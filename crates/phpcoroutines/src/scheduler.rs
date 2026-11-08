@@ -32,11 +32,9 @@ per_thread! {
 }
 
 unsafe extern "C" {
-    /// Unlinks the first PHP name resolver `same` accepts; its zval, or null.
-    fn swoole_name_resolver_php_remove(
-        same: unsafe extern "C" fn(*mut zval, *mut zval) -> bool,
-        resolver: *mut zval,
-    ) -> *mut zval;
+    /// Unlinks the first PHP name resolver (of `resolver`'s object, any when null); its
+    /// zval, or null.
+    fn swoole_name_resolver_php_remove(resolver: *mut zval) -> *mut zval;
 }
 
 /// One `add()` or `parallel()`: its kept callable and how many coroutines run it.
@@ -441,10 +439,6 @@ fn can_exit() -> Result<bool, Bailout> {
     Ok(unsafe { type_of(&raw const retval) } != IS_FALSE)
 }
 
-unsafe extern "C" fn any(_: *mut zval, _: *mut zval) -> bool {
-    true
-}
-
 /// RSHUTDOWN: drop the PHP name resolvers and the exit condition.
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_coroutine_scheduler_rshutdown() {
@@ -454,7 +448,7 @@ pub extern "C" fn php_swoole_coroutine_scheduler_rshutdown() {
 fn rshutdown() -> Result<(), Bailout> {
     loop {
         // SAFETY: C++'s resolver list; every PHP resolver matches.
-        let resolver = unsafe { swoole_name_resolver_php_remove(any, ptr::null_mut()) };
+        let resolver = unsafe { swoole_name_resolver_php_remove(ptr::null_mut()) };
         if resolver.is_null() {
             break;
         }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // What the resolver needs from C++ (upstream's src/network/dns.cc is deleted):
-// the std::string, std::list and std::function signatures of swoole.h's DNS API
-// and the name resolvers, the C++ locale's space table for the hosts file, the
+// the std::string signatures of swoole.h's DNS API and the name resolver lookup
+// (the resolver list is crates/corebase/src/name_resolver.rs), the C++ locale's space table for the hosts file, the
 // coroutine Socket and Coroutine calls, and the ResolverOwner exception paths.
 // The resolver itself is crates/clients (dns.rs, cares.rs).
 #include "swoole_rs_coroutine_socket.h"
@@ -57,33 +57,13 @@ SW_API void swoole_set_hosts_path(const std::string &hosts_file) {
     swr_v1_clients_set_hosts_path(reinterpret_cast<const uint8_t *>(hosts_file.data()), hosts_file.size());
 }
 
-// SwooleG.name_resolvers: swoole_name_resolver_each hands out its std::list iterators.
-SW_API void swoole_name_resolver_add(const NameResolver &resolver, bool append) {
-    if (append) {
-        SwooleG.name_resolvers.push_back(resolver);
-    } else {
-        SwooleG.name_resolvers.push_front(resolver);
-    }
-}
-
-SW_API void swoole_name_resolver_each(
-    const std::function<swTraverseOperation(const std::list<NameResolver>::iterator &iter)> &fn) {
-    for (auto iter = SwooleG.name_resolvers.begin(); iter != SwooleG.name_resolvers.end(); ++iter) {
-        const swTraverseOperation op = fn(iter);
-        if (op == SW_TRAVERSE_REMOVE) {
-            SwooleG.name_resolvers.erase(iter++);
-        } else if (op == SW_TRAVERSE_STOP) {
-            break;
-        }
-    }
-}
-
 SW_API std::string swoole_name_resolver_lookup(const std::string &host_name, NameResolver::Context *ctx) {
-    for (auto &name_resolver : SwooleG.name_resolvers) {
-        std::string result = name_resolver.resolve(host_name, ctx, name_resolver.private_data);
-        if (!result.empty() || ctx->final_) {
-            return result;
-        }
+    std::string result;
+    if (swr_v1_core_name_resolver_resolve(host_name.data(), host_name.size(), ctx, &result,
+                                          [](void *out, const char *text, size_t length) {
+                                              static_cast<std::string *>(out)->assign(text, length);
+                                          })) {
+        return result;
     }
     if (swoole_coroutine_is_in()) {
         return System::gethostbyname(host_name, ctx->type, ctx->timeout);

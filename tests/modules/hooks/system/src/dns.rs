@@ -1,8 +1,8 @@
 //! Upstream's `core-tests/src/network/dns.cpp`, one Rust function per TEST with the
-//! same inputs and expected values. `dns_lookup`, `get_ip_by_hosts`, the DNS server
-//! and hosts-path setters and the name-resolver list are called under their upstream
-//! symbols, passing and reading libstdc++'s `std::string`, `std::vector` and
-//! `std::function` by their layouts; `GethostbynameRequest` and `GetaddrinfoRequest`
+//! same inputs and expected values. `dns_lookup`, `get_ip_by_hosts` and the DNS server
+//! and hosts-path setters are called under their upstream symbols, passing and reading
+//! libstdc++'s `std::string` and `std::vector` by their layouts; the name-resolver list
+//! is Rust's (`swr_v1_core_name_resolver_*`), its `each` a remove; `GethostbynameRequest` and `GetaddrinfoRequest`
 //! are views of the resolver record, so the cases drive that record
 //! (`swr_v1_core_resolver_*`) as `network::gethostbyname`/`getaddrinfo` do; the
 //! lookup itself goes through `swoole_name_resolver_lookup_run`, its C entry.
@@ -17,8 +17,6 @@ use super::{
 const SW_ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = 711;
 const SW_ERROR_CO_CANCELED: c_int = 10017;
 const SW_DNS_SERVER_PORT: c_int = 53;
-const SW_TRAVERSE_KEEP: c_int = 0;
-const SW_TRAVERSE_REMOVE: c_int = 1;
 const TYPE_USER: c_int = 2;
 const TEST_HTTP_DOMAIN: &CStr = c"www.gov.cn";
 
@@ -105,43 +103,6 @@ struct DnsServer {
     port: c_int,
 }
 
-/// libstdc++'s `std::function`: the functor's storage, its manager and its invoker.
-#[repr(C)]
-struct CxxFunction {
-    functor: [usize; 2],
-    manager: unsafe extern "C" fn(*mut [usize; 2], *const [usize; 2], c_int) -> bool,
-    invoker: *const c_void,
-}
-
-/// The manager of a stateless functor held in place: nothing to type, clone or destroy.
-unsafe extern "C" fn stateless(
-    dest: *mut [usize; 2],
-    source: *const [usize; 2],
-    op: c_int,
-) -> bool {
-    // __get_type_info (no caller asks), __get_functor_ptr, __clone_functor, __destroy_functor.
-    match op {
-        // SAFETY: `dest` is a writable functor slot.
-        0 => unsafe { (*dest)[0] = 0 },
-        // SAFETY: as above.
-        1 => unsafe { (*dest)[0] = source as usize },
-        // SAFETY: both are functor slots.
-        2 => unsafe { *dest = *source },
-        _ => {}
-    }
-    false
-}
-
-impl CxxFunction {
-    fn new(invoker: *const c_void) -> Self {
-        Self {
-            functor: [0; 2],
-            manager: stateless,
-            invoker,
-        }
-    }
-}
-
 /// `swoole::NameResolver::Context`.
 #[repr(C)]
 struct Context {
@@ -151,7 +112,7 @@ struct Context {
     with_port: bool,
     cluster: bool,
     is_final: bool,
-    dtor: [usize; 4],
+    dtor: Option<unsafe extern "C" fn(*mut Context)>,
 }
 
 impl Context {
@@ -164,18 +125,13 @@ impl Context {
             with_port: false,
             cluster: false,
             is_final: false,
-            dtor: [0; 4],
+            dtor: None,
         }
     }
 }
 
-/// `swoole::NameResolver`.
-#[repr(C)]
-struct NameResolver {
-    resolve: CxxFunction,
-    private_data: *mut c_void,
-    kind: c_int,
-}
+/// Where a resolver writes its answer.
+type Assign = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
 
 /// `swoole_name_resolver_lookup_call`.
 #[repr(C)]
@@ -231,10 +187,25 @@ unsafe extern "C-unwind" {
     fn swoole_load_resolv_conf() -> bool;
     #[link_name = "_Z21swoole_set_hosts_pathRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"]
     fn swoole_set_hosts_path(path: *const CxxString);
-    #[link_name = "_Z24swoole_name_resolver_addRKN6swoole12NameResolverEb"]
-    fn swoole_name_resolver_add(resolver: *const NameResolver, append: bool);
-    #[link_name = "_Z25swoole_name_resolver_eachRKSt8functionIF19swTraverseOperationRKSt14_List_iteratorIN6swoole12NameResolverEEEE"]
-    fn swoole_name_resolver_each(fn_: *const CxxFunction);
+    /// `swoole_name_resolver_add({resolve, private_data, kind}, append)`.
+    fn swr_v1_core_name_resolver_add(
+        resolve: unsafe extern "C" fn(
+            *mut c_void,
+            *const c_char,
+            usize,
+            *mut Context,
+            *mut c_void,
+            Assign,
+        ) -> bool,
+        private_data: *mut c_void,
+        kind: c_int,
+        append: bool,
+    );
+    /// `swoole_name_resolver_each` removing the first resolver `same` accepts.
+    fn swr_v1_core_name_resolver_remove(
+        same: unsafe extern "C" fn(*mut c_void, c_int, *mut c_void) -> bool,
+        argument: *mut c_void,
+    ) -> *mut c_void;
     fn swoole_name_resolver_lookup_run(call: *mut LookupCall);
     #[link_name = "_Znwm"]
     fn operator_new(size: usize) -> *mut c_void;
@@ -527,47 +498,37 @@ fn name_resolver_test_fn_1() {
     assert_eq!("127.0.0.1", name_resolver_lookup("localhost", &mut ctx));
 }
 
-/// The user resolver's `std::function` invoker: `std::string(const std::string &,
-/// Context *, void *)`, each argument by reference.
+/// The user resolver: upstream's lambda, its answer through `assign`; true when it
+/// returned a non-empty string.
 unsafe extern "C" fn user_resolve(
-    _: *const [usize; 2],
-    domain: *const CxxString,
-    ctx: *const *mut Context,
-    _: *const *mut c_void,
-) -> CxxString {
-    // SAFETY: the caller's live string.
-    let domain = unsafe { &*domain }.text();
-    if domain == "name1" {
-        return CxxString::owned("127.0.0.2");
-    } else if domain == "www.baidu.com" {
+    _: *mut c_void,
+    name: *const c_char,
+    length: usize,
+    ctx: *mut Context,
+    out: *mut c_void,
+    assign: Assign,
+) -> bool {
+    // SAFETY: the lookup's name.
+    let domain = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) };
+    if domain == b"name1" {
+        // SAFETY: the lookup's output.
+        unsafe { assign(out, c"127.0.0.2".as_ptr(), 9) };
+        return true;
+    } else if domain == b"www.baidu.com" {
         // SAFETY: the lookup's live context.
-        unsafe { (**ctx).is_final = true };
-        return CxxString::owned("");
+        unsafe { (*ctx).is_final = true };
     }
-    CxxString::owned("")
+    false
 }
 
-/// The traversal's invoker: `swTraverseOperation(const std::list<NameResolver>::iterator &)`.
-unsafe extern "C" fn remove_user(_: *const [usize; 2], iter: *const *const u8) -> c_int {
-    // A list node is its two links, then the NameResolver.
-    // SAFETY: the iterator names a live node.
-    let resolver = unsafe { &*(*iter).add(2 * size_of::<usize>()).cast::<NameResolver>() };
-    if resolver.kind == TYPE_USER {
-        SW_TRAVERSE_REMOVE
-    } else {
-        SW_TRAVERSE_KEEP
-    }
+/// The traversal's body: remove the user resolver.
+unsafe extern "C" fn remove_user(_: *mut c_void, kind: c_int, _: *mut c_void) -> bool {
+    kind == TYPE_USER
 }
 
 fn name_resolver_test_fn_2() {
-    let nr = NameResolver {
-        resolve: CxxFunction::new(user_resolve as *const c_void),
-        private_data: std::ptr::null_mut(),
-        kind: TYPE_USER,
-    };
-
-    // SAFETY: the list copies the resolver.
-    unsafe { swoole_name_resolver_add(&nr, true) };
+    // SAFETY: a resolver that keeps no state.
+    unsafe { swr_v1_core_name_resolver_add(user_resolve, std::ptr::null_mut(), TYPE_USER, true) };
 
     let mut ctx = Context::of(AF_INET);
     assert_eq!("127.0.0.2", name_resolver_lookup("name1", &mut ctx));
@@ -578,9 +539,8 @@ fn name_resolver_test_fn_2() {
     let mut ctx = Context::of(AF_INET);
     assert_eq!("127.0.0.1", name_resolver_lookup("localhost", &mut ctx));
 
-    let each = CxxFunction::new(remove_user as *const c_void);
-    // SAFETY: a stateless function the traversal calls.
-    unsafe { swoole_name_resolver_each(&each) };
+    // SAFETY: a predicate over the resolver's kind.
+    unsafe { swr_v1_core_name_resolver_remove(remove_user, std::ptr::null_mut()) };
 
     let mut ctx = Context::of(AF_INET);
     let ip = name_resolver_lookup("www.baidu.com", &mut ctx);

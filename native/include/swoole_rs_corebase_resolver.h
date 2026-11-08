@@ -21,10 +21,10 @@ swr_v1_core_resolver_prepared swr_v1_core_resolver_view(const swr_v1_core_resolv
 void swr_v1_core_resolver_retain(const swr_v1_core_resolver *owner);
 void swr_v1_core_resolver_free(swr_v1_core_resolver *owner);
 swr_v1_core_resolver_addresses swr_v1_core_resolver_span(const swr_v1_core_resolver *owner);
-int swr_v1_core_resolver_resize(swr_v1_core_resolver *owner, size_t length);
-int swr_v1_core_resolver_assign(swr_v1_core_resolver *owner, const sockaddr_in6 *data, size_t length);
-int swr_v1_core_resolver_lookup(swr_v1_core_resolver *owner, bool (*unknown)(void *, int), void *context);
-int swr_v1_core_resolver_host(swr_v1_core_resolver *owner);
+int swr_v1_core_resolver_resize(const swr_v1_core_resolver *owner, size_t length);
+int swr_v1_core_resolver_assign(const swr_v1_core_resolver *owner, const sockaddr_in6 *data, size_t length);
+int swr_v1_core_resolver_lookup(const swr_v1_core_resolver *owner, bool (*unknown)(void *, int), void *context);
+int swr_v1_core_resolver_host(const swr_v1_core_resolver *owner);
 swr_v1_core_resolver_text swr_v1_core_resolver_next(const swr_v1_core_resolver *owner, size_t *cursor);
 int swr_v1_clients_gethostbyname(int flags, const char *name, char *addr);
 swr_v1_core_resolver_text swr_v1_core_resolver_format(const swr_v1_core_resolver *owner, size_t index);

@@ -305,7 +305,12 @@ def zend_free_native_sources():
 
 
 def stage_native_sources(source):
-    for name, path in native_sources().items():
+    sources = native_sources()
+    # An incremental tree still holds the copy of a native file deleted since it was staged.
+    for stale in (source / 'src').glob('swoole_rs_*.cc'):
+        if f'src/{stale.name}' not in sources:
+            stale.unlink()
+    for name, path in sources.items():
         if not (source / name).exists() or (source / name).read_bytes() != path.read_bytes():
             (source / name).parent.mkdir(exist_ok=True)  # the patched tree may have no src/ left
             shutil.copyfile(path, source / name)
@@ -415,6 +420,8 @@ def configuration_key(inputs, development=False):
         # Prefix staging below updates their mtimes; native dependency files rebuild callers.
         configuration['headers_sha256'] = {path: value for path, value in inputs.get('headers_sha256', {}).items()
                                             if not path.startswith('native/') or path.startswith('native/include/')}
+        # config.m4 globs src/ at configure, so adding or deleting a native file reconfigures.
+        configuration['native_sources'] = sorted(inputs.get('native_sources_sha256', {}))
         configuration['configure_patches'] = [patch for patch in inputs['patches'] if
                                               any(path in {'config.m4', 'CMakeLists.txt'} for path in patch['upstream_paths'])]
     return hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()

@@ -117,10 +117,27 @@ class Overlays(unittest.TestCase):
         self.assertEqual(build_hybrid.configuration_key(with_module, True), build_hybrid.configuration_key(module_edit, True))
         self.assertNotEqual(build_hybrid.configuration_key(with_module), build_hybrid.configuration_key(module_edit))
 
+        sources = {**inputs, 'native_sources_sha256': {'src/swoole_rs_buffer_a.cc': 'one'}}
+        source_edit = {**sources, 'native_sources_sha256': {'src/swoole_rs_buffer_a.cc': 'two'}}
+        self.assertEqual(build_hybrid.configuration_key(sources, True), build_hybrid.configuration_key(source_edit, True))
+        self.assertNotEqual(build_hybrid.configuration_key(sources, True), build_hybrid.configuration_key(inputs, True))
         for changed in [{**inputs, 'headers_sha256': {'abi.h': 'two'}},
                         {**inputs, 'modules': ['websocket']},
                         {**inputs, 'patches': [{'upstream_paths': ['config.m4'], 'sha256': 'two'}]}]:
             self.assertNotEqual(build_hybrid.configuration_key(inputs, True), build_hybrid.configuration_key(changed, True))
+
+    def test_staging_drops_a_deleted_native_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, source = Path(directory) / 'repo', Path(directory) / 'tree'
+            (root / 'native/buffer').mkdir(parents=True)
+            (root / 'native/buffer/kept.cc').write_text('kept')
+            (source / 'src').mkdir(parents=True)
+            (source / 'src/swoole_rs_buffer_gone.cc').write_text('gone')
+            (source / 'src/upstream.cc').write_text('upstream')
+            with patch.object(build_hybrid, 'ROOT', root):
+                build_hybrid.stage_native_sources(source)
+            self.assertEqual(sorted(p.name for p in (source / 'src').iterdir()),
+                             ['swoole_rs_buffer_kept.cc', 'upstream.cc'])
 
     def test_updates_preserve_unchanged_mtimes_and_restore_removed_patch(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,9 +1,8 @@
 //! `Swoole\NameResolver\Context` and the `swoole_name_resolver_*` functions:
 //! registration, objects, the functions' bodies and the PHP resolver's lookup
 //! (a `Swoole\NameResolver` object's `lookup()`, then its cluster's `pop()`).
-//! C++ keeps `NameResolver::Context` (core code and the coroutine socket share
-//! it, and it holds a `std::function`) and the resolver list in `SwooleG`, so
-//! each touch of either is one call (`native::swoole_name_resolver_*`).
+//! The context and the resolver list are crates/corebase's (`NameResolverContext`,
+//! `swr_v1_core_name_resolver_*`), shared with the coroutine socket's lookup.
 use crate::socket::warn;
 use std::{
     ffi::{c_char, c_int, c_void},
@@ -29,50 +28,135 @@ const RESOLVER_CLASS: &[u8] = b"Swoole\\NameResolver";
 
 static CONTEXT: Class = Class::new();
 
-/// What C++ does to a `NameResolver::Context` and the resolver list, defined in
-/// in `native/clients/name_resolver.cc`.
+/// A `NameResolver::Context` (crates/corebase's `NameResolverContext`) and the resolver
+/// list, as the rest of this file uses them.
 mod native {
-    use std::ffi::{c_char, c_void};
-    use swoole_rs_zend::sys::zval;
+    use std::ffi::{c_char, c_int, c_void};
+    use swoole_rs_corebase::{NameResolverContext, TYPE_PHP};
+    use swoole_rs_zend::{
+        bailout,
+        sys::{swr_zend_efree, swr_zend_try_zval_dtor, zval},
+    };
 
-    unsafe extern "C" {
-        /// `new NameResolver::Context()`.
-        pub(super) fn swoole_name_resolver_context_new() -> *mut c_void;
-        pub(super) fn swoole_name_resolver_context_free(context: *mut c_void);
-        /// `__construct`'s `type` and `with_port`.
-        pub(super) fn swoole_name_resolver_context_set(
-            context: *mut c_void,
-            kind: i64,
-            with_port: bool,
-        );
-        /// The cluster in `private_data` (null for none), and `with_port`.
-        pub(super) fn swoole_name_resolver_context_get(
-            context: *mut c_void,
-            with_port: *mut bool,
-        ) -> *mut zval;
-        /// With a cluster: keep it in `private_data` with its destructor,
-        /// `cluster_` set and `final_` clear. Without: both flags as given.
-        pub(super) fn swoole_name_resolver_context_settle(
-            context: *mut c_void,
-            cluster: *mut zval,
-            is_final: bool,
-        );
-        /// `ctx->dtor(ctx); ctx->private_data = nullptr;`, a `bailout::trap` body
-        /// (the cluster's destructor may run PHP).
-        pub(super) fn swoole_name_resolver_context_release(context: *mut c_void);
-        /// `swoole_name_resolver_add({lookup, resolver, TYPE_PHP})`.
-        pub(super) fn swoole_name_resolver_php_add(resolver: *mut zval);
-        /// Remove the first PHP resolver `same` matches and return its zval
-        /// (null if none did).
-        pub(super) fn swoole_name_resolver_php_remove(
-            same: unsafe extern "C" fn(*mut zval, *mut zval) -> bool,
-            resolver: *mut zval,
-        ) -> *mut zval;
+    fn of(context: *mut c_void) -> *mut NameResolverContext {
+        context.cast()
     }
 
-    /// Where a lookup writes its result.
-    pub(super) type Assign =
-        unsafe extern "C" fn(out: *mut c_void, text: *const c_char, length: usize);
+    /// `new NameResolver::Context()`.
+    pub(super) fn swoole_name_resolver_context_new() -> *mut c_void {
+        Box::into_raw(Box::<NameResolverContext>::default()).cast()
+    }
+
+    /// `delete context`, running its destructor.
+    /// # Safety
+    /// `context` came from [`swoole_name_resolver_context_new`] and nothing else uses it.
+    pub(super) unsafe fn swoole_name_resolver_context_free(context: *mut c_void) {
+        // SAFETY: as the caller promises.
+        drop(unsafe { Box::from_raw(of(context)) });
+    }
+
+    /// `*context = {}` with `with_port`: the old value is overwritten, not destroyed.
+    pub(crate) fn swoole_name_resolver_context_reset(
+        context: &mut NameResolverContext,
+        with_port: bool,
+    ) {
+        let fresh = NameResolverContext {
+            with_port,
+            ..NameResolverContext::default()
+        };
+        std::mem::forget(std::mem::replace(context, fresh));
+    }
+
+    /// `__construct`'s `type` and `with_port`.
+    pub(super) fn swoole_name_resolver_context_set(
+        context: &mut NameResolverContext,
+        kind: i64,
+        with_port: bool,
+    ) {
+        context.with_port = with_port;
+        // `int` storage, as upstream's assignment.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "upstream stores the long in an int"
+        )]
+        let kind = kind as c_int;
+        context.kind = kind;
+    }
+
+    /// The cluster in `private_data` (null for none), and `with_port`.
+    pub(super) fn swoole_name_resolver_context_get(
+        context: &NameResolverContext,
+        with_port: &mut bool,
+    ) -> *mut zval {
+        *with_port = context.with_port;
+        context.private_data.cast()
+    }
+
+    /// The cluster's destructor: `zval_dtor` and `efree`.
+    unsafe extern "C" fn free_cluster(context: &mut NameResolverContext) {
+        let cluster = context.private_data.cast::<zval>();
+        // SAFETY: the context's cluster, an emalloc'd zval.
+        let bailed = unsafe { swr_zend_try_zval_dtor(cluster) };
+        // SAFETY: as above, released.
+        unsafe { swr_zend_efree(cluster.cast()) };
+        bailout::defer(super::trapped(bailed));
+    }
+
+    /// With a cluster (an emalloc'd zval the context takes): keep it in `private_data`
+    /// with its destructor, `cluster_` set and `final_` clear. Without: both flags as given.
+    pub(super) fn swoole_name_resolver_context_settle(
+        context: &mut NameResolverContext,
+        cluster: *mut zval,
+        is_final: bool,
+    ) {
+        if !cluster.is_null() {
+            context.private_data = cluster.cast();
+            context.dtor = Some(free_cluster);
+        }
+        context.cluster = !cluster.is_null();
+        context.is_final = is_final;
+    }
+
+    /// `ctx->dtor(ctx); ctx->private_data = nullptr;`, a `bailout::trap` body (the
+    /// cluster's destructor may run PHP).
+    /// # Safety
+    /// `context` is live with a cluster.
+    pub(super) unsafe extern "C" fn swoole_name_resolver_context_release(context: *mut c_void) {
+        // SAFETY: as the caller promises.
+        unsafe { &mut *of(context) }.release();
+    }
+
+    /// `swoole_name_resolver_add({lookup, resolver, TYPE_PHP})`.
+    pub(super) fn swoole_name_resolver_php_add(resolver: *mut zval) {
+        swoole_rs_corebase::swr_v1_core_name_resolver_add(
+            super::lookup_php,
+            resolver.cast(),
+            TYPE_PHP,
+            true,
+        );
+    }
+
+    /// A PHP resolver whose object is `resolver`'s, or any PHP resolver when it is null.
+    unsafe extern "C" fn php_same(kept: *mut c_void, kind: c_int, resolver: *mut c_void) -> bool {
+        // SAFETY: both are live object zvals when `resolver` is set.
+        kind == TYPE_PHP
+            && (resolver.is_null() || unsafe { super::same(kept.cast(), resolver.cast()) })
+    }
+
+    /// Remove the first PHP resolver for `resolver`'s object (any, when null) and return
+    /// its kept zval, or null if there was none.
+    /// # Safety
+    /// `resolver` is null or a live object zval.
+    #[unsafe(no_mangle)]
+    pub(crate) unsafe extern "C" fn swoole_name_resolver_php_remove(
+        resolver: *mut zval,
+    ) -> *mut zval {
+        // SAFETY: `php_same` reads only the kept zvals and `resolver`.
+        unsafe { swoole_rs_corebase::swr_v1_core_name_resolver_remove(php_same, resolver.cast()) }
+            .cast()
+    }
+
+    pub(super) use swoole_rs_corebase::Assign;
 
     /// `swoole_name_resolver_lookup_call`: `swoole_name_resolver_lookup(name, context)`,
     /// its result through `assign`.
@@ -86,10 +170,12 @@ mod native {
     }
 
     unsafe extern "C" {
-        /// Run a [`Lookup`]; a `bailout::trap` body.
+        /// Run a [`Lookup`]; a `bailout::trap` body (native/clients/dns.cc).
         pub(super) fn swoole_name_resolver_lookup_run(call: *mut c_void);
     }
 }
+
+pub(crate) use native::swoole_name_resolver_context_reset;
 
 /// `struct ContextObject { NameResolver::Context *context; zend_object std; }`.
 type Held = *mut c_void;
@@ -97,8 +183,7 @@ type Held = *mut c_void;
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: Zend calls `create_object` with this class or a subclass of it.
     let std = unsafe { Object::<Held>::create(&CONTEXT, ce) };
-    // SAFETY: C++ allocates the context.
-    let context = unsafe { native::swoole_name_resolver_context_new() };
+    let context = native::swoole_name_resolver_context_new();
     // SAFETY: the object just made.
     unsafe { *Object::<Held>::data(std) = context };
     std
@@ -172,7 +257,11 @@ fn construct(call: &Call) {
     };
     if let Some(context) = context_of(call.this()) {
         // SAFETY: the object's live context.
-        unsafe { native::swoole_name_resolver_context_set(context, family, with_port) };
+        native::swoole_name_resolver_context_set(
+            unsafe { &mut *context.cast() },
+            family,
+            with_port,
+        );
     }
 }
 
@@ -265,8 +354,8 @@ pub unsafe extern "C" fn php_swoole_name_resolver_add(resolver: *mut zval) -> bo
     let held = unsafe { *resolver };
     // SAFETY: fresh storage for one zval.
     unsafe { copy.write(held) };
-    // SAFETY: the copy, which the list keeps until remove or RSHUTDOWN.
-    unsafe { native::swoole_name_resolver_php_add(copy) };
+    // The list keeps the copy until remove or RSHUTDOWN.
+    native::swoole_name_resolver_php_add(copy);
     true
 }
 
@@ -288,7 +377,7 @@ fn remove(call: &Call) {
         return;
     };
     // SAFETY: a live object zval.
-    let kept = unsafe { native::swoole_name_resolver_php_remove(same, resolver) };
+    let kept = unsafe { native::swoole_name_resolver_php_remove(resolver) };
     if !kept.is_null() {
         // Drop the reference `add` took, through the argument as upstream does.
         // SAFETY: the argument holds another reference, so no destructor runs.
@@ -335,39 +424,44 @@ unsafe fn call_method(
 
 /// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` `resolver`
 /// for `name`, keeping a returned cluster in the context and popping a node
-/// from it. Writes the result through `assign` (nothing for an empty result),
+/// from it. Writes the result through `assign` and returns whether it is non-empty,
 /// then raises a bailout the PHP code caused.
 /// # Safety
 /// `resolver` is a live object zval the list holds, `name` holds `length` bytes,
 /// `context` is a live `NameResolver::Context *` and `assign` writes `out`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_name_resolver_lookup(
-    resolver: *mut zval,
+unsafe extern "C" fn lookup_php(
+    resolver: *mut c_void,
     name: *const c_char,
     length: usize,
-    context: *mut c_void,
+    context: *mut swoole_rs_corebase::NameResolverContext,
     out: *mut c_void,
     assign: native::Assign,
-) {
+) -> bool {
+    let (resolver, context) = (resolver.cast::<zval>(), context.cast::<c_void>());
     // SAFETY: per the caller.
     let name = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) };
     // SAFETY: per the caller.
     let result = unsafe { resolve(resolver, name, context) };
-    match result {
+    let answered = match result {
         Ok(Some(text)) => {
             // SAFETY: per the caller.
             unsafe { assign(out, text.as_ptr().cast(), text.len()) };
+            !text.is_empty()
         }
-        Ok(None) => {}
-        Err(bailout) => bailout.defer(),
-    }
+        Ok(None) => false,
+        Err(bailout) => {
+            bailout.defer();
+            false
+        }
+    };
     bailout::finish();
+    answered
 }
 
 /// The lookup's steps, as upstream's; `None` is an empty result. Upstream
 /// returns early from some steps without releasing `retval`; so does this.
 /// # Safety
-/// As [`swr_v1_phpclients_name_resolver_lookup`].
+/// As [`lookup_php`].
 unsafe fn resolve(
     resolver: *mut zval,
     name: &[u8],
@@ -376,7 +470,7 @@ unsafe fn resolve(
     let mut with_port = false;
     // SAFETY: a live context.
     let mut cluster =
-        unsafe { native::swoole_name_resolver_context_get(context, &raw mut with_port) };
+        native::swoole_name_resolver_context_get(unsafe { &*context.cast() }, &mut with_port);
     let mut retval = undef();
     if !cluster.is_null() {
         // SAFETY: the kept cluster object.
@@ -388,7 +482,7 @@ unsafe fn resolve(
         }
         if count == 0 {
             // No available node: release the cluster and resolve again.
-            // SAFETY: C++'s release of a live context.
+            // SAFETY: the release of a live context with a cluster.
             unsafe { bailout::trap(native::swoole_name_resolver_context_release, context) }?;
             cluster = ptr::null_mut();
         }
@@ -414,14 +508,20 @@ unsafe fn resolve(
                 // SAFETY: fresh storage; the context takes `retval`'s reference.
                 unsafe { kept.write(retval) };
                 // SAFETY: a live context.
-                unsafe { native::swoole_name_resolver_context_settle(context, kept, false) };
+                native::swoole_name_resolver_context_settle(
+                    unsafe { &mut *context.cast() },
+                    kept,
+                    false,
+                );
                 cluster = kept;
             }
             IS_STRING => {
                 // SAFETY: a live context.
-                unsafe {
-                    native::swoole_name_resolver_context_settle(context, ptr::null_mut(), true);
-                };
+                native::swoole_name_resolver_context_settle(
+                    unsafe { &mut *context.cast() },
+                    ptr::null_mut(),
+                    true,
+                );
                 // SAFETY: a string zval.
                 let text = unsafe { value::str_of(&raw const retval) };
                 // SAFETY: a live string.
@@ -429,9 +529,11 @@ unsafe fn resolve(
             }
             _ => {
                 // SAFETY: a live context.
-                unsafe {
-                    native::swoole_name_resolver_context_settle(context, ptr::null_mut(), false);
-                };
+                native::swoole_name_resolver_context_settle(
+                    unsafe { &mut *context.cast() },
+                    ptr::null_mut(),
+                    false,
+                );
                 return Ok(None);
             }
         }
@@ -457,7 +559,7 @@ unsafe fn resolve(
     let mut result = unsafe { string::bytes(host) }.to_vec();
     // The PHP calls may have re-run `__construct`: read `with_port` now, as upstream.
     // SAFETY: a live context.
-    unsafe { native::swoole_name_resolver_context_get(context, &raw mut with_port) };
+    native::swoole_name_resolver_context_get(unsafe { &*context.cast() }, &mut with_port);
     if with_port {
         result.push(b':');
         // SAFETY: a live array.

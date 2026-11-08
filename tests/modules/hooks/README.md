@@ -72,10 +72,11 @@ HTTP or SOCKS5 proxy).
 address.cpp's 12, one function each (`dns.<name>`, `address.<name>`, upstream's
 names, inputs and expected values), run by `hooks-system-rust`. `dns_lookup`,
 `get_ip_by_hosts`, `swoole_set_dns_server`/`_get_dns_server`/`_load_resolv_conf`,
-`swoole_set_hosts_path` and `swoole_name_resolver_add`/`_each` are called under
-their upstream symbols, passing libstdc++'s `std::string`, `std::vector` and
-`std::function` by layout (a returned `std::string` is read only outside a
-coroutine); lookups go through `swoole_name_resolver_lookup_run`. The DNS
+and `swoole_set_hosts_path` are called under their upstream symbols, passing
+libstdc++'s `std::string` and `std::vector` by layout (a returned `std::string` is
+read only outside a coroutine); the resolver list is Rust's
+(`swr_v1_core_name_resolver_add`, and `_remove` for the `each` that removes the
+user resolver); lookups go through `swoole_name_resolver_lookup_run`. The DNS
 requests drive the resolver record (`swr_v1_core_resolver_*`) as
 `network::gethostbyname`/`getaddrinfo` do, and `Address` is the header's inline
 calls to `swr_v1_clients_address_*` and `swr_v1_clients_url`. Excluded as in the

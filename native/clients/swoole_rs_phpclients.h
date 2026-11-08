@@ -64,19 +64,6 @@ void swoole_client_run(void *call);
 
 /* Swoole\NameResolver\Context and the swoole_name_resolver_* functions are
  * crates/phpclients/src/resolver.rs; its MINIT is php_swoole_name_resolver_minit. */
-/* The PHP resolver's lookup of name; writes a non-empty result through assign
- * (out is a std::string), then raises a bailout its PHP code caused. */
-void swr_v1_phpclients_name_resolver_lookup(struct _zval_struct *resolver,
-                                            const char *name,
-                                            size_t length,
-                                            void *context,
-                                            void *out,
-                                            void (*assign)(void *out, const char *text, size_t length));
-/* Defined by native/clients/name_resolver.cc. context is a NameResolver::Context *. */
-void swoole_name_resolver_php_add(struct _zval_struct *resolver);
-struct _zval_struct *swoole_name_resolver_php_remove(bool (*same)(struct _zval_struct *kept,
-                                                                  struct _zval_struct *resolver),
-                                                     struct _zval_struct *resolver);
 struct swoole_name_resolver_lookup_call {
     const char *name;
     size_t length;
@@ -87,14 +74,6 @@ struct swoole_name_resolver_lookup_call {
 /* swoole_name_resolver_lookup over a swoole_name_resolver_lookup_call; a
  * bailout::trap body. Defined by native/clients/dns.cc. */
 void swoole_name_resolver_lookup_run(void *call);
-void *swoole_name_resolver_context_new(void);
-void swoole_name_resolver_context_free(void *context);
-/* *context = {}, with with_port. */
-void swoole_name_resolver_context_reset(void *context, bool with_port);
-void swoole_name_resolver_context_set(void *context, int64_t type, bool with_port);
-struct _zval_struct *swoole_name_resolver_context_get(void *context, bool *with_port);
-void swoole_name_resolver_context_settle(void *context, struct _zval_struct *cluster, bool is_final);
-void swoole_name_resolver_context_release(void *context);
 
 #ifdef __cplusplus
 }
