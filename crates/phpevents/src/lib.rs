@@ -134,11 +134,6 @@ method_table! {
     ];
 }
 
-// The handlers that stay C++.
-unsafe extern "C" {
-    fn zif_swoole_event_rshutdown(frame: *mut z::zend_execute_data, value: *mut z::zval);
-}
-
 /// MINIT: `Swoole\Event` (not instantiable) and the `swoole_event_*` functions,
 /// as `php_swoole_event_minit` registered them.
 /// # Safety
@@ -723,6 +718,13 @@ swoole_rs_zend::handlers! {
     zif_swoole_event_defer => defer;
     zif_swoole_event_cycle => cycle;
     zif_swoole_event_isset => isset;
+    zif_swoole_event_rshutdown => rshutdown;
+}
+
+/// The shutdown function `init` registers. A Zend bailout ends it, as inside
+/// upstream's `zend_try`, and is not raised; a thread exit still is.
+fn rshutdown(_call: &Call) {
+    let _caught = bailout::relay_to_c(loop_driver::shutdown());
 }
 
 fn wait(_call: &Call) {
@@ -741,7 +743,7 @@ fn dispatch(call: &Call) {
 /// # Safety
 /// Called from the native lifecycle entry point after module registration.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpevents_init() -> i32 {
+pub unsafe extern "C" fn php_swoole_reactor_init() -> i32 {
     let result = loop_driver::init().unwrap_or_else(|error| {
         error.defer();
         -1
@@ -752,7 +754,7 @@ pub unsafe extern "C" fn swr_v1_phpevents_init() -> i32 {
 /// # Safety
 /// The caller lends a live initialized descriptor candidate.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpevents_fd(value: *mut zval) -> i32 {
+pub unsafe extern "C" fn php_swoole_convert_to_fd(value: *mut zval) -> i32 {
     let result = fd(value);
     bailout::finish();
     result
@@ -761,11 +763,6 @@ pub unsafe extern "C" fn swr_v1_phpevents_fd(value: *mut zval) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phpevents_wait() {
     complete(loop_driver::wait());
-}
-/// Native shutdown entry; its C++ caller contains the final jump.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpevents_shutdown() {
-    complete(loop_driver::shutdown());
 }
 fn complete(result: Result<(), Bailout>) {
     bailout::defer(result);

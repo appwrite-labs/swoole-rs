@@ -30,7 +30,6 @@ struct swr_v1_phptimer_ops {
     void (*stats)(size_t *count, uint64_t *round);
     size_t (*ids)(int64_t *ids, size_t capacity);
     uint8_t (*clear)(int64_t id); /* swoole_timer_clear's lookup and del of a PHP timer */
-    uint8_t (*clear_all)(void);
     void (*call)(void *invocation);
     void (*fatal_warning)(const char *message);
     void (*warning)(const char *message);
@@ -39,6 +38,8 @@ void swr_v1_phptimer_minit(int32_t module_number,
                            struct _zend_class_entry *array_iterator, const struct swr_v1_phptimer_ops *ops);
 uint8_t swr_v1_phptimer_call(void *callable);
 uint8_t swr_v1_phptimer_free(void *callable);
+/* php_swoole_timer_clear_all(): remove every PHP timer; 0 if there is no timer. */
+uint8_t swr_v1_phptimer_clear_all(void);
 #ifdef __cplusplus
 }
 #endif

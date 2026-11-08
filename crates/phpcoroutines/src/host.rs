@@ -77,7 +77,7 @@ unsafe extern "C" {
     ) -> bool;
     fn sw_php_exit(status: c_int);
     fn php_write(buf: *const c_void, size: usize) -> usize;
-    fn swr_v1_phpevents_init() -> i32;
+    fn php_swoole_reactor_init() -> i32;
     fn swr_v1_phpevents_wait();
     fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool;
     fn swr_v1_phphelpers_call_anyway(
@@ -607,7 +607,7 @@ pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
 
 pub(crate) fn reactor_init() -> i32 {
     // SAFETY: crates/phpevents starts the loop.
-    unsafe { swr_v1_phpevents_init() }
+    unsafe { php_swoole_reactor_init() }
 }
 
 pub(crate) fn event_wait() {

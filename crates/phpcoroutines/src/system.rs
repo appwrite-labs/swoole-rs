@@ -65,7 +65,7 @@ unsafe extern "C" {
     ) -> bool;
     fn swr_v1_system_wait_signal(signals: *const c_long, count: usize, timeout: f64) -> c_int;
     fn swoole_coroutine_statvfs(path: *const c_char, buf: *mut libc::statvfs) -> c_int;
-    fn swr_v1_phpevents_fd(value: *mut zval) -> c_int;
+    fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
     fn swr_v1_core_last_error() -> c_int;
     // `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
     pub(crate) fn zif_swoole_async_dns_lookup_coro(
@@ -570,7 +570,7 @@ fn wait_event(call: &Call) {
         return;
     };
     // SAFETY: a passed argument.
-    let fd = unsafe { swr_v1_phpevents_fd(call.zval(1)) };
+    let fd = unsafe { php_swoole_convert_to_fd(call.zval(1)) };
     if fd < 0 {
         host::fatal_error(E_WARNING, c"unknown fd type");
         call.set_bool(false);

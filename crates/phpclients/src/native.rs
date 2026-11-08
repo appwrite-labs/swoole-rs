@@ -572,7 +572,7 @@ unsafe extern "C" {
     pub(crate) fn swoole_client_create(kind: c_int, is_async: bool, error: *mut c_int) -> Cli;
     /// The client's `ClientState` (crates/clients).
     pub(crate) fn swoole_client_state(cli: Cli) -> *mut c_void;
-    /// `php_swoole_convert_to_socket(fd)` into `zsocket`.
+    /// A Socket over a dup of the client's fd into `zsocket`.
     pub(crate) fn swoole_client_export_socket(cli: Cli, zsocket: *mut zval) -> bool;
     /// Install the async callbacks in `events`, raised on `object`.
     pub(crate) fn swoole_client_async_listen(cli: Cli, object: *mut zend_object, events: u32);

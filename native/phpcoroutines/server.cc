@@ -40,11 +40,12 @@ void server_invalid(zend_object *object) {
 }
 void port_socket(void *port, zval *return_value) {
 #ifdef SWOOLE_SOCKETS_SUPPORT
-    php_socket *socket_object = php_swoole_convert_to_socket(as_port(port)->get_fd());
-    if (!socket_object) {
+    int fd = dup(as_port(port)->get_fd());
+    if (fd < 0) {
         RETURN_FALSE;
     }
-    SW_ZVAL_SOCKET(return_value, socket_object);
+    // A Socket whatever the import's result, as upstream's php_swoole_convert_to_socket.
+    swr_cpp_phpthread_php_socket_create(return_value, fd);
     zval *zsocket = sw_zval_dup(return_value);
     Z_TRY_ADDREF_P(zsocket);
 #else
