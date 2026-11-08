@@ -82,8 +82,10 @@ unsafe extern "C" {
     ) -> Sword;
 }
 
-/// `OCI_DEFAULT | OCI_THREADED | OCI_OBJECT`: `SWOOLE_PDO_OCI_INIT_MODE`.
-const INIT_MODE: Ub4 = 0x1 | 0x2;
+/// `OCI_DEFAULT | OCI_THREADED | OCI_OBJECT`: the mode every environment is
+/// created with, here and in the driver's per-charset `OCIEnvNlsCreate`.
+#[unsafe(no_mangle)]
+pub static SWOOLE_PDO_OCI_INIT_MODE: Ub4 = 0x1 | 0x2;
 
 /// The environment every `pdo_oci` connection shares, as the driver reads it.
 #[unsafe(no_mangle)]
@@ -231,7 +233,18 @@ pub unsafe extern "C" fn php_swoole_oracle_rinit() {
     if unsafe { env.read() }.is_null() {
         let null = ptr::null();
         // SAFETY: OCI fills `env`; no custom allocators or user memory.
-        unsafe { OCIEnvCreate(env, INIT_MODE, null, null, null, null, 0, ptr::null_mut()) };
+        unsafe {
+            OCIEnvCreate(
+                env,
+                SWOOLE_PDO_OCI_INIT_MODE,
+                null,
+                null,
+                null,
+                null,
+                0,
+                ptr::null_mut(),
+            )
+        };
     }
 }
 
