@@ -13,6 +13,7 @@
 use std::ffi::{c_char, c_int};
 use std::slice;
 
+pub mod framing_recv;
 pub mod http_routes;
 pub mod lifecycle;
 pub mod methods;

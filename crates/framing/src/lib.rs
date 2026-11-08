@@ -14,7 +14,7 @@
 use std::slice;
 pub mod mime;
 
-mod recv;
+pub mod recv;
 pub use recv::{Protocol, swr_v1_framing_recv};
 
 unsafe fn bytes<'a>(p: *const u8, n: usize) -> Option<&'a [u8]> {

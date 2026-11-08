@@ -8,48 +8,48 @@ use core::ffi::c_void;
 use core::ptr::addr_of;
 
 /// One native effect on the socket, buffer or protocol in `context`.
-pub(crate) type FramingCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> i64;
+pub type FramingCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> i64;
 
-pub(crate) const MODE_LENGTH: u32 = 0;
-pub(crate) const MODE_EOF: u32 = 1;
-pub(crate) const MODE_SPLIT: u32 = 2;
+pub const MODE_LENGTH: u32 = 0;
+pub const MODE_EOF: u32 = 1;
+pub const MODE_SPLIT: u32 = 2;
 
 /// `socket->recv` of arg bytes into the buffer's tail, with upstream's read-error
 /// handling and warning: the byte count, or `RECV_CLOSE`/`RECV_DONE`.
-pub(crate) const OP_RECV: u32 = 1;
+pub const OP_RECV: u32 = 1;
 /// `get_package_length` over the whole buffer.
-pub(crate) const OP_GET_LENGTH: u32 = 2;
-pub(crate) const OP_EXTEND: u32 = 3;
+pub const OP_GET_LENGTH: u32 = 2;
+pub const OP_EXTEND: u32 = 3;
 /// `onPackage` of arg bytes from the buffer start.
-pub(crate) const OP_DISPATCH: u32 = 4;
-pub(crate) const OP_REDUCE: u32 = 5;
+pub const OP_DISPATCH: u32 = 4;
+pub const OP_REDUCE: u32 = 5;
 /// `buffer->split` on the EOF, each part to `onPackage`.
-pub(crate) const OP_SPLIT: u32 = 7;
-pub(crate) const OP_SSL_PENDING: u32 = 8;
+pub const OP_SPLIT: u32 = 7;
+pub const OP_SSL_PENDING: u32 = 8;
 /// `socket->skip_recv = 0`.
-pub(crate) const OP_CLEAR_SKIP: u32 = 9;
+pub const OP_CLEAR_SKIP: u32 = 9;
 /// `swoole_pagesize()`.
-pub(crate) const OP_PAGE: u32 = 10;
-pub(crate) const OP_LOG_MALFORMED: u32 = 11;
-pub(crate) const OP_LOG_NO_LENGTH: u32 = 12;
+pub const OP_PAGE: u32 = 10;
+pub const OP_LOG_MALFORMED: u32 = 11;
+pub const OP_LOG_NO_LENGTH: u32 = 12;
 /// arg: the packet length (length protocol).
-pub(crate) const OP_LOG_TOO_LARGE: u32 = 13;
+pub const OP_LOG_TOO_LARGE: u32 = 13;
 
 /// `OP_RECV`: the connection closes (`SW_ERR`).
-pub(crate) const RECV_CLOSE: i64 = -1;
+pub const RECV_CLOSE: i64 = -1;
 /// `OP_RECV`: the read ends with `SW_OK` (would block, logged error, removed socket).
-pub(crate) const RECV_DONE: i64 = -2;
+pub const RECV_DONE: i64 = -2;
 /// Any op: a native exception was caught; native code rethrows it after return.
-pub(crate) const THROWN: i64 = i64::MIN;
+pub const THROWN: i64 = i64::MIN;
 
 /// [`SwrFramingIo::flags`] bits: `socket->removed`, `recv_wait`, `ssl != nullptr`,
 /// and, at entry only, `skip_recv` and a dynamic `get_package_length_size`. Rust
 /// sets `recv_wait` here; native code applies it before each effect and on return.
-pub(crate) const FLAG_REMOVED: u32 = 1;
-pub(crate) const FLAG_WAIT: u32 = 2;
-pub(crate) const FLAG_TLS: u32 = 4;
-pub(crate) const FLAG_SKIP: u32 = 8;
-pub(crate) const FLAG_DYNAMIC: u32 = 16;
+pub const FLAG_REMOVED: u32 = 1;
+pub const FLAG_WAIT: u32 = 2;
+pub const FLAG_TLS: u32 = 4;
+pub const FLAG_SKIP: u32 = 8;
+pub const FLAG_DYNAMIC: u32 = 16;
 
 const SW_OK: i32 = 0;
 const SW_ERR: i32 = -1;

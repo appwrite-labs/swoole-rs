@@ -1,6 +1,6 @@
 # Packet framing and MIME (M18)
 
-The overlay replaces `src/protocol/base.cc` and `src/protocol/mime_type.cc`. The public
+The overlay deletes `src/protocol/base.cc` and `src/protocol/mime_type.cc`. The public
 Protocol, PacketLength, Socket, String and MIME declarations are unchanged.
 `swoole_rs_framing.h` declares ten exports. Feature bit 4096 is the optional
 framing feature; the module is opt-in.
@@ -9,21 +9,24 @@ framing feature; the module is opt-in.
 
 - `swr_v1_framing_recv` runs one whole length, EOF or split-by-EOF receive. It
   reads and writes the `swoole::String` head (`length`, `size`, `offset`, `str`) and
-  reads the `Protocol`'s leading fields in place; native `static_assert`s pin both
-  layouts. Native code performs each effect (receive and read-error handling,
-  length and package callbacks, extend/reduce/clear/split, `SSL_pending`, logs)
-  through one `call(context, op, arg)` and refreshes the socket's
+  reads the `Protocol`'s leading fields in place. Each effect (receive and read-error
+  handling, length and package callbacks, extend/reduce/clear/split, `SSL_pending`,
+  logs) goes through one `call(context, op, arg)`, which refreshes the socket's
   removed/recv_wait/ssl flags after it.
-- A native exception (for example String allocation failure) is caught in the
-  call, Rust returns at once, and native code rethrows it; nothing unwinds
-  through a Rust frame.
+- `crates/ports/src/framing_recv.rs` is that `call` over the real socket, String and
+  callbacks, and defines `Protocol::recv_with_length_protocol`,
+  `recv_with_eof_protocol`, `recv_split_by_eof`, `default_length_func`,
+  `swoole_unpack`, `swoole_hton64` and `swoole_ntoh64` under their upstream symbols
+  (the hybrid archive's `upstream-symbols`). Every protocol callback in the hybrid
+  is Rust or PHP, so no C++ exception reaches it. `THROWN` remains for the oracle's
+  candidate, which still runs the native `call` from `0001-base.patch`.
 - Kept from upstream: callback removal/failure order, recursive entry, captured
   dynamic header size, partial packets, sticky EOF retry and always growing to the
   next page.
 - `swr_v1_framing_unpack` handles all sixteen formats, native 32-bit int and
   64-bit size_t, unaligned loads, signed values and endianness. The default
   length helper keeps the original `header_len` assignment, including the
-  dynamic-size quirk. Invalid-format diagnostics run natively after Rust returns.
+  dynamic-size quirk. Invalid-format diagnostics are logged after the decode.
 - Borrowed pointers must cover the given length; null is accepted for length 0.
   Output pointers must be live, aligned and disjoint from the input and from each
   other. State and snapshot pointers must not alias mutable state.
