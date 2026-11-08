@@ -65,15 +65,15 @@ unsafe fn transfer(owner: *mut FileRecord, write: bool, data: *mut c_void, lengt
     io.done
 }
 
-/// `File::write_all` on a bare descriptor opened without `APPEND`: the bytes
+/// `File::write_all` on a bare descriptor, opened with `APPEND` or not: the bytes
 /// written, with upstream's `pwrite` warning on an IO error.
 ///
 /// # Safety
 /// `data` spans `length` readable bytes.
 #[must_use]
-pub unsafe fn fd_write_all(fd: c_int, data: *const c_void, length: usize) -> usize {
+pub unsafe fn fd_write_all(fd: c_int, append: bool, data: *const c_void, length: usize) -> usize {
     // SAFETY: as the caller promises.
-    let io = unsafe { swr_v1_os_file_write_all(fd, false, data, length) };
+    let io = unsafe { swr_v1_os_file_write_all(fd, append, data, length) };
     warn_io(c"File::write_all", "pwrite", fd, data, length, io);
     io.done
 }

@@ -138,7 +138,7 @@ pub(crate) fn make_tmpfile(template: &CStr, path: &mut [u8; TASK_TMP_PATH_SIZE])
 /// `data` lends `len` readable bytes.
 unsafe fn spill(fd: c_int, data: *const u8, len: usize) -> bool {
     // SAFETY: as the caller promises.
-    let wrote = unsafe { fd_write_all(fd, data.cast(), len) } == len;
+    let wrote = unsafe { fd_write_all(fd, false, data.cast(), len) } == len;
     if !wrote {
         log::warning(
             c"Server::task_pack",
