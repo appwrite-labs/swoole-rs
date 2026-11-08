@@ -16,9 +16,9 @@ use std::ffi::{CStr, CString};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_reactor::{
-    SocketRecord, swr_v1_socket_bind, swr_v1_socket_buffer_size, swr_v1_socket_catch_error,
-    swr_v1_socket_clean, swr_v1_socket_defaults, swr_v1_socket_domain_and_type,
-    swr_v1_socket_get_peer_name, swr_v1_socket_set_timeout,
+    SocketRecord, event_api, socket_upstream, swr_v1_socket_bind, swr_v1_socket_buffer_size,
+    swr_v1_socket_catch_error, swr_v1_socket_clean, swr_v1_socket_defaults,
+    swr_v1_socket_domain_and_type, swr_v1_socket_get_peer_name, swr_v1_socket_set_timeout,
 };
 
 /// The flags `swr_v1_clients_flag` reads (`SWR_CLIENTS_*`).
@@ -147,16 +147,14 @@ pub struct BufferView {
 }
 
 /// What the C++ `Client` does for Rust (`swr_v1_clients_native`). `cli` is the
-/// C++ `Client *`.
+/// C++ `Client *`, `record` its [`ClientRecord`]. The entries over the record
+/// alone are Rust's own (`swr_v1_clients_*` below), which the C++ table names
+/// and the unit tests replace with doubles.
 #[repr(C)]
 pub struct Native {
     /// `make_socket(type, fd_type, flags)`: the record or null; Rust publishes it.
-    pub make_socket: unsafe extern "C" fn(
-        cli: *mut c_void,
-        kind: c_int,
-        fd_type: c_int,
-        flags: c_int,
-    ) -> *mut SocketRecord,
+    pub make_socket:
+        unsafe extern "C" fn(kind: c_int, fd_type: c_int, flags: c_int) -> *mut SocketRecord,
     /// Frees `cli->socket`: `socket->free()` when `deferred`, else `delete socket`.
     pub free_socket: unsafe extern "C" fn(cli: *mut c_void, deferred: bool),
     /// Whether callback `which` is set.
@@ -172,16 +170,16 @@ pub struct Native {
     /// Logs warning `which`; the system ones report the current `errno`.
     pub warn: unsafe extern "C" fn(cli: *mut c_void, which: c_int),
     /// `socket->set_kernel_timeout(timeout)`.
-    pub kernel_timeout: unsafe extern "C" fn(cli: *mut c_void, timeout: f64),
+    pub kernel_timeout: unsafe extern "C" fn(record: *mut ClientRecord, timeout: f64),
     /// `server_addr.assign(socket_type, host, port, resolve)`.
     pub assign: unsafe extern "C" fn(
-        cli: *mut c_void,
+        record: *mut ClientRecord,
         host: *const c_char,
         port: c_int,
         resolve: bool,
     ) -> bool,
     /// Connects the socket to `server_addr` (`CONNECT_*`); errno is the call's.
-    pub connect: unsafe extern "C" fn(cli: *mut c_void, mode: c_int) -> c_int,
+    pub connect: unsafe extern "C" fn(record: *mut ClientRecord, mode: c_int) -> c_int,
     /// The socket's IO (`IO_*`); `IO_SENDTO` sends to `server_addr` and the
     /// `IO_RECVFROM*` read into `remote_addr`.
     pub io: unsafe extern "C" fn(
@@ -200,7 +198,7 @@ pub struct Native {
         is_async: bool,
     ) -> c_int,
     /// The reactor's `swoole_event_*` (`EVENT_*`) on the socket.
-    pub event: unsafe extern "C" fn(cli: *mut c_void, op: c_int, events: c_int) -> c_int,
+    pub event: unsafe extern "C" fn(record: *mut ClientRecord, op: c_int, events: c_int) -> c_int,
     /// `swoole_event_write`.
     pub event_write:
         unsafe extern "C" fn(cli: *mut c_void, data: *const c_char, length: usize) -> c_int,
@@ -208,7 +206,7 @@ pub struct Native {
     /// `Reactor::_writable_callback(reactor, event)`.
     pub writable: unsafe extern "C" fn(reactor: *mut c_void, event: *mut c_void) -> c_int,
     /// `get_option(SOL_SOCKET, SO_ERROR, error)`.
-    pub socket_error: unsafe extern "C" fn(cli: *mut c_void, error: *mut c_int) -> c_int,
+    pub socket_error: unsafe extern "C" fn(record: *mut ClientRecord, error: *mut c_int) -> c_int,
     /// `swoole_timer_add(timeout, false, Client_onTimeout, cli)`.
     pub timer_add: unsafe extern "C" fn(cli: *mut c_void, timeout: f64) -> *mut c_void,
     pub timer_del: unsafe extern "C" fn(timer: *mut c_void),
@@ -363,7 +361,7 @@ impl Handle {
 
     fn event(self, op: c_int, events: c_int) -> c_int {
         // SAFETY: the reactor and the live client's socket.
-        unsafe { (self.native().event)(self.cli(), op, events) }
+        unsafe { (self.native().event)(self.get().record, op, events) }
     }
 
     fn io(self, op: c_int, data: *mut c_char, length: usize, flags: c_int) -> isize {
@@ -496,7 +494,7 @@ pub unsafe extern "C" fn swr_v1_clients_new(
     };
     let flags = if is_async { SOCK_NONBLOCK } else { 0 } | SOCK_CLOEXEC;
     // SAFETY: native constructs and returns the socket for this client.
-    let socket = unsafe { (native.make_socket)(cli, kind, fd_type, flags) };
+    let socket = unsafe { (native.make_socket)(kind, fd_type, flags) };
     // C++ warns of a failed socket() with its errno.
     let error = errno();
     let client = Box::new(Client {
@@ -811,7 +809,7 @@ fn inet_addr(this: Handle, host: *const c_char, port: c_int) -> c_int {
     }
     let resolve = !this.flag(ASYNC);
     // SAFETY: a NUL-terminated host.
-    if !unsafe { (this.native().assign)(this.cli(), host, port, resolve) } {
+    if !unsafe { (this.native().assign)(this.get().record, host, port, resolve) } {
         if !this.flag(DNS_COMPLETED) && log::last_error() == ERROR_BAD_HOST_ADDR {
             this.set(WAIT_DNS, true);
         } else {
@@ -863,14 +861,14 @@ fn tcp_connect_sync(
     this.set_timeout(timeout);
     if timeout > 0.0 {
         // SAFETY: the live client's socket.
-        unsafe { (this.native().kernel_timeout)(this.cli(), timeout) };
+        unsafe { (this.native().kernel_timeout)(this.get().record, timeout) };
     }
     if inet_addr(this, host, port) < 0 {
         return ERR;
     }
     if nonblock {
         // SAFETY: the live client's socket and address.
-        let rc = unsafe { (this.native().connect)(this.cli(), CONNECT_ASYNC) };
+        let rc = unsafe { (this.native().connect)(this.get().record, CONNECT_ASYNC) };
         if rc == SW_READY {
             return OK;
         }
@@ -880,7 +878,7 @@ fn tcp_connect_sync(
         return ERR;
     }
     // SAFETY: as above.
-    let ret = unsafe { (this.native().connect)(this.cli(), CONNECT_SYNC) };
+    let ret = unsafe { (this.native().connect)(this.get().record, CONNECT_SYNC) };
     if ret < 0 {
         return ret;
     }
@@ -950,7 +948,7 @@ fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f6
     }
     let ret = loop {
         // SAFETY: the live client's socket and address.
-        let ret = unsafe { (this.native().connect)(this.cli(), CONNECT_RAW) };
+        let ret = unsafe { (this.native().connect)(this.get().record, CONNECT_RAW) };
         let error = errno();
         if ret < 0 && error == libc::EINTR {
             continue;
@@ -992,7 +990,7 @@ fn udp_connect(
     this.set_timeout(timeout);
     if !is_async && timeout > 0.0 {
         // SAFETY: the live client's socket.
-        unsafe { (this.native().kernel_timeout)(this.cli(), timeout) };
+        unsafe { (this.native().kernel_timeout)(this.get().record, timeout) };
     }
     this.get().sock_flags.set(udp_connect);
     if inet_addr(this, host, port) < 0 {
@@ -1031,7 +1029,7 @@ fn udp_connect(
     }
     if udp_connect == 1 {
         // SAFETY: the live client's socket and address.
-        if unsafe { (this.native().connect)(this.cli(), CONNECT_RAW) } != 0 {
+        if unsafe { (this.native().connect)(this.get().record, CONNECT_RAW) } != 0 {
             this.set(ACTIVE, false);
             this.socket().removed = 1;
             close(this);
@@ -1080,16 +1078,145 @@ fn bind_unix(this: Handle) -> c_int {
     unsafe { libc::bind(socket.fd, (&raw const *address).cast(), length) }
 }
 
+/// [`Native::make_socket`]: `make_socket(type, fd_type, flags)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_clients_make_socket(
+    kind: c_int,
+    fd_type: c_int,
+    flags: c_int,
+) -> *mut SocketRecord {
+    socket_upstream::make_socket_typed(kind, fd_type, flags)
+}
+
+/// [`Native::kernel_timeout`]: `socket->set_kernel_timeout(timeout)`, the write
+/// timeout only once the read one is set.
+///
+/// # Safety
+/// `record` is a live client's, with its socket made.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_kernel_timeout(record: *mut ClientRecord, timeout: f64) {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { (*record).socket };
+    // SAFETY: the live socket.
+    if unsafe { socket_upstream::socket_set_kernel_read_timeout(socket, timeout) } {
+        // SAFETY: as above.
+        unsafe { socket_upstream::socket_set_kernel_write_timeout(socket, timeout) };
+    }
+}
+
+/// [`Native::assign`]: `server_addr.assign(socket_type, host, port, resolve)`.
+///
+/// # Safety
+/// As [`swr_v1_clients_kernel_timeout`]; `host` is NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_assign(
+    record: *mut ClientRecord,
+    host: *const c_char,
+    port: c_int,
+    resolve: bool,
+) -> bool {
+    // SAFETY: as the caller promises.
+    let record = unsafe { &mut *record };
+    // SAFETY: the live socket.
+    let kind = unsafe { (*record.socket).socket_type };
+    // SAFETY: the caller's NUL-terminated host.
+    let length = unsafe { libc::strlen(host) };
+    // SAFETY: as above.
+    let Some(address) = (unsafe { address_of(kind, host, length, port, resolve) }) else {
+        return false;
+    };
+    record.server_addr = address;
+    true
+}
+
+/// [`Native::connect`]: the socket to `server_addr`, by `mode` (`CONNECT_*`).
+///
+/// # Safety
+/// As [`swr_v1_clients_kernel_timeout`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_connect_socket(
+    record: *mut ClientRecord,
+    mode: c_int,
+) -> c_int {
+    // SAFETY: as the caller promises.
+    let record = unsafe { &*record };
+    let address = &raw const record.server_addr;
+    match mode {
+        // SAFETY: the live socket and the record's address.
+        CONNECT_ASYNC => unsafe { socket_upstream::socket_connect_async(record.socket, address) },
+        // SAFETY: as above.
+        CONNECT_SYNC => unsafe { socket_upstream::socket_connect_sync(record.socket, address) },
+        _ => {
+            // SAFETY: the live socket.
+            let fd = unsafe { (*record.socket).fd };
+            let storage = (&raw const record.server_addr.addr).cast();
+            // SAFETY: the address's storage holds `len` bytes of sockaddr.
+            unsafe { libc::connect(fd, storage, record.server_addr.len) }
+        }
+    }
+}
+
+/// [`Native::event`]: the reactor's `swoole_event_*` (`EVENT_*`) on the socket.
+///
+/// # Safety
+/// As [`swr_v1_clients_kernel_timeout`], on the thread's reactor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_event(
+    record: *mut ClientRecord,
+    op: c_int,
+    events: c_int,
+) -> c_int {
+    // SAFETY: as the caller promises.
+    let socket = unsafe { (*record).socket };
+    match op {
+        // SAFETY: the live socket on the thread's reactor.
+        EVENT_ADD => unsafe { event_api::swoole_event_add(socket, events) },
+        // SAFETY: as above.
+        EVENT_SET => unsafe { event_api::swoole_event_set(socket, events) },
+        // SAFETY: as above.
+        EVENT_DEL => unsafe { event_api::swoole_event_del(socket) },
+        // SAFETY: as above.
+        _ => unsafe { event_api::swoole_event_add_or_update(socket, events) },
+    }
+}
+
+/// [`Native::socket_error`]: `getsockopt(SOL_SOCKET, SO_ERROR)` into `error`.
+///
+/// # Safety
+/// As [`swr_v1_clients_kernel_timeout`]; `error` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_socket_error(
+    record: *mut ClientRecord,
+    error: *mut c_int,
+) -> c_int {
+    #[expect(clippy::cast_possible_truncation, reason = "sizeof(int)")]
+    let mut length = size_of::<c_int>() as libc::socklen_t;
+    // SAFETY: as the caller promises.
+    let socket = unsafe { (*record).socket };
+    // SAFETY: the live socket.
+    let fd = unsafe { (*socket).fd };
+    // SAFETY: `error` holds an int and `length` says so.
+    unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_ERROR,
+            error.cast(),
+            &raw mut length,
+        )
+    }
+}
+
 /// A native log line, named for the C++ method that passes it.
 pub type Warn = unsafe extern "C" fn(fd: c_int);
 
-/// An address of the client's socket type for `host`, resolved if `resolve`;
+/// An address of socket type `kind` for `host`, resolved if `resolve`;
 /// `None` with the last error set when it does not assign.
 ///
 /// # Safety
 /// `host` is NUL-terminated with `host_length` bytes before it.
 unsafe fn address_of(
-    this: Handle,
+    kind: c_int,
     host: *const c_char,
     host_length: usize,
     port: c_int,
@@ -1097,7 +1224,7 @@ unsafe fn address_of(
 ) -> Option<SocketAddress> {
     // SAFETY: an all-zero sockaddr union, length and type, as `Address` starts.
     let mut address: SocketAddress = unsafe { core::mem::zeroed() };
-    address.kind = this.socket().socket_type;
+    address.kind = kind;
     let resolve = resolve
         .then_some(swoole_rs_corebase::swr_v1_clients_gethostbyname as crate::address::Resolve);
     // SAFETY: the local record's union and length, and the caller's host.
@@ -1152,7 +1279,9 @@ pub unsafe extern "C" fn swr_v1_clients_bind(
         unsafe { reuse_failed(fd) };
     }
     // SAFETY: as the caller promises.
-    let Some(address) = (unsafe { address_of(this, host, host_length, port, false) }) else {
+    let Some(address) =
+        (unsafe { address_of(this.socket().socket_type, host, host_length, port, false) })
+    else {
         return ERR;
     };
     // SAFETY: the live socket record and the local address of its length.
@@ -1189,8 +1318,15 @@ pub unsafe extern "C" fn swr_v1_clients_sendto(
         return ERR;
     }
     // SAFETY: as the caller promises.
-    let Some(address) = (unsafe { address_of(this, host, host_length, port, !this.flag(ASYNC)) })
-    else {
+    let Some(address) = (unsafe {
+        address_of(
+            this.socket().socket_type,
+            host,
+            host_length,
+            port,
+            !this.flag(ASYNC),
+        )
+    }) else {
         return ERR;
     };
     let fd = this.socket().fd;
@@ -1490,7 +1626,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_write(
     }
     let mut error = 0;
     // SAFETY: the live client's socket; `error` is writable.
-    let ret = unsafe { (this.native().socket_error)(this.cli(), &raw mut error) };
+    let ret = unsafe { (this.native().socket_error)(this.get().record, &raw mut error) };
     log::set_last_error(error);
     if ret < 0 {
         this.warn(WARN_GETSOCKOPT);
