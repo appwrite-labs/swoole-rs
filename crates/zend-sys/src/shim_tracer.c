@@ -133,8 +133,12 @@ int swr_zend_try_json_encode(zval *value, zend_string **out) {
     return bailed;
 }
 
+/* The scanner reads one byte past `length` and takes only a NUL there as the
+ * end, as upstream's std::string::c_str() guarantees; a reply buffer has none. */
 void swr_zend_json_decode(const char *text, size_t length, zval *out) {
-    if (php_json_decode(out, text, length, 1, 0) == FAILURE) {
+    zend_string *copy = zend_string_init(text, length, 0);
+    if (php_json_decode(out, ZSTR_VAL(copy), length, 1, 0) == FAILURE) {
         ZVAL_FALSE(out);
     }
+    zend_string_release(copy);
 }
