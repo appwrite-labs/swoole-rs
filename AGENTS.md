@@ -187,6 +187,6 @@ claim, glance at `python3 tools/ci.py status`: it lists them as `new failures`.
 For each new failure, search open issues for the phase name. If none mentions
 it, file a `p0` `kind:bug` issue with the run link, the phase and its log path,
 and the commit range since the previous run (group phases of one module into one
-issue), as a sub-issue of the Phase 1 goal. Then carry on with your own ticket.
+issue). Then carry on with your own ticket.
 `p0` sorts first, so the next free executor picks it up. Failures that already
 have an issue keep that issue's priority.
