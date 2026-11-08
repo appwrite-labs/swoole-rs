@@ -10,7 +10,7 @@ index 6babe63..1990c05 100644
 -
      network::Socket *get_server_socket(int fd) const {
 diff --git a/src/server/master.cc b/src/server/master.cc
-index dade286..c4ef360 100644
+index dade286..fd5ef23 100644
 --- a/src/server/master.cc
 +++ b/src/server/master.cc
 @@ -261,8 +261,4 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
@@ -94,16 +94,8 @@ index dade286..c4ef360 100644
 -    case SWR_SERVER_OP_ST_VALID_CONN:
 -        return is_valid_connection(serv->get_connection((int) arg));
      case SWR_SERVER_OP_ST_VISIT:
-@@ -807,18 +749,2 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
-         return serv->factory_->finish(ctx->send);
--    case SWR_SERVER_OP_ST_TIMER_DEL: {
--        TimerNode **timer = arg == 0   ? &serv->master_timer
--                            : arg == 1 ? &serv->heartbeat_timer
--                                       : &serv->enable_accept_timer;
--        swoole_timer_del(*timer);
--        *timer = nullptr;
--        return 0;
--    }
+@@ -815,10 +757,2 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
+     }
 -    case SWR_SERVER_TRACE_ST_SCHEDULE:
 -        swoole_log_as(
 -            "Server::get_idle_worker_id",

@@ -45,7 +45,7 @@ use crate::ops::{
 };
 use crate::ops::{
     OP_ABORT, OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH, OP_ST_DTLS_ADD,
-    OP_ST_PIPE_BIND, OP_ST_TIMER_DEL, OP_ST_VALID_CONN,
+    OP_ST_PIPE_BIND, OP_ST_VALID_CONN,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
@@ -95,12 +95,6 @@ const _: () = assert!(
 );
 /// `SW_BUFFER_MIN_SIZE`, which master.cc asserts.
 const BUFFER_MIN_SIZE: u32 = 65536;
-
-unsafe extern "C-unwind" {
-    /// crates/timer's `swoole_timer_del`.
-    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(node: *mut core::ffi::c_void) -> bool;
-}
 
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
@@ -1263,16 +1257,6 @@ unsafe fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 protocol.package_max_length = BUFFER_MIN_SIZE;
             }
             u64::from(protocol.package_max_length)
-        }
-        OP_ST_TIMER_DEL => {
-            let timer = match arg {
-                0 => &mut o.config().master_timer,
-                1 => &mut o.config().heartbeat_timer,
-                _ => &mut o.tables().enable_accept_timer,
-            };
-            // SAFETY: the server's live timer node, or null, which the timer ignores.
-            unsafe { swoole_timer_del(core::mem::replace(timer, core::ptr::null_mut())) };
-            0
         }
         OP_ST_PIPE_BIND => {
             let fd = isize::try_from(arg).unwrap_or(isize::MAX);
