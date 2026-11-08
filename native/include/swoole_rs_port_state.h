@@ -84,7 +84,7 @@ struct ServerPortGS : PortCounters {
  ServerPortGS() { swr_v1_server_port_shared_init(this); }
 };
 /* Upstream's ListenPort: its state is the Rust-owned PortFields and its other members are crates/ports
- * exports. The inline members are those native/ and the http_server.cpp GoogleTests still call. */
+ * exports. The inline members are those native/ and tests/modules/http/server/fixture.cc still call. */
 struct ListenPort : detail::PortFields {
  RustStringView host{port_config_->host_slot};
  explicit ListenPort(Server *server) { protocol.private_data_2 = server; }
@@ -93,7 +93,6 @@ struct ListenPort : detail::PortFields {
   *new_ctx = *ssl_context;
   return new_ctx;
  }
- void set_package_max_length(uint32_t max_length) { protocol.package_max_length = max_length; }
  void init_protocol();
  const char *get_protocols() const;
  size_t get_connection_num() const;

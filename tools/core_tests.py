@@ -27,21 +27,6 @@ SELECTION = 'file(GLOB_RECURSE core_test_files core-tests/src/*.cpp thirdparty/l
 # Upstream's test helpers (not assertions) that write state the hybrid moved behind accessors.
 ADAPTATIONS = {
     'core-tests/src/_lib/process.cpp': [('worker.pid = pid;', 'swr_v1_worker_set_pid(reinterpret_cast<swr_v1_worker_record *>(&worker), pid);')],
-    # The hybrid has no swoole_http2.h: the case reads its two constants and crates/http2's settings codec.
-    'core-tests/src/server/http_server.cpp': [('#include "swoole_http2.h"\n', '''\
-#define SW_HTTP2_PRI_STRING "PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n"
-#define SW_HTTP2_FRAME_HEADER_SIZE 9
-namespace swoole { namespace http2 {
-struct Settings { uint32_t header_table_size, enable_push, max_concurrent_streams, init_window_size, max_frame_size, max_header_list_size; };
-size_t pack_setting_frame(char *buf, const Settings &settings, bool server_side);
-}}
-extern "C" swoole::http2::Settings sw_rs_http2_default_settings();
-namespace swoole { namespace http2 {
-static inline void init_settings(Settings *settings) { *settings = sw_rs_http2_default_settings(); }
-}}
-'''),
-        # The static handler's setters are gone; the cases fill Server's Rust-held string sets directly.
-        ('add_static_handler_location(', 'locations.insert('), ('add_static_handler_index_files(', 'http_index_files.insert(')],
     # swoole::realtime_add is Rust's (crates/timer); the hybrid's swoole.h no longer declares it.
     'core-tests/src/os/timer.cpp': [('TEST(timer, realtime_add) {',
                                      'namespace swoole { void realtime_add(timespec *time, int64_t add_msec); }\nTEST(timer, realtime_add) {')],

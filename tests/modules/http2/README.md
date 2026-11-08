@@ -16,6 +16,5 @@ expected values since the hybrid has no `swoole_http2.h` to build them against:
 | `http2.get_type_color` | `http2_get_type_color` |
 | `http2.ssl` | not ported: needs the nghttp2 client |
 
-`http_server.get_package_length` runs on both engines in
-`http-native-originals`; on the hybrid, `tools/core_tests.py` gives it the two
-constants and crates/http2's settings codec in place of the header.
+`http_server.get_package_length` is a Rust case in `tests/modules/http/server`
+(`http-server-rust`), packing its settings frame with crates/http2's codec.

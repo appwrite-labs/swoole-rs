@@ -34,13 +34,12 @@ as equal. Unavailable locales are reported as unsupported.
 
 `gate.py` holds the helpers these share (`body`, `Sides`, `run`). The status, method,
 URL and boundary helpers are Rust behind thin facades, so the crate's
-`pin_helpers` tests compare them with v6.2.4's bodies instead. Upstream's own
-`http_server` GoogleTests run on the reference and the hybrid tree in the merge tier's
-`http-native-originals`; on the hybrid the static-handler setup calls fill
-`Server::locations` and `http_index_files` directly (`tools/core_tests.py`
-ADAPTATIONS), and the ported TESTs below are excluded there.
+`pin_helpers` tests compare them with v6.2.4's bodies instead.
 
 ### Ported GoogleTests
+
+Every TEST of `core-tests/src/server/http_server.cpp` is Rust, below, and the file is
+no longer built (#1881).
 
 `http_parser.cpp` and `multipart_parser.cpp` tested only the bundled third-party
 parsers, so they left the lane (#1756) and with them `include/swoole_llhttp.h`.
@@ -73,8 +72,7 @@ recorded requests come from `crates/oracle/upstream/core-tests/fuzz/cases`.
 
 The 11 TESTs that start no server call the helpers, the request-line reader and the
 WebSocket codec directly. Their ports sit beside the Rust each one calls, with the
-same inputs and expected values, and the lane excludes them (`tools/dev.py`):
-`cargo test -p swoole-rs-http -p swoole-rs-websocket --lib`.
+same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-websocket --lib`.
 
 | Upstream TEST | Rust test |
 | --- | --- |
@@ -93,9 +91,19 @@ tests/modules/http/server/fixture.cc`. `fixture.cc` builds the Servers upstream'
 the curl runs and every assertion are in `server/src/main.rs`, one function per TEST
 under its own name: `websocket_small`, `websocket_medium`, `websocket_big`,
 `websocket_mask`, `node_websocket_client_1`, `node_websocket_client_2`, `sni`,
-`client_ca`, `ssl`. The two node TESTs stay excluded there for the reason they had in
-the lane (they need Node.js and its ws package). Each curl runs to completion before
-its log is read, where upstream slept a second after starting it.
+`client_ca`, `ssl`, `abort_connection`, `get_package_length`. The two node TESTs stay
+excluded for the reason they had in the GoogleTest lane (they need Node.js and its ws
+package). Each curl runs to completion before its log is read, where upstream slept a
+second after starting it.
+
+`abort_connection`'s fixture also sets `SwooleG.max_sockets` (2) before
+`set_max_connection(1)` and hands back the old value, which the case restores once the
+server stops; the 16 `SyncClient`s are blocking `TcpStream` connects. In
+`get_package_length` the fixture builds the port, runs `init_protocol` and makes the
+fake connection socket and its `Connection` (session 2025); the case calls the hybrid's
+`http_server::get_package_length(_size)`, `websocket::encode`, `sw_rs_http2_default_settings`
+(`http2::init_settings`) and `http2::pack_setting_frame` itself, with upstream's frames
+and expected values.
 
 The HTTP/1 TESTs that start a server are `server/src/http1.rs`, in the same binary and
 phase, and need no fixture: `swr_v1_server_new`/`_delete` (native/integration/server.cc)
@@ -108,7 +116,7 @@ headers themselves. The client is a port of core-tests' cpp-httplib 0.7
 (`server/src/client.rs`): a failed request is `None` where httplib returns `nullptr`.
 An expectation in a server callback can't unwind through the server, so it is recorded
 and the case fails on it once the server stops; in a process-mode worker it goes
-unseen, as gtest's did. `abort_connection` and `get_package_length` are #1881.
+unseen, as gtest's did.
 
 | Fixture | TESTs |
 | --- | --- |

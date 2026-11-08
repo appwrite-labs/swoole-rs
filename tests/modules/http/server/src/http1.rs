@@ -258,12 +258,12 @@ const TABLES_OFFSETS: &[usize] = &[
 
 /// `Protocol` (native/framing/swoole_protocol.h).
 #[repr(C)]
-struct Protocol {
+pub(super) struct Protocol {
     split_by_eof: bool,
     package_eof: [u8; 8],
     package_eof_len: u8,
     package_length_type: u8,
-    package_length_size: u8,
+    pub(super) package_length_size: u8,
     package_length_offset: u16,
     package_body_offset: u16,
     package_max_length: u32,
@@ -271,7 +271,7 @@ struct Protocol {
     private_data_2: Native,
     on_package: Native,
     get_package_length: Native,
-    get_package_length_size: Native,
+    pub(super) get_package_length_size: Native,
 }
 
 /// `swr_v1_port_config`.
