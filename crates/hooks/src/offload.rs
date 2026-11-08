@@ -7,14 +7,16 @@ use core::mem::{offset_of, size_of};
 /// `async::Handler`: runs on a pool thread.
 pub type Handler = unsafe extern "C" fn(*mut AsyncEvent);
 
-/// Upstream's `AsyncEvent`; native code asserts the same layout.
+/// Upstream's `AsyncEvent`, with its `shared_ptr` request replaced by a counted
+/// DNS record; native code asserts the same layout.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct AsyncEvent {
     pub task_id: usize,
     pub canceled: u8,
     pub error: c_int,
-    /// `std::shared_ptr<AsyncRequest>`, opaque here.
-    data: [usize; 2],
+    /// The request's resolver record: one reference per heap copy, or null.
+    pub(crate) data: *mut swoole_rs_corebase::ResolverRequest,
     pub retval: isize,
     pub pipe_socket: *mut c_void,
     pub timestamp: f64,
@@ -24,7 +26,7 @@ pub struct AsyncEvent {
 }
 
 impl AsyncEvent {
-    /// An event with no request (an empty `shared_ptr`).
+    /// An event with no request.
     pub(crate) const fn request(
         object: *mut c_void,
         handler: Option<Handler>,
@@ -35,7 +37,7 @@ impl AsyncEvent {
             task_id: 0,
             canceled: 0,
             error: 0,
-            data: [0; 2],
+            data: core::ptr::null_mut(),
             retval: 0,
             pipe_socket,
             timestamp: 0.0,
@@ -48,11 +50,11 @@ impl AsyncEvent {
 
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
-    size_of::<AsyncEvent>() == 80
+    size_of::<AsyncEvent>() == 72
         && offset_of!(AsyncEvent, error) == 12
-        && offset_of!(AsyncEvent, retval) == 32
-        && offset_of!(AsyncEvent, object) == 56
-        && offset_of!(AsyncEvent, callback) == 72,
+        && offset_of!(AsyncEvent, retval) == 24
+        && offset_of!(AsyncEvent, object) == 48
+        && offset_of!(AsyncEvent, callback) == 64,
     "swoole::AsyncEvent's layout moved"
 );
 
@@ -283,7 +285,7 @@ mod tests {
             task_id: 0,
             canceled: 0,
             error: 0,
-            data: [0; 2],
+            data: core::ptr::null_mut(),
             retval: 1,
             pipe_socket: core::ptr::null_mut(),
             timestamp: 0.0,

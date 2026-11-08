@@ -41,9 +41,9 @@ ssize_t System::write_file(const char *file, const char *buf, size_t length, boo
 }
 
 std::string gethostbyname_impl_with_async(const std::string &hostname, int domain, double timeout) {
+    GethostbynameRequest req(hostname, domain);
     AsyncEvent ev{};
-    auto req = new GethostbynameRequest(hostname, domain);
-    ev.data = std::shared_ptr<AsyncRequest>(req);
+    ev.data = req.state_handle();
     ev.retval = 1;
 
     coroutine::async(async::handler_gethostbyname, ev, timeout);
@@ -53,7 +53,7 @@ std::string gethostbyname_impl_with_async(const std::string &hostname, int domai
         swoole_set_last_error(completion.error);
         return "";
     }
-    return std::string(req->addr.data(), req->addr.size());
+    return std::string(req.addr.data(), req.addr.size());
 }
 
 static void dns_assign(void *out, const char *address, size_t length) {
@@ -210,16 +210,16 @@ extern "C" bool swr_v1_system_getaddrinfo(const char *host,
                                           double timeout,
                                           swr_v1_system_put put,
                                           void *out) {
+    GetaddrinfoRequest req(host, family, socktype, protocol, service);
     AsyncEvent ev{};
-    auto req = new GetaddrinfoRequest(host, family, socktype, protocol, service);
-    ev.data = std::shared_ptr<AsyncRequest>(req);
+    ev.data = req.state_handle();
     coroutine::async(async::handler_getaddrinfo, ev, timeout);
     std::vector<std::string> addresses;
-    const auto completion = swr_v1_core_resolver_finish(ev.retval, ev.error, &req->error, SW_ERROR_AIO_TIMEOUT, SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT);
+    const auto completion = swr_v1_core_resolver_finish(ev.retval, ev.error, &req.error, SW_ERROR_AIO_TIMEOUT, SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT);
     if (completion.failed) {
         swoole_set_last_error(completion.error);
     } else {
-        req->parse_result(addresses);
+        req.parse_result(addresses);
     }
     for (auto &address : addresses) {
         put(out, address.data(), address.size());
@@ -238,8 +238,8 @@ extern "C" int swr_v1_system_wait_signal(const long *signals, size_t count, doub
     return signalled.signo;
 }
 
-static_assert(sizeof(AsyncEvent) == 80 && offsetof(AsyncEvent, error) == 12 && offsetof(AsyncEvent, retval) == 32 &&
-                  offsetof(AsyncEvent, object) == 56 && offsetof(AsyncEvent, callback) == 72,
+static_assert(sizeof(AsyncEvent) == 72 && offsetof(AsyncEvent, error) == 12 && offsetof(AsyncEvent, retval) == 24 &&
+                  offsetof(AsyncEvent, object) == 48 && offsetof(AsyncEvent, callback) == 64,
               "crates/hooks/src/offload.rs mirrors AsyncEvent");
 
 static void *async_dispatch(const void *event) {

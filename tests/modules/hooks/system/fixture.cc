@@ -368,7 +368,7 @@ void swr_case_hints_vectors_and_failure_publication() {
     ASSERT_EQ(request.count, 0);
     ASSERT_EQ(request.error, 0);
     int *family_address = &request.family;
-    ASSERT_EQ(network::getaddrinfo(&request), 0);
+    ASSERT_EQ(network::getaddrinfo(request.state_handle()), 0);
     ASSERT_GT(request.count, 0);
     ASSERT_EQ(request.results.size(), static_cast<size_t>(request.count));
     auto copy = request;
@@ -376,7 +376,7 @@ void swr_case_hints_vectors_and_failure_publication() {
     const auto saved_count = request.count;
     const std::vector<sockaddr_in6> saved = request.results;
     request.family = -123;
-    ASSERT_EQ(network::getaddrinfo(&request), -1);
+    ASSERT_EQ(network::getaddrinfo(request.state_handle()), -1);
     ASSERT_NE(request.error, 0);
     ASSERT_EQ(request.count, saved_count);
     ASSERT_EQ(request.results.size(), saved.size());
@@ -434,12 +434,12 @@ void swr_case_actual_async_numeric_results() {
     const auto host = swoole::coroutine::gethostbyname_impl_with_async("127.0.0.1", AF_INET, 2);
     ASSERT_EQ(host, "127.0.0.1");
     // What System::getaddrinfo did before it folded into swr_v1_system_getaddrinfo.
+    GetaddrinfoRequest req("127.0.0.1", AF_INET, SOCK_STREAM, 0, "");
     AsyncEvent ev{};
-    auto req = new GetaddrinfoRequest("127.0.0.1", AF_INET, SOCK_STREAM, 0, "");
-    ev.data = std::shared_ptr<AsyncRequest>(req);
+    ev.data = req.state_handle();
     ASSERT_TRUE(swoole::coroutine::async(async::handler_getaddrinfo, ev, 2));
     std::vector<std::string> addresses;
-    req->parse_result(addresses);
+    req.parse_result(addresses);
     ASSERT_FALSE(addresses.empty());
     for (const auto &address : addresses) ASSERT_EQ(address, "127.0.0.1");
 }

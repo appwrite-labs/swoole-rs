@@ -17,6 +17,8 @@ struct swr_v1_core_resolver_completion { int error; bool failed; };
 extern "C" {
 swr_v1_core_resolver_prepared swr_v1_core_resolver_new(int family, int socktype, int protocol);
 swr_v1_core_resolver_prepared swr_v1_core_resolver_create(int family, int socktype, int protocol, const char *name, size_t name_length, const char *service, size_t service_length);
+swr_v1_core_resolver_prepared swr_v1_core_resolver_view(const swr_v1_core_resolver *owner);
+void swr_v1_core_resolver_retain(const swr_v1_core_resolver *owner);
 void swr_v1_core_resolver_free(swr_v1_core_resolver *owner);
 swr_v1_core_resolver_addresses swr_v1_core_resolver_span(const swr_v1_core_resolver *owner);
 int swr_v1_core_resolver_resize(swr_v1_core_resolver *owner, size_t length);
