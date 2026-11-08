@@ -7,19 +7,21 @@ Exports are declared in `swoole_rs_framing.h`. Feature bit 4096; graduated.
 
 ## Packet framing
 
-- `swr_v1_framing_recv` runs one whole length, EOF or split-by-EOF receive. It
-  reads and writes the `swoole::String` head (`length`, `size`, `offset`, `str`) and
-  reads the `Protocol`'s leading fields in place. Each effect (receive and read-error
-  handling, length and package callbacks, extend/reduce/clear/split, `SSL_pending`,
-  logs) goes through one `call(context, op, arg)`, which refreshes the socket's
-  removed/recv_wait/ssl flags after it.
-- `crates/ports/src/framing_recv.rs` is that `call` over the real socket, String and
+- `swoole_rs_framing::recv::recv` runs one whole length, EOF or split-by-EOF
+  receive. It reads and writes the `swoole::String` head (`length`, `size`,
+  `offset`, `str`) and reads the `Protocol`'s leading fields in place. Each effect
+  (receive and read-error handling, length and package callbacks,
+  extend/reduce/clear/split, `SSL_pending`, logs) goes through its generic
+  `Effects::effect`, which refreshes the socket's removed/recv_wait/ssl flags after it.
+- `crates/ports/src/framing_recv.rs` is those effects over the real socket, String and
   callbacks, and defines `Protocol::recv_with_length_protocol`,
   `recv_with_eof_protocol`, `recv_split_by_eof`, `default_length_func`,
   `swoole_unpack`, `swoole_hton64` and `swoole_ntoh64` under their upstream symbols
   (the hybrid archive's `upstream-symbols`). Every protocol callback in the hybrid
-  is Rust or PHP, so no C++ exception reaches it. `THROWN` remains for the oracle's
-  candidate, which still runs the native `call` from `0001-base.patch`.
+  is Rust or PHP, so no C++ exception reaches it.
+- `swr_v1_framing_recv` is `recv` for the oracle's native candidate from
+  `0001-base.patch`: one `call(context, op, arg)` per effect, and `THROWN` stops
+  all further effects.
 - Kept from upstream: callback removal/failure order, recursive entry, captured
   dynamic header size, partial packets, sticky EOF retry and always growing to the
   next page.

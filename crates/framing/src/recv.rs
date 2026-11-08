@@ -1,14 +1,16 @@
 //! `Protocol::recv_with_length_protocol`, `recv_with_eof_protocol` and
 //! `recv_split_by_eof`, each one call. The receive buffer (`swoole::String`) and
-//! the protocol's leading fields are read and written in place (layouts pinned by
-//! native `static_assert`s); native code performs each socket, callback, allocation
-//! or log effect through one `call(context, op, arg)` and refreshes
-//! [`SwrFramingIo::flags`] after it.
+//! the protocol's leading fields are read and written in place; the caller performs
+//! each socket, callback, allocation or log effect through [`Effects::effect`].
 use core::ffi::c_void;
 use core::ptr::addr_of;
 
-/// One native effect on the socket, buffer or protocol in `context`.
-pub type FramingCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> i64;
+/// The socket, buffer and protocol effects of one receive.
+pub trait Effects {
+    /// Performs `op`: applies [`FLAG_WAIT`] from `flags` to the socket first, and
+    /// refreshes `flags` from the socket after.
+    fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64;
+}
 
 pub const MODE_LENGTH: u32 = 0;
 pub const MODE_EOF: u32 = 1;
@@ -39,12 +41,9 @@ pub const OP_LOG_TOO_LARGE: u32 = 13;
 pub const RECV_CLOSE: i64 = -1;
 /// `OP_RECV`: the read ends with `SW_OK` (would block, logged error, removed socket).
 pub const RECV_DONE: i64 = -2;
-/// Any op: a native exception was caught; native code rethrows it after return.
-pub const THROWN: i64 = i64::MIN;
-
-/// [`SwrFramingIo::flags`] bits: `socket->removed`, `recv_wait`, `ssl != nullptr`,
-/// and, at entry only, `skip_recv` and a dynamic `get_package_length_size`. Rust
-/// sets `recv_wait` here; native code applies it before each effect and on return.
+/// Receive flag bits: `socket->removed`, `recv_wait`, `ssl != nullptr`, and, at
+/// entry only, `skip_recv` and a dynamic `get_package_length_size`. The loop sets
+/// `recv_wait` here; the caller applies it before each effect and on return.
 pub const FLAG_REMOVED: u32 = 1;
 pub const FLAG_WAIT: u32 = 2;
 pub const FLAG_TLS: u32 = 4;
@@ -79,54 +78,30 @@ pub struct Protocol {
     pub package_max_length: u32,
 }
 
-#[repr(C)]
-pub struct SwrFramingIo {
-    pub protocol: *const Protocol,
-    pub buffer: *mut Buffer,
-    pub mode: u32,
-    /// The package length size (`get_package_length_size` or the fixed size).
-    pub head: u32,
-    pub flags: u32,
-}
-
-/// A native exception is pending.
-struct Thrown;
-
-struct Recv {
-    io: *mut SwrFramingIo,
+struct Recv<'a, E> {
+    flags: u32,
     protocol: *const Protocol,
     buffer: *mut Buffer,
-    context: *mut c_void,
-    call: FramingCall,
+    effects: &'a mut E,
 }
 
-impl Recv {
-    fn op(&self, op: u32, arg: u64) -> Result<i64, Thrown> {
-        // SAFETY: `call` and `context` are the native pair lent for this receive.
-        let result = unsafe { (self.call)(self.context, op, arg) };
-        if result == THROWN {
-            Err(Thrown)
-        } else {
-            Ok(result)
-        }
+impl<E: Effects> Recv<'_, E> {
+    fn op(&mut self, op: u32, arg: u64) -> i64 {
+        self.effects.effect(op, arg, &mut self.flags)
     }
     fn flag(&self, bit: u32) -> bool {
-        // SAFETY: `io` is live for this receive; native code writes it only inside `op`.
-        let flags = unsafe { (*self.io).flags };
-        flags & bit != 0
+        self.flags & bit != 0
     }
-    /// `socket->recv_wait = wait`, applied by native code before its next effect.
-    fn set_wait(&self, wait: bool) {
-        // SAFETY: as in `flag`; no reference to `io` is live.
-        let flags = unsafe { &mut (*self.io).flags };
-        *flags = if wait {
-            *flags | FLAG_WAIT
+    /// `socket->recv_wait = wait`, applied by the caller before its next effect.
+    fn set_wait(&mut self, wait: bool) {
+        if wait {
+            self.flags |= FLAG_WAIT;
         } else {
-            *flags & !FLAG_WAIT
-        };
+            self.flags &= !FLAG_WAIT;
+        }
     }
     fn length(&self) -> usize {
-        // SAFETY: `buffer` is the live String for this receive; native code changes it only inside `op`.
+        // SAFETY: `buffer` is the live String for this receive; effects change it only inside `op`.
         unsafe { (*self.buffer).length }
     }
     fn size(&self) -> usize {
@@ -185,18 +160,18 @@ impl Recv {
         matches!((tail, eof), (Some(tail), Some(eof)) if tail == eof)
     }
 
-    fn length_protocol(&self, head: u32) -> Result<i32, Thrown> {
+    fn length_protocol(&mut self, head: u32) -> i32 {
         enum At {
             Recv,
             GetLength,
             Dispatch,
         }
         if self.flag(FLAG_DYNAMIC) && head == 0 {
-            return Ok(SW_ERR);
+            return SW_ERR;
         }
         let mut recv_size: u32 = 0;
         let mut at = if self.flag(FLAG_SKIP) {
-            self.op(OP_CLEAR_SKIP, 0)?;
+            self.op(OP_CLEAR_SKIP, 0);
             At::GetLength
         } else {
             At::Recv
@@ -205,7 +180,7 @@ impl Recv {
             at = match at {
                 At::Recv => {
                     if self.flag(FLAG_REMOVED) {
-                        return Ok(SW_OK);
+                        return SW_OK;
                     }
                     let (length, size, offset) = (self.length(), self.size(), self.offset());
                     recv_size = if offset > 0 {
@@ -220,13 +195,13 @@ impl Recv {
                         u32::from(unsafe { (*self.protocol).package_length_offset }) + head
                     };
                     if recv_size as usize > size - length {
-                        return Ok(SW_ERR);
+                        return SW_ERR;
                     }
-                    match self.op(OP_RECV, u64::from(recv_size))? {
-                        RECV_DONE => return Ok(SW_OK),
-                        RECV_CLOSE | 0 => return Ok(SW_ERR),
-                        n if n < 0 => return Ok(SW_ERR),
-                        n if !self.grow(n) => return Ok(SW_ERR),
+                    match self.op(OP_RECV, u64::from(recv_size)) {
+                        RECV_DONE => return SW_OK,
+                        RECV_CLOSE | 0 => return SW_ERR,
+                        n if n < 0 => return SW_ERR,
+                        n if !self.grow(n) => return SW_ERR,
                         _ => {}
                     }
                     if !self.flag(FLAG_WAIT) {
@@ -236,28 +211,28 @@ impl Recv {
                     } else if self.flag(FLAG_TLS) {
                         At::Recv
                     } else {
-                        return Ok(SW_OK);
+                        return SW_OK;
                     }
                 }
                 At::GetLength => {
-                    let packet = self.op(OP_GET_LENGTH, 0)?;
+                    let packet = self.op(OP_GET_LENGTH, 0);
                     if packet < 0 {
-                        self.op(OP_LOG_MALFORMED, 0)?;
-                        return Ok(SW_ERR);
+                        self.op(OP_LOG_MALFORMED, 0);
+                        return SW_ERR;
                     }
                     if packet == 0 {
                         if self.length() == recv_size as usize {
-                            self.op(OP_LOG_NO_LENGTH, 0)?;
-                            return Ok(SW_ERR);
+                            self.op(OP_LOG_NO_LENGTH, 0);
+                            return SW_ERR;
                         }
-                        return Ok(SW_OK);
+                        return SW_OK;
                     }
                     if packet > i64::from(self.max()) {
-                        self.op(OP_LOG_TOO_LARGE, packet.unsigned_abs())?;
-                        return Ok(SW_ERR);
+                        self.op(OP_LOG_TOO_LARGE, packet.unsigned_abs());
+                        return SW_ERR;
                     }
                     if usize::try_from(packet).map_or(true, |packet| self.size() < packet) {
-                        self.op(OP_EXTEND, packet.unsigned_abs())?;
+                        self.op(OP_EXTEND, packet.unsigned_abs());
                     }
                     self.set_wait(true);
                     self.set_offset(packet);
@@ -269,21 +244,21 @@ impl Recv {
                 }
                 At::Dispatch => {
                     let offset = self.offset();
-                    if self.op(OP_DISPATCH, offset.unsigned_abs())? < 0 {
-                        return Ok(SW_ERR);
+                    if self.op(OP_DISPATCH, offset.unsigned_abs()) < 0 {
+                        return SW_ERR;
                     }
                     if self.flag(FLAG_REMOVED) {
-                        return Ok(SW_OK);
+                        return SW_OK;
                     }
                     self.set_wait(false);
                     let offset = self.offset();
                     if usize::try_from(offset).is_ok_and(|offset| self.length() > offset) {
-                        self.op(OP_REDUCE, offset.unsigned_abs())?;
+                        self.op(OP_REDUCE, offset.unsigned_abs());
                         At::GetLength
                     } else {
                         self.clear();
                         if !self.flag(FLAG_TLS) {
-                            return Ok(SW_OK);
+                            return SW_OK;
                         }
                         At::Recv
                     }
@@ -297,53 +272,53 @@ impl Recv {
         usize::try_from(self.offset()).is_ok_and(|offset| self.length() >= offset)
     }
 
-    fn eof_protocol(&self) -> Result<i32, Thrown> {
+    fn eof_protocol(&mut self) -> i32 {
         let mut again = false;
         loop {
             let size = self.size() - self.length();
-            match self.op(OP_RECV, size.min(BUFFER_SIZE_STD) as u64)? {
-                RECV_DONE => return Ok(SW_OK),
-                RECV_CLOSE | 0 => return Ok(SW_ERR),
-                n if n < 0 => return Ok(SW_ERR),
-                n if !self.grow(n) => return Ok(SW_ERR),
+            match self.op(OP_RECV, size.min(BUFFER_SIZE_STD) as u64) {
+                RECV_DONE => return SW_OK,
+                RECV_CLOSE | 0 => return SW_ERR,
+                n if n < 0 => return SW_ERR,
+                n if !self.grow(n) => return SW_ERR,
                 _ => {}
             }
             if self.length() < self.eof_len() {
-                return Ok(SW_OK);
+                return SW_OK;
             }
             // SAFETY: as in `eof_len`.
             if unsafe { (*self.protocol).split_by_eof } != 0 {
-                match self.split_by_eof()? {
+                match self.split_by_eof() {
                     SW_CONTINUE => again = true,
-                    SW_CLOSE => return Ok(SW_ERR),
-                    _ => return Ok(SW_OK),
+                    SW_CLOSE => return SW_ERR,
+                    _ => return SW_OK,
                 }
             } else if self.ends_with_eof() {
                 let length = self.length();
                 self.set_offset(length.cast_signed() as i64);
-                if self.op(OP_DISPATCH, length as u64)? < 0 {
-                    return Ok(SW_ERR);
+                if self.op(OP_DISPATCH, length as u64) < 0 {
+                    return SW_ERR;
                 }
                 if self.flag(FLAG_REMOVED) {
-                    return Ok(SW_OK);
+                    return SW_OK;
                 }
                 self.clear();
-                if self.flag(FLAG_TLS) && self.op(OP_SSL_PENDING, 0)? > 0 {
+                if self.flag(FLAG_TLS) && self.op(OP_SSL_PENDING, 0) > 0 {
                     continue;
                 }
-                return Ok(SW_OK);
+                return SW_OK;
             }
             let (length, size, max) = (self.length(), self.size(), self.max());
             if length == max as usize {
-                self.op(OP_LOG_TOO_LARGE, length as u64)?;
-                return Ok(SW_ERR);
+                self.op(OP_LOG_TOO_LARGE, length as u64);
+                return SW_ERR;
             }
             if length == size {
                 again = true;
                 if size < max as usize {
-                    let page = self.op(OP_PAGE, 0)?;
+                    let page = self.op(OP_PAGE, 0);
                     let Some(page) = usize::try_from(page).ok().filter(|&page| page > 0) else {
-                        return Ok(SW_ERR);
+                        return SW_ERR;
                     };
                     let double = size.wrapping_mul(2);
                     #[expect(
@@ -351,39 +326,119 @@ impl Recv {
                         reason = "upstream's uint32_t extend_size"
                     )]
                     let extend = double.wrapping_add(page - double % page) as u32;
-                    self.op(OP_EXTEND, u64::from(extend.min(max)))?;
+                    self.op(OP_EXTEND, u64::from(extend.min(max)));
                 }
             }
             if !again {
-                return Ok(SW_OK);
+                return SW_OK;
             }
         }
     }
 
-    fn split_by_eof(&self) -> Result<i32, Thrown> {
+    fn split_by_eof(&mut self) -> i32 {
         if self.length() < self.eof_len() {
-            return Ok(SW_CONTINUE);
+            return SW_CONTINUE;
         }
-        let n = self.op(OP_SPLIT, 0)?;
+        let n = self.op(OP_SPLIT, 0);
         if self.flag(FLAG_REMOVED) || n < 0 {
-            return Ok(SW_CLOSE);
+            return SW_CLOSE;
         }
         if n == 0 {
-            return Ok(SW_CONTINUE);
+            return SW_CONTINUE;
         }
         if usize::try_from(n).is_ok_and(|n| n < self.length()) {
-            self.op(OP_REDUCE, n.unsigned_abs())?;
+            self.op(OP_REDUCE, n.unsigned_abs());
             let offset = self.length().saturating_sub(self.eof_len());
             self.set_offset(offset.cast_signed() as i64);
         } else {
             self.clear();
         }
-        Ok(i32::from(self.flag(FLAG_TLS)))
+        i32::from(self.flag(FLAG_TLS))
+    }
+}
+
+/// Runs one receive of `mode` and returns its `SW_*` result. `head` is the
+/// package length size (`get_package_length_size` or the fixed size); `flags`
+/// holds the socket's flags at entry and its `recv_wait` on return.
+///
+/// # Safety
+/// `protocol` and `buffer` are live for the receive, and `effects` changes them
+/// only inside [`Effects::effect`].
+pub unsafe fn recv<E: Effects>(
+    protocol: *const Protocol,
+    buffer: *mut Buffer,
+    mode: u32,
+    head: u32,
+    flags: &mut u32,
+    effects: &mut E,
+) -> i32 {
+    let mut recv = Recv {
+        flags: *flags,
+        protocol,
+        buffer,
+        effects,
+    };
+    if recv.length() > recv.size() {
+        return SW_ERR;
+    }
+    let result = match mode {
+        MODE_LENGTH => recv.length_protocol(head),
+        MODE_EOF => recv.eof_protocol(),
+        MODE_SPLIT => recv.split_by_eof(),
+        _ => SW_ERR,
+    };
+    *flags = recv.flags;
+    result
+}
+
+/// [`recv`]'s C form, for the oracle's native candidate: `io` holds the
+/// arguments and `call(context, op, arg)` performs each effect and refreshes
+/// `io.flags`.
+#[repr(C)]
+pub struct SwrFramingIo {
+    pub protocol: *const Protocol,
+    pub buffer: *mut Buffer,
+    pub mode: u32,
+    pub head: u32,
+    pub flags: u32,
+}
+
+/// One native effect on the socket, buffer or protocol in `context`.
+pub type FramingCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> i64;
+
+/// Any op: a native exception was caught; native code rethrows it after return.
+pub const THROWN: i64 = i64::MIN;
+
+struct NativeEffects {
+    io: *mut SwrFramingIo,
+    context: *mut c_void,
+    call: FramingCall,
+    thrown: bool,
+}
+
+impl Effects for NativeEffects {
+    /// After a `THROWN` op, no further effect runs: each op fails and the socket
+    /// reads as removed, so the loop returns within a few steps.
+    fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64 {
+        if !self.thrown {
+            // SAFETY: `io` is the caller's live receive; native code reads it only inside `call`.
+            unsafe { (*self.io).flags = *flags };
+            // SAFETY: `call` and `context` are the native pair lent for this receive.
+            let result = unsafe { (self.call)(self.context, op, arg) };
+            // SAFETY: as above; `call` has returned.
+            *flags = unsafe { (*self.io).flags };
+            self.thrown = result == THROWN;
+            if !self.thrown {
+                return result;
+            }
+        }
+        *flags |= FLAG_REMOVED;
+        RECV_CLOSE
     }
 }
 
 /// Runs one receive of `io.mode` and returns its `SW_*` result. After a `THROWN`
-/// op it returns at once; native code rethrows.
+/// op it runs no further effect; native code rethrows.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_framing_recv(
     io: *mut SwrFramingIo,
@@ -397,24 +452,24 @@ pub unsafe extern "C" fn swr_v1_framing_recv(
     if shared.protocol.is_null() || shared.buffer.is_null() {
         return SW_ERR;
     }
-    let (mode, head) = (shared.mode, shared.head);
-    let recv = Recv {
+    let (protocol, buffer, mode, head, mut flags) = (
+        shared.protocol,
+        shared.buffer,
+        shared.mode,
+        shared.head,
+        shared.flags,
+    );
+    let mut effects = NativeEffects {
         io,
-        protocol: shared.protocol,
-        buffer: shared.buffer,
         context,
         call,
+        thrown: false,
     };
-    if recv.length() > recv.size() {
-        return SW_ERR;
-    }
-    let result = match mode {
-        MODE_LENGTH => recv.length_protocol(head),
-        MODE_EOF => recv.eof_protocol(),
-        MODE_SPLIT => recv.split_by_eof(),
-        _ => Ok(SW_ERR),
-    };
-    result.unwrap_or(SW_ERR)
+    // SAFETY: the caller's live protocol and buffer, changed only inside `call`.
+    let status = unsafe { recv(protocol, buffer, mode, head, &mut flags, &mut effects) };
+    // SAFETY: the caller's live receive.
+    unsafe { (*io).flags = flags };
+    if effects.thrown { SW_ERR } else { status }
 }
 
 #[cfg(test)]
@@ -424,27 +479,24 @@ mod tests {
 
     /// A fake native side: scripted reads, a growable buffer and a log of effects.
     struct Native {
-        io: SwrFramingIo,
+        mode: u32,
+        head: u32,
+        flags: u32,
         protocol: Protocol,
         buffer: Buffer,
         storage: Vec<u8>,
         chunks: Vec<&'static [u8]>,
         removed: bool,
         wait: bool,
-        throw_on_extend: bool,
         events: Vec<String>,
     }
 
     impl Native {
         fn new(mode: u32, size: usize, chunks: Vec<&'static [u8]>) -> Box<Self> {
             let mut native = Box::new(Native {
-                io: SwrFramingIo {
-                    protocol: ptr::null(),
-                    buffer: ptr::null_mut(),
-                    mode,
-                    head: 1,
-                    flags: 0,
-                },
+                mode,
+                head: 1,
+                flags: 0,
                 protocol: Protocol {
                     split_by_eof: 0,
                     package_eof: *b"\r\n\0\0\0\0\0\0",
@@ -465,18 +517,15 @@ mod tests {
                 chunks,
                 removed: false,
                 wait: false,
-                throw_on_extend: false,
                 events: Vec::new(),
             });
             native.buffer.str = native.storage.as_mut_ptr();
-            native.io.protocol = &raw const native.protocol;
-            native.io.buffer = &raw mut native.buffer;
             native
         }
         fn data(&self) -> &[u8] {
             &self.storage[..self.buffer.length]
         }
-        fn effect(&mut self, op: u32, arg: u64) -> i64 {
+        fn apply(&mut self, op: u32, arg: u64) -> i64 {
             let arg = usize::try_from(arg).unwrap();
             let length = self.buffer.length;
             match op {
@@ -501,9 +550,6 @@ mod tests {
                 }
                 OP_EXTEND => {
                     self.events.push(format!("extend:{arg}"));
-                    if self.throw_on_extend {
-                        return THROWN;
-                    }
                     self.storage.resize(arg, 0);
                     self.buffer.size = arg;
                     self.buffer.str = self.storage.as_mut_ptr();
@@ -543,20 +589,33 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn call(context: *mut c_void, op: u32, arg: u64) -> i64 {
-        // SAFETY: tests pass their live `Native` as the context.
-        let native = unsafe { &mut *context.cast::<Native>() };
-        native.wait = native.io.flags & FLAG_WAIT != 0;
-        let result = native.effect(op, arg);
-        native.io.flags = u32::from(native.removed) | if native.wait { FLAG_WAIT } else { 0 };
-        result
+    impl Effects for Native {
+        fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64 {
+            self.wait = *flags & FLAG_WAIT != 0;
+            let result = self.apply(op, arg);
+            *flags = u32::from(self.removed) | if self.wait { FLAG_WAIT } else { 0 };
+            result
+        }
     }
 
     fn run(native: &mut Native) -> i32 {
-        let io = &raw mut native.io;
-        // SAFETY: `io` and the context are the same live fake.
-        let status = unsafe { swr_v1_framing_recv(io, ptr::from_mut(native).cast(), Some(call)) };
-        native.wait = native.io.flags & FLAG_WAIT != 0;
+        let mut flags = native.flags;
+        let native = ptr::from_mut(native);
+        // SAFETY: the fake's protocol and buffer, changed only inside its effects.
+        let status = unsafe {
+            recv(
+                &raw const (*native).protocol,
+                &raw mut (*native).buffer,
+                (*native).mode,
+                (*native).head,
+                &mut flags,
+                &mut *native,
+            )
+        };
+        // SAFETY: the receive has returned.
+        let native = unsafe { &mut *native };
+        native.flags = flags;
+        native.wait = flags & FLAG_WAIT != 0;
         status
     }
 
@@ -592,7 +651,7 @@ mod tests {
         let mut native = Native::new(MODE_LENGTH, 8, vec![b"\x10"]);
         native.storage[..3].copy_from_slice(b"\x01a\x00");
         native.buffer.length = 3;
-        native.io.flags = FLAG_SKIP;
+        native.flags = FLAG_SKIP;
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(
             native.events,
@@ -618,11 +677,11 @@ mod tests {
     #[test]
     fn length_protocol_stops_on_removed_and_dynamic_zero() {
         let mut native = Native::new(MODE_LENGTH, 8, vec![b"\x01"]);
-        native.io.flags = FLAG_REMOVED;
+        native.flags = FLAG_REMOVED;
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(native.events, Vec::<String>::new());
-        native.io.flags = FLAG_DYNAMIC;
-        native.io.head = 0;
+        native.flags = FLAG_DYNAMIC;
+        native.head = 0;
         assert_eq!(run(&mut native), SW_ERR);
         assert_eq!(native.events, Vec::<String>::new());
     }
@@ -656,22 +715,38 @@ mod tests {
     }
 
     #[test]
-    fn a_thrown_effect_returns_at_once() {
-        let mut native = Native::new(MODE_LENGTH, 2, vec![b"\x05"]);
-        native.throw_on_extend = true;
-        assert_eq!(run(&mut native), SW_ERR);
-        assert_eq!(native.events, ["recv:1", "length:1", "extend:6"]);
-        assert!(!native.wait);
-    }
-
-    #[test]
-    fn rejects_null_and_overrun() {
-        // SAFETY: null is accepted.
-        let result = unsafe { swr_v1_framing_recv(ptr::null_mut(), ptr::null_mut(), Some(call)) };
-        assert_eq!(result, SW_ERR);
+    fn rejects_overrun() {
         let mut native = Native::new(MODE_EOF, 2, vec![]);
         native.buffer.length = 3;
         assert_eq!(run(&mut native), SW_ERR);
         assert_eq!(native.events, Vec::<String>::new());
+    }
+
+    /// The C form over the same fake, throwing at `OP_EXTEND`.
+    unsafe extern "C" fn throwing(context: *mut c_void, op: u32, arg: u64) -> i64 {
+        // SAFETY: the test passes its live `Native` as the context.
+        let native = unsafe { &mut *context.cast::<Native>() };
+        let result = native.apply(op, arg);
+        if op == OP_EXTEND { THROWN } else { result }
+    }
+
+    #[test]
+    fn a_thrown_effect_runs_no_further_effect() {
+        let mut native = Native::new(MODE_LENGTH, 2, vec![b"\x05"]);
+        let mut io = SwrFramingIo {
+            protocol: &raw const native.protocol,
+            buffer: &raw mut native.buffer,
+            mode: MODE_LENGTH,
+            head: 1,
+            flags: 0,
+        };
+        let context = ptr::from_mut(&mut *native).cast();
+        // SAFETY: `io` points into the fake passed as the context.
+        let status = unsafe { swr_v1_framing_recv(&raw mut io, context, Some(throwing)) };
+        assert_eq!(status, SW_ERR);
+        assert_eq!(native.events, ["recv:1", "length:1", "extend:6"]);
+        // SAFETY: null is accepted.
+        let status = unsafe { swr_v1_framing_recv(ptr::null_mut(), context, Some(throwing)) };
+        assert_eq!(status, SW_ERR);
     }
 }

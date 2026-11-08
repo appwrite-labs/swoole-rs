@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/protocol/base.cc (Swoole contributors).
 //! `Protocol::recv_with_length_protocol`, `recv_with_eof_protocol` and
-//! `recv_split_by_eof`: [`swr_v1_framing_recv`] with each effect on the socket,
+//! `recv_split_by_eof`: [`swoole_rs_framing::recv::recv`] with each effect on the socket,
 //! the buffer and the protocol's callbacks; and `default_length_func`,
 //! `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`, under their upstream
 //! symbols. Logs name the upstream function that wrote them.
@@ -12,13 +12,13 @@ use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_add
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
+use swoole_rs_framing::recv::{Effects, recv};
 use swoole_rs_framing::recv::{
     FLAG_DYNAMIC, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, MODE_EOF, MODE_LENGTH, MODE_SPLIT,
     OP_CLEAR_SKIP, OP_DISPATCH, OP_EXTEND, OP_GET_LENGTH, OP_LOG_MALFORMED, OP_LOG_NO_LENGTH,
     OP_LOG_TOO_LARGE, OP_PAGE, OP_RECV, OP_REDUCE, OP_SPLIT, OP_SSL_PENDING, RECV_CLOSE, RECV_DONE,
-    SwrFramingIo,
 };
-use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_hton64, swr_v1_framing_recv};
+use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_hton64};
 use swoole_rs_framing::{swr_v1_framing_unpack, swr_v1_framing_width};
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_get_peer_name};
 use swoole_rs_websocket::frame_api::PacketLength;
@@ -47,11 +47,9 @@ unsafe extern "C" {
     fn SSL_pending(ssl: *const c_void) -> c_int;
 }
 
-/// One receive: the shared state [`swr_v1_framing_recv`] reads, and what each
-/// effect acts on.
-#[repr(C)]
+/// One receive: what each effect acts on.
 struct Recv {
-    io: SwrFramingIo,
+    mode: u32,
     protocol: *const Protocol,
     socket: *mut SocketRecord,
     buffer: *mut CppString,
@@ -129,18 +127,15 @@ fn proto_error(socket: &SocketRecord, code: ErrorCode, origin: &CStr, message: &
     );
 }
 
-/// One effect, with `recv_wait` applied before it and the socket's flags read back
-/// after it.
-unsafe extern "C" fn call(context: *mut c_void, op: u32, arg: u64) -> i64 {
-    // SAFETY: `receive`'s live context; `swr_v1_framing_recv` holds no reference into it.
-    let r = unsafe { &mut *context.cast::<Recv>() };
-    // SAFETY: the receive's live socket.
-    let socket = unsafe { &mut *r.socket };
-    socket.recv_wait = u8::from(r.io.flags & FLAG_WAIT != 0);
-    let result = effect(r, op, arg);
-    // SAFETY: as above; the effect has returned.
-    r.io.flags = socket_flags(unsafe { &*r.socket });
-    result
+impl Effects for Recv {
+    fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64 {
+        // SAFETY: the receive's live socket.
+        unsafe { (*self.socket).recv_wait = u8::from(*flags & FLAG_WAIT != 0) };
+        let result = effect(self, op, arg);
+        // SAFETY: as above; the effect has returned.
+        *flags = socket_flags(unsafe { &*self.socket });
+        result
+    }
 }
 
 fn effect(r: &Recv, op: u32, arg: u64) -> i64 {
@@ -150,7 +145,7 @@ fn effect(r: &Recv, op: u32, arg: u64) -> i64 {
     let p = unsafe { &*r.protocol };
     // SAFETY: the receive's live socket; no other reference to it is live.
     let s = unsafe { &mut *r.socket };
-    let length_mode = r.io.mode == MODE_LENGTH;
+    let length_mode = r.mode == MODE_LENGTH;
     let origin = if length_mode {
         c"Protocol::recv_with_length_protocol"
     } else {
@@ -285,36 +280,37 @@ unsafe fn receive(
     // SAFETY: as the caller promises.
     let p = unsafe { &*protocol };
     // SAFETY: as the caller promises.
-    let s = unsafe { &mut *socket };
+    let s = unsafe { &*socket };
     let mut r = Recv {
-        io: SwrFramingIo {
-            protocol: protocol.cast(),
-            buffer: buffer.cast(),
-            mode,
-            head: 0,
-            flags: socket_flags(s),
-        },
+        mode,
         protocol,
         socket,
         buffer,
     };
+    let (mut head, mut flags) = (0, socket_flags(s));
     if mode == MODE_LENGTH {
         // SAFETY: `get_package_length_size` is a function of this type, or null.
         let size = unsafe {
             core::mem::transmute::<*mut c_void, Option<GetLengthSize>>(p.get_package_length_size)
         };
         // SAFETY: upstream's call over the live socket.
-        r.io.head = u32::from(size.map_or(p.package_length_size, |size| unsafe { size(socket) }));
-        r.io.flags |= (if s.skip_recv != 0 { FLAG_SKIP } else { 0 })
+        head = u32::from(size.map_or(p.package_length_size, |size| unsafe { size(socket) }));
+        flags |= (if s.skip_recv != 0 { FLAG_SKIP } else { 0 })
             | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
     }
-    let context = &raw mut r;
-    // SAFETY: `context` is the live local above.
-    let io = unsafe { &raw mut (*context).io };
-    // SAFETY: the receive's state, its context and its effects.
-    let status = unsafe { swr_v1_framing_recv(io, context.cast(), Some(call)) };
+    // SAFETY: the live protocol and buffer, changed only inside the effects.
+    let status = unsafe {
+        recv(
+            protocol.cast(),
+            buffer.cast(),
+            mode,
+            head,
+            &mut flags,
+            &mut r,
+        )
+    };
     // SAFETY: the live socket; the receive has returned.
-    unsafe { (*socket).recv_wait = u8::from(r.io.flags & FLAG_WAIT != 0) };
+    unsafe { (*socket).recv_wait = u8::from(flags & FLAG_WAIT != 0) };
     status
 }
 

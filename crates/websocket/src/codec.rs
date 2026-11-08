@@ -31,7 +31,50 @@ fn flags(first: u8, second: u8) -> u8 {
 
 /// Decode one frame, unmasking only a complete payload. Trailing bytes are left
 /// untouched. Returns the expected frame length even when its body is incomplete,
-/// or `INVALID_CONTROL` (payload left masked) for a complete compressed control frame.
+/// or `INVALID_CONTROL` (payload left masked) for a complete compressed control
+/// frame, with the decoded header.
+pub fn decode_in_place(data: &mut [u8]) -> (i64, DecodedFrame) {
+    let length = data.len();
+    let mut header = 0;
+    // The native Frame decoder passes header availability through uint32_t.
+    // Preserve that conversion even for unusually large borrowed buffers.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the native uint32_t header availability"
+    )]
+    let available = length as u32 as usize;
+    // SAFETY: `available <= length` readable bytes; header is a disjoint local.
+    let total = unsafe { swr_v1_ws_frame_length(data.as_ptr(), available, &raw mut header) };
+    let mut frame = DecodedFrame {
+        header_length: header as usize,
+        ..DecodedFrame::default()
+    };
+    if let [first, second, ..] = *data {
+        frame.opcode = first & 15;
+        frame.flags = flags(first, second);
+        frame.length_code = second & 127;
+    }
+    if let Some(size) = usize::try_from(total).ok().filter(|&size| size > 0) {
+        frame.payload_length = size - frame.header_length;
+        if length >= size && is_control(frame.opcode) && frame.flags & RSV1 != 0 {
+            return (INVALID_CONTROL, frame);
+        }
+        let at = frame.header_length;
+        if frame.payload_length != 0
+            && frame.flags & MASK != 0
+            && let Some(key) = data.get(at.wrapping_sub(4)..at)
+            && let Ok(key) = <[u8; 4]>::try_from(key)
+            && let Some(payload) = data.get_mut(at..size)
+        {
+            frame.mask_key = key;
+            // SAFETY: `payload` is exclusive and the key is a local copy.
+            unsafe { swr_v1_ws_mask(payload.as_mut_ptr(), payload.len(), key.as_ptr()) };
+        }
+    }
+    (total, frame)
+}
+
+/// [`decode_in_place`] over a C buffer.
 ///
 /// # Safety
 /// Input covers `length` exclusive writable bytes, null only at length zero.
@@ -45,53 +88,13 @@ pub unsafe extern "C" fn swr_v1_ws_decode(
     if output.is_null() || length > isize::MAX as usize || (data.is_null() && length != 0) {
         return -1;
     }
-    let mut header = 0;
-    // The native Frame decoder passes header availability through uint32_t.
-    // Preserve that conversion even for unusually large borrowed buffers.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the native uint32_t header availability"
-    )]
-    let available = length as u32 as usize;
-    // SAFETY: Input was checked above; header is a disjoint local variable.
-    let total = unsafe { swr_v1_ws_frame_length(data, available, &raw mut header) };
-    let mut frame = DecodedFrame {
-        header_length: header as usize,
-        ..DecodedFrame::default()
+    let data = if length == 0 {
+        &mut []
+    } else {
+        // SAFETY: as the caller promises, checked above.
+        unsafe { core::slice::from_raw_parts_mut(data, length) }
     };
-    if length >= 2 {
-        // SAFETY: The caller supplies at least two readable bytes.
-        let first = unsafe { data.read() };
-        // SAFETY: as above, offset 1 is inside those bytes.
-        let second_byte = unsafe { data.add(1) };
-        // SAFETY: as above.
-        let second = unsafe { second_byte.read() };
-        frame.opcode = first & 15;
-        frame.flags = flags(first, second);
-        frame.length_code = second & 127;
-    }
-    if let Some(size) = usize::try_from(total).ok().filter(|&size| size > 0) {
-        frame.payload_length = size - frame.header_length;
-        if length >= size && is_control(frame.opcode) && frame.flags & RSV1 != 0 {
-            // SAFETY: The caller supplies a disjoint, aligned output.
-            unsafe { output.write(frame) };
-            return INVALID_CONTROL;
-        }
-        if length >= size && frame.payload_length != 0 {
-            // A positive complete header bounds the payload and key inside `length`.
-            if frame.flags & MASK != 0 {
-                // SAFETY: the 4-byte key ends at `header_length <= total <= length`.
-                let key = unsafe { data.add(frame.header_length - 4) };
-                // SAFETY: as above, 4 readable bytes; `[u8; 4]` has alignment 1.
-                frame.mask_key = unsafe { key.cast::<[u8; 4]>().read() };
-                // SAFETY: the payload starts at `header_length`, inside the input.
-                let payload = unsafe { data.add(frame.header_length) };
-                // SAFETY: `payload_length` bytes from `payload` end at `total <= length`, the
-                // caller lends them writable, and the key is a local copy.
-                unsafe { swr_v1_ws_mask(payload, frame.payload_length, frame.mask_key.as_ptr()) };
-            }
-        }
-    }
+    let (total, frame) = decode_in_place(data);
     // SAFETY: The caller supplies a disjoint, aligned output.
     unsafe { output.write(frame) };
     total
