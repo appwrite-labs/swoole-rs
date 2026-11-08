@@ -8,7 +8,7 @@ import tempfile
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
 from tools.harness import run_isolated,write_report
-from tools.build_hybrid import hybrid_tree
+from tools.build_hybrid import hybrid_link,hybrid_tree
 
 
 def main():
@@ -21,9 +21,7 @@ def main():
     report={'scope':__doc__,'passed':False}
     with tempfile.TemporaryDirectory(prefix='swr-server-config-') as directory:
         executable=Path(directory)/'owners'
-        command=['c++','-std=c++14','-O1','-UNDEBUG','-I'+str(prefix),str(Path(__file__).with_suffix('.cc')),str(args.archive.resolve()),'-pthread','-o',str(executable)]
-        # --gc-sections: the archive's references to C++ (event.cc's Reactor::wait) are unreachable here.
-        if sys.platform.startswith('linux'):command+=['-Wl,--gc-sections','-ldl','-lm']
+        command=['c++','-std=c++14','-O1','-UNDEBUG','-I'+str(prefix),str(Path(__file__).with_suffix('.cc')),*hybrid_link(args.archive,directory),'-o',str(executable)]
         result=run_isolated(command,timeout=60)
         report['compile']={'command':command,'exit_code':result.returncode,'stderr':result.stderr}
         if result.returncode==0:

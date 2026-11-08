@@ -9,7 +9,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_hybrid import hybrid_link, hybrid_tree
 from tools.harness import run_isolated, write_report
 
 
@@ -36,16 +36,14 @@ def main():
                   pthread_forced_unwind_qualified=False,
                   rust_format_drop_attempted=wrapped, rust_format_drop_qualified=False, runs=[])
     with tempfile.TemporaryDirectory(prefix='server-faults-', dir=args.output.parent) as directory:
+        link = hybrid_link(archive, directory)
         for standard in ['c++14', 'c++17']:
             for sanitize in [False, True]:
                 binary = Path(directory) / (standard + ('-asan' if sanitize else ''))
                 command = ['c++', '-std=' + standard, '-O2', '-g', '-UNDEBUG',
-                           '-Wall', '-Wextra', '-Werror', *flags, str(fixture),
-                           str(archive), '-pthread', '-o', str(binary)]
+                           '-Wall', '-Wextra', '-Werror', *flags, str(fixture), *link, '-o', str(binary)]
                 if wrapped:
-                    # --gc-sections: the archive's references to C++ (event.cc's Reactor::wait) are unreachable here.
-                    # OpenSSL: the server runner sends through crates/tls's Socket::send (crates/server/src/master_ops.rs).
-                    command += ['-DWRAP_FREE', '-Wl,--wrap=free', '-Wl,--gc-sections', '-lssl', '-lcrypto', '-ldl', '-lm']
+                    command += ['-DWRAP_FREE', '-Wl,--wrap=free']
                 if sanitize:
                     command += ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
                 row = dict(standard=standard, native_sanitized=sanitize, commands=[])

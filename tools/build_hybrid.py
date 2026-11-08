@@ -268,6 +268,29 @@ def hybrid_tree(archive):
     return source, [*('-D' + name for name in switches), '-I' + str(source / 'include'), '-I' + str(abi)]
 
 
+def hybrid_link(archive, directory):
+    """Linker inputs for a fixture that calls the Rust `archive` outside PHP: the archive grouped
+    with an archive of the extension's own native objects, which the Rust ops reach (the shims and
+    the upstream C++ still in the build), and the libraries the extension links. Members are pulled
+    in only when referenced, so a fixture never links the extension's Zend glue it doesn't reach."""
+    source = Path(archive).resolve().parents[2] / 'src'
+    make = {}
+    for line in (source / 'Makefile').read_text().splitlines():
+        key, separator, value = line.partition(' = ')
+        if separator and not line.startswith('\t'):
+            make[key] = value
+    objects = [str(source / Path(lo).parent / '.libs' / (Path(lo).stem + '.o'))
+               for lo in make['shared_objects_swoole'].split()]
+    native = Path(directory) / 'libswoole_native.a'
+    native.unlink(missing_ok=True)
+    subprocess.run(['ar', 'rcs', str(native), *objects], check=True)
+    libraries = [flag for flag in shlex.split(make.get('SWOOLE_SHARED_LIBADD', '')) if flag.startswith(('-l', '-L'))]
+    if sys.platform == 'darwin':
+        return [str(native), str(Path(archive).resolve()), '-Wl,-dead_strip', *libraries]
+    return ['-Wl,--start-group', str(native), str(Path(archive).resolve()), '-Wl,--end-group',
+            '-Wl,--gc-sections', *libraries, '-pthread', '-ldl', '-lm']
+
+
 def native_sources():
     """Owned C++ (native/<module>/*.cc: what stable Rust can't express), by the path it compiles
     at in the patched tree, where config.m4's and CMake's src/ globs find it."""

@@ -60,8 +60,8 @@ CI lane has.
 ## Captured Server effects
 
 `server_faults.py --archive <build>/rust-prefix/lib/libswoole_rs_ffi.a --output R`
-(`server-native-faults`) links the actual optimized archive and its copied native
-exception helper. C++14/17 runs cover typed and non-standard exceptions, nested
+(`server-native-faults`) links the actual optimized archive, the build's own native
+objects and its copied native exception helper. C++14/17 runs cover typed and non-standard exceptions, nested
 Server operations, and exact effect prefixes after every injected failure in
 create/destroy, both with native facts and with the canonical Rust configuration
 records. The latter asserts those facts do not fall back through the native
