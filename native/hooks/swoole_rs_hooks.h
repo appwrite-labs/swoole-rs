@@ -93,7 +93,7 @@ typedef struct {
     void (*park)(void *co);
     void (*resume)(void *co);
 } swr_v1_hook_poll_ops;
-/* System::init_reactor's SW_FD_CO_POLL and SW_FD_CO_EVENT handlers, registered through set;
+/* System::init_reactor's SW_FD_CO_SOCKET, SW_FD_CO_POLL and SW_FD_CO_EVENT handlers, registered through set;
  * wake defers co->resume() on this thread's reactor. */
 void swr_v1_hook_init_reactor(void *reactor,
                               void (*set)(void *reactor, int fd_type, int events, int (*handler)(void *, void *)),

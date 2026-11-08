@@ -1,14 +1,20 @@
 //! Rust-owned variable-length coroutine socket metadata. Native string members
 //! borrow these stable slots; snapshot copies own independent Rust bytes.
+use crate::co_socket::CoSocket;
 use std::ffi::c_void;
 use std::ptr;
 use swoole_rs_corebase::StringSlot;
+
+/// A destructor callback: `hook(arg, socket)`.
+pub type CloseHook = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
 pub struct SocketExtra {
     pub(crate) strings: [StringSlot; 3],
     /// The socket's `SSLContext` owner (null without one); native code shares the
     /// context and keeps it alive while this is set.
     pub(crate) tls: *const c_void,
+    /// `set_dtor`'s callback, its argument and the native `Socket` it is passed.
+    close_hook: Option<(CloseHook, *mut c_void, *mut c_void)>,
     /// The ring's host when the socket is a `UringSocket`, else null.
     #[cfg(feature = "iouring")]
     pub(crate) uring: *const c_void,
@@ -29,6 +35,7 @@ pub extern "C" fn swr_v1_hook_socket_extra_new() -> PreparedSocketExtra {
     let owner = Box::into_raw(Box::new(SocketExtra {
         strings: std::array::from_fn(|_| StringSlot::default()),
         tls: ptr::null(),
+        close_hook: None,
         #[cfg(feature = "iouring")]
         uring: ptr::null(),
         #[cfg(feature = "iouring")]
@@ -53,7 +60,7 @@ pub extern "C" fn swr_v1_hook_socket_extra_new() -> PreparedSocketExtra {
 /// # Safety
 /// `socket` is a live record whose extra record is set.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_uring(socket: *mut crate::co_socket::CoSocket) {
+pub unsafe extern "C" fn swr_v1_hook_co_socket_uring(socket: *mut CoSocket) {
     #[cfg(feature = "iouring")]
     if let Some(host) = crate::stdio::host() {
         // SAFETY: as the caller promises.
@@ -64,6 +71,42 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_uring(socket: *mut crate::co_sock
     #[cfg(not(feature = "iouring"))]
     let _ = socket;
 }
+/// `set_dtor`: `hook(arg, owner)` runs once, when the socket closes or is destroyed.
+///
+/// # Safety
+/// `socket` is a live record whose extra record is set; `hook` may be called with
+/// `arg` and `owner` until the socket is destroyed.
+pub unsafe fn set_close_hook(
+    socket: *mut CoSocket,
+    owner: *mut c_void,
+    hook: CloseHook,
+    arg: *mut c_void,
+) {
+    // SAFETY: as the caller promises.
+    let extra = unsafe { (*socket).extra };
+    // SAFETY: the record's live extra record.
+    unsafe { (*extra).close_hook = Some((hook, arg, owner)) };
+}
+
+/// The destructor callback, once: `close()`'s release and `~Socket`. The socket may be
+/// gone after it returns.
+///
+/// # Safety
+/// `socket` is a live record whose extra record is set or null.
+pub unsafe fn run_close_hook(socket: *mut CoSocket) {
+    // SAFETY: as the caller promises.
+    let extra = unsafe { (*socket).extra };
+    if extra.is_null() {
+        return;
+    }
+    // SAFETY: the record's live extra record; the callback is taken before it runs.
+    let hook = unsafe { (*extra).close_hook.take() };
+    if let Some((hook, arg, owner)) = hook {
+        // SAFETY: the callback set_close_hook's caller lent until now.
+        unsafe { hook(arg, owner) };
+    }
+}
+
 /// # Safety
 /// owner came from `extra_new` and is released once after every borrowed view ends.
 #[unsafe(no_mangle)]

@@ -72,11 +72,6 @@ struct SocketOps {
         *mut c_int,
         *mut size_t,
     ) -> bool,
-    close_hook: unsafe extern "C" fn(
-        *mut c_void,
-        unsafe extern "C" fn(*mut c_void, *mut c_void),
-        *mut c_void,
-    ),
     ssl_verify: unsafe extern "C" fn(*mut c_void, bool) -> bool,
     vector: unsafe extern "C" fn(
         *mut c_void,
@@ -1163,7 +1158,9 @@ pub mod co {
         hook: unsafe extern "C" fn(*mut c_void, *mut c_void),
         arg: *mut c_void,
     ) {
+        // SAFETY: per the caller; the native cast returns the embedded record.
+        let record = unsafe { (native().base)(socket) };
         // SAFETY: per the caller.
-        unsafe { (native().close_hook)(socket, hook, arg) };
+        unsafe { swoole_rs_hooks::socket_extra::set_close_hook(record, socket, hook, arg) };
     }
 }

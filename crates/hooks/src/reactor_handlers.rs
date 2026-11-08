@@ -1,7 +1,9 @@
-//! `System::init_reactor`'s readiness handlers for hooked polls (`SW_FD_CO_POLL`)
-//! and event waiters (`SW_FD_CO_EVENT`). Native code registers them through `set`
+//! `System::init_reactor`'s readiness handlers for coroutine sockets
+//! (`SW_FD_CO_SOCKET`), hooked polls (`SW_FD_CO_POLL`) and event waiters
+//! (`SW_FD_CO_EVENT`). Native code registers them through `set`
 //! and lends `wake`, which defers a parked coroutine's resume.
 use crate::poll::swr_v1_hook_poll_ready;
+use crate::socket_members;
 use crate::wait_event::{ERROR, READ, WRITE, event_ready};
 use core::ffi::{c_int, c_void};
 use std::sync::OnceLock;
@@ -48,7 +50,8 @@ unsafe extern "C" fn waiter_ready<const KIND: i32>(_: *mut c_void, event: *mut c
     0
 }
 
-/// Registers the poll and event-waiter handlers on `reactor`.
+/// Registers the coroutine socket (`Socket::init_reactor`), poll and event-waiter
+/// handlers on `reactor`.
 ///
 /// # Safety
 /// `set` registers on `reactor`; `wake` defers a resume on the calling thread's reactor.
@@ -61,7 +64,11 @@ pub unsafe extern "C" fn swr_v1_hook_init_reactor(
     WAKE.get_or_init(|| wake);
     let poll = FdType::SW_FD_CO_POLL as c_int;
     let waiter = FdType::SW_FD_CO_EVENT as c_int;
-    let handlers: [(c_int, c_int, Handler); 6] = [
+    let socket = FdType::SW_FD_CO_SOCKET as c_int;
+    let handlers: [(c_int, c_int, Handler); 9] = [
+        (socket, READ, socket_members::readable_event_callback),
+        (socket, WRITE, socket_members::writable_event_callback),
+        (socket, ERROR, socket_members::error_event_callback),
         (poll, READ, poll_ready::<READ>),
         (poll, WRITE, poll_ready::<WRITE>),
         (poll, ERROR, poll_ready::<ERROR>),
@@ -138,10 +145,14 @@ mod tests {
     }
 
     #[test]
-    fn registers_six_handlers_and_wakes_a_waiter_once() {
+    fn registers_nine_handlers_and_wakes_a_waiter_once() {
         unsafe { swr_v1_hook_init_reactor(core::ptr::null_mut(), set, wake) };
-        assert_eq!(HANDLERS.with_borrow(Vec::len), 6);
-        for fd_type in [FdType::SW_FD_CO_POLL, FdType::SW_FD_CO_EVENT] {
+        assert_eq!(HANDLERS.with_borrow(Vec::len), 9);
+        for fd_type in [
+            FdType::SW_FD_CO_SOCKET,
+            FdType::SW_FD_CO_POLL,
+            FdType::SW_FD_CO_EVENT,
+        ] {
             for events in [READ, WRITE, ERROR] {
                 handler(fd_type, events);
             }

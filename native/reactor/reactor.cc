@@ -8,7 +8,6 @@
 #include "swoole_reactor.h"
 #include "swoole_rs_wrappers.h"
 #include "swoole_client.h"
-#include "swoole_coroutine_socket.h"
 #include "swoole_coroutine_system.h"
 #include "swoole_signal.h"
 #include "swoole_api.h"
@@ -36,7 +35,8 @@ int swoole_event_init(int flags) {
     if (plan.wait_exit) { reactor->wait_exit = true; }
     for (uint32_t initializer : plan.initializers) {
         switch (initializer) {
-        case SWR_WRAPPER_INIT_SOCKET: swoole::coroutine::Socket::init_reactor(reactor); break;
+        // System::init_reactor registers the coroutine socket's handlers too.
+        case SWR_WRAPPER_INIT_SOCKET: break;
         case SWR_WRAPPER_INIT_SYSTEM: swoole::coroutine::System::init_reactor(reactor); break;
         case SWR_WRAPPER_INIT_CLIENT: swoole::network::Client::init_reactor(reactor); break;
         default: assert(false); return SW_ERR;

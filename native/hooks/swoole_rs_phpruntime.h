@@ -135,8 +135,6 @@ struct swr_v1_runtime_socket_ops {
      * merges them; the polled fds and their revents in the poll set's order. */
     bool (*poll_set)(const int *fds, const int *events, size_t count, double timeout, int *ready, int *revents,
                      size_t *size);
-    /* set_dtor: hook(arg, socket) runs once as the socket is destroyed. */
-    void (*close_hook)(void *socket, void (*hook)(void *arg, void *socket), void *arg);
     bool (*ssl_verify)(void *socket, bool allow_self_signed);
     /* op: 0 readv, 1 readv_all, 2 writev, 3 writev_all; where it stopped into index and offset. */
     ssize_t (*vector)(void *socket, int op, const struct iovec *vectors, int count, int *index, size_t *offset);

@@ -269,13 +269,15 @@ pub unsafe fn swr_v1_hook_co_socket_fini(socket: *mut CoSocket) {
     socket.state = ptr::null_mut();
 }
 
-/// `~Socket()` after its destructor callback: the buffers, the bound state, then the
-/// `network::Socket`, its TLS session closed first.
+/// `~Socket()`: the destructor callback if it has not run, the buffers, the bound
+/// state, then the `network::Socket`, its TLS session closed first.
 ///
 /// # Safety
 /// `socket` is a live record, not used afterwards; its buffers came from `new String`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
+    // SAFETY: as the caller promises; the callback runs before anything is freed.
+    unsafe { crate::socket_extra::run_close_hook(socket) };
     // SAFETY: as the caller promises.
     let record = unsafe { &mut *socket };
     for buffer in [record.read_buffer, record.write_buffer] {

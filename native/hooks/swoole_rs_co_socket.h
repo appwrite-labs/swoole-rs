@@ -2,9 +2,9 @@
 #define SWOOLE_RS_CO_SOCKET_H
 /* coroutine::Socket's scalar fields: Rust's CoSocket (crates/hooks/src/co_socket.rs),
  * in its order and types. swoole_coroutine_socket.h derives Socket from it and keeps
- * only the fields C++ owns (strings, proxies, the TLS context, the destructor
- * callback). Rust initialises, opens, accepts and releases records; both sides
- * assert the offsets below. network::Socket is the reactor's record. */
+ * only the fields C++ owns (strings, proxies, the TLS context). Rust initialises,
+ * opens, accepts and releases records; both sides assert the offsets below.
+ * network::Socket is the reactor's record. */
 #include "swoole_rs_hooks.h"
 #include "swoole_socket.h"
 #include "swoole_protocol.h"
@@ -75,8 +75,8 @@ extern "C" {
 swr_v1_co_socket_extra_prepared swr_v1_hook_socket_extra_new();
 void swr_v1_hook_socket_extra_free(swr_v1_co_socket_extra *owner);
 
-/* ~Socket after its destructor callback: frees the buffers, the bound state and the
- * network::Socket. */
+/* ~Socket: runs the destructor callback if close() has not, then frees the buffers,
+ * the bound state and the network::Socket. */
 void swr_v1_hook_co_socket_release(swr_v1_co_socket *socket);
 void swr_v1_hook_co_socket_default_err(swr_v1_co_socket *socket, int last_error);
 void swr_v1_hook_co_socket_borrowed_err(swr_v1_co_socket *socket, int error, const char *message);
@@ -128,8 +128,6 @@ typedef struct {
     void (*remove)(swr_v1_co_socket *, uint32_t event);
     /* Resumes a coroutine. */
     void (*resume)(void *co);
-    /* close()'s release: the destructor callback, once; the socket may be gone after. */
-    void (*release)(swr_v1_co_socket *);
     /* socket->ssl_shutdown() and socket->check_liveness(). */
     void (*ssl_shutdown)(swr_v1_co_socket *);
     bool (*liveness)(swr_v1_co_socket *);

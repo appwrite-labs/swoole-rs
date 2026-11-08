@@ -121,8 +121,8 @@ are still never uninstalled.
   (none is EINVAL), answers a zero timeout with one `poll(2)` (POLLNVAL is EBADF,
   nothing ready is ETIMEDOUT), and otherwise parks as an `EventWaiter` whose state
   (coroutine, fired events) is Rust's: native adds and removes the `SW_FD_CO_EVENT`
-  socket and yields. The `SW_FD_CO_POLL` and `SW_FD_CO_EVENT` reactor handlers are
-  Rust, registered by `hook_init_reactor` from `System::init_reactor` through a
+  socket and yields. The `SW_FD_CO_SOCKET`, `SW_FD_CO_POLL` and `SW_FD_CO_EVENT`
+  reactor handlers are Rust, registered by `hook_init_reactor` from `System::init_reactor` through a
   native `set_handler`; the event waiter's defers native `wake` (the coroutine's
   resume) on the first event only. Error readiness
   becomes the requested read/write bits. Native sets the last error and errno it
