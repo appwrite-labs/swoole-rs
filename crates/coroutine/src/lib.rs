@@ -1,6 +1,6 @@
-//! The coroutine scheduler and per-coroutine state, Channel, and each coroutine's
-//! context: its stack and the switch onto it. C++ runs the effects: swap
-//! callbacks, timers and destructors.
+//! The coroutine scheduler and per-coroutine state, Channel, each coroutine's
+//! context (its stack and the switch onto it) and `swoole::Coroutine`'s
+//! operations. C++ runs the effects: swap callbacks, timers and destructors.
 #![cfg_attr(
     not(test),
     deny(
@@ -13,6 +13,8 @@ pub mod chan;
 pub mod context;
 mod coroutine;
 pub use coroutine::*;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+mod facade;
 mod live;
 pub use live::*;
 mod stack;

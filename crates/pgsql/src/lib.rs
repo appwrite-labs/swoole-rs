@@ -42,7 +42,7 @@ static BLOCKING: AtomicBool = AtomicBool::new(true);
 /// `SW_ERROR_CO_TIMEDOUT`: the last error a timed-out wait leaves.
 const CO_TIMEDOUT: c_int = 10018;
 
-// SAFETY: src/coroutine/base.cc's.
+// SAFETY: crates/coroutine's.
 unsafe extern "C" {
     fn swr_v1_coroutine_current() -> *mut c_void;
 }

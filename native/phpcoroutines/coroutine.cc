@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 ext-src/swoole_coroutine.cc (Swoole contributors).
 // What crates/phpcoroutines needs of C++ that stable Rust can't express: a
-// Coroutine's construction, context and std::function members (cancel, timer,
-// defer, bailout and the user exit condition), and the C++ objects it reads
+// Coroutine's context and std::function members (timer, defer, bailout and the
+// user exit condition), and the C++ objects it reads
 // (Server, Reactor, AsyncThreads, io_uring) and the build's #ifdefs.
 #include "php_swoole_cxx.h"
 #include "swoole_server.h"
@@ -29,10 +29,6 @@ static Coroutine *co(void *c) {
 }
 
 extern "C" {
-swr_v1_coroutine_scheduler *swr_cpp_coroutine_scheduler() {
-    return Coroutine::get_scheduler();
-}
-
 uint32_t swr_cpp_phpcoroutines_host_flags(uint32_t mask) {
     auto set = [mask](uint32_t flag, bool on) -> uint32_t { return (mask & flag) && on ? flag : 0; };
     uint32_t flags = 0;
@@ -50,10 +46,6 @@ uint32_t swr_cpp_phpcoroutines_host_flags(uint32_t mask) {
     flags |= mask & SWR_PHPCOROUTINES_THREAD;
 #endif
     return flags;
-}
-
-long swr_cpp_phpcoroutines_create(void (*entry)(void *), void *args) {
-    return Coroutine::create(entry, args);
 }
 
 // A coroutine that ended in an exception or bailout takes the process down.
@@ -104,11 +96,6 @@ void *swr_cpp_phpcoroutines_stack(void *c, size_t *size) {
 
 uint8_t swr_cpp_phpcoroutines_is_end(void *c) {
     return co(c)->is_end();
-}
-
-void swr_cpp_phpcoroutines_yield_cancelable(void *c, uint8_t (*cancel)(void *, void *), void *data) {
-    Coroutine::CancelFunc cancel_fn = [cancel, data](Coroutine *co) { return cancel(co, data) != 0; };
-    co(c)->yield(&cancel_fn);
 }
 
 // Activation: deactivate when the reactor is freed, then Coroutine::activate.

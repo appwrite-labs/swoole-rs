@@ -6,7 +6,7 @@ Implements `docs/coroutine-abi-v1.md`. Header: `swoole_rs_coroutine.h`.
 | --- | --- |
 | 0001-channel, …-channel-cc-and-swoole-co | `include/swoole_coroutine_channel.h`, `src/coroutine/channel.cc` (deleted) |
 | 0003-context-stack-markers, …-context-is-rust | `src/coroutine/context.cc`, `include/swoole_asm_context.h` (deleted) |
-| 0004-coroutine-core | `include/swoole_coroutine.h`, `src/coroutine/base.cc` |
+| 0004-coroutine-core, …-coroutine-operations-are-rust | `include/swoole_coroutine.h`, `src/coroutine/base.cc` (deleted) |
 | 0005-context-asan-fibers | `include/swoole_coroutine_context.h` |
 
 Rust frames that span a swap callback, context switch, timer or destructor
@@ -31,7 +31,7 @@ on deactivation once empty; no lookup goes through a thread-local. Lists run
 newest first.
 
 `swoole::Coroutine` is a facade: run, resume, yield (with or without a cancel
-function) and bailout are whole Rust operations, in upstream's order (the
+function), the timed `yield_ex`, cancel and bailout are whole Rust operations, in upstream's order (the
 resume callback still sees the old current; yield clears the resume code before
 its callback). They call back through `swr_v1_coroutine_hooks`, which C++ sets in
 the scheduler's initializer: `swap_in` (returns whether the coroutine ended),
@@ -41,9 +41,24 @@ coroutine closes: the close callback, then `release` restores current, orphans
 the coroutines this one resumed, unlinks it from its origin and drops it from
 the live map, then `destroy`. Otherwise a set bailout mark runs the bailout
 hook. The bailout callback, `on_bailout`, stays a C++ `std::function`; the
-scheduler's `bailout` flag mirrors whether it is set. Cancel copies the
-`std::function` before `swr_v1_coroutine_cancel` clears it; `yield_ex`'s timer
-stays C++.
+scheduler's `bailout` flag mirrors whether it is set.
+
+A cancelable yield's `cancel_fn` points at a `swr_v1_coroutine_canceler` (a C
+function and its data) on the yielder's stack; `yield(CancelFunc *)` wraps the
+`CancelFunc` in one whose function calls a copy of it. Cancel (Rust, under
+`Coroutine::cancel`'s symbol) copies the canceler, marks the coroutine
+canceled, then calls it. `yield_ex` adds its timeout timer through
+`swr_cpp_coroutine_timer_add` (a C callback and data) and deletes it after a
+wake that was not the timeout.
+
+`src/coroutine/base.cc` is gone. `crates/coroutine/src/facade.rs` defines its
+operations under their upstream symbols (`yield_ex`, `cancel`, `print_list`,
+`print_socket_bound_error`, `coroutine::run`) and the `swoole_coroutine_*` C
+API; `native/coroutine/coroutine.cc` keeps what Rust can't express: the
+thread-local scheduler (with its hooks) and `on_bailout`, the constructor and
+`delete` (the context keeps a `CoroutineFunc`), `activate`/`deactivate` (the
+thread backend's hooks and `on_bailout`), `bailout`'s `std::function` argument,
+and creating a coroutine or a timer from C callbacks.
 
 ## Context stack
 
