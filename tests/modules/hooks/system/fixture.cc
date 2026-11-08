@@ -3,12 +3,14 @@
 // coroutine::run, Coroutine::bailout, swoole_event_defer and the timer, and the repo-owned witnesses
 // that check C++ copies and std::bad_alloc containment, which only C++ can throw (formerly
 // tests/modules/coroutine/lifetime.cpp, tests/modules/hooks/socket_scopes.cpp and
-// dns_request_owner.cpp, unchanged but for these macros in place of GoogleTest's).
+// dns_request_owner.cpp, unchanged but for these macros in place of GoogleTest's), and the
+// Server worker-retirement witness (formerly tests/modules/process/worker_retirement.cc).
 #include "swoole_coroutine.h"
 #include "swoole_coroutine_system.h"
 #include "swoole_rs_coroutine_socket.h"
 #include "swoole_async.h"
 #include "swoole_timer.h"
+#include "swoole_server.h"
 
 #include <arpa/inet.h>
 #include <cstdio>
@@ -159,6 +161,86 @@ size_t swr_case_timer_count() {
 }
 void swr_case_timer_reinit() {
     sw_timer()->reinit();
+}
+bool swr_case_timer_remove(long id) {
+    return sw_timer()->remove(id);
+}
+
+// os/process_pool.cpp (process_pool.rs): the record sizes its mirrors check, and what its
+// TESTs reach that isn't an exported symbol: sw_mem_pool(), the inline swoole_set_isolation,
+// SwooleWG and sw_worker().
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+extern const size_t swr_case_process_layout[] = {sizeof(ProcessPool),
+                                                 offsetof(ProcessPool, main_loop),
+                                                 offsetof(ProcessPool, ptr),
+                                                 sizeof(Worker),
+                                                 offsetof(Worker, start_time),
+                                                 sizeof(EventData)};
+#pragma GCC diagnostic pop
+void *swr_case_mem_pool_alloc(uint32_t size) {
+    return sw_mem_pool()->alloc(size);
+}
+void swr_case_set_isolation_user(const char *user) {
+    swoole_set_isolation("", user, "");
+}
+uint32_t swr_case_worker_max_request() {
+    return SwooleWG.max_request;
+}
+Worker *swr_case_current_worker() {
+    return sw_worker();
+}
+
+// rust_worker_retirement.abort_and_reset (formerly tests/modules/process/worker_retirement.cc):
+// first-match PID lookup, the session bitfields abort_worker clears (including the last slot
+// and the reserved bits) and the worker/shared concurrency reset, over a real Server.
+void swr_case_worker_retirement() {
+    Server server(Server::MODE_BASE);
+    server.worker_num = 2;
+    ASSERT_TRUE(server.add_port(SW_SOCK_TCP, "127.0.0.1", 0));
+    ASSERT_EQ(server.create(), SW_OK);
+    server.get_event_worker_pool()->workers = server.workers;
+    auto *worker = &server.workers[0];
+    auto *other = &server.workers[1];
+    worker->pid = other->pid = 79;
+    ASSERT_EQ(server.get_worker_by_pid(79), worker);
+    worker->pid = 80;
+    ASSERT_EQ(server.get_worker_by_pid(79), other);
+    other->pid = -7;
+    ASSERT_EQ(server.get_worker_by_pid(-7), other);
+    ASSERT_EQ(server.get_worker_by_pid(79), nullptr);
+
+    worker->id = 1;
+    worker->concurrency = 3;
+    worker->request_count = 7;
+    worker->response_count = 8;
+    worker->dispatch_count = 9;
+    server.gs->concurrency = 7;
+    const size_t last = SW_SESSION_LIST_SIZE - 1;
+    for (size_t index = 0; index < SW_SESSION_LIST_SIZE; ++index) {
+        auto *slot = server.get_session(index);
+        slot->id = index + 41;
+        slot->fd = 23;
+        slot->reactor_id = 2;
+        slot->reserve_ = 0x5a1234;
+    }
+    server.get_session(0)->reactor_id = 1;
+    server.get_session(last)->reactor_id = 1;
+    server.abort_worker(worker);
+    ASSERT_TRUE(worker->concurrency == 0 && server.gs->concurrency == 4);
+    ASSERT_TRUE(worker->request_count == 0 && worker->response_count == 0 && worker->dispatch_count == 0);
+    for (size_t index = 0; index < SW_SESSION_LIST_SIZE; ++index) {
+        const auto *slot = server.get_session(index);
+        ASSERT_TRUE(slot->id == static_cast<SessionId>(index + 41));
+        ASSERT_TRUE(slot->reserve_ == 0x5a1234);
+        ASSERT_TRUE(slot->reactor_id == (index == 0 || index == last ? 1 : 2));
+        ASSERT_TRUE(slot->fd == (index == 0 || index == last ? 0 : 23));
+    }
+    worker->concurrency = 9;
+    server.gs->concurrency = 3;
+    server.reset_worker_counter(worker);
+    ASSERT_TRUE(worker->concurrency == 0 && server.gs->concurrency == 0);
+    server.destroy();
 }
 
 // rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait, in a coroutine.

@@ -1,8 +1,6 @@
-# Worker lifecycle consumers
+# Process tests
 
-`worker_retirement.py --core <core_tests.py build root> --output <report.json>`
-compiles `worker_retirement.cc` against the actual Native and hybrid Server SDKs
-and core libraries, in C++14 and C++17. It checks direct PID writes, first-match
-lookup, native session bitfields (including the final slot and reserved bits),
-and worker/shared concurrency reset over the real Server allocation. The
-unchanged original C++ and PHPT inventories remain separate proofs.
+`process-unit` runs `crates/process`'s tests and `process-signals` runs `signals.py`.
+`core-tests/src/os/process_pool.cpp` and `os/pipe.cpp` are Rust cases in
+`hooks-system-rust`, and the Server worker-retirement witness is a fixture case
+there (tests/modules/hooks/README.md).

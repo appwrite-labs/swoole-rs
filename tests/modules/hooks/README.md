@@ -30,8 +30,8 @@ reported UNSUPPORTED when the config does not enable `SW_USE_IOURING`.
 `core-tests/src/coroutine/system.cpp` is Rust: `system/` holds its 20 TESTs, one
 function each (`coroutine_system.<name>`, upstream's names, inputs and expected
 values), linked against the hybrid tree's `libswoole.so`.
-`hooks-system-rust` (`system.py`, Linux, integrate lane) builds that library as
-`core_tests.py` builds the hybrid engine and runs each case in its own process,
+`hooks-system-rust` (`system.py`, Linux, integrate lane) builds that library from
+the hybrid tree and runs each case in its own process,
 excluding `getaddrinfo` (external DNS and network) and `getaddrinfo_timeout` (a
 lookup that misses the resolver cache), as the GoogleTest run did. Where
 upstream's `System` signature carries C++ library types the cases call what the
@@ -185,3 +185,48 @@ native/tls/swoole_ssl.h makes; `ERR_put_error` is network_socket.rs's.
 | `ssl.get_error` | `ssl.get_error` |
 | `ssl.password` | `ssl.password` |
 | `ssl.failed_create` | `ssl.failed_create` |
+
+`core-tests/src/os/process_pool.cpp` and `os/pipe.cpp` are Rust too: `system/src/process_pool.rs`
+and `pipe.rs`, one function per TEST (`process_pool.<name>`, `pipe.<name>`), run by
+`hooks-system-rust`; `process-worker-retirement`, the last phase that built core-tests
+itself, and `tools/core_tests.py` are gone. The cases call the Rust `ProcessPool`,
+`Worker` and `SocketPair` methods under their upstream symbols over zeroed mirrors of
+the records Rust owns, which `process_pool` checks against the fixture's `sizeof`s and
+offsets. The pool callbacks are `extern "C"` functions, as upstream's are captureless
+lambdas; a failed assertion in one aborts the process it runs in (the master or a
+worker), as GoogleTest's does only in the master. core-tests' counters are
+`sw_mem_pool()` memory, so workers' increments reach the master. `tcp_raw` calls the
+raw-bytes `swr_v1_process_pool_ipc_send_sync` and `_listener`, as core-tests' adapted
+copy did; `msgqueue_2` discards its child's status, as `spawn_exec_and_wait`'s caller
+does. `SyncClient` becomes `std::net::TcpStream` and `UnixStream`. The Server
+worker-retirement witness (formerly `tests/modules/process/worker_retirement.cc`, built
+in C++14 and C++17 against both engines) is a fixture function now, run once as
+`rust_worker_retirement.abort_and_reset` on the hybrid.
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `pipe.unixsock` | `pipe.unixsock` |
+| `pipe.base` | `pipe.base` |
+| `process_pool.tcp` | `process_pool.tcp` |
+| `process_pool.unix_sock` | `process_pool.unix_sock` |
+| `process_pool.tcp_raw` | `process_pool.tcp_raw` |
+| `process_pool.msgqueue` | `process_pool.msgqueue` |
+| `process_pool.msgqueue_2` | `process_pool.msgqueue_2` |
+| `process_pool.message_protocol` | `process_pool.message_protocol` |
+| `process_pool.message_protocol_with_timer` | `process_pool.message_protocol_with_timer` |
+| `process_pool.stream_protocol` | `process_pool.stream_protocol` |
+| `process_pool.stream_protocol_with_msgq` | `process_pool.stream_protocol_with_msgq` |
+| `process_pool.shutdown` | `process_pool.shutdown` |
+| `process_pool.reload` | `process_pool.reload` |
+| `process_pool.async` | `process_pool.async` |
+| `process_pool.async_mb` | `process_pool.async_mb` |
+| `process_pool.mb1` | `process_pool.mb1` |
+| `process_pool.mb2` | `process_pool.mb2` |
+| `process_pool.socket` | `process_pool.socket` |
+| `process_pool.listen` | `process_pool.listen` |
+| `process_pool.listen_rejects_truncated_stream_packet` | `process_pool.listen_rejects_truncated_stream_packet` |
+| `process_pool.listen_rejects_truncated_task_packet` | `process_pool.listen_rejects_truncated_task_packet` |
+| `process_pool.listen_unixsock` | `process_pool.listen_unixsock` |
+| `process_pool.worker` | `process_pool.worker` |
+| `process_pool.add_worker` | `process_pool.add_worker` |
+| `process_pool.reload_from_child_exit_callback` | `process_pool.reload_from_child_exit_callback` |

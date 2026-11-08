@@ -14,7 +14,7 @@ const SW_NUM_MILLION: i64 = 1_000_000;
 
 /// `swoole::TimerNode`, whose first field is `long id`.
 #[repr(C)]
-struct TimerNode {
+pub(super) struct TimerNode {
     id: c_long,
 }
 
@@ -35,7 +35,7 @@ unsafe extern "C" {
     fn swr_case_timer_count() -> usize;
     fn swr_case_timer_reinit();
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(tnode: *mut TimerNode) -> bool;
+    pub(super) fn swoole_timer_del(tnode: *mut TimerNode) -> bool;
     #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
     fn swoole_timer_delay(tnode: *mut TimerNode, delay_ms: c_long);
     #[link_name = "_Z19swoole_timer_existsl"]
@@ -45,7 +45,7 @@ unsafe extern "C" {
     #[link_name = "_Z16swoole_timer_getl"]
     fn swoole_timer_get(timer_id: c_long) -> *mut TimerNode;
     #[link_name = "_Z17swoole_timer_freev"]
-    fn swoole_timer_free();
+    pub(super) fn swoole_timer_free();
     #[link_name = "_Z19swoole_timer_selectv"]
     fn swoole_timer_select();
     #[link_name = "_Z22swoole_signal_dispatchv"]
@@ -84,12 +84,12 @@ fn add<'a>(ms: c_long, persistent: bool, f: impl FnMut(*mut TimerNode) + 'a) -> 
     unsafe { swr_case_timer_add(ms, persistent, call, body(f)) }
 }
 
-fn after<'a>(ms: c_long, f: impl FnMut(*mut TimerNode) + 'a) -> c_long {
+pub(super) fn after<'a>(ms: c_long, f: impl FnMut(*mut TimerNode) + 'a) -> c_long {
     // SAFETY: as in `add`.
     unsafe { swr_case_timer_after(ms, call, body(f)) }
 }
 
-fn tick<'a>(ms: c_long, f: impl FnMut(*mut TimerNode) + 'a) -> c_long {
+pub(super) fn tick<'a>(ms: c_long, f: impl FnMut(*mut TimerNode) + 'a) -> c_long {
     // SAFETY: as in `add`.
     unsafe { swr_case_timer_tick(ms, call, body(f)) }
 }

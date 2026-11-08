@@ -719,8 +719,8 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_send(
 }
 
 /// `ProcessPool::dispatch_sync(data, len)`: [`swr_v1_process_pool_ipc_send`]'s blocking
-/// send of raw bytes. Only core-tests' `os/process_pool.cpp` sends raw bytes;
-/// `tools/core_tests.py` points its call here.
+/// send of raw bytes. Only core-tests' `os/process_pool.cpp` sends raw bytes; its Rust port
+/// (`tests/modules/hooks/system/src/process_pool.rs`) calls this.
 ///
 /// # Safety
 /// `ipc` is null or a live handle; `data` holds `len` bytes.
