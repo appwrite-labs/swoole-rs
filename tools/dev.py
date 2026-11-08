@@ -53,9 +53,8 @@ CORE_TESTS = {
                  'client.bind': "expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner isn't root and gets EACCES",
                  'client.async_tcp_socks5_proxy_handshake_fail': 'expects www.baidu.com:80 to time out a SOCKS5 greeting',
                  **{'client.' + name: PROXY for name in CLIENT_PROXY}}, False),
-    'hooks': (['coroutine/hook.cpp', 'coroutine/socket.cpp', 'coroutine/system.cpp'],
-              {'coroutine_socket.tcp6': 'needs IPv6', 'coroutine_system.getaddrinfo': NETWORK,
-               'coroutine_system.getaddrinfo_timeout': UNCACHED,
+    'hooks': (['coroutine/hook.cpp', 'coroutine/socket.cpp'],
+              {'coroutine_socket.tcp6': 'needs IPv6',
                'coroutine_hook.sendmsg_and_recvmsg': "its child reads the parent's freed stack when the parent's close completes "
                                                      'first (SIGSEGV in ~15% of runs on both engines)',
                **{'coroutine_socket.' + name: PROXY for name in [
@@ -397,6 +396,13 @@ def plan(args, reports):
                    *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
                    *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]],
                    *(['--tmp-file'] if tmp_file else []), *report(name))
+    if integrate and 'hooks' in modules and sys.platform.startswith('linux'):
+        # core-tests/src/coroutine/system.cpp, ported to Rust over the hybrid's libswoole.so.
+        script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
+               '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
+               '--exclude', 'coroutine_system.getaddrinfo=' + NETWORK, '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
+               *report('hooks-system-rust'))
     if integrate and 'clients' in modules and sys.platform.startswith('linux'):
         script('clients-address-record', 'tests/modules/clients/address_record.py',
                '--core-build', ROOT / 'target/native-originals/clients',

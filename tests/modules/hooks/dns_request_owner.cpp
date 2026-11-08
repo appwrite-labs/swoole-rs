@@ -90,7 +90,13 @@ TEST(rust_dns_request, actual_async_numeric_results) {
     swoole::test::coroutine::run([](void *) {
         const auto host = swoole::coroutine::gethostbyname_impl_with_async("127.0.0.1", AF_INET, 2);
         ASSERT_EQ(host, "127.0.0.1");
-        const auto addresses = swoole::coroutine::System::getaddrinfo("127.0.0.1", AF_INET, SOCK_STREAM, 0, "", 2);
+        // What System::getaddrinfo did before it folded into swr_v1_system_getaddrinfo.
+        AsyncEvent ev{};
+        auto req = new GetaddrinfoRequest("127.0.0.1", AF_INET, SOCK_STREAM, 0, "");
+        ev.data = std::shared_ptr<AsyncRequest>(req);
+        ASSERT_TRUE(swoole::coroutine::async(async::handler_getaddrinfo, ev, 2));
+        std::vector<std::string> addresses;
+        req->parse_result(addresses);
         ASSERT_FALSE(addresses.empty());
         for (const auto &address : addresses) ASSERT_EQ(address, "127.0.0.1");
     });
