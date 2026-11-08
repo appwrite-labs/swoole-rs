@@ -1,7 +1,8 @@
 # Packet framing and MIME (M18)
 
-The overlay deletes `src/protocol/base.cc` and `src/protocol/mime_type.cc`. The public
-Protocol, PacketLength, Socket, String and MIME declarations are unchanged.
+The overlay deletes `src/protocol/base.cc`, `src/protocol/mime_type.cc` and
+`include/swoole_protocol.h`. `swoole_protocol.h` here keeps the SendData, RecvData,
+PacketLength and Protocol layouts and the functions C++ or the compiled core-tests call.
 `swoole_rs_framing.h` declares ten exports. Feature bit 4096 is the optional
 framing feature; the module is opt-in.
 

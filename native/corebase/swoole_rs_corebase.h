@@ -34,10 +34,10 @@ pid_t swr_v1_core_fork_exec(void (*call)(const void *function), const void *func
 /* One character of swoole_random_string(std::string &, size_t), drawn with swoole_rand(0, 61). */
 char swr_v1_corebase_random_char(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
- * swoole_protocol.h stay their declarations: sw_malloc/sw_free/sw_calloc/
- * sw_realloc (libc's allocator), swoole_common_divisor/_multiple,
+ * native/framing/swoole_protocol.h stay their declarations: sw_malloc/sw_free/
+ * sw_calloc/sw_realloc (libc's allocator), swoole_common_divisor/_multiple,
  * swoole_version_compare, swoole_dec2hex, swoole_type_size, swoole_itoa,
- * swoole_random_string(char *, size_t), swoole_dump_ascii/_hex, swoole_rand
+ * swoole_random_string(char *, size_t), swoole_rand
  * (both overloads), swoole_random_int, swoole::microtime and
  * swoole::DataHead::dump. */
 /* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both
