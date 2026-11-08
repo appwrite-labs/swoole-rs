@@ -638,7 +638,7 @@ pub unsafe extern "C" fn set_length_protocol(
     let config = unsafe { port_config::of(port) };
     config.open_length_check = true;
     let protocol = &mut config.protocol;
-    protocol.package_length_type = length_type as u8;
+    protocol.package_length_type = length_type.to_ne_bytes()[0];
     protocol.package_length_size = swoole_rs_corebase::swoole_type_size(length_type) as u8;
     protocol.package_length_offset = length_offset as u16;
     protocol.package_body_offset = body_offset as u16;
