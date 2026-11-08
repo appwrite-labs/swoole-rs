@@ -56,7 +56,6 @@
  "hooks-async-policy": 1,
  "hooks-compile": 38,
  "hooks-native-originals": 132,
- "hooks-ordered": 2,
  "hooks-packet-policy": 7,
  "hooks-unit": 3,
  "http-cookie-flow-positive": 7,

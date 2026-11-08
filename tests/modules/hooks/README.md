@@ -5,18 +5,20 @@ Pin `c7e514509451beafd4d70ce5b78943d51e76381c`.
 ## Native-facade gates
 
 ```sh
-python3 tests/modules/hooks/ordered_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --sanitize --report OWN/ordered.json
+python3 tests/modules/hooks/async_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --sanitize --report OWN/async.json
 python3 tests/modules/hooks/compile_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --report OWN/compile.json
 ```
 
-`async_gate.py` and `packet_gate.py` take the same arguments. Each `*_gate.py` extracts the pinned function bodies and
+`packet_gate.py` takes the same arguments. Each `*_gate.py` extracts the pinned function bodies and
 the patched ones from the hybrid build `--archive` comes from (`hybrid_tree`), compiles both
 against a deterministic native facade (`*_fixture.h`) and runs identical
 scenarios through each, comparing effects and order. Syscalls, contexts, TLS
 and kernel IO are faked; these are policy/order checks, not runtime proof.
 `--sanitize` adds ASan/UBSan to C++ only, not the Rust archive.
 
-- `ordered_gate.py` (22 cases): `wait_for`'s retry and cancel. The coroutine Socket's transfers and
+- The ordered gate is gone. `wait_for` lost its last callers (flock and `waitpid_safe` are
+  Rust) and left the build; its 22 retry and cancel cases are `ported_wait_for_matrix` in
+  `crates/hooks/src/flock.rs`, over the same retry loop. The coroutine Socket's transfers and
   `TimerController` moved to Rust with their cases (`ported_*` tests in
   `crates/hooks/src/transfer.rs` and `co_io.rs`).
 - `async_gate.py` (426 cases): async event/lambda/sleep/DNS bodies, including
@@ -76,13 +78,13 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 
 ## Gate audit (#481)
 
-All four phases are kept. They compile the pinned and patched C++ bodies against
+All three phases are kept. They compile the pinned and patched C++ bodies against
 fakes and inject what a running server can't reliably produce: EAGAIN, EINTR,
 partial IO, timer and dispatch failures, cancel races and destructor reentry, all
 under ASan/UBSan. Neither a PHPT nor the Rust unit tests reach that C++ glue.
 
-- `hooks-ordered`, `hooks-async-policy`, `hooks-packet-policy`: the three
-  fault/order matrices above.
+- `hooks-async-policy`, `hooks-packet-policy`: the two fault/order matrices
+  above.
 - `hooks-compile`: the only C++14 build of the eight patched units.
 
 A body these gates slice may move into Rust: the PR that moves it ports the

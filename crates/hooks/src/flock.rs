@@ -130,6 +130,62 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    thread_local! {
+        /// The delays slept, the holder to unlock, and the sleep that unlocks it (`Ok`)
+        /// or is cancelled (`Err`).
+        static MATRIX: RefCell<(Vec<f64>, i32, Result<usize, usize>)> =
+            const { RefCell::new((Vec::new(), -1, Ok(0))) };
+    }
+    unsafe extern "C" fn matrix_sleep(seconds: f64) -> i32 {
+        MATRIX.with_borrow_mut(|(slept, holder, end)| {
+            slept.push(seconds);
+            match *end {
+                Ok(n) if slept.len() == n => {
+                    unsafe { libc::flock(*holder, libc::LOCK_UN) };
+                    0
+                }
+                Err(n) if slept.len() == n => -1,
+                _ => 0,
+            }
+        })
+    }
+
+    /// The former hooks-ordered gate's 22 `wait_for` scenarios over upstream's retry
+    /// loop, which flock ran (`src/coroutine/file_lock.cc`): 14 to 23 failed attempts
+    /// before the lock frees, or a cancelled sleep after 1 to 10, with the delays
+    /// doubling from 1 ms to 100 ms and starting over. Scenarios 1059 and 1060 threw
+    /// from `wait_for`'s `std::function` callback; nothing takes one now.
+    #[test]
+    fn ported_wait_for_matrix() {
+        let cycle = [0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.1];
+        let path = std::env::temp_dir().join(format!("swr-flock-matrix-{}", std::process::id()));
+        let holder = std::fs::File::create(&path).unwrap();
+        let waiter = std::fs::File::open(&path).unwrap();
+        let (holder, waiter) = (holder.as_raw_fd(), waiter.as_raw_fd());
+        for k in 0..20 {
+            let (end, result) = if k >= 10 {
+                (Err(k - 10 + 1), Ok(-1))
+            } else {
+                (Ok(k % 10 + 14), Ok(0))
+            };
+            assert_eq!(lock(holder, libc::LOCK_EX, None), Ok(0));
+            MATRIX.set((Vec::new(), holder, end));
+            assert_eq!(lock(waiter, libc::LOCK_EX, Some(matrix_sleep)), result);
+            let sleeps = match end {
+                Ok(n) | Err(n) => n,
+            };
+            let expected: Vec<f64> = cycle.iter().copied().cycle().take(sleeps).collect();
+            assert_eq!(
+                MATRIX.with_borrow(|state| state.0.clone()),
+                expected,
+                "scenario {k}"
+            );
+            assert_eq!(lock(waiter, libc::LOCK_UN, None), Ok(0));
+            assert_eq!(lock(holder, libc::LOCK_UN, None), Ok(0));
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn the_export_raises_einval_in_a_coroutine() {
         use crate::stdio::tests::{LAST_ERROR, Mode, with};
