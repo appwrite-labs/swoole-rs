@@ -121,6 +121,11 @@ int32_t swr_v2_http_proxy_authorization(const swr_v1_http_proxy_text *, uint8_t 
 int32_t swr_v1_http_proxy_credentials(const swr_v1_http_proxy_text *, uint8_t *, size_t *);
 int32_t swr_v1_http_proxy_pack(const swr_v1_http_proxy_request *, uint8_t *, size_t, size_t *);
 int32_t swr_v1_http_proxy_handshake(const uint8_t *, size_t);
+/* HttpProxy's create, pack and handshake (crates/http/src/owned_proxy.rs). */
+void swr_v1_http_proxy_configure(struct swr_v1_core_proxy *, const char *host, size_t, int32_t port,
+                                 const char *user, size_t, const char *password, size_t);
+size_t swr_v1_http_proxy_connect(const struct swr_v1_core_proxy *, const char *host, size_t, char *output, size_t capacity);
+bool swr_v1_http_proxy_accept(const char *, size_t);
 const char *swr_v1_http_status(int32_t);
 const char *swr_v2_http_status_message(int32_t);
 int32_t swr_v1_http_method(const uint8_t *, size_t);

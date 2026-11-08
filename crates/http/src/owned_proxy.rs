@@ -2,7 +2,13 @@
 use crate::{
     HttpProxyRequest, HttpProxyText, swr_v1_http_proxy_pack, swr_v2_http_proxy_authorization,
 };
-use swoole_rs_corebase::ProxyState;
+use swoole_rs_corebase::{
+    CoreStringView, ProxyState, log, set_errno, swoole_version, swr_v1_core_proxy_configure,
+};
+
+use std::ffi::c_char;
+
+const HANDSHAKE_FAILED: i32 = 7103;
 
 /// # Safety
 /// owner is live/stable; output lends512 bytes and written is writable/disjoint.
@@ -66,33 +72,136 @@ pub unsafe extern "C" fn swr_v1_http_proxy_owned_pack(
     unsafe { swr_v1_http_proxy_pack(&raw const request, output, capacity, written) }
 }
 
+/// `HttpProxy::create`'s assignments on a fresh owner: the host and port, then the
+/// credentials when both are set. A fresh owner has no native cache, so only an
+/// allocation can fail, and that aborts as Rust's allocation failures do.
+/// # Safety
+/// owner is a live owner nothing else uses; the views lend their bytes for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_http_proxy_configure(
+    owner: *mut ProxyState,
+    host: *const c_char,
+    host_length: usize,
+    port: i32,
+    user: *const c_char,
+    user_length: usize,
+    password: *const c_char,
+    password_length: usize,
+) {
+    let authenticated = user_length != 0 && password_length != 0;
+    let view = |data, length| CoreStringView { data, length };
+    let texts = [
+        view(host, host_length),
+        view(user, user_length),
+        view(password, password_length),
+    ];
+    // SAFETY: the caller's live owner and three borrowed views.
+    let result =
+        unsafe { swr_v1_core_proxy_configure(owner, texts.as_ptr(), port, authenticated, -1) };
+    if result.status != 0 {
+        std::process::abort();
+    }
+}
+
+/// `HttpProxy::get_auth_str()`: the Base64 credentials, empty on failure, errno
+/// EOVERFLOW when they were cut to fit.
+#[must_use]
+pub fn authorization(owner: &ProxyState) -> Vec<u8> {
+    let (mut output, mut written) = ([0u8; 512], 0);
+    // SAFETY: the live owner, 512 writable bytes and the length slot.
+    let status = unsafe {
+        swr_v1_http_proxy_owned_authorization(owner, output.as_mut_ptr(), &raw mut written)
+    };
+    if status < 0 {
+        return Vec::new();
+    }
+    if status == 1 {
+        set_errno(libc::EOVERFLOW);
+    }
+    let encoded = output.get(..written).unwrap_or_default();
+    encoded
+        .split(|&b| b == 0)
+        .next()
+        .unwrap_or_default()
+        .to_vec()
+}
+
+/// `HttpProxy::pack`: the CONNECT request for `host` into `output[..capacity]`, with
+/// the authorization when the proxy has a password. Returns the bytes written.
+/// # Safety
+/// owner is live; host lends its bytes; output is `capacity` writable bytes disjoint from both.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_http_proxy_connect(
+    owner: *const ProxyState,
+    host: *const u8,
+    host_length: usize,
+    output: *mut u8,
+    capacity: usize,
+) -> usize {
+    // SAFETY: the caller's live owner.
+    let state = unsafe { &*owner };
+    // SAFETY: the live owner's password slot.
+    let authenticated = unsafe { state.string(2) }.length != 0;
+    let auth = if authenticated {
+        authorization(state)
+    } else {
+        Vec::new()
+    };
+    // SAFETY: the pinned version, a static string.
+    let version = unsafe { std::ffi::CStr::from_ptr(swoole_version()) }.to_bytes();
+    let text = |bytes: &[u8]| HttpProxyText {
+        data: bytes.as_ptr(),
+        length: bytes.len(),
+    };
+    let mut written = 0;
+    // SAFETY: the live owner, borrowed spans and the caller's disjoint output.
+    unsafe {
+        swr_v1_http_proxy_owned_pack(
+            owner,
+            HttpProxyText {
+                data: host,
+                length: host_length,
+            },
+            text(version),
+            text(&auth),
+            output,
+            capacity,
+            &raw mut written,
+        )
+    };
+    written
+}
+
+/// `HttpProxy::handshake`: whether `data[..length]` accepts the CONNECT, setting the
+/// last error when the proxy refused it.
+/// # Safety
+/// data lends `length` bytes (null only when empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_http_proxy_accept(data: *const u8, length: usize) -> bool {
+    // SAFETY: the caller's bytes.
+    let status = unsafe { crate::swr_v1_http_proxy_handshake(data, length) };
+    if status == -2 {
+        log::set_last_error(HANDSHAKE_FAILED);
+    }
+    status == 1
+}
+
 /// The cases of the former `tests/modules/http/proxy_gate.cc` and `dispatch_gate.cc`,
 /// against the pinned `HttpProxy` in swoole-rs-oracle. The candidate is the owner
-/// and the Rust calls the hybrid's `HttpProxy` makes, with its errno, empty-string
-/// and last-error mapping (`src/protocol/http.cc`).
+/// and the functions above, which the hybrid calls in place of `HttpProxy`'s bodies.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{swr_v1_http_proxy_auth_enabled, swr_v1_http_proxy_handshake};
-    use std::ffi::{c_char, c_void};
+    use crate::swr_v1_http_proxy_auth_enabled;
+    use std::ffi::c_void;
     use swoole_rs_corebase::{
-        CoreStringView, PreparedProxy, swr_v1_core_proxy_configure, swr_v1_core_proxy_free,
-        swr_v1_core_proxy_new, swr_v1_core_string_cache, swr_v1_core_string_set,
-        swr_v1_core_string_view,
+        PreparedProxy, swr_v1_core_proxy_free, swr_v1_core_proxy_new, swr_v1_core_string_cache,
+        swr_v1_core_string_set, swr_v1_core_string_view,
     };
     use swoole_rs_oracle::http_proxy as oracle;
 
-    const VERSION: &[u8] = b"6.2.4";
-    const HANDSHAKE_FAILED: i32 = 7103;
-
     fn errno() -> i32 {
         std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-    }
-    fn span(value: &[u8]) -> HttpProxyText {
-        HttpProxyText {
-            data: value.as_ptr(),
-            length: value.len(),
-        }
     }
     unsafe extern "C" fn refuse(_: *mut c_void, _: *const c_char, _: usize) -> bool {
         false
@@ -128,17 +237,29 @@ mod tests {
             refused: Option<usize>,
         ) -> (Self, i32, usize) {
             let proxy = Self::new();
-            if let Some(index) = refused {
-                proxy.refuse(index, true);
-            }
-            let enabled = swr_v1_http_proxy_auth_enabled(user.len(), password.len()) == 1;
+            let Some(index) = refused else {
+                let [host, user, password] = views([host, user, password]);
+                unsafe {
+                    swr_v1_http_proxy_configure(
+                        proxy.0.owner,
+                        host.data,
+                        host.length,
+                        port,
+                        user.data,
+                        user.length,
+                        password.data,
+                        password.length,
+                    );
+                };
+                return (proxy, 0, 0);
+            };
             let texts = views([host, user, password]);
+            proxy.refuse(index, true);
+            let enabled = swr_v1_http_proxy_auth_enabled(user.len(), password.len()) == 1;
             let result = unsafe {
                 swr_v1_core_proxy_configure(proxy.0.owner, texts.as_ptr(), port, enabled, -1)
             };
-            if let Some(index) = refused {
-                proxy.refuse(index, false);
-            }
+            proxy.refuse(index, false);
             (proxy, result.status, usize::try_from(result.index).unwrap())
         }
         /// Registers (or detaches) a native cache on field `index` that refuses
@@ -166,50 +287,22 @@ mod tests {
         }
         /// `get_auth_str`, and errno after it from EINTR.
         fn auth(&self) -> (Vec<u8>, i32) {
-            let (mut output, mut length) = ([0u8; 512], 0);
-            let result = unsafe {
-                swr_v1_http_proxy_owned_authorization(
-                    self.0.owner,
-                    output.as_mut_ptr(),
-                    &raw mut length,
-                )
-            };
-            if result < 0 {
-                return (Vec::new(), libc::EINTR);
-            }
-            let end = output
-                .iter()
-                .position(|&byte| byte == 0)
-                .unwrap_or(output.len());
-            (
-                output[..end].to_vec(),
-                if result == 1 {
-                    libc::EOVERFLOW
-                } else {
-                    libc::EINTR
-                },
-            )
+            set_errno(libc::EINTR);
+            (authorization(unsafe { &*self.0.owner }), errno())
         }
         /// `pack` into `output[..capacity]`, and errno after it from EINTR.
         fn pack(&self, host: &[u8], output: &mut [u8], capacity: usize) -> (usize, i32) {
-            let (authorization, error) = if self.get(2).is_empty() {
-                (Vec::new(), libc::EINTR)
-            } else {
-                self.auth()
-            };
-            let mut written = 0;
-            unsafe {
-                swr_v1_http_proxy_owned_pack(
+            set_errno(libc::EINTR);
+            let written = unsafe {
+                swr_v1_http_proxy_connect(
                     self.0.owner,
-                    span(host),
-                    span(VERSION),
-                    span(&authorization),
+                    host.as_ptr(),
+                    host.len(),
                     output.as_mut_ptr(),
                     capacity,
-                    &raw mut written,
                 )
             };
-            (written, error)
+            (written, errno())
         }
     }
     impl Drop for Proxy {
@@ -336,12 +429,12 @@ mod tests {
         let accepted =
             unsafe { oracle::handshake(input.as_ptr(), input.len(), &raw mut last_error) };
         assert_eq!(errno(), libc::EINTR, "upstream handshake keeps errno");
-        let status = unsafe { swr_v1_http_proxy_handshake(input.as_ptr(), input.len()) };
+        log::set_last_error(0);
+        let candidate = unsafe { swr_v1_http_proxy_accept(input.as_ptr(), input.len()) };
         assert_eq!(errno(), libc::EINTR, "candidate handshake keeps errno");
-        let candidate_error = if status == -2 { HANDSHAKE_FAILED } else { 0 };
         assert_eq!(
             (accepted, last_error),
-            (status == 1, candidate_error),
+            (candidate, log::last_error()),
             "proxy handshake/last-error differential"
         );
     }

@@ -4,7 +4,7 @@
 //! its proxies' owners and its resolver context, and `ssl_handshake`'s steps and
 //! waits. Native code keeps only the name lookup (`Host::lookup`).
 use crate::co_io::{
-    available, errno, host, set_err, set_errno, swr_v1_hook_co_socket_borrowed_err,
+    available, errno, host, set_err, swr_v1_hook_co_socket_borrowed_err,
     swr_v1_hook_co_socket_default_err, swr_v1_hook_co_socket_owned_err,
 };
 use crate::co_socket::{CoSocket, buffer, swr_v1_hook_co_socket_reinit};
@@ -13,7 +13,7 @@ use crate::shutdown::swr_v1_hook_socket_bind;
 use crate::socket_members::{assign, put_host, record, recv, recv_packet, send};
 use crate::socket_scope::{swr_v1_hook_protocol_restore, swr_v1_hook_protocol_scope};
 use crate::socket_tls::{owner, ssl_handshake};
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{c_char, c_int, c_void};
 use core::ptr::{self as ptr, null_mut};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -21,10 +21,7 @@ use swoole_rs_corebase::{
     CoreStringView, ProxyFields, ProxyState, StringSlot, log, swr_v1_core_string_set,
     swr_v1_core_string_view,
 };
-use swoole_rs_http::{
-    HttpProxyText, swr_v1_http_proxy_handshake, swr_v1_http_proxy_owned_authorization,
-    swr_v1_http_proxy_owned_pack,
-};
+use swoole_rs_http::{swr_v1_http_proxy_accept, swr_v1_http_proxy_connect};
 use swoole_rs_protocols::{Socks5Proxy, handshake_step, pack_negotiate_request};
 use swoole_rs_reactor::{CLASS_INET4, CLASS_INET6, type_is};
 use swoole_rs_tls::owner_tls_host_name;
@@ -281,14 +278,6 @@ unsafe fn bytes(view: CoreStringView) -> Vec<u8> {
     unsafe { core::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec()
 }
 
-/// A byte span for the HTTP proxy codec.
-fn text(bytes: &[u8]) -> HttpProxyText {
-    HttpProxyText {
-        data: bytes.as_ptr(),
-        length: bytes.len(),
-    }
-}
-
 /// A live native socket's `connect(host)`.
 struct Live<'a> {
     this: *mut c_void,
@@ -355,32 +344,6 @@ impl Live<'_> {
         // SAFETY: a live String nothing else borrows during the call.
         unsafe { &mut *buffer.cast::<CppString>() }
     }
-}
-
-/// `HttpProxy::get_auth_str()`, when the proxy has a password.
-fn http_authorization(http: &ProxyState) -> Vec<u8> {
-    // SAFETY: the live HTTP owner's password.
-    if unsafe { http.string(2) }.length == 0 {
-        return Vec::new();
-    }
-    let mut output = [0u8; 512];
-    let mut written = 0;
-    // SAFETY: the live owner, 512 writable bytes and the length slot.
-    let status = unsafe {
-        swr_v1_http_proxy_owned_authorization(http, output.as_mut_ptr(), &raw mut written)
-    };
-    if status < 0 {
-        return Vec::new();
-    }
-    if status == 1 {
-        set_errno(libc::EOVERFLOW);
-    }
-    let encoded = output.get(..written).unwrap_or_default();
-    encoded
-        .split(|&b| b == 0)
-        .next()
-        .unwrap_or_default()
-        .to_vec()
 }
 
 impl Connecting for Live<'_> {
@@ -606,24 +569,11 @@ impl Connecting for Live<'_> {
             // SAFETY: its bytes, copied at once.
             name = unsafe { bytes(view) };
         }
-        let authorization = http_authorization(http);
-        // SAFETY: the pinned version, a static string.
-        let version = unsafe { CStr::from_ptr(swoole_rs_corebase::swoole_version()) };
         let write = self.buffer(true);
         let (at, size) = (write.str, write.size);
-        let mut written = 0;
-        // SAFETY: the live owner, the spans above and the write buffer's capacity.
-        unsafe {
-            swr_v1_http_proxy_owned_pack(
-                http,
-                text(&name),
-                text(version.to_bytes()),
-                text(&authorization),
-                at,
-                size,
-                &raw mut written,
-            );
-        }
+        // SAFETY: the live owner, the name above and the write buffer's capacity.
+        let written =
+            unsafe { swr_v1_http_proxy_connect(http, name.as_ptr(), name.len(), at, size) };
         self.buffer(true).length = written;
         // SAFETY: the `written` bytes just packed.
         unsafe { core::slice::from_raw_parts(at, written) }.to_vec()
@@ -647,11 +597,7 @@ impl Connecting for Live<'_> {
             let read = self.buffer(false);
             let (at, length) = (read.str, read.length);
             // SAFETY: its received bytes.
-            let status = unsafe { swr_v1_http_proxy_handshake(at, length) };
-            if status == -2 {
-                log::set_last_error(HTTP_PROXY_HANDSHAKE_FAILED);
-            }
-            accepted = status == 1;
+            accepted = unsafe { swr_v1_http_proxy_accept(at, length) };
         }
         // SAFETY: the scope taken above, over the live record.
         unsafe { swr_v1_hook_protocol_restore(&raw const scope) };
