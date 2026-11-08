@@ -1,25 +1,50 @@
 #!/usr/bin/env python3
 """Upstream's core-tests ported to Rust (by default core-tests/src/coroutine/{system,hook,socket}.cpp,
 tests/modules/hooks/system/; --package names another case package), against the hybrid tree's
-libswoole.so (Linux). Builds lib-swoole as tools/core_tests.py builds the hybrid engine, with
---fixture compiled in, links the case binary to it, and runs each case in its own process group.
+libswoole.so (Linux). Builds the hybrid tree's lib-swoole, with --fixture compiled in, links the
+case binary to it, and runs each case in its own process group.
 --exclude NAME=REASON reports a case `excluded` with its reason; it never counts as passed."""
 import argparse
+import io
 import json
 import os
 import re
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.build_hybrid import overlay_hybrid_tree  # noqa: E402
-from tools.core_tests import stage, write_changed  # noqa: E402
+from tools.build_upstream import COMMIT as PIN  # noqa: E402
 from tools.harness import ROOT, run_isolated, write_report  # noqa: E402
 
 # The cases are system/src/main.rs (with hook.rs and socket.rs); system/Cargo.lock pins its (empty) dependency set for --locked.
 PACKAGE = ROOT / 'tests/modules/hooks/system'
+
+
+def write_changed(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.is_file() or path.read_bytes() != data:
+        path.write_bytes(data)
+
+
+def stage(source, destination):
+    """The pin's tree, including core-tests, which `git archive` leaves out (export-ignore)."""
+    with tarfile.open(fileobj=io.BytesIO(subprocess.check_output(['git', '-C', str(source), 'archive', PIN]))) as bundle:
+        for member in bundle:
+            if member.isfile():
+                write_changed(destination / member.name, bundle.extractfile(member).read())
+    names = subprocess.check_output(['git', '-C', str(source), 'ls-tree', '-r', '--name-only', PIN, 'core-tests', 'examples/test.jpg'],
+                                    text=True).splitlines()
+    blobs = subprocess.check_output(['git', '-C', str(source), 'cat-file', '--batch'], input=''.join(f'{PIN}:{name}\n' for name in names).encode())
+    offset = 0
+    for name in names:
+        end = blobs.index(b'\n', offset)
+        size = int(blobs[offset:end].split()[-1])
+        write_changed(destination / name, blobs[end + 1:end + 1 + size])
+        offset = end + 2 + size
 
 
 def main():

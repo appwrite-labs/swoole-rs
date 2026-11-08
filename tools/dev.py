@@ -329,7 +329,8 @@ def plan(args, reports):
                    *php_for('mbstring'), *engines, *report('framing-versioned-expectation'))
     if integrate and 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp, network/{client,dns,address,socket}.cpp,
-        # os/timer.cpp and protocol/ssl.cpp, ported to Rust over the hybrid's libswoole.so, and the repo-owned C++ witnesses in its fixture.
+        # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the hybrid's libswoole.so, and the repo-owned C++
+        # witnesses in its fixture.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--fixture', ROOT / 'tests/modules/hooks/system/fixture.cc',
@@ -372,12 +373,6 @@ def plan(args, reports):
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
                *report('http-server-rust'))
-    if integrate and 'process' in modules and sys.platform.startswith('linux'):
-        script('process-worker-retirement', 'tests/modules/process/worker_retirement.py',
-               '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               '--core', ROOT / 'target/native-originals/process', '--jobs', args.jobs,
-               *report('process-worker-retirement'))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-native'))

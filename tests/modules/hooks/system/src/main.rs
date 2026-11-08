@@ -1,7 +1,8 @@
 //! Upstream's `core-tests/src/coroutine/system.cpp` (hook.cpp in hook.rs, socket.cpp in socket.rs,
 //! network/client.cpp in tests/modules/clients/client.rs, network/dns.cpp in dns.rs,
 //! network/address.cpp in address.rs, network/socket.cpp in network_socket.rs, os/timer.cpp
-//! in timer.rs and protocol/ssl.cpp in ssl.rs), one
+//! in timer.rs, os/pipe.cpp in pipe.rs, os/process_pool.cpp in process_pool.rs and
+//! protocol/ssl.cpp in ssl.rs), one
 //! Rust function per TEST with the same inputs and expected values, over the
 //! hybrid's libswoole.so: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
@@ -29,6 +30,8 @@ mod dns;
 mod base;
 mod hook;
 mod network_socket;
+mod pipe;
+mod process_pool;
 mod socket;
 mod ssl;
 mod timer;
@@ -910,6 +913,9 @@ const SUITES: &[(&str, Cases)] = &[
     ("socket", network_socket::CASES),
     ("timer", timer::CASES),
     ("ssl", ssl::CASES),
+    ("pipe", pipe::CASES),
+    ("process_pool", process_pool::CASES),
+    ("rust_worker_retirement", process_pool::RETIREMENT_CASES),
 ];
 
 fn main() {
@@ -939,6 +945,9 @@ fn main() {
     unsafe { swoole_init() };
     if suite == "coroutine_hook" {
         hook::prepare();
+    }
+    if suite == "process_pool" {
+        process_pool::check_layout();
     }
     body();
     // SAFETY: after the case, as core-tests' main.
