@@ -655,3 +655,6 @@ pub use resolver::*;
 
 mod resolver_request;
 pub use resolver_request::*;
+
+mod name_resolver;
+pub use name_resolver::*;

@@ -2,8 +2,9 @@
 
 Feature bit 1048576 (`clients`). ABI:
 `swoole_rs_clients.h`. Upstream's client, address, DNS and name-resolver sources
-have left the build; `native/clients/name_resolver.cc` keeps the resolver list's
-C++ glue, and `native/clients/swoole_client.h` is the owned `network::Client` header.
+have left the build; the resolver list and `NameResolver::Context` are
+`crates/corebase/src/name_resolver.rs`, and `native/clients/swoole_client.h` is the
+owned `network::Client` header.
 
 Production exports have the prefix `swr_v1_clients_`. A test-only allocation-budget
 symbol is excluded from production artifacts.
@@ -66,11 +67,13 @@ does. On allocation failure Rust returns a status and native throws `bad_alloc`.
 
 ## DNS (`native/clients/dns.cc`)
 
-`native/clients/dns.cc` keeps what needs C++: the
-`std::string`/`std::list`/`std::function` signatures of swoole.h's DNS and name
-resolver API (the resolver list stays `SwooleG.name_resolvers`, whose iterators
-`swoole_name_resolver_each` hands out), the coroutine `Socket` and `Coroutine`
-calls, the C++ locale's space table and the `ResolverOwner` exception paths.
+`native/clients/dns.cc` keeps what needs C++: the `std::string` signatures of
+swoole.h's DNS API and `swoole_name_resolver_lookup` (which asks the Rust list,
+`swr_v1_core_name_resolver_resolve`, before the system lookup), the coroutine
+`Socket` and `Coroutine` calls, the C++ locale's space table and the
+`ResolverOwner` exception paths. Upstream's `swoole_name_resolver_add`/`_each` and
+their `std::function`/`std::list` signatures are gone: resolvers are C functions
+added and removed with `swr_v1_core_name_resolver_add`/`_remove`.
 
 - `dns_lookup_impl_with_socket` is `clients_dns_lookup`: the DNS server, read from
   `resolv.conf` while none is set (`SW_ERROR_DNSLOOKUP_NO_SERVER` otherwise), the

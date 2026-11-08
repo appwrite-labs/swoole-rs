@@ -101,11 +101,8 @@ pub struct ResolverAddresses {
 /// # Safety
 /// owner is live and synchronized; no mutation occurs while its span is used.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_resolver_span(
-    owner: *const ResolverRequest,
-) -> ResolverAddresses {
-    // SAFETY: the caller lends its live request without concurrent mutation.
-    let storage = unsafe { (*owner).results.get() };
+pub unsafe extern "C" fn swr_v1_core_resolver_span(owner: &ResolverRequest) -> ResolverAddresses {
+    let storage = owner.results.get();
     // SAFETY: a shared borrow only while reading the span metadata.
     let addresses = unsafe { &*storage };
     ResolverAddresses {
@@ -123,14 +120,13 @@ pub unsafe extern "C" fn swr_v1_core_resolver_span(
 /// owner is live and exclusively writable, with no outstanding span accesses.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_resolver_resize(
-    owner: *mut ResolverRequest,
+    owner: &ResolverRequest,
     length: usize,
 ) -> c_int {
     if length > isize::MAX.unsigned_abs() / size_of::<libc::sockaddr_in6>() {
         return -4;
     }
-    // SAFETY: the caller lends exclusive access to its address storage.
-    let storage = unsafe { (*owner).results.get() };
+    let storage = owner.results.get();
     // SAFETY: no callbacks occur while this vector is borrowed.
     let addresses = unsafe { &mut *storage };
     if length > addresses.len() && addresses.try_reserve(length - addresses.len()).is_err() {
@@ -148,7 +144,7 @@ pub unsafe extern "C" fn swr_v1_core_resolver_resize(
 /// owner is exclusive; data holds length readable addresses until this returns.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_resolver_assign(
-    owner: *mut ResolverRequest,
+    owner: &ResolverRequest,
     data: *const libc::sockaddr_in6,
     length: usize,
 ) -> c_int {
@@ -163,8 +159,8 @@ pub unsafe extern "C" fn swr_v1_core_resolver_assign(
         // SAFETY: the source span remains live until replacement is complete.
         replacement.extend_from_slice(unsafe { std::slice::from_raw_parts(data, length) });
     }
-    // SAFETY: only now mutate the caller's address owner, after copying overlaps.
-    let storage = unsafe { (*owner).results.get() };
+    // Only now mutate the caller's address owner, after copying overlaps.
+    let storage = owner.results.get();
     // SAFETY: synchronized exclusive access; old addresses contain no callbacks.
     unsafe { *storage = replacement };
     0
@@ -177,22 +173,18 @@ pub unsafe extern "C" fn swr_v1_core_resolver_assign(
 /// owner is exclusive; unknown catches native exceptions and returns false on failure; context stays live throughout the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_resolver_lookup(
-    owner: *mut ResolverRequest,
+    owner: &ResolverRequest,
     unknown: unsafe extern "C" fn(*mut core::ffi::c_void, c_int) -> bool,
     context: *mut core::ffi::c_void,
 ) -> c_int {
-    // SAFETY: the inline fields belong to the caller's synchronized request.
-    let fields = unsafe { (*owner).fields.get() };
+    let fields = owner.fields.get();
     // SAFETY: copy every hint before any external resolver effect.
     let hints = unsafe { *fields };
-    // SAFETY: both inline slots remain stable and unmodified through resolution.
-    let slots = unsafe { ptr::addr_of!((*owner).strings).cast::<StringSlot>() };
+    let [name, service, _] = &owner.strings;
     // SAFETY: the first slot contains the terminated hostname.
-    let name = unsafe { swr_v1_core_string_view(slots) };
-    // SAFETY: the initialized second slot is within this request's array.
-    let service_slot = unsafe { slots.add(1) };
+    let name = unsafe { swr_v1_core_string_view(name) };
     // SAFETY: the service remains stable until resolution returns.
-    let service = unsafe { swr_v1_core_string_view(service_slot) };
+    let service = unsafe { swr_v1_core_string_view(service) };
     // SAFETY: every byte of POD sockaddr_in6 may be zero.
     let mut found: [libc::sockaddr_in6; 128] = unsafe { std::mem::zeroed() };
     let diagnostic = |family| {
@@ -239,15 +231,12 @@ pub unsafe extern "C" fn swr_v1_core_resolver_lookup(
 /// # Safety
 /// owner is exclusive; its optional string cache is a contained `std::string` leaf.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_resolver_host(owner: *mut ResolverRequest) -> c_int {
-    // SAFETY: fields are stable through this synchronized call.
-    let fields = unsafe { (*owner).fields.get() };
+pub unsafe extern "C" fn swr_v1_core_resolver_host(owner: &ResolverRequest) -> c_int {
     // SAFETY: copy the family without holding a Rust borrow across libc.
-    let family = unsafe { (*fields).family };
-    // SAFETY: the three stable slots stay initialized throughout this request.
-    let slots = unsafe { ptr::addr_of!((*owner).strings).cast::<StringSlot>() };
+    let family = unsafe { (*owner.fields.get()).family };
+    let [name, _, address] = &owner.strings;
     // SAFETY: the first slot's terminated name remains unmodified through libc.
-    let name = unsafe { swr_v1_core_string_view(slots) };
+    let name = unsafe { swr_v1_core_string_view(name) };
     let mut binary = [0 as c_char; 46];
     // SAFETY: stable terminated name and output large enough for both families.
     if unsafe { crate::swr_v1_clients_gethostbyname(family, name.data, binary.as_mut_ptr()) } != 0 {
@@ -263,8 +252,6 @@ pub unsafe extern "C" fn swr_v1_core_resolver_host(owner: *mut ResolverRequest) 
     let length = unsafe { std::ffi::CStr::from_ptr(text.as_ptr()) }
         .to_bytes()
         .len();
-    // SAFETY: the third initialized slot stores this request's result text.
-    let address = unsafe { slots.add(2) };
     // SAFETY: the stack text remains readable; native cache catches exceptions.
     unsafe { swr_v1_core_string_set(address, text.as_ptr(), length) }
 }
@@ -279,15 +266,12 @@ pub struct ResolverText {
 /// owner is live/synchronized and index names one address in its current vector.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_resolver_format(
-    owner: *const ResolverRequest,
+    owner: &ResolverRequest,
     index: usize,
 ) -> ResolverText {
-    // SAFETY: the owner lends its live field record.
-    let fields = unsafe { (*owner).fields.get() };
     // SAFETY: read its family without retaining a borrow across libc.
-    let family = unsafe { (*fields).family };
-    // SAFETY: address storage is stable and synchronized through this call.
-    let storage = unsafe { (*owner).results.get() };
+    let family = unsafe { (*owner.fields.get()).family };
+    let storage = owner.results.get();
     // SAFETY: obtain the live vector's data without exposing a Rust reference.
     let data = unsafe { (*storage).as_ptr() };
     // SAFETY: index is within that live address span.
@@ -385,7 +369,7 @@ pub unsafe extern "C" fn swr_v1_core_resolver_create(
 /// occurs until this enumeration ends.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_resolver_next(
-    owner: *const ResolverRequest,
+    owner: &ResolverRequest,
     cursor: *mut usize,
 ) -> ResolverText {
     // SAFETY: the caller lends stable live address storage.

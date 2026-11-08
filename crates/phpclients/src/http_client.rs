@@ -128,7 +128,7 @@ struct Client {
     path: Vec<u8>,
     basic_auth: Vec<u8>,
     head: bool,
-    resolve: *mut c_void,
+    resolve: Box<swoole_rs_corebase::NameResolverContext>,
     parser: Parser,
     wait_response: bool,
     header_field: (*const u8, usize),
@@ -463,8 +463,7 @@ impl Client {
             path: Vec::new(),
             basic_auth: Vec::new(),
             head: false,
-            // SAFETY: as above.
-            resolve: unsafe { native::swoole_name_resolver_context_new() },
+            resolve: Box::default(),
             parser: Parser::new(),
             wait_response: false,
             header_field: (ptr::null(), 0),
@@ -635,7 +634,7 @@ impl Client {
             native::swoole_http_client_coro_configure(
                 socket,
                 self.connect_timeout,
-                self.resolve,
+                (&raw mut *self.resolve).cast(),
                 self.conn.cast(),
             );
         }
@@ -1020,10 +1019,10 @@ impl Client {
     /// `exec`: send, and unless deferred receive, retrying 502 and 503.
     fn exec(&mut self, path: &[u8]) -> bool {
         self.path = path.to_vec();
-        // SAFETY: the client's resolve context.
-        unsafe {
-            native::swoole_name_resolver_context_reset(self.resolve, self.use_default_port);
-        };
+        crate::resolver::swoole_name_resolver_context_reset(
+            &mut self.resolve,
+            self.use_default_port,
+        );
         let mut attempt = 0;
         while attempt < u32::from(self.max_retries) + 1 {
             if !self.send_request() {
@@ -1434,8 +1433,6 @@ impl Drop for Client {
         unsafe { native::swoole_http_client_coro_callable_free(self.write_func) };
         // SAFETY: as above.
         unsafe { native::swoole_http_client_coro_ws_free(self.ws) };
-        // SAFETY: as above.
-        unsafe { native::swoole_name_resolver_context_free(self.resolve) };
         // SAFETY: as above.
         unsafe { native::swoole_http_client_coro_file_free(self.download_file) };
         // SAFETY: the conn the client allocated; the socket hook no longer runs

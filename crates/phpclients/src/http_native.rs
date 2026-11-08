@@ -15,11 +15,6 @@ use swoole_rs_zend::{
 };
 
 unsafe extern "C" {
-    /// `new NameResolver::Context()` (`native/clients/name_resolver.cc`).
-    pub(crate) fn swoole_name_resolver_context_new() -> *mut c_void;
-    /// `*context = {}` with `with_port`.
-    pub(crate) fn swoole_name_resolver_context_reset(context: *mut c_void, with_port: bool);
-    pub(crate) fn swoole_name_resolver_context_free(context: *mut c_void);
     /// WebSocket settings and continuation buffer (crates/phphttp).
     pub(crate) fn swoole_http_client_coro_ws_new() -> *mut c_void;
     pub(crate) fn swoole_http_client_coro_ws_free(ws: *mut c_void);
