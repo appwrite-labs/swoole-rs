@@ -48,10 +48,6 @@ reported UNSUPPORTED when the config does not enable `SW_USE_IOURING`.
 
 ## Original tests
 
-`hooks-native-originals` (`tools/core_tests.py`, Linux, integrate lane) runs
-upstream's own `core-tests/src/coroutine/socket.cpp` GoogleTests
-unchanged on the reference and on the hybrid tree.
-
 `core-tests/src/coroutine/system.cpp` is Rust: `system/` holds its 20 TESTs, one
 function each (`coroutine_system.<name>`, upstream's names, inputs and expected
 values), linked against the hybrid tree's `libswoole.so`.
@@ -74,6 +70,23 @@ Before each case the binary writes `TEST_TMP_FILE` as core-tests' run did and
 removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
 `sendmsg_and_recvmsg` stays excluded (below).
 
+`core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
+TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports
+and expected values), run by `hooks-system-rust`. A `Socket` is made and deleted
+through `swr_v1_runtime_socket` (its constructors are inline in the hybrid header);
+its out-of-line members are called under their upstream symbols, its inline ones
+through the `swr_v1_hook_co_socket_*` exports the header calls, and its fields
+through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and the
+`set_ssl_*` setters write the `SSLContext` owner (`swr_v1_tls_owner_new`,
+`_set_path` and its string slots and fields); `TimeoutSetter` and
+`TimeoutController` are `swr_v1_hook_timeout_scope` and
+`swr_v1_hook_co_socket_timed_out`; `pop_read_buffer`/`pop_write_buffer` are
+`swr_v1_hook_co_socket_pop_buffer`; `ssl_handshake` and `ssl_verify` are exported
+under their upstream symbols for this. The `Server` fixture `recv_success` and
+`recv_fail` fork is a std echo (or close-on-receive) server: those cases assert only
+on the client. Excluded as before: `tcp6` (IPv6) and the four proxy cases (a local
+HTTP or SOCKS5 proxy).
+
 `core-tests/src/memory/lru_cache.cpp` no longer builds (`include/swoole_lru_cache.h`
 is deleted). Its TESTs are Rust tests over the DNS cache's `Lru` in
 `crates/hooks/src/dns_cache.rs`, with the same inputs and expected values:
@@ -89,11 +102,11 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   failures on both platforms; base/async_file failures reproduce in the native
   control on macOS. Redis, external services and PHP deprecations account for
   further failures and skips.
-- Native originals (socket.cpp, Linux): the reference passes all but the
-  excluded cases. The hybrid tree no longer compiles socket.cpp (#1726: the
-  members it uses moved to Rust), so no hybrid case runs.
 - `hooks-system-rust`: 18 of system.cpp's 20 cases pass; the two `getaddrinfo`
-  network cases are excluded. `coroutine_hook.sendmsg_and_recvmsg` is excluded:
+  network cases are excluded. socket.cpp: 48 of 54 pass (Linux aarch64, docker);
+  `sendto_recvfrom_udp` fails on the hybrid and passes upstream (its UDP6
+  `sendto("localhost")` returns `SW_ERROR_BAD_HOST_ADDR`; #1735) and is excluded
+  until that is fixed. `coroutine_hook.sendmsg_and_recvmsg` is excluded:
   it segfaulted in ~15% of GoogleTest runs on both engines (its child reads the
   finished parent's stack). hook.cpp's other 25 cases pass (Linux aarch64,
   docker); `gethostbyname`, `getaddrinfo` and `socket` need external DNS and
