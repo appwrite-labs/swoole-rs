@@ -9,10 +9,10 @@
                              oldest first (exit 2 when there are none)
 
 For a pull request: `ci.py wait --workflow pr.yml --commit BRANCH` for its PR tier (a branch
-auto-merge deleted resolves through its PR), or `ci.py wait --pr N` to wait for it to merge and
-then for the merge tier on its merge commit. Both return at once (exit 4, state `conflicts`) when
-the PR conflicts with main, since neither a PR-tier run nor auto-merge happens until it's rebased. Transient gh failures (5xx, network) are retried
-until the deadline.
+auto-merge deleted resolves through its PR). It returns at once (exit 4, state `conflicts`) when
+the PR conflicts with main, since no PR-tier run starts until it's rebased. Nothing waits for a
+merge: opening the PR ends an executor's part (AGENTS.md). Transient gh failures (5xx, network)
+are retried until the deadline.
 
 For the merge tier, failed phases come from its `phases` artifact, with new and fixed ones
 against the previous completed run on main; other failures show each failed job's log tail.
@@ -34,7 +34,7 @@ import sys
 import tempfile
 import time
 
-EXIT = {'passed': 0, 'failed': 1, 'closed': 1, 'none': 2, 'running': 2, 'cancelled': 3, 'conflicts': 4}
+EXIT = {'passed': 0, 'failed': 1, 'none': 2, 'running': 2, 'cancelled': 3, 'conflicts': 4}
 LOG_LINES = 40
 GATE_JOB = 'phpt-gate'
 # The merge-tier jobs (full-gates, or its shards "full-gates (N)") whose dev.py phases the
@@ -79,29 +79,6 @@ def resolve(commit):
         if not head:
             raise
         return head
-
-
-def wait_pr(number, deadline, poll):
-    """Wait for PR `number` to merge or close; a merged PR then waits for the merge tier on its
-    merge commit. Returns that run's result with the PR's state, or the closed PR's."""
-    announced = None
-    while True:
-        pr = json.loads(gh('api', f'repos/{{owner}}/{{repo}}/pulls/{number}'))
-        state = 'merged' if pr['merged'] else pr['state']
-        if state != announced:
-            announced = state
-            say(f"PR #{number}: {state}")
-        if state == 'merged':
-            return {**wait('merge.yml', pr['merge_commit_sha'], deadline, poll), 'pr': number, 'pr_state': 'merged'}
-        if state == 'closed':
-            return {'workflow': 'merge.yml', 'commit': '', 'state': 'closed', 'pr': number, 'pr_state': 'closed'}
-        if pr.get('mergeable_state') == 'dirty':
-            # Auto-merge can't land it and GitHub runs no PR tier until it's rebased.
-            return {'workflow': 'merge.yml', 'commit': '', 'state': 'conflicts', 'pr': number, 'pr_state': 'open'}
-        if time.monotonic() > deadline:
-            return {'workflow': 'merge.yml', 'commit': '', 'state': 'running', 'timed_out': True, 'pr': number,
-                    'pr_state': 'open'}
-        time.sleep(poll)
 
 
 def seconds(job):
@@ -365,8 +342,6 @@ def main(argv=None):
     for name in ['status', 'wait']:
         command = commands.add_parser(name)
         command.add_argument('--commit', help='sha or branch (default: main)')
-        if name == 'wait':
-            command.add_argument('--pr', type=int, help='wait for this PR to merge, then for the merge tier on its merge commit')
         command.add_argument('--workflow', default='merge.yml')
         command.add_argument('--timeout', type=int, default=3600, help='seconds (default 3600)')
         command.add_argument('--poll', type=float, default=15, help=argparse.SUPPRESS)
@@ -386,11 +361,8 @@ def main(argv=None):
     global RETRY_DEADLINE, RETRY_BASE
     RETRY_DEADLINE, RETRY_BASE = deadline, min(RETRY_BASE, args.poll) if args.poll else 0.0
     try:
-        if getattr(args, 'pr', None):
-            result = wait_pr(args.pr, deadline, args.poll)
-        else:
-            sha = resolve(args.commit)
-            result = status(args.workflow, sha) if args.command == 'status' else wait(args.workflow, sha, deadline, args.poll)
+        sha = resolve(args.commit)
+        result = status(args.workflow, sha) if args.command == 'status' else wait(args.workflow, sha, deadline, args.poll)
         result = diagnostics(result)
         if args.command == 'status' and args.workflow == 'merge.yml' and result['state'] not in ('passed', 'failed'):
             result['last_completed'] = completed_main()
