@@ -18,9 +18,6 @@ struct _zval_struct;
 typedef struct {
     /* E_ERROR "Invalid instance of %s" (does not return). */
     void (*invalid)(struct _zend_object *object);
-    /* 0: "can't register event callback function after server started";
-     * 1: "unknown event types[%s]" with `name`. */
-    void (*warn)(int kind, const char *name);
     /* getSocket() of a bound port. */
     void (*socket)(void *port, struct _zval_struct *return_value);
     /* The port's TLS context's Rust owner (SSLContext::handle()), or null without one. */

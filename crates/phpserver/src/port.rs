@@ -19,7 +19,7 @@ use swoole_rs_ports::{
 use swoole_rs_server::port_config;
 use swoole_rs_tls::OwnedTlsContext;
 use swoole_rs_zend::{
-    Call, Class, Object, bailout,
+    Call, Class, E_WARNING, Object, bailout, message,
     string::bytes,
     sys::{
         IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
@@ -72,8 +72,7 @@ const PROPERTY_BOOL: u32 = 3;
 #[repr(C)]
 pub struct PortHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
-    warn: unsafe extern "C" fn(c_int, *const c_char),
-    socket: unsafe extern "C" fn(*mut c_void, *mut zval),
+    pub(crate) socket: unsafe extern "C" fn(*mut c_void, *mut zval),
     pub(crate) ssl_owner: unsafe extern "C" fn(*mut c_void) -> *const OwnedTlsContext,
     pub(crate) sni_context:
         unsafe extern "C" fn(*mut c_void, *mut *const OwnedTlsContext) -> *mut c_void,
@@ -121,6 +120,35 @@ pub unsafe extern "C" fn swr_v1_phpserver_port_object_property(
 ) -> *mut PortProperty {
     // SAFETY: one of ours, per the contract.
     &raw mut unsafe { Port::data(object) }.property
+}
+
+/// A new Port object (an emalloc'd zval) bound to `port` and its server `serv`.
+/// # Safety
+/// `serv` is a live server and `port` one of its ports.
+pub(crate) unsafe fn new_object(serv: *mut c_void, port: *mut c_void) -> *mut zval {
+    // SAFETY: Zend's request allocator; the Server object frees it.
+    let zport = unsafe { z::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
+    // SAFETY: a writable zval and the registered class.
+    unsafe { swoole_rs_zend::init_object(zport, PORT.entry()) };
+    // SAFETY: the object just created, one of ours.
+    let object = unsafe { swoole_rs_zend::object_of(zport) };
+    // SAFETY: as above.
+    let data = unsafe { Port::data(object) };
+    data.port = port;
+    data.property.serv = serv;
+    data.property.port = port;
+    // SAFETY: per the caller.
+    let config = unsafe { port_config::of(port) };
+    // SAFETY: the port's own slot and the object's property, which lives as long as the port's link.
+    unsafe {
+        crate::server::swr_v1_phpserver_port_property(
+            config.object_id,
+            &raw mut config.ptr,
+            (&raw mut data.property).cast(),
+            true,
+        );
+    }
+    zport
 }
 
 /// The object's `ListenPort`; an `E_ERROR`, which does not return, when unbound.
@@ -276,8 +304,10 @@ fn on(call: &Call) {
     }
     let serv = property.serv;
     if crate::io::closed(serv) {
-        // SAFETY: a warning; no name.
-        unsafe { (host().warn)(0, ptr::null()) };
+        crate::server::fatal(
+            E_WARNING,
+            c"can't register event callback function after server started",
+        );
         return call.set_bool(false);
     }
     let Ok(name) = call.arity(2, 2).and_then(|()| call.string(1, b"")) else {
@@ -287,8 +317,9 @@ fn on(call: &Call) {
     // SAFETY: the argument's bytes for this call.
     let event = unsafe { swr_v1_ports_event(name.as_ptr(), name.len(), 1) };
     let Ok(index) = usize::try_from(event.index) else {
-        // SAFETY: `Z_PARAM_STRING`'s bytes are NUL-terminated.
-        unsafe { (host().warn)(1, name.as_ptr().cast()) };
+        let name =
+            String::from_utf8_lossy(name.split(|&byte| byte == 0).next().unwrap_or_default());
+        crate::lifecycle::runtime_warning(message!("unknown event types[{name}]").as_cstr());
         return call.set_bool(false);
     };
     // SAFETY: `$this`, the catalog's property name and the callback argument.

@@ -15,11 +15,6 @@ struct _zend_object;
 struct _zval_struct;
 struct _zend_class_entry;
 
-/* Server facts `fact` answers, by id. */
-enum {
-    SWR_PHPSERVER_FACT_CACHE_SESSION_ADDR = 14, /* swoole_http_server_can_cache_session_addr() */
-};
-
 /* What `install` sets up on the Server in C++ (Rust fills the on* slots itself). */
 enum {
     SWR_PHPSERVER_INSTALL_ALLOCATORS = 11, /* the message bus's, and the recv buffers' in base/thread mode */
@@ -27,12 +22,8 @@ enum {
 };
 
 typedef struct {
-    int64_t (*fact)(void *server, uint32_t id);
     void (*install)(void *server, uint32_t which);
     void *(*create)(int64_t mode); /* new Server(mode) */
-    int (*add_systemd_socket)(void *server);
-    /* A new Server\Port object (sw_malloc_zval) bound to `port` and its server. */
-    struct _zval_struct *(*port_object)(void *server, void *port);
     /* serv->create(): null, or sw_error after a failure. */
     const char *(*create_server)(void *server);
     /* serv->start() in zend_try: 0 started and returned, -1 failed (*error is the reason),

@@ -1,54 +1,24 @@
 //! `Swoole\Server`'s `on`, `getCallback`, `listen`, the send family,
-//! `sendMessage` and `finish` (also `Swoole\Server\Task::finish`). C++ keeps
-//! the Server, its callbacks and ports and the task encoding
-//! (`native/process/swoole_rs_phpserver_io.h`).
+//! `sendMessage` and `finish` (also `Swoole\Server\Task::finish`), over the
+//! Server's records (crates/server's view) and its Rust methods.
 use crate::server::{fatal, no_payload, running, server};
 use std::{
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
+    mem::MaybeUninit,
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, server_methods, view};
+use swoole_rs_clients::address::swr_v1_clients_address_assign;
+use swoole_rs_corebase::{net_types::AddressStorage, swr_v1_clients_gethostbyname};
+use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, bailout, message,
     string::bytes,
     sys::{
         IS_NULL, IS_STRING, IS_TRUE, swr_zend_string_release, swr_zval_copy, swr_zval_get_string,
-        zend_object, zend_read_property, zend_update_property, zval,
+        zend_read_property, zend_update_property, zval,
     },
     to_long, type_of,
 };
-
-/// `swr_v1_phpserver_io_host`.
-#[repr(C)]
-pub struct IoHost {
-    listen: unsafe extern "C" fn(*mut zend_object, *const c_char, i64, i64, *mut zval) -> bool,
-    send_unix: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, usize, i64) -> c_int,
-    sendto: unsafe extern "C" fn(
-        *mut c_void,
-        c_int,
-        *const c_char,
-        i64,
-        *const c_char,
-        usize,
-        i64,
-    ) -> c_int,
-}
-
-static HOST: AtomicPtr<IoHost> = AtomicPtr::new(ptr::null_mut());
-
-fn host() -> &'static IoHost {
-    // SAFETY: MINIT installs C++'s static table before any method runs.
-    unsafe { &*HOST.load(Ordering::Acquire) }
-}
-
-/// MINIT: the table the methods call.
-/// # Safety
-/// `table` lives for the process.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_io_init(table: *const IoHost) {
-    HOST.store(table.cast_mut(), Ordering::Release);
-}
 
 /// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
 pub(crate) fn closed(serv: *mut c_void) -> bool {
@@ -185,17 +155,80 @@ fn listen(call: &Call) {
     let Ok((address, port, kind)) = parsed else {
         return call.set_bool(false);
     };
-    // SAFETY: `$this`, NUL-terminated `Z_PARAM_STRING` bytes and the return slot.
-    if !unsafe {
-        (host().listen)(
-            call.this(),
-            address.as_ptr().cast(),
-            port,
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "(SocketType) type and (int) port, as upstream"
+    )]
+    let (kind, port) = (kind as c_int, port as c_int);
+    // SAFETY: a live server.
+    let ls = if unsafe { view::is_worker_thread(serv) } {
+        // `serv->get_port(type, host, port)`, compared as C strings.
+        let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
+        let listening = |config: &PortConfig| {
+            let name = config.host();
+            // SAFETY: the port's host bytes.
+            let name = unsafe { std::slice::from_raw_parts(name.data.cast::<u8>(), name.length) };
+            config.port == port && config.r#type == kind && name == host
+        };
+        // SAFETY: a live server.
+        unsafe { view::find_port(serv, listening) }
+    } else {
+        // SAFETY: a live server; `Z_PARAM_STRING`'s bytes are NUL-terminated.
+        unsafe { server_methods::add_port(serv, kind, address.as_ptr().cast(), port) }
+    };
+    if ls.is_null() {
+        return call.set_bool(false);
+    }
+    // SAFETY: `$this` is bound to `serv`, and `ls` is one of its ports.
+    let zport = unsafe { crate::lifecycle::swr_v1_phpserver_add_port(call.this(), ls) };
+    // SAFETY: `RETVAL_ZVAL(port_object, 1, 0)`.
+    unsafe { swr_zval_copy(call.return_value(), zport) };
+}
+
+/// `network::Socket::sendto(host, port, data, length)` on `socket`: the bytes
+/// sent, or -1.
+/// # Safety
+/// `socket` is null or a live socket.
+unsafe fn socket_sendto(socket: *mut c_void, host: &[u8], port: i64, data: &[u8]) -> isize {
+    if socket.is_null() {
+        return -1;
+    }
+    // SAFETY: per the caller.
+    let (fd, kind) = unsafe { view::socket_fd(socket) };
+    let host = host.split(|&byte| byte == 0).next().unwrap_or_default();
+    let mut addr = MaybeUninit::<AddressStorage>::zeroed();
+    let mut length: libc::socklen_t = 0;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Socket::sendto's (int) port, as upstream"
+    )]
+    let port = port as c_int;
+    // SAFETY: a writable address and the host's bytes.
+    let error = unsafe {
+        swr_v1_clients_address_assign(
+            addr.as_mut_ptr().cast(),
+            &raw mut length,
             kind,
-            call.return_value(),
+            host.as_ptr().cast(),
+            host.len(),
+            port,
+            Some(swr_v1_clients_gethostbyname),
         )
-    } {
-        call.set_bool(false);
+    };
+    if error != 0 {
+        swoole_rs_corebase::log::set_last_error(error);
+        return -1;
+    }
+    // SAFETY: the socket's fd, the payload and the assigned address.
+    unsafe {
+        libc::sendto(
+            fd,
+            data.as_ptr().cast(),
+            data.len(),
+            0,
+            addr.as_ptr().cast(),
+            length,
+        )
     }
 }
 
@@ -220,24 +253,21 @@ fn send(call: &Call) {
         no_payload();
         return call.set_bool(false);
     }
-    let host = host();
     if kind == IS_STRING {
         // SAFETY: an IS_STRING zval.
         let path = unsafe { swoole_rs_zend::string_of(zfd) }.unwrap_or_default();
-        if path.first() == Some(&b'/') {
-            // SAFETY: a live server, a NUL-terminated path and the payload.
-            let sent = unsafe {
-                (host.send_unix)(
-                    serv,
-                    path.as_ptr().cast(),
-                    payload.as_ptr().cast(),
-                    payload.len(),
-                    server_socket,
-                )
+        // SAFETY: a live server.
+        let config = unsafe { view::config(serv) };
+        if path.first() == Some(&b'/') && config.have_dgram_sock {
+            let socket = if server_socket == -1 {
+                config.dgram_socket
+            } else {
+                // SAFETY: a live server.
+                unsafe { view::server_socket(serv, server_socket) }
             };
-            if sent >= 0 {
-                return call.set_bool(sent != 0);
-            }
+            // SAFETY: null or a live socket, and the path's bytes.
+            let sent = unsafe { socket_sendto(socket, path, 0, payload) } > 0;
+            return call.set_bool(sent);
         }
     }
     // SAFETY: a passed argument.
@@ -277,23 +307,25 @@ fn sendto(call: &Call) {
     } else {
         (1, c"UDP listener has to be added before executing sendto")
     };
-    // SAFETY: a live server, the NUL-terminated address and the payload.
-    let sent = unsafe {
-        (host().sendto)(
-            serv,
-            kind,
-            address.as_ptr().cast(),
-            port,
-            data.as_ptr().cast(),
-            data.len(),
-            server_socket,
-        )
+    // SAFETY: a live server.
+    let config = unsafe { view::config(serv) };
+    let socket = match kind {
+        1 => config.udp_socket_ipv4,
+        2 => config.udp_socket_ipv6,
+        _ => config.dgram_socket,
     };
-    if sent < 0 {
+    if socket.is_null() {
         fatal(E_WARNING, missing);
         return call.set_bool(false);
     }
-    call.set_bool(sent != 0);
+    let socket = if server_socket < 0 {
+        socket
+    } else {
+        // SAFETY: a live server.
+        unsafe { view::server_socket(serv, server_socket) }
+    };
+    // SAFETY: null or a live socket, the address and the payload.
+    call.set_bool(unsafe { socket_sendto(socket, address, port, data) } >= 0);
 }
 
 fn sendfile(call: &Call) {

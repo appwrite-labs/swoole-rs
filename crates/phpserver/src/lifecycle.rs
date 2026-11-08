@@ -140,11 +140,8 @@ impl PortInfo {
 /// `swr_v1_phpserver_lifecycle_host`.
 #[repr(C)]
 pub struct LifecycleHost {
-    fact: unsafe extern "C" fn(*mut c_void, u32) -> i64,
     install: unsafe extern "C" fn(*mut c_void, u32),
     create: unsafe extern "C" fn(i64) -> *mut c_void,
-    add_systemd_socket: unsafe extern "C" fn(*mut c_void) -> c_int,
-    port_object: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut zval,
     create_server: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     start: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> c_int,
     release: unsafe extern "C" fn(*mut c_void),
@@ -161,6 +158,9 @@ unsafe extern "C" {
     static swoole_websocket_server_ce: *mut zend_class_entry;
     /// `Swoole\Redis\Server` (crates/phpredis).
     static swoole_redis_server_ce: *mut zend_class_entry;
+    /// crates/phphttp's `swoole_http_server_can_cache_session_addr(serv)`.
+    #[link_name = "_Z41swoole_http_server_can_cache_session_addrPKN6swoole6ServerE"]
+    fn can_cache_session_addr(serv: *const c_void) -> bool;
 }
 
 /// `instanceof_function(ce, parent)`.
@@ -269,7 +269,8 @@ fn number(serv: *mut c_void, id: u32) -> i64 {
         // SAFETY: a live server.
         fact::MAX_CONNECTION => i64::from(unsafe { view::max_connection(serv) }),
         // SAFETY: a live server.
-        _ => unsafe { (host().fact)(serv, id) },
+        fact::CACHE_SESSION_ADDR => i64::from(unsafe { can_cache_session_addr(serv) }),
+        _ => 0,
     }
 }
 
@@ -450,11 +451,10 @@ pub unsafe extern "C" fn swr_v1_phpserver_add_port(
     object: *mut zend_object,
     port: *mut c_void,
 ) -> *mut zval {
-    let host = host();
     // SAFETY: per the caller.
     let serv = unsafe { data(object) }.serv;
     // SAFETY: a live server and port.
-    let zport = unsafe { (host.port_object)(serv, port) };
+    let zport = unsafe { crate::port::new_object(serv, port) };
     // SAFETY: per the caller.
     unsafe { property(object) }.ports.push(zport);
     // SAFETY: a live port.
@@ -642,7 +642,7 @@ fn construct(call: &Call) {
     let serv = unsafe { (host.create)(mode) };
     if port == 0 && address.eq_ignore_ascii_case(b"SYSTEMD") {
         // SAFETY: a new server.
-        if unsafe { (host.add_systemd_socket)(serv) } <= 0 {
+        if unsafe { server_methods::add_systemd_socket(serv) } <= 0 {
             // SAFETY: from a handler.
             unsafe { throw_error(c"failed to add systemd socket") };
             return call.set_bool(false);
@@ -928,7 +928,7 @@ fn command(call: &Call) {
 
 /// `php_swoole_error(E_WARNING, ...)`: a notice-coded warning, shown when
 /// `display_errors` is on.
-fn runtime_warning(text: &CStr) {
+pub(crate) fn runtime_warning(text: &CStr) {
     set_last_error(SW_ERROR_PHP_RUNTIME_NOTICE);
     if crate::server::display_errors() {
         // SAFETY: from a handler; a pending bailout waits for its last step.

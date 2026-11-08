@@ -46,7 +46,6 @@ const MAX_FIND_COUNT: i64 = 100;
 #[repr(C)]
 pub struct ServerHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
-    socket: unsafe extern "C" fn(*mut c_void, i64, *mut zval),
 }
 
 static HOST: AtomicPtr<ServerHost> = AtomicPtr::new(ptr::null_mut());
@@ -868,8 +867,17 @@ fn get_socket(call: &Call) {
     let Ok(port) = call.arity(0, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server and this call's return slot.
-    unsafe { (host().socket)(serv, port, call.return_value()) };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "get_port((int) port), as upstream"
+    )]
+    // SAFETY: a live server.
+    let ls = unsafe { view::port_number(serv, port as c_int) };
+    match (!ls.is_null()).then_some(ls) {
+        // SAFETY: a live port and this call's return slot.
+        Some(ls) => unsafe { (crate::port::host().socket)(ls, call.return_value()) },
+        None => call.set_bool(false),
+    }
 }
 
 /// `add_assoc_*(return_value, key, ...)`.
