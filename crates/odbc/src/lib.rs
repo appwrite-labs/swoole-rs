@@ -5,7 +5,7 @@
 //! (native `async`, through the hooks' host); the cheap ones call through.
 //! With `php`, MINIT ([`minit`]) registers the driver with PDO.
 //!
-//! The exports keep upstream's names: `php_swoole_odbc.h` declares them and
+//! The exports keep upstream's names: `native/hooks/php_swoole_odbc.h` declares them and
 //! the driver's macros call them.
 #![cfg_attr(
     not(test),

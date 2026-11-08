@@ -5,7 +5,7 @@
 //! while blocking, otherwise by parking the coroutine (`System::wait_event`).
 //! With `php`, MINIT ([`minit`]) registers the driver with PDO.
 //!
-//! The exports keep upstream's names: `php_swoole_pgsql.h` declares them and
+//! The exports keep upstream's names: `native/hooks/php_swoole_pgsql.h` declares them and
 //! the driver's macros call them.
 #![cfg_attr(
     not(test),
