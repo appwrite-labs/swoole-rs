@@ -11,8 +11,7 @@ cached read events after close is queued. See the
 The merge tier's `halfclose` job runs every phase below:
 `python3 tools/dev.py integrate --fix-halfclose --php-extension sockets --phase 'halfclose-*' --with-prerequisites`.
 
-Gate audit (#480): all 13 phases are kept. Each checks the repair's behavior, which
-upstream lacks, so no original PHPT, Rust test or fuzz target can cover it.
+These check the repair's behavior, which upstream lacks.
 `halfclose-pause-originals` runs `client_close_in_writable_event.phpt` against the
 repaired build. The PHPT gate runs it only on the unrepaired hybrid.
 

@@ -62,8 +62,8 @@ barriers keep the original one-shot arrival/count words, 10 ms polling and fence
 fallback words must be aligned native `u32` storage.
 
 Supported platforms: macOS and Linux. The crate and header reject other OSes
-(including Android and Apple mobile) at compile time; see
-`tests/modules/locks/PLATFORMS.md`.
+(including Android and Apple mobile) at compile time
+(`tests/modules/locks/platforms.py`).
 
 ## Atomics
 

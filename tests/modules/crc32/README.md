@@ -1,7 +1,6 @@
 # CRC32
 
-ABI: `docs/core-abi-v1.md`, `native/include/swoole_rs_crc32.h`. Feature
-bit 16. The overlay deletes `src/core/crc32.cc`; `crates/crc32` defines
+ABI: `docs/core-abi-v1.md`, `native/include/swoole_rs_crc32.h`. The overlay deletes `src/core/crc32.cc`; `crates/crc32` defines
 `swoole_crc32` under its upstream symbol (feature `upstream-symbols`).
 
 The Rust crate implements reflected IEEE CRC32 without allocation or mutable
@@ -43,20 +42,5 @@ binary messages from eight clients reach the independently computed CRC32
 worker, and that eight empty datagrams get no callback (pinned recvfrom's
 `ret <= 0` branch).
 
-Gate audit (#471/#477): `crc32-consumers-*` is **kept**. The algorithm is covered
-by the `cargo test -p swoole-rs-crc32` differential and the ported core test
-above. The one production caller — `reactor_thread.cc`'s non-IPv4 datagram
-worker dispatch (`crc32(peer) % worker_num`) — is reached by no PHPT with a real
-dispatch choice: `swoole_server/{unsock_dgram,sendto_timeout}.phpt` run a
-datagram server with `worker_num = 1`, and `systemd_fds.phpt` exercises fd
-passing, not multi-worker routing. This phase is the only coverage of the
-`worker_num > 1` non-IPv4 dispatch, so it stays.
-
-## x86_64
-
-## Known gaps
-
-- Not measured: no throughput numbers exist for the current backends (#31).
-- Linux has not run the current slicing-by-eight and instruction backends.
-- Native x86 hardware, maximum/abstract Unix path spans and uninitialized
-  production padding in callers are untested.
+`crc32-consumers-*` runs it. No PHPT dispatches non-IPv4 datagrams across more
+than one worker, so this is the only coverage of that path.

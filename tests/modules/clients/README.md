@@ -1,6 +1,6 @@
 # Clients and resolver migration
 
-Opt-in client and resolver migration (`crates/clients`, patches in
+The client and resolver (`crates/clients`, patches in
 `migration/patches/clients/`). Rust owns `network::Client` state and operations,
 using the reactor's socket record directly. C++ retains Protocol, TLS/proxy
 objects, callbacks and Zend boundaries through the installed native table.
@@ -80,4 +80,3 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 - The pinned `SHUT_RDWR` branch sets only `shutdown_read`; this is preserved.
 - `network::Client` itself (crates/clients/src/client.rs) is covered by its Rust
   unit tests against a recording double of the C++ half, and by the PHPTs.
-- No benchmark has been run.
