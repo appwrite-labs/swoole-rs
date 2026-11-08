@@ -1896,8 +1896,276 @@ unsafe fn startup(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { swr_v1_bus_init_pipe_socket(bus, worker.fd) };
             0
         }
+        // SAFETY: per the caller.
+        op => return unsafe { closing(o, op, arg) },
+    })
+}
+
+/// The ops over a connection's setup and close and the server's shutdown, which
+/// call crates/server's, crates/process's and crates/ports' methods under their
+/// upstream symbols; else `None`.
+///
+/// # Safety
+/// As [`answer`].
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per op, as master.cc's switch was"
+)]
+unsafe fn closing(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    use crate::callbacks::{CB_BEFORE_SHUTDOWN, CB_DISPATCH_FUNC, CB_SHUTDOWN};
+    use crate::ops::{
+        OP_ACCEPT_TIMER, OP_BEFORE_SHUTDOWN, OP_CLOSE_CONNECTION, OP_CLOSE_SOCKET, OP_CONN_INIT,
+        OP_DISPATCH_FUNC, OP_FORCE_CLOSE, OP_FORCED_EXIT, OP_FREE_SERVER, OP_JOIN_REACTOR_THREADS,
+        OP_NOTIFY_CONNECT, OP_ON_CLOSE, OP_ON_SHUTDOWN, OP_PORT_CLOSE, OP_QUEUE_CLOSE,
+        OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN, OP_THREAD0_SHUTDOWN,
+    };
+    use core::ffi::c_void;
+    /// `SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN`.
+    const HOOK_BEFORE_SERVER_SHUTDOWN: c_int = 6;
+    /// `Reactor::EXIT_CONDITION_FORCED_TERMINATION`.
+    const EXIT_CONDITION_FORCED_TERMINATION: c_int = 8;
+    /// `SW_SERVER_EVENT_CONNECT`.
+    const EVENT_CONNECT: c_int = 5;
+    /// `SW_ACCEPT_RETRY_TIME`, in milliseconds.
+    #[expect(clippy::cast_possible_truncation, reason = "1000.0")]
+    const ACCEPT_RETRY_MSEC: libc::c_long =
+        (swoole_rs_corebase::constants::SW_ACCEPT_RETRY_TIME * 1000.0) as libc::c_long;
+    // SAFETY: native/reactor's and crates/ports', under their upstream symbols.
+    unsafe extern "C" {
+        fn swr_v1_event_set_exit_condition(
+            id: c_int,
+            condition: unsafe extern "C" fn(*mut usize) -> bool,
+        );
+        #[link_name = "_ZN6swoole10ListenPort5closeEv"]
+        fn port_close(port: *mut c_void);
+    }
+    let serv = o.ctx.serv;
+    let slot = |index| o.state.callbacks.slot(index);
+    let reopen_logger = || {
+        if let Some(logger) = swoole_rs_utilities::process_logger() {
+            // SAFETY: the process's live logger.
+            unsafe { swoole_rs_utilities::swr_v1_logger_reopen(logger) };
+        }
+    };
+    Some(match op {
+        OP_CONN_INIT => {
+            let conn = o.conn();
+            let sock = o.sock();
+            conn.fd = sock.fd;
+            conn.reactor_id = o.ctx.reactor_id;
+            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
+            let server_fd = arg as c_int;
+            conn.server_fd = server_fd;
+            let now = swoole_rs_corebase::microtime();
+            conn.last_recv_time = now;
+            conn.connect_time = now;
+            conn.active = 1;
+            conn.closed.store(0, Relaxed);
+            conn.worker_id = -1;
+            conn.socket_type = o.port().r#type;
+            conn.socket = o.ctx.sock;
+            conn.ssl = u8::from(!sock.ssl.is_null());
+            conn.info = sock.info;
+            conn.info.kind = conn.socket_type;
+            // SAFETY: the context's live socket.
+            unsafe { swoole_rs_reactor::swr_v1_socket_get_name(sock) };
+            let info = &raw const sock.info;
+            // SAFETY: the address getsockname filled.
+            let port = unsafe { swoole_rs_clients::address::swr_v1_clients_address_port(info) };
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "C++'s uint16_t local_port"
+            )]
+            let port = port as u16;
+            conn.local_port = port;
+            let v6 = sock.info.kind != SW_SOCK_TCP;
+            let addr = if v6 {
+                // SAFETY: an inet6 address's field.
+                unsafe { (&raw const sock.info.addr.inet_v6.sin6_addr).cast::<u8>() }
+            } else {
+                // SAFETY: an inet4 address's field.
+                unsafe { (&raw const sock.info.addr.inet_v4.sin_addr).cast::<u8>() }
+            };
+            // SAFETY: the live state and an address of the family.
+            conn.local_addr_index =
+                unsafe { crate::local_addr::swr_v1_server_local_addr_index(o.state, v6, addr) };
+            0
+        }
+        OP_NOTIFY_CONNECT => {
+            let conn = o.ctx.conn.cast_const().cast();
+            // SAFETY: the live server and its new connection.
+            u64::from(unsafe { crate::server_methods::notify(serv, conn, EVENT_CONNECT) })
+        }
+        OP_CLOSE_CONNECTION => {
+            let socket = o.conn().socket.cast();
+            // SAFETY: the context's live reactor and the connection's socket.
+            unsafe { crate::reactor_entry::close_connection(o.ctx.reactor, socket) };
+            0
+        }
+        OP_FORCE_CLOSE => {
+            let conn = o.conn();
+            conn.close_force = 1;
+            let mut event = swoole_rs_reactor::Event {
+                fd: conn.fd,
+                reactor_id: 0,
+                fd_type: 0,
+                socket: conn.socket,
+            };
+            // SAFETY: the context's live reactor and an event over its live connection.
+            unsafe {
+                reactor_upstream::trigger_close_event(o.ctx.reactor, (&raw mut event).cast())
+            };
+            0
+        }
+        OP_ACCEPT_TIMER => {
+            let retry = crate::server_methods::enable_accept;
+            // SAFETY: a one-shot timer of this thread's over the live server.
+            let timer = unsafe {
+                crate::pool_native::swr_cpp_timer_add(ACCEPT_RETRY_MSEC, false, retry, serv)
+            };
+            o.tables().enable_accept_timer = timer;
+            u64::from(!timer.is_null())
+        }
+        OP_FORCED_EXIT => {
+            FORCED_EXIT_SERVER.store(serv, Relaxed);
+            // SAFETY: time(2) with no output pointer.
+            FORCED_EXIT_TIME.store(unsafe { libc::time(core::ptr::null_mut()) }, Relaxed);
+            // SAFETY: this thread's live reactor.
+            unsafe {
+                swr_v1_event_set_exit_condition(EXIT_CONDITION_FORCED_TERMINATION, forced_exit);
+            };
+            0
+        }
+        OP_THREAD0_SHUTDOWN => {
+            let reactor = swoole_rs_corebase::thread_reactor();
+            let thread = crate::reactor_entry::thread(o.state, 0);
+            // SAFETY: the server's first reactor thread and this thread's reactor.
+            unsafe { crate::reactor_entry::thread_shutdown(thread, reactor) };
+            0
+        }
+        OP_BEFORE_SHUTDOWN => {
+            call_hook(HOOK_BEFORE_SERVER_SHUTDOWN, serv);
+            // SAFETY: onBeforeShutdown's slot and the live server.
+            unsafe { slot(CB_BEFORE_SHUTDOWN)?.call_server(serv) };
+            0
+        }
+        OP_SIGNAL_RELOAD => {
+            // SAFETY: the live server, in its master.
+            let _ = unsafe { swoole_rs_process::workers::entry::reload(serv, arg != 0) };
+            reopen_logger();
+            0
+        }
+        OP_SIGNAL_REOPEN => {
+            reopen_logger();
+            0
+        }
+        OP_ON_SHUTDOWN => {
+            // SAFETY: onShutdown's slot and the live server.
+            unsafe { slot(CB_SHUTDOWN)?.call_server(serv) };
+            0
+        }
+        OP_FREE_SERVER => {
+            let tables = o.tables();
+            let config = o.config();
+            sw_shm_free(core::mem::replace(&mut tables.session_list, core::ptr::null_mut()).cast());
+            sw_shm_free(core::mem::replace(
+                &mut tables.port_gs_list,
+                core::ptr::null_mut(),
+            ));
+            sw_shm_free(core::mem::replace(&mut config.workers, core::ptr::null_mut()).cast());
+            let factory = core::mem::replace(&mut config.factory_, core::ptr::null_mut());
+            if !factory.is_null() {
+                // SAFETY: `delete factory_`: a live polymorphic `Factory`, whose first
+                // virtual is its destructor, so its vtable's second slot deletes it.
+                let vtable = unsafe { *factory.cast::<*const unsafe extern "C" fn(*mut c_void)>() };
+                // SAFETY: as above.
+                let delete = unsafe { *vtable.wrapping_add(1) };
+                // SAFETY: as above; nothing names the factory afterwards.
+                unsafe { delete(factory.cast()) };
+            }
+            swoole_rs_corebase::swr_v1_core_set_server(core::ptr::null_mut());
+            0
+        }
+        OP_JOIN_REACTOR_THREADS => {
+            // SAFETY: the live server, in its master.
+            unsafe { crate::reactor_entry::join_reactor_thread(serv) };
+            0
+        }
+        OP_PORT_CLOSE => {
+            let &port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
+            // SAFETY: one of the server's live ports.
+            unsafe { port_close(port) };
+            0
+        }
+        OP_DISPATCH_FUNC => {
+            let fd = libc::c_long::from(o.ctx.server_fd);
+            // SAFETY: the server's live tables.
+            let conn = unsafe { crate::swr_v1_server_connection(o.state, fd, 0) };
+            let dispatch = slot(CB_DISPATCH_FUNC)?;
+            // SAFETY: dispatch_func's slot, the live server, connection and data.
+            sign(unsafe { dispatch.dispatch(serv, conn.cast(), o.ctx.send) })
+        }
+        OP_ON_CLOSE => {
+            let event = arg as *mut c_void;
+            // SAFETY: onClose's slot, the live server and the close event.
+            unsafe { slot(crate::callbacks::CB_CLOSE)?.call(serv, event) };
+            0
+        }
+        OP_CLOSE_SOCKET => {
+            let reactor = swoole_rs_corebase::thread_reactor();
+            let socket = arg as *mut SocketRecord;
+            // SAFETY: this thread's live reactor and a session socket of it.
+            sign(unsafe { crate::reactor_entry::close_connection(reactor, socket) })
+        }
+        OP_QUEUE_CLOSE => {
+            let socket = arg as *mut SocketRecord;
+            // SAFETY: a live session socket, whose output buffer is live.
+            let buffer = unsafe { (*socket).output.out_buffer };
+            // SAFETY: as above.
+            unsafe { swr_cpp_buffer_typed_close(buffer.cast()) };
+            let reactor = swoole_rs_corebase::thread_reactor();
+            // SAFETY: `remove_read_event` on this thread's live reactor.
+            u64::from(unsafe { reactor_upstream::reactor_interest(reactor, socket, 4, 0) } == 0)
+        }
         _ => return None,
     })
+}
+
+/// The server and the time `Server::stop_master_thread`'s forced exit started.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+static FORCED_EXIT_SERVER: core::sync::atomic::AtomicPtr<core::ffi::c_void> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+static FORCED_EXIT_TIME: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+
+/// The forced-termination exit condition: past `max_wait_time`, stop the loop.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+unsafe extern "C" fn forced_exit(_: *mut usize) -> bool {
+    let serv = FORCED_EXIT_SERVER.load(Relaxed);
+    // SAFETY: the server that is shutting down, live until its loop exits.
+    let state = unsafe { crate::view::state_ptr(serv) };
+    // SAFETY: as above.
+    let state = unsafe { &*state };
+    // SAFETY: as above.
+    let max_wait_time = unsafe { (*state.config()).max_wait_time };
+    // SAFETY: time(2) with no output pointer.
+    let now = unsafe { libc::time(core::ptr::null_mut()) };
+    if now - FORCED_EXIT_TIME.load(Relaxed) > libc::time_t::from(max_wait_time) {
+        error(
+            SW_LOG_WARNING,
+            E::SW_ERROR_SERVER_WORKER_EXIT_TIMEOUT,
+            c"Server::stop_master_thread",
+            format_args!("graceful shutdown failed, forced termination"),
+        );
+        let reactor = swoole_rs_corebase::thread_reactor();
+        // SAFETY: this thread's live reactor.
+        let fields = unsafe { reactor_upstream::prepared(reactor) }.fields;
+        // SAFETY: as above.
+        unsafe { (*fields).running = false };
+    }
+    true
 }
 
 /// Outside the hybrid, whose unit tests link no C++, native code keeps these.
