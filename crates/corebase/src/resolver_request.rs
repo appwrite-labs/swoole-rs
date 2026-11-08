@@ -1,7 +1,9 @@
-//! Owned DNS request strings, hints and address storage. Native async envelopes
-//! retain their generic `shared_ptr` lifetime; these records contain no callbacks.
+//! Owned DNS request strings, hints and address storage. A record is reference
+//! counted: its native request holds one reference and each pool copy of an
+//! `AsyncEvent` carrying it another. Records contain no callbacks.
 use crate::{StringSlot, swr_v1_core_string_set, swr_v1_core_string_view};
 use core::ffi::{c_char, c_int};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::{cell::UnsafeCell, ptr};
 unsafe extern "C" {
     fn inet_ntop(
@@ -22,6 +24,7 @@ pub struct ResolverFields {
     pub count: c_int,
 }
 pub struct ResolverRequest {
+    refs: AtomicUsize,
     fields: UnsafeCell<ResolverFields>,
     strings: [StringSlot; 3],
     results: UnsafeCell<Vec<libc::sockaddr_in6>>,
@@ -40,7 +43,8 @@ pub extern "C" fn swr_v1_core_resolver_new(
     socktype: c_int,
     protocol: c_int,
 ) -> PreparedResolver {
-    let owner = Box::into_raw(Box::new(ResolverRequest {
+    swr_v1_core_resolver_view(Box::leak(Box::new(ResolverRequest {
+        refs: AtomicUsize::new(1),
         fields: UnsafeCell::new(ResolverFields {
             family,
             socktype,
@@ -50,28 +54,41 @@ pub extern "C" fn swr_v1_core_resolver_new(
         }),
         strings: std::array::from_fn(|_| StringSlot::default()),
         results: UnsafeCell::new(Vec::new()),
-    }));
-    // SAFETY: the stable Box remains alive until its native enclosing owner dies.
-    let fields = unsafe { (*owner).fields.get() };
-    // SAFETY: the inline slot array remains at its stable Box address.
-    let slots = unsafe { ptr::addr_of!((*owner).strings).cast::<StringSlot>() };
+    })))
+}
+
+/// The record's fields and string slots, from its handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_core_resolver_view(owner: &ResolverRequest) -> PreparedResolver {
+    let [name, service, address] = &owner.strings;
     PreparedResolver {
-        owner,
-        fields,
-        name: slots,
-        // SAFETY: the array has three initialized slots.
-        service: unsafe { slots.add(1) },
-        // SAFETY: the third initialized slot belongs to the same live array.
-        address: unsafe { slots.add(2) },
+        owner: ptr::from_ref(owner).cast_mut(),
+        fields: owner.fields.get(),
+        name,
+        service,
+        address,
     }
 }
+
+/// Takes another reference to `owner`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_core_resolver_retain(owner: &ResolverRequest) {
+    owner.refs.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Drops one reference; the last frees the record.
 /// # Safety
-/// owner is returned once, after all borrowed native members and async users end.
+/// owner is null or a reference the caller holds and gives up here.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_resolver_free(owner: *mut ResolverRequest) {
-    if !owner.is_null() {
-        // SAFETY: the native owner returns its unique allocation exactly once.
-        unsafe { drop(Box::from_raw(owner)) };
+    // SAFETY: null or live while the caller's reference stands.
+    let Some(record) = (unsafe { owner.as_ref() }) else {
+        return;
+    };
+    if record.refs.fetch_sub(1, Ordering::Release) == 1 {
+        core::sync::atomic::fence(Ordering::Acquire);
+        // SAFETY: that was the last reference to the leaked box.
+        drop(unsafe { Box::from_raw(owner) });
     }
 }
 
@@ -430,5 +447,22 @@ mod completion_tests {
                 .failed
         );
         assert!(!unsafe { swr_v1_core_resolver_finish(1, 0, core::ptr::null(), 4003, 712) }.failed);
+    }
+
+    #[test]
+    fn the_last_reference_frees_the_record() {
+        let prepared = swr_v1_core_resolver_new(libc::AF_INET, 0, 0);
+        let record = unsafe { &*prepared.owner };
+        let view = swr_v1_core_resolver_view(record);
+        assert_eq!(
+            (view.fields, view.address),
+            (prepared.fields, prepared.address)
+        );
+        swr_v1_core_resolver_retain(record);
+        unsafe { swr_v1_core_resolver_free(prepared.owner) };
+        // The pool copy's reference keeps the record after its request went.
+        assert_eq!(record.refs.load(Ordering::Relaxed), 1);
+        unsafe { swr_v1_core_resolver_free(prepared.owner) };
+        unsafe { swr_v1_core_resolver_free(core::ptr::null_mut()) };
     }
 }

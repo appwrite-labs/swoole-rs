@@ -22,8 +22,9 @@ through `swr_v1_async_threads_stats`): `execute` runs the handler
 (missing handler wins over canceled) and writes the event to its pipe; `retire`
 sends the idle worker's key to the default pipe, whose callback joins it with
 `swr_v1_os_pool_join`. `swr_v1_os_pool_complete` reads up to 128 tokens from the
-reactor's end of the pipe and hands each to the completion callback. Copying and
-freeing an event (its request is a `std::shared_ptr`) is `async_event.cc`. Defaults, scheduling and the whole-second idle wait match
+reactor's end of the pipe and hands each to the completion callback. Each pool
+copy of an event holds a reference to its request's resolver record, so a request
+that times out may go first. Defaults, scheduling and the whole-second idle wait match
 upstream v6.2.4. Workers get an 8 MiB stack. Known remaining issues: the
 unsynchronized `canceled` field and the retirement leak in
 [retirement-shutdown-gap.md](retirement-shutdown-gap.md).

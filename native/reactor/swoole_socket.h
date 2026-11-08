@@ -37,9 +37,10 @@ enum {
     SW_BAD_SOCKET = -1,
 };
 
+struct swr_v1_core_resolver;
+
 namespace swoole {
 struct GethostbynameRequest;
-struct GetaddrinfoRequest;
 
 namespace network {
 struct SendfileTask {
@@ -463,7 +464,7 @@ struct Socket : swr_v1_socket {
 std::string gethostbyname(int type, const std::string &name);
 int gethostbyname(int type, const char *name, char *addr);
 int gethostbyname(GethostbynameRequest *req);
-int getaddrinfo(GetaddrinfoRequest *req);
+int getaddrinfo(swr_v1_core_resolver *request);
 
 }  // namespace network
 

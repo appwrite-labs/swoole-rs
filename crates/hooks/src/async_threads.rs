@@ -3,9 +3,8 @@
 //! `AsyncThreads`, a reactor thread's handle on crates/ossupport's shared pool, and
 //! `async::dispatch`, under their upstream (Itanium) symbols. The pool runs an event
 //! on a worker and writes its address to the completion pipe; the reactor reads it
-//! back and runs its callback. `native/ossupport/async_event.cc` copies and frees the
-//! events, whose request is a `std::shared_ptr`. The ossupport patch deletes
-//! `src/os/async_thread.cc`.
+//! back and runs its callback. Each pool copy of an event holds a reference to its
+//! request record. The ossupport patch deletes `src/os/async_thread.cc`.
 use crate::offload::AsyncEvent;
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -37,10 +36,8 @@ const WRONG_OPERATION: c_int = 509;
 const AIO_BAD_REQUEST: c_int = 4001;
 const AIO_CANCELED: c_int = 4002;
 
-// SAFETY: native/ossupport/async_event.cc's and native/reactor/reactor.cc's.
+// SAFETY: native/reactor/reactor.cc's.
 unsafe extern "C" {
-    fn swr_v1_os_async_event_copy(event: *const AsyncEvent) -> *mut AsyncEvent;
-    fn swr_v1_os_async_event_free(event: *mut AsyncEvent);
     fn swr_v1_event_set_exit_condition(
         id: c_int,
         condition: unsafe extern "C" fn(*mut usize) -> bool,
@@ -66,17 +63,19 @@ fn current() -> *mut AsyncThreads {
     thread_async_threads().cast()
 }
 
-/// A heap copy of `event`, as `new AsyncEvent(*event)`.
-///
-/// # Safety
-/// `event` is a live event.
-unsafe fn copy(event: *const AsyncEvent) -> *mut AsyncEvent {
-    // SAFETY: as the caller promises.
-    let copy = unsafe { swr_v1_os_async_event_copy(event) };
-    if copy.is_null() {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<AsyncEvent>());
+/// A heap copy of `event` holding its own reference to the request.
+fn copy(event: &AsyncEvent) -> *mut AsyncEvent {
+    // SAFETY: the event's request record is null or live while the event is.
+    if let Some(record) = unsafe { event.data.as_ref() } {
+        swoole_rs_corebase::swr_v1_core_resolver_retain(record);
     }
-    copy
+    Box::into_raw(Box::new(*event))
+}
+
+/// Drops a copy from `copy`, taken out of its box, and its reference to the request.
+fn free(event: AsyncEvent) {
+    // SAFETY: the copy's own reference.
+    unsafe { swoole_rs_corebase::swr_v1_core_resolver_free(event.data) };
 }
 
 /// Hands `event` to the reactor thread that owns its pipe, or frees it if the write
@@ -96,7 +95,7 @@ unsafe fn send_event(event: *mut AsyncEvent) {
             format_args!("sendto swoole_aio_pipe_write failed"),
         );
         // SAFETY: the event never reached the reactor.
-        unsafe { swr_v1_os_async_event_free(event) };
+        free(*unsafe { Box::from_raw(event) });
     }
 }
 
@@ -156,8 +155,7 @@ extern "C" fn retire(key: usize) {
         Some(release_callback),
         swr_v1_core_aio_default_socket(),
     );
-    // SAFETY: `notice` is a complete event with no request.
-    let event = unsafe { copy(&raw const notice) };
+    let event = copy(&notice);
     // SAFETY: a fresh heap event on the default pipe.
     unsafe { send_event(event) };
 }
@@ -310,7 +308,7 @@ pub unsafe extern "C" fn dispatch(request: *const AsyncEvent) -> *mut AsyncEvent
     // SAFETY: the thread's live handle.
     let threads = unsafe { &mut *threads };
     // SAFETY: as the caller promises.
-    let event = unsafe { copy(request) };
+    let event = copy(unsafe { &*request });
     // SAFETY: the fresh copy, not yet shared.
     let fields = unsafe { &mut *event };
     // SAFETY: an acquired, unreleased reference.
@@ -339,7 +337,7 @@ extern "C" fn complete(token: usize) {
     let threads = unsafe { &mut *current() };
     threads.task_num = threads.task_num.wrapping_sub(1);
     // SAFETY: done with; nothing else holds it.
-    unsafe { swr_v1_os_async_event_free(event) };
+    free(*unsafe { Box::from_raw(event) });
 }
 
 /// Upstream's `AsyncThreads::callback`, the pipe's reactor handler: completes every event

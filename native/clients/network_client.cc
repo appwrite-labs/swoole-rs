@@ -2,7 +2,7 @@
 // network::Client's C++ half (upstream's src/network/client.cc is deleted). The state and
 // every operation are crates/clients/src/client.rs; this keeps what Rust can't express: the
 // class's constructor, destructor and methods over the members of C++ types (std::function
-// callbacks, shared_ptr<SSLContext>, the proxies, String buffers, AsyncEvent), the C++
+// callbacks, shared_ptr<SSLContext>, the proxies, String buffers), the C++
 // exception a callback throws, the one table Rust reaches them through, and the C calls
 // crates/phpclients and the Rust core-tests cases (tests/modules/clients/client.rs) make.
 #include "swoole_string.h"
@@ -83,8 +83,8 @@ static void Client_onTimeout(Timer *, TimerNode *tnode) {
 }
 
 static void Client_onResolveCompleted(AsyncEvent *event) {
-    auto *req = dynamic_cast<GethostbynameRequest *>(event->data.get());
-    swr_v1_clients_on_resolved(static_cast<Client *>(event->object)->state_, event->error, req->addr.c_str());
+    const auto addr = swr_v1_core_string_view(swr_v1_core_resolver_view(event->data).address);
+    swr_v1_clients_on_resolved(static_cast<Client *>(event->object)->state_, event->error, addr.data);
     rethrown(0);
 }
 
@@ -177,8 +177,9 @@ static const swr_v1_clients_native native = {
     [](void *cli, double timeout) -> void * { return swoole_timer_add(timeout, false, Client_onTimeout, cli); },
     [](void *timer) { swoole_timer_del(static_cast<TimerNode *>(timer)); },
     [](void *cli, const char *host, int domain) -> int {
+        GethostbynameRequest req(host, domain);
         AsyncEvent ev{};
-        ev.data = std::make_shared<GethostbynameRequest>(host, domain);
+        ev.data = req.state_handle();
         ev.object = cli;
         ev.handler = async::handler_gethostbyname;
         ev.callback = Client_onResolveCompleted;

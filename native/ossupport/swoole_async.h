@@ -15,15 +15,13 @@
 
 namespace swoole {
 
-struct AsyncRequest {
-    virtual ~AsyncRequest() = default;
-};
-
 struct AsyncEvent {
     size_t task_id;
     uint8_t canceled;
     int error;
-    std::shared_ptr<AsyncRequest> data;
+    // The request's resolver record. A stack event borrows its request's; each pool
+    // copy holds its own reference, so a request may go before the pool finishes.
+    swr_v1_core_resolver *data;
     ssize_t retval;
     network::Socket *pipe_socket;
     double timestamp;
@@ -32,7 +30,7 @@ struct AsyncEvent {
     void (*callback)(AsyncEvent *event);
 };
 
-struct GethostbynameRequest : AsyncRequest, private ResolverOwner {
+struct GethostbynameRequest : private ResolverOwner {
     RustStringView name{state_.name};
     int &family = state_.fields->family;
     RustStringView addr{state_.address};
@@ -46,7 +44,7 @@ struct GethostbynameRequest : AsyncRequest, private ResolverOwner {
     swr_v1_core_resolver *state_handle() const { return state_.owner; }
 };
 
-struct GetaddrinfoRequest : AsyncRequest, private ResolverOwner {
+struct GetaddrinfoRequest : private ResolverOwner {
     RustStringView hostname{state_.name};
     RustStringView service{state_.service};
     int &family = state_.fields->family;
@@ -80,16 +78,16 @@ typedef void (*Handler)(AsyncEvent *event);
 
 AsyncEvent *dispatch(const AsyncEvent *request);
 
+// network::gethostbyname over the record alone: a pool request has no address cache.
 inline void handler_gethostbyname(AsyncEvent *event) {
-    auto req = dynamic_cast<GethostbynameRequest *>(event->data.get());
-    event->retval = network::gethostbyname(req);
-    event->error = event->retval < 0 ? swoole_get_last_error() : 0;
+    event->retval = swr_v1_core_resolver_host(event->data);
+    if (event->retval < -1) ResolverOwner::check(event->retval);
+    event->error = event->retval < 0 ? SW_ERROR_DNSLOOKUP_RESOLVE_FAILED : 0;
 }
 
 inline void handler_getaddrinfo(AsyncEvent *event) {
-    auto req = dynamic_cast<GetaddrinfoRequest *>(event->data.get());
-    event->retval = network::getaddrinfo(req);
-    event->error = req->error;
+    event->retval = network::getaddrinfo(event->data);
+    event->error = swr_v1_core_resolver_view(event->data).fields->error;
 }
 
 }  // namespace async

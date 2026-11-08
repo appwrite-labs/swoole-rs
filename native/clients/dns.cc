@@ -205,10 +205,10 @@ std::string gethostbyname(int type, const std::string &name) {
     return {};
 }
 
-int getaddrinfo(GetaddrinfoRequest *req) {
+int getaddrinfo(swr_v1_core_resolver *request) {
     std::exception_ptr exception;
     const int status = swr_v1_core_resolver_lookup(
-        req->state_handle(),
+        request,
         [](void *context, int family) {
             try {
                 swoole_warning("unknown socket family[%d]", family);
