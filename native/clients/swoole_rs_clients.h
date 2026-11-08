@@ -207,6 +207,38 @@ struct swr_v1_clients_format_result { size_t written; uint32_t error; };
 /* Output is disjoint native-owned writable bytes, possibly uninitialized.
  * Required inputs initialized.0 success,1 invalid,2 printf-count overflow. */
 struct swr_v1_clients_format_result swr_v1_clients_http_format(uint32_t kind, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, size_t number, uint8_t *output, size_t capacity);
+/* network::Client for its C callers (crates/phpclients, the Rust core-tests cases), defined by
+ * native/clients/network_client.cc. create: new Client(type, async), or null with errno in
+ * `error` when it has no socket. */
+void *swoole_client_create(int type, bool async, int *error);
+void swoole_client_free(void *cli);
+/* The client's Rust state (crates/clients' ClientState). */
+void *swoole_client_state(void *cli);
+/* The callbacks in `events` (1 << SWOOLE_CLIENT_ON_*) call `listener` with `object`; for
+ * SWOOLE_CLIENT_ON_ERROR, `length` is swoole_get_last_error(). */
+enum {
+    SWOOLE_CLIENT_ON_CONNECT = 1,
+    SWOOLE_CLIENT_ON_RECEIVE = 2,
+    SWOOLE_CLIENT_ON_CLOSE = 3,
+    SWOOLE_CLIENT_ON_ERROR = 4,
+    SWOOLE_CLIENT_ON_BUFFER_FULL = 5,
+    SWOOLE_CLIENT_ON_BUFFER_EMPTY = 6,
+};
+typedef void (*swoole_client_listener)(void *object, int kind, const char *data, size_t length);
+void swoole_client_async_listen(void *cli, void *object, uint32_t events, swoole_client_listener listener);
+bool swoole_client_has_on_error(void *cli);
+/* The client's SSLContext owner, which crates/tls configures; NULL while TLS is off. */
+const struct swr_v1_tls_owner *swoole_client_ssl_context(void *cli);
+/* set_http_proxy (http) or set_socks5_proxy. */
+void swoole_client_proxy(void *cli,
+                         bool http,
+                         const char *host,
+                         size_t host_length,
+                         int64_t port,
+                         const char *user,
+                         size_t user_length,
+                         const char *password,
+                         size_t password_length);
 #ifdef __cplusplus
 }
 #endif

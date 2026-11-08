@@ -18,47 +18,12 @@ struct _zend_string;
  * (crates/phpclients). */
 void swoole_rs_php_error(int level, bool fatal, const char *message);
 
-/* PHP Swoole\Client and Swoole\Async\Client (crates/phpclients): MINIT
- * (php_swoole_client_minit and php_swoole_client_async_minit), and the async events
- * network::Client raises, which re-raise a PHP callback's bailout as their
- * last step. For SWOOLE_CLIENT_ON_ERROR, `length` is
- * swoole_get_last_error(). */
-enum {
-    SWOOLE_CLIENT_ON_CONNECT = 1,
-    SWOOLE_CLIENT_ON_RECEIVE = 2,
-    SWOOLE_CLIENT_ON_CLOSE = 3,
-    SWOOLE_CLIENT_ON_ERROR = 4,
-    SWOOLE_CLIENT_ON_BUFFER_FULL = 5,
-    SWOOLE_CLIENT_ON_BUFFER_EMPTY = 6,
-};
-void swr_v1_phpclients_async_event(struct _zend_object *object, int kind, const char *data, size_t length);
-
-/* Defined by native/clients/client.cc: network::Client, one call per operation. */
+/* Defined by native/clients/client.cc: network::Client's PHP side. */
 enum { SWOOLE_CLIENT_ERROR = 0, SWOOLE_CLIENT_ERROR_FATAL = 1, SWOOLE_CLIENT_ERROR_SYS = 2, SWOOLE_CLIENT_ERROR_CORE = 3 };
 /* php_swoole_error, _fatal_error, _sys_error or _core_error(level, "%s", message). */
 void swoole_client_php_error(int kind, int level, const char *message);
-/* new Client(type, async); null, with errno in `error`, when it has no socket. */
-void *swoole_client_create(int type, bool async, int *error);
-/* The client's Rust state (crates/clients' ClientState). */
-void *swoole_client_state(void *cli);
 /* A Socket over a dup of the client's fd into `zsocket`; false without ext/sockets. */
 bool swoole_client_export_socket(void *cli, struct _zval_struct *zsocket);
-/* Install the async callbacks in `events` (1 << SWOOLE_CLIENT_ON_*), raising them on `object`. */
-void swoole_client_async_listen(void *cli, struct _zend_object *object, uint32_t events);
-bool swoole_client_has_on_error(void *cli);
-
-/* The client's SSLContext owner, which crates/tls configures; NULL while TLS is off. */
-const struct swr_v1_tls_owner *swoole_client_ssl_context(void *cli);
-/* set_http_proxy (http) or set_socks5_proxy. */
-void swoole_client_proxy(void *cli,
-                         bool http,
-                         const char *host,
-                         size_t host_length,
-                         int64_t port,
-                         const char *user,
-                         size_t user_length,
-                         const char *password,
-                         size_t password_length);
 
 /* One operation that can run PHP code, run by swoole_client_run as a
  * bailout::trap body. */

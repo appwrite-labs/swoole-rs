@@ -3,8 +3,8 @@
 // every operation are crates/clients/src/client.rs; this keeps what Rust can't express: the
 // class's constructor, destructor and methods over the members of C++ types (std::function
 // callbacks, shared_ptr<SSLContext>, the proxies, String buffers, AsyncEvent), the C++
-// exception a callback throws, and the one table Rust reaches them through. Zend-free, so
-// core-tests' SyncClient and AsyncClient link it.
+// exception a callback throws, the one table Rust reaches them through, and the C calls
+// crates/phpclients and the Rust core-tests cases (tests/modules/clients/client.rs) make.
 #include "swoole_string.h"
 #include "swoole_socket.h"
 #include "swoole_timer.h"
@@ -438,3 +438,81 @@ int Client::ssl_verify(int allow_self_signed) const {
 
 }  // namespace network
 }  // namespace swoole
+
+using swoole::network::Client;
+
+void *swoole_client_create(int type, bool async, int *error) {
+    auto *cli = new Client(static_cast<swoole::SocketType>(type), async);
+    if (cli->socket == nullptr) {
+        *error = errno;
+        delete cli;
+        errno = *error;
+        return nullptr;
+    }
+    return cli;
+}
+
+void swoole_client_free(void *cli) {
+    delete static_cast<Client *>(cli);
+}
+
+void *swoole_client_state(void *cli) {
+    return static_cast<Client *>(cli)->state_;
+}
+
+static void client_event(Client *cli, int event, const char *data, size_t length) {
+    cli->listener(cli->object, event, data, length);
+}
+
+void swoole_client_async_listen(void *_cli, void *object, uint32_t events, swoole_client_listener listener) {
+    auto *cli = static_cast<Client *>(_cli);
+    cli->object = object;
+    cli->listener = listener;
+    if (events & (1u << SWOOLE_CLIENT_ON_CONNECT)) {
+        cli->onConnect = [](Client *cli) { client_event(cli, SWOOLE_CLIENT_ON_CONNECT, nullptr, 0); };
+    }
+    if (events & (1u << SWOOLE_CLIENT_ON_RECEIVE)) {
+        cli->onReceive = [](Client *cli, const char *data, size_t length) {
+            client_event(cli, SWOOLE_CLIENT_ON_RECEIVE, data, length);
+        };
+    }
+    if (events & (1u << SWOOLE_CLIENT_ON_CLOSE)) {
+        cli->onClose = [](Client *cli) { client_event(cli, SWOOLE_CLIENT_ON_CLOSE, nullptr, 0); };
+    }
+    if (events & (1u << SWOOLE_CLIENT_ON_ERROR)) {
+        cli->onError = [](Client *cli) { client_event(cli, SWOOLE_CLIENT_ON_ERROR, nullptr, swoole_get_last_error()); };
+    }
+    if (events & (1u << SWOOLE_CLIENT_ON_BUFFER_FULL)) {
+        cli->onBufferFull = [](Client *cli) { client_event(cli, SWOOLE_CLIENT_ON_BUFFER_FULL, nullptr, 0); };
+    }
+    if (events & (1u << SWOOLE_CLIENT_ON_BUFFER_EMPTY)) {
+        cli->onBufferEmpty = [](Client *cli) { client_event(cli, SWOOLE_CLIENT_ON_BUFFER_EMPTY, nullptr, 0); };
+    }
+}
+
+bool swoole_client_has_on_error(void *cli) {
+    return static_cast<Client *>(cli)->onError != nullptr;
+}
+
+const swr_v1_tls_owner *swoole_client_ssl_context(void *cli) {
+    auto &context = static_cast<Client *>(cli)->ssl_context;
+    return context ? context->handle() : nullptr;
+}
+
+void swoole_client_proxy(void *_cli,
+                         bool http,
+                         const char *host,
+                         size_t host_length,
+                         int64_t port,
+                         const char *user,
+                         size_t user_length,
+                         const char *password,
+                         size_t password_length) {
+    auto *cli = static_cast<Client *>(_cli);
+    const std::string h(host, host_length), u(user, user_length), p(password, password_length);
+    if (http) {
+        cli->set_http_proxy(h, port, u, p);
+    } else {
+        cli->set_socks5_proxy(h, port, u, p);
+    }
+}

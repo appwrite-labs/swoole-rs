@@ -1,4 +1,5 @@
-//! Upstream's `core-tests/src/coroutine/system.cpp` (hook.cpp in hook.rs, socket.cpp in socket.rs), one
+//! Upstream's `core-tests/src/coroutine/system.cpp` (hook.cpp in hook.rs, socket.cpp in socket.rs,
+//! and network/client.cpp in tests/modules/clients/client.rs), one
 //! Rust function per TEST with the same inputs and expected values, over the
 //! hybrid's libswoole.so: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
@@ -12,6 +13,10 @@
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+// Upstream's core-tests/src/network/client.cpp: a clients test, built here to share this
+// binary's libswoole.so build and runner.
+#[path = "../../../clients/client.rs"]
+mod client;
 mod hook;
 mod socket;
 
@@ -882,6 +887,7 @@ const SUITES: &[(&str, Cases)] = &[
     ("coroutine_hook", hook::CASES),
     ("coroutine_socket", socket::CASES),
     ("rust_socket_scopes", socket::SCOPE_CASES),
+    ("client", client::CASES),
 ];
 
 fn main() {

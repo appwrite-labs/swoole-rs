@@ -1,7 +1,7 @@
 //! `Swoole\Async\Client`: a `Swoole\Client` whose `network::Client` runs on
 //! the reactor and raises PHP callbacks. It shares the parent's object
 //! ([`Data`]); the callbacks are `zend::Callable`s by slot, and the events the
-//! client raises arrive through `swr_v1_phpclients_async_event`.
+//! client raises arrive through `async_event`.
 use crate::{
     native::{self, ClientCall, ErrorKind, Op},
     net::{
@@ -245,8 +245,7 @@ fn event(
 /// # Safety
 /// `object` is the live client object `connect()` bound; `data` holds
 /// `length` bytes for `SWOOLE_CLIENT_ON_RECEIVE`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_async_event(
+unsafe extern "C" fn async_event(
     object: *mut zend_object,
     kind: c_int,
     data: *const c_char,
@@ -413,7 +412,7 @@ fn connect(call: &Call) {
         }
     }
     // SAFETY: a live client; it raises its events on this object.
-    unsafe { native::swoole_client_async_listen(fresh.cli, object, events) };
+    unsafe { native::swoole_client_async_listen(fresh.cli, object, events, async_event) };
     net::this(call).conn = conn;
     // SAFETY: `zval_addref_p(ZEND_THIS)`: the client holds the object.
     unsafe { (*object).gc.refcount += 1 };

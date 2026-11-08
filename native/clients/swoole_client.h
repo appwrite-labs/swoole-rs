@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_client.h, owned here: network::Client over the Rust state
  * (crates/clients/src/client.rs) and its C++ members, which native/clients reaches,
- * and the SyncClient and AsyncClient wrappers upstream's core-tests build on.
+ * and the SyncClient wrapper upstream's core-tests build on.
  * Upstream's file is deleted, so `#include "swoole_client.h"` finds this copy. */
 
 #pragma once
@@ -32,6 +32,8 @@ class Client : public swr_v1_clients_record {
     std::function<void(Client *cli)> onClose = nullptr;
     std::function<void(Client *cli)> onBufferFull = nullptr;
     std::function<void(Client *cli)> onBufferEmpty = nullptr;
+    // swoole_client_async_listen's callback, which those above call with `object`.
+    swoole_client_listener listener = nullptr;
 
     static void init_reactor(Reactor *reactor);
     Client(SocketType _type, bool async);
@@ -183,54 +185,6 @@ class SyncClient {
         if (created) {
             close();
         }
-    }
-};
-
-class AsyncClient : public SyncClient {
-  protected:
-    std::function<void(AsyncClient *)> _onConnect = nullptr;
-    std::function<void(AsyncClient *)> _onError = nullptr;
-    std::function<void(AsyncClient *)> _onClose = nullptr;
-    std::function<void(AsyncClient *, const char *data, size_t length)> _onReceive = nullptr;
-
-  public:
-    explicit AsyncClient(SocketType _type) : SyncClient(_type, true) {}
-
-    bool connect(const char *host, int port, double timeout = -1) override {
-        client.object = this;
-        client.onConnect = [](Client *cli) {
-            auto *ac = (AsyncClient *) cli->object;
-            ac->_onConnect(ac);
-        };
-        client.onError = [](Client *cli) {
-            auto *ac = (AsyncClient *) cli->object;
-            ac->_onError(ac);
-        };
-        client.onClose = [](Client *cli) {
-            auto *ac = (AsyncClient *) cli->object;
-            ac->_onClose(ac);
-        };
-        client.onReceive = [](Client *cli, const char *data, size_t length) {
-            auto *ac = (AsyncClient *) cli->object;
-            ac->_onReceive(ac, data, length);
-        };
-        return SyncClient::connect(host, port, timeout);
-    }
-
-    void on_connect(const std::function<void(AsyncClient *)> &fn) {
-        _onConnect = fn;
-    }
-
-    void on_error(const std::function<void(AsyncClient *)> &fn) {
-        _onError = fn;
-    }
-
-    void on_close(const std::function<void(AsyncClient *)> &fn) {
-        _onClose = fn;
-    }
-
-    void on_receive(const std::function<void(AsyncClient *, const char *data, size_t length)> &fn) {
-        _onReceive = fn;
     }
 };
 

@@ -100,7 +100,7 @@ calls, the C++ locale's space table and the `ResolverOwner` exception paths.
 watermarks) and operations are Rust's (`crates/clients/src/client.rs`). The C++ half is
 the `swr_v1_clients_native` table over the members of C++ types, and the
 warnings, emitted from functions named as upstream's so the log lines match.
-It is Zend-free so core-tests' `SyncClient` and `AsyncClient` link it. The last error is corebase's, which Rust sets directly.
+It is Zend-free so core-tests' `SyncClient` and the Rust client cases (through its `swoole_client_*` C calls) link it. The last error is corebase's, which Rust sets directly.
 `bind` and `sendto` are whole Rust operations; each method passes a lambda for
 its one warning, which logs under the method's own name.
 Construction checks static `Socket::is_stream(type)` for fd class and the
