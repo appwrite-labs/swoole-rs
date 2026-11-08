@@ -1,4 +1,4 @@
-//! Upstream's `core-tests/src/coroutine/system.cpp` (and hook.cpp, in hook.rs), one
+//! Upstream's `core-tests/src/coroutine/system.cpp` (hook.cpp in hook.rs, socket.cpp in socket.rs), one
 //! Rust function per TEST with the same inputs and expected values, over the
 //! hybrid's libswoole.so: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
@@ -13,6 +13,7 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 mod hook;
+mod socket;
 
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
@@ -876,7 +877,11 @@ const CASES: Cases = &[
 type Cases = &'static [(&'static str, fn())];
 
 /// Each suite and its cases.
-const SUITES: &[(&str, Cases)] = &[("coroutine_system", CASES), ("coroutine_hook", hook::CASES)];
+const SUITES: &[(&str, Cases)] = &[
+    ("coroutine_system", CASES),
+    ("coroutine_hook", hook::CASES),
+    ("coroutine_socket", socket::CASES),
+];
 
 fn main() {
     let name = std::env::args().nth(1).expect("usage: main --list | NAME");

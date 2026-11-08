@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upstream's core-tests/src/coroutine/{system,hook}.cpp, ported to Rust (tests/modules/hooks/system/),
+"""Upstream's core-tests/src/coroutine/{system,hook,socket}.cpp, ported to Rust (tests/modules/hooks/system/),
 against the hybrid tree's libswoole.so (Linux). Builds lib-swoole as tools/core_tests.py builds
 the hybrid engine, links the case binary to it, and runs each case in its own process group.
 --exclude NAME=REASON reports a case `excluded` with its reason; it never counts as passed."""
@@ -16,7 +16,7 @@ from tools.build_hybrid import overlay_hybrid_tree  # noqa: E402
 from tools.core_tests import stage, write_changed  # noqa: E402
 from tools.harness import ROOT, run_isolated, write_report  # noqa: E402
 
-# The cases are system/src/main.rs; system/Cargo.lock pins its (empty) dependency set for --locked.
+# The cases are system/src/main.rs (with hook.rs and socket.rs); system/Cargo.lock pins its (empty) dependency set for --locked.
 PACKAGE = ROOT / 'tests/modules/hooks/system'
 
 

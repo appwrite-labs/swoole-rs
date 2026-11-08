@@ -53,10 +53,6 @@ CORE_TESTS = {
                  'client.bind': "expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner isn't root and gets EACCES",
                  'client.async_tcp_socks5_proxy_handshake_fail': 'expects www.baidu.com:80 to time out a SOCKS5 greeting',
                  **{'client.' + name: PROXY for name in CLIENT_PROXY}}),
-    'hooks': (['coroutine/socket.cpp'],
-              {'coroutine_socket.tcp6': 'needs IPv6',
-               **{'coroutine_socket.' + name: PROXY for name in [
-                   'https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy', 'https_get_with_http_proxy']}}),
     'timer': (['os/timer.cpp'], {}),
     'tls': (['protocol/ssl.cpp'], {}),
 }
@@ -393,13 +389,17 @@ def plan(args, reports):
                    *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
                    *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]], *report(name))
     if integrate and 'hooks' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/coroutine/{system,hook}.cpp, ported to Rust over the hybrid's libswoole.so.
+        # core-tests/src/coroutine/{system,hook,socket}.cpp, ported to Rust over the hybrid's libswoole.so.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
                '--exclude', 'coroutine_system.getaddrinfo=' + NETWORK, '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
                '--exclude', "coroutine_hook.sendmsg_and_recvmsg=its child reads the parent's freed stack when the parent's close "
                             'completes first (SIGSEGV in ~15% of runs upstream)',
+               '--exclude', 'coroutine_socket.tcp6=needs IPv6',
+               '--exclude', 'coroutine_socket.sendto_recvfrom_udp=the UDP6 sendto to a host name fails on the hybrid (#1735)',
+               *[arg for name in ['https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy',
+                                  'https_get_with_http_proxy'] for arg in ['--exclude', f'coroutine_socket.{name}={PROXY}']],
                *report('hooks-system-rust'))
     if integrate and 'clients' in modules and sys.platform.startswith('linux'):
         script('clients-address-record', 'tests/modules/clients/address_record.py',

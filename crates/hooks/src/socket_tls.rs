@@ -150,7 +150,12 @@ unsafe fn create_session(socket: *mut CoSocket, owner: *const OwnedTlsContext) -
 /// against the context's `tls_host_name` when one is set.
 ///
 /// # Safety
-/// `this` is a live native socket with an `SSLContext` and a TLS session.
+/// `this` is a live native socket with an `SSLContext` and a TLS session. Its
+/// upstream symbol is what tests/modules/hooks/system's socket.cpp port calls.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket10ssl_verifyEb")
+)]
 pub unsafe extern "C" fn ssl_verify(this: *mut c_void, allow_self_signed: bool) -> bool {
     let socket = record(this);
     // SAFETY: as the caller promises.
@@ -328,7 +333,12 @@ pub(crate) fn read_timeout(socket: *mut CoSocket) -> f64 {
 /// this socket, then the socket is handshaked.
 ///
 /// # Safety
-/// `this` is a live native socket with an `SSLContext`, in a coroutine.
+/// `this` is a live native socket with an `SSLContext`, in a coroutine. Its
+/// upstream symbol is what tests/modules/hooks/system's socket.cpp port calls.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket13ssl_handshakeEv")
+)]
 pub unsafe extern "C" fn ssl_handshake(this: *mut c_void) -> bool {
     let socket = record(this);
     // SAFETY: as the caller promises; the timer stops before this returns.
