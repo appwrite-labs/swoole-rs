@@ -72,10 +72,7 @@ pub use state::{
 pub use admin::swr_v1_server_tcp_info;
 pub use admin::{swr_v1_server_admin_command, swr_v1_server_admin_run};
 
-pub use local_addr::{
-    swr_v1_server_local_addr, swr_v1_server_local_addr_index, swr_v1_server_local_addrs_free,
-    swr_v1_server_local_addrs_new,
-};
+pub use local_addr::swr_v1_server_local_addr_index;
 
 /// One native fact or effect on the server in `context`.
 pub type ServerCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> u64;

@@ -54,6 +54,8 @@ pub struct ServerState {
     locked: (std::sync::Mutex<bool>, std::sync::Condvar),
     /// The reactor threads and the heartbeat thread, by `start_thread`'s `arg`.
     threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
+    /// The interface addresses `Server::create` read (`local_addr`); null before.
+    pub(crate) local_addrs: AtomicPtr<crate::local_addr::LocalAddrs>,
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
@@ -85,6 +87,7 @@ impl ServerState {
             texts: [const { StringSlot::new() }; TEXT_COUNT],
             locked: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
             threads: std::sync::Mutex::new(Vec::new()),
+            local_addrs: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 
@@ -360,6 +363,8 @@ pub unsafe extern "C" fn swr_v1_server_state_free(state: *mut ServerState) {
 
 impl Drop for ServerState {
     fn drop(&mut self) {
+        // SAFETY: the table `local_addr::init` boxed, if any; nothing reads it after the state.
+        unsafe { crate::local_addr::free(*self.local_addrs.get_mut()) };
         let tables = *self.tables.get_mut();
         if !tables.is_null() {
             // SAFETY: this state owns its unique table-view box; the shared arena is a loan.

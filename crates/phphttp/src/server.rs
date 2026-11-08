@@ -136,10 +136,9 @@ unsafe extern "C" {
     ) -> *mut c_void;
     #[link_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE"]
     fn php_swoole_get_recv_data(server: *mut c_void, zdata: *mut zval, request: *mut c_void);
-    #[link_name = "_ZN6swoole6Server14get_local_addrEPNS_10ConnectionE"]
-    fn get_local_addr(server: *mut c_void, conn: *mut ConnectionRecord) -> *const c_char;
-    #[link_name = "_ZN6swoole6Server15get_remote_addrEPNS_10ConnectionE"]
-    fn get_remote_addr(server: *mut c_void, conn: *mut ConnectionRecord) -> *const c_char;
+    fn swr_v1_clients_address_host(
+        address: *const swoole_rs_corebase::net_types::SocketAddress,
+    ) -> *const c_char;
     fn swr_v1_clients_address_port(
         address: *const swoole_rs_corebase::net_types::SocketAddress,
     ) -> c_int;
@@ -178,13 +177,15 @@ pub(crate) fn add_long(table: *mut HashTable, name: Key, long: zend_long) {
 }
 
 fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> *mut zend_string {
-    let get = if local {
-        get_local_addr
+    let text = if local {
+        // SAFETY: the live server and connection the caller passed.
+        unsafe { swoole_rs_server::local_addr::get_local_addr(server, conn) }
     } else {
-        get_remote_addr
+        // SAFETY: as above.
+        let info = unsafe { &raw const (*conn).info };
+        // SAFETY: `Server::get_remote_addr`: the connection's live peer address.
+        unsafe { swr_v1_clients_address_host(info) }
     };
-    // SAFETY: the live server and connection the caller passed.
-    let text = unsafe { get(server, conn) };
     // SAFETY: the server's NUL-terminated address text.
     let text = unsafe { CStr::from_ptr(text) };
     // SAFETY: a byte span of the address text.
