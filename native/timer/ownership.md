@@ -5,46 +5,44 @@ Frozen queue ABI: `docs/timer-abi-v1.md`. Module-local clock/backend helpers:
 
 | Patch | Upstream file |
 | --- | --- |
-| 0001-timer-header | `include/swoole_timer.h` |
-| 0002-timer-body | `src/core/timer.cc` |
+| 20261108T052712-timer-swoole-timer-is-rust-… | deletes `include/swoole_timer.h` and `src/core/timer.cc` |
 | 0003-timer-php | `ext-src/swoole_timer.cc` |
 | 20261107T031810-timer-src-wrapper-… | deletes `src/wrapper/timer.cc` |
 | 0005-timer-clock | `src/os/timer.cc` |
 
-## Queue
+## Queue and timer
 
 `crates/timer/src/lib.rs` is the only timer heap/index and scheduling state
 machine. Its 14 frozen exports own IDs, deadline ordering, update/repair,
 captured dispatch time, selection rounds, active-ID completion, missed-repeat
 coalescing, cancellation, closing/draining and allocation-failure rollback.
-There is no Native heap or map in the selected `swoole_timer.h`.
 
-What Native keeps:
+`crates/timer/src/owner.rs` is `swoole::Timer`: a Rust-owned record (backend,
+reactor, clock base, armed wakeup, abandoned-selection marker) and its
+operations, `init`/`reinit`, `add`, `remove`, `update`, `delay`, `select` and the
+destructor's close/complete/end/drain/release. `native/timer/swoole_timer.h` is
+the C++ view: `TimerNode`, and a `Timer` class with no data members whose methods
+call `swr_v1_timer_owner_*`. `crates/timer/src/wrapper.rs` is the
+`swoole_timer_*` API over it, with `SwooleTG.timer` through
+`swr_v1_core_timer_slot`.
 
-| Location | Native responsibility |
+What C++ keeps (`native/timer/timer.cc`):
+
+| Shim | Why |
 | --- | --- |
-| `timer.cc` `apply` | Copy returned Rust metadata into the Native callback token. |
-| constructor, `init`, `reinit` | Create the Rust handle, read the monotonic base, select manual/reactor/system execution, rearm the external timeout. |
-| `release_node` | Run the `std::function`/Zend destructor and delete the TimerNode after Rust returns custody; propagate a pending Zend bailout afterwards. |
-| `init_with_reactor` | Set `Reactor::timeout_msec`; attach the timer-priority select, exit condition and destroy callback. |
-| destructor | Drive close/complete/end/drain/release through Rust; run returned destructors outside Rust. A PID check distinguishes inherited child cleanup from a callback that resumes in the same process. |
-| `add` | Reject invalid durations with a Native warning; allocate the callback object; call Rust add; bring an armed external wakeup forward if needed. These checks run before allocation to preserve failure order. |
-| `remove` | Act on RELEASE/DEFERRED and run a detached destructor. |
-| `select` | Call Rust begin/next/complete/end around callback execution; on a C++ exception, clean up selection while preserving the primary exception. |
-| header `update`/`delay` | Read caller-mutated metadata or the clock; refresh the token from Rust. |
-| header get/count/round/get_ids | Copy Rust views/stats/IDs; typed get filters by token type. |
-| `crates/timer/src/wrapper.rs` | The `swoole_timer_*` API (`src/wrapper/timer.cc` is deleted): `SwooleTG.timer` through `swr_v1_core_timer_slot`, lazy creation, unit conversion, warnings; clear removes by ID. Reads the `Timer`/`TimerNode` fields `timer.cc`'s `apply` asserts. |
-| `crates/phptimer` clear-all, list | Snapshot IDs, resolve each again, filter PHP tokens; run destructors or build Zend values after Rust returns. |
-| PHP after/tick/info/stats/clear | Zend parsing/values, callable persistence, callback/destructor attachment. |
+| `swr_cpp_timer_node_new`, `_call`, `_release` | A `TimerNode` holds `std::function` callback and destructor. A C++ exception they throw comes back to Rust as an `exception_ptr`; `select` detaches the active node and ends the selection before `swr_cpp_timer_rethrow` rethrows the first one. |
+| `swr_cpp_timer_reactor_timeout`, `swr_cpp_timer_attach` | `Reactor::timeout_msec`, and the timer-priority select, exit condition and destroy callback, which the reactor takes as `std::function`. |
 
-`next_msec_` is the Native armed-wakeup cache used by `reinit` and thread-manager
+A Zend bailout longjmps out of a callback over `select`'s Rust frames, which hold
+nothing to drop.
+
+`next_msec` is the armed-wakeup cache used by `reinit` and thread-manager
 waits, not a second queue. Rust `end` computes the next delay.
 
 Zend bailout: a fatal longjmp from a PHP callback used to leave selection active
-and abort at shutdown. The PHP callback now marks the Native selection as
-abandoned before propagating bailout; the owner destructor then uses the normal
-exact-ID close/complete/end/drain path. This is a Native stack marker, not Rust
-state. Active self-deletion is still rejected. Details:
+and abort at shutdown. The PHP callback now marks the selection as abandoned
+before propagating bailout; the owner destructor then uses the normal exact-ID
+close/complete/end/drain path. Active self-deletion is still rejected. Details:
 `tests/modules/timer/bailout.md`.
 
 ## Clock and backend helpers

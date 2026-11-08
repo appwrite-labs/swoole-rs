@@ -1,4 +1,4 @@
-// Runs against unchanged pinned timer.cc/heap.cc; PHP supplies native runtime dependencies.
+// Runs against the shipped Rust-owned timer; PHP supplies native runtime dependencies.
 #include "swoole_timer.h"
 #include <iostream>
 #include <string>
@@ -10,7 +10,7 @@ extern "C" int swr_timer_probe(const char *name) {
     try {
         std::string scenario(name), events;
         unsigned destructors = 0;
-        auto *timer = new swoole::Timer(true); // Existing manual mode: no signals/reactor registrations.
+        auto *timer = swr_v1_timer_owner_new(true); // Manual mode: no signals/reactor registrations.
         auto add = [&](char label, bool repeat, const swoole::TimerCallback &callback) {
             auto *node = timer->add(1000, repeat, nullptr, callback);
             if (!node) throw std::runtime_error("add failed");
@@ -43,7 +43,7 @@ extern "C" int swr_timer_probe(const char *name) {
             timer->select();
             timer->select();
             const auto remaining = timer->count();
-            delete timer;
+            swr_v1_timer_owner_free(timer);
             SwooleTG.timer = previous;
             std::cout << "{\"scenario\":\"wrapper-clear\",\"inactive\":" << (inactive ? "true" : "false")
                       << ",\"missing\":" << (missing ? "true" : "false")
@@ -75,7 +75,7 @@ extern "C" int swr_timer_probe(const char *name) {
             const bool survivor_intact = timer->count() == 1 && timer->get(surviving_id);
             timer->select(); // Failure must have ended selection and released A once.
             const auto remaining = timer->count();
-            delete timer;
+            swr_v1_timer_owner_free(timer);
             std::cout << "{\"scenario\":\"" << scenario << "\",\"failure\":\"" << failure
                       << "\",\"survivor_intact\":" << (survivor_intact ? "true" : "false")
                       << ",\"remaining\":" << remaining << ",\"events\":\"" << events
@@ -131,7 +131,7 @@ extern "C" int swr_timer_probe(const char *name) {
                     // Copy references before deleting the callback's own closure.
                     auto *count = &destructors;
                     auto *log = &events;
-                    delete t;
+                    swr_v1_timer_owner_free(t);
                     _exit(*count == 2 && log->size() == 2 ? 0 : 2);
                 }
                 if (waitpid(child, &child_status, 0) != child) throw std::runtime_error("waitpid failed");
@@ -142,7 +142,7 @@ extern "C" int swr_timer_probe(const char *name) {
             timer->select();
             timer->select();
             const bool parent_drained = timer->count() == 0 && events == "AaBb" && destructors == 2;
-            delete timer;
+            swr_v1_timer_owner_free(timer);
             std::cout << "{\"scenario\":\"fork-active-teardown\",\"child_status\":" << child_status
                       << ",\"parent_intact\":" << (parent_intact ? "true" : "false")
                       << ",\"parent_drained\":" << (parent_drained ? "true" : "false")
@@ -152,11 +152,11 @@ extern "C" int swr_timer_probe(const char *name) {
             const auto id = add('A', false, record('A'))->id;
             const auto child = fork();
             if (child < 0) throw std::runtime_error("fork failed");
-            if (child == 0) { delete timer; _exit(destructors == 1 ? 0 : 2); }
+            if (child == 0) { swr_v1_timer_owner_free(timer); _exit(destructors == 1 ? 0 : 2); }
             int status;
             if (waitpid(child, &status, 0) != child) throw std::runtime_error("waitpid failed");
             const bool parent_intact = timer->get(id) && timer->count() == 1 && destructors == 0;
-            delete timer;
+            swr_v1_timer_owner_free(timer);
             std::cout << "{\"scenario\":\"fork-teardown\",\"child_status\":" << status
                       << ",\"parent_intact\":" << (parent_intact ? "true" : "false")
                       << ",\"parent_destructors\":" << destructors << "}\n";
@@ -170,7 +170,7 @@ extern "C" int swr_timer_probe(const char *name) {
         const bool b_present = b_id && timer->get(b_id);
         const std::string after_second = events;
         if (scenario == "destructor-add") timer->select();
-        delete timer;
+        swr_v1_timer_owner_free(timer);
         std::cout << "{\"scenario\":\"" << scenario << "\",\"after_first\":\"" << after_first
                   << "\",\"after_second\":\"" << after_second << "\",\"events\":\"" << events
                   << "\",\"count_after_second\":" << count << ",\"destructors\":" << destructors
