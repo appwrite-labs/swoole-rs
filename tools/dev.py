@@ -44,9 +44,6 @@ CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_
                 'http_get_async_with_socks5_proxy', 'http_get_sync_with_http_proxy', 'http_get_sync_with_socks5_proxy']
 NODE_WS = 'needs Node.js and its ws package'
 CORE_TESTS = {
-    'reactor': (['network/socket.cpp'],
-                {'socket.make_server_socket': "expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's kernel returns EPROTONOSUPPORT",
-                 'socket.connect_sync': NETWORK, 'socket.fail': NETWORK}),
     'timer': (['os/timer.cpp'], {}),
     'tls': (['protocol/ssl.cpp'], {}),
 }
@@ -344,9 +341,8 @@ def plan(args, reports):
                    *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
                    *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]], *report(name))
     if integrate and 'hooks' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp, network/client.cpp and
-        # network/{dns,address}.cpp, ported to Rust over the hybrid's libswoole.so, and the repo-owned
-        # C++ witnesses in its fixture.
+        # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp and network/{client,dns,address,socket}.cpp,
+        # ported to Rust over the hybrid's libswoole.so, and the repo-owned C++ witnesses in its fixture.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--fixture', ROOT / 'tests/modules/hooks/system/fixture.cc',
@@ -364,6 +360,10 @@ def plan(args, reports):
                             "isn't root and gets EACCES",
                '--exclude', 'client.async_tcp_socks5_proxy_handshake_fail=expects www.baidu.com:80 to time out a SOCKS5 greeting',
                *[arg for name in CLIENT_PROXY for arg in ['--exclude', f'client.{name}={PROXY}']],
+               # core-tests/src/network/socket.cpp (system/src/network_socket.rs).
+               '--exclude', "socket.make_server_socket=expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's "
+                            'kernel returns EPROTONOSUPPORT',
+               '--exclude', 'socket.connect_sync=' + NETWORK, '--exclude', 'socket.fail=' + NETWORK,
                *report('hooks-system-rust'))
     if integrate and 'reactor' in modules and sys.platform.startswith('linux'):
         # core-tests/src/reactor/base.cpp, ported to Rust over the hybrid's libswoole.so.

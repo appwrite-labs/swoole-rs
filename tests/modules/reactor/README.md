@@ -1,8 +1,9 @@
 # Reactor tests
 
-`reactor-unit` runs `crates/reactor`'s tests. `reactor-native-originals`
-(`tools/core_tests.py`) runs upstream's `network/socket.cpp` GoogleTests on both
-engines, with the exclusions listed in `CORE_TESTS` in `tools/dev.py`.
+`reactor-unit` runs `crates/reactor`'s tests.
+`network/socket.cpp`'s TESTs are Rust cases in `hooks-system-rust`
+(tests/modules/hooks/README.md), so the `reactor` core-tests lane
+(`reactor-native-originals`) is gone.
 
 `reactor/base.cpp`'s 26 TESTs are Rust (`base/`, the merge tier's `reactor-base-rust`
 phase): a case binary over the hybrid tree's libswoole.so, built and run by
