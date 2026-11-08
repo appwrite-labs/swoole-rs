@@ -1,5 +1,5 @@
 diff --git a/ext-src/php_swoole_curl.h b/ext-src/php_swoole_curl.h
-index 13ae82c..c18fc7b 100644
+index 79e4d33..c18fc7b 100644
 --- a/ext-src/php_swoole_curl.h
 +++ b/ext-src/php_swoole_curl.h
 @@ -31,2 +31,3 @@ SW_EXTERN_C_BEGIN
@@ -29,7 +29,7 @@ index 13ae82c..c18fc7b 100644
 -
 +// Rust's (crates/curl): ext/curl reads and sets multi.
  struct Handle {
-@@ -60,102 +53,48 @@ struct Handle {
+@@ -60,78 +53,25 @@ struct Handle {
      Multi *multi;
 -    /**
 -     * This is only for the swoole_curl_easy_perform function,
@@ -62,19 +62,19 @@ index 13ae82c..c18fc7b 100644
 +    return reinterpret_cast<Handle *>(swr_v1_curl_create_handle(cp));
 +}
  
-+static inline void destroy_handle(CURL *cp) {
-+    swr_v1_curl_destroy_handle(cp);
-+}
-+
-+// The multi engine in Rust (crates/curl); C++ names it and raises the fatal
-+// errors of a bound or missing coroutine.
- class Multi {
+-class Multi {
 -    CURLM *multi_handle_;
 -    TimerNode *timer = nullptr;
 -    long timeout_ms_ = 0;
 -    Coroutine *co = nullptr;
 -    int running_handles_ = 0;
 -    bool defer_callback = false;
+-    /**
+-     * When defer_callback is true, a deferred resume holding `this` is queued in the reactor.
+-     * release() then only marks the object instead of deleting it, and the queued callback
+-     * performs the deletion on entry.
+-     */
+-    bool released = false;
 -    Selector selector;
 -    std::unordered_map<curl_socket_t, Socket *> sockets;
 -
@@ -88,10 +88,11 @@ index 13ae82c..c18fc7b 100644
 -
 -    bool wait_event() const {
 -        return timer || !sockets.empty();
-+    swr_v1_curl_multi *rs() {
-+        return reinterpret_cast<swr_v1_curl_multi *>(this);
-     }
--
+-    }
++static inline void destroy_handle(CURL *cp) {
++    swr_v1_curl_destroy_handle(cp);
++}
+ 
 -    void add_timer(long timeout_ms) {
 -        if (timer && swoole_timer_is_available()) {
 -            swoole_timer_del(timer);
@@ -101,52 +102,76 @@ index 13ae82c..c18fc7b 100644
 -            timer = nullptr;
 -            callback(nullptr, 0);
 -        });
-+    static swr_v1_curl_handle *rs(Handle *handle) {
-+        return reinterpret_cast<swr_v1_curl_handle *>(handle);
-     }
- 
+-    }
+-
 -    void del_timer() {
 -        if (timer && swoole_timer_is_available()) {
 -            swoole_timer_del(timer);
 -            timeout_ms_ = -1;
 -            timer = nullptr;
 -        }
-+  public:
++// The multi engine in Rust (crates/curl); C++ names it and raises the fatal
++// errors of a bound or missing coroutine.
++class Multi {
++    swr_v1_curl_multi *rs() {
++        return reinterpret_cast<swr_v1_curl_multi *>(this);
+     }
+-
+-    void set_timer() {
+-        long _timeout_ms = 0;
+-        curl_multi_timeout(multi_handle_, &_timeout_ms);
+-        handle_timeout(multi_handle_, _timeout_ms, this);
++    static swr_v1_curl_handle *rs(Handle *handle) {
++        return reinterpret_cast<swr_v1_curl_handle *>(handle);
+     }
+@@ -139,48 +79,22 @@ class Multi {
+   public:
+-    Multi();
+-    ~Multi();
+-
+-    /**
+-     * Free the Multi object. If a deferred resume is still queued (defer_callback == true),
+-     * only mark the object; the queued callback deletes it, so the callback never dereferences
+-     * a freed pointer.
+-     *
+-     * Precondition: no coroutine may be suspended in select() on this object (co == nullptr).
+-     * Otherwise the queued callback would skip the resume, leaving the coroutine suspended
+-     * until its yield timeout wakes it up to touch freed memory. Handles freed after RSHUTDOWN
+-     * are the exception: their coroutine can still be suspended, but nothing can resume it.
+-     */
+-    void release() {
+-        assert(!co || SWOOLE_G(req_status) == PHP_SWOOLE_RSHUTDOWN_END);
+-        if (defer_callback) {
+-            released = true;
+-        } else {
+-            delete this;
+-        }
 +    Multi() = delete;
 +    static Multi *create();
 +    static void destroy(Multi *multi) {
 +        swr_v1_curl_multi_free(multi->rs());
      }
  
--    void set_timer() {
--        long _timeout_ms = 0;
--        curl_multi_timeout(multi_handle_, &_timeout_ms);
--        handle_timeout(multi_handle_, _timeout_ms, this);
+-    CURLM *get_multi_handle() const {
+-        return multi_handle_;
 +    CURLM *get_multi_handle() {
 +        return static_cast<CURLM *>(swr_v1_curl_multi_handle(rs()));
      }
  
--  public:
--    Multi();
--    ~Multi();
--
--    CURLM *get_multi_handle() const {
--        return multi_handle_;
-+    int get_running_handles() {
-+        return swr_v1_curl_multi_running(rs());
-     }
- 
 -    int get_running_handles() const {
 -        return running_handles_;
-+    CURLMcode add_handle(Handle *handle) {
-+        return static_cast<CURLMcode>(swr_v1_curl_multi_add_handle(rs(), rs(handle)));
++    int get_running_handles() {
++        return swr_v1_curl_multi_running(rs());
      }
  
 -    CURLMcode add_handle(Handle *handle);
 -    CURLMcode remove_handle(Handle *handle);
 -
 -    CURLMcode perform();
--
++    CURLMcode add_handle(Handle *handle) {
++        return static_cast<CURLMcode>(swr_v1_curl_multi_add_handle(rs(), rs(handle)));
++    }
+ 
 -    int get_event(int action) {
 -        switch (action) {
 -        case CURL_POLL_IN:
@@ -161,11 +186,11 @@ index 13ae82c..c18fc7b 100644
 +    CURLMcode remove_handle(Handle *handle) {
 +        return static_cast<CURLMcode>(swr_v1_curl_multi_remove_handle(rs(), rs(handle)));
      }
-@@ -163,2 +102,3 @@ class Multi {
+@@ -188,2 +102,3 @@ class Multi {
      Coroutine *check_bound_co() {
 +        auto co = static_cast<Coroutine *>(swr_v1_curl_multi_co(rs()));
          if (co) {
-@@ -173,11 +113,21 @@ class Multi {
+@@ -198,11 +113,21 @@ class Multi {
  
 -    CURLcode exec(Handle *handle);
 -    long select(php_curlm *mh, double timeout = -1);
@@ -196,10 +221,10 @@ index 13ae82c..c18fc7b 100644
 +    }
  };
 diff --git a/ext-src/swoole_curl.cc b/ext-src/swoole_curl.cc
-index 1e4eb6a..7dc1117 100644
+index c02123f..7dc1117 100644
 --- a/ext-src/swoole_curl.cc
 +++ b/ext-src/swoole_curl.cc
-@@ -27,33 +27,6 @@ namespace curl {
+@@ -27,84 +27,6 @@ namespace curl {
  
 -Handle *get_handle(CURL *cp) {
 -    Handle *handle;
@@ -222,7 +247,9 @@ index 1e4eb6a..7dc1117 100644
 -    if (!handle) {
 -        return;
 -    }
--    delete handle->easy_multi;
+-    if (handle->easy_multi) {
+-        handle->easy_multi->release();
+-    }
 -    curl_easy_setopt(cp, CURLOPT_PRIVATE, nullptr);
 -    swoole_trace_log(SW_TRACE_CO_CURL, SW_ECHO_RED " handle=%p, curl=%p", "[DESTROY]", handle, cp);
 -    delete handle;
@@ -232,13 +259,9 @@ index 1e4eb6a..7dc1117 100644
 -    auto curl_socket = static_cast<Socket *>(event->socket->object);
 -    curl_socket->bitmask |= bitmask;
 -    curl_socket->multi->callback(curl_socket, bitmask, event->fd);
-+// What the Rust multi engine (crates/curl) borrows from the reactor, timers
-+// and coroutines.
-+static int socket_event(Event *event, int bitmask) {
-+    swr_v1_curl_socket_event(event->socket->object, bitmask);
-     return 0;
-@@ -61,436 +34,76 @@ static int execute_callback(Event *event, int bitmask) {
- 
+-    return 0;
+-}
+-
 -Multi::Multi() {
 -	multi_handle_ = curl_multi_init();
 -	co = nullptr;
@@ -285,9 +308,13 @@ index 1e4eb6a..7dc1117 100644
 -    default:
 -        abort();
 -    }
--    return 0;
--}
--
++// What the Rust multi engine (crates/curl) borrows from the reactor, timers
++// and coroutines.
++static int socket_event(Event *event, int bitmask) {
++    swr_v1_curl_socket_event(event->socket->object, bitmask);
+     return 0;
+@@ -112,395 +34,76 @@ int Multi::handle_socket(CURL *cp, curl_socket_t sockfd, int action, void *userp
+ 
 -int Multi::del_event(void *socket_ptr, curl_socket_t sockfd) {
 -    sockets.erase(sockfd);
 -    curl_multi_assign(multi_handle_, sockfd, nullptr);
@@ -647,6 +674,10 @@ index 1e4eb6a..7dc1117 100644
 -void Multi::callback(Socket *curl_socket, int bitmask, int sockfd) {
 -    swoole_trace_log(
 -        SW_TRACE_CO_CURL, "curl_socket=%p, bitmask=%d, co=%p, sockfd=%d", curl_socket, bitmask, co, sockfd);
+-    if (sw_unlikely(released)) {
+-        // The queued deferred callback owns the object now; do not touch any state.
+-        return;
+-    }
 -    if (!curl_socket) {
 -        selector.timer_callback = true;
 -    }
@@ -668,6 +699,10 @@ index 1e4eb6a..7dc1117 100644
 -    swoole_event_defer(
 -        [this](void *data) {
 -            defer_callback = false;
+-            if (released) {
+-                delete this;
+-                return;
+-            }
 -            if (co) {
 -                co->resume();
 -            }
@@ -748,12 +783,12 @@ index 1e4eb6a..7dc1117 100644
 +Multi *Multi::create() {
 +    return reinterpret_cast<Multi *>(swr_v1_curl_multi_new(&ops));
  }
-@@ -502,3 +115,3 @@ CURLcode swoole_curl_easy_perform(CURL *cp) {
+@@ -512,3 +115,3 @@ CURLcode swoole_curl_easy_perform(CURL *cp) {
      if (!handle->easy_multi) {
 -        handle->easy_multi = new Multi();
 +        handle->easy_multi = swoole::curl::Multi::create();
      }
-@@ -507,8 +120,2 @@ CURLcode swoole_curl_easy_perform(CURL *cp) {
+@@ -517,8 +120,2 @@ CURLcode swoole_curl_easy_perform(CURL *cp) {
  
 -void swoole_curl_easy_reset(CURL *cp) {
 -    auto handle = swoole::curl::get_handle(cp);
@@ -763,7 +798,7 @@ index 1e4eb6a..7dc1117 100644
 -
  php_curl *swoole_curl_get_handle(zval *zid, bool exclusive, bool required) {
 diff --git a/thirdparty/php/curl/multi.cc b/thirdparty/php/curl/multi.cc
-index f7c5aa7..484112d 100644
+index 84f46cc..484112d 100644
 --- a/thirdparty/php/curl/multi.cc
 +++ b/thirdparty/php/curl/multi.cc
 @@ -23,3 +23,2 @@
@@ -777,11 +812,11 @@ index f7c5aa7..484112d 100644
  
 @@ -667,3 +666,3 @@ static void _php_curl_multi_free(php_curlm *mh) {
          if (is_in_coroutine) {
--            delete mh->multi;
+-            mh->multi->release();
 +            Multi::destroy(mh->multi);
          } else {
 diff --git a/thirdparty/php84/curl/multi.cc b/thirdparty/php84/curl/multi.cc
-index 23a2626..f25e989 100644
+index 0928a6c..f25e989 100644
 --- a/thirdparty/php84/curl/multi.cc
 +++ b/thirdparty/php84/curl/multi.cc
 @@ -25,3 +25,2 @@
@@ -795,6 +830,6 @@ index 23a2626..f25e989 100644
  
 @@ -595,3 +594,3 @@ static void _php_curl_multi_free(php_curlm *mh) {
          if (is_in_coroutine) {
--            delete mh->multi;
+-            mh->multi->release();
 +            Multi::destroy(mh->multi);
          } else {

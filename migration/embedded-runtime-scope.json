@@ -1,7 +1,7 @@
 {
   "assigned_to": "@loks0n",
   "accepted_utc": "2026-10-24T15:27:35.857284+00:00",
-  "pinned_upstream": "c7e514509451beafd4d70ce5b78943d51e76381c",
+  "pinned_upstream": "76c657d88be39b7af6bf85e46bcbac0da7387760",
   "embedded_header_sha256": "f334a659e52fa137c3422825237fc9309ada8870b3653eae6f9c52b55c3b950a",
   "research_sha256": "7362f833bbdc80d4dcc7ab73300b93f9d7e9c679a1393743e08246b19782d548",
   "scope_rule": "All actual first-party embedded PHP algorithms and runtime outcomes remain in the Rust completion goal. Zend ABI/value/refcount/GC/exception/bailout/VM and required OS effects may use minimal native shims, after Rust returns. This does not exempt pool/retry/RPC/proxy/collection/coordination policy.",

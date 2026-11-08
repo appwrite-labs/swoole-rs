@@ -1,13 +1,13 @@
 diff --git a/include/swoole_process_pool.h b/include/swoole_process_pool.h
-index dc0ba89..78fe693 100644
+index 8d70be9..333a1df 100644
 --- a/include/swoole_process_pool.h
 +++ b/include/swoole_process_pool.h
-@@ -419,4 +419,2 @@ struct ProcessPool {
+@@ -420,4 +420,2 @@ struct ProcessPool {
      swResultCode dispatch_sync(const char *data, uint32_t len) const;
 -    void add_worker(Worker *worker) const;
 -    bool del_worker(const Worker *worker) const;
      Worker *get_worker_by_pid(pid_t pid) const;
-@@ -433,13 +431,2 @@ struct ProcessPool {
+@@ -434,13 +432,2 @@ struct ProcessPool {
      bool is_worker_running(Worker *worker) const;
 -    bool wait_detached_worker(pid_t pid);
 -    void at_worker_enter(Worker *worker) const;
@@ -22,10 +22,10 @@ index dc0ba89..78fe693 100644
 -    static int run_async(ProcessPool *pool, Worker *worker);
  };
 diff --git a/src/os/process_pool.cc b/src/os/process_pool.cc
-index e93d4fd..3b92454 100644
+index 692becf..d1584f4 100644
 --- a/src/os/process_pool.cc
 +++ b/src/os/process_pool.cc
-@@ -217,22 +217,2 @@ static const swr_v1_pool_hooks pool_hooks = {
+@@ -214,22 +214,2 @@ static const swr_v1_pool_hooks pool_hooks = {
  
 -// The worker loops run in Rust; a bailout from PHP inside one returns here first.
 -static int run_protocol(ProcessPool *pool, Worker *worker, ProtocolType protocol) {
@@ -48,7 +48,7 @@ index e93d4fd..3b92454 100644
 -    return SW_OK;
 -}
  
-@@ -256,69 +236,396 @@ static swResultCode dispatch_event(ProcessPool *pool, EventData *data, int *dst_
+@@ -253,69 +233,396 @@ static swResultCode dispatch_event(ProcessPool *pool, EventData *data, int *dst_
  
 -/**
 - * Process manager
@@ -449,7 +449,7 @@ index e93d4fd..3b92454 100644
 -    ipc_mode = _ipc_mode;
 -    main_loop = run_with_task_protocol;
 -    protocol_type_ = SW_PROTOCOL_TASK;
--    max_packet_size_ = SW_INPUT_BUFFER_SIZE;
+-    set_max_packet_size(SW_INPUT_BUFFER_SIZE);
 -    max_wait_time = SW_WORKER_MAX_WAIT_TIME;
 +// The pool's callbacks, inside the bailout trap.
 +static void pool_callback(void *arg) {
@@ -500,7 +500,7 @@ index e93d4fd..3b92454 100644
 +int ProcessPool::create(uint32_t _worker_num, key_t _msgqueue_key, swIPCMode _ipc_mode) {
 +    return (int) swr_v1_process_pool_create(&pool_native, this, _worker_num, _msgqueue_key, _ipc_mode);
  }
-@@ -326,7 +633,3 @@ int ProcessPool::create(uint32_t _worker_num, key_t _msgqueue_key, swIPCMode _ip
+@@ -323,7 +630,3 @@ int ProcessPool::create(uint32_t _worker_num, key_t _msgqueue_key, swIPCMode _ip
  int ProcessPool::create_message_box(size_t memory_size) {
 -    message_box = Channel::make(memory_size, sizeof(EventData), SW_CHAN_LOCK | SW_CHAN_SHM);
 -    if (message_box == nullptr) {
@@ -509,7 +509,7 @@ index e93d4fd..3b92454 100644
 -    return SW_OK;
 +    return (int) pool_run(this, SWR_POOL_RUN_CREATE_MESSAGE_BOX, memory_size);
  }
-@@ -334,37 +637,3 @@ int ProcessPool::create_message_box(size_t memory_size) {
+@@ -331,37 +634,3 @@ int ProcessPool::create_message_box(size_t memory_size) {
  int ProcessPool::create_message_bus() {
 -    if (ipc_mode != SW_IPC_UNIXSOCK) {
 -        swoole_error_log(
@@ -548,7 +548,7 @@ index e93d4fd..3b92454 100644
 -    return SW_OK;
 +    return (int) pool_run(this, SWR_POOL_RUN_CREATE_MESSAGE_BUS);
  }
-@@ -394,17 +663,3 @@ int ProcessPool::listen(const char *host, int port, int backlog) const {
+@@ -391,17 +660,3 @@ int ProcessPool::listen(const char *host, int port, int backlog) const {
  void ProcessPool::set_protocol(ProtocolType _protocol_type) {
 -    switch (_protocol_type) {
 -    case SW_PROTOCOL_TASK:
@@ -567,7 +567,7 @@ index e93d4fd..3b92454 100644
 -    protocol_type_ = _protocol_type;
 +    pool_run(this, SWR_POOL_RUN_SET_PROTOCOL, _protocol_type);
  }
-@@ -412,49 +667,7 @@ void ProcessPool::set_protocol(ProtocolType _protocol_type) {
+@@ -409,49 +664,7 @@ void ProcessPool::set_protocol(ProtocolType _protocol_type) {
  int ProcessPool::start_check() {
 -    if (ipc_mode == SW_IPC_SOCKET && pool_listener(this) == nullptr) {
 -        swoole_error_log(SW_LOG_WARNING, SW_ERROR_WRONG_OPERATION, "must first listen to an tcp port");
@@ -619,7 +619,7 @@ index e93d4fd..3b92454 100644
 -    return SW_OK;
 +    return (int) pool_run(this, SWR_POOL_RUN_START);
  }
-@@ -561,6 +774,3 @@ swResultCode ProcessPool::dispatch_sync(EventData *data, int *dst_worker_id) {
+@@ -558,6 +771,3 @@ swResultCode ProcessPool::dispatch_sync(EventData *data, int *dst_worker_id) {
  void ProcessPool::drop_reload_task() {
 -    if (auto timer = static_cast<TimerNode *>(swr_v1_process_reload_task_free(reload_task))) {
 -        swoole_timer_del(timer);
@@ -627,7 +627,7 @@ index e93d4fd..3b92454 100644
 -    reload_task = nullptr;
 +    pool_run(this, SWR_POOL_RUN_DROP_RELOAD_TASK);
  }
-@@ -568,22 +778,3 @@ void ProcessPool::drop_reload_task() {
+@@ -565,22 +775,3 @@ void ProcessPool::drop_reload_task() {
  bool ProcessPool::reload() {
 -    if (reload_task) {
 -        return false;
@@ -651,7 +651,7 @@ index e93d4fd..3b92454 100644
 -    return true;
 +    return pool_run(this, SWR_POOL_RUN_RELOAD);
  }
-@@ -591,21 +782,3 @@ bool ProcessPool::reload() {
+@@ -588,21 +779,3 @@ bool ProcessPool::reload() {
  void ProcessPool::stop(Worker *worker) {
 -    worker->shutdown();
 -
@@ -674,7 +674,7 @@ index e93d4fd..3b92454 100644
 -    }
 +    pool_run(this, SWR_POOL_RUN_STOP, 0, worker);
  }
-@@ -613,7 +786,3 @@ void ProcessPool::stop(Worker *worker) {
+@@ -610,7 +783,3 @@ void ProcessPool::stop(Worker *worker) {
  void ProcessPool::reopen_logger() {
 -    sw_logger()->reopen();
 -
@@ -683,14 +683,14 @@ index e93d4fd..3b92454 100644
 -    }
 +    pool_run(this, SWR_POOL_RUN_REOPEN_LOGGER);
  }
-@@ -621,5 +790,3 @@ void ProcessPool::reopen_logger() {
+@@ -618,5 +787,3 @@ void ProcessPool::reopen_logger() {
  void ProcessPool::kill_all_workers(int signo) {
 -    SW_LOOP_N(worker_num) {
 -        swoole_kill(workers[i].get_pid(), signo);
 -    }
 +    pool_run(this, SWR_POOL_RUN_KILL_ALL, signo);
  }
-@@ -627,8 +794,3 @@ void ProcessPool::kill_all_workers(int signo) {
+@@ -624,8 +791,3 @@ void ProcessPool::kill_all_workers(int signo) {
  bool ProcessPool::shutdown() {
 -    if (is_master()) {
 -        running = false;
@@ -700,7 +700,7 @@ index e93d4fd..3b92454 100644
 -    }
 +    return pool_run(this, SWR_POOL_RUN_SHUTDOWN);
  }
-@@ -636,36 +798,3 @@ bool ProcessPool::shutdown() {
+@@ -633,36 +795,3 @@ bool ProcessPool::shutdown() {
  pid_t ProcessPool::spawn(Worker *worker) {
 -    swr_v1_process_worker_registry_unregister(registry_, worker->pid);
 -    pid_t pid = swoole_fork(0);
@@ -738,13 +738,13 @@ index e93d4fd..3b92454 100644
 -    return pid;
 +    return (pid_t) pool_run(this, SWR_POOL_RUN_SPAWN, 0, worker);
  }
-@@ -673,4 +802,3 @@ pid_t ProcessPool::spawn(Worker *worker) {
+@@ -670,4 +799,3 @@ pid_t ProcessPool::spawn(Worker *worker) {
  void ProcessPool::set_max_request(uint32_t _max_request, uint32_t _max_request_grace) {
 -    max_request = _max_request;
 -    max_request_grace = _max_request_grace;
 +    pool_run(this, SWR_POOL_RUN_SET_MAX_REQUEST, _max_request | ((uint64_t) _max_request_grace << 32));
  }
-@@ -681,85 +809,2 @@ bool ProcessPool::is_worker_running(Worker *worker) const {
+@@ -678,85 +806,2 @@ bool ProcessPool::is_worker_running(Worker *worker) const {
  
 -void ProcessPool::at_worker_enter(Worker *worker) const {
 -    if (worker->pipe_worker) {
@@ -830,7 +830,7 @@ index e93d4fd..3b92454 100644
 -}
 -
  Worker *ProcessPool::get_worker_by_pid(pid_t pid) const {
-@@ -769,6 +814,3 @@ Worker *ProcessPool::get_worker_by_pid(pid_t pid) const {
+@@ -766,6 +811,3 @@ Worker *ProcessPool::get_worker_by_pid(pid_t pid) const {
  void ProcessPool::set_type(int _type) {
 -    type = _type;
 -    for (uint32_t i = 0; i < worker_num; i++) {
@@ -838,7 +838,7 @@ index e93d4fd..3b92454 100644
 -    }
 +    pool_run(this, SWR_POOL_RUN_SET_TYPE, (uint8_t) _type);
  }
-@@ -776,6 +818,3 @@ void ProcessPool::set_type(int _type) {
+@@ -773,6 +815,3 @@ void ProcessPool::set_type(int _type) {
  void ProcessPool::set_start_id(int _start_id) {
 -    start_id = _start_id;
 -    for (uint32_t i = 0; i < worker_num; i++) {
@@ -846,7 +846,7 @@ index e93d4fd..3b92454 100644
 -    }
 +    pool_run(this, SWR_POOL_RUN_SET_START_ID, (uint16_t) _start_id);
  }
-@@ -783,30 +822,3 @@ void ProcessPool::set_start_id(int _start_id) {
+@@ -780,30 +819,3 @@ void ProcessPool::set_start_id(int _start_id) {
  bool ProcessPool::detach() {
 -    if (!running || !message_box) {
 -        return false;
@@ -878,7 +878,7 @@ index e93d4fd..3b92454 100644
 -    return true;
 +    return pool_run(this, SWR_POOL_RUN_DETACH);
  }
-@@ -814,113 +826,3 @@ bool ProcessPool::wait_detached_worker(pid_t pid) {
+@@ -811,113 +823,3 @@ bool ProcessPool::wait_detached_worker(pid_t pid) {
  int ProcessPool::wait() {
 -    swr_v1_process_reap_host host{};
 -    host.ctx = this;
@@ -993,7 +993,7 @@ index e93d4fd..3b92454 100644
 -    return SW_OK;
 +    return (int) pool_run(this, SWR_POOL_RUN_WAIT);
  }
-@@ -928,29 +830,3 @@ int ProcessPool::wait() {
+@@ -925,29 +827,3 @@ int ProcessPool::wait() {
  void ProcessPool::destroy() {
 -    if (pipes) {
 -        delete pipes;

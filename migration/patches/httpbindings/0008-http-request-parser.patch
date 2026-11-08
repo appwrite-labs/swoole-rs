@@ -1,12 +1,12 @@
 diff --git a/ext-src/php_swoole_http.h b/ext-src/php_swoole_http.h
-index 9cb01ee..6132a95 100644
+index eda1886..13b3ce6 100644
 --- a/ext-src/php_swoole_http.h
 +++ b/ext-src/php_swoole_http.h
-@@ -26,2 +26,3 @@
+@@ -27,2 +27,3 @@
  #include "thirdparty/multipart_parser.h"
 +#include "swoole_rs_httpbindings.h"
  
-@@ -92,9 +93,3 @@ class Session;
+@@ -93,9 +94,3 @@ class Session;
  namespace http {
 -struct RequestParserState {
 -    size_t url_length;
@@ -17,13 +17,13 @@ index 9cb01ee..6132a95 100644
 -
 +// crates/phphttp/src/state.rs mirrors Request and ContextState field for field.
  struct Request {
-@@ -110,5 +105,3 @@ struct Request {
+@@ -111,5 +106,3 @@ struct Request {
      size_t body_length;
 -    String *chunked_body;
      String *h2_data_buffer;
 -    RequestParserState *parser_state;
  
-@@ -150,5 +143,24 @@ struct Response {
+@@ -151,5 +144,24 @@ struct Response {
  
 -struct Context {
 +// What the request parser reads and writes. Its llhttp and multipart callbacks
@@ -50,29 +50,30 @@ index 9cb01ee..6132a95 100644
 +
 +struct Context : ContextState {
      uchar end_ : 1;
-@@ -156,4 +168,2 @@ struct Context {
+@@ -157,4 +169,2 @@ struct Context {
  #ifdef SW_HAVE_COMPRESSION
 -    uchar enable_compression : 1;
 -    uchar accept_compression : 1;
      uchar content_compressed : 1;
-@@ -161,6 +171,3 @@ struct Context {
+@@ -162,6 +172,3 @@ struct Context {
      uchar send_chunked : 1;
 -    uchar recv_chunked : 1;
      uchar send_trailer_ : 1;
 -    uchar keepalive : 1;
 -    uchar websocket : 1;
      uchar websocket_compression : 1;
-@@ -168,5 +175,2 @@ struct Context {
+@@ -169,6 +176,2 @@ struct Context {
      uchar detached : 1;
 -    uchar parse_cookie : 1;
 -    uchar parse_body : 1;
 -    uchar parse_files : 1;
+-    uchar upload_preprocessed : 1;
      uchar http2 : 1;
-@@ -179,3 +183,2 @@ struct Context {
+@@ -181,3 +184,2 @@ struct Context {
      int8_t compression_level;
 -    int8_t compression_method;
      uint32_t compression_min_length;
-@@ -188,21 +191,4 @@ struct Context {
+@@ -190,21 +192,4 @@ struct Context {
  
 -    Request request;
      Response response;
@@ -94,7 +95,7 @@ index 9cb01ee..6132a95 100644
 -    String *form_data_buffer;
 -
      std::string upload_tmp_dir;
-@@ -224,7 +210,15 @@ struct Context {
+@@ -226,7 +211,15 @@ struct Context {
      void copy(const Context *ctx);
 -    bool init_multipart_parser(const char *boundary_str, int boundary_len);
 +    bool init_multipart_parser(const char *boundary_str, int boundary_len) {
@@ -114,7 +115,7 @@ index 9cb01ee..6132a95 100644
 +        return swr_v1_phphttp_multipart_parse(this, at, length);
 +    }
  
-@@ -273,3 +267,5 @@ struct Context {
+@@ -275,3 +268,5 @@ struct Context {
  #ifdef SW_HAVE_COMPRESSION
 -    void set_compression_method(const char *accept_encoding, size_t length);
 +    void set_compression_method(const char *accept_encoding, size_t length) {
@@ -122,10 +123,10 @@ index 9cb01ee..6132a95 100644
 +    }
      const char *get_content_encoding() const;
 diff --git a/ext-src/swoole_http_request.cc b/ext-src/swoole_http_request.cc
-index d1f983a..4ebdbc1 100644
+index ca3d503..0b54366 100644
 --- a/ext-src/swoole_http_request.cc
 +++ b/ext-src/swoole_http_request.cc
-@@ -22,5 +22,9 @@
+@@ -19,5 +19,9 @@
  static_assert(HTTP_DELETE == 0 && HTTP_POST == 3 && HTTP_PUT == 4 && HTTP_PATCH == 28, "Pinned llhttp method mapping changed");
 +static_assert(SW_LOG_TRACE == 1 && SW_LOG_NOTICE == 3 && SW_LOG_WARNING == 4, "crates/phphttp/src/parse.rs log levels");
 +static_assert(SW_ERROR_SESSION_CLOSED == 1004 && SW_ERROR_SERVER_INVALID_REQUEST == 9010,
@@ -136,7 +137,7 @@ index d1f983a..4ebdbc1 100644
  SW_EXTERN_C_BEGIN
 -#include "ext/standard/url.h"
  #include "stubs/php_swoole_http_request_arginfo.h"
-@@ -29,14 +33,2 @@ SW_EXTERN_C_END
+@@ -26,14 +30,2 @@ SW_EXTERN_C_END
  
 -enum http_upload_errno {
 -    HTTP_UPLOAD_ERR_OK = 0,
@@ -151,7 +152,7 @@ index d1f983a..4ebdbc1 100644
 -
 -using HttpRequest = swoole::http::Request;
  using HttpContext = swoole::http::Context;
-@@ -44,129 +36,8 @@ using swoole::Connection;
+@@ -41,129 +33,8 @@ using swoole::Connection;
  using swoole::ListenPort;
 -using swoole::microtime;
  using swoole::Server;
@@ -238,7 +239,7 @@ index d1f983a..4ebdbc1 100644
 -    nullptr,                                      // on_chunk_complete
 -    nullptr,                                      // on_reset
 -};
- 
+-
 -static constexpr multipart_parser_settings mt_parser_settings =
 -{
 -    multipart_body_on_header_field,
@@ -275,7 +276,7 @@ index d1f983a..4ebdbc1 100644
 -    }
 -    return true;
 -}
--
+ 
 -// The class, its objects and every method are Rust (crates/phphttp); the
 -// handlers keep their zim_ names so this table, built from the stub's arginfo,
 -// stays upstream's. The swr_http_host_ functions at the end of this file are
@@ -285,7 +286,7 @@ index d1f983a..4ebdbc1 100644
 +// from the stub's arginfo, stays upstream's. The swr_http_host_ functions at
 +// the end of this file are what Rust asks of Swoole.
  zend_class_entry *swoole_http_request_ce;
-@@ -204,105 +75,22 @@ const zend_function_entry swoole_http_request_methods[] =
+@@ -201,114 +72,22 @@ const zend_function_entry swoole_http_request_methods[] =
  
 -void php_swoole_http_request_minit(int module_number) {
 -    swoole_http_request_ce = swr_v1_phphttp_request_minit(swoole_http_request_methods);
@@ -322,6 +323,9 @@ index d1f983a..4ebdbc1 100644
 -}
 -
 -static int http_request_on_header_field(llhttp_t *parser, const char *at, size_t length) {
+-    if (sw_unlikely(parser->flags & F_TRAILING)) {
+-        return 0;
+-    }
 -    auto *ctx = static_cast<HttpContext *>(parser->data);
 -    ctx->current_header_name = at;
 -    ctx->current_header_name_len = length;
@@ -343,6 +347,9 @@ index d1f983a..4ebdbc1 100644
 -}
 -
 -static int http_request_parse_on_header_field(llhttp_t *parser, const char *at, size_t length) {
+-    if (sw_unlikely(parser->flags & F_TRAILING)) {
+-        return 0;
+-    }
 -    auto *ctx = static_cast<HttpContext *>(parser->data);
 -    auto *state = ctx->request.parser_state;
 -    if (state->header_name_length == 0) {
@@ -353,6 +360,9 @@ index d1f983a..4ebdbc1 100644
 -}
 -
 -static int http_request_parse_on_header_value(llhttp_t *parser, const char *at, size_t length) {
+-    if (sw_unlikely(parser->flags & F_TRAILING)) {
+-        return 0;
+-    }
 -    auto *ctx = static_cast<HttpContext *>(parser->data);
 -    auto *state = ctx->request.parser_state;
 -    state->header_value_length += length;
@@ -409,7 +419,7 @@ index d1f983a..4ebdbc1 100644
 +    swoole_http_request_ce = swr_v1_phphttp_request_minit(swoole_http_request_methods);
 +    swr_v1_phphttp_parse_minit(http_request_compression_capabilities());
  }
-@@ -317,13 +105,2 @@ void swoole_http_parse_cookie(zval *zcookies, const char *at, size_t length) {
+@@ -323,13 +102,2 @@ void swoole_http_parse_cookie(zval *zcookies, const char *at, size_t length) {
  
 -static void http_request_add_upload_file(HttpContext *ctx, const char *file, size_t l_file) {
 -    zval *zfiles = swoole_http_init_and_read_property(
@@ -423,15 +433,18 @@ index d1f983a..4ebdbc1 100644
 -}
 -
  // Return -1 when the token list cannot fit in the scratch buffer, 0 when absent, and 1 when found.
-@@ -341,329 +118,51 @@ int swoole_http_token_list_contains_value(const char *at, size_t length, const c
+@@ -347,420 +115,51 @@ int swoole_http_token_list_contains_value(const char *at, size_t length, const c
  
 -static int http_request_on_header_value(llhttp_t *parser, const char *at, size_t length) {
+-    if (sw_unlikely(parser->flags & F_TRAILING)) {
+-        return 0;
+-    }
 -    auto *ctx = static_cast<HttpContext *>(parser->data);
 -    zval *zheader = ctx->request.zheader;
 -    const char *header_name = ctx->current_header_name;
 -    size_t header_len = ctx->current_header_name_len;
 -    uint32_t flags = ctx->parse_cookie ? 1u : 0u;
- #ifdef SW_HAVE_COMPRESSION
+-#ifdef SW_HAVE_COMPRESSION
 -    if (ctx->enable_compression) flags |= 2u;
 -#endif
 -    auto action = swr_v1_httpbindings_request_header(
@@ -480,7 +493,7 @@ index d1f983a..4ebdbc1 100644
 -        ctx->init_multipart_parser(boundary_str, boundary_len);
 -        break;
 -    }
--#ifdef SW_HAVE_COMPRESSION
+ #ifdef SW_HAVE_COMPRESSION
 -    case SWR_HTTPBINDINGS_HEADER_COMPRESSION: ctx->set_compression_method(at, length); break;
 -#endif
 -    case SWR_HTTPBINDINGS_HEADER_APPEND: break;
@@ -554,7 +567,11 @@ index d1f983a..4ebdbc1 100644
  
 -static int multipart_body_on_header_field(multipart_parser *p, const char *at, size_t length) {
 -    auto *ctx = static_cast<HttpContext *>(p->data);
--    return http_request_on_header_field(&ctx->parser, at, length);
+-    // Multipart part headers are independent of the outer HTTP parser's trailer flags.
+-    ctx->current_header_name = at;
+-    ctx->current_header_name_len = length;
+-    ctx->current_header_value_len = 0;
+-    return 0;
 +const char *HttpContext::get_content_encoding() const {
 +    auto encoding = swr_v1_httpbindings_encoding(compression_method, http_request_compression_capabilities() & 7u);
 +    return reinterpret_cast<const char *>(encoding.data);
@@ -603,24 +620,13 @@ index d1f983a..4ebdbc1 100644
 -        zval *zform_name;
 -        if (!(zform_name = zend_hash_str_find(Z_ARRVAL(tmp_array), ZEND_STRL("name")))) {
 -            return ret;
-+void swr_http_host_log(int level, int error, const char *func, const char *message) {
-+    size_t length;
-+    if (error > 0) {
-+        swoole_set_last_error(error);
-+        if (level >= swoole_get_log_level() && !swoole_is_ignored_error(error)) {
-+            length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s() (ERRNO %d): %s", func, error, message);
-+            sw_logger()->put(level, sw_error, length);
-         }
+-        }
 -
 -        if (Z_STRLEN_P(zform_name) >= SW_HTTP_FORM_KEYLEN) {
 -            swoole_warning("form_name[%s] is too large", Z_STRVAL_P(zform_name));
 -            ret = -1;
 -            return ret;
-+    } else if (error == 0) {
-+        if (SW_LOG_WARNING >= swoole_get_log_level()) {
-+            length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s(): %s", func, message);
-+            sw_logger()->put(SW_LOG_WARNING, sw_error, length);
-         }
+-        }
 -
 -        swoole_strlcpy(value_buf, Z_STRVAL_P(zform_name), sizeof(value_buf));
 -        value_len = Z_STRLEN_P(zform_name);
@@ -631,7 +637,14 @@ index d1f983a..4ebdbc1 100644
 -        if (!(zfilename = zend_hash_str_find(Z_ARRVAL(tmp_array), ZEND_STRL("filename")))) {
 -            ctx->current_form_data_name = estrndup(tmp, value_len);
 -            ctx->current_form_data_name_len = value_len;
--        }
++void swr_http_host_log(int level, int error, const char *func, const char *message) {
++    size_t length;
++    if (error > 0) {
++        swoole_set_last_error(error);
++        if (level >= swoole_get_log_level() && !swoole_is_ignored_error(error)) {
++            length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s() (ERRNO %d): %s", func, error, message);
++            sw_logger()->put(level, sw_error, length);
+         }
 -        // upload file
 -        else {
 -            if (Z_STRLEN_P(zfilename) >= SW_HTTP_FORM_KEYLEN) {
@@ -665,7 +678,11 @@ index d1f983a..4ebdbc1 100644
 -                add_assoc_long(z_multipart_header, "error", HTTP_UPLOAD_ERR_OK);
 -            }
 -            ctx->current_multipart_header = z_multipart_header;
--        }
++    } else if (error == 0) {
++        if (SW_LOG_WARNING >= swoole_get_log_level()) {
++            length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s(): %s", func, message);
++            sw_logger()->put(SW_LOG_WARNING, sw_error, length);
+         }
 -        zval_ptr_dtor(&tmp_array);
 -    } else if (SW_STRCASEEQ(header_name, header_len, "content-type")) {
 -        if (ctx->current_multipart_header) {
@@ -684,7 +701,7 @@ index d1f983a..4ebdbc1 100644
 +                                 swoole_strerror(-error), -error);
 +            sw_logger()->put(SW_LOG_WARNING, sw_error, length);
          }
--    } else if (SW_STRCASEEQ(header_name, header_len, SW_HTTP_UPLOAD_FILE)) {
+-    } else if (SW_STRCASEEQ(header_name, header_len, SW_HTTP_UPLOAD_FILE) && ctx->upload_preprocessed) {
 -        /**
 -         * When the "SW_HTTP_UPLOAD_FILE" header appears in the request, it indicates that the uploaded file has been
 -         * saved in a temporary file. The binary content in the message body will be replaced with the temporary
@@ -699,10 +716,10 @@ index d1f983a..4ebdbc1 100644
 -        add_assoc_long(z_multipart_header, "error", HTTP_UPLOAD_ERR_FILE_READY);
 -        add_assoc_long(z_multipart_header, "size", swoole::file_get_size(tmp_file));
 -        http_request_add_upload_file(ctx, tmp_file.c_str(), tmp_file.length());
-     }
+-    }
 -    return ret;
- }
- 
+-}
+-
 -static int multipart_body_on_data(multipart_parser *p, const char *at, size_t length) {
 -    auto *ctx = static_cast<HttpContext *>(p->data);
 -    if (ctx->current_form_data_name) {
@@ -711,7 +728,7 @@ index d1f983a..4ebdbc1 100644
 -    }
 -    if (p->fp == nullptr) {
 -        return 0;
--    }
+     }
 -    ssize_t n = fwrite(at, sizeof(char), length, p->fp);
 -    if (n != (off_t) length) {
 -        zval *z_multipart_header = ctx->current_multipart_header;
@@ -723,8 +740,6 @@ index d1f983a..4ebdbc1 100644
 -        swoole_sys_warning("write upload file failed");
 -    }
 -    return 0;
-+void swr_http_host_treat_data(int arg, char *str, zval *array) {
-+    swoole_php_treat_data(arg, str, array);
  }
  
 -#if 0
@@ -739,7 +754,9 @@ index d1f983a..4ebdbc1 100644
 -    PHP_MD5Update(&ctx, buf, n);
 -    PHP_MD5Final(digest, &ctx);
 -    make_digest_ex(des, digest, 16);
--}
++void swr_http_host_treat_data(int arg, char *str, zval *array) {
++    swoole_php_treat_data(arg, str, array);
+ }
 -#endif
 -
 -static int multipart_body_on_header_complete(multipart_parser *p) {
@@ -756,39 +773,30 @@ index d1f983a..4ebdbc1 100644
 -    if (Z_TYPE_P(zerr) == IS_LONG && Z_LVAL_P(zerr) != HTTP_UPLOAD_ERR_OK) {
 -        return 0;
 -    }
--
+ 
 -    char file_path[SW_HTTP_UPLOAD_TMPDIR_SIZE];
 -    sw_snprintf(file_path, SW_HTTP_UPLOAD_TMPDIR_SIZE, "%s/swoole.upfile.XXXXXX", ctx->upload_tmp_dir.c_str());
 -    int tmpfile = swoole_tmpfile(file_path);
 -    if (tmpfile < 0) {
 -        add_assoc_long(z_multipart_header, "error", HTTP_UPLOAD_ERR_NO_TMP_DIR);
-+int swr_http_host_websocket_connection(void *context) {
-+    auto *ctx = static_cast<HttpContext *>(context);
-+    if (ctx->is_co_socket()) {
-         return 0;
-     }
+-        return 0;
+-    }
 -
 -    FILE *fp = fdopen(tmpfile, "wb+");
 -    if (fp == nullptr) {
 -        add_assoc_long(z_multipart_header, "error", HTTP_UPLOAD_ERR_NO_TMP_DIR);
 -        swoole_sys_warning("fopen(%s) failed", file_path);
 -        return 0;
-+    auto *serv = ctx->get_async_server();
-+    Connection *conn = serv->get_connection_by_session_id(ctx->fd);
-+    if (!conn) {
-+        return -1;
-     }
+-    }
 -
 -    p->fp = fp;
 -    add_assoc_string(z_multipart_header, "tmp_name", file_path);
 -
 -    http_request_add_upload_file(ctx, file_path, strlen(file_path));
 -
-+    ListenPort *port = serv->get_port_by_server_fd(conn->server_fd);
-+    if (port->open_websocket_protocol) conn->websocket_status = swoole::websocket::STATUS_CONNECTION;
-     return 0;
-@@ -671,199 +170,15 @@ static int multipart_body_on_header_complete(multipart_parser *p) {
- 
+-    return 0;
+-}
+-
 -static int multipart_body_on_data_end(multipart_parser *p) {
 -    auto *ctx = static_cast<HttpContext *>(p->data);
 -
@@ -822,8 +830,11 @@ index d1f983a..4ebdbc1 100644
 -
 -    zval *zerr;
 -    if (!(zerr = zend_hash_str_find(Z_ARRVAL_P(z_multipart_header), ZEND_STRL("error")))) {
--        return 0;
--    }
++int swr_http_host_websocket_connection(void *context) {
++    auto *ctx = static_cast<HttpContext *>(context);
++    if (ctx->is_co_socket()) {
+         return 0;
+     }
 -    if (zval_get_long(zerr) == HTTP_UPLOAD_ERR_FILE_READY) {
 -        add_assoc_long(z_multipart_header, "error", HTTP_UPLOAD_ERR_OK);
 -    }
@@ -862,7 +873,11 @@ index d1f983a..4ebdbc1 100644
 -        php_register_variable_ex(meta_name, zsize, zfiles);
 -    } else {
 -        php_register_variable_ex(ctx->current_input_name, z_multipart_header, zfiles);
--    }
++    auto *serv = ctx->get_async_server();
++    Connection *conn = serv->get_connection_by_session_id(ctx->fd);
++    if (!conn) {
++        return -1;
+     }
 -
 -    efree(ctx->current_input_name);
 -    ctx->current_input_name = nullptr;
@@ -870,10 +885,10 @@ index d1f983a..4ebdbc1 100644
 -    efree(ctx->current_multipart_header);
 -    ctx->current_multipart_header = nullptr;
 -
--    return 0;
-+const char *swr_http_host_upload_tmp_dir(const void *context) {
-+    return static_cast<const HttpContext *>(context)->upload_tmp_dir.c_str();
- }
++    ListenPort *port = serv->get_port_by_server_fd(conn->server_fd);
++    if (port->open_websocket_protocol) conn->websocket_status = swoole::websocket::STATUS_CONNECTION;
+     return 0;
+@@ -768,115 +167,15 @@ static int multipart_body_on_data_end(multipart_parser *p) {
  
 -static int http_request_on_body(llhttp_t *parser, const char *at, size_t length) {
 -    if (length == 0) {
@@ -904,8 +919,10 @@ index d1f983a..4ebdbc1 100644
 -    }
 -
 -    return ctx->completed ? HPE_PAUSED : 0;
--}
--
++const char *swr_http_host_upload_tmp_dir(const void *context) {
++    return static_cast<const HttpContext *>(context)->upload_tmp_dir.c_str();
+ }
+ 
 -static int http_request_message_complete(llhttp_t *parser) {
 -    auto *ctx = static_cast<HttpContext *>(parser->data);
 -    size_t content_length = ctx->request.chunked_body ? ctx->request.chunked_body->length : ctx->request.body_length;
@@ -957,8 +974,10 @@ index d1f983a..4ebdbc1 100644
 -
 -    /* The analysis of the http protocol has been completed, no further processing is needed. */
 -    return HPE_PAUSED;
--}
--
++int swr_http_host_tmpfile(char *path) {
++    return swoole_tmpfile(path);
+ }
+ 
 -#ifdef SW_HAVE_COMPRESSION
 -static uint32_t http_request_compression_capabilities() {
 -    return 0
@@ -981,10 +1000,8 @@ index d1f983a..4ebdbc1 100644
 -        http_request_compression_capabilities());
 -    accept_compression = method > 0;
 -    if (method > 0) compression_method = static_cast<swHttpCompressMethod>(method);
-+int swr_http_host_tmpfile(char *path) {
-+    return swoole_tmpfile(path);
- }
- 
+-}
+-
 -const char *HttpContext::get_content_encoding() const {
 -    auto encoding = swr_v1_httpbindings_encoding(compression_method, http_request_compression_capabilities());
 -    return reinterpret_cast<const char *>(encoding.data);
@@ -995,7 +1012,7 @@ index d1f983a..4ebdbc1 100644
  }
 -#endif
  
-@@ -889,24 +204,4 @@ void swr_http_host_request_free(void *context) {
+@@ -902,26 +201,4 @@ void swr_http_host_request_free(void *context) {
  
 -const char *swr_http_host_request_body(void *context, size_t *length) {
 -    auto *ctx = static_cast<HttpContext *>(context);
@@ -1018,15 +1035,17 @@ index d1f983a..4ebdbc1 100644
 -
  void swr_http_host_request_create(zval *return_value, zval *zoptions) {
      auto *ctx = new HttpContext();
+-    // Manually created requests parse client input, so no upload path is trusted here.
+-    ctx->upload_preprocessed = 0;
 -    ctx->request.parser_state = new swoole::http::RequestParserState();
      object_init_ex(return_value, swoole_http_request_ce);
-@@ -958,4 +253,3 @@ void swr_http_host_request_create(zval *return_value, zval *zoptions) {
+@@ -973,4 +250,3 @@ void swr_http_host_request_create(zval *return_value, zval *zoptions) {
  
 -    llhttp_t *parser = &ctx->parser;
 -    swoole_llhttp_parser_init(parser, HTTP_REQUEST, (void *) ctx);
 +    swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, (void *) ctx);
  
-@@ -966,30 +260 @@ void swr_http_host_request_create(zval *return_value, zval *zoptions) {
+@@ -981,30 +257 @@ void swr_http_host_request_create(zval *return_value, zval *zoptions) {
  }
 -
 -int64_t swr_http_host_request_parse(void *context, const char *str, size_t l_str) {
@@ -1058,16 +1077,16 @@ index d1f983a..4ebdbc1 100644
 -    RETURN_STRING(llhttp_method_name((enum llhttp_method)(ctx->parser).method));
 -}
 diff --git a/ext-src/swoole_http_server.cc b/ext-src/swoole_http_server.cc
-index a534dff..a53ccfb 100644
+index 132512c..82417fd 100644
 --- a/ext-src/swoole_http_server.cc
 +++ b/ext-src/swoole_http_server.cc
-@@ -306,5 +306,3 @@ void HttpContext::free() {
+@@ -309,5 +309,3 @@ void HttpContext::free() {
  
 -    delete req->chunked_body;
      delete req->h2_data_buffer;
 -    delete req->parser_state;
  
-@@ -313,10 +311,3 @@ void HttpContext::free() {
+@@ -316,10 +314,3 @@ void HttpContext::free() {
      }
 -    if (mt_parser) {
 -        multipart_parser_free(mt_parser);

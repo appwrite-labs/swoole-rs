@@ -17,8 +17,8 @@ non-test crate code; `tools/unsafe_budget.py` (PR tier) fails a PR that raises a
 crate above `tools/unsafe_baseline.json`, and `--update` lowers the baseline.
 
 A gradual C/C++ to Rust migration of the [Swoole](https://github.com/swoole/swoole-src)
-PHP extension. Rust is linked into the build of upstream Swoole v6.2.4 (pinned at
-`c7e51450`), which now compiles little upstream code beyond its build system (see
+PHP extension. Rust is linked into the build of upstream Swoole v6.2.5 (pinned at
+`76c657d8`), which now compiles little upstream code beyond its build system (see
 the badge). Every build links
 every module; the pinned upstream build is the oracle. See the
 [migration approach](docs/migration.md) and [hybrid variants and evidence](docs/hybrid-build.md).

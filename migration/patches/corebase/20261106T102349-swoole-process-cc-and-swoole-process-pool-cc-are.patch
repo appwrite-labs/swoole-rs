@@ -20,7 +20,7 @@ index 9965470..2ea7ee3 100644
 -
  zend_bool php_swoole_signal_isset_handler(int signo);
 diff --git a/ext-src/php_swoole_process.h b/ext-src/php_swoole_process.h
-index c5a6a31..63a560e 100644
+index 670bb33..63a560e 100644
 --- a/ext-src/php_swoole_process.h
 +++ b/ext-src/php_swoole_process.h
 @@ -25,8 +25,2 @@
@@ -32,9 +32,10 @@ index c5a6a31..63a560e 100644
 -};
 -
  /**
-@@ -45,6 +39,3 @@ static sw_inline bool php_swoole_msgqueue_key_is_valid(zend_long key) {
+@@ -45,7 +39,3 @@ static sw_inline bool php_swoole_msgqueue_key_is_valid(zend_long key) {
  
 -void php_swoole_process_clean();
+-void php_swoole_process_signal_clean();
  int php_swoole_process_start(swoole::Worker *process, zval *zobject);
 -swoole::Worker *php_swoole_process_get_worker(const zval *zobject);
 -void php_swoole_process_set_worker(const zval *zobject, swoole::Worker *worker, bool enable_coroutine, int pipe_type);

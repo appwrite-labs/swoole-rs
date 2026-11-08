@@ -1,5 +1,5 @@
 diff --git a/src/server/port.cc b/src/server/port.cc
-index 8b3e9b1..c26280f 100644
+index cf3ad54..c26280f 100644
 --- a/src/server/port.cc
 +++ b/src/server/port.cc
 @@ -17,3 +17,6 @@
@@ -464,22 +464,6 @@ index 8b3e9b1..c26280f 100644
 -    } else if (open_length_check) {
 -        if (protocol.package_length_type != '\0') {
 -            protocol.get_package_length = Protocol::default_length_func;
--        }
--        protocol.onPackage = Server::dispatch_task;
--        onRead = readable_callback_length;
--    } else if (open_http_protocol) {
--        if (open_http2_protocol && open_websocket_protocol) {
--            protocol.get_package_length = http_server::get_package_length;
--            protocol.get_package_length_size = http_server::get_package_length_size;
--            protocol.onPackage = http_server::dispatch_frame;
--        } else if (open_http2_protocol) {
--            protocol.package_length_size = SW_HTTP2_FRAME_HEADER_SIZE;
--            protocol.get_package_length = http2::get_frame_length;
--            protocol.onPackage = Server::dispatch_task;
--        } else if (open_websocket_protocol) {
--            protocol.package_length_size = SW_WEBSOCKET_FRAME_HEADER_SIZE;
--            protocol.get_package_length = websocket::get_package_length;
--            protocol.onPackage = websocket::dispatch_frame;
 +    const bool datagram = is_dgram();
 +    const uint32_t flags = port_protocol_flags(*this) | (datagram ? SWR_PORTS_DGRAM : 0) |
 +                           (datagram && is_dtls() ? SWR_PORTS_DTLS : 0);
@@ -506,6 +490,22 @@ index 8b3e9b1..c26280f 100644
 +        case SWR_PORTS_SET_LENGTH_OFFSET: protocol.package_length_offset = action.value; break;
 +        case SWR_PORTS_SET_BODY_OFFSET: protocol.package_body_offset = action.value; break;
          }
+-        protocol.onPackage = Server::dispatch_task;
+-        onRead = readable_callback_length;
+-    } else if (open_http_protocol) {
+-        if (open_http2_protocol && open_websocket_protocol) {
+-            protocol.get_package_length = http_server::get_package_length;
+-            protocol.get_package_length_size = http_server::get_package_length_size;
+-            protocol.onPackage = http_server::dispatch_frame;
+-        } else if (open_http2_protocol) {
+-            protocol.package_length_size = SW_HTTP2_FRAME_HEADER_SIZE;
+-            protocol.get_package_length = http2::get_frame_length;
+-            protocol.onPackage = Server::dispatch_task;
+-        } else if (open_websocket_protocol) {
+-            protocol.package_length_size = SW_WEBSOCKET_FRAME_HEADER_SIZE;
+-            protocol.get_package_length = websocket::get_package_length;
+-            protocol.onPackage = websocket::dispatch_frame;
+-        }
 -        protocol.package_length_offset = 0;
 -        protocol.package_body_offset = 0;
 -        onRead = readable_callback_http;
@@ -608,7 +608,7 @@ index 8b3e9b1..c26280f 100644
 +    run.fd = sock;
 +    return port_run(std::move(run), SWR_PORTS_RUN_IMPORT);
  }
-@@ -367,362 +404,238 @@ void ListenPort::clear_protocol() {
+@@ -367,375 +404,238 @@ void ListenPort::clear_protocol() {
  
 -int ListenPort::readable_callback_raw(Reactor *reactor, ListenPort *port, Event *event) {
 -    auto _socket = event->socket;
@@ -744,6 +744,7 @@ index 8b3e9b1..c26280f 100644
 -    buffer->length += n;
 -
 -_parse:
+-    dispatch_data.info.ext_flags = 0;
 -    if (request->method == 0 && request->get_protocol() < 0) {
 -        if (!request->excepted && buffer->length < SW_HTTP_HEADER_MAX_SIZE) {
 -            return SW_OK;
@@ -985,6 +986,13 @@ index 8b3e9b1..c26280f 100644
 -    // parse http header and got http body length
 -    if (!request->header_parsed) {
 -        request->parse_header_info();
+-        if (request->excepted) {
+-            swoole_error_log(SW_LOG_TRACE,
+-                             SW_ERROR_HTTP_INVALID_PROTOCOL,
+-                             "Bad Request: invalid Transfer-Encoding" CLIENT_INFO_FMT,
+-                             CLIENT_INFO_ARGS);
+-            goto _bad_request;
+-        }
 -        request->max_length_ = protocol->package_max_length;
 +        return 0;
 +    case SWR_PORTS_LOG_DISCARD:
@@ -1007,7 +1015,16 @@ index 8b3e9b1..c26280f 100644
 -        if (request->form_data_) {
 -            if (serv->upload_max_filesize > 0 &&
 -                request->header_length_ + request->content_length_ > request->max_length_) {
--                request->init_multipart_parser(serv);
+-                const bool send_continue = buffer->length == request->header_length_ && request->has_expect_header();
+-                if (!request->init_multipart_parser(serv)) {
+-                    delete request->form_data_;
+-                    request->form_data_ = nullptr;
+-                    goto _bad_request;
+-                }
+-                request->upload_preprocessed = 1;
+-                if (send_continue) {
+-                    _socket->send(SW_STRL(SW_HTTP_100_CONTINUE_PACKET), 0);
+-                }
 -
 -                buffer = request->buffer_;
 -            } else {
@@ -1039,16 +1056,8 @@ index 8b3e9b1..c26280f 100644
 -
 -    // content length (equal to 0) or (field not found but not chunked)
 -    if (!request->tried_to_dispatch) {
--        // recv nobody_chunked eof
--        if (request->nobody_chunked) {
--            if (buffer->length < request->header_length_ + (sizeof(SW_HTTP_CHUNK_EOF) - 1)) {
--                goto _recv_data;
--            }
--            request->header_length_ += (sizeof(SW_HTTP_CHUNK_EOF) - 1);
--        }
 -        request->tried_to_dispatch = 1;
--        // (know content-length is equal to 0) or (no content-length field and no chunked)
--        if (request->content_length_ == 0 && (request->known_length || !request->chunked)) {
+-        if (request->content_length_ == 0 && !request->chunked) {
 -            buffer->offset = request->header_length_;
 -            // send static file content directly in the reactor thread
 -            if (!serv->enable_static_handler || !serv->select_static_handler(request, conn)) {
@@ -1079,6 +1088,9 @@ index 8b3e9b1..c26280f 100644
 -    if (request->chunked) {
 -        /* unknown length, should find chunked eof */
 -        if (request->get_chunked_body_length() < 0) {
+-            if (request->too_large) {
+-                goto _too_large;
+-            }
 -            if (request->excepted) {
 -                swoole_error_log(SW_LOG_TRACE,
 -                                 SW_ERROR_HTTP_INVALID_PROTOCOL,
@@ -1086,18 +1098,22 @@ index 8b3e9b1..c26280f 100644
 -                                 CLIENT_INFO_ARGS);
 -                goto _bad_request;
 -            }
--            request_length = buffer->size + SW_BUFFER_SIZE_BIG;
--            if (request_length > protocol->package_max_length) {
+-            if (buffer->length >= protocol->package_max_length) {
 -                swoole_error_log(SW_LOG_WARNING,
 -                                 SW_ERROR_HTTP_INVALID_PROTOCOL,
--                                 "Request Entity Too Large: request length (chunked) has already been greater than the "
+-                                 "Request Entity Too Large: the chunked request length (%zu) has reached the "
 -                                 "package_max_length(%u)" CLIENT_INFO_FMT,
+-                                 buffer->length,
 -                                 protocol->package_max_length,
 -                                 CLIENT_INFO_ARGS);
 -                goto _too_large;
 -            }
+-            if (buffer->length == request->header_length_ && request->has_expect_header()) {
+-                _socket->send(SW_STRL(SW_HTTP_100_CONTINUE_PACKET), 0);
+-            }
 -            if (buffer->length == buffer->size) {
--                buffer->extend(request_length);
+-                // The limit check above guarantees that the new size is larger.
+-                buffer->extend(SW_MIN(buffer->size + SW_BUFFER_SIZE_BIG, (size_t) protocol->package_max_length));
 -            }
 -            goto _recv_data;
 -        } else {
@@ -1106,8 +1122,8 @@ index 8b3e9b1..c26280f 100644
 -        swoole_trace_log(
 -            SW_TRACE_SERVER, "received chunked eof, real content-length=%" PRIu64, request->content_length_);
 -    } else {
--        request_length = request->header_length_ + request->content_length_;
--        if (request_length > protocol->package_max_length) {
+-        if (request->header_length_ > protocol->package_max_length ||
+-            request->content_length_ > protocol->package_max_length - request->header_length_) {
 -            swoole_error_log(SW_LOG_WARNING,
 -                             SW_ERROR_HTTP_INVALID_PROTOCOL,
 -                             "Request Entity Too Large: header-length (%u) + content-length (%" PRIu64
@@ -1119,6 +1135,7 @@ index 8b3e9b1..c26280f 100644
 -                             CLIENT_INFO_ARGS);
 -            goto _too_large;
 -        }
+-        request_length = request->header_length_ + request->content_length_;
 -
 -        if (request_length > buffer->size) {
 -            buffer->extend(request_length);
@@ -1126,7 +1143,7 @@ index 8b3e9b1..c26280f 100644
 -
 -        if (buffer->length < request_length) {
 -            // Expect: 100-continue
--            if (request->has_expect_header()) {
+-            if (buffer->length == request->header_length_ && request->has_expect_header()) {
 -                _socket->send(SW_STRL(SW_HTTP_100_CONTINUE_PACKET), 0);
 -            } else {
 -                swoole_trace_log(
@@ -1138,16 +1155,6 @@ index 8b3e9b1..c26280f 100644
 -            }
 -            goto _recv_data;
 -        }
--    }
--
--    // discard the redundant data
--    if (buffer->length > request_length) {
--        swoole_error_log(SW_LOG_TRACE,
--                         SW_ERROR_HTTP_INVALID_PROTOCOL,
--                         "Invalid Request: %zu bytes has been discard" CLIENT_INFO_FMT,
--                         buffer->length - request_length,
--                         CLIENT_INFO_ARGS);
--        buffer->length = request_length;
 +                         "PostWait: request->content_length=%" PRIu64 ", buffer->length=%zu, request->header_length=%d\n",
 +                         request.content_length(), buffer->length, request.header_length());
 +        return 0;
@@ -1158,7 +1165,8 @@ index 8b3e9b1..c26280f 100644
  
 -    buffer->offset = request_length;
 -    dispatch_data.data = buffer->str;
--    dispatch_data.info.len = buffer->length;
+-    dispatch_data.info.len = request_length;
+-    dispatch_data.info.ext_flags = request->upload_preprocessed ? http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED : 0;
 +static int port_read(Reactor *reactor, ListenPort *port, Event *event, uint32_t kind) {
 +    auto *conn = static_cast<Connection *>(event->socket->object);
 +    auto *serv = static_cast<Server *>(reactor->ptr);
@@ -1183,6 +1191,11 @@ index 8b3e9b1..c26280f 100644
 +}
  
 -    if (conn->active && !_socket->removed) {
+-        if (buffer->length > request_length) {
+-            buffer->reduce(request_length);
+-            request->clean();
+-            goto _parse;
+-        }
 -        port->destroy_http_request(conn);
 -        if (_socket->recv_buffer && _socket->recv_buffer->size > SW_BUFFER_SIZE_BIG * 2) {
 -            delete _socket->recv_buffer;
@@ -1199,7 +1212,7 @@ index 8b3e9b1..c26280f 100644
 +int ListenPort::readable_callback_http(Reactor *reactor, ListenPort *port, Event *event) {
 +    return port_read(reactor, port, event, SWR_PORTS_ON_READ_HTTP);
  }
-@@ -730,14 +643,3 @@ _parse:
+@@ -743,14 +643,3 @@ _parse:
  int ListenPort::readable_callback_redis(Reactor *reactor, ListenPort *port, Event *event) {
 -    auto _socket = event->socket;
 -    auto conn = static_cast<Connection *>(_socket->object);
@@ -1215,7 +1228,7 @@ index 8b3e9b1..c26280f 100644
 -    return SW_OK;
 +    return port_read(reactor, port, event, SWR_PORTS_ON_READ_REDIS);
  }
-@@ -745,26 +647,3 @@ int ListenPort::readable_callback_redis(Reactor *reactor, ListenPort *port, Even
+@@ -758,26 +647,3 @@ int ListenPort::readable_callback_redis(Reactor *reactor, ListenPort *port, Even
  int ListenPort::readable_callback_eof(Reactor *reactor, ListenPort *port, Event *event) {
 -    Socket *_socket = event->socket;
 -    auto *conn = static_cast<Connection *>(_socket->object);
@@ -1243,7 +1256,7 @@ index 8b3e9b1..c26280f 100644
 -    return SW_OK;
 +    return port_read(reactor, port, event, SWR_PORTS_ON_READ_EOF);
  }
-@@ -772,20 +651,3 @@ int ListenPort::readable_callback_eof(Reactor *reactor, ListenPort *port, Event
+@@ -785,20 +651,3 @@ int ListenPort::readable_callback_eof(Reactor *reactor, ListenPort *port, Event
  void ListenPort::close() {
 -    if (ssl) {
 -        if (ssl_context) {
@@ -1265,7 +1278,7 @@ index 8b3e9b1..c26280f 100644
 -    }
 +    port_run(PortRun{this}, SWR_PORTS_RUN_CLOSE);
  }
-@@ -793,26 +655,3 @@ void ListenPort::close() {
+@@ -806,26 +655,3 @@ void ListenPort::close() {
  const char *ListenPort::get_protocols() const {
 -    if (is_dgram()) {
 -        return "dgram";
@@ -1293,7 +1306,7 @@ index 8b3e9b1..c26280f 100644
 -    }
 +    return swr_v1_ports_protocol_name(port_protocol_flags(*this) | (is_dgram() ? SWR_PORTS_DGRAM : 0));
  }
-@@ -820,11 +659,7 @@ const char *ListenPort::get_protocols() const {
+@@ -833,11 +659,7 @@ const char *ListenPort::get_protocols() const {
  size_t ListenPort::get_connection_num() const {
 -    if (gs->connection_nums) {
 -        size_t num = 0;
@@ -1310,7 +1323,7 @@ index 8b3e9b1..c26280f 100644
 +    return swr_v1_ports_connection_count(counters, counters ? sw_server()->worker_num : 0,
 +                                       counters ? 0 : gs->connection_num);
  }
-@@ -833,59 +668,52 @@ int ListenPort::create_socket() {
+@@ -846,59 +668,52 @@ int ListenPort::create_socket() {
      auto *server = static_cast<Server *>(protocol.private_data_2);
 -    if (socket) {
 +    // Address has no construction/destruction effects; storage may precede the decisions.
@@ -1413,7 +1426,7 @@ index 8b3e9b1..c26280f 100644
 -
 -    return SW_OK;
  }
-@@ -901,3 +729,3 @@ void ListenPort::close_socket() {
+@@ -914,3 +729,3 @@ void ListenPort::close_socket() {
  void ListenPort::destroy_http_request(Connection *conn) {
 -    const auto request = static_cast<Request *>(conn->object);
 +    const auto request = static_cast<SelectedRequest *>(conn->object);

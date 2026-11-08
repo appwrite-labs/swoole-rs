@@ -1,11 +1,11 @@
 diff --git a/ext-src/stubs/php_swoole_process_arginfo.h b/ext-src/stubs/php_swoole_process_arginfo.h
 deleted file mode 100644
-index 8803f3c..0000000
+index 0a10cdf..0000000
 --- a/ext-src/stubs/php_swoole_process_arginfo.h
 +++ /dev/null
 @@ -1,121 +0,0 @@
 -/* This is a generated file, edit the .stub.php file instead.
-- * Stub hash: e78eaf1e64bf96d0ac0fe2220e670f866eb16473 */
+- * Stub hash: e91431b03e2539a1ef208c68ad354ac09d836f3c */
 -
 -ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Swoole_Process___construct, 0, 0, 1)
 -	ZEND_ARG_TYPE_INFO(0, callback, IS_CALLABLE, 0)
@@ -44,7 +44,7 @@ index 8803f3c..0000000
 -
 -ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Swoole_Process_signal, 0, 1, _IS_BOOL, 0)
 -	ZEND_ARG_TYPE_INFO(0, signal_no, IS_LONG, 0)
--	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, callback, IS_CALLABLE, 1, "null")
+-	ZEND_ARG_TYPE_MASK(0, callback, MAY_BE_CALLABLE|MAY_BE_LONG|MAY_BE_NULL, "null")
 -ZEND_END_ARG_INFO()
 -
 -ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Swoole_Process_alarm, 0, 1, _IS_BOOL, 0)
@@ -553,17 +553,17 @@ index a840d59..9666d58 100644
 +    swr_v1_phpprocess_pool_minit(&host);
  }
 diff --git a/ext-src/swoole_thread.cc b/ext-src/swoole_thread.cc
-index fe51f21..7e0431a 100644
+index bb1c2f2..7cf49bb 100644
 --- a/ext-src/swoole_thread.cc
 +++ b/ext-src/swoole_thread.cc
-@@ -26,6 +26,2 @@
+@@ -37,6 +37,2 @@ struct ZendThreadExitGuards {
  
 -BEGIN_EXTERN_C()
 -#include "stubs/php_swoole_thread_arginfo.h"
 -END_EXTERN_C()
 -
  // The class, its objects and every method are Rust (crates/phpthread);
-@@ -57,49 +53,2 @@ static std::atomic<size_t> thread_num(1);
+@@ -68,49 +64,2 @@ static std::atomic<size_t> thread_num(1);
  
 -SW_EXTERN_C_BEGIN
 -PHP_METHOD(swoole_thread, __construct);
@@ -613,7 +613,7 @@ index fe51f21..7e0431a 100644
 -// clang-format on
 -
  void php_swoole_thread_rinit() {
-@@ -516,3 +465,3 @@ void php_swoole_thread_minit(int module_number) {
+@@ -545,3 +494,3 @@ void php_swoole_thread_minit(int module_number) {
      swr_v1_phpthread_minit(&thread_host);
 -    swoole_thread_ce = swr_v1_phpthread_thread_minit(swoole_thread_methods);
 +    swoole_thread_ce = swr_v1_phpthread_thread_minit();

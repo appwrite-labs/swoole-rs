@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/swoole/swoole-src",
-  "commit": "c7e514509451beafd4d70ce5b78943d51e76381c",
+  "commit": "76c657d88be39b7af6bf85e46bcbac0da7387760",
   "tests": [
     {
       "path": "tests/swoole_http_server/sni/server.phpt",

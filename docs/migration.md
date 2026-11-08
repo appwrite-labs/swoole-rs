@@ -95,5 +95,5 @@ After #1465 (2026-11-08) 99.6% of 90k lines are replaced. What remains, from
 needs of it is the owned `native/process/swoole_server.h`.
 
 References: [Rust FFI](https://doc.rust-lang.org/nomicon/ffi.html),
-[upstream CMake build](https://github.com/swoole/swoole-src/blob/v6.2.4/CMakeLists.txt),
-[upstream config.m4](https://github.com/swoole/swoole-src/blob/v6.2.4/config.m4).
+[upstream CMake build](https://github.com/swoole/swoole-src/blob/v6.2.5/CMakeLists.txt),
+[upstream config.m4](https://github.com/swoole/swoole-src/blob/v6.2.5/config.m4).

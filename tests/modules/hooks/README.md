@@ -1,6 +1,6 @@
 # Hooks
 
-Pin `c7e514509451beafd4d70ce5b78943d51e76381c`.
+Pin `76c657d88be39b7af6bf85e46bcbac0da7387760`.
 
 ## Native-facade gates
 

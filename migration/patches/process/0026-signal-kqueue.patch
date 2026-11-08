@@ -1,8 +1,8 @@
 diff --git a/src/os/signal.cc b/src/os/signal.cc
-index 1e4b22e..0485c8e 100644
+index b874211..3a660da 100644
 --- a/src/os/signal.cc
 +++ b/src/os/signal.cc
-@@ -31,12 +31,2 @@
+@@ -28,12 +28,2 @@
  
 -#ifdef HAVE_KQUEUE
 -#ifdef USE_KQUEUE_IDE_HELPER
@@ -15,15 +15,15 @@ index 1e4b22e..0485c8e 100644
 -#include <sys/param.h>
 -#endif
  
-@@ -44,3 +34,2 @@ using swoole::Event;
+@@ -41,3 +31,2 @@ using swoole::Event;
  using swoole::Reactor;
 -using swoole::Signal;
  using swoole::SignalHandler;
-@@ -67,3 +56,2 @@ static inline bool swoole_signalfd_is_available() {
+@@ -64,3 +53,2 @@ static inline bool swoole_signalfd_is_available() {
  #endif
 -static Signal *const signals = reinterpret_cast<Signal *>(swr_v1_signals);
  
-@@ -274,32 +262,8 @@ static int swoole_signalfd_event_callback(Reactor *reactor, Event *event) {
+@@ -271,39 +259,8 @@ static int swoole_signalfd_event_callback(Reactor *reactor, Event *event) {
  static SignalHandler swoole_signal_kqueue_set(int signo, SignalHandler handler) {
 -    struct kevent ev;
 -    SignalHandler origin_handler = nullptr;
@@ -31,12 +31,19 @@ index 1e4b22e..0485c8e 100644
 -
 -    // clear signal
 -    if (handler == nullptr) {
--        signal(signo, SIG_DFL);
+-        if (signals[signo].activated) {
+-            sigaction(signo, &origin_actions[signo], nullptr);
+-        } else {
+-            signal(signo, SIG_DFL);
+-        }
 -        sw_memset_zero(&signals[signo], sizeof(Signal));
 -        EV_SET(&ev, signo, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
 -    }
 -    // add/update signal
 -    else {
+-        if (!signals[signo].activated) {
+-            sigaction(signo, nullptr, &origin_actions[signo]);
+-        }
 -        signal(signo, SIG_IGN);
 -        origin_handler = signals[signo].handler;
 -        signals[signo].handler = handler;
@@ -60,7 +67,7 @@ index 1e4b22e..0485c8e 100644
      }
 -
      return origin_handler;
-@@ -308,10 +272,4 @@ static SignalHandler swoole_signal_kqueue_set(int signo, SignalHandler handler)
+@@ -312,10 +269,4 @@ static SignalHandler swoole_signal_kqueue_set(int signo, SignalHandler handler)
  static void swoole_signal_kqueue_clear() {
 -    SW_LOOP_N(SW_SIGNO_MAX) {
 -        if (signals[i].activated && swoole_event_is_available()) {

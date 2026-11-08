@@ -1,9 +1,9 @@
 diff --git a/include/swoole_client.h b/include/swoole_client.h
 deleted file mode 100644
-index 4b04269..0000000
+index f30c048..0000000
 --- a/include/swoole_client.h
 +++ /dev/null
-@@ -1,259 +0,0 @@
+@@ -1,264 +0,0 @@
 -/*
 -  +----------------------------------------------------------------------+
 -  | Swoole                                                               |
@@ -78,6 +78,11 @@ index 4b04269..0000000
 -
 -    bool ready() const {
 -        return socket != nullptr;
+-    }
+-
+-    // A shutdown in either direction prevents persistent connection reuse.
+-    bool is_shutdown() const {
+-        return shutdown_read || shutdown_write;
 -    }
 -
 -    SocketType get_socket_type() const {

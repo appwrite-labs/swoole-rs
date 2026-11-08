@@ -1,9 +1,9 @@
 diff --git a/ext-src/swoole_timer.cc b/ext-src/swoole_timer.cc
 deleted file mode 100644
-index 80bdaee..0000000
+index 6fbe033..0000000
 --- a/ext-src/swoole_timer.cc
 +++ /dev/null
-@@ -1,138 +0,0 @@
+@@ -1,139 +0,0 @@
 -/*
 - +----------------------------------------------------------------------+
 - | Swoole                                                               |
@@ -60,7 +60,8 @@ index 80bdaee..0000000
 -    }
 -    auto process_pool = static_cast<swoole::ProcessPool *>(swr_v1_phpprocess_pool_current());
 -    if (process_pool) {
--        return !process_pool->is_master();
+-        // A synchronous worker loop dispatches timers itself and never runs a reactor.
+-        return !process_pool->is_master() && (process_pool->async || !process_pool->main_loop);
 -    }
 -    return true;
 -}

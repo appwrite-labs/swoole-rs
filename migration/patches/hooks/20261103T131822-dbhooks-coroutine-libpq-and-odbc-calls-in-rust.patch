@@ -192,15 +192,22 @@ index 0826bea..a9872c3 100644
 +    swr_v1_odbc_init(&ops);
      if (zend_hash_str_find(&php_pdo_get_dbh_ce()->constants_table, ZEND_STRL("ODBC_ATTR_USE_CURSOR_LIBRARY")) ==
 diff --git a/ext-src/swoole_pgsql.cc b/ext-src/swoole_pgsql.cc
-index 94669ff..1f4d3cc 100644
+index edb3fd9..8f37979 100644
 --- a/ext-src/swoole_pgsql.cc
 +++ b/ext-src/swoole_pgsql.cc
-@@ -28,57 +28,11 @@ using swoole::Coroutine;
+@@ -31,51 +31,11 @@ using swoole::Coroutine;
  using swoole::EventType;
 -using swoole::Reactor;
+-using swoole::Timer;
 -using swoole::translate_events_to_poll;
  
 -static bool swoole_pgsql_blocking = true;
+-struct PgsqlIoError {
+-    int code;
+-    bool handled;
+-};
+-// Only interrupted I/O is recorded. PDO owns connection disposal and persistent-pool eviction.
+-static SW_THREAD_LOCAL std::unordered_map<PGconn *, PgsqlIoError> pgsql_io_errors;
 -/**
 - * In macOS, under special circumstances, the poll function will not return a readable or writable signal. It is
 - * necessary to set a relatively short poll timeout value to allow it to fail quickly. Then, re-execute PQconnectPoll,
@@ -222,22 +229,18 @@ index 94669ff..1f4d3cc 100644
 -    }
 -}
 -
--static int swoole_pgsql_socket_poll(PGconn *conn, EventType event, bool check_nonblock = false) {
+-static int swoole_pgsql_socket_poll(PGconn *conn, EventType event) {
 -    if (swoole_pgsql_blocking) {
 -        struct pollfd fds[1];
 -        fds[0].fd = PQsocket(conn);
 -        fds[0].events = translate_events_to_poll(event);
 -        fds[0].revents = 0;
--
--        int result = 0;
--        do {
--            result = poll(fds, 1, swoole_pgsql_poll_timeout * 1000);
--        } while (result < 0 && errno == EINTR);
--
--        return result;
--    }
 +#include "swoole_rs_dbhooks.h"
  
+-        int result = poll(fds, 1, swoole_pgsql_poll_timeout * 1000);
+-        return result < 0 && errno == EINTR ? 0 : result;
+-    }
+-
 -    SocketImpl sock(PQsocket(conn), SW_SOCK_RAW);
 +/* One coroutine wait on a libpq socket (crates/pgsql calls it): 1 ready, 0
 + * timed out, -1 failed. */
@@ -246,75 +249,89 @@ index 94669ff..1f4d3cc 100644
      sock.get_socket()->nonblock = 1;
 -
 -    bool retval = sock.poll(event, swoole_pgsql_poll_timeout);
--    while (check_nonblock && event == SW_EVENT_READ) {
--        if (PQconsumeInput(conn) == 0) {
--            retval = false;
--            break;
--        }
--        if (PQisBusy(conn) == 0) {
--            break;
--        }
--        retval = sock.poll(event, swoole_pgsql_poll_timeout);
--    }
+-    int error = sock.errCode;
 -
 +    bool retval = sock.poll((EventType) event, timeout);
      sock.move_fd();
-@@ -87,148 +41,4 @@ static int swoole_pgsql_socket_poll(PGconn *conn, EventType event, bool check_no
+@@ -91,194 +51,4 @@ static int swoole_pgsql_socket_poll(PGconn *conn, EventType event) {
  
 -static int swoole_pgsql_flush(PGconn *conn) {
 -    int flush_ret;
 -
--    do {
+-    while ((flush_ret = PQflush(conn)) == 1) {
 -        int ret = swoole_pgsql_socket_poll(conn, SW_EVENT_WRITE);
 -        if (sw_unlikely(ret < 0)) {
 -            return -1;
 -        }
 -        swoole_trace_log(SW_TRACE_CO_PGSQL, "PQflush(conn=%p)", conn);
--        flush_ret = PQflush(conn);
--    } while (flush_ret == 1);
+-    }
 -
 -    return flush_ret;
 -}
 -
+-static bool swoole_pgsql_wait_result(PGconn *conn) {
+-    while (PQisBusy(conn)) {
+-        if (swoole_pgsql_socket_poll(conn, SW_EVENT_READ) < 0) {
+-            return false;
+-        }
+-        if (PQconsumeInput(conn) == 0) {
+-            return false;
+-        }
+-    }
+-    return true;
+-}
+-
 -static PGresult *swoole_pgsql_get_result(PGconn *conn) {
 -    PGresult *result, *last_result = nullptr;
--    // PQgetResult will block the process; it is necessary to forcibly check if the data is ready.
--    int poll_ret = swoole_pgsql_socket_poll(conn, SW_EVENT_READ, true);
--    if (sw_unlikely(poll_ret < 0)) {
+-    // without the hook PQgetResult() may block
+-    if (swoole_pgsql_blocking && sw_unlikely(swoole_pgsql_socket_poll(conn, SW_EVENT_READ) < 0)) {
 -        return nullptr;
 -    }
 -
--    swoole_trace_log(SW_TRACE_CO_PGSQL, "PQgetResult(conn=%p)", conn);
--    while ((result = PQgetResult(conn))) {
+-    while (swoole_pgsql_blocking || swoole_pgsql_wait_result(conn)) {
+-        swoole_trace_log(SW_TRACE_CO_PGSQL, "PQgetResult(conn=%p)", conn);
+-        result = PQgetResult(conn);
+-        if (!result) {
+-            return last_result;
+-        }
 -        PQclear(last_result);
 -        last_result = result;
 -    }
 -
--    return last_result;
+-    PQclear(last_result);
+-    return nullptr;
 -}
 -
--PGconn *swoole_pgsql_connectdb(const char *conninfo) {
--    PGconn *conn = PQconnectStart(conninfo);
--    if (conn == nullptr) {
--        return nullptr;
+-static bool swoole_pgsql_wait_connect(PGconn *conn, PostgresPollingStatusType (*poll_connection)(PGconn *)) {
+-    // PQconnectPoll() ignores connect_timeout, so the caller has to enforce it.
+-    long timeout = 0;
+-    size_t host_count = 1;
+-    size_t address_count = 0;
+-    PQconninfoOption *options = PQconninfo(conn);
+-    for (PQconninfoOption *option = options; option && option->keyword; option++) {
+-        if (!option->val || option->val[0] == '\0') {
+-            continue;
+-        }
+-        if (strcmp(option->keyword, "connect_timeout") == 0) {
+-            timeout = strtol(option->val, nullptr, 10);
+-        } else if (strcmp(option->keyword, "host") == 0) {
+-            host_count = std::count(option->val, option->val + strlen(option->val), ',') + 1;
+-        } else if (strcmp(option->keyword, "hostaddr") == 0) {
+-            address_count = std::count(option->val, option->val + strlen(option->val), ',') + 1;
+-        }
 -    }
--
--    int fd = PQsocket(conn);
--    if (sw_unlikely(fd < 0)) {
--        return conn;
+-    PQconninfoFree(options);
+-    // libpq before 17 treats a connect_timeout of 1 as 2.
+-    if (timeout == 1 && PQlibVersion() < 170000) {
+-        timeout = 2;
 -    }
--
--    if (!swoole_pgsql_blocking && Coroutine::get_current()) {
--        PQsetnonblocking(conn, 1);
--    } else {
--        PQsetnonblocking(conn, 0);
--    }
+-    // The public polling API cannot skip an expired target. Give the complete configured list its combined budget
+-    // instead, allowing libpq to perform failover without depending on private target indexes or address APIs.
+-    const size_t target_count = address_count ? address_count : host_count;
+-    const int64_t start_msec = Timer::get_absolute_msec();
+-    int r = PGRES_POLLING_WRITING;
 -
 -    SW_LOOP {
--        int r = PQconnectPoll(conn);
--        if (r == PGRES_POLLING_OK || r == PGRES_POLLING_FAILED) {
--            break;
--        }
 -        EventType event;
 -
 -        switch (r) {
@@ -325,16 +342,39 @@ index 94669ff..1f4d3cc 100644
 -            event = SW_EVENT_WRITE;
 -            break;
 -        default:
--            // should not be here including PGRES_POLLING_ACTIVE
--            abort();
--            break;
+-            swoole_warning("unexpected PQconnectPoll() status[%d]", r);
+-            return false;
 -        }
 -
--        if (swoole_pgsql_socket_poll(conn, event) < 0) {
+-        int poll_result = swoole_pgsql_socket_poll(conn, event);
+-        if (poll_result < 0) {
+-            break;
+-        }
+-        // Divide the elapsed time to avoid overflowing when multiplying a user-supplied timeout by the target count.
+-        const uint64_t elapsed_sec = (Timer::get_absolute_msec() - start_msec) / 1000;
+-        if (timeout > 0 && elapsed_sec / target_count >= static_cast<uint64_t>(timeout)) {
+-            break;
+-        }
+-        // libpq sends its first packet from these states and assumes the socket is writable.
+-        if (poll_result == 0 && (PQstatus(conn) == CONNECTION_STARTED || PQstatus(conn) == CONNECTION_MADE)) {
+-            continue;
+-        }
+-        r = poll_connection(conn);
+-        if (r == PGRES_POLLING_OK || r == PGRES_POLLING_FAILED) {
 -            break;
 -        }
 -    }
 -
+-    return PQstatus(conn) == CONNECTION_OK;
+-}
+-
+-PGconn *swoole_pgsql_connectdb(const char *conninfo) {
+-    PGconn *conn = PQconnectStart(conninfo);
+-    if (conn == nullptr || PQsocket(conn) < 0) {
+-        return conn;
+-    }
+-    PQsetnonblocking(conn, !swoole_pgsql_blocking && Coroutine::get_current() ? 1 : 0);
+-    swoole_pgsql_wait_connect(conn, PQconnectPoll);
 -    return conn;
 -}
 -
@@ -410,15 +450,71 @@ index 94669ff..1f4d3cc 100644
 +static bool swoole_pgsql_in_coroutine() {
 +    return Coroutine::get_current() != nullptr;
  }
-@@ -239,3 +49,3 @@ PGresult *swoole_pgsql_close_prepared(PGconn *conn, const char *stmtName) {
+@@ -289,3 +59,3 @@ PGresult *swoole_pgsql_close_prepared(PGconn *conn, const char *stmtName) {
      if (sw_likely(result)) {
 -        return swoole_pgsql_get_result(conn);
 +        return swr_v1_pgsql_get_result(conn);
      }
-@@ -246,7 +56,5 @@ PGresult *swoole_pgsql_close_prepared(PGconn *conn, const char *stmtName) {
+@@ -296,63 +66,5 @@ PGresult *swoole_pgsql_close_prepared(PGconn *conn, const char *stmtName) {
  
 -void swoole_pgsql_set_blocking(bool blocking) {
 -    swoole_pgsql_blocking = blocking;
+-}
+-
+-void swoole_pgsql_finish(PGconn *conn) {
+-    pgsql_io_errors.erase(conn);
+-    PQfinish(conn);
+-}
+-
+-bool php_swoole_pgsql_handle_io_error(pdo_dbh_t *dbh, const char **message) {
+-    auto *handle = static_cast<pdo_pgsql_db_handle *>(dbh->driver_data);
+-    auto error = pgsql_io_errors.find(handle->server);
+-    if (error == pgsql_io_errors.end()) {
+-        return false;
+-    }
+-    int error_code = error->second.code;
+-
+-    // An incomplete reply must not be reused. Keep PGconn alive for PDO statements and LOBs
+-    // that still reference it; their normal destructors release it through PQfinish().
+-    if (!error->second.handled) {
+-        error->second.handled = true;
+-        int fd = PQsocket(handle->server);
+-        if (fd >= 0) {
+-            shutdown(fd, SHUT_RDWR);
+-            PQconsumeInput(handle->server);
+-        }
+-        if (dbh->is_persistent && dbh->persistent_id) {
+-            auto *resource = static_cast<zend_resource *>(
+-                zend_hash_str_find_ptr(&EG(persistent_list), dbh->persistent_id, dbh->persistent_id_len));
+-            if (resource && resource->ptr == dbh) {
+-                // Drop only the pool's ownership. Live PDO/statement objects must retain their handle.
+-                resource->ptr = nullptr;
+-                ZEND_ASSERT(dbh->refcount > 1);
+-                dbh->refcount--;
+-                zend_hash_str_del(&EG(persistent_list), dbh->persistent_id, dbh->persistent_id_len);
+-            }
+-        }
+-    }
+-    *message = swoole_strerror(error_code);
+-    return true;
+-}
+-
+-zend_result php_swoole_pgsql_check_liveness(pdo_dbh_t *dbh) {
+-    auto *handle = static_cast<pdo_pgsql_db_handle *>(dbh->driver_data);
+-    if (pgsql_io_errors.count(handle->server)) {
+-        return FAILURE;
+-    }
+-    if (!PQconsumeInput(handle->server) || PQstatus(handle->server) == CONNECTION_BAD) {
+-        if (!swoole_pgsql_blocking) {
+-            if (!PQresetStart(handle->server) || PQsocket(handle->server) < 0) {
+-                return FAILURE;
+-            }
+-            PQsetnonblocking(handle->server, 1);
+-            return swoole_pgsql_wait_connect(handle->server, PQresetPoll) ? SUCCESS : FAILURE;
+-        }
+-        PQreset(handle->server);
+-    }
+-    return PQstatus(handle->server) == CONNECTION_OK ? SUCCESS : FAILURE;
 -}
 -
  void php_swoole_pgsql_minit(int module_id) {

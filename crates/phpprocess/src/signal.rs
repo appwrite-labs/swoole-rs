@@ -62,7 +62,7 @@ unsafe extern "C" fn on_signal(signo: c_int) {
     swoole_rs_zend::bailout::finish();
 }
 
-/// `Process::signal(int $signo, ?callable $callback = null): bool`.
+/// `Process::signal(int $signo, callable|int|null $callback = null): bool`.
 pub(crate) fn signal(call: &Call) {
     if !host::main_thread() {
         set_last_error(OPERATION_NOT_SUPPORT);

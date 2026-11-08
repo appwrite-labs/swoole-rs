@@ -1,5 +1,5 @@
 diff --git a/src/protocol/http.cc b/src/protocol/http.cc
-index 34f1caa..03bbc27 100644
+index 6011d61..57b9e12 100644
 --- a/src/protocol/http.cc
 +++ b/src/protocol/http.cc
 @@ -21,2 +21,5 @@
@@ -92,10 +92,7 @@ index 34f1caa..03bbc27 100644
 -
 -    if (recv_buffer->length < sizeof(SW_HTTP_PROXY_HANDSHAKE_RESPONSE) - 1) {
 -        return false;
-+    int32_t status = swr_v1_http_proxy_handshake(reinterpret_cast<const uint8_t *>(recv_buffer->str), recv_buffer->length);
-+    if (status == -2) {
-+        swoole_set_last_error(SW_ERROR_HTTP_PROXY_HANDSHAKE_FAILED);
-     }
+-    }
 -
 -    for (; p < buf + len; p++) {
 -        if (state == 0) {
@@ -135,7 +132,10 @@ index 34f1caa..03bbc27 100644
 -            }
 -#endif
 -        }
--    }
++    int32_t status = swr_v1_http_proxy_handshake(reinterpret_cast<const uint8_t *>(recv_buffer->str), recv_buffer->length);
++    if (status == -2) {
++        swoole_set_last_error(SW_ERROR_HTTP_PROXY_HANDSHAKE_FAILED);
+     }
 -
 -    return ret;
 +    return status == 1;
@@ -202,19 +202,28 @@ index 34f1caa..03bbc27 100644
 +}
 +
  static int multipart_on_header_field(multipart_parser *p, const char *at, size_t length) {
-@@ -160,2 +151,4 @@ static int multipart_on_header_field(multipart_parser *p, const char *at, size_t
+@@ -167,2 +158,4 @@ static int multipart_on_header_field(multipart_parser *p, const char *at, size_t
  
 +static auto http_cookie_scratch(const char *at, size_t length) -> String *;
 +
  static int multipart_on_header_value(multipart_parser *p, const char *at, size_t length) {
-@@ -166,33 +159,42 @@ static int multipart_on_header_value(multipart_parser *p, const char *at, size_t
+@@ -176,42 +169,42 @@ static int multipart_on_header_value(multipart_parser *p, const char *at, size_t
  
--    form_data->multipart_buffer_->append(form_data->current_header_name, form_data->current_header_name_len);
+-    // Only the reactor may generate this header, a client must never use it as a form-data header name.
+-    if (SW_STRCASEEQ(header_name.c_str(), header_name.length(), SW_HTTP_UPLOAD_FILE)) {
+-        swoole_error_log(SW_LOG_WARNING,
+-                         SW_ERROR_SERVER_INVALID_REQUEST,
+-                         "Bad Request: the reserved header '%s' may not be sent by clients",
+-                         SW_HTTP_UPLOAD_FILE);
+-        return MPPE_ERROR;
+-    }
+-
+-    form_data->multipart_buffer_->append(header_name.c_str(), header_name.length());
 -    form_data->multipart_buffer_->append(SW_STRL(": "));
 -    form_data->multipart_buffer_->append(at, length);
 -    form_data->multipart_buffer_->append(SW_STRL("\r\n"));
 -
--    if (SW_STRCASEEQ(form_data->current_header_name, form_data->current_header_name_len, "content-disposition")) {
+-    if (SW_STRCASEEQ(header_name.c_str(), header_name.length(), "content-disposition")) {
 -        ParseCookieCallback cb = [request, form_data, p](char *key, size_t key_len, char *value, size_t value_len) {
 -            if (SW_STRCASEEQ(key, key_len, "filename")) {
 -                memcpy(form_data->upload_tmpfile->str,
@@ -281,7 +290,7 @@ index 34f1caa..03bbc27 100644
 +        default: throw std::logic_error("Invalid HTTP multipart upload action");
 +        }
      }
-@@ -203,34 +205,30 @@ static int multipart_on_header_value(multipart_parser *p, const char *at, size_t
+@@ -222,34 +215,30 @@ static int multipart_on_header_value(multipart_parser *p, const char *at, size_t
  static int multipart_on_data(multipart_parser *p, const char *at, size_t length) {
 -    auto request = (Request *) p->data;
 +    auto request = static_cast<Request *>(p->data);
@@ -293,6 +302,26 @@ index 34f1caa..03bbc27 100644
 -            request->excepted = 1;
 -            request->unavailable = 1;
 -            return 1;
+-        }
+-        form_data->multipart_buffer_->append(at, length);
+-        return 0;
+-    }
+-
+-    form_data->upload_filesize += length;
+-    if (form_data->upload_filesize > form_data->upload_max_filesize) {
+-        request->excepted = 1;
+-        request->too_large = 1;
+-        return 1;
+-    }
+-
+-    ssize_t n = fwrite(at, sizeof(char), length, p->fp);
+-    if (n != (off_t) length) {
+-        fclose(p->fp);
+-        p->fp = nullptr;
+-        request->excepted = 1;
+-        request->unavailable = 1;
+-        swoole_sys_warning("failed to write upload file");
+-        return 1;
 +    swr_v1_http_multipart_data_state state{};
 +    state.has_file = p->fp != nullptr;
 +    state.buffer_length = form_data->multipart_buffer_->length;
@@ -315,35 +344,17 @@ index 34f1caa..03bbc27 100644
 +        case 3: fclose(p->fp); p->fp = nullptr; break;
 +        case 4: swoole_sys_warning("failed to write upload file"); return 1;
 +        default: return 1;
-         }
--        form_data->multipart_buffer_->append(at, length);
--        return 0;
--    }
--
--    form_data->upload_filesize += length;
--    if (form_data->upload_filesize > form_data->upload_max_filesize) {
--        request->excepted = 1;
--        request->too_large = 1;
--        return 1;
--    }
--
--    ssize_t n = fwrite(at, sizeof(char), length, p->fp);
--    if (n != (off_t) length) {
--        fclose(p->fp);
--        p->fp = nullptr;
--        request->excepted = 1;
--        request->unavailable = 1;
--        swoole_sys_warning("failed to write upload file");
--        return 1;
++        }
 +        action = swr_v1_http_multipart_data(&state);
      }
 -
 -    return 0;
  }
-@@ -239,11 +237,3 @@ static int multipart_on_header_complete(multipart_parser *p) {
+@@ -258,12 +247,3 @@ static int multipart_on_header_complete(multipart_parser *p) {
      swoole_trace("on_header_complete");
 -    auto *request = static_cast<Request *>(p->data);
 -    auto *form_data = request->form_data_;
+-    form_data->current_header_name.clear();
 -    if (p->fp) {
 -        form_data->multipart_buffer_->append(SW_STRL(SW_HTTP_UPLOAD_FILE ": "));
 -        form_data->multipart_buffer_->append(form_data->upload_tmpfile->str, strlen(form_data->upload_tmpfile->str));
@@ -353,7 +364,7 @@ index 34f1caa..03bbc27 100644
 -    return 0;
 +    return http_multipart_emit(p, 0);
  }
-@@ -252,13 +242,3 @@ static int multipart_on_data_end(multipart_parser *p) {
+@@ -272,13 +252,3 @@ static int multipart_on_data_end(multipart_parser *p) {
      swoole_trace("on_data_end\n");
 -    auto *request = static_cast<Request *>(p->data);
 -    auto *form_data = request->form_data_;
@@ -368,16 +379,17 @@ index 34f1caa..03bbc27 100644
 -    return 0;
 +    return http_multipart_emit(p, 1);
  }
-@@ -267,7 +247,3 @@ static int multipart_on_part_begin(multipart_parser *p) {
+@@ -287,8 +257,3 @@ static int multipart_on_part_begin(multipart_parser *p) {
      swoole_trace("on_part_begin");
 -    auto *request = static_cast<Request *>(p->data);
 -    auto *form_data = request->form_data_;
+-    form_data->current_header_name.clear();
 -    form_data->multipart_buffer_->append(p->boundary, p->boundary_length);
 -    form_data->multipart_buffer_->append(SW_STRL("\r\n"));
 -    return 0;
 +    return http_multipart_emit(p, 2);
  }
-@@ -277,42 +253,5 @@ static int multipart_on_body_end(multipart_parser *p) {
+@@ -298,42 +263,5 @@ static int multipart_on_body_end(multipart_parser *p) {
      auto *form_data = request->form_data_;
 -    form_data->multipart_buffer_->append(p->boundary, p->boundary_length);
 -    form_data->multipart_buffer_->append(SW_STRL("--"));
@@ -422,7 +434,7 @@ index 34f1caa..03bbc27 100644
      swoole_trace("end, buffer=%.*s", (int) form_data->multipart_buffer_->length, form_data->multipart_buffer_->str);
 -
      return 0;
-@@ -330,149 +269,24 @@ static constexpr multipart_parser_settings mt_parser_settings = {
+@@ -351,189 +279,24 @@ static constexpr multipart_parser_settings mt_parser_settings = {
  
 -static thread_local char http_status_message[128];
 -
@@ -576,24 +588,11 @@ index 34f1caa..03bbc27 100644
 -    default:
 -        sw_snprintf(http_status_message, sizeof(http_status_message), "%d Unknown Status", code);
 -        return http_status_message;
+-    }
 +    return swr_v2_http_status_message(code);
-+}
-+
-+static auto http_cookie_scratch(const char *at, size_t length) -> String * {
-+    auto *scratch=sw_tg_buffer();
-+    swr_v2_http_cookie_flow_state flow{};
-+    for (;;) {
-+        const int32_t action=swr_v2_http_cookie_flow(&flow,reinterpret_cast<const uint8_t *>(at),length,
-+            reinterpret_cast<uint8_t *>(scratch->str),scratch->size,1,1);
-+        switch (action) {
-+        case 0: return scratch;
-+        case 2: scratch->reserve(flow.required); break;
-+        case -2: throw std::length_error("HTTP cookie size overflow");
-+        default: throw std::invalid_argument("Invalid HTTP cookie scratch buffer");
-+        }
-     }
-@@ -481,38 +295,20 @@ const char *get_status_message(int code) {
- void parse_cookie(const char *at, size_t length, const ParseCookieCallback &cb) {
+ }
+ 
+-void parse_cookie(const char *at, size_t length, const ParseCookieCallback &cb) {
 -    char *value;
 -    const char *separator = ";\0";
 -    size_t key_len = 0;
@@ -614,7 +613,18 @@ index 34f1caa..03bbc27 100644
 -
 -        if (key == value || *key == '\0') {
 -            goto next_cookie;
--        }
++static auto http_cookie_scratch(const char *at, size_t length) -> String * {
++    auto *scratch=sw_tg_buffer();
++    swr_v2_http_cookie_flow_state flow{};
++    for (;;) {
++        const int32_t action=swr_v2_http_cookie_flow(&flow,reinterpret_cast<const uint8_t *>(at),length,
++            reinterpret_cast<uint8_t *>(scratch->str),scratch->size,1,1);
++        switch (action) {
++        case 0: return scratch;
++        case 2: scratch->reserve(flow.required); break;
++        case -2: throw std::length_error("HTTP cookie size overflow");
++        default: throw std::invalid_argument("Invalid HTTP cookie scratch buffer");
+         }
 -
 -        if (value) {
 -            *value++ = '\0';
@@ -626,6 +636,25 @@ index 34f1caa..03bbc27 100644
 -
 -        key_len = strlen(key);
 -        if (!cb(key, key_len, value, value_len)) {
+-            break;
+-        }
+-    next_cookie:
+-        key = strtok_r(nullptr, separator, &strtok_buf);
+     }
+@@ -541,69 +304,32 @@ void parse_cookie(const char *at, size_t length, const ParseCookieCallback &cb)
+ 
+-bool parse_multipart_boundary(
+-    const char *at, size_t length, size_t offset, char **out_boundary_str, int *out_boundary_len) {
+-    while (offset < length) {
+-        if (at[offset] == ' ' || at[offset] == ';') {
+-            offset++;
+-            continue;
+-        }
+-
+-        if (offset + sizeof("boundary=") - 1 <= length &&
+-            SW_STR_ISTARTS_WITH(at + offset, length - offset, "boundary=")) {
+-            offset += sizeof("boundary=") - 1;
++void parse_cookie(const char *at, size_t length, const ParseCookieCallback &cb) {
 +    auto *scratch = sw_tg_buffer();
 +    swr_v2_http_cookie_flow_state flow{};
 +    uint32_t callback_result=1;
@@ -640,34 +669,17 @@ index 34f1caa..03bbc27 100644
 +            callback_result=cb(scratch->str+cookie.key_offset,cookie.key_length,value,cookie.value_length);
              break;
          }
--    next_cookie:
--        key = strtok_r(nullptr, separator, &strtok_buf);
-+        case 2: scratch->reserve(flow.required); break;
-+        case -2: throw std::length_error("HTTP cookie size overflow");
-+        default: throw std::invalid_argument("Invalid HTTP cookie scratch buffer");
-+        }
-     }
-@@ -522,50 +318,7 @@ bool parse_multipart_boundary(
-     const char *at, size_t length, size_t offset, char **out_boundary_str, int *out_boundary_len) {
--    while (offset < length) {
--        if (at[offset] == ' ' || at[offset] == ';') {
--            offset++;
--            continue;
--        }
--
--        if (offset + sizeof("boundary=") - 1 <= length &&
--            SW_STR_ISTARTS_WITH(at + offset, length - offset, "boundary=")) {
--            offset += sizeof("boundary=") - 1;
--            break;
--        }
 -
 -        void *delimiter = memchr((void *) (at + offset), ';', length - offset);
 -        if (delimiter == nullptr) {
 -            return false;
 -        } else {
 -            offset += (const char *) delimiter - (at + offset);
--        }
--    }
++        case 2: scratch->reserve(flow.required); break;
++        case -2: throw std::length_error("HTTP cookie size overflow");
++        default: throw std::invalid_argument("Invalid HTTP cookie scratch buffer");
+         }
+     }
 -
 -    if (offset >= length) {
 -        return false;
@@ -697,13 +709,8 @@ index 34f1caa..03bbc27 100644
 -    *out_boundary_str = boundary_str;
 -    *out_boundary_len = boundary_len;
 -
-+    swr_v1_http_span boundary{};
-+    int32_t status = swr_v1_http_boundary(reinterpret_cast<const uint8_t *>(at), length, offset, &boundary);
-+    if (status != 1) return false;
-+    *out_boundary_str = const_cast<char *>(at) + boundary.offset;
-+    *out_boundary_len = static_cast<int>(boundary.length);
-     return true;
-@@ -573,39 +326,8 @@ bool parse_multipart_boundary(
+-    return true;
+ }
  
 -static int url_htoi(const char *s) {
 -    int c = ((unsigned char *) s)[0];
@@ -719,9 +726,16 @@ index 34f1caa..03bbc27 100644
 -    value += c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10;
 -
 -    return (value);
--}
--
- /* return value: length of decoded string */
++bool parse_multipart_boundary(
++    const char *at, size_t length, size_t offset, char **out_boundary_str, int *out_boundary_len) {
++    swr_v1_http_span boundary{};
++    int32_t status = swr_v1_http_boundary(reinterpret_cast<const uint8_t *>(at), length, offset, &boundary);
++    if (status != 1) return false;
++    *out_boundary_str = const_cast<char *>(at) + boundary.offset;
++    *out_boundary_len = static_cast<int>(boundary.length);
++    return true;
+ }
+@@ -612,21 +338,6 @@ static int url_htoi(const char *s) {
  size_t url_decode(char *str, size_t len) {
 -    char *dest = str;
 -    char *data = str;
@@ -747,7 +761,7 @@ index 34f1caa..03bbc27 100644
 +    if (status != 0) throw std::length_error("Invalid HTTP URL decode buffer");
 +    return written;
  }
-@@ -613,29 +335,12 @@ size_t url_decode(char *str, size_t len) {
+@@ -634,29 +345,12 @@ size_t url_decode(char *str, size_t len) {
  char *url_encode(char const *str, size_t len) {
 -    static uchar hexchars[] = "0123456789ABCDEF";
 -
@@ -787,7 +801,7 @@ index 34f1caa..03bbc27 100644
 +    if (status != 0) { sw_free(result); throw std::invalid_argument("Invalid HTTP URL encode input"); }
 +    return result;
  }
-@@ -643,79 +348,3 @@ char *url_encode(char const *str, size_t len) {
+@@ -664,79 +358,3 @@ char *url_encode(char const *str, size_t len) {
  int Request::get_protocol() {
 -    char *p = buffer_->str;
 -    char *pe = p + buffer_->length;
@@ -868,12 +882,15 @@ index 34f1caa..03bbc27 100644
 -    return SW_OK;
 +    return frame_request(*this, 0);
  }
-@@ -726,55 +355,21 @@ _end:
+@@ -747,79 +365,21 @@ _end:
  void Request::parse_header_info() {
 -    // header field start
 -    char *p = buffer_->str + request_line_length_ + (sizeof("\r\n") - 1);
 -    // point-end: start + strlen(all-header) without strlen("\r\n\r\n")
 -    char *pe = buffer_->str + header_length_ - (sizeof("\r\n\r\n") - 1);
+-    bool transfer_encoding = false;
+-    bool chunked_seen = false;
+-    bool after_chunked = false;
 -
 -    for (; p < pe; p++) {
 -        if (*(p - 1) == '\n' && *(p - 2) == '\r') {
@@ -899,13 +916,32 @@ index 34f1caa..03bbc27 100644
 -            } else if (SW_STR_ISTARTS_WITH(p, pe - p, "Transfer-Encoding:")) {
 -                // strlen("Transfer-Encoding:")
 -                p += (sizeof("Transfer-Encoding:") - 1);
--                // skip spaces
--                while (*p == ' ') {
+-                char *value_end = (char *) memchr(p, '\r', pe - p + 1);
+-                transfer_encoding = true;
+-                while (true) {
+-                    while (p < value_end && (*p == ' ' || *p == '\t')) {
+-                        p++;
+-                    }
+-                    char *coding = p;
+-                    while (p < value_end && *p != ',') {
+-                        p++;
+-                    }
+-                    char *coding_end = p;
+-                    while (coding_end > coding && coding_end[-1] == ' ') {
+-                        coding_end--;
+-                    }
+-                    if (chunked_seen) {
+-                        after_chunked = true;
+-                    }
+-                    if (SW_STRCASEEQ(coding, coding_end - coding, "chunked")) {
+-                        chunked_seen = true;
+-                    }
+-                    if (p == value_end) {
+-                        break;
+-                    }
 -                    p++;
 -                }
--                if (SW_STR_ISTARTS_WITH(p, pe - p, "chunked")) {
--                    chunked = 1;
--                }
+-                p = value_end;
 -            } else if (SW_STR_ISTARTS_WITH(p, pe - p, "Content-Type:")) {
 -                p += (sizeof("Content-Type:") - 1);
 -                while (*p == ' ') {
@@ -920,9 +956,11 @@ index 34f1caa..03bbc27 100644
 -        }
 -    }
 -
--    header_parsed = 1;
--    if (chunked && known_length && content_length_ == 0) {
--        nobody_chunked = 1;
+-    if (transfer_encoding) {
+-        chunked = chunked_seen && !after_chunked;
+-        if (!chunked) {
+-            excepted = 1;
+-        }
 +    swr_v1_http_header_state state{request_line_length_ + 2u, content_length_,
 +        (known_length ? 1u : 0u) | (keep_alive ? 2u : 0u) | (chunked ? 4u : 0u) |
 +        (nobody_chunked ? 8u : 0u) | (header_parsed ? 16u : 0u), 0};
@@ -943,7 +981,7 @@ index 34f1caa..03bbc27 100644
 +        form_data_->multipart_boundary_buf = buffer_->str + boundary.offset;
 +        form_data_->multipart_boundary_len = boundary.length;
      }
-@@ -785,24 +380,34 @@ bool Request::init_multipart_parser(const Server *server) {
+@@ -831,24 +391,34 @@ bool Request::init_multipart_parser(const Server *server) {
      int boundary_len;
 -    if (!parse_multipart_boundary(
 -            form_data_->multipart_boundary_buf, form_data_->multipart_boundary_len, 0, &boundary_str, &boundary_len)) {
@@ -999,7 +1037,7 @@ index 34f1caa..03bbc27 100644
 -    return true;
 +    return false;
  }
-@@ -810,16 +415,29 @@ bool Request::init_multipart_parser(const Server *server) {
+@@ -856,16 +426,29 @@ bool Request::init_multipart_parser(const Server *server) {
  void Request::destroy_multipart_parser() {
 -    auto tmp_buffer = buffer_;
 -    delete tmp_buffer;
@@ -1042,23 +1080,23 @@ index 34f1caa..03bbc27 100644
 -    delete form_data_;
 -    form_data_ = nullptr;
  }
-@@ -830,3 +448,4 @@ bool Request::parse_multipart_data(String *buffer) {
+@@ -876,3 +459,4 @@ bool Request::parse_multipart_data(String *buffer) {
      swoole_trace("multipart_parser_execute: buffer->length=%lu, n=%lu\n", buffer->length, n);
 -    if (n < 0) {
 +    int32_t outcome = swr_v1_http_multipart_result(n, buffer->length, excepted);
 +    if (outcome < 0) {
          int l_error =
-@@ -839,3 +458,3 @@ bool Request::parse_multipart_data(String *buffer) {
+@@ -885,3 +469,3 @@ bool Request::parse_multipart_data(String *buffer) {
          return false;
 -    } else if ((size_t) n != buffer->length) {
 +    } else if (outcome != 2) {
          swoole_error_log(SW_LOG_NOTICE,
-@@ -845,3 +464,3 @@ bool Request::parse_multipart_data(String *buffer) {
+@@ -891,3 +475,3 @@ bool Request::parse_multipart_data(String *buffer) {
                           buffer->length);
 -        return excepted;
 +        return outcome != 0;
      }
-@@ -852,4 +471,10 @@ bool Request::parse_multipart_data(String *buffer) {
+@@ -898,4 +482,10 @@ bool Request::parse_multipart_data(String *buffer) {
  Request::~Request() {
 -    if (form_data_) {
 -        destroy_multipart_parser();
@@ -1071,7 +1109,7 @@ index 34f1caa..03bbc27 100644
 +        default: std::terminate();
 +        }
      }
-@@ -858,23 +483,3 @@ Request::~Request() {
+@@ -904,23 +494,3 @@ Request::~Request() {
  bool Request::has_expect_header() const {
 -    char *buf = buffer_->str;
 -    size_t len = buffer_->length;
@@ -1096,7 +1134,7 @@ index 34f1caa..03bbc27 100644
 -    return false;
 +    return swr_v1_http_expect(reinterpret_cast<const uint8_t *>(buffer_->str), buffer_->length) > 0;
  }
-@@ -882,15 +487,3 @@ bool Request::has_expect_header() const {
+@@ -928,134 +498,3 @@ bool Request::has_expect_header() const {
  int Request::get_header_length() {
 -    char *p = buffer_->str + buffer_->offset;
 -    char *pe = buffer_->str + buffer_->length;
@@ -1111,34 +1149,232 @@ index 34f1caa..03bbc27 100644
 -
 -    buffer_->offset = p - buffer_->str;
 -    return SW_ERR;
+-}
+-
+-static bool is_http_token_char(unsigned char c) {
+-    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+-        return true;
+-    }
+-    switch (c) {
+-    case '!':
+-    case '#':
+-    case '$':
+-    case '%':
+-    case '&':
+-    case '\'':
+-    case '*':
+-    case '+':
+-    case '-':
+-    case '.':
+-    case '^':
+-    case '_':
+-    case '`':
+-    case '|':
+-    case '~':
+-        return true;
+-    default:
+-        return false;
+-    }
+-}
+-
+-static bool is_http_quoted_char(unsigned char c) {
+-    return c == '\t' || (c >= 0x20 && c != 0x7f && c != '"' && c != '\\');
+-}
+-
+-static bool is_http_quoted_pair_char(unsigned char c) {
+-    return c == '\t' || (c >= 0x20 && c != 0x7f);
+-}
+-
+-static ChunkSizeResult parse_chunk_size(const char *p, const char *pe, size_t max_length, size_t *chunk_length) {
+-    size_t length = 0;
+-    const char *start = p;
+-
+-    while (p < pe) {
+-        unsigned char c = *p;
+-        uint8_t digit;
+-        if (c >= '0' && c <= '9') {
+-            digit = c - '0';
+-        } else if (c >= 'a' && c <= 'f') {
+-            digit = c - 'a' + 10;
+-        } else if (c >= 'A' && c <= 'F') {
+-            digit = c - 'A' + 10;
+-        } else {
+-            break;
+-        }
+-        if (digit > max_length || length > (max_length - digit) / 16) {
+-            return CHUNK_SIZE_TOO_LARGE;
+-        }
+-        length = length * 16 + digit;
+-        p++;
+-    }
+-
+-    if (p == start) {
+-        return CHUNK_SIZE_MALFORMED;
+-    }
+-
+-    while (p < pe) {
+-        if (*p++ != ';') {
+-            return CHUNK_SIZE_MALFORMED;
+-        }
+-
+-        const char *name = p;
+-        while (p < pe && is_http_token_char(*p)) {
+-            p++;
+-        }
+-        if (p == name) {
+-            return CHUNK_SIZE_MALFORMED;
+-        }
+-        if (p == pe) {
+-            break;
+-        }
+-        if (*p != '=') {
+-            continue;
+-        }
+-
+-        p++;
+-        if (p == pe) {
+-            return CHUNK_SIZE_MALFORMED;
+-        }
+-        if (*p == '"') {
+-            bool closed = false;
+-            for (p++; p < pe; p++) {
+-                unsigned char c = *p;
+-                if (c == '"') {
+-                    closed = true;
+-                    p++;
+-                    break;
+-                }
+-                if (c == '\\') {
+-                    if (++p == pe || !is_http_quoted_pair_char(*p)) {
+-                        return CHUNK_SIZE_MALFORMED;
+-                    }
+-                } else if (!is_http_quoted_char(c)) {
+-                    return CHUNK_SIZE_MALFORMED;
+-                }
+-            }
+-            if (!closed) {
+-                return CHUNK_SIZE_MALFORMED;
+-            }
+-        } else {
+-            const char *value = p;
+-            while (p < pe && is_http_token_char(*p)) {
+-                p++;
+-            }
+-            if (p == value) {
+-                return CHUNK_SIZE_MALFORMED;
+-            }
+-        }
+-    }
+-
+-    *chunk_length = length;
+-    return CHUNK_SIZE_OK;
 +    return frame_request(*this, 1);
  }
-@@ -898,48 +491,20 @@ int Request::get_header_length() {
+@@ -1063,106 +502,19 @@ static ChunkSizeResult parse_chunk_size(const char *p, const char *pe, size_t ma
  int Request::get_chunked_body_length() {
--    const char *p = buffer_->str + buffer_->offset;
--    const char *pe = buffer_->str + buffer_->length;
+-    const char *buffer = buffer_->str;
+-    const char *pe = buffer + buffer_->length;
+-    const size_t chunk_data_end_length = sizeof("\r\n") - 1 + sizeof(SW_HTTP_CHUNK_EOF) - 1;
+-    const size_t trailer_end_length = sizeof("\r\n") - 1;
 -
--    /**
--     * Ending with SW_HTTP_CHUNK_EOF indicates that the HTTP request may have been fully received,
--     * but this is not certain. It is still necessary to skip over the data sections based on
--     * the length of each chunk of the HTTP data until SW_HTTP_CHUNK_EOF (\0\r\n\r\n) is found.
--     */
--    if (static_cast<size_t>(pe - p) < sizeof(SW_HTTP_CHUNK_EOF) - 1 ||
--        memcmp(pe - sizeof(SW_HTTP_CHUNK_EOF) + 1, SW_STRL(SW_HTTP_CHUNK_EOF)) != 0) {
--        return SW_ERR;
+-    if (chunk_offset_ == 0) {
+-        // clean() leaves zero as the uninitialized offset, and the header has been parsed here.
+-        chunk_offset_ = chunk_scan_offset_ = header_length_;
 -    }
 -
 -    while (true) {
--        char *endptr;
--        size_t chunk_length = strtoul(p, &endptr, 16);
--        if (endptr == nullptr || *endptr != '\r') {
--            break;
+-        if (chunk_state_ == CHUNK_STATE_DATA) {
+-            if (chunk_offset_ > buffer_->length || chunk_length_ > buffer_->length - chunk_offset_) {
+-                return SW_ERR;
+-            }
+-            size_t chunk_end = chunk_offset_ + chunk_length_;
+-            if (chunk_end == buffer_->length) {
+-                return SW_ERR;
+-            }
+-            if (buffer[chunk_end] != '\r') {
+-                excepted = 1;
+-                return SW_ERR;
+-            }
+-            if (chunk_end + 1 == buffer_->length) {
+-                return SW_ERR;
+-            }
+-            if (buffer[chunk_end + 1] != '\n') {
+-                excepted = 1;
+-                return SW_ERR;
+-            }
+-            chunk_offset_ = chunk_scan_offset_ = chunk_end + 2;
+-            chunk_length_ = 0;
+-            chunk_state_ = CHUNK_STATE_SIZE;
+-            continue;
 -        }
 -
--        swoole_trace_log(SW_TRACE_HTTP, "chunk_length=%zu, chunk_len_str=%.*s\n", chunk_length, (int) (endptr - p), p);
+-        const char *p = buffer + chunk_scan_offset_;
+-        const char *line_start = buffer + chunk_offset_;
+-        while (p < pe && *p != '\r') {
+-            if (*p == '\n') {
+-                excepted = 1;
+-                return SW_ERR;
+-            }
+-            p++;
+-        }
+-        if (p == pe) {
+-            chunk_scan_offset_ = p - buffer;
+-            return SW_ERR;
+-        }
+-        if (p + 1 == pe) {
+-            chunk_scan_offset_ = p - buffer;
+-            return SW_ERR;
+-        }
+-        if (p[1] != '\n') {
+-            excepted = 1;
+-            return SW_ERR;
+-        }
 -
--        // Found the HTTP Chunk EOF
--        if (chunk_length == 0) {
+-        const char *line_end = p;
+-        p += 2;
+-        chunk_offset_ = chunk_scan_offset_ = p - buffer;
+-
+-        if (chunk_state_ == CHUNK_STATE_TRAILER) {
+-            if (chunk_offset_ > max_length_) {
+-                too_large = 1;
+-                return SW_ERR;
+-            }
+-            if (line_end == line_start) {
+-                known_length = 1;
+-                content_length_ = chunk_offset_ - header_length_;
+-                return SW_OK;
+-            }
+-            continue;
+-        }
+-
+-        ChunkSizeResult result = parse_chunk_size(line_start, line_end, max_length_, &chunk_length_);
+-        if (result == CHUNK_SIZE_TOO_LARGE) {
+-            too_large = 1;
+-            return SW_ERR;
+-        }
+-        if (result != CHUNK_SIZE_OK) {
+-            excepted = 1;
+-            return SW_ERR;
+-        }
+-        swoole_trace_log(SW_TRACE_HTTP,
+-                         "chunk_length=%zu, chunk_len_str=%.*s\n",
+-                         chunk_length_,
+-                         (int) (line_end - line_start),
+-                         line_start);
+-
+-        if (chunk_length_ == 0) {
+-            chunk_state_ = CHUNK_STATE_TRAILER;
+-            if (chunk_offset_ > max_length_ || max_length_ - chunk_offset_ < trailer_end_length) {
+-                too_large = 1;
+-                return SW_ERR;
+-            }
+-        } else {
+-            chunk_state_ = CHUNK_STATE_DATA;
+-            if (chunk_offset_ > max_length_ || max_length_ - chunk_offset_ < chunk_data_end_length ||
+-                chunk_length_ > max_length_ - chunk_offset_ - chunk_data_end_length) {
+-                too_large = 1;
+-                return SW_ERR;
+-            }
 +    size_t cursor = buffer_->offset;
 +    uint32_t initial = 1;
 +    for (;;) {
@@ -1149,34 +1385,15 @@ index 34f1caa..03bbc27 100644
 +        swoole_trace_log(SW_TRACE_HTTP, "chunk_length=%zu, chunk_len_str=%.*s\n", step.chunk_length,
 +                         static_cast<int>(step.line_length), buffer_->str + step.line_offset);
 +        if (status == 2) {
-             known_length = 1;
--            content_length_ = endptr - (buffer_->str + header_length_) + 4;
++            known_length = 1;
 +            content_length_ = step.body_length;
-             return SW_OK;
--        } else {
--            // chunk length [hex str] + CRLF + data + CRLF
--            p = endptr + 2 + chunk_length + 2;
--            // Continue to parse the next segment of HTTP CHUNK data.
--            if (p < pe) {
--                continue;
--            }
--            /**
--             * If the calculated data length exceeds the length of the currently received data,
--             * then SW_HTTP_CHUNK_EOF may be part of the data,
--             * necessitating the reception of additional data and recalculating the HTTP Chunk length.
--             */
--            return SW_ERR;
++            return SW_OK;
          }
--        break;
 +        if (status == 3) return SW_ERR;
 +        cursor = step.next;
 +        initial = 0;
      }
--
--    excepted = 1;
--    return SW_ERR;
- }
-@@ -947,63 +512,12 @@ int Request::get_chunked_body_length() {
+@@ -1171,63 +523,12 @@ int Request::get_chunked_body_length() {
  std::string Request::get_header(const char *name) const {
 -    size_t name_len = strlen(name);
 -    char *p = buffer_->str + url_offset_ + url_length_ + 10;
@@ -1247,7 +1464,7 @@ index 34f1caa..03bbc27 100644
 -    return -1;
 +    return swr_v1_http_method(reinterpret_cast<const uint8_t *>(method_str), method_len);
  }
-@@ -1011,6 +525,3 @@ int get_method(const char *method_str, size_t method_len) {
+@@ -1235,6 +536,3 @@ int get_method(const char *method_str, size_t method_len) {
  const char *get_method_string(int method) {
 -    if (method <= 0 || method > SW_HTTP_PRI) {
 -        return nullptr;
@@ -1255,7 +1472,7 @@ index 34f1caa..03bbc27 100644
 -    return method_strings[method - 1];
 +    return swr_v1_http_method_string(method);
  }
-@@ -1037,5 +548,7 @@ ssize_t get_package_length(const Protocol *protocol, Socket *socket, PacketLengt
+@@ -1261,5 +559,7 @@ ssize_t get_package_length(const Protocol *protocol, Socket *socket, PacketLengt
      auto *conn = static_cast<Connection *>(socket->object);
 -    if (conn->websocket_status >= websocket::STATUS_HANDSHAKE) {
 +    static_assert(websocket::STATUS_HANDSHAKE == 2, "Pinned WebSocket route threshold changed");
@@ -1265,7 +1482,7 @@ index 34f1caa..03bbc27 100644
 -    } else if (conn->http2_stream) {
 +    } else if (route == 2) {
          return http2::get_frame_length(protocol, socket, pl);
-@@ -1049,5 +562,7 @@ uint8_t get_package_length_size(Socket *socket) {
+@@ -1273,5 +573,7 @@ uint8_t get_package_length_size(Socket *socket) {
      auto *conn = (Connection *) socket->object;
 -    if (conn->websocket_status >= websocket::STATUS_HANDSHAKE) {
 +    static_assert(websocket::STATUS_HANDSHAKE == 2, "Pinned WebSocket route threshold changed");
@@ -1275,7 +1492,7 @@ index 34f1caa..03bbc27 100644
 -    } else if (conn->http2_stream) {
 +    } else if (route == 2) {
          return SW_HTTP2_FRAME_HEADER_SIZE;
-@@ -1061,5 +576,7 @@ int dispatch_frame(const Protocol *proto, Socket *socket, const RecvData *rdata)
+@@ -1285,5 +587,7 @@ int dispatch_frame(const Protocol *proto, Socket *socket, const RecvData *rdata)
      auto *conn = (Connection *) socket->object;
 -    if (conn->websocket_status >= websocket::STATUS_HANDSHAKE) {
 +    static_assert(websocket::STATUS_HANDSHAKE == 2, "Pinned WebSocket route threshold changed");

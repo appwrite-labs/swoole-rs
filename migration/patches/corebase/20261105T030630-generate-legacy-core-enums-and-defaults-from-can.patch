@@ -1,5 +1,5 @@
 diff --git a/include/swoole.h b/include/swoole.h
-index 8b4d48b..c217d09 100644
+index a5a8f84..29327a3 100644
 --- a/include/swoole.h
 +++ b/include/swoole.h
 @@ -354,103 +354,3 @@ static inline void swoole_strtolower(char *str, const int length) {
@@ -153,7 +153,7 @@ index 8b4d48b..c217d09 100644
 -
  /**
 diff --git a/include/swoole_config.h b/include/swoole_config.h
-index 89a7afd..7678ad4 100644
+index 7d3d60e..7678ad4 100644
 --- a/include/swoole_config.h
 +++ b/include/swoole_config.h
 @@ -18,2 +18,4 @@
@@ -322,7 +322,7 @@ index 89a7afd..7678ad4 100644
 -#define SW_HTTP_SERVICE_UNAVAILABLE_PACKET "HTTP/1.1 503 Service Unavailable\r\n\r\n"
 -
  #define SW_HTTP_PAGE_CSS                                                                                               \
-@@ -195,34 +50,4 @@ a { color: #0969da; } \
+@@ -195,35 +50,4 @@ a { color: #0969da; } \
  
 -#define SW_HTTP_POWER_BY "<footer><i>Powered by Swoole</i></footer>"
 -
@@ -336,6 +336,7 @@ index 89a7afd..7678ad4 100644
 -#define SW_HTTP2_DEFAULT_MAX_CONCURRENT_STREAMS UINT_MAX
 -#define SW_HTTP2_DEFAULT_ENABLE_PUSH 0
 -#define SW_HTTP2_DEFAULT_MAX_FRAME_SIZE (1u << 14)
+-#define SW_HTTP2_MAX_FRAME_SIZE ((1u << 24) - 1)
 -#define SW_HTTP2_DEFAULT_INIT_WINDOW_SIZE ((1 << 16) - 1)
 -#define SW_HTTP2_DEFAULT_MAX_HEADER_LIST_SIZE UINT_MAX
 -

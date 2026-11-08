@@ -436,7 +436,7 @@ index 64826bf..0000000
 -}  // namespace swoole
 diff --git a/include/swoole_version.h b/include/swoole_version.h
 deleted file mode 100644
-index 73bc5c2..0000000
+index 70e57dd..0000000
 --- a/include/swoole_version.h
 +++ /dev/null
 @@ -1,33 +0,0 @@
@@ -462,10 +462,10 @@ index 73bc5c2..0000000
 -
 -#define SWOOLE_MAJOR_VERSION 6
 -#define SWOOLE_MINOR_VERSION 2
--#define SWOOLE_RELEASE_VERSION 4
+-#define SWOOLE_RELEASE_VERSION 5
 -#define SWOOLE_EXTRA_VERSION ""
--#define SWOOLE_VERSION "6.2.4"
--#define SWOOLE_VERSION_ID 60204
+-#define SWOOLE_VERSION "6.2.5"
+-#define SWOOLE_VERSION_ID 60205
 -#define SWOOLE_API_VERSION_ID 0x202208a
 -
 -#define SWOOLE_BUG_REPORT                                                                                              \

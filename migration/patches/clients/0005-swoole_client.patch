@@ -48,7 +48,7 @@ index 8f247a9..c4f7968 100644
  void php_swoole_client_check_ssl_setting(const NetClient *cli, const zval *zset);
 -bool php_swoole_client_enable_ssl_encryption(NetClient *cli, zval *zobject);
 diff --git a/ext-src/swoole_client.cc b/ext-src/swoole_client.cc
-index 49a04c5..3d323ae 100644
+index cb34c15..3d323ae 100644
 --- a/ext-src/swoole_client.cc
 +++ b/ext-src/swoole_client.cc
 @@ -18,3 +18,3 @@
@@ -254,7 +254,7 @@ index 49a04c5..3d323ae 100644
 -}
 -
  ssize_t php_swoole_length_func(const Protocol *protocol, Socket *_socket, PacketLength *pl) {
-@@ -506,832 +373,269 @@ ssize_t php_swoole_length_func(const Protocol *protocol, Socket *_socket, Packet
+@@ -506,831 +373,269 @@ ssize_t php_swoole_length_func(const Protocol *protocol, Socket *_socket, Packet
  
 -static Client *php_swoole_client_new(zval *zobject, char *host, int host_len, int port) {
 -    zval *ztype = sw_zend_read_property_ex(Z_OBJCE_P(zobject), zobject, SW_ZSTR_KNOWN(SW_ZEND_STR_TYPE), 0);
@@ -912,9 +912,8 @@ index 49a04c5..3d323ae 100644
 -        php_swoole_error(E_WARNING, "client socket is closed");
 -        RETURN_FALSE;
 -    }
--    // Connection error, or short tcp connection.
--    // No keep connection
--    if (force || !cli->keep || cli->socket->catch_error(swoole_get_last_error()) == SW_CLOSE) {
+-    // Only live connections without a shutdown direction can return to the persistent pool.
+-    if (force || !cli->keep || cli->is_shutdown() || !cli->socket->check_liveness()) {
 -        ret = cli->close();
 -        php_swoole_client_free(ZEND_THIS, cli);
 -    } else {
@@ -1762,7 +1761,7 @@ index a4ed6d0..b7e4646 100644
 +    swr_v1_phpclients_async_minit(swoole_client_async_methods, swoole_client_ce, &swoole_client_async_ce);
  }
 diff --git a/include/swoole_client.h b/include/swoole_client.h
-index 3c97a4e..6777ff7 100644
+index c4876e4..69d6ba8 100644
 --- a/include/swoole_client.h
 +++ b/include/swoole_client.h
 @@ -36,3 +36,2 @@ class Client {

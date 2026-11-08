@@ -29,6 +29,17 @@ class PhptGate(unittest.TestCase):
         self.assertIn('named originals excluded (not passed)', summary)
         self.assertEqual(compare(report), ([], []))
 
+    def test_pending_port_is_listed_never_passed_and_its_passes_are_flagged(self):
+        from corpus.upstream.gate import PENDING
+        failing, passing = sorted(PENDING)[:2]
+        report = [{'test': test, 'family': 'f', 'engine': engine, 'status': status}
+                  for test, hybrid in [(failing, 'failed'), (passing, 'passed'), ('tests/other.phpt', 'failed')]
+                  for engine, status in [('upstream', 'passed'), ('hybrid', hybrid)]]
+        self.assertEqual(compare(report)[0], ['tests/other.phpt (hybrid: failed)'])
+        summary = markdown(report)
+        self.assertIn(f'1 pending a port (not gated)</summary>\n\n- `{failing} (#{PENDING[failing]}): failed`', summary)
+        self.assertIn(f'1 pending a port but passing here: drop them from PENDING_PORTS</summary>\n\n- `{passing}`', summary)
+
     def test_thread_context_racy_original_runs_without_thread_context(self):
         from corpus.upstream.run import racy, verdict_failed
         case = {'path': 'tests/swoole_coroutine/cancel/throw_exception.phpt'}

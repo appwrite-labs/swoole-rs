@@ -1,15 +1,15 @@
 diff --git a/ext-src/swoole_http2_server.cc b/ext-src/swoole_http2_server.cc
-index f3ec0fe..82236b0 100644
+index 3c61d63..92fce7c 100644
 --- a/ext-src/swoole_http2_server.cc
 +++ b/ext-src/swoole_http2_server.cc
-@@ -36,6 +36,2 @@ namespace Http2 = swoole::http2;
+@@ -37,6 +37,2 @@ namespace Http2 = swoole::http2;
  using HttpContext = swoole::http::Context;
 -using Http2Stream = Http2::Stream;
 -using Http2Session = Http2::Session;
 -
 -static SW_THREAD_LOCAL std::unordered_map<SessionId, std::shared_ptr<Http2Session>> http2_sessions;
  
-@@ -49,77 +45,2 @@ static bool http2_server_respond(HttpContext *ctx, const String *body) {
+@@ -50,80 +46,2 @@ static bool http2_server_respond(HttpContext *ctx, const String *body) {
  
 -Http2Stream::Stream(const Http2Session *client, uint32_t _id) {
 -    ctx = swoole_http_context_new(client->fd);
@@ -61,6 +61,9 @@ index f3ec0fe..82236b0 100644
 -
 -    auto stream = iter->second;
 -    streams.erase(iter);
+-    if (stream->waiting_coroutine) {
+-        stream->waiting_coroutine->resume();
+-    }
 -    return true;
 -}
 -
@@ -87,7 +90,7 @@ index f3ec0fe..82236b0 100644
 -    delete default_ctx;
 -}
  static bool http2_server_is_static_file(Server *serv, HttpContext *ctx) {
-@@ -209,5 +130,4 @@ static bool http2_server_is_static_file(Server *serv, HttpContext *ctx) {
+@@ -213,5 +131,4 @@ static bool http2_server_is_static_file(Server *serv, HttpContext *ctx) {
  
 -static void http2_server_onRequest(const std::shared_ptr<Http2Session> &client,
 -                                   const std::shared_ptr<Http2Stream> &stream) {
@@ -95,17 +98,17 @@ index f3ec0fe..82236b0 100644
 +static void http2_server_onRequest(swr_h2s_request *request) {
 +    auto *ctx = static_cast<HttpContext *>(request->ctx);
      auto serv = ctx->get_async_server();
-@@ -229,3 +149,3 @@ static void http2_server_onRequest(const std::shared_ptr<Http2Session> &client,
+@@ -233,3 +150,3 @@ static void http2_server_onRequest(const std::shared_ptr<Http2Session> &client,
          HashTable *ht = Z_ARR_P(zserver);
 -        swoole_http_server_populate_ip_and_port(serv, ht, conn, client->fd, ctx->keepalive);
 +        swoole_http_server_populate_ip_and_port(serv, ht, conn, ctx->fd, ctx->keepalive);
          http_server_add_server_array(ht, SW_ZSTR_KNOWN(SW_ZEND_STR_REQUEST_TIME), (zend_long) time(nullptr));
-@@ -246,3 +166,3 @@ static void http2_server_onRequest(const std::shared_ptr<Http2Session> &client,
+@@ -250,3 +167,3 @@ static void http2_server_onRequest(const std::shared_ptr<Http2Session> &client,
      if (UNEXPECTED(!zend::function::call(cb, 2, args, nullptr, serv->is_enable_coroutine()))) {
 -        stream->reset(SW_HTTP2_ERROR_INTERNAL_ERROR);
 +        swr_v1_phphttp2_server_reset(ctx, ctx->stream_id, SW_HTTP2_ERROR_INTERNAL_ERROR);
          php_swoole_error(E_WARNING, "%s->onRequest[v2] handler error", ZSTR_VAL(swoole_http_server_ce->name));
-@@ -254,5 +174,13 @@ _destroy:
+@@ -258,5 +175,13 @@ _destroy:
  }
 +static bool http2_server_send_range_file_held(HttpContext *ctx, StaticHandler *handler);
 +
@@ -121,7 +124,7 @@ index f3ec0fe..82236b0 100644
 +
 +static bool http2_server_send_range_file_held(HttpContext *ctx, StaticHandler *handler) {
  
-@@ -336,5 +264,12 @@ static bool http2_server_send_range_file(HttpContext *ctx, StaticHandler *handle
+@@ -340,5 +265,12 @@ static bool http2_server_send_range_file(HttpContext *ctx, StaticHandler *handle
  }
 +static bool http2_server_send_file(HttpContext *ctx, zend_string *file, off_t offset, size_t length);
 +
@@ -136,14 +139,14 @@ index f3ec0fe..82236b0 100644
 +
 +static bool http2_server_send_file(HttpContext *ctx, zend_string *file, off_t offset, size_t length) {
      std::shared_ptr<String> body;
-@@ -389,6 +324,2 @@ bool swoole_http2_server_goaway(HttpContext *ctx, zend_long error_code, zend_str
+@@ -393,6 +325,2 @@ bool swoole_http2_server_goaway(HttpContext *ctx, zend_long error_code, zend_str
  
 -int swoole_http2_server_parse(const std::shared_ptr<Http2Session> &client, const char *buf) {
 -    return swr_v1_phphttp2_server_parse(&client, buf);
 -}
 -
  static bool http2_server_onBeforeRequest(HttpContext *ctx) {
-@@ -405,123 +336,23 @@ static bool http2_server_onBeforeRequest(HttpContext *ctx) {
+@@ -409,123 +337,23 @@ static bool http2_server_onBeforeRequest(HttpContext *ctx) {
  }
 -// What crates/phphttp2/src/server.rs asks of the sessions, streams and
 -// contexts, which stay C++ (native/http2/swoole_rs_phphttp2.h).
@@ -244,14 +247,6 @@ index f3ec0fe..82236b0 100644
 -
 -bool swr_h2s_stream_remove(const void *session, uint32_t stream_id) {
 -    return http2_session(session)->remove_stream(stream_id);
--}
--
--void swr_h2s_stream_view(const void *stream, swr_h2s_stream *view) {
--    auto *s = http2_stream(stream);
--    view->ctx = s->ctx;
--    view->id = s->id;
--    view->remote_window_size = &s->remote_window_size;
--    view->local_window_size = &s->local_window_size;
 +// What crates/phphttp2 asks of the contexts, which stay C++
 +// (native/http2/swoole_rs_phphttp2.h).
 +void *swr_h2s_stream_context(void *default_ctx, int64_t fd, uint32_t stream_id) {
@@ -264,11 +259,12 @@ index f3ec0fe..82236b0 100644
 +    return ctx;
  }
  
--void swr_h2s_stream_wait(const void *stream) {
+-void swr_h2s_stream_view(const void *stream, swr_h2s_stream *view) {
 -    auto *s = http2_stream(stream);
--    s->waiting_coroutine = Coroutine::get_current();
--    s->waiting_coroutine->yield();
--    s->waiting_coroutine = nullptr;
+-    view->ctx = s->ctx;
+-    view->id = s->id;
+-    view->remote_window_size = &s->remote_window_size;
+-    view->local_window_size = &s->local_window_size;
 +void swr_h2s_wait(void **coroutine) {
 +    auto *co = Coroutine::get_current();
 +    *coroutine = co;
@@ -276,6 +272,13 @@ index f3ec0fe..82236b0 100644
 +    *coroutine = nullptr;
  }
  
+-void swr_h2s_stream_wait(const void *stream) {
+-    auto *s = http2_stream(stream);
+-    s->waiting_coroutine = Coroutine::get_current();
+-    s->waiting_coroutine->yield();
+-    s->waiting_coroutine = nullptr;
+-}
+-
 -void swr_h2s_stream_wake(const void *stream) {
 -    auto *s = http2_stream(stream);
 -    if (s->waiting_coroutine) {
@@ -284,7 +287,7 @@ index f3ec0fe..82236b0 100644
 +void swr_h2s_wake(void *coroutine) {
 +    static_cast<Coroutine *>(coroutine)->resume();
  }
-@@ -717,17 +548,11 @@ int swoole_http2_server_onReceive(Server *serv, Connection *conn, RecvData *req)
+@@ -721,17 +549,11 @@ int swoole_http2_server_onReceive(Server *serv, Connection *conn, RecvData *req)
      SessionId session_id = req->info.fd;
 -    auto iter = http2_sessions.find(session_id);
 -    std::shared_ptr<Http2Session> client;
@@ -311,12 +314,12 @@ index f3ec0fe..82236b0 100644
 +        swr_v1_phphttp2_session_new(
 +            session_id, default_ctx, serv->get_package_max_length(conn), false, http2_server_onRequest, nullptr);
      }
-@@ -736,3 +561,3 @@ int swoole_http2_server_onReceive(Server *serv, Connection *conn, RecvData *req)
+@@ -740,3 +562,3 @@ int swoole_http2_server_onReceive(Server *serv, Connection *conn, RecvData *req)
      php_swoole_get_recv_data(serv, &zdata, req);
 -    int retval = swoole_http2_server_parse(client, Z_STRVAL(zdata));
 +    int retval = swr_v1_phphttp2_session_parse(session_id, Z_STRVAL(zdata));
      zval_ptr_dtor(&zdata);
-@@ -742,20 +567,4 @@ int swoole_http2_server_onReceive(Server *serv, Connection *conn, RecvData *req)
+@@ -746,24 +568,4 @@ int swoole_http2_server_onReceive(Server *serv, Connection *conn, RecvData *req)
  
 -std::shared_ptr<Http2Session> swoole_http2_server_session_new(SessionId fd) {
 -    auto session = std::make_shared<Http2Session>(fd);
@@ -333,8 +336,12 @@ index f3ec0fe..82236b0 100644
 -    if (iter == http2_sessions.end()) {
 -        return;
 -    }
+-    auto session = iter->second;
 -    /* default_ctx does not blong to session object */
--    iter->second->default_ctx = nullptr;
+-    session->default_ctx = nullptr;
+-    while (!session->streams.empty()) {
+-        session->remove_stream(session->streams.begin()->first);
+-    }
 -    http2_sessions.erase(iter);
 +    swr_v1_phphttp2_session_free(session_id);
  }

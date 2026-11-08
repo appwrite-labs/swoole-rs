@@ -1,0 +1,76 @@
+diff --git a/thirdparty/php82/pdo_pgsql/pgsql_driver.c b/thirdparty/php82/pdo_pgsql/pgsql_driver.c
+index 10e9d61..0c87dce 100644
+--- a/thirdparty/php82/pdo_pgsql/pgsql_driver.c
++++ b/thirdparty/php82/pdo_pgsql/pgsql_driver.c
+@@ -77,5 +77,2 @@ int _pdo_pgsql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *
+ 	pdo_pgsql_error_info *einfo = &H->einfo;
+-	if (php_swoole_pgsql_handle_io_error(dbh, &msg)) {
+-	    sqlstate = PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE;
+-	}
+ 	char *errmsg = PQerrorMessage(H->server);
+@@ -540,3 +537,7 @@ static zend_result pdo_pgsql_check_liveness(pdo_dbh_t *dbh)
+ {
+-    return php_swoole_pgsql_check_liveness(dbh);
++	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)dbh->driver_data;
++	if (!PQconsumeInput(H->server) || PQstatus(H->server) == CONNECTION_BAD) {
++		PQreset(H->server);
++	}
++	return (PQstatus(H->server) == CONNECTION_OK) ? SUCCESS : FAILURE;
+ }
+diff --git a/thirdparty/php83/pdo_pgsql/pgsql_driver.c b/thirdparty/php83/pdo_pgsql/pgsql_driver.c
+index 6b4346e..b764641 100644
+--- a/thirdparty/php83/pdo_pgsql/pgsql_driver.c
++++ b/thirdparty/php83/pdo_pgsql/pgsql_driver.c
+@@ -77,5 +77,2 @@ int _pdo_pgsql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *
+ 	pdo_pgsql_error_info *einfo = &H->einfo;
+-	if (php_swoole_pgsql_handle_io_error(dbh, &msg)) {
+-	    sqlstate = PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE;
+-	}
+ 	char *errmsg = PQerrorMessage(H->server);
+@@ -552,3 +549,7 @@ static zend_result pdo_pgsql_check_liveness(pdo_dbh_t *dbh)
+ {
+-    return php_swoole_pgsql_check_liveness(dbh);
++	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)dbh->driver_data;
++	if (!PQconsumeInput(H->server) || PQstatus(H->server) == CONNECTION_BAD) {
++		PQreset(H->server);
++	}
++	return (PQstatus(H->server) == CONNECTION_OK) ? SUCCESS : FAILURE;
+ }
+diff --git a/thirdparty/php84/pdo_pgsql/pgsql_driver.c b/thirdparty/php84/pdo_pgsql/pgsql_driver.c
+index 660de40..c739eab 100644
+--- a/thirdparty/php84/pdo_pgsql/pgsql_driver.c
++++ b/thirdparty/php84/pdo_pgsql/pgsql_driver.c
+@@ -80,5 +80,2 @@ int _pdo_pgsql_error(pdo_dbh_t *dbh,
+     pdo_pgsql_error_info *einfo = &H->einfo;
+-    if (php_swoole_pgsql_handle_io_error(dbh, &msg)) {
+-        sqlstate = PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE;
+-    }
+     char *errmsg = PQerrorMessage(H->server);
+@@ -550,3 +547,7 @@ static int pdo_pgsql_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return_
+ static zend_result pdo_pgsql_check_liveness(pdo_dbh_t *dbh) {
+-    return php_swoole_pgsql_check_liveness(dbh);
++    pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *) dbh->driver_data;
++    if (!PQconsumeInput(H->server) || PQstatus(H->server) == CONNECTION_BAD) {
++        PQreset(H->server);
++    }
++    return (PQstatus(H->server) == CONNECTION_OK) ? SUCCESS : FAILURE;
+ }
+diff --git a/thirdparty/php85/pdo_pgsql/pgsql_driver.c b/thirdparty/php85/pdo_pgsql/pgsql_driver.c
+index 9175c42..2919aff 100644
+--- a/thirdparty/php85/pdo_pgsql/pgsql_driver.c
++++ b/thirdparty/php85/pdo_pgsql/pgsql_driver.c
+@@ -78,5 +78,2 @@ int _pdo_pgsql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *
+ 	pdo_pgsql_error_info *einfo = &H->einfo;
+-	if (php_swoole_pgsql_handle_io_error(dbh, &msg)) {
+-	    sqlstate = PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE;
+-	}
+ 	char *errmsg = PQerrorMessage(H->server);
+@@ -573,3 +570,7 @@ static zend_result pdo_pgsql_check_liveness(pdo_dbh_t *dbh)
+ {
+-    return php_swoole_pgsql_check_liveness(dbh);
++	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)dbh->driver_data;
++	if (!PQconsumeInput(H->server) || PQstatus(H->server) == CONNECTION_BAD) {
++		PQreset(H->server);
++	}
++	return (PQstatus(H->server) == CONNECTION_OK) ? SUCCESS : FAILURE;
+ }

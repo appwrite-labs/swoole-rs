@@ -1,5 +1,5 @@
 diff --git a/ext-src/swoole_http2_client_coro.cc b/ext-src/swoole_http2_client_coro.cc
-index d4c873f..3858d28 100644
+index 25abad4..3858d28 100644
 --- a/ext-src/swoole_http2_client_coro.cc
 +++ b/ext-src/swoole_http2_client_coro.cc
 @@ -22,3 +22,2 @@
@@ -96,7 +96,7 @@ index d4c873f..3858d28 100644
 -        }
 -    }
 -
--    ssize_t build_header(const zval *zobj, zval *zrequest, char *buffer);
+-    ssize_t build_header(const zval *zobj, zval *zrequest, String *buffer);
 -
 -    void update_error_properties(int code, const char *msg) const {
 -        php_swoole_socket_set_error_properties(zobject, code, msg);
@@ -281,7 +281,7 @@ index d4c873f..3858d28 100644
 +PHP_METHOD(swoole_http2_client_coro, goaway);
 +PHP_METHOD(swoole_http2_client_coro, close);
  SW_EXTERN_C_END
-@@ -307,1002 +75,111 @@ static const zend_function_entry swoole_http2_client_methods[] =
+@@ -307,1008 +75,111 @@ static const zend_function_entry swoole_http2_client_methods[] =
  void php_swoole_http2_client_coro_minit(int module_number) {
 -    SW_INIT_CLASS_ENTRY(
 -        swoole_http2_client_coro, "Swoole\\Coroutine\\Http2\\Client", "Co\\Http2\\Client", swoole_http2_client_methods);
@@ -796,7 +796,7 @@ index d4c873f..3858d28 100644
 +    return http2_socket(socket)->enable_ssl_encrypt();
  }
 -#endif
--
+ 
 -static PHP_METHOD(swoole_http2_client_coro, __construct) {
 -    char *host;
 -    size_t host_len;
@@ -813,15 +813,15 @@ index d4c873f..3858d28 100644
 -    if (http2_client_coro_get_client(ZEND_THIS)) {
 -        zend_throw_error(nullptr, "Constructor of %s can only be called once", SW_Z_OBJCE_NAME_VAL_P(ZEND_THIS));
 -        RETURN_FALSE;
--    }
- 
--    if (host_len == 0) {
--        zend_throw_exception(swoole_http2_client_coro_exception_ce, "host is empty", SW_ERROR_INVALID_PARAMS);
--        RETURN_FALSE;
 +void swoole_http2_client_coro_apply(void *socket, const zval *settings) {
 +    if (ZVAL_IS_ARRAY(settings)) {
 +        php_swoole_socket_set(http2_socket(socket), settings);
      }
+-
+-    if (host_len == 0) {
+-        zend_throw_exception(swoole_http2_client_coro_exception_ce, "host is empty", SW_ERROR_INVALID_PARAMS);
+-        RETURN_FALSE;
+-    }
 -
 -    auto *client = new Client(host, host_len, port, ssl, ZEND_THIS);
 -    http2_client_coro_fetch_object(Z_OBJ_P(ZEND_THIS))->client = client;
@@ -984,7 +984,7 @@ index d4c873f..3858d28 100644
 +    return http2_socket(socket)->is_connected();
  }
  
--ssize_t Client::build_header(const zval *zobj, zval *zrequest, char *buffer) {
+-ssize_t Client::build_header(const zval *zobj, zval *zrequest, String *buffer) {
 -    Client *h2c = http2_client_coro_get_client(zobj);
 -    zval *zmethod = sw_zend_read_property_ex(swoole_http2_request_ce, zrequest, SW_ZSTR_KNOWN(SW_ZEND_STR_METHOD), 0);
 -    zval *zpath = sw_zend_read_property_ex(swoole_http2_request_ce, zrequest, SW_ZSTR_KNOWN(SW_ZEND_STR_PATH), 0);
@@ -1068,19 +1068,22 @@ index d4c873f..3858d28 100644
 -    }
 -
 -    size_t buflen = nghttp2_hd_deflate_bound(h2c->deflater, headers.get(), headers.len());
--#if 0
--    if (buflen > h2c->remote_settings.max_header_list_size) {
--        php_swoole_error(E_WARNING,
--                         "header cannot bigger than remote max_header_list_size %u",
--                         client->remote_settings.max_header_list_size);
--        return -1;
+-    size_t buffer_size = SW_HTTP2_FRAME_HEADER_SIZE + buflen;
+-    // HeaderSet::add() copies cookie scratch values before this shared buffer is reused for encoding.
+-    buffer->clear();
+-    if (buffer_size > buffer->size) {
+-        buffer->reserve(buffer_size);
 -    }
--#endif
--    ssize_t rv = nghttp2_hd_deflate_hd(h2c->deflater, (uchar *) buffer, buflen, headers.get(), headers.len());
+-
+-    ssize_t rv = nghttp2_hd_deflate_hd(
+-        h2c->deflater, (uchar *) buffer->str + SW_HTTP2_FRAME_HEADER_SIZE, buflen, headers.get(), headers.len());
 -    if (rv < 0) {
 -        h2c->nghttp2_error(rv, "nghttp2_hd_deflate_hd() failed");
--        return -1;
+-        h2c->close();
+-        return rv;
 -    }
+-
+-    buffer->length = SW_HTTP2_FRAME_HEADER_SIZE + rv;
 -    return rv;
 +bool swoole_http2_client_coro_write_bound(void *socket) {
 +    return http2_socket(socket)->has_bound(SW_EVENT_WRITE);
@@ -1137,6 +1140,10 @@ index d4c873f..3858d28 100644
 -    uint8_t send_flag;
 -    uint32_t send_len;
 -    char header[SW_HTTP2_FRAME_HEADER_SIZE];
+-    if (len == 0) {
+-        Http2::set_frame_header(header, SW_HTTP2_TYPE_DATA, 0, flag, _stream_id);
+-        return send(header, SW_HTTP2_FRAME_HEADER_SIZE);
+-    }
 -    while (len > 0) {
 -        SwRsHttp2Chunk chunk;
 -        sw_rs_http2_chunk(len, local_settings.max_frame_size, flag, &chunk);
@@ -1179,10 +1186,10 @@ index d4c873f..3858d28 100644
 -    /**
 -     * send headers
 -     */
--    char *buffer = sw_tg_buffer()->str;
--    ssize_t bytes = build_header(zobject, zrequest, buffer + SW_HTTP2_FRAME_HEADER_SIZE);
+-    String *buffer = sw_tg_buffer();
+-    ssize_t bytes = build_header(zobject, zrequest, buffer);
 -
--    if (bytes <= 0) {
+-    if (bytes < 0) {
 -        return 0;
 -    }
 -
@@ -1198,7 +1205,7 @@ index d4c873f..3858d28 100644
 -
 -    swoole_http2_send_trace_log(
 -        "[" SW_ECHO_GREEN ", STREAM#%d] length=%zd", Http2::get_type(SW_HTTP2_TYPE_HEADERS), stream->stream_id, bytes);
--    if (!send(buffer, SW_HTTP2_FRAME_HEADER_SIZE + bytes)) {
+-    if (!send(buffer->str, buffer->length)) {
 -        return 0;
 -    }
 -
@@ -1249,7 +1256,6 @@ index d4c873f..3858d28 100644
 - * called in write channel
 - */
 -bool Client::write_data(uint32_t _stream_id, zval *zdata, bool end) {
--    char buffer[SW_HTTP2_FRAME_HEADER_SIZE];
 -    Stream *stream = get_stream(_stream_id);
 -    int flag = end ? SW_HTTP2_FLAG_END_STREAM : 0;
 -
@@ -1274,11 +1280,11 @@ index d4c873f..3858d28 100644
 -                         end ? " END," : "",
 -                         stream_id,
 -                         len);
--        if (!send(buffer, SW_HTTP2_FRAME_HEADER_SIZE) || !send(formstr, len)) {
--            smart_str_free(&formstr_s);
+-        bool retval = send_data(_stream_id, formstr, len, flag);
+-        smart_str_free(&formstr_s);
+-        if (!retval) {
 -            return false;
 -        }
--        smart_str_free(&formstr_s);
 -    } else {
 -        zend::String data(zdata);
 -        Http2::rust_frame_header(buffer, SW_HTTP2_TYPE_DATA, data.len(), flag, _stream_id);
@@ -1288,7 +1294,7 @@ index d4c873f..3858d28 100644
 -                         end ? " END," : "",
 -                         stream_id,
 -                         data.len());
--        if (!send(buffer, SW_HTTP2_FRAME_HEADER_SIZE) || !send(data.val(), data.len())) {
+-        if (!send_data(_stream_id, data.val(), data.len(), flag)) {
 -            return false;
 -        }
 -    }
@@ -1353,7 +1359,7 @@ index d4c873f..3858d28 100644
 +    if (deflater) {
 +        nghttp2_hd_deflate_del(static_cast<nghttp2_hd_deflater *>(deflater));
      }
-@@ -1310,178 +187,79 @@ static PHP_METHOD(swoole_http2_client_coro, send) {
+@@ -1316,178 +187,79 @@ static PHP_METHOD(swoole_http2_client_coro, send) {
  
 -static void http2_client_coro_recv(INTERNAL_FUNCTION_PARAMETERS, bool pipeline_read) {
 -    Client *h2c = http2_client_coro_get_client(ZEND_THIS);

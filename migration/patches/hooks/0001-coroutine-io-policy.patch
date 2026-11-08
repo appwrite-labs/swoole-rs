@@ -4009,7 +4009,7 @@ index 5a16f4c..c294907 100644
 +        break;
      }
 diff --git a/src/coroutine/system.cc b/src/coroutine/system.cc
-index e6ef9c2..2bbe2d3 100644
+index 2904e82..2bbe2d3 100644
 --- a/src/coroutine/system.cc
 +++ b/src/coroutine/system.cc
 @@ -17,3 +17,4 @@
@@ -4125,7 +4125,7 @@ index e6ef9c2..2bbe2d3 100644
 -        }
 +        ev.error = swr_v1_hook_dns_error(ev.error, SW_ERROR_AIO_TIMEOUT, SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT);
          swoole_set_last_error(ev.error);
-@@ -220,58 +172,32 @@ std::vector<std::string> System::getaddrinfo(
+@@ -220,75 +172,32 @@ std::vector<std::string> System::getaddrinfo(
  
 -struct SignalListener {
 -    Coroutine *co;
@@ -4159,6 +4159,17 @@ index e6ef9c2..2bbe2d3 100644
 -        return -1;
 -    }
 -
+-    // Validate every signal before registering any of them.
+-    for (auto &signo : signals) {
+-        if (signo < 0 || signo >= SW_SIGNO_MAX || signo == SIGCHLD) {
+-            swoole_set_last_error(EINVAL);
+-            return -1;
+-        }
+-    }
++static void co_park(void *co) {
++    static_cast<Coroutine *>(co)->yield();
++}
+ 
 -    auto callback_fn = [](int signo) {
 -        auto listener = listeners[signo];
 -        if (listener) {
@@ -4167,19 +4178,25 @@ index e6ef9c2..2bbe2d3 100644
 -            listener->co->resume();
 -        }
 -    };
-+static void co_park(void *co) {
-+    static_cast<Coroutine *>(co)->yield();
-+}
- 
--    for (auto &signo : signals) {
--        if (signo < 0 || signo >= SW_SIGNO_MAX || signo == SIGCHLD) {
--            swoole_set_last_error(EINVAL);
--            return -1;
+-
+-    struct PreviousSignal {
+-        swoole::SignalHandler handler = nullptr;
+-        bool registered = false;
+-    };
+-    PreviousSignal previous_signals[SW_SIGNO_MAX];
+-    auto register_signal = [&callback_fn, &previous_signals](int signo) {
+-        auto &previous = previous_signals[signo];
+-        if (!previous.registered) {
+-            previous.handler = swoole_signal_get_handler(signo);
+-            previous.registered = true;
+-            swoole_signal_set(signo, callback_fn);
 -        }
+-    };
 +static void co_resume(void *co) {
 +    static_cast<Coroutine *>(co)->resume();
 +}
  
+-    for (auto &signo : signals) {
 -        /* resgiter signal */
 -        listeners[signo] = &listener;
 +static bool signal_busy() {
@@ -4189,10 +4206,10 @@ index e6ef9c2..2bbe2d3 100644
 +static void signal_listen(int signo, bool on) {
 +    swoole::SignalHandler handler = on ? swr_v1_hook_signal_wake : nullptr;
  #ifdef SW_USE_THREAD_CONTEXT
--        swoole_event_defer([signo, &callback_fn](void *) { swoole_signal_set(signo, callback_fn); }, nullptr);
+-        swoole_event_defer([signo, register_signal](void *) { register_signal(signo); }, nullptr);
 +    swoole_event_defer([signo, handler](void *) { swoole_signal_set(signo, handler); }, nullptr);
  #else
--        swoole_signal_set(signo, callback_fn);
+-        register_signal(signo);
 +    swoole_signal_set(signo, handler);
  #endif
 -    }
@@ -4205,7 +4222,7 @@ index e6ef9c2..2bbe2d3 100644
 +        return;
 +    }
      if (!sw_reactor()->isset_exit_condition(Reactor::EXIT_CONDITION_CO_SIGNAL_LISTENER)) {
-@@ -281,85 +207,67 @@ int System::wait_signal(const std::vector<int> &signals, double timeout) {
+@@ -298,91 +207,67 @@ int System::wait_signal(const std::vector<int> &signals, double timeout) {
      }
 -
      SwooleG.signal_async_listener_num++;
@@ -4214,10 +4231,16 @@ index e6ef9c2..2bbe2d3 100644
 -    bool retval = listener.co->yield_ex(timeout);
 -
 -    for (auto &signo : signals) {
+-        auto &previous = previous_signals[signo];
+-        if (!previous.registered) {
+-            continue;
+-        }
+-        auto handler = previous.handler;
+-        previous.registered = false;
 -#ifdef SW_USE_THREAD_CONTEXT
--        swoole_event_defer([signo](void *) { swoole_signal_set(signo, nullptr); }, nullptr);
+-        swoole_event_defer([signo, handler](void *) { swoole_signal_set(signo, handler); }, nullptr);
 -#else
--        swoole_signal_set(signo, nullptr);
+-        swoole_signal_set(signo, handler);
 -#endif
 -        listeners[signo] = nullptr;
 -    }
@@ -4321,12 +4344,12 @@ index e6ef9c2..2bbe2d3 100644
 -    }
 +static void *poll_timer_add(double timeout, void *task) {
 +    return swoole_timer_add(timeout, false, poll_timer_expired, task);
- }
- 
-+static void poll_timer_del(void *timer) {
-+    swoole_timer_del(static_cast<TimerNode *>(timer));
 +}
 +
++static void poll_timer_del(void *timer) {
++    swoole_timer_del(static_cast<TimerNode *>(timer));
+ }
+ 
 +static void poll_defer(void *task) {
 +    sw_reactor()->defer(swr_v1_hook_poll_completed, task);
 +}
@@ -4338,17 +4361,17 @@ index e6ef9c2..2bbe2d3 100644
 -    socket_poll_trigger_event(reactor, (CoroPollTask *) event->socket->object, event->fd, SW_EVENT_READ);
 +    swr_v1_hook_poll_ready(event->socket->object, event->fd, SW_EVENT_READ);
      return SW_OK;
-@@ -368,3 +276,3 @@ static int socket_poll_read_callback(Reactor *reactor, Event *event) {
+@@ -391,3 +276,3 @@ static int socket_poll_read_callback(Reactor *reactor, Event *event) {
  static int socket_poll_write_callback(Reactor *reactor, Event *event) {
 -    socket_poll_trigger_event(reactor, (CoroPollTask *) event->socket->object, event->fd, SW_EVENT_WRITE);
 +    swr_v1_hook_poll_ready(event->socket->object, event->fd, SW_EVENT_WRITE);
      return SW_OK;
-@@ -373,3 +281,3 @@ static int socket_poll_write_callback(Reactor *reactor, Event *event) {
+@@ -396,3 +281,3 @@ static int socket_poll_write_callback(Reactor *reactor, Event *event) {
  static int socket_poll_error_callback(Reactor *reactor, Event *event) {
 -    socket_poll_trigger_event(reactor, (CoroPollTask *) event->socket->object, event->fd, SW_EVENT_ERROR);
 +    swr_v1_hook_poll_ready(event->socket->object, event->fd, SW_EVENT_ERROR);
      return SW_OK;
-@@ -378,55 +286,12 @@ static int socket_poll_error_callback(Reactor *reactor, Event *event) {
+@@ -401,55 +286,12 @@ static int socket_poll_error_callback(Reactor *reactor, Event *event) {
  bool System::socket_poll(std::unordered_map<int, PollSocket> &fds, double timeout) {
 -    if (timeout == 0) {
 -        auto *event_list = static_cast<struct pollfd *>(sw_calloc(fds.size(), sizeof(struct pollfd)));
@@ -4391,12 +4414,12 @@ index e6ef9c2..2bbe2d3 100644
 -        }
 -        fd.second.socket->object = &task;
 -        tasked_num++;
--    }
++        list.push_back({fd.first, fd.second.events, fd.second.revents});
+     }
 -
 -    if (sw_unlikely(tasked_num == 0)) {
 -        return false;
-+        list.push_back({fd.first, fd.second.events, fd.second.revents});
-     }
+-    }
 -
 -    if (timeout > 0) {
 -        task.timer = swoole_timer_add(timeout, false, socket_poll_timeout, &task);
@@ -4411,7 +4434,7 @@ index e6ef9c2..2bbe2d3 100644
 -    return task.success;
 +    return retval;
  }
-@@ -462,6 +327,7 @@ struct EventWaiter {
+@@ -485,6 +327,7 @@ struct EventWaiter {
  static inline void event_waiter_callback(Reactor *reactor, EventWaiter *waiter, EventType event) {
 -    if (waiter->revents == 0) {
 +    auto plan = swr_v1_hook_event_waiter(waiter->revents, event);
@@ -4421,7 +4444,7 @@ index e6ef9c2..2bbe2d3 100644
 -    waiter->revents |= event;
 +    waiter->revents = plan.revents;
  }
-@@ -486,45 +352,17 @@ static int event_waiter_error_callback(Reactor *reactor, Event *event) {
+@@ -509,45 +352,17 @@ static int event_waiter_error_callback(Reactor *reactor, Event *event) {
   */
 -int System::wait_event(int fd, int events, double timeout) {
 -    events &= SW_EVENT_READ | SW_EVENT_WRITE;
@@ -4479,27 +4502,27 @@ index e6ef9c2..2bbe2d3 100644
 +    }
 +    return waited.result;
  }
-@@ -574,3 +412,3 @@ void System::init_reactor(Reactor *reactor) {
+@@ -597,3 +412,3 @@ void System::init_reactor(Reactor *reactor) {
  static void async_task_completed(AsyncEvent *event) {
 -    if (event->canceled) {
 +    if (swr_v1_hook_async_action(2, true, event->canceled) == SWR_HOOK_ASYNC_REJECT) {
          return;
-@@ -592,3 +430,3 @@ bool async(async::Handler handler, AsyncEvent &event, double timeout) {
+@@ -615,3 +430,3 @@ bool async(async::Handler handler, AsyncEvent &event, double timeout) {
      AsyncEvent *_ev = async::dispatch(&event);
 -    if (_ev == nullptr) {
 +    if (swr_v1_hook_async_action(0, true, _ev != nullptr) == SWR_HOOK_ASYNC_REJECT) {
          return false;
-@@ -596,3 +434,3 @@ bool async(async::Handler handler, AsyncEvent &event, double timeout) {
+@@ -619,3 +434,3 @@ bool async(async::Handler handler, AsyncEvent &event, double timeout) {
  
 -    if (!co->yield_ex(timeout)) {
 +    if (swr_v1_hook_async_action(1, true, co->yield_ex(timeout)) == SWR_HOOK_ASYNC_CANCEL) {
          event.canceled = _ev->canceled = true;
-@@ -635,3 +473,3 @@ bool async(const std::function<void()> &fn) {
+@@ -658,3 +473,3 @@ bool async(const std::function<void()> &fn) {
      AsyncEvent *_ev = async::dispatch(&event);
 -    if (_ev == nullptr) {
 +    if (swr_v1_hook_async_action(0, false, _ev != nullptr) == SWR_HOOK_ASYNC_REJECT) {
          return false;
-@@ -645,16 +483,23 @@ bool async(const std::function<void()> &fn) {
+@@ -668,16 +483,23 @@ bool async(const std::function<void()> &fn) {
  bool wait_for(const std::function<bool(void)> &fn) {
 +    uint32_t phase = 0;
      double second = SW_FILE_LOCK_DEFAULT_SECOND;
@@ -4532,7 +4555,7 @@ index e6ef9c2..2bbe2d3 100644
 -    return true;
  }
 diff --git a/src/coroutine/uring_socket.cc b/src/coroutine/uring_socket.cc
-index 758765a..f1b91a4 100644
+index 8f64b26..f1b91a4 100644
 --- a/src/coroutine/uring_socket.cc
 +++ b/src/coroutine/uring_socket.cc
 @@ -20,2 +20,4 @@
@@ -4807,7 +4830,7 @@ index 758765a..f1b91a4 100644
 -        return true;
 -    } else if (error == SSL_ERROR_ZERO_RETURN) {
 -        swoole_debug("%s(fd=%d) return zero value", fn, socket->get_fd());
--        error = SW_ERROR_SSL_RESET;
+-        set_err(SW_ERROR_SSL_RESET);
 -        goto _error;
 -    } else if (error == SSL_ERROR_SYSCALL) {
 -        goto _error;

@@ -1,8 +1,8 @@
 diff --git a/ext-src/php_swoole_http.h b/ext-src/php_swoole_http.h
-index 2a4b5b8..e26fab0 100644
+index f89922e..d366cb2 100644
 --- a/ext-src/php_swoole_http.h
 +++ b/ext-src/php_swoole_http.h
-@@ -85,8 +85,2 @@ namespace swoole {
+@@ -86,8 +86,2 @@ namespace swoole {
  class Server;
 -class Coroutine;
 -
@@ -11,7 +11,7 @@ index 2a4b5b8..e26fab0 100644
 -class Session;
 -}  // namespace http2
  
-@@ -284,60 +278,2 @@ struct Context : ContextState {
+@@ -285,64 +279,2 @@ struct Context : ContextState {
  
 -namespace http2 {
 -class Stream {
@@ -23,6 +23,8 @@ index 2a4b5b8..e26fab0 100644
 -    uint32_t remote_window_size;
 -    uint32_t local_window_size;
 -    Coroutine *waiting_coroutine = nullptr;
+-    bool headers_received = false;
+-    bool request_received = false;
 -
 -    Stream(const Session *client, uint32_t _id);
 -    ~Stream();
@@ -56,6 +58,8 @@ index 2a4b5b8..e26fab0 100644
 -
 -    uint32_t max_body_size;
 -    uint32_t last_stream_id;
+-    uint32_t header_stream_id = 0;
+-    bool header_end_stream = false;
 -    bool shutting_down;
 -    bool is_coro;
 -
@@ -86,25 +90,25 @@ index b4888a4..9cca6c5 100644
 -
  bool swoole_http2_server_end(swoole::http::Context *ctx, zend_string *sdata);
 diff --git a/ext-src/swoole_http_server_coro.cc b/ext-src/swoole_http_server_coro.cc
-index 1d3a379..e137779 100644
+index 0d709b8..08ed8fc 100644
 --- a/ext-src/swoole_http_server_coro.cc
 +++ b/ext-src/swoole_http_server_coro.cc
-@@ -21,2 +21,3 @@
+@@ -18,2 +18,3 @@
  #include "swoole_rs_httpbindings.h"
 +#include "swoole_rs_phphttp2.h"
  #include "php_swoole_websocket.h"
-@@ -37,4 +38,2 @@ using HttpResponse = swoole::http::Response;
+@@ -34,4 +35,2 @@ using HttpResponse = swoole::http::Response;
  using HttpContext = swoole::http::Context;
 -using Http2Stream = swoole::http2::Stream;
 -using Http2Session = swoole::http2::Session;
  
-@@ -45,4 +44,3 @@ static bool http_context_disconnect(HttpContext *ctx);
+@@ -42,4 +41,3 @@ static bool http_context_disconnect(HttpContext *ctx);
  
 -static void http2_server_onRequest(const std::shared_ptr<Http2Session> &session,
 -                                   const std::shared_ptr<Http2Stream> &stream);
 +static void http2_server_onRequest(swr_h2s_request *request);
  
-@@ -164,8 +162,4 @@ class HttpServer {
+@@ -161,8 +159,4 @@ class HttpServer {
  
 -        auto session = swoole_http2_server_session_new(ctx->fd);
 -        session->max_body_size = sock->protocol.package_max_length;
@@ -115,24 +119,24 @@ index 1d3a379..e137779 100644
 +        swr_v1_phphttp2_session_new(
 +            ctx->fd, ctx, sock->protocol.package_max_length, true, http2_server_onRequest, this);
  
-@@ -177,3 +171,3 @@ class HttpServer {
+@@ -174,3 +168,3 @@ class HttpServer {
              }
 -            if (swoole_http2_server_parse(session, buffer->str) == SW_ERR) {
 +            if (swr_v1_phphttp2_session_parse(ctx->fd, buffer->str) == SW_ERR) {
                  break;
-@@ -182,3 +176,3 @@ class HttpServer {
+@@ -179,3 +173,3 @@ class HttpServer {
  
 -        swoole_http2_server_session_free(ctx->fd);
 +        swr_v1_phphttp2_session_free(ctx->fd);
  
-@@ -380,6 +374,2 @@ bool swr_hsc_closed(zval *zconn) {
+@@ -377,6 +371,2 @@ bool swr_hsc_closed(zval *zconn) {
  
 -void swr_hsc_stream_reset(void *stream) {
 -    static_cast<Http2Stream *>(stream)->reset(SW_HTTP2_ERROR_INTERNAL_ERROR);
 -}
 -
  void HttpContext::init(zval *zsock) {
-@@ -536,5 +526,4 @@ int swr_hsc_setting(void *server, uint32_t kind, zend_array *vht, zval *ztmp) {
+@@ -533,5 +523,4 @@ int swr_hsc_setting(void *server, uint32_t kind, zend_array *vht, zval *ztmp) {
  
 -static void http2_server_onRequest(const std::shared_ptr<Http2Session> &session,
 -                                   const std::shared_ptr<Http2Stream> &stream) {

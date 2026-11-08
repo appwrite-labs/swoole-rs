@@ -268,7 +268,7 @@ index ae8a1a1..bf0e9ec 100644
 +        return swr_v1_phpcoroutines_activated();
      }
 diff --git a/ext-src/swoole_coroutine.cc b/ext-src/swoole_coroutine.cc
-index daecf43..c0ecac3 100644
+index 26cbd98..c0ecac3 100644
 --- a/ext-src/swoole_coroutine.cc
 +++ b/ext-src/swoole_coroutine.cc
 @@ -35,17 +35,9 @@ END_EXTERN_C()
@@ -608,7 +608,7 @@ index daecf43..c0ecac3 100644
 +        zend_exception_error(EG(exception), E_ERROR);
 +        return true;
      }
-@@ -405,386 +153,9 @@ bool PHPCoroutine::catch_exception() {
+@@ -405,393 +153,9 @@ bool PHPCoroutine::catch_exception() {
  
 -void PHPCoroutine::activate() {
 -    if (sw_unlikely(activated)) {
@@ -719,6 +719,13 @@ index daecf43..c0ecac3 100644
 -    if (interrupt_thread_running.load(std::memory_order_acquire)) {
 -        return;
 -    }
+-    const bool restore_signal_mask = swoole_signal_block_all();
+-    ON_SCOPE_EXIT {
+-        if (restore_signal_mask) {
+-            swoole_signal_unblock_all();
+-        }
+-    };
+-
 -    auto *running = &interrupt_thread_running;
 -    auto *vm_interrupt = &EG(vm_interrupt);
 -    interrupt_thread_running.store(true, std::memory_order_release);
@@ -999,7 +1006,7 @@ index daecf43..c0ecac3 100644
 +        auto *call = static_cast<zend::Function *>(swr_v1_phpcoroutines_enter(ctx));
 +        zend_call_function(&call->fci, &call->fci_cache);
  
-@@ -794,22 +165,12 @@ void PHPCoroutine::main_func(void *_args) {
+@@ -801,22 +165,12 @@ void PHPCoroutine::main_func(void *_args) {
          // The defer tasks still need to be executed after an exception occurs
 -        if (ctx->defer_tasks) {
 -            std::stack<zend::Function *> *tasks = ctx->defer_tasks;
@@ -1022,16 +1029,16 @@ index daecf43..c0ecac3 100644
 +        while ((defer_fci = static_cast<zend::Function *>(swr_v1_phpcoroutines_defer_next(ctx)))) {
 +            if (UNEXPECTED(sw_zend_call_function_anyway(&defer_fci->fci, &defer_fci->fci_cache) != SUCCESS)) {
 +                php_swoole_fatal_error(E_WARNING, "defer callback handler error");
++            }
++            if (EG(exception)) {
++                zend_bailout();
              }
 -            delete ctx->defer_tasks;
 -            ctx->defer_tasks = nullptr;
-+            if (EG(exception)) {
-+                zend_bailout();
-+            }
 +            sw_zend_fci_cache_discard(&defer_fci->fci_cache);
 +            efree(defer_fci);
          }
-@@ -822,270 +183,177 @@ void PHPCoroutine::main_func(void *_args) {
+@@ -829,270 +183,177 @@ void PHPCoroutine::main_func(void *_args) {
      zend_end_try();
 -    destroy_context(ctx);
 +    swr_v1_phpcoroutines_close(ctx);
@@ -1085,8 +1092,8 @@ index daecf43..c0ecac3 100644
 +        zend_bailout();
      }
 -    ctx->defer_tasks->push(fci);
- }
- 
+-}
+-
 -void PHPCoroutine::fiber_context_init(PHPContext *ctx) {
 -    auto *fiber_context = static_cast<zend_fiber_context *>(emalloc(sizeof(zend_fiber_context)));
 -    fiber_context->handle = reinterpret_cast<void *>(INVALID_PTR);
@@ -1096,8 +1103,8 @@ index daecf43..c0ecac3 100644
 -    ctx->fiber_context = fiber_context;
 -
 -    zend_observer_fiber_init_notify(fiber_context);
--}
--
+ }
+ 
 -void PHPCoroutine::fiber_context_try_destroy(const PHPContext *ctx, PHPContext *origin_ctx) {
 -    if (UNEXPECTED(ctx->fiber_context)) {
 -        ctx->fiber_context->status = ZEND_FIBER_STATUS_DEAD;
@@ -1332,32 +1339,7 @@ index daecf43..c0ecac3 100644
 +    [](uint32_t hook_flags) {
 +        if (hook_flags) {
 +            PHPCoroutine::enable_hook(hook_flags);
-         }
--        AutoloadContext context;
--        context.coroutine = current;
--        context.ce = nullptr;
--        queue->queue->push(&context);
--        current->yield();
--        return context.ce;
--    }
--    AutoloadQueue queue;
--    queue.coroutine = current;
--    std::queue<AutoloadContext *> queue_object;
--    queue.queue = &queue_object;
--
--    zend_hash_add_ptr(SWOOLE_G(in_autoload), lc_name, &queue);
--    zend_class_entry *ce = original_zend_autoload(name, lc_name);
--    zend_hash_del(SWOOLE_G(in_autoload), lc_name);
--
--    AutoloadContext *pending_context = nullptr;
--    while (!queue_object.empty()) {
--        pending_context = queue_object.front();
--        queue_object.pop();
--        pending_context->ce = ce;
--        pending_context->coroutine->resume();
--    }
--    return ce;
--}
++        }
 +        PHPCoroutine::disable_unsafe_function();
 +    },
 +    []() {
@@ -1388,7 +1370,32 @@ index daecf43..c0ecac3 100644
 +    [](const char *message, size_t length, long status) {
 +        if (message) {
 +            php_write((void *) message, length);
-+        }
+         }
+-        AutoloadContext context;
+-        context.coroutine = current;
+-        context.ce = nullptr;
+-        queue->queue->push(&context);
+-        current->yield();
+-        return context.ce;
+-    }
+-    AutoloadQueue queue;
+-    queue.coroutine = current;
+-    std::queue<AutoloadContext *> queue_object;
+-    queue.queue = &queue_object;
+-
+-    zend_hash_add_ptr(SWOOLE_G(in_autoload), lc_name, &queue);
+-    zend_class_entry *ce = original_zend_autoload(name, lc_name);
+-    zend_hash_del(SWOOLE_G(in_autoload), lc_name);
+-
+-    AutoloadContext *pending_context = nullptr;
+-    while (!queue_object.empty()) {
+-        pending_context = queue_object.front();
+-        queue_object.pop();
+-        pending_context->ce = ce;
+-        pending_context->coroutine->resume();
+-    }
+-    return ce;
+-}
 +        sw_php_exit(status);
 +    },
 +};
@@ -1462,12 +1469,12 @@ index daecf43..c0ecac3 100644
 +                               spl_ce_ArrayObject,
 +                               &coroutine_ops);
  }
-@@ -1093,3 +361,3 @@ void php_swoole_coroutine_minit(int module_number) {
+@@ -1100,3 +361,3 @@ void php_swoole_coroutine_minit(int module_number) {
  void php_swoole_coroutine_rinit() {
 -    PHPCoroutine::init_main_context();
 +    swr_v1_phpcoroutines_rinit();
  }
-@@ -1097,452 +365,33 @@ void php_swoole_coroutine_rinit() {
+@@ -1104,452 +365,33 @@ void php_swoole_coroutine_rinit() {
  void php_swoole_coroutine_rshutdown() {
 -    if (SWOOLE_G(in_autoload)) {
 -        zend_hash_destroy(SWOOLE_G(in_autoload));
@@ -1881,8 +1888,9 @@ index daecf43..c0ecac3 100644
 -    ctx->timer_limit = timer;
 -    if (old) {
 -        swoole_timer_del(old);
--    }
--
++        options = Z_ARRVAL(zoptions);
+     }
+ 
 -    RETURN_TRUE;
 -}
 -
@@ -1894,9 +1902,8 @@ index daecf43..c0ecac3 100644
 -PHP_FUNCTION(swoole_test_kernel_coroutine) {
 -    if (!PHPCoroutine::is_activated()) {
 -        RETURN_FALSE;
-+        options = Z_ARRVAL(zoptions);
-     }
- 
+-    }
+-
 -    zend_long count = 100;
 -    double sleep_time = 1.0;
 -
@@ -1940,7 +1947,7 @@ index daecf43..c0ecac3 100644
 -    }
 +    swr_v1_phpcoroutines_set_hook_flags(flags);
  }
-@@ -1561,63 +410,5 @@ void sw_php_print_backtrace_impl(int skip_last, int options, int limit, bool inc
+@@ -1568,63 +410,5 @@ void sw_php_print_backtrace_impl(int skip_last, int options, int limit, bool inc
  void sw_php_print_backtrace(zend_long cid, zend_long options, zend_long limit, zval *return_value) {
 -    if (!cid || cid == PHPCoroutine::get_cid()) {
 -        sw_php_print_backtrace_impl(1, options, limit);

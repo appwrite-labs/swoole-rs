@@ -1,8 +1,8 @@
 diff --git a/include/swoole.h b/include/swoole.h
-index c217d09..21d5d61 100644
+index 29327a3..5227b39 100644
 --- a/include/swoole.h
 +++ b/include/swoole.h
-@@ -478,25 +478,2 @@ struct EventData {
+@@ -478,26 +478,2 @@ struct EventData {
  
 -struct ThreadGlobal {
 -    uint16_t id;
@@ -18,6 +18,7 @@ index c217d09..21d5d61 100644
 -    Iouring *iouring;
 -#endif
 -    bool signal_blocking_all;
+-    sigset_t signal_previous_mask;
 -};
 -
 -struct Allocator {
@@ -28,12 +29,12 @@ index c217d09..21d5d61 100644
 -};
 -
  struct NameResolver {
-@@ -534,2 +511,4 @@ struct DnsServer {
+@@ -535,2 +511,4 @@ struct DnsServer {
  #include "swoole_rs_corebase.h"
 +#include "swoole_rs_corebase_state.h"
 +#include "swoole_rs_corebase_string_view.h"
  
-@@ -586,3 +565,15 @@ struct BugReport {
+@@ -587,3 +565,15 @@ struct BugReport {
  
 -struct Global {
 +struct Global : private CoreConfigOwner {
@@ -50,7 +51,7 @@ index c217d09..21d5d61 100644
 +        return *this;
 +    }
      SW_RUST_FIELD(bool, running);
-@@ -615,7 +606,7 @@ struct Global {
+@@ -616,7 +606,7 @@ struct Global {
      SW_RUST_FIELD(uint32_t, pagesize);
 -    uint32_t max_sockets;
 +    uint32_t &max_sockets = config_.fields->max_sockets;
@@ -61,14 +62,14 @@ index c217d09..21d5d61 100644
 +    Allocator &std_allocator = config_.fields->std_allocator;
 +    RustStringView task_tmpfile{config_.strings[0]};
      //------------------[Single Instance]----------------------
-@@ -625,4 +616,4 @@ struct Global {
+@@ -626,4 +616,4 @@ struct Global {
      DnsServer dns_server;
 -    double dns_cache_refresh_time;
 -    std::string dns_resolvconf_path;
 +    double &dns_cache_refresh_time = config_.fields->dns_cache_refresh_time;
 +    RustStringView dns_resolvconf_path{config_.strings[1]};
      std::string dns_hosts_path;
-@@ -641,3 +632,3 @@ struct Global {
+@@ -642,3 +632,3 @@ struct Global {
      //-----------------------[Hook]--------------------------
 -    void *hooks[SW_MAX_HOOK_TYPE];
 +    void *(&hooks)[SW_MAX_HOOK_TYPE] = config_.fields->hooks;
