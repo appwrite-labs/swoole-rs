@@ -151,10 +151,13 @@ impl Pool {
         let key = self.next_key.fetch_add(1, Ordering::Relaxed);
         // Registered under the lock, so a worker can never retire before it is known.
         let mut threads = lock(&self.threads);
-        match std::thread::Builder::new()
-            .stack_size(STACK_SIZE)
-            .spawn(move || self.work(core, key))
-        {
+        // The worker inherits a fully blocked mask (upstream's `ThreadPool::create_thread`).
+        let spawned = swoole_rs_corebase::with_signals_blocked(|| {
+            std::thread::Builder::new()
+                .stack_size(STACK_SIZE)
+                .spawn(move || self.work(core, key))
+        });
+        match spawned {
             Ok(thread) => {
                 threads.insert(key, thread);
             }

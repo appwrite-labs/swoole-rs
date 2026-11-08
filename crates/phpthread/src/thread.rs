@@ -225,9 +225,11 @@ fn construct(call: &Call) {
         state: Arc::clone(&thread.state),
     }));
     let mut handle = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
-    // SAFETY: default attributes, as `std::thread`'s; `start` owns `boxed`.
-    let errno =
-        unsafe { libc::pthread_create(handle.as_mut_ptr(), ptr::null(), start, boxed.cast()) };
+    // The thread inherits a fully blocked mask (upstream's `Thread::start`).
+    let errno = swoole_rs_corebase::with_signals_blocked(|| {
+        // SAFETY: default attributes, as `std::thread`'s; `start` owns `boxed`.
+        unsafe { libc::pthread_create(handle.as_mut_ptr(), ptr::null(), start, boxed.cast()) }
+    });
     if errno != 0 {
         // SAFETY: the thread never started, so the box is still ours.
         drop(unsafe { Box::from_raw(boxed) });

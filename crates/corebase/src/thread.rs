@@ -117,8 +117,11 @@ pub unsafe extern "C" fn swr_v1_core_thread_start(
     argument: *mut c_void,
 ) -> c_int {
     let mut thread = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
-    // SAFETY: default pthread attributes; native entry owns argument only on success.
-    let code = unsafe { libc::pthread_create(thread.as_mut_ptr(), ptr::null(), entry, argument) };
+    // The new thread inherits a fully blocked mask (upstream's `Thread::start`).
+    let code = crate::with_signals_blocked(|| {
+        // SAFETY: default pthread attributes; native entry owns argument only on success.
+        unsafe { libc::pthread_create(thread.as_mut_ptr(), ptr::null(), entry, argument) }
+    });
     if code == 0 {
         // SAFETY: successful pthread_create initialized the handle.
         let thread = unsafe { thread.assume_init() };
@@ -248,6 +251,50 @@ mod tests {
             assert_eq!(swr_v1_core_thread_status(&raw const *owner), 37);
             assert_eq!(join(&raw mut *owner), libc::EINVAL);
             assert_eq!(swr_v1_core_thread_detach(&raw mut *owner), libc::EINVAL);
+        }
+    }
+
+    extern "C" fn inherit(context: *mut c_void) -> *mut c_void {
+        // Read before any child-thread initialization can block signals.
+        unsafe { *context.cast::<libc::sigset_t>() = crate::signal_mask::tests::current() };
+        ptr::null_mut()
+    }
+
+    /// core-tests/src/os/thread.cpp `TEST(thread, start_with_signals_blocked)`, each
+    /// case in a new thread rather than a forked child: the mask and the flag are per
+    /// thread.
+    #[test]
+    fn start_with_signals_blocked() {
+        use crate::signal_mask::tests::{current, only, same};
+        for already_blocked in [false, true] {
+            std::thread::spawn(move || unsafe {
+                only(libc::SIGUSR1);
+                if already_blocked {
+                    crate::signal_block_all();
+                }
+                let expected = current();
+                let mut inherited: libc::sigset_t = std::mem::zeroed();
+                let mut thread = CoreThread::default();
+                assert_eq!(
+                    swr_v1_core_thread_start(&raw mut thread, inherit, (&raw mut inherited).cast()),
+                    0
+                );
+                assert_eq!(join(&raw mut thread), 0);
+                for signo in [libc::SIGCHLD, libc::SIGUSR1, libc::SIGTERM] {
+                    assert_eq!(
+                        libc::sigismember(&raw const inherited, signo),
+                        1,
+                        "already_blocked={already_blocked}"
+                    );
+                }
+                assert_eq!(crate::signal_blocking_all(), already_blocked);
+                assert!(
+                    same(expected, current()),
+                    "already_blocked={already_blocked}"
+                );
+            })
+            .join()
+            .unwrap();
         }
     }
 }

@@ -56,9 +56,6 @@ impl NativeHost {
     pub(crate) fn signal_clear(&self) {
         self.run(8, 0);
     }
-    pub(crate) fn signal_block_all(&self) {
-        self.run(9, 0);
-    }
     pub(crate) fn timer_available(&self) -> bool {
         self.run(10, 0) != 0
     }

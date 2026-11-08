@@ -276,15 +276,18 @@ fn interrupt_start() {
     // SAFETY: this thread's executor globals.
     let flag = Flag(unsafe { swr_zend_vm_interrupt() });
     let shared = Arc::clone(&running);
-    let spawned = thread::Builder::new().spawn(move || {
-        let flag = flag;
-        host::signal_block_all();
-        let half = Duration::from_millis(MAX_EXEC_MSEC.unsigned_abs() / 2);
-        while shared.load(Ordering::Acquire) {
-            // SAFETY: the executor's flag, live until `interrupt_stop` joins.
-            unsafe { swr_zend_vm_interrupt_raise(flag.0) };
-            thread::sleep(half);
-        }
+    // The thread inherits a fully blocked mask (upstream's `interrupt_thread_start`).
+    let spawned = swoole_rs_corebase::with_signals_blocked(|| {
+        thread::Builder::new().spawn(move || {
+            let flag = flag;
+            swoole_rs_corebase::signal_block_all();
+            let half = Duration::from_millis(MAX_EXEC_MSEC.unsigned_abs() / 2);
+            while shared.load(Ordering::Acquire) {
+                // SAFETY: the executor's flag, live until `interrupt_stop` joins.
+                unsafe { swr_zend_vm_interrupt_raise(flag.0) };
+                thread::sleep(half);
+            }
+        })
     });
     if let Ok(thread) = spawned {
         INTERRUPT.with(|i| *i.borrow_mut() = Some(Interrupt { running, thread }));

@@ -123,7 +123,7 @@ pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
         host.buffer(true);
     }
     if !main_thread {
-        host.signal_block_all();
+        crate::signal_block_all();
     }
     // SAFETY: this thread's live record, borrowed for the write alone.
     unsafe { (*thread(host)).main_thread = main_thread };
@@ -291,13 +291,6 @@ pub fn shared_thread() -> SharedThread {
             ]
         })
     }))
-}
-
-/// `swoole_signal_block_all()`; nothing before `swoole_init`.
-pub fn signal_block_all() {
-    if let Some(host) = native::host() {
-        host.signal_block_all();
-    }
 }
 
 /// Adopts `shared` in this new thread.

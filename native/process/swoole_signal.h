@@ -21,5 +21,6 @@ SW_API swoole::SignalHandler swoole_signal_set(int signo, swoole::SignalHandler 
 SW_API swoole::SignalHandler swoole_signal_set(int signo, swoole::SignalHandler func, int restart, int mask);
 SW_API swoole::SignalHandler swoole_signal_get_handler(int signo);
 SW_API void swoole_signal_clear();
-SW_API void swoole_signal_block_all();
+// Returns true only when this call saves and changes the mask; that caller must restore it with unblock_all().
+SW_API bool swoole_signal_block_all();
 SW_API void swoole_signal_dispatch();
