@@ -2,7 +2,7 @@
 // network::Client's C++ half (upstream's src/network/client.cc is deleted). The state and
 // every operation are crates/clients/src/client.rs; this keeps what Rust can't express: the
 // class's constructor, destructor and methods over the members of C++ types (std::function
-// callbacks, shared_ptr<SSLContext>, the proxies, String buffers), the C++
+// callbacks, the SSLContext reference, the proxies, String buffers), the C++
 // exception a callback throws, the one table Rust reaches them through, and the C calls
 // crates/phpclients and the Rust core-tests cases (tests/modules/clients/client.rs) make.
 #include "swoole_string.h"
@@ -192,7 +192,7 @@ static const swr_v1_clients_native native = {
         case SWR_CLIENTS_SSL_HAS_CONTEXT: return cli->ssl_context != nullptr;
         case SWR_CLIENTS_SSL_PREPARE:
             if (!cli->ssl_context->ready()) {
-                cli->ssl_context->http_v2 = cli->http2;
+                cli->ssl_context->fields().http_v2 = cli->http2;
                 if (!cli->ssl_context->create()) {
                     return SW_ERR;
                 }
@@ -203,19 +203,19 @@ static const swr_v1_clients_native native = {
                 return SW_ERR;
             }
 #ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
-            if (!cli->ssl_context->tls_host_name.empty()) {
-                SSL_set_tlsext_host_name(socket->ssl, cli->ssl_context->tls_host_name.c_str());
+            if (auto *name = cli->ssl_context->text(SSLContext::TLS_HOST_NAME); *name) {
+                SSL_set_tlsext_host_name(socket->ssl, name);
             }
 #endif
             return SW_OK;
         case SWR_CLIENTS_SSL_CONNECT: return socket->ssl_connect();
         case SWR_CLIENTS_SSL_VERIFY_PEER:
-            return cli->ssl_context->verify_peer | (cli->ssl_context->allow_self_signed << 1);
+            return cli->ssl_context->fields().verify_peer | (cli->ssl_context->fields().allow_self_signed << 1);
         case SWR_CLIENTS_SSL_VERIFY: return cli->ssl_verify(arg);
         case SWR_CLIENTS_SSL_CLOSE: socket->ssl_close(); return SW_OK;
         default:
 #ifdef SW_SUPPORT_DTLS
-            cli->ssl_context->protocols = SW_SSL_DTLS;
+            cli->ssl_context->fields().protocols = SW_SSL_DTLS;
             return SW_OK;
 #else
             Client_udp_connect(cli, -1);
@@ -415,7 +415,7 @@ int Client::enable_ssl_encrypt() {
     if (ssl_context) {
         return SW_ERR;
     }
-    ssl_context = std::make_shared<SSLContext>();
+    ssl_context.reset(SSLContext::make());
 #ifdef SW_SUPPORT_DTLS
     return swr_v1_clients_enable_ssl(state_);
 #else
@@ -430,7 +430,8 @@ int Client::ssl_verify(int allow_self_signed) const {
         return SW_ERR;
     }
 #ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
-    if (!ssl_context->tls_host_name.empty() && !socket->ssl_check_host(ssl_context->tls_host_name.c_str())) {
+    auto *name = ssl_context->text(SSLContext::TLS_HOST_NAME);
+    if (*name && !socket->ssl_check_host(name)) {
         return SW_ERR;
     }
 #endif
@@ -496,7 +497,7 @@ bool swoole_client_has_on_error(void *cli) {
 }
 
 const swr_v1_tls_owner *swoole_client_ssl_context(void *cli) {
-    auto &context = static_cast<Client *>(cli)->ssl_context;
+    auto *context = static_cast<Client *>(cli)->ssl_context.get();
     return context ? context->handle() : nullptr;
 }
 

@@ -55,9 +55,10 @@ extern "C" {
 swr_v1_port_config *swr_v1_port_config_new(int);
 void swr_v1_ports_set_eof(void *port, const char *eof, size_t length, bool find_from_right);
 void swr_v1_port_config_free(swr_v1_port_config *);
-/* crates/ports/src/lifecycle_native.rs: stores the SNI context `held` (a new std::shared_ptr<SSLContext>,
- * which Rust takes) under `name`; releases the port's TLS state. */
-bool swr_v1_ports_sni_add(void *port, const char *name, size_t length, void *held, swoole::SSLContext *context);
+/* crates/ports/src/lifecycle_native.rs: a copy of the port's context and its reference; stores
+ * `context` under `name`, taking the caller's reference; releases the port's context and TLS state. */
+swoole::SSLContext const *swr_v1_ports_context_dup(const void *port);
+bool swr_v1_ports_sni_add(void *port, const char *name, size_t length, const swoole::SSLContext *context);
 void swr_v1_ports_tls_free(swr_v1_port_config *);
 }
 namespace swoole { namespace detail {
@@ -88,36 +89,27 @@ struct ServerPortGS : PortCounters {
 struct ListenPort : detail::PortFields {
  RustStringView host{port_config_->host_slot};
  explicit ListenPort(Server *server) { protocol.private_data_2 = server; }
- std::shared_ptr<SSLContext> dup_ssl_context() const {
-  auto new_ctx = std::make_shared<SSLContext>();
-  *new_ctx = *ssl_context;
-  return new_ctx;
- }
+ // The caller's reference, which ssl_add_sni_cert takes.
+ const SSLContext *dup_ssl_context() const { return swr_v1_ports_context_dup(this); }
  void init_protocol();
  const char *get_protocols() const;
  size_t get_connection_num() const;
  int get_port() const { return port; }
  int get_fd() const { return socket ? socket->fd : -1; }
- bool ssl_add_sni_cert(const std::string &name, const std::shared_ptr<SSLContext> &ctx) {
-  return swr_v1_ports_sni_add(this, name.data(), name.length(), new std::shared_ptr<SSLContext>(ctx), ctx.get());
+ bool ssl_add_sni_cert(const std::string &name, const SSLContext *ctx) {
+  return swr_v1_ports_sni_add(this, name.data(), name.length(), ctx);
  }
  bool ssl_init() const;
  bool set_ssl_key_file(const std::string &file) const { return ssl_context->set_key_file(file); }
  bool set_ssl_cert_file(const std::string &file) const { return ssl_context->set_cert_file(file); }
- void set_ssl_cafile(const std::string &file) const { ssl_context->cafile = file; }
- void set_ssl_verify_peer(bool value) const { ssl_context->verify_peer = value; }
- void set_ssl_allow_self_signed(bool value) const { ssl_context->allow_self_signed = value; }
+ void set_ssl_cafile(const std::string &file) const { ssl_context->set_text(SSLContext::CAFILE, file); }
+ void set_ssl_verify_peer(bool value) const { ssl_context->fields().verify_peer = value; }
+ void set_ssl_allow_self_signed(bool value) const { ssl_context->fields().allow_self_signed = value; }
  void set_ssl_protocols(long protocols) const {
-  if (protocols & SW_SSL_DTLS) {
-#ifndef SW_SUPPORT_DTLS
+  if ((protocols & SW_SSL_DTLS) && network::Socket::is_dgram(type)) {
    protocols ^= SW_SSL_DTLS;
-#else
-   if (network::Socket::is_dgram(type)) {
-    protocols ^= SW_SSL_DTLS;
-   }
-#endif
   }
-  ssl_context->protocols = protocols;
+  ssl_context->fields().protocols = protocols;
  }
 };
 }

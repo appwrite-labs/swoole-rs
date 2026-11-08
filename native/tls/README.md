@@ -16,17 +16,19 @@ DH parameters, ECDH curves, ALPN and session id. It owns the password, ALPN,
 verify, DTLS cookie and info callbacks, OpenSSL initialization, the two SSL
 ex_data indexes and `swoole_ssl_get_error`'s text.
 
-`SSLContext` is a header view over a Rust owner (`swr_v1_tls_owner_new`): its
-scalar fields alias the owner's, its strings are Rust string slots, and its
-constructor binds the object itself as OpenSSL's password userdata (Rust reads the
-owner from its first pointer). Copy assignment (`ListenPort::dup_ssl_context`) is
+`SSLContext` is the Rust owner itself, reference counted: `swr_v1_tls_owner_new`
+makes one and its first reference, `_clone` adds one and `_free` drops one, so a
+port, its SNI contexts and DTLS sessions, a client and a coroutine socket hold
+references rather than `std::shared_ptr`s. C++ reads its fields and string slots
+through `swr_v1_tls_owner_view`; OpenSSL's password callback reads the passphrase
+slot the context retains. A copy (`ListenPort::dup_ssl_context`) is
 `swr_v1_tls_owner_assign`. Warnings keep upstream's text and the method name
 upstream's `__SW_FUNC__` printed. Upstream's renegotiation `swoole_debug` exists only
 in `SW_DEBUG` builds and is not reproduced.
 
 ## DTLS (`crates/tls/src/dtls.rs`)
 
-- `swr_v1_tls_dtls_new` makes a session: its socket, `listened` and `peek_mode`, and a datagram queue. crates/ports stores it by fd with a holder of the port's `SSLContext` (`native/ports/tls.cc`'s `swr_v1_ports_context_share`), released with it; crates/server accepts, feeds and closes it.
+- `swr_v1_tls_dtls_new` makes a session: its socket, `listened` and `peek_mode`, and a datagram queue. crates/ports stores it by fd with a reference to the port's `SSLContext`, released with it; crates/server accepts, feeds and closes it.
 - `dtls_append` copies a payload; `dtls_append_buffer` takes one malloc'd `dtls::Buffer` on success. Reads preserve datagram boundaries, short-read consumption, zero-length packets, retry and peek behavior.
 - Rust builds the one BIO method table (write, read, ctrl, create, destroy) and points each session's BIO at its Rust queue. Control reads the actual queue and flags; peer bytes copy the canonical socket address union.
 

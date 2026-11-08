@@ -38,9 +38,10 @@ typedef struct {
 void swr_v1_tls_warning(const char *function, const char *message);
 swr_v1_tls_owner_prepared swr_v1_tls_owner_new(void (*warn)(const char *,
                                                             const char *));
+/* Drops one reference; the last releases the owner. */
 void swr_v1_tls_owner_free(const swr_v1_tls_owner *);
-void swr_v1_tls_owner_bind(const swr_v1_tls_owner *, void *identity);
-void swr_v1_tls_owner_detach(const swr_v1_tls_owner *);
+/* The owner's fields and string slots. */
+swr_v1_tls_owner_prepared swr_v1_tls_owner_view(const swr_v1_tls_owner *);
 /* status 0, -2 out of memory, or the failed string's status at index. */
 typedef struct {
   int32_t status;

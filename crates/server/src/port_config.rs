@@ -4,7 +4,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_corebase::{CoreStringView, StringSlot, swr_v1_core_string_view};
-use swoole_rs_tls::{OwnedTlsPrepared, SslVersion};
+use swoole_rs_tls::{OwnedTlsContext, SslVersion, swr_v1_tls_owner_view};
 #[repr(C)]
 pub struct PortConfig {
     pub object_id: u16,
@@ -50,10 +50,11 @@ pub struct PortConfig {
     pub protocol: Protocol,
     /// `ListenPort::onRead`, the readable callback `init_protocol` picks.
     pub on_read: *mut c_void,
-    /// `ListenPort::ssl_context`: the port's `SSLContext`, or null.
-    pub ssl_context: *mut c_void,
-    /// The TLS state crates/ports owns (the context's holder, the SNI contexts and
-    /// the DTLS sessions); `ListenPort`'s destructor releases it.
+    /// `ListenPort::ssl_context`: the port's `SSLContext` (one reference to its
+    /// Rust owner), or null.
+    pub ssl_context: *const OwnedTlsContext,
+    /// The TLS state crates/ports owns (the SNI contexts and the DTLS sessions);
+    /// `ListenPort`'s destructor releases it with the context.
     pub tls: *mut c_void,
 }
 
@@ -71,10 +72,10 @@ impl PortConfig {
         if self.ssl_context.is_null() {
             return false;
         }
-        // SAFETY: a live `SSLContext` begins with its prepared owner.
-        let prepared = unsafe { &*self.ssl_context.cast::<OwnedTlsPrepared>() };
-        // SAFETY: the owner's fields live as long as the context.
-        let protocols = unsafe { (*prepared.fields).protocols };
+        // SAFETY: the port's live owner.
+        let fields = unsafe { swr_v1_tls_owner_view(self.ssl_context) }.fields;
+        // SAFETY: the owner's fields live as long as the port's reference.
+        let protocols = unsafe { (*fields).protocols };
         protocols & SslVersion::SW_SSL_DTLS as u32 != 0
     }
 }
@@ -159,7 +160,7 @@ pub extern "C" fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig 
         host: Box::default(),
         protocol: default_protocol(),
         on_read: core::ptr::null_mut(),
-        ssl_context: core::ptr::null_mut(),
+        ssl_context: core::ptr::null(),
         tls: core::ptr::null_mut(),
     }))
 }

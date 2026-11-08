@@ -1,5 +1,7 @@
-//! Shared SSL context/configuration ownership. Native exposes borrowed scalar
-//! slots and string views; OpenSSL operations read the authoritative Rust owner.
+//! Shared SSL context/configuration ownership: `swoole::SSLContext` is this owner,
+//! reference counted (`swr_v1_tls_owner_new`, `_clone`, `_free`). Native reads its
+//! scalar fields and string slots through `swr_v1_tls_owner_view`; OpenSSL
+//! operations read the authoritative Rust owner.
 use crate::context::{PasswordBinding, copy_password, create_context};
 use crate::{TlsConfig, TlsStr, Warn};
 use openssl_sys::{SSL_CTX, SSL_CTX_free};
@@ -35,8 +37,6 @@ pub struct OwnedTlsFields {
 pub struct OwnedTlsContext {
     fields: UnsafeCell<OwnedTlsFields>,
     strings: [Arc<StringSlot>; STRING_COUNT],
-    native_identity: UnsafeCell<*mut c_void>,
-    bound_password_context: UnsafeCell<*mut SSL_CTX>,
     context_password: UnsafeCell<Option<Arc<StringSlot>>>,
     warn: Warn,
 }
@@ -84,30 +84,33 @@ pub extern "C" fn swr_v1_tls_warning(function: *const c_char, message: *const c_
     let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
     swoole_rs_corebase::log::warning(function, format_args!("{message}"));
 }
-/// The prepared owner an `SSLContext` begins with (its private `SSLContextOwner` base).
-///
-/// # Safety
-/// `context` is a live `SSLContext`.
-unsafe fn owner_of(context: *const OwnedTlsPrepared) -> *const OwnedTlsContext {
-    // SAFETY: as the caller promises.
-    unsafe { (*context).owner }
+fn prepared(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
+    OwnedTlsPrepared {
+        owner,
+        fields: owner.fields.get(),
+        strings: owner.strings.each_ref().map(Arc::as_ptr),
+    }
 }
+/// A new owner, holding one reference, and its view.
 /// warn is a nonthrowing native logging leaf that outlives the shared owner.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_tls_owner_new(warn: Warn) -> OwnedTlsPrepared {
     let owner = Arc::new(OwnedTlsContext {
         fields: UnsafeCell::new(OwnedTlsFields::default()),
         strings: std::array::from_fn(|_| StringSlot::empty()),
-        native_identity: UnsafeCell::new(ptr::null_mut()),
-        bound_password_context: UnsafeCell::new(ptr::null_mut()),
         context_password: UnsafeCell::new(None),
         warn,
     });
-    OwnedTlsPrepared {
-        fields: owner.fields.get(),
-        strings: owner.strings.each_ref().map(Arc::as_ptr),
-        owner: Arc::into_raw(owner),
-    }
+    // SAFETY: the reference just made, which the caller now holds.
+    prepared(unsafe { &*Arc::into_raw(owner) })
+}
+/// `owner`'s scalar fields and string slots, valid while a reference is held.
+/// # Safety
+/// owner is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_tls_owner_view(owner: *const OwnedTlsContext) -> OwnedTlsPrepared {
+    // SAFETY: as the caller promises.
+    prepared(unsafe { &*owner })
 }
 /// # Safety
 /// owner is live; each returned ownership handle is released once.
@@ -168,20 +171,6 @@ pub unsafe fn owner_tls_host_name(
         swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner.strings[TLS_HOST_NAME]))
     }
 }
-/// Bind the native compatibility identity used by OpenSSL's public userdata API.
-/// # Safety
-/// owner is live/exclusive. identity's first pointer is this owner; the native
-/// constructor verifies that layout before exposing callbacks, and detach precedes destruction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_bind(
-    owner: *const OwnedTlsContext,
-    identity: *mut c_void,
-) {
-    // SAFETY: exclusive compatibility-view registration.
-    let owner = unsafe { &*owner };
-    // SAFETY: caller serializes registration against every configuration operation.
-    unsafe { *owner.native_identity.get() = identity };
-}
 /// # Safety
 /// owner is live; neither its strings nor scalar slots change during the operation.
 unsafe fn configuration(owner: *const OwnedTlsContext) -> TlsConfig {
@@ -222,19 +211,6 @@ extern "C" fn passphrase_view(owner: *const c_void) -> TlsStr {
     unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner.strings[PASSPHRASE])) }
         .into()
 }
-extern "C" fn native_password(
-    buffer: *mut c_char,
-    capacity: c_int,
-    _verify: c_int,
-    identity: *mut c_void,
-) -> c_int {
-    // SAFETY: the native constructor verifies its first pointer is the owner;
-    // detach replaces this callback before that compatibility identity disappears.
-    let owner = unsafe { identity.cast::<*const OwnedTlsContext>().read() };
-    let view = passphrase_view(owner.cast());
-    // SAFETY: OpenSSL lends the output buffer; the live slot lends its exact bytes.
-    unsafe { copy_password(buffer, capacity, view) }
-}
 extern "C" fn slot_password(
     buffer: *mut c_char,
     capacity: c_int,
@@ -246,43 +222,6 @@ extern "C" fn slot_password(
     // SAFETY: OpenSSL lends the output buffer and the live slot lends its exact bytes.
     unsafe { copy_password(buffer, capacity, view.into()) }
 }
-/// Native view teardown keeps cloned Rust handles valid and switches userdata
-/// to the Rust slot, so no callback retains an address in the destroyed view.
-/// # Safety
-/// owner is live/exclusive; its native view is being destroyed with no callback active.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_detach(owner: *const OwnedTlsContext) {
-    // SAFETY: the live owner remains owned during compatibility-view destruction.
-    let owner = unsafe { &*owner };
-    // SAFETY: the compatibility identity remains valid through binding teardown.
-    unsafe { detach_bound_password(owner) };
-    // SAFETY: no callback is active while its native view detaches.
-    unsafe { *owner.native_identity.get() = ptr::null_mut() };
-}
-/// # Safety
-/// owner is live/exclusive, including its current context and password lease.
-unsafe fn detach_bound_password(owner: &OwnedTlsContext) {
-    // SAFETY: exclusive registration observation.
-    let identity = unsafe { *owner.native_identity.get() };
-    // SAFETY: observe which context this owner bound to the native identity.
-    let bound = unsafe { *owner.bound_password_context.get() };
-    // SAFETY: a synchronized field read; the owner retains the current SSL_CTX.
-    let ctx = unsafe { (*owner.fields.get()).context };
-    if !ctx.is_null() && ctx == bound && !identity.is_null()
-        // SAFETY: the live context may be inspected; preserve custom bindings.
-        && unsafe { crate::context::password_binding_matches(ctx, identity, native_password) }
-    {
-        // SAFETY: copied contexts retain this same password lease independently.
-        let password = unsafe { &*owner.context_password.get() };
-        if let Some(password) = password {
-            let slot = Arc::as_ptr(password).cast_mut().cast();
-            // SAFETY: every context owner keeps this stable slot alive after rebinding.
-            unsafe { crate::context::bind_password(ctx, slot, slot_password) };
-        }
-    }
-    // SAFETY: replacing/detaching this native binding ends this owner's tracking.
-    unsafe { *owner.bound_password_context.get() = ptr::null_mut() };
-}
 /// # Safety
 /// owner and native cache views are live/exclusive, and its logger does not throw.
 #[unsafe(no_mangle)]
@@ -291,24 +230,15 @@ pub unsafe extern "C" fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) 
     let mut config = unsafe { configuration(owner) };
     // SAFETY: the live Arc owns interior-mutable slots; no exclusive borrow survives callbacks.
     let state = unsafe { &*owner };
-    // SAFETY: short synchronized observation of the identity slot.
-    let identity = unsafe { *state.native_identity.get() };
     let slot = Arc::as_ptr(&state.strings[PASSPHRASE]);
     let retained_password = if config.passphrase.length == 0 {
         None
     } else {
         Some(Arc::clone(&state.strings[PASSPHRASE]))
     };
-    let password = if identity.is_null() {
-        PasswordBinding {
-            userdata: slot.cast_mut().cast(),
-            callback: slot_password,
-        }
-    } else {
-        PasswordBinding {
-            userdata: identity,
-            callback: native_password,
-        }
+    let password = PasswordBinding {
+        userdata: slot.cast_mut().cast(),
+        callback: slot_password,
     };
     // SAFETY: local configuration, stable string slots and a live password binding.
     let ctx = unsafe { create_context(&raw mut config, Some(password)) };
@@ -320,21 +250,10 @@ pub unsafe extern "C" fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) 
     let fields = unsafe { (*owner).fields.get() };
     // SAFETY: synchronized owner observation; the old OpenSSL reference is still owned.
     let previous = unsafe { (*fields).context };
-    // SAFETY: a replaced context may remain alive in a value copy; detach its native identity first.
-    unsafe { detach_bound_password(state) };
     // SAFETY: no callback is active; publish the resulting OpenSSL reference.
     unsafe { (*fields).context = ctx };
     // SAFETY: create's normalized protocol mask belongs to the same owner.
     unsafe { (*fields).protocols = config.protocols };
-    // SAFETY: remember only a native password binding actually installed by this create.
-    unsafe {
-        *state.bound_password_context.get() =
-            if !identity.is_null() && config.passphrase.length != 0 {
-                ctx
-            } else {
-                ptr::null_mut()
-            }
-    };
     if !previous.is_null() {
         // SAFETY: replacement releases the previous owned context reference.
         unsafe { SSL_CTX_free(previous) };
@@ -346,18 +265,16 @@ pub unsafe extern "C" fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) 
 /// `bool SSLContext::create()`, which initializes OpenSSL first.
 ///
 /// # Safety
-/// `context` is a live `SSLContext`, as for `swr_v1_tls_owner_create`.
+/// `context` is a live owner, as for `swr_v1_tls_owner_create`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole10SSLContext6createEv")
 )]
 #[must_use]
-pub unsafe extern "C" fn ssl_context_create(context: *const OwnedTlsPrepared) -> bool {
+pub unsafe extern "C" fn ssl_context_create(context: *const OwnedTlsContext) -> bool {
     crate::swoole_ssl_init();
     // SAFETY: as the caller promises.
-    let owner = unsafe { owner_of(context) };
-    // SAFETY: the context's live owner.
-    unsafe { swr_v1_tls_owner_create(owner) }
+    unsafe { swr_v1_tls_owner_create(context) }
 }
 /// Path access and assignment are one Rust operation. 1 access denied, otherwise
 /// `string_set`'s status; only cert(4), key(5) and client certificate(7) are accepted.
@@ -443,16 +360,8 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
     }
     // SAFETY: synchronized observation of the destination's previous owned reference.
     let previous = unsafe { (*destination.fields.get()).context };
-    if previous != fields.context {
-        // SAFETY: the old context's remaining copies must not retain this replaced native identity.
-        unsafe { detach_bound_password(destination) };
-    }
     // SAFETY: slots are stable and exclusive; publish the copied scalar values/reference.
     unsafe { *destination.fields.get() = fields };
-    // SAFETY: private ownership metadata copied without any native callback.
-    let bound = unsafe { *source.bound_password_context.get() };
-    // SAFETY: the destination is exclusive; its native identity itself is not copied.
-    unsafe { *destination.bound_password_context.get() = bound };
     if !previous.is_null() {
         // SAFETY: the destination releases its replaced OpenSSL reference.
         unsafe { SSL_CTX_free(previous) };
@@ -756,13 +665,21 @@ mod tests {
     extern "C" fn warning(_function: *const c_char, _message: *const c_char) {
         panic!("unexpected TLS warning");
     }
-    extern "C" fn custom(
-        _buffer: *mut c_char,
-        _capacity: c_int,
-        _verify: c_int,
-        _data: *mut c_void,
-    ) -> c_int {
-        0
+    unsafe extern "C" {
+        fn SSL_CTX_get_default_passwd_cb(
+            ctx: *mut SSL_CTX,
+        ) -> Option<extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int>;
+        fn SSL_CTX_get_default_passwd_cb_userdata(ctx: *mut SSL_CTX) -> *mut c_void;
+    }
+    /// Whether `ctx`'s password callback is `callback` with `data`.
+    unsafe fn password_binding_matches(
+        ctx: *mut SSL_CTX,
+        data: *mut c_void,
+        callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
+    ) -> bool {
+        let actual = unsafe { SSL_CTX_get_default_passwd_cb(ctx) };
+        let userdata = unsafe { SSL_CTX_get_default_passwd_cb_userdata(ctx) };
+        actual.is_some_and(|actual| std::ptr::fn_addr_eq(actual, callback)) && userdata == data
     }
     #[test]
     fn client_settings_write_the_owner() {
@@ -873,79 +790,7 @@ mod tests {
                 );
                 openssl_sys::SSL_free(ssl);
                 swoole_rs_reactor::swr_v1_socket_dealloc(socket);
-                swr_v1_tls_owner_detach(prepared.owner);
                 swr_v1_tls_owner_free(prepared.owner);
-            }
-        }
-    }
-    #[test]
-    fn source_replacement_detaches_older_shared_password_bindings() {
-        unsafe {
-            for replace_by_assignment in [false, true] {
-                let source = swr_v1_tls_owner_new(warning);
-                let copy = swr_v1_tls_owner_new(warning);
-                let mut native = [source.owner];
-                let identity = native.as_mut_ptr().cast();
-                swr_v1_tls_owner_bind(source.owner, identity);
-                assert_eq!(
-                    swoole_rs_corebase::swr_v1_core_string_set(
-                        source.strings[PASSPHRASE],
-                        c"before".as_ptr(),
-                        6
-                    ),
-                    0
-                );
-                assert!(swr_v1_tls_owner_create(source.owner));
-                let older = (*source.fields).context;
-                assert_eq!(swr_v1_tls_owner_assign(copy.owner, source.owner).status, 0);
-                if replace_by_assignment {
-                    let replacement = swr_v1_tls_owner_new(warning);
-                    assert_eq!(
-                        swoole_rs_corebase::swr_v1_core_string_set(
-                            replacement.strings[PASSPHRASE],
-                            c"after".as_ptr(),
-                            5
-                        ),
-                        0
-                    );
-                    assert!(swr_v1_tls_owner_create(replacement.owner));
-                    assert_eq!(
-                        swr_v1_tls_owner_assign(source.owner, replacement.owner).status,
-                        0
-                    );
-                    swr_v1_tls_owner_free(replacement.owner);
-                } else {
-                    assert_eq!(
-                        swoole_rs_corebase::swr_v1_core_string_set(
-                            source.strings[PASSPHRASE],
-                            c"after".as_ptr(),
-                            5
-                        ),
-                        0
-                    );
-                    assert!(swr_v1_tls_owner_create(source.owner));
-                    assert!(crate::context::password_binding_matches(
-                        (*source.fields).context,
-                        identity,
-                        native_password
-                    ));
-                }
-                let password = (*copy.owner).context_password.get();
-                let slot = Arc::as_ptr((&*password).as_ref().unwrap());
-                assert!(crate::context::password_binding_matches(
-                    older,
-                    slot.cast_mut().cast(),
-                    slot_password
-                ));
-                swr_v1_tls_owner_detach(source.owner);
-                swr_v1_tls_owner_free(source.owner);
-                let mut output = [0u8; 16];
-                assert_eq!(
-                    slot_password(output.as_mut_ptr().cast(), 16, 0, slot.cast_mut().cast()),
-                    5
-                );
-                assert_eq!(&output[..6], b"after\0");
-                swr_v1_tls_owner_free(copy.owner);
             }
         }
     }
@@ -954,8 +799,6 @@ mod tests {
         unsafe {
             let source = swr_v1_tls_owner_new(warning);
             let destination = swr_v1_tls_owner_new(warning);
-            let mut native = [source.owner];
-            swr_v1_tls_owner_bind(source.owner, native.as_mut_ptr().cast());
             assert_eq!(
                 swoole_rs_corebase::swr_v1_core_string_set(
                     source.strings[PASSPHRASE],
@@ -986,7 +829,6 @@ mod tests {
                 .to_bytes(),
                 b"source"
             );
-            swr_v1_tls_owner_detach(source.owner);
             swr_v1_tls_owner_free(source.owner);
             let password = (*destination.owner).context_password.get();
             let slot = Arc::as_ptr((&*password).as_ref().unwrap());
@@ -1000,18 +842,15 @@ mod tests {
                 openssl_sys::SSL_CTX_get_options(context),
                 openssl_sys::SSL_CTX_get_options((*destination.fields).context)
             );
-            swr_v1_tls_owner_detach(destination.owner);
             swr_v1_tls_owner_free(destination.owner);
         }
     }
     #[test]
-    fn shared_context_keeps_live_passphrase_after_native_view_detaches() {
+    fn shared_context_reads_the_live_passphrase_after_the_first_reference_goes() {
         unsafe {
             let prepared = swr_v1_tls_owner_new(warning);
             let owner = prepared.owner;
-            let mut native_header = [owner];
-            let identity = native_header.as_mut_ptr().cast();
-            swr_v1_tls_owner_bind(owner, identity);
+            let slot = prepared.strings[PASSPHRASE].cast_mut().cast();
             assert_eq!(
                 swoole_rs_corebase::swr_v1_core_string_set(
                     prepared.strings[PASSPHRASE],
@@ -1023,11 +862,7 @@ mod tests {
             assert!(swr_v1_tls_owner_create(owner));
             let ctx = (*prepared.fields).context;
             assert_eq!((*prepared.fields).protocols, 126);
-            assert!(crate::context::password_binding_matches(
-                ctx,
-                identity,
-                native_password
-            ));
+            assert!(password_binding_matches(ctx, slot, slot_password));
             for value in [b"swoole".as_slice(), b"a\0b", b"", b"1234567"] {
                 assert_eq!(
                     swoole_rs_corebase::swr_v1_core_string_set(
@@ -1052,20 +887,13 @@ mod tests {
                         expected[length] = 0;
                     }
                     assert_eq!(
-                        native_password(bytes.as_mut_ptr().cast(), capacity, 0, identity),
+                        slot_password(bytes.as_mut_ptr().cast(), capacity, 0, slot),
                         c_int::try_from(length).unwrap()
                     );
                     assert_eq!(bytes, expected);
                 }
             }
             let retained = swr_v1_tls_owner_clone(owner);
-            swr_v1_tls_owner_detach(owner);
-            let slot = prepared.strings[PASSPHRASE].cast_mut().cast();
-            assert!(crate::context::password_binding_matches(
-                ctx,
-                slot,
-                slot_password
-            ));
             swr_v1_tls_owner_free(owner);
             assert_eq!(
                 swoole_rs_corebase::swr_v1_core_string_set(
@@ -1079,31 +907,6 @@ mod tests {
             assert_eq!(slot_password(bytes.as_mut_ptr().cast(), 16, 0, slot), 8);
             assert_eq!(&bytes[..9], b"retained\0");
             swr_v1_tls_owner_free(retained);
-        }
-    }
-    #[test]
-    fn detach_preserves_a_custom_openssl_password_binding() {
-        unsafe {
-            let prepared = swr_v1_tls_owner_new(warning);
-            let owner = prepared.owner;
-            let mut native_header = [owner];
-            swr_v1_tls_owner_bind(owner, native_header.as_mut_ptr().cast());
-            assert_eq!(
-                swoole_rs_corebase::swr_v1_core_string_set(
-                    prepared.strings[PASSPHRASE],
-                    c"initial".as_ptr(),
-                    7
-                ),
-                0
-            );
-            assert!(swr_v1_tls_owner_create(owner));
-            let ctx = (*prepared.fields).context;
-            let mut token = 123;
-            let data = ptr::from_mut(&mut token).cast();
-            crate::context::bind_password(ctx, data, custom);
-            swr_v1_tls_owner_detach(owner);
-            assert!(crate::context::password_binding_matches(ctx, data, custom));
-            swr_v1_tls_owner_free(owner);
         }
     }
 }

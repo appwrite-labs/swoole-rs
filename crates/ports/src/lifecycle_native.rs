@@ -3,10 +3,10 @@
 //! Rust owners, the socket record and OpenSSL. Logs name the upstream function
 //! that wrote them.
 //!
-//! A port's TLS state (`PortConfig::tls`) holds what upstream's `ListenPort` kept
-//! in C++ containers: the `std::shared_ptr` holder of its own context, the SNI
-//! contexts (`sni_contexts`) and the DTLS sessions (`dtls_sessions`).
-//! `native/ports/tls.cc` builds and destroys the holders.
+//! `PortConfig::ssl_context` holds one reference to the port's own context's
+//! owner, and its TLS state (`PortConfig::tls`) what upstream's `ListenPort` kept
+//! in C++ containers: the SNI contexts (`sni_contexts`) and the DTLS sessions
+//! (`dtls_sessions`), each with a reference to its context.
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 use std::collections::HashMap;
@@ -25,9 +25,10 @@ use swoole_rs_reactor::{
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
-    DtlsSession, OwnedTlsContext, OwnedTlsFields, OwnedTlsPrepared, SslCreateFlag, SslVersion,
-    Text, has_files, set_text, ssl_context_create, swr_v1_tls_dtls_free, swr_v1_tls_dtls_init,
-    swr_v1_tls_dtls_new, swr_v1_tls_port_index,
+    DtlsSession, OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslVersion, Text, has_files,
+    set_text, ssl_context_create, swr_v1_tls_dtls_free, swr_v1_tls_dtls_init, swr_v1_tls_dtls_new,
+    swr_v1_tls_owner_clone, swr_v1_tls_owner_free, swr_v1_tls_owner_new, swr_v1_tls_owner_view,
+    swr_v1_tls_port_index, swr_v1_tls_warning,
 };
 
 use crate::lifecycle::{
@@ -43,35 +44,6 @@ use crate::lifecycle::{
 };
 use crate::methods::{FD_DGRAM_SERVER, FD_STREAM_SERVER, socket_free};
 
-#[cfg(not(test))]
-unsafe extern "C" {
-    fn swr_v1_ports_context_new(context: *mut *mut c_void) -> *mut c_void;
-    fn swr_v1_ports_context_free(held: *mut c_void);
-    fn swr_v1_ports_context_share(held: *mut c_void) -> *mut c_void;
-}
-
-/// Tests link no C++: a holder is a boxed prepared owner, all Rust reads of a context.
-#[cfg(test)]
-unsafe fn swr_v1_ports_context_new(context: *mut *mut c_void) -> *mut c_void {
-    let prepared = swoole_rs_tls::swr_v1_tls_owner_new(swoole_rs_tls::swr_v1_tls_warning);
-    let held = Box::into_raw(Box::new(prepared)).cast();
-    unsafe { *context = held };
-    held
-}
-
-#[cfg(test)]
-unsafe fn swr_v1_ports_context_free(held: *mut c_void) {
-    let prepared = unsafe { Box::from_raw(held.cast::<OwnedTlsPrepared>()) };
-    unsafe { swoole_rs_tls::swr_v1_tls_owner_free(prepared.owner) };
-}
-
-/// A test holder is its own context: tests share nothing native.
-#[cfg(test)]
-unsafe fn swr_v1_ports_context_share(_: *mut c_void) -> *mut c_void {
-    let mut context = ptr::null_mut();
-    unsafe { swr_v1_ports_context_new(&raw mut context) }
-}
-
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, `SW_ERROR_WRONG_OPERATION` and
 /// `SW_ERROR_SSL_CREATE_SESSION_FAILED`.
 const LOG_WARNING: c_int = 4;
@@ -81,20 +53,17 @@ const SSL_CREATE_SESSION_FAILED: c_int = 1020;
 
 /// What `ListenPort` kept in C++ containers.
 struct TlsState {
-    /// The `std::shared_ptr` holding `PortConfig::ssl_context`, or null.
-    held: *mut c_void,
-    /// `sni_contexts`, in insertion order: the name (NUL-terminated), its
-    /// context and its holder.
-    sni: Vec<(Vec<u8>, *mut c_void, *mut c_void)>,
-    /// `dtls_sessions` by fd: each session and the holder of the context it shares.
-    dtls: HashMap<c_int, (*mut DtlsSession, *mut c_void)>,
+    /// `sni_contexts`, in insertion order: the name (NUL-terminated) and a
+    /// reference to its context.
+    sni: Vec<(Vec<u8>, *const OwnedTlsContext)>,
+    /// `dtls_sessions` by fd: each session and its reference to the port's context.
+    dtls: HashMap<c_int, (*mut DtlsSession, *const OwnedTlsContext)>,
 }
 
 /// The port's TLS state, made on first use.
 fn state(config: &mut PortConfig) -> &mut TlsState {
     if config.tls.is_null() {
         let state = TlsState {
-            held: ptr::null_mut(),
             sni: Vec::new(),
             dtls: HashMap::new(),
         };
@@ -113,7 +82,7 @@ fn sni_count(config: &PortConfig) -> usize {
     unsafe { &*config.tls.cast::<TlsState>() }.sni.len()
 }
 
-/// Releases the port's TLS state: its context's and SNI contexts' holders.
+/// Releases the port's context and its TLS state with the SNI contexts.
 ///
 /// # Safety
 /// `config` is a live port record that nothing else uses.
@@ -121,47 +90,62 @@ fn sni_count(config: &PortConfig) -> usize {
 pub unsafe extern "C" fn swr_v1_ports_tls_free(config: *mut PortConfig) {
     // SAFETY: as the caller guarantees.
     let config = unsafe { &mut *config };
+    // SAFETY: the port's reference (or null), released once.
+    unsafe { swr_v1_tls_owner_free(core::mem::replace(&mut config.ssl_context, ptr::null())) };
     if config.tls.is_null() {
         return;
     }
     // SAFETY: the port's own box, taken once.
     let state = unsafe { Box::from_raw(config.tls.cast::<TlsState>()) };
     config.tls = ptr::null_mut();
-    config.ssl_context = ptr::null_mut();
-    for held in core::iter::once(state.held).chain(state.sni.iter().map(|entry| entry.2)) {
-        if !held.is_null() {
-            // SAFETY: a holder the state owned, released once.
-            unsafe { swr_v1_ports_context_free(held) };
-        }
+    for (_, context) in state.sni {
+        // SAFETY: a reference the state held, released once.
+        unsafe { swr_v1_tls_owner_free(context) };
     }
 }
 
-/// `ListenPort::ssl_add_sni_cert(name, ctx)`: creates the context (both files
-/// required) and stores it under `name` unless the name is taken. Takes `held`,
-/// the holder of `context`.
+/// `ListenPort::dup_ssl_context()`: a new context with the port's settings, and
+/// one reference to it.
 ///
 /// # Safety
-/// `port` is a live `ListenPort`, `name` covers `length` bytes, and `held` is a
-/// new holder from `native/ports/tls.cc` of the live `context`.
+/// `port` is a live `ListenPort` with a context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_ports_context_dup(port: *const c_void) -> *const OwnedTlsContext {
+    // SAFETY: as the caller guarantees; only read.
+    let source = unsafe { port_config::of(port.cast_mut()) }.ssl_context;
+    let copy = swr_v1_tls_owner_new(swr_v1_tls_warning).owner;
+    // SAFETY: two live owners; no native view caches either's strings.
+    if unsafe { swoole_rs_tls::swr_v1_tls_owner_assign(copy, source) }.status != 0 {
+        std::process::abort();
+    }
+    copy
+}
+
+/// `ListenPort::ssl_add_sni_cert(name, ctx)`: creates the context (both files
+/// required) and stores it under `name` unless the name is taken. Takes the
+/// caller's reference to `context`.
+///
+/// # Safety
+/// `port` is a live `ListenPort`, `name` covers `length` bytes, and `context` is
+/// a live owner the caller holds a reference to.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_ports_sni_add(
     port: *mut c_void,
     name: *const c_char,
     length: usize,
-    held: *mut c_void,
-    context: *mut c_void,
+    context: *const OwnedTlsContext,
 ) -> bool {
     // SAFETY: as the caller guarantees.
     let mut key = unsafe { core::slice::from_raw_parts(name.cast::<u8>(), length) }.to_vec();
     key.push(0);
     let mut run = Run::new(port);
     run.target = context;
-    run.sni = Some((key, held));
+    run.sni = Some(key);
     // SAFETY: as the caller guarantees.
     let added = unsafe { run.run(RUN_SNI_ADD) } != 0;
-    if let Some((_, held)) = run.sni {
-        // SAFETY: not stored, so still the caller's holder, released once.
-        unsafe { swr_v1_ports_context_free(held) };
+    if run.sni.is_some() {
+        // SAFETY: not stored, so still the caller's reference, released once.
+        unsafe { swr_v1_tls_owner_free(context) };
     }
     added
 }
@@ -188,11 +172,11 @@ pub unsafe extern "C" fn swr_v1_ports_dtls_session(
 pub unsafe extern "C" fn swr_v1_ports_dtls_free(config: *mut PortConfig, fd: c_int) {
     // SAFETY: as the caller guarantees.
     let dtls = &mut state(unsafe { &mut *config }).dtls;
-    if let Some((session, held)) = dtls.remove(&fd) {
-        // SAFETY: the session and holder the port owned, released once.
+    if let Some((session, context)) = dtls.remove(&fd) {
+        // SAFETY: the session and reference the port owned, released once.
         unsafe { swr_v1_tls_dtls_free(session) };
         // SAFETY: as above.
-        unsafe { swr_v1_ports_context_free(held) };
+        unsafe { swr_v1_tls_owner_free(context) };
     }
 }
 
@@ -217,33 +201,23 @@ pub unsafe extern "C" fn swr_v1_ports_dtls_create(
         unsafe { swr_v1_tls_dtls_free(session) };
         return ptr::null_mut();
     }
-    // SAFETY: the port's live holder.
-    let held = unsafe { swr_v1_ports_context_share(state.held) };
+    // SAFETY: the port's live context.
+    let shared = unsafe { swr_v1_tls_owner_clone(context) };
     // SAFETY: as the caller guarantees.
     let fd = unsafe { (*sock).fd };
-    state.dtls.insert(fd, (session, held));
+    state.dtls.insert(fd, (session, shared));
     session
 }
 
-/// The fields of `context`'s Rust owner.
+/// The fields of `context`.
 ///
 /// # Safety
-/// `context` is a live `SSLContext`, which begins with its prepared owner, and
-/// nothing else uses its fields while the borrow lasts.
-unsafe fn fields<'a>(context: *mut c_void) -> &'a mut OwnedTlsFields {
+/// `context` is a live owner, and nothing else uses its fields while the borrow lasts.
+unsafe fn fields<'a>(context: *const OwnedTlsContext) -> &'a mut OwnedTlsFields {
     // SAFETY: as the caller guarantees.
-    let prepared = unsafe { &*context.cast::<OwnedTlsPrepared>() };
-    // SAFETY: the owner's fields live as long as the context.
-    unsafe { &mut *prepared.fields }
-}
-
-/// `context`'s Rust owner.
-///
-/// # Safety
-/// `context` is a live `SSLContext`.
-unsafe fn owner(context: *mut c_void) -> *const OwnedTlsContext {
-    // SAFETY: as the caller guarantees.
-    unsafe { (*context.cast::<OwnedTlsPrepared>()).owner }
+    let fields = unsafe { swr_v1_tls_owner_view(context) }.fields;
+    // SAFETY: the owner's fields live as long as the reference.
+    unsafe { &mut *fields }
 }
 
 /// A native `int`, as the `u64` [`crate::lifecycle`] reads back signed.
@@ -256,13 +230,13 @@ pub(crate) struct Run {
     /// The `ListenPort`; for the SNI callback, the one the `SSL` names.
     pub(crate) port: *mut c_void,
     /// The `SSLContext` `ssl_context_create` works on.
-    pub(crate) target: *mut c_void,
+    pub(crate) target: *const OwnedTlsContext,
     pub(crate) allow_empty_cert: bool,
     pub(crate) sock: *mut SocketRecord,
     pub(crate) ssl: *mut SSL,
     pub(crate) fd: c_int,
-    /// The SNI name and holder `RUN_SNI_ADD` stores; taken once stored.
-    sni: Option<(Vec<u8>, *mut c_void)>,
+    /// The SNI name `RUN_SNI_ADD` stores `target` under; taken once stored.
+    sni: Option<Vec<u8>>,
     so_type: c_int,
     acceptconn: c_int,
     /// The SNI entry `OP_SNI_NEXT` reached.
@@ -273,7 +247,7 @@ impl Run {
     pub(crate) fn new(port: *mut c_void) -> Self {
         Self {
             port,
-            target: ptr::null_mut(),
+            target: ptr::null(),
             allow_empty_cert: false,
             sock: ptr::null_mut(),
             ssl: ptr::null_mut(),
@@ -308,7 +282,7 @@ impl Run {
     }
 
     /// The port's own context.
-    fn context(&self) -> *mut c_void {
+    fn context(&self) -> *const OwnedTlsContext {
         self.config().ssl_context
     }
 }
@@ -344,9 +318,7 @@ unsafe extern "C" fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
 /// Whether the run's target context has a certificate file and a key file.
 fn target_files(run: &Run) -> (bool, bool) {
     // SAFETY: the run's live target context.
-    let owner = unsafe { owner(run.target) };
-    // SAFETY: its live owner.
-    unsafe { has_files(owner) }
+    unsafe { has_files(run.target) }
 }
 
 /// `ssl_context_create`'s, `ssl_add_sni_cert`'s and `ssl_create`'s ops.
@@ -374,7 +346,7 @@ fn create_op(run: &mut Run, op: u32) -> u64 {
             0
         }
         // SAFETY: as above.
-        OP_CREATE => u64::from(unsafe { ssl_context_create(run.target.cast()) }),
+        OP_CREATE => u64::from(unsafe { ssl_context_create(run.target) }),
         OP_WARN_CREATE => {
             log::warning(
                 c"ListenPort::ssl_context_create",
@@ -384,11 +356,9 @@ fn create_op(run: &mut Run, op: u32) -> u64 {
         }
         OP_SNI_EMPLACE => {
             let state = state(run.config());
-            let fresh = |entry: &mut (Vec<u8>, *mut c_void)| {
-                !state.sni.iter().any(|stored| stored.0 == entry.0)
-            };
-            if let Some((name, held)) = run.sni.take_if(fresh) {
-                state.sni.push((name, run.target, held));
+            let fresh = |name: &mut Vec<u8>| !state.sni.iter().any(|stored| stored.0 == *name);
+            if let Some(name) = run.sni.take_if(fresh) {
+                state.sni.push((name, run.target));
             }
             0
         }
@@ -433,16 +403,10 @@ fn create_op(run: &mut Run, op: u32) -> u64 {
 fn context_op(run: &mut Run, op: u32, arg: u64) -> u64 {
     match op {
         OP_CONTEXT_NEW => {
-            let config = run.config();
-            let mut context = ptr::null_mut();
-            // SAFETY: a fresh holder, written to the out slot.
-            let held = unsafe { swr_v1_ports_context_new(&raw mut context) };
-            let previous = core::mem::replace(&mut state(config).held, held);
-            config.ssl_context = context;
-            if !previous.is_null() {
-                // SAFETY: the replaced holder, released once.
-                unsafe { swr_v1_ports_context_free(previous) };
-            }
+            let context = swr_v1_tls_owner_new(swr_v1_tls_warning).owner;
+            let previous = core::mem::replace(&mut run.config().ssl_context, context);
+            // SAFETY: the replaced reference (or null), released once.
+            unsafe { swr_v1_tls_owner_free(previous) };
             0
         }
         OP_CONTEXT_FLAG => {
@@ -458,9 +422,8 @@ fn context_op(run: &mut Run, op: u32, arg: u64) -> u64 {
             0
         }
         OP_CONTEXT_CIPHERS => {
-            // SAFETY: the port's live context.
-            let owner = unsafe { owner(run.context()) };
-            // SAFETY: its live owner, which only this run writes.
+            let owner = run.context();
+            // SAFETY: the port's live context, which only this run writes.
             unsafe { set_text(owner, Text::Ciphers, SW_SSL_CIPHER_LIST.as_bytes()) };
             // SAFETY: as above.
             unsafe { set_text(owner, Text::EcdhCurve, SW_SSL_ECDH_CURVE.as_bytes()) };
@@ -501,7 +464,7 @@ fn context_op(run: &mut Run, op: u32, arg: u64) -> u64 {
         }
         OP_SNI_SELECT => {
             let entry = run.entry.unwrap_or_default();
-            if let Some(&(_, context, _)) = state(run.config()).sni.get(entry) {
+            if let Some(&(_, context)) = state(run.config()).sni.get(entry) {
                 // SAFETY: a stored live context.
                 let ctx = unsafe { fields(context) }.context;
                 // SAFETY: the handshake's live SSL and that context's SSL_CTX.
@@ -545,11 +508,9 @@ fn socket_op(run: &mut Run, op: u32, arg: u64) -> u64 {
         }
         OP_HAS_CONTEXT => u64::from(!run.context().is_null()),
         OP_RESET_CONTEXT => {
-            let config = run.config();
-            let held = core::mem::replace(&mut state(config).held, ptr::null_mut());
-            config.ssl_context = ptr::null_mut();
-            // SAFETY: the port's holder, released once.
-            unsafe { swr_v1_ports_context_free(held) };
+            let context = core::mem::replace(&mut run.config().ssl_context, ptr::null());
+            // SAFETY: the port's reference, released once.
+            unsafe { swr_v1_tls_owner_free(context) };
             0
         }
         OP_DELETE_DTLS => {

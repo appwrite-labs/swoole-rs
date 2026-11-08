@@ -99,7 +99,7 @@ pub unsafe extern "C" fn ssl_create(port: *mut c_void, sock: *mut SocketRecord) 
 )]
 pub unsafe extern "C" fn ssl_context_create(
     port: *const c_void,
-    context: *mut c_void,
+    context: *const swoole_rs_tls::OwnedTlsContext,
     allow_empty_cert: bool,
 ) -> bool {
     let build = |run: &mut Run| {
@@ -754,7 +754,7 @@ mod tests {
         assert!(unsafe { ssl_context_init(at) }, "a stream port's context");
         let context = config.ssl_context;
         assert!(!context.is_null(), "published");
-        let fields = unsafe { *(*context.cast::<swoole_rs_tls::OwnedTlsPrepared>()).fields };
+        let fields = unsafe { swoole_rs_tls::owner_fields(context) };
         assert_eq!(
             (
                 fields.prefer_server_ciphers,

@@ -27,7 +27,7 @@ so `hooks-system-rust` builds and runs it over the hybrid's libswoole.so. A
 `swoole_client_*` C calls (the ones crates/phpclients makes); its methods are the
 `swr_v1_clients_*` exports they forward to, and `enable_ssl_encrypt`, `ssl_verify`
 and the `Socket` TLS reads are called under their upstream symbols.
-`set_tls_host_name` assigns a fresh `SSLContext` owner with the name set.
+`set_tls_host_name` assigns a fresh `SSLContext` with the name set.
 `SyncClient` and `AsyncClient` are `Client`'s `created`/`connected` bookkeeping.
 `swoole_timer_after` gets a libstdc++ `std::function` laid out over the Rust
 closure. The `Server` fixtures are std servers forked after binding (an echo, the

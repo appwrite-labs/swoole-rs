@@ -149,7 +149,7 @@ int swr_case_ssl_server(Server **out, int mode, int port_number, const char *cer
     port->open_http_protocol = 1;
     port->set_ssl_cert_file(cert);
     port->set_ssl_key_file(key);
-    port->ssl_context->http = 1;
+    port->ssl_context->fields().http = 1;
     port->ssl_init();
     int created = serv->create();
     serv->onStart = on_start;
