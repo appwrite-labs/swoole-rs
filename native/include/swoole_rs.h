@@ -23,16 +23,9 @@ uint64_t swr_v1_feature_bits(void);
 typedef uint64_t (*swr_v1_server_call)(void *context, uint32_t op, uint64_t arg);
 int64_t swr_v1_server_run(uint32_t operation, uint64_t arg, void *context, swr_v1_server_call call);
 struct swr_v1_server_state;
-/* Typed capture of ordinary C++ exceptions. Native retains the exception payload;
- * Rust stops at the first nonzero fault and returns before native rethrow.
- * This does not transport Zend bailout, pthread_exit or cancellation unwinds. */
-typedef struct ServerReply { uint64_t value; uint32_t fault; } ServerReply;
-typedef ServerReply (*ServerGuardedCall)(void *context, uint32_t op, uint64_t arg);
-/* master: native/integration/server.cc's ServerRustContext, whose records Rust reads (crates/server/src/master_ops.rs). */
-ServerReply swr_v1_server_run_guarded(uint32_t operation, uint64_t arg, void *context,
-    ServerGuardedCall call, const struct swr_v1_server_state *state, void *master);
-/* native/integration/server.cc's guarded runner, which the Server methods crates/server/src/server_methods.rs defines call. */
-void swr_v1_server_set_native(int64_t (*run)(uint32_t operation, uint64_t arg, void *context));
+/* One Server method's operation over native/integration/server.cc's ServerRustContext,
+ * whose records Rust reads (crates/server/src/server_methods.rs). */
+int64_t swr_v1_server_method(uint32_t op, uint64_t arg, void *ctx);
 
 
 enum {
@@ -240,15 +233,15 @@ enum {
 enum {
     SWR_SERVER_RUN_ST_ADD_COMMAND = 300, SWR_SERVER_RUN_ST_DOCUMENT_ROOT = 302,
     SWR_SERVER_RUN_ST_STORE_PIPE_FD, SWR_SERVER_RUN_ST_INIT_PIPE_SOCKETS, SWR_SERVER_RUN_ST_RESET_COUNTER,
-    SWR_SERVER_RUN_ST_ABORT, SWR_SERVER_RUN_ST_FOREACH, SWR_SERVER_RUN_ST_SEND, SWR_SERVER_RUN_ST_CLEAR_TIMER, SWR_SERVER_RUN_ST_COMMAND = 312,
+    SWR_SERVER_RUN_ST_ABORT, SWR_SERVER_RUN_ST_SEND = 308, SWR_SERVER_RUN_ST_CLEAR_TIMER, SWR_SERVER_RUN_ST_COMMAND = 312,
     SWR_SERVER_OP_ST_CMD_SEND = 1000, SWR_SERVER_OP_ST_PIPE_COMMAND_NEW,
     SWR_SERVER_OP_ST_ROOT_PATH = 1013, SWR_SERVER_OP_ST_SET_ROOT,
     SWR_SERVER_OP_ST_PIPE_FD, SWR_SERVER_OP_ST_PIPE_BIND, SWR_SERVER_OP_ST_INIT_PIPE,
     SWR_SERVER_OP_ST_W_CONCURRENCY, SWR_SERVER_OP_ST_W_CONCURRENCY_CAS, SWR_SERVER_OP_ST_GS_CONCURRENCY_SUB,
     SWR_SERVER_OP_ST_GS_CONCURRENCY, SWR_SERVER_OP_ST_GS_CONCURRENCY_ZERO, SWR_SERVER_OP_ST_W_RESET_COUNTS,
     SWR_SERVER_OP_ST_ABORT_COUNT, SWR_SERVER_OP_ST_SOCK_OBJECT, SWR_SERVER_OP_ST_REACTOR_CLOSE,
-    SWR_SERVER_OP_ST_SOCK_FREE, SWR_SERVER_OP_ST_VALID_CONN, SWR_SERVER_OP_ST_VISIT,
-    SWR_SERVER_OP_ST_FINISH, SWR_SERVER_OP_ST_TIMER = 1032, SWR_SERVER_OP_ST_TIMER_DEL,
+    SWR_SERVER_OP_ST_SOCK_FREE,
+    SWR_SERVER_OP_ST_FINISH = 1030, SWR_SERVER_OP_ST_TIMER = 1032, SWR_SERVER_OP_ST_TIMER_DEL,
     SWR_SERVER_LOG_ST_ROOT_TOO_LONG = 1102,
     SWR_SERVER_LOG_ST_ROOT_MISSING,
 };

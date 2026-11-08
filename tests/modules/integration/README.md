@@ -41,16 +41,3 @@ lane's `abi` phase uses it, and the integrate lane runs every test.
 
 `zts.py` and `zts_originals.py` are not phases: they need a ZTS PHP, which no
 CI lane has.
-
-## Captured Server effects
-
-`server_faults.py --archive <build>/rust-prefix/lib/libswoole_rs_ffi.a --output R`
-(`server-native-faults`) links the actual optimized archive, the build's own native
-objects and its copied native exception helper. C++14/17 runs cover typed and non-standard exceptions, nested
-Server operations, and exact effect prefixes after every injected failure in
-create/destroy, both with native facts and with the canonical Rust configuration
-records. The latter asserts those facts do not fall back through the native
-callback. Native ASan/UBSan runs are separate; Rust instrumentation is not
-claimed. Linux additionally wraps `free` to prove the production Rust task-path
-String is released before the captured exception is rethrown. Other hosts report
-that drop observation as unmeasured.

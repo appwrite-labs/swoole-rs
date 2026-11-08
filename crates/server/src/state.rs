@@ -5,12 +5,12 @@
 use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
     FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_ROOT_MISSING,
-    LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MINFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING,
+    LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING,
     OP_ST_ABORT_COUNT, OP_ST_FINISH, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB,
     OP_ST_GS_CONCURRENCY_ZERO, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
     OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_SOCK_FREE, OP_ST_SOCK_OBJECT,
-    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_VALID_CONN, OP_ST_VISIT, OP_ST_W_CONCURRENCY,
-    OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE,
+    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS,
+    OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE,
 };
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
 #[cfg(test)]
@@ -606,17 +606,6 @@ fn abort_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
     Ok(())
 }
 
-/// `Server::foreach_connection`: each valid connection from the lowest to the highest fd.
-fn foreach_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
-    let (min, max) = (h.signed(OP_MINFD)?, h.signed(OP_MAXFD)?);
-    for fd in min..=max {
-        if h.op(OP_ST_VALID_CONN, fd.cast_unsigned())? != 0 {
-            h.op(OP_ST_VISIT, fd.cast_unsigned())?;
-        }
-    }
-    Ok(())
-}
-
 /// `Server::send`: through the factory, then the server's, port's and worker's counts.
 /// A base or thread mode worker that owns the session sends it here, as
 /// `BaseFactory::finish` would, without a second trip through native code.
@@ -659,8 +648,7 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
         RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT,
-        RUN_ST_FOREACH, RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_RESET_COUNTER, RUN_ST_SEND,
-        RUN_ST_STORE_PIPE_FD,
+        RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_RESET_COUNTER, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
     };
     Ok(Some(match operation {
         RUN_ST_ADD_COMMAND => {
@@ -700,10 +688,6 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
         }
         RUN_ST_ABORT => {
             abort_connection(h)?;
-            0
-        }
-        RUN_ST_FOREACH => {
-            foreach_connection(h)?;
             0
         }
         RUN_ST_SEND => i64::from(send(
@@ -831,11 +815,6 @@ mod tests {
         let mut s = Script::default();
         abort_connection(&mut s).unwrap();
         assert_eq!(s.called(OP_ST_SOCK_FREE), 1);
-
-        let mut s =
-            Script::with(&[(OP_MINFD, 3), (OP_MAXFD, 6)]).queue(OP_ST_VALID_CONN, &[1, 0, 1, 1]);
-        foreach_connection(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_VISIT), vec![3, 5, 6]);
 
         let data = four_bytes();
         let process = |facts: &[(u32, u64)]| {

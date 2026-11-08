@@ -60,15 +60,20 @@ static uint64_t admin_memory(Server *serv, void *out) {
 }
 
 static void admin_connections(Server *serv, std::vector<void *> &list) {
-    serv->foreach_connection([serv, &list](Connection *conn) {
+    // Server::foreach_connection: each valid connection, max_fd read afresh.
+    for (int fd = serv->gs->min_fd; fd <= serv->gs->max_fd; fd++) {
+        Connection *conn = serv->get_connection(fd);
+        if (!conn || !conn->socket || !conn->active || conn->socket->fd_type != SW_FD_SESSION) {
+            continue;
+        }
         if (serv->is_process_mode() && conn->reactor_id != SwooleTG.id) {
-            return;
+            continue;
         }
         if (serv->is_base_mode() && sw_worker() && conn->reactor_id != sw_worker()->get_id()) {
-            return;
+            continue;
         }
         list.push_back(conn);
-    });
+    }
 }
 
 static uint64_t admin_call(void *context, uint32_t op, uint64_t arg, void *out) {
