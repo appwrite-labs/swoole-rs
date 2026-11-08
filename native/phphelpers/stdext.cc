@@ -3,7 +3,6 @@
 // are private to zend_execute.c, and PCRE's cache, each inside zend_try.
 #include "php_swoole_private.h"
 #ifdef SW_STDEXT
-#include "php_swoole_stdext.h"
 #include "php_swoole_cxx.h"
 #include "swoole_rs_phphelpers.h"
 SW_EXTERN_C_BEGIN
@@ -79,5 +78,4 @@ extern "C" uint8_t swr_cpp_phpstdext_pcre_match(void *entry, zend_string *subjec
     } zend_catch { bailed = 1; } zend_end_try();
     return bailed;
 }
-void php_swoole_stdext_minit(int module_number) { swr_v1_phpstdext_minit(); }
 #endif

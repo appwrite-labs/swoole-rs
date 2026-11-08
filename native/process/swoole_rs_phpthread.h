@@ -29,6 +29,9 @@ struct _zend_class_entry *swr_v1_phpthread_barrier_minit(void);
  * RINIT kept (exit(200) while other threads still run). */
 void swr_v1_phpthread_rinit(void);
 void swr_v1_phpthread_rshutdown(void);
+/* exit() in a thread (upstream php_swoole_thread_bailout): unwinds to the nearest
+ * native scope, else out of the coroutine, else out of the thread's script. */
+void swr_v1_phpthread_bailout(void);
 /* A PHP thread's body: `file` as the primary script with `argv` (an array
  * handle the thread releases, or null) as its arguments; entered(context) first,
  * left(context, exit status) once the request is over. */

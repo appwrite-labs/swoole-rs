@@ -478,7 +478,7 @@ typedef struct swr_v1_phpswoole_ops {
     /* Null disables a family; arrays have 23/35/36 entries. FTP SSL alone may be null. */
     const swr_php_function *stdext, *ssh2, *ftp;
     int64_t (*socket_bound_cid)(void);
-    /* php_swoole_thread_bailout(), or nothing without SW_THREAD. */
+    /* swr_v1_phpthread_bailout(), or nothing without SW_THREAD. */
     void (*thread_bailout)(void);
 } swr_v1_phpswoole_ops;
 struct _zend_module_entry *swr_v1_phpswoole_module(const swr_v1_phpswoole_ops *ops);

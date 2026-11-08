@@ -141,7 +141,7 @@ pub struct HostOps {
     ftp: *const Option<Handler>,
     /// `Coroutine::get_socket_bound_cid()`.
     socket_bound_cid: unsafe extern "C" fn() -> i64,
-    /// `php_swoole_thread_bailout()` (nothing without `SW_THREAD`).
+    /// `swr_v1_phpthread_bailout()` (nothing without `SW_THREAD`).
     thread_bailout: unsafe extern "C" fn(),
 }
 
