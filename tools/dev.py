@@ -322,27 +322,9 @@ def plan(args, reports):
         phase = 'ports-callback-property'
         script(phase, 'tests/modules/ports/callback_property.py', '--source', ROOT / 'target/upstream/src', '--sanitize',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(phase))
-    if 'coroutine' in modules and integrate:
-        native_options = ['--php-prefix', subprocess.check_output(['php-config', '--prefix'], text=True).strip()] if sys.platform == 'darwin' else []
-        native_options += ['--dns-requests']
-        if 'hooks' in modules:
-            native_options += ['--socket-scopes']
-        if getattr(args, 'gtest_prefix', None):
-            native_options += ['--gtest-prefix', args.gtest_prefix]
-        script('coroutine-native-originals', 'tests/modules/coroutine/core.py', '--source', ROOT / 'target/upstream/src',
-               '--config', manifest.parent / 'src/config.h',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               '--build-root', ROOT / 'target/native-originals/coroutine', '--jobs', args.jobs,
-               '--sanitize', *native_options, *report('coroutine-native-originals'))
     if 'ossupport' in modules:
         script('ossupport-async-file-owner', 'tests/modules/ossupport/async_file.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-async-file-owner'))
-        if integrate and sys.platform == 'linux':
-            script('ossupport-async-file-originals', 'tests/modules/coroutine/core.py', '--async-file',
-                   '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                   '--build-root', ROOT / 'target/native-originals/async-file', '--gtest-prefix', '/usr',
-                   '--jobs', args.jobs, *report('ossupport-async-file-originals'))
         script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-file-owner'))
     if 'corebase' in modules:
@@ -380,10 +362,12 @@ def plan(args, reports):
                    *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
                    *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]], *report(name))
     if integrate and 'hooks' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/coroutine/{system,hook,socket}.cpp, network/client.cpp and network/{dns,address}.cpp,
-        # ported to Rust over the hybrid's libswoole.so.
+        # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp, network/client.cpp and
+        # network/{dns,address}.cpp, ported to Rust over the hybrid's libswoole.so, and the repo-owned
+        # C++ witnesses in its fixture.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--fixture', ROOT / 'tests/modules/hooks/system/fixture.cc',
                '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
                '--exclude', 'coroutine_system.getaddrinfo=' + NETWORK, '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
                '--exclude', "coroutine_hook.sendmsg_and_recvmsg=its child reads the parent's freed stack when the parent's close "
@@ -847,7 +831,6 @@ def main():
     parser.add_argument('--ccache', type=Path, default=shutil.which('ccache'), help='Shared compiler cache executable, detected by default')
     parser.add_argument('--no-ccache', dest='ccache', action='store_const', const=None)
     parser.add_argument('--native-build-root', type=Path, help='Private location for native hybrid worlds; space guard remains enforced')
-    parser.add_argument('--gtest-prefix', type=Path, help='Read-only C++14-compatible GoogleTest prefix for native originals')
     parser.add_argument('--php-extension', action='append', default=[])
     parser.add_argument('--hypothesis', help='What this experiment should establish')
     parser.add_argument('--expect', help='Observable outcome that supports the hypothesis')

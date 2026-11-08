@@ -37,7 +37,7 @@ const SW_OK: c_int = 0;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_ERROR_CO_SOCKET_CLOSE_WAIT: c_int = 10019;
 /// `struct stat`'s `st_size` offset, in 8-byte words, on x86_64 and aarch64 Linux.
-const ST_SIZE: usize = 6;
+pub(super) const ST_SIZE: usize = 6;
 /// `struct dirent`'s `d_name` offset on Linux.
 const D_NAME: usize = 19;
 
@@ -50,7 +50,7 @@ const TEST_JPG_FILE: &str = "/examples/test.jpg";
 
 /// Large enough for glibc's `struct stat` and `struct statvfs`; zeroed, so
 /// comparing whole buffers compares the structs.
-type Stat = [u64; 32];
+pub(super) type Stat = [u64; 32];
 
 #[repr(C)]
 struct PollFd {
@@ -132,10 +132,10 @@ struct CoSocket {
 #[link(name = "swoole")]
 unsafe extern "C" {
     fn swoole_coroutine_sleep(sec: c_int);
-    fn swoole_coroutine_usleep(usec: c_int);
+    pub(super) fn swoole_coroutine_usleep(usec: c_int);
     fn swoole_coroutine_access(path: *const c_char, mode: c_int) -> c_int;
-    fn swoole_coroutine_lseek(fd: c_int, offset: i64, whence: c_int) -> i64;
-    fn swoole_coroutine_fstat(fd: c_int, buf: *mut Stat) -> c_int;
+    pub(super) fn swoole_coroutine_lseek(fd: c_int, offset: i64, whence: c_int) -> i64;
+    pub(super) fn swoole_coroutine_fstat(fd: c_int, buf: *mut Stat) -> c_int;
     fn swoole_coroutine_stat(path: *const c_char, buf: *mut Stat) -> c_int;
     fn swoole_coroutine_lstat(path: *const c_char, buf: *mut Stat) -> c_int;
     fn swoole_coroutine_readlink(path: *const c_char, buf: *mut c_char, len: usize) -> isize;
@@ -144,9 +144,9 @@ unsafe extern "C" {
     fn swoole_coroutine_rmdir(path: *const c_char) -> c_int;
     fn swoole_coroutine_rename(from: *const c_char, to: *const c_char) -> c_int;
     fn swoole_coroutine_statvfs(path: *const c_char, buf: *mut Stat) -> c_int;
-    fn swoole_coroutine_fsync(fd: c_int) -> c_int;
+    pub(super) fn swoole_coroutine_fsync(fd: c_int) -> c_int;
     fn swoole_coroutine_fdatasync(fd: c_int) -> c_int;
-    fn swoole_coroutine_ftruncate(fd: c_int, length: i64) -> c_int;
+    pub(super) fn swoole_coroutine_ftruncate(fd: c_int, length: i64) -> c_int;
     fn swoole_coroutine_fopen(path: *const c_char, mode: *const c_char) -> *mut c_void;
     fn swoole_coroutine_fdopen(fd: c_int, mode: *const c_char) -> *mut c_void;
     fn swoole_coroutine_freopen(

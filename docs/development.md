@@ -34,8 +34,6 @@ python3 tools/dev.py integrate --all-modules   # every module's gates; used by C
 - `--ccache PATH`, `--fix-halfclose`, `--match-child-php` and the optional
   switches from [hybrid build](hybrid-build.md) are forwarded to the builder or
   runners.
-- `--gtest-prefix /abs/prefix` points native coroutine originals at a
-  C++14-compatible GoogleTest (1.12.1; Homebrew's 1.18 rejects C++14).
 
 Edit and candidate stop at the first failure; integrate runs every phase and
 fails if any failed. Each run writes logs, exit codes, phase durations,

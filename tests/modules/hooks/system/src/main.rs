@@ -4,7 +4,9 @@
 //! Rust function per TEST with the same inputs and expected values, over the
 //! hybrid's libswoole.so: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
-//! signature carries C++ library types.
+//! signature carries C++ library types. The binary also runs coroutine/base.cpp
+//! and file.cpp (tests/modules/coroutine/base.rs), and the repo-owned C++ witnesses
+//! in ../fixture.cc.
 //!
 //! `main --list` prints the cases; `main NAME` runs one, in this process, as
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`). It exits 0 when
@@ -20,6 +22,10 @@ mod address;
 #[path = "../../../clients/client.rs"]
 mod client;
 mod dns;
+// Upstream's core-tests/src/coroutine/base.cpp and file.cpp: coroutine tests, built here
+// for the same reason.
+#[path = "../../../coroutine/base.rs"]
+mod base;
 mod hook;
 mod socket;
 
@@ -893,6 +899,10 @@ const SUITES: &[(&str, Cases)] = &[
     ("client", client::CASES),
     ("dns", dns::CASES),
     ("address", address::CASES),
+    ("coroutine_base", base::CASES),
+    ("coroutine_async_file", base::ASYNC_FILE_CASES),
+    ("rust_coroutine_lifetime", base::LIFETIME_CASES),
+    ("rust_dns_request", socket::DNS_REQUEST_CASES),
 ];
 
 fn main() {
