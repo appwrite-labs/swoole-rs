@@ -61,7 +61,13 @@ pub static arginfo_class_Swoole_Process_kill: a::ArgInfo<3> = a::ArgInfo([
 pub static arginfo_class_Swoole_Process_signal: a::ArgInfo<3> = a::ArgInfo([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"signal_no", 0, false, z::IS_LONG, false, None),
-    a::arg_type(c"callback", 0, false, z::IS_CALLABLE, true, Some(c"null")),
+    a::arg_mask(
+        c"callback",
+        0,
+        false,
+        z::MAY_BE_CALLABLE | z::MAY_BE_LONG | z::MAY_BE_NULL,
+        Some(c"null"),
+    ),
 ]);
 pub static arginfo_class_Swoole_Process_alarm: a::ArgInfo<3> = a::ArgInfo([
     a::begin_type(1, 0, z::_IS_BOOL, false),
