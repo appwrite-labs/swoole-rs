@@ -34,7 +34,8 @@ closure. The `Server` fixtures are std servers forked after binding (an echo, th
 403 proxy reply, a slow reader): the cases assert only on the client. Excluded
 as before: `bind` (EACCES, not EINVAL, off a root container),
 `async_tcp_socks5_proxy_handshake_fail` (www.baidu.com:80 timing out a SOCKS5
-greeting), the nine proxy cases (a local HTTP or SOCKS5 proxy) and
+greeting), `async_tcp_ssl_handshake_fail` (external network: its handshake with
+www.baidu.com:80 has a 1 s timeout the round trip sometimes exceeds), the nine proxy cases (a local HTTP or SOCKS5 proxy) and
 `sync_ssl_sendfile`: each `recv` lands at the buffer's start, and www.baidu.com's
 ~730 KB page fills the 64 KB buffer with reads no larger than a TLS record, so
 the bytes the assertion finds "baidu.com" in are overwritten and the rest were

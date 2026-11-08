@@ -340,6 +340,8 @@ def plan(args, reports):
                '--exclude', "client.bind=expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner "
                             "isn't root and gets EACCES",
                '--exclude', 'client.async_tcp_socks5_proxy_handshake_fail=expects www.baidu.com:80 to time out a SOCKS5 greeting',
+               '--exclude', 'client.async_tcp_ssl_handshake_fail=' + NETWORK + ': its TLS handshake with www.baidu.com:80 '
+                            'has a 1 s timeout the round trip sometimes exceeds',
                '--exclude', "client.sync_ssl_sendfile=each recv lands at the buffer's start, so past the largest TLS record "
                             "it reads bytes no recv wrote (uninitialised upstream, zeroed here); www.baidu.com's ~730 KB "
                             'page leaves "baidu.com" only in overwritten bytes',
