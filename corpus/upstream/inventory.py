@@ -2,8 +2,8 @@
 """Write a run.py manifest for every pinned upstream PHPT, or one shard of them.
 
 Every other file under tests/ (fixtures, helpers) becomes a support file, as do
-the fixtures tests/include/config.php points outside tests/ (TEST_IMAGE,
-TEST_IMAGE2, DOCUMENT_ROOT), so tests run with their original surroundings.
+the fixtures tests reach outside tests/ (examples/, package.xml, the HTTP fuzz
+cases), so tests run with their original surroundings.
 Tests and expectations are unchanged.
 """
 import argparse
@@ -23,8 +23,9 @@ def shard(paths, index, count):
     return [path for position, path in enumerate(sorted(paths)) if position % count == index - 1]
 
 
-# Outside tests/, but named by tests/include/config.php.
-FIXTURES = ['README.md', 'examples/test.jpg', 'docs/swoole-logo.svg', 'examples/www']
+# Outside tests/, but read by tests: config.php's TEST_IMAGE*, DOCUMENT_ROOT and
+# SOURCE_ROOT_PATH fixtures, and the static handlers' document_root (examples/).
+FIXTURES = ['README.md', 'docs/swoole-logo.svg', 'examples', 'package.xml', 'core-tests/fuzz/cases']
 
 
 def blobs(source):

@@ -1,11 +1,11 @@
-"""Exact pinned Swoole PHP8.5 expectation selection, without its custom runner."""
-import hashlib
+"""Upstream's PHP 8.5 expectation selection (tests/run-tests), without its custom runner."""
 import re
 
 KINDS = ('EXPECT', 'EXPECTF', 'EXPECTREGEX')
 
 
 def select(data, php_version_id):
+    """The PHPT with its --EXPECT*_85-- body in the base section's place on PHP >= 8.5, else dropped."""
     if not isinstance(php_version_id, int) or php_version_id < 50000:
         raise ValueError('Require actual PHP_VERSION_ID')
     markers = list(re.finditer(rb'^--([A-Z][A-Z0-9_]*)--(?:\r?\n|$)', data, re.M))
@@ -26,19 +26,10 @@ def select(data, php_version_id):
     chunks = []
     for name, (marker, body) in parts.items():
         if name in conditional:
-            base = name.removesuffix('_85')
-            if php_version_id >= 80500 and base not in parts:
+            if php_version_id >= 80500 and name.removesuffix('_85') not in parts:
                 chunks.append(marker.replace(b'_85', b'') + body)
         elif name in selected:
             chunks.append(marker + parts[selected[name]][1])
         else:
             chunks.append(marker + body)
-    adapted = b''.join(chunks)
-    sha = lambda value: hashlib.sha256(value).hexdigest()
-    return adapted, {'adapter': 'pinned-swoole-php85-expectations-v1', 'php_version_id': php_version_id,
-                     'original_sha256': sha(data), 'adapted_sha256': sha(adapted),
-                     'selected_section': next(iter(selected.values())),
-                     'selected_body_sha256': sha(parts[next(iter(selected.values()))][1]),
-                     'conditional_sections': conditional,
-                     'protected_sections_sha256': {name: sha(marker + body) for name, (marker, body) in parts.items()
-                         if name not in KINDS and name not in conditional}}
+    return b''.join(chunks)

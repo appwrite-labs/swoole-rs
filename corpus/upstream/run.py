@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.build_upstream import COMMIT, VERSION
 from tools.harness import ROOT, parse_engines, run_isolated, write_report
+from tools.phpt_expectations import select
 
 # Only local upstream test helpers are autoloaded. Curated cases must not need
 # Composer packages or external services. Test files and assertions are untouched.
@@ -204,8 +205,17 @@ def prepare(source, destination, cases, support_files=()):
         (vendor / 'autoload.php').write_text(AUTOLOAD)
 
 
-def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True, runner_ini=(), match_child_php=False):
+def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True, runner_ini=(), match_child_php=False, php=None):
     sandbox = sandbox.resolve()
+    if php:
+        # Upstream's tests/run-tests keeps a case's --EXPECT*_85-- section on PHP >= 8.5 and
+        # drops it below; PHP's runner would read it as part of the base expectation. Every
+        # engine runs the same PHP, so selecting again is a no-op.
+        version = int('%d%02d%02d' % tuple(map(int, re.match(r'(\d+)\.(\d+)\.(\d+)', php).groups())))
+        for case in cases:
+            path = sandbox / case['path']
+            if re.search(rb'^--EXPECT[A-Z]*_85--', original := path.read_bytes(), re.M):
+                path.write_bytes(select(original, version))
     artifacts.mkdir(parents=True, exist_ok=True)
     status_file = artifacts / 'status.txt'
     status_file.unlink(missing_ok=True)
@@ -424,7 +434,7 @@ def main():
                             continue
                     artifact = args.output.resolve().parent / (args.output.stem + '-artifacts') / engine.name / f'batch-{len(report["batches"]):03}'
                     with timed_phase(engine_timing, 'cases'):
-                        results, timing = run_cases(engine, group, sandbox, artifact, args.timeout, args.jobs,
+                        results, timing = run_cases(engine, group, sandbox, artifact, args.timeout, args.jobs, php=metadata.get('php'),
                                                     offline=not (args.external_network or any(case.get('network') for case in group)),
                                                     **({'match_child_php': True} if args.match_child_php else {}))
                     report['batches'].append({'engine': engine.name, **timing})

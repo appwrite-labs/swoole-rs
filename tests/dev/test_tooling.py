@@ -471,8 +471,6 @@ class Lanes(unittest.TestCase):
         # Upstream PHPTs run in the merge tier's phpt-* jobs, not as per-module phases (#83).
         self.assertNotIn('phpt', commands)
         self.assertEqual([name for name in commands if name.endswith(('-full-originals', '-originals-manifest'))], [])
-        self.assertEqual(commands['framing-versioned-expectation'].count('--case'), 1)
-        self.assertIn('tests/swoole_server/wrong_eof_setting.phpt', commands['framing-versioned-expectation'])
         self.assertIn('websocket-close',commands)
         self.assertIn('--export', commands['reference-build'])
         self.assertIn('--reference', commands['abi'])

@@ -1,4 +1,3 @@
-import hashlib
 from pathlib import Path
 import sys
 import unittest
@@ -15,28 +14,22 @@ class VersionedOriginalExpectations(unittest.TestCase):
             base = b'old %s' + newline + newline
             recent = b'new %s' + newline + b'Stack trace:' + newline
             data = protected + b'--EXPECTF--' + newline + base + b'--EXPECTF_85--' + newline + recent
-            for version, body, section in [(80235, base, 'EXPECTF'), (80511, recent, 'EXPECTF_85')]:
+            for version, body in [(80235, base), (80511, recent)]:
                 with self.subTest(newline=newline, version=version):
-                    adapted, receipt = select(data, version)
-                    self.assertEqual(adapted, protected + b'--EXPECTF--' + newline + body)
-                    self.assertEqual(receipt['selected_section'], section)
-                    self.assertEqual(receipt['selected_body_sha256'], hashlib.sha256(body).hexdigest())
-                    self.assertEqual(receipt['original_sha256'], hashlib.sha256(data).hexdigest())
-                    self.assertEqual(receipt['adapted_sha256'], hashlib.sha256(adapted).hexdigest())
-                    self.assertEqual(set(receipt['protected_sections_sha256']), {'TEST', 'SKIPIF', 'FILE'})
+                    self.assertEqual(select(data, version), protected + b'--EXPECTF--' + newline + body)
 
     def test_all_three_pinned_kinds_and_exact_80500_threshold(self):
         for kind in [b'EXPECT', b'EXPECTF', b'EXPECTREGEX']:
             data = b'--TEST--\ncase\n--FILE--\nx\n--' + kind + b'--\nbase\n--' + kind + b'_85--\nnew\n'
-            self.assertTrue(select(data, 80499)[0].endswith(b'base\n'))
-            self.assertTrue(select(data, 80500)[0].endswith(b'new\n'))
-            self.assertTrue(select(data, 90000)[0].endswith(b'new\n'))
+            self.assertTrue(select(data, 80499).endswith(b'base\n'))
+            self.assertTrue(select(data, 80500).endswith(b'new\n'))
+            self.assertTrue(select(data, 90000).endswith(b'new\n'))
 
     def test_version_only_section_does_not_invent_older_expectation(self):
         data = b'--TEST--\ncase\n--FILE--\nx\n--EXPECT_85--\nnew\n'
         with self.assertRaisesRegex(ValueError, 'one active'):
             select(data, 80499)
-        self.assertEqual(select(data, 80500)[0], data.replace(b'EXPECT_85', b'EXPECT'))
+        self.assertEqual(select(data, 80500), data.replace(b'EXPECT_85', b'EXPECT'))
 
     def test_duplicate_and_competing_assertions_are_refused(self):
         prefix = b'--TEST--\ncase\n--FILE--\nx\n'
@@ -46,8 +39,7 @@ class VersionedOriginalExpectations(unittest.TestCase):
 
     def test_unconditional_source_is_byte_identical(self):
         data = b'--TEST--\ncase\n--FILE--\nx\n--EXPECT--\ny\n'
-        self.assertEqual(select(data, 80500)[0], data)
-        self.assertEqual(select(data, 80500)[1]['conditional_sections'], [])
+        self.assertEqual(select(data, 80500), data)
 
     def test_invalid_version_and_malformed_source_are_refused(self):
         for version in [None, '80500', 49999]:
