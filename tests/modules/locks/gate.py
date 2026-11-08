@@ -22,7 +22,7 @@ def main():
         symbols=subprocess.check_output(['nm','-u',str(a.archive)],text=True,stderr=subprocess.DEVNULL)
         if '__asan_report_' not in symbols:p.error('Archive lacks Rust ASan report imports')
     pin=overlay.PIN;original=overlay.original
-    # Reference side from the pin, ported side from the hybrid build's fully patched tree.
+    # Reference side from the pin; ported side native/locks/lock.cc over the hybrid's swoole_lock.h.
     hybrid_source,hybrid_flags=hybrid_tree(a.archive);ported=lambda path:(hybrid_source/path).read_text()
     report={'upstream_commit':pin,'hybrid_tree':str(hybrid_source),'rust_asan_declared':a.rust_asan,'scope':'Actual pinned pthread bodies vs real Rust overlay facades; thread/fork/RW/timeout/barrier/atomic/futex witnesses. C++ sanitizer; Rust instructions instrumented only when rust_asan_declared=true; prebuilt Rust stdlib and OS code excluded. Coroutine lifecycle, PHP/ZTS and optimized performance are separate gates.','passed':False}
     support='''#pragma once
@@ -61,11 +61,12 @@ inline void swoole_set_last_error(int e){errno=e;}
     # with the futex headers they include hoisted out of it.
     kernel='#ifdef HAVE_FUTEX\n#include <linux/futex.h>\n#include <sys/syscall.h>\n#endif\n'
     futex=futex.replace('#include <linux/futex.h>\n','').replace('#include <sys/syscall.h>\n','')
-    original_bodies='';ported_bodies=''
+    original_bodies=''
     for name in ['mutex','rw_lock','spin_lock','barrier']:
         path=f'src/lock/{name}.cc';original_bodies+=original(path).replace('#include "swoole_lock.h"','#include "reference.h"').replace('namespace swoole','namespace reference')+'\n'
-    # The hybrid has no RWLock or SpinLock class; gate.cc drives Rust's lock ABI for those.
-    for name in ['mutex','barrier']:ported_bodies+=ported(f'src/lock/{name}.cc')+'\n'
+    # The hybrid's Mutex and Barrier are native/locks/lock.cc; it has no RWLock or SpinLock
+    # class, so gate.cc drives Rust's lock ABI for those.
+    ported_bodies=(ROOT/'native/locks/lock.cc').read_text()
     with tempfile.TemporaryDirectory(prefix='swr-locks-') as temp:
         tree=Path(temp);(tree/'reference').mkdir();(tree/'ported').mkdir();(tree/'support.h').write_text(support)
         (tree/'reference/reference.h').write_text(original('include/swoole_lock.h').replace('#include "swoole_memory.h"','#include "support.h"').replace('namespace swoole','namespace reference'))

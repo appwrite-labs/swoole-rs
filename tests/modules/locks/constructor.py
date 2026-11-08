@@ -31,7 +31,7 @@ using sw_atomic_t=volatile uint32_t;
 struct Pool { void *alloc(size_t);void free(void *); };
 inline Pool *sw_mem_pool(){static Pool pool;return &pool;}
 '''
-    # Reference side from the pin, ported side from the hybrid build's fully patched tree.
+    # Reference side from the pin; ported side native/locks/lock.cc over the hybrid's swoole_lock.h.
     hybrid_source,hybrid_flags=hybrid_tree(a.archive)
     sides={'reference':overlay.original,'ported':lambda path:(hybrid_source/path).read_text()}
     (folder/'support.h').write_text(support)
@@ -44,7 +44,7 @@ inline Pool *sw_mem_pool(){static Pool pool;return &pool;}
         if side=='reference':
             base=read('src/core/base.cc');start=base.index('bool sw_wait_for(')
             text='namespace reference {\n'+base[start:base.index('\n}\n',start)+3]+'}\n'
-        body=read('src/lock/mutex.cc');text+=(body.replace('#include "swoole_lock.h"','#include "reference.h"').replace('namespace swoole','namespace reference') if side=='reference' else body)+'\n'
+        text+=(read('src/lock/mutex.cc').replace('#include "swoole_lock.h"','#include "reference.h"').replace('namespace swoole','namespace reference') if side=='reference' else (ROOT/'native/locks/lock.cc').read_text())+'\n'
         if side=='reference':(folder/side/'reference.h').write_text(header.replace('namespace swoole','namespace reference'));(folder/side/'original.inc').write_text(text)
         else:(folder/side/'swoole_lock.h').write_text(header);(folder/side/'ported.inc').write_text(text)
     # Two translation units: the reference side sees only pinned text, the ported side and
