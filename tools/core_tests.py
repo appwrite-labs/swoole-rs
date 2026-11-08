@@ -39,7 +39,12 @@ extern "C" swoole::http2::Settings sw_rs_http2_default_settings();
 namespace swoole { namespace http2 {
 static inline void init_settings(Settings *settings) { *settings = sw_rs_http2_default_settings(); }
 }}
-''')],
+'''),
+        # The static handler's setters are gone; the cases fill Server's Rust-held string sets directly.
+        ('add_static_handler_location(', 'locations.insert('), ('add_static_handler_index_files(', 'http_index_files.insert(')],
+    # swoole::realtime_add is Rust's (crates/timer); the hybrid's swoole.h no longer declares it.
+    'core-tests/src/os/timer.cpp': [('TEST(timer, realtime_add) {',
+                                     'namespace swoole { void realtime_add(timespec *time, int64_t add_msec); }\nTEST(timer, realtime_add) {')],
     # Failure cleanup still shuts down the actual listener after a failed sender.
     'core-tests/src/os/process_pool.cpp': [
         ('pool.stream_info_->socket->shutdown(SHUT_RDWR);',
@@ -143,7 +148,7 @@ def main():
                         continue
                     text = (staged / path).read_text()
                     for old, new in edits:
-                        if text.count(old) != 1:
+                        if old not in text:
                             raise ValueError(f'Test helper changed: {path}')
                         text = text.replace(old, new)
                     write_changed(tree / path, text.encode())

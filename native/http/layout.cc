@@ -3,7 +3,8 @@
 // of the third-party multipart parser it drives.
 #include "swoole_http.h"
 
-#include "thirdparty/multipart_parser.h"
+// Relative to src/, where the build copies this file: not every consumer puts the tree root on -I.
+#include "../thirdparty/multipart_parser.h"
 
 using swoole::http_server::Request;
 

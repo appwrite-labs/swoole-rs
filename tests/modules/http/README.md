@@ -43,8 +43,10 @@ as equal. Unavailable locales are reported as unsupported.
 `gate.py` holds the helpers these share (`body`, `Sides`, `run`). The status, method,
 URL and boundary helpers are Rust behind thin facades, so the crate's
 `pin_helpers` tests compare them with v6.2.4's bodies instead. Upstream's own
-`http_server`, `http_parser` and `multipart_parser` GoogleTests run unchanged on
-the reference and the hybrid tree in the merge tier's `http-native-originals`.
+`http_server`, `http_parser` and `multipart_parser` GoogleTests run on the reference
+and the hybrid tree in the merge tier's `http-native-originals`; on the hybrid the
+static-handler setup calls fill `Server::locations` and `http_index_files` directly
+(`tools/core_tests.py` ADAPTATIONS), and the four ported TESTs below are excluded there.
 
 ### Ported GoogleTests
 

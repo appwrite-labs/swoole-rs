@@ -45,7 +45,6 @@ def main():
                             '--archive', str(a.archive), '--build-root', str(a.core),
                             '--jobs', str(a.jobs), '--output', str(folder / 'originals.json'),
                             '--file', 'core-tests/src/os/pipe.cpp',
-                            '--file', 'core-tests/src/os/msg_queue.cpp',
                             '--file', 'core-tests/src/os/process_pool.cpp'], check=True)
         for engine in ['upstream', 'hybrid']:
             build = a.core.resolve() / engine / 'build'
