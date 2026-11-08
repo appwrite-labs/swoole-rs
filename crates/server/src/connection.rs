@@ -209,7 +209,7 @@ pub(crate) fn set_max_connection<H: Host>(h: &mut H, requested: u32) -> crate::E
     }
     if max_sockets > 0 && value > max_sockets {
         value = max_sockets;
-        h.get(LOG_MAX_CONNECTION_SOCKETS)?;
+        h.op(LOG_MAX_CONNECTION_SOCKETS, u64::from(max_sockets))?;
     }
     h.op(OP_SET_MAX_CONNECTION, u64::from(value))?;
     Ok(())
