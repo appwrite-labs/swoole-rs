@@ -13,7 +13,7 @@
 #include <sys/types.h>
 #include "swoole_proxy.h"
 
-#define SWOOLE_VERSION "6.2.4"
+#define SWOOLE_VERSION "6.2.5"
 #define SW_STRL(s) s, sizeof(s) - 1
 #define SW_STR_ISTARTS_WITH(str, len, const_sub_str) swoole_str_istarts_with(str, len, SW_STRL(const_sub_str))
 #define sw_unlikely(x) __builtin_expect(!!(x), 0)
