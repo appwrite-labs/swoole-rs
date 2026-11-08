@@ -22,6 +22,7 @@ use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::StringSlot;
+use swoole_rs_tls::socket_pair::SocketPair;
 
 /// Owned by `Server::state_`, from the constructor to the destructor. Reactor threads
 /// share it, so each counter is atomic.
@@ -52,6 +53,9 @@ pub struct ServerState {
     threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
     /// The interface addresses `Server::create` read (`local_addr`); null before.
     pub(crate) local_addrs: AtomicPtr<crate::local_addr::LocalAddrs>,
+    /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
+    /// `task_sync` waits on; closed with the state, as `~Server` closed them.
+    task_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
@@ -84,7 +88,39 @@ impl ServerState {
             locked: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: AtomicPtr::new(core::ptr::null_mut()),
+            task_pipes: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    /// `task_notify_pipes.emplace_back(new Pipe(true))`: false, closing it, when
+    /// the pipe isn't ready.
+    pub(crate) fn push_task_pipe(&self) -> bool {
+        let pipe = Box::into_raw(Box::new(core::mem::MaybeUninit::<SocketPair>::uninit())).cast();
+        // SAFETY: fresh storage for a pair.
+        unsafe { swoole_rs_tls::socket_pair::pipe_new(pipe, true) };
+        // SAFETY: the pair just built.
+        let pair = unsafe { &*pipe };
+        let ready = !pair.master_socket.is_null() && !pair.worker_socket.is_null();
+        if !ready {
+            // SAFETY: the pair just built, which nothing else has seen.
+            unsafe { free_pipe(pipe) };
+            return false;
+        }
+        self.task_pipes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(AtomicPtr::new(pipe));
+        true
+    }
+
+    /// `task_notify_pipes.at(index)`, or null past the end.
+    pub(crate) fn task_pipe(&self, index: usize) -> *mut SocketPair {
+        self.task_pipes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(index)
+            .map_or(core::ptr::null_mut(), |pipe| pipe.load(Ordering::Relaxed))
     }
 
     /// One of `texts`' slots.
@@ -357,8 +393,44 @@ pub unsafe extern "C" fn swr_v1_server_state_free(state: *mut ServerState) {
     }
 }
 
+/// `delete pipe`. Only the hybrid makes pipes: the unit tests link no C++
+/// for `Socket::free` to call.
+///
+/// # Safety
+/// `pipe` is a pair `push_task_pipe` boxed, not used again.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+unsafe fn free_pipe(pipe: *mut SocketPair) {
+    // SAFETY: as the caller promises.
+    unsafe { swoole_rs_tls::socket_pair::drop(pipe) };
+    // SAFETY: as the caller promises; the box `push_task_pipe` made.
+    drop(unsafe { Box::from_raw(pipe) });
+}
+
+/// `serv->task_notify_pipes.at(index)` for process.cc: the pipe, or null.
+///
+/// # Safety
+/// `state` is a live `Server::state_`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_task_pipe(
+    state: *const ServerState,
+    index: u16,
+) -> *mut SocketPair {
+    // SAFETY: as the caller guarantees.
+    unsafe { &*state }.task_pipe(index.into())
+}
+
 impl Drop for ServerState {
     fn drop(&mut self) {
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        for pipe in self
+            .task_pipes
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+        {
+            // SAFETY: a pipe `push_task_pipe` boxed; nothing reads it after the state.
+            unsafe { free_pipe(pipe.into_inner()) };
+        }
         // SAFETY: the table `local_addr::init` boxed, if any; nothing reads it after the state.
         unsafe { crate::local_addr::free(*self.local_addrs.get_mut()) };
         let tables = *self.tables.get_mut();

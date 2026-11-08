@@ -98,9 +98,10 @@ unsafe extern "C" {
 }
 
 /// `serv->factory_`'s virtual members, in their Itanium vtable slots after the two
-/// destructors, `start` and `shutdown`.
+/// destructors and `start`.
+const FACTORY_SHUTDOWN: usize = 3;
 const FACTORY_DISPATCH: usize = 4;
-const FACTORY_NOTIFY: usize = 6;
+pub(crate) const FACTORY_NOTIFY: usize = 6;
 const FACTORY_END: usize = 7;
 
 /// The server's factory and its vtable slot `slot`.
@@ -113,8 +114,28 @@ fn factory_slot(state: &ServerState, slot: usize) -> (*mut c_void, *const ()) {
     (factory, unsafe { vtable.wrapping_add(slot).read() })
 }
 
+/// `serv->factory_->shutdown()`.
+pub(crate) fn factory_shutdown(state: &ServerState) -> bool {
+    let (factory, member) = factory_slot(state, FACTORY_SHUTDOWN);
+    // SAFETY: the slot holds `bool Factory::shutdown()`.
+    let member: unsafe extern "C-unwind" fn(*mut c_void) -> bool =
+        unsafe { core::mem::transmute(member) };
+    // SAFETY: the live factory.
+    unsafe { member(factory) }
+}
+
+/// `serv->factory_->end(session_id, flags)`.
+pub(crate) fn factory_end(state: &ServerState, session_id: c_long, flags: c_int) -> bool {
+    let (factory, member) = factory_slot(state, FACTORY_END);
+    // SAFETY: the slot holds `bool Factory::end(SessionId, int)`.
+    let end: unsafe extern "C-unwind" fn(*mut c_void, c_long, c_int) -> bool =
+        unsafe { core::mem::transmute(member) };
+    // SAFETY: the live factory.
+    unsafe { end(factory, session_id, flags) }
+}
+
 /// `serv->factory_->dispatch(task)` or `->notify(head)`, which take one pointer.
-fn factory_call(state: &ServerState, slot: usize, arg: *mut c_void) -> bool {
+pub(crate) fn factory_call(state: &ServerState, slot: usize, arg: *mut c_void) -> bool {
     let (factory, member) = factory_slot(state, slot);
     // SAFETY: the slot holds a `bool (Factory::*)(T *)`.
     let member: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool =
@@ -314,12 +335,7 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_CLOSE_FORWARD => {
-            let (factory, member) = factory_slot(state, FACTORY_END);
-            // SAFETY: the slot holds `bool Factory::end(SessionId, int)`.
-            let end: unsafe extern "C-unwind" fn(*mut c_void, i64, c_int) -> bool =
-                unsafe { core::mem::transmute(member) };
-            // SAFETY: the live factory.
-            unsafe { end(factory, arg.cast_signed(), CLOSE_ACTIVELY) };
+            factory_end(state, arg.cast_signed(), CLOSE_ACTIVELY);
             0
         }
         OP_WR_SENDFILE => {

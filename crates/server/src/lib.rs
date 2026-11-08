@@ -78,7 +78,7 @@ pub use config::{ServerConfig, swr_v1_server_config_get, swr_v1_server_config_in
 
 pub use state::{
     ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
-    swr_v1_server_text_slot, swr_v1_server_upload_tmp_dir,
+    swr_v1_server_task_pipe, swr_v1_server_text_slot, swr_v1_server_upload_tmp_dir,
 };
 
 pub use admin::swr_v1_server_tcp_info;
