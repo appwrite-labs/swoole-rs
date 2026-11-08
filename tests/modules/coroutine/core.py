@@ -71,7 +71,7 @@ def main():
     parser.add_argument('--archive', type=Path, help='Same-platform real coroutine Rust static archive')
     parser.add_argument('--build-root', type=Path, help='Private writable cache outside reference/repository')
     parser.add_argument('--dns-requests', action='store_true', help='Execute the unchanged local DNS no-service original and five real request/async/vector witnesses')
-    parser.add_argument('--socket-scopes', action='store_true', help='Also execute the two unchanged original local socket timeout tests and three scoped-state witnesses')
+    parser.add_argument('--socket-scopes', action='store_true', help='Also execute the three scoped-state socket witnesses (socket.cpp itself is Rust: hooks-system-rust)')
     parser.add_argument('--async-file', action='store_true', help='Also compile and execute the unchanged original coroutine AsyncFile unit')
     parser.add_argument('--lifetime-only', action='store_true', help='Execute only the supplemental real-context lifetime witness; the originals remain unmeasured')
     parser.add_argument('--rust-asan', action='store_true', help='Verify the coroutine archive contains actual Rust ASan imports')
@@ -87,8 +87,8 @@ def main():
         parser.error('--async-file requires the complete original selection')
     selected_units = [*SELECTED, *(['core-tests/src/coroutine/file.cpp'] if args.async_file else [])]
     if args.socket_scopes:
-        selected_units += ['core-tests/src/coroutine/socket.cpp', 'core-tests/src/_lib/server.cpp',
-                           'core-tests/src/_lib/process.cpp', 'core-tests/src/coroutine/rust_socket_scopes.cpp']
+        selected_units += ['core-tests/src/_lib/server.cpp', 'core-tests/src/_lib/process.cpp',
+                           'core-tests/src/coroutine/rust_socket_scopes.cpp']
     if args.dns_requests:
         selected_units += ['core-tests/src/network/dns.cpp', 'core-tests/src/coroutine/rust_dns_requests.cpp']
     if args.socket_scopes or args.dns_requests:
@@ -133,17 +133,6 @@ def main():
                     raise ValueError('Original AsyncFile inventory differs')
                 inventory += extra
                 report['scope'] = 'Unchanged 26 coroutine originals plus AsyncFile and the supplemental lifetime witness; full native reference vs the exact production archive overlay. No PHP or performance claim.'
-            if args.socket_scopes:
-                path = 'core-tests/src/coroutine/socket.cpp'
-                all_socket = [{'name': f'{group}.{name}', 'path': path, 'sha256': sha(staged / path)}
-                              for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', (staged / path).read_text())]
-                names = {'coroutine_socket.timeout_setter', 'coroutine_socket.timeout_controller'}
-                selected_socket = [case for case in all_socket if case['name'] in names]
-                if {case['name'] for case in selected_socket} != names:
-                    raise ValueError('Original socket timeout inventory differs')
-                inventory += selected_socket
-                report['unmeasured_socket_originals'] = [case['name'] for case in all_socket if case['name'] not in names]
-                report['scope'] = 'Unchanged coroutine originals and two local socket timeout originals, plus lifetime and scoped-state witnesses; actual complete production overlay. Other socket originals remain unmeasured.'
             if args.dns_requests:
                 path = 'core-tests/src/network/dns.cpp'
                 all_dns = [{'name': f'{group}.{name}', 'path': path, 'sha256': sha(staged / path)}
@@ -153,7 +142,7 @@ def main():
                     raise ValueError('Original DNS no-service inventory differs')
                 inventory += selected_dns
                 report['unmeasured_dns_originals'] = [case['name'] for case in all_dns if case not in selected_dns]
-                report['scope'] = 'Unchanged coroutine originals and local DNS no-service original, plus selected socket originals and lifetime/owner witnesses; actual production overlay. Other DNS/socket originals explicitly unmeasured.'
+                report['scope'] = 'Unchanged coroutine originals and local DNS no-service original, plus lifetime and owner witnesses; actual production overlay. Other DNS originals explicitly unmeasured.'
             report['original_inventory'] = inventory.copy()
             report['unmeasured_originals'] = [case['name'] for case in inventory] if args.lifetime_only else []
             supplemental = [{'name': group + '.' + name, 'path': LIFETIME, 'sha256': hashlib.sha256(lifetime).hexdigest()} for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', lifetime.decode())]

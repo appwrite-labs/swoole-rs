@@ -47,7 +47,9 @@ CORE_TESTS = {
                 {'socket.make_server_socket': "expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's kernel returns EPROTONOSUPPORT"}),
     'http': (['server/http_server.cpp', 'server/http_parser.cpp', 'server/multipart_parser.cpp'],
              {'http_server.node_websocket_client_1': 'needs Node.js and its ws package',
-              'http_server.node_websocket_client_2': 'needs Node.js and its ws package'}),
+              'http_server.node_websocket_client_2': 'needs Node.js and its ws package',
+              **{'http_server.' + name: 'a Rust test (tests/modules/http/http_server.rs); the http_server::listen SDK it drove is deleted'
+                 for name in ['parser1', 'parser2', 'upload', 'max_request_size']}}),
     'clients': (['network/dns.cpp', 'network/address.cpp', 'network/client.cpp'],
                 {'dns.lookup1': NETWORK, 'dns.lookup_ipv6': NETWORK, 'dns.bad_family': NETWORK, 'dns.cancel': UNCACHED,
                  'client.bind': "expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner isn't root and gets EACCES",
