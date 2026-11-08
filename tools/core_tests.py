@@ -45,8 +45,12 @@ static inline void init_settings(Settings *settings) { *settings = sw_rs_http2_d
     # swoole::realtime_add is Rust's (crates/timer); the hybrid's swoole.h no longer declares it.
     'core-tests/src/os/timer.cpp': [('TEST(timer, realtime_add) {',
                                      'namespace swoole { void realtime_add(timespec *time, int64_t add_msec); }\nTEST(timer, realtime_add) {')],
-    # Failure cleanup still shuts down the actual listener after a failed sender.
+    # The raw-bytes dispatch_sync overload and the stream listener are crates/process exports, not members.
     'core-tests/src/os/process_pool.cpp': [
+        ('TEST(process_pool, tcp_raw) {', 'extern "C" bool swr_v1_process_pool_ipc_send_sync(const swr_v1_process_pool_ipc *, const char *, uint32_t);\n'
+                                          'extern "C" void *swr_v1_process_pool_ipc_listener(const swr_v1_process_pool_ipc *);\n'
+                                          'TEST(process_pool, tcp_raw) {'),
+        ('pool.dispatch_sync(data.str, data.length);', '(swr_v1_process_pool_ipc_send_sync(pool.ipc_, data.str, data.length) ? SW_OK : SW_ERR);'),
         ('pool.stream_info_->socket->shutdown(SHUT_RDWR);',
          'static_cast<swoole::network::Socket *>(swr_v1_process_pool_ipc_listener(pool.ipc_))->shutdown(SHUT_RDWR);')],
     # The global hook table is Rust's, not SwooleG.hooks. Each case runs in its own process, which

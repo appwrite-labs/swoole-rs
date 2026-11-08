@@ -718,6 +718,24 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_send(
         .is_ok()
 }
 
+/// `ProcessPool::dispatch_sync(data, len)`: [`swr_v1_process_pool_ipc_send`]'s blocking
+/// send of raw bytes. Only core-tests' `os/process_pool.cpp` sends raw bytes;
+/// `tools/core_tests.py` points its call here.
+///
+/// # Safety
+/// `ipc` is null or a live handle; `data` holds `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_process_pool_ipc_send_sync(
+    ipc: *const PoolIpc,
+    data: *const u8,
+    len: u32,
+) -> bool {
+    // SAFETY: the caller's `len` bytes.
+    let data = unsafe { std::slice::from_raw_parts(data, len as usize) };
+    // SAFETY: the caller's handle, or null.
+    unsafe { swr_v1_process_pool_ipc_send(ipc, data, true) }
+}
+
 /// Keep the listener the native side created.
 ///
 /// # Safety
