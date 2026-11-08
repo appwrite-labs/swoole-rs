@@ -1,7 +1,6 @@
 # PHP helper and stdext tests
 
-The common PHP helpers are `crates/phphelpers` (contract:
-[docs/phphelpers-abi-v1.md](../../../docs/phphelpers-abi-v1.md)); stdext (typed
+The common PHP helpers are `crates/phphelpers`; stdext (typed
 arrays, methods on arrays/strings/streams and the `swoole_*` stdext functions)
 is `crates/phpstdext`. `native/phphelpers/stdext.cc` keeps the Zend VM and PCRE
 calls whose bodies are private to PHP, and `native/phphelpers/module.cc` the

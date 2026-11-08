@@ -1,7 +1,6 @@
 # ListenPort tests
 
-Contracts: [native/ports/contract.md](../../../native/ports/contract.md) and
-[docs/ports-abi-v1.md](../../../docs/ports-abi-v1.md).
+Contract: [native/ports/contract.md](../../../native/ports/contract.md).
 
 `crates/ports` holds the port policy and receive callbacks (`read.rs`),
 unit-tested with `cargo test -p swoole-rs-ports`. `Swoole\Server\Port` is

@@ -1,8 +1,7 @@
 # M05 reactor and stream
 
 The Swoole reactor (backends, wait loop, handlers, callbacks, deferred queues),
-`Socket` I/O and output queues. The frozen ABI is `docs/reactor-abi-v1.md`; the
-module-local header is `swoole_rs_reactor.h`. Rust sources are in
+`Socket` I/O and output queues. The header is `swoole_rs_reactor.h`. Rust sources are in
 `crates/reactor/src/`; `crates/tls/src/upstream.rs` and `reactor_write.rs` hold the
 `Socket` and write-path members that also touch TLS.
 

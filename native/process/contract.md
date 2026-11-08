@@ -1,6 +1,6 @@
 # Worker, task and reload transitions v1
 
-Feature bit 524288 (`process`). ABI: `docs/process-abi-v1.md` and
+Feature bit 524288 (`process`). ABI:
 `swoole_rs_process.h`. crates/process runs the event worker, task worker,
 reactor process, manager and factory operations; `native/process/workers.cc` is
 what they need from C++ (`swoole_rs_workers.h`). Decisions it keeps from upstream:

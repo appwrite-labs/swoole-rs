@@ -2,14 +2,13 @@
 
 Declarations: `native/include/swoole_rs_buffer.h` and
 `native/buffer/swoole_rs_buffer_typed.h`. Feature value 2 (graduated: always on).
-Upstream targets: `src/core/buffer.cc` (deleted), `include/swoole_buffer.h` (deleted; `native/buffer/swoole_buffer.h` replaces it),
-`src/core/string.cc`, `include/swoole_string.h`.
 
 Rust owns one queue and its data allocations. Entries are Rust data, sendfile
-tokens or CLOSE markers; the front cursor (offset and generation) is Rust's too.
-The C++ `Buffer` holds only the
-Rust handle, and its methods are Rust under their upstream symbols
-(`crates/buffer/src/cpp.rs`). There is no second queue or side map.
+tokens or CLOSE markers; the front cursor (offset and generation) is Rust's too. The C++ `Buffer`
+(`native/buffer/swoole_buffer.h`) holds only the Rust handle, and its methods are
+Rust under their upstream symbols (`crates/buffer/src/cpp.rs`). Callers read the
+first entry with `typed_front()`, commit sends with `typed_consume()`, queue a
+close with `typed_close()` and drop the entry with `pop()`.
 
 ## Ownership and accounting
 
@@ -39,21 +38,13 @@ Rust handle, and its methods are Rust under their upstream symbols
 
 Allocation is fallible. On failure no entry, view or accounting changes. No
 panic, exception or callback crosses the seam. `Buffer`'s methods abort on any
-failed status, where `buffer.cc` threw `std::bad_alloc`, `std::length_error` or
-`std::invalid_argument` that nothing caught. Existing `void` append signatures
-remain and never drop bytes silently.
+failed status. Existing `void` append signatures remain and never drop bytes
+silently.
 
 One owner uses a handle at a time. Sequential transfer between threads is fine
 once views are no longer used. A quiescent fork gives parent and child
 independent copy-on-write queues; each releases its own. No Rust threads, locks
 or global state exist.
-
-## Upstream's `front()` and `alloc()`
-
-Gone, with `BufferChunk`'s fields and `destroy` callback. Callers read the first
-entry with `typed_front()` (DATA bytes, the Rust cursor's offset, or a sendfile
-token), commit sends with `typed_consume()`, queue a close with `typed_close()`
-and drop the entry with `pop()`.
 
 Pinned upstream underflows: six bytes, chunk size 4, vector offset 3 creates a
 chunk of capacity 4 and length 3; pop then reports length `UINT32_MAX`. Rust
@@ -62,6 +53,7 @@ reports 0. Exact vector-boundary offsets also select the correct suffix.
 ## String
 
 `swoole::String` is defined in Rust (`crates/buffer/src/string.rs`): the C++ class
-keeps its fields, which Rust mirrors with layout asserts on both sides, and Rust
-defines every method with a body under its upstream symbol. `String::split` stays a
-three-line C++ method that lends its `std::function` handler to Rust.
+(`native/buffer/swoole_string.h`) keeps its fields, which Rust mirrors with layout
+asserts on both sides, and Rust defines every method with a body under its
+upstream symbol. `String::split` stays a three-line C++ method that lends its
+`std::function` handler to Rust.

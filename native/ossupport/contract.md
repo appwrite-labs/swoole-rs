@@ -1,6 +1,6 @@
 # OS support policy v1
 
-Feature bit 131072 (`ossupport`). ABI: `docs/os-support-abi-v1.md` and
+Feature bit 131072 (`ossupport`). ABI:
 `swoole_rs_ossupport.h`.
 
 Rust owns the async thread pool, file records (`file_record.rs`,

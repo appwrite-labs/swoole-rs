@@ -1,6 +1,6 @@
 # Coroutine I/O policy contract
 
-Feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
+Feature bit 65536 (`hooks`). ABI:
 `swoole_rs_hooks.h`. Upstream's coroutine runtime, hook, socket, system, file-lock
 and io_uring sources have left the build. What Rust can't express of `System` and
 the coroutine Socket is `native/hooks/system.cc`; `coroutine::Socket` and

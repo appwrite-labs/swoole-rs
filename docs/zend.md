@@ -1,14 +1,14 @@
 # PHP classes in Rust
 
-Goal #754 moves the Zend surface (`ext-src/`) into Rust. `Swoole\Atomic` was
-the first family to move (#755); copy it.
+The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
+(`crates/phplocks`) is the smallest complete family to read.
 
 ## Crates
 
 - `crates/zend-sys`: bindgen at build time against `php-config --includes`
   (`$PHP_CONFIG`; `build_hybrid.py` passes `--php-config`), so struct layouts
   follow that PHP's version and ZTS mode. bindgen's layout assertions fail the
-  build on a mismatch. `src/shim.c` is the macros and inline functions bindgen
+  build on a mismatch. `src/shim*.c` are the macros and inline functions bindgen
   can't see; add one there when a macro is version-dependent or touches an
   anonymous union (`create_object`).
 - `crates/zend`: the safe layer. `Call` (argument count, `$this`, `long`/`double`
@@ -16,34 +16,16 @@ the first family to move (#755); copy it.
   (`struct { T data; zend_object std; }`: `create`, `data`, `install`, `dtor`),
   `Class` (registration from a method table), `unset_property_deny`,
   `throw_exception`/`throw_error`. Add wrappers as callers need them.
-- One `crates/php<family>` crate per family (`crates/phplocks`), owned by the
-  module that owns its `ext-src` file. It calls the mechanism crate directly
-  (Rust calls Rust).
+- One `crates/php<family>` crate per family (`crates/phplocks`). It calls the
+  mechanism crate directly (Rust calls Rust).
 
 All three sit behind a `php` feature and are empty without it, so the
-workspace builds without PHP. The module's `crates/ffi` feature adds the crate
-and re-exports it; `crates/ffi`'s `php` feature turns on `<crate>?/php`. The
-hybrid build makes two archives: `libswoole_rs_php.a` with `php` for the
-extension (thin LTO outside `--dev`), and the Zend-free `libswoole_rs_ffi.a`
-without it, which the native gates link into executables.
+workspace builds without PHP. `crates/ffi`'s `php` feature turns on each
+family crate's `php`. The hybrid build makes two archives: `libswoole_rs_php.a`
+with `php` for the extension (thin LTO outside `--dev`), and the Zend-free
+`libswoole_rs_ffi.a` without it, which the native gates link into executables.
 
-## The pattern
-
-What stays C++ in the `ext-src` file (edited through `migration/patches/<module>/`):
-
-- MINIT: one call into Rust, passing anything only C++ can reach (here
-  `sw_mem_pool()` alloc/free and `swoole_exception_ce`).
-- C++ types other files still use (here `ThreadResource` subclasses, and the
-  class-entry globals `swoole_thread.cc` tests against, which Rust fills).
-
-What moves to Rust: the method tables, class registration and flags, object handlers
-(`create_object`, `free_obj`, clone and unset denial), object layout and every
-method body. Declare the `swr_v1_*` entry points in the module's
-`native/<module>/` header with forward-declared Zend structs; guard ZTS-only ones
-with `#ifdef SW_THREAD`, which `config.h` defines, so the bridge's export
-inventory only expects what the build links.
-
-A method:
+## Methods
 
 ```rust
 methods! {
@@ -93,9 +75,6 @@ method_table! {
 }
 ```
 
-The patch then deletes the C++ table, the `stubs/*_arginfo.h` include and,
-once nothing includes it, the header itself.
-
 ## Calling PHP: bailouts
 
 `exit()` and fatal errors leave PHP code by `zend_bailout()`, a `longjmp` to the
@@ -109,15 +88,13 @@ calls PHP code directly where it could bail out:
 - `Bailout` is `#[must_use]`: finish the Rust work (release what you hold),
   return it to the C/C++ caller as a flag, and let that caller call
   `zend_bailout()` once the Rust frames are gone. Callbacks driven by a C++
-  loop (timers, the reactor) keep a C++ trampoline that does exactly this.
-  A Rust fn the C++ loop calls directly (the Server's on* slots) does the
-  same with `bailout::raise` as its last step, from a frame that owns nothing
-  that needs a drop:
+  loop keep a C++ trampoline that does exactly this. A Rust fn the C++ loop
+  calls directly (the Server's on* slots) does the same with `bailout::raise`
+  as its last step, from a frame that owns nothing that needs a drop:
 
 ```cpp
-static void timer_callback(Timer *timer, TimerNode *tnode) {
-    if (swr_v1_..._callback(tnode->data)) {  // Rust: true if it trapped a bailout
-        timer->abandon_selection();
+static void event_object_free(void *data) {  // native/phpevents/event.cc
+    if (swr_v1_phpevents_free(data)) {       // Rust: true if it trapped a bailout
         zend_bailout();
     }
 }
@@ -151,73 +128,28 @@ call `php_error_docref`, `zend_error` or a C++ reporter directly from Rust.
 upstream: an error handler that `exit()`s, and one that raises a fatal error,
 on a Rust-raised warning.
 
+### Native scopes and C++ exceptions
+
+`native/corebase/swoole_rs_zend_guard.h` defines native scope outcomes: normal
+return (0), ordinary Zend bailout (1) and pending whole-thread exit (2). Rust
+relays the outcome after dropping its owners. Callbacks invoked below Rust must
+catch C++ exceptions inside the native body, return a typed fault, and rethrow
+only after Rust returns. `native/corebase/swoole_rs_native_effect.h` is the
+invoke/resume provider that MINIT registers once.
+
+## Stdext
+
+The `stdext` feature of `crates/ffi` (`phpstdext/active`) tracks native
+`SW_STDEXT`; `tools/build_hybrid.py` derives it from the configure options.
+Feature-enabled Rust checks use `--features php,active`.
+
 ## Checks
 
 - `cargo clippy --workspace --all-targets --all-features` and `cargo test
   --workspace --all-features` (the `rust` job installs PHP headers and libclang).
-- Syntax-check the patched C++ (see the brief in AGENTS.md's module rules), then
-  the hybrid and the family's PHPTs on Linux:
+- The hybrid and the family's PHPTs on Linux:
   `python3 tools/dev.py docker -- tools/build_hybrid.py --jobs 4`
   and `corpus/upstream/run.py --case ...` against both engines.
 - A callgrind A/B of a tight method loop against upstream, in the PR.
 - Alpine (musl) builds build scripts with `-C target-feature=-crt-static`
   (merge tier); a static build script cannot `dlopen` libclang.
-
-The module host owns its persistent INI definitions and ordered information rows
-in `crates/phpswoole`. INI update callbacks remain Zend's native handlers; their
-second argument is the address of the native globals in NTS and the address of
-the globals id in ZTS. The information inventory generates only compiler
-capability bits for C++; library version strings remain native facts. Each PHP
-output effect is trapped below the Rust formatting owner, and the outer C++
-MINFO callback resumes a bailout after Rust cleanup. The module witness checks
-all ten definitions, access modes, update/restore behavior, information rows and
-an output handler that exits, against actual NTS and ZTS native controls.
-
-The experimental stdext profile also selects the `stdext` FFI Cargo feature
-(`phpstdext/active`). This keeps direct private Zend VM providers aligned with
-native `SW_STDEXT`; disabling the native profile leaves stdext PHP functions
-unregistered and its Rust crate inactive. `tools/build_hybrid.py` derives the
-feature from the effective configure options, including explicit overrides.
-Feature-enabled Rust checks use `--features php,active`. The assignment handlers
-own operand selection, COW type metadata, reference branches, result publication
-and temporary destruction in Rust. Native functions expose individual private
-Zend VM effects; PCRE cache references are retained and released by a Rust owner
-around a contained native match call.
-
-## Native scope and whole-thread exit transport
-
-`swoole_rs_zend_guard.h` defines native scope outcomes: normal return (0),
-ordinary Zend bailout (1), and pending whole-thread exit (2). A scope belongs to
-its current native PHP coroutine. A custom exit can use only that coroutine's
-live native scope; otherwise it yields to its immediate resumer. The pending
-exit remains sticky until the native Thread request boundary. Rust relays the
-outcome after dropping its owners; no request/bootstrap ownership is implied by
-this prerequisite. Thread-enabled hybrid builds require an explicit
-`phpcoroutines` selection, including profiles retaining native Process code;
-`process` therefore depends on `phpcoroutines` as well as `locks`.
-
-Native scope records unlink explicitly for Zend longjmp and use compiler
-cleanup with C `-fexceptions` for native C++ unwinding. Callbacks invoked below
-Rust must capture ordinary C++ exceptions inside the native body, return a typed
-fault, and rethrow only after Rust returns and native custody is destroyed.
-Cleanup of a native-only C++ caller does not authorize C++ exceptions, forced
-unwinding or pthread cancellation across Rust. PHP coroutine cancellation is a
-separate cooperative operation covered by the runtime witness.
-
-`swoole_rs_native_effect.h` supplies an optional C++14 provider containing only
-native invoke/resume function pointers. Its inline slot is shared across a
-linked program's translation units. PHP MINIT registers a static provider
-before module initialization, requests and worker publication. Registration
-never races consumers or replaces the provider. Standalone PHP-disabled SDK
-consumers retain a null slot without any Zend references; consumers select it
-once per outer native invocation. A nonlocal resume must run after all native
-invocation custody has been destroyed.
-This is not permission for an arbitrary native facade destructor called during
-another Rust Drop to invoke a facade export which resumes immediately. Facade
-exports retain their outermost-Rust entry contract; nested consumers must use
-a deferred outcome and their own qualified native outer boundary.
-
-The ZTS witness retains each Native observation as passed or failed and requires
-all selected lifecycle modes, Rust Box/Vec destruction, typed provenance and
-native C++ unwind/capture/rethrow checks. Its Native coroutine/cancellation
-failures remain failed observations; no original PHPT expectation is changed.

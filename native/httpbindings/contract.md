@@ -1,6 +1,6 @@
 # PHP HTTP binding policy
 
-Feature bit 2097152 (`httpbindings`). ABI: `docs/http-bindings-abi-v1.md`.
+Feature bit 2097152 (`httpbindings`).
 crates/httpbindings is policy: each call returns a decision and retains no
 context, buffer, Zend value or pointer. crates/phphttp (the PHP HTTP classes,
 whose context it allocates in `src/state.rs`) performs every effect (Zend

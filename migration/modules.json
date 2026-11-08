@@ -169,7 +169,7 @@
         "src/server/reactor_process.cc",
         "src/server/reactor_thread.cc"
       ],
-      "abi_contract": "docs/reactor-abi-v1.md",
+      "abi_contract": "native/reactor/README.md",
       "feature_bit_reserved": 16384
     },
     {
@@ -200,7 +200,7 @@
         "include/swoole_coroutine.h",
         "include/swoole_coroutine_context.h"
       ],
-      "abi_contract": "docs/coroutine-abi-v1.md",
+      "abi_contract": "native/coroutine/contract.md",
       "feature_bit_reserved": 32768
     },
     {
@@ -253,7 +253,7 @@
         "ext-src/php_swoole_ssh2.h",
         "ext-src/php_swoole_ssh2_hook.h"
       ],
-      "abi_contract": "docs/hooks-abi-v1.md",
+      "abi_contract": "native/hooks/contract.md",
       "feature_bit_reserved": 65536
     },
     {
@@ -310,7 +310,7 @@
         "include/swoole_pipe.h",
         "src/os/unix_socket.cc"
       ],
-      "abi_contract": "docs/process-abi-v1.md",
+      "abi_contract": "native/process/contract.md",
       "feature_bit_reserved": 524288
     },
     {
@@ -630,7 +630,7 @@
         "src/os/unix_socket.cc",
         "src/coroutine/file.cc"
       ],
-      "abi_contract": "docs/os-support-abi-v1.md",
+      "abi_contract": "native/ossupport/contract.md",
       "feature_bit_reserved": 131072
     },
     {
@@ -655,7 +655,7 @@
         "src/protocol/dtls.cc",
         "include/swoole_dtls.h"
       ],
-      "abi_contract": "docs/tls-dtls-abi-v1.md",
+      "abi_contract": "native/tls/README.md",
       "feature_bit_reserved": 262144
     },
     {
@@ -705,7 +705,7 @@
         "ext-src/swoole_socket_coro.cc",
         "include/swoole_client.h"
       ],
-      "abi_contract": "docs/clients-resolver-abi-v1.md",
+      "abi_contract": "native/clients/contract.md",
       "feature_bit_reserved": 1048576
     },
     {
@@ -739,7 +739,7 @@
         "ext-src/swoole_http_server.cc",
         "ext-src/swoole_websocket_server.cc"
       ],
-      "abi_contract": "docs/http-bindings-abi-v1.md",
+      "abi_contract": "native/httpbindings/contract.md",
       "feature_bit_reserved": 2097152
     },
     {
@@ -774,7 +774,7 @@
         "ext-src/swoole_http2_server.cc",
         "ext-src/swoole_http2_client_coro.cc"
       ],
-      "abi_contract": "docs/http2-abi-v1.md",
+      "abi_contract": "crates/http2/src/lib.rs",
       "feature_bit_reserved": 4194304
     },
     {
@@ -813,7 +813,7 @@
         "src/server/port.cc",
         "ext-src/swoole_server_port.cc"
       ],
-      "abi_contract": "docs/ports-abi-v1.md",
+      "abi_contract": "native/ports/contract.md",
       "feature_bit_reserved": 8388608
     },
     {
@@ -842,7 +842,7 @@
         "ext-src/php_swoole_cxx.h",
         "ext-src/php_swoole_private.h"
       ],
-      "abi_contract": "docs/phphelpers-abi-v1.md",
+      "abi_contract": "native/phphelpers/swoole_rs_phphelpers.h",
       "feature_bit_reserved": 16777216
     },
     {
@@ -868,7 +868,7 @@
         "ext-src/swoole_table.cc",
         "ext-src/swoole_channel_coro.cc"
       ],
-      "abi_contract": "docs/phpcollections-abi-v1.md"
+      "abi_contract": "crates/phpcollections/src/lib.rs"
     },
     {
       "id": "M28",
