@@ -19,6 +19,7 @@ void swoole_signalfd_init();
 /* `safety` defers the handler to swoole_signal_dispatch(), outside the signal frame. */
 SW_API swoole::SignalHandler swoole_signal_set(int signo, swoole::SignalHandler func, bool safety = false);
 SW_API swoole::SignalHandler swoole_signal_set(int signo, swoole::SignalHandler func, int restart, int mask);
+SW_API swoole::SignalHandler swoole_signal_get_handler(int signo);
 SW_API void swoole_signal_clear();
 SW_API void swoole_signal_block_all();
 SW_API void swoole_signal_dispatch();
