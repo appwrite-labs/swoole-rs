@@ -21,6 +21,9 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+mod client;
+mod http1;
+
 type Server = c_void;
 type Receive = extern "C" fn(*mut Server, *const c_void) -> c_int;
 type Event = extern "C" fn(*mut Server, *const c_void);
@@ -925,14 +928,15 @@ const CASES: Cases = &[
 fn main() {
     let name = std::env::args().nth(1).expect("usage: main --list | NAME");
     if name == "--list" {
-        for (case, _) in CASES {
+        for (case, _) in http1::CASES.iter().chain(CASES) {
             println!("http_server.{case}");
         }
         return;
     }
     let case = name.strip_prefix("http_server.").expect("http_server.NAME");
-    let (_, body) = CASES
+    let (_, body) = http1::CASES
         .iter()
+        .chain(CASES)
         .find(|(known, _)| *known == case)
         .expect("unknown case");
     // core-tests' main sets SwooleG.max_sockets = 20000 after swoole_init; swoole_init

@@ -148,6 +148,15 @@ using swoole::ListenPort;
 using swoole::Server;
 
 extern "C" {
+// The Rust ports of core-tests' server cases (tests/modules/http/server/src/http1.rs) make and delete theirs here.
+Server *swr_v1_server_new(int mode) {
+    return new Server(static_cast<Server::Mode>(mode));
+}
+
+void swr_v1_server_delete(Server *serv) {
+    delete serv;
+}
+
 ListenPort *swr_v1_server_port_new(Server *serv) {
     return new ListenPort(serv);
 }

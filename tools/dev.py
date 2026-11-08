@@ -45,6 +45,10 @@ CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_
 # http_server.cpp's server TESTs ported to tests/modules/http/server/ (the http-server-rust phase).
 HTTP_SERVER_RUST = ['websocket_small', 'websocket_medium', 'websocket_big', 'websocket_mask', 'node_websocket_client_1',
                     'node_websocket_client_2', 'sni', 'client_ca', 'ssl']
+HTTP1_SERVER_RUST = ['get', 'reset_connection', 'heartbeat_check_interval', 'idle_time', 'post', 'static_get', 'static_files',
+                     'not_modify', 'proxy_file', 'proxy_response', 'heartbeat', 'overflow', 'process', 'process1',
+                     'redundant_callback', 'pause', 'bad_request', 'chunked', 'max_queued_bytes',
+                     'dispatch_func_return_error_worker_id', 'http_range', 'http_range2', 'fail']
 NODE_WS = 'needs Node.js and its ws package'
 CORE_TESTS = {
     'reactor': (['reactor/base.cpp', 'network/socket.cpp'],
@@ -52,6 +56,7 @@ CORE_TESTS = {
                  'socket.connect_sync': NETWORK, 'socket.fail': NETWORK}),
     'http': (['server/http_server.cpp'],
              {**{'http_server.' + name: 'a Rust test (tests/modules/http/server/src/main.rs)' for name in HTTP_SERVER_RUST},
+              **{'http_server.' + name: 'a Rust test (tests/modules/http/server/src/http1.rs)' for name in HTTP1_SERVER_RUST},
               **{'http_server.' + name: 'a Rust test (tests/modules/http/http_server.rs); the http_server::listen SDK it drove is deleted'
                  for name in ['parser1', 'parser2', 'upload', 'max_request_size']},
               **{'http_server.' + name: 'a Rust test (' + path + ')' for path, names in [

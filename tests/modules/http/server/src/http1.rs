@@ -1,0 +1,1733 @@
+//! The HTTP/1 TESTs that start a server (`get` .. `http_range2`, and `fail`), one Rust
+//! function per TEST with the same inputs and expected values.
+//!
+//! Unlike main.rs's cases these need no fixture: the `Server` is made and deleted by
+//! `swr_v1_server_new`/`swr_v1_server_delete` (native/integration/server.cc), and its
+//! configuration, callback slots, tables and static-handler sets are the Rust records
+//! `ServerFields` and `PortFields` view (native/include/swoole_rs_server_state.h,
+//! swoole_rs_port_state.h), reached from the `state_` handle that heads the object and
+//! the `swr_v1_port_config *` that heads a `ListenPort`. Each new server checks this
+//! file's copies of those layouts with `swr_v1_server_record_layout`. The methods the
+//! cases call are Rust under their upstream symbols. The fixtures read the request line
+//! and headers where upstream's ran llhttp; the client is core-tests' httplib
+//! (client.rs). An assertion in a server callback cannot unwind through the server's
+//! frames, so it records the failure, which the case asserts on once the server stops.
+
+use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
+use std::mem::offset_of;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use crate::client::{Client, USER_AGENT};
+
+const TEST_HOST: &str = "127.0.0.1";
+const MODE_BASE: c_int = 1;
+const MODE_PROCESS: c_int = 2;
+const DISPATCH_FDMOD: u8 = 2;
+const DISPATCH_IDLE_WORKER: u8 = 3;
+const DISPATCH_RESULT_DISCARD_PACKET: c_int = -1;
+const DISPATCH_RESULT_CLOSE_CONNECTION: c_int = -2;
+const SW_SERVER_EVENT_PAUSE_RECV: c_int = 11;
+const SW_SOCK_TCP: c_int = 1;
+const SW_LOG_WARNING: c_int = 4;
+const SW_OK: c_int = 0;
+const SW_ERR: c_int = -1;
+const SW_ERROR_NAME_TOO_LONG: c_int = 504;
+const SW_ERROR_DIR_NOT_EXIST: c_int = 703;
+const PATH_MAX: usize = 4096;
+const SIGTERM: c_int = 15;
+const SW_HTTP_RFC1123_DATE_GMT: &CStr = c"%a, %d %b %Y %T GMT";
+const SW_HTTP_RFC1123_DATE_UTC: &CStr = c"%a, %d %b %Y %T UTC";
+const SW_HTTP_RFC850_DATE: &CStr = c"%A, %d-%b-%y %T GMT";
+const SW_HTTP_ASCTIME_DATE: &CStr = c"%a %b %e %T %Y";
+
+// Server's text members (SWR_SERVER_TEXT_*).
+const TEXT_CHROOT: usize = 0;
+const TEXT_USER: usize = 1;
+const TEXT_GROUP: usize = 2;
+
+// The static-handler sets (`detail::ServerStrings` kinds) and their insert operation.
+const LOCATIONS: u32 = 0;
+const INDEX_FILES: u32 = 1;
+const COMPRESSION_TYPES: u32 = 2;
+const STRINGS_INSERT: u32 = 4;
+
+// Callback slots, in callbacks.rs's order.
+const CB_CONNECT: usize = 0;
+const CB_CLOSE: usize = 1;
+const CB_BUFFER_FULL: usize = 2;
+const CB_BUFFER_EMPTY: usize = 3;
+const CB_RECEIVE: usize = 5;
+const CB_START: usize = 7;
+const CB_WORKER_START: usize = 16;
+const CB_DISPATCH_FUNC: usize = 21;
+const CB_COUNT: usize = 22;
+
+// `get_connection_by_session_id`'s lookup kind.
+const BY_SESSION: u32 = 1;
+
+// The SWR_SERVER_NATIVE pointer members, opaque here.
+type Native = *mut c_void;
+
+/// `swr_v1_server_config`.
+#[repr(C)]
+struct ServerConfig {
+    reactor_num: u16,
+    worker_num: u32,
+    dgram_port_num: u8,
+    dispatch_mode: u8,
+    scheduler_warning: bool,
+    max_request: u32,
+    max_request_grace: u32,
+    udp_socket_ipv4: Native,
+    udp_socket_ipv6: Native,
+    dgram_socket: Native,
+    max_wait_time: u32,
+    worker_max_concurrency: u32,
+    daemonize: bool,
+    have_dgram_sock: bool,
+    have_stream_sock: bool,
+    open_cpu_affinity: bool,
+    disable_notify: bool,
+    discard_timeout_request: bool,
+    http_parse_cookie: bool,
+    http_parse_post: bool,
+    http_parse_files: bool,
+    http_compression: bool,
+    websocket_compression: bool,
+    enable_static_handler: bool,
+    http_autoindex: bool,
+    enable_unsafe_event: bool,
+    enable_delay_receive: bool,
+    enable_reuse_port: bool,
+    reload_async: bool,
+    event_object: bool,
+    task_object: bool,
+    task_enable_coroutine: bool,
+    send_yield: bool,
+    enable_coroutine: bool,
+    single_thread: bool,
+    running: bool,
+    cpu_affinity_available: *mut c_int,
+    cpu_affinity_available_num: c_int,
+    pipe_command: Native,
+    send_timeout: f64,
+    heartbeat_check_interval: u16,
+    warning_time: i64,
+    timezone_: c_long,
+    master_timer: Native,
+    heartbeat_timer: Native,
+    output_buffer_size: u32,
+    input_buffer_size: u32,
+    max_queued_bytes: u32,
+    ipc_max_size: u32,
+    private_data_1: Native,
+    private_data_2: Native,
+    private_data_3: Native,
+    private_data_4: Native,
+    factory_: Native,
+    manager_: Native,
+    task_worker_num: u32,
+    task_ipc_mode: u8,
+    task_max_request: u32,
+    task_max_request_grace: u32,
+    task_results: Native,
+    worker_registry: Native,
+    user_workers: Native,
+    workers: Native,
+    gs: Native,
+    upload_max_filesize: usize,
+    http_compression_level: u8,
+    compression_min_length: u32,
+    recv_buffer_allocator: Native,
+    recv_buffer_size: usize,
+    message_queue_key: u64,
+    mode_: u8,
+}
+
+/// The offsets `ServerFields`' constructor checks, in its order.
+const CONFIG_OFFSETS: &[usize] = &[
+    offset_of!(ServerConfig, reactor_num),
+    offset_of!(ServerConfig, worker_num),
+    offset_of!(ServerConfig, dgram_port_num),
+    offset_of!(ServerConfig, dispatch_mode),
+    offset_of!(ServerConfig, scheduler_warning),
+    offset_of!(ServerConfig, max_request),
+    offset_of!(ServerConfig, max_request_grace),
+    offset_of!(ServerConfig, udp_socket_ipv4),
+    offset_of!(ServerConfig, udp_socket_ipv6),
+    offset_of!(ServerConfig, dgram_socket),
+    offset_of!(ServerConfig, max_wait_time),
+    offset_of!(ServerConfig, worker_max_concurrency),
+    offset_of!(ServerConfig, daemonize),
+    offset_of!(ServerConfig, have_dgram_sock),
+    offset_of!(ServerConfig, have_stream_sock),
+    offset_of!(ServerConfig, open_cpu_affinity),
+    offset_of!(ServerConfig, disable_notify),
+    offset_of!(ServerConfig, discard_timeout_request),
+    offset_of!(ServerConfig, http_parse_cookie),
+    offset_of!(ServerConfig, http_parse_post),
+    offset_of!(ServerConfig, http_parse_files),
+    offset_of!(ServerConfig, http_compression),
+    offset_of!(ServerConfig, websocket_compression),
+    offset_of!(ServerConfig, enable_static_handler),
+    offset_of!(ServerConfig, http_autoindex),
+    offset_of!(ServerConfig, enable_unsafe_event),
+    offset_of!(ServerConfig, enable_delay_receive),
+    offset_of!(ServerConfig, enable_reuse_port),
+    offset_of!(ServerConfig, reload_async),
+    offset_of!(ServerConfig, event_object),
+    offset_of!(ServerConfig, task_object),
+    offset_of!(ServerConfig, task_enable_coroutine),
+    offset_of!(ServerConfig, send_yield),
+    offset_of!(ServerConfig, enable_coroutine),
+    offset_of!(ServerConfig, single_thread),
+    offset_of!(ServerConfig, running),
+    offset_of!(ServerConfig, cpu_affinity_available),
+    offset_of!(ServerConfig, cpu_affinity_available_num),
+    offset_of!(ServerConfig, pipe_command),
+    offset_of!(ServerConfig, send_timeout),
+    offset_of!(ServerConfig, heartbeat_check_interval),
+    offset_of!(ServerConfig, warning_time),
+    offset_of!(ServerConfig, timezone_),
+    offset_of!(ServerConfig, master_timer),
+    offset_of!(ServerConfig, heartbeat_timer),
+    offset_of!(ServerConfig, output_buffer_size),
+    offset_of!(ServerConfig, input_buffer_size),
+    offset_of!(ServerConfig, max_queued_bytes),
+    offset_of!(ServerConfig, ipc_max_size),
+    offset_of!(ServerConfig, private_data_1),
+    offset_of!(ServerConfig, private_data_2),
+    offset_of!(ServerConfig, private_data_3),
+    offset_of!(ServerConfig, private_data_4),
+    offset_of!(ServerConfig, factory_),
+    offset_of!(ServerConfig, manager_),
+    offset_of!(ServerConfig, task_worker_num),
+    offset_of!(ServerConfig, task_ipc_mode),
+    offset_of!(ServerConfig, task_max_request),
+    offset_of!(ServerConfig, task_max_request_grace),
+    offset_of!(ServerConfig, task_results),
+    offset_of!(ServerConfig, worker_registry),
+    offset_of!(ServerConfig, user_workers),
+    offset_of!(ServerConfig, workers),
+    offset_of!(ServerConfig, gs),
+    offset_of!(ServerConfig, upload_max_filesize),
+    offset_of!(ServerConfig, http_compression_level),
+    offset_of!(ServerConfig, compression_min_length),
+    offset_of!(ServerConfig, recv_buffer_allocator),
+    offset_of!(ServerConfig, recv_buffer_size),
+    offset_of!(ServerConfig, message_queue_key),
+    offset_of!(ServerConfig, mode_),
+];
+
+/// `swr_v1_server_ports`.
+#[repr(C)]
+struct Ports {
+    items: *const *mut c_void,
+    count: u32,
+}
+
+/// `swr_v1_server_tables`.
+#[repr(C)]
+struct ServerTables {
+    connection_list: Native,
+    session_list: Native,
+    port_gs_list: Native,
+    max_connection: u32,
+    enable_accept_timer: Native,
+    reactor_pipe_num: u16,
+    reactor_threads: Native,
+    ports: Ports,
+    message_bus: Native,
+}
+
+const TABLES_OFFSETS: &[usize] = &[
+    offset_of!(ServerTables, connection_list),
+    offset_of!(ServerTables, session_list),
+    offset_of!(ServerTables, port_gs_list),
+    offset_of!(ServerTables, max_connection),
+    offset_of!(ServerTables, enable_accept_timer),
+    offset_of!(ServerTables, reactor_pipe_num),
+    offset_of!(ServerTables, reactor_threads),
+    offset_of!(ServerTables, ports),
+    offset_of!(ServerTables, message_bus),
+];
+
+/// `Protocol` (native/framing/swoole_protocol.h).
+#[repr(C)]
+struct Protocol {
+    split_by_eof: bool,
+    package_eof: [u8; 8],
+    package_eof_len: u8,
+    package_length_type: u8,
+    package_length_size: u8,
+    package_length_offset: u16,
+    package_body_offset: u16,
+    package_max_length: u32,
+    private_data_1: Native,
+    private_data_2: Native,
+    on_package: Native,
+    get_package_length: Native,
+    get_package_length_size: Native,
+}
+
+/// `swr_v1_port_config`.
+#[repr(C)]
+struct PortConfig {
+    object_id: u16,
+    backlog: u16,
+    listening: bool,
+    tcp_defer_accept: c_int,
+    tcp_fastopen: c_int,
+    tcp_keepidle: c_int,
+    tcp_keepinterval: c_int,
+    tcp_keepcount: c_int,
+    tcp_user_timeout: c_int,
+    max_idle_time: f64,
+    socket_buffer_size: c_int,
+    buffer_high_watermark: u32,
+    buffer_low_watermark: u32,
+    type_: c_int,
+    ssl: u8,
+    port: c_int,
+    socket: Native,
+    thread_id: u64,
+    heartbeat_idle_time: u16,
+    open_eof_check: bool,
+    open_http_protocol: bool,
+    open_http2_protocol: bool,
+    open_websocket_protocol: bool,
+    open_length_check: bool,
+    open_mqtt_protocol: bool,
+    open_redis_protocol: bool,
+    open_tcp_nodelay: bool,
+    open_tcp_nopush: bool,
+    open_tcp_keepalive: bool,
+    kernel_socket_recv_buffer_size: c_int,
+    kernel_socket_send_buffer_size: c_int,
+    gs: Native,
+    ptr: Native,
+    websocket_frames: u8,
+    websocket_protocol: Native,
+    host_slot: Native,
+    protocol: Protocol,
+    on_read: Native,
+    ssl_context: Native,
+    tls: Native,
+}
+
+/// The offsets `PortFields`' constructor checks, in its order.
+const PORT_OFFSETS: &[usize] = &[
+    offset_of!(PortConfig, object_id),
+    offset_of!(PortConfig, backlog),
+    offset_of!(PortConfig, listening),
+    offset_of!(PortConfig, tcp_defer_accept),
+    offset_of!(PortConfig, tcp_fastopen),
+    offset_of!(PortConfig, tcp_keepidle),
+    offset_of!(PortConfig, tcp_keepinterval),
+    offset_of!(PortConfig, tcp_keepcount),
+    offset_of!(PortConfig, tcp_user_timeout),
+    offset_of!(PortConfig, max_idle_time),
+    offset_of!(PortConfig, socket_buffer_size),
+    offset_of!(PortConfig, buffer_high_watermark),
+    offset_of!(PortConfig, buffer_low_watermark),
+    offset_of!(PortConfig, type_),
+    offset_of!(PortConfig, ssl),
+    offset_of!(PortConfig, port),
+    offset_of!(PortConfig, socket),
+    offset_of!(PortConfig, thread_id),
+    offset_of!(PortConfig, heartbeat_idle_time),
+    offset_of!(PortConfig, open_eof_check),
+    offset_of!(PortConfig, open_http_protocol),
+    offset_of!(PortConfig, open_http2_protocol),
+    offset_of!(PortConfig, open_websocket_protocol),
+    offset_of!(PortConfig, open_length_check),
+    offset_of!(PortConfig, open_mqtt_protocol),
+    offset_of!(PortConfig, open_redis_protocol),
+    offset_of!(PortConfig, open_tcp_nodelay),
+    offset_of!(PortConfig, open_tcp_nopush),
+    offset_of!(PortConfig, open_tcp_keepalive),
+    offset_of!(PortConfig, kernel_socket_recv_buffer_size),
+    offset_of!(PortConfig, kernel_socket_send_buffer_size),
+    offset_of!(PortConfig, gs),
+    offset_of!(PortConfig, ptr),
+    offset_of!(PortConfig, websocket_frames),
+    offset_of!(PortConfig, websocket_protocol),
+    offset_of!(PortConfig, host_slot),
+    offset_of!(PortConfig, protocol),
+    offset_of!(PortConfig, on_read),
+    offset_of!(PortConfig, ssl_context),
+    offset_of!(PortConfig, tls),
+];
+
+/// `swr_v1_server_callback`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Callback {
+    invoke: *const c_void,
+    ctx: *mut c_void,
+    drop: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
+/// `DataHead`.
+#[repr(C)]
+struct DataHead {
+    fd: c_long,
+    msg_id: u64,
+    len: u32,
+    reactor_id: i16,
+    type_: u8,
+    flags: u8,
+    server_fd: u16,
+    ext_flags: u16,
+    reserved: u32,
+    time: f64,
+}
+
+/// `RecvData`.
+#[repr(C)]
+struct RecvData {
+    info: DataHead,
+    data: *const c_char,
+}
+
+/// The head of `Connection`, through `close_actively`.
+#[repr(C)]
+struct Connection {
+    active: u8,
+    socket_type: c_int,
+    fd: c_int,
+    worker_id: c_int,
+    session_id: c_long,
+    ssl: u8,
+    ssl_ready: u8,
+    overflow: u8,
+    high_watermark: u8,
+    http_upgrade: u8,
+    http2_stream: u8,
+    websocket_compression: u8,
+    close_actively: u8,
+}
+
+/// libstdc++'s `std::string`, as a `const std::string &` argument reads it.
+#[repr(C)]
+struct StdString {
+    data: *const c_char,
+    length: usize,
+    capacity: usize,
+    _local: usize,
+}
+
+#[link(name = "swoole")]
+unsafe extern "C-unwind" {
+    #[link_name = "_Z20swoole_set_log_leveli"]
+    fn swoole_set_log_level(level: c_int);
+    #[link_name = "_Z23swoole_signal_block_allv"]
+    fn swoole_signal_block_all();
+    fn swr_v1_core_last_error() -> c_int;
+
+    fn swr_v1_server_new(mode: c_int) -> *mut c_void;
+    fn swr_v1_server_delete(serv: *mut c_void);
+    fn swr_v1_server_config_get(state: *mut c_void) -> *mut ServerConfig;
+    fn swr_v1_server_callbacks_get(state: *mut c_void) -> *mut Callback;
+    fn swr_v1_server_tables_get(state: *mut c_void) -> *mut ServerTables;
+    fn swr_v1_server_record_layout(
+        kind: u32,
+        size: usize,
+        alignment: usize,
+        offsets: *const usize,
+        count: usize,
+    ) -> bool;
+    fn swr_v1_server_static_config(
+        state: *const c_void,
+        kind: u32,
+        op: u32,
+        data: *const u8,
+        length: usize,
+    ) -> usize;
+    fn swr_v1_server_connection(state: *const c_void, key: c_long, kind: u32) -> *mut Connection;
+
+    #[link_name = "_ZN6swoole6Server17set_document_rootERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"]
+    fn server_set_document_root(serv: *mut c_void, path: *const StdString) -> bool;
+    #[link_name = "_ZN6swoole6Server8add_portE12swSocketTypePKci"]
+    fn server_add_port(
+        serv: *mut c_void,
+        kind: c_int,
+        host: *const c_char,
+        port: c_int,
+    ) -> *mut c_void;
+    #[link_name = "_ZN6swoole6Server6createEv"]
+    fn server_create(serv: *mut c_void) -> c_int;
+    #[link_name = "_ZN6swoole6Server5startEv"]
+    fn server_start(serv: *mut c_void) -> c_int;
+    #[link_name = "_ZNK6swoole6Server4sendElPKvj"]
+    fn server_send(serv: *mut c_void, session: c_long, data: *const c_void, length: u32) -> bool;
+    #[link_name = "_ZNK6swoole6Server8sendfileElPKcjlm"]
+    fn server_sendfile(
+        serv: *mut c_void,
+        session: c_long,
+        file: *const c_char,
+        length: u32,
+        offset: c_long,
+        size: usize,
+    ) -> bool;
+}
+
+unsafe extern "C" {
+    fn kill(pid: c_int, signal: c_int) -> c_int;
+    fn getpid() -> c_int;
+    fn time(out: *mut i64) -> i64;
+    fn gmtime(time: *const i64) -> *const c_void;
+    fn strftime(out: *mut c_char, size: usize, format: *const c_char, tm: *const c_void) -> usize;
+}
+
+#[link(name = "swoole")]
+unsafe extern "C-unwind" {
+    fn swr_v1_server_text_slot(state: *const c_void, index: usize) -> *const c_void;
+    fn swr_v1_core_string_set(slot: *const c_void, bytes: *const c_char, length: usize) -> c_int;
+    #[link_name = "_ZNK6swoole6Server19get_idle_worker_numEv"]
+    fn server_get_idle_worker_num(serv: *mut c_void) -> u32;
+    #[link_name = "_ZNK6swoole6Server21is_healthy_connectionEdPKNS_10ConnectionE"]
+    fn server_is_healthy_connection(serv: *mut c_void, now: f64, conn: *const Connection) -> bool;
+    #[link_name = "_ZN6swoole6Server8feedbackEPNS_10ConnectionENS_15ServerEventTypeE"]
+    fn server_feedback(serv: *mut c_void, conn: *mut Connection, event: c_int) -> bool;
+    #[link_name = "_ZN6swoole9microtimeEv"]
+    fn microtime() -> f64;
+    #[link_name = "_Z20swoole_set_worker_idj"]
+    fn swoole_set_worker_id(worker_id: u32);
+}
+
+unsafe extern "C" {
+    fn fork() -> c_int;
+    fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
+}
+
+/// A `Server`. Upstream's cases leak the ones they `new`; `delete` ends the others.
+#[derive(Clone, Copy)]
+struct Server(*mut c_void);
+
+// SAFETY: the cases' client threads use the server as upstream's do: the fields they
+// set are plain records, and the methods they call are the ones upstream calls there.
+unsafe impl Send for Server {}
+// SAFETY: as above.
+unsafe impl Sync for Server {}
+
+/// A `ListenPort`.
+#[derive(Clone, Copy)]
+struct Port(*mut c_void);
+
+impl Port {
+    fn config(self) -> &'static mut PortConfig {
+        // SAFETY: a ListenPort's first member is its live `swr_v1_port_config *`.
+        unsafe { &mut **self.0.cast::<*mut PortConfig>() }
+    }
+
+    fn port(self) -> u16 {
+        u16::try_from(self.config().port).unwrap()
+    }
+
+    fn set_package_max_length(self, max_length: u32) {
+        self.config().protocol.package_max_length = max_length;
+    }
+}
+
+fn check_layout(kind: u32, size: usize, alignment: usize, offsets: &[usize]) {
+    // SAFETY: `offsets` is readable for its length.
+    let matches = unsafe {
+        swr_v1_server_record_layout(kind, size, alignment, offsets.as_ptr(), offsets.len())
+    };
+    assert!(matches, "record {kind}'s layout differs from the hybrid's");
+}
+
+impl Server {
+    fn new(mode: c_int) -> Self {
+        check_layout(
+            0,
+            size_of::<ServerConfig>(),
+            align_of::<ServerConfig>(),
+            CONFIG_OFFSETS,
+        );
+        check_layout(
+            1,
+            size_of::<ServerTables>(),
+            align_of::<ServerTables>(),
+            TABLES_OFFSETS,
+        );
+        check_layout(
+            4,
+            size_of::<PortConfig>(),
+            align_of::<PortConfig>(),
+            PORT_OFFSETS,
+        );
+        // SAFETY: a valid mode.
+        Self(unsafe { swr_v1_server_new(mode) })
+    }
+
+    /// `delete serv`, or the end of a stack `Server`'s scope.
+    fn delete(self) {
+        // SAFETY: made by swr_v1_server_new, deleted once.
+        unsafe { swr_v1_server_delete(self.0) };
+    }
+
+    fn state(self) -> *mut c_void {
+        // SAFETY: `Server` begins with `ServerFields`, whose first member is `state_`.
+        unsafe { *self.0.cast::<*mut c_void>() }
+    }
+
+    fn config(self) -> &'static mut ServerConfig {
+        // SAFETY: the state's configuration lives as long as the server.
+        unsafe { &mut *swr_v1_server_config_get(self.state()) }
+    }
+
+    fn slot(self, slot: usize) -> &'static mut Callback {
+        assert!(slot < CB_COUNT);
+        // SAFETY: the server's slots, `CB_COUNT` of them.
+        unsafe { &mut *swr_v1_server_callbacks_get(self.state()).add(slot) }
+    }
+
+    /// `serv.onX = fn`, for a slot that holds no closure to drop.
+    fn set_callback(self, slot: usize, invoke: *const c_void) {
+        *self.slot(slot) = Callback {
+            invoke,
+            ctx: std::ptr::null_mut(),
+            drop: None,
+        };
+    }
+
+    /// `serv.onX == nullptr`.
+    fn callback_is_empty(self, slot: usize) -> bool {
+        self.slot(slot).invoke.is_null()
+    }
+
+    fn insert(self, kind: u32, value: &str) {
+        // SAFETY: `value` is readable for its length.
+        unsafe {
+            swr_v1_server_static_config(
+                self.state(),
+                kind,
+                STRINGS_INSERT,
+                value.as_ptr(),
+                value.len(),
+            )
+        };
+    }
+
+    /// `serv.user_ = value` and the other text members.
+    fn set_text(self, index: usize, value: &str) {
+        // SAFETY: the state's text slot; `value` is readable for its length.
+        let status = unsafe {
+            swr_v1_core_string_set(
+                swr_v1_server_text_slot(self.state(), index),
+                value.as_ptr().cast(),
+                value.len(),
+            )
+        };
+        assert!(status >= 0);
+    }
+
+    /// `set_document_root(path)`: `path` as a `std::string` of its bytes.
+    fn set_document_root(self, path: &[u8]) -> bool {
+        let mut bytes = path.to_vec();
+        bytes.push(0);
+        let string = StdString {
+            data: bytes.as_ptr().cast(),
+            length: path.len(),
+            capacity: path.len(),
+            _local: 0,
+        };
+        // SAFETY: a NUL-terminated string the callee only reads.
+        unsafe { server_set_document_root(self.0, &string) }
+    }
+
+    fn add_port(self, kind: c_int, host: &str, port: c_int) -> Option<Port> {
+        let host = CString::new(host).unwrap();
+        // SAFETY: a NUL-terminated host.
+        let port = unsafe { server_add_port(self.0, kind, host.as_ptr(), port) };
+        (!port.is_null()).then_some(Port(port))
+    }
+
+    /// `ports.front()`.
+    fn get_primary_port(self) -> Port {
+        // SAFETY: the state's tables live as long as the server.
+        let ports = unsafe { &(*swr_v1_server_tables_get(self.state())).ports };
+        assert!(ports.count > 0);
+        // SAFETY: `count` listening ports.
+        Port(unsafe { *ports.items })
+    }
+
+    /// `gs->master_pid`: `ServerGS` begins with the counters, `master_pid` first.
+    fn get_master_pid(self) -> c_int {
+        // SAFETY: the created server's shared counters.
+        unsafe { *self.config().gs.cast::<c_int>() }
+    }
+
+    fn create(self) -> c_int {
+        // SAFETY: a configured server.
+        unsafe { server_create(self.0) }
+    }
+
+    fn start(self) -> c_int {
+        // SAFETY: a created server.
+        unsafe { server_start(self.0) }
+    }
+
+    fn send(self, session: c_long, data: &[u8]) -> bool {
+        // SAFETY: `data` is readable for its length.
+        unsafe {
+            server_send(
+                self.0,
+                session,
+                data.as_ptr().cast(),
+                u32::try_from(data.len()).unwrap(),
+            )
+        }
+    }
+
+    fn sendfile(self, session: c_long, file: &str) -> bool {
+        let path = CString::new(file).unwrap();
+        // SAFETY: a NUL-terminated path.
+        unsafe {
+            server_sendfile(
+                self.0,
+                session,
+                path.as_ptr(),
+                u32::try_from(file.len()).unwrap(),
+                0,
+                0,
+            )
+        }
+    }
+
+    fn get_connection_by_session_id(self, session: c_long) -> &'static mut Connection {
+        // SAFETY: a live session's connection.
+        unsafe { &mut *swr_v1_server_connection(self.state(), session, BY_SESSION) }
+    }
+
+    fn get_idle_worker_num(self) -> u32 {
+        // SAFETY: a running server.
+        unsafe { server_get_idle_worker_num(self.0) }
+    }
+
+    fn is_healthy_connection(self, now: f64, conn: &Connection) -> bool {
+        // SAFETY: a live connection.
+        unsafe { server_is_healthy_connection(self.0, now, conn) }
+    }
+
+    fn feedback(self, conn: &mut Connection, event: c_int) -> bool {
+        // SAFETY: a live connection.
+        unsafe { server_feedback(self.0, conn, event) }
+    }
+}
+
+fn last_error() -> c_int {
+    // SAFETY: reads this thread's last error.
+    unsafe { swr_v1_core_last_error() }
+}
+
+/// `test::get_root_path()`: the directory the runner starts each case in, the tree's
+/// root, read once as core-tests' main does (a worker's `chroot_` moves it to `/`).
+fn root_path() -> String {
+    static ROOT: OnceLock<String> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        std::env::current_dir()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    })
+    .clone()
+}
+
+fn sleep(seconds: f64) {
+    std::thread::sleep(Duration::from_secs_f64(seconds));
+}
+
+fn kill_pid(pid: c_int) {
+    // SAFETY: signals that process.
+    unsafe { kill(pid, SIGTERM) };
+}
+
+fn kill_self() {
+    // SAFETY: this process.
+    kill_pid(unsafe { getpid() });
+}
+
+fn block_all_signals() {
+    // SAFETY: masks this thread's signals.
+    unsafe { swoole_signal_block_all() };
+}
+
+fn set_log_warning() {
+    // SAFETY: sets the global log level.
+    unsafe { swoole_set_log_level(SW_LOG_WARNING) };
+}
+
+/// `fork()`: the child runs `child` and exits 0, as upstream's `if (pid == 0)` blocks do.
+fn fork_with(child: impl FnOnce()) -> c_int {
+    // SAFETY: the child runs only `child` before exiting.
+    let pid = unsafe { fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        child();
+        std::process::exit(0);
+    }
+    pid
+}
+
+/// `ON_SCOPE_EXIT { kill(server->get_master_pid(), SIGTERM); }`.
+struct KillMaster(Server);
+
+impl Drop for KillMaster {
+    fn drop(&mut self) {
+        kill_pid(self.0.get_master_pid());
+    }
+}
+
+/// `swoole_shell_exec(command, &pid, 0)`: `/bin/sh -c command`, its stdout piped back.
+fn shell_exec(command: &str) -> std::process::ChildStdout {
+    std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+        .stdout
+        .unwrap()
+}
+
+/// One `read(pipe, buf, sizeof(buf) - 1)` into a 1024-byte buffer.
+fn read_once(mut pipe: std::process::ChildStdout) -> Vec<u8> {
+    let mut buf = [0u8; 1024];
+    let n = std::io::Read::read(&mut pipe, &mut buf[..1023]).unwrap_or(0);
+    buf[..n].to_vec()
+}
+
+fn read_text(path: &str) -> Option<String> {
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `test::counter_*`'s counter 0, and whether a server-side expectation failed.
+static COUNTER: AtomicI32 = AtomicI32::new(0);
+static FAILED: AtomicBool = AtomicBool::new(false);
+
+/// `EXPECT_*` in a server callback: report and record, then carry on as gtest does.
+fn expect(held: bool, what: &str) {
+    if !held {
+        eprintln!("expectation failed: {what}");
+        FAILED.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The request's URL and headers, where upstream's handler ran llhttp; `None` for a
+/// request it could not parse.
+fn parse_request(data: &[u8]) -> Option<(String, Vec<(String, String)>)> {
+    let head_end = data.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&data[..head_end]).ok()?;
+    let mut lines = head.split("\r\n");
+    let mut request_line = lines.next()?.split(' ');
+    let (_method, url, version) = (
+        request_line.next()?,
+        request_line.next()?,
+        request_line.next()?,
+    );
+    if !version.starts_with("HTTP/1.") || request_line.next().is_some() {
+        return None;
+    }
+    let headers = lines
+        .map(|line| {
+            let (key, value) = line.split_once(':')?;
+            Some((key.to_owned(), value.trim_start().to_owned()))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((url.to_owned(), headers))
+}
+
+fn user_agent(headers: &[(String, String)]) -> &str {
+    headers
+        .iter()
+        .find(|(k, _)| k == "User-Agent")
+        .map_or("", |(_, v)| v.as_str())
+}
+
+/// `http_context::response(code, body)`: the status line and `Content-Length`, then the body.
+fn respond(serv: Server, session: c_long, body: &str) {
+    let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+    serv.send(session, head.as_bytes());
+    serv.send(session, body.as_bytes());
+}
+
+/// The request a callback receives, and its bytes.
+fn request<'a>(req: *mut RecvData) -> (c_long, &'a [u8]) {
+    // SAFETY: the server passes a live request of `len` bytes.
+    unsafe {
+        let req = &*req;
+        (
+            req.info.fd,
+            std::slice::from_raw_parts(req.data.cast::<u8>(), req.info.len as usize),
+        )
+    }
+}
+
+/// `onClose` in both fixtures: an active close has no reactor.
+unsafe extern "C" fn on_close(_: *mut c_void, serv: *mut c_void, info: *mut DataHead) {
+    // SAFETY: the server passes a live event head.
+    let info = unsafe { &*info };
+    let conn = Server(serv).get_connection_by_session_id(info.fd);
+    if conn.close_actively != 0 {
+        expect(info.reactor_id == -1, "info->reactor_id == -1");
+    } else {
+        expect(info.reactor_id >= 0, "info->reactor_id >= 0");
+    }
+}
+
+/// `test_base_server`'s `onReceive`. The WebSocket frames its `websocket_*` TESTs send
+/// are #1842's.
+unsafe extern "C" fn base_on_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let serv = Server(serv);
+    let (session, data) = request(req);
+    COUNTER.fetch_add(1, Ordering::SeqCst);
+    let Some((url, headers)) = parse_request(data) else {
+        eprintln!("Parse error");
+        return SW_ERR;
+    };
+    if url == "/just/get/file" {
+        serv.sendfile(session, &(root_path() + "/examples/test.jpg"));
+    } else {
+        respond(serv, session, "hello world");
+    }
+    expect(
+        user_agent(&headers) == USER_AGENT,
+        "User-Agent == httplib::USER_AGENT",
+    );
+    SW_OK
+}
+
+static CLIENT: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+static TEST: Mutex<Option<fn(Server)>> = Mutex::new(None);
+
+/// Runs `body` in a thread that signals `pid` down when an assertion fails, so the
+/// server stops and the failure is reported.
+fn client_thread(pid: impl Fn() -> c_int + Send + 'static, body: impl FnOnce() + Send + 'static) {
+    let handle = std::thread::spawn(move || {
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(body)) {
+            kill_pid(pid());
+            resume_unwind(panic);
+        }
+    });
+    *CLIENT.lock().unwrap() = Some(handle);
+}
+
+/// Joins the client thread, then fails on its panic or a server-side expectation.
+fn join_client() {
+    let client = CLIENT.lock().unwrap().take().expect("the client started");
+    if let Err(panic) = client.join() {
+        resume_unwind(panic);
+    }
+    assert!(
+        !FAILED.load(Ordering::SeqCst),
+        "a server-side expectation failed"
+    );
+}
+
+/// `test_base_server`'s `onWorkerStart`: the case's client runs in its own thread.
+unsafe extern "C" fn base_on_worker_start(_: *mut c_void, serv: *mut c_void, _: *mut c_void) {
+    let test = TEST.lock().unwrap().expect("a case");
+    let serv = Server(serv);
+    // SAFETY: getpid(2).
+    client_thread(|| unsafe { getpid() }, move || test(serv));
+}
+
+/// `test_base_server(fn)`: a one-worker base-mode HTTP and WebSocket server with the
+/// static handler on `/examples`, which runs `fn` in a thread once its worker starts.
+fn test_base_server(test: fn(Server)) {
+    let serv = Server::new(MODE_BASE);
+    serv.config().worker_num = 1;
+    serv.config().enable_reuse_port = true;
+    serv.config().heartbeat_check_interval = 1;
+    *TEST.lock().unwrap() = Some(test);
+
+    COUNTER.store(0, Ordering::SeqCst);
+
+    serv.config().enable_static_handler = true;
+    assert!(serv.set_document_root(root_path().as_bytes()));
+
+    serv.insert(LOCATIONS, "/examples");
+    serv.insert(COMPRESSION_TYPES, "text/html");
+
+    set_log_warning();
+
+    let Some(port) = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0) else {
+        eprintln!("listen failed, [error={}]", last_error());
+        std::process::exit(2);
+    };
+    port.config().open_http_protocol = true;
+    port.config().open_websocket_protocol = true;
+
+    serv.create();
+
+    serv.set_callback(CB_WORKER_START, base_on_worker_start as *const c_void);
+    serv.set_callback(CB_CLOSE, on_close as *const c_void);
+    serv.set_callback(CB_RECEIVE, base_on_receive as *const c_void);
+
+    serv.start();
+    join_client();
+    serv.delete();
+}
+
+unsafe extern "C" fn ignore_server(_: *mut c_void, _: *mut c_void) {}
+
+unsafe extern "C" fn ignore_event(_: *mut c_void, _: *mut c_void, _: *mut DataHead) {}
+
+/// `test_http_server`'s `onReceive`.
+unsafe extern "C" fn http_on_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let serv = Server(serv);
+    let (session, data) = request(req);
+    let conn = serv.get_connection_by_session_id(session);
+
+    expect(
+        serv.get_idle_worker_num() <= serv.config().worker_num,
+        "get_idle_worker_num() <= worker_num",
+    );
+    // SAFETY: the clock.
+    let now = unsafe { microtime() };
+    expect(
+        serv.is_healthy_connection(now, conn),
+        "is_healthy_connection(microtime(), conn)",
+    );
+
+    let Some((url, _)) = parse_request(data) else {
+        eprintln!("Parse error");
+        return SW_ERR;
+    };
+
+    if url == "/overflow" {
+        conn.overflow = 1;
+    }
+
+    if url == "/pause" {
+        serv.feedback(conn, SW_SERVER_EVENT_PAUSE_RECV);
+    }
+
+    respond(serv, session, "hello world");
+
+    SW_OK
+}
+
+/// `test_http_server(dispatch_mode, false, worker_num, mode)`: an HTTP and WebSocket
+/// server with the static handler on `/examples`; its workers run as root in `/`.
+/// The TLS variant is #1842's.
+fn test_http_server(dispatch_mode: u8, worker_num: u32, mode: c_int) -> Server {
+    let server = Server::new(mode);
+    server.set_text(TEXT_USER, "root");
+    server.set_text(TEXT_GROUP, "root");
+    server.set_text(TEXT_CHROOT, "/");
+    server.config().worker_num = worker_num;
+    server.config().dispatch_mode = dispatch_mode;
+    server.config().open_cpu_affinity = true;
+    set_log_warning();
+
+    let port = server.add_port(SW_SOCK_TCP, TEST_HOST, 0).unwrap();
+
+    port.config().open_http_protocol = true;
+    port.config().open_websocket_protocol = true;
+    port.config().open_tcp_keepalive = true;
+    port.config().tcp_fastopen = 1;
+    port.config().tcp_defer_accept = 1;
+
+    server.config().enable_static_handler = true;
+    server.set_document_root(root_path().as_bytes());
+    server.insert(LOCATIONS, "/examples");
+
+    server.create();
+
+    server.set_callback(CB_START, ignore_server as *const c_void);
+    server.set_callback(CB_CLOSE, on_close as *const c_void);
+    server.set_callback(CB_CONNECT, ignore_event as *const c_void);
+    server.set_callback(CB_RECEIVE, http_on_receive as *const c_void);
+
+    server
+}
+
+/// `test_http_server()`'s defaults.
+fn default_http_server() -> Server {
+    test_http_server(DISPATCH_FDMOD, 2, MODE_PROCESS)
+}
+
+/// `test_proxy_server`'s `onReceive`.
+unsafe extern "C" fn proxy_on_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let server = Server(serv);
+    let (session, data) = request(req);
+
+    // SAFETY: sets this thread's worker id.
+    unsafe { swoole_set_worker_id(server.config().worker_num) };
+
+    let Some((url, headers)) = parse_request(data) else {
+        eprintln!("Parse error");
+        return SW_ERR;
+    };
+
+    if url == "/just/get/file" {
+        server.sendfile(session, &(root_path() + "/examples/test.jpg"));
+    } else {
+        respond(server, session, "hello world");
+    }
+
+    expect(
+        user_agent(&headers) == USER_AGENT,
+        "User-Agent == httplib::USER_AGENT",
+    );
+    SW_OK
+}
+
+/// `test_proxy_server()`: a one-worker base-mode server with the static handler on
+/// `/examples` and a 64 KiB package limit.
+fn test_proxy_server() -> Server {
+    let server = Server::new(MODE_BASE);
+    server.config().worker_num = 1;
+
+    let Some(port) = server.add_port(SW_SOCK_TCP, TEST_HOST, 0) else {
+        eprintln!("listen failed, [error={}]", last_error());
+        std::process::exit(2);
+    };
+    port.config().kernel_socket_send_buffer_size = c_int::MAX;
+    port.config().kernel_socket_recv_buffer_size = c_int::MAX;
+    port.config().open_tcp_nodelay = true;
+
+    server.config().enable_static_handler = true;
+    server.set_document_root(root_path().as_bytes());
+    server.insert(LOCATIONS, "/examples");
+
+    server.get_primary_port().set_package_max_length(64 * 1024);
+    port.config().open_http_protocol = true;
+    port.config().open_websocket_protocol = true;
+
+    server.create();
+
+    server.set_callback(CB_RECEIVE, proxy_on_receive as *const c_void);
+
+    server
+}
+
+fn get() {
+    test_base_server(|serv| {
+        block_all_signals();
+
+        let port = serv.get_primary_port();
+
+        let mut cli = Client::new(TEST_HOST, port.port());
+        let resp = cli.get("/index.html").unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, b"hello world");
+
+        kill_self();
+    });
+}
+
+fn reset_connection() {
+    test_base_server(|serv| {
+        block_all_signals();
+
+        let port = serv.get_primary_port();
+        // `Client c(SW_SOCK_TCP, false)`: a blocking TCP client.
+        let mut c = std::net::TcpStream::connect((TEST_HOST, port.port())).unwrap();
+        std::io::Write::write_all(&mut c, b"GET /index.html HTTP/1.1").unwrap();
+        sleep(0.01);
+        drop(c);
+
+        kill_self();
+    });
+
+    assert_eq!(COUNTER.load(Ordering::SeqCst), 0);
+}
+
+fn heartbeat_check_interval() {
+    test_base_server(|serv| {
+        block_all_signals();
+
+        let port = serv.get_primary_port();
+
+        let mut cli = Client::new(TEST_HOST, port.port());
+        cli.set_keep_alive(true);
+        let resp = cli.get("/index.html").unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, b"hello world");
+        sleep(3.0);
+
+        kill_self();
+    });
+}
+
+fn idle_time() {
+    test_base_server(|serv| {
+        block_all_signals();
+        let port = serv.get_primary_port();
+        port.config().max_idle_time = 1.0;
+
+        let mut cli = Client::new(TEST_HOST, port.port());
+        cli.set_keep_alive(true);
+        let resp = cli.get("/index.html").unwrap();
+        assert_eq!(resp.status, 200);
+
+        sleep(2.0);
+        kill_self();
+    });
+}
+
+fn post() {
+    test_base_server(|serv| {
+        block_all_signals();
+
+        let port = serv.get_primary_port();
+
+        let mut cli = Client::new(TEST_HOST, port.port());
+        let resp = cli
+            .post("/index.html", &[("name", "john"), ("note", "coder")])
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, b"hello world");
+
+        kill_self();
+    });
+}
+
+fn static_get() {
+    test_base_server(|serv| {
+        block_all_signals();
+
+        let port = serv.get_primary_port();
+
+        let mut cli = Client::new(TEST_HOST, port.port());
+        let resp = cli.get("/examples/test.jpg").unwrap();
+        assert_eq!(resp.status, 200);
+
+        let file = root_path() + "/examples/test.jpg";
+        let content = std::fs::read(file).expect("fp.ready()");
+
+        assert_eq!(resp.body, content);
+
+        let resp = cli.get("/just/get/file");
+        assert!(resp.is_none());
+        kill_self();
+    });
+}
+
+fn static_files() {
+    test_base_server(|serv| {
+        serv.config().http_autoindex = true;
+        serv.insert(LOCATIONS, "");
+
+        block_all_signals();
+        let port = serv.get_primary_port();
+        let mut cli = Client::new(TEST_HOST, port.port());
+
+        let resp = cli.get("/").unwrap();
+        assert_eq!(resp.status, 200);
+        assert!(find(&resp.body, b"Index of"));
+
+        // directory not exists
+        let resp = cli.get("/test/../").unwrap();
+        assert_eq!(resp.status, 404);
+
+        // must be document_root
+        let resp = cli.get("//tests/../").unwrap();
+        assert_eq!(resp.status, 404);
+
+        let resp = cli.get("/tests/../README.md").unwrap();
+        assert_eq!(resp.status, 200);
+
+        // file not exists
+        let resp = cli.get("/not-exists.jpg").unwrap();
+        assert_eq!(resp.status, 404);
+
+        // try again
+        serv.insert(INDEX_FILES, "README.md");
+        let resp = cli.get("/").unwrap();
+        assert!(find(&resp.body, b"<h2 align=center>"));
+
+        kill_self();
+    });
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// `strftime(date_format, gmtime(&raw_time))`.
+fn format_time(date_format: &CStr, raw_time: i64) -> String {
+    let mut temp = [0u8; 128];
+    // SAFETY: libc's calendar, into a 128-byte buffer.
+    let written = unsafe {
+        strftime(
+            temp.as_mut_ptr().cast(),
+            temp.len(),
+            date_format.as_ptr(),
+            gmtime(&raw_time),
+        )
+    };
+    String::from_utf8(temp[..written].to_vec()).unwrap()
+}
+
+/// `request_with_header`: `If-Modified-Since` a week ahead in `date_format`; no response.
+fn request_with_header(date_format: &CStr, cli: &mut Client) {
+    // SAFETY: the clock.
+    let raw_time = unsafe { time(std::ptr::null_mut()) } + 7 * 24 * 60 * 60;
+    let temp = format_time(date_format, raw_time);
+    let resp = cli.get_with("/", &[("If-Modified-Since", &temp)]);
+    assert!(resp.is_none());
+}
+
+fn not_modify() {
+    test_base_server(|serv| {
+        serv.config().http_autoindex = true;
+        serv.insert(LOCATIONS, "");
+
+        block_all_signals();
+        let port = serv.get_primary_port();
+        let mut cli = Client::new(TEST_HOST, port.port());
+
+        serv.insert(INDEX_FILES, "swoole-logo.svg");
+        let resp = cli.get("/").unwrap();
+        assert_eq!(resp.status, 200);
+
+        // 304 not modified
+        cli.set_read_timeout(0, 100);
+        request_with_header(SW_HTTP_RFC1123_DATE_GMT, &mut cli);
+        request_with_header(SW_HTTP_RFC1123_DATE_UTC, &mut cli);
+        request_with_header(SW_HTTP_RFC850_DATE, &mut cli);
+        request_with_header(SW_HTTP_ASCTIME_DATE, &mut cli);
+        kill_self();
+    });
+}
+
+fn proxy_file() {
+    let server = test_proxy_server();
+    fork_with(|| {
+        server.start();
+    });
+
+    let _kill = KillMaster(server);
+
+    sleep(1.0);
+    let port = server.get_primary_port();
+    let mut cli = Client::new(TEST_HOST, port.port());
+
+    let resp = cli.get("/just/get/file");
+    assert!(resp.is_none());
+}
+
+// need fix
+fn proxy_response() {
+    let server = test_proxy_server();
+    fork_with(|| {
+        server.start();
+    });
+
+    let _kill = KillMaster(server);
+    sleep(1.0);
+    let port = server.get_primary_port();
+    let mut cli = Client::new(TEST_HOST, port.port());
+    let resp = cli.get("/");
+    assert!(resp.is_none());
+    //        ASSERT_EQ(resp->body, string("hello world"));
+}
+
+fn heartbeat() {
+    let server = default_http_server();
+    server.config().heartbeat_check_interval = 0;
+    let port = server.get_primary_port();
+    port.set_package_max_length(1024);
+    port.config().heartbeat_idle_time = 2;
+
+    fork_with(|| {
+        server.start();
+    });
+
+    let _kill = KillMaster(server);
+
+    sleep(1.0);
+    let port = server.get_primary_port();
+    let mut cli = Client::new(TEST_HOST, port.port());
+    cli.set_keep_alive(true);
+    let resp = cli.get("/").unwrap();
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, b"hello world");
+    sleep(10.0);
+    let resp = cli.get("/");
+    assert!(resp.is_none());
+}
+
+fn overflow() {
+    let server = default_http_server();
+
+    fork_with(|| {
+        server.start();
+    });
+
+    let _kill = KillMaster(server);
+
+    sleep(1.0);
+    let port = server.get_primary_port();
+    let mut cli = Client::new(TEST_HOST, port.port());
+    cli.set_keep_alive(true);
+    let resp = cli.get("/").unwrap();
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, b"hello world");
+    let resp = cli.get("/overflow");
+    assert!(resp.is_none());
+}
+
+fn process() {
+    let server = default_http_server();
+    fork_with(|| {
+        server.start();
+    });
+
+    let _kill = KillMaster(server);
+
+    sleep(1.0);
+    let port = server.get_primary_port();
+    let mut cli = Client::new(TEST_HOST, port.port());
+    cli.set_keep_alive(true);
+    let resp = cli.get("/").unwrap();
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, b"hello world");
+
+    let resp = cli.get("/").unwrap();
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, b"hello world");
+}
+
+fn process1() {
+    let server = default_http_server();
+    fork_with(|| {
+        server.start();
+    });
+
+    let _kill = KillMaster(server);
+    sleep(1.0);
+    let port = server.get_primary_port();
+    let mut cli = Client::new(TEST_HOST, port.port());
+    cli.set_keep_alive(true);
+    let resp = cli.get("/index.html").unwrap();
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, b"hello world");
+
+    sleep(1.0);
+    let resp = cli.get("/examples/test.jpg").unwrap();
+    assert_eq!(resp.status, 200);
+}
+
+unsafe extern "C" fn return_zero(_: *mut c_void, _: *mut c_void, _: *mut DataHead) -> c_int {
+    0
+}
+
+fn redundant_callback() {
+    let server = test_http_server(DISPATCH_IDLE_WORKER, 2, MODE_PROCESS);
+    for slot in [CB_CONNECT, CB_CLOSE, CB_BUFFER_FULL, CB_BUFFER_EMPTY] {
+        server.set_callback(slot, return_zero as *const c_void);
+    }
+
+    fork_with(|| {
+        server.start();
+        assert!(server.callback_is_empty(CB_CONNECT));
+        assert!(server.callback_is_empty(CB_CLOSE));
+        assert!(server.callback_is_empty(CB_BUFFER_FULL));
+        assert!(server.callback_is_empty(CB_BUFFER_EMPTY));
+    });
+
+    sleep(2.0);
+    kill_pid(server.get_master_pid());
+}
+
+fn pause() {
+    let server = default_http_server();
+    fork_with(|| {
+        server.start();
+    });
+
+    let _kill = KillMaster(server);
+
+    sleep(1.0);
+    let port = server.get_primary_port();
+    let mut cli = Client::new(TEST_HOST, port.port());
+    cli.set_keep_alive(true);
+    let resp = cli.get("/pause");
+    assert!(resp.is_some());
+    let resp = resp.unwrap();
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, b"hello world");
+
+    let resp = cli.get("/");
+    assert!(resp.is_none());
+}
+
+fn bad_request() {
+    let server = default_http_server();
+
+    fork_with(|| {
+        server.start();
+    });
+
+    let _kill = KillMaster(server);
+    sleep(1.0);
+
+    let port = server.get_primary_port().port();
+    let command =
+        format!("curl -X UNKNOWN http://{TEST_HOST}:{port} -k -vvv --stderr /tmp/bad_request.txt");
+
+    let _pipe = shell_exec(&command);
+    sleep(1.0);
+
+    let response = read_text("/tmp/bad_request.txt");
+    assert!(response.is_some());
+    assert!(response.unwrap().contains("400 Bad Request"));
+}
+
+/// The chunked upload `chunked` and `max_queued_bytes` send with curl.
+fn chunked_upload_command(port: u16) -> String {
+    let jpg_path = root_path() + "/examples/test.jpg";
+    format!(
+        "curl -s -S -H 'Transfer-Encoding: chunked' -F \"file=@{jpg_path}\" http://{TEST_HOST}:{port}"
+    )
+}
+
+static CHUNKED_SERVER: Mutex<Option<Server>> = Mutex::new(None);
+
+unsafe extern "C" fn chunked_on_start(_: *mut c_void, _: *mut c_void) {
+    let server = CHUNKED_SERVER.lock().unwrap().expect("the case's server");
+    client_thread(
+        move || server.get_master_pid(),
+        move || {
+            block_all_signals();
+            sleep(0.3);
+
+            let command = chunked_upload_command(server.get_primary_port().port());
+
+            let pipe = shell_exec(&command);
+            sleep(1.0);
+
+            assert_eq!(read_once(pipe), b"hello world");
+            kill_pid(server.get_master_pid());
+        },
+    );
+}
+
+fn chunked() {
+    let server = test_http_server(DISPATCH_FDMOD, 1, MODE_BASE);
+    *CHUNKED_SERVER.lock().unwrap() = Some(server);
+
+    server.set_callback(CB_START, chunked_on_start as *const c_void);
+
+    server.start();
+    join_client();
+    server.delete();
+}
+
+/// `test::wait_all_child_processes()`.
+fn wait_all_child_processes() {
+    let mut status = 0;
+    // SAFETY: reaps this process's children.
+    while unsafe { waitpid(-1, &mut status, 0) } > 0 {}
+}
+
+fn max_queued_bytes() {
+    let server = default_http_server();
+    server.config().max_queued_bytes = 100;
+
+    fork_with(|| {
+        server.start();
+    });
+
+    {
+        let _kill = KillMaster(server);
+
+        sleep(1.0);
+
+        let command = chunked_upload_command(server.get_primary_port().port());
+
+        let pipe = shell_exec(&command);
+        sleep(1.0);
+
+        assert_eq!(read_once(pipe), b"hello world");
+    }
+
+    wait_all_child_processes();
+}
+
+/// `SendData`: its head.
+#[repr(C)]
+struct SendData {
+    info: DataHead,
+}
+
+unsafe extern "C" fn dispatch_error(
+    _: *mut c_void,
+    _: *mut c_void,
+    _: *mut c_void,
+    data: *mut SendData,
+) -> c_int {
+    // SAFETY: the server passes the packet it dispatches.
+    let fd = unsafe { (*data).info.fd };
+    if fd % 2 == 0 {
+        DISPATCH_RESULT_DISCARD_PACKET
+    } else {
+        DISPATCH_RESULT_CLOSE_CONNECTION
+    }
+}
+
+fn dispatch_func_return_error_worker_id() {
+    let server = default_http_server();
+    server.set_callback(CB_DISPATCH_FUNC, dispatch_error as *const c_void);
+    fork_with(|| {
+        server.start();
+    });
+
+    let _kill = KillMaster(server);
+    sleep(1.0);
+    let port = server.get_primary_port();
+    let mut cli = Client::new(TEST_HOST, port.port());
+    cli.set_read_timeout(1, 0);
+    let resp = cli.get("/");
+    assert!(resp.is_none());
+    let resp = cli.get("/");
+    assert!(resp.is_none());
+}
+
+/// Whether curl's verbose log in /tmp/http_range.txt holds `expected`, after `command`.
+fn curl_log_has(command: &str, expected: &[&str]) -> bool {
+    drop(shell_exec(command));
+    sleep(2.0);
+
+    let Some(response) = read_text("/tmp/http_range.txt") else {
+        return false;
+    };
+    expected.iter().all(|e| response.contains(e))
+}
+
+/// `request_with_if_range_header`: bytes 0-500 of docs/swoole-logo.svg if unchanged
+/// since its mtime, in `date_format`.
+fn request_with_if_range_header(date_format: &CStr, port: u16) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let file_path = root_path() + "/docs/swoole-logo.svg";
+    let file_mtime = std::fs::metadata(file_path).map_or(0, |m| m.mtime());
+    let temp = format_time(date_format, file_mtime);
+
+    let command = format!(
+        "curl http://{TEST_HOST}:{port}/docs/swoole-logo.svg -k -vvv --stderr /tmp/http_range.txt \
+         -H 'Range: bytes=0-500' -H 'If-Range: {temp}'"
+    );
+    curl_log_has(&command, &["206 Partial Content", "Content-Length: 501"])
+}
+
+fn http_range() {
+    let server = default_http_server();
+    server.config().http_autoindex = true;
+    server.insert(LOCATIONS, "/docs");
+
+    fork_with(|| {
+        server.start();
+    });
+
+    sleep(1.0);
+    let _kill = KillMaster(server);
+
+    let port = server.get_primary_port().port();
+    assert!(request_with_if_range_header(SW_HTTP_RFC1123_DATE_GMT, port));
+    assert!(request_with_if_range_header(SW_HTTP_RFC1123_DATE_UTC, port));
+    assert!(request_with_if_range_header(SW_HTTP_RFC850_DATE, port));
+    assert!(request_with_if_range_header(SW_HTTP_ASCTIME_DATE, port));
+}
+
+/// `request_with_diff_range`: docs/swoole-logo.svg's `range`.
+fn request_with_diff_range(port: u16, range: &str) -> bool {
+    let command = format!(
+        "curl -X GET http://{TEST_HOST}:{port}/docs/swoole-logo.svg -k -vvv --stderr /tmp/http_range.txt \
+         -H 'Range: bytes={range}'"
+    );
+    curl_log_has(&command, &["206 Partial Content"])
+}
+
+fn http_range2() {
+    let server = default_http_server();
+    server.insert(LOCATIONS, "/docs");
+    server.insert(INDEX_FILES, "swoole-logo.svg");
+
+    // test::spawn_exec.
+    let pid = fork_with(|| {
+        server.start();
+    });
+
+    let port = server.get_primary_port().port();
+    assert!(request_with_diff_range(port, "0-15"));
+    assert!(request_with_diff_range(port, "16-31"));
+    assert!(request_with_diff_range(port, "-16"));
+    assert!(request_with_diff_range(port, "128-"));
+    assert!(request_with_diff_range(port, "0-0,-1"));
+
+    sleep(0.1);
+    kill_pid(pid);
+
+    let mut status = 0;
+    // SAFETY: reaps the server's process.
+    assert_eq!(unsafe { waitpid(pid, &mut status, 0) }, pid);
+}
+
+fn fail() {
+    let serv = Server::new(MODE_BASE);
+    serv.config().worker_num = 1;
+
+    let bad_path = vec![0u8; PATH_MAX + 4];
+    assert!(!serv.set_document_root(&bad_path));
+    assert_eq!(last_error(), SW_ERROR_NAME_TOO_LONG);
+
+    assert!(!serv.set_document_root(b"/tmp/swoole-core-tests-not-exists"));
+    assert_eq!(last_error(), SW_ERROR_DIR_NOT_EXIST);
+    serv.delete();
+}
+
+/// `http_server.<name>`, in upstream's order.
+pub const CASES: &[(&str, fn())] = &[
+    ("get", get),
+    ("reset_connection", reset_connection),
+    ("heartbeat_check_interval", heartbeat_check_interval),
+    ("idle_time", idle_time),
+    ("post", post),
+    ("static_get", static_get),
+    ("static_files", static_files),
+    ("not_modify", not_modify),
+    ("proxy_file", proxy_file),
+    ("proxy_response", proxy_response),
+    ("heartbeat", heartbeat),
+    ("overflow", overflow),
+    ("process", process),
+    ("process1", process1),
+    ("redundant_callback", redundant_callback),
+    ("pause", pause),
+    ("bad_request", bad_request),
+    ("chunked", chunked),
+    ("max_queued_bytes", max_queued_bytes),
+    (
+        "dispatch_func_return_error_worker_id",
+        dispatch_func_return_error_worker_id,
+    ),
+    ("http_range", http_range),
+    ("http_range2", http_range2),
+    ("fail", fail),
+];
