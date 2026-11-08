@@ -128,6 +128,7 @@ fn proto_error(socket: &SocketRecord, code: ErrorCode, origin: &CStr, message: &
 }
 
 impl Effects for Recv {
+    #[inline(always)]
     fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64 {
         // SAFETY: the receive's live socket.
         unsafe { (*self.socket).recv_wait = u8::from(*flags & FLAG_WAIT != 0) };
@@ -138,6 +139,9 @@ impl Effects for Recv {
     }
 }
 
+/// Each call site's op is a constant, so the match folds: every frame's receive,
+/// length and dispatch run inline, and a failed receive and the rare ops don't.
+#[inline(always)]
 fn effect(r: &Recv, op: u32, arg: u64) -> i64 {
     // SAFETY: the receive's live buffer; no other reference to it is live.
     let b = unsafe { &mut *r.buffer };
@@ -145,6 +149,41 @@ fn effect(r: &Recv, op: u32, arg: u64) -> i64 {
     let p = unsafe { &*r.protocol };
     // SAFETY: the receive's live socket; no other reference to it is live.
     let s = unsafe { &mut *r.socket };
+    match op {
+        OP_RECV => {
+            let at = b.str.wrapping_add(b.length);
+            let size = usize::try_from(arg).unwrap_or(usize::MAX);
+            // SAFETY: the live socket and the buffer's free tail of at least `size` bytes.
+            let n = unsafe { swoole_rs_tls::upstream::socket_recv(s, at.cast(), size, 0) };
+            if n >= 0 {
+                return n as i64;
+            }
+            rare(r, b, p, s, op, arg)
+        }
+        OP_GET_LENGTH => {
+            let mut pl = PacketLength {
+                buf: b.str.cast_const(),
+                buf_size: u32::try_from(b.length).unwrap_or(u32::MAX),
+                header_len: 0,
+            };
+            // SAFETY: `get_package_length` is a function of this type, or null.
+            let get = unsafe {
+                core::mem::transmute::<*mut c_void, Option<GetLength>>(p.get_package_length)
+            };
+            // SAFETY: upstream's call over the live protocol, socket and buffer.
+            get.map_or(-1, |get| unsafe { get(r.protocol, r.socket, &raw mut pl) }
+                as i64)
+        }
+        // SAFETY: the live protocol and socket, and `arg` bytes at the buffer start.
+        OP_DISPATCH => i64::from(unsafe { dispatch(r.protocol, r.socket, b.str, arg) }),
+        _ => rare(r, b, p, s, op, arg),
+    }
+}
+
+/// A failed `OP_RECV`, and the effects a frame rarely needs.
+#[cold]
+#[inline(never)]
+fn rare(r: &Recv, b: &mut CppString, p: &Protocol, s: &mut SocketRecord, op: u32, arg: u64) -> i64 {
     let length_mode = r.mode == MODE_LENGTH;
     let origin = if length_mode {
         c"Protocol::recv_with_length_protocol"
@@ -154,12 +193,6 @@ fn effect(r: &Recv, op: u32, arg: u64) -> i64 {
     let size = usize::try_from(arg).unwrap_or(usize::MAX);
     match op {
         OP_RECV => {
-            let at = b.str.wrapping_add(b.length);
-            // SAFETY: the live socket and the buffer's free tail of at least `size` bytes.
-            let n = unsafe { swoole_rs_tls::upstream::socket_recv(s, at.cast(), size, 0) };
-            if n >= 0 {
-                return n as i64;
-            }
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             match s.catch_error(errno) {
                 ERROR => {
@@ -182,26 +215,10 @@ fn effect(r: &Recv, op: u32, arg: u64) -> i64 {
                 _ => RECV_DONE,
             }
         }
-        OP_GET_LENGTH => {
-            let mut pl = PacketLength {
-                buf: b.str.cast_const(),
-                buf_size: u32::try_from(b.length).unwrap_or(u32::MAX),
-                header_len: 0,
-            };
-            // SAFETY: `get_package_length` is a function of this type, or null.
-            let get = unsafe {
-                core::mem::transmute::<*mut c_void, Option<GetLength>>(p.get_package_length)
-            };
-            // SAFETY: upstream's call over the live protocol, socket and buffer.
-            get.map_or(-1, |get| unsafe { get(r.protocol, r.socket, &raw mut pl) }
-                as i64)
-        }
         OP_EXTEND => {
             b.extend(size);
             0
         }
-        // SAFETY: the live protocol and socket, and `arg` bytes at the buffer start.
-        OP_DISPATCH => i64::from(unsafe { dispatch(r.protocol, r.socket, b.str, arg) }),
         OP_REDUCE => {
             b.reduce(arg.cast_signed());
             0
