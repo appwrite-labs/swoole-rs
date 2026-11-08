@@ -24,7 +24,7 @@ p.add_argument('--report', type=Path, required=True)
 p.add_argument('--stack-usage', action='store_true', help='Compile the optional stack-usage callers')
 p.add_argument('--timing', action='store_true', help='Compile the optional Coroutine timing callers')
 p.add_argument('--standard', choices=['c++14', 'c++17'], default='c++14')
-p.add_argument('--backend', choices=['header-default', 'asm', 'ucontext', 'thread'], default='header-default',
+p.add_argument('--backend', choices=['header-default', 'asm', 'thread'], default='header-default',
                help='Compile the requested context backend; no switching or runtime execution')
 a = p.parse_args()
 hybrid_source, hybrid_flags = hybrid_tree(a.archive)
@@ -48,7 +48,8 @@ with tempfile.TemporaryDirectory(prefix='swr-coroutine-compile-') as tmp:
     trees = {'original': (tree, ['-I' + str(tree / 'include'), '-I' + str(tree)]),
              'patched': (hybrid_source, [*hybrid_flags, '-I' + str(hybrid_source)])}
     for variant, (root, flags) in trees.items():
-        for name in units:
+        # The patch set deletes context.cc; only the units the hybrid still builds compile.
+        for name in [name for name in units if (root / ('src/coroutine/' + name + '.cc')).exists()]:
             cmd = ['c++', *common, *flags, '-c', str(root / ('src/coroutine/' + name + '.cc')),
                    '-o', str(tree / (variant + '-' + name + '.o'))]
             result = subprocess.run(cmd, capture_output=True, text=True)

@@ -68,7 +68,7 @@ class ArtifactReuse(unittest.TestCase):
                                 dev.verify_artifact_report(args)
 
     def test_loaded_minimal_profiles_capture_both_producers(self):
-        for modules, phase in [(['coroutine'], 'coroutine-production-stack'),
+        for modules, phase in [(['phpcoroutines'], 'phpcoroutines-tracer'),
                                (['http'], 'http-rewrites')]:
             with self.subTest(modules=modules):
                 args=SimpleNamespace(lane='integrate', module=modules, all_modules=False,

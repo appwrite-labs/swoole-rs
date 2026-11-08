@@ -39,14 +39,19 @@ Channel:
   which crates/phpcollections implements for `Swoole\Coroutine\Channel`. Rust
   never dereferences or frees payloads.
 
-`context.cc`: stack allocation, the guard page, marker initialization and
-stack-usage sampling are in Rust (original marker bytes and placement; `<=` on
-init versus `<` on query). Valgrind registration, the ASan fiber annotations and
-the context-switch ABI (boost.context asm or ucontext) are native.
+The context is Rust (`src/coroutine/context.cc` and `swoole_asm_context.h` left
+the build): stack allocation, the guard page, marker initialization and
+stack-usage sampling (original marker bytes and placement; `<=` on init versus
+`<` on query), boost.context's `swoole_make_fcontext`/`swoole_jump_fcontext`, and
+the ASan fiber annotations, which run whenever `dlsym` finds the sanitizer
+runtime. `swoole::coroutine::Context` is an inline view that keeps the
+`CoroutineFunc` and calls it from Rust's entry. ucontext and valgrind stack
+registration are gone: config.m4 rejects a CPU without boost asm unless
+`--enable-thread-context` is given.
 
 Execution-time accounting (`get_execute_usec`, `calc_execute_usec`) is in Rust;
 C++ reads the clocks and passes them in.
 
 Not validated: `SW_USE_THREAD_CONTEXT` (its cross-owner `std::mutex` hand-off is
-not a valid Rust ownership model) and macOS ucontext. Original inventory: 130
+not a valid Rust ownership model). Original inventory: 130
 coroutine, 44 channel and 27 scheduler PHPTs.

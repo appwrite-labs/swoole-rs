@@ -75,7 +75,6 @@ def main():
     parser.add_argument('--async-file', action='store_true', help='Also compile and execute the unchanged original coroutine AsyncFile unit')
     parser.add_argument('--lifetime-only', action='store_true', help='Execute only the supplemental real-context lifetime witness; the originals remain unmeasured')
     parser.add_argument('--rust-asan', action='store_true', help='Verify the coroutine archive contains actual Rust ASan imports')
-    parser.add_argument('--ucontext', action='store_true', help='Derived private config explicitly selects native ucontext instead of assembly')
     parser.add_argument('--sanitize', action='store_true', help='Native full-core ASan; Rust archive instrumentation remains separate')
     parser.add_argument('--gtest-prefix', type=Path, help='Read-only C++14-compatible GoogleTest installation')
     parser.add_argument('--php-prefix', default='/usr', help='Configured php-config prefix')
@@ -201,9 +200,8 @@ def main():
                 config = args.config.read_bytes()
                 if re.search(rb'^#define SW_USE_THREAD_CONTEXT\b', config, re.M):
                     raise ValueError('Optional thread-context requires separate ownership/lifetime proof')
-                if args.ucontext:
-                    config = re.sub(rb'^#define SW_USE_ASM_CONTEXT\b[^\n]*', b'#undef SW_USE_ASM_CONTEXT', config, flags=re.M)
-                report['native_context_mode'] = 'asm' if re.search(rb'^#define SW_USE_ASM_CONTEXT\b', config, re.M) else 'ucontext'
+                if not re.search(rb'^#define SW_USE_ASM_CONTEXT\b', config, re.M):
+                    raise ValueError('The hybrid switches coroutine stacks only with boost asm')
                 for engine in ['upstream', 'rust']:
                     if engine == 'rust':
                         # Every module's patches, as the hybrid build applied them (#796).
@@ -245,10 +243,6 @@ def main():
                     metadata.update(compiler_flags={name: (tree / ('build/CMakeFiles/'+name+'.dir/flags.make')).read_text() for name in ['lib-swoole', 'core-tests']}, runs=[])
                     library = tree / ('lib/libswoole.dylib' if sys.platform == 'darwin' else 'lib/libswoole.so')
                     metadata.update(library_sha256=sha(library), compiled_config_sha256=sha(tree / 'config.h'))
-                    symbols = subprocess.check_output(['nm', '-u', str(library)], text=True)
-                    metadata['ucontext_imports'] = {name: name in symbols for name in ['getcontext', 'makecontext', 'swapcontext']}
-                    if report['native_context_mode'] == 'ucontext' and not all(metadata['ucontext_imports'].values()):
-                        raise RuntimeError('ucontext selection lacks actual library imports')
 
                     for case in inventory:
                         xml = logs / (case['name'] + '.xml')
