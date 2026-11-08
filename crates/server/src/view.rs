@@ -97,6 +97,39 @@ pub unsafe fn set_upload_tmp_dir(serv: *mut c_void, dir: &[u8]) {
     unsafe { state(serv) }.set_upload_tmp_dir(dir);
 }
 
+/// `serv-><text> = value` for text member `index`: 0 `chroot_`, 1 `user_`,
+/// 2 `group_`, 3 `pid_file` (`SWR_SERVER_TEXT_*`).
+///
+/// # Safety
+/// `serv` is a live `Server`, not started.
+pub unsafe fn set_text(serv: *mut c_void, index: usize, value: &[u8]) {
+    // SAFETY: per the caller.
+    let slot = unsafe { state(serv) }.text_slot(index);
+    if slot.is_null() {
+        return;
+    }
+    // SAFETY: a live slot with no native cache; set only while the server is configured.
+    let status = unsafe {
+        swoole_rs_corebase::swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len())
+    };
+    if status < 0 {
+        // C++'s assignment threw `std::bad_alloc`, which nothing catches.
+        std::process::abort();
+    }
+}
+
+/// `insert(value)` into the static collection `kind`: 0 `locations`,
+/// 1 `http_index_files`, 2 `http_compression_types`.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+pub unsafe fn insert_static_string(serv: *mut c_void, kind: u32, value: &[u8]) {
+    // SAFETY: per the caller.
+    let state = unsafe { fields(serv) }.state;
+    // SAFETY: the live state and a byte span (non-null even when empty).
+    unsafe { crate::swr_v1_server_static_config(state, kind, 4, value.as_ptr(), value.len()) };
+}
+
 /// `url_rewrite_rules`: add one rule.
 ///
 /// # Safety

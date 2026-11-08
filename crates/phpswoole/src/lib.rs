@@ -241,6 +241,12 @@ pub fn check_reactor() {
     unsafe { (ops().check_reactor)() };
 }
 
+/// `swoole_set_task_tmpdir(dir)`.
+pub fn set_task_tmpdir(dir: &std::ffi::CStr) {
+    // SAFETY: C++'s setter, which copies it.
+    unsafe { (ops().set_task_tmpdir)(dir.as_ptr()) };
+}
+
 /// `php_swoole_load_library()`, inside `zend_try`.
 /// # Errors
 /// The library's code bailed out.

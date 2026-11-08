@@ -1,10 +1,10 @@
 //! `Swoole\Server::set()`: every option's lookup, conversion, bounds and the
-//! order upstream reads them in. C++ keeps the Server's fields and the effects
-//! that need its C++ API, reached by field id through the host table
+//! order upstream reads them in, written straight into the Server's Rust
+//! records. C++ answers only the build switches, by id through the host table
 //! (`native/process/swoole_rs_phpserver_settings.h`).
 use crate::server::{display_errors, fatal, server, set_last_error};
 use std::{
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -88,25 +88,10 @@ mod field {
     pub(super) const PATH_MAX: u32 = 116;
 }
 
-/// Server string settings and lists (`SWR_PHPSERVER_TEXT_*`).
-mod text {
-    pub(super) const CHROOT: u32 = 1;
-    pub(super) const USER: u32 = 2;
-    pub(super) const GROUP: u32 = 3;
-    pub(super) const PID_FILE: u32 = 4;
-    pub(super) const TASK_TMPDIR: u32 = 5;
-    pub(super) const DOCUMENT_ROOT: u32 = 7;
-    pub(super) const INDEX_FILE: u32 = 8;
-    pub(super) const COMPRESSION_TYPE: u32 = 9;
-    pub(super) const STATIC_LOCATION: u32 = 10;
-}
-
 /// `swr_v1_phpserver_settings_host`.
 #[repr(C)]
 pub struct SettingsHost {
     get: unsafe extern "C" fn(*mut c_void, u32) -> i64,
-    text: unsafe extern "C" fn(*mut c_void, u32, *const c_char, usize),
-    cpu_affinity: unsafe extern "C" fn(*mut c_int, usize, *mut c_int) -> c_int,
 }
 
 static HOST: AtomicPtr<SettingsHost> = AtomicPtr::new(ptr::null_mut());
@@ -150,6 +135,14 @@ unsafe fn fact(serv: *mut c_void, id: u32) -> i64 {
         f::DISPATCH_MODE => i64::from(config.dispatch_mode),
         f::TASK_IPC_MODE => i64::from(config.task_ipc_mode),
         f::TASK_ENABLE_COROUTINE => i64::from(config.task_enable_coroutine),
+        f::CPU_NUM => i64::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
+        f::GLOBAL_ENABLE_COROUTINE => i64::from(swoole_rs_corebase::swr_v1_core_enable_coroutine()),
+        f::PATH_MAX => i64::from(libc::PATH_MAX),
+        f::HAVE_CPU_AFFINITY => i64::from(cfg!(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "freebsd"
+        ))),
         // SAFETY: per the caller.
         _ => unsafe { (host().get)(serv, id) },
     }
@@ -296,9 +289,16 @@ impl Settings {
         checked().map(|()| result)
     }
 
-    fn text(&self, id: u32, value: &[u8]) {
-        // SAFETY: a live server and bytes.
-        unsafe { (host().text)(self.serv, id, value.as_ptr().cast(), value.len()) };
+    /// `serv-><text> = value` (`view::set_text`'s `index`).
+    fn text(&self, index: usize, value: &[u8]) {
+        // SAFETY: a live server, not started (set() checked).
+        unsafe { view::set_text(self.serv, index, value) };
+    }
+
+    /// `insert(value)` into static collection `kind` (`view::insert_static_string`).
+    fn insert(&self, kind: u32, value: &[u8]) {
+        // SAFETY: a live server.
+        unsafe { view::insert_static_string(self.serv, kind, value) };
     }
 
     /// A boolean option.
@@ -317,9 +317,9 @@ impl Settings {
     }
 
     /// A string option.
-    fn string_option(&self, key: &CStr, id: u32) -> Step {
+    fn string_option(&self, key: &CStr, each: impl FnOnce(&[u8])) -> Step {
         if let Some(value) = self.get(key) {
-            Self::string(value, |bytes| self.text(id, bytes))?;
+            Self::string(value, each)?;
         }
         Ok(())
     }
@@ -431,11 +431,11 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
     unsafe { swoole_rs_phpcoroutines::php_swoole_set_coroutine_option(vht) };
     // SAFETY: as above.
     unsafe { swoole_rs_phpswoole::php_swoole_set_aio_option(vht) };
-    s.string_option(c"chroot", text::CHROOT)?;
-    s.string_option(c"user", text::USER)?;
-    s.string_option(c"group", text::GROUP)?;
+    s.string_option(c"chroot", |v| s.text(0, v))?;
+    s.string_option(c"user", |v| s.text(1, v))?;
+    s.string_option(c"group", |v| s.text(2, v))?;
     s.flag(c"daemonize", f::DAEMONIZE);
-    s.string_option(c"pid_file", text::PID_FILE)?;
+    s.string_option(c"pid_file", |v| s.text(3, v))?;
     if let Some(value) = s.get(c"reactor_num") {
         let v = Settings::long(value)?.clamp(0, i64::from(u16::MAX));
         s.set(f::REACTOR_NUM, if v == 0 { s.fact(f::CPU_NUM) } else { v });
@@ -567,7 +567,10 @@ fn workers(s: &Settings) -> Step {
         i64::from(u32::MAX),
     )?;
     s.clamped(c"task_ipc_mode", f::TASK_IPC_MODE, 0, i64::from(u8::MAX))?;
-    s.string_option(c"task_tmpdir", text::TASK_TMPDIR)?;
+    s.string_option(c"task_tmpdir", |dir| {
+        let dir = dir.split(|&b| b == 0).next().unwrap_or_default();
+        swoole_rs_phpswoole::set_task_tmpdir(&CString::new(dir).unwrap_or_default());
+    })?;
     if let Some(value) = s.get(c"task_max_request") {
         let v = Settings::long(value)?.clamp(0, i64::from(u32::MAX));
         s.set(f::TASK_MAX_REQUEST, v);
@@ -621,37 +624,64 @@ fn workers(s: &Settings) -> Step {
     Ok(())
 }
 
-/// `CPU_SETSIZE`.
-const CPU_SETSIZE: usize = 1024;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+type CpuSet = libc::cpu_set_t;
+#[cfg(target_os = "freebsd")]
+type CpuSet = libc::cpuset_t;
+
+/// The CPUs `swoole_get_cpu_affinity` allows this process, or its errno.
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+fn affinity() -> Result<Vec<c_int>, c_int> {
+    /// `CPU_SETSIZE`.
+    const CPU_SETSIZE: usize = 1024;
+    // SAFETY: a plain bitset, for which zero is the empty set.
+    let mut set: CpuSet = unsafe { std::mem::zeroed() };
+    // SAFETY: a writable set.
+    if unsafe { swoole_rs_ossupport::swoole_get_cpu_affinity(&raw mut set) } < 0 {
+        return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    }
+    Ok((0..CPU_SETSIZE)
+        // SAFETY: `cpu` is below `CPU_SETSIZE`, inside the set.
+        .filter(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) })
+        .filter_map(|cpu| c_int::try_from(cpu).ok())
+        .collect())
+}
+
+/// No `HAVE_CPU_AFFINITY`: `set()` never asks.
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "freebsd")))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature the affinity targets share"
+)]
+fn affinity() -> Result<Vec<c_int>, c_int> {
+    Ok(Vec::new())
+}
 
 /// `php_swoole_server_set_cpu_affinity_ignore`: the CPUs left to bind workers
 /// to once `value`'s are taken out of this process's affinity. False: rejected.
 fn cpu_affinity_ignore(s: &Settings, value: *mut zval) -> Result<bool, Stop> {
-    let host = host();
     // SAFETY: a live setting.
     if unsafe { type_of(value) } != IS_ARRAY {
         fatal(E_ERROR, c"cpu_affinity_ignore must be array");
         return Err(Stop);
     }
-    let mut cpus = vec![0; CPU_SETSIZE];
-    let mut error = 0;
-    // SAFETY: room for every CPU and a writable error.
-    let count = unsafe { (host.cpu_affinity)(cpus.as_mut_ptr(), cpus.len(), &raw mut error) };
-    let Ok(count) = usize::try_from(count) else {
-        // php_swoole_sys_error(E_WARNING, "sched_getaffinity() failed")
-        set_last_error(error);
-        if display_errors() {
-            let reason = swoole_rs_phpruntime::strerror(error);
-            let text = message!(
-                "sched_getaffinity() failed, Error: {}[{error}]",
-                reason.to_string_lossy()
-            );
-            // SAFETY: a warning from a handler.
-            bailout::defer(unsafe { php_error(E_WARNING, text.as_cstr()) });
+    let mut cpus = match affinity() {
+        Ok(cpus) => cpus,
+        Err(error) => {
+            // php_swoole_sys_error(E_WARNING, "sched_getaffinity() failed")
+            set_last_error(error);
+            if display_errors() {
+                let reason = swoole_rs_phpruntime::strerror(error);
+                let text = message!(
+                    "sched_getaffinity() failed, Error: {}[{error}]",
+                    reason.to_string_lossy()
+                );
+                // SAFETY: a warning from a handler.
+                bailout::defer(unsafe { php_error(E_WARNING, text.as_cstr()) });
+            }
+            return checked().map(|()| false);
         }
-        return checked().map(|()| false);
     };
-    cpus.truncate(count);
     // SAFETY: an array setting.
     let ignored = unsafe { table(value) };
     let mut items = Vec::new();
@@ -744,7 +774,8 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
                 fatal(E_ERROR, text.as_cstr());
                 return false;
             }
-            s.text(text::DOCUMENT_ROOT, root);
+            // SAFETY: a live server, not started.
+            unsafe { server_methods::set_document_root(s.serv, root) };
             true
         })?;
         if !fits {
@@ -757,7 +788,7 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
         c"http_index_files must be array",
         |name| {
             if !name.is_empty() {
-                s.text(text::INDEX_FILE, name);
+                s.insert(1, name);
             }
         },
     )?;
@@ -765,8 +796,8 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
         &[c"http_compression_types", c"compression_types"],
         c"http_compression_types must be array",
         |kind| {
-            if !kind.is_empty() {
-                s.text(text::COMPRESSION_TYPE, kind);
+            if !kind.is_empty() && s.fact(f::HAVE_COMPRESSION) != 0 {
+                s.insert(2, kind);
             }
         },
     )?;
@@ -775,7 +806,7 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
         c"static_handler_locations num must be array",
         |location| {
             if location.first() == Some(&b'/') {
-                s.text(text::STATIC_LOCATION, location);
+                s.insert(0, location);
             }
         },
     )?;

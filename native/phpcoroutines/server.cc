@@ -2,7 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 ext-src/swoole_server.cc (Swoole contributors).
 // What crates/phpserver needs of C++ that stable Rust can't express: the build's #ifdefs
 // (sockets, thread mode, the features set() checks), the C++ objects a Server holds
-// (`new`/`delete Server`, its MessageBus, std::string settings, MultiTask's std::function
+// (`new`/`delete Server`, its MessageBus, MultiTask's std::function
 // members, ListenPort's shared_ptr<SSLContext>), the variadic PHP error reporters and the
 // zend_try frames around calls that bail out (start(), addProcess's worker, json_encode).
 #include "php_swoole_cxx.h"
@@ -72,14 +72,8 @@ void dispatch_worker_start(void *server) {
 
 int64_t settings_get(void *, uint32_t id) {
     switch (id) {
-    case SWR_PHPSERVER_SET_CPU_NUM: return SW_CPU_NUM;
-    case SWR_PHPSERVER_SET_GLOBAL_ENABLE_COROUTINE: return SwooleG.enable_coroutine;
-    case SWR_PHPSERVER_SET_PATH_MAX: return PATH_MAX;
 #if defined(__linux__) and defined(HAVE_REUSEPORT)
     case SWR_PHPSERVER_SET_HAVE_REUSE_PORT: return 1;
-#endif
-#ifdef HAVE_CPU_AFFINITY
-    case SWR_PHPSERVER_SET_HAVE_CPU_AFFINITY: return 1;
 #endif
 #ifdef SW_HAVE_COMPRESSION
     case SWR_PHPSERVER_SET_HAVE_COMPRESSION: return 1;
@@ -95,44 +89,6 @@ int64_t settings_get(void *, uint32_t id) {
 #endif
     default: return 0;
     }
-}
-void settings_text(void *server, uint32_t id, const char *value, size_t length) {
-    Server *serv = as_server(server);
-    std::string text(value, length);
-    switch (id) {
-    case SWR_PHPSERVER_TEXT_CHROOT: serv->chroot_ = text; break;
-    case SWR_PHPSERVER_TEXT_USER: serv->user_ = text; break;
-    case SWR_PHPSERVER_TEXT_GROUP: serv->group_ = text; break;
-    case SWR_PHPSERVER_TEXT_PID_FILE: serv->pid_file = text; break;
-    case SWR_PHPSERVER_TEXT_TASK_TMPDIR: swoole_set_task_tmpdir(text); break;
-    case SWR_PHPSERVER_TEXT_DOCUMENT_ROOT: serv->set_document_root(text); break;
-    case SWR_PHPSERVER_TEXT_INDEX_FILE: serv->http_index_files.insert(text); break;
-#ifdef SW_HAVE_COMPRESSION
-    case SWR_PHPSERVER_TEXT_COMPRESSION_TYPE: serv->add_http_compression_type(text); break;
-#endif
-    case SWR_PHPSERVER_TEXT_STATIC_LOCATION: serv->locations.insert(text); break;
-    default: break;
-    }
-}
-int settings_cpu_affinity(int *cpus, size_t capacity, int *error) {
-    int count = 0;
-#ifdef HAVE_CPU_AFFINITY
-    cpu_set_t cpu_set;
-    if (swoole_get_cpu_affinity(&cpu_set) < 0) {
-        *error = errno;
-        return -1;
-    }
-    for (int i = 0; i < CPU_SETSIZE && (size_t) count < capacity; i++) {
-        if (CPU_ISSET(i, &cpu_set)) {
-            cpus[count++] = i;
-        }
-    }
-#else
-    (void) cpus;
-    (void) capacity;
-    (void) error;
-#endif
-    return count;
 }
 
 bool task_dispatch_multi(void *server, zval *ztasks, double timeout, zval *return_value, bool *bailed) {
@@ -313,9 +269,6 @@ static_assert(SW_ERROR_PHP_FATAL_ERROR == 503 && SW_ERROR_INVALID_PARAMS == 505 
                   SW_WORKER_MIN_REQUEST == 10 && SW_SOCK_TCP == 1 && SW_SERVER_EVENT_PAUSE_RECV == 11 &&
                   SW_SERVER_EVENT_RESUME_RECV == 12,
               "error codes and constants crates/phpserver uses");
-#ifdef HAVE_CPU_AFFINITY
-static_assert(CPU_SETSIZE == 1024, "crates/phpserver's settings.rs CPU_SETSIZE");
-#endif
 
 void php_swoole_server_minit(int module_number) {
 #ifdef SW_THREAD
@@ -336,7 +289,7 @@ void php_swoole_server_minit(int module_number) {
     swr_v1_phpserver_dispatch_init(&dispatch);
     static const swr_v1_phpserver_task_host task = {task_dispatch_multi};
     swr_v1_phpserver_task_init(&task);
-    static const swr_v1_phpserver_settings_host settings = {settings_get, settings_text, settings_cpu_affinity};
+    static const swr_v1_phpserver_settings_host settings = {settings_get};
     swr_v1_phpserver_settings_init(&settings);
     static const swr_v1_phpserver_lifecycle_host lifecycle = {
         lifecycle_install, lifecycle_create, lifecycle_create_server, lifecycle_start,
