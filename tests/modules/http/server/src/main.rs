@@ -6,9 +6,14 @@
 //! (`core-tests/src/_lib/http.cpp`): the same upgrade request, and frames from the
 //! hybrid's `websocket::encode`, `mask`, `get_package_length` and `decode`.
 //!
+//! protocol.rs (tests/modules/framing) adds `core-tests/src/protocol/base.cpp`'s server TESTs.
+//!
 //! `main --list` prints the cases; `main NAME` runs one, in this process, as
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`), from the tree
 //! root (core-tests' `get_root_path()`). It exits 0 when every assertion held.
+
+#[path = "../../../framing/protocol.rs"]
+mod protocol;
 
 use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_long, c_void};
@@ -925,19 +930,28 @@ const CASES: Cases = &[
     ("ssl", ssl),
 ];
 
+const SUITES: &[(&str, Cases)] = &[
+    ("http_server", http1::CASES),
+    ("http_server", CASES),
+    ("protocol", protocol::CASES),
+];
+
 fn main() {
     let name = std::env::args().nth(1).expect("usage: main --list | NAME");
+    let cases = SUITES.iter().flat_map(|(suite, cases)| {
+        cases
+            .iter()
+            .map(move |(case, body)| (format!("{suite}.{case}"), body))
+    });
     if name == "--list" {
-        for (case, _) in http1::CASES.iter().chain(CASES) {
-            println!("http_server.{case}");
+        for (case, _) in cases {
+            println!("{case}");
         }
         return;
     }
-    let case = name.strip_prefix("http_server.").expect("http_server.NAME");
-    let (_, body) = http1::CASES
-        .iter()
-        .chain(CASES)
-        .find(|(known, _)| *known == case)
+    let (_, body) = cases
+        .into_iter()
+        .find(|(known, _)| *known == name)
         .expect("unknown case");
     // core-tests' main sets SwooleG.max_sockets = 20000 after swoole_init; swoole_init
     // takes it from the soft descriptor limit.

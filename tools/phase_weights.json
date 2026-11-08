@@ -47,7 +47,6 @@
  "error-unit": 1,
  "format": 3,
  "framing-native": 2,
- "framing-native-originals": 78,
  "framing-unit": 1,
  "framing-versioned-expectation": 1,
  "hooks-compile": 38,

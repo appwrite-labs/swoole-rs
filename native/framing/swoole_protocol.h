@@ -52,18 +52,6 @@ struct Protocol {
 };
 }  // namespace swoole
 
-static inline uint16_t swoole_swap_endian16(uint16_t x) {
-    return __builtin_bswap16(x);
-}
-
-static inline uint32_t swoole_swap_endian32(uint32_t x) {
-    return __builtin_bswap32(x);
-}
-
-static inline uint64_t swoole_swap_endian64(uint64_t x) {
-    return __builtin_bswap64(x);
-}
-
 int64_t swoole_unpack(char type, const void *data);
 uint64_t swoole_hton64(uint64_t value);
 uint64_t swoole_ntoh64(uint64_t value);

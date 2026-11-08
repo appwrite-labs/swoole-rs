@@ -1,5 +1,6 @@
 // The Servers upstream's core-tests/src/server/http_server.cpp builds (test_base_server,
-// test_http_server, test_ssl_http), for the Rust cases in src/main.rs. Building a Server, its
+// test_http_server, test_ssl_http) and core-tests/src/protocol/base.cpp builds, for the Rust cases
+// in src/main.rs and tests/modules/framing/protocol.rs. Building a Server, its
 // std::string setters, its callback slots and a timer callback need C++; every assertion and
 // callback body is Rust's. Compiled into the hybrid tree's lib-swoole by tests/modules/hooks/system.py.
 #include "swoole_server.h"
@@ -21,7 +22,30 @@ static ListenPort *listen_port(Server *serv, int type, int port) {
     return ls;
 }
 
+// crates/ports' ListenPort setters, which the hybrid's ListenPort no longer declares.
+void port_set_stream_protocol(ListenPort *) asm("_ZN6swoole10ListenPort19set_stream_protocolEv");
+void port_set_length_protocol(ListenPort *, uint32_t, char, uint32_t) asm("_ZN6swoole10ListenPort19set_length_protocolEjcj");
+
 extern "C" {
+// core-tests/src/protocol/base.cpp's Server, created: one worker in base mode, its TCP port framed
+// by set_stream_protocol (0), set_length_protocol(0, 'l', 4) (1) or set_eof_protocol("\r\n", false) (2).
+Server *swr_case_protocol_server(int framing, Hook on_worker_start, Receive on_receive) {
+    auto serv = new Server(Server::MODE_BASE);
+    serv->worker_num = 1;
+    ListenPort *port = listen_port(serv, SW_SOCK_TCP, 0);
+    if (framing == 0) {
+        port_set_stream_protocol(port);
+    } else if (framing == 1) {
+        port_set_length_protocol(port, 0, 'l', 4);
+    } else {
+        swr_v1_ports_set_eof(port, "\r\n", 2, false);
+    }
+    serv->create();
+    serv->onWorkerStart = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
+    serv->onReceive = on_receive;
+    return serv;
+}
+
 // test_base_server's Server, created: null when set_document_root fails.
 Server *swr_case_base_server(const char *root, Receive on_receive, Closed on_close, Hook on_worker_start) {
     auto serv = new Server(Server::MODE_BASE);
