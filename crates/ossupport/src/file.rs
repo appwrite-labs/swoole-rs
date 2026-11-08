@@ -130,36 +130,6 @@ pub unsafe extern "C" fn swr_v1_os_file_read_all(
     })
 }
 
-/// `File::read_line`: reads up to `n - 1` bytes, cuts after the first NUL or
-/// newline, NUL-terminates and seeks just past the line. Without a terminator it
-/// seeks one byte past the data read, as upstream does.
-/// # Safety
-/// `buf` points to `n` writable bytes and `n` is at least one.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_read_line(fd: c_int, buf: *mut c_void, n: usize) -> isize {
-    // SAFETY: plain syscall on a caller-owned descriptor.
-    let start = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
-    // SAFETY: `buf` has `n` writable bytes, so `n - 1` leaves room for the NUL.
-    let read = unsafe { libc::read(fd, buf, n.wrapping_sub(1)) };
-    if read <= 0 {
-        return read;
-    }
-    let read = read.unsigned_abs();
-    // SAFETY: the read initialised `read` bytes at `buf`.
-    let bytes = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), n) };
-    let (length, skip) = bytes
-        .iter()
-        .take(read)
-        .position(|&b| b == 0 || b == b'\n')
-        .map_or((read, 1), |at| (at + 1, 0));
-    if let Some(terminator) = bytes.get_mut(length) {
-        *terminator = 0;
-    }
-    // SAFETY: plain syscall on a caller-owned descriptor.
-    unsafe { libc::lseek(fd, start + to_off(length + skip), libc::SEEK_SET) };
-    length.cast_signed()
-}
-
 /// `file_get_size(fd)`: the size of a regular file, or the error to publish.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,54 +452,6 @@ mod tests {
                 error: libc::EISDIR
             },
             "non-regular files are EISDIR"
-        );
-    }
-
-    #[test]
-    fn read_line_cuts_after_the_terminator_and_seeks_past_it() {
-        let mut file = scratch(b"ab\ncd\0ef");
-        let fd = file.as_raw_fd();
-        let mut buf = [0xff_u8; 16];
-        assert_eq!(
-            unsafe { swr_v1_os_file_read_line(fd, buf.as_mut_ptr().cast(), 16) },
-            3,
-            "newline kept"
-        );
-        assert_eq!(&buf[..4], b"ab\n\0", "NUL after the line");
-        assert_eq!(
-            unsafe { swr_v1_os_file_read_line(fd, buf.as_mut_ptr().cast(), 16) },
-            3,
-            "NUL ends a line"
-        );
-        assert_eq!(&buf[..4], b"cd\0\0", "NUL kept and terminated");
-        assert_eq!(
-            unsafe { swr_v1_os_file_read_line(fd, buf.as_mut_ptr().cast(), 16) },
-            2,
-            "no terminator"
-        );
-        assert_eq!(&buf[..3], b"ef\0", "terminated");
-        assert_eq!(
-            file.stream_position().unwrap_or_default(),
-            9,
-            "one byte past the data"
-        );
-        assert_eq!(
-            unsafe { swr_v1_os_file_read_line(fd, buf.as_mut_ptr().cast(), 16) },
-            0,
-            "EOF"
-        );
-        file.seek(SeekFrom::Start(0))
-            .unwrap_or_else(|e| unreachable!("{e}"));
-        assert_eq!(
-            unsafe { swr_v1_os_file_read_line(fd, buf.as_mut_ptr().cast(), 3) },
-            2,
-            "n - 1 bytes"
-        );
-        assert_eq!(&buf[..3], b"ab\0", "a full chunk is terminated");
-        assert_eq!(
-            file.stream_position().unwrap_or_default(),
-            3,
-            "and skips one byte"
         );
     }
 
