@@ -19,6 +19,13 @@ SOURCES = ['src/core/string.cc', 'src/core/base.cc', 'src/core/misc.cc', 'src/os
            'src/core/error.cc']
 
 
+def native_sources():
+    """The Zend-free native sources a String consumer links: all but the clients' DNS, whose
+    coroutine Socket calls need the Socket vtable in src/coroutine/system.cc, which a String
+    consumer doesn't build. Sanitizer data keeps those calls past --gc-sections."""
+    return [name for name in zend_free_native_sources() if name != 'src/swoole_rs_clients_dns.cc']
+
+
 def pinned_tree(source, tree):
     """Extract the pinned String sources and the original string.cpp tests into tree."""
     data = subprocess.check_output(['git', '-C', str(source), 'archive', COMMIT, 'include', *SOURCES])
@@ -44,7 +51,7 @@ def build(tree, engine, consumer, binary, archive=None, *, sanitize=False, optim
     if engine == 'rust':
         tree, headers = hybrid_tree(archive)
     command = ['c++', '-std=c++17', '-O3' if optimize else '-O1', '-g', '-ffunction-sections', '-fdata-sections',
-               '-I' + str(HERE), *headers, *[str(tree / name) for name in [*SOURCES, *zend_free_native_sources()] if (tree / name).exists()], *map(str, extra), str(HERE / consumer)]
+               '-I' + str(HERE), *headers, *[str(tree / name) for name in [*SOURCES, *native_sources()] if (tree / name).exists()], *map(str, extra), str(HERE / consumer)]
     command += shlex.split(subprocess.check_output(['pkg-config', '--cflags', '--libs', 'openssl'], text=True))
     if engine == 'rust':
         command.append(str(archive))
