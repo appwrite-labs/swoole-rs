@@ -2,7 +2,7 @@
 // What crates/phpclients' resolver.rs needs from C++: NameResolver::Context and
 // swoole.h's resolver list, which core code and the coroutine socket share, with
 // their std::string, std::list and std::function signatures.
-#include "php_swoole_cxx.h"
+#include "swoole_rs_phphost.h"
 #include "swoole_rs_phpclients.h"
 
 using swoole::NameResolver;

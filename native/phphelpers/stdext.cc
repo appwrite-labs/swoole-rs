@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // What crates/phpstdext needs from C: Zend VM primitives whose inline bodies
 // are private to zend_execute.c, and PCRE's cache, each inside zend_try.
-#include "php_swoole_private.h"
+#include "swoole_rs_phphost.h"
 #ifdef SW_STDEXT
-#include "php_swoole_cxx.h"
 #include "swoole_rs_phphelpers.h"
 SW_EXTERN_C_BEGIN
 #include "ext/pcre/php_pcre.h"

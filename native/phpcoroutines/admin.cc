@@ -2,7 +2,7 @@
 // The admin server's commands are crates/server/src/admin.rs; this lends it the
 // C++ server's state: Server, Connection, ListenPort, ReactorThread and the
 // reactor's sockets, which Rust reads through swr_v1_server_admin_* records.
-#include "php_swoole_cxx.h"
+#include "swoole_rs_phphost.h"
 #include "swoole_server.h"
 #include "swoole_rs.h"
 

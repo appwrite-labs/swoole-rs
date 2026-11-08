@@ -2,7 +2,7 @@
 // What crates/phptimer's Swoole\Timer needs from C++ (swoole_rs_phptimer.h):
 // the C++ Timer's operations, the callback and destructor trampolines that
 // re-raise a bailout Rust reports, and the zend::Function call.
-#include "php_swoole_cxx.h"
+#include "swoole_rs_phphost.h"
 #include "swoole_server.h"
 #include "swoole_rs_phptimer.h"
 #include "swoole_rs_phpprocess.h"

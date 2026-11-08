@@ -6,7 +6,7 @@
 // files call), the module globals and get_module(), and the ops tables whose entries
 // configure's #ifdefs decide (the optional drivers, ssh2, ftp, stdext, Swoole\Thread,
 // the PDO hooks) or that reach C++ objects (the module globals, the DNS settings).
-#include "php_swoole_cxx.h"
+#include "swoole_rs_phphost.h"
 #include "swoole_rs_phphelpers.h"
 #include "swoole_rs_phpruntime.h"
 #include "swoole_rs_zend_guard.h"
@@ -17,6 +17,8 @@
 using swoole::Coroutine;
 using swoole::network::Socket;
 static_assert(SUCCESS == 0, "Zend SUCCESS ABI");
+
+extern "C" PHP_FUNCTION(swoole_coroutine_gethostbyname);  // crates/phpcoroutines
 
 SW_API zend_string **sw_zend_known_strings = nullptr;
 

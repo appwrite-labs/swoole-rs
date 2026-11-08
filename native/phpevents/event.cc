@@ -2,7 +2,7 @@
 // What crates/phpevents' Swoole\Event needs from C++ (swoole_rs_phpevents.h):
 // the C++ reactor's and sockets' operations, the reactor callbacks that re-raise
 // a bailout Rust reports, and the PHP SDK leaves.
-#include "php_swoole_cxx.h"
+#include "swoole_rs_phphost.h"
 #include "swoole_server.h"
 #include "swoole_signal.h"
 

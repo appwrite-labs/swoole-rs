@@ -3,7 +3,7 @@
 // Socket, handlers and events, timers, the current Coroutine's yield and
 // resume, and the bundled php_curl handle (thirdparty/php/curl) that
 // curl_easy_perform and the curl_* functions reach it through.
-#include "php_swoole_cxx.h"
+#include "swoole_rs_phphost.h"
 #include "swoole_rs_curl.h"
 #include "swoole_socket.h"
 
