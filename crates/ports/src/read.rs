@@ -126,15 +126,19 @@ pub struct Shared {
     pub static_handler: u8,
 }
 
-struct Native {
+/// One fact or effect on the connection in the context: a [`PortsCall`] wrapped
+/// in a closure, so each read is monomorphised over it and its hot effects inline.
+pub(crate) trait Call: Fn(*mut c_void, u32, u64) -> u64 {}
+impl<F: Fn(*mut c_void, u32, u64) -> u64> Call for F {}
+
+struct Native<F> {
     shared: *mut Shared,
-    call: PortsCall,
+    call: F,
 }
 
-impl Native {
+impl<F: Call> Native<F> {
     fn op(&self, op: u32, arg: u64) -> u64 {
-        // SAFETY: a native fact or effect on the live connection in `context`.
-        unsafe { (self.call)(self.shared.cast(), op, arg) }
+        (self.call)(self.shared.cast(), op, arg)
     }
     fn get(&self, op: u32) -> u64 {
         self.op(op, 0)
@@ -198,12 +202,7 @@ fn size(count: u64) -> usize {
 /// # Safety
 /// `context` starts with a [`Shared`] and `call` acts on the connection in it, live
 /// for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_on_read(
-    kind: u32,
-    context: *mut c_void,
-    call: PortsCall,
-) -> i32 {
+pub(crate) unsafe fn readable(kind: u32, context: *mut c_void, call: impl Call) -> i32 {
     let native = Native {
         shared: context.cast(),
         call,
@@ -224,7 +223,7 @@ enum Failure {
     Close,
 }
 
-fn read_error(n: &Native) -> Failure {
+fn read_error(n: &Native<impl Call>) -> Failure {
     match n.get(OP_CATCH) {
         SW_ERROR => {
             n.get(OP_WARN_RECV);
@@ -238,7 +237,7 @@ fn read_error(n: &Native) -> Failure {
     }
 }
 
-fn raw(n: &Native) -> i32 {
+fn raw(n: &Native<impl Call>) -> i32 {
     n.get(OP_RECV_BUFFER);
     let received = n.signed(OP_RECV, 1);
     if received < 0 {
@@ -258,7 +257,7 @@ fn raw(n: &Native) -> i32 {
 }
 
 /// Length and Redis framing; length (and EOF) ports free a large drained buffer.
-fn framed(n: &Native, receive: u32, release: bool) -> i32 {
+fn framed(n: &Native<impl Call>, receive: u32, release: bool) -> i32 {
     n.get(OP_RECV_BUFFER);
     if n.signed(receive, 0) < 0 {
         n.get(OP_CLOSE_ERRNO);
@@ -270,7 +269,7 @@ fn framed(n: &Native, receive: u32, release: bool) -> i32 {
     SW_OK
 }
 
-fn eof(n: &Native) -> i32 {
+fn eof(n: &Native<impl Call>) -> i32 {
     if !n.is(OP_RECV_BUFFER) {
         n.get(OP_CLOSE);
         return SW_ERR;
@@ -293,7 +292,7 @@ enum Step {
     Done,
 }
 
-fn http(n: &Native) -> i32 {
+fn http(n: &Native<impl Call>) -> i32 {
     let shared = n.shared();
     let (websocket, upgraded, http2_stream) =
         (shared.websocket, shared.upgraded, shared.http2_stream);
@@ -328,7 +327,7 @@ fn http(n: &Native) -> i32 {
     }
 }
 
-fn receive(n: &Native) -> Step {
+fn receive(n: &Native<impl Call>) -> Step {
     let received = n.signed(OP_RECV, 0);
     if received < 0 {
         return match read_error(n) {
@@ -343,7 +342,7 @@ fn receive(n: &Native) -> Step {
     Step::Parse
 }
 
-fn bad(n: &Native, which: Log) -> Step {
+fn bad(n: &Native<impl Call>, which: Log) -> Step {
     log(n, which);
     Step::Reply(SEND_BAD_REQUEST)
 }
@@ -353,7 +352,7 @@ const TRACE: c_int = 1;
 const WARNING: c_int = 4;
 
 /// One of `readable_callback_http`'s `swoole_error_log`s, naming the client.
-fn log(n: &Native, which: Log) {
+fn log(n: &Native<impl Call>, which: Log) {
     let host = n.op(OP_CLIENT, 1) as *const c_char;
     let host = if host.is_null() {
         c""
@@ -417,7 +416,7 @@ fn log(n: &Native, which: Log) {
     );
 }
 
-fn parse(n: &Native) -> Step {
+fn parse(n: &Native<impl Call>) -> Step {
     if let Some(step) = head(n) {
         return step;
     }
@@ -430,7 +429,7 @@ fn parse(n: &Native) -> Step {
 }
 
 /// The request line, an HTTP/2 preface, the header block and form setup.
-fn head(n: &Native) -> Option<Step> {
+fn head(n: &Native<impl Call>) -> Option<Step> {
     if n.request().method == 0 && n.request().get_protocol() < 0 {
         if !n.request().excepted && (n.buffer().length as u64) < HEADER_MAX_SIZE {
             return Some(Step::Done);
@@ -474,7 +473,7 @@ fn head(n: &Native) -> Option<Step> {
     None
 }
 
-fn preface(n: &Native) -> Step {
+fn preface(n: &Native<impl Call>) -> Step {
     if !n.is(OP_HTTP2_ENABLED) {
         return bad(n, Log::NoHttp2);
     }
@@ -491,7 +490,7 @@ fn preface(n: &Native) -> Step {
 }
 
 /// A multipart upload streamed to disk.
-fn form(n: &Native) -> Option<Step> {
+fn form(n: &Native<impl Call>) -> Option<Step> {
     if !n.request().multipart_header_parsed && !n.is(OP_BUF_HEADER_END) {
         return Some(Step::Done);
     }
@@ -519,7 +518,7 @@ fn form(n: &Native) -> Option<Step> {
 
 /// The first look at a request: one without a body is served here, pipelined
 /// requests behind it parsed next.
-fn bodyless(n: &Native) -> Option<Step> {
+fn bodyless(n: &Native<impl Call>) -> Option<Step> {
     if n.request().nobody_chunked {
         let header_length = n.request().header_length;
         if (n.buffer().length as u64) < u64::from(header_length) + u64::from(CHUNK_EOF) {
@@ -555,7 +554,7 @@ fn bodyless(n: &Native) -> Option<Step> {
 }
 
 /// A request with a body: wait for all of it, then dispatch.
-fn body(n: &Native) -> Step {
+fn body(n: &Native<impl Call>) -> Step {
     let max = n.get(OP_MAX_LENGTH);
     let request_length;
     if n.request().chunked {
@@ -864,11 +863,6 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
-        // SAFETY: tests pass their live `Fake`.
-        unsafe { &mut *context.cast::<Fake>() }.call(op, arg)
-    }
-
     std::thread_local! {
         static LOGGED: std::cell::RefCell<Vec<(String, c_int, c_int, String)>> = const {
             std::cell::RefCell::new(Vec::new())
@@ -903,8 +897,10 @@ mod tests {
     fn run(kind: u32, fake: &mut Fake) -> i32 {
         log::swr_v1_core_set_log_host(record);
         fake.point();
+        let call =
+            |context: *mut c_void, op, arg| unsafe { &mut *context.cast::<Fake>() }.call(op, arg);
         // SAFETY: `fake` is live for the call and starts with its `Shared`.
-        unsafe { swr_v1_ports_on_read(kind, (&raw mut *fake).cast(), call) }
+        unsafe { readable(kind, (&raw mut *fake).cast(), call) }
     }
 
     const GET: &[u8] = b"GET / HTTP/1.1\r\n\r\n";
