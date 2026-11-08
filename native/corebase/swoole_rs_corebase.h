@@ -31,8 +31,6 @@ int32_t swr_v1_corebase_mkdir_next(const uint8_t *input, size_t input_length, ui
  * gets the pid, 0 when fork fails. call may throw. Rust also defines swoole_fork,
  * swoole_clean, swoole_thread_init/_clean and swoole_is_main_thread. */
 pid_t swr_v1_core_fork_exec(void (*call)(const void *function), const void *function);
-/* One character of swoole_random_string(std::string &, size_t), drawn with swoole_rand(0, 61). */
-char swr_v1_corebase_random_char(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
  * native/framing/swoole_protocol.h stay their declarations: sw_malloc/sw_free/
  * sw_calloc/sw_realloc (libc's allocator), swoole_common_divisor/_multiple,
@@ -42,8 +40,7 @@ char swr_v1_corebase_random_char(void);
  * swoole::DataHead::dump. */
 /* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both
  * swoole_redirect_stdout overloads, swoole_print_backtrace(_on_error),
- * swoole_exit and swoole_get_systemd_listen_fds; and, in crates/utilities,
- * swoole_set_log_level, swoole_get_log_level and swoole_set_log_file. */
+ * swoole_exit and swoole_get_systemd_listen_fds. */
 /* Process-wide core state: upstream's SwooleG scalars. swoole::Global's members
  * of these names are swoole::RustField views over the accessor pairs below.
  * Pointers (memory pool, stdout FILE *, Logger *, Server *, the AIO pipe
@@ -128,5 +125,44 @@ void swr_v1_core_bug_report_init(const char *banner, const char *compiler, const
 int sw_printf(const char *format, ...) __attribute__((format(printf, 1, 2)));
 #ifdef __cplusplus
 }
+#include <cstdio>
+#include <functional>
+#include <string>
+namespace swoole {
+/* SwooleG.name_resolvers' element; native/clients/dns.cc runs them. */
+struct NameResolver {
+    enum Type { TYPE_KERNEL, TYPE_PHP, TYPE_USER };
+    struct Context {
+        int type;
+        double timeout;
+        void *private_data;
+        bool with_port;
+        bool cluster_;
+        bool final_;
+        std::function<void(Context *ctx)> dtor;
+        ~Context() {
+            if (private_data && dtor) dtor(this);
+        }
+    };
+    std::function<std::string(const std::string &, Context *, void *)> resolve;
+    void *private_data;
+    Type type;
+};
+}  // namespace swoole
+/* Upstream's error and log API under its C++ symbols: Rust's (crates/error,
+ * crates/utilities, crates/corebase) except swoole_throw_error and
+ * swoole_ignore_error (native/error/error.cc). */
+const char *swoole_strerror(int code);
+void swoole_throw_error(int code);
+void swoole_ignore_error(int code);
+bool swoole_is_ignored_error(int code);
+bool swoole_is_main_thread();
+void swoole_set_log_level(int level);
+void swoole_set_log_file(const char *file);
+int swoole_get_log_level();
+void swoole_set_trace_flags(long flags);
+void swoole_set_print_backtrace_on_error(bool enable = true);
+void swoole_set_stdout_stream(FILE *fp);
+FILE *swoole_get_stdout_stream();
 #endif
 #endif

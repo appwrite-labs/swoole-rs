@@ -155,8 +155,3 @@ pid_t swoole_fork_exec(const std::function<void(void)> &fn) {
     return swr_v1_core_fork_exec([](const void *f) { (*static_cast<const std::function<void(void)> *>(f))(); }, &fn);
 }
 
-void swoole_random_string(std::string &str, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-        str.append(1, swr_v1_corebase_random_char());
-    }
-}

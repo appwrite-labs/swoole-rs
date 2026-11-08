@@ -41,14 +41,6 @@ pub unsafe extern "C" fn swoole_random_string(buf: *mut c_char, len: usize) {
     fill(buffer, &mut |low, high| swoole_rand(low, high));
 }
 
-/// One character for the `std::string` overload, which appends them in C++ (its
-/// mangled name differs between libc++ and libstdc++).
-#[must_use]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_corebase_random_char() -> c_char {
-    c_char::from_ne_bytes([character(&mut |low, high| swoole_rand(low, high))])
-}
-
 /// `swoole_random_bytes`: fills `buf` from the system CSPRNG, retrying
 /// interrupted calls; returns how many bytes it filled.
 /// # Safety
@@ -192,7 +184,5 @@ mod tests {
         unsafe { swoole_random_string(buffer.as_mut_ptr().cast(), 64) };
         assert!(buffer[..64].iter().all(|byte| UPSTREAM.contains(byte)));
         assert_eq!(buffer[64..], [0, 0xa5]);
-        let byte = swr_v1_corebase_random_char().to_ne_bytes()[0];
-        assert!(UPSTREAM.contains(&byte));
     }
 }
