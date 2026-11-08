@@ -47,7 +47,7 @@ const SESSION_CLOSED: c_int = 1004;
 const SESSION_NOT_EXIST: c_int = 1005;
 
 /// `Server::is_stream_event`.
-fn is_stream_event(kind: u8) -> bool {
+pub(crate) fn is_stream_event(kind: u8) -> bool {
     matches!(kind, 0 | 2..=5 | 11..=14)
 }
 
@@ -56,7 +56,7 @@ fn address<T>(value: *const T) -> u64 {
 }
 
 /// `DataHead::server_fd` is `uint16_t`; native's assignment keeps the low bits.
-fn low16(value: c_int) -> u16 {
+pub(crate) fn low16(value: c_int) -> u16 {
     u16::try_from(value.cast_unsigned() & 0xffff).unwrap_or_default()
 }
 

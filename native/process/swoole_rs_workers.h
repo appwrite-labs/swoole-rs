@@ -31,6 +31,9 @@ uint64_t swr_v1_reactor_process_call(void *context, uint32_t op, uint64_t arg);
 /* The manager's ops over Rust-owned records, for the ManagerContext (`WorkersNative<3>`)
  * at `context`: crates/server's manager_ops.rs. */
 uint64_t swr_v1_manager_call(void *context, uint32_t op, uint64_t arg);
+/* The process factory's ops over Rust-owned records, for the FactoryContext (`WorkersNative<4>`)
+ * at `context`: crates/server's factory_ops.rs. */
+uint64_t swr_v1_factory_call(void *context, uint32_t op, uint64_t arg);
 /* A thread-mode worker thread's body, run(context): directly, or inside the PHP thread
  * crates/phpserver starts on `thread` (the ThreadFactory's swoole::Thread). */
 void swr_v1_workers_thread_start(void *thread, void (*run)(void *context), void *context);
@@ -420,7 +423,6 @@ void swr_v1_thread_manager_exited(const void *manager, void *worker);
 #define SWR_WORKERS_OP_WRITE_TO_REACTOR 352
 #define SWR_WORKERS_OP_SET_CLOSE_RESET 354
 #define SWR_WORKERS_OP_SET_CLOSE_ACTIVELY 355
-#define SWR_WORKERS_OP_TRACE_CLOSE 356
 #define SWR_WORKERS_OP_CONN_CLOSE_ACTIVELY 357
 #define SWR_WORKERS_OP_CONN_FD 358
 #define SWR_WORKERS_OP_IS_WORKER 359

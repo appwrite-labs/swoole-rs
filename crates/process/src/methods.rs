@@ -604,6 +604,12 @@ impl ExitStatus {
     pub fn new(pid: c_int, status: c_int) -> Self {
         Self { pid, status }
     }
+
+    /// `ExitStatus::get_status()`: the `waitpid` status.
+    #[must_use]
+    pub fn status(&self) -> c_int {
+        self.status
+    }
 }
 
 /// `Worker::report_error(exit_status)`: the abnormal exit warning.
