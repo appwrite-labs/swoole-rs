@@ -42,13 +42,12 @@ const EVENT_WRITE: i64 = 1 << 10;
 /// `IOV_MAX` on Linux and Apple.
 const IOV_MAX: u32 = 1024;
 
-/// Rust owns the core pointer, imported stream and reference flag. Native SDK
+/// Rust owns the core pointer and imported stream. Native SDK
 /// facades access them only through the typed Rust entry points below.
 #[repr(C)]
 pub(crate) struct Data {
     socket: Socket,
     stream: zval,
-    reference: bool,
 }
 
 type SocketObject = Object<Data>;
@@ -437,61 +436,23 @@ unsafe fn init(object: *mut zend_object) -> Result<(), swoole_rs_zend::bailout::
     Ok(())
 }
 
-/// `php_swoole_export_socket(zobject, socket)`: a `Coroutine\Socket` object
-/// that owns `socket`.
-/// # Safety
-/// `zobject` is writable and `socket` a live coroutine socket; called after
-/// MINIT, from PHP's thread.
-#[unsafe(export_name = "_Z24php_swoole_export_socketP12_zval_structPN6swoole9coroutine6SocketE")]
-pub unsafe extern "C" fn php_swoole_export_socket(zobject: *mut zval, socket: Socket) -> bool {
-    // SAFETY: per the caller.
-    let object = unsafe { socket_object(socket, false) };
-    // SAFETY: per the caller.
-    unsafe { set_object(zobject, object) };
-    true
-}
-
-/// `php_swoole_init_socket_object(zobject, socket)`: an object that only
-/// references `socket`.
-/// # Safety
-/// As [`php_swoole_export_socket`].
-#[unsafe(export_name = "_Z29php_swoole_init_socket_objectP12_zval_structPN6swoole9coroutine6SocketE")]
-pub unsafe extern "C" fn php_swoole_init_socket_object(zobject: *mut zval, socket: Socket) {
-    // SAFETY: per the caller.
-    swoole_rs_zend::bailout::raise(unsafe { init_socket_object(zobject, socket) });
-}
-
-/// [`php_swoole_init_socket_object`] for Rust callers: a bailout is returned.
+/// `php_swoole_init_socket_object(zobject, socket)`: a `Coroutine\Socket`
+/// object that owns `socket`, as upstream's coroutine HTTP server makes for
+/// each connection.
 /// # Errors
 /// Making the object bailed out; `zobject` is untouched.
 /// # Safety
-/// As [`php_swoole_export_socket`].
+/// `zobject` is writable and `socket` a live coroutine socket; called after
+/// MINIT, from PHP's thread.
 pub unsafe fn init_socket_object(
     zobject: *mut zval,
     socket: Socket,
 ) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: per the caller.
-    let object = unsafe { owner::make_object(socket, true) }?;
+    let object = unsafe { owner::make_object(socket) }?;
     // SAFETY: per the caller.
     unsafe { set_object(zobject, object) };
     Ok(())
-}
-
-/// A `Coroutine\Socket` object over `socket`, as `socket_coro_init` leaves it;
-/// with `reference`, the object does not own the socket.
-/// # Safety
-/// `socket` is a live coroutine socket; called after MINIT, from PHP's thread.
-unsafe fn socket_object(socket: Socket, reference: bool) -> *mut zend_object {
-    // SAFETY: the native caller transfers this live core socket and its ownership mode.
-    let object = match unsafe { owner::make_object(socket, reference) } {
-        Ok(object) => object,
-        Err(error) => {
-            error.defer();
-            ptr::null_mut()
-        }
-    };
-    swoole_rs_zend::bailout::finish();
-    object
 }
 
 /// `bind(string $address, int $port = 0): bool`.
@@ -1105,10 +1066,6 @@ fn close(call: &Call) {
     if open(call).is_none() {
         return;
     }
-    if this(call).reference {
-        warn(false, "cannot close the referenced resource");
-        return call.set_bool(false);
-    }
     // SAFETY: the current PHP method keeps this open, owned socket object live.
     match unsafe { owner::close(call.this()) } {
         Ok(()) => call.set_bool(true),
@@ -1422,11 +1379,11 @@ mod tests {
 
     #[test]
     fn data_matches_socket_object() {
-        // SocketImpl *, zval, bool, then the zend_object.
+        // SocketImpl *, zval, then the zend_object.
         assert_eq!(
             SocketObject::OFFSET,
-            (size_of::<Socket>() + size_of::<zval>() + 1).next_multiple_of(8),
-            "std follows the socket, stream and reference flag"
+            size_of::<Socket>() + size_of::<zval>(),
+            "std follows the socket and stream"
         );
     }
 }
