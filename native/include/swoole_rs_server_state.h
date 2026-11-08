@@ -55,7 +55,6 @@ enum {
     SWR_SERVER_TEXT_DOCUMENT_ROOT,
 };
 const struct swr_v1_core_string *swr_v1_server_text_slot(const swr_v1_server_state *, size_t);
-void swr_v1_server_shared_init(void *storage);
 void swr_v1_server_port_shared_init(void *storage);
 size_t swr_v1_server_port_connections(const void *storage, uint32_t workers);
 bool swr_v1_server_record_layout(uint32_t kind, size_t size, size_t alignment, const size_t *offsets, size_t count);
@@ -192,6 +191,9 @@ swr_v1_server_state *swr_v1_server_state_new(void);
 void swr_v1_server_state_free(swr_v1_server_state *state);
 swr_v1_server_config *swr_v1_server_config_get(swr_v1_server_state *state);
 void swr_v1_server_config_init(swr_v1_server_state *state, uint32_t cpu_num, uint32_t max_sockets, long timezone, const void *allocator);
+/* Server::Server's and ~Server's work besides the C++ members (crates/server/src/server_methods.rs). */
+bool swr_v1_server_open(void *serv, int mode, size_t gs_size);
+void swr_v1_server_close(void *serv, void (*delete_port)(void *port));
 
 #ifdef __cplusplus
 } /* extern C */

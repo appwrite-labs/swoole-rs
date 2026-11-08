@@ -807,6 +807,24 @@ pub unsafe extern "C" fn swr_v1_bus_set_id_source(
     unsafe { self::bus(bus) }.next_id = Some((next, context));
 }
 
+/// `MessageBus::count_ids`: numbers each message written from `counter`, an
+/// atomic `sw_atomic_long_t` that buses in other processes may share.
+///
+/// # Safety
+/// As `bus`; `counter` stays live and aligned while the bus lives.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_bus_count_ids(bus: *mut Bus, counter: *mut c_void) {
+    /// # Safety
+    /// `counter` is the live atomic `swr_v1_bus_count_ids` was given.
+    unsafe extern "C" fn next(counter: *mut c_void) -> u64 {
+        // SAFETY: the caller's contract.
+        unsafe { &*counter.cast::<core::sync::atomic::AtomicU64>() }
+            .fetch_add(1, core::sync::atomic::Ordering::SeqCst)
+    }
+    // SAFETY: the caller's contract.
+    unsafe { self::bus(bus) }.next_id = Some((next, counter));
+}
+
 /// `MessageBus::write`: numbers the message, then writes it through the event loop
 /// while one is available, else synchronously. False if the pipe failed.
 ///
@@ -902,6 +920,18 @@ mod tests {
 
     unsafe extern "C" fn free(data: *mut c_void) {
         unsafe { libc::free(data) };
+    }
+
+    #[test]
+    fn count_ids_takes_each_id_from_the_shared_counter() {
+        let counter = core::sync::atomic::AtomicU64::new(1);
+        let bus = swr_v1_bus_create(64);
+        unsafe { swr_v1_bus_count_ids(bus, (&raw const counter).cast_mut().cast()) };
+        let (next, context) = unsafe { &*bus }.next_id.unwrap();
+        assert_eq!(unsafe { next(context) }, 1);
+        assert_eq!(unsafe { next(context) }, 2);
+        assert_eq!(counter.load(core::sync::atomic::Ordering::Relaxed), 3);
+        unsafe { swr_v1_bus_free(bus) };
     }
     struct Static(Allocator);
     unsafe impl Sync for Static {}

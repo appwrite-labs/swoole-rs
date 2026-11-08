@@ -21,6 +21,7 @@
         "crates/oracle/",
         "tools/arginfo.py",
         "native/include/",
+        "native/integration/",
         "migration/patches/integration/",
         "tools/build_hybrid.py",
         "tests/modules/integration/",
