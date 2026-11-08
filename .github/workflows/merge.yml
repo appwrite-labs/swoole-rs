@@ -356,6 +356,14 @@ jobs:
           FIREBIRD_DATABASE: test.fdb
           FIREBIRD_DATABASE_DEFAULT_CHARSET: UTF8
         ports: ['3050:3050']
+      # Serves freepdb1, the service ORACLE_TNS names; the image's own healthcheck.sh
+      # reports healthy once the database opens (a minute or two).
+      oracle:
+        image: gvenzl/oracle-free:slim
+        env:
+          ORACLE_PASSWORD: oracle
+        ports: ['1521:1521']
+        options: --health-cmd healthcheck.sh --health-interval 5s --health-retries 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/phpt-env
@@ -417,6 +425,12 @@ jobs:
           FIREBIRD_DATABASE: test.fdb
           FIREBIRD_DATABASE_DEFAULT_CHARSET: UTF8
         ports: ['3050:3050']
+      oracle:
+        image: gvenzl/oracle-free:slim
+        env:
+          ORACLE_PASSWORD: oracle
+        ports: ['1521:1521']
+        options: --health-cmd healthcheck.sh --health-interval 5s --health-retries 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

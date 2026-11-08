@@ -17,7 +17,7 @@ runs:
     # The engines link the Instant Client (--with-swoole-oracle).
     - uses: ./.github/actions/instantclient
     - shell: bash
-      run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql' | sudo tee -a /etc/hosts
+      run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql oracle' | sudo tee -a /etc/hosts
     # The ODBC driver and the mysql-test DSN, as upstream's tests/init writes them, with the
     # driver's full path (Ubuntu installs it outside the loader's default directories).
     - shell: bash
