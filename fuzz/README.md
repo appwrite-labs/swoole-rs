@@ -75,6 +75,19 @@ throw), on URLs up to 256 bytes because libstdc++'s
 `swr_v1_clients_domain_decode` with dns.cc's `domain_decode` wherever Rust stays
 in bounds; other inputs are outside the compared domain and aren't run.
 
+Five targets in `src/network.rs` have no oracle side; each checks a parser that
+reads untrusted bytes against the wire format or against invariants of its output.
+`http2_frame` checks `get_frame_length`, `sw_rs_http2_decode_frame` and
+`sw_rs_http2_unpack_setting` against the RFC 9113 frame header and SETTINGS layout.
+`clients_dns_reply` hands `swr_v1_clients_dns_query` any reply (optionally echoing the
+query's id): it succeeds exactly when it pushes an address, and each is IP text.
+`http_multipart` feeds the bundled `thirdparty/multipart_parser.c` a boundary and body
+in chunks, and runs `swr_v1_http_multipart_filename` on each part's headers.
+`http_chunked` feeds the bundled llhttp a chunked request or response in chunks: body
+spans stay inside their chunk and never exceed the input. `resp_server` walks a
+`Redis\Server` request with `swr_v1_resp_php_next`: spans stay inside the request,
+the walk advances and ends, and there is one command at most.
+
 libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in
 `artifacts/<target>/`; replay it with `cargo +nightly fuzz run <target> <file>`.
