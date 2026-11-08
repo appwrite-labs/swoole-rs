@@ -144,15 +144,6 @@ pub(crate) trait Host {
 /// The state of a server without one, which native code never passes.
 static NO_STATE: ServerState = ServerState::new();
 
-/// Native effects report faults as data; their enclosing C++ frame owns the payload.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct ServerReply {
-    pub value: u64,
-    pub fault: u32,
-}
-/// A callback catches every abnormal native effect before returning.
-pub type ServerGuardedCall = unsafe extern "C" fn(*mut c_void, u32, u64) -> ServerReply;
 trait NativeCall {
     /// # Safety
     /// The context is live for the callback, whose native unwind contract holds.
@@ -162,17 +153,6 @@ impl NativeCall for ServerCall {
     unsafe fn invoke(&self, context: *mut c_void, op: u32, arg: u64) -> Effect<u64> {
         // SAFETY: the caller lends the context under the legacy nonthrowing contract.
         Ok(unsafe { self(context, op, arg) })
-    }
-}
-impl NativeCall for ServerGuardedCall {
-    unsafe fn invoke(&self, context: *mut c_void, op: u32, arg: u64) -> Effect<u64> {
-        // SAFETY: native captures abnormalities below this Rust frame.
-        let reply = unsafe { self(context, op, arg) };
-        if reply.fault == 0 {
-            Ok(reply.value)
-        } else {
-            Err(NativeFault(reply.fault))
-        }
     }
 }
 struct Native<C> {
@@ -218,9 +198,9 @@ impl<C: NativeCall> Host for Native<C> {
                 }
             }
         }
-        // Only the guarded runner lends master.cc's context; the hot runners skip the call.
+        // Only the method runner lends master.cc's context; the hot runners skip the call.
         if !self.master.is_null() {
-            // SAFETY: the guarded runner lends master.cc's live context with its state.
+            // SAFETY: the method runner lends master.cc's live context with its state.
             let answer = unsafe { master_ops::answer(self.master, self.state, op, arg) };
             if let Some(value) = answer {
                 return Ok(value);
@@ -307,38 +287,40 @@ pub(crate) unsafe fn run_reactor(
     .unwrap_or(SW_ERR)
 }
 
-/// Run one operation with typed abnormal-effect propagation. No effect after the
-/// first fault executes; local Rust owners are dropped before this returns.
-/// `master` is master.cc's context (inside `context`), whose records Rust reads.
+/// Runs one operation for a `Server` method (`server_methods`) over its context,
+/// whose records `master_ops` answers. No effect here calls back into C++.
+///
 /// # Safety
-/// Context/state remain live and synchronized; call catches all native unwinds,
-/// bailouts and thread exits before returning, and owns their pending payload.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_run_guarded(
+/// `ctx` is a live context whose `serv` is null or a live `Server`.
+#[cfg_attr(test, expect(dead_code, reason = "server_methods' tests run a fake"))]
+pub(crate) unsafe fn run_method(
     operation: u32,
     arg: u64,
-    context: *mut c_void,
-    call: ServerGuardedCall,
-    state: *const ServerState,
-    master: *mut server_methods::NativeContext,
-) -> ServerReply {
-    match run(
+    ctx: *mut server_methods::NativeContext,
+) -> i64 {
+    unsafe extern "C" fn none(_: *mut c_void, _: u32, _: u64) -> u64 {
+        0
+    }
+    // SAFETY: per the caller.
+    let serv = unsafe { (*ctx).serv };
+    let state = if serv.is_null() {
+        core::ptr::null()
+    } else {
+        // SAFETY: a live server, per the caller.
+        unsafe { view::state_ptr(serv) }
+    };
+    run(
         &mut Native {
-            context,
-            call,
+            context: ctx.cast(),
+            call: none as ServerCall,
             state,
-            master,
+            master: ctx,
             reactor: core::ptr::null_mut(),
         },
         operation,
         arg,
-    ) {
-        Ok(value) => ServerReply {
-            value: value.cast_unsigned(),
-            fault: 0,
-        },
-        Err(NativeFault(fault)) => ServerReply { value: 0, fault },
-    }
+    )
+    .unwrap_or(SW_ERR)
 }
 
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {

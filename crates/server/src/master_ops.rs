@@ -53,7 +53,6 @@ use crate::ops::{
 };
 use crate::ops::{
     OP_ABORT, OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH, OP_ST_PIPE_BIND,
-    OP_ST_VALID_CONN,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
@@ -1304,14 +1303,6 @@ unsafe fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the pipe's fd indexes the live connection list, as in master.cc.
             unsafe { (*conn).object = o.ctx.object };
             0
-        }
-        OP_ST_VALID_CONN => {
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
-            let fd = libc::c_long::from(arg as c_int);
-            // SAFETY: the live state's connection table.
-            let conn = unsafe { crate::swr_v1_server_connection(o.state, fd, 0) };
-            // SAFETY: null or a slot of the live table, whose socket is null or live.
-            u64::from(unsafe { crate::reactor_ops::valid(conn) })
         }
         OP_ABORT => {
             let ctx = &o.ctx;

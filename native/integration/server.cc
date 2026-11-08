@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // What crates/server needs from C++ about swoole::Server: building and destroying
 // it, its ListenPorts and its BaseFactory (whose vtable this file emits), the
-// std::string and std::function methods, the barriers, and the runner that
-// carries a C++ exception across the Rust that requested the native effect. The
-// rest is crates/server, from swr_v1_server_open to swr_v1_server_close.
+// std::string methods and the barriers. The rest is crates/server, from
+// swr_v1_server_open to swr_v1_server_close.
 #include "swoole_server.h"
-#include "swoole_rs_corebase_native_exception.h"
 #include "swoole_rs.h"
 
 #include <type_traits>
@@ -87,35 +85,6 @@ struct ServerRustContext {
 static_assert(sizeof(ServerRustContext) == 136 && offsetof(ServerRustContext, object) == 128,
               "crates/server/src/server_methods.rs NativeContext");
 
-// Per-invocation custody lets a nested operation rethrow into its native caller: no
-// C++ exception crosses the Rust that requested the effect. The one effect left
-// native calls a Server::foreach_connection callback.
-struct ServerInvocation {
-    ServerRustContext *context;
-    swoole_rs::NativeException exception;
-};
-static ServerReply server_guarded_call(void *context, uint32_t op, uint64_t arg) {
-    auto *invocation = static_cast<ServerInvocation *>(context);
-    return invocation->exception.capture([&]() -> uint64_t {
-        ServerRustContext *ctx = invocation->context;
-        if (op == SWR_SERVER_OP_ST_VISIT) {
-            (*static_cast<std::function<void(Connection *)> *>(ctx->object))(ctx->serv->get_connection((int) arg));
-        }
-        return 0;
-    });
-}
-static int64_t server_run(uint32_t operation, uint64_t arg, ServerRustContext *ctx) {
-    ServerInvocation invocation{ctx, {}};
-    return invocation.exception.finish(swr_v1_server_run_guarded(operation, arg, &invocation, server_guarded_call,
-                                                                 ctx->serv ? ctx->serv->state_handle() : nullptr, ctx));
-}
-
-// The wrappers crates/server/src/server_methods.rs defines run here. An exception one
-// rethrows stops at its Rust frame, which aborts; upstream never catches one.
-[[maybe_unused]] static const bool server_native_set = (swr_v1_server_set_native([](uint32_t op, uint64_t arg, void *ctx) {
-    return server_run(op, arg, static_cast<ServerRustContext *>(ctx));
-}), true);
-
 Server::Server(Mode mode)
     : detail::ServerFields(SW_CPU_NUM, SwooleG.max_sockets, get_timezone(), &SwooleG.std_allocator) {
     if (!swr_v1_server_open(this, mode, sizeof(ServerGS))) {
@@ -132,7 +101,7 @@ Server::~Server() {
 bool Server::set_document_root(const std::string &path) {
     ServerRustContext ctx{this};
     ctx.data = path.c_str();
-    return server_run(SWR_SERVER_RUN_ST_DOCUMENT_ROOT, path.length(), &ctx);
+    return swr_v1_server_method(SWR_SERVER_RUN_ST_DOCUMENT_ROOT, path.length(), &ctx);
 }
 
 void Server::add_http_compression_type(const std::string &type) {

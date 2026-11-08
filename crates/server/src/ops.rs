@@ -782,8 +782,6 @@ pub const RUN_ST_INIT_PIPE_SOCKETS: u32 = 304;
 pub const RUN_ST_RESET_COUNTER: u32 = 305;
 /// `Server::abort_connection`: context reactor, port and socket.
 pub const RUN_ST_ABORT: u32 = 306;
-/// `Server::foreach_connection`: context callback (`object`).
-pub const RUN_ST_FOREACH: u32 = 307;
 /// `Server::send`: context session, data and length.
 pub const RUN_ST_SEND: u32 = 308;
 pub const RUN_ST_CLEAR_TIMER: u32 = 309;
@@ -817,9 +815,6 @@ pub const OP_ST_ABORT_COUNT: u32 = 1024;
 pub const OP_ST_SOCK_OBJECT: u32 = 1025;
 pub const OP_ST_REACTOR_CLOSE: u32 = 1026;
 pub const OP_ST_SOCK_FREE: u32 = 1027;
-/// fd arg is a valid connection; the callback visits it.
-pub const OP_ST_VALID_CONN: u32 = 1028;
-pub const OP_ST_VISIT: u32 = 1029;
 /// `factory_->finish` of the send.
 pub const OP_ST_FINISH: u32 = 1030;
 /// Timer arg (`master_timer`, `heartbeat_timer`, `enable_accept_timer`) is armed; it

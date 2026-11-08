@@ -1,13 +1,11 @@
 //! The public `Server` methods of `src/server/master.cc`, and the `BaseFactory`
 //! methods that were `src/server/base.cc`, that are one operation over a fresh
 //! context, defined under their upstream (Itanium) symbols when the hybrid links
-//! this crate (`upstream-symbols`). Native code registers the guarded runner
-//! (`server_run`) once; each method fills the context the way its C++ forward did
-//! and runs over it.
+//! this crate (`upstream-symbols`). Each method fills the context the way its C++
+//! forward did and runs over it in Rust.
 
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
-use std::sync::OnceLock;
 
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER, OP_TASK_PACK};
@@ -20,8 +18,8 @@ use crate::ops::{
     RUN_BASE_FINISH, RUN_BASE_NOTIFY, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
     RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT,
     RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER,
-    RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_FOREACH, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
-    RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS,
+    RUN_TASKING,
 };
 use crate::records::ConnectionRecord;
 use crate::view;
@@ -80,29 +78,29 @@ impl NativeContext {
     }
 }
 
-/// native/integration/server.cc's `server_run`: one operation over a context, native exception custody included.
-pub type NativeRun = unsafe extern "C-unwind" fn(u32, u64, *mut NativeContext) -> i64;
-
-static NATIVE: OnceLock<NativeRun> = OnceLock::new();
-
-/// Registers native/integration/server.cc's runner, which the methods below call.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_set_native(run: NativeRun) {
-    // A second registration is the same function; keeping the first is equivalent.
-    NATIVE.get_or_init(|| run);
-}
-
-/// Runs `op` over `ctx` through the registered runner.
+/// Runs `op` over `ctx`: straight into Rust, or the tests' fake runner.
 ///
 /// # Safety
 /// `ctx.serv` is a live `Server`, and the other fields are what `op` reads.
 unsafe fn run(op: u32, arg: u64, ctx: &mut NativeContext) -> i64 {
-    let Some(native) = NATIVE.get() else {
-        // server.cc registers before any Server exists.
-        std::process::abort()
-    };
+    #[cfg(not(test))]
+    let run = crate::run_method;
+    #[cfg(test)]
+    let run = tests::fake;
     // SAFETY: as the caller guarantees.
-    unsafe { native(op, arg, ctx) }
+    unsafe { run(op, arg, ctx) }
+}
+
+/// `server_methods`' runner, for native/integration/server.cc's own methods.
+///
+/// # Safety
+/// As `run`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_method(op: u32, arg: u64, ctx: *mut NativeContext) -> i64 {
+    // SAFETY: per the caller.
+    let ctx = unsafe { &mut *ctx };
+    // SAFETY: per the caller.
+    unsafe { run(op, arg, ctx) }
 }
 
 /// Each method that is one operation over the server alone: its symbol if C++ calls it, Rust
@@ -518,29 +516,6 @@ pub unsafe extern "C" fn add_port(
     } else {
         ptr::null_mut()
     }
-}
-
-/// `Server::foreach_connection(callback)`.
-///
-/// # Safety
-/// `serv` is a live `Server`; `callback` a live `std::function<void(Connection *)>`.
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_os = "macos"),
-    unsafe(
-        export_name = "_ZNK6swoole6Server18foreach_connectionERKNSt3__18functionIFvPNS_10ConnectionEEEE"
-    )
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_os = "macos")),
-    unsafe(
-        export_name = "_ZNK6swoole6Server18foreach_connectionERKSt8functionIFvPNS_10ConnectionEEE"
-    )
-)]
-pub unsafe extern "C" fn foreach_connection(serv: *mut c_void, callback: *const c_void) {
-    let mut ctx = NativeContext::new(serv);
-    ctx.object = callback.cast_mut();
-    // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_ST_FOREACH, 0, &mut ctx) };
 }
 
 /// `Server::abort_connection(reactor, port, socket)`.
@@ -1067,7 +1042,7 @@ mod tests {
     /// The worker or flags and the `DataHead` of each native op that takes one.
     static HEADS: Mutex<Vec<(c_int, DataHead)>> = Mutex::new(Vec::new());
 
-    unsafe extern "C-unwind" fn fake(op: u32, arg: u64, ctx: *mut NativeContext) -> i64 {
+    pub(super) unsafe fn fake(op: u32, arg: u64, ctx: *mut NativeContext) -> i64 {
         // SAFETY: the methods pass their own live context.
         let ctx = unsafe { &mut *ctx };
         SEEN.lock()
@@ -1151,7 +1126,6 @@ mod tests {
 
     #[test]
     fn methods_fill_the_context_their_forward_did() {
-        swr_v1_server_set_native(fake);
         let serv = ptr::without_provenance_mut(0x10);
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
         unsafe {
@@ -1189,8 +1163,6 @@ mod tests {
                 (RUN_ADD_CONNECTION, 0, 0x10, 0x20, 0x30, 0, 0, 0),
                 "add_connection context"
             );
-            foreach_connection(serv, at(0x40));
-            assert_eq!(last().5, 0x40, "callback in object");
             assert!(!feedback(serv, at(0x60), 5), "feedback result");
             assert_eq!(last().1, 5, "event arg");
             send_family_and_base_factory(serv);
