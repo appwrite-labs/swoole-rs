@@ -63,7 +63,7 @@ use crate::ops::{
 };
 use crate::ops::{
     OP_IP_KEY, OP_PIPE_COMMAND_ADD, OP_PIPE_COMMAND_DEL, OP_SC_CLOSE, OP_ST_DTLS_TYPE,
-    OP_ST_PIPE_FD, OP_ST_REACTOR_CLOSE, OP_ST_SOCK_FREE, OP_WORKER_IDLE,
+    OP_ST_PIPE_FD, OP_ST_REACTOR_CLOSE, OP_WORKER_IDLE,
 };
 use crate::ops::{
     OP_IS_MASTER_THREAD, OP_MASTER_THREAD, OP_NOW_MS, OP_OUT_EMPTY, OP_PORT_EVENT_ADD,
@@ -1549,11 +1549,6 @@ unsafe fn sockets(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             }
             0
         }
-        OP_ST_SOCK_FREE => {
-            // SAFETY: the context's socket, which nothing uses afterwards.
-            unsafe { swoole_rs_tls::upstream::socket_free(o.ctx.sock.cast()) };
-            0
-        }
         OP_ST_PIPE_FD => {
             // SAFETY: the context's live `UnixSocket`.
             let pair = unsafe { &*o.ctx.object.cast::<SocketPair>() };
@@ -1596,7 +1591,8 @@ unsafe fn sockets(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 unsafe fn native(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_COMMAND_HANDLER, OP_EVENT_FREE, OP_EVENT_WAIT, OP_LC_CLEAR_ERROR, OP_MARK_SHUTDOWN,
-        OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_ST_TIMER_DEL, OP_TIMER_DETACHED, OP_TIMER_REINIT,
+        OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_ST_SOCK_FREE, OP_ST_TIMER_DEL, OP_TIMER_DETACHED,
+        OP_TIMER_REINIT,
     };
     use core::ffi::c_void;
     /// `SW_FD_PIPE`.
@@ -1684,6 +1680,12 @@ unsafe fn native(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { swoole_signal_clear() };
             o.gs().start.store(0, SeqCst);
             o.gs().shutdown.store(1, SeqCst);
+            0
+        }
+        OP_ST_SOCK_FREE => {
+            // SAFETY: the context's socket, which nothing uses afterwards;
+            // its body links the timer and C++ buffer.
+            unsafe { swoole_rs_tls::upstream::socket_free(o.ctx.sock.cast()) };
             0
         }
         OP_COMMAND_HANDLER => {
