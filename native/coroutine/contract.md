@@ -82,7 +82,8 @@ upstream's fatal error and exit 254), swap_in/swap_out jump with
 through one C entry, sets `end` and switches out. ASan's fiber annotations run
 when `dlsym` finds `__sanitizer_{start,finish}_switch_fiber`. ucontext and
 valgrind stack registration are not kept; config.m4 fails on a CPU without
-boost asm unless the thread backend is chosen.
+boost asm, and links it with the thread backend too, since the Rust context
+references it either way.
 
 With `SWR_CTX_THREAD` (`--enable-thread-context`) the record has no stack and
 `fctx` owns a thread (`crates/coroutine/src/thread.rs`; `thread_context.cc` is
