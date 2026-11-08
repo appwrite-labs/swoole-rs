@@ -140,8 +140,8 @@ pub(crate) fn create() -> bool {
     unsafe {
         swoole_rs_phpswoole::php_swoole_register_shutdown_function(
             c"swoole_event_rshutdown".as_ptr(),
-        )
-    };
+        );
+    }
     true
 }
 
