@@ -31,6 +31,9 @@ uint64_t swr_v1_reactor_process_call(void *context, uint32_t op, uint64_t arg);
 /* The manager's ops over Rust-owned records, for the ManagerContext (`WorkersNative<3>`)
  * at `context`: crates/server's manager_ops.rs. */
 uint64_t swr_v1_manager_call(void *context, uint32_t op, uint64_t arg);
+/* The task worker's ops over Rust-owned records, for the TaskWorkerContext (`WorkersNative<2>`)
+ * at `context`: crates/server's task_worker_ops.rs. */
+uint64_t swr_v1_task_worker_call(void *context, uint32_t op, uint64_t arg);
 /* The process factory's ops over Rust-owned records, for the FactoryContext (`WorkersNative<4>`)
  * at `context`: crates/server's factory_ops.rs. */
 uint64_t swr_v1_factory_call(void *context, uint32_t op, uint64_t arg);

@@ -58,6 +58,8 @@ mod static_config;
 pub mod static_handler;
 pub mod static_select;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
+pub mod task_worker_ops;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod thread_mode_ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod thread_ops;

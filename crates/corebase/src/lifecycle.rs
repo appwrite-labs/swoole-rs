@@ -88,6 +88,14 @@ pub fn set_thread_message_bus(bus: *mut c_void) {
     }
 }
 
+/// Sets `SwooleTG.reactor`; nothing before `swoole_init`.
+pub fn set_thread_reactor(reactor: *mut c_void) {
+    if let Some(host) = native::host() {
+        // SAFETY: this thread's live record, borrowed for the write alone.
+        unsafe { (*thread(host)).reactor = reactor };
+    }
+}
+
 /// `SwooleTG.async_threads`: null before `swoole_init`.
 #[must_use]
 pub fn thread_async_threads() -> *mut c_void {

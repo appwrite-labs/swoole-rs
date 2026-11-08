@@ -59,6 +59,9 @@ const SW_GLOBAL_HOOK_BEFORE_WORKER_STOP: c_int = 8;
 /// `swoole::WorkerType::SW_EVENT_WORKER`, `SW_WORKER_MESSAGE_STOP`.
 const SW_EVENT_WORKER: c_int = 2;
 const SW_WORKER_MESSAGE_STOP: u8 = 1;
+/// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
+const SW_WORKER_BUSY: u8 = 1;
+const SW_WORKER_IDLE: u8 = 2;
 /// `Server::DISPATCH_CO_CONN_LB`, `DISPATCH_CO_REQ_LB`.
 const DISPATCH_CO_CONN_LB: u8 = 8;
 const DISPATCH_CO_REQ_LB: u8 = 9;
@@ -212,7 +215,7 @@ unsafe fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: the context's live worker.
         OP_WORKER_SHUTDOWN => unsafe { swr_v1_worker_shutdown(worker) },
         // SAFETY: as above.
-        OP_WORKER_STATUS => unsafe { swr_v1_worker_set_status(worker, u8::from(arg != 0)) },
+        OP_WORKER_STATUS => unsafe { set_worker_status(worker, arg) },
         OP_REOPEN_LOGGER => {
             if let Some(logger) = swoole_rs_utilities::process_logger() {
                 // SAFETY: the process logger, live while the process runs.
@@ -312,6 +315,21 @@ unsafe fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         _ => return None,
     })
+}
+
+/// `OP_WORKER_STATUS`: `set_status_to_busy()` for a nonzero `arg`, else
+/// `set_status_to_idle()`.
+///
+/// # Safety
+/// `worker` is live.
+pub(crate) unsafe fn set_worker_status(worker: *mut WorkerRecord, arg: u64) {
+    let status = if arg != 0 {
+        SW_WORKER_BUSY
+    } else {
+        SW_WORKER_IDLE
+    };
+    // SAFETY: per the caller.
+    unsafe { swr_v1_worker_set_status(worker, status) };
 }
 
 /// `OP_SIGNAL_SET`: the signal number (-1 for SIGRTMIN) in the low word and the
