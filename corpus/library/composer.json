@@ -1,0 +1,31 @@
+{
+    "name": "swoole/library-embedded-tests",
+    "description": "Installs the test tooling for running the test suite against the library embedded in the Swoole extension (swoole.enable_library=On). The main composer.json cannot be used there: its autoload rules would redeclare the functions and classes the extension already provides. Used by the Build Swoole workflow as: COMPOSER=composer-embedded.json composer update",
+    "license": "Apache-2.0",
+    "require": {
+        "php": ">=8.2",
+        "ext-swoole": ">=6.2",
+        "ext-curl": "*",
+        "ext-json": "*",
+        "ext-posix": "*",
+        "ext-redis": "*",
+        "ext-sockets": "*",
+        "mongodb/mongodb": "^2.1",
+        "deminy/counit": "~0.3"
+    },
+    "autoload": {
+        "classmap": [
+            "tests/TestCase.php",
+            "tests/DatabaseTestCase.php",
+            "tests/HookFlagsTrait.php"
+        ],
+        "files": [
+            "tests/curl_hook.php"
+        ]
+    },
+    "config": {
+        "platform": {
+            "php": "8.3.6"
+        }
+    }
+}
