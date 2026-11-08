@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Compatibility derived from Swoole v6.2.4 src/os/wait.cc (Swoole contributors).
+// Compatibility derived from Swoole v6.2.5 src/os/wait.cc (Swoole contributors).
 //! Coroutine `waitpid` (`System::wait`, `waitpid`, `waitpid_safe` and their C API) and
 //! `swoole_waitpid`, under their upstream (Itanium) symbols, over crates/process's wait
 //! registry (or `io_uring`, with `iouring`). The process patch deletes `src/os/wait.cc`.
@@ -53,7 +53,7 @@ mod registry {
         unsafe { swr_v1_coroutine_native_resume(co) };
     }
 
-    unsafe extern "C" fn signal_handler(signo: c_int) {
+    extern "C" fn signal_handler(signo: c_int) {
         // SAFETY: the signal dispatch runs on the loop's thread.
         unsafe { swr_v1_wait_reap(signo, resume) };
     }
@@ -68,22 +68,39 @@ mod registry {
         unsafe { swoole_signal_clear() };
     }
 
+    fn register() {
+        // SAFETY: the loop's thread, which owns the handlers.
+        let _ = unsafe {
+            swoole_signal_set(libc::SIGCHLD, signal_handler as *const () as usize, false)
+        };
+    }
+
+    extern "C-unwind" fn register_deferred(_data: *mut c_void) {
+        register();
+        signal_handler(libc::SIGCHLD);
+    }
+
     /// SIGCHLD reaps into the registry while the loop runs; the loop waits for the
     /// coroutines that wait, and forgets the handler when it is destroyed.
     unsafe extern "C" fn signal_init() {
         if SIGNAL_READY.load(Ordering::Relaxed) {
             return;
         }
-        // SAFETY: a coroutine runs, so the thread has a loop.
-        let _ = unsafe {
-            swoole_signal_set(libc::SIGCHLD, signal_handler as *const () as usize, false)
-        };
-        // SAFETY: as above.
-        unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_WAIT_PID, no_waiters) };
         // SAFETY: no preconditions.
         let reactor = unsafe { swr_v1_event_current() }.cast::<ReactorPrepared>();
-        // SAFETY: the live loop, which begins with its prepared state.
+        // SAFETY: a coroutine runs, so the thread has a live loop, which begins with its
+        // prepared state.
         let fields = unsafe { (*reactor).fields };
+        if swoole_rs_coroutine::thread_context_active() {
+            // Coroutine threads block every signal: register SIGCHLD on the loop's
+            // thread, then reap the children that exited before it ran.
+            // SAFETY: the live loop's fields.
+            unsafe { crate::deferred::defer(fields, register_deferred, ptr::null_mut()) };
+        } else {
+            register();
+        }
+        // SAFETY: as above.
+        unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_WAIT_PID, no_waiters) };
         // SAFETY: the loop's live fields.
         let queue = unsafe { &raw mut (*fields).destroy_callbacks };
         // SAFETY: the loop's live destroy queue; the call keeps no data.
