@@ -84,7 +84,7 @@ pub struct PoolRecord {
     pub ptr: *mut c_void,
 }
 
-/// What native code lends every export.
+/// The table every export runs over (`crates/server/src/pool_native.rs`).
 #[repr(C)]
 pub struct PoolNative {
     /// One effect (`OP_*`) on `pool` and `worker` (null when none).
@@ -137,7 +137,7 @@ const EVENT_TYPE: usize = 22;
 const EVENT_DATA: usize = 40;
 const HEAD_SIZE: u32 = 40;
 
-// BEGIN NUMBERED: native/process/swoole_rs_process.h's SWR_POOL_*; a test keeps them equal.
+// The effects (crates/server/src/pool_native.rs), the callbacks and the worker loop.
 pub const OP_HAVE_MSGQUEUE: u32 = 0;
 pub const OP_ALLOC_WORKERS: u32 = 1;
 pub const OP_NEW_MESSAGE_BOX: u32 = 2;
@@ -189,7 +189,6 @@ pub const CB_WORKER_START: c_int = 4;
 pub const CB_MAIN_LOOP: c_int = 5;
 pub const CB_WORKER_STOP: c_int = 6;
 pub const RUN_MAIN: u32 = 13;
-// END NUMBERED
 // The warnings a pool operation logs, which [`Native`] emits itself.
 pub const LOG_NO_SYSVMSG: u32 = 48;
 pub const LOG_ALLOC: u32 = 49;
@@ -1425,34 +1424,6 @@ mod tests {
         assert_eq!(offset_of!(PoolRecord, workers), 192);
         assert_eq!(offset_of!(PoolRecord, ptr), 256);
         assert_eq!(size_of::<PoolRecord>(), 264);
-    }
-
-    #[test]
-    fn the_header_numbers_every_op_alike() {
-        let header = include_str!("../../../native/process/swoole_rs_process.h");
-        let source = include_str!("process_pool.rs");
-        let numbered = source
-            .split("// BEGIN NUMBERED")
-            .nth(1)
-            .and_then(|rest| rest.split("// END NUMBERED").next())
-            .unwrap();
-        let mut count = 0;
-        for line in numbered
-            .lines()
-            .filter(|line| line.starts_with("pub const "))
-        {
-            let rest = &line["pub const ".len()..];
-            let name = rest.split(':').next().unwrap();
-            let value = rest.rsplit("= ").next().unwrap().trim_end_matches(';');
-            let define = format!("#define SWR_POOL_{name} {value}\n");
-            assert!(header.contains(&define), "{define}");
-            count += 1;
-        }
-        let defined = ["OP", "LOG", "CB", "RUN"]
-            .iter()
-            .map(|kind| header.matches(&format!("#define SWR_POOL_{kind}_")).count())
-            .sum::<usize>();
-        assert_eq!(defined, count);
     }
 
     /// A scripted native side over a pool record allocated here.

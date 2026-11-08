@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // What crates/timer/src/owner.rs (the Rust-owned swoole::Timer) needs from C++: a
 // TimerNode's std::function callback and destructor, C++ exceptions carried across
-// Rust as exception_ptr, and the reactor's std::function hooks.
+// Rust as exception_ptr, the reactor's std::function hooks, and timers of a plain
+// function for Rust callers.
 #include "swoole_timer.h"
 
 #include <exception>
@@ -53,6 +54,11 @@ void *swr_cpp_timer_node_release(TimerNode *node) {
 
 void swr_cpp_timer_forget(void *failure) {
     delete static_cast<std::exception_ptr *>(failure);
+}
+
+// A one-shot timer whose callback is a plain function of its data, for Rust callers.
+TimerNode *swr_cpp_timer_after(long msec, void (*callback)(void *data), void *data) {
+    return swoole_timer_add(msec, false, [callback](Timer *, TimerNode *tnode) { callback(tnode->data); }, data);
 }
 
 void swr_cpp_timer_reactor_timeout(Reactor *reactor, int64_t msec) {

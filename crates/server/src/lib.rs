@@ -31,6 +31,8 @@ mod layout;
 pub mod local_addr;
 mod master_ops;
 pub mod ops;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+mod pool_native;
 pub mod port_config;
 pub mod reactor_entry;
 mod reactor_io;
