@@ -346,6 +346,9 @@ def plan(args, reports):
                '--exclude', "client.bind=expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner "
                             "isn't root and gets EACCES",
                '--exclude', 'client.async_tcp_socks5_proxy_handshake_fail=expects www.baidu.com:80 to time out a SOCKS5 greeting',
+               '--exclude', "client.sync_ssl_sendfile=each recv lands at the buffer's start, so past the largest TLS record "
+                            "it reads bytes no recv wrote (uninitialised upstream, zeroed here); www.baidu.com's ~730 KB "
+                            'page leaves "baidu.com" only in overwritten bytes',
                *[arg for name in CLIENT_PROXY for arg in ['--exclude', f'client.{name}={PROXY}']],
                # core-tests/src/network/socket.cpp (system/src/network_socket.rs).
                '--exclude', "socket.make_server_socket=expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's "

@@ -34,7 +34,11 @@ closure. The `Server` fixtures are std servers forked after binding (an echo, th
 403 proxy reply, a slow reader): the cases assert only on the client. Excluded
 as before: `bind` (EACCES, not EINVAL, off a root container),
 `async_tcp_socks5_proxy_handshake_fail` (www.baidu.com:80 timing out a SOCKS5
-greeting) and the nine proxy cases (a local HTTP or SOCKS5 proxy).
+greeting), the nine proxy cases (a local HTTP or SOCKS5 proxy) and
+`sync_ssl_sendfile`: each `recv` lands at the buffer's start, and www.baidu.com's
+~730 KB page fills the 64 KB buffer with reads no larger than a TLS record, so
+the bytes the assertion finds "baidu.com" in are overwritten and the rest were
+never written (uninitialised upstream, zeroed here).
 
 `http_format_gate.py` compiles the pinned request formatter calls and
 `sw_snprintf` next to `swr_v1_clients_http_format` from the hybrid build's archive
