@@ -930,6 +930,14 @@ mod tests {
         value
     }
 
+    /// The local address `fd` is bound to, or `None` when it names no socket.
+    fn local_addr(fd: c_int) -> Option<(u16, u32)> {
+        let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        let mut size = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
+        let got = unsafe { libc::getsockname(fd, (&raw mut addr).cast(), &raw mut size) };
+        (got == 0).then_some((addr.sin_port, addr.sin_addr.s_addr))
+    }
+
     #[test]
     fn listen_listens_sets_keepalive_and_the_default_watermark() {
         let mut port = socket_port(libc::SOCK_STREAM, true);
@@ -986,13 +994,17 @@ mod tests {
         config.buffer_high_watermark = 7;
         assert_eq!(unsafe { listen(at) }, 0, "already listening");
         assert_eq!(config.buffer_high_watermark, 7, "kept");
+        // Parallel tests may reuse the number once it is closed, so check that
+        // it no longer names this socket: a duplicate keeps the ephemeral port
+        // bound, and so unique, until the check is done.
+        let bound = local_addr(fd);
+        assert!(bound.is_some(), "bound");
+        let held = unsafe { libc::dup(fd) };
+        assert!(held >= 0, "dup(2)");
         unsafe { close_socket(at) };
         assert!(config.socket.is_null(), "socket released");
-        assert_eq!(
-            unsafe { libc::fcntl(fd, libc::F_GETFD) },
-            -1,
-            "descriptor closed"
-        );
+        assert_ne!(local_addr(fd), bound, "descriptor closed");
+        unsafe { libc::close(held) };
         unsafe { port_config::swr_v1_port_config_free(port) };
     }
 
