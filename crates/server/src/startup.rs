@@ -23,7 +23,7 @@ use crate::ops::{
     OP_SEND_TIMEOUT_MIN, OP_SET_DISABLE_NOTIFY, OP_SET_FIELD, OP_SET_MASTER_PID,
     OP_SET_MAX_CONNECTION, OP_SET_MAXFD, OP_SET_MINFD, OP_SINGLE_THREAD, OP_STORE_LISTEN,
     OP_TASK_PIPE, OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN, OP_TASK_POOL_SETUP, OP_TIMER_DETACHED,
-    OP_TIMER_REINIT, TRACE_REACTOR_THREADS, TRACE_RELEASE, TRACE_TASK_WORKERS,
+    OP_TIMER_REINIT,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
 
@@ -343,11 +343,9 @@ pub(crate) fn store_listen_socket<H: Host>(h: &mut H) -> crate::Effect<()> {
 /// `Server::destroy` once the factory exists. In process mode the reactor threads
 /// finish their write events before the factory shuts down.
 pub(crate) fn destroy<H: Host>(h: &mut H) -> crate::Effect<()> {
-    h.get(TRACE_RELEASE)?;
     h.get(OP_AFTER_SHUTDOWN)?;
     let mode = h.get(OP_MODE)?;
     if mode == MODE_PROCESS {
-        h.get(TRACE_REACTOR_THREADS)?;
         h.get(OP_JOIN_REACTOR_THREADS)?;
     }
     if h.is(OP_IS_STARTED)? {
@@ -365,7 +363,6 @@ pub(crate) fn destroy<H: Host>(h: &mut H) -> crate::Effect<()> {
     h.get(OP_ON_SHUTDOWN)?;
     h.op(OP_DESTROY_FACTORY, mode)?;
     if field(h, FIELD_TASK_WORKER_NUM)? > 0 {
-        h.get(TRACE_TASK_WORKERS)?;
         h.get(OP_DESTROY_TASK_WORKERS)?;
     }
     h.get(OP_FREE_SERVER)?;
@@ -419,7 +416,7 @@ mod tests {
                     OP_MODE,
                     run,
                     OP_IS_CREATED,
-                    TRACE_RELEASE,
+                    OP_AFTER_SHUTDOWN,
                 ]);
                 let ops: Vec<u32> = s.log.iter().map(|&(op, _)| op).collect();
                 assert_eq!(
@@ -442,7 +439,7 @@ mod tests {
             (OP_LC_CLAIM_START, 0, OP_LC_DAEMONIZE),
             (OP_LC_DAEMON, failed, OP_LC_START_TIME),
             (OP_LC_FACTORY_START, 0, OP_LC_WRITE_PID),
-            (OP_LC_START_PROCESS, failed, TRACE_RELEASE),
+            (OP_LC_START_PROCESS, failed, OP_AFTER_SHUTDOWN),
         ] {
             let mut s = starting(MODE_PROCESS, true);
             s.facts.insert(op, answer);
@@ -462,7 +459,7 @@ mod tests {
         let mut s = starting(MODE_BASE, false);
         s.facts.insert(OP_IS_CREATED, 0);
         assert_eq!(start(&mut s).unwrap(), SW_OK);
-        assert_eq!(s.called(TRACE_RELEASE), 0);
+        assert_eq!(s.called(OP_AFTER_SHUTDOWN), 0);
         assert_eq!(s.called(OP_LC_UNLINK_PID), 1);
     }
 

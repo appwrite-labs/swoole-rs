@@ -10,9 +10,7 @@ use core::ptr;
 use std::sync::OnceLock;
 
 use crate::base_factory::{SEND_DATA, SendData};
-use crate::ops::{
-    OP_CONN_MAX_LENGTH, OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER, OP_TASK_PACK,
-};
+use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER, OP_TASK_PACK};
 use crate::ops::{
     RUN_ACCEPT, RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_ST_INIT_PIPE_SOCKETS, RUN_START,
     RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
@@ -802,11 +800,12 @@ unsafe fn native_op(op: u32, ctx: &mut NativeContext) -> bool {
 /// # Safety
 /// `serv` is a live `Server` and `conn` one of its connections.
 pub unsafe fn package_max_length(serv: *mut c_void, conn: *mut c_void) -> u32 {
-    let mut ctx = NativeContext::new(serv);
-    ctx.conn = conn;
     // SAFETY: as the caller guarantees.
-    let length = unsafe { run(RUN_NATIVE_OP, OP_CONN_MAX_LENGTH.into(), &mut ctx) };
-    u32::try_from(length).unwrap_or_default()
+    let fd = unsafe { &*conn.cast::<ConnectionRecord>() }.fd;
+    // SAFETY: as the caller guarantees.
+    let port = unsafe { view::port_by_fd(serv, fd) };
+    // SAFETY: the connection's live port, as in C++, which doesn't check it either.
+    unsafe { view::port(port) }.protocol.package_max_length
 }
 
 /// `Server::CLOSE_RESET`, `Server::CLOSE_ACTIVELY`.

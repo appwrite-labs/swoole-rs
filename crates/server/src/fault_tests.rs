@@ -61,6 +61,11 @@ fn every_captured_fault_stops_the_remaining_effect_trace() {
         (RUN_START_CHECK, 0, &[(OP_FIELD, 1), (OP_PORT_COUNT, 2)]),
         (RUN_THREAD_SHUTDOWN, 0, &[(OP_MODE, 3)]),
         (
+            RUN_SIGNAL,
+            libc::SIGTERM as u64,
+            &[(OP_SIGNAL_ACTIVE, 1), (OP_MODE, 2)],
+        ),
+        (
             RUN_ST_FOREACH,
             0,
             &[(OP_MINFD, 1), (OP_MAXFD, 3), (OP_ST_VALID_CONN, 1)],

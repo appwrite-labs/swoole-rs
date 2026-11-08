@@ -264,12 +264,6 @@ pub const LOG_SHUTDOWN_FAILED: u32 = 129;
 pub const LOG_MANAGER_EXIT: u32 = 130;
 /// arg 0 the server, 1 the task pool.
 pub const LOG_NO_IDLE_WORKER: u32 = 131;
-pub const TRACE_ACCEPT: u32 = 140;
-pub const TRACE_TIMEOUT: u32 = 141;
-/// arg the signal.
-pub const TRACE_SIGNAL: u32 = 142;
-pub const TRACE_SHUTDOWN_BEGIN: u32 = 143;
-pub const TRACE_SHUTDOWN_END: u32 = 144;
 
 // Startup and teardown (`RUN_CREATE`, `RUN_START_CHECK`, `RUN_START_MASTER_THREAD`,
 // `RUN_STORE_LISTEN_SOCKET`, `RUN_DESTROY`).
@@ -367,8 +361,6 @@ pub const OP_DESTROY_TASK_WORKERS: u32 = 208;
 /// Frees the session list, port statistics and workers, then the factory, and
 /// clears `SwooleG.server`.
 pub const OP_FREE_SERVER: u32 = 209;
-/// `get_package_max_length(conn)`: the connection's port's `protocol.package_max_length`.
-pub const OP_CONN_MAX_LENGTH: u32 = 210;
 
 pub const LOG_ALLOC_SESSIONS: u32 = 220;
 pub const LOG_ALLOC_PORT_GS: u32 = 221;
@@ -384,9 +376,6 @@ pub const LOG_ALLOC_TASK_RESULTS: u32 = 228;
 pub const LOG_CALLBACK_DISPATCH: u32 = 229;
 /// arg the `CB_*` the server requires.
 pub const LOG_CALLBACK_REQUIRED: u32 = 230;
-pub const TRACE_RELEASE: u32 = 231;
-pub const TRACE_REACTOR_THREADS: u32 = 232;
-pub const TRACE_TASK_WORKERS: u32 = 233;
 
 // Numeric server fields for `OP_FIELD`/`OP_SET_FIELD`; `CPU_NUM` is `SwooleG.cpu_num`.
 pub const FIELD_REACTOR_NUM: u32 = 0;
@@ -863,8 +852,6 @@ pub const LOG_ST_DTLS_BIND: u32 = 1100;
 pub const LOG_ST_DTLS_CONNECT: u32 = 1101;
 pub const LOG_ST_ROOT_TOO_LONG: u32 = 1102;
 pub const LOG_ST_ROOT_MISSING: u32 = 1103;
-/// arg the worker and `worker_round_id << 32`.
-pub const TRACE_ST_SCHEDULE: u32 = 1104;
 
 // `Server::send_to_connection` (`crates/server/src/send.rs`); context send, data and length.
 /// arg the send's type.

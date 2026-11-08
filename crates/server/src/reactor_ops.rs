@@ -165,7 +165,7 @@ impl Objects<'_> {
 ///
 /// # Safety
 /// `conn` is null or a live connection whose socket is null or live.
-unsafe fn valid(conn: *const ConnectionRecord) -> bool {
+pub(crate) unsafe fn valid(conn: *const ConnectionRecord) -> bool {
     // SAFETY: per the caller.
     let Some(conn) = (unsafe { conn.as_ref() }) else {
         return false;

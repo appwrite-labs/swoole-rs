@@ -8,7 +8,6 @@ use crate::ops::{
     OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SIGNAL_READ_MESSAGE, OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN,
     OP_SIGRTMIN, OP_SINGLE_THREAD, OP_STOP_SINGLE_WORKER, OP_STOP_WORKER_THREADS,
     OP_THREAD0_SHUTDOWN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WRONG_OPERATION,
-    TRACE_SHUTDOWN_BEGIN, TRACE_SHUTDOWN_END, TRACE_SIGNAL,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD};
 
@@ -47,7 +46,6 @@ pub(crate) fn shutdown<H: Host>(h: &mut H) -> crate::Effect<bool> {
 
 /// `Server::master_signal_handler`.
 pub(crate) fn signal<H: Host>(h: &mut H, signo: i32) -> crate::Effect<()> {
-    h.op(TRACE_SIGNAL, signal_number(signo))?;
     if !h.is(OP_SIGNAL_ACTIVE)? {
         return Ok(());
     }
@@ -88,7 +86,6 @@ pub(crate) fn reopen_logger<H: Host>(h: &mut H) -> crate::Effect<()> {
 
 /// `Server::signal_handler_shutdown`.
 pub(crate) fn signal_shutdown<H: Host>(h: &mut H) -> crate::Effect<bool> {
-    h.get(TRACE_SHUTDOWN_BEGIN)?;
     if h.get(OP_MODE)? == MODE_BASE {
         if h.signed(OP_MANAGER_PID)? > 0 {
             h.op(OP_SET_RUNNING, 0)?;
@@ -101,7 +98,6 @@ pub(crate) fn signal_shutdown<H: Host>(h: &mut H) -> crate::Effect<bool> {
     h.get(OP_BEFORE_SHUTDOWN)?;
     h.op(OP_SET_RUNNING, 0)?;
     stop_master_thread(h)?;
-    h.get(TRACE_SHUTDOWN_END)?;
     Ok(true)
 }
 
@@ -270,7 +266,7 @@ mod tests {
         let mut s = Script::with(&[]);
         signal(&mut s, libc::SIGTERM).unwrap();
         assert_eq!(
-            s.called(TRACE_SHUTDOWN_BEGIN),
+            s.called(OP_BEFORE_SHUTDOWN),
             0,
             "inactive server ignores signals"
         );
