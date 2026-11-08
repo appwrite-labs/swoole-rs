@@ -67,7 +67,9 @@ There are three explicit **test-support adaptations** in the disposable copy:
 
 Reports record the pinned commit, original support Git tree, unchanged runner
 checksum, effective adapted-bootstrap checksum, and adapter description. HOME
-and TMPDIR point into the disposable tree. Each test process group has an outer
+and TMPDIR point into the disposable tree, and `PHP_INI_SCAN_DIR` adds an ini that
+loads the engine, so a child a test starts as `$TEST_PHP_EXECUTABLE` without `-n`
+(`start_server`, `ulimit.phpt`) has it, as in upstream's CI. Each test process group has an outer
 timeout and is terminated with its children, including on failure. This is
 process/filesystem isolation for the selected trusted tests, not an OS security
 sandbox. Bootstrap-dependent tests explicitly declare `upstream_test_bootstrap`

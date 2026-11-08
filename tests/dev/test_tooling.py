@@ -217,6 +217,8 @@ class Phpt(unittest.TestCase):
                     self.assertEqual('--online' in command, not expected and supported)
                     if not expected:
                         self.assertEqual(kwargs['env']['SKIP_ONLINE_TESTS'], '0')
+                    scan = Path(kwargs['env']['PHP_INI_SCAN_DIR'].split(os.pathsep)[-1])
+                    self.assertEqual((scan / 'swoole.ini').read_text(), f'extension={engine.extension.resolve()}\n')
                     (artifacts / 'status.txt').write_text(f'PASSED {sandbox / "original.phpt"}\n')
                     return subprocess.CompletedProcess(command, 0, '', '')
                 with patch.object(phpt, 'run_isolated', run):
