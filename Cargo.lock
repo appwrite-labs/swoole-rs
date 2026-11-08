@@ -513,8 +513,10 @@ dependencies = [
  "memchr",
  "regex-automata",
  "swoole-rs-base64",
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-oracle",
+ "swoole-rs-ossupport",
 ]
 
 [[package]]

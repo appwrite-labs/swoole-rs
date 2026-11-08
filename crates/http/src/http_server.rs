@@ -1,9 +1,12 @@
 //! `swoole::http_server`'s free helpers from `src/protocol/http.cc`, defined under
 //! their upstream (Itanium) symbols when the hybrid links this crate
-//! (`upstream-symbols`). `url_encode` stays native: it throws `std::bad_alloc`.
+//! (`upstream-symbols`).
 use std::ffi::{c_char, c_int};
 
-use crate::{HttpSpan, swr_v1_http_boundary, swr_v1_http_url_decode};
+use crate::{
+    HttpSpan, swr_v1_http_boundary, swr_v1_http_url_capacity, swr_v1_http_url_decode,
+    swr_v1_http_url_encode,
+};
 
 /// `const char *get_status_message(int code)`.
 #[cfg_attr(
@@ -87,6 +90,34 @@ pub unsafe extern "C" fn url_decode(str: *mut c_char, len: usize) -> usize {
     written
 }
 
+/// `char *url_encode(const char *str, size_t len)`: a NUL-terminated copy from
+/// `sw_malloc`, which the caller frees. Upstream's `bad_alloc` and `length_error`
+/// went uncaught, so either ends the process.
+///
+/// # Safety
+/// `str` is readable for `len` bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole11http_server10url_encodeEPKcm")
+)]
+#[must_use]
+pub unsafe extern "C" fn url_encode(str: *const c_char, len: usize) -> *mut c_char {
+    let (mut capacity, mut written) = (0, 0);
+    // SAFETY: as the caller guarantees; `capacity` is a live local.
+    if unsafe { swr_v1_http_url_capacity(str.cast(), len, &raw mut capacity) } != 0 {
+        std::process::abort();
+    }
+    let result = swoole_rs_corebase::sw_malloc(capacity).cast::<u8>();
+    if result.is_null() {
+        std::process::abort();
+    }
+    // SAFETY: `result` holds `capacity` bytes, disjoint from the input.
+    if unsafe { swr_v1_http_url_encode(str.cast(), len, result, capacity, &raw mut written) } != 0 {
+        std::process::abort();
+    }
+    result.cast()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +193,24 @@ mod tests {
         // SAFETY: `buffer` holds the 10 bytes and their terminator.
         let written = unsafe { url_decode(buffer.as_mut_ptr().cast(), 10) };
         assert_eq!(&buffer[..=written], b"a b c%zz\0");
+    }
+
+    /// Upstream's `http_server.EncodeDecodeBasic` and `EncodeDecodeWithSpecialChars`.
+    #[test]
+    fn url_encode_round_trips() {
+        for (input, expected) in [
+            ("Hello World!", "Hello%20World%21"),
+            ("C++ Programming & C#", "C%2B%2B%20Programming%20%26%20C%23"),
+        ] {
+            // SAFETY: the literal is readable for its length.
+            let encoded = unsafe { url_encode(input.as_ptr().cast(), input.len()) };
+            assert_eq!(text(encoded), expected);
+            // SAFETY: `encoded` is NUL-terminated and writable.
+            let decoded = unsafe { url_decode(encoded, expected.len()) };
+            assert_eq!(decoded, input.len());
+            assert_eq!(text(encoded), input);
+            // SAFETY: from `sw_malloc`, not used again.
+            unsafe { swoole_rs_corebase::sw_free(encoded.cast()) };
+        }
     }
 }
