@@ -372,6 +372,67 @@ mod tests {
         );
     }
 
+    // core-tests/src/server/http_server.cpp: websocket_encode. `print_frame` writes to
+    // Swoole's stdout stream, pointed at a log file for the case.
+    #[test]
+    fn websocket_encode() {
+        let mut buffer = string();
+        let packet = b"hello world\n";
+        assert!(unsafe {
+            encode(
+                &raw mut buffer,
+                packet.as_ptr().cast(),
+                packet.len(),
+                1,
+                FIN | MASK,
+            )
+        });
+        let mut ws: Frame = unsafe { std::mem::zeroed() };
+        assert!(unsafe { decode(&raw mut ws, buffer.str.cast(), buffer.length) });
+
+        let log = std::env::temp_dir().join(format!(
+            "swoole-websocket-encode-{}.log",
+            std::process::id()
+        ));
+        let path = std::ffi::CString::new(log.to_str().unwrap()).unwrap();
+        let fp = unsafe { libc::fopen(path.as_ptr(), c"a+".as_ptr()) };
+        assert!(!fp.is_null());
+        let ori_fp = swoole_rs_corebase::swoole_get_stdout_stream();
+        swoole_rs_corebase::swoole_set_stdout_stream(fp.cast());
+        unsafe { print_frame(&raw const ws) };
+        unsafe { libc::fclose(fp) };
+        swoole_rs_corebase::swoole_set_stdout_stream(ori_fp);
+
+        let rs = std::fs::read_to_string(&log).unwrap();
+        assert!(rs.contains("FIN: 1,"), "{rs}");
+        assert!(rs.contains("RSV1: 0,"), "{rs}");
+        assert!(rs.contains("opcode: 1,"), "{rs}");
+        assert!(rs.contains("payload: hello world\n"), "{rs}");
+        std::fs::remove_file(&log).unwrap();
+        buffer.dispose();
+    }
+
+    // core-tests/src/server/http_server.cpp: websocket_compressed_control_frame.
+    #[test]
+    fn websocket_compressed_control_frame() {
+        /// `FLAG_RSV1`; `OPCODE_TEXT`, `OPCODE_PING`, `OPCODE_PONG`.
+        const RSV1: u8 = 4;
+        let mut buffer = string();
+        let mut frame: Frame = unsafe { std::mem::zeroed() };
+        for opcode in [OPCODE_CLOSE, 9, 10] {
+            buffer.length = 0;
+            assert!(unsafe { encode(&raw mut buffer, c"".as_ptr(), 0, opcode, FIN | RSV1) });
+            assert!(
+                !unsafe { decode(&raw mut frame, buffer.str.cast(), buffer.length) },
+                "{opcode}"
+            );
+        }
+        buffer.length = 0;
+        assert!(unsafe { encode(&raw mut buffer, c"".as_ptr(), 0, 1, FIN | RSV1) });
+        assert!(unsafe { decode(&raw mut frame, buffer.str.cast(), buffer.length) });
+        buffer.dispose();
+    }
+
     #[test]
     fn package_length_reports_the_header() {
         let data = *b"\x82\x7e\x01\x00";

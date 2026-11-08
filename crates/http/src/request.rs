@@ -1215,39 +1215,122 @@ mod tests {
 
     // core-tests/src/server/http_server.cpp: get_protocol.
     #[test]
-    fn get_protocol_reads_the_request_line() {
-        let mut i = input(b"GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n");
-        let mut r = request(&mut i);
-        assert_eq!(r.get_protocol(), SW_OK, "GET");
-        assert_eq!((r.method, r.version), (2, 2), "GET, HTTP/1.1");
-        assert_eq!(url(&r, &i), b"/index.html", "its URL");
+    fn get_protocol() {
+        // `SW_HTTP_GET`, `_POST`, `_PUT`, `_PRI`; `SW_HTTP_VERSION_10`, `_11`.
+        let (get, post, put, pri, v10, v11) = (2, 4, 5, 27, 1, 2);
+        let protocol = |text: &[u8]| {
+            let mut i = input(text);
+            let mut r = request(&mut i);
+            let status = r.get_protocol();
+            let url = url(&r, &i);
+            (status, r, url, i.buffer.offset)
+        };
+        let (status, r, url, _) =
+            protocol(b"GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n");
+        assert_eq!((status, r.method, r.version), (SW_OK, get, v11), "GET");
+        assert_eq!(url, b"/index.html", "its URL");
 
-        let mut i = input(
+        // A long URL: `append_random_bytes(swoole_rand(1024, 2048), 1)` after `?a=`.
+        let raw = vec![0u8; usize::try_from(swoole_rs_corebase::swoole_rand(1024, 2048)).unwrap()];
+        // SAFETY: `raw` is writable for its length.
+        assert_eq!(
+            unsafe {
+                swoole_rs_corebase::swr_v1_os_random_bytes(
+                    raw.as_ptr().cast_mut().cast(),
+                    raw.len(),
+                )
+            },
+            raw.len()
+        );
+        let mut encoded = vec![0u8; raw.len().div_ceil(3) * 4 + 1];
+        // SAFETY: `encoded` holds the encoding and its NUL.
+        let n = unsafe {
+            swoole_rs_base64::swr_v1_base64_encode(raw.as_ptr(), raw.len(), encoded.as_mut_ptr())
+        };
+        let text = [
+            &b"GET /home/explore/?a="[..],
+            &encoded[..n],
+            b" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\nCache-Control: max-age=0\r\n\r\n",
+        ]
+        .concat();
+        let (status, r, url, _) = protocol(&text);
+        assert_eq!((status, r.method, r.version), (SW_OK, get, v11), "long URL");
+        assert_eq!(
+            url.split(|b| *b == b'?').next().unwrap(),
+            b"/home/explore/",
+            "its path"
+        );
+
+        let (status, r, url, _) = protocol(
             b"POST /submit HTTP/1.0\r\nContent-Type: application/json\r\n\r\n{\"key\":\"value\"}",
         );
-        let mut r = request(&mut i);
-        assert_eq!(r.get_protocol(), SW_OK, "POST");
-        assert_eq!((r.method, r.version), (4, 1), "POST, HTTP/1.0");
-        assert_eq!(url(&r, &i), b"/submit", "its URL");
+        assert_eq!((status, r.method, r.version), (SW_OK, post, v10), "POST");
+        assert_eq!(url, b"/submit", "its URL");
 
-        let mut i = input(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-        let mut r = request(&mut i);
-        assert_eq!(r.get_protocol(), SW_OK, "preface");
+        let (status, r, url, _) =
+            protocol(b"PUT /resource HTTP/1.1\r\nContent-Type: text/plain\r\n\r\nNew content");
+        assert_eq!((status, r.method, r.version), (SW_OK, put, v11), "PUT");
+        assert_eq!(url, b"/resource", "its URL");
+
+        let (status, r, _, offset) = protocol(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+        assert_eq!((status, r.method), (SW_OK, pri), "HTTP/2 preface");
+        assert_eq!(offset, 24, "the preface consumed");
+
+        let (status, r, ..) = protocol(b"GET /");
         assert_eq!(
-            (r.method, i.buffer.offset),
-            (27, 24),
-            "HTTP/2 preface consumed"
+            (status, r.excepted),
+            (SW_ERR, false),
+            "too short: wait for more"
         );
+        for text in [
+            &b"UNKNOWN /path HTTP/1.1\r\n"[..],
+            b"UPDATE  HTTP/1.1\r\n",
+            b"GET /index.html HTTP/2.0\r\n",
+            b"UNSUBSCRIBE /index.html\r\n",
+            b"BREW / HTTP/1.1\r\n\r\n",
+        ] {
+            let (status, r, ..) = protocol(text);
+            assert_eq!(
+                (status, r.excepted),
+                (SW_ERR, true),
+                "{}",
+                String::from_utf8_lossy(text)
+            );
+        }
 
-        let mut i = input(b"BREW / HTTP/1.1\r\n\r\n");
-        let mut r = request(&mut i);
-        assert_eq!(r.get_protocol(), SW_ERR, "unknown method");
-        assert!(r.excepted, "unknown method is an error");
+        let (status, r, url, _) = protocol(b"GET /search?q=test&page=1#results HTTP/1.1\r\n");
+        assert_eq!((status, r.method), (SW_OK, get), "complex URL");
+        assert_eq!(url, b"/search?q=test&page=1#results", "its URL");
 
-        let mut i = input(b"GET /");
-        let mut r = request(&mut i);
-        assert_eq!(r.get_protocol(), SW_ERR, "incomplete");
-        assert!(!r.excepted, "incomplete: wait for more");
+        let (status, r, url, _) = protocol(b"GET    /index.html    HTTP/1.1\r\n");
+        assert_eq!(
+            (status, r.method, r.version),
+            (SW_OK, get, v11),
+            "extra spaces"
+        );
+        assert_eq!(url, b"/index.html", "its URL");
+    }
+
+    // core-tests/src/server/http_server.cpp: all_method.
+    #[test]
+    fn all_method() {
+        let pri = 27;
+        for i in 0..pri + 4 {
+            let name = crate::http_server::get_method_string(i);
+            if i == 0 || i > pri {
+                assert!(name.is_null(), "{i}");
+                continue;
+            }
+            // SAFETY: a known method's name is static NUL-terminated text.
+            let name = unsafe { core::ffi::CStr::from_ptr(name) }.to_bytes();
+            let mut i_ = input(&[name, b" / HTTP/1.1\r\nHost: example.com\r\n\r\n"].concat());
+            let mut r = request(&mut i_);
+            if i == pri {
+                assert_eq!((r.get_protocol(), r.excepted), (SW_ERR, true), "PRI");
+            } else {
+                assert_eq!((r.get_protocol(), c_int::from(r.method)), (SW_OK, i), "{i}");
+            }
+        }
     }
 
     // core-tests/src/server/http_server.cpp: has_expect_header.
