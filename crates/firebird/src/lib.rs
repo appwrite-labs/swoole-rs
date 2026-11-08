@@ -2,7 +2,8 @@
 //! with `--with-swoole-firebird`): the `isc_*` replacements its bundled
 //! `pdo_firebird` driver calls. While the runtime hook is on and a coroutine
 //! runs, each call runs on Swoole's thread pool and the coroutine waits for it
-//! (C++ lends `swoole::coroutine::async`).
+//! (native `async`, through the hooks' host). With `php`, MINIT ([`minit`])
+//! registers the driver with PDO.
 //!
 //! The exports keep upstream's names: `php_swoole_firebird.h` declares them
 //! and the driver's macros call them.
@@ -14,10 +15,12 @@
     )
 )]
 
+#[cfg(feature = "php")]
+pub mod minit;
+
 use std::{
     cell::Cell,
     ffi::{c_char, c_int, c_short, c_ushort, c_void},
-    sync::OnceLock,
 };
 use swoole_rs_firebird_sys::{
     ISC_QUAD, ISC_SCHAR, ISC_STATUS, ISC_VERSION_CALLBACK, XSQLDA, fb_ping, isc_attach_database,
@@ -28,32 +31,9 @@ use swoole_rs_firebird_sys::{
     isc_rollback_transaction, isc_start_transaction, isc_stmt_handle, isc_tr_handle, isc_version,
 };
 
-/// `swr_v1_firebird_ops`: what C++ lends at MINIT.
-#[repr(C)]
-pub struct Ops {
-    /// `swoole::coroutine::async`: run `job(context)` on the thread pool while
-    /// the running coroutine waits.
-    run_async: unsafe extern "C" fn(job: unsafe extern "C" fn(*mut c_void), context: *mut c_void),
-    /// Whether a coroutine is running.
-    in_coroutine: unsafe extern "C" fn() -> bool,
-}
-
-static OPS: OnceLock<&'static Ops> = OnceLock::new();
-
 thread_local! {
     /// `swoole_firebird_blocking`, per thread as upstream's.
     static BLOCKING: Cell<bool> = const { Cell::new(true) };
-}
-
-/// MINIT: keep C++'s operations.
-/// # Safety
-/// `ops` is a static table.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_firebird_init(ops: *const Ops) {
-    // SAFETY: per the caller.
-    if let Some(ops) = unsafe { ops.as_ref() } {
-        OPS.get_or_init(|| ops);
-    }
 }
 
 /// `swoole_firebird_set_blocking`: the runtime hook flag.
@@ -62,33 +42,12 @@ pub extern "C" fn swoole_firebird_set_blocking(blocking: bool) {
     BLOCKING.set(blocking);
 }
 
-unsafe extern "C" fn trampoline(context: *mut c_void) {
-    // SAFETY: `offload` passes its job, alive until `run_async` returns.
-    let job = unsafe { &mut *context.cast::<&mut dyn FnMut()>() };
-    job();
-}
-
 /// `php_swoole_async(swoole_firebird_blocking, call)`: the call's result, or
 /// `fallback` when the pool did not run it.
-fn offload<R>(fallback: R, call: impl FnOnce() -> R) -> R {
-    let mut call = Some(call);
-    let mut result = fallback;
-    let mut job = || {
-        if let Some(call) = call.take() {
-            result = call();
-        }
-    };
-    let ops = OPS.get().filter(|_| !BLOCKING.get());
-    // SAFETY: C++ reads the running coroutine.
-    match ops.filter(|ops| unsafe { (ops.in_coroutine)() }) {
-        Some(ops) => {
-            let mut job: &mut dyn FnMut() = &mut job;
-            // SAFETY: the job outlives the call, which waits for it.
-            unsafe { (ops.run_async)(trampoline, (&raw mut job).cast()) };
-        }
-        None => job(),
-    }
-    result
+fn offload<R>(fallback: R, call: impl FnMut() -> R) -> R {
+    let offload = swoole_rs_hooks::stdio::offload().filter(|_| !BLOCKING.get());
+    // SAFETY: native `async` inside a coroutine, or none; the call waits for the job.
+    unsafe { swoole_rs_hooks::stdio::offloaded(offload, fallback, call) }
 }
 
 /// What a wrapper returns when the pool could not run the call.

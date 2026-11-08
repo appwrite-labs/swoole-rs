@@ -2,7 +2,8 @@
 //! `--with-swoole-odbc`): the `SQL*` replacements its bundled `pdo_odbc`
 //! driver calls. While the runtime hook is on and a coroutine runs, each
 //! blocking call runs on Swoole's thread pool and the coroutine waits for it
-//! (C++ lends `swoole::coroutine::async`); the cheap ones call through.
+//! (native `async`, through the hooks' host); the cheap ones call through.
+//! With `php`, MINIT ([`minit`]) registers the driver with PDO.
 //!
 //! The exports keep upstream's names: `php_swoole_odbc.h` declares them and
 //! the driver's macros call them.
@@ -14,13 +15,10 @@
     )
 )]
 
-use std::{
-    ffi::c_void,
-    sync::{
-        OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+#[cfg(feature = "php")]
+pub mod minit;
+
+use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_odbc_sys::{
     RETCODE, SQLCHAR, SQLCloseCursor, SQLConnect, SQLDescribeCol, SQLDisconnect, SQLDriverConnect,
     SQLEndTran, SQLExecDirect, SQLExecute, SQLFreeHandle, SQLGetData, SQLGetDiagRec, SQLGetInfo,
@@ -28,32 +26,10 @@ use swoole_rs_odbc_sys::{
     SQLPrepare, SQLPutData, SQLRETURN, SQLRowCount, SQLSMALLINT, SQLULEN, SQLUSMALLINT,
 };
 
-/// `swr_v1_odbc_ops`: what C++ lends at MINIT.
-#[repr(C)]
-pub struct Ops {
-    /// `swoole::coroutine::async`: run `job(context)` on the thread pool while
-    /// the running coroutine waits.
-    run_async: unsafe extern "C" fn(job: unsafe extern "C" fn(*mut c_void), context: *mut c_void),
-    /// Whether a coroutine is running.
-    in_coroutine: unsafe extern "C" fn() -> bool,
-}
-
 /// `SQL_ERROR`.
 const SQL_ERROR: SQLRETURN = -1;
 
-static OPS: OnceLock<&'static Ops> = OnceLock::new();
 static BLOCKING: AtomicBool = AtomicBool::new(true);
-
-/// MINIT: keep C++'s operations.
-/// # Safety
-/// `ops` is a static table.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_odbc_init(ops: *const Ops) {
-    // SAFETY: per the caller.
-    if let Some(ops) = unsafe { ops.as_ref() } {
-        OPS.get_or_init(|| ops);
-    }
-}
 
 /// `swoole_odbc_set_blocking`: the runtime hook flag.
 #[unsafe(no_mangle)]
@@ -61,33 +37,12 @@ pub extern "C" fn swoole_odbc_set_blocking(blocking: bool) {
     BLOCKING.store(blocking, Ordering::Relaxed);
 }
 
-unsafe extern "C" fn trampoline(context: *mut c_void) {
-    // SAFETY: `offload` passes its job, alive until `run_async` returns.
-    let job = unsafe { &mut *context.cast::<&mut dyn FnMut()>() };
-    job();
-}
-
 /// `php_swoole_async(swoole_odbc_blocking, call)`: the call's result, or
 /// `SQL_ERROR` when the pool did not run it.
-fn offload(call: impl FnOnce() -> SQLRETURN) -> SQLRETURN {
-    let mut call = Some(call);
-    let mut rc = SQL_ERROR;
-    let mut job = || {
-        if let Some(call) = call.take() {
-            rc = call();
-        }
-    };
-    let ops = OPS.get().filter(|_| !BLOCKING.load(Ordering::Relaxed));
-    // SAFETY: C++ reads the running coroutine.
-    match ops.filter(|ops| unsafe { (ops.in_coroutine)() }) {
-        Some(ops) => {
-            let mut job: &mut dyn FnMut() = &mut job;
-            // SAFETY: the job outlives the call, which waits for it.
-            unsafe { (ops.run_async)(trampoline, (&raw mut job).cast()) };
-        }
-        None => job(),
-    }
-    rc
+fn offload(call: impl FnMut() -> SQLRETURN) -> SQLRETURN {
+    let offload = swoole_rs_hooks::stdio::offload().filter(|_| !BLOCKING.load(Ordering::Relaxed));
+    // SAFETY: native `async` inside a coroutine, or none; the call waits for the job.
+    unsafe { swoole_rs_hooks::stdio::offloaded(offload, SQL_ERROR, call) }
 }
 
 /// `swoole_odbc_SQLConnect`.
@@ -369,35 +324,17 @@ pub unsafe extern "C" fn swoole_odbc_SQLDisconnect(connection: SQLHDBC) -> SQLRE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
-
-    static ASYNC_RUNS: AtomicUsize = AtomicUsize::new(0);
-
-    unsafe extern "C" fn run_async(job: unsafe extern "C" fn(*mut c_void), context: *mut c_void) {
-        ASYNC_RUNS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: the job and context offload passed.
-        unsafe { job(context) };
-    }
-
-    unsafe extern "C" fn in_coroutine() -> bool {
-        true
-    }
-
-    static OPS_TABLE: Ops = Ops {
-        run_async,
-        in_coroutine,
-    };
 
     #[test]
-    fn offload_runs_on_the_pool_only_when_hooked() {
-        // SAFETY: a static table.
-        unsafe { swr_v1_odbc_init(&raw const OPS_TABLE) };
+    fn offload_calls_through_while_blocking() {
         swoole_odbc_set_blocking(true);
         assert_eq!(offload(|| 7), 7);
-        assert_eq!(ASYNC_RUNS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn offload_calls_through_without_a_coroutine() {
         swoole_odbc_set_blocking(false);
         assert_eq!(offload(|| 8), 8);
-        assert_eq!(ASYNC_RUNS.load(Ordering::Relaxed), 1);
         swoole_odbc_set_blocking(true);
     }
 }
