@@ -82,7 +82,7 @@ def main():
         artifact = producer['rust_php_compilation']['artifact']
         if (producer['build_mode'] != 'immutable' or inputs['upstream_commit'] != COMMIT
                 or inputs['fix_halfclose'] or sha(archive) != inputs['rust_php_archive_sha256']
-                or 'staticlib' not in artifact['target']['kind'] or artifact['profile']['opt_level'] != '3'
+                or artifact['target']['kind'] != ['staticlib'] or artifact['profile']['opt_level'] != '3'
                 or artifact['profile']['test'] or artifact['profile']['debug_assertions']):
             raise ValueError('Require original-scope immutable optimized Rust producer')
         expected = {**inputs['rust_sources_sha256'], **inputs['headers_sha256'],

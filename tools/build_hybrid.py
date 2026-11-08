@@ -184,8 +184,10 @@ def stdext_enabled(args):
 def rust_archive(php_config='php-config', extra=(), *, php=True, profile='release'):
     """Use Cargo's actual static-library output, including configured target directories.
     zend-sys binds the headers of the PHP the extension is built for (PHP_CONFIG). Without
-    `php` the archive holds no Zend references: the native gates link it into executables."""
-    command = ['cargo', 'build', '--locked', *(['--release'] if profile == 'release' else ['--profile', profile]), '--no-default-features', '-p', 'swoole-rs-ffi',
+    `php` the archive holds no Zend references: the native gates link it into executables.
+    `--crate-type staticlib` alone: crates/ext needs the crate as an rlib too, and rustc skips
+    thin LTO whenever an rlib is among the outputs, which costs ~330 instructions a request (#2005)."""
+    command = ['cargo', 'rustc', '--crate-type', 'staticlib', '--locked', *(['--release'] if profile == 'release' else ['--profile', profile]), '--no-default-features', '-p', 'swoole-rs-ffi',
                '--message-format=json-render-diagnostics']
     if features := (['php'] if php else []) + list(extra):
         command += ['--features', ','.join(features)]
