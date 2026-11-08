@@ -61,7 +61,6 @@ CORE_TESTS = {
                **{'coroutine_socket.' + name: PROXY for name in [
                    'https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy', 'https_get_with_http_proxy']}},
               True),
-    'http2': (['protocol/http2.cpp'], {'http2.ssl': 'needs the nghttp2 client'}, False),
     'timer': (['os/timer.cpp'], {}, False),
     'tls': (['protocol/ssl.cpp'], {}, False),
 }

@@ -15,8 +15,20 @@ The overlay has no native fallback: patched builds define `SW_USE_RUST_HTTP2`.
 
 The codecs, settings, frame lengths and header lookups have Rust unit tests
 (`cargo test -p swoole-rs-http2`). Upstream's own `http2` GoogleTests
-(`core-tests/src/protocol/http2.cpp`) run on both engines in the
-`http2-native-originals` phase. The server's frames, responses and request header
+(`core-tests/src/protocol/http2.cpp`) are ported there, with the same inputs and
+expected values, since the hybrid has no `swoole_http2.h` to build them against:
+
+| Upstream TEST | Rust test |
+| --- | --- |
+| `http2.default_settings` | `http2_default_settings` |
+| `http2.pack_setting_frame` | `http2_pack_setting_frame` |
+| `http2.get_type` | `http2_get_type` |
+| `http2.get_type_color` | `http2_get_type_color` |
+| `http2.ssl` | not ported: needs the nghttp2 client (the native lane excluded it too) |
+
+`http_server.get_package_length` still runs on both engines in the
+`http-native-originals` phase; on the hybrid, `tools/core_tests.py` gives it the two
+constants and crates/http2's settings codec in place of the header. The server's frames, responses and request header
 parser are Rust too (`crates/phphttp2/src/server.rs`, #757); its PHPTs cover them.
 
 ## Original PHPTs
