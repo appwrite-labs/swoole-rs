@@ -82,7 +82,6 @@ static uintptr_t effect(int effect, uintptr_t argument) {
     case 6: sw_logger()->reopen(); break;
     case 7: delete sw_logger(); break;
     case 8: swoole_signal_clear(); break;
-    case 9: swoole_signal_block_all(); break;
     case 10: return swoole_timer_is_available();
     case 11: swoole_timer_free(); break;
     case 12: return swoole_event_is_available();

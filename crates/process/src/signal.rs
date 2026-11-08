@@ -3,7 +3,6 @@
 //! looking a handler up, clearing the table and blocking every signal.
 //! The signalfd and kqueue paths (`signalfd.rs`, `signal_kqueue.rs`) share the
 //! table, `swr_v1_signals`.
-use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
 
@@ -246,42 +245,17 @@ pub extern "C" fn swr_v1_signal_clear() {
     swr_v1_signal_reset();
 }
 
-thread_local! {
-    /// `SwooleTG.signal_blocking_all`: this thread has blocked every signal.
-    static BLOCKING_ALL: Cell<bool> = const { Cell::new(false) };
-}
-
-/// `swoole_signal_block_all` (`block`) and `swoole_signal_unblock_all`: changes this
-/// thread's mask for every signal unless it already is so. Upstream's failure check
-/// (`pthread_sigmask(...) < 0`) never holds, so the flag always follows.
-fn mask_all(block: bool) {
-    if BLOCKING_ALL.get() == block {
-        return;
-    }
-    // SAFETY: sigset_t is plain data.
-    let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
-    // SAFETY: `mask` is a valid sigset_t.
-    unsafe { libc::sigfillset(&raw mut mask) };
-    let how = if block {
-        libc::SIG_BLOCK
-    } else {
-        libc::SIG_UNBLOCK
-    };
-    // SAFETY: `mask` is initialized; the old mask is not wanted.
-    unsafe { libc::pthread_sigmask(how, &raw const mask, std::ptr::null_mut()) };
-    BLOCKING_ALL.set(block);
-}
-
-/// `void swoole_signal_block_all()`.
+/// `bool swoole_signal_block_all()`: [`swoole_rs_corebase::signal_block_all`].
+#[must_use]
 #[unsafe(export_name = "_Z23swoole_signal_block_allv")]
-pub extern "C" fn swoole_signal_block_all() {
-    mask_all(true);
+pub extern "C" fn swoole_signal_block_all() -> bool {
+    swoole_rs_corebase::signal_block_all()
 }
 
-/// `void swoole_signal_unblock_all()`.
+/// `void swoole_signal_unblock_all()`: [`swoole_rs_corebase::signal_unblock_all`].
 #[unsafe(export_name = "_Z25swoole_signal_unblock_allv")]
 pub extern "C" fn swoole_signal_unblock_all() {
-    mask_all(false);
+    swoole_rs_corebase::signal_unblock_all();
 }
 
 /// `char *swoole_signal_to_str(int)`: `strsignal`'s text in a static 64-byte
@@ -385,16 +359,6 @@ mod tests {
         assert_eq!(set_action(libc::SIGUSR1, 0, false, false), SIG_DFL);
         assert_eq!(swr_v1_signal_lookup(libc::SIGUSR1).status, 2);
         set_action(libc::SIGUSR1, usize::MAX, false, false);
-    }
-
-    #[test]
-    fn masks_all_once() {
-        swoole_signal_block_all();
-        assert!(BLOCKING_ALL.get());
-        swoole_signal_block_all();
-        assert!(BLOCKING_ALL.get());
-        swoole_signal_unblock_all();
-        assert!(!BLOCKING_ALL.get());
     }
 
     #[test]

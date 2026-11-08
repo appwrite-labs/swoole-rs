@@ -72,8 +72,6 @@ unsafe extern "C" {
     fn swoole_timer_del(timer: *mut c_void) -> bool;
     #[link_name = "_Z30swoole_signal_get_listener_numv"]
     fn swoole_signal_get_listener_num() -> u32;
-    #[link_name = "_Z23swoole_signal_block_allv"]
-    fn swoole_signal_block_all();
     // native/phphelpers/module.cc, crates/phpevents, crates/phpclients, crates/phphelpers and PHP.
     #[link_name = "_Z32php_swoole_call_original_handlerPKcmP18_zend_execute_dataP12_zval_struct"]
     fn php_swoole_call_original_handler(
@@ -551,11 +549,6 @@ pub(crate) fn hook(flags: u32) {
 pub(crate) fn unhook() {
     let _unhooked = swoole_rs_phpruntime::php_coroutine_disable_hook();
     swoole_rs_phpruntime::enable_unsafe_function();
-}
-
-pub(crate) fn signal_block_all() {
-    // SAFETY: blocks this thread's signals.
-    unsafe { swoole_signal_block_all() };
 }
 
 /// `\Swoole\Coroutine\deadlock_check()`, inside `zend_try`.
