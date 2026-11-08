@@ -5,8 +5,8 @@ Packet framing and the MIME table (`crates/framing`); the ABI is in
 
 ## Gates
 
-`tools/dev.py` runs `gate.py` (framing-native), `core.py`
-(framing-native-originals, Linux) and the versioned `wrong_eof_setting.phpt` expectation.
+`tools/dev.py` runs `gate.py` (framing-native) and the versioned
+`wrong_eof_setting.phpt` expectation.
 
 ```sh
 mkdir -p target/reports
@@ -19,12 +19,6 @@ python3 tests/modules/framing/gate.py --archive target/libframing.a \
 - `gate.py` runs the ABI, MIME lookup and malformed-input checks in
   `gate.cc`. Add `--rust-asan` with an instrumented archive to also require
   that a one-past read in the invalid caller is detected.
-- `core.py --source S --config config.h --archive A --build-root DIR --output R`
-  needs Linux with CMake, GTest and PHP. It builds the unchanged pinned native
-  GoogleTests for the reference and for the archive's hybrid tree (every
-  module's patches, `overlay_hybrid_tree`), and runs each test
-  separately. Any error, skip or missing outcome fails. `--inventory-only`
-  lists the tests without building.
 - Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Ported GoogleTests
@@ -40,6 +34,24 @@ swoole-rs-framing`), with the same inputs and expected values:
 | `mime_type.set` | `mime::tests::set` |
 | `mime_type.add` | `mime::tests::add` |
 | `mime_type.del` | `mime::tests::del` |
+
+`core-tests/src/protocol/base.cpp` no longer builds either. Its server TESTs are
+cases in [protocol.rs](protocol.rs), built into the http server case binary
+(`tests/modules/http/server`, the merge tier's http-server-rust phase), whose
+`fixture.cc` builds the Server and its port's framing. The rest are unit tests
+(`cargo test -p swoole-rs-ports -p swoole-rs-protocols`):
+
+| Upstream TEST | Rust test |
+| --- | --- |
+| `protocol.length` | `protocol.length` (http-server-rust) |
+| `protocol.length_2` | `protocol.length_2` (http-server-rust) |
+| `protocol.length_3` | `protocol.length_3` (http-server-rust) |
+| `protocol.eof` | `protocol.eof` (http-server-rust) |
+| `protocol.socks5_strerror` | `swoole-rs-protocols` `owned_proxy::tests::socks5_strerror` |
+| `protocol.socks5_dns_tunnel_target_host_max_length` | `swoole-rs-protocols` `owned_proxy::tests::socks5_dns_tunnel_target_host_max_length` |
+| `protocol.swap_byte_order` | `swoole-rs-ports` `framing_recv::tests::swap_byte_order` |
+| `protocol.unpack` | `swoole-rs-ports` `framing_recv::tests::unpack_formats` |
+| `protocol.hton64` | `swoole-rs-ports` `framing_recv::tests::hton64` |
 
 ## Known failures
 

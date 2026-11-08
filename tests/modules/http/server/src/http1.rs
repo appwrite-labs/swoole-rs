@@ -32,7 +32,7 @@ const DISPATCH_RESULT_DISCARD_PACKET: c_int = -1;
 const DISPATCH_RESULT_CLOSE_CONNECTION: c_int = -2;
 const SW_SERVER_EVENT_PAUSE_RECV: c_int = 11;
 const SW_SOCK_TCP: c_int = 1;
-const SW_LOG_WARNING: c_int = 4;
+pub(super) const SW_LOG_WARNING: c_int = 4;
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
 const SW_ERROR_NAME_TOO_LONG: c_int = 504;
@@ -424,7 +424,7 @@ struct StdString {
 #[link(name = "swoole")]
 unsafe extern "C-unwind" {
     #[link_name = "_Z20swoole_set_log_leveli"]
-    fn swoole_set_log_level(level: c_int);
+    pub(super) fn swoole_set_log_level(level: c_int);
     #[link_name = "_Z23swoole_signal_block_allv"]
     fn swoole_signal_block_all();
     fn swr_v1_core_last_error() -> c_int;

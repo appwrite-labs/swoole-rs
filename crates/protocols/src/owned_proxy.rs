@@ -287,7 +287,81 @@ pub extern "C" fn admit(user_length: usize, password_length: usize) -> c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swoole_rs_corebase::{CoreStringView, swr_v1_core_proxy_configure, swr_v1_core_proxy_new};
+    use swoole_rs_corebase::{
+        CoreStringView, swr_v1_core_proxy_configure, swr_v1_core_proxy_new, swr_v1_core_string_set,
+    };
+
+    // core-tests/src/protocol/base.cpp's protocol.socks5_strerror.
+    #[test]
+    fn socks5_strerror() {
+        for i in 0..16 {
+            // SAFETY: strerror returns a static NUL-terminated string.
+            let error = unsafe { CStr::from_ptr(strerror(i)) };
+            if i > 0x08 {
+                assert_eq!(error, c"Unknown error");
+            } else {
+                assert!(error.count_bytes() > 5);
+            }
+        }
+    }
+
+    // core-tests/src/protocol/base.cpp's protocol.socks5_dns_tunnel_target_host_max_length:
+    // `Socks5Proxy::create(SW_SOCK_TCP, "127.0.0.1", 1080, "", "")`, then a 255- and a
+    // 256-byte target host through the tunnel.
+    /// Native's `swoole_error_log`, as far as the case observes it: it sets the last error.
+    unsafe extern "C" fn error_log(
+        kind: c_int,
+        _: c_int,
+        code: c_int,
+        _: *const c_char,
+        _: *const c_char,
+    ) {
+        if kind == log::LOG_ERROR {
+            log::set_last_error(code);
+        }
+    }
+
+    #[test]
+    fn socks5_dns_tunnel_target_host_max_length() {
+        log::swr_v1_core_set_log_host(error_log);
+        assert_eq!(admit(0, 0), 1);
+        let prepared = swr_v1_core_proxy_new(true);
+        let text = |s: &'static str| CoreStringView {
+            data: s.as_ptr().cast(),
+            length: s.len(),
+        };
+        let texts = [text("127.0.0.1"), text(""), text("")];
+        let configured =
+            unsafe { swr_v1_core_proxy_configure(prepared.owner, texts.as_ptr(), 1080, false, 1) };
+        assert_eq!(configured.status, 0);
+        let mut proxy = Socks5Proxy {
+            owner: prepared.owner,
+        };
+        let p = &raw mut proxy;
+        let set_target_host = |host: &[u8]| unsafe {
+            assert_eq!(
+                swr_v1_core_string_set(prepared.strings[3], host.as_ptr().cast(), host.len()),
+                0
+            );
+        };
+        unsafe { (*prepared.fields).dns_tunnel = 1 };
+        let target_host = vec![b'a'; usize::from(u8::MAX)];
+        set_target_host(&target_host);
+        unsafe { (*prepared.fields).target_port = 80 };
+
+        assert_eq!(unsafe { pack_connect_request(p) }, 262);
+        let buf = unsafe { std::slice::from_raw_parts(prepared.buffer, 512) };
+        assert_eq!(buf[3], 0x03);
+        assert_eq!(buf[4], u8::MAX);
+        assert_eq!(&buf[5..5 + target_host.len()], &target_host[..]);
+        let port = &buf[5 + target_host.len()..7 + target_host.len()];
+        assert_eq!(u16::from_be_bytes([port[0], port[1]]), 80);
+
+        set_target_host(&[b'a'; 256]);
+        assert_eq!(unsafe { pack_connect_request(p) }, -1);
+        assert_eq!(log::last_error(), HANDSHAKE_FAILED);
+        unsafe { swoole_rs_corebase::swr_v1_core_proxy_free(prepared.owner) };
+    }
 
     #[test]
     fn handshake_steps_through_auth_and_connect() {

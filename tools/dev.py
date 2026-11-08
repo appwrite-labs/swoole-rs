@@ -371,13 +371,6 @@ def plan(args, reports):
             script('framing-versioned-expectation', 'corpus/upstream/versioned.py',
                    '--source', ROOT / 'target/upstream/src', '--case', 'tests/swoole_server/wrong_eof_setting.phpt',
                    *php_for('mbstring'), *engines, *report('framing-versioned-expectation'))
-            # Upstream's own framing GoogleTests, on the reference and the overlay (Linux trees).
-            if sys.platform.startswith('linux'):
-                script('framing-native-originals', 'tests/modules/framing/core.py', '--source', ROOT / 'target/upstream/src',
-                       '--config', manifest.parent / 'src/config.h',
-                       '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       '--build-root', ROOT / 'target/native-originals/framing', '--jobs', args.jobs,
-                       *report('framing-native-originals'))
     for module, (files, excluded) in CORE_TESTS.items():
         if integrate and module in modules and sys.platform.startswith('linux'):
             name = module + '-native-originals'
@@ -407,7 +400,8 @@ def plan(args, reports):
                *[arg for name in CLIENT_PROXY for arg in ['--exclude', f'client.{name}={PROXY}']],
                *report('hooks-system-rust'))
     if integrate and 'http' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/server/http_server.cpp's server TESTs, ported to Rust over the hybrid's libswoole.so.
+        # core-tests/src/server/http_server.cpp's and protocol/base.cpp's server TESTs, ported to Rust over the
+        # hybrid's libswoole.so.
         script('http-server-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--build-root', ROOT / 'target/native-originals/http-server', '--jobs', args.jobs,

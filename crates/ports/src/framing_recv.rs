@@ -591,17 +591,243 @@ mod tests {
         unsafe { libc::close(socket.fd) };
     }
 
+    // core-tests/src/protocol/base.cpp's protocol.swap_byte_order, protocol.unpack and
+    // protocol.hton64, with the same inputs and expected values. upstream's
+    // swoole_swap_endian{16,32,64} are the integers' `swap_bytes`.
+
+    fn unpack(format: u8, buffer: &[u8]) -> i64 {
+        // SAFETY: every buffer here holds 8 readable bytes, the widest format.
+        unsafe { swoole_unpack(format, buffer.as_ptr().cast()) }
+    }
+
+    /// `createBinaryData`: the value's native bytes at the front of an 8-byte buffer.
+    fn data(bytes: &[u8]) -> [u8; 8] {
+        let mut buffer = [0; 8];
+        buffer[..bytes.len()].copy_from_slice(bytes);
+        buffer
+    }
+
     #[test]
-    fn unpack_and_byte_order() {
+    fn swap_byte_order() {
+        assert_eq!(0x1234u16.swap_bytes(), 0x3412);
+        assert_eq!(0x0001u16.swap_bytes(), 0x0100);
+        assert_eq!(0x00FFu16.swap_bytes(), 0xFF00);
+        assert_eq!(0xFF00u16.swap_bytes(), 0x00FF);
+        assert_eq!(0xFFFFu16.swap_bytes(), 0xFFFF);
+
+        assert_eq!(0x1234_5678u32.swap_bytes(), 0x7856_3412);
+        assert_eq!(0x0000_0001u32.swap_bytes(), 0x0100_0000);
+        assert_eq!(0x0000_FF00u32.swap_bytes(), 0x00FF_0000);
+        assert_eq!(0xFF00_0000u32.swap_bytes(), 0x0000_00FF);
+        assert_eq!(0xFFFF_FFFFu32.swap_bytes(), 0xFFFF_FFFF);
+
+        let v = 0xABCDu16;
+        assert_eq!(v.swap_bytes().swap_bytes(), v);
+        let v = 0xABCD_EF01u32;
+        assert_eq!(v.swap_bytes().swap_bytes(), v);
+
+        let converted = 0x1122_3344_5566_7788u64.swap_bytes();
         assert_eq!(
-            unsafe { swoole_unpack(b'n', b"\x12\x34".as_ptr().cast()) },
+            converted.to_ne_bytes(),
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]
+        );
+    }
+
+    #[test]
+    #[expect(clippy::cast_possible_wrap, reason = "upstream's (int64_t) casts")]
+    #[expect(clippy::cognitive_complexity, reason = "one upstream TEST, kept whole")]
+    fn unpack_formats() {
+        // 8-bit
+        assert_eq!(unpack(b'c', &data(&(-42i8).to_ne_bytes())), -42);
+        assert_eq!(unpack(b'C', &data(&200u8.to_ne_bytes())), 200);
+        assert_eq!(unpack(b'c', &data(&i8::MIN.to_ne_bytes())), i8::MIN.into());
+        assert_eq!(unpack(b'c', &data(&i8::MAX.to_ne_bytes())), i8::MAX.into());
+        assert_eq!(unpack(b'C', &data(&u8::MAX.to_ne_bytes())), u8::MAX.into());
+
+        // 16-bit
+        assert_eq!(unpack(b's', &data(&(-12345i16).to_ne_bytes())), -12345);
+        assert_eq!(unpack(b'S', &data(&54321u16.to_ne_bytes())), 54321);
+        let n_val = 0x1234u16;
+        let n_be = n_val.rotate_left(8);
+        assert_eq!(unpack(b'n', &data(&n_be.to_ne_bytes())), 0x1234);
+        assert_eq!(unpack(b'v', &data(&0x1234u16.to_ne_bytes())), 0x1234);
+        assert_eq!(
+            unpack(b's', &data(&i16::MIN.to_ne_bytes())),
+            i16::MIN.into()
+        );
+        assert_eq!(
+            unpack(b's', &data(&i16::MAX.to_ne_bytes())),
+            i16::MAX.into()
+        );
+        assert_eq!(
+            unpack(b'S', &data(&u16::MAX.to_ne_bytes())),
+            u16::MAX.into()
+        );
+
+        // 32-bit
+        assert_eq!(
+            unpack(b'l', &data(&(-123_456_789i32).to_ne_bytes())),
+            -123_456_789
+        );
+        assert_eq!(
+            unpack(b'L', &data(&3_000_000_000u32.to_ne_bytes())),
+            3_000_000_000
+        );
+        let n_val = 0x1234_5678u32;
+        let n_be = ((n_val & 0xFF) << 24)
+            | ((n_val & 0xFF00) << 8)
+            | ((n_val & 0x00FF_0000) >> 8)
+            | ((n_val & 0xFF00_0000) >> 24);
+        assert_eq!(unpack(b'N', &data(&n_be.to_ne_bytes())), 0x1234_5678);
+        assert_eq!(
+            unpack(b'V', &data(&0x1234_5678u32.to_ne_bytes())),
+            0x1234_5678
+        );
+        assert_eq!(
+            unpack(b'l', &data(&i32::MIN.to_ne_bytes())),
+            i32::MIN.into()
+        );
+        assert_eq!(
+            unpack(b'l', &data(&i32::MAX.to_ne_bytes())),
+            i32::MAX.into()
+        );
+        assert_eq!(
+            unpack(b'L', &data(&u32::MAX.to_ne_bytes())),
+            u32::MAX.into()
+        );
+
+        // 64-bit
+        assert_eq!(
+            unpack(b'q', &data(&(-1_234_567_890_123_456_789i64).to_ne_bytes())),
+            -1_234_567_890_123_456_789
+        );
+        assert_eq!(
+            unpack(b'Q', &data(&10_234_567_890_123_456_789u64.to_ne_bytes())),
+            10_234_567_890_123_456_789u64 as i64
+        );
+        let j_be = 0x1234_5678_9ABC_DEF0u64.swap_bytes();
+        assert_eq!(
+            unpack(b'J', &data(&j_be.to_ne_bytes())),
+            0x1234_5678_9ABC_DEF0
+        );
+        assert_eq!(
+            unpack(b'P', &data(&0x1234_5678_9ABC_DEF0u64.to_ne_bytes())),
+            0x1234_5678_9ABC_DEF0
+        );
+        assert_eq!(unpack(b'q', &data(&i64::MIN.to_ne_bytes())), i64::MIN);
+        assert_eq!(unpack(b'q', &data(&i64::MAX.to_ne_bytes())), i64::MAX);
+        assert_eq!(
+            unpack(b'Q', &data(&u64::MAX.to_ne_bytes())),
+            u64::MAX as i64
+        );
+
+        // Machine-dependent int
+        assert_eq!(
+            unpack(b'i', &data(&(-987_654_321i32).to_ne_bytes())),
+            -987_654_321
+        );
+        assert_eq!(
+            unpack(b'I', &data(&3_000_000_000u32.to_ne_bytes())),
+            3_000_000_000
+        );
+        assert_eq!(
+            unpack(b'i', &data(&i32::MIN.to_ne_bytes())),
+            i32::MIN.into()
+        );
+        assert_eq!(
+            unpack(b'i', &data(&i32::MAX.to_ne_bytes())),
+            i32::MAX.into()
+        );
+        assert_eq!(
+            unpack(b'I', &data(&u32::MAX.to_ne_bytes())),
+            u32::MAX.into()
+        );
+
+        // Invalid format specifiers
+        let zero = [0u8; 8];
+        assert_eq!(unpack(b'x', &zero), -1);
+        assert_eq!(unpack(b'?', &zero), -1);
+        assert_eq!(unpack(b'Z', &zero), -1);
+
+        // Endianness
+        assert_eq!(unpack(b'n', &data(&[0x12, 0x34])), 0x1234);
+        assert_eq!(unpack(b'v', &data(&[0x34, 0x12])), 0x1234);
+        assert_eq!(unpack(b'N', &data(&[0x12, 0x34, 0x56, 0x78])), 0x1234_5678);
+        assert_eq!(unpack(b'V', &data(&[0x78, 0x56, 0x34, 0x12])), 0x1234_5678);
+        let be = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+        assert_eq!(unpack(b'J', &be), 0x1234_5678_9ABC_DEF0);
+        let le = [0xF0, 0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12];
+        assert_eq!(unpack(b'P', &le), 0x1234_5678_9ABC_DEF0);
+
+        // htons, htonl and swoole_hton64 into n, N and J
+        assert_eq!(
+            unpack(b'n', &data(&0x1234u16.to_be().to_ne_bytes())),
             0x1234
         );
-        assert_eq!(unsafe { swoole_unpack(b'x', b"x".as_ptr().cast()) }, -1);
         assert_eq!(
-            swoole_ntoh64(swoole_hton64(0x1122_3344_5566_7788)),
-            0x1122_3344_5566_7788
+            unpack(b'N', &data(&0x1234_5678u32.to_be().to_ne_bytes())),
+            0x1234_5678
         );
-        assert_eq!(swoole_hton64(1).to_ne_bytes()[7], 1);
+        let be64 = swoole_hton64(0x1234_5678_9ABC_DEF0);
+        assert_eq!(
+            unpack(b'J', &data(&be64.to_ne_bytes())),
+            0x1234_5678_9ABC_DEF0
+        );
+    }
+
+    #[test]
+    fn hton64() {
+        let val = 0x1122_3344_5566_7788u64;
+        let converted = swoole_hton64(val);
+        assert_eq!(
+            converted.to_ne_bytes(),
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]
+        );
+        assert_eq!(swoole_ntoh64(converted), val);
+
+        let min_converted = swoole_hton64(0);
+        assert_eq!(min_converted.to_ne_bytes(), [0x00; 8]);
+        assert_eq!(swoole_ntoh64(min_converted), 0);
+        let max_converted = swoole_hton64(u64::MAX);
+        assert_eq!(max_converted.to_ne_bytes(), [0xFF; 8]);
+        assert_eq!(swoole_ntoh64(max_converted), u64::MAX);
+
+        for pattern in [0xAAAA_AAAA_AAAA_AAAAu64, 0x5555_5555_5555_5555] {
+            assert_eq!(swoole_ntoh64(swoole_hton64(pattern)), pattern);
+        }
+        for i in 0..8 {
+            let single_byte = 0xFFu64 << (i * 8);
+            assert_eq!(
+                swoole_ntoh64(swoole_hton64(single_byte)),
+                single_byte,
+                "Failed for byte position {i}"
+            );
+        }
+
+        for _ in 0..100 {
+            let random_val = swoole_rs_corebase::swoole_random_int();
+            assert_eq!(
+                swoole_ntoh64(swoole_hton64(random_val)),
+                random_val,
+                "Failed for random value: 0x{random_val:x}"
+            );
+        }
+
+        let converted = swoole_hton64(0x0102_0304_0506_0708);
+        assert_eq!(converted.to_ne_bytes(), [1, 2, 3, 4, 5, 6, 7, 8]);
+
+        for _ in 0..100 {
+            let val = swoole_rs_corebase::swoole_random_int();
+            assert_eq!(
+                swoole_ntoh64(swoole_hton64(val)),
+                val,
+                "hton64->ntoh64 failed for 0x{val:x}"
+            );
+            assert_eq!(
+                swoole_hton64(swoole_ntoh64(val)),
+                val,
+                "ntoh64->hton64 failed for 0x{val:x}"
+            );
+        }
     }
 }
