@@ -39,7 +39,8 @@ impl HttpString {
     }
 }
 
-/// The head of third-party `struct multipart_parser`; native code asserts the layout.
+/// The head of third-party `struct multipart_parser` (checked against the real parser in
+/// `parser_mirrors_the_bundled_multipart_parser`).
 #[repr(C)]
 struct Parser {
     settings: *const c_void,
@@ -1182,6 +1183,28 @@ mod tests {
         };
         parser.boundary[..boundary.len()].copy_from_slice(boundary);
         parser
+    }
+
+    /// The bundled parser (crates/oracle's `thirdparty/multipart_parser.c`) read through
+    /// this crate's mirror: what `init` and a rejected start boundary write lands where
+    /// `Parser` and `ParserSettings` say.
+    #[test]
+    fn parser_mirrors_the_bundled_multipart_parser() {
+        use swoole_rs_oracle as _;
+        let p = unsafe { multipart_parser_init(c"abc".as_ptr(), 3, &raw const SETTINGS) };
+        assert!(!p.is_null());
+        let parser = unsafe { &*p };
+        assert_eq!(parser.settings, (&raw const SETTINGS).cast());
+        assert_eq!(parser.boundary_length, 5, "\"--\" + boundary");
+        assert_eq!(&parser.boundary[..6], b"--abc\0");
+        assert!(parser.fp.is_null() && parser.data.is_null(), "calloc'd");
+        assert_eq!(
+            unsafe { multipart_parser_execute(p, c"x".as_ptr(), 1) },
+            -1,
+            "MPPE_ERROR"
+        );
+        assert_eq!(unsafe { &*p }.error_reason, 4, "MPPE_BAD_START_BOUNDARY");
+        unsafe { multipart_parser_free(p) };
     }
 
     #[test]

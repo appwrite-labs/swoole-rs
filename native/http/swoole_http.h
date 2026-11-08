@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-// http_server::Request and the HTTP helpers: what native/http/layout.cc and the compiled
-// core-tests still use. crates/http and crates/ports define the functions under their
+// http_server::Request and the HTTP helpers: what the compiled core-tests still use. crates/http and crates/ports define the functions under their
 // upstream symbols; crates/http/src/request.rs owns Request's state.
 #pragma once
 
@@ -109,6 +108,10 @@ struct Request {
         return swr_v1_http_request_expect(this);
     }
 };
+static_assert(offsetof(Request, url_offset_) == 12 && offsetof(Request, content_length_) == 32 &&
+                  offsetof(Request, form_data_) == 40 && offsetof(Request, buffer_) == 48 &&
+                  offsetof(Request, native_) == 56 && sizeof(Request) == 64,
+              "crates/http/src/request.rs mirrors Request");
 
 int get_method(const char *method_str, size_t method_len);
 const char *get_method_string(int method);
