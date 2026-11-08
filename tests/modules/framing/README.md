@@ -5,8 +5,7 @@ Packet framing and the MIME table (`crates/framing`); the ABI is in
 
 ## Gates
 
-`tools/dev.py` runs `gate.py` (framing-native) and the versioned
-`wrong_eof_setting.phpt` expectation.
+`tools/dev.py` runs `gate.py` (framing-native).
 
 ```sh
 mkdir -p target/reports

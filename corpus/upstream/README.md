@@ -50,7 +50,7 @@ counts as a pass. Failures, unexpected statuses, runner errors, and timeouts fai
 the command. Unsupported APIs are reported separately; `--require-all` also
 fails on unsupported and skipped cases.
 
-There are two explicit **test-support adaptations** in the disposable copy:
+There are three explicit **test-support adaptations** in the disposable copy:
 
 1. A small PSR-4 autoloader loads original `SwooleTest` helpers instead of installing
    unrelated Composer dependencies. Selected tests do not use those packages.
@@ -58,6 +58,12 @@ There are two explicit **test-support adaptations** in the disposable copy:
    removed. It otherwise attempts to write under HOME and start a daemon even for
    an atomic/codec unit test. The adapter requires the exact expected setup block
    and fails closed if it changes. All actual test bodies and assertions remain.
+3. A case with an `--EXPECT_85--`, `--EXPECTF_85--` or `--EXPECTREGEX_85--`
+   section gets upstream's own `tests/run-tests` selection
+   (`tools/phpt_expectations.py`): on PHP >= 8.5 that body replaces the base
+   expectation, below 8.5 the section is dropped. PHP's runner doesn't know these
+   sections and would read one as part of the base expectation, so the case fails
+   on every engine. No other byte changes.
 
 Reports record the pinned commit, original support Git tree, unchanged runner
 checksum, effective adapted-bootstrap checksum, and adapter description. HOME
@@ -101,22 +107,6 @@ commit, verifies their hashes before executing tests, and records the declaratio
 in the report. Paths must be relative repository files. Working-copy assets are
 ignored; a missing asset or checksum mismatch fails the run. This adds fixtures
 without modifying the original PHPT assertions or capability probes.
-
-The separate `versioned.py` profile supports the pinned upstream `_85` expectation
-sections using the exact `PHP_VERSION_ID >= 80500` selection in `tests/run-tests`.
-It reads that file only to verify the frozen rules hash; execution still uses the
-matching installation's official PHP runner. Original FILE/SKIPIF/other bodies
-and the selected expectation body are byte-identical. Receipts include original
-and adapted PHPT hashes, protected-section hashes, selected body hash, PHP version,
-actual extension and official-runner identities. PHP8.5 uses explicitly recorded
-`fatal_error_backtraces=On` to match the pinned stack-trace expectation.
-
-`framing-versioned-expectation` is an additional, explicitly adapted diagnostic
-for `wrong_eof_setting.phpt`. The normal complete framing inventory remains
-untouched and retains every first failed/skipped/warned/unsupported outcome. A
-passing adapted case is not a passing untouched original or whole inventory;
-those report fields stay false. Unknown/duplicate or competing assertion sections
-are not silently discarded to get a pass.
 
 ## Every PHPT, gated on upstream
 

@@ -320,10 +320,6 @@ def plan(args, reports):
     if 'framing' in modules:
         script('framing-native', 'tests/modules/framing/gate.py', '--archive',
                manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('framing-native'))
-        if integrate:
-            script('framing-versioned-expectation', 'corpus/upstream/versioned.py',
-                   '--source', ROOT / 'target/upstream/src', '--case', 'tests/swoole_server/wrong_eof_setting.phpt',
-                   *php_for('mbstring'), *engines, *report('framing-versioned-expectation'))
     if integrate and 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp, network/{client,dns,address,socket}.cpp,
         # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the hybrid's libswoole.so, and the repo-owned C++
@@ -524,7 +520,7 @@ BARRIER_PHASES = {'ownership', 'build', 'reference-build', 'stdext-reference-bui
 
 
 # Phases that run original PHPTs under another name (their servers race for ports under load).
-PHPT_PHASES = {'phpt', 'framing-versioned-expectation', 'utilities-lowercase-runtime'}
+PHPT_PHASES = {'phpt', 'utilities-lowercase-runtime'}
 
 
 def serial_phase(name):

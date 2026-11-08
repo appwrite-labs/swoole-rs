@@ -47,7 +47,6 @@
  "format": 3,
  "framing-native": 2,
  "framing-unit": 1,
- "framing-versioned-expectation": 1,
  "hooks-compile": 38,
  "hooks-packet-policy": 7,
  "hooks-unit": 3,
