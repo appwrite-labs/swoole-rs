@@ -10,6 +10,10 @@
 //! the C++ objects. The coroutine's entry runs the user callable and its defer
 //! tasks inside the zend-sys shim's `zend_first_try`; Rust frames that may
 //! switch coroutines or bail out own nothing that needs a drop.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),

@@ -41,8 +41,8 @@ jobs:
       - run: python3 tools/check_migration.py
       # The all-modules patch set applies to the pin (seconds), so a conflict fails a required check.
       - run: python3 tools/patches.py check
-      # No crate's unsafe count may rise above tools/unsafe_baseline.json.
-      - run: python3 tools/unsafe_budget.py
+      # No crate's unsafe or slow-layout count may rise above tools/budget.json.
+      - run: python3 tools/budget.py
       - run: tests/dev/run.sh
 
   # Whether this PR touches what the hybrid build compiles or installs with.

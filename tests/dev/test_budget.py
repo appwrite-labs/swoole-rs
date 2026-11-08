@@ -1,4 +1,4 @@
-"""tools/unsafe_budget.py counts unsafe items in non-test crate code and only lets them fall."""
+"""tools/budget.py counts unsafe items and slow data layouts in non-test crate code and only lets them fall."""
 from pathlib import Path
 import sys
 import tempfile
@@ -6,7 +6,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from tools import unsafe_budget  # noqa: E402
+from tools import budget  # noqa: E402
 
 LIB = '''\
 mod imp;
@@ -23,10 +23,14 @@ mod tests {
 #[cfg(test)]
 #[path = "loaded_tests.rs"]
 mod loaded;
+use std::collections::{HashMap, VecDeque};
+static DATE_CACHE: u8 = 0;
+pub(crate) struct Cached;
+fn flags(open: Vec<bool>, fixed: [bool; 4]) {}
 '''
 
 
-class UnsafeBudget(unittest.TestCase):
+class Budget(unittest.TestCase):
     def test_counts_non_test_blocks_fns_and_impls(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -41,10 +45,13 @@ class UnsafeBudget(unittest.TestCase):
             (root / 'crates/one/tests').mkdir()
             (root / 'crates/one/tests/it.rs').write_text('unsafe {}\n')
             # a, its block, c, the impl, the cfg(test) helper's block, imp's block.
-            self.assertEqual(unsafe_budget.counts(root), {'one': 6})
+            self.assertEqual(budget.counts(root), {
+                'unsafe': {'one': 6}, 'maps': {'one': 1}, 'lists': {'one': 1},
+                'bools': {'one': 2}, 'caches': {'one': 2},
+            })
 
     def test_only_a_rise_fails(self):
-        above, below = unsafe_budget.check({'a': 3, 'b': 1, 'new': 1}, {'a': 2, 'b': 2})
+        above, below = budget.check({'a': 3, 'b': 1, 'new': 1}, {'a': 2, 'b': 2})
         self.assertEqual(above, {'a': (3, 2), 'new': (1, 0)})
         self.assertEqual(below, {'b': (1, 2)})
 

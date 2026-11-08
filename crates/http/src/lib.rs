@@ -1,5 +1,12 @@
 //! HTTP policy and private directory storage. Native effects run after Rust returns.
 #![cfg_attr(
+    test,
+    expect(
+        clippy::disallowed_types,
+        reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+    )
+)]
+#![cfg_attr(
     not(test),
     deny(
         clippy::undocumented_unsafe_blocks,

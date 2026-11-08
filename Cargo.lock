@@ -934,6 +934,7 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
+ "swoole-rs-memory",
  "swoole-rs-ossupport",
  "swoole-rs-process",
 ]

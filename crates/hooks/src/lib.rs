@@ -1,6 +1,10 @@
 //! Coroutine I/O policy over copied scalars, and whole hooked operations moving
 //! into Rust (`sleep`). Policy functions make no native callbacks, syscalls or
 //! allocations and retain no borrows.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg_attr(
     not(test),
     deny(

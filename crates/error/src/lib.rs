@@ -1,3 +1,7 @@
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 // SPDX-License-Identifier: Apache-2.0
 // Message text derived from Swoole v6.2.2 src/core/error.cc,
 // Copyright Swoole contributors; original author Tianfeng Han <rango@swoole.com>.

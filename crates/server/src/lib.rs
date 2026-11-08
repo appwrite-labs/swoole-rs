@@ -2,6 +2,10 @@
 //! ports, the reactor, callbacks and logs); Rust decides every step and asks native
 //! code for each fact or effect through one `call(context, op, arg)`, reading facts
 //! afresh. The interface address table is Rust state (`local_addr`).
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg_attr(
     not(test),
     deny(

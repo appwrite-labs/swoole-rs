@@ -17,6 +17,7 @@ swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-coroutine = { path = "../coroutine" }
 swoole-rs-ossupport = { path = "../ossupport" }
 swoole-rs-process = { path = "../process" }
+swoole-rs-memory = { path = "../memory" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"

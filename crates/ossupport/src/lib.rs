@@ -1,5 +1,9 @@
 //! OS support: the async thread pool, file IO, sendfile, entropy, process and
 //! thread identity, and the `SysV` message queue.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg_attr(
     not(test),
     deny(

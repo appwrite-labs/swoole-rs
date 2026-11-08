@@ -2,6 +2,13 @@
 //! fd registry and loop admission, dispatch and shutdown policy. Native leaves
 //! lend the reactor, sockets and SDK operations. C++ callback trampolines resume
 //! contained Zend bailouts after Rust cleanup has completed.
+#![cfg_attr(
+    feature = "php",
+    expect(
+        clippy::disallowed_types,
+        reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+    )
+)]
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),

@@ -1,4 +1,8 @@
 //! Copied worker/process transitions. Native alone executes callbacks and owns stores.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg_attr(
     not(test),
     deny(

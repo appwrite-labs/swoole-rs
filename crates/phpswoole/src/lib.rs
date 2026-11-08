@@ -5,6 +5,10 @@
 //! and `SwooleG.fatal_error`. C++ keeps the module globals and lends them, with
 //! what only configure's `#ifdef`s decide or C++ objects hold, as a table of
 //! operations; Swoole's core, error and logger state are the Rust crates'.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),

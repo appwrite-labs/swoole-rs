@@ -7,6 +7,10 @@
 //! See docs/zend.md.
 //!
 //! Without the `php` feature the crate is empty.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),
