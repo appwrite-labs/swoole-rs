@@ -2,10 +2,10 @@
 
 Feature bit 1048576 (`clients`). ABI: `docs/clients-resolver-abi-v1.md`,
 `swoole_rs_clients.h`. Patched upstream files: `ext-src/swoole_client.cc`,
-`ext-src/swoole_client_async.cc`, `ext-src/swoole_client_coro.cc`,
-`src/network/client.cc` (`src/network/address.cc`, `src/network/dns.cc` and
-`ext-src/swoole_name_resolver.cc` are deleted; `native/clients/name_resolver.cc` keeps
-the resolver list's C++ glue).
+`ext-src/swoole_client_async.cc` and `ext-src/swoole_client_coro.cc`
+(`src/network/client.cc`, `ext-src/php_swoole_client.h`, `src/network/address.cc`,
+`src/network/dns.cc` and `ext-src/swoole_name_resolver.cc` are deleted;
+`native/clients/name_resolver.cc` keeps the resolver list's C++ glue).
 
 Production exports have the prefix `swr_v1_clients_`. A test-only allocation-budget
 symbol is excluded from production artifacts.
@@ -101,13 +101,16 @@ calls, the C++ locale's space table and the `ResolverOwner` exception paths.
   helper does, not compressed `inet_ntop` text). Native builds the
   `std::string`; the invalid-family assertion stays native.
 
-## Client (`src/network/client.cc`)
+## Client (`native/clients/network_client.cc`)
 
 `network::Client`'s state (flags, server host and port, connect timer,
 watermarks) and operations are Rust's; see
 [the boundary](../../docs/clients-resolver-abi-v1.md#clients). The C++ half is
 the `swr_v1_clients_native` table over the members of C++ types, and the
 warnings, emitted from functions named as upstream's so the log lines match.
+Upstream's src/network/client.cc is deleted: that half is
+`native/clients/network_client.cc`, Zend-free so core-tests' `SyncClient` and
+`AsyncClient` link it. The last error is corebase's, which Rust sets directly.
 `bind` and `sendto` are whole Rust operations; each method passes a lambda for
 its one warning, which logs under the method's own name.
 Construction checks static `Socket::is_stream(type)` for fd class and the

@@ -6,7 +6,7 @@
 #include "php_swoole_cxx.h"
 #include "swoole_rs_clients.h"
 #include "swoole_rs_phpclients.h"
-#include "php_swoole_client.h"
+#include "swoole_client.h"
 
 #include <string>
 

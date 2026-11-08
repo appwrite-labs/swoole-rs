@@ -119,8 +119,6 @@ typedef struct {
     bool (*has)(void *cli, int which);
     /* false when the callback threw; the client may be gone afterwards. */
     bool (*call)(void *cli, int which, const char *data, size_t length);
-    int (*last_error)(void);
-    void (*set_last_error)(int code);
     void (*warn)(void *cli, int which);
     void (*kernel_timeout)(void *cli, double timeout);
     bool (*assign)(void *cli, const char *host, int port, bool resolve);
