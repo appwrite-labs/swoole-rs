@@ -55,6 +55,7 @@ jobs:
       cares: ${{ steps.paths.outputs.cares }}
       zts: ${{ steps.paths.outputs.zts }}
       threadcontext: ${{ steps.paths.outputs.threadcontext }}
+      asan: ${{ steps.paths.outputs.asan }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,11 +73,14 @@ jobs:
           if echo "$changed" | grep -qE '^(migration/patches/(clients|corebase)/|crates/(clients|corebase|cares-sys)/|\.github/workflows/cares\.yml$)'; then
             echo cares=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/(locks/|[^/]+/[^/]*thread)|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php-zts)\.sh$)'; then
+          if echo "$changed" | grep -qE '^(migration/patches/(locks/|[^/]+/[^/]*thread)|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php)\.sh$)'; then
             echo zts=true >> "$GITHUB_OUTPUT"
           fi
           if echo "$changed" | grep -qE '^(migration/patches/coroutine/|native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
             echo threadcontext=true >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(tools/asan\.py|\.github/workflows/asan\.yml|\.devcontainer/php\.sh)$'; then
+            echo asan=true >> "$GITHUB_OUTPUT"
           fi
 
   # The all-modules hybrid with the halfclose repair, so no module's native code
@@ -179,6 +183,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.threadcontext == 'true'
     uses: ./.github/workflows/threadcontext.yml
+
+  # The sanitizer run (nightly), when a PR touches it. Informative.
+  asan:
+    needs: changes
+    if: needs.changes.outputs.asan == 'true'
+    uses: ./.github/workflows/asan.yml
 
   # Candidate-lane gates of the modules this PR touches (every module for shared
   # build inputs); prints "No module touched" and passes otherwise. Advisory until

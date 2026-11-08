@@ -36,8 +36,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/php-zts
-          key: php-zts-${{ runner.os }}-${{ hashFiles('.devcontainer/php-zts.sh') }}
-      - run: .devcontainer/php-zts.sh target/php-zts
+          key: php-zts-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+      - run: .devcontainer/php.sh target/php-zts --enable-zts
       # ZTS objects never hit the shared ccache (other flags), so this job keeps its own,
       # saved on main only, like every cache (#1521).
       - uses: actions/cache/restore@v4
