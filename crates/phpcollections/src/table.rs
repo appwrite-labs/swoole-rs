@@ -1,22 +1,23 @@
 //! PHP `Swoole\Table`: class registration, object handlers and every method,
-//! over the memory crate's table. C++ lends what needs the host: making,
-//! creating and destroying a table (Swoole's shared allocators and Zend's
-//! string hash) and PHP's error reports.
+//! over the memory crate's table (its header from Swoole's global pool, its
+//! arena shared memory), hashing keys with Zend's string hash.
 //!
 //! `E_ERROR` and Swoole's fatal errors leave a method by a bailout or exit;
 //! where a method can raise one, nothing it holds needs dropping.
 use std::{
-    ffi::{CStr, c_char},
+    ffi::{CStr, c_char, c_int},
     ptr,
-    sync::OnceLock,
 };
-use swoole_rs_memory::table::{
-    Column, NEW_ROW, Row, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table, clear_value, get_number,
-    get_string, row_key, unlock,
+use swoole_rs_memory::{
+    members::{swr_table_create, swr_table_destroy, swr_table_make},
+    table::{
+        Column, NEW_ROW, Row, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table, clear_value, get_number,
+        get_string, row_key, unlock,
+    },
 };
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
-    Call, Class, Object, bailout,
+    Call, Class, Message, Object, bailout, php_error,
     sys::{
         _zval_struct__bindgen_ty_1, E_ERROR, E_WARNING, HashPosition, IS_DOUBLE, IS_NULL,
         ZEND_ACC_NOT_SERIALIZABLE, add_assoc_double_ex, add_assoc_long_ex, add_assoc_stringl_ex,
@@ -24,50 +25,48 @@ use swoole_rs_zend::{
         zend_ce_iterator, zend_class_entry, zend_class_implements, zend_hash_get_current_data_ex,
         zend_hash_get_current_key_ex, zend_hash_internal_pointer_reset_ex,
         zend_hash_move_forward_ex, zend_hash_str_find, zend_object, zend_object_handlers,
-        zend_string, zend_value, zval,
+        zend_string, zend_string_hash_func, zend_value, zval,
     },
     throw_constructed_twice, throw_exception, unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// The host's half of `Swoole\Table` (`swr_v1_phpcollections_table_ops`).
-#[repr(C)]
-pub struct TableOps {
-    /// `Table::make(rows, conflict)` with Zend's string hash; null if it failed.
-    make: unsafe extern "C" fn(rows: u32, conflict: f32) -> *mut Table,
-    /// `Table::create()`: the shared arena.
-    create: unsafe extern "C" fn(table: *mut Table) -> u8,
-    destroy: unsafe extern "C" fn(table: *mut Table),
-    /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
-    unconstructed: unsafe extern "C" fn(),
-    /// `php_swoole_fatal_error(level, "%s", message)`.
-    fatal: unsafe extern "C" fn(level: i32, message: *const c_char),
-    /// `php_swoole_fatal_error(E_WARNING, "key[%s] is too long", key)`.
-    key_too_long: unsafe extern "C" fn(key: *const c_char),
-    /// `php_swoole_error(E_WARNING, "failed to set('%*s'), unable to allocate memory", length, key)`.
-    set_failed: unsafe extern "C" fn(key: *const c_char, length: i32),
-    /// `php_swoole_fatal_error(E_WARNING, "column[%s] does not exist", column)`.
-    no_column: unsafe extern "C" fn(column: *const c_char),
-}
-
-/// `SW_TABLE_KEY_SIZE`, `SW_TABLE_CONFLICT_PROPORTION`, `SW_ERROR_MALLOC_FAIL`.
+/// `SW_TABLE_KEY_SIZE`, `SW_TABLE_CONFLICT_PROPORTION`.
 const KEY_SIZE: usize = 64;
 const CONFLICT_PROPORTION: f64 = 0.2;
+/// `SW_ERROR_MALLOC_FAIL`, `SW_ERROR_PHP_FATAL_ERROR`, `SW_ERROR_WRONG_OPERATION`,
+/// `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const MALLOC_FAIL: i64 = 501;
+const PHP_FATAL_ERROR: c_int = 503;
+const WRONG_OPERATION: c_int = 509;
+const PHP_RUNTIME_NOTICE: c_int = 510;
 /// `HASH_KEY_IS_STRING`, `HASH_KEY_NON_EXISTENT`.
 const KEY_IS_STRING: i64 = 1;
 const KEY_NON_EXISTENT: i64 = 3;
 
-static OPS: OnceLock<&'static TableOps> = OnceLock::new();
 static TABLE: Class = Class::new();
-static EXCEPTION: OnceLock<usize> = OnceLock::new();
 
 /// `struct TableObject { Table *ptr; zend_object std; }`.
 type TableObject = Object<*mut Table>;
 
-fn ops() -> &'static TableOps {
-    // Methods and handlers run only after MINIT stored the table.
-    OPS.get().copied().unwrap_or_else(|| std::process::abort())
+/// `zend_string_hash_val` of the PHP string whose bytes `key` points into
+/// (every key is one), as upstream's `set_hash_func` hook did.
+unsafe extern "C" fn zend_hash(key: *const c_char, _length: usize) -> u64 {
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "`val` follows the string's aligned header"
+    )]
+    let string = key
+        .wrapping_byte_sub(std::mem::offset_of!(zend_string, val))
+        .cast::<zend_string>()
+        .cast_mut();
+    // SAFETY: `key` is a live zend_string's `val`.
+    let cached = unsafe { (*string).h };
+    if cached != 0 {
+        return cached;
+    }
+    // SAFETY: as above; Zend caches the hash on the string.
+    unsafe { zend_string_hash_func(string) }
 }
 
 unsafe extern "C" fn create_object(ce: *mut zend_class_entry) -> *mut zend_object {
@@ -108,19 +107,11 @@ method_table! {
     ];
 }
 
-/// MINIT: register `Swoole\Table` as `php_swoole_table_minit` did.
+/// MINIT: register `Swoole\Table` as upstream's `php_swoole_table_minit` did.
 /// # Safety
-/// Called once, at MINIT, with `swoole_exception_ce` and a static operations table.
+/// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcollections_table_minit(
-    exception: *mut zend_class_entry,
-    ops: *const TableOps,
-) {
-    // SAFETY: per the caller, a static table.
-    if let Some(ops) = unsafe { ops.as_ref() } {
-        OPS.get_or_init(|| ops);
-    }
-    EXCEPTION.get_or_init(|| exception as usize);
+pub unsafe extern "C" fn php_swoole_table_minit(_module: c_int) {
     // SAFETY: MINIT, with a static table.
     unsafe { TABLE.register(c"Swoole\\Table", METHODS.as_ptr(), configure) };
     let entry = TABLE.entry();
@@ -159,22 +150,49 @@ fn this(call: &Call) -> &'static mut *mut Table {
     unsafe { TableObject::data(call.this()) }
 }
 
+/// `php_swoole_fatal_error(level, "%s", message)`: always reported.
 fn fatal(level: u32, message: &CStr) {
+    swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
     #[expect(clippy::cast_possible_wrap, reason = "E_ERROR and E_WARNING")]
-    // SAFETY: C++'s reporter, from a handler.
-    bailout::defer(unsafe { bailout::report_level(ops().fatal, level as i32, message) });
+    // SAFETY: from a handler.
+    bailout::defer(unsafe { php_error(level as i32, message) });
 }
 
-/// A C++ reporter of Zend's NUL-terminated string bytes; true if a user error
-/// handler bailed out (deferred: the method stops).
-fn report(reporter: unsafe extern "C" fn(*const c_char), text: &[u8]) -> bool {
-    // SAFETY: Zend's string bytes are NUL-terminated.
-    let text = unsafe { CStr::from_ptr(text.as_ptr().cast()) };
-    // SAFETY: C++'s reporter, from a handler.
-    let reported = unsafe { bailout::report(reporter, text) };
+/// `php_swoole_fatal_error(E_WARNING, "<before>%s<after>", text)` of Zend's
+/// string bytes (`%s` stops at a NUL); true if a user error handler bailed
+/// out (deferred: the method stops).
+fn report(before: &[u8], text: &[u8], after: &[u8]) -> bool {
+    let mut message = Message::new();
+    message.push(before);
+    message.push(text.split(|&b| b == 0).next().unwrap_or_default());
+    message.push(after);
+    swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
+    #[expect(clippy::cast_possible_wrap, reason = "E_WARNING")]
+    // SAFETY: from a handler; the message lives on this stack.
+    let reported = unsafe { php_error(E_WARNING as i32, message.as_cstr()) };
     let bailed = reported.is_err();
     bailout::defer(reported);
     bailed
+}
+
+/// `php_swoole_error(E_WARNING, "failed to set('%*s'), unable to allocate
+/// memory", (int) keylen, key)`: the key up to a NUL, right-aligned to its
+/// length; shown when `swoole.display_errors` is on.
+fn set_failed(key: &[u8]) {
+    let text = key.split(|&b| b == 0).next().unwrap_or_default();
+    let mut message = Message::new();
+    message.push(b"failed to set('");
+    for _ in text.len()..key.len() {
+        message.push(b" ");
+    }
+    message.push(text);
+    message.push(b"'), unable to allocate memory");
+    swoole_rs_corebase::log::set_last_error(PHP_RUNTIME_NOTICE);
+    if swoole_rs_phpswoole::display_errors() {
+        #[expect(clippy::cast_possible_wrap, reason = "E_WARNING")]
+        // SAFETY: from a handler; the message lives on this stack.
+        bailout::defer(unsafe { php_error(E_WARNING as i32, message.as_cstr()) });
+    }
 }
 
 /// The table this object made, if any.
@@ -187,8 +205,8 @@ fn table_of(call: &Call) -> Option<&'static mut Table> {
 fn constructed(call: &Call) -> Option<&'static mut Table> {
     let table = table_of(call);
     if table.is_none() {
-        // SAFETY: C++'s fatal-error report.
-        unsafe { (ops().unconstructed)() };
+        // SAFETY: Swoole's fatal error, from a handler.
+        unsafe { swoole_rs_corebase::fatal_error(WRONG_OPERATION, c"must call constructor first") };
     }
     table
 }
@@ -234,11 +252,15 @@ fn construct(call: &Call) {
         clippy::cast_sign_loss,
         reason = "upstream passes the zend_long to a uint32_t and the double to a float"
     )]
-    // SAFETY: C++'s factory.
-    let table = unsafe { (ops().make)(rows as u32, conflict as f32) };
-    if table.is_null() {
-        let exception = EXCEPTION.get().copied().unwrap_or(0) as *mut zend_class_entry;
-        // SAFETY: Swoole's exception class, from MINIT.
+    // SAFETY: `swoole_init` made the global pool.
+    let table = unsafe { swr_table_make(rows as u32, conflict as f32) };
+    // SAFETY: a made table, or null.
+    if let Some(made) = unsafe { table.as_mut() } {
+        made.set_hash(zend_hash);
+    } else {
+        // SAFETY: Swoole's exception class, registered at MINIT.
+        let exception = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
+        // SAFETY: as above.
         unsafe { throw_exception(exception, c"global memory allocation failure", MALLOC_FAIL) };
         call.set_bool(false);
         return;
@@ -292,7 +314,7 @@ fn create(call: &Call) {
         return;
     };
     // SAFETY: a constructed table.
-    if unsafe { (ops().create)(table) } == 0 {
+    if unsafe { !swr_table_create(table) } {
         fatal(E_ERROR, c"unable to allocate memory");
         call.set_bool(false);
         return;
@@ -311,7 +333,7 @@ fn long(value: usize) -> i64 {
 fn destroy(call: &Call) {
     let Some(table) = created(call) else { return };
     // SAFETY: the table this object made; nothing uses it after.
-    unsafe { (ops().destroy)(table) };
+    unsafe { swr_table_destroy(table) };
     *this(call) = ptr::null_mut();
     call.set_bool(true);
 }
@@ -389,8 +411,7 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let ops = ops();
-    if key.len() >= KEY_SIZE && report(ops.key_too_long, key) {
+    if key.len() >= KEY_SIZE && report(b"key[", key, b"] is too long") {
         call.set_bool(false);
         return;
     }
@@ -399,16 +420,7 @@ fn set(call: &Call) {
     if row.is_null() {
         // SAFETY: the bucket lock `set` took.
         unsafe { unlock(lock) };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_possible_wrap,
-            reason = "upstream's (int) keylen"
-        )]
-        let length = key.len() as i32;
-        // SAFETY: the key's bytes, as `%*s` reads them.
-        bailout::defer(unsafe {
-            bailout::report_length(ops.set_failed, key.as_ptr().cast(), length)
-        });
+        set_failed(key);
         call.set_bool(false);
         return;
     }
@@ -477,7 +489,7 @@ fn update(call: &Call, subtract: bool) {
     }
     let Some(column) = table.column(name) else {
         unlock();
-        report(ops().no_column, name);
+        report(b"column[", name, b"] does not exist");
         call.set_bool(false);
         return;
     };

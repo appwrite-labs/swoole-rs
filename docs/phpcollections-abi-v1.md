@@ -1,7 +1,10 @@
 # PHP Table and coroutine Channel boundary (M27)
 
 Feature value 33554432. Upstream targets:
-`ext-src/swoole_table.cc`, `ext-src/swoole_channel_coro.cc`. Public headers,
+`ext-src/swoole_table.cc`, `ext-src/swoole_channel_coro.cc`; both have left
+the build. `Swoole\Table` is all Rust (`php_swoole_table_minit`, over the
+memory crate's table and Zend's string hash); the coroutine Channel's
+operations are `native/phpcollections/channel.cc`. Public headers,
 stubs/arginfo, Table/Channel/row/column layouts, M12 storage, M06 channel
 lifetime and M16 locking are unchanged. Follows the
 [policy/effect split](abi-v1.md#policyeffect-split).

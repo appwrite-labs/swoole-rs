@@ -615,8 +615,10 @@ dependencies = [
 name = "swoole-rs-phpcollections"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-corebase",
  "swoole-rs-memory",
  "swoole-rs-phpstubs",
+ "swoole-rs-phpswoole",
  "swoole-rs-zend",
 ]
 
