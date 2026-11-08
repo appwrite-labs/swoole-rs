@@ -161,12 +161,6 @@ pub mod exports {
     /// # Safety
     /// Upstream's: the port's protocol (its `private_data_2` the server), a
     /// connection socket and its whole frame.
-    #[cfg_attr(
-        feature = "upstream-symbols",
-        unsafe(
-            export_name = "_ZN6swoole9websocket14dispatch_frameEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"
-        )
-    )]
     pub unsafe extern "C" fn websocket_dispatch_frame(
         proto: *const c_void,
         socket: *mut SocketRecord,
@@ -313,12 +307,6 @@ pub mod exports {
     ///
     /// # Safety
     /// Upstream's: a live server, its port's protocol, a connection socket and its data.
-    #[cfg_attr(
-        feature = "upstream-symbols",
-        unsafe(
-            export_name = "_ZN6swoole11http_server16dispatch_requestEPNS_6ServerEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"
-        )
-    )]
     pub unsafe extern "C" fn dispatch_request(
         serv: *mut c_void,
         proto: *const c_void,
@@ -391,12 +379,6 @@ pub mod exports {
     ///
     /// # Safety
     /// Upstream's: the port's protocol, a connection socket and its data.
-    #[cfg_attr(
-        feature = "upstream-symbols",
-        unsafe(
-            export_name = "_ZN6swoole11http_server14dispatch_frameEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"
-        )
-    )]
     pub unsafe extern "C" fn dispatch_frame(
         proto: *const c_void,
         socket: *mut SocketRecord,
