@@ -173,6 +173,9 @@ class PhptGate(unittest.TestCase):
         solid.append(row('mixed', 'upstream', 'passed'))
         self.assertEqual(pending(['mixed'], solid, 'upstream-extended'), [])
         self.assertEqual(recheck(['mixed'], solid), (['mixed'], [], [], []))
+        # Any engine earns them, not only the hybrid: the cargo engine is gated the same way.
+        cargo = [{**r, 'engine': 'cargo'} if r['engine'] == 'hybrid' else r for r in rechecked]
+        self.assertEqual(pending(tests, cargo, 'upstream-extended'), ['mixed'])
 
     def test_a_test_both_engines_almost_always_fail_needs_an_upstream_pass_to_gate(self):
         def row(test, engine, status):

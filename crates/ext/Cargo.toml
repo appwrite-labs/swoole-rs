@@ -16,6 +16,17 @@ doctest = false
 # Build the extension for the PHP that `$PHP_CONFIG` names, from the patched
 # tree `$SWOOLE_SRC` (tools/build_ext.py prepares both). Without it the crate is empty.
 php = ["swoole-rs-ffi/php", "dep:cc", "dep:openssl-sys"]
+# The merge tier's PHPT profile, one feature per configure switch (`--enable-sockets`,
+# `--enable-mysqlnd`, `--enable-swoole-pgsql`, ...): build.rs adds what config.m4 does.
+sockets = []
+mysqlnd = []
+pgsql = ["swoole-rs-ffi/pgsql"]
+odbc = ["swoole-rs-ffi/odbc"]
+firebird = ["swoole-rs-ffi/firebird"]
+sqlite = ["swoole-rs-ffi/sqlite"]
+oci = ["swoole-rs-ffi/oci"]
+curl = ["swoole-rs-ffi/curl"]
+ssh2 = ["swoole-rs-ffi/ssh2"]
 
 [dependencies]
 swoole-rs-ffi = { path = "../ffi" }
