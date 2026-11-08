@@ -14,7 +14,7 @@ crate-type = ["rlib"]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
 # Defines the Rust bodies under their upstream C++ symbols.
 upstream-symbols = []
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:openssl-sys", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-corebase", "dep:swoole-rs-error", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-utilities"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:openssl-sys", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-corebase", "dep:swoole-rs-error", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-utilities", "dep:swoole-rs-tls"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
@@ -26,6 +26,7 @@ swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-error = { path = "../error", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-utilities = { path = "../utilities", optional = true }
+swoole-rs-tls = { path = "../tls", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 
 [lints]

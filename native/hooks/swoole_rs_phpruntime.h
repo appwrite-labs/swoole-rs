@@ -96,10 +96,9 @@ struct _php_stream *swr_v1_phpruntime_stream_from_socket(int fd, int domain, int
 void php_swoole_runtime_rinit(void);
 void php_swoole_runtime_stream_ops(uint8_t stdio, uint8_t hook);
 
-/* What the coroutine streams and client classes need of the native coroutine socket (a SocketImpl *;
- * its virtual calls reach UringSocket), defined by src/coroutine/system.cc. make
- * and close are bodies for swr_zend_try over a swr_v1_runtime_socket_call. */
-struct swr_v1_co_socket;
+/* What the coroutine streams and client classes need of the native coroutine socket (a SocketImpl *)
+ * beyond its Rust members, defined by src/coroutine/system.cc. make and close are
+ * bodies for swr_zend_try over a swr_v1_runtime_socket_call. */
 struct swr_v1_tls_owner;
 struct swr_v1_core_proxy;
 struct swr_v1_runtime_socket_call {
@@ -112,25 +111,16 @@ struct swr_v1_runtime_socket_ops {
     void (*make)(void *call);
     void (*close)(void *call);
     void (*free)(void *socket);
-    struct swr_v1_co_socket *(*base)(void *socket);
-    /* op: 0 send_sync, 1 recv_sync, 2 send_all, 3 send_once, 4 recv, 5 recv_once,
-     * 6 peek, 7 send, 8 recv_all. */
-    ssize_t (*io)(void *socket, int op, char *buf, size_t length);
-    ssize_t (*recvfrom)(void *socket, char *buf, size_t length, struct sockaddr *addr, socklen_t *addrlen);
     /* setsockopt(level, name, value); logged: the coroutine socket's, which logs a failure. */
     void (*option)(void *socket, int level, int name, int value, bool logged);
     /* connect(std::string(host, length), port, flags). */
     bool (*connect)(void *socket, const char *host, size_t length, int port, int flags);
-    bool (*listen)(void *socket, int backlog);
-    void *(*accept)(void *socket, double timeout);
     bool (*ssl_enabled)(void *socket);
     void (*ssl_encrypt)(void *socket);
     bool (*ssl_handshake)(void *socket);
     void (*ssl_close)(void *socket);
     /* each(arg, pem, length) of each certificate in the peer's chain. */
     void (*peer_chain)(void *socket, void (*each)(void *, const char *, size_t), void *arg);
-    /* poll(SW_EVENT_WRITE or SW_EVENT_READ, timeout). */
-    bool (*poll)(void *socket, bool write, double timeout);
     /* System::socket_poll of count (fd, events) rows, merged by fd as stream_select
      * merges them; the polled fds and their revents in the poll set's order. */
     bool (*poll_set)(const int *fds, const int *events, size_t count, double timeout, int *ready, int *revents,
@@ -138,7 +128,6 @@ struct swr_v1_runtime_socket_ops {
     bool (*ssl_verify)(void *socket, bool allow_self_signed);
     /* op: 0 readv, 1 readv_all, 2 writev, 3 writev_all; where it stopped into index and offset. */
     ssize_t (*vector)(void *socket, int op, const struct iovec *vectors, int count, int *index, size_t *offset);
-    bool (*sendfile)(void *socket, const char *file, int64_t offset, int64_t length);
     /* set_http_proxy (http) or set_socks5_proxy. */
     void (*proxy)(void *socket, bool http, const char *host, size_t host_length, int port, const char *user,
                   size_t user_length, const char *password, size_t password_length);
