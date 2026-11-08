@@ -105,6 +105,28 @@ pub unsafe extern "C" fn swr_v1_ws_frame_length(
     i64::try_from(payload + header as u64).unwrap_or(-1)
 }
 
+/// A wire header without a mask key or payload, and its length.
+pub(crate) fn header(payload_length: u64, opcode: u8, flags: u8) -> ([u8; 10], usize) {
+    let mut header = [0u8; 10];
+    header[0] = (opcode & 0xf) | (u8::from(flags & 1 != 0) << 7) | (u8::from(flags & 4 != 0) << 6);
+    header[1] = u8::from(flags & 32 != 0) << 7;
+    let size = if let Ok(short) = u8::try_from(payload_length)
+        && short < 126
+    {
+        header[1] |= short;
+        2
+    } else if let Ok(short) = u16::try_from(payload_length) {
+        header[1] |= 126;
+        header[2..4].copy_from_slice(&short.to_be_bytes());
+        4
+    } else {
+        header[1] |= 127;
+        header[2..10].copy_from_slice(&payload_length.to_be_bytes());
+        10
+    };
+    (header, size)
+}
+
 /// Write a wire header without a mask key or payload; return 0 without writes
 /// when the output is null, oversized, or too short.
 ///
@@ -119,43 +141,28 @@ pub unsafe extern "C" fn swr_v1_ws_write_header(
     output: *mut u8,
     capacity: usize,
 ) -> usize {
-    let size = if payload_length < 126 {
-        2
-    } else if u16::try_from(payload_length).is_ok() {
-        4
-    } else {
-        10
-    };
+    let (header, size) = header(payload_length, opcode, flags);
     if output.is_null() || capacity < size || capacity > isize::MAX as usize {
         return 0;
-    }
-    let mut header = [0u8; 10];
-    header[0] = (opcode & 0xf) | (u8::from(flags & 1 != 0) << 7) | (u8::from(flags & 4 != 0) << 6);
-    header[1] = u8::from(flags & 32 != 0) << 7;
-    match size {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "size 2 means payload_length < 126"
-        )]
-        2 => header[1] |= payload_length as u8,
-        4 => {
-            header[1] |= 126;
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "size 4 means payload_length fits u16"
-            )]
-            let short = payload_length as u16;
-            header[2..4].copy_from_slice(&short.to_be_bytes());
-        }
-        _ => {
-            header[1] |= 127;
-            header[2..10].copy_from_slice(&payload_length.to_be_bytes());
-        }
     }
     // SAFETY: The caller's exclusive output has enough capacity. The local
     // header cannot overlap it, and only the encoded header bytes are written.
     unsafe { std::ptr::copy_nonoverlapping(header.as_ptr(), output, size) };
     size
+}
+
+/// XOR a payload with a four-byte key.
+pub(crate) fn mask(payload: &mut [u8], key: [u8; 4]) {
+    let word = u64::from(u32::from_ne_bytes(key));
+    let word_mask = word | (word << 32);
+    let (words, tail) = payload.as_chunks_mut::<8>();
+    for bytes in words {
+        *bytes = (u64::from_ne_bytes(*bytes) ^ word_mask).to_ne_bytes();
+    }
+    // Each complete word consumes two whole keys, so the tail restarts at 0.
+    for (byte, key) in tail.iter_mut().zip(key.iter().cycle()) {
+        *byte ^= key;
+    }
 }
 
 /// XOR a payload with a four-byte key; zero length permits null pointers.
@@ -174,20 +181,10 @@ pub unsafe extern "C" fn swr_v1_ws_mask(data: *mut u8, length: usize, key: *cons
     }
     // SAFETY: Copy all four key bytes before the mutable payload borrow so
     // overlap is valid. read_unaligned preserves byte-aligned key support.
-    let key_word = unsafe { key.cast::<u32>().read_unaligned() };
-    let mask = key_word.to_ne_bytes();
+    let key = unsafe { key.cast::<[u8; 4]>().read_unaligned() };
     // SAFETY: non-null, `length <= isize::MAX`; the caller lends `length` writable bytes and
     // the key was copied out first, so an overlapping key is fine.
-    let payload = unsafe { std::slice::from_raw_parts_mut(data, length) };
-    let word_mask = u64::from(key_word) | (u64::from(key_word) << 32);
-    let (words, tail) = payload.as_chunks_mut::<8>();
-    for bytes in words {
-        *bytes = (u64::from_ne_bytes(*bytes) ^ word_mask).to_ne_bytes();
-    }
-    // Each complete word consumes two whole keys, so the tail restarts at 0.
-    for (byte, key) in tail.iter_mut().zip(mask.iter().cycle()) {
-        *byte ^= key;
-    }
+    mask(unsafe { std::slice::from_raw_parts_mut(data, length) }, key);
     0
 }
 
