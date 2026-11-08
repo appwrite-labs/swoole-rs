@@ -1,6 +1,8 @@
 //! Complete-frame codec and the pinned server's message/control policy.
 //! Allocation, connection state, PHP and callbacks stay with the native caller.
-use crate::{swr_v1_ws_frame_length, swr_v1_ws_mask, swr_v1_ws_write_header};
+use std::mem::MaybeUninit;
+
+use crate::{header, mask, swr_v1_ws_frame_length};
 
 const FIN: u8 = 1;
 const RSV1: u8 = 4;
@@ -67,8 +69,7 @@ pub fn decode_in_place(data: &mut [u8]) -> (i64, DecodedFrame) {
             && let Some(payload) = data.get_mut(at..size)
         {
             frame.mask_key = key;
-            // SAFETY: `payload` is exclusive and the key is a local copy.
-            unsafe { swr_v1_ws_mask(payload.as_mut_ptr(), payload.len(), key.as_ptr()) };
+            mask(payload, key);
         }
     }
     (total, frame)
@@ -128,7 +129,108 @@ pub extern "C" fn swr_v1_ws_encoded_size(length: usize, flags: u8) -> usize {
         .unwrap_or(0)
 }
 
-/// Encode into native-owned storage with no allocation; errors leave it intact.
+/// One frame of a `length`-byte payload into `out`; `data`, the payload, is
+/// unused for a header-only frame. Returns the encoded size, or 0 without
+/// writes when `out` is too short or the frame is invalid.
+fn encode_parts(
+    length: usize,
+    data: &[u8],
+    opcode: u8,
+    flags: u8,
+    out: &mut [MaybeUninit<u8>],
+) -> usize {
+    let size = swr_v1_ws_encoded_size(length, flags);
+    if size == 0 || swr_v1_ws_control_invalid(opcode, flags, length) {
+        return 0;
+    }
+    let (header, header_length) = header(length as u64, opcode, flags);
+    let Some((head, rest)) = out
+        .get_mut(..size)
+        .and_then(|out| out.split_at_mut_checked(header_length))
+    else {
+        return 0;
+    };
+    head.write_copy_of_slice(header.get(..header_length).unwrap_or_default());
+    let payload = match rest.split_first_chunk_mut::<4>() {
+        Some((key, payload)) if flags & MASK != 0 => {
+            key.write_copy_of_slice(&MASK_KEY);
+            payload
+        }
+        _ => rest,
+    };
+    // Not header-only: `size` left exactly the payload's bytes.
+    if flags & HEADER_ONLY == 0 && payload.len() == data.len() {
+        let payload = payload.write_copy_of_slice(data);
+        if flags & MASK != 0 {
+            mask(payload, MASK_KEY);
+        }
+    }
+    size
+}
+
+/// One frame of `data` into `out`, with no allocation; the encoded size, or 0
+/// without writes when `out` is too short or the frame is invalid.
+pub fn encode_into(data: &[u8], opcode: u8, flags: u8, out: &mut [MaybeUninit<u8>]) -> usize {
+    encode_parts(data.len(), data, opcode, flags, out)
+}
+
+/// A close frame of `code` and `reason` into `out`, as [`encode_into`]. The
+/// signed code truncates to 16 bits as upstream's; code plus reason is a
+/// control payload, so reasons over 123 bytes are rejected.
+pub fn encode_close_into(
+    code: i32,
+    reason: &[u8],
+    flags: u8,
+    out: &mut [MaybeUninit<u8>],
+) -> usize {
+    let mut payload = [0u8; 127];
+    let Some((code_bytes, reason_bytes)) = payload
+        .get_mut(..reason.len() + 2)
+        .and_then(<[u8]>::split_first_chunk_mut)
+    else {
+        return 0;
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "upstream packs the close code as uint16_t"
+    )]
+    let code = code as u16;
+    *code_bytes = code.to_be_bytes();
+    reason_bytes.copy_from_slice(reason);
+    let payload = payload.get(..reason.len() + 2).unwrap_or_default();
+    encode_into(payload, 8, flags | FIN, out)
+}
+
+/// The `length` bytes at `data` a C caller lends (null only at length zero),
+/// and its `capacity`-byte output, or `None` when either is invalid.
+///
+/// # Safety
+/// As `swr_v1_ws_encode`, with `data` read only when `read`.
+unsafe fn borrowed<'a>(
+    data: *const u8,
+    length: usize,
+    read: bool,
+    output: *mut u8,
+    capacity: usize,
+) -> Option<(&'a [u8], &'a mut [MaybeUninit<u8>])> {
+    if output.is_null() || capacity > isize::MAX as usize {
+        return None;
+    }
+    let data = if !read || length == 0 {
+        &[]
+    } else if data.is_null() || length > isize::MAX as usize {
+        return None;
+    } else {
+        // SAFETY: the caller lends `length` readable bytes.
+        unsafe { std::slice::from_raw_parts(data, length) }
+    };
+    // SAFETY: the caller lends `capacity` exclusive writable bytes, disjoint from `data`.
+    let output = unsafe { std::slice::from_raw_parts_mut(output.cast(), capacity) };
+    Some((data, output))
+}
+
+/// [`encode_into`] over native-owned storage; errors leave it intact.
 ///
 /// # Safety
 /// Input covers `length` readable bytes (null permitted for empty/header-only
@@ -142,42 +244,14 @@ pub unsafe extern "C" fn swr_v1_ws_encode(
     output: *mut u8,
     capacity: usize,
 ) -> usize {
-    let size = swr_v1_ws_encoded_size(length, flags);
-    if size == 0
-        || swr_v1_ws_control_invalid(opcode, flags, length)
-        || output.is_null()
-        || capacity < size
-        || capacity > isize::MAX as usize
-        || (data.is_null() && length != 0 && flags & HEADER_ONLY == 0)
-    {
-        return 0;
+    // SAFETY: as the caller promises.
+    match unsafe { borrowed(data, length, flags & HEADER_ONLY == 0, output, capacity) } {
+        Some((data, output)) => encode_parts(length, data, opcode, flags, output),
+        None => 0,
     }
-    // SAFETY: All ranges/capacities validated before the first write.
-    let mut position =
-        unsafe { swr_v1_ws_write_header(length as u64, opcode, flags, output, capacity) };
-    // `capacity >= size` (checked above), and `size` covers header, key and payload.
-    if flags & MASK != 0 {
-        // SAFETY: the key's 4 bytes follow the header, inside `size`.
-        let key = unsafe { output.add(position) };
-        // SAFETY: `MASK_KEY` is a 4-byte static, disjoint from the caller's output.
-        unsafe { std::ptr::copy_nonoverlapping(MASK_KEY.as_ptr(), key, 4) };
-        position += 4;
-    }
-    if flags & HEADER_ONLY == 0 && length != 0 {
-        // SAFETY: the payload's `length` bytes follow the header and key, inside `size`.
-        let payload = unsafe { output.add(position) };
-        // SAFETY: `data` lends `length` readable bytes, disjoint from the output.
-        unsafe { std::ptr::copy_nonoverlapping(data, payload, length) };
-        if flags & MASK != 0 {
-            // SAFETY: `payload` holds `length` writable bytes just copied; the key is static.
-            unsafe { swr_v1_ws_mask(payload, length, MASK_KEY.as_ptr()) };
-        }
-    }
-    size
 }
 
-/// Pack close code/reason, preserving truncation of the signed code to 16 bits.
-/// Code plus reason is a control payload, so reasons over 123 bytes are rejected.
+/// [`encode_close_into`] over native-owned storage.
 ///
 /// # Safety
 /// Same disjoint borrowed ranges as `swr_v1_ws_encode`.
@@ -190,37 +264,10 @@ pub unsafe extern "C" fn swr_v1_ws_encode_close(
     output: *mut u8,
     capacity: usize,
 ) -> usize {
-    if length > 125 || (reason.is_null() && length != 0) {
-        return 0;
-    }
-    let mut payload = [0u8; 127];
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream packs the close code as uint16_t"
-    )]
-    let code = code as u16;
-    let Some((code_bytes, reason_bytes)) = payload.split_first_chunk_mut() else {
-        return 0;
-    };
-    *code_bytes = code.to_be_bytes();
-    if length != 0
-        && let Some(reason_bytes) = reason_bytes.get_mut(..length)
-    {
-        // SAFETY: Reason is borrowed and bounded by 125 bytes.
-        reason_bytes.copy_from_slice(unsafe { std::slice::from_raw_parts(reason, length) });
-    }
-    // SAFETY: `payload` is a local holding `length + 2 <= 127` bytes; the caller lends
-    // `capacity` writable output bytes, disjoint from it.
-    unsafe {
-        swr_v1_ws_encode(
-            payload.as_ptr(),
-            length + 2,
-            8,
-            flags | FIN,
-            output,
-            capacity,
-        )
+    // SAFETY: as the caller promises.
+    match unsafe { borrowed(reason, length, true, output, capacity) } {
+        Some((reason, output)) => encode_close_into(code, reason, flags, output),
+        None => 0,
     }
 }
 

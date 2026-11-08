@@ -10,7 +10,8 @@ use crate::{
 };
 use std::{
     ffi::{CStr, c_int, c_void},
-    ptr,
+    mem::MaybeUninit,
+    ptr, slice,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 use swoole_rs_buffer::string::CppString;
@@ -19,9 +20,8 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
-    DecodedFrame, INVALID_CONTROL, swr_v1_ws_control_invalid, swr_v1_ws_encode,
-    swr_v1_ws_encode_close, swr_v1_ws_encoded_size, swr_v1_ws_message_policy,
-    swr_v1_ws_pack_policy,
+    DecodedFrame, INVALID_CONTROL, encode_close_into, encode_into, swr_v1_ws_control_invalid,
+    swr_v1_ws_encoded_size, swr_v1_ws_message_policy, swr_v1_ws_pack_policy,
 };
 use swoole_rs_zend::{
     Call, Class, bailout, declare_long, declare_property_null, declare_string, handlers,
@@ -586,14 +586,17 @@ const INLINE: usize = 128;
 
 /// An encoded frame, on the stack when it fits.
 pub(crate) enum Frame {
-    Inline([u8; INLINE], usize),
+    Inline([MaybeUninit<u8>; INLINE], usize),
     Heap(Str),
 }
 
 impl Frame {
     pub(crate) fn bytes(&self) -> &[u8] {
         match self {
-            Self::Inline(buffer, size) => buffer.get(..*size).unwrap_or_default(),
+            Self::Inline(buffer, size) => buffer.get(..*size).map_or(&[], |bytes| {
+                // SAFETY: `encoded` keeps an inline frame only once `size` bytes are written.
+                unsafe { bytes.assume_init_ref() }
+            }),
             Self::Heap(string) => string.bytes(),
         }
     }
@@ -609,16 +612,18 @@ impl Frame {
 
 /// A frame of `size` bytes `write` fills; `None` unless it wrote exactly
 /// `size`.
-fn encoded(size: usize, write: impl FnOnce(*mut u8) -> usize) -> Option<Frame> {
+fn encoded(size: usize, write: impl FnOnce(&mut [MaybeUninit<u8>]) -> usize) -> Option<Frame> {
     if size == 0 {
         return None;
     }
     if size <= INLINE {
-        let mut buffer = [0; INLINE];
-        return (write(buffer.as_mut_ptr()) == size).then_some(Frame::Inline(buffer, size));
+        let mut buffer = [MaybeUninit::uninit(); INLINE];
+        return (write(&mut buffer) == size).then_some(Frame::Inline(buffer, size));
     }
     let out = string::alloc(size);
-    if write(string::val(out)) != size {
+    // SAFETY: the fresh string's `size` writable bytes, which nothing else references.
+    let bytes = unsafe { slice::from_raw_parts_mut(string::val(out).cast(), size) };
+    if write(bytes) != size {
         // SAFETY: the fresh string nothing else references.
         unsafe { string::free(out) };
         return None;
@@ -647,10 +652,7 @@ pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Frame> {
         return None;
     }
     let size = swr_v1_ws_encoded_size(data.len(), flags);
-    let frame = encoded(size, |out| {
-        // SAFETY: `data` and a fresh `size`-byte output.
-        unsafe { swr_v1_ws_encode(data.as_ptr(), data.len(), opcode, flags, out, size) }
-    })?;
+    let frame = encoded(size, |out| encode_into(data, opcode, flags, out))?;
     (!header_only_mask(flags)).then_some(frame)
 }
 
@@ -672,10 +674,7 @@ fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
         return None;
     }
     let size = swr_v1_ws_encoded_size(reason.len() + 2, flags | FLAG_FIN);
-    let frame = encoded(size, |out| {
-        // SAFETY: the reason and a fresh `size`-byte output.
-        unsafe { swr_v1_ws_encode_close(code, reason.as_ptr(), reason.len(), flags, out, size) }
-    })?;
+    let frame = encoded(size, |out| encode_close_into(code, reason, flags, out))?;
     (!header_only_mask(flags)).then_some(frame)
 }
 
