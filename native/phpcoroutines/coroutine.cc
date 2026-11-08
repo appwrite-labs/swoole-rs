@@ -4,7 +4,7 @@
 // Coroutine's construction, context and std::function members (cancel, timer,
 // defer, bailout and the user exit condition), and the C++ objects it reads
 // (Server, Reactor, AsyncThreads, io_uring) and the build's #ifdefs.
-#include "php_swoole_cxx.h"
+#include "swoole_rs_phphost.h"
 #include "swoole_server.h"
 #include "swoole_async.h"
 #include "swoole_rs_uring.h"

@@ -5,7 +5,7 @@
 // (`new`/`delete Server`, its MessageBus, MultiTask's std::function
 // members, ListenPort's shared_ptr<SSLContext>), the variadic PHP error reporters and the
 // zend_try frames around calls that bail out (start(), addProcess's worker).
-#include "php_swoole_cxx.h"
+#include "swoole_rs_phphost.h"
 #include "swoole_server.h"
 #include "swoole_llhttp.h"
 #include "swoole_rs_phpserver_server.h"

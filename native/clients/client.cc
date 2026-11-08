@@ -3,7 +3,7 @@
 // (swoole_rs_phpclients.h): network::Client's construction, std::string and
 // std::function members, ext/sockets' php_socket, the PHP error macros, and
 // the bailout::trap body that calls into network::Client.
-#include "php_swoole_cxx.h"
+#include "swoole_rs_phphost.h"
 #include "swoole_rs_clients.h"
 #include "swoole_rs_phpclients.h"
 #include "swoole_client.h"

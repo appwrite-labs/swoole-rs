@@ -276,7 +276,7 @@ def native_sources():
 def zend_free_native_sources():
     """native_sources() without the extension's own glue, which includes PHP's headers: it belongs
     in swoole.so, not in a Zend-free libswoole such as core-tests and the SDK consumers link."""
-    return {name: path for name, path in native_sources().items() if b'#include "php_swoole' not in path.read_bytes()}
+    return {name: path for name, path in native_sources().items() if b'#include "swoole_rs_phphost.h"' not in path.read_bytes()}
 
 
 def stage_native_sources(source):
