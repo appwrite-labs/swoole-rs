@@ -18,11 +18,9 @@ fn data(object: *mut z::zend_object) -> *mut Data {
 /// Zend is freeing this live socket object, and no method remains suspended on it.
 pub(super) unsafe fn release(object: *mut z::zend_object) -> Result<(), Bailout> {
     let state = data(object);
-    // SAFETY: copy the object's ownership flag; no record borrow spans a destructor.
-    let reference = unsafe { (*state).reference };
     // SAFETY: copy the core pointer of this initialized object.
     let socket = unsafe { (*state).socket };
-    if reference || socket.is_null() {
+    if socket.is_null() {
         return Ok(());
     }
     // SAFETY: the embedded initialized zval outlives the native destructor leaf.
@@ -120,18 +118,13 @@ pub(super) unsafe fn update_long(
 
 /// Construct the PHP object over an already allocated core socket.
 /// # Safety
-/// The core socket is live; ownership transfers to the new object unless reference is true.
-pub(super) unsafe fn make_object(
-    socket: native::Socket,
-    reference: bool,
-) -> Result<*mut z::zend_object, Bailout> {
+/// The core socket is live; ownership transfers to the new object.
+pub(super) unsafe fn make_object(socket: native::Socket) -> Result<*mut z::zend_object, Bailout> {
     // SAFETY: the registered class's data layout is zero-initializable.
     let object = unsafe { SocketObject::try_create(&super::SOCKET, super::SOCKET.entry()) }?;
     let state = data(object);
-    // SAFETY: the new unpublished object now owns or references this core socket.
+    // SAFETY: the new unpublished object now owns this core socket.
     unsafe { (*state).socket = socket };
-    // SAFETY: publish its matching ownership flag before initialization can run PHP effects.
-    unsafe { (*state).reference = reference };
     // SAFETY: the new object now holds its core socket and initialized data.
     unsafe { super::init(object) }?;
     Ok(object)
@@ -150,7 +143,7 @@ unsafe fn checked_object(socket: native::Socket) -> Result<*mut z::zend_object, 
         return Ok(ptr::null_mut());
     }
     // SAFETY: the validated core socket transfers ownership to the new PHP object.
-    unsafe { make_object(socket, false) }
+    unsafe { make_object(socket) }
 }
 
 /// # Safety
