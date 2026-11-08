@@ -3,9 +3,8 @@
 Feature bit 262144 (`tls`). `src/protocol/ssl.cc` and `src/protocol/dtls.cc` have left
 the build: `crates/tls` defines `swoole_ssl_init`/`destroy`/`get_error`/`get_ex_*_index`,
 `SSLContext::create` and its `set_*` methods under their upstream symbols, and
-`dtls::Session::init`/`listen` are header forwarders to `swr_v1_tls_dtls_init` and
-`swr_v1_tls_dtls_session_listen`. Declarations are in
-[swoole_rs_tls_owner.h](swoole_rs_tls_owner.h) and [swoole_rs_tls_dtls.h](swoole_rs_tls_dtls.h).
+`dtls::Session` is a Rust record (`include/swoole_dtls.h` has left the tree). Declarations
+are in [swoole_rs_tls_owner.h](swoole_rs_tls_owner.h).
 Tests: `crates/tls` unit tests, upstream `core-tests/src/protocol/ssl.cpp` on both engines
 (`tls-native-originals`) and the ssl/dtls PHPT families. Requires OpenSSL 3 (rejected at compile
 time otherwise).
@@ -28,10 +27,9 @@ in `SW_DEBUG` builds and is not reproduced.
 
 ## DTLS (`crates/tls/src/dtls.rs`)
 
-- `swr_v1_tls_dtls_new` prepares stable scalar fields and a Rust-owned datagram queue. Native `Session` retains its shared SSLContext and clears the queue before that context is destroyed.
-- `dtls_append` copies a payload; `dtls_append_buffer` takes one compatible native Buffer on success. Reads preserve datagram boundaries, short-read consumption, zero-length packets, retry and peek behavior.
+- `swr_v1_tls_dtls_new` makes a session: its socket, `listened` and `peek_mode`, and a datagram queue. crates/ports stores it by fd with a holder of the port's `SSLContext` (`native/ports/tls.cc`'s `swr_v1_ports_context_share`), released with it; crates/server accepts, feeds and closes it.
+- `dtls_append` copies a payload; `dtls_append_buffer` takes one malloc'd `dtls::Buffer` on success. Reads preserve datagram boundaries, short-read consumption, zero-length packets, retry and peek behavior.
 - Rust builds the one BIO method table (write, read, ctrl, create, destroy) and points each session's BIO at its Rust queue. Control reads the actual queue and flags; peer bytes copy the canonical socket address union.
-- Native `Session` scalar aliases remain addressable. Its queue is opaque. Value copies use independent queue allocations.
 
 The table leaves the callback-control slot unset, so OpenSSL handles that unsupported
 operation itself ([BIO_meth_new](https://docs.openssl.org/3.0/man3/BIO_meth_new/)).

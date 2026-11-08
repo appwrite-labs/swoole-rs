@@ -26,6 +26,8 @@ mod conn_io;
 mod connection;
 mod control;
 mod dispatch;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+mod dtls;
 mod json;
 mod layout;
 pub mod local_addr;

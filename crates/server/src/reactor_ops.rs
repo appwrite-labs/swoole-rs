@@ -31,6 +31,7 @@ use crate::conn_io::{
     CLOSE_WAIT, LOW_WATERMARK, OUT_EMPTY, OVERFLOW_DRAINED, PEER_CLOSED, REMOVED, SEND_TIMER,
     SEND_WAIT,
 };
+use crate::ops::OP_PORT_DTLS;
 use crate::ops::{
     LOG_CC_LINGER, LOG_NO_SESSION, LOG_RECVFROM, LOG_RT_CLOSED_BY_SERVER, LOG_RT_DISCARD,
     LOG_RT_SET_WRITE, OP_CC_FACTS, OP_CC_SESSION_CLEAR, OP_CC_SSL_WANT, OP_CC_TIMER_DEL,
@@ -539,6 +540,8 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_HAVE_DGRAM => u64::from(o.config().have_dgram_sock),
+        // SAFETY: the datagram server's connection, whose object is its live port.
+        OP_PORT_DTLS => u64::from(unsafe { port_config::of(o.conn().object) }.is_dtls()),
         OP_REACTOR_ID => u64::from(o.reactor().id),
         OP_REACTOR_NUM => u64::from(o.config().reactor_num),
         OP_WORKER_NUM => u64::from(o.config().worker_num),
@@ -921,6 +924,7 @@ unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[inline(always)]
 unsafe fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    use crate::ops::{OP_CC_DTLS_FREE, OP_DTLS_ACCEPT, OP_RD_DTLS};
     use crate::ops::{
         OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_RESUME_READ,
         OP_WR_TIMER_DELAY,
@@ -943,6 +947,25 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         fn init_protocol(port: *mut c_void);
     }
     Some(match op {
+        OP_DTLS_ACCEPT => {
+            let (serv, reactor) = (o.ctx.serv, o.ctx.reactor);
+            let (single_thread, close) = (o.config().single_thread, o.reactor().close);
+            let (port, pkt) = (o.conn().object, o.ctx.pkt.cast());
+            // SAFETY: the context's live server and reactor, the DTLS port the packet
+            // arrived on and the packet received, `arg` bytes.
+            sign(unsafe {
+                crate::dtls::on_packet(serv, single_thread, reactor, close, port, pkt, arg)
+            })
+        }
+        OP_RD_DTLS => {
+            // SAFETY: the context's live DTLS port and its session socket.
+            u64::from(unsafe { crate::dtls::on_read(o.ctx.port, o.sock(), o.event().fd) })
+        }
+        OP_CC_DTLS_FREE => {
+            // SAFETY: the closing socket's live port; nothing uses its session after.
+            unsafe { crate::dtls::free(o.ctx.port, o.sock().fd) };
+            0
+        }
         OP_WR_TIMER_DELAY => {
             #[expect(
                 clippy::cast_possible_truncation,

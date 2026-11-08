@@ -4,6 +4,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_corebase::{CoreStringView, StringSlot, swr_v1_core_string_view};
+use swoole_rs_tls::{OwnedTlsPrepared, SslVersion};
 #[repr(C)]
 pub struct PortConfig {
     pub object_id: u16,
@@ -62,6 +63,19 @@ impl PortConfig {
     pub fn host(&self) -> CoreStringView {
         // SAFETY: the slot lives as long as `self`, and `&self` keeps writers out.
         unsafe { swr_v1_core_string_view(&raw const *self.host) }
+    }
+
+    /// `ListenPort::is_dtls()`: the port's context speaks DTLS.
+    #[must_use]
+    pub fn is_dtls(&self) -> bool {
+        if self.ssl_context.is_null() {
+            return false;
+        }
+        // SAFETY: a live `SSLContext` begins with its prepared owner.
+        let prepared = unsafe { &*self.ssl_context.cast::<OwnedTlsPrepared>() };
+        // SAFETY: the owner's fields live as long as the context.
+        let protocols = unsafe { (*prepared.fields).protocols };
+        protocols & SslVersion::SW_SSL_DTLS as u32 != 0
     }
 }
 
