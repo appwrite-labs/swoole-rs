@@ -123,6 +123,9 @@ void swr_v1_core_set_print_backtrace(void *value);
 const char *swr_v1_core_bug_report_message(void);
 void swr_v1_core_bug_report_append(const char *text);
 void swr_v1_core_bug_report_init(const char *banner, const char *compiler, const char *ssl);
+/* crates/corebase/src/format.c: vfprintf to SwooleG.stdout_. No compiled source
+ * calls it; core-tests/src/_lib/ssl.cpp does. */
+int sw_printf(const char *format, ...) __attribute__((format(printf, 1, 2)));
 #ifdef __cplusplus
 }
 #endif
