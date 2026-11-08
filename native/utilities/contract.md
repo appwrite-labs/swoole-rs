@@ -1,8 +1,9 @@
 # Utilities ABI
 
 Feature bit 512 (`utilities`). Patches `src/core/misc.cc`,
-`src/core/log.cc`, `include/swoole_util.h`, `include/swoole.h` and
-`include/swoole_log.h`. Declarations are in
+`src/core/log.cc` and `include/swoole.h`. The overlay deletes `include/swoole_util.h`,
+`swoole_log.h`, `swoole_hash.h` and `swoole_version.h`; the copies here keep what C++,
+the compiled core-tests and the utilities gates use. Declarations are in
 [swoole_rs_utilities.h](swoole_rs_utilities.h). Tests:
 `tests/modules/utilities/README.md`. Depends on the locks module for wait/wake.
 
@@ -107,7 +108,7 @@ valid until the file next changes.
 
 ## Logging macros (v2)
 
-`include/swoole_log.h` macros call two whole-program exports. Contexts are caller
+`swoole_log.h` macros call two whole-program exports. Contexts are caller
 stack PODs, uniquely borrowed for one step. No allocation, registry or Logger layout
 change. `fatal_error` is the original forwarder.
 
