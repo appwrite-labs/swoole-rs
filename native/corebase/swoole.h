@@ -95,6 +95,13 @@ static constexpr const char *sw_log_origin = nullptr;
         __VA_ARGS__;                                                                                                   \
     } while (0)
 
+#define SW_MIN(A, B) ((A) < (B) ? (A) : (B))
+#ifndef MAX
+#define MAX(A, B) ((A) > (B) ? (A) : (B))
+#endif
+#ifndef MIN
+#define MIN(A, B) SW_MIN(A, B)
+#endif
 #define SW_LOOP_N(n) for (std::remove_reference_t<decltype(n)> i = 0; i < n; i++)
 
 #ifdef SW_DEBUG
@@ -205,6 +212,7 @@ bool swoole_get_env(const char *name, int *value);
 
 void swoole_init();
 void swoole_exit(int _status);
+pid_t swoole_fork(int flags);
 pid_t swoole_fork_exec(const std::function<void()> &child_fn);
 pid_t swoole_waitpid(pid_t _pid, int *_stat_loc, int _options);
 void swoole_thread_init(bool main_thread = false);
