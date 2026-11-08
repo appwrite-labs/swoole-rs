@@ -457,7 +457,7 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['reactor-compile'])
         self.assertIn('corebase-native',commands)
         self.assertIn('ossupport-async-file-owner', commands)
-        self.assertIn('http-proxy', commands)
+        self.assertIn('http-rewrites', commands)
         self.assertIn('coroutine-compile',commands)
         self.assertIn('swoole-rs-coroutine', commands['coroutine-rust-asan'])
         self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])
@@ -561,7 +561,6 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('clients-ip-text', commands)  # So do these.
         self.assertIn('--archive',commands['http-locales'])
         self.assertIn('--archive',commands['http-rewrites'])
-        self.assertIn('--archive',commands['http-dispatch'])
         args.native_build_root = Path('/private-ram/hybrid')
         args.ccache = Path('/explicit/compiler-cache')
         with patch.object(dev.subprocess, 'check_output', return_value='/openssl'):

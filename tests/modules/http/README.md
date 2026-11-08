@@ -33,9 +33,7 @@ marked `[R]` also take `--rust-sanitize`. `tools/dev.py` registers each as an
 
 | Script | Checks |
 | --- | --- |
-| `proxy_gate.py` [R] | Proxy auth packing/handshake with actual base64 |
 | `rewrite_gate.py` [R] | Pinned `add_rewrite_rule`/`apply_rewrite_rules` (std::regex) against the server's Rust rules (`swr_v1_server_static_rewrite`) |
-| `dispatch_gate.py` [R] | Proxy-init bodies |
 | `locale_gate.py` | Case-insensitive helpers against libc `strncasecmp` across available locales |
 
 Locale semantic runs must be unsanitized: under ASan the macOS interceptor
@@ -78,9 +76,9 @@ Kept (23, now 17). Each differential gate compares pinned and patched native bod
 under ASan/UBSan, most with allocation-failure or errno injection that no PHPT,
 Rust unit test or fuzz target reaches:
 `http-native` (also the five original core-test bodies), `-framing`,
-`-headers`, `-proxy`, `-static`, `-conditionals`,
+`-headers`, `-static`, `-conditionals`,
 `-multipart`, `-multipart-headers`, `-multipart-emit`, `-rewrites`,
-`-dispatch`, `-locales` (libc locales), `-context` and `-request-lifecycle`.
+`-locales` (libc locales), `-context` and `-request-lifecycle`.
 `-cookie-flow-positive` went with `parse_cookie` (dead once crates/phphttp parsed
 cookies); its cases compare `swr_v1_http_cookie_next` with the pinned `parse_cookie`
 in `crates/http/src/headers.rs` (`ported_cookie_flow_gate`). (`-boundary-rng` became a crates/corebase unit test, #995.)
@@ -101,13 +99,19 @@ Deleted (6 duplicates and one ported phase):
   and `http-rewrites`, which run the same scenarios plus injected failures.
 - `http-index-append-positive`, `http-proxy-auth-positive`: fault-free
   `make_index_page` and proxy auth differentials. `http-index-pages` and
-  `http-proxy` run the same functions over a wider path, entry, credential and
+  `http-proxy` ran the same functions over a wider path, entry, credential and
   capacity domain.
 - `http-framing`, `http-headers`, `http-multipart`, `http-multipart-emit`,
   `http-multipart-headers`, `http-request-lifecycle`: compared `Request`'s C++
   bodies with upstream's. Those bodies are Rust now (`crates/http/src/request.rs`,
   #931); its unit tests carry the cases, including core-tests' `get_protocol` and
   `has_expect_header`, and the HTTP PHPTs cover the server path.
+- `http-proxy`, `http-dispatch`: sliced `HttpProxy` out of the hybrid http.cc. Their
+  cases run in `crates/http/src/owned_proxy.rs` (`ported_proxy_gate_*`,
+  `ported_dispatch_gate`) against the pinned `HttpProxy` compiled in crates/oracle
+  (`shim/http_proxy.cc`), through the Rust owner and the calls the C++ class makes.
+  Injected C++ allocation faults became refused native-cache assignments, the
+  failure the Rust owner reports; the C++ class itself is a forwarding shell.
 - `http-binding-reflection`: ported into `api-surface`. `tools/php_api_inventory.php`
   now records parameter default values, class modifiers and default properties
   for every Swoole class, not just these five.
