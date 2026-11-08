@@ -9,7 +9,7 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
 
 use crate::{
-    DecodedFrame, INVALID_CONTROL, swr_v1_ws_control_invalid, swr_v1_ws_decode, swr_v1_ws_encode,
+    DecodedFrame, INVALID_CONTROL, decode_in_place, swr_v1_ws_control_invalid, swr_v1_ws_encode,
     swr_v1_ws_encode_close, swr_v1_ws_encoded_size, swr_v1_ws_frame_length, swr_v1_ws_mask,
 };
 
@@ -94,9 +94,13 @@ pub unsafe fn decode_frame(
     data: *mut u8,
     length: usize,
 ) -> Result<DecodedFrame, (DecodedFrame, bool)> {
-    let mut decoded = DecodedFrame::default();
-    // SAFETY: as the caller promises; a local output.
-    let total = unsafe { swr_v1_ws_decode(data, length, &raw mut decoded) };
+    let data = if length == 0 {
+        &mut []
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { std::slice::from_raw_parts_mut(data, length) }
+    };
+    let (total, decoded) = decode_in_place(data);
     if total == INVALID_CONTROL {
         log::warning(
             c"websocket::decode",

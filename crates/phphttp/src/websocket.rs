@@ -19,7 +19,7 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
-    DecodedFrame, INVALID_CONTROL, swr_v1_ws_control_invalid, swr_v1_ws_decode, swr_v1_ws_encode,
+    DecodedFrame, INVALID_CONTROL, swr_v1_ws_control_invalid, swr_v1_ws_encode,
     swr_v1_ws_encode_close, swr_v1_ws_encoded_size, swr_v1_ws_message_policy,
     swr_v1_ws_pack_policy,
 };
@@ -779,9 +779,7 @@ fn to_string(call: &Call) {
 /// unmasked in place.
 fn decode(data: &mut [u8]) -> Option<DecodedFrame> {
     let func = c"websocket::decode";
-    let mut frame = DecodedFrame::default();
-    // SAFETY: the caller's writable bytes and a local output.
-    let total = unsafe { swr_v1_ws_decode(data.as_mut_ptr(), data.len(), &raw mut frame) };
+    let (total, frame) = swoole_rs_websocket::decode_in_place(data);
     if total == INVALID_CONTROL {
         warning(
             func,
