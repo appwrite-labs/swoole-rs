@@ -113,6 +113,10 @@ RACY = {'tests/swoole_websocket_server/send_close_frame.phpt':
         "the server waits on its SysV message queue for a third task and sometimes never gets "
         'it under CI load, on both engines: hybrid timed out in a shard while upstream passed, '
         'then upstream timed out on re-run (#438, #664)',
+        'tests/swoole_server/kill_user_process_01.phpt':
+        "the same 10 ms restart window as kill_user_process_02, checked by `ps` after SIGTERM: "
+        'under CI load both engines miss it (shards failed upstream 4/6, hybrid 4/6 over six '
+        'merge-tier runs; locally both pass 30/30 idle and fail 1/15 under load, #1835)',
         'tests/swoole_server/kill_user_process_02.phpt':
         'it asserts the killed user process was restarted within 10 ms; restarts take ~3-4 ms '
         'median on both engines, but the tail passes 10 ms on either (hybrid 12/540, upstream '
