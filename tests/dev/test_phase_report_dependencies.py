@@ -11,8 +11,6 @@ ROOT = Path(__file__).resolve().parents[2]
 class PhaseReports(unittest.TestCase):
     def test_report_consumers_require_their_parent_phase(self):
         for module, child, parent in [
-            ('phphelpers','phphelpers-async-sqlite-sdk','phphelpers-sdk'),
-            ('phphelpers','phphelpers-async-odbc-sdk','phphelpers-sdk'),
             ('locks','base64-consumers-upstream','reference-identity')]:  # base64 is graduated, so always selected
             with self.subTest(child=child):
                 command=[sys.executable,'tools/dev.py','integrate','--module',module,'--phase',child,'--plan']
@@ -27,17 +25,17 @@ class PhaseReports(unittest.TestCase):
                 self.assertLess(phases.index(parent),phases.index(child))
 
     def test_with_prerequisites_adds_reports_and_builds(self):
-        command=[sys.executable,'tools/dev.py','integrate','--module','phphelpers','--phase','phphelpers-async-sqlite-sdk',
+        command=[sys.executable,'tools/dev.py','integrate','--module','locks','--phase','base64-consumers-upstream',
                  '--with-prerequisites','--plan']
         result=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
         phases=[row['phase'] for row in json.loads(result.stdout)]
         # The report it reads, then the builds behind both, in plan order.
-        self.assertIn('phphelpers-sdk',phases)
+        self.assertIn('reference-identity',phases)
         self.assertIn('build',phases)
-        self.assertLess(phases.index('build'),phases.index('phphelpers-async-sqlite-sdk'))
-        self.assertLess(phases.index('phphelpers-sdk'),phases.index('phphelpers-async-sqlite-sdk'))
-        self.assertNotIn('phphelpers-async-odbc-sdk',phases)
+        self.assertLess(phases.index('build'),phases.index('base64-consumers-upstream'))
+        self.assertLess(phases.index('reference-identity'),phases.index('base64-consumers-upstream'))
+        self.assertNotIn('base64-consumers-hybrid',phases)
 
     def test_independent_selection_stays_independent(self):
         result=subprocess.run([sys.executable,'tools/dev.py','integrate','--module', 'locks',

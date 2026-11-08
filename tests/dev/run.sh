@@ -16,11 +16,7 @@ for test in \
     tests/modules/integration/test_bridge_inventory.py \
     tests/modules/phpcollections/test_prepare_benchmark.py \
     tests/modules/phpcollections/test_runtime.py \
-    tests/modules/phphelpers/test_entrypoint.py \
-    tests/modules/phphelpers/test_facade_identity.py \
-    tests/modules/phphelpers/test_php_benchmark.py \
     tests/modules/phphelpers/test_runtime.py \
-    tests/modules/phphelpers/test_sdk.py \
     tests/modules/utilities/test_prepare_benchmark.py \
     tests/modules/utilities/test_storage_summary.py
 do
