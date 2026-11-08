@@ -641,7 +641,8 @@ fn affinity() -> Result<Vec<c_int>, c_int> {
         return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }
     Ok((0..CPU_SETSIZE)
-        .filter(|&cpu| libc::CPU_ISSET(cpu, &set))
+        // SAFETY: `cpu` is below `CPU_SETSIZE`, inside the set.
+        .filter(|&cpu| unsafe { libc::CPU_ISSET(cpu, &set) })
         .filter_map(|cpu| c_int::try_from(cpu).ok())
         .collect())
 }
