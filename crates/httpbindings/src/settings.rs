@@ -266,6 +266,7 @@ mod tests {
     /// Every subset of the twelve keys, eight value/hook variations, with and without
     /// compression, and an exit at each trace position for a sample of them.
     #[test]
+    #[cfg_attr(miri, ignore = "65,536 cases are too slow to interpret")]
     fn cursor_matches_the_pinned_start_body() {
         let mut exits = 0;
         for (compression, mask, variation) in

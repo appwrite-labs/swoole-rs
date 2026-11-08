@@ -177,6 +177,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "65,536 inputs are too slow to interpret")]
     fn exhaustive_two_byte_bitwise_oracle() {
         // Independent polynomial division, without the implementation's table.
         for value in 0..=u16::MAX {
@@ -198,6 +199,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "megabytes of bitwise CRC are too slow to interpret")]
     fn sliced_blocks_and_tails_match_bitwise_oracle() {
         fn bitwise(input: &[u8]) -> u32 {
             let mut crc = u32::MAX;
@@ -245,8 +247,8 @@ mod tests {
             (core::ptr::null(), 0),
             (core::ptr::null(), 1),
             (core::ptr::dangling(), usize::MAX),
-            (usize::MAX as *const u8, 1),
-            ((usize::MAX - 7) as *const u8, 8),
+            (core::ptr::without_provenance(usize::MAX), 1),
+            (core::ptr::without_provenance(usize::MAX - 7), 8),
         ];
         for (data, length) in cases {
             // SAFETY: see above; the export returns 0 without reading.

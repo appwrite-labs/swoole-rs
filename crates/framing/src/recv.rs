@@ -589,18 +589,22 @@ mod tests {
         }
     }
 
-    impl Effects for Native {
+    /// The fake by raw pointer, as the native side holds it: `recv` reads the
+    /// protocol and buffer through pointers into it between effects.
+    impl Effects for *mut Native {
         fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64 {
-            self.wait = *flags & FLAG_WAIT != 0;
-            let result = self.apply(op, arg);
-            *flags = u32::from(self.removed) | if self.wait { FLAG_WAIT } else { 0 };
+            // SAFETY: `run`'s live fake; `recv` holds no reference into it.
+            let native = unsafe { &mut **self };
+            native.wait = *flags & FLAG_WAIT != 0;
+            let result = native.apply(op, arg);
+            *flags = u32::from(native.removed) | if native.wait { FLAG_WAIT } else { 0 };
             result
         }
     }
 
     fn run(native: &mut Native) -> i32 {
         let mut flags = native.flags;
-        let native = ptr::from_mut(native);
+        let mut native = ptr::from_mut(native);
         // SAFETY: the fake's protocol and buffer, changed only inside its effects.
         let status = unsafe {
             recv(
@@ -609,7 +613,7 @@ mod tests {
                 (*native).mode,
                 (*native).head,
                 &mut flags,
-                &mut *native,
+                &mut native,
             )
         };
         // SAFETY: the receive has returned.
@@ -733,14 +737,19 @@ mod tests {
     #[test]
     fn a_thrown_effect_runs_no_further_effect() {
         let mut native = Native::new(MODE_LENGTH, 2, vec![b"\x05"]);
+        // One pointer for the context and the fields `io` aliases, so the
+        // effect's `&mut Native` doesn't invalidate `io`'s pointers.
+        let fake = ptr::from_mut(&mut *native);
         let mut io = SwrFramingIo {
-            protocol: &raw const native.protocol,
-            buffer: &raw mut native.buffer,
+            // SAFETY: `fake` is the live boxed fake.
+            protocol: unsafe { &raw const (*fake).protocol },
+            // SAFETY: as above.
+            buffer: unsafe { &raw mut (*fake).buffer },
             mode: MODE_LENGTH,
             head: 1,
             flags: 0,
         };
-        let context = ptr::from_mut(&mut *native).cast();
+        let context = fake.cast();
         // SAFETY: `io` points into the fake passed as the context.
         let status = unsafe { swr_v1_framing_recv(&raw mut io, context, Some(throwing)) };
         assert_eq!(status, SW_ERR);
