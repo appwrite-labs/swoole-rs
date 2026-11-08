@@ -397,7 +397,6 @@ def plan(args, reports):
                '--exclude', "coroutine_hook.sendmsg_and_recvmsg=its child reads the parent's freed stack when the parent's close "
                             'completes first (SIGSEGV in ~15% of runs upstream)',
                '--exclude', 'coroutine_socket.tcp6=needs IPv6',
-               '--exclude', 'coroutine_socket.sendto_recvfrom_udp=the UDP6 sendto to a host name fails on the hybrid (#1735)',
                *[arg for name in ['https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy',
                                   'https_get_with_http_proxy'] for arg in ['--exclude', f'coroutine_socket.{name}={PROXY}']],
                *report('hooks-system-rust'))
