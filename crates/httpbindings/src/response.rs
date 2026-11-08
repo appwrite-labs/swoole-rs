@@ -1,12 +1,9 @@
 //! Response header policy. Native code performs all allocation/date/codec effects.
-use crate::Text;
-use crate::request::{bytes, case_equal};
+use crate::request::case_equal;
 
-/// Original native known-header flags; unknown headers retain their custom path.
-/// # Safety
-/// Name is an initialized readable span for this call only.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_response_header(name: Text) -> i32 {
+/// The native known-header flag of a response header name; 0 for a custom one.
+#[must_use]
+pub fn response_header(name: &[u8]) -> i32 {
     const HEADERS: [(&[u8], i32); 7] = [
         (b"Server", 2),
         (b"Connection", 4),
@@ -16,10 +13,6 @@ pub unsafe extern "C" fn swr_v1_httpbindings_response_header(name: Text) -> i32 
         (b"Transfer-Encoding", 64),
         (b"Content-Encoding", 256),
     ];
-    // SAFETY: `name` spans `length` initialized bytes (null only when empty) for this call.
-    let Some(name) = (unsafe { bytes(name) }) else {
-        return -1;
-    };
     HEADERS
         .iter()
         .find(|&&(key, _)| case_equal(name, key))

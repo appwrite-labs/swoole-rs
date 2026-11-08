@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
 use swoole_rs_corebase::log;
 use swoole_rs_http::{HttpSpan, swr_v1_http_boundary};
 use swoole_rs_httpbindings::{
-    Text, Trimmed, UrlParts, swr_v1_httpbindings_body_prefix, swr_v1_httpbindings_compression,
-    swr_v1_httpbindings_form_source, swr_v1_httpbindings_request_header,
-    swr_v1_httpbindings_request_key, swr_v1_httpbindings_request_url, swr_v1_httpbindings_tokens,
+    RequestHeader, Text, Trimmed, UrlParts, request_header, request_key,
+    swr_v1_httpbindings_body_prefix, swr_v1_httpbindings_compression,
+    swr_v1_httpbindings_form_source, swr_v1_httpbindings_request_url, swr_v1_httpbindings_tokens,
     swr_v1_httpbindings_trim_quotes,
 };
 use swoole_rs_server::view;
@@ -132,13 +132,6 @@ const UPLOAD_NO_FILE: i64 = 4;
 const UPLOAD_NO_TMP_DIR: i64 = 6;
 const UPLOAD_CANT_WRITE: i64 = 7;
 const UPLOAD_FILE_READY: i64 = 8;
-/// `swr_v1_httpbindings_request_header`'s actions.
-const HEADER_APPEND: i32 = 0;
-const HEADER_COOKIE: i32 = 1;
-const HEADER_UPGRADE: i32 = 2;
-const HEADER_FORM: i32 = 3;
-const HEADER_MULTIPART: i32 = 4;
-const HEADER_COMPRESSION: i32 = 5;
 /// MINIT's codec bits: zlib, brotli, zstd, and `SW_HAVE_COMPRESSION`.
 const CODECS: u32 = 7;
 const COMPRESSION: u32 = 8;
@@ -236,7 +229,7 @@ const KEY_NAMES: [&[u8]; 25] = [
     b"master_time",
     b"HTTP/2",
 ];
-/// The header keys `swr_v1_httpbindings_request_key` numbers 0 to 7.
+/// The header keys `request_key` numbers 0 to 7.
 const HEADER_KEYS: [Key; 8] = [
     Key::Host,
     Key::UserAgent,
@@ -673,26 +666,27 @@ fn websocket_connection(state: &State) -> bool {
 const STATUS_CONNECTION: u8 = 1;
 
 fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
-    let name = Text {
-        data: state.parse.header_name,
-        length: state.parse.header_name_len,
-    };
-    let mut flags = u32::from(state.parse_cookie != 0);
-    if CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression != 0 {
-        flags |= 2;
-    }
-    let method = u32::from(state.parser.method);
-    // SAFETY: the current header's name and llhttp's value span.
-    let action = unsafe {
-        swr_v1_httpbindings_request_header(name, Text { data: at, length }, method, flags)
-    };
+    // SAFETY: the current header's name, inside llhttp's input.
+    let name =
+        unsafe { std::slice::from_raw_parts(state.parse.header_name, state.parse.header_name_len) };
+    // SAFETY: llhttp's value span.
+    let value_ = unsafe { std::slice::from_raw_parts(at, length) };
+    let compression =
+        CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression != 0;
+    let action = request_header(
+        name,
+        value_,
+        state.parser.method,
+        state.parse_cookie != 0,
+        compression,
+    );
     match action {
-        HEADER_COOKIE => {
+        RequestHeader::Cookie => {
             let cookie = property(state, Property::Cookie);
             parse_cookie(cookie, at, length);
             return 0;
         }
-        HEADER_UPGRADE => {
+        RequestHeader::Upgrade => {
             const MAX_LENGTH: usize = STACK_BUFFER_SIZE - 1;
             let seen = state.parse.header_value_len;
             if seen > MAX_LENGTH || length > MAX_LENGTH - seen {
@@ -721,8 +715,8 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
                 _ => {}
             }
         }
-        HEADER_FORM => state.request.post_form_urlencoded = 1,
-        HEADER_MULTIPART => {
+        RequestHeader::Form => state.request.post_form_urlencoded = 1,
+        RequestHeader::Multipart => {
             let Some((boundary, boundary_len)) =
                 multipart_boundary(state, at, length, b"multipart/form-data".len())
             else {
@@ -730,28 +724,18 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
             };
             multipart_init(state, boundary, boundary_len);
         }
-        HEADER_COMPRESSION if CAPABILITIES.load(Relaxed) & COMPRESSION != 0 => {
-            compression_method(state, at, length);
-        }
-        HEADER_APPEND => {}
-        _ => return -1,
+        RequestHeader::Compression => compression_method(state, at, length),
+        RequestHeader::Append => {}
     }
     let mut tmp = stringl(at, length);
     // The request's `header` array, created with the request.
     let header = state.request.zheader.ptr;
-    // SAFETY: the current header's name.
-    let index = unsafe { swr_v1_httpbindings_request_key(name) };
-    if let Some(&known) = usize::try_from(index)
-        .ok()
-        .and_then(|index| HEADER_KEYS.get(index))
-    {
+    if let Some(&known) = request_key(name).and_then(|index| HEADER_KEYS.get(index)) {
         // SAFETY: a live array zval.
         let table = unsafe { value::table(header) };
         // SAFETY: a live table, an interned key and a value it takes over.
         unsafe { zend_hash_update(table, key(known), &raw mut tmp) };
     } else {
-        // SAFETY: the current header's name, inside llhttp's input.
-        let name = unsafe { std::slice::from_raw_parts(name.data, name.length) };
         let lower = name.to_ascii_lowercase();
         // SAFETY: a live array zval and a value it takes over.
         unsafe {
