@@ -14,9 +14,10 @@ runs:
           unzip -qo "$part.zip"
         done
         rm instantclient_*/sdk/include/ldap.h
-        echo DISABLE_INTERRUPT=on > instantclient_*/network/admin/sqlnet.ora
         sudo rm -rf /usr/local/instantclient
         sudo mv instantclient_* /usr/local/instantclient
+        # A non-interactive bash doesn't glob a redirection target, so name the directory.
+        echo DISABLE_INTERRUPT=on | sudo tee /usr/local/instantclient/network/admin/sqlnet.ora
         # Oracle 19 needs libaio.so.1; Ubuntu 24.04's libaio1t64 names it libaio.so.1t64.
         dir="/usr/lib/$(gcc -print-multiarch)"
         [ -e "$dir/libaio.so.1" ] || sudo ln -s libaio.so.1t64 "$dir/libaio.so.1"
