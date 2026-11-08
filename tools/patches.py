@@ -44,9 +44,8 @@ def base_patches(module):
     build order. A module's patches are written against them."""
     plan = [m for m in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
             if any(p.startswith('migration/patches/') for p in m['owned_paths'])]
-    order = sorted(plan, key=lambda m: not m.get('applies_first'))
-    names = [next(p for p in m['owned_paths'] if p.startswith('migration/patches/')).rstrip('/').split('/')[-1] for m in order]
-    return patches_for(order[:names.index(module)]) if module in names else []
+    names = [next(p for p in m['owned_paths'] if p.startswith('migration/patches/')).rstrip('/').split('/')[-1] for m in plan]
+    return patches_for(plan[:names.index(module)]) if module in names else []
 
 
 def checkout(module, patches, work):

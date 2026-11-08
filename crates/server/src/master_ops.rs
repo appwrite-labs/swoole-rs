@@ -1544,7 +1544,7 @@ fn verify(o: &mut Objects<'_>) -> u64 {
     let bit = |set: bool, bit| if set { bit } else { 0 };
     send_flags(o)
         | send::FOUND
-        | send::HALFCLOSE
+        | bit(cfg!(feature = "halfclose"), send::HALFCLOSE)
         | bit(config.send_yield, send::SEND_YIELD)
         | bit(out_empty, send::OUT_EMPTY)
         | bit(o.sock().direct_send != 0, send::DIRECT_SEND)
@@ -1569,7 +1569,10 @@ fn send_flags(o: &Objects<'_>) -> u64 {
         (conn.close_queued != 0, send::CLOSE_QUEUED),
         (conn.high_watermark != 0, send::HIGH_WATERMARK),
         (sock.removed != 0, send::REMOVED),
-        (sock.close_notified != 0, send::CLOSE_NOTIFIED),
+        (
+            cfg!(feature = "halfclose") && sock.close_notified != 0,
+            send::CLOSE_NOTIFIED,
+        ),
         (sock.events & SW_EVENT_READ != 0, send::EVENT_READ),
         (sock.events & SW_EVENT_WRITE != 0, send::EVENT_WRITE),
         (callback(CB_BUFFER_FULL), send::ON_BUFFER_FULL),

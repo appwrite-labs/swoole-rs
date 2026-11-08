@@ -3,8 +3,8 @@
 //! the connection, socket and output buffer; each effect is one op, and `OP_SC_VERIFY`
 //! returns every fact a send reads before its first effect.
 //!
-//! `--fix-halfclose` (M15) builds define `SW_HALFCLOSE_DRAIN`, which native code
-//! reports as `HALFCLOSE`: pause and resume then go through the reactor's
+//! `--fix-halfclose` (M15) builds have the `halfclose` feature, which reports
+//! `HALFCLOSE` (upstream's `SW_HALFCLOSE_DRAIN`): pause and resume then go through the reactor's
 //! read-event helpers, a resume skips closing connections, and a queued close stops
 //! reading.
 use crate::base_factory::SendData;
@@ -53,7 +53,7 @@ pub(crate) const EVENT_WRITE: u64 = 1 << 10;
 pub(crate) const ON_BUFFER_FULL: u64 = 1 << 11;
 pub(crate) const ON_BUFFER_EMPTY: u64 = 1 << 12;
 /// `OP_SC_VERIFY`'s bits beside those: the connection was found; `send_yield`; built
-/// with `SW_HALFCLOSE_DRAIN`; the output buffer is empty; the socket sends directly.
+/// with the `halfclose` feature; the output buffer is empty; the socket sends directly.
 pub(crate) const FOUND: u64 = 1 << 13;
 pub(crate) const SEND_YIELD: u64 = 1 << 14;
 pub(crate) const HALFCLOSE: u64 = 1 << 15;

@@ -22,6 +22,8 @@ php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswo
 iouring = ["swoole-rs-hooks/iouring", "swoole-rs-reactor/iouring", "swoole-rs-phplocks/iouring"]
 cares = ["swoole-rs-clients/cares"]
 stdext = ["swoole-rs-phpstdext/active"]
+# --fix-halfclose (M15, native/halfclose): the queued-close drain, synchronous prequeue and TLS repairs.
+halfclose = ["swoole-rs-server/halfclose", "swoole-rs-tls/halfclose"]
 pgsql = ["dep:swoole-rs-pgsql"]
 odbc = ["dep:swoole-rs-odbc"]
 firebird = ["dep:swoole-rs-firebird"]

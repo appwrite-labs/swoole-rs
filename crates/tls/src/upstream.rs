@@ -13,7 +13,6 @@ use crate::{
 };
 use openssl_sys::{SSL, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, stack_st_X509};
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
-use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::{
     make_socket_typed, signal_dispatch, socket_cork, socket_set_fd_option, socket_uncork,
@@ -1302,16 +1301,10 @@ pub unsafe extern "C-unwind" fn socket_handle_send(socket: *mut SocketRecord) ->
     output.result.code
 }
 
-/// `--fix-halfclose` (M15): `ssl_shutdown` writes the `close_notify` alert, and
-/// `handle_sendfile` retries a sendfile interrupted before any progress instead of
-/// dropping the file. Native code registers it (`SW_HALFCLOSE_TLS_SHUTDOWN`).
-static HALFCLOSE_REPAIRS: AtomicBool = AtomicBool::new(false);
-
-/// Selects M15's repairs (`SW_HALFCLOSE_TLS_SHUTDOWN`).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_set_halfclose_repairs(repaired: bool) {
-    HALFCLOSE_REPAIRS.store(repaired, Ordering::Relaxed);
-}
+/// `--fix-halfclose` (M15, the `halfclose` feature): `ssl_shutdown` writes the
+/// `close_notify` alert, and `handle_sendfile` retries a sendfile interrupted before any
+/// progress instead of dropping the file.
+const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 
 /// `int Socket::handle_sendfile()`: sends a chunk of the queue's front file.
 ///
@@ -1333,7 +1326,7 @@ pub unsafe extern "C-unwind" fn socket_handle_sendfile(socket: *mut SocketRecord
     unsafe { swr_v1_socket_file_cork(request, &raw const hooks) };
     // SAFETY: the record and the front's live request.
     let (rv, requested) = unsafe { send_chunk(socket, request) };
-    if rv < 0 && errno() == libc::EINTR && HALFCLOSE_REPAIRS.load(Ordering::Relaxed) {
+    if rv < 0 && errno() == libc::EINTR && HALFCLOSE_REPAIRS {
         return 0;
     }
     // SAFETY: the front's live request, the record and the hooks over them.
@@ -1469,7 +1462,7 @@ pub unsafe extern "C-unwind" fn socket_send_async(
 pub unsafe extern "C" fn socket_ssl_shutdown(socket: *mut SocketRecord) -> bool {
     // SAFETY: as the caller promises.
     let record = unsafe { &mut *socket };
-    let repaired = HALFCLOSE_REPAIRS.load(Ordering::Relaxed);
+    let repaired = HALFCLOSE_REPAIRS;
     let (ssl, quiet, closed) = (
         record.ssl.cast(),
         record.ssl_quiet_shutdown != 0,
@@ -1868,14 +1861,6 @@ mod tests {
             libc::close(fds[0]);
             libc::close(fds[1]);
         }
-    }
-
-    #[test]
-    fn shutdown_repair_is_registered() {
-        swr_v1_socket_set_halfclose_repairs(true);
-        assert!(HALFCLOSE_REPAIRS.load(Ordering::Relaxed));
-        swr_v1_socket_set_halfclose_repairs(false);
-        assert!(!HALFCLOSE_REPAIRS.load(Ordering::Relaxed));
     }
 
     /// A connected pair of Unix stream records.

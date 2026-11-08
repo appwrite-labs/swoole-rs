@@ -13,7 +13,6 @@ v6.2.5, commit `76c657d88be39b7af6bf85e46bcbac0da7387760`, fetched at
 | `owned_paths` | Repository paths for the module (crate, native adapter, patches, tests). |
 | `phpt_families` | Upstream `tests/` directories whose PHPTs `dev.py candidate` gates for the module. |
 | `upstream_patch_targets` | Upstream files the module mainly patches (informational). |
-| `applies_first` | Apply this module's patches before every other module's. Only M15 (halfclose) sets it. |
 | `feature_bit_reserved` | Feature value, where one is listed. |
 | `abi_contract` | Path to the module's contract document or header. |
 

@@ -246,8 +246,7 @@ def module_patches(directory):
 def patches_for(modules):
     """Each module's patches, in application order, with paths relative to the checkout."""
     collected = []
-    # A native repair (halfclose) applies before the Rust patches whose context includes it.
-    for module in sorted(modules, key=lambda item: not item.get('applies_first')):
+    for module in modules:
         directories = [path.rstrip('/') for path in module['owned_paths'] if path.startswith('migration/patches/')]
         if len(directories) != 1:
             raise ValueError(f'A module must own exactly one patch directory: {module["id"]}')
@@ -423,7 +422,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     add_build_arguments(parser)
     parser.add_argument('--backend', choices=['rust', 'upstream'], default='rust', help='Rust ABI seam enabled, or explicit upstream fallback')
-    parser.add_argument('--fix-halfclose', action='store_true', help='Apply the opt-in native queued-close drain repair (not a Rust kernel)')
+    parser.add_argument('--fix-halfclose', action='store_true', help='Build the opt-in half-close repairs (M15: the halfclose cargo feature)')
     parser.add_argument('--dev', action='store_true', help='Reuse a private incremental tree; never publishes integration artifacts')
     parser.add_argument('--export', type=Path, help='Publish verified immutable copies to a new directory; refuses replacement')
     parser.add_argument('--native-build-root', type=Path, help='Private native build directory, including an explicitly mounted RAM filesystem')
@@ -453,8 +452,6 @@ def build(args, parser):
     plan = json.loads((ROOT / 'migration/modules.json').read_text())
     validate(plan)
     selected = {'M00', *(MODULES[name][0] for name in args.module)}
-    if getattr(args, 'fix_halfclose', False):
-        selected.add('M15')
     patches = patches_for([module for module in plan['modules'] if module['id'] in selected])
     if args.backend == 'upstream':
         # The upstream fallback links no Rust: it takes only the bridge switch, so the
@@ -471,6 +468,8 @@ def build(args, parser):
     if args.backend == 'rust':
         if stdext_enabled(args):
             cargo_extra.append('stdext')
+        if getattr(args, 'fix_halfclose', False):
+            cargo_extra.append('halfclose')
         rust_inputs = rust_sources(cargo_extra)
         cargo_started = time.monotonic()
         staging = ROOT / 'target/hybrid/.archives'
