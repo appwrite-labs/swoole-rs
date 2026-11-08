@@ -13,32 +13,20 @@ use std::{
     },
 };
 use swoole_rs_cares_sys as sdk;
-use swoole_rs_corebase::constants::{EventType, SW_DNS_SERVER_PORT};
+use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
+use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
+use swoole_rs_reactor::{SocketRecord, event_api, socket_upstream};
 
-/// Static native reactor/coroutine effects. No query state resides in this table.
+/// Static native coroutine and logging effects. No query state resides in this table.
 #[repr(C)]
 pub(crate) struct Ops {
-    handlers: unsafe extern "C" fn() -> u8,
-    install: unsafe extern "C" fn(),
     current: unsafe extern "C" fn() -> *mut c_void,
     suspending: unsafe extern "C" fn(*mut c_void) -> u8,
     yield_: unsafe extern "C" fn(*mut c_void, f64),
     canceled: unsafe extern "C" fn(*mut c_void) -> u8,
     timedout: unsafe extern "C" fn(*mut c_void) -> u8,
     resume: unsafe extern "C" fn(*mut c_void),
-    defer: unsafe extern "C" fn(
-        unsafe extern "C" fn(*mut c_void),
-        unsafe extern "C" fn(*mut c_void),
-        *mut c_void,
-    ),
-    make: unsafe extern "C" fn(i32, *mut c_void) -> *mut c_void,
-    events: unsafe extern "C" fn(*mut c_void) -> i32,
-    add: unsafe extern "C" fn(*mut c_void, i32),
-    set: unsafe extern "C" fn(*mut c_void, i32),
-    del: unsafe extern "C" fn(*mut c_void),
-    free: unsafe extern "C" fn(*mut c_void),
-    error: unsafe extern "C" fn(i32),
     warning: unsafe extern "C" fn(u8, i32),
     trace: unsafe extern "C" fn(u8, i32, i32, usize),
 }
@@ -49,7 +37,7 @@ struct Query {
     completed: bool,
     coroutine: *mut c_void,
     retired: Arc<AtomicBool>,
-    sockets: HashMap<i32, *mut c_void>,
+    sockets: HashMap<i32, *mut SocketRecord>,
     results: Vec<Vec<u8>>,
 }
 struct Completion {
@@ -88,9 +76,92 @@ unsafe extern "C" fn complete(data: *mut c_void) {
     }
 }
 unsafe extern "C" fn release_completion(data: *mut c_void) {
-    // SAFETY: the last native captured owner transfers this Rust allocation exactly once,
-    // whether the queue invoked or discarded its callback.
+    // SAFETY: the queue transfers this Rust allocation exactly once, whether it
+    // invoked or discarded its callback.
     drop(unsafe { Box::from_raw(data.cast::<Completion>()) });
+}
+/// The deferred task: the queue popped it, so it no longer disposes of it.
+unsafe extern "C-unwind" fn run_completion(data: *mut c_void) {
+    // SAFETY: the queue's live payload; `complete` borrows none of it across resume.
+    unsafe { complete(data) };
+    // SAFETY: as above, released once.
+    unsafe { release_completion(data) };
+}
+/// The thread's live reactor fields.
+fn reactor_fields() -> *mut swoole_rs_reactor::ReactorFields {
+    let reactor = swoole_rs_corebase::thread_reactor();
+    // SAFETY: c-ares runs on a thread whose reactor is live.
+    unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) }.fields
+}
+/// The `SW_FD_CARES` read and write handlers: the wrapper's object is its query.
+unsafe extern "C" fn readable(_reactor: *mut c_void, event: *mut c_void) -> i32 {
+    // SAFETY: the reactor lends its live event.
+    unsafe { process(event, 0) }
+}
+unsafe extern "C" fn writable(_reactor: *mut c_void, event: *mut c_void) -> i32 {
+    // SAFETY: the reactor lends its live event.
+    unsafe { process(event, 1) }
+}
+unsafe fn process(event: *mut c_void, write: u8) -> i32 {
+    // SAFETY: the reactor's live event.
+    let event = unsafe { &*event.cast::<swoole_rs_reactor::Event>() };
+    let fd = event.fd;
+    // SAFETY: its socket is a registered c-ares wrapper.
+    let data = unsafe { (*event.socket.cast::<SocketRecord>()).object };
+    // SAFETY: the wrapper's query outlives its registration.
+    let trace = unsafe { query(data).ops.trace };
+    // SAFETY: a scalar trace observation.
+    unsafe { trace(write, fd, 0, 0) };
+    // SAFETY: the query's channel stays live while its wrappers are registered.
+    let channel = unsafe { query(data).channel };
+    let (read, write) = if write == 0 { (fd, -1) } else { (-1, fd) };
+    // SAFETY: SDK callbacks run synchronously on this reactor thread.
+    unsafe { sdk::ares_process_fd(channel, read, write) };
+    0
+}
+/// Reactor destruction: no query still uses the library after its channel was destroyed.
+unsafe extern "C-unwind" fn cleanup(_: *mut c_void) {
+    // SAFETY: the reactor runs this once, after its c-ares handlers retire.
+    unsafe { sdk::ares_library_cleanup() };
+}
+/// The first query of a reactor's lifetime: its handlers and library cleanup.
+fn install() {
+    let read = EventType::SW_EVENT_READ as i32;
+    let write = EventType::SW_EVENT_WRITE as i32;
+    // SAFETY: the thread's live reactor.
+    unsafe { event_api::swoole_event_set_handler(FD, read, Some(readable)) };
+    // SAFETY: as above.
+    unsafe { event_api::swoole_event_set_handler(FD, write, Some(writable)) };
+    // SAFETY: the live reactor's destroy queue; the call keeps no data.
+    let queue = unsafe { &raw mut (*reactor_fields()).destroy_callbacks };
+    // SAFETY: as above.
+    if unsafe {
+        swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, cleanup, ptr::null_mut(), None)
+    } != 0
+    {
+        std::alloc::handle_alloc_error(std::alloc::Layout::new::<usize>());
+    }
+}
+const FD: i32 = FdType::SW_FD_CARES as i32;
+/// `Socket::free` of a wrapper whose descriptor c-ares keeps: the record goes on the
+/// next deferred pass while a reactor runs, as the event being handled may hold it.
+unsafe fn free(socket: *mut SocketRecord) {
+    unsafe extern "C-unwind" fn dealloc(socket: *mut c_void) {
+        // SAFETY: the detached wrapper, unused since.
+        unsafe { swoole_rs_reactor::swr_v1_socket_dealloc(socket.cast()) };
+    }
+    // SAFETY: a live wrapper; c-ares retains the OS descriptor.
+    unsafe { (*socket).fd = -1 };
+    let reactor = event_api::swr_v1_event_reactor();
+    if reactor.is_null() {
+        // SAFETY: as above.
+        unsafe { dealloc(socket.cast()) };
+    } else {
+        // SAFETY: the available reactor is live.
+        let fields = unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) }.fields;
+        // SAFETY: its live queue.
+        unsafe { swoole_rs_reactor::defer(fields, dealloc, socket.cast()) };
+    }
 }
 unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: i32) {
     // SAFETY: c-ares returns this query's stable callback userdata.
@@ -113,9 +184,9 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
             // SAFETY: trace of the live descriptor before its removal.
             unsafe { (ops.trace)(3, fd, 0, 0) };
             // SAFETY: remove the registered native socket before detaching its descriptor.
-            unsafe { (ops.del)(socket) };
+            unsafe { event_api::swoole_event_del(socket) };
             // SAFETY: free detaches fd first; c-ares retains ownership of the OS descriptor.
-            unsafe { (ops.free)(socket) };
+            unsafe { free(socket) };
             // SAFETY: no SDK call can reenter while this registry borrow is held.
             unsafe { query_mut(data).sockets.remove(&fd) };
             return;
@@ -127,20 +198,22 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
             unsafe { (ops.warning)(0, fd) };
             return;
         }
-        // SAFETY: c-ares lends fd; this stable query becomes the wrapper's callback userdata.
-        let socket = unsafe { (ops.make)(fd, data) };
+        // c-ares lends fd; this stable query becomes the wrapper's callback userdata.
+        let socket = socket_upstream::make_socket_fd(fd, FD);
+        // SAFETY: the fresh record.
+        unsafe { (*socket).object = data };
         // SAFETY: registry insertion completes before the reactor can run any callback.
         unsafe { query_mut(data).sockets.insert(fd, socket) };
         socket
     };
-    // SAFETY: a live native wrapper's primitive registered-event flags.
-    let registered = unsafe { (ops.events)(socket) } != 0;
+    // SAFETY: a live wrapper's registered-event flags.
+    let registered = unsafe { (*socket).events } != 0;
     if registered {
         // SAFETY: update this existing registered wrapper with the requested event mask.
-        unsafe { (ops.set)(socket, events) };
+        unsafe { event_api::swoole_event_set(socket, events) };
     } else {
         // SAFETY: register this fresh wrapper with the requested event mask.
-        unsafe { (ops.add)(socket, events) };
+        unsafe { event_api::swoole_event_add(socket, events) };
     }
     // SAFETY: scalar trace after the reactor operation, matching native ordering.
     unsafe { (ops.trace)(if registered { 4 } else { 5 }, fd, events, 0) };
@@ -197,40 +270,26 @@ unsafe extern "C" fn host(
             coroutine,
             resume: ops.resume,
         }));
-        // SAFETY: the native deferred queue takes this owned completion payload once.
-        unsafe { (ops.defer)(complete, release_completion, task.cast()) };
+        // SAFETY: the live reactor's queue takes this owned completion payload once.
+        let slot = unsafe { &raw mut (*reactor_fields()).defer_tasks };
+        // SAFETY: as above.
+        let pushed = unsafe {
+            swoole_rs_reactor::swr_v1_reactor_deferred_push(
+                slot,
+                run_completion,
+                task.cast(),
+                Some(release_completion),
+            )
+        };
+        if pushed != 0 {
+            std::alloc::handle_alloc_error(std::alloc::Layout::new::<Completion>());
+        }
         // SAFETY: a completion was queued, so further SDK callbacks cannot enqueue it again.
         unsafe { query_mut(data).coroutine = ptr::null_mut() };
     } else {
         // SAFETY: synchronous completion is recorded before the initiating SDK call returns.
         unsafe { query_mut(data).completed = true };
     }
-}
-
-/// # Safety
-/// Called only from this query's reactor callback, on its owner thread.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_clients_cares_process(
-    data: *mut c_void,
-    fd: i32,
-    write: u8,
-) {
-    // SAFETY: the native wrapper lends its live query userdata.
-    let channel = unsafe { query(data).channel };
-    // SAFETY: the channel remains live; SDK callbacks run synchronously on this reactor thread.
-    unsafe {
-        sdk::ares_process_fd(
-            channel,
-            if write == 0 { fd } else { -1 },
-            if write == 0 { -1 } else { fd },
-        );
-    };
-}
-/// Reactor destruction: no query still uses the library after its channel was destroyed.
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn swr_v1_clients_cares_cleanup() {
-    // SAFETY: the native reactor invokes this once after its c-ares handlers retire.
-    unsafe { sdk::ares_library_cleanup() };
 }
 
 /// # Safety
@@ -249,12 +308,11 @@ pub(crate) unsafe extern "C" fn swr_v1_clients_cares_lookup(
 ) {
     // SAFETY: the caller provides a process-lifetime immutable table.
     let ops = unsafe { &*ops };
-    // SAFETY: this presence probe invokes no user code.
-    if unsafe { (ops.handlers)() } == 0 {
+    // SAFETY: the thread's live reactor; the probe invokes no user code.
+    if !unsafe { event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) } {
         // SAFETY: the handler absence identifies the first query in this reactor lifetime.
         unsafe { sdk::ares_library_init(metadata().library_all) };
-        // SAFETY: install native handler/destroy trampolines, without retaining Rust references.
-        unsafe { (ops.install)() };
+        install();
     }
     // SAFETY: obtain the existing safe coroutine identity before allocating the query.
     let coroutine = unsafe { (ops.current)() };
@@ -338,8 +396,8 @@ pub(crate) unsafe extern "C" fn swr_v1_clients_cares_lookup(
             } else {
                 ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED
             };
-            // SAFETY: publish the exact native error mapping before destroying the SDK channel.
-            unsafe { (ops.error)(code as i32) };
+            // The exact native error mapping, before destroying the SDK channel.
+            log::set_last_error(code as i32);
         }
         // SAFETY: all deferred completions share this token; none may resume a retired query.
         unsafe { query(state).retired.store(true, Ordering::Relaxed) };

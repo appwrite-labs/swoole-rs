@@ -12,7 +12,10 @@ use crate::{
     swr_v1_clients_hosts_match, swr_v1_clients_port, swr_v1_clients_resolv_line,
 };
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use swoole_rs_corebase::log;
+use swoole_rs_error::ErrorCode;
 
 /// `SW_BUFFER_SIZE_STD`.
 const PACKET: usize = 8192;
@@ -134,8 +137,8 @@ pub unsafe extern "C" fn swr_v1_clients_dns_server(context: *mut c_void, push: P
 }
 
 /// `swoole_load_resolv_conf`'s read: the first `nameserver` of the file at `path`
-/// becomes the DNS server. 1 found, 0 none, -1 the file did not open (errno is
-/// fopen's, for native's warning).
+/// becomes the DNS server. 1 found, 0 none, -1 the file did not open (warned with
+/// fopen's errno).
 /// # Safety
 /// `path` is NUL-terminated.
 #[unsafe(no_mangle)]
@@ -143,6 +146,14 @@ pub unsafe extern "C" fn swr_v1_clients_load_resolv_conf(path: *const c_char) ->
     let mut server = [0 as c_char; 16];
     // SAFETY: per the caller; `server` holds 16 bytes.
     let found = unsafe { resolv_conf(path, server.as_mut_ptr()) };
+    if found < 0 {
+        // SAFETY: per the caller.
+        let path = unsafe { CStr::from_ptr(path) }.to_string_lossy();
+        log::sys_warning(
+            c"swoole_load_resolv_conf",
+            format_args!("fopen({path}) failed"),
+        );
+    }
     if found > 0 {
         // SAFETY: NUL-terminated by the read.
         set_dns_server(unsafe { CStr::from_ptr(server.as_ptr()) }.to_bytes());
@@ -264,6 +275,124 @@ pub unsafe extern "C" fn swr_v1_clients_dns_query(
         found = true;
     }
     if found { 0 } else { RESOLVE_FAILED }
+}
+
+/// The coroutine UDP socket `dns_lookup_impl_with_socket` exchanges its query over.
+#[repr(C)]
+pub struct DnsSocket {
+    /// `new Socket(SW_SOCK_UDP)`, with `timeout` set when positive.
+    open: unsafe extern "C" fn(f64) -> *mut c_void,
+    /// `sendto(host, port, data, length)`; false on failure.
+    sendto: unsafe extern "C" fn(*mut c_void, *const c_char, c_int, *const u8, usize) -> bool,
+    /// `recv`, as [`Recv`].
+    recv: Recv,
+    /// `delete`.
+    close: unsafe extern "C" fn(*mut c_void),
+}
+
+struct Exchange<'a> {
+    socket: &'a DnsSocket,
+    handle: *mut c_void,
+    host: Vec<u8>,
+    port: c_int,
+    output: *mut c_void,
+    push: Push,
+}
+
+unsafe extern "C" fn exchange_send(context: *mut c_void, data: *const u8, length: usize) -> bool {
+    // SAFETY: `swr_v1_clients_dns_lookup`'s live exchange.
+    let exchange = unsafe { &*context.cast::<Exchange<'_>>() };
+    let host = exchange.host.as_ptr().cast();
+    // SAFETY: an open socket; `host` is NUL-terminated and `data` holds `length` bytes.
+    unsafe { (exchange.socket.sendto)(exchange.handle, host, exchange.port, data, length) }
+}
+
+unsafe extern "C" fn exchange_recv(context: *mut c_void, data: *mut u8, capacity: usize) -> isize {
+    // SAFETY: `swr_v1_clients_dns_lookup`'s live exchange.
+    let exchange = unsafe { &*context.cast::<Exchange<'_>>() };
+    // SAFETY: an open socket; `data` holds `capacity` bytes.
+    unsafe { (exchange.socket.recv)(exchange.handle, data, capacity) }
+}
+
+unsafe extern "C" fn exchange_push(context: *mut c_void, text: *const u8, length: usize) {
+    // SAFETY: `swr_v1_clients_dns_lookup`'s live exchange.
+    let exchange = unsafe { &*context.cast::<Exchange<'_>>() };
+    // SAFETY: per `swr_v1_clients_dns_lookup`'s caller.
+    unsafe { (exchange.push)(exchange.output, text, length) };
+}
+
+/// The DNS server's host, NUL-terminated, and port.
+fn server() -> (Vec<u8>, c_int) {
+    let config = config();
+    let mut host = config.host.clone();
+    host.push(0);
+    (host, config.port)
+}
+
+/// The next query's id (upstream's `static uint16_t dns_request_id`).
+static REQUEST_ID: AtomicU16 = AtomicU16::new(1);
+
+/// `dns_lookup_impl_with_socket(domain, family, timeout)`: one query to the DNS server,
+/// read from `resolv_conf` while none is set, each address pushed onto `output`. A
+/// failure is the last error, or a warning for a domain that doesn't encode.
+///
+/// # Safety
+/// `domain` and `resolv_conf` are NUL-terminated; `socket` and `push` are native's,
+/// `push` valid with `output`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_dns_lookup(
+    domain: *const c_char,
+    family: c_int,
+    timeout: f64,
+    resolv_conf: *const c_char,
+    socket: &DnsSocket,
+    output: *mut c_void,
+    push: Push,
+) {
+    let (mut host, mut port) = server();
+    if host.len() == 1 {
+        // SAFETY: per the caller.
+        if unsafe { swr_v1_clients_load_resolv_conf(resolv_conf) } <= 0 {
+            log::set_last_error(ErrorCode::SW_ERROR_DNSLOOKUP_NO_SERVER as c_int);
+            return;
+        }
+        (host, port) = server();
+    }
+    // SAFETY: native's open.
+    let handle = unsafe { (socket.open)(timeout) };
+    let exchange = Exchange {
+        socket,
+        handle,
+        host,
+        port,
+        output,
+        push,
+    };
+    // SAFETY: per the caller; the trampolines borrow `exchange` for the call.
+    let error = unsafe {
+        swr_v1_clients_dns_query(
+            domain,
+            family,
+            REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+            (&raw const exchange).cast_mut().cast(),
+            exchange_send,
+            exchange_recv,
+            exchange_push,
+            c_char::MIN != 0,
+        )
+    };
+    if error == INVALID_DOMAIN {
+        // SAFETY: per the caller.
+        let domain = unsafe { CStr::from_ptr(domain) }.to_string_lossy();
+        log::warning(
+            c"dns_lookup_impl_with_socket",
+            format_args!("invalid domain[{domain}]"),
+        );
+    } else if error != 0 {
+        log::set_last_error(error);
+    }
+    // SAFETY: the socket `open` returned; nothing uses it afterwards.
+    unsafe { (socket.close)(handle) };
 }
 
 pub use swoole_rs_corebase::{Resolved, swr_v1_clients_getaddrinfo, swr_v1_clients_gethostbyname};
