@@ -48,8 +48,9 @@ pub struct Coroutine {
     pub execute_usec: c_long,
 }
 
-/// A cancelable yield's cancel function: `call(native, data)` wakes the
-/// canceled coroutine and returns whether it did.
+/// A cancelable yield's cancel function: `call(native, data)` marks the
+/// coroutine canceled ([`swr_v1_coroutine_cancel`]) once nothing can fail, then
+/// wakes it and returns whether it did.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Canceler {
@@ -515,7 +516,7 @@ export! {
 }
 
 export! {
-    /// Cancel, after the cancel function was copied.
+    /// Cancel, from the canceler once it can no longer fail.
     fn swr_v1_coroutine_cancel(co: *mut Coroutine) {
         // SAFETY: the caller lends `co` exclusively.
         let co = unsafe { &mut *co };

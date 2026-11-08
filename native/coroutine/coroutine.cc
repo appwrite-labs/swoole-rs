@@ -2,8 +2,9 @@
 // Compatibility derived from Swoole v6.2.4 src/coroutine/base.cc (Swoole contributors).
 // What crates/coroutine can't express of a swoole::Coroutine: the thread-local
 // scheduler and bailout callback, the facade's construction and delete (its
-// Context keeps a std::function), and the std::function arguments and timers.
-// Rust owns the rest (crates/coroutine/src/facade.rs).
+// Context keeps a std::function), the std::function arguments and timers, and
+// cancel, whose CancelFunc copy may throw. Rust owns the rest
+// (crates/coroutine/src/facade.rs).
 #include "swoole_coroutine.h"
 
 namespace swoole {
@@ -63,9 +64,24 @@ void Coroutine::call_on_bailout() {
     on_bailout();
 }
 
+// In C++ because a canceler's CancelFunc copy may throw, and no C++ exception
+// may cross a Rust frame.
+bool Coroutine::cancel() {
+    auto *canceler = static_cast<swr_v1_coroutine_canceler *>(co_.cancel_fn);
+    if (!canceler) {
+        swoole_set_last_error(SW_ERROR_CO_CANNOT_CANCEL);
+        return false;
+    }
+    auto copy = *canceler;
+    return copy.call(this, copy.data);
+}
+
+// Copying may throw; only a copy that succeeded marks the coroutine canceled.
 bool Coroutine::call_cancel(void *co, void *fn) {
     auto copy = *static_cast<CancelFunc *>(fn);
-    return copy(static_cast<Coroutine *>(co));
+    auto *self = static_cast<Coroutine *>(co);
+    swr_v1_coroutine_cancel(&self->co_);
+    return copy(self);
 }
 
 #ifdef SW_USE_THREAD_CONTEXT
