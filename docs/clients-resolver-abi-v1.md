@@ -3,7 +3,7 @@
 Feature value 1048576. Upstream targets:
 `src/network/{address,client,dns}.cc`, `ext-src/swoole_client.cc`,
 `swoole_client_async.cc`, `swoole_client_coro.cc`, `swoole_name_resolver.cc`
-and `include/swoole_client.h`. `include/swoole.h` and
+and `include/swoole_client.h` (deleted; `native/clients/swoole_client.h` is the owned copy). `include/swoole.h` and
 Stream are unchanged. Follows the
 [policy/effect split](abi-v1.md#policyeffect-split); data crosses as `repr(C)`
 scalars, opaque tokens, borrowed spans and caller-owned output with checked
