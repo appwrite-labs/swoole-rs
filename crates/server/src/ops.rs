@@ -88,6 +88,8 @@ pub const RUN_BASE_FINISH: u32 = 46;
 pub const RUN_BASE_DISPATCH: u32 = 47;
 /// One native op, arg the op: the operands are in the context (`server_methods.rs`).
 pub const RUN_NATIVE_OP: u32 = 48;
+/// A reactor thread's reactor is destroyed: close the connections it owns.
+pub const RUN_CLOSE_REACTOR_CONNECTIONS: u32 = 49;
 
 // Server facts.
 pub const OP_MODE: u32 = 0;
@@ -526,7 +528,6 @@ pub const OP_SEND_CLOSE_FORCE: u32 = 330;
 pub const LOG_RECVFROM: u32 = 350;
 /// arg the session.
 pub const LOG_NO_SESSION: u32 = 351;
-pub const TRACE_HEARTBEAT_JOIN: u32 = 352;
 
 // `ServerEventType` values on the reactor pipe.
 pub const EVENT_CLOSE_FORCE: u32 = 6;
@@ -767,11 +768,6 @@ pub const OP_CC_VALID: u32 = 975;
 /// Marks the connection closed, then `Reactor::_close`'s result.
 pub const OP_CC_FINISH: u32 = 976;
 pub const LOG_CC_LINGER: u32 = 990;
-/// Traces the new max fd arg.
-pub const TRACE_CC_MAXFD: u32 = 991;
-/// Traces the context's event, a write's connection or a peer close's fd.
-pub const TRACE_RT_WRITE: u32 = 992;
-pub const TRACE_RT_CLOSE: u32 = 993;
 
 // Rust-owned state and the rest of `master.cc` (`crates/server/src/state.rs`).
 /// `Server::add_command`: arg a `commands::AddCommand`.

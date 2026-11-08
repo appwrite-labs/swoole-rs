@@ -17,8 +17,7 @@ use crate::ops::{
     OP_RD_WRITE_FACTS, OP_REACTOR_DEL, OP_RESUME_TIMER, OP_RT_REMOVE_WRITE, OP_SET_MAXFD,
     OP_SET_WAITING_TIME, OP_UNLOCK, OP_WR_BUFFER_EMPTY, OP_WR_CLEAR_OVERFLOW, OP_WR_CLOSE,
     OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE, OP_WR_QUEUED, OP_WR_READ_ONLY, OP_WR_SEND,
-    OP_WR_SENDFILE, OP_WR_STATE, OP_WR_TIMER_DEL, OP_WR_TIMER_DELAY, OP_WR_WAIT, TRACE_CC_MAXFD,
-    TRACE_RT_CLOSE, TRACE_RT_WRITE,
+    OP_WR_SENDFILE, OP_WR_STATE, OP_WR_TIMER_DEL, OP_WR_TIMER_DELAY, OP_WR_WAIT,
 };
 use crate::reactor_thread::{SW_CONTINUE, SW_ERROR, SW_READY, SW_WAIT, verify_ssl};
 use crate::{Host, SW_ERR, SW_OK};
@@ -145,7 +144,6 @@ pub(crate) fn write<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
     if facts & FOUND == 0 {
         return Ok(SW_ERR);
     }
-    h.get(TRACE_RT_WRITE)?;
     if facts & CLOSE_NOTIFY != 0 {
         if facts & SSL_PENDING != 0 {
             return h.signed(OP_CLOSE);
@@ -207,7 +205,6 @@ pub(crate) fn write<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
 /// `ReactorThread_onClose`: the peer closed. Close now when nobody is told or a
 /// close is already queued, else mark the connection and notify the worker once.
 pub(crate) fn peer_close<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
-    h.get(TRACE_RT_CLOSE)?;
     if facts & FOUND == 0 {
         return Ok(SW_ERR);
     }
@@ -291,7 +288,6 @@ pub(crate) fn close_connection<H: Host>(h: &mut H) -> crate::Effect<i64> {
     h.get(OP_LOCK)?;
     if fd == h.signed(OP_MAXFD)? {
         let mut find = fd - 1;
-        h.op(TRACE_CC_MAXFD, find.cast_unsigned())?;
         while h.op(OP_CC_VALID, find.cast_unsigned())? == 0 && find > h.signed(OP_MINFD)? {
             find -= 1;
         }

@@ -93,11 +93,12 @@ pub(crate) struct ReactorContext {
     pub(crate) rdata: *const c_void,
     /// The `PipeBuffer` read from a worker, which starts with its head.
     pub(crate) resp: *const DataHead,
-    pkt: *mut c_void,
+    /// The datagram `OP_PACKET_INIT` reads into: this thread's buffer.
+    pub(crate) pkt: *mut c_void,
     /// The worker-pipe message at the front of the output buffer.
     pub(crate) front: *const DataHead,
     pub(crate) front_length: usize,
-    task: SendData,
+    pub(crate) task: SendData,
 }
 
 const _: () = assert!(
