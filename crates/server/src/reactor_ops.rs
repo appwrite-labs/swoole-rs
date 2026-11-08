@@ -925,12 +925,14 @@ unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[inline(always)]
 unsafe fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    use crate::ops::{
+        OP_BASE_PASS, OP_SESSION_HANDLERS, OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET,
+    };
     use crate::ops::{OP_CC_DTLS_FREE, OP_DTLS_ACCEPT, OP_RD_DTLS};
     use crate::ops::{
         OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_RESUME_READ,
         OP_WR_TIMER_DELAY,
     };
-    use crate::ops::{OP_SESSION_HANDLERS, OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET};
     // SAFETY: crates/timer's, native/reactor's and crates/tls's, under their upstream symbols.
     unsafe extern "C-unwind" {
         #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
@@ -1005,6 +1007,13 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 // SAFETY: one of the server's live ports.
                 unsafe { init_protocol(port) };
             }
+            0
+        }
+        OP_BASE_PASS => {
+            // SAFETY: the `SendData` (the context's task) the dispatch lends at arg.
+            let send = unsafe { &*(arg as *const SendData) };
+            // SAFETY: the context's live server and its state.
+            unsafe { crate::master_ops::base_pass(o.ctx.serv, o.state, send) };
             0
         }
         OP_STORE_LISTEN_SOCKET => {

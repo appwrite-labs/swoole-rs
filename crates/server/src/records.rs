@@ -71,6 +71,8 @@ pub struct ServerTables {
     pub reactor_threads: *mut c_void,
     /// `Server::ports`.
     pub ports: PortList,
+    /// `&Server::message_bus`, whose `MessageBus` starts with its Rust bus.
+    pub message_bus: *mut c_void,
 }
 
 /// The `ListenPort`s in listen order: a loan of `ServerState`'s list.
@@ -106,6 +108,7 @@ impl Default for ServerTables {
                 items: core::ptr::null(),
                 count: 0,
             },
+            message_bus: core::ptr::null_mut(),
         }
     }
 }

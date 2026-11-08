@@ -72,6 +72,14 @@ pub fn thread_id() -> u16 {
     native::host().map_or(0, |host| read(host, |thread| thread.id))
 }
 
+/// `SwooleTG.message_bus`: null before `swoole_init`.
+#[must_use]
+pub fn thread_message_bus() -> *mut c_void {
+    native::host().map_or(std::ptr::null_mut(), |host| {
+        read(host, |thread| thread.message_bus)
+    })
+}
+
 /// Sets `SwooleTG.message_bus`; nothing before `swoole_init`.
 pub fn set_thread_message_bus(bus: *mut c_void) {
     if let Some(host) = native::host() {

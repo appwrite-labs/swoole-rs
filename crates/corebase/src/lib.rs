@@ -34,7 +34,7 @@ pub use lifecycle::{
 pub use lifecycle::{
     set_thread, set_thread_async_threads, set_thread_message_bus, swoole_clean, swoole_fork,
     swoole_is_main_thread, swoole_thread_clean, swoole_thread_init, swr_v1_core_fork_exec,
-    thread_async_threads, thread_id, thread_kind, thread_reactor,
+    thread_async_threads, thread_id, thread_kind, thread_message_bus, thread_reactor,
 };
 pub use random::{swoole_random_string, swr_v1_corebase_random_char, swr_v1_os_random_bytes};
 pub use thread::*;

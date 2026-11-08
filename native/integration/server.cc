@@ -11,6 +11,7 @@ Server::Server(Mode mode)
         throw std::bad_alloc();
     }
     message_bus.count_ids(&gs->pipe_packet_msg_id);
+    tables_->message_bus = &message_bus;
 }
 
 Server::~Server() {

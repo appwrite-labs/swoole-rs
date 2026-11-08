@@ -15,6 +15,8 @@ use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{SocketRecord, reactor_upstream};
 
+use crate::base_factory::SendData;
+use crate::callbacks::CallbackSlot;
 use crate::callbacks::{
     CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CLOSE, CB_CONNECT, CB_RECEIVE, CB_TASK,
 };
@@ -34,19 +36,20 @@ use crate::ops::{
     OP_CONN_RESET, OP_CONN_UID, OP_CONN_WORKER, OP_COUNT_ACCEPT, OP_DGRAM_PORT, OP_DIRECT_SEND,
     OP_EVENT_FD, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED,
     OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH, OP_LAST_RECEIVED, OP_LAST_SENT, OP_NEW_PORT_TYPE,
-    OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PORT_IDLE_TIME, OP_PORT_NODELAY, OP_PORT_NUMBER,
-    OP_PORT_PUSH, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL, OP_PORT_TYPE, OP_REACTOR_ADD_READ,
-    OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_HAS_SEND_TIMER,
-    OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET,
-    OP_SC_TOUCH_SEND, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC, OP_SEND_TIMEOUT,
-    OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX,
-    OP_SENDFILE_OFFSET, OP_SESSION_BIND, OP_SESSION_CLAIM, OP_SET_DISABLE_NOTIFY,
-    OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF, OP_SIGNAL_FD, OP_SIGRTMIN,
-    OP_SOCK_FD, OP_SOCK_SSL, OP_SOCKET_CONN, OP_SOCKET_NOBUFS, OP_SPIN_LOCK, OP_SPIN_UNLOCK,
-    OP_SSL_CLEAR, OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT, OP_ST_TIMER,
-    OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_STATE, OP_STREAM_PORT,
-    OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
-    OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
+    OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PIPE_NOBUFS, OP_PORT_IDLE_TIME, OP_PORT_NODELAY,
+    OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL, OP_PORT_TYPE,
+    OP_REACTOR_ADD_READ, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL,
+    OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ,
+    OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR,
+    OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
+    OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SESSION_BIND, OP_SESSION_CLAIM,
+    OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF,
+    OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SOCKET_CONN, OP_SOCKET_NOBUFS,
+    OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR, OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH,
+    OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS,
+    OP_ST_W_RESET_COUNTS, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN,
+    OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES,
+    OP_WRONG_OPERATION,
 };
 use crate::ops::{
     OP_ABORT, OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH, OP_ST_PIPE_BIND,
@@ -72,6 +75,7 @@ use crate::ops::{
 };
 use crate::port_config::PortConfig;
 use crate::records::{ConnectionRecord, SessionRecord};
+use crate::send;
 use crate::server_methods::NativeContext;
 use crate::shared::{PortCounters, ServerCounters};
 use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
@@ -102,6 +106,8 @@ const HOOK_BEFORE_SERVER_START: c_int = 0;
 const HOOK_AFTER_SERVER_SHUTDOWN: c_int = 7;
 const HOOK_AFTER_SERVER_CREATE: c_int = 11;
 const SW_EVENT_WRITE: c_int = 1 << 10;
+/// `SW_SERVER_EVENT_CLOSE`.
+const EVENT_CLOSE: u8 = 4;
 /// `sizeof(Session)`, `sizeof(sw_atomic_t)` and `sizeof(SendfileTask)`.
 const SESSION_SIZE: usize = size_of::<SessionRecord>();
 const ATOMIC_SIZE: usize = 4;
@@ -1093,6 +1099,17 @@ pub(crate) unsafe fn answer(
             };
             u64::from(usize::try_from(sent) == Ok(length))
         }
+        OP_SC_FLAGS => send_flags(&o),
+        OP_SC_VERIFY => verify(&mut o),
+        OP_PIPE_NOBUFS => {
+            // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
+            let pipes = i64::from(o.tables().reactor_pipe_num);
+            let index = o.ctx.session_id % pipes;
+            let id = i64::from(o.conn().reactor_id) + index * i64::from(o.config().reactor_num);
+            let pipe = worker_record(o.ctx.serv, id).pipe_worker;
+            // SAFETY: the worker's live pipe socket.
+            u64::from(unsafe { swoole_rs_reactor::swr_v1_socket_has_kernel_nobufs(pipe.cast()) })
+        }
         OP_SOCKET_NOBUFS => {
             let socket = o.conn().socket.cast();
             // SAFETY: the connection's live socket.
@@ -1494,6 +1511,82 @@ unsafe fn effects(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: per the caller.
         op => return unsafe { sockets(o, op, arg) },
     })
+}
+
+/// The live server's worker `id` (`Server::get_worker`).
+fn worker_record<'a>(serv: *mut core::ffi::c_void, id: impl TryInto<u16>) -> &'a WorkerRecord {
+    let id = id.try_into().unwrap_or(u16::MAX);
+    // SAFETY: a live server; every caller passes a worker id it has.
+    let worker = unsafe { crate::view::worker(serv, id) };
+    // SAFETY: as above.
+    unsafe { &*worker }
+}
+
+/// `OP_SC_VERIFY`: selects the send's connection (`get_connection_verify`, or
+/// `get_connection_verify_no_ssl` for a close), its reactor, port and socket, and
+/// returns every fact the send reads, or 0 when there is none.
+fn verify(o: &mut Objects<'_>) -> u64 {
+    // SAFETY: the send path lends its live `SendData`.
+    let send = unsafe { &*o.ctx.send.cast::<SendData>() };
+    let kind = if send.info.kind == EVENT_CLOSE { 2 } else { 3 };
+    // SAFETY: the server's live tables.
+    let conn = unsafe { crate::swr_v1_server_connection(o.state, o.ctx.session_id, kind) };
+    o.ctx.conn = conn.cast();
+    // SAFETY: null, or a slot of the live connection table.
+    let Some(conn) = (unsafe { conn.as_ref() }) else {
+        return 0;
+    };
+    o.ctx.reactor = swoole_rs_corebase::thread_reactor();
+    // SAFETY: the live server and its connection's listening fd.
+    o.ctx.port = unsafe { crate::view::port_by_server_fd(o.ctx.serv, conn.server_fd) };
+    o.ctx.sock = conn.socket;
+    let config = o.config();
+    debug_assert!(
+        config.single_thread
+            || i64::from(conn.fd) % i64::from(config.reactor_num)
+                == i64::from(swoole_rs_corebase::thread_id()),
+        "a connection is sent to on its own reactor thread"
+    );
+    let out = o.sock().output.out_buffer;
+    // SAFETY: null or the socket's live buffer (`Buffer::empty`).
+    let out_empty = out.is_null() || unsafe { swr_cpp_buffer_empty(out.cast()) };
+    let bit = |set: bool, bit| if set { bit } else { 0 };
+    send_flags(o)
+        | send::FOUND
+        | send::HALFCLOSE
+        | bit(config.send_yield, send::SEND_YIELD)
+        | bit(out_empty, send::OUT_EMPTY)
+        | bit(o.sock().direct_send != 0, send::DIRECT_SEND)
+        | (u64::from(o.ctx.length) << 32)
+}
+
+/// `OP_SC_FLAGS`: the connection's flags, then its socket's and the server's buffer callbacks.
+fn send_flags(o: &Objects<'_>) -> u64 {
+    let (conn, sock) = (o.conn(), o.sock());
+    let callback = |index| {
+        o.state
+            .callbacks
+            .slot(index)
+            .is_some_and(CallbackSlot::is_set)
+    };
+    [
+        (conn.overflow != 0, send::OVERFLOW),
+        (conn.close_reset != 0, send::CLOSE_RESET),
+        (conn.close_force != 0, send::CLOSE_FORCE),
+        (conn.peer_closed != 0, send::PEER_CLOSED),
+        (conn.closed.load(Relaxed) != 0, send::CLOSED),
+        (conn.close_queued != 0, send::CLOSE_QUEUED),
+        (conn.high_watermark != 0, send::HIGH_WATERMARK),
+        (sock.removed != 0, send::REMOVED),
+        (sock.close_notified != 0, send::CLOSE_NOTIFIED),
+        (sock.events & SW_EVENT_READ != 0, send::EVENT_READ),
+        (sock.events & SW_EVENT_WRITE != 0, send::EVENT_WRITE),
+        (callback(CB_BUFFER_FULL), send::ON_BUFFER_FULL),
+        (callback(CB_BUFFER_EMPTY), send::ON_BUFFER_EMPTY),
+    ]
+    .into_iter()
+    .filter_map(|(set, bit)| set.then_some(bit))
+    .fold(0, |flags, bit| flags | bit)
 }
 
 /// `DgramPacket` up to its address.
@@ -2129,7 +2222,8 @@ unsafe fn closing(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: `remove_read_event` on this thread's live reactor.
             u64::from(unsafe { reactor_upstream::reactor_interest(reactor, socket, 4, 0) } == 0)
         }
-        _ => return None,
+        // SAFETY: per the caller.
+        op => return unsafe { sends(o, op, arg) },
     })
 }
 
@@ -2166,6 +2260,247 @@ unsafe extern "C" fn forced_exit(_: *mut usize) -> bool {
         unsafe { (*fields).running = false };
     }
     true
+}
+
+// SAFETY: crates/protocols' bus, linked into the same archive.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+unsafe extern "C" {
+    fn swr_v1_bus_pass(
+        bus: *mut core::ffi::c_void,
+        info: *const swoole_rs_corebase::DataHead,
+        data: *const c_char,
+    );
+    fn swr_v1_bus_buffer(bus: *mut core::ffi::c_void) -> *mut swoole_rs_corebase::DataHead;
+    fn swr_v1_bus_write(
+        bus: *mut core::ffi::c_void,
+        socket: *mut core::ffi::c_void,
+        head: *mut swoole_rs_corebase::DataHead,
+        data: *const u8,
+    ) -> bool;
+    fn swr_v1_bus_pipe_socket(bus: *mut core::ffi::c_void, fd: c_int) -> *mut SocketRecord;
+}
+
+/// `serv->get_worker_message_bus()`'s Rust bus: this thread's in thread mode,
+/// else the server's. A `MessageBus` starts with its Rust bus.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+fn worker_bus(state: &ServerState) -> *mut core::ffi::c_void {
+    // SAFETY: a live server's config.
+    let thread_mode = u64::from(unsafe { (*state.config()).mode_ }) == MODE_THREAD;
+    let bus = if thread_mode {
+        swoole_rs_corebase::thread_message_bus()
+    } else {
+        // SAFETY: a live server's tables.
+        unsafe { (*state.tables()).message_bus }
+    };
+    // SAFETY: a live `MessageBus`.
+    unsafe { *bus.cast::<*mut core::ffi::c_void>() }
+}
+
+/// `OP_BASE_PASS`: the worker message bus takes `send`, then `worker_accept_event`
+/// of it.
+///
+/// # Safety
+/// `serv` is a live server and `state` its own.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) unsafe fn base_pass(serv: *mut core::ffi::c_void, state: &ServerState, send: &SendData) {
+    let bus = worker_bus(state);
+    // SAFETY: the live bus and the send it copies.
+    unsafe { swr_v1_bus_pass(bus, &raw const send.info, send.data) };
+    // SAFETY: the live bus.
+    let event = unsafe { swr_v1_bus_buffer(bus) };
+    // SAFETY: the live server and the bus's buffer, which now holds the event.
+    unsafe { entry::worker_accept_event(serv, event.cast()) };
+}
+
+/// `SendfileTask`'s head: its offset and length, then its name.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[repr(C)]
+struct SendfileTask {
+    offset: libc::off_t,
+    length: usize,
+}
+
+/// The send ops that call a `Server` or `Socket` method crates/server,
+/// crates/process or crates/tls defines; else `None`.
+///
+/// # Safety
+/// As [`answer`].
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+unsafe fn sends(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    use crate::ops::{
+        OP_ACCEPT_EVENT, OP_BASE_PASS, OP_FEEDBACK_SEND, OP_FEEDBACK_THREAD, OP_FORWARD,
+        OP_SC_NOTIFY_FULL, OP_SC_SENDFILE, OP_SEND_HERE, OP_SEND_INCOMING, OP_SEND_SHUTDOWN,
+        OP_SENDFILE_FINISH,
+    };
+    use core::ffi::c_void;
+    use swoole_rs_corebase::DataHead;
+    // SAFETY: crates/tls', under their upstream symbols.
+    unsafe extern "C-unwind" {
+        #[cfg_attr(
+            target_os = "macos",
+            link_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKcxm"
+        )]
+        #[cfg_attr(
+            not(target_os = "macos"),
+            link_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKclm"
+        )]
+        fn sendfile_async(
+            socket: *mut c_void,
+            filename: *const c_char,
+            offset: libc::off_t,
+            length: usize,
+        ) -> c_int;
+        #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
+        fn send_async(socket: *mut c_void, data: *const c_void, length: usize) -> isize;
+    }
+    /// `SW_SERVER_EVENT_SEND_FILE`, `_BUFFER_FULL`, `_INCOMING` and `_SHUTDOWN_SIGNAL`.
+    const EVENT_SEND_FILE: u8 = 3;
+    const EVENT_BUFFER_FULL: c_int = 13;
+    const EVENT_INCOMING: u8 = 15;
+    const EVENT_SHUTDOWN_SIGNAL: u8 = 19;
+    let serv = o.ctx.serv;
+    // The connection's session and reactor in a head of `kind` (C++'s uint8_t).
+    #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint8_t) arg")]
+    let head = |kind: u64| {
+        let conn = o.conn();
+        DataHead {
+            fd: conn.session_id,
+            reactor_id: conn.reactor_id.into(),
+            kind: kind as u8,
+            ..DataHead::default()
+        }
+    };
+    // `serv->send_to_reactor_thread(head, sizeof(*head), head->fd)`.
+    let to_reactor_thread = |head: &DataHead| {
+        let size = size_of::<DataHead>();
+        // SAFETY: the live server and a head that outlives the call.
+        unsafe { entry::send_to_reactor_thread(serv, (&raw const *head).cast(), size, head.fd) }
+    };
+    // The `SendData` native code lends at arg.
+    let lent = || {
+        // SAFETY: as above.
+        unsafe { &*(arg as *const SendData) }
+    };
+    Some(match op {
+        OP_SEND_INCOMING => {
+            let head = DataHead {
+                server_fd: u16::try_from(o.ctx.server_fd).unwrap_or(u16::MAX),
+                ..head(u64::from(EVENT_INCOMING))
+            };
+            (to_reactor_thread(&head) as i64).cast_unsigned()
+        }
+        OP_FEEDBACK_THREAD => u64::from(to_reactor_thread(&head(arg)) > 0),
+        OP_FEEDBACK_SEND => {
+            let send = SendData {
+                info: head(arg),
+                data: core::ptr::null(),
+            };
+            // SAFETY: the live server and the send it delivers.
+            let sent = unsafe {
+                crate::server_methods::send_to_connection(serv, (&raw const send).cast())
+            };
+            u64::from(i64::from(sent) == crate::SW_OK)
+        }
+        OP_SEND_HERE => {
+            // SAFETY: the live server and the context's send.
+            sign(unsafe { crate::server_methods::send_to_connection(serv, o.ctx.send) })
+        }
+        OP_SC_NOTIFY_FULL => {
+            // SAFETY: the live server and the context's connection.
+            unsafe { crate::server_methods::notify(serv, o.conn(), EVENT_BUFFER_FULL) };
+            o.conn().high_watermark = 1;
+            0
+        }
+        OP_ACCEPT_EVENT => {
+            // SAFETY: the live server and the `DataHead` native code lends at arg.
+            unsafe { entry::worker_accept_event(serv, arg as *mut c_void) };
+            0
+        }
+        OP_BASE_PASS => {
+            // SAFETY: the live server and its state.
+            unsafe { base_pass(serv, o.state, lent()) };
+            0
+        }
+        OP_FORWARD => forward(o, lent()),
+        OP_SC_SENDFILE => {
+            let task = o.ctx.data.cast::<SendfileTask>();
+            // SAFETY: the send's `SendfileTask`, whose name follows its head.
+            let SendfileTask { offset, length } = unsafe { task.read() };
+            let name = task.wrapping_add(1).cast::<c_char>();
+            // SAFETY: the connection's live socket and the task's name.
+            sign(unsafe { sendfile_async(o.conn().socket, name, offset, length) })
+        }
+        OP_SEND_SHUTDOWN => {
+            // A worker may run as a user that cannot signal the master.
+            let send = SendData {
+                info: DataHead {
+                    kind: EVENT_SHUTDOWN_SIGNAL,
+                    ..DataHead::default()
+                },
+                data: core::ptr::null(),
+            };
+            // `serv->get_reactor_pipe_socket(0, 0)`.
+            let pipe = worker_record(serv, 0_u16).pipe_worker;
+            let data = (&raw const send).cast();
+            // SAFETY: the worker's live pipe socket and the send's bytes.
+            u64::from(unsafe { send_async(pipe, data, size_of::<SendData>()) } > 0)
+        }
+        OP_SENDFILE_FINISH => {
+            let task = o.ctx.buffer.cast::<SendfileTask>();
+            // SAFETY: `Server::sendfile`'s buffer, which starts with its task.
+            unsafe { (*task).offset = o.ctx.offset };
+            let head = u32::try_from(size_of::<SendfileTask>()).unwrap_or(0);
+            let mut send = SendData {
+                info: DataHead {
+                    fd: o.ctx.session_id,
+                    kind: EVENT_SEND_FILE,
+                    len: head + o.ctx.length + 1,
+                    ..DataHead::default()
+                },
+                data: o.ctx.buffer,
+            };
+            u64::from(factory_finish(o, &mut send))
+        }
+        _ => return None,
+    })
+}
+
+/// `OP_FORWARD`: the worker message bus writes `send` to the pipe of the worker
+/// that owns its session.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+fn forward(o: &Objects<'_>, send: &SendData) -> u64 {
+    // SAFETY: the server's live session table.
+    let session = unsafe { crate::swr_v1_server_session(o.state, send.info.fd) };
+    // SAFETY: the session's live slot.
+    let id = unsafe { (*session).reactor_bits } & 0xff;
+    let pipe = worker_record(o.ctx.serv, id).pipe_master;
+    let bus = worker_bus(o.state);
+    let socket = if u64::from(o.config().mode_) == MODE_THREAD {
+        // SAFETY: the worker's live pipe socket.
+        let fd = unsafe { (*pipe.cast::<SocketRecord>()).fd };
+        // SAFETY: the live bus.
+        unsafe { swr_v1_bus_pipe_socket(bus, fd) }.cast()
+    } else {
+        pipe
+    };
+    let (info, data) = ((&raw const send.info).cast_mut(), send.data.cast());
+    // SAFETY: the live bus, a live pipe socket and the send it writes.
+    u64::from(unsafe { swr_v1_bus_write(bus, socket, info, data) })
+}
+
+/// `serv->factory_->finish(send)`: the factory is a process one in process mode,
+/// else a base one (`ThreadFactory` keeps `BaseFactory::finish`).
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+fn factory_finish(o: &Objects<'_>, send: &mut SendData) -> bool {
+    let factory = o.config().factory_;
+    let send = (&raw mut *send).cast();
+    if u64::from(o.config().mode_) == MODE_PROCESS {
+        // SAFETY: the server's live process factory and the send it delivers.
+        unsafe { swoole_rs_process::workers::factory_methods::finish(factory, send) }
+    } else {
+        // SAFETY: the server's live base factory and the send it delivers.
+        unsafe { crate::server_methods::base_factory_finish(factory, send.cast()) }
+    }
 }
 
 /// Outside the hybrid, whose unit tests link no C++, native code keeps these.

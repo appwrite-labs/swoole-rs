@@ -84,6 +84,7 @@ const RECORD_1_OFFSETS: &[usize] = &[
     offset_of!(crate::records::ServerTables, reactor_pipe_num),
     offset_of!(crate::records::ServerTables, reactor_threads),
     offset_of!(crate::records::ServerTables, ports),
+    offset_of!(crate::records::ServerTables, message_bus),
 ];
 
 const RECORD_2_OFFSETS: &[usize] = &[

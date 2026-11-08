@@ -179,6 +179,7 @@ typedef struct swr_v1_server_tables {
     uint16_t reactor_pipe_num;
     SWR_SERVER_NATIVE(ReactorThread) *reactor_threads;
     swr_v1_server_ports ports;
+    void *message_bus;
 } swr_v1_server_tables;
 
 void *swr_v1_server_session(const swr_v1_server_state *state, long id);
