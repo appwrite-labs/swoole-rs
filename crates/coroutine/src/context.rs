@@ -28,6 +28,28 @@ pub struct Context {
     pub(crate) end: bool,
 }
 
+impl Context {
+    /// A [`THREAD`] context's record before its thread starts: no stack.
+    pub(crate) const fn threaded(
+        flags: u32,
+        entry: unsafe extern "C" fn(*mut c_void),
+        data: *mut c_void,
+    ) -> Self {
+        Self {
+            fctx: ptr::null_mut(),
+            swap_fctx: ptr::null_mut(),
+            stack: ptr::null_mut(),
+            stack_size: 0,
+            flags,
+            entry,
+            data,
+            asan_bottom: ptr::null(),
+            asan_size: 0,
+            end: false,
+        }
+    }
+}
+
 #[repr(C)]
 struct Transfer {
     fctx: *mut c_void,
@@ -85,20 +107,8 @@ pub unsafe extern "C" fn swr_v1_context_init(
     data: *mut c_void,
 ) -> c_int {
     if flags & THREAD != 0 {
-        let context = Context {
-            fctx: ptr::null_mut(),
-            swap_fctx: ptr::null_mut(),
-            stack: ptr::null_mut(),
-            stack_size: 0,
-            flags,
-            entry,
-            data,
-            asan_bottom: ptr::null(),
-            asan_size: 0,
-            end: false,
-        };
         // SAFETY: `ctx` is writable, as the caller promises.
-        unsafe { ctx.write(context) };
+        unsafe { ctx.write(Context::threaded(flags, entry, data)) };
         // SAFETY: initialized above; it stays put until free.
         return unsafe { thread::start(ctx) };
     }

@@ -217,14 +217,13 @@ mod tests {
         // SAFETY: the test's log; this thread holds the baton.
         unsafe { (*log).steps.push("entry") };
         // SAFETY: the running context.
-        unsafe { crate::context::swr_v1_context_swap_out((*log).ctx.as_mut_ptr()) };
+        unsafe { swap_out((*log).ctx.as_mut_ptr()) };
         // SAFETY: as above.
         unsafe { (*log).steps.push("resumed") };
     }
 
     #[test]
     fn a_thread_context_runs_one_side_at_a_time() {
-        use crate::context::*;
         let mut log = Log {
             ctx: core::mem::MaybeUninit::uninit(),
             steps: Vec::new(),
@@ -232,14 +231,16 @@ mod tests {
         let data = (&raw mut log).cast();
         let ctx = log.ctx.as_mut_ptr();
         swr_v1_thread_context_init();
+        // The context's own entry points, without the fcontext ones this test can't link.
         unsafe {
-            assert_eq!(swr_v1_context_init(ctx, 0, THREAD, entry, data), 0);
-            swr_v1_context_swap_in(ctx);
+            ctx.write(Context::threaded(THREAD, entry, data));
+            assert_eq!(start(ctx), 0);
+            swap_in(ctx);
             log.steps.push("main");
             assert!(!(*ctx).end);
-            swr_v1_context_swap_in(ctx);
+            swap_in(ctx);
             assert!((*ctx).end);
-            swr_v1_context_free(ctx);
+            free(ctx);
         }
         swr_v1_thread_context_clean();
         assert_eq!(log.steps, ["entry", "main", "resumed"]);

@@ -120,6 +120,8 @@ typedef struct {
     void (*resume)(void *co);
     int (*last_error)(void);
 } swr_v1_hook_async_ops;
+/* The thread's AsyncThreads, created first when it has none (null on failure). */
+void *swr_v1_async_threads_ensure(void);
 bool swr_v1_hook_async(void *event, void (*handler)(void *event), double timeout, const swr_v1_hook_async_ops *ops);
 bool swr_v1_hook_async_job(void (*job)(void *), void *context, const swr_v1_hook_async_ops *ops);
 int32_t swr_v1_hook_dns_error(int32_t error, int32_t asynchronous_timeout, int32_t resolve_timeout);

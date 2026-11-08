@@ -7,7 +7,7 @@
 // (crates/coroutine/src/facade.rs).
 #include "swoole_coroutine.h"
 #ifdef SW_USE_THREAD_CONTEXT
-#include "swoole_async.h"
+#include "swoole_rs_hooks.h"
 #endif
 
 namespace swoole {
@@ -93,9 +93,7 @@ void Coroutine::activate() {
     if (!swoole_timer_is_available()) {
         swoole_timer_add(1L, false, [](Timer *, TimerNode *) {}, nullptr);
     }
-    if (SwooleTG.async_threads == nullptr) {
-        SwooleTG.async_threads = new AsyncThreads();
-    }
+    swr_v1_async_threads_ensure();
     swr_v1_thread_context_init();
 #endif
     swr_v1_coroutine_set_active(&scheduler_, true);
