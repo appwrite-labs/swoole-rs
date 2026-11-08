@@ -15,7 +15,7 @@ use swoole_rs_zend::{
 };
 
 unsafe extern "C" {
-    /// `new NameResolver::Context()` (ext-src/swoole_name_resolver.cc).
+    /// `new NameResolver::Context()` (`native/clients/name_resolver.cc`).
     pub(crate) fn swoole_name_resolver_context_new() -> *mut c_void;
     /// `*context = {}` with `with_port`.
     pub(crate) fn swoole_name_resolver_context_reset(context: *mut c_void, with_port: bool);
