@@ -90,8 +90,8 @@ On Linux, build with `CC=clang CXX=clang++` so the C++ ASan matches rustc's.
 
 ## CI
 
-ClusterFuzzLite (`.clusterfuzzlite/`) builds every target. On PRs touching
-`crates/`, `fuzz/` or `.clusterfuzzlite/`, it fuzzes the targets the change reaches
-for five minutes (`cflite_pr.yml`). Nightly it fuzzes all targets for an hour
+ClusterFuzzLite (`.clusterfuzzlite/`) builds every target. On PRs touching a crate
+the targets link, `fuzz/` or `.clusterfuzzlite/`, it fuzzes the targets the change
+reaches for two minutes (`cflite_pr.yml`). Nightly it fuzzes all targets for an hour
 and then prunes its stored corpus (`cflite_batch.yml`). A crash fails the run,
 and the minimised input is uploaded as `cflite-crashes`.

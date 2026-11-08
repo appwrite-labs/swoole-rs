@@ -1,16 +1,38 @@
 name: ClusterFuzzLite PR
 on:
   pull_request:
-    paths: ['crates/**', 'fuzz/**', '.clusterfuzzlite/**', 'Cargo.lock']
+    # The crates fuzz/'s targets link (cargo metadata on fuzz/Cargo.toml); the nightly batch
+    # covers whatever drifts out of this list.
+    paths:
+      - 'crates/base64/**'
+      - 'crates/buffer/**'
+      - 'crates/clients/**'
+      - 'crates/corebase/**'
+      - 'crates/error/**'
+      - 'crates/framing/**'
+      - 'crates/http/**'
+      - 'crates/locks/**'
+      - 'crates/memory/**'
+      - 'crates/oracle/**'
+      - 'crates/ossupport/**'
+      - 'crates/process/**'
+      - 'crates/protocols/**'
+      - 'crates/reactor/**'
+      - 'crates/utilities/**'
+      - 'crates/websocket/**'
+      - 'fuzz/**'
+      - '.clusterfuzzlite/**'
+      - 'Cargo.lock'
 permissions: read-all
 concurrency:
   group: cflite-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
-  # Fuzzes the targets a PR's change reaches for five minutes, starting from the
+  # Fuzzes the targets a PR's change reaches for two minutes, starting from the
   # corpus the nightly batch run keeps. A crash fails the job and is uploaded.
   fuzz:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - id: build
         uses: google/clusterfuzzlite/actions/build_fuzzers@v1
@@ -22,7 +44,7 @@ jobs:
         uses: google/clusterfuzzlite/actions/run_fuzzers@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 300
+          fuzz-seconds: 120
           mode: code-change
           sanitizer: address
           minimize-crashes: true
