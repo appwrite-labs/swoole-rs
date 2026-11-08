@@ -192,10 +192,6 @@ unsafe fn text(state: *const ServerState, v6: bool, index: u16) -> *const c_char
 ///
 /// # Safety
 /// `serv` is a live `Server` and `conn` one of its connections.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server14get_local_addrEPNS_10ConnectionE")
-)]
 pub unsafe extern "C" fn get_local_addr(
     serv: *mut c_void,
     conn: *const ConnectionRecord,

@@ -286,10 +286,6 @@ pub unsafe extern "C-unwind" fn init_reactor(serv: *mut c_void, reactor: *mut c_
 ///
 /// # Safety
 /// `serv` is a live `Server`, in its master.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server21start_reactor_threadsEv")
-)]
 pub unsafe extern "C-unwind" fn start_reactor_threads(serv: *mut c_void) -> c_int {
     let mut ctx = ReactorContext::new(serv, ptr::null_mut());
     // SAFETY: per the caller.
@@ -349,10 +345,6 @@ pub unsafe extern "C-unwind" fn dispatch_task(
 ///
 /// # Safety
 /// `serv` is a live `Server`, in its master.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server19join_reactor_threadEv")
-)]
 pub unsafe extern "C-unwind" fn join_reactor_thread(serv: *mut c_void) {
     let mut ctx = ReactorContext::new(serv, ptr::null_mut());
     // SAFETY: per the caller.

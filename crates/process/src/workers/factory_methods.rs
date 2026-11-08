@@ -344,10 +344,6 @@ pub unsafe extern "C" fn end(factory: *mut c_void, session_id: c_long, flags: c_
 ///
 /// # Safety
 /// `serv` is a live `Server`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server22create_process_factoryEv")
-)]
 pub unsafe extern "C" fn create_process_factory(serv: *mut c_void) -> *mut c_void {
     // SAFETY: as the caller guarantees.
     let created = unsafe {
@@ -367,10 +363,6 @@ pub unsafe extern "C" fn create_process_factory(serv: *mut c_void) -> *mut c_voi
 ///
 /// # Safety
 /// `serv` is a live `Server` whose process factory was created.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server23destroy_process_factoryEv")
-)]
 pub unsafe extern "C" fn destroy_process_factory(serv: *mut c_void) {
     // SAFETY: as the caller guarantees.
     unsafe {
@@ -389,10 +381,6 @@ pub unsafe extern "C" fn destroy_process_factory(serv: *mut c_void) {
 ///
 /// # Safety
 /// `serv` is a live `Server`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server19create_worker_pipesEv")
-)]
 pub unsafe extern "C" fn create_worker_pipes(serv: *mut c_void) -> bool {
     // SAFETY: as the caller guarantees.
     unsafe {
