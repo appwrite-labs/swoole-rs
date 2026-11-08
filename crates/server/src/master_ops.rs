@@ -62,6 +62,10 @@ use crate::ops::{
     OP_STOP_WORKER_THREADS,
 };
 use crate::ops::{
+    OP_IP_KEY, OP_PIPE_COMMAND_ADD, OP_PIPE_COMMAND_DEL, OP_SC_CLOSE, OP_ST_DTLS_TYPE,
+    OP_ST_PIPE_FD, OP_ST_REACTOR_CLOSE, OP_WORKER_IDLE,
+};
+use crate::ops::{
     OP_IS_MASTER_THREAD, OP_MASTER_THREAD, OP_NOW_MS, OP_OUT_EMPTY, OP_PORT_EVENT_ADD,
     OP_PORT_EVENT_DEL, OP_PORT_REACTOR_DEL, OP_REACTOR_STOP, OP_REACTOR_WAIT_EXIT, OP_SC_APPEND,
     OP_SC_ENSURE_BUFFER, OP_SC_OUT_FULL, OP_SC_OUT_HIGH, OP_SC_QUEUE_CLOSE,
@@ -73,10 +77,14 @@ use crate::shared::{PortCounters, ServerCounters};
 use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::hook;
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::{sw_shm_calloc, sw_shm_free};
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::worker_record::swr_v1_worker_status;
 use swoole_rs_process::workers::entry;
+use swoole_rs_tls::socket_pair::SocketPair;
+use swoole_rs_utilities::misc::swoole_hash_php;
 
 const SW_LOG_TRACE: c_int = 1;
 const SW_LOG_NOTICE: c_int = 3;
@@ -1471,8 +1479,237 @@ unsafe fn effects(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.conn().close_queued = 1;
             0
         }
+        // SAFETY: per the caller.
+        op => return unsafe { sockets(o, op, arg) },
+    })
+}
+
+/// `DgramPacket` up to its address.
+#[repr(C)]
+struct DgramPacket {
+    socket_type: c_int,
+    socket_addr: SocketAddress,
+}
+
+/// The ops over the context's reactor, sockets and pipes, the server's
+/// workers and the dispatch address, which Rust lays out; else `None`.
+///
+/// # Safety
+/// As [`answer`].
+unsafe fn sockets(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    /// `SW_WORKER_IDLE`.
+    const WORKER_IDLE: u8 = 2;
+    Some(match op {
+        OP_ST_DTLS_TYPE => sign(o.port().r#type),
+        OP_WORKER_IDLE => {
+            #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint16_t) id")]
+            let id = arg as u16;
+            // SAFETY: the context's live server.
+            let worker = unsafe { crate::view::worker(o.ctx.serv, id) };
+            // SAFETY: null or one of the server's live workers.
+            u64::from(!worker.is_null() && unsafe { swr_v1_worker_status(worker) } == WORKER_IDLE)
+        }
+        OP_IP_KEY => {
+            let fd = libc::c_long::from(o.ctx.server_fd);
+            // SAFETY: the server's live tables.
+            let conn = unsafe { crate::swr_v1_server_connection(o.state, fd, 0) };
+            // SAFETY: null or a slot of the live connection table.
+            let addr = if let Some(conn) = unsafe { conn.as_ref() } {
+                &conn.info
+            } else {
+                // SAFETY: no connection: the context sends a datagram.
+                let packet = unsafe { (*o.ctx.send.cast::<crate::base_factory::SendData>()).data };
+                #[expect(
+                    clippy::cast_ptr_alignment,
+                    reason = "the payload is a message bus buffer, aligned for its `DgramPacket`"
+                )]
+                let packet = packet.cast::<DgramPacket>();
+                // SAFETY: the datagram's payload starts with its `DgramPacket`.
+                unsafe { &(*packet).socket_addr }
+            };
+            if swoole_rs_reactor::type_is(addr.kind, swoole_rs_reactor::CLASS_INET4) {
+                // SAFETY: an inet4 address.
+                u64::from(u32::from_be(unsafe { addr.addr.inet_v4.sin_addr.s_addr }))
+            } else {
+                let v6 = (&raw const addr.addr).cast::<c_char>();
+                // SAFETY: the address's storage holds a whole `sockaddr_in6`.
+                let hash = unsafe { swoole_hash_php(v6, size_of::<libc::sockaddr_in6>()) };
+                #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint32_t)")]
+                u64::from(hash as u32)
+            }
+        }
+        OP_SC_CLOSE | OP_ST_REACTOR_CLOSE => {
+            let reactor = o.ctx.reactor;
+            // SAFETY: the context's live reactor.
+            let fields = unsafe { reactor_upstream::prepared(reactor) }.fields;
+            // SAFETY: as above.
+            if let Some(close) = unsafe { (*fields).close } {
+                // SAFETY: the reactor's own close on the context's live socket.
+                unsafe { close(reactor, o.ctx.sock.cast()) };
+            }
+            0
+        }
+        OP_ST_PIPE_FD => {
+            // SAFETY: the context's live `UnixSocket`.
+            let pair = unsafe { &*o.ctx.object.cast::<SocketPair>() };
+            let end = if arg == 0 {
+                pair.master_socket
+            } else {
+                pair.worker_socket
+            };
+            // SAFETY: a ready pair's live end.
+            sign(unsafe { (*end).fd })
+        }
+        // `ctx->reactor->add` and `SwooleTG.reactor->del` of the command pipe's master end.
+        OP_PIPE_COMMAND_ADD | OP_PIPE_COMMAND_DEL => {
+            let pipe = o.config().pipe_command.cast::<SocketPair>();
+            // SAFETY: null or the server's live command pipe.
+            if let Some(pipe) = unsafe { pipe.as_ref() } {
+                let (reactor, kind, events) = if op == OP_PIPE_COMMAND_ADD {
+                    (o.ctx.reactor.cast_const(), 0, SW_EVENT_READ)
+                } else {
+                    (swoole_rs_corebase::thread_reactor().cast_const(), 2, 0)
+                };
+                // SAFETY: a live reactor and the pipe's live end.
+                unsafe {
+                    reactor_upstream::reactor_change(reactor, pipe.master_socket, kind, events)
+                };
+            }
+            0
+        }
+        // SAFETY: per the caller.
+        op => return unsafe { native(o, op, arg) },
+    })
+}
+
+/// The ops that call the event loop, timer, signal and error functions under
+/// their upstream symbols; else `None`.
+///
+/// # Safety
+/// As [`answer`].
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+unsafe fn native(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    use crate::ops::{
+        OP_COMMAND_HANDLER, OP_EVENT_FREE, OP_EVENT_WAIT, OP_LC_CLEAR_ERROR, OP_MARK_SHUTDOWN,
+        OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_ST_SOCK_FREE, OP_ST_TIMER_DEL, OP_TIMER_DETACHED,
+        OP_TIMER_REINIT,
+    };
+    use core::ffi::c_void;
+    /// `SW_FD_PIPE`.
+    const SW_FD_PIPE: c_int = 3;
+    // SAFETY: native/reactor's, crates/timer's, src/core/error.cc's and
+    // crates/reactor's, under their upstream symbols.
+    unsafe extern "C-unwind" {
+        #[link_name = "_Z17swoole_event_freev"]
+        fn swoole_event_free() -> c_int;
+        #[link_name = "_Z17swoole_event_waitv"]
+        fn swoole_event_wait() -> c_int;
+        #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
+        fn swoole_timer_del(node: *mut c_void) -> bool;
+        fn swr_v1_core_timer_slot() -> *mut *mut c_void;
+        fn swr_v1_timer_owner_reactor(timer: *const c_void) -> *mut c_void;
+        fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
+        #[link_name = "_Z27swoole_clear_last_error_msgv"]
+        fn swoole_clear_last_error_msg();
+        #[link_name = "_Z17swoole_signal_setiPFviEb"]
+        fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
+        #[link_name = "_Z19swoole_signal_clearv"]
+        fn swoole_signal_clear();
+    }
+    // SAFETY: master.cc's.
+    unsafe extern "C" {
+        #[link_name = "_ZN6swoole6Server21accept_command_resultEPNS_7ReactorEPNS_5EventE"]
+        fn accept_command_result(reactor: *mut c_void, event: *mut c_void) -> c_int;
+    }
+    // `SwooleTG.timer`.
+    let timer = || {
+        // SAFETY: the address of this thread's slot.
+        let slot = unsafe { swr_v1_core_timer_slot() };
+        // SAFETY: as above.
+        unsafe { *slot }
+    };
+    Some(match op {
+        OP_LC_CLEAR_ERROR => {
+            log::set_last_error(0);
+            // SAFETY: this thread's error message.
+            unsafe { swoole_clear_last_error_msg() };
+            0
+        }
+        OP_EVENT_FREE => {
+            // SAFETY: this thread's event loop.
+            unsafe { swoole_event_free() };
+            0
+        }
+        // SAFETY: as above.
+        OP_EVENT_WAIT => sign(unsafe { swoole_event_wait() }),
+        OP_TIMER_DETACHED => {
+            let timer = timer();
+            // SAFETY: this thread's live timer.
+            u64::from(!timer.is_null() && unsafe { swr_v1_timer_owner_reactor(timer) }.is_null())
+        }
+        OP_TIMER_REINIT => {
+            // SAFETY: this thread's live timer.
+            unsafe { swr_v1_timer_owner_reinit(timer(), false) };
+            0
+        }
+        OP_ST_TIMER_DEL => {
+            let node = match arg {
+                0 => &mut o.config().master_timer,
+                1 => &mut o.config().heartbeat_timer,
+                _ => &mut o.tables().enable_accept_timer,
+            };
+            // SAFETY: null or one of this thread's live timer nodes.
+            unsafe { swoole_timer_del(*node) };
+            *node = core::ptr::null_mut();
+            0
+        }
+        OP_SIGNAL_IGNORE | OP_SIGNAL_HANDLE => {
+            let handler = if op == OP_SIGNAL_HANDLE {
+                crate::server_methods::master_signal_handler as *const () as usize
+            } else {
+                0
+            };
+            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
+            let signo = arg as c_int;
+            // SAFETY: a handler nothing unloads, or none.
+            unsafe { swoole_signal_set(signo, handler, false) };
+            0
+        }
+        OP_MARK_SHUTDOWN => {
+            // SAFETY: the master, which owns the signal handlers.
+            unsafe { swoole_signal_clear() };
+            o.gs().start.store(0, SeqCst);
+            o.gs().shutdown.store(1, SeqCst);
+            0
+        }
+        OP_ST_SOCK_FREE => {
+            // SAFETY: the context's socket, which nothing uses afterwards;
+            // its body links the timer and C++ buffer.
+            unsafe { swoole_rs_tls::upstream::socket_free(o.ctx.sock.cast()) };
+            0
+        }
+        OP_COMMAND_HANDLER => {
+            let reactor = o.ctx.reactor.cast_const();
+            let handler: swoole_rs_reactor::Handler = accept_command_result;
+            // SAFETY: the context's live reactor.
+            unsafe {
+                reactor_upstream::reactor_set_handler(
+                    reactor,
+                    SW_FD_PIPE,
+                    SW_EVENT_READ,
+                    Some(handler),
+                );
+            };
+            0
+        }
         _ => return None,
     })
+}
+
+/// Outside the hybrid, whose unit tests link no C++, native code keeps these.
+#[cfg(not(all(feature = "upstream-symbols", not(test))))]
+unsafe fn native(_: &Objects<'_>, _: u32, _: u64) -> Option<u64> {
+    None
 }
 
 /// `Server::destroy_base_factory()`: the connection list and the connection counts.
@@ -1524,6 +1761,43 @@ mod tests {
                 answer(core::ptr::null_mut(), state, OP_SEND_TIMEOUT, 0),
                 None
             );
+            crate::swr_v1_server_state_free(state);
+        }
+    }
+
+    #[test]
+    fn pipe_fd_and_datagram_ip_key_read_their_records() {
+        let state = crate::swr_v1_server_state_new();
+        let mut ctx = context();
+        // SAFETY: plain records, for which zero is valid.
+        let (mut master, mut worker): (SocketRecord, SocketRecord) =
+            unsafe { (core::mem::zeroed(), core::mem::zeroed()) };
+        master.fd = 7;
+        worker.fd = 8;
+        let mut pair = SocketPair {
+            blocking: false,
+            timeout: 0.0,
+            socks: [8, 7],
+            master_socket: &raw mut master,
+            worker_socket: &raw mut worker,
+        };
+        ctx.object = (&raw mut pair).cast();
+        // SAFETY: as above.
+        let mut packet: DgramPacket = unsafe { core::mem::zeroed() };
+        packet.socket_addr.kind = 2;
+        packet.socket_addr.addr.inet_v4.sin_addr.s_addr = 0x0a00_0001_u32.to_be();
+        let mut send = crate::base_factory::SendData {
+            // SAFETY: as above.
+            info: unsafe { core::mem::zeroed() },
+            data: (&raw const packet).cast(),
+        };
+        ctx.send = (&raw mut send).cast();
+        ctx.server_fd = -1;
+        // SAFETY: the context's records are live above; no connection has fd -1.
+        unsafe {
+            assert_eq!(answer(&raw mut ctx, state, OP_ST_PIPE_FD, 0), Some(7));
+            assert_eq!(answer(&raw mut ctx, state, OP_ST_PIPE_FD, 1), Some(8));
+            assert_eq!(answer(&raw mut ctx, state, OP_IP_KEY, 0), Some(0x0a00_0001));
             crate::swr_v1_server_state_free(state);
         }
     }

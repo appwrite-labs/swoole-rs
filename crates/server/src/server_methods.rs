@@ -12,8 +12,8 @@ use std::sync::OnceLock;
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER, OP_TASK_PACK};
 use crate::ops::{
-    RUN_ACCEPT, RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_ST_INIT_PIPE_SOCKETS, RUN_START,
-    RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
+    RUN_ACCEPT, RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_SIGNAL, RUN_ST_INIT_PIPE_SOCKETS,
+    RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
 };
 use crate::ops::{
     RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_BASE_DISPATCH, RUN_BASE_END,
@@ -168,6 +168,20 @@ plain_methods! {
     "_ZN6swoole6Server5startEv" fn start() -> c_int = RUN_START;
     "_ZN6swoole6Server11start_checkEv" fn start_check() -> c_int = RUN_START_CHECK;
     "_ZN6swoole6Server19store_listen_socketEv" fn store_listen_socket() -> () = RUN_STORE_LISTEN_SOCKET;
+}
+
+/// `Server::master_signal_handler(signo)`: the signal over `SwooleG.server`.
+///
+/// # Safety
+/// Runs as a signal handler while `SwooleG.server` is live.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole6Server21master_signal_handlerEi")
+)]
+pub unsafe extern "C-unwind" fn master_signal_handler(signo: c_int) {
+    let mut ctx = NativeContext::new(swoole_rs_corebase::swr_v1_core_server());
+    // SAFETY: as the caller guarantees.
+    unsafe { run(RUN_SIGNAL, i64::from(signo).cast_unsigned(), &mut ctx) };
 }
 
 /// `SW_GLOBAL_HOOK_BEFORE_SERVER_CREATE`.
