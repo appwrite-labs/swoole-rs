@@ -32,5 +32,5 @@ the reactor side of the exit condition, which calls `swr_v1_phpcoroutines_can_ex
 `swoole_coroutine_system.cc` is out of the build too: `Swoole\Coroutine\System` and
 `FILE_LOCK` are Rust (`system.rs`), under upstream's `php_swoole_coroutine_system_minit`.
 It calls `swoole::coroutine::System`'s static members by their own symbols, and the
-`swr_v1_system_*` functions in `src/coroutine/system.cc` where a C++ string or list
+`swr_v1_system_*` functions in `native/hooks/system.cc` where a C++ string or list
 holds the result.

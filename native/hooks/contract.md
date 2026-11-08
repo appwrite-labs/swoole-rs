@@ -8,8 +8,8 @@ coroutine streams reach the socket through `system.cc`'s
 `include/swoole_coroutine_socket.h`, `src/coroutine/file_lock.cc` (deleted),
 `src/coroutine/hook.cc` (deleted),
 `src/coroutine/iouring.cc` (deleted with `include/swoole_iouring.h`; `Iouring` is
-`crates/hooks/src/iouring.rs`), `src/coroutine/socket.cc` (deleted; the coroutine
-Socket's native side is in `system.cc`), `src/coroutine/system.cc`,
+`crates/hooks/src/iouring.rs`), `src/coroutine/socket.cc` and `src/coroutine/system.cc` (deleted; what Rust can't
+express of `System` and the coroutine Socket is `native/hooks/system.cc`),
 `src/coroutine/uring_socket.cc` (deleted with `include/swoole_uring_socket.h`; a
 `UringSocket` is a `coroutine::Socket` its `swoole_socket_impl.h` constructors mark, and
 the Rust members take the ring for it).
@@ -156,8 +156,9 @@ are still never uninstalled.
   enabled-only destruction. Disabled destructors and zero-timeout starts do not
   dereference `timer_pp`. Positive allocation failure leaves enabled = true with
   a null pointer; existing non-null timers are not re-armed.
-- `System::sleep` minimum keeps NaN/Inf/non-positive comparisons and
-  get-current/`yield_ex`/is-canceled order.
+- `System::sleep` is Rust (`crates/hooks/src/sleep.rs`, upstream symbol): the
+  minimum keeps NaN/Inf/non-positive comparisons and the get-current/`yield_ex`/
+  is-canceled order; canceled is `yield_ex` failing with `SW_ERROR_CO_CANCELED`.
 
 ## Async tasks, DNS and io_uring
 

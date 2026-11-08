@@ -170,7 +170,7 @@ pub(crate) mod native {
     unsafe extern "C" {
         fn swr_v1_coroutine_current() -> *mut c_void;
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
-        fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
+        pub(crate) fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
     }
 
     /// `SW_ERROR_CO_OUT_OF_COROUTINE`.

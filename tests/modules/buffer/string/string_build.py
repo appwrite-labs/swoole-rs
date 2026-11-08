@@ -20,10 +20,12 @@ SOURCES = ['src/core/string.cc', 'src/core/base.cc', 'src/core/misc.cc', 'src/os
 
 
 def native_sources():
-    """The Zend-free native sources a String consumer links: all but the clients' DNS, whose
-    coroutine Socket calls need the Socket vtable in src/coroutine/system.cc, which a String
-    consumer doesn't build. Sanitizer data keeps those calls past --gc-sections."""
-    return [name for name in zend_free_native_sources() if name != 'src/swoole_rs_clients_dns.cc']
+    """The Zend-free native sources a String consumer links: all but the coroutine Socket's
+    (native/hooks/system.cc, whose static host tables reach the hooks and reactor) and the
+    clients' DNS, whose Socket calls need that file's vtable. Sanitizer data keeps those calls
+    past --gc-sections."""
+    return [name for name in zend_free_native_sources()
+            if name not in ('src/swoole_rs_clients_dns.cc', 'src/swoole_rs_hooks_system.cc')]
 
 
 def pinned_tree(source, tree):

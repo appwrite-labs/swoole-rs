@@ -62,7 +62,7 @@ mod host {
     }
     #[cfg(not(feature = "iouring"))]
     pub(super) extern "C" fn sleep(seconds: f64) -> CoroutineOutcome {
-        // SAFETY: src/coroutine/system.cc's.
+        // SAFETY: crates/hooks's (upstream symbol).
         unsafe extern "C" {
             #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
             fn system_sleep(seconds: f64) -> c_int;
