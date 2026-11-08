@@ -1,0 +1,624 @@
+//! Upstream's `core-tests/src/network/dns.cpp`, one Rust function per TEST with the
+//! same inputs and expected values. `dns_lookup`, `get_ip_by_hosts`, the DNS server
+//! and hosts-path setters and the name-resolver list are called under their upstream
+//! symbols, passing and reading libstdc++'s `std::string`, `std::vector` and
+//! `std::function` by their layouts; `GethostbynameRequest` and `GetaddrinfoRequest`
+//! are views of the resolver record, so the cases drive that record
+//! (`swr_v1_core_resolver_*`) as `network::gethostbyname`/`getaddrinfo` do; the
+//! lookup itself goes through `swoole_name_resolver_lookup_run`, its C entry.
+
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::fs;
+
+use super::{
+    AF_INET, AF_INET6, EAI_NONAME, SOCK_STREAM, coroutine_cancel, current, go, last_error, run,
+};
+
+const SW_ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = 711;
+const SW_ERROR_CO_CANCELED: c_int = 10017;
+const SW_DNS_SERVER_PORT: c_int = 53;
+const SW_TRAVERSE_KEEP: c_int = 0;
+const SW_TRAVERSE_REMOVE: c_int = 1;
+const TYPE_USER: c_int = 2;
+const TEST_HTTP_DOMAIN: &CStr = c"www.gov.cn";
+
+/// libstdc++'s `std::string`: data, length, then the local buffer or the capacity.
+#[repr(C)]
+pub(super) struct CxxString {
+    ptr: *const u8,
+    len: usize,
+    local: [usize; 2],
+}
+
+impl CxxString {
+    /// A view of `text` the callee only reads (`const std::string &`): an out-of-line
+    /// string whose capacity is its length.
+    pub(super) fn borrow(text: &CStr) -> Self {
+        let len = text.to_bytes().len();
+        Self {
+            ptr: text.as_ptr().cast(),
+            len,
+            local: [len, 0],
+        }
+    }
+
+    /// A string the callee owns and frees: out of line in `operator new` memory.
+    fn owned(text: &str) -> Self {
+        // SAFETY: operator new returns `len + 1` writable bytes or throws.
+        let ptr = unsafe { operator_new(text.len() + 1) }.cast::<u8>();
+        // SAFETY: `ptr` holds `len + 1` bytes; `text` doesn't overlap it.
+        unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), ptr, text.len()) };
+        // SAFETY: the terminator is within the allocation.
+        unsafe { *ptr.add(text.len()) = 0 };
+        Self {
+            ptr,
+            len: text.len(),
+            local: [text.len(), 0],
+        }
+    }
+
+    /// A string returned by value, read on the thread's own stack. A local
+    /// (short) string pointed into the slot the callee wrote, which was in this
+    /// frame and has since moved here; an out-of-line one points to the heap.
+    fn take(self) -> String {
+        let here = (&raw const self) as usize;
+        let bytes = if self.len < 16 && (self.ptr as usize).abs_diff(here) < 1 << 16 {
+            // SAFETY: the local buffer holds the short string.
+            unsafe { std::slice::from_raw_parts(self.local.as_ptr().cast::<u8>(), self.len) }
+        } else {
+            // SAFETY: the out-of-line buffer holds `len` bytes; it leaks with the case.
+            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+        };
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// An element of a `std::vector<std::string>`, read in place.
+    fn text(&self) -> String {
+        // SAFETY: an in-place string's data holds `len` bytes.
+        String::from_utf8(unsafe { std::slice::from_raw_parts(self.ptr, self.len) }.to_vec())
+            .unwrap()
+    }
+}
+
+/// `std::vector<std::string>`.
+#[repr(C)]
+struct CxxVector {
+    begin: *const CxxString,
+    end: *const CxxString,
+    capacity: *const CxxString,
+}
+
+impl CxxVector {
+    fn list(&self) -> Vec<String> {
+        let len = (self.end as usize - self.begin as usize) / size_of::<CxxString>();
+        // SAFETY: the vector's elements; they leak with the case.
+        (0..len)
+            .map(|i| unsafe { &*self.begin.add(i) }.text())
+            .collect()
+    }
+}
+
+/// `swoole::DnsServer`.
+#[repr(C)]
+struct DnsServer {
+    host: CxxString,
+    port: c_int,
+}
+
+/// libstdc++'s `std::function`: the functor's storage, its manager and its invoker.
+#[repr(C)]
+struct CxxFunction {
+    functor: [usize; 2],
+    manager: unsafe extern "C" fn(*mut [usize; 2], *const [usize; 2], c_int) -> bool,
+    invoker: *const c_void,
+}
+
+/// The manager of a stateless functor held in place: nothing to type, clone or destroy.
+unsafe extern "C" fn stateless(
+    dest: *mut [usize; 2],
+    source: *const [usize; 2],
+    op: c_int,
+) -> bool {
+    // __get_type_info (no caller asks), __get_functor_ptr, __clone_functor, __destroy_functor.
+    match op {
+        // SAFETY: `dest` is a writable functor slot.
+        0 => unsafe { (*dest)[0] = 0 },
+        // SAFETY: as above.
+        1 => unsafe { (*dest)[0] = source as usize },
+        // SAFETY: both are functor slots.
+        2 => unsafe { *dest = *source },
+        _ => {}
+    }
+    false
+}
+
+impl CxxFunction {
+    fn new(invoker: *const c_void) -> Self {
+        Self {
+            functor: [0; 2],
+            manager: stateless,
+            invoker,
+        }
+    }
+}
+
+/// `swoole::NameResolver::Context`.
+#[repr(C)]
+struct Context {
+    kind: c_int,
+    timeout: f64,
+    private_data: *mut c_void,
+    with_port: bool,
+    cluster: bool,
+    is_final: bool,
+    dtor: [usize; 4],
+}
+
+impl Context {
+    /// `ctx = {type}`.
+    fn of(kind: c_int) -> Self {
+        Self {
+            kind,
+            timeout: 0.0,
+            private_data: std::ptr::null_mut(),
+            with_port: false,
+            cluster: false,
+            is_final: false,
+            dtor: [0; 4],
+        }
+    }
+}
+
+/// `swoole::NameResolver`.
+#[repr(C)]
+struct NameResolver {
+    resolve: CxxFunction,
+    private_data: *mut c_void,
+    kind: c_int,
+}
+
+/// `swoole_name_resolver_lookup_call`.
+#[repr(C)]
+struct LookupCall {
+    name: *const c_char,
+    length: usize,
+    context: *mut Context,
+    out: *mut c_void,
+    assign: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
+}
+
+#[repr(C)]
+struct ResolverFields {
+    family: c_int,
+    socktype: c_int,
+    protocol: c_int,
+    error: c_int,
+    count: c_int,
+}
+
+#[repr(C)]
+struct ResolverPrepared {
+    owner: *mut c_void,
+    fields: *mut ResolverFields,
+    name: *const c_void,
+    service: *const c_void,
+    address: *const c_void,
+}
+
+#[repr(C)]
+struct ResolverText {
+    bytes: [c_char; 46],
+    valid: bool,
+}
+
+#[repr(C)]
+struct StringView {
+    data: *const c_char,
+    length: usize,
+}
+
+#[link(name = "swoole")]
+unsafe extern "C-unwind" {
+    #[link_name = "_ZN6swoole9coroutine10dns_lookupEPKcid"]
+    fn dns_lookup(domain: *const c_char, family: c_int, timeout: f64) -> CxxVector;
+    #[link_name = "_ZN6swoole9coroutine15get_ip_by_hostsERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"]
+    fn get_ip_by_hosts(domain: *const CxxString) -> CxxString;
+    #[link_name = "_Z21swoole_set_dns_serverRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"]
+    fn swoole_set_dns_server(server: *const CxxString);
+    #[link_name = "_Z21swoole_get_dns_serverv"]
+    fn swoole_get_dns_server() -> DnsServer;
+    #[link_name = "_Z23swoole_load_resolv_confv"]
+    fn swoole_load_resolv_conf() -> bool;
+    #[link_name = "_Z21swoole_set_hosts_pathRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"]
+    fn swoole_set_hosts_path(path: *const CxxString);
+    #[link_name = "_Z24swoole_name_resolver_addRKN6swoole12NameResolverEb"]
+    fn swoole_name_resolver_add(resolver: *const NameResolver, append: bool);
+    #[link_name = "_Z25swoole_name_resolver_eachRKSt8functionIF19swTraverseOperationRKSt14_List_iteratorIN6swoole12NameResolverEEEE"]
+    fn swoole_name_resolver_each(fn_: *const CxxFunction);
+    fn swoole_name_resolver_lookup_run(call: *mut LookupCall);
+    #[link_name = "_Znwm"]
+    fn operator_new(size: usize) -> *mut c_void;
+
+    fn swr_v1_core_resolver_create(
+        family: c_int,
+        socktype: c_int,
+        protocol: c_int,
+        name: *const c_char,
+        name_length: usize,
+        service: *const c_char,
+        service_length: usize,
+    ) -> ResolverPrepared;
+    fn swr_v1_core_resolver_free(owner: *mut c_void);
+    fn swr_v1_core_resolver_host(owner: *mut c_void) -> c_int;
+    fn swr_v1_core_resolver_lookup(
+        owner: *mut c_void,
+        unknown: unsafe extern "C" fn(*mut c_void, c_int) -> bool,
+        context: *mut c_void,
+    ) -> c_int;
+    fn swr_v1_core_resolver_next(owner: *const c_void, cursor: *mut usize) -> ResolverText;
+    fn swr_v1_core_string_view(string: *const c_void) -> StringView;
+    fn swr_v1_clients_address_verify(family: c_int, host: *const c_char) -> bool;
+}
+
+/// `network::Address::verify_ip`.
+pub(super) fn verify_ip(family: c_int, ip: &str) -> bool {
+    let ip = CString::new(ip).unwrap();
+    // SAFETY: a NUL-terminated address.
+    unsafe { swr_v1_clients_address_verify(family, ip.as_ptr()) }
+}
+
+fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {
+    // SAFETY: a NUL-terminated domain, in a coroutine.
+    unsafe { dns_lookup(domain.as_ptr(), family, timeout) }.list()
+}
+
+fn hosts(domain: &CStr) -> String {
+    let domain = CxxString::borrow(domain);
+    // SAFETY: a borrowed string the callee reads.
+    unsafe { get_ip_by_hosts(&domain) }.take()
+}
+
+fn set_dns_server(server: &str) {
+    let server = CString::new(server).unwrap();
+    let server = CxxString::borrow(&server);
+    // SAFETY: as above.
+    unsafe { swoole_set_dns_server(&server) };
+}
+
+fn dns_server() -> (String, c_int) {
+    // SAFETY: returns the server by value.
+    let server = unsafe { swoole_get_dns_server() };
+    (server.host.take(), server.port)
+}
+
+unsafe extern "C" fn assign(out: *mut c_void, text: *const c_char, length: usize) {
+    // SAFETY: `out` is the caller's String; `text` holds `length` bytes.
+    let text = unsafe { std::slice::from_raw_parts(text.cast::<u8>(), length) };
+    // SAFETY: as above.
+    *unsafe { &mut *out.cast::<String>() } = String::from_utf8(text.to_vec()).unwrap();
+}
+
+/// `swoole_name_resolver_lookup(host_name, ctx)`.
+fn name_resolver_lookup(host_name: &str, ctx: &mut Context) -> String {
+    let mut out = String::new();
+    let mut call = LookupCall {
+        name: host_name.as_ptr().cast(),
+        length: host_name.len(),
+        context: ctx,
+        out: (&raw mut out).cast(),
+        assign,
+    };
+    // SAFETY: the call's pointers outlive it.
+    unsafe { swoole_name_resolver_lookup_run(&mut call) };
+    out
+}
+
+/// `GethostbynameRequest req(name, family); network::gethostbyname(&req)`: the status
+/// and `req.addr`.
+fn gethostbyname(name: &CStr, family: c_int) -> (c_int, String) {
+    // SAFETY: a NUL-terminated name and an empty service.
+    let req = unsafe {
+        swr_v1_core_resolver_create(
+            family,
+            0,
+            0,
+            name.as_ptr(),
+            name.to_bytes().len(),
+            c"".as_ptr(),
+            0,
+        )
+    };
+    assert!(!req.owner.is_null());
+    // SAFETY: the record just made.
+    let status = unsafe { swr_v1_core_resolver_host(req.owner) };
+    // SAFETY: the record's address slot.
+    let view = unsafe { swr_v1_core_string_view(req.address) };
+    // SAFETY: the view's bytes, read before the record goes.
+    let addr = unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec();
+    // SAFETY: frees the record once.
+    unsafe { swr_v1_core_resolver_free(req.owner) };
+    (status, String::from_utf8(addr).unwrap())
+}
+
+/// `network::getaddrinfo`'s warning for an unknown family is a log line; the lookup goes on.
+unsafe extern "C" fn unknown_family(_: *mut c_void, _: c_int) -> bool {
+    true
+}
+
+struct Getaddrinfo {
+    status: c_int,
+    count: c_int,
+    error: c_int,
+    ip_list: Vec<String>,
+}
+
+/// `GetaddrinfoRequest req(hostname, family, SOCK_STREAM, 0, ""); network::getaddrinfo(&req);
+/// req.parse_result(ip_list)`.
+fn getaddrinfo(hostname: &CStr, family: c_int) -> Getaddrinfo {
+    // SAFETY: as in `gethostbyname`.
+    let req = unsafe {
+        swr_v1_core_resolver_create(
+            family,
+            SOCK_STREAM,
+            0,
+            hostname.as_ptr(),
+            hostname.to_bytes().len(),
+            c"".as_ptr(),
+            0,
+        )
+    };
+    assert!(!req.owner.is_null());
+    // SAFETY: the record just made.
+    let status =
+        unsafe { swr_v1_core_resolver_lookup(req.owner, unknown_family, std::ptr::null_mut()) };
+    let mut ip_list = Vec::new();
+    let mut cursor = 0;
+    loop {
+        // SAFETY: walks the record's results.
+        let address = unsafe { swr_v1_core_resolver_next(req.owner, &mut cursor) };
+        if !address.valid {
+            break;
+        }
+        // SAFETY: a NUL-terminated presentation address.
+        ip_list.push(
+            unsafe { CStr::from_ptr(address.bytes.as_ptr()) }
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    // SAFETY: the record's fields.
+    let (count, error) = unsafe { ((*req.fields).count, (*req.fields).error) };
+    // SAFETY: frees the record once.
+    unsafe { swr_v1_core_resolver_free(req.owner) };
+    Getaddrinfo {
+        status,
+        count,
+        error,
+        ip_list,
+    }
+}
+
+fn lookup1() {
+    run(|| assert!(!lookup(c"www.baidu.com", AF_INET, 10.0).is_empty()));
+}
+
+fn lookup_ipv6() {
+    run(|| assert!(!lookup(c"www.google.com", AF_INET6, 2.0).is_empty()));
+}
+
+fn domain_not_found() {
+    run(|| {
+        assert_eq!(lookup(c"www.baidu.com-not-found", AF_INET, 2.0).len(), 0);
+        assert_eq!(last_error(), SW_ERROR_DNSLOOKUP_RESOLVE_FAILED);
+    });
+}
+
+fn bad_family() {
+    run(|| assert!(!lookup(c"www.google.com", 9999, 2.0).is_empty()));
+}
+
+fn cancel() {
+    run(|| {
+        let co = current();
+        go(move || {
+            super::co_sleep(0.001);
+            // SAFETY: the outer coroutine is suspended in its lookup.
+            unsafe { coroutine_cancel(co) };
+        });
+        let list1 = lookup(c"www.baidu-not-found-for-cancel.com", AF_INET, 2.0);
+        assert_eq!(list1.len(), 0);
+        assert_eq!(last_error(), SW_ERROR_CO_CANCELED);
+    });
+}
+
+fn gethostbyname_() {
+    let (status, addr) = gethostbyname(TEST_HTTP_DOMAIN, AF_INET);
+    assert_eq!(status, 0);
+    assert!(verify_ip(AF_INET, &addr));
+
+    let (status, addr) = gethostbyname(TEST_HTTP_DOMAIN, AF_INET6);
+    assert_eq!(status, 0);
+    assert!(verify_ip(AF_INET6, &addr));
+}
+
+fn getaddrinfo_() {
+    let req = getaddrinfo(c"www.baidu.com", AF_INET);
+    assert_eq!(req.status, 0);
+    assert!(req.count > 0);
+    for ip in &req.ip_list {
+        assert!(verify_ip(AF_INET, ip));
+    }
+}
+
+fn getaddrinfo_without_service() {
+    // An empty service must be treated as no service at all; musl rejects an empty string with EAI_SERVICE.
+    let req = getaddrinfo(c"localhost", AF_INET);
+    assert_eq!(req.status, 0);
+    assert!(req.count > 0);
+    assert!(req.ip_list.iter().any(|ip| ip == "127.0.0.1"));
+}
+
+fn getaddrinfo_fail() {
+    let req = getaddrinfo(c"www.baidu.com-not-exists", AF_INET);
+    assert_eq!(req.status, -1);
+    assert_eq!(req.error, EAI_NONAME);
+}
+
+fn getaddrinfo_ipv6() {
+    let req = getaddrinfo(TEST_HTTP_DOMAIN, AF_INET6);
+    assert_eq!(req.status, 0);
+    assert!(req.count > 0);
+    for ip in &req.ip_list {
+        assert!(verify_ip(AF_INET6, ip));
+    }
+}
+
+fn load_resolv_conf() {
+    let port = super::socket::get_random_port();
+
+    let ori_dns_server = dns_server();
+
+    // with port
+    set_dns_server(&format!("127.0.0.1:{port}")); // fake dns server
+    let dns_server_ = dns_server();
+    assert_eq!(dns_server_.0, "127.0.0.1");
+    assert_eq!(dns_server_.1, port);
+
+    // invalid port
+    set_dns_server("127.0.0.1:808088");
+    assert_eq!(dns_server().1, SW_DNS_SERVER_PORT);
+
+    // SAFETY: reads the configured resolv.conf.
+    assert!(unsafe { swoole_load_resolv_conf() });
+    assert_eq!(dns_server(), ori_dns_server);
+}
+
+fn gethosts() {
+    let hosts_file = c"/tmp/swoole_hosts";
+    fs::write(
+        hosts_file.to_str().unwrap(),
+        "\n127.0.0.1\n127.0.0.1 localhost\n# 127.0.0.1 aaa.com\n       127.0.0.1 bbb.com               ccc.com      #ddd.com\n",
+    )
+    .unwrap();
+    struct Unlink;
+    impl Drop for Unlink {
+        fn drop(&mut self) {
+            let _ = fs::remove_file("/tmp/swoole_hosts");
+        }
+    }
+    let _unlink = Unlink;
+
+    let path = CxxString::borrow(hosts_file);
+    // SAFETY: a borrowed string the callee copies.
+    unsafe { swoole_set_hosts_path(&path) };
+
+    assert_eq!(hosts(c"localhost"), "127.0.0.1");
+    assert_eq!(hosts(c"aaa.com"), "");
+    assert_eq!(hosts(c"bbb.com"), "127.0.0.1");
+    assert_eq!(hosts(c"ccc.com"), "127.0.0.1");
+    assert_eq!(hosts(c"ddd.com"), "");
+    assert_eq!(hosts(c"non.exist.com"), "");
+}
+
+fn name_resolver_test_fn_1() {
+    let mut ctx = Context::of(AF_INET);
+    ctx.timeout = 1.0;
+    assert_eq!("127.0.0.1", name_resolver_lookup("localhost", &mut ctx));
+}
+
+/// The user resolver's `std::function` invoker: `std::string(const std::string &,
+/// Context *, void *)`, each argument by reference.
+unsafe extern "C" fn user_resolve(
+    _: *const [usize; 2],
+    domain: *const CxxString,
+    ctx: *const *mut Context,
+    _: *const *mut c_void,
+) -> CxxString {
+    // SAFETY: the caller's live string.
+    let domain = unsafe { &*domain }.text();
+    if domain == "name1" {
+        return CxxString::owned("127.0.0.2");
+    } else if domain == "www.baidu.com" {
+        // SAFETY: the lookup's live context.
+        unsafe { (**ctx).is_final = true };
+        return CxxString::owned("");
+    }
+    CxxString::owned("")
+}
+
+/// The traversal's invoker: `swTraverseOperation(const std::list<NameResolver>::iterator &)`.
+unsafe extern "C" fn remove_user(_: *const [usize; 2], iter: *const *const u8) -> c_int {
+    // A list node is its two links, then the NameResolver.
+    // SAFETY: the iterator names a live node.
+    let resolver = unsafe { &*(*iter).add(2 * size_of::<usize>()).cast::<NameResolver>() };
+    if resolver.kind == TYPE_USER {
+        SW_TRAVERSE_REMOVE
+    } else {
+        SW_TRAVERSE_KEEP
+    }
+}
+
+fn name_resolver_test_fn_2() {
+    let nr = NameResolver {
+        resolve: CxxFunction::new(user_resolve as *const c_void),
+        private_data: std::ptr::null_mut(),
+        kind: TYPE_USER,
+    };
+
+    // SAFETY: the list copies the resolver.
+    unsafe { swoole_name_resolver_add(&nr, true) };
+
+    let mut ctx = Context::of(AF_INET);
+    assert_eq!("127.0.0.2", name_resolver_lookup("name1", &mut ctx));
+
+    let mut ctx = Context::of(AF_INET);
+    assert_eq!("", name_resolver_lookup("www.baidu.com", &mut ctx));
+
+    let mut ctx = Context::of(AF_INET);
+    assert_eq!("127.0.0.1", name_resolver_lookup("localhost", &mut ctx));
+
+    let each = CxxFunction::new(remove_user as *const c_void);
+    // SAFETY: a stateless function the traversal calls.
+    unsafe { swoole_name_resolver_each(&each) };
+
+    let mut ctx = Context::of(AF_INET);
+    let ip = name_resolver_lookup("www.baidu.com", &mut ctx);
+    assert!(verify_ip(AF_INET, &ip));
+}
+
+fn name_resolve_1() {
+    name_resolver_test_fn_1();
+    run(name_resolver_test_fn_1);
+}
+
+fn name_resolve_2() {
+    name_resolver_test_fn_2();
+    run(name_resolver_test_fn_2);
+}
+
+fn name_resolve_fail() {
+    let mut ctx = Context::of(AF_INET);
+    let ip = name_resolver_lookup("www.baidu.com-not-exists", &mut ctx);
+    assert!(ip.is_empty());
+    assert_eq!(last_error(), SW_ERROR_DNSLOOKUP_RESOLVE_FAILED);
+}
+
+/// `dns.<name>`, in upstream's order.
+pub(super) const CASES: super::Cases = &[
+    ("lookup1", lookup1),
+    ("lookup_ipv6", lookup_ipv6),
+    ("domain_not_found", domain_not_found),
+    ("bad_family", bad_family),
+    ("cancel", cancel),
+    ("gethostbyname", gethostbyname_),
+    ("getaddrinfo", getaddrinfo_),
+    ("getaddrinfo_without_service", getaddrinfo_without_service),
+    ("getaddrinfo_fail", getaddrinfo_fail),
+    ("getaddrinfo_ipv6", getaddrinfo_ipv6),
+    ("load_resolv_conf", load_resolv_conf),
+    ("gethosts", gethosts),
+    ("name_resolve_1", name_resolve_1),
+    ("name_resolve_2", name_resolve_2),
+    ("name_resolve_fail", name_resolve_fail),
+];

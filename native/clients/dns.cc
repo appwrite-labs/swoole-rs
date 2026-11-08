@@ -9,6 +9,7 @@
 #include "swoole_coroutine_api.h"
 #include "swoole_async.h"
 #include "swoole_rs_clients.h"
+#include "swoole_rs_phpclients.h"
 
 #include <locale>
 #include <string>
@@ -88,6 +89,13 @@ SW_API std::string swoole_name_resolver_lookup(const std::string &host_name, Nam
         return System::gethostbyname(host_name, ctx->type, ctx->timeout);
     }
     return swoole::network::gethostbyname(ctx->type, host_name);
+}
+
+// Here, not in name_resolver.cc, so Zend-free callers (core-tests' Rust cases) reach it too.
+void swoole_name_resolver_lookup_run(void *call) {
+    auto *c = static_cast<swoole_name_resolver_lookup_call *>(call);
+    auto result = swoole_name_resolver_lookup(std::string(c->name, c->length), static_cast<NameResolver::Context *>(c->context));
+    c->assign(c->out, result.data(), result.size());
 }
 
 namespace swoole {

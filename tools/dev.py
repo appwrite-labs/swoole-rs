@@ -60,8 +60,6 @@ CORE_TESTS = {
                   ('crates/http/src/request.rs', ['has_expect_header', 'get_protocol', 'all_method']),
                   ('crates/websocket/src/frame_api.rs', ['websocket_encode', 'websocket_compressed_control_frame'])]
                  for name in names}}),
-    'clients': (['network/dns.cpp', 'network/address.cpp'],
-                {'dns.lookup1': NETWORK, 'dns.lookup_ipv6': NETWORK, 'dns.bad_family': NETWORK, 'dns.cancel': UNCACHED}),
     'timer': (['os/timer.cpp'], {}),
     'tls': (['protocol/ssl.cpp'], {}),
 }
@@ -384,8 +382,8 @@ def plan(args, reports):
                    *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
                    *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]], *report(name))
     if integrate and 'hooks' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/coroutine/{system,hook,socket}.cpp and network/client.cpp, ported to Rust over the
-        # hybrid's libswoole.so.
+        # core-tests/src/coroutine/{system,hook,socket}.cpp, network/client.cpp and network/{dns,address}.cpp,
+        # ported to Rust over the hybrid's libswoole.so.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
@@ -393,6 +391,8 @@ def plan(args, reports):
                '--exclude', "coroutine_hook.sendmsg_and_recvmsg=its child reads the parent's freed stack when the parent's close "
                             'completes first (SIGSEGV in ~15% of runs upstream)',
                '--exclude', 'coroutine_socket.tcp6=needs IPv6',
+               *[arg for name, reason in [('lookup1', NETWORK), ('lookup_ipv6', NETWORK), ('bad_family', NETWORK), ('cancel', UNCACHED)]
+                 for arg in ['--exclude', f'dns.{name}={reason}']],
                *[arg for name in ['https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy',
                                   'https_get_with_http_proxy'] for arg in ['--exclude', f'coroutine_socket.{name}={PROXY}']],
                # core-tests/src/network/client.cpp (tests/modules/clients/client.rs).
@@ -409,10 +409,6 @@ def plan(args, reports):
                '--package', ROOT / 'tests/modules/http/server', '--fixture', ROOT / 'tests/modules/http/server/fixture.cc',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                *report('http-server-rust'))
-    if integrate and 'clients' in modules and sys.platform.startswith('linux'):
-        script('clients-address-record', 'tests/modules/clients/address_record.py',
-               '--core-build', ROOT / 'target/native-originals/clients',
-               '--native-report', reports / 'clients-native-originals.json', *report('clients-address-record'))
     if integrate and 'process' in modules and sys.platform.startswith('linux'):
         script('process-worker-retirement', 'tests/modules/process/worker_retirement.py',
                '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',

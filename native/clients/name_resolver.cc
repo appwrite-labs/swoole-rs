@@ -39,12 +39,6 @@ zval *swoole_name_resolver_php_remove(bool (*same)(zval *kept, zval *resolver), 
     return removed;
 }
 
-void swoole_name_resolver_lookup_run(void *call) {
-    auto *c = static_cast<swoole_name_resolver_lookup_call *>(call);
-    auto result = swoole_name_resolver_lookup(std::string(c->name, c->length), context_of(c->context));
-    c->assign(c->out, result.data(), result.size());
-}
-
 void *swoole_name_resolver_context_new(void) {
     return new NameResolver::Context();
 }
