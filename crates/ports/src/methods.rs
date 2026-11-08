@@ -1,7 +1,8 @@
 //! The `ListenPort` methods of `src/server/port.cc` that were one lifecycle run
 //! or one readable callback, defined under their upstream (Itanium) symbols when
-//! the hybrid links this crate (`upstream-symbols`). port.cc registers its two
-//! runners once; each method calls one as its C++ forward did.
+//! the hybrid links this crate (`upstream-symbols`). master.cc registers its
+//! lifecycle runner once and each method calls it as its C++ forward did; the
+//! readable callbacks run in Rust ([`crate::read_native`]).
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
@@ -61,9 +62,6 @@ pub type NativeRun = unsafe extern "C-unwind" fn(
     *mut c_void,
     c_int,
 ) -> i32;
-/// port.cc's `port_read`: reactor, port, event and readable kind.
-pub type NativeRead =
-    unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut c_void, u32) -> i32;
 /// A port fact native code owns: [`FACT_REUSE_PORT`] or [`FACT_DTLS`].
 pub type NativeFact = unsafe extern "C-unwind" fn(*mut c_void, u32) -> bool;
 
@@ -72,16 +70,16 @@ pub const FACT_REUSE_PORT: u32 = 0;
 /// `ListenPort::is_dtls()`.
 pub const FACT_DTLS: u32 = 1;
 
-static NATIVE: OnceLock<(NativeRun, NativeRead, NativeFact)> = OnceLock::new();
+static NATIVE: OnceLock<(NativeRun, NativeFact)> = OnceLock::new();
 
 /// Registers port.cc's runners, which the methods below call.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ports_set_native(run: NativeRun, read: NativeRead, fact: NativeFact) {
-    // A second registration is the same triple; keeping the first is equivalent.
-    NATIVE.get_or_init(|| (run, read, fact));
+pub extern "C" fn swr_v1_ports_set_native(run: NativeRun, fact: NativeFact) {
+    // A second registration is the same pair; keeping the first is equivalent.
+    NATIVE.get_or_init(|| (run, fact));
 }
 
-fn native() -> (NativeRun, NativeRead, NativeFact) {
+fn native() -> (NativeRun, NativeFact) {
     match NATIVE.get() {
         Some(native) => *native,
         // port.cc registers before any ListenPort exists.
@@ -95,7 +93,7 @@ fn native() -> (NativeRun, NativeRead, NativeFact) {
 /// `port` is a live `ListenPort`.
 unsafe fn fact(port: *mut c_void, which: u32) -> bool {
     // SAFETY: as the caller guarantees.
-    unsafe { (native().2)(port, which) }
+    unsafe { (native().1)(port, which) }
 }
 
 /// One lifecycle `kind` through port.cc's runner.
@@ -774,16 +772,25 @@ pub unsafe extern "C" fn destroy_http_request(_port: *mut c_void, conn: *mut Con
     unsafe { swr_v1_http_request_free(request.cast()) };
 }
 
+#[cfg(not(test))]
+use crate::read_native::on_read;
+
+/// Tests link no C++: the readable kind stands in for the read.
+#[cfg(test)]
+unsafe fn on_read(_: *mut c_void, _: *mut c_void, _: *mut c_void, kind: u32) -> c_int {
+    c_int::try_from(kind).unwrap_or_default()
+}
+
 /// Each static `readable_callback_*`: its Rust name and readable kind.
 macro_rules! readable_callbacks {
     ($(fn $name:ident = $kind:ident;)*) => {$(
-        /// One readable callback kind through port.cc's `port_read`.
+        /// One readable callback kind.
         ///
         /// # Safety
         /// The reactor's readable event on a connection of `port`.
         unsafe extern "C" fn $name(reactor: *mut c_void, port: *mut c_void, event: *mut c_void) -> c_int {
             // SAFETY: as the caller guarantees.
-            unsafe { (native().1)(reactor, port, event, $kind) }
+            unsafe { on_read(reactor, port, event, $kind) }
         }
     )*};
 }
@@ -825,16 +832,6 @@ mod tests {
         i32::from(kind != RUN_CLOSE) * 3
     }
 
-    unsafe extern "C-unwind" fn read_fake(
-        _: *mut c_void,
-        port: *mut c_void,
-        _: *mut c_void,
-        kind: u32,
-    ) -> i32 {
-        i32::try_from(port.addr()).unwrap_or_default() * 10
-            + i32::try_from(kind).unwrap_or_default()
-    }
-
     thread_local! {
         /// The facts `fact_fake` answers on this thread: bit 0 reuse-port, bit 1 DTLS.
         static FACTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -854,7 +851,7 @@ mod tests {
 
     #[test]
     fn methods_pass_what_their_forward_did() {
-        swr_v1_ports_set_native(run_fake, read_fake, fact_fake);
+        swr_v1_ports_set_native(run_fake, fact_fake);
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
         unsafe {
             assert!(ssl_create(at(1), at(2)), "3 is true");
@@ -885,12 +882,12 @@ mod tests {
             );
             assert_eq!(
                 readable_callback_http(at(0), at(2), at(0)),
-                20 + i32::try_from(ON_READ_HTTP).unwrap_or_default(),
+                i32::try_from(ON_READ_HTTP).unwrap_or_default(),
                 "http kind"
             );
             assert_eq!(
                 readable_callback_eof(at(0), at(2), at(0)),
-                20 + i32::try_from(ON_READ_EOF).unwrap_or_default(),
+                i32::try_from(ON_READ_EOF).unwrap_or_default(),
                 "eof kind"
             );
         }
@@ -1023,7 +1020,7 @@ mod tests {
 
     /// A socketless port of `kind` on `host`:`number`, with the native facts `facts`.
     fn unbound_port(kind: c_int, host: &str, number: c_int, facts: u32) -> *mut PortConfig {
-        swr_v1_ports_set_native(run_fake, read_fake, fact_fake);
+        swr_v1_ports_set_native(run_fake, fact_fake);
         FACTS.set(facts);
         let config = port_config::swr_v1_port_config_new(1000);
         unsafe {

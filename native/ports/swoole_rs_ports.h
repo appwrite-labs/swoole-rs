@@ -29,33 +29,9 @@ enum { SWR_PORTS_PROPERTY_END, SWR_PORTS_PROPERTY_NULL, SWR_PORTS_PROPERTY_LONG,
  * promised or ownership transfer; each native Zend call follows Rust return. */
 SwrPortsProperty swr_v1_ports_class_property(size_t index);
 SwrPortsEvent swr_v1_ports_event(const uint8_t *, size_t, uint8_t native_casefold);
-/* Readable callbacks (crates/ports/src/read.rs): Rust runs the whole callback, reads and
- * writes the current buffer and request in place through the SwrPortsShared that starts
- * the context, and asks native code for every other fact or effect through
- * call(context, op, arg). */
-typedef struct { uint64_t length, size; int64_t offset; char *str; } SwrPortsString;
-typedef struct {
-    SwrPortsString *buffer;
-    /* The connection's http_server::Request (crates/http/src/request.rs). */
-    void *request;
-    uint8_t websocket, upgraded, http2_stream, static_handler, trace;
-} SwrPortsShared;
-enum { SWR_PORTS_ON_READ_RAW=0, SWR_PORTS_ON_READ_LENGTH=1, SWR_PORTS_ON_READ_EOF=2, SWR_PORTS_ON_READ_REDIS=3,
-       SWR_PORTS_ON_READ_HTTP=4, SWR_PORTS_OP_RECV=0, SWR_PORTS_OP_CATCH=1, SWR_PORTS_OP_WARN_RECV=2,
-       SWR_PORTS_OP_CLOSE_ERRNO=3, SWR_PORTS_OP_CLOSE=4, SWR_PORTS_OP_SEND=5, SWR_PORTS_OP_RECV_BUFFER=6,
-       SWR_PORTS_OP_RELEASE=7, SWR_PORTS_OP_RECV_LENGTH=8, SWR_PORTS_OP_RECV_EOF=9, SWR_PORTS_OP_RECV_REDIS=10,
-       SWR_PORTS_OP_DISPATCH_TASK=11, SWR_PORTS_OP_DISPATCH_REQUEST=12, SWR_PORTS_OP_ACTIVE=13,
-       SWR_PORTS_OP_WEBSOCKET_ACTIVATE=17, SWR_PORTS_OP_HTTP2_ENABLED=18, SWR_PORTS_OP_HTTP2_START=19,
-       SWR_PORTS_OP_SKIP_RECV=20, SWR_PORTS_OP_MAX_LENGTH=21, SWR_PORTS_OP_UPLOADS=22, SWR_PORTS_OP_STATIC=23,
-       SWR_PORTS_OP_BUF_REDUCE=36, SWR_PORTS_OP_BUF_EXTEND=38, SWR_PORTS_OP_BUF_HEADER_END=39, SWR_PORTS_OP_REQ_INIT=50,
-       SWR_PORTS_OP_REQ_DESTROY=51, SWR_PORTS_OP_REQ_MULTIPART_INIT=63, SWR_PORTS_OP_CLIENT=89,
-       SWR_PORTS_TRACE_HEADER=98, SWR_PORTS_TRACE_CHUNKED=99, SWR_PORTS_TRACE_POST_WAIT=100, SWR_PORTS_TRACE_CLOSE=101, SWR_PORTS_SEND_BAD_REQUEST=0,
-       SWR_PORTS_SEND_TOO_LARGE=1, SWR_PORTS_SEND_UNAVAILABLE=2, SWR_PORTS_SEND_CONTINUE=3 };
 typedef uint64_t (*SwrPortsCall)(void *context, uint32_t op, uint64_t arg);
-/* `new http_server::Request()` on Rust's heap; ListenPort::destroy_http_request (Rust) frees it. */
-void *swr_v1_http_request_new(void);
-int32_t swr_v1_ports_on_read(uint32_t kind, void *context, SwrPortsCall call);
-/* TLS setup, SNI, import and close (crates/ports/src/lifecycle.rs), over the same call. */
+/* TLS setup, SNI, import and close (crates/ports/src/lifecycle.rs): Rust decides each
+ * step and asks native code for every fact or effect through call(context, op, arg). */
 enum { SWR_PORTS_RUN_SNI_ADD=0, SWR_PORTS_RUN_SSL_INIT=1, SWR_PORTS_RUN_SSL_CREATE=2, SWR_PORTS_RUN_CONTEXT_INIT=3,
        SWR_PORTS_RUN_SNI=4, SWR_PORTS_RUN_IMPORT=5, SWR_PORTS_RUN_CLOSE=6, SWR_PORTS_RUN_CONTEXT_CREATE=7, SWR_PORTS_LC_OP_CERT_EMPTY=0,
        SWR_PORTS_LC_OP_KEY_EMPTY=1, SWR_PORTS_LC_OP_LOG_REQUIRE_CERT=2, SWR_PORTS_LC_OP_OPEN_HTTP=3, SWR_PORTS_LC_OP_OPEN_HTTP2=4,
@@ -74,12 +50,11 @@ enum { SWR_PORTS_RUN_SNI_ADD=0, SWR_PORTS_RUN_SSL_INIT=1, SWR_PORTS_RUN_SSL_CREA
 int32_t swr_v1_ports_run(uint32_t kind, void *context, SwrPortsCall call);
 struct swr_v1_port_config;
 int32_t swr_v1_ports_run_state(uint32_t kind, void *context, SwrPortsCall call, const struct swr_v1_port_config *config);
-/* port.cc's runners, which the ListenPort methods crates/ports/src/methods.rs defines call:
+/* master.cc's runners, which the ListenPort methods crates/ports/src/methods.rs defines call:
  * one lifecycle kind over (port, target context, socket, SSL, fd or allow_empty_cert),
- * one readable callback kind, and one port fact (SWR_PORTS_FACT_*). */
+ * and one port fact (SWR_PORTS_FACT_*). */
 enum { SWR_PORTS_FACT_REUSE_PORT = 0, SWR_PORTS_FACT_DTLS = 1 };
 void swr_v1_ports_set_native(int32_t (*run)(uint32_t kind, void *port, void *target, void *sock, void *ssl, int number),
-                             int32_t (*read)(void *reactor, void *port, void *event, uint32_t kind),
                              bool (*fact)(void *port, uint32_t which));
 #ifdef __cplusplus
 }

@@ -1,6 +1,6 @@
 //! `ListenPort`'s readable callbacks (raw, length, EOF, Redis and HTTP) as whole
-//! operations. Native code keeps the socket, connection, traces and dispatch, and
-//! performs each effect through one `call(context, op, arg)`. The receive buffer and
+//! operations, performing each effect on the socket, connection and dispatch
+//! through one `call(context, op, arg)` ([`crate::read_native`]'s in the hybrid). The receive buffer and
 //! the HTTP request are read and written in place through [`Shared`], the head of the
 //! context (layouts pinned by native `static_assert`s), as upstream's reader did; the
 //! request's own operations are `swoole_rs_http`'s.
@@ -92,11 +92,6 @@ enum Log {
     /// The bytes discarded.
     Discard(u64),
 }
-/// Trace logs, sent only when [`Shared::trace`] is set.
-pub const TRACE_HEADER: u32 = 98;
-pub const TRACE_CHUNKED: u32 = 99;
-pub const TRACE_POST_WAIT: u32 = 100;
-pub const TRACE_CLOSE: u32 = 101;
 
 /// Canned responses for `OP_SEND`.
 pub const SEND_BAD_REQUEST: u64 = 0;
@@ -129,8 +124,6 @@ pub struct Shared {
     pub http2_stream: u8,
     /// `enable_static_handler`.
     pub static_handler: u8,
-    /// Trace logging is compiled in.
-    pub trace: u8,
 }
 
 struct Native {
@@ -157,11 +150,6 @@ impl Native {
         // SAFETY: the context starts with a live `Shared`, which only native
         // effects, never spanned by the borrow, repoint.
         unsafe { &*self.shared }
-    }
-    fn trace(&self, op: u32) {
-        if self.shared().trace != 0 {
-            self.get(op);
-        }
     }
     /// The current buffer, borrowed until the next native call.
     #[expect(
@@ -273,9 +261,6 @@ fn raw(n: &Native) -> i32 {
 fn framed(n: &Native, receive: u32, release: bool) -> i32 {
     n.get(OP_RECV_BUFFER);
     if n.signed(receive, 0) < 0 {
-        if receive == OP_RECV_LENGTH {
-            n.trace(TRACE_CLOSE);
-        }
         n.get(OP_CLOSE_ERRNO);
         n.get(OP_CLOSE);
     }
@@ -470,7 +455,6 @@ fn head(n: &Native) -> Option<Step> {
         n.request().parse_header_info();
         // `package_max_length` is a `uint32_t`.
         n.request().max_length = u32::try_from(n.get(OP_MAX_LENGTH)).unwrap_or(u32::MAX);
-        n.trace(TRACE_HEADER);
         if n.request().form.is_some() {
             if n.is(OP_UPLOADS) && {
                 let request = n.request();
@@ -592,7 +576,6 @@ fn body(n: &Native) -> Step {
         }
         let request = n.request();
         request_length = u64::from(request.header_length).wrapping_add(request.content_length);
-        n.trace(TRACE_CHUNKED);
     } else {
         let request = n.request();
         request_length = u64::from(request.header_length).wrapping_add(request.content_length);
@@ -606,8 +589,6 @@ fn body(n: &Native) -> Step {
         if (n.buffer().length as u64) < request_length {
             if n.request().has_expect_header() {
                 n.op(OP_SEND, SEND_CONTINUE);
-            } else {
-                n.trace(TRACE_POST_WAIT);
             }
             return Step::Receive;
         }
@@ -758,7 +739,6 @@ mod tests {
                 upgraded: 0,
                 http2_stream: 0,
                 static_handler: 1,
-                trace: 1,
             },
             buf: Buffer {
                 length: 0,
@@ -956,7 +936,7 @@ mod tests {
         let mut f = fake(&[head, b"ab"]);
         run(ON_READ_HTTP, &mut f);
         assert!(
-            f.dispatched.is_empty() && f.effects.contains(&TRACE_POST_WAIT),
+            f.dispatched.is_empty() && f.incoming.is_empty(),
             "waits for the body"
         );
         f.incoming.push_back(b"cd".to_vec());
@@ -969,20 +949,6 @@ mod tests {
         assert!(
             f.effects.contains(&OP_RELEASE),
             "large buffers released after dispatch"
-        );
-    }
-
-    #[test]
-    fn traces_only_when_compiled_in() {
-        let head = b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\n";
-        let mut f = fake(&[head]);
-        f.shared.trace = 0;
-        run(ON_READ_HTTP, &mut f);
-        assert!(
-            !f.effects
-                .iter()
-                .any(|op| (TRACE_HEADER..=TRACE_CLOSE).contains(op)),
-            "no trace calls"
         );
     }
 

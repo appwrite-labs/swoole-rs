@@ -17,6 +17,8 @@ pub mod http_routes;
 pub mod lifecycle;
 pub mod methods;
 pub mod read;
+#[cfg(not(test))]
+mod read_native;
 
 const _: () = {
     assert!(

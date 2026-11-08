@@ -10,7 +10,7 @@ use crate::upstream::{
 use std::ffi::{c_int, c_void};
 use swoole_rs_buffer::Buffer;
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::reactor_upstream::{prepared, reactor_interest};
+use swoole_rs_reactor::reactor_upstream::{prepared, reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::{socket_set_fd_option, socket_wait_event};
 use swoole_rs_reactor::{
     Event, FlushOps, SocketOutput, SocketRecord, WriteOps, WritePayload, swr_v1_socket_defaults,
@@ -272,16 +272,8 @@ unsafe extern "C" fn flush_close(context: *mut c_void) -> c_int {
 unsafe extern "C" fn flush_trigger_close(context: *mut c_void) -> c_int {
     // SAFETY: a live flush.
     let context = unsafe { self::context(context) };
-    // SAFETY: its live reactor.
-    let handlers = unsafe { prepared(context.reactor) }.handlers;
-    // SAFETY: the reactor's default error handler slot.
-    let slot = unsafe { swoole_rs_reactor::swr_v1_reactor_handlers_default(handlers, 2) };
-    // SAFETY: as above.
-    let Some(handler) = (unsafe { *slot }) else {
-        return -1;
-    };
-    // SAFETY: `reactor->trigger_close_event(event)`.
-    unsafe { handler(context.reactor, context.event.cast()) }
+    // SAFETY: its live reactor and event.
+    unsafe { trigger_close_event(context.reactor, context.event.cast()) }
 }
 
 unsafe extern "C" fn flush_delete_timer(context: *mut c_void) {

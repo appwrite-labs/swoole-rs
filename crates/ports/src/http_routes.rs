@@ -116,9 +116,9 @@ pub mod exports {
 
     /// `swoole::RecvData`.
     #[repr(C)]
-    struct RecvData {
-        info: DataHead,
-        data: *const u8,
+    pub(crate) struct RecvData {
+        pub(crate) info: DataHead,
+        pub(crate) data: *const u8,
     }
 
     /// `websocket::STATUS_CLOSING`.
