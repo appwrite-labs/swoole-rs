@@ -52,10 +52,10 @@ registration are gone: config.m4 rejects a CPU without boost asm unless
 `--enable-thread-context` is given.
 
 `src/coroutine/base.cc` left the build: Rust defines `Coroutine::yield_ex`,
-`cancel`, `print_list`, `print_socket_bound_error`, `coroutine::run` and the
+`print_list`, `print_socket_bound_error`, `coroutine::run` and the
 `swoole_coroutine_*` C API under their upstream symbols; native/coroutine keeps
-the thread-local scheduler, the facade's construction and delete, and the
-`std::function` arguments.
+the thread-local scheduler, the facade's construction and delete, cancel (its
+`CancelFunc` copy may throw) and the `std::function` arguments.
 
 Execution-time accounting (`get_execute_usec`, `calc_execute_usec`) is in Rust;
 C++ reads the clocks and passes them in.

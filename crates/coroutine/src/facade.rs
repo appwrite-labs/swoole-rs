@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/coroutine/base.cc (Swoole contributors).
 //! `swoole::Coroutine`'s out-of-line operations and the coroutine C API, under
-//! their upstream symbols: the timed and cancelable yield, cancel, the
-//! socket-bound error, `coroutine::run`, and the `swoole_coroutine_*` functions
+//! their upstream symbols: the timed and cancelable yield, the socket-bound
+//! error, `coroutine::run`, and the `swoole_coroutine_*` functions
 //! gdb and C callers use. native/coroutine/coroutine.cc keeps the thread-local
-//! scheduler and what takes or makes a `std::function`. A facade starts with its
+//! scheduler, what takes or makes a `std::function`, and cancel, whose
+//! `CancelFunc` copy may throw (no C++ exception may cross a Rust frame). A facade starts with its
 //! [`Coroutine`], so the two pointers are the same.
 use crate::{
     Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, Scheduler, swr_v1_coroutine_cancel,
@@ -18,7 +19,6 @@ use std::ffi::{CStr, CString};
 use swoole_rs_corebase::{fatal_error, log::set_last_error, swoole_get_stdout_stream};
 
 const SW_ERROR_CO_HAS_BEEN_BOUND: c_int = 10002;
-const SW_ERROR_CO_CANNOT_CANCEL: c_int = 10015;
 const SW_ERROR_CO_CANCELED: c_int = 10017;
 const SW_ERROR_CO_TIMEDOUT: c_int = 10018;
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
@@ -85,7 +85,18 @@ unsafe extern "C-unwind" fn resume_canceled(co: *mut c_void, _: *mut c_void) -> 
     true
 }
 
-/// `co->yield(&cancel_fn)`, where `cancel_fn` calls `call(co, data)`.
+/// Marks `co` canceled, then calls the caller's canceler, `inner`.
+unsafe extern "C-unwind" fn mark_canceled(co: *mut c_void, inner: *mut c_void) -> bool {
+    // SAFETY: the yield that set the canceler is still waiting.
+    unsafe { swr_v1_coroutine_cancel(co.cast()) };
+    // SAFETY: as above, so its frame (and `inner`) is live.
+    let Canceler { call, data } = unsafe { inner.cast::<Canceler>().read() };
+    // SAFETY: the caller's cancel function for this yield.
+    unsafe { call(co, data) }
+}
+
+/// `co->yield(&cancel_fn)`, where `cancel_fn` calls `call(co, data)` once `co`
+/// is marked canceled.
 ///
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing with a destructor.
@@ -95,9 +106,13 @@ unsafe extern "C-unwind" fn swr_v1_coroutine_yield_with_cancel(
     call: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool,
     data: *mut c_void,
 ) {
-    let mut canceler = Canceler { call, data };
+    let mut inner = Canceler { call, data };
+    let mut canceler = Canceler {
+        call: mark_canceled,
+        data: (&raw mut inner).cast(),
+    };
     let canceler = (&raw mut canceler).cast();
-    // SAFETY: as the caller promises; the canceler outlives the yield.
+    // SAFETY: as the caller promises; both cancelers outlive the yield.
     unsafe { swr_v1_coroutine_yield_cancelable(scheduler(), co.cast(), canceler) };
 }
 
@@ -131,28 +146,6 @@ unsafe extern "C-unwind" fn yield_ex(co: *mut Coroutine, timeout: f64) -> bool {
         return false;
     }
     true
-}
-
-/// `bool Coroutine::cancel()`: false, with the last error, unless `co` waits in
-/// a cancelable yield; otherwise a copy of its cancel function runs once
-/// `co` is marked canceled, and `co` is not touched afterwards.
-///
-/// # Safety
-/// `co` is a live coroutine.
-#[unsafe(export_name = "_ZN6swoole9Coroutine6cancelEv")]
-unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
-    // SAFETY: as the caller promises.
-    let canceler = unsafe { (*co).cancel_fn }.cast::<Canceler>();
-    if canceler.is_null() {
-        set_last_error(SW_ERROR_CO_CANNOT_CANCEL);
-        return false;
-    }
-    // SAFETY: a set cancel function lives until its yield returns.
-    let Canceler { call, data } = unsafe { canceler.read() };
-    // SAFETY: as the caller promises.
-    unsafe { swr_v1_coroutine_cancel(co) };
-    // SAFETY: the yield's own cancel function.
-    unsafe { call(co.cast(), data) }
 }
 
 /// `static void Coroutine::print_list()`.

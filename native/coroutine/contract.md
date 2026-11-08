@@ -45,20 +45,22 @@ scheduler's `bailout` flag mirrors whether it is set.
 
 A cancelable yield's `cancel_fn` points at a `swr_v1_coroutine_canceler` (a C
 function and its data) on the yielder's stack; `yield(CancelFunc *)` wraps the
-`CancelFunc` in one whose function calls a copy of it. Cancel (Rust, under
-`Coroutine::cancel`'s symbol) copies the canceler, marks the coroutine
-canceled, then calls it. `yield_ex` adds its timeout timer through
+`CancelFunc` in one whose function copies it, marks the coroutine canceled,
+then calls the copy, so a copy that throws leaves the wait as it was; Rust
+callers' cancelers are wrapped the same way. Cancel copies the canceler and
+calls it; it stays C++ because the `CancelFunc` copy may throw and no C++
+exception may cross a Rust frame (the archive aborts on unwinding). `yield_ex` adds its timeout timer through
 `swr_cpp_coroutine_timer_add` (a C callback and data) and deletes it after a
 wake that was not the timeout.
 
 `src/coroutine/base.cc` is gone. `crates/coroutine/src/facade.rs` defines its
-operations under their upstream symbols (`yield_ex`, `cancel`, `print_list`,
+operations under their upstream symbols (`yield_ex`, `print_list`,
 `print_socket_bound_error`, `coroutine::run`) and the `swoole_coroutine_*` C
 API; `native/coroutine/coroutine.cc` keeps what Rust can't express: the
 thread-local scheduler (with its hooks) and `on_bailout`, the constructor and
 `delete` (the context keeps a `CoroutineFunc`), `activate`/`deactivate` (the
 thread backend's hooks and `on_bailout`), `bailout`'s `std::function` argument,
-and creating a coroutine or a timer from C callbacks.
+cancel, and creating a coroutine or a timer from C callbacks.
 
 ## Context stack
 

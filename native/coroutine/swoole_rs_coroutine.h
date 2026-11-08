@@ -22,8 +22,9 @@ struct swr_v1_coroutine {
     swr_v1_coroutine *origin, *first_child, *prev_sibling, *next_sibling;
     long init_msec, switch_usec, execute_usec;
 };
-/* A yield's cancel function (cancel_fn points to one): call(native, data) wakes
- * the canceled coroutine and returns whether it did. */
+/* A yield's cancel function (cancel_fn points to one): call(native, data) marks
+ * the coroutine canceled (swr_v1_coroutine_cancel) once nothing can fail, then
+ * wakes it and returns whether it did. */
 typedef struct {
     bool (*call)(void *native, void *data);
     void *data;
