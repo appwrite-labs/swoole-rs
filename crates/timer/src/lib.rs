@@ -10,6 +10,8 @@ mod heap;
 mod runtime;
 pub use runtime::*;
 #[cfg(feature = "upstream-symbols")]
+mod owner;
+#[cfg(feature = "upstream-symbols")]
 mod wrapper;
 use std::alloc::{Layout, alloc, dealloc};
 use std::collections::HashMap;

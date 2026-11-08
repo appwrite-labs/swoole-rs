@@ -2,76 +2,27 @@
 // Compatibility derived from Swoole v6.2.4 src/wrapper/timer.cc (Swoole contributors).
 //! The `swoole_timer_*` C API (upstream `src/wrapper/timer.cc`, which the timer
 //! patch deletes) under its upstream symbols: this thread's `SwooleTG.timer`, its
-//! lazy creation, unit conversion and warnings. `swoole::Timer` stays a C++ object
-//! (its `std::function` members and callback nodes); these call its out-of-line
-//! members by symbol and read the fields its inline members read, at the offsets
-//! src/core/timer.cc asserts.
-use crate::{TimerView, swr_v1_timer_delay_deadline, swr_v1_timer_token, swr_v1_timer_update};
+//! lazy creation, unit conversion and warnings, over the Rust-owned timer
+//! (`owner.rs`).
+use crate::owner::{Owner as Timer, TimerNode, swr_v1_timer_owner_free};
+use crate::swr_v1_timer_token;
 use std::ffi::{CStr, c_long, c_void};
 use swoole_rs_corebase::{log, swoole_print_backtrace};
 
-/// `SW_ERR`, `SW_TIMER_MIN_SEC` and `sizeof(swoole::Timer)`.
+/// `SW_ERR` and `SW_TIMER_MIN_SEC`.
 const ERR: c_long = -1;
 const MIN_SEC: f64 = 0.001;
-const TIMER_SIZE: usize = 112;
-
-/// The leading members of `swoole::Timer` the inline members read.
-#[repr(C)]
-struct Timer {
-    _reactor: *mut c_void,
-    queue: *mut c_void,
-    /// `owner_pid_`, `abandoned_selection_` and `pending_bailout_`.
-    _selection: [usize; 2],
-    base_time: i64,
-    next_msec: i64,
-}
-
-/// The leading members of `swoole::TimerNode`.
-#[repr(C)]
-struct TimerNode {
-    id: c_long,
-    _type: i32,
-    exec_msec: i64,
-    /// `interval`, `exec_count` and `round`.
-    _counts: [u64; 3],
-    removed: bool,
-}
 
 /// `const swoole::TimerCallback &`, passed through untouched.
 type Callback = *const c_void;
 
-// SAFETY: native/corebase/globals.cc's, src/core/timer.cc's and the C++ runtime's.
-unsafe extern "C-unwind" {
+// SAFETY: native/corebase/globals.cc's.
+#[expect(
+    improper_ctypes,
+    reason = "the slot holds an address C++ never dereferences"
+)]
+unsafe extern "C" {
     fn swr_v1_core_timer_slot() -> *mut *mut Timer;
-    #[link_name = "_ZN6swoole5TimerC1Eb"]
-    fn timer_construct(this: *mut Timer, manually_trigger: bool);
-    #[link_name = "_ZN6swoole5TimerD1Ev"]
-    fn timer_destruct(this: *mut Timer);
-    #[cfg_attr(
-        target_os = "macos",
-        link_name = "_ZN6swoole5Timer3addElbPvRKNSt3__18functionIFvPS0_PNS_9TimerNodeEEEE"
-    )]
-    #[cfg_attr(
-        not(target_os = "macos"),
-        link_name = "_ZN6swoole5Timer3addElbPvRKSt8functionIFvPS0_PNS_9TimerNodeEEE"
-    )]
-    fn timer_add(
-        this: *mut Timer,
-        msec: c_long,
-        persistent: bool,
-        data: *mut c_void,
-        callback: Callback,
-    ) -> *mut TimerNode;
-    #[link_name = "_ZN6swoole5Timer6removeEl"]
-    fn timer_remove(this: *mut Timer, id: c_long) -> bool;
-    #[link_name = "_ZN6swoole5Timer6selectEv"]
-    fn timer_select(this: *mut Timer);
-    #[link_name = "_ZN6swoole5Timer5applyERK17swr_v1_timer_view"]
-    fn timer_apply(view: *const TimerView) -> *mut TimerNode;
-    #[link_name = "_Znwm"]
-    fn operator_new(size: usize) -> *mut c_void;
-    #[link_name = "_ZdlPv"]
-    fn operator_delete(pointer: *mut c_void);
 }
 
 /// `SwooleTG.timer`.
@@ -101,24 +52,11 @@ extern "C" fn swoole_timer_is_available() -> bool {
     !timer().is_null()
 }
 
-/// `Timer *swoole_timer_create(bool manually_trigger)`: `new Timer`, published
+/// `Timer *swoole_timer_create(bool manually_trigger)`: a new timer, published
 /// as this thread's.
 #[unsafe(export_name = "_Z19swoole_timer_createb")]
 extern "C-unwind" fn swoole_timer_create(manually_trigger: bool) -> *mut c_void {
-    /// Frees the allocation if the constructor throws, as a new-expression does.
-    struct Allocation(*mut c_void);
-    impl Drop for Allocation {
-        fn drop(&mut self) {
-            // SAFETY: operator new's, never constructed.
-            unsafe { operator_delete(self.0) };
-        }
-    }
-    // SAFETY: operator new throws rather than return null.
-    let allocation = Allocation(unsafe { operator_new(TIMER_SIZE) });
-    let timer = allocation.0.cast::<Timer>();
-    // SAFETY: fresh storage of sizeof(Timer) bytes.
-    unsafe { timer_construct(timer, manually_trigger) };
-    std::mem::forget(allocation);
+    let timer = Timer::create(manually_trigger);
     // SAFETY: this thread's live slot.
     unsafe { *slot() = timer };
     timer.cast()
@@ -132,7 +70,7 @@ extern "C" fn swoole_timer_get_next_msec() -> i64 {
         return -1;
     }
     // SAFETY: this thread's live timer.
-    unsafe { (*timer).next_msec }
+    unsafe { &*timer }.next_msec()
 }
 
 /// `TimerNode *swoole_timer_add(double timeout, ...)`: seconds, at least
@@ -192,8 +130,10 @@ unsafe extern "C-unwind" fn swoole_timer_add(
     if timer().is_null() {
         swoole_timer_create(false);
     }
-    // SAFETY: this thread's live timer; `callback` as the caller promises.
-    unsafe { timer_add(timer(), ms, persistent, data, callback) }.cast()
+    // SAFETY: this thread's live timer.
+    unsafe { &*timer() }
+        .add(ms, persistent, data, callback)
+        .cast()
 }
 
 /// `swoole_timer_after`/`swoole_timer_tick`: the new timer's id, or `SW_ERR`.
@@ -282,7 +222,7 @@ unsafe extern "C-unwind" fn swoole_timer_del(node: *mut c_void) -> bool {
         return false;
     };
     // SAFETY: this thread's live timer.
-    unsafe { timer_remove(timer, node.id) }
+    unsafe { &*timer }.remove(node.id)
 }
 
 /// `void swoole_timer_delay(TimerNode *, long delay_ms)`: `Timer::delay`, which
@@ -300,30 +240,15 @@ unsafe extern "C-unwind" fn swoole_timer_delay(node: *mut c_void, delay_ms: c_lo
         return;
     };
     // SAFETY: this thread's live timer.
-    let timer = unsafe { &*timer };
-    let now = crate::swr_v1_timer_relative_msec(crate::absolute_msec(), timer.base_time);
-    let mut deadline = 0;
-    // SAFETY: a writable deadline.
-    if unsafe { swr_v1_timer_delay_deadline(now, node.exec_msec, delay_ms, &raw mut deadline) } == 0
-    {
-        return;
-    }
-    let mut view = TimerView::default();
-    // SAFETY: the timer's live queue and a writable view.
-    if unsafe { swr_v1_timer_update(timer.queue.cast(), node.id, deadline, &raw mut view) }
-        == crate::OK
-    {
-        // SAFETY: the view of a live node.
-        unsafe { timer_apply(&raw const view) };
-    }
+    unsafe { &*timer }.delay(node, delay_ms);
 }
 
 /// `Timer::get(id)`.
 fn get(timer: *mut Timer, id: c_long) -> *mut TimerNode {
     // SAFETY: this thread's live timer.
-    let queue = unsafe { (*timer).queue };
+    let queue = unsafe { &*timer }.queue();
     // SAFETY: its live queue.
-    unsafe { swr_v1_timer_token(queue.cast(), id) }.cast()
+    unsafe { swr_v1_timer_token(queue, id) }.cast()
 }
 
 /// `bool swoole_timer_exists(long timer_id)`: a node that isn't removed.
@@ -343,7 +268,7 @@ extern "C-unwind" fn swoole_timer_clear(timer_id: c_long) -> bool {
         return false;
     };
     // SAFETY: this thread's live timer.
-    unsafe { timer_remove(timer, timer_id) }
+    unsafe { &*timer }.remove(timer_id)
 }
 
 /// `TimerNode *swoole_timer_get(long timer_id)`.
@@ -361,10 +286,8 @@ extern "C-unwind" fn swoole_timer_free() {
         log::warning(c"swoole_timer_free", format_args!("timer is not available"));
         return;
     }
-    // SAFETY: the timer swoole_timer_create made; destroyed, then freed, once.
-    unsafe { timer_destruct(timer) };
-    // SAFETY: as above.
-    unsafe { operator_delete(timer.cast()) };
+    // SAFETY: the timer swoole_timer_create made, freed once.
+    unsafe { swr_v1_timer_owner_free(timer) };
     // SAFETY: this thread's live slot.
     unsafe { *slot() = std::ptr::null_mut() };
 }
@@ -375,6 +298,6 @@ extern "C-unwind" fn swoole_timer_select() {
     let timer = timer();
     if !timer.is_null() {
         // SAFETY: this thread's live timer.
-        unsafe { timer_select(timer) };
+        unsafe { &*timer }.select();
     }
 }
