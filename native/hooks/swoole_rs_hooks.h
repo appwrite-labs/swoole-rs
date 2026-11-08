@@ -58,18 +58,6 @@ typedef struct { uint64_t total; bool again; } swr_v1_hook_transfer_plan;
 swr_v1_hook_transfer_plan swr_v1_hook_transfer(int64_t result, uint64_t total, uint64_t requested, bool wait);
 typedef struct { uint32_t revents; bool wake; } swr_v1_hook_event_plan;
 swr_v1_hook_event_plan swr_v1_hook_event_waiter(uint32_t received, uint32_t event);
-typedef struct { int32_t result; int32_t last_error; int32_t error; } swr_v1_hook_wait_event_outcome;
-/* The EventWaiter's reactor socket and coroutine. add: make_socket(fd, SW_FD_CO_EVENT)
- * carrying waiter, added for events; null with the last error in *error if refused (the
- * socket released, not its fd). park: co->yield_ex(timeout), 0 or the last error.
- * remove: off the reactor, released, not its fd. */
-typedef struct {
-    void *(*current)(void);
-    void *(*add)(int fd, int events, void *waiter, int *error);
-    int (*park)(void *co, double timeout);
-    void (*remove)(void *socket);
-} swr_v1_hook_event_wait_ops;
-swr_v1_hook_wait_event_outcome swr_v1_hook_wait_event(int32_t fd, int32_t events, double timeout, const swr_v1_hook_event_wait_ops *ops);
 typedef struct {
     void *(*current)(void);
     bool (*busy)(void);
@@ -92,11 +80,6 @@ typedef struct {
     void (*park)(void *co);
     void (*resume)(void *co);
 } swr_v1_hook_poll_ops;
-/* System::init_reactor's SW_FD_CO_SOCKET, SW_FD_CO_POLL and SW_FD_CO_EVENT handlers, registered through set;
- * wake defers co->resume() on this thread's reactor. */
-void swr_v1_hook_init_reactor(void *reactor,
-                              void (*set)(void *reactor, int fd_type, int events, int (*handler)(void *, void *)),
-                              void (*wake)(void *co));
 void swr_v1_hook_poll_completed(void *task);
 void swr_v1_hook_poll_timeout(void *task);
 bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout, const swr_v1_hook_poll_ops *ops);
@@ -121,10 +104,6 @@ typedef struct swr_v1_hook_host {
     swr_v1_hook_socket_ops socket;
 } swr_v1_hook_host;
 void swr_v1_hook_set_host(const swr_v1_hook_host *host);
-void swr_v1_hook_dns_cache_expire(int64_t expire);
-void swr_v1_hook_dns_cache_capacity(size_t capacity);
-void swr_v1_hook_dns_cache_clear(void);
-float swr_v1_hook_dns_cache_hit_ratio(void);
 bool swr_v1_hook_dns_cache_get(int domain, const char *name, size_t length, void *out, void (*assign)(void *out, const char *address, size_t length));
 void swr_v1_hook_dns_cache_set(int domain, const char *name, size_t length, const char *address, size_t address_length);
 double swr_v1_hook_timeval(double seconds, double micros);

@@ -64,7 +64,6 @@ unsafe extern "C" {
         out: *mut c_void,
     ) -> bool;
     fn swr_v1_system_wait_signal(signals: *const c_long, count: usize, timeout: f64) -> c_int;
-    fn swr_v1_hook_dns_cache_clear();
     fn swoole_coroutine_statvfs(path: *const c_char, buf: *mut libc::statvfs) -> c_int;
     fn swr_v1_phpevents_fd(value: *mut zval) -> c_int;
     fn swr_v1_core_last_error() -> c_int;
@@ -294,8 +293,7 @@ fn gethostbyname(call: &Call) {
 
 /// `swoole_clear_dns_cache()`.
 fn clear_dns_cache(_: &Call) {
-    // SAFETY: the hooks module clears the cache.
-    unsafe { swr_v1_hook_dns_cache_clear() };
+    swoole_rs_hooks::dns_cache::swr_v1_hook_dns_cache_clear();
 }
 
 /// `getaddrinfo(string $domain, int $family = AF_INET, int $socktype = SOCK_STREAM,

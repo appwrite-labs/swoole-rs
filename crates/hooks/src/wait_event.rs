@@ -1,8 +1,7 @@
 //! `System::wait_event(fd, events, timeout)`: wait until `fd` is readable and/or
 //! writable. A zero timeout is one `poll(2)` here; otherwise the coroutine parks on
-//! the reactor as an `EventWaiter`, whose state is here and whose reactor socket and
-//! coroutine native code drives through `EventWaitOps`. Native code keeps setting
-//! errno and the last error from the outcome.
+//! the reactor as an `EventWaiter`, whose reactor socket and coroutine `EventWaitOps`
+//! drive (the reactor's and the coroutine's under `System::wait_event`, fakes in tests).
 use crate::{swr_v1_hook_event_waiter, swr_v1_hook_wait_revents};
 use core::ffi::c_void;
 
@@ -11,7 +10,7 @@ pub(crate) const READ: i32 = 1 << 9;
 pub(crate) const WRITE: i32 = 1 << 10;
 pub(crate) const ERROR: i32 = 1 << 11;
 
-/// Native code's side of an `EventWaiter`.
+/// The reactor's and the coroutine's side of an `EventWaiter`.
 #[repr(C)]
 pub struct EventWaitOps {
     /// The current coroutine.
@@ -129,11 +128,121 @@ pub(crate) fn from_poll(revents: i16) -> i32 {
     events
 }
 
+/// `int System::wait_event(int fd, int events, double timeout)`: the fired events, or
+/// -1 with errno and the last error set.
+///
+/// # Safety
+/// In a coroutine when `timeout` is not zero (outside one it raises upstream's fatal
+/// error, which does not return), with the thread's reactor running.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6System10wait_eventEiid")
+)]
+#[must_use]
+pub unsafe extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
+    let ops = EventWaitOps {
+        current: native::current,
+        add: native::add,
+        park: native::park,
+        remove: native::remove,
+    };
+    // SAFETY: the reactor's ops, in the current coroutine as the caller promises.
+    let waited = unsafe { swr_v1_hook_wait_event(fd, events, timeout, &raw const ops) };
+    if waited.last_error != 0 {
+        swoole_rs_corebase::log::set_last_error(waited.last_error);
+    }
+    if waited.error != 0 {
+        crate::co_io::set_errno(waited.error);
+    }
+    waited.result
+}
+
+/// The event waiter's reactor socket and coroutine: upstream's `make_socket`,
+/// `swoole_event_add`/`del` and `Coroutine::yield_ex`.
+mod native {
+    use core::ffi::{c_int, c_void};
+    use swoole_rs_corebase::constants::FdType;
+    use swoole_rs_corebase::log;
+    use swoole_rs_reactor::SocketRecord;
+    use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del};
+
+    // SAFETY: src/coroutine/base.cc's.
+    unsafe extern "C" {
+        fn swr_v1_coroutine_current() -> *mut c_void;
+        #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
+        fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
+    }
+
+    /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
+    const OUT_OF_COROUTINE: c_int = 10001;
+
+    /// `Coroutine::get_current_safe()`.
+    pub(super) unsafe extern "C" fn current() -> *mut c_void {
+        // SAFETY: no preconditions.
+        let co = unsafe { swr_v1_coroutine_current() };
+        if co.is_null() {
+            // SAFETY: Swoole's fatal error hook; this frame owns nothing.
+            unsafe {
+                swoole_rs_corebase::fatal_error(
+                    OUT_OF_COROUTINE,
+                    c"API must be called in the coroutine",
+                );
+            }
+        }
+        co
+    }
+
+    /// Releases the record, not its fd: the waiter doesn't own it.
+    unsafe fn release(socket: *mut SocketRecord) {
+        // SAFETY: a live record of this module's.
+        unsafe { (*socket).fd = -1 };
+        // SAFETY: as above; nothing uses it afterwards.
+        unsafe { swoole_rs_tls::upstream::socket_free(socket) };
+    }
+
+    pub(super) unsafe extern "C" fn add(
+        fd: i32,
+        events: i32,
+        waiter: *mut c_void,
+        error: *mut i32,
+    ) -> *mut c_void {
+        let socket = swoole_rs_reactor::swr_v1_socket_make(fd, FdType::SW_FD_CO_EVENT as c_int);
+        // SAFETY: the new record.
+        unsafe { (*socket).object = waiter };
+        // SAFETY: the new record, on the running reactor.
+        if unsafe { swoole_event_add(socket, events) } < 0 {
+            // SAFETY: the caller's slot.
+            unsafe { *error = log::last_error() };
+            // SAFETY: the record, which the reactor refused.
+            unsafe { release(socket) };
+            return core::ptr::null_mut();
+        }
+        socket.cast()
+    }
+
+    pub(super) unsafe extern "C" fn park(co: *mut c_void, timeout: f64) -> i32 {
+        // SAFETY: the current coroutine.
+        if unsafe { coroutine_yield_ex(co, timeout) } {
+            0
+        } else {
+            log::last_error()
+        }
+    }
+
+    pub(super) unsafe extern "C" fn remove(socket: *mut c_void) {
+        let socket = socket.cast::<SocketRecord>();
+        // SAFETY: the record `add` registered.
+        unsafe { swoole_event_del(socket) };
+        // SAFETY: as above, now off the reactor.
+        unsafe { release(socket) };
+    }
+}
+
 /// Waits for `events` (only `SW_EVENT_READ`/`WRITE` count) on `fd`.
 ///
 /// # Safety
-/// `ops` is native code's, callable in the current coroutine.
-#[unsafe(no_mangle)]
+/// `ops` is callable in the current coroutine.
+#[must_use]
 pub unsafe extern "C" fn swr_v1_hook_wait_event(
     fd: i32,
     events: i32,

@@ -55,7 +55,6 @@ unsafe extern "C" fn waiter_ready<const KIND: i32>(_: *mut c_void, event: *mut c
 ///
 /// # Safety
 /// `set` registers on `reactor`; `wake` defers a resume on the calling thread's reactor.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_init_reactor(
     reactor: *mut c_void,
     set: SetHandler,
@@ -79,6 +78,80 @@ pub unsafe extern "C" fn swr_v1_hook_init_reactor(
     for (fd_type, events, handler) in handlers {
         // SAFETY: the caller's registrar for `reactor`.
         unsafe { set(reactor, fd_type, events, handler) };
+    }
+}
+
+/// `static void System::init_reactor(Reactor *reactor)`: the handlers above, waking
+/// coroutines through the thread's deferred queue, then the async-thread pipe's (and
+/// `io_uring`'s) completions.
+///
+/// # Safety
+/// `reactor` is the calling thread's live `Reactor`.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE")]
+pub unsafe extern "C" fn system_init_reactor(reactor: *mut c_void) {
+    // SAFETY: the caller's reactor; `defer_resume` defers onto this thread's.
+    unsafe { swr_v1_hook_init_reactor(reactor, set_handler, defer_resume) };
+    // SAFETY: as above.
+    unsafe { set_handler(reactor, FdType::SW_FD_AIO as c_int, READ, aio_ready) };
+    #[cfg(feature = "iouring")]
+    {
+        // SAFETY: src/coroutine/iouring.cc's.
+        unsafe extern "C" {
+            #[link_name = "_ZN6swoole7Iouring8callbackEPNS_7ReactorEPNS_5EventE"]
+            fn iouring_ready(reactor: *mut c_void, event: *mut c_void) -> c_int;
+        }
+        // SAFETY: as above.
+        unsafe { set_handler(reactor, FdType::SW_FD_IOURING as c_int, READ, iouring_ready) };
+    }
+}
+
+/// `Reactor::set_handler`.
+#[cfg(feature = "upstream-symbols")]
+unsafe extern "C" fn set_handler(
+    reactor: *mut c_void,
+    fd_type: c_int,
+    events: c_int,
+    handler: Handler,
+) {
+    // SAFETY: the caller's live reactor.
+    unsafe {
+        swoole_rs_reactor::reactor_upstream::reactor_set_handler(
+            reactor,
+            fd_type,
+            events,
+            Some(handler),
+        );
+    }
+}
+
+/// `AsyncThreads::callback`.
+#[cfg(feature = "upstream-symbols")]
+unsafe extern "C" fn aio_ready(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: the reactor's live event for the async-thread pipe.
+    unsafe { crate::async_threads::callback(reactor, event.cast()) }
+}
+
+/// `sw_reactor()->defer([co] { co->resume(); })`.
+#[cfg(feature = "upstream-symbols")]
+unsafe extern "C" fn defer_resume(co: *mut c_void) {
+    // SAFETY: src/coroutine/base.cc's.
+    unsafe extern "C-unwind" {
+        fn swr_v1_coroutine_native_resume(co: *mut c_void);
+    }
+    unsafe extern "C-unwind" fn resume(co: *mut c_void) {
+        // SAFETY: the coroutine stays parked until this deferred resume runs.
+        unsafe { swr_v1_coroutine_native_resume(co) };
+    }
+    let reactor = swoole_rs_corebase::thread_reactor().cast::<swoole_rs_reactor::ReactorPrepared>();
+    // SAFETY: a handler runs, so the thread's loop is live; it begins with its prepared state.
+    let fields = unsafe { (*reactor).fields };
+    // SAFETY: the loop's live deferred queue; the task borrows `co`.
+    let queue = unsafe { &raw mut (*fields).defer_tasks };
+    // SAFETY: as above.
+    if unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, resume, co, None) } != 0 {
+        // Upstream throws std::bad_alloc, which no frame here could catch.
+        std::process::abort();
     }
 }
 

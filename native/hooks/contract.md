@@ -118,16 +118,15 @@ are still never uninstalled.
   unless error was requested), deletes the timer and defers one completion; the
   completion or the timer removes every socket without closing its fd and resumes.
   The hooked `poll` counts a repeated fd once, through its first entry.
-- `System::wait_event` is one Rust call, `hook_wait_event`: it masks to read/write
+- `System::wait_event` and `System::init_reactor` are Rust under their upstream
+  symbols (`wait_event.rs`, `reactor_handlers.rs`). `wait_event` masks to read/write
   (none is EINVAL), answers a zero timeout with one `poll(2)` (POLLNVAL is EBADF,
-  nothing ready is ETIMEDOUT), and otherwise parks as an `EventWaiter` whose state
-  (coroutine, fired events) is Rust's: native adds and removes the `SW_FD_CO_EVENT`
-  socket and yields. The `SW_FD_CO_SOCKET`, `SW_FD_CO_POLL` and `SW_FD_CO_EVENT`
-  reactor handlers are Rust, registered by `hook_init_reactor` from `System::init_reactor` through a
-  native `set_handler`; the event waiter's defers native `wake` (the coroutine's
-  resume) on the first event only. Error readiness
-  becomes the requested read/write bits. Native sets the last error and errno it
-  returns.
+  nothing ready is ETIMEDOUT), and otherwise parks as an `EventWaiter` on a
+  `SW_FD_CO_EVENT` socket, yielding through `Coroutine::yield_ex`; it sets the last
+  error and errno. `init_reactor` registers the `SW_FD_CO_SOCKET`, `SW_FD_CO_POLL`,
+  `SW_FD_CO_EVENT`, `SW_FD_AIO` (and `SW_FD_IOURING`) handlers; the event waiter's
+  defers the coroutine's resume on the thread's deferred queue on the first event
+  only. Error readiness becomes the requested read/write bits.
 - `System::read_file`/`write_file` are one Rust call each, `hook_read_file` and
   `hook_write_file`: open, flock, size, the whole read or write (`File::read_all`,
   `write_all`, `read_content` semantics), fsync and unlock on the async pool.
@@ -170,7 +169,8 @@ are still never uninstalled.
   never touches the parked task.
 - DNS async-timeout error mapping is scalar policy in both host/address lookup
   wrappers; requests, parsing and c-ares/libc stay native. The DNS cache
-  (`hook_dns_cache_*`: LRU, expiry, family key, hit/miss counters) is Rust.
+  (LRU, expiry, family key, hit/miss counters) is Rust, and so are `System`'s
+  four DNS cache settings, under their upstream symbols.
 - io_uring: CQ harvesting, SQ admission and task counter decrement stay native
   and precede resume. Rust maps negative CQ results (ECANCELED -> ETIMEDOUT).
   Submit keeps EAGAIN defer, EBUSY sleep, EINTR retry and the native fatal
