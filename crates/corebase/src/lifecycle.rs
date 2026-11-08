@@ -66,6 +66,20 @@ pub fn set_thread(kind: u8, id: u16) {
     }
 }
 
+/// `swoole_get_thread_id()`: `SwooleTG.id`, 0 before `swoole_init`.
+#[must_use]
+pub fn thread_id() -> u16 {
+    native::host().map_or(0, |host| read(host, |thread| thread.id))
+}
+
+/// Sets `SwooleTG.message_bus`; nothing before `swoole_init`.
+pub fn set_thread_message_bus(bus: *mut c_void) {
+    if let Some(host) = native::host() {
+        // SAFETY: this thread's live record, borrowed for the write alone.
+        unsafe { (*thread(host)).message_bus = bus };
+    }
+}
+
 /// `SwooleTG.async_threads`: null before `swoole_init`.
 #[must_use]
 pub fn thread_async_threads() -> *mut c_void {

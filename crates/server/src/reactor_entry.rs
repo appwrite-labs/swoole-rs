@@ -45,11 +45,18 @@ fn native() -> (ServerCall, usize) {
     }
 }
 
+/// `serv->get_thread(id)`.
+pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
+    // SAFETY: a live server's tables.
+    let threads = unsafe { &*state.tables() }.reactor_threads;
+    threads.wrapping_byte_add(id * native().1)
+}
+
 /// Runs `op` over `ctx`.
 ///
 /// # Safety
 /// `ctx.serv` is a live `Server` and the context's other objects are what `op` reads.
-unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
+pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
     // SAFETY: per the caller.
     let state = unsafe { view::state_ptr(ctx.serv) };
     let context = ptr::from_mut(ctx).cast();
@@ -156,11 +163,7 @@ pub unsafe extern "C" fn on_pipe_read(reactor: *mut c_void, event: *mut c_void) 
     // SAFETY: per the caller.
     let id = usize::from(unsafe { fields(reactor) }.id);
     // SAFETY: per the caller, a live server's.
-    let tables = unsafe { state(ctx.serv) }.tables();
-    // SAFETY: the live server's tables.
-    let threads = unsafe { &*tables }.reactor_threads;
-    // `serv->get_thread(reactor->id)`.
-    ctx.thread = threads.wrapping_byte_add(id * native().1);
+    ctx.thread = thread(unsafe { state(ctx.serv) }, id);
     // SAFETY: per the caller.
     int(unsafe { run(RUN_PIPE_READ, 0, &mut ctx) })
 }

@@ -99,8 +99,9 @@ unsafe extern "C-unwind" {
     fn swoole_timer_create(manually_trigger: bool) -> *mut c_void;
     fn swr_v1_core_timer_slot() -> *mut *mut c_void;
     fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
-    fn swr_cpp_timer_after(
+    pub(crate) fn swr_cpp_timer_add(
         msec: c_long,
+        persistent: bool,
         callback: unsafe extern "C" fn(*mut c_void),
         data: *mut c_void,
     ) -> *mut c_void;
@@ -239,10 +240,20 @@ fn bus_of<'a>(pool: Pool) -> &'a PoolBus {
     unsafe { &*record(pool).message_bus.cast::<PoolBus>() }
 }
 
-/// `MessageBus::read(sock)`: allocates each packet block the bus asks for.
+/// `MessageBus::read(sock)`.
 fn bus_read(pool: Pool, sock: *mut c_void) -> isize {
     let PoolBus { bus, allocator } = *bus_of(pool);
-    let sock = socket(sock);
+    read_bus(bus, allocator, socket(sock), false)
+}
+
+/// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`) over the bus and its
+/// default allocator: allocates each packet block the bus asks for.
+pub(crate) fn read_bus(
+    bus: *mut c_void,
+    allocator: *const CoreAllocator,
+    sock: &mut SocketRecord,
+    dgram: bool,
+) -> isize {
     let mut state = BusRead {
         received: 0,
         size: 0,
@@ -253,12 +264,12 @@ fn bus_read(pool: Pool, sock: *mut c_void) -> isize {
         event: 0,
     };
     loop {
-        // SAFETY: the pool's bus, its pipe's descriptor and flag, and a writable state.
+        // SAFETY: a live bus, its pipe's descriptor and flag, and a writable state.
         let n = unsafe {
             swr_v1_bus_read(
                 bus,
                 sock.fd,
-                false,
+                dgram,
                 &raw mut sock.kernel_nobufs,
                 &raw mut state,
             )
@@ -462,7 +473,7 @@ fn timer_after(
     data: *mut c_void,
 ) -> *mut c_void {
     // SAFETY: a one-shot timer of this thread's.
-    unsafe { swr_cpp_timer_after(msec, callback, data) }
+    unsafe { swr_cpp_timer_add(msec, false, callback, data) }
 }
 
 unsafe extern "C" fn reload_timeout(task: *mut c_void) {
