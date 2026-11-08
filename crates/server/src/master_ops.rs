@@ -24,16 +24,16 @@ use crate::ops::{
     LOG_CALLBACK_DISPATCH, LOG_CALLBACK_REQUIRED, LOG_FDS_START, LOG_FILE_EMPTY, LOG_HOST_TOO_LONG,
     LOG_INVALID_PORT, LOG_INVALID_SESSION, LOG_LC_ONLY_ONE, LOG_LISTEN_PID, LOG_MANAGER_EXIT,
     LOG_MAX_CONNECTION_CREATED, LOG_MAX_CONNECTION_MINIMUM, LOG_MAX_CONNECTION_SESSIONS,
-    LOG_NO_IDLE_WORKER, LOG_NO_SESSION_SLOT, LOG_NODELAY, LOG_NOT_REGULAR, LOG_PORT_CREATED,
-    LOG_RCVBUF, LOG_REACTOR_NUM, LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW,
-    LOG_SC_NO_SESSION_DATA, LOG_SC_NO_SESSION_EVENT, LOG_SC_SOCKET_OVERFLOW, LOG_SEND_IN_MASTER,
-    LOG_SENDFILE_NAME, LOG_SENDWAIT, LOG_SHUTDOWN_FAILED, LOG_SNDBUF, LOG_ST_ROOT_MISSING,
-    LOG_ST_ROOT_TOO_LONG, LOG_STAT, LOG_TASK_POOL, LOG_TASK_WORKER_NUM, LOG_TOO_MANY_CONNECTIONS,
-    LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_ACCEPT, OP_BASE_REACTORS, OP_CHUNK_SIZE,
-    OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_CONN_PROTECT, OP_CONN_RESET,
-    OP_CONN_UID, OP_CONN_WORKER, OP_COUNT_ACCEPT, OP_DGRAM_PORT, OP_DIRECT_SEND, OP_EVENT_FD,
-    OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER,
-    OP_KILL_TERM, OP_KILL_WINCH, OP_LAST_RECEIVED, OP_LAST_SENT, OP_NEW_PORT_TYPE,
+    LOG_MAX_CONNECTION_SOCKETS, LOG_NO_IDLE_WORKER, LOG_NO_SESSION_SLOT, LOG_NODELAY,
+    LOG_NOT_REGULAR, LOG_PORT_CREATED, LOG_RCVBUF, LOG_REACTOR_NUM, LOG_SC_CLOSED_BY_CLIENT,
+    LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA, LOG_SC_NO_SESSION_EVENT, LOG_SC_SOCKET_OVERFLOW,
+    LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME, LOG_SENDWAIT, LOG_SHUTDOWN_FAILED, LOG_SNDBUF,
+    LOG_ST_ROOT_MISSING, LOG_ST_ROOT_TOO_LONG, LOG_STAT, LOG_TASK_POOL, LOG_TASK_WORKER_NUM,
+    LOG_TOO_MANY_CONNECTIONS, LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_ACCEPT, OP_BASE_REACTORS,
+    OP_CHUNK_SIZE, OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_CONN_PROTECT,
+    OP_CONN_RESET, OP_CONN_UID, OP_CONN_WORKER, OP_COUNT_ACCEPT, OP_DGRAM_PORT, OP_DIRECT_SEND,
+    OP_EVENT_FD, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED,
+    OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH, OP_LAST_RECEIVED, OP_LAST_SENT, OP_NEW_PORT_TYPE,
     OP_NODELAY_ENABLED, OP_PIN_WORKER, OP_PORT_IDLE_TIME, OP_PORT_NODELAY, OP_PORT_NUMBER,
     OP_PORT_PUSH, OP_PORT_RCVBUF, OP_PORT_SNDBUF, OP_PORT_SSL, OP_PORT_TYPE, OP_REACTOR_ADD_READ,
     OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_HAS_SEND_TIMER,
@@ -56,7 +56,7 @@ use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
     OP_ALLOC_PORT_GS, OP_ALLOC_SESSIONS, OP_ALLOC_TASK_RESULTS, OP_ALLOC_WORKERS,
     OP_CREATE_FACTORY, OP_DESTROY_FACTORY, OP_DESTROY_WORKER, OP_FREE_USER_WORKERS,
-    OP_INIT_LOCAL_ADDRS, OP_INIT_TASK_WORKERS, OP_LC_BEFORE_START, OP_LC_CHECK,
+    OP_HTTP_DEFAULTS, OP_INIT_LOCAL_ADDRS, OP_INIT_TASK_WORKERS, OP_LC_BEFORE_START, OP_LC_CHECK,
     OP_LC_PREPARE_WORKERS, OP_LC_START_BASE, OP_LC_START_THREAD, OP_MASTER_REACTOR,
     OP_MASTER_WORKER, OP_SIGNAL_ACTIVE, OP_SIGNAL_READ_MESSAGE, OP_STOP_SINGLE_WORKER,
     OP_STOP_WORKER_THREADS,
@@ -323,6 +323,11 @@ pub(crate) unsafe fn answer(
         }
         LOG_MAX_CONNECTION_CREATED => {
             let m = format_args!("max_connection must be set before server create");
+            log::warning(c"Server::set_max_connection", m);
+            0
+        }
+        LOG_MAX_CONNECTION_SOCKETS => {
+            let m = format_args!("max_connection is exceed the maximum value, it's reset to {arg}");
             log::warning(c"Server::set_max_connection", m);
             0
         }
@@ -1383,6 +1388,23 @@ unsafe fn lifecycle(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             gs.connection_nums = shm_calloc(o.config().worker_num as usize, ATOMIC_SIZE);
             u64::from(!gs.connection_nums.is_null())
         }
+        OP_HTTP_DEFAULTS => {
+            // `locations` (0) and `http_compression_types` (2): count, enabled, enable, reset.
+            let strings = |kind, op| {
+                // SAFETY: the live state; these operations lend no bytes.
+                unsafe {
+                    crate::swr_v1_server_static_config(o.state, kind, op, core::ptr::null(), 0)
+                }
+            };
+            if o.config().enable_static_handler && strings(0, 1) == 0 {
+                strings(0, 3);
+                strings(0, 2);
+            }
+            if strings(2, 1) != 0 && strings(2, 0) != 0 {
+                o.config().http_compression = true;
+            }
+            0
+        }
         // SAFETY: per the caller.
         op => return unsafe { effects(o, op, arg) },
     })
@@ -1694,6 +1716,184 @@ unsafe fn native(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     Some(handler),
                 );
             };
+            0
+        }
+        // SAFETY: per the caller, for this and the ops below.
+        op => return unsafe { startup(o, op, arg) },
+    })
+}
+
+/// The startup ops over the server's factory, timer, callbacks, listening sockets
+/// and environment, under their upstream symbols; else `None`.
+///
+/// # Safety
+/// As [`answer`]; the server is at the point of its startup where it makes `op`.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+unsafe fn startup(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    use crate::callbacks::CB_START;
+    use crate::ops::{
+        OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_LC_DAEMON, OP_LC_FACTORY_START,
+        OP_LC_START_PROCESS, OP_MASTER_START, OP_MASTER_TIMER, OP_MAX_SOCKETS, OP_ST_FINISH,
+        OP_ST_INIT_PIPE, OP_STORE_LISTEN, OP_SYSTEMD_FDS,
+    };
+    use core::ffi::c_void;
+    use swoole_rs_utilities::{process_logger, swr_v1_logger_is_opened, swr_v1_logger_redirect};
+    type Resolve = unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_int;
+    // SAFETY: crates/ossupport's, crates/corebase's and crates/clients' bodies and
+    // upstream's `SwooleG`, under their upstream symbols.
+    unsafe extern "C" {
+        #[link_name = "_Z13swoole_daemonii"]
+        fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int;
+        #[link_name = "_Z22swoole_redirect_stdoutPKc"]
+        fn swoole_redirect_stdout(file: *const c_char);
+        #[link_name = "_Z29swoole_get_systemd_listen_fdsv"]
+        fn swoole_get_systemd_listen_fds() -> c_int;
+        fn swr_v1_bus_init_pipe_socket(bus: *mut c_void, fd: c_int);
+        fn swr_v1_clients_address_assign(
+            address: *mut c_void,
+            length: *mut libc::socklen_t,
+            kind: c_int,
+            host: *const c_char,
+            host_length: usize,
+            port: c_int,
+            resolve: Option<Resolve>,
+        ) -> c_int;
+        static SwooleG: Global;
+    }
+    /// `swoole::Global`: its only base, `CoreConfigOwner`, starts with the
+    /// `swr_v1_core_config_prepared` whose second word is the scalar fields.
+    #[repr(C)]
+    struct Global {
+        owner: *mut c_void,
+        fields: *const swoole_rs_corebase::CoreConfigFields,
+    }
+    /// `factory_->start()` and `factory_->finish(send)`: `Factory`'s vtable slots
+    /// after its two destructors.
+    type Start = unsafe extern "C-unwind" fn(*mut c_void) -> bool;
+    type Finish = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool;
+    let factory = o.config().factory_;
+    let slot = |at: usize| {
+        // SAFETY: the started server's live factory, which starts with its vptr.
+        let vtable = unsafe { *factory.cast::<*const *const c_void>() };
+        // SAFETY: `Factory`'s vtable has eight slots.
+        unsafe { *vtable.wrapping_add(at) }
+    };
+    let serv = o.ctx.serv;
+    Some(match op {
+        OP_LC_DAEMON => {
+            match process_logger() {
+                // SAFETY: the process logger, live while the process runs.
+                Some(logger) if unsafe { swr_v1_logger_is_opened(logger) } => {
+                    // SAFETY: as above.
+                    unsafe { swr_v1_logger_redirect(logger, true) };
+                }
+                // SAFETY: a NUL-terminated path.
+                _ => unsafe { swoole_redirect_stdout(c"/dev/null".as_ptr()) },
+            }
+            // SAFETY: the master, before it starts any thread.
+            sign(unsafe { swoole_daemon(0, 1) })
+        }
+        OP_LC_FACTORY_START => {
+            // SAFETY: slot 2 of the factory's vtable is `start`.
+            let start = unsafe { core::mem::transmute::<*const c_void, Start>(slot(2)) };
+            // SAFETY: the live factory.
+            u64::from(unsafe { start(factory) })
+        }
+        OP_ST_FINISH => {
+            // SAFETY: slot 5 of the factory's vtable is `finish`.
+            let finish = unsafe { core::mem::transmute::<*const c_void, Finish>(slot(5)) };
+            // SAFETY: the live factory and the context's send.
+            u64::from(unsafe { finish(factory, o.ctx.send) })
+        }
+        // SAFETY: the master, starting its reactor threads.
+        OP_LC_START_PROCESS => sign(unsafe { crate::reactor_entry::start_reactor_threads(serv) }),
+        // SAFETY: `SwooleG`'s fields, set by `swoole_init`.
+        OP_MAX_SOCKETS => u64::from(unsafe { (*SwooleG.fields).max_sockets }),
+        OP_MASTER_TIMER => {
+            let tick = crate::server_methods::master_timer_tick;
+            // SAFETY: a persistent timer of the master's, over the live server.
+            let node = unsafe { crate::pool_native::swr_cpp_timer_add(1000, true, tick, serv) };
+            o.config().master_timer = node;
+            u64::from(!node.is_null())
+        }
+        OP_MASTER_START => {
+            if let Some(slot) = o.state.callbacks.slot(CB_START) {
+                // SAFETY: `onStart` takes the server.
+                unsafe { slot.call_server(serv) };
+            }
+            0
+        }
+        OP_STORE_LISTEN => {
+            let index = usize::try_from(arg).unwrap_or(usize::MAX);
+            let &ls = o.tables().ports().get(index)?;
+            // SAFETY: one of the server's live ports.
+            let port = unsafe { port_config(ls) };
+            // SAFETY: the port's live listening socket.
+            let socket = unsafe { &mut *port.socket.cast::<SocketRecord>() };
+            let fd = socket.fd;
+            let at = isize::try_from(fd).unwrap_or(isize::MAX);
+            // SAFETY: the listening socket's fd indexes the live connection list.
+            let conn = unsafe { &mut *o.tables().connection_list.wrapping_offset(at) };
+            conn.fd = fd;
+            conn.socket = port.socket.cast();
+            conn.socket_type = port.r#type;
+            conn.object = ls;
+            conn.info.kind = port.r#type;
+            let host = port.host();
+            let info = &mut conn.info;
+            let resolve: Resolve = swoole_rs_corebase::swr_v1_clients_gethostbyname;
+            // SAFETY: the connection's address storage and the port's host.
+            let error = unsafe {
+                swr_v1_clients_address_assign(
+                    (&raw mut info.addr).cast(),
+                    &raw mut info.len,
+                    port.r#type,
+                    host.data,
+                    host.length,
+                    port.port,
+                    Some(resolve),
+                )
+            };
+            if error != 0 {
+                log::set_last_error(error);
+            }
+            socket.object = ls;
+            sign(fd)
+        }
+        OP_ENV_LISTEN_PID | OP_ENV_FDS_START => {
+            let name = if op == OP_ENV_LISTEN_PID {
+                c"LISTEN_PID"
+            } else {
+                c"LISTEN_FDS_START"
+            };
+            let mut value: c_int = 0;
+            // SAFETY: base.cc's `swoole_get_env`, with a NUL-terminated name and a live out-parameter.
+            let found = swoole_rs_corebase::native::host()
+                .is_some_and(|host| unsafe { (host.get_env)(name.as_ptr(), &raw mut value) });
+            if found {
+                sign(value)
+            } else {
+                i64::MIN.cast_unsigned()
+            }
+        }
+        // SAFETY: reads the environment.
+        OP_SYSTEMD_FDS => sign(unsafe { swoole_get_systemd_listen_fds() }),
+        OP_ST_INIT_PIPE => {
+            // SAFETY: the context's live `MessageBus`, which starts with its Rust bus.
+            let bus = unsafe { *o.ctx.object.cast::<*mut core::ffi::c_void>() };
+            // SAFETY: the context's live server; `arg` is one of its worker ids.
+            let worker =
+                unsafe { crate::view::worker(serv, u16::try_from(arg).unwrap_or(u16::MAX)) };
+            // SAFETY: one of the server's live workers.
+            let worker = unsafe { &*worker };
+            // SAFETY: the worker's live pipe sockets.
+            let master = unsafe { &*worker.pipe_master.cast::<SocketRecord>() };
+            // SAFETY: as above.
+            let worker = unsafe { &*worker.pipe_worker.cast::<SocketRecord>() };
+            // SAFETY: the live bus.
+            unsafe { swr_v1_bus_init_pipe_socket(bus, master.fd) };
+            // SAFETY: as above.
+            unsafe { swr_v1_bus_init_pipe_socket(bus, worker.fd) };
             0
         }
         _ => return None,

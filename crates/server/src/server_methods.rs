@@ -633,6 +633,22 @@ pub unsafe fn set_document_root(serv: *mut c_void, path: &[u8]) -> bool {
     unsafe { run(RUN_ST_DOCUMENT_ROOT, path.len() as u64, &mut ctx) != 0 }
 }
 
+/// The master timer's tick, `Server::timer_callback`, as a plain timer callback.
+///
+/// # Safety
+/// `serv` is a live `Server`, in its master.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) unsafe extern "C" fn master_timer_tick(serv: *mut c_void) {
+    // SAFETY: as the caller guarantees.
+    unsafe {
+        run(
+            crate::ops::RUN_MASTER_TIMER,
+            0,
+            &mut NativeContext::new(serv),
+        )
+    };
+}
+
 /// `Server::sendwait(session_id, data, length)`.
 ///
 /// # Safety
