@@ -411,6 +411,25 @@ pub unsafe fn at<'a>(serv: *mut c_void, fd: c_int) -> Option<&'a mut ConnectionR
     unsafe { connection(serv, c_long::from(fd), 0) }
 }
 
+/// `Server::get_server_socket(fd)`: the listening socket at `fd`, or null.
+///
+/// # Safety
+/// As [`connection`].
+pub unsafe fn server_socket(serv: *mut c_void, fd: c_long) -> *mut c_void {
+    // SAFETY: per the caller.
+    unsafe { connection(serv, fd, 0) }.map_or(core::ptr::null_mut(), |conn| conn.socket)
+}
+
+/// A `network::Socket`'s fd and `swSocketType`.
+///
+/// # Safety
+/// `socket` is a live socket.
+pub unsafe fn socket_fd(socket: *mut c_void) -> (c_int, c_int) {
+    // SAFETY: per the caller.
+    let socket = unsafe { &*socket.cast::<SocketRecord>() };
+    (socket.fd, socket.socket_type)
+}
+
 /// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on, or
 /// null.
 ///
@@ -481,6 +500,36 @@ pub unsafe fn port_at(serv: *mut c_void, index: usize) -> *mut c_void {
     // SAFETY: the live server's tables.
     let ports = unsafe { &*tables }.ports();
     ports.get(index).copied().unwrap_or(core::ptr::null_mut())
+}
+
+/// `Server::get_port(port)`: the first port listening on `port` (any at 0),
+/// or null.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+pub unsafe fn port_number(serv: *mut c_void, port: c_int) -> *mut c_void {
+    // SAFETY: per the caller.
+    unsafe { find_port(serv, |config| port == 0 || config.port == port) }
+}
+
+/// The first of `serv->ports` whose settings `wanted` accepts, or null.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+pub unsafe fn find_port(serv: *mut c_void, wanted: impl Fn(&PortConfig) -> bool) -> *mut c_void {
+    // SAFETY: per the caller.
+    let tables = unsafe { state(serv) }.tables();
+    if tables.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: the live server's tables, whose ports are live.
+    unsafe { &*tables }
+        .ports()
+        .iter()
+        .copied()
+        // SAFETY: as above.
+        .find(|&ls| wanted(unsafe { port(ls) }))
+        .unwrap_or(core::ptr::null_mut())
 }
 
 /// The connection socket's `recv_buffer` (a `swoole::String *`), or null.

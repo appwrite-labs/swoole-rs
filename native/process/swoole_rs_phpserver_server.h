@@ -18,7 +18,6 @@ struct _zend_object_handlers;
 typedef struct {
     /* E_ERROR "Invalid instance of %s" (does not return). */
     void (*invalid)(struct _zend_object *object);
-    void (*socket)(void *server, int64_t port, struct _zval_struct *return_value);
 } swr_v1_phpserver_host;
 
 /* php_swoole_server_{get,set}_port_property: per thread in thread mode, else in
