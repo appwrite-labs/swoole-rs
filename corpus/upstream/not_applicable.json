@@ -1,0 +1,17 @@
+{
+  "tests/swoole_event/kqueue.phpt": "darwin only (skip_if_not_darwin)",
+  "tests/swoole_pdo_oracle/bug60994.phpt": "SKIPIF compares the PHP_VERSION string with 80100, which is true on every PHP 8 release",
+  "tests/swoole_pdo_oracle/oci_success_with_info.phpt": "SKIPIF compares the PHP_VERSION string with 80100, which is true on every PHP 8 release",
+  "tests/swoole_pdo_oracle/pdo_oci_stream_1.phpt": "SKIPIF compares the PHP_VERSION string with 80100, which is true on every PHP 8 release",
+  "tests/swoole_pdo_sqlite/bug44327_2_1.phpt": "PHP 8.0 or lower",
+  "tests/swoole_pdo_sqlite/bug44327_3_1.phpt": "PHP 8.0 or lower",
+  "tests/swoole_pdo_sqlite/bug70862.phpt": "PHP 8.1 or lower",
+  "tests/swoole_pdo_sqlite/bug78192_1.phpt": "PHP 8.0 or lower",
+  "tests/swoole_pdo_sqlite/bug79664_1.phpt": "PHP 8.0 or lower",
+  "tests/swoole_pdo_sqlite/bug_44159_sqlite_version_1.phpt": "PHP 8.0 or lower",
+  "tests/swoole_pdo_sqlite/bug_63916-2.phpt": "32-bit only",
+  "tests/swoole_pdo_sqlite/bug_63916_1.phpt": "PHP 8.0 or lower",
+  "tests/swoole_pdo_sqlite/pdo_fetch_func_001.phpt": "PHP 8.1 or lower",
+  "tests/swoole_runtime/sockets/basic/bug49341.phpt": "BSD and darwin only",
+  "tests/swoole_runtime/sockets/basic/mcast_ipv6_recv_limited.phpt": "runs only where the protocol-independent multicast API is missing; Linux has it"
+}

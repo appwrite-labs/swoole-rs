@@ -11,8 +11,9 @@ Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 3 and 5 are done; o
 [speed](https://github.com/loks0n/swoole-rs/issues/366) and
 [differential fuzzing](https://github.com/loks0n/swoole-rs/issues/100). The badges come from `tools/badges.py`
 (`.github/workflows/badges.yml`): upstream C++ replaced counts upstream first-party
-lines the all-modules patch set deletes, and the PHPT badge names the commit its
-merge-tier run measured. The unsafe badge counts `unsafe` blocks, fns and impls in
+lines the all-modules patch set deletes, and the PHPT badge counts tests the hybrid
+passes in any of a merge-tier run's PHPT jobs, over those that can apply to 64-bit Linux
+(`corpus/upstream/not_applicable.json` lists the rest), naming the commit it measured. The unsafe badge counts `unsafe` blocks, fns and impls in
 non-test crate code; `tools/unsafe_budget.py` (PR tier) fails a PR that raises any
 crate above `tools/unsafe_baseline.json`, and `--update` lowers the baseline.
 

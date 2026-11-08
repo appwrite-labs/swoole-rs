@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shields.io endpoint JSON for the README's migration progress badges.
 
-  badges.py --source PINNED_UPSTREAM --output DIR [--phpt PHPT_JSON --commit SHA]
+  badges.py --source PINNED_UPSTREAM --output DIR [--phpt GATE_JSON... --commit SHA]
 
 replaced.json  upstream first-party lines (src/, ext-src/, include/; not the embedded
                PHP library) that the all-modules patch set deletes, over the pinned total:
@@ -10,8 +10,10 @@ replaced.json  upstream first-party lines (src/, ext-src/, include/; not the emb
 graduated.json leaf modules that are always on (Phase 3).
 unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/unsafe_budget.py);
                the per-crate table goes to the step summary.
-phpt.json      pinned PHPTs passing on the hybrid in a merge-tier gate (--phpt: that
-               run's gate output), with the commit it measured.
+phpt.json      applicable pinned PHPTs the hybrid passes in a merge-tier run (--phpt: that
+               run's gate outputs, one per build variant; a test counts if it passes in any),
+               with the commit it measured. corpus/upstream/not_applicable.json lists the
+               tests left out, and why, in the step summary too.
 """
 import argparse
 import json
@@ -96,11 +98,15 @@ def all_module_patches():
     return patches_for([module for module in plan['modules'] if module['id'] in selected])
 
 
-def phpt_passing(rows):
-    """(hybrid passes, first run or ungated re-run, over pinned PHPTs) from corpus/upstream/gate.py --output rows."""
-    tests = {row['test'] for row in rows}
+NOT_APPLICABLE = ROOT / 'corpus/upstream/not_applicable.json'
+
+
+def phpt_passing(rows, not_applicable=()):
+    """(hybrid passes, first run or ungated re-run, over applicable pinned PHPTs) from every job's
+    corpus/upstream/gate.py --output rows together."""
+    tests = {row['test'] for row in rows} - set(not_applicable)
     passing = {row['test'] for row in rows if row['engine'] == 'hybrid' and 'passed' in (row['status'], row.get('rerun'))}
-    return len(passing), len(tests)
+    return len(passing & tests), len(tests)
 
 
 def endpoint(label, message):
@@ -111,7 +117,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--source', type=Path, required=True, help='Pinned upstream checkout')
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--phpt', type=Path, help="A merge-tier run's phpt.json (gate rows)")
+    parser.add_argument('--phpt', type=Path, nargs='+', help="A merge-tier run's gate outputs (phpt.json, phpt-zts.json, ...)")
     parser.add_argument('--commit', help='The commit that run measured')
     parser.add_argument('--kept', action='store_true', help='Also list each file still built, with its kept upstream lines')
     args = parser.parse_args()
@@ -124,17 +130,21 @@ def main():
             print(f'{lines:6} {path}')
     deleted, total = replaced(files)
     unsafe = unsafe_budget.counts()
+    not_applicable = json.loads(NOT_APPLICABLE.read_text())
     if summary := os.environ.get('GITHUB_STEP_SUMMARY'):
         rows = ''.join(f'| {crate} | {n} |\n' for crate, n in sorted(unsafe.items(), key=lambda item: -item[1]))
+        excluded = ''.join(f'| `{test}` | {reason} |\n' for test, reason in sorted(not_applicable.items()))
         with open(summary, 'a') as out:
-            out.write(f'| crate | unsafe |\n| --- | ---: |\n{rows}')
+            out.write(f'| crate | unsafe |\n| --- | ---: |\n{rows}\n'
+                      f'| PHPT not applicable | reason |\n| --- | --- |\n{excluded}')
     badges = {
         'replaced': endpoint('upstream C++ replaced', f'{100 * deleted / total:.1f}% of {total / 1000:.0f}k lines'),
         'graduated': endpoint('graduated', f'{sum(m in GRADUATED for m in LEAF)} / {len(LEAF)} leaf modules'),
         'unsafe': endpoint('unsafe blocks', f'{sum(unsafe.values()):,}'),
     }
     if args.phpt:
-        passing, tests = phpt_passing(json.loads(args.phpt.read_text()))
+        rows = [row for path in args.phpt for row in json.loads(path.read_text())]
+        passing, tests = phpt_passing(rows, not_applicable)
         badges['phpt'] = endpoint('upstream PHPTs passing', f'{passing:,} / {tests:,} @ {args.commit[:7]}')
     for name, badge in badges.items():
         (args.output / (name + '.json')).write_text(json.dumps(badge) + '\n')
