@@ -11,18 +11,6 @@ typedef struct { uint32_t status; int32_t error; } swr_v1_process_affinity_outco
 #if defined(__linux__) || defined(__FreeBSD__)
 swr_v1_process_affinity_outcome swr_v1_process_worker_affinity(uint32_t worker_id, const int32_t *available, int32_t available_len, bool thread);
 #endif
-/* Laid out as swoole::Signal. */
-typedef struct { uintptr_t handler; uint16_t signo; bool activated; } swr_v1_signal_slot;
-extern swr_v1_signal_slot swr_v1_signals[128];
-typedef struct { uint32_t status; uintptr_t handler; } swr_v1_signal_lookup_result;
-uintptr_t swr_v1_signal_set(int signo, uintptr_t handler, bool safety, void (*callback)(int), bool (*has_reactor)(void));
-swr_v1_signal_lookup_result swr_v1_signal_lookup(int signo);
-void swr_v1_signal_reset(void);
-void swr_v1_signal_clear(void);
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
-uintptr_t swr_v1_signal_kqueue_set(int kq, int signo, uintptr_t handler, bool *failed);
-void swr_v1_signal_kqueue_clear(int kq, bool available);
-#endif
 typedef struct {
     void *(*current)(void);
     void (*signal_init)(void);

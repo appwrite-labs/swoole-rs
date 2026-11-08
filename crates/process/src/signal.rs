@@ -2,7 +2,7 @@
 //! the two async-signal handlers, dispatching triggered signals from a safe context,
 //! looking a handler up, clearing the table and blocking every signal.
 //! The signalfd and kqueue paths (`signalfd.rs`, `signal_kqueue.rs`) share the
-//! table, `swr_v1_signals`, laid out as `swoole::Signal`.
+//! table, `swr_v1_signals`.
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
