@@ -49,7 +49,7 @@ reported UNSUPPORTED when the config does not enable `SW_USE_IOURING`.
 ## Original tests
 
 `hooks-native-originals` (`tools/core_tests.py`, Linux, integrate lane) runs
-upstream's own `core-tests/src/coroutine/{hook,socket}.cpp` GoogleTests
+upstream's own `core-tests/src/coroutine/socket.cpp` GoogleTests
 unchanged on the reference and on the hybrid tree.
 
 `core-tests/src/coroutine/system.cpp` is Rust: `system/` holds its 20 TESTs, one
@@ -62,6 +62,17 @@ lookup that misses the resolver cache), as the GoogleTest run did. Where
 upstream's `System` signature carries C++ library types the cases call what the
 hybrid's callers call instead: `swr_v1_system_read_file`, `_getaddrinfo` and
 `_wait_signal`, and `swr_v1_hook_socket_poll` with `System`'s poll operations.
+
+`core-tests/src/coroutine/hook.cpp` is Rust too: `system/src/hook.rs` holds its 26
+TESTs, one function each (`coroutine_hook.<name>`, upstream's names, inputs and
+expected values), calling the C ABI `swoole_coroutine_*` exports; the same
+`hooks-system-rust` phase runs them. Upstream's test helpers are written out over
+libc (`File`, `String`, `create_socket_pair`, `file_get_contents`,
+`Address::assign`), `System::gethostbyname` is `swr_v1_system_gethostbyname`,
+and `exists` reads the socket's `sock_fd` through the hybrid's record layout.
+Before each case the binary writes `TEST_TMP_FILE` as core-tests' run did and
+removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
+`sendmsg_and_recvmsg` stays excluded (below).
 
 `core-tests/src/memory/lru_cache.cpp` no longer builds (`include/swoole_lru_cache.h`
 is deleted). Its TESTs are Rust tests over the DNS cache's `Lru` in
@@ -78,13 +89,15 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   failures on both platforms; base/async_file failures reproduce in the native
   control on macOS. Redis, external services and PHP deprecations account for
   further failures and skips.
-- Native originals (hook.cpp and socket.cpp, Linux): the reference passes all
-  but the excluded cases. The hybrid tree no longer compiles socket.cpp
-  (#1726: the members it uses moved to Rust), so no hybrid case runs.
-  `coroutine_hook.sendmsg_and_recvmsg` stays excluded: it segfaults in ~15% of
-  runs on both (its child reads the finished parent's stack).
+- Native originals (socket.cpp, Linux): the reference passes all but the
+  excluded cases. The hybrid tree no longer compiles socket.cpp (#1726: the
+  members it uses moved to Rust), so no hybrid case runs.
 - `hooks-system-rust`: 18 of system.cpp's 20 cases pass; the two `getaddrinfo`
-  network cases are excluded.
+  network cases are excluded. `coroutine_hook.sendmsg_and_recvmsg` is excluded:
+  it segfaulted in ~15% of GoogleTest runs on both engines (its child reads the
+  finished parent's stack). hook.cpp's other 25 cases pass (Linux aarch64,
+  docker); `gethostbyname`, `getaddrinfo` and `socket` need external DNS and
+  network.
 - macOS (clang): `packet_gate.py` stops at a narrowing error in the selected
   `recv_packet` initializer. It passes on Linux, which is where CI runs it.
 - Not run: enabled io_uring runtime, ZTS/thread mode, the PHP originals after

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upstream's core-tests/src/coroutine/system.cpp, ported to Rust (tests/modules/hooks/system/),
+"""Upstream's core-tests/src/coroutine/{system,hook}.cpp, ported to Rust (tests/modules/hooks/system/),
 against the hybrid tree's libswoole.so (Linux). Builds lib-swoole as tools/core_tests.py builds
 the hybrid engine, links the case binary to it, and runs each case in its own process group.
 --exclude NAME=REASON reports a case `excluded` with its reason; it never counts as passed."""

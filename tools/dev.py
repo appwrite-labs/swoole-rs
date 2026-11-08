@@ -34,7 +34,7 @@ except ValueError:
 sys.exit(0 if ssl.HAS_TLSv1_3 else 2)"""
 
 # Upstream's own GoogleTests per module, run unchanged on the reference and the hybrid tree by
-# tools/core_tests.py (Linux, integrate): files, excluded cases with the reason, whether the cases read TEST_TMP_FILE.
+# tools/core_tests.py (Linux, integrate): files and excluded cases with the reason.
 NETWORK, PROXY = 'needs external DNS and network', 'needs a local HTTP or SOCKS5 proxy service'
 # The case's fixed missing name stays in the resolver's negative cache after any lookup of it (the
 # other engine's, an earlier run's), and the cached answer comes back before the cancel or timeout.
@@ -44,24 +44,21 @@ CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_
                 'http_get_async_with_socks5_proxy', 'http_get_sync_with_http_proxy', 'http_get_sync_with_socks5_proxy']
 CORE_TESTS = {
     'reactor': (['reactor/base.cpp', 'network/socket.cpp'],
-                {'socket.make_server_socket': "expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's kernel returns EPROTONOSUPPORT"}, False),
+                {'socket.make_server_socket': "expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's kernel returns EPROTONOSUPPORT"}),
     'http': (['server/http_server.cpp', 'server/http_parser.cpp', 'server/multipart_parser.cpp'],
              {'http_server.node_websocket_client_1': 'needs Node.js and its ws package',
-              'http_server.node_websocket_client_2': 'needs Node.js and its ws package'}, False),
+              'http_server.node_websocket_client_2': 'needs Node.js and its ws package'}),
     'clients': (['network/dns.cpp', 'network/address.cpp', 'network/client.cpp'],
                 {'dns.lookup1': NETWORK, 'dns.lookup_ipv6': NETWORK, 'dns.bad_family': NETWORK, 'dns.cancel': UNCACHED,
                  'client.bind': "expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner isn't root and gets EACCES",
                  'client.async_tcp_socks5_proxy_handshake_fail': 'expects www.baidu.com:80 to time out a SOCKS5 greeting',
-                 **{'client.' + name: PROXY for name in CLIENT_PROXY}}, False),
-    'hooks': (['coroutine/hook.cpp', 'coroutine/socket.cpp'],
+                 **{'client.' + name: PROXY for name in CLIENT_PROXY}}),
+    'hooks': (['coroutine/socket.cpp'],
               {'coroutine_socket.tcp6': 'needs IPv6',
-               'coroutine_hook.sendmsg_and_recvmsg': "its child reads the parent's freed stack when the parent's close completes "
-                                                     'first (SIGSEGV in ~15% of runs on both engines)',
                **{'coroutine_socket.' + name: PROXY for name in [
-                   'https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy', 'https_get_with_http_proxy']}},
-              True),
-    'timer': (['os/timer.cpp'], {}, False),
-    'tls': (['protocol/ssl.cpp'], {}, False),
+                   'https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy', 'https_get_with_http_proxy']}}),
+    'timer': (['os/timer.cpp'], {}),
+    'tls': (['protocol/ssl.cpp'], {}),
 }
 
 
@@ -387,21 +384,22 @@ def plan(args, reports):
                        '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                        '--build-root', ROOT / 'target/native-originals/framing', '--jobs', args.jobs,
                        *report('framing-native-originals'))
-    for module, (files, excluded, tmp_file) in CORE_TESTS.items():
+    for module, (files, excluded) in CORE_TESTS.items():
         if integrate and module in modules and sys.platform.startswith('linux'):
             name = module + '-native-originals'
             script(name, 'tools/core_tests.py', '--source', ROOT / 'target/upstream/src', '--config', manifest.parent / 'src/config.h',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                    '--build-root', ROOT / 'target/native-originals' / module, '--jobs', args.jobs,
                    *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
-                   *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]],
-                   *(['--tmp-file'] if tmp_file else []), *report(name))
+                   *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]], *report(name))
     if integrate and 'hooks' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/coroutine/system.cpp, ported to Rust over the hybrid's libswoole.so.
+        # core-tests/src/coroutine/{system,hook}.cpp, ported to Rust over the hybrid's libswoole.so.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
                '--exclude', 'coroutine_system.getaddrinfo=' + NETWORK, '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
+               '--exclude', "coroutine_hook.sendmsg_and_recvmsg=its child reads the parent's freed stack when the parent's close "
+                            'completes first (SIGSEGV in ~15% of runs upstream)',
                *report('hooks-system-rust'))
     if integrate and 'clients' in modules and sys.platform.startswith('linux'):
         script('clients-address-record', 'tests/modules/clients/address_record.py',

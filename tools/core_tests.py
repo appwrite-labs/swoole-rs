@@ -9,11 +9,9 @@ import argparse
 import io
 import json
 import os
-import random
 from pathlib import Path
 import re
 import shutil
-import string
 import subprocess
 import sys
 import tarfile
@@ -64,20 +62,6 @@ static inline void init_settings(Settings *settings) { *settings = sw_rs_http2_d
     };
 ''', '')],
 }
-# The original ftruncate case creates this file with mode 000 and leaves it behind.
-# Give each engine a private path; keep the open flags, mode and every assertion.
-ABSOLUTE_FIXTURES = {'coroutine_hook.ftruncate': ('core-tests/src/coroutine/hook.cpp', '/tmp/123.txt')}
-
-
-# core-tests' TEST_TMP_FILE: base.file_put_contents (core/base.cpp) writes 65535 random
-# alphanumerics and a NUL, and coroutine/hook.cpp's cases read it.
-TMP_FILE = Path('/tmp/swoole_core_test_file')
-
-
-def private_fixture(tree, name):
-    return tree / 'case-fixtures' / name / Path(ABSOLUTE_FIXTURES[name][1]).name
-
-
 def write_changed(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.is_file() or path.read_bytes() != data:
@@ -106,10 +90,6 @@ def cases(staged, files):
 
 
 def run_case(binary, tree, name, logs, timeout):
-    if name in ABSOLUTE_FIXTURES:
-        fixture = private_fixture(tree, name)
-        fixture.parent.mkdir(parents=True, exist_ok=True)
-        fixture.unlink(missing_ok=True)
     xml = logs / (name + '.xml')
     xml.unlink(missing_ok=True)
     command = [str(binary), '--gtest_filter=' + name, '--gtest_output=xml:' + str(xml)]
@@ -135,8 +115,6 @@ def main():
     parser.add_argument('--build-root', type=Path, required=True, help='Private writable build directory')
     parser.add_argument('--file', action='append', required=True, help='core-tests/src/... file whose TEST()s run')
     parser.add_argument('--exclude', action='append', default=[], metavar='SUITE.NAME=REASON')
-    parser.add_argument('--tmp-file', action='store_true',
-                        help=f'Write {TMP_FILE} first, as base.file_put_contents does, because the cases read it')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--timeout', type=int, default=90, help='Seconds per test')
     parser.add_argument('--output', type=Path, required=True)
@@ -169,17 +147,6 @@ def main():
                             raise ValueError(f'Test helper changed: {path}')
                         text = text.replace(old, new)
                     write_changed(tree / path, text.encode())
-                for name, (path, original) in ABSOLUTE_FIXTURES.items():
-                    if path not in args.file:
-                        continue
-                    text = (tree / path).read_text()
-                    if text.count(json.dumps(original)) != 1:
-                        raise ValueError(f'Absolute test fixture changed: {path}')
-                    replacement = private_fixture(tree, name)
-                    text = text.replace(json.dumps(original), json.dumps(str(replacement)))
-                    write_changed(tree / path, text.encode())
-                    report.setdefault('fixture_isolation', []).append(
-                        {'engine': engine, 'case': name, 'original': original, 'private': str(replacement)})
                 cmake = (staged / 'CMakeLists.txt').read_text()
                 if cmake.count(SELECTION) != 1:
                     raise ValueError('Upstream core-tests target selection changed')
@@ -200,8 +167,6 @@ def main():
                 binary = tree / 'bin/core-tests'
                 binary.parent.mkdir(exist_ok=True)
                 shutil.copy2(tree / 'build/bin/core-tests', binary)
-                if args.tmp_file:
-                    TMP_FILE.write_bytes(''.join(random.choices(string.ascii_letters + string.digits, k=65535)).encode() + b'\0')
                 for name in inventory:
                     status = 'excluded' if name in excluded else run_case(binary, tree, name, logs, args.timeout)
                     report['results'].append({'engine': engine, 'name': name, 'status': status})
