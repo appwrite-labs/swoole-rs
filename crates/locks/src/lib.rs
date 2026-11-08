@@ -756,17 +756,23 @@ mod tests {
         const TIMEOUT_2: i32 = 10;
         let lock = Lock::new(MUTEX, false);
         lock.lock(LOCK_EX, -1);
+        // Upstream unlocks after a fixed 10 ms sleep, which races the waiter's start and its
+        // second wait on a loaded runner. Main instead unlocks 1 ms after the first timeout,
+        // so the waiter blocks briefly in the second wait with TIMEOUT_2's whole margin left.
+        let timed_out = Barrier::new(2);
         thread::scope(|s| {
             s.spawn(|| {
                 let ms1 = millis();
                 assert_eq!(lock.lock(LOCK_EX, TIMEOUT_1), ETIMEDOUT);
+                timed_out.wait();
                 let ms2 = millis();
                 assert!(ms2 - ms1 >= TIMEOUT_1 as u128);
                 assert_eq!(lock.lock(LOCK_EX, TIMEOUT_2), 0);
                 let ms3 = millis();
                 assert!(ms3 - ms2 <= TIMEOUT_2 as u128);
             });
-            thread::sleep(Duration::from_millis(10));
+            timed_out.wait();
+            thread::sleep(Duration::from_millis(1));
             lock.unlock();
         });
     }
