@@ -112,12 +112,12 @@ const EVENT_CLOSE: u8 = 4;
 const SESSION_SIZE: usize = size_of::<SessionRecord>();
 const ATOMIC_SIZE: usize = 4;
 const SENDFILE_TASK_SIZE: usize = 16;
-// master.cc asserts the native sizes of the arrays allocated here.
+// native/integration/server.cc asserts the native sizes of the arrays allocated here.
 const _: () = assert!(
     SESSION_SIZE == 16 && size_of::<PortCounters>() == 80,
-    "master.cc sizeof(Session), sizeof(ServerPortGS)"
+    "server.cc sizeof(Session), sizeof(ServerPortGS)"
 );
-/// `SW_BUFFER_MIN_SIZE`, which master.cc asserts.
+/// `SW_BUFFER_MIN_SIZE`, which native/integration/server.cc asserts.
 const BUFFER_MIN_SIZE: u32 = 65536;
 
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
@@ -247,7 +247,7 @@ impl Objects<'_> {
 /// Answers `op` when it is one of this module's, else `None`.
 ///
 /// # Safety
-/// `ctx` is master.cc's live context for the running operation and `state`
+/// `ctx` is native/integration/server.cc's live context for the running operation and `state`
 /// its server's; the objects each op reads are live, as for master.cc's case.
 #[expect(
     clippy::too_many_lines,
@@ -1720,11 +1720,9 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         #[link_name = "_Z19swoole_signal_clearv"]
         fn swoole_signal_clear();
     }
-    // SAFETY: master.cc's.
+    // SAFETY: crates/ports'.
     unsafe extern "C" {
-        #[link_name = "_ZN6swoole6Server21accept_command_resultEPNS_7ReactorEPNS_5EventE"]
-        fn accept_command_result(reactor: *mut c_void, event: *mut c_void) -> c_int;
-        /// crates/ports' `ListenPort::ssl_create`.
+        /// `ListenPort::ssl_create`.
         #[link_name = "_ZN6swoole10ListenPort10ssl_createEPNS_7network6SocketE"]
         fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool;
     }
@@ -2525,7 +2523,7 @@ unsafe fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     const SW_TASK_WORKER: c_int = 4;
     const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
     const BASE_FACTORY_SIZE: usize = 2 * size_of::<usize>();
-    // SAFETY: the C++ runtime's and master.cc's.
+    // SAFETY: the C++ runtime's and native/integration/server.cc's.
     unsafe extern "C-unwind" {
         #[link_name = "_Znwm"]
         fn operator_new(size: usize) -> *mut core::ffi::c_void;
@@ -2636,8 +2634,378 @@ unsafe fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             };
             u64::from(sent > 0)
         }
+        // SAFETY: per the caller.
+        op => return unsafe { objects(o, op, arg) },
+    })
+}
+
+/// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[repr(C)]
+struct EventData {
+    info: swoole_rs_corebase::DataHead,
+    data: [u8; IPC_BUFFER_SIZE],
+}
+
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+const _: () = assert!(
+    size_of::<EventData>() == swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize,
+    "sizeof(EventData)"
+);
+
+/// The ops over the server's ports, timers, barriers, command pipe and message
+/// bus, which build or call a native `ListenPort`, `Barrier` or `UnixSocket`;
+/// else `None`.
+///
+/// # Safety
+/// As [`answer`].
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per op, as master.cc's switch was"
+)]
+unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    use crate::ops::{
+        EVENT_COMMAND_REQUEST, OP_ADD_RECV_TIMER, OP_MANAGER_BARRIER, OP_PORT_IMPORT, OP_PORT_NEW,
+        OP_PORT_SOCKET, OP_REACTOR_BARRIER, OP_RELEASE_PIPE_BUFFERS, OP_SC_IDLE_TIMER,
+        OP_ST_CMD_SEND, OP_ST_PIPE_COMMAND_NEW,
+    };
+    use core::ffi::c_void;
+    use swoole_rs_process::command::{TO_MANAGER, TO_REACTOR_THREAD, TO_TASK_WORKER};
+    /// `SW_SOCK_SSL`.
+    const SOCK_SSL: c_int = 1 << 9;
+    // SAFETY: native/integration/server.cc's, native/locks', crates/ports' and
+    // crates/reactor's, under their upstream symbols.
+    unsafe extern "C-unwind" {
+        fn swr_v1_server_port_new(serv: *mut c_void) -> *mut c_void;
+        fn swr_v1_server_port_delete(port: *mut c_void);
+        fn swr_v1_server_barrier(serv: *mut c_void, manager: bool) -> *mut c_void;
+        #[link_name = "_ZN6swoole7Barrier4waitEv"]
+        fn barrier_wait(barrier: *mut c_void);
+        #[link_name = "_ZN6swoole10ListenPort16ssl_context_initEv"]
+        fn ssl_context_init(port: *mut c_void) -> bool;
+        #[link_name = "_ZN6swoole10ListenPort13create_socketEv"]
+        fn create_socket(port: *mut c_void) -> c_int;
+        #[link_name = "_ZN6swoole10ListenPort6importEi"]
+        fn import(port: *mut c_void, fd: c_int) -> bool;
+        #[link_name = "_ZN6swoole7network6Socket13set_fd_optionEii"]
+        fn set_fd_option(socket: *mut c_void, nonblock: c_int, cloexec: c_int) -> bool;
+    }
+    let serv = o.ctx.serv;
+    Some(match op {
+        // `swoole_timer_add(sec2msec(port->max_idle_time), true, get_timeout_callback(...))`
+        // for the connection's reads, or the context socket's sends.
+        OP_ADD_RECV_TIMER | OP_SC_IDLE_TIMER => {
+            let idle = o.port().max_idle_time;
+            let sock = if op == OP_ADD_RECV_TIMER {
+                o.conn().socket
+            } else {
+                o.ctx.sock
+            };
+            // SAFETY: the connection's live socket.
+            let sock = unsafe { &mut *sock.cast::<SocketRecord>() };
+            let tick = crate::server_methods::idle_timeout_tick;
+            #[expect(clippy::cast_possible_truncation, reason = "sec2msec's (long) cast")]
+            let msec = (idle * 1000.0) as libc::c_long;
+            // SAFETY: a persistent timer over the live connection, deleted before it goes.
+            let node =
+                unsafe { crate::pool_native::swr_cpp_timer_add(msec, true, tick, o.ctx.conn) };
+            if op == OP_ADD_RECV_TIMER {
+                sock.timeouts.read = idle;
+                sock.recv_timer = node;
+            } else {
+                sock.timeouts.write = idle;
+                sock.last_sent_time = swoole_rs_reactor::steady_ms();
+                sock.output.send_timer = node;
+            }
+            0
+        }
+        OP_REACTOR_BARRIER | OP_MANAGER_BARRIER => {
+            // SAFETY: the live server's barrier, initialized at startup.
+            let barrier = unsafe { swr_v1_server_barrier(serv, op == OP_MANAGER_BARRIER) };
+            // SAFETY: as above.
+            unsafe { barrier_wait(barrier) };
+            0
+        }
+        OP_RELEASE_PIPE_BUFFERS => {
+            release_pipe_buffers(o.state);
+            0
+        }
+        OP_PORT_NEW => {
+            // SAFETY: `new ListenPort(serv)`.
+            let ls = unsafe { swr_v1_server_port_new(serv) };
+            o.ctx.port = ls;
+            let port = o.port();
+            port.r#type = o.ctx.socket_type;
+            port.port = o.ctx.number;
+            // SAFETY: the NUL-terminated host the caller lends.
+            let host = unsafe { CStr::from_ptr(o.ctx.host) };
+            // SAFETY: the new port's own slot, which has no native cache yet.
+            let set = unsafe {
+                swoole_rs_corebase::swr_v1_core_string_set(
+                    &raw const *port.host,
+                    host.as_ptr(),
+                    host.count_bytes(),
+                )
+            };
+            if set < 0 {
+                // `throw std::bad_alloc()`, which nothing catches.
+                std::process::abort();
+            }
+            if arg != 0 {
+                port.r#type = o.ctx.socket_type & !SOCK_SSL;
+                port.ssl = 1;
+                // SAFETY: the new port.
+                unsafe { ssl_context_init(ls) };
+            }
+            0
+        }
+        OP_PORT_SOCKET => {
+            // SAFETY: the new port.
+            if unsafe { create_socket(o.ctx.port) } < 0 {
+                log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+                // SAFETY: the new port, deleted once.
+                unsafe { swr_v1_server_port_delete(o.ctx.port) };
+                o.ctx.port = core::ptr::null_mut();
+                return Some(0);
+            }
+            1
+        }
+        OP_PORT_IMPORT => {
+            // SAFETY: `new ListenPort(serv)`.
+            let ls = unsafe { swr_v1_server_port_new(serv) };
+            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
+            let fd = arg as c_int;
+            // SAFETY: the new port and an inherited descriptor.
+            if !unsafe { import(ls, fd) } {
+                // SAFETY: the new port, deleted once.
+                unsafe { swr_v1_server_port_delete(ls) };
+                return Some(0);
+            }
+            o.ctx.port = ls;
+            // SAFETY: the socket `import` made: O_NONBLOCK and O_CLOEXEC.
+            unsafe { set_fd_option(o.port().socket, 1, 1) };
+            1
+        }
+        OP_ST_CMD_SEND => {
+            // SAFETY: the `CommandSend` `arg` lends.
+            let c = unsafe { &*ptr_of::<crate::commands::CommandSend>(arg) };
+            let process_id = u16::try_from(c.process_id).unwrap_or(u16::MAX);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "C++'s conversions into DataHead's fields"
+            )]
+            let head = |info: &mut swoole_rs_corebase::DataHead| {
+                info.kind = EVENT_COMMAND_REQUEST as u8;
+                info.fd = c.request_id as libc::c_long;
+                info.server_fd = c.command_id as u16;
+            };
+            if c.action == TO_TASK_WORKER || c.action == TO_MANAGER {
+                // SAFETY: an all-zero `EventData` is valid.
+                let mut buf: EventData = unsafe { core::mem::zeroed() };
+                let sent = if c.action == TO_TASK_WORKER {
+                    // SAFETY: a writable `EventData` and the message's bytes.
+                    unsafe {
+                        swoole_rs_process::task_file::task_pack(
+                            (&raw mut buf).cast(),
+                            c.message.cast(),
+                            c.length,
+                        )
+                    }
+                } else {
+                    let length = c.length.min(IPC_BUFFER_SIZE);
+                    buf.info.len = u32::try_from(length).unwrap_or(u32::MAX);
+                    // SAFETY: the message's bytes, within the buffer.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(c.message, buf.data.as_mut_ptr(), length);
+                    };
+                    true
+                };
+                head(&mut buf.info);
+                if !sent {
+                    return Some(0);
+                }
+                let sent = if c.action == TO_TASK_WORKER {
+                    let mut dst = c_int::from(process_id);
+                    // SAFETY: the live server and the packed task.
+                    unsafe {
+                        swoole_rs_process::task_sync::task(
+                            serv,
+                            (&raw mut buf).cast(),
+                            &raw mut dst,
+                            false,
+                        )
+                    }
+                } else {
+                    let pool = core::ptr::from_mut(o.event_pool());
+                    // SAFETY: the live event pool and the message.
+                    unsafe {
+                        swoole_rs_process::methods::push_event(pool, (&raw const buf).cast()) >= 0
+                    }
+                };
+                return Some(u64::from(sent));
+            }
+            #[expect(clippy::cast_possible_truncation, reason = "DataHead's fields")]
+            let mut task = SendData {
+                info: swoole_rs_corebase::DataHead {
+                    reactor_id: process_id.cast_signed(),
+                    len: c.length as u32,
+                    ..Default::default()
+                },
+                data: c.message.cast(),
+            };
+            head(&mut task.info);
+            // SAFETY: the live server and one of its workers.
+            let worker = unsafe { crate::view::worker(serv, process_id) };
+            // SAFETY: as above.
+            let worker = unsafe { &*worker };
+            let pipe = if c.action == TO_REACTOR_THREAD {
+                worker.pipe_worker
+            } else {
+                worker.pipe_master
+            };
+            // SAFETY: the server's live bus, a worker pipe and the message.
+            u64::from(unsafe {
+                swr_v1_bus_write(
+                    server_message_bus(o.state)[0],
+                    pipe,
+                    &raw mut task.info,
+                    task.data.cast(),
+                )
+            })
+        }
+        OP_ST_PIPE_COMMAND_NEW => {
+            use core::mem::MaybeUninit;
+            use swoole_rs_tls::socket_pair::{drop, unix_socket_new};
+            let pair = Box::into_raw(Box::new(MaybeUninit::<SocketPair>::uninit()));
+            let pair = pair.cast::<SocketPair>();
+            // SAFETY: fresh storage for a pair.
+            unsafe { unix_socket_new(pair, false, libc::SOCK_DGRAM) };
+            // SAFETY: constructed above.
+            let built = unsafe { &*pair };
+            if built.master_socket.is_null() || built.worker_socket.is_null() {
+                // SAFETY: the pair just built.
+                unsafe { drop(pair) };
+                // SAFETY: its box.
+                core::mem::drop(unsafe { Box::from_raw(pair.cast::<MaybeUninit<SocketPair>>()) });
+                return Some(0);
+            }
+            o.config().pipe_command = pair.cast();
+            1
+        }
         _ => return None,
     })
+}
+
+/// The server's own `MessageBus`: its Rust bus, then its allocator.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+fn server_message_bus(state: &ServerState) -> [*mut core::ffi::c_void; 2] {
+    // SAFETY: a live server's tables, which lend `&Server::message_bus`.
+    let bus = unsafe { (*state.tables()).message_bus };
+    // SAFETY: a live `MessageBus`, which starts with these two words.
+    unsafe { *bus.cast::<[*mut core::ffi::c_void; 2]>() }
+}
+
+/// The allocator of the server's `MessageBus`.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+fn bus_allocator<'a>(state: &ServerState) -> &'a swoole_rs_corebase::CoreAllocator {
+    // SAFETY: the bus's allocator, which outlives the server.
+    unsafe { &*server_message_bus(state)[1].cast::<swoole_rs_corebase::CoreAllocator>() }
+}
+
+/// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[unsafe(export_name = "_ZN6swoole6Server19create_pipe_buffersEv")]
+unsafe extern "C" fn create_pipe_buffers(serv: *mut core::ffi::c_void) -> c_int {
+    use crate::pool_native::{
+        swr_v1_bus_buffer_size, swr_v1_bus_set_buffer, swr_v1_bus_set_buffer_size,
+    };
+    // SAFETY: as the caller guarantees.
+    let state = unsafe { crate::view::state_ptr(serv) };
+    // SAFETY: the live server's state.
+    let state = unsafe { &*state };
+    let bus = server_message_bus(state)[0];
+    // SAFETY: a live server's config.
+    let size = unsafe { (*state.config()).ipc_max_size };
+    // SAFETY: the server's live bus.
+    unsafe { swr_v1_bus_set_buffer_size(bus, size as usize) };
+    // SAFETY: the server's live bus.
+    let size = unsafe { swr_v1_bus_buffer_size(bus) };
+    let buffer = match bus_allocator(state).malloc {
+        // SAFETY: a fresh block of the bus's buffer size.
+        Some(malloc) => unsafe { malloc(size) },
+        None => core::ptr::null_mut(),
+    };
+    // SAFETY: the server's live bus and its new buffer.
+    unsafe { swr_v1_bus_set_buffer(bus, buffer) };
+    if buffer.is_null() { -1 } else { 0 }
+}
+
+/// `MessageBus::free_buffer()` of the server's bus.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+fn release_pipe_buffers(state: &ServerState) {
+    let bus = server_message_bus(state)[0];
+    // SAFETY: the server's live bus.
+    let buffer = unsafe { swr_v1_bus_buffer(bus) };
+    if let Some(free) = bus_allocator(state).free {
+        // SAFETY: the bus's buffer, from this allocator, which nothing uses afterwards.
+        unsafe { free(buffer.cast()) };
+    }
+    // SAFETY: the server's live bus.
+    unsafe { crate::pool_native::swr_v1_bus_set_buffer(bus, core::ptr::null_mut()) };
+}
+
+/// `Server::accept_command_result`: the master's command pipe is readable; a
+/// whole reply goes to its waiting callback. The callback may resume a coroutine:
+/// this frame owns nothing that needs a drop then.
+///
+/// # Safety
+/// `reactor` is the master's live reactor, whose `ptr` is the server, and `event`
+/// its event on the command pipe.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+unsafe extern "C" fn accept_command_result(
+    reactor: *mut core::ffi::c_void,
+    event: *mut core::ffi::c_void,
+) -> c_int {
+    use crate::pool_native::{read_bus, swr_v1_bus_packet, swr_v1_bus_pop};
+    // SAFETY: as the caller guarantees.
+    let fields = unsafe { reactor_upstream::prepared(reactor) }.fields;
+    // SAFETY: as above.
+    let serv = unsafe { (*fields).ptr };
+    // SAFETY: the live server.
+    let state = unsafe { crate::view::state_ptr(serv) };
+    // SAFETY: its live state.
+    let state = unsafe { &*state };
+    let [bus, allocator] = server_message_bus(state);
+    // SAFETY: the event's live socket.
+    let sock = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket };
+    // SAFETY: as above.
+    if read_bus(bus, allocator.cast(), unsafe { &mut *sock.cast() }, false) <= 0 {
+        return 0;
+    }
+    // SAFETY: the bus holds a whole packet.
+    let packet = unsafe { swr_v1_bus_packet(bus) };
+    // SAFETY: as above; its buffer's head names the request.
+    let buffer = unsafe { swr_v1_bus_buffer(bus) };
+    // SAFETY: as above.
+    let request_id = unsafe { (*buffer).fd };
+    // SAFETY: the live state and server, and the packet's bytes.
+    unsafe {
+        crate::commands::swr_v1_server_command_result(
+            state,
+            serv,
+            request_id,
+            packet.data,
+            packet.length,
+        );
+    };
+    // SAFETY: the packet just delivered.
+    unsafe { swr_v1_bus_pop(bus) };
+    0
 }
 
 /// A pointer an op passes in its argument.

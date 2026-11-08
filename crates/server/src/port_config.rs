@@ -85,7 +85,7 @@ impl PortConfig {
 /// `port` is a live `ListenPort`, and nothing else accesses its settings while
 /// the borrow lasts.
 pub unsafe fn of<'a>(port: *mut c_void) -> &'a mut PortConfig {
-    // SAFETY: per the caller; `ListenPort` is not polymorphic (master.cc asserts it).
+    // SAFETY: per the caller; `ListenPort` is not polymorphic (native/integration/server.cc asserts it).
     let config = unsafe { *port.cast::<*mut PortConfig>() };
     // SAFETY: the port's settings live as long as it.
     unsafe { &mut *config }

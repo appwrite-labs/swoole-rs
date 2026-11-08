@@ -7,8 +7,7 @@ unchanged.
 
 | Patch | Upstream files |
 | --- | --- |
-| 0001-drain-before-close | `src/server/master.cc`; `BaseFactory::end` runs in `crates/server/src/base_factory.rs`, and its queued-close op in `master.cc` stops reading under the same `SW_HALFCLOSE_DRAIN` |
-| 20261103T195726-drain-before-close-in-rust-send-to-connection | `src/server/master.cc`: `send_to_connection` runs in `crates/server/src/send.rs`, so 0001's `master.cc` hunks give way to `SW_HALFCLOSE_DRAIN`, which selects the same pause, resume and queued-close behaviour there. It also defines `SW_HALFCLOSE_PREQUEUE` for the reactor-thread ops that moved to `master.cc` when `reactor_thread.cc` left the build: the read, write and close paths run in `crates/server/src/conn_io.rs`, and the define selects the synchronous prequeue there and, through its registration with Rust, the TLS repairs in [tls.md](tls.md) |
+| 20261108T154800-m15-defines-its-switches-in-config-h | `config.m4`: defines `SW_HALFCLOSE_DRAIN` and `SW_HALFCLOSE_PREQUEUE` in config.h. The drain and the synchronous prequeue run in `crates/server/src/send.rs`, `base_factory.rs` and `conn_io.rs`; [repairs.cc](repairs.cc) registers the TLS repairs in [tls.md](tls.md) with Rust under `SW_HALFCLOSE_PREQUEUE`. The two earlier `src/server/master.cc` patches netted to these defines, and went when master.cc left the build |
 
 ## Queued close
 

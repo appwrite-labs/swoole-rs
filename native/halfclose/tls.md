@@ -1,8 +1,7 @@
 # Queued TLS shutdown
 
-Changes `src/server/master.cc`.
 `Socket::ssl_shutdown` and `Socket::handle_sendfile` run in `crates/tls/src/upstream.rs`.
-master.cc registers M15's `SW_HALFCLOSE_PREQUEUE` with Rust
+[repairs.cc](repairs.cc) registers M15's `SW_HALFCLOSE_PREQUEUE` with Rust
 (`swr_v1_socket_set_halfclose_repairs`), which selects the repaired shutdown and
 passes EINTR from `handle_sendfile` back to the reactor.
 No public layout, signature, Rust ABI or second queue.

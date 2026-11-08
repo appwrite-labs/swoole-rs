@@ -116,12 +116,12 @@ unsafe extern "C-unwind" {
 unsafe extern "C" {
     fn swr_v1_bus_create(buffer_size: usize) -> *mut c_void;
     fn swr_v1_bus_free(bus: *mut c_void);
-    fn swr_v1_bus_set_buffer_size(bus: *mut c_void, size: usize);
-    fn swr_v1_bus_buffer_size(bus: *mut c_void) -> usize;
-    fn swr_v1_bus_set_buffer(bus: *mut c_void, buffer: *mut c_void);
+    pub(crate) fn swr_v1_bus_set_buffer_size(bus: *mut c_void, size: usize);
+    pub(crate) fn swr_v1_bus_buffer_size(bus: *mut c_void) -> usize;
+    pub(crate) fn swr_v1_bus_set_buffer(bus: *mut c_void, buffer: *mut c_void);
     fn swr_v1_bus_buffer(bus: *mut c_void) -> *mut DataHead;
-    fn swr_v1_bus_packet(bus: *mut c_void) -> BusPacket;
-    fn swr_v1_bus_pop(bus: *mut c_void);
+    pub(crate) fn swr_v1_bus_packet(bus: *mut c_void) -> BusPacket;
+    pub(crate) fn swr_v1_bus_pop(bus: *mut c_void);
     fn swr_v1_bus_read(
         bus: *mut c_void,
         fd: c_int,
@@ -135,9 +135,9 @@ unsafe extern "C" {
 
 /// `swoole::PacketPtr`.
 #[repr(C)]
-struct BusPacket {
-    length: usize,
-    data: *const c_char,
+pub(crate) struct BusPacket {
+    pub(crate) length: usize,
+    pub(crate) data: *const c_char,
 }
 
 /// `swr_bus_read`.
