@@ -462,6 +462,7 @@ dependencies = [
  "swoole-rs-protocols",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-sqlite",
  "swoole-rs-ssh2",
  "swoole-rs-timer",
  "swoole-rs-tls",
@@ -925,6 +926,15 @@ dependencies = [
  "swoole-rs-reactor",
  "swoole-rs-tls",
  "swoole-rs-utilities",
+]
+
+[[package]]
+name = "swoole-rs-sqlite"
+version = "0.1.0"
+dependencies = [
+ "swoole-rs-corebase",
+ "swoole-rs-hooks",
+ "swoole-rs-zend",
 ]
 
 [[package]]

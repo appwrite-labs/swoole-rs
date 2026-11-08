@@ -140,6 +140,7 @@ jobs:
       - run: |
           # Database, cURL and ssh2 hooks as upstream's own CI builds them (scripts/docker-compile.sh).
           services="--configure=--enable-swoole-pgsql --configure=--enable-mysqlnd --configure=--with-swoole-odbc=unixODBC,/usr --configure=--with-swoole-firebird"
+          services="$services --configure=--enable-swoole-sqlite"
           services="$services --configure=--enable-swoole-curl --configure=--with-swoole-ssh2"
           python3 tools/build_hybrid.py --backend upstream --php-sockets $services | tee upstream.log
           python3 tools/build_hybrid.py --php-sockets $services | tee hybrid.log
