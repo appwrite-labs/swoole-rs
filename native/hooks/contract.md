@@ -7,7 +7,8 @@ coroutine streams reach the socket through `system.cc`'s
 `thirdparty/php/streams/plain_wrapper.c` builds alone),
 `include/swoole_coroutine_socket.h`, `src/coroutine/file_lock.cc` (deleted),
 `src/coroutine/hook.cc` (deleted),
-`src/coroutine/iouring.cc`, `src/coroutine/socket.cc` (deleted; the coroutine
+`src/coroutine/iouring.cc` (deleted with `include/swoole_iouring.h`; `Iouring` is
+`crates/hooks/src/iouring.rs`), `src/coroutine/socket.cc` (deleted; the coroutine
 Socket's native side is in `system.cc`), `src/coroutine/system.cc`,
 `src/coroutine/uring_socket.cc` (deleted with `include/swoole_uring_socket.h`; a
 `UringSocket` is a `coroutine::Socket` its `swoole_socket_impl.h` constructors mark, and
@@ -146,7 +147,7 @@ are still never uninstalled.
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
   system.cc registers a host table while the library loads (`swr_v1_hook_set_host`): its
   coroutine test, `async`, `System::sleep`, the poll table, the socket table and, in an
-  io_uring build, `Iouring::host`.
+  io_uring build, `swr_v1_uring_native`.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;
   outside a coroutine the libc call runs in place; inside one it runs through native
   `async`, which parks the coroutine and restores the worker's errno; a refused

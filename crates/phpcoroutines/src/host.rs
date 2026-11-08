@@ -45,7 +45,11 @@ unsafe extern "C" {
     fn swr_cpp_phpcoroutines_stats(stats: *mut Stats);
     fn swr_cpp_phpcoroutines_stack(co: Co, size: *mut usize) -> *mut c_void;
     fn swr_cpp_phpcoroutines_is_end(co: Co) -> u8;
-    fn swr_cpp_phpcoroutines_yield_cancelable(co: Co, cancel: unsafe extern "C" fn(Co) -> u8);
+    fn swr_cpp_phpcoroutines_yield_cancelable(
+        co: Co,
+        cancel: unsafe extern "C" fn(Co, *mut c_void) -> u8,
+        data: *mut c_void,
+    );
     fn swr_cpp_phpcoroutines_activate(deactivate: unsafe extern "C" fn(*mut c_void));
     fn swr_cpp_phpcoroutines_defer(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void);
     fn swr_cpp_phpcoroutines_timer_add(
@@ -330,9 +334,9 @@ pub fn yield_(co: Co) {
 /// [`yield_`], cancelable through `cancel`.
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
-pub unsafe fn yield_cancelable(co: Co, cancel: unsafe extern "C" fn(Co) -> u8) {
+pub unsafe fn yield_cancelable(co: Co, cancel: unsafe extern "C" fn(Co, *mut c_void) -> u8) {
     // SAFETY: as the caller promises.
-    unsafe { swr_cpp_phpcoroutines_yield_cancelable(co, cancel) };
+    unsafe { swr_cpp_phpcoroutines_yield_cancelable(co, cancel, std::ptr::null_mut()) };
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.

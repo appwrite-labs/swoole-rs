@@ -29,7 +29,6 @@ class Reactor;
 class Timer;
 class MessageBus;
 class AsyncThreads;
-class Iouring;
 } // namespace swoole
 typedef swoole::Allocator swr_v1_core_allocator;
 extern "C" {
@@ -105,9 +104,6 @@ struct ThreadGlobal {
   Timer *timer;
   MessageBus *message_bus;
   AsyncThreads *async_threads;
-#ifdef SW_USE_IOURING
-  Iouring *iouring;
-#endif
   bool signal_blocking_all;
 };
 static_assert(sizeof(swr_v1_core_allocator) == 4 * sizeof(void *),

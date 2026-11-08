@@ -7,7 +7,7 @@
 #include "php_swoole_cxx.h"
 #include "swoole_server.h"
 #include "swoole_async.h"
-#include "swoole_iouring.h"
+#include "swoole_rs_uring.h"
 
 using swoole::Coroutine;
 using swoole::Reactor;
@@ -83,11 +83,11 @@ void swr_cpp_phpcoroutines_stats(swr_v1_phpcoroutines_stats *stats) {
         stats->aio_queue_size = sw_async_threads()->get_queue_size();
     }
 #ifdef SW_USE_IOURING
-    if (auto iouring = SwooleTG.iouring) {
+    if (auto iouring = swr_v1_uring_current()) {
         stats->iouring = 1;
-        stats->iouring_task_num = iouring->get_task_num();
-        stats->iouring_sq_usage_percent = iouring->get_sq_usage_percent();
-        stats->iouring_waiting_task_num = iouring->get_waiting_task_num();
+        stats->iouring_task_num = swr_v1_uring_task_num(iouring);
+        stats->iouring_sq_usage_percent = swr_v1_uring_sq_usage_percent(iouring);
+        stats->iouring_waiting_task_num = swr_v1_uring_waiting_num(iouring);
     }
 #endif
 }
@@ -106,8 +106,8 @@ uint8_t swr_cpp_phpcoroutines_is_end(void *c) {
     return co(c)->is_end();
 }
 
-void swr_cpp_phpcoroutines_yield_cancelable(void *c, uint8_t (*cancel)(void *)) {
-    Coroutine::CancelFunc cancel_fn = [cancel](Coroutine *co) { return cancel(co) != 0; };
+void swr_cpp_phpcoroutines_yield_cancelable(void *c, uint8_t (*cancel)(void *, void *), void *data) {
+    Coroutine::CancelFunc cancel_fn = [cancel, data](Coroutine *co) { return cancel(co, data) != 0; };
     co(c)->yield(&cancel_fn);
 }
 

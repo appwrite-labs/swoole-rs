@@ -96,9 +96,10 @@ typedef struct swr_v1_hook_host {
     bool (*in_coroutine)(void);    /* a reactor and a coroutine are running */
     swr_v1_hook_offload offload;   /* swoole::coroutine::async */
     int (*sleep)(double seconds);  /* System::sleep */
-    const void *uring;             /* &Iouring::host with io_uring, else NULL */
+    const void *uring;             /* &swr_v1_uring_native with io_uring, else NULL */
     bool uring_statx;              /* HAVE_IOURING_STATX */
     bool uring_ftruncate;          /* HAVE_IOURING_FTRUNCATE */
+    bool uring_futex;              /* HAVE_IOURING_FUTEX */
     void (*set_last_error)(int error);
     const swr_v1_hook_poll_ops *poll; /* System's, for the hooked poll */
     swr_v1_hook_socket_ops socket;

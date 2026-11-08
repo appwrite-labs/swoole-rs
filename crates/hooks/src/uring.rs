@@ -2,7 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 src/coroutine/iouring.cc (Swoole contributors).
 //! Swoole's `io_uring` engine over liburing: the ring, its submission and
 //! completion queues, the per-request events, the wait queue for a full ring, and
-//! every operation `Iouring` offers. Native code keeps the reactor registration,
+//! every operation `Iouring` offers. crates/hooks/src/iouring.rs keeps the reactor registration,
 //! the coroutine switches and the log lines, reached through [`Host`].
 //!
 //! An operation runs on the calling coroutine's stack: its [`Event`] lives in the
@@ -31,7 +31,7 @@ const FUTEX_BITSET_MATCH_ANY: u64 = 0xffff_ffff;
 pub struct Host {
     /// `Coroutine::get_current_safe()`.
     pub current: unsafe extern "C" fn() -> *mut c_void,
-    /// `Iouring::get_instance()`'s engine, created on first use (null if it failed).
+    /// The thread's engine, created on first use (null if it failed).
     pub instance: unsafe extern "C" fn() -> *mut Uring,
     /// Suspend `coroutine` until [`swr_v1_uring_wakeup`] resumes it; cancelling it
     /// calls [`swr_v1_uring_cancel`] with `event`.

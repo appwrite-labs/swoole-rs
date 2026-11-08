@@ -46,6 +46,13 @@ size_t swr_v1_uring_waiting_num(const swr_v1_uring *uring);
 float swr_v1_uring_sq_usage_percent(const swr_v1_uring *uring);
 void swr_v1_uring_submit(swr_v1_uring *uring);
 bool swr_v1_uring_wakeup(swr_v1_uring *uring);
+/* Iouring (crates/hooks/src/iouring.rs): the host table over the thread's instance,
+ * which the first request creates on the reactor; that engine, or NULL before; and
+ * the reactor's EINTR handler. */
+extern const swr_v1_uring_host swr_v1_uring_native;
+swr_v1_uring *swr_v1_uring_current(void);
+int swr_v1_uring_interrupted(void *_reactor);
+void swr_v1_uring_interrupt(void *_reactor);
 bool swr_v1_uring_cancel(const swr_v1_uring_host *host, void *event);
 int swr_v1_uring_open_file(const swr_v1_uring_host *host, const char *pathname, int flags, mode_t mode);
 int swr_v1_uring_socket(const swr_v1_uring_host *host, int domain, int kind, int protocol, unsigned int flags);

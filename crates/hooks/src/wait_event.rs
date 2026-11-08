@@ -159,7 +159,7 @@ pub unsafe extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -
 
 /// The event waiter's reactor socket and coroutine: upstream's `make_socket`,
 /// `swoole_event_add`/`del` and `Coroutine::yield_ex`.
-mod native {
+pub(crate) mod native {
     use core::ffi::{c_int, c_void};
     use swoole_rs_corebase::constants::FdType;
     use swoole_rs_corebase::log;
@@ -177,7 +177,7 @@ mod native {
     const OUT_OF_COROUTINE: c_int = 10001;
 
     /// `Coroutine::get_current_safe()`.
-    pub(super) unsafe extern "C" fn current() -> *mut c_void {
+    pub(crate) unsafe extern "C" fn current() -> *mut c_void {
         // SAFETY: no preconditions.
         let co = unsafe { swr_v1_coroutine_current() };
         if co.is_null() {

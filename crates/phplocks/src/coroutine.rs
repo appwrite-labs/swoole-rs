@@ -70,10 +70,10 @@ mod host {
         // SAFETY: the lock sleeps only inside a coroutine.
         done(unsafe { system_sleep(seconds) })
     }
-    // SAFETY: crates/hooks's engine and src/coroutine/iouring.cc's static host.
+    // SAFETY: crates/hooks's engine and its static host.
     #[cfg(feature = "iouring")]
     unsafe extern "C" {
-        #[link_name = "_ZN6swoole7Iouring4hostE"]
+        #[link_name = "swr_v1_uring_native"]
         static IOURING_HOST: c_void;
         fn swr_v1_uring_futex_wait(host: *const c_void, futex: *mut u32) -> c_int;
         fn swr_v1_uring_futex_wakeup(host: *const c_void, futex: *mut u32) -> c_int;

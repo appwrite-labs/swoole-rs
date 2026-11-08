@@ -11,6 +11,7 @@
 #include "swoole_coroutine_system.h"
 #include "swoole_signal.h"
 #include "swoole_api.h"
+#include "swoole_rs_uring.h"
 
 #include <cstddef>
 #include <memory>
@@ -62,6 +63,10 @@ void swoole_event_defer(const Callback &cb, void *private_data) {
 void swr_v1_event_set_exit_condition(int id, bool (*condition)(size_t *event_num)) {
     SwooleTG.reactor->set_exit_condition(static_cast<Reactor::ExitCondition>(id),
                                          [condition](Reactor *, size_t &event_num) { return condition(&event_num); });
+}
+
+void swr_v1_event_set_end_callback(int id, void (*callback)(void)) {
+    SwooleTG.reactor->set_end_callback(static_cast<Reactor::EndCallback>(id), [callback](Reactor *) { callback(); });
 }
 
 namespace swoole {
@@ -278,11 +283,8 @@ int Reactor::wait() {
         [](void *r) { static_cast<Reactor *>(r)->execute_begin_callback(); },
         [](void *r, int timed_out) { static_cast<Reactor *>(r)->execute_end_callbacks(timed_out != 0); },
 #ifdef SW_USE_IOURING
-        [](void *r) { return static_cast<int>(errno == EINTR && static_cast<Reactor *>(r)->iouring_interrupt_handler); },
-        [](void *r) {
-            auto reactor = static_cast<Reactor *>(r);
-            reactor->iouring_interrupt_handler(reactor);
-        },
+        swr_v1_uring_interrupted,
+        swr_v1_uring_interrupt,
 #else
         nullptr,
         nullptr,

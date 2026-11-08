@@ -22,6 +22,8 @@ pub mod fd_control;
 pub mod file_io;
 pub mod flock;
 pub mod hooked;
+#[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
+pub mod iouring;
 pub mod lifecycle;
 pub mod offload;
 pub mod packet;
