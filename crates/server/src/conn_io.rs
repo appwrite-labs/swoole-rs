@@ -1,7 +1,7 @@
 //! A connection's read, write and close paths (`src/server/reactor_thread.cc`):
 //! `ReactorThread_onRead`, `ReactorThread_onWrite`, `ReactorThread_onClose` and
 //! `Server::close_connection`. Native code passes each entry's facts as its argument
-//! (`SWR_CN_*`, below), so the hot read path makes one native call besides the port's
+//! (the fact bits below), so the hot read path makes no call besides the port's
 //! own `onRead`.
 //!
 //! `--fix-halfclose` (M15) builds define `SW_HALFCLOSE_PREQUEUE`, reported as
@@ -22,7 +22,7 @@ use crate::ops::{
 use crate::reactor_thread::{SW_CONTINUE, SW_ERROR, SW_READY, SW_WAIT, verify_ssl};
 use crate::{Host, SW_ERR, SW_OK};
 
-// The fact bits, `SWR_CN_*` in `native/include/swoole_rs.h`.
+// The fact bits.
 /// The connection exists (and, for a read, belongs to a port; else is active).
 pub(crate) const FOUND: u64 = 1 << 0;
 pub(crate) const CLOSE_NOTIFIED: u64 = 1 << 1;
@@ -67,9 +67,9 @@ pub(crate) const OUT_EMPTY: u64 = 1 << 31;
 /// `OP_RD_PORT_READ`'s bits above its result: the connection is still active, then
 /// (only while it is) the workers hold more than `max_queued_bytes` and the read
 /// notified the close.
-const ACTIVE: u64 = 1 << 32;
-const QUEUE_OVER: u64 = 1 << 33;
-const READ_NOTIFIED: u64 = 1 << 34;
+pub(crate) const ACTIVE: u64 = 1 << 32;
+pub(crate) const QUEUE_OVER: u64 = 1 << 33;
+pub(crate) const READ_NOTIFIED: u64 = 1 << 34;
 /// `OP_WR_WAIT`'s bits.
 pub(crate) const CLOSE_WAIT: u64 = 1 << 35;
 pub(crate) const SEND_WAIT: u64 = 1 << 36;

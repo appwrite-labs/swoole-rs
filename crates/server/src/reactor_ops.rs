@@ -665,17 +665,20 @@ pub(crate) unsafe fn answer(
 pub(crate) struct ThreadRecord {
     pub(crate) id: c_int,
     pub(crate) notify_pipe: *mut SocketRecord,
-    dispatch_count: u64,
+    pub(crate) dispatch_count: u64,
     pub(crate) pipe_command: *mut SocketRecord,
     pub(crate) heartbeat_timer: *mut c_void,
     /// `message_bus`: its Rust bus, then the allocator of its buffer and packets.
     pub(crate) bus: *mut c_void,
     pub(crate) allocator: *const swoole_rs_corebase::CoreAllocator,
+    /// The bus's `std::function` id generator, four words in libstdc++ and libc++.
+    id_generator: [usize; 4],
 }
 
 const _: () = assert!(
     core::mem::offset_of!(ThreadRecord, heartbeat_timer) == 32
-        && core::mem::offset_of!(ThreadRecord, bus) == 40,
+        && core::mem::offset_of!(ThreadRecord, bus) == 40
+        && size_of::<ThreadRecord>() == 88,
     "master.cc ReactorThread layout"
 );
 

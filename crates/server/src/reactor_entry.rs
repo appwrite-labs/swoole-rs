@@ -1,11 +1,9 @@
 //! The reactor-thread entry points that were master.cc's: the reactor handlers
 //! (`ReactorThread_on*`) and the `Server` and `ReactorThread` methods that build a
 //! context and run one operation over it. With `upstream-symbols` the methods are
-//! defined under their upstream (Itanium) symbols. Native code registers its op
-//! call (`reactor_thread_hot_call`) and `sizeof(ReactorThread)` once.
+//! defined under their upstream (Itanium) symbols. Every op they make is Rust's.
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
-use std::sync::OnceLock;
 
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::Protocol;
@@ -17,39 +15,27 @@ use crate::ops::{
     RUN_RT_PIPE_WRITE, RUN_RT_READ, RUN_RT_WRITE, RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE,
     RUN_THREAD_SHUTDOWN,
 };
-use crate::reactor_ops::{Facts, ReactorContext, facts};
+use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
 use crate::records::{ConnectionRecord, swr_v1_server_connection};
-use crate::{ServerCall, view};
+use crate::view;
 
 /// `swoole::RecvData`.
 #[repr(C)]
 pub struct RecvData {
-    info: DataHead,
-    data: *const c_void,
+    pub(crate) info: DataHead,
+    pub(crate) data: *const c_void,
 }
 
-static NATIVE: OnceLock<(ServerCall, usize)> = OnceLock::new();
-
-/// Registers master.cc's op call and `sizeof(ReactorThread)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_set_reactor_native(call: ServerCall, thread_size: usize) {
-    // A second registration is the same pair; keeping the first is equivalent.
-    NATIVE.get_or_init(|| (call, thread_size));
-}
-
-fn native() -> (ServerCall, usize) {
-    match NATIVE.get() {
-        Some(native) => *native,
-        // master.cc registers before any Server exists.
-        None => std::process::abort(),
-    }
+/// An op no arm answers: 0, as master.cc's `default:` was.
+unsafe extern "C" fn unanswered(_: *mut c_void, _: u32, _: u64) -> u64 {
+    0
 }
 
 /// `serv->get_thread(id)`.
 pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
     // SAFETY: a live server's tables.
     let threads = unsafe { &*state.tables() }.reactor_threads;
-    threads.wrapping_byte_add(id * native().1)
+    threads.wrapping_byte_add(id * size_of::<ThreadRecord>())
 }
 
 /// Runs `op` over `ctx`.
@@ -60,8 +46,8 @@ pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
     // SAFETY: per the caller.
     let state = unsafe { view::state_ptr(ctx.serv) };
     let context = ptr::from_mut(ctx).cast();
-    // SAFETY: per the caller; the call is native code's.
-    unsafe { crate::swr_v1_server_run_reactor(op, arg, context, native().0, state) }
+    // SAFETY: per the caller.
+    unsafe { crate::run_reactor(op, arg, context, unanswered, state) }
 }
 
 /// Runs `op` over `ctx` with the `which` facts.

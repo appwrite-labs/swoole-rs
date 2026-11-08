@@ -23,7 +23,6 @@ uint64_t swr_v1_feature_bits(void);
 typedef uint64_t (*swr_v1_server_call)(void *context, uint32_t op, uint64_t arg);
 int64_t swr_v1_server_run(uint32_t operation, uint64_t arg, void *context, swr_v1_server_call call);
 struct swr_v1_server_state;
-int64_t swr_v1_server_run_reactor(uint32_t operation, uint64_t arg, void *context, swr_v1_server_call call, const struct swr_v1_server_state *state);
 /* Typed capture of ordinary C++ exceptions. Native retains the exception payload;
  * Rust stops at the first nonzero fault and returns before native rethrow.
  * This does not transport Zend bailout, pthread_exit or cancellation unwinds. */
@@ -34,9 +33,6 @@ ServerReply swr_v1_server_run_guarded(uint32_t operation, uint64_t arg, void *co
     ServerGuardedCall call, const struct swr_v1_server_state *state, void *master);
 /* master.cc's guarded runner, which the Server methods crates/server/src/server_methods.rs defines call. */
 void swr_v1_server_set_native(int64_t (*run)(uint32_t operation, uint64_t arg, void *context));
-/* master.cc's reactor-thread op call and sizeof(ReactorThread), which the entry points
- * crates/server/src/reactor_entry.rs defines run with. */
-void swr_v1_server_set_reactor_native(swr_v1_server_call call, size_t thread_size);
 
 
 enum {
@@ -239,10 +235,6 @@ enum {
     SWR_SERVER_OP_CC_SESSION_CLEAR, SWR_SERVER_OP_CC_VALID, SWR_SERVER_OP_CC_FINISH,
     SWR_SERVER_LOG_CC_LINGER = 990,
 };
-/* OP_RD_PORT_READ's bits above its result (crates/server/src/conn_io.rs). */
-#define SWR_CN_ACTIVE (1ull << 32)
-#define SWR_CN_QUEUE_OVER (1ull << 33)
-#define SWR_CN_READ_NOTIFIED (1ull << 34)
 
 /* Rust-owned server state and the rest of master.cc (crates/server/src/state.rs). */
 enum {

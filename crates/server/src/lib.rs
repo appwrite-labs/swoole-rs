@@ -276,15 +276,13 @@ pub unsafe extern "C" fn swr_v1_server_run(
     .unwrap_or(SW_ERR)
 }
 
-/// Runs a reactor-thread operation over master.cc's `ReactorThreadContext`, whose
-/// records Rust reads, and the server's owned records.
+/// Runs a reactor-thread operation over a `ReactorContext`, whose records Rust
+/// reads, and the server's owned records.
 ///
 /// # Safety
-/// `state` is live for the call; `context` is a live `ReactorThreadContext`, and it
-/// and the callbacks lend synchronized server objects and catch any native/PHP
-/// bailout before returning to Rust.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_run_reactor(
+/// `state` is live for the call; `context` is a live `ReactorContext` lending
+/// synchronized server objects.
+pub(crate) unsafe fn run_reactor(
     operation: u32,
     arg: u64,
     context: *mut c_void,
