@@ -31,13 +31,20 @@ pub unsafe extern "C" fn swr_v1_signal_kqueue_set(
     event.ident = signo.cast_unsigned() as _;
     event.filter = libc::EVFILT_SIGNAL;
     if handler == 0 {
-        // SAFETY: restores the default disposition.
-        unsafe { libc::signal(signo, libc::SIG_DFL) };
+        if slot.activated.load(Relaxed) {
+            crate::signal::restore_origin(signo);
+        } else {
+            // SAFETY: restores the default disposition.
+            unsafe { libc::signal(signo, libc::SIG_DFL) };
+        }
         slot.reset();
         event.flags = libc::EV_DELETE;
     } else {
-        // SAFETY: kqueue delivers the signal instead.
-        unsafe { libc::signal(signo, libc::SIG_IGN) };
+        // kqueue delivers the signal instead.
+        let previous = crate::signal::install(signo, libc::SIG_IGN, false, false);
+        if !slot.activated.load(Relaxed) {
+            crate::signal::save_origin(signo, previous);
+        }
         origin = slot.handler.swap(handler, Relaxed);
         // A table index: below SW_SIGNO_MAX.
         slot.signo

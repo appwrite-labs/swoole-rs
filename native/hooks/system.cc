@@ -99,12 +99,29 @@ static bool signal_busy() {
     return SwooleG.signal_listener_num > 0;
 }
 
-static void signal_listen(int signo, bool on) {
-    swoole::SignalHandler handler = on ? swr_v1_hook_signal_wake : nullptr;
+// Records the handler when the registration runs, so a deferred one sees those pending.
+static void signal_register(int signo, swr_v1_hook_previous_signal *previous) {
+    if (!previous->registered) {
+        previous->handler = reinterpret_cast<uintptr_t>(swoole_signal_get_handler(signo));
+        previous->registered = true;
+        swoole_signal_set(signo, swr_v1_hook_signal_wake);
+    }
+}
+
+static void signal_listen(int signo, swr_v1_hook_previous_signal *previous, bool on) {
+    if (!on) {
+        auto handler = reinterpret_cast<swoole::SignalHandler>(previous->handler);
 #ifdef SW_USE_THREAD_CONTEXT
-    swoole_event_defer([signo, handler](void *) { swoole_signal_set(signo, handler); }, nullptr);
+        swoole_event_defer([signo, handler](void *) { swoole_signal_set(signo, handler); }, nullptr);
 #else
-    swoole_signal_set(signo, handler);
+        swoole_signal_set(signo, handler);
+#endif
+        return;
+    }
+#ifdef SW_USE_THREAD_CONTEXT
+    swoole_event_defer([signo, previous](void *) { signal_register(signo, previous); }, nullptr);
+#else
+    signal_register(signo, previous);
 #endif
 }
 
