@@ -401,7 +401,8 @@ pub(crate) unsafe fn close(context: *mut c_void) {
     // SAFETY: a live context.
     let timer = mem::replace(&mut unsafe { at(ctx) }.timer_limit, ptr::null_mut());
     if !timer.is_null() {
-        host::timer_del(timer);
+        // SAFETY: the coroutine's armed timer.
+        unsafe { host::timer_del(timer) };
     }
     // SAFETY: the coroutine's own VM stack.
     unsafe { swr_zend_coroutine_vm_destroy() };

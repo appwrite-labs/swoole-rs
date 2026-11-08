@@ -857,7 +857,6 @@
       ],
       "owned_paths": [
         "crates/phpcollections/",
-        "native/phpcollections/",
         "migration/patches/phpcollections/",
         "tests/modules/phpcollections/"
       ],

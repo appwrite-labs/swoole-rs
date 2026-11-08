@@ -21,14 +21,14 @@ from tools.build_upstream import require_build_space
 from tools.build_hybrid import overlay_hybrid_tree
 
 from tools.build_upstream import COMMIT as PIN
-ASSERTIONS = ['core-tests/src/coroutine/base.cpp', 'core-tests/src/coroutine/channel.cpp']
+# core-tests/src/coroutine/channel.cpp's TESTs are Rust tests in tests/modules/coroutine/channel.rs.
+ASSERTIONS = ['core-tests/src/coroutine/base.cpp']
 LIFETIME = 'core-tests/src/coroutine/rust_policy_lifetime.cpp'
 SELECTED = ['core-tests/src/main.cpp', *ASSERTIONS, LIFETIME]
 # Run without LeakSanitizer (#415), by name only; their assertions are unchanged and any
 # other failure still fails the phase. Every other case keeps leak checking.
 SUSPENDED = 'the original leaves a coroutine suspended forever; its stack holds the only reference'
-NO_LEAK_CHECK = {'coroutine_base.bailout': SUSPENDED, 'coroutine_channel.push_yield': SUSPENDED,
-                 'coroutine_channel.close': SUSPENDED}
+NO_LEAK_CHECK = {'coroutine_base.bailout': SUSPENDED}
 
 
 def sha(path):
@@ -73,7 +73,7 @@ def main():
     parser.add_argument('--dns-requests', action='store_true', help='Execute the unchanged local DNS no-service original and five real request/async/vector witnesses')
     parser.add_argument('--socket-scopes', action='store_true', help='Also execute the two unchanged original local socket timeout tests and three scoped-state witnesses')
     parser.add_argument('--async-file', action='store_true', help='Also compile and execute the unchanged original coroutine AsyncFile unit')
-    parser.add_argument('--lifetime-only', action='store_true', help='Execute only three supplemental real-context lifetime witnesses; original32 remain unmeasured')
+    parser.add_argument('--lifetime-only', action='store_true', help='Execute only the supplemental real-context lifetime witness; the originals remain unmeasured')
     parser.add_argument('--rust-asan', action='store_true', help='Verify the coroutine archive contains actual Rust ASan imports')
     parser.add_argument('--ucontext', action='store_true', help='Derived private config explicitly selects native ucontext instead of assembly')
     parser.add_argument('--sanitize', action='store_true', help='Native full-core ASan; Rust archive instrumentation remains separate')
@@ -124,7 +124,7 @@ def main():
             write_changed(staged / LIFETIME, lifetime)
             inventory = [{'name': f'{group}.{name}', 'path': path, 'sha256': sha(staged / path)}
                 for path in ASSERTIONS for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', (staged / path).read_text())]
-            if len(inventory) != 33 or len({case['name'] for case in inventory}) != len(inventory):
+            if len(inventory) != 26 or len({case['name'] for case in inventory}) != len(inventory):
                 raise ValueError('Original coroutine inventory differs')
             if args.async_file:
                 path = 'core-tests/src/coroutine/file.cpp'
@@ -133,7 +133,7 @@ def main():
                 if [case['name'] for case in extra] != ['coroutine_async_file.async_file']:
                     raise ValueError('Original AsyncFile inventory differs')
                 inventory += extra
-                report['scope'] = 'Unchanged33 coroutine originals plus AsyncFile and3 supplemental lifetime witnesses; full native reference vs the exact production archive overlay. No PHP or performance claim.'
+                report['scope'] = 'Unchanged 26 coroutine originals plus AsyncFile and the supplemental lifetime witness; full native reference vs the exact production archive overlay. No PHP or performance claim.'
             if args.socket_scopes:
                 path = 'core-tests/src/coroutine/socket.cpp'
                 all_socket = [{'name': f'{group}.{name}', 'path': path, 'sha256': sha(staged / path)}
@@ -158,7 +158,7 @@ def main():
             report['original_inventory'] = inventory.copy()
             report['unmeasured_originals'] = [case['name'] for case in inventory] if args.lifetime_only else []
             supplemental = [{'name': group + '.' + name, 'path': LIFETIME, 'sha256': hashlib.sha256(lifetime).hexdigest()} for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', lifetime.decode())]
-            if len(supplemental) != 3:
+            if len(supplemental) != 1:
                 raise ValueError('Supplemental lifetime inventory differs')
             if args.socket_scopes:
                 path = 'core-tests/src/coroutine/rust_socket_scopes.cpp'
@@ -166,7 +166,7 @@ def main():
                 write_changed(staged / path, data)
                 supplemental += [{'name': group + '.' + name, 'path': path, 'sha256': hashlib.sha256(data).hexdigest()}
                                  for group, name in re.findall(r'TEST\((\w+),\s*(\w+)\)', data.decode())]
-                if len(supplemental) != 6:
+                if len(supplemental) != 4:
                     raise ValueError('Socket scope witness inventory differs')
             if args.dns_requests:
                 path = 'core-tests/src/coroutine/rust_dns_requests.cpp'

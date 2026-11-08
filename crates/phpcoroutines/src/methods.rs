@@ -164,7 +164,8 @@ fn yield_(call: &Call) {
     let co = host::current_safe();
     let cid = host::cid(co);
     YIELDED.with(|y| y.borrow_mut().insert(cid, co));
-    host::yield_cancelable(co, cancel_yield);
+    // SAFETY: the running coroutine; this frame owns nothing that needs a drop.
+    unsafe { host::yield_cancelable(co, cancel_yield) };
     if host::is_canceled(co) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         call.set_bool(false);
@@ -413,7 +414,8 @@ fn set_time_limit(call: &Call) {
     // SAFETY: the running coroutine's context.
     let old = mem::replace(&mut unsafe { context::at(ctx) }.timer_limit, timer);
     if !old.is_null() {
-        host::timer_del(old);
+        // SAFETY: the coroutine's armed timer.
+        unsafe { host::timer_del(old) };
     }
     call.set_bool(true);
 }

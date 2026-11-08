@@ -9,7 +9,7 @@ callbacks, activation) and each coroutine's state (id, state, resume code, task,
 cancel function, origin tree, timing) as `repr(C)` records that C++ stores in
 upstream's scopes and reads inline; `swoole::Coroutine` is a facade whose writes
 are Rust calls. The coroutine map (`Coroutine::coroutines`, whose iteration
-order `Coroutine::list()` exposes) and the stack `TimeoutMessage` stay native.
+order `Coroutine::list()` exposes) stays native.
 Context switches, timer operations, callbacks, allocation, diagnostics and
 unwinding run natively between Rust calls; Rust has returned before
 `swap_in`/`swap_out`, bailout, `on_resume`/`on_yield`/`on_close` and waking
@@ -34,10 +34,10 @@ Channel:
   matching entries before resume. After a wait, the timer is deleted before
   checking cancellation, timeout and close; cancellation wins.
 - Pop may drain buffered data after close.
-- The channel's state and queues are one Rust-owned handle; pop/push/close are
-  whole Rust operations calling C++ for the timer, yield and resume. Rust never
-  dereferences or frees payloads. Allocation is fallible; native raises
-  `bad_alloc`. Channel is no longer copyable.
+- The channel is all Rust (`src/coroutine/channel.cc` and its header left the
+  build); pop/push/close run the host's coroutines through an `Effects` trait,
+  which crates/phpcollections implements for `Swoole\Coroutine\Channel`. Rust
+  never dereferences or frees payloads.
 
 `context.cc`: stack allocation, the guard page, marker initialization and
 stack-usage sampling are in Rust (original marker bytes and placement; `<=` on

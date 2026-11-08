@@ -4,7 +4,7 @@ Implements `docs/coroutine-abi-v1.md`. Header: `swoole_rs_coroutine.h`.
 
 | Patch | Upstream files |
 | --- | --- |
-| 0001-channel | `include/swoole_coroutine_channel.h`, `src/coroutine/channel.cc` |
+| 0001-channel, …-channel-cc-and-swoole-co | `include/swoole_coroutine_channel.h`, `src/coroutine/channel.cc` (deleted) |
 | 0003-context-stack-markers | `src/coroutine/context.cc` |
 | 0004-coroutine-core | `include/swoole_coroutine.h`, `src/coroutine/base.cc` |
 | 0005-context-asan-fibers | `include/swoole_coroutine_context.h` |
@@ -62,20 +62,22 @@ upstream's, unchanged.
 
 ## Channel
 
-`swr_v1_channel` is an owned Rust handle (capacity, closed flag, last error,
-the data FIFO and both waiter queues of opaque pointers); `swoole::coroutine::Channel`
-holds it and is not copyable. pop/push/close are whole Rust operations that call
-`swr_v1_channel_effects` for the timeout timer, the yield (C++ builds the cancel
-function and returns the canceled/timed-out bits), waking a waiter and the
-trace points. Upstream's order holds: a waiter is queued before it yields and
-removed (every entry, by the timer callback or cancel function) before it
-resumes; after a wait the timer is deleted, then cancellation wins over timeout
-over close; pop drains data after close; close wakes producers, then consumers,
-re-reading each queue after every resume. A push/pop wake ends the operation:
-the woken coroutine may delete the channel. Enqueue picks the producer queue
-only for PRODUCER, removal the consumer queue only for CONSUMER (upstream's
-asymmetric else branches). Allocation failure returns -5 and C++ throws
-`std::bad_alloc`.
+`crates/coroutine/src/chan.rs` is the whole Channel; `src/coroutine/channel.cc`
+and its header are gone, and core-tests' `test_coroutine.h` includes
+`swoole_coroutine.h` in the header's place (`overlay_hybrid_tree`). pop/push/close
+run the host's coroutines through the `Effects` trait: crates/phpcollections
+implements it over PHP's coroutines (timer, cancelable yield, resume), and the
+crate's tests over a thread-per-coroutine model that runs upstream's
+`coroutine_channel` GoogleTests (tests/modules/coroutine/channel.rs). Upstream's
+order holds: a waiter is queued before it yields and removed (every entry, by
+the timer callback or cancel function) before it resumes; after a wait the timer
+is deleted, then cancellation wins over timeout over close; pop drains data
+after close; close wakes producers, then consumers, re-reading each queue after
+every resume. A push/pop wake ends the operation: the woken coroutine may delete
+the channel. Enqueue picks the producer queue only for PRODUCER, removal the
+consumer queue only for CONSUMER (upstream's asymmetric else branches).
+Upstream's `SW_TRACE_CHANNEL` trace logs, compiled only into trace builds, are
+not kept.
 
 ## Coroutine map
 

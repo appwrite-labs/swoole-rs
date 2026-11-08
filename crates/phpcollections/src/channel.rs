@@ -1,7 +1,14 @@
 //! PHP `Swoole\Coroutine\Channel`: class registration, object handlers and every
-//! method. The queue is the coroutine module's C++ `Channel`, which C++ hands
-//! over as a table of operations; values cross it as emalloc'd zval copies.
-use std::{ffi::c_void, ptr, sync::OnceLock};
+//! method. The queue is the coroutine crate's Channel, run on PHP's coroutines;
+//! values cross it as emalloc'd zval copies.
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    ffi::{c_long, c_void},
+    ptr,
+};
+use swoole_rs_coroutine::chan::{self as queue, CANCELED, Channel, Effects, TIMEDOUT};
+use swoole_rs_phpcoroutines as co;
 use swoole_rs_phpstubs::channel_coro;
 use swoole_rs_zend::{
     Call, Class, Object, register_long_constant,
@@ -14,25 +21,6 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// `swoole::coroutine::Channel`'s operations (`swr_v1_phpcollections_channel_ops`).
-#[repr(C)]
-pub struct Ops {
-    create: unsafe extern "C" fn(capacity: usize) -> *mut c_void,
-    destroy: unsafe extern "C" fn(chan: *mut c_void),
-    push: unsafe extern "C" fn(chan: *mut c_void, data: *mut c_void, timeout: f64) -> u8,
-    pop: unsafe extern "C" fn(chan: *mut c_void, timeout: f64) -> *mut c_void,
-    pop_data: unsafe extern "C" fn(chan: *mut c_void) -> *mut c_void,
-    error: unsafe extern "C" fn(chan: *mut c_void) -> i32,
-    close: unsafe extern "C" fn(chan: *mut c_void) -> u8,
-    length: unsafe extern "C" fn(chan: *mut c_void) -> usize,
-    is_empty: unsafe extern "C" fn(chan: *mut c_void) -> u8,
-    is_full: unsafe extern "C" fn(chan: *mut c_void) -> u8,
-    consumers: unsafe extern "C" fn(chan: *mut c_void) -> usize,
-    producers: unsafe extern "C" fn(chan: *mut c_void) -> usize,
-    /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
-    unconstructed: unsafe extern "C" fn(),
-}
-
 /// `Channel::ErrorCode`.
 const ERROR_OK: i64 = 0;
 const CONSTANTS: [(&std::ffi::CStr, i64); 4] = [
@@ -41,16 +29,135 @@ const CONSTANTS: [(&std::ffi::CStr, i64); 4] = [
     (c"SWOOLE_CHANNEL_CLOSED", -2),
     (c"SWOOLE_CHANNEL_CANCELED", -3),
 ];
+const SW_ERROR_WRONG_OPERATION: i32 = 509;
+const SW_ERROR_CO_HAS_BEEN_DISCARDED: i32 = 10003;
+const SW_LOG_WARNING: i32 = 4;
 
-static OPS: OnceLock<&'static Ops> = OnceLock::new();
 static CHANNEL: Class = Class::new();
 
 /// `struct ChannelObject { Channel *chan; zend_object std; }`.
-type ChannelObject = Object<*mut c_void>;
+type ChannelObject = Object<*mut Channel>;
 
-fn ops() -> &'static Ops {
-    // Methods and handlers run only after MINIT stored the table.
-    OPS.get().copied().unwrap_or_else(|| std::process::abort())
+/// One coroutine's wait, on its own stack while it is suspended: upstream's
+/// `TimeoutMessage`, which the timer and the cancel function find by cid.
+struct Wait {
+    ch: *mut Channel,
+    role: u32,
+    co: *mut c_void,
+    timer: *mut c_void,
+    timedout: bool,
+}
+
+thread_local! {
+    static WAITS: RefCell<HashMap<c_long, *mut Wait>> = RefCell::default();
+}
+
+/// `timer_callback` and the cancel function: remove `cid`'s wait from its
+/// queue and resume it; a timeout also marks it timed out.
+fn wake(cid: c_long, timeout: bool) {
+    let Some(wait) = WAITS.with(|w| w.borrow().get(&cid).copied()) else {
+        return;
+    };
+    // SAFETY: the suspended coroutine's frame, live until it resumes.
+    let w = unsafe { &mut *wait };
+    if timeout {
+        w.timedout = true;
+        w.timer = ptr::null_mut();
+    }
+    // SAFETY: a channel outlives its waiters.
+    unsafe { (*w.ch).remove(w.role, w.co) };
+    let parked = w.co;
+    // SAFETY: a parked coroutine; this frame owns nothing that needs a drop.
+    unsafe { co::wake(parked, false) };
+}
+
+unsafe extern "C" fn on_timeout(cid: c_long) {
+    wake(cid, true);
+}
+
+unsafe extern "C" fn on_cancel(parked: *mut c_void) -> u8 {
+    wake(co::cid(parked), false);
+    1
+}
+
+/// PHP's coroutines for one operation; `co` is null for close.
+struct Php {
+    co: *mut c_void,
+    timeout: f64,
+}
+
+impl Php {
+    /// `Coroutine::get_current_safe()`: a fatal error outside a coroutine.
+    fn current(timeout: f64) -> Self {
+        Self {
+            co: co::current_safe(),
+            timeout,
+        }
+    }
+}
+
+impl Effects for Php {
+    fn current(&self) -> *mut c_void {
+        self.co
+    }
+
+    unsafe fn wait(&mut self, ch: *mut Channel, role: u32) -> u32 {
+        let cid = co::cid(self.co);
+        let mut state = Wait {
+            ch,
+            role,
+            co: self.co,
+            timer: ptr::null_mut(),
+            timedout: false,
+        };
+        // Only through this pointer from here on: the callbacks write it too.
+        let wait = &raw mut state;
+        if self.timeout > 0.0 {
+            // SAFETY: this frame's wait.
+            unsafe { (*wait).timer = co::timer_add(self.timeout, cid, on_timeout) };
+        }
+        WAITS.with(|w| w.borrow_mut().insert(cid, wait));
+        // SAFETY: the running coroutine; this frame owns nothing that needs a drop.
+        unsafe { co::yield_cancelable(self.co, on_cancel) };
+        WAITS.with(|w| w.borrow_mut().remove(&cid));
+        // SAFETY: as above, and no callback can reach it any more.
+        let Wait {
+            timer, timedout, ..
+        } = unsafe { wait.read() };
+        if !timer.is_null() {
+            // SAFETY: still armed: the timeout would have cleared it.
+            unsafe { co::timer_del(timer) };
+        }
+        (if co::is_canceled(self.co) {
+            CANCELED
+        } else {
+            0
+        }) | (if timedout { TIMEDOUT } else { 0 })
+    }
+
+    fn resume(&mut self, waiter: *mut c_void) {
+        // SAFETY: a waiter just taken from a queue; this frame owns nothing that needs a drop.
+        unsafe { co::wake(waiter, false) };
+    }
+}
+
+/// `Channel::~Channel`: warns about the coroutines still waiting, then frees it.
+fn destroy(chan: *mut Channel) {
+    // SAFETY: `__construct` made it; nothing else holds it.
+    let chan = unsafe { Box::from_raw(chan) };
+    for (count, role) in [
+        (chan.producer_num(), "producers"),
+        (chan.consumer_num(), "consumers"),
+    ] {
+        if count > 0 {
+            swoole_rs_corebase::log::error_log(
+                SW_LOG_WARNING,
+                SW_ERROR_CO_HAS_BEEN_DISCARDED,
+                c"Channel::~Channel",
+                format_args!("channel is destroyed, {count} {role} will be discarded"),
+            );
+        }
+    }
 }
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
@@ -69,10 +176,9 @@ unsafe extern "C" fn dtor(std: *mut zend_object) {
     if chan.is_null() {
         return;
     }
-    let ops = ops();
     loop {
         // SAFETY: a live channel.
-        let data = unsafe { (ops.pop_data)(*chan) }.cast::<zval>();
+        let data = unsafe { (**chan).pop_data() }.cast::<zval>();
         if data.is_null() {
             break;
         }
@@ -82,8 +188,7 @@ unsafe extern "C" fn dtor(std: *mut zend_object) {
         // SAFETY: as above.
         unsafe { swr_zend_efree(data.cast()) };
     }
-    // SAFETY: the channel `__construct` made; nothing else holds it.
-    unsafe { (ops.destroy)(*chan) };
+    destroy(*chan);
     *chan = ptr::null_mut();
 }
 
@@ -91,8 +196,8 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees an object this class created.
     let chan = unsafe { *ChannelObject::data(std) };
     if !chan.is_null() {
-        // SAFETY: as in `dtor`, when the destructor did not run.
-        unsafe { (ops().destroy)(chan) };
+        // As in `dtor`, when the destructor did not run.
+        destroy(chan);
     }
     // SAFETY: as above.
     unsafe { ChannelObject::dtor(std) };
@@ -111,19 +216,15 @@ method_table! {
     ];
 }
 
-/// MINIT: register the class, its properties and constants as
+/// MINIT: register the class, its properties and constants as upstream's
 /// `php_swoole_channel_coro_minit` did, with `Co\Channel` and `Chan` when
 /// short names are on.
 /// # Safety
-/// Called once, at MINIT, with a static operations table.
+/// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcollections_channel_minit(
-    module_number: i32,
-    use_shortname: u8,
-    ops: *const Ops,
-) {
+pub unsafe extern "C" fn php_swoole_channel_coro_minit(module_number: i32) {
     // SAFETY: the native MINIT entry lends these original startup arguments.
-    let result = unsafe { init_phpcollections_channel_minit(module_number, use_shortname, ops) };
+    let result = unsafe { init_phpcollections_channel_minit(module_number) };
     match result {
         Ok(value) => value,
         Err(error) => {
@@ -135,16 +236,11 @@ pub unsafe extern "C" fn swr_v1_phpcollections_channel_minit(
 
 unsafe fn init_phpcollections_channel_minit(
     module_number: i32,
-    use_shortname: u8,
-    ops: *const Ops,
 ) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    // SAFETY: per the caller, a static table.
-    if let Some(ops) = unsafe { ops.as_ref() } {
-        OPS.get_or_init(|| ops);
-    }
     // SAFETY: MINIT, with a static table.
     unsafe { CHANNEL.register(c"Swoole\\Coroutine\\Channel", METHODS.as_ptr(), configure) };
-    if use_shortname != 0 {
+    // SAFETY: this thread's module globals, live from MINIT.
+    if unsafe { (*swoole_rs_phpswoole::globals()).use_shortname } {
         // SAFETY: MINIT, after registration.
         unsafe { CHANNEL.alias(c"Co\\Channel") }?;
         // SAFETY: as above.
@@ -171,17 +267,22 @@ fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) 
     handlers.dtor_obj = Some(dtor);
 }
 
-fn this(call: &Call) -> &'static mut *mut c_void {
+fn this(call: &Call) -> &'static mut *mut Channel {
     // SAFETY: Channel methods are non-static, so `$this` is one of our objects.
     unsafe { ChannelObject::data(call.this()) }
 }
 
 /// `channel_coro_get_ptr`: the channel, or Swoole's fatal error (which exits).
-fn channel(call: &Call) -> Option<*mut c_void> {
+fn channel(call: &Call) -> Option<*mut Channel> {
     let chan = *this(call);
     if chan.is_null() {
-        // SAFETY: C++'s fatal-error report.
-        unsafe { (ops().unconstructed)() };
+        // SAFETY: the fatal error exits; this frame owns nothing that needs a drop.
+        unsafe {
+            swoole_rs_corebase::fatal_error(
+                SW_ERROR_WRONG_OPERATION,
+                c"must call constructor first",
+            );
+        }
         return None;
     }
     Some(chan)
@@ -190,6 +291,12 @@ fn channel(call: &Call) -> Option<*mut c_void> {
 /// `$this->errCode = $code`, as the class sees it.
 fn set_error(call: &Call, code: i64) {
     call.update_property_long(Some(&CHANNEL), c"errCode", code);
+}
+
+/// The channel's last error.
+fn error(chan: *mut Channel) -> i64 {
+    // SAFETY: a live channel.
+    unsafe { (*chan).error() }.into()
 }
 
 /// `__construct(int $size = 1)`: capacity below 1 becomes 1. Upstream neither
@@ -201,9 +308,7 @@ fn construct(call: &Call) {
     };
     let capacity = capacity.max(1);
     let size = usize::try_from(capacity).unwrap_or(usize::MAX);
-    // SAFETY: the C++ constructor.
-    let chan = unsafe { (ops().create)(size) };
-    *this(call) = chan;
+    *this(call) = Box::into_raw(Box::new(Channel::new(size)));
     call.update_property_long(Some(&CHANNEL), c"capacity", capacity);
 }
 
@@ -224,15 +329,14 @@ fn push(call: &Call) {
     let value = unsafe { data.read() };
     // SAFETY: `copy` is fresh; a bitwise copy, as upstream's memcpy.
     unsafe { copy.write(value) };
-    let ops = ops();
+    let mut php = Php::current(timeout);
     // SAFETY: a live channel; may suspend this coroutine.
-    if unsafe { (ops.push)(chan, copy.cast(), timeout) } != 0 {
+    if unsafe { queue::push(chan, &mut php, copy.cast()) } {
         set_error(call, ERROR_OK);
         call.set_bool(true);
         return;
     }
-    // SAFETY: a live channel.
-    set_error(call, unsafe { (ops.error)(chan) }.into());
+    set_error(call, error(chan));
     // SAFETY: the channel refused `copy`, so its reference is ours to drop.
     unsafe { swr_zval_try_delref(copy) };
     // SAFETY: as above.
@@ -247,12 +351,11 @@ fn pop(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let ops = ops();
+    let mut php = Php::current(timeout);
     // SAFETY: a live channel; may suspend this coroutine.
-    let data = unsafe { (ops.pop)(chan, timeout) }.cast::<zval>();
+    let data = unsafe { queue::pop(chan, &mut php) }.cast::<zval>();
     if data.is_null() {
-        // SAFETY: a live channel.
-        set_error(call, unsafe { (ops.error)(chan) }.into());
+        set_error(call, error(chan));
         call.set_bool(false);
         return;
     }
@@ -268,49 +371,47 @@ fn long(size: usize) -> i64 {
     size as i64
 }
 
-/// The methods that read the channel: `close(): bool`, `length(): int`,
-/// `isEmpty(): bool`, `isFull(): bool` and `stats(): array`.
+/// `close(): bool`, which wakes every waiter.
+fn close(call: &Call) {
+    if let Some(chan) = channel(call) {
+        let mut php = Php {
+            co: ptr::null_mut(),
+            timeout: 0.0,
+        };
+        // SAFETY: a live channel.
+        call.set_bool(unsafe { queue::close(chan, &mut php) });
+    }
+}
+
+/// The methods that read the channel: `length(): int`, `isEmpty(): bool`,
+/// `isFull(): bool` and `stats(): array`.
 macro_rules! queries {
-    ($($name:ident($ops:ident, $chan:ident, $call:ident) $body:block)*) => {$(
+    ($($name:ident($chan:ident, $call:ident) $body:block)*) => {$(
         fn $name($call: &Call) {
-            if let Some($chan) = channel($call) {
-                let $ops = ops();
+            if let Some(chan) = channel($call) {
+                // SAFETY: a live channel, which no other borrow reaches meanwhile.
+                let $chan = unsafe { &*chan };
                 $body
             }
         }
     )*};
 }
 
-// Each body runs on a live channel.
 queries! {
-    close(ops, chan, call) {
-        // SAFETY: see above.
-        let closed = unsafe { (ops.close)(chan) };
-        call.set_bool(closed != 0);
+    length(chan, call) {
+        call.set_long(long(chan.length()));
     }
-    length(ops, chan, call) {
-        // SAFETY: see above.
-        let length = unsafe { (ops.length)(chan) };
-        call.set_long(long(length));
+    is_empty(chan, call) {
+        call.set_bool(chan.is_empty());
     }
-    is_empty(ops, chan, call) {
-        // SAFETY: see above.
-        let empty = unsafe { (ops.is_empty)(chan) };
-        call.set_bool(empty != 0);
+    is_full(chan, call) {
+        call.set_bool(chan.is_full());
     }
-    is_full(ops, chan, call) {
-        // SAFETY: see above.
-        let full = unsafe { (ops.is_full)(chan) };
-        call.set_bool(full != 0);
-    }
-    stats(ops, chan, call) {
+    stats(chan, call) {
         call.set_array();
-        // SAFETY: see above.
-        call.add_assoc_long(c"consumer_num", long(unsafe { (ops.consumers)(chan) }));
-        // SAFETY: see above.
-        call.add_assoc_long(c"producer_num", long(unsafe { (ops.producers)(chan) }));
-        // SAFETY: see above.
-        call.add_assoc_long(c"queue_num", long(unsafe { (ops.length)(chan) }));
+        call.add_assoc_long(c"consumer_num", long(chan.consumer_num()));
+        call.add_assoc_long(c"producer_num", long(chan.producer_num()));
+        call.add_assoc_long(c"queue_num", long(chan.length()));
     }
 }
 

@@ -9,8 +9,7 @@
     )
 )]
 
-mod channel;
-pub use channel::*;
+pub mod chan;
 mod coroutine;
 pub use coroutine::*;
 mod live;

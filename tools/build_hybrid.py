@@ -303,7 +303,8 @@ def overlay_hybrid_tree(archive, tree):
     for path in (Path(tree) / 'core-tests').rglob('*'):
         text = path.read_text() if path.suffix in ('.h', '.cpp') else ''
         folded = text
-        for header, survivor in (('swoole_process_pool.h', 'swoole_server.h'), ('swoole_config.h', 'swoole.h')):
+        for header, survivor in (('swoole_process_pool.h', 'swoole_server.h'), ('swoole_config.h', 'swoole.h'),
+                                 ('swoole_coroutine_channel.h', 'swoole_coroutine.h')):
             folded = folded.replace(f'#include "{header}"', f'#include "{survivor}"')
         if folded != text:
             path.write_text(folded)
