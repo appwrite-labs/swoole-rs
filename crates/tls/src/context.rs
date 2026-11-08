@@ -723,20 +723,12 @@ pub extern "C" fn swr_v1_tls_destroy() {
     INITIALIZED.store(false, Ordering::Release);
 }
 
-/// `int swoole_ssl_get_ex_connection_index()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z34swoole_ssl_get_ex_connection_indexv")
-)]
+/// The SSL `ex_data` index holding the connection's `Socket`.
 pub extern "C" fn swr_v1_tls_connection_index() -> c_int {
     CONNECTION_INDEX.load(Ordering::Acquire)
 }
 
-/// `int swoole_ssl_get_ex_port_index()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z28swoole_ssl_get_ex_port_indexv")
-)]
+/// The SSL `ex_data` index holding the accepting `ListenPort`.
 pub extern "C" fn swr_v1_tls_port_index() -> c_int {
     PORT_INDEX.load(Ordering::Acquire)
 }

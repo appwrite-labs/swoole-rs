@@ -359,53 +359,6 @@ pub unsafe extern "C" fn ssl_context_create(context: *const OwnedTlsPrepared) ->
     // SAFETY: the context's live owner.
     unsafe { swr_v1_tls_owner_create(owner) }
 }
-macro_rules! owned_method {
-    ($name:ident, $symbol:literal, $method:ident) => {
-        /// The `SSLContext` method; owner and borrowed OpenSSL context are synchronized.
-        ///
-        /// # Safety
-        /// `context` is a live `SSLContext`.
-        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
-        pub unsafe extern "C" fn $name(context: *const OwnedTlsPrepared) -> bool {
-            // SAFETY: as the caller promises.
-            let owner = unsafe { owner_of(context) };
-            // SAFETY: temporary raw views into the live, unchanged configuration.
-            let config = unsafe { configuration(owner) };
-            // SAFETY: borrow interior-mutable metadata, without an exclusive record reference.
-            let state = unsafe { &*owner };
-            let fields = state.fields.get();
-            // SAFETY: synchronized field observation before OpenSSL/log callbacks.
-            let ctx = unsafe { (*fields).context };
-            // SAFETY: all views remain live and the logger is nonthrowing.
-            unsafe { crate::$method(ctx, &raw const config) }
-        }
-    };
-}
-owned_method!(
-    ssl_context_set_capath,
-    "_ZNK6swoole10SSLContext10set_capathEv",
-    swr_v1_tls_set_capath
-);
-owned_method!(
-    ssl_context_set_ciphers,
-    "_ZNK6swoole10SSLContext11set_ciphersEv",
-    swr_v1_tls_set_ciphers
-);
-owned_method!(
-    ssl_context_set_client_certificate,
-    "_ZNK6swoole10SSLContext22set_client_certificateEv",
-    swr_v1_tls_set_client_certificate
-);
-owned_method!(
-    ssl_context_set_ecdh_curve,
-    "_ZNK6swoole10SSLContext14set_ecdh_curveEv",
-    swr_v1_tls_set_ecdh_curve
-);
-owned_method!(
-    ssl_context_set_dhparam,
-    "_ZNK6swoole10SSLContext11set_dhparamEv",
-    swr_v1_tls_set_dhparam
-);
 /// Path access and assignment are one Rust operation. 1 access denied, otherwise
 /// `string_set`'s status; only cert(4), key(5) and client certificate(7) are accepted.
 /// # Safety
