@@ -71,13 +71,31 @@ pub unsafe extern "C" fn swr_v1_error_ignored_release(state: *mut IgnoredErrors)
 /// The process-global set behind `swoole_ignore_error` and `swoole_is_ignored_error`.
 static IGNORED: AtomicPtr<IgnoredErrors> = AtomicPtr::new(std::ptr::null_mut());
 
-/// `swr_v1_error_ignore` on the process-global set; `swoole_ignore_error` throws on -2.
+/// `swr_v1_error_ignore` on the process-global set; `swoole_ignore_error` aborts on -2.
 /// # Safety
 /// Access must be serialized, as upstream's unsynchronized set requires.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_error_ignore_global(code: i32) -> i32 {
     // SAFETY: the slot holds null or this API's live handle, and access is serialized.
     unsafe { swr_v1_error_ignore(IGNORED.as_ptr(), code) }
+}
+
+/// `void swoole_ignore_error(int)`. Upstream threw `std::bad_alloc` when the set could not
+/// grow, which nothing in the extension catches, so it terminated; this aborts.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z19swoole_ignore_errori")
+)]
+pub extern "C" fn swoole_ignore_error(code: i32) {
+    // SAFETY: the extension serializes ignored-error writes, as upstream required.
+    if unsafe { swr_v1_error_ignore_global(code) } != 0 {
+        std::io::Write::write_all(
+            &mut std::io::stderr(),
+            b"swoole_ignore_error: out of memory\n",
+        )
+        .ok();
+        std::process::abort();
+    }
 }
 
 /// `bool swoole_is_ignored_error(int)`.

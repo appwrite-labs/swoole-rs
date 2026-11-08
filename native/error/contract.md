@@ -12,8 +12,7 @@
   or retain state. It owns the bytes it returns; Rust neither reads nor frees them.
 - `swr_v1_error_strerror` is `swoole_strerror`'s body. Rust classifies the
   code, does the known lookup and formats unknown codes. Codes below the pinned
-  500 boundary go to the native formatter, which calls system `strerror`. C++ exceptions and the shared `sw_error` buffer stay native; any
-  throw happens after Rust returns.
+  500 boundary go to the native formatter, which calls system `strerror`.
 
 Unknown messages are formatted without allocating into one 32-byte static
 buffer. Byte layout matches the native `snprintf` buffer: Apple colon spelling,
@@ -35,15 +34,23 @@ and `swoole_is_ignored_error` is a Rust static that lazily owns an opaque
 
 - Insert is idempotent and accepts any int32. If allocation fails, the existing
   set is kept, a failed first insert leaves the holder null, and Rust returns
-  -2 without unwinding. The native wrapper then raises `std::bad_alloc`.
+  -2 without unwinding. `swoole_ignore_error` then aborts: upstream threw
+  `std::bad_alloc`, which nothing in the extension catches.
 - The global set lives until exit. No callbacks or Zend values are retained.
 - The set is process-local and copied on fork; it is not shared memory. It has no
   synchronization: callers must keep writes apart from other reads and writes.
   Concurrent reads after initialization are safe.
 
-`src/core/error.cc` is not built. `swoole_strerror` and `swoole_is_ignored_error`
-are Rust under their upstream symbols; `native/error/error.cc` keeps what stable
-Rust can't express: the throwing `swoole_throw_error`, `swoole_ignore_error` and
-`Exception` constructor, and the thread_local `sw_error` accessors.
+## Last error and throw
+
+`sw_error` is `swr_v1_error_buffer()`: each thread's `SW_ERROR_MSG_SIZE` (16384) byte
+buffer, a Rust `thread_local` that lives as long as its thread (upstream's was a C++
+`thread_local` array). `swoole_get_last_error_msg` returns it and
+`swoole_clear_last_error_msg` writes its first byte. `swoole_throw_error` writes the
+code's message to stderr and aborts: upstream threw `swoole::Exception`, and no
+handler in the extension catches one, so it terminated.
+
+`src/core/error.cc` is not built, and the module has no C or C++ source: every
+function above is Rust under its upstream symbol.
 
 Tests: `tests/modules/error/`.

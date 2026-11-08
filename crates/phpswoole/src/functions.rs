@@ -212,11 +212,7 @@ fn error_log_ex(call: &Call) {
 fn ignore_error(call: &Call) {
     let parsed = call.arity(1, 1).and_then(|()| call.long(1, 0));
     if let Some(error) = or_false(call, parsed) {
-        // SAFETY: PHP calls in serially on the main thread; out of memory aborts, as
-        // C++'s std::bad_alloc did crossing Rust.
-        if unsafe { swoole_rs_error::swr_v1_error_ignore_global(int(error)) } != 0 {
-            std::process::abort();
-        }
+        swoole_rs_error::swoole_ignore_error(int(error));
     }
 }
 

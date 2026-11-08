@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <csignal>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -18,7 +19,8 @@ void reference_swoole_ignore_error(int);
 bool reference_swoole_is_ignored_error(int);
 void reference_swoole_clear_last_error_msg();
 const char *reference_swoole_get_last_error_msg();
-char sw_error[1024] = {};
+// The reference error.cc's sw_error; the hybrid's is crates/error's per-thread buffer.
+char reference_sw_error[1024] = {};
 
 static void require(bool value) {
     if (!value) std::abort();
@@ -80,14 +82,16 @@ int main() {
         require(unknown == nullptr || unknown == actual);
         unknown = actual;
     }
-    swoole::Exception exception(SW_ERROR_MALLOC_FAIL);
-    require(exception.code == SW_ERROR_MALLOC_FAIL && std::string(exception.msg) == "Malloc fail");
-    try {
+    // Upstream's throw reached no handler in the extension, so it terminated; Rust aborts.
+    const pid_t thrower = fork();
+    require(thrower >= 0);
+    if (thrower == 0) {
         swoole_throw_error(SW_ERROR_BAD_PORT);
-        require(false);
-    } catch (const swoole::Exception &error) {
-        require(error.code == SW_ERROR_BAD_PORT && std::string(error.msg) == "Bad port");
+        _exit(0);
     }
+    int thrower_status = 0;
+    require(waitpid(thrower, &thrower_status, 0) == thrower);
+    require(WIFSIGNALED(thrower_status) && WTERMSIG(thrower_status) == SIGABRT);
     for (int code : {0, int(SW_ERROR_MALLOC_FAIL), INT_MAX}) {
         require(!swoole_is_ignored_error(code) && !reference_swoole_is_ignored_error(code));
         swoole_ignore_error(code);
@@ -122,11 +126,14 @@ int main() {
     require(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
     require(!swoole_is_ignored_error(child_code) && !reference_swoole_is_ignored_error(child_code));
     std::strcpy(sw_error, "last error sentinel");
+    std::strcpy(reference_sw_error, "last error sentinel");
+    require(swoole_get_last_error_msg() == sw_error);
     require(std::string(swoole_get_last_error_msg()) == reference_swoole_get_last_error_msg());
     swoole_clear_last_error_msg();
-    require(sw_error[0] == '\0');
-    std::strcpy(sw_error, "last error sentinel");
     reference_swoole_clear_last_error_msg();
+    require(sw_error[0] == '\0' && reference_sw_error[0] == '\0');
+    // Each thread has its own buffer, as upstream's thread_local.
+    std::thread([] { require(sw_error[0] == '\0'); std::strcpy(sw_error, "other thread"); }).join();
     require(sw_error[0] == '\0');
 
     std::vector<const char *> pointers;

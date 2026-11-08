@@ -18,7 +18,7 @@
 
 void reference_swoole_ignore_error(int);
 bool reference_swoole_is_ignored_error(int);
-char sw_error[1024] = {};
+char reference_sw_error[1024] = {};
 struct Sample {
     int64_t ns;
     uint64_t checksum;

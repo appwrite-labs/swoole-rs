@@ -23,10 +23,11 @@ Rust behaviour:
 - Ignored errors use a lazy process-local Rust HashSet in a Rust static:
   idempotent insert, fallible allocation and copied-on-fork state match native.
   Concurrent mutation is excluded; initialized read-only access may be
-  concurrent. Native code throws `bad_alloc` after Rust returns.
-
-Native code (`native/error/error.cc`) keeps C++ exception construction/throw and
-the thread_local `sw_error` accessors. No Zend values, PHP callbacks or bailout
+  concurrent. `swoole_ignore_error` aborts on NOMEM, as upstream's uncaught
+  `bad_alloc` terminated.
+- The last-error buffer (`sw_error`) is a Rust per-thread buffer, and
+  `swoole_throw_error` aborts where upstream's uncaught `swoole::Exception`
+  terminated. The module has no C or C++ source. No Zend values, PHP callbacks or bailout
 enter Rust.
 
 ## Correctness
@@ -39,20 +40,18 @@ python3 tests/modules/error/differential.py --source PINNED_REFERENCE --archive 
 python3 tests/modules/error/php.py --source PINNED_REFERENCE --engine upstream=CONTROL --engine hybrid=CANDIDATE --output REPORT
 ```
 
-`differential.py` compiles the complete pinned `error.cc` (from Git objects) and
-the hybrid build's native error shim with that build's headers, against the
-archive's Rust `swoole_strerror` and `swoole_is_ignored_error` (`HYBRID_ARCHIVE` is
+`differential.py` compiles the complete pinned `error.cc` (from Git objects)
+against the archive's Rust error facade, with that build's headers (`HYBRID_ARCHIVE` is
 `<build>/rust-prefix/lib/libswoole_rs_ffi.a`);
 only dependency declarations and external buffer storage are stubbed. It checks
-all 130 messages, 10414 numeric inputs, the original exception/state
-assertions, concurrent lookups and reads, 20000 state operations, duplicates,
+all 130 messages, 10414 numeric inputs, the original state assertions, the
+throw's abort (in a child), the per-thread last-error buffer, concurrent lookups and reads, 20000 state operations, duplicates,
 signed values, fork isolation and child destruction, plus full callback and
 32-byte unknown-buffer assertions.
 
 `--allocator-faults` links the unchanged Rust module with a test global
-allocator against the native facade: bucket, handle and growth allocation
-failures must preserve membership and raise native `bad_alloc` after Rust
-returns; duplicates must not allocate and retries must succeed. It links that
+allocator: bucket, handle and growth allocation failures must return NOMEM and
+preserve membership, `swoole_ignore_error` must abort on one (in a child); duplicates must not allocate and retries must succeed. It links that
 fixture in place of the archive and rejects benchmark preparation.
 
 `php.py` compares engines on 31221 `swoole_strerror` results, runs the original
