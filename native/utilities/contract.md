@@ -1,9 +1,8 @@
 # Utilities ABI
 
-Feature bit 512 (`utilities`). Patches `src/core/misc.cc`,
-`src/core/log.cc` and `include/swoole.h`. The overlay deletes `include/swoole_util.h`,
-`swoole_log.h`, `swoole_hash.h` and `swoole_version.h`; the copies here keep what C++,
-the compiled core-tests and the utilities gates use. Declarations are in
+Feature bit 512 (`utilities`). Patches `include/swoole.h`; this directory's
+`swoole_util.h`, `swoole_log.h`, `swoole_hash.h` and `swoole_version.h` replace
+upstream's and keep what C++, the compiled core-tests and the utilities gates use. Declarations are in
 [swoole_rs_utilities.h](swoole_rs_utilities.h). Tests:
 `tests/modules/utilities/README.md`. Depends on the locks module for wait/wake.
 
@@ -72,8 +71,8 @@ All public utility signatures are unchanged; v1 is frozen.
   Caller unlocks with its existing native release store. Backoff multiplication is
   checked. Null/unaligned pointers return immediately.
 - `swr_v1_utils_wait(u32 *, timeout)` / `swr_v1_utils_wakeup(u32 *, n)`:
-  the locks module's futex wait, called from `misc.cc` only when `HAVE_FUTEX` is
-  set. Other builds use `swr_v1_utils_registry_wait`/`_wakeup` over a Rust registry
+  the locks module's futex wait, called by `sw_atomic_futex_wait`
+  (`crates/utilities/src/misc.rs`) only when `HAVE_FUTEX` is set. Other builds use `swr_v1_utils_registry_wait`/`_wakeup` over a Rust registry
   that `sw_atomic_wait_init` adopts from the shared memory pool before any fork.
   Caller owns aligned process-shared storage and its lifetime. errno is
   preserved. Timeouts outside the positive `time_t` range are undefined upstream.
@@ -99,7 +98,7 @@ All public utility signatures are unchanged; v1 is frozen.
 `swoole::Logger` holds one `SwrLogger` handle; every operation is Rust's, under one
 lock (the level is an atomic, so `get_level` takes no lock). Diagnostics go
 through corebase's log host under upstream's method names; worker identity,
-`swoole_redirect_stdout` and backtraces call `swr_logger_host` (Rust, in `crates/process`; `src/core/log.cc` is deleted).
+`swoole_redirect_stdout` and backtraces call `swr_logger_host` (Rust, in `crates/process`).
 Both run after the lock is released, so a diagnostic can log through the same
 logger. A failed open warns as upstream's
 `Logger::open` did; a failed open during `put`'s rotation, which deadlocked

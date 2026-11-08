@@ -5,8 +5,6 @@ hosts are 64-bit macOS and Linux.
 
 ## General rules
 
-- No native allocator, lock, exception, PHP/Zend operation or syscall runs with a
-  Rust frame active. Native work runs before/after Rust calls on the owning thread.
 - Pointers and borrowed ranges must be valid for their documented size and
   lifetime. NULL handles are rejected; dangling pointers cannot be detected.
 - Mutable state/output must be exclusive and disjoint from borrowed input/output.
@@ -14,8 +12,7 @@ hosts are 64-bit macOS and Linux.
 - Rust allocations are fallible; no caller-controlled size causes an infallible
   allocation or unchecked wrap.
 - Rust-allocated heap nodes/queues are released only through their Rust owner.
-  Native tokens/data are never freed or dereferenced by Rust. No callback or
-  destructor crosses Rust.
+  Native tokens/data are never freed or dereferenced by Rust.
 - Invalid external node positions return failure before indexing.
 - Defensive rejection of invalid/overflowing scalar input is not equivalence with
   undefined original behavior.
@@ -41,8 +38,7 @@ the arena, so a shared pool stays visible across fork. Callers serialize.
 
 ## Heap
 
-Rust only: no native code uses the heap since `include/swoole_heap.h` left the
-build. Rust owns a vector of stable, individually allocated node PODs with
+Rust only. Rust owns a vector of stable, individually allocated node PODs with
 upstream's `HeapNode` fields and 1-based position.
 
 - create takes min/max as exactly 0/1, zeroes output first, returns 0/-1.
@@ -63,8 +59,8 @@ upstream's `HeapNode` fields and 1-based position.
 
 ## Core channel
 
-`swr_v1_memory_channel` is the whole record of upstream's `swoole::Channel` (whose
-header is deleted; the server's message box is its one user): the queue state, a
+`swr_v1_memory_channel` is the whole record of upstream's `swoole::Channel` (the
+server's message box is its one user): the queue state, a
 process-shared mutex and the notification pipe (read end first). The owner allocates `channel_bytes(size,maxlen)` bytes (the record
 plus the ring and its maxlen+4 overflow space) from the heap or, for
 `SW_CHAN_SHM`, a shared mapping, and frees them after `channel_close`. Rust owns
@@ -133,7 +129,7 @@ min(old_total-8, new_total-8) payload bytes.
 
 ## Upstream members
 
-`crates/memory/src/members.rs` defines what `src/memory/*.cc` did. With
+`crates/memory/src/members.rs` holds upstream's memory members. With
 `upstream-symbols`, `GlobalMemory`'s non-virtual members and `sw_shm_malloc`,
 `sw_shm_calloc`, `sw_shm_free` and `sw_shm_protect` are under their upstream C++
 symbols. `native/memory/swoole_memory.h` (upstream's is deleted) keeps `GlobalMemory`'s constructor (it throws on the

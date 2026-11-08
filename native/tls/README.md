@@ -1,12 +1,11 @@
 # TLS/DTLS boundary
 
-Feature bit 262144 (`tls`). `src/protocol/ssl.cc` and `src/protocol/dtls.cc` have left
-the build: `crates/tls` defines `swoole_ssl_init`/`destroy`/`get_error` and `SSLContext::create`
-under their upstream symbols, and `dtls::Session` is a Rust record. `include/swoole_ssl.h`
-and `include/swoole_dtls.h` have left the tree: [swoole_ssl.h](swoole_ssl.h) keeps the
-`SSLContext` members C++ and the compiled core-tests still use, and the C declarations are
-in [swoole_rs_tls_owner.h](swoole_rs_tls_owner.h).
-Tests: `crates/tls` unit tests, upstream `core-tests/src/protocol/ssl.cpp` on both engines
+Feature bit 262144 (`tls`). `crates/tls` defines `swoole_ssl_init`/`destroy`/`get_error`
+and `SSLContext::create` under their upstream symbols, and `dtls::Session` is a Rust
+record. [swoole_ssl.h](swoole_ssl.h) keeps the `SSLContext` members C++ and the
+compiled core-tests still use; the C declarations are in
+[swoole_rs_tls_owner.h](swoole_rs_tls_owner.h).
+Tests: `crates/tls` unit tests, upstream's `protocol/ssl.cpp` GoogleTests on both engines
 (`tls-native-originals`) and the ssl/dtls PHPT families. Requires OpenSSL 3 (rejected at compile
 time otherwise).
 

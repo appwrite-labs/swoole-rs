@@ -1,12 +1,11 @@
 # OS support policy v1
 
 Feature bit 131072 (`ossupport`). ABI: `docs/os-support-abi-v1.md` and
-`swoole_rs_ossupport.h`. Patched upstream files: `src/os/async_thread.cc`,
-`src/os/file.cc`, `src/os/msg_queue.cc`, `src/os/base.cc`, `src/os/sendfile.cc`.
+`swoole_rs_ossupport.h`.
 
-Rust owns the async thread pool. File, SysV queue, sendfile and entropy code is
-still policy only: Rust keeps no state there and every native effect runs after
-Rust returns.
+Rust owns the async thread pool, file records (`file_record.rs`,
+`async_file.rs`; `swoole_file.h`'s classes are views of them), the SysV queue,
+sendfile and entropy.
 
 ## Thread pool
 
@@ -31,8 +30,8 @@ unsynchronized `canceled` field and the retirement leak in
 
 ## File, sendfile and entropy
 
-`crates/ossupport/src/file.rs` runs the syscalls; native keeps the descriptors,
-`String` allocation and logging. Each call returns right after a failing syscall
+`crates/ossupport/src/file.rs` runs the syscalls; C++ keeps `String` allocation
+and logging. Each call returns right after a failing syscall
 so the native `swoole_sys_warning` sees its errno.
 
 - `swr_v1_os_file_write_all` / `read_all` (`File::write_all` / `read_all`):
@@ -47,42 +46,35 @@ so the native `swoole_sys_warning` sees its errno.
   it): `getrandom` on Linux/Android (retrying `EINTR`/`EAGAIN`, a zero result
   repeats), `arc4random_buf` elsewhere.
 
-- `file_api.rs` is the rest of `src/os/file.cc` that is still called:
+- `file_api.rs` is the rest of upstream's `src/os/file.cc`:
   `swoole_tmpfile` under its upstream symbol, `file_get_contents`,
   `file_put_contents` (Rust's only caller is the server) and `File::read_content`.
-  `native/ossupport/swoole_file.h`, which replaced upstream's
-  `include/swoole_file.h`, keeps only the File and AsyncFile members the
+  `native/ossupport/swoole_file.h` keeps only the File and AsyncFile members the
   compiled C++, core-tests and the ossupport gates call. Logs name the function
   as upstream's `__SW_FUNC__` does.
 
 ## SysV message queue
 
-`msg_queue.rs` is `swoole::MsgQueue` (upstream `src/os/msg_queue.cc` and
-`include/swoole_msg_queue.h`, both deleted): Rust allocates and frees the queue,
+`msg_queue.rs` is `swoole::MsgQueue`: Rust allocates and frees the queue,
 and native code holds an opaque `swr_v1_os_msg_queue *`. The constructor defaults
 permissions outside (0, 01000) to 0666 and calls `msgget(key, IPC_CREAT | perms)`;
 `set_blocking` changes only `IPC_NOWAIT`; push retries `EINTR` and stays quiet on
 `EAGAIN`; pop does not retry and is quiet on `ENOMSG`/`EINTR`; a private queue is
 removed when freed. Warnings and the last error follow upstream's order. Upstream's
-`core-tests/src/os/msg_queue.cpp` is the module test `msg_queue_rbac`.
+`msg_queue.rbac` GoogleTest is the Rust test `msg_queue_rbac`.
 
 ## Process and thread identity
 
-`system.rs` is upstream `src/os/base.cc`, which the patch deletes. Under their
+`system.rs` is upstream's `src/os/base.cc`. Under their
 upstream symbols: the root check, `swoole_daemon` (Darwin detaches, forks and
-calls `setsid` itself; elsewhere `daemon(3)` and the after-fork hooks, through the
-C++ `swoole_fork`, `swoole_isset_hook` and `swoole_call_hook`), the parent-death
+calls `setsid` itself; elsewhere `daemon(3)` and the after-fork hooks, through corebase's
+`swoole_fork` and `swoole_call_hook`), the parent-death
 signal, `swoole_get_cpu_affinity` (`getpid()`, as upstream), the native thread id
 and thread names. `swoole_set_isolation` is an inline header call with each
 `std::string`'s `c_str()`; Rust logs each failed step as it happens, errno intact.
-`file.rs`'s `swoole_sendfile` is upstream `src/os/sendfile.cc`, also deleted.
+`file.rs`'s `swoole_sendfile` is upstream's `src/os/sendfile.cc`.
 
 `swr_v1_os_file_open`/`close` and `swr_v1_os_tmpfile` back `File::open`,
 `File::close` and `swoole_tmpfile`. The resolver request constructors and the
-`gethostbyname`/`getaddrinfo` async handlers are inline in the owned `swoole_async.h`
-(upstream's is deleted): `AsyncEvent`, whose layout `crates/hooks/src/offload.rs`
+`gethostbyname`/`getaddrinfo` async handlers are inline in `swoole_async.h`: `AsyncEvent`, whose layout `crates/hooks/src/offload.rs`
 mirrors, and the requests, views of the Rust resolver record.
-Unused upstream helpers left with the file: `swoole_set_cpu_affinity` and
-`swoole_thread_id_to_str`.
-
-Still native: File storage and UnixSocket construction.

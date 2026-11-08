@@ -1,25 +1,12 @@
 # Locks and atomics ABI
 
-Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. Patched upstream
-files: `ext-src/swoole_thread_atomic.cc`, `ext-src/swoole_thread_lock.cc`.
-`src/lock/barrier.cc` and `src/lock/mutex.cc` are deleted: `native/locks/lock.cc`
-holds the `Mutex` and `Barrier` methods over this ABI, and `native/locks/swoole_lock.h`
-and `swoole_atomic.h` replace the deleted upstream headers. `src/lock/rw_lock.cc` and
-`src/lock/spin_lock.cc` are deleted: no C++ caller has an RW or spin lock.
-`ext-src/swoole_atomic.cc`, `ext-src/swoole_lock.cc`, `ext-src/swoole_coroutine_lock.cc`
-and `src/lock/coroutine_lock.cc` are deleted: crates/phplocks exports their MINITs and
-builds `Coroutine\Lock`'s host itself (the global pool through its vtable, the
-coroutine from crates/phpcoroutines, `System::sleep`, or io_uring's futex).
-
-Native callers keep source-compatible C++ methods and PHP behavior. Recompile
-C++ consumers against their matching SDK: PHP object layouts
-now contain Rust owners rather than native lock state. Allocation provenance,
-reference counts and exception behavior are preserved. The module adds no scheduler,
-registry or thread. The one Rust heap is ZTS builds' thread resources: a
-`Thread\Atomic`, `Thread\Atomic\Long` or `Thread\Lock` keeps its word or private
-lock in an `Arc` (upstream's `ThreadResource`), which crates/phpthread's
-containers share between threads. PHP effects reachable from scheduler leaves contain Zend bailouts below the
-Rust frame. No panic or C++ exception crosses the ABI.
+Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. `native/locks/lock.cc`
+holds the `Mutex` and `Barrier` methods over this ABI (declared in this directory's
+`swoole_lock.h`); crates/phplocks is `Swoole\Atomic`, `Swoole\Lock`,
+`Coroutine\Lock` and the ZTS `Thread\Atomic`, `Atomic\Long` and `Thread\Lock`,
+MINITs included. A thread resource keeps its word or private lock in an `Arc`
+(upstream's `ThreadResource`), which crates/phpthread's containers share between
+threads. No panic or C++ exception crosses the ABI.
 
 ## Mutex, RW and spin locks
 
@@ -74,48 +61,20 @@ compare-set = 4; `expected` is the last argument. Loads/stores are relaxed
 wraps at `u32`/`i64` width. CAS returns 0/1 and leaves the word unchanged on
 failure. Callers keep the storage live and exclude concurrent destruction.
 
-PHP Atomic, Atomic\Long and their Thread counterparts are Rust classes
-(`crates/phplocks`, `swr_v1_phplocks_*`). C++ supplies the global-pool words
-(Atomic) and the `ThreadResource`s that hold Thread words; Rust owns the method
-tables (over `crates/phpstubs`' arginfo), registration, objects and methods
-(see `docs/zend.md`).
-
 `swr_v1_locks_wait` / `swr_v1_locks_wakeup` exist on Linux only and implement
 the `HAVE_FUTEX` path: CAS token consumption, a single futex syscall (no hidden
 EINTR/spurious-wake retry), timeout conversion and result/errno. NaN/out-of-range
 timeout casts are undefined input. PHP Atomic and its Thread counterpart call
-them directly; non-futex builds use upstream's C++ wait registry.
+them directly; other hosts use crates/utilities' wait registry.
 
-## Coroutine lock ownership
+## Coroutine lock
 
-`crates/locks/src/coroutine.rs` owns the complete lock record, shared/private
-atomic word, owner cookie/CID, acquisition loop, cancellation and unlock. Private
-words use Rust allocation; shared words use the existing process-shared pool and
-return to that same pool on destruction. The C++ class retains its inherited
-Lock interface and one opaque owner pointer. Destruction requires no suspended
-operation, as before. Ownership metadata belongs to one cooperative scheduler
-thread; only the atomic word may be shared between processes.
-
-An immutable process-lived host supplies current coroutine identity, shared pool
-allocation, sleep or io_uring wait/wake, and warning leaves once at construction.
-The Rust record is accessed through raw pointers around suspension; no mutable
-record borrow spans scheduler or PHP reentry. The one-time reentrant check,
-seq-cst acquisition, nonblocking EBUSY, cancellation code, errno propagation and
-release without an owner/recursion check preserve upstream order. Backoff remains
-1 ms doubling to 100 ms, then wraps to 1 ms. The scheduler remains native.
-
-`crates/phplocks/src/coroutine.rs` owns the complete PHP class, method table,
-construction, free handler and errCode updates. It uses the existing typed Zend
-object/parameter APIs and Rust arginfo. Native PHP leaves wrap each scheduler
-sleep/wait/wake/warning in zend_try; their bailout flag returns through the Rust
-lock before the outer PHP handler resumes the bailout. C++ callers likewise
-resume a trapped bailout only after the Rust export returns. There is no
-per-call dispatch or duplicated native lock algorithm.
-
-## Known failures
-
-- Original Linux GoogleTest `lock.rw_try_wr` (line 233) fails in both engines:
-  try-write returned 0 after the test's 1 ms/2 ms usleep arrangement.
-- macOS `coroutine_lock/lock.phpt` failed once with reply order
-  lock2,value3,lock1 instead of value3,lock1,lock2, before the coroutine lock
-  policy was converted; PHP's runner passed it on retry.
+`crates/locks/src/coroutine.rs` owns the lock record, its shared or private
+atomic word, owner cookie/CID, acquisition loop, cancellation and unlock. Shared
+words come from the process-shared pool and return to it on destruction.
+Ownership metadata belongs to one cooperative scheduler thread; only the word may
+be shared between processes. An immutable host (crates/phplocks) supplies the
+current coroutine, shared pool allocation, sleep or io_uring futex wait/wake, and
+the warning. The one-time reentrant check, seq-cst acquisition, nonblocking
+EBUSY, cancellation code, errno propagation and release without an owner check
+preserve upstream order. Backoff is 1 ms doubling to 100 ms, then wraps to 1 ms.

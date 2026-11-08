@@ -1,18 +1,9 @@
 # Worker, task and reload transitions v1
 
 Feature bit 524288 (`process`). ABI: `docs/process-abi-v1.md` and
-`swoole_rs_process.h`. Callers are in `native/process/workers.cc` (the event worker, reactor process,
-task worker, manager and factory ops, and the ProcessPool glue).
-
-Rust decides worker-exit observation and timeout plans, discard triage,
-task-kind/finish diagnostic/result-flag precedence, ordinary manager reload
-selection and stale-PID/reload-kill result actions. All APIs take copied
-bool/int facts and return POD/scalars (CPU pinning and task files also take
-native pointers). No allocator, callback, borrow,
-registry or native handle enters Rust. Server/Worker/ProcessPool/ReloadTask
-state, counters, maps, PID snapshot and kill queue stay native, as do logging,
-signals, syscalls, timers, reactor, callbacks, fork, atomics and coroutines,
-which run after Rust returns.
+`swoole_rs_process.h`. crates/process runs the event worker, task worker,
+reactor process, manager and factory operations; `native/process/workers.cc` is
+what they need from C++ (`swoole_rs_workers.h`). Decisions it keeps from upstream:
 
 - WorkerExit observes `if_exit` before callback presence, publishes its local
   `called` flag before the native callback, then observes reactor/settings/clock
@@ -42,10 +33,10 @@ which run after Rust returns.
   `length` bytes retrying EINTR/EAGAIN, close, unlink unless `SW_TASK_PEEK`.
   Native sizes the buffer first (upstream did so after a successful open), then
   logs the open/pread warnings and builds the packet.
-- The signal table (`src/os/signal.cc` at the pin; the file is gone, its facades are
-  `crates/reactor/src/signal_upstream.rs`) is Rust's `swr_v1_signals`, which the Rust kqueue path
-  shares (a slot is the kqueue event's udata); upstream's `include/swoole_signal.h` is
-  deleted and `native/process/swoole_signal.h` keeps the signal functions C++ still calls. Rust registers handlers through sigaction, runs the deferred and
+- The signal table (upstream `src/os/signal.cc`; facades in
+  `crates/reactor/src/signal_upstream.rs`) is `swr_v1_signals` (`crates/process/src/signal.rs`),
+  which the kqueue path shares (a slot is the kqueue event's udata);
+  `native/process/swoole_signal.h` keeps the signal functions C++ still calls. Rust registers handlers through sigaction, runs the deferred and
   immediate async handlers (atomic stores; the immediate one calls
   `swoole_signal_callback` in the signal frame as upstream), dispatches marked
   signals and blocks/unblocks every signal. Dispatch's callback may run PHP; no Rust value with a
@@ -56,13 +47,12 @@ which run after Rust returns.
   reading one `signalfd_siginfo` into a call/warn/ignore decision. Native keeps
   the reactor `Socket` around the descriptor, its handler, exit condition and
   destroy callback, `SwooleG.signal_fd`, the warnings and the handler call.
-- Coroutine waitpid (`src/os/wait.cc` at the pin; its facades are now
-  `crates/reactor/src/wait_upstream.rs`) is Rust: the children
+- Coroutine waitpid (upstream `src/os/wait.cc`; facades in
+  `crates/reactor/src/wait_upstream.rs`, registry in `crates/process/src/wait.rs`) is Rust: the children
   reaped before anyone waited, the any-child FIFO and the per-PID waiters, the
   last WNOHANG try after SIGCHLD registration, the yield, and the SIGCHLD reaper
-  that hands each child out and resumes its coroutine. Native passes the
-  coroutine operations (current, yield, resume, timed out); the C++ left is
-  base.cc's three accessors for the current coroutine, resume and is_timedout. The waiting
+  that hands each child out and resumes its coroutine. The caller passes the
+  coroutine operations (current, yield, resume, timed out). The waiting
   coroutine's Rust frame stays on its stack across the yield; no value with a
   destructor is live there, and no RefCell borrow spans a yield or resume.
 
@@ -70,5 +60,3 @@ which run after Rust returns.
 and result-flag decision against the upstream expression it replaces, and the
 C layout of the exit records.
 
-Not converted: the rest of startup/fork/worker/task/reload/exit/IPC/signal/wait
-lifecycle.
