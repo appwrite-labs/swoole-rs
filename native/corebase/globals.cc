@@ -17,7 +17,6 @@
 
 swoole::Global SwooleG = {};
 thread_local swoole::ThreadGlobal SwooleTG = {};
-thread_local char sw_error[SW_ERROR_MSG_SIZE];
 std::mutex sw_thread_lock;
 
 static_assert(offsetof(swoole::ThreadGlobal, main_thread) == 3 && offsetof(swoole::ThreadGlobal, buffer_stack) == 8 &&

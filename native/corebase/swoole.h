@@ -191,7 +191,9 @@ static inline ssize_t swoole_strnpos(const char *haystack,
 typedef unsigned char uchar;
 #endif
 
-extern thread_local char sw_error[SW_ERROR_MSG_SIZE];
+// sw_error: this thread's SW_ERROR_MSG_SIZE-byte last-error buffer, owned by crates/error.
+extern "C" char *swr_v1_error_buffer(void);
+#define sw_error (swr_v1_error_buffer())
 
 // tests/modules/utilities/storage.py declares these from here for the pinned hash tests.
 uint64_t swoole_random_int();

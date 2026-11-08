@@ -150,6 +150,8 @@ const char *swr_v1_error_message(int32_t code);
 
 const char *swr_v1_error_resolve(int32_t code, const char *(*fallback)(int32_t));
 
+char *swr_v1_error_buffer(void);
+
 const char *swr_v1_error_strerror(int32_t code, const char *(*system)(int32_t));
 
 int32_t swr_v1_error_ignore(struct SwrErrorIgnored **state, int32_t code);

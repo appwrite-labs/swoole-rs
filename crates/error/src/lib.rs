@@ -200,6 +200,54 @@ pub extern "C" fn swoole_strerror(code: i32) -> *const c_char {
     unsafe { swr_v1_error_strerror(code, Some(system_error)) }
 }
 
+/// `SW_ERROR_MSG_SIZE`: the bytes of each thread's last-error message.
+const ERROR_MSG_SIZE: usize = 16384;
+
+thread_local! {
+    // Cells: C++ writes through the pointer while the thread can still reach the array.
+    static LAST_ERROR: [std::cell::Cell<c_char>; ERROR_MSG_SIZE] =
+        const { [const { std::cell::Cell::new(0) }; ERROR_MSG_SIZE] };
+}
+
+/// `sw_error`: this thread's last-error message buffer, `SW_ERROR_MSG_SIZE` bytes that
+/// live as long as the thread. C++ formats log lines into it.
+#[must_use]
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_error_buffer() -> *mut c_char {
+    LAST_ERROR.with(|buffer| buffer.as_ptr().cast::<c_char>().cast_mut())
+}
+
+/// `const char *swoole_get_last_error_msg()`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z25swoole_get_last_error_msgv")
+)]
+#[must_use]
+pub extern "C" fn swoole_get_last_error_msg() -> *const c_char {
+    swr_v1_error_buffer()
+}
+
+/// `void swoole_clear_last_error_msg()`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z27swoole_clear_last_error_msgv")
+)]
+pub extern "C" fn swoole_clear_last_error_msg() {
+    LAST_ERROR.with(|buffer| buffer[0].set(0));
+}
+
+/// `void swoole_throw_error(int)`. Upstream threw a `swoole::Exception`; the extension
+/// catches none, so it terminated. This reports the code and aborts.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z18swoole_throw_errori")
+)]
+pub extern "C" fn swoole_throw_error(code: i32) -> ! {
+    use std::io::Write;
+    writeln!(std::io::stderr(), "swoole_throw_error({code})").ok();
+    std::process::abort();
+}
+
 /// Resolve system, known and unknown errors without heap allocation.
 /// # Safety
 /// Calls which return the mutable unknown-message buffer must be externally
@@ -238,4 +286,27 @@ pub unsafe extern "C" fn swr_v1_error_strerror(
     };
     *end = 0;
     buffer.as_ptr().cast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_error_buffer_is_per_thread_and_clears() {
+        let buffer = swr_v1_error_buffer();
+        unsafe { buffer.copy_from_nonoverlapping(c"sentinel".as_ptr(), 9) };
+        assert_eq!(swoole_get_last_error_msg(), buffer.cast_const());
+        assert_eq!(unsafe { std::ffi::CStr::from_ptr(buffer) }, c"sentinel");
+        let other = std::thread::spawn(|| {
+            let other = swr_v1_error_buffer();
+            (other as usize, unsafe { *other })
+        })
+        .join()
+        .unwrap();
+        assert_ne!(other.0, buffer as usize, "each thread has its own buffer");
+        assert_eq!(other.1, 0);
+        swoole_clear_last_error_msg();
+        assert_eq!(unsafe { *buffer }, 0);
+    }
 }

@@ -7,7 +7,7 @@
 #include <iostream>
 
 const char *reference_swoole_strerror(int);
-char sw_error[1024] = {};
+char reference_sw_error[1024] = {};
 
 struct Sample {
     int64_t nanoseconds;
