@@ -6,6 +6,7 @@
 //! `check_return_value(-1)` where upstream calls it).
 
 use std::ffi::{c_char, c_int, c_ulong, c_void};
+use swoole_rs_corebase::set_errno;
 
 use openssl_sys as ssl;
 
@@ -53,13 +54,6 @@ pub struct Tls {
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-fn set_errno(value: c_int) {
-    // SAFETY: this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__errno_location() };
-    // SAFETY: `slot` is this thread's errno.
-    unsafe { slot.write(value) };
 }
 
 fn len(size: usize) -> c_int {

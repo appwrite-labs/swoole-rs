@@ -45,7 +45,7 @@ pub unsafe fn offloaded<T, F: FnMut() -> T>(offload: Option<Offload>, refused: T
 #[repr(C)]
 pub struct Host {
     /// A reactor and a coroutine are running (hook.cc's `!is_no_coro()`).
-    pub in_coroutine: unsafe extern "C" fn() -> bool,
+    pub in_coroutine: extern "C" fn() -> bool,
     /// Native `async`.
     pub offload: Offload,
     /// `System::sleep`.
@@ -59,7 +59,7 @@ pub struct Host {
     /// `HAVE_IOURING_FUTEX`: the engine probes the futex opcodes.
     pub uring_futex: bool,
     /// `swoole_set_last_error`.
-    pub set_last_error: unsafe extern "C" fn(c_int),
+    pub set_last_error: extern "C" fn(c_int),
     /// `System`'s coroutine poll table, for the hooked `poll`.
     pub poll: *const crate::poll::PollOps,
     /// The hooked fds' native sockets.
@@ -87,8 +87,7 @@ pub(crate) fn host() -> Option<&'static Host> {
 
 /// The host inside a coroutine (hook.cc's `!is_no_coro()`), else none.
 pub(crate) fn coroutine() -> Option<&'static Host> {
-    // SAFETY: native reads its reactor and coroutine.
-    host().filter(|host| unsafe { (host.in_coroutine)() })
+    host().filter(|host| (host.in_coroutine)())
 }
 
 /// Native `async` inside a coroutine, else none: the call runs here.
@@ -101,8 +100,7 @@ pub fn offload() -> Option<Offload> {
 #[cfg(feature = "iouring")]
 fn ring(gate: fn(&Host) -> bool) -> Option<*const crate::uring::Host> {
     let host = host().filter(|host| !host.uring.is_null() && gate(host))?;
-    // SAFETY: native reads its reactor and coroutine.
-    unsafe { (host.in_coroutine)() }.then_some(host.uring.cast())
+    (host.in_coroutine)().then_some(host.uring.cast())
 }
 
 macro_rules! hooked {
@@ -295,7 +293,7 @@ pub(crate) mod tests {
         pub(crate) static LAST_ERROR: Cell<c_int> = const { Cell::new(0) };
     }
 
-    unsafe extern "C" fn in_coroutine() -> bool {
+    extern "C" fn in_coroutine() -> bool {
         MODE.get() != Mode::Here
     }
     unsafe extern "C" fn pool(
@@ -334,7 +332,7 @@ pub(crate) mod tests {
         poll: std::ptr::null(),
         socket: crate::hooked::tests::OPS,
     };
-    unsafe extern "C" fn set_last_error(error: c_int) {
+    extern "C" fn set_last_error(error: c_int) {
         LAST_ERROR.set(error);
     }
 

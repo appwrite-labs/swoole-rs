@@ -191,7 +191,7 @@ mod tests {
         })
     }
 
-    unsafe extern "C" fn current() -> *mut c_void {
+    extern "C" fn current() -> *mut c_void {
         CO
     }
     unsafe extern "C" fn add(fd: i32, _: i32, waiter: *mut c_void, _: *mut i32) -> *mut c_void {

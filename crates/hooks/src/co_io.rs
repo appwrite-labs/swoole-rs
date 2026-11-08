@@ -19,11 +19,11 @@ const WAIT: c_int = 2;
 #[repr(C)]
 pub struct Host {
     /// `swoole_set_last_error`.
-    pub set_last_error: unsafe extern "C" fn(c_int),
+    pub set_last_error: extern "C" fn(c_int),
     /// `swoole_strerror`.
     pub strerror: unsafe extern "C" fn(c_int) -> *const c_char,
     /// `Coroutine::get_current_safe()`.
-    pub current: unsafe extern "C" fn() -> *mut c_void,
+    pub current: extern "C" fn() -> *mut c_void,
     /// A coroutine's id.
     pub cid: unsafe extern "C" fn(*mut c_void) -> c_long,
     /// `Coroutine::print_socket_bound_error(fd, event, cid)`.
@@ -62,18 +62,6 @@ pub struct Host {
     pub accepted: unsafe extern "C" fn(*mut CoSocket, *mut SocketRecord) -> *mut c_void,
     /// `delete socket` of a native socket.
     pub destroy: unsafe extern "C" fn(*mut c_void),
-    /// `swoole_name_resolver_lookup(name, context)` with the context's type and
-    /// timeout set first: the address goes to `put(out, ..)`; returns the context's
-    /// `with_port`.
-    pub lookup: unsafe extern "C" fn(
-        *mut c_void,
-        c_int,
-        f64,
-        *const c_char,
-        usize,
-        *mut c_void,
-        unsafe extern "C" fn(*mut c_void, *const c_char, usize),
-    ) -> bool,
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
@@ -98,16 +86,7 @@ pub(crate) fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-pub(crate) fn set_errno(value: c_int) {
-    #[cfg(target_os = "linux")]
-    // SAFETY: a libc call with no preconditions.
-    let location = unsafe { libc::__errno_location() };
-    #[cfg(target_vendor = "apple")]
-    // SAFETY: a libc call with no preconditions.
-    let location = unsafe { libc::__error() };
-    // SAFETY: the calling thread's errno.
-    unsafe { *location = value };
-}
+pub(crate) use swoole_rs_corebase::set_errno;
 
 /// `set_err(e)`: the record's code and message, errno and the last error.
 ///
@@ -117,8 +96,7 @@ pub(crate) unsafe fn set_err(socket: *mut CoSocket, error: c_int) {
     // SAFETY: as the caller promises.
     unsafe { (*socket).err_code = error };
     set_errno(error);
-    // SAFETY: a native effect with no access to the record.
-    unsafe { (host().set_last_error)(error) };
+    (host().set_last_error)(error);
     let message = if error == 0 {
         c"".as_ptr()
     } else {
@@ -507,13 +485,13 @@ pub(crate) mod test_host {
         SSL_ERRNO.set(0);
     }
 
-    unsafe extern "C" fn set_last_error(error: c_int) {
+    extern "C" fn set_last_error(error: c_int) {
         log(format!("last-error:{error}"));
     }
     unsafe extern "C" fn strerror(_: c_int) -> *const c_char {
         c"native-error".as_ptr()
     }
-    unsafe extern "C" fn current() -> *mut c_void {
+    extern "C" fn current() -> *mut c_void {
         ptr::dangling_mut::<u64>().cast()
     }
     /// A test coroutine is a `c_long` holding its id.
@@ -571,19 +549,6 @@ pub(crate) mod test_host {
     unsafe extern "C" fn destroy(_: *mut c_void) {
         log("destroy");
     }
-    unsafe extern "C" fn lookup(
-        _: *mut c_void,
-        _: c_int,
-        _: f64,
-        _: *const c_char,
-        _: usize,
-        _: *mut c_void,
-        _: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
-    ) -> bool {
-        log("lookup");
-        false
-    }
-
     static HOST_TABLE: Host = Host {
         set_last_error,
         strerror,
@@ -606,7 +571,6 @@ pub(crate) mod test_host {
         packet_fail: crate::packet::tests::failure,
         accepted,
         destroy,
-        lookup,
     };
 }
 
@@ -1004,8 +968,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_borrowed_err(
     // SAFETY: the caller lends the live socket.
     unsafe { (*socket).err_code = error };
     set_errno(error);
-    // SAFETY: the native TLS setter cannot access or destroy the socket.
-    unsafe { (host().set_last_error)(error) };
+    (host().set_last_error)(error);
     // SAFETY: the borrowed message outlives publication.
     unsafe { (*socket).err_msg = message };
 }
@@ -1026,8 +989,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_owned_err(
     // SAFETY: the caller lends a live writable socket.
     unsafe { (*socket).err_code = error };
     set_errno(error);
-    // SAFETY: the installed native leaf writes only the calling thread's error.
-    unsafe { (host().set_last_error)(error) };
+    (host().set_last_error)(error);
     // SAFETY: the metadata owner outlives this synchronized call.
     let extra = unsafe { (*socket).extra };
     // SAFETY: its first stable slot owns the error string; take no Rust borrow.

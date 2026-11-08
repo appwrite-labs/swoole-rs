@@ -12,6 +12,7 @@
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::{mem, ptr};
+use swoole_rs_corebase::set_errno;
 
 use swoole_rs_uring_sys as sys;
 
@@ -30,7 +31,7 @@ const FUTEX_BITSET_MATCH_ANY: u64 = 0xffff_ffff;
 #[repr(C)]
 pub struct Host {
     /// `Coroutine::get_current_safe()`.
-    pub current: unsafe extern "C" fn() -> *mut c_void,
+    pub current: extern "C" fn() -> *mut c_void,
     /// The thread's engine, created on first use (null if it failed).
     pub instance: unsafe extern "C" fn() -> *mut Uring,
     /// Suspend `coroutine` until [`swr_v1_uring_wakeup`] resumes it; cancelling it
@@ -86,13 +87,6 @@ pub struct Uring {
     waiting: VecDeque<*mut Event>,
     cqes: Vec<*mut sys::io_uring_cqe>,
     ready: Vec<*mut Event>,
-}
-
-fn set_errno(value: c_int) {
-    // SAFETY: this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__errno_location() };
-    // SAFETY: `slot` is this thread's errno.
-    unsafe { slot.write(value) };
 }
 
 fn errno() -> c_int {
@@ -169,8 +163,7 @@ impl Event {
     /// Upstream's `INIT_EVENT`: the current coroutine, or a fatal error outside one.
     fn new(host: &Host) -> Self {
         Self {
-            // SAFETY: the native callback has no preconditions.
-            coroutine: unsafe { (host.current)() },
+            coroutine: (host.current)(),
             // SAFETY: an all-zero sqe is the state every io_uring_prep_* starts from.
             data: unsafe { mem::zeroed() },
             result: 0,

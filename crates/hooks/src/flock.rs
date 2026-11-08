@@ -5,6 +5,7 @@
 use crate::sleep::CoroutineSleep;
 use crate::swr_v1_hook_backoff;
 use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
+use swoole_rs_corebase::set_errno;
 
 fn flock(fd: i32, operation: i32) -> i32 {
     // SAFETY: flock has no memory preconditions.
@@ -43,31 +44,18 @@ fn coroutine_flock(
     }
 }
 
-fn set_errno(value: i32) {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: `slot` is this thread's errno.
-    unsafe { slot.write(value) };
-}
-
 /// Hooked `flock(fd, operation)`. An invalid operation in a coroutine fails with
 /// EINVAL as errno and the last error.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_flock(fd: i32, operation: i32) -> i32 {
     let host = crate::stdio::host();
-    // SAFETY: native reads its reactor and coroutine.
     let sleep = host
-        .filter(|host| unsafe { (host.in_coroutine)() })
+        .filter(|host| (host.in_coroutine)())
         .map(|host| host.sleep);
     coroutine_flock(fd, operation, sleep).unwrap_or_else(|()| {
         set_errno(libc::EINVAL);
         if let Some(host) = host {
-            // SAFETY: native's last-error setter.
-            unsafe { (host.set_last_error)(libc::EINVAL) };
+            (host.set_last_error)(libc::EINVAL);
         }
         -1
     })

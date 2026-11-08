@@ -24,7 +24,7 @@ static RESUME: AtomicUsize = AtomicUsize::new(0);
 #[repr(C)]
 pub struct SignalOps {
     /// `Coroutine::get_current_safe()`.
-    pub current: unsafe extern "C" fn() -> *mut c_void,
+    pub current: extern "C" fn() -> *mut c_void,
     /// Whether a non-coroutine signal listener exists (`signal_listener_num > 0`).
     pub busy: unsafe extern "C" fn() -> bool,
     /// On the loop's thread under thread contexts: with `true`, unless the record says
@@ -100,8 +100,7 @@ pub unsafe extern "C" fn swr_v1_hook_wait_signal(
     timeout: f64,
     ops: &SignalOps,
 ) -> Signalled {
-    // SAFETY: the native accessor has no preconditions.
-    let co = unsafe { (ops.current)() };
+    let co = (ops.current)();
     let mut waiting = Listener { co, signo: -1 };
     let failed = |last_error| Signalled {
         signo: -1,
@@ -171,7 +170,7 @@ mod tests {
     fn log(entry: String) {
         LOG.with_borrow_mut(|log| log.push(entry));
     }
-    unsafe extern "C" fn current() -> *mut c_void {
+    extern "C" fn current() -> *mut c_void {
         std::ptr::dangling_mut()
     }
     unsafe extern "C" fn idle() -> bool {

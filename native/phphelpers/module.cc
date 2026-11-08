@@ -312,7 +312,7 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
         swr_v1_core_set_print_backtrace_on_error(on);
 #endif
     },
-    [](const char *server, size_t length) { swoole_set_dns_server(std::string(server, length)); },
+    [](const char *server, size_t length) { swr_v1_clients_set_dns_server(reinterpret_cast<const uint8_t *>(server), length); },
     [](double seconds) { SwooleG.dns_cache_refresh_time = seconds; },
     [] { return SwooleG.dns_cache_refresh_time; },
 #ifdef SW_THREAD
@@ -323,11 +323,7 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
     [] { return (uint8_t) (sw_reactor() != nullptr); },
     [] { Coroutine::get_current_safe(); },
     [] { php_swoole_check_reactor(); },
-    [](const char *domain, int32_t family, double timeout, void (*push)(void *, const char *), void *list) {
-        for (auto &address : swoole::coroutine::dns_lookup(domain, family, timeout)) {
-            push(list, address.c_str());
-        }
-    },
+    swr_v1_hook_dns_lookup,
     [](int type, int module_number) -> int {
         const uint32_t rust_abi = swr_v1_abi_version();
         if (rust_abi != SWR_ABI_VERSION) {

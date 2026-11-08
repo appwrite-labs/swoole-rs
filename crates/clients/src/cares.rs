@@ -2,10 +2,10 @@
 // Compatibility derived from Swoole v6.2.4 src/network/dns.cc (Swoole contributors).
 //! Per-query c-ares channel, descriptor registry, results and deferred completion.
 //! Only Swoole's reactor drives c-ares; no c-ares event thread is enabled.
-use crate::{dns::Push, ip::swr_v1_clients_ip_text};
+use crate::ip::swr_v1_clients_ip_text;
 use std::{
     collections::HashMap,
-    ffi::{c_char, c_void},
+    ffi::{CStr, c_char, c_void},
     ptr,
     sync::{
         Arc,
@@ -18,20 +18,55 @@ use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::{SocketRecord, event_api, socket_upstream};
 
-/// Static native coroutine and logging effects. No query state resides in this table.
-#[repr(C)]
-pub(crate) struct Ops {
-    current: unsafe extern "C" fn() -> *mut c_void,
-    suspending: unsafe extern "C" fn(*mut c_void) -> u8,
-    yield_: unsafe extern "C" fn(*mut c_void, f64),
-    canceled: unsafe extern "C" fn(*mut c_void) -> u8,
-    timedout: unsafe extern "C" fn(*mut c_void) -> u8,
-    resume: unsafe extern "C" fn(*mut c_void),
-    warning: unsafe extern "C" fn(u8, i32),
-    trace: unsafe extern "C" fn(u8, i32, i32, usize),
+/// The coroutine a query parks: a `swoole::Coroutine`, which starts with its
+/// `swoole_rs_coroutine::Coroutine`.
+mod co {
+    use std::ffi::c_void;
+    use swoole_rs_coroutine::{Coroutine, RC_CANCELED, RC_TIMEDOUT, STATE_WAITING};
+
+    // SAFETY: crates/coroutine's.
+    unsafe extern "C" {
+        fn swr_v1_coroutine_current() -> *mut c_void;
+        #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
+        pub(super) fn yield_ex(co: *mut c_void, timeout: f64) -> bool;
+        #[link_name = "swr_v1_coroutine_native_resume"]
+        pub(super) fn resume(co: *mut c_void);
+    }
+
+    /// `Coroutine::get_current_safe()`.
+    pub(super) fn current() -> *mut c_void {
+        // SAFETY: no preconditions.
+        let co = unsafe { swr_v1_coroutine_current() };
+        if co.is_null() {
+            // SAFETY: Swoole's fatal error hook; this frame owns nothing.
+            unsafe {
+                swoole_rs_corebase::fatal_error(10001, c"API must be called in the coroutine");
+            }
+        }
+        co
+    }
+
+    fn record(co: *mut c_void) -> (i32, i32) {
+        let co = co.cast::<Coroutine>();
+        // SAFETY: a live coroutine's scalar fields.
+        let co = unsafe { &*co };
+        (co.state, co.resume_code)
+    }
+
+    pub(super) fn suspending(co: *mut c_void) -> bool {
+        record(co).0 == STATE_WAITING
+    }
+
+    pub(super) fn canceled(co: *mut c_void) -> bool {
+        record(co).1 == RC_CANCELED
+    }
+
+    pub(super) fn timedout(co: *mut c_void) -> bool {
+        record(co).1 == RC_TIMEDOUT
+    }
 }
+const ORIGIN: &std::ffi::CStr = c"coroutine::dns_lookup_impl_with_cares";
 struct Query {
-    ops: &'static Ops,
     channel: *mut sdk::Channel,
     error: i32,
     completed: bool,
@@ -108,10 +143,6 @@ unsafe fn process(event: *mut c_void, write: u8) -> i32 {
     let fd = event.fd;
     // SAFETY: its socket is a registered c-ares wrapper.
     let data = unsafe { (*event.socket.cast::<SocketRecord>()).object };
-    // SAFETY: the wrapper's query outlives its registration.
-    let trace = unsafe { query(data).ops.trace };
-    // SAFETY: a scalar trace observation.
-    unsafe { trace(write, fd, 0, 0) };
     // SAFETY: the query's channel stays live while its wrappers are registered.
     let channel = unsafe { query(data).channel };
     let (read, write) = if write == 0 { (fd, -1) } else { (-1, fd) };
@@ -164,8 +195,6 @@ unsafe fn free(socket: *mut SocketRecord) {
     }
 }
 unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: i32) {
-    // SAFETY: c-ares returns this query's stable callback userdata.
-    let ops = unsafe { query(data).ops };
     let events = if readable != 0 {
         EventType::SW_EVENT_READ as i32
     } else {
@@ -175,14 +204,10 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
     } else {
         0
     };
-    // SAFETY: scalar trace observations; the native logger retains no pointers.
-    unsafe { (ops.trace)(2, fd, readable, usize::try_from(writable).unwrap_or(0)) };
     // SAFETY: query registry access ends before any reactor effect.
     let socket = unsafe { query(data).sockets.get(&fd).copied() };
     let socket = if let Some(socket) = socket {
         if events == 0 {
-            // SAFETY: trace of the live descriptor before its removal.
-            unsafe { (ops.trace)(3, fd, 0, 0) };
             // SAFETY: remove the registered native socket before detaching its descriptor.
             unsafe { event_api::swoole_event_del(socket) };
             // SAFETY: free detaches fd first; c-ares retains ownership of the OS descriptor.
@@ -194,8 +219,7 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
         socket
     } else {
         if events == 0 {
-            // SAFETY: scalar warning, with no callback data retained.
-            unsafe { (ops.warning)(0, fd) };
+            log::warning(ORIGIN, format_args!("error events, fd={fd}"));
             return;
         }
         // c-ares lends fd; this stable query becomes the wrapper's callback userdata.
@@ -215,8 +239,6 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
         // SAFETY: register this fresh wrapper with the requested event mask.
         unsafe { event_api::swoole_event_add(socket, events) };
     }
-    // SAFETY: scalar trace after the reactor operation, matching native ordering.
-    unsafe { (ops.trace)(if registered { 4 } else { 5 }, fd, events, 0) };
 }
 unsafe extern "C" fn host(
     data: *mut c_void,
@@ -224,10 +246,6 @@ unsafe extern "C" fn host(
     timeouts: i32,
     entry: *mut libc::hostent,
 ) {
-    // SAFETY: callback userdata remains live until ares_destroy returns.
-    let ops = unsafe { query(data).ops };
-    // SAFETY: the logger only observes these callback scalars.
-    unsafe { (ops.trace)(6, status, timeouts, 0) };
     if timeouts > 0 || status != metadata().success {
         let error = if timeouts > 0 {
             ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT as i32
@@ -262,13 +280,13 @@ unsafe extern "C" fn host(
     // SAFETY: read the borrowed coroutine identity without retaining a query reference.
     let coroutine = unsafe { query(data).coroutine };
     // SAFETY: a nonnull identity is the query's original live coroutine.
-    if !coroutine.is_null() && unsafe { (ops.suspending)(coroutine) } != 0 {
+    if !coroutine.is_null() && co::suspending(coroutine) {
         // SAFETY: clone only the shared retirement token; no query borrow escapes.
         let retired = unsafe { query(data).retired.clone() };
         let task = Box::into_raw(Box::new(Completion {
             retired,
             coroutine,
-            resume: ops.resume,
+            resume: co::resume,
         }));
         // SAFETY: the live reactor's queue takes this owned completion payload once.
         let slot = unsafe { &raw mut (*reactor_fields()).defer_tasks };
@@ -292,32 +310,26 @@ unsafe extern "C" fn host(
     }
 }
 
-/// # Safety
-/// Static native leaves; borrowed NUL-terminated domain/server; output accepts copied
-/// text. All calls and callbacks for this query occur on the invoking reactor thread.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_clients_cares_lookup(
-    ops: *const Ops,
-    domain: *const c_char,
-    family: i32,
-    timeout: f64,
-    server: *const c_char,
-    port: u16,
-    output: *mut c_void,
-    push: Push,
-) {
-    // SAFETY: the caller provides a process-lifetime immutable table.
-    let ops = unsafe { &*ops };
+/// `dns_lookup_impl_with_cares(domain, family, timeout)`: the addresses c-ares finds
+/// through the configured DNS server; a failure is the last error. All calls and
+/// callbacks for this query occur on the invoking reactor thread, in a coroutine.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "upstream passes the int port to c-ares' uint16_t"
+)]
+pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
+    let (server, port) = crate::dns::server();
+    let (server, port) = (server.as_ptr().cast::<c_char>(), port as u16);
+    let domain = domain.as_ptr();
     // SAFETY: the thread's live reactor; the probe invokes no user code.
     if !unsafe { event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) } {
         // SAFETY: the handler absence identifies the first query in this reactor lifetime.
         unsafe { sdk::ares_library_init(metadata().library_all) };
         install();
     }
-    // SAFETY: obtain the existing safe coroutine identity before allocating the query.
-    let coroutine = unsafe { (ops.current)() };
+    let coroutine = co::current();
     let state = Box::into_raw(Box::new(Query {
-        ops,
         channel: ptr::null_mut(),
         error: 0,
         completed: false,
@@ -351,12 +363,13 @@ pub(crate) unsafe extern "C" fn swr_v1_clients_cares_lookup(
                 // SAFETY: the wrapper uses the actual SDK node layout for this version.
                 unsafe { sdk::swrs_cares_server(channel, server, port) };
                 if metadata.server_api == 1 && u32::from(port) != SW_DNS_SERVER_PORT {
-                    // SAFETY: report the original unsupported-port warning.
-                    unsafe { (ops.warning)(2, 0) };
+                    log::warning(
+                        ORIGIN,
+                        format_args!("not support to set port of dns server"),
+                    );
                 }
             } else {
-                // SAFETY: the SDK version cannot configure a server, so retain the warning.
-                unsafe { (ops.warning)(3, 0) };
+                log::warning(ORIGIN, format_args!("not support to set dns server"));
             }
         }
         // SAFETY: c-ares copies the query name; the userdata remains live through destroy.
@@ -368,22 +381,15 @@ pub(crate) unsafe extern "C" fn swr_v1_clients_cares_lookup(
         };
         if !done {
             // SAFETY: this is the query's existing current coroutine; no Rust reference spans suspension.
-            unsafe { (ops.yield_)(coroutine, timeout) };
-            // SAFETY: coroutine outcome inspection has no callbacks.
-            if unsafe { (ops.canceled)(coroutine) } != 0 {
+            unsafe { co::yield_ex(coroutine, timeout) };
+            if co::canceled(coroutine) {
                 // SAFETY: cancel synchronously invokes only callbacks on this live query.
                 unsafe { sdk::ares_cancel(channel) };
-            // SAFETY: coroutine outcome inspection has no callbacks.
-            } else if unsafe { (ops.timedout)(coroutine) } != 0 {
+            } else if co::timedout(coroutine) {
                 // SAFETY: process SDK timeouts before recording the original timeout status.
                 unsafe { sdk::ares_process_fd(channel, -1, -1) };
                 // SAFETY: record timeout after SDK callbacks, matching original order.
                 unsafe { query_mut(state).error = metadata.timeout };
-            } else {
-                // SAFETY: copy the scalar result count without retaining its collection borrow.
-                let count = unsafe { query(state).results.len() };
-                // SAFETY: the native logger observes only this completed query's result count.
-                unsafe { (ops.trace)(7, 0, 0, count) };
             }
         }
         // SAFETY: inspect the stored outcome before destroy can invoke more callbacks.
@@ -404,15 +410,17 @@ pub(crate) unsafe extern "C" fn swr_v1_clients_cares_lookup(
         // SAFETY: keep query storage alive until all synchronous destruction callbacks return.
         unsafe { sdk::ares_destroy(channel) };
     } else {
-        // SAFETY: the reporter only reads the SDK status and its static description.
-        unsafe { (ops.warning)(1, status) };
+        // SAFETY: c-ares' static description of the status.
+        let reason = unsafe { sdk::ares_strerror(status) };
+        // SAFETY: NUL-terminated.
+        let reason = unsafe { CStr::from_ptr(reason) }.to_string_lossy();
+        log::warning(
+            ORIGIN,
+            format_args!("ares_init_options() failed, Error: {reason}[{status}]"),
+        );
     }
     // SAFETY: the channel no longer retains userdata; consume this owner exactly once.
-    let state = unsafe { Box::from_raw(state.cast::<Query>()) };
-    for text in &state.results {
-        // SAFETY: the native vector copies the borrowed text before returning.
-        unsafe { push(output, text.as_ptr(), text.len()) };
-    }
+    unsafe { Box::from_raw(state.cast::<Query>()) }.results
 }
 #[expect(
     clippy::cast_possible_truncation,

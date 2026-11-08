@@ -19,11 +19,25 @@ pub mod dns;
 pub mod http_format;
 pub mod ip;
 pub mod pool;
+pub mod resolver;
 pub mod ws;
 
 use address::{TCP, TCP6, UDP, UDP6, UNIX_DGRAM, UNIX_STREAM};
 use std::ffi::c_int;
 use std::ops::Range;
+
+/// `dns_lookup_impl_with_cares(domain, family, timeout)` when built with c-ares
+/// (`--enable-cares`), else `None`.
+#[must_use]
+pub fn cares_lookup(domain: &std::ffi::CStr, family: c_int, timeout: f64) -> Option<Vec<Vec<u8>>> {
+    #[cfg(feature = "cares")]
+    return Some(cares::lookup(domain, family, timeout));
+    #[cfg(not(feature = "cares"))]
+    {
+        let _ = (domain, family, timeout);
+        None
+    }
+}
 
 /// The bytes before the first NUL, as a C string reads them.
 fn c_str(bytes: &[u8]) -> &[u8] {

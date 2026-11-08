@@ -3,7 +3,6 @@
 //! seconds, created on first lookup and counting hits and misses. Native code
 //! resolves on a miss (c-ares or the async pool) and stores the answer here.
 use std::collections::{BTreeMap, HashMap};
-use std::ffi::c_void;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -112,18 +111,13 @@ fn now() -> i64 {
         .map_or(0, |elapsed| elapsed.as_secs().cast_signed())
 }
 
-/// # Safety
-/// `name` holds `length` bytes.
-unsafe fn key(domain: i32, name: *const u8, length: usize) -> Vec<u8> {
+fn key(domain: i32, name: &[u8]) -> Vec<u8> {
     let mut key = if domain == libc::AF_INET {
         b"IPv4.".to_vec()
     } else {
         b"IPv6.".to_vec()
     };
-    if length > 0 {
-        // SAFETY: the caller's precondition.
-        key.extend_from_slice(unsafe { std::slice::from_raw_parts(name, length) });
-    }
+    key.extend_from_slice(name);
     key
 }
 
@@ -184,76 +178,32 @@ pub extern "C" fn swr_v1_hook_dns_cache_hit_ratio() -> f32 {
     }
 }
 
-/// Looks `name` up for `domain`, creating the cache first if enabled. On a hit,
-/// `assign(out, address, length)` receives the address and this returns true.
-///
-/// # Safety
-/// `name` holds `length` bytes; `assign` accepts `out`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_dns_cache_get(
-    domain: i32,
-    name: *const u8,
-    length: usize,
-    out: *mut c_void,
-    assign: unsafe extern "C" fn(*mut c_void, *const u8, usize),
-) -> bool {
-    let address = {
-        let mut cache = cache();
-        let capacity = cache.capacity;
-        if cache.lru.is_none() && capacity != 0 {
-            cache.lru = Some(Lru::new(capacity));
-        }
-        let Some(lru) = &mut cache.lru else {
-            return false;
-        };
-        // SAFETY: the caller's precondition.
-        let found = lru
-            .get(&unsafe { key(domain, name, length) }, now())
-            .cloned();
-        if found.is_some() {
-            cache.hits += 1;
-        } else {
-            cache.misses += 1;
-        }
-        found
-    };
-    let Some(address) = address else {
-        return false;
-    };
-    // SAFETY: the caller's precondition; `address` is alive for the call.
-    unsafe { assign(out, address.as_ptr(), address.len()) };
-    true
+/// The address cached for `name` in `domain`, creating the cache first if enabled.
+#[must_use]
+pub fn get(domain: i32, name: &[u8]) -> Option<Vec<u8>> {
+    let mut cache = cache();
+    let capacity = cache.capacity;
+    if cache.lru.is_none() && capacity != 0 {
+        cache.lru = Some(Lru::new(capacity));
+    }
+    let found = cache.lru.as_mut()?.get(&key(domain, name), now()).cloned();
+    if found.is_some() {
+        cache.hits += 1;
+    } else {
+        cache.misses += 1;
+    }
+    found
 }
 
 /// Stores a resolved, non-empty `address` for `name`, if the cache exists.
-///
-/// # Safety
-/// `name` holds `length` bytes and `address` `address_length`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_dns_cache_set(
-    domain: i32,
-    name: *const u8,
-    length: usize,
-    address: *const u8,
-    address_length: usize,
-) {
+pub fn set(domain: i32, name: &[u8], address: &[u8]) {
     let mut cache = cache();
     let expire = cache.expire;
-    let Some(lru) = &mut cache.lru else {
-        return;
-    };
-    if address_length == 0 {
-        return;
+    if let Some(lru) = &mut cache.lru
+        && !address.is_empty()
+    {
+        lru.set(&key(domain, name), address.to_vec(), expire, now());
     }
-    // SAFETY: the caller's precondition.
-    let address = unsafe { std::slice::from_raw_parts(address, address_length) };
-    // SAFETY: the caller's precondition.
-    lru.set(
-        &unsafe { key(domain, name, length) },
-        address.to_vec(),
-        expire,
-        now(),
-    );
 }
 
 #[cfg(test)]
@@ -371,35 +321,12 @@ mod tests {
         assert_eq!(dtor_num.get(), 4);
     }
 
-    unsafe extern "C" fn assign(out: *mut c_void, address: *const u8, length: usize) {
-        let out = unsafe { &mut *out.cast::<Vec<u8>>() };
-        *out = unsafe { std::slice::from_raw_parts(address, length) }.to_vec();
-    }
-
     fn get(domain: i32, name: &str) -> Option<Vec<u8>> {
-        let mut out = Vec::new();
-        let hit = unsafe {
-            swr_v1_hook_dns_cache_get(
-                domain,
-                name.as_ptr(),
-                name.len(),
-                (&raw mut out).cast(),
-                assign,
-            )
-        };
-        hit.then_some(out)
+        super::get(domain, name.as_bytes())
     }
 
     fn set(domain: i32, name: &str, address: &str) {
-        unsafe {
-            swr_v1_hook_dns_cache_set(
-                domain,
-                name.as_ptr(),
-                name.len(),
-                address.as_ptr(),
-                address.len(),
-            );
-        }
+        super::set(domain, name.as_bytes(), address.as_bytes());
     }
 
     /// One test owns the process-wide cache.

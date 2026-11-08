@@ -3,6 +3,7 @@
 //! `async::dispatch` and the coroutine operations in `AsyncOps`.
 use core::ffi::{c_int, c_void};
 use core::mem::{offset_of, size_of};
+use swoole_rs_corebase::set_errno;
 
 /// `async::Handler`: runs on a pool thread.
 pub type Handler = unsafe extern "C" fn(*mut AsyncEvent);
@@ -62,7 +63,7 @@ const _: () = assert!(
 #[repr(C)]
 pub struct AsyncOps {
     /// `Coroutine::get_current_safe()`.
-    pub current: unsafe extern "C" fn() -> *mut c_void,
+    pub current: extern "C" fn() -> *mut c_void,
     /// `async::dispatch`: a pool-owned copy of the event, or null if refused.
     pub dispatch: unsafe extern "C" fn(*const AsyncEvent) -> *mut AsyncEvent,
     /// `co->yield()`.
@@ -72,7 +73,7 @@ pub struct AsyncOps {
     /// `co->resume()`.
     pub resume: unsafe extern "C" fn(*mut c_void),
     /// `swoole_get_last_error()`.
-    pub last_error: unsafe extern "C" fn() -> c_int,
+    pub last_error: extern "C" fn() -> c_int,
 }
 
 /// The waiting coroutine, on its stack; the event's `object` while the job runs.
@@ -80,17 +81,6 @@ struct Task {
     co: *mut c_void,
     resume: unsafe extern "C" fn(*mut c_void),
     job: Option<(unsafe extern "C" fn(*mut c_void), *mut c_void)>,
-}
-
-fn set_errno(value: c_int) {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: `slot` is this thread's errno.
-    unsafe { slot.write(value) };
 }
 
 /// The pool thread's handler for a job: runs it, then records its errno.
@@ -136,8 +126,7 @@ pub unsafe extern "C" fn swr_v1_hook_async(
 ) -> bool {
     // SAFETY: the caller passes a valid ops table.
     let ops = unsafe { &*ops };
-    // SAFETY: inside a coroutine (else native fails fatally).
-    let co = unsafe { (ops.current)() };
+    let co = (ops.current)();
     let mut task = Task {
         co,
         resume: ops.resume,
@@ -167,8 +156,7 @@ pub unsafe extern "C" fn swr_v1_hook_async(
         unsafe { (*dispatched).canceled = 1 };
         event.canceled = 1;
         event.retval = -1;
-        // SAFETY: plain native read.
-        event.error = unsafe { (ops.last_error)() };
+        event.error = (ops.last_error)();
         set_errno(event.error);
         false
     }
@@ -187,8 +175,7 @@ pub unsafe extern "C" fn swr_v1_hook_async_job(
 ) -> bool {
     // SAFETY: the caller passes a valid ops table.
     let ops = unsafe { &*ops };
-    // SAFETY: inside a coroutine (else native fails fatally).
-    let co = unsafe { (ops.current)() };
+    let co = (ops.current)();
     let mut task = Task {
         co,
         resume: ops.resume,
@@ -227,7 +214,7 @@ mod tests {
         static RESUMED: Cell<u32> = const { Cell::new(0) };
     }
 
-    unsafe extern "C" fn current() -> *mut c_void {
+    extern "C" fn current() -> *mut c_void {
         core::ptr::dangling_mut()
     }
     unsafe extern "C" fn dispatch(event: *const AsyncEvent) -> *mut AsyncEvent {
@@ -257,7 +244,7 @@ mod tests {
     unsafe extern "C" fn resume(_: *mut c_void) {
         RESUMED.set(RESUMED.get() + 1);
     }
-    unsafe extern "C" fn last_error() -> c_int {
+    extern "C" fn last_error() -> c_int {
         9001
     }
     const OPS: AsyncOps = AsyncOps {

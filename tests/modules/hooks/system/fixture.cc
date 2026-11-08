@@ -69,6 +69,32 @@ void *operator new(size_t size) {
     }
     throw std::bad_alloc();
 }
+// What native/clients/dns.cc defined over the request views; production resolves in
+// Rust (crates/hooks/src/resolve.rs), so these witnesses keep the views' copies and
+// exception paths.
+static int gethostbyname(GethostbynameRequest *req) {
+    const int status = swr_v1_core_resolver_host(req->state_handle());
+    if (status < -1) req->addr.check(status);
+    return status;
+}
+static int getaddrinfo(swr_v1_core_resolver *request) {
+    const int status = swr_v1_core_resolver_lookup(
+        request, [](void *, int) { return true; }, nullptr);
+    if (status < -1) ResolverOwner::check(status);
+    return status;
+}
+static void parse_result(const GetaddrinfoRequest &request, std::vector<std::string> &retval) {
+    size_t cursor = 0;
+    while (true) {
+        auto address = swr_v1_core_resolver_next(request.state_handle(), &cursor);
+        if (!address.valid) break;
+        retval.emplace_back(address.bytes);
+    }
+}
+typedef void (*swr_put)(void *out, const char *data, size_t length);
+extern "C" bool swr_v1_system_gethostbyname(const char *, size_t, long, double, swr_put, void *);
+extern "C" bool swr_v1_system_getaddrinfo(const char *, long, long, long, const char *, double, swr_put, void *);
+
 void operator delete(void *p) noexcept {
     std::free(p);
 }
@@ -331,12 +357,12 @@ void swr_case_error_text_publication_and_cache_exception() {
 // rust_dns_request.numeric_host_owner_and_independent_copies.
 void swr_case_numeric_host_owner_and_independent_copies() {
     GethostbynameRequest host("127.0.0.1", AF_INET);
-    ASSERT_EQ(network::gethostbyname(&host), 0);
+    ASSERT_EQ(gethostbyname(&host), 0);
     ASSERT_EQ(host.addr, "127.0.0.1");
     auto copy = host;
     copy.name = "::1";
     copy.family = AF_INET6;
-    ASSERT_EQ(network::gethostbyname(&copy), 0);
+    ASSERT_EQ(gethostbyname(&copy), 0);
     ASSERT_EQ(copy.addr, "::1");
     ASSERT_EQ(host.name, "127.0.0.1");
     ASSERT_EQ(host.addr, "127.0.0.1");
@@ -354,7 +380,7 @@ void swr_case_hints_vectors_and_failure_publication() {
     ASSERT_EQ(request.count, 0);
     ASSERT_EQ(request.error, 0);
     int *family_address = &request.family;
-    ASSERT_EQ(network::getaddrinfo(request.state_handle()), 0);
+    ASSERT_EQ(getaddrinfo(request.state_handle()), 0);
     ASSERT_GT(request.count, 0);
     ASSERT_EQ(request.results.size(), static_cast<size_t>(request.count));
     auto copy = request;
@@ -362,7 +388,7 @@ void swr_case_hints_vectors_and_failure_publication() {
     const auto saved_count = request.count;
     const std::vector<sockaddr_in6> saved = request.results;
     request.family = -123;
-    ASSERT_EQ(network::getaddrinfo(request.state_handle()), -1);
+    ASSERT_EQ(getaddrinfo(request.state_handle()), -1);
     ASSERT_NE(request.error, 0);
     ASSERT_EQ(request.count, saved_count);
     ASSERT_EQ(request.results.size(), saved.size());
@@ -372,7 +398,7 @@ void swr_case_hints_vectors_and_failure_publication() {
     ASSERT_EQ(inet_pton(AF_INET, "127.0.0.2", &address->sin_addr), 1);
     ASSERT_NE(std::memcmp(copy.results.data(), snapshot.data(), sizeof(sockaddr_in6)), 0);
     std::vector<std::string> output{"keep"};
-    copy.parse_result(output);
+    parse_result(copy, output);
     ASSERT_EQ(output.front(), "keep");
     ASSERT_EQ(output[1], "127.0.0.2");
     request = copy;
@@ -400,7 +426,7 @@ void swr_case_native_output_append_exception_is_contained() {
     allocation::begin(2);
     bool caught = false;
     try {
-        request.parse_result(output);
+        parse_result(request, output);
     } catch (const std::bad_alloc &) {
         caught = true;
     }
@@ -411,21 +437,21 @@ void swr_case_native_output_append_exception_is_contained() {
     ASSERT_EQ(output[1], text);
     ASSERT_EQ(request.results.size(), 3u);
     output.clear();
-    request.parse_result(output);
+    parse_result(request, output);
     ASSERT_EQ(output.size(), 3u);
 }
 
 // rust_dns_request.actual_async_numeric_results, in a coroutine.
 void swr_case_actual_async_numeric_results() {
-    const auto host = swoole::coroutine::gethostbyname_impl_with_async("127.0.0.1", AF_INET, 2);
+    std::string host;
+    ASSERT_TRUE(swr_v1_system_gethostbyname("127.0.0.1", 9, AF_INET, 2, [](void *out, const char *data, size_t length) {
+        static_cast<std::string *>(out)->assign(data, length);
+    }, &host));
     ASSERT_EQ(host, "127.0.0.1");
-    // What System::getaddrinfo did before it folded into swr_v1_system_getaddrinfo.
-    GetaddrinfoRequest req("127.0.0.1", AF_INET, SOCK_STREAM, 0, "");
-    AsyncEvent ev{};
-    ev.data = req.state_handle();
-    ASSERT_TRUE(swoole::coroutine::async(async::handler_getaddrinfo, ev, 2));
     std::vector<std::string> addresses;
-    req.parse_result(addresses);
+    ASSERT_TRUE(swr_v1_system_getaddrinfo("127.0.0.1", AF_INET, SOCK_STREAM, 0, "", 2, [](void *out, const char *data, size_t length) {
+        static_cast<std::vector<std::string> *>(out)->emplace_back(data, length);
+    }, &addresses));
     ASSERT_FALSE(addresses.empty());
     for (const auto &address : addresses) ASSERT_EQ(address, "127.0.0.1");
 }
@@ -440,7 +466,7 @@ void swr_case_owned_address_cache_exception() {
     allocation::begin(1);
     bool caught = false;
     try {
-        network::gethostbyname(&request);
+        gethostbyname(&request);
     } catch (const std::bad_alloc &) {
         caught = true;
     }
@@ -448,7 +474,7 @@ void swr_case_owned_address_cache_exception() {
     ASSERT_TRUE(caught);
     ASSERT_EQ(cache, "previous");
     ASSERT_EQ(&static_cast<const std::string &>(request.addr), identity);
-    ASSERT_EQ(network::gethostbyname(&request), 0);
+    ASSERT_EQ(gethostbyname(&request), 0);
     ASSERT_EQ(request.addr, text);
 }
 }

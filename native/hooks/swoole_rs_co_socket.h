@@ -137,10 +137,6 @@ typedef struct {
     /* new Socket(conn, server), the accepting constructor, and delete of a Socket. */
     void *(*accepted)(swr_v1_co_socket *server, swr_v1_socket *conn);
     void (*destroy)(void *socket);
-    /* swoole_name_resolver_lookup(host, context) with the context's type and timeout set
-     * first: put(out, address); returns the context's with_port. */
-    bool (*lookup)(void *context, int type, double timeout, const char *host, size_t length, void *out,
-                   void (*put)(void *, const char *, size_t));
 } swr_v1_hook_co_socket_host_t;
 /* Socket::connect(host, port) of the native socket (crates/hooks/src/connect.rs): context is the
  * NameResolver::Context its lookup uses, socks5 and http its proxies' owners or null. */

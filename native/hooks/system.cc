@@ -40,49 +40,6 @@ ssize_t System::write_file(const char *file, const char *buf, size_t length, boo
     return swr_v1_hook_write_file(file, buf, length, lock, flags | O_CREAT | O_WRONLY, &file_ops, async_job);
 }
 
-std::string gethostbyname_impl_with_async(const std::string &hostname, int domain, double timeout) {
-    GethostbynameRequest req(hostname, domain);
-    AsyncEvent ev{};
-    ev.data = req.state_handle();
-    ev.retval = 1;
-
-    coroutine::async(async::handler_gethostbyname, ev, timeout);
-
-    const auto completion = swr_v1_core_resolver_finish(ev.retval, ev.error, nullptr, SW_ERROR_AIO_TIMEOUT, SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT);
-    if (completion.failed) {
-        swoole_set_last_error(completion.error);
-        return "";
-    }
-    return std::string(req.addr.data(), req.addr.size());
-}
-
-static void dns_assign(void *out, const char *address, size_t length) {
-    static_cast<std::string *>(out)->assign(address, length);
-}
-
-std::string System::gethostbyname(const std::string &hostname, int domain, double timeout) {
-    std::string result;
-    if (swr_v1_hook_dns_cache_get(domain, hostname.data(), hostname.size(), &result, dns_assign)) {
-        return result;
-    }
-
-#ifdef SW_USE_CARES
-    auto result_list = dns_lookup_impl_with_cares(hostname.c_str(), domain, timeout);
-    if (!result_list.empty()) {
-        if (swr_v1_core_dns_lookup_random()) {
-            result = result_list[swoole_rand() % result_list.size()];
-        } else {
-            result = result_list[0];
-        }
-    }
-#else
-    result = gethostbyname_impl_with_async(hostname, domain, timeout);
-#endif
-
-    swr_v1_hook_dns_cache_set(domain, hostname.data(), hostname.size(), result.data(), result.size());
-    return result;
-}
-
 static void *co_current() {
     return Coroutine::get_current_safe();
 }
@@ -193,40 +150,6 @@ extern "C" bool swr_v1_system_read_file(const char *file, bool lock, swr_v1_syst
     return content != nullptr;
 }
 
-extern "C" bool swr_v1_system_gethostbyname(
-    const char *host, size_t length, long family, double timeout, swr_v1_system_put put, void *out) {
-    auto address = System::gethostbyname(std::string(host, length), family, timeout);
-    if (!address.empty()) {
-        put(out, address.data(), address.size());
-    }
-    return !address.empty();
-}
-
-extern "C" bool swr_v1_system_getaddrinfo(const char *host,
-                                          long family,
-                                          long socktype,
-                                          long protocol,
-                                          const char *service,
-                                          double timeout,
-                                          swr_v1_system_put put,
-                                          void *out) {
-    GetaddrinfoRequest req(host, family, socktype, protocol, service);
-    AsyncEvent ev{};
-    ev.data = req.state_handle();
-    coroutine::async(async::handler_getaddrinfo, ev, timeout);
-    std::vector<std::string> addresses;
-    const auto completion = swr_v1_core_resolver_finish(ev.retval, ev.error, &req.error, SW_ERROR_AIO_TIMEOUT, SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT);
-    if (completion.failed) {
-        swoole_set_last_error(completion.error);
-    } else {
-        req.parse_result(addresses);
-    }
-    for (auto &address : addresses) {
-        put(out, address.data(), address.size());
-    }
-    return !addresses.empty();
-}
-
 extern "C" int swr_v1_system_wait_signal(const long *signals, size_t count, double timeout) {
     static const swr_v1_hook_signal_ops ops = {
         co_current, signal_busy, signal_listen, signal_waiting, co_park_for, co_resume};
@@ -242,19 +165,12 @@ static_assert(sizeof(AsyncEvent) == 72 && offsetof(AsyncEvent, error) == 12 && o
                   offsetof(AsyncEvent, object) == 48 && offsetof(AsyncEvent, callback) == 64,
               "crates/hooks/src/offload.rs mirrors AsyncEvent");
 
-static void *async_dispatch(const void *event) {
-    return async::dispatch(static_cast<const AsyncEvent *>(event));
-}
-
-static const swr_v1_hook_async_ops async_ops = {
-    co_current, async_dispatch, co_park, co_park_for, co_resume, swoole_get_last_error};
-
 bool async(async::Handler handler, AsyncEvent &event, double timeout) {
-    return swr_v1_hook_async(&event, reinterpret_cast<void (*)(void *)>(handler), timeout, &async_ops);
+    return swr_v1_hook_async(&event, reinterpret_cast<void (*)(void *)>(handler), timeout, &swr_v1_hook_coroutine_async);
 }
 
 bool async_job(void (*job)(void *), void *context) {
-    return swr_v1_hook_async_job(job, context, &async_ops);
+    return swr_v1_hook_async_job(job, context, &swr_v1_hook_coroutine_async);
 }
 
 bool async(const std::function<void()> &fn) {
@@ -360,15 +276,6 @@ const swr_v1_hook_co_socket_host_t Socket::host_{
         return new Socket(static_cast<network::Socket *>(conn), static_cast<Socket *>(server));
     },
     [](void *s) { delete static_cast<Socket *>(s); },
-    [](void *context, int type, double timeout, const char *host, size_t length, void *out,
-       void (*put)(void *, const char *, size_t)) {
-        auto *ctx = static_cast<NameResolver::Context *>(context);
-        ctx->type = type;
-        ctx->timeout = timeout;
-        std::string address = swoole_name_resolver_lookup(std::string(host, length), ctx);
-        put(out, address.data(), address.size());
-        return ctx->with_port;
-    },
 };
 const bool Socket::host_installed_ = (swr_v1_hook_co_socket_host(&Socket::host_), true);
 

@@ -69,7 +69,6 @@ struct GetaddrinfoRequest : private ResolverOwner {
         return *this;
     }
     swr_v1_core_resolver *state_handle() const { return state_.owner; }
-    void parse_result(std::vector<std::string> &retval) const;
 };
 
 namespace async {
@@ -83,11 +82,6 @@ inline void handler_gethostbyname(AsyncEvent *event) {
     event->retval = swr_v1_core_resolver_host(event->data);
     if (event->retval < -1) ResolverOwner::check(event->retval);
     event->error = event->retval < 0 ? SW_ERROR_DNSLOOKUP_RESOLVE_FAILED : 0;
-}
-
-inline void handler_getaddrinfo(AsyncEvent *event) {
-    event->retval = network::getaddrinfo(event->data);
-    event->error = swr_v1_core_resolver_view(event->data).fields->error;
 }
 
 }  // namespace async

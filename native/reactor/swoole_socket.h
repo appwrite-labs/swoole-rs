@@ -461,10 +461,6 @@ struct Socket : swr_v1_socket {
     }
 };
 
-std::string gethostbyname(int type, const std::string &name);
-int gethostbyname(int type, const char *name, char *addr);
-int gethostbyname(GethostbynameRequest *req);
-int getaddrinfo(swr_v1_core_resolver *request);
 
 }  // namespace network
 

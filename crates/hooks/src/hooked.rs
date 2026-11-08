@@ -284,8 +284,7 @@ pub unsafe extern "C" fn swoole_coroutine_poll_fake(
 ) -> c_int {
     if nfds != 1 {
         if let Some(host) = crate::stdio::host() {
-            // SAFETY: native's last-error slot.
-            unsafe { (host.set_last_error)(INVALID_PARAMS) };
+            (host.set_last_error)(INVALID_PARAMS);
         }
         log::warning(
             c"swoole_coroutine_poll_fake",
