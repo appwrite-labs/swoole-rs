@@ -6,8 +6,8 @@ Thread Lock, Atomic/Long and Thread Atomic/Long are Rust classes (`crates/phploc
 [native/locks/contract.md](../../../native/locks/contract.md) for geometry,
 ownership, timeout, ordering, fork, coroutine and platform contracts.
 
-`overlay.py` reads the pinned sources for the gates' reference side; the ported side is
-`native/locks/lock.cc` (the hybrid's `Mutex` and `Barrier`) over `native/locks/swoole_lock.h`. Edit `migration/patches/locks/` with `tools/patches.py`.
+`overlay.py` reads the pinned sources for the gates' reference side; the hybrid side is
+Rust's lock ABI and `Barrier` (whose methods are Rust) over `native/locks/swoole_lock.h`. Edit `migration/patches/locks/` with `tools/patches.py`.
 
 ```sh
 python3 tests/modules/locks/gate.py --source target/upstream/src \
@@ -17,9 +17,8 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
 ## Native gate
 
 - `gate.py --source S --archive A [--sanitize] [--rust-asan] [--output R]`
-  (`locks-native`): compiles the pinned pthread bodies, the hybrid's Mutex and
-  Barrier and the Rust lock ABI (RW and spin locks have no C++ class in the hybrid)
-  into one driver (`gate.cc`) and compares thread/fork/RW/timeout/
+  (`locks-native`): compiles the pinned pthread bodies, the hybrid's Barrier and
+  the Rust lock ABI (no lock kind has a C++ class in the hybrid) into one driver (`gate.cc`) and compares thread/fork/RW/timeout/
   barrier/atomic/futex behaviour (about 160,000 checks). `--rust-asan` also
   requires the archive's ASan imports to detect a deliberate one-past pointer
   passed to `swr_v1_locks_coroutine_try`. For a Rust-ASan archive on Linux:
@@ -43,17 +42,12 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
   barrier, 20,000 increments per Thread Atomic width and 2,000 mutex-protected
   updates. Requires ZTS engines; also used by `tests/modules/integration/zts.py`.
 - `constructor.py --source S --archive A --output R [--sanitize] [--rust-asan]` (`locks-constructor`):
-  Mutex constructors (and Rust's init for every kind) with faults injected at the native pthread init/attribute/
-  pshared boundaries; checks no leaked storage, attribute cleanup, exception
-  code/message and first-error propagation through the direct ABI.
+  Rust's init for every kind with faults injected at the native pthread init/attribute/
+  pshared boundaries; checks nothing is allocated, attribute cleanup and
+  first-error propagation through the ABI.
 - `platforms.py --source S --output R` (`locks-platforms`): compiles the header as C11/C++14 on the
   host and checks synthetic FreeBSD/Android (and Apple mobile on macOS) macros
   are rejected.
-
-## Known failures
-
-- `constructor.py`: the native baseline leaks on failed construction and is
-  reported as `native_baseline_passed: false`; the gate checks the Rust rows.
 
 ## Ported GoogleTests
 

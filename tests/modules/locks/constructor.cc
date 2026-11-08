@@ -1,63 +1,21 @@
-// Two translation units: LOCKS_REFERENCE builds the pinned constructors against the pinned
-// header, the other the hybrid tree's against its header, plus the faults and the driver.
-#include "support.h"
+// Rust's lock init for every kind, faulted only at the native pthread boundaries it calls.
+// There is no lock class in the hybrid: Swoole\Lock, Table and the server call this ABI.
+#include "swoole_rs_locks.h"
+#include <cerrno>
+#include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <dlfcn.h>
 #include <iostream>
 #include <new>
+#include <pthread.h>
 
-// One instance shared by both translation units.
-inline bool watching;
-inline int fault_kind, fault_stage, allocated, released, attr_destroyed, init_calls, attr_init_calls, shared_calls;
-inline void *pointers[256];
+static bool watching;
+static int fault_kind, fault_stage, allocated, released, attr_destroyed, init_calls, attr_init_calls, shared_calls;
 
-#ifdef LOCKS_REFERENCE
-#include "original.inc"
-#else
-#include "ported.inc"
-#endif
-
-template<class L> static void one(const char *engine,int kind,bool shared,bool fail,int stage=0) {
-    allocated=released=attr_destroyed=init_calls=attr_init_calls=shared_calls=0;fault_kind=fail?kind:0;fault_stage=stage;
-    for(auto p:pointers)if(p)std::abort();
-    int code=0;bool threw=false;char message[256]{};
-    watching=true;
-    try { L lock(shared);code=lock.lock();if(!code)code=lock.unlock(); }
-    catch(const std::system_error &error) { threw=true;code=error.code().value();std::strncpy(message,error.what(),sizeof(message)-1); }
-    watching=false;
-    std::cout<<"{\"engine\":\""<<engine<<"\",\"kind\":"<<kind<<",\"shared\":"<<shared
-             <<",\"stage\":"<<stage<<",\"failed_init\":"<<fail<<",\"threw\":"<<threw<<",\"code\":"<<code
-             <<",\"allocated\":"<<allocated<<",\"released\":"<<released<<",\"live\":"<<allocated-released
-             <<",\"attr_destroyed\":"<<attr_destroyed<<",\"attr_init_calls\":"<<attr_init_calls
-             <<",\"shared_calls\":"<<shared_calls<<",\"init_calls\":"<<init_calls
-             <<",\"message\":\""<<message<<"\"}\n";
-    // Test-only reclamation AFTER recording the actual constructor's leaked ownership.
-    for(auto &p:pointers)if(p){std::free(p);p=nullptr;}
-}
-// The reference side's entry point: the upstream Mutex constructor. RW and spin locks have
-// no C++ class in the hybrid; direct() faults their Rust init.
-void upstream(bool shared,bool fail);
-
-#ifdef LOCKS_REFERENCE
-void upstream(bool shared,bool fail) { one<reference::Mutex>("upstream",3,shared,fail); }
-#else
-static void remember(void *p) {
-    if(!watching||!p)return;
-    for(auto &slot:pointers)if(!slot){slot=p;allocated++;return;}
-    std::abort();
-}
-static void forget(void *p) {
-    if(watching&&p)for(auto &slot:pointers)if(slot==p){slot=nullptr;released++;break;}
-}
-void *operator new(size_t size) { auto p=std::malloc(size?size:1);if(!p)throw std::bad_alloc();remember(p);return p; }
-void operator delete(void *p) noexcept { forget(p);std::free(p);if(watching)errno=EPIPE; }
+// Rust's init must allocate nothing through the native allocator.
+void *operator new(size_t size) { auto p=std::malloc(size?size:1);if(!p)throw std::bad_alloc();if(watching)allocated++;return p; }
+void operator delete(void *p) noexcept { if(watching&&p)released++;std::free(p); }
 void operator delete(void *p,size_t) noexcept { ::operator delete(p); }
-void *operator new[](size_t n) { return ::operator new(n); }
-void operator delete[](void *p) noexcept { ::operator delete(p); }
-void operator delete[](void *p,size_t) noexcept { ::operator delete(p); }
-void *Pool::alloc(size_t n) { auto p=std::malloc(n);remember(p);return p; }
-void Pool::free(void *p) { forget(p);std::free(p);if(watching)errno=EPIPE; }
 
 template<class T> static T next_symbol(const char *name) {
     auto p=dlsym(RTLD_NEXT,name);if(!p)std::abort();return reinterpret_cast<T>(p);
@@ -137,13 +95,6 @@ int main() {
 #ifdef __linux__
     real_spin_init=next_symbol<decltype(real_spin_init)>("pthread_spin_init");
 #endif
-    for(bool shared:{false,true})for(bool fail:{false,true}) {
-        upstream(shared,fail);one<swoole::Mutex>("rust",3,shared,fail);
-    }
-    // Failed attribute-stage shims reject follow-up calls before touching storage.
-    // Never run the original unsafe continuation against real pthread storage.
-    for(bool shared:{false,true})one<swoole::Mutex>("rust",3,shared,true,1);
-    one<swoole::Mutex>("rust",3,true,true,2);
     for(int kind:{1,3}) {
         for(bool shared:{false,true})for(int stage:{0,1})direct(kind,shared,stage);
         direct(kind,true,2);
@@ -152,4 +103,3 @@ int main() {
     for(bool shared:{false,true})direct(5,shared,0);
 #endif
 }
-#endif

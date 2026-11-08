@@ -1,12 +1,12 @@
 // Two translation units: LOCKS_REFERENCE builds the pinned bodies against the pinned header,
-// the other the hybrid tree's bodies against its header, plus the driver.
+// the other the driver against the hybrid tree's header, whose Barrier methods and lock ABI
+// are the archive's Rust.
 #ifdef LOCKS_REFERENCE
 #include "reference.h"
 #include "original.inc"
 #else
 #include "swoole_lock.h"
 #include "swoole_rs_locks.h"
-#include "ported.inc"
 #endif
 #include <cassert>
 #include <iostream>
@@ -18,11 +18,17 @@ inline int checks;
 #define CHECK(x) do { ++checks; if (!(x)) { std::cerr << "failed: " << #x << " line " << __LINE__ << std::endl; std::abort(); } } while(0)
 
 #ifndef LOCKS_REFERENCE
-// The hybrid's RW and spin locks: Swoole\Lock calls Rust's lock ABI directly.
+// The hybrid's locks: Swoole\Lock and the server call Rust's lock ABI directly. A shared
+// lock lives in a shared page, as upstream's Mutex(true) did in sw_mem_pool.
 template<int Kind> struct RustLock {
-    alignas(64) unsigned char storage[512];
-    explicit RustLock(bool shared) { CHECK(swr_v1_locks_size(Kind)<=sizeof(storage)); CHECK(swr_v1_locks_init(storage,Kind,shared)==0); }
-    ~RustLock() { swr_v1_locks_destroy(storage,Kind); }
+    static constexpr size_t page=4096;
+    void *storage;
+    explicit RustLock(bool shared) {
+        CHECK(swr_v1_locks_size(Kind)<=page);
+        storage=mmap(nullptr,page,PROT_READ|PROT_WRITE,(shared?MAP_SHARED:MAP_PRIVATE)|MAP_ANON,-1,0);CHECK(storage!=MAP_FAILED);
+        CHECK(swr_v1_locks_init(storage,Kind,shared)==0);
+    }
+    ~RustLock() { swr_v1_locks_destroy(storage,Kind);munmap(storage,page); }
     int lock(int operation=LOCK_EX,int timeout=-1) {
         uint32_t capabilities=0;
 #ifdef HAVE_MUTEX_TIMEDLOCK
@@ -195,7 +201,7 @@ int main() {
     CHECK(swr_v1_locks_align(3)==entry::align(3));
     CHECK(swr_v1_locks_size(1)==entry::size(1));
     CHECK(swr_v1_locks_align(1)==entry::align(1));
-    CHECK((entry::exercise()==exercise<swoole::Mutex,RustLock<1>,swoole::Barrier>()));
+    CHECK((entry::exercise()==exercise<RustLock<3>,RustLock<1>,swoole::Barrier>()));
 #ifdef HAVE_SPINLOCK
     auto reference_spin=entry::spin(),rust_spin=spin<RustLock<5>>();
     for(size_t i=0;i<reference_spin.size();i++)CHECK(reference_spin[i]==rust_spin[i]);

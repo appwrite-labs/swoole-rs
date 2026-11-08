@@ -23,9 +23,6 @@ void swr_v1_locks_destroy(void *, int32_t kind);
 /* operation: load=0, store=1, add-fetch=2, sub-fetch=3, CAS=4. */
 uint32_t swr_v1_locks_atomic32(uint32_t *, uint32_t operation, uint32_t value, uint32_t expected);
 int64_t swr_v1_locks_atomic64(int64_t *, uint32_t operation, int64_t value, int64_t expected);
-void swr_v1_locks_barrier_init(uint32_t *count, uint32_t *arrived, uint32_t parties);
-void swr_v1_locks_barrier_wait(uint32_t *count, uint32_t *arrived);
-int32_t swr_v1_locks_pthread_barrier(void *, size_t, void *, size_t, uint32_t operation, int32_t shared, uint32_t parties);
 #ifdef __linux__ /* matches the Rust cfg(target_os = "linux") */
 /* Futex wait/wake; non-futex builds use upstream's C++ registry. */
 int32_t swr_v1_locks_wait(uint32_t *, double timeout);

@@ -22,7 +22,7 @@ def main():
         symbols=subprocess.check_output(['nm','-u',str(a.archive)],text=True,stderr=subprocess.DEVNULL)
         if '__asan_report_' not in symbols:p.error('Archive lacks Rust ASan report imports')
     pin=overlay.PIN;original=overlay.original
-    # Reference side from the pin; ported side native/locks/lock.cc over native/locks/swoole_lock.h.
+    # Reference side from the pin; the hybrid side is native/locks/swoole_lock.h over the archive.
     hybrid_source,hybrid_flags=hybrid_tree(a.archive)
     report={'upstream_commit':pin,'hybrid_tree':str(hybrid_source),'rust_asan_declared':a.rust_asan,'scope':'Actual pinned pthread bodies vs real Rust overlay facades; thread/fork/RW/timeout/barrier/atomic/futex witnesses. C++ sanitizer; Rust instructions instrumented only when rust_asan_declared=true; prebuilt Rust stdlib and OS code excluded. Coroutine lifecycle, PHP/ZTS and optimized performance are separate gates.','passed':False}
     support='''#pragma once
@@ -64,15 +64,12 @@ inline void swoole_set_last_error(int e){errno=e;}
     original_bodies=''
     for name in ['mutex','rw_lock','spin_lock','barrier']:
         path=f'src/lock/{name}.cc';original_bodies+=original(path).replace('#include "swoole_lock.h"','#include "reference.h"').replace('namespace swoole','namespace reference')+'\n'
-    # The hybrid's Mutex and Barrier are native/locks/lock.cc; it has no RWLock or SpinLock
-    # class, so gate.cc drives Rust's lock ABI for those.
-    ported_bodies=(ROOT/'native/locks/lock.cc').read_text()
+    # The hybrid has no lock class: gate.cc drives Rust's lock ABI, and Barrier's methods are Rust.
     with tempfile.TemporaryDirectory(prefix='swr-locks-') as temp:
         tree=Path(temp);(tree/'reference').mkdir();(tree/'ported').mkdir();(tree/'support.h').write_text(support)
         (tree/'reference/reference.h').write_text(original('include/swoole_lock.h').replace('#include "swoole_memory.h"','#include "support.h"').replace('namespace swoole','namespace reference'))
         (tree/'reference/original.inc').write_text(kernel+'\nnamespace reference {\n'+futex+wait+realtime+'}\n'+original_bodies)
         (tree/'ported/swoole_lock.h').write_text((ROOT/'native/locks/swoole_lock.h').read_text().replace('#include "swoole_memory.h"','#include "support.h"'))
-        (tree/'ported/ported.inc').write_text(ported_bodies)
         # Two translation units: the reference side sees only pinned text, the ported side
         # and the driver the hybrid build's flags.
         binary=tree/'gate';witness=str(Path(__file__).with_suffix('.cc'))
