@@ -282,29 +282,23 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_free(handle: *mut Cal
     bailout::defer(unsafe { release(handle) });
     bailout::finish();
 }
-/// # Safety
-/// The caller borrows the live owner and keeps it allocated, as [`cache`] requires.
+/// The owner's cache, which stays put while it lives.
 #[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_cache(
-    handle: *mut Callable,
+pub(crate) extern "C" fn swr_v1_phphelpers_callable_cache(
+    handle: &mut Callable,
 ) -> *mut zend_fcall_info_cache {
-    // SAFETY: expose the caller's live cache without running PHP.
-    unsafe { cache(handle) }
+    &raw mut handle.cache
 }
-/// # Safety
-/// The optional owner follows [`ready`]'s live-handle contract.
+/// Whether the owner, if any, resolved.
 #[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_ready(handle: *const Callable) -> bool {
-    // SAFETY: this query runs no PHP code.
-    unsafe { ready(handle) }
+pub(crate) extern "C" fn swr_v1_phphelpers_callable_ready(handle: Option<&Callable>) -> bool {
+    // SAFETY: a live owner; this query runs no PHP code.
+    handle.is_some_and(|handle| unsafe { ready(handle) })
 }
-/// # Safety
-/// The borrowed owner satisfies [`copy`]'s contract.
+/// An independent owner of the same callable.
 #[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_copy(
-    handle: *const Callable,
-) -> *mut Callable {
-    // SAFETY: retain the source's references in an independent owner.
+pub(crate) extern "C" fn swr_v1_phphelpers_callable_copy(handle: &Callable) -> *mut Callable {
+    // SAFETY: retain the live source's references in an independent owner.
     unsafe { copy(handle) }
 }
 /// # Safety
@@ -321,10 +315,9 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_invoke(
     bailout::finish();
     result
 }
-/// # Safety
-/// The owner follows [`refs`]'s live-handle contract.
+/// The owner's reference count.
 #[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_refs(handle: *const Callable) -> u32 {
+pub(crate) extern "C" fn swr_v1_phphelpers_callable_refs(handle: &Callable) -> u32 {
     // SAFETY: the query reads a live reference-counted payload.
     unsafe { refs(handle) }
 }

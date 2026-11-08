@@ -2,8 +2,8 @@
 // Compatibility derived from Swoole v6.2.4 ext-src/php_swoole_cxx.cc, php_swoole.cc and
 // swoole_runtime.cc (Swoole contributors).
 // What crates/phphelpers, crates/phpswoole and crates/phpruntime need of C++ that stable
-// Rust can't express: zend::Callable and zend::function::call (C++ members other C++
-// files call), the module globals and get_module(), and the ops tables whose entries
+// Rust can't express: zend::Callable (C++ members other C++ files call; its constructor
+// takes the header-inline sw_callable_warning), the module globals and get_module(), and the ops tables whose entries
 // configure's #ifdefs decide (the optional drivers, ssh2, ftp, stdext, Swoole\Thread,
 // the PDO hooks) or that reach C++ objects (the module globals, the DNS settings).
 #include "swoole_rs_phphost.h"
@@ -23,16 +23,6 @@ extern "C" PHP_FUNCTION(swoole_coroutine_gethostbyname);  // crates/phpcoroutine
 SW_API zend_string **sw_zend_known_strings = nullptr;
 
 namespace zend {
-namespace function {
-bool call(zend_fcall_info_cache *cache, uint32_t argc, zval *argv, zval *retval, const bool coroutine) {
-    int called = call_trapped(cache, argc, argv, retval, coroutine);
-    if (called < 0) {
-        swr_zend_guard_resume();
-    }
-    return called > 0;
-}
-}  // namespace function
-
 Callable::Callable(zval *value) : owned(swr_v1_phphelpers_callable_new(value, sw_callable_warning)) {}
 Callable::~Callable() { swr_v1_phphelpers_callable_free(owned); }
 uint32_t Callable::refcount() const { return swr_v1_phphelpers_callable_refs(owned); }
