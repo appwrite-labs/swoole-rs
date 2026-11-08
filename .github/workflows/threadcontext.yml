@@ -2,7 +2,8 @@ name: thread-context
 # Upstream and the all-modules hybrid built with --enable-thread-context (each
 # coroutine on its own thread, crates/coroutine/src/thread.rs), then the coroutine
 # PHPT families. Any test that passes on upstream must pass on the hybrid.
-# Called by the merge tier, and by the PR tier when a PR touches the coroutine context.
+# Called by the merge tier, and by the PR tier when a PR touches the coroutine
+# context or the coroutine state the loop thread shares with coroutine threads.
 on:
   workflow_call:
 env:

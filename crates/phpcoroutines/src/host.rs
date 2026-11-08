@@ -55,8 +55,8 @@ unsafe extern "C" {
     fn swr_cpp_phpcoroutines_defer(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void);
     fn swr_cpp_phpcoroutines_timer_add(
         timeout: f64,
-        cid: c_long,
-        f: unsafe extern "C" fn(c_long),
+        data: *mut c_void,
+        f: unsafe extern "C" fn(*mut c_void),
     ) -> *mut c_void;
     fn swr_cpp_phpcoroutines_set_exit_condition(set: u8);
     // crates/coroutine, native/coroutine/coroutine.cc, crates/timer, crates/reactor and crates/process.
@@ -332,15 +332,16 @@ pub fn yield_(co: Co) {
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_yield(scheduler(), state(co)) };
 }
 
-/// [`yield_`], cancelable through `cancel`.
+/// [`yield_`], cancelable through `cancel(co, data)`.
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
 pub unsafe fn yield_cancelable(
     co: Co,
     cancel: unsafe extern "C-unwind" fn(Co, *mut c_void) -> bool,
+    data: *mut c_void,
 ) {
     // SAFETY: as the caller promises.
-    unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, std::ptr::null_mut()) };
+    unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, data) };
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
@@ -588,11 +589,17 @@ pub(crate) fn defer(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void) {
     unsafe { swr_cpp_phpcoroutines_defer(f, data) };
 }
 
-/// A one-shot timer calling `f(cid)` after `timeout` seconds.
+/// A one-shot timer calling `f(data)` after `timeout` seconds.
+/// # Safety
+/// `f` accepts `data` when the timer fires.
 #[must_use]
-pub fn timer_add(timeout: f64, cid: c_long, f: unsafe extern "C" fn(c_long)) -> *mut c_void {
+pub unsafe fn timer_add(
+    timeout: f64,
+    data: *mut c_void,
+    f: unsafe extern "C" fn(*mut c_void),
+) -> *mut c_void {
     // SAFETY: C++ adds the timer.
-    unsafe { swr_cpp_phpcoroutines_timer_add(timeout, cid, f) }
+    unsafe { swr_cpp_phpcoroutines_timer_add(timeout, data, f) }
 }
 
 /// `swoole_timer_del`.

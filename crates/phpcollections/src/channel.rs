@@ -1,12 +1,7 @@
 //! PHP `Swoole\Coroutine\Channel`: class registration, object handlers and every
 //! method. The queue is the coroutine crate's Channel, run on PHP's coroutines;
 //! values cross it as emalloc'd zval copies.
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    ffi::{c_long, c_void},
-    ptr,
-};
+use std::{ffi::c_void, ptr};
 use swoole_rs_coroutine::chan::{self as queue, CANCELED, Channel, Effects, TIMEDOUT};
 use swoole_rs_phpcoroutines as co;
 use swoole_rs_phpstubs::channel_coro;
@@ -39,7 +34,8 @@ static CHANNEL: Class = Class::new();
 type ChannelObject = Object<*mut Channel>;
 
 /// One coroutine's wait, on its own stack while it is suspended: upstream's
-/// `TimeoutMessage`, which the timer and the cancel function find by cid.
+/// `TimeoutMessage`, which the timer and the cancel function reach by pointer.
+/// Under thread contexts they run on another thread than the waiting coroutine.
 struct Wait {
     ch: *mut Channel,
     role: u32,
@@ -48,18 +44,14 @@ struct Wait {
     timedout: bool,
 }
 
-thread_local! {
-    static WAITS: RefCell<HashMap<c_long, *mut Wait>> = RefCell::default();
-}
-
-/// `timer_callback` and the cancel function: remove `cid`'s wait from its
-/// queue and resume it; a timeout also marks it timed out.
-fn wake(cid: c_long, timeout: bool) {
-    let Some(wait) = WAITS.with(|w| w.borrow().get(&cid).copied()) else {
-        return;
-    };
+/// `timer_callback` and the cancel function: remove the wait from its queue
+/// and resume it; a timeout also marks it timed out.
+///
+/// # Safety
+/// `wait` is a suspended coroutine's [`Wait`].
+unsafe fn wake(wait: *mut c_void, timeout: bool) {
     // SAFETY: the suspended coroutine's frame, live until it resumes.
-    let w = unsafe { &mut *wait };
+    let w = unsafe { &mut *wait.cast::<Wait>() };
     if timeout {
         w.timedout = true;
         w.timer = ptr::null_mut();
@@ -71,12 +63,14 @@ fn wake(cid: c_long, timeout: bool) {
     unsafe { co::wake(parked, false) };
 }
 
-unsafe extern "C" fn on_timeout(cid: c_long) {
-    wake(cid, true);
+unsafe extern "C" fn on_timeout(wait: *mut c_void) {
+    // SAFETY: the wait deletes its timer before it ends.
+    unsafe { wake(wait, true) };
 }
 
-unsafe extern "C-unwind" fn on_cancel(parked: *mut c_void, _: *mut c_void) -> bool {
-    wake(co::cid(parked), false);
+unsafe extern "C-unwind" fn on_cancel(_: *mut c_void, wait: *mut c_void) -> bool {
+    // SAFETY: a cancel function is reachable only while its wait is suspended.
+    unsafe { wake(wait, false) };
     true
 }
 
@@ -102,7 +96,6 @@ impl Effects for Php {
     }
 
     unsafe fn wait(&mut self, ch: *mut Channel, role: u32) -> u32 {
-        let cid = co::cid(self.co);
         let mut state = Wait {
             ch,
             role,
@@ -113,13 +106,13 @@ impl Effects for Php {
         // Only through this pointer from here on: the callbacks write it too.
         let wait = &raw mut state;
         if self.timeout > 0.0 {
+            // SAFETY: on_timeout takes this frame's wait, which deletes the timer before it ends.
+            let timer = unsafe { co::timer_add(self.timeout, wait.cast(), on_timeout) };
             // SAFETY: this frame's wait.
-            unsafe { (*wait).timer = co::timer_add(self.timeout, cid, on_timeout) };
+            unsafe { (*wait).timer = timer };
         }
-        WAITS.with(|w| w.borrow_mut().insert(cid, wait));
         // SAFETY: the running coroutine; this frame owns nothing that needs a drop.
-        unsafe { co::yield_cancelable(self.co, on_cancel) };
-        WAITS.with(|w| w.borrow_mut().remove(&cid));
+        unsafe { co::yield_cancelable(self.co, on_cancel, wait.cast()) };
         // SAFETY: as above, and no callback can reach it any more.
         let Wait {
             timer, timedout, ..

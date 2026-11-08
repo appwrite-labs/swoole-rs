@@ -73,7 +73,7 @@ jobs:
           if echo "$changed" | grep -qE '^(migration/patches/(locks/|[^/]+/[^/]*thread)|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php-zts)\.sh$)'; then
             echo zts=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/coroutine/|native/coroutine/|crates/coroutine/|\.github/workflows/threadcontext\.yml$)'; then
+          if echo "$changed" | grep -qE '^(migration/patches/coroutine/|native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
             echo threadcontext=true >> "$GITHUB_OUTPUT"
           fi
 

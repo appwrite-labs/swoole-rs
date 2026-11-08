@@ -165,7 +165,7 @@ fn yield_(call: &Call) {
     let cid = host::cid(co);
     YIELDED.with(|y| y.borrow_mut().insert(cid, co));
     // SAFETY: the running coroutine; this frame owns nothing that needs a drop.
-    unsafe { host::yield_cancelable(co, cancel_yield) };
+    unsafe { host::yield_cancelable(co, cancel_yield, ptr::null_mut()) };
     if host::is_canceled(co) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         call.set_bool(false);
@@ -406,7 +406,10 @@ fn set_time_limit(call: &Call) {
     }
     let cid = host::cid(co);
     let ctx = context::current_task();
-    let timer = host::timer_add(timeout, cid, time_limit);
+    // Coroutine ids are positive.
+    let data = ptr::without_provenance_mut(usize::try_from(cid).unwrap_or_default());
+    // SAFETY: time_limit takes the id as its data.
+    let timer = unsafe { host::timer_add(timeout, data, time_limit) };
     if timer.is_null() {
         call.set_bool(false);
         return;
@@ -420,7 +423,8 @@ fn set_time_limit(call: &Call) {
     call.set_bool(true);
 }
 
-unsafe extern "C" fn time_limit(cid: c_long) {
+unsafe extern "C" fn time_limit(cid: *mut c_void) {
+    let cid = c_long::try_from(cid.addr()).unwrap_or_default();
     let ctx = context::by_cid(cid);
     if !ctx.is_null() {
         // SAFETY: a live context; its timer has fired.
