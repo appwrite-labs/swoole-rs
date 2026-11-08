@@ -40,6 +40,7 @@ const FD_SESSION: c_int = 0;
 
 unsafe extern "C-unwind" {
     /// crates/timer's `swoole_timer_del`.
+    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
     fn swoole_timer_del(node: *mut c_void) -> bool;
 }
 
