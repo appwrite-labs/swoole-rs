@@ -245,7 +245,9 @@ jobs:
           if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt-stdext.json >> "$GITHUB_STEP_SUMMARY"
       # phphelpers' runtime fixtures call stdext helpers, so they run here, not in full-gates.
-      - if: always()
+      # They run after a failed gate, but not when setup failed before the reference was built:
+      # that would report its phases as failures.
+      - if: ${{ !cancelled() && hashFiles('target/upstream/src/run-tests.php') != '' }}
         run: >
           python3 tools/dev.py integrate --module phphelpers --stdext
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
