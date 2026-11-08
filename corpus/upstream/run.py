@@ -242,6 +242,12 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
     env = {**os.environ, 'PHPT': '1', 'NO_INTERACTION': '1', 'REPORT_EXIT_STATUS': '1',
            'TEST_PHP_EXECUTABLE': shutil.which(engine.php) or engine.php,
            'TEST_PHP_JUNIT': str(junit), 'HOME': str(sandbox / 'home'), 'TMPDIR': str(sandbox / 'tmp')}
+    # Server fixtures run as `$TEST_PHP_EXECUTABLE file.php` (start_server), without -n
+    # or the runner's -d flags, so they read the system php.ini. Upstream's CI installs
+    # swoole there; append it to the scan dir so those children load this engine too.
+    scan = Path(tempfile.mkdtemp(prefix='php-ini-', dir=artifacts.resolve()))
+    (scan / 'zz-swoole.ini').write_text(f'extension={Path(engine.extension).resolve()}\n')
+    env['PHP_INI_SCAN_DIR'] = os.pathsep + str(scan)
     if not offline:
         env['SKIP_ONLINE_TESTS'] = '0'
     child_selector = None

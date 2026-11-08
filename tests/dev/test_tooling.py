@@ -255,6 +255,19 @@ class Phpt(unittest.TestCase):
             self.assertEqual(selector['sha256'], __import__('hashlib').sha256(Path(selector['path']).read_bytes()).hexdigest())
             self.assertEqual(selector['fallback_exec_argv'][0], str(executable))
 
+    def test_server_fixture_children_load_the_engine_from_the_scan_dir(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sandbox = Path(directory).resolve()
+            artifact = sandbox / 'artifacts'
+            engine = Engine('fixture', sandbox / 'engine.so')
+            def run(command, **kwargs):
+                scan = kwargs['env']['PHP_INI_SCAN_DIR']
+                self.assertTrue(scan.startswith(os.pathsep))  # appended to the distribution's conf.d
+                self.assertEqual((Path(scan[1:]) / 'zz-swoole.ini').read_text(), f'extension={engine.extension}\n')
+                return subprocess.CompletedProcess(command, 1, '', '')
+            with patch.object(phpt, 'run_isolated', run):
+                phpt.run_cases(engine, [{'path': 'server.phpt'}], sandbox, artifact, 1, 1)
+
     def test_owned_selection_cannot_change_reference_pin(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory) / 'selection.json'
