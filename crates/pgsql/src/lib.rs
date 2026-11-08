@@ -2,7 +2,8 @@
 //! `--enable-swoole-pgsql`): the `PQconnectdb`, `PQprepare`, `PQexec*`
 //! replacements its bundled `pdo_pgsql` driver calls. Each sends the request,
 //! flushes and waits for the result on the connection's socket: with `poll(2)`
-//! while blocking, otherwise by parking the coroutine (C++ lends that wait).
+//! while blocking, otherwise by parking the coroutine (`System::wait_event`).
+//! With `php`, MINIT ([`minit`]) registers the driver with PDO.
 //!
 //! The exports keep upstream's names: `php_swoole_pgsql.h` declares them and
 //! the driver's macros call them.
@@ -14,18 +15,18 @@
     )
 )]
 
+#[cfg(feature = "php")]
+pub mod minit;
+
 use pq_sys::{
     Oid, PGconn, PGresult, PQclear, PQconnectPoll, PQconnectStart, PQconsumeInput, PQflush,
     PQgetResult, PQisBusy, PQlibVersion, PQsendPrepare, PQsendQuery, PQsendQueryParams,
     PQsendQueryPrepared, PQsetnonblocking, PQsocket, PostgresPollingStatusType,
 };
 use std::{
-    ffi::{c_char, c_int},
+    ffi::{c_char, c_int, c_void},
     ptr,
-    sync::{
-        OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
@@ -36,27 +37,28 @@ const WRITE: c_int = 1 << 10;
 /// miss readiness, so a short timeout lets the caller retry.
 const POLL_TIMEOUT: f64 = 0.1;
 
-/// `swr_v1_pgsql_ops`: what C++ lends at MINIT.
-#[repr(C)]
-pub struct Ops {
-    /// Park the coroutine until `event` on `fd` or `timeout`: 1 ready, 0
-    /// timed out, -1 failed.
-    wait: unsafe extern "C" fn(fd: c_int, event: c_int, timeout: f64) -> c_int,
-    /// Whether a coroutine is running.
-    in_coroutine: unsafe extern "C" fn() -> bool,
-}
-
-static OPS: OnceLock<&'static Ops> = OnceLock::new();
 static BLOCKING: AtomicBool = AtomicBool::new(true);
 
-/// MINIT: keep C++'s operations.
+/// `SW_ERROR_CO_TIMEDOUT`: the last error a timed-out wait leaves.
+const CO_TIMEDOUT: c_int = 10018;
+
+// SAFETY: src/coroutine/base.cc's.
+unsafe extern "C" {
+    fn swr_v1_coroutine_current() -> *mut c_void;
+}
+
+/// `swoole_pgsql_socket_poll`'s coroutine wait: park until `event` on `fd` or
+/// `timeout`; 1 ready, 0 timed out, -1 failed.
 /// # Safety
-/// `ops` is a static table.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_pgsql_init(ops: *const Ops) {
+/// In a coroutine, with the thread's reactor running.
+unsafe fn wait(fd: c_int, event: c_int, timeout: f64) -> c_int {
     // SAFETY: per the caller.
-    if let Some(ops) = unsafe { ops.as_ref() } {
-        OPS.get_or_init(|| ops);
+    if unsafe { swoole_rs_hooks::wait_event::system_wait_event(fd, event, timeout) } >= 0 {
+        1
+    } else if swoole_rs_corebase::log::last_error() == CO_TIMEDOUT {
+        0
+    } else {
+        -1
     }
 }
 
@@ -67,7 +69,7 @@ pub extern "C" fn swoole_pgsql_set_blocking(blocking: bool) {
 }
 
 fn blocking() -> bool {
-    BLOCKING.load(Ordering::Relaxed) || OPS.get().is_none()
+    BLOCKING.load(Ordering::Relaxed)
 }
 
 /// libpq's version as `major.minor` (10 and later) or `major.minor.revision`.
@@ -123,32 +125,27 @@ fn to_poll(event: c_int) -> i16 {
 unsafe fn socket_poll(conn: *mut PGconn, event: c_int, check_nonblock: bool) -> c_int {
     // SAFETY: per the caller.
     let fd = unsafe { PQsocket(conn) };
-    let ops = match OPS.get() {
-        Some(ops) if !blocking() => ops,
-        _ => {
-            let mut poll = libc::pollfd {
-                fd,
-                events: to_poll(event),
-                revents: 0,
-            };
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "upstream's (int) of the milliseconds"
-            )]
-            let timeout = (POLL_TIMEOUT * 1000.0) as c_int;
-            loop {
-                // SAFETY: one live pollfd.
-                let result = unsafe { libc::poll(&raw mut poll, 1, timeout) };
-                if result >= 0
-                    || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
-                {
-                    return result;
-                }
+    if blocking() {
+        let mut poll = libc::pollfd {
+            fd,
+            events: to_poll(event),
+            revents: 0,
+        };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "upstream's (int) of the milliseconds"
+        )]
+        let timeout = (POLL_TIMEOUT * 1000.0) as c_int;
+        loop {
+            // SAFETY: one live pollfd.
+            let result = unsafe { libc::poll(&raw mut poll, 1, timeout) };
+            if result >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                return result;
             }
         }
-    };
-    // SAFETY: C++ parks the running coroutine.
-    let mut result = unsafe { (ops.wait)(fd, event, POLL_TIMEOUT) };
+    }
+    // SAFETY: the hook is on: a coroutine runs the request, as upstream requires.
+    let mut result = unsafe { wait(fd, event, POLL_TIMEOUT) };
     if !(check_nonblock && event == READ) {
         return result;
     }
@@ -163,7 +160,7 @@ unsafe fn socket_poll(conn: *mut PGconn, event: c_int, check_nonblock: bool) -> 
             return result;
         }
         // SAFETY: as above.
-        result = unsafe { (ops.wait)(fd, event, POLL_TIMEOUT) };
+        result = unsafe { wait(fd, event, POLL_TIMEOUT) };
     }
 }
 
@@ -187,8 +184,7 @@ unsafe fn flush(conn: *mut PGconn) -> c_int {
 /// `swoole_pgsql_get_result`: wait for the result, then keep the last one.
 /// # Safety
 /// `conn` is a live connection.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_pgsql_get_result(conn: *mut PGconn) -> *mut PGresult {
+unsafe fn get_result(conn: *mut PGconn) -> *mut PGresult {
     // SAFETY: per the caller.
     if unsafe { socket_poll(conn, READ, true) } < 0 {
         return ptr::null_mut();
@@ -215,7 +211,34 @@ unsafe fn finish(conn: *mut PGconn, sent: c_int) -> *mut PGresult {
         return ptr::null_mut();
     }
     // SAFETY: as above.
-    unsafe { swr_v1_pgsql_get_result(conn) }
+    unsafe { get_result(conn) }
+}
+
+/// `swoole_pgsql_close_prepared`: `PQsendClosePrepared`, then its result.
+/// Only a driver built against libpq 17 or later (`HAVE_PQCLOSEPREPARED`)
+/// calls it, so the call is looked up rather than linked: an older libpq
+/// still loads.
+/// # Safety
+/// As `PQclosePrepared`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swoole_pgsql_close_prepared(
+    conn: *mut PGconn,
+    stmt_name: *const c_char,
+) -> *mut PGresult {
+    type Send = unsafe extern "C" fn(*mut PGconn, *const c_char) -> c_int;
+    // SAFETY: a NUL-terminated name.
+    let send = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"PQsendClosePrepared".as_ptr()) };
+    if send.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: libpq's `PQsendClosePrepared`, of this type.
+    let send = unsafe { std::mem::transmute::<*mut c_void, Send>(send) };
+    // SAFETY: per the caller.
+    if unsafe { send(conn, stmt_name) } == 0 {
+        return ptr::null_mut();
+    }
+    // SAFETY: as above.
+    unsafe { get_result(conn) }
 }
 
 /// `swoole_pgsql_connectdb`: `PQconnectStart`, then poll the handshake to its end.
@@ -232,8 +255,8 @@ pub unsafe extern "C" fn swoole_pgsql_connectdb(conninfo: *const c_char) -> *mut
     if unsafe { PQsocket(conn) } < 0 {
         return conn;
     }
-    // SAFETY: C++ reads the running coroutine.
-    let nonblocking = !blocking() && OPS.get().is_some_and(|ops| unsafe { (ops.in_coroutine)() });
+    // SAFETY: reads the running coroutine.
+    let nonblocking = !blocking() && !unsafe { swr_v1_coroutine_current() }.is_null();
     // SAFETY: a live connection.
     unsafe { PQsetnonblocking(conn, c_int::from(nonblocking)) };
     loop {

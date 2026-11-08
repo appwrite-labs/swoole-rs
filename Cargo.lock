@@ -589,6 +589,9 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "pq-sys",
+ "swoole-rs-corebase",
+ "swoole-rs-hooks",
+ "swoole-rs-zend",
 ]
 
 [[package]]
