@@ -43,7 +43,7 @@ and `RingBuffer` facades any more, so they left with these ports.
 | `memory/fixed_pool.cpp` `fixed_pool.alloc` | `members::tests::fixed_pool_alloc` |
 | `memory/fixed_pool.cpp` `fixed_pool.realloc` | `members::tests::fixed_pool_realloc` |
 | `memory/global_memory.cpp` `global_memory.alloc` | `members::tests::global_memory_alloc` |
-| `memory/ringbuffer.cpp` `ringbuffer.thread` | `members::tests::ringbuffer_thread` |
+| `memory/ringbuffer.cpp` `ringbuffer.thread` | `ringbuffer_thread` (test binary `ringbuffer`) |
 | `memory/table.cpp` `table.create` | `table::tests::table_create` |
 | `memory/table.cpp` `table.iterator` | `table::tests::table_iterator` |
 | `memory/table.cpp` `table.iterator_2` | `table::tests::table_iterator_2` |
