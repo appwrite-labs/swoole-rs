@@ -20,6 +20,7 @@ use swoole_rs_server::static_select::swr_v1_server_static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
 use swoole_rs_tls::upstream::{socket_recv, socket_send};
 
+use crate::framing_recv::{recv_with_eof_protocol, recv_with_length_protocol};
 use crate::http_routes::exports::{RecvData, dispatch_request, dispatch_task};
 use crate::read::{
     ON_READ_HTTP, OP_ACTIVE, OP_BUF_EXTEND, OP_BUF_HEADER_END, OP_BUF_REDUCE, OP_CATCH, OP_CLIENT,
@@ -30,22 +31,7 @@ use crate::read::{
     SEND_TOO_LARGE, SEND_UNAVAILABLE, Shared, swr_v1_ports_on_read,
 };
 
-type Receive = unsafe extern "C" fn(*const Protocol, *mut c_void, *mut CppString) -> c_int;
-
-unsafe extern "C" {
-    #[link_name = "_ZNK6swoole8Protocol25recv_with_length_protocolEPNS_7network6SocketEPNS_6StringE"]
-    fn recv_with_length_protocol(
-        protocol: *const Protocol,
-        socket: *mut c_void,
-        buffer: *mut CppString,
-    ) -> c_int;
-    #[link_name = "_ZNK6swoole8Protocol22recv_with_eof_protocolEPNS_7network6SocketEPNS_6StringE"]
-    fn recv_with_eof_protocol(
-        protocol: *const Protocol,
-        socket: *mut c_void,
-        buffer: *mut CppString,
-    ) -> c_int;
-}
+type Receive = unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *mut CppString) -> c_int;
 
 /// `websocket::STATUS_HANDSHAKE` and `STATUS_ACTIVE`.
 const STATUS_HANDSHAKE: u8 = 2;
@@ -158,11 +144,11 @@ fn send(c: &Read, packet: &[u8]) -> u64 {
 }
 
 /// One receive through the port's protocol.
-fn receive(c: &Read, how: Receive, target: *mut c_void) -> u64 {
+fn receive(c: &Read, how: Receive) -> u64 {
     // SAFETY: the live port.
     let protocol = unsafe { &raw const (*c.port).protocol };
     // SAFETY: the port's protocol, a live socket or connection and the current buffer.
-    status(unsafe { how(protocol, target, c.shared.buffer.cast()) })
+    status(unsafe { how(protocol, c.socket, c.shared.buffer.cast()) })
 }
 
 /// The effects every read makes.
@@ -199,7 +185,7 @@ unsafe extern "C" fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
             }
             u64::from(release)
         }
-        OP_RECV_LENGTH => receive(c, recv_with_length_protocol, c.socket.cast()),
+        OP_RECV_LENGTH => receive(c, recv_with_length_protocol),
         OP_ACTIVE => {
             // SAFETY: the live connection.
             let active = unsafe { (*c.conn).active };
@@ -275,8 +261,14 @@ fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
             }
             .as_bytes(),
         ),
-        OP_RECV_EOF => receive(c, recv_with_eof_protocol, c.socket.cast()),
-        OP_RECV_REDIS => receive(c, crate::resp_recv::recv_packet, c.conn.cast()),
+        OP_RECV_EOF => receive(c, recv_with_eof_protocol),
+        OP_RECV_REDIS => {
+            // SAFETY: the live port.
+            let protocol = unsafe { &raw const (*c.port).protocol };
+            let (conn, buffer) = (c.conn.cast(), c.shared.buffer.cast());
+            // SAFETY: the port's protocol, the live connection and the current buffer.
+            status(unsafe { crate::resp_recv::recv_packet(protocol, conn, buffer) })
+        }
         OP_DISPATCH_TASK | OP_DISPATCH_REQUEST => dispatch(c, op, arg),
         OP_WEBSOCKET_ACTIVATE => {
             let conn = conn();

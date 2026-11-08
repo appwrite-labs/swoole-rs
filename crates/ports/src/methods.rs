@@ -550,15 +550,11 @@ enum Callback {
 #[cfg(not(test))]
 fn callback(callback: Callback) -> *mut c_void {
     use crate::http_routes::exports as http;
-    unsafe extern "C" {
-        #[link_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"]
-        fn default_length();
-    }
     match callback {
         Callback::DispatchTask => http::dispatch_task as *mut c_void,
         Callback::HttpDispatchFrame => http::dispatch_frame as *mut c_void,
         Callback::WebsocketDispatchFrame => http::websocket_dispatch_frame as *mut c_void,
-        Callback::DefaultLength => default_length as *mut c_void,
+        Callback::DefaultLength => crate::framing_recv::default_length_func as *mut c_void,
         Callback::HttpLength => http::get_package_length as *mut c_void,
         Callback::HttpLengthSize => http::get_package_length_size as *mut c_void,
         Callback::Http2Length => http::http2_length as *mut c_void,

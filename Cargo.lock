@@ -873,6 +873,7 @@ dependencies = [
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-framing",
  "swoole-rs-http",
  "swoole-rs-http2",
  "swoole-rs-oracle",
