@@ -5,7 +5,7 @@ Implements `docs/coroutine-abi-v1.md`. Header: `swoole_rs_coroutine.h`.
 | Patch | Upstream files |
 | --- | --- |
 | 0001-channel, …-channel-cc-and-swoole-co | `include/swoole_coroutine_channel.h`, `src/coroutine/channel.cc` (deleted) |
-| 0003-context-stack-markers | `src/coroutine/context.cc` |
+| 0003-context-stack-markers, …-context-is-rust | `src/coroutine/context.cc`, `include/swoole_asm_context.h` (deleted) |
 | 0004-coroutine-core | `include/swoole_coroutine.h`, `src/coroutine/base.cc` |
 | 0005-context-asan-fibers | `include/swoole_coroutine_context.h` |
 
@@ -55,10 +55,18 @@ inaccessible; it returns null on failure, which C++ reports as upstream does.
 markers before the context is made: at `size - offset + 31` for each doubling
 `offset` from 64 KiB while `offset <= size`. `swr_v1_context_stack_usage`
 samples them while `offset < size` and reports twice the last changed offset,
-or 64 KiB. `swr_v1_context_stack_free` takes the same size and flags. The
-Context fields, the switch (boost.context asm or ucontext), valgrind
-registration and the ASan fiber annotations stay C++. The thread backend is
-upstream's, unchanged.
+or 64 KiB. `swr_v1_context_stack_free` takes the same size and flags.
+
+`crates/coroutine/src/context.rs` owns the `swr_v1_context` record that each
+`Coroutine` embeds through `swoole::coroutine::Context`'s inline view: init
+allocates the stack and makes the boost.context fcontext (out of memory is
+upstream's fatal error and exit 254), swap_in/swap_out jump with
+`swoole_jump_fcontext`, and the first frame runs the view's `CoroutineFunc`
+through one C entry, sets `end` and switches out. ASan's fiber annotations run
+when `dlsym` finds `__sanitizer_{start,finish}_switch_fiber`. ucontext and
+valgrind stack registration are not kept; config.m4 fails on a CPU without
+boost asm unless the thread backend is chosen. The thread backend is upstream's,
+unchanged.
 
 ## Channel
 

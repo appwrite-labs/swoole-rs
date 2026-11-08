@@ -8,7 +8,7 @@ Rust FFI static archive. Most gates refuse an existing `--report` path.
 
 ```
 python3 tests/modules/coroutine/core.py --source PINNED_TREE --config CONFIG_H --archive ARCHIVE \
-  --build-root PRIVATE_DIR [--sanitize] [--ucontext] [--rust-asan] [--lifetime-only] --output OUT.json
+  --build-root PRIVATE_DIR [--sanitize] [--rust-asan] [--lifetime-only] --output OUT.json
 ```
 
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
@@ -16,8 +16,7 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 `core.py` builds the full native reference and the archive's hybrid tree (every
 module's patches, `overlay_hybrid_tree`, #796) and runs the
 26 unchanged `coroutine_base` GoogleTests, plus the supplemental real-context test in
-`lifetime.cpp`, each in its own process group. `--ucontext` derives a private
-config selecting ucontext. `--rust-asan` requires ASan imports in the archive;
+`lifetime.cpp`, each in its own process group. `--rust-asan` requires ASan imports in the archive;
 ASan stack-switch warnings yield `warned`, not `passed`. On macOS pass
 `--gtest-prefix` pointing at a C++14-compatible GoogleTest (1.12).
 
@@ -25,18 +24,16 @@ ASan stack-switch warnings yield `warned`, not `passed`. On macOS pass
 
 ```
 python3 tests/modules/coroutine/compile_gate.py --source PINNED_TREE --archive ARCHIVE [--timing] [--stack-usage] \
-  [--backend asm|ucontext|thread] [--standard c++14|c++17] --report OUT.json
+  [--backend asm|thread] [--standard c++14|c++17] --report OUT.json
 python3 tools/cargo_asan.py --package swoole-rs-coroutine --report OUT.json
-python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --source-ref REF \
-  --selected-export SELECTED/export.json --native-export NATIVE/export.json --output OUT.json
 ```
 
 - `compile_gate.py` compiles `base`, `context` and `thread_context`
-  from the pin (original) and from the archive's hybrid tree with its switches
-  (patched, `hybrid_tree`).
+  from the pin (original), and those still in the archive's hybrid tree with its
+  switches (patched, `hybrid_tree`; `context.cc` is gone).
 - `tools/cargo_asan.py` runs crates/coroutine's unit tests under Rust ASan (the plain
   run is `coroutine-unit`).
-- The scheduler, coroutine state, the live map and stacks (crates/coroutine)
+- The scheduler, coroutine state, the live map, stacks and the context switch (crates/coroutine)
   are covered by its Rust unit tests and, through real context switches, by
   `core.py`'s upstream GoogleTests and the coroutine PHPT families.
 - Channel is covered by `channel.rs` (crates/coroutine's unit tests): upstream's
@@ -46,13 +43,9 @@ python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --sourc
   `lifetime.cpp`, over a thread-per-coroutine model of Swoole's coroutines and
   timers; and by the `swoole_channel_coro` and `swoole_coroutine/cancel` PHPTs. The live map lists newest first, the order `Coroutine::list()`
   shows from upstream's `std::unordered_map` (#357).
-- `production_stack.py` builds the Context constructor/destructor/query from the
-  shipped context.cc (the pin plus every build patch's hunks for it) into a private PHP addon against each engine's SDK and checks marker observations.
 
 ## Known failures and blocked activation
 
-- `core.py --ucontext` on macOS fails all originals per engine, including a
-  native SIGSEGV in `_setcontext`. Assembly contexts pass on macOS and Linux.
 - Optional thread-context is unsupported; `core.py` rejects a config defining
   `SW_USE_THREAD_CONTEXT`.
 

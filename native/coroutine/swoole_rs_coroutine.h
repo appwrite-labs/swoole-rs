@@ -68,7 +68,6 @@ void swr_v1_coroutine_set_task(swr_v1_coroutine *, void *);
 void swr_v1_coroutine_cancel(swr_v1_coroutine *);
 void swr_v1_coroutine_timeout(swr_v1_coroutine *);
 long swr_v1_coroutine_execute_usec(const swr_v1_coroutine *, long now);
-long swr_v1_coroutine_execute_usec(const swr_v1_coroutine *, long now);
 /* Coroutine stacks (crates/coroutine/src/stack.rs). PROTECT maps the stack and
  * makes its lowest page inaccessible (SW_CONTEXT_PROTECT_STACK_PAGE); MARK
  * writes the usage markers (SW_CONTEXT_DETECT_STACK_USAGE). Free with the same
@@ -77,6 +76,26 @@ enum { SWR_CTX_STACK_PROTECT = 1, SWR_CTX_STACK_MARK = 2 };
 void *swr_v1_context_stack_alloc(size_t size, uint32_t flags);
 void swr_v1_context_stack_free(void *stack, size_t size, uint32_t flags);
 size_t swr_v1_context_stack_usage(const uint8_t *stack, size_t size);
+/* A coroutine's context (crates/coroutine/src/context.rs): the stack and the
+ * boost.context switch onto it, with AddressSanitizer's fiber annotations when
+ * its runtime is loaded. init runs entry(data) on the first swap_in and exits
+ * with upstream's fatal error when out of memory; the record must not move until
+ * free. swap_out from the running context returns to its last swap_in; end is
+ * set once entry returns. */
+typedef struct {
+    void *fctx, *swap_fctx;
+    uint8_t *stack;
+    uint32_t stack_size, flags;
+    void (*entry)(void *);
+    void *data;
+    const void *asan_bottom;
+    size_t asan_size;
+    bool end;
+} swr_v1_context;
+void swr_v1_context_init(swr_v1_context *, size_t stack_size, uint32_t flags, void (*entry)(void *), void *data);
+void swr_v1_context_free(swr_v1_context *);
+void swr_v1_context_swap_in(swr_v1_context *);
+void swr_v1_context_swap_out(swr_v1_context *);
 #ifdef __cplusplus
 }
 #endif

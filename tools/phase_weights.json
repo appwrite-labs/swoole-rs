@@ -37,7 +37,6 @@
  "corebase-unit": 2,
  "coroutine-compile": 9,
  "coroutine-native-originals": 153,
- "coroutine-production-stack": 7,
  "coroutine-rust-asan": 3,
  "coroutine-stack-compile": 11,
  "coroutine-timing-compile": 6,

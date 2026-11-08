@@ -174,7 +174,7 @@ def plan(args, reports):
     variant = build_variant(args)
     manifest = ROOT / 'target/hybrid' / variant / 'build-manifest.json'
     hybrid = manifest.parent / 'modules/swoole.so'
-    captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines', 'coroutine'} & set(modules)))
+    captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines'} & set(modules)))
     native_variant = build_alias('upstream', profile_suffix(args))
     reference = (ROOT / 'target/hybrid' / native_variant / 'modules/swoole.so'
                  if captured_reference or getattr(args, 'stdext', False) or getattr(args, 'php_sockets', False) else ROOT / 'target/upstream/src/modules/swoole.so')
@@ -253,11 +253,6 @@ def plan(args, reports):
                '--report', reports / 'reactor-compile.json')
     pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
     if 'coroutine' in modules:
-        if integrate:
-            script('coroutine-production-stack', 'tests/modules/coroutine/production_stack.py',
-                   '--source', ROOT / 'target/upstream/src', '--source-ref', 'HEAD', *php,
-                   '--selected-export', selected_export / 'export.json',
-                   '--native-export', native_export / 'export.json', *report('coroutine-production-stack'))
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.
         script('coroutine-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-coroutine', '--report', reports / 'coroutine-rust-asan.json')
         for phase, options in [('coroutine-compile', []), ('coroutine-stack-compile', ['--stack-usage']),

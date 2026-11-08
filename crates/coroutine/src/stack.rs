@@ -1,5 +1,5 @@
 //! Coroutine stacks: allocation (heap, or a mapping with a guard page), the
-//! usage markers and their exponential sampling. C++ switches onto the stack.
+//! usage markers and their exponential sampling. context.rs switches onto it.
 
 use core::ffi::c_void;
 use std::ptr;
