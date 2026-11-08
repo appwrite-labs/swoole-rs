@@ -45,8 +45,6 @@ pub struct Host {
     pub remove: unsafe extern "C" fn(*mut CoSocket, u32),
     /// Resumes a coroutine.
     pub resume: unsafe extern "C" fn(*mut c_void),
-    /// `close()`'s release: runs the destructor callback once; the socket may be gone after.
-    pub release: unsafe extern "C" fn(*mut CoSocket),
     /// `socket->ssl_shutdown()`.
     pub ssl_shutdown: unsafe extern "C" fn(*mut CoSocket),
     /// `socket->check_liveness()`, errno set when it fails.
@@ -458,9 +456,10 @@ pub(crate) mod test_host {
         log(format!("resume:{cid}"));
         hook(&ON_RESUME, |f| f(cid));
     }
-    unsafe extern "C" fn release(socket: *mut CoSocket) {
+    /// A test socket's destructor callback; its owner is the record.
+    pub(crate) unsafe extern "C" fn release(_: *mut c_void, socket: *mut c_void) {
         log("release");
-        hook(&ON_RELEASE, |f| f(socket));
+        hook(&ON_RELEASE, |f| f(socket.cast()));
     }
     unsafe extern "C" fn ssl_shutdown(_: *mut CoSocket) {
         log("ssl-shutdown");
@@ -575,7 +574,6 @@ pub(crate) mod test_host {
         buffer,
         remove,
         resume,
-        release,
         ssl_shutdown,
         liveness,
         read_buffer: crate::packet::tests::read_buffer,

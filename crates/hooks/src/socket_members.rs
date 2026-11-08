@@ -128,40 +128,29 @@ unsafe fn ready(event: *const Event, kind: u32) -> c_int {
     0
 }
 
-/// `Socket::readable_event_callback(reactor, event)`.
+/// `Socket::readable_event_callback(reactor, event)`, registered for
+/// `SW_FD_CO_SOCKET` by `swr_v1_hook_init_reactor`.
 ///
 /// # Safety
 /// As [`ready`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole9coroutine6Socket23readable_event_callbackEPNS_7ReactorEPNS_5EventE"
-    )
-)]
 pub unsafe extern "C" fn readable_event_callback(
     _reactor: *mut c_void,
-    event: *mut Event,
+    event: *mut c_void,
 ) -> c_int {
     // SAFETY: forwarded.
-    unsafe { ready(event, READ) }
+    unsafe { ready(event.cast(), READ) }
 }
 
 /// `Socket::writable_event_callback(reactor, event)`.
 ///
 /// # Safety
 /// As [`ready`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole9coroutine6Socket23writable_event_callbackEPNS_7ReactorEPNS_5EventE"
-    )
-)]
 pub unsafe extern "C" fn writable_event_callback(
     _reactor: *mut c_void,
-    event: *mut Event,
+    event: *mut c_void,
 ) -> c_int {
     // SAFETY: forwarded.
-    unsafe { ready(event, WRITE) }
+    unsafe { ready(event.cast(), WRITE) }
 }
 
 /// `Socket::error_event_callback(reactor, event)`: wakes the writer, then the
@@ -169,15 +158,9 @@ pub unsafe extern "C" fn writable_event_callback(
 ///
 /// # Safety
 /// As [`ready`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole9coroutine6Socket20error_event_callbackEPNS_7ReactorEPNS_5EventE"
-    )
-)]
-pub unsafe extern "C" fn error_event_callback(_reactor: *mut c_void, event: *mut Event) -> c_int {
+pub unsafe extern "C" fn error_event_callback(_reactor: *mut c_void, event: *mut c_void) -> c_int {
     // SAFETY: as the caller promises.
-    let source = unsafe { event_socket(event) };
+    let source = unsafe { event_socket(event.cast()) };
     // SAFETY: as above.
     let object = unsafe { (*source).object };
     // SAFETY: the live socket and the network::Socket the event came from.
@@ -205,11 +188,7 @@ pub unsafe extern "C" fn getsockname(this: *const c_void) -> bool {
 ///
 /// # Safety
 /// `this` is a live native socket and `address` writable.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6Socket11getpeernameEPNS_7network7AddressE")
-)]
-pub unsafe extern "C" fn getpeername(this: *mut c_void, address: *mut SocketAddress) -> bool {
+pub unsafe fn getpeername(this: *mut c_void, address: *mut SocketAddress) -> bool {
     let socket = record(this);
     // SAFETY: as the caller promises.
     let error = unsafe { swr_v1_hook_co_socket_peer_name(socket, address) };
@@ -262,10 +241,6 @@ pub unsafe extern "C" fn set_timeout(this: *const c_void, timeout: f64, kind: c_
 ///
 /// # Safety
 /// `this` is a live native socket and `out` holds `size` writable bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6Socket16recv_with_bufferEPvm")
-)]
 pub unsafe extern "C" fn recv_with_buffer(this: *mut c_void, out: *mut u8, size: usize) -> isize {
     // SAFETY: as the caller promises.
     unsafe { swr_v1_hook_co_socket_recv_buffered(record(this), out, size) }
@@ -1509,14 +1484,14 @@ mod tests {
         unsafe { swr_v1_hook_socket_bind(object.0.record.state, READ, (&raw mut co).cast()) };
         let mut event = object.event();
         assert_eq!(
-            unsafe { readable_event_callback(core::ptr::null_mut(), &raw mut event) },
+            unsafe { readable_event_callback(core::ptr::null_mut(), (&raw mut event).cast()) },
             0
         );
         assert_eq!(object.0.record.err_code, 0);
         assert_eq!(take(), ["last-error:0", "resume:3"]);
         // Nobody writes: a writable event wakes no one.
         assert_eq!(
-            unsafe { writable_event_callback(core::ptr::null_mut(), &raw mut event) },
+            unsafe { writable_event_callback(core::ptr::null_mut(), (&raw mut event).cast()) },
             0
         );
         assert_eq!(take(), ["last-error:0"]);
@@ -1532,7 +1507,7 @@ mod tests {
         unsafe { swr_v1_hook_socket_bind(state, WRITE, (&raw mut writer).cast()) };
         object.0.record.socket_mut().removed = 0;
         let mut event = object.event();
-        unsafe { error_event_callback(core::ptr::null_mut(), &raw mut event) };
+        unsafe { error_event_callback(core::ptr::null_mut(), (&raw mut event).cast()) };
         assert_eq!(
             take(),
             ["last-error:0", "resume:2", "last-error:0", "resume:1"]

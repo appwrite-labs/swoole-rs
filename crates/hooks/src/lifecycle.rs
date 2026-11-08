@@ -126,7 +126,7 @@ unsafe fn close(socket: *mut CoSocket, sys: Sys) -> bool {
     // SAFETY: as the caller promises.
     unsafe { (*socket).sock_fd = -1 };
     // SAFETY: the record's last effect here; it may destroy the socket.
-    unsafe { (host().release)(socket) };
+    unsafe { crate::socket_extra::run_close_hook(socket) };
     true
 }
 
@@ -299,7 +299,7 @@ mod tests {
     use super::*;
     use crate::co_io::set_errno;
     use crate::co_io::test_host::{
-        ON_RELEASE, ON_RESUME, ON_SUSPEND, PROBE, SSL_ERRNO, TIMER_OK, install, log, take,
+        ON_RELEASE, ON_RESUME, ON_SUSPEND, PROBE, SSL_ERRNO, TIMER_OK, install, log, release, take,
     };
     use crate::co_socket::TestSocket;
     use crate::shutdown::{SocketFlags, swr_v1_hook_socket_bind, swr_v1_hook_socket_set_flags};
@@ -368,7 +368,7 @@ mod tests {
         }
         if unsafe { swr_v1_hook_socket_bound_co(record(s).state, READ | WRITE) }.is_null() {
             unsafe { (*s).sock_fd = -1 };
-            unsafe { (host().release)(s) };
+            unsafe { crate::socket_extra::run_close_hook(s) };
             true
         } else {
             unsafe { record(s).record() }.output.close_wait = 1;
@@ -505,6 +505,17 @@ mod tests {
         operation: &dyn Fn(*mut CoSocket) -> bool,
     ) -> Outcome {
         let mut socket = TestSocket::new();
+        let extra = crate::socket_extra::swr_v1_hook_socket_extra_new().owner;
+        socket.0.extra = extra;
+        let owner = socket.ptr().cast();
+        unsafe {
+            crate::socket_extra::set_close_hook(
+                socket.ptr(),
+                owner,
+                release,
+                core::ptr::null_mut(),
+            );
+        }
         unsafe { socket.0.record() }.timeouts.connect = 1.0;
         socket.0.err_code = 9;
         let mut ids: [Box<c_long>; 3] = [Box::new(5), Box::new(7), Box::new(11)];
@@ -530,6 +541,8 @@ mod tests {
         };
         socket.0.sock_fd = 100;
         unsafe { swr_v1_hook_socket_bind(state, READ | WRITE, core::ptr::null_mut()) };
+        unsafe { crate::socket_extra::swr_v1_hook_socket_extra_free(extra) };
+        socket.0.extra = core::ptr::null_mut();
         outcome
     }
 
