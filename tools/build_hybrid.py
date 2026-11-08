@@ -302,10 +302,13 @@ def overlay_hybrid_tree(archive, tree):
             for name in patch['upstream_paths']:
                 if name in CORE_TEST_HEADERS:
                     continue
+                target = Path(tree) / name
                 if not (source / name).exists():
-                    (Path(tree) / name).unlink(missing_ok=True)
-                elif (source / name).read_bytes() != (Path(tree) / name).read_bytes():
-                    shutil.copyfile(source / name, Path(tree) / name)
+                    target.unlink(missing_ok=True)
+                elif not target.is_file() or (source / name).read_bytes() != target.read_bytes():
+                    # A tree may lack the file: `git archive` export-ignores core-tests/.
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source / name, target)
     for name in zend_free_native_sources():
         shutil.copyfile(source / name, Path(tree) / name)
     # core-tests include a header the hybrid folded into another one; they include the survivor.
