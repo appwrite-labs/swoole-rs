@@ -3,7 +3,8 @@
 // Socket, handlers and events, timers, the current Coroutine's yield and
 // resume, and the bundled php_curl handle (thirdparty/php/curl) that
 // curl_easy_perform and the curl_* functions reach it through.
-#include "php_swoole_curl.h"
+#include "php_swoole_cxx.h"
+#include "swoole_rs_curl.h"
 #include "swoole_socket.h"
 
 #ifdef SW_USE_CURL
@@ -11,8 +12,12 @@
 // The cURL sockets' reactor fd type, upstream's PHP_SWOOLE_FD_CO_CURL.
 static constexpr int PHP_SWOOLE_FD_CO_CURL = SW_FD_STREAM_CLIENT + 10;
 
-namespace swoole {
-namespace curl {
+using swoole::Coroutine;
+using swoole::Event;
+using swoole::FdType;
+using swoole::Reactor;
+using swoole::Timer;
+using swoole::TimerNode;
 
 static int socket_event(Event *event, int bitmask) {
     swr_v1_curl_socket_event(event->socket->object, bitmask);
@@ -41,7 +46,7 @@ static const swr_v1_curl_ops ops = {
         }
     },
     [](int fd, void *object) -> void * {
-        auto socket = new network::Socket();
+        auto socket = new swoole::network::Socket();
         socket->fd = fd;
         socket->removed = 1;
         socket->fd_type = static_cast<FdType>(PHP_SWOOLE_FD_CO_CURL);
@@ -49,17 +54,17 @@ static const swr_v1_curl_ops ops = {
         return socket;
     },
     [](void *socket, bool *removed) {
-        auto sock = static_cast<network::Socket *>(socket);
+        auto sock = static_cast<swoole::network::Socket *>(socket);
         if (removed) {
             *removed = sock->removed;
         }
         return static_cast<int>(sock->events);
     },
-    [](void *socket, int events) { return swoole_event_add(static_cast<network::Socket *>(socket), events); },
-    [](void *socket, int events) { return swoole_event_set(static_cast<network::Socket *>(socket), events); },
-    [](void *socket) { return swoole_event_del(static_cast<network::Socket *>(socket)); },
+    [](void *socket, int events) { return swoole_event_add(static_cast<swoole::network::Socket *>(socket), events); },
+    [](void *socket, int events) { return swoole_event_set(static_cast<swoole::network::Socket *>(socket), events); },
+    [](void *socket) { return swoole_event_del(static_cast<swoole::network::Socket *>(socket)); },
     [](void *socket) {
-        auto sock = static_cast<network::Socket *>(socket);
+        auto sock = static_cast<swoole::network::Socket *>(socket);
         if (sock->events && sw_likely(swoole_event_is_available())) {
             sock->silent_remove = 1;
             swoole_event_del(sock);
@@ -91,18 +96,32 @@ static const swr_v1_curl_ops ops = {
     []() { swoole_log_as("Multi::read_info", swoole_warning("CURLMSG default")); },
 };
 
-Multi *Multi::create() {
-    return reinterpret_cast<Multi *>(swr_v1_curl_multi_new(&ops));
+swr_v1_curl_multi *swoole_curl_multi_new() {
+    return swr_v1_curl_multi_new(&ops);
 }
-}  // namespace curl
-}  // namespace swoole
+
+void *swoole_curl_check_bound_co(swr_v1_curl_multi *multi) {
+    auto co = static_cast<Coroutine *>(swr_v1_curl_multi_co(multi));
+    if (co) {
+        Coroutine::set_socket_bound_cid(co->get_cid());
+        swoole_fatal_error(SW_ERROR_CO_HAS_BEEN_BOUND,
+                           "This cURL handle is currently executing in coroutine#%ld, cannot be operated",
+                           co->get_cid());
+        return nullptr;
+    }
+    return Coroutine::get_current_safe();
+}
 
 CURLcode swoole_curl_easy_perform(CURL *cp) {
-    auto handle = swoole::curl::get_handle(cp);
+    auto handle = swr_v1_curl_get_handle(cp);
     if (!handle->easy_multi) {
-        handle->easy_multi = swoole::curl::Multi::create();
+        handle->easy_multi = swoole_curl_multi_new();
     }
-    return handle->easy_multi->exec(handle);
+    int result = swr_v1_curl_multi_exec(handle->easy_multi, handle);
+    if (result < 0) {
+        swoole_curl_check_bound_co(handle->easy_multi);
+    }
+    return static_cast<CURLcode>(result);
 }
 
 php_curl *swoole_curl_get_handle(zval *zid, bool exclusive, bool required) {
@@ -111,12 +130,12 @@ php_curl *swoole_curl_get_handle(zval *zid, bool exclusive, bool required) {
         exclusive = false;
     }
     if (exclusive && swoole_coroutine_is_in()) {
-        auto handle = swoole::curl::get_handle(ch->cp);
+        auto handle = swr_v1_curl_get_handle(ch->cp);
         if (required && !handle) {
             php_swoole_fatal_error(E_WARNING, "The given handle is not initialized in coroutine");
             return nullptr;
         }
-        if (handle && handle->multi && handle->multi->check_bound_co() == nullptr) {
+        if (handle && handle->multi && swoole_curl_check_bound_co(handle->multi) == nullptr) {
             return nullptr;
         }
     }

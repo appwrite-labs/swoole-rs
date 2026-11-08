@@ -5,10 +5,10 @@
 //! curl watches joins the reactor, each timeout becomes a timer, and the
 //! coroutine waiting on the transfer is resumed when either fires.
 //!
-//! C++ keeps the `swoole::curl::Multi` and `Handle` names `ext/curl` uses, as
-//! a facade over these exports, and lends the reactor, timer and coroutine
-//! operations ([`Ops`]). The Zend side (`swoole_curl_get_handle`) and the
-//! fatal errors of a bound or missing coroutine stay in C++.
+//! The bundled `ext/curl` calls these exports directly (`swoole_rs_curl.h`);
+//! C++ lends the reactor, timer and coroutine operations ([`Ops`]). The Zend
+//! side (`swoole_curl_get_handle`) and the fatal errors of a bound or missing
+//! coroutine stay in C++.
 #![cfg_attr(
     not(test),
     deny(
@@ -88,8 +88,8 @@ pub struct Ops {
     warn_message: unsafe extern "C" fn(),
 }
 
-/// `swoole::curl::Handle`: the easy handle's multi while it is in one, and
-/// the multi `curl_exec` runs it in. C++ reads and writes `multi`.
+/// `struct swr_v1_curl_handle`: the easy handle's multi while it is in one,
+/// and the multi `curl_exec` runs it in. C++ reads and writes `multi`.
 #[repr(C)]
 pub struct Handle {
     cp: *mut CURL,
@@ -108,7 +108,7 @@ struct Socket {
     deleted: Cell<bool>,
 }
 
-/// `swoole::curl::Multi`. Every field is a cell: curl calls back into the
+/// `struct swr_v1_curl_multi`. Every field is a cell: curl calls back into the
 /// same multi from inside its own calls, and other coroutines do while this
 /// one waits, so no borrow is held across either.
 pub struct Multi {

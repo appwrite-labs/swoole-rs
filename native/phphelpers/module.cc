@@ -11,7 +11,7 @@
 #include "swoole_rs_phpruntime.h"
 #include "swoole_rs_zend_guard.h"
 #include "swoole_coroutine_system.h"
-#include "swoole_curl_interface.h"
+#include "swoole_rs_curl.h"
 #include "thirdparty/php/standard/proc_open.h"
 
 using swoole::Coroutine;
