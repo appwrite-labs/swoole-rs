@@ -5,6 +5,7 @@
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
+use super::network_socket::make_socket;
 use super::{AF_INET6, ENOENT, errno, last_error};
 
 const SW_SOCK_TCP: c_int = 1;
@@ -63,10 +64,6 @@ unsafe extern "C-unwind" {
     fn swr_v1_clients_address_string(family: c_int, address: *const c_void) -> *const c_char;
     fn swr_v1_clients_address_verify(family: c_int, host: *const c_char) -> bool;
     fn swr_v1_core_set_last_error(code: c_int);
-    #[link_name = "_ZN6swoole11make_socketE12swSocketType8swFdTypei"]
-    fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> *mut c_int;
-    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free(socket: *mut c_int);
 }
 
 #[link(name = "swoole")]
@@ -78,20 +75,19 @@ unsafe extern "C" {
 
 unsafe extern "C" {
     fn __errno_location() -> *mut c_int;
-    fn connect(fd: c_int, address: *const c_void, length: u32) -> c_int;
 }
 
 /// `swoole::network::Address`: the sockaddr union, its length and the socket type.
 #[repr(C)]
 #[derive(Clone)]
-struct Address {
-    addr: [u32; 28],
-    len: u32,
-    kind: c_int,
+pub(super) struct Address {
+    pub(super) addr: [u32; 28],
+    pub(super) len: u32,
+    pub(super) kind: c_int,
 }
 
 impl Address {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             addr: [0; 28],
             len: 0,
@@ -100,7 +96,13 @@ impl Address {
     }
 
     /// `assign(type, host, port = 0, resolve_name = true)`.
-    fn assign(&mut self, kind: c_int, host: &str, port: c_int, resolve_name: bool) -> bool {
+    pub(super) fn assign(
+        &mut self,
+        kind: c_int,
+        host: &str,
+        port: c_int,
+        resolve_name: bool,
+    ) -> bool {
         self.kind = kind;
         let host = CString::new(host).unwrap();
         let resolve: Option<Resolve> = resolve_name.then_some(swr_v1_clients_gethostbyname);
@@ -125,7 +127,7 @@ impl Address {
     }
 
     /// `assign(url)`.
-    fn assign_url(&mut self, url: &str) -> bool {
+    pub(super) fn assign_url(&mut self, url: &str) -> bool {
         // SAFETY: `url` is readable for its length.
         let plan = unsafe { swr_v1_clients_url(url.as_ptr(), url.len()) };
         assert_ne!(
@@ -142,7 +144,7 @@ impl Address {
         self.assign(plan.kind, host, plan.port, true)
     }
 
-    fn get_port(&self) -> c_int {
+    pub(super) fn get_port(&self) -> c_int {
         // SAFETY: a live record.
         unsafe { swr_v1_clients_address_port(std::ptr::from_ref(self).cast()) }
     }
@@ -157,7 +159,7 @@ impl Address {
         unsafe { swr_v1_clients_address_loopback(self) }
     }
 
-    fn get_addr(&self) -> *const c_char {
+    pub(super) fn get_addr(&self) -> *const c_char {
         // SAFETY: a live record.
         unsafe { swr_v1_clients_address_host(std::ptr::from_ref(self).cast()) }
     }
@@ -192,21 +194,14 @@ fn type_str(kind: c_int) -> &'static CStr {
 
 /// `make_socket(type, SW_FD_STREAM, 0)`, `sock->connect(addr)` and `sock->free()`.
 fn connect_fails(kind: c_int, urls: &[&str], expected: c_int) {
-    // SAFETY: a new blocking socket; its record starts with the fd.
-    let sock = unsafe { make_socket(kind, SW_FD_STREAM, 0) };
-    assert!(!sock.is_null());
+    let sock = make_socket(kind, SW_FD_STREAM, 0).expect("socket");
     let mut addr = Address::new();
     for url in urls {
         assert!(addr.assign_url(url));
-        // SAFETY: the socket's fd and the assigned sockaddr.
-        assert_eq!(
-            unsafe { connect(*sock, addr.addr.as_ptr().cast(), addr.len) },
-            SW_ERR
-        );
+        assert_eq!(sock.connect_address(&addr), SW_ERR);
         assert_eq!(errno(), expected);
     }
-    // SAFETY: frees the socket once.
-    unsafe { socket_free(sock) };
+    sock.free();
 }
 
 fn basic() {

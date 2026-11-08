@@ -95,6 +95,49 @@ tests/modules/coroutine/lifetime.cpp). The fixture also holds the allocation fau
 oracle they share. coroutine/base.cpp and file.cpp run here too
 (tests/modules/coroutine/README.md).
 
+`core-tests/src/network/socket.cpp` is Rust: `system/src/network_socket.rs` holds
+its 26 TESTs, one function each (`socket.<name>`, upstream's names, inputs, paths,
+ports and expected values), run by `hooks-system-rust`; with reactor/base.cpp already Rust, the
+`reactor-native-originals` lane that compiled it is gone. `network::Socket` is
+Rust's record (`swr_v1_socket`): its
+out-of-line members are called under their upstream symbols and its inline ones
+through the `swr_v1_socket_*` calls the header makes; `Address` is address.rs's.
+`ERR_put_error` is OpenSSL 3's expansion (`ERR_new`, `ERR_set_debug`,
+`ERR_set_error`); `sw_tg_buffer()` reads become a 64 KiB buffer; upstream's mutex
+handoff between the two threads is a channel. Excluded as in the GoogleTest run:
+`socket.connect_sync` and `socket.fail` (external DNS and network) and
+`socket.make_server_socket` (the runner's kernel returns `EPROTONOSUPPORT` for an
+unprivileged raw socket).
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `connect_sync` | `socket.connect_sync` |
+| `fail` | `socket.fail` |
+| `ssl_fail` | `socket.ssl_fail` |
+| `sendto` | `socket.sendto` |
+| `sendto_ipv4` | `socket.sendto_ipv4` |
+| `sendto_ipv6` | `socket.sendto_ipv6` |
+| `recv` | `socket.recv` |
+| `recvfrom_sync` | `socket.recvfrom_sync` |
+| `send_async_1` | `socket.send_async_1` |
+| `send_async_2` | `socket.send_async_2` |
+| `sendfile_sync` | `socket.sendfile_sync` |
+| `sendfile` | `socket.sendfile` |
+| `peek` | `socket.peek` |
+| `sendto_sync` | `socket.sendto_sync` |
+| `clean` | `socket.clean` |
+| `check_liveness` | `socket.check_liveness` |
+| `sync` | `socket.sync` |
+| `dup` | `socket.dup` |
+| `convert_to_type` | `socket.convert_to_type` |
+| `get_domain_and_type` | `socket.get_domain_and_type` |
+| `make_socket` | `socket.make_socket` |
+| `make_server_socket` | `socket.make_server_socket` |
+| `make_server_socket_rebind_after_time_wait` | `socket.make_server_socket_rebind_after_time_wait` |
+| `ssl_get_error_reason` | `socket.ssl_get_error_reason` |
+| `catch_error` | `socket.catch_error` |
+| `misc` | `socket.misc` |
+
 `core-tests/src/memory/lru_cache.cpp` no longer builds (`include/swoole_lru_cache.h`
 is deleted). Its TESTs are Rust tests over the DNS cache's `Lru` in
 `crates/hooks/src/dns_cache.rs`, with the same inputs and expected values:

@@ -351,7 +351,7 @@ type Slot<'a> = RefCell<Option<Box<dyn FnMut(&Client<'a>) + 'a>>>;
 type ReceiveSlot<'a> = RefCell<Option<Box<dyn FnMut(&Client<'a>, &[u8]) + 'a>>>;
 
 /// `network::Client`, deleted on drop; `created`/`connected` are `SyncClient`'s.
-struct Client<'a> {
+pub(super) struct Client<'a> {
     ptr: *mut c_void,
     state: *mut c_void,
     created: Cell<bool>,
@@ -391,7 +391,7 @@ unsafe extern "C" fn listener(
 
 impl<'a> Client<'a> {
     /// `Client cli(type, async)`; None when it has no socket (`!cli.ready()`).
-    fn new(kind: c_int, is_async: bool) -> Option<Box<Self>> {
+    pub(super) fn new(kind: c_int, is_async: bool) -> Option<Box<Self>> {
         let mut error = 0;
         // SAFETY: a writable error.
         let ptr = unsafe { swoole_client_create(kind, is_async, &raw mut error) };
@@ -426,7 +426,7 @@ impl<'a> Client<'a> {
         unsafe { &*self.ptr.cast::<Native>() }
     }
 
-    fn socket(&self) -> *mut c_void {
+    pub(super) fn socket(&self) -> *mut c_void {
         self.native().record.socket
     }
 
@@ -474,7 +474,7 @@ impl<'a> Client<'a> {
         *self.on_receive.borrow_mut() = Some(Box::new(body));
     }
 
-    fn connect(&self, host: &str, port: c_int, timeout: f64, flags: c_int) -> c_int {
+    pub(super) fn connect(&self, host: &str, port: c_int, timeout: f64, flags: c_int) -> c_int {
         let host = cstring(host);
         // SAFETY: the live state and a NUL-terminated host.
         unsafe { swr_v1_clients_connect(self.state, host.as_ptr(), port, timeout, flags) }
@@ -501,7 +501,7 @@ impl<'a> Client<'a> {
         unsafe { swr_v1_clients_close(self.state) }
     }
 
-    fn shutdown(&self, how: c_int) -> c_int {
+    pub(super) fn shutdown(&self, how: c_int) -> c_int {
         // SAFETY: the live state.
         unsafe { swr_v1_clients_shutdown(self.state, how) }
     }
@@ -558,7 +558,7 @@ impl<'a> Client<'a> {
         (result, host.to_str().unwrap().to_owned(), port)
     }
 
-    fn enable_ssl_encrypt(&self) -> c_int {
+    pub(super) fn enable_ssl_encrypt(&self) -> c_int {
         // SAFETY: the live client.
         unsafe { client_enable_ssl_encrypt(self.ptr) }
     }
