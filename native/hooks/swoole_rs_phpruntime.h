@@ -116,7 +116,7 @@ struct swr_v1_runtime_socket_ops {
     bool (*connect)(void *socket, const char *host, size_t length, int port, int flags);
     /* each(arg, pem, length) of each certificate in the peer's chain. */
     void (*peer_chain)(void *socket, void (*each)(void *, const char *, size_t), void *arg);
-    /* System::socket_poll of count (fd, events) rows, merged by fd as stream_select
+    /* swr_v1_hook_socket_poll of count (fd, events) rows, merged by fd as stream_select
      * merges them; the polled fds and their revents in the poll set's order. */
     bool (*poll_set)(const int *fds, const int *events, size_t count, double timeout, int *ready, int *revents,
                      size_t *size);
