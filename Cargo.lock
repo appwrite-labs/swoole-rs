@@ -510,6 +510,7 @@ dependencies = [
  "regex-automata",
  "swoole-rs-base64",
  "swoole-rs-corebase",
+ "swoole-rs-oracle",
 ]
 
 [[package]]

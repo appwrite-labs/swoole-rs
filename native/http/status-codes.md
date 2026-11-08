@@ -13,7 +13,6 @@ every initialized entry, the sentinel and the trailing zero slots. The header's
   unsynchronized sequential read/write contract. There is no accessor or mirror, and
   status lookup does not depend on the array's contents.
 
-Tests: `tests/modules/http/cookie_flow_gate.py --codes-only` (compares all 128 slots
-and checks that a shared library linking only the status body defines the symbol
-exactly once; the library is not loaded). Export visibility in the production PHP
+Tests: `crates/http/src/pin_helpers.rs`
+(`public_status_code_array_matches_the_pin_and_is_independent_of_lookup`). Export visibility in the production PHP
 extension still needs to be checked.

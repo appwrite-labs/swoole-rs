@@ -329,7 +329,15 @@ pub fn http_url_encode(bytes: &[u8]) {
 pub fn http_cookies(bytes: &[u8]) {
     let mut theirs = vec![0; 8 * bytes.len() + 16];
     // SAFETY: `theirs` has the documented capacity.
-    let size = unsafe { upstream_http::cookies(bytes.as_ptr(), bytes.len(), theirs.as_mut_ptr()) };
+    let size = unsafe {
+        upstream_http::cookies(
+            bytes.as_ptr(),
+            bytes.len(),
+            theirs.as_mut_ptr(),
+            false,
+            std::ptr::null_mut(),
+        )
+    };
     theirs.truncate(size);
     // Like parse_cookie, tokenize a NUL-terminated copy in place.
     let mut buffer = [bytes, &[0]].concat();
@@ -1009,8 +1017,19 @@ pub fn resp_stream(bytes: &[u8]) {
 /// exports), from `create` through arbitrary server replies: every byte sent,
 /// each handshake result and state, and each reply code's message must match.
 pub fn socks5(bytes: &[u8]) {
-    let Some((&[flags, user, password, host, host_extra, port_high, port_low, replies], rest)) =
-        bytes.split_first_chunk::<8>()
+    let Some((
+        &[
+            flags,
+            user,
+            password,
+            host,
+            host_extra,
+            port_high,
+            port_low,
+            replies,
+        ],
+        rest,
+    )) = bytes.split_first_chunk::<8>()
     else {
         return;
     };

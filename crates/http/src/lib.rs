@@ -9,8 +9,6 @@
 use std::{mem::MaybeUninit, slice};
 const INVALID: i32 = -1;
 const OVERFLOW: i32 = -2;
-mod cookie_flow;
-pub use cookie_flow::{HttpCookieFlow, swr_v2_http_cookie_flow};
 mod conditional;
 pub use conditional::{
     HttpCalendar, HttpConditional, swr_v1_http_conditional, swr_v1_http_date_format,

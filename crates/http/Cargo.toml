@@ -21,5 +21,8 @@ regex-automata = "0.4.18"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-base64 = { path = "../base64" }
 
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
 [lints]
 workspace = true
