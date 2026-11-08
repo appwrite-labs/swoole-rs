@@ -1,8 +1,8 @@
 {
-  "plaintext": 1.05,
-  "echo-1k": 1.04,
+  "plaintext": 1.03,
+  "echo-1k": 1.03,
   "json": 1.03,
-  "service-health": 1.02,
-  "websocket": 1.18,
+  "service-health": 1.01,
+  "websocket": 1.15,
   "timer": 0.83
 }
