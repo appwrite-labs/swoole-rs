@@ -6,6 +6,11 @@
 use core::ffi::{CStr, c_char, c_int};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 
+use swoole_rs_buffer::cpp::{
+    CppBuffer, new_buffer, swr_cpp_buffer_append, swr_cpp_buffer_empty, swr_cpp_buffer_length,
+    swr_cpp_buffer_typed_close,
+};
+use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{SocketRecord, reactor_upstream};
@@ -55,6 +60,11 @@ use crate::ops::{
     OP_LC_PREPARE_WORKERS, OP_LC_START_BASE, OP_LC_START_THREAD, OP_MASTER_REACTOR,
     OP_MASTER_WORKER, OP_SIGNAL_ACTIVE, OP_SIGNAL_READ_MESSAGE, OP_STOP_SINGLE_WORKER,
     OP_STOP_WORKER_THREADS,
+};
+use crate::ops::{
+    OP_IS_MASTER_THREAD, OP_MASTER_THREAD, OP_NOW_MS, OP_OUT_EMPTY, OP_PORT_EVENT_ADD,
+    OP_PORT_EVENT_DEL, OP_PORT_REACTOR_DEL, OP_REACTOR_STOP, OP_REACTOR_WAIT_EXIT, OP_SC_APPEND,
+    OP_SC_ENSURE_BUFFER, OP_SC_OUT_FULL, OP_SC_OUT_HIGH, OP_SC_QUEUE_CLOSE,
 };
 use crate::port_config::PortConfig;
 use crate::records::{ConnectionRecord, SessionRecord};
@@ -1375,6 +1385,92 @@ unsafe fn lifecycle(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             gs.connection_nums = shm_calloc(o.config().worker_num as usize, ATOMIC_SIZE);
             u64::from(!gs.connection_nums.is_null())
         }
+        // SAFETY: per the caller.
+        op => return unsafe { effects(o, op, arg) },
+    })
+}
+
+/// The ops over the thread's globals and reactor, the server's ports and
+/// the context socket's output buffer, which Rust lays out; else `None`.
+///
+/// # Safety
+/// As [`answer`].
+unsafe fn effects(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    /// `THREAD_MASTER`.
+    const THREAD_MASTER: u8 = 1;
+    let reactor = swoole_rs_corebase::thread_reactor;
+    let listener = || {
+        let index = usize::try_from(arg).unwrap_or(usize::MAX);
+        let &port = o.tables().ports().get(index)?;
+        // SAFETY: one of the server's live ports, whose listening socket is live.
+        Some(unsafe { port_config(port) }.socket.cast::<SocketRecord>())
+    };
+    let out = || o.sock().output.out_buffer.cast::<CppBuffer>();
+    Some(match op {
+        OP_IS_MASTER_THREAD => u64::from(swoole_rs_corebase::thread_kind() == THREAD_MASTER),
+        OP_MASTER_THREAD => {
+            #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint16_t) arg")]
+            swoole_rs_corebase::set_thread(THREAD_MASTER, arg as u16);
+            0
+        }
+        // `swoole_event_add`/`_del` and `SwooleTG.reactor->del` on a listening socket.
+        OP_PORT_EVENT_ADD | OP_PORT_EVENT_DEL | OP_PORT_REACTOR_DEL => {
+            let (kind, events) = if op == OP_PORT_EVENT_ADD {
+                (0, SW_EVENT_READ)
+            } else {
+                (2, 0)
+            };
+            // SAFETY: the thread's live reactor and a listening socket.
+            unsafe { reactor_upstream::reactor_change(reactor(), listener()?, kind, events) };
+            0
+        }
+        OP_REACTOR_WAIT_EXIT | OP_REACTOR_STOP => {
+            // SAFETY: the thread's live reactor.
+            let fields = unsafe { reactor_upstream::prepared(reactor()) }.fields;
+            if op == OP_REACTOR_WAIT_EXIT {
+                // SAFETY: as above.
+                unsafe { (*fields).wait_exit = true };
+            } else {
+                // SAFETY: as above.
+                unsafe { (*fields).running = false };
+            }
+            0
+        }
+        OP_NOW_MS => swoole_rs_reactor::steady_ms().to_bits(),
+        OP_OUT_EMPTY => {
+            // SAFETY: native code passes a live socket.
+            let buffer = unsafe { (*(arg as *const SocketRecord)).output.out_buffer };
+            // SAFETY: null or the socket's live buffer (`Buffer::empty`).
+            u64::from(buffer.is_null() || unsafe { swr_cpp_buffer_empty(buffer.cast()) })
+        }
+        OP_SC_ENSURE_BUFFER => {
+            let output = &mut o.sock().output;
+            if output.out_buffer.is_null() {
+                output.out_buffer = new_buffer(SW_SEND_BUFFER_SIZE).cast();
+            }
+            0
+        }
+        OP_SC_OUT_FULL => {
+            // SAFETY: the send path's socket, whose buffer it ensured.
+            u64::from(unsafe { swr_cpp_buffer_length(out()) } >= o.sock().output.buffer_size)
+        }
+        OP_SC_OUT_HIGH => {
+            // SAFETY: as above.
+            u64::from(unsafe { swr_cpp_buffer_length(out()) } >= o.port().buffer_high_watermark)
+        }
+        OP_SC_APPEND => {
+            // SAFETY: as above; the context lends `length` bytes at `data`.
+            unsafe { swr_cpp_buffer_append(out(), o.ctx.data.cast(), o.ctx.length) };
+            // SAFETY: as above.
+            o.conn().send_queued_bytes = unsafe { swr_cpp_buffer_length(out()) };
+            0
+        }
+        OP_SC_QUEUE_CLOSE => {
+            // SAFETY: as above.
+            unsafe { swr_cpp_buffer_typed_close(out()) };
+            o.conn().close_queued = 1;
+            0
+        }
         _ => return None,
     })
 }
@@ -1551,6 +1647,53 @@ mod tests {
                 sw_shm_free(allocation);
             }
             tables.session_list = core::ptr::null_mut();
+            crate::swr_v1_server_state_free(state);
+        }
+    }
+
+    #[test]
+    fn send_buffer_ops_queue_on_the_sockets_output() {
+        unsafe extern "C" {
+            #[link_name = "_ZdlPv"]
+            fn operator_delete(storage: *mut core::ffi::c_void);
+        }
+        let state = crate::swr_v1_server_state_new();
+        let mut ctx = context();
+        // SAFETY: plain records, for which zero is valid.
+        let mut sock: SocketRecord = unsafe { core::mem::zeroed() };
+        // SAFETY: as above.
+        let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let config = crate::port_config::swr_v1_port_config_new(0);
+        // A `ListenPort` starts with its settings pointer.
+        let mut port = config;
+        sock.output.buffer_size = 4;
+        // SAFETY: the settings allocated above.
+        unsafe { (*config).buffer_high_watermark = 2 };
+        let data = *b"abc";
+        ctx.sock = (&raw mut sock).cast();
+        ctx.conn = (&raw mut conn).cast();
+        ctx.port = (&raw mut port).cast();
+        ctx.data = data.as_ptr().cast();
+        ctx.length = 3;
+        let socket = (&raw const sock).addr() as u64;
+        // SAFETY: the context's records are live above.
+        unsafe {
+            assert_eq!(answer(&raw mut ctx, state, OP_OUT_EMPTY, socket), Some(1));
+            answer(&raw mut ctx, state, OP_SC_ENSURE_BUFFER, 0);
+            assert!(!sock.output.out_buffer.is_null());
+            assert_eq!(answer(&raw mut ctx, state, OP_OUT_EMPTY, socket), Some(1));
+            answer(&raw mut ctx, state, OP_SC_APPEND, 0);
+            assert_eq!(conn.send_queued_bytes, 3);
+            assert_eq!(answer(&raw mut ctx, state, OP_OUT_EMPTY, socket), Some(0));
+            assert_eq!(answer(&raw mut ctx, state, OP_SC_OUT_FULL, 0), Some(0));
+            assert_eq!(answer(&raw mut ctx, state, OP_SC_OUT_HIGH, 0), Some(1));
+            answer(&raw mut ctx, state, OP_SC_QUEUE_CLOSE, 0);
+            assert_eq!(conn.close_queued, 1);
+            let buffer = sock.output.out_buffer.cast::<CppBuffer>();
+            assert_eq!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(buffer), 2);
+            swoole_rs_buffer::cpp::swr_cpp_buffer_drop(buffer);
+            operator_delete(buffer.cast());
+            crate::port_config::swr_v1_port_config_free(config);
             crate::swr_v1_server_state_free(state);
         }
     }

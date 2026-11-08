@@ -55,6 +55,17 @@ pub fn thread_kind() -> u8 {
     native::host().map_or(0, |host| read(host, |thread| thread.kind))
 }
 
+/// `swoole_set_thread_type(kind)` then `swoole_set_thread_id(id)`; nothing before `swoole_init`.
+pub fn set_thread(kind: u8, id: u16) {
+    if let Some(host) = native::host() {
+        let thread = thread(host);
+        // SAFETY: this thread's live record, borrowed for the writes alone.
+        unsafe { (*thread).kind = kind };
+        // SAFETY: as above.
+        unsafe { (*thread).id = id };
+    }
+}
+
 /// `SwooleTG.async_threads`: null before `swoole_init`.
 #[must_use]
 pub fn thread_async_threads() -> *mut c_void {
