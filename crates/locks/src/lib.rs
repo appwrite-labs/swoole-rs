@@ -708,16 +708,22 @@ mod tests {
         assert_eq!(count.into_inner(), N * 2);
     }
 
+    // Upstream orders the threads with 1 ms and 2 ms sleeps. When load delays the first thread
+    // past 1 ms, the try takes a free mutex or spinlock and keeps it, and the first thread's
+    // lock blocks forever; barriers keep the read lock held across the try instead.
     fn test_lock_rd_func(lock: &Lock) {
+        let (held, tried) = (Barrier::new(2), Barrier::new(2));
         thread::scope(|s| {
             s.spawn(|| {
                 assert_eq!(lock.lock(LOCK_SH, -1), 0);
-                thread::sleep(Duration::from_micros(2000));
+                held.wait();
+                tried.wait();
                 lock.unlock();
             });
             s.spawn(|| {
-                thread::sleep(Duration::from_micros(1000));
+                held.wait();
                 assert!(lock.lock(LOCK_SH | LOCK_NB, -1) >= 0);
+                tried.wait();
             });
         });
     }
