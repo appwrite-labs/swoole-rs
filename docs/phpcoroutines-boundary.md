@@ -17,13 +17,13 @@ scheduler and each coroutine's record) and calls the module host, the runtime
 hooks and the event loop directly. Rust callers start coroutines with
 `swr_v1_phpcoroutines_create`. `native/phpcoroutines/coroutine.cc` keeps what
 needs C++: a `Coroutine`'s context and `std::function` members (timer, defer,
-bailout, the user exit condition), and reads of `Server`, `Reactor` and io_uring.
+bailout), and reads of `Server`, `Reactor` and io_uring.
 
 `Swoole\Coroutine\Scheduler`, the coroutine options and the reactor's user exit
 condition are Rust (`scheduler.rs`), under upstream's
 `php_swoole_coroutine_scheduler_minit`, `_rshutdown` and
-`php_swoole_set_coroutine_option` symbols; the shim keeps only the reactor side
-of the exit condition, which calls `swr_v1_phpcoroutines_can_exit`.
+`php_swoole_set_coroutine_option` symbols; the reactor keeps the exit condition
+as a plain function (`swr_v1_event_set_exit_condition`).
 `Swoole\Coroutine\System` and `FILE_LOCK` are Rust (`system.rs`), under
 upstream's `php_swoole_coroutine_system_minit`. It calls
 `swoole::coroutine::System`'s static members by their own symbols, and the

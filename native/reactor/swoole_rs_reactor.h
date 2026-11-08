@@ -251,6 +251,8 @@ int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t lengt
 /* Reactor::set_exit_condition of a plain function, for Rust's signal backends
  * (native/reactor/reactor.cc). */
 void swr_v1_event_set_exit_condition(int id, bool (*condition)(size_t *event_num));
+/* Reactor::remove_exit_condition, for Rust's (crates/phpcoroutines). */
+void swr_v1_event_remove_exit_condition(int id);
 /* Reactor::set_end_callback of a plain function, for the io_uring submit (crates/hooks). */
 void swr_v1_event_set_end_callback(int id, void (*callback)(void));
 /* The swr_v1_reactor_change_log the C++ passes. */
@@ -343,6 +345,8 @@ swr_v1_socket_host_type_plan swr_v1_socket_host_type(const uint8_t *host, size_t
 
 /* One owner for Reactor public slots, registry, handlers and kernel resources. */
 typedef struct swr_v1_reactor_state swr_v1_reactor_state;
+/* Reactor's idle and future tasks (Swoole\Event::cycle): null until set. */
+typedef struct { void (*callback)(void *); void *data; } swr_v1_reactor_task;
 typedef struct {
     int kind; void *ptr; int native_handle; uint32_t max_event_num;
     bool ready, running, start, once, wait_exit, destroyed, bailout, timed_out;
@@ -351,6 +355,7 @@ typedef struct {
     swr_v1_reactor_writev_fn writev;
     swr_v1_reactor_close_fn close;
     swr_v1_reactor_deferred *defer_tasks, *destroy_callbacks;
+    swr_v1_reactor_task idle_task, future_task;
 } swr_v1_reactor_fields;
 /* The PRIORITY_DEFER_TASK end callback: detaches defer_tasks, runs and frees it. */
 void swr_v1_reactor_run_defer(swr_v1_reactor_deferred **slot);

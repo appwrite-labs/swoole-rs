@@ -325,7 +325,6 @@ struct Global : private CoreConfigOwner {
         RustStringView *views[] = {&task_tmpfile, &dns_resolvconf_path};
         if (copied.status) views[copied.index]->check(copied.status);
         swr_v1_core_name_resolver_clear();  // the only source is `{}`
-        user_exit_condition = source.user_exit_condition;
         return *this;
     }
     SW_RUST_FIELD(bool, running);
@@ -346,7 +345,6 @@ struct Global : private CoreConfigOwner {
     //-----------------------[DNS]-----------------------------
     double &dns_cache_refresh_time = config_.fields->dns_cache_refresh_time;
     RustStringView dns_resolvconf_path{config_.strings[1]};
-    std::function<bool(Reactor *reactor, size_t &event_num)> user_exit_condition;
 };
 
 double microtime();

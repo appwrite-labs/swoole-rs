@@ -1,5 +1,8 @@
 #include "shim.h"
 #include "shim_event.h"
+#if __has_include("ext/sockets/php_sockets.h")
+#include "ext/sockets/php_sockets.h"
+#endif
 
 uint8_t swr_zend_event_pause_shutdown(void) {
 #if defined(EG_FLAGS_IN_SHUTDOWN) && !defined(EG_FLAGS_OBJECT_STORE_NO_REUSE)
@@ -27,4 +30,20 @@ int swr_zend_event_property(zval *object, zend_string *name, zval **result) {
         bailed = 1;
     } SWR_ZEND_END_TRY();
     return bailed;
+}
+
+int swr_zend_event_socket_fd(zval *object, uint8_t *closed) {
+#ifdef HAVE_SOCKETS
+    /* socket_ce, found by name: linking it would make ext/sockets a load-time dependency. */
+    zend_class_entry *socket = zend_hash_str_find_ptr(CG(class_table), ZEND_STRL("socket"));
+    if (socket && instanceof_function(Z_OBJCE_P(object), socket)) {
+        php_socket *php_sock = Z_SOCKET_P(object);
+        *closed = IS_INVALID_SOCKET(php_sock);
+        return php_sock->bsd_socket;
+    }
+#else
+    (void) object;
+    (void) closed;
+#endif
+    return -2;
 }
