@@ -1,19 +1,16 @@
 //! The server's Rust-owned state (`Server::state_`: the round-robin counter and the
 //! command id counter) and the operations over the rest of `Server` that
-//! `master.cc` kept: worker scheduling, commands, the DTLS accept, the document
-//! root, pipe sockets, worker counters, aborts, connection iteration, sends, timers
+//! `master.cc` kept: worker scheduling, commands, the document root, pipe sockets, worker counters, aborts, connection iteration, sends, timers
 //! and the startup error message.
 use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
-    FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_DTLS_BIND,
-    LOG_ST_DTLS_CONNECT, LOG_ST_ROOT_MISSING, LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MINFD,
-    OP_MODE, OP_SET_MAXFD, OP_SET_WARNING, OP_ST_ABORT_COUNT, OP_ST_DTLS_ADD, OP_ST_DTLS_ASSERT,
-    OP_ST_DTLS_BIND, OP_ST_DTLS_CLEANUP, OP_ST_DTLS_CONNECT, OP_ST_DTLS_PEER, OP_ST_DTLS_SESSION,
-    OP_ST_DTLS_SOCKET, OP_ST_DTLS_TYPE, OP_ST_DTLS_V6ONLY, OP_ST_FINISH, OP_ST_GS_CONCURRENCY,
-    OP_ST_GS_CONCURRENCY_SUB, OP_ST_GS_CONCURRENCY_ZERO, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND,
-    OP_ST_PIPE_FD, OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_SOCK_FREE,
-    OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_VALID_CONN, OP_ST_VISIT,
-    OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE,
+    FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_ROOT_MISSING,
+    LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MINFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING,
+    OP_ST_ABORT_COUNT, OP_ST_FINISH, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB,
+    OP_ST_GS_CONCURRENCY_ZERO, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
+    OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_SOCK_FREE, OP_ST_SOCK_OBJECT,
+    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_VALID_CONN, OP_ST_VISIT, OP_ST_W_CONCURRENCY,
+    OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE,
 };
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
 #[cfg(test)]
@@ -447,44 +444,6 @@ pub(crate) fn idle_worker<H: Host>(h: &mut H) -> crate::Effect<i64> {
     Ok(i64::from(key))
 }
 
-/// `SocketType`.
-const SOCK_UDP: u64 = 2;
-const SOCK_UDP6: u64 = 4;
-
-/// `Server::accept_dtls_connection`: a socket bound to the port and connected to the
-/// peer, registered as a connection with a DTLS session; on failure everything made
-/// is undone.
-fn accept_dtls<H: Host>(h: &mut H) -> crate::Effect<bool> {
-    if !h.is(OP_ST_DTLS_SOCKET)? {
-        return Ok(false);
-    }
-    if !matches!(h.get(OP_ST_DTLS_TYPE)?, SOCK_UDP | SOCK_UDP6) {
-        h.get(OP_ST_DTLS_ASSERT)?;
-    }
-    let mut added = false;
-    let ok = 'setup: {
-        if !h.is(OP_ST_DTLS_BIND)? {
-            h.get(LOG_ST_DTLS_BIND)?;
-            break 'setup false;
-        }
-        h.get(OP_ST_DTLS_V6ONLY)?;
-        if !h.is(OP_ST_DTLS_CONNECT)? {
-            h.get(LOG_ST_DTLS_CONNECT)?;
-            break 'setup false;
-        }
-        h.get(OP_ST_DTLS_PEER)?;
-        if !h.is(OP_ST_DTLS_ADD)? {
-            break 'setup false;
-        }
-        added = true;
-        h.is(OP_ST_DTLS_SESSION)?
-    };
-    if !ok {
-        h.op(OP_ST_DTLS_CLEANUP, u64::from(added))?;
-    }
-    Ok(ok)
-}
-
 /// `Server::set_document_root(path)`: the path's real path, if it exists.
 fn document_root<H: Host>(h: &mut H, path: &[u8]) -> crate::Effect<bool> {
     if path.len() > usize::try_from(libc::PATH_MAX).unwrap_or(usize::MAX) {
@@ -622,8 +581,8 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
         RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT,
-        RUN_ST_DTLS_ACCEPT, RUN_ST_FOREACH, RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_RESET_COUNTER,
-        RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
+        RUN_ST_FOREACH, RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_RESET_COUNTER, RUN_ST_SEND,
+        RUN_ST_STORE_PIPE_FD,
     };
     Ok(Some(match operation {
         RUN_ST_ADD_COMMAND => {
@@ -640,7 +599,6 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
             // SAFETY: `swr_v1_server_command` lends its arguments for the call.
             i64::from(crate::commands::command(h, unsafe { &*send })?)
         }
-        RUN_ST_DTLS_ACCEPT => i64::from(accept_dtls(h)?),
         RUN_ST_DOCUMENT_ROOT => {
             let address = usize::try_from(h.get(OP_ST_ROOT_PATH)?).unwrap_or(0);
             let len = usize::try_from(arg).unwrap_or(0);
@@ -722,53 +680,6 @@ mod tests {
         );
         assert_eq!(busy.args(OP_WORKER_IDLE), vec![2, 0, 1, 2]);
         assert_eq!(busy.called(OP_SET_WARNING), 1);
-    }
-
-    #[test]
-    fn dtls_accept_undoes_what_it_made() {
-        let ok = [
-            (OP_ST_DTLS_SOCKET, 1),
-            (OP_ST_DTLS_TYPE, SOCK_UDP),
-            (OP_ST_DTLS_BIND, 1),
-            (OP_ST_DTLS_CONNECT, 1),
-            (OP_ST_DTLS_ADD, 1),
-            (OP_ST_DTLS_SESSION, 1),
-        ];
-        let mut s = Script::with(&ok);
-        assert!(accept_dtls(&mut s).unwrap());
-        assert_eq!(s.called(OP_ST_DTLS_CLEANUP), 0);
-        assert_eq!(s.called(OP_ST_DTLS_ASSERT), 0);
-
-        let mut s = Script::with(&ok);
-        s.facts.insert(OP_ST_DTLS_BIND, 0);
-        assert!(!accept_dtls(&mut s).unwrap());
-        assert_eq!(s.called(LOG_ST_DTLS_BIND), 1);
-        assert_eq!(s.called(OP_ST_DTLS_CONNECT), 0);
-        assert_eq!(s.args(OP_ST_DTLS_CLEANUP), vec![0]);
-
-        let mut s = Script::with(&ok);
-        s.facts.insert(OP_ST_DTLS_SESSION, 0);
-        assert!(!accept_dtls(&mut s).unwrap());
-        assert_eq!(
-            s.args(OP_ST_DTLS_CLEANUP),
-            vec![1],
-            "the connection is cleared"
-        );
-
-        let mut s = Script::with(&ok);
-        s.facts.insert(OP_ST_DTLS_CONNECT, 0);
-        assert!(!accept_dtls(&mut s).unwrap());
-        assert_eq!(s.called(LOG_ST_DTLS_CONNECT), 1);
-        assert_eq!(s.args(OP_ST_DTLS_CLEANUP), vec![0]);
-
-        let mut s = Script::with(&ok);
-        s.facts.insert(OP_ST_DTLS_TYPE, 1);
-        accept_dtls(&mut s).unwrap();
-        assert_eq!(s.called(OP_ST_DTLS_ASSERT), 1, "only UDP ports");
-
-        let mut s = Script::default();
-        assert!(!accept_dtls(&mut s).unwrap());
-        assert_eq!(s.called(OP_ST_DTLS_CLEANUP), 0, "no socket to free");
     }
 
     #[test]

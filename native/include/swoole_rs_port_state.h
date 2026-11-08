@@ -56,11 +56,9 @@ swr_v1_port_config *swr_v1_port_config_new(int);
 void swr_v1_ports_set_eof(void *port, const char *eof, size_t length, bool find_from_right);
 void swr_v1_port_config_free(swr_v1_port_config *);
 /* crates/ports/src/lifecycle_native.rs: stores the SNI context `held` (a new std::shared_ptr<SSLContext>,
- * which Rust takes) under `name`; releases the port's TLS state; finds the DTLS session on `fd`,
- * removing it when `take`. */
+ * which Rust takes) under `name`; releases the port's TLS state. */
 bool swr_v1_ports_sni_add(void *port, const char *name, size_t length, void *held, swoole::SSLContext *context);
 void swr_v1_ports_tls_free(swr_v1_port_config *);
-void *swr_v1_ports_dtls_session(swr_v1_port_config *, int fd, bool take);
 }
 namespace swoole { namespace detail {
 class PortFields {

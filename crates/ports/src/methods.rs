@@ -49,7 +49,7 @@ use crate::lifecycle::{
     RUN_CLOSE, RUN_CONTEXT_CREATE, RUN_CONTEXT_INIT, RUN_IMPORT, RUN_SNI, RUN_SSL_CREATE,
     RUN_SSL_INIT,
 };
-use crate::lifecycle_native::{Run, is_dtls};
+use crate::lifecycle_native::Run;
 use crate::read::{ON_READ_EOF, ON_READ_HTTP, ON_READ_LENGTH, ON_READ_RAW, ON_READ_REDIS};
 
 /// One lifecycle `kind` over `port`.
@@ -326,7 +326,7 @@ pub unsafe extern "C" fn create_socket(port: *mut c_void) -> c_int {
         target_os = "openbsd",
         target_os = "dragonfly"
     ));
-    if kqueue && is_dtls(config) {
+    if kqueue && config.is_dtls() {
         set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT);
     }
     let fail = || {
@@ -586,7 +586,7 @@ const WEBSOCKET_FRAME_HEADER_SIZE: u8 = 2 + 4 + 8;
 pub unsafe extern "C" fn init_protocol(port: *mut c_void) {
     // SAFETY: as the caller guarantees.
     let config = unsafe { port_config::of(port) };
-    let dtls = is_dtls(config);
+    let dtls = config.is_dtls();
     init_protocol_over(config, || dtls);
 }
 
@@ -765,14 +765,14 @@ mod tests {
             (1, 0, 1, 1),
             "flags"
         );
-        assert!(!is_dtls(config), "not DTLS");
+        assert!(!config.is_dtls(), "not DTLS");
         // No files: ssl_init refuses unless SNI contexts exist.
         assert!(!unsafe { ssl_init(at) }, "no certificate");
         unsafe { close(at) };
         assert!(config.ssl_context.is_null(), "released");
         config.r#type = 2;
         assert!(unsafe { ssl_context_init(at) }, "a datagram port's context");
-        assert!(is_dtls(config), "DTLS");
+        assert!(config.is_dtls(), "DTLS");
         unsafe { crate::lifecycle_native::swr_v1_ports_tls_free(*fresh.0) };
         assert!(
             config.ssl_context.is_null(),

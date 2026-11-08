@@ -42,48 +42,40 @@ pub struct DtlsSession {
 }
 
 #[repr(C)]
-pub struct PreparedDtlsSession {
-    pub owner: *mut DtlsSession,
-    pub fields: *mut DtlsFields,
-}
-
-#[repr(C)]
 pub struct DtlsReadView {
     pub length: u16,
     pub empty: bool,
     pub peek: bool,
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_dtls_new(socket: *mut SocketRecord) -> PreparedDtlsSession {
-    let owner = Box::into_raw(Box::new(DtlsSession {
+/// `new dtls::Session(socket, ctx)` before `init`: an empty queue over `socket`.
+#[must_use]
+pub fn swr_v1_tls_dtls_new(socket: *mut SocketRecord) -> *mut DtlsSession {
+    Box::into_raw(Box::new(DtlsSession {
         fields: UnsafeCell::new(DtlsFields {
             socket,
             listened: false,
             peek: false,
         }),
         queue: VecDeque::new(),
-    }));
-    // SAFETY: the fresh Box remains live until dtls_free; the inline slot has a stable address.
-    let fields = unsafe { (*owner).fields.get() };
-    PreparedDtlsSession { owner, fields }
+    }))
+}
+
+/// The session's socket, `listened` and `peek_mode`.
+///
+/// # Safety
+/// owner is live; nothing else touches its fields while the pointer is used.
+#[must_use]
+pub unsafe fn dtls_fields(owner: *mut DtlsSession) -> *mut DtlsFields {
+    // SAFETY: as the caller promises.
+    unsafe { (*owner).fields.get() }
 }
 
 /// # Safety
-/// owner is one live handle; native holds no queue borrow while it clears.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_dtls_clear(owner: *mut DtlsSession) {
-    // SAFETY: the queue is exclusively accessed for this call.
-    let queue = unsafe { &mut (*owner).queue };
-    queue.clear();
-}
-
-/// # Safety
-/// owner came from `dtls_new` and is returned once after native references expire.
-#[unsafe(no_mangle)]
+/// owner came from `swr_v1_tls_dtls_new` and is returned once, when nothing uses it.
 pub unsafe extern "C" fn swr_v1_tls_dtls_free(owner: *mut DtlsSession) {
     if !owner.is_null() {
-        // SAFETY: native returns its unique allocation after clearing the queue.
+        // SAFETY: the caller returns its unique allocation.
         unsafe { drop(Box::from_raw(owner)) };
     }
 }
@@ -91,7 +83,6 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_free(owner: *mut DtlsSession) {
 /// # Safety
 /// owner is live; buffer is an exclusively transferred sw_malloc-compatible datagram.
 /// On allocation failure ownership remains with the caller.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_tls_dtls_append_buffer(
     owner: *mut DtlsSession,
     buffer: *mut c_void,
@@ -107,7 +98,6 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_append_buffer(
 
 /// # Safety
 /// owner is live; data covers length initialized bytes, with nonnegative native length.
-#[unsafe(no_mangle)]
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the public native Buffer length is uint16_t"
@@ -202,7 +192,6 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_read(
 
 /// # Safety
 /// owner is live and no queue mutation overlaps this observation.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_tls_dtls_length(owner: *const DtlsSession) -> usize {
     // SAFETY: read-only access to the live queue.
     let queue = unsafe { &(*owner).queue };
@@ -441,7 +430,6 @@ fn methods() -> *mut BIO_METHOD {
 ///
 /// # Safety
 /// `owner` is live, its socket a live record, and `context` the session's live `SSLContext`.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     owner: *mut DtlsSession,
     context: *const c_void,
@@ -481,7 +469,6 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
 ///
 /// # Safety
 /// `owner` is live and its socket a live record holding an SSL.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_tls_dtls_session_listen(owner: *mut DtlsSession) -> bool {
     // SAFETY: as the caller promises.
     let fields = unsafe { (*owner).fields.get() };
@@ -514,88 +501,24 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_session_listen(owner: *mut DtlsSession)
     false
 }
 
-/// # Safety
-/// Both handles are live; only destination mutates until this value copy returns.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_dtls_assign(
-    destination: *mut DtlsSession,
-    source: *const DtlsSession,
-) -> c_int {
-    if ptr::eq(destination, source) {
-        return 0;
-    }
-    // SAFETY: the source queue is read only while independent datagrams are prepared.
-    let source_queue = unsafe { &(*source).queue };
-    let mut copied = VecDeque::new();
-    if copied.try_reserve(source_queue.len()).is_err() {
-        return -1;
-    }
-    for buffer in source_queue {
-        // SAFETY: each source entry owns one initialized native Buffer.
-        let length = usize::from(unsafe { (*buffer.0).length });
-        // SAFETY: malloc accepts a header plus this initialized datagram length.
-        let allocation =
-            unsafe { libc::malloc(core::mem::size_of::<Buffer>() + length) }.cast::<Buffer>();
-        if allocation.is_null() {
-            return -1;
-        }
-        // SAFETY: the complete source header/payload and fresh destination cover this span, and do not overlap.
-        unsafe {
-            ptr::copy_nonoverlapping(
-                buffer.0.cast::<u8>(),
-                allocation.cast::<u8>(),
-                core::mem::size_of::<Buffer>() + length,
-            );
-        };
-        copied.push_back(Datagram(allocation));
-    }
-    // SAFETY: native lends the destination queue exclusively for commit.
-    unsafe { (*destination).queue = copied };
-    // SAFETY: both inline field slots remain stable for their enclosing handles.
-    let source_fields = unsafe { (*source).fields.get() };
-    // SAFETY: as above.
-    let destination_fields = unsafe { (*destination).fields.get() };
-    // SAFETY: the source's scalar values are observed only while native is not mutating them.
-    let socket = unsafe { (*source_fields).socket };
-    // SAFETY: as above.
-    let listened = unsafe { (*source_fields).listened };
-    // SAFETY: as above.
-    let peek = unsafe { (*source_fields).peek };
-    // SAFETY: native lends the destination group exclusively while retaining its address.
-    unsafe {
-        *destination_fields = DtlsFields {
-            socket,
-            listened,
-            peek,
-        }
-    };
-    0
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = {
-    assert!(
-        core::mem::size_of::<DtlsFields>() == 16
-            && core::mem::offset_of!(DtlsFields, listened) == 8
-            && core::mem::offset_of!(DtlsFields, peek) == 9,
-        "native Session aliases require the exact canonical DTLS field layout"
-    );
-    assert!(
-        core::mem::size_of::<Buffer>() == 2,
-        "native datagram header is one uint16_t"
-    );
-};
+const _: () = assert!(
+    core::mem::size_of::<Buffer>() == 2,
+    "native datagram header is one uint16_t"
+);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Owner(PreparedDtlsSession);
+    struct Owner(*mut DtlsSession);
     impl Owner {
         fn new(socket: *mut SocketRecord) -> Self {
             Self(swr_v1_tls_dtls_new(socket))
         }
         fn handle(&self) -> *mut DtlsSession {
-            self.0.owner
+            self.0
+        }
+        fn fields(&self) -> *mut DtlsFields {
+            unsafe { dtls_fields(self.0) }
         }
         fn append(&self, bytes: &[u8]) {
             assert_eq!(
@@ -653,12 +576,12 @@ mod tests {
         owner.append(b"abcdef");
         owner.append(b"xyz");
         assert_eq!(owner.length(), 9);
-        unsafe { (*owner.0.fields).peek = true };
+        unsafe { (*owner.fields()).peek = true };
         let (plan, bytes) = owner.read(2);
         assert_eq!((plan.length, plan.consume, plan.retry), (2, 0, 0));
         assert_eq!(bytes, b"ab");
         assert_eq!(owner.length(), 9);
-        unsafe { (*owner.0.fields).peek = false };
+        unsafe { (*owner.fields()).peek = false };
         assert_eq!(owner.read(2).1, b"ab");
         assert_eq!(owner.length(), 3);
         let (plan, bytes) = owner.read(10);
@@ -688,47 +611,21 @@ mod tests {
         );
         assert_eq!(owner.read(3).1, b"abc");
         assert_eq!(unsafe { swr_v1_tls_dtls_listen(owner.handle(), 0) }, 1);
-        assert!(!unsafe { (*owner.0.fields).listened });
+        assert!(!unsafe { (*owner.fields()).listened });
         assert_eq!(unsafe { swr_v1_tls_dtls_listen(owner.handle(), 1) }, 2);
-        assert!(unsafe { (*owner.0.fields).listened });
+        assert!(unsafe { (*owner.fields()).listened });
         unsafe { swr_v1_tls_dtls_control(owner.handle(), 8, 0, -7, ptr::null_mut()) };
-        assert!(unsafe { (*owner.0.fields).peek });
+        assert!(unsafe { (*owner.fields()).peek });
         owner.append(b"abc");
         assert_eq!(
             unsafe { swr_v1_tls_dtls_control(owner.handle(), 2, 0, 0, ptr::null_mut()) }.result,
             3
         );
-        unsafe { swr_v1_tls_dtls_clear(owner.handle()) };
+        unsafe { (*owner.fields()).peek = false };
+        assert_eq!(owner.read(3).1, b"abc");
         assert_eq!(
             unsafe { swr_v1_tls_dtls_control(owner.handle(), 0, 0, 0, ptr::null_mut()) }.result,
             1
         );
-    }
-
-    #[test]
-    fn value_copies_and_assignment_keep_field_addresses_and_independent_queue_storage() {
-        let source = Owner::new(ptr::null_mut());
-        source.append(b"first");
-        source.append(b"second");
-        unsafe { (*source.0.fields).peek = true };
-        let copied = Owner::new(ptr::null_mut());
-        let fields = copied.0.fields;
-        assert_eq!(
-            unsafe { swr_v1_tls_dtls_assign(copied.handle(), source.handle()) },
-            0
-        );
-        assert_eq!(copied.0.fields, fields);
-        assert_eq!(
-            unsafe { swr_v1_tls_dtls_assign(copied.handle(), copied.handle()) },
-            0
-        );
-        unsafe { swr_v1_tls_dtls_clear(source.handle()) };
-        assert_eq!(copied.length(), 11);
-        assert_eq!(copied.read(5).1, b"first");
-        assert_eq!(copied.length(), 11);
-        unsafe { (*copied.0.fields).peek = false };
-        assert_eq!(copied.read(5).1, b"first");
-        assert_eq!(copied.read(6).1, b"second");
-        assert_eq!(source.length(), 0);
     }
 }

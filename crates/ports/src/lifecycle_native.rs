@@ -6,7 +6,7 @@
 //! A port's TLS state (`PortConfig::tls`) holds what upstream's `ListenPort` kept
 //! in C++ containers: the `std::shared_ptr` holder of its own context, the SNI
 //! contexts (`sni_contexts`) and the DTLS sessions (`dtls_sessions`).
-//! `native/ports/tls.cc` builds and destroys the holders and sessions.
+//! `native/ports/tls.cc` builds and destroys the holders.
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 use std::collections::HashMap;
@@ -25,8 +25,9 @@ use swoole_rs_reactor::{
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
-    OwnedTlsContext, OwnedTlsFields, OwnedTlsPrepared, SslCreateFlag, SslVersion, Text, has_files,
-    set_text, ssl_context_create, swr_v1_tls_port_index,
+    DtlsSession, OwnedTlsContext, OwnedTlsFields, OwnedTlsPrepared, SslCreateFlag, SslVersion,
+    Text, has_files, set_text, ssl_context_create, swr_v1_tls_dtls_free, swr_v1_tls_dtls_init,
+    swr_v1_tls_dtls_new, swr_v1_tls_port_index,
 };
 
 use crate::lifecycle::{
@@ -46,7 +47,7 @@ use crate::methods::{FD_DGRAM_SERVER, FD_STREAM_SERVER, socket_free};
 unsafe extern "C" {
     fn swr_v1_ports_context_new(context: *mut *mut c_void) -> *mut c_void;
     fn swr_v1_ports_context_free(held: *mut c_void);
-    fn swr_v1_ports_dtls_session_new(held: *mut c_void, sock: *mut SocketRecord) -> *mut c_void;
+    fn swr_v1_ports_context_share(held: *mut c_void) -> *mut c_void;
 }
 
 /// Tests link no C++: a holder is a boxed prepared owner, all Rust reads of a context.
@@ -64,9 +65,11 @@ unsafe fn swr_v1_ports_context_free(held: *mut c_void) {
     unsafe { swoole_rs_tls::swr_v1_tls_owner_free(prepared.owner) };
 }
 
+/// A test holder is its own context: tests share nothing native.
 #[cfg(test)]
-unsafe fn swr_v1_ports_dtls_session_new(_: *mut c_void, sock: *mut SocketRecord) -> *mut c_void {
-    sock.cast()
+unsafe fn swr_v1_ports_context_share(_: *mut c_void) -> *mut c_void {
+    let mut context = ptr::null_mut();
+    unsafe { swr_v1_ports_context_new(&raw mut context) }
 }
 
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, `SW_ERROR_WRONG_OPERATION` and
@@ -83,8 +86,8 @@ struct TlsState {
     /// `sni_contexts`, in insertion order: the name (NUL-terminated), its
     /// context and its holder.
     sni: Vec<(Vec<u8>, *mut c_void, *mut c_void)>,
-    /// `dtls_sessions` by fd.
-    dtls: HashMap<c_int, *mut c_void>,
+    /// `dtls_sessions` by fd: each session and the holder of the context it shares.
+    dtls: HashMap<c_int, (*mut DtlsSession, *mut c_void)>,
 }
 
 /// The port's TLS state, made on first use.
@@ -163,7 +166,7 @@ pub unsafe extern "C" fn swr_v1_ports_sni_add(
     added
 }
 
-/// The DTLS session on `fd`, removed from the port when `take`; null if none.
+/// The DTLS session on `fd`; null if none.
 ///
 /// # Safety
 /// `config` is a live port record that nothing else uses meanwhile.
@@ -171,16 +174,26 @@ pub unsafe extern "C" fn swr_v1_ports_sni_add(
 pub unsafe extern "C" fn swr_v1_ports_dtls_session(
     config: *mut PortConfig,
     fd: c_int,
-    take: bool,
-) -> *mut c_void {
+) -> *mut DtlsSession {
+    // SAFETY: as the caller guarantees.
+    let dtls = &state(unsafe { &mut *config }).dtls;
+    dtls.get(&fd).map_or(ptr::null_mut(), |entry| entry.0)
+}
+
+/// `delete` of the DTLS session on `fd`, removed from the port; nothing if none.
+///
+/// # Safety
+/// As [`swr_v1_ports_dtls_session`]; nothing uses the session afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_ports_dtls_free(config: *mut PortConfig, fd: c_int) {
     // SAFETY: as the caller guarantees.
     let dtls = &mut state(unsafe { &mut *config }).dtls;
-    let session = if take {
-        dtls.remove(&fd)
-    } else {
-        dtls.get(&fd).copied()
-    };
-    session.unwrap_or(ptr::null_mut())
+    if let Some((session, held)) = dtls.remove(&fd) {
+        // SAFETY: the session and holder the port owned, released once.
+        unsafe { swr_v1_tls_dtls_free(session) };
+        // SAFETY: as above.
+        unsafe { swr_v1_ports_context_free(held) };
+    }
 }
 
 /// `ListenPort::create_dtls_session(sock)`: a session over the port's context,
@@ -188,34 +201,28 @@ pub unsafe extern "C" fn swr_v1_ports_dtls_session(
 ///
 /// # Safety
 /// `port` is a live DTLS `ListenPort` and `sock` a live socket.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole10ListenPort19create_dtls_sessionEPNS_7network6SocketE")
-)]
-pub unsafe extern "C" fn create_dtls_session(
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_ports_dtls_create(
     port: *mut c_void,
     sock: *mut SocketRecord,
-) -> *mut c_void {
+) -> *mut DtlsSession {
     // SAFETY: as the caller guarantees.
-    let state = state(unsafe { port_config::of(port) });
-    // SAFETY: the port's holder and the caller's live socket.
-    let session = unsafe { swr_v1_ports_dtls_session_new(state.held, sock) };
-    if !session.is_null() {
-        // SAFETY: as the caller guarantees.
-        let fd = unsafe { (*sock).fd };
-        state.dtls.insert(fd, session);
+    let config = unsafe { port_config::of(port) };
+    let context = config.ssl_context;
+    let state = state(config);
+    let session = swr_v1_tls_dtls_new(sock);
+    // SAFETY: the fresh session over the caller's live socket, and the port's live context.
+    if !unsafe { swr_v1_tls_dtls_init(session, context) } {
+        // SAFETY: the session made above, which nothing else holds.
+        unsafe { swr_v1_tls_dtls_free(session) };
+        return ptr::null_mut();
     }
+    // SAFETY: the port's live holder.
+    let held = unsafe { swr_v1_ports_context_share(state.held) };
+    // SAFETY: as the caller guarantees.
+    let fd = unsafe { (*sock).fd };
+    state.dtls.insert(fd, (session, held));
     session
-}
-
-/// `ListenPort::is_dtls()`: the port's context speaks DTLS.
-pub(crate) fn is_dtls(config: &PortConfig) -> bool {
-    if config.ssl_context.is_null() {
-        return false;
-    }
-    // SAFETY: the port's live context, read while its record is borrowed.
-    let protocols = unsafe { fields(config.ssl_context) }.protocols;
-    protocols & SslVersion::SW_SSL_DTLS as u32 != 0
 }
 
 /// The fields of `context`'s Rust owner.

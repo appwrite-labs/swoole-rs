@@ -9,16 +9,12 @@ registers the password, ALPN, verify and DTLS cookie callbacks, initializes Open
 and owns the ex_data indexes and error text. Native compatibility views retain
 addressable fields and the live password binding.
 
-DTLS Session owns its datagram queue and canonical socket/listened/peek fields in
-Rust. Its native wrapper retains the shared `SSLContext`; queue cleanup returns
-before that shared context is destroyed. Rust builds the BIO method table, whose
+A DTLS session is a Rust record: its socket, listened and peek fields and its
+datagram queue. crates/ports stores it by fd with a holder of the port's shared
+`SSLContext`, released with it. Rust builds the BIO method table, whose
 write/read/control operate over the socket and the actual queue and flags, and runs
-`Session::init`/`listen`. `ssl.cc` and `dtls.cc` have left the build.
-
-SDK consumers must rebuild against the selected headers. `Session::rxqueue` is
-opaque; std::deque layout/API compatibility is not claimed. Public socket,
-listened and peek aliases refer to stable canonical fields. Value copies hold
-independent datagram allocations while the SSLContext remains shared natively.
+`Session::init`/`listen`. `ssl.cc` and `dtls.cc` have left the build and
+`swoole_dtls.h` the tree; no C++ names a session.
 
 No panic crosses the ABI. Returned strings: `swoole_ssl_get_error` is valid until the
 thread's next call.

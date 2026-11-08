@@ -49,8 +49,8 @@ use crate::ops::{
     OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
 };
 use crate::ops::{
-    OP_ABORT, OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH, OP_ST_DTLS_ADD,
-    OP_ST_PIPE_BIND, OP_ST_VALID_CONN,
+    OP_ABORT, OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH, OP_ST_PIPE_BIND,
+    OP_ST_VALID_CONN,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
@@ -62,8 +62,8 @@ use crate::ops::{
     OP_STOP_WORKER_THREADS,
 };
 use crate::ops::{
-    OP_IP_KEY, OP_PIPE_COMMAND_ADD, OP_PIPE_COMMAND_DEL, OP_SC_CLOSE, OP_ST_DTLS_TYPE,
-    OP_ST_PIPE_FD, OP_ST_REACTOR_CLOSE, OP_WORKER_IDLE,
+    OP_IP_KEY, OP_PIPE_COMMAND_ADD, OP_PIPE_COMMAND_DEL, OP_SC_CLOSE, OP_ST_PIPE_FD,
+    OP_ST_REACTOR_CLOSE, OP_WORKER_IDLE,
 };
 use crate::ops::{
     OP_IS_MASTER_THREAD, OP_MASTER_THREAD, OP_NOW_MS, OP_OUT_EMPTY, OP_PORT_EVENT_ADD,
@@ -1299,16 +1299,6 @@ unsafe fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             };
             0
         }
-        OP_ST_DTLS_ADD => {
-            // SAFETY: the context's live port, whose listening socket is live.
-            let server_fd = unsafe { &*o.port().socket.cast::<SocketRecord>() }.fd;
-            let (serv, port, sock) = (o.ctx.serv, o.ctx.port, o.ctx.sock);
-            // SAFETY: the context's live port and the DTLS session's socket.
-            let conn =
-                unsafe { crate::server_methods::add_connection(serv, port, sock, server_fd) };
-            o.ctx.conn = conn;
-            u64::from(!conn.is_null())
-        }
         // SAFETY: each lifecycle call below runs on the context's live server, at
         // the point of startup or shutdown where upstream's Server makes it.
         op => return unsafe { lifecycle(o, op, arg) },
@@ -1500,7 +1490,6 @@ unsafe fn sockets(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     /// `SW_WORKER_IDLE`.
     const WORKER_IDLE: u8 = 2;
     Some(match op {
-        OP_ST_DTLS_TYPE => sign(o.port().r#type),
         OP_WORKER_IDLE => {
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint16_t) id")]
             let id = arg as u16;

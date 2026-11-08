@@ -775,9 +775,6 @@ pub const TRACE_RT_CLOSE: u32 = 993;
 // Rust-owned state and the rest of `master.cc` (`crates/server/src/state.rs`).
 /// `Server::add_command`: arg a `commands::AddCommand`.
 pub const RUN_ST_ADD_COMMAND: u32 = 300;
-/// `Server::accept_dtls_connection`: context port and peer address (`data`); 1 with
-/// the session in the context's `object`.
-pub const RUN_ST_DTLS_ACCEPT: u32 = 301;
 /// `Server::set_document_root`: arg the path's length, context the path (`data`).
 pub const RUN_ST_DOCUMENT_ROOT: u32 = 302;
 /// `Server::store_pipe_fd`: context pipe (`object`).
@@ -802,22 +799,6 @@ pub const RUN_ST_COMMAND: u32 = 312;
 /// whether it went. A new command pipe, whether it is ready.
 pub const OP_ST_CMD_SEND: u32 = 1000;
 pub const OP_ST_PIPE_COMMAND_NEW: u32 = 1001;
-/// A non-blocking session socket of the port's type with its address (and port)
-/// reusable; the port's type; `OPENSSL_assert(0)`.
-pub const OP_ST_DTLS_SOCKET: u32 = 1003;
-pub const OP_ST_DTLS_TYPE: u32 = 1004;
-pub const OP_ST_DTLS_ASSERT: u32 = 1005;
-/// Binds to the port's address; `IPV6_V6ONLY` off for IPv6; connects to the peer.
-pub const OP_ST_DTLS_BIND: u32 = 1006;
-pub const OP_ST_DTLS_V6ONLY: u32 = 1007;
-pub const OP_ST_DTLS_CONNECT: u32 = 1008;
-/// The socket takes the peer address and the TLS chunk size.
-pub const OP_ST_DTLS_PEER: u32 = 1009;
-/// `add_connection`; the port's DTLS session for the socket.
-pub const OP_ST_DTLS_ADD: u32 = 1010;
-pub const OP_ST_DTLS_SESSION: u32 = 1011;
-/// Clears the connection when arg, then frees the socket.
-pub const OP_ST_DTLS_CLEANUP: u32 = 1012;
 /// The path's text; `document_root` becomes the NUL-terminated string at arg.
 pub const OP_ST_ROOT_PATH: u32 = 1013;
 pub const OP_ST_SET_ROOT: u32 = 1014;
@@ -851,8 +832,6 @@ pub const OP_ST_FINISH: u32 = 1030;
 pub const OP_ST_TIMER: u32 = 1032;
 pub const OP_ST_TIMER_DEL: u32 = 1033;
 
-pub const LOG_ST_DTLS_BIND: u32 = 1100;
-pub const LOG_ST_DTLS_CONNECT: u32 = 1101;
 pub const LOG_ST_ROOT_TOO_LONG: u32 = 1102;
 pub const LOG_ST_ROOT_MISSING: u32 = 1103;
 
