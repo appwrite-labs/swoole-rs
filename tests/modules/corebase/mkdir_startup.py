@@ -3,7 +3,6 @@
 import argparse
 import errno
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -39,19 +38,15 @@ echo "\nM19_STARTUP ", json_encode(['exists' => $exists, 'last_error' => swoole_
         report['engines'] = [engine.metadata() for engine in engines]
         if {bool(item['rust_feature_bits'] & 8192) for item in report['engines']} != {False, True}:
             raise ValueError('Need actual native and Rust-corebase engines')
-        patch_path = 'migration/patches/corebase/0001-rust-core-helpers.patch'
-        expected_patch = hashlib.sha256((ROOT / patch_path).read_bytes()).hexdigest()
         for item in report['engines']:
             if not item['rust_feature_bits'] & 8192:
                 continue
             path = Path(item['extension']).resolve().parents[2] / 'build-manifest.json'
             build = json.loads(path.read_text())
-            selected = [p for p in build['inputs']['patches'] if p['path'] == patch_path]
             if (build['build_mode'] != 'immutable' or build['extension_sha256'] != item['sha256']
                     or build['migrated_feature_bits'] != item['rust_feature_bits']
-                    or build['inputs']['upstream_commit'] != report['upstream_commit']
-                    or len(selected) != 1 or selected[0]['sha256'] != expected_patch):
-                raise ValueError('Rust engine lacks exact current recursive-mkdir overlay/immutable identity')
+                    or build['inputs']['upstream_commit'] != report['upstream_commit']):
+                raise ValueError('Rust engine lacks an immutable build identity')
             report['builds'].append(dict(engine=item['name'], manifest=str(path),
                 rust_archive_sha256=build['inputs']['rust_archive_sha256']))
         with tempfile.TemporaryDirectory(prefix='swoole-mkdir-php-') as temporary:

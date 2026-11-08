@@ -41,8 +41,8 @@ python3 tests/modules/coroutine/production_stack.py --source PINNED_TREE --sourc
   context switches, by `core.py`'s upstream GoogleTests and the coroutine PHPT
   families. The live map lists newest first, the order `Coroutine::list()`
   shows from upstream's `std::unordered_map` (#357).
-- `production_stack.py` builds the Context constructor/destructor/query into a
-  private PHP addon against each engine's SDK and checks marker observations.
+- `production_stack.py` builds the Context constructor/destructor/query from the
+  shipped context.cc (the pin plus every build patch's hunks for it) into a private PHP addon against each engine's SDK and checks marker observations.
 
 ## Known failures and blocked activation
 

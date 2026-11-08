@@ -50,10 +50,14 @@ try:
         raw=subprocess.check_output(['git','-C',str(a.source),'show',shared.COMMIT+':src/coroutine/context.cc'])
         original=mirror/'src/coroutine/context.cc';original.parent.mkdir(parents=True);original.write_bytes(raw)
         if label=='selected':
-            from tools.build_hybrid import apply_patch_verified
-            entry=next(row for row in inputs['patches'] if row['path']=='migration/patches/coroutine/0003-context-stack-markers.patch')
-            patch=mirror/'markers.patch';patch.write_bytes(subprocess.check_output(['git','show',a.source_ref+':'+entry['path']],cwd=ROOT))
-            identity['patch_proof']=apply_patch_verified(mirror,patch,entry['upstream_paths'],entry['sha256'])
+            # Every shipped patch's context.cc hunks, in build order: the file the build compiles.
+            identity['patch_proof']=[]
+            for entry in [row for row in inputs['patches'] if 'src/coroutine/context.cc' in row['upstream_paths']]:
+                patch=mirror/'context.patch';patch.write_bytes(subprocess.check_output(['git','show',a.source_ref+':'+entry['path']],cwd=ROOT))
+                if sha(patch)!=entry['sha256']:raise ValueError('Patch differs from the build: '+entry['path'])
+                subprocess.run(['git','apply','--include=src/coroutine/context.cc',str(patch)],cwd=mirror,capture_output=True,check=True)
+                identity['patch_proof'].append(entry['path'])
+            if original.read_bytes()==raw:raise ValueError('No shipped patch edits context.cc')
         target=mirror/'actual-context.inc';target.write_bytes(original.read_bytes())
         addon=work/(label+'-markers.so')
         # SWOOLE_RS_COROUTINE: the addon's own switch to report the Rust marker's image.
