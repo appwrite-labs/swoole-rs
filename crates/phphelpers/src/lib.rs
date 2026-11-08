@@ -14,8 +14,6 @@ mod common;
 #[cfg(feature = "php")]
 mod known_strings;
 #[cfg(feature = "php")]
-mod owned;
-#[cfg(feature = "php")]
 mod private;
 #[cfg(feature = "php")]
 mod utilities;

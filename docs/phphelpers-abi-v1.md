@@ -2,9 +2,9 @@
 
 Feature value 16777216. Upstream targets:
 `ext-src/php_swoole_cxx.cc` (deleted; `native/phphelpers/module.cc` keeps its C++), `ext-src/swoole_stdext.cc`, and in
-`ext-src/php_swoole_cxx.h` only `zend::String`, `Variable`, the inline
+`ext-src/php_swoole_cxx.h` only the inline
 `Callable` helpers and `sw_callable_create`. Helpers nothing in the all-modules
-build calls (`KeyValue`, `CharPtr`, `ArrayIterator`, `Array`, `get_function`,
+build calls (`String`, `Variable`, `KeyValue`, `CharPtr`, `ArrayIterator`, `Array`, `get_function`,
 `array_add_or_merge`, `sw_callable_create_ex` and the unused
 `php_swoole_private.h` macros and inlines) are deleted, with their Rust exports. Follows the
 [policy/effect split](abi-v1.md#policyeffect-split).
@@ -14,11 +14,9 @@ keeps the `ASSIGN_DIM`/`ASSIGN_DIM_OP` handlers, which need PHP's
 `zend_execute.c` internals, and lends the PCRE and JSON library calls at MINIT.
 
 For the common owning facades, Rust owns the complete lifetime and operations:
-String conversion/copy/move/release/trim/duplication,
-Variable copy/move/reference operations, and Callable
+Callable
 resolution/copy/invocation/release and factories. C++ keeps source-compatible
-constructors and forwarding methods. Variable's public `value` aliases stable
-Rust-owned zval storage; String and Callable hold opaque Rust handles.
+constructors and forwarding methods; Callable holds an opaque Rust handle.
 
 Rust calls Zend directly through the typed SDK and existing macro shims. Only
 leaf Zend effects which can execute PHP use C `zend_try` shims; no operation

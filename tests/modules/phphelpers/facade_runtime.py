@@ -31,9 +31,8 @@ def main():
     try:
         sdk=json.loads(a.sdk_report.read_text())
         if not sdk.get('passed'):raise ValueError('Require a completed native/hybrid SDK qualification')
-        files={name:Path(__file__).with_name(name) for name in ['facade_entrypoint.cc','facade_entrypoint.php','facade_oom.php','vm_bailout.php']}
+        files={name:Path(__file__).with_name(name) for name in ['facade_entrypoint.cc','facade_entrypoint.php','vm_bailout.php']}
         fixture=work/'facade_entrypoint.php';shutil.copy2(files['facade_entrypoint.php'],fixture)
-        oom=work/'facade_oom.php';shutil.copy2(files['facade_oom.php'],oom)
         vm_bailout=work/'vm_bailout.php';shutil.copy2(files['vm_bailout.php'],vm_bailout)
         engines=[]
         if not a.prepare_only:
@@ -49,7 +48,7 @@ def main():
                 row['path']=str(helper)
                 symbols=subprocess.check_output(['nm','-u',str(helper)],text=True,stderr=subprocess.PIPE)
                 row['undefined_symbols']=symbols
-                required=['swr_v1_phphelpers_'+name for name in ['string_new','variable_assign','callable_invoke','callable_factory','callable_frame','class_alias','unset_deny']]
+                required=['swr_v1_phphelpers_'+name for name in ['callable_invoke','callable_factory','class_alias']]
                 row['required_rust_calls']={name:name in symbols for name in required}
                 retired=['swr_v1_phphelpers_'+name for name in ['string_plan','duplicate_plan','factory_plan','empty']]
                 if any(name in symbols for name in retired):raise ValueError('Helper still consumes a retired facade plan')
@@ -79,29 +78,6 @@ def main():
         if not a.prepare_only:
             if len(report['results'])!=len(plans) or not all(row['passed'] for row in report['results']):raise ValueError('Facade runtime failed; original statuses retained')
             if len({json.dumps(row['summary'],sort_keys=True) for row in report['results']})!=1:raise ValueError('Facade outputs differ across profiles/engines')
-        report['oom_results']=[]
-        for engine,identity,profile in plans:
-            helper=report['helper_profiles'][profile]
-            for mode in (0,1,3):
-                for pressure in [0,8*1024*1024]:
-                    command=engine.command('-d','extension='+helper['path'],'-d','memory_limit=16M',str(oom),str(mode),str(pressure))
-                    result=run_isolated(command,timeout=30)
-                    diagnostic=result.stdout+result.stderr
-                    row=dict(engine=engine.name,profile=profile,mode=mode,pressure_bytes=pressure,command=command,exit=result.returncode,
-                             stdout=result.stdout,stderr=result.stderr,extension_sha256_after=sha(identity['extension']))
-                    expected_exit=137 if mode==3 else 255
-                    expected_diagnostic=('Hard memory limit of 33554432 bytes exhausted' if mode==3
-                                         else 'Allowed memory size of 16777216 bytes exhausted')
-                    row['passed']=(result.returncode==expected_exit and expected_diagnostic in diagnostic
-                                   and 'UNREACHABLE' not in diagnostic and row['extension_sha256_after']==identity['sha256'])
-                    row['expected_exit']=expected_exit
-                    row['expected_diagnostic']=expected_diagnostic
-                    report['oom_results'].append(row)
-                    write_report(output,report)
-                    if not row['passed']:
-                        print(json.dumps({'oom_failure':row}),flush=True)
-        if not a.prepare_only and not all(row['passed'] for row in report['oom_results']):
-            raise ValueError('Facade allocation-failure containment failed; original engine outcomes retained')
         report['vm_bailout_results']=[]
         for engine,identity,profile in plans:
             helper=report['helper_profiles'][profile]

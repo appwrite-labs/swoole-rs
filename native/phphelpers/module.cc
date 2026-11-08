@@ -29,11 +29,6 @@ bool call(zend_fcall_info_cache *cache, uint32_t argc, zval *argv, zval *retval,
     }
     return called > 0;
 }
-Variable call(const std::string &name, int argc, zval *argv) {
-    Variable retval;
-    swr_v1_phphelpers_named_call(name.data(), name.size(), argc, argv, retval.ptr());
-    return retval;
-}
 }  // namespace function
 
 Callable::Callable(zval *value) : owned(swr_v1_phphelpers_callable_new(value, sw_callable_warning)) {}
@@ -638,8 +633,7 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
             auto *call = static_cast<swr_v1_phpruntime_x509_call *>(arg);
             zval argv[1];
             ZVAL_STRINGL(&argv[0], call->pem, call->length);
-            auto result = zend::function::call("openssl_x509_read", 1, argv);
-            ZVAL_COPY(call->retval, &result.value);
+            swr_v1_phphelpers_named_call(ZEND_STRL("openssl_x509_read"), 1, argv, call->retval);
             zval_dtor(&argv[0]);
         },
         [](void *) { Coroutine::get_current_safe(); },

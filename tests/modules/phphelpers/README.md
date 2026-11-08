@@ -1,16 +1,12 @@
 # M26 common PHP helpers and optional stdext
 
 M26 covers `ext-src/php_swoole_cxx.cc`, `ext-src/swoole_stdext.cc` and the
-common Zend owning facades in `ext-src/php_swoole_cxx.h` and shared property/call/value operations in `ext-src/php_swoole_private.h`. String, Variable
-and Callable own Rust handles. C++ keeps the
-source-compatible constructors and methods. The contract is
+common Zend owning facades in `ext-src/php_swoole_cxx.h` and shared property/call/value operations in `ext-src/php_swoole_private.h`. Callable
+owns a Rust handle. C++ keeps the
+source-compatible constructors and methods. String and Variable left with their last callers. The contract is
 [docs/phphelpers-abi-v1.md](../../../docs/phphelpers-abi-v1.md).
 
 `ext-src/swoole_stdext.cc`.
-String, Variable, inline Callable methods and callable factories keep
-the upstream implementation until their state moves into Rust. The contract is
-[docs/phphelpers-abi-v1.md](../../../docs/phphelpers-abi-v1.md).
-
 `ext-src/swoole_stdext.cc` (typed arrays, methods on arrays/strings/streams and
 the `swoole_*` stdext functions) is Rust in `crates/phpstdext` over the zend
 crates (docs/zend.md); only the `ASSIGN_DIM`/`ASSIGN_DIM_OP` handlers (PHP's
@@ -23,7 +19,7 @@ The C++ known-string global remains a borrowed ABI view.
 
 | Rust ownership / operations | Native leaf effects |
 | --- | --- |
-| String, Variable, Callable lifetimes and factories | Zend allocators/refcount macros; trapped PHP calls and diagnostics |
+| Callable lifetimes and factories | Zend allocators/refcount macros; trapped PHP calls and diagnostics |
 | Function calls; 64 known strings and their pointer cache | Trapped Zend invocation/hash effects; persistent allocation/interning |
 | `php_swoole_async` admission | `std::function` storage, native invocation/async/yield |
 
@@ -126,18 +122,13 @@ None of these is a PHPT, Rust unit test or fuzz target.
 
 ## Owning Zend facades (#1063)
 
-String, Variable and Callable now execute
-their ownership and operations in Rust against the actual Zend SDK. Their former
+Callable now executes
+its ownership and operations in Rust against the actual Zend SDK.
+String and Variable, and their fixture cases and request-allocation probes,
+left with their last callers. Their former
 modeled C++ fixtures (13/9/4681/14 cases) copied private class bodies and supplied
 fake Zend layouts; those assumptions are retired. Array/ArrayIterator, and the
 keyed merge, left with their last callers. The SDK compile and loaded facade runtime remain mandatory, with the original PHP expectations unchanged:
-copy/self-copy/move/self-move, binary duplication, PHP conversion reentry,
 callback duplication/invocation and destructor timing.
 The obsolete call/merge/cache policy phase is retired after those complete operations move to Rust.
 
-The facade request-allocation probes exercise the original 16 MiB soft bailout and
-32 MiB hard limit with both ordinary startup usage and 8 MiB of retained request data.
-Soft inputs are sized from the actual Zend heap headroom; every exit, diagnostic,
-reachability and engine-identity assertion remains enforced. The stdext phase
-artifact retains per-engine JSON and logs, including the live-heap/input sizes.
-These probes do not inject Rust/libc allocation failures.

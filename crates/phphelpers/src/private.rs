@@ -1,6 +1,6 @@
 //! Shared object/property and callback custody operations for native PHP callers.
 use std::{
-    ffi::{c_char, c_int, c_long},
+    ffi::{c_char, c_int, c_long, c_void},
     ptr,
 };
 use swoole_rs_zend::{
@@ -24,13 +24,12 @@ unsafe fn destroy(value: *mut zval) {
 }
 
 /// # Safety
-/// Return uninitialized request memory for one zval; callers must initialize it before use.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_alloc() -> *mut zval {
-    // SAFETY: Zend's request allocator returns suitably aligned storage.
-    let value = unsafe { super::owned::alloc_request(size_of::<zval>()) }.cast();
-    bailout::finish();
-    value
+/// The returned request allocation is uninitialized; null carries a deferred bailout.
+unsafe fn alloc_request(size: usize) -> *mut c_void {
+    let mut result = ptr::null_mut();
+    // SAFETY: the C leaf allocates aligned request storage and traps allocation failure.
+    bailed(unsafe { sys::swr_zend_try_facade_alloc(size, &raw mut result) });
+    result
 }
 
 /// # Safety
@@ -38,7 +37,7 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_alloc() -> *mut zval {
 #[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_dup(value: *const zval) -> *mut zval {
     // SAFETY: one fresh request allocation, not a reference-count operation.
-    let dest = unsafe { super::owned::alloc_request(size_of::<zval>()) }.cast::<zval>();
+    let dest = unsafe { alloc_request(size_of::<zval>()) }.cast::<zval>();
     bailout::finish();
     // SAFETY: the source is initialized and independent of the allocation.
     let value = unsafe { value.read() };
