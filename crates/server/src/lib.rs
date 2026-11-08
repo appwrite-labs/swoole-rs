@@ -33,6 +33,7 @@ mod master_ops;
 pub mod ops;
 pub mod port_config;
 mod reactor_io;
+mod reactor_ops;
 mod reactor_thread;
 mod records;
 mod send;
@@ -162,6 +163,9 @@ struct Native<C> {
     /// master.cc's context, whose records `master_ops` answers ops from; null
     /// for the other runners.
     master: *mut server_methods::NativeContext,
+    /// master.cc's reactor-thread context, whose records `reactor_ops` answers ops
+    /// from; null for the other runners.
+    reactor: *mut reactor_ops::ReactorContext,
 }
 
 impl<C: NativeCall> Host for Native<C> {
@@ -186,6 +190,13 @@ impl<C: NativeCall> Host for Native<C> {
             // SAFETY: the root path op lends its terminated path.
             if let Some(value) = unsafe { state::native_fact(state, op, arg) } {
                 return Ok(value);
+            }
+            if !self.reactor.is_null() {
+                // SAFETY: the reactor runner lends master.cc's live context with its state.
+                let answer = unsafe { reactor_ops::answer(self.reactor, self.state, op, arg) };
+                if let Some(value) = answer {
+                    return Ok(value);
+                }
             }
         }
         // Only the guarded runner lends master.cc's context; the hot runners skip the call.
@@ -242,6 +253,7 @@ pub unsafe extern "C" fn swr_v1_server_run(
             call,
             state: core::ptr::null(),
             master: core::ptr::null_mut(),
+            reactor: core::ptr::null_mut(),
         },
         operation,
         arg,
@@ -249,14 +261,15 @@ pub unsafe extern "C" fn swr_v1_server_run(
     .unwrap_or(SW_ERR)
 }
 
-/// Runs a server operation directly over the server's owned records.
-/// Native callbacks are used only for effects/loans outside those records.
+/// Runs a reactor-thread operation over master.cc's `ReactorThreadContext`, whose
+/// records Rust reads, and the server's owned records.
 ///
 /// # Safety
-/// `state` is null or live for the call; `context` and callbacks lend synchronized
-/// server objects and catch any native/PHP bailout before returning to Rust.
+/// `state` is live for the call; `context` is a live `ReactorThreadContext`, and it
+/// and the callbacks lend synchronized server objects and catch any native/PHP
+/// bailout before returning to Rust.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_run_state(
+pub unsafe extern "C" fn swr_v1_server_run_reactor(
     operation: u32,
     arg: u64,
     context: *mut c_void,
@@ -269,6 +282,7 @@ pub unsafe extern "C" fn swr_v1_server_run_state(
             call,
             state,
             master: core::ptr::null_mut(),
+            reactor: context.cast(),
         },
         operation,
         arg,
@@ -297,6 +311,7 @@ pub unsafe extern "C" fn swr_v1_server_run_guarded(
             call,
             state,
             master,
+            reactor: core::ptr::null_mut(),
         },
         operation,
         arg,
@@ -463,6 +478,7 @@ mod mode_tests {
             call: unreachable as super::ServerCall,
             state,
             master: core::ptr::null_mut(),
+            reactor: core::ptr::null_mut(),
         };
         assert_eq!(host.get(OP_MODE), Ok(2));
         // SAFETY: created above and not used again.

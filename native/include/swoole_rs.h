@@ -23,7 +23,7 @@ uint64_t swr_v1_feature_bits(void);
 typedef uint64_t (*swr_v1_server_call)(void *context, uint32_t op, uint64_t arg);
 int64_t swr_v1_server_run(uint32_t operation, uint64_t arg, void *context, swr_v1_server_call call);
 struct swr_v1_server_state;
-int64_t swr_v1_server_run_state(uint32_t operation, uint64_t arg, void *context, swr_v1_server_call call, const struct swr_v1_server_state *state);
+int64_t swr_v1_server_run_reactor(uint32_t operation, uint64_t arg, void *context, swr_v1_server_call call, const struct swr_v1_server_state *state);
 /* Typed capture of ordinary C++ exceptions. Native retains the exception payload;
  * Rust stops at the first nonzero fault and returns before native rethrow.
  * This does not transport Zend bailout, pthread_exit or cancellation unwinds. */
