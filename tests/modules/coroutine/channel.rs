@@ -290,13 +290,26 @@ fn read(data: *mut c_void) -> i32 {
     unsafe { *data.cast::<i32>() }
 }
 
+/// Frees an `int`, so the sanitizer run sees no leak.
+fn free(data: *mut c_void) {
+    // SAFETY: made by `int`, freed once.
+    drop(unsafe { Box::from_raw(data.cast::<i32>()) });
+}
+
+/// Reads and frees a popped `int`.
+fn take(data: *mut c_void) -> i32 {
+    let value = read(data);
+    free(data);
+    value
+}
+
 #[test]
 fn coroutine_channel_push_pop() {
     rt::run1(|| {
         let chan = Chan::new(1);
         let i = int(1);
         assert!(chan.push(i));
-        assert_eq!(read(chan.pop()), 1);
+        assert_eq!(take(chan.pop()), 1);
         chan.delete();
     });
 }
@@ -310,26 +323,29 @@ fn coroutine_channel_push_yield() {
             assert!(chan.push(int(1)));
         }),
         Box::new(move || {
-            assert_eq!(read(chan.pop()), 1);
-            assert_eq!(read(chan.pop()), 1);
+            assert_eq!(take(chan.pop()), 1);
+            assert_eq!(take(chan.pop()), 1);
         }),
     ]);
+    chan.delete();
 }
 
 #[test]
 fn coroutine_channel_pop_yield() {
     let chan = Chan::new(1);
+    let i = int(1) as usize;
     rt::run(vec![
         Box::new(move || {
             assert_eq!(read(chan.pop()), 1);
             assert_eq!(read(chan.pop()), 1);
         }),
         Box::new(move || {
-            let i = int(1);
-            assert!(chan.push(i));
-            assert!(chan.push(i));
+            assert!(chan.push(i as *mut c_void));
+            assert!(chan.push(i as *mut c_void));
         }),
     ]);
+    free(i as *mut c_void);
+    chan.delete();
 }
 
 #[test]
@@ -338,6 +354,7 @@ fn coroutine_channel_push_timeout() {
         let chan = Chan::new(1);
         assert!(chan.push_for(null_mut(), 0.001));
         assert!(!chan.push_for(null_mut(), 0.001));
+        chan.delete();
     });
 }
 
@@ -346,14 +363,16 @@ fn coroutine_channel_pop_timeout() {
     rt::run1(|| {
         let chan = Chan::new(1);
         assert_eq!(chan.pop_for(0.001), null_mut());
+        chan.delete();
     });
 }
 
 #[test]
 fn coroutine_channel_close() {
     let chan = Chan::new(1);
+    let value = int(1) as usize;
     rt::run1(move || {
-        let value = int(1);
+        let value = value as *mut c_void;
         loop {
             if !chan.push(value) {
                 assert_eq!(chan.get_error(), ERROR_CLOSED);
@@ -364,6 +383,8 @@ fn coroutine_channel_close() {
     });
     assert!(chan.close());
     assert!(!chan.close());
+    free(value as *mut c_void);
+    chan.delete();
 
     let chan2 = Chan::new(1);
     rt::run1(move || {
@@ -376,6 +397,7 @@ fn coroutine_channel_close() {
         }
     });
     assert!(chan2.close());
+    chan2.delete();
 }
 
 #[test]
@@ -391,6 +413,7 @@ fn coroutine_channel_cancel() {
         assert_eq!(chan.pop(), null_mut());
         assert_eq!(chan.get_error(), ERROR_CLOSED);
     });
+    chan.delete();
 }
 
 #[test]
@@ -410,6 +433,7 @@ fn lifetime_pop_waiter_deletes_channel() {
         assert!(DELETED.load(Ordering::Relaxed));
     });
     assert_eq!(rt::count(), 0);
+    free(value as *mut c_void);
 }
 
 #[test]
@@ -428,6 +452,7 @@ fn lifetime_push_waiter_deletes_channel() {
         assert!(DELETED.load(Ordering::Relaxed));
     });
     assert_eq!(rt::count(), 0);
+    free(value as *mut c_void);
 }
 
 /// Records resumes; `wait` returns fixed flags without suspending.
