@@ -475,6 +475,8 @@ name = "swoole-rs-firebird"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-firebird-sys",
+ "swoole-rs-hooks",
+ "swoole-rs-zend",
 ]
 
 [[package]]
@@ -552,7 +554,9 @@ dependencies = [
 name = "swoole-rs-odbc"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-hooks",
  "swoole-rs-odbc-sys",
+ "swoole-rs-zend",
 ]
 
 [[package]]

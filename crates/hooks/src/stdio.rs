@@ -20,11 +20,7 @@ pub type Offload = unsafe extern "C" fn(unsafe extern "C" fn(*mut c_void), *mut 
 /// # Safety
 /// `offload` is native's `async`, valid in the current coroutine. `call` runs on a
 /// pool thread while this frame waits, so it may only touch what the caller lent.
-pub(crate) unsafe fn offloaded<T, F: FnMut() -> T>(
-    offload: Option<Offload>,
-    refused: T,
-    call: F,
-) -> T {
+pub unsafe fn offloaded<T, F: FnMut() -> T>(offload: Option<Offload>, refused: T, call: F) -> T {
     struct Job<F, T> {
         call: F,
         result: Option<T>,
@@ -94,7 +90,8 @@ pub(crate) fn coroutine() -> Option<&'static Host> {
 }
 
 /// Native `async` inside a coroutine, else none: the call runs here.
-fn offload() -> Option<Offload> {
+#[must_use]
+pub fn offload() -> Option<Offload> {
     coroutine().map(|host| host.offload)
 }
 
