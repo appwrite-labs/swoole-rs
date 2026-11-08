@@ -46,7 +46,7 @@ URL and boundary helpers are Rust behind thin facades, so the crate's
 `http_server` GoogleTests run on the reference and the hybrid tree in the merge tier's
 `http-native-originals`; on the hybrid the static-handler setup calls fill
 `Server::locations` and `http_index_files` directly (`tools/core_tests.py`
-ADAPTATIONS), and the four ported TESTs below are excluded there.
+ADAPTATIONS), and the ported TESTs below are excluded there.
 
 ### Ported GoogleTests
 
@@ -78,6 +78,18 @@ recorded requests come from `crates/oracle/upstream/core-tests/fuzz/cases`.
 | `parser2` | `parser2` | `req2.bin`, `package_max_length` 64 KiB, `upload_max_filesize` 1 MiB | `form_data.size() == 3`; `200 OK` as above; also that the upload streamed to disk is `test.jpg` |
 | `upload` | `upload` | curl's chunked `-F file=@test.jpg` to `/upload?test=curl`, 2 MiB | `files.size() == 1`, `request_path` `/upload`, `query_string` `test=curl`; the server sends nothing itself |
 | `max_request_size` | `max_request_size` | curl's `-F file=@test.jpg`, 128 KiB | `413 Request Entity Too Large`, the request never dispatched |
+
+The 11 TESTs that start no server call the helpers, the request-line reader and the
+WebSocket codec directly. Their ports sit beside the Rust each one calls, with the
+same inputs and expected values, and the lane excludes them (`tools/dev.py`):
+`cargo test -p swoole-rs-http -p swoole-rs-websocket --lib`.
+
+| Upstream TEST | Rust test |
+| --- | --- |
+| `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `crates/http/src/http_server.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
+| `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
+| `has_expect_header`, `get_protocol`, `all_method` | `crates/http/src/request.rs`: same names |
+| `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
 
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,

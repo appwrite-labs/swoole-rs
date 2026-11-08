@@ -50,7 +50,13 @@ CORE_TESTS = {
              {'http_server.node_websocket_client_1': 'needs Node.js and its ws package',
               'http_server.node_websocket_client_2': 'needs Node.js and its ws package',
               **{'http_server.' + name: 'a Rust test (tests/modules/http/http_server.rs); the http_server::listen SDK it drove is deleted'
-                 for name in ['parser1', 'parser2', 'upload', 'max_request_size']}}),
+                 for name in ['parser1', 'parser2', 'upload', 'max_request_size']},
+              **{'http_server.' + name: 'a Rust test (' + path + ')' for path, names in [
+                  ('crates/http/src/http_server.rs', ['EncodeDecodeBasic', 'EncodeDecodeWithSpecialChars', 'get_method',
+                                                      'get_method_str', 'get_status_message', 'parse_multipart_boundary']),
+                  ('crates/http/src/request.rs', ['has_expect_header', 'get_protocol', 'all_method']),
+                  ('crates/websocket/src/frame_api.rs', ['websocket_encode', 'websocket_compressed_control_frame'])]
+                 for name in names}}),
     'clients': (['network/dns.cpp', 'network/address.cpp', 'network/client.cpp'],
                 {'dns.lookup1': NETWORK, 'dns.lookup_ipv6': NETWORK, 'dns.bad_family': NETWORK, 'dns.cancel': UNCACHED,
                  'client.bind': "expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner isn't root and gets EACCES",
