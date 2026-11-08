@@ -28,7 +28,7 @@ use crate::read::{
     OP_HTTP2_START, OP_MAX_LENGTH, OP_RECV, OP_RECV_BUFFER, OP_RECV_EOF, OP_RECV_LENGTH,
     OP_RECV_REDIS, OP_RELEASE, OP_REQ_DESTROY, OP_REQ_INIT, OP_REQ_MULTIPART_INIT, OP_SEND,
     OP_SKIP_RECV, OP_STATIC, OP_UPLOADS, OP_WARN_RECV, OP_WEBSOCKET_ACTIVATE, SEND_BAD_REQUEST,
-    SEND_TOO_LARGE, SEND_UNAVAILABLE, Shared, swr_v1_ports_on_read,
+    SEND_TOO_LARGE, SEND_UNAVAILABLE, Shared, readable,
 };
 
 type Receive = unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *mut CppString) -> c_int;
@@ -39,7 +39,7 @@ const STATUS_ACTIVE: u8 = 3;
 /// `SW_HTTP2_SETTING_FRAME_SIZE`: a frame header and six settings.
 const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 
-/// One readable event: the context [`swr_v1_ports_on_read`] runs over.
+/// One readable event: the context [`readable`] runs over.
 #[repr(C)]
 struct Read {
     shared: Shared,
@@ -97,8 +97,10 @@ pub(crate) unsafe fn on_read(
         read.shared.http2_stream = c.http2_stream;
         read.shared.static_handler = u8::from(config(&read).enable_static_handler);
     }
+    // SAFETY: `readable` passes back `read`'s address, live for the call.
+    let effect = |context, op, arg| unsafe { call(context, op, arg) };
     // SAFETY: `read` starts with its `Shared` and outlives the call.
-    unsafe { swr_v1_ports_on_read(kind, (&raw mut read).cast(), call) }
+    unsafe { readable(kind, (&raw mut read).cast(), effect) }
 }
 
 /// A native status or byte count, as the `u64` [`crate::read`] reads back signed.
@@ -151,8 +153,13 @@ fn receive(c: &Read, how: Receive) -> u64 {
     status(unsafe { how(protocol, c.socket, c.shared.buffer.cast()) })
 }
 
-/// The effects every read makes.
-unsafe extern "C" fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
+/// The effects every read makes, inlined into each call site, where `op` is a
+/// constant and the match folds to its one arm.
+///
+/// # Safety
+/// `context` is `on_read`'s live [`Read`].
+#[inline(always)]
+unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
     // SAFETY: `on_read`'s live context.
     let c = unsafe { &mut *context.cast::<Read>() };
     match op {
