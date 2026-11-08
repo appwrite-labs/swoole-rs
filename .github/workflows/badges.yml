@@ -1,7 +1,7 @@
 name: Badges
 # README progress badges: shields.io endpoint JSON (tools/badges.py) on the `badges`
-# branch. The static ones update on every push to main; the PHPT one when a merge-tier
-# run on main completes, from that run's gate.
+# branch. The static ones update on every push to main; the PHPT and speed ones when a
+# merge-tier run on main completes, from that run's gate and callgrind job.
 on:
   push:
     branches: [main]
@@ -47,10 +47,22 @@ jobs:
             fi
             rm -rf gate
           done
+      # The newest completed merge-tier run on main whose callgrind job uploaded a result
+      # (it uploads one when the limits fail too, which is when the badge matters most).
+      - id: callgrind
+        run: |
+          for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 20 --json databaseId -q '.[].databaseId'); do
+            if gh run download "$run" -n callgrind -D cg 2>/dev/null && [ -f cg/callgrind.json ]; then
+              echo "commit=$(gh run view "$run" --json headSha -q .headSha)" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            rm -rf cg
+          done
       - run: git clone -q --depth 1 --branch badges "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" out || git init -q -b badges out
       - run: >
           python3 tools/badges.py --source target/pin --output out
           ${{ steps.gate.outputs.commit && format('--phpt gate/*/phpt*.json --commit {0}', steps.gate.outputs.commit) || '' }}
+          ${{ steps.callgrind.outputs.commit && format('--callgrind cg/callgrind.json --callgrind-commit {0}', steps.callgrind.outputs.commit) || '' }}
       - working-directory: out
         run: |
           git add -A

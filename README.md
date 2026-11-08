@@ -4,6 +4,7 @@
 [![Upstream C++ replaced](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Freplaced.json)](docs/migration.md#upstream-files-still-in-the-build)
 [![Graduated leaf modules](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fgraduated.json)](https://github.com/loks0n/swoole-rs/issues/125)
 [![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/loks0n/swoole-rs/issues/58)
+[![Speed vs upstream](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fspeed.json)](https://github.com/loks0n/swoole-rs/blob/badges/speed.md)
 [![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/loks0n/swoole-rs/issues/1902)
 
 Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 3 and 5 are done; open are

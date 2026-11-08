@@ -10,6 +10,9 @@ replaced.json  upstream first-party lines (src/, ext-src/, include/; not the emb
 graduated.json leaf modules that are always on (Phase 3).
 unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/unsafe_budget.py);
                the per-crate table goes to the step summary.
+speed.json     callgrind instructions per request, hybrid over upstream, from a merge-tier
+               run's callgrind job (--callgrind): how many workloads beat upstream and the
+               slowest one. speed.md, beside it, is the per-workload table the badge links to.
 phpt.json      applicable pinned PHPTs the hybrid passes in a merge-tier run (--phpt: that
                run's gate outputs, one per build variant; a test counts if it passes in any),
                with the commit it measured. corpus/upstream/not_applicable.json lists the
@@ -109,8 +112,34 @@ def phpt_passing(rows, not_applicable=()):
     return len(passing & tests), len(tests)
 
 
-def endpoint(label, message):
-    return {'schemaVersion': 1, 'label': label, 'message': message, 'color': 'blue'}
+def endpoint(label, message, color='blue'):
+    return {'schemaVersion': 1, 'label': label, 'message': message, 'color': color}
+
+
+def speed(result, limits, commit):
+    """(speed.json endpoint, speed.md table) from benchmarks/callgrind.py's --output and the limits.
+    Ratios are hybrid over upstream instructions per request: below 1 is faster than upstream."""
+    ratios = {name: row['hybrid'] / row['upstream'] for name, row in result['instructions_per_request'].items()}
+    mean = 1.0
+    for ratio in ratios.values():
+        mean *= ratio ** (1 / len(ratios))
+    slowest = max(ratios, key=ratios.get)
+    worst = ratios[slowest]
+    color = 'brightgreen' if worst <= 1 else 'yellow' if worst <= 1.05 else 'orange'
+    faster = sum(ratio <= 1 for ratio in ratios.values())
+    badge = endpoint('speed vs upstream', f'{faster}/{len(ratios)} faster · slowest {slowest} {worst:.2f}×', color)
+    rows = ''.join(
+        f"| {name} | {row['hybrid']:,.0f} | {row['upstream']:,.0f} | {ratios[name]:.4f}× | "
+        f"{limits.get(name, '')}{'×' if name in limits else ''} | {'✅' if ratios[name] <= 1 else '❌' if name in limits and ratios[name] > limits[name] else '➖'} |\n"
+        for name, row in result['instructions_per_request'].items())
+    table = (f'# Speed vs upstream Swoole\n\nCallgrind instructions per request (lower is better), measured by the '
+             f'merge tier on `{commit[:7]}` (`benchmarks/callgrind.py`, {result.get("requests", "?")} requests). '
+             f'Ratio is hybrid ÷ upstream: below 1.00× is faster than upstream. The limit is '
+             f'`benchmarks/callgrind_limits.json`; ✅ beats upstream, ➖ within the limit, ❌ over it.\n\n'
+             f'| workload | hybrid | upstream | ratio | limit | |\n| --- | ---: | ---: | ---: | ---: | --- |\n{rows}\n'
+             f'Geometric mean {mean:.4f}×. Goal: ≤ 1.00× on every workload '
+             f'([#1894](https://github.com/loks0n/swoole-rs/issues/1894)).\n')
+    return badge, table
 
 
 def main():
@@ -119,10 +148,14 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--phpt', type=Path, nargs='+', help="A merge-tier run's gate outputs (phpt.json, phpt-zts.json, ...)")
     parser.add_argument('--commit', help='The commit that run measured')
+    parser.add_argument('--callgrind', type=Path, help="A merge-tier run's callgrind.json")
+    parser.add_argument('--callgrind-commit', help='The commit that callgrind run measured')
     parser.add_argument('--kept', action='store_true', help='Also list each file still built, with its kept upstream lines')
     args = parser.parse_args()
     if args.phpt and not args.commit:
         parser.error('--phpt needs --commit')
+    if args.callgrind and not args.callgrind_commit:
+        parser.error('--callgrind needs --callgrind-commit')
     args.output.mkdir(parents=True, exist_ok=True)
     files = kept(args.source, all_module_patches())
     for path, (lines, _) in sorted(files.items(), key=lambda item: -item[1][0]) if args.kept else ():
@@ -146,6 +179,10 @@ def main():
         rows = [row for path in args.phpt for row in json.loads(path.read_text())]
         passing, tests = phpt_passing(rows, not_applicable)
         badges['phpt'] = endpoint('upstream PHPTs passing', f'{passing:,} / {tests:,} @ {args.commit[:7]}')
+    if args.callgrind:
+        limits = json.loads((ROOT / 'benchmarks/callgrind_limits.json').read_text())
+        badges['speed'], table = speed(json.loads(args.callgrind.read_text()), limits, args.callgrind_commit)
+        (args.output / 'speed.md').write_text(table)
     for name, badge in badges.items():
         (args.output / (name + '.json')).write_text(json.dumps(badge) + '\n')
         print(f"{name}: {badge['message']}")

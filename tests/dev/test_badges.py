@@ -91,6 +91,17 @@ class Badges(unittest.TestCase):
         rows.append({'test': 'b', 'engine': 'hybrid', 'status': 'passed'})
         self.assertEqual(badges.phpt_passing(rows, {'c': 'darwin only'}), (3, 3))
 
+    def test_speed_counts_workloads_faster_than_upstream_and_names_the_slowest(self):
+        result = {'requests': 10, 'instructions_per_request': {
+            'plaintext': {'hybrid': 103.0, 'upstream': 100.0}, 'timer': {'hybrid': 80.0, 'upstream': 100.0},
+            'websocket': {'hybrid': 120.0, 'upstream': 100.0}}}
+        badge, table = badges.speed(result, {'plaintext': 1.05, 'websocket': 1.1}, 'abcdef0123')
+        self.assertEqual(badge['message'], '1/3 faster · slowest websocket 1.20×')
+        self.assertEqual(badge['color'], 'orange')
+        self.assertIn('| websocket | 120 | 100 | 1.2000× | 1.1× | ❌ |', table)
+        self.assertIn('| timer | 80 | 100 | 0.8000× |  | ✅ |', table)
+        self.assertIn('`abcdef0`', table)
+
     def test_every_leaf_is_a_module(self):
         self.assertLessEqual(set(badges.LEAF), set(badges.MODULES))
 
