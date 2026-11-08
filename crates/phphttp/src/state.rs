@@ -1,6 +1,6 @@
 //! `swoole::http::ContextState`: the part of `swoole::http::Context` the
-//! request parser reads and writes, laid out as `ext-src/php_swoole_http.h`
-//! declares it (C++ asserts the size against `SWR_PHPHTTP_STATE_SIZE`).
+//! request parser reads and writes. Rust owns the layout; only `Llhttp` must
+//! match C (thirdparty llhttp's `llhttp_t`).
 use std::{
     collections::HashSet,
     ffi::{CString, c_char, c_int, c_void},
@@ -182,15 +182,15 @@ pub(crate) struct Response {
     pub(crate) ztrailer: Slot,
 }
 
-/// `SWR_PHPHTTP_PARSE_SIZE` and `SWR_PHPHTTP_STATE_SIZE`.
-const _: () = assert!(size_of::<Parse>() == 144, "ext-src/php_swoole_http.h");
-const _: () = assert!(size_of::<State>() == 768, "ext-src/php_swoole_http.h");
-const _: () = assert!(size_of::<Response>() == 120, "ext-src/php_swoole_http.h");
-const _: () = assert!(size_of::<Llhttp>() == 96, "ext-src/php_swoole_http.h");
-const _: () = assert!(size_of::<Request>() == 272, "ext-src/php_swoole_http.h");
+/// The layout the upstream `ContextState` had.
+const _: () = assert!(size_of::<Parse>() == 144, "upstream ContextState layout");
+const _: () = assert!(size_of::<State>() == 768, "upstream ContextState layout");
+const _: () = assert!(size_of::<Response>() == 120, "upstream ContextState layout");
+const _: () = assert!(size_of::<Llhttp>() == 96, "llhttp_t");
+const _: () = assert!(size_of::<Request>() == 272, "upstream ContextState layout");
 const _: () = assert!(
     std::mem::offset_of!(State, parse) == 400,
-    "ext-src/php_swoole_http.h"
+    "upstream ContextState layout"
 );
 
 #[cfg(test)]

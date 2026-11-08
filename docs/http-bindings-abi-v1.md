@@ -2,8 +2,8 @@
 
 Feature value 2097152. Upstream targets:
 `ext-src/swoole_http_{cookie,request,response,server,server_coro}.cc`.
-`php_swoole_http.h`, `php_swoole_http_server.h`, stubs/arginfo and class
-declarations are unchanged. Follows the
+`php_swoole_http.h` and `php_swoole_http_server.h` are gone; stubs/arginfo
+and class declarations are unchanged. Follows the
 [policy/effect split](abi-v1.md#policyeffect-split). HTTP framing and parsing
 reuse M04; there is no second parser.
 
