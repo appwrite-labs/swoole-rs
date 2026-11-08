@@ -867,14 +867,18 @@ unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The ops that call the timer, event loop and `Reactor::_close` under their
-/// upstream symbols; else `None`.
+/// upstream symbols; else `None`. A reactor thread's own loop runs, and is freed,
+/// here: master.cc no longer answers `OP_EVENT_WAIT` or `OP_EVENT_FREE`.
 ///
 /// # Safety
 /// As [`answer`].
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[inline(always)]
 unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
-    use crate::ops::{OP_CC_FINISH, OP_EVENT_INIT, OP_RESUME_READ, OP_WR_TIMER_DELAY};
+    use crate::ops::{
+        OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_RESUME_READ,
+        OP_WR_TIMER_DELAY,
+    };
     use crate::ops::{OP_SESSION_HANDLERS, OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET};
     // SAFETY: crates/timer's, native/reactor's and crates/tls's, under their upstream symbols.
     unsafe extern "C-unwind" {
@@ -883,6 +887,10 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
         fn swr_v1_timer_owner_reactor(timer: *const c_void) -> *mut c_void;
         #[link_name = "_Z17swoole_event_initi"]
         fn swoole_event_init(flags: c_int) -> c_int;
+        #[link_name = "_Z17swoole_event_waitv"]
+        fn swoole_event_wait() -> c_int;
+        #[link_name = "_Z17swoole_event_freev"]
+        fn swoole_event_free() -> c_int;
         #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
         fn reactor_close(reactor: *mut c_void, socket: *mut SocketRecord) -> c_int;
         /// crates/ports' `ListenPort::init_protocol`.
@@ -945,6 +953,13 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, _: u64) -> Option<u64> {
             let ret = unsafe { swoole_event_init(0) };
             o.ctx.reactor = swoole_rs_corebase::thread_reactor();
             sign(ret)
+        }
+        // SAFETY: this thread's event loop.
+        OP_EVENT_WAIT => sign(unsafe { swoole_event_wait() }),
+        OP_EVENT_FREE => {
+            // SAFETY: as above.
+            unsafe { swoole_event_free() };
+            0
         }
         OP_CC_FINISH => {
             let conn = o.conn();
