@@ -338,11 +338,8 @@ def plan(args, reports):
                    '--source-ref', 'HEAD', *report('ports-configuration'))
         script('ports-policy', 'tests/modules/ports/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ports-policy'))
-        port_options = (['--openssl-root', subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()]
-                        if sys.platform == 'darwin' else [])
         phase = 'ports-callback-property'
-        script(phase, 'tests/modules/ports/callback_property.py', '--source', ROOT / 'target/upstream/src',
-               *(['--core', ROOT / 'target/hybrid' / native_variant / 'src'] if integrate else []), '--sanitize', *port_options,
+        script(phase, 'tests/modules/ports/callback_property.py', '--source', ROOT / 'target/upstream/src', '--sanitize',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(phase))
     if 'coroutine' in modules and integrate:
         native_options = ['--php-prefix', subprocess.check_output(['php-config', '--prefix'], text=True).strip()] if sys.platform == 'darwin' else []

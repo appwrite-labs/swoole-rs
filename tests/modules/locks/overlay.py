@@ -1,5 +1,5 @@
-"""The pinned upstream sources a gate's upstream side reads. The hybrid side reads the hybrid
-build's tree (tools/build_hybrid.py's hybrid_tree), never a regenerated copy."""
+"""The pinned upstream sources a gate's upstream side reads. A hybrid side compiles with
+tools/build_hybrid.py's hybrid_tree flags, never a regenerated copy."""
 from pathlib import Path
 import subprocess
 import sys
