@@ -113,3 +113,28 @@ zend_string *swr_zend_json_encode(zval *value) {
     }
     return smart_str_extract(&buf);
 }
+
+int swr_zend_try_json_encode(zval *value, zend_string **out) {
+    smart_str buf = {0};
+    volatile int bailed = 0;
+    *out = NULL;
+    SWR_ZEND_TRY {
+        if (php_json_encode(&buf, value, 0) != FAILURE && buf.s) {
+            *out = buf.s;
+        }
+    }
+    SWR_ZEND_CATCH {
+        bailed = 1;
+    }
+    SWR_ZEND_END_TRY();
+    if (!*out) {
+        smart_str_free(&buf);
+    }
+    return bailed;
+}
+
+void swr_zend_json_decode(const char *text, size_t length, zval *out) {
+    if (php_json_decode(out, text, length, 1, 0) == FAILURE) {
+        ZVAL_FALSE(out);
+    }
+}

@@ -24,8 +24,6 @@ enum {
 typedef struct {
     void (*install)(void *server, uint32_t which);
     void *(*create)(int64_t mode); /* new Server(mode) */
-    /* serv->create(): null, or sw_error after a failure. */
-    const char *(*create_server)(void *server);
     /* serv->start() in zend_try: 0 started and returned, -1 failed (*error is the reason),
      * 1 bailed out. */
     int (*start)(void *server, const char **error);
@@ -34,10 +32,6 @@ typedef struct {
     /* addProcess's worker: -3 bailed out, -2 a thread that is not a user worker, -1 add_worker failed,
      * else the id. */
     int64_t (*add_process)(void *server, struct _zval_struct *process);
-    /* json_encode($data) as a new zend_string, or null; in zend_try (*bailed when it bailed out). */
-    struct _zend_string *(*json_encode)(struct _zval_struct *data, bool *bailed);
-    /* json_decode($text, true) into `out`, or false. */
-    void (*json_decode)(const char *text, size_t length, struct _zval_struct *out);
 } swr_v1_phpserver_lifecycle_host;
 
 void swr_v1_phpserver_lifecycle_init(const swr_v1_phpserver_lifecycle_host *table);
