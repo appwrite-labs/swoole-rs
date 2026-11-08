@@ -14,11 +14,6 @@ static_assert(SW_EVENT_READ == (1 << 9) && SW_EVENT_WRITE == (1 << 10) && SW_EVE
 
 namespace swoole {
 
-struct DeferCallback {
-    Callback callback;
-    void *data;
-};
-
 class Reactor;
 
 class ReactorStateOwner {
@@ -109,9 +104,6 @@ class Reactor : private ReactorStateOwner {
 
     swr_v1_reactor_deferred *&defer_tasks = state_.fields->defer_tasks;
     swr_v1_reactor_deferred *&destroy_callbacks = state_.fields->destroy_callbacks;
-
-    DeferCallback idle_task;
-    DeferCallback future_task;
 
     using Write = ssize_t (*)(Reactor *, network::Socket *, const void *, size_t);
     using Writev = ssize_t (*)(Reactor *, network::Socket *, const iovec *, size_t);

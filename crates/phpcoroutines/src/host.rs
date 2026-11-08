@@ -55,7 +55,12 @@ unsafe extern "C" {
     fn swr_cpp_phpcoroutines_is_end(co: Co) -> u8;
     fn swr_cpp_phpcoroutines_activate(deactivate: unsafe extern "C" fn(*mut c_void));
     fn swr_cpp_phpcoroutines_defer(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void);
-    fn swr_cpp_phpcoroutines_set_exit_condition(set: u8);
+    // native/reactor/reactor.cc.
+    fn swr_v1_event_set_exit_condition(
+        id: c_int,
+        condition: unsafe extern "C" fn(*mut usize) -> bool,
+    );
+    fn swr_v1_event_remove_exit_condition(id: c_int);
     // crates/coroutine, native/coroutine/coroutine.cc, crates/timer, crates/reactor and crates/process.
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: Co, timeout: f64) -> bool;
@@ -674,11 +679,27 @@ pub(crate) fn set_dns_cache_capacity(capacity: c_long) {
     swoole_rs_hooks::dns_cache::swr_v1_hook_dns_cache_capacity(capacity);
 }
 
-/// Install (`set`) or clear the reactor's user exit condition, which calls
-/// `swr_v1_phpcoroutines_can_exit`.
+/// `Reactor::EXIT_CONDITION_USER_AFTER_DEFAULT`.
+const EXIT_CONDITION_USER_AFTER_DEFAULT: c_int = 1000;
+
+/// Install (`set`) or clear this thread's reactor's user exit condition,
+/// which calls `Co::set`'s `exit_condition`; nothing without a reactor.
 pub(crate) fn set_exit_condition(set: bool) {
-    // SAFETY: C++ holds the condition as a std::function.
-    unsafe { swr_cpp_phpcoroutines_set_exit_condition(u8::from(set)) };
+    if swoole_rs_corebase::thread_reactor().is_null() {
+        return;
+    }
+    if set {
+        // SAFETY: the thread's live reactor keeps a plain function.
+        unsafe {
+            swr_v1_event_set_exit_condition(
+                EXIT_CONDITION_USER_AFTER_DEFAULT,
+                crate::scheduler::reactor_can_exit,
+            );
+        };
+    } else {
+        // SAFETY: as above.
+        unsafe { swr_v1_event_remove_exit_condition(EXIT_CONDITION_USER_AFTER_DEFAULT) };
+    }
 }
 
 /// `sw_callable_warning`.
