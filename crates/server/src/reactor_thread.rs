@@ -21,7 +21,7 @@ use crate::ops::{
     OP_SSL_VERIFY, OP_START_MASTER_THREAD, OP_STOP_THREAD_WORKER, OP_STORE_LISTEN_SOCKET,
     OP_TASK_INIT, OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT, OP_THREAD_NOTIFY,
     OP_THREAD0_INIT, OP_VERIFY_PEER, OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM,
-    OP_WORKER_PIPE_UNREAD, OP_WORKER_START, OP_WORKER_STOP, TRACE_HEARTBEAT_JOIN,
+    OP_WORKER_PIPE_UNREAD, OP_WORKER_START, OP_WORKER_STOP,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
 
@@ -349,6 +349,18 @@ pub(crate) fn dispatch_task<H: Host>(h: &mut H, len: u64) -> crate::Effect<i64> 
     Ok(SW_OK)
 }
 
+/// The destroy callback `ReactorThread::shutdown` adds: close each connection this
+/// reactor owns.
+fn close_reactor_connections<H: Host>(h: &mut H) -> crate::Effect<()> {
+    let reactor = h.get(OP_REACTOR_ID)?;
+    for_each_connection(h, |h| {
+        if h.get(OP_CONN_REACTOR)? == reactor {
+            h.get(OP_CLOSE)?;
+        }
+        Ok(())
+    })
+}
+
 /// `Server::join_reactor_thread`: tell each running reactor thread to shut down and join it.
 pub(crate) fn join_reactor_threads<H: Host>(h: &mut H) -> crate::Effect<()> {
     if h.is(OP_SINGLE_THREAD)? {
@@ -357,7 +369,6 @@ pub(crate) fn join_reactor_threads<H: Host>(h: &mut H) -> crate::Effect<()> {
     if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))? > 0
         && let Some(heartbeat) = h.state()?.take_thread(HEARTBEAT)
     {
-        h.get(TRACE_HEARTBEAT_JOIN)?;
         heartbeat.join().unwrap_or_default();
     }
     for thread in 0..h.get(OP_REACTOR_NUM)? {
@@ -430,6 +441,10 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
         }
         RUN_HEARTBEAT_THREAD => {
             heartbeat_thread(h)?;
+            SW_OK
+        }
+        crate::ops::RUN_CLOSE_REACTOR_CONNECTIONS => {
+            close_reactor_connections(h)?;
             SW_OK
         }
         _ => crate::dispatch::run(h, operation, arg)?,
@@ -594,6 +609,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn destroyed_reactor_closes_only_its_connections() {
+        let mut s = Script::with(&[
+            (OP_MINFD, 1),
+            (OP_MAXFD, 3),
+            (OP_CONN_AT, 1),
+            (OP_REACTOR_ID, 1),
+        ])
+        .queue(OP_CONN_REACTOR, &[0, 1, 1]);
+        close_reactor_connections(&mut s).unwrap();
+        assert_eq!(s.called(OP_CLOSE), 2, "this reactor's two");
+    }
+
     static RAN: std::sync::Mutex<Vec<(usize, u64)>> = std::sync::Mutex::new(Vec::new());
 
     unsafe extern "C" fn record(serv: *mut core::ffi::c_void, arg: u64) {
@@ -623,7 +651,6 @@ mod tests {
             "threads"
         );
         assert_eq!(s.args(OP_THREAD_NOTIFY), vec![0, 1, 2], "each told to stop");
-        assert_eq!(s.called(TRACE_HEARTBEAT_JOIN), 1, "heartbeat joined");
 
         let mut s = Script::with(&[(OP_PORT_COUNT, 1), (OP_PORT_LISTEN, u64::MAX)]);
         assert_eq!(
@@ -636,7 +663,6 @@ mod tests {
         let mut s = Script::with(&[(OP_REACTOR_NUM, 2), (OP_FIELD, 1)]);
         join_reactor_threads(&mut s).unwrap();
         assert_eq!(s.called(OP_THREAD_NOTIFY), 0, "none started");
-        assert_eq!(s.called(TRACE_HEARTBEAT_JOIN), 0, "no heartbeat");
     }
 
     #[test]

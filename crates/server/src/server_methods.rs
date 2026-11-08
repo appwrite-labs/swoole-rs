@@ -816,6 +816,21 @@ base_methods! {
     "_ZN6swoole11BaseFactory6notifyEPNS_8DataHeadE" fn base_factory_notify(info) = RUN_BASE_NOTIFY, lend false;
 }
 
+/// `serv->reactor_thread_barrier.wait()`, which master.cc still holds.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) unsafe fn reactor_barrier(serv: *mut c_void) {
+    // SAFETY: as the caller guarantees; the op reads only the server.
+    unsafe {
+        native_op(
+            crate::ops::OP_REACTOR_BARRIER,
+            &mut NativeContext::new(serv),
+        )
+    };
+}
+
 /// Runs the native op `op` over `ctx`, which holds its operands.
 ///
 /// # Safety

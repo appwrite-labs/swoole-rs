@@ -8,6 +8,7 @@ use core::ptr;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
+use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_reactor::{SocketRecord, reactor_upstream};
 
@@ -25,6 +26,11 @@ use crate::ops::{
     OP_WORKER_START, OP_WORKER_STOP, RUN_HEARTBEAT_CHECK, RUN_HEARTBEAT_THREAD,
     RUN_RESUME_RECEIVING,
 };
+use crate::ops::{
+    OP_CC_COUNT, OP_CC_HTTP_DESTROY, OP_CLOSE_FORWARD, OP_DESTROY_CALLBACK, OP_FORCE_CLOSE,
+    OP_PACKET_DISPATCH, OP_PACKET_INIT, OP_PC_NOTIFY, OP_REACTOR_BARRIER, OP_RECVFROM, OP_WR_SEND,
+    OP_WR_SENDFILE, RUN_CLOSE_REACTOR_CONNECTIONS,
+};
 use crate::reactor_entry::{self as entry, run, thread};
 use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign};
 use crate::records::ConnectionRecord;
@@ -34,6 +40,21 @@ use crate::{ServerState, server_methods as methods, view};
 const SW_EVENT_READ: c_int = 1 << 9;
 const THREAD_REACTOR: u8 = 2;
 const SW_WAIT: c_int = 2;
+/// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_SERVER_EVENT_CLOSE`, `SW_SOCK_UDP`,
+/// `Server::CLOSE_ACTIVELY` and `SW_SOCKET_RETRY_COUNT`.
+const EVENT_RECV_DGRAM: u8 = 1;
+const EVENT_CLOSE: u8 = 4;
+const SOCK_UDP: c_int = 2;
+const CLOSE_ACTIVELY: c_int = 1 << 2;
+const SOCKET_RETRY_COUNT: u32 = 10;
+
+/// `DgramPacket`: the datagram follows it.
+#[repr(C)]
+struct DgramPacket {
+    socket_type: c_int,
+    socket_addr: SocketAddress,
+    length: u32,
+}
 
 /// `swoole::PacketPtr`.
 #[repr(C)]
@@ -66,6 +87,40 @@ unsafe extern "C-unwind" {
     fn stop_async_worker(serv: *mut c_void, worker: *mut WorkerRecord);
     #[link_name = "_ZN6swoole10ListenPort6listenEv"]
     fn port_listen(port: *mut c_void) -> c_int;
+    #[link_name = "_ZN6swoole10ListenPort20destroy_http_requestEPNS_10ConnectionE"]
+    fn destroy_http_request(port: *mut c_void, conn: *mut ConnectionRecord);
+}
+
+// SAFETY: crates/clients' `Address::get_addr` and crates/crc32's `swoole_crc32`.
+unsafe extern "C" {
+    fn swr_v1_clients_address_host(address: *const SocketAddress) -> *const c_char;
+    fn swr_v1_crc32(input: *const u8, length: usize) -> u32;
+}
+
+/// `serv->factory_`'s virtual members, in their Itanium vtable slots after the two
+/// destructors, `start` and `shutdown`.
+const FACTORY_DISPATCH: usize = 4;
+const FACTORY_NOTIFY: usize = 6;
+const FACTORY_END: usize = 7;
+
+/// The server's factory and its vtable slot `slot`.
+fn factory_slot(state: &ServerState, slot: usize) -> (*mut c_void, *const ()) {
+    // SAFETY: a live server's config, whose factory is live while its reactors run.
+    let factory = unsafe { (*state.config()).factory_ };
+    // SAFETY: a polymorphic object starts with its vtable pointer.
+    let vtable = unsafe { *factory.cast::<*const *const ()>() };
+    // SAFETY: `Factory` declares the slot (swoole_server.h).
+    (factory, unsafe { vtable.wrapping_add(slot).read() })
+}
+
+/// `serv->factory_->dispatch(task)` or `->notify(head)`, which take one pointer.
+fn factory_call(state: &ServerState, slot: usize, arg: *mut c_void) -> bool {
+    let (factory, member) = factory_slot(state, slot);
+    // SAFETY: the slot holds a `bool (Factory::*)(T *)`.
+    let member: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool =
+        unsafe { core::mem::transmute(member) };
+    // SAFETY: the live factory and the record the member takes.
+    unsafe { member(factory, arg) }
 }
 
 /// The context's thread.
@@ -156,6 +211,164 @@ pub(crate) unsafe fn answer(
     // SAFETY: the ops reading it run with a live connection.
     let conn_ref = || unsafe { &mut *conn };
     Some(match op {
+        OP_REACTOR_BARRIER => {
+            // SAFETY: the live server, whose barrier master.cc still holds.
+            unsafe { methods::reactor_barrier(serv) };
+            0
+        }
+        OP_FORCE_CLOSE => {
+            conn_ref().close_force = 1;
+            let mut event = swoole_rs_reactor::Event {
+                fd: conn_ref().fd,
+                reactor_id: 0,
+                fd_type: 0,
+                socket: conn_ref().socket,
+            };
+            // SAFETY: this thread's reactor and an event over a live connection.
+            unsafe { reactor_upstream::trigger_close_event(reactor, (&raw mut event).cast()) };
+            0
+        }
+        OP_PACKET_INIT => {
+            // SAFETY: the context's live event.
+            let fd = unsafe { (*ctx.event).fd };
+            // SAFETY: a live server's tables; the event's fd is a listening socket's.
+            ctx.conn = unsafe { crate::records::swr_v1_server_connection(state, fd.into(), 0) };
+            // SAFETY: a listening socket's live connection.
+            let kind = unsafe { (*ctx.conn).socket_type };
+            // SAFETY: as above.
+            ctx.sock = unsafe { (*ctx.conn).socket }.cast();
+            let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
+            // SAFETY: this thread's live buffer.
+            ctx.pkt = unsafe { (*buffer).str }.cast();
+            ctx.task = SendData {
+                info: DataHead {
+                    server_fd: u16::try_from(fd).unwrap_or(u16::MAX),
+                    reactor_id: swoole_rs_corebase::thread_id().cast_signed(),
+                    kind: EVENT_RECV_DGRAM,
+                    time: swoole_rs_corebase::microtime(),
+                    ..DataHead::default()
+                },
+                data: ptr::null(),
+            };
+            let pkt = packet(ctx);
+            pkt.socket_type = kind;
+            pkt.socket_addr.kind = kind;
+            0
+        }
+        OP_RECVFROM => {
+            let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
+            // SAFETY: this thread's live buffer.
+            let room = unsafe { (*buffer).size } - size_of::<DgramPacket>();
+            let fd = socket(ctx.sock.cast()).fd;
+            let pkt = packet(ctx);
+            let data = (&raw mut *pkt).wrapping_add(1).cast();
+            let address = &mut pkt.socket_addr;
+            address.len = libc::socklen_t::try_from(size_of::<AddressStorage>()).unwrap_or(0);
+            let (storage, len) = ((&raw mut address.addr).cast(), &raw mut address.len);
+            // SAFETY: the buffer's room after the packet head, and the address's storage.
+            let n = unsafe {
+                swoole_rs_reactor::swr_v1_socket_recvfrom(
+                    fd,
+                    data,
+                    room,
+                    0,
+                    storage,
+                    len,
+                    SOCKET_RETRY_COUNT,
+                )
+            };
+            sign(i64::try_from(n).unwrap_or(-1))
+        }
+        OP_PACKET_DISPATCH => {
+            let pkt = packet(ctx);
+            ctx.task.info.fd = if pkt.socket_type == SOCK_UDP {
+                // SAFETY: a UDP datagram's peer is an inet4 address.
+                let ip = unsafe { pkt.socket_addr.addr.inet_v4.sin_addr.s_addr };
+                c_long::from(ip.cast_signed())
+            } else {
+                // SAFETY: the packet's live address.
+                let host = unsafe { swr_v1_clients_address_host(&raw const pkt.socket_addr) };
+                // SAFETY: upstream hashes as many bytes of the text as the address is long.
+                c_long::from(unsafe { swr_v1_crc32(host.cast(), pkt.socket_addr.len as usize) })
+            };
+            pkt.length = u32::try_from(arg).unwrap_or(u32::MAX);
+            let len = size_of::<DgramPacket>() as u64 + arg;
+            ctx.task.info.len = u32::try_from(len).unwrap_or(u32::MAX);
+            ctx.task.data = ctx.pkt.cast();
+            u64::from(factory_call(
+                state,
+                FACTORY_DISPATCH,
+                (&raw mut ctx.task).cast(),
+            ))
+        }
+        OP_DESTROY_CALLBACK => {
+            // SAFETY: the context's live reactor, which begins with its prepared state.
+            let fields = unsafe { reactor_upstream::prepared(reactor) }.fields;
+            // SAFETY: its live destroy queue; the call takes the reactor, which outlives it.
+            let queue = unsafe { &raw mut (*fields).destroy_callbacks };
+            let push = swoole_rs_reactor::swr_v1_reactor_deferred_push;
+            // SAFETY: as above.
+            if unsafe { push(queue, close_connections, reactor, None) } != 0 {
+                std::alloc::handle_alloc_error(std::alloc::Layout::new::<usize>());
+            }
+            0
+        }
+        OP_CLOSE_FORWARD => {
+            let (factory, member) = factory_slot(state, FACTORY_END);
+            // SAFETY: the slot holds `bool Factory::end(SessionId, int)`.
+            let end: unsafe extern "C-unwind" fn(*mut c_void, i64, c_int) -> bool =
+                unsafe { core::mem::transmute(member) };
+            // SAFETY: the live factory.
+            unsafe { end(factory, arg.cast_signed(), CLOSE_ACTIVELY) };
+            0
+        }
+        OP_WR_SENDFILE => {
+            // SAFETY: the context's live session socket.
+            sign(unsafe { swoole_rs_tls::upstream::socket_handle_sendfile(ctx.sock) })
+        }
+        // SAFETY: as above.
+        OP_WR_SEND => sign(unsafe { swoole_rs_tls::upstream::socket_handle_send(ctx.sock) }),
+        OP_PC_NOTIFY => {
+            let mut head = DataHead {
+                reactor_id: i16::try_from(reactor_id()).unwrap_or_default(),
+                // SAFETY: the context's live event.
+                fd: c_long::from(unsafe { (*ctx.event).fd }),
+                kind: EVENT_CLOSE,
+                ..DataHead::default()
+            };
+            // arg: peer_closed, the connection is no longer available
+            conn_ref().peer_closed = u8::from(arg != 0);
+            socket(ctx.sock.cast()).close_notified = 1;
+            u64::from(factory_call(state, FACTORY_NOTIFY, (&raw mut head).cast()))
+        }
+        OP_CC_COUNT => {
+            use core::sync::atomic::Ordering::SeqCst;
+            // SAFETY: a live server's shared counters.
+            let gs = unsafe { &*config().gs.cast::<crate::shared::ServerCounters>() };
+            // SAFETY: the context's live port, whose counters live as long as it.
+            let port = unsafe { crate::port_config::of(ctx.port) }.gs;
+            // SAFETY: as above.
+            let port = unsafe { &*port.cast::<crate::shared::PortCounters>() };
+            gs.close_count.fetch_add(1, SeqCst);
+            port.close_count.fetch_add(1, SeqCst);
+            // arg: base mode, which counts connections per reactor
+            if arg == 0 {
+                gs.connection_num.fetch_sub(1, SeqCst);
+                port.connection_num.fetch_sub(1, SeqCst);
+            } else {
+                let id = usize::from(reactor_id());
+                // SAFETY: base mode's per-reactor counts, one per reactor.
+                unsafe { (*gs.connection_nums.wrapping_add(id)).fetch_sub(1, SeqCst) };
+                // SAFETY: as above.
+                unsafe { (*port.connection_nums.wrapping_add(id)).fetch_sub(1, SeqCst) };
+            }
+            0
+        }
+        OP_CC_HTTP_DESTROY => {
+            // SAFETY: the context's live port and connection.
+            unsafe { destroy_http_request(ctx.port, conn) };
+            0
+        }
         OP_THREAD_ENTER => {
             ctx.thread = thread(state, usize::try_from(arg).ok()?);
             let thread = this(ctx);
@@ -438,6 +651,22 @@ pub(crate) unsafe fn answer(
         }
         _ => return None,
     })
+}
+
+/// The datagram `OP_PACKET_INIT` points the context at.
+fn packet<'a>(ctx: &ReactorContext) -> &'a mut DgramPacket {
+    // SAFETY: this thread's buffer, which holds a packet head and its datagram.
+    unsafe { &mut *ctx.pkt.cast::<DgramPacket>() }
+}
+
+/// The destroy callback of a reactor thread's reactor: close its connections.
+unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
+    // SAFETY: the callback's live reactor, which begins with its prepared state.
+    let fields = unsafe { reactor_upstream::prepared(reactor) }.fields;
+    // SAFETY: as above.
+    let mut ctx = ReactorContext::new(unsafe { (*fields).ptr }, reactor);
+    // SAFETY: the reactor's live server.
+    unsafe { run(RUN_CLOSE_REACTOR_CONNECTIONS, 0, &mut ctx) };
 }
 
 /// The server's state.
