@@ -28,6 +28,8 @@ mod control;
 mod dispatch;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod dtls;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub mod event_worker_ops;
 mod json;
 mod layout;
 pub mod local_addr;

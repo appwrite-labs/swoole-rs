@@ -36,8 +36,8 @@ which run after Rust returns.
   kill-before-clear and callback order are unchanged.
 - Worker CPU pinning (`Worker_set_cpu_affinity`, Linux) is one Rust operation:
   read the process's affinity, keep `cpu_affinity_available`, pick the
-  `worker_id % count`-th CPU and pin the thread (thread mode) or process. Native
-  sets errno from the outcome and logs upstream's warnings.
+  `worker_id % count`-th CPU and pin the thread (thread mode) or process.
+  crates/server logs upstream's warnings with the outcome's errno.
 - A task's temporary file (`Server::task_unpack`) is read in Rust: open, pread
   `length` bytes retrying EINTR/EAGAIN, close, unlink unless `SW_TASK_PEEK`.
   Native sizes the buffer first (upstream did so after a successful open), then

@@ -20,8 +20,11 @@ void swr_v1_workers_set_enter(swr_v1_workers_enter enter);
 /* Server::finish's result, as workers_enter's extra. */
 typedef struct { const char *data; size_t length; } swr_v1_workers_bytes;
 /* OP_SIGNAL_SET's argument: the signal number (-1 for SIGRTMIN) in the low word and
- * the handler in the high word: 0 none, 1 SIG_IGN, 2 `own`. Defined in worker.cc. */
+ * the handler in the high word: 0 none, 1 SIG_IGN, 2 `own`. crates/server's event_worker_ops.rs. */
 void swr_workers_signal_set(uint64_t arg, void (*own)(int));
+/* The event worker's ops over Rust-owned records, for the WorkerContext (`WorkersNative<0>`)
+ * at `context`: crates/server's event_worker_ops.rs. */
+uint64_t swr_v1_event_worker_call(void *context, uint32_t op, uint64_t arg);
 /* A thread-mode worker thread's body, run(context): directly, or inside the PHP thread
  * crates/phpserver starts on `thread` (the ThreadFactory's swoole::Thread). */
 void swr_v1_workers_thread_start(void *thread, void (*run)(void *context), void *context);
