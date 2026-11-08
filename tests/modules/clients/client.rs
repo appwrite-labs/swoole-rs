@@ -134,12 +134,19 @@ struct TlsCopy {
     index: u32,
 }
 
-/// libstdc++'s `std::vector<T>`.
+/// `swr_v1_reactor_iov_prepared` (native/reactor/swoole_rs_reactor.h).
 #[repr(C)]
-struct StdVector {
-    begin: *mut u8,
-    end: *mut u8,
-    capacity: *mut u8,
+struct IovPrepared {
+    owner: *mut c_void,
+    fields: *mut c_void,
+    status: i32,
+}
+
+// OpenSSL's stack accessors, which `sk_X509_num` and `sk_X509_value` expand to.
+#[link(name = "crypto")]
+unsafe extern "C" {
+    fn OPENSSL_sk_num(stack: *const c_void) -> c_int;
+    fn OPENSSL_sk_value(stack: *const c_void, index: c_int) -> *mut c_void;
 }
 
 #[link(name = "swoole")]
@@ -224,7 +231,14 @@ unsafe extern "C" {
     fn swr_v1_clients_gethostbyname(flags: c_int, name: *const c_char, addr: *mut c_char) -> c_int;
     fn swr_v1_tls_owner_assign(destination: *const c_void, source: *const c_void) -> TlsCopy;
     fn swr_v1_tls_owner_free(owner: *const c_void);
+    fn swr_v1_reactor_iov_prepare(source: *const IoVec, count: i32) -> IovPrepared;
     fn swr_v1_reactor_iov_destroy(owner: *mut c_void);
+    fn swr_v1_socket_ssl_read_x509(
+        cert: *mut c_void,
+        buffer: *mut c_char,
+        length: usize,
+        consume: bool,
+    ) -> c_int;
 
     #[link_name = "_ZN6swoole7network6Client18enable_ssl_encryptEv"]
     fn client_enable_ssl_encrypt(cli: *mut c_void) -> c_int;
@@ -234,14 +248,12 @@ unsafe extern "C" {
     fn socket_has_timedout(socket: *const c_void) -> bool;
     #[link_name = "_ZNK6swoole7network6Socket24ssl_get_peer_certificateEPNS_6StringE"]
     fn socket_ssl_get_peer_certificate(socket: *const c_void, buf: *mut CppString) -> bool;
-    #[link_name = "_ZNK6swoole7network6Socket23ssl_get_peer_cert_chainB5cxx11Ei"]
-    fn socket_ssl_get_peer_cert_chain(socket: *const c_void, limit: c_int) -> StdVector;
+    #[link_name = "_ZNK6swoole7network6Socket23ssl_get_peer_cert_chainEv"]
+    fn socket_ssl_get_peer_cert_chain(socket: *const c_void) -> *mut c_void;
     #[link_name = "_ZN6swoole7network6Socket10ssl_writevEPNS0_8IOVectorE"]
     fn socket_ssl_writev(socket: *mut c_void, io_vector: *mut c_void) -> isize;
     #[link_name = "_ZN6swoole7network6Socket9ssl_readvEPNS0_8IOVectorE"]
     fn socket_ssl_readv(socket: *mut c_void, io_vector: *mut c_void) -> isize;
-    #[link_name = "_ZN6swoole7network8IOVectorC1EPK5ioveci"]
-    fn io_vector_new(this: *mut c_void, iov: *const IoVec, count: c_int);
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
@@ -1553,17 +1565,44 @@ fn cpp_string(size: usize) -> CppString {
     }
 }
 
-/// `IOVector(iov, count)` around `body`, destroyed after.
+/// `IOVector(iov, count)` around `body`, destroyed after. Its constructor is inline
+/// C++ (native/reactor/swoole_rs_socket_methods.h), so this does what it does; the
+/// `ssl_readv`/`ssl_writev` it reaches read only its first member, `owner_`.
 fn with_io_vector<T>(iov: &[IoVec], body: impl FnOnce(*mut c_void) -> T) -> T {
-    // owner_ and six references, with room to spare.
-    let mut storage = [0_usize; 8];
-    let vector = storage.as_mut_ptr().cast::<c_void>();
-    // SAFETY: constructs into the local storage over `iov`, then its inline destructor.
-    unsafe { io_vector_new(vector, iov.as_ptr(), c_int::try_from(iov.len()).unwrap()) };
-    let result = body(vector);
+    // SAFETY: `iov` is a live array of `iov.len()` entries.
+    let prepared =
+        unsafe { swr_v1_reactor_iov_prepare(iov.as_ptr(), i32::try_from(iov.len()).unwrap()) };
+    assert_eq!(prepared.status, 0);
+    let mut owner = prepared.owner;
+    let result = body((&raw mut owner).cast());
     // SAFETY: the vector's owner_, released once.
-    unsafe { swr_v1_reactor_iov_destroy(*storage.as_ptr().cast::<*mut c_void>()) };
+    unsafe { swr_v1_reactor_iov_destroy(owner) };
     result
+}
+
+/// `Socket::ssl_get_peer_cert_chain(limit)`, inline C++ in
+/// native/reactor/swoole_rs_socket_methods.h: the PEM of each of the first `limit`
+/// certificates that reads.
+fn peer_cert_chain(sock: *const c_void, limit: c_int) -> Vec<Vec<u8>> {
+    // SAFETY: a live socket.
+    let chain = unsafe { socket_ssl_get_peer_cert_chain(sock) };
+    if chain.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: a live STACK_OF(X509).
+    let n = unsafe { OPENSSL_sk_num(chain) }.min(limit);
+    let mut buffer = vec![0_u8; SW_BUFFER_SIZE_BIG];
+    (0..n)
+        .filter_map(|i| {
+            // SAFETY: `i` is within the stack.
+            let cert = unsafe { OPENSSL_sk_value(chain, i) };
+            // SAFETY: a live X509 and a writable buffer of its length.
+            let rv = unsafe {
+                swr_v1_socket_ssl_read_x509(cert, buffer.as_mut_ptr().cast(), buffer.len(), false)
+            };
+            (rv > 0).then(|| buffer[..rv as usize].to_vec())
+        })
+        .collect()
 }
 
 fn ssl() {
@@ -1579,9 +1618,8 @@ fn ssl() {
     let mut certificate = cpp_string(SW_BUFFER_SIZE_BIG);
     // SAFETY: the connected socket and a live String.
     assert!(unsafe { socket_ssl_get_peer_certificate(sock, &raw mut certificate) });
-    // SAFETY: the connected socket; the returned vector is leaked.
-    let ls = unsafe { socket_ssl_get_peer_cert_chain(sock, 10) };
-    assert_ne!(ls.begin, ls.end);
+    let ls = peer_cert_chain(sock, 10);
+    assert!(!ls.is_empty());
     assert_eq!(client.ssl_verify(false), SW_OK);
 
     let mut req = http_get_request(TEST_HTTP_DOMAIN, "/");
