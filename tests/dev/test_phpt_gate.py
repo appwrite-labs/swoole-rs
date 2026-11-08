@@ -29,6 +29,14 @@ class PhptGate(unittest.TestCase):
         self.assertIn('named originals excluded (not passed)', summary)
         self.assertEqual(compare(report), ([], []))
 
+    def test_thread_context_racy_original_runs_without_thread_context(self):
+        from corpus.upstream.run import racy, verdict_failed
+        case = {'path': 'tests/swoole_coroutine/cancel/throw_exception.phpt'}
+        self.assertIsNotNone(racy(case, {'capabilities': ['thread_context']}))
+        self.assertIsNone(racy(case, {'capabilities': []}))
+        self.assertIsNotNone(racy({'path': 'tests/swoole_server/shutdown_in_master.phpt'}, {'capabilities': []}))
+        self.assertTrue(verdict_failed({'test': case['path'], 'status': 'failed'}, True))
+
     def test_shards_partition_every_path(self):
         paths = [f'tests/t/{n}.phpt' for n in range(25)]
         parts = [shard(paths, index, 4) for index in range(1, 5)]

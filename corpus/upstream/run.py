@@ -77,7 +77,7 @@ def verdict_failed(row, require_all):
     """Named exclusions stay non-passing; a real failure is never waived."""
     if row['status'] == 'failed':
         return True
-    return (require_all and row['status'] != 'passed' and row['test'] not in RACY
+    return (require_all and row['status'] != 'passed' and row['test'] not in RACY | THREAD_CONTEXT_RACY
             and not (row['status'] == 'excluded' and row['test'] in EXCLUDED))
 
 
@@ -121,6 +121,17 @@ RACY = {'tests/swoole_websocket_server/send_close_frame.phpt':
         'it asserts the killed user process was restarted within 10 ms; restarts take ~3-4 ms '
         'median on both engines, but the tail passes 10 ms on either (hybrid 12/540, upstream '
         '6/540 over nine aarch64 rounds), more often under CI load (#710)'}
+# Racy only with --enable-thread-context, where each coroutine runs on its own thread.
+THREAD_CONTEXT_RACY = {'tests/swoole_coroutine/cancel/throw_exception.phpt':
+                       "co 2's third 0.1 s sleep sometimes wakes before co 1's 0.3 s sleep cancels "
+                       'it, printing a third "co 2 running" on both engines with the same diff '
+                       '(merge tier: upstream 4 of 7 runs, hybrid 11 of 13, #1864)'}
+
+
+def racy(case, metadata):
+    if 'thread_context' in metadata.get('capabilities', []) and case['path'] in THREAD_CONTEXT_RACY:
+        return THREAD_CONTEXT_RACY[case['path']]
+    return RACY.get(case['path'])
 
 
 def require_free_port(port):
@@ -394,9 +405,9 @@ def main():
                         if exclusion:
                             record_result(report, engine, case, {'status': 'excluded',
                                           'detail': exclusion, 'seconds': 0})
-                        elif case['path'] in RACY:
+                        elif reason := racy(case, metadata):
                             record_result(report, engine, case, {'status': 'unsupported',
-                                          'detail': f'racy original: {RACY[case["path"]]}', 'seconds': 0})
+                                          'detail': f'racy original: {reason}', 'seconds': 0})
                         elif missing:
                             record_result(report, engine, case, {'status': 'unsupported',
                                           'detail': f'missing capabilities: {", ".join(missing)}', 'seconds': 0})
