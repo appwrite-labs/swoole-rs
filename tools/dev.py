@@ -61,9 +61,6 @@ CORE_TESTS = {
                **{'coroutine_socket.' + name: PROXY for name in [
                    'https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy', 'https_get_with_http_proxy']}},
               True),
-    # core/heap.cpp is a Rust test (tests/modules/memory/heap.rs): swoole_heap.h left the build (#1513).
-    'memory': (['memory/fixed_pool.cpp', 'memory/global_memory.cpp', 'memory/ringbuffer.cpp', 'memory/table.cpp',
-                'core/channel.cpp'], {}, False),
     'http2': (['protocol/http2.cpp'], {'http2.ssl': 'needs the nghttp2 client'}, False),
     'timer': (['os/timer.cpp'], {}, False),
     'tls': (['protocol/ssl.cpp'], {}, False),
@@ -447,9 +444,6 @@ def plan(args, reports):
                '--source-ref', utility_source, *report('utilities-public-storage'))
     if 'memory' in modules:
         script('memory-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-memory', '--report', reports / 'memory-rust-asan.json')
-        script('memory-native', 'tests/modules/memory/gate.py', '--extension', hybrid, '--reference-extension', reference, *php,
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               *(['--sanitize'] if sys.platform == 'darwin' else []), *report('memory-native'))
     if 'memory' in modules and integrate:
         script('memory-table-witnesses', 'tests/modules/memory/witnesses.py', *php, *engines,
                '--require-memory-bridge', 'hybrid', *report('memory-table-witnesses'))

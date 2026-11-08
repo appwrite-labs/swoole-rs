@@ -14,7 +14,6 @@ done
 for test in \
     tests/modules/clients/test_gate_output.py \
     tests/modules/integration/test_bridge_inventory.py \
-    tests/modules/memory/test_benchmark.py \
     tests/modules/phpcollections/test_prepare_benchmark.py \
     tests/modules/phpcollections/test_runtime.py \
     tests/modules/phphelpers/test_entrypoint.py \

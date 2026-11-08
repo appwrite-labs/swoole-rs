@@ -380,3 +380,393 @@ fn uncreated_tables_refuse_row_operations() {
     t.rewind();
     t.forward();
 }
+
+// Upstream's core-tests/src/memory/table.cpp, one test per TEST, with its inputs and
+// expected values. `Upstream` is its `table_t`: a table with `id`, `name` (32 bytes)
+// and `score` columns whose header and arena are shared mappings, as
+// `Table::make` and `Table::create` lay them out, so forked children share it.
+
+struct Entry {
+    name: Vec<u8>,
+    id: i64,
+    score: f64,
+}
+
+fn row(name: &[u8], id: i64, score: f64) -> Entry {
+    Entry {
+        name: name.to_vec(),
+        id,
+        score,
+    }
+}
+
+/// `Table::make(rows_size, conflict_proportion)`, its header in a shared mapping.
+fn make(rows: u32, conflict: f32) -> *mut Table {
+    let table = crate::members::sw_shm_malloc(size_of::<Table>()).cast::<Table>();
+    assert!(!table.is_null());
+    assert!(unsafe { Table::init(table, rows, conflict, djb, record_warning, record_error) });
+    table
+}
+
+/// `Table::destroy()`.
+fn destroy(table: *mut Table) {
+    let arena = unsafe { Table::destroy(table) };
+    if !arena.is_null() {
+        crate::members::sw_shm_free(arena.cast());
+    }
+    crate::members::sw_shm_free(table.cast());
+}
+
+struct Upstream(*mut Table);
+
+impl Upstream {
+    fn new(rows: u32) -> Self {
+        let table = make(rows, 0.2);
+        let this = unsafe { &mut *table };
+        assert!(this.add_column(b"id", TYPE_INT, 0));
+        assert!(this.add_column(b"name", TYPE_STRING, 32));
+        assert!(this.add_column(b"score", TYPE_FLOAT, 0));
+        assert!(
+            unsafe { crate::members::swr_table_create(table) },
+            "create failed"
+        );
+        Upstream(table)
+    }
+
+    fn ptr(&self) -> &Table {
+        unsafe { &*self.0 }
+    }
+
+    fn set(&self, key: &str, value: &Entry) -> bool {
+        let table = self.ptr();
+        let mut lock = ptr::null_mut();
+        let row = table.set(key.as_bytes(), &mut lock, None);
+        if row.is_null() {
+            unsafe { unlock(lock) };
+            return false;
+        }
+        let column = |name: &[u8]| table.column(name).unwrap();
+        unsafe {
+            table.set_value(row, column(b"id"), (&raw const value.id).cast(), 8);
+            table.set_value(row, column(b"name"), value.name.as_ptr(), value.name.len());
+            table.set_value(row, column(b"score"), (&raw const value.score).cast(), 8);
+            unlock(lock);
+        }
+        true
+    }
+
+    fn get(&self, key: &str) -> Entry {
+        let table = self.ptr();
+        let mut lock = ptr::null_mut();
+        let found = table.get(key.as_bytes(), &mut lock);
+        let column = |name: &[u8]| table.column(name).unwrap();
+        let mut result = row(b"", 0, 0.0);
+        if !found.is_null() {
+            unsafe {
+                result.id = get_number(found, column(b"id")).cast_signed();
+                result.score = f64::from_bits(get_number(found, column(b"score")));
+                result.name = get_string(found, column(b"name")).to_vec();
+            }
+        }
+        unsafe { unlock(lock) };
+        result
+    }
+
+    fn del(&self, key: &str) -> bool {
+        self.ptr().del(key.as_bytes())
+    }
+
+    fn exists(&self, key: &str) -> bool {
+        let mut lock = ptr::null_mut();
+        let row = self.ptr().get(key.as_bytes(), &mut lock);
+        unsafe { unlock(lock) };
+        !row.is_null()
+    }
+
+    fn count(&self) -> usize {
+        self.ptr().count()
+    }
+
+    /// A table filled by `create_table`.
+    fn colliding(rows: u32) -> Self {
+        let table = Upstream::new(rows);
+        table.create_table();
+        table
+    }
+
+    /// `create_table`: five rows that all hash to 1.
+    fn create_table(&self) {
+        let table = self;
+        unsafe { &mut *table.0 }.set_hash(one);
+        assert!(table.set("php", &row(b"php", 1, 1.245)));
+        assert!(table.set("java", &row(b"java", 2, JAVA_SCORE)));
+        assert!(table.set("c++", &row(b"c++", 3, 4.888)));
+        assert!(table.set("js", &row(b"js", 9, 6565.0)));
+        assert!(table.set("golang", &row(b"golang", 4, 9.888)));
+    }
+
+    fn used_slices(&self) -> usize {
+        (self.ptr().total_slices() - self.ptr().available_slices()) as usize
+    }
+}
+
+impl Drop for Upstream {
+    fn drop(&mut self) {
+        destroy(self.0);
+    }
+}
+
+unsafe extern "C" fn one(_: *const c_char, _: usize) -> u64 {
+    1
+}
+
+const TEST_TABLE_SIZE: u32 = 128;
+#[expect(clippy::approx_constant, reason = "upstream's literal, not pi")]
+const JAVA_SCORE: f64 = 3.141_592_6;
+const TEST_JPG_MD5SUM: &str = "64a42b4c0f3c65a14c23b60d3880a917";
+
+/// `TEST(table, create)`.
+#[test]
+fn table_create() {
+    let table = Upstream::new(1024);
+    let ptr = table.ptr();
+    assert!(ptr.memory_size() > ptr.size() * ptr.column_size());
+    assert!(!unsafe { crate::members::swr_table_create(table.0) }); // create again should fail
+    assert!(table.set("php", &row(b"php", 1, 1.245)));
+    assert!(table.set("java", &row(b"java", 2, JAVA_SCORE)));
+    assert!(table.set("c++", &row(b"c++", 3, 4.888)));
+    assert_eq!(table.count(), 3);
+    let r1 = table.get("java");
+    assert_eq!(r1.id, 2);
+    assert_eq!(r1.score.to_bits(), JAVA_SCORE.to_bits());
+    assert_eq!(r1.name, b"java");
+    assert!(ptr.column(b"not-exists").is_none());
+    assert!(table.exists("php"));
+    assert!(table.del("php"));
+    assert!(!table.exists("php"));
+    assert!(!table.del("not-exists"));
+    // Test with a string that is longer than the column size
+    let long = format!("golang {TEST_JPG_MD5SUM}{TEST_JPG_MD5SUM}");
+    assert!(table.set("golang", &row(long.as_bytes(), 3, 4.888)));
+    warnings();
+}
+
+/// `start_iterator`: every row the iterator yields exists, and it yields `count()`.
+fn start_iterator(ptr: &Table) {
+    ptr.rewind();
+    let mut count = 0;
+    loop {
+        ptr.forward();
+        let row = ptr.current();
+        let key_len = unsafe { (*row).key_len };
+        if key_len == 0 {
+            break;
+        }
+        let key = unsafe { &(&(*row).key)[..usize::from(key_len)] };
+        assert!(ptr.exists(key));
+        count += 1;
+    }
+    assert_eq!(count, ptr.count());
+}
+
+/// `TEST(table, iterator)`.
+#[test]
+fn table_iterator() {
+    let table = Upstream::new(1024);
+    table.set("php", &row(b"php", 1, 1.245));
+    table.set("java", &row(b"java", 2, JAVA_SCORE));
+    table.set("c++", &row(b"c++", 3, 4.888));
+    start_iterator(table.ptr());
+}
+
+/// `TEST(table, iterator_2)`: every key hashes to 1.
+#[test]
+fn table_iterator_2() {
+    let table = Upstream::new(1024);
+    unsafe { &mut *table.0 }.set_hash(one);
+    table.set("php", &row(b"php", 1, 1.245));
+    table.set("java", &row(b"java", 2, JAVA_SCORE));
+    table.set("c++", &row(b"c++", 3, 4.888));
+    start_iterator(table.ptr());
+}
+
+/// `TEST(table, conflict1)`.
+#[test]
+fn table_conflict1() {
+    let table = Upstream::new(TEST_TABLE_SIZE);
+    assert!(!table.exists("swift"));
+    table.create_table();
+    assert!(!table.exists("kotlin"));
+    assert!(table.del("php"));
+    assert!(!table.exists("php"));
+    assert!(table.set("rust", &row(b"rust", 5, 9.888)));
+    assert!(table.del("golang"));
+    assert!(!table.exists("golang"));
+    assert!(table.set("erlang", &row(b"erlang", 6, 12.888)));
+    assert!(table.del("java"));
+    assert!(!table.exists("java"));
+    assert_eq!(table.used_slices(), table.count() - 1);
+}
+
+/// `TEST(table, conflict2)`.
+#[test]
+fn table_conflict2() {
+    let table = Upstream::colliding(TEST_TABLE_SIZE);
+    assert!(table.del("java"));
+    assert!(!table.exists("java"));
+    assert!(table.set("rust", &row(b"rust", 5, 9.888)));
+    assert!(table.del("golang"));
+    assert!(!table.exists("golang"));
+    assert!(table.set("erlang", &row(b"erlang", 6, 12.888)));
+    assert_eq!(table.used_slices(), table.count() - 1);
+}
+
+/// `TEST(table, conflict3)`.
+#[test]
+fn table_conflict3() {
+    let table = Upstream::colliding(TEST_TABLE_SIZE);
+    assert!(table.del("golang"));
+    assert!(table.set("erlang", &row(b"erlang", 6, 12.888)));
+    assert!(table.del("java"));
+    assert_eq!(table.used_slices(), table.count() - 1);
+}
+
+/// `TEST(table, conflict4)`.
+#[test]
+fn table_conflict4() {
+    let table = Upstream::colliding(TEST_TABLE_SIZE);
+    assert!(table.del("c++"));
+    assert!(table.set("rust", &row(b"rust", 5, 9.888)));
+    assert!(table.del("golang"));
+    assert!(table.set("erlang", &row(b"erlang", 6, 12.888)));
+    assert!(table.del("java"));
+    assert_eq!(table.used_slices(), table.count() - 1);
+}
+
+/// `TEST(table, get_value)`: clearing a string column keeps its bytes, which
+/// `ASSERT_STREQ` reads up to their NUL.
+#[test]
+fn table_get_value() {
+    let table = Upstream::colliding(TEST_TABLE_SIZE);
+    let ptr = table.ptr();
+    let mut lock = ptr::null_mut();
+    let row = ptr.get(b"php", &mut lock);
+    unsafe { unlock(lock) };
+    let column_id = ptr.column(b"id").unwrap();
+    let column_name = ptr.column(b"name").unwrap();
+    let column_score = ptr.column(b"score").unwrap();
+    let streq = |expected: &std::ffi::CStr| {
+        let value = unsafe { get_string(row, column_name) };
+        assert_eq!(
+            unsafe { std::ffi::CStr::from_ptr(value.as_ptr().cast()) },
+            expected
+        );
+    };
+    streq(c"php");
+    assert_eq!(
+        f64::from_bits(unsafe { get_number(row, column_score) }),
+        1.245
+    );
+    assert_eq!(unsafe { get_number(row, column_id) }.cast_signed(), 1);
+    unsafe {
+        clear_value(row, column_id);
+        clear_value(row, column_name);
+        clear_value(row, column_score);
+    }
+    streq(c"php");
+    assert_eq!(
+        f64::from_bits(unsafe { get_number(row, column_score) }),
+        0.0
+    );
+    assert_eq!(unsafe { get_number(row, column_id) }.cast_signed(), 0);
+}
+
+/// `TEST(table, lock)`: four threads in turn take the row's lock and keep it; the
+/// test unlocks it once at the end.
+#[test]
+fn table_lock() {
+    let table = Upstream::colliding(TEST_TABLE_SIZE);
+    let address = table.0.expose_provenance();
+    let mut lock = 0;
+    for _ in 0..=3 {
+        lock = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let ptr = unsafe { &*ptr::with_exposed_provenance::<Table>(address) };
+                    let mut lock = ptr::null_mut();
+                    let row = ptr.get(b"php", &mut lock);
+                    let value = unsafe { get_string(row, ptr.column(b"name").unwrap()) };
+                    assert_eq!(
+                        unsafe { std::ffi::CStr::from_ptr(value.as_ptr().cast()) },
+                        c"php"
+                    );
+                    lock.expose_provenance()
+                })
+                .join()
+                .unwrap()
+        });
+    }
+    unsafe { unlock(ptr::with_exposed_provenance_mut(lock)) };
+}
+
+/// `TEST(table, size_limit)`.
+#[test]
+fn table_size_limit() {
+    let t1 = make(0x9000_0000, 1.2);
+    assert_eq!(unsafe { &*t1 }.size(), 0x8000_0000);
+    assert_eq!(unsafe { &*t1 }.conflict_proportion(), 1.0);
+    assert!(!unsafe { &mut *t1 }.add_column(b"bad_field", 8, 0));
+    let t2 = make(1024, 0.1);
+    assert_eq!(unsafe { &*t2 }.size(), 1024);
+    assert_eq!(unsafe { &*t2 }.conflict_proportion(), 0.2f32);
+    destroy(t1);
+    destroy(t2);
+    warnings();
+}
+
+/// Waits for `child` and returns its exit status.
+fn wait(child: libc::pid_t) -> c_int {
+    assert!(child > 0);
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
+    assert!(libc::WIFEXITED(status));
+    libc::WEXITSTATUS(status)
+}
+
+/// `TEST(table, lock_crash)`: a child exits holding the row's lock; the parent
+/// still gets the row.
+#[test]
+fn table_lock_crash() {
+    let table = Upstream::colliding(TEST_TABLE_SIZE);
+    let ptr = table.ptr();
+    let child = unsafe { libc::fork() };
+    if child == 0 {
+        let mut lock = ptr::null_mut();
+        ptr.get(b"java", &mut lock);
+        unsafe { libc::usleep(5) };
+        unsafe { libc::_exit(200) }; // Simulate a crash in the child process, no release lock
+    }
+    assert_eq!(wait(child), 200);
+    let mut lock = ptr::null_mut();
+    assert!(!ptr.get(b"java", &mut lock).is_null());
+    unsafe { unlock(lock) };
+}
+
+/// `TEST(table, lock_race)`: a child and the parent take the row's lock at once.
+#[test]
+fn table_lock_race() {
+    let table = Upstream::colliding(TEST_TABLE_SIZE);
+    let ptr = table.ptr();
+    let child = unsafe { libc::fork() };
+    if child == 0 {
+        let mut lock = ptr::null_mut();
+        let found = !ptr.get(b"java", &mut lock).is_null();
+        unsafe { libc::usleep(5) };
+        unsafe { unlock(lock) };
+        unsafe { libc::_exit(c_int::from(!found)) };
+    }
+    let mut lock = ptr::null_mut();
+    assert!(!ptr.get(b"java", &mut lock).is_null());
+    unsafe { unlock(lock) };
+    assert_eq!(wait(child), 0);
+}

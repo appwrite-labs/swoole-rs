@@ -1,6 +1,6 @@
 //! `swoole::Table`: a fixed-size hash table in shared memory, used by forked
-//! workers at once. Rust owns the whole table; C++ allocates its two blocks
-//! (the header from `sw_mem_pool()`, the arena from `sw_shm_malloc`), so both
+//! workers at once. Rust owns the whole table; its two blocks come from
+//! `sw_mem_pool()` (the header) and `sw_shm_malloc` (the arena), so both
 //! stay shared across `fork()` exactly as upstream's are.
 //!
 //! The header holds what upstream's `Table` held in shared memory: sizes,
@@ -8,7 +8,7 @@
 //! cursor are process-private heap objects, as upstream's maps and
 //! `TableIterator` were. The arena is `size` bucket pointers, `size` bucket
 //! rows, then a fixed pool of collision rows. Each row is an 88-byte header
-//! (`swr_v1_memory_table_row`) followed by the column data, rounded up to 8
+//! followed by the column data, rounded up to 8
 //! bytes so every lock word and link is aligned.
 //!
 //! Row locks are upstream's spin locks, with its recovery from a dead owner
@@ -50,7 +50,7 @@ pub type Warning = unsafe extern "C" fn(message: *const c_char, length: usize);
 /// `swoole_set_last_error`.
 pub type Error = unsafe extern "C" fn(code: c_int);
 
-/// A row header, then `item_size` bytes of column data (`swr_v1_memory_table_row`).
+/// A row header, then `item_size` bytes of column data.
 #[repr(C)]
 pub struct Row {
     lock: AtomicU32,
@@ -191,8 +191,7 @@ impl Live {
     }
 }
 
-/// A declared column. The C header declares its first three fields
-/// (`swr_v1_memory_table_column`); the name follows.
+/// A declared column.
 #[repr(C)]
 pub struct Column {
     pub kind: u32,
@@ -216,7 +215,7 @@ impl Column {
 struct Columns {
     #[expect(
         clippy::vec_box,
-        reason = "C++ keeps column pointers across later declarations"
+        reason = "callers keep column pointers across later declarations"
     )]
     list: Vec<Box<Column>>,
     first: HashMap<Box<[u8]>, usize>,
@@ -249,7 +248,7 @@ impl Lock {
     }
 }
 
-/// The counters `Swoole\Table::stats()` reports (`swr_v1_memory_table_stats`).
+/// The counters `Swoole\Table::stats()` reports.
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct Stats {
@@ -260,8 +259,7 @@ pub struct Stats {
     pub delete_count: i64,
 }
 
-/// The table header (`swr_v1_memory_table`), in
-/// `swr_v1_memory_table_header_size()` bytes of shared memory.
+/// The table header, in `size_of::<Table>()` bytes of shared memory.
 ///
 /// Invariant: once `created`, `memory` is the arena `create` laid out: `rows`
 /// holds `size` pointers to bucket rows, `pool` is a fixed pool of collision
@@ -337,17 +335,6 @@ fn warn(warning: Warning, message: &[u8]) {
 /// `check_key_length`: keys are cut to 63 bytes.
 fn clamp(key: &[u8]) -> &[u8] {
     key.get(..KEY_SIZE - 1).unwrap_or(key)
-}
-
-/// `length` bytes the host lends at `bytes`.
-/// # Safety
-/// `bytes` holds `length` readable bytes, or `length` is 0.
-unsafe fn borrow<'a>(bytes: *const c_char, length: usize) -> &'a [u8] {
-    if bytes.is_null() || length == 0 {
-        return &[];
-    }
-    // SAFETY: per the caller.
-    unsafe { slice::from_raw_parts(bytes.cast(), length) }
 }
 
 /// The key a row holds.
@@ -1053,349 +1040,6 @@ impl Table {
         unsafe { self.cursor.as_mut() }
             .map_or(ptr::null_mut(), |cursor| cursor.current.as_mut_ptr().cast())
     }
-}
-
-// The C ABI (swoole_rs_memory.h). Each `table` is one `init` initialised and
-// `destroy` has not freed, each `row` a row of it, each `column` one of its
-// columns; outputs are writable.
-
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_memory_table_header_size() -> usize {
-    size_of::<Table>()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_init(
-    table: *mut Table,
-    rows: u32,
-    conflict: f32,
-    hash: Hash,
-    warning: Warning,
-    error: Error,
-) -> bool {
-    if table.is_null() || !table.addr().is_multiple_of(align_of::<Table>()) {
-        return false;
-    }
-    // SAFETY: per the C contract, `header_size()` writable bytes.
-    unsafe { Table::init(table, rows, conflict, hash, warning, error) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_set_hash(table: *mut Table, hash: Hash) {
-    // SAFETY: per the C contract.
-    unsafe { &mut *table }.set_hash(hash);
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_add_column(
-    table: *mut Table,
-    name: *const c_char,
-    length: usize,
-    kind: u32,
-    size: usize,
-) -> bool {
-    // SAFETY: per the C contract, `length` bytes.
-    let name = unsafe { borrow(name, length) };
-    // SAFETY: per the C contract.
-    unsafe { &mut *table }.add_column(name, kind, size)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_find_column(
-    table: *const Table,
-    name: *const c_char,
-    length: usize,
-) -> *mut Column {
-    // SAFETY: per the C contract, `length` bytes.
-    let name = unsafe { borrow(name, length) };
-    // SAFETY: per the C contract.
-    unsafe { &*table }
-        .column(name)
-        .map_or(ptr::null_mut(), |c| ptr::from_ref(c).cast_mut())
-}
-
-/// The `index`th declaration, repeats included, or null past the last.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_column_at(
-    table: *const Table,
-    index: usize,
-) -> *mut Column {
-    // SAFETY: per the C contract.
-    unsafe { &*table }
-        .columns()
-        .nth(index)
-        .map_or(ptr::null_mut(), |c| ptr::from_ref(c).cast_mut())
-}
-
-/// Declarations, repeats included, or distinct names if `unique`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_column_count(
-    table: *const Table,
-    unique: bool,
-) -> usize {
-    // SAFETY: per the C contract.
-    let table = unsafe { &*table };
-    if unique {
-        table.column_size()
-    } else {
-        table.columns().len()
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_column_name(
-    column: *const Column,
-    length: *mut usize,
-) -> *const c_char {
-    // SAFETY: per the C contract.
-    let name = unsafe { &*column }.name();
-    // SAFETY: as above.
-    unsafe { length.write(name.len()) };
-    name.as_ptr().cast()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_memory_total(table: *const Table) -> usize {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.memory_total()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_arena_size(table: *const Table) -> usize {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.arena_size()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_create(table: *mut Table, arena: *mut c_void) -> bool {
-    // SAFETY: per the C contract.
-    let table = unsafe { &mut *table };
-    // SAFETY: per the C contract, an `arena_size()` arena the table now owns.
-    unsafe { table.create(arena.cast()) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_destroy(table: *mut Table) -> *mut c_void {
-    // SAFETY: per the C contract; nothing uses the table afterwards.
-    unsafe { Table::destroy(table) }.cast()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_created(table: *const Table) -> bool {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.is_created()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_ready(table: *const Table) -> bool {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.ready()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_size(table: *const Table) -> usize {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.size()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_conflict_proportion(table: *const Table) -> f32 {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.conflict_proportion()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_memory_size(table: *const Table) -> usize {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.memory_size()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_count(table: *const Table) -> usize {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.count()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_counters(table: *const Table) -> Stats {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.stats()
-}
-
-/// Spare collision rows if `available`, else all of them.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_slices(table: *const Table, available: bool) -> u32 {
-    // SAFETY: per the C contract.
-    let table = unsafe { &*table };
-    if available {
-        table.available_slices()
-    } else {
-        table.total_slices()
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_set(
-    table: *const Table,
-    key: *const c_char,
-    length: u16,
-    lock: *mut *mut Row,
-    flags: *mut c_int,
-) -> *mut Row {
-    // SAFETY: per the C contract, `length` bytes.
-    let key = unsafe { borrow(key, usize::from(length)) };
-    // SAFETY: per the C contract; `flags` may be null.
-    let flags = unsafe { flags.as_mut() };
-    // SAFETY: per the C contract.
-    let lock = unsafe { &mut *lock };
-    // SAFETY: as above.
-    unsafe { &*table }.set(key, lock, flags)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_get(
-    table: *const Table,
-    key: *const c_char,
-    length: u16,
-    lock: *mut *mut Row,
-) -> *mut Row {
-    // SAFETY: per the C contract, `length` bytes.
-    let key = unsafe { borrow(key, usize::from(length)) };
-    // SAFETY: per the C contract.
-    let lock = unsafe { &mut *lock };
-    // SAFETY: as above.
-    unsafe { &*table }.get(key, lock)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_exists(
-    table: *const Table,
-    key: *const c_char,
-    length: u16,
-) -> bool {
-    // SAFETY: per the C contract, `length` bytes.
-    let key = unsafe { borrow(key, usize::from(length)) };
-    // SAFETY: per the C contract.
-    unsafe { &*table }.exists(key)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_del(
-    table: *const Table,
-    key: *const c_char,
-    length: u16,
-) -> bool {
-    // SAFETY: per the C contract, `length` bytes.
-    let key = unsafe { borrow(key, usize::from(length)) };
-    // SAFETY: per the C contract.
-    unsafe { &*table }.del(key)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_by_index(table: *const Table, index: u32) -> *mut Row {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.by_index(index as usize)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_rewind(table: *const Table) {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.rewind();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_forward(table: *const Table) {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.forward();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_current(table: *const Table) -> *mut Row {
-    // SAFETY: per the C contract.
-    unsafe { &*table }.current()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_clear_row(table: *const Table, row: *mut Row) {
-    // SAFETY: per the C contract.
-    let table = unsafe { &*table };
-    // SAFETY: per the C contract, a locked row.
-    unsafe { table.clear_row(row) };
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_row_lock(row: *mut Row, warning: Warning) {
-    // SAFETY: per the C contract.
-    unsafe { lock(row, warning) };
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_row_unlock(row: *mut Row) {
-    // SAFETY: per the C contract; this process holds the lock.
-    unsafe { unlock(row) };
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_row_clear(row: *mut Row) {
-    // SAFETY: per the C contract, a locked row.
-    unsafe { clear(row) };
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_set_value(
-    row: *mut Row,
-    column: *const Column,
-    value: *const c_void,
-    length: usize,
-    warning: Warning,
-) {
-    // SAFETY: per the C contract.
-    let column = unsafe { &*column };
-    // SAFETY: per the C contract, a locked row and `value` as `set_value` reads it.
-    unsafe { set_value(row, column, value.cast(), length, warning) };
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_clear_value(row: *mut Row, column: *const Column) {
-    // SAFETY: per the C contract.
-    let column = unsafe { &*column };
-    // SAFETY: per the C contract, a locked row.
-    unsafe { clear_value(row, column) };
-}
-
-/// A number column's 8 bytes, into `value`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_get_number(
-    row: *const Row,
-    column: *const Column,
-    value: *mut c_void,
-) {
-    // SAFETY: per the C contract.
-    let column = unsafe { &*column };
-    // SAFETY: per the C contract, a locked row.
-    let bits = unsafe { get_number(row, column) };
-    // SAFETY: per the C contract, 8 writable bytes.
-    unsafe { value.cast::<u64>().write_unaligned(bits) };
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_table_get_string(
-    row: *const Row,
-    column: *const Column,
-    value: *mut *mut c_char,
-    length: *mut u32,
-) {
-    // SAFETY: per the C contract.
-    let column = unsafe { &*column };
-    // SAFETY: per the C contract, a locked row.
-    let bytes = unsafe { get_string(row, column) };
-    #[expect(clippy::cast_possible_truncation, reason = "a stored 4-byte length")]
-    // SAFETY: per the C contract.
-    unsafe {
-        length.write(bytes.len() as u32);
-    };
-    // SAFETY: per the C contract.
-    unsafe { value.write(bytes.as_ptr().cast_mut().cast()) };
 }
 
 #[cfg(test)]

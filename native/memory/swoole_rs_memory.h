@@ -4,15 +4,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #ifdef __cplusplus
-namespace swoole { struct TableRow; struct TableColumn; class Table; }
-typedef swoole::TableRow swr_v1_memory_table_link;
-typedef swoole::TableColumn swr_v1_memory_table_column_link;
-typedef swoole::Table swr_v1_memory_table;
 extern "C" {
-#else
-typedef struct swr_v1_memory_table_row swr_v1_memory_table_link;
-typedef struct swr_v1_memory_table_column swr_v1_memory_table_column_link;
-typedef struct swr_v1_memory_table swr_v1_memory_table;
 #endif
 /* swoole::Channel: the queue state, its process-shared mutex and its notification
  * pipe (read end first). Native allocates swr_v1_memory_channel_bytes() bytes (heap
@@ -49,91 +41,12 @@ typedef struct swr_v1_memory_channel_capacity {
     uint8_t head_tag, tail_tag;
 } swr_v1_memory_channel_capacity;
 int32_t swr_v1_memory_channel_full(const swr_v1_memory_channel_capacity *);
-/* The pools are Rust's (crates/memory/src/members.rs). These are what
- * swoole_memory.h keeps inline: the constructors, which throw, and the virtual members. A constructor returns 0, -1 for
- * Exception(SW_ERROR_INVALID_PARAMS) or -2 for std::bad_alloc; so does global alloc. */
-int32_t swr_v1_memory_fixed_pool_new(uint32_t slices, uint32_t width, bool shared, void **output);
-int32_t swr_v1_memory_fixed_pool_borrow(uint32_t width, void *memory, size_t size, bool shared, void **output);
-void swr_v1_memory_fixed_pool_delete(void *pool);
-void *swr_v1_memory_fixed_pool_alloc(void *pool);
-void swr_v1_memory_fixed_pool_free(void *pool, void *data);
-int32_t swr_v1_memory_ring_buffer_new(uint32_t size, bool shared, void **output);
-void swr_v1_memory_ring_buffer_delete(void *ring);
-void *swr_v1_memory_ring_buffer_alloc(void *ring, uint32_t size);
-void swr_v1_memory_ring_buffer_free(void *ring, void *data);
+/* GlobalMemory is Rust's (crates/memory/src/members.rs); swoole_memory.h keeps its
+ * constructor, which throws, and its virtual members. new and alloc return 0, -1 for
+ * Exception(SW_ERROR_INVALID_PARAMS) or -2 for std::bad_alloc. */
 int32_t swr_v1_memory_global_memory_new(uint32_t pagesize, bool shared, void **output);
 void swr_v1_memory_global_memory_delete(void *pool);
 int32_t swr_v1_memory_global_memory_alloc(void **pool, uint32_t size, void **output);
-/* swoole::Table (crates/memory/src/table.rs). Rust owns the table; the host
- * allocates its header (header_size() bytes, 8-aligned, shared memory) and,
- * for create, its arena (arena_size() bytes). Every row pointer here is a row
- * of the table or the iterator's copy of one; a bucket's chain is read and
- * written only under the bucket's lock. */
-typedef struct swr_v1_memory_table_row {
-    volatile uint32_t lock_;
-    int32_t lock_pid;
-    uint8_t active, key_len;
-    swr_v1_memory_table_link *next;
-    char key[64];
-    char data[0];
-} swr_v1_memory_table_row;
-/* The leading fields of a column, which Rust allocates. */
-typedef struct swr_v1_memory_table_column {
-    uint32_t type; /* 1 int, 2 float, 3 string */
-    uint32_t size; /* bytes in a row: 8, or a string's capacity plus its 4-byte length */
-    size_t index;  /* offset in a row's data */
-} swr_v1_memory_table_column;
-typedef struct swr_v1_memory_table_stats {
-    size_t conflict_count;
-    uint32_t conflict_max_level;
-    int64_t insert_count, update_count, delete_count;
-} swr_v1_memory_table_stats;
-typedef uint64_t (*swr_v1_memory_table_hash)(const char *key, size_t length);
-/* Logs one whole warning line ("Class::method(): message"). */
-typedef void (*swr_v1_memory_table_warning)(const char *message, size_t length);
-typedef void (*swr_v1_memory_table_error)(int code);
-size_t swr_v1_memory_table_header_size(void);
-bool swr_v1_memory_table_init(swr_v1_memory_table *, uint32_t rows, float conflict, swr_v1_memory_table_hash,
-                              swr_v1_memory_table_warning, swr_v1_memory_table_error);
-void swr_v1_memory_table_set_hash(swr_v1_memory_table *, swr_v1_memory_table_hash);
-bool swr_v1_memory_table_add_column(swr_v1_memory_table *, const char *name, size_t length, uint32_t kind, size_t size);
-swr_v1_memory_table_column_link *swr_v1_memory_table_find_column(const swr_v1_memory_table *, const char *name, size_t length);
-swr_v1_memory_table_column_link *swr_v1_memory_table_column_at(const swr_v1_memory_table *, size_t index);
-size_t swr_v1_memory_table_column_count(const swr_v1_memory_table *, bool unique);
-const char *swr_v1_memory_table_column_name(const swr_v1_memory_table_column *, size_t *length);
-size_t swr_v1_memory_table_memory_total(const swr_v1_memory_table *);
-size_t swr_v1_memory_table_arena_size(const swr_v1_memory_table *);
-bool swr_v1_memory_table_create(swr_v1_memory_table *, void *arena);
-/* Frees the table's own parts; returns its arena (or NULL) for the host to free. */
-void *swr_v1_memory_table_destroy(swr_v1_memory_table *);
-bool swr_v1_memory_table_created(const swr_v1_memory_table *);
-bool swr_v1_memory_table_ready(const swr_v1_memory_table *);
-size_t swr_v1_memory_table_size(const swr_v1_memory_table *);
-float swr_v1_memory_table_conflict_proportion(const swr_v1_memory_table *);
-size_t swr_v1_memory_table_memory_size(const swr_v1_memory_table *);
-size_t swr_v1_memory_table_count(const swr_v1_memory_table *);
-swr_v1_memory_table_stats swr_v1_memory_table_counters(const swr_v1_memory_table *);
-uint32_t swr_v1_memory_table_slices(const swr_v1_memory_table *, bool available);
-swr_v1_memory_table_link *swr_v1_memory_table_set(const swr_v1_memory_table *, const char *key, uint16_t length,
-                                                  swr_v1_memory_table_link **lock, int *flags);
-swr_v1_memory_table_link *swr_v1_memory_table_get(const swr_v1_memory_table *, const char *key, uint16_t length,
-                                                  swr_v1_memory_table_link **lock);
-bool swr_v1_memory_table_exists(const swr_v1_memory_table *, const char *key, uint16_t length);
-bool swr_v1_memory_table_del(const swr_v1_memory_table *, const char *key, uint16_t length);
-swr_v1_memory_table_link *swr_v1_memory_table_by_index(const swr_v1_memory_table *, uint32_t index);
-void swr_v1_memory_table_rewind(const swr_v1_memory_table *);
-void swr_v1_memory_table_forward(const swr_v1_memory_table *);
-swr_v1_memory_table_link *swr_v1_memory_table_current(const swr_v1_memory_table *);
-void swr_v1_memory_table_clear_row(const swr_v1_memory_table *, swr_v1_memory_table_row *);
-void swr_v1_memory_table_row_lock(swr_v1_memory_table_row *, swr_v1_memory_table_warning);
-void swr_v1_memory_table_row_unlock(swr_v1_memory_table_row *);
-void swr_v1_memory_table_row_clear(swr_v1_memory_table_row *);
-void swr_v1_memory_table_set_value(swr_v1_memory_table_row *, const swr_v1_memory_table_column *, const void *value,
-                                   size_t length, swr_v1_memory_table_warning);
-void swr_v1_memory_table_clear_value(swr_v1_memory_table_row *, const swr_v1_memory_table_column *);
-void swr_v1_memory_table_get_number(const swr_v1_memory_table_row *, const swr_v1_memory_table_column *, void *value);
-void swr_v1_memory_table_get_string(const swr_v1_memory_table_row *, const swr_v1_memory_table_column *, char **value,
-                                    uint32_t *length);
 #ifdef __cplusplus
 }
 #endif

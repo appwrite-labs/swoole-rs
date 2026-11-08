@@ -347,3 +347,153 @@ fn public_capacity_predicate_preserves_defined_modular_scalar_domain() {
     }
     assert_eq!(unsafe { swr_v1_memory_channel_full(ptr::null()) }, -1);
 }
+
+/// `swoole::Channel` as `include/swoole_channel.h` drives the record: `make`, the
+/// locked `push`, `pop` and `peek`, `wait`, `notify` and `destroy`.
+struct Native(Vec<u64>);
+
+impl Native {
+    fn make(size: usize, maxlen: usize, flags: i32) -> Self {
+        let total = swr_v1_memory_channel_bytes(size, maxlen);
+        let mut memory = vec![0u64; total.div_ceil(8)];
+        let record = memory.as_mut_ptr().cast::<Record>();
+        assert_eq!(
+            unsafe { swr_v1_memory_channel_init(record, size, maxlen, flags) },
+            0
+        );
+        Native(memory)
+    }
+    fn record(&self) -> *mut Record {
+        self.0.as_ptr().cast::<Record>().cast_mut()
+    }
+    fn push(&self, data: &[u8]) -> i32 {
+        unsafe {
+            swr_v1_memory_channel_lock(self.record(), true);
+            let status = swr_v1_memory_channel_in(
+                self.record().cast(),
+                data.as_ptr().cast(),
+                data.len() as i32,
+            );
+            swr_v1_memory_channel_lock(self.record(), false);
+            status
+        }
+    }
+    /// `pop` (`consume`) or `peek`: -1 (`SW_ERR`) when empty.
+    fn take(&self, buf: &mut [u8], consume: u32) -> i32 {
+        unsafe {
+            swr_v1_memory_channel_lock(self.record(), true);
+            let n = if (*self.record()).queue.num == 0 {
+                -1
+            } else {
+                swr_v1_memory_channel_out(
+                    self.record().cast(),
+                    buf.as_mut_ptr().cast(),
+                    buf.len() as i32,
+                    consume,
+                )
+            };
+            swr_v1_memory_channel_lock(self.record(), false);
+            n
+        }
+    }
+    fn wait(&self) -> i32 {
+        unsafe { swr_v1_memory_channel_signal(self.record(), false) }
+    }
+    fn notify(&self) -> i32 {
+        unsafe { swr_v1_memory_channel_signal(self.record(), true) }
+    }
+}
+
+impl Drop for Native {
+    fn drop(&mut self) {
+        unsafe { swr_v1_memory_channel_close(self.record()) };
+    }
+}
+
+// The record's mutex serializes the queue, as upstream's does.
+unsafe impl Sync for Native {}
+
+const SW_CHAN_LOCK: i32 = 2;
+const SW_CHAN_NOTIFY: i32 = 4;
+
+/// Upstream core-tests/src/core/channel.cpp `TEST(channel, push)`: 10 MB of random
+/// 4000..7999-byte records through a 128 KiB channel, one thread pushing, one popping
+/// and comparing each record with the one pushed.
+#[test]
+fn channel_push() {
+    const N: usize = 10_000_000;
+    let c = Native::make(128 * 1024, 8192, SW_CHAN_LOCK | SW_CHAN_NOTIFY);
+    let mut m = Vec::new();
+    let mut bytes = 0;
+    while bytes < N {
+        let n = (unsafe { libc::rand() } as usize % 4000) + 4000;
+        let buf: Vec<u8> = (0..n).map(|_| unsafe { libc::rand() } as u8).collect();
+        bytes += n;
+        m.push(buf);
+    }
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut bytes = 0;
+            let mut next = m.iter().peekable();
+            while let Some(data) = next.peek() {
+                if bytes >= N {
+                    break;
+                }
+                if c.push(data) == 0 {
+                    bytes += data.len();
+                    next.next();
+                } else {
+                    std::thread::sleep(std::time::Duration::from_micros(10));
+                }
+            }
+        });
+        scope.spawn(|| {
+            let mut buf = [0u8; 8000];
+            let mut bytes = 0;
+            let mut index = 0;
+            while bytes < N {
+                let retval = c.take(&mut buf, 1);
+                if retval > 0 {
+                    assert_eq!(m[index], buf[..retval as usize]);
+                    index += 1;
+                    bytes += retval as usize;
+                } else {
+                    std::thread::sleep(std::time::Duration::from_micros(10));
+                }
+            }
+        });
+    });
+}
+
+/// `TEST(channel, peek)`.
+#[test]
+fn channel_peek() {
+    let mut buf = [0u8; 8000];
+    let c = Native::make(128 * 1024, 8192, SW_CHAN_LOCK | SW_CHAN_NOTIFY);
+    assert_eq!(c.take(&mut buf, 0), -1);
+    let value = b"test";
+    c.push(value);
+    assert_eq!(c.take(&mut buf, 0), value.len() as i32);
+}
+
+/// `TEST(channel, notify)`. Upstream's `sleep(0.02)` truncates to `sleep(0)`, and its
+/// `while (c->wait())` pops only when `wait` fails; both are kept as they are.
+#[test]
+fn channel_notify() {
+    let c = Native::make(128 * 1024, 8192, SW_CHAN_LOCK | SW_CHAN_NOTIFY);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            c.push(b"test");
+            c.notify();
+        });
+        scope.spawn(|| {
+            #[expect(clippy::never_loop, reason = "upstream's loop, kept as it is")]
+            while c.wait() != 0 {
+                let mut buf = [0u8; 8000];
+                assert!(c.take(&mut buf, 1) > 0);
+                break;
+            }
+        });
+    });
+    unsafe { swr_v1_memory_channel_print(c.record()) };
+}
