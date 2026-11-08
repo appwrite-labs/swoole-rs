@@ -822,6 +822,7 @@ dependencies = [
 name = "swoole-rs-phpstdext"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "swoole-rs-zend",
 ]
 

@@ -4,7 +4,8 @@
 //!
 //! Rust owns the complete `ASSIGN_DIM` and `ASSIGN_DIM_OP` operations,
 //! operand/result/refcount order, PCRE cache custody and opcode installation.
-//! C++ exposes only individual private Zend VM and JSON library effects.
+//! src/stdext.c (README.md) exposes only individual private Zend VM, PCRE and
+//! JSON library effects.
 //!
 //! PHP code (autoloaders, callbacks, destructors) runs under `zend_try` in the
 //! C shim; a handler that trapped a bailout re-raises it as its last act, when

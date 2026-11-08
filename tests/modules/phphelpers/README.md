@@ -2,9 +2,9 @@
 
 The common PHP helpers are `crates/phphelpers`; stdext (typed
 arrays, methods on arrays/strings/streams and the `swoole_*` stdext functions)
-is `crates/phpstdext`. `native/phphelpers/stdext.cc` keeps the Zend VM and PCRE
-calls whose bodies are private to PHP, and `native/phphelpers/module.cc` the
-module glue.
+is `crates/phpstdext`, whose `src/stdext.c` keeps the Zend VM, PCRE and JSON
+calls whose bodies are private to PHP (its README says why).
+`native/phphelpers/module.cc` is the module glue.
 
 ## Loaded PHP checks
 
