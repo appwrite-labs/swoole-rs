@@ -824,7 +824,7 @@ pub unsafe fn sendto_host(
     // SAFETY: as the caller promises.
     let mut assigned = unsafe { assign(&mut address, kind, host, length, port) };
     if !assigned && log::last_error() == BAD_HOST_ADDR {
-        let mut ip = Vec::new();
+        let mut ip = Vec::<u8>::new();
         let out = (&raw mut ip).cast();
         // SAFETY: the host's bytes; `put_host` appends to `ip`, live for the call.
         if unsafe {
