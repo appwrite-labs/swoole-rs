@@ -1,7 +1,7 @@
 #ifndef SWOOLE_RS_CO_SOCKET_H
 #define SWOOLE_RS_CO_SOCKET_H
 /* coroutine::Socket's scalar fields: Rust's CoSocket (crates/hooks/src/co_socket.rs),
- * in its order and types. swoole_coroutine_socket.h derives Socket from it and keeps
+ * in its order and types. swoole_rs_coroutine_socket.h derives Socket from it and keeps
  * only the fields C++ owns (strings, proxies). Rust initialises,
  * opens, accepts and releases records; both sides assert the offsets below.
  * network::Socket is the reactor's record. */
@@ -97,7 +97,7 @@ uint32_t swr_v1_hook_co_socket_accepted(swr_v1_co_socket *socket,
                                         const swr_v1_co_socket *server);
 /* pop_read_buffer / pop_write_buffer. */
 void *swr_v1_hook_co_socket_pop_buffer(swr_v1_co_socket *socket, bool write);
-/* UringSocket's constructors (swoole_socket_impl.h): with io_uring, Rust runs the socket's
+/* UringSocket's constructors (swoole_rs_coroutine_socket.h): with io_uring, Rust runs the socket's
  * members through the ring (crates/hooks/src/uring_socket.rs). */
 void swr_v1_hook_co_socket_uring(swr_v1_co_socket *socket);
 

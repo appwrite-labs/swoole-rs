@@ -4,7 +4,7 @@
 // and the name resolvers, the C++ locale's space table for the hosts file, the
 // coroutine Socket and Coroutine calls, and the ResolverOwner exception paths.
 // The resolver itself is crates/clients (dns.rs, cares.rs).
-#include "swoole_coroutine_socket.h"
+#include "swoole_rs_coroutine_socket.h"
 #include "swoole_coroutine_system.h"
 #include "swoole_coroutine_api.h"
 #include "swoole_async.h"

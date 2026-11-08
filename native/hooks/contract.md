@@ -5,13 +5,15 @@ Feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
 coroutine streams reach the socket through `system.cc`'s
 `swr_v1_runtime_socket`, the C++ services through `native/phphelpers/module.cc`, and
 `thirdparty/php/streams/plain_wrapper.c` builds alone),
-`include/swoole_coroutine_socket.h`, `src/coroutine/file_lock.cc` (deleted),
+`include/swoole_coroutine_socket.h` and `include/swoole_socket_impl.h` (deleted; the
+`coroutine::Socket` class and `SocketImpl` are `swoole_rs_coroutine_socket.h`, and core-tests
+include it in their place), `src/coroutine/file_lock.cc` (deleted),
 `src/coroutine/hook.cc` (deleted),
 `src/coroutine/iouring.cc` (deleted with `include/swoole_iouring.h`; `Iouring` is
 `crates/hooks/src/iouring.rs`), `src/coroutine/socket.cc` and `src/coroutine/system.cc` (deleted; what Rust can't
 express of `System` and the coroutine Socket is `native/hooks/system.cc`),
 `src/coroutine/uring_socket.cc` (deleted with `include/swoole_uring_socket.h`; a
-`UringSocket` is a `coroutine::Socket` its `swoole_socket_impl.h` constructors mark, and
+`UringSocket` is a `coroutine::Socket` its constructors mark, and
 the Rust members take the ring for it).
 
 All exports are allocation-free, callback-free decisions over copied scalars.
