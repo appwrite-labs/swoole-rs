@@ -21,7 +21,7 @@ use crate::packet::swr_v1_hook_co_socket_recv_packet;
 use crate::sendfile::{FAILED, ZERO, send_range};
 use crate::setup::{SetupOps, swr_v1_hook_accept};
 use crate::shutdown::READ;
-use crate::socket_tls::{owner, read_timeout, ssl_context_create};
+use crate::socket_tls::{owner, read_timeout, share, ssl_context_create};
 use crate::socket_wait::{
     swr_v1_hook_co_socket_error_event, swr_v1_hook_co_socket_poll, swr_v1_hook_socket_ready, wait,
 };
@@ -518,7 +518,21 @@ unsafe fn accepted(socket: *mut CoSocket, timeout: f64) -> *mut c_void {
         return null_mut();
     }
     // SAFETY: the live listening socket and the connection it accepted.
-    unsafe { (host().accepted)(socket, state.conn) }
+    unsafe { adopt(socket, state.conn) }
+}
+
+/// `new Socket(conn, server)`: the accepting constructor, then the server's TLS context
+/// shared with the new socket.
+///
+/// # Safety
+/// `server` is a live record and `conn` a live accepted `network::Socket` the new
+/// socket takes.
+pub(crate) unsafe fn adopt(server: *mut CoSocket, conn: *mut SocketRecord) -> *mut c_void {
+    // SAFETY: as the caller promises.
+    let client = unsafe { (host().accepted)(server, conn) };
+    // SAFETY: both live records, their extra records set by their constructors.
+    unsafe { share(server, record(client)) };
+    client
 }
 
 /// `Socket::get_read_buffer()`: the read buffer, made on first use.

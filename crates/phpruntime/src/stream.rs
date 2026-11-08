@@ -958,7 +958,7 @@ fn enable_crypto(
     // SAFETY: a live stream.
     let context = unsafe { swr_zend_stream_context(stream) };
     if activate && !socket.ssl_available() {
-        socket.ssl_encrypt();
+        socket.enable_ssl();
         if !ssl_set_options(socket, context)? || !socket.ssl_handshake() {
             return Ok(-1);
         }

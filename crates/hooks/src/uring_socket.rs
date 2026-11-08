@@ -631,7 +631,7 @@ pub(crate) unsafe fn accept(socket: *mut CoSocket, ops: &UringSocketOps) -> *mut
     // SAFETY: fresh storage for one record.
     unsafe { accepted.write(conn) };
     // SAFETY: the listening socket and the record it accepted.
-    let client = unsafe { (crate::co_io::host().accepted)(socket, accepted) };
+    let client = unsafe { crate::socket_members::adopt(socket, accepted) };
     let marked = crate::socket_members::record(client);
     // SAFETY: the new native socket's record.
     unsafe { crate::socket_extra::swr_v1_hook_co_socket_uring(marked) };

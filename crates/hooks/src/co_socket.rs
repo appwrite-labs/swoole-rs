@@ -409,7 +409,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_reinit(
 }
 
 /// The accepting constructor: `conn`, accepted on `server`, with the server's
-/// type, framing and timeouts, connected. Native code shares the TLS context.
+/// type, framing and timeouts, connected; `accept` shares the TLS context after.
 /// Returns [`swr_v1_hook_co_socket_new`]'s bits.
 ///
 /// # Safety

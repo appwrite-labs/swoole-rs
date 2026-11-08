@@ -9,10 +9,10 @@ use swoole_rs_hooks::{
     co_io::swr_v1_hook_co_socket_set_err,
     co_socket::CoSocket,
     lifecycle::{swr_v1_hook_co_socket_check_liveness, swr_v1_hook_co_socket_shutdown},
-    socket_members,
+    socket_members, socket_tls,
 };
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_timeout};
-use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync};
+use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     bailout::{self, Bailout},
     php_error,
@@ -43,10 +43,6 @@ struct SocketOps {
     free: Body,
     option: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, bool),
     connect: unsafe extern "C" fn(*mut c_void, *const c_char, size_t, c_int, c_int) -> bool,
-    ssl_enabled: unsafe extern "C" fn(*mut c_void) -> bool,
-    ssl_encrypt: unsafe extern "C" fn(*mut c_void),
-    ssl_handshake: unsafe extern "C" fn(*mut c_void) -> bool,
-    ssl_close: unsafe extern "C" fn(*mut c_void),
     peer_chain: unsafe extern "C" fn(
         *mut c_void,
         unsafe extern "C" fn(*mut c_void, *const c_char, size_t),
@@ -61,7 +57,6 @@ struct SocketOps {
         *mut c_int,
         *mut size_t,
     ) -> bool,
-    ssl_verify: unsafe extern "C" fn(*mut c_void, bool) -> bool,
     vector: unsafe extern "C" fn(
         *mut c_void,
         c_int,
@@ -81,7 +76,6 @@ struct SocketOps {
         *const c_char,
         size_t,
     ),
-    ssl_context: unsafe extern "C" fn(*mut c_void) -> *const c_void,
     http_proxy: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
 }
 
@@ -224,7 +218,7 @@ impl Socket {
     pub(crate) fn new(kind: i32, ssl: bool) -> Option<Self> {
         let socket = Self::make(-1, 0, kind, 0)?;
         if ssl {
-            socket.ssl_encrypt();
+            socket.enable_ssl();
         }
         (socket.fd() >= 0).then_some(socket)
     }
@@ -446,7 +440,7 @@ impl Socket {
     /// `ssl_is_enable()`: encryption is configured.
     pub(crate) fn ssl_enabled(&self) -> bool {
         // SAFETY: a live socket.
-        unsafe { (native().ssl_enabled)(self.raw()) }
+        !unsafe { socket_tls::owner(self.co_ptr()) }.is_null()
     }
 
     /// `ssl_is_available()`: the handshake has completed.
@@ -458,24 +452,28 @@ impl Socket {
         connected && unsafe { (*co).ssl_handshaked }
     }
 
+    /// `enable_ssl_encrypt()`: false when TLS was already on.
+    pub(crate) fn enable_ssl(&self) -> bool {
+        // SAFETY: a live socket.
+        unsafe { socket_tls::enable_ssl(self.co_ptr()) }
+    }
+
     /// The connection's `SSL *`, or null.
     pub(crate) fn ssl(&self) -> *mut openssl_sys::SSL {
         self.with_record(std::ptr::null_mut(), |record| record.ssl.cast())
     }
 
-    pub(crate) fn ssl_encrypt(&self) {
-        // SAFETY: a live socket.
-        unsafe { (native().ssl_encrypt)(self.raw()) };
-    }
-
     pub(crate) fn ssl_handshake(&self) -> bool {
         // SAFETY: a live socket.
-        unsafe { (native().ssl_handshake)(self.raw()) }
+        unsafe { socket_tls::ssl_handshake(self.raw()) }
     }
 
+    /// `ssl_close()`; the socket holds an SSL.
     pub(crate) fn ssl_close(&self) {
-        // SAFETY: a live socket.
-        unsafe { (native().ssl_close)(self.raw()) };
+        // SAFETY: a scalar of the live coroutine socket.
+        let network = unsafe { (*self.co_ptr()).socket };
+        // SAFETY: its live network::Socket, which holds an SSL.
+        unsafe { socket_ssl_close(network) };
     }
 
     /// The peer certificate's PEM, empty without one.
@@ -645,7 +643,7 @@ pub mod co {
             swr_v1_hook_co_socket_close, swr_v1_hook_co_socket_shutdown,
         },
         shutdown::{swr_v1_hook_socket_bound_co, swr_v1_hook_socket_flags},
-        socket_members, swr_v1_hook_timeout_restore, swr_v1_hook_timeout_scope,
+        socket_members, socket_tls, swr_v1_hook_timeout_restore, swr_v1_hook_timeout_scope,
     };
     use swoole_rs_zend::bailout::Bailout;
 
@@ -877,7 +875,7 @@ pub mod co {
     /// `socket` is live.
     pub unsafe fn ssl_handshake(socket: Socket) -> bool {
         // SAFETY: per the caller.
-        unsafe { (native().ssl_handshake)(socket) }
+        unsafe { socket_tls::ssl_handshake(socket) }
     }
 
     /// The `SSLContext`'s owner, or null while TLS is off.
@@ -885,7 +883,7 @@ pub mod co {
     /// `socket` is live.
     pub unsafe fn ssl_context(socket: Socket) -> *const c_void {
         // SAFETY: per the caller.
-        unsafe { (native().ssl_context)(socket) }
+        unsafe { socket_tls::owner(socket_members::record(socket)) }.cast()
     }
 
     /// `set_http_proxy` (`http`) or `set_socks5_proxy`.
@@ -1106,12 +1104,7 @@ pub mod co {
     /// `socket` is live.
     pub unsafe fn enable_ssl(socket: Socket) -> bool {
         // SAFETY: per the caller.
-        if unsafe { (native().ssl_enabled)(socket) } {
-            return false;
-        }
-        // SAFETY: as above.
-        unsafe { (native().ssl_encrypt)(socket) };
-        true
+        unsafe { socket_tls::enable_ssl(socket_members::record(socket)) }
     }
 
     /// `ssl_verify(allow_self_signed)`.
@@ -1119,7 +1112,7 @@ pub mod co {
     /// `socket` is live and has TLS.
     pub unsafe fn ssl_verify(socket: Socket, allow_self_signed: bool) -> bool {
         // SAFETY: per the caller.
-        unsafe { (native().ssl_verify)(socket, allow_self_signed) }
+        unsafe { socket_tls::ssl_verify(socket, allow_self_signed) }
     }
 
     /// `set_timeout(timeout, kind)`.
@@ -1155,7 +1148,7 @@ pub mod co {
     #[must_use]
     pub unsafe fn ssl_enabled(socket: Socket) -> bool {
         // SAFETY: per the caller.
-        unsafe { (native().ssl_enabled)(socket) }
+        !unsafe { socket_tls::owner(socket_members::record(socket)) }.is_null()
     }
 
     /// The HTTP proxy's `ProxyState`, or null.
