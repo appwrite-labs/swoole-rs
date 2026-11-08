@@ -1,6 +1,10 @@
 //! The coroutine scheduler and per-coroutine state, Channel, each coroutine's
 //! context (its stack and the switch onto it) and `swoole::Coroutine`'s
 //! operations. C++ runs the effects: swap callbacks, timers and destructors.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg_attr(
     not(test),
     deny(

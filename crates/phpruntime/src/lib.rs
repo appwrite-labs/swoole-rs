@@ -13,6 +13,10 @@
 //! drop, and no lock is held across such a call. Calls that run PHP code
 //! (autoloaders, the library's replacements, original handlers) are trapped,
 //! and the handler or export Zend or C++ called re-raises the bailout last.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),

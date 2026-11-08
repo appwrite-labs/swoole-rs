@@ -1,4 +1,8 @@
 //! Allocation-fallible owned buffer queue. See docs/buffer-abi-v1.md.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg_attr(
     not(test),
     deny(

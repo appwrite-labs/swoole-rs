@@ -241,7 +241,7 @@ impl Parser<'_> {
     /// Any value, nested without recursion.
     fn value(&mut self) -> Parsed<()> {
         // Each open container: whether it is an object.
-        let mut open: Vec<bool> = Vec::new();
+        let mut open = swoole_rs_memory::flat::BitSet::new();
         loop {
             self.space();
             match self.peek().ok_or(())? {
@@ -266,7 +266,7 @@ impl Parser<'_> {
             }
             // A value ended: close containers or move to the next element.
             loop {
-                let Some(&is_object) = open.last() else {
+                let Some(is_object) = open.last() else {
                     return Ok(());
                 };
                 if self.eat(if is_object { b'}' } else { b']' }) {

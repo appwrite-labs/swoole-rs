@@ -5,6 +5,13 @@
 //! Rust frames are gone (docs/zend.md).
 //!
 //! Without the `php` feature the crate is empty.
+#![cfg_attr(
+    feature = "php",
+    expect(
+        clippy::disallowed_types,
+        reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+    )
+)]
 #![cfg(feature = "php")]
 #![cfg_attr(
     not(test),

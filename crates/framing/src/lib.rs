@@ -1,6 +1,10 @@
 //! The length/EOF receive loops, packet-length helpers and the MIME table;
 //! native code keeps the socket IO, callbacks and buffer allocation.
 #![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
+#![expect(
     clippy::missing_safety_doc,
     reason = "every export is covered by the module-local C contract"
 )]

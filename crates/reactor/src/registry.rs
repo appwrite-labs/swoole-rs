@@ -1,21 +1,27 @@
 //! The reactor's socket registry (upstream `Reactor::sockets_`): each registered fd's
 //! native `Socket` and the events it was registered with. Native keeps writing the
-//! `Socket`'s own `events` and `removed` fields, which other modules read.
+//! `Socket`'s own `events` and `removed` fields, which other modules read. Fds are
+//! small and dense, so the registry is a flat table indexed by fd.
 use crate::owner::{release, try_owner};
-use std::collections::HashMap;
 use std::ffi::{c_int, c_void};
 use std::ptr;
+use swoole_rs_memory::flat::Table;
+
+type Sockets = Table<(*mut c_void, c_int)>;
 
 #[derive(Default)]
 pub struct Registry {
-    sockets: HashMap<c_int, (*mut c_void, c_int)>,
+    sockets: Sockets,
+}
+
+/// The table slot for `fd`; none for a negative fd, which is never registered.
+fn slot(fd: c_int) -> Option<usize> {
+    usize::try_from(fd).ok()
 }
 
 /// # Safety
 /// `registry` is null (empty) or a live registry no one else is using.
-unsafe fn sockets<'a>(
-    registry: *const Registry,
-) -> Option<&'a HashMap<c_int, (*mut c_void, c_int)>> {
+unsafe fn sockets<'a>(registry: *const Registry) -> Option<&'a Sockets> {
     // SAFETY: as the caller promises.
     unsafe { registry.as_ref() }.map(|registry| &registry.sockets)
 }
@@ -23,10 +29,7 @@ unsafe fn sockets<'a>(
 /// A new empty registry, or null if allocation fails.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_reactor_registry_new() -> *mut Registry {
-    try_owner(|| Registry {
-        sockets: HashMap::new(),
-    })
-    .map_or(ptr::null_mut(), Box::into_raw)
+    try_owner(Registry::default).map_or(ptr::null_mut(), Box::into_raw)
 }
 
 /// # Safety
@@ -38,7 +41,7 @@ pub unsafe extern "C" fn swr_v1_reactor_registry_free(registry: *mut Registry) {
 }
 
 /// `Reactor::_add`/`_set`: maps `fd` to `socket` registered for `events`; 0, or -2 if
-/// allocation fails (the registry is then unchanged).
+/// allocation fails or `fd` is negative (the registry is then unchanged).
 ///
 /// # Safety
 /// `registry` is live and exclusively lent for this call.
@@ -51,11 +54,10 @@ pub unsafe extern "C" fn swr_v1_reactor_registry_put(
 ) -> c_int {
     // SAFETY: as the caller promises.
     let registry = unsafe { &mut *registry };
-    if registry.sockets.try_reserve(1).is_err() {
-        return -2;
+    match usize::try_from(fd) {
+        Ok(fd) if registry.sockets.insert(fd, (socket, events)).is_ok() => 0,
+        _ => -2,
     }
-    registry.sockets.insert(fd, (socket, events));
-    0
 }
 
 /// `Reactor::_set`: the events `fd` is registered for, if it is.
@@ -69,7 +71,8 @@ pub unsafe extern "C" fn swr_v1_reactor_registry_set(
     events: c_int,
 ) {
     // SAFETY: as the caller promises.
-    if let Some(entry) = unsafe { &mut *registry }.sockets.get_mut(&fd) {
+    let registry = unsafe { &mut *registry };
+    if let Some(entry) = slot(fd).and_then(|fd| registry.sockets.get_mut(fd)) {
         entry.1 = events;
     }
 }
@@ -81,7 +84,10 @@ pub unsafe extern "C" fn swr_v1_reactor_registry_set(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_reactor_registry_remove(registry: *mut Registry, fd: c_int) {
     // SAFETY: as the caller promises.
-    unsafe { &mut *registry }.sockets.remove(&fd);
+    let registry = unsafe { &mut *registry };
+    if let Some(fd) = slot(fd) {
+        registry.sockets.remove(fd);
+    }
 }
 
 /// `Reactor::get_socket`: the socket registered for `fd`, or null.
@@ -96,7 +102,8 @@ pub unsafe extern "C" fn swr_v1_reactor_registry_get(
     // SAFETY: as the caller promises.
     let sockets = unsafe { sockets(registry) };
     sockets
-        .and_then(|sockets| sockets.get(&fd))
+        .zip(slot(fd))
+        .and_then(|(sockets, fd)| sockets.get(fd))
         .map_or(ptr::null_mut(), |entry| entry.0)
 }
 
@@ -107,7 +114,7 @@ pub unsafe extern "C" fn swr_v1_reactor_registry_get(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_reactor_registry_count(registry: *const Registry) -> usize {
     // SAFETY: as the caller promises.
-    unsafe { sockets(registry) }.map_or(0, HashMap::len)
+    unsafe { sockets(registry) }.map_or(0, Sockets::len)
 }
 
 /// `Reactor::foreach_socket`: calls `visit(context, fd, socket)` for each entry, over a
@@ -129,8 +136,11 @@ pub unsafe extern "C" fn swr_v1_reactor_registry_foreach(
     if entries.try_reserve_exact(sockets.len()).is_err() {
         return -2;
     }
-    entries.extend(sockets.iter().map(|(&fd, entry)| (fd, entry.0)));
+    entries.extend(sockets.iter().map(|(fd, entry)| (fd, entry.0)));
     for (fd, socket) in entries {
+        let Ok(fd) = c_int::try_from(fd) else {
+            continue;
+        };
         // SAFETY: as the caller promises.
         unsafe { visit(context, fd, socket) };
     }
@@ -153,7 +163,10 @@ pub(crate) unsafe fn poll(
         return 0;
     };
     let mut count = 0;
-    for (&fd, &(socket, registered_events)) in registered.iter().take(limit) {
+    for (fd, &(socket, registered_events)) in registered.iter().take(limit) {
+        let Ok(fd) = c_int::try_from(fd) else {
+            continue;
+        };
         let entry = libc::pollfd {
             fd,
             events: crate::swr_v1_reactor_poll_events_to(registered_events),

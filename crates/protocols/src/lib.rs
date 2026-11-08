@@ -1,5 +1,9 @@
 //! Packet codecs and protocol decisions. All native I/O, allocation callbacks,
 //! connection storage and PHP execution happen after these calls return.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg_attr(
     not(test),
     deny(

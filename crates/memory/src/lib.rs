@@ -1,6 +1,10 @@
 //! Swoole's memory pools and collections: fixed, global and ring pools, the heap,
 //! channel, shared mappings and the shared-memory table.
 #![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
+#![expect(
     clippy::missing_safety_doc,
     reason = "every export is covered by the module-local C contract"
 )]
@@ -24,6 +28,7 @@ macro_rules! upstream {
 
 pub mod channel;
 pub mod fixed;
+pub mod flat;
 mod global;
 pub mod heap;
 mod pool;

@@ -67,6 +67,29 @@ job fails if one rises more than 1% (noise) above its record.
 - Within 5% of upstream is the target for Phase 6, when Rust owns the event
   loop and the HTTP path end to end.
 
+### Data layout
+
+Fast code is designed to be fast; it doesn't patch a slow design afterwards.
+
+- **Flat arrays, not hash tables.** Key state by a small dense integer (an fd, a
+  slot, a worker id) in `swoole_rs_memory::flat::Table`. A reference to another
+  record is an index into its table, not a pointer, and the most used facts about
+  it can ride in the index's upper bits so the common check never loads the record.
+- **No caches.** A cache hides a slow path; make the path fast instead. The ones
+  that stay are upstream behaviour PHP can observe (the DNS cache behind
+  `swoole_clear_dns_cache()`, the HTTP `Date` header's per-second value).
+- **Structure of arrays** when a loop reads one field of many records: one array
+  per field, all indexed by the same key, with hot fields apart from cold ones.
+- **Inline storage, not small heap lists.** A list with a known small bound lives
+  in a fixed array with a length.
+- **Bitsets, not arrays of bools** (`swoole_rs_memory::flat::BitSet`).
+
+`clippy.toml`'s `disallowed-types` rejects std's maps, sets, `LinkedList` and
+`VecDeque`. Crates that already use them carry one crate-level `expect` until
+their count reaches zero, and `tools/budget.py` (PR tier) counts them, arrays of
+bool and cache statics per crate against `tools/budget.json`, which may only fall.
+A use that must stay (output order PHP can see, a cold path) keeps the `expect`.
+
 ## Roadmap
 
 Progress is measured by the upstream first-party lines (`src/`, `ext-src/`,

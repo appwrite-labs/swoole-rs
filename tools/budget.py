@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Unsafe budget: `unsafe` blocks, fns and impls per crate in non-test code may only fall.
+"""Per-crate counts in non-test code that may only fall (tools/budget.json):
 
-  unsafe_budget.py           fail if any crate is above tools/unsafe_baseline.json
-  unsafe_budget.py --update  lower the baseline to the current counts (never raise it)
+  unsafe   `unsafe` blocks, fns and impls
+  maps     std hash and B-tree maps and sets, where a flat table belongs
+  lists    LinkedList and VecDeque
+  bools    arrays and Vecs of bool, where a bitset belongs
+  caches   statics and types named for a cache: redesign the slow path instead
+
+See docs/migration.md, Data layout.
+
+  budget.py           fail if any crate is above its baseline
+  budget.py --update  lower the baseline to the current counts (never raise it)
 
 Test code is not counted: a `#[cfg(test)]` inline module, a file a `#[cfg(test)] mod`
 loads, and anything under a tests/ or benches/ directory.
@@ -14,15 +22,22 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = ROOT / 'tools/unsafe_baseline.json'
-UNSAFE = re.compile(r'\bunsafe\s*(?:\{|(?:extern\s+"[^"]*"\s+)?fn\b|impl\b)')
+BASELINE = ROOT / 'tools/budget.json'
+KINDS = {
+    'unsafe': re.compile(r'\bunsafe\s*(?:\{|(?:extern\s+"[^"]*"\s+)?fn\b|impl\b)'),
+    'maps': re.compile(r'\b(?:HashMap|HashSet|BTreeMap|BTreeSet)\b'),
+    'lists': re.compile(r'\b(?:LinkedList|VecDeque)\b'),
+    'bools': re.compile(r'Vec<bool>|\[bool;'),
+    'caches': re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:static|struct|enum|type)\s+\w*(?i:cache)'),
+}
 TEST_MOD = re.compile(r'^(\s*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*([;{])')
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 
 
 def count_file(path, test_files):
-    """`unsafe` items in `path` outside #[cfg(test)] modules; adds files those modules load to `test_files`."""
-    count, skip_until, pending, pending_path = 0, None, False, None
+    """{kind: matches} in `path` outside #[cfg(test)] modules; adds files those modules load to `test_files`."""
+    count = dict.fromkeys(KINDS, 0)
+    skip_until, pending, pending_path = None, False, None
     for line in path.read_text(errors='replace').splitlines():
         if skip_until is not None:
             if line.rstrip() == skip_until:
@@ -48,20 +63,23 @@ def count_file(path, test_files):
         if line.strip() == '#[cfg(test)]':
             pending, pending_path = True, None
             continue
-        count += len(UNSAFE.findall(line.split('//', 1)[0]))
+        code = line.split('//', 1)[0]
+        for kind, pattern in KINDS.items():
+            count[kind] += len(pattern.findall(code))
     return count
 
 
 def counts(root=ROOT):
-    """{crate: unsafe items} over crates/*/ non-test Rust sources."""
-    result = {}
+    """{kind: {crate: matches}} over crates/*/ non-test Rust sources."""
+    result = {kind: {} for kind in KINDS}
     for crate in sorted(p for p in (root / 'crates').iterdir() if (p / 'Cargo.toml').exists()):
         files = sorted(p for p in crate.rglob('*.rs')
                        if not {'tests', 'benches', 'target'} & set(p.relative_to(crate).parts[:-1]))
         test_files, per_file = set(), {}
         for path in files:
             per_file[path.resolve()] = count_file(path, test_files)
-        result[crate.name] = sum(n for path, n in per_file.items() if path not in test_files)
+        for kind in KINDS:
+            result[kind][crate.name] = sum(n[kind] for path, n in per_file.items() if path not in test_files)
     return result
 
 
@@ -79,16 +97,21 @@ def main():
     current = counts()
     baseline = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
     if args.update:
-        baseline = {c: min(n, baseline.get(c, n)) for c, n in current.items()}
+        baseline = {kind: {c: min(n, baseline.get(kind, {}).get(c, n)) for c, n in crates.items()}
+                    for kind, crates in current.items()}
         BASELINE.write_text(json.dumps(baseline, indent=1, sort_keys=True) + '\n')
-    above, below = check(current, baseline)
-    for crate, (n, limit) in sorted(above.items()):
-        print(f'{crate}: {n} unsafe items, above the baseline of {limit}', file=sys.stderr)
-    for crate, (n, limit) in sorted(below.items()):
-        print(f'{crate}: {n} unsafe items, below the baseline of {limit}: '
-              'run tools/unsafe_budget.py --update and commit it')
-    print(f'{sum(current.values())} unsafe items (baseline {sum(baseline.values())})')
-    return 1 if above else 0
+    failed = False
+    for kind, crates in current.items():
+        limits = baseline.get(kind, {})
+        above, below = check(crates, limits)
+        failed = failed or bool(above)
+        for crate, (n, limit) in sorted(above.items()):
+            print(f'{crate}: {n} {kind}, above the baseline of {limit}', file=sys.stderr)
+        for crate, (n, limit) in sorted(below.items()):
+            print(f'{crate}: {n} {kind}, below the baseline of {limit}: '
+                  'run tools/budget.py --update and commit it')
+        print(f'{kind}: {sum(crates.values())} (baseline {sum(limits.values())})')
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':

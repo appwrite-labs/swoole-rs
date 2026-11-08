@@ -7,7 +7,7 @@ replaced.json  upstream first-party lines (src/, ext-src/, include/; not the emb
                PHP library) that the all-modules patch set deletes, over the pinned total:
                the minimal net diff after applying every patch, so glue a patch adds and a later
                one removes never counts.
-unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/unsafe_budget.py);
+unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/budget.py);
                the per-crate table goes to the step summary.
 speed.json     callgrind instructions per request, hybrid over upstream, from a merge-tier
                run's callgrind job (--callgrind): how many workloads beat upstream and the
@@ -29,7 +29,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools.build_hybrid import MODULES, apply_patch_verified, patches_for  # noqa: E402
-from tools import unsafe_budget  # noqa: E402
+from tools import budget  # noqa: E402
 
 FIRST_PARTY = ('src/', 'ext-src/', 'include/')
 NOT_COUNTED = {'ext-src/php_swoole_library.h'}  # generated embedded PHP library
@@ -160,7 +160,7 @@ def main():
         if lines:
             print(f'{lines:6} {path}')
     deleted, total = replaced(files)
-    unsafe = unsafe_budget.counts()
+    unsafe = budget.counts()['unsafe']
     not_applicable = json.loads(NOT_APPLICABLE.read_text())
     if summary := os.environ.get('GITHUB_STEP_SUMMARY'):
         rows = ''.join(f'| {crate} | {n} |\n' for crate, n in sorted(unsafe.items(), key=lambda item: -item[1]))

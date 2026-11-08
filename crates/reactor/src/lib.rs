@@ -1,4 +1,8 @@
 //! Readiness/interest and opt-in metadata ownership; Native retains effects and default registries.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg_attr(
     not(test),
     deny(

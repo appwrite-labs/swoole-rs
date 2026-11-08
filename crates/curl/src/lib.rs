@@ -9,6 +9,10 @@
 //! C++ lends the reactor, timer and coroutine operations ([`Ops`]). The Zend
 //! side (`swoole_curl_get_handle`) and the fatal errors of a bound or missing
 //! coroutine stay in C++.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 #![cfg_attr(
     not(test),
     deny(

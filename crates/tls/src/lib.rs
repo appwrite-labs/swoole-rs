@@ -1,3 +1,7 @@
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
 // SPDX-License-Identifier: Apache-2.0
 //! TLS and DTLS over OpenSSL (openssl-sys): `SSLContext`'s context creation and
 //! configuration (`context`), `network::Socket`'s TLS I/O (`socket`, called from
