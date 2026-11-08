@@ -2,7 +2,7 @@
 //! (`swoole_coroutine_socket`, `send`, `recv`, `connect`, `accept`, `poll`,
 //! `close`, `read`, `write`, …), exported under their upstream names. Inside a
 //! coroutine an fd the socket map holds goes to its native socket through
-//! [`SocketOps`]; any other call goes to libc, the async pool or `io_uring`, as
+//! its Rust members; any other call goes to libc, the async pool or `io_uring`, as
 //! upstream routes it.
 use crate::co_io::set_errno;
 use crate::co_socket::CoSocket;
@@ -10,13 +10,13 @@ use crate::fd_control::{
     swr_v1_hook_fd_poll, swr_v1_hook_fd_poll_fake, swr_v1_hook_fd_timeout, swr_v1_hook_fd_wait,
     swr_v1_hook_fd_wait_restore,
 };
-use crate::lifecycle::swr_v1_hook_co_socket_close;
+use crate::lifecycle::{swr_v1_hook_co_socket_close, swr_v1_hook_co_socket_connect};
 use crate::poll::swr_v1_hook_poll;
 use crate::socket_map::{
     swr_v1_hook_socket_close, swr_v1_hook_socket_exists, swr_v1_hook_socket_get,
     swr_v1_hook_socket_insert, swr_v1_hook_socket_remove,
 };
-use crate::socket_members::record;
+use crate::socket_members::{self as members, record};
 use crate::stdio::{Host, coroutine, offloaded, swr_v1_hook_close_fd};
 use libc::{c_int, c_void, msghdr, nfds_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
 use swoole_rs_corebase::log;
@@ -25,9 +25,9 @@ use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_fd_option};
 /// `SW_ERROR_INVALID_PARAMS`.
 const INVALID_PARAMS: c_int = 505;
 
-/// The native coroutine socket, `SocketImpl` (`coroutine::Socket`, or `UringSocket`
-/// with `--enable-uring-socket`): its constructors, `delete` and the calls whose
-/// body depends on the class.
+/// What C++ keeps of the native coroutine socket, `SocketImpl` (`coroutine::Socket`,
+/// or `UringSocket` with `--enable-uring-socket`): its constructors and `delete`.
+/// Its members are Rust (`socket_members`, `lifecycle`) and pick the ring themselves.
 #[repr(C)]
 pub struct SocketOps {
     /// `new SocketImpl(domain, type, protocol)`.
@@ -36,18 +36,6 @@ pub struct SocketOps {
     pub wrap: unsafe extern "C" fn(c_int) -> *mut c_void,
     /// `delete`.
     pub free: unsafe extern "C" fn(*mut c_void),
-    pub send: unsafe extern "C" fn(*mut c_void, *const c_void, size_t) -> ssize_t,
-    pub recv: unsafe extern "C" fn(*mut c_void, *mut c_void, size_t) -> ssize_t,
-    pub peek: unsafe extern "C" fn(*mut c_void, *mut c_void, size_t) -> ssize_t,
-    pub write: unsafe extern "C" fn(*mut c_void, *const c_void, size_t) -> ssize_t,
-    pub read: unsafe extern "C" fn(*mut c_void, *mut c_void, size_t) -> ssize_t,
-    pub sendmsg: unsafe extern "C" fn(*mut c_void, *const msghdr, c_int) -> ssize_t,
-    pub recvmsg: unsafe extern "C" fn(*mut c_void, *mut msghdr, c_int) -> ssize_t,
-    pub connect: unsafe extern "C" fn(*mut c_void, *const sockaddr, socklen_t) -> bool,
-    /// `accept(0)`: the accepted socket, or null.
-    pub accept: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    /// `poll(event)` with the socket's own timeout.
-    pub poll: unsafe extern "C" fn(*mut c_void, u32) -> bool,
 }
 
 /// `get_socket_ex`: inside a coroutine, the host and `fd`'s socket. Otherwise
@@ -152,7 +140,7 @@ pub unsafe extern "C" fn swoole_coroutine_send(
 ) -> ssize_t {
     match hooked(fd) {
         // SAFETY: the map's live socket; the caller's buffer.
-        Some((host, socket)) => unsafe { (host.socket.send)(socket, buf, len) },
+        Some((_, socket)) => unsafe { members::send(socket, buf, len) },
         // SAFETY: as the caller promises.
         None => unsafe { libc::send(fd, buf, len, flags) },
     }
@@ -170,7 +158,7 @@ pub unsafe extern "C" fn swoole_coroutine_sendmsg(
 ) -> ssize_t {
     match hooked(fd) {
         // SAFETY: the map's live socket; the caller's message.
-        Some((host, socket)) => unsafe { (host.socket.sendmsg)(socket, msg, flags) },
+        Some((_, socket)) => unsafe { members::sendmsg(socket, msg, flags) },
         // SAFETY: as the caller promises.
         None => unsafe { libc::sendmsg(fd, msg, flags) },
     }
@@ -188,7 +176,7 @@ pub unsafe extern "C" fn swoole_coroutine_recvmsg(
 ) -> ssize_t {
     match hooked(fd) {
         // SAFETY: the map's live socket; the caller's message.
-        Some((host, socket)) => unsafe { (host.socket.recvmsg)(socket, msg, flags) },
+        Some((_, socket)) => unsafe { members::recvmsg(socket, msg, flags) },
         // SAFETY: as the caller promises.
         None => unsafe { libc::recvmsg(fd, msg, flags) },
     }
@@ -205,14 +193,14 @@ pub unsafe extern "C" fn swoole_coroutine_recv(
     len: size_t,
     flags: c_int,
 ) -> ssize_t {
-    let Some((host, socket)) = hooked(fd) else {
+    let Some((_, socket)) = hooked(fd) else {
         // SAFETY: as the caller promises.
         return unsafe { libc::recv(fd, buf, len, flags) };
     };
     let call = if flags & libc::MSG_PEEK != 0 {
-        host.socket.peek
+        members::peek
     } else {
-        host.socket.recv
+        members::recv
     };
     // SAFETY: the map's live socket; the caller's buffer.
     unsafe { call(socket, buf, len) }
@@ -229,9 +217,9 @@ pub unsafe extern "C" fn swoole_coroutine_connect(
     len: socklen_t,
 ) -> c_int {
     match hooked(fd) {
-        Some((host, socket)) => {
+        Some((_, socket)) => {
             // SAFETY: the map's live socket; the caller's address.
-            if unsafe { (host.socket.connect)(socket, addr, len) } {
+            if unsafe { swr_v1_hook_co_socket_connect(record(socket), addr, len) } {
                 0
             } else {
                 -1
@@ -258,7 +246,7 @@ pub unsafe extern "C" fn swoole_coroutine_accept(
         return unsafe { libc::accept(fd, addr, len) };
     };
     // SAFETY: the map's live socket.
-    let conn = unsafe { (host.socket.accept)(socket) };
+    let conn = unsafe { members::accept(socket, 0.0) };
     if conn.is_null() {
         return -1;
     }
@@ -413,7 +401,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
     event: c_int,
     timeout: f64,
 ) -> c_int {
-    let Some((host, socket)) = hooked(fd) else {
+    let Some((_, socket)) = hooked(fd) else {
         let mut poll = swr_v1_hook_fd_poll(fd, event);
         #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) cast")]
         // SAFETY: one pollfd.
@@ -423,7 +411,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
     // SAFETY: the map's live socket.
     let wait = unsafe { swr_v1_hook_fd_wait(record(socket), event.cast_unsigned(), timeout) };
     // SAFETY: as above.
-    let ready = unsafe { (host.socket.poll)(socket, event.cast_unsigned()) };
+    let ready = unsafe { members::poll(socket, event.cast_unsigned(), 0.0) };
     // SAFETY: the preparation's result; the socket is still live.
     unsafe { swr_v1_hook_fd_wait_restore(wait) };
     if ready { 0 } else { -1 }
@@ -475,7 +463,7 @@ pub unsafe extern "C" fn swoole_coroutine_read(
     let socket = swr_v1_hook_socket_get(fd);
     if !socket.is_null() {
         // SAFETY: the map's live socket; the caller's buffer.
-        return unsafe { (host.socket.read)(socket, buf, count) };
+        return unsafe { members::read(socket, buf, count) };
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = ring(host) {
@@ -508,7 +496,7 @@ pub unsafe extern "C" fn swoole_coroutine_write(
     let socket = swr_v1_hook_socket_get(fd);
     if !socket.is_null() {
         // SAFETY: the map's live socket; the caller's buffer.
-        return unsafe { (host.socket.write)(socket, buf, count) };
+        return unsafe { members::write(socket, buf, count) };
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = ring(host) {
@@ -587,6 +575,7 @@ pub(crate) mod tests {
     fn fake(fd: c_int) -> *mut c_void {
         // Every field is a scalar, raw pointer or Protocol of those; zero is valid.
         let mut socket: Box<Fake> = Box::new(unsafe { core::mem::zeroed() });
+        unsafe { crate::co_socket::init(&raw mut socket.record) };
         socket.network = SocketRecord::new();
         socket.network.fd = fd;
         socket.record.sock_fd = fd;
@@ -603,145 +592,122 @@ pub(crate) mod tests {
         fake(fd)
     }
     unsafe extern "C" fn free(socket: *mut c_void) {
-        let socket = unsafe { Box::from_raw(socket.cast::<Fake>()) };
+        let mut socket = unsafe { Box::from_raw(socket.cast::<Fake>()) };
+        unsafe { crate::co_socket::swr_v1_hook_co_socket_fini(&raw mut socket.record) };
         call(format!(
             "free {} {}",
             socket.record.sock_fd, socket.network.fd
         ));
     }
-    unsafe extern "C" fn send(_: *mut c_void, _: *const c_void, n: size_t) -> ssize_t {
-        call(format!("send {n}"));
-        1
-    }
-    unsafe extern "C" fn recv(_: *mut c_void, _: *mut c_void, n: size_t) -> ssize_t {
-        call(format!("recv {n}"));
-        2
-    }
-    unsafe extern "C" fn peek(_: *mut c_void, _: *mut c_void, n: size_t) -> ssize_t {
-        call(format!("peek {n}"));
-        3
-    }
-    unsafe extern "C" fn write(_: *mut c_void, _: *const c_void, n: size_t) -> ssize_t {
-        call(format!("write {n}"));
-        4
-    }
-    unsafe extern "C" fn read(_: *mut c_void, _: *mut c_void, n: size_t) -> ssize_t {
-        call(format!("read {n}"));
-        5
-    }
-    unsafe extern "C" fn sendmsg(_: *mut c_void, _: *const msghdr, flags: c_int) -> ssize_t {
-        call(format!("sendmsg {flags}"));
-        6
-    }
-    unsafe extern "C" fn recvmsg(_: *mut c_void, _: *mut msghdr, flags: c_int) -> ssize_t {
-        call(format!("recvmsg {flags}"));
-        7
-    }
-    unsafe extern "C" fn connect(_: *mut c_void, _: *const sockaddr, len: socklen_t) -> bool {
-        call(format!("connect {len}"));
-        len > 0
-    }
-    unsafe extern "C" fn accept(socket: *mut c_void) -> *mut c_void {
-        let fd = unsafe { fd_of(socket) };
-        call(format!("accept {fd}"));
-        let conn = fake(fd + 1);
-        let info = unsafe { &mut (*network(conn)).info };
-        info.len = 4;
-        info.addr.ss.sa_family = 7;
-        conn
-    }
-    unsafe extern "C" fn poll(socket: *mut c_void, event: u32) -> bool {
-        let read = unsafe { (*network(socket)).timeouts.read };
-        call(format!("poll {event} {read}"));
-        true
-    }
 
     /// The test host's sockets.
-    pub(crate) const OPS: SocketOps = SocketOps {
-        open,
-        wrap,
-        free,
-        send,
-        recv,
-        peek,
-        write,
-        read,
-        sendmsg,
-        recvmsg,
-        connect,
-        accept,
-        poll,
-    };
+    pub(crate) const OPS: SocketOps = SocketOps { open, wrap, free };
 
-    #[test]
-    fn a_coroutine_routes_mapped_fds_to_the_native_socket() {
+    fn err_code(fd: c_int) -> c_int {
+        unsafe { (*record(swr_v1_hook_socket_get(fd))).err_code }
+    }
+
+    /// Run `body` on a coroutine socket wrapping one end of a socketpair and the
+    /// other end, then unwrap it: the deleted socket no longer owns the fd.
+    fn wrapped(body: impl FnOnce(c_int, c_int)) {
+        crate::co_io::test_host::install();
+        let mut pair = [0; 2];
         unsafe {
+            assert_eq!(
+                libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pair.as_mut_ptr()),
+                0
+            );
+            let (fd, peer) = (pair[0], pair[1]);
             with(Mode::Pool, || {
-                let fd = swoole_coroutine_socket(2, 1, 0);
-                assert_eq!(fd, 9001);
+                assert_eq!(swoole_coroutine_socket_create(fd), 0);
                 assert_eq!(swoole_coroutine_socket_exists(fd), 1);
-                let mut buf = [0u8; 8];
-                assert_eq!(swoole_coroutine_send(fd, buf.as_ptr().cast(), 8, 0), 1);
-                assert_eq!(swoole_coroutine_recv(fd, buf.as_mut_ptr().cast(), 8, 0), 2);
-                assert_eq!(
-                    swoole_coroutine_recv(fd, buf.as_mut_ptr().cast(), 8, libc::MSG_PEEK),
-                    3
-                );
-                assert_eq!(swoole_coroutine_write(fd, buf.as_ptr().cast(), 8), 4);
-                assert_eq!(swoole_coroutine_read(fd, buf.as_mut_ptr().cast(), 8), 5);
-                assert_eq!(swoole_coroutine_sendmsg(fd, core::ptr::null(), 1), 6);
-                assert_eq!(swoole_coroutine_recvmsg(fd, core::ptr::null_mut(), 2), 7);
-                assert_eq!(swoole_coroutine_connect(fd, core::ptr::null(), 0), -1);
-                assert_eq!(swoole_coroutine_connect(fd, core::ptr::null(), 16), 0);
-
-                let mut addr: libc::sockaddr_storage = core::mem::zeroed();
-                let mut len: socklen_t = 0;
-                let conn = swoole_coroutine_accept(fd, (&raw mut addr).cast(), &raw mut len);
-                assert_eq!((conn, len, addr.ss_family), (9002, 4, 7));
-                assert_eq!(
-                    swoole_coroutine_get_socket_object(conn),
-                    swr_v1_hook_socket_get(conn)
-                );
-
-                // wait_event polls with the timeout in every direction, then restores it.
-                let socket = swr_v1_hook_socket_get(fd);
-                let read = (*network(socket)).timeouts.read;
-                assert_eq!(swoole_coroutine_socket_wait_event(fd, 1 << 9, 0.5), 0);
-                assert_eq!((*network(socket)).timeouts.read, read);
-                assert_eq!(
-                    swoole_coroutine_socket_set_timeout(fd, libc::SO_RCVTIMEO, 0.25),
-                    0
-                );
-                assert_eq!((*network(socket)).timeouts.read, 0.25);
-                assert_eq!(swoole_coroutine_socket_set_connect_timeout(fd, 2.0), 0);
-                assert_eq!((*network(socket)).timeouts.connect, 2.0);
-
-                // unwrap leaves the fds open: the deleted sockets no longer own them.
-                assert_eq!(swoole_coroutine_socket_unwrap(conn), 0);
+                body(fd, peer);
                 assert_eq!(swoole_coroutine_socket_unwrap(fd), 0);
                 assert_eq!(swoole_coroutine_socket_unwrap(fd), -1);
                 assert_eq!(swoole_coroutine_socket_exists(fd), 0);
             });
+            assert_eq!(libc::close(fd), 0);
+            libc::close(peer);
         }
-        assert_eq!(
-            calls(),
-            [
-                "open 2 1",
-                "send 8",
-                "recv 8",
-                "peek 8",
-                "write 8",
-                "read 8",
-                "sendmsg 1",
-                "recvmsg 2",
-                "connect 0",
-                "connect 16",
-                "accept 9001",
-                "poll 512 0.5",
-                "free -1 -1",
-                "free -1 -1",
-            ]
-        );
+        let wrap = format!("wrap {}", pair[0]);
+        assert_eq!(calls(), [wrap.as_str(), "free -1 -1"]);
+    }
+
+    #[test]
+    fn a_coroutine_transfers_on_mapped_fds_through_the_rust_members() {
+        wrapped(|fd, peer| unsafe {
+            let mut buf = [0u8; 16];
+            assert_eq!(swoole_coroutine_send(fd, b"send".as_ptr().cast(), 4, 0), 4);
+            assert_eq!(swoole_coroutine_write(fd, b"write".as_ptr().cast(), 5), 5);
+            let iov = libc::iovec {
+                iov_base: b"msg".as_ptr().cast_mut().cast(),
+                iov_len: 3,
+            };
+            let mut msg: msghdr = core::mem::zeroed();
+            msg.msg_iov = (&raw const iov).cast_mut();
+            msg.msg_iovlen = 1;
+            assert_eq!(swoole_coroutine_sendmsg(fd, &raw const msg, 0), 3);
+            assert_eq!(libc::read(peer, buf.as_mut_ptr().cast(), 16), 12);
+            assert_eq!(&buf[..12], b"sendwritemsg");
+
+            assert_eq!(libc::write(peer, b"abcdefgh".as_ptr().cast(), 8), 8);
+            let mut got = [0u8; 2];
+            assert_eq!(
+                swoole_coroutine_recv(fd, got.as_mut_ptr().cast(), 2, libc::MSG_PEEK),
+                2
+            );
+            assert_eq!(&got, b"ab");
+            assert_eq!(swoole_coroutine_recv(fd, got.as_mut_ptr().cast(), 2, 0), 2);
+            assert_eq!(&got, b"ab");
+            assert_eq!(swoole_coroutine_read(fd, got.as_mut_ptr().cast(), 2), 2);
+            assert_eq!(&got, b"cd");
+            let mut into = libc::iovec {
+                iov_base: buf.as_mut_ptr().cast(),
+                iov_len: 4,
+            };
+            msg.msg_iov = &raw mut into;
+            assert_eq!(swoole_coroutine_recvmsg(fd, &raw mut msg, 0), 4);
+            assert_eq!(&buf[..4], b"efgh");
+        });
+    }
+
+    #[test]
+    fn a_coroutine_connects_accepts_and_waits_on_mapped_fds_through_the_rust_members() {
+        use crate::co_io::test_host::{TIMER_OK, take};
+        wrapped(|fd, _| unsafe {
+            // The members record a failure on the socket.
+            let mut addr: libc::sockaddr_storage = core::mem::zeroed();
+            addr.ss_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap();
+            let size = socklen_t::try_from(size_of::<libc::sa_family_t>()).unwrap();
+            assert_eq!(
+                swoole_coroutine_connect(fd, (&raw const addr).cast(), size),
+                -1
+            );
+            assert_ne!(err_code(fd), 0);
+            let mut len: socklen_t = 0;
+            assert_eq!(
+                swoole_coroutine_accept(fd, (&raw mut addr).cast(), &raw mut len),
+                -1
+            );
+            assert_eq!(err_code(fd), libc::EINVAL);
+
+            // wait_event polls with the timeout in every direction, then restores it.
+            let socket = swr_v1_hook_socket_get(fd);
+            let read = (*network(socket)).timeouts.read;
+            TIMER_OK.set(false);
+            take();
+            assert_eq!(swoole_coroutine_socket_wait_event(fd, 1 << 9, 0.5), -1);
+            assert!(take().contains(&"timer:add:0.5".to_owned()));
+            TIMER_OK.set(true);
+            assert_eq!((*network(socket)).timeouts.read, read);
+            assert_eq!(
+                swoole_coroutine_socket_set_timeout(fd, libc::SO_RCVTIMEO, 0.25),
+                0
+            );
+            assert_eq!((*network(socket)).timeouts.read, 0.25);
+            assert_eq!(swoole_coroutine_socket_set_connect_timeout(fd, 2.0), 0);
+            assert_eq!((*network(socket)).timeouts.connect, 2.0);
+        });
     }
 
     #[test]

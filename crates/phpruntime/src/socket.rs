@@ -1,6 +1,6 @@
-//! The coroutine socket (`SocketImpl`) is still C++: what the streams need of
-//! it is `swr_v1_runtime_socket`, a table `src/coroutine/system.cc` defines
-//! (virtual calls reach `UringSocket`); what they need of Swoole's PHP side is
+//! The coroutine socket (`SocketImpl`): the streams call its Rust members
+//! directly, and what is still C++ of it is `swr_v1_runtime_socket`, a table
+//! `src/coroutine/system.cc` defines; what they need of Swoole's PHP side is
 //! in the runtime's [`Ops`](crate::Ops). Both are declared in
 //! `native/hooks/swoole_rs_phpruntime.h`.
 use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};
@@ -12,6 +12,7 @@ use swoole_rs_hooks::{
     socket_members,
 };
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_timeout};
+use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync};
 use swoole_rs_zend::{
     bailout::{self, Bailout},
     php_error,
@@ -40,19 +41,8 @@ struct SocketOps {
     make: Body,
     close: Body,
     free: Body,
-    base: unsafe extern "C" fn(*mut c_void) -> *mut CoSocket,
-    io: unsafe extern "C" fn(*mut c_void, c_int, *mut c_char, size_t) -> ssize_t,
-    recvfrom: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_char,
-        size_t,
-        *mut sockaddr,
-        *mut socklen_t,
-    ) -> ssize_t,
     option: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, bool),
     connect: unsafe extern "C" fn(*mut c_void, *const c_char, size_t, c_int, c_int) -> bool,
-    listen: unsafe extern "C" fn(*mut c_void, c_int) -> bool,
-    accept: unsafe extern "C" fn(*mut c_void, f64) -> *mut c_void,
     ssl_enabled: unsafe extern "C" fn(*mut c_void) -> bool,
     ssl_encrypt: unsafe extern "C" fn(*mut c_void),
     ssl_handshake: unsafe extern "C" fn(*mut c_void) -> bool,
@@ -62,7 +52,6 @@ struct SocketOps {
         unsafe extern "C" fn(*mut c_void, *const c_char, size_t),
         *mut c_void,
     ),
-    poll: unsafe extern "C" fn(*mut c_void, bool, f64) -> bool,
     poll_set: unsafe extern "C" fn(
         *const c_int,
         *const c_int,
@@ -86,7 +75,6 @@ struct SocketOps {
         *mut c_int,
         *mut size_t,
     ) -> ssize_t,
-    sendfile: unsafe extern "C" fn(*mut c_void, *const c_char, i64, i64) -> bool,
     proxy: unsafe extern "C" fn(
         *mut c_void,
         bool,
@@ -179,6 +167,42 @@ pub enum Io {
     RecvAll = 8,
 }
 
+/// One `op` transfer of `length` bytes at `buf` on the `SocketImpl` at `socket`:
+/// its Rust member, or its `network::Socket`'s for the synchronous pair.
+/// # Safety
+/// `socket` is live and `buf` holds `length` bytes (writable for the receiving operations).
+unsafe fn io(socket: *mut c_void, op: Io, buf: *mut c_char, length: usize) -> isize {
+    use socket_members as m;
+    let buf = buf.cast::<c_void>();
+    match op {
+        Io::SendSync | Io::RecvSync => {
+            // SAFETY: per the caller, its live record.
+            let network = unsafe { (*m::record(socket)).socket };
+            if matches!(op, Io::SendSync) {
+                // SAFETY: the live network::Socket and the caller's buffer.
+                unsafe { socket_send_sync(network, buf, length, 0) }
+            } else {
+                // SAFETY: as above.
+                unsafe { socket_recv_sync(network, buf, length, 0) }
+            }
+        }
+        // SAFETY: per the caller.
+        Io::SendAll => unsafe { m::send_all(socket, buf, length) },
+        // SAFETY: per the caller.
+        Io::SendOnce => unsafe { m::send_once(socket, buf, length) },
+        // SAFETY: per the caller.
+        Io::Recv => unsafe { m::recv(socket, buf, length) },
+        // SAFETY: per the caller.
+        Io::RecvOnce => unsafe { m::recv_once(socket, buf, length) },
+        // SAFETY: per the caller.
+        Io::Peek => unsafe { m::peek(socket, buf, length) },
+        // SAFETY: per the caller.
+        Io::Send => unsafe { m::send(socket, buf, length) },
+        // SAFETY: per the caller.
+        Io::RecvAll => unsafe { m::recv_all(socket, buf, length) },
+    }
+}
+
 /// `SW_WAIT`.
 pub(crate) const SW_WAIT: i32 = 2;
 
@@ -255,8 +279,7 @@ impl Socket {
 
     /// A compiler-adjusted base projection; `coroutine::Socket` has virtual methods.
     fn co_ptr(&self) -> *mut CoSocket {
-        // SAFETY: the native cast returns the actual embedded Rust record of this live socket.
-        unsafe { (native().base)(self.raw()) }
+        socket_members::record(self.raw())
     }
 
     pub(crate) fn fd(&self) -> i32 {
@@ -321,7 +344,7 @@ impl Socket {
     /// `buf` holds `length` bytes (writable for the receiving operations).
     pub(crate) unsafe fn io(&self, op: Io, buf: *mut c_char, length: usize) -> isize {
         // SAFETY: per the caller.
-        unsafe { (native().io)(self.raw(), op as c_int, buf, length) }
+        unsafe { io(self.raw(), op, buf, length) }
     }
 
     /// `catch_write_error`/`catch_read_error` of `code`, which are one rule.
@@ -340,7 +363,7 @@ impl Socket {
         addrlen: *mut socklen_t,
     ) -> isize {
         // SAFETY: per the caller.
-        unsafe { (native().recvfrom)(self.raw(), buf, length, addr, addrlen) }
+        unsafe { socket_members::recvfrom(self.raw(), buf.cast(), length, addr, addrlen) }
     }
 
     pub(crate) fn close(&self) -> Result<bool, Bailout> {
@@ -394,13 +417,13 @@ impl Socket {
 
     pub(crate) fn listen(&self, backlog: i32) -> bool {
         // SAFETY: a live socket.
-        unsafe { (native().listen)(self.raw(), backlog) }
+        unsafe { socket_members::listen(self.raw(), backlog) }
     }
 
     /// `accept()`: the connection, if any.
     pub(crate) fn accept(&self) -> Option<Self> {
         // SAFETY: a live socket; the connection is new and owned.
-        Self::wrap(unsafe { (native().accept)(self.raw(), 0.0) }, true)
+        Self::wrap(unsafe { socket_members::accept(self.raw(), 0.0) }, true)
     }
 
     pub(crate) fn shutdown(&self, how: i32) -> bool {
@@ -410,8 +433,9 @@ impl Socket {
 
     /// `poll(SW_EVENT_WRITE or SW_EVENT_READ, timeout)`.
     pub(crate) fn poll(&self, write: bool, timeout: f64) -> bool {
+        let event = if write { co::WRITE } else { co::READ };
         // SAFETY: a live socket.
-        unsafe { (native().poll)(self.raw(), write, timeout) }
+        unsafe { socket_members::poll(self.raw(), event, timeout) }
     }
 
     /// `get_err()`: `swoole_strerror(errCode)`.
@@ -738,7 +762,7 @@ pub mod co {
     /// `socket` is live and `buf` holds `length` bytes, writable to receive.
     pub unsafe fn io(socket: Socket, op: Io, buf: *mut c_char, length: usize) -> isize {
         // SAFETY: per the caller.
-        unsafe { (native().io)(socket, op as c_int, buf, length) }
+        unsafe { super::io(socket, op, buf, length) }
     }
 
     /// `recv_line(buf, length)`.
@@ -822,7 +846,9 @@ pub mod co {
     /// `socket` is live and `file` NUL-terminated.
     pub unsafe fn sendfile(socket: Socket, file: *const c_char, offset: i64, length: i64) -> bool {
         // SAFETY: per the caller.
-        unsafe { (native().sendfile)(socket, file, offset, length) }
+        let length = usize::try_from(length.cast_unsigned()).unwrap_or(usize::MAX);
+        // SAFETY: per the caller; size_t's conversion of the length, as upstream's call.
+        unsafe { socket_members::sendfile(socket, file, offset, length) }
     }
 
     /// `bind(std::string(host, length), port)`.
@@ -848,7 +874,7 @@ pub mod co {
     /// `socket` is live, in a coroutine.
     pub unsafe fn accept(socket: Socket, timeout: f64) -> Socket {
         // SAFETY: per the caller.
-        unsafe { (native().accept)(socket, timeout) }
+        unsafe { socket_members::accept(socket, timeout) }
     }
 
     /// `ssl_handshake()`.
@@ -987,6 +1013,8 @@ pub mod co {
         }
     }
 
+    /// `SW_EVENT_READ`.
+    pub const READ: u32 = 1 << 9;
     /// `SW_EVENT_WRITE`.
     pub const WRITE: u32 = 1 << 10;
 
@@ -998,10 +1026,8 @@ pub mod co {
     /// `socket` is live.
     #[must_use]
     pub unsafe fn record<'a>(socket: Socket) -> &'a mut CoSocket {
-        // SAFETY: per the caller; the native cast returns the embedded record.
-        let record = unsafe { (native().base)(socket) };
-        // SAFETY: as above.
-        unsafe { &mut *record }
+        // SAFETY: per the caller; the record follows the vtable pointer.
+        unsafe { &mut *socket_members::record(socket) }
     }
 
     /// `close()`; the socket may be gone after it returns true.
@@ -1047,7 +1073,7 @@ pub mod co {
     /// `socket` is live and `data` holds `length` readable bytes.
     pub unsafe fn send_all(socket: Socket, data: *const c_char, length: usize) -> isize {
         // SAFETY: per the caller; a send only reads the buffer.
-        unsafe { (native().io)(socket, Io::SendAll as c_int, data.cast_mut(), length) }
+        unsafe { super::io(socket, Io::SendAll, data.cast_mut(), length) }
     }
 
     /// `send(data, length)`.
@@ -1055,7 +1081,7 @@ pub mod co {
     /// `socket` is live and `data` holds `length` readable bytes.
     pub unsafe fn send(socket: Socket, data: *const c_char, length: usize) -> isize {
         // SAFETY: per the caller; a send only reads the buffer.
-        unsafe { (native().io)(socket, Io::Send as c_int, data.cast_mut(), length) }
+        unsafe { super::io(socket, Io::Send, data.cast_mut(), length) }
     }
 
     /// `recv(data, length)`.
@@ -1063,7 +1089,7 @@ pub mod co {
     /// `socket` is live and `data` holds `length` writable bytes.
     pub unsafe fn recv(socket: Socket, data: *mut c_char, length: usize) -> isize {
         // SAFETY: per the caller.
-        unsafe { (native().io)(socket, Io::Recv as c_int, data, length) }
+        unsafe { super::io(socket, Io::Recv, data, length) }
     }
 
     /// `connect(std::string(host, length), port, flags)`.

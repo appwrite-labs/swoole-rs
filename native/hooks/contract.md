@@ -28,10 +28,11 @@ declarations and layouts are unchanged.
   `socket_wait_event`, and `swoole_coroutine_get_socket_object[_ex]` under their C++
   symbols) are Rust. The hooked fds' socket map is Rust's too: fd to a lent
   `SocketImpl *`, no reference count; hooked `close` removes it only after
-  `Socket::close()` succeeds. The host's `socket` table is what depends on the
-  class (`coroutine::Socket` or `UringSocket`): its constructors, `delete` and
-  the virtual calls. A C++ exception or a pthread cancellation in one of those
-  calls, or in a libc call a hook falls back to, aborts at the Rust frame.
+  `Socket::close()` succeeds. The host's `socket` table is what stays C++ of
+  `SocketImpl`: its constructors and `delete`. The hooks call the Rust members
+  directly, and those pick the ring for a `UringSocket`. A C++ exception or a
+  pthread cancellation in one of those calls, or in a libc call a hook falls back
+  to, aborts at the Rust frame.
 - `swoole_coroutine_flock` is Rust, exported under that name: outside a
   coroutine or with `LOCK_NB` it is plain flock; `LOCK_UN` unlocks;
   `LOCK_EX`/`LOCK_SH` retry `flock(op | LOCK_NB)` only on -1/EWOULDBLOCK,

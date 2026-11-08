@@ -101,22 +101,12 @@ void swr_v1_hook_init_reactor(void *reactor,
 void swr_v1_hook_poll_completed(void *task);
 void swr_v1_hook_poll_timeout(void *task);
 bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout, const swr_v1_hook_poll_ops *ops);
-/* The native coroutine socket (SocketImpl: coroutine::Socket, or UringSocket with
- * --enable-uring-socket): new, delete, and the calls whose body is the class's. */
+/* What C++ keeps of the native coroutine socket (SocketImpl: coroutine::Socket, or
+ * UringSocket with --enable-uring-socket): new and delete. Its members are Rust. */
 typedef struct swr_v1_hook_socket_ops {
     void *(*open)(int domain, int type, int protocol); /* new SocketImpl(domain, type, protocol) */
     void *(*wrap)(int fd);                             /* new SocketImpl(fd, SW_SOCK_RAW) */
     void (*free)(void *socket);
-    ssize_t (*send)(void *socket, const void *buf, size_t n);
-    ssize_t (*recv)(void *socket, void *buf, size_t n);
-    ssize_t (*peek)(void *socket, void *buf, size_t n);
-    ssize_t (*write)(void *socket, const void *buf, size_t n);
-    ssize_t (*read)(void *socket, void *buf, size_t n);
-    ssize_t (*sendmsg)(void *socket, const struct msghdr *msg, int flags);
-    ssize_t (*recvmsg)(void *socket, struct msghdr *msg, int flags);
-    bool (*connect)(void *socket, const struct sockaddr *addr, socklen_t length);
-    void *(*accept)(void *socket);             /* accept(0) */
-    bool (*poll)(void *socket, uint32_t event); /* poll(event) */
 } swr_v1_hook_socket_ops;
 /* What the hooked functions (Rust, under upstream's swoole_coroutine_<name>) need
  * of native; registered at load (swr_v1_hook_set_host). */
