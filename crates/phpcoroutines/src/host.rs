@@ -55,11 +55,6 @@ unsafe extern "C" {
     fn swr_cpp_phpcoroutines_is_end(co: Co) -> u8;
     fn swr_cpp_phpcoroutines_activate(deactivate: unsafe extern "C" fn(*mut c_void));
     fn swr_cpp_phpcoroutines_defer(f: unsafe extern "C" fn(*mut c_void), data: *mut c_void);
-    fn swr_cpp_phpcoroutines_timer_add(
-        timeout: f64,
-        data: *mut c_void,
-        f: unsafe extern "C" fn(*mut c_void),
-    ) -> *mut c_void;
     fn swr_cpp_phpcoroutines_set_exit_condition(set: u8);
     // crates/coroutine, native/coroutine/coroutine.cc, crates/timer, crates/reactor and crates/process.
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
@@ -70,6 +65,12 @@ unsafe extern "C" {
     fn coroutine_deactivate();
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
     fn swoole_timer_del(timer: *mut c_void) -> bool;
+    fn swr_v1_timer_add_plain_sec(
+        timeout: f64,
+        persistent: bool,
+        f: unsafe extern "C" fn(*mut c_void),
+        data: *mut c_void,
+    ) -> *mut c_void;
     #[link_name = "_Z30swoole_signal_get_listener_numv"]
     fn swoole_signal_get_listener_num() -> u32;
     // native/phphelpers/module.cc, crates/phpevents, crates/phpclients, crates/phphelpers and PHP.
@@ -601,8 +602,8 @@ pub unsafe fn timer_add(
     data: *mut c_void,
     f: unsafe extern "C" fn(*mut c_void),
 ) -> *mut c_void {
-    // SAFETY: C++ adds the timer.
-    unsafe { swr_cpp_phpcoroutines_timer_add(timeout, data, f) }
+    // SAFETY: crates/timer adds the timer.
+    unsafe { swr_v1_timer_add_plain_sec(timeout, false, f, data) }
 }
 
 /// `swoole_timer_del`.

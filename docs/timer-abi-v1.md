@@ -8,9 +8,10 @@ Callers: `swoole::Timer` (`crates/timer/src/owner.rs`, see
 
 Rust owns one indexed min-heap with ID lookup, scheduling fields, next ID,
 selection round, captured time, active ID and closing state. `TimerNode`
-objects, their callbacks and destructors are C++ (`native/timer/timer.cc`); the
-queue sees them only as tokens. Time is injected as signed 64-bit relative monotonic
-milliseconds; Rust creates no clock, runtime or thread.
+objects are `swoole::Timer`'s (`crates/timer/src/owner.rs`); their callbacks and
+destructors are plain C function pointers. The queue sees nodes only as tokens.
+Time is injected as signed 64-bit relative monotonic milliseconds; Rust creates no
+clock, runtime or thread.
 
 - One owner thread per handle; no concurrent calls.
 - Handles and outputs must be valid and aligned; outputs must not alias the

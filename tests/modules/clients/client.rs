@@ -8,8 +8,8 @@
 //! (`enable_ssl_encrypt`, `ssl_verify`, the `Socket` TLS reads) under their symbols.
 //! `SyncClient` and `AsyncClient` are the `created`/`connected` bookkeeping their
 //! header gives `Client`. The `Server` fixtures are forked std servers bound before
-//! the fork: the cases assert only on the client. `swoole_timer_after` takes a
-//! libstdc++ `std::function`, which [`timer_after`] lays out over a Rust closure.
+//! the fork: the cases assert only on the client. [`timer_after`] schedules a
+//! Rust closure through crates/timer's `swr_v1_timer_add_plain`.
 
 use super::socket::{
     EADDRNOTAVAIL, ECONNREFUSED, IoVec, SHUT_RD, SHUT_RDWR, SHUT_WR, SIGTERM, SW_SOCK_TCP,
@@ -117,14 +117,6 @@ struct ProxyFields {
     port: i32,
     target_port: i32,
     socket_type: i32,
-}
-
-/// libstdc++'s `std::function<R(A...)>`: `_Any_data`, `_M_manager`, `_M_invoker`.
-#[repr(C)]
-struct StdFunction {
-    functor: [*mut c_void; 2],
-    manager: unsafe extern "C" fn(*mut [*mut c_void; 2], *const [*mut c_void; 2], c_int) -> bool,
-    invoker: *const c_void,
 }
 
 /// `OwnedTlsCopy` (crates/tls/src/owned.rs).
@@ -258,12 +250,12 @@ unsafe extern "C" {
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
     fn swoole_event_wait() -> c_int;
-    #[link_name = "_Z18swoole_timer_afterlRKSt8functionIFvPN6swoole5TimerEPNS0_9TimerNodeEEEPv"]
-    fn swoole_timer_after(
+    fn swr_v1_timer_add_plain(
         ms: c_long,
-        callback: *const StdFunction,
-        private_data: *mut c_void,
-    ) -> c_long;
+        persistent: bool,
+        callback: unsafe extern "C" fn(*mut c_void),
+        data: *mut c_void,
+    ) -> *mut c_void;
     #[link_name = "_Z17swoole_signal_setiPFviEii"]
     fn swoole_signal_set(
         signo: c_int,
@@ -304,46 +296,17 @@ fn event_wait() {
     unsafe { swoole_event_wait() };
 }
 
-unsafe extern "C" fn closure_manager(
-    dest: *mut [*mut c_void; 2],
-    source: *const [*mut c_void; 2],
-    op: c_int,
-) -> bool {
-    // SAFETY: libstdc++ passes this function's own `_Any_data`.
-    unsafe {
-        match op {
-            // __get_type_info: no RTTI for a Rust closure.
-            0 => (*dest)[0] = std::ptr::null_mut(),
-            // __get_functor_ptr
-            1 => (*dest)[0] = source.cast_mut().cast(),
-            // __clone_functor: the leaked closure is shared, never freed.
-            2 => *dest = *source,
-            _ => {}
-        }
-    }
-    false
-}
-
-unsafe extern "C" fn closure_invoker<F: FnMut()>(
-    functor: *const [*mut c_void; 2],
-    _: *mut *mut c_void,
-    _: *mut *mut c_void,
-) {
-    // SAFETY: `timer_after` leaked an `F` into the functor's first word.
-    let body = unsafe { &mut *(*functor)[0].cast::<F>() };
+unsafe extern "C" fn closure_invoker<F: FnMut()>(data: *mut c_void) {
+    // SAFETY: `timer_after` leaked an `F` as the timer's data.
+    let body = unsafe { &mut *data.cast::<F>() };
     body();
 }
 
-/// `swoole_timer_after(ms, fn)`: a libstdc++ `std::function<void(Timer *, TimerNode *)>`
-/// over the leaked closure (the timer copies it; the copies share it).
+/// `swoole_timer_after(ms, fn)` of the leaked closure.
 fn timer_after<F: FnMut()>(ms: c_long, body: F) {
-    let callback = StdFunction {
-        functor: [Box::into_raw(Box::new(body)).cast(), std::ptr::null_mut()],
-        manager: closure_manager,
-        invoker: closure_invoker::<F> as *const c_void,
-    };
-    // SAFETY: the timer copies `callback` before this returns.
-    assert!(unsafe { swoole_timer_after(ms, &raw const callback, std::ptr::null_mut()) } > 0);
+    let data = Box::into_raw(Box::new(body)).cast();
+    // SAFETY: the invoker takes the closure leaked as `data`.
+    assert!(!unsafe { swr_v1_timer_add_plain(ms, false, closure_invoker::<F>, data) }.is_null());
 }
 
 /// A boxed callback slot, called reentrantly with the others.

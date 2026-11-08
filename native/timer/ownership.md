@@ -13,22 +13,20 @@ coalescing, cancellation, closing/draining and allocation-failure rollback.
 `crates/timer/src/owner.rs` is `swoole::Timer`: a Rust-owned record (backend,
 reactor, clock base, armed wakeup, abandoned-selection marker) and its
 operations, `init`/`reinit`, `add`, `remove`, `update`, `delay`, `select` and the
-destructor's close/complete/end/drain/release. `native/timer/swoole_timer.h` is
-the C++ view: `TimerNode`, and a `Timer` class with no data members whose methods
-call `swr_v1_timer_owner_*`. `crates/timer/src/wrapper.rs` is the
-`swoole_timer_*` API over it, with `SwooleTG.timer` through
-`swr_v1_core_timer_slot`.
+destructor's close/complete/end/drain/release. It allocates and frees every
+`TimerNode`, whose callback and destructor are plain C function pointers;
+`swr_v1_timer_add_plain` adds one whose callback is a function of its data alone,
+for Rust callers. With a reactor it hooks `Reactor::timeout_msec`, the
+timer-priority end callback, the exit condition and a destroy callback that frees
+this thread's timer. `native/timer/swoole_timer.h` is the C++ view: `TimerNode`,
+and a `Timer` class with no data members whose methods call
+`swr_v1_timer_owner_*`. `crates/timer/src/wrapper.rs` is the `swoole_timer_*` API
+over it, with `SwooleTG.timer` through `swr_v1_core_timer_slot`.
 
-What C++ keeps (`native/timer/timer.cc`):
-
-| Shim | Why |
-| --- | --- |
-| `swr_cpp_timer_node_new`, `_call`, `_release` | A `TimerNode` holds `std::function` callback and destructor. A C++ exception they throw comes back to Rust as an `exception_ptr`; `select` detaches the active node, ends the selection and returns the first one, which the C++ view's `select` or `remove` rethrows with `swr_cpp_timer_rethrow`: an exception can't unwind through Rust frames under `panic = "abort"`. The Rust `swoole_timer_*` exports have no C++ frame to rethrow in, so they abort, as an uncaught exception would. |
-| `swr_cpp_timer_add` | A callback that is a plain function of its data, for Rust callers. |
-| `swr_cpp_timer_reactor_timeout`, `swr_cpp_timer_attach` | `Reactor::timeout_msec`, and the timer-priority select, exit condition and destroy callback, which the reactor takes as `std::function`. |
-
-A Zend bailout longjmps out of a callback over `select`'s Rust frames, which hold
-nothing to drop.
+A Zend bailout longjmps out of a callback or destructor over `select`'s Rust
+frames, which hold nothing to drop. A C++ exception a callback or destructor
+throws aborts at the first Rust frame (`panic = "abort"`), as an uncaught one
+would.
 
 `next_msec` is the armed-wakeup cache used by `reinit` and thread-manager
 waits, not a second queue. Rust `end` computes the next delay.

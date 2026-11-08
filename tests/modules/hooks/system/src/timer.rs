@@ -1,6 +1,6 @@
 //! Upstream's `core-tests/src/os/timer.cpp`, one function per TEST with the same inputs
 //! and expected values, over the Rust timer (crates/timer) under its upstream symbols.
-//! The std::function callbacks and `SwooleTG.timer` go through ../fixture.cc.
+//! `SwooleTG.timer` goes through ../fixture.cc.
 
 use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
@@ -12,25 +12,32 @@ const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_NUM_MILLION: i64 = 1_000_000;
 
-/// `swoole::TimerNode`, whose first field is `long id`.
+/// `swoole::TimerNode` (native/timer/swoole_timer.h): `id`, the members up to
+/// `callback`, `data` and `destructor`.
 #[repr(C)]
 pub(super) struct TimerNode {
     id: c_long,
+    _members: [u64; 7],
+    data: *mut c_void,
+    destructor: Option<unsafe extern "C" fn(*mut TimerNode)>,
 }
 
+/// `swoole::TimerCallback`.
 type Callback = unsafe extern "C" fn(*mut c_void, *mut TimerNode);
 
 #[link(name = "swoole")]
 unsafe extern "C" {
-    fn swr_case_timer_add(
+    #[link_name = "_Z16swoole_timer_addlbPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
+    fn swoole_timer_add(
         ms: c_long,
         persistent: bool,
-        fn_: Callback,
+        callback: Callback,
         data: *mut c_void,
     ) -> *mut TimerNode;
-    fn swr_case_timer_after(ms: c_long, fn_: Callback, data: *mut c_void) -> c_long;
-    fn swr_case_timer_tick(ms: c_long, fn_: Callback, data: *mut c_void) -> c_long;
-    fn swr_case_timer_set_destructor(tnode: *mut TimerNode, fn_: Callback, data: *mut c_void);
+    #[link_name = "_Z18swoole_timer_afterlPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
+    fn swoole_timer_after(ms: c_long, callback: Callback, data: *mut c_void) -> c_long;
+    #[link_name = "_Z17swoole_timer_ticklPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
+    fn swoole_timer_tick(ms: c_long, callback: Callback, data: *mut c_void) -> c_long;
     fn swr_case_timer_exchange(timer: *mut c_void) -> *mut c_void;
     fn swr_case_timer_count() -> usize;
     fn swr_case_timer_reinit();
@@ -64,34 +71,61 @@ unsafe extern "C-unwind" {
     fn swr_v1_core_set_last_error(code: c_int);
 }
 
-type Body<'a> = Box<dyn FnMut(*mut TimerNode) + 'a>;
-
-unsafe extern "C" fn call(data: *mut c_void, tnode: *mut TimerNode) {
-    // SAFETY: `body` leaked this closure for the timer's lifetime.
-    let body = unsafe { &mut *data.cast::<Body<'_>>() };
-    body(tnode);
+/// A node's closures, its data: the C++ lambdas' captures.
+struct Hooks<'a> {
+    call: Box<dyn FnMut(*mut TimerNode) + 'a>,
+    destructor: Option<Box<dyn FnMut() + 'a>>,
 }
 
-/// A closure as the fixture's (fn, data) pair. Leaked, as the C++ lambdas' captures
-/// outlive nothing they borrow while the timer can still fire.
-fn body<'a>(f: impl FnMut(*mut TimerNode) + 'a) -> *mut c_void {
-    let f: Body<'a> = Box::new(f);
-    Box::into_raw(Box::new(f)).cast()
+unsafe extern "C" fn call(_timer: *mut c_void, tnode: *mut TimerNode) {
+    // SAFETY: `hooks` leaked the node's closures into its data for the timer's lifetime.
+    let hooks = unsafe { &mut *(*tnode).data.cast::<Hooks<'_>>() };
+    (hooks.call)(tnode);
+}
+
+unsafe extern "C" fn destruct(tnode: *mut TimerNode) {
+    // SAFETY: as in `call`.
+    let hooks = unsafe { &mut *(*tnode).data.cast::<Hooks<'_>>() };
+    if let Some(destructor) = hooks.destructor.as_mut() {
+        destructor();
+    }
+}
+
+/// A closure as a node's data. Leaked, as the C++ lambdas' captures outlive
+/// nothing they borrow while the timer can still fire.
+fn hooks<'a>(f: impl FnMut(*mut TimerNode) + 'a) -> *mut c_void {
+    let hooks = Hooks {
+        call: Box::new(f),
+        destructor: None,
+    };
+    Box::into_raw(Box::new(hooks)).cast()
 }
 
 fn add<'a>(ms: c_long, persistent: bool, f: impl FnMut(*mut TimerNode) + 'a) -> *mut TimerNode {
-    // SAFETY: `call` takes the closure `body` leaked.
-    unsafe { swr_case_timer_add(ms, persistent, call, body(f)) }
+    // SAFETY: `call` takes the closures `hooks` leaked.
+    unsafe { swoole_timer_add(ms, persistent, call, hooks(f)) }
 }
 
 pub(super) fn after<'a>(ms: c_long, f: impl FnMut(*mut TimerNode) + 'a) -> c_long {
     // SAFETY: as in `add`.
-    unsafe { swr_case_timer_after(ms, call, body(f)) }
+    unsafe { swoole_timer_after(ms, call, hooks(f)) }
 }
 
 pub(super) fn tick<'a>(ms: c_long, f: impl FnMut(*mut TimerNode) + 'a) -> c_long {
     // SAFETY: as in `add`.
-    unsafe { swr_case_timer_tick(ms, call, body(f)) }
+    unsafe { swoole_timer_tick(ms, call, hooks(f)) }
+}
+
+/// `tnode->destructor = f`.
+///
+/// # Safety
+/// `tnode` is a live node `add` made.
+unsafe fn set_destructor<'a>(tnode: *mut TimerNode, f: impl FnMut() + 'a) {
+    // SAFETY: as the caller promises; its data is the closures `hooks` leaked.
+    unsafe {
+        (*(*tnode).data.cast::<Hooks<'a>>()).destructor = Some(Box::new(f));
+        (*tnode).destructor = Some(destruct);
+    }
 }
 
 /// `swoole::time<std::chrono::milliseconds>()`: the system clock.
@@ -139,8 +173,8 @@ fn sys() {
     // dtor test
     let timer = add(20, false, |_| _ = incr(&counter[2]));
     assert!(!timer.is_null());
-    // SAFETY: a live node; `call` takes the leaked closure.
-    unsafe { swr_case_timer_set_destructor(timer, call, body(|_| counter[3].set(9999))) };
+    // SAFETY: a live node `add` made.
+    unsafe { set_destructor(timer, || counter[3].set(9999)) };
 
     add(100, true, |tnode| {
         if incr(&counter[1]) == 5 {

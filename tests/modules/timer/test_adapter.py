@@ -24,8 +24,6 @@ SCENARIOS = ['equal-deadlines', 'self-remove', 'remove-other', 'destructor-remov
              'update-active-repeat', 'destructor-add', 'fork-teardown',
              'delay-active-once', 'nested-select-once']
 
-EXCEPTION_SCENARIOS = ['callback-throws', 'destructor-throws', 'callback-destructor-throw']
-
 EXPECTED = {
     'equal-deadlines': ('AaCcBb', 'AaCcBb', 0, 3, False),
     'self-remove': ('AYNVa', 'AYNVa', 0, 1, False),
@@ -52,10 +50,6 @@ def verify(name, observations):
         assert value == {'scenario': name, 'inactive': True, 'missing': True, 'active': True,
                          'cancelled_other': True, 'active_view': True, 'remaining': 0,
                          'events': 'cAba', 'destructors': 3}
-        return
-    if name in EXCEPTION_SCENARIOS:
-        assert value == {'scenario': name, 'failure': 'destructor' if name == 'destructor-throws' else 'callback',
-                         'survivor_intact': True, 'remaining': 0, 'events': 'AaBb', 'destructors': 2}
         return
     if name == 'fork-active-teardown':
         assert value == {'scenario': name, 'child_status': 0, 'parent_intact': True, 'parent_drained': True, 'parent_destructors': 2}
@@ -131,7 +125,7 @@ def probe(pytestconfig, tmp_path_factory):
     return [php, '-n', *php_extra, '-d', 'extension=' + str(extension), '-d', 'ffi.enable=1', '-r', PROBE, str(library)], environment, tree
 
 
-@pytest.mark.parametrize('name', [*SCENARIOS, 'fork-active-teardown', *EXCEPTION_SCENARIOS, 'wrapper-clear'])
+@pytest.mark.parametrize('name', [*SCENARIOS, 'fork-active-teardown', 'wrapper-clear'])
 def test_scenario(probe, name):
     command, environment, tree = probe
     before = set(tree.glob('asan-report*'))

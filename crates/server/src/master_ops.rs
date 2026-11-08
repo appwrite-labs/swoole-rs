@@ -1897,7 +1897,8 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_MASTER_TIMER => {
             let tick = crate::server_methods::master_timer_tick;
             // SAFETY: a persistent timer of the master's, over the live server.
-            let node = unsafe { crate::pool_native::swr_cpp_timer_add(1000, true, tick, serv) };
+            let node =
+                unsafe { crate::pool_native::swr_v1_timer_add_plain(1000, true, tick, serv) };
             o.config().master_timer = node;
             u64::from(!node.is_null())
         }
@@ -2108,7 +2109,7 @@ unsafe fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let retry = crate::server_methods::enable_accept;
             // SAFETY: a one-shot timer of this thread's over the live server.
             let timer = unsafe {
-                crate::pool_native::swr_cpp_timer_add(ACCEPT_RETRY_MSEC, false, retry, serv)
+                crate::pool_native::swr_v1_timer_add_plain(ACCEPT_RETRY_MSEC, false, retry, serv)
             };
             o.tables().enable_accept_timer = timer;
             u64::from(!timer.is_null())
@@ -2701,7 +2702,7 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let msec = (idle * 1000.0) as libc::c_long;
             // SAFETY: a persistent timer over the live connection, deleted before it goes.
             let node =
-                unsafe { crate::pool_native::swr_cpp_timer_add(msec, true, tick, o.ctx.conn) };
+                unsafe { crate::pool_native::swr_v1_timer_add_plain(msec, true, tick, o.ctx.conn) };
             if op == OP_ADD_RECV_TIMER {
                 sock.timeouts.read = idle;
                 sock.recv_timer = node;

@@ -86,7 +86,7 @@ const BUS_ALLOCATE: u8 = 1;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
-// SAFETY: crates/timer's and crates/protocols' C entries, native/timer/timer.cc's and
+// SAFETY: crates/timer's and crates/protocols' C entries,
 // native/reactor/reactor.cc's, and their upstream symbols.
 unsafe extern "C-unwind" {
     #[link_name = "_Z19swoole_timer_selectv"]
@@ -99,7 +99,7 @@ unsafe extern "C-unwind" {
     fn swoole_timer_create(manually_trigger: bool) -> *mut c_void;
     fn swr_v1_core_timer_slot() -> *mut *mut c_void;
     fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
-    pub(crate) fn swr_cpp_timer_add(
+    pub(crate) fn swr_v1_timer_add_plain(
         msec: c_long,
         persistent: bool,
         callback: unsafe extern "C" fn(*mut c_void),
@@ -473,7 +473,7 @@ fn timer_after(
     data: *mut c_void,
 ) -> *mut c_void {
     // SAFETY: a one-shot timer of this thread's.
-    unsafe { swr_cpp_timer_add(msec, false, callback, data) }
+    unsafe { swr_v1_timer_add_plain(msec, false, callback, data) }
 }
 
 unsafe extern "C" fn reload_timeout(task: *mut c_void) {
