@@ -839,3 +839,29 @@ pub mod clients {
         );
     }
 }
+
+/// The bundled `thirdparty/multipart_parser.c`, as the server links it.
+pub mod multipart {
+    use core::ffi::{c_char, c_void};
+    unsafe extern "C" {
+        pub fn multipart_parser_init(
+            boundary: *const c_char,
+            length: usize,
+            settings: *const c_void,
+        ) -> *mut c_void;
+        pub fn multipart_parser_execute(
+            parser: *mut c_void,
+            data: *const c_char,
+            length: usize,
+        ) -> isize;
+        pub fn multipart_parser_free(parser: *mut c_void);
+    }
+}
+
+/// Upstream core-tests' recorded requests (`core-tests/fuzz/cases`).
+pub mod cases {
+    /// A multipart POST of three form fields.
+    pub const REQ1: &[u8] = include_bytes!("../upstream/core-tests/fuzz/cases/req1.bin");
+    /// A multipart POST of the same three fields and `examples/test.jpg`.
+    pub const REQ2: &[u8] = include_bytes!("../upstream/core-tests/fuzz/cases/req2.bin");
+}

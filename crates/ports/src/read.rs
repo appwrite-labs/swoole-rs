@@ -647,21 +647,106 @@ mod tests {
         bytes: Vec<u8>,
         request: bool,
         max: u64,
+        /// `upload_max_filesize`.
+        uploads: u64,
         http2: bool,
         dispatched: Vec<Vec<u8>>,
+        /// Each dispatched request's URL.
+        urls: Vec<Vec<u8>>,
         effects: Vec<u32>,
         sent: Vec<u64>,
     }
 
-    /// The request's native effects: none of these requests has a form.
+    /// The request's native effects (`swoole_rs_http`'s `HttpNative` ops): heap
+    /// strings, the bundled multipart parser and libc's files.
     unsafe extern "C" fn request_native(
-        _: u32,
-        _: *mut c_void,
-        _: *const u8,
-        _: u64,
+        op: u32,
+        a: *mut c_void,
+        b: *const u8,
+        n: u64,
         _: u64,
     ) -> u64 {
-        0
+        use swoole_rs_oracle::multipart;
+        let length = usize::try_from(n).unwrap();
+        let file = a.cast::<libc::FILE>();
+        match op {
+            // `new String(n)` or `new String(b, n)`.
+            0 => {
+                let bytes = if b.is_null() {
+                    Vec::with_capacity(length)
+                } else {
+                    unsafe { core::slice::from_raw_parts(b, length) }.to_vec()
+                };
+                let mut text = Box::new(Text {
+                    head: Buffer {
+                        length: bytes.len(),
+                        size: 0,
+                        offset: 0,
+                        str: core::ptr::null_mut(),
+                    },
+                    bytes,
+                });
+                text.sync();
+                let text = Box::into_raw(text);
+                TEXTS.with_borrow_mut(|texts| texts.push(text));
+                text as u64
+            }
+            1 => {
+                TEXTS.with_borrow_mut(|texts| texts.retain(|&t| t != a.cast()));
+                drop(unsafe { Box::from_raw(a.cast::<Text>()) });
+                0
+            }
+            // `a->append(b, n)`: a string made here, or a fake's receive buffer, which has room.
+            2 => {
+                let data = unsafe { core::slice::from_raw_parts(b, length) };
+                if TEXTS.with_borrow(|texts| texts.contains(&a.cast())) {
+                    let text = unsafe { &mut *a.cast::<Text>() };
+                    text.bytes.truncate(text.head.length);
+                    text.bytes.extend_from_slice(data);
+                    text.head.length = text.bytes.len();
+                    text.sync();
+                } else {
+                    let buffer = unsafe { &mut *a.cast::<Buffer>() };
+                    assert!(buffer.length + length <= buffer.size, "receive buffer room");
+                    unsafe { buffer.str.add(buffer.length).copy_from(b, length) };
+                    buffer.length += length;
+                }
+                0
+            }
+            3 => unsafe { multipart::multipart_parser_init(b.cast(), length, a) as u64 },
+            4 => {
+                unsafe { multipart::multipart_parser_execute(a, b.cast(), length) }.cast_unsigned()
+                    as u64
+            }
+            5 => {
+                unsafe { multipart::multipart_parser_free(a) };
+                0
+            }
+            6 => i64::from(unsafe { libc::mkstemp(a.cast()) }).cast_unsigned(),
+            7 => unsafe { libc::fdopen(c_int::try_from(n).unwrap(), c"wb+".as_ptr()) as u64 },
+            8 => unsafe { libc::fwrite(b.cast(), 1, length, file) as u64 },
+            9 => u64::from(unsafe { libc::fflush(file) } == 0),
+            10 => u64::from(unsafe { libc::fclose(file) } == 0),
+            11 => u64::from(unsafe { libc::unlink(a.cast()) } == 0),
+            _ => 0,
+        }
+    }
+
+    /// A `swoole::String` the request made.
+    #[repr(C)]
+    struct Text {
+        head: Buffer,
+        bytes: Vec<u8>,
+    }
+
+    impl Text {
+        fn sync(&mut self) {
+            (self.head.str, self.head.size) = (self.bytes.as_mut_ptr(), self.bytes.capacity());
+        }
+    }
+
+    std::thread_local! {
+        static TEXTS: std::cell::RefCell<Vec<*mut Text>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
     fn fake(chunks: &[&[u8]]) -> Fake {
@@ -686,21 +771,28 @@ mod tests {
             bytes: vec![0; 64],
             request: false,
             max: 1024,
+            uploads: 0,
             http2: false,
             dispatched: Vec::new(),
+            urls: Vec::new(),
             effects: Vec::new(),
             sent: Vec::new(),
         }
     }
 
     impl Fake {
+        /// Into the current buffer; what doesn't fit arrives next.
         fn receive(&mut self, whole: bool) -> u64 {
-            let Some(chunk) = self.incoming.pop_front() else {
+            let Some(mut chunk) = self.incoming.pop_front() else {
                 return u64::MAX;
             };
-            let start = if whole { 0 } else { self.buf.length };
-            let n = chunk.len().min(self.buf.size - start);
-            self.bytes[start..start + n].copy_from_slice(&chunk[..n]);
+            let buffer = unsafe { &mut *self.shared.buffer };
+            let start = if whole { 0 } else { buffer.length };
+            let n = chunk.len().min(buffer.size - start);
+            unsafe { buffer.str.add(start).copy_from(chunk.as_ptr(), n) };
+            if n < chunk.len() {
+                self.incoming.push_front(chunk.split_off(n));
+            }
             n as u64
         }
         fn reduce(&mut self, n: usize) {
@@ -728,11 +820,33 @@ mod tests {
                 OP_RECV_BUFFER => 1,
                 OP_DISPATCH_TASK | OP_DISPATCH_REQUEST => {
                     self.dispatched.push(self.bytes[..at].to_vec());
+                    let url = self.req.url_offset as usize;
+                    self.urls
+                        .push(self.bytes[url..url + self.req.url_length as usize].to_vec());
                     0
                 }
                 OP_ACTIVE => 1,
                 OP_HTTP2_ENABLED => flag(self.http2),
                 OP_MAX_LENGTH => self.max,
+                OP_UPLOADS => flag(self.uploads > 0),
+                OP_BUF_HEADER_END => {
+                    let buffer = unsafe { &*self.shared.buffer };
+                    let bytes = unsafe { core::slice::from_raw_parts(buffer.str, buffer.length) };
+                    flag(bytes.windows(4).any(|w| w == b"\r\n\r\n"))
+                }
+                OP_REQ_MULTIPART_INIT => {
+                    let upload_max = usize::try_from(self.uploads).unwrap();
+                    // The fake's live request, with a form.
+                    unsafe {
+                        swoole_rs_http::init_multipart_parser(
+                            &raw mut self.req,
+                            b"/tmp",
+                            upload_max,
+                        )
+                    };
+                    self.shared.buffer = self.req.buffer;
+                    0
+                }
                 OP_BUF_REDUCE => {
                     self.reduce(at);
                     0
@@ -744,8 +858,11 @@ mod tests {
                 }
                 OP_REQ_INIT => {
                     self.request = true;
-                    self.req.buffer = &raw mut self.buf;
+                    if self.req.buffer.is_null() {
+                        self.req.buffer = &raw mut self.buf;
+                    }
                     self.point();
+                    self.shared.buffer = self.req.buffer;
                     0
                 }
                 OP_REQ_DESTROY => {
@@ -967,5 +1084,10 @@ mod tests {
             "eof releases its buffer"
         );
         assert_eq!(run(99, &mut f), SW_ERR, "unknown kind");
+    }
+
+    /// Upstream's HTTP server core tests, ported (`tests/modules/http/README.md`).
+    mod http_server {
+        include!("../../../tests/modules/http/http_server.rs");
     }
 }
