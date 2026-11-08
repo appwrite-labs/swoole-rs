@@ -349,6 +349,10 @@ jobs:
         image: redis:7.4
         ports: ['6379:6379']
         options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
+      # Go's HTTP/2 demo, whose /serverpush pushes four assets (TEST_HTTP2_SERVERPUSH_URL).
+      golang-h2demo:
+        image: phpswoole/golang-h2demo
+        ports: ['4430:4430']
       # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
       firebirdsql:
         image: firebirdsql/firebird
@@ -418,6 +422,10 @@ jobs:
         image: redis:7.4
         ports: ['6379:6379']
         options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
+      # Go's HTTP/2 demo, whose /serverpush pushes four assets (TEST_HTTP2_SERVERPUSH_URL).
+      golang-h2demo:
+        image: phpswoole/golang-h2demo
+        ports: ['4430:4430']
       # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
       firebirdsql:
         image: firebirdsql/firebird
