@@ -1,9 +1,24 @@
 # Reactor tests
 
 `reactor-unit` runs `crates/reactor`'s tests. `reactor-native-originals`
-(`tools/core_tests.py`) runs upstream's `reactor/base.cpp` and
-`network/socket.cpp` GoogleTests on both engines, with the exclusions listed in
-`CORE_TESTS` in `tools/dev.py`. `reactor-compile` runs
+(`tools/core_tests.py`) runs upstream's `network/socket.cpp` GoogleTests on both
+engines, with the exclusions listed in `CORE_TESTS` in `tools/dev.py`.
+
+`reactor/base.cpp`'s 26 TESTs are Rust (`base/`, the merge tier's `reactor-base-rust`
+phase): a case binary over the hybrid tree's libswoole.so, built and run by
+`tests/modules/hooks/system.py --package tests/modules/reactor/base --fixture
+tests/modules/reactor/base/fixture.cc`. `fixture.cc` gives C entry points to what needs
+C++ (the `Reactor` constructor, members and `std::function` slots, `Pipe` and
+`UnixSocket`, and the C++-linkage event, hook, signal and timer calls); the handlers,
+callbacks and every assertion are in `base/src/main.rs`, one function per TEST under
+its own name (`write` is `write_case`): `create`, `create_failure`, `set_handler`,
+`wait`, `get_missing_socket`, `write`, `wait_timeout`, `wait_error`, `writev`,
+`write_2m`, `bad_fd`, `epoll`, `poll`, `poll_readiness_after_fd_reuse`, `poll_extra`,
+`poll_extra2`, `add_or_update`, `defer_task`, `cycle`, `priority_idle_task`, `hook`,
+`set_fd`, `error_event`, `error`, `drain_write_buffer`, `handle_fail`. Each case runs
+in its own process, so the hook-table save and restore upstream wraps around
+`create_failure` and `hook` has nothing to do. A failed EXPECT is printed and fails the
+case at exit, as GoogleTest's nonfatal assertions do. `reactor-compile` runs
 `compile_gate.py --source S --archive A --report R`: the original and hybrid
 backend translation units compile as C++14.
 

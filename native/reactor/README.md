@@ -25,5 +25,6 @@ callbacks, tasks and deferrals it holds. An `IOVector` is a view of a Rust owner
 over the constructor, the end/exit callbacks and the idle, try-exit and deferred
 builtins are Rust tests named `former_initialize_gate_*`,
 `former_callbacks_gate_*` and `former_builtins_gate_*`; they drive the Rust
-exports through a Rust copy of `reactor.cc`'s glue. Upstream's own
-`reactor/base.cpp` GoogleTests run on both engines (`reactor-native-originals`).
+exports through a Rust copy of `reactor.cc`'s glue. Upstream's
+`reactor/base.cpp` GoogleTests are Rust cases over the hybrid
+(`tests/modules/reactor/base`, `reactor-base-rust`).
