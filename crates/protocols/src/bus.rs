@@ -1222,13 +1222,58 @@ mod tests {
         }
     }
 
+    /// The reading end: the reader's bus and what it has read (session, data).
+    struct Loopback {
+        fds: [RawFd; 2],
+        dgram: bool,
+        bus: Bus,
+        q: Received,
+    }
+
+    /// The writer's send: one blocking writev, then (when it succeeded, so errno stays
+    /// the failure's for `pipe_reduce`) every packet the reader can read now. Upstream's
+    /// reactor interleaves its writes and reads; reading only whole writes keeps a
+    /// partly written stream chunk from being read as a whole one.
+    unsafe extern "C" fn loopback_send(
+        context: *mut c_void,
+        iov: *const libc::iovec,
+        count: usize,
+    ) -> isize {
+        let pipe = unsafe { &mut *context.cast::<Loopback>() };
+        let sent = unsafe { libc::writev(pipe.fds[0], iov, c_int::try_from(count).unwrap()) };
+        if sent < 0 {
+            return sent;
+        }
+        loop {
+            let mut poll = libc::pollfd {
+                fd: pipe.fds[1],
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&raw mut poll, 1, 0) } != 1 {
+                return sent;
+            }
+            let n = mb_read(&mut pipe.bus, pipe.fds[1], pipe.dgram);
+            assert!(n >= 0);
+            if n > 0 {
+                let packet = pipe.bus.packet();
+                let data = if packet.length == 0 {
+                    Vec::new()
+                } else {
+                    unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) }
+                        .to_vec()
+                };
+                pipe.q.push((pipe.bus.head().fd, data));
+            }
+        }
+    }
+
     /// Both `message_bus` TESTs: a socket pair with 64KiB buffers and a bus of 64KiB;
     /// packets of `DATA_SIZE`, the bus's buffer size and 2341 bytes to sessions 1-3, then
     /// `send_empty_packet`'s two (`hello world` with length 0 to session 4, null with
-    /// length 10 to session 5), read until five arrive. Upstream's reactor flushes the
-    /// writes while it reads; here a thread writes them, blocking, and the nonblocking
-    /// reader polls. Packets are never popped, as upstream's `TestMB::read` never pops.
-    /// The bus, the packets it read (session, data) and the three packets sent.
+    /// length 10 to session 5), read until five arrive. Packets are never popped, as
+    /// upstream's `TestMB::read` never pops them. The reader's bus, the packets it read
+    /// and the three packets sent.
     fn message_bus(kind: c_int, dgram: bool) -> (Bus, Received, Vec<Vec<u8>>) {
         let mut fds = [0; 2];
         assert_eq!(
@@ -1251,67 +1296,44 @@ mod tests {
         }
         let flags = unsafe { libc::fcntl(fds[1], libc::F_GETFL) };
         unsafe { libc::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK) };
-        let mut bus = Bus::new(65536);
+        let mut pipe = Loopback {
+            fds,
+            dgram,
+            bus: Bus::new(65536),
+            q: Vec::new(),
+        };
         let mut buffer = vec![0u64; 65536 / 8];
-        bus.buffer = buffer.as_mut_ptr().cast();
+        pipe.bus.buffer = buffer.as_mut_ptr().cast();
         let sent = vec![
             mb_packet(DATA_SIZE, 1),
-            mb_packet(bus.buffer_size, 2),
+            mb_packet(pipe.bus.buffer_size, 2),
             mb_packet(2341, 3),
         ];
-        let packets = sent.clone();
-        let writer = std::thread::spawn(move || {
-            let writer = Bus::new(65536);
-            let socket = fds[0].cast_unsigned() as usize as *mut c_void;
-            let mut msg_id = 0;
-            let mut write = |fd: i64, data: *const u8, len: usize| {
-                let mut head = BusHead {
-                    fd,
-                    msg_id,
-                    len: u32::try_from(len).unwrap(),
-                    ..BusHead::default()
-                };
-                msg_id += 1;
-                unsafe { writer.write(socket, &mut head, data, send, pipe_reduce) }
+        let writer = Bus::new(65536);
+        let context = (&raw mut pipe).cast::<c_void>();
+        let mut msg_id = 0;
+        let mut write = |fd: i64, data: *const u8, len: usize| {
+            let mut head = BusHead {
+                fd,
+                msg_id,
+                len: u32::try_from(len).unwrap(),
+                ..BusHead::default()
             };
-            for (fd, packet) in (1..).zip(&packets) {
-                assert!(write(fd, packet.as_ptr(), packet.len()));
-            }
-            assert!(write(4, b"hello world".as_ptr(), 0));
-            assert!(write(5, ptr::null(), 10));
-        });
-        let mut q = Vec::new();
-        while q.len() < 5 {
-            let mut poll = libc::pollfd {
-                fd: fds[1],
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            assert_eq!(
-                unsafe { libc::poll(&raw mut poll, 1, 10_000) },
-                1,
-                "readable"
-            );
-            let n = mb_read(&mut bus, fds[1], dgram);
-            assert!(n >= 0);
-            if n > 0 {
-                let packet = bus.packet();
-                let data = if packet.length == 0 {
-                    Vec::new()
-                } else {
-                    unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) }
-                        .to_vec()
-                };
-                q.push((bus.head().fd, data));
-            }
+            msg_id += 1;
+            unsafe { writer.write(context, &mut head, data, loopback_send, pipe_reduce) }
+        };
+        for (fd, packet) in (1..).zip(&sent) {
+            assert!(write(fd, packet.as_ptr(), packet.len()));
         }
-        writer.join().unwrap();
+        assert!(write(4, b"hello world".as_ptr(), 0));
+        assert!(write(5, ptr::null(), 10));
+        assert_eq!(pipe.q.len(), 5);
         for fd in fds {
             unsafe { libc::close(fd) };
         }
-        bus.buffer = ptr::null_mut();
+        pipe.bus.buffer = ptr::null_mut();
         drop(buffer);
-        (bus, q, sent)
+        (pipe.bus, pipe.q, sent)
     }
 
     /// `MB_ASSERT(1..3)` and the empty packets' asserts. `ASSERT_STREQ` compares up to
