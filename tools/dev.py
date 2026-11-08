@@ -60,11 +60,8 @@ CORE_TESTS = {
                   ('crates/http/src/request.rs', ['has_expect_header', 'get_protocol', 'all_method']),
                   ('crates/websocket/src/frame_api.rs', ['websocket_encode', 'websocket_compressed_control_frame'])]
                  for name in names}}),
-    'clients': (['network/dns.cpp', 'network/address.cpp', 'network/client.cpp'],
-                {'dns.lookup1': NETWORK, 'dns.lookup_ipv6': NETWORK, 'dns.bad_family': NETWORK, 'dns.cancel': UNCACHED,
-                 'client.bind': "expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner isn't root and gets EACCES",
-                 'client.async_tcp_socks5_proxy_handshake_fail': 'expects www.baidu.com:80 to time out a SOCKS5 greeting',
-                 **{'client.' + name: PROXY for name in CLIENT_PROXY}}),
+    'clients': (['network/dns.cpp', 'network/address.cpp'],
+                {'dns.lookup1': NETWORK, 'dns.lookup_ipv6': NETWORK, 'dns.bad_family': NETWORK, 'dns.cancel': UNCACHED}),
     'timer': (['os/timer.cpp'], {}),
     'tls': (['protocol/ssl.cpp'], {}),
 }
@@ -387,7 +384,8 @@ def plan(args, reports):
                    *[arg for file in files for arg in ['--file', 'core-tests/src/' + file]],
                    *[arg for case, reason in excluded.items() for arg in ['--exclude', case + '=' + reason]], *report(name))
     if integrate and 'hooks' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/coroutine/{system,hook,socket}.cpp, ported to Rust over the hybrid's libswoole.so.
+        # core-tests/src/coroutine/{system,hook,socket}.cpp and network/client.cpp, ported to Rust over the
+        # hybrid's libswoole.so.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
@@ -397,6 +395,11 @@ def plan(args, reports):
                '--exclude', 'coroutine_socket.tcp6=needs IPv6',
                *[arg for name in ['https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy',
                                   'https_get_with_http_proxy'] for arg in ['--exclude', f'coroutine_socket.{name}={PROXY}']],
+               # core-tests/src/network/client.cpp (tests/modules/clients/client.rs).
+               '--exclude', "client.bind=expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner "
+                            "isn't root and gets EACCES",
+               '--exclude', 'client.async_tcp_socks5_proxy_handshake_fail=expects www.baidu.com:80 to time out a SOCKS5 greeting',
+               *[arg for name in CLIENT_PROXY for arg in ['--exclude', f'client.{name}={PROXY}']],
                *report('hooks-system-rust'))
     if integrate and 'http' in modules and sys.platform.startswith('linux'):
         # core-tests/src/server/http_server.cpp's server TESTs, ported to Rust over the hybrid's libswoole.so.

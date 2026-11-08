@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // What crates/phpclients' Swoole\Client and Swoole\Async\Client need from C++
-// (swoole_rs_phpclients.h): network::Client's construction, std::string and
-// std::function members, ext/sockets' php_socket, the PHP error macros, and
-// the bailout::trap body that calls into network::Client.
+// (swoole_rs_phpclients.h): ext/sockets' php_socket, the PHP error macros, and the
+// bailout::trap body that calls into network::Client (network_client.cc has the rest).
 #include "swoole_rs_phphost.h"
 #include "swoole_rs_clients.h"
 #include "swoole_rs_phpclients.h"
@@ -18,28 +17,6 @@ static Client *client_of(void *cli) {
     return static_cast<Client *>(cli);
 }
 
-const swr_v1_tls_owner *swoole_client_ssl_context(void *cli) {
-    auto &context = client_of(cli)->ssl_context;
-    return context ? context->handle() : nullptr;
-}
-
-void swoole_client_proxy(void *cli,
-                         bool http,
-                         const char *host,
-                         size_t host_length,
-                         int64_t port,
-                         const char *user,
-                         size_t user_length,
-                         const char *password,
-                         size_t password_length) {
-    const std::string h(host, host_length), u(user, user_length), p(password, password_length);
-    if (http) {
-        client_of(cli)->set_http_proxy(h, port, u, p);
-    } else {
-        client_of(cli)->set_socks5_proxy(h, port, u, p);
-    }
-}
-
 void swoole_client_php_error(int kind, int level, const char *message) {
     switch (kind) {
     case SWOOLE_CLIENT_ERROR_SYS:
@@ -52,21 +29,6 @@ void swoole_client_php_error(int kind, int level, const char *message) {
         swoole_rs_php_error(level, kind == SWOOLE_CLIENT_ERROR_FATAL, message);
         break;
     }
-}
-
-void *swoole_client_create(int type, bool async, int *error) {
-    auto *cli = new Client(static_cast<SocketType>(type), async);
-    if (cli->socket == nullptr) {
-        *error = errno;
-        delete cli;
-        errno = *error;
-        return nullptr;
-    }
-    return cli;
-}
-
-void *swoole_client_state(void *cli) {
-    return client_of(cli)->state_;
 }
 
 bool swoole_client_export_socket(void *cli, zval *zsocket) {
@@ -137,7 +99,7 @@ void swoole_client_run(void *op) {
             sw_callable_free(cli->protocol.private_data_1);
             cli->protocol.private_data_1 = nullptr;
         }
-        delete cli;
+        swoole_client_free(cli);
         break;
     case SWOOLE_CLIENT_CALLABLE:
         call->buffer = reinterpret_cast<char *>(sw_callable_create(const_cast<zval *>(call->settings)));
@@ -156,41 +118,4 @@ void swoole_client_run(void *op) {
         break;
     }
     }
-}
-
-static void client_async_event(Client *cli, int event, const char *data, size_t length) {
-    swr_v1_phpclients_async_event(static_cast<zend_object *>(cli->object), event, data, length);
-}
-
-void swoole_client_async_listen(void *cli, zend_object *object, uint32_t events) {
-    Client *client = client_of(cli);
-    client->object = object;
-    if (events & (1u << SWOOLE_CLIENT_ON_CONNECT)) {
-        client->onConnect = [](Client *cli) { client_async_event(cli, SWOOLE_CLIENT_ON_CONNECT, nullptr, 0); };
-    }
-    if (events & (1u << SWOOLE_CLIENT_ON_RECEIVE)) {
-        client->onReceive = [](Client *cli, const char *data, size_t length) {
-            client_async_event(cli, SWOOLE_CLIENT_ON_RECEIVE, data, length);
-        };
-    }
-    if (events & (1u << SWOOLE_CLIENT_ON_CLOSE)) {
-        client->onClose = [](Client *cli) { client_async_event(cli, SWOOLE_CLIENT_ON_CLOSE, nullptr, 0); };
-    }
-    if (events & (1u << SWOOLE_CLIENT_ON_ERROR)) {
-        client->onError = [](Client *cli) {
-            client_async_event(cli, SWOOLE_CLIENT_ON_ERROR, nullptr, swoole_get_last_error());
-        };
-    }
-    if (events & (1u << SWOOLE_CLIENT_ON_BUFFER_FULL)) {
-        client->onBufferFull = [](Client *cli) { client_async_event(cli, SWOOLE_CLIENT_ON_BUFFER_FULL, nullptr, 0); };
-    }
-    if (events & (1u << SWOOLE_CLIENT_ON_BUFFER_EMPTY)) {
-        client->onBufferEmpty = [](Client *cli) {
-            client_async_event(cli, SWOOLE_CLIENT_ON_BUFFER_EMPTY, nullptr, 0);
-        };
-    }
-}
-
-bool swoole_client_has_on_error(void *cli) {
-    return client_of(cli)->onError != nullptr;
 }

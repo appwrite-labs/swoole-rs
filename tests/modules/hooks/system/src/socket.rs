@@ -26,21 +26,21 @@ use std::mem::ManuallyDrop;
 use std::ptr;
 
 // glibc's values (the core-tests build is Linux).
-const ECONNREFUSED: c_int = 111;
-const EADDRNOTAVAIL: c_int = 99;
+pub(super) const ECONNREFUSED: c_int = 111;
+pub(super) const EADDRNOTAVAIL: c_int = 99;
 const ENOTCONN: c_int = 107;
 const ECANCELED: c_int = 125;
-const SIGTERM: c_int = 15;
-const SHUT_RD: c_int = 0;
-const SHUT_WR: c_int = 1;
-const SHUT_RDWR: c_int = 2;
+pub(super) const SIGTERM: c_int = 15;
+pub(super) const SHUT_RD: c_int = 0;
+pub(super) const SHUT_WR: c_int = 1;
+pub(super) const SHUT_RDWR: c_int = 2;
 
-const SW_SOCK_TCP: c_int = 1;
-const SW_SOCK_UDP: c_int = 2;
-const SW_SOCK_TCP6: c_int = 3;
-const SW_SOCK_UDP6: c_int = 4;
+pub(super) const SW_SOCK_TCP: c_int = 1;
+pub(super) const SW_SOCK_UDP: c_int = 2;
+pub(super) const SW_SOCK_TCP6: c_int = 3;
+pub(super) const SW_SOCK_UDP6: c_int = 4;
 const SW_SOCK_UNIX_STREAM: c_int = 5;
-const SW_SOCK_UNIX_DGRAM: c_int = 6;
+pub(super) const SW_SOCK_UNIX_DGRAM: c_int = 6;
 const SW_TIMEOUT_DNS: c_int = 1;
 const SW_TIMEOUT_CONNECT: c_int = 2;
 const SW_TIMEOUT_READ: c_int = 4;
@@ -51,15 +51,15 @@ const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int = 1201;
 const SW_ERROR_CO_SOCKET_CLOSE_WAIT: c_int = 10019;
 const SW_STACK_BUFFER_SIZE: usize = 65536;
 
-const TEST_HOST: &str = "127.0.0.1";
-const TEST_PORT: c_int = 9501;
+pub(super) const TEST_HOST: &str = "127.0.0.1";
+pub(super) const TEST_PORT: c_int = 9501;
 const HOST: &str = "www.baidu.com";
 const CRLF: &[u8] = b"\r\n";
 const EOF_PACKET: &[u8] = b"hello world\r\n";
 const EOF_PACKET_2: &[u8] = b"php&swoole, java&golang\r\n";
 const RECV_TIMEOUT: f64 = 10.0;
-const TEST_HTTP_EXPECT: &[u8] = b"Location: https://www.gov.cn/";
-const TEST_HTTPS_EXPECT: &[u8] = "中国政府网".as_bytes();
+pub(super) const TEST_HTTP_EXPECT: &[u8] = b"Location: https://www.gov.cn/";
+pub(super) const TEST_HTTPS_EXPECT: &[u8] = "中国政府网".as_bytes();
 const TEST_HTTP_PROXY_HOST: &str = "127.0.0.1";
 const TEST_HTTP_PROXY_PORT: c_int = 8888;
 const TEST_HTTP_PROXY_USER: &str = "user";
@@ -69,7 +69,7 @@ const TEST_SOCKS5_PROXY_PORT: c_int = 8080;
 const TEST_SOCKS5_PROXY_NO_AUTH_PORT: c_int = 8081;
 const TEST_SOCKS5_PROXY_USER: &str = "user";
 const TEST_SOCKS5_PROXY_PASSWORD: &str = "password";
-const TEST_REQUEST_BAIDU: &[u8] = b"GET / HTTP/1.1\r\n\
+pub(super) const TEST_REQUEST_BAIDU: &[u8] = b"GET / HTTP/1.1\r\n\
 Host: www.baidu.com\r\n\
 Connection: close\r\n\
 User-Agent: Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) \
@@ -219,22 +219,22 @@ struct TimeoutScope {
 /// `OwnedTlsPrepared` (crates/tls/src/owned.rs).
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct TlsPrepared {
-    owner: *const c_void,
-    fields: *mut TlsFields,
-    strings: [*const c_void; 11],
+pub(super) struct TlsPrepared {
+    pub(super) owner: *const c_void,
+    pub(super) fields: *mut TlsFields,
+    pub(super) strings: [*const c_void; 11],
 }
 
 /// `OwnedTlsFields`, up to `allow_self_signed`.
 #[repr(C)]
-struct TlsFields {
+pub(super) struct TlsFields {
     http: u8,
     http_v2: u8,
     prefer_server_ciphers: u8,
     session_tickets: u8,
     stapling: u8,
     stapling_verify: u8,
-    disable_tls_host_name: u8,
+    pub(super) disable_tls_host_name: u8,
     grease: u8,
     verify_depth: u8,
     disable_compress: u8,
@@ -247,13 +247,13 @@ const TLS_ECDH_CURVE: usize = 1;
 const TLS_DHPARAM: usize = 3;
 const TLS_CERT_FILE: u32 = 4;
 const TLS_KEY_FILE: u32 = 5;
-const TLS_HOST_NAME: usize = 8;
+pub(super) const TLS_HOST_NAME: usize = 8;
 const TLS_CAFILE: usize = 9;
 
 #[repr(C)]
-struct IoVec {
-    base: *mut c_void,
-    len: usize,
+pub(super) struct IoVec {
+    pub(super) base: *mut c_void,
+    pub(super) len: usize,
 }
 
 #[repr(C)]
@@ -373,14 +373,18 @@ unsafe extern "C" {
     fn swr_v1_hook_timeout_scope(socket: *mut Record, timeout: f64, kind: c_int) -> TimeoutScope;
     fn swr_v1_hook_timeout_restore(scope: *const TimeoutScope);
 
-    safe fn swr_v1_tls_owner_new(warn: Warn) -> TlsPrepared;
+    pub(super) safe fn swr_v1_tls_owner_new(warn: Warn) -> TlsPrepared;
     fn swr_v1_tls_owner_set_path(
         owner: *const c_void,
         index: u32,
         path: *const c_char,
         length: usize,
     ) -> c_int;
-    fn swr_v1_core_string_set(slot: *const c_void, bytes: *const c_char, length: usize) -> c_int;
+    pub(super) fn swr_v1_core_string_set(
+        slot: *const c_void,
+        bytes: *const c_char,
+        length: usize,
+    ) -> c_int;
 
     #[link_name = "_ZN6swoole6String3popEm"]
     fn string_pop(this: *mut CppString, init_size: usize) -> *mut u8;
@@ -407,7 +411,7 @@ unsafe extern "C" {
     fn usleep(usec: u32) -> c_int;
 }
 
-extern "C" fn tls_warning(function: *const c_char, message: *const c_char) {
+pub(super) extern "C" fn tls_warning(function: *const c_char, message: *const c_char) {
     // SAFETY: owners pass NUL-terminated text.
     let (function, message) = unsafe { (CStr::from_ptr(function), CStr::from_ptr(message)) };
     eprintln!(
@@ -430,7 +434,7 @@ fn microtime() -> f64 {
         .as_secs_f64()
 }
 
-fn get_random_port() -> c_int {
+pub(super) fn get_random_port() -> c_int {
     // SAFETY: Swoole's random source.
     TEST_PORT + c_int::try_from(unsafe { swoole_random_int() } % 10000).unwrap()
 }
@@ -439,7 +443,7 @@ fn get_ssl_dir() -> String {
     std::env::current_dir().unwrap().display().to_string() + "/tests/include/ssl_certs"
 }
 
-fn http_get_request(domain: &CStr, path: &str) -> Vec<u8> {
+pub(super) fn http_get_request(domain: &CStr, path: &str) -> Vec<u8> {
     format!(
         "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\
          User-Agent: Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) \
@@ -449,11 +453,11 @@ fn http_get_request(domain: &CStr, path: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-fn is_github_ci() -> bool {
+pub(super) fn is_github_ci() -> bool {
     std::env::var_os("GITHUB_ACTIONS").is_some()
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+pub(super) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|window| window == needle)
@@ -1913,7 +1917,11 @@ fn test_sendto_recvfrom(sock_type: c_int) {
                 &raw mut addr_length,
             )
         };
-        assert_eq!(result, server_length.cast_signed(), "type {sock_type}, from server");
+        assert_eq!(
+            result,
+            server_length.cast_signed(),
+            "type {sock_type}, from server"
+        );
         assert_eq!(&data_from_server[..size(result)], server_text);
 
         // receive data from client
@@ -1936,7 +1944,11 @@ fn test_sendto_recvfrom(sock_type: c_int) {
                 client_length,
             )
         };
-        assert_eq!(result, client_length.cast_signed(), "type {sock_type}, from client");
+        assert_eq!(
+            result,
+            client_length.cast_signed(),
+            "type {sock_type}, from client"
+        );
         assert_eq!(&data_from_client[..client_length], client_text);
 
         // ON_SCOPE_EXIT
@@ -2411,8 +2423,10 @@ fn selected_timeout_restore_and_copy() {
 }
 
 /// `rust_socket_scopes.<name>`, the cases whose C++ API left the hybrid header.
-pub(super) const SCOPE_CASES: super::Cases =
-    &[("selected_timeout_restore_and_copy", selected_timeout_restore_and_copy)];
+pub(super) const SCOPE_CASES: super::Cases = &[(
+    "selected_timeout_restore_and_copy",
+    selected_timeout_restore_and_copy,
+)];
 
 /// `coroutine_socket.<name>`, in upstream's order.
 pub(super) const CASES: super::Cases = &[

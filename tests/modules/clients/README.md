@@ -13,8 +13,28 @@ The persistent client pool is also Rust-owned.
 `verify_port`, both `assign`s, `is_loopback_addr`), the hosts-file lookup, the DNS
 name codec, the DNS address text and the socket DNS lookup
 (`dns_lookup_impl_with_socket` over a UDP socket double).
-`clients-native-originals` runs upstream's own `network/client.cpp`, `dns.cpp`
-and `address.cpp` GoogleTests on the hybrid tree.
+`clients-native-originals` runs upstream's own `network/dns.cpp` and
+`address.cpp` GoogleTests on the hybrid tree.
+
+## network/client.cpp in Rust
+
+`core-tests/src/network/client.cpp` no longer builds. `client.rs` holds its 43
+TESTs, one function each with upstream's name, inputs, ports and expected values:
+TEST `client.<name>` is the case `client.<name>` (function `<name>`). The case
+binary is the hooks one (`tests/modules/hooks/system`, which includes this file),
+so `hooks-system-rust` builds and runs it over the hybrid's libswoole.so. A
+`Client` is made, given its callbacks and deleted through network_client.cc's
+`swoole_client_*` C calls (the ones crates/phpclients makes); its methods are the
+`swr_v1_clients_*` exports they forward to, and `enable_ssl_encrypt`, `ssl_verify`
+and the `Socket` TLS reads are called under their upstream symbols.
+`set_tls_host_name` assigns a fresh `SSLContext` owner with the name set.
+`SyncClient` and `AsyncClient` are `Client`'s `created`/`connected` bookkeeping.
+`swoole_timer_after` gets a libstdc++ `std::function` laid out over the Rust
+closure. The `Server` fixtures are std servers forked after binding (an echo, the
+403 proxy reply, a slow reader): the cases assert only on the client. Excluded
+as before: `bind` (EACCES, not EINVAL, off a root container),
+`async_tcp_socks5_proxy_handshake_fail` (www.baidu.com:80 timing out a SOCKS5
+greeting) and the nine proxy cases (a local HTTP or SOCKS5 proxy).
 
 `http_format_gate.py` compiles the pinned request formatter calls and
 `sw_snprintf` next to `swr_v1_clients_http_format` from the hybrid build's archive
