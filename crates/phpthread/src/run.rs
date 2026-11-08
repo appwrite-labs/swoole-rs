@@ -160,11 +160,11 @@ unsafe extern "C" fn epilogue(_start: *mut c_void) {
     unsafe { swr_zend_guard_clear() };
 }
 
-/// `php_swoole_thread_bailout()`: `exit()` in a thread unwinds to the nearest
+/// Upstream's `php_swoole_thread_bailout()`: `exit()` in a thread unwinds to the nearest
 /// native scope that contains it, else out of the coroutine, else out of the
 /// thread's script.
-#[unsafe(export_name = "_Z25php_swoole_thread_bailoutv")]
-pub extern "C" fn php_swoole_thread_bailout() {
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_phpthread_bailout() {
     // SAFETY: no preconditions.
     unsafe { swr_zend_guard_mark() };
     // SAFETY: as above.
@@ -198,7 +198,7 @@ extern "C" fn guard_context() -> *mut c_void {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpthread_minit() {
     // SAFETY: MINIT, before any thread reads them.
-    unsafe { swr_zend_guard_register(Some(guard_context), Some(php_swoole_thread_bailout)) };
+    unsafe { swr_zend_guard_register(Some(guard_context), Some(swr_v1_phpthread_bailout)) };
     // SAFETY: MINIT.
     let ce = unsafe { thread::register() };
     // `std::thread::hardware_concurrency()`.

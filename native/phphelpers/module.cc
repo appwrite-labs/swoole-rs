@@ -41,7 +41,7 @@ uint32_t Callable::refcount() const { return swr_v1_phphelpers_callable_refs(own
 // the module globals and lends, as swr_v1_phpswoole_ops, what only configure's #ifdefs
 // or C++ can reach.
 #include "php_swoole_library.h"
-#include "php_swoole_thread.h"
+#include "swoole_rs_phpthread.h"
 #include "swoole_rs_locks.h"
 #include "swoole_rs_native_effect.h"
 #include "swoole_rs.h"
@@ -68,9 +68,6 @@ END_EXTERN_C()
 #endif
 #ifdef SW_USE_PGSQL
 extern "C" void swoole_libpq_version(char *buf, size_t len);
-#endif
-#ifdef SW_STDEXT
-#include "php_swoole_stdext.h"
 #endif
 #ifdef SW_HAVE_SSH2LIB
 #include "php_swoole_ssh2_def.h"
@@ -138,7 +135,7 @@ SW_API bool php_swoole_is_enable_coroutine() {
 void sw_php_exit(int status) {
     EG(exit_status) = status;
 #ifdef SW_THREAD
-    php_swoole_thread_bailout();
+    swr_v1_phpthread_bailout();
 #else
     zend_bailout();
 #endif
@@ -149,31 +146,35 @@ extern "C" void swr_zend_after_fork(void *);
 
 // Native lends only handler addresses; Rust owns names, aliases and arginfo.
 #ifdef SW_STDEXT
-static const zif_handler swoole_stdext_handlers[] = {
-    ZEND_FN(swoole_call_array_method),
-    ZEND_FN(swoole_call_string_method),
-    ZEND_FN(swoole_call_stream_method),
-    ZEND_FN(swoole_array_search),
-    ZEND_FN(swoole_array_contains),
-    ZEND_FN(swoole_array_join),
-    ZEND_FN(swoole_array_key_exists),
-    ZEND_FN(swoole_array_map),
-    ZEND_FN(swoole_str_split),
-    ZEND_FN(swoole_parse_str),
-    ZEND_FN(swoole_hash),
-    ZEND_FN(swoole_typed_array),
-    ZEND_FN(swoole_array_is_typed),
-    ZEND_FN(swoole_str_is_empty),
-    ZEND_FN(swoole_array_is_empty),
-    ZEND_FN(swoole_str_match),
-    ZEND_FN(swoole_str_match_all),
-    ZEND_FN(swoole_str_json_decode),
-    ZEND_FN(swoole_str_json_decode_to_object),
-    ZEND_FN(swoole_str_replace),
-    ZEND_FN(swoole_str_ireplace),
-    ZEND_FN(swoole_array_replace_str),
-    ZEND_FN(swoole_array_ireplace_str),
-};
+// crates/phpstdext defines each handler.
+#define SWR_STDEXT_FUNCTIONS(X) \
+    X(swoole_call_array_method) \
+    X(swoole_call_string_method) \
+    X(swoole_call_stream_method) \
+    X(swoole_array_search) \
+    X(swoole_array_contains) \
+    X(swoole_array_join) \
+    X(swoole_array_key_exists) \
+    X(swoole_array_map) \
+    X(swoole_str_split) \
+    X(swoole_parse_str) \
+    X(swoole_hash) \
+    X(swoole_typed_array) \
+    X(swoole_array_is_typed) \
+    X(swoole_str_is_empty) \
+    X(swoole_array_is_empty) \
+    X(swoole_str_match) \
+    X(swoole_str_match_all) \
+    X(swoole_str_json_decode) \
+    X(swoole_str_json_decode_to_object) \
+    X(swoole_str_replace) \
+    X(swoole_str_ireplace) \
+    X(swoole_array_replace_str) \
+    X(swoole_array_ireplace_str)
+#define SWR_DECLARE(name) PHP_FUNCTION(name);
+extern "C" { SWR_STDEXT_FUNCTIONS(SWR_DECLARE) }
+#define SWR_HANDLER(name) ZEND_FN(name),
+static const zif_handler swoole_stdext_handlers[] = {SWR_STDEXT_FUNCTIONS(SWR_HANDLER)};
 #else
 static const zif_handler *swoole_stdext_handlers = nullptr;
 #endif
@@ -317,7 +318,7 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
         swr_v1_phpthread_arraylist_minit();
 #endif
 #ifdef SW_STDEXT
-        php_swoole_stdext_minit(module_number);
+        swr_v1_phpstdext_minit();
 #endif
     },
     [] {
@@ -486,7 +487,7 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
     [] { return (int64_t) Coroutine::get_socket_bound_cid(); },
     [] {
 #ifdef SW_THREAD
-        php_swoole_thread_bailout();
+        swr_v1_phpthread_bailout();
 #endif
     },
 };
