@@ -6,7 +6,7 @@ publish = false
 
 [lib]
 name = "swoole_rs_ffi"
-crate-type = ["staticlib"]
+crate-type = ["staticlib", "rlib"]
 
 [features]
 default = []

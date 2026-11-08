@@ -64,7 +64,7 @@ jobs:
         run: |
           changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           echo "$changed"
-          if echo "$changed" | grep -qE '^(migration/patches/|native/|tools/(build_(hybrid|upstream)|arginfo)\.py$|crates/phpstubs/|\.github/|\.devcontainer/)'; then
+          if echo "$changed" | grep -qE '^(migration/patches/|native/|tools/(build_(hybrid|upstream|ext)|arginfo)\.py$|crates/(phpstubs|ext)/|\.github/|\.devcontainer/)'; then
             echo hybrid=true >> "$GITHUB_OUTPUT"
           fi
           if echo "$changed" | grep -qE '^(migration/patches/hooks/|native/hooks/|crates/(hooks|uring[^/]*)/|\.github/workflows/iouring\.yml$|\.devcontainer/install\.sh$)'; then
@@ -120,6 +120,8 @@ jobs:
       - run: cargo fetch --locked
       # With the optional cURL and ssh2 hooks (the merge tier's phpt-build runs their PHPTs).
       - run: python3 tools/build_hybrid.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2
+      # The extension built by Cargo alone (crates/ext, #1921), run side by side below.
+      - run: python3 tools/build_ext.py
       # Compare SDK alias defaults independently of remote SSH service availability.
       - run: |
           cargo build --locked --release -p swoole-rs-ffi --features ssh2
@@ -140,6 +142,7 @@ jobs:
           --project 05-coroutines --project 06-websocket --project 07-tcp-framing
           --project 08-timers --project 09-shared-table --project 10-task-workers
           --engine hybrid=target/hybrid/rust-halfclose/modules/swoole.so
+          --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/reports/corpus.json
       # Upstream truncates queued responses after a client half-close; --fix-halfclose repairs it.
@@ -147,6 +150,7 @@ jobs:
       - run: >
           python3 corpus/run.py --php-extension curl --project 11-buffer-lifecycle
           --engine hybrid=target/hybrid/rust-halfclose/modules/swoole.so
+          --engine cargo=target/ext/swoole.so
           --output target/reports/corpus-halfclose.json
       # This run built main as of its push. Auto-merge follows the last required check
       # (usually this one) within seconds, so re-apply the patch set over main as it is now.
