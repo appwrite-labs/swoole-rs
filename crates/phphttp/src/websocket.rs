@@ -523,7 +523,7 @@ fn warning(func: &CStr, message: &str) {
 }
 
 /// `FrameObject::pack`: the frame on the wire as a new string, or `None`.
-fn pack(frame: &FrameObject) -> Option<Str> {
+fn pack(frame: &FrameObject) -> Option<Frame> {
     if frame.opcode > OPCODE_PONG {
         host::fatal("the maximum value of opcode is 10");
         return None;
@@ -580,11 +580,42 @@ fn compress(data: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// A string of `size` bytes `write` fills; `None` (and freed) unless it
-/// wrote exactly `size`.
-fn encoded(size: usize, write: impl FnOnce(*mut u8) -> usize) -> Option<Str> {
+/// Frames up to this size encode on the stack: upstream encodes into a reused
+/// buffer, so a small message costs no allocation there either.
+const INLINE: usize = 128;
+
+/// An encoded frame, on the stack when it fits.
+pub(crate) enum Frame {
+    Inline([u8; INLINE], usize),
+    Heap(Str),
+}
+
+impl Frame {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Inline(buffer, size) => buffer.get(..*size).unwrap_or_default(),
+            Self::Heap(string) => string.bytes(),
+        }
+    }
+
+    /// The frame as a new string the caller owns.
+    fn into_string(self) -> *mut zend_string {
+        match self {
+            Self::Inline(..) => string::copy(self.bytes()),
+            Self::Heap(string) => string.take(),
+        }
+    }
+}
+
+/// A frame of `size` bytes `write` fills; `None` unless it wrote exactly
+/// `size`.
+fn encoded(size: usize, write: impl FnOnce(*mut u8) -> usize) -> Option<Frame> {
     if size == 0 {
         return None;
+    }
+    if size <= INLINE {
+        let mut buffer = [0; INLINE];
+        return (write(buffer.as_mut_ptr()) == size).then_some(Frame::Inline(buffer, size));
     }
     let out = string::alloc(size);
     if write(string::val(out)) != size {
@@ -594,7 +625,7 @@ fn encoded(size: usize, write: impl FnOnce(*mut u8) -> usize) -> Option<Str> {
     }
     // SAFETY: as above, now holding `size` bytes.
     unsafe { string::truncate(out, size) };
-    Some(Str(out))
+    Some(Frame::Heap(Str(out)))
 }
 
 /// Upstream's encoders fail a masked header-only frame after writing it.
@@ -603,7 +634,7 @@ fn header_only_mask(flags: u8) -> bool {
 }
 
 /// `websocket::encode`.
-pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Str> {
+pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Frame> {
     if swr_v1_ws_control_invalid(opcode, flags, data.len()) {
         warning(
             c"websocket::encode",
@@ -624,7 +655,7 @@ pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Str> {
 }
 
 /// `websocket::pack_close_frame`.
-fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Str> {
+fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
     let func = c"websocket::pack_close_frame";
     if reason.len() > CLOSE_REASON_MAX {
         warning(func, "the max length of close reason is 125");
@@ -752,7 +783,7 @@ pub(crate) fn zval_of(string: *mut zend_string) -> zval {
 fn pack_value(call: &Call, data: *mut zval, opcode: i64, flags: i64) {
     match pack(&FrameObject::new(data, opcode, flags, 0)) {
         // SAFETY: the return slot takes the new string.
-        Some(packed) => unsafe { call.set_string(packed.take()) },
+        Some(packed) => unsafe { call.set_string(packed.into_string()) },
         None => call.set_empty_string(),
     }
 }
