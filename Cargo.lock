@@ -502,6 +502,7 @@ dependencies = [
  "swoole-rs-ossupport",
  "swoole-rs-protocols",
  "swoole-rs-reactor",
+ "swoole-rs-ssh2-sys",
  "swoole-rs-tls",
  "swoole-rs-uring-sys",
 ]

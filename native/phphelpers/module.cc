@@ -73,11 +73,10 @@ extern "C" void swoole_libpq_version(char *buf, size_t len);
 #include "php_swoole_stdext.h"
 #endif
 #ifdef SW_HAVE_SSH2LIB
-#include "php_swoole_ssh2_def.h"
+#include "swoole_rs_ssh2.h"
 #endif
-#ifdef SW_HAVE_FTP
-#include "php_swoole_ftp_def.h"
-#endif
+#define SWR_DECLARE(name) ZEND_FUNCTION(name);
+#define SWR_HANDLER(name) ZEND_FN(name),
 static_assert(SWR_ABI_VERSION == 1, "unsupported Rust bridge ABI header");
 
 ZEND_DECLARE_MODULE_GLOBALS(swoole)
@@ -178,89 +177,30 @@ static const zif_handler swoole_stdext_handlers[] = {
 static const zif_handler *swoole_stdext_handlers = nullptr;
 #endif
 #ifdef SW_HAVE_SSH2LIB
-static const zif_handler swoole_ssh2_handlers[] = {
-    ZEND_FN(ssh2_connect),
-    ZEND_FN(ssh2_disconnect),
-    ZEND_FN(ssh2_methods_negotiated),
-    ZEND_FN(ssh2_fingerprint),
-    ZEND_FN(ssh2_auth_none),
-    ZEND_FN(ssh2_auth_password),
-    ZEND_FN(ssh2_auth_pubkey_file),
-    ZEND_FN(ssh2_auth_pubkey),
-    ZEND_FN(ssh2_auth_hostbased_file),
-    ZEND_FN(ssh2_forward_listen),
-    ZEND_FN(ssh2_forward_accept),
-    ZEND_FN(ssh2_shell),
-    ZEND_FN(ssh2_shell_resize),
-    ZEND_FN(ssh2_exec),
-    ZEND_FN(ssh2_tunnel),
-    ZEND_FN(ssh2_scp_recv),
-    ZEND_FN(ssh2_scp_send),
-    ZEND_FN(ssh2_fetch_stream),
-    ZEND_FN(ssh2_send_eof),
-    ZEND_FN(ssh2_sftp),
-    ZEND_FN(ssh2_sftp_rename),
-    ZEND_FN(ssh2_sftp_unlink),
-    ZEND_FN(ssh2_sftp_mkdir),
-    ZEND_FN(ssh2_sftp_rmdir),
-    ZEND_FN(ssh2_sftp_chmod),
-    ZEND_FN(ssh2_sftp_stat),
-    ZEND_FN(ssh2_sftp_lstat),
-    ZEND_FN(ssh2_sftp_symlink),
-    ZEND_FN(ssh2_sftp_readlink),
-    ZEND_FN(ssh2_sftp_realpath),
-    ZEND_FN(ssh2_publickey_init),
-    ZEND_FN(ssh2_publickey_add),
-    ZEND_FN(ssh2_publickey_remove),
-    ZEND_FN(ssh2_publickey_list),
-    ZEND_FN(ssh2_auth_agent),
-};
+static const zif_handler swoole_ssh2_handlers[] = {SWR_SSH2_FUNCTIONS(SWR_HANDLER)};
 #else
 static const zif_handler *swoole_ssh2_handlers = nullptr;
 #endif
 #ifdef SW_HAVE_FTP
-static const zif_handler swoole_ftp_handlers[] = {
-    ZEND_FN(ftp_connect),
-#ifdef SW_HAVE_FTP_SSL
-    ZEND_FN(ftp_ssl_connect),
-#else
-    nullptr,
+// thirdparty/php84/ftp's handlers (C), in crates/phpstubs' order; ftp_close is also ftp_quit.
+#define SWR_FTP_FUNCTIONS(X) \
+    X(ftp_connect) X(ftp_ssl_connect) X(ftp_login) X(ftp_pwd) X(ftp_cdup) \
+    X(ftp_chdir) X(ftp_exec) X(ftp_raw) X(ftp_mkdir) X(ftp_rmdir) \
+    X(ftp_chmod) X(ftp_alloc) X(ftp_nlist) X(ftp_rawlist) X(ftp_mlsd) \
+    X(ftp_systype) X(ftp_fget) X(ftp_nb_fget) X(ftp_pasv) X(ftp_get) \
+    X(ftp_nb_get) X(ftp_nb_continue) X(ftp_fput) X(ftp_nb_fput) X(ftp_put) \
+    X(ftp_append) X(ftp_nb_put) X(ftp_size) X(ftp_mdtm) X(ftp_rename) \
+    X(ftp_delete) X(ftp_site) X(ftp_close) X(ftp_close) X(ftp_set_option) \
+    X(ftp_get_option)
+BEGIN_EXTERN_C()
+SWR_FTP_FUNCTIONS(SWR_DECLARE)
+PHP_MINIT_FUNCTION(ftp);
+PHP_MINFO_FUNCTION(ftp);
+END_EXTERN_C()
+#ifndef SW_HAVE_FTP_SSL
+#define zif_ftp_ssl_connect nullptr
 #endif
-    ZEND_FN(ftp_login),
-    ZEND_FN(ftp_pwd),
-    ZEND_FN(ftp_cdup),
-    ZEND_FN(ftp_chdir),
-    ZEND_FN(ftp_exec),
-    ZEND_FN(ftp_raw),
-    ZEND_FN(ftp_mkdir),
-    ZEND_FN(ftp_rmdir),
-    ZEND_FN(ftp_chmod),
-    ZEND_FN(ftp_alloc),
-    ZEND_FN(ftp_nlist),
-    ZEND_FN(ftp_rawlist),
-    ZEND_FN(ftp_mlsd),
-    ZEND_FN(ftp_systype),
-    ZEND_FN(ftp_fget),
-    ZEND_FN(ftp_nb_fget),
-    ZEND_FN(ftp_pasv),
-    ZEND_FN(ftp_get),
-    ZEND_FN(ftp_nb_get),
-    ZEND_FN(ftp_nb_continue),
-    ZEND_FN(ftp_fput),
-    ZEND_FN(ftp_nb_fput),
-    ZEND_FN(ftp_put),
-    ZEND_FN(ftp_append),
-    ZEND_FN(ftp_nb_put),
-    ZEND_FN(ftp_size),
-    ZEND_FN(ftp_mdtm),
-    ZEND_FN(ftp_rename),
-    ZEND_FN(ftp_delete),
-    ZEND_FN(ftp_site),
-    ZEND_FN(ftp_close),
-    ZEND_FN(ftp_close),
-    ZEND_FN(ftp_set_option),
-    ZEND_FN(ftp_get_option),
-};
+static const zif_handler swoole_ftp_handlers[] = {SWR_FTP_FUNCTIONS(SWR_HANDLER)};
 #else
 static const zif_handler *swoole_ftp_handlers = nullptr;
 #endif

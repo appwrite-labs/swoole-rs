@@ -4,10 +4,10 @@
 //! sends each blocking libssh2 call here, which repeats it while libssh2 says
 //! `EAGAIN`, parking the coroutine on the session's socket in between.
 //!
-//! C++ checks that no other coroutine is bound to the socket before each call
-//! and lends the wait ([`Ops`]). Each export is `swoole_<libssh2 function>`,
-//! taking those operations and the session to wait on before the function's
-//! own arguments.
+//! `swr_v1_ssh2_bound` (crates/hooks) checks that no other coroutine is bound
+//! to the socket before each call and lends the wait ([`Ops`]). Each export
+//! is `swoole_<libssh2 function>`, taking those operations and the session to
+//! wait on before the function's own arguments.
 #![cfg_attr(
     not(test),
     deny(
@@ -46,7 +46,7 @@ use swoole_rs_ssh2_sys::{
 const READ: c_int = 1 << 9;
 const WRITE: c_int = 1 << 10;
 
-/// `swr_v1_ssh2_ops`: what C++ lends.
+/// `swr_v1_ssh2_ops`: what `swr_v1_ssh2_bound` lends.
 #[repr(C)]
 pub struct Ops {
     /// Park the coroutine until `event` on the session's socket: false if
@@ -66,7 +66,7 @@ fn event(directions: c_int) -> c_int {
 /// `ssh2_async_call`: `call` until it stops saying `EAGAIN`, waiting for
 /// `event`, the direction libssh2 was blocked on when it started.
 /// # Safety
-/// `ops` is C++'s table and `session` a live session it can wait on.
+/// `ops` is the lent table and `session` a live session it can wait on.
 unsafe fn retry(
     ops: *const Ops,
     session: *mut LIBSSH2_SESSION,
@@ -172,7 +172,7 @@ macro_rules! hooks {
     (@int $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident) => {
         #[doc = concat!("`", stringify!($function), "`, retried while it says `EAGAIN`.")]
         /// # Safety
-        /// `ops` is C++'s table, `wait_on` a live session, and the rest are
+        /// `ops` is the lent table, `wait_on` a live session, and the rest are
         /// the libssh2 function's arguments.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $export(ops: *const Ops, wait_on: *mut LIBSSH2_SESSION, $($arg: $ty),*) -> $ret {
