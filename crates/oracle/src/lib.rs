@@ -142,6 +142,23 @@ pub mod http_proxy {
     }
 }
 
+pub mod hooks_async {
+    use core::ffi::c_void;
+
+    unsafe extern "C" {
+        /// Runs scenario 0..426 through upstream's `coroutine::async`, `async(fn)`,
+        /// `System::sleep`, `gethostbyname_impl_with_async` and `System::getaddrinfo`
+        /// over a recording facade (`shim/hooks_async.cc`), handing each effect in
+        /// order to `line(context, text, length)`.
+        #[link_name = "swr_oracle_hooks_async"]
+        pub fn trace(
+            scenario: i32,
+            line: unsafe extern "C" fn(*mut c_void, *const u8, usize),
+            context: *mut c_void,
+        );
+    }
+}
+
 pub mod framing {
     unsafe extern "C" {
         /// Upstream `swoole_unpack`: reads the format's width from `data`.
