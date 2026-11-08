@@ -163,8 +163,8 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 and `ssl.rs`, one function per TEST (`timer.<name>`, `ssl.<name>`), run by
 `hooks-system-rust`; the `timer-native-originals` and `tls-native-originals` lanes,
 the last two that compiled core-tests files on their own, are gone. The timer cases
-call crates/timer under its upstream symbols; the fixture wraps their
-`std::function` callbacks and reads `SwooleTG.timer`. Upstream's shared-memory
+call crates/timer under its upstream symbols, with each lambda's captures as the
+node's data; the fixture reads `SwooleTG.timer`. Upstream's shared-memory
 counters become `Cell`s (the callbacks run in the case's process), and its
 `uint64_t` elapsed-time subtractions wrap as they do in C++. The ssl cases call
 `swoole_ssl_*` and `SSLContext::create` under their upstream symbols and build the

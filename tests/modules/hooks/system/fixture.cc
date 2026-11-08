@@ -136,21 +136,7 @@ void swr_case_event_defer(void (*fn)(void *), void *data) {
     swoole_event_defer(fn, data);
 }
 
-// The std::function arguments of swoole_timer_add/after/tick and TimerNode::destructor
-// (timer.rs), and SwooleTG.timer, a C++ thread_local.
-typedef void (*swr_case_timer_fn)(void *, TimerNode *);
-TimerNode *swr_case_timer_add(long ms, bool persistent, swr_case_timer_fn fn, void *data) {
-    return swoole_timer_add(ms, persistent, [fn, data](Timer *, TimerNode *tnode) { fn(data, tnode); }, nullptr);
-}
-long swr_case_timer_after(long ms, swr_case_timer_fn fn, void *data) {
-    return swoole_timer_after(ms, [fn, data](Timer *, TimerNode *tnode) { fn(data, tnode); }, nullptr);
-}
-long swr_case_timer_tick(long ms, swr_case_timer_fn fn, void *data) {
-    return swoole_timer_tick(ms, [fn, data](Timer *, TimerNode *tnode) { fn(data, tnode); }, nullptr);
-}
-void swr_case_timer_set_destructor(TimerNode *tnode, swr_case_timer_fn fn, void *data) {
-    tnode->destructor = [fn, data](TimerNode *node) { fn(data, node); };
-}
+// SwooleTG.timer, a C++ thread_local (timer.rs).
 Timer *swr_case_timer_exchange(Timer *timer) {
     Timer *previous = SwooleTG.timer;
     SwooleTG.timer = timer;

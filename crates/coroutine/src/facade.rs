@@ -32,8 +32,9 @@ type Routine = Option<unsafe extern "C-unwind" fn(*mut c_void)>;
 unsafe extern "C-unwind" {
     fn swr_cpp_coroutine_scheduler() -> *mut c_void;
     fn swr_cpp_coroutine_create(routine: Routine, arg: *mut c_void, func: Func) -> c_long;
-    fn swr_cpp_coroutine_timer_add(
+    fn swr_v1_timer_add_plain_sec(
         timeout: f64,
+        persistent: bool,
         f: unsafe extern "C-unwind" fn(*mut c_void),
         data: *mut c_void,
     ) -> *mut c_void;
@@ -125,7 +126,7 @@ unsafe extern "C-unwind" fn swr_v1_coroutine_yield_with_cancel(
 unsafe extern "C-unwind" fn yield_ex(co: *mut Coroutine, timeout: f64) -> bool {
     let timer = if timeout > 0.0 {
         // SAFETY: the timer fires only while `co` waits below, or is deleted first.
-        unsafe { swr_cpp_coroutine_timer_add(timeout, timed_out, co.cast()) }
+        unsafe { swr_v1_timer_add_plain_sec(timeout, false, timed_out, co.cast()) }
     } else {
         ptr::null_mut()
     };

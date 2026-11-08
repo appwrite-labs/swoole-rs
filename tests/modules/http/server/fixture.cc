@@ -79,13 +79,24 @@ Server *swr_case_mqtt_server(Hook on_worker_start, Closed on_connect, Closed on_
     return serv;
 }
 
+// A timer's data: what upstream's lambdas capture.
+struct Tick {
+    Server *serv;
+    bool (*tick)(Server *, SessionId);
+    SessionId session_id;
+};
+
 // swoole_timer_tick(ms): `tick(serv, session_id)` until it returns false.
 void swr_case_tick(Server *serv, long ms, bool (*tick)(Server *, SessionId), SessionId session_id) {
-    swoole_timer_tick(ms, [serv, tick, session_id](Timer *, TimerNode *tnode) {
-        if (!tick(serv, session_id)) {
+    auto on_tick = [](Timer *, TimerNode *tnode) {
+        auto *t = static_cast<Tick *>(tnode->data);
+        if (!t->tick(t->serv, t->session_id)) {
             swoole_timer_del(tnode);
         }
-    });
+    };
+    swoole_timer_add(ms, true, on_tick, new Tick{serv, tick, session_id})->destructor = [](TimerNode *tnode) {
+        delete static_cast<Tick *>(tnode->data);
+    };
 }
 
 // test_base_server's Server, created: null when set_document_root fails.
@@ -284,11 +295,14 @@ uint32_t swr_case_worker_num(Server *serv) {
 
 // The `/ws/close` handshake's timer: a policy close frame after `ms`.
 void swr_case_close_after(Server *serv, SessionId session_id, long ms) {
-    swoole_timer_after(ms, [serv, session_id](Timer *, TimerNode *) {
+    auto on_timeout = [](Timer *, TimerNode *tnode) {
+        auto *t = static_cast<Tick *>(tnode->data);
         sw_tg_buffer()->clear();
         websocket::pack_close_frame(sw_tg_buffer(), websocket::CLOSE_POLICY_ERROR, SW_STRL("swoole close"), 0);
-        serv->send(session_id, sw_tg_buffer()->str, sw_tg_buffer()->length);
-    });
+        t->serv->send(t->session_id, sw_tg_buffer()->str, sw_tg_buffer()->length);
+        delete t;
+    };
+    swoole_timer_after(ms, on_timeout, new Tick{serv, nullptr, session_id});
 }
 
 // The primary port's TLS settings.

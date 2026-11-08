@@ -136,9 +136,4 @@ swr_v1_coroutine_scheduler *swr_cpp_coroutine_scheduler() {
 long swr_cpp_coroutine_create(void (*routine)(void *), void *arg, const CoroutineFunc *fn) {
     return fn ? swoole::Coroutine::create(*fn, arg) : swoole::Coroutine::create(routine, arg);
 }
-
-void *swr_cpp_coroutine_timer_add(double timeout, void (*fn)(void *), void *data) {
-    return swoole_timer_add(
-        timeout, false, [fn](swoole::Timer *, swoole::TimerNode *tnode) { fn(tnode->data); }, data);
-}
 }

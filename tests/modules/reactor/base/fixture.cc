@@ -224,9 +224,6 @@ void swr_case_signal_set(int signo, void (*handler)(int), int restart, int mask)
 void swr_case_signal_block_all() {
     swoole_signal_block_all();
 }
-long swr_case_timer_after(long ms, Plain fn, void *data) {
-    return swoole_timer_after(ms, [fn, data](Timer *, TimerNode *) { fn(data); });
-}
 size_t swr_case_random_bytes(char *buf, size_t size) {
     return swoole_random_bytes(buf, size);
 }

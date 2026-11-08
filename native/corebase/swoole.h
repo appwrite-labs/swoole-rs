@@ -146,7 +146,7 @@ struct EventData;
 struct DataHead;
 typedef int (*ReactorHandler)(Reactor *reactor, Event *event);
 typedef std::function<void(void *)> Callback;
-typedef std::function<void(Timer *, TimerNode *)> TimerCallback;
+typedef void (*TimerCallback)(Timer *, TimerNode *);
 }  // namespace swoole
 
 /*----------------------------------String-------------------------------------*/

@@ -1,22 +1,41 @@
 // Runs against the shipped Rust-owned timer; PHP supplies native runtime dependencies.
 #include "swoole_timer.h"
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 #include <sys/wait.h>
 #include <unistd.h>
+
+// A node's closures, its data; the node's callback and destructor call them.
+struct Hooks {
+    std::function<void(swoole::Timer *, swoole::TimerNode *)> call;
+    std::function<void(swoole::TimerNode *)> destructor;
+};
+static Hooks &hooks(swoole::TimerNode *node) {
+    return *static_cast<Hooks *>(node->data);
+}
+static void call(swoole::Timer *timer, swoole::TimerNode *node) {
+    hooks(node).call(timer, node);
+}
+static void destruct(swoole::TimerNode *node) {
+    std::unique_ptr<Hooks> owned(&hooks(node));
+    owned->destructor(node);
+}
 
 extern "C" int swr_timer_probe(const char *name) {
     try {
         std::string scenario(name), events;
         unsigned destructors = 0;
         auto *timer = swr_v1_timer_owner_new(true); // Manual mode: no signals/reactor registrations.
-        auto add = [&](char label, bool repeat, const swoole::TimerCallback &callback) {
-            auto *node = timer->add(1000, repeat, nullptr, callback);
+        auto add = [&](char label, bool repeat, std::function<void(swoole::Timer *, swoole::TimerNode *)> callback) {
+            auto *node = timer->add(1000, repeat, new Hooks{std::move(callback), nullptr}, call);
             if (!node) throw std::runtime_error("add failed");
             node->exec_msec = 0;
             timer->update(node); // Existing public deadline mutation hook, no clock replacement.
-            node->destructor = [&, label](swoole::TimerNode *) { ++destructors; events += char(label + ('a' - 'A')); };
+            node->destructor = destruct;
+            hooks(node).destructor = [&, label](swoole::TimerNode *) { ++destructors; events += char(label + ('a' - 'A')); };
             return node;
         };
         auto record = [&](char label) { return [&, label](swoole::Timer *, swoole::TimerNode *) { events += label; }; };
@@ -54,34 +73,6 @@ extern "C" int swr_timer_probe(const char *name) {
                       << "\",\"destructors\":" << destructors << "}\n";
             return 0;
         }
-        if (scenario == "callback-throws" || scenario == "destructor-throws" ||
-            scenario == "callback-destructor-throw") {
-            auto *a = add('A', false, [&](swoole::Timer *, swoole::TimerNode *) {
-                events += 'A';
-                if (scenario != "destructor-throws") throw std::runtime_error("callback");
-            });
-            if (scenario != "callback-throws") {
-                a->destructor = [&](swoole::TimerNode *) {
-                    ++destructors;
-                    events += 'a';
-                    throw std::runtime_error("destructor");
-                };
-            }
-            const auto surviving_id = add('B', false, record('B'))->id;
-            timer->select(); // Creation-round barrier.
-            std::string failure;
-            try { timer->select(); }
-            catch (const std::runtime_error &error) { failure = error.what(); }
-            const bool survivor_intact = timer->count() == 1 && timer->get(surviving_id);
-            timer->select(); // Failure must have ended selection and released A once.
-            const auto remaining = timer->count();
-            swr_v1_timer_owner_free(timer);
-            std::cout << "{\"scenario\":\"" << scenario << "\",\"failure\":\"" << failure
-                      << "\",\"survivor_intact\":" << (survivor_intact ? "true" : "false")
-                      << ",\"remaining\":" << remaining << ",\"events\":\"" << events
-                      << "\",\"destructors\":" << destructors << "}\n";
-            return 0;
-        }
         if (scenario == "equal-deadlines") {
             add('A', false, record('A'));
             add('B', false, record('B'));
@@ -101,7 +92,7 @@ extern "C" int swr_timer_probe(const char *name) {
             other = add('B', false, record('B'));
             add('C', false, record('C'));
             if (scenario == "destructor-remove-other") {
-                a->destructor = [&](swoole::TimerNode *) { ++destructors; events += 'a'; timer->remove(other); };
+                hooks(a).destructor = [&](swoole::TimerNode *) { ++destructors; events += 'a'; timer->remove(other); };
             }
         } else if (scenario == "delay-active-once" || scenario == "update-active-repeat") {
             auto *a = add('A', repeat, [&](swoole::Timer *t, swoole::TimerNode *n) {
@@ -114,7 +105,7 @@ extern "C" int swr_timer_probe(const char *name) {
             b_id = add('B', false, record('B'))->id;
         } else if (scenario == "destructor-add") {
             auto *a = add('A', false, record('A'));
-            a->destructor = [&](swoole::TimerNode *) { ++destructors; events += 'a'; add('C', false, record('C')); };
+            hooks(a).destructor = [&](swoole::TimerNode *) { ++destructors; events += 'a'; add('C', false, record('C')); };
             add('B', false, record('B'));
         } else if (scenario == "nested-select-once") {
             add('A', false, [&](swoole::Timer *t, swoole::TimerNode *) {

@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/timer.cc (Swoole contributors).
 //! `swoole::Timer` (upstream `src/core/timer.cc`, which the timer patch deletes): a
-//! Rust-owned record over this crate's queue. `native/timer/swoole_timer.h` is its
-//! C++ view; `native/timer/timer.cc` runs what only C++ can: a `TimerNode`'s
-//! `std::function` callback and destructor, C++ exceptions, and the reactor's
-//! `std::function` hooks.
+//! Rust-owned record over this crate's queue, and its nodes.
+//! `native/timer/swoole_timer.h` is its C++ view.
 use crate::{
     BUSY, CLOSING, DEFERRED, EMPTY, OK, RELEASE, RELEASE_OVERFLOW, Timer as Queue, TimerStats,
     TimerView, absolute_msec, swr_v1_timer_backend, swr_v1_timer_begin, swr_v1_timer_close,
@@ -16,6 +14,8 @@ use crate::{
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
+use swoole_rs_reactor::reactor_upstream::prepared;
+use swoole_rs_reactor::swr_v1_reactor_deferred_push;
 
 /// `SW_LOG_WARNING` and `SW_ERROR_INVALID_PARAMS`.
 const LOG_WARNING: c_int = 4;
@@ -23,9 +23,21 @@ const INVALID_PARAMS: c_int = 505;
 /// `swr_v1_timer_backend`'s modes.
 const MANUAL: u32 = 0;
 const REACTOR: u32 = 1;
+/// `Reactor::PRIORITY_TIMER` and `Reactor::EXIT_CONDITION_TIMER`.
+const PRIORITY_TIMER: c_int = 0;
+const EXIT_CONDITION_TIMER: c_int = 0;
 
-/// `swoole::TimerNode`'s leading members; the rest (`callback`, `data`,
-/// `destructor`) are C++'s. `native/timer/swoole_timer.h` asserts the offsets.
+/// `swoole::TimerCallback`: `void (*)(Timer *, TimerNode *)`.
+pub(crate) type Callback = unsafe extern "C-unwind" fn(timer: *mut c_void, node: *mut TimerNode);
+/// `swoole::TimerDestructor`: `void (*)(TimerNode *)`.
+type Destructor = unsafe extern "C-unwind" fn(node: *mut TimerNode);
+/// A callback of the node's data alone, for `swr_v1_timer_add_plain`'s callers.
+pub(crate) type Plain = unsafe extern "C-unwind" fn(data: *mut c_void);
+/// `abandon_selection`'s pending Zend bailout.
+type Bailout = unsafe extern "C-unwind" fn();
+
+/// `swoole::TimerNode`; `native/timer/swoole_timer.h` asserts the offsets. Only
+/// `TimerNode::new` makes one, so `plain` can trail what C++ sees.
 #[repr(C)]
 pub(crate) struct TimerNode {
     pub(crate) id: c_long,
@@ -35,25 +47,54 @@ pub(crate) struct TimerNode {
     exec_count: u64,
     round: u64,
     pub(crate) removed: bool,
+    callback: Option<Callback>,
+    data: *mut c_void,
+    destructor: Option<Destructor>,
+    plain: Option<Plain>,
 }
 
-/// A `std::exception_ptr` native/timer/timer.cc caught, or null.
-type Failure = *mut c_void;
-/// `abandon_selection`'s pending Zend bailout.
-type Bailout = unsafe extern "C-unwind" fn();
+impl TimerNode {
+    pub(crate) fn new(callback: Option<Callback>, data: *mut c_void) -> Self {
+        Self {
+            id: 0,
+            kind: 0,
+            exec_msec: 0,
+            interval: 0,
+            exec_count: 0,
+            round: 0,
+            removed: false,
+            callback,
+            data,
+            destructor: None,
+            plain: None,
+        }
+    }
 
-// SAFETY: native/timer/timer.cc's, and Swoole's signal API.
-#[expect(
-    improper_ctypes,
-    reason = "Owner is opaque to C++, which only passes its address back"
-)]
+    /// A node whose callback is `plain(data)`.
+    pub(crate) fn plain(plain: Plain, data: *mut c_void) -> Self {
+        let mut node = Self::new(Some(call_plain), data);
+        node.plain = Some(plain);
+        node
+    }
+}
+
+/// A `TimerNode::plain` node's callback.
+unsafe extern "C-unwind" fn call_plain(_timer: *mut c_void, node: *mut TimerNode) {
+    // SAFETY: the running node.
+    let node = unsafe { &*node };
+    if let Some(plain) = node.plain {
+        // SAFETY: the caller's function of its data.
+        unsafe { plain(node.data) };
+    }
+}
+
+// SAFETY: native/reactor/reactor.cc's and Swoole's signal API.
 unsafe extern "C-unwind" {
-    fn swr_cpp_timer_node_new(data: *mut c_void, callback: *const c_void) -> *mut TimerNode;
-    fn swr_cpp_timer_node_call(timer: *const Owner, node: *mut TimerNode) -> Failure;
-    fn swr_cpp_timer_node_release(node: *mut TimerNode) -> Failure;
-    fn swr_cpp_timer_forget(failure: Failure);
-    fn swr_cpp_timer_reactor_timeout(reactor: *mut c_void, msec: i64);
-    fn swr_cpp_timer_attach(reactor: *mut c_void, timer: *const Owner);
+    fn swr_v1_event_set_end_callback(id: c_int, callback: extern "C-unwind" fn());
+    fn swr_v1_event_set_exit_condition(
+        id: c_int,
+        condition: unsafe extern "C-unwind" fn(*mut usize) -> bool,
+    );
     #[link_name = "_Z17swoole_signal_setiPFviEb"]
     fn swoole_signal_set(signo: c_int, handler: extern "C" fn(c_int), safety: bool) -> usize;
 }
@@ -88,15 +129,6 @@ fn apply(view: &TimerView) -> *mut TimerNode {
     node
 }
 
-/// A C++ exception for a caller with no C++ frame to rethrow it in: a C++
-/// exception can't unwind through Rust frames (`panic = "abort"`), so it aborts,
-/// as an uncaught exception would. The C++ view rethrows instead.
-pub(crate) fn uncaught(failure: Failure) {
-    if !failure.is_null() {
-        std::process::abort();
-    }
-}
-
 /// `swoole::Timer`. Callbacks re-enter it, so every mutable field is a `Cell`.
 #[repr(C)]
 pub(crate) struct Owner {
@@ -127,7 +159,7 @@ impl Owner {
             base_time: absolute_msec(),
             next_msec: Cell::new(-1),
         }));
-        // SAFETY: just allocated; the reactor hooks keep its address, which never moves.
+        // SAFETY: just allocated.
         unsafe { &*timer }.init(manually_trigger);
         timer
     }
@@ -144,6 +176,13 @@ impl Owner {
         self.queue
     }
 
+    pub(crate) fn count(&self) -> usize {
+        let mut stats = TimerStats::default();
+        // SAFETY: the live queue and writable stats.
+        check(unsafe { swr_v1_timer_stats_get(self.queue, &raw mut stats) });
+        stats.count
+    }
+
     /// Picks the manual, reactor or system backend. Another backend keeps a
     /// previous reactor, as upstream's `reactor_` did.
     fn init(&self, manually_trigger: bool) {
@@ -153,9 +192,7 @@ impl Owner {
         self.backend.set(backend);
         if backend == REACTOR {
             self.reactor.set(reactor);
-            // SAFETY: the thread's live reactor; the timer outlives its hooks (the
-            // reactor's destroy callback frees it).
-            unsafe { swr_cpp_timer_attach(reactor, self) };
+            attach(reactor);
         } else if backend != MANUAL {
             // SAFETY: a plain signal handler.
             unsafe { swoole_signal_set(libc::SIGALRM, alarm, false) };
@@ -166,8 +203,17 @@ impl Owner {
     fn set(&self, msec: i64) {
         match self.backend.get() {
             MANUAL => {}
-            // SAFETY: the reactor the backend attached to.
-            REACTOR => unsafe { swr_cpp_timer_reactor_timeout(self.reactor.get(), msec) },
+            REACTOR => {
+                // SAFETY: the live reactor the backend attached to.
+                let fields = unsafe { prepared(self.reactor.get()) }.fields;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "Reactor::timeout_msec is an int"
+                )]
+                let msec = msec as i32;
+                // SAFETY: its live fields.
+                unsafe { (*fields).timeout_msec = msec };
+            }
             _ => {
                 swr_v1_timer_system_set(msec);
             }
@@ -181,32 +227,28 @@ impl Owner {
     }
 
     /// Runs a detached node's destructor and deletes it, then raises a pending
-    /// bailout. Returns the destructor's exception instead.
-    fn release(&self, node: *mut TimerNode) -> Failure {
+    /// bailout. The destructor may longjmp over these frames, which hold
+    /// nothing to drop.
+    fn release(&self, node: *mut TimerNode) {
         // SAFETY: a node whose custody Rust just returned.
-        let failure = unsafe { swr_cpp_timer_node_release(node) };
-        if failure.is_null()
-            && let Some(bailout) = self.pending_bailout.take()
-        {
+        if let Some(destructor) = unsafe { (*node).destructor } {
+            // SAFETY: the node's own destructor.
+            unsafe { destructor(node) };
+        }
+        // SAFETY: `add` boxed it; the queue no longer holds it.
+        drop(unsafe { Box::from_raw(node) });
+        if let Some(bailout) = self.pending_bailout.take() {
             // SAFETY: abandon_selection's bailout; it longjmps over plain frames.
             unsafe { bailout() };
         }
-        failure
     }
 
-    pub(crate) fn add(
-        &self,
-        msec: c_long,
-        persistent: bool,
-        data: *mut c_void,
-        callback: *const c_void,
-    ) -> *mut TimerNode {
+    pub(crate) fn add(&self, msec: c_long, persistent: bool, node: TimerNode) -> *mut TimerNode {
         if msec <= 0 {
             warning(c"add", format_args!("msec value[{msec}] is invalid"));
             return std::ptr::null_mut();
         }
-        // SAFETY: `callback` is a live TimerCallback, as the caller promises.
-        let node = unsafe { swr_cpp_timer_node_new(data, callback) };
+        let node = Box::into_raw(Box::new(node));
         let mut view = TimerView::default();
         // SAFETY: the live queue, a fresh token and a writable view.
         let status = unsafe {
@@ -224,8 +266,8 @@ impl Owner {
                 c"add",
                 format_args!("Rust timer add failed: status={status}"),
             );
-            // SAFETY: the node was never handed to the queue; it has no destructor.
-            uncaught(unsafe { swr_cpp_timer_node_release(node) });
+            // SAFETY: the node was never handed to the queue.
+            drop(unsafe { Box::from_raw(node) });
             return std::ptr::null_mut();
         }
         let node = apply(&view);
@@ -237,17 +279,20 @@ impl Owner {
         node
     }
 
-    /// Whether `id` was removed, and its destructor's exception, if it threw.
-    pub(crate) fn remove(&self, id: c_long) -> (bool, Failure) {
+    /// Whether `id` was removed.
+    pub(crate) fn remove(&self, id: c_long) -> bool {
         let mut view = TimerView::default();
         // SAFETY: the live queue and a writable view.
         match unsafe { swr_v1_timer_remove(self.queue, id, &raw mut view) } {
             DEFERRED => {
                 apply(&view);
-                (true, std::ptr::null_mut())
+                true
             }
-            RELEASE => (true, self.release(apply(&view))),
-            _ => (false, std::ptr::null_mut()),
+            RELEASE => {
+                self.release(apply(&view));
+                true
+            }
+            _ => false,
         }
     }
 
@@ -285,8 +330,8 @@ impl Owner {
         }
     }
 
-    /// Completes the active node; a released one's destructor exception, if any.
-    fn complete(&self, id: i64) -> Failure {
+    /// Completes the active node.
+    fn complete(&self, id: i64) {
         let mut view = TimerView::default();
         // SAFETY: the live queue and a writable view.
         let status = unsafe { swr_v1_timer_complete(self.queue, id, &raw mut view) };
@@ -295,15 +340,13 @@ impl Owner {
                 apply(&view);
             }
             RELEASE | RELEASE_OVERFLOW => {
-                let failure = self.release(apply(&view));
-                if failure.is_null() && status == RELEASE_OVERFLOW {
+                self.release(apply(&view));
+                if status == RELEASE_OVERFLOW {
                     warning(c"select", format_args!("Rust timer repeat limit exceeded"));
                 }
-                return failure;
             }
             _ => check(status),
         }
-        std::ptr::null_mut()
     }
 
     /// Ends the selection and arms the next wakeup; false if Rust refused.
@@ -318,32 +361,14 @@ impl Owner {
         true
     }
 
-    /// A callback or destructor threw: detach the active node, end the
-    /// selection, and return the first exception.
-    fn fail(&self, primary: Failure) -> Failure {
-        let mut stats = TimerStats::default();
-        // SAFETY: the live queue and writable stats.
-        if unsafe { swr_v1_timer_stats_get(self.queue, &raw mut stats) } == OK
-            && stats.active_id != 0
-        {
-            let secondary = self.complete(stats.active_id);
-            if !secondary.is_null() {
-                // SAFETY: a caught exception, dropped once.
-                unsafe { swr_cpp_timer_forget(secondary) };
-            }
-        }
-        self.end();
-        primary
-    }
-
-    /// Runs every due node; the first callback or destructor exception ends the
-    /// selection and comes back. A Zend bailout longjmps out of a callback over
-    /// these frames, which hold nothing to drop.
-    pub(crate) fn select(&self) -> Failure {
+    /// Runs every due node. A Zend bailout longjmps out of a callback over these
+    /// frames, which hold nothing to drop; a C++ exception aborts at the first
+    /// Rust frame (`panic = "abort"`), as an uncaught one would.
+    pub(crate) fn select(&self) {
         // SAFETY: the live queue.
         let begin = unsafe { swr_v1_timer_begin(self.queue, self.relative_msec()) };
         if begin == BUSY || begin == CLOSING {
-            return std::ptr::null_mut();
+            return;
         }
         check(begin);
         loop {
@@ -356,22 +381,24 @@ impl Owner {
             check(status);
             let node = apply(&view);
             // SAFETY: the node the queue just selected.
-            if !unsafe { (*node).removed } {
-                // SAFETY: as above.
-                let failure = unsafe { swr_cpp_timer_node_call(self, node) };
-                if !failure.is_null() {
-                    return self.fail(failure);
-                }
+            let node_ref = unsafe { &*node };
+            if !node_ref.removed
+                && let Some(callback) = node_ref.callback
+            {
+                // SAFETY: the node's own callback, of this timer and the node.
+                unsafe { callback(std::ptr::from_ref(self).cast_mut().cast(), node) };
             }
-            let failure = self.complete(view.id);
-            if !failure.is_null() {
-                return self.fail(failure);
-            }
+            self.complete(view.id);
         }
         if !self.end() {
             check(CLOSING);
         }
-        std::ptr::null_mut()
+    }
+
+    /// Only after a caught Zend bailout whose selection will never resume.
+    pub(crate) fn abandon(&self, bailout: Option<Bailout>) {
+        self.abandoned.set(true);
+        self.pending_bailout.set(bailout);
     }
 
     /// `~Timer`: releases every node, then the queue. A forked child or terminal
@@ -401,8 +428,8 @@ impl Owner {
                 // SAFETY: the live queue and a writable delay.
                 check(unsafe { swr_v1_timer_end(self.queue, &raw mut delay) });
             }
-            if stats.active_id != 0 && !self.release(apply(&view)).is_null() {
-                std::process::abort();
+            if stats.active_id != 0 {
+                self.release(apply(&view));
             }
         }
         let status = loop {
@@ -411,15 +438,50 @@ impl Owner {
             if status != RELEASE {
                 break status;
             }
-            if !self.release(apply(&view)).is_null() {
-                std::process::abort();
-            }
+            self.release(apply(&view));
         };
         // SAFETY: the drained queue, released once.
         if status != EMPTY || unsafe { swr_v1_timer_release(self.queue) } != OK {
             std::process::abort();
         }
     }
+}
+
+/// Hooks this thread's timer to `reactor`, the thread's: select after each loop
+/// round, keep the loop while a timer is pending, and free the timer with it.
+fn attach(reactor: *mut c_void) {
+    // SAFETY: the thread's live reactor.
+    unsafe { swr_v1_event_set_end_callback(PRIORITY_TIMER, crate::wrapper::swoole_timer_select) };
+    // SAFETY: as above.
+    unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_TIMER, idle) };
+    // SAFETY: as above.
+    let fields = unsafe { prepared(reactor) }.fields;
+    // SAFETY: its live fields.
+    let queue = unsafe { &raw mut (*fields).destroy_callbacks };
+    // SAFETY: the live destroy queue; `destroyed` takes the reactor back.
+    if unsafe { swr_v1_reactor_deferred_push(queue, destroyed, reactor, None) } != 0 {
+        std::process::abort();
+    }
+}
+
+/// The exit condition: no timer is pending.
+extern "C-unwind" fn idle(_event_num: *mut usize) -> bool {
+    crate::wrapper::current().is_none_or(|timer| timer.count() == 0)
+}
+
+/// The reactor's destroy callback: frees this thread's timer, closing a
+/// selection a bailout left.
+unsafe extern "C-unwind" fn destroyed(reactor: *mut c_void) {
+    let Some(timer) = crate::wrapper::current() else {
+        return;
+    };
+    // SAFETY: the reactor being destroyed, which `attach` registered.
+    let fields = unsafe { prepared(reactor) }.fields;
+    // SAFETY: its live fields.
+    if unsafe { (*fields).bailout } {
+        timer.abandon(None);
+    }
+    crate::wrapper::swoole_timer_free();
 }
 
 /// The record behind `timer`.
@@ -482,35 +544,27 @@ unsafe extern "C-unwind" fn swr_v1_timer_owner_reinit(timer: *mut Owner, manuall
 /// `Timer::add`: the new node, or null with a warning.
 ///
 /// # Safety
-/// `timer` is live and `callback` is a live `TimerCallback`.
+/// `timer` is live.
 #[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn swr_v1_timer_owner_add(
     timer: *mut Owner,
     msec: c_long,
     persistent: bool,
     data: *mut c_void,
-    callback: *const c_void,
+    callback: Option<Callback>,
 ) -> *mut TimerNode {
     // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.add(msec, persistent, data, callback)
+    unsafe { owner(timer) }.add(msec, persistent, TimerNode::new(callback, data))
 }
 
-/// `Timer::remove(id)`; `*failure` is the destructor's exception, for the C++
-/// view to rethrow.
+/// `Timer::remove(id)`.
 ///
 /// # Safety
-/// `timer` is live and `failure` writable.
+/// `timer` is live.
 #[unsafe(no_mangle)]
-unsafe extern "C-unwind" fn swr_v1_timer_owner_remove(
-    timer: *mut Owner,
-    id: c_long,
-    failure: *mut *mut c_void,
-) -> bool {
+unsafe extern "C-unwind" fn swr_v1_timer_owner_remove(timer: *mut Owner, id: c_long) -> bool {
     // SAFETY: as the caller promises.
-    let (removed, caught) = unsafe { owner(timer) }.remove(id);
-    // SAFETY: as the caller promises.
-    unsafe { failure.write(caught) };
-    removed
+    unsafe { owner(timer) }.remove(id)
 }
 
 /// `Timer::update(node)`.
@@ -543,14 +597,14 @@ unsafe extern "C" fn swr_v1_timer_owner_delay(
     }
 }
 
-/// `Timer::select()`: the exception for the C++ view to rethrow, or null.
+/// `Timer::select()`.
 ///
 /// # Safety
 /// `timer` is live.
 #[unsafe(no_mangle)]
-unsafe extern "C-unwind" fn swr_v1_timer_owner_select(timer: *mut Owner) -> *mut c_void {
+unsafe extern "C-unwind" fn swr_v1_timer_owner_select(timer: *mut Owner) {
     // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.select()
+    unsafe { owner(timer) }.select();
 }
 
 /// `Timer::abandon_selection(bailout)`: only after a caught Zend bailout whose
@@ -561,7 +615,5 @@ unsafe extern "C-unwind" fn swr_v1_timer_owner_select(timer: *mut Owner) -> *mut
 #[unsafe(no_mangle)]
 unsafe extern "C" fn swr_v1_timer_owner_abandon(timer: *mut Owner, bailout: Option<Bailout>) {
     // SAFETY: as the caller promises.
-    let timer = unsafe { owner(timer) };
-    timer.abandoned.set(true);
-    timer.pending_bailout.set(bailout);
+    unsafe { owner(timer) }.abandon(bailout);
 }
