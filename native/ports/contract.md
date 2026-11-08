@@ -63,21 +63,31 @@ Rust-owned settings and socket record. Options are those the platform defines:
 `TCP_USER_TIMEOUT` on Linux, `TCP_FASTOPEN` and `SO_KEEPALIVE` on both supported
 hosts (`SO_ACCEPTFILTER` is BSD-only). `host` is a Rust string slot in the
 settings, which native code reads and writes through a `RustStringView`.
-`create_socket` asks native code (the third runner `swr_v1_ports_set_native`
-registers) for the two facts it does not own: the server's `enable_reuse_port`
-(Linux) and `is_dtls()` (kqueue hosts), each at its original point. On failure
-the port keeps pointing at the freed socket, as upstream's does. Known: on macOS, querying `SO_ACCEPTCONN` before listen
-returns `ENOPROTOOPT` for both native and Rust; import of an already-listening
-descriptor is untested.
+`create_socket` reads the server's `enable_reuse_port` (Linux) and `is_dtls()`
+(kqueue hosts). On failure the port keeps pointing at the freed socket, as
+upstream's does. Known: on macOS, querying `SO_ACCEPTCONN` returns `ENOPROTOOPT`
+for both native and Rust, so `import` refuses every descriptor there.
+
+## TLS, SNI, import and close
+
+`crates/ports/src/lifecycle.rs` decides each step of `ssl_context_init`,
+`ssl_context_create`, `ssl_init`, `ssl_create`, `ssl_add_sni_cert`, the SNI
+callback, `import` and `close`; `lifecycle_native.rs` performs them, over the
+port's Rust-owned settings, its contexts' Rust TLS owners, the socket record and
+OpenSSL. The port's `ssl_context` is a `PortConfig` field; the `std::shared_ptr`
+holders of it and of the SNI contexts, and the DTLS sessions by fd, live in the
+Rust TLS state (`PortConfig::tls`), which `~PortFields` releases.
+`native/ports/tls.cc` only constructs and destroys holders and sessions. SNI
+contexts are matched in insertion order; upstream iterated an
+`std::unordered_map`, whose order is unspecified.
 
 ## `Port::set`
 
 `Swoole\Server\Port::set()` is Rust (`crates/phpserver/src/port_settings.rs`): every
 option's lookup, conversion, bound and order, written into the Rust-owned
 `PortConfig` and, on an SSL port, the context's Rust TLS owner. An over-long
-`package_eof` is rejected rather than copied. Native code keeps the SNI contexts
-(`dup_ssl_context`, `ssl_add_sni_cert`) and `ssl_init`, which `set()` reaches through
-the port host table (`swoole_rs_phpserver.h`).
+`package_eof` is rejected rather than copied. `set()` reaches `dup_ssl_context`,
+`ssl_add_sni_cert` and `ssl_init` through the port host table (`swoole_rs_phpserver.h`).
 
 ## Class properties: `swr_v1_ports_class_property(index)`
 
@@ -88,7 +98,6 @@ connections. Native MINIT calls the Zend declaration APIs after each return.
 
 ## Not converted
 
-Native defaults beyond the explicit constructor body, SSL/import/close custody,
-container storage, object lifecycle, callback property update/cache publication,
+Native defaults beyond the explicit constructor body, object lifecycle, callback property update/cache publication,
 and allocation-failure behavior remain native. Full Server behavior, ZTS, optional
 platforms and performance are untested.

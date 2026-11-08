@@ -100,7 +100,7 @@ fn open(peer: &Peer) -> io::Result<OwnedFd> {
                 return Err(io::ErrorKind::InvalidInput.into());
             }
             for (to, from) in address.sun_path.iter_mut().zip(path.iter()) {
-                *to = from.cast_signed();
+                *to = libc::c_char::from_ne_bytes([*from]);
             }
             connect(libc::AF_UNIX, &address)
         }

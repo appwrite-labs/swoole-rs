@@ -1,12 +1,11 @@
 //! The `ListenPort` methods of `src/server/port.cc` that were one lifecycle run
 //! or one readable callback, defined under their upstream (Itanium) symbols when
-//! the hybrid links this crate (`upstream-symbols`). master.cc registers its
-//! lifecycle runner once and each method calls it as its C++ forward did; the
-//! readable callbacks run in Rust ([`crate::read_native`]).
+//! the hybrid links this crate (`upstream-symbols`). Lifecycle runs answer their
+//! effects in [`crate::lifecycle_native`], the readable callbacks in
+//! [`crate::read_native`].
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
-use std::sync::OnceLock;
 
 use swoole_rs_clients::address::{
     swr_v1_clients_address_assign, swr_v1_clients_address_port, swr_v1_clients_address_type,
@@ -20,12 +19,12 @@ use swoole_rs_reactor::{
     swr_v1_socket_listen,
 };
 #[cfg(not(test))]
-use swoole_rs_tls::upstream::socket_free;
+pub(crate) use swoole_rs_tls::upstream::socket_free;
 
 /// `Socket::free()` for a socket no loop, timer or buffer has seen: tests link no
 /// C++, which `socket_free` reaches under `upstream-symbols`.
 #[cfg(test)]
-unsafe fn socket_free(socket: *mut SocketRecord) {
+pub(crate) unsafe fn socket_free(socket: *mut SocketRecord) {
     // SAFETY: the caller's live record.
     let fd = unsafe { (*socket).fd };
     // SAFETY: close(2) has no memory preconditions.
@@ -35,8 +34,8 @@ unsafe fn socket_free(socket: *mut SocketRecord) {
 }
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
-const FD_STREAM_SERVER: c_int = 1;
-const FD_DGRAM_SERVER: c_int = 2;
+pub(crate) const FD_STREAM_SERVER: c_int = 1;
+pub(crate) const FD_DGRAM_SERVER: c_int = 2;
 /// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
 const SOCK_NONBLOCK: c_int = 1 << 2;
 const SOCK_CLOEXEC: c_int = 1 << 3;
@@ -50,66 +49,18 @@ use crate::lifecycle::{
     RUN_CLOSE, RUN_CONTEXT_CREATE, RUN_CONTEXT_INIT, RUN_IMPORT, RUN_SNI, RUN_SSL_CREATE,
     RUN_SSL_INIT,
 };
+use crate::lifecycle_native::{Run, is_dtls};
 use crate::read::{ON_READ_EOF, ON_READ_HTTP, ON_READ_LENGTH, ON_READ_RAW, ON_READ_REDIS};
 
-/// port.cc's lifecycle runner: kind, port, target context, socket, SSL, and the
-/// fd or `allow_empty_cert`.
-pub type NativeRun = unsafe extern "C-unwind" fn(
-    u32,
-    *mut c_void,
-    *mut c_void,
-    *mut c_void,
-    *mut c_void,
-    c_int,
-) -> i32;
-/// A port fact native code owns: [`FACT_REUSE_PORT`] or [`FACT_DTLS`].
-pub type NativeFact = unsafe extern "C-unwind" fn(*mut c_void, u32) -> bool;
-
-/// The port's server's `enable_reuse_port`.
-pub const FACT_REUSE_PORT: u32 = 0;
-/// `ListenPort::is_dtls()`.
-pub const FACT_DTLS: u32 = 1;
-
-static NATIVE: OnceLock<(NativeRun, NativeFact)> = OnceLock::new();
-
-/// Registers port.cc's runners, which the methods below call.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ports_set_native(run: NativeRun, fact: NativeFact) {
-    // A second registration is the same pair; keeping the first is equivalent.
-    NATIVE.get_or_init(|| (run, fact));
-}
-
-fn native() -> (NativeRun, NativeFact) {
-    match NATIVE.get() {
-        Some(native) => *native,
-        // port.cc registers before any ListenPort exists.
-        None => std::process::abort(),
-    }
-}
-
-/// A native fact of `port`.
+/// One lifecycle `kind` over `port`.
 ///
 /// # Safety
-/// `port` is a live `ListenPort`.
-unsafe fn fact(port: *mut c_void, which: u32) -> bool {
+/// `port` is a live `ListenPort`; `build` sets what `kind` reads.
+unsafe fn run(kind: u32, port: *mut c_void, build: impl FnOnce(&mut Run)) -> i32 {
+    let mut run = Run::new(port);
+    build(&mut run);
     // SAFETY: as the caller guarantees.
-    unsafe { (native().1)(port, which) }
-}
-
-/// One lifecycle `kind` through port.cc's runner.
-///
-/// # Safety
-/// `port` is null only for `RUN_SNI`, else a live `ListenPort`; the rest are what `kind` reads.
-unsafe fn run(
-    kind: u32,
-    port: *mut c_void,
-    target: *mut c_void,
-    sock: *mut c_void,
-    ssl: *mut c_void,
-    number: c_int,
-) -> i32 {
-    // SAFETY: as the caller guarantees.
-    unsafe { (native().0)(kind, port, target, sock, ssl, number) }
+    unsafe { run.run(kind) }
 }
 
 /// `ListenPort::ssl_context_init()`.
@@ -121,9 +72,8 @@ unsafe fn run(
     unsafe(export_name = "_ZN6swoole10ListenPort16ssl_context_initEv")
 )]
 pub unsafe extern "C" fn ssl_context_init(port: *mut c_void) -> bool {
-    let null = ptr::null_mut();
     // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_CONTEXT_INIT, port, null, null, null, 0) != 0 }
+    unsafe { run(RUN_CONTEXT_INIT, port, |_| {}) != 0 }
 }
 
 /// `ListenPort::ssl_create(sock)`.
@@ -134,10 +84,9 @@ pub unsafe extern "C" fn ssl_context_init(port: *mut c_void) -> bool {
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole10ListenPort10ssl_createEPNS_7network6SocketE")
 )]
-pub unsafe extern "C" fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool {
-    let null = ptr::null_mut();
+pub unsafe extern "C" fn ssl_create(port: *mut c_void, sock: *mut SocketRecord) -> bool {
     // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_SSL_CREATE, port, null, sock, null, 0) != 0 }
+    unsafe { run(RUN_SSL_CREATE, port, |run| run.sock = sock) != 0 }
 }
 
 /// `ListenPort::ssl_context_create(context, allow_empty_cert)`.
@@ -153,19 +102,12 @@ pub unsafe extern "C" fn ssl_context_create(
     context: *mut c_void,
     allow_empty_cert: bool,
 ) -> bool {
-    let null = ptr::null_mut();
-    let allow = c_int::from(allow_empty_cert);
+    let build = |run: &mut Run| {
+        run.target = context;
+        run.allow_empty_cert = allow_empty_cert;
+    };
     // SAFETY: as the caller guarantees.
-    unsafe {
-        run(
-            RUN_CONTEXT_CREATE,
-            port.cast_mut(),
-            context,
-            null,
-            null,
-            allow,
-        ) != 0
-    }
+    unsafe { run(RUN_CONTEXT_CREATE, port.cast_mut(), build) != 0 }
 }
 
 /// `ListenPort::import(fd)`.
@@ -177,9 +119,8 @@ pub unsafe extern "C" fn ssl_context_create(
     unsafe(export_name = "_ZN6swoole10ListenPort6importEi")
 )]
 pub unsafe extern "C" fn import(port: *mut c_void, fd: c_int) -> bool {
-    let null = ptr::null_mut();
     // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_IMPORT, port, null, null, null, fd) != 0 }
+    unsafe { run(RUN_IMPORT, port, |run| run.fd = fd) != 0 }
 }
 
 /// `ListenPort::close()`.
@@ -191,9 +132,8 @@ pub unsafe extern "C" fn import(port: *mut c_void, fd: c_int) -> bool {
     unsafe(export_name = "_ZN6swoole10ListenPort5closeEv")
 )]
 pub unsafe extern "C" fn close(port: *mut c_void) {
-    let null = ptr::null_mut();
     // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_CLOSE, port, null, null, null, 0) };
+    unsafe { run(RUN_CLOSE, port, |_| {}) };
 }
 
 /// `ListenPort::ssl_server_sni_callback(ssl, al, arg)`, OpenSSL's servername callback.
@@ -209,9 +149,8 @@ pub unsafe extern "C" fn ssl_server_sni_callback(
     _al: *mut c_int,
     _arg: *mut c_void,
 ) -> c_int {
-    let null = ptr::null_mut();
     // SAFETY: as the caller guarantees; the SNI run finds the port from `ssl`.
-    unsafe { run(RUN_SNI, null, null, null, ssl, 0) }
+    unsafe { run(RUN_SNI, ptr::null_mut(), |run| run.ssl = ssl.cast()) }
 }
 
 /// The listening socket's options `ListenPort::listen` sets where the platform
@@ -353,11 +292,14 @@ fn set_option(fd: c_int, level: c_int, option: c_int) -> c_int {
 )]
 pub unsafe extern "C" fn create_socket(port: *mut c_void) -> c_int {
     // SAFETY: as the caller guarantees.
-    let reuse_port = || cfg!(target_os = "linux") && unsafe { fact(port, FACT_REUSE_PORT) };
-    // SAFETY: as the caller guarantees.
     let config = unsafe { port_config::of(port) };
+    let serv = config.protocol.private_data_2;
+    // SAFETY: the port's live server, when it has one.
+    let reuse_port = cfg!(target_os = "linux")
+        && !serv.is_null()
+        && unsafe { view::config(serv) }.enable_reuse_port;
     if !config.socket.is_null() {
-        if !reuse_port() {
+        if !reuse_port {
             return 0;
         }
         // SAFETY: the port's live socket, which nothing else uses now.
@@ -384,8 +326,7 @@ pub unsafe extern "C" fn create_socket(port: *mut c_void) -> c_int {
         target_os = "openbsd",
         target_os = "dragonfly"
     ));
-    // SAFETY: as the caller guarantees.
-    if kqueue && unsafe { fact(port, FACT_DTLS) } {
+    if kqueue && is_dtls(config) {
         set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT);
     }
     let fail = || {
@@ -394,7 +335,7 @@ pub unsafe extern "C" fn create_socket(port: *mut c_void) -> c_int {
         unsafe { socket_free(socket) };
         -1
     };
-    if reuse_port() && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT) < 0 {
+    if reuse_port && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT) < 0 {
         return fail();
     }
     let host = config.host();
@@ -645,8 +586,8 @@ const WEBSOCKET_FRAME_HEADER_SIZE: u8 = 2 + 4 + 8;
 pub unsafe extern "C" fn init_protocol(port: *mut c_void) {
     // SAFETY: as the caller guarantees.
     let config = unsafe { port_config::of(port) };
-    // SAFETY: as the caller guarantees.
-    init_protocol_over(config, || unsafe { fact(port, FACT_DTLS) });
+    let dtls = is_dtls(config);
+    init_protocol_over(config, || dtls);
 }
 
 /// `ListenPort::set_eof_protocol(eof, find_from_right)`, given the string's bytes.
@@ -747,9 +688,10 @@ pub unsafe extern "C" fn get_connection_num(port: *mut c_void) -> usize {
 )]
 #[must_use]
 pub unsafe extern "C" fn ssl_init(port: *const c_void) -> bool {
-    let null = ptr::null_mut();
-    // SAFETY: as the caller guarantees; a null target is the port's own context.
-    unsafe { run(RUN_SSL_INIT, port.cast_mut(), null, null, null, 0) != 0 }
+    // SAFETY: as the caller guarantees.
+    let target = unsafe { port_config::of(port.cast_mut()) }.ssl_context;
+    // SAFETY: as the caller guarantees; ssl_init works on the port's own context.
+    unsafe { run(RUN_SSL_INIT, port.cast_mut(), |run| run.target = target) != 0 }
 }
 
 /// `ListenPort::destroy_http_request(conn)`: frees the connection's request, if any.
@@ -802,91 +744,71 @@ readable_callbacks! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static SEEN: Mutex<Vec<[usize; 6]>> = Mutex::new(Vec::new());
-
-    unsafe extern "C-unwind" fn run_fake(
-        kind: u32,
-        port: *mut c_void,
-        target: *mut c_void,
-        sock: *mut c_void,
-        ssl: *mut c_void,
-        number: c_int,
-    ) -> i32 {
-        let row = [
-            kind as usize,
-            port.addr(),
-            target.addr(),
-            sock.addr(),
-            ssl.addr(),
-            usize::try_from(number).unwrap_or_default(),
-        ];
-        SEEN.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(row);
-        i32::from(kind != RUN_CLOSE) * 3
-    }
-
-    thread_local! {
-        /// The facts `fact_fake` answers on this thread: bit 0 reuse-port, bit 1 DTLS.
-        static FACTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-    }
-
-    unsafe extern "C-unwind" fn fact_fake(_: *mut c_void, which: u32) -> bool {
-        FACTS.get() & (1 << which) != 0
-    }
-
-    fn last() -> [usize; 6] {
-        *SEEN
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .last()
-            .unwrap_or(&[0; 6])
-    }
 
     #[test]
-    fn methods_pass_what_their_forward_did() {
-        swr_v1_ports_set_native(run_fake, fact_fake);
-        let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
-        unsafe {
-            assert!(ssl_create(at(1), at(2)), "3 is true");
-            assert_eq!(
-                last(),
-                [RUN_SSL_CREATE as usize, 1, 0, 2, 0, 0],
-                "ssl_create row"
-            );
-            assert!(ssl_context_create(at(1), at(4), true), "context create");
-            assert_eq!(
-                last(),
-                [RUN_CONTEXT_CREATE as usize, 1, 4, 0, 0, 1],
-                "allow_empty_cert in number"
-            );
-            assert!(import(at(1), 9), "import");
-            assert_eq!(last()[5], 9, "fd in number");
-            close(at(1));
-            assert_eq!(last()[0], RUN_CLOSE as usize, "close kind");
-            assert_eq!(
-                ssl_server_sni_callback(at(5), ptr::null_mut(), at(6)),
-                3,
-                "sni result"
-            );
-            assert_eq!(
-                last(),
-                [RUN_SNI as usize, 0, 0, 0, 5, 0],
-                "sni passes only ssl"
-            );
-            assert_eq!(
-                readable_callback_http(at(0), at(2), at(0)),
-                i32::try_from(ON_READ_HTTP).unwrap_or_default(),
-                "http kind"
-            );
-            assert_eq!(
-                readable_callback_eof(at(0), at(2), at(0)),
-                i32::try_from(ON_READ_EOF).unwrap_or_default(),
-                "eof kind"
-            );
-        }
+    fn context_init_sets_upstreams_defaults_and_close_releases_it() {
+        let mut fresh = Fresh::new();
+        let at = fresh.at();
+        let config = unsafe { port_config::of(at) };
+        config.ssl = 1;
+        assert!(unsafe { ssl_context_init(at) }, "a stream port's context");
+        let context = config.ssl_context;
+        assert!(!context.is_null(), "published");
+        let fields = unsafe { *(*context.cast::<swoole_rs_tls::OwnedTlsPrepared>()).fields };
+        assert_eq!(
+            (
+                fields.prefer_server_ciphers,
+                fields.session_tickets,
+                fields.stapling,
+                fields.stapling_verify
+            ),
+            (1, 0, 1, 1),
+            "flags"
+        );
+        assert!(!is_dtls(config), "not DTLS");
+        // No files: ssl_init refuses unless SNI contexts exist.
+        assert!(!unsafe { ssl_init(at) }, "no certificate");
+        unsafe { close(at) };
+        assert!(config.ssl_context.is_null(), "released");
+        config.r#type = 2;
+        assert!(unsafe { ssl_context_init(at) }, "a datagram port's context");
+        assert!(is_dtls(config), "DTLS");
+        unsafe { crate::lifecycle_native::swr_v1_ports_tls_free(*fresh.0) };
+        assert!(
+            config.ssl_context.is_null(),
+            "the destructor releases what close left"
+        );
+    }
+
+    // macOS answers SO_ACCEPTCONN with ENOPROTOOPT, so import refuses every socket there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn import_adopts_a_listening_socket_and_refuses_others() {
+        let mut fresh = Fresh::new();
+        let at = fresh.at();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let bound = listener.local_addr().unwrap().port();
+        let fd = std::os::fd::IntoRawFd::into_raw_fd(listener);
+        assert!(unsafe { import(at, fd) }, "listening");
+        let config = unsafe { port_config::of(at) };
+        let socket = record(config);
+        assert_eq!(
+            (socket.fd, socket.fd_type),
+            (fd, FD_STREAM_SERVER),
+            "server socket"
+        );
+        assert_eq!(
+            (config.r#type, config.port),
+            (1, c_int::from(bound)),
+            "type and port"
+        );
+        assert_eq!(host_text(config), "127.0.0.1", "host");
+        assert!(config.listening, "listening");
+        unsafe { close(at) };
+        assert!(config.socket.is_null(), "freed");
+        let stream = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(!unsafe { import(at, stream) }, "not listening");
+        unsafe { libc::close(stream) };
     }
 
     /// A port whose settings own a fresh `kind` socket on 127.0.0.1, unbound
@@ -1014,11 +936,19 @@ mod tests {
         unsafe { port_config::swr_v1_port_config_free(port) };
     }
 
-    /// A socketless port of `kind` on `host`:`number`, with the native facts `facts`.
-    fn unbound_port(kind: c_int, host: &str, number: c_int, facts: u32) -> *mut PortConfig {
-        swr_v1_ports_set_native(run_fake, fact_fake);
-        FACTS.set(facts);
+    /// A socketless port of `kind` on `host`:`number`, of a server that reuses
+    /// ports when `reuse_port` (a `ServerFields` head over a leaked config).
+    fn unbound_port(kind: c_int, host: &str, number: c_int, reuse_port: bool) -> *mut PortConfig {
         let config = port_config::swr_v1_port_config_new(1000);
+        if reuse_port {
+            let server = Box::leak(Box::new(swoole_rs_server::ServerConfig {
+                enable_reuse_port: true,
+                ..Default::default()
+            }));
+            let head: &mut [*mut c_void; 2] =
+                Box::leak(Box::new([ptr::null_mut(), (&raw mut *server).cast()]));
+            unsafe { (*config).protocol.private_data_2 = head.as_mut_ptr().cast() };
+        }
         unsafe {
             (*config).r#type = kind;
             (*config).port = number;
@@ -1038,7 +968,7 @@ mod tests {
 
     #[test]
     fn create_socket_binds_the_host_and_takes_the_bound_port() {
-        let mut port = unbound_port(1, "127.0.0.1", 0, 0);
+        let mut port = unbound_port(1, "127.0.0.1", 0, false);
         let at = (&raw mut port).cast::<c_void>();
         assert_eq!(unsafe { create_socket(at) }, 0, "created");
         let config = unsafe { port_config::of(at) };
@@ -1070,7 +1000,7 @@ mod tests {
 
     #[test]
     fn create_socket_makes_a_datagram_server_socket_for_udp() {
-        let mut port = unbound_port(2, "127.0.0.1", 0, 0);
+        let mut port = unbound_port(2, "127.0.0.1", 0, false);
         let at = (&raw mut port).cast::<c_void>();
         assert_eq!(unsafe { create_socket(at) }, 0, "created");
         let config = unsafe { port_config::of(at) };
@@ -1088,7 +1018,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn create_socket_replaces_the_socket_when_the_server_reuses_ports() {
-        let mut port = unbound_port(1, "127.0.0.1", 0, 1 << FACT_REUSE_PORT);
+        let mut port = unbound_port(1, "127.0.0.1", 0, true);
         let at = (&raw mut port).cast::<c_void>();
         assert_eq!(unsafe { create_socket(at) }, 0, "created");
         let config = unsafe { port_config::of(at) };
@@ -1117,12 +1047,12 @@ mod tests {
     fn create_socket_fails_on_an_address_it_cannot_assign_or_bind() {
         // A Unix path longer than sun_path: the address is invalid.
         let long = "p".repeat(200);
-        let port = unbound_port(5, &long, 0, 0);
+        let port = unbound_port(5, &long, 0, false);
         let at = (&raw const port).cast_mut().cast::<c_void>();
         assert_eq!(unsafe { create_socket(at) }, -1, "invalid address");
         unsafe { port_config::swr_v1_port_config_free(port) };
         // An address no local interface has: bind(2) fails.
-        let port = unbound_port(1, "203.0.113.1", 0, 0);
+        let port = unbound_port(1, "203.0.113.1", 0, false);
         let at = (&raw const port).cast_mut().cast::<c_void>();
         assert_eq!(unsafe { create_socket(at) }, -1, "bind failed");
         assert_eq!(

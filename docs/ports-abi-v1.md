@@ -9,10 +9,10 @@ Rust owns callback-free policy: native defaults, protocol selection,
 listener/option/setup policy and PHP Port settings. TLS setup (context creation,
 SNI registration and selection, SNI wildcard matching with libc case folding,
 per-socket TLS), socket import and `close` are whole Rust operations
-(`swr_v1_ports_run`, `crates/ports/src/lifecycle.rs`) over the same op call as
-the receive callbacks. Sockets, socket options, OpenSSL calls, DTLS sessions,
-Zend conversion, object/property custody, allocation, logging and callbacks stay
-native, as do the callback, SNI, session and connection containers. Return values, errno, warnings, partial
+(`crates/ports/src/lifecycle.rs`, effects in `lifecycle_native.rs`), including the
+port's context, SNI contexts and DTLS sessions (`PortConfig`). Constructing and
+destroying `SSLContext` holders and DTLS sessions (`native/ports/tls.cc`), Zend
+conversion, object/property custody and callbacks stay native. Return values, errno, warnings, partial
 publication and cleanup order match upstream.
 
 The receive callbacks (`readable_callback_*`: raw, length, EOF, Redis and HTTP)
