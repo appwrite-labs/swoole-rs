@@ -1,4 +1,4 @@
-/* PDO's side of Swoole's bundled drivers (crates/odbc, crates/firebird; see shim.h). */
+/* PDO's side of Swoole's bundled drivers (crates/pgsql, crates/odbc, crates/firebird; see shim.h). */
 #ifndef SWOOLE_RS_ZEND_SHIM_PDO_H
 #define SWOOLE_RS_ZEND_SHIM_PDO_H
 #include "php.h"
