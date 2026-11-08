@@ -9,27 +9,27 @@ use swoole_rs_zend::{
 };
 
 unsafe extern "C" {
-    fn swr_cpp_phpstdext_undefined_cv(
+    fn swr_phpstdext_undefined_cv(
         frame: *mut zend_execute_data,
         var: u32,
         result: *mut *mut zval,
     ) -> u8;
-    fn swr_cpp_phpstdext_dimension(
+    fn swr_phpstdext_dimension(
         frame: *mut zend_execute_data,
         table: *mut z::HashTable,
         key: *const zval,
         constant: bool,
         result: *mut *mut zval,
     ) -> u8;
-    fn swr_cpp_phpstdext_assign(
+    fn swr_phpstdext_assign(
         slot: *mut zval,
         value: *mut zval,
         kind: u8,
         strict: bool,
         result: *mut *mut zval,
     ) -> u8;
-    fn swr_cpp_phpstdext_binary(slot: *mut zval, value: *mut zval, op: *const zend_op) -> u8;
-    fn swr_cpp_phpstdext_typed_ref(
+    fn swr_phpstdext_binary(slot: *mut zval, value: *mut zval, op: *const zend_op) -> u8;
+    fn swr_phpstdext_typed_ref(
         frame: *mut zend_execute_data,
         reference: *mut zend_reference,
         value: *mut zval,
@@ -109,7 +109,7 @@ unsafe fn operand(
         }
         let mut undefined = ptr::null_mut();
         // SAFETY: Zend reads its own CV name and invokes any warning handler under a native trap.
-        leaf(unsafe { swr_cpp_phpstdext_undefined_cv(frame, var, &raw mut undefined) })?;
+        leaf(unsafe { swr_phpstdext_undefined_cv(frame, var, &raw mut undefined) })?;
         return Ok(undefined);
     }
     Ok(ptr::null_mut())
@@ -165,7 +165,7 @@ unsafe fn assign(
         let mut variable = ptr::null_mut();
         // SAFETY: lookup uses this assignment's original constant-key distinction.
         leaf(unsafe {
-            swr_cpp_phpstdext_dimension(
+            swr_phpstdext_dimension(
                 frame,
                 ht,
                 key,
@@ -181,7 +181,7 @@ unsafe fn assign(
         let strict = unsafe { strict(frame) };
         // SAFETY: Zend performs its original assignment/refcount effect below a trap.
         leaf(unsafe {
-            swr_cpp_phpstdext_assign(variable, value, data.op1_type, strict, &raw mut slot)
+            swr_phpstdext_assign(variable, value, data.op1_type, strict, &raw mut slot)
         })?;
         if slot.is_null() {
             // SAFETY: the native assignment failed before result publication.
@@ -217,7 +217,7 @@ unsafe fn assign_op(
     // Upstream selects W_CONST from the value's OP_DATA type here, unlike ASSIGN_DIM.
     // SAFETY: retain that exact distinction when invoking the native VM primitive.
     leaf(unsafe {
-        swr_cpp_phpstdext_dimension(
+        swr_phpstdext_dimension(
             frame,
             ht,
             key,
@@ -250,7 +250,7 @@ unsafe fn assign_op(
     }
     if typed_reference {
         // SAFETY: the native typed-reference operation preserves PHP source verification and strict types.
-        leaf(unsafe { swr_cpp_phpstdext_typed_ref(frame, reference, value, op_ptr) })?;
+        leaf(unsafe { swr_phpstdext_typed_ref(frame, reference, value, op_ptr) })?;
     } else {
         // SAFETY: the live typed table is checked before the original binary operation.
         if !unsafe { typed::swr_v1_phpstdext_operation(ht, op.extended_value == z::ZEND_CONCAT) } {
@@ -258,7 +258,7 @@ unsafe fn assign_op(
             return unsafe { abandon(frame, op, data) };
         }
         // SAFETY: Zend applies the exact current opcode to the live element and value.
-        leaf(unsafe { swr_cpp_phpstdext_binary(slot, value, op_ptr) })?;
+        leaf(unsafe { swr_phpstdext_binary(slot, value, op_ptr) })?;
     }
     if result_used(op) {
         // SAFETY: the active frame owns this used result slot.

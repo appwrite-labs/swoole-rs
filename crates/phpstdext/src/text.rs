@@ -1,5 +1,5 @@
 //! The string and array predicates, `swoole_parse_str`, and the PCRE and JSON
-//! functions, whose library calls C++ lends as [`Ops`].
+//! functions, whose library calls are src/stdext.c's.
 use std::{
     ffi::{c_char, c_void},
     ptr,
@@ -14,10 +14,10 @@ use swoole_rs_zend::{
 };
 
 unsafe extern "C" {
-    fn swr_cpp_phpstdext_pcre_cache(regex: *mut zend_string, result: *mut *mut c_void) -> u8;
-    fn swr_cpp_phpstdext_pcre_retain(entry: *mut c_void);
-    fn swr_cpp_phpstdext_pcre_release(entry: *mut c_void);
-    fn swr_cpp_phpstdext_pcre_match(
+    fn swr_phpstdext_pcre_cache(regex: *mut zend_string, result: *mut *mut c_void) -> u8;
+    fn swr_phpstdext_pcre_retain(entry: *mut c_void);
+    fn swr_phpstdext_pcre_release(entry: *mut c_void);
+    fn swr_phpstdext_pcre_match(
         entry: *mut c_void,
         subject: *mut zend_string,
         count: *mut zval,
@@ -27,7 +27,7 @@ unsafe extern "C" {
         flags: i64,
         offset: i64,
     ) -> u8;
-    fn swr_cpp_phpstdext_json_decode(
+    fn swr_phpstdext_json_decode(
         value: *mut zval,
         text: *const c_char,
         length: usize,
@@ -42,7 +42,7 @@ struct Pattern(*mut c_void);
 impl Drop for Pattern {
     fn drop(&mut self) {
         // SAFETY: this owner retains exactly one live compiled-pattern reference.
-        unsafe { swr_cpp_phpstdext_pcre_release(self.0) };
+        unsafe { swr_phpstdext_pcre_release(self.0) };
     }
 }
 
@@ -58,7 +58,7 @@ unsafe fn match_pattern(
     let mut compiled = ptr::null_mut();
     // SAFETY: both argument strings stay live; compilation warnings are trapped below Rust.
     swoole_rs_zend::bailout::trapped(i32::from(unsafe {
-        swr_cpp_phpstdext_pcre_cache(regex, &raw mut compiled)
+        swr_phpstdext_pcre_cache(regex, &raw mut compiled)
     }))?;
     if compiled.is_null() {
         // SAFETY: like RETVAL_FALSE, write the caller's fresh return slot type.
@@ -70,14 +70,14 @@ unsafe fn match_pattern(
         return Ok(());
     }
     // SAFETY: PHP's live cache entry is retained before any matching effect.
-    unsafe { swr_cpp_phpstdext_pcre_retain(compiled) };
+    unsafe { swr_phpstdext_pcre_retain(compiled) };
     let compiled = Pattern(compiled);
     // SAFETY: all-zero initializes the native function's count zval to undefined.
     let mut count = unsafe { std::mem::zeroed::<zval>() };
     // SAFETY: PHP borrows the retained pattern, subject and writable result slots
     // inside a native trap, below the Pattern owner and all caller frames.
     swoole_rs_zend::bailout::trapped(i32::from(unsafe {
-        swr_cpp_phpstdext_pcre_match(
+        swr_phpstdext_pcre_match(
             compiled.0,
             subject,
             &raw mut count,
@@ -203,7 +203,7 @@ fn json_decode(call: &Call, assoc: bool) {
     };
     // SAFETY: the argument's bytes live for the call; the return slot.
     let bailed = unsafe {
-        swr_cpp_phpstdext_json_decode(
+        swr_phpstdext_json_decode(
             call.return_value(),
             text.as_ptr().cast(),
             text.len(),
