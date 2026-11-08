@@ -11,16 +11,17 @@ use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     OP_ADD_MASTER_TIMER, OP_ALL_WORKER_NUM, OP_CLOSE_CONNECTION, OP_CLOSE_EVENT_SOCKET,
     OP_CLOSE_SESSION, OP_CONN_AT, OP_CONN_CLOSE_FORCE, OP_CONN_CLOSE_QUEUED, OP_CONN_HEALTHY,
-    OP_CONN_SSL_PENDING, OP_DISABLE_NOTIFY, OP_EVENT_CONN_ACTIVE, OP_EVENT_SOCKET_REMOVED,
-    OP_HAS_ON_START, OP_HAS_PIPE_WORKER, OP_HAS_REACTOR, OP_HAVE_STREAM_SOCK,
-    OP_HEARTBEAT_INTERVAL, OP_HEARTBEAT_NOW, OP_INIT_IPC_MAX_SIZE, OP_INIT_REACTOR, OP_MAXFD,
-    OP_MINFD, OP_NOTIFY_CLOSE, OP_ON_START, OP_ONSTART_CALLED, OP_POOL_DESTROY,
-    OP_PORT_CLOSE_SOCKET, OP_PORT_COUNT, OP_PORT_CREATE_SOCKET, OP_PORT_LISTEN, OP_PORT_REUSE,
-    OP_PORT_STREAM, OP_REACTOR_WAIT, OP_RESET_CONNECTION_NUM, OP_REUSE_PORT, OP_SET_CLOSE_FORCE,
-    OP_SET_MASTER_PID, OP_SET_PEER_CLOSED, OP_SET_SINGLE_THREAD, OP_SINGLE_WORKER,
-    OP_START_MANAGER, OP_STORE_LISTEN_SOCKET, OP_TASK_IPC_UNIXSOCK, OP_TASK_POOL_WORKER_NUM,
-    OP_TASK_WORKER_NUM, OP_WORKER_ENTER, OP_WORKER_ID, OP_WORKER_SIGNAL_INIT,
-    OP_WORKER_START_CALLBACK, OP_WORKER_STOP_CALLBACK,
+    OP_CONN_SSL_PENDING, OP_DISABLE_NOTIFY, OP_END_ACTIVELY, OP_EVENT_CONN_ACTIVE,
+    OP_EVENT_SOCKET_REMOVED, OP_FINISH_SEND_DATA, OP_FINISH_SEND_FILE, OP_HAS_ON_START,
+    OP_HAS_PIPE_WORKER, OP_HAS_REACTOR, OP_HAVE_STREAM_SOCK, OP_HEARTBEAT_INTERVAL,
+    OP_HEARTBEAT_NOW, OP_INIT_IPC_MAX_SIZE, OP_INIT_REACTOR, OP_MAXFD, OP_MINFD, OP_NOTIFY_CLOSE,
+    OP_ON_START, OP_ONSTART_CALLED, OP_POOL_DESTROY, OP_PORT_CLOSE_SOCKET, OP_PORT_COUNT,
+    OP_PORT_CREATE_SOCKET, OP_PORT_LISTEN, OP_PORT_REUSE, OP_PORT_STREAM, OP_REACTOR_WAIT,
+    OP_RESET_CONNECTION_NUM, OP_REUSE_PORT, OP_SET_CLOSE_FORCE, OP_SET_MASTER_PID,
+    OP_SET_PEER_CLOSED, OP_SET_SINGLE_THREAD, OP_SINGLE_WORKER, OP_START_MANAGER,
+    OP_STORE_LISTEN_SOCKET, OP_TASK_IPC_UNIXSOCK, OP_TASK_POOL_WORKER_NUM, OP_TASK_WORKER_NUM,
+    OP_WORKER_ENTER, OP_WORKER_ID, OP_WORKER_SIGNAL_INIT, OP_WORKER_START_CALLBACK,
+    OP_WORKER_STOP_CALLBACK,
 };
 use swoole_rs_reactor::SocketRecord;
 
@@ -88,7 +89,52 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_process_call(
     let answer = answer.or_else(|| unsafe { worker(ctx, op) });
     // SAFETY: per the caller.
     let answer = answer.or_else(|| unsafe { connection(ctx, op, arg) });
+    // SAFETY: per the caller.
+    let answer = answer.or_else(|| unsafe { pipe(ctx, op) });
     answer.unwrap_or_else(|| std::process::abort())
+}
+
+/// The factory's work on the message the server's bus just read from the pipe.
+///
+/// # Safety
+/// As [`swr_v1_reactor_process_call`]; the ops run with a message read.
+unsafe fn pipe(ctx: &Context, op: u32) -> Option<u64> {
+    use crate::base_factory::SendData;
+    use crate::pool_native::{swr_v1_bus_buffer, swr_v1_bus_packet};
+    /// `SW_SERVER_EVENT_RECV_DATA`, `Server::CLOSE_ACTIVELY`.
+    const EVENT_RECV_DATA: u8 = 0;
+    const CLOSE_ACTIVELY: c_int = 1 << 2;
+    // SAFETY: the context's live server.
+    let state = unsafe { view::state(ctx.serv) };
+    let [bus, _] = crate::master_ops::server_message_bus(state);
+    // SAFETY: the bus's `PipeBuffer`: the message's head, then its data.
+    let buffer = unsafe { swr_v1_bus_buffer(bus) };
+    // SAFETY: as above.
+    let info = unsafe { *buffer };
+    let mut send = match op {
+        OP_FINISH_SEND_FILE => SendData {
+            info,
+            data: buffer.wrapping_add(1).cast(),
+        },
+        OP_FINISH_SEND_DATA => {
+            // SAFETY: the live bus's packet.
+            let packet = unsafe { swr_v1_bus_packet(bus) };
+            let mut info = info;
+            info.kind = EVENT_RECV_DATA;
+            info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
+            SendData {
+                info,
+                data: packet.data,
+            }
+        }
+        OP_END_ACTIVELY => {
+            crate::factory::end(state, info.fd, CLOSE_ACTIVELY);
+            return Some(0);
+        }
+        _ => return None,
+    };
+    crate::factory::finish(state, (&raw mut send).cast());
+    Some(0)
 }
 
 /// `serv->ports`, in listen order.

@@ -114,12 +114,12 @@ unsafe extern "C-unwind" {
 
 // SAFETY: crates/protocols' bus, linked into the same archive.
 unsafe extern "C" {
-    fn swr_v1_bus_create(buffer_size: usize) -> *mut c_void;
-    fn swr_v1_bus_free(bus: *mut c_void);
+    pub(crate) fn swr_v1_bus_create(buffer_size: usize) -> *mut c_void;
+    pub(crate) fn swr_v1_bus_free(bus: *mut c_void);
     pub(crate) fn swr_v1_bus_set_buffer_size(bus: *mut c_void, size: usize);
     pub(crate) fn swr_v1_bus_buffer_size(bus: *mut c_void) -> usize;
     pub(crate) fn swr_v1_bus_set_buffer(bus: *mut c_void, buffer: *mut c_void);
-    fn swr_v1_bus_buffer(bus: *mut c_void) -> *mut DataHead;
+    pub(crate) fn swr_v1_bus_buffer(bus: *mut c_void) -> *mut DataHead;
     pub(crate) fn swr_v1_bus_packet(bus: *mut c_void) -> BusPacket;
     pub(crate) fn swr_v1_bus_pop(bus: *mut c_void);
     fn swr_v1_bus_read(
@@ -457,7 +457,7 @@ fn box_push(pool: Pool, message: *const u8) -> i64 {
     i64::from(pushed)
 }
 
-fn free_message_box(pool: Pool) {
+pub(crate) fn free_message_box(pool: Pool) {
     let channel = record(pool).message_box.cast::<ChannelRecord>();
     // SAFETY: the box `new_message_box` made, with no other user.
     unsafe { swr_v1_memory_channel_close(channel) };

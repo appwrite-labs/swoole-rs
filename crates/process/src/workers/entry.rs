@@ -7,7 +7,6 @@ use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
 use std::sync::OnceLock;
 
-use super::factory_methods::server_of;
 use super::ops::{
     RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_CALL_WORKER_START, RUN_CALL_WORKER_STOP,
     RUN_CLEAN_CONNECTIONS, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_DRAIN_PIPES,
@@ -185,8 +184,8 @@ macro_rules! thread_factory_methods {
         $(#[$attr])*
         #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
         pub unsafe extern "C" fn $name(factory: *mut c_void, $($p: $t),*) -> $r {
-            // SAFETY: as the caller guarantees.
-            let serv = unsafe { server_of(factory) };
+            // SAFETY: as the caller guarantees: `Factory::server_` is its first member.
+            let serv = unsafe { *factory.cast::<*mut c_void>() };
             // SAFETY: as the caller guarantees.
             unsafe { enter($op, serv.object(), factory.object(), NONE, $arg) }
         }
@@ -318,8 +317,8 @@ mod tests {
     fn methods_enter_with_their_operation_and_objects() {
         swr_v1_workers_set_enter(fake);
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
-        // A `ThreadFactory`: the vtable pointer, then `server_`.
-        let mut factory: [usize; 2] = [0, 0x10];
+        // A `ThreadFactory`: `server_`, then `manager_`.
+        let mut factory: [usize; 2] = [0x10, 0];
         let this = (&raw mut factory).cast::<c_void>();
         // SAFETY: the fake only records the pointers.
         unsafe {

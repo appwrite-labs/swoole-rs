@@ -3,6 +3,7 @@
 //! `ManagerContext::call` hands every op it has no case for to
 //! [`swr_v1_manager_call`].
 use core::ffi::{c_int, c_void};
+use core::ptr::{null, null_mut};
 
 use swoole_rs_corebase::{DataHead, log, worker_registry as registry};
 use swoole_rs_error::ErrorCode as E;
@@ -11,23 +12,28 @@ use swoole_rs_process::reload_task::{
     swr_v1_process_reload_task_add_workers, swr_v1_process_reload_task_kill_all,
 };
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_pid, swr_v1_worker_type};
+use swoole_rs_process::workers::entry;
+use swoole_rs_process::workers::factory_methods::run;
 use swoole_rs_process::workers::ops::{
     LOG_UNKNOWN_COMMAND, OP_ALL_WORKER_NUM, OP_ANY_WORKER_PID, OP_CHECK_EXIT_STATUS,
     OP_CREATE_EVENT_WORKERS, OP_CREATE_MESSAGE_BOX, OP_CREATE_USER_WORKERS, OP_DROP_RELOAD_TASK,
     OP_EVENT_WORKER_PID, OP_HAS_COMMAND, OP_HAS_MESSAGE_BOX, OP_HAS_ON_WORKER_MESSAGE,
-    OP_INFO_TYPE, OP_IS_MANAGER, OP_KILL_TASK_WORKERS, OP_MANAGER, OP_MANAGER_INIT, OP_MANAGER_PID,
-    OP_MAX_WAIT_TIME, OP_MODE, OP_ON_AFTER_RELOAD, OP_ON_BEFORE_RELOAD, OP_ON_MANAGER_START,
-    OP_ON_MANAGER_STOP, OP_POOL_RELOAD, OP_READ_MESSAGE, OP_REAP_DETACHED, OP_REAP_WAIT,
-    OP_RELOAD_ADD_EVENT_WORKERS, OP_RELOAD_ADD_TASK_WORKERS, OP_RELOAD_ASYNC, OP_RELOAD_INIT,
-    OP_RELOAD_KILL_ALL, OP_RELOAD_TASK, OP_RELOAD_THREADS, OP_RELOAD_WARN, OP_REOPEN_LOGGER,
-    OP_RESPAWN_EVENT_WORKER, OP_RESPAWN_USER_WORKER, OP_RESTART_WORKER, OP_RUNNING,
-    OP_SERVER_RELOAD, OP_SET_MANAGER_PID, OP_SET_MANAGER_TYPE, OP_SET_READ_MESSAGE,
-    OP_SET_RELOAD_INIT, OP_SET_RUNNING, OP_SIGNAL_DISPATCH, OP_SPAWN_EVENT_WORKER,
-    OP_SPAWN_USER_WORKER, OP_START_TASK_POOL, OP_TASK_POOL_WORKER_NUM, OP_TASK_WORKER_NUM,
-    OP_TASK_WORKER_PID, OP_UNREGISTER_PID, OP_USER_WORKER_NUM, OP_WAIT_ERROR, OP_WAIT_STATUS,
-    OP_WORKER_BY_PID, OP_WORKER_NUM, OP_WORKER_REGISTRY, OP_WORKER_TYPE,
+    OP_INFO_TYPE, OP_IS_MANAGER, OP_KILL_EVENT_WORKERS, OP_KILL_TASK_WORKERS, OP_KILL_USER_WORKERS,
+    OP_MANAGER, OP_MANAGER_INIT, OP_MANAGER_PID, OP_MAX_WAIT_TIME, OP_MODE, OP_ON_AFTER_RELOAD,
+    OP_ON_BEFORE_RELOAD, OP_ON_MANAGER_START, OP_ON_MANAGER_STOP, OP_POOL_RELOAD, OP_READ_MESSAGE,
+    OP_REAP_DETACHED, OP_REAP_WAIT, OP_RELOAD_ADD_EVENT_WORKERS, OP_RELOAD_ADD_TASK_WORKERS,
+    OP_RELOAD_ASYNC, OP_RELOAD_INIT, OP_RELOAD_KILL_ALL, OP_RELOAD_TASK, OP_RELOAD_THREADS,
+    OP_RELOAD_WARN, OP_REOPEN_LOGGER, OP_RESPAWN_EVENT_WORKER, OP_RESPAWN_TASK_WORKER,
+    OP_RESPAWN_USER_WORKER, OP_RESTART_WORKER, OP_RUNNING, OP_SERVER_RELOAD, OP_SET_MANAGER_PID,
+    OP_SET_MANAGER_TYPE, OP_SET_READ_MESSAGE, OP_SET_RELOAD_INIT, OP_SET_RUNNING,
+    OP_SIGNAL_DISPATCH, OP_SPAWN_EVENT_WORKER, OP_SPAWN_TASK_WORKER, OP_SPAWN_USER_WORKER,
+    OP_START_TASK_POOL, OP_TASK_POOL_WORKER_NUM, OP_TASK_WORKER_NUM, OP_TASK_WORKER_PID,
+    OP_UNREGISTER_PID, OP_USER_WORKER_NUM, OP_WAIT_ERROR, OP_WAIT_STATUS, OP_WORKER_BY_PID,
+    OP_WORKER_NUM, OP_WORKER_REGISTRY, OP_WORKER_TYPE,
 };
-use swoole_rs_process::workers::{entry, factory_methods as factory};
+use swoole_rs_process::workers::ops::{
+    RUN_CHECK_EXIT_STATUS, RUN_KILL_TASK_WORKERS, RUN_SPAWN_EVENT_WORKER, RUN_SPAWN_USER_WORKER,
+};
 
 use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP};
 use crate::commands::{CommandFn, swr_v1_server_command_handler};
@@ -42,6 +48,34 @@ struct Context {
     handler: CommandFn,
     wait_status: c_int,
     wait_error: c_int,
+}
+
+// SAFETY: crates/reactor's body, under its upstream symbol.
+unsafe extern "C-unwind" {
+    #[link_name = "_Z14swoole_waitpidiPii"]
+    fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
+}
+
+/// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
+const REGISTRY_EVENT: c_int = 1;
+const REGISTRY_USER: c_int = 2;
+
+/// `Factory::kill_event_workers()` (`origin` `kill_event_workers`) and
+/// `kill_user_workers()`: SIGTERM each worker of `category`, then wait for each.
+fn kill_workers(serv: *mut c_void, category: c_int, origin: &core::ffi::CStr) {
+    // SAFETY: the live server's config.
+    let registry = unsafe { view::config(serv) }.worker_registry;
+    // SAFETY: the server's live registry.
+    let registry = unsafe { &*registry.cast::<registry::WorkerRegistry>() };
+    // SAFETY: kill(2) has no memory preconditions.
+    let kill = |pid, signo| unsafe { libc::kill(pid, signo) };
+    let wait = |pid| {
+        let mut status = 0;
+        // SAFETY: a local status.
+        unsafe { swoole_waitpid(pid, &raw mut status, 0) }
+    };
+    let warn = |pid| log::sys_warning(origin, format_args!("waitpid({pid}) failed"));
+    registry.terminate(category, libc::SIGTERM, kill, wait, warn);
 }
 
 /// `SW_MESSAGE_BOX_SIZE`, `swoole::WorkerType::SW_MANAGER`, `SW_LOG_ERROR`.
@@ -246,8 +280,19 @@ unsafe fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_ON_AFTER_RELOAD => callback(CB_AFTER_RELOAD),
         // SAFETY: the server's live event pool.
         OP_DROP_RELOAD_TASK => unsafe { methods::drop_reload_task(pool) },
-        // SAFETY: the server's live factory.
-        OP_KILL_TASK_WORKERS => unsafe { factory::kill_task_workers(config.factory_) },
+        OP_KILL_TASK_WORKERS => {
+            // SAFETY: the context's live server.
+            unsafe {
+                run(
+                    serv,
+                    RUN_KILL_TASK_WORKERS,
+                    null_mut(),
+                    null_mut(),
+                    null(),
+                    0,
+                )
+            };
+        }
         OP_SET_RUNNING => config.running = arg != 0,
         OP_SET_RELOAD_INIT => event_pool().reload_init = arg != 0,
         OP_SET_READ_MESSAGE => event_pool().read_message = arg != 0,
@@ -350,15 +395,18 @@ unsafe fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 /// As [`swr_v1_manager_call`].
 unsafe fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
-    // SAFETY: the context's live server.
-    let factory_ = unsafe { view::config(serv) }.factory_;
+    // `Factory::spawn_*_worker(worker)`: the child's pid, or -1.
+    let spawn = |op, worker| {
+        // SAFETY: the context's live server, and one of its workers.
+        let pid = unsafe { run(serv, op, worker, null_mut(), null(), 0) };
+        c_int::try_from(pid).unwrap_or(-1)
+    };
     let pid = match op {
         OP_SPAWN_EVENT_WORKER => {
             let id = u16::try_from(arg).unwrap_or(u16::MAX);
             // SAFETY: the context's live server.
             let worker = unsafe { view::worker(serv, id) };
-            // SAFETY: the live factory and one of its server's event workers.
-            unsafe { factory::spawn_event_worker(factory_, worker.cast()) }
+            spawn(RUN_SPAWN_EVENT_WORKER, worker.cast())
         }
         OP_SPAWN_USER_WORKER => {
             // SAFETY: the context's live server.
@@ -370,8 +418,7 @@ unsafe fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let slot = unsafe { pending.add(index(arg)) };
             // SAFETY: as above.
             let worker = unsafe { *slot };
-            // SAFETY: the live factory and one of its user workers.
-            unsafe { factory::spawn_user_worker(factory_, worker) }
+            spawn(RUN_SPAWN_USER_WORKER, worker)
         }
         OP_WORKER_BY_PID => {
             // SAFETY: the context's live server.
@@ -380,24 +427,37 @@ unsafe fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CHECK_EXIT_STATUS => {
             let status = exit_status(arg);
-            // SAFETY: the live factory, the worker found and its exit status.
-            unsafe {
-                factory::check_worker_exit_status(
-                    factory_,
-                    ctx.worker.cast(),
-                    (&raw const status).cast(),
-                );
-            }
+            let (worker, status) = (ctx.worker.cast(), (&raw const status).cast());
+            // SAFETY: the context's live server, the worker found and its exit status.
+            unsafe { run(serv, RUN_CHECK_EXIT_STATUS, worker, null_mut(), status, 0) };
             return Some(0);
         }
-        // SAFETY: the live factory and the worker found.
-        OP_RESPAWN_EVENT_WORKER => unsafe {
-            factory::spawn_event_worker(factory_, ctx.worker.cast())
-        },
-        // SAFETY: as above.
-        OP_RESPAWN_USER_WORKER => unsafe {
-            factory::spawn_user_worker(factory_, ctx.worker.cast())
-        },
+        OP_KILL_EVENT_WORKERS => {
+            kill_workers(serv, REGISTRY_EVENT, c"Factory::kill_event_workers");
+            return Some(0);
+        }
+        OP_KILL_USER_WORKERS => {
+            kill_workers(serv, REGISTRY_USER, c"Factory::kill_user_workers");
+            return Some(0);
+        }
+        OP_SPAWN_TASK_WORKER => {
+            let id = u16::try_from(arg).unwrap_or(u16::MAX);
+            // SAFETY: the context's live server.
+            let pool = unsafe { view::task_pool(serv) };
+            // SAFETY: as above.
+            let worker = unsafe { view::worker(serv, id) };
+            // SAFETY: the live task pool and one of its workers.
+            unsafe { methods::spawn(pool, worker) };
+            return Some(0);
+        }
+        OP_RESPAWN_TASK_WORKER => {
+            // SAFETY: the context's live server.
+            let pool = unsafe { view::task_pool(serv) };
+            // SAFETY: the live task pool and the worker found.
+            unsafe { methods::spawn(pool, ctx.worker) }
+        }
+        OP_RESPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker.cast()),
+        OP_RESPAWN_USER_WORKER => spawn(RUN_SPAWN_USER_WORKER, ctx.worker.cast()),
         _ => return None,
     };
     Some(signed(pid))

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// What crates/process's event worker, task worker, reactor process, thread mode, manager
-// and factory operations need from C++ (swoole_rs_workers.h): the calls into Server, Reactor,
-// MessageBus, Pipe and Thread, the Factory and ThreadFactory methods, the task hooks, and
-// the Worker and ProcessPool layout checks.
+// What crates/process's event worker, task worker, reactor process, thread mode and manager
+// operations need from C++ (swoole_rs_workers.h): the calls into Server, Reactor,
+// MessageBus, Pipe and Thread, the thread factory's threads, the task hooks, and the
+// Worker and ProcessPool layout checks.
 #include <sys/uio.h>
 #include <sys/mman.h>
 #include <system_error>
@@ -33,105 +33,15 @@ static_assert(offsetof(Worker, pool) == offsetof(swr_v1_worker_record, pool), "W
 static_assert(offsetof(Worker, msgqueue_mode) == offsetof(swr_v1_worker_record, msgqueue_mode),
               "Worker.msgqueue_mode drift");
 
-// The Server's Rust-owned worker registry (pid -> Worker*).
-static inline swr_v1_process_worker_registry *worker_registry_of(const Server *serv) {
-    return static_cast<swr_v1_process_worker_registry *>(serv->worker_registry);
-}
-
-// Reported by the registry's terminate op when a worker's waitpid fails.
-static void event_worker_waitpid_warn(int pid) {
-    swoole_log_as("Factory::kill_event_workers", swoole_sys_warning("waitpid(%d) failed", pid));
-}
-
 using network::Socket;
 
 
 template <int>
 struct WorkersNative;
 
-// What a crates/process/src/workers/factory.rs operation acts on.
-template <>
-struct WorkersNative<4> {
-    Server *serv;
-    Worker *worker;
-    SendData *send;
-    const ExitStatus *status;
-    Connection *conn;
-    int fd;
-
-    static uint64_t call(void *context, uint32_t op, uint64_t arg);
-};
-using FactoryContext = WorkersNative<4>;
-// crates/process/src/workers/factory_methods.rs defines the Factory, ProcessFactory and
-// Server methods over this context, and reads Factory::server_ after the vptr.
-static_assert(sizeof(FactoryContext) == 48 && offsetof(FactoryContext, fd) == 40, "FactoryContext layout");
-static_assert(sizeof(Factory) == 2 * sizeof(void *), "Factory layout");
-static const bool factory_call_registered = (swr_v1_workers_set_factory_call(FactoryContext::call), true);
-
-uint64_t FactoryContext::call(void *context, uint32_t op, uint64_t arg) {
-    auto *ctx = static_cast<FactoryContext *>(context);
-    Server *serv = ctx->serv;
-    SendData *send = ctx->send;
-    switch (op) {
-    case SWR_WORKERS_OP_NEW_REACTOR_THREADS:
-        // init reactor thread pool
-        serv->reactor_threads = new ReactorThread[serv->reactor_num]();
-        return 0;
-    case SWR_WORKERS_OP_INIT_BARRIERS:
-        serv->reactor_thread_barrier.init(false, serv->reactor_num + 1);
-        serv->gs->manager_barrier.init(true, 2);
-        return 0;
-    case SWR_WORKERS_OP_NEW_PROCESS_FACTORY:
-        return (uintptr_t) new ProcessFactory(serv);
-    case SWR_WORKERS_OP_DELETE_REACTOR_THREADS:
-        delete[] serv->reactor_threads;
-        return 0;
-    case SWR_WORKERS_OP_DESTROY_BARRIERS:
-        serv->reactor_thread_barrier.destroy();
-        serv->gs->manager_barrier.destroy();
-        return 0;
-    case SWR_WORKERS_OP_DESTROY_MESSAGE_BOX: {
-        // A shared mapping crates/server's new_message_box made.
-        auto *box = static_cast<swr_v1_memory_channel *>(serv->get_event_worker_pool()->message_box);
-        swr_v1_memory_channel_close(box);
-        sw_shm_free(box);
-        return 0;
-    }
-    case SWR_WORKERS_OP_CREATE_WORKER_PIPE: {
-        auto _sock = new UnixSocket(true, SOCK_DGRAM);
-        if (!_sock->ready()) {
-            delete _sock;
-            return 0;
-        }
-        serv->worker_pipes.emplace_back(_sock);
-        serv->workers[arg].pipe_master = _sock->get_socket(true);
-        serv->workers[arg].pipe_worker = _sock->get_socket(false);
-        serv->workers[arg].pipe_object = _sock;
-        return 1;
-    }
-    case SWR_WORKERS_OP_CREATE_PIPE_BUFFERS:
-        return (int64_t) serv->create_pipe_buffers();
-    case SWR_WORKERS_OP_WRITE_TO_WORKER: {
-        Worker *target = serv->get_worker(arg);
-        SendData _task;
-        memcpy(&_task, send, sizeof(SendData));
-        MessageBus *mb = &serv->get_thread(swoole_get_thread_id())->message_bus;
-        Socket *sock = mb->get_pipe_socket(target->pipe_master);
-        return mb->write(sock, &_task);
-    }
-    case SWR_WORKERS_OP_WRITE_TO_REACTOR: {
-        SendData task;
-        memcpy(&task, send, sizeof(SendData));
-        task.info.reactor_id = ctx->conn->reactor_id;
-        task.info.server_fd = swoole_get_worker_id();
-        return serv->message_bus.write(serv->get_reactor_pipe_socket(task.info.fd, task.info.reactor_id), &task);
-    }
-    case SWR_WORKERS_OP_FINISH_CLOSE:
-        return serv->factory_->finish(send);
-    default:
-        return swr_v1_factory_call(context, op, arg);
-    }
-}
+// crates/server/src/factory.rs's record, and crates/process reads its server first.
+static_assert(sizeof(Factory) == 2 * sizeof(void *) && offsetof(Factory, manager_) == sizeof(void *),
+              "Factory layout");
 
 static_assert(SW_SERVER_EVENT_RECV_DATA == 0 && SW_SERVER_EVENT_RECV_DGRAM == 1 && SW_SERVER_EVENT_SEND_DATA == 2 &&
                   SW_SERVER_EVENT_SEND_FILE == 3 && SW_SERVER_EVENT_CLOSE == 4 && SW_SERVER_EVENT_CONNECT == 5 &&
@@ -192,9 +102,6 @@ uint64_t WorkerContext::call(void *context, uint32_t op, uint64_t arg) {
         }
         return 0;
     }
-    case SWR_WORKERS_OP_FACTORY_END:
-        serv->factory_->end(info->fd, false);
-        return 0;
     case SWR_WORKERS_OP_STORE_CLIENT_CERT: {
         Connection *conn = serv->get_connection_verify_no_ssl(info->fd);
         if (conn) {
@@ -478,6 +385,8 @@ uint64_t ReactorProcessContext::call(void *context, uint32_t op, uint64_t arg) {
         return (int64_t) serv->message_bus.read(ctx->event->socket);
     case SWR_WORKERS_OP_INFO_TYPE:
         return pipe_buffer->info.type;
+    case SWR_WORKERS_OP_INFO_REACTOR_ID:
+        return (int64_t) pipe_buffer->info.reactor_id;
     case SWR_WORKERS_OP_ON_PIPE_MESSAGE:
         serv->onPipeMessage(serv, reinterpret_cast<EventData *>(pipe_buffer));
         return 0;
@@ -486,28 +395,6 @@ uint64_t ReactorProcessContext::call(void *context, uint32_t op, uint64_t arg) {
         return 0;
     case SWR_WORKERS_OP_STOP_ASYNC:
         serv->stop_async_worker(serv->get_worker(reactor->id));
-        return 0;
-    case SWR_WORKERS_OP_FINISH_SEND_FILE: {
-        SendData _send;
-        _send.info = pipe_buffer->info;
-        _send.data = pipe_buffer->data;
-        serv->factory_->finish(&_send);
-        return 0;
-    }
-    case SWR_WORKERS_OP_INFO_REACTOR_ID:
-        return (int64_t) pipe_buffer->info.reactor_id;
-    case SWR_WORKERS_OP_FINISH_SEND_DATA: {
-        SendData _send;
-        auto packet = serv->message_bus.get_packet();
-        memcpy(&_send.info, &pipe_buffer->info, sizeof(_send.info));
-        _send.info.type = SW_SERVER_EVENT_RECV_DATA;
-        _send.data = packet.data;
-        _send.info.len = packet.length;
-        serv->factory_->finish(&_send);
-        return 0;
-    }
-    case SWR_WORKERS_OP_END_ACTIVELY:
-        serv->factory_->end(pipe_buffer->info.fd, Server::CLOSE_ACTIVELY);
         return 0;
     case SWR_WORKERS_OP_COMMAND_REQUEST:
         serv->call_command_handler(serv->message_bus, sw_worker()->get_id(), serv->get_worker(0)->pipe_master);
@@ -789,6 +676,36 @@ static int TaskWorker_onPipeReceive(Reactor *reactor, Event *event) {
     return ctx.run(SWR_WORKERS_RUN_TASK_ON_PIPE);
 }
 
+static const swr_v1_thread_ops thread_ops = {
+    []() -> void * {
+        try { return new std::shared_ptr<Thread>(std::make_shared<Thread>()); }
+        catch (...) { return nullptr; }
+    },
+    [](void *slot) { delete static_cast<std::shared_ptr<Thread> *>(slot); },
+    [](void *slot) -> int32_t {
+        try {
+            auto &thread = *static_cast<std::shared_ptr<Thread> *>(slot);
+            if (thread->joinable()) thread->join();
+            return 0;
+        } catch (const std::system_error &error) { return error.code().value(); }
+          catch (...) { return EFAULT; }
+    },
+};
+
+std::shared_ptr<Thread> &ThreadFactory::thread_at(size_t index) const {
+    return *static_cast<std::shared_ptr<Thread> *>(swr_v1_thread_manager_thread(manager_, index));
+}
+
+// `new ThreadFactory(serv)`: a factory whose manager holds a thread for each worker and the manager.
+static Factory *thread_factory_new(Server *serv) {
+    void *manager = swr_v1_thread_manager_new();
+    if (!swr_v1_thread_manager_threads_init(manager, serv->get_all_worker_num() + 1, &thread_ops)) {
+        swr_v1_thread_manager_free(manager);
+        throw std::bad_alloc();
+    }
+    return static_cast<Factory *>(swr_v1_server_factory_new(serv, manager));
+}
+
 // What a crates/process/src/workers/thread.rs operation acts on.
 template <>
 struct WorkersNative<5> {
@@ -823,14 +740,8 @@ uint64_t ThreadContext::call(void *context, uint32_t op, uint64_t arg) {
                       swoole_sys_warning("calloc[2](%d) failed",
                                          static_cast<int>(serv->max_connection * sizeof(Connection))));
         return 0;
-    case SWR_WORKERS_OP_NEW_REACTOR_THREADS:
-        serv->reactor_threads = new ReactorThread[serv->reactor_num]();
-        return 0;
     case SWR_WORKERS_OP_NEW_THREAD_FACTORY:
-        return (uintptr_t) new ThreadFactory(serv);
-    case SWR_WORKERS_OP_DELETE_REACTOR_THREADS:
-        delete[] serv->reactor_threads;
-        return 0;
+        return (uintptr_t) thread_factory_new(serv);
     case SWR_WORKERS_TRACE_NOTIFY_MANAGER_EXIT:
         swoole_log_as("ThreadFactory::terminate_manager_thread",
                       swoole_trace_log(SW_TRACE_THREAD, "notify manager thread to exit"));
@@ -928,45 +839,6 @@ uint64_t ThreadContext::call(void *context, uint32_t op, uint64_t arg) {
     }
 }
 
-static const swr_v1_thread_ops thread_ops = {
-    []() -> void * {
-        try { return new std::shared_ptr<Thread>(std::make_shared<Thread>()); }
-        catch (...) { return nullptr; }
-    },
-    [](void *slot) { delete static_cast<std::shared_ptr<Thread> *>(slot); },
-    [](void *slot) -> int32_t {
-        try {
-            auto &thread = *static_cast<std::shared_ptr<Thread> *>(slot);
-            if (thread->joinable()) thread->join();
-            return 0;
-        } catch (const std::system_error &error) { return error.code().value(); }
-          catch (...) { return EFAULT; }
-    },
-};
-
-ThreadFactory::ThreadFactory(Server *server) : BaseFactory(server) {
-    manager_ = swr_v1_thread_manager_new();
-    if (!swr_v1_thread_manager_threads_init(manager_, server_->get_all_worker_num() + 1, &thread_ops)) {
-        swr_v1_thread_manager_free(manager_);
-        throw std::bad_alloc();
-    }
-}
-
-std::shared_ptr<Thread> &ThreadFactory::thread_at(size_t index) const {
-    return *static_cast<std::shared_ptr<Thread> *>(swr_v1_thread_manager_thread(manager_, index));
-}
-
-ThreadFactory::~ThreadFactory() {
-    ThreadFactory::shutdown();
-    swr_v1_thread_manager_free(manager_);
-}
-
-bool ThreadFactory::shutdown() {
-    int error = swr_v1_thread_manager_join_all(manager_);
-    if (error) throw std::system_error(error, std::generic_category());
-    return true;
-}
-
 // What a crates/process/src/workers/manager.rs operation acts on.
 template <>
 struct WorkersNative<3> {
@@ -1014,12 +886,6 @@ uint64_t ManagerContext::call(void *context, uint32_t op, uint64_t arg) {
     case SWR_WORKERS_OP_SET_ISOLATION:
         swoole_set_isolation(serv->group_, serv->user_, serv->chroot_);
         return 0;
-    case SWR_WORKERS_OP_KILL_EVENT_WORKERS:
-        serv->factory_->kill_event_workers();
-        return 0;
-    case SWR_WORKERS_OP_KILL_USER_WORKERS:
-        serv->factory_->kill_user_workers();
-        return 0;
     case SWR_WORKERS_OP_POP_MESSAGE:
         return (int64_t) serv->get_event_worker_pool()->pop_message(&ctx->msg, sizeof(ctx->msg));
     case SWR_WORKERS_OP_MESSAGE_TYPE:
@@ -1030,15 +896,10 @@ uint64_t ManagerContext::call(void *context, uint32_t op, uint64_t arg) {
     case SWR_WORKERS_OP_STOP_MESSAGE_WORKER:
         memcpy(&ctx->stop, ctx->msg.data, sizeof(ctx->stop));
         return ctx->stop.worker_id;
-    case SWR_WORKERS_OP_SPAWN_TASK_WORKER:
-        serv->factory_->spawn_task_worker(serv->get_worker(arg));
-        return 0;
     case SWR_WORKERS_OP_DETACH_STOPPED:
         swr_v1_process_worker_registry_detach(static_cast<swr_v1_process_worker_registry *>(serv->worker_registry),
                                               ctx->stop.pid);
         return 0;
-    case SWR_WORKERS_OP_RESPAWN_TASK_WORKER:
-        return (int64_t) serv->factory_->spawn_task_worker(ctx->worker);
     case SWR_WORKERS_OP_COMMAND_REPLY: {
         const auto result = detail::command_answer(ctx->handler, serv, ctx->task->data, ctx->task->info.len);
         SendData task{};
@@ -1104,8 +965,8 @@ static int64_t workers_enter(uint32_t operation, void *object, void *other, void
     case SWR_WORKERS_RUN_START_WORKER_THREADS:
     case SWR_WORKERS_RUN_STOP_WORKER_THREADS:
         return ThreadContext{serv,
-                             other ? static_cast<ThreadFactory *>(other)
-                                   : dynamic_cast<ThreadFactory *>(serv->factory_)}
+                             static_cast<ThreadFactory *>(other ? other
+                                                        : serv->is_thread_mode() ? serv->factory_ : nullptr)}
             .run(operation, arg);
     case SWR_WORKERS_RUN_INIT_TASK_WORKERS:
         return TaskWorkerContext{serv, serv->get_task_worker_pool()}.run(operation, arg);
@@ -1144,31 +1005,6 @@ static int64_t workers_enter(uint32_t operation, void *object, void *other, void
 }
 static const bool workers_enter_registered = (swr_v1_workers_set_enter(workers_enter), true);
 
-ProcessFactory::ProcessFactory(Server *server) : Factory(server) {}
-
-ProcessFactory::~ProcessFactory() = default;
-
-/**
- * kill and wait all user process
- */
-void Factory::kill_user_workers() const {
-    swr_v1_process_worker_registry_terminate(
-        worker_registry_of(server_), SWR_WORKER_USER, SIGTERM, swoole_kill, swoole_waitpid, [](int pid) {
-            swoole_log_as("Factory::kill_user_workers", swoole_sys_warning("waitpid(%d) failed", pid));
-        });
-}
-
-/**
- * [Manager] kill and wait all event worker process
- */
-void Factory::kill_event_workers() const {
-    swr_v1_process_worker_registry_terminate(
-        worker_registry_of(server_), SWR_WORKER_EVENT, SIGTERM, swoole_kill, swoole_waitpid, event_worker_waitpid_warn);
-}
-
-pid_t Factory::spawn_task_worker(Worker *worker) const {
-    return server_->get_task_worker_pool()->spawn(worker);
-}
 // ProcessPool's layout is Rust's swr_v1_pool_record (crates/process/src/process_pool.rs).
 #define SWR_POOL_FIELD(field, mirror)                                                                                  \
     static_assert(offsetof(ProcessPool, field) == offsetof(swr_v1_pool_record, mirror), #field " drift")

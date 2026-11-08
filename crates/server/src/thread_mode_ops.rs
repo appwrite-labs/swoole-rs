@@ -3,22 +3,25 @@
 //! `ThreadContext::call` hands every op it has no case for to
 //! [`swr_v1_thread_mode_call`].
 use core::ffi::{c_int, c_void};
+use core::ptr::{null, null_mut};
 
 use swoole_rs_corebase::{sw_calloc, sw_free};
 use swoole_rs_process::methods::{start_check, swoole_get_worker_type};
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_id, swr_v1_worker_type};
 use swoole_rs_process::workers::entry;
-use swoole_rs_process::workers::factory_methods::create_worker_pipes;
+use swoole_rs_process::workers::factory_methods::run;
+use swoole_rs_process::workers::ops::RUN_CREATE_WORKER_PIPES;
 use swoole_rs_process::workers::ops::{
     OP_ABORT, OP_ALL_CORE_WORKER_NUM, OP_ALL_WORKER_NUM, OP_CALLOC_CONNECTIONS,
     OP_CREATE_EVENT_WORKERS, OP_CREATE_USER_WORKERS, OP_CREATE_WORKER_PIPES,
-    OP_FREE_THREAD_CONNECTIONS, OP_GET_WORKER, OP_IS_MANAGER, OP_KILL_WORKER, OP_MANAGER_THREAD_ID,
-    OP_ON_AFTER_RELOAD, OP_ON_BEFORE_RELOAD, OP_ON_MANAGER_START, OP_ON_MANAGER_STOP,
-    OP_ON_USER_WORKER_START, OP_ON_WORKER_START, OP_ON_WORKER_STOP, OP_POOL_MAIN_LOOP, OP_PORT_ADD,
-    OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_LISTEN, OP_RUNNING, OP_SINGLE_REACTOR_PIPE,
-    OP_STORE_LISTEN_SOCKET, OP_TASK_START_CHECK, OP_TASK_WORKER_NUM, OP_TERMINATE_MANAGER_THREAD,
-    OP_THREAD_REACTOR_NUM, OP_USER_WORKER_NUM, OP_WORKER_ID, OP_WORKER_NUM, OP_WORKER_TYPE,
+    OP_DELETE_REACTOR_THREADS, OP_FREE_THREAD_CONNECTIONS, OP_GET_WORKER, OP_IS_MANAGER,
+    OP_KILL_WORKER, OP_MANAGER_THREAD_ID, OP_NEW_REACTOR_THREADS, OP_ON_AFTER_RELOAD,
+    OP_ON_BEFORE_RELOAD, OP_ON_MANAGER_START, OP_ON_MANAGER_STOP, OP_ON_USER_WORKER_START,
+    OP_ON_WORKER_START, OP_ON_WORKER_STOP, OP_POOL_MAIN_LOOP, OP_PORT_ADD, OP_PORT_COUNT,
+    OP_PORT_DGRAM, OP_PORT_LISTEN, OP_RUNNING, OP_SINGLE_REACTOR_PIPE, OP_STORE_LISTEN_SOCKET,
+    OP_TASK_START_CHECK, OP_TASK_WORKER_NUM, OP_TERMINATE_MANAGER_THREAD, OP_THREAD_REACTOR_NUM,
+    OP_USER_WORKER_NUM, OP_WORKER_ID, OP_WORKER_NUM, OP_WORKER_TYPE,
 };
 use swoole_rs_reactor::{SocketRecord, reactor_upstream};
 
@@ -100,6 +103,21 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         0
     };
     Some(match op {
+        OP_NEW_REACTOR_THREADS => {
+            // SAFETY: as above.
+            let state = unsafe { view::state(serv) };
+            let threads = crate::factory_ops::new_reactor_threads(state, config.reactor_num);
+            tables().reactor_threads = threads;
+            0
+        }
+        OP_DELETE_REACTOR_THREADS => {
+            let threads = tables().reactor_threads;
+            // SAFETY: the array `OP_NEW_REACTOR_THREADS` made, not used again.
+            unsafe {
+                crate::reactor_ops::ThreadRecord::delete_array(threads, config.reactor_num.into());
+            }
+            0
+        }
         OP_MANAGER_THREAD_ID | OP_ALL_WORKER_NUM => {
             // SAFETY: as above.
             let workers = unsafe { view::workers(serv) };
@@ -142,7 +160,18 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         // SAFETY: the live server.
-        OP_CREATE_WORKER_PIPES => u64::from(unsafe { create_worker_pipes(serv) }),
+        OP_CREATE_WORKER_PIPES => u64::from(
+            unsafe {
+                run(
+                    serv,
+                    RUN_CREATE_WORKER_PIPES,
+                    null_mut(),
+                    null_mut(),
+                    null(),
+                    0,
+                )
+            } != 0,
+        ),
         // SAFETY: as above.
         OP_CREATE_EVENT_WORKERS => u64::from(unsafe { create_event_workers(serv) }),
         // SAFETY: as above.

@@ -269,33 +269,27 @@ pub unsafe extern "C" fn swr_v1_process_worker_registry_snapshot_free(
     unsafe { snapshot.write(WorkerSnapshot::default()) };
 }
 
-/// Terminate every worker of `category`: send `signo` to each, then wait for each.
-/// `kill_fn(pid, signo)` sends the signal; `wait_fn(pid, &status, 0)` reaps (it is
-/// `swoole_waitpid`, which services signals and timers across `EINTR`); `warn_fn(pid)`
-/// is called when a wait reports failure. Workers stay registered; teardown frees the
-/// whole registry.
-///
-/// # Safety
-/// `registry` is a live handle; the three callbacks are valid for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_terminate(
-    registry: *const WorkerRegistry,
-    category: c_int,
-    signo: c_int,
-    kill_fn: extern "C" fn(c_int, c_int) -> c_int,
-    wait_fn: extern "C" fn(c_int, *mut c_int, c_int) -> c_int,
-    warn_fn: extern "C" fn(c_int),
-) {
-    // SAFETY: the caller lends a live registry handle.
-    let registry = unsafe { &*registry };
-    let pids: Vec<c_int> = registry.pids(category).collect();
-    for &pid in &pids {
-        kill_fn(pid, signo);
-    }
-    for &pid in &pids {
-        let mut status: c_int = 0;
-        if wait_fn(pid, &raw mut status, 0) < 0 {
-            warn_fn(pid);
+impl WorkerRegistry {
+    /// Terminate every worker of `category`: send `signo` to each, then wait for each.
+    /// `kill(pid, signo)` sends the signal; `wait(pid)` reaps (it is `swoole_waitpid`,
+    /// which services signals and timers across `EINTR`); `warn(pid)` is called when a
+    /// wait reports failure. Workers stay registered; teardown frees the whole registry.
+    pub fn terminate(
+        &self,
+        category: c_int,
+        signo: c_int,
+        kill: impl Fn(c_int, c_int) -> c_int,
+        wait: impl Fn(c_int) -> c_int,
+        warn: impl Fn(c_int),
+    ) {
+        let pids: Vec<c_int> = self.pids(category).collect();
+        for &pid in &pids {
+            kill(pid, signo);
+        }
+        for &pid in &pids {
+            if wait(pid) < 0 {
+                warn(pid);
+            }
         }
     }
 }
@@ -394,19 +388,19 @@ mod tests {
         static WARNED: RefCell<Vec<c_int>> = const { RefCell::new(Vec::new()) };
     }
 
-    extern "C" fn record_kill(pid: c_int, signo: c_int) -> c_int {
+    fn record_kill(pid: c_int, signo: c_int) -> c_int {
         KILLED.with(|k| k.borrow_mut().push((pid, signo)));
         0
     }
-    extern "C" fn record_wait_ok(pid: c_int, _status: *mut c_int, _options: c_int) -> c_int {
+    fn record_wait_ok(pid: c_int) -> c_int {
         WAITED.with(|w| w.borrow_mut().push(pid));
         pid
     }
-    extern "C" fn record_wait_fail(pid: c_int, _status: *mut c_int, _options: c_int) -> c_int {
+    fn record_wait_fail(pid: c_int) -> c_int {
         WAITED.with(|w| w.borrow_mut().push(pid));
         -1
     }
-    extern "C" fn record_warn(pid: c_int) {
+    fn record_warn(pid: c_int) {
         WARNED.with(|w| w.borrow_mut().push(pid));
     }
 
@@ -419,14 +413,7 @@ mod tests {
             swr_v1_process_worker_registry_register(reg, 10, p, CATEGORY_EVENT);
             swr_v1_process_worker_registry_register(reg, 11, p, CATEGORY_EVENT);
             swr_v1_process_worker_registry_register(reg, 20, p, CATEGORY_USER);
-            swr_v1_process_worker_registry_terminate(
-                reg,
-                CATEGORY_EVENT,
-                15,
-                record_kill,
-                record_wait_ok,
-                record_warn,
-            );
+            (*reg).terminate(CATEGORY_EVENT, 15, record_kill, record_wait_ok, record_warn);
             swr_v1_process_worker_registry_free(reg);
         }
         let mut killed = KILLED.with(|k| k.borrow().clone());
@@ -446,8 +433,7 @@ mod tests {
         WARNED.with(|w| w.borrow_mut().clear());
         unsafe {
             swr_v1_process_worker_registry_register(reg, 30, p, CATEGORY_USER);
-            swr_v1_process_worker_registry_terminate(
-                reg,
+            (*reg).terminate(
                 CATEGORY_USER,
                 15,
                 record_kill,

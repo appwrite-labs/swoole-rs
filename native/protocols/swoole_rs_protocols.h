@@ -106,7 +106,6 @@ void swr_v1_bus_pop(swr_bus *);
 ssize_t swr_v1_bus_read(swr_bus *, int fd, bool dgram, bool *nobufs, swr_bus_read *state);
 void swr_v1_bus_adopt(swr_bus *, void *data, size_t size, const void *allocator);
 /* next(context) numbers each message swr_v1_bus_write sends. */
-void swr_v1_bus_set_id_source(swr_bus *, uint64_t (*next)(void *context), void *context);
 /* Each message swr_v1_bus_write sends takes the next value of counter, an atomic int64_t. */
 void swr_v1_bus_count_ids(swr_bus *, void *counter);
 /* socket is a swoole::network::Socket. */

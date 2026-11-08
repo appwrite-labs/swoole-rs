@@ -35,6 +35,8 @@ mod dtls;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod event_worker_ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
+pub mod factory;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod factory_ops;
 mod json;
 mod layout;

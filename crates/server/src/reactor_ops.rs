@@ -667,7 +667,7 @@ pub(crate) unsafe fn answer(
     })
 }
 
-/// `ReactorThread` up to its message bus's allocator; master.cc asserts this layout.
+/// `ReactorThread`; server.cc asserts this layout.
 #[repr(C)]
 pub(crate) struct ThreadRecord {
     pub(crate) id: c_int,
@@ -678,16 +678,52 @@ pub(crate) struct ThreadRecord {
     /// `message_bus`: its Rust bus, then the allocator of its buffer and packets.
     pub(crate) bus: *mut c_void,
     pub(crate) allocator: *const swoole_rs_corebase::CoreAllocator,
-    /// The bus's `std::function` id generator, four words in libstdc++ and libc++.
-    id_generator: [usize; 4],
 }
 
 const _: () = assert!(
     core::mem::offset_of!(ThreadRecord, heartbeat_timer) == 32
         && core::mem::offset_of!(ThreadRecord, bus) == 40
-        && size_of::<ThreadRecord>() == 88,
-    "master.cc ReactorThread layout"
+        && size_of::<ThreadRecord>() == 56,
+    "server.cc ReactorThread layout"
 );
+
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+impl ThreadRecord {
+    /// `new ReactorThread[count]()`: each with a fresh bus over `allocator`.
+    pub(crate) fn new_array(
+        count: usize,
+        allocator: *const swoole_rs_corebase::CoreAllocator,
+    ) -> *mut c_void {
+        let size = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
+        let threads: Box<[Self]> = (0..count)
+            .map(|_| Self {
+                id: 0,
+                notify_pipe: core::ptr::null_mut(),
+                dispatch_count: 0,
+                pipe_command: core::ptr::null_mut(),
+                heartbeat_timer: core::ptr::null_mut(),
+                // SAFETY: no preconditions.
+                bus: unsafe { crate::pool_native::swr_v1_bus_create(size) },
+                allocator,
+            })
+            .collect();
+        Box::into_raw(threads).cast()
+    }
+
+    /// `delete[] threads`: the `count` threads [`Self::new_array`] made, and their buses.
+    ///
+    /// # Safety
+    /// `threads` is [`Self::new_array`]'s array of `count`, not used again.
+    pub(crate) unsafe fn delete_array(threads: *mut c_void, count: usize) {
+        let threads = core::ptr::slice_from_raw_parts_mut(threads.cast::<Self>(), count);
+        // SAFETY: as the caller guarantees.
+        let threads = unsafe { Box::from_raw(threads) };
+        for thread in &threads {
+            // SAFETY: the thread's own bus, freed once.
+            unsafe { crate::pool_native::swr_v1_bus_free(thread.bus) };
+        }
+    }
+}
 
 /// The ops over the context's reactor, sockets, connection, port and thread
 /// and the server's counters; else `None`. Inlined, as [`answer`] is.
