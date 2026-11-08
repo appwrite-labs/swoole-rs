@@ -2,7 +2,7 @@
 #define SWOOLE_RS_CO_SOCKET_H
 /* coroutine::Socket's scalar fields: Rust's CoSocket (crates/hooks/src/co_socket.rs),
  * in its order and types. swoole_coroutine_socket.h derives Socket from it and keeps
- * only the fields C++ owns (strings, proxies, the TLS context). Rust initialises,
+ * only the fields C++ owns (strings, proxies). Rust initialises,
  * opens, accepts and releases records; both sides assert the offsets below.
  * network::Socket is the reactor's record. */
 #include "swoole_rs_hooks.h"
@@ -68,7 +68,7 @@ struct swr_v1_co_socket_extra_prepared {
     const swr_v1_core_string *error;
     const swr_v1_core_string *connect_host;
     const swr_v1_core_string *ssl_host_name;
-    /* The SSLContext's owner, which the TLS members read; set with the context. */
+    /* The SSLContext's owner: enable_ssl_encrypt's, or the server's for an accepted socket. */
     const void **tls;
 };
 extern "C" {
@@ -90,7 +90,7 @@ enum { SWR_CO_SOCKET_BY_FAMILY, SWR_CO_SOCKET_BY_TYPE, SWR_CO_SOCKET_FD_BY_TYPE,
 enum { SWR_CO_SOCKET_OPENED = 1, SWR_CO_SOCKET_NODELAY_FAILED = 2 };
 uint32_t swr_v1_hook_co_socket_new(
     swr_v1_co_socket *socket, void *owner, int how, int fd, int socket_type, int domain, int kind, int protocol);
-/* The accepting constructor's fields; native code shares the TLS context. */
+/* The accepting constructor's fields; accept shares the TLS context after. */
 uint32_t swr_v1_hook_co_socket_accepted(swr_v1_co_socket *socket,
                                         void *owner,
                                         swr_v1_socket *conn,

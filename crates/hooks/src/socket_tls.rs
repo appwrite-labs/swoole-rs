@@ -1,11 +1,10 @@
-//! The `coroutine::Socket` TLS members, defined under their upstream (Itanium)
-//! symbols when the hybrid links this crate (`upstream-symbols`):
-//! `ssl_context_create`, `ssl_create`, `ssl_verify` and `ssl_handshake`. The socket's
-//! `SSLContext` owner is the one its extra record holds; native code shares the
-//! context and sets the owner with it.
+//! The `coroutine::Socket` TLS members: `ssl_context_create`, `ssl_create`,
+//! `ssl_verify` and `ssl_handshake`. The socket's `SSLContext` owner is the one its extra record holds:
+//! `enable_ssl_encrypt` makes it, and an accepted socket shares its server's.
 use crate::co_io::{Timer, available, set_err, swr_v1_hook_co_socket_default_err};
 use crate::co_socket::CoSocket;
 use crate::connect::{TlsOps, swr_v1_hook_ssl_handshake};
+use crate::lifecycle::swr_v1_hook_co_socket_close;
 use crate::socket_members::record;
 use crate::socket_wait::wait;
 use core::ffi::{c_int, c_void};
@@ -16,7 +15,8 @@ use swoole_rs_tls::upstream::{
 };
 use swoole_rs_tls::{
     OwnedTlsContext, owner_fields, owner_tls_host_name, reason_text, swoole_ssl_init,
-    swr_v1_tls_owner_socket_context, swr_v1_tls_owner_socket_session,
+    swr_v1_tls_owner_clone, swr_v1_tls_owner_new, swr_v1_tls_owner_socket_context,
+    swr_v1_tls_owner_socket_session, swr_v1_tls_warning,
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_RDWR`.
@@ -32,25 +32,62 @@ const SSL_CREATE_SESSION_FAILED: c_int = 1020;
 ///
 /// # Safety
 /// `socket` is a live record.
-pub(crate) unsafe fn owner(socket: *mut CoSocket) -> *const OwnedTlsContext {
+pub unsafe fn owner(socket: *mut CoSocket) -> *const OwnedTlsContext {
     // SAFETY: as the caller promises.
     let extra = unsafe { (*socket).extra };
     if extra.is_null() {
         return core::ptr::null();
     }
     // SAFETY: the record's live extra.
-    unsafe { (*extra).tls }.cast()
+    unsafe { (*extra).tls }
+}
+
+/// `Socket::enable_ssl_encrypt()`: a fresh `SSLContext` owner; false when the
+/// socket has one already.
+///
+/// # Safety
+/// `socket` is a live record whose extra record is set.
+pub unsafe fn enable_ssl(socket: *mut CoSocket) -> bool {
+    // SAFETY: as the caller promises.
+    let extra = unsafe { (*socket).extra };
+    // SAFETY: the record's live extra record.
+    let tls = unsafe { &mut (*extra).tls };
+    if !tls.is_null() {
+        return false;
+    }
+    *tls = swr_v1_tls_owner_new(swr_v1_tls_warning).owner;
+    true
+}
+
+/// The accepting constructor's TLS: `client`, accepted on `server`, shares the
+/// server's context and gets a session over it, or is closed when that fails.
+///
+/// # Safety
+/// `server` and `client` are live records whose extra records are set.
+pub(crate) unsafe fn share(server: *mut CoSocket, client: *mut CoSocket) {
+    // SAFETY: as the caller promises.
+    let owner = unsafe { owner(server) };
+    if owner.is_null() {
+        return;
+    }
+    // SAFETY: the server's live owner.
+    let shared = unsafe { swr_v1_tls_owner_clone(owner) };
+    // SAFETY: as the caller promises.
+    let extra = unsafe { (*client).extra };
+    // SAFETY: the client's live extra record, which takes the reference.
+    unsafe { (*extra).tls = shared };
+    // SAFETY: the live record and the context it now shares.
+    if !unsafe { create_session(client, owner) } {
+        // SAFETY: the live record, which nothing else holds yet.
+        unsafe { swr_v1_hook_co_socket_close(client) };
+    }
 }
 
 /// `Socket::ssl_context_create()`: the socket's context, configured for it.
 ///
 /// # Safety
 /// `this` is a live native socket with an `SSLContext`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6Socket18ssl_context_createEv")
-)]
-pub unsafe extern "C" fn ssl_context_create(this: *mut c_void) -> bool {
+pub(crate) unsafe fn ssl_context_create(this: *mut c_void) -> bool {
     let socket = record(this);
     // SAFETY: as the caller promises.
     let owner = unsafe { owner(socket) };
@@ -78,23 +115,7 @@ pub unsafe extern "C" fn ssl_context_create(this: *mut c_void) -> bool {
     }
 }
 
-/// `Socket::ssl_create(context)`: the socket's TLS session over `context`.
-///
-/// # Safety
-/// `this` is a live native socket and `context` a live `SSLContext`, whose first
-/// pointer is its owner.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6Socket10ssl_createEPNS_10SSLContextE")
-)]
-pub unsafe extern "C" fn ssl_create(this: *mut c_void, context: *const c_void) -> bool {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { context.cast::<*const OwnedTlsContext>().read() };
-    // SAFETY: as the caller promises.
-    unsafe { create_session(record(this), owner) }
-}
-
-/// `ssl_create`'s session over `owner`.
+/// `Socket::ssl_create(context)`: the socket's TLS session over `owner`.
 ///
 /// # Safety
 /// `socket` is a live record and `owner` live.
@@ -130,10 +151,6 @@ unsafe fn create_session(socket: *mut CoSocket, owner: *const OwnedTlsContext) -
 ///
 /// # Safety
 /// `this` is a live native socket with an `SSLContext` and a TLS session.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6Socket10ssl_verifyEb")
-)]
 pub unsafe extern "C" fn ssl_verify(this: *mut c_void, allow_self_signed: bool) -> bool {
     let socket = record(this);
     // SAFETY: as the caller promises.
@@ -312,10 +329,6 @@ pub(crate) fn read_timeout(socket: *mut CoSocket) -> f64 {
 ///
 /// # Safety
 /// `this` is a live native socket with an `SSLContext`, in a coroutine.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6Socket13ssl_handshakeEv")
-)]
 pub unsafe extern "C" fn ssl_handshake(this: *mut c_void) -> bool {
     let socket = record(this);
     // SAFETY: as the caller promises; the timer stops before this returns.
@@ -354,4 +367,32 @@ pub unsafe extern "C" fn ssl_handshake(this: *mut c_void) -> bool {
         unsafe { (*socket).ssl_handshaked = true };
     }
     done
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::co_socket::TestSocket;
+    use crate::socket_extra::{swr_v1_hook_socket_extra_free, swr_v1_hook_socket_extra_new};
+
+    #[test]
+    fn enabling_tls_makes_one_owner_which_an_accepted_socket_needs_a_server_owner_to_share() {
+        let (mut server, mut client) = (TestSocket::new(), TestSocket::new());
+        let extras = [
+            swr_v1_hook_socket_extra_new(),
+            swr_v1_hook_socket_extra_new(),
+        ];
+        server.0.extra = extras[0].owner;
+        client.0.extra = extras[1].owner;
+        unsafe { share(server.ptr(), client.ptr()) };
+        assert!(unsafe { owner(client.ptr()) }.is_null());
+        assert!(unsafe { enable_ssl(server.ptr()) });
+        let made = unsafe { owner(server.ptr()) };
+        assert!(!made.is_null());
+        assert!(!unsafe { enable_ssl(server.ptr()) });
+        assert_eq!(unsafe { owner(server.ptr()) }, made);
+        for extra in extras {
+            unsafe { swr_v1_hook_socket_extra_free(extra.owner) };
+        }
+    }
 }

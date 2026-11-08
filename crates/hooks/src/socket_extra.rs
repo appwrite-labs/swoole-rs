@@ -4,15 +4,16 @@ use crate::co_socket::CoSocket;
 use std::ffi::c_void;
 use std::ptr;
 use swoole_rs_corebase::StringSlot;
+use swoole_rs_tls::{OwnedTlsContext, swr_v1_tls_owner_free};
 
 /// A destructor callback: `hook(arg, socket)`.
 pub type CloseHook = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
 pub struct SocketExtra {
     pub(crate) strings: [StringSlot; 3],
-    /// The socket's `SSLContext` owner (null without one); native code shares the
-    /// context and keeps it alive while this is set.
-    pub(crate) tls: *const c_void,
+    /// The socket's `SSLContext` owner (null without one): one reference, which an
+    /// accepted socket shares with its server and the record releases.
+    pub(crate) tls: *const OwnedTlsContext,
     /// `set_dtor`'s callback, its argument and the native `Socket` it is passed.
     close_hook: Option<(CloseHook, *mut c_void, *mut c_void)>,
     /// The ring's host when the socket is a `UringSocket`, else null.
@@ -28,7 +29,14 @@ pub struct PreparedSocketExtra {
     error: *const StringSlot,
     connect_host: *const StringSlot,
     ssl_host_name: *const StringSlot,
-    tls: *mut *const c_void,
+    tls: *const *const OwnedTlsContext,
+}
+impl Drop for SocketExtra {
+    fn drop(&mut self) {
+        // SAFETY: the record's own reference, released once; the network::Socket and
+        // its session went first (`swr_v1_hook_co_socket_release`).
+        unsafe { swr_v1_tls_owner_free(self.tls) };
+    }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_socket_extra_new() -> PreparedSocketExtra {
@@ -51,7 +59,7 @@ pub extern "C" fn swr_v1_hook_socket_extra_new() -> PreparedSocketExtra {
         // SAFETY: the third slot is within the same live array.
         ssl_host_name: unsafe { strings.add(2) },
         // SAFETY: the fresh Box's own field.
-        tls: unsafe { &raw mut (*owner).tls },
+        tls: unsafe { &raw const (*owner).tls },
     }
 }
 /// `UringSocket`'s constructors (`swoole_socket_impl.h`): with `io_uring`, Rust runs
@@ -124,9 +132,9 @@ mod tests {
     #[test]
     fn tls_slot_is_the_extra_records_owner() {
         let prepared = swr_v1_hook_socket_extra_new();
-        let owner = 0x40 as *const c_void;
-        unsafe { *prepared.tls = owner };
-        assert_eq!(unsafe { (*prepared.owner).tls }, owner);
+        let owner = swoole_rs_tls::swr_v1_tls_owner_new(swoole_rs_tls::swr_v1_tls_warning).owner;
+        unsafe { (*prepared.owner).tls = owner };
+        assert_eq!(unsafe { *prepared.tls }, owner);
         unsafe { swr_v1_hook_socket_extra_free(prepared.owner) };
     }
 }
