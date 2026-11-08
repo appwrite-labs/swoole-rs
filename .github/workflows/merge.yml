@@ -106,9 +106,12 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - run: >
-          gh cache list --ref refs/heads/main --key ccache-${{ runner.os }}- --sort created_at --order desc
-          --limit 100 --json id --jq '.[2:][].id' | xargs -r -n1 gh cache delete
+      # zts.yml keeps its own ccache-zts- line.
+      - run: |
+          for key in ccache-${{ runner.os }}- ccache-zts-${{ runner.os }}-; do
+            gh cache list --ref refs/heads/main --key "$key" --sort created_at --order desc \
+              --limit 100 --json id --jq '.[2:][].id' | xargs -r -n1 gh cache delete
+          done
 
   # Every pinned PHPT on upstream and on the all-modules hybrid: any test that passes
   # on upstream must pass on the hybrid (corpus/upstream/gate.py).

@@ -20,6 +20,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      # Main's release build: the dependencies; zend-sys and the crates above it rebuild
+      # against this PHP (PHP_CONFIG). Hybrid build trees must start clean.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: false
+      - run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
       - uses: ./.github/actions/install
       # Restored only: the pinned reference is rebuilt for ZTS below, never saved.
       - uses: actions/cache/restore@v4
@@ -31,11 +38,15 @@ jobs:
           path: target/php-zts
           key: php-zts-${{ runner.os }}-${{ hashFiles('.devcontainer/php-zts.sh') }}
       - run: .devcontainer/php-zts.sh target/php-zts
+      # ZTS objects never hit the shared ccache (other flags), so this job keeps its own,
+      # saved on main only, like every cache (#1521).
       - uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
+          key: ccache-zts-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-zts-${{ runner.os }}-
+            ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       # The control is the pinned reference itself, unpatched.
       - run: |
@@ -47,6 +58,11 @@ jobs:
           cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
           for engine in upstream hybrid; do target/php-zts/bin/php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -E '^thread '; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
+      - if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-zts-${{ runner.os }}-${{ github.sha }}
       - name: Composed whole-thread escape scopes
         run: |
           python3 tests/modules/phphelpers/exit_guard.py --php "$PWD/target/php-zts/bin/php" \
