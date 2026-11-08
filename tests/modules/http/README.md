@@ -97,6 +97,26 @@ under its own name: `websocket_small`, `websocket_medium`, `websocket_big`,
 the lane (they need Node.js and its ws package). Each curl runs to completion before
 its log is read, where upstream slept a second after starting it.
 
+The HTTP/1 TESTs that start a server are `server/src/http1.rs`, in the same binary and
+phase, and need no fixture: `swr_v1_server_new`/`_delete` (native/integration/server.cc)
+make and delete the `Server`, and the cases set its configuration, callback slots,
+tables, port configuration and static-handler sets through the Rust records
+`ServerFields` and `PortFields` view, whose layouts each new server checks against
+`http1.rs`'s copies (`swr_v1_server_record_layout`). Upstream's fixtures, inputs and
+expected values are kept; where they ran llhttp the handlers read the request line and
+headers themselves. The client is a port of core-tests' cpp-httplib 0.7
+(`server/src/client.rs`): a failed request is `None` where httplib returns `nullptr`.
+An expectation in a server callback can't unwind through the server, so it is recorded
+and the case fails on it once the server stops; in a process-mode worker it goes
+unseen, as gtest's did. `abort_connection` and `get_package_length` are #1881.
+
+| Fixture | TESTs |
+| --- | --- |
+| `test_base_server` (base mode, client in a thread) | `get`, `reset_connection`, `heartbeat_check_interval`, `idle_time`, `post`, `static_get`, `static_files`, `not_modify` |
+| `test_proxy_server` (forked) | `proxy_file`, `proxy_response` |
+| `test_http_server` (forked, or base mode for `chunked`) | `heartbeat`, `overflow`, `process`, `process1`, `redundant_callback`, `pause`, `bad_request`, `chunked`, `max_queued_bytes`, `dispatch_func_return_error_worker_id`, `http_range`, `http_range2` |
+| none | `fail` |
+
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
 covered by the PHPTs.
