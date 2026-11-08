@@ -687,6 +687,14 @@ fn main() {
     cc::Build::new()
         .file("upstream/thirdparty/multipart_parser.c")
         .compile("swoole_oracle_multipart_parser");
+    // The bundled llhttp the HTTP server and client parse with.
+    cc::Build::new()
+        .files(
+            ["api.c", "http.c", "llhttp.c"]
+                .map(|file| format!("upstream/thirdparty/llhttp/{file}")),
+        )
+        .extra_warnings(false)
+        .compile("swoole_oracle_llhttp");
     cpp()
         .define("SWR_PROTO_ENGINE", "candidate")
         .define("SWR_PROTO_INC", "\"protocols_candidate.inc\"")
