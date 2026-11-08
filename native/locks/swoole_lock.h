@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Swoole's include/swoole_lock.h, owned here: Mutex (core-tests construct it) and the
- * server's Barrier, over Rust's lock ABI (lock.cc). Swoole\Lock's RW, spin and coroutine
- * locks call that ABI directly and have no C++ class. */
+/* Swoole's include/swoole_lock.h, owned here: the server's Barrier, whose methods are Rust
+ * (crates/locks) under their C++ symbols. Every lock kind is Rust's lock ABI
+ * (swoole_rs_locks.h), with no C++ class. */
 #pragma once
 
 #include "swoole_memory.h"
@@ -20,25 +20,11 @@ struct Lock {
     };
 };
 
-struct MutexImpl;
-
-class Mutex {
-    MutexImpl *impl;
-    bool shared_;
-
-  public:
-    explicit Mutex(bool shared);
-    Mutex(const Mutex &) = delete;
-    Mutex &operator=(const Mutex &) = delete;
-    ~Mutex();
-    int lock(int operation = LOCK_EX, int timeout_msec = -1);
-    int unlock();
-};
-
 #if defined(HAVE_PTHREAD_BARRIER) && !(defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__))
 #define SW_USE_PTHREAD_BARRIER
 #endif
 
+// crates/locks/src/lib.rs's Barrier.
 struct Barrier {
 #ifdef SW_USE_PTHREAD_BARRIER
     pthread_barrier_t barrier_;

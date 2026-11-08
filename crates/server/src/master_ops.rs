@@ -2665,14 +2665,12 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use swoole_rs_process::command::{TO_MANAGER, TO_REACTOR_THREAD, TO_TASK_WORKER};
     /// `SW_SOCK_SSL`.
     const SOCK_SSL: c_int = 1 << 9;
-    // SAFETY: native/integration/server.cc's, native/locks', crates/ports' and
+    // SAFETY: native/integration/server.cc's, crates/ports' and
     // crates/reactor's, under their upstream symbols.
     unsafe extern "C-unwind" {
         fn swr_v1_server_port_new(serv: *mut c_void) -> *mut c_void;
         fn swr_v1_server_port_delete(port: *mut c_void);
         fn swr_v1_server_barrier(serv: *mut c_void, manager: bool) -> *mut c_void;
-        #[link_name = "_ZN6swoole7Barrier4waitEv"]
-        fn barrier_wait(barrier: *mut c_void);
         #[link_name = "_ZN6swoole10ListenPort16ssl_context_initEv"]
         fn ssl_context_init(port: *mut c_void) -> bool;
         #[link_name = "_ZN6swoole10ListenPort13create_socketEv"]
@@ -2714,8 +2712,8 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_REACTOR_BARRIER | OP_MANAGER_BARRIER => {
             // SAFETY: the live server's barrier, initialized at startup.
             let barrier = unsafe { swr_v1_server_barrier(serv, op == OP_MANAGER_BARRIER) };
-            // SAFETY: as above.
-            unsafe { barrier_wait(barrier) };
+            // SAFETY: as above: a live, initialized swoole::Barrier.
+            swoole_rs_locks::barrier_wait(unsafe { &*barrier.cast::<swoole_rs_locks::Barrier>() });
             0
         }
         OP_RELEASE_PIPE_BUFFERS => {

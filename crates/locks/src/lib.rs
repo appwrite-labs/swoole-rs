@@ -387,100 +387,94 @@ macro_rules! atomic_api {
 atomic_api!(swr_v1_locks_atomic32, atomic32, AtomicU32, u32);
 atomic_api!(swr_v1_locks_atomic64, atomic64, AtomicI64, i64);
 
-// Barrier words follow the atomic API's contract; it rejects null and misaligned ones.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_barrier_init(
-    count: *mut u32,
-    arrived: *mut u32,
-    parties: u32,
-) {
-    // SAFETY: `count` is null or a live, atomically accessed word.
-    unsafe { swr_v1_locks_atomic32(count, 1, parties, 0) };
-    // SAFETY: `arrived` is null or a live, atomically accessed word.
-    unsafe { swr_v1_locks_atomic32(arrived, 1, 0, 0) };
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_barrier_wait(count: *mut u32, arrived: *mut u32) {
-    if count.is_null() || arrived.is_null() {
-        return;
-    }
-    let load = |word| {
-        // SAFETY: `word` is one of the caller's live, atomically accessed barrier words.
-        unsafe { swr_v1_locks_atomic32(word, 0, 0, 0) }
-    };
-    // SAFETY: as above.
-    unsafe { swr_v1_locks_atomic32(arrived, 2, 1, 0) };
-    while load(arrived) != load(count) {
-        // SAFETY: usleep has no memory preconditions.
-        unsafe { usleep(10_000) };
-        std::sync::atomic::fence(Ordering::SeqCst);
-    }
+/// `swoole::Barrier` (`native/locks/swoole_lock.h`), whose methods are these exports under
+/// their C++ symbols. Linux uses a pthread barrier, as upstream's `SW_USE_PTHREAD_BARRIER`
+/// (glibc and musl have `pthread_barrier_init`); macOS keeps the arrival/count words.
+#[repr(C)]
+pub struct Barrier {
+    #[cfg(target_os = "linux")]
+    barrier: std::cell::UnsafeCell<pthread_barrier_t>,
+    #[cfg(target_os = "linux")]
+    attr: std::cell::UnsafeCell<pthread_barrierattr_t>,
+    #[cfg(target_os = "linux")]
+    shared: std::sync::atomic::AtomicBool,
+    #[cfg(not(target_os = "linux"))]
+    count: AtomicU32,
+    #[cfg(not(target_os = "linux"))]
+    arrived: AtomicU32,
 }
 
-// Native pthread storage is borrowed, never moved or exposed as a Rust reference.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_pthread_barrier(
-    storage: *mut c_void,
-    storage_len: usize,
-    attr: *mut c_void,
-    attr_len: usize,
-    operation: u32,
-    shared: i32,
-    parties: u32,
-) -> i32 {
+// SAFETY: pthread barriers are made for concurrent waits; the caller serializes init and
+// destroy against them, as upstream's Barrier requires.
+#[cfg(target_os = "linux")]
+unsafe impl Sync for Barrier {}
+
+/// `Barrier::init(bool shared, int count)`. Shared attrs are initialized before
+/// `setpshared`, fixing upstream's use of an uninitialized attribute.
+#[unsafe(export_name = "_ZN6swoole7Barrier4initEbi")]
+pub extern "C" fn barrier_init(barrier: &Barrier, shared: bool, count: c_int) {
     #[cfg(target_os = "linux")]
     {
-        if storage.is_null()
-            || storage_len != size_of::<pthread_barrier_t>()
-            || !(storage as usize).is_multiple_of(align_of::<pthread_barrier_t>())
-            || attr.is_null()
-            || attr_len != size_of::<pthread_barrierattr_t>()
-            || !(attr as usize).is_multiple_of(align_of::<pthread_barrierattr_t>())
-        {
-            return EINVAL;
+        barrier.shared.store(shared, Ordering::Relaxed);
+        let attr = barrier.attr.get();
+        if shared {
+            // SAFETY: `attr` is this barrier's writable attribute storage.
+            unsafe { pthread_barrierattr_init(attr) };
+            // SAFETY: `attr` was initialized above.
+            unsafe { pthread_barrierattr_setpshared(attr, PTHREAD_PROCESS_SHARED) };
         }
-        // Both regions are non-null, exactly sized and aligned (checked above) and lent
-        // by the caller, which serializes init and destroy against waits.
-        let (barrier, attr) = (storage.cast(), attr.cast());
-        match operation {
-            0 => {
-                if shared != 0 {
-                    // SAFETY: `attr` is writable attribute storage.
-                    unsafe { pthread_barrierattr_init(attr) };
-                    // SAFETY: `attr` was initialized above.
-                    unsafe { pthread_barrierattr_setpshared(attr, PTHREAD_PROCESS_SHARED) };
-                }
-                let attr = if shared != 0 { attr } else { std::ptr::null() };
-                // SAFETY: `barrier` is writable, unused storage; `attr` is null or initialized.
-                unsafe { pthread_barrier_init(barrier, attr, parties) }
-            }
-            // SAFETY: `barrier` was initialized by operation 0.
-            1 => unsafe { pthread_barrier_wait(barrier) },
-            2 => {
-                // SAFETY: `barrier` is initialized, has no waiters and is destroyed once.
-                let result = unsafe { pthread_barrier_destroy(barrier) };
-                if shared != 0 {
-                    // SAFETY: `attr` was initialized by operation 0 and is destroyed once.
-                    unsafe { pthread_barrierattr_destroy(attr) };
-                }
-                result
-            }
-            _ => EINVAL,
-        }
+        let attr = if shared {
+            attr.cast_const()
+        } else {
+            std::ptr::null()
+        };
+        // SAFETY: the caller initializes an unused barrier once, before any wait;
+        // `attr` is null or initialized.
+        unsafe { pthread_barrier_init(barrier.barrier.get(), attr, count.cast_unsigned()) };
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (
-            storage,
-            storage_len,
-            attr,
-            attr_len,
-            operation,
-            shared,
-            parties,
-        );
-        ENOTSUP
+        let _ = shared;
+        barrier
+            .count
+            .store(count.cast_unsigned(), Ordering::Relaxed);
+        barrier.arrived.store(0, Ordering::Relaxed);
     }
+}
+
+/// `Barrier::wait()`.
+#[unsafe(export_name = "_ZN6swoole7Barrier4waitEv")]
+pub extern "C" fn barrier_wait(barrier: &Barrier) {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: the barrier was initialized by `barrier_init` and is not yet destroyed.
+        unsafe { pthread_barrier_wait(barrier.barrier.get()) };
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        barrier.arrived.fetch_add(1, Ordering::SeqCst);
+        while barrier.arrived.load(Ordering::Relaxed) != barrier.count.load(Ordering::Relaxed) {
+            // SAFETY: usleep has no memory preconditions.
+            unsafe { usleep(10_000) };
+            std::sync::atomic::fence(Ordering::SeqCst);
+        }
+    }
+}
+
+/// `Barrier::destroy()`.
+#[unsafe(export_name = "_ZN6swoole7Barrier7destroyEv")]
+pub extern "C" fn barrier_destroy(barrier: &Barrier) {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: the barrier is initialized, has no waiters and is destroyed once.
+        unsafe { pthread_barrier_destroy(barrier.barrier.get()) };
+        if barrier.shared.load(Ordering::Relaxed) {
+            // SAFETY: init initialized the attribute of a shared barrier.
+            unsafe { pthread_barrierattr_destroy(barrier.attr.get()) };
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = barrier;
 }
 
 // The word functions below take null or a pointer to live u32 storage that is only
@@ -639,6 +633,23 @@ mod tests {
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn barrier_releases_every_party_together() {
+        let barrier = Box::new(unsafe { std::mem::zeroed::<super::Barrier>() });
+        barrier_init(&barrier, false, 4);
+        let arrived = AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    arrived.fetch_add(1, Ordering::SeqCst);
+                    barrier_wait(&barrier);
+                    assert_eq!(arrived.load(Ordering::SeqCst), 4);
+                });
+            }
+        });
+        barrier_destroy(&barrier);
+    }
 
     // What configure finds: Linux has pthread_mutex_timedlock and pthread_rwlock_timed*.
     const CAPABILITIES: u32 = if cfg!(target_os = "linux") { 3 } else { 0 };

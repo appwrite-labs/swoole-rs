@@ -1,8 +1,9 @@
 # Locks and atomics ABI
 
-Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. `native/locks/lock.cc`
-holds the `Mutex` and `Barrier` methods over this ABI (declared in this directory's
-`swoole_lock.h`); crates/phplocks is `Swoole\Atomic`, `Swoole\Lock`,
+Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. No lock has a C++ class: the
+server, Table and crates/phplocks call this ABI, and `swoole::Barrier`'s methods (declared in
+this directory's `swoole_lock.h`) are Rust under their C++ symbols. The module has no C or C++
+source. crates/phplocks is `Swoole\Atomic`, `Swoole\Lock`,
 `Coroutine\Lock` and the ZTS `Thread\Atomic`, `Atomic\Long` and `Thread\Lock`,
 MINITs included. A thread resource keeps its word or private lock in an `Arc`
 (upstream's `ThreadResource`), which crates/phpthread's containers share between
@@ -28,22 +29,22 @@ destroy run in Rust via libc. On Linux, timed pthread entry points are selected
 by caller capability bits (mutex = 1, RW = 2); macOS and configurations without
 them keep the pinned `sw_wait_for` attempt/usleep/backoff order. `LOCK_NB` takes
 precedence over a positive timeout; RW `LOCK_SH` takes precedence over exclusive.
-Timeout <= 0 blocks. Syscall and pthread errors are returned as-is. Constructor
-failure still throws the native `system_error` with upstream errno/string.
+Timeout <= 0 blocks. Syscall and pthread errors are returned as-is; init failure
+returns the error (upstream's `Mutex` constructor threw it as a `system_error`).
 
 Deliberate fixes relative to upstream:
 
 - On pthread lock-init failure Rust destroys the initialized attribute
-  (preserving errno); native then frees the storage and throws the same error.
-  Upstream leaked the attribute and allocation.
+  (preserving errno) and the caller frees the storage. Upstream leaked the
+  attribute and allocation.
 - Attribute init and shared-attribute setup return their first error instead of
   continuing into lock init. Failed setup releases the initialized attribute.
 
 ## Barrier
 
-Barrier class layout is unchanged. Linux borrows the native barrier and attr
-storage with runtime size/alignment checks and uses libc pthread
-init/wait/destroy. Shared attrs are initialized before `setpshared`, fixing
+Barrier class layout is unchanged (`crates/locks/src/lib.rs`'s `Barrier` is the same
+`repr(C)` record). Linux uses libc pthread init/wait/destroy on its barrier and attr,
+as upstream's `SW_USE_PTHREAD_BARRIER`. Shared attrs are initialized before `setpshared`, fixing
 upstream `Barrier::init`'s use of an uninitialized attribute. Non-pthread
 barriers keep the original one-shot arrival/count words, 10 ms polling and fence;
 fallback words must be aligned native `u32` storage.
