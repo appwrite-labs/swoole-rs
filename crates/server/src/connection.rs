@@ -12,8 +12,7 @@ use crate::ops::{
     OP_PORT_SNDBUF, OP_PORT_SSL, OP_REACTOR_ADD_READ, OP_SEND_INCOMING, OP_SESSION_BIND,
     OP_SESSION_CLAIM, OP_SESSION_ROUND, OP_SET_MAX_CONNECTION, OP_SET_MAXFD, OP_SET_MINFD,
     OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF, OP_SINGLE_THREAD, OP_SOCK_FD, OP_SOCK_SSL,
-    OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR, OP_SSL_CREATE, OP_UNLOCK, TRACE_ACCEPT,
-    TRACE_TIMEOUT,
+    OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR, OP_SSL_CREATE, OP_UNLOCK,
 };
 use crate::{Host, SW_ERR, SW_OK};
 
@@ -39,7 +38,6 @@ pub(crate) fn accept<H: Host>(h: &mut H) -> crate::Effect<i64> {
             h.get(LOG_ACCEPT_FAILED)?;
             return Ok(SW_OK);
         }
-        h.get(TRACE_ACCEPT)?;
         if h.signed(OP_SOCK_FD)? >= i64::from(max_connection(h)?) {
             h.get(LOG_TOO_MANY_CONNECTIONS)?;
             h.get(OP_ABORT)?;
@@ -157,7 +155,6 @@ pub(crate) fn idle_timeout<H: Host>(h: &mut H) -> crate::Effect<()> {
         return Ok(());
     }
     let now = h.float(OP_NOW_MS)?;
-    h.get(TRACE_TIMEOUT)?;
     let idle = h.float(OP_PORT_IDLE_TIME)?;
     if now - h.float(OP_LAST_RECEIVED)? < idle && now - h.float(OP_LAST_SENT)? < idle {
         return Ok(());

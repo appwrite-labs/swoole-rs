@@ -14,7 +14,6 @@ use crate::ops::{
     OP_ST_PIPE_FD, OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_SOCK_FREE,
     OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_VALID_CONN, OP_ST_VISIT,
     OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE,
-    TRACE_ST_SCHEDULE,
 };
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
 #[cfg(test)]
@@ -445,8 +444,6 @@ pub(crate) fn idle_worker<H: Host>(h: &mut H) -> crate::Effect<i64> {
     if !found {
         h.get(OP_SET_WARNING)?;
     }
-    let round = h.state()?.round.load(Ordering::SeqCst);
-    h.op(TRACE_ST_SCHEDULE, u64::from(key) | (u64::from(round) << 32))?;
     Ok(i64::from(key))
 }
 
@@ -725,7 +722,6 @@ mod tests {
         );
         assert_eq!(busy.args(OP_WORKER_IDLE), vec![2, 0, 1, 2]);
         assert_eq!(busy.called(OP_SET_WARNING), 1);
-        assert_eq!(busy.args(TRACE_ST_SCHEDULE), vec![2 | (6 << 32)]);
     }
 
     #[test]

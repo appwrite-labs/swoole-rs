@@ -44,6 +44,10 @@ use crate::ops::{
     OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
 };
 use crate::ops::{
+    OP_ABORT, OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH, OP_ST_DTLS_ADD,
+    OP_ST_PIPE_BIND, OP_ST_TIMER_DEL, OP_ST_VALID_CONN,
+};
+use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
     OP_ALLOC_PORT_GS, OP_ALLOC_SESSIONS, OP_ALLOC_TASK_RESULTS, OP_ALLOC_WORKERS,
     OP_CREATE_FACTORY, OP_DESTROY_FACTORY, OP_DESTROY_WORKER, OP_FREE_USER_WORKERS,
@@ -89,6 +93,15 @@ const _: () = assert!(
     SESSION_SIZE == 16 && size_of::<PortCounters>() == 80,
     "master.cc sizeof(Session), sizeof(ServerPortGS)"
 );
+/// `SW_BUFFER_MIN_SIZE`, which master.cc asserts.
+const BUFFER_MIN_SIZE: u32 = 65536;
+
+unsafe extern "C-unwind" {
+    /// crates/timer's `swoole_timer_del`.
+    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
+    fn swoole_timer_del(node: *mut core::ffi::c_void) -> bool;
+}
+
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
 /// `SW_HOST_MAXSIZE`: `sizeof(sockaddr_un::sun_path)`.
@@ -238,7 +251,7 @@ pub(crate) unsafe fn answer(
     if state.config().is_null() || state.tables().is_null() {
         return None;
     }
-    let o = Objects { ctx, state };
+    let mut o = Objects { ctx, state };
     let cpus = c_int::from(swoole_rs_corebase::swr_v1_core_cpu_num());
     Some(match op {
         // Logs.
@@ -1223,9 +1236,80 @@ pub(crate) unsafe fn answer(
             u64::from(!results.is_null())
         }
         OP_INIT_LOCAL_ADDRS => u64::from(crate::local_addr::init(o.state)),
+        // SAFETY: per the caller, for the ops below.
+        op => return unsafe { forwarded(&mut o, op, arg) },
+    })
+}
+
+/// The ops over the server's tables and ports that master.cc made, and the
+/// `Server` methods crates/server defines that it forwarded to; then [`lifecycle`].
+///
+/// # Safety
+/// As [`answer`].
+unsafe fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    Some(match op {
+        OP_ALLOC_CONNECTIONS => {
+            let size = size_of::<ConnectionRecord>();
+            let list = swoole_rs_corebase::sw_calloc(o.tables().max_connection as usize, size);
+            o.tables().connection_list = list.cast();
+            u64::from(!list.is_null())
+        }
+        OP_PORT_MAX_LENGTH | OP_PORT_MIN_LENGTH => {
+            let index = usize::try_from(arg).unwrap_or(usize::MAX);
+            let &port = o.tables().ports().get(index)?;
+            // SAFETY: one of the server's live ports.
+            let protocol = &mut unsafe { port_config(port) }.protocol;
+            if op == OP_PORT_MIN_LENGTH {
+                protocol.package_max_length = BUFFER_MIN_SIZE;
+            }
+            u64::from(protocol.package_max_length)
+        }
+        OP_ST_TIMER_DEL => {
+            let timer = match arg {
+                0 => &mut o.config().master_timer,
+                1 => &mut o.config().heartbeat_timer,
+                _ => &mut o.tables().enable_accept_timer,
+            };
+            // SAFETY: the server's live timer node, or null, which the timer ignores.
+            unsafe { swoole_timer_del(core::mem::replace(timer, core::ptr::null_mut())) };
+            0
+        }
+        OP_ST_PIPE_BIND => {
+            let fd = isize::try_from(arg).unwrap_or(isize::MAX);
+            let conn = o.tables().connection_list.wrapping_offset(fd);
+            // SAFETY: the pipe's fd indexes the live connection list, as in master.cc.
+            unsafe { (*conn).object = o.ctx.object };
+            0
+        }
+        OP_ST_VALID_CONN => {
+            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
+            let fd = libc::c_long::from(arg as c_int);
+            // SAFETY: the live state's connection table.
+            let conn = unsafe { crate::swr_v1_server_connection(o.state, fd, 0) };
+            // SAFETY: null or a slot of the live table, whose socket is null or live.
+            u64::from(unsafe { crate::reactor_ops::valid(conn) })
+        }
+        OP_ABORT => {
+            let ctx = &o.ctx;
+            // SAFETY: the context's live reactor, port and accepted socket.
+            unsafe {
+                crate::server_methods::abort_connection(ctx.serv, ctx.reactor, ctx.port, ctx.sock);
+            };
+            0
+        }
+        OP_ST_DTLS_ADD => {
+            // SAFETY: the context's live port, whose listening socket is live.
+            let server_fd = unsafe { &*o.port().socket.cast::<SocketRecord>() }.fd;
+            let (serv, port, sock) = (o.ctx.serv, o.ctx.port, o.ctx.sock);
+            // SAFETY: the context's live port and the DTLS session's socket.
+            let conn =
+                unsafe { crate::server_methods::add_connection(serv, port, sock, server_fd) };
+            o.ctx.conn = conn;
+            u64::from(!conn.is_null())
+        }
         // SAFETY: each lifecycle call below runs on the context's live server, at
         // the point of startup or shutdown where upstream's Server makes it.
-        op => return unsafe { lifecycle(&o, op, arg) },
+        op => return unsafe { lifecycle(o, op, arg) },
     })
 }
 
