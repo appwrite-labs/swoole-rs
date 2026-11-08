@@ -33,7 +33,7 @@ void swr_v1_signalfd_close(void);
 bool swr_v1_signalfd_clear(void);
 swr_v1_signalfd_received swr_v1_signalfd_receive(int fd);
 #endif
-/* Byte-exact mirror of swoole::Worker (include/swoole_server.h), whose layout
+/* Byte-exact mirror of swoole::Worker (swoole_rs_process_pool.h), whose layout
  * Rust owns (crates/process/src/worker_record.rs). A static_assert in the process
  * patch locks sizeof/offsetof of swoole::Worker to this mirror, so a layout drift
  * fails the build rather than corrupting shared memory. The scalar process fields

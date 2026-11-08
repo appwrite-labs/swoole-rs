@@ -7,7 +7,7 @@
 
 use std::ffi::{c_int, c_void};
 
-/// Byte-exact mirror of `swoole::Worker` (`include/swoole_server.h`). Field order,
+/// Byte-exact mirror of `swoole::Worker` (`native/process/swoole_rs_process_pool.h`). Field order,
 /// types and padding match the pinned C++ struct; the pointer and atomic fields are
 /// opaque storage here (owned by C++ for now). Only the scalar process fields are
 /// migrated behind the accessors below.
