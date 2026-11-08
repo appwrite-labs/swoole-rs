@@ -1,11 +1,14 @@
 //! `cfg(zts)` when the PHP being built for is thread-safe, so per-thread state
 //! is thread-local there and plain process state otherwise, as Swoole's
-//! `SW_THREAD_LOCAL` is.
+//! `SW_THREAD_LOCAL` is. Shared by the crates that keep such state (their
+//! `build` key points here), under their `php` or `upstream-symbols` feature.
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(zts)");
     println!("cargo::rerun-if-env-changed=PHP_CONFIG");
-    if std::env::var_os("CARGO_FEATURE_PHP").is_none() {
+    if std::env::var_os("CARGO_FEATURE_PHP").is_none()
+        && std::env::var_os("CARGO_FEATURE_UPSTREAM_SYMBOLS").is_none()
+    {
         return;
     }
     let php_config = std::env::var("PHP_CONFIG").unwrap_or_else(|_| "php-config".into());

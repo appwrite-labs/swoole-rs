@@ -18,18 +18,45 @@ pub struct WorkerGlobalRecord {
     pub exit_time: libc::time_t,
 }
 
+const INIT: WorkerGlobalRecord = WorkerGlobalRecord {
+    id: 0,
+    kind: 0,
+    pid: 0,
+    shutdown: false,
+    running: false,
+    max_request: 0,
+    worker: core::ptr::null_mut(),
+    worker_copy: core::ptr::null_mut(),
+    exit_time: 0,
+};
+
+// `SwooleWG` is `SW_THREAD_LOCAL`: thread-local on a thread-safe PHP, one process
+// record otherwise, which saves a TLS lookup per access on the request path.
+// Tests (which unwind) keep it per thread, as they run in parallel.
+#[cfg(any(zts, panic = "unwind"))]
 std::thread_local! {
-    static GLOBAL: UnsafeCell<WorkerGlobalRecord> = const { UnsafeCell::new(WorkerGlobalRecord {
-        id:0,kind:0,pid:0,shutdown:false,running:false,max_request:0,
-        worker:core::ptr::null_mut(),worker_copy:core::ptr::null_mut(),exit_time:0,
-    }) };
+    static GLOBAL: UnsafeCell<WorkerGlobalRecord> = const { UnsafeCell::new(INIT) };
 }
+
+#[cfg(not(any(zts, panic = "unwind")))]
+struct Process(UnsafeCell<WorkerGlobalRecord>);
+
+// SAFETY: as upstream's non-thread-safe `SwooleWG`, one record the process's
+// threads share; callers access single fields, never a whole-record borrow.
+#[cfg(not(any(zts, panic = "unwind")))]
+unsafe impl Sync for Process {}
+
+#[cfg(not(any(zts, panic = "unwind")))]
+static GLOBAL: Process = Process(UnsafeCell::new(INIT));
 
 /// Borrows the original native field view for this thread. It has no TLS destructor
 /// and remains available during native thread teardown, as the original POD did.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_worker_globals() -> *mut WorkerGlobalRecord {
-    GLOBAL.with(UnsafeCell::get)
+    #[cfg(any(zts, panic = "unwind"))]
+    return GLOBAL.with(UnsafeCell::get);
+    #[cfg(not(any(zts, panic = "unwind")))]
+    GLOBAL.0.get()
 }
 
 /// Fields: 0 id, 1 pid, 2 type, 3 running, 4 shutdown, 5 max requests.

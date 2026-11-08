@@ -11,10 +11,7 @@ use crate::{
         zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_object, zval,
     },
 };
-use std::{
-    cell::Cell,
-    ffi::{CStr, c_char, c_int, c_void},
-};
+use std::ffi::{CStr, c_char, c_int, c_void};
 
 /// A trapped bailout. Its owner finishes its Rust work, then reports it to
 /// the C/C++ caller (for example as a flag), which calls `zend_bailout()`.
@@ -22,8 +19,35 @@ use std::{
 #[derive(Debug)]
 pub struct Bailout;
 
+// Per thread on a thread-safe PHP, as the shim's `ZEND_TLS` guard state; one
+// process flag otherwise, with no TLS lookup on each check. Tests (which
+// unwind) keep it per thread, as they run in parallel.
+#[cfg(any(zts, panic = "unwind"))]
 thread_local! {
-    static PENDING: Cell<bool> = const { Cell::new(false) };
+    static PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(not(any(zts, panic = "unwind")))]
+static PENDING: Flag = Flag(std::sync::atomic::AtomicBool::new(false));
+
+/// The process's pending flag, with `Cell`'s interface.
+#[cfg(not(any(zts, panic = "unwind")))]
+struct Flag(std::sync::atomic::AtomicBool);
+
+#[cfg(not(any(zts, panic = "unwind")))]
+impl Flag {
+    fn get(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn set(&self, value: bool) {
+        self.0.store(value, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Only the PHP thread writes it, so no atomic swap is needed.
+    fn replace(&self, value: bool) -> bool {
+        let previous = self.get();
+        self.set(value);
+        previous
+    }
 }
 
 /// The native destination of a contained escape. Whole-thread provenance remains
