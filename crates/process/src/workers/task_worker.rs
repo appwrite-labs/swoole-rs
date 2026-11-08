@@ -1,4 +1,4 @@
-//! Task workers (upstream's `src/server/task_worker.cc`; process.cc's
+//! Task workers (upstream's `src/server/task_worker.cc`; workers.cc's
 //! `TaskWorkerContext`): the pool's setup and callbacks,
 //! the task switch, the coroutine loop and `Server::finish`, which hands a result
 //! back to the worker that sent the task. The context holds the server, the pool,

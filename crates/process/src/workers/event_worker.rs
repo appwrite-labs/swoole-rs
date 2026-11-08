@@ -1,4 +1,4 @@
-//! Event workers (upstream's `src/server/worker.cc`; process.cc's `WorkerContext`):
+//! Event workers (upstream's `src/server/worker.cc`; workers.cc's `WorkerContext`):
 //! signals, the event switch, start/stop
 //! callbacks, the async stop and its exit wait, and the process-mode main loop.
 //! The context holds the server, the current worker and, per operation, the

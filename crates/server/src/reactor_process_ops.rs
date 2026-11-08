@@ -1,6 +1,6 @@
 //! The base-mode reactor process's facts and effects
 //! (`crates/process/src/workers/reactor_process.rs`'s `OP_*`) over the server,
-//! port, worker and connection records Rust lays out. process.cc's
+//! port, worker and connection records Rust lays out. workers.cc's
 //! `ReactorProcessContext::call` hands every op it has no case for to
 //! [`swr_v1_reactor_process_call`].
 use core::ffi::{c_int, c_void};
@@ -29,7 +29,7 @@ use crate::callbacks::CB_START;
 use crate::reactor_ops::sign;
 use crate::view;
 
-/// process.cc's `WorkersNative<1>`.
+/// workers.cc's `WorkersNative<1>`.
 #[repr(C)]
 struct Context {
     serv: *mut c_void,
@@ -73,7 +73,7 @@ unsafe extern "C-unwind" {
 /// Answers reactor-process op `op` with `arg` over the `WorkersNative<1>` at `context`.
 ///
 /// # Safety
-/// `context` is process.cc's live `ReactorProcessContext`, whose objects the op reads are live.
+/// `context` is workers.cc's live `ReactorProcessContext`, whose objects the op reads are live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn swr_v1_reactor_process_call(
     context: *mut c_void,

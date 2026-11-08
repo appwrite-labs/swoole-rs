@@ -1,5 +1,5 @@
 //! The event worker's facts and effects (`crates/process/src/workers/event_worker.rs`'s
-//! `OP_*`) over the server, worker and connection records Rust lays out. process.cc's
+//! `OP_*`) over the server, worker and connection records Rust lays out. workers.cc's
 //! `WorkerContext::call` hands every op it has no case for to
 //! [`swr_v1_event_worker_call`].
 use core::ffi::{c_int, c_void};
@@ -40,7 +40,7 @@ use crate::callbacks::{
 };
 use crate::view;
 
-/// process.cc's `WorkersNative<0>`.
+/// workers.cc's `WorkersNative<0>`.
 #[repr(C)]
 struct Context {
     serv: *mut c_void,
@@ -76,7 +76,7 @@ struct WorkerStopMessage {
 /// Answers event-worker op `op` with `arg` over the `WorkersNative<0>` at `context`.
 ///
 /// # Safety
-/// `context` is process.cc's live `WorkerContext`, whose objects the op reads are live.
+/// `context` is workers.cc's live `WorkerContext`, whose objects the op reads are live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn swr_v1_event_worker_call(
     context: *mut c_void,

@@ -11,9 +11,9 @@ extern "C" {
 #endif
 typedef uint64_t (*swr_v1_workers_call)(void *context, uint32_t op, uint64_t arg);
 int64_t swr_v1_workers_run(uint32_t operation, uint64_t arg, void *context, swr_v1_workers_call call);
-/* process.cc's FactoryContext call, which the Rust Factory methods run over. */
+/* workers.cc's FactoryContext call, which the Rust Factory methods run over. */
 void swr_v1_workers_set_factory_call(swr_v1_workers_call call);
-/* process.cc's workers_enter: builds the context of a Rust Server method's operation
+/* workers.cc's workers_enter: builds the context of a Rust Server method's operation
  * (crates/process/src/workers/entry.rs) from its objects and runs the operation. */
 typedef int64_t (*swr_v1_workers_enter)(uint32_t operation, void *object, void *other, void *extra, uint64_t arg);
 void swr_v1_workers_set_enter(swr_v1_workers_enter enter);

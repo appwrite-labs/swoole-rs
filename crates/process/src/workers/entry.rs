@@ -1,7 +1,7 @@
 //! The `Server` methods of the deleted worker-side files (`src/server/manager.cc`,
 //! `worker.cc`, `reactor_process.cc`, `task_worker.cc` and `thread.cc`), defined under their upstream (Itanium)
 //! symbols when the hybrid links this crate (`upstream-symbols`). Each one enters
-//! native code with its operation and objects; process.cc's `workers_enter` builds
+//! native code with its operation and objects; workers.cc's `workers_enter` builds
 //! the context the C++ forward built and runs the operation over it.
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
@@ -21,7 +21,7 @@ use super::ops::{
 use crate::methods::{Narrow, send_pipe_message};
 use crate::worker_record::WorkerRecord;
 
-/// process.cc's `workers_enter(operation, object, other, extra, arg)`.
+/// workers.cc's `workers_enter(operation, object, other, extra, arg)`.
 pub type WorkersEnter = unsafe extern "C-unwind" fn(
     operation: u32,
     object: *mut c_void,
@@ -32,7 +32,7 @@ pub type WorkersEnter = unsafe extern "C-unwind" fn(
 
 static ENTER: OnceLock<WorkersEnter> = OnceLock::new();
 
-/// Registers process.cc's `workers_enter`, which the methods below enter.
+/// Registers workers.cc's `workers_enter`, which the methods below enter.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_workers_set_enter(enter: WorkersEnter) {
     // A second registration is the same function; keeping the first is equivalent.
@@ -51,7 +51,7 @@ unsafe fn enter<R: Narrow>(
     arg: u64,
 ) -> R {
     let Some(&enter) = ENTER.get() else {
-        // process.cc registers before any Server exists.
+        // workers.cc registers before any Server exists.
         std::process::abort()
     };
     // SAFETY: as the caller guarantees.

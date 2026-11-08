@@ -1,6 +1,6 @@
 //! The task worker's facts and effects (`crates/process/src/workers/task_worker.rs`'s
 //! `OP_*`) over the server, pool, worker and task records Rust lays out.
-//! process.cc's `TaskWorkerContext::call` hands every op it has no case for to
+//! workers.cc's `TaskWorkerContext::call` hands every op it has no case for to
 //! [`swr_v1_task_worker_call`].
 use core::cell::Cell;
 use core::ffi::{CStr, c_char, c_int, c_void};
@@ -37,7 +37,7 @@ use crate::callbacks::{CB_PIPE_MESSAGE, CB_TASK};
 use crate::event_worker_ops::{set_worker_status, swr_workers_signal_set};
 use crate::view;
 
-/// process.cc's `WorkersNative<2>`, up to the fields only C++ reads.
+/// workers.cc's `WorkersNative<2>`, up to the fields only C++ reads.
 #[repr(C)]
 struct Context {
     serv: *mut c_void,
@@ -56,7 +56,7 @@ struct Context {
 
 const _: () = assert!(
     core::mem::offset_of!(Context, file) == 72,
-    "process.cc TaskWorkerContext layout"
+    "workers.cc TaskWorkerContext layout"
 );
 
 impl Context {
@@ -125,7 +125,7 @@ fn errno() -> c_int {
 /// Answers task-worker op `op` with `arg` over the `WorkersNative<2>` at `context`.
 ///
 /// # Safety
-/// `context` is process.cc's live `TaskWorkerContext`, whose objects the op reads are live.
+/// `context` is workers.cc's live `TaskWorkerContext`, whose objects the op reads are live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn swr_v1_task_worker_call(
     context: *mut c_void,

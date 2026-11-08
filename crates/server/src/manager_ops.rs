@@ -1,5 +1,5 @@
 //! The manager's facts and effects (`crates/process/src/workers/manager.rs`'s
-//! `OP_*`) over the server, pool and worker records Rust lays out. process.cc's
+//! `OP_*`) over the server, pool and worker records Rust lays out. workers.cc's
 //! `ManagerContext::call` hands every op it has no case for to
 //! [`swr_v1_manager_call`].
 use core::ffi::{c_int, c_void};
@@ -33,7 +33,7 @@ use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_M
 use crate::commands::{CommandFn, swr_v1_server_command_handler};
 use crate::{view, worker_methods};
 
-/// process.cc's `WorkersNative<3>`, up to the fields only native code reads.
+/// workers.cc's `WorkersNative<3>`, up to the fields only native code reads.
 #[repr(C)]
 struct Context {
     serv: *mut c_void,
@@ -52,7 +52,7 @@ const SW_LOG_ERROR: c_int = 5;
 /// Answers manager op `op` with `arg` over the `WorkersNative<3>` at `context`.
 ///
 /// # Safety
-/// `context` is process.cc's live `ManagerContext`, whose objects the op reads are live.
+/// `context` is workers.cc's live `ManagerContext`, whose objects the op reads are live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn swr_v1_manager_call(
     context: *mut c_void,
