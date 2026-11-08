@@ -52,6 +52,7 @@ jobs:
       iouring: ${{ steps.paths.outputs.iouring }}
       cares: ${{ steps.paths.outputs.cares }}
       zts: ${{ steps.paths.outputs.zts }}
+      threadcontext: ${{ steps.paths.outputs.threadcontext }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,6 +72,9 @@ jobs:
           fi
           if echo "$changed" | grep -qE '^(migration/patches/(locks/|[^/]+/[^/]*thread)|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php-zts)\.sh$)'; then
             echo zts=true >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(migration/patches/coroutine/|native/coroutine/|crates/coroutine/|\.github/workflows/threadcontext\.yml$)'; then
+            echo threadcontext=true >> "$GITHUB_OUTPUT"
           fi
 
   # The all-modules hybrid with the halfclose repair, so no module's native code
@@ -167,6 +171,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.zts == 'true'
     uses: ./.github/workflows/zts.yml
+
+  # The thread-context build variant (merge tier), when a PR touches the coroutine context. Informative.
+  threadcontext:
+    needs: changes
+    if: needs.changes.outputs.threadcontext == 'true'
+    uses: ./.github/workflows/threadcontext.yml
 
   # Candidate-lane gates of the modules this PR touches (every module for shared
   # build inputs); prints "No module touched" and passes otherwise. Advisory until

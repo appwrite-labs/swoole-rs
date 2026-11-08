@@ -275,6 +275,10 @@ jobs:
   zts:
     uses: ./.github/workflows/zts.yml
 
+  # The --enable-thread-context build variant and its coroutine PHPTs.
+  threadcontext:
+    uses: ./.github/workflows/threadcontext.yml
+
   # The opt-in --fix-halfclose repair (M15) is its own build variant, so its gates run
   # here; full-gates builds without it.
   halfclose:

@@ -237,3 +237,53 @@ pub fn thread_buffer() -> *mut c_void {
         read(host, |thread| thread.buffer_stack)
     })
 }
+
+/// The `SwooleTG` members a thread-context coroutine's thread shares with the
+/// thread that activated coroutines: the buffer stack, reactor, timer and async
+/// threads.
+#[derive(Clone, Copy)]
+pub struct SharedThread([*mut c_void; 4]);
+
+// SAFETY: plain pointers, handed to threads that run one at a time.
+unsafe impl Send for SharedThread {}
+
+/// This thread's [`SharedThread`]; null pointers before `swoole_init`.
+#[must_use]
+pub fn shared_thread() -> SharedThread {
+    let null = std::ptr::null_mut();
+    SharedThread(native::host().map_or([null; 4], |host| {
+        read(host, |thread| {
+            [
+                thread.buffer_stack,
+                thread.reactor,
+                thread.timer,
+                thread.async_threads,
+            ]
+        })
+    }))
+}
+
+/// `swoole_signal_block_all()`; nothing before `swoole_init`.
+pub fn signal_block_all() {
+    if let Some(host) = native::host() {
+        host.signal_block_all();
+    }
+}
+
+/// Adopts `shared` in this new thread.
+pub fn adopt_shared_thread(shared: SharedThread) {
+    let Some(host) = native::host() else { return };
+    let thread = self::thread(host);
+    let [buffer_stack, reactor, timer, async_threads] = shared.0;
+    // SAFETY: this thread's live record.
+    let current = unsafe { thread.read() };
+    let shared = ThreadGlobal {
+        buffer_stack,
+        reactor,
+        timer,
+        async_threads,
+        ..current
+    };
+    // SAFETY: as above.
+    unsafe { thread.write(shared) };
+}

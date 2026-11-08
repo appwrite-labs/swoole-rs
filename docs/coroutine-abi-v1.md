@@ -60,6 +60,8 @@ the thread-local scheduler, the facade's construction and delete, cancel (its
 Execution-time accounting (`get_execute_usec`, `calc_execute_usec`) is in Rust;
 C++ reads the clocks and passes them in.
 
-Not validated: `SW_USE_THREAD_CONTEXT` (its cross-owner `std::mutex` hand-off is
-not a valid Rust ownership model). Original inventory: 130
+`src/coroutine/thread_context.cc` left the build: `SW_USE_THREAD_CONTEXT` is the
+context's `SWR_CTX_THREAD` flag, a thread per coroutine with a baton hand-off
+(native/coroutine/contract.md), checked by the `threadcontext` workflow. Original
+inventory: 130
 coroutine, 44 channel and 27 scheduler PHPTs.

@@ -6,6 +6,9 @@
 // cancel, whose CancelFunc copy may throw. Rust owns the rest
 // (crates/coroutine/src/facade.rs).
 #include "swoole_coroutine.h"
+#ifdef SW_USE_THREAD_CONTEXT
+#include "swoole_async.h"
+#endif
 
 namespace swoole {
 
@@ -84,16 +87,16 @@ bool Coroutine::call_cancel(void *co, void *fn) {
     return copy(self);
 }
 
-#ifdef SW_USE_THREAD_CONTEXT
-namespace coroutine {
-void thread_context_init();
-void thread_context_clean();
-}  // namespace coroutine
-#endif
-
 void Coroutine::activate() {
 #ifdef SW_USE_THREAD_CONTEXT
-    coroutine::thread_context_init();
+    // Coroutine threads share this thread's timer and async threads.
+    if (!swoole_timer_is_available()) {
+        swoole_timer_add(1L, false, [](Timer *, TimerNode *) {}, nullptr);
+    }
+    if (SwooleTG.async_threads == nullptr) {
+        SwooleTG.async_threads = new AsyncThreads();
+    }
+    swr_v1_thread_context_init();
 #endif
     swr_v1_coroutine_set_active(&scheduler_, true);
     on_bailout = nullptr;
@@ -101,7 +104,7 @@ void Coroutine::activate() {
 
 void Coroutine::deactivate() {
 #ifdef SW_USE_THREAD_CONTEXT
-    coroutine::thread_context_clean();
+    swr_v1_thread_context_clean();
 #endif
     swr_v1_coroutine_set_active(&scheduler_, false);
     on_bailout = bailed_out;

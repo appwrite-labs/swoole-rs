@@ -85,13 +85,8 @@ void swr_cpp_phpcoroutines_stats(swr_v1_phpcoroutines_stats *stats) {
 }
 
 void *swr_cpp_phpcoroutines_stack(void *c, size_t *size) {
-#ifdef SW_USE_THREAD_CONTEXT
-    *size = 0;
-    return nullptr;
-#else
     *size = co(c)->get_ctx().get_stack_size();
     return co(c)->get_ctx().get_stack();
-#endif
 }
 
 uint8_t swr_cpp_phpcoroutines_is_end(void *c) {
