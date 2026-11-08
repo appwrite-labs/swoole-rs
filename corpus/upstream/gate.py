@@ -237,11 +237,11 @@ def pending(tests, rechecked, engine='upstream', results=()):
                 and within(runs[test]['upstream'], RERUNS)]
     if engine == 'upstream-extended':
         def budget(test):
-            hybrid = conclusive(runs[test].get('hybrid', []))
+            others = [conclusive(statuses) for engine, statuses in runs[test].items() if engine != 'upstream']
             upstream = conclusive(runs[test].get('upstream', []))
             if 'failed' not in upstream:
-                return MIXED_RERUNS if 'passed' in hybrid and 'failed' in hybrid else 0
-            return EXTENDED_RERUNS if hybrid and 'passed' not in hybrid else 0
+                return MIXED_RERUNS if any('passed' in other and 'failed' in other for other in others) else 0
+            return EXTENDED_RERUNS if any(other and 'passed' not in other for other in others) else 0
         return [test for test in tests if within(runs[test]['upstream'], budget(test))]
     timed_out = {row['test'] for row in results if row['engine'] == engine and row.get('timed_out')}
     left = []

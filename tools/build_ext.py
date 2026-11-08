@@ -3,7 +3,8 @@
 
 crates/ext's build.rs compiles native/ and the bundled thirdparty C from the patched tree this
 prepares in target/ext/src, then the extension is checked to load and report the pinned version.
-Prints `Built cargo: <path>` (target/ext/swoole.so).
+Prints `Built cargo: <path>` (target/ext/swoole.so). `--php-sockets` and build_hybrid's service
+`--configure` switches turn on the crates/ext feature of the same build profile.
 """
 import argparse
 import os
@@ -13,6 +14,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.build_hybrid import HOOK_SWITCHES
 from tools.build_upstream import VERSION
 from tools.harness import ROOT
 from tools.patches import apply
@@ -22,20 +24,41 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--php-config', default=os.environ.get('PHP_CONFIG', 'php-config'))
     parser.add_argument('--profile', default='release', help='Cargo profile (default: release)')
+    parser.add_argument('--php-sockets', action='store_true', help='Build with PHP sockets integration')
+    parser.add_argument('--configure', action='append', default=[], metavar='ARG',
+                        help="A service hook's configure switch, as build_hybrid.py takes it; repeatable")
     args = parser.parse_args()
     out = ROOT / 'target/ext'
     tree = out / 'src'
     apply(tree)
     env = {**os.environ, 'SWOOLE_SRC': str(tree), 'PHP_CONFIG': args.php_config}
-    subprocess.run(['cargo', 'build', '--locked', '--profile', args.profile, '-p', 'swoole-rs-ext', '--features', 'php'],
-                   cwd=ROOT, env=env, check=True)
+    switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd'}
+    switches.pop('iouring')
+    features = ['php', *(['sockets'] if args.php_sockets else [])]
+    for flag in args.configure:
+        name, _, value = flag.partition('=')
+        feature = next((f for f, switch in switches.items() if switch == name), None)
+        if not feature:
+            raise SystemExit(f'build_ext.py: no crates/ext feature for {flag}')
+        features.append(feature)
+        # `unixODBC,DIR` and `instantclient,DIR` name the library's directory.
+        if feature in ('odbc', 'oci') and ',' in value:
+            env['SWOOLE_ODBC_DIR' if feature == 'odbc' else 'SWOOLE_ORACLE_DIR'] = value.split(',')[1]
+    subprocess.run(['cargo', 'build', '--locked', '--profile', args.profile, '-p', 'swoole-rs-ext',
+                    '--features', ','.join(features)], cwd=ROOT, env=env, check=True)
     target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'))
     built = target / ('debug' if args.profile == 'dev' else args.profile) / (
         'libswoole.dylib' if sys.platform == 'darwin' else 'libswoole.so')
     extension = out / 'swoole.so'
     shutil.copy2(built, extension)
     php = Path(subprocess.check_output([args.php_config, '--php-binary'], text=True).strip())
-    version = subprocess.run([str(php), '-n', '-d', f'extension={extension}', '-r', 'echo SWOOLE_VERSION;'],
+    # The PHP extensions the profile's hooks link against, unless PHP has them built in.
+    needs = {'sockets': 'sockets', 'curl': 'curl', 'mysqlnd': 'mysqlnd',
+             **dict.fromkeys(['pgsql', 'odbc', 'firebird', 'sqlite', 'oci'], 'pdo')}
+    builtin = subprocess.check_output([str(php), '-n', '-m'], text=True).lower().split()
+    load = sorted({needs[f] for f in features if f in needs} - set(builtin))
+    version = subprocess.run([str(php), '-n', *[a for name in load for a in ('-d', f'extension={name}')],
+                              '-d', f'extension={extension}', '-r', 'echo SWOOLE_VERSION;'],
                              capture_output=True, text=True)
     if version.stdout != VERSION.removeprefix('v'):
         raise SystemExit(f'{extension} does not load as Swoole {VERSION}:\n{version.stdout}{version.stderr}')

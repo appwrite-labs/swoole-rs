@@ -113,11 +113,11 @@ jobs:
               --limit 100 --json id --jq '.[2:][].id' | xargs -r -n1 gh cache delete
           done
 
-  # Every pinned PHPT on upstream and on the all-modules hybrid: any test that passes
-  # on upstream must pass on the hybrid (corpus/upstream/gate.py).
+  # Every pinned PHPT on upstream, the all-modules hybrid and the extension Cargo builds
+  # alone (crates/ext): any test that passes on upstream must pass on both (corpus/upstream/gate.py).
   phpt-build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     outputs:
       php: ${{ steps.install.outputs.php }}
     steps:
@@ -125,7 +125,8 @@ jobs:
       - id: install
         uses: ./.github/actions/install
         with:
-          packages: firebird-dev libaio1t64
+          # php-mysql: build_ext.py loads mysqlnd to check the cargo engine loads.
+          packages: firebird-dev libaio1t64 php-mysql
           php: latest
       - uses: ./.github/actions/instantclient
       - id: upstream
@@ -148,9 +149,11 @@ jobs:
           services="$services --configure=--enable-swoole-curl --configure=--with-swoole-ssh2"
           python3 tools/build_hybrid.py --backend upstream --php-sockets $services | tee upstream.log
           python3 tools/build_hybrid.py --php-sockets $services | tee hybrid.log
+          python3 tools/build_ext.py --php-sockets $services
           mkdir -p target/phpt
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
           cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
+          cp target/ext/swoole.so target/phpt/cargo.so
       - uses: actions/upload-artifact@v4
         with:
           name: phpt-engines
@@ -320,7 +323,7 @@ jobs:
       fail-fast: false
       matrix:
         index: [1, 2, 3, 4, 5, 6]
-        engine: [upstream, hybrid]
+        engine: [upstream, hybrid, cargo]
     # The services upstream's PHPTs expect, as in its scripts/docker-compose.yml, under
     # the host names its tests/include/config.php uses on CI (httpbin at http://httpbin:80).
     services:

@@ -8,7 +8,7 @@
 # so a test racy on both engines isn't counted as a hybrid regression; so does one whose
 # re-runs both engines failed (up to 9).
 #   recheck.sh RESULTS_DIR ENGINES_DIR RECHECK_DIR [run.py arguments...]
-# ENGINES_DIR holds upstream.so and hybrid.so; RECHECK_DIR receives <engine>-<attempt>.json.
+# ENGINES_DIR holds upstream.so and each other engine as <engine>.so; RECHECK_DIR receives <engine>-<attempt>.json.
 set -eo pipefail
 results=$1 engines=$2 recheck=$3
 shift 3
@@ -20,7 +20,8 @@ pending() {
   # It prints an empty line when nothing is pending; that must not become a bare --case.
   python3 corpus/upstream/gate.py "$@" --print-pending "$engine" | sed -n 's/^\(..*\)$/--case \1/p' | tr '\n' ' '
 }
-for engine in upstream hybrid; do
+# Upstream first, then every other engine in ENGINES_DIR.
+for engine in upstream $(cd "$engines" && ls -- *.so | sed 's/\.so$//' | grep -vx upstream); do
   for attempt in $(seq 18); do
     cases=$(pending "$engine")
     [ -n "$cases" ] || break
