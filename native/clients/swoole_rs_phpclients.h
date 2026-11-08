@@ -41,7 +41,7 @@ void swoole_client_php_error(int kind, int level, const char *message);
 void *swoole_client_create(int type, bool async, int *error);
 /* The client's Rust state (crates/clients' ClientState). */
 void *swoole_client_state(void *cli);
-/* php_swoole_convert_to_socket(fd) into `zsocket`; false without ext/sockets. */
+/* A Socket over a dup of the client's fd into `zsocket`; false without ext/sockets. */
 bool swoole_client_export_socket(void *cli, struct _zval_struct *zsocket);
 /* Install the async callbacks in `events` (1 << SWOOLE_CLIENT_ON_*), raising them on `object`. */
 void swoole_client_async_listen(void *cli, struct _zend_object *object, uint32_t events);

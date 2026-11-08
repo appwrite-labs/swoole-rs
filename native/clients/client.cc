@@ -71,11 +71,12 @@ void *swoole_client_state(void *cli) {
 
 bool swoole_client_export_socket(void *cli, zval *zsocket) {
 #ifdef SWOOLE_SOCKETS_SUPPORT
-    php_socket *socket_object = php_swoole_convert_to_socket(client_of(cli)->socket->fd);
-    if (!socket_object) {
+    int fd = dup(client_of(cli)->socket->fd);
+    if (fd < 0) {
         return false;
     }
-    SW_ZVAL_SOCKET(zsocket, socket_object);
+    // A Socket whatever the import's result, as upstream's php_swoole_convert_to_socket.
+    swr_cpp_phpthread_php_socket_create(zsocket, fd);
     return true;
 #else
     return false;

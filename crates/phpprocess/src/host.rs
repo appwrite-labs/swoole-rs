@@ -26,9 +26,9 @@ type Handler = Option<unsafe extern "C" fn(c_int)>;
 
 unsafe extern "C" {
     static swoole_server_ce: *mut zend_class_entry;
-    fn swr_v1_phpevents_init() -> c_int;
+    fn php_swoole_reactor_init() -> c_int;
     fn swr_v1_phpevents_wait();
-    fn swr_v1_phpevents_fd(value: *mut zval) -> c_int;
+    fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
     fn swr_v1_event_current() -> *mut c_void;
     fn swr_v1_event_set_exit_condition(
         id: c_int,
@@ -163,7 +163,7 @@ pub(crate) fn worker_base() -> u32 {
 /// `php_swoole_reactor_init()`.
 pub(crate) fn reactor_init() -> c_int {
     // SAFETY: phpevents' init, from a PHP call.
-    unsafe { swr_v1_phpevents_init() }
+    unsafe { php_swoole_reactor_init() }
 }
 
 /// `php_swoole_event_wait()`.
@@ -188,7 +188,7 @@ pub(crate) fn dup_socket(fd: c_int, stream: bool) -> *mut zend_object {
 /// `value` is a live zval.
 pub(crate) unsafe fn convert_to_fd(value: *mut zval) -> c_int {
     // SAFETY: per the caller.
-    unsafe { swr_v1_phpevents_fd(value) }
+    unsafe { php_swoole_convert_to_fd(value) }
 }
 
 /// Raise a bailout now, as C++'s `zend_try`-less callers did.

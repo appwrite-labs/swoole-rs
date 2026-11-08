@@ -43,8 +43,6 @@ pub struct Ops {
     /// `swoole_timer_clear`'s body after its checks: `swoole_timer_del` of the
     /// timer `id` if it is a PHP timer, 0 if not or there is none.
     clear: unsafe extern "C" fn(id: i64) -> u8,
-    /// `php_swoole_timer_clear_all()`.
-    clear_all: unsafe extern "C" fn() -> u8,
     /// `zend::Function::call(nullptr, php_swoole_is_enable_coroutine())` of an
     /// `Invocation`'s callable, a body for `swr_zend_try`.
     call: unsafe extern "C" fn(invocation: *mut c_void),
@@ -324,11 +322,8 @@ fn stats(call: &Call) {
     call.add_assoc_long(c"round", round as i64);
 }
 
-/// The PHP timers' ids, oldest first.
-fn php_ids() -> Vec<i64> {
-    if !available() {
-        return Vec::new();
-    }
+/// Every timer's id, oldest first; the timer is available.
+fn ids() -> Vec<i64> {
     let ops = ops();
     let (mut count, mut round) = (0, 0);
     // SAFETY: the timer is available; writable outputs.
@@ -337,6 +332,15 @@ fn php_ids() -> Vec<i64> {
     // SAFETY: `ids` has room for `count` ids.
     let copied = unsafe { (ops.ids)(ids.as_mut_ptr(), count) };
     ids.truncate(copied);
+    ids
+}
+
+/// The PHP timers' ids, oldest first.
+fn php_ids() -> Vec<i64> {
+    if !available() {
+        return Vec::new();
+    }
+    let mut ids = ids();
     ids.retain(|&id| node(id).is_some_and(|node| node.php != 0));
     ids
 }
@@ -391,8 +395,31 @@ fn clear(call: &Call) {
 }
 
 fn clear_all(call: &Call) {
-    // SAFETY: C++'s removal of every PHP timer.
-    call.set_bool(unsafe { (ops().clear_all)() } != 0);
+    call.set_bool(swr_v1_phptimer_clear_all() != 0);
+}
+
+/// `php_swoole_timer_clear_all()`: remove every PHP timer, newest first; 0 if
+/// there is no timer. A destructor can clear other timers, so each id is looked
+/// up again. The ids sit on the system heap, which a request at its memory
+/// limit still has; a destructor's bailout leaks them, as upstream's vector.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_phptimer_clear_all() -> u8 {
+    if !available() {
+        return 0;
+    }
+    let ids = std::mem::ManuallyDrop::new(ids());
+    for &id in ids.iter().rev() {
+        // SAFETY: C++'s lookup and removal of a PHP timer.
+        unsafe { (ops().clear)(id) };
+    }
+    drop(std::mem::ManuallyDrop::into_inner(ids));
+    1
+}
+
+/// RSHUTDOWN: remove every PHP timer.
+#[unsafe(no_mangle)]
+pub extern "C" fn php_swoole_timer_rshutdown() {
+    swr_v1_phptimer_clear_all();
 }
 
 swoole_rs_zend::handlers! {
