@@ -25,7 +25,9 @@ python3 tools/dev.py integrate --all-modules   # every module's gates; used by C
 - `--plan` prints the commands without running them.
 - `--test` is edit-only; `--case` is candidate-only.
 - Candidate runs only the hybrid; `--compare` also runs upstream. The WebSocket
-  differential always runs upstream. Buffer changes select the full PHPT suite.
+  differential always runs upstream. Candidate gates the chosen modules'
+  `phpt_families` (`migration/modules.json`); `--changed-since REF` chooses the
+  modules a diff touches.
 - `--benchmark` runs benchmarks after the correctness phases (and implies
   `--compare`); skipped if any phase failed. Stop other builds first.
 - `--php-extension NAME` passes dynamic PHP modules through to runners.
@@ -58,21 +60,13 @@ phase timings and whether make/relink/configure ran.
 - Changes to central `native/include/` headers, configure inputs, feature flags,
   toolchain or build-system patches select a new dev tree. Module-local headers
   are copied in and make rebuilds their consumers.
-- Edits outside the declared overlays are rejected.
 - One writer at a time: a concurrent builder fails instead of waiting.
-- A dangling libtool `.lo` whose object was evicted is discarded and rebuilt.
 
 Use immutable (non-`--dev`) builds for comparisons that must be reproduced.
 
 Patches apply in file-name order, and `tools/patches.py export` names a new one
 `<UTC timestamp>-<subject>.patch`, so adding a patch never conflicts with
 another branch; see [hybrid build](hybrid-build.md#editing-patches).
-
-`tools.build_hybrid.apply_patch_verified(tree, patch, targets, expected_sha256=None)`
-applies a patch inside its own Git boundary, checks that every declared target
-changed, and returns before/after hashes. An apply that leaves a target
-unchanged is an error (Git can silently skip patches under an ignored parent
-checkout).
 
 ## Caches
 
@@ -160,8 +154,3 @@ next issue). A GitHub Codespace or any devcontainer host
 builds `.devcontainer/` automatically and injects `GH_TOKEN`, so the clone and the
 hooks line are the only steps. Keep builds, profiles and clones under the
 environment's own disk; `python3 tools/dev.py prune` clears a day's leavings.
-
-## Extension identity
-
-`tools/extension_identity.py` records the identity of an extension binary that
-has no build manifest.
