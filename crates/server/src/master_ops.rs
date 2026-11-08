@@ -1650,4 +1650,51 @@ mod tests {
             crate::swr_v1_server_state_free(state);
         }
     }
+
+    #[test]
+    fn send_buffer_ops_queue_on_the_sockets_output() {
+        unsafe extern "C" {
+            #[link_name = "_ZdlPv"]
+            fn operator_delete(storage: *mut core::ffi::c_void);
+        }
+        let state = crate::swr_v1_server_state_new();
+        let mut ctx = context();
+        // SAFETY: plain records, for which zero is valid.
+        let mut sock: SocketRecord = unsafe { core::mem::zeroed() };
+        // SAFETY: as above.
+        let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let config = crate::port_config::swr_v1_port_config_new(0);
+        // A `ListenPort` starts with its settings pointer.
+        let mut port = config;
+        sock.output.buffer_size = 4;
+        // SAFETY: the settings allocated above.
+        unsafe { (*config).buffer_high_watermark = 2 };
+        let data = *b"abc";
+        ctx.sock = (&raw mut sock).cast();
+        ctx.conn = (&raw mut conn).cast();
+        ctx.port = (&raw mut port).cast();
+        ctx.data = data.as_ptr().cast();
+        ctx.length = 3;
+        let socket = (&raw const sock).addr() as u64;
+        // SAFETY: the context's records are live above.
+        unsafe {
+            assert_eq!(answer(&raw mut ctx, state, OP_OUT_EMPTY, socket), Some(1));
+            answer(&raw mut ctx, state, OP_SC_ENSURE_BUFFER, 0);
+            assert!(!sock.output.out_buffer.is_null());
+            assert_eq!(answer(&raw mut ctx, state, OP_OUT_EMPTY, socket), Some(1));
+            answer(&raw mut ctx, state, OP_SC_APPEND, 0);
+            assert_eq!(conn.send_queued_bytes, 3);
+            assert_eq!(answer(&raw mut ctx, state, OP_OUT_EMPTY, socket), Some(0));
+            assert_eq!(answer(&raw mut ctx, state, OP_SC_OUT_FULL, 0), Some(0));
+            assert_eq!(answer(&raw mut ctx, state, OP_SC_OUT_HIGH, 0), Some(1));
+            answer(&raw mut ctx, state, OP_SC_QUEUE_CLOSE, 0);
+            assert_eq!(conn.close_queued, 1);
+            let buffer = sock.output.out_buffer.cast::<CppBuffer>();
+            assert_eq!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(buffer), 2);
+            swoole_rs_buffer::cpp::swr_cpp_buffer_drop(buffer);
+            operator_delete(buffer.cast());
+            crate::port_config::swr_v1_port_config_free(config);
+            crate::swr_v1_server_state_free(state);
+        }
+    }
 }
