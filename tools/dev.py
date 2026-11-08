@@ -272,7 +272,7 @@ def plan(args, reports):
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options,
                    '--report', reports / (phase + '.json'))
     if 'hooks' in modules:
-        for name, runner in [('hooks-ordered', 'tests/modules/hooks/ordered_gate.py'), ('hooks-async-policy', 'tests/modules/hooks/async_gate.py'),
+        for name, runner in [('hooks-async-policy', 'tests/modules/hooks/async_gate.py'),
                              ('hooks-packet-policy', 'tests/modules/hooks/packet_gate.py')]:
             script(name, runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',

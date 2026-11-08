@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 
-from ordered_gate import block, sources
+from async_gate import block, sources
 
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))

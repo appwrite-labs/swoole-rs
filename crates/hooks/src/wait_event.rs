@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(ADDED.get(), 0);
     }
 
-    /// The hooks-ordered gate's `EventWaiter` scenarios (1023..1059): a waiter holding
+    /// The former hooks-ordered gate's `EventWaiter` scenarios (1023..1059): a waiter holding
     /// `held` fires `event` then `WRITE`. Upstream's callback deferred a resume only
     /// while nothing had fired yet, and published the bits after choosing.
     #[test]
