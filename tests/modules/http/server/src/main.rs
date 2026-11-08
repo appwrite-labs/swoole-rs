@@ -87,6 +87,17 @@ struct PacketLength {
     header_len: u32,
 }
 
+/// `swoole::http2::Settings`.
+#[repr(C)]
+struct Http2Settings {
+    header_table_size: u32,
+    enable_push: u32,
+    max_concurrent_streams: u32,
+    init_window_size: u32,
+    max_frame_size: u32,
+    max_header_list_size: u32,
+}
+
 #[link(name = "swoole")]
 unsafe extern "C" {
     #[link_name = "_Z11swoole_initv"]
@@ -143,6 +154,35 @@ unsafe extern "C" {
         on_worker_start: Hook,
         on_receive: Receive,
     ) -> c_int;
+    fn swr_case_abort_server(
+        max_sockets: u32,
+        saved: *mut u32,
+        ports: *mut [*mut c_void; 2],
+        on_start: Hook,
+        on_receive: Receive,
+    ) -> *mut Server;
+    fn swr_case_set_max_sockets(value: u32);
+    fn swr_case_length_port(serv: *mut *mut Server) -> *mut c_void;
+    fn swr_case_init_protocol(port: *mut c_void, websocket: bool) -> *const http1::Protocol;
+    fn swr_case_fake_socket(port: *mut c_void, conn: *mut *mut c_void) -> *mut c_void;
+    fn swr_case_connection_status(conn: *mut c_void, websocket_status: u8, http2_stream: u8);
+    fn swr_case_create(serv: *mut Server) -> c_int;
+    fn swr_case_last_error(msg: *mut *const c_char) -> c_int;
+    #[link_name = "_ZN6swoole11http_server18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
+    fn http_get_package_length(
+        protocol: *const http1::Protocol,
+        socket: *mut c_void,
+        pl: *mut PacketLength,
+    ) -> isize;
+    #[link_name = "_ZN6swoole11http_server23get_package_length_sizeEPNS_7network6SocketE"]
+    fn http_get_package_length_size(socket: *mut c_void) -> u8;
+    fn sw_rs_http2_default_settings() -> Http2Settings;
+    #[link_name = "_ZN6swoole5http218pack_setting_frameEPcRKNS0_8SettingsEb"]
+    fn http2_pack_setting_frame(
+        buf: *mut c_char,
+        settings: *const Http2Settings,
+        server_side: bool,
+    ) -> usize;
     fn swr_case_port(serv: *mut Server) -> c_int;
     fn swr_case_start(serv: *mut Server) -> c_int;
     fn swr_case_shutdown(serv: *mut Server) -> bool;
@@ -916,9 +956,159 @@ fn ssl() {
     }
 }
 
+static ABORT_LOCK: Mutex<[c_int; 2]> = Mutex::new([-1, -1]);
+
+/// abort_connection's `onStart`: unlock the client thread.
+extern "C" fn abort_start(_: *mut Server) {
+    let lock = ABORT_LOCK.lock().unwrap()[1];
+    // SAFETY: the pipe's write end; one readable byte.
+    unsafe { write(lock, c"x".as_ptr().cast(), 1) };
+}
+
+extern "C" fn abort_receive(_: *mut Server, _: *const c_void) -> c_int {
+    SW_OK
+}
+
+/// With `SwooleG.max_sockets` 2 and one connection allowed, 16 blocking clients fill the
+/// server and cpp-httplib's `Get` fails.
+fn abort_connection() {
+    let mut fds = [-1; 2];
+    // SAFETY: a writable pair; upstream's Mutex, locked.
+    assert_eq!(unsafe { pipe(&mut fds) }, 0);
+    *ABORT_LOCK.lock().unwrap() = fds;
+    let (mut max_sockets, mut ports) = (0, [std::ptr::null_mut(); 2]);
+    // SAFETY: writable out-parameters and callbacks of the slots' signatures.
+    let serv = unsafe {
+        swr_case_abort_server(2, &mut max_sockets, &mut ports, abort_start, abort_receive)
+    };
+    assert!(!ports[0].is_null());
+    assert!(!ports[1].is_null());
+    let port = primary_port(serv) as u16;
+    let shared = Shared(serv);
+    let thread = std::thread::spawn(move || {
+        let serv = shared;
+        signal_block_all();
+        let mut byte = 0u8;
+        // SAFETY: the pipe's read end; one writable byte.
+        unsafe { read(fds[0], (&raw mut byte).cast(), 1) };
+        // SyncClient::connect(TEST_HOST, port, -1): a blocking connect, its result unused.
+        let clients: Vec<_> = (0..16)
+            .map(|_| TcpStream::connect(("127.0.0.1", port)))
+            .collect();
+        let resp = client::Client::new("127.0.0.1", port).get("/");
+        drop(clients);
+        // SAFETY: the running server.
+        unsafe { swr_case_shutdown(serv.0) };
+        assert!(resp.is_none());
+    });
+    // SAFETY: the created server.
+    unsafe { swr_case_start(serv) };
+    // SAFETY: restores the value the fixture saved.
+    unsafe { swr_case_set_max_sockets(max_sockets) };
+    if let Err(panic) = thread.join() {
+        resume_unwind(panic);
+    }
+}
+
+/// `http_server::get_package_length(_size)` over a fake connection socket: a WebSocket
+/// frame, an HTTP/2 settings frame, then an HTTP/1.1 connection, which is an error.
+fn get_package_length() {
+    const SW_HTTP2_FRAME_HEADER_SIZE: u8 = 9;
+    const SW_WEBSOCKET_FRAME_HEADER_SIZE: u8 = 14;
+    const STATUS_HANDSHAKE: u8 = 2;
+    const SW_ERROR_PROTOCOL_ERROR: c_int = 508;
+    let mut serv = std::ptr::null_mut();
+    // SAFETY: a writable out-parameter.
+    let port = unsafe { swr_case_length_port(&mut serv) };
+    assert!(!port.is_null());
+    // SAFETY: the live port; its Protocol lives with it.
+    let protocol = unsafe { &*swr_case_init_protocol(port, false) };
+    assert_eq!(protocol.package_length_size, SW_HTTP2_FRAME_HEADER_SIZE);
+    // SAFETY: as above.
+    let protocol = unsafe { &*swr_case_init_protocol(port, true) };
+    assert_eq!(
+        protocol.get_package_length_size,
+        http_get_package_length_size as *mut c_void
+    );
+
+    let mut conn = std::ptr::null_mut();
+    // SAFETY: the live port and a writable out-parameter.
+    let fake_sock = unsafe { swr_case_fake_socket(port, &mut conn) };
+    // SAFETY: the server, configured.
+    assert_eq!(unsafe { swr_case_create(serv) }, SW_OK);
+
+    // websocket
+    let buffer = tg_buffer();
+    // SAFETY: the fake socket's Connection.
+    unsafe { swr_case_connection_status(conn, STATUS_HANDSHAKE, 0) };
+    // SAFETY: the fake socket, whose object is its Connection.
+    let size = unsafe { http_get_package_length_size(fake_sock) };
+    assert_eq!(size, SW_WEBSOCKET_FRAME_HEADER_SIZE);
+    // SAFETY: the live buffer; TEST_STR's bytes.
+    assert!(unsafe {
+        ws_encode(
+            buffer,
+            TEST_STR.as_ptr().cast(),
+            TEST_STR.len(),
+            OPCODE_TEXT,
+            FLAG_FIN,
+        )
+    });
+    // SAFETY: the live buffer.
+    let mut pl = unsafe {
+        PacketLength {
+            buf: (*buffer).str.cast(),
+            buf_size: (*buffer).length as u32,
+            header_len: 0,
+        }
+    };
+    // SAFETY: the port's protocol, the fake socket and the frame.
+    let length = unsafe { http_get_package_length(protocol, fake_sock, &mut pl) };
+    assert_eq!(length, (SW_WEBSOCKET_HEADER_LEN + TEST_STR.len()) as isize);
+
+    // http2
+    let buffer = tg_buffer();
+    // SAFETY: the fake socket's Connection.
+    unsafe { swr_case_connection_status(conn, 0, 1) };
+    // SAFETY: as above.
+    let size = unsafe { http_get_package_length_size(fake_sock) };
+    assert_eq!(size, SW_HTTP2_FRAME_HEADER_SIZE);
+    // SAFETY: http2::init_settings.
+    let settings_1 = unsafe { sw_rs_http2_default_settings() };
+    // SAFETY: the buffer's storage, far larger than a settings frame.
+    unsafe { (*buffer).length = http2_pack_setting_frame((*buffer).str, &settings_1, false) };
+    // SAFETY: the live buffer.
+    let (str, length) = unsafe { ((*buffer).str, (*buffer).length) };
+    pl.buf = str.cast();
+    pl.buf_size = length as u32;
+    assert!(length > 16);
+    // SAFETY: the port's protocol, the fake socket and the frame.
+    let got = unsafe { http_get_package_length(protocol, fake_sock, &mut pl) };
+    assert_eq!(got, length as isize);
+
+    // http1.1
+    // SAFETY: the fake socket's Connection.
+    unsafe { swr_case_connection_status(conn, 0, 0) };
+    // SAFETY: as above.
+    assert_eq!(unsafe { http_get_package_length_size(fake_sock) }, 0);
+    // SAFETY: as above.
+    let got = unsafe { http_get_package_length(protocol, fake_sock, &mut pl) };
+    assert_eq!(got, SW_ERR as isize);
+
+    let mut msg = std::ptr::null();
+    // SAFETY: a writable out-parameter.
+    let error = unsafe { swr_case_last_error(&mut msg) };
+    // SAFETY: the thread's NUL-terminated error message.
+    let str = unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy();
+    assert_eq!(error, SW_ERROR_PROTOCOL_ERROR);
+    assert!(str.contains("unexpected protocol status of session"));
+}
+
 type Cases = &'static [(&'static str, fn())];
 
 const CASES: Cases = &[
+    ("abort_connection", abort_connection),
+    ("get_package_length", get_package_length),
     ("websocket_small", websocket_small),
     ("websocket_medium", websocket_medium),
     ("websocket_big", websocket_big),

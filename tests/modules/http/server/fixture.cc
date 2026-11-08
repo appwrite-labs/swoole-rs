@@ -1,9 +1,11 @@
 // The Servers upstream's core-tests/src/server/http_server.cpp builds (test_base_server,
-// test_http_server, test_ssl_http) and core-tests/src/protocol/base.cpp builds, for the Rust cases
-// in src/main.rs and tests/modules/framing/protocol.rs. Building a Server, its
-// std::string setters, its callback slots and a timer callback need C++; every assertion and
+// test_http_server, test_ssl_http, abort_connection's and get_package_length's) and
+// core-tests/src/protocol/base.cpp builds, for the Rust cases in src/main.rs and
+// tests/modules/framing/protocol.rs. Building a Server, its std::string setters, its callback
+// slots, a timer callback and get_package_length's fake socket need C++; every assertion and
 // callback body is Rust's. Compiled into the hybrid tree's lib-swoole by tests/modules/hooks/system.py.
 #include "swoole_server.h"
+#include "swoole_http.h"
 #include "swoole_timer.h"
 #include "swoole_websocket.h"
 
@@ -114,6 +116,79 @@ int swr_case_ssl_server(Server **out, int mode, int port_number, const char *cer
     serv->onWorkerStart = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
     serv->onReceive = on_receive;
     return created;
+}
+
+// abort_connection's Server, created: two workers in process mode, SwooleG.max_sockets set to
+// `max_sockets` (the old value in *saved) before set_max_connection(1), then an HTTP port and a
+// TCP port (ports[0], ports[1]; not created when either is null).
+Server *swr_case_abort_server(uint32_t max_sockets, uint32_t *saved, ListenPort **ports, Hook on_start,
+                              Receive on_receive) {
+    auto serv = new Server(Server::MODE_PROCESS);
+    serv->worker_num = 2;
+    *saved = SwooleG.max_sockets;
+    SwooleG.max_sockets = max_sockets;
+    serv->set_max_connection(1);
+    swoole_set_log_level(SW_LOG_WARNING);
+    ports[0] = serv->add_port(SW_SOCK_TCP, "127.0.0.1", 0);
+    if (!ports[0]) {
+        return serv;
+    }
+    ports[0]->open_http_protocol = true;
+    ports[1] = serv->add_port(SW_SOCK_TCP, "127.0.0.1", 0);
+    if (!ports[1]) {
+        return serv;
+    }
+    serv->create();
+    serv->onStart = on_start;
+    serv->onReceive = on_receive;
+    return serv;
+}
+void swr_case_set_max_sockets(uint32_t value) {
+    SwooleG.max_sockets = value;
+}
+
+// get_package_length's port: one worker in base mode, the TCP port speaking HTTP and HTTP/2; the
+// Server not created. Null when add_port fails.
+ListenPort *swr_case_length_port(Server **out) {
+    auto serv = *out = new Server(Server::MODE_BASE);
+    serv->worker_num = 1;
+    ListenPort *port = serv->add_port(SW_SOCK_TCP, "127.0.0.1", 0);
+    if (port) {
+        port->open_http_protocol = true;
+        port->open_http2_protocol = true;
+    }
+    return port;
+}
+// ListenPort::init_protocol, after turning on open_websocket_protocol when `websocket`; the port's Protocol.
+const Protocol *swr_case_init_protocol(ListenPort *port, bool websocket) {
+    if (websocket) {
+        port->open_websocket_protocol = true;
+    }
+    port->init_protocol();
+    return &port->protocol;
+}
+// get_package_length's fake connection socket on the port's fd, its object a Connection of session 2025.
+network::Socket *swr_case_fake_socket(ListenPort *port, Connection **out) {
+    auto conn = *out = new Connection();
+    auto sock = new network::Socket();
+    sock->fd = port->get_fd();
+    sock->object = conn;
+    sock->socket_type = port->type;
+    sock->get_name();
+    conn->info = sock->info;
+    conn->session_id = 2025;
+    return sock;
+}
+void swr_case_connection_status(Connection *conn, uint8_t websocket_status, uint8_t http2_stream) {
+    conn->websocket_status = websocket_status;
+    conn->http2_stream = http2_stream;
+}
+int swr_case_create(Server *serv) {
+    return serv->create();
+}
+int swr_case_last_error(const char **msg) {
+    *msg = swoole_get_last_error_msg();
+    return swoole_get_last_error();
 }
 
 int swr_case_port(Server *serv) {
