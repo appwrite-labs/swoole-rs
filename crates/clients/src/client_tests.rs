@@ -10,7 +10,6 @@ struct Mock {
     connect: Vec<c_int>,
     io: Vec<isize>,
     ssl_connect_ready: bool,
-    last_error: c_int,
     socket_error: c_int,
     out_buffer: u32,
     /// The callback that releases the client's socket object (as a PHP close would).
@@ -67,12 +66,6 @@ extern "C" fn call(_: *mut c_void, which: c_int, _: *const c_char, length: usize
     }
     true
 }
-extern "C" fn last_error() -> c_int {
-    mock(|m| m.last_error)
-}
-extern "C" fn set_last_error(code: c_int) {
-    mock(|m| m.last_error = code);
-}
 extern "C" fn warn(_: *mut c_void, which: c_int) {
     log(format!("warn {which}"));
 }
@@ -86,7 +79,7 @@ extern "C" fn assign(_: *mut c_void, host: *const c_char, port: c_int, resolve: 
         .into_owned();
     log(format!("assign {host}:{port} {resolve}"));
     if host == "dns.test" {
-        set_last_error(ERROR_BAD_HOST_ADDR);
+        log::set_last_error(ERROR_BAD_HOST_ADDR);
         return false;
     }
     true
@@ -119,7 +112,7 @@ extern "C" fn event(_: *mut c_void, op: c_int, events: c_int) -> c_int {
 }
 extern "C" fn event_write(_: *mut c_void, _: *const c_char, length: usize) -> c_int {
     log(format!("write {length}"));
-    if mock(|m| m.last_error) == ERROR_OUTPUT_BUFFER_OVERFLOW {
+    if log::last_error() == ERROR_OUTPUT_BUFFER_OVERFLOW {
         ERR
     } else {
         OK
@@ -222,8 +215,6 @@ static NATIVE: Native = Native {
     free_socket,
     has,
     call,
-    last_error,
-    set_last_error,
     warn,
     kernel_timeout,
     assign,
@@ -275,6 +266,7 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
             ..Mock::default()
         }
     });
+    log::set_last_error(0);
     // SAFETY: the double stands in for the C++ client.
     let client = unsafe { new_client(kind, is_async) };
     taken();
@@ -304,6 +296,7 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
             ..Mock::default()
         }
     });
+    log::set_last_error(0);
     // SAFETY: the double stands in for the C++ client.
     let client = unsafe { new_client(1, true) };
     assert_eq!(taken(), ["make 1 17 12"]);
@@ -354,7 +347,7 @@ fn shutdown_records_each_direction_once() {
     // SAFETY: a live state.
     let shutdown = |how| unsafe { swr_v1_clients_shutdown(client, how) };
     assert_eq!(shutdown(99), ERR);
-    assert_eq!(mock(|m| m.last_error), libc::EINVAL);
+    assert_eq!(log::last_error(), libc::EINVAL);
     // The fd is -1, so the system call fails.
     assert_eq!(shutdown(libc::SHUT_RD), ERR);
     assert!(!flag(client, SHUTDOWN_READ));
@@ -428,7 +421,7 @@ fn failed_resolution_closes_and_reports_once() {
     taken();
     // SAFETY: a live state.
     unsafe { swr_v1_clients_on_resolved(client, 1, c"".as_ptr()) };
-    assert_eq!(mock(|m| m.last_error), ERROR_DNSLOOKUP_RESOLVE_FAILED);
+    assert_eq!(log::last_error(), ERROR_DNSLOOKUP_RESOLVE_FAILED);
     assert!(flag(client, ONERROR_CALLED) && flag(client, CLOSED));
     assert_eq!(taken(), ["call 1 0"], "removed: no reactor delete");
     free(client);
@@ -488,7 +481,7 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
     // SAFETY: as above.
     unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) };
     assert_eq!(taken(), ["write 4"]);
-    mock(|m| m.last_error = ERROR_OUTPUT_BUFFER_OVERFLOW);
+    log::set_last_error(ERROR_OUTPUT_BUFFER_OVERFLOW);
     // SAFETY: as above.
     assert_eq!(
         unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) },
@@ -518,7 +511,7 @@ fn writable_after_a_failed_connect_reports_the_error() {
     mock(|m| m.socket_error = libc::ECONNREFUSED);
     // SAFETY: a live state.
     unsafe { swr_v1_clients_on_write(client, core::ptr::null_mut(), core::ptr::null_mut()) };
-    assert_eq!(mock(|m| m.last_error), libc::ECONNREFUSED);
+    assert_eq!(log::last_error(), libc::ECONNREFUSED);
     assert_eq!(taken(), ["event 2 0", "call 1 0"]);
     free(client);
 }
@@ -553,7 +546,7 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     mock(|m| m.proxy[1] = HTTP_PROXY_WAIT);
     // SAFETY: a live state.
     unsafe { swr_v1_clients_on_timeout(client) };
-    assert_eq!(mock(|m| m.last_error), libc::ETIMEDOUT);
+    assert_eq!(log::last_error(), libc::ETIMEDOUT);
     assert_eq!(taken(), ["event 2 0", "call 1 0"]);
     free(client);
 }

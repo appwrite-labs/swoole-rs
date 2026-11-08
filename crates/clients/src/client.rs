@@ -1,4 +1,4 @@
-//! `network::Client` (src/network/client.cc) in Rust: its state and every
+//! `network::Client` (upstream's `src/network/client.cc`) in Rust: its state and every
 //! operation over it, from construction to close. The C++ `Client` is a facade
 //! that holds this behind `state_` and the members of C++ types (the callbacks,
 //! the proxies and the TLS context); the public POD fields use [`ClientRecord`].
@@ -13,6 +13,7 @@
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
 use std::ffi::{CStr, CString};
+use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_reactor::{
     SocketRecord, swr_v1_socket_bind, swr_v1_socket_buffer_size, swr_v1_socket_catch_error,
@@ -101,7 +102,7 @@ pub const BUFFER_FREE: c_int = 4;
 /// The thread's shared buffer (`sw_tg_buffer()`), for `BUFFER_VIEW`.
 pub const BUFFER_SHARED: c_int = 5;
 
-/// Swoole's constants this file uses; client.cc asserts each.
+/// Swoole's constants this file uses; `native/clients/network_client.cc` asserts each.
 const OK: c_int = 0;
 const ERR: c_int = -1;
 const SW_WAIT: c_int = 2;
@@ -168,8 +169,6 @@ pub struct Native {
         data: *const c_char,
         length: usize,
     ) -> bool,
-    pub last_error: unsafe extern "C" fn() -> c_int,
-    pub set_last_error: unsafe extern "C" fn(code: c_int),
     /// Logs warning `which`; the system ones report the current `errno`.
     pub warn: unsafe extern "C" fn(cli: *mut c_void, which: c_int),
     /// `socket->set_kernel_timeout(timeout)`.
@@ -355,16 +354,6 @@ impl Handle {
         let (native, cli) = (self.native(), self.cli());
         // SAFETY: the live client; nothing of it is borrowed across the call.
         unsafe { (native.call)(cli, which, data, length) }
-    }
-
-    fn last_error(self) -> c_int {
-        // SAFETY: reads the thread's last error.
-        unsafe { (self.native().last_error)() }
-    }
-
-    fn set_last_error(self, code: c_int) {
-        // SAFETY: sets the thread's last error.
-        unsafe { (self.native().set_last_error)(code) };
     }
 
     fn warn(self, which: c_int) {
@@ -707,7 +696,7 @@ pub unsafe extern "C" fn swr_v1_clients_shutdown(client: *mut Client, how: c_int
             OK
         }
         _ => {
-            this.set_last_error(libc::EINVAL);
+            log::set_last_error(libc::EINVAL);
             ERR
         }
     }
@@ -776,7 +765,7 @@ fn ssl_handshake(this: Handle) -> c_int {
     if this.socket().ssl.is_null() {
         this.socket().output.ssl_send = 1;
         if this.ssl(SSL_SESSION, 0) < 0 {
-            this.set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
+            log::set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
             return ERR;
         }
     }
@@ -823,7 +812,7 @@ fn inet_addr(this: Handle, host: *const c_char, port: c_int) -> c_int {
     let resolve = !this.flag(ASYNC);
     // SAFETY: a NUL-terminated host.
     if !unsafe { (this.native().assign)(this.cli(), host, port, resolve) } {
-        if !this.flag(DNS_COMPLETED) && this.last_error() == ERROR_BAD_HOST_ADDR {
+        if !this.flag(DNS_COMPLETED) && log::last_error() == ERROR_BAD_HOST_ADDR {
             this.set(WAIT_DNS, true);
         } else {
             return ERR;
@@ -1124,7 +1113,7 @@ unsafe fn address_of(
         )
     };
     if error != 0 {
-        this.set_last_error(error);
+        log::set_last_error(error);
         return None;
     }
     Some(address)
@@ -1169,7 +1158,7 @@ pub unsafe extern "C" fn swr_v1_clients_bind(
     // SAFETY: the live socket record and the local address of its length.
     if unsafe { swr_v1_socket_bind(this.socket_ptr(), &raw const address.addr.ss, address.len) } < 0
     {
-        this.set_last_error(errno());
+        log::set_last_error(errno());
         return ERR;
     }
     OK
@@ -1194,7 +1183,7 @@ pub unsafe extern "C" fn swr_v1_clients_sendto(
     let this = Handle(client);
     let socket = this.socket();
     if !is_dgram(socket.socket_type) {
-        this.set_last_error(ERROR_OPERATION_NOT_SUPPORT);
+        log::set_last_error(ERROR_OPERATION_NOT_SUPPORT);
         // SAFETY: a log line about this descriptor.
         unsafe { not_datagram(socket.fd) };
         return ERR;
@@ -1217,7 +1206,7 @@ pub unsafe extern "C" fn swr_v1_clients_sendto(
         )
     } < 0
     {
-        this.set_last_error(errno());
+        log::set_last_error(errno());
         return ERR;
     }
     OK
@@ -1257,7 +1246,7 @@ fn send_async(this: Handle, data: *const c_char, length: usize) -> isize {
     let mut n = length.cast_signed();
     // SAFETY: `length` bytes at `data`, copied by the reactor.
     if unsafe { (this.native().event_write)(this.cli(), data, length) } < 0 {
-        if this.last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW {
+        if log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW {
             return ERR as isize;
         }
         n = -1;
@@ -1318,7 +1307,7 @@ fn recv(this: Handle, data: *mut c_char, length: usize, flags: c_int) -> isize {
     if this.flag(STREAM) || this.flag(DTLS) {
         let n = this.io(IO_RECV_SYNC, data, length, flags);
         // A poll timeout reads as recv(2)'s EAGAIN, as it did before poll.
-        if n == -1 && this.last_error() == ERROR_SOCKET_POLL_TIMEOUT {
+        if n == -1 && log::last_error() == ERROR_SOCKET_POLL_TIMEOUT {
             set_errno(libc::EAGAIN);
         }
         n
@@ -1356,7 +1345,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_read(client: *mut Client) -> c_int {
     if http >= 0 && http != HTTP_PROXY_READY {
         let n = this.io(IO_RECV, buf, size, 0);
         if n <= 0 || !this.http_handshake(false, n.cast_unsigned()) {
-            this.set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
+            log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
             return connect_failed(this);
         }
         this.set_proxy_state(PROXY_HTTP, HTTP_PROXY_READY);
@@ -1370,13 +1359,13 @@ pub unsafe extern "C" fn swr_v1_clients_on_read(client: *mut Client) -> c_int {
     if socks5 >= 0 && socks5 != SOCKS5_READY {
         let n = this.io(IO_RECV, buf, size, 0);
         if n <= 0 {
-            this.set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
+            log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
         this.buffer(BUFFER_GROW, n.cast_unsigned());
         // Upstream hands the handshake the buffer's free size, not what was read.
         if !this.socks5_handshake(buf, size) {
-            this.set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
+            log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
         if this.proxy_state(PROXY_SOCKS5) != SOCKS5_READY {
@@ -1390,7 +1379,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_read(client: *mut Client) -> c_int {
     }
     if this.flag(OPEN_SSL) && this.socket().tls.state != SSL_STATE_READY {
         if ssl_handshake(this) < 0 {
-            this.set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
+            log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
         if this.socket().tls.state == SSL_STATE_READY {
@@ -1473,7 +1462,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_write(
     if this.flag(ACTIVE) {
         if this.flag(OPEN_SSL) && this.socket().tls.state == SSL_STATE_WAIT_STREAM {
             if ssl_handshake(this) < 0 {
-                this.set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
+                log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
                 return write_failed(this);
             }
             if this.socket().tls.state == SSL_STATE_READY {
@@ -1502,7 +1491,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_write(
     let mut error = 0;
     // SAFETY: the live client's socket; `error` is writable.
     let ret = unsafe { (this.native().socket_error)(this.cli(), &raw mut error) };
-    this.set_last_error(error);
+    log::set_last_error(error);
     if ret < 0 {
         this.warn(WARN_GETSOCKOPT);
         return ERR;
@@ -1531,7 +1520,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_write(
     }
     if this.flag(OPEN_SSL) {
         if ssl_handshake(this) < 0 {
-            this.set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
+            log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
             return write_failed(this);
         }
         this.socket().tls.state = SSL_STATE_WAIT_STREAM;
@@ -1575,7 +1564,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_error(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_on_timeout(client: *mut Client) {
     let this = Handle(client);
-    this.set_last_error(libc::ETIMEDOUT);
+    log::set_last_error(libc::ETIMEDOUT);
     this.get().timer.set(core::ptr::null_mut());
     if this.flag(OPEN_SSL) && this.socket().tls.state != SSL_STATE_READY {
         this.set(ACTIVE, false);
@@ -1613,7 +1602,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_resolved(
             return;
         }
     } else {
-        this.set_last_error(ERROR_DNSLOOKUP_RESOLVE_FAILED);
+        log::set_last_error(ERROR_DNSLOOKUP_RESOLVE_FAILED);
     }
     this.socket().removed = 1;
     close(this);
