@@ -972,8 +972,7 @@ fn port_facts(zport: *mut zval) -> PortFacts {
     let port = unsafe { crate::port::swr_v1_phpserver_port_port(object) };
     // SAFETY: its live ListenPort.
     let c = unsafe { view::port(port) };
-    // SAFETY: as above.
-    let owner = unsafe { (crate::port::host().ssl_owner)(port) };
+    let owner = c.ssl_context;
     PortFacts {
         port,
         protocols: [

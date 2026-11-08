@@ -8,7 +8,6 @@
 #include <new>
 #include <string>
 namespace swoole {
-struct SSLContext;
 struct Global;
 struct Socks5Proxy;
 struct HttpProxy;
@@ -23,7 +22,6 @@ class Socket;
 // view. Only const std::string& compatibility getters allocate a native
 // reference cache.
 class RustStringView {
-  friend struct SSLContext;
   friend struct Global;
   friend struct Socks5Proxy;
   friend struct HttpProxy;

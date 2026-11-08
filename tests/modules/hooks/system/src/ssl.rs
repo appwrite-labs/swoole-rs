@@ -28,9 +28,7 @@ unsafe extern "C" {
     #[link_name = "_Z20swoole_ssl_get_errorv"]
     fn swoole_ssl_get_error() -> *const c_char;
     #[link_name = "_ZN6swoole10SSLContext6createEv"]
-    fn ssl_context_create(context: *const TlsPrepared) -> bool;
-    fn swr_v1_tls_owner_bind(owner: *const c_void, identity: *const c_void);
-    fn swr_v1_tls_owner_detach(owner: *const c_void);
+    fn ssl_context_create(context: *const c_void) -> bool;
     fn swr_v1_tls_owner_free(owner: *const c_void);
 }
 
@@ -46,15 +44,13 @@ unsafe extern "C" {
     fn ERR_peek_error() -> c_ulong;
 }
 
-/// `swoole::SSLContext`: a boxed prepared owner, bound to its own address.
-struct SslContext(Box<TlsPrepared>);
+/// `swoole::SSLContext`: the owner's one reference and its view.
+struct SslContext(TlsPrepared);
 
 impl SslContext {
     fn new() -> Self {
-        let prepared = Box::new(swr_v1_tls_owner_new(tls_warning));
+        let prepared = swr_v1_tls_owner_new(tls_warning);
         assert!(!prepared.owner.is_null());
-        // SAFETY: OpenSSL's userdata is the context, whose first member is `prepared`.
-        unsafe { swr_v1_tls_owner_bind(prepared.owner, (&raw const *prepared).cast()) };
         Self(prepared)
     }
 
@@ -69,7 +65,7 @@ impl SslContext {
 
     fn create(&self) -> bool {
         // SAFETY: a live, bound context.
-        unsafe { ssl_context_create(&raw const *self.0) }
+        unsafe { ssl_context_create(self.0.owner) }
     }
 
     fn ready(&self) -> bool {
@@ -89,10 +85,7 @@ impl SslContext {
 impl Drop for SslContext {
     fn drop(&mut self) {
         // SAFETY: the owner this context made, released once.
-        unsafe {
-            swr_v1_tls_owner_detach(self.0.owner);
-            swr_v1_tls_owner_free(self.0.owner);
-        }
+        unsafe { swr_v1_tls_owner_free(self.0.owner) };
     }
 }
 
