@@ -94,7 +94,8 @@ jobs:
             target/hybrid/*/build-manifest.json
 
   # Every merge-tier run saves a ccache of about 500 MB under its own sha, and the repo's
-  # caches share 10 GB; jobs restore the newest, so keep two and delete the rest.
+  # caches share 10 GB; jobs restore the newest, so keep two and delete the rest. A prune
+  # the API rate limit refuses is caught up by the next run, so it doesn't fail main.
   ccache-prune:
     needs: full-gates
     if: always()
@@ -107,7 +108,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
     steps:
       # zts.yml keeps its own ccache-zts- line.
-      - run: |
+      - continue-on-error: true
+        run: |
           for key in ccache-${{ runner.os }}- ccache-zts-${{ runner.os }}-; do
             gh cache list --ref refs/heads/main --key "$key" --sort created_at --order desc \
               --limit 100 --json id --jq '.[2:][].id' | xargs -r -n1 gh cache delete
