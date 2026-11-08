@@ -67,7 +67,10 @@ int main(void) {
             header = build / 'rust-prefix/include' / path.name
             content = header.read_bytes()
             self.assertEqual(hashlib.sha256(content).hexdigest(), digest, str(header))
-            headers.append(header)
+            # The hook headers rewrite libc calls with function-like macros for the
+            # sources that include them; they declare no ABI and break later headers.
+            if not path.name.endswith('_hook.h'):
+                headers.append(header)
         # Inventory the declarations selected by the actual target/compiler and
         # configured SDK. Raw text includes unavailable OS backends as well.
         source = build / 'src'
