@@ -1,4 +1,4 @@
-//! The `Factory`, `ProcessFactory` and `Server` methods of `src/server/process.cc`
+//! The `Factory`, `ProcessFactory` and `Server` methods of `native/process/workers.cc`
 //! that were one operation of [`super::factory`], defined under their upstream
 //! (Itanium) symbols when the hybrid links this crate (`upstream-symbols`). Native
 //! code registers its factory call once; each method fills the context the way its
@@ -16,7 +16,7 @@ use super::ops::{
 use super::{WorkersCall, swr_v1_workers_run};
 use swoole_rs_corebase::DataHead;
 
-/// process.cc's `FactoryContext` (`WorkersNative<4>`), which asserts this layout.
+/// workers.cc's `FactoryContext` (`WorkersNative<4>`), which asserts this layout.
 #[repr(C)]
 pub struct FactoryContext {
     serv: *mut c_void,
@@ -29,7 +29,7 @@ pub struct FactoryContext {
 
 const _: () = assert!(
     size_of::<FactoryContext>() == 48 && core::mem::offset_of!(FactoryContext, fd) == 40,
-    "process.cc FactoryContext layout"
+    "workers.cc FactoryContext layout"
 );
 
 /// `swoole::SendData`.
@@ -41,14 +41,14 @@ pub struct SendData {
 
 static CALL: OnceLock<WorkersCall> = OnceLock::new();
 
-/// Registers process.cc's `FactoryContext::call`, which the methods below run over.
+/// Registers workers.cc's `FactoryContext::call`, which the methods below run over.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_workers_set_factory_call(call: WorkersCall) {
     // A second registration is the same function; keeping the first is equivalent.
     CALL.get_or_init(|| call);
 }
 
-/// `Factory::server_`: the one member after the vtable pointer (process.cc asserts
+/// `Factory::server_`: the one member after the vtable pointer (workers.cc asserts
 /// `sizeof(Factory)`).
 ///
 /// # Safety
@@ -90,7 +90,7 @@ unsafe fn run(
     arg: u64,
 ) -> i64 {
     let Some(&call) = CALL.get() else {
-        // process.cc registers before any Server exists.
+        // workers.cc registers before any Server exists.
         std::process::abort()
     };
     let mut ctx = FactoryContext {

@@ -1,4 +1,4 @@
-//! Thread mode (upstream's `src/server/thread.cc`; process.cc's `ThreadContext`):
+//! Thread mode (upstream's `src/server/thread.cc`; workers.cc's `ThreadContext`):
 //! every worker is a thread, and a manager
 //! thread rejoins and respawns each one that exits and walks reloads one worker
 //! at a time. Rust owns the manager's state ([`ThreadManager`]: its wait queue,

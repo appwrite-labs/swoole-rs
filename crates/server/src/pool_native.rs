@@ -1,5 +1,5 @@
 //! The objects `ProcessPool` runs over (once `src/os/process_pool.cc`, then the pool
-//! section of `src/server/process.cc`): its worker pipes, message box, message bus,
+//! section of `native/process/workers.cc`): its worker pipes, message box, message bus,
 //! timers, event loop and callbacks. crates/process decides every step
 //! (`process_pool.rs`, `pool.rs`) and asks for each effect through the table
 //! [`swr_v1_process_pool_native`] returns. It lives here because these objects are

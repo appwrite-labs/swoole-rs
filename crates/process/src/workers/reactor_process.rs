@@ -1,5 +1,5 @@
 //! Base-mode reactor processes (upstream's `src/server/reactor_process.cc`;
-//! process.cc's `ReactorProcessContext`): every worker
+//! workers.cc's `ReactorProcessContext`): every worker
 //! accepts, reads and runs callbacks itself. The context holds the server and,
 //! per operation, the pool, worker, reactor, event and connection.
 use super::log::LOG_INVALID_WORKER;

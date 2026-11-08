@@ -1,5 +1,5 @@
 //! Thread mode's facts and effects (`crates/process/src/workers/thread.rs`'s `OP_*`)
-//! over the server, pool, worker and port records Rust lays out. process.cc's
+//! over the server, pool, worker and port records Rust lays out. workers.cc's
 //! `ThreadContext::call` hands every op it has no case for to
 //! [`swr_v1_thread_mode_call`].
 use core::ffi::{c_int, c_void};
@@ -31,7 +31,7 @@ use crate::records::ConnectionRecord;
 use crate::worker_methods::{create_event_workers, create_user_workers};
 use crate::{server_methods, view};
 
-/// process.cc's `WorkersNative<5>`.
+/// workers.cc's `WorkersNative<5>`.
 #[repr(C)]
 struct Context {
     serv: *mut c_void,
@@ -50,7 +50,7 @@ type PoolHook = unsafe extern "C-unwind" fn(*mut PoolRecord, *mut WorkerRecord);
 /// Answers thread-mode op `op` with `arg` over the `WorkersNative<5>` at `context`.
 ///
 /// # Safety
-/// `context` is process.cc's live `ThreadContext`, whose objects the op reads are live.
+/// `context` is workers.cc's live `ThreadContext`, whose objects the op reads are live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn swr_v1_thread_mode_call(
     context: *mut c_void,

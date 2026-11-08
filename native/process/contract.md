@@ -1,7 +1,7 @@
 # Worker, task and reload transitions v1
 
 Feature bit 524288 (`process`). ABI: `docs/process-abi-v1.md` and
-`swoole_rs_process.h`. Callers are in `src/server/process.cc` (the event worker, reactor process,
+`swoole_rs_process.h`. Callers are in `native/process/workers.cc` (the event worker, reactor process,
 task worker, manager and factory ops, and the ProcessPool glue).
 
 Rust decides worker-exit observation and timeout plans, discard triage,

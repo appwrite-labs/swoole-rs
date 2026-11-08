@@ -422,7 +422,7 @@ unsafe fn free_pipe(pipe: *mut SocketPair) {
     drop(unsafe { Box::from_raw(pipe) });
 }
 
-/// `serv->task_notify_pipes.at(index)` for process.cc: the pipe, or null.
+/// `serv->task_notify_pipes.at(index)` for workers.cc: the pipe, or null.
 ///
 /// # Safety
 /// `state` is a live `Server::state_`.

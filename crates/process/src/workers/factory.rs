@@ -1,4 +1,4 @@
-//! The process-mode factory (`src/server/process.cc`): its setup and teardown,
+//! The process-mode factory (`native/process/workers.cc`): its setup and teardown,
 //! forking event and user workers, and the reactor threads' dispatch to workers
 //! and the workers' sends and closes back through them. The context holds the
 //! server and, per operation, the worker, the data sent and its connection.

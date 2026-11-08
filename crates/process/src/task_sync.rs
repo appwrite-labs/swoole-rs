@@ -391,7 +391,7 @@ pub unsafe extern "C" fn swr_v1_process_task_sync_many(
     outcome(server.sync_many(count, timeout, path, event_size), ok)
 }
 
-/// `SW_ERROR_TASK_DISPATCH_FAIL`; process.cc asserts it.
+/// `SW_ERROR_TASK_DISPATCH_FAIL`; workers.cc asserts it.
 const ERROR_TASK_DISPATCH_FAIL: c_int = 2002;
 
 /// The server's task state from native code, and its `MultiTask`'s count.

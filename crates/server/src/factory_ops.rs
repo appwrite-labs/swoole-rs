@@ -1,6 +1,6 @@
 //! The process-mode factory's facts and effects (`crates/process/src/workers/factory.rs`'s
 //! `OP_*`) over the server, worker, connection and send records Rust lays out.
-//! process.cc's `FactoryContext::call` hands every op it has no case for to
+//! workers.cc's `FactoryContext::call` hands every op it has no case for to
 //! [`swr_v1_factory_call`].
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicI64, Ordering};
@@ -41,7 +41,7 @@ use crate::callbacks::{CB_CLOSE, CB_USER_WORKER_START, CallbackSlot};
 use crate::records::swr_v1_server_connection;
 use crate::{ConnectionRecord, ServerCounters, view};
 
-/// process.cc's `WorkersNative<4>`.
+/// workers.cc's `WorkersNative<4>`.
 #[repr(C)]
 struct Context {
     serv: *mut c_void,
@@ -54,7 +54,7 @@ struct Context {
 
 const _: () = assert!(
     size_of::<Context>() == 48 && core::mem::offset_of!(Context, fd) == 40,
-    "process.cc FactoryContext layout"
+    "workers.cc FactoryContext layout"
 );
 
 // SAFETY: crates/reactor's body, under its upstream symbol.
@@ -111,7 +111,7 @@ fn worker_id(arg: u64) -> u16 {
 /// Answers factory op `op` with `arg` over the `WorkersNative<4>` at `context`.
 ///
 /// # Safety
-/// `context` is process.cc's live `FactoryContext`, whose objects the op reads are live.
+/// `context` is workers.cc's live `FactoryContext`, whose objects the op reads are live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn swr_v1_factory_call(
     context: *mut c_void,
