@@ -7,7 +7,7 @@ unchanged.
 
 | Patch | Upstream files |
 | --- | --- |
-| 20261108T154800-m15-defines-its-switches-in-config-h | `config.m4`: defines `SW_HALFCLOSE_DRAIN` and `SW_HALFCLOSE_PREQUEUE` in config.h. The drain and the synchronous prequeue run in `crates/server/src/send.rs`, `base_factory.rs` and `conn_io.rs`; [repairs.cc](repairs.cc) registers the TLS repairs in [tls.md](tls.md) with Rust under `SW_HALFCLOSE_PREQUEUE`. The two earlier `src/server/master.cc` patches netted to these defines, and went when master.cc left the build |
+| 20261108T154800-m15-defines-its-switches-in-config-h | `config.m4`: defines `SW_HALFCLOSE_DRAIN` and `SW_HALFCLOSE_PREQUEUE` in config.h. The drain and the synchronous prequeue run in `crates/server/src/send.rs`, `base_factory.rs` and `conn_io.rs`; [repairs.cc](repairs.cc) registers the TLS repairs in [tls.md](tls.md) with Rust under `SW_HALFCLOSE_PREQUEUE`. |
 
 ## Queued close
 
@@ -51,9 +51,8 @@ with the same chunk and offset. EAGAIN and fatal handling are unchanged.
 
 ## Open issues
 
-- Suspended-coroutine HTTP responses lose their output on early FIN (see
-  [prequeue.md](prequeue.md)) and on worker termination
-  ([worker-terminal.md](worker-terminal.md)).
+- Suspended-coroutine HTTP responses lose their output on early FIN and on
+  worker termination ([http-response-lifetime.md](../../docs/http-response-lifetime.md)).
 - Unread extra request data after `Connection: close` (reset/timeout) is not
   handled.
 - With the repair enabled, `verify_02` and `verify_03` emit an extra TLS

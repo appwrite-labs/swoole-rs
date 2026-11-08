@@ -1,10 +1,9 @@
 # Packet framing and MIME (M18)
 
-The overlay deletes `src/protocol/base.cc`, `src/protocol/mime_type.cc` and
-`include/swoole_protocol.h`. `swoole_protocol.h` here keeps the SendData, RecvData,
+`src/protocol/base.cc`, `src/protocol/mime_type.cc` and `include/swoole_protocol.h`
+have left the build. `swoole_protocol.h` here keeps the SendData, RecvData,
 PacketLength and Protocol layouts and the functions C++ or the compiled core-tests call.
-`swoole_rs_framing.h` declares ten exports. Feature bit 4096 is the optional
-framing feature; the module is opt-in.
+Exports are declared in `swoole_rs_framing.h`. Feature bit 4096; graduated.
 
 ## Packet framing
 
@@ -41,9 +40,8 @@ framing feature; the module is opt-in.
   (upstream's is hash order).
 - Lookup is case-sensitive on mutation, uses the last dot, and handles no-dot,
   trailing-dot and embedded-NUL input. Case mapping uses host libc `tolower`.
-- C++'s `StaticHandler` calls `swr_v1_framing_mime_get` and
-  `swr_v1_framing_mime_exists` (crates/server's Rust one calls `mime::get` and
-  `mime::exists`); an invalid extent looks up the empty suffix.
+- `swr_v1_framing_mime_get` and `swr_v1_framing_mime_exists` look up an invalid
+  extent as the empty suffix.
 
 ## Deliberate differences from upstream
 

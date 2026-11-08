@@ -9,7 +9,7 @@ No public layout, signature, Rust ABI or second queue.
 ## Socket::ssl_shutdown
 
 - Upstream premarks both shutdown bits before calling OpenSSL, so the alert is
-  never written. The overlay removes that premature publication.
+  never written. The repaired path does not premark them.
 - Every negative result goes through `SSL_get_error`, even with an empty error
   queue.
 - A zero return is a successful one-way alert; the peer is not awaited.
@@ -38,8 +38,8 @@ socket shutdown callers keep their own semantics.
 peers. Paired BIOs check payload-before-alert, one-way shutdown, peer-first,
 quiet mode, repeated close/free, unfinished handshake and nonblocking errors; a
 bounded BIO checks alert retry once capacity frees; five injected result/error
-pairs check empty-queue classification. Peer-death and non-null-reason checks
-from [expired-peer.md](expired-peer.md) complete the old gate's checks.
+pairs check empty-queue classification. `closed_peer` covers peer death
+([expired-peer.md](expired-peer.md)).
 
 ## Open
 

@@ -1,29 +1,12 @@
 # Coroutine I/O policy contract
 
 Feature bit 65536 (`hooks`). ABI: `docs/hooks-abi-v1.md` and
-`swoole_rs_hooks.h`. Patched upstream files: `ext-src/swoole_runtime.cc` (deleted; the
-coroutine streams reach the socket through `system.cc`'s
-`swr_v1_runtime_socket`, the C++ services through `native/phphelpers/module.cc`, and
-`thirdparty/php/streams/plain_wrapper.c` builds alone),
-`include/swoole_coroutine_socket.h` and `include/swoole_socket_impl.h` (deleted; the
-`coroutine::Socket` class and `SocketImpl` are `swoole_rs_coroutine_socket.h`, and core-tests
-include it in their place), `src/coroutine/file_lock.cc` (deleted),
-`src/coroutine/hook.cc` (deleted),
-`src/coroutine/iouring.cc` (deleted with `include/swoole_iouring.h`; `Iouring` is
-`crates/hooks/src/iouring.rs`), `src/coroutine/socket.cc` and `src/coroutine/system.cc` (deleted; what Rust can't
-express of `System` and the coroutine Socket is `native/hooks/system.cc`),
-`src/coroutine/uring_socket.cc` (deleted with `include/swoole_uring_socket.h`; a
-`UringSocket` is a `coroutine::Socket` its constructors mark, and
-the Rust members take the ring for it). `include/swoole_socket_hook.h` and `include/swoole_file_hook.h` (deleted;
-the same-named headers here keep only the macros and declarations `ftp.c` and
-`plain_wrapper.c` use).
-
-All exports are allocation-free, callback-free decisions over copied scalars.
-They never read or write errno/last_error. Native code owns objects,
-IO, callbacks, queues, timers, context switches, PHP function/transport
-registries and error publication. No user-buffer borrow or Rust frame survives
-a native operation, and native exceptions unwind only native frames. Public
-declarations and layouts are unchanged.
+`swoole_rs_hooks.h`. Upstream's coroutine runtime, hook, socket, system, file-lock
+and io_uring sources have left the build. What Rust can't express of `System` and
+the coroutine Socket is `native/hooks/system.cc`; `coroutine::Socket` and
+`SocketImpl` are `swoole_rs_coroutine_socket.h`; the coroutine streams reach the
+socket through `swr_v1_runtime_socket`; `swoole_socket_hook.h` and
+`swoole_file_hook.h` keep only what `ftp.c` and `plain_wrapper.c` use.
 
 ## Hooks and file locks
 
@@ -51,15 +34,12 @@ declarations and layouts are unchanged.
 
 ## Runtime hook transitions
 
-Requested flags are compared with installed flags per family (21 families,
-including curl and MongoDB's install-only alias path), with no Rust registry.
+`crates/phpruntime` compares requested with installed flags per family.
 Capability filtering runs after the before-hook callback and before
 stream/PDO/function/MongoDB/after-hook/publication. Requested config flags and
-installed flags stay distinct. Curl conflict normalization is a copied
-by-value plan: the native warning runs before normalized flags are published and
-before Rust reads installed flags again, so PHP warning handlers can re-enter or
-throw safely. MongoDB class lookup/alias registration stay native, and aliases
-are still never uninstalled.
+installed flags stay distinct. The curl conflict warning runs before normalized
+flags are published, so a PHP warning handler can bail out safely. MongoDB
+aliases are never uninstalled.
 
 ## Socket IO
 
@@ -180,7 +160,4 @@ are still never uninstalled.
 - io_uring: CQ harvesting, SQ admission and task counter decrement stay native
   and precede resume. Rust maps negative CQ results (ECANCELED -> ETIMEDOUT).
   Submit keeps EAGAIN defer, EBUSY sleep, EINTR retry and the native fatal
-  diagnostic. Behavior on io_uring-enabled kernels is untested.
-
-Known native races (cancellation fields, unhandled worker exceptions) are
-unchanged.
+  diagnostic.

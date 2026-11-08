@@ -34,6 +34,3 @@ once close is queued; TLS WANT_READ still reaches the shutdown retry.
 `crates/server/src/conn_io.rs`'s `prequeue_reads_stop_at_a_queued_or_notified_close`
 drives the read dispatcher through ordinary reads, queued plain reads, TLS retry
 routing and terminal notification.
-
-## Suspended coroutine responses (open)
-

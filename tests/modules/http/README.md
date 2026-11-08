@@ -1,7 +1,6 @@
 # HTTP tests
 
-The HTTP module is `crates/http`; [native/http/contract.md](../../../native/http/contract.md)
-has its ABI.
+The HTTP module is `crates/http`; its exports' contracts are their doc comments.
 
 Rust unit tests and the archive the native gates link against:
 

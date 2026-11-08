@@ -1,12 +1,9 @@
 # Clients local ABI
 
 Feature bit 1048576 (`clients`). ABI: `docs/clients-resolver-abi-v1.md`,
-`swoole_rs_clients.h`. Patched upstream files: `ext-src/swoole_client.cc`,
-`ext-src/swoole_client_async.cc` and `ext-src/swoole_client_coro.cc`
-(`src/network/client.cc`, `ext-src/php_swoole_client.h`, `src/network/address.cc`,
-`src/network/dns.cc`, `ext-src/swoole_name_resolver.cc` and `include/swoole_client.h`
-are deleted; `native/clients/name_resolver.cc` keeps the resolver list's C++ glue, and
-`native/clients/swoole_client.h` is the owned `network::Client` header).
+`swoole_rs_clients.h`. Upstream's client, address, DNS and name-resolver sources
+have left the build; `native/clients/name_resolver.cc` keeps the resolver list's
+C++ glue, and `native/clients/swoole_client.h` is the owned `network::Client` header.
 
 Production exports have the prefix `swr_v1_clients_`. A test-only allocation-budget
 symbol is excluded from production artifacts.
@@ -38,20 +35,15 @@ and callbacks stay native.
 ## Persistent pool
 
 `Swoole\Client` (crates/phpclients) holds one lazily created pool handle and
-calls the pool directly. The former C++ RAII facade had no production callers
-and is retired; its FIFO, binary-key, fork, teardown and failure-prefix cases
-run directly against the pool exports in `crates/clients/src/pool.rs`.
+calls the pool directly; its tests are in `crates/clients/src/pool.rs`.
 Rust stores binary keys and FIFO queues of opaque Client tokens using a
 deterministic hasher and fallible allocation; there is no C++ map/queue. Only
 native code closes or deletes Client tokens; dropping the Rust container never
 does. On allocation failure Rust returns a status and native throws `bad_alloc`.
-Unlike the original (which leaks residual heap queues at shutdown), Rust frees
-its own buffers on destruction, so allocation topology differs.
 
 ## Address and raw object
 
-`src/network/address.cc` is deleted: `network::Address`'s methods are inline calls
-into these exports in `native/reactor/swoole_socket.h`.
+`network::Address`'s methods are inline calls into these exports in `native/reactor/swoole_socket.h`.
 
 - Numeric parsing stops at the first NUL of the span. Only successful 4/16-byte
   results are written into existing `sockaddr`/`tmp_address` storage.
@@ -74,7 +66,7 @@ into these exports in `native/reactor/swoole_socket.h`.
 
 ## DNS (`native/clients/dns.cc`)
 
-`src/network/dns.cc` is deleted. `native/clients/dns.cc` keeps what needs C++: the
+`native/clients/dns.cc` keeps what needs C++: the
 `std::string`/`std::list`/`std::function` signatures of swoole.h's DNS and name
 resolver API (the resolver list stays `SwooleG.name_resolvers`, whose iterators
 `swoole_name_resolver_each` hands out), the coroutine `Socket` and `Coroutine`
@@ -109,9 +101,7 @@ watermarks) and operations are Rust's; see
 [the boundary](../../docs/clients-resolver-abi-v1.md#clients). The C++ half is
 the `swr_v1_clients_native` table over the members of C++ types, and the
 warnings, emitted from functions named as upstream's so the log lines match.
-Upstream's src/network/client.cc is deleted: that half is
-`native/clients/network_client.cc`, Zend-free so core-tests' `SyncClient` and
-`AsyncClient` link it. The last error is corebase's, which Rust sets directly.
+It is Zend-free so core-tests' `SyncClient` and `AsyncClient` link it. The last error is corebase's, which Rust sets directly.
 `bind` and `sendto` are whole Rust operations; each method passes a lambda for
 its one warning, which logs under the method's own name.
 Construction checks static `Socket::is_stream(type)` for fd class and the
