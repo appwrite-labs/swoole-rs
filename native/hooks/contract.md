@@ -14,7 +14,9 @@ include it in their place), `src/coroutine/file_lock.cc` (deleted),
 express of `System` and the coroutine Socket is `native/hooks/system.cc`),
 `src/coroutine/uring_socket.cc` (deleted with `include/swoole_uring_socket.h`; a
 `UringSocket` is a `coroutine::Socket` its constructors mark, and
-the Rust members take the ring for it).
+the Rust members take the ring for it). `include/swoole_socket_hook.h` and `include/swoole_file_hook.h` (deleted;
+the same-named headers here keep only the macros and declarations `ftp.c` and
+`plain_wrapper.c` use).
 
 All exports are allocation-free, callback-free decisions over copied scalars.
 They never read or write errno/last_error. Native code owns objects,
