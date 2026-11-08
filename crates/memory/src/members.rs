@@ -2,13 +2,15 @@
 // Compatibility derived from Swoole v6.2.4 src/memory/{fixed_pool,ring_buffer,global_memory,
 // shared_memory,table}.cc (Swoole contributors).
 //! The upstream members of `FixedPool`, `RingBuffer`, `GlobalMemory`, the `sw_shm_*`
-//! functions and `Table`'s shared-memory lifecycle. `include/swoole_memory.h` keeps the
-//! constructors, which throw, and the virtual members, whose vtables every user emits;
-//! they call the `swr_v1_memory_*_pool` functions below. A constructor returns 0, -1 for
-//! upstream's `Exception(SW_ERROR_INVALID_PARAMS)` or -2 for `std::bad_alloc`.
+//! functions and `Table`'s shared-memory lifecycle. `include/swoole_memory.h` keeps
+//! `GlobalMemory`'s constructor, which throws, and its virtual members, whose vtables
+//! every user emits; they call the `swr_v1_memory_global_memory_*` functions below. A
+//! constructor returns 0, -1 for upstream's `Exception(SW_ERROR_INVALID_PARAMS)` or -2
+//! for `std::bad_alloc`. `FixedPool` and `RingBuffer` have no C++ facade left; their
+//! members serve the Rust ports of upstream's core tests in `tests/modules/memory/members.rs`.
 //!
 //! Each `// assert(...)` comment is the upstream assertion the `assert!` under it
-//! carries; tests/modules/memory/gate.py checks every one is still here.
+//! carries.
 
 use crate::fixed::{self, DebugCursor, Fixed, Layout, Slice};
 use crate::global::{self, Global};
@@ -181,75 +183,64 @@ unsafe fn fixed<'a>(this: *const c_void) -> &'a Fixed {
     unsafe { &*pool }
 }
 
-upstream! {
-    "_ZNK6swoole9FixedPool25get_number_of_spare_sliceEv", "_ZNK6swoole9FixedPool25get_number_of_spare_sliceEv" =>
-    /// `uint32_t FixedPool::get_number_of_spare_slice() const`.
-    #[must_use]
-    pub unsafe extern "C" fn swr_fixed_pool_spare(this: *const c_void) -> u32 {
-        // SAFETY: `this` is a constructed FixedPool.
-        let pool = unsafe { fixed(this) };
-        pool.slices().0
-    }
-    "_ZNK6swoole9FixedPool25get_number_of_total_sliceEv", "_ZNK6swoole9FixedPool25get_number_of_total_sliceEv" =>
-    /// `uint32_t FixedPool::get_number_of_total_slice() const`.
-    #[must_use]
-    pub unsafe extern "C" fn swr_fixed_pool_total(this: *const c_void) -> u32 {
-        // SAFETY: `this` is a constructed FixedPool.
-        let pool = unsafe { fixed(this) };
-        pool.slices().1
-    }
-    "_ZNK6swoole9FixedPool14get_slice_sizeEv", "_ZNK6swoole9FixedPool14get_slice_sizeEv" =>
-    /// `uint32_t FixedPool::get_slice_size() const`.
-    #[must_use]
-    pub unsafe extern "C" fn swr_fixed_pool_slice_size(this: *const c_void) -> u32 {
-        // SAFETY: `this` is a constructed FixedPool.
-        let pool = unsafe { fixed(this) };
-        pool.slice_size
-    }
-    "_ZN6swoole9FixedPool19sizeof_struct_sliceEv", "_ZN6swoole9FixedPool19sizeof_struct_sliceEv" =>
-    /// `static size_t FixedPool::sizeof_struct_slice()`.
-    #[must_use]
-    pub extern "C" fn swr_fixed_pool_sizeof_slice() -> usize {
-        mem::size_of::<Slice>()
-    }
-    "_ZN6swoole9FixedPool18sizeof_struct_implEv", "_ZN6swoole9FixedPool18sizeof_struct_implEv" =>
-    /// `static size_t FixedPool::sizeof_struct_impl()`.
-    #[must_use]
-    pub extern "C" fn swr_fixed_pool_sizeof_impl() -> usize {
-        mem::size_of::<Fixed>()
-    }
-    "_ZNK6swoole9FixedPool5debugEi", "_ZNK6swoole9FixedPool5debugEi" =>
-    /// `void FixedPool::debug(int max_lines) const`: the slices on stdout.
-    pub unsafe extern "C" fn swr_fixed_pool_debug(this: *const c_void, max_lines: c_int) {
-        // SAFETY: `this` is a constructed FixedPool.
-        let pool = unsafe { fixed(this) };
-        let mut cursor = DebugCursor::default();
-        // SAFETY: the format takes one string.
-        unsafe {
-            libc::printf(
-                c"===============================%s=================================\n".as_ptr(),
-                c"debug".as_ptr(),
-            )
-        };
-        // SAFETY: `pool` is live.
-        while let Some(record) = unsafe { fixed::debug_step(pool, &mut cursor, max_lines) } {
-            if record.self_link {
-                // SAFETY: a literal format with no arguments.
-                unsafe { libc::printf(c"-------------------@@@@@@@@@@@@@@@@@@@@@@----------------\n".as_ptr()) };
-            }
-            // SAFETY: the arguments match the format.
+/// `uint32_t FixedPool::get_number_of_spare_slice() const`.
+#[must_use]
+pub unsafe extern "C" fn swr_fixed_pool_spare(this: *const c_void) -> u32 {
+    // SAFETY: `this` is a constructed FixedPool.
+    let pool = unsafe { fixed(this) };
+    pool.slices().0
+}
+
+/// `uint32_t FixedPool::get_number_of_total_slice() const`.
+#[must_use]
+pub unsafe extern "C" fn swr_fixed_pool_total(this: *const c_void) -> u32 {
+    // SAFETY: `this` is a constructed FixedPool.
+    let pool = unsafe { fixed(this) };
+    pool.slices().1
+}
+
+/// `uint32_t FixedPool::get_slice_size() const`.
+#[must_use]
+pub unsafe extern "C" fn swr_fixed_pool_slice_size(this: *const c_void) -> u32 {
+    // SAFETY: `this` is a constructed FixedPool.
+    let pool = unsafe { fixed(this) };
+    pool.slice_size
+}
+
+/// `void FixedPool::debug(int max_lines) const`: the slices on stdout.
+pub unsafe extern "C" fn swr_fixed_pool_debug(this: *const c_void, max_lines: c_int) {
+    // SAFETY: `this` is a constructed FixedPool.
+    let pool = unsafe { fixed(this) };
+    let mut cursor = DebugCursor::default();
+    // SAFETY: the format takes one string.
+    unsafe {
+        libc::printf(
+            c"===============================%s=================================\n".as_ptr(),
+            c"debug".as_ptr(),
+        )
+    };
+    // SAFETY: `pool` is live.
+    while let Some(record) = unsafe { fixed::debug_step(pool, &mut cursor, max_lines) } {
+        if record.self_link {
+            // SAFETY: a literal format with no arguments.
             unsafe {
                 libc::printf(
-                    c"#%llu\tslice[%p]\tprev=%p\tnext=%p\ttag=%d\tdata=%p\n".as_ptr(),
-                    libc::c_ulonglong::from(record.line),
-                    record.slice,
-                    record.prev,
-                    record.next,
-                    c_int::from(record.lock),
-                    record.data,
+                    c"-------------------@@@@@@@@@@@@@@@@@@@@@@----------------\n".as_ptr(),
                 )
             };
         }
+        // SAFETY: the arguments match the format.
+        unsafe {
+            libc::printf(
+                c"#%llu\tslice[%p]\tprev=%p\tnext=%p\ttag=%d\tdata=%p\n".as_ptr(),
+                libc::c_ulonglong::from(record.line),
+                record.slice,
+                record.prev,
+                record.next,
+                c_int::from(record.lock),
+                record.data,
+            )
+        };
     }
 }
 
@@ -573,27 +564,27 @@ upstream! {
         // SAFETY: the mapping its header describes.
         unsafe { libc::mprotect(base, total, flags) }
     }
-    "_Z14sw_shm_reallocPvm", "_Z14sw_shm_reallocPvm" =>
-    /// `void *sw_shm_realloc(void *ptr, size_t new_size)`: copies what fits.
-    #[must_use]
-    #[expect(
-        clippy::not_unsafe_ptr_arg_deref,
-        reason = "upstream's C signature; callers pass a live sw_shm_malloc payload"
-    )]
-    pub extern "C" fn sw_shm_realloc(payload: *mut c_void, size: usize) -> *mut c_void {
-        let fresh = sw_shm_malloc(size);
-        if fresh.is_null() {
-            return ptr::null_mut();
-        }
-        // SAFETY: `payload` is a live mapping's payload.
-        let old = unsafe { extent(payload) }.1;
-        // SAFETY: `fresh` is a new one.
-        let new = unsafe { extent(fresh) }.1;
-        // SAFETY: two disjoint live payloads, each `total - 8` bytes.
-        unsafe { ptr::copy_nonoverlapping(payload.cast::<u8>(), fresh.cast::<u8>(), old.min(new) - 8) };
-        unmap(payload);
-        fresh
+}
+
+/// `void *sw_shm_realloc(void *ptr, size_t new_size)`: copies what fits.
+#[must_use]
+#[expect(
+    clippy::not_unsafe_ptr_arg_deref,
+    reason = "upstream's C signature; callers pass a live sw_shm_malloc payload"
+)]
+pub extern "C" fn sw_shm_realloc(payload: *mut c_void, size: usize) -> *mut c_void {
+    let fresh = sw_shm_malloc(size);
+    if fresh.is_null() {
+        return ptr::null_mut();
     }
+    // SAFETY: `payload` is a live mapping's payload.
+    let old = unsafe { extent(payload) }.1;
+    // SAFETY: `fresh` is a new one.
+    let new = unsafe { extent(fresh) }.1;
+    // SAFETY: two disjoint live payloads, each `total - 8` bytes.
+    unsafe { ptr::copy_nonoverlapping(payload.cast::<u8>(), fresh.cast::<u8>(), old.min(new) - 8) };
+    unmap(payload);
+    fresh
 }
 
 // ---------------------------------------------------------------- Table
@@ -644,69 +635,76 @@ unsafe extern "C" fn table_error(code: c_int) {
     set_last_error(code);
 }
 
-upstream! {
-    "_ZN6swoole13table_warningEPKcm", "_ZN6swoole13table_warningEPKcm" =>
-    /// `void table_warning(const char *message, size_t length)`: a warning whose text
-    /// starts with its function, `Name(): `.
-    pub unsafe extern "C" fn table_warning(message: *const c_char, length: usize) {
-        // SAFETY: the table passes `length` readable bytes.
-        let text = unsafe { std::slice::from_raw_parts(message.cast::<u8>(), length) };
-        let text = String::from_utf8_lossy(text);
-        let (origin, rest) = text.split_once("(): ").unwrap_or(("", &text));
-        let origin = std::ffi::CString::new(origin).unwrap_or_default();
-        log::warning(&origin, format_args!("{rest}"));
+/// `table_warning(message, length)`: a warning whose text starts with its function,
+/// `Name(): `.
+unsafe extern "C" fn table_warning(message: *const c_char, length: usize) {
+    // SAFETY: the table passes `length` readable bytes.
+    let text = unsafe { std::slice::from_raw_parts(message.cast::<u8>(), length) };
+    let text = String::from_utf8_lossy(text);
+    let (origin, rest) = text.split_once("(): ").unwrap_or(("", &text));
+    let origin = std::ffi::CString::new(origin).unwrap_or_default();
+    log::warning(&origin, format_args!("{rest}"));
+}
+
+/// `Table::make(rows_size, conflict_proportion)`: the header comes from the global
+/// memory pool, so forked workers share it.
+///
+/// # Safety
+/// `swoole_init` made the global pool.
+#[must_use]
+pub unsafe fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
+    #[expect(clippy::cast_possible_truncation, reason = "a sub-page header")]
+    // SAFETY: as the caller promises.
+    let table = unsafe { pool::alloc(mem::size_of::<Table>() as u32) }.cast::<Table>();
+    if table.is_null() {
+        return table;
     }
-    "_ZN6swoole5Table4makeEjf", "_ZN6swoole5Table4makeEjf" =>
-    /// `static Table *Table::make(uint32_t rows_size, float conflict_proportion)`: the
-    /// header comes from the global memory pool, so forked workers share it.
-    #[must_use]
-    pub unsafe extern "C" fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
-        #[expect(clippy::cast_possible_truncation, reason = "a sub-page header")]
-        // SAFETY: `swoole_init` made the global pool.
-        let table = unsafe { pool::alloc(crate::table::swr_v1_memory_table_header_size() as u32) }.cast::<Table>();
-        if table.is_null() {
-            return table;
-        }
-        let hash = swoole_rs_utilities::misc::swoole_hash_php;
-        // SAFETY: `header_size()` writable bytes.
-        if unsafe { !crate::table::swr_v1_memory_table_init(table, rows, conflict, hash, table_warning, table_error) } {
-            // SAFETY: from the pool above.
-            unsafe { pool::free(table.cast()) };
-            return ptr::null_mut();
-        }
-        table
+    let hash = swoole_rs_utilities::misc::swoole_hash_php;
+    // SAFETY: the pool's blocks are 8-aligned; `size_of::<Table>()` writable bytes.
+    if unsafe { !Table::init(table, rows, conflict, hash, table_warning, table_error) } {
+        // SAFETY: from the pool above.
+        unsafe { pool::free(table.cast()) };
+        return ptr::null_mut();
     }
-    "_ZN6swoole5Table6createEv", "_ZN6swoole5Table6createEv" =>
-    /// `bool Table::create()`: lays the table out in a fresh shared arena.
-    #[must_use]
-    pub unsafe extern "C" fn swr_table_create(this: *mut Table) -> bool {
-        // SAFETY: `this` is a made table.
-        let size = unsafe { crate::table::swr_v1_memory_table_arena_size(this) };
-        if size == 0 {
-            return false;
-        }
-        let arena = sw_shm_malloc(size);
-        if arena.is_null() {
-            return false;
-        }
-        // SAFETY: a fresh arena of `size` bytes.
-        if unsafe { !crate::table::swr_v1_memory_table_create(this, arena) } {
-            sw_shm_free(arena);
-            return false;
-        }
-        true
+    table
+}
+
+/// `Table::create()`: lays the table out in a fresh shared arena.
+///
+/// # Safety
+/// `this` is a made table.
+#[must_use]
+pub unsafe fn swr_table_create(this: *mut Table) -> bool {
+    // SAFETY: as the caller promises.
+    let table = unsafe { &mut *this };
+    let size = table.arena_size();
+    if size == 0 {
+        return false;
     }
-    "_ZN6swoole5Table7destroyEv", "_ZN6swoole5Table7destroyEv" =>
-    /// `void Table::destroy()`: frees the arena, then the header.
-    pub unsafe extern "C" fn swr_table_destroy(this: *mut Table) {
-        // SAFETY: `this` is a made table, destroyed once.
-        let arena = unsafe { crate::table::swr_v1_memory_table_destroy(this) };
-        if !arena.is_null() {
-            sw_shm_free(arena);
-        }
-        // SAFETY: from the pool `make` used.
-        unsafe { pool::free(this.cast()) };
+    let arena = sw_shm_malloc(size);
+    if arena.is_null() {
+        return false;
     }
+    // SAFETY: a fresh arena of `size` bytes.
+    if unsafe { !table.create(arena.cast()) } {
+        sw_shm_free(arena);
+        return false;
+    }
+    true
+}
+
+/// `Table::destroy()`: frees the arena, then the header.
+///
+/// # Safety
+/// `this` is a made table, destroyed once.
+pub unsafe fn swr_table_destroy(this: *mut Table) {
+    // SAFETY: as the caller promises.
+    let arena = unsafe { Table::destroy(this) };
+    if !arena.is_null() {
+        sw_shm_free(arena.cast());
+    }
+    // SAFETY: from the pool `make` used.
+    unsafe { pool::free(this.cast()) };
 }
 
 #[cfg(test)]

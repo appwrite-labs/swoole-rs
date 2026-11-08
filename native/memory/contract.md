@@ -134,26 +134,27 @@ min(old_total-8, new_total-8) payload bytes.
 
 ## Upstream members
 
-`crates/memory/src/members.rs` defines what `src/memory/*.cc` did, under the
-upstream C++ symbols with `upstream-symbols`: `FixedPool`'s, `RingBuffer`'s and
-`GlobalMemory`'s non-virtual members, `sw_shm_*`, `table_warning` and
-`Table::make`/`create`/`destroy`. `swoole_memory.h` keeps the constructors (they
-throw on the `swr_v1_memory_*_new` status: -1 `Exception(SW_ERROR_INVALID_PARAMS)`,
--2 `std::bad_alloc`) and the virtual members, so each user emits the vtables.
-`Table::make` allocates through `sw_mem_pool()`'s vtable (slot 2 `alloc`, 3 `free`).
-These run allocators, mmap and logs with a Rust frame active.
+`crates/memory/src/members.rs` defines what `src/memory/*.cc` did. With
+`upstream-symbols`, `GlobalMemory`'s non-virtual members and `sw_shm_malloc`,
+`sw_shm_calloc`, `sw_shm_free` and `sw_shm_protect` are under their upstream C++
+symbols. `swoole_memory.h` keeps `GlobalMemory`'s constructor (it throws on the
+`swr_v1_memory_global_memory_new` status: -1 `Exception(SW_ERROR_INVALID_PARAMS)`,
+-2 `std::bad_alloc`) and its virtual members, so each user emits the vtable.
+`FixedPool`, `RingBuffer` and `sw_shm_realloc` have no C++ caller left; their members
+stay Rust-only for upstream's GoogleTests, ported to `tests/modules/memory/`.
+`swr_table_make` allocates through `sw_mem_pool()`'s vtable (slot 2 `alloc`, 3
+`free`). These run allocators, mmap and logs with a Rust frame active.
 
 ## Shared tables
 
-Rust owns `swoole::Table` (crates/memory/src/table.rs); the C++ `Table`,
-`TableRow` and `TableColumn` are views of its handles. The host allocates two
-blocks, so both stay shared across `fork()` as upstream's are: the header
-(`table_header_size()` bytes from `sw_mem_pool()`, holding sizes, counters and
-the pool and iterator mutexes) and, at create, the arena (`table_arena_size()`
-bytes from `sw_shm_malloc`). `table_destroy` frees the rest and returns the arena
-for the host to free with the header.
+Rust owns `swoole::Table` (crates/memory/src/table.rs), and `Swoole\Table`
+(crates/phpcollections) is its only user; no C++ view is left. Two blocks stay
+shared across `fork()` as upstream's are: the header (`size_of::<Table>()` bytes from
+`sw_mem_pool()`, holding sizes, counters and the pool and iterator mutexes) and, at
+create, the arena (`arena_size()` bytes from `sw_shm_malloc`). `Table::destroy`
+frees the rest and returns the arena for the caller to free with the header.
 
-- Rows: 88-byte header (`swr_v1_memory_table_row`; next at 16, key at 24) and the
+- Rows: 88-byte header (next at 16, key at 24) and the
   column data. Rows are padded to 8 bytes in the arena so lock words and links are
   aligned; `calc_memory_size`/`get_memory_size` and the slice counts still report
   upstream's unpadded accounting.
@@ -169,31 +170,3 @@ for the host to free with the header.
   Duplicate names keep the first declaration for lookup; every declaration
   takes row space. Columns cannot be added once the table is created.
 - The iterator's cursor and row copy are process-private; its mutex is shared.
-
-## Benchmarks
-
-Prepare optimized binaries (correctness gate runs first, no timing):
-
-```
-python3 tests/modules/memory/gate.py --source /absolute/pinned/upstream \
-  --extension /absolute/hybrid/swoole.so --reference-extension /absolute/upstream/swoole.so \
-  --archive /absolute/build/rust-prefix/lib/libswoole_rs_ffi.a \
-  --prepare-benchmark target/memory-benchmark \
-  --output target/reports/memory/gate-benchmark-prepared.json
-```
-
-Measure on an otherwise idle host:
-
-```
-python3 tests/modules/memory/benchmark.py --prepared target/memory-benchmark \
-  --trials 7 --loops 100000 --output target/reports/memory/benchmark.json
-```
-
-Trials alternate upstream/Rust order and compare workload checksums. Cases: fixed
-alloc/free, locked channel push/pop, ring alloc/free, global 64-byte
-alloc, table row/column lookup/read-modify-write.
-
-Known regression: the most recent measured Rust/upstream elapsed-time ratios were
-fixed 1.068, channel 1.437, ring 2.074, global 1.099, table 1.061.
-These block default activation. Later seams (ring storage ABI, lookup/clear/value
-resume steps) add crossings and have not been measured.
