@@ -94,6 +94,9 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_runtime/exec/exec.phpt':
         "it pings www.gov.cn three times through each exec function; GitHub's hosted runners "
         'drop ICMP, so ping never answers and the case times out on every engine (#1974)',
+        'tests/swoole_http2_client_coro/connect_twice.phpt':
+        "it fetches https://nghttp2.org/httpbin/base64/..., and nghttp2.org's httpbin backend "
+        'answers 502 Bad Gateway (nghttpx) to every engine and to curl (#1986)',
         'tests/swoole_websocket_server/send_close_frame.phpt':
         'the parent kills the server as soon as its pushes return, usually before the server '
         'handles the second frame (#111)',
