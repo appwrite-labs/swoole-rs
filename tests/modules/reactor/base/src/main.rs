@@ -212,7 +212,7 @@ unsafe extern "C" {
         mask: c_int,
     );
     fn swr_case_signal_block_all();
-    fn swr_case_timer_after(ms: i64, f: Plain, data: *mut c_void) -> i64;
+    fn swr_v1_timer_add_plain(ms: i64, persistent: bool, f: Plain, data: *mut c_void) -> *mut c_void;
     fn swr_case_random_bytes(buf: *mut c_char, size: usize) -> usize;
     fn swr_case_tg_buffer() -> *mut CppString;
     fn swr_case_string_grow(str: *mut CppString, n: usize);
@@ -1224,7 +1224,7 @@ extern "C" fn fail_write(reactor: *mut Reactor, event: *mut Event) -> c_int {
     unsafe {
         let socket = ev_socket(event);
         expect_eq!(set(reactor, socket, SW_EVENT_READ), 0);
-        swr_case_timer_after(10, write_pkt, (*socket).object);
+        swr_v1_timer_add_plain(10, false, write_pkt, (*socket).object);
     }
     SW_ERR
 }

@@ -24,7 +24,7 @@ class Client : public swr_v1_clients_record {
     std::unique_ptr<Socks5Proxy> socks5_proxy = nullptr;
     std::unique_ptr<HttpProxy> http_proxy = nullptr;
 
-    std::shared_ptr<SSLContext> ssl_context = nullptr;
+    std::unique_ptr<SSLContext, SSLContext::Release> ssl_context = nullptr;
 
     std::function<void(Client *cli)> onConnect = nullptr;
     std::function<void(Client *cli)> onError = nullptr;
@@ -67,9 +67,9 @@ class Client : public swr_v1_clients_record {
         return socket->socket_type;
     }
 
-    const std::string &get_http_proxy_host_name() const {
-        if (ssl_context && !ssl_context->tls_host_name.empty()) {
-            return ssl_context->tls_host_name;
+    std::string get_http_proxy_host_name() const {
+        if (ssl_context && *ssl_context->text(SSLContext::TLS_HOST_NAME)) {
+            return ssl_context->text(SSLContext::TLS_HOST_NAME);
         }
         return http_proxy->target_host;
     }
@@ -94,14 +94,6 @@ class Client : public swr_v1_clients_record {
     int enable_ssl_encrypt();
     int ssl_handshake() const;
     int ssl_verify(int allow_self_signed) const;
-
-#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
-    void set_tls_host_name(const std::string &str) const {
-        ssl_context->tls_host_name = str;
-        // if user set empty ssl_host_name, disable it, otherwise the underlying may set it automatically
-        ssl_context->disable_tls_host_name = ssl_context->tls_host_name.empty();
-    }
-#endif
 };
 
 class SyncClient {

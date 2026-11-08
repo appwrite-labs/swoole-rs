@@ -17,7 +17,6 @@ use swoole_rs_ports::{
     swr_v1_ports_event,
 };
 use swoole_rs_server::port_config;
-use swoole_rs_tls::OwnedTlsContext;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Object, bailout, message,
     string::bytes,
@@ -73,12 +72,6 @@ const PROPERTY_BOOL: u32 = 3;
 pub struct PortHost {
     invalid: unsafe extern "C" fn(*mut zend_object),
     pub(crate) socket: unsafe extern "C" fn(*mut c_void, *mut zval),
-    pub(crate) ssl_owner: unsafe extern "C" fn(*mut c_void) -> *const OwnedTlsContext,
-    pub(crate) sni_context:
-        unsafe extern "C" fn(*mut c_void, *mut *const OwnedTlsContext) -> *mut c_void,
-    pub(crate) sni_add:
-        unsafe extern "C" fn(*mut c_void, *const c_char, usize, *mut c_void) -> bool,
-    pub(crate) ssl_init: unsafe extern "C" fn(*mut c_void) -> bool,
 }
 
 static HOST: AtomicPtr<PortHost> = AtomicPtr::new(ptr::null_mut());
@@ -456,9 +449,7 @@ fn apply_settings(port: *mut c_void, serv: *mut c_void, vht: *mut zval) -> Resul
         return Ok(());
     }
     let dgram = port_settings::is_dgram(config.r#type);
-    // SAFETY: an SSL port.
-    let owner = unsafe { (host().ssl_owner)(port) };
-    port_settings::tls(&source, owner, dgram)
+    port_settings::tls(&source, config.ssl_context, dgram)
 }
 
 swoole_rs_zend::handlers! {

@@ -55,11 +55,10 @@ for both native and Rust, so `import` refuses every descriptor there.
 `ssl_context_create`, `ssl_init`, `ssl_create`, `ssl_add_sni_cert`, the SNI
 callback, `import` and `close`; `lifecycle_native.rs` performs them, over the
 port's Rust-owned settings, its contexts' Rust TLS owners, the socket record and
-OpenSSL. The port's `ssl_context` is a `PortConfig` field; the `std::shared_ptr`
-holders of it and of the SNI contexts, and the DTLS sessions by fd, live in the
-Rust TLS state (`PortConfig::tls`), which `~PortFields` releases.
-`native/ports/tls.cc` only constructs and destroys holders and sessions. SNI
-contexts are matched in insertion order; upstream iterated an
+OpenSSL. The port's `ssl_context` is a `PortConfig` field holding one reference
+to its Rust owner; the SNI contexts and the DTLS sessions by fd, each with its
+reference, live in the Rust TLS state (`PortConfig::tls`). `~PortFields` releases
+both. SNI contexts are matched in insertion order; upstream iterated an
 `std::unordered_map`, whose order is unspecified.
 
 ## `Port::set`
@@ -67,8 +66,8 @@ contexts are matched in insertion order; upstream iterated an
 `Swoole\Server\Port::set()` is Rust (`crates/phpserver/src/port_settings.rs`): every
 option's lookup, conversion, bound and order, written into the Rust-owned
 `PortConfig` and, on an SSL port, the context's Rust TLS owner. An over-long
-`package_eof` is rejected rather than copied. `set()` reaches `dup_ssl_context`,
-`ssl_add_sni_cert` and `ssl_init` through the port host table (`swoole_rs_phpserver.h`).
+`package_eof` is rejected rather than copied. `set()` calls `dup_ssl_context`
+(`swr_v1_ports_context_dup`), `ssl_add_sni_cert` and `ssl_init` in crates/ports directly.
 
 ## Class properties: `swr_v1_ports_class_property(index)`
 

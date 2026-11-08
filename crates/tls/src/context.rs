@@ -52,10 +52,6 @@ unsafe extern "C" {
         callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
     );
     fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *mut SSL_CTX, data: *mut c_void);
-    fn SSL_CTX_get_default_passwd_cb(
-        ctx: *mut SSL_CTX,
-    ) -> Option<extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int>;
-    fn SSL_CTX_get_default_passwd_cb_userdata(ctx: *mut SSL_CTX) -> *mut c_void;
 }
 
 /// `swSSLVersion`'s protocol bits.
@@ -525,33 +521,6 @@ unsafe extern "C" fn select_alpn(
 /// Peer certificates are checked later by the callers; the chain walk always continues.
 extern "C" fn verify_callback(_ok: c_int, _store: *mut X509_STORE_CTX) -> c_int {
     1
-}
-
-/// # Safety
-/// ctx is live; data remains live for subsequent password callbacks.
-pub(crate) unsafe fn bind_password(
-    ctx: *mut SSL_CTX,
-    data: *mut c_void,
-    callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
-) {
-    // SAFETY: a live context and stable callback data.
-    unsafe { SSL_CTX_set_default_passwd_cb_userdata(ctx, data) };
-    // SAFETY: the callback accepts that data and OpenSSL's output buffer.
-    unsafe { SSL_CTX_set_default_passwd_cb(ctx, callback) };
-}
-
-/// # Safety
-/// ctx is live; this observes the current callback binding without invoking it.
-pub(crate) unsafe fn password_binding_matches(
-    ctx: *mut SSL_CTX,
-    data: *mut c_void,
-    callback: extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int,
-) -> bool {
-    // SAFETY: a live OpenSSL context.
-    let actual = unsafe { SSL_CTX_get_default_passwd_cb(ctx) };
-    // SAFETY: a live OpenSSL context.
-    let userdata = unsafe { SSL_CTX_get_default_passwd_cb_userdata(ctx) };
-    actual.is_some_and(|actual| std::ptr::fn_addr_eq(actual, callback)) && userdata == data
 }
 
 /// Native code's passphrase reader, the same function for every context.

@@ -187,7 +187,7 @@ fn timer_add(
     data: *mut c_void,
 ) -> *mut c_void {
     // SAFETY: a timer of this thread's.
-    unsafe { crate::pool_native::swr_cpp_timer_add(msec, persistent, callback, data) }
+    unsafe { crate::pool_native::swr_v1_timer_add_plain(msec, persistent, callback, data) }
 }
 
 /// `socket->send_sync(&head, sizeof(head))` of a bare event.

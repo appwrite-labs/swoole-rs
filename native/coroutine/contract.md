@@ -56,7 +56,7 @@ then calls the copy, so a copy that throws leaves the wait as it was; Rust
 callers' cancelers are wrapped the same way. Cancel copies the canceler and
 calls it; it stays C++ because the `CancelFunc` copy may throw and no C++
 exception may cross a Rust frame (the archive aborts on unwinding). `yield_ex` adds its timeout timer through
-`swr_cpp_coroutine_timer_add` (a C callback and data) and deletes it after a
+`swr_v1_timer_add_plain_sec` (crates/timer, a C callback and data) and deletes it after a
 wake that was not the timeout.
 
 `src/coroutine/base.cc` is gone. `crates/coroutine/src/facade.rs` defines its
@@ -66,7 +66,7 @@ API; `native/coroutine/coroutine.cc` keeps what Rust can't express: the
 thread-local scheduler (with its hooks) and `on_bailout`, the constructor and
 `delete` (the context keeps a `CoroutineFunc`), `activate`/`deactivate` (the
 thread backend's hooks and `on_bailout`), `bailout`'s `std::function` argument,
-cancel, and creating a coroutine or a timer from C callbacks.
+cancel, and creating a coroutine from C callbacks.
 
 ## Context stack
 

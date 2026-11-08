@@ -17,8 +17,8 @@ passes in any of a merge-tier run's PHPT jobs, over those that can apply to 64-b
 (`corpus/upstream/not_applicable.json` lists the rest), naming the commit it measured. The speed badge links to the latest merge-tier callgrind
 results, per workload, against upstream. The unsafe badge counts `unsafe` blocks, fns and impls in
 non-test crate code; `tools/budget.py` (PR tier) fails a PR that raises any
-crate above `tools/budget.json`, which also counts the data layouts in
-[Data layout](docs/migration.md#data-layout), and `--update` lowers the baseline.
+crate's count above `main`'s, and counts the data layouts in
+[Data layout](docs/migration.md#data-layout) the same way.
 
 A gradual C/C++ to Rust migration of the [Swoole](https://github.com/swoole/swoole-src)
 PHP extension. Rust is linked into the build of upstream Swoole v6.2.5 (pinned at

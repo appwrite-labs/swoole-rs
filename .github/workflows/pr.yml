@@ -37,12 +37,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # Two commits: the PR's merge commit and, as HEAD^1, main, which tools/budget.py compares against.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - run: python3 tools/check_migration.py
       # The all-modules patch set applies to the pin (seconds), so a conflict fails a required check.
       - run: python3 tools/patches.py check
-      # No crate's unsafe or slow-layout count may rise above tools/budget.json.
-      - run: python3 tools/budget.py
+      # No crate's unsafe or slow-layout count may rise above main's.
+      - run: python3 tools/budget.py --base HEAD^1
       - run: tests/dev/run.sh
 
   # Whether this PR touches what the hybrid build compiles or installs with.

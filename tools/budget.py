@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-crate counts in non-test code that may only fall (tools/budget.json):
+"""Per-crate counts in non-test code that may not rise above the base commit's:
 
   unsafe   `unsafe` blocks, fns and impls
   maps     std hash and B-tree maps and sets, where a flat table belongs
@@ -9,20 +9,24 @@
 
 See docs/migration.md, Data layout.
 
-  budget.py           fail if any crate is above its baseline
-  budget.py --update  lower the baseline to the current counts (never raise it)
+  budget.py [--base REF]   fail if any crate counts more than at REF (default: the
+                           merge base with origin/main; the PR tier passes HEAD^1)
+
+There is no baseline file: every PR that removes an item would edit it, so
+parallel PRs conflicted on it. A crate new since REF is not checked.
 
 Test code is not counted: a `#[cfg(test)]` inline module, a file a `#[cfg(test)] mod`
 loads, and anything under a tests/ or benches/ directory.
 """
 import argparse
-import json
 from pathlib import Path
 import re
+import subprocess
 import sys
+import tarfile
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = ROOT / 'tools/budget.json'
 KINDS = {
     'unsafe': re.compile(r'\bunsafe\s*(?:\{|(?:extern\s+"[^"]*"\s+)?fn\b|impl\b)'),
     'maps': re.compile(r'\b(?:HashMap|HashSet|BTreeMap|BTreeSet)\b'),
@@ -83,34 +87,37 @@ def counts(root=ROOT):
     return result
 
 
-def check(current, baseline):
-    """(crates above their baseline, crates below it) as {crate: (current, baseline)}."""
-    above = {c: (n, baseline.get(c, 0)) for c, n in current.items() if n > baseline.get(c, 0)}
-    below = {c: (n, baseline[c]) for c, n in current.items() if c in baseline and n < baseline[c]}
-    return above, below
+def counts_at(ref, root=ROOT):
+    """counts() of `ref`'s crates/ tree."""
+    archive = subprocess.run(['git', '-C', str(root), 'archive', ref, 'crates'],
+                             check=True, capture_output=True).stdout
+    with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryFile() as tar:
+        tar.write(archive)
+        tar.seek(0)
+        with tarfile.open(fileobj=tar) as tree:
+            tree.extractall(directory, filter='data')
+        return counts(Path(directory))
+
+
+def above(current, base):
+    """{crate: (current, base)} for crates that existed at the base and count more now."""
+    return {c: (n, base[c]) for c, n in current.items() if c in base and n > base[c]}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--update', action='store_true', help='Lower the baseline to the current counts')
+    parser.add_argument('--base', help='Commit to compare against (default: merge base with origin/main)')
     args = parser.parse_args()
-    current = counts()
-    baseline = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
-    if args.update:
-        baseline = {kind: {c: min(n, baseline.get(kind, {}).get(c, n)) for c, n in crates.items()}
-                    for kind, crates in current.items()}
-        BASELINE.write_text(json.dumps(baseline, indent=1, sort_keys=True) + '\n')
+    base_ref = args.base or subprocess.run(['git', '-C', str(ROOT), 'merge-base', 'HEAD', 'origin/main'],
+                                           check=True, capture_output=True, text=True).stdout.strip()
+    current, base = counts(), counts_at(base_ref)
     failed = False
     for kind, crates in current.items():
-        limits = baseline.get(kind, {})
-        above, below = check(crates, limits)
-        failed = failed or bool(above)
-        for crate, (n, limit) in sorted(above.items()):
-            print(f'{crate}: {n} {kind}, above the baseline of {limit}', file=sys.stderr)
-        for crate, (n, limit) in sorted(below.items()):
-            print(f'{crate}: {n} {kind}, below the baseline of {limit}: '
-                  'run tools/budget.py --update and commit it')
-        print(f'{kind}: {sum(crates.values())} (baseline {sum(limits.values())})')
+        rises = above(crates, base[kind])
+        failed = failed or bool(rises)
+        for crate, (n, was) in sorted(rises.items()):
+            print(f'{crate}: {n} {kind}, up from {was} at {base_ref[:12]}', file=sys.stderr)
+        print(f'{kind}: {sum(crates.values())} (base {sum(base[kind].values())})')
     return 1 if failed else 0
 
 

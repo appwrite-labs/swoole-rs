@@ -26,15 +26,15 @@
  * instead, it will be managed directly at the user space.
  */
 SW_API swoole::Timer *swoole_timer_create(bool manually_trigger = false);
-SW_API long swoole_timer_after(long ms, const swoole::TimerCallback &callback, void *private_data = nullptr);
-SW_API long swoole_timer_tick(long ms, const swoole::TimerCallback &callback, void *private_data = nullptr);
+SW_API long swoole_timer_after(long ms, swoole::TimerCallback callback, void *private_data = nullptr);
+SW_API long swoole_timer_tick(long ms, swoole::TimerCallback callback, void *private_data = nullptr);
 SW_API swoole::TimerNode *swoole_timer_add(double ms,
                                            bool persistent,
-                                           const swoole::TimerCallback &callback,
+                                           swoole::TimerCallback callback,
                                            void *private_data = nullptr);
 SW_API swoole::TimerNode *swoole_timer_add(long ms,
                                            bool persistent,
-                                           const swoole::TimerCallback &callback,
+                                           swoole::TimerCallback callback,
                                            void *private_data = nullptr);
 SW_API bool swoole_timer_del(swoole::TimerNode *tnode);
 SW_API bool swoole_timer_exists(long timer_id);
@@ -47,8 +47,9 @@ SW_API bool swoole_timer_is_available();
 
 namespace swoole {
 static_assert(sizeof(long) == 8, "Timer ABI v1 requires a 64-bit native long");
-typedef std::function<void(TimerNode *)> TimerDestructor;
+typedef void (*TimerDestructor)(TimerNode *);
 
+// crates/timer/src/owner.rs allocates and frees every node.
 struct TimerNode {
     enum Type {
         TYPE_KERNEL,
@@ -67,8 +68,9 @@ struct TimerNode {
 };
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Winvalid-offsetof"
-static_assert(offsetof(TimerNode, exec_msec) == 16 && offsetof(TimerNode, removed) == 48,
-              "the TimerNode prefix crates/timer/src/owner.rs writes");
+static_assert(offsetof(TimerNode, exec_msec) == 16 && offsetof(TimerNode, removed) == 48 &&
+                  offsetof(TimerNode, destructor) == 72,
+              "crates/timer/src/owner.rs's TimerNode");
 #pragma GCC diagnostic pop
 }  // namespace swoole
 
@@ -79,15 +81,15 @@ swr_v1_timer *swr_v1_timer_owner_queue(const swoole::Timer *timer);
 void *swr_v1_timer_owner_reactor(const swoole::Timer *timer);
 void swr_v1_timer_owner_reinit(swoole::Timer *timer, bool manually_trigger);
 swoole::TimerNode *swr_v1_timer_owner_add(
-    swoole::Timer *timer, long msec, bool persistent, void *data, const swoole::TimerCallback *callback);
-bool swr_v1_timer_owner_remove(swoole::Timer *timer, long id, void **failure);
+    swoole::Timer *timer, long msec, bool persistent, void *data, swoole::TimerCallback callback);
+bool swr_v1_timer_owner_remove(swoole::Timer *timer, long id);
 void swr_v1_timer_owner_update(swoole::Timer *timer, const swoole::TimerNode *node);
 void swr_v1_timer_owner_delay(swoole::Timer *timer, const swoole::TimerNode *node, long delay_ms);
-void *swr_v1_timer_owner_select(swoole::Timer *timer);
+// A C++ exception a callback or destructor throws aborts at Rust's frames (panic = "abort").
+void swr_v1_timer_owner_select(swoole::Timer *timer);
 void swr_v1_timer_owner_abandon(swoole::Timer *timer, void (*bailout)());
-// A C++ exception can't unwind through Rust frames (panic = "abort"), so Rust
-// returns a callback's or destructor's and the view rethrows it here.
-[[noreturn]] void swr_cpp_timer_rethrow(void *failure);
+// swoole_timer_add of a callback of the data alone.
+swoole::TimerNode *swr_v1_timer_add_plain(long ms, bool persistent, void (*callback)(void *), void *data);
 }
 
 namespace swoole {
@@ -112,14 +114,11 @@ class Timer {
     Reactor *get_reactor() const {
         return static_cast<Reactor *>(swr_v1_timer_owner_reactor(this));
     }
-    TimerNode *add(long msec, bool persistent, void *data, const TimerCallback &callback) {
-        return swr_v1_timer_owner_add(this, msec, persistent, data, &callback);
+    TimerNode *add(long msec, bool persistent, void *data, TimerCallback callback) {
+        return swr_v1_timer_owner_add(this, msec, persistent, data, callback);
     }
     bool remove(long id) {
-        void *failure = nullptr;
-        const bool removed = swr_v1_timer_owner_remove(this, id, &failure);
-        if (failure) swr_cpp_timer_rethrow(failure);
-        return removed;
+        return swr_v1_timer_owner_remove(this, id);
     }
     bool remove(TimerNode *tnode) {
         return tnode && remove(tnode->id);
@@ -134,7 +133,7 @@ class Timer {
         swr_v1_timer_owner_reinit(this, manually_trigger);
     }
     void select() {
-        if (void *failure = swr_v1_timer_owner_select(this)) swr_cpp_timer_rethrow(failure);
+        swr_v1_timer_owner_select(this);
     }
     // Only after a caught Zend bailout whose native selection will never resume.
     void abandon_selection(void (*bailout)() = nullptr) {
