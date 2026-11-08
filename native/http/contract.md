@@ -237,5 +237,5 @@ progress instead of looping.
 - [static-tasks-v2.md](static-tasks-v2.md): `swr_v2_http_tasks_*`
 - [static-context-v2.md](static-context-v2.md): `swr_v2_http_context_*`
 
-Tests: `tests/modules/http/` (for example `gate.py`,
-`proxy_gate.py`).
+Tests: `tests/modules/http/` (for example `gate.py`) and the proxy cases in
+`crates/http/src/owned_proxy.rs`.

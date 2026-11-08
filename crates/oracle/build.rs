@@ -120,6 +120,18 @@ fn http() {
     fs::write(out("http.inc"), text).unwrap();
 }
 
+/// `HttpProxy::create`, `get_auth_str`, `pack` and `handshake` from the pinned http.cc,
+/// copied unchanged for `shim/http_proxy.cc`.
+fn http_proxy() {
+    let source = fs::read_to_string("upstream/src/protocol/http.cc").expect("vendored http.cc");
+    let text = slice(
+        &source,
+        "HttpProxy *HttpProxy::create(",
+        "namespace http_server {",
+    );
+    fs::write(out("http_proxy.inc"), text).unwrap();
+}
+
 /// The definition starting at `signature`, through its matching brace.
 fn definition(text: &str, signature: &str) -> String {
     let start = text.find(signature).expect(signature);
@@ -565,6 +577,7 @@ fn main() {
     // beside the Rust-backed `swoole::` and `swoole_crc32`.
     websocket();
     http();
+    http_proxy();
     framing();
     framing_stream();
     http_frame();
@@ -614,6 +627,13 @@ fn main() {
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/http_frame.cc")
         .compile("swoole_oracle_http_frame");
+    // Before swoole_oracle, whose base64_encode it calls: archives link in order.
+    cpp()
+        .define("swoole", "oracle_proxy")
+        .include("upstream/include")
+        .include(env::var("OUT_DIR").unwrap())
+        .file("shim/http_proxy.cc")
+        .compile("swoole_oracle_http_proxy");
     cpp()
         .define("swoole", "oracle")
         .define("swoole_crc32", "oracle_swoole_crc32")

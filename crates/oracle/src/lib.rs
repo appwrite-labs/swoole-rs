@@ -89,6 +89,59 @@ pub mod http {
     }
 }
 
+pub mod http_proxy {
+    unsafe extern "C" {
+        /// Upstream `HttpProxy::create`: returns its port and copies its host,
+        /// username and password into `output` (capacity the three input lengths),
+        /// their lengths into `lengths`.
+        #[link_name = "swr_oracle_http_proxy_create"]
+        pub fn create(
+            host: *const u8,
+            host_length: usize,
+            port: i32,
+            user: *const u8,
+            user_length: usize,
+            password: *const u8,
+            password_length: usize,
+            output: *mut u8,
+            lengths: *mut [usize; 3],
+        ) -> i32;
+        /// Upstream `HttpProxy::get_auth_str` over these credentials into
+        /// `output` (capacity 512); `error` is errno after it, EINTR before.
+        #[link_name = "swr_oracle_http_proxy_auth"]
+        pub fn auth(
+            user: *const u8,
+            user_length: usize,
+            password: *const u8,
+            password_length: usize,
+            output: *mut u8,
+            error: *mut i32,
+        ) -> usize;
+        /// Upstream `HttpProxy::pack` into `capacity` bytes of `output`; `error`
+        /// is errno after it, EINTR before.
+        #[link_name = "swr_oracle_http_proxy_pack"]
+        pub fn pack(
+            user: *const u8,
+            user_length: usize,
+            password: *const u8,
+            password_length: usize,
+            target: *const u8,
+            target_length: usize,
+            target_port: i32,
+            host: *const u8,
+            host_length: usize,
+            output: *mut u8,
+            capacity: usize,
+            error: *mut i32,
+        ) -> usize;
+        /// Upstream `HttpProxy::handshake`; `error` is the last error it set
+        /// (`SW_ERROR_HTTP_PROXY_HANDSHAKE_FAILED`, 7103) or 0. It sets errno to
+        /// EINTR first, so the caller can see whether the handshake changed it.
+        #[link_name = "swr_oracle_http_proxy_handshake"]
+        pub fn handshake(data: *const u8, length: usize, error: *mut i32) -> bool;
+    }
+}
+
 pub mod framing {
     unsafe extern "C" {
         /// Upstream `swoole_unpack`: reads the format's width from `data`.
