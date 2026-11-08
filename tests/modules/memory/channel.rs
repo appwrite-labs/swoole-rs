@@ -348,7 +348,7 @@ fn public_capacity_predicate_preserves_defined_modular_scalar_domain() {
     assert_eq!(unsafe { swr_v1_memory_channel_full(ptr::null()) }, -1);
 }
 
-/// `swoole::Channel` as `include/swoole_channel.h` drives the record: `make`, the
+/// `swoole::Channel` as upstream's `include/swoole_channel.h` drove the record: `make`, the
 /// locked `push`, `pop` and `peek`, `wait`, `notify` and `destroy`.
 struct Native(Vec<u64>);
 
