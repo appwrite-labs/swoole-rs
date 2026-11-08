@@ -12,8 +12,6 @@ mod mqtt;
 mod owned_proxy;
 mod redis;
 mod reply;
-#[cfg(feature = "upstream-symbols")]
-mod resp_export;
 mod resp_recv;
 mod socks;
 pub use bus::*;
@@ -21,8 +19,6 @@ pub use mqtt::*;
 pub use owned_proxy::*;
 pub use redis::*;
 pub use reply::*;
-#[cfg(feature = "upstream-symbols")]
-pub use resp_export::*;
 pub use resp_recv::*;
 pub use socks::*;
 

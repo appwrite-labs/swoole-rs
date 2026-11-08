@@ -1,13 +1,13 @@
 //! `swoole::redis::recv_packet`: reads a connection until a whole RESP command is
 //! buffered, then hands it to `onPackage`. [`swr_v1_resp_recv`] is the loop over
-//! borrowed effects; `resp_export` runs it over the server's own records.
+//! borrowed effects; the ports crate runs it over the server's own records.
 use crate::{RespRequest, swr_v1_resp_extend_size, swr_v1_resp_receive_range};
 use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::{log, sw_malloc};
 
 pub(crate) const SW_OK: c_int = 0;
-pub(crate) const SW_ERR: c_int = -1;
-pub(crate) const ORIGIN: &core::ffi::CStr = c"redis::recv_packet";
+pub const SW_ERR: c_int = -1;
+pub const ORIGIN: &core::ffi::CStr = c"redis::recv_packet";
 
 /// [`RespIo::recv`]: the connection closes (`SW_ERR`).
 pub const RESP_RECV_CLOSE: isize = -1;
