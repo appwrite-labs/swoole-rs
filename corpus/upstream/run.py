@@ -97,6 +97,22 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_http2_client_coro/connect_twice.phpt':
         "it fetches https://nghttp2.org/httpbin/base64/..., and nghttp2.org's httpbin backend "
         'answers 502 Bad Gateway (nghttpx) to every engine and to curl (#1986)',
+        'tests/swoole_curl/close_before_resume.phpt':
+        "the expected Swoole\\Error is fatal_error(), which exits 255 without PHP's shutdown "
+        "functions, so ProcessManager never kills its SWOOLE_PROCESS server; the orphaned server "
+        "holds the runner's stdout open and the runner, upstream's run-tests too, waits out its "
+        'deadline on every engine (#1994)',
+        'tests/swoole_curl/exec_twice.phpt':
+        'the same fatal_error() exit as close_before_resume orphans its SWOOLE_PROCESS server, '
+        "which holds the runner's stdout open until the deadline on every engine (#1994)",
+        'tests/swoole_ssh2/ssh2_sftp_001.phpt':
+        "libssh2 (1.11.0 and 1.11.1) against OpenSSH's sftp-server (9.6, 10.0) fails every "
+        "SSH_FXP_SYMLINK after an SFTP channel's first request, though the link is created; "
+        'plain PECL ssh2 and a C client do the same, and the test calls mkdir first (#1994)',
+        'tests/swoole_table/force_unlock.phpt':
+        "it expects the child's OOM to bail out of Table::get while it holds the row lock; PHP's "
+        'fix for CVE-2026-109618 (php-src 3584a98, in the runners\' PHP 8.3.6) delays a memory '
+        'limit error until the internal call returns, so get() unlocks the row first (#1994)',
         'tests/swoole_websocket_server/send_close_frame.phpt':
         'the parent kills the server as soon as its pushes return, usually before the server '
         'handles the second frame (#111)',
