@@ -187,7 +187,6 @@ void swr_v1_process_bailout(void);
 swr_v1_process_pool_ipc *swr_v1_process_pool_ipc_new(bool listener);
 void swr_v1_process_pool_ipc_free(swr_v1_process_pool_ipc *ipc, void (*close)(void *socket));
 void *swr_v1_process_pool_ipc_listener(const swr_v1_process_pool_ipc *ipc);
-const char *swr_v1_process_pool_ipc_address_of(const swr_v1_process_pool_ipc *ipc, int *port);
 void *swr_v1_process_pool_ipc_connection(const swr_v1_process_pool_ipc *ipc);
 char *swr_v1_process_pool_ipc_prepare(swr_v1_process_pool_ipc *ipc, uint32_t max_packet_size);
 char *swr_v1_process_pool_ipc_packet(swr_v1_process_pool_ipc *ipc);
@@ -278,7 +277,6 @@ int swr_v1_process_reap_wait(void *_ctx, bool nonblock, int *status, int *error)
 #define SWR_POOL_OP_WORKER_INIT 43
 #define SWR_POOL_OP_EVENT_INIT 44
 #define SWR_POOL_OP_BOX_PUSH 45
-#define SWR_POOL_OP_STREAM_SEND 46
 #define SWR_POOL_CB_START 1
 #define SWR_POOL_CB_BEFORE_RELOAD 2
 #define SWR_POOL_CB_SHUTDOWN 3

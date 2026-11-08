@@ -43,7 +43,7 @@ CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_
                 'https_get_sync_with_socks5_proxy', 'http_get_sync_with_socks5_proxy_no_dns_tunnel', 'http_get_async_with_http_proxy',
                 'http_get_async_with_socks5_proxy', 'http_get_sync_with_http_proxy', 'http_get_sync_with_socks5_proxy']
 CORE_TESTS = {
-    'reactor': (['reactor/base.cpp', 'network/socket.cpp', 'network/stream.cpp'],
+    'reactor': (['reactor/base.cpp', 'network/socket.cpp'],
                 {'socket.make_server_socket': "expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's kernel returns EPROTONOSUPPORT"}, False),
     'http': (['server/http_server.cpp', 'server/http_parser.cpp', 'server/multipart_parser.cpp'],
              {'http_server.node_websocket_client_1': 'needs Node.js and its ws package',

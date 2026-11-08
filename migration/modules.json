@@ -163,7 +163,6 @@
       "upstream_patch_targets": [
         "src/reactor/",
         "ext-src/swoole_admin_server.cc",
-        "src/network/stream.cc",
         "include/swoole_reactor.h",
         "src/network/socket.cc",
         "include/swoole_socket.h",
@@ -697,6 +696,7 @@
         "src/network/address.cc",
         "src/network/client.cc",
         "src/network/dns.cc",
+        "src/network/stream.cc",
         "ext-src/swoole_client.cc",
         "ext-src/swoole_client_async.cc",
         "ext-src/swoole_client_coro.cc",

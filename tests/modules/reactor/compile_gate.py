@@ -25,7 +25,7 @@ a = p.parse_args()
 if a.report.exists():
     raise SystemExit('Refusing to replace an existing compile receipt')
 hybrid_source, hybrid_flags = hybrid_tree(a.archive)
-inputs = ['include', 'src/reactor', 'src/network/stream.cc', 'src/network/socket.cc', 'thirdparty']
+inputs = ['include', 'src/reactor', 'src/network/socket.cc', 'thirdparty']
 rows = []
 with tempfile.TemporaryDirectory(prefix='swr-reactor-compile-') as tmp:
     tree = Path(tmp)
@@ -43,8 +43,8 @@ with tempfile.TemporaryDirectory(prefix='swr-reactor-compile-') as tmp:
     trees = {'original': (tree, ['-I'+str(tree/'include'), '-I'+str(tree)]),
              'patched': (hybrid_source, [*hybrid_flags, '-I'+str(hybrid_source)])}
     for variant, (root, flags) in trees.items():
-        for name in [*backends, 'stream']:
-            source = root/(('src/network/' if name == 'stream' else 'src/reactor/')+name+'.cc')
+        for name in backends:
+            source = root/'src/reactor'/(name+'.cc')
             if variant != 'original' and not source.exists():
                 continue  # the hybrid deletes these units: the backends are Rust (#448), base.cc's rest is native/reactor/reactor.cc
             cmd = ['c++', *common, *flags, '-c', str(source), '-o', str(tree/(variant+'-'+name+'.o'))]
