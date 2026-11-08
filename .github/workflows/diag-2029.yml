@@ -1,0 +1,77 @@
+name: diag-2029
+on:
+  pull_request:
+    paths: ['.github/workflows/diag-2029.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  diag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [upstream, hybrid]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          packages: libaio1t64
+          php: latest
+      - uses: ./.github/actions/instantclient
+      - run: sudo sysctl -w kernel.msgmnb=67108864
+      - uses: actions/cache/restore@v4
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: phpt-engines
+          path: target/phpt
+          run-id: 42531595259
+          github-token: ${{ github.token }}
+      - run: python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
+      - name: environment
+        run: |
+          id; uname -a; ipcs -q; ipcs -l; sysctl kernel.msgmax kernel.msgmnb kernel.msgmni
+          ls -la /dev/shm; cat /proc/self/status | grep -i cap
+      - name: run alone, with a watcher
+        run: |
+          ext=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')
+          for i in 1 2 3; do
+            echo "::group::attempt $i"
+            ( for t in $(seq 1 12); do
+                sleep 4
+                echo "--- watch t=$((t*4))s"
+                ps -eo pid,ppid,pgid,stat,wchan:32,etimes,args --forest | grep -E '[p]hp|[r]un-tests' | grep -v grep
+                ipcs -q
+                for f in /tmp/swoole-phpt-*/tests/swoole_server/task/tmp.log; do [ -f "$f" ] && { echo "tmp.log:"; cat "$f"; }; done
+                for p in $(pgrep -f invalid_packet); do echo "pid $p syscall: $(sudo cat /proc/$p/syscall 2>/dev/null)"; sudo cat /proc/$p/stack 2>/dev/null | head -5; done
+              done ) &
+            watcher=$!
+            python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --timeout 30 $ext \
+              --case tests/swoole_server/task/invalid_packet.phpt \
+              --engine ${{ matrix.engine }}=target/phpt/${{ matrix.engine }}.so \
+              --output target/phpt/alone-$i.json || true
+            kill $watcher || true
+            python3 -c "import json,sys; [print(r['status'], r.get('seconds'), r.get('detail','')[-600:]) for r in json.load(open(sys.argv[1]))['results']]" target/phpt/alone-$i.json
+            ipcs -q
+            echo "::endgroup::"
+          done
+      - name: run the task directory
+        run: |
+          ext=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')
+          cases=$(cd target/upstream/src && ls tests/swoole_server/task/*.phpt tests/swoole_process_pool/msgqueue*.phpt | sed 's/^/--case /' | tr '\n' ' ')
+          ( while sleep 5; do
+              if pgrep -f invalid_packet >/dev/null; then
+                echo "--- watch"; ps -eo pid,ppid,stat,wchan:32,etimes,args --forest | grep -E '[p]hp' ; ipcs -q
+                for f in /tmp/swoole-phpt-*/tests/swoole_server/task/tmp.log; do [ -f "$f" ] && cat "$f"; done
+              fi
+            done ) &
+          python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --timeout 30 $ext $cases \
+            --engine ${{ matrix.engine }}=target/phpt/${{ matrix.engine }}.so \
+            --output target/phpt/dir.json || true
+          python3 -c "import json,sys; [print(r['test'], r['status'], r.get('seconds')) for r in json.load(open(sys.argv[1]))['results']]" target/phpt/dir.json
+          ipcs -q
