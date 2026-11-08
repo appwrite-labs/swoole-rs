@@ -42,13 +42,16 @@ UNCACHED = 'needs a DNS lookup that misses the resolver cache'
 CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_proxy', 'https_get_sync_with_http_proxy',
                 'https_get_sync_with_socks5_proxy', 'http_get_sync_with_socks5_proxy_no_dns_tunnel', 'http_get_async_with_http_proxy',
                 'http_get_async_with_socks5_proxy', 'http_get_sync_with_http_proxy', 'http_get_sync_with_socks5_proxy']
+# http_server.cpp's server TESTs ported to tests/modules/http/server/ (the http-server-rust phase).
+HTTP_SERVER_RUST = ['websocket_small', 'websocket_medium', 'websocket_big', 'websocket_mask', 'node_websocket_client_1',
+                    'node_websocket_client_2', 'sni', 'client_ca', 'ssl']
+NODE_WS = 'needs Node.js and its ws package'
 CORE_TESTS = {
     'reactor': (['reactor/base.cpp', 'network/socket.cpp'],
                 {'socket.make_server_socket': "expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's kernel returns EPROTONOSUPPORT",
                  'socket.connect_sync': NETWORK, 'socket.fail': NETWORK}),
     'http': (['server/http_server.cpp'],
-             {'http_server.node_websocket_client_1': 'needs Node.js and its ws package',
-              'http_server.node_websocket_client_2': 'needs Node.js and its ws package',
+             {**{'http_server.' + name: 'a Rust test (tests/modules/http/server/src/main.rs)' for name in HTTP_SERVER_RUST},
               **{'http_server.' + name: 'a Rust test (tests/modules/http/http_server.rs); the http_server::listen SDK it drove is deleted'
                  for name in ['parser1', 'parser2', 'upload', 'max_request_size']},
               **{'http_server.' + name: 'a Rust test (' + path + ')' for path, names in [
@@ -395,6 +398,14 @@ def plan(args, reports):
                *[arg for name in ['https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy',
                                   'https_get_with_http_proxy'] for arg in ['--exclude', f'coroutine_socket.{name}={PROXY}']],
                *report('hooks-system-rust'))
+    if integrate and 'http' in modules and sys.platform.startswith('linux'):
+        # core-tests/src/server/http_server.cpp's server TESTs, ported to Rust over the hybrid's libswoole.so.
+        script('http-server-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
+               '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--build-root', ROOT / 'target/native-originals/http-server', '--jobs', args.jobs,
+               '--package', ROOT / 'tests/modules/http/server', '--fixture', ROOT / 'tests/modules/http/server/fixture.cc',
+               '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
+               *report('http-server-rust'))
     if integrate and 'clients' in modules and sys.platform.startswith('linux'):
         script('clients-address-record', 'tests/modules/clients/address_record.py',
                '--core-build', ROOT / 'target/native-originals/clients',

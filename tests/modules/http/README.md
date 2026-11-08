@@ -84,6 +84,20 @@ same inputs and expected values, and the lane excludes them (`tools/dev.py`):
 | `has_expect_header`, `get_protocol`, `all_method` | `crates/http/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
 
+The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
+phase): a Rust case binary over the hybrid tree's libswoole.so, built and run by
+`tests/modules/hooks/system.py --package tests/modules/http/server --fixture
+tests/modules/http/server/fixture.cc`. `fixture.cc` builds the Servers upstream's
+`test_base_server`, `test_http_server` and `test_ssl_http` built (a C++ constructor,
+`std::string` setters and callback slots); the callbacks, cpp-httplib's WebSocket client
+(the same upgrade request, frames from the hybrid's `websocket::encode`/`mask`/`decode`),
+the curl runs and every assertion are in `server/src/main.rs`, one function per TEST
+under its own name: `websocket_small`, `websocket_medium`, `websocket_big`,
+`websocket_mask`, `node_websocket_client_1`, `node_websocket_client_2`, `sni`,
+`client_ca`, `ssl`. The two node TESTs stay excluded there for the reason they had in
+the lane (they need Node.js and its ws package). Each curl runs to completion before
+its log is read, where upstream slept a second after starting it.
+
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
 covered by the PHPTs.
