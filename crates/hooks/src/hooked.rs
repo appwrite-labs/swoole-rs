@@ -791,10 +791,9 @@ pub(crate) mod tests {
                     3
                 );
                 assert_eq!(&buf, b"hey");
-                // Not a coroutine socket: the fd closes on the pool.
-                assert_eq!(swoole_coroutine_close(pair[0]), 0);
-                assert_eq!(swoole_coroutine_close(pair[1]), 0);
             });
+            // While the fd is still open: a closed fd's number can be reused and
+            // mapped by a parallel test.
             let mut buf = [0u8; 3];
             assert_eq!(
                 with(Mode::Refuse, || swoole_coroutine_read(
@@ -804,6 +803,11 @@ pub(crate) mod tests {
                 )),
                 -1
             );
+            with(Mode::Pool, || {
+                // Not a coroutine socket: the fd closes on the pool.
+                assert_eq!(swoole_coroutine_close(pair[0]), 0);
+                assert_eq!(swoole_coroutine_close(pair[1]), 0);
+            });
         }
         assert_eq!(calls(), Vec::<String>::new());
     }
