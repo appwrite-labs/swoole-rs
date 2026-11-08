@@ -83,9 +83,12 @@ def verdict_failed(row, require_all):
 
 
 # Originals whose verdict is decided by something outside the engine, on upstream too: a
-# race in the test itself, or the runner's network. They are recorded unsupported, never
-# run or counted as passed.
-RACY = {'tests/swoole_websocket_server/send_close_frame.phpt':
+# race in the test itself, the runner's network, or a file PHP's runner can't read. They are
+# recorded unsupported, never run or counted as passed.
+RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
+        'the file starts with a blank line, so PHP\'s runner BORKs it ("tests must start with '
+        '--TEST--") on every engine (#1964)',
+        'tests/swoole_websocket_server/send_close_frame.phpt':
         'the parent kills the server as soon as its pushes return, usually before the server '
         'handles the second frame (#111)',
         'tests/swoole_coroutine/dnslookup_ipv6.phpt':
@@ -242,6 +245,12 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
     env = {**os.environ, 'PHPT': '1', 'NO_INTERACTION': '1', 'REPORT_EXIT_STATUS': '1',
            'TEST_PHP_EXECUTABLE': shutil.which(engine.php) or engine.php,
            'TEST_PHP_JUNIT': str(junit), 'HOME': str(sandbox / 'home'), 'TMPDIR': str(sandbox / 'tmp')}
+    # Children a test starts as TEST_PHP_EXECUTABLE without -n (start_server, ulimit) read the
+    # system ini, which upstream's CI installs the extension into; ours doesn't. A blank entry
+    # keeps PHP's compiled scan directory. Runs under -n, the cases themselves, ignore it.
+    (scan := artifacts.resolve() / 'php.d').mkdir(exist_ok=True)
+    (scan / 'swoole.ini').write_text(f'extension={Path(engine.extension).resolve()}\n')
+    env['PHP_INI_SCAN_DIR'] = os.environ.get('PHP_INI_SCAN_DIR', '') + os.pathsep + str(scan)
     if not offline:
         env['SKIP_ONLINE_TESTS'] = '0'
     child_selector = None
