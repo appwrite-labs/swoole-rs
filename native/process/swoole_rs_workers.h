@@ -25,6 +25,9 @@ void swr_workers_signal_set(uint64_t arg, void (*own)(int));
 /* The event worker's ops over Rust-owned records, for the WorkerContext (`WorkersNative<0>`)
  * at `context`: crates/server's event_worker_ops.rs. */
 uint64_t swr_v1_event_worker_call(void *context, uint32_t op, uint64_t arg);
+/* The base-mode reactor process's ops over Rust-owned records, for the ReactorProcessContext
+ * (`WorkersNative<1>`) at `context`: crates/server's reactor_process_ops.rs. */
+uint64_t swr_v1_reactor_process_call(void *context, uint32_t op, uint64_t arg);
 /* A thread-mode worker thread's body, run(context): directly, or inside the PHP thread
  * crates/phpserver starts on `thread` (the ThreadFactory's swoole::Thread). */
 void swr_v1_workers_thread_start(void *thread, void (*run)(void *context), void *context);
