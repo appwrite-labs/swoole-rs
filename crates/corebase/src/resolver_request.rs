@@ -229,7 +229,7 @@ pub unsafe extern "C" fn swr_v1_core_resolver_lookup(
 }
 
 /// # Safety
-/// owner is exclusive; its optional string cache is a contained `std::string` leaf.
+/// owner is exclusive.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_resolver_host(owner: &ResolverRequest) -> c_int {
     // SAFETY: copy the family without holding a Rust borrow across libc.
@@ -252,7 +252,7 @@ pub unsafe extern "C" fn swr_v1_core_resolver_host(owner: &ResolverRequest) -> c
     let length = unsafe { std::ffi::CStr::from_ptr(text.as_ptr()) }
         .to_bytes()
         .len();
-    // SAFETY: the stack text remains readable; native cache catches exceptions.
+    // SAFETY: the stack text remains readable for the copy.
     unsafe { swr_v1_core_string_set(address, text.as_ptr(), length) }
 }
 
@@ -325,8 +325,8 @@ pub unsafe extern "C" fn swr_v1_core_resolver_finish(
     }
 }
 
-/// Creates request hints and both input strings together; no native cache or
-/// arbitrary payload exists during construction. Null owner reports byte OOM.
+/// Creates request hints and both input strings together; no arbitrary payload
+/// exists during construction. Null owner reports byte OOM.
 /// # Safety
 /// name/service hold their declared readable byte lengths.
 #[unsafe(no_mangle)]

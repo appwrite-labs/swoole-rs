@@ -3,8 +3,6 @@
 #include "swoole_rs_corebase_string_slot.h"
 #include <cstdlib>
 #include <cstring>
-#include <exception>
-#include <memory>
 #include <new>
 #include <string>
 namespace swoole {
@@ -18,8 +16,7 @@ namespace coroutine {
 class Socket;
 }
 // A native view over a Rust value. Copy construction clones bytes, never the
-// view. Only const std::string& compatibility getters allocate a native
-// reference cache.
+// view; std::string conversions copy the bytes out.
 class RustStringView {
   friend struct Socks5Proxy;
   friend struct HttpProxy;
@@ -30,24 +27,7 @@ class RustStringView {
   friend struct ListenPort;
   const swr_v1_core_string *slot_;
   bool owned_ = false;
-  struct Cache {
-    std::string value;
-    std::exception_ptr exception;
-    explicit Cache(const char *bytes, size_t length) : value(bytes, length) {}
-  };
-  mutable std::unique_ptr<Cache> cache_;
   explicit RustStringView(const swr_v1_core_string *slot) : slot_(slot) {}
-  static bool update(void *context, const char *bytes, size_t length) noexcept {
-    auto *self = static_cast<RustStringView *>(context);
-    self->cache_->exception = {};
-    try {
-      self->cache_->value.assign(bytes, length);
-      return true;
-    } catch (...) {
-      self->cache_->exception = std::current_exception();
-      return false;
-    }
-  }
 
 public:
   RustStringView(const RustStringView &source)
@@ -56,16 +36,12 @@ public:
       throw std::bad_alloc();
   }
   ~RustStringView() {
-    if (cache_)
-      swr_v1_core_string_cache(slot_, nullptr, nullptr);
     if (owned_)
       swr_v1_core_string_free(slot_);
   }
   void check(int status) const {
     if (status == -2)
       throw std::bad_alloc();
-    if (status == -3)
-      std::rethrow_exception(cache_->exception);
     if (status < 0)
       std::abort();
   }
@@ -129,15 +105,7 @@ public:
     return !(left == right);
   }
   void clear() { assign("", 0); }
-  const std::string &std_string() const {
-    if (!cache_) {
-      auto view = swr_v1_core_string_view(slot_);
-      cache_.reset(new Cache(view.data, view.length));
-      swr_v1_core_string_cache(slot_, const_cast<RustStringView *>(this),
-                               update);
-    }
-    return cache_->value;
-  }
-  operator const std::string &() const { return std_string(); }
+  std::string std_string() const { return std::string(data(), size()); }
+  operator std::string() const { return std_string(); }
 };
 } // namespace swoole

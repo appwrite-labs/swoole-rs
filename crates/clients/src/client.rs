@@ -1299,8 +1299,7 @@ pub unsafe extern "C" fn swr_v1_clients_proxy(
                     view(password, password_length),
                 ];
                 let kind = this.socket().socket_type;
-                // SAFETY: the new owner, which has no native cache to refuse a
-                // value, and the caller's texts.
+                // SAFETY: the new owner and the caller's texts.
                 unsafe {
                     swoole_rs_corebase::swr_v1_core_proxy_configure(
                         owner,
