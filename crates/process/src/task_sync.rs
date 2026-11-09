@@ -6,7 +6,7 @@
 //! [`MultiTask`]. The dispatch and the pipe's waits can reach PHP (a blocking
 //! write or wait dispatches signals), so they run inside the bailout trap
 //! ([`crate::pool`]); a bailout returns [`Bailed`] for the caller to re-raise.
-use std::ffi::{CStr, c_int, c_void};
+use std::ffi::{CStr, c_int};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,7 +16,7 @@ use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_ossupport::swr_v1_os_file_get_contents;
 
 pub use crate::pool::Bailed;
-use crate::pool::{PoolCall, run};
+use crate::pool::trapped;
 use crate::process_pool::SW_IPC_MAX_SIZE;
 use crate::task_file::{TASK_TMP_PATH_SIZE, errno, make_tmpfile, task_tmpfile};
 
@@ -95,32 +95,6 @@ pub fn count_task(
     }
     tasking.fetch_sub(1, Ordering::SeqCst);
     Ok(false)
-}
-
-/// A body [`trapped`] runs, and what it returned.
-struct Body<F, R> {
-    body: Option<F>,
-    result: Option<R>,
-}
-
-unsafe extern "C" fn step<F: FnOnce() -> R, R>(call: *mut c_void) {
-    // SAFETY: `trapped` passes its call.
-    let data = unsafe { (*call.cast::<PoolCall>()).data };
-    // SAFETY: the call's data is `trapped`'s body, which owns nothing a bailout skips.
-    let body = unsafe { &mut *data.cast::<Body<F, R>>() };
-    body.result = body.body.take().map(|body| body());
-}
-
-/// Runs `body` inside the bailout trap.
-fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
-    let mut body = Body {
-        body: Some(body),
-        result: None,
-    };
-    let mut call = PoolCall::new(ptr::null_mut(), ptr::null_mut());
-    call.data = (&raw mut body).cast();
-    run(step::<F, R>, &mut call)?;
-    body.result.ok_or(Bailed)
 }
 
 impl<H: TaskHost> Tasks<'_, H> {
