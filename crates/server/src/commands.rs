@@ -160,7 +160,7 @@ pub(crate) unsafe fn call_command_handler(
         return error(SW_LOG_ERROR, E::SW_ERROR_SERVER_INVALID_COMMAND, origin, m);
     };
     let packet = bus.packet();
-    let message = (packet.data.cast(), packet.length);
+    let message = (packet.data.cast_const().cast(), packet.length);
     let Some(sock) = crate::objects::socket(sock) else {
         return;
     };

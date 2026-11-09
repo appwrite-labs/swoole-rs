@@ -9,14 +9,14 @@ use core::ptr;
 use swoole_rs_http::{
     HttpCalendar, HttpContextPageBuffer, HttpContextRangeObservation, HttpContextServeObservation,
     HttpIndexPage, HttpProxyText, HttpStaticContext, HttpStaticIo, HttpStaticObservation,
-    HttpStaticTask, swr_v1_http_static_boundary, swr_v1_http_static_content_prefix,
-    swr_v2_http_context_boundary, swr_v2_http_context_drop, swr_v2_http_context_format,
-    swr_v2_http_context_index, swr_v2_http_context_new, swr_v2_http_context_observe,
-    swr_v2_http_context_page_emit, swr_v2_http_context_page_step, swr_v2_http_context_path,
-    swr_v2_http_context_range_begin, swr_v2_http_context_range_resume,
-    swr_v2_http_context_range_step, swr_v2_http_context_tasks, swr_v2_http_context_text,
-    swr_v3_http_conditional, swr_v3_http_context_directory, swr_v3_http_context_mtime,
-    swr_v3_http_context_serve, swr_v3_http_context_stat, swr_v3_http_date,
+    HttpStaticTask, static_boundary, static_multipart, swr_v2_http_context_boundary,
+    swr_v2_http_context_drop, swr_v2_http_context_format, swr_v2_http_context_index,
+    swr_v2_http_context_new, swr_v2_http_context_observe, swr_v2_http_context_page_emit,
+    swr_v2_http_context_page_step, swr_v2_http_context_path, swr_v2_http_context_range_begin,
+    swr_v2_http_context_range_resume, swr_v2_http_context_range_step, swr_v2_http_context_tasks,
+    swr_v2_http_context_text, swr_v3_http_conditional, swr_v3_http_context_directory,
+    swr_v3_http_context_mtime, swr_v3_http_context_serve, swr_v3_http_context_stat,
+    swr_v3_http_date,
 };
 
 /// `SWR_HTTP_CONTEXT_*`: the context's texts.
@@ -225,11 +225,7 @@ impl<E: Effects> StaticHandler<E> {
     }
 
     fn ensure_boundary(&self) -> u32 {
-        let mut count = 0;
-        // SAFETY: a local output.
-        if !unsafe { swr_v1_http_static_boundary(self.text(BOUNDARY).len(), &raw mut count) }
-            .is_null()
-        {
+        if let Some(count) = static_boundary(self.text(BOUNDARY).len()) {
             let mut random = [0u8; BOUNDARY_SIZE];
             let count = count.min(BOUNDARY_SIZE - 1);
             self.effects.random(&mut random, count);
@@ -513,7 +509,7 @@ impl<E: Effects> StaticHandler<E> {
     /// The response's `Content-Type`: multipart with several ranges, else the file's.
     #[must_use]
     pub fn content_type(&self) -> Vec<u8> {
-        if swr_v1_http_static_content_prefix(self.observe().task_count).is_null() {
+        if !static_multipart(self.observe().task_count) {
             return self.mimetype();
         }
         self.ensure_boundary();

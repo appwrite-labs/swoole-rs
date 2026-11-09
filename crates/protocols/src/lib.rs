@@ -18,7 +18,10 @@ mod redis;
 mod reply;
 mod resp_recv;
 mod socks;
-pub use bus::*;
+pub use bus::{
+    BUS_ABNORMAL, BUS_ALLOCATE, BUS_CLOSED, BUS_READV_CLOSED, Bus as MessageBus, BusPacket,
+    BusRead, swr_v1_bus_write,
+};
 pub use mqtt::*;
 pub use owned_proxy::*;
 pub use redis::*;

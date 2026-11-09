@@ -2,11 +2,8 @@
 //! observations; no Rust-owned text or container pointer crosses the boundary.
 use crate::{
     HttpDirectory, HttpIndexPage, HttpProxyText, HttpRangeFormat, HttpStaticPath, HttpStaticTask,
-    HttpTasks, INVALID, OVERFLOW, bytes, swr_v1_http_range_format, swr_v1_http_static_catch,
-    swr_v1_http_static_content_type, swr_v1_http_static_index_path, swr_v1_http_static_location,
-    swr_v1_http_static_path, swr_v2_http_directory_page, swr_v2_http_tasks_begin,
-    swr_v2_http_tasks_clear, swr_v2_http_tasks_count, swr_v2_http_tasks_prepare,
-    swr_v2_http_tasks_push, swr_v2_http_tasks_snapshot,
+    HttpTasks, INVALID, OVERFLOW, bytes, swr_v1_http_range_format, swr_v1_http_static_location,
+    swr_v1_http_static_path,
 };
 use std::alloc::{Layout, alloc};
 mod filesystem;
@@ -294,29 +291,6 @@ pub unsafe extern "C" fn swr_v2_http_context_text(
     unsafe { written.write(text.len()) };
     0
 }
-/// Admit a copied observation at the original native publication boundary.
-/// FILENAME means successful canonical result; index appending is separate and
-/// deliberately preserves the logical/base filename length.
-/// # Safety
-/// Live unique context and initialized input span disjoint from its storage.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_publish(
-    owner: *mut HttpStaticContext,
-    kind: u32,
-    input: *const u8,
-    length: usize,
-) -> i32 {
-    // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-    let Some(owner) = (unsafe { owner.as_mut() }) else {
-        return INVALID;
-    };
-    // SAFETY: the caller lends `length` initialized bytes at `input` (null only when empty).
-    let text = match unsafe { bytes(input, length) } {
-        Ok(text) => text,
-        Err(error) => return error,
-    };
-    owner.publish(kind, text)
-}
 /// Admit the fixed positive RNG result and assemble the lazy boundary directly
 /// in its sole Rust owner, without a Native prefix/string allocation.
 /// # Safety
@@ -374,8 +348,7 @@ pub unsafe extern "C" fn swr_v2_http_context_observe(
     let mut result = owner.facts;
     result.last = owner.path.last;
     result.directory_count = owner.directory.len();
-    // SAFETY: `owner.tasks` is a live field of this context.
-    result.task_count = unsafe { swr_v2_http_tasks_count(&raw const owner.tasks) };
+    result.task_count = owner.tasks.count();
     // SAFETY: `output` is non-null (checked above), aligned and writable per the caller contract.
     unsafe { output.write(result) };
     0
@@ -428,14 +401,19 @@ pub unsafe extern "C" fn swr_v2_http_context_format(
     if kind > 1 {
         return INVALID;
     }
-    let boundary = HttpProxyText {
-        data: owner.boundary.as_ptr(),
-        length: owner.boundary.len(),
-    };
+    if kind == 0 {
+        return match crate::static_meta::static_content_type(&owner.boundary) {
+            Ok(value) => {
+                owner.content = value;
+                0
+            }
+            Err(error) => error,
+        };
+    }
     let range = HttpRangeFormat {
         boundary: HttpProxyText {
-            data: boundary.data,
-            length: boundary.length,
+            data: owner.boundary.as_ptr(),
+            length: owner.boundary.len(),
         },
         mime: HttpProxyText {
             data: std::ptr::null(),
@@ -448,15 +426,9 @@ pub unsafe extern "C" fn swr_v2_http_context_format(
         separator: 0,
     };
     let render = |output, capacity, written| {
-        if kind == 0 {
-            // SAFETY: `boundary` is a local; output follows the caller's render contract.
-            unsafe {
-                swr_v1_http_static_content_type(&raw const boundary, output, capacity, written)
-            }
-        } else {
-            // SAFETY: `range` is a local; output follows the caller's render contract.
-            unsafe { swr_v1_http_range_format(&raw const range, output, capacity, written) }
-        }
+        // SAFETY: `range` is a local over the owner's boundary; output follows the
+        // caller's render contract.
+        unsafe { swr_v1_http_range_format(&raw const range, output, capacity, written) }
     };
     let mut length = 0;
     let status = render(std::ptr::null_mut(), 0, &raw mut length);
@@ -464,7 +436,7 @@ pub unsafe extern "C" fn swr_v2_http_context_format(
         return status;
     }
     let Some(capacity) = length
-        .checked_add(usize::from(kind == 1))
+        .checked_add(1)
         .filter(|&value| isize::try_from(value).is_ok())
     else {
         return OVERFLOW;
@@ -479,11 +451,7 @@ pub unsafe extern "C" fn swr_v2_http_context_format(
         return status;
     }
     value.truncate(length);
-    if kind == 0 {
-        owner.content = value;
-    } else {
-        owner.end = value;
-    }
+    owner.end = value;
     0
 }
 
@@ -527,64 +495,16 @@ pub unsafe extern "C" fn swr_v2_http_context_path(
                 )
             }
         }
-        // SAFETY: the owner's filename buffer is writable through its length, initialized at
-        // `filename_length`, and disjoint from `index`.
-        2 => unsafe {
-            swr_v1_http_static_index_path(
-                owner.filename.as_mut_ptr(),
-                owner.filename.len(),
-                owner.path.filename_length,
-                owner.index.as_ptr(),
-                owner.index.len(),
-            )
-        },
-        // SAFETY: `owner.facts.status` is a live, exclusive field.
-        3 => unsafe { swr_v1_http_static_catch(owner.path.last, &raw mut owner.facts.status) },
+        2 => crate::static_path::static_index_path(
+            &mut owner.filename,
+            owner.path.filename_length,
+            &owner.index,
+        ),
+        3 => crate::static_meta::static_catch(owner.path.last, &mut owner.facts.status),
         4 => owner.ensure_directory_slash(),
         5 => {
             owner.path.phase = 0;
             owner.path.url_length = 0;
-            0
-        }
-        _ => INVALID,
-    }
-}
-/// Directory effect adapter:0=append copied entry,1=finish scan,2=contains.
-/// # Safety
-/// Unique live context; input initialized/disjoint. Native DIR resources stay
-/// outside Rust and all calls finish before readdir/closedir resumes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_directory(
-    owner: *mut HttpStaticContext,
-    operation: u32,
-    input: *const u8,
-    length: usize,
-) -> i32 {
-    // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-    let Some(owner) = (unsafe { owner.as_mut() }) else {
-        return INVALID;
-    };
-    match operation {
-        0 | 2 => {
-            // SAFETY: the caller lends `length` initialized bytes at `input` (null only when empty).
-            let name = match unsafe { bytes(input, length) } {
-                Ok(name) => name,
-                Err(error) => return error,
-            };
-            if operation == 0 {
-                match owner.directory.scan_append(name) {
-                    Ok(()) => 1,
-                    Err(error) => error,
-                }
-            } else {
-                match owner.directory.contains(name) {
-                    Ok(found) => i32::from(found),
-                    Err(error) => error,
-                }
-            }
-        }
-        1 => {
-            owner.directory.scan_finish();
             0
         }
         _ => INVALID,
@@ -630,49 +550,17 @@ pub unsafe extern "C" fn swr_v2_http_context_page(
     };
     // SAFETY: `input` is a local copy of the caller's spans; output follows the contract.
     unsafe {
-        swr_v2_http_directory_page(
-            &raw const owner.directory,
-            index,
-            &raw const input,
-            output,
-            capacity,
-            written,
-        )
+        owner
+            .directory
+            .page(index, &input, output, capacity, written)
     }
 }
-/// Range scratch/commit:0=begin,1=prepare,2=push,3=clear. Native RNG/MIME/date
-/// effects have ended; no pointer to the by-value task owner escapes.
+/// Query or copy the whole immutable task snapshot in one call. Capacity 0
+/// queries the count without reading output. Insufficient capacity or invalid
+/// metadata changes neither output nor written.
 /// # Safety
-/// Unique live context; optional format and written obey `tasks_prepare` contract.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_task(
-    owner: *mut HttpStaticContext,
-    operation: u32,
-    offset: i64,
-    length: usize,
-    format: *const HttpRangeFormat,
-    written: *mut usize,
-) -> i32 {
-    // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-    let Some(owner) = (unsafe { owner.as_mut() }) else {
-        return INVALID;
-    };
-    match operation {
-        // SAFETY: `owner.tasks` is a live, exclusive field of this context.
-        0 => unsafe { swr_v2_http_tasks_begin(&raw mut owner.tasks) },
-        // SAFETY: as above; `format` and `written` follow tasks_prepare's contract.
-        1 => unsafe {
-            swr_v2_http_tasks_prepare(&raw mut owner.tasks, offset, length, format, written)
-        },
-        // SAFETY: as above.
-        2 => unsafe { swr_v2_http_tasks_push(&raw mut owner.tasks) },
-        // SAFETY: as above.
-        3 => unsafe { swr_v2_http_tasks_clear(&raw mut owner.tasks) },
-        _ => INVALID,
-    }
-}
-/// # Safety
-/// Live unchanged context and independent native output/written, as `task_snapshot`.
+/// Live unchanged context; aligned writable written and output capacity are
+/// disjoint from one another and the owner.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v2_http_context_tasks(
     owner: *const HttpStaticContext,
@@ -681,11 +569,23 @@ pub unsafe extern "C" fn swr_v2_http_context_tasks(
     written: *mut usize,
 ) -> i32 {
     // SAFETY: `owner` is null or live and aligned for this call.
-    let Some(owner) = (unsafe { owner.as_ref() }) else {
+    let tasks = unsafe { owner.as_ref() }.map_or(&[][..], |owner| owner.tasks.items());
+    if written.is_null() {
         return INVALID;
-    };
-    // SAFETY: `owner.tasks` is live; output follows task_snapshot's contract.
-    unsafe { swr_v2_http_tasks_snapshot(&raw const owner.tasks, output, capacity, written) }
+    }
+    if capacity != 0 {
+        if capacity < tasks.len() || capacity > isize::MAX as usize / size_of::<HttpStaticTask>() {
+            return OVERFLOW;
+        }
+        if output.is_null() {
+            return INVALID;
+        }
+        // SAFETY: non-null (checked above), `len <= capacity` slots, disjoint from the owner.
+        unsafe { std::ptr::copy_nonoverlapping(tasks.as_ptr(), output, tasks.len()) };
+    }
+    // SAFETY: `written` is non-null (checked above), aligned and writable per the caller contract.
+    unsafe { written.write(tasks.len()) };
+    0
 }
 
 #[cfg(test)]
@@ -695,10 +595,7 @@ mod tests {
         unsafe { swr_v2_http_context_new(b"/files?q=1".as_ptr(), 10, 128) }
     }
     fn put(owner: *mut HttpStaticContext, kind: u32, value: &[u8]) {
-        assert_eq!(
-            unsafe { swr_v2_http_context_publish(owner, kind, value.as_ptr(), value.len()) },
-            0
-        );
+        assert_eq!(unsafe { &mut *owner }.publish(kind, value), 0);
     }
     fn read(owner: *const HttpStaticContext, kind: u32) -> Vec<u8> {
         let mut length = 0;
@@ -849,35 +746,15 @@ mod tests {
         );
         assert_eq!(facts.status, 200);
         assert_eq!(facts.file_ready, 0);
+        let context = unsafe { &mut *owner };
         for name in [b"z".as_slice(), b"a", b"z"] {
-            assert_eq!(
-                unsafe { swr_v2_http_context_directory(owner, 0, name.as_ptr(), name.len()) },
-                1
-            );
+            assert_eq!(context.directory.scan_append(name), Ok(()));
         }
-        assert_eq!(
-            unsafe { swr_v2_http_context_directory(owner, 1, std::ptr::null(), 0) },
-            0
-        );
+        context.directory.scan_finish();
         let mut written = 0;
-        assert_eq!(
-            unsafe {
-                swr_v2_http_context_task(owner, 0, 0, 0, std::ptr::null(), std::ptr::null_mut())
-            },
-            0
-        );
-        assert_eq!(
-            unsafe {
-                swr_v2_http_context_task(owner, 1, 17, 23, std::ptr::null(), &raw mut written)
-            },
-            0
-        );
-        assert_eq!(
-            unsafe {
-                swr_v2_http_context_task(owner, 2, 0, 0, std::ptr::null(), std::ptr::null_mut())
-            },
-            0
-        );
+        context.tasks.begin();
+        context.tasks.prepare_full(17, 23);
+        assert_eq!(context.tasks.push(), 0);
         assert_eq!(
             unsafe { swr_v2_http_context_observe(owner, &raw mut facts) },
             0
@@ -893,6 +770,52 @@ mod tests {
         assert_eq!(task.offset, 17);
         assert_eq!(task.length, 23);
         assert_eq!(task.part_header, [0; 256]);
+    }
+    #[test]
+    fn bulk_snapshot_admission_preserves_outputs_before_publication() {
+        let owner = make();
+        let context = unsafe { &mut *owner };
+        assert_eq!(context.tasks.push(), 0);
+        assert_eq!(context.tasks.push(), 0);
+        let mut destination = HttpStaticTask {
+            offset: 77,
+            ..HttpStaticTask::default()
+        };
+        let before = destination;
+        let mut written = 91;
+        assert_eq!(
+            unsafe { swr_v2_http_context_tasks(owner, &raw mut destination, 1, &raw mut written) },
+            OVERFLOW
+        );
+        assert_eq!(destination, before);
+        assert_eq!(written, 91);
+        let mut output = [HttpStaticTask::default(); 2];
+        assert_eq!(
+            unsafe {
+                swr_v2_http_context_tasks(
+                    owner,
+                    output.as_mut_ptr(),
+                    output.len(),
+                    &raw mut written,
+                )
+            },
+            0
+        );
+        assert_eq!(written, 2);
+        unsafe { swr_v2_http_context_drop(owner) };
+        assert_eq!(output, [HttpStaticTask::default(); 2]);
+        assert_eq!(
+            unsafe {
+                swr_v2_http_context_tasks(
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    0,
+                    &raw mut written,
+                )
+            },
+            0
+        );
+        assert_eq!(written, 0);
     }
     #[test]
     fn lazy_boundary_assembly_owns_prefix_and_positive_rng_bytes_once() {

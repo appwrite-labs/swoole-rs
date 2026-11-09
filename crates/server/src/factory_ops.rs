@@ -74,17 +74,6 @@ unsafe extern "C-unwind" {
     fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
 }
 
-// SAFETY: crates/protocols' bus, linked into the same archive.
-unsafe extern "C" {
-    fn swr_v1_bus_write(
-        bus: *mut c_void,
-        socket: *mut c_void,
-        head: *mut DataHead,
-        data: *const u8,
-    ) -> bool;
-    fn swr_v1_bus_pipe_socket(bus: *mut c_void, fd: c_int) -> *mut SocketRecord;
-}
-
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
 const REGISTRY_EVENT: c_int = 1;
 const REGISTRY_USER: c_int = 2;
@@ -221,16 +210,15 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
                 .cast::<ThreadRecord>()
                 .wrapping_add(usize::from(swoole_rs_corebase::thread_id()));
             // SAFETY: this reactor thread's live record.
-            let bus = unsafe { (*thread).bus };
+            let bus = unsafe { &*thread }.message_bus();
             // The worker the factory scheduled.
             let pipe = ctx.worker_at(worker_id(arg)).pipe_master;
             // SAFETY: the worker's live pipe socket.
             let fd = unsafe { (*pipe.cast::<SocketRecord>()).fd };
-            // SAFETY: the live bus.
-            let socket = unsafe { swr_v1_bus_pipe_socket(bus, fd) };
+            let socket = bus.pipe_fd(fd);
             let (mut info, data) = send();
-            // SAFETY: the live bus and pipe, and the data sent.
-            u64::from(unsafe { swr_v1_bus_write(bus, socket.cast(), &raw mut info, data.cast()) })
+            // SAFETY: the live pipe, and the data sent.
+            u64::from(unsafe { bus.rust().send(socket.cast(), &mut info, data.cast()) })
         }
         OP_WRITE_TO_REACTOR => {
             let (mut info, data) = send();
@@ -242,9 +230,9 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let id = i64::from(info.reactor_id) + (info.fd % pipes) * i64::from(config.reactor_num);
             // The worker serving that reactor's pipe.
             let pipe = ctx.worker_at(worker_id(id.cast_unsigned())).pipe_worker;
-            let bus = crate::master_ops::server_message_bus(state).raw();
-            // SAFETY: the live bus and pipe, and the data sent.
-            u64::from(unsafe { swr_v1_bus_write(bus, pipe, &raw mut info, data.cast()) })
+            let bus = crate::master_ops::server_message_bus(state);
+            // SAFETY: the live pipe, and the data sent.
+            u64::from(unsafe { bus.rust().send(pipe.cast(), &mut info, data.cast()) })
         }
         OP_FINISH_CLOSE => u64::from(crate::factory::finish(state, ctx.send.cast())),
         _ => return None,
