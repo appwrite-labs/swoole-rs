@@ -194,8 +194,7 @@ pub(crate) fn started(server: *mut Server) -> bool {
 fn set_status(server: *mut Server, fd: zend_long, status: i64) {
     // SAFETY: its callers pass their live server.
     let server = unsafe { view::Server::from_raw(server) };
-    // SAFETY: a live server.
-    if let Some(conn) = unsafe { server.by_session(fd) } {
+    if let Some(conn) = server.by_session(fd) {
         conn.websocket_status = u8::try_from(status).unwrap_or_default();
     }
 }
@@ -229,8 +228,7 @@ fn close(server: *mut Server, fd: zend_long, reset: bool) -> bool {
 fn port_frames(server: *mut Server, fd: zend_long) -> Option<u8> {
     // SAFETY: its callers pass their live server.
     let server = unsafe { view::Server::from_raw(server) };
-    // SAFETY: a live server.
-    let conn = unsafe { server.by_session(fd) }?;
+    let conn = server.by_session(fd)?;
     let port = server.port_by_fd(conn.fd);
     // SAFETY: a live port.
     (!port.is_null()).then(|| unsafe { view::port(port) }.websocket_frames)
@@ -942,11 +940,9 @@ fn connection(server: *mut Server, fd: zend_long, verify: bool) -> Option<Connec
     // SAFETY: its callers pass their live server.
     let server = unsafe { view::Server::from_raw(server) };
     let conn = if verify {
-        // SAFETY: a live server.
-        unsafe { server.verified(fd) }
+        server.verified(fd)
     } else {
-        // SAFETY: as above.
-        unsafe { server.by_session(fd) }
+        server.by_session(fd)
     }?;
     Some(Connection {
         status: conn.websocket_status,
@@ -1398,8 +1394,7 @@ pub(crate) fn accept(context: *mut Context) {
     let state = send::state(context);
     state.websocket_compression = u8::from(accepted);
     if !crate::context::co_socket(state)
-        // SAFETY: the server the context is bound to.
-        && let Some(conn) = unsafe { crate::context::server(state).verified(state.fd) }
+        && let Some(conn) = crate::context::server(state).verified(state.fd)
     {
         conn.websocket_compression = u8::from(accepted);
     }

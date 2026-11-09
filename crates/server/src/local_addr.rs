@@ -146,11 +146,7 @@ pub(crate) unsafe fn free(addrs: *mut LocalAddrs) {
     }
 }
 
-/// # Safety
-/// `state` is null or live.
-unsafe fn table<'a>(state: *const ServerState) -> Option<&'a LocalAddrs> {
-    // SAFETY: per the caller.
-    let state = unsafe { state.as_ref() }?;
+fn table(state: &ServerState) -> Option<&LocalAddrs> {
     // SAFETY: replaced only by `init`, before readers start; freed with the state.
     unsafe { state.local_addrs.load(Ordering::Acquire).as_ref() }
 }
@@ -166,7 +162,7 @@ pub unsafe extern "C" fn swr_v1_server_local_addr_index(
     addr: *const u8,
 ) -> u16 {
     // SAFETY: per the caller.
-    let Some(addrs) = (unsafe { table(state) }) else {
+    let Some(addrs) = unsafe { state.as_ref() }.and_then(table) else {
         return 0;
     };
     // SAFETY: the caller passes an address of the family.
@@ -176,12 +172,8 @@ pub unsafe extern "C" fn swr_v1_server_local_addr_index(
 
 /// The text of local address `index`; the loopback address when unknown. Valid
 /// while the state lives.
-///
-/// # Safety
-/// `state` is null or live.
-unsafe fn text(state: *const ServerState, v6: bool, index: u16) -> *const c_char {
-    // SAFETY: per the caller.
-    let found = unsafe { table(state) }.and_then(|addrs| addrs.text(v6, index));
+fn text(state: &ServerState, v6: bool, index: u16) -> *const c_char {
+    let found = table(state).and_then(|addrs| addrs.text(v6, index));
     found
         .unwrap_or(if v6 { c"::1" } else { c"127.0.0.1" })
         .as_ptr()
@@ -201,15 +193,11 @@ pub unsafe extern "C" fn get_local_addr(
     // SAFETY: per the caller.
     let conn = unsafe { &*conn };
     if conn.socket_type == SW_SOCK_TCP || conn.socket_type == SW_SOCK_TCP6 {
-        let state = serv.state_ptr();
-        // SAFETY: the server's live state.
-        return unsafe {
-            text(
-                state,
-                conn.socket_type == SW_SOCK_TCP6,
-                conn.local_addr_index,
-            )
-        };
+        return text(
+            serv.state(),
+            conn.socket_type == SW_SOCK_TCP6,
+            conn.local_addr_index,
+        );
     }
     let port = serv.port_by_server_fd(conn.server_fd);
     // SAFETY: the connection's live port.
@@ -248,10 +236,10 @@ mod tests {
             unsafe { swr_v1_server_local_addr_index(&raw const state, false, loopback.as_ptr()) };
         assert_ne!(index, 0, "lo is up");
         // SAFETY: live state; the text lives with it.
-        let found = unsafe { CStr::from_ptr(text(&raw const state, false, index)) };
+        let found = unsafe { CStr::from_ptr(text(&state, false, index)) };
         assert_eq!(found, c"127.0.0.1", "loopback text");
         // SAFETY: live state.
-        let missing = unsafe { CStr::from_ptr(text(&raw const state, true, 0)) };
+        let missing = unsafe { CStr::from_ptr(text(&state, true, 0)) };
         assert_eq!(missing, c"::1", "unknown v6 index");
         assert!(init(&state), "a second read replaces the first");
         // SAFETY: a null state has no table.

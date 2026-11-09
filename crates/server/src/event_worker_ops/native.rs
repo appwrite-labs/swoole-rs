@@ -218,7 +218,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let id = u16::try_from(ctx.worker().id()).unwrap_or(0);
             let bus = ctx.tables().message_bus;
             // SAFETY: the live server, its bus holding the request, and the pipe.
-            unsafe { crate::commands::call_command_handler(ctx.serv, bus, id, pipe) };
+            unsafe { crate::commands::call_command_handler(ctx.server(), bus, id, pipe) };
             0
         }
         OP_THREAD_SHUTDOWN => {

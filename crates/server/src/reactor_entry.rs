@@ -374,11 +374,9 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     }
     let port = crate::reactor_ops::port_by_fd(state, c.fd);
     // SAFETY: the connection's live port, whose counters live as long as it.
-    let port = unsafe { crate::port_config::of(port) }.gs;
-    // SAFETY: as above.
-    unsafe { &*port.cast::<crate::shared::PortCounters>() }
-        .dispatch_count
-        .fetch_add(1, SeqCst);
+    if let Some(gs) = unsafe { crate::port_config::of(port) }.counters() {
+        gs.dispatch_count.fetch_add(1, SeqCst);
+    }
     0
 }
 

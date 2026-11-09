@@ -292,7 +292,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     match op {
         OP_CREATE_EVENT_WORKERS => {
             // SAFETY: the context's live server.
-            let created = unsafe { worker_methods::create_event_workers(serv) };
+            let created = unsafe { worker_methods::create_event_workers(ctx.server()) };
             return Some(u64::from(created));
         }
         OP_CREATE_MESSAGE_BOX => {
@@ -303,7 +303,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CREATE_USER_WORKERS => {
             // SAFETY: the context's live server.
-            let created = unsafe { worker_methods::create_user_workers(serv) };
+            let created = unsafe { worker_methods::create_user_workers(ctx.server()) };
             return Some(u64::from(created));
         }
         OP_SET_MANAGER_PID => ctx.counters().manager_pid = std::process::id().cast_signed(),

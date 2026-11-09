@@ -1295,11 +1295,10 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_LC_CHECK => sign(crate::server_methods::start_check(o.server())),
         OP_LC_PREPARE_WORKERS => {
-            // SAFETY: per the caller, for this and each call below.
-            unsafe { crate::worker_methods::swr_v1_server_workers_start(serv) };
+            crate::worker_methods::workers_start(o.server());
             0
         }
-        // SAFETY: as above.
+        // SAFETY: per the caller, for this and each call below.
         OP_LC_START_BASE => sign(unsafe { entry::start_reactor_processes(serv) }),
         // SAFETY: as above.
         OP_LC_START_THREAD => sign(unsafe { entry::start_worker_threads(serv) }),
@@ -1572,7 +1571,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             }
         }
         OP_SC_CLOSE | OP_ST_REACTOR_CLOSE => {
-            o.reactor().close(o.ctx.sock.cast());
+            o.reactor().close(o.sock());
             0
         }
         OP_ST_PIPE_FD => {
@@ -2397,7 +2396,7 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_DESTROY_TASK_WORKERS => {
             // SAFETY: as above.
-            unsafe { crate::worker_methods::destroy_task_workers(serv) };
+            unsafe { crate::worker_methods::destroy_task_workers(o.server()) };
             0
         }
         OP_TASK_POOL_CREATE => {

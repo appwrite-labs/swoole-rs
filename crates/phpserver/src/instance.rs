@@ -189,8 +189,7 @@ pub unsafe extern "C" fn php_swoole_get_recv_data(
         unsafe { assign_by_val(zdata, req.data, length) };
         move_packet(serv.raw());
     } else if let Some(buffer) = (flags & SW_EVENT_DATA_POP_PTR as u8 != 0)
-        // SAFETY: per the caller; a POP_PTR request's session is live.
-        .then(|| unsafe { serv.by_session(req.info.fd) })
+        .then(|| serv.by_session(req.info.fd))
         .flatten()
         // SAFETY: the connection's live socket.
         .map(|conn| unsafe { view::recv_buffer(conn) })

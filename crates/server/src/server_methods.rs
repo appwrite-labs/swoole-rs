@@ -10,8 +10,8 @@ use core::ptr;
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER};
 use crate::ops::{
-    RUN_ACCEPT, RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_SIGNAL, RUN_ST_INIT_PIPE_SOCKETS,
-    RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
+    RUN_ACCEPT, RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_SIGNAL, RUN_START, RUN_START_CHECK,
+    RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
 };
 use crate::ops::{
     RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
@@ -283,14 +283,9 @@ pub unsafe extern "C-unwind" fn start_master_thread(
 /// `Server::init_pipe_sockets(mb)`, once the server has started.
 ///
 /// # Safety
-/// `serv` is a live `Server` and `mb` a live `MessageBus`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server17init_pipe_socketsEPNS_10MessageBusE")
-)]
-pub unsafe extern "C-unwind" fn init_pipe_sockets(serv: *mut c_void, mb: *mut c_void) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+/// `mb` is a live `MessageBus`.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) unsafe fn init_pipe_sockets(serv: view::Server<'_>, mb: *mut c_void) {
     if !serv.is_started() {
         // upstream's `assert(is_started())`.
         std::process::abort();
@@ -298,7 +293,7 @@ pub unsafe extern "C-unwind" fn init_pipe_sockets(serv: *mut c_void, mb: *mut c_
     let mut ctx = NativeContext::new(serv.raw());
     ctx.object = mb;
     // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_ST_INIT_PIPE_SOCKETS, 0, &mut ctx) };
+    unsafe { run(crate::ops::RUN_ST_INIT_PIPE_SOCKETS, 0, &mut ctx) };
 }
 
 /// `Server::connection_incoming(reactor, conn)`, over the port `conn` arrived on.

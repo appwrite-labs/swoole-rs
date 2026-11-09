@@ -254,51 +254,29 @@ impl<'a> Server<'a> {
             .fold(0, usize::wrapping_add)
     }
 
-    /// `ServerState::connection(key, kind)`: a slot of the live connection table, or null.
-    fn connection(self, key: c_long, kind: u32) -> *mut ConnectionRecord {
-        self.state().connection_ptr(key, kind)
-    }
-
     /// `Server::get_connection_verify(session_id)`.
-    ///
-    /// # Safety
-    /// No other reference to the connection is live; the server's own
-    /// synchronization orders it with other threads.
     #[must_use]
-    pub unsafe fn verified(self, session_id: i64) -> Option<&'a mut ConnectionRecord> {
-        // SAFETY: null, or a live slot; exclusive per the caller.
-        unsafe { self.connection(session_id, 2).as_mut() }
+    pub fn verified(self, session_id: i64) -> Option<&'a mut ConnectionRecord> {
+        self.state().connection(session_id, 2)
     }
 
     /// `Server::get_connection_by_session_id(session_id)`: the session's slot,
     /// unverified.
-    ///
-    /// # Safety
-    /// As [`Server::verified`].
     #[must_use]
-    pub unsafe fn by_session(self, session_id: i64) -> Option<&'a mut ConnectionRecord> {
-        // SAFETY: null, or a live slot; exclusive per the caller.
-        unsafe { self.connection(session_id, 1).as_mut() }
+    pub fn by_session(self, session_id: i64) -> Option<&'a mut ConnectionRecord> {
+        self.state().connection(session_id, 1)
     }
 
     /// `Server::get_connection_for_iterator(fd)`.
-    ///
-    /// # Safety
-    /// As [`Server::verified`].
     #[must_use]
-    pub unsafe fn iterated(self, fd: c_int) -> Option<&'a mut ConnectionRecord> {
-        // SAFETY: null, or a live slot; exclusive per the caller.
-        unsafe { self.connection(c_long::from(fd), 4).as_mut() }
+    pub fn iterated(self, fd: c_int) -> Option<&'a mut ConnectionRecord> {
+        self.state().connection(c_long::from(fd), 4)
     }
 
     /// `Server::get_connection(fd)`.
-    ///
-    /// # Safety
-    /// As [`Server::verified`].
     #[must_use]
-    pub unsafe fn at(self, fd: c_int) -> Option<&'a mut ConnectionRecord> {
-        // SAFETY: null, or a live slot; exclusive per the caller.
-        unsafe { self.connection(c_long::from(fd), 0).as_mut() }
+    pub fn at(self, fd: c_int) -> Option<&'a mut ConnectionRecord> {
+        self.state().connection(c_long::from(fd), 0)
     }
 
     /// `field` of the connection at `key`; `None` for no slot.
@@ -308,9 +286,7 @@ impl<'a> Server<'a> {
         kind: u32,
         field: impl FnOnce(&ConnectionRecord) -> T,
     ) -> Option<T> {
-        // SAFETY: null, or a live slot, read only for this call under the
-        // server's own synchronization.
-        unsafe { self.connection(key, kind).as_ref() }.map(field)
+        self.state().connection(key, kind).map(|conn| field(conn))
     }
 
     /// `ListenPort::get_connection_num()` of one of the server's ports.
