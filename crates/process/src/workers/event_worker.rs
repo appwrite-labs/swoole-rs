@@ -352,11 +352,7 @@ fn try_exit<H: Host>(h: &mut H) {
     }
 }
 
-/// `::time(nullptr)`.
-pub(crate) fn now() -> i64 {
-    // SAFETY: time(NULL) only returns the clock.
-    unsafe { libc::time(core::ptr::null_mut()) }
-}
+pub(crate) use swoole_rs_corebase::time_now as now;
 
 /// `Server::clean_worker_connections`.
 fn clean_connections<H: Host>(h: &mut H) {
