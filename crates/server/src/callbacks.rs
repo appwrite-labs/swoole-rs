@@ -183,15 +183,12 @@ impl Drop for ServerCallbacks {
     }
 }
 
-/// The first of `state`'s slots, which `Server`'s members bind to.
-///
-/// # Safety
-/// `state` came from `swr_v1_server_state_new` and is live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_callbacks_get(state: *mut ServerState) -> *mut c_void {
-    // SAFETY: per the caller.
-    let state = unsafe { &*state };
-    state.callbacks.0.as_ptr().cast_mut().cast()
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+impl ServerState {
+    /// The first of the slots, which `Server`'s callbacks pointer heads.
+    pub(crate) fn callbacks_ptr(&self) -> *mut c_void {
+        self.callbacks.0.as_ptr().cast_mut().cast()
+    }
 }
 
 /// Answers the callback facts from the slots, else `None`.

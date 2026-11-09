@@ -19,6 +19,7 @@
 #include <atomic>
 #include <unordered_map>
 #include <condition_variable>
+#include <cstdlib>
 
 namespace swoole {
 
@@ -89,7 +90,20 @@ enum ServerEventType {
     SW_SERVER_EVENT_SHUTDOWN_SIGNAL,
 };
 
-class Server : public detail::ServerFields {
+// The record crates/server allocates and frees (swr_v1_server_new and swr_v1_server_delete, in
+// crates/server/src/server_object.rs), which C++ only views: these four pointers head it. Its
+// methods are Rust's under their upstream symbols; the inline ones are what native/ and the test
+// fixtures still call.
+class Server {
+    swr_v1_server_state *state_;
+    swr_v1_server_config *config_;
+    swr_v1_server_tables *tables_;
+    swr_v1_server_callback *callbacks_;
+
+    template <class Sig> detail::Callback<Sig> &callback(int index) const {
+        return *reinterpret_cast<detail::Callback<Sig> *>(callbacks_ + index);
+    }
+
   public:
     enum Mode {
         MODE_BASE = 1,
@@ -132,82 +146,46 @@ class Server : public detail::ServerFields {
         CLOSE_ACTIVELY = 1u << 2,
     };
 
-    // Worker (and task worker) chroot, user and group.
-    RustStringView chroot_{text(SWR_SERVER_TEXT_CHROOT)};
-    RustStringView user_{text(SWR_SERVER_TEXT_USER)};
-    RustStringView group_{text(SWR_SERVER_TEXT_GROUP)};
+    Server() = delete;
+    Server(const Server &) = delete;
+    ~Server() = delete;
 
-    MessageBus message_bus;
+    swr_v1_server_config *config() const {
+        return config_;
+    }
 
-    decltype(swr_v1_server_tables::ports) &ports = tables_->ports;
-    std::vector<std::shared_ptr<UnixSocket>> worker_pipes;
+    swr_v1_server_state *state_handle() const {
+        return state_;
+    }
+
+    // The static handler's locations and the compressed MIME types.
+    detail::ServerStrings locations() const {
+        return {state_, 0};
+    }
+
+    detail::ServerStrings http_compression_types() const {
+        return {state_, 2};
+    }
+
+    detail::Callback<void(Server *)> &onStart() const {
+        return callback<void(Server *)>(SWR_SERVER_CB_START);
+    }
+    detail::Callback<void(Server *, Worker *)> &onWorkerStart() const {
+        return callback<void(Server *, Worker *)>(SWR_SERVER_CB_WORKER_START);
+    }
+    detail::Callback<int(Server *, RecvData *)> &onReceive() const {
+        return callback<int(Server *, RecvData *)>(SWR_SERVER_CB_RECEIVE);
+    }
+    detail::Callback<void(Server *, DataHead *)> &onClose() const {
+        return callback<void(Server *, DataHead *)>(SWR_SERVER_CB_CLOSE);
+    }
+    detail::Callback<void(Server *, DataHead *)> &onConnect() const {
+        return callback<void(Server *, DataHead *)>(SWR_SERVER_CB_CONNECT);
+    }
 
     ListenPort *get_primary_port() const {
-        return ports.front();
+        return tables_->ports.front();
     }
-
-    ListenPort *get_port_by_server_fd(const int server_fd) const {
-        return static_cast<ListenPort *>(connection_list[server_fd].object);
-    }
-
-    network::Socket *get_command_reply_socket() const {
-        return is_base_mode() ? get_worker(0)->pipe_master : pipe_command->get_socket(false);
-    }
-
-    network::Socket *get_worker_pipe_master_in_message_bus(const Worker *worker) {
-        return is_thread_mode() ? get_worker_message_bus()->get_pipe_socket(worker->pipe_master) : worker->pipe_master;
-    }
-
-    network::Socket *get_worker_pipe_worker_in_message_bus(const Worker *worker) {
-        return is_thread_mode() ? get_worker_message_bus()->get_pipe_socket(worker->pipe_worker) : worker->pipe_worker;
-    }
-
-    network::Socket *get_worker_pipe_master_in_message_bus(WorkerId id) {
-        return get_worker_pipe_master_in_message_bus(get_worker(id));
-    }
-
-    // [Worker|Master] The pipe of the worker that serves this session's reactor.
-    network::Socket *get_reactor_pipe_socket(const SessionId session_id, int reactor_id) const {
-        const int pipe_index = session_id % reactor_pipe_num;
-        int pipe_worker_id = reactor_id + (pipe_index * reactor_num);
-        Worker *worker = get_worker(pipe_worker_id);
-        return worker->pipe_worker;
-    }
-
-
-    detail::ServerStrings locations{state_,0};
-    detail::ServerStrings http_compression_types{state_,2};
-
-    Barrier reactor_thread_barrier = {};
-
-    // Master process
-    detail::Callback<void(Server *)> &onStart = callback(SWR_SERVER_CB_START);
-    detail::Callback<void(Server *)> &onShutdown = callback(SWR_SERVER_CB_SHUTDOWN);
-    // Manager process
-    detail::Callback<void(Server *, Worker *, const ExitStatus &)> &onWorkerError = callback(SWR_SERVER_CB_WORKER_ERROR);
-    detail::Callback<void(Server *)> &onBeforeReload = callback(SWR_SERVER_CB_BEFORE_RELOAD);
-    detail::Callback<void(Server *)> &onAfterReload = callback(SWR_SERVER_CB_AFTER_RELOAD);
-    // Worker process
-    detail::Callback<void(Server *, EventData *)> &onPipeMessage = callback(SWR_SERVER_CB_PIPE_MESSAGE);
-    detail::Callback<void(Server *, Worker *)> &onWorkerStart = callback(SWR_SERVER_CB_WORKER_START);
-    detail::Callback<void(Server *, Worker *)> &onWorkerStop = callback(SWR_SERVER_CB_WORKER_STOP);
-    detail::Callback<void(Server *, Worker *)> &onWorkerExit = callback(SWR_SERVER_CB_WORKER_EXIT);
-    // Connection
-    detail::Callback<int(Server *, RecvData *)> &onReceive = callback(SWR_SERVER_CB_RECEIVE);
-    detail::Callback<int(Server *, RecvData *)> &onPacket = callback(SWR_SERVER_CB_PACKET);
-    detail::Callback<void(Server *, DataHead *)> &onClose = callback(SWR_SERVER_CB_CLOSE);
-    detail::Callback<void(Server *, DataHead *)> &onConnect = callback(SWR_SERVER_CB_CONNECT);
-    detail::Callback<void(Server *, DataHead *)> &onBufferFull = callback(SWR_SERVER_CB_BUFFER_FULL);
-    detail::Callback<void(Server *, DataHead *)> &onBufferEmpty = callback(SWR_SERVER_CB_BUFFER_EMPTY);
-    // Task worker
-    detail::Callback<int(Server *, EventData *)> &onTask = callback(SWR_SERVER_CB_TASK);
-    detail::Callback<int(Server *, EventData *)> &onFinish = callback(SWR_SERVER_CB_FINISH);
-
-    explicit Server(Mode _mode = MODE_BASE);
-    ~Server();
-
-    bool set_document_root(const std::string &path);
-    void add_http_compression_type(const std::string &type);
 
     int create();
     int start();
@@ -221,79 +199,29 @@ class Server : public detail::ServerFields {
 
     uint32_t get_idle_worker_num() const;
 
-    TaskId get_task_id(const EventData *task) const {
-        return get_task_worker_pool()->get_task_id(task);
-    }
-
-    static uint16_t get_command_id(const EventData *cmd) {
-        return cmd->info.server_fd;
-    }
-
     pid_t get_master_pid() const {
-        return gs->master_pid;
-    }
-
-    MessageBus *get_worker_message_bus() {
-#ifdef SW_THREAD
-        return sw_likely(is_thread_mode()) ? SwooleTG.message_bus : &message_bus;
-#else
-        return &message_bus;
-#endif
-    }
-
-    ProcessPool *get_task_worker_pool() const {
-        return &gs->task_workers;
+        return config_->gs->master_pid;
     }
 
     ProcessPool *get_event_worker_pool() const {
-        return &gs->event_workers;
-    }
-
-    bool is_process_mode() const {
-        return mode_ == MODE_PROCESS;
-    }
-
-    bool is_base_mode() const {
-        return mode_ == MODE_BASE;
-    }
-
-    bool is_thread_mode() const {
-        return mode_ == MODE_THREAD;
+        return &config_->gs->event_workers;
     }
 
     bool is_enable_coroutine() const {
         if (is_task_worker()) {
-            return task_enable_coroutine;
+            return config_->task_enable_coroutine;
         } else if (is_manager()) {
             return false;
         } else {
-            return enable_coroutine;
+            return config_->enable_coroutine;
         }
     }
 
     Worker *get_worker(uint16_t worker_id) const;
     Worker *get_worker_by_pid(pid_t worker_pid) const;
-    void stop_async_worker(Worker *worker);
-
-    size_t get_all_worker_num() const {
-        return get_core_worker_num() + user_worker_list.size();
-    }
 
     size_t get_core_worker_num() const {
-        return worker_num + task_worker_num;
-    }
-
-    ReactorThread *get_thread(int reactor_id) const {
-        return &reactor_threads[reactor_id];
-    }
-
-    bool is_started() const {
-        return gs->start;
-    }
-
-
-    bool is_worker() const {
-        return swoole_get_worker_type() == SW_EVENT_WORKER;
+        return config_->worker_num + config_->task_worker_num;
     }
 
     bool is_task_worker() const {
@@ -309,27 +237,10 @@ class Server : public detail::ServerFields {
     }
 
     bool is_worker_thread() const {
-        return is_thread_mode() && swoole_get_thread_type() == THREAD_WORKER;
+        return config_->mode_ == MODE_THREAD && swoole_get_thread_type() == THREAD_WORKER;
     }
-
-    bool is_reactor_thread() {
-        return swoole_get_thread_type() == THREAD_REACTOR;
-    }
-
 
     bool is_healthy_connection(double now, const Connection *conn) const;
-
-    Connection *get_connection_verify_no_ssl(SessionId session_id) const {
-        return static_cast<Connection *>(swr_v1_server_connection(state_, session_id, 2));
-    }
-
-    Connection *get_connection_verify(SessionId session_id) const {
-        return static_cast<Connection *>(swr_v1_server_connection(state_, session_id, 3));
-    }
-
-    Connection *get_connection(const int fd) const {
-        return static_cast<Connection *>(swr_v1_server_connection(state_, fd, 0));
-    }
 
     Connection *get_connection_by_session_id(SessionId session_id) const {
         return static_cast<Connection *>(swr_v1_server_connection(state_, session_id, 1));
@@ -339,53 +250,40 @@ class Server : public detail::ServerFields {
         return static_cast<Session *>(swr_v1_server_session(state_, session_id));
     }
 
-    void call_worker_error_callback(Worker *worker, const ExitStatus &status);
-    void call_command_handler(MessageBus &mb, uint16_t worker_id, network::Socket *sock);
-    void foreach_connection(const std::function<void(Connection *)> &callback) const;
-    static int accept_connection(Reactor *reactor, Event *event);
-    static int close_connection(Reactor *reactor, network::Socket *_socket);
-
-    ssize_t send_to_worker_from_worker(const Worker *dst_worker, const void *buf, size_t len, int flags);
-
-    ssize_t send_to_worker_from_worker(WorkerId id, const EventData *data, int flags) {
-        return send_to_worker_from_worker(get_worker(id), data, data->size(), flags);
-    }
-
     bool send(SessionId session_id, const void *data, uint32_t length) const;
     bool sendfile(SessionId session_id, const char *file, uint32_t l_file, off_t offset, size_t length) const;
     bool close(SessionId session_id, bool reset = false) const;
 
-    void init_pipe_sockets(MessageBus *mb) const;
-
     void set_max_connection(uint32_t _max_connection);
 
-    uint32_t get_max_connection() const {
-        return max_connection;
-    }
-
-    pid_t restart_worker_process(const ExitStatus &exit_status);
-
-
-
-    // [Worker]
-    static int reactor_process_main_loop(ProcessPool *pool, Worker *worker);
-    static void reactor_thread_main_loop(Server *serv, int reactor_id);
-    static bool task_unpack(EventData *task, String *buffer, PacketPtr *packet);
-
     const char *get_startup_error_message() const;
-
-  private:
-    decltype(swr_v1_server_tables::connection_list) &connection_list = tables_->connection_list;
-    decltype(swr_v1_server_tables::session_list) &session_list = tables_->session_list;
-    decltype(swr_v1_server_tables::max_connection) &max_connection = tables_->max_connection;
-    // The number of pipes each reactor maintains.
-    decltype(swr_v1_server_tables::reactor_pipe_num) &reactor_pipe_num = tables_->reactor_pipe_num;
-    decltype(swr_v1_server_tables::reactor_threads) &reactor_threads = tables_->reactor_threads;
-    detail::PendingWorkers<Worker> user_worker_list{worker_registry};
-
-    int create_pipe_buffers();
-    int start_master_thread(Reactor *reactor);
 };
+
+namespace detail {
+template <size_t N> void check_record(uint32_t kind, size_t size, size_t alignment, const size_t (&offsets)[N]) {
+    if (!swr_v1_server_record_layout(kind, size, alignment, offsets, N)) std::abort();
+}
+// Checks native's view of each record crates/server lays out (crates/server/src/layout.rs) and
+// aborts on a mismatch. php_swoole_server_minit and the C++ test fixtures run it before they
+// make a Server.
+inline void check_server_layouts() {
+#define SWR_CONFIG_OFFSET(type, name) offsetof(swr_v1_server_config, name),
+    check_record(0, sizeof(swr_v1_server_config), alignof(swr_v1_server_config),
+                 {SWR_SERVER_CONFIG_FIELDS(SWR_CONFIG_OFFSET)});
+#undef SWR_CONFIG_OFFSET
+    check_record(1, sizeof(swr_v1_server_tables), alignof(swr_v1_server_tables), {offsetof(swr_v1_server_tables, connection_list), offsetof(swr_v1_server_tables, session_list), offsetof(swr_v1_server_tables, port_gs_list), offsetof(swr_v1_server_tables, max_connection), offsetof(swr_v1_server_tables, enable_accept_timer), offsetof(swr_v1_server_tables, reactor_pipe_num), offsetof(swr_v1_server_tables, reactor_threads), offsetof(swr_v1_server_tables, ports), offsetof(swr_v1_server_tables, message_bus)});
+    check_record(2, sizeof(Session), alignof(Session), {offsetof(Session, id), offsetof(Session, fd)});
+    check_record(3, sizeof(Connection), alignof(Connection), {offsetof(Connection, active), offsetof(Connection, socket_type), offsetof(Connection, fd), offsetof(Connection, worker_id), offsetof(Connection, session_id), offsetof(Connection, ssl), offsetof(Connection, ssl_ready), offsetof(Connection, overflow), offsetof(Connection, high_watermark), offsetof(Connection, http_upgrade), offsetof(Connection, http2_stream), offsetof(Connection, websocket_compression), offsetof(Connection, close_actively), offsetof(Connection, close_queued), offsetof(Connection, closing), offsetof(Connection, close_reset), offsetof(Connection, peer_closed), offsetof(Connection, protect), offsetof(Connection, close_notify), offsetof(Connection, close_force), offsetof(Connection, reactor_id), offsetof(Connection, close_errno), offsetof(Connection, recv_queued_bytes), offsetof(Connection, send_queued_bytes), offsetof(Connection, waiting_time), offsetof(Connection, local_port), offsetof(Connection, local_addr_index), offsetof(Connection, timer), offsetof(Connection, info), offsetof(Connection, object), offsetof(Connection, socket), offsetof(Connection, connect_time), offsetof(Connection, last_recv_time), offsetof(Connection, last_send_time), offsetof(Connection, last_dispatch_time), offsetof(Connection, uid), offsetof(Connection, websocket_status), offsetof(Connection, websocket_buffer), offsetof(Connection, ssl_client_cert), offsetof(Connection, ssl_client_cert_pid), offsetof(Connection, lock), offsetof(Connection, closed), offsetof(Connection, server_fd)});
+#define SWR_PORT_OFFSET(type, name) offsetof(swr_v1_port_config, name),
+    check_record(4, sizeof(swr_v1_port_config), alignof(swr_v1_port_config), {SWR_PORT_CONFIG_FIELDS(SWR_PORT_OFFSET)});
+#undef SWR_PORT_OFFSET
+    check_record(5, sizeof(ServerCounters), alignof(ServerCounters), {offsetof(ServerCounters, master_pid), offsetof(ServerCounters, manager_pid), offsetof(ServerCounters, session_round), offsetof(ServerCounters, start), offsetof(ServerCounters, shutdown), offsetof(ServerCounters, max_fd), offsetof(ServerCounters, min_fd), offsetof(ServerCounters, onstart_called), offsetof(ServerCounters, start_time), offsetof(ServerCounters, connection_num), offsetof(ServerCounters, connection_nums), offsetof(ServerCounters, tasking_num), offsetof(ServerCounters, max_concurrency), offsetof(ServerCounters, concurrency), offsetof(ServerCounters, abort_count), offsetof(ServerCounters, accept_count), offsetof(ServerCounters, close_count), offsetof(ServerCounters, dispatch_count), offsetof(ServerCounters, request_count), offsetof(ServerCounters, response_count), offsetof(ServerCounters, total_recv_bytes), offsetof(ServerCounters, total_send_bytes), offsetof(ServerCounters, pipe_packet_msg_id), offsetof(ServerCounters, task_count), offsetof(ServerCounters, spinlock)});
+    check_record(6, sizeof(PortCounters), alignof(PortCounters), {offsetof(PortCounters, connection_num), offsetof(PortCounters, connection_nums), offsetof(PortCounters, abort_count), offsetof(PortCounters, accept_count), offsetof(PortCounters, close_count), offsetof(PortCounters, dispatch_count), offsetof(PortCounters, request_count), offsetof(PortCounters, response_count), offsetof(PortCounters, total_recv_bytes), offsetof(PortCounters, total_send_bytes)});
+    check_record(7, sizeof(swr_v1_server_callback)*SWR_SERVER_CB_COUNT, alignof(swr_v1_server_callback), {offsetof(swr_v1_server_callback, invoke), offsetof(swr_v1_server_callback, ctx), offsetof(swr_v1_server_callback, drop)});
+    check_record(8, sizeof(ServerGS), alignof(ServerGS),
+                 {offsetof(ServerGS, task_workers), offsetof(ServerGS, event_workers), offsetof(ServerGS, manager_barrier)});
+}
+}  // namespace detail
 
 // The layouts and numbering Rust mirrors (crates/process, crates/server): a drift fails
 // every build that includes this header.

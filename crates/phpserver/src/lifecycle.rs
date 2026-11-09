@@ -2,8 +2,8 @@
 //! `ServerProperty` held (the Port objects, user processes, server callbacks and
 //! command callables), the object's creation and release, `__construct`,
 //! `start()` with `register_callback` and `on_before_start`, `addProcess`,
-//! `addCommand` and `command`. C++ keeps the Server, its ports and the C++
-//! callbacks it installs (`native/process/swoole_rs_phpserver_lifecycle.h`).
+//! `addCommand` and `command`. C++ keeps the `zend_try` frames around `start()`
+//! and `addProcess`'s worker (`native/process/swoole_rs_phpserver_lifecycle.h`).
 use crate::server::{SERVER, ServerData, fatal, running, server};
 use std::{
     cell::RefCell,
@@ -77,7 +77,7 @@ const REDIS: u32 = 8;
 
 /// `Server::MODE_*`.
 const MODE_BASE: i64 = 1;
-const MODE_PROCESS: i64 = 2;
+pub(crate) const MODE_PROCESS: i64 = 2;
 pub(crate) const MODE_THREAD: i64 = 3;
 /// `SW_SOCK_TCP`.
 const SOCK_TCP: i64 = 1;
@@ -140,14 +140,15 @@ impl PortInfo {
 /// `swr_v1_phpserver_lifecycle_host`.
 #[repr(C)]
 pub struct LifecycleHost {
-    install: unsafe extern "C" fn(*mut c_void, u32),
-    create: unsafe extern "C" fn(i64) -> *mut c_void,
     start: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> c_int,
-    release: unsafe extern "C" fn(*mut c_void),
     add_process: unsafe extern "C" fn(*mut c_void, *mut zval) -> i64,
 }
 
 unsafe extern "C" {
+    /// crates/server's `new Server(mode)`, `delete serv` and the admin commands.
+    fn swr_v1_server_new(mode: c_int) -> *mut c_void;
+    fn swr_v1_server_delete(serv: *mut c_void);
+    fn swr_v1_server_admin_register(serv: *mut c_void, php_memory: extern "C" fn() -> usize);
     /// `Swoole\Process` (crates/phpprocess).
     static swoole_process_ce: *mut zend_class_entry;
     /// `Swoole\Http\Server` and `Swoole\WebSocket\Server` (crates/phphttp).
@@ -275,10 +276,18 @@ fn number(serv: *mut c_void, id: u32) -> i64 {
 }
 
 fn put(serv: *mut c_void, which: u32) {
-    if !crate::dispatch::install(serv, which) {
-        // SAFETY: a live server.
-        unsafe { (host().install)(serv, which) };
+    match which {
+        install::ALLOCATORS => crate::dispatch::use_zend_strings(serv),
+        // SAFETY: a live server that has not started.
+        install::ADMIN_COMMANDS => unsafe { swr_v1_server_admin_register(serv, php_memory) },
+        _ => crate::dispatch::install(serv, which),
     }
+}
+
+/// `zend_memory_usage(true)`, the admin commands' PHP memory figure.
+extern "C" fn php_memory() -> usize {
+    // SAFETY: Zend's allocator statistics, read on a PHP thread.
+    unsafe { swoole_rs_zend::sys::zend_memory_usage(true) }
 }
 
 /// `swoole_process_ce`.
@@ -393,7 +402,6 @@ pub unsafe extern "C" fn swr_v1_phpserver_create(ce: *mut zend_class_entry) -> *
 /// Zend frees a Server object.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
-    let host = host();
     // SAFETY: per the caller.
     let data = unsafe { data(object) };
     // SAFETY: `create` boxed it; nothing else frees it.
@@ -437,7 +445,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
     if !serv.is_null() && fact(serv, fact::MASTER) {
         crate::thread::free_setting(serv);
         // SAFETY: the master owns the Server; nothing refers to it now.
-        unsafe { (host.release)(serv) };
+        unsafe { swr_v1_server_delete(serv) };
     }
     bailout::finish();
 }
@@ -585,7 +593,6 @@ fn class(object: *mut zend_object) -> String {
 
 fn construct(call: &Call) {
     let object = call.this();
-    let host = host();
     // SAFETY: `$this` is a Server.
     if !unsafe { data(object) }.serv.is_null() {
         // SAFETY: from a handler, with `$this`.
@@ -638,7 +645,13 @@ fn construct(call: &Call) {
         }
     }
     // SAFETY: a supported mode.
-    let serv = unsafe { (host.create)(mode) };
+    let serv = unsafe { swr_v1_server_new(c_int::try_from(mode).unwrap_or_default()) };
+    if mode == MODE_BASE {
+        // SAFETY: the new server.
+        let config = unsafe { view::config(serv) };
+        config.reactor_num = 1;
+        config.worker_num = 1;
+    }
     if port == 0 && address.eq_ignore_ascii_case(b"SYSTEMD") {
         // SAFETY: a new server.
         if unsafe { server_methods::add_systemd_socket(serv) } <= 0 {

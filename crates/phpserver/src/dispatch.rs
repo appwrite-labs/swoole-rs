@@ -7,7 +7,6 @@ use crate::server::{DATA, SERVER};
 use std::{
     ffi::{CStr, c_char, c_int, c_long, c_void},
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_address_string};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
@@ -64,29 +63,6 @@ struct Packet {
     address: *const c_char,
     port: i64,
     server_port: i64,
-}
-
-/// `swr_v1_phpserver_dispatch_host`.
-#[repr(C)]
-pub struct DispatchHost {
-    message_bus: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    worker_start: unsafe extern "C" fn(*mut c_void),
-}
-
-static HOST: AtomicPtr<DispatchHost> = AtomicPtr::new(ptr::null_mut());
-
-#[inline]
-fn host() -> &'static DispatchHost {
-    // SAFETY: MINIT installs C++'s static table before the Server can start.
-    unsafe { &*HOST.load(Ordering::Acquire) }
-}
-
-/// MINIT: the table the dispatch calls.
-/// # Safety
-/// `table` lives for the process.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_dispatch_init(table: *const DispatchHost) {
-    HOST.store(table.cast_mut(), Ordering::Release);
 }
 
 /// `SW_SERVER_CB_*` (server-level callbacks).
@@ -237,10 +213,49 @@ pub unsafe fn is_enable_coroutine(server: *mut c_void) -> bool {
     }
 }
 
-/// `serv->get_worker_message_bus()`.
+/// `serv->get_worker_message_bus()`: this thread's in thread mode, else the server's.
 pub(crate) fn message_bus(server: *mut c_void) -> *mut c_void {
     // SAFETY: a live server.
-    unsafe { (host().message_bus)(server) }
+    if i64::from(unsafe { view::config(server) }.mode_) == crate::lifecycle::MODE_THREAD {
+        swoole_rs_corebase::thread_message_bus()
+    } else {
+        // SAFETY: a live server.
+        unsafe { view::message_bus(server) }
+    }
+}
+
+/// `set_allocator(sw_zend_string_allocator())` on `bus`, a `MessageBus`: its Rust
+/// bus, then its allocator.
+fn bus_uses_zend_strings(bus: *mut c_void) {
+    let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
+    // SAFETY: a live `MessageBus`, whose allocator only this thread reads meanwhile.
+    unsafe { (*bus.cast::<[*const c_void; 2]>())[1] = allocator };
+}
+
+/// `SWR_PHPSERVER_INSTALL_ALLOCATORS`: the server's message bus, and its receive
+/// buffers in base and thread mode, allocate Zend strings.
+pub(crate) fn use_zend_strings(server: *mut c_void) {
+    // SAFETY: a live server, not started.
+    bus_uses_zend_strings(unsafe { view::message_bus(server) });
+    // SAFETY: as above.
+    let config = unsafe { view::config(server) };
+    if i64::from(config.mode_) != crate::lifecycle::MODE_PROCESS {
+        config.recv_buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
+    }
+}
+
+/// onWorkerStart's preparation: a task worker without coroutines unhooks the
+/// runtime (not in thread mode), and the worker's bus allocates Zend strings.
+fn prepare_worker(server: *mut c_void) {
+    // SAFETY: a live server.
+    let config = unsafe { view::config(server) };
+    if crate::server::worker_type() == crate::server::TASK_WORKER
+        && !config.task_enable_coroutine
+        && i64::from(config.mode_) != crate::lifecycle::MODE_THREAD
+    {
+        let _unhooked = swoole_rs_phpruntime::php_coroutine_enable_hook(0);
+    }
+    bus_uses_zend_strings(message_bus(server));
 }
 
 fn zserv(server: *mut c_void) -> zval {
@@ -524,7 +539,6 @@ fn on_lifecycle(server: *mut c_void, kind: c_int, worker_id: i64) -> bool {
     let Some((event, helper_name, coroutine)) = lifecycle(kind) else {
         return false;
     };
-    let host = host();
     let cb = server_callback(server, kind);
     let facts = facts(server);
     let mut args = [zserv(server), long_zval(worker_id)];
@@ -547,8 +561,7 @@ fn on_lifecycle(server: *mut c_void, kind: c_int, worker_id: i64) -> bool {
             );
         }
         set_server_long(object, c"worker_pid", i64::from(std::process::id()));
-        // SAFETY: a live server.
-        unsafe { (host.worker_start)(server) };
+        prepare_worker(server);
     }
     let argc = if matches!(kind, ON_WORKER_START | ON_WORKER_STOP | ON_WORKER_EXIT) {
         2
@@ -1034,8 +1047,7 @@ extern "C" fn on_user_worker_start(_: Ctx, server: *mut c_void, worker: *mut Wor
         let index = usize::try_from(index).unwrap_or(usize::MAX);
         let process = crate::lifecycle::user_process(server_object, index);
         // A user worker: just the message bus allocator.
-        // SAFETY: a live server.
-        unsafe { (host().worker_start)(server) };
+        prepare_worker(server);
         process
     } else {
         // SAFETY: the worker `addProcess` made holds its process object.
@@ -1071,8 +1083,8 @@ pub(crate) fn port_hook(server: *mut c_void, hook: u32) {
     }
 }
 
-/// `SWR_PHPSERVER_INSTALL_*` that fills slots: whether `which` was one.
-pub(crate) fn install(server: *mut c_void, which: u32) -> bool {
+/// `SWR_PHPSERVER_INSTALL_*` that fills slots.
+pub(crate) fn install(server: *mut c_void, which: u32) {
     use crate::lifecycle::install::{
         BUFFER_EMPTY, CLOSE, CONTROL, HTTP_CLOSE, HTTP_RECEIVE, PIPE_MESSAGE, RECEIVE,
         REDIS_RECEIVE, TASK, USER_WORKER_START,
@@ -1105,14 +1117,13 @@ pub(crate) fn install(server: *mut c_void, which: u32) -> bool {
         // SAFETY: a live server.
         USER_WORKER_START if unsafe { view::has_callback(server, CB_USER_WORKER_START) } => &[],
         USER_WORKER_START => &[(CB_USER_WORKER_START, on_user_worker_start as *const c_void)],
-        _ => return false,
+        _ => return,
     };
     for &(slot, invoke) in slots {
         // SAFETY: a live server, configured before it starts; each fn has its
         // slot's signature.
         unsafe { view::set_callback(server, slot, invoke) };
     }
-    true
 }
 
 /// `SW_SERVER_EVENT_CLOSE`.

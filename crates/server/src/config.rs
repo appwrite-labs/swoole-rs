@@ -177,45 +177,23 @@ impl Default for ServerConfig {
     }
 }
 
-/// Borrows a server's configuration for its native reference view.
-///
-/// # Safety
-/// `state` is the live handle returned by `swr_v1_server_state_new`. Views end
-/// before `state_free`, and native callers synchronize configuration access.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_config_get(
-    state: *mut crate::ServerState,
-) -> *mut ServerConfig {
-    // SAFETY: the caller lends a live state; its configuration lives for that state.
-    unsafe { &*state }.config()
-}
-
-/// Initializes the platform/runtime-dependent defaults before native members use the view.
-///
-/// # Safety
-/// `state` is a fresh state, with no concurrent readers or writers of its configuration.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_config_init(
-    state: *mut crate::ServerState,
-    cpu_num: u32,
-    max_sockets: u32,
-    timezone: libc::c_long,
-    allocator: *const c_void,
-) {
-    // SAFETY: the caller lends a fresh state.
-    let state = unsafe { &*state };
-    // SAFETY: initialization owns the fresh state's configuration exclusively.
-    let config = unsafe { &mut *state.config() };
-    config.reactor_num = u16::try_from(cpu_num.min(8)).unwrap_or(8);
-    config.worker_num = cpu_num;
-    config.timezone_ = timezone;
-    config.http_compression = true;
-    config.http_compression_level = 1;
-    config.compression_min_length = 20;
-    config.recv_buffer_allocator = allocator;
-    // SAFETY: no native table view is read before this initialization finishes.
-    let tables = unsafe { &mut *state.tables() };
-    tables.max_connection = max_sockets.min(100_000);
+#[cfg(any(test, feature = "upstream-symbols"))]
+impl ServerConfig {
+    /// The platform/runtime-dependent defaults a new server starts with.
+    pub(crate) fn init_defaults(
+        &mut self,
+        cpu_num: u32,
+        timezone: libc::c_long,
+        allocator: *const c_void,
+    ) {
+        self.reactor_num = u16::try_from(cpu_num.min(8)).unwrap_or(8);
+        self.worker_num = cpu_num;
+        self.timezone_ = timezone;
+        self.http_compression = true;
+        self.http_compression_level = 1;
+        self.compression_min_length = 20;
+        self.recv_buffer_allocator = allocator;
+    }
 }
 
 /// Handles only owned configuration/table facts; all effects on other objects stay native.
@@ -378,15 +356,11 @@ mod tests {
     fn runtime_defaults_and_native_views_share_owned_slots() {
         let state = swr_v1_server_state_new();
         unsafe {
-            swr_v1_server_config_init(state, 16, 65_536, 3600, core::ptr::null());
-            let config = swr_v1_server_config_get(state);
+            let config = (*state).config();
+            (*config).init_defaults(16, 3600, core::ptr::null());
             assert_eq!((*config).worker_num, 16);
             assert_eq!((*config).reactor_num, 8);
             assert_eq!((*config).timezone_, 3600);
-            assert_eq!(
-                (*crate::records::swr_v1_server_tables_get(state)).max_connection,
-                65_536
-            );
             assert_eq!(
                 native_fact(state, OP_FIELD, u64::from(FIELD_WORKER_NUM)),
                 Some(16)

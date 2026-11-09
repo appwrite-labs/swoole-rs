@@ -23,9 +23,6 @@ uint64_t swr_v1_feature_bits(void);
 typedef uint64_t (*swr_v1_server_call)(void *context, uint32_t op, uint64_t arg);
 int64_t swr_v1_server_run(uint32_t operation, uint64_t arg, void *context, swr_v1_server_call call);
 struct swr_v1_server_state;
-/* One Server method's operation over native/integration/server.cc's ServerRustContext,
- * whose records Rust reads (crates/server/src/server_methods.rs). */
-int64_t swr_v1_server_method(uint32_t op, uint64_t arg, void *ctx);
 
 
 enum {

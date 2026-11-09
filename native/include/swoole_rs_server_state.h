@@ -10,7 +10,7 @@
 namespace swoole {
 struct Connection; struct Session; struct ServerPortGS; struct ReactorThread; struct ListenPort;
 struct EventData; struct Worker; struct ServerGS; struct TimerNode; struct Allocator; struct Manager;
-class Factory; class UnixSocket;
+class Factory; class UnixSocket; class Server;
 namespace network { struct Socket; }
 }
 #define SWR_SERVER_NATIVE(type) swoole::type
@@ -71,7 +71,6 @@ enum {
     SWR_SERVER_CB_WORKER_START, SWR_SERVER_CB_WORKER_STOP, SWR_SERVER_CB_WORKER_EXIT, SWR_SERVER_CB_USER_WORKER_START,
     SWR_SERVER_CB_FINISH, SWR_SERVER_CB_DISPATCH_FUNC, SWR_SERVER_CB_COUNT,
 };
-swr_v1_server_callback *swr_v1_server_callbacks_get(swr_v1_server_state *state);
 #define SWR_SERVER_CONFIG_FIELDS(F) \
     F(uint16_t, reactor_num) \
     F(uint32_t, worker_num) \
@@ -184,14 +183,12 @@ void swr_v1_server_sessions_retire(const swr_v1_server_state *state, uint32_t wo
 /* Startup's LC_PREPARE_WORKERS: publish the event pool and number the workers (crates/server/src/worker_methods.rs). */
 void swr_v1_server_workers_start(void *serv);
 void *swr_v1_server_connection(const swr_v1_server_state *state, long key, uint32_t kind);
-swr_v1_server_tables *swr_v1_server_tables_get(swr_v1_server_state *state);
 swr_v1_server_state *swr_v1_server_state_new(void);
 void swr_v1_server_state_free(swr_v1_server_state *state);
-swr_v1_server_config *swr_v1_server_config_get(swr_v1_server_state *state);
-void swr_v1_server_config_init(swr_v1_server_state *state, uint32_t cpu_num, uint32_t max_sockets, long timezone, const void *allocator);
-/* Server::Server's and ~Server's work besides the C++ members (crates/server/src/server_methods.rs). */
-bool swr_v1_server_open(void *serv, int mode, size_t gs_size);
-void swr_v1_server_close(void *serv, void (*delete_port)(void *port));
+/* `new Server(mode)` and `delete serv`: crates/server/src/server_object.rs allocates and frees the
+   record a swoole::Server views. */
+SWR_SERVER_NATIVE(Server) *swr_v1_server_new(int mode);
+void swr_v1_server_delete(SWR_SERVER_NATIVE(Server) *serv);
 
 #ifdef __cplusplus
 } /* extern C */

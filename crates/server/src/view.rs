@@ -1,11 +1,9 @@
 //! A native `Server`'s Rust-owned records, read straight from its pointer by
 //! the crates that bind it (phpserver), without a native call.
 //!
-//! `Server` has no virtual methods and `detail::ServerFields` is its first base,
-//! so a `Server *` points at `ServerFields { state_, config_, tables_ }`
-//! (`native/include/swoole_rs_server_view.h`). `ListenPort` likewise starts
-//! with `detail::PortFields { port_config_ }`. `ServerGS` puts the task and
-//! event worker pools right after the shared counters.
+//! A `Server *` is `object.rs`'s record, which starts `{ state, config, tables,
+//! callbacks }`, and a `ListenPort *` is its box of the port's settings pointer
+//! (`native/process/swoole_server.h`). `ServerGS` is `shared::ServerShared`.
 use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
 use crate::{ConnectionRecord, PortCounters, ServerConfig, ServerCounters, ServerState};
@@ -18,7 +16,7 @@ use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_tls::socket_pair::SocketPair;
 
-/// `ServerFields`, the head of every `Server`.
+/// The head of every `Server`.
 #[repr(C)]
 struct Fields {
     state: *const ServerState,
@@ -87,6 +85,15 @@ pub unsafe fn config<'a>(serv: *mut c_void) -> &'a mut ServerConfig {
     let config = unsafe { fields(serv) }.config;
     // SAFETY: the config allocation lives as long as the server.
     unsafe { &mut *config }
+}
+
+/// `&serv->message_bus`, the server's own `MessageBus`.
+///
+/// # Safety
+/// `serv` is a live `Server`.
+pub unsafe fn message_bus(serv: *mut c_void) -> *mut c_void {
+    // SAFETY: per the caller.
+    unsafe { state(serv) }.tables_ref().message_bus
 }
 
 /// `upload_tmp_dir = dir`.
@@ -382,8 +389,8 @@ pub unsafe fn max_connection(serv: *mut c_void) -> u32 {
 pub unsafe fn task_pool(serv: *mut c_void) -> *mut PoolRecord {
     // SAFETY: per the caller.
     let gs = unsafe { config(serv) }.gs.cast::<u8>();
-    let offset = size_of::<ServerCounters>().next_multiple_of(align_of::<PoolRecord>());
-    gs.wrapping_add(offset).cast()
+    gs.wrapping_add(core::mem::offset_of!(crate::shared::ServerShared, pools))
+        .cast()
 }
 
 /// `Server::get_user_worker_num()`: the user workers added so far.
