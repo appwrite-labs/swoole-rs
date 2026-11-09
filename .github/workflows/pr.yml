@@ -200,7 +200,9 @@ jobs:
   # Candidate-lane gates of the modules this PR touches, and of those whose packages
   # depend on a touched crate (every module for shared build inputs). It fails only on
   # a phase that didn't fail in main's latest completed merge-tier run: red main
-  # doesn't block a PR, a new failure does.
+  # doesn't block a PR, a new failure does. The PHPT families are left to the merge
+  # tier's parallel phpt jobs: run serially here, without their services, they outlast
+  # the phase timeout.
   gates:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -242,7 +244,7 @@ jobs:
         id: candidate
         continue-on-error: true
         run: >
-          python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }}
+          python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }} --skip-phase phpt
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
       - if: steps.candidate.outcome == 'failure'
         env:
