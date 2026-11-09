@@ -147,13 +147,9 @@ const ERROR_SOCKS5_HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SOCKS5_HANDSHAK
 const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
     ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR as c_int;
 
-// SAFETY: crates/tls's reactor write, which only its `upstream-symbols` build
-// defines, under upstream's name (the unit tests use a double instead).
+// crates/tls's reactor write (the unit tests use a double instead).
 #[cfg(not(test))]
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE"]
-    fn writable_callback(reactor: *mut c_void, event: *mut c_void) -> c_int;
-}
+use swoole_rs_tls::reactor_write::reactor_writable_callback as writable_callback;
 
 /// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
 /// live protocol, socket and input buffer.
@@ -2119,7 +2115,7 @@ fn on_write(this: Handle, reactor: *mut c_void, event: *mut c_void) -> c_int {
             return OK;
         }
         // SAFETY: the handler's reactor and event.
-        if unsafe { writable_callback(reactor, event) } < 0 {
+        if unsafe { writable_callback(reactor, event.cast()) } < 0 {
             return ERR;
         }
         if this.has(ON_BUFFER_EMPTY)

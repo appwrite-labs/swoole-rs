@@ -12,7 +12,7 @@ unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/budg
 speed.json     callgrind instructions per request, Cargo build over upstream, from a merge-tier
                run's callgrind job (--callgrind): how many workloads beat upstream and the
                slowest one. speed.md, beside it, is the per-workload table the badge links to.
-phpt.json      applicable pinned PHPTs the hybrid passes in a merge-tier run (--phpt: that
+phpt.json      applicable pinned PHPTs the Cargo build passes in a merge-tier run (--phpt: that
                run's gate outputs, one per build variant; a test counts if it passes in any),
                with the commit it measured. corpus/upstream/not_applicable.json lists the
                tests left out, and why, in the step summary too.
@@ -106,11 +106,10 @@ NOT_APPLICABLE = ROOT / 'corpus/upstream/not_applicable.json'
 
 
 def phpt_passing(rows, not_applicable=()):
-    """(Rust build passes, first run or ungated re-run, over applicable pinned PHPTs) from every job's
-    corpus/upstream/gate.py --output rows together. Jobs run the hybrid or the Cargo build while
-    they move to Cargo (#2199): a pass on either counts."""
+    """(Cargo build passes, first run or ungated re-run, over applicable pinned PHPTs) from every job's
+    corpus/upstream/gate.py --output rows together."""
     tests = {row['test'] for row in rows} - set(not_applicable)
-    passing = {row['test'] for row in rows if row['engine'] in ('hybrid', 'cargo')
+    passing = {row['test'] for row in rows if row['engine'] == 'cargo'
                and 'passed' in (row['status'], row.get('rerun'))}
     return len(passing & tests), len(tests)
 
@@ -121,8 +120,10 @@ def endpoint(label, message, color='blue'):
 
 def speed(result, limits, commit):
     """(speed.json endpoint, speed.md table) from benchmarks/callgrind.py's --output and the limits.
-    Ratios are the Cargo build over upstream instructions per request: below 1 is faster than upstream."""
-    ratios = {name: row['cargo'] / row['upstream'] for name, row in result['instructions_per_request'].items()}
+    Ratios are the Cargo build over upstream instructions per request: below 1 is faster than upstream.
+    A result from before the Cargo build replaced the hybrid (#2414) has a `hybrid` row instead."""
+    measured = {name: row.get('cargo', row.get('hybrid')) for name, row in result['instructions_per_request'].items()}
+    ratios = {name: measured[name] / row['upstream'] for name, row in result['instructions_per_request'].items()}
     mean = 1.0
     for ratio in ratios.values():
         mean *= ratio ** (1 / len(ratios))
@@ -132,7 +133,7 @@ def speed(result, limits, commit):
     faster = sum(ratio <= 1 for ratio in ratios.values())
     badge = endpoint('speed vs upstream', f'{faster}/{len(ratios)} faster · slowest {slowest} {worst:.2f}×', color)
     rows = ''.join(
-        f"| {name} | {row['cargo']:,.0f} | {row['upstream']:,.0f} | {ratios[name]:.4f}× | "
+        f"| {name} | {measured[name]:,.0f} | {row['upstream']:,.0f} | {ratios[name]:.4f}× | "
         f"{limits.get(name, '')}{'×' if name in limits else ''} | {'✅' if ratios[name] <= 1 else '❌' if name in limits and ratios[name] > limits[name] else '➖'} |\n"
         for name, row in result['instructions_per_request'].items())
     table = (f'# Speed vs upstream Swoole\n\nCallgrind instructions per request (lower is better), measured by the '
