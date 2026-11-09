@@ -68,8 +68,7 @@ fn lookup(name: *mut zval) -> Option<(c_int, &'static CStr)> {
 /// port object, as `sw_zend_call_method_with_*_params` calls it; a bailout is
 /// raised from the handler, which owns nothing.
 fn port_call(call: &Call, method: &[u8], retval: *mut zval, args: &[*mut zval]) {
-    // SAFETY: `$this` is a Server object.
-    let port = unsafe { crate::lifecycle::port_at(call.this(), 0) };
+    let port = crate::lifecycle::ServerObject::this(call).port_at(0);
     // SAFETY: the primary port's object zval.
     let object = unsafe { swoole_rs_zend::object_of(port) };
     // SAFETY: a live Port object, its class, the result slot and the arguments.
@@ -107,8 +106,10 @@ fn on(call: &Call) {
             cb,
         );
     }
-    // SAFETY: `$this` and the callback argument.
-    call.set_bool(unsafe { crate::lifecycle::set_callback(call.this(), kind, cb) });
+    let set = call
+        .value(2)
+        .is_some_and(|cb| crate::lifecycle::ServerObject::this(call).set_callback(kind, cb));
+    call.set_bool(set);
 }
 
 fn get_callback(call: &Call) {
@@ -175,7 +176,8 @@ fn listen(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: `$this` is bound to `serv`, and `ls` is one of its ports.
-    let zport = unsafe { crate::lifecycle::add_port(call.this(), ls) };
+    let zport =
+        unsafe { crate::lifecycle::add_port(crate::lifecycle::ServerObject::this(call), ls) };
     // SAFETY: `RETVAL_ZVAL(port_object, 1, 0)`.
     unsafe { swr_zval_copy(call.return_value(), zport) };
 }
