@@ -2,7 +2,9 @@
 //! `http2_server_is_static_file` and `http2_server_send_range_file`) and
 //! `Response::sendfile`'s (`http2_server_send_file`), over crates/server's
 //! `StaticHandler`.
-use crate::server::{Value, begin_file, finish_file, of, respond, send_body, set, zval_of};
+use crate::server::{
+    Value, begin_file, current, finish_file, of, respond, send_body, set, zval_of,
+};
 use libc::c_void;
 use std::ffi::CString;
 use swoole_rs_hooks::offload::async_job;
@@ -268,13 +270,19 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_send_file(
     offset: i64,
     length: usize,
 ) -> bool {
-    let _held = of(ctx);
+    let Some((session, stream)) = of(ctx) else {
+        return false;
+    };
     set(ctx, Field::AcceptCompression, 0);
     // SAFETY: a live string.
     let path = unsafe { string::bytes(file) };
     let Some(content) = content(path) else {
         return false;
     };
+    // Reading the file may suspend while the peer resets the stream or closes the connection.
+    if !current(&session, &stream) {
+        return false;
+    }
     send_content(ctx, path, &content, offset, length)
 }
 
@@ -322,8 +330,7 @@ fn send_content(ctx: *mut c_void, path: &[u8], content: &[u8], offset: i64, leng
             error = true;
         }
     }
-    finish_file(ctx, trailer != 0, error);
-    true
+    finish_file(ctx, trailer != 0, error)
 }
 
 #[cfg(test)]

@@ -8,12 +8,13 @@ use libc::{c_char, c_int, c_void};
 use std::{collections::VecDeque, ffi::CStr, mem::MaybeUninit, ptr};
 use swoole_rs_http2::{
     Http2ChunkPlan, Http2FrameFacts, Http2HeaderPlan, Http2InflateStep, Http2ResponsePlan,
-    Http2SettingPlan, Http2Settings, Http2WindowPlan, sw_rs_http2_chunk, sw_rs_http2_decode_frame,
-    sw_rs_http2_default_settings, sw_rs_http2_header_plan, sw_rs_http2_headers_flags,
-    sw_rs_http2_inflate_step, sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header,
-    sw_rs_http2_pack_settings, sw_rs_http2_queue_action, sw_rs_http2_response,
-    sw_rs_http2_send_complete, sw_rs_http2_setting_plan, sw_rs_http2_stream_flags,
-    sw_rs_http2_stream_update, sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
+    Http2SettingPlan, Http2Settings, Http2WindowPlan, send_frame_size, sw_rs_http2_chunk,
+    sw_rs_http2_decode_frame, sw_rs_http2_default_settings, sw_rs_http2_header_plan,
+    sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
+    sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings, sw_rs_http2_queue_action,
+    sw_rs_http2_response, sw_rs_http2_send_complete, sw_rs_http2_setting_plan,
+    sw_rs_http2_stream_flags, sw_rs_http2_stream_update, sw_rs_http2_window_plan,
+    sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::Inflate;
 use swoole_rs_phpstubs::http2_client_coro;
@@ -573,13 +574,16 @@ impl Client {
         self.send(&frame)
     }
 
+    /// DATA frames within the peer's frame size; one empty frame for no data.
     fn send_data(&mut self, stream: u32, mut data: &[u8], flag: u32) -> bool {
+        if data.is_empty() {
+            return self.send(&frame_header(TYPE_DATA, 0, flag, stream));
+        }
         while !data.is_empty() {
+            let max_frame_size = send_frame_size(self.remote.max_frame_size);
             let mut chunk = Http2ChunkPlan::default();
             // SAFETY: a writable plan.
-            unsafe {
-                sw_rs_http2_chunk(data.len(), self.local.max_frame_size, flag, &raw mut chunk);
-            };
+            unsafe { sw_rs_http2_chunk(data.len(), max_frame_size, flag, &raw mut chunk) };
             let (part, rest) = data.split_at(chunk.length.min(data.len()));
             if !self.send(&frame_header(TYPE_DATA, part.len(), chunk.flags, stream))
                 || !self.send(part)
@@ -703,6 +707,8 @@ impl Client {
                 reason = "nghttp2 error codes are small ints"
             )]
             self.nghttp2_error(written as c_int, "nghttp2_hd_deflate_hd() failed");
+            // The peer's decoder is out of step with this encoder now.
+            self.close();
             return None;
         }
         frame.truncate(FRAME_HEADER + written.unsigned_abs());
@@ -744,10 +750,7 @@ impl Client {
                 );
             };
         }
-        let Some(mut frame) = self
-            .build_header(request)
-            .filter(|frame| frame.len() > FRAME_HEADER)
-        else {
+        let Some(mut frame) = self.build_header(request) else {
             return 0;
         };
         let flags = sw_rs_http2_stream_flags(u32::from(pipeline), u32::from(use_pipeline_read));
@@ -816,9 +819,7 @@ impl Client {
         let Some(body) = body_bytes(data) else {
             return false;
         };
-        if !self.send(&frame_header(TYPE_DATA, body.bytes().len(), flag, id))
-            || !self.send(body.bytes())
-        {
+        if !self.send_data(id, body.bytes(), flag) {
             return false;
         }
         if let Some(stream) = self.streams.get_mut(&id) {
