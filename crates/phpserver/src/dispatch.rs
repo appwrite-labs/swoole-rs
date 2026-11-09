@@ -529,8 +529,8 @@ fn lifecycle(kind: c_int) -> Option<(&'static str, &'static CStr, bool)> {
     })
 }
 
-fn set_server_long(object: *mut zend_object, name: &CStr, value: i64) {
-    set_long(SERVER.entry(), object, name, value);
+fn set_server_long(object: crate::lifecycle::ServerObject, name: &CStr, value: i64) {
+    set_long(SERVER.entry(), object.raw(), name, value);
 }
 
 /// The lifecycle events' bodies (`php_swoole_server_onStart` and friends);
@@ -542,8 +542,7 @@ fn on_lifecycle(server: view::Server<'_>, kind: c_int, worker_id: i64) -> bool {
     let cb = server_callback(server.raw(), kind);
     let facts = facts(server);
     let mut args = [zserv(server.raw()), long_zval(worker_id)];
-    // SAFETY: the server's object zval.
-    let object = unsafe { object_of(&raw const args[0]) };
+    let object = crate::lifecycle::ServerObject::of(server.raw());
     if matches!(kind, ON_START | ON_MANAGER_START | ON_WORKER_START) {
         set_server_long(object, c"master_pid", facts.master_pid);
         set_server_long(object, c"manager_pid", facts.manager_pid);
@@ -554,7 +553,7 @@ fn on_lifecycle(server: view::Server<'_>, kind: c_int, worker_id: i64) -> bool {
         unsafe {
             zend_update_property_bool(
                 SERVER.entry(),
-                object,
+                object.raw(),
                 c"taskworker".as_ptr(),
                 10,
                 i64::from(facts.task_worker),
@@ -1062,13 +1061,11 @@ extern "C" fn on_user_worker_start(_: Ctx, server: *mut c_void, worker: *mut Wor
     let server = unsafe { view::Server::from_raw(server) };
     let id = worker_id(worker);
     let config = server.config();
-    let zserv = zserv(server.raw());
-    // SAFETY: the server's object zval.
-    let server_object = unsafe { object_of(&raw const zserv) };
+    let server_object = crate::lifecycle::ServerObject::of(server.raw());
     let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {
         let index = id - i64::from(config.worker_num) - i64::from(config.task_worker_num);
         let index = usize::try_from(index).unwrap_or(usize::MAX);
-        let process = crate::lifecycle::user_process(server_object, index);
+        let process = server_object.user_process(index);
         // A user worker: just the message bus allocator.
         prepare_worker(server);
         process

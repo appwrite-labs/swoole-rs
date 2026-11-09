@@ -19,7 +19,7 @@ class GitIsolation(unittest.TestCase):
             git_dir = sentinel / '.git'
             before = {path: path.read_bytes() for path in git_dir.rglob('*') if path.is_file()}
             env = {**os.environ, 'GIT_DIR': str(git_dir), 'GIT_INDEX_FILE': str(git_dir / 'index')}
-            for module in ['test_hybrid_identity.py', 'test_frozen_source.py']:
+            for module in ['test_frozen_source.py']:
                 result = subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests/dev', '-p', module],
                                         cwd=ROOT, env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr[-2000:])

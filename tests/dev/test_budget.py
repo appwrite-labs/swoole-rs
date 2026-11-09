@@ -70,6 +70,16 @@ class Budget(unittest.TestCase):
         rises = budget.above({'a': 3, 'b': 1, 'c': 2, 'new': 1}, {'a': 2, 'b': 2, 'c': 2})
         self.assertEqual(rises, {'a': (3, 2)}, 'a crate new since the base is not checked')
 
+    def test_an_ffi_crate_may_rise_by_what_its_crate_moved_to_it(self):
+        base = {'http': 10, 'http-ffi': 5, 'other': 1, 'orphan-ffi': 1}
+        current = {'http': 4, 'http-ffi': 11, 'other': 1, 'orphan-ffi': 2}
+        rises = budget.above(current, base)
+        self.assertEqual(budget.boundary_moves(rises, current, base), {'orphan-ffi': (2, 1)},
+                         'http fell by 6, so http-ffi may rise by 6; orphan has no crate')
+        current['http-ffi'] = 12
+        self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base),
+                         {'http-ffi': (12, 5), 'orphan-ffi': (2, 1)}, 'a rise past the fall fails')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -2,7 +2,8 @@
 """Per-crate counts in non-test code that may not rise above the base commit's:
 
   unsafe   `unsafe` blocks, fns and impls (crates/zend, the safe layer callers move
-           onto, may rise while the workspace total falls)
+           onto, may rise while the workspace total falls, and an `X-ffi` crate, the C ABI
+           over crate X, by as much as X falls)
   maps     std hash and B-tree maps and sets, where a flat table belongs
   lists    LinkedList and VecDeque
   bools    arrays and Vecs of bool, where a bitset belongs
@@ -111,6 +112,15 @@ def above(current, base):
     return {c: (n, base[c]) for c, n in current.items() if c in base and n > base[c]}
 
 
+def boundary_moves(rises, current, base):
+    """`rises` without each `X-ffi` crate whose rise crate X's fall covers: unsafe that
+    moved from X to the C ABI over it."""
+    def covered(crate, n, was):
+        safe = crate.removesuffix('-ffi')
+        return safe != crate and n - was <= base.get(safe, 0) - current.get(safe, 0)
+    return {c: (n, was) for c, (n, was) in rises.items() if not covered(c, n, was)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--base', help='Commit to compare against (default: merge base with origin/main)')
@@ -121,8 +131,10 @@ def main():
     failed = False
     for kind, crates in current.items():
         rises = above(crates, base[kind])
-        if kind == 'unsafe' and sum(crates.values()) < sum(base[kind].values()):
-            rises.pop('zend', None)
+        if kind == 'unsafe':
+            rises = boundary_moves(rises, crates, base[kind])
+            if sum(crates.values()) < sum(base[kind].values()):
+                rises.pop('zend', None)
         failed = failed or bool(rises)
         for crate, (n, was) in sorted(rises.items()):
             print(f'{crate}: {n} {kind}, up from {was} at {base_ref[:12]}', file=sys.stderr)

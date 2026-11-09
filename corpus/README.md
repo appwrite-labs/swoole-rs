@@ -25,9 +25,9 @@ runs external clients against real PHP processes.
 ```sh
 # Build the pinned upstream reference without installing it globally:
 python3 tools/build_upstream.py
-python3 tools/build_hybrid.py
+python3 tools/build_ext.py
 python3 corpus/run.py \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so \
+  --engine cargo=target/ext/swoole.so \
   --engine upstream=target/upstream/src/modules/swoole.so
 ```
 
@@ -83,7 +83,7 @@ the services of the library's `docker-compose.yml` with its
 ```sh
 python3 corpus/library/run.py --prepare
 python3 corpus/library/run.py --engine upstream=target/upstream/src/modules/swoole.so \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so
+  --engine cargo=target/ext/swoole.so
 ```
 
 A test passing on the first engine and failing on another fails the run.
