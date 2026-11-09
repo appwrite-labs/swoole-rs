@@ -148,17 +148,25 @@ impl<H: TaskHost> Tasks<'_, H> {
         unsafe { self.result.write_bytes(0, HEAD) };
         // SAFETY: `info.fd` heads the task.
         let task_id = unsafe { task.cast::<i64>().read_unaligned() };
-        self.pipe_clean()?;
-        self.set_timeout(timeout)?;
-        if !self.task(task, worker_id, true)? {
-            return Ok(false);
-        }
-        while self.read_notify()? > 0 {
-            if self.result_task_id() == task_id {
-                return Ok(true);
+        // One trap for the whole wait: the body owns nothing a bailout skips, and
+        // a bailout at any step ends the call, as a trap per step did.
+        trapped(|| {
+            self.host.pipe_clean();
+            self.host.set_timeout(timeout);
+            let host = &mut self.host;
+            let sent = count_task(self.tasking, self.count, || {
+                Ok(host.dispatch(task, worker_id, true))
+            });
+            if !matches!(sent, Ok(true)) {
+                return false;
             }
-        }
-        Ok(false)
+            while self.host.read_notify() > 0 {
+                if self.result_task_id() == task_id {
+                    return true;
+                }
+            }
+            false
+        })
     }
 
     /// `Server::task_sync(mtask, timeout)`: the result slot cleared and pointed at
