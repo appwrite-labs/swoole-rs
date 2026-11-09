@@ -48,7 +48,8 @@ __attribute__((unused)) static inline size_t swoole_size_align(size_t size, int 
     return size + (pagesize - (size % pagesize));
 }
 
-// The buffer keeps a zeroed byte past size, so text past length reads as a NUL.
+// The buffer keeps a byte past size, and each recv writes a NUL after what it
+// hands out, so text past length reads as a NUL even after clear().
 struct String {
     size_t length = 0;
     size_t size = 0;
@@ -91,6 +92,7 @@ struct Socket {
         std::string &chunk = chunks.front();
         size_t n = length < chunk.size() ? length : chunk.size();
         memcpy(buffer, chunk.data(), n);
+        static_cast<char *>(buffer)[n] = '\0';
         chunk.erase(0, n);
         if (chunk.empty()) {
             chunks.pop_front();
