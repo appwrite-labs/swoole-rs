@@ -99,14 +99,17 @@ impl Call {
     }
 
     /// `ZVAL_COPY(&value, ZEND_THIS)`: `$this` with a reference of its own,
-    /// valid in a non-static method only.
+    /// or None without one (a static method).
     #[must_use]
-    pub fn this_owned(&self) -> crate::Owned {
-        let this = self.this();
-        // SAFETY: a method's live `$this`.
+    pub fn this_owned(&self) -> Option<crate::Owned> {
+        // SAFETY: a live frame.
+        let this = unsafe { &raw const (*self.frame).This };
+        // SAFETY: `This` is a zval whose type says whether it holds an object.
+        let this = unsafe { crate::Value::from_ptr(this) }?.object()?;
+        // SAFETY: the frame's live `$this`.
         unsafe { (*this).gc.refcount += 1 };
         // SAFETY: as above, carrying the reference added.
-        unsafe { crate::Owned::object(this) }
+        Some(unsafe { crate::Owned::object(this) })
     }
 
     /// `ZEND_CALL_ARG(execute_data, n)`, 1-based; `n` is at most `num_args()`.
