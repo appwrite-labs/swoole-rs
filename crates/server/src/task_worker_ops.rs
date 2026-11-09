@@ -168,14 +168,15 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// Answers each task-worker op over the context.
+/// Answers each task-worker op over the context. The groups each task asks of
+/// (`task`, `finish`, then `worker`) come first; setup and commands come last.
 impl swoole_rs_process::workers::Answer for Context {
     fn answer(&mut self, op: u32, arg: u64) -> u64 {
         let ctx = self;
-        native::native(ctx, op, arg)
-            .or_else(|| worker(ctx, op, arg))
-            .or_else(|| task(ctx, op))
+        task(ctx, op)
             .or_else(|| finish(ctx, op, arg))
+            .or_else(|| worker(ctx, op, arg))
+            .or_else(|| native::native(ctx, op, arg))
             .or_else(|| result(ctx, op))
             .unwrap_or_else(|| std::process::abort())
     }
