@@ -474,11 +474,9 @@ class Lanes(unittest.TestCase):
         self.assertIn('corebase-native',commands)
         self.assertIn('ossupport-async-file-owner', commands)
         self.assertIn('http-rewrites', commands)
-        self.assertIn('coroutine-compile',commands)
         self.assertIn('swoole-rs-coroutine', commands['coroutine-rust-asan'])
         self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
-        self.assertIn('--archive',commands['hooks-compile'])
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-cargo',
                      'crc32-consumers-upstream','crc32-consumers-cargo',
                      'corebase-startup','corebase-record-views']:

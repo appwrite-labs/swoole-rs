@@ -7,7 +7,7 @@
 use core::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_http::{HttpRequest as Request, HttpString as Buffer};
+use swoole_rs_http_ffi::{HttpRequest as Request, HttpString as Buffer};
 
 /// One native fact or effect on the connection in `context`.
 pub type PortsCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> u64;
@@ -511,7 +511,7 @@ fn form(n: &Native<impl Call>) -> Option<Step> {
     let (request, buffer) = (n.shared().request, n.shared().buffer);
     // SAFETY: the connection's live request, with a form, and the current buffer; the
     // parser's callbacks are the only other users of either during the call.
-    if !unsafe { swoole_rs_http::parse_multipart_data(request, buffer) } {
+    if !unsafe { swoole_rs_http_ffi::parse_multipart_data(request, buffer) } {
         return Some(Step::Reply(SEND_BAD_REQUEST));
     }
     let request = n.request();
@@ -525,7 +525,7 @@ fn form(n: &Native<impl Call>) -> Option<Step> {
         return Some(Step::Done);
     }
     // SAFETY: the connection's live request, which nothing else uses during the call.
-    unsafe { swoole_rs_http::destroy_multipart_parser(n.shared().request) };
+    unsafe { swoole_rs_http_ffi::destroy_multipart_parser(n.shared().request) };
     n.use_request_buffer();
     None
 }
@@ -847,7 +847,7 @@ mod tests {
                     let upload_max = usize::try_from(self.uploads).unwrap();
                     // The fake's live request, with a form.
                     let ok = unsafe {
-                        swoole_rs_http::init_multipart_parser(
+                        swoole_rs_http_ffi::init_multipart_parser(
                             &raw mut self.req,
                             b"/tmp",
                             upload_max,
