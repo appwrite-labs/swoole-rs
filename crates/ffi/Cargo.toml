@@ -62,7 +62,6 @@ swoole-rs-phpprocess = { path = "../phpprocess" }
 swoole-rs-phpthread = { path = "../phpthread" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-phpclients = { path = "../phpclients" }
-swoole-rs-inflate = { path = "../inflate" }
 swoole-rs-httpbindings = { path = "../httpbindings" }
 swoole-rs-phphttp = { path = "../phphttp" }
 swoole-rs-http2 = { path = "../http2" }

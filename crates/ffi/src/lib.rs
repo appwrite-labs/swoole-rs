@@ -75,8 +75,6 @@ pub use swoole_rs_phpthread::*;
 pub use swoole_rs_clients as clients;
 #[cfg(feature = "php")]
 pub use swoole_rs_phpclients::*;
-// The clients patch calls the HTTP inflate stream in crates/inflate.
-pub use swoole_rs_inflate as inflate;
 
 // Keep local Rust type names scoped; C exports retain their no_mangle names.
 pub use swoole_rs_httpbindings as httpbindings;
