@@ -24,7 +24,7 @@ use crate::records::ConnectionRecord;
 use crate::view;
 use swoole_rs_corebase::{DataHead, hook, log};
 
-/// native/integration/server.cc's `ServerRustContext`, which asserts this layout.
+/// What an operation acts on besides the server.
 #[repr(C)]
 pub struct NativeContext {
     pub(crate) serv: *mut c_void,
@@ -46,11 +46,6 @@ pub struct NativeContext {
     pub(crate) number: c_int,
     pub(crate) object: *mut c_void,
 }
-
-const _: () = assert!(
-    size_of::<NativeContext>() == 136 && core::mem::offset_of!(NativeContext, object) == 128,
-    "server.cc ServerRustContext layout"
-);
 
 impl NativeContext {
     fn new(serv: *mut c_void) -> Self {
@@ -87,18 +82,6 @@ unsafe fn run(op: u32, arg: u64, ctx: &mut NativeContext) -> i64 {
     #[cfg(test)]
     let run = tests::fake;
     // SAFETY: as the caller guarantees.
-    unsafe { run(op, arg, ctx) }
-}
-
-/// `server_methods`' runner, for native/integration/server.cc's own methods.
-///
-/// # Safety
-/// As `run`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_method(op: u32, arg: u64, ctx: *mut NativeContext) -> i64 {
-    // SAFETY: per the caller.
-    let ctx = unsafe { &mut *ctx };
-    // SAFETY: per the caller.
     unsafe { run(op, arg, ctx) }
 }
 
@@ -216,47 +199,11 @@ pub unsafe extern "C-unwind" fn destroy(serv: *mut c_void) {
     }
 }
 
-/// `Server::Server(mode)` after native/integration/server.cc has built the C++
-/// members: maps the `gs_size`-byte shared record, sets the mode and makes this
-/// `SwooleG.server`. False when the record can't be mapped.
-///
-/// # Safety
-/// `serv` is a `Server` under construction whose `ServerFields` are built.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_open(
-    serv: *mut c_void,
-    mode: c_int,
-    gs_size: usize,
-) -> bool {
-    let gs = swoole_rs_memory::members::sw_shm_malloc(gs_size);
-    if gs.is_null() {
-        log::sys_warning(
-            c"Server",
-            format_args!("[Master] Fatal Error: failed to allocate memory for Server->gs"),
-        );
-        return false;
-    }
-    // SAFETY: a fresh mapping of a whole `ServerGS`, which starts with the counters.
-    unsafe { crate::swr_v1_server_shared_init(gs) };
-    // SAFETY: as the caller guarantees.
-    let config = unsafe { view::config(serv) };
-    config.gs = gs;
-    config.mode_ = u8::try_from(mode).unwrap_or_default();
-    swoole_rs_corebase::swr_v1_core_set_server(serv);
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    swoole_rs_process::workers::factory_methods::set_factory_call(
-        crate::factory_ops::swr_v1_factory_call,
-    );
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    swoole_rs_process::workers::entry::set_enter(workers_enter);
-    true
-}
-
 /// The module whose context each `Server` and `ThreadFactory` method of
 /// crates/process's entry.rs runs its operation over, as workers.cc's
 /// `workers_enter` built it.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-fn workers_enter(operation: u32) -> swoole_rs_process::workers::entry::WorkersEnter {
+pub(crate) fn workers_enter(operation: u32) -> swoole_rs_process::workers::entry::WorkersEnter {
     use swoole_rs_process::workers::ops::{
         RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_CALL_WORKER_START, RUN_CALL_WORKER_STOP,
         RUN_CLEAN_CONNECTIONS, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY,
@@ -297,51 +244,6 @@ fn workers_enter(operation: u32) -> swoole_rs_process::workers::entry::WorkersEn
         | RUN_STOP_WORKER_THREADS => crate::thread_mode_ops::enter,
         _ => std::process::abort(),
     }
-}
-
-/// `Server::~Server()` before native/integration/server.cc destroys the C++
-/// members: destroys a server still running in its master, deletes each port
-/// with `delete_port`, then frees the CPU list and the shared record.
-///
-/// # Safety
-/// `serv` is a `Server` that [`swr_v1_server_open`] opened, being destroyed;
-/// `delete_port` deletes a `ListenPort`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_server_close(
-    serv: *mut c_void,
-    delete_port: unsafe extern "C" fn(*mut c_void),
-) {
-    // SAFETY: as the caller guarantees.
-    let counters = unsafe { view::counters(serv) };
-    let master = std::process::id().cast_signed() == counters.master_pid;
-    if master
-        && counters
-            .shutdown
-            .load(core::sync::atomic::Ordering::Relaxed)
-            == 0
-    {
-        // SAFETY: as the caller guarantees.
-        unsafe { destroy(serv) };
-    }
-    // SAFETY: as the caller guarantees; deleting a port leaves the list as it is.
-    let ports = (0..).map(|index| unsafe { view::port_at(serv, index) });
-    for port in ports.take_while(|port| !port.is_null()) {
-        // SAFETY: a live port, deleted once.
-        unsafe { delete_port(port) };
-    }
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    {
-        // SAFETY: as the caller guarantees.
-        let state = unsafe { view::state_ptr(serv) };
-        // SAFETY: the server's state, which outlives this call.
-        unsafe { &*state }.close_pipes();
-    }
-    // SAFETY: as the caller guarantees.
-    let config = unsafe { view::config(serv) };
-    // SAFETY: the list settings.rs allocated, or null.
-    unsafe { swoole_rs_corebase::sw_free(config.cpu_affinity_available.cast()) };
-    config.cpu_affinity_available = ptr::null_mut();
-    swoole_rs_memory::members::sw_shm_free(config.gs);
 }
 
 /// `Server::start_master_thread(reactor)`.
@@ -663,6 +565,22 @@ pub unsafe fn set_document_root(serv: *mut c_void, path: &[u8]) -> bool {
     ctx.data = path.as_ptr().cast();
     // SAFETY: as the caller guarantees; the path lives for the call.
     unsafe { run(RUN_ST_DOCUMENT_ROOT, path.len() as u64, &mut ctx) != 0 }
+}
+
+/// [`set_document_root`] for the C++ test fixtures and tests/modules/http's cases.
+///
+/// # Safety
+/// As [`set_document_root`]; `path` is readable for `length` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_server_set_document_root(
+    serv: *mut c_void,
+    path: *const u8,
+    length: usize,
+) -> bool {
+    // SAFETY: per the caller.
+    let path = unsafe { core::slice::from_raw_parts(path, length) };
+    // SAFETY: per the caller.
+    unsafe { set_document_root(serv, path) }
 }
 
 /// The master timer's tick, `Server::timer_callback`, as a plain timer callback.

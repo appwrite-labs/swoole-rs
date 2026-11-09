@@ -229,6 +229,13 @@ const RECORD_6_OFFSETS: &[usize] = &[
 
 const RECORD_7_OFFSETS: &[usize] = &[0, size_of::<usize>(), 2 * size_of::<usize>()];
 
+const RECORD_8_OFFSETS: &[usize] = &[
+    offset_of!(crate::shared::ServerShared, pools),
+    offset_of!(crate::shared::ServerShared, pools)
+        + size_of::<swoole_rs_process::process_pool::PoolRecord>(),
+    offset_of!(crate::shared::ServerShared, manager_barrier),
+];
+
 /// Checks the native layout against its canonical Rust record.
 ///
 /// # Safety
@@ -241,7 +248,7 @@ pub(crate) unsafe extern "C" fn swr_v1_server_record_layout(
     offsets: *const usize,
     count: usize,
 ) -> bool {
-    // SAFETY: the native constructor supplies its readable offset array for this call.
+    // SAFETY: the caller supplies its readable offset array for this call.
     let actual = unsafe { core::slice::from_raw_parts(offsets, count) };
     match kind {
         0 => {
@@ -291,6 +298,12 @@ pub(crate) unsafe extern "C" fn swr_v1_server_record_layout(
             size == size_of::<Record>()
                 && alignment == align_of::<Record>()
                 && actual == RECORD_7_OFFSETS
+        }
+        8 => {
+            type Record = crate::shared::ServerShared;
+            size == size_of::<Record>()
+                && alignment == align_of::<Record>()
+                && actual == RECORD_8_OFFSETS
         }
         _ => false,
     }

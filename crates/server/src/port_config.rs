@@ -80,20 +80,20 @@ impl PortConfig {
     }
 }
 
-/// The settings of a `ListenPort`, which begins with its `PortFields` pointer to them.
+/// The settings of a `ListenPort`, a box of the pointer to them (`server_object`).
 ///
 /// # Safety
 /// `port` is a live `ListenPort`, and nothing else accesses its settings while
 /// the borrow lasts.
 pub unsafe fn of<'a>(port: *mut c_void) -> &'a mut PortConfig {
-    // SAFETY: per the caller; `ListenPort` is not polymorphic (native/integration/server.cc asserts it).
+    // SAFETY: per the caller; a `ListenPort` is crate::object's box of this pointer.
     let config = unsafe { *port.cast::<*mut PortConfig>() };
     // SAFETY: the port's settings live as long as it.
     unsafe { &mut *config }
 }
 
-/// The protocol `ListenPort(Server *)` starts with: network-u32 length framing
-/// and the default EOF; the C++ constructor then stores the server.
+/// The protocol a new port starts with: network-u32 length framing and the
+/// default EOF; `object::port_new` then stores the server.
 fn default_protocol() -> Protocol {
     let mut package_eof = [0; 8];
     for (slot, byte) in package_eof.iter_mut().zip(SW_DATA_EOF.as_bytes()) {
@@ -120,50 +120,58 @@ fn default_protocol() -> Protocol {
 /// Allocates settings before the native port acquires any resources.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig {
-    Box::into_raw(Box::new(PortConfig {
-        object_id: 0,
-        backlog: 512,
-        listening: false,
-        tcp_defer_accept: 0,
-        tcp_fastopen: 0,
-        tcp_keepidle: 3600,
-        tcp_keepinterval: 60,
-        tcp_keepcount: 5,
-        tcp_user_timeout: 0,
-        max_idle_time: 0.0,
-        socket_buffer_size: buffer_size,
-        buffer_high_watermark: 0,
-        buffer_low_watermark: 0,
-        r#type: 1,
-        ssl: 0,
-        port: 0,
-        socket: core::ptr::null_mut(),
-        // SAFETY: pthread_t is an integer or pointer; zero is the original native empty sentinel.
-        thread_id: unsafe { core::mem::zeroed() },
-        heartbeat_idle_time: 0,
-        open_eof_check: false,
-        open_http_protocol: false,
-        open_http2_protocol: false,
-        open_websocket_protocol: false,
-        open_length_check: false,
-        open_mqtt_protocol: false,
-        open_redis_protocol: false,
-        open_tcp_nodelay: false,
-        open_tcp_nopush: true,
-        open_tcp_keepalive: false,
-        kernel_socket_recv_buffer_size: 0,
-        kernel_socket_send_buffer_size: 0,
-        gs: core::ptr::null_mut(),
-        ptr: core::ptr::null_mut(),
-        websocket_frames: 0,
-        websocket_protocol: None,
-        host: Box::default(),
-        protocol: default_protocol(),
-        on_read: core::ptr::null_mut(),
-        ssl_context: core::ptr::null(),
-        tls: core::ptr::null_mut(),
-    }))
+    Box::into_raw(PortConfig::boxed(buffer_size))
 }
+
+impl PortConfig {
+    /// A new port's settings.
+    pub(crate) fn boxed(buffer_size: c_int) -> Box<Self> {
+        Box::new(Self {
+            object_id: 0,
+            backlog: 512,
+            listening: false,
+            tcp_defer_accept: 0,
+            tcp_fastopen: 0,
+            tcp_keepidle: 3600,
+            tcp_keepinterval: 60,
+            tcp_keepcount: 5,
+            tcp_user_timeout: 0,
+            max_idle_time: 0.0,
+            socket_buffer_size: buffer_size,
+            buffer_high_watermark: 0,
+            buffer_low_watermark: 0,
+            r#type: 1,
+            ssl: 0,
+            port: 0,
+            socket: core::ptr::null_mut(),
+            // SAFETY: pthread_t is an integer or pointer; zero is the original native empty sentinel.
+            thread_id: unsafe { core::mem::zeroed() },
+            heartbeat_idle_time: 0,
+            open_eof_check: false,
+            open_http_protocol: false,
+            open_http2_protocol: false,
+            open_websocket_protocol: false,
+            open_length_check: false,
+            open_mqtt_protocol: false,
+            open_redis_protocol: false,
+            open_tcp_nodelay: false,
+            open_tcp_nopush: true,
+            open_tcp_keepalive: false,
+            kernel_socket_recv_buffer_size: 0,
+            kernel_socket_send_buffer_size: 0,
+            gs: core::ptr::null_mut(),
+            ptr: core::ptr::null_mut(),
+            websocket_frames: 0,
+            websocket_protocol: None,
+            host: Box::default(),
+            protocol: default_protocol(),
+            on_read: core::ptr::null_mut(),
+            ssl_context: core::ptr::null(),
+            tls: core::ptr::null_mut(),
+        })
+    }
+}
+
 /// # Safety
 /// `config` is a unique live allocation from `config_new`; no views remain.
 #[unsafe(no_mangle)]

@@ -44,6 +44,16 @@ pub struct ServerCounters {
     pub spinlock: AtomicU32,
 }
 
+/// `ServerGS`, the record a server maps shared (`serv->gs`): the counters, the
+/// task and event worker pools, and the manager's barrier. `layout.rs` checks
+/// native's against it (record 8).
+#[repr(C)]
+pub(crate) struct ServerShared {
+    pub(crate) counters: ServerCounters,
+    pub(crate) pools: [swoole_rs_process::process_pool::PoolRecord; 2],
+    pub(crate) manager_barrier: swoole_rs_locks::Barrier,
+}
+
 /// The server's shared counters (`serv->gs`), once configured.
 /// `time(NULL)`: seconds since the Unix epoch.
 pub(crate) fn unix_now() -> libc::time_t {
@@ -75,8 +85,8 @@ fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<
     if port.is_null() {
         return None;
     }
-    // SAFETY: a `ListenPort` starts with its settings pointer (`PortFields::port_config_`;
-    // native/integration/server.cc asserts it has no vtable), whose `gs` is the port's shared counters.
+    // SAFETY: a `ListenPort` is a box of its settings pointer (`server_object`), whose
+    // `gs` is the port's shared counters.
     let config = unsafe { *port.cast::<*const crate::port_config::PortConfig>() };
     // SAFETY: a port's settings live as long as the port.
     let gs = unsafe { config.as_ref() }?.gs;

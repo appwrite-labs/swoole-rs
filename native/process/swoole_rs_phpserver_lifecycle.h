@@ -3,8 +3,8 @@
 /* Swoole\Server's object state (the Port objects, user processes and callbacks
  * upstream's ServerProperty held), its creation and release, __construct,
  * start() with its pre-start checks, addProcess, addCommand and command
- * (crates/phpserver, lifecycle.rs). C++ keeps the Server, its ports and the C++
- * callbacks it installs, reached through `host`. */
+ * (crates/phpserver, lifecycle.rs). C++ keeps the zend_try frames, reached through
+ * `host`. */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -15,20 +15,10 @@ struct _zend_object;
 struct _zval_struct;
 struct _zend_class_entry;
 
-/* What `install` sets up on the Server in C++ (Rust fills the on* slots itself). */
-enum {
-    SWR_PHPSERVER_INSTALL_ALLOCATORS = 11, /* the message bus's, and the recv buffers' in base/thread mode */
-    SWR_PHPSERVER_INSTALL_ADMIN_COMMANDS = 12,
-};
-
 typedef struct {
-    void (*install)(void *server, uint32_t which);
-    void *(*create)(int64_t mode); /* new Server(mode) */
     /* serv->start() in zend_try: 0 started and returned, -1 failed (*error is the reason),
      * 1 bailed out. */
     int (*start)(void *server, const char **error);
-    /* Delete the Server. */
-    void (*release)(void *server);
     /* addProcess's worker: -3 bailed out, -2 a thread that is not a user worker, -1 add_worker failed,
      * else the id. */
     int64_t (*add_process)(void *server, struct _zval_struct *process);

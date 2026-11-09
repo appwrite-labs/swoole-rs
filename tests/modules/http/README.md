@@ -106,10 +106,10 @@ fake connection socket and its `Connection` (session 2025); the case calls the h
 and expected values.
 
 The HTTP/1 TESTs that start a server are `server/src/http1.rs`, in the same binary and
-phase, and need no fixture: `swr_v1_server_new`/`_delete` (native/integration/server.cc)
+phase, and need no fixture: `swr_v1_server_new`/`_delete` (crates/server/src/server_object.rs)
 make and delete the `Server`, and the cases set its configuration, callback slots,
 tables, port configuration and static-handler sets through the Rust records
-`ServerFields` and `PortFields` view, whose layouts each new server checks against
+whose pointers head the `Server` and its `ListenPort`s, whose layouts each new server checks against
 `http1.rs`'s copies (`swr_v1_server_record_layout`). Upstream's fixtures, inputs and
 expected values are kept; where they ran llhttp the handlers read the request line and
 headers themselves. The client is a port of core-tests' cpp-httplib 0.7

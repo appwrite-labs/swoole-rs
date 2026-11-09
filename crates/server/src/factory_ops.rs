@@ -61,11 +61,10 @@ const _: () = assert!(
     "crates/process FactoryContext layout"
 );
 
-// SAFETY: crates/reactor's and native/integration/server.cc's bodies.
+// SAFETY: crates/reactor's body.
 unsafe extern "C-unwind" {
     #[link_name = "_Z14swoole_waitpidiPii"]
     fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-    fn swr_v1_server_barrier(serv: *mut c_void, manager: bool) -> *mut c_void;
 }
 
 // SAFETY: crates/protocols' bus, linked into the same archive.
@@ -184,9 +183,7 @@ unsafe fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let barriers = |init: bool| {
         for (manager, count) in [(false, c_int::from(config.reactor_num) + 1), (true, 2)] {
             // SAFETY: the server's reactor-thread and (shared) manager barriers.
-            let barrier = unsafe { swr_v1_server_barrier(serv, manager) };
-            // SAFETY: as above: a live `swoole::Barrier`.
-            let barrier = unsafe { &*barrier.cast::<swoole_rs_locks::Barrier>() };
+            let barrier = unsafe { crate::server_object::barrier(serv, manager) };
             if init {
                 swoole_rs_locks::barrier_init(barrier, manager, count);
             } else {

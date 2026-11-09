@@ -54,10 +54,10 @@ pub struct ServerState {
     /// The interface addresses `Server::create` read (`local_addr`); null before.
     pub(crate) local_addrs: AtomicPtr<crate::local_addr::LocalAddrs>,
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
-    /// `task_sync` waits on; `swr_v1_server_close` closes them, as `~Server` did.
+    /// `task_sync` waits on; `swr_v1_server_delete` closes them, as `~Server` did.
     task_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
     /// `Server::worker_pipes`: each event worker's `UnixSocket`, which
-    /// `swr_v1_server_close` closes, as `~Server` did.
+    /// `swr_v1_server_delete` closes, as `~Server` did.
     #[cfg_attr(
         not(all(feature = "upstream-symbols", not(test))),
         expect(dead_code, reason = "only the hybrid makes pipes")
