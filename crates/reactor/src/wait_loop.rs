@@ -569,12 +569,7 @@ mod tests {
         let token: *mut c_void = (&raw mut socket).cast();
         unsafe {
             assert_eq!((*state.owner).record(&mut socket, 0, events), 0);
-            assert!(crate::swr_v1_reactor_handlers_set(
-                state.handlers,
-                5,
-                512,
-                Some(read)
-            ));
+            assert!((*state.handlers).set(5, 512, Some(read)));
             let descriptor = (*state.owner).backend_fd;
             #[cfg(target_os = "linux")]
             if kind == 1 {
