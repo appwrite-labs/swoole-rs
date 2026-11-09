@@ -13,5 +13,6 @@
   "tests/swoole_pdo_sqlite/bug_63916_1.phpt": "PHP 8.0 or lower",
   "tests/swoole_pdo_sqlite/pdo_fetch_func_001.phpt": "PHP 8.1 or lower",
   "tests/swoole_runtime/sockets/basic/bug49341.phpt": "BSD and darwin only",
-  "tests/swoole_runtime/sockets/basic/mcast_ipv6_recv_limited.phpt": "runs only where the protocol-independent multicast API is missing; Linux has it"
+  "tests/swoole_runtime/sockets/basic/mcast_ipv6_recv_limited.phpt": "runs only where the protocol-independent multicast API is missing; Linux has it",
+  "tests/swoole_websocket_server/memory.phpt": "skip_if_no_top wants the usage text procps 3.x's top prints for `top help` and refuses busybox; procps 4 (Ubuntu 24.04) prints none and the Alpine job has busybox"
 }
