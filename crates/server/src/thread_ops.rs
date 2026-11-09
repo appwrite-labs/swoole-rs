@@ -664,6 +664,9 @@ unsafe extern "C" fn reactor_thread_entry(serv: *mut c_void, id: u64) {
 
 /// What the heartbeat thread Rust starts runs, its signals blocked.
 unsafe extern "C" fn heartbeat_main(serv: *mut c_void, _: u64) {
+    // Else a process-directed signal (the shutdown's SIGTERM) can land here rather
+    // than on the master's signalfd, and its default action kills the master.
+    swoole_rs_corebase::signal_block_all();
     // SAFETY: the live server.
     let state = unsafe { state_of(serv) };
     let reactors = state.config_ref().reactor_num;
