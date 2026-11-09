@@ -1,0 +1,156 @@
+//! The task worker's ops on native objects (its pool's callbacks, its pipe in the
+//! reactor and the commands sent to it), and the callbacks that run its operations:
+//! what workers.cc's `TaskWorkerContext::call` and `TaskWorker_*` did.
+use core::ffi::{c_int, c_void};
+
+use swoole_rs_corebase::DataHead;
+use swoole_rs_process::process_pool::PoolRecord;
+use swoole_rs_process::worker_globals::swr_v1_worker_globals;
+use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::workers::ops::{
+    OP_COMMAND_REPLY, OP_HAS_COMMAND, OP_LISTEN_TASK_PIPE, OP_POOL_INIT, OP_SET_ASYNC_LOOP,
+    OP_UNLIMIT_BUS_PIPES, OP_UNPACK_COMMAND, RUN_TASK_LOOP_ASYNC, RUN_TASK_ON_PIPE,
+    RUN_TASK_ON_START, RUN_TASK_ON_STOP, RUN_TASK_ON_TASK,
+};
+
+use super::{Context, swr_v1_task_worker_call};
+use crate::objects::{EVENT_READ, Reactor, in_worker_bus, set_nonblock, socket};
+
+/// `SW_FD_PIPE`.
+const SW_FD_PIPE: c_int = 3;
+
+/// The ops on native objects.
+pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+    Some(match op {
+        OP_POOL_INIT => {
+            let serv = ctx.serv;
+            let pool = ctx.pool();
+            pool.ptr = serv;
+            pool.on_task = on_task as *const c_void;
+            pool.on_worker_start = on_start as *const c_void;
+            pool.on_worker_stop = on_stop as *const c_void;
+            0
+        }
+        OP_SET_ASYNC_LOOP => {
+            ctx.pool().main_loop = loop_async as *const c_void;
+            0
+        }
+        OP_HAS_COMMAND => {
+            let id = i32::from(ctx.task().server_fd);
+            let handler = crate::commands::handler(ctx.state(), id);
+            if let Some(handler) = handler {
+                ctx.handler = handler;
+            }
+            u64::from(handler.is_some())
+        }
+        OP_UNPACK_COMMAND => {
+            let buffer = swoole_rs_corebase::thread_buffer();
+            let unpack = swoole_rs_process::task_file::unpack;
+            // SAFETY: the live command task and this thread's buffer.
+            let Some((data, length, _)) = (unsafe { unpack(ctx.task.cast_mut().cast(), buffer) })
+            else {
+                return Some(0);
+            };
+            ctx.packet = (length, data);
+            1
+        }
+        OP_COMMAND_REPLY => {
+            let (length, message) = ctx.packet;
+            let state = ctx.state();
+            let sock = crate::commands::reply_socket(state, ctx.serv)?;
+            let bus = crate::master_ops::server_message_bus(state);
+            // `serv->get_task_id(task)`: the task's fd.
+            let (fd, id) = (ctx.task().fd, ctx.worker().id());
+            let id = u16::try_from(id).unwrap_or(u16::MAX);
+            // SAFETY: the handler OP_HAS_COMMAND found and the message unpacked for it.
+            u64::from(unsafe {
+                crate::commands::answer(
+                    ctx.handler,
+                    ctx.serv,
+                    (message, length),
+                    (bus, sock),
+                    fd,
+                    id,
+                )
+            })
+        }
+        OP_LISTEN_TASK_PIPE => {
+            let pipe = in_worker_bus(ctx.state(), ctx.config(), ctx.worker().pipe_worker);
+            let pipe = socket(pipe)?;
+            set_nonblock(pipe);
+            let reactor = Reactor::thread();
+            reactor.fields().ptr = ctx.pool.cast();
+            reactor.add(pipe, EVENT_READ);
+            reactor.set_handler(SW_FD_PIPE, EVENT_READ, on_pipe_receive);
+            0
+        }
+        OP_UNLIMIT_BUS_PIPES => {
+            let id = u16::try_from(arg).unwrap_or(u16::MAX);
+            // SAFETY: the context's live server.
+            let worker = unsafe { crate::view::worker(ctx.serv, id) };
+            // SAFETY: its worker `arg`.
+            let worker = unsafe { &*worker };
+            for pipe in [worker.pipe_worker, worker.pipe_master] {
+                if let Some(pipe) = socket(in_worker_bus(ctx.state(), ctx.config(), pipe)) {
+                    pipe.output.buffer_size = u32::MAX;
+                }
+            }
+            0
+        }
+        _ => return None,
+    })
+}
+
+/// `TaskWorker_onTask`: the pool's task callback.
+pub(super) extern "C-unwind" fn on_task(
+    pool: *mut PoolRecord,
+    worker: *mut WorkerRecord,
+    task: *mut DataHead,
+) -> c_int {
+    let mut ctx = Context::of(pool, worker);
+    ctx.task = task;
+    run(&mut ctx, RUN_TASK_ON_TASK)
+}
+
+/// `TaskWorker_onStart`.
+extern "C-unwind" fn on_start(pool: *mut PoolRecord, worker: *mut WorkerRecord) {
+    run(&mut Context::of(pool, worker), RUN_TASK_ON_START);
+}
+
+/// `TaskWorker_onStop`.
+extern "C-unwind" fn on_stop(pool: *mut PoolRecord, worker: *mut WorkerRecord) {
+    run(&mut Context::of(pool, worker), RUN_TASK_ON_STOP);
+}
+
+/// `TaskWorker_loop_async`: the coroutine task worker's main loop.
+extern "C-unwind" fn loop_async(pool: *mut PoolRecord, worker: *mut WorkerRecord) -> c_int {
+    run(&mut Context::of(pool, worker), RUN_TASK_LOOP_ASYNC)
+}
+
+/// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes, aligned for its head.
+#[repr(C, align(8))]
+struct EventData([u8; super::EVENT_DATA_SIZE]);
+
+/// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.
+extern "C" fn on_pipe_receive(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: the reactor running this handler, whose `ptr` is the task pool.
+    let pool = unsafe { Reactor::of(reactor) }.fields().ptr.cast();
+    // SAFETY: this thread's worker globals.
+    let worker = unsafe { (*swr_v1_worker_globals()).worker };
+    let mut task = EventData([0; super::EVENT_DATA_SIZE]);
+    let mut ctx = Context::of(pool, worker);
+    // SAFETY: the reactor's live event.
+    ctx.socket = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket }.cast();
+    ctx.buf = (&raw mut task).cast();
+    run(&mut ctx, RUN_TASK_ON_PIPE)
+}
+
+/// Runs `operation` over `ctx`, whose objects are live.
+fn run(ctx: &mut Context, operation: u32) -> c_int {
+    let context = (&raw mut *ctx).cast();
+    let call = swr_v1_task_worker_call;
+    // SAFETY: the context's live objects.
+    let ret =
+        unsafe { swoole_rs_process::workers::swr_v1_workers_run(operation, 0, context, call) };
+    c_int::try_from(ret).unwrap_or(-1)
+}

@@ -20,6 +20,12 @@ unsafe extern "C" {
     fn swr_v1_bus_clear(bus: *mut c_void);
     fn swr_v1_bus_init_pipe_socket(bus: *mut c_void, fd: c_int);
     fn swr_v1_bus_pipe_socket(bus: *mut c_void, fd: c_int) -> *mut SocketRecord;
+    fn swr_v1_bus_write(
+        bus: *mut c_void,
+        socket: *mut c_void,
+        head: *mut DataHead,
+        data: *const u8,
+    ) -> bool;
 }
 
 // SAFETY: crates/reactor's and crates/tls' bodies, under their upstream symbols.
@@ -36,6 +42,21 @@ unsafe extern "C-unwind" {
 pub(crate) fn socket<'a>(socket: *mut c_void) -> Option<&'a mut SocketRecord> {
     // SAFETY: the native objects hand out null or live sockets, each used by one thread.
     unsafe { socket.cast::<SocketRecord>().as_mut() }
+}
+
+/// `serv->get_worker_pipe_*_in_message_bus(worker)`: in thread mode, the thread
+/// bus's own end of the worker's `pipe`.
+pub(crate) fn in_worker_bus(
+    state: &crate::ServerState,
+    config: &crate::ServerConfig,
+    pipe: *mut c_void,
+) -> *mut c_void {
+    match socket(pipe) {
+        Some(sock) if u64::from(config.mode_) == crate::MODE_THREAD => {
+            crate::master_ops::worker_message_bus(state).pipe_socket(sock)
+        }
+        _ => pipe,
+    }
 }
 
 /// `sock->set_nonblock()`.
@@ -109,6 +130,13 @@ impl Bus {
     /// `MessageBus::read(sock)`.
     pub(crate) fn read(self, sock: &mut SocketRecord) -> isize {
         read_bus(self.bus, self.allocator, sock, false)
+    }
+    /// `MessageBus::write(sock, {head, data})`, `head.len` set to the data's length:
+    /// whether the whole message went.
+    pub(crate) fn write(self, sock: &mut SocketRecord, head: &mut DataHead, data: &[u8]) -> bool {
+        head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        // SAFETY: a live bus and socket, and `head.len` readable bytes.
+        unsafe { swr_v1_bus_write(self.bus, (&raw mut *sock).cast(), head, data.as_ptr()) }
     }
     /// `MessageBus::init_pipe_socket(sock)`.
     pub(crate) fn init_pipe_socket(self, fd: c_int) {
