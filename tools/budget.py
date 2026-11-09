@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Per-crate counts in non-test code that may not rise above the base commit's:
 
-  unsafe   `unsafe` blocks, fns and impls
+  unsafe   `unsafe` blocks, fns and impls (crates/zend, the safe layer callers move
+           onto, may rise while the workspace total falls)
   maps     std hash and B-tree maps and sets, where a flat table belongs
   lists    LinkedList and VecDeque
   bools    arrays and Vecs of bool, where a bitset belongs
@@ -118,6 +119,8 @@ def main():
     failed = False
     for kind, crates in current.items():
         rises = above(crates, base[kind])
+        if kind == 'unsafe' and sum(crates.values()) < sum(base[kind].values()):
+            rises.pop('zend', None)
         failed = failed or bool(rises)
         for crate, (n, was) in sorted(rises.items()):
             print(f'{crate}: {n} {kind}, up from {was} at {base_ref[:12]}', file=sys.stderr)
