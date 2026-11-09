@@ -23,9 +23,6 @@ unsafe extern "C-unwind" {
     fn reactor_if_exit(reactor: *mut c_void) -> bool;
     #[link_name = "_ZN6swoole7Reactor4waitEv"]
     fn reactor_wait(reactor: *mut c_void) -> c_int;
-    // crates/tls's `Socket::free`.
-    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free(socket: *mut SocketRecord);
     // crates/phpprocess, crates/coroutine and crates/phptimer.
     safe fn php_swoole_is_enable_coroutine() -> bool;
     fn swoole_coroutine_is_in() -> u8;
@@ -248,7 +245,7 @@ pub(crate) unsafe fn socket_free_record(socket: *mut SocketRecord, detach_fd: bo
         unsafe { (*socket).fd = -1 };
     }
     // SAFETY: per the caller.
-    unsafe { socket_free(socket) };
+    unsafe { swoole_rs_tls::upstream::socket_free(socket) };
 }
 
 /// `Reactor::defer(call, data)` on this thread's reactor.

@@ -2145,25 +2145,9 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     };
     use core::ffi::c_void;
     use swoole_rs_corebase::DataHead;
-    // SAFETY: crates/tls', under their upstream symbols.
-    unsafe extern "C-unwind" {
-        #[cfg_attr(
-            target_os = "macos",
-            link_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKcxm"
-        )]
-        #[cfg_attr(
-            not(target_os = "macos"),
-            link_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKclm"
-        )]
-        fn sendfile_async(
-            socket: *mut c_void,
-            filename: *const c_char,
-            offset: libc::off_t,
-            length: usize,
-        ) -> c_int;
-        #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
-        fn send_async(socket: *mut c_void, data: *const c_void, length: usize) -> isize;
-    }
+    use swoole_rs_tls::upstream::{
+        socket_send_async as send_async, socket_sendfile_async as sendfile_async,
+    };
     /// `SW_SERVER_EVENT_SEND_FILE`, `_BUFFER_FULL`, `_INCOMING` and `_SHUTDOWN_SIGNAL`.
     const EVENT_SEND_FILE: u8 = 3;
     const EVENT_BUFFER_FULL: c_int = 13;
@@ -2238,7 +2222,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let SendfileTask { offset, length } = unsafe { task.read() };
             let name = task.wrapping_add(1).cast::<c_char>();
             // SAFETY: the connection's live socket and the task's name.
-            sign(unsafe { sendfile_async(o.conn().socket, name, offset, length) })
+            sign(unsafe { sendfile_async(o.conn().socket.cast(), name, offset, length) })
         }
         OP_SEND_SHUTDOWN => {
             // A worker may run as a user that cannot signal the master.
@@ -2253,7 +2237,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let pipe = worker_record(o.server(), 0_u16).pipe_worker;
             let data = (&raw const send).cast();
             // SAFETY: the worker's live pipe socket and the send's bytes.
-            u64::from(unsafe { send_async(pipe, data, size_of::<SendData>()) } > 0)
+            u64::from(unsafe { send_async(pipe.cast(), data, size_of::<SendData>()) } > 0)
         }
         OP_SENDFILE_FINISH => {
             let task = o.ctx.buffer.cast::<SendfileTask>();
