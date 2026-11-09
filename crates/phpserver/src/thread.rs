@@ -40,24 +40,25 @@ thread_local! {
 }
 
 /// Thread mode, in a build with `SW_THREAD`.
-fn thread_mode(serv: *mut c_void) -> bool {
-    // SAFETY: its callers pass their live server.
-    let serv = unsafe { view::Server::from_raw(serv) };
+fn thread_mode(serv: view::Server<'_>) -> bool {
     // SAFETY: a live server.
     crate::server::THREAD.load(Ordering::Relaxed) && i64::from(serv.config().mode_) == MODE_THREAD
 }
 
 /// `__construct`'s check: 0 no server yet, 1 this worker thread's server
 /// (in `existing`), 2 not the main thread, 3 a server already exists.
-pub(crate) fn admit(existing: &mut *mut c_void) -> c_int {
+pub(crate) fn admit(existing: &mut Option<view::Server<'static>>) -> c_int {
     let current = swoole_rs_corebase::swr_v1_core_server();
     if !crate::server::THREAD.load(Ordering::Relaxed) {
         return if current.is_null() { 0 } else { 3 };
     }
-    // SAFETY: the process's live server, when it has one.
-    if !current.is_null() && unsafe { view::Server::from_raw(current) }.is_worker_thread() {
-        *existing = current;
-        return 1;
+    if !current.is_null() {
+        // SAFETY: the process's live server, which outlives every request.
+        let server = unsafe { view::Server::from_raw(current) };
+        if server.is_worker_thread() {
+            *existing = Some(server);
+            return 1;
+        }
     }
     // SAFETY: a pure TSRM read.
     if unsafe { swr_zend_tsrm_is_main_thread() } {
@@ -70,17 +71,17 @@ pub(crate) fn admit(existing: &mut *mut c_void) -> c_int {
 /// `start()` on a worker thread: the settings the master serialized, this
 /// thread's coroutine options, then the worker's body. `None`: not a worker
 /// thread.
-pub(crate) fn worker(object: *mut zend_object, serv: *mut c_void) -> Option<Result<(), Bailout>> {
-    // SAFETY: `serv` is the live server here.
-    if !unsafe { view::Server::from_raw(serv) }.is_worker_thread() {
+pub(crate) fn worker(
+    object: *mut zend_object,
+    serv: view::Server<'_>,
+) -> Option<Result<(), Bailout>> {
+    if !serv.is_worker_thread() {
         return None;
     }
     Some(run_worker(object, serv))
 }
 
-fn run_worker(object: *mut zend_object, serv: *mut c_void) -> Result<(), Bailout> {
-    // SAFETY: its callers pass their live server.
-    let serv = unsafe { view::Server::from_raw(serv) };
+fn run_worker(object: *mut zend_object, serv: view::Server<'_>) -> Result<(), Bailout> {
     let mut zserv = crate::dispatch::undef();
     // SAFETY: a borrowed view of the live object (`ZVAL_OBJ`, no reference).
     unsafe { swoole_rs_zend::set_object(&raw mut zserv, object) };
@@ -118,7 +119,7 @@ fn run_worker(object: *mut zend_object, serv: *mut c_void) -> Result<(), Bailout
 /// `start()` in thread mode, before the server starts: the bootstrap script,
 /// the `init_arguments` result, and the thread starter; the runtime hooks are
 /// enabled before any thread is created.
-pub(crate) fn prepare(object: *mut zend_object, serv: *mut c_void) -> Result<(), Bailout> {
+pub(crate) fn prepare(object: *mut zend_object, serv: view::Server<'_>) -> Result<(), Bailout> {
     if !thread_mode(serv) {
         return Ok(());
     }
@@ -275,9 +276,7 @@ unsafe extern "C" fn serializable(value: *mut zval) -> c_int {
 
 /// `copy_setting`: the serializable settings, serialized for the worker
 /// threads to read back.
-pub(crate) fn copy_setting(serv: *mut c_void, setting: *mut zval) -> Result<(), Bailout> {
-    // SAFETY: its callers pass their live server.
-    let serv = unsafe { view::Server::from_raw(serv) };
+pub(crate) fn copy_setting(serv: view::Server<'_>, setting: *mut zval) -> Result<(), Bailout> {
     let mut copy = crate::dispatch::undef();
     // SAFETY: the settings array.
     let source = unsafe { table(setting) };
@@ -298,10 +297,8 @@ pub(crate) fn copy_setting(serv: *mut c_void, setting: *mut zval) -> Result<(), 
 }
 
 /// Before the Server is deleted: the serialized settings go.
-pub(crate) fn free_setting(serv: *mut c_void) {
-    // SAFETY: its callers pass their live server.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    if !thread_mode(serv.raw()) {
+pub(crate) fn free_setting(serv: view::Server<'_>) {
+    if !thread_mode(serv) {
         return;
     }
     // SAFETY: the server is configured on this thread, with no other reference to the field.

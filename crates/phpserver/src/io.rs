@@ -21,9 +21,7 @@ use swoole_rs_zend::{
 };
 
 /// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
-pub(crate) fn closed(serv: *mut c_void) -> bool {
-    // SAFETY: its callers pass their live server.
-    let serv = unsafe { view::Server::from_raw(serv) };
+pub(crate) fn closed(serv: view::Server<'_>) -> bool {
     let worker_thread = serv.is_worker_thread();
     !worker_thread && serv.is_started()
 }
@@ -81,7 +79,7 @@ fn port_call(call: &Call, method: &[u8], retval: *mut zval, args: &[*mut zval]) 
 
 fn on(call: &Call) {
     let serv = server(call);
-    if closed(serv.raw()) {
+    if closed(serv) {
         fatal(
             E_WARNING,
             c"server is running, unable to register event callback function",
@@ -144,7 +142,7 @@ fn get_callback(call: &Call) {
 
 fn listen(call: &Call) {
     let serv = server(call);
-    if closed(serv.raw()) {
+    if closed(serv) {
         fatal(E_WARNING, c"server is running, cannot add listener");
         return call.set_bool(false);
     }
@@ -272,7 +270,7 @@ fn send(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: a live server and string.
-    call.set_bool(unsafe { crate::instance::send(serv.raw(), fd, data) });
+    call.set_bool(unsafe { crate::instance::send(serv, fd, data) });
 }
 
 fn sendto(call: &Call) {
