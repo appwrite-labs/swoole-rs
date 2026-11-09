@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Compatibility derived from Swoole v6.2.4 src/coroutine/uring_socket.cc (Swoole contributors).
+// Compatibility derived from Swoole v6.2.5 src/coroutine/uring_socket.cc (Swoole contributors).
 //! `UringSocket`'s TLS transport: OpenSSL runs over a pair of memory BIOs, and
 //! this pumps their bytes through the ring ([`crate::uring`]). Errors land on the
 //! native socket through [`TlsHost`], in upstream's order (`set_err`, then
@@ -179,7 +179,11 @@ impl Tls {
         let moved = match error {
             ssl::SSL_ERROR_WANT_WRITE => self.bio_write(),
             ssl::SSL_ERROR_WANT_READ => self.bio_read(),
-            ssl::SSL_ERROR_ZERO_RETURN | ssl::SSL_ERROR_SYSCALL => false,
+            ssl::SSL_ERROR_ZERO_RETURN => {
+                self.set_err(self.host().reset);
+                false
+            }
+            ssl::SSL_ERROR_SYSCALL => false,
             _ => {
                 // SAFETY: reads this thread's OpenSSL error queue.
                 let code = unsafe { ssl::ERR_get_error() };
@@ -525,5 +529,106 @@ mod tests {
             ssl::BIO_free_all(wbio);
             libc::close(fds[0]);
         });
+    }
+
+    /// Upstream's `uring_socket.ssl_close_notify`: a peer that ends the TLS session
+    /// with `close_notify` but keeps the TCP connection open makes the next read fail
+    /// with `SW_ERROR_SSL_RESET` (here the host's `reset`) instead of leaving errCode
+    /// at 0. The sessions use an anonymous cipher in place of core-tests' certificate.
+    #[test]
+    fn ssl_close_notify() {
+        use std::net::{TcpListener, TcpStream};
+        use std::os::fd::AsRawFd;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        unsafe fn context(method: *const ssl::SSL_METHOD) -> *mut ssl::SSL_CTX {
+            unsafe {
+                let ctx = ssl::SSL_CTX_new(method);
+                ssl::SSL_CTX_set_security_level(ctx, 0);
+                ssl::SSL_CTX_set_max_proto_version(ctx, ssl::TLS1_2_VERSION);
+                assert_eq!(ssl::SSL_CTX_set_cipher_list(ctx, c"aNULL".as_ptr()), 1);
+                ctx
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let client_done = std::sync::Arc::new(AtomicBool::new(false));
+        let server = std::thread::spawn({
+            let client_done = client_done.clone();
+            move || unsafe {
+                let ctx = context(ssl::TLS_server_method());
+                let (stream, _) = listener.accept().unwrap();
+                let session = ssl::SSL_new(ctx);
+                let bio = ssl::BIO_new_socket(stream.as_raw_fd(), 0);
+                ssl::SSL_set_bio(session, bio, bio);
+                if ssl::SSL_accept(session) == 1 {
+                    let mut buf = [0_u8; 16];
+                    ssl::SSL_read(session, buf.as_mut_ptr().cast(), 16);
+                    ssl::SSL_write(session, b"ok".as_ptr().cast(), 2);
+                    // sends close_notify, the TCP connection stays open
+                    ssl::SSL_shutdown(session);
+                    for _ in 0..5000 {
+                        if client_done.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                }
+                ssl::SSL_free(session);
+                ssl::SSL_CTX_free(ctx);
+                drop(stream);
+            }
+        });
+
+        with_engine(|| unsafe {
+            let stream = TcpStream::connect(address).unwrap();
+            let ctx = context(ssl::TLS_client_method());
+            let session = ssl::SSL_new(ctx);
+            let (rbio, wbio) = (
+                ssl::BIO_new(ssl::BIO_s_mem()),
+                ssl::BIO_new(ssl::BIO_s_mem()),
+            );
+            ssl::SSL_set_bio(session, rbio, wbio);
+            ssl::SSL_set_connect_state(session);
+            let tls = Tls {
+                ssl: session,
+                ..tls(stream.as_raw_fd(), rbio, wbio)
+            };
+            loop {
+                let rc = ssl::SSL_do_handshake(session);
+                if rc == 1 {
+                    break;
+                }
+                assert!(
+                    swr_v1_uring_tls_perform(tls, rc, c"ssl_connect".as_ptr()),
+                    "connect"
+                );
+            }
+            assert_eq!(
+                ERRORS.with(|errors| errors.borrow().clone()),
+                [],
+                "errCode 0"
+            );
+
+            assert_eq!(swr_v1_uring_tls_send(tls, b"ping".as_ptr().cast(), 4), 4);
+
+            let mut buf = [0_u8; 16];
+            assert_eq!(swr_v1_uring_tls_recv(tls, buf.as_mut_ptr().cast(), 16), 2);
+
+            // the next read sees the close_notify
+            assert!(swr_v1_uring_tls_recv(tls, buf.as_mut_ptr().cast(), 16) <= 0);
+            assert_eq!(
+                ERRORS.with(|errors| errors.borrow().clone()),
+                [TLS_HOST.reset, -1],
+                "errCode is the reset, then check_return_value(-1)"
+            );
+
+            client_done.store(true, Ordering::SeqCst);
+            ssl::SSL_free(session);
+            ssl::SSL_CTX_free(ctx);
+        });
+        client_done.store(true, Ordering::SeqCst);
+        server.join().unwrap();
     }
 }
