@@ -7,8 +7,6 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-mod receive;
-pub use receive::*;
 mod files;
 pub use files::*;
 use std::ffi::{c_char, c_void};

@@ -336,11 +336,10 @@ pub unsafe fn multipart_start(ctx: *mut Context, content_type: &[u8]) -> bool {
             &raw mut length,
         )
     };
-    if !found {
+    // SAFETY: the boundary inside the value.
+    if !found || !unsafe { parse::swr_v1_phphttp_multipart_init(ctx.cast(), boundary, length) } {
         return false;
     }
-    // SAFETY: the boundary inside the value.
-    unsafe { parse::swr_v1_phphttp_multipart_init(ctx.cast(), boundary, length) };
     send::state(ctx).parser.data = ctx.cast();
     true
 }
