@@ -55,7 +55,7 @@ pub use static_context::*;
 mod tasks;
 pub use tasks::{HttpStaticTask, HttpTasks};
 mod static_meta;
-pub use static_meta::{static_boundary, static_multipart};
+pub use static_meta::{static_boundary, static_multipart, swr_v1_http_static_boundary};
 mod status_buffer;
 pub use status_buffer::{NATIVE_STATUS_CODES, swr_v2_http_status_message};
 pub mod http_server;

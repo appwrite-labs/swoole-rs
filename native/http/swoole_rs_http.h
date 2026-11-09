@@ -58,6 +58,7 @@ int32_t swr_v1_http_index_page(const swr_v1_http_index_page_input *, uint8_t *, 
 typedef struct { uint32_t phase, last; size_t url_length, filename_length; } swr_v1_http_static_path_state;
 int32_t swr_v1_http_static_location(const uint8_t *, size_t, const uint8_t *, size_t, swr_v1_http_static_path_state *);
 int32_t swr_v1_http_static_path(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, size_t, swr_v1_http_static_path_state *, uint32_t);
+const uint8_t *swr_v1_http_static_boundary(size_t, size_t *);
 int32_t swr_v1_http_static_headers(const swr_v1_http_static_header *, uint8_t *, size_t, size_t *);
 struct swr_v1_core_proxy;
 int32_t swr_v1_http_proxy_owned_authorization(const struct swr_v1_core_proxy *, uint8_t *, size_t *);
