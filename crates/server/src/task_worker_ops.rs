@@ -1,7 +1,6 @@
 //! The task worker's facts and effects (`crates/process/src/workers/task_worker.rs`'s
-//! `OP_*`) over the server, pool, worker and task records Rust lays out.
-//! workers.cc's `TaskWorkerContext::call` hands every op it has no case for to
-//! [`swr_v1_task_worker_call`].
+//! `OP_*`) over the server, pool, worker and task records Rust lays out, and the
+//! pool callbacks that run its operations: what workers.cc's `TaskWorkerContext` did.
 use core::cell::Cell;
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -14,8 +13,7 @@ use swoole_rs_process::methods::{
 use swoole_rs_process::process_pool::{PoolRecord, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{EventHead, task_pack};
 use swoole_rs_process::worker_record::{
-    WorkerRecord, pool_of, swr_v1_worker_add_request_count, swr_v1_worker_exceeded_max_requests,
-    swr_v1_worker_id, swr_v1_worker_init, swr_v1_worker_shutdown,
+    WorkerRecord, pool_of, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
@@ -34,10 +32,13 @@ use swoole_rs_process::workers::ops::{
 use swoole_rs_reactor::SocketRecord;
 
 use crate::callbacks::{CB_PIPE_MESSAGE, CB_TASK};
-use crate::event_worker_ops::{set_worker_status, swr_workers_signal_set};
+use crate::commands::CommandFn;
+use crate::event_worker_ops::swr_workers_signal_set;
 use crate::view;
 
-/// workers.cc's `WorkersNative<2>`, up to the fields only C++ reads.
+mod native;
+
+/// workers.cc's `WorkersNative<2>`.
 #[repr(C)]
 struct Context {
     serv: *mut c_void,
@@ -52,41 +53,80 @@ struct Context {
     packed: *mut DataHead,
     buf: *mut DataHead,
     file: c_int,
+    /// The command a task runs, and its unpacked message (`PacketPtr`).
+    handler: CommandFn,
+    packet: (usize, *const c_char),
 }
 
 const _: () = assert!(
-    core::mem::offset_of!(Context, file) == 72,
+    size_of::<Context>() == 112,
     "workers.cc TaskWorkerContext layout"
 );
 
+/// The context's objects, each live when the op reading it runs.
+#[expect(
+    clippy::mut_from_ref,
+    reason = "native records shared with C++, written by the task worker that owns them"
+)]
 impl Context {
+    /// The context over `pool`'s server and `worker`.
+    fn of(pool: *mut PoolRecord, worker: *mut WorkerRecord) -> Self {
+        Self {
+            // SAFETY: a task pool, whose `ptr` is its server, calls back with itself.
+            serv: unsafe { (*pool).ptr },
+            pool,
+            worker,
+            task: core::ptr::null(),
+            socket: core::ptr::null_mut(),
+            data: core::ptr::null(),
+            data_len: 0,
+            packed: core::ptr::null_mut(),
+            buf: core::ptr::null_mut(),
+            file: -1,
+            handler: CommandFn {
+                invoke: core::ptr::null(),
+                ctx: core::ptr::null_mut(),
+            },
+            packet: (0, core::ptr::null()),
+        }
+    }
+    fn state(&self) -> &crate::ServerState {
+        // SAFETY: the context's live server.
+        unsafe { view::state(self.serv) }
+    }
+    fn config(&self) -> &mut crate::ServerConfig {
+        // SAFETY: the context's live server.
+        unsafe { view::config(self.serv) }
+    }
+    fn pool(&self) -> &mut PoolRecord {
+        // SAFETY: the ops reading it run with the context's live task pool.
+        unsafe { &mut *self.pool }
+    }
+    fn worker(&self) -> &mut WorkerRecord {
+        // SAFETY: the ops reading it run with the context's live worker.
+        unsafe { &mut *self.worker }
+    }
+    fn task(&self) -> &DataHead {
+        // SAFETY: the ops reading it run with a live task.
+        unsafe { &*self.task }
+    }
+    /// The packed result.
+    fn packed(&self) -> &mut DataHead {
+        // SAFETY: the ops reading it run after the result is packed.
+        unsafe { &mut *self.packed }
+    }
     /// The worker that sent the finishing task.
-    ///
-    /// # Safety
-    /// The context holds a live task.
-    unsafe fn source(&self) -> u16 {
-        // SAFETY: per the caller.
-        unsafe { (*self.task).reactor_id }.cast_unsigned()
+    fn source(&self) -> u16 {
+        self.task().reactor_id.cast_unsigned()
     }
-
-    /// The source worker's slot of `task_results`.
-    ///
-    /// # Safety
-    /// As [`Context::source`], with a live server.
-    unsafe fn result_slot(&self) -> *mut u8 {
-        // SAFETY: the live server's `task_results`: an `EventData` per worker.
-        let results = unsafe { view::config(self.serv) }.task_results.cast::<u8>();
-        // SAFETY: per the caller.
-        let source = unsafe { self.source() };
-        results.wrapping_add(usize::from(source) * EVENT_DATA_SIZE)
+    /// The source worker's slot of `task_results`: an `EventData` per worker.
+    fn result_slot(&self) -> *mut u8 {
+        let results = self.config().task_results.cast::<u8>();
+        results.wrapping_add(usize::from(self.source()) * EVENT_DATA_SIZE)
     }
-
     /// `buf->size()`: the packed result's header and payload.
-    ///
-    /// # Safety
-    /// `buf` is the live packed result.
-    unsafe fn packed_size(&self) -> usize {
-        // SAFETY: per the caller.
+    fn packed_size(&self) -> usize {
+        // SAFETY: the ops reading it run with the live packed result.
         size_of::<DataHead>() + unsafe { (*self.buf).len } as usize
     }
 }
@@ -101,6 +141,9 @@ thread_local! {
 const SW_TASK_WORKER: c_int = 4;
 const EVENT_FINISH: u8 = 9;
 const PIPE_MASTER: c_int = 1;
+/// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
+const SW_WORKER_BUSY: u8 = 1;
+const SW_WORKER_IDLE: u8 = 2;
 /// `SW_LOG_ERROR`, `SW_WAIT`, `Lock::MUTEX`.
 const SW_LOG_ERROR: c_int = 5;
 const SW_WAIT: c_int = 2;
@@ -125,7 +168,7 @@ fn errno() -> c_int {
 /// Answers task-worker op `op` with `arg` over the `WorkersNative<2>` at `context`.
 ///
 /// # Safety
-/// `context` is workers.cc's live `TaskWorkerContext`, whose objects the op reads are live.
+/// `context` is a live `TaskWorkerContext`, whose objects the op reads are live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn swr_v1_task_worker_call(
     context: *mut c_void,
@@ -134,25 +177,18 @@ pub unsafe extern "C-unwind" fn swr_v1_task_worker_call(
 ) -> u64 {
     // SAFETY: per the caller.
     let ctx = unsafe { &mut *context.cast::<Context>() };
-    // SAFETY: per the caller.
-    let answer = unsafe { worker(ctx, op, arg) };
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { task(ctx, op) });
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { finish(ctx, op, arg) });
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { result(ctx, op) });
-    answer.unwrap_or_else(|| std::process::abort())
+    native::native(ctx, op, arg)
+        .or_else(|| worker(ctx, op, arg))
+        .or_else(|| task(ctx, op))
+        .or_else(|| finish(ctx, op, arg))
+        .or_else(|| result(ctx, op))
+        .unwrap_or_else(|| std::process::abort())
 }
 
 /// The task pool and worker: setup, state and callbacks.
-///
-/// # Safety
-/// As [`swr_v1_task_worker_call`].
-unsafe fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let (serv, pool, worker) = (ctx.serv, ctx.pool, ctx.worker);
-    // SAFETY: the context's live server.
-    let config = unsafe { view::config(serv) };
+fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+    let (serv, worker) = (ctx.serv, ctx.worker);
+    let config = ctx.config();
     match op {
         OP_TASK_IPC_MODE => return Some(u64::from(config.task_ipc_mode)),
         OP_TASK_ENABLE_COROUTINE => return Some(u64::from(config.task_enable_coroutine)),
@@ -161,30 +197,28 @@ unsafe fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_ALL_CORE_WORKER_NUM => {
             return Some(u64::from(config.worker_num) + u64::from(config.task_worker_num));
         }
-        OP_EXCEEDED_MAX_REQUEST => {
-            // SAFETY: the context's live worker.
-            let exceeded = unsafe { swr_v1_worker_exceeded_max_requests(worker) };
-            return Some(u64::from(exceeded));
-        }
-        // SAFETY: the context's live task pool.
-        OP_SET_SYSVMSG => unsafe { (*pool).schedule_by_sysvmsg = true },
+        OP_EXCEEDED_MAX_REQUEST => return Some(u64::from(ctx.worker().exceeded_max_request())),
+        OP_SET_SYSVMSG => ctx.pool().schedule_by_sysvmsg = true,
         OP_CREATE_TASK_WORKER => {
-            // SAFETY: the live pool's worker `arg`, one of `task_worker_num`.
-            let worker = unsafe { (*pool).workers }.wrapping_add(usize::try_from(arg).ok()?);
-            // SAFETY: the live server and its task worker.
+            let worker = ctx.pool().workers.wrapping_add(usize::try_from(arg).ok()?);
+            // SAFETY: the live server and its task worker `arg`, one of `task_worker_num`.
             unsafe { crate::worker_methods::create_worker(serv, worker) };
         }
+        OP_WORKER_STATUS => {
+            let status = if arg != 0 {
+                SW_WORKER_BUSY
+            } else {
+                SW_WORKER_IDLE
+            };
+            ctx.worker().set_status(status);
+        }
         // SAFETY: the context's live worker.
-        OP_WORKER_STATUS => unsafe { set_worker_status(worker, arg) },
-        // SAFETY: as above.
         OP_WORKER_SHUTDOWN => unsafe { swr_v1_worker_shutdown(worker) },
         // SAFETY: the context's live server and worker.
         OP_STOP_ASYNC => unsafe { entry::stop_async_worker(serv, worker.cast()) },
-        // SAFETY: the context's live worker.
-        OP_ADD_REQUEST_COUNT => unsafe { swr_v1_worker_add_request_count(worker) },
+        OP_ADD_REQUEST_COUNT => ctx.worker().add_request_count(),
         OP_WORKER_ENTER => {
-            // SAFETY: as above.
-            swoole_set_worker_id(unsafe { swr_v1_worker_id(worker) });
+            swoole_set_worker_id(ctx.worker().id());
             swoole_set_worker_type(SW_TASK_WORKER);
         }
         OP_FAIL_REACTOR => log::error(
@@ -206,8 +240,7 @@ unsafe fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_INIT => {
             // SAFETY: the context's live worker.
             unsafe { swr_v1_worker_init(worker) };
-            // SAFETY: the context's live task pool.
-            let pool = unsafe { &*pool };
+            let pool = ctx.pool();
             worker_set_max_request(worker, pool.max_request, pool.max_request_grace);
         }
         _ => return None,
@@ -216,18 +249,11 @@ unsafe fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The task being run: its header, its callbacks and the pipe it came over.
-///
-/// # Safety
-/// As [`swr_v1_task_worker_call`].
-unsafe fn task(ctx: &mut Context, op: u32) -> Option<u64> {
+fn task(ctx: &mut Context, op: u32) -> Option<u64> {
     let serv = ctx.serv;
-    let task = || {
-        // SAFETY: the ops that read it run with a live task.
-        unsafe { &*ctx.task }
-    };
     Some(match op {
         LOG_UNKNOWN_COMMAND => {
-            let id = task().server_fd;
+            let id = ctx.task().server_fd;
             log::error_log(
                 SW_LOG_ERROR,
                 E::SW_ERROR_SERVER_INVALID_COMMAND as c_int,
@@ -246,24 +272,18 @@ unsafe fn task(ctx: &mut Context, op: u32) -> Option<u64> {
             }
             0
         }
-        OP_INFO_TYPE => u64::from(task().kind),
-        OP_TASK_EXT_FLAGS => u64::from(task().ext_flags),
+        OP_INFO_TYPE => u64::from(ctx.task().kind),
+        OP_TASK_EXT_FLAGS => u64::from(ctx.task().ext_flags),
         OP_ON_PIPE_MESSAGE => {
-            // SAFETY: the context's live server.
-            let slot = unsafe { view::state_ptr(serv) };
-            // SAFETY: its state, live as long as it; the slot takes the server and the task.
-            if let Some(slot) = unsafe { &*slot }.callbacks.slot(CB_PIPE_MESSAGE) {
-                // SAFETY: as above.
+            if let Some(slot) = ctx.state().callbacks.slot(CB_PIPE_MESSAGE) {
+                // SAFETY: the slot takes the server and the task.
                 unsafe { slot.call(serv, ctx.task.cast_mut().cast()) };
             }
             0
         }
         OP_ON_TASK => {
-            // SAFETY: the context's live server.
-            let state = unsafe { view::state_ptr(serv) };
-            // SAFETY: its state; `onTask` takes the server and the task and returns an int.
-            let slot = unsafe { &*state }.callbacks.slot(CB_TASK)?;
-            // SAFETY: as above.
+            let slot = ctx.state().callbacks.slot(CB_TASK)?;
+            // SAFETY: `onTask` takes the server and the task and returns an int.
             signed(unsafe { slot.receive(serv, ctx.task.cast_mut().cast()) })
         }
         OP_READ_TASK => {
@@ -281,76 +301,43 @@ unsafe fn task(ctx: &mut Context, op: u32) -> Option<u64> {
             );
             0
         }
-        OP_ON_TASK_POOL => {
-            type OnTask = unsafe extern "C-unwind" fn(
-                *mut PoolRecord,
-                *mut WorkerRecord,
-                *mut DataHead,
-            ) -> c_int;
-            // SAFETY: the context's live task pool; `onTask` is set by `OP_POOL_INIT`.
-            let on_task = unsafe { (*ctx.pool).on_task };
-            // SAFETY: the pool's `int (*)(ProcessPool *, Worker *, EventData *)`.
-            let on_task =
-                unsafe { core::mem::transmute::<*const c_void, Option<OnTask>>(on_task) }?;
-            // SAFETY: the live pool and worker, and the task just read.
-            signed(unsafe { on_task(ctx.pool, ctx.worker, ctx.buf) })
-        }
+        OP_ON_TASK_POOL => signed(native::on_task(ctx.pool, ctx.worker, ctx.buf)),
         _ => return None,
     })
 }
 
 /// `Server::finish`: the result goes back to the worker that sent the task.
-///
-/// # Safety
-/// As [`swr_v1_task_worker_call`].
-unsafe fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
-    // SAFETY: per the caller.
-    let source = unsafe { ctx.source() };
     Some(match op {
         OP_SOURCE_WORKER => {
             // SAFETY: the live server.
-            ctx.worker = unsafe { view::worker(serv, source) };
+            ctx.worker = unsafe { view::worker(serv, ctx.source()) };
             u64::from(!ctx.worker.is_null())
         }
         LOG_INVALID_SOURCE => {
-            let id = source;
+            let id = ctx.source();
             log::warning(c"Server::finish", format_args!("invalid worker_id[{id}]"));
             0
         }
-        OP_PACK_RESULT => {
-            ctx.packed = ctx.buf;
-            // SAFETY: the context's `EventData` and the result's bytes.
-            u64::from(unsafe {
-                task_pack(
-                    ctx.packed.cast::<EventHead>(),
-                    ctx.data.cast(),
-                    ctx.data_len,
-                )
-            })
-        }
-        OP_RESULT_IN_SHM => {
-            // SAFETY: per the caller.
-            ctx.packed = unsafe { ctx.result_slot() }.cast();
-            // SAFETY: the source worker's result slot and the result's bytes.
-            u64::from(unsafe {
-                task_pack(
-                    ctx.packed.cast::<EventHead>(),
-                    ctx.data.cast(),
-                    ctx.data_len,
-                )
-            })
+        OP_PACK_RESULT | OP_RESULT_IN_SHM => {
+            ctx.packed = if op == OP_PACK_RESULT {
+                ctx.buf
+            } else {
+                ctx.result_slot().cast()
+            };
+            let packed = ctx.packed.cast::<EventHead>();
+            // SAFETY: an `EventData` (the context's, or the source's result slot) and
+            // the result's bytes.
+            u64::from(unsafe { task_pack(packed, ctx.data.cast(), ctx.data_len) })
         }
         OP_ZERO_RESULT => {
-            // SAFETY: the packed result's header.
-            unsafe { (*ctx.packed).len = 0 };
+            ctx.packed().len = 0;
             0
         }
         OP_FINISH_HEADER => {
-            // SAFETY: the finishing task.
-            let id = unsafe { (*ctx.task).fd };
-            // SAFETY: the packed result's header.
-            let packed = unsafe { &mut *ctx.packed };
+            let id = ctx.task().fd;
+            let packed = ctx.packed();
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "DataHead's uint16_t ext_flags"
@@ -377,58 +364,38 @@ unsafe fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(!ctx.socket.is_null())
         }
         OP_SEND_STREAM => {
+            let send = |data: *const u8, length| {
+                let send_sync = swoole_rs_tls::upstream::socket_send_sync;
+                // SAFETY: the stream's live connection and `length` bytes at `data`.
+                unsafe { send_sync(ctx.socket, data.cast(), length, 0) }
+            };
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "htonl's uint32_t, as upstream"
             )]
             let length = (ctx.data_len as u32).to_be_bytes();
-            // SAFETY: the stream's live connection and the length's bytes.
-            let mut retval = unsafe {
-                swoole_rs_tls::upstream::socket_send_sync(
-                    ctx.socket,
-                    length.as_ptr().cast(),
-                    length.len(),
-                    0,
-                )
-            };
+            let mut retval = send(length.as_ptr(), length.len());
             if retval > 0 {
-                // SAFETY: as above, with the result's bytes.
-                retval = unsafe {
-                    swoole_rs_tls::upstream::socket_send_sync(
-                        ctx.socket,
-                        ctx.data.cast(),
-                        ctx.data_len,
-                        0,
-                    )
-                };
+                retval = send(ctx.data, ctx.data_len);
             }
             signed(retval as i64)
         }
         OP_SEND_PIPE => {
-            // SAFETY: the packed result.
-            let size = unsafe { ctx.packed_size() };
+            let (buf, size) = (ctx.buf.cast(), ctx.packed_size());
             // SAFETY: the source worker, live, and the packed result.
             let sent = unsafe {
-                entry::send_to_worker_from_worker(
-                    serv,
-                    ctx.worker,
-                    ctx.buf.cast(),
-                    size,
-                    PIPE_MASTER,
-                )
+                entry::send_to_worker_from_worker(serv, ctx.worker, buf, size, PIPE_MASTER)
             };
             signed(sent as i64)
         }
         OP_LOCK_WORKER => {
-            // SAFETY: the live source worker.
-            let lock = unsafe { (*ctx.worker).lock };
-            // SAFETY: its live mutex.
+            let lock = ctx.worker().lock;
+            // SAFETY: the source worker's live mutex.
             signed(unsafe { swoole_rs_locks::swr_v1_locks_lock(lock, MUTEX, libc::LOCK_EX, -1, 0) })
         }
         OP_UNLOCK_WORKER => {
-            // SAFETY: the live source worker.
-            let lock = unsafe { (*ctx.worker).lock };
-            // SAFETY: its live mutex, which this process holds.
+            let lock = ctx.worker().lock;
+            // SAFETY: the source worker's live mutex, which this process holds.
             signed(unsafe { swoole_rs_locks::swr_v1_locks_unlock(lock, MUTEX) })
         }
         _ => return None,
@@ -437,51 +404,37 @@ unsafe fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 
 /// `Server::finish`'s blocking result: the waitall file, the shared slot's
 /// count and the source worker's notify pipe.
-///
-/// # Safety
-/// As [`swr_v1_task_worker_call`].
-unsafe fn result(ctx: &mut Context, op: u32) -> Option<u64> {
-    // SAFETY: per the caller.
-    let slot = unsafe { ctx.result_slot() };
-    // SAFETY: a waitall slot holds a counter, then its temporary file's path.
-    let path = || unsafe {
-        CStr::from_ptr(
-            slot.wrapping_add(size_of::<DataHead>() + 4)
-                .cast::<c_char>(),
-        )
+fn result(ctx: &mut Context, op: u32) -> Option<u64> {
+    let slot = ctx.result_slot();
+    let path = || {
+        let path = slot
+            .wrapping_add(size_of::<DataHead>() + 4)
+            .cast::<c_char>();
+        // SAFETY: a waitall slot holds a counter, then its temporary file's path.
+        unsafe { CStr::from_ptr(path) }
     };
-    // SAFETY: per the caller.
-    let source = unsafe { ctx.source() };
-    let notify_pipe = || {
-        // SAFETY: the context's live server.
-        let state = unsafe { view::state_ptr(ctx.serv) };
-        // SAFETY: its state, live as long as it.
-        unsafe { &*state }.task_pipe(source.into())
+    let notify_pipe = || ctx.state().task_pipe(ctx.source().into());
+    let master_socket = || {
+        // SAFETY: the source worker's live notify pipe.
+        unsafe { (*notify_pipe()).master_socket }
     };
     Some(match op {
         OP_OPEN_RESULT_FILE => {
+            let flags = libc::O_APPEND | libc::O_WRONLY;
             // SAFETY: a NUL-terminated path.
-            ctx.file = unsafe {
-                swoole_rs_ossupport::swr_v1_os_file_open(
-                    -1,
-                    path().as_ptr(),
-                    libc::O_APPEND | libc::O_WRONLY,
-                    0,
-                )
-            };
+            ctx.file =
+                unsafe { swoole_rs_ossupport::swr_v1_os_file_open(-1, path().as_ptr(), flags, 0) };
             u64::from(ctx.file != -1)
         }
         OP_WRITE_RESULT_FILE => {
-            // SAFETY: the packed result.
-            let bytes = unsafe { ctx.packed_size() };
+            let bytes = ctx.packed_size();
             // SAFETY: the open file and the packed result.
             let written =
                 unsafe { swoole_rs_ossupport::fd_write_all(ctx.file, true, ctx.buf.cast(), bytes) };
             u64::from(written == bytes)
         }
         LOG_RESULT_WRITE => {
-            // SAFETY: the packed result.
-            let bytes = unsafe { ctx.packed_size() };
+            let bytes = ctx.packed_size();
             let path = path().to_string_lossy();
             log::sys_warning(
                 c"Server::finish",
@@ -490,9 +443,9 @@ unsafe fn result(ctx: &mut Context, op: u32) -> Option<u64> {
             0
         }
         OP_FINISH_COUNT => {
+            let count = slot.wrapping_add(size_of::<DataHead>()).cast();
             // SAFETY: the slot's leading counter, which every waiting process shares.
-            let count =
-                unsafe { AtomicU32::from_ptr(slot.wrapping_add(size_of::<DataHead>()).cast()) };
+            let count = unsafe { AtomicU32::from_ptr(count) };
             count.fetch_add(1, Ordering::SeqCst);
             swoole_rs_ossupport::swr_v1_os_file_close(ctx.file);
             ctx.file = -1;
@@ -500,27 +453,20 @@ unsafe fn result(ctx: &mut Context, op: u32) -> Option<u64> {
         }
         OP_NOTIFY_RESULT => {
             let flag = 1u64.to_ne_bytes();
+            let write = swoole_rs_tls::socket_pair::write;
             // SAFETY: the source worker's live notify pipe.
-            let written = unsafe {
-                swoole_rs_tls::socket_pair::write(notify_pipe(), flag.as_ptr().cast(), flag.len())
-            };
+            let written = unsafe { write(notify_pipe(), flag.as_ptr().cast(), flag.len()) };
             signed(written as i64)
         }
         OP_NOTIFY_WOULD_BLOCK => {
             let error = errno();
-            // SAFETY: the source worker's live notify pipe.
-            let socket = unsafe { (*notify_pipe()).master_socket };
-            // SAFETY: its live master socket.
-            let socket = unsafe { &mut *socket };
+            let socket = crate::objects::socket(master_socket().cast())?;
             u64::from(socket.catch_error(error) == SW_WAIT)
         }
         OP_WAIT_NOTIFY_WRITABLE => {
-            // SAFETY: as above.
-            let socket = unsafe { (*notify_pipe()).master_socket };
-            // SAFETY: as above.
-            signed(unsafe {
-                swoole_rs_reactor::socket_upstream::socket_wait_event(socket, -1, SW_EVENT_WRITE)
-            })
+            let wait = swoole_rs_reactor::socket_upstream::socket_wait_event;
+            // SAFETY: the notify pipe's live master socket.
+            signed(unsafe { wait(master_socket(), -1, SW_EVENT_WRITE) })
         }
         _ => return None,
     })

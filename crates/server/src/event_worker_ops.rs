@@ -12,9 +12,7 @@ use swoole_rs_process::methods::{
     swoole_set_worker_type,
 };
 use swoole_rs_process::worker_globals::{swr_v1_worker_global_detach, swr_v1_worker_globals};
-use swoole_rs_process::worker_record::{
-    WorkerRecord, swr_v1_worker_set_status, swr_v1_worker_shutdown,
-};
+use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_shutdown};
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     HOOK_BEFORE_SERVER_SHUTDOWN, HOOK_BEFORE_WORKER_START, OP_ABORT_WORKER, OP_ALL_CORE_WORKER_NUM,
@@ -274,21 +272,6 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         _ => return None,
     })
-}
-
-/// `OP_WORKER_STATUS`: `set_status_to_busy()` for a nonzero `arg`, else
-/// `set_status_to_idle()`.
-///
-/// # Safety
-/// `worker` is live.
-pub(crate) unsafe fn set_worker_status(worker: *mut WorkerRecord, arg: u64) {
-    let status = if arg != 0 {
-        SW_WORKER_BUSY
-    } else {
-        SW_WORKER_IDLE
-    };
-    // SAFETY: per the caller.
-    unsafe { swr_v1_worker_set_status(worker, status) };
 }
 
 /// `OP_SIGNAL_SET`: the signal number (-1 for SIGRTMIN) in the low word and the
