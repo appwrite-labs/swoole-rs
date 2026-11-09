@@ -1,6 +1,7 @@
 //! `Swoole\Server::set()`: every option's lookup, conversion, bounds and the
 //! order upstream reads them in, written straight into the Server's Rust
 //! records, including the build switches config.h would define.
+use crate::lifecycle::ServerObject;
 use crate::server::{display_errors, fatal, server, set_last_error};
 use std::{
     ffi::{CStr, CString, c_int, c_void},
@@ -14,7 +15,7 @@ use swoole_rs_zend::{
     string::bytes,
     sys::{
         IS_REFERENCE, swr_zend_callable_warning, swr_zend_hash_foreach_key,
-        swr_zend_try_facade_update, zend_object, zend_string, zend_ulong, zval,
+        swr_zend_try_facade_update, zend_string, zend_ulong, zval,
     },
     type_of,
 };
@@ -344,8 +345,9 @@ fn set(call: &Call) {
     let s = Settings { serv, vht };
     // Every early exit after an `E_ERROR` or a deferred bailout leaves the
     // handler, whose last step raises it.
-    if let Ok(true) = options(&s, call.this()) {
-        match finish(call.this(), vht) {
+    let this = ServerObject::this(call);
+    if let Ok(true) = options(&s, this) {
+        match finish(this, vht) {
             Ok(()) => call.set_bool(true),
             Err(bailed) => bailed.defer(),
         }
@@ -356,9 +358,8 @@ fn set(call: &Call) {
 
 /// `$this->ports[0]->set($settings)` (Port's own method), then the merge into
 /// `$this->setting`.
-fn finish(this: *mut zend_object, settings: *mut zval) -> Result<(), bailout::Bailout> {
-    // SAFETY: `$this` is a Server object.
-    let port = unsafe { crate::lifecycle::port_at(this, 0) };
+fn finish(this: ServerObject, settings: *mut zval) -> Result<(), bailout::Bailout> {
+    let port = this.port_at(0);
     // SAFETY: the primary port's object zval.
     let port = unsafe { swoole_rs_zend::object_of(port) };
     // SAFETY: the live Port object, its class and the settings argument.
@@ -371,11 +372,11 @@ fn finish(this: *mut zend_object, settings: *mut zval) -> Result<(), bailout::Ba
             &[settings],
         )
     }?;
-    crate::port::merge_setting(crate::server::SERVER.entry(), this, settings).map(|_| ())
+    crate::port::merge_setting(crate::server::SERVER.entry(), this.raw(), settings).map(|_| ())
 }
 
 /// The options, in upstream's order. `Ok(false)`: return false.
-fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
+fn options(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
     use field as f;
     // php_swoole_set_global_option, _coroutine_option and _aio_option; the
     // first defers its fatal error for a size that does not parse.
@@ -474,14 +475,13 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
 
 /// `bootstrap` into `$this->bootstrap`, and `init_arguments` kept on the object
 /// (uncounted, as upstream's `server_object->init_arguments = *ztmp`).
-fn thread_options(s: &Settings, this: *mut zend_object) -> Step {
+fn thread_options(s: &Settings, this: ServerObject) -> Step {
     if let Some(value) = s.get(c"bootstrap") {
-        // SAFETY: `$this`, a live object.
-        let ce = unsafe { (*this).ce };
+        let (ce, object) = (this.class(), this.raw());
         // SAFETY: `$this` of its class and a live value, which the property
         // copies; the shim traps a bailout.
         let bailed = unsafe {
-            swr_zend_try_facade_update(ce, this, c"bootstrap".as_ptr(), 9, value.as_ptr())
+            swr_zend_try_facade_update(ce, object, c"bootstrap".as_ptr(), 9, value.as_ptr())
         };
         if bailed != 0 {
             bailout::Bailout.defer();
@@ -491,8 +491,7 @@ fn thread_options(s: &Settings, this: *mut zend_object) -> Step {
     if let Some(value) = s.get(c"init_arguments") {
         // SAFETY: a live value.
         let value = unsafe { value.as_ptr().read() };
-        // SAFETY: `$this` is a Server object.
-        unsafe { crate::lifecycle::data(this) }.init_arguments = value;
+        this.set_init_arguments(value);
     }
     Ok(())
 }
@@ -661,7 +660,7 @@ fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
 }
 
 /// The HTTP, buffer, queue and thread options, and the final checks.
-fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
+fn http(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
     use field as f;
     s.flag(c"http_parse_cookie", f::HTTP_PARSE_COOKIE);
     s.flag(c"http_parse_post", f::HTTP_PARSE_POST);
