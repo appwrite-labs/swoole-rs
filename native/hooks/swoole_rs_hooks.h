@@ -18,9 +18,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef bool (*swr_v1_hook_offload)(void (*job)(void *), void *context);
-/* coroutine::async_job: job(context) on the pool while the current coroutine waits. */
-bool swr_v1_hook_coroutine_async_job(void (*job)(void *), void *context);
 int32_t swr_v1_hook_transition(uint32_t requested, uint32_t installed, uint32_t bit);
 uint32_t swr_v1_hook_filter(uint32_t flags, uint32_t unavailable);
 bool swr_v1_hook_file_result(bool open, int64_t result);
@@ -56,14 +53,10 @@ typedef struct swr_v1_hook_socket_ops {
 /* What the hooked functions (Rust, under upstream's swoole_coroutine_<name>) need
  * of native; registered at load (swr_v1_hook_set_host). */
 typedef struct swr_v1_hook_host {
-    bool (*in_coroutine)(void);    /* a reactor and a coroutine are running */
-    swr_v1_hook_offload offload;   /* swoole::coroutine::async */
-    int (*sleep)(double seconds);  /* System::sleep */
     const void *uring;             /* &swr_v1_uring_native with io_uring, else NULL */
     bool uring_statx;              /* HAVE_IOURING_STATX */
     bool uring_ftruncate;          /* HAVE_IOURING_FTRUNCATE */
     bool uring_futex;              /* HAVE_IOURING_FUTEX */
-    void (*set_last_error)(int error);
     swr_v1_hook_socket_ops socket;
 } swr_v1_hook_host;
 void swr_v1_hook_set_host(const swr_v1_hook_host *host);
