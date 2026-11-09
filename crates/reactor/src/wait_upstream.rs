@@ -147,21 +147,17 @@ unsafe fn iouring_waitpid(
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
-    // SAFETY: crates/hooks's engine and its static host.
+    // SAFETY: crates/hooks's engine, which this crate sits below.
     unsafe extern "C" {
-        #[link_name = "swr_v1_uring_native"]
-        static IOURING_HOST: c_void;
         fn swr_v1_uring_waitpid(
-            host: *const c_void,
             pid: libc::pid_t,
             status: *mut c_int,
             options: c_int,
             timeout: f64,
         ) -> libc::pid_t;
     }
-    // SAFETY: as the caller promises; the engine's static host.
-    let result =
-        unsafe { swr_v1_uring_waitpid(&raw const IOURING_HOST, pid, status, options, timeout) };
+    // SAFETY: as the caller promises.
+    let result = unsafe { swr_v1_uring_waitpid(pid, status, options, timeout) };
     if result < 0 {
         log::set_last_error(errno());
     }

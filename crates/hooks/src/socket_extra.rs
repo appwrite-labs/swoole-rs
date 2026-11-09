@@ -22,9 +22,9 @@ pub struct SocketExtra {
     close_hook: Option<(CloseHook, *mut c_void, *mut c_void)>,
     /// `socks5_proxy` and `http_proxy`: each an owner, or null.
     pub(crate) proxies: [*mut ProxyState; 2],
-    /// The ring's host when the socket is a `UringSocket`, else null.
+    /// The ring's host when the socket is a `UringSocket`, else none.
     #[cfg(feature = "iouring")]
-    pub(crate) uring: *const c_void,
+    pub(crate) uring: Option<&'static crate::uring::Host>,
     /// A `UringSocket`'s TLS memory BIOs (read, write), which its session owns.
     #[cfg(feature = "iouring")]
     pub(crate) bio: [*mut c_void; 2],
@@ -54,7 +54,7 @@ impl SocketExtra {
             close_hook: None,
             proxies: [ptr::null_mut(); 2],
             #[cfg(feature = "iouring")]
-            uring: ptr::null(),
+            uring: None,
             #[cfg(feature = "iouring")]
             bio: [ptr::null_mut(); 2],
         }))

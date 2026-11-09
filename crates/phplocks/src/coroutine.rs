@@ -68,25 +68,15 @@ mod host {
         // SAFETY: the lock sleeps only inside a coroutine.
         done(unsafe { system_sleep(seconds) })
     }
-    // SAFETY: crates/hooks's engine and its static host.
-    #[cfg(feature = "iouring")]
-    unsafe extern "C" {
-        #[link_name = "swr_v1_uring_native"]
-        static IOURING_HOST: c_void;
-        fn swr_v1_uring_futex_wait(host: *const c_void, futex: *mut u32) -> c_int;
-        fn swr_v1_uring_futex_wakeup(host: *const c_void, futex: *mut u32) -> c_int;
-    }
     /// `Iouring::futex_wait`.
     #[cfg(feature = "iouring")]
     pub(super) fn wait(word: &std::sync::atomic::AtomicU32) -> CoroutineOutcome {
-        // SAFETY: the lock's live word, in a coroutine.
-        done(unsafe { swr_v1_uring_futex_wait(&raw const IOURING_HOST, word.as_ptr()) })
+        done(swoole_rs_hooks::iouring::futex_wait(word))
     }
     /// `Iouring::futex_wakeup`.
     #[cfg(feature = "iouring")]
     pub(super) fn wake(word: &std::sync::atomic::AtomicU32) -> CoroutineOutcome {
-        // SAFETY: as in `wait`.
-        done(unsafe { swr_v1_uring_futex_wakeup(&raw const IOURING_HOST, word.as_ptr()) })
+        done(swoole_rs_hooks::iouring::futex_wakeup(word))
     }
     pub(super) fn warning() -> u8 {
         swoole_rs_corebase::log::warning(
