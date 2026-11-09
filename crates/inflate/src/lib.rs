@@ -5,8 +5,9 @@
 
 #![forbid(unsafe_code)]
 
-pub mod brotli;
 pub mod zstd;
+
+pub use swoole_rs_brotli as brotli;
 
 use std::ffi::c_int;
 
