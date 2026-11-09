@@ -77,6 +77,7 @@ impl Scheduler {
     }
 
     /// Frees the registry once no coroutine is live (on deactivation).
+    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn release_live(&mut self) {
         if self.count() == 0 && !self.live.is_null() {
             // SAFETY: the box `insert` leaked; nothing else refers to it.
