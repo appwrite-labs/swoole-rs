@@ -39,6 +39,7 @@ use super::{
     HANDLER_NONE, HANDLER_OWN, Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK,
     set_signal_all,
 };
+use crate::os::kill;
 use crate::reaper::{
     self, RELOAD_KILL_ONE, RELOAD_NONE, RELOAD_SIGNALLED, RELOAD_SKIP, Reap, Waited,
 };
@@ -429,11 +430,6 @@ fn signal<H: Host>(h: &mut H, signo: i32) {
     }
 }
 
-fn kill(pid: c_int, signo: c_int) -> c_int {
-    // SAFETY: kill only sends a signal.
-    unsafe { libc::kill(pid, signo) }
-}
-
 /// `Server::restart_worker_process`: replace the worker whose process exited.
 fn restart<H: Host>(h: &mut H, exited: u64) -> i64 {
     let pid = exited & 0xffff_ffff;
@@ -472,8 +468,7 @@ fn reload<H: Host>(h: &mut H, all: bool) -> bool {
         h.log(LOG_RELOAD_SINGLE_PROCESS, 0, 0);
         return false;
     }
-    // SAFETY: getpid has no preconditions.
-    if i64::from(unsafe { libc::getpid() }) != manager_pid {
+    if i64::from(crate::os::getpid()) != manager_pid {
         let signo = if all { libc::SIGUSR1 } else { libc::SIGUSR2 };
         return kill(pid(manager_pid.cast_unsigned()), signo) == 0;
     }
@@ -633,7 +628,7 @@ mod tests {
     fn reload_sets_the_managers_request_in_its_own_process() {
         let manager = Manager::default();
         // SAFETY (test): getpid has no preconditions.
-        let me = u64::from(unsafe { libc::getpid() }.cast_unsigned());
+        let me = u64::from(crate::os::getpid().cast_unsigned());
         let mut h = Script::with(&[
             (OP_MANAGER, core::ptr::from_ref(&manager) as u64),
             (OP_MANAGER_PID, me),

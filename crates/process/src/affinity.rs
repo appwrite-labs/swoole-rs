@@ -33,8 +33,7 @@ pub fn worker_affinity(worker_id: u32, available: Option<&[i32]>, thread: bool) 
     };
     // SAFETY: cpu_set_t is a plain bit array; all zeroes is the empty set.
     let mut current: libc::cpu_set_t = unsafe { zeroed() };
-    // SAFETY: getpid has no preconditions.
-    let pid = unsafe { libc::getpid() };
+    let pid = crate::os::getpid();
     // SAFETY: `current` is a valid cpu_set_t of the size passed.
     if unsafe { libc::sched_getaffinity(pid, size_of::<libc::cpu_set_t>(), &raw mut current) } < 0 {
         return failed(1);
