@@ -59,10 +59,35 @@ jobs:
       zts: ${{ steps.paths.outputs.zts }}
       threadcontext: ${{ steps.paths.outputs.threadcontext }}
       asan: ${{ steps.paths.outputs.asan }}
+      families: ${{ steps.phpt.outputs.families }}
+      engines: ${{ steps.phpt.outputs.engines }}
+      baseline: ${{ steps.phpt.outputs.baseline }}
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # The PHPT families of the modules this PR touches (every family for shared build
+      # inputs), and main's merge-tier run whose upstream results gate them. Upstream runs
+      # here too when this PR changes how upstream or its PHPTs are built or run.
+      - id: phpt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          families=$(python3 -c "
+          from tools.dev import MODULES, changed_modules, phpt_families
+          modules = changed_modules('origin/${{ github.base_ref }}', consumers=False)
+          print('all' if modules == sorted(MODULES) else ' '.join(phpt_families(modules)))")
+          echo "families=$families" >> "$GITHUB_OUTPUT"
+          read -r run sha <<< "$(python3 tools/ci.py phpt-baseline || true)"
+          if [ -n "$run" ] && git diff --quiet "$sha" HEAD -- tools/build_upstream.py corpus/upstream/; then
+            echo "baseline=$run" >> "$GITHUB_OUTPUT"
+            echo 'engines=["cargo"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'engines=["upstream", "cargo"]' >> "$GITHUB_OUTPUT"
+          fi
       - id: paths
         run: |
           changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
@@ -200,7 +225,7 @@ jobs:
   # Candidate-lane gates of the modules this PR touches, and of those whose packages
   # depend on a touched crate (every module for shared build inputs). It fails only on
   # a phase that didn't fail in main's latest completed merge-tier run: red main
-  # doesn't block a PR, a new failure does.
+  # doesn't block a PR, a new failure does. The PHPT families run in the phpt job.
   gates:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
@@ -242,7 +267,7 @@ jobs:
         id: candidate
         continue-on-error: true
         run: >
-          python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }}
+          python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }} --skip-phase phpt
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
       - if: steps.candidate.outcome == 'failure'
         env:
@@ -254,12 +279,41 @@ jobs:
           name: gates-reports
           path: target/reports/
 
+  # The PHPT families of the modules this PR touches on the Cargo build, sharded with the
+  # services they expect and gated on upstream (.github/workflows/phpt.yml).
+  phpt-build:
+    needs: changes
+    if: needs.changes.outputs.families != ''
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    outputs:
+      php: ${{ steps.build.outputs.php }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: build
+        uses: ./.github/actions/phpt-build
+        with:
+          engines: ${{ join(fromJSON(needs.changes.outputs.engines), ' ') }}
+
+  phpt:
+    needs: [changes, phpt-build]
+    if: needs.changes.outputs.families != ''
+    uses: ./.github/workflows/phpt.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      php: ${{ needs.phpt-build.outputs.php }}
+      engines: ${{ needs.changes.outputs.engines }}
+      families: ${{ needs.changes.outputs.families != 'all' && needs.changes.outputs.families || '' }}
+      baseline: ${{ needs.changes.outputs.baseline }}
+
   # The one check main's ruleset requires: every blocking job passed or was skipped.
   # A skipped reusable-workflow caller reports no check at all, so the ruleset can't
   # name those jobs directly. cares and asan stay informative.
   required:
     if: always()
-    needs: [rust, tooling, changes, hybrid, gates, iouring, zts, threadcontext]
+    needs: [rust, tooling, changes, hybrid, gates, phpt-build, phpt, iouring, zts, threadcontext]
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:

@@ -776,6 +776,19 @@ class ChangedModules(unittest.TestCase):
 
 
 class FocusedPhases(unittest.TestCase):
+    def test_skipped_phases_are_not_run_and_the_run_is_partial(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            planned = [('ownership', ['check-ownership']), ('phpt', ['families.sh'])]
+            with patch.object(dev, 'ROOT', root), patch.object(dev, 'plan', return_value=planned), \
+                 patch.object(dev, 'execute', return_value=SimpleNamespace(returncode=0)) as run, \
+                 patch('sys.argv', ['dev.py', 'candidate', '--module', 'locks', '--skip-phase', 'php*']):
+                self.assertEqual(dev.main(), 0)
+            report = json.loads(next(root.glob('target/reports/dev/*/loop.json')).read_text())
+            self.assertEqual((report['status'], report['selected_phases']), ('partial_passed', ['ownership']))
+            self.assertEqual(report['not_run'][0]['phase'], 'phpt')
+            self.assertEqual(run.call_count, 1)
+
     def test_explicit_selection_keeps_canonical_order_and_records_omitted_gates(self):
         for codes, status, exit_code in [([0, 0], 'partial_passed', 0), ([0, 2], 'partial_failed', 1)]:
             with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
