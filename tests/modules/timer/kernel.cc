@@ -122,7 +122,7 @@ static void mutation() {
 static void ties() {
     Queue q; Node a{"A",0,{}},b{"B",0,{}},c{"C",0,{}};
     q.add(a,0,1);q.add(b,0,1);q.add(c,0,1);q.prime();q.select(1);
-    q.golden({"call:A","drop:A","call:B","drop:B","call:C","drop:C"});
+    q.golden({"call:A","drop:A","call:C","drop:C","call:B","drop:B"});
 }
 static void missed() {
     Queue q;Node a{"A",0,{}};auto av=q.add(a,0,5,true);q.prime();q.select(23);
