@@ -3,12 +3,15 @@
 //! `native/hooks/system.cc` defines; what they need of Swoole's PHP side is
 //! in the runtime's [`Ops`](crate::Ops). Both are declared in
 //! `native/hooks/swoole_rs_phpruntime.h`.
-use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};
+use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t};
 use std::{ffi::CStr, ptr::NonNull};
 use swoole_rs_hooks::{
     co_io::swr_v1_hook_co_socket_set_err,
     co_socket::CoSocket,
-    lifecycle::{swr_v1_hook_co_socket_check_liveness, swr_v1_hook_co_socket_shutdown},
+    lifecycle::{
+        swr_v1_hook_co_socket_check_liveness, swr_v1_hook_co_socket_close,
+        swr_v1_hook_co_socket_shutdown,
+    },
     socket_members, socket_tls,
 };
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_timeout};
@@ -39,23 +42,13 @@ type Body = unsafe extern "C" fn(*mut c_void);
 #[repr(C)]
 struct SocketOps {
     make: Body,
-    close: Body,
     free: Body,
-    option: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, bool),
     connect: unsafe extern "C" fn(*mut c_void, *const c_char, size_t, c_int, c_int) -> bool,
     peer_chain: unsafe extern "C" fn(
         *mut c_void,
         unsafe extern "C" fn(*mut c_void, *const c_char, size_t),
         *mut c_void,
     ),
-    vector: unsafe extern "C" fn(
-        *mut c_void,
-        c_int,
-        *const libc::iovec,
-        c_int,
-        *mut c_int,
-        *mut size_t,
-    ) -> ssize_t,
     proxy: unsafe extern "C" fn(
         *mut c_void,
         bool,
@@ -115,6 +108,15 @@ struct FdCall {
 unsafe fn trap<T>(body: Body, call: &mut T) -> Result<(), Bailout> {
     // SAFETY: per the caller; `call` is live for the call.
     unsafe { bailout::trap(body, (&raw mut *call).cast()) }
+}
+
+/// `call.result = socket->close()` over a [`SocketCall`]: a body for [`trap`],
+/// since the close may resume coroutines that run PHP.
+unsafe extern "C" fn close_body(call: *mut c_void) {
+    // SAFETY: `trap` passes the caller's live `SocketCall`.
+    let call = unsafe { &mut *call.cast::<SocketCall>() };
+    // SAFETY: the call's live socket; `close` is not virtual.
+    call.result = unsafe { swr_v1_hook_co_socket_close(socket_members::record(call.socket)) };
 }
 /// `SW_SOCK_*`.
 pub(crate) mod kind {
@@ -357,15 +359,25 @@ impl Socket {
             result: false,
         };
         // SAFETY: `close` takes a `SocketCall` of this live socket; PHP callbacks may bail out.
-        unsafe { trap(native().close, &mut call) }?;
+        unsafe { trap(close_body, &mut call) }?;
         Ok(call.result)
     }
 
     /// `setsockopt(level, name, value)`; `logged` through the coroutine
     /// socket, which logs a failure.
     pub(crate) fn set_option(&self, level: i32, name: i32, value: i32, logged: bool) {
-        // SAFETY: a live socket.
-        unsafe { (native().option)(self.raw(), level, name, value, logged) };
+        if logged {
+            // SAFETY: a live socket; the member is not virtual.
+            let _ = unsafe { socket_members::set_int_option(self.raw(), level, name, value) };
+        } else {
+            self.with_record((), |record| {
+                let length: socklen_t = c_int::BITS / 8;
+                // SAFETY: setsockopt reads `length` bytes of the `int` `value`.
+                unsafe {
+                    libc::setsockopt(record.fd, level, name, (&raw const value).cast(), length)
+                };
+            });
+        }
     }
 
     pub(crate) fn set_nodelay(&self, value: i32) {
@@ -602,7 +614,7 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
 /// the native table.
 pub mod co {
     pub use super::Io;
-    use super::{SocketCall, native, trap};
+    use super::{SocketCall, close_body, native, trap};
     use libc::{c_char, c_int, c_void, iovec};
     pub use swoole_rs_hooks::co_socket::CoSocket;
     use swoole_rs_hooks::{
@@ -618,6 +630,9 @@ pub mod co {
         },
         shutdown::{swr_v1_hook_socket_bound_co, swr_v1_hook_socket_flags},
         socket_members, socket_tls, swr_v1_hook_timeout_restore, swr_v1_hook_timeout_scope,
+    };
+    use swoole_rs_reactor::{
+        swr_v1_reactor_iov_destroy, swr_v1_reactor_iov_prepare, swr_v1_reactor_iov_view,
     };
     use swoole_rs_zend::bailout::Bailout;
 
@@ -678,7 +693,7 @@ pub mod co {
             result: false,
         };
         // SAFETY: per the caller; `close` takes a `SocketCall`.
-        unsafe { trap(native().close, &mut call) }?;
+        unsafe { trap(close_body, &mut call) }?;
         Ok(call.result)
     }
 
@@ -760,8 +775,32 @@ pub mod co {
         index: *mut c_int,
         offset: *mut usize,
     ) -> isize {
-        // SAFETY: per the caller.
-        unsafe { (native().vector)(socket, op, vectors, count, index, offset) }
+        // SAFETY: per the caller, `count` readable vectors.
+        let prepared = unsafe { swr_v1_reactor_iov_prepare(vectors, count) };
+        if prepared.status != 0 {
+            // `IOVector`'s constructor throws here, which ended at this Rust frame.
+            std::process::abort();
+        }
+        // Each member reads only an `IOVector`'s first field, its owner.
+        let mut owner = prepared.owner;
+        let vector = (&raw mut owner).cast::<c_void>();
+        let member: unsafe extern "C" fn(*mut c_void, *mut c_void) -> isize = match op {
+            0 => socket_members::readv,
+            1 => socket_members::readv_all,
+            2 => socket_members::writev,
+            _ => socket_members::writev_all,
+        };
+        // SAFETY: per the caller, over the live vector; no subclass overrides the members.
+        let result = unsafe { member(socket, vector) };
+        // SAFETY: the live owner.
+        let state = unsafe { swr_v1_reactor_iov_view(owner) };
+        // SAFETY: per the caller, writable.
+        unsafe { index.write(state.index) };
+        // SAFETY: as above.
+        unsafe { offset.write(state.offset_bytes) };
+        // SAFETY: the owner `prepare` made, released once.
+        unsafe { swr_v1_reactor_iov_destroy(owner) };
+        result
     }
 
     /// `recvfrom(buf, length)`, into the peer address.
