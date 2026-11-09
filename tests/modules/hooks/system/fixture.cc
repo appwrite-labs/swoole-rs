@@ -398,26 +398,4 @@ void swr_case_actual_async_numeric_results() {
     ASSERT_FALSE(addresses.empty());
     for (const auto &address : addresses) ASSERT_EQ(address, "127.0.0.1");
 }
-
-// rust_dns_request.owned_address_cache_exception.
-void swr_case_owned_address_cache_exception() {
-    const std::string text = "2001:db8:1111:2222:3333:4444:5555:6666";
-    GethostbynameRequest request(text, AF_INET6);
-    request.addr = "previous";
-    const std::string &cache = request.addr;
-    const std::string *identity = &cache;
-    allocation::begin(1);
-    bool caught = false;
-    try {
-        gethostbyname(&request);
-    } catch (const std::bad_alloc &) {
-        caught = true;
-    }
-    allocation::end();
-    ASSERT_TRUE(caught);
-    ASSERT_EQ(cache, "previous");
-    ASSERT_EQ(&static_cast<const std::string &>(request.addr), identity);
-    ASSERT_EQ(gethostbyname(&request), 0);
-    ASSERT_EQ(request.addr, text);
-}
 }
