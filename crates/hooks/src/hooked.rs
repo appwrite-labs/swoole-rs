@@ -84,8 +84,8 @@ fn adopt(socket: Co) -> c_int {
 
 /// The ring's host when `io_uring` takes the call, as upstream's `SW_USE_IOURING`.
 #[cfg(feature = "iouring")]
-fn ring(host: &Host) -> Option<*const crate::uring::Host> {
-    (!host.uring.is_null()).then_some(host.uring.cast())
+fn ring(host: &Host) -> Option<&'static crate::uring::Host> {
+    host.uring
 }
 
 /// Hooked `socket(2)`.
@@ -289,8 +289,8 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring).filter(|_| nfds == 1) {
-        // SAFETY: the ring's host; one pollfd.
-        return unsafe { crate::uring::swr_v1_uring_poll(ring, fds, timeout) };
+        // SAFETY: one pollfd.
+        return unsafe { crate::uring::poll(ring, fds, timeout) };
     }
     // SAFETY: as the caller promises, in a coroutine.
     unsafe { swr_v1_hook_poll(fds, nfds, timeout, &crate::poll::NATIVE) }
@@ -397,8 +397,8 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        // SAFETY: the ring's host.
-        return unsafe { crate::uring::swr_v1_uring_close_fd(ring, fd) };
+        // SAFETY: no pointer arguments.
+        return unsafe { crate::uring::close_fd(ring, fd) };
     }
     // SAFETY: native `async`, in a coroutine.
     unsafe { swr_v1_hook_close_fd(fd, Some(crate::stdio::NATIVE.offload)) }
@@ -425,8 +425,8 @@ pub unsafe extern "C" fn swoole_coroutine_read(
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        // SAFETY: the ring's host; the caller's buffer.
-        return unsafe { crate::uring::swr_v1_uring_read(ring, fd, buf, count, -1.0) };
+        // SAFETY: the caller's buffer.
+        return unsafe { crate::uring::read(ring, fd, buf, count, -1.0) };
     }
     let call = || {
         let mut socket = blocking(fd, false);
@@ -457,8 +457,8 @@ pub unsafe extern "C" fn swoole_coroutine_write(
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        // SAFETY: the ring's host; the caller's buffer.
-        return unsafe { crate::uring::swr_v1_uring_write(ring, fd, buf, count, -1.0) };
+        // SAFETY: the caller's buffer.
+        return unsafe { crate::uring::write(ring, fd, buf, count, -1.0) };
     }
     let call = || {
         let mut socket = blocking(fd, true);
