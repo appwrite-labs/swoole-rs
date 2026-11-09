@@ -1,10 +1,10 @@
 name: PHP versions
 # Upstream and the Cargo-built swoole.so built against each PHP release upstream supports
 # (8.2 to 8.5: v6.2.5 refuses 8.1) besides 8.3 (the merge tier's), compiled from source
-# by .devcontainer/php.sh, then every PHPT on both in 4 shards. zend-sys binds each version's headers, so a struct layout,
-# inline function or VM change breaks the Cargo build on that version alone. Any test
-# that passes on upstream must pass on the Cargo build. No services: the tests that
-# need one skip on both engines, as do the network ones.
+# by .devcontainer/php.sh, then every PHPT on both in 4 shards. zend-sys binds each
+# version's headers, so a struct layout, inline function or VM change breaks the Cargo
+# build on that version alone. Any test that passes on upstream must pass on the Cargo
+# build. No services: the tests that need one skip on both engines, as do the network ones.
 # Nightly; a PR that changes this workflow or php.sh runs it too.
 on:
   schedule:
