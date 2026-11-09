@@ -5,15 +5,27 @@
 use std::io::Error;
 use std::os::raw::{c_int, c_void};
 
-/// `setsockopt(fd, level, name, &value, sizeof(int)) == 0`.
-fn set_int(fd: c_int, level: c_int, name: c_int, value: c_int) -> bool {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "sizeof(int) fits socklen_t"
-    )]
-    let length = size_of::<c_int>() as libc::socklen_t;
-    // SAFETY: `value` is a local int and `length` is its size; fd validity is the kernel's to check.
+/// `setsockopt(fd, level, name, &value, sizeof(value)) == 0`, for the plain option
+/// values (`int`, `timeval`, `linger`).
+fn set<T: Copy>(fd: c_int, level: c_int, name: c_int, value: T) -> bool {
+    let length = libc::socklen_t::try_from(size_of::<T>()).unwrap_or(0);
+    // SAFETY: `value` is a local of `length` bytes; fd validity is the kernel's to check.
     unsafe { libc::setsockopt(fd, level, name, (&raw const value).cast::<c_void>(), length) == 0 }
+}
+
+fn set_int(fd: c_int, level: c_int, name: c_int, value: c_int) -> bool {
+    set(fd, level, name, value)
+}
+
+/// `SO_LINGER {1, 0}`: closing the socket now sends RST, as closing one with unread
+/// bytes in the kernel does.
+#[must_use]
+pub fn swr_v1_socket_reset_on_close(fd: c_int) -> bool {
+    let linger = libc::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    set(fd, libc::SOL_SOCKET, libc::SO_LINGER, linger)
 }
 
 /// `fcntl(fd, command[, argument])`, retried on `EINTR`.
@@ -224,21 +236,7 @@ pub fn swr_v1_socket_kernel_timeout(fd: c_int, send: bool, timeout: f64) -> bool
     } else {
         libc::SO_RCVTIMEO
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "sizeof(timeval) fits socklen_t"
-    )]
-    let length = size_of::<libc::timeval>() as libc::socklen_t;
-    // SAFETY: `value` is a local timeval and `length` its size.
-    unsafe {
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            name,
-            (&raw const value).cast::<c_void>(),
-            length,
-        ) == 0
-    }
+    set(fd, libc::SOL_SOCKET, name, value)
 }
 
 #[cfg(test)]
@@ -340,6 +338,7 @@ mod tests {
         assert!(swr_v1_socket_kernel_timeout(fd, true, 1.5));
         assert!(swr_v1_socket_kernel_timeout(fd, false, 0.25));
         assert!(swr_v1_socket_tcp_nodelay(fd, 1));
+        assert!(swr_v1_socket_reset_on_close(fd));
         close(fd);
         assert!(!swr_v1_socket_buffer_size(-1, false, true, 1));
     }
