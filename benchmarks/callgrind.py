@@ -52,6 +52,9 @@ WORKLOADS = {
     'table': ('benchmarks/primitives', 'GET', '/table', None, b'2016\n'),
     'channel': ('benchmarks/primitives', 'GET', '/channel', None, b'2016\n'),
     'task': ('corpus/10-task-workers', 'POST', '/', b'[1,2,3]', b'{"sum":6,"count":3,"task_worker":true}'),
+    # A prepared SELECT through hooked PDO mysql (#2066); needs MySQL on MYSQL_HOST (root/root,
+    # database test) and --php-extension mysqlnd --php-extension pdo --php-extension pdo_mysql.
+    'mysql': ('benchmarks/mysql', 'GET', '/?id=42', None, b'{"id":42,"name":"benchmark"}'),
 }
 
 

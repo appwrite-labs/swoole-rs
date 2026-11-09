@@ -34,6 +34,12 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 `benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
 `10-task-workers`.
 
+`mysql` runs a prepared `SELECT` per request through hooked PDO mysql against
+`benchmarks/mysql`, on one connection per worker. It needs MySQL on `MYSQL_HOST`
+(default `127.0.0.1`, root/root, database `test`) and `--php-extension mysqlnd
+--php-extension pdo --php-extension pdo_mysql`. Its record started at a
+provisional 1.10; the ratchet lowers it once two merge runs beat it.
+
 ```sh
 python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --workload echo-1k --limits benchmarks/callgrind_limits.json \
   --engine hybrid=target/hybrid/rust/modules/swoole.so \
