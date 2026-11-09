@@ -40,7 +40,7 @@ One immutable 12-event catalog.
 
 All three are Rust (`crates/ports/src/methods.rs`), over the Rust-owned settings and
 socket record. Only the server calls them, through the table `swoole_init` registers
-(`swoole_rs_ports::METHODS`, `swoole_rs_server::port_config::PortMethods`), with
+(`swoole_rs_ports::register_methods`, `swoole_rs_server::port_config::PortMethods`), with
 `get_protocols`, `init_protocol`, `destroy_http_request`, `ssl_context_init`,
 `ssl_create`, `import`, `close` and the DTLS session lookups: ports depends on the
 server, so the server can't name them. `init_protocol` keeps its upstream symbol for
