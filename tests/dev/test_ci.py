@@ -31,12 +31,6 @@ deleted = [branch for branch in data.get('deleted', []) if call.startswith('api 
 if deleted:
     sys.stderr.write(f'gh: No commit found for SHA: {deleted[0]} (HTTP 422)\\n')
     sys.exit(1)
-elif args[0] == 'api' and args[1].startswith('search/issues?q='):
-    if data.get('search') is None:
-        sys.stderr.write('HTTP 403: API rate limit exceeded\\n')
-        sys.exit(1)
-    term = urllib.parse.unquote(args[1].split('=', 1)[1]).split('"')[1]
-    print(json.dumps(data['search'].get(term, [])))
 elif args[:2] == ['api', '--paginate']:
     for issue in data.get('open_pulls' if '/pulls?' in args[2] else 'issues', []):
         print(json.dumps(issue))
@@ -49,6 +43,12 @@ elif args[0] == 'api' and '/pulls/' in args[1]:
     pull = queue.pop(0) if len(queue) > 1 else queue[0]
     save()
     print(json.dumps({'html_url': 'p', 'merged': False, 'merge_commit_sha': None, **pull}))
+elif args[0] == 'api' and args[1].startswith('search/issues?q='):
+    if data.get('search') is None:
+        sys.stderr.write('HTTP 403: API rate limit exceeded\\n')
+        sys.exit(1)
+    term = urllib.parse.unquote(args[1].split('=', 1)[1]).split('"')[1]
+    print(json.dumps(data['search'].get(term, [])))
 elif args[0] == 'api' and '/check-runs' in args[1]:
     for check in data.get('checks', {}).get(args[1].split('/')[-2], []):
         print(json.dumps(check))
