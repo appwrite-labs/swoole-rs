@@ -19,7 +19,7 @@ use crate::pool::{
     Bailed, PoolCall, PoolHooks, PoolIpc, PoolLoop, Step, pool_ipc_free, pool_ipc_new,
     pool_ipc_prepare, pool_run, swr_v1_process_pool_ipc_listener,
 };
-use crate::reaper::{RELOAD_KILL_ONE, RELOAD_NONE, ReapHost};
+use crate::reaper::{self, RELOAD_KILL_ONE, RELOAD_NONE, Reap, Waited, wait_child};
 use crate::reload_task::{ReloadTask, Warn};
 use crate::worker_record::WorkerRecord;
 use crate::worker_registry::{
@@ -1041,22 +1041,7 @@ impl<H: PoolHost> Pool<H> {
     /// `ProcessPool::wait`: reap and restart workers until the pool stops, then
     /// stop them all.
     fn wait(&mut self) -> Result<i64, Bailed> {
-        let host = ReapHost {
-            ctx: ptr::from_mut(self).cast(),
-            leave_when_stopped: true,
-            skip_no_child: false,
-            running: reap_running::<H>,
-            reload_requested: reap_reload_requested::<H>,
-            reload_task: reap_reload_task::<H>,
-            wait: pool_reap_wait,
-            service: reap_service::<H>,
-            wait_failed: reap_wait_failed::<H>,
-            start_reload: reap_start_reload::<H>,
-            reap: reap_exited::<H>,
-            finish_reload: reap_finish_reload::<H>,
-            warn: self.h.warn(),
-        };
-        host.run();
+        reaper::run(self);
 
         self.set_running(false);
         self.drop_reload_task();
@@ -1180,78 +1165,63 @@ impl<H: PoolHost> Pool<H> {
     }
 }
 
-fn pool_of<'a, H>(ctx: *mut c_void) -> &'a mut Pool<H> {
-    // SAFETY: the reap host's context is the `Pool` running `wait`, on its stack.
-    unsafe { &mut *ctx.cast::<Pool<H>>() }
-}
-
-unsafe extern "C" fn reap_running<H: PoolHost>(ctx: *mut c_void) -> bool {
-    pool_of::<H>(ctx).running()
-}
-
-unsafe extern "C" fn reap_reload_requested<H: PoolHost>(ctx: *mut c_void) -> bool {
-    pool_of::<H>(ctx).reload_init()
-}
-
-unsafe extern "C" fn reap_reload_task<H: PoolHost>(ctx: *mut c_void) -> *mut ReloadTask {
-    pool_of::<H>(ctx).reload_task()
-}
-
-/// The reap loop's wait: `wait()`, or `waitpid(-1, WNOHANG)` when `nonblock`,
-/// with the status and the wait's `errno` written out.
-///
-/// # Safety
-/// `status` and `error` are writable.
-pub unsafe extern "C" fn pool_reap_wait(
-    _ctx: *mut c_void,
-    nonblock: bool,
-    status: *mut c_int,
-    error: *mut c_int,
-) -> c_int {
-    let mut exit_status = 0;
-    let pid = if nonblock {
-        // SAFETY: waitpid(2) into a local.
-        unsafe { libc::waitpid(-1, &raw mut exit_status, libc::WNOHANG) }
-    } else {
-        // SAFETY: wait(2) into a local.
-        unsafe { libc::wait(&raw mut exit_status) }
-    };
-    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    // SAFETY: the reap loop's out-pointers.
-    unsafe { *error = errno };
-    // SAFETY: as above.
-    unsafe { *status = exit_status };
-    pid
-}
-
-unsafe extern "C" fn reap_service<H: PoolHost>(ctx: *mut c_void) {
-    pool_of::<H>(ctx).service();
-}
-
-unsafe extern "C" fn reap_wait_failed<H: PoolHost>(ctx: *mut c_void) {
-    pool_of::<H>(ctx).op(LOG_WAIT_FAILED, 0);
-}
-
-unsafe extern "C" fn reap_start_reload<H: PoolHost>(ctx: *mut c_void) -> u32 {
-    let pool = pool_of::<H>(ctx);
-    if !pool.reload_init() {
-        return RELOAD_NONE;
+impl<H: PoolHost> Reap for Pool<H> {
+    fn leave_when_stopped(&self) -> bool {
+        true
     }
-    pool.set_reload_init(false);
-    // SAFETY: the reload `reload` started, live until `drop_reload_task`.
-    unsafe { &mut *pool.reload_task() }.add_workers(pool.worker_records());
-    RELOAD_KILL_ONE
-}
 
-unsafe extern "C" fn reap_exited<H: PoolHost>(ctx: *mut c_void, pid: c_int, status: c_int) -> bool {
-    pool_of::<H>(ctx).reap(pid, status)
-}
+    fn skip_no_child(&self) -> bool {
+        false
+    }
 
-unsafe extern "C" fn reap_finish_reload<H: PoolHost>(ctx: *mut c_void) {
-    let pool = pool_of::<H>(ctx);
-    pool.drop_reload_task();
-    if !pool.on_after_reload().is_null() {
-        pool.op(OP_ON_AFTER_RELOAD, 0);
+    fn running(&mut self) -> bool {
+        Pool::running(self)
+    }
+
+    fn reload_requested(&mut self) -> bool {
+        self.reload_init()
+    }
+
+    fn active_reload(&mut self) -> Option<&mut ReloadTask> {
+        // SAFETY: the reload `reload` started, live until `drop_reload_task`.
+        unsafe { Pool::reload_task(self).as_mut() }
+    }
+
+    fn wait(&mut self, nonblock: bool) -> Waited {
+        wait_child(nonblock)
+    }
+
+    fn service(&mut self) {
+        Pool::service(self);
+    }
+
+    fn wait_failed(&mut self) {
+        self.op(LOG_WAIT_FAILED, 0);
+    }
+
+    fn start_reload(&mut self) -> u32 {
+        if !self.reload_init() {
+            return RELOAD_NONE;
+        }
+        self.set_reload_init(false);
+        // SAFETY: the reload `reload` started, live until `drop_reload_task`.
+        unsafe { &mut *Pool::reload_task(self) }.add_workers(self.worker_records());
+        RELOAD_KILL_ONE
+    }
+
+    fn reap(&mut self, pid: c_int, status: c_int) -> bool {
+        Pool::reap(self, pid, status)
+    }
+
+    fn finish_reload(&mut self) {
+        self.drop_reload_task();
+        if !self.on_after_reload().is_null() {
+            self.op(OP_ON_AFTER_RELOAD, 0);
+        }
+    }
+
+    fn warn(&self) -> Warn {
+        self.h.warn()
     }
 }
 
