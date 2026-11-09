@@ -218,7 +218,11 @@ class Socket : public swr_v1_co_socket {
         created(swr_v1_hook_co_socket_accepted(this, this, sock, server_sock));
     }
 
-    void created(uint32_t result);
+    // Rust reports what the constructor did (crates/hooks/src/co_socket.rs).
+    void created(uint32_t result) {
+        extra_ = extra_owner_.value.owner;
+        swr_v1_hook_co_socket_created(this, result);
+    }
 
     void check_return_value(ssize_t retval) {
         swr_v1_hook_co_socket_check(this, retval);
