@@ -13,7 +13,6 @@ use swoole_rs_zend::{
     string::bytes,
     sys::{IS_ARRAY, swr_zend_hash_foreach_key, zend_string, zend_ulong, zval},
     type_of,
-    value::{get_double, table},
 };
 
 /// `SW_TIMER_MIN_SEC`.
@@ -369,8 +368,7 @@ impl Source for Zend<'_> {
         let Some(value) = self.settings.get(key) else {
             return Ok(None);
         };
-        // SAFETY: a live setting.
-        let value = unsafe { get_double(value) };
+        let value = value.double();
         checked().map(|()| Some(value))
     }
 
@@ -391,7 +389,7 @@ impl Source for Zend<'_> {
             return Ok(None);
         };
         // SAFETY: a live setting; its bailouts stay deferred.
-        let callable = unsafe { swoole_rs_phpruntime::callable_create(value) };
+        let callable = unsafe { swoole_rs_phpruntime::callable_create(value.as_ptr()) };
         if checked().is_err() {
             if !callable.is_null() {
                 self.release(callable);
@@ -430,16 +428,14 @@ impl Source for Zend<'_> {
         let Some(certs) = self.settings.get(c"ssl_sni_certs") else {
             return Ok(());
         };
-        // SAFETY: a live setting.
-        if unsafe { type_of(certs) } != IS_ARRAY {
+        let Some(certs) = certs.array() else {
             let message = c"ssl_sni_certs requires an array mapping host names to cert paths";
             return Err(self.fatal(E_WARNING, message));
-        }
+        };
         let mut entries: Vec<(*mut zend_string, *mut zval)> = Vec::new();
-        // SAFETY: a live array, which nothing modifies while set() runs.
-        let certs = unsafe { table(certs) };
-        // SAFETY: as above; `each` only records the entries.
-        unsafe { swr_zend_hash_foreach_key(certs, Some(each), (&raw mut entries).cast()) };
+        // SAFETY: a live array, which nothing modifies while set() runs; `each`
+        // only records the entries.
+        unsafe { swr_zend_hash_foreach_key(certs.as_ptr(), Some(each), (&raw mut entries).cast()) };
         for (key, value) in entries {
             if key.is_null() {
                 let message = c"ssl_sni_certs array requires string host name keys";
