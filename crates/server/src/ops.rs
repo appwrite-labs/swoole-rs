@@ -655,8 +655,6 @@ pub const LOG_BASE_ALLOC_PORT_NUMS: u32 = 532;
 pub const OP_FACTORY_END: u32 = 540;
 /// `factory_->notify(object)`.
 pub const OP_FACTORY_NOTIFY: u32 = 541;
-/// `Server::task_pack(object, data, offset)`: the byte count rides in `offset`.
-pub const OP_TASK_PACK: u32 = 542;
 /// `send_to_worker_from_worker(get_worker(number), object, length, master | nonblock) > 0`.
 pub const OP_PIPE_TO_WORKER: u32 = 543;
 

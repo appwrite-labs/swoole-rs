@@ -4,10 +4,7 @@
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_corebase::{CoreAllocator, DataHead};
-use swoole_rs_reactor::reactor_upstream::{
-    prepared, reactor_change, reactor_interest, reactor_set_handler,
-};
-use swoole_rs_reactor::{Handler, ReactorFields, SocketRecord};
+use swoole_rs_reactor::SocketRecord;
 
 use crate::pool_native::{
     BusPacket, read_bus, swr_v1_bus_buffer, swr_v1_bus_buffer_size, swr_v1_bus_packet,
@@ -186,72 +183,13 @@ impl Bus {
     }
 }
 
-/// `Reactor::change`'s add and del, `Reactor::interest`'s `remove_read_event`.
-const ADD: u32 = 0;
-const DEL: u32 = 2;
-const REMOVE_READ: u32 = 4;
-/// `SW_EVENT_READ`.
-pub(crate) const EVENT_READ: c_int = 1 << 9;
+pub(crate) use crate::reactor_handle::{EVENT_READ, Reactor};
 
-/// A live `Reactor`, used by the thread that runs it.
-#[derive(Clone, Copy)]
-pub(crate) struct Reactor(*mut c_void);
-
-#[expect(
-    clippy::mut_from_ref,
-    reason = "the reactor's fields, which only its own thread touches"
-)]
 impl Reactor {
-    /// # Safety
-    /// `reactor` is a live `Reactor` while the handle is used, on its own thread.
-    pub(crate) unsafe fn of(reactor: *mut c_void) -> Self {
-        Self(reactor)
-    }
-    /// The thread's reactor (`sw_reactor()`), which the worker ops run under.
-    pub(crate) fn thread() -> Self {
-        Self(swoole_rs_corebase::thread_reactor())
-    }
-    pub(crate) fn ptr(self) -> *mut c_void {
-        self.0
-    }
-    pub(crate) fn fields(&self) -> &mut ReactorFields {
-        // SAFETY: a live reactor, which begins with its prepared state.
-        let fields = unsafe { prepared(self.0) }.fields;
-        // SAFETY: as above.
-        unsafe { &mut *fields }
-    }
-    /// `reactor->add(sock, events)`.
-    pub(crate) fn add(self, sock: &mut SocketRecord, events: c_int) -> c_int {
-        // SAFETY: a live reactor and socket.
-        unsafe { reactor_change(self.0, sock, ADD, events) }
-    }
-    /// `reactor->del(sock)`.
-    pub(crate) fn del(self, sock: &mut SocketRecord) -> c_int {
-        // SAFETY: as above.
-        unsafe { reactor_change(self.0, sock, DEL, 0) }
-    }
-    /// `reactor->remove_read_event(sock)`.
-    pub(crate) fn unread(self, sock: &mut SocketRecord) {
-        // SAFETY: as above.
-        let _ = unsafe { reactor_interest(self.0, sock, REMOVE_READ, 0) };
-    }
     /// `reactor->drain_write_buffer(sock)`.
     pub(crate) fn drain(self, sock: &mut SocketRecord) {
         // SAFETY: as above.
         unsafe { drain_write_buffer(self.0, (&raw mut *sock).cast()) };
-    }
-    pub(crate) fn set_handler(self, fd_type: c_int, event: c_int, handler: Handler) {
-        // SAFETY: a live reactor.
-        unsafe { reactor_set_handler(self.0, fd_type, event, Some(handler)) };
-    }
-    /// `reactor->set_default_error_handler(handler)`.
-    pub(crate) fn set_error_handler(self, handler: Handler) {
-        // SAFETY: a live reactor.
-        let handlers = unsafe { prepared(self.0) }.handlers;
-        // SAFETY: its live handler tables.
-        unsafe {
-            swoole_rs_reactor::swr_v1_reactor_handlers_set_default(handlers, 2, Some(handler));
-        }
     }
     pub(crate) fn if_exit(self) -> bool {
         // SAFETY: a live reactor.

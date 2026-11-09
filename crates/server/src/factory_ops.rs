@@ -41,7 +41,7 @@ use swoole_rs_reactor::SocketRecord;
 use crate::base_factory::{SendData, is_stream_event, low16};
 use crate::callbacks::{CB_CLOSE, CB_USER_WORKER_START, CallbackSlot};
 use crate::reactor_ops::ThreadRecord;
-use crate::records::swr_v1_server_connection;
+use crate::records::{VERIFIED, VERIFIED_TLS};
 use crate::{ConnectionRecord, ServerCounters, view};
 
 /// The context crates/process's factory methods run over (its `FactoryContext`).
@@ -97,9 +97,6 @@ const DISPATCH_CO_CONN_LB: u8 = 8;
 /// `SW_SERVER_EVENT_CLOSE`, `SW_PIPE_MASTER`.
 const EVENT_CLOSE: u8 = 4;
 const PIPE_MASTER: c_int = 1;
-/// `swr_v1_server_connection`'s `get_connection_verify_no_ssl` and `get_connection_verify`.
-const VERIFIED: u32 = 2;
-const VERIFIED_TLS: u32 = 3;
 
 /// A `Context` is only ever seen through [`swr_v1_factory_call`], whose caller keeps
 /// its server, and whichever of its worker, send and status the op reads, live for
@@ -154,33 +151,27 @@ fn worker_id(arg: u64) -> u16 {
 /// Answers factory op `op` with `arg` over the context at `context`.
 ///
 /// # Safety
-/// `context` is crates/process's live `FactoryContext`, whose objects the op reads are live.
+/// `context` is crates/process's live `FactoryContext`, whose objects the op reads are live:
+/// the ops after `OP_SEND_CONN_ACTIVE` or `OP_SESSION_CONN` run with its connection.
+/// Only this makes a [`Context`], so the stages below take its proof with it.
 pub(crate) unsafe extern "C-unwind" fn swr_v1_factory_call(
     context: *mut c_void,
     op: u32,
     arg: u64,
 ) -> u64 {
-    // SAFETY: per the caller.
+    // SAFETY: per the caller; the stages below read the context under this proof.
     let ctx = unsafe { &mut *context.cast::<Context>() };
-    // SAFETY: per the caller.
-    let answer = unsafe { fact(ctx, op) };
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { connection(ctx, op, arg) });
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { worker(ctx, op, arg) });
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { server(ctx, op, arg) });
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { native(ctx, op, arg) });
+    let answer = fact(ctx, op);
+    let answer = answer.or_else(|| connection(ctx, op, arg));
+    let answer = answer.or_else(|| worker(ctx, op, arg));
+    let answer = answer.or_else(|| server(ctx, op, arg));
+    let answer = answer.or_else(|| native(ctx, op, arg));
     answer.unwrap_or_else(|| std::process::abort())
 }
 
 /// The reactor threads, barriers, pipes and message box the factory makes and
 /// frees, and its writes to the workers and reactor threads.
-///
-/// # Safety
-/// As [`swr_v1_factory_call`].
-unsafe fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let (state, tables, config) = (ctx.state(), ctx.tables(), ctx.config());
     let barriers = |init: bool| {
@@ -269,10 +260,7 @@ pub(crate) fn new_reactor_threads(state: &crate::ServerState, count: u16) -> *mu
 }
 
 /// The facts read from the server config, the data sent and the worker globals.
-///
-/// # Safety
-/// As [`swr_v1_factory_call`].
-unsafe fn fact(ctx: &Context, op: u32) -> Option<u64> {
+fn fact(ctx: &Context, op: u32) -> Option<u64> {
     let config = ctx.config();
     let send = || &ctx.send().info;
     Some(match op {
@@ -301,11 +289,7 @@ unsafe fn fact(ctx: &Context, op: u32) -> Option<u64> {
 
 /// The connection the data sent is for: selected by `OP_SEND_CONN_ACTIVE` or
 /// `OP_SESSION_CONN`, then read and updated by the ops after them.
-///
-/// # Safety
-/// As [`swr_v1_factory_call`]; the ops after the selecting one run with its
-/// connection.
-unsafe fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     match op {
         OP_SCHEDULE_WORKER => {
@@ -318,9 +302,7 @@ unsafe fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             return Some(signed(worker));
         }
         OP_SEND_CONN_ACTIVE => {
-            // SAFETY: the live server.
-            let conn = unsafe { ctx.server().at(ctx.fd) }.map(|conn| &raw mut *conn);
-            ctx.conn = conn.unwrap_or(core::ptr::null_mut());
+            ctx.conn = ctx.state().connection_ptr(ctx.fd.into(), 0);
             // SAFETY: null or a slot of the live connection table.
             return Some(u64::from(
                 unsafe { ctx.conn.as_ref() }.is_some_and(|c| c.active != 0),
@@ -329,9 +311,7 @@ unsafe fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_SESSION_CONN => {
             let kind = if arg != 0 { VERIFIED } else { VERIFIED_TLS };
             let session = ctx.send().info.fd;
-            let state = core::ptr::from_ref(ctx.state());
-            // SAFETY: the live server's state and tables.
-            ctx.conn = unsafe { swr_v1_server_connection(state, session, kind) };
+            ctx.conn = ctx.state().connection_ptr(session, kind);
             return Some(u64::from(!ctx.conn.is_null()));
         }
         _ => {}
@@ -433,10 +413,7 @@ fn low32(value: u64) -> u32 {
 }
 
 /// Forking, registering and running event and user workers.
-///
-/// # Safety
-/// As [`swr_v1_factory_call`].
-unsafe fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
     let registry = ctx.config().worker_registry.cast();
     // The pid or worker type in the argument, as native's `int` conversion keeps it.
@@ -522,10 +499,7 @@ unsafe fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The server's setup and teardown: connections, the manager and the task workers.
-///
-/// # Safety
-/// As [`swr_v1_factory_call`].
-unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let (tables, config) = (ctx.tables(), ctx.config());
     // SAFETY: the server's shared counters, mapped for its life.

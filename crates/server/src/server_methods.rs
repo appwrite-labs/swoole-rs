@@ -8,7 +8,7 @@ use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
 
 use crate::base_factory::{SEND_DATA, SendData};
-use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER, OP_TASK_PACK};
+use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER};
 use crate::ops::{
     RUN_ACCEPT, RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_SIGNAL, RUN_ST_INIT_PIPE_SOCKETS,
     RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
@@ -85,18 +85,31 @@ unsafe fn run(op: u32, arg: u64, ctx: &mut NativeContext) -> i64 {
     unsafe { run(op, arg, ctx) }
 }
 
-/// Each method that is one operation over the server alone: its symbol if C++ calls it, Rust
-/// name, return type and operation. `bool` and `int` returns narrow like C++.
+/// Runs `op` with `arg` over a context that lends `serv` and nothing else.
+fn run_on(serv: view::Server<'_>, op: u32, arg: u64) -> i64 {
+    // SAFETY: a live server, and no other object for the operation to read.
+    unsafe { run(op, arg, &mut NativeContext::new(serv.raw())) }
+}
+
+/// Each method that is one operation over the server alone: its symbol when the C++ test
+/// fixtures call it (then it takes the raw `Server *`), Rust name, return type and
+/// operation. `bool` and `int` returns narrow like C++.
 macro_rules! plain_methods {
-    ($($($symbol:literal)? fn $name:ident() -> $r:ty = $op:ident;)*) => {$(
+    ($($symbol:literal fn $name:ident() -> $r:ty = $op:ident;)*) => {$(
         #[doc = concat!("`Server::", stringify!($name), "`.")]
         ///
         /// # Safety
         /// `serv` is a live `Server`.
-        $(#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))])?
+        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
         pub unsafe extern "C-unwind" fn $name(serv: *mut c_void) -> $r {
             // SAFETY: as the caller guarantees.
-            Narrow::narrow(unsafe { run($op, 0, &mut NativeContext::new(serv)) })
+            Narrow::narrow(run_on(unsafe { view::Server::from_raw(serv) }, $op, 0))
+        }
+    )*};
+    ($(fn $name:ident() -> $r:ty = $op:ident;)*) => {$(
+        #[doc = concat!("`Server::", stringify!($name), "`.")]
+        pub fn $name(serv: view::Server<'_>) -> $r {
+            Narrow::narrow(run_on(serv, $op, 0))
         }
     )*};
 }
@@ -138,14 +151,17 @@ impl Narrow for u32 {
 }
 
 plain_methods! {
-    fn clear_timer() -> () = RUN_ST_CLEAR_TIMER;
     "_ZN6swoole6Server8shutdownEv" fn shutdown() -> bool = RUN_SHUTDOWN;
-    fn add_systemd_socket() -> c_int = RUN_SYSTEMD_SOCKETS;
     "_ZNK6swoole6Server19get_idle_worker_numEv" fn get_idle_worker_num() -> u32 = RUN_IDLE_WORKERS;
+    "_ZN6swoole6Server5startEv" fn start() -> c_int = RUN_START;
+}
+
+plain_methods! {
+    fn clear_timer() -> () = RUN_ST_CLEAR_TIMER;
+    fn add_systemd_socket() -> c_int = RUN_SYSTEMD_SOCKETS;
     fn get_idle_task_worker_num() -> c_int = RUN_IDLE_TASK_WORKERS;
     fn get_tasking_num() -> c_int = RUN_TASKING;
-    "_ZN6swoole6Server5startEv" fn start() -> c_int = RUN_START;
-    "_ZN6swoole6Server11start_checkEv" fn start_check() -> c_int = RUN_START_CHECK;
+    fn start_check() -> c_int = RUN_START_CHECK;
     fn store_listen_socket() -> () = RUN_STORE_LISTEN_SOCKET;
 }
 
@@ -180,8 +196,7 @@ pub unsafe extern "C-unwind" fn create(serv: *mut c_void) -> c_int {
         // SAFETY: the hook's callbacks take the server.
         unsafe { hook::swoole_call_hook(HOOK_BEFORE_SERVER_CREATE, serv.raw()) };
     }
-    // SAFETY: as the caller guarantees.
-    c_int::narrow(unsafe { run(RUN_CREATE, 0, &mut NativeContext::new(serv.raw())) })
+    c_int::narrow(run_on(serv, RUN_CREATE, 0))
 }
 
 /// `Server::destroy()`: nothing before the server is created.
@@ -195,10 +210,8 @@ pub unsafe extern "C-unwind" fn create(serv: *mut c_void) -> c_int {
 pub unsafe extern "C-unwind" fn destroy(serv: *mut c_void) {
     // SAFETY: per the caller, `serv` is a live `Server` for the call.
     let serv = unsafe { view::Server::from_raw(serv) };
-    // SAFETY: as the caller guarantees.
     if !serv.config().factory_.is_null() {
-        // SAFETY: as the caller guarantees.
-        unsafe { run(RUN_DESTROY, 0, &mut NativeContext::new(serv.raw())) };
+        run_on(serv, RUN_DESTROY, 0);
     }
 }
 
@@ -337,9 +350,10 @@ pub(crate) unsafe extern "C" fn enable_accept(serv: *mut c_void) {
 )]
 pub unsafe extern "C" fn accept_connection(reactor: *mut c_void, event: *mut c_void) -> c_int {
     // SAFETY: as the caller guarantees.
-    let fields = unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) }.fields;
-    // SAFETY: as above.
-    let mut ctx = NativeContext::new(unsafe { (*fields).ptr });
+    let serv = unsafe { crate::reactor_handle::Reactor::of(reactor) }
+        .fields()
+        .ptr;
+    let mut ctx = NativeContext::new(serv);
     // SAFETY: as the caller guarantees.
     let event_record = unsafe { &*event.cast::<swoole_rs_reactor::Event>() };
     ctx.reactor = reactor;
@@ -563,14 +577,15 @@ pub unsafe extern "C" fn send(
     unsafe { run(RUN_ST_SEND, arg, &mut ctx) != 0 }
 }
 
-/// `Server::set_document_root(path)`.
-///
-/// # Safety
-/// `serv` is a live `Server`, not started.
-pub unsafe fn set_document_root(serv: *mut c_void, path: &[u8]) -> bool {
-    let mut ctx = NativeContext::new(serv);
+/// `Server::set_document_root(path)`, before the server starts.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "`swoole_server_set` ignores the result, as upstream's does"
+)]
+pub fn set_document_root(serv: view::Server<'_>, path: &[u8]) -> bool {
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.data = path.as_ptr().cast();
-    // SAFETY: as the caller guarantees; the path lives for the call.
+    // SAFETY: the live server; the path lives for the call.
     unsafe { run(RUN_ST_DOCUMENT_ROOT, path.len() as u64, &mut ctx) != 0 }
 }
 
@@ -587,7 +602,7 @@ pub unsafe extern "C" fn swr_v1_server_set_document_root(
     // SAFETY: per the caller.
     let path = unsafe { core::slice::from_raw_parts(path, length) };
     // SAFETY: per the caller.
-    unsafe { set_document_root(serv, path) }
+    set_document_root(unsafe { view::Server::from_raw(serv) }, path)
 }
 
 /// The master timer's tick, `Server::timer_callback`, as a plain timer callback.
@@ -628,31 +643,25 @@ pub(crate) unsafe extern "C" fn idle_timeout_tick(conn: *mut c_void) {
 }
 
 /// `Server::sendwait(session_id, data, length)`.
-///
-/// # Safety
-/// `serv` is a live `Server`; `data` holds `length` bytes.
-pub unsafe extern "C" fn sendwait(
-    serv: *mut c_void,
-    session_id: c_long,
-    data: *const c_void,
-    length: u32,
-) -> bool {
-    let mut ctx = NativeContext::new(serv);
+#[must_use]
+pub fn sendwait(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool {
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.session_id = session_id;
-    ctx.data = data;
+    ctx.data = data.as_ptr().cast();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Server::sendwait's uint32_t length, as upstream"
+    )]
+    let length = data.len() as u32;
     ctx.length = length;
-    // SAFETY: as the caller guarantees.
+    // SAFETY: the live server; `data` holds `length` bytes for the call.
     unsafe { run(RUN_SENDWAIT, session_id.cast_unsigned(), &mut ctx) != 0 }
 }
 
 /// `Server::has_kernel_nobufs_error(session_id)`.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub unsafe extern "C" fn has_kernel_nobufs_error(serv: *mut c_void, session_id: c_long) -> bool {
-    let mut ctx = NativeContext::new(serv);
-    // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_KERNEL_NOBUFS, session_id.cast_unsigned(), &mut ctx) != 0 }
+#[must_use]
+pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bool {
+    run_on(serv, RUN_KERNEL_NOBUFS, session_id.cast_unsigned()) != 0
 }
 
 /// `Server::send_to_connection(send)`: `SW_OK` or `SW_ERR`.
@@ -715,16 +724,10 @@ pub unsafe extern "C" fn sendfile(
 }
 
 /// `Server::create_base_factory()`: the new `BaseFactory`, or null.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server19create_base_factoryEv")
-)]
-pub unsafe extern "C" fn create_base_factory(serv: *mut c_void) -> *mut c_void {
-    let mut ctx = NativeContext::new(serv);
-    // SAFETY: as the caller guarantees.
+#[must_use]
+pub fn create_base_factory(serv: view::Server<'_>) -> *mut c_void {
+    let mut ctx = NativeContext::new(serv.raw());
+    // SAFETY: a live server, and no other object for the operation to read.
     if unsafe { run(RUN_BASE_CREATE, 0, &mut ctx) } != 0 {
         ctx.object
     } else {
@@ -754,18 +757,9 @@ pub(crate) fn end_arg(session_id: c_long, flags: c_int) -> u64 {
 }
 
 /// `serv->reactor_thread_barrier.wait()`.
-///
-/// # Safety
-/// `serv` is a live `Server`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) unsafe fn reactor_barrier(serv: *mut c_void) {
-    // SAFETY: as the caller guarantees; the op reads only the server.
-    unsafe {
-        native_op(
-            crate::ops::OP_REACTOR_BARRIER,
-            &mut NativeContext::new(serv),
-        )
-    };
+pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
+    run_on(serv, RUN_NATIVE_OP, crate::ops::OP_REACTOR_BARRIER.into());
 }
 
 /// Runs the native op `op` over `ctx`, which holds its operands.
@@ -812,20 +806,7 @@ pub unsafe extern "C" fn close(serv: *mut c_void, session_id: c_long, reset: boo
 }
 
 /// `Server::notify(conn, event)`: the factory hears `event` for `conn`.
-///
-/// # Safety
-/// `serv` is a live `Server` and `conn` one of its connections.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server6notifyEPNS_10ConnectionENS_15ServerEventTypeE")
-)]
-pub unsafe extern "C" fn notify(
-    serv: *mut c_void,
-    conn: *const ConnectionRecord,
-    event: c_int,
-) -> bool {
-    // SAFETY: as the caller guarantees.
-    let conn = unsafe { &*conn };
+pub fn notify(serv: view::Server<'_>, conn: &ConnectionRecord, event: c_int) -> bool {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -838,9 +819,9 @@ pub unsafe extern "C" fn notify(
         server_fd: conn.server_fd as u16,
         ..DataHead::default()
     };
-    let mut ctx = NativeContext::new(serv);
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.object = (&raw mut head).cast();
-    // SAFETY: as the caller guarantees; the head lives for the call.
+    // SAFETY: the live server; the head lives for the call.
     unsafe { native_op(OP_FACTORY_NOTIFY, &mut ctx) }
 }
 
@@ -866,33 +847,6 @@ pub unsafe extern "C" fn send_pipe_message(
     ctx.length = 40 + head.len;
     // SAFETY: as the caller guarantees.
     unsafe { native_op(OP_PIPE_TO_WORKER, &mut ctx) }
-}
-
-/// An `EventData`: `SW_IPC_MAX_SIZE` bytes (server.cc asserts it), aligned for its head.
-#[repr(C, align(8))]
-struct EventData([u8; IPC_BUFFER_SIZE + 40]);
-
-/// `Server::send_pipe_message(worker_id, data, len)`: `data` packed as a task.
-///
-/// # Safety
-/// `serv` is a live `Server` and `worker_id` one of its workers; `data` holds `len` bytes.
-pub unsafe extern "C" fn send_pipe_message_data(
-    serv: *mut c_void,
-    worker_id: u32,
-    data: *const c_char,
-    len: usize,
-) -> bool {
-    let mut buf = EventData([0; IPC_BUFFER_SIZE + 40]);
-    let mut ctx = NativeContext::new(serv);
-    ctx.object = buf.0.as_mut_ptr().cast();
-    ctx.data = data.cast();
-    ctx.offset = i64::try_from(len).unwrap_or(i64::MAX);
-    // SAFETY: as the caller guarantees; the buffer lives for the call.
-    if !unsafe { native_op(OP_TASK_PACK, &mut ctx) } {
-        return false;
-    }
-    // SAFETY: as the caller guarantees; task_pack filled the buffer's head.
-    unsafe { send_pipe_message(serv, worker_id, buf.0.as_mut_ptr().cast()) }
 }
 
 /// `Server::add_command(name, accepted_process_types, handler)`: whether the
@@ -1012,11 +966,6 @@ mod tests {
                     .push((number, head));
             };
             match u32::try_from(arg).unwrap_or(0) {
-                OP_TASK_PACK => {
-                    // SAFETY: the context lends the buffer to pack into.
-                    unsafe { (*head).len = 3 };
-                    return 1;
-                }
                 // SAFETY: these lend a head.
                 OP_FACTORY_NOTIFY | OP_PIPE_TO_WORKER => push(unsafe { *head }),
                 _ => push(DataHead::default()),
@@ -1032,6 +981,17 @@ mod tests {
             RUN_IDLE_WORKERS => -1,
             _ => 0,
         }
+    }
+
+    /// A server whose state and config are null: the fake runner reads neither.
+    static FAKE: [usize; 2] = [0; 2];
+
+    fn fake_serv() -> *mut c_void {
+        (&raw const FAKE).cast_mut().cast()
+    }
+
+    fn server() -> view::Server<'static> {
+        unsafe { view::Server::from_raw(fake_serv()) }
     }
 
     fn last() -> Seen {
@@ -1052,7 +1012,8 @@ mod tests {
 
     #[test]
     fn methods_fill_the_context_their_forward_did() {
-        let serv = ptr::without_provenance_mut(0x10);
+        let serv = fake_serv();
+        let sv = serv.addr();
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
         unsafe {
             assert!(shutdown(serv), "shutdown's 1 is true");
@@ -1077,7 +1038,7 @@ mod tests {
             );
             let (op, _, s, _, _, _, number, host) = last();
             assert!(
-                op == RUN_ADD_PORT && s == 0x10 && number == 9 && host != 0,
+                op == RUN_ADD_PORT && s == sv && number == 9 && host != 0,
                 "add_port context"
             );
             assert!(
@@ -1086,7 +1047,7 @@ mod tests {
             );
             assert_eq!(
                 last(),
-                (RUN_ADD_CONNECTION, 0, 0x10, 0x20, 0x30, 0, 0, 0),
+                (RUN_ADD_CONNECTION, 0, sv, 0x20, 0x30, 0, 0, 0),
                 "add_connection context"
             );
             assert!(!feedback(serv, at(0x60), 5), "feedback result");
@@ -1096,29 +1057,20 @@ mod tests {
     }
 
     unsafe fn send_family_and_base_factory(serv: *mut c_void) {
+        let sv = serv.addr();
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
         unsafe {
             let data = at(0x80);
             assert!(send(serv, 9, data, 4), "send's 1 is true");
             assert_eq!(
                 sent(),
-                (
-                    RUN_ST_SEND,
-                    sent().3 as u64,
-                    0x10,
-                    sent().3,
-                    0x80,
-                    4,
-                    9,
-                    0,
-                    0
-                ),
+                (RUN_ST_SEND, sent().3 as u64, sv, sent().3, 0x80, 4, 9, 0, 0),
                 "send context, with its SendData lent"
             );
             assert_ne!(sent().3, 0, "a SendData is lent");
-            assert!(!sendwait(serv, 9, data, 4), "sendwait result");
+            assert!(!sendwait(server(), 9, &[0; 4]), "sendwait result");
             assert_eq!(sent().1, 9, "sendwait passes the session");
-            assert!(!has_kernel_nobufs_error(serv, 11), "nobufs result");
+            assert!(!has_kernel_nobufs_error(server(), 11), "nobufs result");
             assert_eq!(sent().1, 11, "nobufs passes the session");
             assert!(
                 !sendfile(serv, 12, c"f".as_ptr(), 1, 3, 99),
@@ -1144,12 +1096,12 @@ mod tests {
             assert_eq!(send_to_connection(serv, task_at), -1, "SW_ERR");
             assert_eq!(
                 sent(),
-                (RUN_SC_SEND, 2, 0x10, task_at.addr(), 0x80, 5, 13, 0, 0),
+                (RUN_SC_SEND, 2, sv, task_at.addr(), 0x80, 5, 13, 0, 0),
                 "send_to_connection reads the SendData"
             );
 
             assert_eq!(
-                create_base_factory(serv).addr(),
+                create_base_factory(server()).addr(),
                 0x70,
                 "the created factory"
             );
@@ -1166,14 +1118,14 @@ mod tests {
             assert!(
                 op == RUN_BASE_DISPATCH
                     && arg == task_at.addr() as u64
-                    && s == 0x10
+                    && s == sv
                     && lent == task_at.addr(),
                 "dispatch lends the task"
             );
             on_base(factory_at, ptr::null_mut(), RUN_BASE_NOTIFY, 0xa0);
             let (op, arg, s, lent, ..) = sent();
             assert!(
-                op == RUN_BASE_NOTIFY && arg == 0xa0 && s == 0x10 && lent == 0,
+                op == RUN_BASE_NOTIFY && arg == 0xa0 && s == sv && lent == 0,
                 "notify passes the head"
             );
             on_base(factory_at, ptr::null_mut(), RUN_BASE_END, end_arg(7, 6));
@@ -1207,7 +1159,7 @@ mod tests {
             conn.fd = 22;
             conn.reactor_id = 3;
             conn.server_fd = 0x1_0005;
-            assert!(notify(serv, &raw const conn, 0x104), "notify result");
+            assert!(notify(server(), &conn, 0x104), "notify result");
             assert_eq!(sent().1, u64::from(OP_FACTORY_NOTIFY), "notify op");
             let (_, h) = head();
             assert!(
@@ -1215,10 +1167,11 @@ mod tests {
                 "notify head keeps the low bits"
             );
 
-            assert!(
-                send_pipe_message_data(serv, 2, c"abc".as_ptr(), 3),
-                "pipe result"
-            );
+            let mut message = DataHead {
+                len: 3,
+                ..DataHead::default()
+            };
+            assert!(send_pipe_message(serv, 2, &raw mut message), "pipe result");
             let (op, arg, _, _, data, length, ..) = sent();
             assert!(
                 op == RUN_NATIVE_OP

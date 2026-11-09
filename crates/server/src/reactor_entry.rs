@@ -6,7 +6,7 @@ use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 
 use swoole_rs_corebase::DataHead;
-use swoole_rs_reactor::{SocketRecord, reactor_upstream};
+use swoole_rs_reactor::SocketRecord;
 
 use crate::ops::{
     RUN_CLOSE_CONNECTION, RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED,
@@ -14,7 +14,6 @@ use crate::ops::{
     RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE, RUN_THREAD_SHUTDOWN,
 };
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
-use crate::records::swr_v1_server_connection;
 use crate::{unanswered, view};
 
 /// `swoole::RecvData`.
@@ -73,21 +72,7 @@ fn int(value: i64) -> c_int {
 /// `serv` is a live `Server`.
 unsafe fn state<'a>(serv: *mut c_void) -> &'a crate::ServerState {
     // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    let state = serv.state_ptr();
-    // SAFETY: the state lives as long as the server.
-    unsafe { &*state }
-}
-
-/// The reactor's fields.
-///
-/// # Safety
-/// `reactor` is a live `Reactor`.
-unsafe fn fields<'a>(reactor: *mut c_void) -> &'a swoole_rs_reactor::ReactorFields {
-    // SAFETY: per the caller.
-    let fields = unsafe { reactor_upstream::prepared(reactor) }.fields;
-    // SAFETY: the live reactor's fields.
-    unsafe { &*fields }
+    unsafe { view::Server::from_raw(serv) }.state()
 }
 
 /// `reactor->ptr`, a reactor thread's server.
@@ -96,7 +81,9 @@ unsafe fn fields<'a>(reactor: *mut c_void) -> &'a swoole_rs_reactor::ReactorFiel
 /// `reactor` is a live `Reactor`.
 unsafe fn server(reactor: *mut c_void) -> *mut c_void {
     // SAFETY: per the caller.
-    unsafe { fields(reactor) }.ptr
+    unsafe { crate::reactor_handle::Reactor::of(reactor) }
+        .fields()
+        .ptr
 }
 
 /// A context over the reactor, its server and the event and its socket.
@@ -144,7 +131,11 @@ pub unsafe extern "C" fn on_pipe_read(reactor: *mut c_void, event: *mut c_void) 
     let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
     ctx.event = event.cast();
     // SAFETY: per the caller.
-    let id = usize::from(unsafe { fields(reactor) }.id);
+    let id = usize::from(
+        unsafe { crate::reactor_handle::Reactor::of(reactor) }
+            .fields()
+            .id,
+    );
     // SAFETY: per the caller, a live server's.
     ctx.thread = thread(unsafe { state(ctx.serv) }, id);
     // SAFETY: per the caller.
@@ -172,10 +163,10 @@ pub unsafe extern "C" fn on_read(reactor: *mut c_void, event: *mut c_void) -> c_
     let mut ctx = unsafe { event_context(reactor, event) };
     // SAFETY: per the caller.
     let fd = c_long::from(unsafe { (*ctx.event).fd });
-    // SAFETY: per the caller, a live server's state.
-    let state = unsafe { view::Server::from_raw(ctx.serv) }.state_ptr();
-    // SAFETY: the fd's slot in the connection table.
-    ctx.conn = unsafe { swr_v1_server_connection(state, fd, 0) };
+    // SAFETY: per the caller, a live server.
+    ctx.conn = unsafe { view::Server::from_raw(ctx.serv) }
+        .state()
+        .connection_ptr(fd, 0);
     // SAFETY: per the caller.
     unsafe { run_with(Facts::Read, &mut ctx, crate::conn_io::read) }
 }

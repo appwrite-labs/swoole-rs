@@ -254,11 +254,9 @@ impl<'a> Server<'a> {
             .fold(0, usize::wrapping_add)
     }
 
-    /// `swr_v1_server_connection(state, key, kind)`: a slot of the live
-    /// connection table, or null.
+    /// `ServerState::connection(key, kind)`: a slot of the live connection table, or null.
     fn connection(self, key: c_long, kind: u32) -> *mut ConnectionRecord {
-        // SAFETY: the server's live state and tables.
-        unsafe { crate::swr_v1_server_connection(self.state_ptr(), key, kind) }
+        self.state().connection_ptr(key, kind)
     }
 
     /// `Server::get_connection_verify(session_id)`.

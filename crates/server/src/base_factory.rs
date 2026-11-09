@@ -8,7 +8,7 @@ use crate::ops::{
     OP_BASE_REACTORS, OP_CLOSE_SOCKET, OP_FORWARD, OP_HAS_ON_CLOSE, OP_NEW_BASE_FACTORY,
     OP_ON_CLOSE, OP_ON_RECEIVE, OP_OUT_EMPTY, OP_PORT_COUNT, OP_QUEUE_CLOSE, OP_SEND_HERE,
 };
-use crate::records::{ConnectionRecord, swr_v1_server_connection, swr_v1_server_session};
+use crate::records::{ConnectionRecord, VERIFIED_TLS};
 use crate::{Host, SW_OK};
 use core::ffi::{c_char, c_int, c_long};
 use core::sync::atomic::Ordering;
@@ -31,8 +31,6 @@ const CLOSE_FORWARD: u8 = 7;
 const RECV_DATA: u8 = 0;
 /// `SW_EVENT_DATA_PTR`: `MessageBus::pass`'s flags for a payload it points at.
 const DATA_PTR: u8 = 1 << 1;
-/// `swr_v1_server_connection`'s `get_connection_verify`.
-const VERIFIED_TLS: u32 = 3;
 /// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
 const WORKER_BUSY: u8 = 1;
 const WORKER_IDLE: u8 = 2;
@@ -60,15 +58,9 @@ pub(crate) fn low16(value: c_int) -> u16 {
     u16::try_from(value.cast_unsigned() & 0xffff).unwrap_or_default()
 }
 
-/// The connection lookup of `kind` (see `swr_v1_server_connection`), once the
-/// tables are allocated.
+/// The connection lookup of `kind` (see `ServerState::connection`).
 fn connection<H: Host>(h: &mut H, key: c_long, kind: u32) -> crate::Effect<*mut ConnectionRecord> {
-    let state = h.state()?;
-    if !allocated(state) {
-        return Ok(core::ptr::null_mut());
-    }
-    // SAFETY: the state owns initialized tables, lent for this operation.
-    Ok(unsafe { swr_v1_server_connection(state, key, kind) })
+    Ok(h.state()?.connection_ptr(key, kind))
 }
 
 /// Whether the server has allocated its session and connection tables.
@@ -83,11 +75,9 @@ fn session<H: Host>(h: &mut H, id: c_long) -> crate::Effect<Option<(u32, c_int)>
     if !allocated(state) {
         return Ok(None);
     }
-    // SAFETY: the state owns its session table; every id maps to a slot.
-    let slot = unsafe { swr_v1_server_session(state, id) };
-    // SAFETY: the slot is live in the mapped table.
-    let slot = unsafe { &*slot };
-    Ok(Some((slot.reactor_bits & 0xff, slot.fd)))
+    Ok(state
+        .session(id)
+        .map(|slot| (slot.reactor_bits & 0xff, slot.fd)))
 }
 
 /// A live connection record for one step; no native op runs while it is borrowed.

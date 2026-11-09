@@ -136,9 +136,7 @@ pub unsafe extern "C" fn abort_worker(serv: *mut c_void, worker: *mut WorkerReco
     if u64::from(serv.config().mode_) == crate::MODE_BASE {
         // SAFETY: per the caller.
         let id = unsafe { Worker::new(worker).id() };
-        let state = serv.state_ptr();
-        // SAFETY: the server's live state and session table.
-        unsafe { crate::records::swr_v1_server_sessions_retire(state, id) };
+        serv.state().retire_sessions(id);
     }
 }
 

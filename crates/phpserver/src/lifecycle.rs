@@ -701,7 +701,7 @@ fn construct(call: &Call) {
     }
     if port == 0 && address.eq_ignore_ascii_case(b"SYSTEMD") {
         // SAFETY: a new server.
-        if unsafe { server_methods::add_systemd_socket(serv) } <= 0 {
+        if server_methods::add_systemd_socket(unsafe { view::Server::from_raw(serv) }) <= 0 {
             // SAFETY: from a handler.
             unsafe { throw_error(c"failed to add systemd socket") };
             return call.set_bool(false);

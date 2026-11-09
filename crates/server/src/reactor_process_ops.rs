@@ -206,8 +206,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_HAS_REACTOR => u64::from(!swoole_rs_corebase::thread_reactor().is_null()),
         OP_STORE_LISTEN_SOCKET => {
-            // SAFETY: the context's live server.
-            unsafe { crate::server_methods::store_listen_socket(serv) };
+            crate::server_methods::store_listen_socket(ctx.server());
             0
         }
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
@@ -354,10 +353,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             conn.peer_closed = 1;
             0
         }
-        OP_NOTIFY_CLOSE => {
-            // SAFETY: the context's live server and one of its connections.
-            u64::from(unsafe { crate::server_methods::notify(serv, conn, EVENT_CLOSE) })
-        }
+        OP_NOTIFY_CLOSE => u64::from(crate::server_methods::notify(server, conn, EVENT_CLOSE)),
         OP_CONN_HEALTHY => u64::from(server.healthy(ctx.now, conn)),
         OP_CONN_SSL_PENDING => {
             let socket = crate::objects::socket(socket.cast())?;

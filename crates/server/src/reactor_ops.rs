@@ -55,7 +55,7 @@ use crate::ops::{
 };
 use crate::port_config::{self, PortConfig};
 use crate::reactor_entry as entry;
-use crate::records::{ConnectionRecord, swr_v1_server_connection, swr_v1_server_session};
+use crate::records::ConnectionRecord;
 use crate::{ServerConfig, ServerState, ServerTables};
 
 /// `PREQUEUE` in builds with `--fix-halfclose` (`SW_HALFCLOSE_PREQUEUE`), else nothing.
@@ -188,6 +188,11 @@ struct Objects<'a> {
     reason = "native records shared with C++, written on the reactor thread that owns them as master.cc did"
 )]
 impl Objects<'_> {
+    /// The context's live server.
+    fn server(&self) -> crate::view::Server<'_> {
+        // SAFETY: the reactor runner lends a context whose server is live.
+        unsafe { crate::view::Server::from_raw(self.ctx.serv) }
+    }
     fn config(&self) -> &ServerConfig {
         self.state.config_ref()
     }
@@ -235,8 +240,7 @@ impl Objects<'_> {
     }
     /// `get_connection(fd)` (kind 0) or a verified session's (kind 2, 3).
     fn connection(&self, key: c_long, kind: u32) -> *mut ConnectionRecord {
-        // SAFETY: the server's live tables.
-        unsafe { swr_v1_server_connection(self.state, key, kind) }
+        self.state.connection_ptr(key, kind)
     }
     /// `get_port_by_fd(fd)`: the port whose listening socket accepted `fd`.
     fn port_by_fd(&self, fd: c_int) -> *mut c_void {
@@ -249,14 +253,11 @@ impl Objects<'_> {
 
 /// `Server::get_port_by_fd(fd)`: the port whose listening socket accepted `fd`.
 pub(crate) fn port_by_fd(state: &ServerState, fd: c_int) -> *mut c_void {
-    let slot = |fd: c_int| {
-        // SAFETY: fd's slot in the live connection table.
-        let conn = unsafe { swr_v1_server_connection(state, c_long::from(fd), 0) };
-        // SAFETY: as above.
-        unsafe { &*conn }
-    };
+    let slot = |fd: c_int| state.connection(c_long::from(fd), 0);
     // The listening socket's slot, whose object is its port.
-    slot(slot(fd).server_fd).object
+    slot(fd)
+        .and_then(|conn| slot(conn.server_fd))
+        .map_or(core::ptr::null_mut(), |listen| listen.object)
 }
 
 /// `bit` when `set`.
@@ -651,14 +652,12 @@ pub(crate) unsafe fn answer(
             u64::from(tls.want_read != 0 || tls.want_write != 0)
         }
         OP_CC_SESSION_CLEAR => {
-            // SAFETY: the server's live session table.
-            let session = unsafe { swr_v1_server_session(state, o.conn().session_id) };
-            // SAFETY: a live connection's slot in it.
-            unsafe { (*session).fd = 0 };
+            if let Some(session) = state.session(o.conn().session_id) {
+                session.fd = 0;
+            }
             0
         }
-        // SAFETY: per the caller.
-        op => return unsafe { effects(&mut o, op, arg) },
+        op => return effects(&mut o, op, arg),
     })
 }
 
@@ -731,15 +730,12 @@ impl ThreadRecord {
 
 /// The ops over the context's reactor, sockets, connection, port and thread
 /// and the server's counters; else `None`. Inlined, as [`answer`] is.
-///
-/// # Safety
-/// As [`answer`].
 #[expect(
     clippy::too_many_lines,
     reason = "one arm per op, as master.cc's switch was"
 )]
 #[inline(always)]
-unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let reactor = o.ctx.reactor.cast_const();
     // `reactor->add/set/del(socket)`.
     let change = |socket, kind, events| {
@@ -942,8 +938,8 @@ unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     (o.ctx.conn, EVENT_BUFFER_EMPTY)
                 }
             };
-            // SAFETY: the context's live server and one of its connections.
-            unsafe { crate::server_methods::notify(o.ctx.serv, conn, event) };
+            // SAFETY: one of the server's live connections.
+            crate::server_methods::notify(o.server(), unsafe { &*conn }, event);
             if op == OP_WR_NOTIFY_CLOSE {
                 o.conn().close_notify = 0;
             }
@@ -961,20 +957,16 @@ unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { tls::socket_ssl_close(socket) };
             0
         }
-        // SAFETY: per the caller.
-        op => return unsafe { native(o, op, arg) },
+        op => return native(o, op, arg),
     })
 }
 
 /// The ops that call the timer, event loop and `Reactor::_close` under their
 /// upstream symbols; else `None`. A reactor thread's own loop runs, and is freed,
 /// here: master.cc no longer answers `OP_EVENT_WAIT` or `OP_EVENT_FREE`.
-///
-/// # Safety
-/// As [`answer`].
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[inline(always)]
-unsafe fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_BASE_PASS, OP_SESSION_HANDLERS, OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET,
     };
@@ -1067,8 +1059,7 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_STORE_LISTEN_SOCKET => {
-            // SAFETY: the context's live server.
-            unsafe { crate::server_methods::store_listen_socket(o.ctx.serv) };
+            crate::server_methods::store_listen_socket(o.server());
             0
         }
         OP_START_MASTER_THREAD => {
@@ -1106,7 +1097,7 @@ unsafe fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// Outside the hybrid, whose unit tests link no C++, native code keeps these.
 #[cfg(not(all(feature = "upstream-symbols", not(test))))]
 #[inline(always)]
-unsafe fn native(_: &mut Objects<'_>, _: u32, _: u64) -> Option<u64> {
+fn native(_: &mut Objects<'_>, _: u32, _: u64) -> Option<u64> {
     None
 }
 

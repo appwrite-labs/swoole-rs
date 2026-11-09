@@ -230,7 +230,7 @@ pub unsafe extern "C" fn php_swoole_create_dir(path: *const c_char, _length: usi
 fn check_kernel_nobufs(serv: *mut c_void, session_id: c_long) {
     if swoole_rs_phpcoroutines::in_coroutine()
         // SAFETY: a live server.
-        && unsafe { server_methods::has_kernel_nobufs_error(serv, session_id) }
+        && server_methods::has_kernel_nobufs_error(unsafe { view::Server::from_raw(serv) }, session_id)
     {
         // SAFETY: in a coroutine.
         unsafe { system_sleep(0.01) };
