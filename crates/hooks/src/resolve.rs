@@ -62,8 +62,7 @@ extern "C" fn last_error() -> c_int {
 }
 
 /// `coroutine::async`'s coroutine and pool operations, which native's `async` uses too.
-#[unsafe(no_mangle)]
-pub static swr_v1_hook_coroutine_async: AsyncOps = AsyncOps {
+pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
     current,
     dispatch: async_dispatch_event,
     park,
@@ -101,14 +100,7 @@ fn run(
     event.data = request.as_ptr();
     event.retval = retval;
     // SAFETY: a complete event over a live request, in a coroutine.
-    unsafe {
-        swr_v1_hook_async(
-            &raw mut event,
-            handler,
-            timeout,
-            &raw const swr_v1_hook_coroutine_async,
-        )
-    };
+    unsafe { swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC) };
     request.failed(event.retval, event.error, request_error)
 }
 

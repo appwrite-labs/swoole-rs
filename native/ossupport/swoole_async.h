@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_async.h, owned here: what C++ and core-tests still use of it.
  * AsyncEvent is a plain record whose layout crates/hooks/src/offload.rs mirrors (asserted
- * in native/hooks/system.cc); the DNS requests are views of the Rust resolver record. The
+ * below); the DNS requests are views of the Rust resolver record. The
  * pool (AsyncThreads, async::dispatch) is crates/hooks/src/async_threads.rs. Upstream's
  * file is deleted, so `#include "swoole_async.h"` finds this copy on the Rust prefix's
  * include path. */
@@ -29,6 +29,9 @@ struct AsyncEvent {
     void (*handler)(AsyncEvent *event);
     void (*callback)(AsyncEvent *event);
 };
+static_assert(sizeof(AsyncEvent) == 72 && offsetof(AsyncEvent, error) == 12 && offsetof(AsyncEvent, retval) == 24 &&
+                  offsetof(AsyncEvent, object) == 48 && offsetof(AsyncEvent, callback) == 64,
+              "crates/hooks/src/offload.rs mirrors AsyncEvent");
 
 struct GethostbynameRequest : private ResolverOwner {
     RustStringView name{state_.name};

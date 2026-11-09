@@ -5,7 +5,7 @@
 //! where a C++ string or list carries the result.
 use crate::host;
 use std::{
-    ffi::{CStr, c_char, c_int, c_long, c_void},
+    ffi::{CStr, CString, c_char, c_int, c_long, c_void},
     mem, ptr, slice,
 };
 use swoole_rs_buffer::string;
@@ -24,14 +24,6 @@ type Put = unsafe extern "C" fn(out: *mut c_void, data: *const c_char, length: u
 unsafe extern "C" {
     #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
     fn system_sleep(seconds: f64) -> c_int;
-    #[link_name = "_ZN6swoole9coroutine6System10write_fileEPKcS3_mbi"]
-    fn system_write_file(
-        file: *const c_char,
-        data: *const c_char,
-        length: usize,
-        lock: bool,
-        flags: c_int,
-    ) -> isize;
     #[link_name = "_ZN6swoole9coroutine6System10wait_eventEiid"]
     fn system_wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System4waitEPid"]
@@ -43,8 +35,6 @@ unsafe extern "C" {
         options: c_int,
         timeout: f64,
     ) -> libc::pid_t;
-    fn swr_v1_system_read_file(file: *const c_char, lock: bool, put: Put, out: *mut c_void)
-    -> bool;
     fn swr_v1_system_gethostbyname(
         host: *const c_char,
         length: usize,
@@ -205,10 +195,14 @@ fn read_file(call: &Call) {
         value_error(call, c"Filename cannot be empty");
         return;
     }
-    let (lock, out) = (flags & FILE_LOCK != 0, call.return_value().cast());
-    // SAFETY: a NUL-terminated path argument and the empty return slot.
-    if !unsafe { swr_v1_system_read_file(path.as_ptr().cast(), lock, put_string, out) } {
+    let Ok(path) = CString::new(path) else {
         call.set_bool(false);
+        return;
+    };
+    match swoole_rs_hooks::file_io::read_file(&path, flags & FILE_LOCK != 0) {
+        // SAFETY: a new string, whose reference the return slot takes.
+        Some(content) => unsafe { call.set_string(swoole_rs_zend::string::copy(&content)) },
+        None => call.set_bool(false),
     }
 }
 
@@ -230,16 +224,16 @@ fn write_file(call: &Call) {
     } else {
         libc::O_TRUNC
     };
-    // SAFETY: a NUL-terminated path and the data's bytes.
-    let written = unsafe {
-        system_write_file(
-            path.as_ptr().cast(),
-            data.as_ptr().cast(),
-            data.len(),
-            flags & FILE_LOCK != 0,
-            libc::O_CREAT | libc::O_WRONLY | libc::O_NOFOLLOW | mode,
-        )
+    let Ok(path) = CString::new(path) else {
+        call.set_bool(false);
+        return;
     };
+    let written = swoole_rs_hooks::file_io::write_file(
+        &path,
+        data,
+        flags & FILE_LOCK != 0,
+        libc::O_NOFOLLOW | mode,
+    );
     if written < 0 {
         call.set_bool(false);
     } else {

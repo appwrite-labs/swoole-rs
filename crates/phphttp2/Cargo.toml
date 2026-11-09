@@ -12,6 +12,7 @@ php = [
     "dep:libc",
     "dep:swoole-rs-inflate",
     "dep:swoole-rs-http2",
+    "dep:swoole-rs-hooks",
     "dep:swoole-rs-phptable",
     "swoole-rs-phptable/php",
     "dep:swoole-rs-zend",
@@ -38,6 +39,7 @@ php = [
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-inflate = { path = "../inflate", optional = true }
 swoole-rs-http2 = { path = "../http2", optional = true }
+swoole-rs-hooks = { path = "../hooks", optional = true }
 swoole-rs-phptable = { path = "../phptable", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }

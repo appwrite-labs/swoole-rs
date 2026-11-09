@@ -3,8 +3,9 @@
 //! `Response::sendfile`'s (`http2_server_send_file`), over crates/server's
 //! `StaticHandler`.
 use crate::server::{Value, begin_file, finish_file, of, respond, send_body, set, zval_of};
-use libc::{c_char, c_void};
+use libc::c_void;
 use std::ffi::CString;
+use swoole_rs_hooks::offload::async_job;
 use swoole_rs_http2::{sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_phphttp::http2::Field;
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
@@ -22,20 +23,6 @@ const MODE_SINGLE: u32 = 2;
 const NOT_FOUND: i32 = 404;
 const NOT_MODIFIED: u32 = 304;
 const PARTIAL_CONTENT: i32 = 206;
-
-unsafe extern "C" {
-    /// `swoole::coroutine::async_job`: `job(context)` on the thread pool while
-    /// the coroutine waits; false if the pool refused it.
-    #[link_name = "_ZN6swoole9coroutine9async_jobEPFvPvES1_"]
-    fn async_job(job: unsafe extern "C" fn(*mut c_void), context: *mut c_void) -> bool;
-    /// `System::read_file(file, lock)`: the content goes to `put` (false: unreadable).
-    fn swr_v1_system_read_file(
-        file: *const c_char,
-        lock: bool,
-        put: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
-        out: *mut c_void,
-    ) -> bool;
-}
 
 /// A file opened read-only, closed on drop.
 struct File(libc::c_int);
@@ -291,24 +278,13 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_send_file(
     send_content(ctx, path, &content, offset, length)
 }
 
-unsafe extern "C" fn put(out: *mut c_void, data: *const c_char, length: usize) {
-    // SAFETY: `length` readable bytes.
-    let data = unsafe { std::slice::from_raw_parts(data.cast(), length) };
-    // SAFETY: the `Vec` `content` lends.
-    unsafe { (*out.cast::<Vec<u8>>()).extend_from_slice(data) };
-}
-
 /// The file's whole content (`System::read_file` in a coroutine), `None` if unreadable.
 fn content(path: &[u8]) -> Option<Vec<u8>> {
     let path = CString::new(c_text(path)).ok()?;
-    let mut content = Vec::new();
     if swoole_rs_phpcoroutines::in_coroutine() {
-        // SAFETY: a NUL-terminated path; `put` appends to `content`.
-        let read = unsafe {
-            swr_v1_system_read_file(path.as_ptr(), false, put, (&raw mut content).cast())
-        };
-        return read.then_some(content);
+        return swoole_rs_hooks::file_io::read_file(&path, false);
     }
+    let mut content = Vec::new();
     let file = File::open(path.as_bytes())?;
     let mut buf = [0u8; 8192];
     loop {
