@@ -73,6 +73,8 @@ use crate::ops::{
     OP_SC_ENSURE_BUFFER, OP_SC_OUT_FULL, OP_SC_OUT_HIGH, OP_SC_QUEUE_CLOSE,
 };
 use crate::port_config::PortConfig;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+use crate::port_config::methods;
 use crate::records::{ConnectionRecord, SessionRecord};
 use crate::send;
 use crate::server_methods::NativeContext;
@@ -1636,12 +1638,6 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         #[link_name = "_Z19swoole_signal_clearv"]
         fn swoole_signal_clear();
     }
-    // SAFETY: crates/ports'.
-    unsafe extern "C" {
-        /// `ListenPort::ssl_create`.
-        #[link_name = "_ZN6swoole10ListenPort10ssl_createEPNS_7network6SocketE"]
-        fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool;
-    }
     // `SwooleTG.timer`.
     let timer = || {
         // SAFETY: the address of this thread's slot.
@@ -1709,8 +1705,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { swoole_rs_tls::upstream::socket_free(o.ctx.sock.cast()) };
             0
         }
-        // SAFETY: the context's live port and the socket it accepted.
-        OP_SSL_CREATE => u64::from(unsafe { ssl_create(o.ctx.port, o.ctx.sock) }),
+        OP_SSL_CREATE => u64::from((methods().ssl_create)(o.ctx.port, o.ctx.sock)),
         OP_COMMAND_HANDLER => {
             let handler: swoole_rs_reactor::Handler = accept_command_result;
             o.reactor().set_handler(SW_FD_PIPE, SW_EVENT_READ, handler);
@@ -1881,14 +1876,12 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     #[expect(clippy::cast_possible_truncation, reason = "1000.0")]
     const ACCEPT_RETRY_MSEC: libc::c_long =
         (swoole_rs_corebase::constants::SW_ACCEPT_RETRY_TIME * 1000.0) as libc::c_long;
-    // SAFETY: native/reactor's and crates/ports', under their upstream symbols.
+    // SAFETY: native/reactor's.
     unsafe extern "C" {
         fn swr_v1_event_set_exit_condition(
             id: c_int,
             condition: unsafe extern "C" fn(*mut usize) -> bool,
         );
-        #[link_name = "_ZN6swoole10ListenPort5closeEv"]
-        fn port_close(port: *mut c_void);
     }
     let serv = o.ctx.serv;
     let slot = |index| o.state.callbacks.slot(index);
@@ -2037,8 +2030,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PORT_CLOSE => {
             let &port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
-            // SAFETY: one of the server's live ports.
-            unsafe { port_close(port) };
+            (methods().close)(port);
             0
         }
         OP_DISPATCH_FUNC => {
@@ -2476,14 +2468,8 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     /// `SW_SOCK_SSL`.
     const SOCK_SSL: c_int = 1 << 9;
     use crate::server_object::{barrier, port_delete, port_new};
-    // SAFETY: crates/ports' and crates/reactor's, under their upstream symbols.
+    // SAFETY: crates/reactor's, under its upstream symbol.
     unsafe extern "C-unwind" {
-        #[link_name = "_ZN6swoole10ListenPort16ssl_context_initEv"]
-        fn ssl_context_init(port: *mut c_void) -> bool;
-        #[link_name = "_ZN6swoole10ListenPort13create_socketEv"]
-        fn create_socket(port: *mut c_void) -> c_int;
-        #[link_name = "_ZN6swoole10ListenPort6importEi"]
-        fn import(port: *mut c_void, fd: c_int) -> bool;
         #[link_name = "_ZN6swoole7network6Socket13set_fd_optionEii"]
         fn set_fd_option(socket: *mut c_void, nonblock: c_int, cloexec: c_int) -> bool;
     }
@@ -2548,14 +2534,12 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             if arg != 0 {
                 port.r#type = o.ctx.socket_type & !SOCK_SSL;
                 port.ssl = 1;
-                // SAFETY: the new port.
-                unsafe { ssl_context_init(ls) };
+                (methods().ssl_context_init)(ls);
             }
             0
         }
         OP_PORT_SOCKET => {
-            // SAFETY: the new port.
-            if unsafe { create_socket(o.ctx.port) } < 0 {
+            if (methods().create_socket)(o.ctx.port) < 0 {
                 log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
                 // SAFETY: the new port, deleted once.
                 unsafe { port_delete(o.ctx.port) };
@@ -2568,8 +2552,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let ls = port_new(serv);
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let fd = arg as c_int;
-            // SAFETY: the new port and an inherited descriptor.
-            if !unsafe { import(ls, fd) } {
+            if !(methods().import)(ls, fd) {
                 // SAFETY: the new port, deleted once.
                 unsafe { port_delete(ls) };
                 return Some(0);

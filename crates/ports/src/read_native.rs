@@ -234,7 +234,7 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
         }
         OP_REQ_DESTROY => {
             // SAFETY: the live connection, whose request is null or Rust's.
-            unsafe { crate::methods::destroy_http_request(ptr::null_mut(), c.conn) };
+            crate::methods::destroy_http_request(c.conn);
             c.shared.request = ptr::null_mut();
             0
         }

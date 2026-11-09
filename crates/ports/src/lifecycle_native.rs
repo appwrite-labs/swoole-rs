@@ -80,13 +80,7 @@ fn sni_count(config: &PortConfig) -> usize {
 }
 
 /// Releases the port's context and its TLS state with the SNI contexts.
-///
-/// # Safety
-/// `config` is a live port record that nothing else uses.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_tls_free(config: *mut PortConfig) {
-    // SAFETY: as the caller guarantees.
-    let config = unsafe { &mut *config };
+pub(crate) fn tls_free(config: &mut PortConfig) {
     // SAFETY: the port's reference (or null), released once.
     unsafe { swr_v1_tls_owner_free(core::mem::replace(&mut config.ssl_context, ptr::null())) };
     if config.tls.is_null() {
@@ -148,27 +142,15 @@ pub unsafe extern "C" fn swr_v1_ports_sni_add(
 }
 
 /// The DTLS session on `fd`; null if none.
-///
-/// # Safety
-/// `config` is a live port record that nothing else uses meanwhile.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_dtls_session(
-    config: *mut PortConfig,
-    fd: c_int,
-) -> *mut DtlsSession {
-    // SAFETY: as the caller guarantees.
-    let dtls = &state(unsafe { &mut *config }).dtls;
+pub(crate) fn dtls_session(config: &mut PortConfig, fd: c_int) -> *mut DtlsSession {
+    let dtls = &state(config).dtls;
     dtls.get(&fd).map_or(ptr::null_mut(), |entry| entry.0)
 }
 
 /// `delete` of the DTLS session on `fd`, removed from the port; nothing if none.
-///
-/// # Safety
-/// As [`swr_v1_ports_dtls_session`]; nothing uses the session afterwards.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_dtls_free(config: *mut PortConfig, fd: c_int) {
-    // SAFETY: as the caller guarantees.
-    let dtls = &mut state(unsafe { &mut *config }).dtls;
+/// Nothing uses the session afterwards.
+pub(crate) fn dtls_free(config: &mut PortConfig, fd: c_int) {
+    let dtls = &mut state(config).dtls;
     if let Some((session, context)) = dtls.remove(&fd) {
         // SAFETY: the session and reference the port owned, released once.
         unsafe { swr_v1_tls_dtls_free(session) };
@@ -179,15 +161,8 @@ pub unsafe extern "C" fn swr_v1_ports_dtls_free(config: *mut PortConfig, fd: c_i
 
 /// `ListenPort::create_dtls_session(sock)`: a session over the port's context,
 /// stored under the socket's fd; null when it fails to initialize.
-///
-/// # Safety
-/// `port` is a live DTLS `ListenPort` and `sock` a live socket.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_dtls_create(
-    port: *mut c_void,
-    sock: *mut SocketRecord,
-) -> *mut DtlsSession {
-    // SAFETY: as the caller guarantees.
+pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut DtlsSession {
+    // SAFETY: a live DTLS port of the server, which `PortMethods` takes.
     let config = unsafe { port_config::of(port) };
     let context = config.ssl_context;
     let state = state(config);
@@ -200,7 +175,7 @@ pub unsafe extern "C" fn swr_v1_ports_dtls_create(
     }
     // SAFETY: the port's live context.
     let shared = unsafe { swr_v1_tls_owner_clone(context) };
-    // SAFETY: as the caller guarantees.
+    // SAFETY: the live socket `PortMethods` takes.
     let fd = unsafe { (*sock).fd };
     state.dtls.insert(fd, (session, shared));
     session

@@ -20,11 +20,8 @@ use crate::ops::EVENT_INCOMING;
 use crate::port_config;
 use crate::records::ConnectionRecord;
 
-// SAFETY: crates/ports' and libcrypto's.
+// SAFETY: libcrypto's.
 unsafe extern "C" {
-    fn swr_v1_ports_dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut c_void;
-    fn swr_v1_ports_dtls_session(config: *mut c_void, fd: c_int) -> *mut c_void;
-    fn swr_v1_ports_dtls_free(config: *mut c_void, fd: c_int);
     fn OPENSSL_die(assertion: *const c_char, file: *const c_char, line: c_int) -> !;
 }
 
@@ -151,8 +148,7 @@ unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *m
         if conn.is_null() {
             break 'setup;
         }
-        // SAFETY: the live DTLS port and the connected socket.
-        let session = unsafe { swr_v1_ports_dtls_create(port, sock) }.cast::<DtlsSession>();
+        let session = (port_config::methods().dtls_create)(port, sock);
         if !session.is_null() {
             return session;
         }
@@ -268,9 +264,7 @@ pub(crate) unsafe fn on_read(port: *mut c_void, sock: &SocketRecord, fd: c_int) 
         *buffer = read as u16;
     }
     // SAFETY: the port's live record.
-    let config = unsafe { &raw mut *port_config::of(port) };
-    // SAFETY: as above.
-    let session = unsafe { swr_v1_ports_dtls_session(config.cast(), fd) }.cast::<DtlsSession>();
+    let session = (port_config::methods().dtls_session)(unsafe { port_config::of(port) }, fd);
     // SAFETY: the socket's live session, which takes the buffer.
     appended(unsafe { swr_v1_tls_dtls_append_buffer(session, buffer.cast()) });
     // SAFETY: as above.
@@ -286,8 +280,6 @@ pub(crate) unsafe fn on_read(port: *mut c_void, sock: &SocketRecord, fd: c_int) 
 /// # Safety
 /// `port` is the live DTLS port; nothing uses the session afterwards.
 pub(crate) unsafe fn free(port: *mut c_void, fd: c_int) {
-    // SAFETY: the port's live record.
-    let config = unsafe { &raw mut *port_config::of(port) };
-    // SAFETY: as the caller guarantees.
-    unsafe { swr_v1_ports_dtls_free(config.cast(), fd) };
+    // SAFETY: the port's live record, as the caller guarantees.
+    (port_config::methods().dtls_free)(unsafe { port_config::of(port) }, fd);
 }
