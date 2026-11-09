@@ -423,10 +423,10 @@ fn proxy(
     let host = host.bytes();
     let user = user.map_or(&[][..], Owned::bytes);
     let password = password.map_or(&[][..], Owned::bytes);
-    // SAFETY: a live client; C++ copies every string during the call.
+    // SAFETY: a live client; the proxy copies every string during the call.
     unsafe {
-        native::swoole_client_proxy(
-            cli,
+        swoole_rs_clients::client::swr_v1_clients_proxy(
+            state(cli),
             http,
             host.as_ptr().cast(),
             host.len(),
@@ -443,7 +443,8 @@ fn proxy(
 /// client's `SSLContext` (crates/tls).
 pub(crate) fn apply_ssl(cli: Cli, settings: *const zval) {
     // SAFETY: a live client.
-    let owner = unsafe { native::swoole_client_ssl_context(cli) }.cast::<tls::OwnedTlsContext>();
+    let owner = unsafe { swoole_rs_clients::client::swr_v1_clients_ssl_context(state(cli)) }
+        .cast::<tls::OwnedTlsContext>();
     if owner.is_null() {
         return;
     }

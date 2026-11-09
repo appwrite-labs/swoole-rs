@@ -576,20 +576,6 @@ unsafe extern "C" {
     pub(crate) fn swoole_client_export_socket(cli: Cli, zsocket: *mut zval) -> bool;
     /// Run one [`ClientCall`]; a `bailout::trap` body.
     pub(crate) fn swoole_client_run(call: *mut c_void);
-    /// The client's `SSLContext` owner; null while TLS is off.
-    pub(crate) fn swoole_client_ssl_context(cli: Cli) -> *const c_void;
-    /// `set_http_proxy` (`http`) or `set_socks5_proxy`.
-    pub(crate) fn swoole_client_proxy(
-        cli: Cli,
-        http: bool,
-        host: *const c_char,
-        host_length: size_t,
-        port: i64,
-        user: *const c_char,
-        user_length: size_t,
-        password: *const c_char,
-        password_length: size_t,
-    );
 }
 
 /// The client's public record: `network::Client`'s only base, at its start.

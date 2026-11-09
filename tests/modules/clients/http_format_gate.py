@@ -35,6 +35,6 @@ def main():
  rust.write_text(native_text.split('// PINNED_DEFINES')[0]+rust_text)
  exe=out/'http_format';flags=['-std=c++17','-O1',*(['-fsanitize=address,undefined','-fno-omit-frame-pointer'] if a.sanitize else [])]
  gate.run(['c++',*flags,'-c',native,'-o',out/'native_http_format.o'])
- gate.run(['c++',*flags,*hybrid_flags,rust,out/'native_http_format.o',a.archive,'-lpthread','-ldl','-lm','-o',exe]);result=json.loads(gate.run([exe]))
+ gate.run(['c++',*flags,*hybrid_flags,rust,out/'native_http_format.o',a.archive,'-Wl,--gc-sections','-lpthread','-ldl','-lm','-o',exe]);result=json.loads(gate.run([exe]))
  report=dict(passed=True,results=result,scope=__doc__,pin=gate.PIN,hybrid_tree=str(hybrid_source),native_sanitized=a.sanitize,rust_sanitized=a.rust_sanitized);a.output.write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report))
 if __name__=='__main__':main()

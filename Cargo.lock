@@ -413,6 +413,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
+ "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-reactor",
  "swoole-rs-websocket",
