@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from corpus.upstream.gate import category, compare, flagged, mark_reruns, markdown, pending, recheck, rows, skip_reason
 from corpus.upstream.inventory import shard
@@ -29,6 +30,7 @@ class PhptGate(unittest.TestCase):
         self.assertIn('named originals excluded (not passed)', summary)
         self.assertEqual(compare(report), ([], []))
 
+    @mock.patch.dict('corpus.upstream.gate.PENDING', {'tests/a/failing.phpt': 1, 'tests/a/passing.phpt': 1})
     def test_pending_port_is_listed_never_passed_and_its_passes_are_flagged(self):
         from corpus.upstream.gate import PENDING
         failing, passing = sorted(PENDING)[:2]

@@ -55,27 +55,7 @@ STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 # Pinned tests of upstream fixes to code that is Rust now, by the open issue porting them
 # (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
 # failing on them, and lists those the hybrid already passes so their entries go.
-PENDING_PORTS = {
-    1943: [
-        'swoole_pdo_pgsql/connect_pending_failover.phpt',
-        'swoole_pdo_pgsql/connect_timeout.phpt',
-        'swoole_pdo_pgsql/connect_timeout_delayed_failover.phpt',
-        'swoole_pdo_pgsql/connect_timeout_duplicate_target.phpt',
-        'swoole_pdo_pgsql/connect_timeout_interrupted.phpt',
-        'swoole_pdo_pgsql/connect_timeout_minimum.phpt',
-        'swoole_pdo_pgsql/connect_timeout_pending.phpt',
-        'swoole_pdo_pgsql/connect_timeout_per_address.phpt',
-        'swoole_pdo_pgsql/connect_timeout_per_host.phpt',
-        'swoole_pdo_pgsql/cancel.phpt',
-        'swoole_pdo_pgsql/cancel_persistent.phpt',
-        'swoole_pdo_pgsql/cancel_send.phpt',
-        'swoole_pdo_pgsql/connect_cancel_empty_message.phpt',
-        'swoole_pdo_pgsql/persistent_reconnect.phpt',
-        'swoole_pdo_pgsql/poll_error.phpt',
-        'swoole_pdo_pgsql/split_reply.phpt',
-        'swoole_pdo_pgsql/split_reply_local.phpt',
-    ],
-}
+PENDING_PORTS = {}
 PENDING = {f'tests/{test}': issue for issue, tests in PENDING_PORTS.items() for test in tests}
 
 

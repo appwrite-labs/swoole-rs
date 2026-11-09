@@ -13,3 +13,22 @@ void swr_zend_pdo_declare_long(const char *name, zend_long value) {
     zend_declare_class_constant_long(php_pdo_get_dbh_ce(), name, strlen(name), value);
 #endif
 }
+
+void *swr_zend_pdo_driver_data(void *dbh) {
+    return ((pdo_dbh_t *) dbh)->driver_data;
+}
+
+void swr_zend_pdo_forget_persistent(void *handle) {
+    pdo_dbh_t *dbh = handle;
+    if (!dbh->is_persistent || !dbh->persistent_id) {
+        return;
+    }
+    zend_resource *resource =
+        zend_hash_str_find_ptr(&EG(persistent_list), dbh->persistent_id, dbh->persistent_id_len);
+    if (resource && resource->ptr == dbh) {
+        resource->ptr = NULL;
+        ZEND_ASSERT(dbh->refcount > 1);
+        dbh->refcount--;
+        zend_hash_str_del(&EG(persistent_list), dbh->persistent_id, dbh->persistent_id_len);
+    }
+}

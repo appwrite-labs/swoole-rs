@@ -9,4 +9,11 @@ bool swr_zend_pdo_declared(const char *name);
 /* REGISTER_PDO_CLASS_CONST_LONG; from PHP 8.5, REGISTER_PDO_CLASS_CONST_LONG_DEPRECATED_85. */
 void swr_zend_pdo_declare_long(const char *name, zend_long value);
 
+/* A pdo_dbh_t's driver_data. */
+void *swr_zend_pdo_driver_data(void *dbh);
+
+/* PDO's persistent pool forgets `dbh` (a pdo_dbh_t) if it holds it; live
+ * PDO and statement objects keep theirs. */
+void swr_zend_pdo_forget_persistent(void *dbh);
+
 #endif
