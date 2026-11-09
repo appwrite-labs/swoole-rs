@@ -26,7 +26,7 @@ use std::sync::OnceLock;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
     ReactorIov, SocketRecord, swr_v1_reactor_iov_advance, swr_v1_reactor_iov_view,
-    swr_v1_socket_alloc, swr_v1_socket_get_name,
+    swr_v1_socket_alloc,
 };
 use swoole_rs_tls::upstream::{socket_recv, socket_send};
 
@@ -110,7 +110,7 @@ unsafe extern "C" fn socket_name(socket: *mut c_void) {
     // SAFETY: the live record of the operation.
     let network = unsafe { network(record(socket)) };
     // SAFETY: its open network::Socket; a failure is ignored, as upstream does.
-    unsafe { swr_v1_socket_get_name(network) };
+    unsafe { (*network).get_name() };
 }
 
 unsafe extern "C" fn tls_check_failure(socket: *mut c_void) {

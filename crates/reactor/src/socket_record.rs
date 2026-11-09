@@ -186,8 +186,7 @@ impl SocketRecord {
 
     /// `Socket::catch_error` (`catch_read_error`, `catch_write_error`).
     pub fn catch_error(&mut self, error: c_int) -> c_int {
-        // SAFETY: the record's own flag.
-        unsafe { crate::swr_v1_socket_catch_error(error, &raw mut self.kernel_nobufs) }
+        crate::catch_error(error, &mut self.kernel_nobufs)
     }
 
     /// `Socket::set_tcp_nodelay`.
@@ -262,7 +261,7 @@ pub unsafe extern "C" fn swr_v1_socket_release(socket: *mut SocketRecord) -> boo
     let record = unsafe { &*socket };
     if record.is_local() && record.bound != 0
         // SAFETY: as the caller promises.
-        && unsafe { crate::swr_v1_socket_get_name(socket) } == 0
+        && unsafe { (*socket).get_name() } == 0
     {
         // SAFETY: the record's address, which getsockname(2) just wrote.
         let path = unsafe { (&raw const (*socket).info.addr.un.sun_path).cast::<libc::c_char>() };

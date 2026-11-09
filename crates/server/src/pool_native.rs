@@ -59,7 +59,7 @@ use swoole_rs_reactor::event_api::{
 };
 use swoole_rs_reactor::reactor_upstream::prepared;
 use swoole_rs_reactor::socket_upstream::socket_wait_event;
-use swoole_rs_reactor::{Event, SocketRecord, swr_v1_socket_accept_new, swr_v1_socket_set_timeout};
+use swoole_rs_reactor::{Event, SocketRecord, swr_v1_socket_accept_new};
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket_new};
 use swoole_rs_tls::upstream::{socket_free, socket_read_sync, socket_recv_sync, socket_send_sync};
 
@@ -957,12 +957,10 @@ unsafe extern "C" fn pipe_read(arg: *mut c_void) {
             .cast::<SocketRecord>();
         // SAFETY: this thread's timer, if any.
         let next = unsafe { swoole_timer_get_next_msec() };
-        // SAFETY: the worker's pipe.
-        let timeouts = unsafe { &raw mut (*pipe).timeouts };
         #[expect(clippy::cast_precision_loss, reason = "msec2sec's (double) conversion")]
         let timeout = next as f64 / 1000.0;
-        // SAFETY: as above.
-        unsafe { swr_v1_socket_set_timeout(timeouts, timeout, TIMEOUT_READ) };
+        // SAFETY: the worker's pipe.
+        unsafe { (*pipe).timeouts.set(timeout, TIMEOUT_READ) };
         // SAFETY: the worker's pipe and the call's buffer.
         unsafe { socket_read_sync(pipe, c.data, c.length) }
     });

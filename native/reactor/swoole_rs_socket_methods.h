@@ -20,14 +20,6 @@ inline IOVector::IOVector(swr_v1_reactor_iov_prepared prepared)
       index(prepared.fields->state.index), offset_bytes(prepared.fields->state.offset_bytes) {}
 inline IOVector::IOVector(const iovec *_iov, int _iovcnt) : IOVector(swr_v1_reactor_iov_prepare(_iov, _iovcnt)) {}
 
-inline int Socket::bind(const std::string &_host, int port) {
-    Address addr;
-    if (!addr.assign(socket_type, _host, port, false)) {
-        return SW_ERR;
-    }
-    return bind(addr);
-}
-
 inline SocketType Socket::convert_to_type(std::string &host) {
     const auto plan = swr_v1_socket_host_type(reinterpret_cast<const uint8_t *>(host.data()), host.size());
     host.erase(0, plan.erase);
@@ -59,7 +51,7 @@ static_assert(SW_SENDFILE_CHUNK_SIZE == 65536, "swr_v1_socket_sendfile_chunk's c
 static_assert(SW_SOCK_NONBLOCK == 1 << 2 && SW_SOCK_CLOEXEC == 1 << 3 && SW_ERROR_SOCKET_POLL_TIMEOUT == 6002,
               "crates/reactor/src/socket_upstream.rs");
 static_assert(SW_ERROR_SSL_BAD_CLIENT == 1015 && SW_ERROR_SSL_RESET == 1017 && SW_REDUCE_SIZE == 7,
-              "swr_v1_socket_catch_error's codes");
+              "crates/reactor/src/socket_rw.rs's catch_error codes");
 static_assert(SW_WAIT == 2 && SW_ERROR == 4 && SW_READY == 5 && SW_OK == 0 && SW_ERR == -1,
               "crates/tls/src/socket.rs's codes");
 static_assert(SW_LOG_NOTICE == 3 && SW_ERROR_SSL_VERIFY_FAILED == 1014 && SW_ERROR_SSL_BAD_PROTOCOL == 1016 &&

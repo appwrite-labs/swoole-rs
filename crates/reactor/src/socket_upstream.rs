@@ -231,11 +231,7 @@ pub extern "C" fn socket_has_timedout(_socket: *const SocketRecord) -> bool {
 )]
 pub unsafe extern "C" fn socket_get_timeout(socket: *const SocketRecord, kind: c_int) -> f64 {
     // SAFETY: as the caller promises.
-    let timeouts = unsafe { &(*socket).timeouts };
-    // SAFETY: a live timeout group.
-    let timeout = unsafe { crate::swr_v1_socket_timeout(timeouts, kind) };
-    // SAFETY: null or a pointer into `timeouts`.
-    unsafe { timeout.as_ref() }.copied().unwrap_or(-1.0)
+    unsafe { (*socket).timeouts.get(kind) }.unwrap_or(-1.0)
 }
 
 /// `bool Socket::set_fd_option(int nonblock, int cloexec)`, warning as
@@ -253,7 +249,7 @@ pub unsafe extern "C" fn socket_set_fd_option(
     cloexec: c_int,
 ) -> bool {
     // SAFETY: as the caller promises.
-    let result = unsafe { crate::swr_v1_socket_set_fd_option(socket, nonblock, cloexec) };
+    let result = unsafe { (*socket).set_fd_option(nonblock, cloexec) };
     // SAFETY: as the caller promises.
     let fd = unsafe { (*socket).fd };
     for (bit, call) in [
@@ -278,7 +274,7 @@ pub unsafe extern "C" fn socket_set_fd_option(
 /// `socket` is a live record.
 unsafe fn set_kernel_timeout(socket: *mut SocketRecord, send: bool, timeout: f64) -> bool {
     // SAFETY: as the caller promises.
-    if unsafe { crate::swr_v1_socket_set_kernel_timeout(socket, send, timeout) } {
+    if unsafe { (*socket).set_kernel_timeout(send, timeout) } {
         return true;
     }
     let which = if send { "SEND" } else { "RECV" };

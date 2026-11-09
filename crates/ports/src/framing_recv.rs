@@ -23,7 +23,7 @@ use swoole_rs_framing::recv::{
 };
 use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_hton64};
 use swoole_rs_framing::{swr_v1_framing_unpack, swr_v1_framing_width};
-use swoole_rs_reactor::{SocketRecord, swr_v1_socket_get_peer_name, swr_v1_socket_reset_on_close};
+use swoole_rs_reactor::{SocketRecord, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
 use swoole_rs_websocket::frame_api::PacketLength;
 
@@ -168,8 +168,7 @@ unsafe extern "C" fn split_part(
 /// `getpeername` fails) appended as `<host:port>`.
 fn proto_error(socket: &SocketRecord, code: ErrorCode, origin: &CStr, message: &str) {
     let mut address = socket.info;
-    // SAFETY: the live socket and a writable address.
-    if unsafe { swr_v1_socket_get_peer_name(socket, &raw mut address) } < 0 {
+    if (*socket).get_peer_name(&mut address) < 0 {
         address = socket.info;
     }
     let (host, port) = crate::http_routes::host_port(&address);

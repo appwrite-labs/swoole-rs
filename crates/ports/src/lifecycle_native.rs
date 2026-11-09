@@ -19,8 +19,7 @@ use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_add
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, swr_v1_core_string_set};
 use swoole_rs_reactor::{
-    SocketRecord, swr_v1_socket_dealloc, swr_v1_socket_get_name, swr_v1_socket_make,
-    swr_v1_socket_type,
+    SocketRecord, swr_v1_socket_dealloc, swr_v1_socket_make, swr_v1_socket_type,
 };
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_tls::upstream::socket_ssl_create;
@@ -486,7 +485,7 @@ fn socket_op(run: &mut Run, op: u32, arg: u64) -> u64 {
         }
         OP_GET_TYPE => int(get_option(run.fd, libc::SO_TYPE, &mut run.so_type)),
         // SAFETY: the run's live socket.
-        OP_GET_NAME => int(unsafe { swr_v1_socket_get_name(run.sock) }),
+        OP_GET_NAME => int(unsafe { (*run.sock).get_name() }),
         OP_GET_ACCEPTCONN => int(get_option(run.fd, libc::SO_ACCEPTCONN, &mut run.acceptconn)),
         OP_ACCEPTCONN => int(run.acceptconn),
         OP_WARN_IMPORT => {

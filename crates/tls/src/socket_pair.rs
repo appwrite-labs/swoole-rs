@@ -10,9 +10,7 @@ use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::{make_socket_fd, socket_set_fd_option, socket_wait_event};
-use swoole_rs_reactor::{
-    SocketRecord, swr_v1_socket_buffer_size, swr_v1_socket_defaults, swr_v1_socket_set_timeout,
-};
+use swoole_rs_reactor::{SocketRecord, swr_v1_socket_buffer_size, swr_v1_socket_defaults};
 
 /// `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_ALL` and `SW_OK`.
 const FD_PIPE: c_int = 3;
@@ -193,10 +191,8 @@ pub unsafe extern "C" fn set_timeout(this: *mut SocketPair, timeout: f64) {
     unsafe { (*this).timeout = timeout };
     // SAFETY: as the caller promises.
     for socket in unsafe { ends(this) } {
-        // SAFETY: as the caller promises.
-        let timeouts = unsafe { &raw mut (*socket).timeouts };
-        // SAFETY: the end's live timeout group.
-        unsafe { swr_v1_socket_set_timeout(timeouts, timeout, TIMEOUT_ALL) };
+        // SAFETY: as the caller promises, the end's live timeout group.
+        unsafe { (*socket).timeouts.set(timeout, TIMEOUT_ALL) };
     }
 }
 

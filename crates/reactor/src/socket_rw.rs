@@ -122,15 +122,8 @@ const INVALID: c_int = 6;
 const REDUCE_SIZE: c_int = 7;
 
 /// `Socket::catch_error`: what an errno (or Swoole TLS error) means for the socket.
-/// `ENOBUFS` waits and sets `*kernel_nobufs`; `EFAULT` aborts, as upstream does.
-///
-/// # Safety
-/// `kernel_nobufs` points to a writable bool.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_catch_error(
-    error: c_int,
-    kernel_nobufs: *mut bool,
-) -> c_int {
+/// `ENOBUFS` waits and sets `kernel_nobufs`; `EFAULT` aborts, as upstream does.
+pub fn catch_error(error: c_int, kernel_nobufs: &mut bool) -> c_int {
     #[expect(
         unreachable_patterns,
         reason = "EWOULDBLOCK equals EAGAIN on these platforms"
@@ -152,8 +145,7 @@ pub unsafe extern "C" fn swr_v1_socket_catch_error(
         | SSL_RESET => CLOSE,
         libc::EAGAIN | libc::EWOULDBLOCK | 0 => WAIT,
         libc::ENOBUFS => {
-            // SAFETY: the caller lends a writable bool.
-            unsafe { *kernel_nobufs = true };
+            *kernel_nobufs = true;
             WAIT
         }
         _ => ERROR,
@@ -161,26 +153,17 @@ pub unsafe extern "C" fn swr_v1_socket_catch_error(
 }
 
 /// `Socket::catch_write_pipe_error`: a pipe write that is too large reduces its
-/// size (`EMSGSIZE`, and on Linux `ENOBUFS`, which also sets `*kernel_nobufs`);
-/// anything else is [`swr_v1_socket_catch_error`]'s.
-///
-/// # Safety
-/// `kernel_nobufs` points to a writable bool.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_catch_pipe_error(
-    error: c_int,
-    kernel_nobufs: *mut bool,
-) -> c_int {
+/// size (`EMSGSIZE`, and on Linux `ENOBUFS`, which also sets `kernel_nobufs`);
+/// anything else is [`catch_error`]'s.
+pub fn catch_pipe_error(error: c_int, kernel_nobufs: &mut bool) -> c_int {
     match error {
         libc::EMSGSIZE => REDUCE_SIZE,
         #[cfg(target_os = "linux")]
         libc::ENOBUFS => {
-            // SAFETY: the caller lends a writable bool.
-            unsafe { *kernel_nobufs = true };
+            *kernel_nobufs = true;
             REDUCE_SIZE
         }
-        // SAFETY: as the caller promises.
-        _ => unsafe { swr_v1_socket_catch_error(error, kernel_nobufs) },
+        _ => catch_error(error, kernel_nobufs),
     }
 }
 
@@ -314,7 +297,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_sendfile(
     if sent < 0 {
         let error = Error::last_os_error().raw_os_error().unwrap_or(0);
         // SAFETY: the caller's kernel_nobufs flag.
-        let failed = unsafe { crate::swr_v1_socket_catch_error(error, kernel_nobufs) } == 4;
+        let failed = unsafe { crate::catch_error(error, &mut *kernel_nobufs) } == 4;
         return SslSendfileResult {
             value: sent,
             warn: c_int::from(failed),
@@ -429,8 +412,7 @@ mod tests {
     #[test]
     fn errors_classify_as_upstream() {
         let mut nobufs = false;
-        // SAFETY: `nobufs` is a local.
-        let mut classify = |error| unsafe { swr_v1_socket_catch_error(error, &raw mut nobufs) };
+        let mut classify = |error| catch_error(error, &mut nobufs);
         assert_eq!(classify(libc::EAGAIN), WAIT);
         assert_eq!(classify(0), WAIT);
         assert_eq!(classify(libc::EPIPE), CLOSE);
@@ -444,9 +426,7 @@ mod tests {
     #[test]
     fn pipe_errors_reduce_the_size() {
         let mut nobufs = false;
-        // SAFETY: `nobufs` is a local.
-        let mut classify =
-            |error| unsafe { swr_v1_socket_catch_pipe_error(error, &raw mut nobufs) };
+        let mut classify = |error| catch_pipe_error(error, &mut nobufs);
         assert_eq!(classify(libc::EMSGSIZE), REDUCE_SIZE);
         assert_eq!(classify(libc::EAGAIN), WAIT);
         assert_eq!(classify(libc::EPIPE), CLOSE);

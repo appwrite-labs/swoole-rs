@@ -9,8 +9,8 @@ use swoole_rs_clients::address::swr_v1_clients_address_assign;
 use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_reactor::SocketRecord;
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
-use swoole_rs_reactor::{SocketRecord, swr_v1_socket_bind};
 use swoole_rs_tls::{
     DtlsSession, dtls_fields, swr_v1_tls_dtls_append, swr_v1_tls_dtls_append_buffer,
     swr_v1_tls_dtls_session_listen,
@@ -79,7 +79,7 @@ unsafe fn bind(sock: *mut SocketRecord, kind: c_int, host: &CStr, port: c_int) -
         return false;
     }
     // SAFETY: the live socket and the address assigned above.
-    unsafe { swr_v1_socket_bind(sock, (&raw const address.addr).cast(), address.len) >= 0 }
+    unsafe { (*sock).bind(&address) >= 0 }
 }
 
 /// `Server::accept_dtls_connection(port, sa)`: a socket bound to the port and

@@ -231,7 +231,7 @@ unsafe fn connect(
     // SAFETY: the record's live state.
     unsafe { swr_v1_hook_socket_connect(record(socket).state) };
     // SAFETY: an open record's network::Socket; `get_name`'s failure is ignored.
-    unsafe { swoole_rs_reactor::swr_v1_socket_get_name(record(socket).socket) };
+    unsafe { (*record(socket).socket).get_name() };
     // SAFETY: as the caller promises.
     unsafe { set_err(socket, 0) };
     true
@@ -412,7 +412,7 @@ mod tests {
             timer.stop();
         }
         unsafe { swr_v1_hook_socket_connect(record(s).state) };
-        unsafe { swoole_rs_reactor::swr_v1_socket_get_name(record(s).socket) };
+        unsafe { (*record(s).socket).get_name() };
         unsafe { set_err(s, 0) };
         true
     }

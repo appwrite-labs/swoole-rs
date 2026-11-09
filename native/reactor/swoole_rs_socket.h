@@ -99,13 +99,6 @@ swr_v1_socket *swr_v1_socket_dup(const swr_v1_socket *socket);
 swr_v1_socket *swr_v1_socket_accept_new(swr_v1_socket *listener);
 /* Socket's methods over the record (crates/reactor/src/socket_methods.rs): SW_OK or
  * SW_ERR, setting info, bound, listened or the TCP flags on success. */
-int swr_v1_socket_get_name(swr_v1_socket *socket);
-int swr_v1_socket_get_peer_name(const swr_v1_socket *socket, swoole::network::Address *address);
-int swr_v1_socket_bind(swr_v1_socket *socket, const struct sockaddr *address, socklen_t length);
-int swr_v1_socket_listen(swr_v1_socket *socket, int backlog);
-int swr_v1_socket_set_tcp_nopush(swr_v1_socket *socket, int nopush);
-bool swr_v1_socket_set_tcp_nodelay(swr_v1_socket *socket, int nodelay);
-bool swr_v1_socket_has_kernel_nobufs(swr_v1_socket *socket);
 /* socket_free_defer: unlink a bound Unix socket's path, close the fd; false (errno
  * set) when close(2) failed. */
 bool swr_v1_socket_release(swr_v1_socket *socket);

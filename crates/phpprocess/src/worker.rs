@@ -12,7 +12,6 @@ use swoole_rs_reactor::{
     socket_upstream::{
         socket_set_fd_option, socket_set_kernel_read_timeout, socket_set_kernel_write_timeout,
     },
-    swr_v1_socket_set_timeout,
 };
 use swoole_rs_tls::{
     socket_pair::{self, SocketPair},
@@ -240,10 +239,8 @@ pub(crate) unsafe fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
 /// The worker has a pipe.
 pub(crate) unsafe fn pipe_timeout(worker: *mut c_void, seconds: f64) -> bool {
     let socket = pipe(worker);
-    // SAFETY: as the caller promises.
-    let timeouts = unsafe { &raw mut (*socket).timeouts };
-    // SAFETY: the live socket's timeouts.
-    unsafe { swr_v1_socket_set_timeout(timeouts, seconds, TIMEOUT_ALL) };
+    // SAFETY: as the caller promises, the live socket's timeouts.
+    unsafe { (*socket).timeouts.set(seconds, TIMEOUT_ALL) };
     // SAFETY: as the caller promises.
     let read = unsafe { socket_set_kernel_read_timeout(socket, seconds) };
     // SAFETY: as above.

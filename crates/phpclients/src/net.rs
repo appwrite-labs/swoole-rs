@@ -1141,7 +1141,7 @@ fn getsockname(call: &Call) {
     };
     let socket = conn.socket();
     // SAFETY: a live client's socket.
-    if unsafe { swoole_rs_reactor::swr_v1_socket_get_name(socket) } < 0 {
+    if unsafe { (*socket).get_name() } < 0 {
         let error = errno();
         warn_sys("getsockname() failed", error);
         set_err_code(call.this(), error);
