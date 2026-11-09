@@ -327,8 +327,8 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_call_anyway(
     result
 }
 
-/// `swr_v1_phpcoroutines_create`: the new cid, with 1 in its last argument
-/// when activation bailed out.
+/// crates/phpcoroutines' `create_coroutine`: the new cid, with 1 in its last
+/// argument when activation bailed out.
 pub type Create =
     unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval, *mut zval, *mut u8) -> c_long;
 
@@ -463,45 +463,4 @@ pub unsafe fn named_call(name: &[u8], args: &mut [zval]) -> Result<(), bailout::
     } else {
         Ok(())
     }
-}
-
-/// `bool zend::function::call(zend_fcall_info_cache *, uint32_t, zval *, zval *, bool)`:
-/// [`function_call`] in a coroutine through crates/phpcoroutines, warning as
-/// `sw_callable_warning`, with a bailout re-raised.
-/// # Safety
-/// As [`function_call`], from a frame that owns nothing that needs a drop.
-#[cfg(not(test))]
-#[unsafe(export_name = "_ZN4zend8function4callEP22_zend_fcall_info_cachejP12_zval_structS4_b")]
-unsafe extern "C" fn zend_function_call(
-    cache: *mut zend_fcall_info_cache,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
-    coroutine: bool,
-) -> bool {
-    // SAFETY: crates/phpcoroutines' coroutine leaf.
-    unsafe extern "C" {
-        fn swr_v1_phpcoroutines_create(
-            fcc: *mut zend_fcall_info_cache,
-            argc: u32,
-            argv: *mut zval,
-            callable: *mut zval,
-            bailout: *mut u8,
-        ) -> c_long;
-    }
-    // SAFETY: per the caller.
-    let result = unsafe {
-        function_call(
-            cache,
-            argc,
-            argv,
-            retval,
-            coroutine,
-            swr_v1_phpcoroutines_create,
-            sys::swr_zend_callable_warning,
-        )
-    };
-    let called = matches!(result, Ok(true));
-    bailout::raise(result.map(drop));
-    called
 }
