@@ -81,7 +81,7 @@ pub fn max_sockets() -> u32 {
 }
 
 fn set_path(slot: &StringSlot, path: &[u8]) -> bool {
-    // SAFETY: `path` lends its bytes; no native cache views these slots.
+    // SAFETY: `path` lends its bytes to a live slot.
     unsafe { swr_v1_core_string_set(slot, path.as_ptr().cast(), path.len()) == 0 }
 }
 

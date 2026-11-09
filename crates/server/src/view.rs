@@ -116,7 +116,7 @@ pub unsafe fn set_text(serv: *mut c_void, index: usize, value: &[u8]) {
     if slot.is_null() {
         return;
     }
-    // SAFETY: a live slot with no native cache; set only while the server is configured.
+    // SAFETY: a live slot, set only while the server is configured.
     let status = unsafe {
         swoole_rs_corebase::swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len())
     };

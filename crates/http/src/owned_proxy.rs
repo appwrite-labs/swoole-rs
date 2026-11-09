@@ -73,8 +73,8 @@ pub unsafe extern "C" fn swr_v1_http_proxy_owned_pack(
 }
 
 /// `HttpProxy::create`'s assignments on a fresh owner: the host and port, then the
-/// credentials when both are set. A fresh owner has no native cache, so only an
-/// allocation can fail, and that aborts as Rust's allocation failures do.
+/// credentials when both are set. Only an allocation can fail, and that aborts as
+/// Rust's allocation failures do.
 /// # Safety
 /// owner is a live owner nothing else uses; the views lend their bytes for the call.
 #[unsafe(no_mangle)]
@@ -192,19 +192,14 @@ pub unsafe extern "C" fn swr_v1_http_proxy_accept(data: *const u8, length: usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::swr_v1_http_proxy_auth_enabled;
-    use std::ffi::c_void;
     use swoole_rs_corebase::{
-        PreparedProxy, swr_v1_core_proxy_free, swr_v1_core_proxy_new, swr_v1_core_string_cache,
-        swr_v1_core_string_set, swr_v1_core_string_view,
+        PreparedProxy, swr_v1_core_proxy_free, swr_v1_core_proxy_new, swr_v1_core_string_set,
+        swr_v1_core_string_view,
     };
     use swoole_rs_oracle::http_proxy as oracle;
 
     fn errno() -> i32 {
         std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-    }
-    unsafe extern "C" fn refuse(_: *mut c_void, _: *const c_char, _: usize) -> bool {
-        false
     }
     fn views<'a>(texts: [&'a [u8]; 3]) -> [CoreStringView; 3] {
         texts.map(|text: &'a [u8]| CoreStringView {
@@ -228,47 +223,23 @@ mod tests {
             unsafe { (*proxy.0.fields).target_port = target_port };
             proxy
         }
-        /// `HttpProxy::create`, refusing the native cache of field `refused`.
-        fn create(
-            host: &[u8],
-            port: i32,
-            user: &[u8],
-            password: &[u8],
-            refused: Option<usize>,
-        ) -> (Self, i32, usize) {
+        /// `HttpProxy::create`.
+        fn create(host: &[u8], port: i32, user: &[u8], password: &[u8]) -> Self {
             let proxy = Self::new();
-            let Some(index) = refused else {
-                let [host, user, password] = views([host, user, password]);
-                unsafe {
-                    swr_v1_http_proxy_configure(
-                        proxy.0.owner,
-                        host.data,
-                        host.length,
-                        port,
-                        user.data,
-                        user.length,
-                        password.data,
-                        password.length,
-                    );
-                };
-                return (proxy, 0, 0);
-            };
-            let texts = views([host, user, password]);
-            proxy.refuse(index, true);
-            let enabled = swr_v1_http_proxy_auth_enabled(user.len(), password.len()) == 1;
-            let result = unsafe {
-                swr_v1_core_proxy_configure(proxy.0.owner, texts.as_ptr(), port, enabled, -1)
-            };
-            proxy.refuse(index, false);
-            (proxy, result.status, usize::try_from(result.index).unwrap())
-        }
-        /// Registers (or detaches) a native cache on field `index` that refuses
-        /// every publication, as a failing C++ allocation does.
-        fn refuse(&self, index: usize, refusing: bool) {
-            let update = refusing.then_some(refuse as unsafe extern "C" fn(_, _, _) -> _);
+            let [host, user, password] = views([host, user, password]);
             unsafe {
-                swr_v1_core_string_cache(self.0.strings[index], std::ptr::null_mut(), update);
+                swr_v1_http_proxy_configure(
+                    proxy.0.owner,
+                    host.data,
+                    host.length,
+                    port,
+                    user.data,
+                    user.length,
+                    password.data,
+                    password.length,
+                );
             };
+            proxy
         }
         fn set(&self, index: usize, value: &[u8]) -> i32 {
             unsafe {
@@ -503,9 +474,8 @@ mod tests {
         (port, [host, user, &rest[..lengths[2]]].map(<[u8]>::to_vec))
     }
 
-    /// The factory and authorization differential, and what a refused assignment
-    /// leaves: create assigns the host, then the port, then the username, then the
-    /// password, and stops at a refusal; a refused cache publication keeps both values.
+    /// The factory and authorization differential, and a later host assignment
+    /// that leaves the other fields alone.
     #[test]
     fn ported_dispatch_gate() {
         let long_name = [b'x'; 200];
@@ -529,10 +499,10 @@ mod tests {
                         "native factory fields"
                     );
 
-                    let (current, status, _) = Proxy::create(host, -123, user, password, None);
+                    let current = Proxy::create(host, -123, user, password);
                     assert_eq!(
-                        (status, current.port(), current.fields()),
-                        (0, -123, expected.clone()),
+                        (current.port(), current.fields()),
+                        (-123, expected.clone()),
                         "real candidate factory fields"
                     );
                     assert_eq!(
@@ -546,48 +516,9 @@ mod tests {
                         "authorization preserves owner fields"
                     );
 
-                    for refused in 0..if authenticated { 3 } else { 1 } {
-                        let (proxy, status, index) =
-                            Proxy::create(host, -123, user, password, Some(refused));
-                        assert_eq!((status, index), (-3, refused), "candidate factory refusal");
-                        assert_eq!(
-                            proxy.port(),
-                            if refused == 0 { 0 } else { -123 },
-                            "port follows the host"
-                        );
-                        for (index, value) in proxy.fields().iter().enumerate() {
-                            let assigned = if index < refused {
-                                expected[index].as_slice()
-                            } else {
-                                b""
-                            };
-                            assert_eq!(
-                                value.as_slice(),
-                                assigned,
-                                "fields before the refusal only"
-                            );
-                        }
-                    }
-
                     let replacement = [b'z'; 600];
-                    current.refuse(0, true);
-                    assert_eq!(current.set(0, &replacement), -3, "candidate cache refusal");
-                    assert_eq!(
-                        current.fields(),
-                        expected,
-                        "candidate cache refusal preserves Rust values"
-                    );
-                    current.refuse(0, false);
-                    assert_eq!(
-                        current.set(0, &replacement),
-                        0,
-                        "candidate cache publication"
-                    );
-                    assert_eq!(
-                        current.get(0),
-                        replacement,
-                        "candidate cache publication value"
-                    );
+                    assert_eq!(current.set(0, &replacement), 0, "host assignment");
+                    assert_eq!(current.get(0), replacement, "host assignment value");
                     assert_eq!(
                         current.fields()[1..],
                         expected[1..],

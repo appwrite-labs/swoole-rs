@@ -2689,7 +2689,7 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             port.port = o.ctx.number;
             // SAFETY: the NUL-terminated host the caller lends.
             let host = unsafe { CStr::from_ptr(o.ctx.host) };
-            // SAFETY: the new port's own slot, which has no native cache yet.
+            // SAFETY: the new port's own slot.
             let set = unsafe {
                 swoole_rs_corebase::swr_v1_core_string_set(
                     &raw const *port.host,

@@ -1,12 +1,7 @@
 //! Rust string slots for native configuration views. Copies own independent
-//! bytes; the optional native cache exists only for reference-returning APIs.
+//! bytes.
 
-use std::{
-    cell::UnsafeCell,
-    ffi::{c_char, c_void},
-    ptr,
-    sync::Arc,
-};
+use std::{cell::UnsafeCell, ffi::c_char, ptr, sync::Arc};
 
 /// Borrowed terminated bytes; embedded NULs are included in length.
 #[repr(C)]
@@ -16,25 +11,18 @@ pub struct CoreStringView {
     pub length: usize,
 }
 
-type CacheUpdate = unsafe extern "C" fn(*mut c_void, *const c_char, usize) -> bool;
-#[derive(Clone, Copy)]
-struct Cache {
-    context: *mut c_void,
-    update: CacheUpdate,
-}
 enum Bytes {
     Inline { data: [u8; 24], length: usize },
     Heap(Vec<u8>),
 }
 pub struct StringSlot {
     bytes: UnsafeCell<Bytes>,
-    cache: UnsafeCell<Option<Cache>>,
 }
 // SAFETY: every operation that reads or mutates a slot is unsafe and requires
 // external synchronization, matching the native configuration's caller contract.
 unsafe impl Send for StringSlot {}
 // SAFETY: sharing exposes no safe mutation or references; C callers synchronize
-// accesses, and native cache registration ends before its view is destroyed.
+// accesses.
 unsafe impl Sync for StringSlot {}
 impl Default for StringSlot {
     fn default() -> Self {
@@ -50,7 +38,6 @@ impl StringSlot {
                 data: [0; 24],
                 length: 0,
             }),
-            cache: UnsafeCell::new(None),
         }
     }
     #[must_use]
@@ -77,11 +64,10 @@ pub unsafe extern "C" fn swr_v1_core_string_view(slot: *const StringSlot) -> Cor
         },
     }
 }
-/// Fallible byte assignment; 0 success,-2 allocation refusal,-3 native cache error.
+/// Fallible byte assignment; 0 success, -2 allocation refusal.
 /// Embedded NULs remain part of the value, with a separate trailing terminator.
 /// # Safety
-/// slot is live/exclusive, bytes readable for length; its registered native cache
-/// catches exceptions and cannot reenter or mutate the Rust slot.
+/// slot is live/exclusive, bytes readable for length.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_string_set(
     slot: *const StringSlot,
@@ -106,22 +92,14 @@ pub unsafe extern "C" fn swr_v1_core_string_set(
         if data.try_reserve_exact(capacity).is_err() {
             return -2;
         }
-        // SAFETY: the caller lends all bytes, copied before mutation or cache effects.
+        // SAFETY: the caller lends all bytes, copied before mutation.
         data.extend_from_slice(unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) });
         data.push(0);
         Bytes::Heap(data)
     };
     // SAFETY: the slot is live and externally synchronized.
     let slot = unsafe { &*slot };
-    // SAFETY: copy the optional effect; no Rust reference crosses the callback.
-    let cache = unsafe { *slot.cache.get() };
-    if let Some(cache) = cache {
-        // SAFETY: registration promises a catching, nonreentrant native cache update.
-        if !unsafe { (cache.update)(cache.context, bytes, length) } {
-            return -3;
-        }
-    }
-    // SAFETY: effects returned; publish only after both allocations succeeded.
+    // SAFETY: publish only after the allocation succeeded.
     unsafe { *slot.bytes.get() = replacement };
     0
 }
@@ -148,47 +126,17 @@ pub unsafe extern "C" fn swr_v1_core_string_free(slot: *const StringSlot) {
         unsafe { drop(Arc::from_raw(slot)) };
     }
 }
-/// Register a lazy native reference cache, or detach it before destruction.
-/// # Safety
-/// slot is live/exclusive. A nonnull update catches exceptions and never reenters;
-/// its context remains live until it is detached. There is exactly one borrowed view.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_string_cache(
-    slot: *const StringSlot,
-    context: *mut c_void,
-    update: Option<CacheUpdate>,
-) {
-    // SAFETY: the slot is exclusively lent for cache registration.
-    let slot = unsafe { &*slot };
-    // SAFETY: no cache effect is active during registration or detach.
-    unsafe { *slot.cache.get() = update.map(|update| Cache { context, update }) };
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    unsafe extern "C" fn refuse(
-        _context: *mut c_void,
-        _bytes: *const c_char,
-        _length: usize,
-    ) -> bool {
-        false
-    }
     #[test]
-    fn copies_are_values_and_cache_refusal_does_not_publish() {
+    fn copies_are_values() {
         unsafe {
             let slot = StringSlot::empty();
             let pointer = Arc::as_ptr(&slot);
             assert_eq!(swr_v1_core_string_set(pointer, c"initial".as_ptr(), 7), 0);
             let copied = swr_v1_core_string_clone(pointer);
             assert!(!copied.is_null());
-            swr_v1_core_string_cache(pointer, ptr::null_mut(), Some(refuse));
-            assert_eq!(swr_v1_core_string_set(pointer, c"changed".as_ptr(), 7), -3);
-            assert_eq!(
-                std::ffi::CStr::from_ptr(swr_v1_core_string_view(pointer).data).to_bytes(),
-                b"initial"
-            );
-            swr_v1_core_string_cache(pointer, ptr::null_mut(), None);
             assert_eq!(swr_v1_core_string_set(pointer, c"changed".as_ptr(), 7), 0);
             assert_eq!(
                 std::ffi::CStr::from_ptr(swr_v1_core_string_view(copied).data).to_bytes(),

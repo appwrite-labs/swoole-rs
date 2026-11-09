@@ -223,7 +223,7 @@ extern "C" fn slot_password(
     unsafe { copy_password(buffer, capacity, view.into()) }
 }
 /// # Safety
-/// owner and native cache views are live/exclusive, and its logger does not throw.
+/// owner is live/exclusive, and its logger does not throw.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
     // SAFETY: snapshot raw views without retaining a record reference across OpenSSL/log callbacks.
@@ -279,8 +279,7 @@ pub unsafe extern "C" fn ssl_context_create(context: *const OwnedTlsContext) -> 
 /// Path access and assignment are one Rust operation. 1 access denied, otherwise
 /// `string_set`'s status; only cert(4), key(5) and client certificate(7) are accepted.
 /// # Safety
-/// owner is live/exclusive; path is terminated and readable for length bytes;
-/// native cache callbacks catch exceptions and do not reenter.
+/// owner is live/exclusive; path is terminated and readable for length bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_tls_owner_set_path(
     owner: *const OwnedTlsContext,
@@ -560,7 +559,7 @@ unsafe fn set_file(
             );
             false
         }
-        // A native cache that couldn't allocate, which std::bad_alloc ends.
+        // An allocation refusal, which std::bad_alloc ends.
         _ => std::process::abort(),
     }
 }
@@ -568,7 +567,7 @@ unsafe fn set_file(
 /// Write the text setting into the owner: false for a certificate or key file
 /// that can't be read.
 /// # Safety
-/// owner is live and exclusive; native caches catch exceptions and do not reenter.
+/// owner is live and exclusive.
 pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8]) -> bool {
     // SAFETY: the caller lends the live owner.
     let state = unsafe { &*owner };

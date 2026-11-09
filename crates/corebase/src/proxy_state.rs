@@ -1,5 +1,5 @@
 //! Shared HTTP/SOCKS proxy values and packet storage. Native objects only lend
-//! references to these stable slots and guard their lazy C++ reference caches.
+//! references to these stable slots.
 use crate::{CoreStringView, StringSlot, swr_v1_core_string_set, swr_v1_core_string_view};
 use std::{cell::UnsafeCell, ptr};
 
@@ -123,7 +123,7 @@ pub unsafe extern "C" fn swr_v1_core_proxy_assign(
     let destination = unsafe { &*destination };
     // SAFETY: the source is unchanged during value assignment.
     let source = unsafe { &*source };
-    // SAFETY: a leaf scalar snapshot before any native cache guard.
+    // SAFETY: a leaf scalar snapshot before the string assignments.
     let fields = unsafe { *source.fields.get() };
     // SAFETY: private packet presence identifies the two proxy value layouts.
     let socks = unsafe { &*source.buffer.get() }.is_some();
@@ -141,9 +141,9 @@ pub unsafe extern "C" fn swr_v1_core_proxy_assign(
                 }
             };
         }
-        // SAFETY: source string bytes remain unchanged through the cache callback.
+        // SAFETY: source string bytes remain unchanged through the assignment.
         let value = unsafe { swr_v1_core_string_view(from) };
-        // SAFETY: destination is exclusive; its native cache catches exceptions.
+        // SAFETY: destination is exclusive and the source view readable.
         let status = unsafe { swr_v1_core_string_set(to, value.data, value.length) };
         if status != 0 {
             return ProxyCopyResult {
@@ -181,7 +181,7 @@ pub unsafe extern "C" fn swr_v1_core_proxy_configure(
     authenticated: bool,
     socket_type: i32,
 ) -> ProxyCopyResult {
-    // SAFETY: the fresh owner stays live through all cache effects.
+    // SAFETY: the fresh owner stays live through configuration.
     let owner = unsafe { &*owner };
     // SAFETY: three initialized input descriptors remain stable through assignment.
     let texts = unsafe { std::slice::from_raw_parts(texts, 3) };
@@ -191,7 +191,7 @@ pub unsafe extern "C" fn swr_v1_core_proxy_configure(
         if index != 0 && !authenticated {
             break;
         }
-        // SAFETY: live exclusive slot and readable input span; its cache guards exceptions.
+        // SAFETY: live exclusive slot and readable input span.
         let status = unsafe { swr_v1_core_string_set(slot, value.data, value.length) };
         if status != 0 {
             return ProxyCopyResult {
@@ -218,11 +218,8 @@ pub unsafe extern "C" fn swr_v1_core_proxy_configure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{swr_v1_core_string_cache, swr_v1_core_string_set};
-    use std::ffi::{CStr, c_char, c_void};
-    unsafe extern "C" fn refuse(_: *mut c_void, _: *const c_char, _: usize) -> bool {
-        false
-    }
+    use crate::swr_v1_core_string_set;
+    use std::ffi::CStr;
     #[test]
     fn proxy_copies_keep_scalar_packet_and_string_values_independent() {
         unsafe {
@@ -290,10 +287,6 @@ mod tests {
                     *source.buffer = 0;
                     assert_eq!(*destination.buffer, 0x5a);
                 }
-                swr_v1_core_string_cache(destination.strings[1], ptr::null_mut(), Some(refuse));
-                let result = swr_v1_core_proxy_assign(destination.owner, source.owner);
-                assert_eq!((result.status, result.index), (-3, 1));
-                swr_v1_core_string_cache(destination.strings[1], ptr::null_mut(), None);
                 swr_v1_core_proxy_free(source.owner);
                 swr_v1_core_proxy_free(destination.owner);
             }
