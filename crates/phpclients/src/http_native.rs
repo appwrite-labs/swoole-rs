@@ -435,18 +435,7 @@ pub(crate) unsafe fn swoole_http_client_coro_mime(path: *const c_char) -> *const
     swoole_rs_phpswoole::mime_type(unsafe { CStr::from_ptr(path) }.to_bytes()).as_ptr()
 }
 
-/// Upstream's `decompress_response` warnings: unknown `method`, or failed (-1).
-pub(crate) unsafe fn swoole_http_client_coro_inflate_warning(method: c_int) {
-    let origin = c"Client::decompress_response";
-    if method < 0 {
-        log::warning(
-            origin,
-            format_args!("HttpClient::decompress_response failed"),
-        );
-    } else {
-        log::warning(
-            origin,
-            format_args!("HttpClient::decompress_response unknown compress method [{method}]"),
-        );
-    }
+/// Upstream's `decompress_response` warnings.
+pub(crate) fn swoole_http_client_coro_inflate_warning(message: &str) {
+    log::warning(c"Client::decompress_response", format_args!("{message}"));
 }

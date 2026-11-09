@@ -56,13 +56,6 @@ struct swr_v1_clients_cookie_plan swr_v1_clients_cookie(const uint8_t *, size_t)
 /* WebSocket client handshake: 1 if base64(SHA-1(key + GUID)) equals accept.
  * Zend header extraction and the Upgrade/Connection token checks stay native. */
 uint8_t swr_v1_clients_ws_accept_valid(const uint8_t *key, size_t key_len, const uint8_t *accept, size_t accept_len);
-/* HTTP response decompression over a per-Client zlib stream (gzip/deflate; brotli
- * and zstd are disabled in every build). The handle owns the z_stream and the
- * raw-deflate retry; native appends each chunk's produced bytes to its body. */
-struct swr_v1_clients_http_inflate_view { const uint8_t *data; size_t length; };
-void *swr_v1_clients_http_inflate_new(bool gzip);
-bool swr_v1_clients_http_inflate_chunk(void *handle, const uint8_t *input, size_t len, struct swr_v1_clients_http_inflate_view *view);
-void swr_v1_clients_http_inflate_free(void *handle);
 /* Caller-owned bounded DNS codec buffers; no native execution or retained state. */
 int32_t swr_v1_clients_domain_encode(const uint8_t *, size_t, uint8_t *, size_t);
 uint8_t swr_v1_clients_domain_decode(uint8_t *, size_t, uint8_t signed_char);

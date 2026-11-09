@@ -27,7 +27,7 @@ mod php {
     };
 
     /// What configure's checks define in config.h that native/ reads, by target
-    /// OS (zlib, no brotli or zstd).
+    /// OS.
     const LINUX: &[&str] = &[
         "HAVE_AI_ALL",
         "HAVE_AI_V4MAPPED",
@@ -61,7 +61,9 @@ mod php {
         "SWOOLE_RS_BRIDGE",
         "SW_HALFCLOSE_DRAIN",
         "SW_HALFCLOSE_PREQUEUE",
+        "SW_HAVE_BROTLI",
         "SW_HAVE_ZLIB",
+        "SW_HAVE_ZSTD",
         "SW_USE_ASM_CONTEXT",
     ];
 
@@ -89,6 +91,26 @@ mod php {
 
     fn pkg_includes(module: &str) -> Vec<PathBuf> {
         include_flags(Command::new("pkg-config").args(["--cflags", module])).unwrap_or_default()
+    }
+
+    /// Link the libraries pkg-config names for `modules`, from the directories it names.
+    fn pkg_link(modules: &[&str]) {
+        let output = Command::new("pkg-config")
+            .arg("--libs")
+            .args(modules)
+            .output()
+            .expect("ext: pkg-config --libs");
+        assert!(
+            output.status.success(),
+            "ext: pkg-config --libs {modules:?}"
+        );
+        for flag in String::from_utf8_lossy(&output.stdout).split_whitespace() {
+            if let Some(dir) = flag.strip_prefix("-L") {
+                println!("cargo::rustc-link-search=native={dir}");
+            } else if let Some(library) = flag.strip_prefix("-l") {
+                println!("cargo::rustc-link-lib={library}");
+            }
+        }
     }
 
     /// config.m4's `SW_PHP_VERSION_ID`: 84 for PHP 8.4.x.
@@ -346,6 +368,10 @@ mod php {
         includes.extend(env::var_os("DEP_OPENSSL_INCLUDE").map(PathBuf::from));
         includes.extend(php_includes(&php_config));
         includes.extend(profile.includes);
+        // native/phphelpers reads the Brotli and zstd versions (zstd-sys links libzstd).
+        includes.extend(pkg_includes("libbrotlienc"));
+        includes.extend(pkg_includes("libzstd"));
+        pkg_link(&["libbrotlienc", "libbrotlidec"]);
 
         let base = |cpp: bool| {
             let mut build = cc::Build::new();

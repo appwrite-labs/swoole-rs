@@ -291,12 +291,19 @@ unsafe extern "C" fn socket_coro_minit(module_number: c_int) {
     unsafe { swr_v1_phpclients_socket_minit(exception, shortname, module_number) };
 }
 
-/// `php_swoole_http_response_minit`: zlib and `SW_HAVE_COMPRESSION` are the
-/// codecs built in (brotli and zstd never are: `tools/build_upstream.py`).
+/// The codecs the build has: 1 zlib, 2 brotli, 4 zstd.
+fn codecs() -> u32 {
+    [Capability::Zlib, Capability::Brotli, Capability::Zstd]
+        .iter()
+        .enumerate()
+        .filter(|(_, capability)| crate::built_with(**capability))
+        .fold(0, |features, (bit, _)| features | 1 << bit)
+}
+
+/// `php_swoole_http_response_minit`: the codecs and `SW_HAVE_COMPRESSION`.
 unsafe extern "C" fn http_response_minit(_module_number: c_int) {
-    use crate::constants::{COMPRESSION, ZLIB};
     let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
-    let codecs = u32::from(flags & ZLIB != 0) | u32::from(flags & COMPRESSION != 0) << 3;
+    let codecs = codecs() | u32::from(flags & crate::constants::COMPRESSION != 0) << 3;
     // SAFETY: Rust's MINIT, once, after the request class's.
     unsafe { swr_v1_phphttp_response_minit(codecs) };
 }
@@ -348,13 +355,8 @@ unsafe extern "C" fn http_client_coro_minit(module_number: c_int) {
     let exception = unsafe { crate::swoole_exception_ce };
     // SAFETY: the module's globals, live from MINIT.
     let shortname = unsafe { (*globals()).use_shortname };
-    let features = [Capability::Zlib, Capability::Brotli, Capability::Zstd]
-        .iter()
-        .enumerate()
-        .filter(|(_, capability)| crate::built_with(**capability))
-        .fold(0, |features, (bit, _)| features | 1 << bit);
     // SAFETY: Rust's MINIT, once.
-    unsafe { swr_v1_phpclients_http_client_minit(exception, shortname, module_number, features) };
+    unsafe { swr_v1_phpclients_http_client_minit(exception, shortname, module_number, codecs()) };
 }
 
 /// `php_swoole_http2_client_coro_minit`.

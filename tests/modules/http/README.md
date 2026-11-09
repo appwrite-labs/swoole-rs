@@ -144,7 +144,7 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 - `If_Modified_Since.phpt` fails on macOS for native and hybrid (200 instead of
   304), consistent with a libc calendar offset difference.
 - Full originals also fail or are unsupported for reasons outside Rust: the
-  runner's unsupported custom `EXPECTF_85` section, zstd-disabled builds, missing
+  runner's unsupported custom `EXPECTF_85` section, missing
   `ip` executable (`server_addr`), `bug_2444` (needs MySQL), `tmp-content-type`
   (needs Composer Guzzle), coroutine `close_socket` (needs external HTTPS), and
   timeouts in `sendfile_client_reset`/issue 2360 (the original can stall waiting
