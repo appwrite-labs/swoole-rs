@@ -3,8 +3,8 @@
 Feature bit 1048576 (`clients`). ABI:
 `swoole_rs_clients.h`. Upstream's client, address, DNS and name-resolver sources
 have left the build; the resolver list and `NameResolver::Context` are
-`crates/corebase/src/name_resolver.rs`, and `native/clients/swoole_client.h` is the
-owned `network::Client` header.
+`crates/corebase/src/name_resolver.rs`, and `network::Client` is
+`crates/clients/src/client.rs` (upstream's header has no replacement).
 
 Production exports have the prefix `swr_v1_clients_`. A test-only allocation-budget
 symbol is excluded from production artifacts.
@@ -100,11 +100,13 @@ removed with `swr_v1_core_name_resolver_add`/`_remove`.
   helper does, not compressed `inet_ntop` text). Native builds the
   `std::string`; the invalid-family assertion stays native.
 
-## Client (`native/clients/network_client.cc`)
+## Client
 
-`network::Client`'s state (flags, server host and port, connect timer,
-watermarks, the TLS context and the proxies), operations, callbacks and reactor handlers are Rust's
-(`crates/clients/src/client.rs`). The callbacks are one `(listener, object)` pair and an
+`network::Client` is Rust's (`crates/clients/src/client.rs`): its construction,
+state (flags, server host and port, connect timer, watermarks, the TLS context
+and the proxies), operations, callbacks, reactor handlers and DNS lookup. The
+state starts with the public record (`swoole_rs_clients_record.h`), so a client
+pointer is also its record's. The callbacks are one `(listener, object)` pair and an
 event mask (`swr_v1_clients_listen`); a PHP bailout in one longjmps out, so no C++
 exception crosses Rust. The socket's `object` is the Rust state, which the handlers and
 `onPackage` read. Warnings log under upstream's function names so the lines match.
@@ -114,12 +116,15 @@ crates/tls's, crates/reactor's and crates/ports' definitions by their upstream s
 The TLS context is crates/tls's owner and the proxies are corebase's `ProxyState`s,
 held by the state. The TLS session calls, `SSLContext::create` and the SOCKS5 codec
 (crates/protocols) are called by their upstream symbols too; the HTTP proxy's are
-crates/http's, called directly. The C++ half is the `swr_v1_clients_native` table
-(the socket record operations and the DNS lookup) and the method forwarders.
-It is Zend-free so core-tests' `SyncClient` and the Rust client cases (through its `swoole_client_*` C calls) link it. The last error is corebase's, which Rust sets directly.
-`bind` and `sendto` are whole Rust operations; each method passes a lambda for
-its one warning, which logs under the method's own name.
+crates/http's, called directly. The DNS lookup dispatches a resolver request to
+crates/hooks' `async::dispatch` by its upstream symbol, with crates/clients'
+resolver as the pool handler. No C++ remains; native/clients/client.cc calls the
+operations for crates/phpclients' PHP-facing bailout trap. The last error is
+corebase's, which Rust sets directly.
+`bind` and `sendto` are whole Rust operations; each caller passes a callback for
+its one warning.
 Construction checks static `Socket::is_stream(type)` for fd class and the
-created socket's type for dispatch; a null Socket keeps the early return.
+created socket's type for dispatch; a failed socket logs upstream's `socket() failed`
+warning and makes no client.
 
 Tests: `tests/modules/clients/README.md`.

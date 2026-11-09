@@ -23,10 +23,10 @@ TESTs, one function each with upstream's name, inputs, ports and expected values
 TEST `client.<name>` is the case `client.<name>` (function `<name>`). The case
 binary is the hooks one (`tests/modules/hooks/system`, which includes this file),
 so `hooks-system-rust` builds and runs it over the hybrid's libswoole.so. A
-`Client` is made and deleted through network_client.cc's `swoole_client_*` C calls
-(the ones crates/phpclients makes) and given its callbacks by `swr_v1_clients_listen`;
-its methods, `enable_ssl_encrypt` and `ssl_verify` among them, are the `swr_v1_clients_*`
-exports they forward to, and the `Socket` TLS reads are called under their upstream symbols.
+`Client` is crates/clients' state: made by `swr_v1_clients_new`, deleted by
+`swr_v1_clients_free` and given its callbacks by `swr_v1_clients_listen`; its methods,
+`enable_ssl_encrypt` and `ssl_verify` among them, are the other `swr_v1_clients_*`
+exports, and the `Socket` TLS reads are called under their upstream symbols.
 `set_tls_host_name` assigns a fresh `SSLContext` with the name set.
 `SyncClient` and `AsyncClient` are `Client`'s `created`/`connected` bookkeeping.
 `swoole_timer_after` takes the Rust closure through crates/timer's

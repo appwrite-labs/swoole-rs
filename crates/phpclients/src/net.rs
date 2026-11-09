@@ -79,23 +79,18 @@ impl Conn {
         }
     }
 
-    pub(crate) fn state(&self) -> *mut native::ClientState {
-        // SAFETY: a live client.
-        unsafe { native::swoole_client_state(self.cli) }.cast()
-    }
-
     pub(crate) fn flag(&self, name: u32) -> bool {
         // SAFETY: the client's live state.
-        unsafe { state::swr_v1_clients_flag(self.state(), name) }
+        unsafe { state::swr_v1_clients_flag(self.cli, name) }
     }
 
     pub(crate) fn set_flag(&self, name: u32, value: bool) {
         // SAFETY: the client's live state, not borrowed elsewhere.
-        unsafe { state::swr_v1_clients_set_flag(self.state(), name, value) };
+        unsafe { state::swr_v1_clients_set_flag(self.cli, name, value) };
     }
 
     pub(crate) fn call(&self, op: Op) -> ClientCall {
-        ClientCall::new(self.cli, op)
+        ClientCall::new(self.cli.cast(), op)
     }
 
     /// Run an IO call: a sync client raises no callbacks, so only an async
@@ -572,17 +567,15 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
         }
     }
     if conn.is_null() {
-        let mut error = 0;
         #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
-        // SAFETY: a socket type within range (checked by the constructor).
-        let cli = unsafe {
-            native::swoole_client_create(socket_type(kind) as c_int, false, &raw mut error)
+        let cli = match native::create(socket_type(kind) as c_int, false) {
+            Ok(cli) => cli,
+            Err(error) => {
+                warn_sys("Client_create() failed", error);
+                set_err_code(object, error);
+                return None;
+            }
         };
-        if cli.is_null() {
-            warn_sys("Client_create() failed", error);
-            set_err_code(object, error);
-            return None;
-        }
         let mut fresh = Box::new(Conn::new(cli));
         fresh.key = key;
         conn = Box::into_raw(fresh);
@@ -1183,7 +1176,7 @@ fn getpeername(call: &Call) {
     // SAFETY: plain old data, which the call below writes.
     let mut address: SocketAddress = unsafe { std::mem::zeroed() };
     // SAFETY: a live client; a writable local.
-    if unsafe { state::swr_v1_clients_get_peer_name(conn.state(), &raw mut address) } < 0 {
+    if unsafe { state::swr_v1_clients_get_peer_name(conn.cli, &raw mut address) } < 0 {
         let error = errno();
         warn_sys("getpeername() failed", error);
         set_err_code(call.this(), error);
@@ -1215,7 +1208,7 @@ fn get_socket(call: &Call) {
     }
     let mut socket = long_zval(0);
     // SAFETY: a live client; `socket` is a writable local.
-    if !unsafe { native::swoole_client_export_socket(conn.cli, &raw mut socket) } {
+    if !unsafe { native::swoole_client_export_socket(conn.cli.cast(), &raw mut socket) } {
         return call.set_bool(false);
     }
     call.set_value(socket);

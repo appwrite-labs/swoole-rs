@@ -162,11 +162,6 @@ fn record<'a>(cli: Cli) -> &'a mut ClientRecord {
     unsafe { native::client(cli) }
 }
 
-fn state(cli: Cli) -> *mut native::ClientState {
-    // SAFETY: a live client.
-    unsafe { native::swoole_client_state(cli) }.cast()
-}
-
 /// `socket_buffer_size` (`socket->set_buffer_size(size)`, then
 /// `socket->buffer_size = size`) and the output buffer's watermarks.
 #[expect(
@@ -188,8 +183,7 @@ fn buffers(cli: Cli, options: &Options) {
     ] {
         if let Some(mark) = options.size(key) {
             // SAFETY: the live client's state.
-            let slot =
-                unsafe { swoole_rs_clients::client::swr_v1_clients_watermark(state(cli), high) };
+            let slot = unsafe { swoole_rs_clients::client::swr_v1_clients_watermark(cli, high) };
             // SAFETY: its watermark, which lives as long.
             unsafe { *slot = clamp(mark, 0, u32::MAX.into()) as u32 };
         }
@@ -223,7 +217,7 @@ fn bind(cli: Cli, address: &[u8], port: i64) -> bool {
     // SAFETY: a live client with a socket; a NUL-terminated host.
     let bound = unsafe {
         swoole_rs_clients::client::swr_v1_clients_bind(
-            state(cli),
+            cli,
             host.as_ptr().cast(),
             address.len(),
             port as c_int,
@@ -372,7 +366,7 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
         return Some(false);
     }
     // SAFETY: the live client's state.
-    if unsafe { swoole_rs_clients::client::swr_v1_clients_flag(state(cli), OPEN_SSL) } {
+    if unsafe { swoole_rs_clients::client::swr_v1_clients_flag(cli, OPEN_SSL) } {
         apply_ssl(cli, settings);
     }
     Some(true)
@@ -426,7 +420,7 @@ fn proxy(
     // SAFETY: a live client; the proxy copies every string during the call.
     unsafe {
         swoole_rs_clients::client::swr_v1_clients_proxy(
-            state(cli),
+            cli,
             http,
             host.as_ptr().cast(),
             host.len(),
@@ -443,7 +437,7 @@ fn proxy(
 /// client's `SSLContext` (crates/tls).
 pub(crate) fn apply_ssl(cli: Cli, settings: *const zval) {
     // SAFETY: a live client.
-    let owner = unsafe { swoole_rs_clients::client::swr_v1_clients_ssl_context(state(cli)) }
+    let owner = unsafe { swoole_rs_clients::client::swr_v1_clients_ssl_context(cli) }
         .cast::<tls::OwnedTlsContext>();
     if owner.is_null() {
         return;

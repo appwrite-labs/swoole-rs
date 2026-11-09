@@ -12,7 +12,11 @@ use crate::{
 };
 use libc::{c_char, c_int, c_void};
 use std::{ffi::CStr, ptr};
-use swoole_rs_clients::{client as state, swr_v1_clients_port};
+use swoole_rs_clients::client::{
+    self as state, ON_BUFFER_EMPTY, ON_BUFFER_FULL, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE,
+    SSL_STATE_WAIT_STREAM,
+};
+use swoole_rs_clients::swr_v1_clients_port;
 use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
     Call, Class, E_ERROR,
@@ -55,15 +59,6 @@ const EVENTS: [&[u8]; 6] = [
     b"bufferempty",
 ];
 
-/// `SWOOLE_CLIENT_ON_*`: the event a client raises.
-const ON_CONNECT: c_int = 1;
-const ON_RECEIVE: c_int = 2;
-const ON_CLOSE: c_int = 3;
-const ON_ERROR: c_int = 4;
-const ON_BUFFER_FULL: c_int = 5;
-const ON_BUFFER_EMPTY: c_int = 6;
-/// `SW_SSL_STATE_WAIT_STREAM`.
-const SSL_STATE_WAIT_STREAM: u32 = 2;
 /// `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
 const DNS_RESOLVE_FAILED: c_int = 711;
 
@@ -244,7 +239,7 @@ fn event(
 /// bailout is re-raised as the last step.
 /// # Safety
 /// `object` is the live client object `connect()` bound; `data` holds
-/// `length` bytes for `SWOOLE_CLIENT_ON_RECEIVE`.
+/// `length` bytes for [`ON_RECEIVE`].
 unsafe extern "C" fn async_event(
     object: *mut c_void,
     kind: c_int,
@@ -304,16 +299,15 @@ fn connection(object: *mut zend_object, port: i64) -> Option<*mut Conn> {
         set_last_error(INVALID_PARAMS);
         return None;
     }
-    let mut error = 0;
     #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
-    // SAFETY: a socket type within range (checked by the constructor).
-    let cli =
-        unsafe { native::swoole_client_create(socket_type(kind) as c_int, true, &raw mut error) };
-    if cli.is_null() {
-        warn_sys("failed to create client", error);
-        set_err_code(object, error);
-        return None;
-    }
+    let cli = match native::create(socket_type(kind) as c_int, true) {
+        Ok(cli) => cli,
+        Err(error) => {
+            warn_sys("failed to create client", error);
+            set_err_code(object, error);
+            return None;
+        }
+    };
     let conn = Box::new(Conn::new(cli));
     // SAFETY: a live client object.
     let ce = unsafe { (*object).ce };
@@ -412,7 +406,7 @@ fn connect(call: &Call) {
         }
     }
     // SAFETY: a live client; it raises its events on this object.
-    unsafe { state::swr_v1_clients_listen(fresh.state(), object.cast(), events, async_event) };
+    unsafe { state::swr_v1_clients_listen(fresh.cli, object.cast(), events, async_event) };
     net::this(call).conn = conn;
     // SAFETY: `zval_addref_p(ZEND_THIS)`: the client holds the object.
     unsafe { (*object).gc.refcount += 1 };

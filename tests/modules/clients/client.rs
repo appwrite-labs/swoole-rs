@@ -2,10 +2,9 @@
 //! inputs and expected values, over the hybrid's `network::Client`. Built into the
 //! hooks case binary (tests/modules/hooks/system), which links libswoole.so.
 //!
-//! A `Client` is made, listened to and deleted through network_client.cc's C calls
-//! (`swoole_client_*`, swoole_rs_clients.h); its operations are the Rust state's
-//! `swr_v1_clients_*` exports the C++ methods forward to, and the `Socket` TLS reads
-//! are called under their upstream symbols.
+//! A `Client` is crates/clients' state, made, listened to, operated on and deleted
+//! through its `swr_v1_clients_*` exports; the `Socket` TLS reads are called under
+//! their upstream symbols.
 //! `SyncClient` and `AsyncClient` are the `created`/`connected` bookkeeping their
 //! header gives `Client`. The `Server` fixtures are forked std servers bound before
 //! the fork: the cases assert only on the client. [`timer_after`] schedules a
@@ -62,7 +61,7 @@ const EINPROGRESS: c_int = 115;
 const SIGIO: c_int = 29;
 const SIGPIPE: c_int = 13;
 
-// swoole_rs_clients.h's SWOOLE_CLIENT_ON_*.
+// crates/clients' `ON_*` events.
 const ON_CONNECT: c_int = 1;
 const ON_RECEIVE: c_int = 2;
 const ON_CLOSE: c_int = 3;
@@ -129,9 +128,8 @@ unsafe extern "C" {
 
 #[link(name = "swoole")]
 unsafe extern "C" {
-    fn swoole_client_create(kind: c_int, is_async: bool, error: *mut c_int) -> *mut c_void;
-    fn swoole_client_free(cli: *mut c_void);
-    fn swoole_client_state(cli: *mut c_void) -> *mut c_void;
+    fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
+    fn swr_v1_clients_free(state: *mut c_void);
     fn swr_v1_clients_listen(
         state: *mut c_void,
         object: *mut c_void,
@@ -300,7 +298,6 @@ type ReceiveSlot<'a> = RefCell<Option<Box<dyn FnMut(&Client<'a>, &[u8]) + 'a>>>;
 
 /// `network::Client`, deleted on drop; `created`/`connected` are `SyncClient`'s.
 pub(super) struct Client<'a> {
-    ptr: *mut c_void,
     state: *mut c_void,
     created: Cell<bool>,
     connected: Cell<bool>,
@@ -340,16 +337,13 @@ unsafe extern "C" fn listener(
 impl<'a> Client<'a> {
     /// `Client cli(type, async)`; None when it has no socket (`!cli.ready()`).
     pub(super) fn new(kind: c_int, is_async: bool) -> Option<Box<Self>> {
-        let mut error = 0;
-        // SAFETY: a writable error.
-        let ptr = unsafe { swoole_client_create(kind, is_async, &raw mut error) };
-        if ptr.is_null() {
+        // SAFETY: no preconditions.
+        let state = unsafe { swr_v1_clients_new(kind, is_async) };
+        if state.is_null() {
             return None;
         }
         Some(Box::new(Self {
-            ptr,
-            // SAFETY: the live client.
-            state: unsafe { swoole_client_state(ptr) },
+            state,
             created: Cell::new(true),
             connected: Cell::new(false),
             sync: false,
@@ -371,7 +365,7 @@ impl<'a> Client<'a> {
 
     fn record(&self) -> &Record {
         // SAFETY: the live client, whose head is the record.
-        unsafe { &*self.ptr.cast::<Record>() }
+        unsafe { &*self.state.cast::<Record>() }
     }
 
     pub(super) fn socket(&self) -> *mut c_void {
@@ -395,7 +389,7 @@ impl<'a> Client<'a> {
         }
         let object = std::ptr::from_ref(self).cast_mut().cast();
         // SAFETY: the boxed client outlives its callbacks.
-        unsafe { swr_v1_clients_listen(swoole_client_state(self.ptr), object, events, listener) };
+        unsafe { swr_v1_clients_listen(self.state, object, events, listener) };
     }
 
     fn on_connect(&self, body: impl FnMut(&Client<'a>) + 'a) {
@@ -642,7 +636,7 @@ impl Drop for Client<'_> {
             self.sync_close();
         }
         // SAFETY: the client `new` made, deleted once.
-        unsafe { swoole_client_free(self.ptr) };
+        unsafe { swr_v1_clients_free(self.state) };
     }
 }
 

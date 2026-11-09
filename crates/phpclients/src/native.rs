@@ -568,19 +568,15 @@ unsafe extern "C" {
     /// `php_swoole_error`, `_fatal_error`, `_sys_error` or `_core_error`
     /// (`kind`, [`ErrorKind`]) of `level` with `"%s"` and `message`.
     pub(crate) fn swoole_client_php_error(kind: c_int, level: c_int, message: *const c_char);
-    /// `new Client(type, async)`; null, with errno in `error`, without a socket.
-    pub(crate) fn swoole_client_create(kind: c_int, is_async: bool, error: *mut c_int) -> Cli;
-    /// The client's `ClientState` (crates/clients).
-    pub(crate) fn swoole_client_state(cli: Cli) -> *mut c_void;
     /// A Socket over a dup of the client's fd into `zsocket`.
-    pub(crate) fn swoole_client_export_socket(cli: Cli, zsocket: *mut zval) -> bool;
+    pub(crate) fn swoole_client_export_socket(cli: *mut c_void, zsocket: *mut zval) -> bool;
     /// Run one [`ClientCall`]; a `bailout::trap` body.
     pub(crate) fn swoole_client_run(call: *mut c_void);
 }
 
-/// The client's public record: `network::Client`'s only base, at its start.
+/// The client's public record, at the start of its state.
 /// # Safety
-/// `cli` is a live `network::Client *`, and nothing else touches its record
+/// `cli` is a live client, and nothing else touches its record
 /// while the borrow lasts.
 pub(crate) unsafe fn client<'a>(cli: Cli) -> &'a mut ClientRecord {
     // SAFETY: per the caller.
@@ -646,11 +642,18 @@ pub(crate) fn package_too_big(length: c_int) {
     );
 }
 
-/// A `network::Client *`.
-pub(crate) type Cli = *mut c_void;
+/// A `network::Client *`: crates/clients' per-client state.
+pub(crate) type Cli = *mut swoole_rs_clients::client::Client;
 
-/// crates/clients' per-client state.
-pub(crate) type ClientState = swoole_rs_clients::client::Client;
+/// `new Client(type, async)`: the client, or the errno of its failed socket.
+pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
+    let cli = swoole_rs_clients::client::swr_v1_clients_new(kind, is_async);
+    if cli.is_null() {
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
+    } else {
+        Ok(cli)
+    }
+}
 
 /// `SWOOLE_CLIENT_ERROR*`: which reporter `swoole_client_php_error` uses.
 #[derive(Clone, Copy)]

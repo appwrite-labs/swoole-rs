@@ -14,7 +14,6 @@ struct Mock {
     releases: Option<c_int>,
     /// The record `make_socket` allocated; the client releases it.
     socket: Option<core::ptr::NonNull<SocketRecord>>,
-    record: Option<Box<core::mem::MaybeUninit<ClientRecord>>>,
     fail_socket: bool,
 }
 
@@ -254,13 +253,20 @@ extern "C-unwind" fn timer_del(_: *mut c_void) -> bool {
     log("timer del");
     true
 }
-extern "C" fn dns_lookup(_: *mut c_void, host: *const c_char, domain: c_int) -> c_int {
-    // SAFETY: a NUL-terminated host.
-    let host = unsafe { CStr::from_ptr(host) }
-        .to_string_lossy()
-        .into_owned();
-    log(format!("dns {host} {domain}"));
-    OK
+/// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
+pub(super) unsafe extern "C" fn async_dispatch(event: *const c_void) -> *mut c_void {
+    // SAFETY: a complete event over a live request.
+    let view = swoole_rs_corebase::swr_v1_core_resolver_view(unsafe {
+        &*(*event.cast::<AsyncEvent>()).data
+    });
+    // SAFETY: the request's name, live with it.
+    let name = unsafe { swoole_rs_corebase::swr_v1_core_string_view(view.name) };
+    // SAFETY: `length` bytes at `data`.
+    let name = unsafe { core::slice::from_raw_parts(name.data.cast::<u8>(), name.length) };
+    // SAFETY: the request's fields, live with it.
+    let family = unsafe { (*view.fields).family };
+    log(format!("dns {} {family}", String::from_utf8_lossy(name)));
+    core::ptr::without_provenance_mut(8)
 }
 // crates/tls's, crates/protocols' and OpenSSL's, which the hybrid links. A TLS
 // owner is a leaked view of itself.
@@ -389,21 +395,8 @@ fn set_proxy(client: *mut Client, http: bool) {
     }
 }
 
-static NATIVE: Native = Native { dns_lookup };
-
-unsafe fn new_client(kind: c_int, is_async: bool) -> *mut Client {
-    let mut record = Box::new(core::mem::MaybeUninit::uninit());
-    let pointer = record.as_mut_ptr();
-    mock(|m| m.record = Some(record));
-    unsafe {
-        swr_v1_clients_new(
-            core::ptr::without_provenance_mut(8),
-            &NATIVE,
-            pointer,
-            kind,
-            is_async,
-        )
-    }
+fn new_client(kind: c_int, is_async: bool) -> *mut Client {
+    swr_v1_clients_new(kind, is_async)
 }
 
 /// A client of `kind`, its construction log dropped, listened to for every event
@@ -411,8 +404,7 @@ unsafe fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| *m = Mock::default());
     log::set_last_error(0);
-    // SAFETY: the double stands in for the C++ client.
-    let client = unsafe { new_client(kind, is_async) };
+    let client = new_client(kind, is_async);
     if callbacks {
         // SAFETY: a live state.
         unsafe { swr_v1_clients_listen(client, core::ptr::null_mut(), 0b111_1110, listener) };
@@ -440,14 +432,13 @@ fn connect(client: *mut Client, host: &CStr, timeout: f64, flags: c_int) -> c_in
 fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
     mock(|m| *m = Mock::default());
     log::set_last_error(0);
-    // SAFETY: the double stands in for the C++ client.
-    let client = unsafe { new_client(1, true) };
+    let client = new_client(1, true);
     assert_eq!(taken(), ["make 1 17 12"]);
     assert!(flag(client, ASYNC) && flag(client, STREAM));
     assert_eq!(sock().chunk_size, SEND_BUFFER_SIZE);
     free(client);
     assert_eq!(taken(), ["event 2 0", "free"]);
-    let client = unsafe { new_client(2, false) };
+    let client = new_client(2, false);
     assert_eq!(taken(), ["make 2 18 8"]);
     free(client);
 }
@@ -535,8 +526,7 @@ fn async_connect_waits_for_dns_then_connects_the_resolved_address() {
     assert_eq!(connect(client, c"dns.test", 1.0, 0), OK);
     assert!(flag(client, WAIT_DNS));
     assert_eq!(taken(), ["assign dns.test:80 false", "dns dns.test 2"]);
-    // SAFETY: a live state and a NUL-terminated address.
-    unsafe { swr_v1_clients_on_resolved(client, 0, c"192.0.2.1".as_ptr()) };
+    resolved(Handle(client), 0, c"192.0.2.1");
     assert!(!flag(client, WAIT_DNS));
     assert_eq!(
         taken(),
@@ -550,8 +540,7 @@ fn failed_resolution_closes_and_reports_once() {
     let client = client(1, true, true);
     connect(client, c"dns.test", 1.0, 0);
     taken();
-    // SAFETY: a live state.
-    unsafe { swr_v1_clients_on_resolved(client, 1, c"".as_ptr()) };
+    resolved(Handle(client), 1, c"");
     assert_eq!(log::last_error(), ERROR_DNSLOOKUP_RESOLVE_FAILED);
     assert!(flag(client, ONERROR_CALLED) && flag(client, CLOSED));
     assert_eq!(
@@ -746,7 +735,7 @@ fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
 #[test]
 fn public_record_defaults_and_direct_framing_writes_drive_reads() {
     let client = client(1, true, true);
-    let fields = Handle(client).get().record;
+    let fields = client.cast::<ClientRecord>();
     unsafe {
         assert!(!(*fields).http2 && !(*fields).open_eof_check && !(*fields).open_length_check);
         assert_eq!((*fields).remote_addr.kind, 1);
@@ -771,7 +760,7 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
 #[test]
 fn datagram_peer_snapshot_is_independent_and_may_target_its_source() {
     let client = client(2, false, false);
-    let fields = Handle(client).get().record;
+    let fields = client.cast::<ClientRecord>();
     unsafe {
         (*fields).remote_addr.len = 17;
         (*fields).remote_addr.kind = 4;
@@ -794,25 +783,16 @@ fn datagram_peer_snapshot_is_independent_and_may_target_its_source() {
 }
 
 #[test]
-fn failed_socket_leaves_zero_protocol_and_addresses_without_teardown_effects() {
+fn a_failed_socket_makes_no_client_and_keeps_its_errno() {
     mock(|m| {
         *m = Mock {
             fail_socket: true,
             ..Mock::default()
         }
     });
-    unsafe {
-        let client = new_client(1, false);
-        assert_eq!(errno(), libc::EMFILE);
-        let fields = &*Handle(client).get().record;
-        assert!(fields.socket.is_null());
-        assert_eq!(fields.remote_addr.kind, 0);
-        assert_eq!(fields.protocol.package_length_size, 0);
-        assert!(fields.protocol.on_package.is_null());
-        taken();
-        free(client);
-        assert_eq!(taken(), Vec::<String>::new());
-    }
+    assert!(new_client(1, false).is_null());
+    assert_eq!(errno(), libc::EMFILE);
+    assert_eq!(taken(), ["make 1 17 8"]);
 }
 
 #[test]
