@@ -77,9 +77,7 @@ pub mod exports {
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_server::{ConnectionRecord, view};
     use swoole_rs_websocket::frame_api::decode_frame;
-    use swoole_rs_websocket::{
-        Action, Context, Decision, PolicyError, swr_v1_ws_decide, swr_v1_ws_encode,
-    };
+    use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, swr_v1_ws_encode};
 
     use super::{length_size, route};
 
@@ -155,7 +153,7 @@ pub mod exports {
     }
 
     /// `int websocket::dispatch_frame(const Protocol *, Socket *, const RecvData *)`:
-    /// decode the frame, let [`swr_v1_ws_decide`] choose, and carry out its action on
+    /// decode the frame, let [`decide_frame`] choose, and carry out its action on
     /// the connection's fragment buffer, the server and the socket.
     ///
     /// # Safety
@@ -203,19 +201,9 @@ pub mod exports {
                 context.package_max_length = max as usize;
             }
         }
-        let mut decision = Decision::default();
-        // SAFETY: local inputs and output.
-        if unsafe {
-            swr_v1_ws_decide(
-                &raw const frame,
-                length,
-                &raw const context,
-                &raw mut decision,
-            )
-        } != 0
-        {
+        let Some(decision) = decide_frame(&frame, length, &context) else {
             return -1;
-        }
+        };
         policy_warning(conn, decision.error, frame.opcode);
         let mut dispatch = RecvData {
             // SAFETY: plain integers.

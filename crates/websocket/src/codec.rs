@@ -370,7 +370,21 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
     result
 }
 
-/// Decide protocol actions without callbacks, allocation or retained state.
+/// Decide protocol actions without callbacks, allocation or retained state;
+/// `None` when the frame's lengths don't fit the wire's.
+#[inline]
+#[must_use]
+pub fn decide_frame(frame: &DecodedFrame, wire: usize, context: &Context) -> Option<Decision> {
+    if frame.header_length < if frame.flags & MASK != 0 { 6 } else { 2 }
+        || frame.header_length > wire
+        || frame.payload_length > wire - frame.header_length
+    {
+        return None;
+    }
+    Some(decide(*frame, wire, *context))
+}
+
+/// [`decide_frame`] over C pointers.
 ///
 /// # Safety
 /// Inputs are valid, aligned readable values; output is aligned, exclusive and
@@ -382,22 +396,21 @@ pub unsafe extern "C" fn swr_v1_ws_decide(
     context: *const Context,
     output: *mut Decision,
 ) -> i32 {
-    if frame.is_null() || context.is_null() || output.is_null() {
+    // SAFETY: null or, per the caller, valid and aligned.
+    let frame = unsafe { frame.as_ref() };
+    // SAFETY: as above.
+    let context = unsafe { context.as_ref() };
+    let (Some(frame), Some(context)) = (frame, context) else {
         return -1;
+    };
+    match decide_frame(frame, wire_length, context) {
+        Some(decision) if !output.is_null() => {
+            // SAFETY: non-null; the caller lends an aligned, exclusive output.
+            unsafe { output.write(decision) };
+            0
+        }
+        _ => -1,
     }
-    // SAFETY: non-null (checked above); the caller lends a valid, aligned frame.
-    let frame = unsafe { frame.read() };
-    if frame.header_length < if frame.flags & MASK != 0 { 6 } else { 2 }
-        || frame.header_length > wire_length
-        || frame.payload_length > wire_length - frame.header_length
-    {
-        return -1;
-    }
-    // SAFETY: non-null (checked above); the caller lends a valid, aligned context.
-    let context = unsafe { context.read() };
-    // SAFETY: non-null (checked above); the caller lends an aligned, exclusive output.
-    unsafe { output.write(decide(frame, wire_length, context)) };
-    0
 }
 
 /// Normalize outgoing PHP frame flags and choose compression. The low byte is

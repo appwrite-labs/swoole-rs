@@ -344,6 +344,11 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
         ops::RUN_RT_WRITE => conn_io::write(h, arg)?,
         // Every received frame: matched here, not after the fallback chain below.
         ops::RUN_DISPATCH_TASK => reactor_thread::dispatch_task(h, arg)?,
+        // Every reply, likewise.
+        ops::RUN_ST_SEND => i64::from(state::send(
+            h,
+            core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0)),
+        )?),
         ops::RUN_PEER_CLOSE => conn_io::peer_close(h, arg)?,
         ops::RUN_CLOSE_CONNECTION => conn_io::close_connection(h)?,
         RUN_ACCEPT => connection::accept(h)?,
