@@ -113,39 +113,6 @@ def build_variant(args):
     return build_alias('rust', suffix, dev=args.lane != 'integrate')
 
 
-def verify_artifact_report(args):
-    """Reuse completed bytes, never earlier test outcomes or another source cohort."""
-    source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    identities = {}
-    for label, variant in [('selected', build_variant(args)),
-                           ('native', build_alias('upstream', profile_suffix(args)))]:
-        folder = args.artifacts_from / (label + '-export')
-        receipt = json.loads((folder / 'export.json').read_text())
-        if receipt['source_ref'] != source:
-            raise ValueError('Artifact source differs: ' + label)
-        for name, identity in receipt['files'].items():
-            if Path(name).name != name or hashlib.sha256((folder / name).read_bytes()).hexdigest() != identity['sha256']:
-                raise ValueError('Export file changed: ' + label + '/' + name)
-        manifest = json.loads((folder / 'build-manifest.json').read_text())
-        origins = [receipt.get('producer_source_ref'), manifest.get('producer_source_ref')]
-        if any(origin is not None for origin in origins) and any(origin != receipt['source_ref'] for origin in origins):
-            raise ValueError('Artifact producer source differs: ' + label)
-        if (manifest['build_mode'] != 'immutable'
-                or ('--enable-swoole-stdext' in manifest['configure']) != args.stdext
-                or manifest['inputs'].get('php_sockets_requested', False) != getattr(args, 'php_sockets', False)
-                or ('--enable-sockets' in manifest['configure']) != getattr(args, 'php_sockets', False)
-                or label == 'selected' and (sorted(manifest['inputs']['modules']) != sorted(MODULES)
-                    or manifest['inputs']['fix_halfclose'] != args.fix_halfclose)):
-            raise ValueError('Artifact configuration differs: ' + label)
-        build = ROOT / 'target/hybrid' / variant
-        for name, path in [('swoole.so', build / 'modules/swoole.so'),
-                           ('build-manifest.json', build / 'build-manifest.json')]:
-            if hashlib.sha256(path.read_bytes()).hexdigest() != receipt['files'][name]['sha256']:
-                raise ValueError('Current build alias differs: ' + label + '/' + name)
-        identities[label] = {'path': str(folder), 'export_sha256': hashlib.sha256((folder / 'export.json').read_bytes()).hexdigest()}
-    return identities
-
-
 def plan(args, reports):
     modules = selected_modules(args)
     python = sys.executable
@@ -179,8 +146,10 @@ def plan(args, reports):
     integrate = args.lane == 'integrate'
     repair = ['--fix-halfclose'] if getattr(args, 'fix_halfclose', False) else []
     variant = build_variant(args)
+    # The hybrid build is left only for its Zend-free archive and configured tree: the native
+    # gates link and compile against them, and the PHPT runners read its phpize'd tests.
+    # Nothing loads its swoole.so (#2199); #2415 moves the rest.
     manifest = ROOT / 'target/hybrid' / variant / 'build-manifest.json'
-    hybrid = manifest.parent / 'modules/swoole.so'
     captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines'} & set(modules)))
     native_variant = build_alias('upstream', profile_suffix(args))
     reference = (ROOT / 'target/hybrid' / native_variant / 'modules/swoole.so'
@@ -197,8 +166,7 @@ def plan(args, reports):
         add('format', 'cargo', 'fmt', '--all', '--check')
         add('clippy', 'cargo', 'clippy', '--locked', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings')
     script('ownership', 'tools/check_migration.py')
-    artifact_reports = getattr(args, 'artifacts_from', None) or reports
-    native_export = artifact_reports / 'native-export'
+    native_export = reports / 'native-export'
     if getattr(args, 'stdext', False) or getattr(args, 'php_sockets', False) or captured_reference:
         script('stdext-reference-build' if getattr(args, 'stdext', False) else 'reference-build',
                'tools/build_hybrid.py', '--backend', 'upstream',
@@ -207,15 +175,16 @@ def plan(args, reports):
                *(['--export', native_export] if captured_reference else []),
                *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']),
                *(['--native-build-root', args.native_build_root] if getattr(args, 'native_build_root', None) else []))
-    selected_export = artifact_reports / 'selected-export'
     script('build', 'tools/build_hybrid.py', *([] if integrate else ['--dev']), *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []), *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []),
-           *(['--export', selected_export] if captured_reference else []), '--jobs', args.jobs,
+           '--jobs', args.jobs,
            *(['--native-build-root', args.native_build_root] if getattr(args, 'native_build_root', None) else []),
            *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']))
     script('cargo-build', 'tools/build_ext.py', *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []),
            *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []))
-    script('abi', 'tests/modules/integration/test_bridge.py', *php_for('sockets'), '--hybrid', hybrid, '--reference', reference,
-           *([] if integrate else ['--startup-only']))
+    # The alias holds only symlinks; its src/.. is the build directory.
+    archive = manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a'
+    script('abi', 'tests/modules/integration/test_bridge.py', *php_for('sockets'), '--extension', cargo, '--reference', reference,
+           *(['--archive', archive] if integrate else ['--startup-only']))
     if integrate:
         script('api-surface', 'tools/capability_inventory.py', '--source', ROOT / 'target/upstream/src',
                *php_for('curl', 'sockets', 'tokenizer'), *engines, '--require-same-api', *report('api-surface'))
@@ -231,13 +200,13 @@ def plan(args, reports):
             if module in modules:
                 consumer_php = php_for('curl') if module == 'base64' else php
                 for label, extension, identity in [('upstream', reference, reference_identity),
-                                                    ('hybrid', hybrid, manifest)]:
+                                                    ('cargo', cargo, built)]:
                     name = module + '-consumers-' + label
                     script(name, runner, '--extension', extension,
                            '--manifest', identity, *consumer_php, *report(name))
     if 'error' in modules:
-        script('error-native', 'tools/core_check.py', '--module', 'error',
-               '--build-manifest', manifest, '--sanitize', *report('error-native'))
+        script('error-native', 'tests/modules/error/differential.py', '--source', ROOT / 'target/upstream/src',
+               '--archive', archive, '--sanitize', *report('error-native'))
     if 'process' in modules:
         script('process-signals', 'tests/modules/process/signals.py',
                *php, *engines, *report('process-signals'))
@@ -246,18 +215,18 @@ def plan(args, reports):
                *php, *engines, *report('error-php'))
     if 'http' in modules:
         script('http-server-config-owners', 'tests/modules/http/server_config_owners.py',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('http-server-config-owners'))
+               '--archive', archive, *report('http-server-config-owners'))
         for name, runner in [('http-rewrites', 'tests/modules/http/rewrite_gate.py'),
                              ('http-locales', 'tests/modules/http/locale_gate.py')]:
             script(name, runner, '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(name))
+                   '--archive', archive, *report(name))
         pytest('http-smuggling', 'tests/modules/http/test_smuggling.py', *php,
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
     if 'locks' in modules:
         script('locks-native', 'tests/modules/locks/gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('locks-native'))
+               '--archive', archive, '--sanitize', *report('locks-native'))
         script('locks-constructor', 'tests/modules/locks/constructor.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('locks-constructor'))
+               '--archive', archive, '--sanitize', *report('locks-constructor'))
         script('locks-platforms', 'tests/modules/locks/platforms.py', '--source', ROOT / 'target/upstream/src', *report('locks-platforms'))
         if integrate:
             script('locks-state', 'tests/modules/locks/state.py', *php_for('curl'), *engines, *report('locks-state'))
@@ -265,23 +234,23 @@ def plan(args, reports):
         script('phpcoroutines-tracer', 'tests/modules/phpcoroutines/tracer.py', *php, *engines, *report('phpcoroutines-tracer'))
     if 'reactor' in modules:
         script('reactor-compile', 'tests/modules/reactor/compile_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--archive', archive,
                '--report', reports / 'reactor-compile.json')
-    pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
+    pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', archive, '--sanitize')
     if 'coroutine' in modules:
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.
         script('coroutine-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-coroutine', '--report', reports / 'coroutine-rust-asan.json')
         for phase, options in [('coroutine-compile', []), ('coroutine-stack-compile', ['--stack-usage']),
                                ('coroutine-timing-compile', ['--timing', '--stack-usage'])]:
             script(phase, 'tests/modules/coroutine/compile_gate.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *options,
+                   '--archive', archive, *options,
                    '--report', reports / (phase + '.json'))
     if 'hooks' in modules:
         script('hooks-compile', 'tests/modules/hooks/compile_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--report', reports / 'hooks-compile.json')
+               '--archive', archive, '--report', reports / 'hooks-compile.json')
     if 'clients' in modules:
         script('clients-http-format', 'tests/modules/clients/http_format_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
+               '--archive', archive, '--sanitize',
                *report('clients-http-format'))
         if integrate:
             for family, runner in [('http', 'tests/modules/clients/php_http.py'), ('dns', 'tests/modules/clients/php_dns.py'),
@@ -323,25 +292,25 @@ def plan(args, reports):
             script('ports-configuration', 'tests/modules/ports/configuration.py', *php_for('curl', 'sockets'), *engines,
                    '--build-manifest', built, *report('ports-configuration'))
         script('ports-policy', 'tests/modules/ports/gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ports-policy'))
+               '--archive', archive, *report('ports-policy'))
         phase = 'ports-callback-property'
         script(phase, 'tests/modules/ports/callback_property.py', '--source', ROOT / 'target/upstream/src', '--sanitize',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(phase))
+               '--archive', archive, *report(phase))
     if 'ossupport' in modules:
         script('ossupport-async-file-owner', 'tests/modules/ossupport/async_file.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-async-file-owner'))
+               '--archive', archive, *report('ossupport-async-file-owner'))
         script('ossupport-file-owner', 'tests/modules/ossupport/file_owner.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ossupport-file-owner'))
+               '--archive', archive, *report('ossupport-file-owner'))
     if 'corebase' in modules:
         script('corebase-dns-request-guard', 'tests/modules/corebase/resolver_guard.py',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('corebase-dns-request-guard'))
+               '--archive', archive, *report('corebase-dns-request-guard'))
         script('corebase-record-views', 'tests/modules/corebase/record_views.py',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('corebase-record-views'))
+               '--archive', archive, *report('corebase-record-views'))
         script('corebase-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src', *report('corebase-constants'))
         includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
                     if sys.platform == 'darwin' else [])
         script('corebase-native', 'tests/modules/corebase/differential.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *includes, *report('corebase-native'))
+               '--archive', archive, '--sanitize', *includes, *report('corebase-native'))
         if integrate:
             script('corebase-startup', 'tests/modules/corebase/mkdir_startup.py', *php, *engines,
                    '--build-manifest', built, *report('corebase-startup'))
@@ -350,10 +319,10 @@ def plan(args, reports):
                '--include-tls', *report('tls-constants'))
     if 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp, network/{client,dns,address,socket}.cpp,
-        # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the hybrid's libswoole.so, and the repo-owned C++
+        # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the hybrid tree's libswoole, and the repo-owned C++
         # witnesses in its fixture.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
-               '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--config', manifest.parent / 'src/config.h', '--archive', archive,
                '--fixture', ROOT / 'tests/modules/hooks/system/fixture.cc',
                '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
                '--exclude', 'coroutine_system.getaddrinfo=' + NETWORK, '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
@@ -380,17 +349,17 @@ def plan(args, reports):
                '--exclude', 'socket.connect_sync=' + NETWORK, '--exclude', 'socket.fail=' + NETWORK,
                *report('hooks-system-rust'))
     if 'reactor' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/reactor/base.cpp, ported to Rust over the hybrid's libswoole.so.
+        # core-tests/src/reactor/base.cpp, ported to Rust over the hybrid tree's libswoole.
         script('reactor-base-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
-               '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--config', manifest.parent / 'src/config.h', '--archive', archive,
                '--build-root', ROOT / 'target/native-originals/reactor-base', '--jobs', args.jobs,
                '--package', ROOT / 'tests/modules/reactor/base', '--fixture', ROOT / 'tests/modules/reactor/base/fixture.cc',
                *report('reactor-base-rust'))
     if 'http' in modules and sys.platform.startswith('linux'):
         # core-tests/src/server/http_server.cpp's, protocol/base.cpp's and redis.cpp's and server/mqtt.cpp's server
-        # TESTs, ported to Rust over the hybrid's libswoole.so.
+        # TESTs, ported to Rust over the hybrid tree's libswoole.
         script('http-server-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
-               '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               '--config', manifest.parent / 'src/config.h', '--archive', archive,
                '--build-root', ROOT / 'target/native-originals/http-server', '--jobs', args.jobs,
                '--package', ROOT / 'tests/modules/http/server',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
@@ -398,25 +367,25 @@ def plan(args, reports):
                *report('http-server-rust'))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-native'))
+               '--archive', archive, '--sanitize', *report('utilities-native'))
         if sys.platform.startswith('linux'):  # Rust implements only the futex path; others run upstream's registry.
             script('utilities-wait', 'tests/modules/utilities/wait.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-wait'))
+                   '--archive', archive, '--sanitize', *report('utilities-wait'))
     if 'utilities' in modules and integrate:
         utility_source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-        utility_engines = ['--engine', f'hybrid={selected_export / "swoole.so"}',
+        utility_engines = ['--engine', f'cargo={cargo}',
                            '--engine', f'upstream={native_export / "swoole.so"}']
         for family in ['logger', 'hash', 'global-logger', 'redirect']:
             name = 'utilities-' + family + '-originals'
             script(name, 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
-                   *php_for('curl'), *utility_engines, '--build-manifest', manifest,
-                   '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+                   *php_for('curl'), *utility_engines, '--build-manifest', built,
+                   '--archive', archive,
                    '--source-ref', utility_source, '--' + family + '-originals', *report(name))
         script('utilities-php-logger', 'tests/modules/utilities/php_logger.py', *php, *engines,
                '--build-manifest', built, *report('utilities-php-logger'))
         script('utilities-public-storage', 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
-               *php, *utility_engines, '--build-manifest', manifest,
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
+               *php, *utility_engines, '--build-manifest', built,
+               '--archive', archive,
                '--source-ref', utility_source, *report('utilities-public-storage'))
     if 'memory' in modules:
         script('memory-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-memory', '--report', reports / 'memory-rust-asan.json')
@@ -425,7 +394,7 @@ def plan(args, reports):
                '--require-memory-bridge', 'cargo', *report('memory-table-witnesses'))
     if 'protocols' in modules:
         script('protocols-native', 'tests/modules/protocols/native.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize',
+               '--archive', archive, '--sanitize',
                *report('protocols-native'))
         script('protocols-network', 'tests/modules/protocols/network.py', *php, *engines, *report('protocols-network'))
         if integrate:
@@ -443,18 +412,17 @@ def plan(args, reports):
                    *(['--sanitize'] if sys.platform == 'darwin' else []))
     if 'buffer' in modules:
         pytest('buffer-string-compatibility', 'tests/modules/buffer/string/test_compatibility.py',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
+               '--archive', archive, '--sanitize')
         if integrate and getattr(args, 'php_sockets', False):
             script('php-sockets-sendfile-original', 'corpus/upstream/run.py',
                    '--source', manifest.parent / 'src', '--manifest', ROOT / 'tests/modules/buffer/originals.json',
                    '--case', 'tests/swoole_server/sendfile_02.phpt', *php_for('curl', 'sockets'),
                    *engines, '--require-all', '--isolate-cases', *report('php-sockets-sendfile-original'))
-        pytest('buffer-posix-iovec', 'tests/modules/buffer/test_iovec.py', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
+        pytest('buffer-posix-iovec', 'tests/modules/buffer/test_iovec.py', '--archive', archive, '--sanitize')
         pytest('string-originals', 'tests/modules/buffer/string/test_gate.py',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize')
+               '--archive', archive, '--sanitize')
         pytest('buffer-network', 'tests/modules/buffer/test_network.py', *php, *engines)
     if 'websocket' in modules:
-        archive = manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a'
         pytest('websocket-codec', 'tests/modules/websocket/test_codec.py', '--archive', archive, '--sanitize')
         pytest('websocket-differential', 'tests/modules/websocket/test_differential.py', *php,
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
@@ -527,15 +495,8 @@ def retain_build_manifest(build, reports):
     copy_private(original, retained)
     if read_json(retained, with_digest=True)[1] != digest or read_json(original, with_digest=True)[1] != digest:
         raise ValueError('Build manifest changed during retention')
-    identity = dict(original_path=str(original), path=str(retained), sha256=digest,
-                    build_mode=manifest.get('build_mode'), source_ref=None)
-    export = reports / 'selected-export/export.json'
-    if export.is_file():
-        receipt = read_json(export)
-        if receipt['files']['build-manifest.json']['sha256'] != digest:
-            raise ValueError('Export and retained build manifests differ')
-        identity['source_ref'] = receipt['source_ref']
-    return identity
+    return dict(original_path=str(original), path=str(retained), sha256=digest,
+                build_mode=manifest.get('build_mode'))
 
 
 # Phases that build artifacts later phases consume, or that later phases need to have
@@ -820,7 +781,6 @@ def main():
                         help='Kill a phase (and the processes it started) after this long; it fails')
     parser.add_argument('--shard', type=shard_spec, metavar='I/N',
                         help='Run slice I of N of the integrate plan; every slice builds and runs the barriers')
-    parser.add_argument('--artifacts-from', type=Path, help='Reuse verified exports from an existing same-source report for explicit correctness phases; never reuse test outcomes')
     parser.add_argument('--frozen-source', help='Require this literal 40-hex HEAD and a clean checkout before and after each integration phase')
     parser.add_argument('--plan', action='store_true', help='Print commands without executing or writing reports')
     args = parser.parse_args()
@@ -845,17 +805,8 @@ def main():
         parser.error('Benchmarks require candidate or integrate')
     if args.phase and (args.lane == 'edit' or args.benchmark):
         parser.error('--phase requires candidate/integrate and cannot qualify a benchmark run')
-    artifact_identity = None
     if args.shard and (args.lane != 'integrate' or args.phase):
         parser.error('--shard splits the full integrate plan; it cannot be combined with --phase')
-    if args.artifacts_from:
-        if args.lane != 'integrate' or not args.phase or set(args.phase) & BARRIER_PHASES - {'ownership'}:
-            parser.error('--artifacts-from requires explicit integration phases without builds')
-        try:
-            args.artifacts_from = args.artifacts_from.resolve()
-            artifact_identity = verify_artifact_report(args)
-        except (ValueError, KeyError, OSError) as error:
-            parser.error(str(error))
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid.uuid4().hex[:8]
     reports = ROOT / 'target/reports/dev' / stamp
     planned = plan(args, reports)
@@ -889,7 +840,7 @@ def main():
               'match_child_php_requested': args.match_child_php, 'frozen_source_required': args.frozen_source,
               'phases': [], 'status': 'running', 'selection_scope': 'explicit_phase_subset' if args.phase or args.skip_phase else 'complete_plan',
               'planned_phases': [name for name, _ in planned], 'selected_phases': [name for name, _ in commands],
-              'full_plan_passed': False, 'reused_artifacts': artifact_identity,
+              'full_plan_passed': False,
               'driver_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     environment = dict(os.environ)
     def frozen_error():

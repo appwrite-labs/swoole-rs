@@ -17,9 +17,9 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_hybrid import hybrid_tree, patches_for
+from tools.ext_identity import attest, unchanged
 from tools.harness import parse_engines, run_isolated, write_report
-from tools.hybrid_identity import attest
 from coherent_sdk import stage
 from storage_summary import compare
 
@@ -61,8 +61,8 @@ def main():
     parser.add_argument('--php-config', default='php-config')
     parser.add_argument('--php-extension', action='append', default=[])
     parser.add_argument('--engine', action='append', required=True)
-    parser.add_argument('--build-manifest', type=Path, required=True)
-    parser.add_argument('--archive', type=Path, required=True)
+    parser.add_argument('--build-manifest', type=Path, required=True, help="tools/build_ext.py's manifest of the selected engine")
+    parser.add_argument('--archive', type=Path, required=True, help="A hybrid build's archive, whose patched tree supplies the selected SDK headers")
     parser.add_argument('--source-ref', required=True)
     parser.add_argument('--output', type=Path, required=True)
     phase = parser.add_mutually_exclusive_group()
@@ -163,10 +163,11 @@ def main():
         if {bool(row['rust_feature_bits'] & 512) for row in report['engines']} != {False, True}:
             raise ValueError('Require native and selected utilities engines')
         selected = next(row for row in report['engines'] if row['rust_feature_bits'] & 512)
-        report['source_attestation'] = attest(args.build_manifest, args.archive, selected, args.source_ref, 512)
-        manifest = json.loads(args.build_manifest.read_text())
-        # Every helper gets its own engine's headers: the pinned SDK, or the hybrid build's.
-        logger_layout = any('include/swoole_log.h' in row.get('upstream_paths', []) for row in manifest['inputs']['patches'])
+        report['source_attestation'] = attest(args.build_manifest, selected, 512)
+        # Every helper gets its own engine's headers: the pinned SDK, or the patched tree's.
+        plan = json.loads((ROOT / 'migration/modules.json').read_text())['modules']
+        logger_layout = any('include/swoole_log.h' in row['upstream_paths'] for row in patches_for(
+            [m for m in plan if any(p.startswith('migration/patches/') for p in m['owned_paths'])]))
         version = subprocess.check_output([args.php_config, '--version'], text=True).strip()
         if any(row['php'] != version for row in report['engines']):
             raise ValueError('PHP SDK differs from loaded runtime version')
@@ -299,9 +300,7 @@ def main():
             raise ValueError('Logger storage fixture failed; all engine outputs retained: ' + '; '.join(
                 f"{row['engine']} exit {row['exit']}, stderr {row['stderr'][-400:]!r}" for row in failed))
         compare(report['results'])
-        receipt = report['source_attestation']
-        if sha(args.build_manifest) != receipt['manifest_sha256'] or sha(args.archive) != receipt['archive_sha256']:
-            raise ValueError('Selected production inputs changed')
+        unchanged(args.build_manifest, report['source_attestation'])
         report['passed'] = True
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'
