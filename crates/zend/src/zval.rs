@@ -11,10 +11,11 @@ use crate::{
         IS_DOUBLE, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR, IS_REFERENCE, IS_STRING, IS_UNDEF,
         add_assoc_bool_ex, add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex,
         add_next_index_long, add_next_index_null, add_next_index_stringl, swr_zend_array_init,
-        swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_string_copy,
-        swr_zend_string_release, swr_zend_try_get_double, swr_zend_try_get_long,
-        swr_zend_try_get_string, swr_zval_is_true, swr_zval_try_addref, zend_array_count,
-        zend_class_entry, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
+        swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next,
+        swr_zend_separate_array, swr_zend_string_copy, swr_zend_string_release,
+        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string, swr_zval_is_true,
+        swr_zval_str, swr_zval_try_addref, zend_array_count, zend_class_entry,
+        zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
         zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
         zend_value, zval, zval_ptr_dtor,
     },
@@ -505,6 +506,38 @@ impl Owned {
     #[inline]
     pub fn long(value: zend_long) -> Self {
         Self(Value(UnsafeCell::new(crate::long_zval(value))))
+    }
+
+    /// `ZVAL_NULL`.
+    #[must_use]
+    #[inline]
+    pub fn null() -> Self {
+        let mut value = UNDEF;
+        value.u1.type_info = IS_NULL;
+        Self(Value(UnsafeCell::new(value)))
+    }
+
+    /// `ZVAL_STR(value, string)`: the result takes over the reference.
+    #[must_use]
+    #[inline]
+    pub fn string(string: ZString) -> Self {
+        let owned = Self::default();
+        // SAFETY: an undefined slot this owns takes the string's reference.
+        unsafe { swr_zval_str(owned.as_ptr(), string.into_raw()) };
+        owned
+    }
+
+    /// `SEPARATE_ARRAY`: the array this holds, made its own for writes, or
+    /// None when it holds no array.
+    #[inline]
+    pub fn array_mut(&mut self) -> Option<&mut OwnedArray> {
+        if self.kind() != IS_ARRAY {
+            return None;
+        }
+        // SAFETY: an array zval this owns; a shared array is duplicated.
+        unsafe { swr_zend_separate_array(self.as_ptr()) };
+        // SAFETY: `OwnedArray` is a transparent `Owned` holding an unshared array.
+        Some(unsafe { &mut *ptr::from_mut(self).cast::<OwnedArray>() })
     }
 
     /// `ZVAL_OBJ(value, std)`: the result takes over the reference `std` carries.
