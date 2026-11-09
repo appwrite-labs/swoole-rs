@@ -48,6 +48,8 @@ libc (`File`, `String`, `create_socket_pair`, `file_get_contents`,
 and `exists` reads the socket's `sock_fd` through the hybrid's record layout.
 Before each case the binary writes `TEST_TMP_FILE` as core-tests' run did and
 removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
+`statvfs` reads `/proc` where upstream reads `/tmp`: the free counts of the filesystem
+`/tmp` sits on change whenever anything on the host writes to it between the two calls.
 `sendmsg_and_recvmsg` stays excluded (below).
 
 `core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
