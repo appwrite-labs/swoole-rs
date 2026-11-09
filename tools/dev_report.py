@@ -105,7 +105,7 @@ def outcomes(data):
     comparisons = []
     for (case, checksum, backend), engines in cases.items():
         # A missing control, changed assertion, or repeated case is not a matched comparison.
-        candidate = 'hybrid' if 'hybrid' in engines else 'rust'
+        candidate = next((name for name in ('cargo', 'hybrid') if name in engines), 'rust')
         if candidate not in engines or 'upstream' not in engines:
             continue
         hybrid, upstream = engines[candidate], engines['upstream']
@@ -472,7 +472,7 @@ def compare(before, after, limit=5, allow_partial=False):
                 reasons.append('Changed case/assertion/backend/engine inventory')
             # Different candidate binaries are the intended input. Runtime/control changes are not.
             engine_names = {case['engine'] for case in left['cases']}
-            if engine_names & {'hybrid', 'rust'}:
+            if engine_names & {'cargo', 'hybrid', 'rust'}:
                 engine_names.add('upstream')
             for engine in engine_names:
                 observations = [[e for e in phase['engines'] if e.get('name') == engine] for phase in [left, right]]

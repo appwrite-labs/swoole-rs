@@ -159,7 +159,7 @@ to the merge tier.
 
 ```sh
 corpus/upstream/families.sh target/reports/phpt target/upstream/src/modules/swoole.so \
-  /absolute/hybrid/swoole.so --module swoole_timer
+  target/ext/swoole.so --module swoole_timer
 ```
 
 ## Attributing a regression
