@@ -22,7 +22,11 @@ runners, and that changes how much of it the Expect-header scan walks (#338).
 
 The same job also runs `websocket` (a WebSocket echo against `06-websocket`) and
 `timer` (an endpoint in `08-timers/server.php` that adds and clears a batch of
-far-future timers per request), on the same ratchet.
+far-future timers per request), on the same ratchet, and `app`: `benchmarks/app`,
+an application-shaped order endpoint (routing, JSON parsing and validation, three
+coroutines per request doing pooled Redis `SET`/`GET` over hooked streams and a file
+read). It needs Redis on `REDIS_HOST:REDIS_PORT` (default `127.0.0.1:6379`); the job
+runs it as a service.
 
 ```sh
 python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --workload echo-1k --limits benchmarks/callgrind_limits.json \

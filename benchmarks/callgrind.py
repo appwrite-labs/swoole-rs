@@ -28,19 +28,23 @@ from corpus.run import WebSocket
 
 NOISE = 1.01  # counts for the same binaries drift well under 1% between runs
 PAYLOAD = bytes(range(256)) * 256
-# (corpus application, method, path, body, expected response body). method 'WS' opens a
+# (application directory, method, path, body, expected response body). method 'WS' opens a
 # WebSocket to the app and echoes `body` frame by frame instead of sending HTTP.
 WORKLOADS = {
-    'plaintext': ('01-hello', 'GET', '/', None, b'Hello, Swoole!\n'),
-    'json': ('02-router', 'GET', '/inspect?q=benchmark', None,
+    'plaintext': ('corpus/01-hello', 'GET', '/', None, b'Hello, Swoole!\n'),
+    'json': ('corpus/02-router', 'GET', '/inspect?q=benchmark', None,
              b'{"query":{"q":"benchmark"},"token":null}'),
-    'echo-64k': ('02-router', 'POST', '/echo', PAYLOAD, PAYLOAD),
-    'echo-1k': ('02-router', 'POST', '/echo', PAYLOAD[:1024], PAYLOAD[:1024]),
-    'service-health': ('04-job-service', 'GET', '/health', None, b'{"ok":true}'),
+    'echo-64k': ('corpus/02-router', 'POST', '/echo', PAYLOAD, PAYLOAD),
+    'echo-1k': ('corpus/02-router', 'POST', '/echo', PAYLOAD[:1024], PAYLOAD[:1024]),
+    'service-health': ('corpus/04-job-service', 'GET', '/health', None, b'{"ok":true}'),
     # Graduation gates for the websocket (#117) and timer (#118) modules: the workload
     # that exercises each most, held to --max-ratio 1.05 rather than the ratchet.
-    'websocket': ('06-websocket', 'WS', '/chat', b'ping', b'ping'),
-    'timer': ('08-timers', 'GET', '/', None, b'timers\n'),
+    'websocket': ('corpus/06-websocket', 'WS', '/chat', b'ping', b'ping'),
+    'timer': ('corpus/08-timers', 'GET', '/', None, b'timers\n'),
+    # Routing, JSON, validation, a Redis pool, a file read and three coroutines per request
+    # (#1907); needs Redis on REDIS_HOST:REDIS_PORT, default 127.0.0.1:6379.
+    'app': ('benchmarks/app', 'POST', '/users/42/orders', b'{"sku":"A-1","quantity":3,"note":"gift"}',
+            b'{"user":42,"sku":"A-1","quantity":3,"total":750,"in_stock":true,"stored":true}'),
 }
 
 
@@ -75,7 +79,7 @@ def send(port, workload, count):
         conn.request(method, path, payload)
         response = conn.getresponse()
         body = response.read()
-        if response.status != 200 or body != expected:
+        if response.status not in (200, 201) or body != expected:
             raise RuntimeError(f'unexpected response {response.status}: {body[:80]!r}')
     conn.close()
 
@@ -87,7 +91,7 @@ def instructions(engine, workload, requests, warmup, profiles=None):
     with tempfile.TemporaryDirectory(prefix='swr-callgrind-') as out, tempfile.TemporaryDirectory() as data:
         command = ['valgrind', '--tool=callgrind', '--trace-children=yes', '--instr-atstart=no',
                    f'--callgrind-out-file={out}/cg.%p',
-                   *engine.command(ROOT / 'corpus' / workload[0] / 'server.php')]
+                   *engine.command(ROOT / workload[0] / 'server.php')]
         proc = subprocess.Popen(command, env={**os.environ, 'TEST_PORT': str(port), 'TEST_DATA': data},
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         try:
