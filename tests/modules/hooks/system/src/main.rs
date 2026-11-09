@@ -175,10 +175,7 @@ unsafe extern "C-unwind" {
         fds: *mut PollFd,
         count: usize,
         timeout: f64,
-        ops: *const c_void,
     ) -> bool;
-    #[link_name = "_ZN6swoole9coroutine8poll_opsE"]
-    static poll_ops: c_void;
 }
 
 unsafe extern "C" {
@@ -318,8 +315,8 @@ fn getaddrinfo(
 
 /// `System::socket_poll` over core-tests' one-entry map.
 fn socket_poll(fds: &mut [PollFd], timeout: f64) -> bool {
-    // SAFETY: `fds` is writable; `poll_ops` is System's.
-    unsafe { swr_v1_hook_socket_poll(fds.as_mut_ptr(), fds.len(), timeout, &raw const poll_ops) }
+    // SAFETY: `fds` is writable, with distinct fds.
+    unsafe { swr_v1_hook_socket_poll(fds.as_mut_ptr(), fds.len(), timeout) }
 }
 
 /// core-tests' `UnixSocket`: socketpair(2); the master (socks[1]) writes, the worker

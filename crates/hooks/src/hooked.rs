@@ -312,20 +312,17 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
     nfds: nfds_t,
     timeout: c_int,
 ) -> c_int {
-    let host = coroutine().filter(|_| timeout != 0);
-    let Some(host) = host else {
+    if timeout == 0 || coroutine().is_none() {
         // SAFETY: as the caller promises.
         return unsafe { libc::poll(fds, nfds, timeout) };
-    };
+    }
     #[cfg(feature = "iouring")]
-    if let Some(ring) = ring(host).filter(|_| nfds == 1) {
+    if let Some(ring) = crate::stdio::host().and_then(ring).filter(|_| nfds == 1) {
         // SAFETY: the ring's host; one pollfd.
         return unsafe { crate::uring::swr_v1_uring_poll(ring, fds, timeout) };
     }
-    // SAFETY: native's static poll table.
-    let ops = unsafe { &*host.poll };
     // SAFETY: as the caller promises, in a coroutine.
-    unsafe { swr_v1_hook_poll(fds, nfds, timeout, ops) }
+    unsafe { swr_v1_hook_poll(fds, nfds, timeout, &crate::poll::NATIVE) }
 }
 
 /// Wrap the open `fd` in a nonblocking coroutine socket: 0, or -1 outside a coroutine.

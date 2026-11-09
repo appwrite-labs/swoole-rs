@@ -60,13 +60,11 @@ pub struct Host {
     pub uring_futex: bool,
     /// `swoole_set_last_error`.
     pub set_last_error: extern "C" fn(c_int),
-    /// `System`'s coroutine poll table, for the hooked `poll`.
-    pub poll: *const crate::poll::PollOps,
     /// The hooked fds' native sockets.
     pub socket: crate::hooked::SocketOps,
 }
 
-// SAFETY: native's table is static and read-only; `uring` and `poll` point to others.
+// SAFETY: native's table is static and read-only; `uring` points to another.
 unsafe impl Sync for Host {}
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(std::ptr::null_mut());
@@ -329,7 +327,6 @@ pub(crate) mod tests {
         uring_ftruncate: false,
         uring_futex: false,
         set_last_error,
-        poll: std::ptr::null(),
         socket: crate::hooked::tests::OPS,
     };
     extern "C" fn set_last_error(error: c_int) {

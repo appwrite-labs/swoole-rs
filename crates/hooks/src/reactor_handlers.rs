@@ -143,17 +143,22 @@ unsafe extern "C" fn defer_resume(co: *mut c_void) {
     unsafe extern "C-unwind" {
         fn swr_v1_coroutine_native_resume(co: *mut c_void);
     }
-    unsafe extern "C-unwind" fn resume(co: *mut c_void) {
-        // SAFETY: the coroutine stays parked until this deferred resume runs.
-        unsafe { swr_v1_coroutine_native_resume(co) };
-    }
+    // SAFETY: the coroutine stays parked until this deferred resume runs.
+    unsafe { defer(swr_v1_coroutine_native_resume, co) };
+}
+
+/// `sw_reactor()->defer(call, data)` on the calling thread's loop.
+///
+/// # Safety
+/// The thread's reactor loop is running; `call(data)` is sound when it runs.
+pub(crate) unsafe fn defer(call: swoole_rs_reactor::DeferCall, data: *mut c_void) {
     let reactor = swoole_rs_corebase::thread_reactor().cast::<swoole_rs_reactor::ReactorPrepared>();
-    // SAFETY: a handler runs, so the thread's loop is live; it begins with its prepared state.
+    // SAFETY: the thread's loop is live; it begins with its prepared state.
     let fields = unsafe { (*reactor).fields };
-    // SAFETY: the loop's live deferred queue; the task borrows `co`.
+    // SAFETY: the loop's live deferred queue.
     let queue = unsafe { &raw mut (*fields).defer_tasks };
-    // SAFETY: as above.
-    if unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, resume, co, None) } != 0 {
+    // SAFETY: as above; the caller vouches for `call(data)`.
+    if unsafe { swoole_rs_reactor::swr_v1_reactor_deferred_push(queue, call, data, None) } != 0 {
         // Upstream throws std::bad_alloc, which no frame here could catch.
         std::process::abort();
     }

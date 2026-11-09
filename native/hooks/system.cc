@@ -20,10 +20,6 @@ static void *co_current() {
     return Coroutine::get_current_safe();
 }
 
-static void co_park(void *co) {
-    static_cast<Coroutine *>(co)->yield();
-}
-
 static void co_resume(void *co) {
     static_cast<Coroutine *>(co)->resume();
 }
@@ -98,44 +94,6 @@ static void signal_waiting(bool on) {
 static bool co_park_for(void *co, double timeout) {
     return static_cast<Coroutine *>(co)->yield_ex(timeout);
 }
-
-static void *poll_add(int fd, int events, void *task) {
-    auto *socket = make_socket(fd, SW_FD_CO_POLL);
-    socket->object = task;
-    if (swoole_event_add(socket, events) < 0) {
-        // socket_poll() is not the owner of the fd: release the socket, not the fd.
-        socket->move_fd();
-        socket->free();
-        return nullptr;
-    }
-    return socket;
-}
-
-static void poll_remove(void *socket) {
-    auto *_socket = static_cast<network::Socket *>(socket);
-    swoole_event_del(_socket);
-    _socket->move_fd();
-    _socket->free();
-}
-
-static void poll_timer_expired(Timer *timer, TimerNode *tnode) {
-    swr_v1_hook_poll_timeout(tnode->data);
-}
-
-static void *poll_timer_add(double timeout, void *task) {
-    return swoole_timer_add(timeout, false, poll_timer_expired, task);
-}
-
-static void poll_timer_del(void *timer) {
-    swoole_timer_del(static_cast<TimerNode *>(timer));
-}
-
-static void poll_defer(void *task) {
-    sw_reactor()->defer(swr_v1_hook_poll_completed, task);
-}
-
-extern const swr_v1_hook_poll_ops poll_ops = {
-    poll_add, poll_remove, poll_timer_add, poll_timer_del, poll_defer, co_current, co_park, co_resume};
 
 // Swoole\Coroutine\System (crates/phpcoroutines) calls these: each result C++ holds
 // is copied out through `put`, one call per string.
@@ -334,7 +292,6 @@ static const swr_v1_hook_host hook_host = {
     false,
 #endif
     swoole_set_last_error,
-    &swoole::coroutine::poll_ops,
     {
         [](int domain, int type, int protocol) -> void * { return new SocketImpl(domain, type, protocol); },
         [](int fd) -> void * { return new SocketImpl(fd, SW_SOCK_RAW); },
@@ -375,27 +332,6 @@ const swr_v1_runtime_socket_ops swr_v1_runtime_socket = {
         for (auto &cert : SOCK(socket)->get_socket()->ssl_get_peer_cert_chain(INT_MAX)) {
             each(arg, cert.c_str(), cert.length());
         }
-    },
-    [](const int *fds, const int *events, size_t count, double timeout, int *ready, int *revents, size_t *size) {
-        // Merged by fd, in the map's order, as upstream's socket_poll map was.
-        std::unordered_map<int, int> polled;
-        for (size_t i = 0; i < count; i++) {
-            polled[fds[i]] |= events[i];
-        }
-        std::vector<swr_v1_hook_poll_fd> list;
-        for (auto &entry : polled) {
-            list.push_back({entry.first, entry.second, 0});
-        }
-        if (!swr_v1_hook_socket_poll(list.data(), list.size(), timeout, &swoole::coroutine::poll_ops)) {
-            *size = 0;
-            return false;
-        }
-        for (size_t i = 0; i < list.size(); i++) {
-            ready[i] = list[i].fd;
-            revents[i] = list[i].revents;
-        }
-        *size = list.size();
-        return true;
     },
     [](void *socket, int op, const iovec *vectors, int count, int *index, size_t *offset) {
         swoole::network::IOVector io_vector(vectors, count);
