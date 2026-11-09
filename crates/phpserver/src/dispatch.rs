@@ -25,14 +25,14 @@ use swoole_rs_server::callbacks::{
 use swoole_rs_zend::{
     Class, E_WARNING,
     bailout::{self, Bailout},
-    class_name, init_object, message, object_of, php_error, string,
+    class_name, init_object, long_zval, message, object_of, php_error, string,
     sys::{
-        _zval_struct__bindgen_ty_1, IS_LONG, IS_NULL, ZEND_ACC_VARIADIC, add_assoc_double_ex,
-        add_assoc_long_ex, add_assoc_string_ex, swr_zend_array_init, swr_zend_callable_warning,
-        swr_zend_stack_restore, swr_zend_stack_unlimit, zend_class_entry, zend_fcall_info_cache,
-        zend_object, zend_string, zend_update_property, zend_update_property_bool,
-        zend_update_property_double, zend_update_property_long, zend_update_property_string,
-        zend_update_property_stringl, zend_value, zval, zval_ptr_dtor,
+        IS_NULL, ZEND_ACC_VARIADIC, add_assoc_double_ex, add_assoc_long_ex, add_assoc_string_ex,
+        swr_zend_array_init, swr_zend_callable_warning, swr_zend_stack_restore,
+        swr_zend_stack_unlimit, zend_class_entry, zend_fcall_info_cache, zend_object, zend_string,
+        zend_update_property, zend_update_property_bool, zend_update_property_double,
+        zend_update_property_long, zend_update_property_string, zend_update_property_stringl, zval,
+        zval_ptr_dtor,
     },
     type_of,
     value::{get_long, set_str},
@@ -121,18 +121,9 @@ enum Called {
     Bailout,
 }
 
-/// `ZVAL_LONG`.
+/// An `IS_UNDEF` zval.
 #[inline]
-fn long(value: i64) -> zval {
-    // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
-    let mut zv: zval = unsafe { std::mem::zeroed() };
-    zv.value = zend_value { lval: value };
-    zv.u1 = _zval_struct__bindgen_ty_1 { type_info: IS_LONG };
-    zv
-}
-
-#[inline]
-fn undef() -> zval {
+pub(crate) fn undef() -> zval {
     // SAFETY: all-zero bytes are `IS_UNDEF`.
     unsafe { std::mem::zeroed() }
 }
@@ -307,8 +298,8 @@ fn receive_args(
         dtor(&mut data);
         2
     } else {
-        args[1] = long(fd);
-        args[2] = long(reactor_id);
+        args[1] = long_zval(fd);
+        args[2] = long_zval(reactor_id);
         // SAFETY: as above.
         unsafe { recv_data(server, &raw mut args[3], request) };
         4
@@ -352,8 +343,8 @@ fn on_connection(
         set_double(ce, object, c"dispatch_time", time);
         2
     } else {
-        args[1] = long(fd);
-        args[2] = long(reactor_id);
+        args[1] = long_zval(fd);
+        args[2] = long_zval(reactor_id);
         3
     };
     let event = if close { "onClose" } else { "onConnect" };
@@ -384,7 +375,7 @@ fn on_buffer(server: *mut c_void, full: bool, fd: i64, server_fd: c_int) -> bool
     if cb.is_null() {
         return false;
     }
-    let mut args = [zserv(server), long(fd)];
+    let mut args = [zserv(server), long_zval(fd)];
     call(cb, &mut args, false, event) == Called::Bailout
 }
 
@@ -485,7 +476,7 @@ fn on_pipe_message(server: *mut c_void, data: *mut zval, source_worker_id: i64, 
         unsafe { zend_update_property(ce, object, c"data".as_ptr(), 4, data) };
         2
     } else {
-        args[1] = long(source_worker_id);
+        args[1] = long_zval(source_worker_id);
         // SAFETY: borrowed without a reference, as upstream's `args[2] = zresult.value`.
         args[2] = unsafe { *data };
         3
@@ -536,7 +527,7 @@ fn on_lifecycle(server: *mut c_void, kind: c_int, worker_id: i64) -> bool {
     let host = host();
     let cb = server_callback(server, kind);
     let facts = facts(server);
-    let mut args = [zserv(server), long(worker_id)];
+    let mut args = [zserv(server), long_zval(worker_id)];
     // SAFETY: the server's object zval.
     let object = unsafe { object_of(&raw const args[0]) };
     if matches!(kind, ON_START | ON_MANAGER_START | ON_WORKER_START) {
@@ -604,10 +595,10 @@ fn on_worker_error(
         set_long(ce, object, c"signal", signal);
         2
     } else {
-        args[1] = long(worker_id);
-        args[2] = long(pid);
-        args[3] = long(code);
-        args[4] = long(signal);
+        args[1] = long_zval(worker_id);
+        args[2] = long_zval(pid);
+        args[3] = long_zval(code);
+        args[4] = long_zval(signal);
         5
     };
     if helper(
@@ -783,10 +774,10 @@ extern "C" fn on_finish(_: Ctx, server: *mut c_void, req: *mut c_void) -> c_int 
 
 extern "C" fn on_pipe_message_slot(_: Ctx, server: *mut c_void, req: *mut c_void) {
     let mut data = undef();
-    let mut bailed = false;
-    // SAFETY: the live message and a writable zval and flag.
-    let unpacked =
-        unsafe { crate::task::swr_v1_phpserver_task_unpack(req, &raw mut data, &raw mut bailed) };
+    let (unpacked, mut bailed) = match crate::task::decode(req, &raw mut data) {
+        Ok(unpacked) => (unpacked, false),
+        Err(Bailout) => (false, true),
+    };
     if unpacked {
         let info = head(req);
         // `Server::get_task_src_worker_id`.
@@ -1224,7 +1215,12 @@ extern "C" fn on_dispatch(
         None => send.map_or(0, |send| send.info.fd),
     };
     let kind = send.map_or(EVENT_CLOSE, |send| send.info.kind);
-    let mut args = [zserv, long(session), long(i64::from(kind)), undef()];
+    let mut args = [
+        zserv,
+        long_zval(session),
+        long_zval(i64::from(kind)),
+        undef(),
+    ];
     let mut argc = 3;
     if let Some(send) = send.filter(|_| max_num_args(cache) > 3) {
         let length = (send.info.len as usize).min(SW_IPC_BUFFER_SIZE);

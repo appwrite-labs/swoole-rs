@@ -773,12 +773,47 @@ pub static swr_logger_host: swoole_rs_utilities::LoggerHost = swoole_rs_utilitie
 };
 
 #[cfg(feature = "upstream-symbols")]
-unsafe extern "C" fn logger_identity(identity: *mut swoole_rs_utilities::LoggerIdentity) {
-    // SAFETY: the logger passes its own live identity.
-    let identity = unsafe { &mut *identity };
-    identity.worker_id = swoole_get_worker_id().cast_signed();
-    identity.worker_pid = swoole_get_worker_pid();
-    identity.worker_symbol = swoole_get_worker_symbol();
+extern "C" fn logger_identity() -> swoole_rs_utilities::LoggerIdentity {
+    swoole_rs_utilities::LoggerIdentity {
+        worker_id: swoole_get_worker_id().cast_signed(),
+        worker_pid: swoole_get_worker_pid(),
+        worker_symbol: swoole_get_worker_symbol(),
+    }
+}
+
+/// The process logger. `SwooleG.logger` points here, as at a `swoole::Logger`,
+/// whose only member is its logger.
+#[cfg(feature = "upstream-symbols")]
+static LOGGER: std::sync::atomic::AtomicPtr<swoole_rs_utilities::Logger> =
+    std::sync::atomic::AtomicPtr::new(ptr::null_mut());
+
+/// The process logger's `new Logger()` on `SwooleG.stdout`, `->reopen()`, `->close()`
+/// and `delete` (corebase's `LOGGER_*`), which `swoole_init` registers for corebase's
+/// lifecycles.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_process_logger(op: c_int) {
+    use std::sync::atomic::Ordering::Relaxed;
+    use swoole_rs_corebase::native::{LOGGER_CLOSE, LOGGER_NEW, LOGGER_REOPEN};
+    use swoole_rs_utilities::{Logger, process_logger};
+    match op {
+        LOGGER_NEW => {
+            let stdout = swoole_rs_corebase::swr_v1_core_stdout().cast();
+            let logger = Logger::new(stdout, swr_logger_host);
+            LOGGER.store(Box::into_raw(Box::new(logger)), Relaxed);
+            swoole_rs_corebase::swr_v1_core_set_logger(LOGGER.as_ptr().cast());
+        }
+        LOGGER_REOPEN => process_logger().into_iter().for_each(Logger::reopen),
+        LOGGER_CLOSE => process_logger().into_iter().for_each(Logger::close),
+        _ => {
+            swoole_rs_corebase::swr_v1_core_set_logger(ptr::null_mut());
+            let logger = LOGGER.swap(ptr::null_mut(), Relaxed);
+            if !logger.is_null() {
+                // SAFETY: the logger LOGGER_NEW made, taken once.
+                drop(unsafe { Box::from_raw(logger) });
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// What crates/process's task calls need from C++ (the task hooks), and the Worker,
-// Factory and ProcessPool layout checks against the records Rust lays out.
-#include <sys/uio.h>
-#include <sys/mman.h>
+// The Worker, Factory and ProcessPool layout checks against the records Rust lays
+// out (crates/process and crates/server).
 
 #include "swoole_server.h"
 #include "swoole_rs_process.h"
-#include "swoole_rs_locks.h"
-#include "swoole_util.h"
-#include "swoole_memory.h"
-#include "swoole_rs_memory.h"
-#include "swoole_coroutine.h"
-#include "swoole_pipe.h"
 
 namespace swoole {
 
@@ -46,86 +38,6 @@ static_assert(SW_WORKER_IDLE == 2, "crates/server/src/task_worker_ops.rs SW_WORK
 // Server::task_pack, task_unpack and task_dump are Rust's (crates/process/src/task_file.rs).
 static_assert(sizeof(DataHead) == 40 && offsetof(EventData, data) == sizeof(DataHead) && sizeof(String) == 40,
               "crates/process/src/task_file.rs layouts");
-
-// The task calls run in Rust (crates/process/src/task_sync.rs) over these hooks;
-// a PHP bailout inside one (MultiTask's pack/unpack, a signal handler while the
-// pipe waits) returns here first and is raised again.
-static swr_v1_pool_call *task_call(void *arg) {
-    return static_cast<swr_v1_pool_call *>(arg);
-}
-
-static Server *task_server_of(void *arg) {
-    return static_cast<Server *>(task_call(arg)->pool);
-}
-
-static Server::MultiTask *task_mtask(void *arg) {
-    return static_cast<Server::MultiTask *>(task_call(arg)->worker);
-}
-
-static Pipe *task_pipe(void *arg) {
-    return task_server_of(arg)->task_notify_pipe(swoole_get_worker_id());
-}
-
-static const swr_v1_task_hooks task_hooks = {
-    [](void *arg) {
-        auto c = task_call(arg);
-        auto pool = task_server_of(arg)->get_task_worker_pool();
-        auto task = static_cast<EventData *>(c->data);
-        auto dst_worker_id = static_cast<int *>(c->socket);
-        c->result = (c->flags ? pool->dispatch_sync(task, dst_worker_id) : pool->dispatch(task, dst_worker_id)) == SW_OK;
-    },
-    [](void *arg) { task_pipe(arg)->clean(); },
-    [](void *arg) { task_pipe(arg)->set_timeout(*static_cast<double *>(task_call(arg)->data)); },
-    [](void *arg) { task_call(arg)->result = task_pipe(arg)->read(task_call(arg)->data, task_call(arg)->length); },
-    [](void *arg) {
-        void *lock = task_server_of(arg)->get_worker(swoole_get_worker_id())->lock;
-        task_call(arg)->flags ? swr_v1_locks_lock(lock, Lock::MUTEX, LOCK_EX, -1, 0) : swr_v1_locks_unlock(lock, Lock::MUTEX);
-    },
-    [](void *arg) {
-        auto c = task_call(arg);
-        c->result = task_mtask(arg)->pack(c->flags, static_cast<EventData *>(c->data));
-    },
-    [](void *arg) { task_mtask(arg)->unpack(task_call(arg)->flags, static_cast<EventData *>(task_call(arg)->data)); },
-    [](void *arg) { task_mtask(arg)->fail(task_call(arg)->flags); },
-    [](void *arg) {
-        auto c = task_call(arg);
-        auto content = file_get_contents(static_cast<const char *>(c->data));
-        c->data = content ? content->str : nullptr;
-        c->length = content ? content->length : 0;
-        c->socket = content ? new std::shared_ptr<String>(content) : nullptr;
-    },
-    [](void *arg) { delete static_cast<std::shared_ptr<String> *>(task_call(arg)->socket); },
-    [](int kind) {
-        if (kind == SWR_TASK_WARN_PACK) {
-            swoole_warning("task pack failed");
-        } else {
-            swoole_warning("failed to dispatch task");
-        }
-    },
-};
-
-static swr_v1_task_server task_server(Server *serv, EventData *result, Server::MultiTask *mtask = nullptr) {
-    return {&task_hooks,
-            serv,
-            mtask,
-            const_cast<uint32_t *>(&serv->gs->tasking_num),
-            const_cast<int64_t *>(reinterpret_cast<volatile int64_t *>(&serv->gs->task_count)),
-            reinterpret_cast<uint8_t *>(result),
-            sizeof(EventData)};
-}
-
-static_assert(SW_ERROR_TASK_DISPATCH_FAIL == 2002, "crates/process/src/task_sync.rs ERROR_TASK_DISPATCH_FAIL");
-static const swr_v1_task_native task_native = {
-    []() { return SwooleG.task_tmpfile.c_str(); },
-    [](void *string, size_t size) { static_cast<String *>(string)->extend(size); },
-    [](void *serv, void *mtask, bool with_result, swr_v1_task_server *out) -> uint16_t {
-        auto *server = static_cast<Server *>(serv);
-        auto *multi = static_cast<Server::MultiTask *>(mtask);
-        *out = task_server(server, with_result ? server->get_task_result() : nullptr, multi);
-        return multi ? multi->count : 0;
-    },
-};
-[[maybe_unused]] static const bool task_native_set = (swr_v1_process_task_set_native(&task_native), true);
 
 // ProcessPool's layout is Rust's swr_v1_pool_record (crates/process/src/process_pool.rs).
 #define SWR_POOL_FIELD(field, mirror)                                                                                  \

@@ -1,8 +1,6 @@
 //! The base-mode reactor process's facts and effects
 //! (`crates/process/src/workers/reactor_process.rs`'s `OP_*`) over the server,
-//! port, worker and connection records Rust lays out. workers.cc's
-//! `ReactorProcessContext::call` hands every op it has no case for to
-//! [`swr_v1_reactor_process_call`].
+//! port, worker and connection records Rust lays out.
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering;
 

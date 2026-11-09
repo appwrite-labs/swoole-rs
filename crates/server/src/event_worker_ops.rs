@@ -1,7 +1,5 @@
 //! The event worker's facts and effects (`crates/process/src/workers/event_worker.rs`'s
-//! `OP_*`) over the server, worker and connection records Rust lays out. workers.cc's
-//! `WorkerContext::call` hands every op it has no case for to
-//! [`swr_v1_event_worker_call`].
+//! `OP_*`) over the server, worker and connection records Rust lays out.
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_corebase::DataHead;
@@ -181,8 +179,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }),
         OP_REOPEN_LOGGER => {
             if let Some(logger) = swoole_rs_utilities::process_logger() {
-                // SAFETY: the process logger, live while the process runs.
-                unsafe { swoole_rs_utilities::swr_v1_logger_reopen(logger) };
+                logger.reopen();
             }
         }
         // SAFETY: the context's live server and worker.

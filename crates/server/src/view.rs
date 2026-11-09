@@ -16,6 +16,7 @@ use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_reactor::SocketRecord;
+use swoole_rs_tls::socket_pair::SocketPair;
 
 /// `ServerFields`, the head of every `Server`.
 #[repr(C)]
@@ -433,6 +434,15 @@ pub unsafe fn worker(serv: *mut c_void, id: u16) -> *mut WorkerRecord {
     let view = unsafe { workers(serv) };
     // SAFETY: the server's live pools and worker arrays, with their counts.
     unsafe { swr_v1_process_server_worker(&raw const view, id) }
+}
+
+/// `Server::task_notify_pipe(worker_id)`, or null.
+///
+/// # Safety
+/// As [`counters`].
+pub unsafe fn task_notify_pipe(serv: *mut c_void, worker_id: u16) -> *mut SocketPair {
+    // SAFETY: per the caller.
+    unsafe { state(serv) }.task_pipe(worker_id.into())
 }
 
 /// `Server::get_connection(fd)`.
