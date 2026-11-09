@@ -6,8 +6,8 @@
   "websocket": 0.87,
   "timer": 0.72,
   "app": 0.96,
-  "http2": 1.10,
+  "http2": 1.05,
   "table": 1.00,
   "channel": 0.92,
-  "task": 1.06
+  "task": 1.05
 }
