@@ -52,7 +52,7 @@ removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
 `core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
 TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports
 and expected values), run by `hooks-system-rust`. A `Socket` is made and deleted
-through `swr_v1_runtime_socket` (its constructors are inline in the hybrid header);
+through `swr_v1_hook_co_socket_make` and `_free`, as crates/phpruntime does;
 its out-of-line members are called under their upstream symbols (the vectored ones over
 an `IOVector` owner `swr_v1_reactor_iov_prepare` makes, as crates/phpruntime does), its inline ones
 through the `swr_v1_hook_co_socket_*` exports the header calls, and its fields
@@ -90,7 +90,8 @@ The repo-owned C++ witnesses of copies and `std::bad_alloc` containment, which o
 C++ can throw, are the same binary's cases with bodies in `system/fixture.cc`
 (compiled into the hybrid's lib-swoole with `--fixture`), unchanged but for plain
 assertion macros in place of GoogleTest's: `rust_socket_scopes.protocol_snapshot_and_copy_restore`
-and `.error_text_publication_and_cache_exception` (formerly `socket_scopes.cpp`),
+and `.error_text_publication` (formerly `socket_scopes.cpp`; its checks of the
+C++ `errString` cache went with the cache, since a `Socket` has no C++ members),
 the five `rust_dns_request.*` cases (formerly `dns_request_owner.cpp`) and
 `rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait` (formerly
 tests/modules/coroutine/lifetime.cpp). The fixture also holds the allocation fault

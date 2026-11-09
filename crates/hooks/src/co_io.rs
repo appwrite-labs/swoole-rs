@@ -7,7 +7,6 @@ use crate::shutdown::{READ, swr_v1_hook_socket_bound_co, swr_v1_hook_socket_even
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
-use swoole_rs_reactor::SocketRecord;
 
 /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
 pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
@@ -36,10 +35,6 @@ pub struct Host {
     pub package_length: unsafe extern "C" fn(*mut CoSocket, u32, *mut u32) -> isize,
     /// Packet error diagnostics, with the same kinds as the packet receive.
     pub packet_fail: unsafe extern "C" fn(*mut CoSocket, u32, isize),
-    /// `new Socket(conn, server)`, the accepting constructor: the native socket.
-    pub accepted: unsafe extern "C" fn(*mut CoSocket, *mut SocketRecord) -> *mut c_void,
-    /// `delete socket` of a native socket.
-    pub destroy: unsafe extern "C" fn(*mut c_void),
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
@@ -626,13 +621,6 @@ pub(crate) mod test_host {
         log(format!("remove:{event}"));
     }
 
-    unsafe extern "C" fn accepted(_: *mut CoSocket, _: *mut SocketRecord) -> *mut c_void {
-        log("accepted");
-        ptr::null_mut()
-    }
-    unsafe extern "C" fn destroy(_: *mut c_void) {
-        log("destroy");
-    }
     pub(crate) const OPS: Ops = Ops {
         set_last_error,
         strerror,
@@ -655,8 +643,6 @@ pub(crate) mod test_host {
         recv: crate::packet::tests::receive,
         package_length: crate::packet::tests::get_length,
         packet_fail: crate::packet::tests::failure,
-        accepted,
-        destroy,
     };
 }
 

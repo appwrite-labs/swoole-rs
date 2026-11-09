@@ -1,12 +1,12 @@
 //! Upstream's `core-tests/src/coroutine/socket.cpp`, one function per TEST with the
 //! same inputs and expected values, over the hybrid's coroutine `Socket`.
 //!
-//! A `Socket` is made and deleted by `swr_v1_runtime_socket` (native/hooks/system.cc),
-//! as the hybrid's own callers make theirs: its constructors are inline in the
-//! hybrid header. Its out-of-line members are Rust under their upstream symbols
+//! A `Socket` is made and deleted by `swr_v1_hook_co_socket_make` and `_free`
+//! (crates/hooks/src/co_socket.rs), as the hybrid's own callers make theirs. Its
+//! out-of-line members are Rust under their upstream symbols
 //! (crates/hooks/src/socket_members.rs); its inline ones call the
-//! `swr_v1_hook_co_socket_*` exports with the record one pointer into the object,
-//! as the header does. Fields are read through the hybrid's record layout
+//! `swr_v1_hook_co_socket_*` exports with the object, which is the record, as the
+//! header does. Fields are read through the hybrid's record layout
 //! (native/hooks/swoole_rs_co_socket.h). The TLS setters write the socket's
 //! `SSLContext` owner (crates/tls/src/owned.rs) as `enable_ssl_encrypt` and the
 //! `set_ssl_*` members did; `TimeoutSetter` and `TimeoutController` are the
@@ -94,8 +94,7 @@ struct Protocol {
     get_package_length_size: *mut c_void,
 }
 
-/// `swr_v1_co_socket` (native/hooks/swoole_rs_co_socket.h), the record one pointer
-/// into a `Socket`.
+/// `swr_v1_co_socket` (native/hooks/swoole_rs_co_socket.h), which a `Socket` is.
 #[repr(C)]
 struct Record {
     err_code: c_int,
@@ -140,19 +139,6 @@ struct NetHead {
     event_hup: u8,
 }
 
-/// The head of the hybrid's `Socket`: the vtable pointer, the record, then its
-/// `ExtraOwner` (`swr_v1_co_socket_extra_prepared`).
-#[repr(C)]
-struct Native {
-    vtable: *const c_void,
-    record: Record,
-    extra: *mut c_void,
-    error: *const c_void,
-    connect_host: *const c_void,
-    ssl_host_name: *const c_void,
-    tls: *mut *const c_void,
-}
-
 /// `swoole::String`.
 #[repr(C)]
 struct CppString {
@@ -161,38 +147,6 @@ struct CppString {
     offset: i64,
     str: *mut u8,
     allocator: *const c_void,
-}
-
-/// `swr_v1_runtime_socket_call`.
-#[repr(C)]
-struct RuntimeCall {
-    socket: *mut c_void,
-    fd: c_int,
-    domain: c_int,
-    kind: c_int,
-    protocol: c_int,
-    family: bool,
-    result: bool,
-}
-
-/// `swr_v1_runtime_socket_ops` (native/hooks/swoole_rs_phpruntime.h).
-#[repr(C)]
-struct RuntimeOps {
-    make: unsafe extern "C" fn(*mut RuntimeCall),
-    free: unsafe extern "C" fn(*mut c_void),
-    connect: unsafe extern "C" fn(*mut c_void, *const c_char, usize, c_int, c_int) -> bool,
-    peer_chain: *const c_void,
-    proxy: unsafe extern "C" fn(
-        *mut c_void,
-        bool,
-        *const c_char,
-        usize,
-        c_int,
-        *const c_char,
-        usize,
-        *const c_char,
-        usize,
-    ),
 }
 
 /// `swr_v1_co_timeout_scope`: `Socket::TimeoutSetter` and `TimeoutController`.
@@ -276,7 +230,28 @@ struct IovPrepared {
 
 #[link(name = "swoole")]
 unsafe extern "C" {
-    static swr_v1_runtime_socket: RuntimeOps;
+    fn swr_v1_hook_co_socket_make(
+        fd: c_int,
+        domain: c_int,
+        kind: c_int,
+        protocol: c_int,
+        family: bool,
+    ) -> *mut c_void;
+    fn swr_v1_hook_co_socket_free(socket: *mut c_void);
+    fn swr_v1_hook_co_socket_connect_host(
+        socket: *mut Record,
+        host: *const c_char,
+        length: usize,
+        port: c_int,
+    ) -> bool;
+    fn swr_v1_hook_co_socket_proxy(
+        socket: *mut Record,
+        http: bool,
+        host: Text,
+        port: c_int,
+        user: Text,
+        password: Text,
+    );
 
     fn swr_v1_reactor_iov_prepare(source: *const IoVec, count: c_int) -> IovPrepared;
     fn swr_v1_reactor_iov_destroy(owner: *mut c_void);
@@ -429,9 +404,20 @@ pub(super) extern "C" fn tls_warning(function: *const c_char, message: *const c_
     );
 }
 
-fn runtime() -> &'static RuntimeOps {
-    // SAFETY: system.cc defines the table as a constant.
-    unsafe { &swr_v1_runtime_socket }
+/// `swr_v1_core_string_view_t`: borrowed bytes.
+#[repr(C)]
+struct Text {
+    data: *const c_char,
+    length: usize,
+}
+
+impl Text {
+    fn of(text: &str) -> Self {
+        Self {
+            data: text.as_ptr().cast(),
+            length: text.len(),
+        }
+    }
 }
 
 /// `microtime()`.
@@ -488,19 +474,10 @@ struct Sock {
 
 impl Sock {
     fn make(fd: c_int, domain: c_int, kind: c_int, protocol: c_int, family: bool) -> Self {
-        let mut call = RuntimeCall {
-            socket: ptr::null_mut(),
-            fd,
-            domain,
-            kind,
-            protocol,
-            family,
-            result: false,
-        };
-        // SAFETY: the call is live and filled in for `make`.
-        unsafe { (runtime().make)(&raw mut call) };
-        assert!(!call.socket.is_null());
-        Self::wrap(call.socket)
+        // SAFETY: Rust's constructor, which never returns null.
+        let socket = unsafe { swr_v1_hook_co_socket_make(fd, domain, kind, protocol, family) };
+        assert!(!socket.is_null());
+        Self::wrap(socket)
     }
 
     fn wrap(ptr: *mut c_void) -> Self {
@@ -526,9 +503,7 @@ impl Sock {
     }
 
     fn rec(&self) -> *mut Record {
-        self.ptr
-            .wrapping_byte_add(size_of::<*const c_void>())
-            .cast()
+        self.ptr.cast()
     }
 
     fn record(&self) -> &mut Record {
@@ -546,8 +521,9 @@ impl Sock {
     }
 
     fn connect(&self, host: &str, port: c_int, flags: c_int) -> bool {
+        let _ = flags;
         // SAFETY: the live socket and `host`'s bytes.
-        unsafe { (runtime().connect)(self.ptr, host.as_ptr().cast(), host.len(), port, flags) }
+        unsafe { swr_v1_hook_co_socket_connect_host(self.rec(), host.as_ptr().cast(), host.len(), port) }
     }
 
     fn bind(&self, address: &str, port: c_int) -> bool {
@@ -720,28 +696,26 @@ impl Sock {
     fn set_proxy(&self, http: bool, host: &str, port: c_int, user: &str, pwd: &str) {
         // SAFETY: the live socket and the three strings' bytes.
         unsafe {
-            (runtime().proxy)(
-                self.ptr,
+            swr_v1_hook_co_socket_proxy(
+                self.rec(),
                 http,
-                host.as_ptr().cast(),
-                host.len(),
+                Text::of(host),
                 port,
-                user.as_ptr().cast(),
-                user.len(),
-                pwd.as_ptr().cast(),
-                pwd.len(),
+                Text::of(user),
+                Text::of(pwd),
             );
         }
     }
 
-    fn native(&self) -> &Native {
-        // SAFETY: the live socket begins with this layout.
-        unsafe { &*self.ptr.cast::<Native>() }
+    /// The socket's `SSLContext` owner slot, its extra record's first field
+    /// (crates/hooks/src/socket_extra.rs).
+    fn tls_slot(&self) -> *mut *const c_void {
+        self.record().extra.cast()
     }
 
     fn tls_owner(&self) -> *const c_void {
         // SAFETY: the socket's live extra record's TLS slot.
-        unsafe { *self.native().tls }
+        unsafe { *self.tls_slot() }
     }
 
     /// `enable_ssl_encrypt()`: a fresh `SSLContext` unless the socket has one.
@@ -751,7 +725,7 @@ impl Sock {
         }
         let prepared = swr_v1_tls_owner_new(tls_warning);
         // SAFETY: a fresh owner, whose one reference the socket's extra record takes.
-        unsafe { *self.native().tls = prepared.owner };
+        unsafe { *self.tls_slot() = prepared.owner };
         self.tls.set(Some(prepared));
         true
     }
@@ -810,7 +784,7 @@ impl Sock {
 impl Drop for Sock {
     fn drop(&mut self) {
         // SAFETY: the socket `make` or `accept` made, deleted once.
-        unsafe { (runtime().free)(self.ptr) };
+        unsafe { swr_v1_hook_co_socket_free(self.ptr) };
     }
 }
 
@@ -2444,7 +2418,7 @@ fn selected_timeout_restore_and_copy() {
 #[link(name = "swoole")]
 unsafe extern "C-unwind" {
     fn swr_case_protocol_snapshot_and_copy_restore();
-    fn swr_case_error_text_publication_and_cache_exception();
+    fn swr_case_error_text_publication();
     fn swr_case_numeric_host_owner_and_independent_copies();
     fn swr_case_hints_vectors_and_failure_publication();
     fn swr_case_native_output_append_exception_is_contained();
@@ -2457,9 +2431,9 @@ fn protocol_snapshot_and_copy_restore() {
     run(|| unsafe { swr_case_protocol_snapshot_and_copy_restore() });
 }
 
-fn error_text_publication_and_cache_exception() {
+fn error_text_publication() {
     // SAFETY: in a coroutine.
-    run(|| unsafe { swr_case_error_text_publication_and_cache_exception() });
+    run(|| unsafe { swr_case_error_text_publication() });
 }
 
 fn numeric_host_owner_and_independent_copies() {
@@ -2495,8 +2469,8 @@ pub(super) const SCOPE_CASES: super::Cases = &[
         protocol_snapshot_and_copy_restore,
     ),
     (
-        "error_text_publication_and_cache_exception",
-        error_text_publication_and_cache_exception,
+        "error_text_publication",
+        error_text_publication,
     ),
     (
         "selected_timeout_restore_and_copy",

@@ -25,18 +25,34 @@ use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_fd_option};
 /// `SW_ERROR_INVALID_PARAMS`.
 const INVALID_PARAMS: c_int = 505;
 
-/// What C++ keeps of the native coroutine socket, `SocketImpl` (`coroutine::Socket`,
-/// or `UringSocket` with `--enable-uring-socket`): its constructors and `delete`.
-/// Its members are Rust (`socket_members`, `lifecycle`) and pick the ring themselves.
-#[repr(C)]
+/// How the hooked fds' sockets (`SocketImpl`: `coroutine::Socket`, or `UringSocket`
+/// with `--enable-uring-socket`) are made and deleted: Rust's own (`co_socket`), or
+/// the unit tests' recording fakes. Their members are Rust (`socket_members`,
+/// `lifecycle`) and pick the ring themselves.
 pub struct SocketOps {
     /// `new SocketImpl(domain, type, protocol)`.
-    pub open: unsafe extern "C" fn(c_int, c_int, c_int) -> *mut c_void,
+    pub open: fn(c_int, c_int, c_int) -> *mut c_void,
     /// `new SocketImpl(fd, SW_SOCK_RAW)`.
-    pub wrap: unsafe extern "C" fn(c_int) -> *mut c_void,
+    pub wrap: fn(c_int) -> *mut c_void,
     /// `delete`.
     pub free: unsafe extern "C" fn(*mut c_void),
 }
+
+/// `SW_SOCK_RAW`.
+#[cfg(not(test))]
+const SOCK_RAW: c_int = 7;
+
+/// The sockets the hooks make.
+#[cfg(not(test))]
+pub(crate) const SOCKETS: SocketOps = SocketOps {
+    open: |domain, kind, protocol| {
+        crate::co_socket::swr_v1_hook_co_socket_make(-1, domain, kind, protocol, true)
+    },
+    wrap: |fd| crate::co_socket::swr_v1_hook_co_socket_make(fd, 0, SOCK_RAW, 0, false),
+    free: crate::co_socket::swr_v1_hook_co_socket_free,
+};
+#[cfg(test)]
+pub(crate) use tests::OPS as SOCKETS;
 
 /// `get_socket_ex`: inside a coroutine, the host and `fd`'s socket. Otherwise
 /// none, with errno `EWOULDBLOCK` outside a coroutine or `ENOTSOCK` without a socket.
@@ -76,11 +92,11 @@ unsafe fn fd_of(socket: *mut c_void) -> c_int {
 ///
 /// # Safety
 /// `socket` is a live native socket the map now owns.
-unsafe fn keep(host: &Host, fd: c_int, socket: *mut c_void, replace: bool) {
+unsafe fn keep(fd: c_int, socket: *mut c_void, replace: bool) {
     let released = swr_v1_hook_socket_insert(fd, socket, replace);
     if !released.is_null() {
         // SAFETY: the map no longer holds it.
-        unsafe { (host.socket.free)(released) };
+        unsafe { (SOCKETS.free)(released) };
     }
 }
 
@@ -88,16 +104,16 @@ unsafe fn keep(host: &Host, fd: c_int, socket: *mut c_void, replace: bool) {
 ///
 /// # Safety
 /// `socket` is a new native socket.
-unsafe fn adopt(host: &Host, socket: *mut c_void) -> c_int {
+unsafe fn adopt(socket: *mut c_void) -> c_int {
     // SAFETY: as the caller promises.
     let fd = unsafe { fd_of(socket) };
     if fd < 0 {
         // SAFETY: nothing else holds it.
-        unsafe { (host.socket.free)(socket) };
+        unsafe { (SOCKETS.free)(socket) };
         return -1;
     }
     // SAFETY: as above.
-    unsafe { keep(host, fd, socket, true) };
+    unsafe { keep(fd, socket, true) };
     fd
 }
 
@@ -117,14 +133,13 @@ pub unsafe extern "C" fn swoole_coroutine_socket(
     kind: c_int,
     protocol: c_int,
 ) -> c_int {
-    let Some(host) = coroutine() else {
+    if coroutine().is_none() {
         // SAFETY: as the caller promises.
         return unsafe { libc::socket(domain, kind, protocol) };
-    };
-    // SAFETY: native's constructor.
-    let socket = unsafe { (host.socket.open)(domain, kind, protocol) };
+    }
+    let socket = (SOCKETS.open)(domain, kind, protocol);
     // SAFETY: the new socket.
-    unsafe { adopt(host, socket) }
+    unsafe { adopt(socket) }
 }
 
 /// Hooked `send(2)`.
@@ -241,7 +256,7 @@ pub unsafe extern "C" fn swoole_coroutine_accept(
     addr: *mut sockaddr,
     len: *mut socklen_t,
 ) -> c_int {
-    let Some((host, socket)) = hooked(fd) else {
+    let Some((_, socket)) = hooked(fd) else {
         // SAFETY: as the caller promises.
         return unsafe { libc::accept(fd, addr, len) };
     };
@@ -267,7 +282,7 @@ pub unsafe extern "C" fn swoole_coroutine_accept(
     // SAFETY: the new socket.
     let conn_fd = unsafe { fd_of(conn) };
     // SAFETY: as above; the map now owns it.
-    unsafe { keep(host, conn_fd, conn, false) };
+    unsafe { keep(conn_fd, conn, false) };
     conn_fd
 }
 
@@ -329,11 +344,12 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
 /// `fd` is open and becomes the socket's.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_coroutine_socket_create(fd: c_int) -> c_int {
-    let Some(host) = coroutine() else { return -1 };
-    // SAFETY: native's constructor.
-    let socket = unsafe { (host.socket.wrap)(fd) };
+    if coroutine().is_none() {
+        return -1;
+    }
+    let socket = (SOCKETS.wrap)(fd);
     // SAFETY: the new socket.
-    if unsafe { adopt(host, socket) } < 0 {
+    if unsafe { adopt(socket) } < 0 {
         return -1;
     }
     // SAFETY: the map's live socket.
@@ -346,7 +362,9 @@ pub unsafe extern "C" fn swoole_coroutine_socket_create(fd: c_int) -> c_int {
 /// Take `fd`'s socket out of the map and delete it, leaving `fd` open: 0, or -1.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int {
-    let Some(host) = coroutine() else { return -1 };
+    if coroutine().is_none() {
+        return -1;
+    }
     let socket = swr_v1_hook_socket_remove(fd);
     if socket.is_null() {
         return -1;
@@ -360,7 +378,7 @@ pub extern "C" fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int {
     // SAFETY: its network::Socket.
     unsafe { (*unwrapped).fd = -1 };
     // SAFETY: the map let go of it.
-    unsafe { (host.socket.free)(socket) };
+    unsafe { (SOCKETS.free)(socket) };
     0
 }
 
@@ -421,17 +439,17 @@ unsafe extern "C" fn close_socket(socket: *mut c_void) -> bool {
 /// closes on the pool or the ring.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
-    let Some(host) = coroutine() else {
+    let Some(_host) = coroutine() else {
         // SAFETY: closing an fd touches no memory.
         return unsafe { libc::close(fd) };
     };
     // SAFETY: both act on live sockets from the map.
-    let result = unsafe { swr_v1_hook_socket_close(fd, close_socket, host.socket.free) };
+    let result = unsafe { swr_v1_hook_socket_close(fd, close_socket, SOCKETS.free) };
     if result <= 0 {
         return result;
     }
     #[cfg(feature = "iouring")]
-    if let Some(ring) = ring(host) {
+    if let Some(ring) = ring(_host) {
         // SAFETY: the ring's host.
         return unsafe { crate::uring::swr_v1_uring_close_fd(ring, fd) };
     }
@@ -546,10 +564,9 @@ pub(crate) mod tests {
     use crate::stdio::tests::{LAST_ERROR, Mode, with};
     use std::cell::RefCell;
 
-    /// A native socket: the vtable pointer, then the record, as `socket_members` reads it.
+    /// A native socket (its record), and the network record it owns.
     #[repr(C)]
     struct Fake {
-        vtable: usize,
         record: CoSocket,
         network: SocketRecord,
     }
@@ -577,11 +594,11 @@ pub(crate) mod tests {
         Box::into_raw(socket).cast()
     }
 
-    unsafe extern "C" fn open(domain: c_int, kind: c_int, _: c_int) -> *mut c_void {
+    fn open(domain: c_int, kind: c_int, _: c_int) -> *mut c_void {
         call(format!("open {domain} {kind}"));
         fake(if kind < 0 { -1 } else { 9000 + kind })
     }
-    unsafe extern "C" fn wrap(fd: c_int) -> *mut c_void {
+    fn wrap(fd: c_int) -> *mut c_void {
         call(format!("wrap {fd}"));
         fake(fd)
     }

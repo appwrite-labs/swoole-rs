@@ -1,36 +1,23 @@
 #pragma once
 /* coroutine::Socket, the C++ face of Rust's coroutine socket (upstream's
- * include/swoole_coroutine_socket.h and swoole_socket_impl.h). The scalar fields are
- * Rust's record (swoole_rs_co_socket.h); the out-of-line members are Rust under their
- * upstream symbols (crates/hooks/src/socket_members.rs) or native/hooks/system.cc. */
+ * include/swoole_coroutine_socket.h and swoole_socket_impl.h). It is Rust's record
+ * (swoole_rs_co_socket.h) and nothing more: no vtable, no C++ members. Rust makes,
+ * accepts and frees the sockets it hands out (crates/hooks/src/co_socket.rs); a C++
+ * `new` or a local one is released by ~Socket. The out-of-line members are Rust under
+ * their upstream symbols (crates/hooks/src/socket_members.rs). */
 #include "swoole_socket.h"
 #include "swoole_rs_hooks.h"
 
 #include "swoole_coroutine.h"
 #include "swoole_protocol.h"
-#include "swoole_proxy.h"
 #include "swoole_rs_co_socket.h"
-#include "swoole_rs_corebase_string_view.h"
 
-#include <memory>
-#include <vector>
+#include <string>
 
 namespace swoole {
 namespace coroutine {
 class Socket : public swr_v1_co_socket {
-    struct ExtraOwner {
-        swr_v1_co_socket_extra_prepared value = swr_v1_hook_socket_extra_new();
-        ~ExtraOwner() { swr_v1_hook_socket_extra_free(value.owner); }
-        ExtraOwner() = default;
-        ExtraOwner(const ExtraOwner &) = delete;
-        ExtraOwner &operator=(const ExtraOwner &) = delete;
-    } extra_owner_;
   public:
-    RustStringView errString{extra_owner_.value.error};
-
-    std::unique_ptr<Socks5Proxy> socks5_proxy = nullptr;
-    std::unique_ptr<HttpProxy> http_proxy = nullptr;
-
     // Rust makes the socket (crates/hooks/src/co_socket.rs).
     Socket(int domain, int type, int protocol) {
         created(swr_v1_hook_co_socket_new(this, this, SWR_CO_SOCKET_BY_FAMILY, -1, 0, domain, type, protocol));
@@ -44,21 +31,34 @@ class Socket : public swr_v1_co_socket {
     Socket(int fd, SocketType type) {
         created(swr_v1_hook_co_socket_new(this, this, SWR_CO_SOCKET_FD_BY_TYPE, fd, type, 0, 0, 0));
     }
-    virtual ~Socket();
+    /**
+     * Warn:
+     * the destructor should only be called in following two cases:
+     * 1. construct failed
+     * 2. called close() and it returns true
+     * 3. called close() and it returns false, but it will not be accessed anywhere else
+     */
+    ~Socket() {
+#ifdef SW_DEBUG
+        if (SwooleG.running) {
+            SW_ASSERT(!has_bound() && socket->removed);
+        }
+#endif
+        swr_v1_hook_co_socket_release(this);
+    }
+    Socket(const Socket &) = delete;
+    Socket &operator=(const Socket &) = delete;
     /**
      * If SSL is enabled, an SSL handshake will automatically take place during the connect() method.
      * When connect() returns true, it indicates that the TCP connection has been successfully
      * established and the SSL handshake has also succeeded.
      */
-    // Rust's (crates/hooks/src/connect.rs); the lookup's context outlives the call.
+    // Rust's (crates/hooks/src/connect.rs), through the socket's proxies.
     bool connect(const std::string &host, int port = 0, int flags = 0) {
-        NameResolver::Context fallback{};
-        return swr_v1_hook_co_socket_connect_host(this, host.data(), host.size(), port,
-            resolve_context_ ? resolve_context_ : &fallback, socks5_proxy ? socks5_proxy->handle() : nullptr,
-            http_proxy ? http_proxy->handle() : nullptr);
+        return swr_v1_hook_co_socket_connect_host(this, host.data(), host.size(), port);
     }
     // The lifecycle is Rust's (crates/hooks/src/lifecycle.rs).
-    virtual bool connect(const sockaddr *addr, socklen_t addrlen) {
+    bool connect(const sockaddr *addr, socklen_t addrlen) {
         return swr_v1_hook_co_socket_connect(this, addr, addrlen);
     }
     bool shutdown(int how = SHUT_RDWR) {
@@ -84,11 +84,11 @@ class Socket : public swr_v1_co_socket {
         return swr_v1_hook_co_socket_check_liveness(this);
     }
     ssize_t peek(void *_buf, size_t _n);
-    virtual ssize_t recv(void *_buf, size_t _n);
-    virtual ssize_t send(const void *_buf, size_t _n);
+    ssize_t recv(void *_buf, size_t _n);
+    ssize_t send(const void *_buf, size_t _n);
 
-    virtual ssize_t recv_once(void *_buf, size_t _n);
-    virtual ssize_t send_once(const void *_buf, size_t _n);
+    ssize_t recv_once(void *_buf, size_t _n);
+    ssize_t send_once(const void *_buf, size_t _n);
 
     ssize_t send(const std::string &buf) {
         return send(buf.c_str(), buf.length());
@@ -97,21 +97,21 @@ class Socket : public swr_v1_co_socket {
     /**
      * The read()/write()/recvmsg()/sendmsg() functions currently does not support SSL
      */
-    virtual ssize_t read(void *_buf, size_t _n);
-    virtual ssize_t write(const void *_buf, size_t _n);
-    virtual ssize_t recvmsg(msghdr *msg, int flags);
-    virtual ssize_t sendmsg(const msghdr *msg, int flags);
+    ssize_t read(void *_buf, size_t _n);
+    ssize_t write(const void *_buf, size_t _n);
+    ssize_t recvmsg(msghdr *msg, int flags);
+    ssize_t sendmsg(const msghdr *msg, int flags);
 
-    virtual ssize_t readv(network::IOVector *io_vector);
-    virtual ssize_t readv_all(network::IOVector *io_vector);
-    virtual ssize_t writev(network::IOVector *io_vector);
-    virtual ssize_t writev_all(network::IOVector *io_vector);
-    virtual ssize_t recv_all(void *_buf, size_t _n);
-    virtual ssize_t send_all(const void *_buf, size_t _n);
+    ssize_t readv(network::IOVector *io_vector);
+    ssize_t readv_all(network::IOVector *io_vector);
+    ssize_t writev(network::IOVector *io_vector);
+    ssize_t writev_all(network::IOVector *io_vector);
+    ssize_t recv_all(void *_buf, size_t _n);
+    ssize_t send_all(const void *_buf, size_t _n);
     ssize_t recv_packet(double timeout = 0);
     ssize_t recv_line(void *_buf, size_t maxlen);
 
-    virtual bool poll(EventType _type, double timeout = 0);
+    bool poll(EventType _type, double timeout = 0);
     /**
      * If the server has SSL enabled, you must explicitly call `ssl_handshake()`,
      * as it will not be automatically executed within the `accept()` function.
@@ -126,10 +126,10 @@ class Socket : public swr_v1_co_socket {
     bool bind(const char *address, int port = 0);
     bool bind(const sockaddr *sa, socklen_t len);
     bool listen(int backlog = 0);
-    virtual bool sendfile(const char *filename, off_t offset, size_t length);
+    bool sendfile(const char *filename, off_t offset, size_t length);
     ssize_t sendto(const char *host, int port, const void *_buf, size_t _n);
     ssize_t recvfrom(void *_buf, size_t _n);
-    virtual ssize_t recvfrom(void *_buf, size_t _n, sockaddr *_addr, socklen_t *_socklen);
+    ssize_t recvfrom(void *_buf, size_t _n, sockaddr *_addr, socklen_t *_socklen);
 
     SocketType get_type() const {
         return type;
@@ -176,7 +176,7 @@ class Socket : public swr_v1_co_socket {
         swr_v1_hook_co_socket_borrowed_err(this, error, message);
     }
     void set_err(int error, const std::string &message) {
-        errString.check(swr_v1_hook_co_socket_owned_err(this, error, message.data(), message.size()));
+        swr_v1_hook_co_socket_owned_err(this, error, message.data(), message.size());
     }
 
     /* set connect read write timeout */
@@ -191,14 +191,6 @@ class Socket : public swr_v1_co_socket {
     bool get_option(int level, int optname, int *optval) const;
     bool set_option(int level, int optname, const void *optval, socklen_t optlen) const;
     bool set_option(int level, int optname, int optval) const;
-    void set_socks5_proxy(const std::string &host, int port, const std::string &user = "", const std::string &pwd = "") {
-        socks5_proxy.reset(Socks5Proxy::create(type, host, port, user, pwd));
-    }
-    void set_http_proxy(const std::string &host, int port, const std::string &user = "", const std::string &pwd = "") {
-        http_proxy.reset(new HttpProxy());
-        swr_v1_http_proxy_configure(
-            http_proxy->handle(), host.data(), host.size(), port, user.data(), user.size(), pwd.data(), pwd.size());
-    }
     String *get_read_buffer();
     String *get_write_buffer();
     int move_fd() {
@@ -207,20 +199,10 @@ class Socket : public swr_v1_co_socket {
     }
 
   protected:
-    RustStringView connect_host{extra_owner_.value.connect_host};
-
-    RustStringView ssl_host_name{extra_owner_.value.ssl_host_name};
-
     void bind_co(uint32_t event, Coroutine *co) { swr_v1_hook_socket_bind(state_, event, co); }
-
-    // The accepting constructor; accept shares the server's TLS context after.
-    Socket(network::Socket *sock, const Socket *server_sock) {
-        created(swr_v1_hook_co_socket_accepted(this, this, sock, server_sock));
-    }
 
     // Rust reports what the constructor did (crates/hooks/src/co_socket.rs).
     void created(uint32_t result) {
-        extra_ = extra_owner_.value.owner;
         swr_v1_hook_co_socket_created(this, result);
     }
 
@@ -244,6 +226,9 @@ class Socket : public swr_v1_co_socket {
         return swr_v1_hook_co_socket_available(this, event);
     }
 };
+
+static_assert(sizeof(Socket) == sizeof(swr_v1_co_socket) && !std::is_polymorphic<Socket>::value,
+              "a Socket is Rust's record (crates/hooks/src/co_socket.rs)");
 
 class ProtocolSwitch {
     swr_v1_co_protocol_scope state_;

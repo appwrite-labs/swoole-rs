@@ -1,12 +1,14 @@
-//! `coroutine::Socket`'s record: its scalar fields in Rust's layout, initialised,
-//! opened, accepted and released here. Native `Socket` derives from the mirror
-//! (`native/hooks/swoole_rs_co_socket.h`) and keeps only what C++ owns (strings,
-//! the proxies, the TLS context, the destructor callback); both sides assert the
-//! offsets below. The `network::Socket` it wraps is the reactor's record.
+//! `coroutine::Socket`'s record, which is the whole socket: made, opened, accepted,
+//! released and freed here. Native `Socket` derives from the mirror
+//! (`native/hooks/swoole_rs_co_socket.h`) and adds no fields; both sides assert the
+//! offsets below. The `network::Socket` it wraps is the reactor's record, and the
+//! strings, proxies, TLS context and destructor callback are its
+//! [`SocketExtra`](crate::socket_extra::SocketExtra).
 use crate::shutdown::{
     SocketState, swr_v1_hook_socket_connect, swr_v1_hook_socket_state_free,
     swr_v1_hook_socket_state_new,
 };
+use crate::socket_extra::SocketExtra;
 use core::ffi::{c_char, c_int, c_void};
 use core::mem::{offset_of, size_of};
 use core::ptr;
@@ -45,7 +47,7 @@ pub struct CoSocket {
     pub resolve_context: *mut c_void,
     /// The coroutines, barriers and timers bound to each direction.
     pub state: *mut SocketState,
-    /// Borrowed metadata owner; the enclosing native RAII member releases it.
+    /// The record's metadata, which `init` makes and `fini` releases.
     pub extra: *mut crate::socket_extra::SocketExtra,
 }
 
@@ -114,6 +116,16 @@ impl CoSocket {
         unsafe { &mut *self.socket }
     }
 
+    /// The socket's proxies' owners: SOCKS5, then HTTP. Each stays put until a
+    /// setter replaces it or the socket goes.
+    #[must_use]
+    pub fn proxies(&self) -> [Option<&swoole_rs_corebase::ProxyState>; 2] {
+        // SAFETY: the record's live metadata.
+        let owners = unsafe { (*self.extra).proxies };
+        // SAFETY: each null or a live owner.
+        owners.map(|owner| unsafe { owner.as_ref() })
+    }
+
     fn new(state: *mut SocketState) -> Self {
         Self {
             err_code: 0,
@@ -140,7 +152,7 @@ impl CoSocket {
             zero_copy: false,
             resolve_context: ptr::null_mut(),
             state,
-            extra: ptr::null_mut(),
+            extra: SocketExtra::alloc(),
         }
     }
 
@@ -257,7 +269,7 @@ pub(crate) unsafe fn init(socket: *mut CoSocket) -> &'static mut CoSocket {
     unsafe { &mut *socket }
 }
 
-/// Release the bound state a constructor made.
+/// Release the bound state and the metadata a constructor made.
 ///
 /// # Safety
 /// `socket` is a live record, not used afterwards.
@@ -267,10 +279,14 @@ pub unsafe fn swr_v1_hook_co_socket_fini(socket: *mut CoSocket) {
     // SAFETY: the record's own handle, released once.
     unsafe { swr_v1_hook_socket_state_free(socket.state) };
     socket.state = ptr::null_mut();
+    // SAFETY: the record's own metadata, released once.
+    unsafe { SocketExtra::free(socket.extra) };
+    socket.extra = ptr::null_mut();
 }
 
-/// `~Socket()`: the destructor callback if it has not run, the buffers, the bound
-/// state, then the `network::Socket`, its TLS session closed first.
+/// `~Socket()`: the destructor callback if it has not run, the buffers, the
+/// `network::Socket` (its TLS session closed first), then the bound state and the
+/// metadata, whose TLS context outlived the session.
 ///
 /// # Safety
 /// `socket` is a live record, not used afterwards; its buffers came from `new String`.
@@ -286,19 +302,61 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
             unsafe { delete_string(buffer.cast()) };
         }
     }
-    // SAFETY: as the caller promises.
-    unsafe { swr_v1_hook_co_socket_fini(socket) };
     let network = record.socket;
-    if network.is_null() {
-        return;
-    }
-    // SAFETY: the socket's live network record.
-    if !unsafe { (*network).ssl }.is_null() {
+    // SAFETY: the socket's live network record, if any.
+    if unsafe { network.as_ref() }.is_some_and(|network| !network.ssl.is_null()) {
         // SAFETY: the live record holds an SSL.
         unsafe { socket_ssl_close(network) };
     }
-    // SAFETY: the live record, which nothing uses afterwards.
-    unsafe { socket_free(network) };
+    if !network.is_null() {
+        // SAFETY: the live record, which nothing uses afterwards.
+        unsafe { socket_free(network) };
+    }
+    // SAFETY: as the caller promises.
+    unsafe { swr_v1_hook_co_socket_fini(socket) };
+}
+
+/// `new SocketImpl(...)` for the sockets Rust hands out: by `domain`, `kind` and
+/// `protocol` with `family`, else by the `swSocketType` `kind`; over `fd` unless it is
+/// negative. A `UringSocket` when the build says so. Never null; a failed socket(2)
+/// leaves it without an fd.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_hook_co_socket_make(
+    fd: c_int,
+    domain: c_int,
+    kind: c_int,
+    protocol: c_int,
+    family: bool,
+) -> *mut c_void {
+    let how = match (family, fd < 0) {
+        (true, true) => NEW_BY_FAMILY,
+        (true, false) => NEW_FD_BY_FAMILY,
+        (false, true) => NEW_BY_TYPE,
+        (false, false) => NEW_FD_BY_TYPE,
+    };
+    let mut socket = Box::new(CoSocket::new(swr_v1_hook_socket_state_new()));
+    let owner = ptr::from_mut(&mut *socket).cast();
+    let result = socket.construct(owner, how, fd, kind, domain, kind, protocol);
+    swr_v1_hook_co_socket_created(&socket, result);
+    if crate::stdio::host().is_some_and(|host| host.uring_socket) {
+        // SAFETY: the record just made, with its metadata.
+        unsafe { crate::socket_extra::swr_v1_hook_co_socket_uring(&raw mut *socket) };
+    }
+    Box::into_raw(socket).cast()
+}
+
+/// `delete socket` of a socket Rust made or accepted: `~Socket`, then its storage.
+///
+/// # Safety
+/// `socket` came from [`swr_v1_hook_co_socket_make`] or `accept` and is not used
+/// afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_free(socket: *mut c_void) {
+    let socket = socket.cast::<CoSocket>();
+    // SAFETY: as the caller promises.
+    unsafe { swr_v1_hook_co_socket_release(socket) };
+    // SAFETY: the record `make` or `accept` boxed, released once.
+    drop(unsafe { Box::from_raw(socket) });
 }
 
 /// `get_read_buffer()` / `get_write_buffer()`: the buffer, made on first use.
@@ -341,32 +399,50 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_new(
     protocol: c_int,
 ) -> u32 {
     // SAFETY: as the caller promises.
-    let socket = unsafe { init(socket) };
-    let mut result = OPENED;
-    match how {
-        NEW_BY_FAMILY | NEW_FD_BY_FAMILY => {
-            socket.sock_domain = domain;
-            socket.sock_type = kind;
-            socket.sock_protocol = protocol;
-            socket.kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
+    unsafe { init(socket) }.construct(owner, how, fd, socket_type, domain, kind, protocol)
+}
+
+impl CoSocket {
+    /// The public constructors' work over a fresh record (see
+    /// [`swr_v1_hook_co_socket_new`]).
+    #[expect(clippy::too_many_arguments, reason = "the constructors' union")]
+    fn construct(
+        &mut self,
+        owner: *mut c_void,
+        how: c_int,
+        fd: c_int,
+        socket_type: c_int,
+        domain: c_int,
+        kind: c_int,
+        protocol: c_int,
+    ) -> u32 {
+        let socket = self;
+        let mut result = OPENED;
+        match how {
+            NEW_BY_FAMILY | NEW_FD_BY_FAMILY => {
+                socket.sock_domain = domain;
+                socket.sock_type = kind;
+                socket.sock_protocol = protocol;
+                socket.kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
+            }
+            _ => {
+                socket.kind = socket_type;
+                domain_and_type(socket_type, &mut socket.sock_domain, &mut socket.sock_type);
+            }
         }
-        _ => {
-            socket.kind = socket_type;
-            domain_and_type(socket_type, &mut socket.sock_domain, &mut socket.sock_type);
+        if how == NEW_BY_FAMILY || how == NEW_BY_TYPE {
+            if !socket.open(owner) {
+                return 0;
+            }
+        } else {
+            socket.adopt(fd, owner);
+            if how == NEW_FD_BY_TYPE && socket_type == SOCK_RAW {
+                return result;
+            }
+            result |= socket.set_nonblock();
         }
+        result | socket.init_options()
     }
-    if how == NEW_BY_FAMILY || how == NEW_BY_TYPE {
-        if !socket.open(owner) {
-            return 0;
-        }
-    } else {
-        socket.adopt(fd, owner);
-        if how == NEW_FD_BY_TYPE && socket_type == SOCK_RAW {
-            return result;
-        }
-        result |= socket.set_nonblock();
-    }
-    result | socket.init_options()
 }
 
 /// `reinit_sock(type)`: a new socket of `socket_type` replaces the record's, whose
@@ -408,22 +484,16 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_reinit(
     true
 }
 
-/// The accepting constructor: `conn`, accepted on `server`, with the server's
-/// type, framing and timeouts, connected; `accept` shares the TLS context after.
-/// Returns [`swr_v1_hook_co_socket_new`]'s bits.
+/// `new Socket(conn, server)`, the accepting constructor: `conn`, accepted on
+/// `server`, with the server's type, framing and timeouts, connected; `accept`
+/// shares the TLS context after. [`swr_v1_hook_co_socket_free`] releases it.
 ///
 /// # Safety
-/// `socket` is writable storage for one record, `server` a live one, `conn` a live accepted
-/// `network::Socket` the record takes; `owner` is the record's native object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_accepted(
-    socket: *mut CoSocket,
-    owner: *mut c_void,
-    conn: *mut SocketRecord,
-    server: *const CoSocket,
-) -> u32 {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { init(socket) };
+/// `server` is a live record and `conn` a live accepted `network::Socket` the new
+/// socket takes.
+pub(crate) unsafe fn accepted(server: *const CoSocket, conn: *mut SocketRecord) -> *mut c_void {
+    let mut socket = Box::new(CoSocket::new(swr_v1_hook_socket_state_new()));
+    let owner = ptr::from_mut(&mut *socket).cast::<c_void>();
     // SAFETY: as the caller promises.
     let server = unsafe { &*server };
     socket.kind = server.kind;
@@ -451,7 +521,8 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_accepted(
     // SAFETY: the record's own handle.
     unsafe { swr_v1_hook_socket_connect(socket.state) };
     socket.ssl_is_server = server.ssl_is_server;
-    result
+    swr_v1_hook_co_socket_created(&socket, result);
+    Box::into_raw(socket).cast()
 }
 
 /// What a constructor's bits report (`Socket::created`): a failed socket(2) becomes
@@ -749,13 +820,12 @@ mod tests {
         unsafe { (*server.socket).timeouts.read = 1.5 };
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         let conn = swoole_rs_reactor::swr_v1_socket_make(fd, 0);
-        let mut socket = record();
-        let owner = (&raw mut *socket).cast();
-        unsafe { swr_v1_hook_co_socket_fini(&raw mut *socket) };
-        let bits = unsafe {
-            swr_v1_hook_co_socket_accepted(&raw mut *socket, owner, conn, &raw const *server)
-        };
-        assert_eq!(bits, OPENED);
+        let socket = unsafe { accepted(&raw const *server, conn) };
+        let socket = unsafe { Box::from_raw(socket.cast::<CoSocket>()) };
+        assert_eq!(
+            unsafe { (*conn).object },
+            (&raw const *socket).cast_mut().cast()
+        );
         assert_eq!((socket.kind, socket.sock_fd), (1, fd));
         assert!(socket.open_eof_check && socket.http2 && socket.ssl_is_server);
         assert_eq!(socket.protocol.package_eof_len, 2);

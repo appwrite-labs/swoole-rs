@@ -93,8 +93,8 @@ pub struct Host {
     pub uring_ftruncate: bool,
     /// `HAVE_IOURING_FUTEX`: the engine probes the futex opcodes.
     pub uring_futex: bool,
-    /// The hooked fds' native sockets.
-    pub socket: crate::hooked::SocketOps,
+    /// `SW_USE_URING_SOCKET`: the sockets Rust makes are `UringSocket`s.
+    pub uring_socket: bool,
 }
 
 // SAFETY: native's table is static and read-only; `uring` points to another.
@@ -364,7 +364,7 @@ pub(crate) mod tests {
         uring_statx: false,
         uring_ftruncate: false,
         uring_futex: false,
-        socket: crate::hooked::tests::OPS,
+        uring_socket: false,
     };
     fn set_last_error(error: c_int) {
         LAST_ERROR.set(error);
