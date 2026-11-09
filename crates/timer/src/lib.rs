@@ -709,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_deadlines_match_swap_last_and_birth_round_blocks_head() {
+    fn equal_deadlines_fire_in_insertion_order_and_birth_round_blocks_head() {
         let q = Owned::new();
         let a = q.add(0, 1, false, 1);
         let b = q.add(0, 1, false, 2);
@@ -718,7 +718,7 @@ mod tests {
         assert_eq!(q.next(EMPTY), TimerView::default());
         assert_eq!(q.end(), 1);
         assert_eq!(unsafe { swr_v1_timer_begin(q.0, 1) }, OK);
-        for expected in [a, c, b] {
+        for expected in [a, b, c] {
             assert_eq!(q.next(OK), expected);
             assert_eq!(q.complete(expected.id, RELEASE), expected);
             q.invariant();
