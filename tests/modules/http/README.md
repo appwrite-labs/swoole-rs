@@ -12,10 +12,10 @@ cargo build --locked -p swoole-rs-ffi --release
 
 ## Native differential gates
 
-Each gate compiles pinned (v6.2.5) bodies against the hybrid build `--archive`
+Each gate compiles pinned (v6.2.5) bodies against the Cargo build SDK `--archive`
 comes from and compares outcomes. The two sides compile apart (`Sides` in
 `gate.py`): upstream fragments against the pin's headers only, the rest against
-the Cargo build's patched tree (`native_tree`). Native code runs under ASan/UBSan;
+the SDK's headers and switches (`native_flags`). Native code runs under ASan/UBSan;
 the Rust archive is uninstrumented unless `--rust-sanitize` is used (Linux;
 links a private ASan HTTP archive instead, precompiled std stays uninstrumented).
 All take `--source PINNED_GIT --archive HYBRID_ARCHIVE --output REPORT`; gates
@@ -83,9 +83,9 @@ same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-http
 | --- | --- |
 | `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `crates/http-ffi/src/http_server.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
 | `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http-ffi/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
-| `has_expect_header`, `get_protocol`, `all_method` | `crates/http/src/request.rs`: same names |
+| `has_expect_header`, `get_protocol`, `all_method` | `crates/http-ffi/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket-ffi/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
-| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http/src/request.rs`: same names, over the bundled multipart parser (#1938) |
+| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http-ffi/src/request.rs`: same names, over the bundled multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
 phase): a Rust case binary over the hybrid tree's libswoole.so, built and run by

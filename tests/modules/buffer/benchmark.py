@@ -18,7 +18,6 @@ import tempfile
 
 from baseline import PIN
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.build_ext import native_tree
 from tools.harness import ROOT, run_isolated, write_report
 
 WORKLOADS = [
@@ -34,10 +33,9 @@ def sha(path):
 
 
 def selected_build(archive):
-    """An SDK archive (tools/build_ext.py --native), its patched tree and its ABI headers."""
+    """An SDK archive (tools/build_ext.py --native) and its headers."""
     archive = Path(archive).resolve(strict=True)
-    source, _ = native_tree(archive)
-    return source, archive.parents[1] / 'include', archive
+    return archive.parents[1] / 'include', archive
 
 
 def measure(report, binaries, args):
@@ -111,7 +109,7 @@ def main():
     builds = {'hybrid': selected_build(args.archive)}
     if args.previous_archive:
         builds['previous'] = selected_build(args.previous_archive)
-    _, _, archive = builds['hybrid']
+    _, archive = builds['hybrid']
     compiler = shlex.split(os.environ.get('CXX', 'c++'))
     local = Path(__file__).resolve().parent
     report = {
@@ -137,13 +135,13 @@ def main():
                             destination = tree / member.name
                             destination.parent.mkdir(parents=True, exist_ok=True)
                             destination.write_bytes(bundle.extractfile(member).read())
-                source, include = tree, ROOT / 'native/include'
+                headers = ['-I' + str(tree / 'include'), '-I' + str(ROOT / 'native/include')]
             else:
-                source, include, archive = builds[engine]
+                include, archive = builds[engine]
+                headers = ['-I' + str(include)]
             binary = tree / 'benchmark'
             command = compiler + ['-std=c++17', '-O3', '-DNDEBUG', '-ffunction-sections', '-fdata-sections',
-                                  '-I' + str(source / 'include'), '-I' + str(include),
-                                  *([str(source / 'src/core/buffer.cc')] if engine == 'upstream' else []), str(local / 'benchmark.cc')]
+                                  *headers, *([str(tree / 'src/core/buffer.cc')] if engine == 'upstream' else []), str(local / 'benchmark.cc')]
             if engine in builds:
                 command += ['-DSWOOLE_RS_BUFFER', str(archive), '-lm']
                 if sys.platform == 'linux':

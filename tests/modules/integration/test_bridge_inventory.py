@@ -16,8 +16,7 @@ class SelectedExports(unittest.TestCase):
     def check(self, symbols, conditional=False, config=''):
         with tempfile.TemporaryDirectory() as folder:
             build = Path(folder)
-            (build / 'src').mkdir()
-            (build / 'src/config.h').write_text(config)
+            (build / 'config.h').write_text(config)
             header = build / 'native/http/swoole_rs_http.h'
             header.parent.mkdir(parents=True)
             content = b'''uint32_t swr_v1_http_plan(void);

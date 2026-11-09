@@ -1,10 +1,10 @@
 {
   "plaintext": 0.91,
   "echo-1k": 0.92,
-  "json": 0.95,
+  "json": 0.94,
   "service-health": 0.93,
   "websocket": 0.81,
-  "timer": 0.73,
+  "timer": 0.72,
   "app": 0.93,
   "http2": 0.95,
   "table": 0.99,

@@ -63,12 +63,12 @@ int main(void) {
         includes = shlex.split(run([ARGS.php_config, '--includes']).stdout)
         directories = sorted({str(header.parent) for header in headers})
         # Configure-gated declarations (SW_STDEXT, SW_THREAD, SW_USE_CURL, ...) follow the
-        # config.h the build used, which build_ext.py copies into the tree.
+        # config.h the build used, which build_ext.py writes beside swoole.so.
         with tempfile.TemporaryDirectory(prefix='swoole-rs-export-inventory-') as directory:
             inventory = Path(directory) / 'headers.cc'
             inventory.write_text(''.join(f'#include "{header}"\n' for header in headers))
             text = run(shlex.split(os.environ.get('CXX', 'c++')) + [
-                '-E', '-P', '-x', 'c++', '-include', str(source / 'config.h'), *[f'-I{path}' for path in directories], '-I', str(source),
+                '-E', '-P', '-x', 'c++', '-include', str(ARGS.extension.parent / 'config.h'), *[f'-I{path}' for path in directories], '-I', str(source),
                 '-I', str(source / 'include'), '-I', str(source / 'ext-src'),
                 '-I', str(source / 'thirdparty'), *includes, str(inventory)]).stdout
         text = re.sub(r'/\*.*?\*/|//[^\n]*', '', text, flags=re.S)

@@ -274,12 +274,12 @@ impl SendfileTask {
 /// The live request, connection and server of an HTTP/1 static response.
 struct Wire {
     server: *mut c_void,
-    request: *const swoole_rs_http::HttpRequest,
+    request: *const swoole_rs_http_ffi::HttpRequest,
     conn: *const crate::ConnectionRecord,
 }
 
 impl Wire {
-    fn request(&self) -> &swoole_rs_http::HttpRequest {
+    fn request(&self) -> &swoole_rs_http_ffi::HttpRequest {
         // SAFETY: the connection's live request, per `swr_v1_server_static_select`.
         unsafe { &*self.request }
     }
@@ -345,7 +345,7 @@ impl Exchange for Wire {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_static_select(
     server: *mut c_void,
-    request: *const swoole_rs_http::HttpRequest,
+    request: *const swoole_rs_http_ffi::HttpRequest,
     conn: *const crate::ConnectionRecord,
 ) -> bool {
     let wire = Wire {
