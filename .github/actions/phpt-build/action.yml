@@ -2,10 +2,10 @@ name: PHPT engines
 description: >-
   Build the engines upstream's PHPTs run on, with the database, cURL and ssh2 hooks as
   upstream's own CI builds them (scripts/docker-compile.sh), into the phpt-engines artifact:
-  upstream.so, hybrid.so (the all-modules hybrid) and cargo.so (crates/ext alone).
+  upstream.so and cargo.so (crates/ext).
 inputs:
   engines:
-    description: The engines to build, space separated (upstream hybrid cargo)
+    description: The engines to build, space separated (upstream cargo)
     required: true
 outputs:
   php:
@@ -55,9 +55,6 @@ runs:
             upstream)
               python3 tools/build_hybrid.py --backend upstream --php-sockets $services | tee upstream.log
               cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so ;;
-            hybrid)
-              python3 tools/build_hybrid.py --php-sockets $services | tee hybrid.log
-              cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so ;;
             cargo)
               python3 tools/build_ext.py --php-sockets $services
               cp target/ext/swoole.so target/phpt/cargo.so ;;

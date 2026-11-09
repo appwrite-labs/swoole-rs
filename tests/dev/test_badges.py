@@ -81,13 +81,13 @@ class Badges(unittest.TestCase):
                     self.assertEqual(badges.replaced(badges.kept(source, rows[:1])), (930, 1801))
                     self.assertEqual(badges.replaced(badges.kept(source, rows)), (927, 1801))
 
-    def test_phpt_counts_hybrid_passes_over_every_pinned_test(self):
-        rows = [{'test': 'a', 'engine': 'upstream', 'status': 'passed'}, {'test': 'a', 'engine': 'hybrid', 'status': 'passed'},
-                {'test': 'b', 'engine': 'upstream', 'status': 'passed'}, {'test': 'b', 'engine': 'hybrid', 'status': 'failed'},
-                {'test': 'c', 'engine': 'upstream', 'status': 'skipped'}, {'test': 'c', 'engine': 'hybrid', 'status': 'skipped'},
-                {'test': 'd', 'engine': 'upstream', 'status': 'passed'}, {'test': 'd', 'engine': 'hybrid', 'status': 'failed', 'rerun': 'passed'}]
+    def test_phpt_counts_cargo_passes_over_every_pinned_test(self):
+        rows = [{'test': 'a', 'engine': 'upstream', 'status': 'passed'}, {'test': 'a', 'engine': 'cargo', 'status': 'passed'},
+                {'test': 'b', 'engine': 'upstream', 'status': 'passed'}, {'test': 'b', 'engine': 'cargo', 'status': 'failed'},
+                {'test': 'c', 'engine': 'upstream', 'status': 'skipped'}, {'test': 'c', 'engine': 'cargo', 'status': 'skipped'},
+                {'test': 'd', 'engine': 'upstream', 'status': 'passed'}, {'test': 'd', 'engine': 'cargo', 'status': 'failed', 'rerun': 'passed'}]
         self.assertEqual(badges.phpt_passing(rows), (2, 4))
-        # Another job's gate (a build variant, on the Cargo build) passes b; c can't apply here.
+        # Another job's gate (a build variant) passes b; c can't apply here.
         rows.append({'test': 'b', 'engine': 'cargo', 'status': 'passed'})
         self.assertEqual(badges.phpt_passing(rows, {'c': 'darwin only'}), (3, 3))
 
