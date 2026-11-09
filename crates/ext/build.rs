@@ -62,7 +62,16 @@ mod php {
         "SW_HAVE_BROTLI",
         "SW_HAVE_ZLIB",
         "SW_HAVE_ZSTD",
-        "SW_USE_ASM_CONTEXT",
+    ];
+
+    /// The build variants' features and what config.m4 defines for each.
+    const VARIANTS: &[(&str, &[&str])] = &[
+        ("stdext", &["SW_STDEXT"]),
+        ("iouring", &["SW_USE_IOURING"]),
+        ("uring_socket", &["SW_USE_URING_SOCKET"]),
+        ("cares", &["SW_USE_CARES", "HAVE_CARES"]),
+        ("thread_context", &["SW_USE_THREAD_CONTEXT"]),
+        ("thread", &["SW_THREAD"]),
     ];
 
     /// What config.m4 adds for each switch of the merge tier's PHPT profile whose
@@ -130,6 +139,9 @@ mod php {
         let bundled = third.join(format!("php{php}"));
         if feature("sockets") {
             p.define(&["SW_SOCKETS", "HAVE_SOCKETS"]);
+        }
+        for (_, defines) in VARIANTS.iter().filter(|(name, _)| feature(name)) {
+            p.define(defines);
         }
         if feature("mysqlnd") {
             p.define(&["SW_USE_MYSQLND"]);
@@ -340,9 +352,12 @@ mod php {
         let php_config = env::var("PHP_CONFIG").unwrap_or_else(|_| "php-config".into());
         let third = tree.join("thirdparty");
         let profile = profile(&third, php_version_id(&php_config));
+        // config.m4: thread context replaces boost.context's assembly switch.
+        let asm_context = !feature("thread_context");
         let config: String = COMMON
             .iter()
             .chain(platform)
+            .chain(asm_context.then_some(&"SW_USE_ASM_CONTEXT"))
             .map(|name| format!("#define {name} 1\n"))
             .chain(
                 profile
@@ -369,7 +384,6 @@ mod php {
         // native/phphelpers reads the Brotli and zstd versions (zstd-sys links libzstd).
         includes.extend(pkg_includes("libbrotlienc"));
         includes.extend(pkg_includes("libzstd"));
-        pkg_link(&["libbrotlienc", "libbrotlidec"]);
 
         let base = |cpp: bool| {
             let mut build = cc::Build::new();
@@ -412,11 +426,14 @@ mod php {
                 ]
                 .map(|f| third.join("nghttp2").join(f)),
             )
+            // Rust's coroutine links boost.context's switch even under thread context.
             .file(third.join("boost/asm").join(format!("make_{asm}")))
             .file(third.join("boost/asm").join(format!("jump_{asm}")))
             .files(&profile.c)
             .compile("swoole_native_c");
 
+        // After the objects that use them, or --as-needed drops them.
+        pkg_link(&["libbrotlienc", "libbrotlidec"]);
         for library in profile.libs.into_iter().chain(["z", "pthread", "m"]) {
             println!("cargo::rustc-link-lib={library}");
         }

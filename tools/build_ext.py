@@ -3,8 +3,8 @@
 
 crates/ext's build.rs compiles native/ and the bundled thirdparty C from the patched tree this
 prepares in target/ext/src, then the extension is checked to load and report the pinned version.
-Prints `Built cargo: <path>` (target/ext/swoole.so). `--php-sockets` and build_hybrid's service
-`--configure` switches turn on the crates/ext feature of the same build profile.
+Prints `Built cargo: <path>` (target/ext/swoole.so). `--php-sockets`, `--stdext`, `--fix-halfclose`
+and build_hybrid's `--configure` switches turn on the crates/ext feature of the same build profile.
 """
 import argparse
 import os
@@ -25,6 +25,8 @@ def main():
     parser.add_argument('--php-config', default=os.environ.get('PHP_CONFIG', 'php-config'))
     parser.add_argument('--profile', default='release', help='Cargo profile (default: release)')
     parser.add_argument('--php-sockets', action='store_true', help='Build with PHP sockets integration')
+    parser.add_argument('--stdext', action='store_true', help='Build with the experimental stdext')
+    parser.add_argument('--fix-halfclose', action='store_true', help='Build the opt-in half-close repairs')
     parser.add_argument('--configure', action='append', default=[], metavar='ARG',
                         help="A service hook's configure switch, as build_hybrid.py takes it; repeatable")
     args = parser.parse_args()
@@ -32,9 +34,11 @@ def main():
     tree = out / 'src'
     apply(tree)
     env = {**os.environ, 'SWOOLE_SRC': str(tree), 'PHP_CONFIG': args.php_config}
-    switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd'}
-    switches.pop('iouring')
-    features = ['php', *(['sockets'] if args.php_sockets else [])]
+    switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd', 'uring-socket': '--enable-uring-socket',
+                'cares': '--enable-cares', 'thread-context': '--enable-thread-context',
+                'thread': '--enable-swoole-thread', 'stdext': '--enable-swoole-stdext'}
+    features = ['php', *(['sockets'] if args.php_sockets else []), *(['stdext'] if args.stdext else []),
+                *(['halfclose'] if args.fix_halfclose else [])]
     for flag in args.configure:
         name, _, value = flag.partition('=')
         feature = next((f for f, switch in switches.items() if switch == name), None)
