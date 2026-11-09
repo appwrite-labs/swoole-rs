@@ -3,7 +3,7 @@
 use std::ffi::{c_int, c_void};
 
 unsafe extern "C" {
-    fn swr_zend_try(body: unsafe extern "C" fn(*mut c_void), argument: *mut c_void) -> c_int;
+    fn swr_v1_zend_try(body: unsafe extern "C" fn(*mut c_void), argument: *mut c_void) -> c_int;
 }
 
 struct Owner {
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn swr_exit_guard_test_owner(
 ) -> c_int {
     let owner = Box::new(Owner { bytes: vec![42; 4096], dropped });
     std::hint::black_box(&owner);
-    let outcome = unsafe { swr_zend_try(body, argument) };
+    let outcome = unsafe { swr_v1_zend_try(body, argument) };
     drop(owner);
     outcome
 }

@@ -1,9 +1,9 @@
 name: ZTS
-# Upstream and the all-modules hybrid built against a thread-safe PHP with
+# Upstream and the Cargo-built swoole.so built against a thread-safe PHP with
 # --enable-swoole-thread, then the PHPTs upstream's own thread CI runs (swoole_thread,
 # scripts/run-tests.sh with SWOOLE_THREAD) plus the atomic and lock families, whose
 # Thread\Atomic and Thread\Lock only exist in this build. Any test that passes on
-# upstream must pass on the hybrid. zend-sys binds the ZTS headers (PHP_CONFIG).
+# upstream must pass on the Cargo build. zend-sys binds the ZTS headers (PHP_CONFIG).
 # Called by the merge tier, and by the PR tier when a PR touches thread or ZTS code.
 on:
   workflow_call:
@@ -21,12 +21,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Main's release build: the dependencies; zend-sys and the crates above it rebuild
-      # against this PHP (PHP_CONFIG). Hybrid build trees must start clean.
+      # against this PHP (PHP_CONFIG). Build trees must start clean.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
+      - run: rm -rf target/ext target/upstream target/thirdparty target/native-core
       - uses: ./.github/actions/install
       # Restored only: the pinned reference is rebuilt for ZTS below, never saved.
       - uses: actions/cache/restore@v4
@@ -50,13 +50,13 @@ jobs:
       - run: cargo fetch --locked
       # The control is the pinned reference itself, unpatched.
       - run: |
-          php="--php-config $PWD/target/php-zts/bin/php-config --phpize $PWD/target/php-zts/bin/phpize --configure=--enable-swoole-thread"
-          python3 tools/build_upstream.py $php
-          python3 tools/build_hybrid.py $php --export target/phpt/guard-sdk | tee hybrid.log
+          php="--php-config $PWD/target/php-zts/bin/php-config --configure=--enable-swoole-thread"
+          python3 tools/build_upstream.py $php --phpize $PWD/target/php-zts/bin/phpize
+          python3 tools/build_ext.py $php
           mkdir -p target/phpt
           cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
-          cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
-          for engine in upstream hybrid; do target/php-zts/bin/php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -E '^thread '; done
+          cp target/ext/swoole.so target/phpt/cargo.so
+          for engine in upstream cargo; do target/php-zts/bin/php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -E '^thread '; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
       - if: github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
@@ -67,13 +67,13 @@ jobs:
         run: |
           python3 tests/modules/phphelpers/exit_guard.py --php "$PWD/target/php-zts/bin/php" \
             --php-config "$PWD/target/php-zts/bin/php-config" \
-            --engine upstream=target/phpt/upstream.so --engine hybrid=target/phpt/hybrid.so \
-            --export target/phpt/guard-sdk --source-ref "$GITHUB_SHA" --output target/phpt/guard.json
+            --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so \
+            --build-manifest target/ext/build-manifest.json --output target/phpt/guard.json
       - run: |
           families="--module swoole_thread --module swoole_atomic --module swoole_lock"
           options="--manifest target/phpt/manifest.json --timeout 30 --php $PWD/target/php-zts/bin/php"
           mkdir -p target/phpt/zts
-          for engine in upstream hybrid; do
+          for engine in upstream cargo; do
             python3 corpus/upstream/run.py $options $families --engine $engine=target/phpt/$engine.so \
               --output target/phpt/zts/$engine.json || [ $? -eq 1 ]
           done
@@ -85,7 +85,7 @@ jobs:
         run: |
           python3 tests/modules/integration/server_exit.py --checkout "$PWD" --source target/upstream/src \
             --runner target/upstream/src/run-tests.php --php "$PWD/target/php-zts/bin/php" \
-            --engine upstream=target/phpt/upstream.so --engine hybrid=target/phpt/hybrid.so \
+            --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so \
             --output target/phpt/server-exit-companion.json
       - uses: actions/upload-artifact@v4
         if: always()

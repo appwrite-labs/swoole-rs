@@ -7,6 +7,10 @@
 ZEND_TSRMLS_CACHE_DEFINE()
 #endif
 
+// The guard ABI as the Cargo-built swoole.so exports it (crates/ext/src/lib.rs).
+extern "C" int swr_v1_zend_try(void (*body)(void *), void *argument);
+extern "C" void *swr_v1_zend_guard_target(void);
+extern "C" void swr_v1_zend_guard_resume(void);
 extern "C" int swr_exit_guard_test_owner(void (*body)(void *), void *, void (*dropped)(const unsigned char *, size_t));
 static std::atomic<size_t> entered{0}, dropped{0}, returned{0}, bytes{0}, checksum{0}, zend_bailouts{0}, thread_exits{0};
 struct Call { zval *callback; zval result{}; };
@@ -34,11 +38,11 @@ PHP_FUNCTION(swr_guard_owned) {
     if (outcome == SWR_ZEND_BAILOUT) zend_bailouts.fetch_add(1);
     else if (outcome == SWR_ZEND_THREAD_EXIT) thread_exits.fetch_add(1);
     else if (outcome != SWR_ZEND_RETURN) std::abort();
-    if (outcome) swr_zend_guard_resume();
+    if (outcome) swr_v1_zend_guard_resume();
     RETURN_NULL();
 }
 static void throw_native(void *) { throw std::runtime_error("native probe"); }
-static void nested_native(void *) { swr_zend_try(throw_native, nullptr); }
+static void nested_native(void *) { swr_v1_zend_try(throw_native, nullptr); }
 static void capture_native(void *argument) {
     auto *exception = static_cast<std::exception_ptr *>(argument);
     try { nested_native(nullptr); } catch (...) { *exception = std::current_exception(); }
@@ -47,15 +51,15 @@ PHP_FUNCTION(swr_guard_cpp_probe) {
     ZEND_PARSE_PARAMETERS_NONE();
     auto *original = EG(bailout);
     bool caught = false;
-    try { swr_zend_try(nested_native, nullptr); }
+    try { swr_v1_zend_try(nested_native, nullptr); }
     catch (const std::runtime_error &error) { caught = std::string(error.what()) == "native probe"; }
-    bool clean = caught && EG(bailout) == original && swr_zend_guard_target() == nullptr;
+    bool clean = caught && EG(bailout) == original && swr_v1_zend_guard_target() == nullptr;
     std::exception_ptr exception;
     entered.fetch_add(1);
     int outcome = swr_exit_guard_test_owner(capture_native, &exception, owner_dropped);
     returned.fetch_add(1);
     clean = clean && outcome == 0 && exception && EG(bailout) == original &&
-        swr_zend_guard_target() == nullptr && dropped.load() == 1 && bytes.load() == 4096 &&
+        swr_v1_zend_guard_target() == nullptr && dropped.load() == 1 && bytes.load() == 4096 &&
         checksum.load() == 4096 * 42;
     caught = false;
     try { if (exception) std::rethrow_exception(exception); }
