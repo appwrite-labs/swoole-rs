@@ -235,6 +235,28 @@ class PhptGate(unittest.TestCase):
         summary = markdown([row(t, 'upstream', 'passed') for t in tests] + [row(t, 'hybrid', 'failed') for t in tests], rechecked)
         self.assertIn('2 inconclusive: every re-run on an engine ended in the runner abort', summary)
 
+    def test_debug_php_reports_are_listed_per_engine_and_gated_as_failures(self):
+        leak = ("004+ [Mon Nov  9 03:12:44 2026]  Script:  '/t/tests/x.php'\n"
+                '005+ Zend/zend_string.h(176) :  Freed 0x7f0 (32 bytes), script=/t/tests/x.php\n'
+                '006+ === Total 1 memory leaks detected ===\n')
+        assertion = "002+ php: Zend/zend_hash.c:1075: _zend_hash_index_add: Assertion `(ht)->nTableMask' failed.\n"
+        with tempfile.TemporaryDirectory() as temp:
+            report = Path(temp) / 'shard.json'
+            report.write_text(json.dumps({'results': [
+                {'test': 'tests/x.phpt', 'module': 'x', 'engine': 'upstream', 'status': 'passed', 'upstream_status': 'PASSED'},
+                {'test': 'tests/x.phpt', 'module': 'x', 'engine': 'cargo', 'status': 'failed', 'upstream_status': 'FAILED', 'detail': leak},
+                {'test': 'tests/y.phpt', 'module': 'y', 'engine': 'upstream', 'status': 'failed', 'upstream_status': 'FAILED', 'detail': leak},
+                {'test': 'tests/y.phpt', 'module': 'y', 'engine': 'cargo', 'status': 'failed', 'upstream_status': 'FAILED', 'detail': assertion},
+                {'test': 'tests/z.phpt', 'module': 'z', 'engine': 'cargo', 'status': 'failed', 'upstream_status': 'FAILED',
+                 'detail': '001+ ** ERROR: process timed out **'}]}))
+            results = list(rows([report]))
+        self.assertEqual([r.get('report') for r in results], [None, 'leak', 'leak', 'assertion', None])
+        self.assertEqual(compare(results)[0], ['tests/x.phpt (cargo: failed)'])
+        summary = markdown(results)
+        self.assertIn('3 leak or assertion reports', summary)
+        self.assertIn('- `tests/y.phpt (upstream: leak)`', summary)
+        self.assertNotIn('leak or assertion', markdown(results[:1]))
+
     def test_incomplete_shards_are_refused(self):
         with tempfile.TemporaryDirectory() as temp:
             report = Path(temp) / 'shard.json'
