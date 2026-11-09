@@ -72,13 +72,19 @@ class Budget(unittest.TestCase):
 
     def test_an_ffi_crate_may_rise_by_what_its_crate_moved_to_it(self):
         base = {'http': 10, 'http-ffi': 5, 'other': 1, 'orphan-ffi': 1}
-        current = {'http': 4, 'http-ffi': 11, 'other': 1, 'orphan-ffi': 2}
+        current = {'http': 4, 'http-ffi': 11, 'other': 0, 'orphan-ffi': 2}  # the total holds at 17
         rises = budget.above(current, base)
         self.assertEqual(budget.boundary_moves(rises, current, base), {'orphan-ffi': (2, 1)},
                          'http fell by 6, so http-ffi may rise by 6; orphan has no crate')
         current['http-ffi'] = 12
         self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base),
                          {'http-ffi': (12, 5), 'orphan-ffi': (2, 1)}, 'a rise past the fall fails')
+
+    def test_a_fall_into_a_new_crate_does_not_also_cover_an_ffi_rise(self):
+        # http's 6 moved to locale, which is new and so unchecked; http-ffi's 6 are new unsafe.
+        base = {'http': 10, 'http-ffi': 5}
+        current = {'http': 4, 'http-ffi': 11, 'locale': 6}
+        self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base), {'http-ffi': (11, 5)})
 
 
 if __name__ == '__main__':

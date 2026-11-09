@@ -7,7 +7,7 @@ Thread Lock, Atomic/Long and Thread Atomic/Long are Rust classes (`crates/phploc
 ownership, timeout, ordering, fork, coroutine and platform contracts.
 
 `overlay.py` reads the pinned sources for the gates' reference side; the hybrid side is
-Rust's lock ABI and `Barrier` (whose methods are Rust) over `native/locks/swoole_lock.h`. Edit `migration/patches/locks/` with `tools/patches.py`.
+Rust's lock ABI and `Barrier` (whose methods are Rust) over `native/locks/swoole_lock.h`.
 
 ```sh
 python3 tests/modules/locks/gate.py --source target/upstream/src \

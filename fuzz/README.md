@@ -48,8 +48,8 @@ part header, and the closing boundary must match.
 
 For MQTT and RESP, `mqtt_length` compares `mqtt::get_package_length` over any
 received bytes and `resp_parse` compares `redis::parse` (every string and, on
-glibc, `ERANGE`), each against the same body after
-`migration/patches/protocols/0001-rust-packet-protocols.patch`. Outside the compared domain only the candidate runs; `resp_parse` models upstream's walk
+glibc, `ERANGE`), each against the same function from
+`crates/oracle/candidate/` (the hybrid's body, calling Rust). Outside the compared domain only the candidate runs; `resp_parse` models upstream's walk
 without reading memory to find those inputs. `resp_stream` runs `redis::recv_packet`
 over a chunked stream and `socks5` drives `Socks5Proxy` from `create` through
 arbitrary server replies, each against the Rust candidate.
@@ -60,8 +60,8 @@ For packet framing (`open_length_check`), `framing_unpack` compares
 `Protocol::default_length_func` over a length type, field offset, body offset and
 any received bytes. Outside the compared domain, Rust's -1 only has to match an upstream error.
 `framing_stream` runs the receive loops (`recv_with_length_protocol`,
-`recv_with_eof_protocol`, `recv_split_by_eof`) from the pinned base.cc and from it
-after `migration/patches/framing/0001-base.patch` (the Rust receive loop with
+`recv_with_eof_protocol`, `recv_split_by_eof`) from the pinned base.cc and from
+`crates/oracle/candidate/src/protocol/base.cc` (the Rust receive loop with
 native effects) over the same stream, delivered in fuzzer-chosen chunks:
 every call's result, every packet and the final buffer must match for the EOF
 loops. The Rust length loop reads greedily (one `recv` of the buffer's free space,

@@ -377,8 +377,7 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
 /// 0 success, 1 unsupported DTLS, 2 context creation failure.
 /// # Safety
 /// owner and socket are live/exclusive; native TLS initialization has succeeded.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_socket_context(
+pub unsafe fn swr_v1_tls_owner_socket_context(
     owner: *const OwnedTlsContext,
     socket: *mut swoole_rs_reactor::SocketRecord,
     http2: bool,
@@ -421,8 +420,7 @@ pub struct OwnedTlsSessionResult {
 /// # Safety
 /// All pointers are live/exclusive, hostname is stable, and TLS is initialized.
 /// grease, when supplied by `BoringSSL`, is a nonthrowing SSL configuration leaf.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_socket_session(
+pub unsafe fn swr_v1_tls_owner_socket_session(
     owner: *const OwnedTlsContext,
     socket: *mut swoole_rs_reactor::SocketRecord,
     hostname: *const StringSlot,

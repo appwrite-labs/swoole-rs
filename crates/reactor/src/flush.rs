@@ -1,6 +1,6 @@
 //! The reactor's writable handler and drain (upstream `Reactor::_writable_callback` and
 //! `drain_write_buffer`) over the socket's write-path block and its output queue.
-//! Native code performs the effects that need its objects.
+//! `crates/tls`'s `reactor_write.rs` supplies the effects.
 use crate::write::SocketOutput;
 use std::ffi::{c_int, c_void};
 use swoole_rs_buffer::{Buffer, swr_v1_buffer_stats};
@@ -11,7 +11,7 @@ const SW_ERR: c_int = -1;
 const SENDFILE: c_int = 1;
 const CLOSE: c_int = 2;
 
-/// Native effects. Each receives `context`.
+/// The effects (`crates/tls`'s `reactor_write.rs`). Each receives `context`.
 #[repr(C)]
 pub struct FlushOps {
     pub context: *mut c_void,
@@ -49,8 +49,7 @@ unsafe fn empty(buffer: *mut Buffer) -> bool {
 /// # Safety
 /// `output` is the socket's embedded block; `buffer` is its `out_buffer`'s Rust handle
 /// or null; `ops` is valid for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_flush(
+pub unsafe fn swr_v1_reactor_flush(
     output: *mut SocketOutput,
     buffer: *mut Buffer,
     ops: *const FlushOps,
@@ -101,8 +100,7 @@ pub unsafe extern "C" fn swr_v1_reactor_flush(
 ///
 /// # Safety
 /// As for [`swr_v1_reactor_flush`]; `ops.wait_writable` and `ops.removed` are set.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_drain(
+pub unsafe fn swr_v1_reactor_drain(
     output: *mut SocketOutput,
     buffer: *mut Buffer,
     ops: *const FlushOps,

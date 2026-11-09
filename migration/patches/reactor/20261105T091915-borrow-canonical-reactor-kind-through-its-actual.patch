@@ -1,9 +1,0 @@
-diff --git a/include/swoole_reactor.h b/include/swoole_reactor.h
-index fffe354..a9ac89f 100644
---- a/include/swoole_reactor.h
-+++ b/include/swoole_reactor.h
-@@ -106,3 +106,3 @@ class Reactor : private ReactorStateOwner {
- 
--    Type &type_ = *reinterpret_cast<Type *>(&state_.fields->kind);
-+    int &type_ = state_.fields->kind;
-     void *&ptr = state_.fields->ptr;
