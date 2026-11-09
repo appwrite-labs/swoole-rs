@@ -5,6 +5,7 @@ Build the reference and the Cargo extension (tools/build_ext.py) first, then run
 All compilations write only to a temporary directory.
 """
 import argparse
+import json
 import os
 import re
 from pathlib import Path
@@ -17,6 +18,9 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.build_hybrid import MODULES, headers_for  # noqa: E402
+
+VARIANTS = {'stdext': ['SW_STDEXT'], 'iouring': ['SW_USE_IOURING'], 'uring_socket': ['SW_USE_IOURING', 'SW_USE_URING_SOCKET'],
+            'cares': ['SW_USE_CARES', 'HAVE_CARES'], 'thread_context': ['SW_USE_THREAD_CONTEXT'], 'thread': ['SW_THREAD']}
 
 
 def run(command, *, cwd=ROOT, check=True):
@@ -61,12 +65,17 @@ int main(void) {
         # configured SDK. Raw text includes unavailable OS backends as well.
         source = ARGS.source
         includes = shlex.split(run([ARGS.php_config, '--includes']).stdout)
+        # The build's variant switches (crates/ext/build.rs VARIANTS), so the headers'
+        # conditional declarations (swr_v1_phpstdext_*, io_uring, ...) are checked too.
+        manifest = ARGS.extension.parent / 'build-manifest.json'
+        features = json.loads(manifest.read_text())['features'] if manifest.exists() else []
+        defines = [f'-D{name}' for feature in features for name in VARIANTS.get(feature.replace('-', '_'), [])]
         directories = sorted({str(header.parent) for header in headers})
         with tempfile.TemporaryDirectory(prefix='swoole-rs-export-inventory-') as directory:
             inventory = Path(directory) / 'headers.cc'
             inventory.write_text(''.join(f'#include "{header}"\n' for header in headers))
             text = run(shlex.split(os.environ.get('CXX', 'c++')) + [
-                '-E', '-P', '-x', 'c++', *[f'-I{path}' for path in directories], '-I', str(source),
+                '-E', '-P', '-x', 'c++', *defines, *[f'-I{path}' for path in directories], '-I', str(source),
                 '-I', str(source / 'include'), '-I', str(source / 'ext-src'),
                 '-I', str(source / 'thirdparty'), *includes, str(inventory)]).stdout
         text = re.sub(r'/\*.*?\*/|//[^\n]*', '', text, flags=re.S)
