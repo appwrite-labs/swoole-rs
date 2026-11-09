@@ -376,7 +376,7 @@ mod native {
 
     pub(super) fn liveness(socket: Co) -> bool {
         // SAFETY: an open record.
-        unsafe { swoole_rs_tls::upstream::socket_check_liveness(socket.socket()) }
+        unsafe { swoole_rs_tls::upstream::socket_check_liveness(&mut *socket.socket()) }
     }
 }
 

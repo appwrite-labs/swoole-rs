@@ -88,21 +88,14 @@ mod field {
 }
 
 /// `serv->reload_async = true` (`on_before_start` with coroutines on).
-pub(crate) fn set_reload_async(serv: *mut c_void) {
-    // SAFETY: its callers pass their live server.
-    let serv = unsafe { view::Server::from_raw(serv) };
+pub(crate) fn set_reload_async(serv: view::Server<'_>) {
     // SAFETY: the server is configured on this thread, with no other reference to the field.
     unsafe { serv.config_mut() }.reload_async = true;
 }
 
 /// The Server field `id` (`field::*`), read as C++ reads it.
-///
-/// # Safety
-/// `serv` is a live server.
-unsafe fn fact(serv: *mut c_void, id: u32) -> i64 {
+fn fact(serv: view::Server<'_>, id: u32) -> i64 {
     use field as f;
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
     let config = serv.config();
     match id {
         f::STARTED => i64::from(serv.is_started()),
@@ -135,16 +128,14 @@ unsafe fn fact(serv: *mut c_void, id: u32) -> i64 {
 /// `serv-><field> = v` for the Server field `id`, converted as C++ assigns it.
 ///
 /// # Safety
-/// `serv` is a live server that has not started.
+/// `serv` has not started.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "C++'s implicit conversions of the int64_t setting to each field's type"
 )]
-unsafe fn apply(serv: *mut c_void, id: u32, v: i64) {
+unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
     use field as f;
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: the server has not started, per the caller; nothing else holds its config.
     let c = unsafe { serv.config_mut() };
     let on = v != 0;
@@ -204,8 +195,8 @@ unsafe fn apply(serv: *mut c_void, id: u32, v: i64) {
 }
 
 /// The settings array and the Server being configured.
-pub(crate) struct Settings {
-    pub(crate) serv: *mut c_void,
+pub(crate) struct Settings<'a> {
+    pub(crate) serv: view::Server<'a>,
     pub(crate) vht: *mut zval,
 }
 
@@ -222,11 +213,10 @@ pub(crate) fn checked() -> Step {
     }
 }
 
-impl Settings {
+impl Settings<'_> {
     /// The server being configured.
     pub(crate) fn server(&self) -> view::Server<'_> {
-        // SAFETY: `set()` built these settings over `$this`'s live server.
-        unsafe { view::Server::from_raw(self.serv) }
+        self.serv
     }
 
     /// `php_swoole_array_get_value(vht, key, ztmp)`: present and not null.
@@ -244,8 +234,7 @@ impl Settings {
     }
 
     fn fact(&self, id: u32) -> i64 {
-        // SAFETY: a live server.
-        unsafe { fact(self.serv, id) }
+        fact(self.serv, id)
     }
 
     fn set(&self, id: u32, value: i64) {
@@ -356,7 +345,7 @@ fn notice(message: &CStr) -> Step {
 fn set(call: &Call) {
     let serv = server(call);
     let s = Settings {
-        serv: serv.raw(),
+        serv,
         vht: ptr::null_mut(),
     };
     if s.fact(field::WORKER_THREAD) != 0 {
@@ -376,10 +365,7 @@ fn set(call: &Call) {
     let Ok(vht) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
-    let s = Settings {
-        serv: serv.raw(),
-        vht,
-    };
+    let s = Settings { serv, vht };
     // Every early exit after an `E_ERROR` or a deferred bailout leaves the
     // handler, whose last step raises it.
     if let Ok(true) = options(&s, call.this()) {
@@ -500,7 +486,7 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
                 return Ok(());
             }
             // SAFETY: a live server, not started.
-            unsafe { crate::dispatch::set_dispatch_func(s.serv, handle) }
+            unsafe { crate::dispatch::set_dispatch_func(s.serv.raw(), handle) }
         });
         if set.is_err() {
             bailout::defer(set);
@@ -768,8 +754,7 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
                 fatal(E_ERROR, text.as_cstr());
                 return false;
             }
-            // SAFETY: a live server, not started.
-            server_methods::set_document_root(unsafe { view::Server::from_raw(s.serv) }, root);
+            server_methods::set_document_root(s.serv, root);
             true
         })?;
         if !fits {
@@ -884,7 +869,7 @@ fn rewrite_rules(s: &Settings) -> Step {
         true
     }
     struct Rules<'a> {
-        settings: &'a Settings,
+        settings: &'a Settings<'a>,
         bad: bool,
     }
     let Some(value) = s.get(c"url_rewrite_rules") else {

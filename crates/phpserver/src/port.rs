@@ -14,7 +14,7 @@ use swoole_rs_ports::{
     swr_v1_ports_callback_hook, swr_v1_ports_callback_property, swr_v1_ports_class_property,
     swr_v1_ports_event,
 };
-use swoole_rs_server::port_config;
+use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Object, bailout, message,
     string::bytes,
@@ -266,7 +266,8 @@ fn on(call: &Call) {
     if property.serv.is_null() {
         invalid(call);
     }
-    let serv = property.serv;
+    // SAFETY: the port's bound server, live while the port is.
+    let serv = unsafe { view::Server::from_raw(property.serv) };
     if crate::io::closed(serv) {
         crate::server::fatal(
             E_WARNING,
@@ -399,14 +400,16 @@ fn set(call: &Call) {
     if data.port.is_null() || data.property.serv.is_null() {
         invalid(call);
     }
-    if apply_settings(data.port, data.property.serv, settings).is_err() {
+    // SAFETY: the port's bound server, live while the port is.
+    let serv = unsafe { view::Server::from_raw(data.property.serv) };
+    if apply_settings(data.port, serv, settings).is_err() {
         return call.set_bool(false);
     }
     bailout::raise(finish(call, settings, &mut data.property));
 }
 
 /// The `ListenPort` and TLS options of `set()`.
-fn apply_settings(port: *mut c_void, serv: *mut c_void, vht: *mut zval) -> Result<(), Stop> {
+fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: *mut zval) -> Result<(), Stop> {
     let source = port_settings::Zend {
         settings: Settings { serv, vht },
         port,

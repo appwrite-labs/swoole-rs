@@ -64,8 +64,7 @@ pub fn signalfd_fd() -> c_int {
 /// Whether this process created the descriptor (a forked child must not remove it
 /// from the parent's reactor).
 pub fn signalfd_owned() -> bool {
-    // SAFETY: getpid has no preconditions.
-    PID.load(Relaxed) == unsafe { libc::getpid() }
+    PID.load(Relaxed) == crate::os::getpid()
 }
 
 /// `swoole_signalfd_set` before the reactor setup: a null `handler` unregisters an
@@ -145,8 +144,7 @@ pub fn signalfd_create() -> Created {
         };
     }
     FD.store(fd, Relaxed);
-    // SAFETY: getpid has no preconditions.
-    PID.store(unsafe { libc::getpid() }, Relaxed);
+    PID.store(crate::os::getpid(), Relaxed);
     Created {
         status: 0,
         fd,
