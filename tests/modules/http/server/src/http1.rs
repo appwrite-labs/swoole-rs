@@ -2,12 +2,11 @@
 //! function per TEST with the same inputs and expected values.
 //!
 //! Unlike main.rs's cases these need no fixture: the `Server` is made and deleted by
-//! `swr_v1_server_new`/`swr_v1_server_delete` (native/integration/server.cc), and its
-//! configuration, callback slots, tables and static-handler sets are the Rust records
-//! `ServerFields` and `PortFields` view (native/include/swoole_rs_server_state.h,
-//! swoole_rs_port_state.h), reached from the `state_` handle that heads the object and
-//! the `swr_v1_port_config *` that heads a `ListenPort`. Each new server checks this
-//! file's copies of those layouts with `swr_v1_server_record_layout`. The methods the
+//! `swr_v1_server_new`/`swr_v1_server_delete` (crates/server/src/server_object.rs), and
+//! its configuration, callback slots, tables and static-handler sets are the Rust records
+//! whose pointers head the object (native/include/swoole_rs_server_state.h), as the
+//! `swr_v1_port_config *` heads a `ListenPort` (swoole_rs_port_state.h). Each new server
+//! checks this file's copies of those layouts with `swr_v1_server_record_layout`. The methods the
 //! cases call are Rust under their upstream symbols. The fixtures read the request line
 //! and headers where upstream's ran llhttp; the client is core-tests' httplib
 //! (client.rs). An assertion in a server callback cannot unwind through the server's
@@ -148,7 +147,7 @@ struct ServerConfig {
     mode_: u8,
 }
 
-/// The offsets `ServerFields`' constructor checks, in its order.
+/// The offsets `detail::check_server_layouts` checks for record 0, in its order.
 const CONFIG_OFFSETS: &[usize] = &[
     offset_of!(ServerConfig, reactor_num),
     offset_of!(ServerConfig, worker_num),
@@ -319,7 +318,7 @@ struct PortConfig {
     tls: Native,
 }
 
-/// The offsets `PortFields`' constructor checks, in its order.
+/// The offsets `detail::check_server_layouts` checks for record 4, in its order.
 const PORT_OFFSETS: &[usize] = &[
     offset_of!(PortConfig, object_id),
     offset_of!(PortConfig, backlog),
@@ -412,13 +411,13 @@ struct Connection {
     close_actively: u8,
 }
 
-/// libstdc++'s `std::string`, as a `const std::string &` argument reads it.
+/// The pointers that head a `Server` (native/process/swoole_server.h).
 #[repr(C)]
-struct StdString {
-    data: *const c_char,
-    length: usize,
-    capacity: usize,
-    _local: usize,
+struct Head {
+    state: *mut c_void,
+    config: *mut ServerConfig,
+    tables: *mut ServerTables,
+    callbacks: *mut Callback,
 }
 
 #[link(name = "swoole")]
@@ -431,9 +430,6 @@ unsafe extern "C-unwind" {
 
     fn swr_v1_server_new(mode: c_int) -> *mut c_void;
     fn swr_v1_server_delete(serv: *mut c_void);
-    fn swr_v1_server_config_get(state: *mut c_void) -> *mut ServerConfig;
-    fn swr_v1_server_callbacks_get(state: *mut c_void) -> *mut Callback;
-    fn swr_v1_server_tables_get(state: *mut c_void) -> *mut ServerTables;
     fn swr_v1_server_record_layout(
         kind: u32,
         size: usize,
@@ -450,8 +446,7 @@ unsafe extern "C-unwind" {
     ) -> usize;
     fn swr_v1_server_connection(state: *const c_void, key: c_long, kind: u32) -> *mut Connection;
 
-    #[link_name = "_ZN6swoole6Server17set_document_rootERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"]
-    fn server_set_document_root(serv: *mut c_void, path: *const StdString) -> bool;
+    fn swr_v1_server_set_document_root(serv: *mut c_void, path: *const u8, length: usize) -> bool;
     #[link_name = "_ZN6swoole6Server8add_portE12swSocketTypePKci"]
     fn server_add_port(
         serv: *mut c_void,
@@ -572,20 +567,24 @@ impl Server {
         unsafe { swr_v1_server_delete(self.0) };
     }
 
+    fn head(self) -> &'static Head {
+        // SAFETY: a live `Server`, which these pointers head.
+        unsafe { &*self.0.cast::<Head>() }
+    }
+
     fn state(self) -> *mut c_void {
-        // SAFETY: `Server` begins with `ServerFields`, whose first member is `state_`.
-        unsafe { *self.0.cast::<*mut c_void>() }
+        self.head().state
     }
 
     fn config(self) -> &'static mut ServerConfig {
         // SAFETY: the state's configuration lives as long as the server.
-        unsafe { &mut *swr_v1_server_config_get(self.state()) }
+        unsafe { &mut *self.head().config }
     }
 
     fn slot(self, slot: usize) -> &'static mut Callback {
         assert!(slot < CB_COUNT);
         // SAFETY: the server's slots, `CB_COUNT` of them.
-        unsafe { &mut *swr_v1_server_callbacks_get(self.state()).add(slot) }
+        unsafe { &mut *self.head().callbacks.add(slot) }
     }
 
     /// `serv.onX = fn`, for a slot that holds no closure to drop.
@@ -628,18 +627,10 @@ impl Server {
         assert!(status >= 0);
     }
 
-    /// `set_document_root(path)`: `path` as a `std::string` of its bytes.
+    /// `set_document_root(path)`.
     fn set_document_root(self, path: &[u8]) -> bool {
-        let mut bytes = path.to_vec();
-        bytes.push(0);
-        let string = StdString {
-            data: bytes.as_ptr().cast(),
-            length: path.len(),
-            capacity: path.len(),
-            _local: 0,
-        };
-        // SAFETY: a NUL-terminated string the callee only reads.
-        unsafe { server_set_document_root(self.0, &string) }
+        // SAFETY: `path` is readable for its length.
+        unsafe { swr_v1_server_set_document_root(self.0, path.as_ptr(), path.len()) }
     }
 
     fn add_port(self, kind: c_int, host: &str, port: c_int) -> Option<Port> {
@@ -652,7 +643,7 @@ impl Server {
     /// `ports.front()`.
     fn get_primary_port(self) -> Port {
         // SAFETY: the state's tables live as long as the server.
-        let ports = unsafe { &(*swr_v1_server_tables_get(self.state())).ports };
+        let ports = unsafe { &(*self.head().tables).ports };
         assert!(ports.count > 0);
         // SAFETY: `count` listening ports.
         Port(unsafe { *ports.items })

@@ -111,12 +111,12 @@ const EVENT_CLOSE: u8 = 4;
 const SESSION_SIZE: usize = size_of::<SessionRecord>();
 const ATOMIC_SIZE: usize = 4;
 const SENDFILE_TASK_SIZE: usize = 16;
-// native/integration/server.cc asserts the native sizes of the arrays allocated here.
+// native/phpcoroutines/server.cc asserts the native sizes of the arrays allocated here.
 const _: () = assert!(
     SESSION_SIZE == 16 && size_of::<PortCounters>() == 80,
     "server.cc sizeof(Session), sizeof(ServerPortGS)"
 );
-/// `SW_BUFFER_MIN_SIZE`, which native/integration/server.cc asserts.
+/// `SW_BUFFER_MIN_SIZE`, which native/phpcoroutines/server.cc asserts.
 const BUFFER_MIN_SIZE: u32 = 65536;
 
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
@@ -246,7 +246,7 @@ impl Objects<'_> {
 /// Answers `op` when it is one of this module's, else `None`.
 ///
 /// # Safety
-/// `ctx` is native/integration/server.cc's live context for the running operation and `state`
+/// `ctx` is the live context for the running operation and `state`
 /// its server's; the objects each op reads are live, as for master.cc's case.
 #[expect(
     clippy::too_many_lines,
@@ -2631,12 +2631,9 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use swoole_rs_process::command::{TO_MANAGER, TO_REACTOR_THREAD, TO_TASK_WORKER};
     /// `SW_SOCK_SSL`.
     const SOCK_SSL: c_int = 1 << 9;
-    // SAFETY: native/integration/server.cc's, crates/ports' and
-    // crates/reactor's, under their upstream symbols.
+    use crate::server_object::{barrier, port_delete, port_new};
+    // SAFETY: crates/ports' and crates/reactor's, under their upstream symbols.
     unsafe extern "C-unwind" {
-        fn swr_v1_server_port_new(serv: *mut c_void) -> *mut c_void;
-        fn swr_v1_server_port_delete(port: *mut c_void);
-        fn swr_v1_server_barrier(serv: *mut c_void, manager: bool) -> *mut c_void;
         #[link_name = "_ZN6swoole10ListenPort16ssl_context_initEv"]
         fn ssl_context_init(port: *mut c_void) -> bool;
         #[link_name = "_ZN6swoole10ListenPort13create_socketEv"]
@@ -2677,9 +2674,7 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_REACTOR_BARRIER | OP_MANAGER_BARRIER => {
             // SAFETY: the live server's barrier, initialized at startup.
-            let barrier = unsafe { swr_v1_server_barrier(serv, op == OP_MANAGER_BARRIER) };
-            // SAFETY: as above: a live, initialized swoole::Barrier.
-            swoole_rs_locks::barrier_wait(unsafe { &*barrier.cast::<swoole_rs_locks::Barrier>() });
+            swoole_rs_locks::barrier_wait(unsafe { barrier(serv, op == OP_MANAGER_BARRIER) });
             0
         }
         OP_RELEASE_PIPE_BUFFERS => {
@@ -2687,8 +2682,7 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_NEW => {
-            // SAFETY: `new ListenPort(serv)`.
-            let ls = unsafe { swr_v1_server_port_new(serv) };
+            let ls = port_new(serv);
             o.ctx.port = ls;
             let port = o.port();
             port.r#type = o.ctx.socket_type;
@@ -2720,21 +2714,20 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             if unsafe { create_socket(o.ctx.port) } < 0 {
                 log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
                 // SAFETY: the new port, deleted once.
-                unsafe { swr_v1_server_port_delete(o.ctx.port) };
+                unsafe { port_delete(o.ctx.port) };
                 o.ctx.port = core::ptr::null_mut();
                 return Some(0);
             }
             1
         }
         OP_PORT_IMPORT => {
-            // SAFETY: `new ListenPort(serv)`.
-            let ls = unsafe { swr_v1_server_port_new(serv) };
+            let ls = port_new(serv);
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let fd = arg as c_int;
             // SAFETY: the new port and an inherited descriptor.
             if !unsafe { import(ls, fd) } {
                 // SAFETY: the new port, deleted once.
-                unsafe { swr_v1_server_port_delete(ls) };
+                unsafe { port_delete(ls) };
                 return Some(0);
             }
             o.ctx.port = ls;

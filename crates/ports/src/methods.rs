@@ -937,7 +937,7 @@ mod tests {
     }
 
     /// A socketless port of `kind` on `host`:`number`, of a server that reuses
-    /// ports when `reuse_port` (a `ServerFields` head over a leaked config).
+    /// ports when `reuse_port` (a `Server` head over a leaked config).
     fn unbound_port(kind: c_int, host: &str, number: c_int, reuse_port: bool) -> *mut PortConfig {
         let config = port_config::swr_v1_port_config_new(1000);
         if reuse_port {

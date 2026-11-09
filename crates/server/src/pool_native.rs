@@ -160,7 +160,7 @@ struct PoolBus {
 }
 
 /// `SwooleG.std_allocator`.
-static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
+pub(crate) static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
     malloc: Some(libc::malloc),
     calloc: Some(libc::calloc),
     realloc: Some(libc::realloc),

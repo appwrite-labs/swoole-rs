@@ -57,7 +57,7 @@ callback, `import` and `close`; `lifecycle_native.rs` performs them, over the
 port's Rust-owned settings, its contexts' Rust TLS owners, the socket record and
 OpenSSL. The port's `ssl_context` is a `PortConfig` field holding one reference
 to its Rust owner; the SNI contexts and the DTLS sessions by fd, each with its
-reference, live in the Rust TLS state (`PortConfig::tls`). `~PortFields` releases
+reference, live in the Rust TLS state (`PortConfig::tls`). `swr_v1_server_delete` releases
 both. SNI contexts are matched in insertion order; upstream iterated an
 `std::unordered_map`, whose order is unspecified.
 

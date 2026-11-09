@@ -207,13 +207,14 @@ Worker *swr_case_current_worker() {
 // first-match PID lookup, the session bitfields abort_worker clears (including the last slot
 // and the reserved bits) and the worker/shared concurrency reset, over a real Server.
 void swr_case_worker_retirement() {
-    Server server(Server::MODE_BASE);
-    server.worker_num = 2;
+    detail::check_server_layouts();
+    Server &server = *swr_v1_server_new(Server::MODE_BASE);
+    server.config()->worker_num = 2;
     ASSERT_TRUE(server.add_port(SW_SOCK_TCP, "127.0.0.1", 0));
     ASSERT_EQ(server.create(), SW_OK);
-    server.get_event_worker_pool()->workers = server.workers;
-    auto *worker = &server.workers[0];
-    auto *other = &server.workers[1];
+    server.get_event_worker_pool()->workers = server.config()->workers;
+    auto *worker = &server.config()->workers[0];
+    auto *other = &server.config()->workers[1];
     worker->pid = other->pid = 79;
     ASSERT_EQ(server.get_worker_by_pid(79), worker);
     worker->pid = 80;
@@ -227,7 +228,7 @@ void swr_case_worker_retirement() {
     worker->request_count = 7;
     worker->response_count = 8;
     worker->dispatch_count = 9;
-    server.gs->concurrency = 7;
+    server.config()->gs->concurrency = 7;
     const size_t last = SW_SESSION_LIST_SIZE - 1;
     for (size_t index = 0; index < SW_SESSION_LIST_SIZE; ++index) {
         auto *slot = server.get_session(index);
@@ -239,7 +240,7 @@ void swr_case_worker_retirement() {
     server.get_session(0)->reactor_id = 1;
     server.get_session(last)->reactor_id = 1;
     server.abort_worker(worker);
-    ASSERT_TRUE(worker->concurrency == 0 && server.gs->concurrency == 4);
+    ASSERT_TRUE(worker->concurrency == 0 && server.config()->gs->concurrency == 4);
     ASSERT_TRUE(worker->request_count == 0 && worker->response_count == 0 && worker->dispatch_count == 0);
     for (size_t index = 0; index < SW_SESSION_LIST_SIZE; ++index) {
         const auto *slot = server.get_session(index);
@@ -249,10 +250,11 @@ void swr_case_worker_retirement() {
         ASSERT_TRUE(slot->fd == (index == 0 || index == last ? 0 : 23));
     }
     worker->concurrency = 9;
-    server.gs->concurrency = 3;
+    server.config()->gs->concurrency = 3;
     server.reset_worker_counter(worker);
-    ASSERT_TRUE(worker->concurrency == 0 && server.gs->concurrency == 0);
+    ASSERT_TRUE(worker->concurrency == 0 && server.config()->gs->concurrency == 0);
     server.destroy();
+    swr_v1_server_delete(&server);
 }
 
 // rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait, in a coroutine.

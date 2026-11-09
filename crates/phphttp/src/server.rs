@@ -68,6 +68,9 @@ const STATUS_HANDSHAKE: u8 = 2;
 const SESSION_NOT_EXIST: c_int = 1005;
 const LOG_TRACE: c_int = 1;
 
+/// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
+const UPLOAD_PREPROCESSED: u16 = 1;
+
 /// Where `onReceive` sends the data.
 const CLOSED: c_int = 0;
 const TCP: c_int = 1;
@@ -249,7 +252,7 @@ unsafe fn addresses(
 pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_void) -> c_int {
     // SAFETY: a `RecvData` begins with its `DataHead`.
     let info = unsafe { *request.cast::<DataHead>() };
-    match receive(server, request, info.fd, c_int::from(info.server_fd)) {
+    match receive(server, request, &info) {
         CLOSED => -1,
         // SAFETY: the live server and its request.
         TCP => unsafe { swr_v1_phpserver_on_receive(server, request) },
@@ -266,7 +269,8 @@ pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_
     }
 }
 
-fn receive(server: *mut c_void, request: *mut c_void, session: i64, server_fd: c_int) -> c_int {
+fn receive(server: *mut c_void, request: *mut c_void, info: &DataHead) -> c_int {
+    let (session, server_fd) = (info.fd, c_int::from(info.server_fd));
     // SAFETY: the live server.
     let Some(conn) = (unsafe { view::verified(server, session) }) else {
         host::log(
@@ -315,6 +319,7 @@ fn receive(server: *mut c_void, request: *mut c_void, session: i64, server_fd: c
     unsafe { context::swr_v1_phphttp_context_init(ctx, server) };
     let state = state(ctx);
     state.before_request = 1;
+    state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
     let zdata = &raw mut state.request.zdata;
     // SAFETY: the live server and its request; the data moves into the context.
     unsafe { php_swoole_get_recv_data(server, zdata, request) };

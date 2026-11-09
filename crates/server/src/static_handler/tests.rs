@@ -344,7 +344,7 @@ impl Drop for Upstream {
     }
 }
 
-/// `ServerFields`, the head of a native `Server` (see `view`).
+/// The head of a native `Server` (see `view`).
 #[repr(C)]
 struct Head {
     state: *mut ServerState,

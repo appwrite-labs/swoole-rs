@@ -80,6 +80,7 @@ same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-webs
 | `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
 | `has_expect_header`, `get_protocol`, `all_method` | `crates/http/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
+| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http/src/request.rs`: same names, over the bundled multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
 phase): a Rust case binary over the hybrid tree's libswoole.so, built and run by
@@ -106,10 +107,10 @@ fake connection socket and its `Connection` (session 2025); the case calls the h
 and expected values.
 
 The HTTP/1 TESTs that start a server are `server/src/http1.rs`, in the same binary and
-phase, and need no fixture: `swr_v1_server_new`/`_delete` (native/integration/server.cc)
+phase, and need no fixture: `swr_v1_server_new`/`_delete` (crates/server/src/server_object.rs)
 make and delete the `Server`, and the cases set its configuration, callback slots,
 tables, port configuration and static-handler sets through the Rust records
-`ServerFields` and `PortFields` view, whose layouts each new server checks against
+whose pointers head the `Server` and its `ListenPort`s, whose layouts each new server checks against
 `http1.rs`'s copies (`swr_v1_server_record_layout`). Upstream's fixtures, inputs and
 expected values are kept; where they ran llhttp the handlers read the request line and
 headers themselves. The client is a port of core-tests' cpp-httplib 0.7

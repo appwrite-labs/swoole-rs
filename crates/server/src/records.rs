@@ -113,18 +113,6 @@ impl Default for ServerTables {
     }
 }
 
-/// Borrows the private table fields for the original native Server view.
-///
-/// # Safety
-/// `state` is live, and the view is no longer used after `state_free`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_tables_get(
-    state: *mut crate::ServerState,
-) -> *mut ServerTables {
-    // SAFETY: the caller lends a live state whose table-view allocation is still owned.
-    unsafe { &*state }.tables()
-}
-
 /// Borrows a session-table slot through the original shared-table modulo rule.
 ///
 /// # Safety
@@ -242,7 +230,7 @@ mod tests {
         sessions[0].reactor_bits = 0x5a12_3401;
         sessions[1_048_575].reactor_bits = 0x5a12_3401;
         unsafe {
-            (*swr_v1_server_tables_get(state)).session_list = sessions.as_mut_ptr();
+            (*(*state).tables()).session_list = sessions.as_mut_ptr();
             swr_v1_server_sessions_retire(state, 257);
         }
         assert!(sessions.iter().all(|slot| slot.fd == 23));
@@ -278,7 +266,7 @@ mod tests {
         connections[2].active = 1;
         connections[2].session_id = 1;
         unsafe {
-            let tables = &mut *swr_v1_server_tables_get(state);
+            let tables = &mut *(*state).tables();
             tables.session_list = sessions.as_mut_ptr();
             tables.connection_list = connections.as_mut_ptr();
             tables.max_connection = 2;

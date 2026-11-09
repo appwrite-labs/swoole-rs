@@ -183,15 +183,20 @@ fn fatal(error: c_int) -> bool {
     !matches!(error, 0 | libc::EAGAIN | libc::EINTR)
 }
 
+/// Run native hook `step` over `call`.
+fn invoke(step: Step, call: &mut PoolCall) {
+    // SAFETY: a native hook over its call.
+    unsafe { step(ptr::from_mut(call).cast()) };
+}
+
 /// Run `step` over `call`, inside the trap when one is installed.
 pub(crate) fn run(step: Step, call: &mut PoolCall) -> Result<(), Bailed> {
-    let arg = ptr::from_mut(call).cast::<c_void>();
     let trap = TRAP.load(Ordering::Acquire);
     if trap.is_null() {
-        // SAFETY: a native hook over its call.
-        unsafe { step(arg) };
+        invoke(step, call);
         return Ok(());
     }
+    let arg = ptr::from_mut(call).cast::<c_void>();
     // SAFETY: TRAP only ever holds a `Trap`.
     let trap = unsafe { std::mem::transmute::<*mut c_void, Trap>(trap) };
     // SAFETY: the trap runs the native hook inside `zend_try`; no Rust frame is
@@ -201,6 +206,32 @@ pub(crate) fn run(step: Step, call: &mut PoolCall) -> Result<(), Bailed> {
     } else {
         Err(Bailed)
     }
+}
+
+/// A body [`trapped`] runs, and what it returned.
+struct Body<F, R> {
+    body: Option<F>,
+    result: Option<R>,
+}
+
+unsafe extern "C" fn step<F: FnOnce() -> R, R>(call: *mut c_void) {
+    // SAFETY: `trapped` passes its call.
+    let data = unsafe { (*call.cast::<PoolCall>()).data };
+    // SAFETY: the call's data is `trapped`'s body, which owns nothing a bailout skips.
+    let body = unsafe { &mut *data.cast::<Body<F, R>>() };
+    body.result = body.body.take().map(|body| body());
+}
+
+/// Runs `body` inside the bailout trap.
+pub(crate) fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
+    let mut body = Body {
+        body: Some(body),
+        result: None,
+    };
+    let mut call = PoolCall::new(ptr::null_mut(), ptr::null_mut());
+    call.data = (&raw mut body).cast();
+    run(step::<F, R>, &mut call)?;
+    body.result.ok_or(Bailed)
 }
 
 /// One worker's loop over its pool.
@@ -394,11 +425,25 @@ impl Worker<'_> {
                 if n != size {
                     self.warn(WARN_BAD_PACKET, 0, n as i64, size as i64);
                 }
-                let call = self.io(self.hooks.task, ptr::null_mut(), buf, event_size, 0)?;
-                if call.result < 0 {
-                    // SAFETY: `info.fd` heads `buf`.
-                    let task_id = unsafe { buf.cast::<i64>().read_unaligned() };
-                    self.warn(WARN_TASK_FAILED, 0, task_id, 0);
+                // Without a connection to answer, nothing comes between the task and
+                // the iteration's end, so one trap covers both.
+                let alone = self.connection().is_none();
+                let mut call = self.call();
+                call.data = buf.cast();
+                call.length = event_size;
+                trapped(|| {
+                    invoke(self.hooks.task, &mut call);
+                    if call.result < 0 {
+                        // SAFETY: `info.fd` heads `buf`.
+                        let task_id = unsafe { buf.cast::<i64>().read_unaligned() };
+                        self.warn(WARN_TASK_FAILED, 0, task_id, 0);
+                    }
+                    if alone {
+                        invoke(self.hooks.end, &mut call);
+                    }
+                })?;
+                if alone {
+                    continue;
                 }
                 if let Some(stream) = self.connection() {
                     let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());

@@ -110,6 +110,8 @@ const LOG_FOPEN: u32 = 14;
 const LOG_WRITE: u32 = 15;
 const LOG_PARSE_REASON: u32 = 16;
 const LOG_PARSE_PARTIAL: u32 = 17;
+/// A client sent the reserved `Swoole-Upload-File` header.
+const LOG_RESERVED: u32 = 18;
 
 // The third-party multipart parser (thirdparty/multipart_parser.c), linked into the
 // extension beside this crate.
@@ -125,8 +127,9 @@ unsafe extern "C" {
     -> c_int;
 }
 
-/// `SW_LOG_NOTICE` and `SW_ERROR_SERVER_INVALID_REQUEST`.
+/// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_ERROR_SERVER_INVALID_REQUEST`.
 const NOTICE: c_int = 3;
+const WARNING: c_int = 4;
 const INVALID_REQUEST: c_int = 9010;
 
 fn errno() -> c_int {
@@ -247,6 +250,14 @@ unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, m: u
                 ),
             );
         }
+        LOG_RESERVED => log::error_log(
+            WARNING,
+            INVALID_REQUEST,
+            c"http_server::multipart_on_header_value",
+            format_args!(
+                "Bad Request: the reserved header 'Swoole-Upload-File' may not be sent by clients"
+            ),
+        ),
         LOG_PARSE_PARTIAL => log::error_log(
             NOTICE,
             INVALID_REQUEST,
@@ -258,6 +269,9 @@ unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, m: u
     0
 }
 
+/// The multipart parser's `MPPE_PAUSED` and `MPPE_ERROR` callback results.
+const MPPE_PAUSED: c_int = 1;
+const MPPE_ERROR: c_int = -1;
 /// `SW_HTTP_UPLOAD_FILE`.
 const UPLOAD_FILE: &[u8] = b"Swoole-Upload-File";
 /// `SW_BUFFER_SIZE_BIG`.
@@ -275,8 +289,8 @@ pub struct HttpForm {
     upload: *mut HttpString,
     /// `upload_tmp_dir + "/swoole.upfile.XXXXXX"`.
     template: Vec<u8>,
-    header_name: *const u8,
-    header_name_length: usize,
+    /// The part header's name, copied: it may arrive split across reads.
+    header_name: Vec<u8>,
     upload_size: usize,
     upload_max: usize,
 }
@@ -560,8 +574,7 @@ impl HttpRequest {
                 saved: ptr::null_mut(),
                 upload: ptr::null_mut(),
                 template: Vec::new(),
-                header_name: ptr::null(),
-                header_name_length: 0,
+                header_name: Vec::new(),
                 upload_size: 0,
                 upload_max: 0,
             }));
@@ -867,8 +880,15 @@ unsafe extern "C" fn on_header_field(
 ) -> c_int {
     // SAFETY: the parser calls back with itself, set up by `init_multipart_parser`.
     let (_, request) = unsafe { parts(parser) };
+    let max_length = request.max_length as usize;
     let form = form_of(request);
-    (form.header_name, form.header_name_length) = (at.cast(), length);
+    if form.header_name.len().saturating_add(length) > max_length {
+        (request.excepted, request.too_large) = (true, true);
+        return MPPE_PAUSED;
+    }
+    // SAFETY: the parser lends `length` bytes at `at`.
+    let fragment = unsafe { core::slice::from_raw_parts(at.cast::<u8>(), length) };
+    form.header_name.extend_from_slice(fragment);
     0
 }
 
@@ -880,14 +900,18 @@ unsafe extern "C" fn on_header_value(
     // SAFETY: the parser calls back with itself, set up by `init_multipart_parser`.
     let (parser, request) = unsafe { parts(parser) };
     let form = form_of(request);
-    let (saved, name, name_length) = (form.saved, form.header_name, form.header_name_length);
-    request.append(saved, name, name_length);
+    // The value callback means the name is complete.
+    let (saved, name) = (form.saved, core::mem::take(&mut form.header_name));
+    // Only the reactor may write this header; a client never names a part header so.
+    if case_equal(&name, UPLOAD_FILE) {
+        request.op(LOG_RESERVED, ptr::null_mut(), ptr::null(), 0, 0);
+        return MPPE_ERROR;
+    }
+    request.append(saved, name.as_ptr(), name.len());
     request.append(saved, b": ".as_ptr(), 2);
     request.append(saved, at.cast(), length);
     request.append(saved, b"\r\n".as_ptr(), 2);
-    // SAFETY: the parser lent the header name it last reported, still in its input.
-    let name = unsafe { core::slice::from_raw_parts(name, name_length) };
-    if !case_equal(name, b"content-disposition") {
+    if !case_equal(&name, b"content-disposition") {
         return 0;
     }
     // `parse_cookie` over a NUL-terminated copy, stopping at the first `filename`.
@@ -933,7 +957,7 @@ unsafe extern "C" fn on_part_data(parser: *mut Parser, at: *const c_char, length
         // SAFETY: the saved buffer is live while the form is.
         if (unsafe { (*saved).length } as u64).wrapping_add(length as u64) > max_length {
             (request.excepted, request.unavailable) = (true, true);
-            return 1;
+            return MPPE_PAUSED;
         }
         request.append(saved, at.cast(), length);
         return 0;
@@ -941,7 +965,7 @@ unsafe extern "C" fn on_part_data(parser: *mut Parser, at: *const c_char, length
     form.upload_size = form.upload_size.wrapping_add(length);
     if form.upload_size > form.upload_max {
         (request.excepted, request.too_large) = (true, true);
-        return 1;
+        return MPPE_PAUSED;
     }
     let written = request.op(FWRITE, parser.fp, at.cast(), length as u64, 0);
     if written != length as u64 {
@@ -949,7 +973,7 @@ unsafe extern "C" fn on_part_data(parser: *mut Parser, at: *const c_char, length
         parser.fp = ptr::null_mut();
         (request.excepted, request.unavailable) = (true, true);
         request.op(LOG_WRITE, ptr::null_mut(), ptr::null(), 0, 0);
-        return 1;
+        return MPPE_PAUSED;
     }
     0
 }
@@ -958,6 +982,7 @@ unsafe extern "C" fn on_headers_complete(parser: *mut Parser) -> c_int {
     // SAFETY: the parser calls back with itself, set up by `init_multipart_parser`.
     let (parser, request) = unsafe { parts(parser) };
     let form = form_of(request);
+    form.header_name.clear();
     let (saved, upload) = (form.saved, form.upload);
     if !parser.fp.is_null() {
         request.append(
@@ -998,7 +1023,9 @@ unsafe extern "C" fn on_part_data_end(parser: *mut Parser) -> c_int {
 unsafe extern "C" fn on_part_data_begin(parser: *mut Parser) -> c_int {
     // SAFETY: the parser calls back with itself, set up by `init_multipart_parser`.
     let (parser, request) = unsafe { parts(parser) };
-    let saved = form_of(request).saved;
+    let form = form_of(request);
+    form.header_name.clear();
+    let saved = form.saved;
     request.append(
         saved,
         parser.boundary.as_ptr(),
@@ -1207,6 +1234,12 @@ mod tests {
     }
 
     unsafe extern "C" fn native(op: u32, a: *mut c_void, b: *const u8, n: u64, _: u64) -> u64 {
+        if op == PARSER_EXECUTE {
+            HOST.with_borrow_mut(|host| host.effects.push(op));
+            // Outside the borrow: the parser calls back into the request's effects.
+            return unsafe { multipart_parser_execute(a.cast(), b.cast(), size(n)) }.cast_unsigned()
+                as u64;
+        }
         HOST.with_borrow_mut(|host| {
             host.effects.push(op);
             match op {
@@ -1256,7 +1289,15 @@ mod tests {
                     }
                     0
                 }
+                // A test's stand-in parser, or else the bundled one.
+                PARSER_NEW if PARSER.get().is_null() => unsafe {
+                    multipart_parser_init(b.cast(), size(n), a.cast()) as u64
+                },
                 PARSER_NEW => PARSER.get() as u64,
+                PARSER_FREE if a.cast() != PARSER.get() => {
+                    unsafe { multipart_parser_free(a.cast()) };
+                    0
+                }
                 FWRITE => {
                     host.written
                         .extend_from_slice(unsafe { core::slice::from_raw_parts(b, size(n)) });
@@ -1811,5 +1852,133 @@ mod tests {
             "an upload past upload_max_filesize"
         );
         r.form = None;
+    }
+
+    /// `http_upload_provenance.cpp`'s `MultipartFixture`: a request whose form has
+    /// boundary `b`, fed through the bundled parser as the reactor feeds it.
+    struct Fixture {
+        input: Box<Input>,
+        request: Box<HttpRequest>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            use swoole_rs_oracle as _;
+            let mut input = input(b"");
+            let mut request = Box::new(request(&mut input));
+            request.max_length = u32::try_from(BUFFER_SIZE_BIG).unwrap();
+            let boundary = b"boundary=b";
+            request.form = Some(Box::new(HttpForm {
+                boundary: boundary.as_ptr(),
+                boundary_length: u32::try_from(boundary.len()).unwrap(),
+                parser: ptr::null_mut(),
+                saved: ptr::null_mut(),
+                upload: ptr::null_mut(),
+                template: Vec::new(),
+                header_name: Vec::new(),
+                upload_size: 0,
+                upload_max: 0,
+            }));
+            let r = &raw mut *request;
+            assert!(unsafe { init_multipart_parser(r, b"/tmp", 1024 * 1024) });
+            Self { input, request }
+        }
+
+        /// Like the reactor, the parse buffer is cleared after every read and refilled from its start.
+        fn feed(&mut self, data: &[u8]) -> bool {
+            self.request
+                .append(self.request.buffer, data.as_ptr(), data.len());
+            let r = &raw mut *self.request;
+            unsafe { parse_multipart_data(r, (*r).buffer) }
+        }
+
+        fn forwarded(&self) -> String {
+            String::from_utf8_lossy(&self.input.bytes[..self.input.buffer.length])
+                .to_ascii_lowercase()
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            unsafe { destroy_multipart_parser(&raw mut *self.request) };
+        }
+    }
+
+    const PART_PREFIX: &[u8] = b"--b\r\nContent-Disposition: form-data; name=\"text\"\r\n";
+
+    // core-tests/src/server/http_upload_provenance.cpp: reject_client_upload_marker.
+    #[test]
+    fn reject_client_upload_marker() {
+        // `sWoOlE-uPlOaD-fIlE` matches only while no test has a Turkish LC_CTYPE.
+        let _locale = crate::LOCALE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for name in [&b"Swoole-Upload-File"[..], b"sWoOlE-uPlOaD-fIlE"] {
+            let body = [
+                PART_PREFIX,
+                name,
+                b": /tmp/victim\r\n\r\nvalue\r\n--b--\r\n",
+            ]
+            .concat();
+            for split in 1..body.len() {
+                let trace = format!("{} split={split}", String::from_utf8_lossy(name));
+                let mut f = Fixture::new();
+                let mut ok = f.feed(&body[..split]);
+                if ok {
+                    ok = f.feed(&body[split..]);
+                }
+                assert!(!ok, "{trace}");
+                assert!(
+                    !f.forwarded().contains("\r\nswoole-upload-file:"),
+                    "{trace}"
+                );
+                assert!(!f.request.tried_to_dispatch, "{trace}");
+            }
+        }
+    }
+
+    // core-tests/src/server/http_upload_provenance.cpp: header_name_split_across_reads_is_assembled.
+    #[test]
+    fn header_name_split_across_reads_is_assembled() {
+        let body = [PART_PREFIX, b"X-Custom-Header: v\r\n\r\nvalue\r\n--b--\r\n"].concat();
+        let start = body
+            .windows(15)
+            .position(|w| w == b"X-Custom-Header")
+            .unwrap();
+        for split in start..=start + b"X-Custom-Header: ".len() {
+            let mut f = Fixture::new();
+            assert!(f.feed(&body[..split]), "{split}");
+            assert!(f.feed(&body[split..]), "{split}");
+            assert!(f.request.tried_to_dispatch, "{split}");
+            assert!(
+                f.forwarded().contains("\r\nx-custom-header: v\r\n"),
+                "{split}"
+            );
+        }
+    }
+
+    // core-tests/src/server/http_upload_provenance.cpp:
+    // overwritten_read_buffer_cannot_forge_upload_marker. The header name must not be
+    // a reference into the read buffer: a later read overwrites that memory.
+    #[test]
+    fn overwritten_read_buffer_cannot_forge_upload_marker() {
+        let name = [b'A'; 24];
+        let first = [PART_PREFIX, &name, b":"].concat();
+        let name_offset = first.len() - name.len() - 1;
+
+        // The forged header has the same length as the already accepted name and lands
+        // exactly where it was stored.
+        let forged = b"A: b\r\nSwoole-Upload-File";
+        assert_eq!(forged.len(), name.len());
+        let mut second = b" /tmp/victim\r\n\r\n".to_vec();
+        assert!(second.len() <= name_offset);
+        second.resize(name_offset, b'x');
+        second.extend_from_slice(forged);
+        second.extend_from_slice(b"\r\n--b--\r\n");
+
+        let mut f = Fixture::new();
+        assert!(f.feed(&first));
+        assert!(f.feed(&second));
+        assert!(!f.forwarded().contains("\r\nswoole-upload-file:"));
     }
 }

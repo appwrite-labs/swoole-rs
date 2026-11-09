@@ -2,8 +2,8 @@
 // test_http_server, test_ssl_http, abort_connection's and get_package_length's) and
 // core-tests/src/protocol/base.cpp builds, for the Rust cases in src/main.rs and
 // tests/modules/framing/protocol.rs, and protocol/redis.cpp's and server/mqtt.cpp's for
-// tests/modules/protocols/server.rs. Building a Server, its std::string setters, its callback
-// slots, a timer callback and get_package_length's fake socket need C++; every assertion and
+// tests/modules/protocols/server.rs. Its callback slots, a timer callback and get_package_length's
+// fake socket need C++; every assertion and
 // callback body is Rust's. Compiled into the hybrid tree's lib-swoole by tests/modules/hooks/system.py.
 #include "swoole_server.h"
 #include "swoole_http.h"
@@ -25,6 +25,25 @@ static ListenPort *listen_port(Server *serv, int type, int port) {
     return ls;
 }
 
+// crates/server's Server::set_document_root(path).
+extern "C" bool swr_v1_server_set_document_root(Server *serv, const char *path, size_t length);
+
+static Server *new_server(int mode) {
+    detail::check_server_layouts();
+    return swr_v1_server_new(mode);
+}
+
+static bool set_document_root(Server *serv, const char *root) {
+    return swr_v1_server_set_document_root(serv, root, strlen(root));
+}
+
+// serv->user_ = value, and the other text members.
+static void set_text(Server *serv, size_t index, const char *value) {
+    if (swr_v1_core_string_set(swr_v1_server_text_slot(serv->state_handle(), index), value, strlen(value)) < 0) {
+        abort();
+    }
+}
+
 // crates/ports' ListenPort setters, which the hybrid's ListenPort no longer declares.
 void port_set_stream_protocol(ListenPort *) asm("_ZN6swoole10ListenPort19set_stream_protocolEv");
 void port_set_length_protocol(ListenPort *, uint32_t, char, uint32_t) asm("_ZN6swoole10ListenPort19set_length_protocolEjcj");
@@ -33,8 +52,8 @@ extern "C" {
 // core-tests/src/protocol/base.cpp's Server, created: one worker in base mode, its TCP port framed
 // by set_stream_protocol (0), set_length_protocol(0, 'l', 4) (1) or set_eof_protocol("\r\n", false) (2).
 Server *swr_case_protocol_server(int framing, Hook on_worker_start, Receive on_receive) {
-    auto serv = new Server(Server::MODE_BASE);
-    serv->worker_num = 1;
+    auto serv = new_server(Server::MODE_BASE);
+    serv->config()->worker_num = 1;
     ListenPort *port = listen_port(serv, SW_SOCK_TCP, 0);
     if (framing == 0) {
         port_set_stream_protocol(port);
@@ -44,38 +63,38 @@ Server *swr_case_protocol_server(int framing, Hook on_worker_start, Receive on_r
         swr_v1_ports_set_eof(port, "\r\n", 2, false);
     }
     serv->create();
-    serv->onWorkerStart = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
-    serv->onReceive = on_receive;
+    serv->onWorkerStart() = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
+    serv->onReceive() = on_receive;
     return serv;
 }
 
 // core-tests/src/protocol/redis.cpp's redis.server Server, created: one worker in base mode, its TCP
 // port on the redis protocol.
 Server *swr_case_redis_server(Hook on_worker_start, Receive on_receive) {
-    auto serv = new Server(Server::MODE_BASE);
-    serv->worker_num = 1;
-    serv->enable_static_handler = true;
+    auto serv = new_server(Server::MODE_BASE);
+    serv->config()->worker_num = 1;
+    serv->config()->enable_static_handler = true;
     swoole_set_log_level(SW_LOG_WARNING);
-    listen_port(serv, SW_SOCK_TCP, 0)->open_redis_protocol = true;
+    listen_port(serv, SW_SOCK_TCP, 0)->config()->open_redis_protocol = true;
     serv->create();
-    serv->onWorkerStart = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
-    serv->onReceive = on_receive;
+    serv->onWorkerStart() = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
+    serv->onReceive() = on_receive;
     return serv;
 }
 
 // core-tests/src/server/mqtt.cpp's test_mqtt_server, created: one worker in base mode, port 9501 on
 // the mqtt protocol.
 Server *swr_case_mqtt_server(Hook on_worker_start, Closed on_connect, Closed on_close, Receive on_receive) {
-    auto serv = new Server(Server::MODE_BASE);
-    serv->worker_num = 1;
-    serv->enable_reuse_port = true;
+    auto serv = new_server(Server::MODE_BASE);
+    serv->config()->worker_num = 1;
+    serv->config()->enable_reuse_port = true;
     swoole_set_log_level(SW_LOG_WARNING);
-    listen_port(serv, SW_SOCK_TCP, 9501)->open_mqtt_protocol = true;
+    listen_port(serv, SW_SOCK_TCP, 9501)->config()->open_mqtt_protocol = true;
     serv->create();
-    serv->onWorkerStart = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
-    serv->onClose = on_close;
-    serv->onConnect = on_connect;
-    serv->onReceive = on_receive;
+    serv->onWorkerStart() = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
+    serv->onClose() = on_close;
+    serv->onConnect() = on_connect;
+    serv->onReceive() = on_receive;
     return serv;
 }
 
@@ -101,71 +120,71 @@ void swr_case_tick(Server *serv, long ms, bool (*tick)(Server *, SessionId), Ses
 
 // test_base_server's Server, created: null when set_document_root fails.
 Server *swr_case_base_server(const char *root, Receive on_receive, Closed on_close, Hook on_worker_start) {
-    auto serv = new Server(Server::MODE_BASE);
-    serv->worker_num = 1;
-    serv->enable_reuse_port = true;
-    serv->heartbeat_check_interval = 1;
-    serv->enable_static_handler = true;
-    if (!serv->set_document_root(root)) {
+    auto serv = new_server(Server::MODE_BASE);
+    serv->config()->worker_num = 1;
+    serv->config()->enable_reuse_port = true;
+    serv->config()->heartbeat_check_interval = 1;
+    serv->config()->enable_static_handler = true;
+    if (!set_document_root(serv, root)) {
         return nullptr;
     }
-    serv->locations.insert("/examples");
-    serv->add_http_compression_type("text/html");
+    serv->locations().insert("/examples");
+    serv->http_compression_types().insert("text/html");
     swoole_set_log_level(SW_LOG_WARNING);
     ListenPort *port = listen_port(serv, SW_SOCK_TCP, 0);
-    port->open_http_protocol = true;
-    port->open_websocket_protocol = true;
+    port->config()->open_http_protocol = true;
+    port->config()->open_websocket_protocol = true;
     serv->create();
-    serv->onWorkerStart = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
-    serv->onClose = on_close;
-    serv->onReceive = on_receive;
+    serv->onWorkerStart() = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
+    serv->onClose() = on_close;
+    serv->onReceive() = on_receive;
     return serv;
 }
 
 // test_http_server's Server, created.
 Server *swr_case_http_server(int dispatch_mode, bool ssl, int worker_num, int mode, const char *root,
                              Receive on_receive, Closed on_close) {
-    auto serv = new Server(static_cast<Server::Mode>(mode));
-    serv->user_ = std::string("root");
-    serv->group_ = std::string("root");
-    serv->chroot_ = std::string("/");
-    serv->worker_num = worker_num;
-    serv->dispatch_mode = dispatch_mode;
-    serv->open_cpu_affinity = true;
+    auto serv = new_server(static_cast<Server::Mode>(mode));
+    set_text(serv, SWR_SERVER_TEXT_USER, "root");
+    set_text(serv, SWR_SERVER_TEXT_GROUP, "root");
+    set_text(serv, SWR_SERVER_TEXT_CHROOT, "/");
+    serv->config()->worker_num = worker_num;
+    serv->config()->dispatch_mode = dispatch_mode;
+    serv->config()->open_cpu_affinity = true;
     swoole_set_log_level(SW_LOG_WARNING);
     ListenPort *port = listen_port(serv, ssl ? (SW_SOCK_TCP | SW_SOCK_SSL) : SW_SOCK_TCP, 0);
-    port->open_http_protocol = true;
-    port->open_websocket_protocol = true;
-    port->open_tcp_keepalive = true;
-    port->tcp_fastopen = true;
-    port->tcp_defer_accept = true;
-    serv->enable_static_handler = true;
-    serv->set_document_root(root);
-    serv->locations.insert("/examples");
+    port->config()->open_http_protocol = true;
+    port->config()->open_websocket_protocol = true;
+    port->config()->open_tcp_keepalive = true;
+    port->config()->tcp_fastopen = true;
+    port->config()->tcp_defer_accept = true;
+    serv->config()->enable_static_handler = true;
+    set_document_root(serv, root);
+    serv->locations().insert("/examples");
     serv->create();
-    serv->onStart = [](Server *) {};
-    serv->onConnect = [](Server *, DataHead *) {};
-    serv->onClose = on_close;
-    serv->onReceive = on_receive;
+    serv->onStart() = [](Server *) {};
+    serv->onConnect() = [](Server *, DataHead *) {};
+    serv->onClose() = on_close;
+    serv->onReceive() = on_receive;
     return serv;
 }
 
 // test_ssl_http's Server on an SSL port: SW_OK from create, or its error.
 int swr_case_ssl_server(Server **out, int mode, int port_number, const char *cert, const char *key, Hook on_start,
                         Hook on_worker_start, Receive on_receive) {
-    auto serv = *out = new Server(static_cast<Server::Mode>(mode));
-    serv->worker_num = 1;
+    auto serv = *out = new_server(static_cast<Server::Mode>(mode));
+    serv->config()->worker_num = 1;
     swoole_set_log_level(SW_LOG_INFO);
     ListenPort *port = listen_port(serv, SW_SOCK_TCP | SW_SOCK_SSL, port_number);
-    port->open_http_protocol = 1;
+    port->config()->open_http_protocol = 1;
     port->set_ssl_cert_file(cert);
     port->set_ssl_key_file(key);
-    port->ssl_context->fields().http = 1;
+    port->config()->ssl_context->fields().http = 1;
     port->ssl_init();
     int created = serv->create();
-    serv->onStart = on_start;
-    serv->onWorkerStart = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
-    serv->onReceive = on_receive;
+    serv->onStart() = on_start;
+    serv->onWorkerStart() = [on_worker_start](Server *s, Worker *) { on_worker_start(s); };
+    serv->onReceive() = on_receive;
     return created;
 }
 
@@ -174,8 +193,8 @@ int swr_case_ssl_server(Server **out, int mode, int port_number, const char *cer
 // TCP port (ports[0], ports[1]; not created when either is null).
 Server *swr_case_abort_server(uint32_t max_sockets, uint32_t *saved, ListenPort **ports, Hook on_start,
                               Receive on_receive) {
-    auto serv = new Server(Server::MODE_PROCESS);
-    serv->worker_num = 2;
+    auto serv = new_server(Server::MODE_PROCESS);
+    serv->config()->worker_num = 2;
     *saved = SwooleG.max_sockets;
     SwooleG.max_sockets = max_sockets;
     serv->set_max_connection(1);
@@ -184,14 +203,14 @@ Server *swr_case_abort_server(uint32_t max_sockets, uint32_t *saved, ListenPort 
     if (!ports[0]) {
         return serv;
     }
-    ports[0]->open_http_protocol = true;
+    ports[0]->config()->open_http_protocol = true;
     ports[1] = serv->add_port(SW_SOCK_TCP, "127.0.0.1", 0);
     if (!ports[1]) {
         return serv;
     }
     serv->create();
-    serv->onStart = on_start;
-    serv->onReceive = on_receive;
+    serv->onStart() = on_start;
+    serv->onReceive() = on_receive;
     return serv;
 }
 void swr_case_set_max_sockets(uint32_t value) {
@@ -201,22 +220,22 @@ void swr_case_set_max_sockets(uint32_t value) {
 // get_package_length's port: one worker in base mode, the TCP port speaking HTTP and HTTP/2; the
 // Server not created. Null when add_port fails.
 ListenPort *swr_case_length_port(Server **out) {
-    auto serv = *out = new Server(Server::MODE_BASE);
-    serv->worker_num = 1;
+    auto serv = *out = new_server(Server::MODE_BASE);
+    serv->config()->worker_num = 1;
     ListenPort *port = serv->add_port(SW_SOCK_TCP, "127.0.0.1", 0);
     if (port) {
-        port->open_http_protocol = true;
-        port->open_http2_protocol = true;
+        port->config()->open_http_protocol = true;
+        port->config()->open_http2_protocol = true;
     }
     return port;
 }
 // ListenPort::init_protocol, after turning on open_websocket_protocol when `websocket`; the port's Protocol.
 const Protocol *swr_case_init_protocol(ListenPort *port, bool websocket) {
     if (websocket) {
-        port->open_websocket_protocol = true;
+        port->config()->open_websocket_protocol = true;
     }
     port->init_protocol();
-    return &port->protocol;
+    return &port->config()->protocol;
 }
 // get_package_length's fake connection socket on the port's fd, its object a Connection of session 2025.
 network::Socket *swr_case_fake_socket(ListenPort *port, Connection **out) {
@@ -224,7 +243,7 @@ network::Socket *swr_case_fake_socket(ListenPort *port, Connection **out) {
     auto sock = new network::Socket();
     sock->fd = port->get_fd();
     sock->object = conn;
-    sock->socket_type = port->type;
+    sock->socket_type = port->config()->type;
     sock->get_name();
     conn->info = sock->info;
     conn->session_id = 2025;
@@ -290,7 +309,7 @@ uint32_t swr_case_idle_worker_num(Server *serv) {
     return serv->get_idle_worker_num();
 }
 uint32_t swr_case_worker_num(Server *serv) {
-    return serv->worker_num;
+    return serv->config()->worker_num;
 }
 
 // The `/ws/close` handshake's timer: a policy close frame after `ms`.

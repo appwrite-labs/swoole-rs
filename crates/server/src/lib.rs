@@ -60,6 +60,8 @@ mod reactor_thread;
 mod records;
 mod send;
 pub mod server_methods;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+mod server_object;
 mod shared;
 mod startup;
 mod state;
@@ -83,7 +85,7 @@ pub use static_config::{
 
 pub use records::{
     ConnectionRecord, ServerTables, SessionRecord, swr_v1_server_connection, swr_v1_server_session,
-    swr_v1_server_sessions_retire, swr_v1_server_tables_get,
+    swr_v1_server_sessions_retire,
 };
 
 pub use shared::{
@@ -91,8 +93,7 @@ pub use shared::{
     swr_v1_server_shared_init,
 };
 
-pub use callbacks::swr_v1_server_callbacks_get;
-pub use config::{ServerConfig, swr_v1_server_config_get, swr_v1_server_config_init};
+pub use config::ServerConfig;
 
 pub use state::{
     ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
@@ -101,6 +102,8 @@ pub use state::{
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub use admin::swr_v1_server_admin_register;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub use server_object::{swr_v1_server_delete, swr_v1_server_new};
 pub use tcp_info::swr_v1_server_tcp_info;
 
 pub use local_addr::swr_v1_server_local_addr_index;

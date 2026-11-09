@@ -150,11 +150,10 @@ impl Context {
     }
 }
 
-// SAFETY: crates/reactor's and native/integration/server.cc's bodies.
+// SAFETY: crates/reactor's body.
 unsafe extern "C-unwind" {
     #[link_name = "_Z14swoole_waitpidiPii"]
     fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-    fn swr_v1_server_barrier(serv: *mut c_void, manager: bool) -> *mut c_void;
 }
 
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
@@ -489,9 +488,7 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_MANAGER_BARRIER => {
             // SAFETY: the live server's barrier, initialized at startup.
-            let barrier = unsafe { swr_v1_server_barrier(ctx.serv, true) };
-            // SAFETY: as above: a live, initialized swoole::Barrier.
-            swoole_rs_locks::barrier_wait(unsafe { &*barrier.cast::<swoole_rs_locks::Barrier>() });
+            swoole_rs_locks::barrier_wait(unsafe { crate::server_object::barrier(ctx.serv, true) });
             0
         }
         OP_HAS_USER => u64::from(!ctx.state().text(1).is_empty()),
