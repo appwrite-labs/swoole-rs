@@ -98,14 +98,22 @@ pub(crate) enum Backend {
 impl Drop for ReactorState {
     fn drop(&mut self) {
         self.close_backend();
-        let fields = &mut self.fields;
-        let running = self.running_defer.iter_mut();
-        for slot in [&mut fields.destroy_callbacks, &mut fields.defer_tasks]
-            .into_iter()
-            .chain(running)
-        {
-            // SAFETY: the queue slots are this state's own, and nothing runs them now.
-            unsafe { crate::deferred::deferred_free(slot) };
+        let mut running = std::mem::take(&mut self.running_defer);
+        // A disposer can defer again (a PHP destructor calling `Event::defer`), so the
+        // queues are detached before they are freed, until they stay empty.
+        loop {
+            let fields = &mut self.fields;
+            let queues = [
+                std::mem::replace(&mut fields.destroy_callbacks, ptr::null_mut()),
+                std::mem::replace(&mut fields.defer_tasks, ptr::null_mut()),
+            ];
+            if queues.iter().chain(&running).all(|queue| queue.is_null()) {
+                break;
+            }
+            for mut queue in running.drain(..).chain(queues) {
+                // SAFETY: detached queues of this state's, which nothing runs now.
+                unsafe { crate::deferred::deferred_free(&mut queue) };
+            }
         }
     }
 }
