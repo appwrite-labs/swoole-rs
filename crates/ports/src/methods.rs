@@ -1142,7 +1142,6 @@ mod tests {
 
     /// The length setter over every type and boundary offset (was settings.cc).
     #[test]
-    #[expect(clippy::cast_possible_wrap, reason = "every C char, as a byte")]
     fn set_length_protocol_narrows_as_the_cpp_fields_do() {
         let edges = [0u32, 1, 255, 65535, 65536, 65537, 0x8000_0000, 0xffff_ffff];
         let mut port = Fresh::new();
@@ -1152,9 +1151,10 @@ mod tests {
         for kind in 0..=255u8 {
             for offset in edges {
                 for body in edges {
-                    unsafe { set_length_protocol(port.at(), offset, kind as c_char, body) };
+                    let c_kind = c_char::from_ne_bytes([kind]);
+                    unsafe { set_length_protocol(port.at(), offset, c_kind, body) };
                     let p = &config.protocol;
-                    let size = swoole_rs_corebase::swoole_type_size(kind as c_char);
+                    let size = swoole_rs_corebase::swoole_type_size(c_kind);
                     assert!(config.open_length_check, "length check on");
                     assert_eq!(p.package_length_type, kind, "type");
                     assert_eq!(i32::from(p.package_length_size), size & 0xff, "type size");
@@ -1174,7 +1174,6 @@ mod tests {
     #[test]
     #[expect(
         clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
         reason = "settings.cc's byte-wrapping iteration values"
     )]
     fn set_stream_protocol_sets_network_u32_framing() {
@@ -1182,7 +1181,7 @@ mod tests {
         let config = port.config();
         for iteration in 0..256u32 {
             config.protocol.get_package_length = ptr::without_provenance_mut(17);
-            let kind = iteration as u8 as c_char;
+            let kind = c_char::from_ne_bytes([iteration as u8]);
             unsafe { set_length_protocol(port.at(), iteration * 257, kind, u32::MAX - iteration) };
             let eof = vec![iteration as u8; (iteration % 17) as usize];
             unsafe { swr_v1_ports_set_eof(port.at(), eof.as_ptr(), eof.len(), iteration % 2 == 1) };
