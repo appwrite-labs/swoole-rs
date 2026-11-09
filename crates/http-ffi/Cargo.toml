@@ -19,8 +19,11 @@ upstream-symbols = []
 
 [dependencies]
 libc = "=0.2.191"
+swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-http = { path = "../http" }
+swoole-rs-ossupport = { path = "../ossupport" }
 
 [dev-dependencies]
+swoole-rs-base64 = { path = "../base64" }
 swoole-rs-oracle = { path = "../oracle" }
