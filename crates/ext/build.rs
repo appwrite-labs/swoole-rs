@@ -1,6 +1,7 @@
 //! Compile what the extension still needs of C and C++ (native/ and the bundled
 //! thirdparty sources config.m4 lists) and link it into `swoole.so`, in place of
-//! phpize and configure.
+//! phpize and configure. The sources are the unpatched pin's (`SWOOLE_SRC`), except
+//! the files native/swoole-src owns at the same paths.
 
 fn main() {
     println!("cargo::rerun-if-env-changed=PHP_CONFIG");
@@ -351,6 +352,12 @@ mod php {
         let platform = if os == "macos" { MACOS } else { LINUX };
         let php_config = env::var("PHP_CONFIG").unwrap_or_else(|_| "php-config".into());
         let third = tree.join("thirdparty");
+        // native/swoole-src's copy of a pinned file, when it owns one.
+        let owned = native.join("swoole-src");
+        let own = |path: PathBuf| {
+            let copy = owned.join(path.strip_prefix(&tree).unwrap_or(&path));
+            if copy.is_file() { copy } else { path }
+        };
         let profile = profile(&third, php_version_id(&php_config));
         // config.m4: thread context replaces boost.context's assembly switch.
         let asm_context = !feature("thread_context");
@@ -373,11 +380,18 @@ mod php {
         let mut modules: Vec<PathBuf> = fs::read_dir(&native)
             .expect("ext: read native/")
             .map(|entry| entry.expect("ext: native entry").path())
-            .filter(|path| path.is_dir() && path.file_name().is_some_and(|n| n != "include"))
+            .filter(|path| {
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .is_some_and(|n| n != "include" && n != "swoole-src")
+            })
             .collect();
         modules.sort();
         includes.extend(modules.iter().cloned());
-        includes.extend([tree.clone(), tree.join("ext-src"), tree.join("thirdparty")]);
+        // Each owned root ahead of the pin's, so an include reaches the owned copy.
+        includes.extend([owned.clone(), tree.clone(), tree.join("ext-src")]);
+        includes.extend([owned.join("thirdparty"), third.clone()]);
         includes.extend(env::var_os("DEP_OPENSSL_INCLUDE").map(PathBuf::from));
         includes.extend(php_includes(&php_config));
         includes.extend(profile.includes);
@@ -405,8 +419,8 @@ mod php {
             cxx.files(sources(module, "cc"));
         }
         cxx.file(third.join("php/standard/var_decoder.cc"))
-            .file(third.join("php/standard/proc_open.cc"))
-            .files(&profile.cxx)
+            .file(own(third.join("php/standard/proc_open.cc")))
+            .files(profile.cxx.into_iter().map(own))
             .compile("swoole_native_cxx");
 
         let asm = context_asm(&os, &arch);
@@ -414,7 +428,7 @@ mod php {
         for module in &modules {
             c.files(sources(module, "c"));
         }
-        c.file(third.join("php/streams/plain_wrapper.c"))
+        c.file(own(third.join("php/streams/plain_wrapper.c")))
             .files(["api.c", "http.c", "llhttp.c"].map(|f| third.join("llhttp").join(f)))
             .file(third.join("multipart_parser.c"))
             .files(
@@ -432,7 +446,7 @@ mod php {
             // Rust's coroutine links boost.context's switch even under thread context.
             .file(third.join("boost/asm").join(format!("make_{asm}")))
             .file(third.join("boost/asm").join(format!("jump_{asm}")))
-            .files(&profile.c)
+            .files(profile.c.into_iter().map(own))
             .compile("swoole_native_c");
 
         // After the objects that use them, or --as-needed drops them.

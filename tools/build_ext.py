@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Build swoole.so with Cargo alone (crates/ext): no phpize, configure or make.
 
-crates/ext's build.rs compiles native/ and the bundled thirdparty C from the patched tree this
-prepares in target/ext/src, then the extension is checked to load and report the pinned version.
+crates/ext's build.rs compiles native/ and the bundled thirdparty C from the unpatched pin it
+checks out in target/ext/src (native/swoole-src owns the files it changes), then the extension
+is checked to load and report the pinned version.
 Prints `Built cargo: <path>` (target/ext/swoole.so) and writes target/ext/build-manifest.json,
 which tools/ext_identity.py checks gates' engines against. `--php-sockets`, `--stdext`, `--fix-halfclose`
 and build_hybrid's `--configure` switches turn on the crates/ext feature of the same build profile.
 
 `--native` also lays out target/ext/sdk for the native gates, which link fixtures outside PHP:
 lib/ holds the Zend-free libswoole_rs_ffi.a and crates/ext's compiled C and C++ archives,
-include/ the ABI headers, and target/ext/src/config.h is the build's config.h (see native_tree).
+include/ the ABI headers, and target/ext/src/config.h is the build's config.h. The gates still
+compile against the patched tree, which it applies in target/ext/patched (see native_tree) until
+they move off it (#2200).
 """
 import argparse
 import hashlib
@@ -26,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.build_hybrid import HOOK_SWITCHES, MODULES, headers_for, module_patches, zend_free_native_sources
 from tools.build_upstream import COMMIT, VERSION
 from tools.harness import ROOT
-from tools.patches import apply
+from tools.patches import apply, clone_pin, git
 
 # crates/ext's features that are swoole-rs-ffi's too: the Zend-free archive's build profile.
 FFI_FEATURES = {'sockets', 'stdext', 'halfclose', 'iouring', 'cares', 'pgsql', 'odbc', 'firebird', 'sqlite', 'oci', 'curl', 'ssh2'}
@@ -59,7 +62,19 @@ def sdk(tree, messages, features, profile, env):
         shutil.copy2(path, root / 'lib' / path.name)
     for header in headers_for(MODULES):
         shutil.copy2(header, root / 'include' / header.name)
-    shutil.copy2(out / 'config.h', tree / 'config.h')
+    apply(tree.parent / 'patched')
+    for directory in (tree, tree.parent / 'patched'):
+        shutil.copy2(out / 'config.h', directory / 'config.h')
+
+
+def checkout(tree):
+    """The pin, unpatched, in `tree`: kept when it is already there and clean."""
+    if (tree / '.git').exists() and git(tree, 'status', '--porcelain', '--untracked-files=no') == '' \
+            and git(tree, 'rev-parse', 'HEAD').strip() == COMMIT:
+        return
+    shutil.rmtree(tree, ignore_errors=True)
+    clone_pin(tree)
+    git(tree, 'checkout', '-q', COMMIT)
 
 
 def native_tree(archive):
@@ -68,7 +83,7 @@ def native_tree(archive):
     headers and the SWOOLE_RS_* switches its config.h turns on. A gate's selected side compiles
     against these, never against the pinned headers; its upstream side uses the pin."""
     ext = Path(archive).resolve().parents[2]
-    source, abi = ext / 'src', ext / 'sdk/include'
+    source, abi = ext / 'patched', ext / 'sdk/include'
     if not (source / 'config.h').is_file() or not abi.is_dir():
         raise ValueError(f'Not an SDK archive (tools/build_ext.py --native): {archive}')
     switches = re.findall(r'^#define (SWOOLE_RS_\w+) 1$', (source / 'config.h').read_text(), re.M)
@@ -137,7 +152,7 @@ def main():
     args = parser.parse_args()
     out = ROOT / 'target/ext'
     tree = out / 'src'
-    apply(tree)
+    checkout(tree)
     env = {**os.environ, 'SWOOLE_SRC': str(tree), 'PHP_CONFIG': args.php_config}
     switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd', 'uring-socket': '--enable-uring-socket',
                 'cares': '--enable-cares', 'thread-context': '--enable-thread-context',
