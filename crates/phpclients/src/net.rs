@@ -9,11 +9,15 @@ use libc::{c_char, c_int, c_void};
 use std::{
     ffi::{CStr, CString},
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::{
+        Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicPtr, Ordering},
+    },
 };
 use swoole_rs_clients::{
     client::{self as state, Call as ClientCall, Op},
-    pool, swr_v1_clients_port,
+    pool::Pool,
+    swr_v1_clients_port,
 };
 use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_phpruntime::Report;
@@ -149,8 +153,18 @@ pub(crate) type ClientObject = Object<Data>;
 
 pub(crate) static CLIENT: Class = Class::new();
 static EXCEPTION: Class = Class::new();
+/// A persistent connection the pool owns until a client takes it back.
+struct Pooled(*mut Conn);
+// SAFETY: the pool only moves the pointer; whichever request takes it back owns
+// the connection, as with upstream's process-wide `long_connections`.
+unsafe impl Send for Pooled {}
+
 /// The persistent connections (`long_connections`), keyed by server id.
-static POOL: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+static POOL: Mutex<Option<Pool<Pooled>>> = Mutex::new(None);
+
+fn long_connections() -> MutexGuard<'static, Option<Pool<Pooled>>> {
+    POOL.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: Zend creates this class or a subclass; zeroed data is no
@@ -369,33 +383,15 @@ pub(crate) fn bailed<T>(result: Result<T, Bailout>) -> Option<T> {
     }
 }
 
-fn pool() -> *mut c_void {
-    let handle = POOL.load(Ordering::Acquire);
-    if !handle.is_null() {
-        return handle;
-    }
-    let handle = pool::swr_v1_clients_pool_create();
-    POOL.store(handle, Ordering::Release);
-    handle
-}
-
 /// `php_swoole_client_free`: release the connection's timer, length callable,
 /// pool entry and client, then the exported socket.
 pub(crate) fn release(object: *mut zend_object, conn: *mut Conn) -> Result<(), Bailout> {
     // SAFETY: the connection the object held or the pool gave back, released once.
     let conn = unsafe { Box::from_raw(conn) };
-    if conn.keep {
-        let handle = POOL.load(Ordering::Acquire);
-        // SAFETY: the pool, null or live; the key is this connection's.
-        if unsafe { pool::swr_v1_clients_pool_state(handle, conn.key.as_ptr(), conn.key.len()) }
-            .kind
-            == 1
-        {
-            // SAFETY: as above.
-            unsafe {
-                pool::swr_v1_clients_pool_remove_empty(handle, conn.key.as_ptr(), conn.key.len())
-            };
-        }
+    if conn.keep
+        && let Some(pool) = long_connections().as_mut()
+    {
+        pool.remove_empty(&conn.key);
     }
     let destroyed = native::destroy(conn.cli);
     let data = data(object);
@@ -533,12 +529,9 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
     };
     let mut conn: *mut Conn = ptr::null_mut();
     if kind & FLAG_KEEP != 0 {
-        let handle = POOL.load(Ordering::Acquire);
-        // SAFETY: the pool, null or live; `key` is initialized.
-        if unsafe { pool::swr_v1_clients_pool_state(handle, key.as_ptr(), key.len()) }.kind == 2 {
-            // SAFETY: as above; the pool holds connections this module pushed.
-            conn =
-                unsafe { pool::swr_v1_clients_pool_take(handle, key.as_ptr(), key.len()) }.cast();
+        let taken = long_connections().as_mut().and_then(|pool| pool.take(&key));
+        if let Some(Pooled(taken)) = taken {
+            conn = taken;
             // SAFETY: a pooled connection, now this object's.
             let pooled = unsafe { &mut *conn };
             if pooled.alive() {
@@ -1235,12 +1228,15 @@ fn close(call: &Call) {
         bailed(release(object, conn_ptr));
         return call.set_bool(result >= 0);
     }
-    let handle = pool();
-    // SAFETY: the live pool; the connection moves into it.
-    if unsafe {
-        pool::swr_v1_clients_pool_push(handle, conn.key.as_ptr(), conn.key.len(), conn_ptr.cast())
-    } != 0
-    {
+    let pushed = {
+        let mut pool = long_connections();
+        if pool.is_none() {
+            *pool = Pool::create();
+        }
+        pool.as_mut()
+            .map(|pool| pool.push(&conn.key, Pooled(conn_ptr)))
+    };
+    if !matches!(pushed, Some(Ok(()))) {
         std::process::abort();
     }
     this(call).conn = ptr::null_mut();

@@ -3,7 +3,7 @@
 //! byte, red zones included, must match.
 
 use std::ffi::{CStr, c_char};
-use swoole_rs_clients::{swr_v1_clients_cookie, swr_v1_clients_domain_decode};
+use swoole_rs_clients::{cookie, domain_decode};
 use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_unpack, swr_v1_framing_width};
 use swoole_rs_http::{
     HttpCookie, swr_v1_http_cookie_next, swr_v1_http_url_capacity, swr_v1_http_url_decode,
@@ -721,8 +721,8 @@ pub fn clients_url(bytes: &[u8]) {
 /// Any bytes as one Set-Cookie header: the same key, value offset and value.
 pub fn clients_cookie(bytes: &[u8]) {
     let mut want = (0, 0, 0);
-    // SAFETY: both read `bytes`; outputs are locals.
-    let got = unsafe {
+    // SAFETY: reads `bytes`; outputs are locals.
+    unsafe {
         clients::cookie(
             bytes.as_ptr().cast(),
             bytes.len(),
@@ -730,8 +730,8 @@ pub fn clients_cookie(bytes: &[u8]) {
             &mut want.1,
             &mut want.2,
         );
-        swr_v1_clients_cookie(bytes.as_ptr(), bytes.len())
-    };
+    }
+    let got = cookie(bytes);
     assert_eq!(
         (got.key_length, got.value_offset, got.value_length),
         want,
@@ -744,11 +744,7 @@ pub fn clients_cookie(bytes: &[u8]) {
 /// reports 0 and upstream isn't run.
 pub fn clients_domain_decode(bytes: &[u8]) {
     let (mut theirs, mut ours) = (bytes.to_vec(), bytes.to_vec());
-    // SAFETY: Rust stays within `ours`.
-    let decoded = unsafe {
-        swr_v1_clients_domain_decode(ours.as_mut_ptr(), ours.len(), u8::from(c_char::MIN != 0))
-    };
-    if decoded == 0 {
+    if !domain_decode(&mut ours, c_char::MIN != 0) {
         return;
     }
     // SAFETY: Rust decoded the same bytes in bounds, so upstream's identical walk does too.

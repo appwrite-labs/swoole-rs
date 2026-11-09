@@ -6,17 +6,14 @@ have left the build; the resolver list and `NameResolver::Context` are
 `crates/corebase/src/name_resolver.rs`, and `network::Client` is
 `crates/clients/src/client.rs` (upstream's header has no replacement).
 
-Production exports have the prefix `swr_v1_clients_`. A test-only allocation-budget
-symbol is excluded from production artifacts.
+Production exports have the prefix `swr_v1_clients_`.
 
 | Area | Exports | Rust responsibility |
 | --- | --- | --- |
 | Address | `url`, `port`, `ip`, `loopback`, `ip_text` | URL grammar, type and port; port validity; numeric bytes, original loopback policy and DNS text |
-| Hosts/resolver settings | `hosts_match`, `resolv_line`, `dns_endpoint` | Borrowed line/token spans; locale/`strtol` stay native |
-| DNS codec | `domain_encode`, `domain_decode` | Bounded label encoding/decoding with native `char` signedness |
+| Resolver settings | `set_dns_server`, `dns_server`, `load_resolv_conf`, `set_hosts_path`, `hosts_lookup` | DNS server, `resolv.conf` and hosts file |
 | Client | `new`, `run` (connect, send, recv, close, shutdown, free, …), `listen`, … | `network::Client`: state and every operation (see below) |
-| Persistent clients | `pool_create`, `pool_destroy`, `pool_push`, `pool_state`, `pool_take`, `pool_remove_empty` | Private pool storage (crates/phpclients keeps the connections) |
-| HTTP | `cookie`, `http_format` | Set-Cookie spans; bounded output formatting |
+| HTTP | `http_format` | Bounded output formatting |
 
 ## Common rules
 
@@ -35,12 +32,12 @@ and callbacks stay native.
 
 ## Persistent pool
 
-`Swoole\Client` (crates/phpclients) holds one lazily created pool handle and
-calls the pool directly; its tests are in `crates/clients/src/pool.rs`.
-Rust stores binary keys and FIFO queues of opaque Client tokens using a
-deterministic hasher and fallible allocation; there is no C++ map/queue. Only
-native code closes or deletes Client tokens; dropping the Rust container never
-does. On allocation failure Rust returns a status and native throws `bad_alloc`.
+`Swoole\Client` (crates/phpclients) keeps one lazily created
+`swoole_rs_clients::pool::Pool` behind a mutex; its tests are in
+`crates/clients/src/pool.rs`. It stores binary keys and FIFO queues of tokens
+using a deterministic hasher and fallible allocation, and never closes or drops
+a token's connection. On allocation failure the caller aborts, as upstream's
+uncaught `bad_alloc` does.
 
 ## Address and raw object
 
@@ -79,7 +76,7 @@ removed with `swr_v1_core_name_resolver_add`/`_remove`.
 
 - `dns_lookup_impl_with_socket` is `clients_dns_lookup`: the DNS server, read from
   `resolv.conf` (`SW_DNS_RESOLV_CONF`) while none is set
-  (`SW_ERROR_DNSLOOKUP_NO_SERVER` otherwise), the request id, `clients_dns_query`
+  (`SW_ERROR_DNSLOOKUP_NO_SERVER` otherwise), the request id, `dns::query`
   (query packet, one send and one receive, then the answer's A/AAAA addresses as
   text), the invalid-domain warning and the last error. crates/hooks opens and
   deletes the coroutine UDP socket, sets its timeout, and maps `ECANCELED`.
@@ -87,8 +84,8 @@ removed with `swr_v1_core_name_resolver_add`/`_remove`.
   (`gethostbyname2_r` with a growing buffer on Linux, `gethostbyname2` under a
   lock elsewhere); `network::getaddrinfo` is `clients_getaddrinfo` into a native
   array of `SW_DNS_HOST_BUFFER_SIZE`.
-- `swoole_load_resolv_conf` is `clients_load_resolv_conf` (libc `fopen` and
-  `fgets`, and the `fopen` warning); `get_ip_by_hosts` is `clients_hosts_lookup`,
+- `swoole_load_resolv_conf` is `clients_load_resolv_conf` (`fgets`' 99-byte
+  lines over the file's bytes, and the `fopen` warning); `get_ip_by_hosts` is `clients_hosts_lookup`,
   given a 256-entry space table (the classic locale's for upstream's
   `std::istringstream`).
 - With c-ares (`cares_lookup`), `cares.rs` registers the `SW_FD_CARES` handlers and

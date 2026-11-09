@@ -409,17 +409,21 @@ pub unsafe extern "C" fn swr_v1_phpclients_parse_set_cookies(
     cookies: *mut zval,
     set_cookie_headers: *mut zval,
 ) {
-    // SAFETY: per the caller.
-    let plan = unsafe { swoole_rs_clients::swr_v1_clients_cookie(at.cast(), length) };
+    let bytes = if length == 0 {
+        &[][..]
+    } else {
+        // SAFETY: per the caller.
+        unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) }
+    };
+    let plan = swoole_rs_clients::cookie(bytes);
     let mut cookie = MaybeUninit::<zval>::uninit();
     if plan.value_length == 0 {
         // SAFETY: a writable zval.
         unsafe { swr_zval_empty_string(cookie.as_mut_ptr()) };
     } else {
-        // SAFETY: the value lies inside the caller's bytes.
-        let start = at.wrapping_add(plan.value_offset).cast::<u8>();
-        // SAFETY: as above.
-        let text = unsafe { std::slice::from_raw_parts(start, plan.value_length) };
+        let text = bytes
+            .get(plan.value_offset..plan.value_offset + plan.value_length)
+            .unwrap_or_default();
         let decoded = string::copy(text);
         // SAFETY: a fresh, unshared string whose bytes php_url_decode rewrites.
         let length = unsafe { swr_zend_url_decode(string::val(decoded).cast(), plan.value_length) };
@@ -1178,15 +1182,7 @@ impl Client {
         else {
             return false;
         };
-        // SAFETY: both slices are live for the call.
-        unsafe {
-            swoole_rs_clients::ws::swr_v1_clients_ws_accept_valid(
-                key.as_ptr(),
-                key.len(),
-                accept.as_ptr(),
-                accept.len(),
-            ) != 0
-        }
+        swoole_rs_clients::ws::accept_valid(key, accept)
     }
 
     fn recv_websocket_frame(&mut self, call: &Call, timeout: f64) {

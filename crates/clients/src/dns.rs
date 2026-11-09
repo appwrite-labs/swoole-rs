@@ -8,8 +8,7 @@
 //! hosts file.
 use crate::ip::swr_v1_clients_ip_text;
 use crate::{
-    swr_v1_clients_dns_endpoint, swr_v1_clients_domain_decode, swr_v1_clients_domain_encode,
-    swr_v1_clients_hosts_match, swr_v1_clients_port, swr_v1_clients_resolv_line,
+    dns_endpoint, domain_decode, domain_encode, hosts_match, resolv_line, swr_v1_clients_port,
 };
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -35,13 +34,19 @@ const CANCELED: c_int = 10017;
 /// The domain does not encode: native warns `invalid domain[...]`.
 pub const INVALID_DOMAIN: c_int = -1;
 
-/// Sends `length` bytes to the DNS server; false on failure.
-pub type Send = unsafe extern "C" fn(*mut c_void, *const u8, usize) -> bool;
-/// Receives into `capacity` bytes; the length, 0/-1 on failure, `-ECANCELED` if
-/// the coroutine was cancelled.
-pub type Recv = unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> isize;
 /// Collects one address in text form.
 pub type Push = unsafe extern "C" fn(*mut c_void, *const u8, usize);
+
+/// The socket side of one DNS query.
+pub trait DnsExchange {
+    /// Sends the query to the DNS server; false on failure.
+    fn send(&mut self, data: &[u8]) -> bool;
+    /// Receives into `buffer`: the length, 0/-1 on failure, `-ECANCELED` if the
+    /// coroutine was cancelled.
+    fn recv(&mut self, buffer: &mut [u8]) -> isize;
+    /// Collects one address of the answer in text form.
+    fn push(&mut self, address: &[u8]);
+}
 
 fn u16_at(packet: &[u8], at: usize) -> u16 {
     let byte = |offset: usize| packet.get(offset).copied().unwrap_or(0);
@@ -92,8 +97,7 @@ fn config() -> MutexGuard<'static, Config> {
 /// The text ends at its first NUL, and the port converts as `sw_atoi` (`strtol`
 /// narrowed to `int`).
 fn set_dns_server(server: &[u8]) {
-    // SAFETY: an initialized span.
-    let plan = unsafe { swr_v1_clients_dns_endpoint(server.as_ptr(), server.len()) };
+    let plan = dns_endpoint(server);
     let mut port = DNS_PORT;
     if plan.has_port != 0 {
         let digits = server.get(plan.port_offset..).unwrap_or_default();
@@ -140,27 +144,33 @@ pub unsafe extern "C" fn swr_v1_clients_dns_server(context: *mut c_void, push: P
 
 /// `swoole_load_resolv_conf`'s read: the first `nameserver` of the file at `path`
 /// becomes the DNS server. 1 found, 0 none, -1 the file did not open (warned with
-/// fopen's errno).
+/// open's errno).
+#[must_use]
+pub fn load_resolv_conf(path: &CStr) -> c_int {
+    match resolv_conf(path) {
+        Err(_) => {
+            let path = path.to_string_lossy();
+            log::sys_warning(
+                c"swoole_load_resolv_conf",
+                format_args!("fopen({path}) failed"),
+            );
+            -1
+        }
+        Ok(None) => 0,
+        Ok(Some(server)) => {
+            set_dns_server(&server);
+            1
+        }
+    }
+}
+
+/// [`load_resolv_conf`] for the hybrid's tests.
 /// # Safety
 /// `path` is NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_load_resolv_conf(path: *const c_char) -> c_int {
-    let mut server = [0 as c_char; 16];
-    // SAFETY: per the caller; `server` holds 16 bytes.
-    let found = unsafe { resolv_conf(path, server.as_mut_ptr()) };
-    if found < 0 {
-        // SAFETY: per the caller.
-        let path = unsafe { CStr::from_ptr(path) }.to_string_lossy();
-        log::sys_warning(
-            c"swoole_load_resolv_conf",
-            format_args!("fopen({path}) failed"),
-        );
-    }
-    if found > 0 {
-        // SAFETY: NUL-terminated by the read.
-        set_dns_server(unsafe { CStr::from_ptr(server.as_ptr()) }.to_bytes());
-    }
-    found
+    // SAFETY: per the caller.
+    load_resolv_conf(unsafe { CStr::from_ptr(path) })
 }
 
 /// `swoole_set_hosts_path(path)`.
@@ -173,22 +183,15 @@ pub unsafe extern "C" fn swr_v1_clients_set_hosts_path(path: *const u8, length: 
     config().hosts = path;
 }
 
-/// Queries `domain` for `family`'s address records with `request_id`, pushing each
-/// address of the answer; 0, [`INVALID_DOMAIN`], or the code native sets as the
-/// last error (also when the answer has no address).
-///
-/// # Safety
-/// `domain` is NUL-terminated; `send`, `recv` and `push` are native's, valid with
-/// `context`. `signed_char` is native `char`'s signedness.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_dns_query(
-    domain: *const c_char,
+/// Queries `domain` for `family`'s address records with `request_id` over
+/// `exchange`, pushing each address of the answer; 0, [`INVALID_DOMAIN`], or the
+/// code native sets as the last error (also when the answer has no address).
+/// `signed_char` is native `char`'s signedness.
+pub fn query(
+    domain: &CStr,
     family: c_int,
     request_id: u16,
-    context: *mut c_void,
-    send: Send,
-    recv: Recv,
-    push: Push,
+    exchange: &mut impl DnsExchange,
     signed_char: bool,
 ) -> c_int {
     let mut packet = vec![0u8; PACKET];
@@ -196,19 +199,13 @@ pub unsafe extern "C" fn swr_v1_clients_dns_query(
     // ID, RD, one question.
     put(&mut packet, 0, &[id_high, id_low, 1, 0, 0, 1]);
 
-    // SAFETY: the caller passes a NUL-terminated domain.
-    let name = unsafe { CStr::from_ptr(domain) }.to_bytes();
+    let name = domain.to_bytes();
     let capacity = PACKET - HEADER;
     if name.len() > capacity - 3 {
         return INVALID_DOMAIN;
     }
     let question = packet.get_mut(HEADER..).unwrap_or_default();
-    // SAFETY: `name` and `question` are separate buffers, `question` at least
-    // `capacity` bytes long.
-    if unsafe {
-        swr_v1_clients_domain_encode(name.as_ptr(), name.len(), question.as_mut_ptr(), capacity)
-    } < 0
-    {
+    if domain_encode(name, question) < 0 {
         return INVALID_DOMAIN;
     }
     let mut steps = HEADER + c_len(question) + 1;
@@ -218,12 +215,10 @@ pub unsafe extern "C" fn swr_v1_clients_dns_query(
     steps += 4;
     let query_initialized = PACKET.min(steps.max(HEADER + name.len() + 3));
 
-    // SAFETY: the native send takes `steps` bytes of the packet.
-    if !unsafe { send(context, packet.as_ptr(), steps) } {
+    if !exchange.send(packet.get(..steps).unwrap_or_default()) {
         return RESOLVE_FAILED;
     }
-    // SAFETY: the native recv writes at most `PACKET - 1` bytes into the packet.
-    let received = unsafe { recv(context, packet.as_mut_ptr(), PACKET - 1) };
+    let received = exchange.recv(packet.get_mut(..PACKET - 1).unwrap_or_default());
     let Ok(received @ 1..) = usize::try_from(received) else {
         return if received == -isize::try_from(libc::ECANCELED).unwrap_or(0) {
             CANCELED
@@ -235,11 +230,10 @@ pub unsafe extern "C" fn swr_v1_clients_dns_query(
     put(&mut packet, received, &[0]);
     let initialized = query_initialized.max(received + 1);
 
-    let question = packet.get_mut(HEADER..initialized).unwrap_or_default();
-    // SAFETY: `question` is initialized and writable for its length.
-    unsafe {
-        swr_v1_clients_domain_decode(question.as_mut_ptr(), question.len(), u8::from(signed_char))
-    };
+    domain_decode(
+        packet.get_mut(HEADER..initialized).unwrap_or_default(),
+        signed_char,
+    );
     let mut steps = HEADER + c_len(packet.get(HEADER..).unwrap_or_default()) + 2 + 4;
 
     let answers = usize::from(u16_at(&packet, 6)).min(MAX_ANSWERS);
@@ -272,8 +266,7 @@ pub unsafe extern "C" fn swr_v1_clients_dns_query(
         // SAFETY: `data` holds the 4- or 16-byte address.
         let text = unsafe { swr_v1_clients_ip_text(version, data.as_ptr()) };
         let length = usize::try_from(text.length).unwrap_or(0);
-        // SAFETY: the native push copies `length` bytes.
-        unsafe { push(context, text.bytes.as_ptr(), length) };
+        exchange.push(text.bytes.get(..length).unwrap_or_default());
         found = true;
     }
     if found { 0 } else { RESOLVE_FAILED }
@@ -295,43 +288,19 @@ struct Exchange<S> {
     found: Vec<Vec<u8>>,
 }
 
-unsafe extern "C" fn exchange_send<S: DnsSocket>(
-    context: *mut c_void,
-    data: *const u8,
-    length: usize,
-) -> bool {
-    // SAFETY: `lookup`'s live exchange.
-    let exchange = unsafe { &mut *context.cast::<Exchange<S>>() };
-    // SAFETY: the query's `length` bytes.
-    let data = unsafe { std::slice::from_raw_parts(data, length) };
-    let host = CStr::from_bytes_until_nul(&exchange.host).unwrap_or_default();
-    exchange.socket.sendto(host, exchange.port, data)
-}
+impl<S: DnsSocket> DnsExchange for Exchange<S> {
+    fn send(&mut self, data: &[u8]) -> bool {
+        let host = CStr::from_bytes_until_nul(&self.host).unwrap_or_default();
+        self.socket.sendto(host, self.port, data)
+    }
 
-unsafe extern "C" fn exchange_recv<S: DnsSocket>(
-    context: *mut c_void,
-    data: *mut u8,
-    capacity: usize,
-) -> isize {
-    // SAFETY: `lookup`'s live exchange.
-    let exchange = unsafe { &mut *context.cast::<Exchange<S>>() };
-    // SAFETY: the packet buffer's `capacity` writable bytes.
-    exchange
-        .socket
-        .recv(unsafe { std::slice::from_raw_parts_mut(data, capacity) })
-}
+    fn recv(&mut self, buffer: &mut [u8]) -> isize {
+        self.socket.recv(buffer)
+    }
 
-unsafe extern "C" fn exchange_push<S: DnsSocket>(
-    context: *mut c_void,
-    text: *const u8,
-    length: usize,
-) {
-    // SAFETY: `lookup`'s live exchange.
-    let exchange = unsafe { &mut *context.cast::<Exchange<S>>() };
-    // SAFETY: the address's `length` bytes.
-    exchange
-        .found
-        .push(unsafe { std::slice::from_raw_parts(text, length) }.to_vec());
+    fn push(&mut self, address: &[u8]) {
+        self.found.push(address.to_vec());
+    }
 }
 
 /// The DNS server's host, NUL-terminated, and port.
@@ -356,8 +325,7 @@ pub fn lookup<S: DnsSocket>(
 ) -> Vec<Vec<u8>> {
     let (mut host, mut port) = server();
     if host.len() == 1 {
-        // SAFETY: a NUL-terminated path.
-        if unsafe { swr_v1_clients_load_resolv_conf(RESOLV_CONF.as_ptr()) } <= 0 {
+        if load_resolv_conf(RESOLV_CONF) <= 0 {
             log::set_last_error(ErrorCode::SW_ERROR_DNSLOOKUP_NO_SERVER as c_int);
             return Vec::new();
         }
@@ -369,19 +337,13 @@ pub fn lookup<S: DnsSocket>(
         port,
         found: Vec::new(),
     };
-    // SAFETY: a NUL-terminated domain; the trampolines borrow `exchange` for the call.
-    let error = unsafe {
-        swr_v1_clients_dns_query(
-            domain.as_ptr(),
-            family,
-            REQUEST_ID.fetch_add(1, Ordering::Relaxed),
-            (&raw mut exchange).cast(),
-            exchange_send::<S>,
-            exchange_recv::<S>,
-            exchange_push::<S>,
-            c_char::MIN != 0,
-        )
-    };
+    let error = query(
+        domain,
+        family,
+        REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+        &mut exchange,
+        c_char::MIN != 0,
+    );
     if error == INVALID_DOMAIN {
         let domain = domain.to_string_lossy();
         log::warning(
@@ -397,43 +359,36 @@ pub fn lookup<S: DnsSocket>(
 pub use swoole_rs_corebase::{Resolved, swr_v1_clients_getaddrinfo, swr_v1_clients_gethostbyname};
 
 /// The first `nameserver` of the file at `path`, read in `fgets` lines of up to 99
-/// bytes, into `server` (16 bytes, NUL-terminated); 1 found, 0 none, -1 the file
-/// did not open (errno is fopen's).
-///
-/// # Safety
-/// `path` is NUL-terminated; `server` holds 16 bytes.
-unsafe fn resolv_conf(path: *const c_char, server: *mut c_char) -> c_int {
-    // SAFETY: both strings are NUL-terminated.
-    let file = unsafe { libc::fopen(path, c"rt".as_ptr()) };
-    if file.is_null() {
-        return -1;
+/// bytes: the server, if one (at most 15 bytes, nonempty) is named.
+fn resolv_conf(path: &CStr) -> std::io::Result<Option<Vec<u8>>> {
+    let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path.to_bytes());
+    let mut file = std::fs::File::open(path)?;
+    let mut contents = Vec::new();
+    // A failed read (a directory, say) ends `fgets` like the end of the file.
+    if std::io::Read::read_to_end(&mut file, &mut contents).is_err() {
+        contents.clear();
     }
-    let mut line = [0 as c_char; 100];
-    let mut found = 0;
-    // SAFETY: `line` holds 100 bytes and `file` is open.
-    while !unsafe { libc::fgets(line.as_mut_ptr(), 100, file) }.is_null() {
-        // SAFETY: fgets NUL-terminated the line.
-        let text = unsafe { CStr::from_ptr(line.as_ptr()) }.to_bytes();
-        // SAFETY: `text` is the line's bytes.
-        let plan = unsafe { swr_v1_clients_resolv_line(text.as_ptr(), text.len()) };
+    let mut rest = contents.as_slice();
+    while !rest.is_empty() {
+        let end = rest
+            .iter()
+            .take(99)
+            .position(|&byte| byte == b'\n')
+            .map_or(rest.len().min(99), |newline| newline + 1);
+        let (text, next) = rest.split_at(end);
+        rest = next;
+        let text = crate::c_str(text);
+        let plan = resolv_line(text);
         if plan.kind == 0 {
             continue;
         }
-        if plan.kind == 1 && plan.length < 16 {
-            // SAFETY: the caller's `server` holds 16 bytes.
-            let server = unsafe { std::slice::from_raw_parts_mut(server.cast::<u8>(), 16) };
-            let token = text
-                .get(plan.offset..plan.offset + plan.length)
-                .unwrap_or_default();
-            put(server, 0, token);
-            put(server, token.len(), &[0]);
-            found = c_int::from(plan.length != 0);
+        if plan.kind == 1 && plan.length < 16 && plan.length != 0 {
+            let token = text.get(plan.offset..plan.offset + plan.length);
+            return Ok(token.map(<[u8]>::to_vec));
         }
-        break;
+        return Ok(None);
     }
-    // SAFETY: `file` came from fopen.
-    unsafe { libc::fclose(file) };
-    found
+    Ok(None)
 }
 
 /// `get_ip_by_hosts`: the address `domain` has in the hosts file, pushed as text;
@@ -451,6 +406,14 @@ pub unsafe extern "C" fn swr_v1_clients_hosts_lookup(
     context: *mut c_void,
     push: Push,
 ) -> bool {
+    let domain = if domain_length == 0 {
+        &[][..]
+    } else {
+        // SAFETY: per the caller.
+        unsafe { std::slice::from_raw_parts(domain, domain_length) }
+    };
+    // SAFETY: per the caller.
+    let spaces = unsafe { std::slice::from_raw_parts(spaces, 256) };
     let mut path = config().hosts.clone();
     if path.is_empty() {
         path = HOSTS.to_vec();
@@ -471,10 +434,7 @@ pub unsafe extern "C" fn swr_v1_clients_hosts_lookup(
         if let Some(comment) = line.iter_mut().find(|byte| **byte == b'#') {
             *comment = 0;
         }
-        // SAFETY: `line` and `domain` are initialized; `spaces` holds 256 entries.
-        let found = unsafe {
-            swr_v1_clients_hosts_match(line.as_ptr(), line.len(), domain, domain_length, spaces)
-        };
+        let found = hosts_match(&line, domain, spaces);
         if found.found != 0 {
             let address = line
                 .get(found.offset..found.offset + found.length)
@@ -496,32 +456,33 @@ mod tests {
         query: Vec<u8>,
         reply: Vec<u8>,
         results: Vec<String>,
+        cancelled: bool,
     }
 
-    unsafe extern "C" fn sent(context: *mut c_void, data: *const u8, length: usize) -> bool {
-        let exchange = unsafe { &mut *context.cast::<RefCell<Exchange>>() };
-        exchange.borrow_mut().query = unsafe { std::slice::from_raw_parts(data, length) }.to_vec();
-        true
+    impl DnsExchange for Exchange {
+        fn send(&mut self, data: &[u8]) -> bool {
+            self.query = data.to_vec();
+            true
+        }
+        fn recv(&mut self, out: &mut [u8]) -> isize {
+            if self.cancelled {
+                return -isize::try_from(libc::ECANCELED).unwrap();
+            }
+            let id = [self.query[0], self.query[1]];
+            self.reply[..2].copy_from_slice(&id);
+            let n = self.reply.len().min(out.len());
+            out[..n].copy_from_slice(&self.reply[..n]);
+            isize::try_from(n).unwrap()
+        }
+        fn push(&mut self, text: &[u8]) {
+            self.results.push(String::from_utf8(text.to_vec()).unwrap());
+        }
     }
-    unsafe extern "C" fn answered(context: *mut c_void, out: *mut u8, capacity: usize) -> isize {
-        let exchange = unsafe { &*context.cast::<RefCell<Exchange>>() };
-        let mut exchange = exchange.borrow_mut();
-        let id = [exchange.query[0], exchange.query[1]];
-        exchange.reply[..2].copy_from_slice(&id);
-        let n = exchange.reply.len().min(capacity);
-        unsafe { std::ptr::copy_nonoverlapping(exchange.reply.as_ptr(), out, n) };
-        isize::try_from(n).unwrap()
-    }
-    unsafe extern "C" fn cancelled(_: *mut c_void, _: *mut u8, _: usize) -> isize {
-        -isize::try_from(libc::ECANCELED).unwrap()
-    }
+
     unsafe extern "C" fn collect(context: *mut c_void, text: *const u8, length: usize) {
         let exchange = unsafe { &*context.cast::<RefCell<Exchange>>() };
         let text = unsafe { std::slice::from_raw_parts(text, length) };
-        exchange
-            .borrow_mut()
-            .results
-            .push(String::from_utf8(text.to_vec()).unwrap());
+        exchange.borrow_mut().push(text);
     }
 
     fn reply(records: &[(u16, &[u8])]) -> Vec<u8> {
@@ -550,35 +511,24 @@ mod tests {
         packet
     }
 
-    fn query(family: c_int, reply: Vec<u8>, recv: Recv) -> (c_int, Exchange) {
-        let exchange = RefCell::new(Exchange {
+    fn ask(family: c_int, reply: Vec<u8>, cancelled: bool) -> (c_int, Exchange) {
+        let mut exchange = Exchange {
             query: Vec::new(),
             reply,
             results: Vec::new(),
-        });
-        let context = (&raw const exchange).cast_mut().cast();
-        let error = unsafe {
-            swr_v1_clients_dns_query(
-                c"example.test".as_ptr(),
-                family,
-                7,
-                context,
-                sent,
-                recv,
-                collect,
-                true,
-            )
+            cancelled,
         };
-        (error, exchange.into_inner())
+        let error = query(c"example.test", family, 7, &mut exchange, true);
+        (error, exchange)
     }
 
     #[test]
     fn asks_once_and_reads_addresses() {
         let cname: &[u8] = b"\x03www\xc0\x0c";
-        let (error, exchange) = query(
+        let (error, exchange) = ask(
             libc::AF_INET,
             reply(&[(5, cname), (A, &[192, 0, 2, 1]), (A, &[192, 0, 2, 2])]),
-            answered,
+            false,
         );
         assert_eq!(error, 0);
         assert_eq!(exchange.results, ["192.0.2.1", "192.0.2.2"]);
@@ -589,7 +539,7 @@ mod tests {
         );
 
         let six = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-        let (error, exchange) = query(libc::AF_INET6, reply(&[(AAAA, &six)]), answered);
+        let (error, exchange) = ask(libc::AF_INET6, reply(&[(AAAA, &six)]), false);
         assert_eq!(
             (error, exchange.results),
             (
@@ -603,14 +553,14 @@ mod tests {
         );
 
         assert_eq!(
-            query(libc::AF_INET, reply(&[(5, cname)]), answered).0,
+            ask(libc::AF_INET, reply(&[(5, cname)]), false).0,
             RESOLVE_FAILED
         );
-        assert_eq!(query(libc::AF_INET, reply(&[]), cancelled).0, CANCELED);
+        assert_eq!(ask(libc::AF_INET, reply(&[]), true).0, CANCELED);
         let mut truncated = reply(&[(A, &[192, 0, 2, 1])]);
         truncated[7] = 200;
         assert_eq!(
-            query(libc::AF_INET, truncated, answered).1.results,
+            ask(libc::AF_INET, truncated, false).1.results,
             ["192.0.2.1"]
         );
     }
@@ -698,6 +648,7 @@ mod tests {
                 query: Vec::new(),
                 reply: Vec::new(),
                 results: Vec::new(),
+                cancelled: false,
             });
             let port = unsafe {
                 swr_v1_clients_dns_server((&raw const exchange).cast_mut().cast(), collect)
@@ -741,6 +692,7 @@ mod tests {
                 query: Vec::new(),
                 reply: Vec::new(),
                 results: Vec::new(),
+                cancelled: false,
             });
             let context = (&raw const exchange).cast_mut().cast();
             let found = unsafe {

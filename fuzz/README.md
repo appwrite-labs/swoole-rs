@@ -73,16 +73,16 @@ For the clients, `clients_url` compares `Address::assign(url)` from the pinned
 address.cc with `swoole_rs_clients::url` (type, host, port, or a `std::stoi`
 throw), on URLs up to 256 bytes because libstdc++'s
 `std::regex` recurses per character. `clients_cookie` compares
-`swr_v1_clients_cookie` with the Set-Cookie split in
+`swoole_rs_clients::cookie` with the Set-Cookie split in
 `php_swoole_http_parse_set_cookies`, and `clients_domain_decode` compares
-`swr_v1_clients_domain_decode` with dns.cc's `domain_decode` wherever Rust stays
+`swoole_rs_clients::domain_decode` with dns.cc's `domain_decode` wherever Rust stays
 in bounds; other inputs are outside the compared domain and aren't run.
 
 The targets in `src/network.rs` have no oracle side; each checks a parser that
 reads untrusted bytes against the wire format or against invariants of its output.
 `http2_frame` checks `get_frame_length`, `sw_rs_http2_decode_frame` and
 `sw_rs_http2_unpack_setting` against the RFC 9113 frame header and SETTINGS layout.
-`clients_dns_reply` hands `swr_v1_clients_dns_query` any reply (optionally echoing the
+`clients_dns_reply` hands `swoole_rs_clients::dns::query` any reply (optionally echoing the
 query's id): it succeeds exactly when it pushes an address, and each is IP text.
 `http_multipart` feeds the bundled `thirdparty/multipart_parser.c` a boundary and body
 in chunks, and runs `swr_v1_http_multipart_filename` on each part's headers.
