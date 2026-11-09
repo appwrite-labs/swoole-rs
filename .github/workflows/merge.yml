@@ -577,6 +577,8 @@ jobs:
               --output target/phpt/root/$engine.json || [ $? -eq 1 ]
           done
           sudo corpus/upstream/recheck.sh target/phpt/root target/phpt target/phpt/recheck "$@"
+          # run.py writes its reports 0600, so hand root's output back to the runner.
+          sudo chown -R "$(id -u):$(id -g)" target/phpt
           set -- target/phpt/root/*.json
           if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt-root.json | tee -a "$GITHUB_STEP_SUMMARY"
