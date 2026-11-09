@@ -18,7 +18,7 @@ runs:
     # The engines link the Instant Client (--with-swoole-oracle).
     - uses: ./.github/actions/instantclient
     - shell: bash
-      run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql oracle golang-h2demo' | sudo tee -a /etc/hosts
+      run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql oracle golang-h2demo tinyproxy socks5' | sudo tee -a /etc/hosts
     # msgq_capacity sets a 64 MiB queue, which upstream's root test container may; we aren't root.
     - shell: bash
       run: sudo sysctl -w kernel.msgmnb=67108864
