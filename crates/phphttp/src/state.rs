@@ -159,6 +159,9 @@ pub(crate) struct State {
     pub(crate) after_response: u8,
     /// A coroutine server's `WebSocketSettings` (`websocket::SETTING_*` bits).
     pub(crate) websocket_settings: u8,
+    /// Only the reactor's dispatch sets this: it rewrote the body, so its
+    /// `Swoole-Upload-File` headers name files it saved. Other input is a client's.
+    pub(crate) upload_preprocessed: u8,
     /// A coroutine server's or `Request::create`'s `upload_tmp_dir`; a
     /// server's context reads its server's.
     pub(crate) upload_tmp_dir: Option<Rc<CString>>,

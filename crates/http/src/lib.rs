@@ -397,6 +397,11 @@ pub unsafe extern "C" fn swr_v1_http_boundary(
     1
 }
 
+/// Held by the test that switches `LC_CTYPE`, which `strncasecmp` reads, and by tests
+/// whose case-insensitive matches a Turkish locale would change.
+#[cfg(test)]
+pub(crate) static LOCALE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +419,9 @@ mod tests {
             c"tr_TR.ISO8859-9",
             c"tr_TR.UTF-8",
         ];
+        let _locale = LOCALE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for locale in locales {
             // SAFETY: a NUL-terminated name; this test alone changes LC_CTYPE, then restores it.
             if unsafe { setlocale(LC_CTYPE, locale.as_ptr()) }.is_null() {

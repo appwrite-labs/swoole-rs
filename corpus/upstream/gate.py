@@ -62,12 +62,6 @@ PENDING_PORTS = {
         'swoole_http_server/create_request_trailer.phpt',
         'swoole_http_server/request_trailer.phpt',
     ],
-    1938: [
-        'swoole_http2_server/upload_reserved_header.phpt',
-        'swoole_http_server/upload_reserved_header_lifecycle.phpt',
-        'swoole_http_server/upload_reserved_header_request_shutdown.phpt',
-        'swoole_http_server/upload_reserved_header_split.phpt',
-    ],
     1939: [
         'swoole_http2_client_coro/data_peer_frame_size.phpt',
         'swoole_http2_client_coro/settings_frame_size_compat.phpt',

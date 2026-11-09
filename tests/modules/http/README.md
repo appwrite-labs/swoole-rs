@@ -80,6 +80,7 @@ same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-webs
 | `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
 | `has_expect_header`, `get_protocol`, `all_method` | `crates/http/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
+| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http/src/request.rs`: same names, over the bundled multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
 phase): a Rust case binary over the hybrid tree's libswoole.so, built and run by

@@ -37,8 +37,11 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     let ctx = unsafe { *Holder::data(std) };
     if !ctx.is_null() {
         let state = send::state(ctx);
-        // SAFETY: the request's own `tmpfiles` slot (null when it has none).
-        unsafe { z::swr_zend_http_uploads_release(state.request.ztmpfiles.ptr) };
+        if !state.request.ztmpfiles.ptr.is_null() {
+            // SAFETY: the request object, its properties still live, and the
+            // declared `tmpfiles` slot's offset.
+            unsafe { z::swr_zend_http_uploads_release(std, parse::tmpfiles_offset()) };
+        }
         state.request.zobject.ptr = std::ptr::null_mut();
         // SAFETY: the context the object held.
         unsafe { context::swr_v1_phphttp_context_free(ctx) };

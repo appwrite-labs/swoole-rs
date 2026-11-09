@@ -286,13 +286,20 @@ pub(crate) fn minit(codecs: u32) {
     }
 }
 
-/// `swoole_http_init_and_read_property`: the array behind a property slot,
-/// creating it on first use. Like upstream, the slot keeps an uncounted copy.
 /// `Swoole\Http\Request`'s declared `fd` slot.
 pub(crate) fn fd_offset() -> u32 {
     OFFSETS[7].load(Relaxed)
 }
 
+/// `Swoole\Http\Request`'s declared `tmpfiles` slot.
+pub(crate) fn tmpfiles_offset() -> u32 {
+    OFFSETS
+        .get(Property::TmpFiles as usize)
+        .map_or(0, |offset| offset.load(Relaxed))
+}
+
+/// `swoole_http_init_and_read_property`: the array behind a property slot,
+/// creating it on first use. Like upstream, the slot keeps an uncounted copy.
 pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
     let request = &mut state.request;
     let slot: &mut Slot = match which {
@@ -1286,7 +1293,7 @@ unsafe extern "C" fn on_part_header_value(
             state.parse.tmp_content_type = value_.as_ptr();
             state.parse.tmp_content_type_len = length;
         }
-    } else if name.eq_ignore_ascii_case(b"swoole-upload-file") {
+    } else if name.eq_ignore_ascii_case(b"swoole-upload-file") && state.upload_preprocessed != 0 {
         // When the "SW_HTTP_UPLOAD_FILE" header appears in the request, it indicates that the uploaded file has been
         // saved in a temporary file. The binary content in the message body will be replaced with the temporary
         // filename. However, the Content-Length still reflects the original message size, causing llhttp to believe
