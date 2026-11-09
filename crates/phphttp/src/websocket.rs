@@ -45,7 +45,7 @@ static SERVER: Class = Class::new();
 static FRAME: Class = Class::new();
 static CLOSE_FRAME: Class = Class::new();
 /// Frame's declared `fd`, `data`, `opcode`, `flags` and `finish`, as byte offsets
-/// into a Frame or CloseFrame (which keeps its parent's slots), set in MINIT.
+/// into a `Frame` or `CloseFrame` (which keeps its parent's slots), set in MINIT.
 static SLOTS: [AtomicU32; 5] = [const { AtomicU32::new(0) }; 5];
 const SLOT_NAMES: [&CStr; 5] = [c"fd", c"data", c"opcode", c"flags", c"finish"];
 const FD: usize = 0;
