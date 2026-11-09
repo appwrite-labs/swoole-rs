@@ -18,17 +18,10 @@ use crate::view;
 const SW_LOG_ERROR: c_int = 5;
 const SW_USER_WORKER: u8 = 5;
 
-/// `Server::get_worker_by_pid(worker_pid)`.
-///
-/// # Safety
-/// `serv` is a live `Server` with its shared memory.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server17get_worker_by_pidEi")
-)]
-pub unsafe extern "C" fn get_worker_by_pid(serv: *mut c_void, pid: c_int) -> *mut WorkerRecord {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+/// `Server::get_worker_by_pid(worker_pid)`: the first event worker with the pid, then
+/// the task pool's, then a user worker's; null for none.
+#[must_use]
+pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecord {
     let workers = serv.workers();
     let registry = serv.config().worker_registry;
     // SAFETY: the server's live arrays and registry.
@@ -87,39 +80,16 @@ pub unsafe extern "C" fn add_worker(serv: *mut c_void, worker: *mut WorkerRecord
     worker.id().cast_signed()
 }
 
-/// `Server::reset_worker_counter(worker)`.
-///
-/// # Safety
-/// `serv` is a live `Server` with its shared memory; `worker` one of its workers.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server20reset_worker_counterEPNS_6WorkerE")
-)]
-pub unsafe extern "C" fn reset_worker_counter(serv: *mut c_void, worker: *mut WorkerRecord) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    // SAFETY: per the caller, one of the server's live workers.
-    unsafe { Worker::new(worker) }.reset_counters(&serv.counters().concurrency);
+/// `Server::reset_worker_counter(worker)`: the worker's concurrency leaves the server's.
+pub fn reset_worker_counter(serv: view::Server<'_>, worker: Worker<'_>) {
+    worker.reset_counters(&serv.counters().concurrency);
 }
 
 /// `Server::abort_worker(worker)`: reset its counters and, in base mode, retire its sessions.
-///
-/// # Safety
-/// As [`reset_worker_counter`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server12abort_workerEPNS_6WorkerE")
-)]
-pub unsafe extern "C" fn abort_worker(serv: *mut c_void, worker: *mut WorkerRecord) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    // SAFETY: per the caller.
-    unsafe { reset_worker_counter(serv.raw(), worker) };
-    // SAFETY: per the caller.
+pub fn abort_worker(serv: view::Server<'_>, worker: Worker<'_>) {
+    reset_worker_counter(serv, worker);
     if u64::from(serv.config().mode_) == crate::MODE_BASE {
-        // SAFETY: per the caller.
-        let id = unsafe { Worker::new(worker).id() };
-        serv.state().retire_sessions(id);
+        serv.state().retire_sessions(worker.id());
     }
 }
 
@@ -270,4 +240,78 @@ pub unsafe fn create_user_workers(serv: view::Server<'_>) -> bool {
         unsafe { Worker::new(worker).set_kind(SW_USER_WORKER) };
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::records::SessionRecord;
+    use core::sync::atomic::Ordering::SeqCst;
+
+    /// The repo-owned Server witness, formerly `tests/modules/process/worker_retirement.cc` and
+    /// then the hooks fixture's `rust_worker_retirement.abort_and_reset`: first-match PID lookup,
+    /// the session bits `abort_worker` clears (including the last slot and the reserved bits)
+    /// and the worker/shared concurrency reset, over a base-mode server. Unit tests link no
+    /// `swr_v1_server_new` or `create()`, so the test lends the server its shared record, the
+    /// two event workers and the session table those would have allocated.
+    #[test]
+    fn abort_and_reset() {
+        let state = crate::swr_v1_server_state_new();
+        let mut gs = Box::new(unsafe { core::mem::zeroed::<crate::shared::ServerShared>() });
+        let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
+        let serv = unsafe { view::Server::from_raw(head.as_ptr().cast_mut().cast()) };
+        unsafe { serv.config_mut() }.mode_ = 1;
+        unsafe { serv.config_mut() }.gs = (&raw mut *gs).cast();
+        let mut workers = [*WorkerRecord::boxed(), *WorkerRecord::boxed()];
+        let (worker, other) = (&raw mut workers[0], &raw mut workers[1]);
+        unsafe { serv.config_mut() }.worker_num = 2;
+        unsafe { serv.config_mut() }.workers = worker.cast();
+        unsafe { (*worker).set_pid(79) };
+        unsafe { (*other).set_pid(79) };
+        assert_eq!(get_worker_by_pid(serv, 79), worker);
+        unsafe { (*worker).set_pid(80) };
+        assert_eq!(get_worker_by_pid(serv, 79), other);
+        unsafe { (*other).set_pid(-7) };
+        assert_eq!(get_worker_by_pid(serv, -7), other);
+        assert!(get_worker_by_pid(serv, 79).is_null());
+
+        unsafe { (*worker).set_id(1) };
+        unsafe { (*worker).concurrency = 3 };
+        let worker = unsafe { Worker::new(worker) };
+        worker.set_request_count(7);
+        worker.set_response_count(8);
+        worker.set_dispatch_count(9);
+        serv.counters().concurrency.store(7, SeqCst);
+        let size = 1024 * 1024;
+        let last = size - 1;
+        // reactor_bits: the reactor id in the low byte, the reserved bits above it.
+        let mut sessions: Vec<_> = (0..size)
+            .map(|index| SessionRecord {
+                id: i64::try_from(index + 41).unwrap(),
+                fd: 23,
+                reactor_bits: 0x5a12_3400 | 2,
+            })
+            .collect();
+        sessions[0].reactor_bits = 0x5a12_3400 | 1;
+        sessions[last].reactor_bits = 0x5a12_3400 | 1;
+        unsafe { (*serv.state().tables()).session_list = sessions.as_mut_ptr() };
+        abort_worker(serv, worker);
+        assert_eq!(worker.counters(), [0, 0, 0, 0]);
+        assert_eq!(serv.counters().concurrency.load(SeqCst), 4);
+        for (index, slot) in sessions.iter().enumerate() {
+            let edge = index == 0 || index == last;
+            assert_eq!(slot.id, i64::try_from(index + 41).unwrap());
+            assert_eq!(slot.reactor_bits >> 8, 0x5a_1234);
+            assert_eq!(slot.reactor_bits & 0xff, if edge { 1 } else { 2 });
+            assert_eq!(slot.fd, if edge { 0 } else { 23 });
+        }
+        unsafe { (*worker.raw()).concurrency = 9 };
+        serv.counters().concurrency.store(3, SeqCst);
+        reset_worker_counter(serv, worker);
+        assert_eq!(worker.counters()[3], 0);
+        assert_eq!(serv.counters().concurrency.load(SeqCst), 0);
+
+        unsafe { (*serv.state().tables()).session_list = core::ptr::null_mut() };
+        unsafe { crate::swr_v1_server_state_free(state) };
+    }
 }

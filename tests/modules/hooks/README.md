@@ -207,9 +207,9 @@ worker), as GoogleTest's does only in the master. core-tests' counters are
 raw-bytes `swr_v1_process_pool_ipc_send_sync` and `_listener`, as core-tests' adapted
 copy did; `msgqueue_2` discards its child's status, as `spawn_exec_and_wait`'s caller
 does. `SyncClient` becomes `std::net::TcpStream` and `UnixStream`. The Server
-worker-retirement witness (formerly `tests/modules/process/worker_retirement.cc`, built
-in C++14 and C++17 against both engines) is a fixture function now, run once as
-`rust_worker_retirement.abort_and_reset` on the hybrid.
+worker-retirement witness (formerly `tests/modules/process/worker_retirement.cc`, then
+this fixture's `rust_worker_retirement.abort_and_reset`) is crates/server's
+`worker_methods::tests::abort_and_reset`.
 
 | Upstream TEST | Rust case |
 | --- | --- |
