@@ -8,7 +8,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 
 use crate::pool::{
-    swr_v1_process_bailout, swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_respond,
+    raise_bailout, swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_respond,
     swr_v1_process_pool_ipc_set_listener, swr_v1_process_worker_send,
 };
 use crate::process_pool::{
@@ -16,12 +16,12 @@ use crate::process_pool::{
     RUN_DETACH, RUN_DROP_RELOAD_TASK, RUN_KILL_ALL, RUN_PUSH_MESSAGE, RUN_RELOAD,
     RUN_REOPEN_LOGGER, RUN_SET_MAX_REQUEST, RUN_SET_PROTOCOL, RUN_SET_START_ID, RUN_SET_TYPE,
     RUN_SHUTDOWN, RUN_SIGNAL, RUN_SPAWN, RUN_START, RUN_START_CHECK, RUN_STOP, RUN_WAIT,
-    swr_v1_process_pool_create, swr_v1_process_pool_dispatch_event, swr_v1_process_pool_push,
-    swr_v1_process_pool_run_op, swr_v1_worker_symbol,
+    pool_run_op, swr_v1_process_pool_create, swr_v1_process_pool_dispatch_event,
+    swr_v1_process_pool_push, swr_v1_worker_symbol,
 };
 use crate::reload_task::{WARN_KILL_ALL_FAILED, WARN_KILL_ONE_FAILED};
 use crate::worker_globals::{
-    swr_v1_worker_global_get, swr_v1_worker_global_max_requests, swr_v1_worker_global_set,
+    swr_v1_worker_global_get, swr_v1_worker_global_set, worker_global_max_requests,
 };
 use crate::worker_record::{WorkerRecord, swr_v1_worker_exceeded_max_requests};
 use crate::worker_registry::{
@@ -105,9 +105,9 @@ impl Narrow for c_int {
 /// `pool` is a live `ProcessPool` and `worker` null or one of its workers.
 unsafe fn run<R: Narrow>(pool: *mut PoolRecord, worker: *mut WorkerRecord, op: u32, arg: u64) -> R {
     // SAFETY: as the caller guarantees; the table is native's.
-    let result = unsafe { swr_v1_process_pool_run_op(native(), pool, worker, op, arg) };
+    let result = unsafe { pool_run_op(native(), pool, worker, op, arg) };
     if result == RAISE {
-        swr_v1_process_bailout();
+        raise_bailout();
     }
     R::narrow(result)
 }
@@ -580,11 +580,7 @@ pub unsafe extern "C" fn pop_message(
 pub extern "C" fn worker_set_max_request(_worker: *mut WorkerRecord, max_request: u32, grace: u32) {
     // SAFETY: the original random primitive.
     unsafe {
-        swr_v1_worker_global_max_requests(
-            max_request,
-            grace,
-            swoole_rs_corebase::swoole_system_random,
-        );
+        worker_global_max_requests(max_request, grace, swoole_rs_corebase::swoole_system_random);
     }
 }
 
@@ -787,8 +783,7 @@ static LOGGER: std::sync::atomic::AtomicPtr<swoole_rs_utilities::Logger> =
 /// and `delete` (corebase's `LOGGER_*`), which `swoole_init` registers for corebase's
 /// lifecycles.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_process_logger(op: c_int) {
+pub fn logger_op(op: c_int) {
     use std::sync::atomic::Ordering::Relaxed;
     use swoole_rs_corebase::native::{LOGGER_CLOSE, LOGGER_NEW, LOGGER_REOPEN};
     use swoole_rs_utilities::{Logger, process_logger};
@@ -816,8 +811,8 @@ pub extern "C" fn swr_v1_process_logger(op: c_int) {
 pub(crate) mod tests {
     use super::*;
     use crate::pool::{
-        swr_v1_process_pool_ipc_address_of, swr_v1_process_pool_ipc_free,
-        swr_v1_process_pool_ipc_listener, swr_v1_process_pool_ipc_new,
+        pool_ipc_free, pool_ipc_new, swr_v1_process_pool_ipc_address_of,
+        swr_v1_process_pool_ipc_listener,
     };
     use std::sync::Mutex;
     use std::thread::{self, ThreadId};
@@ -887,7 +882,7 @@ pub(crate) mod tests {
         install();
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
-        pool.ipc = swr_v1_process_pool_ipc_new(true);
+        pool.ipc = pool_ipc_new(true);
         pool.ipc_mode = 1;
         // SAFETY: the pool is live and the host a NUL-terminated string.
         let refused = unsafe { listen(&raw const pool, 1, c"127.0.0.1".as_ptr(), 9501, 8, make) };
@@ -930,7 +925,7 @@ pub(crate) mod tests {
             unsafe { CStr::from_ptr(swr_v1_process_pool_ipc_address_of(pool.ipc, &raw mut port)) };
         assert_eq!((address, port), (c"127.0.0.1", 9501), "and its address");
         // SAFETY: the pool's IPC state, not used again.
-        unsafe { swr_v1_process_pool_ipc_free(pool.ipc, keep) };
+        unsafe { pool_ipc_free(pool.ipc, keep) };
     }
 
     #[test]
@@ -992,7 +987,7 @@ pub(crate) mod tests {
     fn a_response_needs_a_connection() {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
-        pool.ipc = swr_v1_process_pool_ipc_new(true);
+        pool.ipc = pool_ipc_new(true);
         // SAFETY: the pool is live and the bytes readable.
         assert_eq!(
             unsafe { response(&raw const pool, b"ok".as_ptr(), 2) },
@@ -1005,7 +1000,7 @@ pub(crate) mod tests {
             "SW_ERROR_INVALID_PARAMS"
         );
         // SAFETY: the pool's IPC state, not used again.
-        unsafe { swr_v1_process_pool_ipc_free(pool.ipc, keep) };
+        unsafe { pool_ipc_free(pool.ipc, keep) };
     }
 
     #[test]

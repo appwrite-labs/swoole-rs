@@ -146,8 +146,7 @@ impl ReapHost {
 ///
 /// # Safety
 /// `host` points to a valid host whose callbacks stay valid for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_reap_loop(host: *const ReapHost) {
+pub unsafe fn reap_loop(host: *const ReapHost) {
     // SAFETY: the caller lends a valid host for the call.
     unsafe { &*host }.run();
 }
@@ -254,7 +253,7 @@ mod tests {
             finish_reload,
             warn,
         };
-        unsafe { swr_v1_process_reap_loop(&raw const host) };
+        unsafe { reap_loop(&raw const host) };
     }
 
     #[test]

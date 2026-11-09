@@ -4,7 +4,7 @@
 use std::ffi::{c_char, c_int, c_void};
 use swoole_rs_process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
-    worker_globals::swr_v1_worker_globals,
+    worker_globals::thread_globals,
     worker_record::{Worker, WorkerRecord},
 };
 use swoole_rs_reactor::{
@@ -171,7 +171,7 @@ pub(crate) fn child_enter(worker: *mut c_void) {
     swoole_set_worker_id(process.id());
     swoole_set_worker_pid(pid);
     // SAFETY: this thread's worker globals; the Process object keeps the worker alive.
-    unsafe { (*swr_v1_worker_globals()).worker = worker.cast() };
+    unsafe { (*thread_globals()).worker = worker.cast() };
 }
 
 /// # Safety

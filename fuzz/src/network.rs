@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_int, c_void};
 use std::net::IpAddr;
-use swoole_rs_clients::dns::swr_v1_clients_dns_query;
+use swoole_rs_clients::dns::{DnsExchange, query};
 use swoole_rs_http::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
 use swoole_rs_http2::{
     frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
@@ -56,42 +56,27 @@ struct Exchange<'a> {
     pushed: Vec<Vec<u8>>,
 }
 
-unsafe extern "C" fn dns_send(context: *mut c_void, data: *const u8, length: usize) -> bool {
-    // SAFETY: `context` is the caller's `RefCell<Exchange>`; `data` holds `length` bytes.
-    let (exchange, query) = unsafe {
-        (
-            &*context.cast::<RefCell<Exchange>>(),
-            std::slice::from_raw_parts(data, length),
-        )
-    };
-    exchange.borrow_mut().query = query.to_vec();
-    true
-}
-
-unsafe extern "C" fn dns_recv(context: *mut c_void, out: *mut u8, capacity: usize) -> isize {
-    // SAFETY: `context` is the caller's `RefCell<Exchange>`.
-    let exchange = unsafe { &*context.cast::<RefCell<Exchange>>() }.borrow();
-    let mut reply = exchange.reply.to_vec();
-    if exchange.echo_id {
-        for (byte, id) in reply.iter_mut().zip(&exchange.query) {
-            *byte = *id;
-        }
+impl DnsExchange for Exchange<'_> {
+    fn send(&mut self, data: &[u8]) -> bool {
+        self.query = data.to_vec();
+        true
     }
-    let n = reply.len().min(capacity);
-    // SAFETY: `out` holds `capacity` writable bytes.
-    unsafe { std::ptr::copy_nonoverlapping(reply.as_ptr(), out, n) };
-    n as isize
-}
 
-unsafe extern "C" fn dns_push(context: *mut c_void, text: *const u8, length: usize) {
-    // SAFETY: `context` is the caller's `RefCell<Exchange>`; `text` holds `length` bytes.
-    let (exchange, text) = unsafe {
-        (
-            &*context.cast::<RefCell<Exchange>>(),
-            std::slice::from_raw_parts(text, length),
-        )
-    };
-    exchange.borrow_mut().pushed.push(text.to_vec());
+    fn recv(&mut self, out: &mut [u8]) -> isize {
+        let mut reply = self.reply.to_vec();
+        if self.echo_id {
+            for (byte, id) in reply.iter_mut().zip(&self.query) {
+                *byte = *id;
+            }
+        }
+        let n = reply.len().min(out.len());
+        out[..n].copy_from_slice(&reply[..n]);
+        n as isize
+    }
+
+    fn push(&mut self, text: &[u8]) {
+        self.pushed.push(text.to_vec());
+    }
 }
 
 /// Any bytes as the DNS server's reply to an A or AAAA query: the resolver reads only
@@ -106,27 +91,19 @@ pub fn dns_reply(bytes: &[u8]) {
     } else {
         libc::AF_INET
     };
-    let exchange = RefCell::new(Exchange {
+    let mut exchange = Exchange {
         reply,
         echo_id: flags & 2 != 0,
         query: Vec::new(),
         pushed: Vec::new(),
-    });
-    let context = (&raw const exchange).cast_mut().cast();
-    // SAFETY: the domain is NUL-terminated; the callbacks take `context`.
-    let result = unsafe {
-        swr_v1_clients_dns_query(
-            c"example.test".as_ptr(),
-            family,
-            u16::from(flags >> 2) + 1,
-            context,
-            dns_send,
-            dns_recv,
-            dns_push,
-            c_char::MIN != 0,
-        )
     };
-    let exchange = exchange.into_inner();
+    let result = query(
+        c"example.test",
+        family,
+        u16::from(flags >> 2) + 1,
+        &mut exchange,
+        c_char::MIN != 0,
+    );
     let expected = if exchange.pushed.is_empty() { 711 } else { 0 };
     assert_eq!(result, expected, "reply {reply:?}");
     for text in &exchange.pushed {

@@ -405,11 +405,7 @@ pub(crate) unsafe fn set_callback(
 /// The Port object at `index` (`property->ports.at(index)`), or null.
 /// # Safety
 /// `object` is a live Server object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_port(
-    object: *mut zend_object,
-    index: usize,
-) -> *mut zval {
+pub(crate) unsafe fn port_at(object: *mut zend_object, index: usize) -> *mut zval {
     // SAFETY: per the caller.
     let ports = &unsafe { property(object) }.ports;
     ports.get(index).copied().unwrap_or(ptr::null_mut())
@@ -425,8 +421,7 @@ pub(crate) fn user_process(object: *mut zend_object, index: usize) -> *mut zval 
 /// The Server class's `create_object`.
 /// # Safety
 /// Zend creates an object of the Server class or a subclass.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_create(ce: *mut zend_class_entry) -> *mut zend_object {
+pub(crate) unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: per the caller; all-zero `ServerData` is an unbound server.
     let object = unsafe { Object::<ServerData>::create(&SERVER, ce) };
     // SAFETY: the object just created.
@@ -440,8 +435,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_create(ce: *mut zend_class_entry) -> *
 /// The Server class's `free_obj`.
 /// # Safety
 /// Zend frees a Server object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
+pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
     // SAFETY: per the caller.
     let data = unsafe { data(object) };
     // SAFETY: `create` boxed it; nothing else frees it.
@@ -471,7 +465,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
             // SAFETY: a Port zval `port_object` allocated.
             let object = unsafe { swoole_rs_zend::object_of(port) };
             // SAFETY: its Port object.
-            unsafe { crate::port::swr_v1_phpserver_port_deref(object) };
+            unsafe { crate::port::deref(object) };
             // SAFETY: the emalloc'd zval, freed once.
             unsafe { swr_zend_efree(port.cast()) };
         }
@@ -496,11 +490,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
 /// object and appended to `$server->ports`.
 /// # Safety
 /// `object` is a live Server object bound to its server; `port` one of its ports.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_add_port(
-    object: *mut zend_object,
-    port: *mut c_void,
-) -> *mut zval {
+pub(crate) unsafe fn add_port(object: *mut zend_object, port: *mut c_void) -> *mut zval {
     // SAFETY: per the caller.
     let serv = unsafe { data(object) }.serv;
     // SAFETY: a live server and port.
@@ -590,7 +580,7 @@ fn bind(call: &Call, serv: *mut c_void) {
         && !port.is_null()
     {
         // SAFETY: `$this`, bound above, and one of its ports.
-        unsafe { swr_v1_phpserver_add_port(object, port) };
+        unsafe { add_port(object, port) };
         index += 1;
     }
     let ce = SERVER.entry();
@@ -1022,7 +1012,7 @@ fn port_facts(zport: *mut zval) -> PortFacts {
     // SAFETY: a live Port object.
     let object = unsafe { object_of(zport) };
     // SAFETY: a bound Port object.
-    let port = unsafe { crate::port::swr_v1_phpserver_port_port(object) };
+    let port = unsafe { crate::port::bound_port(object) };
     // SAFETY: its live ListenPort.
     let c = unsafe { view::port(port) };
     let owner = c.ssl_context;

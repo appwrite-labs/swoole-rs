@@ -11,7 +11,6 @@
 #include "swoole_api.h"
 #include "swoole_coroutine_api.h"
 #include "swoole_coroutine.h"
-#include "swoole_rs_phpcoroutines.h"
 #include "swoole_coroutine_system.h"
 #include "swoole_rs_coroutine_socket.h"
 #include "swoole_protocol.h"

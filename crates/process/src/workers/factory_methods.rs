@@ -5,7 +5,7 @@ use core::ffi::{c_int, c_void};
 use core::ptr;
 use std::sync::OnceLock;
 
-use super::{WorkersCall, swr_v1_workers_run};
+use super::{WorkersCall, workers_run};
 use swoole_rs_corebase::DataHead;
 
 /// The context crates/server's factory call answers over.
@@ -65,7 +65,7 @@ pub unsafe fn run(
         fd: 0,
     };
     // SAFETY: as the caller guarantees; the context lives for the call.
-    unsafe { swr_v1_workers_run(op, arg, (&raw mut ctx).cast(), call) }
+    unsafe { workers_run(op, arg, (&raw mut ctx).cast(), call) }
 }
 
 #[cfg(test)]

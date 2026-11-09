@@ -1,7 +1,7 @@
 //! The coroutine socket's variable-length metadata, which its record owns: the error,
 //! connect and TLS host strings, the proxies, the TLS context and the destructor
 //! callback.
-use crate::co_socket::CoSocket;
+use crate::co_socket::Co;
 use std::ffi::c_void;
 use std::ptr;
 use swoole_rs_corebase::{ProxyState, StringSlot, swr_v1_core_proxy_free};
@@ -75,16 +75,11 @@ impl SocketExtra {
 /// `UringSocket`'s constructors (`swoole_rs_coroutine_socket.h`): with `io_uring`, Rust runs
 /// the socket's operations through the ring (`crate::uring_socket`).
 ///
-/// # Safety
-/// `socket` is a live record whose extra record is set.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_uring(socket: *mut CoSocket) {
+pub extern "C" fn swr_v1_hook_co_socket_uring(socket: Co) {
     #[cfg(feature = "iouring")]
     if let Some(host) = crate::stdio::host() {
-        // SAFETY: as the caller promises.
-        let extra = unsafe { (*socket).extra };
-        // SAFETY: the record's live extra record.
-        unsafe { (*extra).uring = host.uring };
+        socket.with_extra(|extra| extra.uring = host.uring);
     }
     #[cfg(not(feature = "iouring"))]
     let _ = socket;
@@ -92,33 +87,17 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_uring(socket: *mut CoSocket) {
 /// `set_dtor`: `hook(arg, owner)` runs once, when the socket closes or is destroyed.
 ///
 /// # Safety
-/// `socket` is a live record whose extra record is set; `hook` may be called with
-/// `arg` and `owner` until the socket is destroyed.
-pub unsafe fn set_close_hook(
-    socket: *mut CoSocket,
-    owner: *mut c_void,
-    hook: CloseHook,
-    arg: *mut c_void,
-) {
-    // SAFETY: as the caller promises.
-    let extra = unsafe { (*socket).extra };
-    // SAFETY: the record's live extra record.
-    unsafe { (*extra).close_hook = Some((hook, arg, owner)) };
+/// `hook` may be called with `arg` and the native socket until the socket is
+/// destroyed.
+pub unsafe fn set_close_hook(socket: Co, hook: CloseHook, arg: *mut c_void) {
+    socket.with_extra(|extra| extra.close_hook = Some((hook, arg, socket.this())));
 }
 
 /// The destructor callback, once: `close()`'s release and `~Socket`. The socket may be
 /// gone after it returns.
 ///
-/// # Safety
-/// `socket` is a live record whose extra record is set or null.
-pub unsafe fn run_close_hook(socket: *mut CoSocket) {
-    // SAFETY: as the caller promises.
-    let extra = unsafe { (*socket).extra };
-    if extra.is_null() {
-        return;
-    }
-    // SAFETY: the record's live extra record; the callback is taken before it runs.
-    let hook = unsafe { (*extra).close_hook.take() };
+pub(crate) fn run_close_hook(socket: Co) {
+    let hook = socket.with_extra(|extra| extra.close_hook.take()).flatten();
     if let Some((hook, arg, owner)) = hook {
         // SAFETY: the callback set_close_hook's caller lent until now.
         unsafe { hook(arg, owner) };

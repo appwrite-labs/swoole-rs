@@ -3,19 +3,13 @@
 //! SOCKS5 and HTTP proxy exchanges and the TLS handshake) over the socket's record,
 //! its proxies' owners and its resolver context, and `ssl_handshake`'s steps and
 //! waits. Native code keeps only the name lookup (`Host::lookup`).
-use crate::co_io::{
-    NATIVE, available, errno, set_err, swr_v1_hook_co_socket_borrowed_err,
-    swr_v1_hook_co_socket_default_err, swr_v1_hook_co_socket_owned_err,
-};
-use crate::co_socket::{CoSocket, buffer, swr_v1_hook_co_socket_reinit};
-use crate::lifecycle::swr_v1_hook_co_socket_connect;
-use crate::shutdown::swr_v1_hook_socket_bind;
-use crate::socket_members::{assign, put_host, recv, recv_packet, send};
-use crate::socket_scope::{swr_v1_hook_protocol_restore, swr_v1_hook_protocol_scope};
-use crate::socket_tls::{owner, ssl_handshake};
+use crate::co_io::{NATIVE, available, borrowed_err, default_err, errno, owned_err, set_err};
+use crate::co_socket::{Co, CoSocket, reinit};
+use crate::packet::recv_packet;
+use crate::socket_members::{assign, put_host};
+use crate::socket_scope::ProtocolScope;
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::{self as ptr, null_mut};
-use swoole_rs_buffer::string::CppString;
 
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{
@@ -281,8 +275,7 @@ unsafe fn bytes(view: CoreStringView) -> Vec<u8> {
 
 /// A live native socket's `connect(host)`.
 struct Live<'a> {
-    this: *mut c_void,
-    socket: *mut CoSocket,
+    socket: Co,
     /// The `NameResolver::Context` the lookup uses.
     resolve: *mut c_void,
     socks5: Option<&'a ProxyState>,
@@ -292,13 +285,8 @@ struct Live<'a> {
 }
 
 impl Live<'_> {
-    fn record(&self) -> &CoSocket {
-        // SAFETY: the live record, read for one statement at a time.
-        unsafe { &*self.socket }
-    }
-
     fn slot(&self, index: usize) -> *const StringSlot {
-        let extra = self.record().extra;
+        let extra = self.socket.extra();
         // SAFETY: the record's live extra record.
         let strings = unsafe { &raw const (*extra).strings };
         strings.cast::<StringSlot>().wrapping_add(index)
@@ -338,22 +326,15 @@ impl Live<'_> {
         self.socks5
             .map_or(null_mut(), |proxy| ptr::from_ref(proxy).cast_mut())
     }
-
-    fn buffer(&mut self, write: bool) -> &mut CppString {
-        // SAFETY: the live record, nothing else borrowing it during the call.
-        buffer(unsafe { &mut *self.socket }, write)
-    }
 }
 
 impl Connecting for Live<'_> {
     fn domain(&self) -> c_int {
-        self.record().sock_domain
+        self.socket.sock_domain()
     }
 
     fn family(&self) -> c_int {
-        // SAFETY: the record's network::Socket, when it has one.
-        let kind = unsafe { self.record().socket.as_ref() }.map(|socket| socket.socket_type);
-        match kind {
+        match self.socket.net(|socket| socket.socket_type) {
             Some(kind) if type_is(kind, CLASS_INET6) => libc::AF_INET6,
             Some(kind) if type_is(kind, CLASS_INET4) => libc::AF_INET,
             _ => 0,
@@ -375,37 +356,29 @@ impl Connecting for Live<'_> {
     }
 
     fn ssl(&self) -> bool {
-        // SAFETY: the live record.
-        !unsafe { owner(self.socket) }.is_null()
+        !self.socket.tls_owner().is_null()
     }
 
     fn available(&mut self) -> bool {
-        // SAFETY: the live record.
-        unsafe { available(self.socket, RDWR) }
+        available(self.socket, RDWR)
     }
 
     fn set_err(&mut self, code: c_int) {
         if code == LAST_ERROR {
-            // SAFETY: the live record.
-            unsafe { swr_v1_hook_co_socket_default_err(self.socket, log::last_error()) };
+            default_err(self.socket, log::last_error());
         } else {
-            // SAFETY: the live record.
-            unsafe { set_err(self.socket, code) };
+            set_err(self.socket, code);
         }
     }
 
     fn set_err_text(&mut self, code: c_int, text: Option<&[u8]>) {
-        let Some(text) = text else {
-            let message = (NATIVE.strerror)(code);
-            // SAFETY: the live record and that text.
-            unsafe { swr_v1_hook_co_socket_borrowed_err(self.socket, code, message) };
-            return;
-        };
-        // SAFETY: the live record and the text, readable for the call. A failed copy
-        // (allocation) leaves the previous message.
-        unsafe {
-            swr_v1_hook_co_socket_owned_err(self.socket, code, text.as_ptr().cast(), text.len())
-        };
+        match text {
+            None => borrowed_err(self.socket, code, (NATIVE.strerror)(code)),
+            // A failed copy (allocation) leaves the previous message.
+            Some(text) => {
+                owned_err(self.socket, code, text);
+            }
+        }
     }
 
     fn last_error(&self) -> c_int {
@@ -433,8 +406,7 @@ impl Connecting for Live<'_> {
             self.set_slot(SSL_HOST_NAME, &host);
         } else {
             self.set_slot(CONNECT_HOST, &host);
-            // SAFETY: the live record.
-            unsafe { (*self.socket).connect_port = port };
+            self.socket.set_connect_port(port);
         }
     }
 
@@ -443,23 +415,19 @@ impl Connecting for Live<'_> {
     }
 
     fn reinit(&mut self, kind: c_int) -> bool {
-        let mut old = null_mut();
-        // SAFETY: the live record and its native object.
-        if !unsafe { swr_v1_hook_co_socket_reinit(self.socket, self.this, kind, &raw mut old) } {
+        let Some(old) = reinit(self.socket, kind) else {
             log::set_last_error(errno());
             return false;
-        }
+        };
         // SAFETY: the network::Socket the record no longer holds.
         unsafe { socket_free(old) };
         true
     }
 
     fn assign(&mut self) -> bool {
-        // SAFETY: the live slot; its view is NUL-terminated.
-        let view = unsafe { swr_v1_core_string_view(self.slot(CONNECT_HOST)) };
-        let (kind, port) = (self.record().kind, self.record().connect_port);
-        // SAFETY: as above.
-        unsafe { assign(&mut self.address, kind, view.data, view.length, port) }
+        let (kind, port) = (self.socket.kind(), self.socket.connect_port());
+        let host = self.connect_host();
+        assign(&mut self.address, kind, &host, port)
     }
 
     fn lookup(&mut self) -> bool {
@@ -470,15 +438,15 @@ impl Connecting for Live<'_> {
             }
         }
         let name = self.connect_host();
-        let record = self.record();
-        let (domain, state, network) = (record.sock_domain, record.state, record.socket);
-        // SAFETY: the record's network::Socket.
-        let timeout = unsafe { (*network).timeouts.dns };
+        let domain = self.socket.sock_domain();
+        let timeout = self
+            .socket
+            .net(|network| network.timeouts.dns)
+            .unwrap_or(0.0);
         let mut address = Vec::<u8>::new();
         let co = (NATIVE.current)();
         // Locked like wait_event.
-        // SAFETY: the live record's bound state.
-        unsafe { swr_v1_hook_socket_bind(state, RDWR, co) };
+        self.socket.with_state(|state| state.bind(RDWR, co));
         // SAFETY: the resolver context, the name and the Vec `put_host` appends to.
         let with_port = unsafe {
             crate::resolve::socket_lookup(
@@ -490,8 +458,7 @@ impl Connecting for Live<'_> {
                 put_host,
             )
         };
-        // SAFETY: as above.
-        unsafe { swr_v1_hook_socket_bind(state, RDWR, null_mut()) };
+        self.socket.with_state(|state| state.bind(RDWR, null_mut()));
         if address.is_empty() {
             Connecting::set_err(self, log::last_error());
             return false;
@@ -500,8 +467,8 @@ impl Connecting for Live<'_> {
         match address.iter().position(|&b| b == delimiter) {
             Some(at) if with_port => {
                 let (name, port) = address.split_at(at);
-                // SAFETY: the live record.
-                unsafe { (*self.socket).connect_port = stoi(port.get(1..).unwrap_or_default()) };
+                self.socket
+                    .set_connect_port(stoi(port.get(1..).unwrap_or_default()));
                 self.set_slot(CONNECT_HOST, name);
             }
             _ => self.set_slot(CONNECT_HOST, &address),
@@ -511,18 +478,16 @@ impl Connecting for Live<'_> {
 
     fn connect(&mut self) -> bool {
         let to = (&raw const self.address.addr).cast();
-        // SAFETY: the live record and its assigned address.
-        unsafe { swr_v1_hook_co_socket_connect(self.socket, to, self.address.len) }
+        // SAFETY: the assigned address.
+        unsafe { self.socket.connect_addr(to, self.address.len) }
     }
 
     fn send(&mut self, data: &[u8]) -> isize {
-        // SAFETY: the live native socket and the caller's bytes.
-        unsafe { send(self.this, data.as_ptr().cast(), data.len()) }
+        self.socket.send(data)
     }
 
     fn recv(&mut self, into: &mut [u8]) -> isize {
-        // SAFETY: the live native socket and the caller's buffer.
-        unsafe { recv(self.this, into.as_mut_ptr().cast(), into.len()) }
+        self.socket.recv(into)
     }
 
     fn socks5_negotiate(&mut self) -> Vec<u8> {
@@ -550,8 +515,7 @@ impl Connecting for Live<'_> {
         let Some(http) = self.http else {
             return Vec::new();
         };
-        // SAFETY: the live record's TLS owner, when it has one.
-        let tls = unsafe { owner(self.socket) };
+        let tls = self.socket.tls_owner();
         let mut name = Vec::new();
         if !tls.is_null() {
             // SAFETY: the live owner's host name.
@@ -565,63 +529,143 @@ impl Connecting for Live<'_> {
             // SAFETY: its bytes, copied at once.
             name = unsafe { bytes(view) };
         }
-        let write = self.buffer(true);
-        let (at, size) = (write.str, write.size);
-        // SAFETY: the live owner, the name above and the write buffer's capacity.
-        let written =
-            unsafe { swr_v1_http_proxy_connect(http, name.as_ptr(), name.len(), at, size) };
-        self.buffer(true).length = written;
-        // SAFETY: the `written` bytes just packed.
-        unsafe { core::slice::from_raw_parts(at, written) }.to_vec()
+        self.socket.with_buffer(true, |write| {
+            let (at, size) = (write.str, write.size);
+            // SAFETY: the live owner, the name above and the write buffer's capacity.
+            let written =
+                unsafe { swr_v1_http_proxy_connect(http, name.as_ptr(), name.len(), at, size) };
+            write.length = written;
+            // SAFETY: the `written` bytes just packed.
+            unsafe { core::slice::from_raw_parts(at, written) }.to_vec()
+        })
     }
 
     fn http_response(&mut self) -> (isize, bool) {
-        // SAFETY: the live record.
-        let scope = unsafe { swr_v1_hook_protocol_scope(self.socket) };
-        {
-            // SAFETY: the live record, borrowed for this block.
-            let record = unsafe { &mut *self.socket };
+        let scope = ProtocolScope::new(self.socket);
+        self.socket.with(|record| {
             record.open_eof_check = true;
             record.open_length_check = false;
             record.protocol.package_eof_len = 4;
             record.protocol.package_eof = *b"\r\n\r\n\0\0\0\0";
-        }
-        // SAFETY: the live native socket.
-        let n = unsafe { recv_packet(self.this, 0.0) };
-        let mut accepted = false;
-        if n > 0 {
-            let read = self.buffer(false);
-            let (at, length) = (read.str, read.length);
-            // SAFETY: its received bytes.
-            accepted = unsafe { swr_v1_http_proxy_accept(at, length) };
-        }
-        // SAFETY: the scope taken above, over the live record.
-        unsafe { swr_v1_hook_protocol_restore(&raw const scope) };
+        });
+        let n = recv_packet(self.socket, 0.0);
+        let accepted = n > 0
+            && self.socket.with_buffer(false, |read| {
+                // SAFETY: its received bytes.
+                unsafe { swr_v1_http_proxy_accept(read.str, read.length) }
+            });
+        drop(scope);
         (n, accepted)
     }
 
     fn http_done(&mut self, received: bool) {
         for write in [false, true] {
             if write || received {
-                let buffer = self.buffer(write);
-                (buffer.length, buffer.offset) = (0, 0);
+                self.socket.with_buffer(write, |buffer| {
+                    (buffer.length, buffer.offset) = (0, 0);
+                });
             }
         }
     }
 
     fn client(&mut self) {
-        // SAFETY: the live record.
-        unsafe { (*self.socket).ssl_is_server = false };
+        self.socket.set_ssl_is_server(false);
     }
 
     fn handshake(&mut self) -> bool {
-        // SAFETY: the live native socket.
-        unsafe { ssl_handshake(self.this) }
+        self.socket.ssl_handshake()
     }
 }
 
-/// `Socket::connect(host, port)` of the native `socket`, through its proxies; the
-/// lookup uses the socket's `NameResolver::Context`, or a fresh one.
+impl Co {
+    /// `Socket::connect(host, port)`, through the socket's proxies; the lookup uses
+    /// the socket's `NameResolver::Context`, or a fresh one. In a coroutine.
+    #[must_use]
+    pub fn connect_host(self, host: &[u8], port: c_int) -> bool {
+        let mut fallback = NameResolverContext::default();
+        let resolve = match self.resolve_context() {
+            context if context.is_null() => (&raw mut fallback).cast(),
+            context => context,
+        };
+        // SAFETY: the live record, whose proxies stay put while it connects.
+        let [socks5, http] = unsafe { &*self.raw() }.proxies();
+        let mut live = Live {
+            socket: self,
+            resolve,
+            socks5,
+            http,
+            // SAFETY: an all-zero address, as `Address` starts.
+            address: unsafe { core::mem::zeroed() },
+            resolved: false,
+        };
+        connect_host(&mut live, host, port)
+    }
+
+    /// `set_http_proxy` (`http`) or `set_socks5_proxy`: a new proxy, which replaces
+    /// the socket's. A SOCKS5 proxy whose credentials are too long (logged) clears it.
+    /// No connect of the socket is running.
+    pub fn set_proxy(self, http: bool, host: &[u8], port: c_int, user: &[u8], password: &[u8]) {
+        let proxy = if http {
+            let owner = swoole_rs_corebase::swr_v1_core_proxy_new(false).owner;
+            // SAFETY: the new owner and the texts.
+            unsafe {
+                swoole_rs_http::swr_v1_http_proxy_configure(
+                    owner,
+                    host.as_ptr().cast(),
+                    host.len(),
+                    port,
+                    user.as_ptr().cast(),
+                    user.len(),
+                    password.as_ptr().cast(),
+                    password.len(),
+                );
+            }
+            owner
+        } else {
+            match swoole_rs_protocols::admit(user.len(), password.len()) {
+                0 => null_mut(),
+                config => {
+                    let owner = swoole_rs_corebase::swr_v1_core_proxy_new(true).owner;
+                    let texts = [host, user, password].map(|text| CoreStringView {
+                        data: text.as_ptr().cast(),
+                        length: text.len(),
+                    });
+                    // SAFETY: the new owner, which has no native cache to refuse a
+                    // value, and the texts.
+                    unsafe {
+                        swoole_rs_corebase::swr_v1_core_proxy_configure(
+                            owner,
+                            texts.as_ptr(),
+                            port,
+                            config == 2,
+                            self.kind(),
+                        )
+                    };
+                    owner
+                }
+            }
+        };
+        let old = self
+            .with_extra(|extra| {
+                let [socks5, http_proxy] = &mut extra.proxies;
+                core::mem::replace(if http { http_proxy } else { socks5 }, proxy)
+            })
+            .unwrap_or(proxy);
+        // SAFETY: the replaced proxy, released once.
+        unsafe { swoole_rs_corebase::swr_v1_core_proxy_free(old) };
+    }
+
+    /// The socket's HTTP proxy owner, or null.
+    #[must_use]
+    pub fn http_proxy(self) -> *mut ProxyState {
+        self.with(|socket| {
+            let [_, http] = socket.proxies();
+            http.map_or(null_mut(), |http| ptr::from_ref(http).cast_mut())
+        })
+    }
+}
+
+/// `Socket::connect(host, port)` of the native `socket`, for C++.
 ///
 /// # Safety
 /// `socket` is a live native socket in a coroutine and `host` holds `length` bytes.
@@ -632,93 +676,11 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_connect_host(
     length: usize,
     port: c_int,
 ) -> bool {
-    // SAFETY: the caller's host bytes, copied before any effect.
-    let host = unsafe { core::slice::from_raw_parts(host.cast::<u8>(), length) }.to_vec();
-    let mut fallback = NameResolverContext::default();
     // SAFETY: as the caller promises.
-    let record = unsafe { &*socket };
-    let resolve = if record.resolve_context.is_null() {
-        (&raw mut fallback).cast()
-    } else {
-        record.resolve_context
-    };
-    let [socks5, http] = record.proxies();
-    let mut live = Live {
-        this: socket.cast(),
-        socket,
-        resolve,
-        socks5,
-        http,
-        // SAFETY: an all-zero address, as `Address` starts.
-        address: unsafe { core::mem::zeroed() },
-        resolved: false,
-    };
-    connect_host(&mut live, &host, port)
-}
-
-/// `set_http_proxy` (`http`) or `set_socks5_proxy`: a new proxy, which replaces the
-/// socket's. A SOCKS5 proxy whose credentials are too long (logged) clears it.
-///
-/// # Safety
-/// No connect of the socket is running, and each text lends its bytes for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_proxy(
-    record: &mut CoSocket,
-    http: bool,
-    host: CoreStringView,
-    port: c_int,
-    user: CoreStringView,
-    password: CoreStringView,
-) {
-    let proxy = if http {
-        let owner = swoole_rs_corebase::swr_v1_core_proxy_new(false).owner;
-        // SAFETY: the new owner and the caller's texts.
-        unsafe {
-            swoole_rs_http::swr_v1_http_proxy_configure(
-                owner,
-                host.data,
-                host.length,
-                port,
-                user.data,
-                user.length,
-                password.data,
-                password.length,
-            );
-        }
-        owner
-    } else {
-        match swoole_rs_protocols::admit(user.length, password.length) {
-            0 => null_mut(),
-            config => {
-                let owner = swoole_rs_corebase::swr_v1_core_proxy_new(true).owner;
-                let texts = [host, user, password];
-                // SAFETY: the new owner, which has no native cache to refuse a value,
-                // and the caller's texts.
-                unsafe {
-                    swoole_rs_corebase::swr_v1_core_proxy_configure(
-                        owner,
-                        texts.as_ptr(),
-                        port,
-                        config == 2,
-                        record.kind,
-                    )
-                };
-                owner
-            }
-        }
-    };
-    // SAFETY: the record's live metadata.
-    let [socks5, http_proxy] = unsafe { &mut (*record.extra).proxies };
-    let slot = if http { http_proxy } else { socks5 };
-    // SAFETY: the replaced proxy, released once.
-    unsafe { swoole_rs_corebase::swr_v1_core_proxy_free(core::mem::replace(slot, proxy)) };
-}
-
-/// The socket's HTTP proxy owner, or null.
-#[must_use]
-pub fn http_proxy(socket: &CoSocket) -> *mut ProxyState {
-    let [_, http] = socket.proxies();
-    http.map_or(null_mut(), |http| ptr::from_ref(http).cast_mut())
+    let socket = unsafe { Co::new(socket) };
+    // SAFETY: as the caller promises; copied before any effect.
+    let host = unsafe { core::slice::from_raw_parts(host.cast::<u8>(), length) }.to_vec();
+    socket.connect_host(&host, port)
 }
 
 /// How `TlsOps::step` drives the handshake.

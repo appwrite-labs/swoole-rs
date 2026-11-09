@@ -5,7 +5,7 @@
 //! C++ socket (`crate::native`).
 use crate::{
     constants,
-    native::{self, Socket, Transfer},
+    native::{self, Co, Socket, Transfer},
 };
 use libc::{c_char, c_int, iovec};
 use std::{
@@ -258,16 +258,9 @@ pub(crate) fn this<'a>(call: &Call) -> &'a mut Data {
 
 /// `swoole_get_socket_coro`: the constructed, open socket of `$this`; else
 /// errCode/errMsg say EBADF and the method returns false.
-pub(crate) fn open(call: &Call) -> Option<Socket> {
-    let socket = this(call).socket;
-    if socket.is_null() {
-        // SAFETY: a fatal error; it does not return.
-        unsafe { native::swoole_socket_coro_unconstructed() };
-        call.set_bool(false);
-        return None;
-    }
-    // SAFETY: a constructed socket stays live while its object is.
-    if unsafe { native::swoole_socket_coro_is_closed(socket) } {
+pub(crate) fn open(call: &Call) -> Option<Co> {
+    let socket = constructed(call)?;
+    if socket.is_closed() {
         set_error(call, libc::EBADF, strerror(libc::EBADF));
         call.set_bool(false);
         return None;
@@ -283,6 +276,20 @@ pub(crate) fn strerror<'a>(code: c_int) -> &'a CStr {
     unsafe { CStr::from_ptr(text) }
 }
 
+/// The constructed socket of `$this`; else a fatal error, and the method
+/// returns false.
+fn constructed(call: &Call) -> Option<Co> {
+    let socket = this(call).socket;
+    if socket.is_null() {
+        // SAFETY: a fatal error; the handler owns nothing it skips.
+        unsafe { native::unconstructed() };
+        call.set_bool(false);
+        return None;
+    }
+    // SAFETY: a constructed socket stays live while its object is.
+    Some(unsafe { Co::new(socket) })
+}
+
 /// errCode and errMsg.
 fn set_error(call: &Call, code: c_int, message: &CStr) {
     // SAFETY: the registered class and current method object remain live through both property updates.
@@ -292,16 +299,8 @@ fn set_error(call: &Call, code: c_int, message: &CStr) {
 }
 
 /// `socket_coro_sync_properties`: errCode and errMsg from the socket.
-fn sync(call: &Call, socket: Socket) {
-    let mut message: *const c_char = ptr::null();
-    // SAFETY: an open socket; `message` is a writable local.
-    let code = unsafe { native::swoole_socket_coro_error(socket, &raw mut message) };
-    let message = if message.is_null() {
-        c""
-    } else {
-        // SAFETY: errMsg is a NUL-terminated string the socket keeps.
-        unsafe { CStr::from_ptr(message) }
-    };
+fn sync(call: &Call, socket: Co) {
+    let (code, message) = socket.error();
     set_error(call, code, message);
 }
 
@@ -421,11 +420,11 @@ fn construct(call: &Call) {
 /// # Safety
 /// `object` is a live socket object holding its socket.
 unsafe fn init(object: *mut zend_object) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    let mut fields = [0_i64; 4];
     // SAFETY: per the caller.
     let socket = unsafe { SocketObject::data(object) }.socket;
-    // SAFETY: a live socket and four writable slots.
-    unsafe { native::swoole_socket_coro_adopt(socket, fields.as_mut_ptr()) };
+    // SAFETY: as above.
+    let socket = unsafe { Co::new(socket) };
+    let fields = socket.adopt();
     for (name, field) in [c"fd", c"domain", c"type", c"protocol"]
         .into_iter()
         .zip(fields)
@@ -464,10 +463,7 @@ fn bind(call: &Call) {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket and the argument's bytes.
-    if unsafe {
-        native::swoole_socket_coro_bind(socket, address.as_ptr().cast(), address.len(), port)
-    } {
+    if socket.bind(address, port) {
         call.set_bool(true);
     } else {
         sync(call, socket);
@@ -481,8 +477,7 @@ fn listen(call: &Call) {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket.
-    if unsafe { native::swoole_socket_coro_listen(socket, backlog) } {
+    if socket.listen(backlog) {
         call.set_bool(true);
     } else {
         sync(call, socket);
@@ -496,8 +491,7 @@ fn accept(call: &Call) {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket.
-    let connection = unsafe { native::swoole_socket_coro_accept(socket, timeout) };
+    let connection = socket.accept(timeout);
     if connection.is_null() {
         sync(call, socket);
         return call.set_bool(false);
@@ -524,8 +518,7 @@ fn connect(call: &Call) {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket.
-    if unsafe { native::swoole_socket_coro_port_required(socket) } {
+    if socket.port_required() {
         if call.num_args() == 1 {
             warn(
                 false,
@@ -537,11 +530,7 @@ fn connect(call: &Call) {
             return call.set_bool(false);
         }
     }
-    // SAFETY: an open socket and the argument's bytes.
-    let connected = unsafe {
-        native::swoole_socket_coro_connect(socket, host.as_ptr().cast(), host.len(), port, timeout)
-    };
-    if connected {
+    if socket.connect(host, port, timeout) {
         call.set_bool(true);
     } else {
         sync(call, socket);
@@ -552,8 +541,7 @@ fn connect(call: &Call) {
 /// `checkLiveness(): bool`.
 fn check_liveness(call: &Call) {
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket.
-    let alive = unsafe { native::swoole_socket_coro_check_liveness(socket) };
+    let alive = socket.check_liveness();
     sync(call, socket);
     call.set_bool(alive);
 }
@@ -564,8 +552,7 @@ fn bound_cid(call: &Call) {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket.
-    call.set_long(unsafe { native::swoole_socket_coro_bound_cid(socket, event) });
+    call.set_long(socket.bound_cid(event));
 }
 
 /// A length argument: non-positive means `SW_BUFFER_SIZE_BIG`.
@@ -587,18 +574,10 @@ fn peek(call: &Call) {
 }
 
 /// Fill a new string of `length` bytes with one transfer and return it.
-fn receive(call: &Call, socket: Socket, op: Transfer, length: usize, timeout: f64) {
+fn receive(call: &Call, socket: Co, op: Transfer, length: usize, timeout: f64) {
     let buffer = string::alloc(length);
-    // SAFETY: an open socket and a buffer of `length` bytes.
-    let bytes = unsafe {
-        native::swoole_socket_coro_transfer(
-            socket,
-            op as c_int,
-            string::val(buffer).cast(),
-            length,
-            timeout,
-        )
-    };
+    // SAFETY: a buffer of `length` bytes.
+    let bytes = unsafe { socket.transfer(op, string::val(buffer).cast(), length, timeout) };
     sync(call, socket);
     set_received(call, buffer, length, bytes);
 }
@@ -639,8 +618,7 @@ fn recv_packet(call: &Call) {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket.
-    let bytes = unsafe { native::swoole_socket_coro_recv_packet(socket, timeout, true) };
+    let bytes = socket.recv_packet(timeout, true);
     sync(call, socket);
     let Ok(length) = usize::try_from(bytes) else {
         return call.set_bool(false);
@@ -648,8 +626,7 @@ fn recv_packet(call: &Call) {
     if length == 0 {
         return call.set_empty_string();
     }
-    // SAFETY: an open socket holding a packet.
-    let packet = unsafe { native::swoole_socket_coro_pop_packet(socket) };
+    let packet = socket.pop_packet();
     if packet.is_null() {
         return call.set_bool(false);
     }
@@ -671,16 +648,7 @@ fn send_as(call: &Call, op: Transfer) {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket; the transfer only reads the argument's bytes.
-    let sent = unsafe {
-        native::swoole_socket_coro_transfer(
-            socket,
-            op as c_int,
-            data.as_ptr().cast_mut().cast(),
-            data.len(),
-            timeout,
-        )
-    };
+    let sent = socket.send(op, data, timeout);
     sync(call, socket);
     if sent < 0 {
         call.set_bool(false);
@@ -720,19 +688,12 @@ unsafe fn values(array: *mut zval) -> impl Iterator<Item = *mut zval> {
 
 /// The vectors argument: its element count, or false (with errCode EINVAL)
 /// past `IOV_MAX`.
-fn vector_count(socket: Socket, array: *mut zval) -> Option<usize> {
+fn vector_count(socket: Co, array: *mut zval) -> Option<usize> {
     // SAFETY: a live array argument.
     let count = unsafe { value::count(array) };
     if count > IOV_MAX {
-        let message = CString::new(format!("The maximum of iov count is {IOV_MAX}"));
-        // SAFETY: an open socket and a NUL-terminated message it copies.
-        unsafe {
-            native::swoole_socket_coro_set_error(
-                socket,
-                libc::EINVAL,
-                message.unwrap_or_default().as_ptr(),
-            );
-        }
+        let message = format!("The maximum of iov count is {IOV_MAX}");
+        socket.set_error(libc::EINVAL, message.as_bytes());
         return None;
     }
     usize::try_from(count).ok()
@@ -770,7 +731,7 @@ fn write_vector_as(call: &Call, op: c_int) {
     sync(call, socket);
 }
 
-fn write_vector(call: &Call, socket: Socket, op: c_int, array: *mut zval, timeout: f64) {
+fn write_vector(call: &Call, socket: Co, op: c_int, array: *mut zval, timeout: f64) {
     let Some(count) = vector_count(socket, array) else {
         return call.set_bool(false);
     };
@@ -802,16 +763,8 @@ fn write_vector(call: &Call, socket: Socket, op: c_int, array: *mut zval, timeou
             iov_len: bytes.len(),
         });
     }
-    // SAFETY: an open socket; the writes only read the elements' bytes.
-    let (written, _, _) = unsafe {
-        native::swoole_socket_coro_vector(
-            socket,
-            op,
-            vectors.as_mut_ptr(),
-            c_int::try_from(vectors.len()).unwrap_or(c_int::MAX),
-            timeout,
-        )
-    };
+    // SAFETY: the writes only read the elements' bytes.
+    let (written, _, _) = unsafe { socket.vector(op, &vectors, timeout) };
     if written < 0 {
         call.set_bool(false);
     } else {
@@ -837,7 +790,7 @@ fn read_vector_as(call: &Call, op: c_int) {
     sync(call, socket);
 }
 
-fn read_vector(call: &Call, socket: Socket, op: c_int, array: *mut zval, timeout: f64) {
+fn read_vector(call: &Call, socket: Co, op: c_int, array: *mut zval, timeout: f64) {
     let Some(count) = vector_count(socket, array) else {
         return call.set_bool(false);
     };
@@ -876,16 +829,8 @@ fn read_vector(call: &Call, socket: Socket, op: c_int, array: *mut zval, timeout
         });
         total += length;
     }
-    // SAFETY: an open socket and buffers of the listed lengths.
-    let (read, stopped, offset) = unsafe {
-        native::swoole_socket_coro_vector(
-            socket,
-            op,
-            vectors.as_mut_ptr(),
-            c_int::try_from(vectors.len()).unwrap_or(c_int::MAX),
-            timeout,
-        )
-    };
+    // SAFETY: unshared buffers of the listed lengths.
+    let (read, stopped, offset) = unsafe { socket.vector(op, &vectors, timeout) };
     let read = match usize::try_from(read) {
         Ok(0) | Err(_) => {
             release(&vectors);
@@ -949,9 +894,8 @@ fn send_file(call: &Call) {
         return call.set_bool(false);
     }
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket; a string argument's bytes are NUL-terminated.
-    if unsafe { native::swoole_socket_coro_sendfile(socket, file.as_ptr().cast(), offset, length) }
-    {
+    // SAFETY: a string argument's bytes are NUL-terminated.
+    if unsafe { socket.sendfile(file.as_ptr().cast(), offset, length) } {
         call.set_bool(true);
     } else {
         sync(call, socket);
@@ -970,10 +914,8 @@ fn recvfrom(call: &Call) {
     let Some(socket) = open(call) else { return };
     let length = buffer_length(BUFFER_SIZE_BIG);
     let buffer = string::alloc(length);
-    // SAFETY: an open socket and a buffer of `length` bytes.
-    let bytes = unsafe {
-        native::swoole_socket_coro_recvfrom(socket, string::val(buffer).cast(), length, timeout)
-    };
+    // SAFETY: a buffer of `length` bytes.
+    let bytes = unsafe { socket.recvfrom(string::val(buffer).cast(), length, timeout) };
     sync(call, socket);
     let Ok(used @ 1..) = usize::try_from(bytes) else {
         // SAFETY: the buffer was never shared.
@@ -997,12 +939,8 @@ fn recvfrom(call: &Call) {
 }
 
 /// `address` and `port` of the socket's last address into `array`.
-pub(crate) fn add_address(array: *mut zval, socket: Socket) {
-    let mut port = 0;
-    // SAFETY: an open socket and a writable local.
-    let address = unsafe { native::swoole_socket_coro_address(socket, &raw mut port) };
-    // SAFETY: the socket's NUL-terminated address text.
-    let address = unsafe { CStr::from_ptr(address) };
+pub(crate) fn add_address(array: *mut zval, socket: Co) {
+    let (address, port) = socket.address();
     // SAFETY: a live array.
     unsafe { value::add_string(array, c"address", address) };
     // SAFETY: as above.
@@ -1018,17 +956,7 @@ fn sendto(call: &Call) {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket and the arguments' bytes.
-    let sent = unsafe {
-        native::swoole_socket_coro_sendto(
-            socket,
-            address.as_ptr().cast(),
-            address.len(),
-            port,
-            data.as_ptr().cast(),
-            data.len(),
-        )
-    };
+    let sent = socket.sendto(address, port, data);
     sync(call, socket);
     if sent < 0 {
         call.set_bool(false);
@@ -1046,8 +974,7 @@ fn shutdown(call: &Call) {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket.
-    if unsafe { native::swoole_socket_coro_shutdown(socket, how) } {
+    if socket.shutdown(how) {
         call.set_bool(true);
     } else {
         sync(call, socket);
@@ -1070,8 +997,7 @@ fn close(call: &Call) {
 /// `getsockname(): array|false`.
 fn getsockname(call: &Call) {
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket.
-    if !unsafe { native::swoole_socket_coro_getsockname(socket) } {
+    if !socket.getsockname() {
         sync(call, socket);
         return call.set_bool(false);
     }
@@ -1083,24 +1009,11 @@ fn getsockname(call: &Call) {
 /// `getpeername(): array|false`.
 fn getpeername(call: &Call) {
     let Some(socket) = open(call) else { return };
-    // Room for the longest address text: a Unix socket path.
-    let mut address = [0 as c_char; 256];
-    let mut port = 0;
-    // SAFETY: an open socket and writable locals of the sizes given.
-    let found = unsafe {
-        native::swoole_socket_coro_getpeername(
-            socket,
-            address.as_mut_ptr(),
-            address.len(),
-            &raw mut port,
-        )
-    };
-    if !found {
+    let Some((address, port)) = socket.getpeername() else {
         sync(call, socket);
         return call.set_bool(false);
-    }
-    // SAFETY: the hook NUL-terminates what it writes.
-    let address = unsafe { CStr::from_ptr(address.as_ptr()) };
+    };
+    let address = address.as_c_str();
     let array = call.return_value();
     // SAFETY: the return slot is writable and holds nothing yet.
     unsafe { value::array_init(array) };
@@ -1121,10 +1034,7 @@ fn cancel(call: &Call) {
     } else {
         EVENT_WRITE
     };
-    // SAFETY: an open socket.
-    call.set_bool(unsafe {
-        native::swoole_socket_coro_cancel(socket, c_int::try_from(event).unwrap_or(0))
-    });
+    call.set_bool(socket.cancel(c_int::try_from(event).unwrap_or(0)));
 }
 
 /// `setProtocol(array $settings): bool`; the socket is checked first.
@@ -1147,15 +1057,14 @@ fn set_protocol(call: &Call) {
 /// `sslHandshake(): bool`.
 fn ssl_handshake(call: &Call) {
     let Some(socket) = open(call) else { return };
-    // SAFETY: an open socket.
-    call.set_bool(unsafe { native::swoole_socket_coro_ssl_handshake(socket) });
+    call.set_bool(socket.ssl_handshake());
 }
 
 /// `isClosed(): bool`: unconstructed counts as closed.
 fn is_closed(call: &Call) {
     let socket = this(call).socket;
     // SAFETY: a constructed socket is live.
-    call.set_bool(socket.is_null() || unsafe { native::swoole_socket_coro_is_closed(socket) });
+    call.set_bool(socket.is_null() || unsafe { Co::new(socket) }.is_closed());
 }
 
 swoole_rs_zend::handlers! {
@@ -1300,7 +1209,7 @@ pub unsafe extern "C" fn php_swoole_socket_is_closed(value: *const zval) -> bool
     // SAFETY: copy the object's optional core socket pointer.
     let socket = unsafe { socket_of(object) };
     // SAFETY: a non-null core socket remains live while this object is borrowed.
-    socket.is_null() || unsafe { native::swoole_socket_coro_is_closed(socket) }
+    socket.is_null() || unsafe { Co::new(socket) }.is_closed()
 }
 
 /// `php_swoole_socket_set_error_properties(zobject, socket)`: its error.
@@ -1311,11 +1220,10 @@ pub unsafe extern "C" fn php_swoole_socket_set_error_properties_socket(
     value: *const zval,
     socket: Socket,
 ) {
-    let mut message = ptr::null();
     // SAFETY: per the caller.
-    let code = unsafe { native::swoole_socket_coro_error(socket, &raw mut message) };
+    let (code, message) = unsafe { Co::new(socket) }.error();
     // SAFETY: as above; the message lives in the socket.
-    unsafe { php_swoole_socket_set_error_properties(value, code, message) };
+    unsafe { php_swoole_socket_set_error_properties(value, code, message.as_ptr()) };
 }
 /// `php_swoole_socket_set_error_properties(zobject, code)`: `swoole_strerror(code)`.
 /// # Safety

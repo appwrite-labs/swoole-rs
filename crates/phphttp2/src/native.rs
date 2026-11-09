@@ -153,10 +153,10 @@ pub(crate) unsafe fn swoole_http2_client_coro_create_socket(
 
 unsafe extern "C" fn socket_closed(conn: *mut c_void, _: *mut c_void) {
     // SAFETY: the client's conn outlives its socket.
-    unsafe { crate::client::swr_v1_phphttp2_client_socket_dtor(conn) };
+    unsafe { crate::client::socket_dtor(conn) };
 }
 
-/// The close hook (`swr_v1_phphttp2_client_socket_dtor(conn)`) and zero copy.
+/// The close hook (`socket_dtor(conn)`) and zero copy.
 pub(crate) unsafe fn swoole_http2_client_coro_setup(socket: Socket, conn: *mut c_void) {
     // SAFETY: per the caller.
     unsafe { co::close_hook(socket, socket_closed, conn) };

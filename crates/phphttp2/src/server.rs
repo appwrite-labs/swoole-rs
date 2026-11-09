@@ -1054,7 +1054,7 @@ pub unsafe extern "C" fn swoole_http2_server_on_receive(
                 default_ctx.cast(),
                 max_body_size,
                 false,
-                swoole_rs_phphttp::swr_v1_phphttp_server_http2_request,
+                swoole_rs_phphttp::http2_request_handler,
                 ptr::null_mut(),
             );
         };

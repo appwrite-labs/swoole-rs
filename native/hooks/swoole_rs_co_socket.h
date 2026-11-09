@@ -37,36 +37,10 @@ struct swr_v1_co_socket {
     void *extra_;
 };
 
-struct swr_v1_co_protocol_scope {
-    swr_v1_co_socket *socket;
-    bool eof;
-    bool length;
-    swoole::Protocol protocol;
-};
-struct swr_v1_co_timeout_scope {
-    swr_v1_co_socket *socket_;
-    double timeout;
-    swoole::TimeoutType type;
-    double original_timeout[16];
-    double startup_time;
-};
-static_assert(sizeof(swr_v1_co_protocol_scope) == 80 && offsetof(swr_v1_co_protocol_scope, protocol) == 16, "Protocol scope ABI");
-static_assert(sizeof(swr_v1_co_timeout_scope) == 160 && offsetof(swr_v1_co_timeout_scope, original_timeout) == 24 &&
-              offsetof(swr_v1_co_timeout_scope, startup_time) == 152, "Timeout scope ABI");
-extern "C" {
-swr_v1_co_protocol_scope swr_v1_hook_protocol_scope(swr_v1_co_socket *socket);
-void swr_v1_hook_protocol_restore(const swr_v1_co_protocol_scope *scope);
-swr_v1_co_timeout_scope swr_v1_hook_timeout_scope(swr_v1_co_socket *socket, double timeout, int kind);
-void swr_v1_hook_timeout_restore(const swr_v1_co_timeout_scope *scope);
-}
-
 extern "C" {
 /* ~Socket: runs the destructor callback if close() has not, then frees the buffers,
  * the network::Socket, the bound state and the extra record (strings, proxies, TLS). */
 void swr_v1_hook_co_socket_release(swr_v1_co_socket *socket);
-void swr_v1_hook_co_socket_default_err(swr_v1_co_socket *socket, int last_error);
-void swr_v1_hook_co_socket_borrowed_err(swr_v1_co_socket *socket, int error, const char *message);
-int swr_v1_hook_co_socket_owned_err(swr_v1_co_socket *socket, int error, const char *bytes, size_t length);
 /* The public constructors, by how: Socket(domain, type, protocol), Socket(SocketType),
  * Socket(fd, SocketType), Socket(fd, domain, type, protocol). owner is the Socket the
  * network::Socket points back to. Returns what it did, for swr_v1_hook_co_socket_created. */
@@ -75,41 +49,13 @@ uint32_t swr_v1_hook_co_socket_new(
     swr_v1_co_socket *socket, void *owner, int how, int fd, int socket_type, int domain, int kind, int protocol);
 /* Socket::created: a failed socket(2) becomes the last error; the others are warnings. */
 void swr_v1_hook_co_socket_created(const swr_v1_co_socket *socket, uint32_t result);
-/* pop_read_buffer / pop_write_buffer. */
-void *swr_v1_hook_co_socket_pop_buffer(swr_v1_co_socket *socket, bool write);
 /* UringSocket's constructors (swoole_rs_coroutine_socket.h): with io_uring, Rust runs the socket's
- * members through the ring (crates/hooks/src/uring_socket.rs). */
-void swr_v1_hook_co_socket_uring(swr_v1_co_socket *socket);
-
+ * members through the ring (crates/hooks/src/uring_socket.rs). Rust's `Co` is the
+ * record's pointer (`#[repr(transparent)]`). */
+typedef swr_v1_co_socket *swr_v1_co;
+void swr_v1_hook_co_socket_uring(swr_v1_co socket);
 /* Socket::connect(host, port) (crates/hooks/src/connect.rs), through the socket's proxies. */
 bool swr_v1_hook_co_socket_connect_host(swr_v1_co_socket *socket, const char *host, size_t length, int port);
-/* Complete packet/buffer reads, including availability, buffer and timer. */
-ssize_t swr_v1_hook_co_socket_recv_packet(swr_v1_co_socket *socket, double timeout);
-/* The lifecycle (crates/hooks/src/lifecycle.rs): shutdown(how), cancel(event), close()
-   (the socket may be gone after it returns true), check_liveness() and connect(addr). */
-bool swr_v1_hook_co_socket_shutdown(swr_v1_co_socket *socket, int how);
-bool swr_v1_hook_co_socket_cancel(swr_v1_co_socket *socket, uint32_t event);
-bool swr_v1_hook_co_socket_close(swr_v1_co_socket *socket);
-bool swr_v1_hook_co_socket_check_liveness(swr_v1_co_socket *socket);
-bool swr_v1_hook_co_socket_connect(swr_v1_co_socket *socket, const struct sockaddr *addr, socklen_t length);
-/* set_err(e), check_return_value, is_available, get_bound_cid, check_bound_co,
-   get_event_str (a static string) and TimeoutController::has_timedout (startup is
-   its clock, now microtime()). */
-void swr_v1_hook_co_socket_set_err(swr_v1_co_socket *socket, int error);
-void swr_v1_hook_co_socket_check(swr_v1_co_socket *socket, ssize_t result);
-bool swr_v1_hook_co_socket_available(swr_v1_co_socket *socket, uint32_t event);
-long swr_v1_hook_co_socket_bound_cid(const swr_v1_co_socket *socket, uint32_t event);
-void swr_v1_hook_co_socket_check_bound(const swr_v1_co_socket *socket, uint32_t event);
-const char *swr_v1_hook_co_socket_event_str(const swr_v1_co_socket *socket, uint32_t event);
-bool swr_v1_hook_co_socket_timed_out(swr_v1_co_socket *socket, double timeout, double *startup, double now, int kind);
-/* wait_event for the current coroutine: barrier (when given) stays installed for the wait;
-   buffer, when not null, is a write's buffer slot. */
-bool swr_v1_hook_co_socket_wait(swr_v1_co_socket *socket,
-                                uint32_t event,
-                                swr_v1_hook_barrier barrier,
-                                void *barrier_state,
-                                char **buffer,
-                                size_t length);
 }
 
 static_assert(sizeof(swoole::Protocol) == 64 && offsetof(swoole::Protocol, package_max_length) == 16 &&

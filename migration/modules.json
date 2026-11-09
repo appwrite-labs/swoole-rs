@@ -909,7 +909,6 @@
       ],
       "owned_paths": [
         "crates/phpcoroutines/",
-        "native/phpcoroutines/",
         "migration/patches/phpcoroutines/",
         "tests/modules/phpcoroutines/"
       ],

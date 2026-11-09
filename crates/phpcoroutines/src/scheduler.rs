@@ -264,10 +264,8 @@ fn truthy(value: *mut zval) -> bool {
 }
 
 /// `php_swoole_set_coroutine_option`.
-/// # Safety
-/// `options` is a live array.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_set_coroutine_option(options: *mut zend_array) {
+pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
+    let options = options.as_ptr();
     if let Some(value) = get(options, c"max_coro_num").or_else(|| get(options, c"max_coroutine")) {
         let max = long(value);
         let max = if max <= 0 {
@@ -289,7 +287,7 @@ pub unsafe extern "C" fn php_swoole_set_coroutine_option(options: *mut zend_arra
         set_hook_flags(long(value) as u32);
     }
     if let Some(value) = get(options, c"enable_preemptive_scheduler") {
-        runtime::swr_v1_phpcoroutines_set_preemptive(u8::from(truthy(value)));
+        runtime::set_preemptive(truthy(value));
     }
     if let Some(value) = get(options, c"c_stack_size").or_else(|| get(options, c"stack_size")) {
         host::set_stack_size(value);
@@ -338,7 +336,7 @@ pub(crate) fn set_hook_flags(flags: u32) {
         // SAFETY: our array, merged.
         unsafe { zval_ptr_dtor(&raw mut array) };
     }
-    runtime::swr_v1_phpcoroutines_set_hook_flags(flags);
+    runtime::set_hook_flags(flags);
 }
 
 /// `PHPCoroutine::set_hook_flags` for C++.
@@ -358,15 +356,13 @@ pub(crate) fn free_options() {
 
 /// `Co::set(array $options)`/`Scheduler::set()`.
 fn set(call: &Call) {
-    let Ok(options) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+    let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
         call.set_bool(false);
         return;
     };
-    // SAFETY: an array argument.
-    let options = unsafe { value::table(options) };
-    host::set_global_option(options);
-    // SAFETY: a live array.
-    unsafe { php_swoole_set_coroutine_option(options) };
+    swoole_rs_phpswoole::php_swoole_set_global_option(array);
+    set_coroutine_option(array);
+    let options = array.as_ptr();
     if let Some(value) = get(options, c"dns_cache_expire") {
         host::set_dns_cache_expire(long(value));
     }

@@ -1,12 +1,10 @@
 //! Upstream's `core-tests/src/coroutine/socket.cpp`, one function per TEST with the
 //! same inputs and expected values, over the hybrid's coroutine `Socket`.
 //!
-//! A `Socket` is made and deleted by `swr_v1_hook_co_socket_make` and `_free`
-//! (crates/hooks/src/co_socket.rs), as the hybrid's own callers make theirs. Its
-//! out-of-line members are Rust under their upstream symbols
-//! (crates/hooks/src/socket_members.rs); its inline ones call the
-//! `swr_v1_hook_co_socket_*` exports with the object, which is the record, as the
-//! header does. Fields are read through the hybrid's record layout
+//! A `Socket` is the hooks crate's `Co`, reached by symbol: its members are
+//! exported under their upstream symbols, and the rest as `swr_v1_hook_co_socket_*`,
+//! only for this package (crates/hooks/src/socket_symbols.rs, built with
+//! `upstream-symbols`). Fields are read through the hybrid's record layout
 //! (native/hooks/swoole_rs_co_socket.h). The TLS setters write the socket's
 //! `SSLContext` owner (crates/tls/src/owned.rs) as `enable_ssl_encrypt` and the
 //! `set_ssl_*` members did; `TimeoutSetter` and `TimeoutController` are the
@@ -149,13 +147,13 @@ struct CppString {
     allocator: *const c_void,
 }
 
-/// `swr_v1_co_timeout_scope`: `Socket::TimeoutSetter` and `TimeoutController`.
+/// crates/hooks' `TimeoutScope`: `Socket::TimeoutSetter` and `TimeoutController`.
 #[repr(C)]
 struct TimeoutScope {
     socket: *mut Record,
     timeout: f64,
     kind: c_int,
-    original: [f64; 16],
+    original: [f64; 4],
     startup: f64,
 }
 
@@ -352,7 +350,7 @@ unsafe extern "C" {
         now: f64,
         kind: c_int,
     ) -> bool;
-    fn swr_v1_hook_co_socket_pop_buffer(socket: *mut Record, write: bool) -> *mut CppString;
+
     fn swr_v1_hook_timeout_scope(socket: *mut Record, timeout: f64, kind: c_int) -> TimeoutScope;
     fn swr_v1_hook_timeout_restore(scope: *const TimeoutScope);
 
@@ -1635,10 +1633,9 @@ fn buffer() {
     let rbuf = ptr::from_mut(sock.read_buffer());
     let wbuf = sock.write_buffer();
 
-    // SAFETY: the live record.
-    let rbuf_pop = unsafe { swr_v1_hook_co_socket_pop_buffer(sock.rec(), false) };
-    // SAFETY: as above.
-    let wbuf_pop = unsafe { swr_v1_hook_co_socket_pop_buffer(sock.rec(), true) };
+    // `pop_read_buffer` and `pop_write_buffer`: the record lets go of each buffer.
+    let rbuf_pop = std::mem::replace(&mut sock.record().read_buffer, ptr::null_mut());
+    let wbuf_pop = std::mem::replace(&mut sock.record().write_buffer, ptr::null_mut());
 
     assert_eq!(rbuf, rbuf_pop);
     assert_eq!(wbuf, wbuf_pop);
@@ -2417,23 +2414,12 @@ fn selected_timeout_restore_and_copy() {
 // ../fixture.cc's (formerly tests/modules/hooks/socket_scopes.cpp and dns_request_owner.cpp).
 #[link(name = "swoole")]
 unsafe extern "C-unwind" {
-    fn swr_case_protocol_snapshot_and_copy_restore();
-    fn swr_case_error_text_publication();
     fn swr_case_numeric_host_owner_and_independent_copies();
     fn swr_case_hints_vectors_and_failure_publication();
     fn swr_case_native_output_append_exception_is_contained();
     fn swr_case_actual_async_numeric_results();
 }
 
-fn protocol_snapshot_and_copy_restore() {
-    // SAFETY: in a coroutine.
-    run(|| unsafe { swr_case_protocol_snapshot_and_copy_restore() });
-}
-
-fn error_text_publication() {
-    // SAFETY: in a coroutine.
-    run(|| unsafe { swr_case_error_text_publication() });
-}
 
 fn numeric_host_owner_and_independent_copies() {
     // SAFETY: the fixture's case.
@@ -2456,16 +2442,9 @@ fn actual_async_numeric_results() {
 }
 
 /// `rust_socket_scopes.<name>`: the timeout scope, whose C++ API left the hybrid
-/// header, and the two C++ witnesses.
+/// header. The protocol scope and error text witnesses are crates/hooks unit tests
+/// (`socket_scope::tests`, `co_io::tests::error_text_publication`).
 pub(super) const SCOPE_CASES: super::Cases = &[
-    (
-        "protocol_snapshot_and_copy_restore",
-        protocol_snapshot_and_copy_restore,
-    ),
-    (
-        "error_text_publication",
-        error_text_publication,
-    ),
     (
         "selected_timeout_restore_and_copy",
         selected_timeout_restore_and_copy,

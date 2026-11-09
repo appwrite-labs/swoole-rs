@@ -9,7 +9,7 @@ use swoole_rs_process::methods::{
     push_message, swoole_get_worker_id, swoole_get_worker_type, swoole_set_worker_id,
     swoole_set_worker_type,
 };
-use swoole_rs_process::worker_globals::{swr_v1_worker_global_detach, swr_v1_worker_globals};
+use swoole_rs_process::worker_globals::{thread_globals, worker_global_detach};
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_shutdown};
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
@@ -157,7 +157,7 @@ fn callback(ctx: &Context, op: u32) -> Option<u64> {
         OP_ON_WORKER_STOP => (CB_WORKER_STOP, ctx.worker.cast()),
         OP_ON_WORKER_EXIT => {
             // SAFETY: this thread's worker globals.
-            let current = unsafe { (*swr_v1_worker_globals()).worker };
+            let current = unsafe { (*thread_globals()).worker };
             (CB_WORKER_EXIT, current.cast())
         }
         OP_ON_BEFORE_SHUTDOWN => (CB_BEFORE_SHUTDOWN, core::ptr::null_mut()),
@@ -219,7 +219,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             crate::worker_methods::reset_worker_counter(serv, worker);
         },
         // SAFETY: the context's live worker.
-        OP_DETACH_WORKER => unsafe { swr_v1_worker_global_detach(worker) },
+        OP_DETACH_WORKER => unsafe { worker_global_detach(worker) },
         OP_WORKER_ENTER => {
             swoole_set_worker_id(ctx.worker().id());
             swoole_set_worker_type(SW_EVENT_WORKER);
@@ -340,15 +340,16 @@ fn set_cpu_affinity(config: &crate::ServerConfig, worker_id: u32) {
     const ORIGIN: &core::ffi::CStr = c"Worker_set_cpu_affinity";
     /// `Server::MODE_THREAD`.
     const MODE_THREAD: u8 = 3;
-    // SAFETY: the server's live CPU list and its length.
-    let outcome = unsafe {
-        swoole_rs_process::affinity::swr_v1_process_worker_affinity(
-            worker_id,
-            config.cpu_affinity_available,
-            config.cpu_affinity_available_num,
-            config.mode_ == MODE_THREAD,
-        )
-    };
+    let available = (!config.cpu_affinity_available.is_null()).then(|| {
+        let len = usize::try_from(config.cpu_affinity_available_num).unwrap_or(0);
+        // SAFETY: the server's live CPU list and its length.
+        unsafe { core::slice::from_raw_parts(config.cpu_affinity_available, len) }
+    });
+    let outcome = swoole_rs_process::affinity::worker_affinity(
+        worker_id,
+        available,
+        config.mode_ == MODE_THREAD,
+    );
     match outcome.status {
         1 => log::sys_warning_errno(
             outcome.error,

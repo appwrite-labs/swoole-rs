@@ -4,7 +4,10 @@
 //! crates/clients runs.
 use crate::settings::{default_length_func, mqtt_set_protocol, php_swoole_length_func};
 use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
-use std::{ffi::CStr, ptr};
+use std::{
+    ffi::{CStr, CString},
+    ptr,
+};
 use swoole_rs_clients::{
     address::{swr_v1_clients_address_host, swr_v1_clients_address_port},
     client::{Call, Client, ClientRecord, Op, swr_v1_clients_run},
@@ -27,7 +30,7 @@ pub(crate) type Socket = *mut libc::c_void;
 /// `package_length_func`'s arguments.
 #[repr(C)]
 pub(crate) struct LengthCallable {
-    pub(crate) socket: Socket,
+    pub(crate) socket: Co,
     pub(crate) value: *mut zval,
 }
 
@@ -46,8 +49,10 @@ struct Fact {
 }
 
 /// `SW_TIMEOUT_*`.
+const TIMEOUT_CONNECT: c_int = 1 << 1;
 const TIMEOUT_READ: c_int = 1 << 2;
 const TIMEOUT_WRITE: c_int = 1 << 3;
+pub(crate) const TIMEOUT_RDWR: c_int = TIMEOUT_READ | TIMEOUT_WRITE;
 /// `SW_SOCK_UDP6`.
 const SOCK_UDP6: c_int = 4;
 /// `SW_ERROR_WRONG_OPERATION`.
@@ -77,367 +82,532 @@ pub(crate) fn swoole_strerror(code: c_int) -> *const c_char {
 }
 
 /// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
-pub(crate) unsafe fn swoole_socket_coro_unconstructed() {
-    // SAFETY: a fatal error; the caller owns nothing it skips.
+/// # Safety
+/// It may longjmp: the frames it skips own nothing.
+pub(crate) unsafe fn unconstructed() {
+    // SAFETY: per the caller.
     unsafe { swoole_rs_corebase::fatal_error(WRONG_OPERATION, c"must call constructor first") };
 }
 
-fn co_record<'a>(socket: Socket) -> &'a mut co::CoSocket {
-    // SAFETY: every caller passes a live socket.
-    unsafe { co::record(socket) }
-}
-
-/// `socket_coro_init`'s socket half: zero copy and the zend string allocator,
-/// then its fd, domain, type and protocol into `fields`.
-pub(crate) unsafe fn swoole_socket_coro_adopt(socket: Socket, fields: *mut i64) {
-    let r = co_record(socket);
-    r.zero_copy = true;
-    r.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
-    // SAFETY: the caller's four fields.
-    let fields = unsafe { &mut *fields.cast::<[i64; 4]>() };
-    *fields = [r.sock_fd, r.sock_domain, r.sock_type, r.sock_protocol].map(i64::from);
-}
-
-/// `*result = socket`: whether making it bailed out.
-fn made(socket: Result<Socket, Bailout>, result: *mut Socket) -> u8 {
-    socket.map_or(1, |socket| {
-        // SAFETY: the caller's writable slot.
-        unsafe { *result = socket };
-        0
-    })
-}
-
-pub(crate) unsafe fn swoole_socket_coro_new_family(
-    domain: c_int,
-    kind: c_int,
-    protocol: c_int,
-    result: *mut Socket,
-) -> u8 {
-    made(co::make(-1, domain, kind, protocol, true), result)
-}
-pub(crate) unsafe fn swoole_socket_coro_new_type(kind: c_int, result: *mut Socket) -> u8 {
-    made(co::make(-1, 0, kind, 0, false), result)
-}
-pub(crate) unsafe fn swoole_socket_coro_new_fd(fd: c_int, kind: c_int, result: *mut Socket) -> u8 {
-    made(co::make(fd, 0, kind, 0, false), result)
-}
-pub(crate) unsafe fn swoole_socket_coro_new_fd_family(
+/// `new SocketImpl(...)`: by family (`domain`, `kind`, `protocol`) or by
+/// `swSocketType` (`kind`), over `fd` unless it is negative. The new socket is
+/// the caller's to own.
+/// # Errors
+/// The constructor bailed out.
+pub(crate) fn make(
     fd: c_int,
     domain: c_int,
     kind: c_int,
     protocol: c_int,
-    result: *mut Socket,
-) -> u8 {
-    made(co::make(fd, domain, kind, protocol, true), result)
+    family: bool,
+) -> Result<Socket, Bailout> {
+    co::make(fd, domain, kind, protocol, family)
 }
-pub(crate) unsafe fn swoole_socket_coro_fd(socket: Socket) -> c_int {
-    co_record(socket).sock_fd
-}
-pub(crate) unsafe fn swoole_socket_coro_destroy(socket: Socket) -> u8 {
-    // SAFETY: per the caller, a live owned socket.
-    u8::from(unsafe { co::free(socket) }.is_err())
-}
-/// `move_fd()`: the socket forgets its fd, which stays open.
-pub(crate) unsafe fn swoole_socket_coro_move_fd(socket: Socket) {
-    let r = co_record(socket);
-    r.sock_fd = -1;
-    // SAFETY: its network::Socket record.
-    unsafe { r.record() }.fd = -1;
-}
-pub(crate) unsafe fn swoole_socket_coro_close_native(socket: Socket) -> u8 {
+
+/// `delete socket`.
+/// # Errors
+/// A close hook bailed out.
+/// # Safety
+/// `socket` is live and owned; it is gone after the call.
+pub(crate) unsafe fn free_socket(socket: Socket) -> Result<(), Bailout> {
     // SAFETY: per the caller.
-    u8::from(unsafe { co::close_trapped(socket) }.is_err())
+    unsafe { co::free(socket) }
 }
+
 unsafe extern "C" fn free_callable(callable: *mut c_void) {
     // SAFETY: a `zend_try` body over a callable `callable_create` made.
     unsafe { swoole_rs_phpruntime::callable_free(callable) };
 }
-pub(crate) unsafe fn swoole_socket_coro_callable_free(callable: *mut c_void) -> u8 {
-    // SAFETY: per the caller.
-    u8::from(unsafe { bailout::trap(free_callable, callable) }.is_err())
-}
-pub(crate) unsafe fn swoole_socket_coro_is_closed(socket: Socket) -> bool {
-    co_record(socket).is_closed()
-}
-/// `errCode`, with `errMsg` in `message`.
-pub(crate) unsafe fn swoole_socket_coro_error(
-    socket: Socket,
-    message: *mut *const c_char,
-) -> c_int {
-    let r = co_record(socket);
-    // SAFETY: the caller's slot.
-    unsafe { *message = r.err_msg };
-    r.err_code
-}
-/// `set_err(code, message)`.
-pub(crate) unsafe fn swoole_socket_coro_set_error(
-    socket: Socket,
-    code: c_int,
-    message: *const c_char,
-) {
-    // SAFETY: per the caller, a NUL-terminated message.
-    let message = unsafe { CStr::from_ptr(message) };
-    // SAFETY: per the caller.
-    unsafe { co::set_error(socket, code, message.to_bytes()) };
-}
-#[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
-pub(crate) unsafe fn swoole_socket_coro_bind(
-    socket: Socket,
-    address: *const c_char,
-    length: size_t,
-    port: i64,
-) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::bind(socket, address, length, port as c_int) }
-}
-#[expect(clippy::cast_possible_truncation, reason = "upstream's int backlog")]
-pub(crate) unsafe fn swoole_socket_coro_listen(socket: Socket, backlog: i64) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::listen(socket, backlog as c_int) }
-}
-/// `accept(timeout)`; the connection copies the listener's length callable,
-/// so closing it leaves the listener's.
-pub(crate) unsafe fn swoole_socket_coro_accept(socket: Socket, timeout: f64) -> Socket {
-    // SAFETY: per the caller.
-    let conn = unsafe { co::accept(socket, timeout) };
-    let callable = co_record(socket).protocol.private_data_1;
-    if !conn.is_null() && !callable.is_null() {
-        // SAFETY: the listener's live callable.
-        co_record(conn).protocol.private_data_1 =
-            unsafe { swoole_rs_phpruntime::callable_dup(callable) };
+
+/// Whether the build has an optional SSL option: the host name (0) or grease
+/// (1, `BoringSSL`'s).
+pub(crate) fn ssl_supports(option: c_int) -> bool {
+    match option {
+        0 => built_with(Switch::TlsHostName),
+        1 => built_with(Switch::BoringSsl),
+        _ => false,
     }
-    conn
 }
-pub(crate) unsafe fn swoole_socket_coro_port_required(socket: Socket) -> bool {
-    co_record(socket).kind <= SOCK_UDP6
-}
-/// `connect(host, port)` under a connect timeout of `timeout`.
-#[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
-pub(crate) unsafe fn swoole_socket_coro_connect(
-    socket: Socket,
-    host: *const c_char,
-    length: size_t,
-    port: i64,
-    timeout: f64,
-) -> bool {
-    // SAFETY: per the caller.
-    let _timeout = unsafe { co::Timeout::set(socket, timeout, TIMEOUT_CONNECT) };
-    // SAFETY: as above.
-    unsafe { co::connect(socket, host, length, port as c_int, 0) }
-}
-pub(crate) unsafe fn swoole_socket_coro_check_liveness(socket: Socket) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::check_liveness(socket) }
-}
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "an event bit set"
-)]
-pub(crate) unsafe fn swoole_socket_coro_bound_cid(socket: Socket, event: i64) -> i64 {
-    // SAFETY: per the caller.
-    unsafe { co::bound_cid(socket, event as u32) }
-}
-/// One [`Transfer`] of `length` bytes at `buffer` under `timeout`.
-pub(crate) unsafe fn swoole_socket_coro_transfer(
-    socket: Socket,
-    op: c_int,
-    buffer: *mut c_char,
-    length: size_t,
-    timeout: f64,
-) -> ssize_t {
-    use co::Io;
-    if op == Transfer::Peek as c_int {
-        // SAFETY: per the caller.
-        return unsafe { co::io(socket, Io::Peek, buffer, length) };
+
+/// A live coroutine socket (`SocketImpl *`). Its constructor is the only
+/// unsafe point: a socket stays live while the object or client that owns it
+/// is, and a method holds that owner for its whole call.
+#[derive(Clone, Copy)]
+pub(crate) struct Co(Socket);
+
+impl Co {
+    /// # Safety
+    /// `socket` is a live coroutine socket that outlives every use of the handle.
+    pub(crate) const unsafe fn new(socket: Socket) -> Self {
+        Self(socket)
     }
-    let kind = if op < Transfer::Send as c_int {
-        TIMEOUT_READ
-    } else {
-        TIMEOUT_WRITE
-    };
-    // SAFETY: per the caller.
-    let _timeout = unsafe { co::Timeout::set(socket, timeout, kind) };
-    let io = match op {
-        1 => Io::Recv,
-        2 => Io::RecvAll,
-        // SAFETY: per the caller.
-        3 => return unsafe { co::recv_line(socket, buffer, length) },
-        // SAFETY: per the caller.
-        4 => return unsafe { co::recv_with_buffer(socket, buffer, length) },
-        5 => Io::Send,
-        _ => Io::SendAll,
-    };
-    // SAFETY: per the caller.
-    unsafe { co::io(socket, io, buffer, length) }
-}
-/// `recv_packet(timeout)`; with `clear_empty`, an empty packet clears the
-/// read buffer.
-pub(crate) unsafe fn swoole_socket_coro_recv_packet(
-    socket: Socket,
-    timeout: f64,
-    clear_empty: bool,
-) -> ssize_t {
-    // SAFETY: per the caller.
-    let retval = unsafe { co::recv_packet(socket, timeout) };
-    let buffer = co_record(socket)
-        .read_buffer
-        .cast::<swoole_rs_buffer::string::CppString>();
-    if retval == 0 && clear_empty && !buffer.is_null() {
-        // SAFETY: the socket's live read buffer.
-        let buffer = unsafe { &mut *buffer };
-        buffer.length = 0;
-        buffer.offset = 0;
+
+    pub(crate) fn as_ptr(self) -> Socket {
+        self.0
     }
-    retval
-}
-/// `pop_packet()`: the `ZSTR_VAL` of the packet's string, or null after
-/// `set_err(ENOMEM)`.
-pub(crate) unsafe fn swoole_socket_coro_pop_packet(socket: Socket) -> *mut c_char {
-    let r = co_record(socket);
-    // SAFETY: recv_packet made the read buffer.
-    let buffer = unsafe { &mut *r.read_buffer.cast::<swoole_rs_buffer::string::CppString>() };
-    let packet: *mut c_char = if buffer.offset == 0 {
-        std::ptr::null_mut()
-    } else {
-        buffer.pop(r.buffer_init_size).cast()
-    };
-    if packet.is_null() {
+
+    /// The socket's record, read fresh on every use: it changes when the socket
+    /// is reinitialised.
+    pub(crate) fn record<'a>(self) -> &'a mut co::CoSocket {
+        // SAFETY: a live socket, as the handle promises; callers drop the
+        // borrow before any effect that may touch the record.
+        unsafe { co::record(self.0) }
+    }
+
+    /// The `network::Socket` record (`get_socket()`), or null.
+    pub(crate) fn socket_record(self) -> *mut SocketRecord {
+        self.record().socket
+    }
+
+    /// The `network::Socket` record, while the socket is open.
+    pub(crate) fn net<'a>(self) -> Option<&'a mut SocketRecord> {
+        // SAFETY: an open socket's live record; nothing else holds it during the borrow.
+        unsafe { self.socket_record().as_mut() }
+    }
+
+    /// `socket_coro_init`'s socket half: zero copy and the zend string
+    /// allocator; its fd, domain, type and protocol.
+    pub(crate) fn adopt(self) -> [i64; 4] {
+        let r = self.record();
+        r.zero_copy = true;
+        r.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
+        [r.sock_fd, r.sock_domain, r.sock_type, r.sock_protocol].map(i64::from)
+    }
+
+    pub(crate) fn fd(self) -> c_int {
+        self.record().sock_fd
+    }
+
+    /// `move_fd()`: the socket forgets its fd, which stays open.
+    pub(crate) fn move_fd(self) {
+        let r = self.record();
+        r.sock_fd = -1;
+        // SAFETY: its network::Socket record.
+        unsafe { r.record() }.fd = -1;
+    }
+
+    /// `close()` inside `zend_try`.
+    /// # Errors
+    /// A close hook bailed out.
+    pub(crate) fn close_trapped(self) -> Result<bool, Bailout> {
         // SAFETY: a live socket.
-        unsafe { co::set_err(socket, libc::ENOMEM) };
+        unsafe { co::close_trapped(self.0) }
     }
-    packet
-}
-/// `readv`/`readv_all`/`writev`/`writev_all` (`op` 0..=3) over `count`
-/// vectors under `timeout`; `index` and `offset` report where it stopped.
-pub(crate) unsafe fn swoole_socket_coro_vector(
-    socket: Socket,
-    op: c_int,
-    vectors: *mut iovec,
-    count: c_int,
-    timeout: f64,
-) -> (ssize_t, c_int, size_t) {
-    let kind = if op < 2 { TIMEOUT_READ } else { TIMEOUT_WRITE };
-    // SAFETY: per the caller.
-    let _timeout = unsafe { co::Timeout::set(socket, timeout, kind) };
-    // SAFETY: per the caller.
-    unsafe { co::vector(socket, op, vectors, count) }
-}
-pub(crate) unsafe fn swoole_socket_coro_sendfile(
-    socket: Socket,
-    file: *const c_char,
-    offset: i64,
-    length: i64,
-) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::sendfile(socket, file, offset, length) }
-}
-/// `recvfrom(buffer, length)` under a read timeout of `timeout`.
-pub(crate) unsafe fn swoole_socket_coro_recvfrom(
-    socket: Socket,
-    buffer: *mut c_char,
-    length: size_t,
-    timeout: f64,
-) -> ssize_t {
-    // SAFETY: per the caller.
-    let _timeout = unsafe { co::Timeout::set(socket, timeout, TIMEOUT_READ) };
-    // SAFETY: as above.
-    unsafe { co::recvfrom(socket, buffer, length) }
-}
-/// `get_addr()`, with `get_port()` in `port`.
-pub(crate) unsafe fn swoole_socket_coro_address(socket: Socket, port: *mut c_int) -> *const c_char {
-    // SAFETY: an open socket's network::Socket record.
-    let info = &raw const unsafe { co_record(socket).record() }.info;
-    // SAFETY: a live address.
-    let number = unsafe { swoole_rs_clients::address::swr_v1_clients_address_port(info) };
-    // SAFETY: the caller's slot.
-    unsafe { *port = number };
-    // SAFETY: a live address.
-    unsafe { swoole_rs_clients::address::swr_v1_clients_address_host(info) }
-}
-#[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
-pub(crate) unsafe fn swoole_socket_coro_sendto(
-    socket: Socket,
-    address: *const c_char,
-    length: size_t,
-    port: i64,
-    data: *const c_char,
-    data_length: size_t,
-) -> ssize_t {
-    // SAFETY: per the caller.
-    unsafe { co::sendto(socket, address, length, port as c_int, data, data_length) }
-}
-#[expect(clippy::cast_possible_truncation, reason = "upstream's int how")]
-pub(crate) unsafe fn swoole_socket_coro_shutdown(socket: Socket, how: i64) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::shutdown(socket, how as c_int) }
-}
-pub(crate) unsafe fn swoole_socket_coro_getsockname(socket: Socket) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::getsockname(socket) }
-}
-/// `getpeername(&sa)`: the address, NUL-terminated, into `address`
-/// (`swoole_strlcpy`).
-pub(crate) unsafe fn swoole_socket_coro_getpeername(
-    socket: Socket,
-    address: *mut c_char,
-    size: size_t,
-    port: *mut c_int,
-) -> bool {
-    // SAFETY: an all-zero address is valid.
-    let mut sa: SocketAddress = unsafe { std::mem::zeroed() };
-    // SAFETY: per the caller.
-    if !unsafe { co::getpeername(socket, &mut sa) } {
-        return false;
+
+    /// `close()`; the socket may be gone after it returns true.
+    pub(crate) fn close(self) -> bool {
+        // SAFETY: a live socket.
+        unsafe { co::close(self.0) }
     }
-    // SAFETY: the address getpeername filled.
-    let host = unsafe { swoole_rs_clients::address::swr_v1_clients_address_host(&raw const sa) };
-    // SAFETY: a NUL-terminated host.
-    let host = unsafe { CStr::from_ptr(host) }.to_bytes();
-    // SAFETY: the caller's `size` (> 0) writable bytes.
-    let out = unsafe { std::slice::from_raw_parts_mut(address.cast::<u8>(), size) };
-    let terminated = host.iter().copied().take(size - 1).chain([0]);
-    for (slot, byte) in out.iter_mut().zip(terminated) {
-        *slot = byte;
+
+    pub(crate) fn is_closed(self) -> bool {
+        self.record().is_closed()
     }
-    // SAFETY: as above.
-    let number = unsafe { swoole_rs_clients::address::swr_v1_clients_address_port(&raw const sa) };
-    // SAFETY: the caller's slot.
-    unsafe { *port = number };
-    true
-}
-#[expect(clippy::cast_sign_loss, reason = "an event bit set")]
-pub(crate) unsafe fn swoole_socket_coro_cancel(socket: Socket, event: c_int) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::cancel(socket, event as u32) }
-}
-pub(crate) unsafe fn swoole_socket_coro_ssl_handshake(socket: Socket) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::ssl_handshake(socket) }
-}
-/// `open_length_check` (0), `open_eof_check` (1) or `http2` (2) = `value`.
-pub(crate) unsafe fn swoole_socket_coro_set_flag(socket: Socket, flag: c_int, value: bool) {
-    let r = co_record(socket);
-    *match flag {
-        0 => &mut r.open_length_check,
-        1 => &mut r.open_eof_check,
-        _ => &mut r.http2,
-    } = value;
-}
-/// `&protocol`.
-pub(crate) unsafe fn swoole_socket_coro_protocol(socket: Socket) -> *mut c_void {
-    (&raw mut co_record(socket).protocol).cast()
-}
-/// `mqtt::set_protocol` (0) or `Protocol::default_length_func` (1).
-pub(crate) unsafe fn swoole_socket_coro_protocol_preset(socket: Socket, kind: c_int) {
-    let protocol = &mut co_record(socket).protocol;
-    if kind == 0 {
-        // SAFETY: the socket's protocol.
-        unsafe { mqtt_set_protocol(protocol) };
-    } else {
-        protocol.get_package_length = default_length_func as *mut c_void;
+
+    /// `errCode` and `errMsg`.
+    pub(crate) fn error<'a>(self) -> (c_int, &'a CStr) {
+        let r = self.record();
+        let message = if r.err_msg.is_null() {
+            c""
+        } else {
+            // SAFETY: errMsg is a NUL-terminated string the socket keeps.
+            unsafe { CStr::from_ptr(r.err_msg) }
+        };
+        (r.err_code, message)
+    }
+
+    /// `set_err(code)`: the code's message.
+    pub(crate) fn set_err(self, code: c_int) {
+        // SAFETY: a live socket.
+        unsafe { co::set_err(self.0, code) };
+    }
+
+    /// `set_err(code, message)`.
+    pub(crate) fn set_error(self, code: c_int, message: &[u8]) {
+        // SAFETY: a live socket.
+        unsafe { co::set_error(self.0, code, message) };
+    }
+
+    /// `socket->errCode = code`, nothing else.
+    pub(crate) fn set_err_code(self, code: c_int) {
+        self.record().err_code = code;
+    }
+
+    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
+    pub(crate) fn bind(self, address: &[u8], port: i64) -> bool {
+        // SAFETY: a live socket and the address's bytes.
+        unsafe {
+            co::bind(
+                self.0,
+                address.as_ptr().cast(),
+                address.len(),
+                port as c_int,
+            )
+        }
+    }
+
+    #[expect(clippy::cast_possible_truncation, reason = "upstream's int backlog")]
+    pub(crate) fn listen(self, backlog: i64) -> bool {
+        // SAFETY: a live socket.
+        unsafe { co::listen(self.0, backlog as c_int) }
+    }
+
+    /// `accept(timeout)`: the new connection, owned by the caller, or null. It
+    /// copies the listener's length callable, so closing it leaves the listener's.
+    pub(crate) fn accept(self, timeout: f64) -> Socket {
+        // SAFETY: a live socket.
+        let conn = unsafe { co::accept(self.0, timeout) };
+        let callable = self.record().protocol.private_data_1;
+        if !conn.is_null() && !callable.is_null() {
+            // SAFETY: the new connection, live and not yet shared.
+            let conn = unsafe { Self::new(conn) };
+            // SAFETY: the listener's live callable.
+            conn.record().protocol.private_data_1 =
+                unsafe { swoole_rs_phpruntime::callable_dup(callable) };
+        }
+        conn
+    }
+
+    pub(crate) fn port_required(self) -> bool {
+        self.record().kind <= SOCK_UDP6
+    }
+
+    /// `connect(host, port)` under a connect timeout of `timeout`.
+    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
+    pub(crate) fn connect(self, host: &[u8], port: i64, timeout: f64) -> bool {
+        let _timeout = self.timeout(timeout, TIMEOUT_CONNECT);
+        // SAFETY: a live socket and the host's bytes.
+        unsafe { co::connect(self.0, host.as_ptr().cast(), host.len(), port as c_int, 0) }
+    }
+
+    /// `set_timeout(timeout, SW_TIMEOUT_CONNECT)`, then `connect(host, port,
+    /// flags)` of the host up to its first NUL, as upstream reads it.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "upstream's int port and flags"
+    )]
+    pub(crate) fn connect_host(self, host: &[u8], port: i64, timeout: f64, flags: i64) -> bool {
+        self.set_timeout(timeout, TIMEOUT_CONNECT);
+        let host = host.split(|byte| *byte == 0).next().unwrap_or_default();
+        // SAFETY: a live socket and the host's bytes.
+        unsafe {
+            co::connect(
+                self.0,
+                host.as_ptr().cast(),
+                host.len(),
+                port as c_int,
+                flags as c_int,
+            )
+        }
+    }
+
+    pub(crate) fn check_liveness(self) -> bool {
+        // SAFETY: a live socket.
+        unsafe { co::check_liveness(self.0) }
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "an event bit set"
+    )]
+    pub(crate) fn bound_cid(self, event: i64) -> i64 {
+        // SAFETY: a live socket.
+        unsafe { co::bound_cid(self.0, event as u32) }
+    }
+
+    /// A timeout of `kind` for the guard's life (`TimeoutSetter`).
+    pub(crate) fn timeout(self, timeout: f64, kind: c_int) -> co::Timeout {
+        // SAFETY: a live socket, which outlives the guard in every caller.
+        unsafe { co::Timeout::set(self.0, timeout, kind) }
+    }
+
+    /// One [`Transfer`] of `length` bytes at `buffer` under `timeout`.
+    /// # Safety
+    /// `buffer` holds `length` bytes, writable unless the transfer sends.
+    pub(crate) unsafe fn transfer(
+        self,
+        op: Transfer,
+        buffer: *mut c_char,
+        length: size_t,
+        timeout: f64,
+    ) -> ssize_t {
+        use co::Io;
+        let io = match op {
+            Transfer::Peek => Io::Peek,
+            Transfer::Recv => Io::Recv,
+            Transfer::RecvAll => Io::RecvAll,
+            Transfer::Send => Io::Send,
+            Transfer::SendAll => Io::SendAll,
+            Transfer::RecvLine | Transfer::RecvWithBuffer => Io::Recv,
+        };
+        if matches!(op, Transfer::Peek) {
+            // SAFETY: per the caller.
+            return unsafe { co::io(self.0, io, buffer, length) };
+        }
+        let kind = if matches!(op, Transfer::Send | Transfer::SendAll) {
+            TIMEOUT_WRITE
+        } else {
+            TIMEOUT_READ
+        };
+        let _timeout = self.timeout(timeout, kind);
+        match op {
+            // SAFETY: per the caller.
+            Transfer::RecvLine => unsafe { co::recv_line(self.0, buffer, length) },
+            // SAFETY: per the caller.
+            Transfer::RecvWithBuffer => unsafe { co::recv_with_buffer(self.0, buffer, length) },
+            // SAFETY: per the caller.
+            _ => unsafe { co::io(self.0, io, buffer, length) },
+        }
+    }
+
+    /// One send [`Transfer`] of `data` under `timeout`.
+    pub(crate) fn send(self, op: Transfer, data: &[u8], timeout: f64) -> ssize_t {
+        // SAFETY: a send only reads the bytes.
+        unsafe { self.transfer(op, data.as_ptr().cast_mut().cast(), data.len(), timeout) }
+    }
+
+    /// `recv_packet(timeout)`; with `clear_empty`, an empty packet clears the
+    /// read buffer.
+    pub(crate) fn recv_packet(self, timeout: f64, clear_empty: bool) -> ssize_t {
+        // SAFETY: a live socket.
+        let retval = unsafe { co::recv_packet(self.0, timeout) };
+        if retval == 0
+            && clear_empty
+            && let Some(buffer) = self.read_buffer()
+        {
+            buffer.length = 0;
+            buffer.offset = 0;
+        }
+        retval
+    }
+
+    fn read_buffer<'a>(self) -> Option<&'a mut swoole_rs_buffer::string::CppString> {
+        let buffer = self.record().read_buffer;
+        // SAFETY: the socket's live read buffer, or null before the first read.
+        unsafe {
+            buffer
+                .cast::<swoole_rs_buffer::string::CppString>()
+                .as_mut()
+        }
+    }
+
+    /// `pop_packet()`: the `ZSTR_VAL` of the packet's string, or null after
+    /// `set_err(ENOMEM)`.
+    pub(crate) fn pop_packet(self) -> *mut c_char {
+        let init_size = self.record().buffer_init_size;
+        let packet: *mut c_char = match self.read_buffer() {
+            Some(buffer) if buffer.offset != 0 => buffer.pop(init_size).cast(),
+            _ => std::ptr::null_mut(),
+        };
+        if packet.is_null() {
+            self.set_err(libc::ENOMEM);
+        }
+        packet
+    }
+
+    /// `readv`/`readv_all`/`writev`/`writev_all` (`op` 0..=3) over `vectors`
+    /// under `timeout`; with the vector index and byte offset where it stopped.
+    /// # Safety
+    /// Each vector holds its bytes, writable for a read.
+    pub(crate) unsafe fn vector(
+        self,
+        op: c_int,
+        vectors: &[iovec],
+        timeout: f64,
+    ) -> (ssize_t, c_int, size_t) {
+        let kind = if op < 2 { TIMEOUT_READ } else { TIMEOUT_WRITE };
+        let _timeout = self.timeout(timeout, kind);
+        let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
+        // SAFETY: per the caller.
+        unsafe { co::vector(self.0, op, vectors.as_ptr(), count) }
+    }
+
+    /// `sendfile(file, offset, length)`.
+    /// # Safety
+    /// `file` is NUL-terminated.
+    pub(crate) unsafe fn sendfile(self, file: *const c_char, offset: i64, length: i64) -> bool {
+        // SAFETY: per the caller.
+        unsafe { co::sendfile(self.0, file, offset, length) }
+    }
+
+    /// `recvfrom(buffer, length)` under a read timeout of `timeout`.
+    /// # Safety
+    /// `buffer` holds `length` writable bytes.
+    pub(crate) unsafe fn recvfrom(
+        self,
+        buffer: *mut c_char,
+        length: size_t,
+        timeout: f64,
+    ) -> ssize_t {
+        let _timeout = self.timeout(timeout, TIMEOUT_READ);
+        // SAFETY: per the caller.
+        unsafe { co::recvfrom(self.0, buffer, length) }
+    }
+
+    /// `get_addr()` and `get_port()`; the text lives until this thread's next
+    /// presentation.
+    pub(crate) fn address<'a>(self) -> (&'a CStr, c_int) {
+        // SAFETY: an open socket's network::Socket record.
+        address(&unsafe { self.record().record() }.info)
+    }
+
+    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
+    pub(crate) fn sendto(self, address: &[u8], port: i64, data: &[u8]) -> ssize_t {
+        // SAFETY: a live socket and the slices' bytes.
+        unsafe {
+            co::sendto(
+                self.0,
+                address.as_ptr().cast(),
+                address.len(),
+                port as c_int,
+                data.as_ptr().cast(),
+                data.len(),
+            )
+        }
+    }
+
+    #[expect(clippy::cast_possible_truncation, reason = "upstream's int how")]
+    pub(crate) fn shutdown(self, how: i64) -> bool {
+        // SAFETY: a live socket.
+        unsafe { co::shutdown(self.0, how as c_int) }
+    }
+
+    pub(crate) fn getsockname(self) -> bool {
+        // SAFETY: a live socket.
+        unsafe { co::getsockname(self.0) }
+    }
+
+    /// `getpeername(&sa)`: the peer's address text and port.
+    pub(crate) fn getpeername(self) -> Option<(CString, c_int)> {
+        // SAFETY: an all-zero address is valid.
+        let mut sa: SocketAddress = unsafe { std::mem::zeroed() };
+        // SAFETY: a live socket.
+        if !unsafe { co::getpeername(self.0, &mut sa) } {
+            return None;
+        }
+        let (host, port) = address(&sa);
+        Some((host.to_owned(), port))
+    }
+
+    #[expect(clippy::cast_sign_loss, reason = "an event bit set")]
+    pub(crate) fn cancel(self, event: c_int) -> bool {
+        // SAFETY: a live socket.
+        unsafe { co::cancel(self.0, event as u32) }
+    }
+
+    pub(crate) fn ssl_handshake(self) -> bool {
+        // SAFETY: a live socket.
+        unsafe { co::ssl_handshake(self.0) }
+    }
+
+    /// `open_length_check` (0), `open_eof_check` (1) or `http2` (2) = `value`.
+    pub(crate) fn set_flag(self, flag: c_int, value: bool) {
+        let r = self.record();
+        *match flag {
+            0 => &mut r.open_length_check,
+            1 => &mut r.open_eof_check,
+            _ => &mut r.http2,
+        } = value;
+    }
+
+    /// `mqtt::set_protocol` (0) or `Protocol::default_length_func` (1).
+    pub(crate) fn protocol_preset(self, kind: c_int) {
+        let protocol = &mut self.record().protocol;
+        if kind == 0 {
+            // SAFETY: the socket's protocol.
+            unsafe { mqtt_set_protocol(protocol) };
+        } else {
+            protocol.get_package_length = default_length_func as *mut c_void;
+        }
+    }
+
+    /// `set_option(level, name, value)`, warning (a log line) on failure.
+    pub(crate) fn set_option(self, level: c_int, name: c_int, value: c_int) -> bool {
+        // SAFETY: a live socket.
+        unsafe { co::set_option(self.0, level, name, value) }
+    }
+
+    pub(crate) fn set_timeout(self, timeout: f64, kind: c_int) {
+        // SAFETY: a live socket.
+        unsafe { co::set_timeout(self.0, timeout, kind) };
+    }
+
+    pub(crate) fn get_timeout(self, kind: c_int) -> f64 {
+        // SAFETY: a live socket.
+        unsafe { co::get_timeout(self.0, kind) }
+    }
+
+    /// `set_http_proxy` or `set_socks5_proxy`.
+    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
+    pub(crate) fn proxy(self, http: bool, host: &[u8], port: i64, user: &[u8], password: &[u8]) {
+        // SAFETY: a live socket.
+        unsafe { co::proxy(self.0, http, host, port as c_int, user, password) };
+    }
+
+    /// `enable_ssl_encrypt()`: false when TLS was already on.
+    pub(crate) fn enable_ssl(self) -> bool {
+        // SAFETY: a live socket.
+        unsafe { co::enable_ssl(self.0) }
+    }
+
+    /// The socket's `SSLContext` owner; null while TLS is off.
+    pub(crate) fn ssl_context(self) -> *const c_void {
+        // SAFETY: a live socket.
+        unsafe { co::ssl_context(self.0) }
+    }
+
+    /// The socket's domain and type.
+    pub(crate) fn family(self) -> (c_int, c_int) {
+        let r = self.record();
+        (r.sock_domain, r.sock_type)
+    }
+
+    /// `swSocketType`.
+    pub(crate) fn kind(self) -> c_int {
+        self.record().kind
+    }
+
+    /// `open_length_check || open_eof_check`.
+    pub(crate) fn packet_mode(self) -> bool {
+        let record = self.record();
+        record.open_length_check || record.open_eof_check
+    }
+
+    pub(crate) fn is_connected(self) -> bool {
+        // SAFETY: a live socket.
+        unsafe { co::is_connected(self.0) }
+    }
+
+    /// `get_ssl() != nullptr`.
+    pub(crate) fn has_ssl(self) -> bool {
+        self.net().is_some_and(|record| !record.ssl.is_null())
+    }
+
+    /// The peer certificate as a new string, or null; the socket has TLS.
+    pub(crate) fn peer_cert(self) -> *mut zend_string {
+        // SAFETY: a live record with TLS, as the callers check.
+        unsafe { peer_cert(self.socket_record()) }
+    }
+
+    pub(crate) fn verify_peer(self, allow_self_signed: bool) -> bool {
+        // SAFETY: a live socket with TLS, as the callers check.
+        unsafe { co::ssl_verify(self.0, allow_self_signed) }
+    }
+
+    /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
+    /// # Safety
+    /// `hook` may be called with `arg` until then.
+    pub(crate) unsafe fn close_hook(
+        self,
+        hook: unsafe extern "C" fn(*mut c_void, *mut c_void),
+        arg: *mut c_void,
+    ) {
+        // SAFETY: a live socket; per the caller.
+        unsafe { co::close_hook(self.0, hook, arg) };
     }
 }
+
 /// `package_length_func` from a [`LengthCallable`]: a callable replaces any
 /// earlier one. A `zend_try` body.
 pub(crate) unsafe extern "C" fn swoole_socket_coro_length_callable(call: *mut c_void) {
@@ -448,7 +618,7 @@ pub(crate) unsafe extern "C" fn swoole_socket_coro_length_callable(call: *mut c_
     if callable.is_null() {
         return;
     }
-    let protocol = &mut co_record(args.socket).protocol;
+    let protocol = &mut args.socket.record().protocol;
     protocol.get_package_length = php_swoole_length_func as *mut c_void;
     if !protocol.private_data_1.is_null() {
         // SAFETY: as above; the earlier callable.
@@ -459,84 +629,7 @@ pub(crate) unsafe extern "C" fn swoole_socket_coro_length_callable(call: *mut c_
     protocol.package_length_type = 0;
     protocol.package_length_offset = IPC_BUFFER_SIZE;
 }
-/// `set_option(level, name, value)`, warning (a log line) on failure.
-pub(crate) unsafe fn swoole_socket_coro_set_option(
-    socket: Socket,
-    level: c_int,
-    name: c_int,
-    value: c_int,
-) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::set_option(socket, level, name, value) }
-}
-pub(crate) unsafe fn swoole_socket_coro_set_timeout(socket: Socket, timeout: f64, kind: c_int) {
-    // SAFETY: per the caller.
-    unsafe { co::set_timeout(socket, timeout, kind) };
-}
-pub(crate) unsafe fn swoole_socket_coro_get_timeout(socket: Socket, kind: c_int) -> f64 {
-    // SAFETY: per the caller.
-    unsafe { co::get_timeout(socket, kind) }
-}
-/// `set_http_proxy` or `set_socks5_proxy`.
-#[expect(clippy::too_many_arguments, reason = "three strings and a port")]
-#[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
-pub(crate) unsafe fn swoole_socket_coro_proxy(
-    socket: Socket,
-    http: bool,
-    host: *const c_char,
-    host_length: size_t,
-    port: i64,
-    user: *const c_char,
-    user_length: size_t,
-    password: *const c_char,
-    password_length: size_t,
-) {
-    let bytes = |text: *const c_char, length| {
-        // SAFETY: the caller's `length` bytes.
-        unsafe { std::slice::from_raw_parts(text.cast::<u8>(), length) }
-    };
-    // SAFETY: per the caller.
-    unsafe {
-        co::proxy(
-            socket,
-            http,
-            bytes(host, host_length),
-            port as c_int,
-            bytes(user, user_length),
-            bytes(password, password_length),
-        );
-    }
-}
-/// `enable_ssl_encrypt()`: false when TLS was already on.
-pub(crate) unsafe fn swoole_socket_coro_enable_ssl(socket: Socket) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::enable_ssl(socket) }
-}
-/// The socket's `SSLContext` owner; null while TLS is off.
-pub(crate) unsafe fn swoole_socket_coro_ssl_context(socket: Socket) -> *const c_void {
-    // SAFETY: per the caller.
-    unsafe { co::ssl_context(socket) }
-}
-/// Whether the build has an optional SSL option: the host name (0) or grease
-/// (1, `BoringSSL`'s).
-pub(crate) unsafe fn swoole_socket_coro_ssl_supports(option: c_int) -> bool {
-    match option {
-        0 => built_with(Switch::TlsHostName),
-        1 => built_with(Switch::BoringSsl),
-        _ => false,
-    }
-}
-/// The socket's domain, and its type into `kind`.
-pub(crate) unsafe fn swoole_socket_coro_family(socket: Socket, kind: *mut c_int) -> c_int {
-    let r = co_record(socket);
-    // SAFETY: the caller's slot.
-    unsafe { *kind = r.sock_type };
-    r.sock_domain
-}
-/// `socket->errCode = code`, nothing else.
-pub(crate) unsafe fn swoole_socket_coro_set_err_code(socket: Socket, code: c_int) {
-    co_record(socket).err_code = code;
-}
+
 /// The fields of `info`, in upstream's order (crates/server's list).
 #[cfg(target_os = "linux")]
 pub(crate) fn tcp_fields(info: &libc::tcp_info) -> impl Iterator<Item = (&'static CStr, u64)> {
@@ -665,12 +758,8 @@ pub(crate) fn callable(value: *mut zval) -> Result<*mut c_void, Bailout> {
 /// # Errors
 /// A destructor bailed out.
 pub(crate) fn callable_free(callable: *mut c_void) -> Result<(), Bailout> {
-    // SAFETY: a callable `callable` made, freed once.
-    if unsafe { swoole_socket_coro_callable_free(callable) } == 0 {
-        Ok(())
-    } else {
-        Err(Bailout)
-    }
+    // SAFETY: a `zend_try` body over a callable `callable` made, freed once.
+    unsafe { bailout::trap(free_callable, callable) }
 }
 
 /// `sw_zend_call_function_ex2(nullptr, callable->ptr(), argv, retval)`: whether
@@ -767,103 +856,7 @@ pub(crate) enum Transfer {
     SendAll = 6,
 }
 
-/// The record of `socket`, a live coroutine socket, read fresh on every use: it
-/// changes when the socket is reinitialised.
-///
-/// # Safety
-/// `socket` is live, and nothing else touches its record while the borrow lasts.
-pub(crate) unsafe fn record<'a>(socket: Socket) -> Option<&'a mut swoole_rs_reactor::SocketRecord> {
-    // SAFETY: as the caller promises.
-    let record = unsafe { swoole_client_coro_socket_record(socket) };
-    // SAFETY: as above.
-    unsafe { record.as_mut() }
-}
-
 /// `php_swoole_check_reactor()`; a `swr_zend_try_hook` body.
 pub(crate) unsafe extern "C" fn swoole_rs_check_reactor() {
     swoole_rs_phpruntime::check_reactor();
-}
-
-/// `SW_TIMEOUT_CONNECT` and `SW_TIMEOUT_RDWR`.
-const TIMEOUT_CONNECT: c_int = 1 << 1;
-const TIMEOUT_RDWR: c_int = (1 << 2) | (1 << 3);
-
-/// `set_timeout(timeout, SW_TIMEOUT_CONNECT)`, then `connect(host, port, flags)`.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "upstream's int port and flags"
-)]
-pub(crate) unsafe fn swoole_client_coro_connect(
-    socket: Socket,
-    host: *const c_char,
-    port: i64,
-    timeout: f64,
-    flags: i64,
-) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::set_timeout(socket, timeout, TIMEOUT_CONNECT) };
-    // SAFETY: a NUL-terminated host.
-    let length = unsafe { libc::strlen(host) };
-    // SAFETY: per the caller.
-    unsafe { co::connect(socket, host, length, port as c_int, flags as c_int) }
-}
-
-/// `set_timeout(timeout, SW_TIMEOUT_RDWR)`.
-pub(crate) unsafe fn swoole_client_coro_rdwr_timeout(socket: Socket, timeout: f64) {
-    // SAFETY: per the caller.
-    unsafe { co::set_timeout(socket, timeout, TIMEOUT_RDWR) };
-}
-
-pub(crate) unsafe fn swoole_client_coro_close(socket: Socket) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::close(socket) }
-}
-
-/// The coroutine socket's `network::Socket` record (`get_socket()`), or null.
-pub(crate) unsafe fn swoole_client_coro_socket_record(
-    socket: Socket,
-) -> *mut swoole_rs_reactor::SocketRecord {
-    // SAFETY: per the caller.
-    unsafe { co::record(socket) }.socket
-}
-
-pub(crate) unsafe fn swoole_client_coro_type(socket: Socket) -> c_int {
-    // SAFETY: per the caller.
-    unsafe { co::record(socket) }.kind
-}
-
-/// `open_length_check || open_eof_check`.
-pub(crate) unsafe fn swoole_client_coro_packet_mode(socket: Socket) -> bool {
-    // SAFETY: per the caller.
-    let record = unsafe { co::record(socket) };
-    record.open_length_check || record.open_eof_check
-}
-
-pub(crate) unsafe fn swoole_client_coro_is_connected(socket: Socket) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::is_connected(socket) }
-}
-
-/// `get_ssl() != nullptr`.
-pub(crate) unsafe fn swoole_client_coro_has_ssl(socket: Socket) -> bool {
-    // SAFETY: per the caller.
-    let record = unsafe { swoole_client_coro_socket_record(socket) };
-    // SAFETY: an open socket's record.
-    !record.is_null() && !unsafe { (*record).ssl }.is_null()
-}
-
-/// The peer certificate as a new string, or null.
-pub(crate) unsafe fn swoole_client_coro_peer_cert(socket: Socket) -> *mut zend_string {
-    // SAFETY: per the caller.
-    let record = unsafe { swoole_client_coro_socket_record(socket) };
-    // SAFETY: per the caller, a socket with TLS.
-    unsafe { peer_cert(record) }
-}
-
-pub(crate) unsafe fn swoole_client_coro_verify_peer(
-    socket: Socket,
-    allow_self_signed: bool,
-) -> bool {
-    // SAFETY: per the caller.
-    unsafe { co::ssl_verify(socket, allow_self_signed) }
 }

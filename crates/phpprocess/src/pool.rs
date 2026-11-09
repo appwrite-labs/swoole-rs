@@ -19,7 +19,7 @@ use swoole_rs_process::{
     pool::swr_v1_process_pool_ipc_listener,
     process_pool::{PROTOCOL_MESSAGE, PROTOCOL_STREAM, PoolRecord, max_package_size, packet_limit},
     signal::swoole_signal_isset,
-    worker_globals::swr_v1_worker_globals,
+    worker_globals::thread_globals,
     worker_record,
 };
 use swoole_rs_zend::{
@@ -137,7 +137,7 @@ fn pool_free(pool: Pool) {
 /// `SwooleWG.worker`'s status, and its request count once idle again.
 fn worker_busy(busy: bool) {
     // SAFETY: this thread's worker globals.
-    let worker = unsafe { (*swr_v1_worker_globals()).worker };
+    let worker = unsafe { (*thread_globals()).worker };
     // SAFETY: this process's worker.
     let worker = unsafe { Worker::new(worker) };
     if busy {
@@ -279,7 +279,7 @@ unsafe extern "C" fn raise() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_process_pool_minit(_module: c_int) {
     // SAFETY: a `zend_try` trap and Zend's bailout.
-    unsafe { swoole_rs_process::pool::swr_v1_process_set_bailout(trap, raise) };
+    unsafe { swoole_rs_process::pool::set_bailout(trap, raise) };
     // SAFETY: MINIT, with a static table.
     unsafe { POOL.register(c"Swoole\\Process\\Pool", METHODS.as_ptr(), configure) };
     for name in [c"master_pid", c"workerPid", c"workerId"] {
@@ -311,12 +311,6 @@ pub(crate) fn timer_uses_reactor(master: bool) -> Option<bool> {
         let pool = record(pool);
         !master && (pool.is_async || pool.main_loop.is_null())
     })
-}
-
-/// `sw_process_pool()`: the pool `start()` is running, or null.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpprocess_pool_current() -> *mut c_void {
-    CURRENT.load(Ordering::Acquire).cast()
 }
 
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
@@ -619,8 +613,7 @@ fn set(call: &Call) {
     let this = this(call);
     let pool = record(checked(this));
     swoole_rs_phpswoole::php_swoole_set_global_option(options);
-    // SAFETY: the options array.
-    unsafe { swoole_rs_phpcoroutines::php_swoole_set_coroutine_option(options.as_ptr()) };
+    swoole_rs_phpcoroutines::set_coroutine_option(options);
     swoole_rs_phpswoole::php_swoole_set_aio_option(options);
     if let Some(value) = options.get(b"max_package_size") {
         let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);

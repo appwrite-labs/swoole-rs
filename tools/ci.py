@@ -7,6 +7,8 @@
   ci.py next                 the claimable issues in claim order (exit 2 when there are none)
   ci.py stuck                auto-merge PRs that conflict with main or failed a required check,
                              oldest first (exit 2 when there are none)
+  ci.py new-failures LOOP... the failed phases in these dev.py loop.json reports that passed, or
+                             didn't exist, in main's latest completed merge-tier run (exit 1 if any)
 
 For a pull request: `ci.py wait --workflow pr.yml --commit BRANCH` for its PR tier (a branch
 auto-merge deleted resolves through its PR). It returns at once (exit 4, state `conflicts`) when
@@ -312,7 +314,23 @@ def claimable():
             for issue in sorted(issues, key=lambda issue: (priority(issue), issue['created_at']))]
 
 
-REQUIRED = ('rust', 'tooling', 'hybrid')
+# The PR tier's aggregate check, the one main's ruleset requires; it needs every blocking job.
+REQUIRED = ('required',)
+
+
+def new_failures(loops):
+    """The phases failed in `loops` (dev.py loop.json paths) that main's latest completed merge-tier
+    run with phases didn't fail: a PR's gates block only on what it breaks, not on red main."""
+    failed = set()
+    for loop in loops:
+        failed |= {row['phase'] for row in json.loads(Path(loop).read_text())['phases'] if row['failed']}
+    runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--status', 'completed',
+                         '--limit', '30', '--json', 'databaseId,conclusion,url'))
+    for run in runs:
+        baseline = run['conclusion'] in ('success', 'failure') and phases(run['databaseId'])
+        if baseline:
+            return run['url'], sorted(name for name in failed if baseline.get(name) is not False)
+    return None, sorted(failed)
 
 
 def stuck():
@@ -348,7 +366,18 @@ def main(argv=None):
         command.add_argument('--json', action='store_true')
     for name in ['next', 'stuck']:
         commands.add_parser(name).add_argument('--json', action='store_true')
+    commands.add_parser('new-failures').add_argument('loops', nargs='*', type=Path, metavar='LOOP_JSON')
     args = parser.parse_args(argv)
+    if args.command == 'new-failures':
+        if not args.loops:
+            sys.exit('new-failures: no loop.json given; the gates ran nothing')
+        try:
+            baseline, new = new_failures(args.loops)
+        except subprocess.CalledProcessError as failure:
+            sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
+        print(f"Against {baseline or 'no merge-tier run with phases'}: " +
+              (f"new failures: {', '.join(new)}" if new else 'no new failures; every failed phase fails on main too'))
+        return int(bool(new))
     if args.command in ('next', 'stuck'):
         try:
             queue = claimable() if args.command == 'next' else stuck()

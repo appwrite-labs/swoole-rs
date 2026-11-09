@@ -328,23 +328,6 @@ pub unsafe extern "C" fn swr_v1_phpprocess_worker(object: *const zval, check: bo
     }
 }
 
-/// `php_swoole_process_set_worker`.
-/// # Safety
-/// `object` is a live Process object zval; it takes ownership of `worker`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpprocess_set_worker(
-    object: *const zval,
-    worker: *mut c_void,
-    enable_coroutine: bool,
-    pipe_type: c_int,
-) {
-    // SAFETY: per the caller.
-    let object = unsafe { object_of(object) };
-    // SAFETY: as above.
-    let process = unsafe { data(object) };
-    set_worker(process, worker, enable_coroutine, pipe_type);
-}
-
 fn set_worker(
     process: &mut Process,
     worker: *mut c_void,

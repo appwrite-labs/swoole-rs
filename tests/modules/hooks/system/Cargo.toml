@@ -7,9 +7,4 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
-# The reactor and process records' methods, which upstream's Socket and Worker members became.
-[dependencies]
-swoole-rs-process = { path = "../../../../crates/process" }
-swoole-rs-reactor = { path = "../../../../crates/reactor" }
-
 [workspace]

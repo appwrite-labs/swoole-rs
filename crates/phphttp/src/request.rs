@@ -44,7 +44,7 @@ unsafe extern "C" fn free(std: *mut zend_object) {
         }
         state.request.zobject.ptr = std::ptr::null_mut();
         // SAFETY: the context the object held.
-        unsafe { context::swr_v1_phphttp_context_free(ctx) };
+        unsafe { context::free(ctx) };
     }
     // SAFETY: as above.
     unsafe { Holder::dtor(std) };
@@ -140,7 +140,7 @@ fn create_request(call: &Call) {
     let Ok(options) = call.arity(0, 1).and_then(|()| call.array_opt(1)) else {
         return call.set_bool(false);
     };
-    let ctx = context::swr_v1_phphttp_context_new();
+    let ctx = context::alloc();
     parse::init_request_parser(ctx);
     let object = call.return_value();
     // SAFETY: the return slot and the registered class.
@@ -152,7 +152,7 @@ fn create_request(call: &Call) {
     // SAFETY: the object just made.
     let std = unsafe { obj_of(object) };
     // SAFETY: one of our objects.
-    unsafe { context::swr_v1_phphttp_set_context(std, ctx) };
+    unsafe { context::set_context(std, ctx) };
     state.parse_cookie = 1;
     state.parse_body = 1;
     state.parse_files = 1;

@@ -6,7 +6,7 @@
 use crate::{
     context::{self, CompressionTypes},
     host::{self, Context},
-    parse::{Key, find, swr_v1_phphttp_parse},
+    parse::{Key, find, parse_request},
     send,
     server::{Callable, call_handler},
     websocket,
@@ -214,7 +214,7 @@ impl HttpServer {
             swoole_rs_zend::update_property(crate::response::entry(), response, c"socket", zconn);
         }
         // SAFETY: a new context and the live connection object.
-        unsafe { context::swr_v1_phphttp_context_bind(context, ptr::null_mut(), zconn) };
+        unsafe { context::bind(context, ptr::null_mut(), zconn) };
         let state = send::state(context);
         state
             .compression_types
@@ -1120,7 +1120,7 @@ impl Connection<'_> {
 
 fn parse(context: *mut Context, data: *const u8, length: usize) -> usize {
     // SAFETY: a live context and `length` readable bytes.
-    unsafe { swr_v1_phphttp_parse(context, data.cast(), length) }
+    unsafe { parse_request(context, data.cast(), length) }
 }
 
 /// Where the loop goes next: read more, or parse what the buffer holds.
@@ -1150,7 +1150,7 @@ fn on_accept(call: &Call) {
         call.set_null();
         return;
     }
-    let cid = swoole_rs_phpcoroutines::swr_v1_phpcoroutines_cid();
+    let cid = swoole_rs_phpcoroutines::get_cid();
     // SAFETY: the server's live array takes a reference to the connection.
     unsafe { z::swr_zval_try_addref(zconn) };
     // SAFETY: as above.

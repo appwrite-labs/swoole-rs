@@ -6,7 +6,7 @@
 use crate::{
     context,
     host::{self, Context},
-    parse::{Key, add_protocol, key, request_times, swr_v1_phphttp_parse},
+    parse::{Key, add_protocol, key, parse_request, request_times},
     send::state,
     websocket,
 };
@@ -341,7 +341,7 @@ fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c
     facts.coroutine = enable_coroutine(server.raw());
     let ctx = context::context_new(session);
     // SAFETY: a new context and the live server.
-    unsafe { context::swr_v1_phphttp_context_init(ctx, server.raw()) };
+    unsafe { context::init(ctx, server.raw()) };
     let state = state(ctx);
     state.before_request = 1;
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
@@ -507,7 +507,7 @@ fn handle(
     // SAFETY: as above.
     let data = unsafe { string::bytes(data) };
     // SAFETY: a live context and its data.
-    let parsed = unsafe { swr_v1_phphttp_parse(ctx, data.as_ptr().cast(), data.len()) };
+    let parsed = unsafe { parse_request(ctx, data.as_ptr().cast(), data.len()) };
     if state(ctx).parser.error != HPE_OK || state(ctx).completed == 0 {
         context::send(ctx, BAD_REQUEST);
         context::close(ctx);
@@ -654,8 +654,7 @@ unsafe extern "C" {
 /// A bailout in the handler is raised last, over this frame only.
 /// # Safety
 /// `request` is the session's `SessionRequest` for a live stream context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_server_http2_request(request: *mut c_void) {
+pub unsafe extern "C" fn http2_request_handler(request: *mut c_void) {
     // SAFETY: per the caller.
     let ctx = unsafe { (*request.cast::<Http2Request>()).ctx };
     let result = http2_request(ctx);
@@ -773,7 +772,7 @@ struct Worker {
 /// server worker.
 fn worker() -> Option<Worker> {
     let server = swoole_rs_corebase::swr_v1_core_server();
-    let current = swoole_rs_process::worker_globals::swr_v1_worker_globals();
+    let current = swoole_rs_process::worker_globals::thread_globals();
     // SAFETY: this thread's worker record.
     let current = unsafe { (*current).worker };
     if server.is_null() || current.is_null() {

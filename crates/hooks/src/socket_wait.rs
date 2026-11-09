@@ -5,8 +5,8 @@
 //! `poll` waits the same way under a timer. Native code keeps the yield and the
 //! write buffer ([`Host`](crate::co_io::Host)).
 use crate::co_io::{CLOSE_WAIT_ERROR, NATIVE, Timer, available, set_err};
-use crate::co_socket::CoSocket;
-use crate::shutdown::{READ, SocketState, WRITE, swr_v1_hook_socket_bind, swr_v1_hook_socket_co};
+use crate::co_socket::Co;
+use crate::shutdown::{READ, WRITE};
 use crate::vector::Barrier;
 use core::ffi::c_void;
 
@@ -22,72 +22,54 @@ fn slot(event: u32) -> usize {
 }
 
 /// One wait on a live record. Nothing here holds a borrow of it across a native call.
-struct Wait(*mut CoSocket);
+struct Wait(Co);
 
 impl Wait {
-    fn socket(&self) -> &CoSocket {
-        // SAFETY: the live record the caller passes; not held across a native call.
-        unsafe { &*self.0 }
-    }
-
-    fn state(&self) -> *mut SocketState {
-        self.socket().state
-    }
-
-    fn closed(&self) -> bool {
-        self.socket().is_closed()
-    }
-
     /// `close_wait`, else `has_kernel_nobufs()` (which clears it); the TLS
     /// session's wants, `removed` and `events`.
     fn status(&self) -> u32 {
-        // SAFETY: an open socket's record, not otherwise borrowed here.
-        let record = unsafe { self.socket().record() };
-        if record.output.close_wait != 0 {
-            return CLOSE_WAIT;
-        }
-        let tls = !record.ssl.is_null();
-        let mut status = record.events.cast_unsigned() & (READ | WRITE);
-        if core::mem::take(&mut record.kernel_nobufs) {
-            status |= NOBUFS;
-        }
-        if tls && record.tls.want_read != 0 {
-            status |= WANT_READ;
-        }
-        if tls && record.tls.want_write != 0 {
-            status |= WANT_WRITE;
-        }
-        if record.removed != 0 {
-            status |= REMOVED;
-        }
-        status
-    }
-
-    fn set_err(&self, error: i32) {
-        // SAFETY: the live record, not borrowed here.
-        unsafe { set_err(self.0, error) };
+        self.0
+            .net(|record| {
+                if record.output.close_wait != 0 {
+                    return CLOSE_WAIT;
+                }
+                let tls = !record.ssl.is_null();
+                let mut status = record.events.cast_unsigned() & (READ | WRITE);
+                if core::mem::take(&mut record.kernel_nobufs) {
+                    status |= NOBUFS;
+                }
+                if tls && record.tls.want_read != 0 {
+                    status |= WANT_READ;
+                }
+                if tls && record.tls.want_write != 0 {
+                    status |= WANT_WRITE;
+                }
+                if record.removed != 0 {
+                    status |= REMOVED;
+                }
+                status
+            })
+            .unwrap_or(CLOSE_WAIT)
     }
 
     fn bind(&self, event: u32, co: *mut c_void) {
-        // SAFETY: the socket's live handle, not borrowed across this call.
-        unsafe { swr_v1_hook_socket_bind(self.state(), event, co) };
+        self.0.with_state(|state| state.bind(event, co));
     }
 
     fn want(&self) -> u32 {
-        // SAFETY: a read of the live handle.
-        unsafe { (*self.state()).want }
+        self.0.with_state(|state| state.want)
     }
 
     fn set_want(&self, event: u32) {
-        // SAFETY: a write to the live handle, not borrowed across this call.
-        unsafe { (*self.state()).want = event };
+        self.0.with_state(|state| state.want = event);
     }
 
     fn set_barrier(&self, event: u32, barrier: Option<(Barrier, *mut c_void)>) {
-        // SAFETY: a write to the live handle, not borrowed across this call.
-        if let Some(slot) = unsafe { (*self.state()).barriers.get_mut(slot(event)) } {
-            *slot = barrier;
-        }
+        self.0.with_state(|state| {
+            if let Some(slot) = state.barriers.get_mut(slot(event)) {
+                *slot = barrier;
+            }
+        });
     }
 
     /// `add_event`: add `event` to the reactor unless it is there already.
@@ -99,14 +81,14 @@ impl Wait {
             status & (READ | WRITE) | event
         };
         let added = status & event != 0 || (NATIVE.reactor)(self.0, events, removed);
-        self.set_err(if added { 0 } else { crate::co_io::errno() });
+        set_err(self.0, if added { 0 } else { crate::co_io::errno() });
         added
     }
 
     fn wait(&self, co: *mut c_void, event: u32, buffer: *mut *mut u8, length: usize) -> bool {
         let status = self.status();
         if status & CLOSE_WAIT != 0 {
-            self.set_err(CLOSE_WAIT_ERROR);
+            set_err(self.0, CLOSE_WAIT_ERROR);
             return false;
         }
         let event = if event == READ { READ } else { WRITE };
@@ -114,9 +96,9 @@ impl Wait {
             self.bind(event, co);
             (NATIVE.sleep)();
             self.bind(event, core::ptr::null_mut());
-            return !self.closed();
+            return !self.0.is_closed();
         }
-        self.set_err(0);
+        set_err(self.0, 0);
         let mut added = event;
         if event == READ && status & WANT_WRITE != 0 || event == WRITE && status & WANT_READ != 0 {
             if status & WANT_WRITE != 0 && self.add(status, WRITE) {
@@ -139,15 +121,15 @@ impl Wait {
         (NATIVE.suspend)(self.0, co, event);
         self.bind(event, core::ptr::null_mut());
         // Both coroutines may wait for the same event under TLS.
-        // SAFETY: a read of the live handle.
-        let bound = unsafe {
-            !crate::shutdown::swr_v1_hook_socket_bound_co(self.state(), READ | WRITE).is_null()
-        };
+        let bound = !self
+            .0
+            .with_state(|state| state.bound_co(READ | WRITE))
+            .is_null();
         if self.want() == 0 || !bound {
             (NATIVE.remove)(self.0, added);
         }
         self.set_want(0);
-        !self.closed() && self.socket().err_code == 0
+        !self.0.is_closed() && self.0.err_code() == 0
     }
 }
 
@@ -157,10 +139,10 @@ impl Wait {
 /// woken with the socket open and no error.
 ///
 /// # Safety
-/// `socket` is a live, open record; the barrier's state outlives the call;
-/// `buffer` is null or a live slot of `length` bytes.
+/// The barrier's state outlives the call; `buffer` is null or a live slot of
+/// `length` bytes.
 pub(crate) unsafe fn wait(
-    socket: *mut CoSocket,
+    socket: Co,
     event: u32,
     barrier: Option<(Barrier, *mut c_void)>,
     buffer: *mut *mut u8,
@@ -180,29 +162,10 @@ pub(crate) unsafe fn wait(
     woke
 }
 
-/// [`wait`] for native code.
-///
-/// # Safety
-/// As [`wait`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_wait(
-    socket: *mut CoSocket,
-    event: u32,
-    barrier: Option<Barrier>,
-    barrier_state: *mut c_void,
-    buffer: *mut *mut u8,
-    length: usize,
-) -> bool {
-    // SAFETY: forwarded.
-    unsafe {
-        wait(
-            socket,
-            event,
-            barrier.map(|b| (b, barrier_state)),
-            buffer,
-            length,
-        )
-    }
+/// [`wait`] with no barrier and no buffer.
+pub(crate) fn wait_for(socket: Co, event: u32) -> bool {
+    // SAFETY: no barrier and no buffer.
+    unsafe { wait(socket, event, None, core::ptr::null_mut(), 0) }
 }
 
 /// The readable (`event` read) or writable callback: the coroutine to resume, or
@@ -210,69 +173,47 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_wait(
 /// installed barrier that keeps waiting holds the coroutine unless the peer hung up.
 ///
 /// # Safety
-/// `state` is a live handle; an installed barrier's state is live.
-pub unsafe extern "C" fn swr_v1_hook_socket_ready(
-    state: *mut SocketState,
-    event: u32,
-    hup: bool,
-) -> *mut c_void {
+/// An installed barrier's state is live.
+pub(crate) unsafe fn ready(socket: Co, event: u32, hup: bool) -> *mut c_void {
     let other = if event == READ { WRITE } else { READ };
-    // SAFETY: a read of the live handle.
-    let want = unsafe { (*state).want };
-    // SAFETY: a read of the live handle.
-    let barrier = unsafe { (*state).barriers.get(slot(event)) }
-        .copied()
-        .flatten();
-    if want != 0 {
-        return if want == event {
-            // SAFETY: a read of the live handle.
-            unsafe { swr_v1_hook_socket_co(state, other) }
+    let (want, woken, barrier) = socket.with_state(|state| {
+        let woken = if state.want == event {
+            state.co(other)
         } else {
             core::ptr::null_mut()
         };
+        (
+            state.want,
+            woken,
+            state.barriers.get(slot(event)).copied().flatten(),
+        )
+    });
+    if want != 0 {
+        return woken;
     }
     if let Some((barrier, barrier_state)) = barrier {
-        // SAFETY: the installed barrier with its live state; it does not touch `state`'s
-        // barriers or bindings.
+        // SAFETY: the installed barrier with its live state; it does not touch the
+        // state's barriers or bindings.
         if unsafe { barrier(barrier_state) } && !hup {
             return core::ptr::null_mut();
         }
     }
-    // SAFETY: a read of the live handle.
-    unsafe { swr_v1_hook_socket_co(state, event) }
+    socket.with_state(|state| state.co(event))
 }
 
 /// `Socket::poll(event, timeout)`: wait for `event` under `timeout`, or the
 /// direction's own timeout when it is zero.
-///
-/// # Safety
-/// `socket` is a live record, not borrowed elsewhere for the call.
-pub unsafe extern "C" fn swr_v1_hook_co_socket_poll(
-    socket: *mut CoSocket,
-    event: u32,
-    timeout: f64,
-) -> bool {
-    // SAFETY: as the caller promises.
-    if !unsafe { available(socket, event) } {
+pub(crate) fn poll(socket: Co, event: u32, timeout: f64) -> bool {
+    if !available(socket, event) {
         return false;
     }
     let timeout = if timeout == 0.0 {
-        // SAFETY: as the caller promises.
-        let record = unsafe { &*socket };
-        // SAFETY: an available record is open; the read ends here.
-        let timeouts = unsafe { record.record() }.timeouts;
-        if event == READ {
-            timeouts.read
-        } else {
-            timeouts.write
-        }
+        socket.timeout(if event == READ { 4 } else { 8 })
     } else {
         timeout
     };
-    // SAFETY: the live record; the timer stops before this returns.
-    let mut timer = unsafe { Timer::new(socket, event, timeout) };
-    // SAFETY: the live, open record.
-    let woke = timer.start() && unsafe { wait(socket, event, None, core::ptr::null_mut(), 0) };
+    let mut timer = Timer::new(socket, event, timeout);
+    let woke = timer.start() && wait_for(socket, event);
     timer.stop();
     woke
 }
@@ -282,26 +223,19 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_poll(
 /// object over `socket`, or left the reactor).
 ///
 /// # Safety
-/// `socket` is a live record and `event_socket` the live `network::Socket` the
-/// event came from; a resumed coroutine may free the record but not `event_socket`.
-pub unsafe extern "C" fn swr_v1_hook_co_socket_error_event(
-    socket: *mut CoSocket,
-    owner: *const c_void,
-    event_socket: *const swoole_rs_reactor::SocketRecord,
-) {
+/// `event_socket` is the live `network::Socket` the event came from; a resumed
+/// coroutine may free the record but not `event_socket`.
+pub(crate) unsafe fn error_event(socket: Co, event_socket: *const swoole_rs_reactor::SocketRecord) {
     for event in [WRITE, READ] {
         // SAFETY: the live network::Socket (see above).
         let record = unsafe { &*event_socket };
-        if event == READ && (record.object.cast_const() != owner || record.removed != 0) {
+        if event == READ && (record.object != socket.this() || record.removed != 0) {
             return;
         }
-        // SAFETY: the record is live: it still owns `event_socket`.
-        let state = unsafe { (*socket).state };
-        // SAFETY: the record's live state.
-        let co = unsafe { swr_v1_hook_socket_co(state, event) };
+        // The record is live: it still owns `event_socket`.
+        let co = socket.with_state(|state| state.co(event));
         if !co.is_null() {
-            // SAFETY: as above.
-            unsafe { set_err(socket, 0) };
+            set_err(socket, 0);
             (NATIVE.resume)(co);
         }
     }
@@ -331,10 +265,9 @@ mod tests {
 
     /// The suspended coroutine records whether the ready callback picks it.
     fn wake_on_ready() {
-        ON_SUSPEND.set(Some(Box::new(|socket: *mut CoSocket, event| {
-            let state = unsafe { (*socket).state };
-            let bound = unsafe { swr_v1_hook_socket_co(state, event) };
-            let woken = unsafe { swr_v1_hook_socket_ready(state, event, false) };
+        ON_SUSPEND.set(Some(Box::new(|socket: Co, event| {
+            let bound = socket.with_state(|state| state.co(event));
+            let woken = unsafe { ready(socket, event, false) };
             log(format!("woken:{}", !woken.is_null() && woken == bound));
         })));
     }
@@ -342,11 +275,10 @@ mod tests {
     fn wait_on(socket: &mut TestSocket, event: u32, barrier: Option<Barrier>) -> bool {
         let mut slot = core::ptr::null_mut();
         unsafe {
-            swr_v1_hook_co_socket_wait(
-                socket.ptr(),
+            wait(
+                socket.co(),
                 event,
-                barrier,
-                core::ptr::null_mut(),
+                barrier.map(|b| (b, core::ptr::null_mut())),
                 &raw mut slot,
                 4,
             )
@@ -429,8 +361,8 @@ mod tests {
             true
         }
         let mut s = socket(0);
-        ON_SUSPEND.set(Some(Box::new(|socket: *mut CoSocket, event| {
-            let woken = unsafe { swr_v1_hook_socket_ready((*socket).state, event, false) };
+        ON_SUSPEND.set(Some(Box::new(|socket: Co, event| {
+            let woken = unsafe { ready(socket, event, false) };
             log(format!("woken:{}", !woken.is_null()));
         })));
         assert!(wait_on(&mut s, READ, Some(again)));
@@ -444,9 +376,7 @@ mod tests {
     #[test]
     fn a_wake_with_an_error_or_close_fails() {
         let mut s = socket(0);
-        ON_SUSPEND.set(Some(Box::new(|socket: *mut CoSocket, _| unsafe {
-            (*socket).sock_fd = -1;
-        })));
+        ON_SUSPEND.set(Some(Box::new(|socket: Co, _| socket.set_sock_fd(-1))));
         assert!(!wait_on(&mut s, READ, None));
         s.0.sock_fd = 100;
     }
@@ -460,7 +390,7 @@ mod tests {
         unsafe { s.0.record() }.timeouts.write = 4.0;
         for (event, timeout, expected) in [(READ, 0.0, 3.0), (WRITE, 0.0, 4.0), (READ, 0.5, 0.5)] {
             take();
-            assert!(unsafe { swr_v1_hook_co_socket_poll(s.ptr(), event, timeout) });
+            assert!(poll(s.co(), event, timeout));
             let add = if event == READ { "set:512" } else { "set:1024" };
             let mut want = vec![format!("timer:add:{expected}"), add.into()];
             want.extend([
@@ -472,10 +402,10 @@ mod tests {
         }
         // A failed timer skips the wait; a socket held by another coroutine is unavailable.
         crate::co_io::test_host::TIMER_OK.set(false);
-        assert!(!unsafe { swr_v1_hook_co_socket_poll(s.ptr(), READ, 1.0) });
+        assert!(!poll(s.co(), READ, 1.0));
         assert_eq!(effects(), ["timer:add:1"]);
         s.0.sock_fd = -1;
-        assert!(!unsafe { swr_v1_hook_co_socket_poll(s.ptr(), READ, 1.0) });
+        assert!(!poll(s.co(), READ, 1.0));
         assert_eq!(effects(), Vec::<String>::new());
         s.0.sock_fd = 100;
     }
@@ -502,23 +432,23 @@ mod tests {
             };
             record.removed = u8::from(removed);
             let event_socket = s.0.socket;
-            unsafe { swr_v1_hook_socket_bind(s.state(), READ, (&raw mut reader).cast()) };
-            unsafe { swr_v1_hook_socket_bind(s.state(), WRITE, (&raw mut writer).cast()) };
+            unsafe { &mut *s.state() }.bind(READ, (&raw mut reader).cast());
+            unsafe { &mut *s.state() }.bind(WRITE, (&raw mut writer).cast());
             ON_RESUME.set(Some(Box::new(move |cid| {
                 if close_in_writer && cid == 8 {
                     unsafe { (*event_socket).object = core::ptr::null_mut() };
                 }
             })));
             s.0.err_code = 9;
-            unsafe { swr_v1_hook_co_socket_error_event(s.ptr(), owner, event_socket) };
+            unsafe { error_event(s.co(), event_socket) };
             let mut want = vec!["resume:8".to_string()];
             if object_matches && !removed && !close_in_writer {
                 want.push("resume:7".into());
             }
             assert_eq!(effects(), want);
             assert_eq!(s.0.err_code, 0);
-            unsafe { swr_v1_hook_socket_bind(s.state(), READ, core::ptr::null_mut()) };
-            unsafe { swr_v1_hook_socket_bind(s.state(), WRITE, core::ptr::null_mut()) };
+            unsafe { &mut *s.state() }.bind(READ, core::ptr::null_mut());
+            unsafe { &mut *s.state() }.bind(WRITE, core::ptr::null_mut());
         }
     }
 }

@@ -439,8 +439,7 @@ fn execute(
 /// `Context::parse`.
 /// # Safety
 /// `context` is a live `swoole::http::Context` whose parser is initialised.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_parse(
+pub(crate) unsafe fn parse_request(
     context: *mut c_void,
     data: *const c_char,
     length: usize,
@@ -959,8 +958,7 @@ fn multipart_free(state: &mut State) {
 /// `Context::free`'s share: what the parser still holds.
 /// # Safety
 /// `context` is a live `swoole::http::Context`, about to be deleted.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_parse_free(context: *mut c_void) {
+pub(crate) unsafe fn parse_free(context: *mut c_void) {
     // SAFETY: per the caller.
     let state = unsafe { &mut *context.cast::<State>() };
     multipart_free(state);
@@ -995,8 +993,7 @@ fn multipart_boundary(
 /// `Context::get_multipart_boundary`, for the HTTP/2 server.
 /// # Safety
 /// `context` is a live context; `at` spans `length` bytes; the outputs are writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_multipart_boundary(
+pub(crate) unsafe fn multipart_boundary_of(
     context: *mut c_void,
     at: *const c_char,
     length: usize,
@@ -1040,8 +1037,7 @@ fn multipart_init(state: &mut State, boundary: *const u8, length: usize) -> bool
 /// `Context::init_multipart_parser`, for the HTTP/2 server.
 /// # Safety
 /// `context` is a live context and `boundary` spans `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_multipart_init(
+pub(crate) unsafe fn init_multipart(
     context: *mut c_void,
     boundary: *const c_char,
     length: c_int,
@@ -1076,19 +1072,6 @@ pub(crate) fn multipart_parse(state: &mut State, at: *const u8, length: usize) -
         return false;
     }
     true
-}
-
-/// `Context::parse_multipart_data`, for the HTTP/2 server.
-/// # Safety
-/// `context` is a live context with a multipart parser; `at` spans `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_multipart_parse(
-    context: *mut c_void,
-    at: *const c_char,
-    length: usize,
-) -> bool {
-    // SAFETY: per the caller.
-    multipart_parse(unsafe { &mut *context.cast::<State>() }, at.cast(), length)
 }
 
 /// `Context::set_compression_method`.

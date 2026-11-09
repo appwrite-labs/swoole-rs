@@ -88,15 +88,8 @@ fn port_property<'a>(port: *mut c_void) -> Option<&'a PortProperty> {
     }
     // SAFETY: a live `ListenPort`.
     let config = unsafe { port_config::of(port) };
-    // SAFETY: the port's own `ptr` field.
-    let property = unsafe {
-        crate::server::swr_v1_phpserver_port_property(
-            config.object_id,
-            &raw mut config.ptr,
-            ptr::null_mut(),
-            false,
-        )
-    };
+    let property =
+        crate::server::port_property(config.object_id, &mut config.ptr, ptr::null_mut(), false);
     // SAFETY: null, or the property its Port object holds while the port lives.
     unsafe { property.cast::<PortProperty>().as_ref() }
 }
@@ -270,7 +263,7 @@ const SW_ERROR_SERVER_WORKER_TERMINATED: c_int = 9003;
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_server_rshutdown() {
     let serv = swoole_rs_corebase::swr_v1_core_server();
-    let globals = worker_globals::swr_v1_worker_globals();
+    let globals = worker_globals::thread_globals();
     // SAFETY: this thread's worker globals.
     let worker = unsafe { (*globals).worker };
     if serv.is_null() || worker.is_null() {

@@ -1299,8 +1299,7 @@ struct PacketLength {
 /// # Safety
 /// `protocol` is a port's live protocol whose `private_data_1` is the
 /// callable its settings made; `packet` the bytes so far.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_length_func(
+pub(crate) unsafe extern "C" fn length_func(
     protocol: *const Protocol,
     _socket: *mut c_void,
     packet: *const c_void,

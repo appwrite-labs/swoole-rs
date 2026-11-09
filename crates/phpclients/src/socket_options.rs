@@ -6,7 +6,7 @@
 //! the coroutine socket's fields stay C++, reached through `native`.
 use crate::{
     multicast,
-    native::{self, ErrorKind, Socket},
+    native::{self, Co, ErrorKind},
     net::{self, warn_sys},
     socket::open,
 };
@@ -17,6 +17,7 @@ use std::{
     ptr,
     sync::atomic::Ordering,
 };
+use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_zend::{
     Call,
@@ -69,26 +70,6 @@ pub(crate) struct PacketLength {
     pub(crate) buf: *const u8,
     pub(crate) buf_size: u32,
     header_len: u32,
-}
-
-type LengthFunc = unsafe extern "C" fn(*const Protocol, *mut c_void, *mut PacketLength) -> isize;
-
-/// `swoole::Protocol`, whole (C++ asserts its size and the length function's offset).
-#[repr(C)]
-pub(crate) struct Protocol {
-    split_by_eof: bool,
-    package_eof: [u8; EOF_MAXLEN],
-    package_eof_len: u8,
-    package_length_type: u8,
-    package_length_size: u8,
-    package_length_offset: u16,
-    package_body_offset: u16,
-    package_max_length: u32,
-    pub(crate) private_data_1: *mut c_void,
-    private_data_2: *mut c_void,
-    on_package: *mut c_void,
-    get_package_length: Option<LengthFunc>,
-    get_package_length_size: *mut c_void,
 }
 
 /// `open_fastcgi_protocol`'s length: the record's content and padding lengths
@@ -219,28 +200,15 @@ fn size(value: *mut zval) -> Result<i64, Stop> {
     Ok(size)
 }
 
-fn set_flag(socket: Socket, flag: c_int, value: bool) {
-    // SAFETY: a live socket.
-    unsafe { native::swoole_socket_coro_set_flag(socket, flag, value) };
-}
-
-fn ssl_context(socket: Socket) -> *const OwnedTlsContext {
-    // SAFETY: a live socket.
-    unsafe { native::swoole_socket_coro_ssl_context(socket) }.cast()
-}
-
 /// The socket's `Protocol`, edited by `f`.
-fn edit(socket: Socket, f: impl FnOnce(&mut Protocol)) {
-    // SAFETY: a live socket.
-    let protocol = unsafe { native::swoole_socket_coro_protocol(socket) }.cast::<Protocol>();
-    // SAFETY: the socket's protocol, not referenced elsewhere during `f`.
-    f(unsafe { &mut *protocol });
+fn edit(socket: Co, f: impl FnOnce(&mut Protocol)) {
+    f(&mut socket.record().protocol);
 }
 
 /// The settings `which` names applied to `socket` (`ALL`, `PROTOCOL`, `SSL`):
 /// whether they all applied. Stops at a pending bailout, for the caller's
 /// handler to raise.
-pub(crate) fn apply(socket: Socket, settings: *const zval, which: c_int) -> bool {
+pub(crate) fn apply(socket: Co, settings: *const zval, which: c_int) -> bool {
     // SAFETY: an array zval.
     let s = Settings(unsafe { table(settings) });
     let applied = match which {
@@ -260,7 +228,8 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_settings(
     settings: *const zval,
     which: c_int,
 ) -> bool {
-    let applied = apply(socket, settings, which);
+    // SAFETY: per the caller.
+    let applied = apply(unsafe { Co::new(socket) }, settings, which);
     bailout::finish();
     applied
 }
@@ -269,7 +238,10 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_settings(
 /// # Safety
 /// As [`swr_v1_phpclients_socket_settings`].
 #[unsafe(export_name = "_Z21php_swoole_socket_setPN6swoole9coroutine6SocketEPK12_zval_struct")]
-pub unsafe extern "C" fn php_swoole_socket_set(socket: Socket, settings: *const zval) -> bool {
+pub unsafe extern "C" fn php_swoole_socket_set(
+    socket: native::Socket,
+    settings: *const zval,
+) -> bool {
     // SAFETY: per the caller.
     unsafe { swr_v1_phpclients_socket_settings(socket, settings, ALL) }
 }
@@ -279,7 +251,7 @@ pub unsafe extern "C" fn php_swoole_socket_set(socket: Socket, settings: *const 
 /// As [`swr_v1_phpclients_socket_settings`].
 #[unsafe(export_name = "_Z30php_swoole_socket_set_protocolPN6swoole9coroutine6SocketEPK12_zval_struct")]
 pub unsafe extern "C" fn php_swoole_socket_set_protocol(
-    socket: Socket,
+    socket: native::Socket,
     settings: *const zval,
 ) -> bool {
     // SAFETY: per the caller.
@@ -287,7 +259,7 @@ pub unsafe extern "C" fn php_swoole_socket_set_protocol(
 }
 
 /// `php_swoole_socket_set_protocol`.
-fn set_protocol(s: &Settings, socket: Socket) -> Result<bool, Stop> {
+fn set_protocol(s: &Settings, socket: Co) -> Result<bool, Stop> {
     let mut ret = true;
     if let Some(v) = s.get(c"open_ssl")
         && truth(v)
@@ -295,19 +267,19 @@ fn set_protocol(s: &Settings, socket: Socket) -> Result<bool, Stop> {
         enable_ssl(socket);
     }
     if let Some(v) = s.get(c"open_http2_protocol") {
-        set_flag(socket, FLAG_HTTP2, truth(v));
+        socket.set_flag(FLAG_HTTP2, truth(v));
     }
-    if !ssl_context(socket).is_null() && !set_ssl(s, socket)? {
+    if !socket.ssl_context().is_null() && !set_ssl(s, socket)? {
         ret = false;
     }
     if let Some(v) = s.get(c"open_eof_check") {
-        set_flag(socket, FLAG_EOF, truth(v));
+        socket.set_flag(FLAG_EOF, truth(v));
     }
     if let Some(v) = s.get(c"open_eof_split") {
         let split = truth(v);
         edit(socket, |p| p.split_by_eof = split);
         if split {
-            set_flag(socket, FLAG_EOF, true);
+            socket.set_flag(FLAG_EOF, true);
         }
     }
     if let Some(v) = s.get(c"package_eof") {
@@ -331,26 +303,24 @@ fn set_protocol(s: &Settings, socket: Socket) -> Result<bool, Stop> {
         }
     }
     if let Some(v) = s.get(c"open_fastcgi_protocol") {
-        set_flag(socket, FLAG_LENGTH, truth(v));
+        socket.set_flag(FLAG_LENGTH, truth(v));
         edit(socket, |p| {
             p.package_length_size = 8;
             p.package_length_offset = 0;
             p.package_body_offset = 0;
-            p.get_package_length = Some(fastcgi_length);
+            p.get_package_length = fastcgi_length as *mut c_void;
         });
     }
     if let Some(v) = s.get(c"open_mqtt_protocol") {
         let mqtt = truth(v);
-        set_flag(socket, FLAG_LENGTH, mqtt);
+        socket.set_flag(FLAG_LENGTH, mqtt);
         if mqtt {
-            // SAFETY: a live socket.
-            unsafe { native::swoole_socket_coro_protocol_preset(socket, 0) };
+            socket.protocol_preset(0);
         }
     }
     if let Some(v) = s.get(c"open_length_check") {
-        set_flag(socket, FLAG_LENGTH, truth(v));
-        // SAFETY: a live socket.
-        unsafe { native::swoole_socket_coro_protocol_preset(socket, 1) };
+        socket.set_flag(FLAG_LENGTH, truth(v));
+        socket.protocol_preset(1);
     }
     if let Some(v) = s.get(c"package_length_type") {
         let kind = string(v)?.first().copied().unwrap_or(0);
@@ -405,7 +375,7 @@ fn clamp_u8(value: i64) -> u8 {
 }
 
 /// `php_swoole_socket_set`.
-fn set(s: &Settings, socket: Socket) -> Result<bool, Stop> {
+fn set(s: &Settings, socket: Co) -> Result<bool, Stop> {
     let mut ret = true;
     for (key, kind) in [
         (c"timeout", TIMEOUT_ALL),
@@ -414,9 +384,7 @@ fn set(s: &Settings, socket: Socket) -> Result<bool, Stop> {
         (c"write_timeout", TIMEOUT_WRITE),
     ] {
         if let Some(v) = s.get(key) {
-            let timeout = double(v)?;
-            // SAFETY: a live socket.
-            unsafe { native::swoole_socket_coro_set_timeout(socket, timeout, kind) };
+            socket.set_timeout(double(v)?, kind);
         }
     }
     let mut bind_port = 0;
@@ -428,16 +396,7 @@ fn set(s: &Settings, socket: Socket) -> Result<bool, Stop> {
         bind_address = string(v)?;
     }
     if !bind_address.is_empty() {
-        // SAFETY: a live socket and the address bytes.
-        let bound = unsafe {
-            native::swoole_socket_coro_bind(
-                socket,
-                bind_address.as_ptr().cast(),
-                bind_address.len(),
-                bind_port,
-            )
-        };
-        ret &= bound;
+        ret &= socket.bind(&bind_address, bind_port);
     }
     if let Some(v) = s.get(c"socket_buffer_size") {
         let size = size(v)?;
@@ -451,44 +410,21 @@ fn set(s: &Settings, socket: Socket) -> Result<bool, Stop> {
                 reason = "set_option takes an int, as upstream's"
             )]
             let size = size as c_int;
-            // SAFETY: a live socket.
-            let _ = unsafe {
-                native::swoole_socket_coro_set_option(
-                    socket,
-                    libc::SOL_SOCKET,
-                    libc::SO_RCVBUF,
-                    size,
-                )
-            } && {
-                // SAFETY: as above.
-                unsafe {
-                    native::swoole_socket_coro_set_option(
-                        socket,
-                        libc::SOL_SOCKET,
-                        libc::SO_SNDBUF,
-                        size,
-                    )
-                }
-            };
+            let _ = socket.set_option(libc::SOL_SOCKET, libc::SO_RCVBUF, size)
+                && socket.set_option(libc::SOL_SOCKET, libc::SO_SNDBUF, size);
         }
     }
-    // SAFETY: a live socket.
-    let kind = unsafe { native::swoole_client_coro_type(socket) };
+    let kind = socket.kind();
     if let Some(v) = s.get(c"open_tcp_nodelay")
         // Upstream's test: every type but TCP6.
         && (kind == SOCK_TCP || kind != SOCK_TCP6)
     {
         let on = truth(v);
         let nodelay = c_int::from(on);
-        // SAFETY: a live socket's record.
-        let record = unsafe { native::swoole_client_coro_socket_record(socket) };
-        // SAFETY: as above.
-        let fd = unsafe { (*record).fd };
-        if swoole_rs_reactor::swr_v1_socket_tcp_nodelay(fd, nodelay) {
-            // SAFETY: as above.
-            unsafe {
-                (*record).tcp_nodelay = u8::from(on);
-            }
+        if let Some(record) = socket.net()
+            && swoole_rs_reactor::swr_v1_socket_tcp_nodelay(record.fd, nodelay)
+        {
+            record.tcp_nodelay = u8::from(on);
         }
     }
     if !set_protocol(s, socket)? {
@@ -517,7 +453,7 @@ fn set(s: &Settings, socket: Socket) -> Result<bool, Stop> {
                 }
             }
         }
-        proxy(socket, false, &host, port, &user, &password);
+        socket.proxy(false, &host, port, &user, &password);
     } else if let Some(host) = s.get(c"http_proxy_host") {
         if !inet {
             throw_unsupported(c"Only tcp socket supports http proxy settings");
@@ -543,7 +479,7 @@ fn set(s: &Settings, socket: Socket) -> Result<bool, Stop> {
                 }
             }
         }
-        proxy(socket, true, &host, port, &user, &password);
+        socket.proxy(true, &host, port, &user, &password);
     }
     Ok(ret)
 }
@@ -554,26 +490,9 @@ fn throw_unsupported(message: &CStr) {
     unsafe { throw_exception(exception, message, OPERATION_NOT_SUPPORT) };
 }
 
-fn proxy(socket: Socket, http: bool, host: &[u8], port: i64, user: &[u8], password: &[u8]) {
-    // SAFETY: a live socket and the bytes given.
-    unsafe {
-        native::swoole_socket_coro_proxy(
-            socket,
-            http,
-            host.as_ptr().cast(),
-            host.len(),
-            port,
-            user.as_ptr().cast(),
-            user.len(),
-            password.as_ptr().cast(),
-            password.len(),
-        );
-    }
-}
-
 /// `php_swoole_socket_set_ssl`.
-fn set_ssl(s: &Settings, socket: Socket) -> Result<bool, Stop> {
-    let owner = ssl_context(socket);
+fn set_ssl(s: &Settings, socket: Co) -> Result<bool, Stop> {
+    let owner = socket.ssl_context().cast::<OwnedTlsContext>();
     if owner.is_null() {
         return Ok(true);
     }
@@ -618,8 +537,7 @@ fn set_ssl(s: &Settings, socket: Socket) -> Result<bool, Stop> {
     if let Some(v) = s.get(c"ssl_passphrase") {
         text(Text::Passphrase, v)?;
     }
-    // SAFETY: a pure query.
-    if unsafe { native::swoole_socket_coro_ssl_supports(SSL_HOST_NAME) }
+    if native::ssl_supports(SSL_HOST_NAME)
         && let Some(v) = s.get(c"ssl_host_name")
     {
         text(Text::HostName, v)?;
@@ -645,8 +563,7 @@ fn set_ssl(s: &Settings, socket: Socket) -> Result<bool, Stop> {
     if let Some(v) = s.get(c"ssl_ecdh_curve") {
         text(Text::EcdhCurve, v)?;
     }
-    // SAFETY: a pure query.
-    if unsafe { native::swoole_socket_coro_ssl_supports(SSL_GREASE) }
+    if native::ssl_supports(SSL_GREASE)
         && let Some(v) = s.get(c"ssl_grease")
     {
         set(Value::Grease(clamp_u8(long(v)?)));
@@ -655,17 +572,13 @@ fn set_ssl(s: &Settings, socket: Socket) -> Result<bool, Stop> {
 }
 
 /// Turn a client socket's TLS on (`enable_ssl_encrypt`): false if it had it.
-pub(crate) fn enable_ssl(socket: Socket) -> bool {
-    // SAFETY: a live socket.
-    unsafe { native::swoole_socket_coro_enable_ssl(socket) }
+pub(crate) fn enable_ssl(socket: Co) -> bool {
+    socket.enable_ssl()
 }
 
 /// The coroutine socket's descriptor, from its `network::Socket` record.
-pub(crate) fn fd(socket: Socket) -> c_int {
-    // SAFETY: an open socket has a record.
-    let record = unsafe { native::swoole_client_coro_socket_record(socket) };
-    // SAFETY: as above.
-    unsafe { (*record).fd }
+pub(crate) fn fd(socket: Co) -> c_int {
+    socket.net().map_or(-1, |record| record.fd)
 }
 
 pub(crate) fn errno() -> c_int {
@@ -741,8 +654,7 @@ fn get_option(call: &Call) {
         } else {
             TIMEOUT_WRITE
         };
-        // SAFETY: an open socket.
-        let timeout = unsafe { native::swoole_socket_coro_get_timeout(socket, kind) };
+        let timeout = socket.get_timeout(kind);
         #[expect(
             clippy::cast_possible_truncation,
             reason = "(int) timeout, as upstream"
@@ -908,8 +820,7 @@ fn set_option(call: &Call) {
         } else {
             TIMEOUT_CONNECT | TIMEOUT_WRITE
         };
-        // SAFETY: an open socket.
-        unsafe { native::swoole_socket_coro_set_timeout(socket, timeout, kind) };
+        socket.set_timeout(timeout, kind);
         return call.set_bool(true);
     } else if !plain && bind_to_device(name) {
         // SAFETY: a live argument.

@@ -62,19 +62,37 @@ SHARED_PATHS = ('crates/ffi/', 'native/include/', 'native/integration/', 'native
                 'tools/build_hybrid.py', 'tools/build_upstream.py', 'migration/modules.json')
 
 
-def changed_modules(base):
-    """Modules whose owned paths the diff from BASE touches; shared build inputs select every module."""
+def dependents():
+    """{crate directory: the directories of the Cargo packages under crates/ and tests/modules/
+    whose normal dependencies name it by path (dev-dependencies don't reach the extension)}, relative to ROOT with a trailing slash."""
+    import tomllib
+    found = {}
+    for manifest in [*ROOT.glob('crates/*/Cargo.toml'), *ROOT.glob('tests/modules/**/Cargo.toml')]:
+        package = manifest.parent.relative_to(ROOT).as_posix() + '/'
+        table = tomllib.loads(manifest.read_text())
+        for spec in table.get('dependencies', {}).values():
+            if isinstance(spec, dict) and 'path' in spec:
+                crate = (manifest.parent / spec['path']).resolve().relative_to(ROOT).as_posix() + '/'
+                found.setdefault(crate, set()).add(package)
+    return found
+
+
+def changed_modules(base, consumers=True):
+    """Modules whose owned paths the diff from BASE touches, and (with CONSUMERS) the modules
+    owning a package that depends on a changed crate: their gates call its exports, so they
+    catch one removed or renamed (#2236). Shared build inputs select every module."""
     names = {module_id: name for name, (module_id, _) in MODULES.items()}
     owners = [(path, names.get(module['id'])) for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
               for path in module['owned_paths']]
+    owner = lambda path: next((name for owned, name in owners if name and (path == owned or path.startswith(owned))), None)
+    users = dependents()
     selected = set()
     for path in subprocess.check_output(['git', 'diff', '--name-only', base + '...HEAD'], cwd=ROOT, text=True).split():
-        owner = next((name for owned, name in owners if name and (path == owned or path.startswith(owned))), None)
-        if owner:
-            selected.add(owner)
-        elif path.startswith(SHARED_PATHS):
+        if not owner(path) and path.startswith(SHARED_PATHS):
             return sorted(MODULES)
-    return sorted(selected)
+        selected |= {owner(path)} | {owner(package) for crate, packages in users.items()
+                                     if consumers and path.startswith(crate) for package in packages}
+    return sorted(selected - {None})
 
 
 def selected_modules(args):
@@ -468,7 +486,9 @@ def plan(args, reports):
     elif not integrate and not getattr(args, 'all_modules', False) and set(args.module or ['websocket']) < set(MODULES):
         # The original PHPT families of the chosen modules, gated on upstream like the merge
         # tier's phpt jobs, which run every family (and so cover a change to all modules).
-        ids = {MODULES[module][0] for module in args.module or ['websocket']}
+        # Only the modules a change touches: a consumer's families can't change outcome
+        # without its own code changing, and every family together overruns the phase cap.
+        ids = {MODULES[module][0] for module in getattr(args, 'phpt_module', None) or args.module or ['websocket']}
         families = sorted({family for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
                            if module['id'] in ids for family in module.get('phpt_families', [])})
         if families:
@@ -799,6 +819,7 @@ def main():
         return 0
     if args.changed_since:
         args.module = changed_modules(args.changed_since)
+        args.phpt_module = changed_modules(args.changed_since, consumers=False)
         if not args.module:
             print('No module touched since ' + args.changed_since)
             return 0

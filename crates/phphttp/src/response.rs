@@ -1,5 +1,5 @@
 //! `Swoole\Http\Response`.
-use crate::cookie::{swr_v1_httpbindings_cookie_line, swr_v1_httpbindings_cookie_object_line};
+use crate::cookie::{header_line, object_header_line};
 use crate::{
     context::{self, Holder},
     host::{
@@ -96,7 +96,7 @@ fn release(ctx: *mut Context) -> bool {
     }
     send::state(ctx).response.zobject.ptr = ptr::null_mut();
     // SAFETY: a live context, which the response no longer holds.
-    unsafe { context::swr_v1_phphttp_context_free(ctx) };
+    unsafe { context::free(ctx) };
     bailed
 }
 
@@ -420,23 +420,23 @@ fn set_cookie(call: &Call, encode: bool) {
         let name = unsafe { name.str_ };
         // SAFETY: the parsed arguments of this call.
         unsafe {
-            swr_v1_httpbindings_cookie_line(
-                u8::from(encode),
-                name,
-                nullable(value),
+            header_line(
+                encode,
+                [
+                    name,
+                    nullable(value),
+                    nullable(path),
+                    nullable(domain),
+                    nullable(same_site),
+                    nullable(priority),
+                ],
                 expires,
-                nullable(path),
-                nullable(domain),
-                u8::from(secure),
-                u8::from(http_only),
-                nullable(same_site),
-                nullable(priority),
-                u8::from(partitioned),
+                (secure, http_only, partitioned),
             )
         }
     } else {
         // SAFETY: an object argument; a non-Cookie one is reported by httpbindings.
-        unsafe { swr_v1_httpbindings_cookie_object_line(name) }
+        unsafe { object_header_line(name) }
     };
     if cookie.is_null() {
         return call.set_bool(false);
@@ -785,7 +785,7 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
         // SAFETY: as above.
         let request = unsafe { obj_of(request) };
         // SAFETY: a `Swoole\Http\Request`.
-        ctx = unsafe { context::swr_v1_phphttp_context(request) };
+        ctx = unsafe { context::context_of(request) };
     }
     // SAFETY: as above.
     if unsafe { type_of(object) } == IS_OBJECT {
@@ -827,7 +827,7 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
         return;
     }
     let ctx = if ctx.is_null() {
-        let ctx = context::swr_v1_phphttp_context_new();
+        let ctx = context::alloc();
         send::state(ctx).keepalive = 1;
         if server.is_null() {
             crate::parse::init_request_parser(ctx);
@@ -842,14 +842,14 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
             }
         } else {
             // SAFETY: the live server.
-            unsafe { context::swr_v1_phphttp_context_init(ctx, server) };
+            unsafe { context::init(ctx, server) };
         }
         ctx
     } else {
         ctx
     };
     // SAFETY: a live context, and the server or the socket.
-    unsafe { context::swr_v1_phphttp_context_bind(ctx, server, socket) };
+    unsafe { context::bind(ctx, server, socket) };
     let response = call.return_value();
     let ce = RESPONSE.entry();
     // SAFETY: the return slot and this registered class.
@@ -857,7 +857,7 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
     // SAFETY: the object just created.
     let std = unsafe { obj_of(response) };
     // SAFETY: a `Swoole\Http\Response`.
-    unsafe { context::swr_v1_phphttp_set_context(std, ctx) };
+    unsafe { context::set_context(std, ctx) };
     let state = send::state(ctx);
     state.fd = fd;
     // SAFETY: the object zval just created.
