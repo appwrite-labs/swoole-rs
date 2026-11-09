@@ -403,19 +403,27 @@ fn release_exit_condition() -> Result<(), Bailout> {
     unsafe { kept::release(handle) }
 }
 
-/// `php_swoole_coroutine_reactor_can_exit`: call the exit condition; whether
-/// the reactor may exit goes in `*exit`. 1 when it bailed out, which C++
-/// re-raises.
-/// # Safety
-/// `exit` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_can_exit(exit: *mut u8) -> u8 {
-    let result = can_exit();
-    // SAFETY: per the caller.
-    unsafe { exit.write(u8::from(matches!(result, Ok(true)))) };
-    u8::from(bailout::relay_to_c(result.map(drop)))
+/// Install `Co::set`'s exit condition, if it gave one, on this thread's
+/// reactor, as `php_swoole_reactor_init` did for a new reactor.
+pub fn install_exit_condition() {
+    if !EXIT_CONDITION.with(Cell::get).is_null() {
+        host::set_exit_condition(true);
+    }
 }
 
+/// The reactor's user exit condition: whether it may exit. A bailout is raised
+/// from here, as upstream's lambda raised it.
+pub(crate) extern "C" fn reactor_can_exit(_event_num: *mut usize) -> bool {
+    match can_exit() {
+        Ok(exit) => exit,
+        Err(error) => {
+            bailout::raise(Err(error));
+            false
+        }
+    }
+}
+
+/// `php_swoole_coroutine_reactor_can_exit`: call the exit condition.
 fn can_exit() -> Result<bool, Bailout> {
     let handle = EXIT_CONDITION.with(Cell::get);
     if handle.is_null() {

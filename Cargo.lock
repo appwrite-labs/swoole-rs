@@ -674,8 +674,13 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
+ "swoole-rs-phpcoroutines",
  "swoole-rs-phphelpers",
  "swoole-rs-phpstubs",
+ "swoole-rs-phpswoole",
+ "swoole-rs-process",
+ "swoole-rs-reactor",
+ "swoole-rs-server",
  "swoole-rs-zend",
 ]
 

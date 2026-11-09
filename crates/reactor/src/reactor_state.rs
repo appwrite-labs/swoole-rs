@@ -10,6 +10,14 @@ pub type ReactorWritev =
     unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
 pub type ReactorClose = unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord) -> c_int;
 
+/// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ReactorTask {
+    pub callback: Option<crate::DeferCall>,
+    pub data: *mut c_void,
+}
+
 #[repr(C)]
 pub struct ReactorFields {
     pub kind: c_int,
@@ -35,6 +43,8 @@ pub struct ReactorFields {
     pub defer_tasks: *mut crate::ReactorDeferred,
     /// `Reactor::destroy_callbacks`.
     pub destroy_callbacks: *mut crate::ReactorDeferred,
+    pub idle_task: ReactorTask,
+    pub future_task: ReactorTask,
 }
 
 pub struct ReactorState {
@@ -100,6 +110,14 @@ pub extern "C" fn swr_v1_reactor_state_new() -> ReactorPrepared {
             close: None,
             defer_tasks: ptr::null_mut(),
             destroy_callbacks: ptr::null_mut(),
+            idle_task: ReactorTask {
+                callback: None,
+                data: ptr::null_mut(),
+            },
+            future_task: ReactorTask {
+                callback: None,
+                data: ptr::null_mut(),
+            },
         },
         registry: Registry::default(),
         handlers: Handlers::default(),

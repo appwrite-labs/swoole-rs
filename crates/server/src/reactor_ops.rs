@@ -22,7 +22,7 @@ use swoole_rs_reactor::{
     swr_v1_reactor_handlers_set_default,
 };
 use swoole_rs_tls::upstream as tls;
-use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared};
+use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
 
 use crate::base_factory::SendData;
 use crate::callbacks::{CB_BUFFER_EMPTY, CB_DISPATCH_FUNC};
@@ -226,13 +226,13 @@ impl Objects<'_> {
         // SAFETY: the context's live port.
         unsafe { crate::port_config::of(self.ctx.port) }
     }
-    /// The TLS port's `SSLContext`, which begins with its prepared Rust owner.
-    fn ssl(&self) -> &OwnedTlsPrepared {
+    /// The TLS port's `SSLContext` view.
+    fn ssl(&self) -> OwnedTlsPrepared {
         // SAFETY: the ops reading it run on a TLS port, whose context is live.
-        unsafe { &*self.port().ssl_context.cast::<OwnedTlsPrepared>() }
+        unsafe { swr_v1_tls_owner_view(self.port().ssl_context) }
     }
     fn ssl_fields(&self) -> &OwnedTlsFields {
-        // SAFETY: the owner's fields live as long as the context.
+        // SAFETY: the owner's fields live as long as the port's reference.
         unsafe { &*self.ssl().fields }
     }
     /// `get_connection(fd)` (kind 0) or a verified session's (kind 2, 3).

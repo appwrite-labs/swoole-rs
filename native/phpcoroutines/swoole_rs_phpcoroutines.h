@@ -31,9 +31,6 @@ uint32_t swr_v1_phpcoroutines_hook_flags(void);
 void swr_v1_phpcoroutines_set_hook_flags(uint32_t flags);
 /* PHPCoroutine::set_hook_flags: the flags, recorded in the options too. */
 void swr_v1_phpcoroutines_set_hook_option(uint32_t flags);
-/* The reactor's user exit condition: 1 when it bailed out (the caller
- * re-raises); in *exit, whether the reactor may exit. */
-uint8_t swr_v1_phpcoroutines_can_exit(uint8_t *exit);
 void swr_v1_phpcoroutines_set_preemptive(uint8_t enable);
 /* The tracer's blocking detection: with `watch`, count the switches of
  * `task` (a coroutine's context) from 0; without, stop counting those of the

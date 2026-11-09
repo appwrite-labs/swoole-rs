@@ -20,14 +20,6 @@ typedef struct {
     void (*invalid)(struct _zend_object *object);
     /* getSocket() of a bound port. */
     void (*socket)(void *port, struct _zval_struct *return_value);
-    /* The port's TLS context's Rust owner (SSLContext::handle()), or null without one. */
-    const void *(*ssl_owner)(void *port);
-    /* dup_ssl_context(): a new SNI context, and its owner in `owner`. */
-    void *(*sni_context)(void *port, const void **owner);
-    /* ssl_add_sni_cert(name, context), consuming the context; a null name only releases it. */
-    bool (*sni_add)(void *port, const char *name, size_t length, void *context);
-    /* ssl_init() */
-    bool (*ssl_init)(void *port);
 } swr_v1_phpserver_port_host;
 
 /* php_swoole_server_port_set_ptr and _get_property: the object's ListenPort and ServerPortProperty. */
