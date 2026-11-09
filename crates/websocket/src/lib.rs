@@ -37,7 +37,53 @@ pub fn accept(key: &[u8]) -> [u8; 28] {
     accept
 }
 
-/// Query header plus payload length, preserving upstream's incremental output.
+/// A frame's header plus payload length over the `bytes` received so far: 0 while
+/// the header is incomplete, -1 when it overflows `ssize_t`. The header length is
+/// reported as soon as the bytes read so far settle it (`None` under two bytes),
+/// as upstream's incremental output.
+#[inline]
+#[must_use]
+pub fn frame_length(bytes: &[u8]) -> (i64, Option<u32>) {
+    let [_, second, ref extended @ ..] = *bytes else {
+        return (0, None);
+    };
+    let (mut header, mut payload) = match second & 0x7f {
+        126 => (4, 0),
+        127 => (10, 0),
+        short => (2, u64::from(short)),
+    };
+    if header == 4
+        && let Some(&extended) = extended.first_chunk()
+    {
+        payload = u64::from(u16::from_be_bytes(extended));
+    } else if header == 10
+        && let Some(&extended) = extended.first_chunk()
+    {
+        payload = u64::from_be_bytes(extended);
+    }
+    if bytes.len() >= header && second & 0x80 != 0 {
+        header += 4;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a header is at most 14 bytes"
+    )]
+    let reported = Some(header as u32);
+    // Subtract before adding: even a positive payload can overflow ssize_t once
+    // the header is included. Upstream's signed addition is undefined there.
+    if bytes.len() < header {
+        (0, reported)
+    } else if payload > (isize::MAX as u64) - header as u64 {
+        (-1, reported)
+    } else {
+        (
+            i64::try_from(payload + header as u64).unwrap_or(-1),
+            reported,
+        )
+    }
+}
+
+/// [`frame_length`] over a C buffer, writing the header length when known.
 ///
 /// # Safety
 /// `data` must cover `length` readable bytes (null is allowed only at length 0).
@@ -55,56 +101,13 @@ pub unsafe extern "C" fn swr_v1_ws_frame_length(
     if length < 2 {
         return 0;
     }
-    // SAFETY: The caller supplies the readable input and exclusive output.
-    let bytes = unsafe { std::slice::from_raw_parts(data, length) };
-    let [_, second, ref extended @ ..] = *bytes else {
-        return 0;
-    };
-    let mut header = 2;
-    let mut payload = u64::from(second & 0x7f);
-    if payload == 126 {
-        header = 4;
-    } else if payload == 127 {
-        header = 10;
+    // SAFETY: The caller supplies the readable input.
+    let (total, header) = frame_length(unsafe { std::slice::from_raw_parts(data, length) });
+    if let Some(header) = header {
+        // SAFETY: the caller lends an aligned, writable `header_length`.
+        unsafe { header_length.write(header) };
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "a header is at most 14 bytes"
-    )]
-    let reported = header as u32;
-    // SAFETY: the caller lends an aligned, writable `header_length`.
-    unsafe { header_length.write(reported) };
-    if length < header {
-        return 0;
-    }
-    if header == 4
-        && let Some(&extended) = extended.first_chunk()
-    {
-        payload = u64::from(u16::from_be_bytes(extended));
-    } else if header == 10
-        && let Some(&extended) = extended.first_chunk()
-    {
-        payload = u64::from_be_bytes(extended);
-    }
-    if second & 0x80 != 0 {
-        header += 4;
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "a header is at most 14 bytes"
-        )]
-        let reported = header as u32;
-        // SAFETY: as above.
-        unsafe { header_length.write(reported) };
-        if length < header {
-            return 0;
-        }
-    }
-    // Subtract before adding: even a positive payload can overflow ssize_t once
-    // the header is included. Upstream's signed addition is undefined there.
-    if payload > (isize::MAX as u64) - header as u64 {
-        return -1;
-    }
-    i64::try_from(payload + header as u64).unwrap_or(-1)
+    total
 }
 
 /// A wire header without a mask key or payload, and its length.

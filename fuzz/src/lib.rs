@@ -926,8 +926,9 @@ fn stream_log<S>(
 
 /// The stream receive loops (`recv_with_length_protocol`, `recv_with_eof_protocol`
 /// and `recv_split_by_eof`) from upstream and from the candidate (a step loop over
-/// the Rust framing state machine), over the same stream in the same chunks: every
-/// call's result, every packet and the final buffer must match.
+/// the Rust framing state machine), over the same stream in the same chunks. The EOF
+/// loops must match every call's result, every packet and the final buffer; the
+/// length loop, which reads greedily, every packet and whether the stream errors.
 pub fn framing_stream(bytes: &[u8]) {
     let Some((
         &[
