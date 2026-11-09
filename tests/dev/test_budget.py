@@ -47,8 +47,16 @@ class Budget(unittest.TestCase):
             # a, its block, c, the impl, the cfg(test) helper's block, imp's block.
             self.assertEqual(budget.counts(root), {
                 'unsafe': {'one': 6}, 'maps': {'one': 1}, 'lists': {'one': 1},
-                'bools': {'one': 2}, 'caches': {'one': 2},
+                'bools': {'one': 2}, 'caches': {'one': 2}, 'unforbidden': {'one': 1},
             })
+
+    def test_a_crate_that_forbids_unsafe_code_counts_zero_unforbidden(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'crates/one/src').mkdir(parents=True)
+            (root / 'crates/one/Cargo.toml').write_text('')
+            (root / 'crates/one/src/lib.rs').write_text('//! Docs.\n#![forbid(unsafe_code)]\n')
+            self.assertEqual(budget.counts(root)['unforbidden'], {'one': 0})
 
     def test_only_a_rise_over_the_base_fails(self):
         rises = budget.above({'a': 3, 'b': 1, 'c': 2, 'new': 1}, {'a': 2, 'b': 2, 'c': 2})
