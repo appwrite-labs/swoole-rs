@@ -22,6 +22,7 @@ use swoole_rs_process::{
     worker_globals::thread_globals,
     worker_record,
 };
+use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object, class_name, handlers, long_zval, message, object_of,
     string,
@@ -80,9 +81,6 @@ unsafe extern "C" {
         port: c_int,
         backlog: c_int,
     ) -> *mut c_void;
-    /// `Socket::set_fd_option` (crates/reactor).
-    #[link_name = "_ZN6swoole7network6Socket13set_fd_optionEii"]
-    fn set_fd_option(socket: *mut c_void, nonblock: c_int, cloexec: c_int) -> bool;
 }
 
 static POOL: Class = Class::new();
@@ -736,8 +734,8 @@ fn listen(call: &Call) {
     // SAFETY: the pool's IPC state.
     let socket = unsafe { swr_v1_process_pool_ipc_listener(record(pool).ipc) };
     if !socket.is_null() {
-        // SAFETY: the pool's live listener.
-        unsafe { set_fd_option(socket, 0, 1) };
+        // SAFETY: the pool's live listener record, which nothing else borrows here.
+        socket_set_fd_option(unsafe { &mut *socket.cast() }, 0, 1);
     }
     call.set_bool(listened >= 0);
 }
