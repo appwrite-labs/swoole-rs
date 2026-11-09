@@ -31,7 +31,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import MODULES, apply_patch_verified, patches_for  # noqa: E402
+from tools.check_migration import MODULES  # noqa: E402
+from tools.patches import apply_patch_verified, patches_for  # noqa: E402
 from tools import budget  # noqa: E402
 
 FIRST_PARTY = ('src/', 'ext-src/', 'include/')

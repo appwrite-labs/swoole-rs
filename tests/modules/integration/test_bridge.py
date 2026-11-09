@@ -17,7 +17,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import MODULES, headers_for  # noqa: E402
+from tools.build_ext import headers_for  # noqa: E402
+from tools.check_migration import MODULES  # noqa: E402
 
 OWNED = ROOT / 'native/swoole-src'
 
@@ -55,7 +56,7 @@ int main(void) {
                     run([str(executable)])
 
     def test_selected_abi_exports(self):
-        # The Cargo build has every module, so it declares every ABI header build_hybrid would.
+        # The Cargo build has every module, so it declares every ABI header the hybrid would.
         headers = [header for header in headers_for(MODULES)
                    # The hook headers rewrite libc calls with function-like macros for the
                    # sources that include them; they declare no ABI and break later headers.

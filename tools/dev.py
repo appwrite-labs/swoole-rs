@@ -18,8 +18,8 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.harness import ROOT, write_report
-from tools.build_hybrid import GRADUATED, MODULES, profile_suffix, build_alias
-from tools.build_upstream import require_build_space
+from tools.build_upstream import require_build_space, tree
+from tools.check_migration import GRADUATED, MODULES
 from tools.dev_report import read_json
 
 
@@ -139,10 +139,8 @@ def plan(args, reports):
         return commands
     integrate = args.lane == 'integrate'
     repair = ['--fix-halfclose'] if getattr(args, 'fix_halfclose', False) else []
-    captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines'} & set(modules)))
-    native_variant = build_alias('upstream', profile_suffix(args))
-    reference = (ROOT / 'target/hybrid' / native_variant / 'modules/swoole.so'
-                 if captured_reference or getattr(args, 'stdext', False) or getattr(args, 'php_sockets', False) else ROOT / 'target/upstream/src/modules/swoole.so')
+    stdext, sockets = getattr(args, 'stdext', False), getattr(args, 'php_sockets', False)
+    reference = tree(stdext, sockets) / 'modules/swoole.so'
     # The Cargo-built swoole.so is the engine under test (#2199); `built` is the manifest
     # tools/build_ext.py writes beside it, which gates check their engine against.
     cargo = ROOT / 'target/ext/swoole.so'
@@ -155,15 +153,10 @@ def plan(args, reports):
         add('format', 'cargo', 'fmt', '--all', '--check')
         add('clippy', 'cargo', 'clippy', '--locked', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings')
     script('ownership', 'tools/check_migration.py')
-    native_export = reports / 'native-export'
-    if getattr(args, 'stdext', False) or getattr(args, 'php_sockets', False) or captured_reference:
-        script('stdext-reference-build' if getattr(args, 'stdext', False) else 'reference-build',
-               'tools/build_hybrid.py', '--backend', 'upstream',
-               *(['--stdext'] if getattr(args, 'stdext', False) else []),
-               *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []), '--jobs', args.jobs,
-               *(['--export', native_export] if captured_reference else []),
-               *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']),
-               *(['--native-build-root', args.native_build_root] if getattr(args, 'native_build_root', None) else []))
+    if integrate or stdext or sockets:
+        script('stdext-reference-build' if stdext else 'reference-build', 'tools/build_upstream.py',
+               *(['--stdext'] if stdext else []), *(['--php-sockets'] if sockets else []), '--jobs', args.jobs,
+               *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']))
     script('cargo-build', 'tools/build_ext.py', '--native', *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []),
            *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []))
     # The native gates link fixtures against its Zend-free Rust archive and compile against its tree.
@@ -345,21 +338,15 @@ def plan(args, reports):
             script('utilities-wait', 'tests/modules/utilities/wait.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', archive, '--sanitize', *report('utilities-wait'))
     if 'utilities' in modules and integrate:
-        utility_source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-        utility_engines = ['--engine', f'cargo={cargo}',
-                           '--engine', f'upstream={native_export / "swoole.so"}']
         for family in ['logger', 'hash', 'global-logger', 'redirect']:
             name = 'utilities-' + family + '-originals'
             script(name, 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
-                   *php_for('curl'), *utility_engines, '--build-manifest', built,
-                   '--archive', archive,
-                   '--source-ref', utility_source, '--' + family + '-originals', *report(name))
+                   *php_for('curl'), *engines, '--build-manifest', built, '--archive', archive,
+                   '--' + family + '-originals', *report(name))
         script('utilities-php-logger', 'tests/modules/utilities/php_logger.py', *php, *engines,
                '--build-manifest', built, *report('utilities-php-logger'))
         script('utilities-public-storage', 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
-               *php, *utility_engines, '--build-manifest', built,
-               '--archive', archive,
-               '--source-ref', utility_source, *report('utilities-public-storage'))
+               *php, *engines, '--build-manifest', built, '--archive', archive, *report('utilities-public-storage'))
     if 'memory' in modules:
         script('memory-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-memory', '--report', reports / 'memory-rust-asan.json')
     if 'memory' in modules and integrate:
@@ -623,7 +610,7 @@ def docker(arguments):
     # the host's own target/upstream and target/hybrid never hold another platform's.
     private = ROOT / 'target/docker' / architecture
     builds = []
-    for name in ['upstream', 'hybrid', 'ext']:
+    for name in ['upstream', 'upstream-builds', 'hybrid', 'ext']:
         (private / name).mkdir(parents=True, exist_ok=True)
         builds += ['-v', f'{private / name}:{ROOT / "target" / name}']
     command = ['docker', 'run', '--rm', '--init', '-w', str(ROOT),
@@ -643,18 +630,13 @@ def with_prerequisites(planned, phases):
     output they use, in plan order."""
     names = [name for name, _ in planned]
     commands = {name: list(map(str, command)) for name, command in planned}
-    # What each phase writes besides its report: the directories it --export s.
-    exports = {name: [command[i + 1] for i, part in enumerate(command[:-1]) if part == '--export']
-               for name, command in commands.items()}
     selected = set(phases)
     while True:
         grown = set(selected)
         for name in selected:
             for argument in commands.get(name, []):
                 grown |= {owner for owner in names if owner != name and argument.endswith('/' + owner + '.json')}
-                grown |= {owner for owner, paths in exports.items() if owner != name
-                          and any(argument == path or argument.startswith(path + '/') for path in paths)}
-                reference = '/target/upstream/' in argument or '/target/hybrid/upstream' in argument
+                reference = '/target/upstream/' in argument or '/target/upstream-builds/' in argument
                 if 'cargo-build' in names and '/target/ext/' in argument:
                     grown.add('cargo-build')
                 grown |= {owner for owner in ('reference-build', 'stdext-reference-build') if owner in names and reference}
@@ -726,7 +708,6 @@ def main():
     parser.add_argument('--tls13-python', type=Path, help='Explicit Python SSL provider for native-repair TLS1.3 clients only; defaults to this driver, without fallback')
     parser.add_argument('--ccache', type=Path, default=shutil.which('ccache'), help='Shared compiler cache executable, detected by default')
     parser.add_argument('--no-ccache', dest='ccache', action='store_const', const=None)
-    parser.add_argument('--native-build-root', type=Path, help='Private location for native hybrid worlds; space guard remains enforced')
     parser.add_argument('--php-extension', action='append', default=[])
     parser.add_argument('--hypothesis', help='What this experiment should establish')
     parser.add_argument('--expect', help='Observable outcome that supports the hypothesis')

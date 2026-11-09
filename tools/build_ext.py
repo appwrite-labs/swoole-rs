@@ -6,7 +6,7 @@ checks out in target/ext/src (native/swoole-src owns the files it changes), then
 is checked to load and report the pinned version.
 Prints `Built cargo: <path>` (target/ext/swoole.so) and writes target/ext/build-manifest.json,
 which tools/ext_identity.py checks gates' engines against. `--php-sockets`, `--stdext`, `--fix-halfclose`
-and build_hybrid's `--configure` switches turn on the crates/ext feature of the same build profile.
+and build_upstream.py's `--configure` switches turn on the crates/ext feature of the same build profile.
 
 `--native` also lays out target/ext/sdk for the native gates, which link fixtures outside PHP:
 lib/ holds the Zend-free libswoole_rs_ffi.a and crates/ext's compiled C and C++ archives,
@@ -24,13 +24,50 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.build_hybrid import HOOK_SWITCHES, MODULES, headers_for
 from tools.build_upstream import COMMIT, VERSION
+from tools.check_migration import MODULES
 from tools.harness import ROOT
 from tools.patches import clone_pin, git
 
 # crates/ext's features that are swoole-rs-ffi's too: the Zend-free archive's build profile.
 FFI_FEATURES = {'sockets', 'stdext', 'halfclose', 'iouring', 'cares', 'pgsql', 'odbc', 'firebird', 'sqlite', 'oci', 'curl', 'ssh2'}
+
+# The ffi features that replace upstream's optional hooks, by the configure switch
+# that builds each: the Rust code links what that switch makes the extension link.
+HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
+                  'firebird': '--with-swoole-firebird', 'sqlite': '--enable-swoole-sqlite',
+                  'oci': '--with-swoole-oracle', 'curl': '--enable-swoole-curl',
+                  'ssh2': '--with-swoole-ssh2', 'ftp': '--enable-swoole-ftp'}
+
+
+def headers_for(modules):
+    headers = [ROOT / 'native/include/swoole_rs.h', ROOT / 'native/include/swoole_rs_server_state.h',
+               ROOT / 'native/include/swoole_rs_server_view.h', ROOT / 'native/include/swoole_rs_server_records.h', ROOT / 'native/include/swoole_rs_port_state.h', ROOT / 'native/include/swoole_rs_server_shared.h', ROOT / 'native/include/swoole_rs_server_strings.h']
+    headers.extend((ROOT / 'native/include').glob('swoole_rs_corebase_*.h'))
+    for module in modules:
+        if module != 'corebase':
+            headers.extend((ROOT / 'native/include').glob(f'swoole_rs_{module}_*.h'))
+        contract = ROOT / 'native/include' / f'swoole_rs_{module}.h'
+        if contract.is_file():
+            headers.append(contract)
+        headers.extend((ROOT / 'native' / module).rglob('*.h'))
+    if len({path.name.casefold() for path in headers}) != len(headers):
+        raise ValueError('ABI header basenames overlap in the build prefix')
+    return sorted(headers)
+
+
+def native_sources():
+    """Owned C and C++ (native/<module>/*.c and *.cc: what stable Rust can't express), by the path
+    it compiles at in the patched tree, where config.m4's and CMake's src/ globs find it."""
+    paths = sorted((ROOT / 'native').glob('*/*.c')) + sorted((ROOT / 'native').glob('*/*.cc'))
+    return {f'src/swoole_rs_{path.parent.name}_{path.name}': path for path in paths}
+
+
+def zend_free_native_sources():
+    """native_sources() without the extension's own glue, which includes PHP's headers: it belongs
+    in swoole.so, not in a Zend-free libswoole such as core-tests and the SDK consumers link."""
+    return {name: path for name, path in native_sources().items()
+            if not any(header in path.read_bytes() for header in (b'#include "swoole_rs_phphost.h"', b'#include "php_swoole.h"'))}
 
 
 def cargo(arguments, env):
@@ -106,7 +143,7 @@ def main():
     parser.add_argument('--stdext', action='store_true', help='Build with the experimental stdext')
     parser.add_argument('--fix-halfclose', action='store_true', help='Build the opt-in half-close repairs')
     parser.add_argument('--configure', action='append', default=[], metavar='ARG',
-                        help="A service hook's configure switch, as build_hybrid.py takes it; repeatable")
+                        help="A service hook's configure switch, as build_upstream.py takes it; repeatable")
     parser.add_argument('--native', action='store_true', help='Also lay out target/ext/sdk for the native gates')
     args = parser.parse_args()
     out = ROOT / 'target/ext'
