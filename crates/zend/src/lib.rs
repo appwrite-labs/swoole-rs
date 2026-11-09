@@ -29,7 +29,7 @@ pub mod string;
 pub mod value;
 mod zval;
 
-pub use access::{set_key, string_of, value_of};
+pub use access::{key_ptr, set_key, string_of, value_of};
 pub use call::{Call, Invalid, type_of};
 pub use callable::Callable;
 pub use class::{

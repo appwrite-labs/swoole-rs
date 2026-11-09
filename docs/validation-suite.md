@@ -11,6 +11,7 @@ PHPTs (see [hybrid build](hybrid-build.md)). `EXT` is a path to a built
 | Native buffer benchmark | `python3 tests/modules/buffer/benchmark.py --build-manifest target/hybrid/rust/build-manifest.json --iterations 50000 --repeat 5 --output target/reports/buffer-benchmark.json` (`--peek-front` reads each front before pop; `--previous-build-manifest` adds an older build to the same trial series) |
 | Original upstream PHPTs | `python3 corpus/upstream/run.py --engine NAME=EXT --require-all` |
 | HTTP/1 framing ambiguities (smuggling corpus) | `python3 -m pytest tests/modules/http/test_smuggling.py --engine upstream=EXT --engine cargo=EXT` |
+| PHP-API differential fuzzing | `python3 tests/differential/fuzz.py --engine upstream=EXT --engine cargo=EXT --seed S --programs N --cases tests/differential/cases --keep DIR` |
 | WebSocket raw transport | `python3 -m pytest tests/modules/websocket/test_close.py --engine upstream=EXT --engine hybrid=EXT` |
 | WebSocket invalid-frame policy | `python3 -m pytest tests/modules/websocket/test_invalid.py --engine upstream=EXT --engine hybrid=EXT` |
 | Autobahn RFC suite | `python3 tests/modules/websocket/autobahn.py --engine upstream=EXT --engine hybrid=EXT` |
