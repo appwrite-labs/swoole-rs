@@ -159,6 +159,11 @@ reports and `upstream.so` from main's latest merge-tier run whose upstream shard
 (`tools/ci.py phpt-baseline`), cut to those families. A PR that changes
 `tools/build_upstream.py` or `corpus/upstream/` runs upstream too.
 
+`services.yml` holds those services, and `services.py` prints the ones some families reach
+(every one for a family it doesn't list); `.github/actions/phpt-env` starts what its
+`services` input names. Locally, with the names in `/etc/hosts` as phpt-env writes them:
+`docker compose -f corpus/upstream/services.yml up -d --wait $(python3 corpus/upstream/services.py swoole_runtime)`.
+
 To run some families on both engines locally, `families.sh` re-runs and gates them the same
 way (`dev.py candidate` does it for the modules it selects):
 
