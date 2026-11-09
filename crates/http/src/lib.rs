@@ -17,7 +17,7 @@ use std::{mem::MaybeUninit, slice};
 const INVALID: i32 = -1;
 const OVERFLOW: i32 = -2;
 mod conditional;
-pub use conditional::{HttpCalendar, HttpConditional, swr_v3_http_conditional, swr_v3_http_date};
+pub use conditional::{Calendar, Tm, conditional, http_date};
 mod directory;
 use directory::HttpDirectory;
 mod dispatch;
@@ -82,13 +82,6 @@ unsafe fn bytes<'a>(data: *const u8, length: usize) -> Result<&'a [u8], i32> {
     // SAFETY: non-null, `length <= isize::MAX`; callers lend that many initialized bytes.
     Ok(unsafe { slice::from_raw_parts(data, length) })
 }
-unsafe extern "C" {
-    fn strncasecmp(
-        left: *const std::ffi::c_char,
-        right: *const std::ffi::c_char,
-        length: usize,
-    ) -> i32;
-}
 /// Preserve the pinned POSIX comparison's current locale and matching-NUL rules.
 /// This libc leaf borrows initialized bytes only; it has no allocator, callback,
 /// IO or Zend boundary. ASCII folding alone differs for configured binary paths.
@@ -106,14 +99,7 @@ fn differs_at_first(left: u8, right: u8) -> bool {
 fn case_prefix(input: &[u8], expected: &[u8]) -> bool {
     input.len() >= expected.len()
         && !matches!((input.first(), expected.first()), (Some(&left), Some(&right)) if differs_at_first(left, right))
-        // SAFETY: both slices hold at least `expected.len()` readable bytes.
-        && unsafe {
-            strncasecmp(
-                input.as_ptr().cast(),
-                expected.as_ptr().cast(),
-                expected.len(),
-            ) == 0
-        }
+        && swoole_rs_locale::strncasecmp_equal(input, expected, expected.len())
 }
 fn case_equal(input: &[u8], expected: &[u8]) -> bool {
     input.len() == expected.len() && case_prefix(input, expected)
@@ -291,11 +277,10 @@ mod tests {
             for left in 0..=u8::MAX {
                 for right in 0..=u8::MAX {
                     if differs_at_first(left, right) {
-                        let (a, b) = ([left, 0], [right, 0]);
-                        // SAFETY: both arrays hold the one compared byte.
-                        let result =
-                            unsafe { strncasecmp(a.as_ptr().cast(), b.as_ptr().cast(), 1) };
-                        assert_ne!(result, 0, "{left:#x} {right:#x} in {locale:?}");
+                        assert!(
+                            !swoole_rs_locale::strncasecmp_equal(&[left], &[right], 1),
+                            "{left:#x} {right:#x} in {locale:?}"
+                        );
                     }
                 }
             }

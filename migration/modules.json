@@ -125,6 +125,7 @@
       "owned_paths": [
         "crates/http/",
         "crates/http-ffi/",
+        "crates/locale/",
         "crates/deflate/",
         "crates/inflate/",
         "crates/zlib/",
