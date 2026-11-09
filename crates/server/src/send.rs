@@ -70,9 +70,11 @@ pub(crate) const DIRECT_SEND: u64 = 1 << 17;
 /// `state` is null or live; `send` lends `info.len` readable bytes at `data`.
 pub(crate) unsafe fn send_now(state: *const ServerState, send: &SendData) -> Option<i64> {
     // SAFETY: as the caller guarantees.
-    let tables = unsafe { state.as_ref() }?.tables();
-    // SAFETY: a live state's table view, read before any lookup.
-    if tables.is_null() || unsafe { (*tables).connection_list.is_null() } {
+    if unsafe { state.as_ref() }?
+        .tables_ref()
+        .connection_list
+        .is_null()
+    {
         return None;
     }
     // SAFETY: the state owns initialized tables.

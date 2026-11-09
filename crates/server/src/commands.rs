@@ -90,63 +90,19 @@ fn commands(state: &ServerState) -> MutexGuard<'_, Commands> {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct CommandInfo {
-    pub name: *const u8,
-    pub length: usize,
-    pub id: i32,
-    pub accepted_types: i32,
-}
-
-/// The command at `index` in name order, for the admin server's listing.
-///
-/// # Safety
-/// The server is live; `output` is writable. The name is borrowed until the server
-/// is freed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_command_at(
-    state: *const ServerState,
-    index: usize,
-    output: *mut CommandInfo,
-) -> bool {
-    // SAFETY: the caller lends a live server.
-    let commands = commands(unsafe { &*state });
-    let Some((name, command)) = commands.named.iter().nth(index) else {
-        return false;
-    };
-    // SAFETY: the caller supplies writable output and the table owns this name.
-    unsafe {
-        output.write(CommandInfo {
-            name: name.as_ptr(),
-            length: name.len(),
-            id: command.id,
-            accepted_types: command.accepted_types,
-        });
-    };
-    true
+/// Each command's name, id and accepted process types, in name order, for the
+/// admin server's listing.
+#[cfg(any(test, feature = "upstream-symbols"))]
+pub(crate) fn listing(state: &ServerState) -> Vec<(Vec<u8>, i32, i32)> {
+    let commands = commands(state);
+    let named = commands.named.iter();
+    named
+        .map(|(name, command)| (name.clone(), command.id, command.accepted_types))
+        .collect()
 }
 
 /// The handler of command `id`, if there is one.
-///
-/// # Safety
-/// `state` is live and `output` writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_command_handler(
-    state: *const ServerState,
-    id: i32,
-    output: *mut CommandFn,
-) -> bool {
-    // SAFETY: the caller lends a live server.
-    let Some(handler) = handler(unsafe { &*state }, id) else {
-        return false;
-    };
-    // SAFETY: per the caller.
-    unsafe { output.write(handler) };
-    true
-}
-
-/// The handler of command `id`, if there is one.
+#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn handler(state: &ServerState, id: i32) -> Option<CommandFn> {
     commands(state).handlers.get(&id).copied()
 }
@@ -260,8 +216,7 @@ pub(crate) fn reply_socket<'a>(
     state: &ServerState,
     serv: *mut c_void,
 ) -> Option<&'a mut SocketRecord> {
-    // SAFETY: a live server's config.
-    let config = unsafe { &*state.config() };
+    let config = state.config_ref();
     if u64::from(config.mode_) == MODE_BASE {
         // SAFETY: the live server.
         let worker = unsafe { crate::view::worker(serv, 0) };
@@ -572,36 +527,10 @@ mod tests {
         let mut s = Script::with(&[(OP_MODE, MODE_BASE)]);
         let name = b"admin\0command";
         assert!(add(&mut s, name, 62));
-        let mut info = CommandInfo::default();
-        unsafe {
-            assert!(swr_v1_server_command_at(
-                &raw const s.state,
-                0,
-                &raw mut info
-            ));
-            assert_eq!((info.id, info.accepted_types), (1, 62));
-            assert_eq!(core::slice::from_raw_parts(info.name, info.length), name);
-            assert!(!swr_v1_server_command_at(
-                &raw const s.state,
-                1,
-                &raw mut info
-            ));
-            let mut found = CommandFn {
-                invoke: core::ptr::null(),
-                ctx: core::ptr::null_mut(),
-            };
-            assert!(swr_v1_server_command_handler(
-                &raw const s.state,
-                1,
-                &raw mut found
-            ));
-            assert_eq!(found.invoke, echo as *const c_void);
-            assert!(!swr_v1_server_command_handler(
-                &raw const s.state,
-                2,
-                &raw mut found
-            ));
-        }
+        assert_eq!(listing(&s.state), [(name.to_vec(), 1, 62)]);
+        let found = super::handler(&s.state, 1).map(|found| found.invoke);
+        assert_eq!(found, Some(echo as *const c_void));
+        assert!(super::handler(&s.state, 2).is_none());
     }
 
     fn send<'a>(name: &'a [u8], process_type: i32, out: &mut Vec<u8>) -> SendCommand<'a> {

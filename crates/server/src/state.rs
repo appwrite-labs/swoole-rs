@@ -80,12 +80,20 @@ impl Default for ServerState {
 }
 
 impl ServerState {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
+        Self::with(
+            crate::config::ServerConfig::default(),
+            crate::records::ServerTables::default(),
+        )
+    }
+
+    /// A state that owns `config` and `tables`, so neither pointer is ever null.
+    fn with(config: crate::config::ServerConfig, tables: crate::records::ServerTables) -> Self {
         Self {
             round: AtomicU32::new(0),
             next_command: AtomicI32::new(1),
-            config: AtomicPtr::new(core::ptr::null_mut()),
-            tables: AtomicPtr::new(core::ptr::null_mut()),
+            config: AtomicPtr::new(Box::into_raw(Box::new(config))),
+            tables: AtomicPtr::new(Box::into_raw(Box::new(tables))),
             static_config: std::sync::OnceLock::new(),
             commands: std::sync::Mutex::new(crate::commands::Commands::new()),
             ports: std::sync::Mutex::new(Vec::new()),
@@ -275,16 +283,13 @@ impl ServerState {
         // SAFETY: a live port's settings, per the caller.
         unsafe { crate::port_config::of(port) }.object_id =
             u16::try_from(count).unwrap_or(u16::MAX);
-        let tables = self.tables();
-        if !tables.is_null() {
-            // SAFETY: the state's table view; no reader runs during the push, per the caller.
-            let tables = unsafe { &mut *tables };
-            // `AtomicPtr` has the layout of the pointer it holds.
-            tables.ports = crate::records::PortList {
-                items: ports.as_ptr().cast(),
-                count,
-            };
-        }
+        // SAFETY: the state's table view; no reader runs during the push, per the caller.
+        let tables = unsafe { &mut *self.tables() };
+        // `AtomicPtr` has the layout of the pointer it holds.
+        tables.ports = crate::records::PortList {
+            items: ports.as_ptr().cast(),
+            count,
+        };
     }
 
     pub(crate) fn config(&self) -> *mut crate::config::ServerConfig {
@@ -295,13 +300,22 @@ impl ServerState {
         self.tables.load(Ordering::Relaxed)
     }
 
+    /// The configuration, which native code writes only before the server
+    /// starts or under the server's own synchronization.
+    pub(crate) fn config_ref(&self) -> &crate::config::ServerConfig {
+        // SAFETY: the box this state owns until it drops.
+        unsafe { &*self.config() }
+    }
+
+    /// The table view, written as `config_ref` says.
+    pub(crate) fn tables_ref(&self) -> &crate::records::ServerTables {
+        // SAFETY: the box this state owns until it drops.
+        unsafe { &*self.tables() }
+    }
+
     #[cfg(test)]
     pub(crate) fn with_tables(tables: crate::records::ServerTables) -> Self {
-        let state = Self::new();
-        state
-            .tables
-            .store(Box::into_raw(Box::new(tables)), Ordering::Relaxed);
-        state
+        Self::with(crate::config::ServerConfig::default(), tables)
     }
 
     /// `upload_tmp_dir = dir`; only before the server starts.
@@ -349,17 +363,11 @@ pub unsafe extern "C" fn swr_v1_server_upload_tmp_dir(
     dir.as_ptr()
 }
 
-/// `Server`'s text member `index` (`SWR_SERVER_TEXT_*`), or null past the last.
-///
-/// # Safety
-/// `state` is live; the slot lives as long as it.
+/// `Server`'s text member `index` (`SWR_SERVER_TEXT_*`), or null past the last;
+/// the slot lives as long as `state`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_text_slot(
-    state: *const ServerState,
-    index: usize,
-) -> *const StringSlot {
-    // SAFETY: per the caller.
-    unsafe { &*state }.text_slot(index)
+pub extern "C" fn swr_v1_server_text_slot(state: &ServerState, index: usize) -> *const StringSlot {
+    state.text_slot(index)
 }
 
 /// `text.c_str()`: the bytes up to the first NUL.
@@ -425,20 +433,13 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
 /// The result is freed once with `swr_v1_server_state_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
-    let state = ServerState::new();
     let config = crate::config::ServerConfig {
         worker_registry: swoole_rs_corebase::worker_registry::swr_v1_process_worker_registry_new()
             .cast(),
         ..crate::config::ServerConfig::default()
     };
-    state
-        .config
-        .store(Box::into_raw(Box::new(config)), Ordering::Relaxed);
-    state.tables.store(
-        Box::into_raw(Box::new(crate::records::ServerTables::default())),
-        Ordering::Relaxed,
-    );
-    Box::into_raw(Box::new(state))
+    let tables = crate::records::ServerTables::default();
+    Box::into_raw(Box::new(ServerState::with(config, tables)))
 }
 
 /// # Safety
@@ -474,17 +475,11 @@ impl Drop for ServerState {
     fn drop(&mut self) {
         // SAFETY: the table `local_addr::init` boxed, if any; nothing reads it after the state.
         unsafe { crate::local_addr::free(*self.local_addrs.get_mut()) };
-        let tables = *self.tables.get_mut();
-        if !tables.is_null() {
-            // SAFETY: this state owns its unique table-view box; the shared arena is a loan.
-            drop(unsafe { Box::from_raw(tables) });
-        }
-        let config = *self.config.get_mut();
-        if !config.is_null() {
-            // SAFETY: this state owns the unique configuration allocation made in state_new;
-            // native reference views have ended before the base owner frees the state.
-            drop(unsafe { Box::from_raw(config) });
-        }
+        // SAFETY: this state owns its unique table-view box; the shared arena is a loan.
+        drop(unsafe { Box::from_raw(*self.tables.get_mut()) });
+        // SAFETY: this state owns its unique configuration box; native reference
+        // views have ended before the base owner frees the state.
+        drop(unsafe { Box::from_raw(*self.config.get_mut()) });
     }
 }
 

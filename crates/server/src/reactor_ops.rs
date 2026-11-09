@@ -189,12 +189,10 @@ struct Objects<'a> {
 )]
 impl Objects<'_> {
     fn config(&self) -> &ServerConfig {
-        // SAFETY: a live server's config.
-        unsafe { &*self.state.config() }
+        self.state.config_ref()
     }
     fn tables(&self) -> &ServerTables {
-        // SAFETY: a live server's tables.
-        unsafe { &*self.state.tables() }
+        self.state.tables_ref()
     }
     fn conn(&self) -> &mut ConnectionRecord {
         // SAFETY: the ops reading it run with a live connection in the context.
@@ -457,9 +455,6 @@ pub(crate) unsafe fn answer(
     let ctx = unsafe { &mut *ctx };
     // SAFETY: per the caller.
     let state = unsafe { &*state };
-    if state.config().is_null() || state.tables().is_null() {
-        return None;
-    }
     let mut o = Objects { ctx, state };
     Some(match op {
         LOG_RECVFROM => {

@@ -72,8 +72,7 @@ pub(crate) unsafe fn delete(factory: *mut c_void) {
 
 /// The server's factory, and its mode.
 fn of(state: &ServerState) -> (*mut c_void, u64) {
-    // SAFETY: a live server's config, whose factory is live while it runs.
-    let config = unsafe { &*state.config() };
+    let config = state.config_ref();
     (config.factory_, u64::from(config.mode_))
 }
 

@@ -70,8 +70,7 @@ impl Context {
         self.state().callbacks.slot(index)
     }
     pub(super) fn tables(&self) -> &crate::ServerTables {
-        // SAFETY: its tables live as long as it.
-        unsafe { &*self.state().tables() }
+        self.state().tables_ref()
     }
     pub(super) fn reactor_handle(&self) -> Reactor {
         // SAFETY: the context's (or the thread's) live reactor, on this thread.

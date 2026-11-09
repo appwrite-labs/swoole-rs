@@ -135,9 +135,7 @@ pub unsafe extern "C" fn swr_v1_server_session(
     id: libc::c_long,
 ) -> *mut SessionRecord {
     // SAFETY: the caller lends a live state.
-    let tables = unsafe { &*state }.tables();
-    // SAFETY: the state owns its table-view allocation.
-    let sessions = unsafe { (*tables).session_list };
+    let sessions = unsafe { &*state }.tables_ref().session_list;
     sessions.wrapping_offset(isize::try_from(id % 1_048_576).unwrap_or_default())
 }
 
@@ -153,9 +151,7 @@ pub unsafe extern "C" fn swr_v1_server_connection(
     kind: u32,
 ) -> *mut ConnectionRecord {
     // SAFETY: the caller lends a live state.
-    let tables = unsafe { &*state }.tables();
-    // SAFETY: the state owns the stable table-view allocation for this call.
-    let tables = unsafe { &*tables };
+    let tables = unsafe { &*state }.tables_ref();
     let mut session_id = 0;
     let fd = if matches!(kind, 1..=3) {
         let slot = tables
@@ -213,10 +209,9 @@ pub unsafe extern "C" fn swr_v1_server_sessions_retire(
     state: *const crate::ServerState,
     worker_id: u32,
 ) {
-    // SAFETY: the caller retains the live state and its table-view allocation.
-    let tables = unsafe { &*state }.tables();
-    // SAFETY: the native retirement call loans the complete mapped session table.
-    let sessions = unsafe { (*tables).session_list };
+    // SAFETY: the caller retains the live state, whose table view loans the
+    // complete mapped session table.
+    let sessions = unsafe { &*state }.tables_ref().session_list;
     for index in 0..1_048_576 {
         let session = sessions.wrapping_add(index);
         // SAFETY: this is one initialized slot's native 8-bit reactor-ID field.

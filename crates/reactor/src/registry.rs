@@ -15,9 +15,16 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// How many fds are registered.
-    pub(crate) fn count(&self) -> usize {
+    /// How many fds are registered (`Reactor::get_event_num`).
+    #[must_use]
+    pub fn count(&self) -> usize {
         self.sockets.len()
+    }
+
+    /// The registered sockets, in fd order (`Reactor::foreach_socket`'s copy).
+    #[must_use]
+    pub fn sockets(&self) -> Vec<*mut c_void> {
+        self.sockets.iter().map(|(_, entry)| entry.0).collect()
     }
 }
 

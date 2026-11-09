@@ -60,20 +60,27 @@ pub(crate) fn low16(value: c_int) -> u16 {
     u16::try_from(value.cast_unsigned() & 0xffff).unwrap_or_default()
 }
 
-/// The connection lookup of `kind` (see `swr_v1_server_connection`), when there are tables.
+/// The connection lookup of `kind` (see `swr_v1_server_connection`), once the
+/// tables are allocated.
 fn connection<H: Host>(h: &mut H, key: c_long, kind: u32) -> crate::Effect<*mut ConnectionRecord> {
     let state = h.state()?;
-    if state.tables().is_null() {
+    if !allocated(state) {
         return Ok(core::ptr::null_mut());
     }
     // SAFETY: the state owns initialized tables, lent for this operation.
     Ok(unsafe { swr_v1_server_connection(state, key, kind) })
 }
 
-/// The session's reactor (its worker) and fd, or `None` without tables.
+/// Whether the server has allocated its session and connection tables.
+pub(crate) fn allocated(state: &crate::ServerState) -> bool {
+    let tables = state.tables_ref();
+    !tables.session_list.is_null() && !tables.connection_list.is_null()
+}
+
+/// The session's reactor (its worker) and fd, or `None` before the tables.
 fn session<H: Host>(h: &mut H, id: c_long) -> crate::Effect<Option<(u32, c_int)>> {
     let state = h.state()?;
-    if state.tables().is_null() {
+    if !allocated(state) {
         return Ok(None);
     }
     // SAFETY: the state owns its session table; every id maps to a slot.

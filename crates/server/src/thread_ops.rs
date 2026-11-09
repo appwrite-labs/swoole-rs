@@ -543,8 +543,7 @@ pub(crate) unsafe fn answer(
         OP_SEND_CLOSE_FORCE => {
             // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
             let session = arg.cast_signed();
-            // SAFETY: a live server's tables.
-            let pipes = i64::from(unsafe { (*state.tables()).reactor_pipe_num });
+            let pipes = i64::from(state.tables_ref().reactor_pipe_num);
             let index = session % pipes;
             let id = i64::from(conn_ref().reactor_id) + index * i64::from(config().reactor_num);
             // the session id, so the reactor verifies the connection before closing it
@@ -562,10 +561,7 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_PORT_LISTEN | OP_PORT_READ => {
-            // SAFETY: a live server's tables.
-            let &port = unsafe { &*state.tables() }
-                .ports()
-                .get(usize::try_from(arg).ok()?)?;
+            let &port = state.tables_ref().ports().get(usize::try_from(arg).ok()?)?;
             if op == OP_PORT_LISTEN {
                 // SAFETY: one of the server's live ports.
                 return Some(sign(unsafe { port_listen(port) }));
@@ -731,8 +727,7 @@ unsafe extern "C" fn reactor_thread_entry(serv: *mut c_void, id: u64) {
 unsafe extern "C" fn heartbeat_main(serv: *mut c_void, _: u64) {
     // SAFETY: the live server.
     let state = unsafe { state_of(serv) };
-    // SAFETY: its live config.
-    let reactors = unsafe { (*state.config()).reactor_num };
+    let reactors = state.config_ref().reactor_num;
     // upstream sets THREAD_HEARTBEAT, then overwrites the type with this.
     let kind = (reactors.wrapping_add(1) & 0xff) as u8;
     swoole_rs_corebase::set_thread(kind, swoole_rs_corebase::thread_id());

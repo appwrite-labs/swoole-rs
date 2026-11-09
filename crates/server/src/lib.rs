@@ -17,12 +17,10 @@ use core::ffi::c_void;
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub use commands::call_command_handler;
-pub use commands::{
-    CommandFn, CommandInfo, CommandReply, swr_v1_server_command_at, swr_v1_server_command_handler,
-    swr_v1_server_command_result,
-};
+pub use commands::{CommandFn, CommandReply, swr_v1_server_command_result};
 pub use server_methods::{swr_v1_server_add_command, swr_v1_server_command};
 
+#[cfg(any(test, feature = "upstream-symbols"))]
 mod admin;
 mod base_factory;
 pub mod callbacks;
@@ -40,6 +38,7 @@ pub mod event_worker_ops;
 pub mod factory;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod factory_ops;
+#[cfg(any(test, feature = "upstream-symbols"))]
 mod json;
 mod layout;
 pub mod local_addr;
@@ -69,6 +68,7 @@ pub mod static_handler;
 pub mod static_select;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod task_worker_ops;
+mod tcp_info;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod thread_mode_ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -99,8 +99,9 @@ pub use state::{
     swr_v1_server_text_slot, swr_v1_server_upload_tmp_dir,
 };
 
-pub use admin::swr_v1_server_tcp_info;
-pub use admin::{swr_v1_server_admin_command, swr_v1_server_admin_run};
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub use admin::swr_v1_server_admin_register;
+pub use tcp_info::swr_v1_server_tcp_info;
 
 pub use local_addr::swr_v1_server_local_addr_index;
 
@@ -152,7 +153,7 @@ pub(crate) trait Host {
 }
 
 /// The state of a server without one, which native code never passes.
-static NO_STATE: ServerState = ServerState::new();
+static NO_STATE: std::sync::LazyLock<ServerState> = std::sync::LazyLock::new(ServerState::new);
 
 trait NativeCall {
     /// # Safety

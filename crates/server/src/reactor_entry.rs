@@ -33,8 +33,7 @@ unsafe extern "C" fn unanswered(_: *mut c_void, _: u32, _: u64) -> u64 {
 
 /// `serv->get_thread(id)`.
 pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
-    // SAFETY: a live server's tables.
-    let threads = unsafe { &*state.tables() }.reactor_threads;
+    let threads = state.tables_ref().reactor_threads;
     threads.wrapping_byte_add(id * size_of::<ThreadRecord>())
 }
 
