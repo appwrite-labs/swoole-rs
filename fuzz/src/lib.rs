@@ -7,6 +7,8 @@ use swoole_rs_clients::{cookie, domain_decode};
 use swoole_rs_framing::{DefaultLength, default_length, unpack, width};
 use swoole_rs_http::{
     BOUNDARY_SIZE, HttpCookie, HttpStaticContext, HttpStaticObservation, StaticEffects,
+};
+use swoole_rs_http_ffi::{
     swr_v1_http_cookie_next, swr_v1_http_url_capacity, swr_v1_http_url_decode,
     swr_v1_http_url_encode,
 };
@@ -32,7 +34,7 @@ const CANDIDATE: Engine = Engine {
     frame: request::frame,
     expect: request::expect,
     header: request::header,
-    method: swoole_rs_http::swr_v1_http_method_string,
+    method: swoole_rs_http_ffi::swr_v1_http_method_string,
     header_info: request::header_info,
 };
 

@@ -9,11 +9,6 @@ license = "Apache-2.0"
 name = "swoole_rs_http"
 crate-type = ["rlib"]
 
-[features]
-# Define the upstream C++ symbols of `src/upstream.rs`; only the hybrid's archive,
-# whose http.cc no longer defines them, turns it on.
-upstream-symbols = []
-
 [dependencies]
 libc = "=0.2.191"
 memchr = "2.8.3"
