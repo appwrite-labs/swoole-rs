@@ -11,9 +11,9 @@ process. Wall-clock load against a deployed stack is `tools/appwrite_bench.py`.
 `benchmarks/callgrind.py` counts instructions per request under callgrind
 (Linux, `valgrind` installed), with instrumentation on only while requests are
 served. Counts barely vary between runs of the same binaries, so the
-hybrid/upstream ratio is stable on shared runners where timings are not.
+Cargo build/upstream ratio is stable on shared runners where timings are not.
 The merge tier's `callgrind` job runs it for `plaintext`, `echo-1k`, `json` and
-`service-health` on the all-modules hybrid and fails if a ratio rises more than
+`service-health` on the Cargo build (`tools/build_ext.py --profile release-lto`) and fails if a ratio rises more than
 1% above its record in `callgrind_limits.json` (the ratchet; see
 [Speed](../docs/migration.md#speed)). On distributions with dynamic PDO modules, pass `--php-extension pdo
 --php-extension pdo_sqlite` (the servers run under `php -n`). It uses `echo-1k`
@@ -41,8 +41,9 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 provisional 1.10; the ratchet lowers it once two merge runs beat it.
 
 ```sh
+python3 tools/build_ext.py --profile release-lto
 python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --workload echo-1k --limits benchmarks/callgrind_limits.json \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so \
+  --engine cargo=target/ext/swoole.so \
   --engine upstream=target/upstream/src/modules/swoole.so
 ```
 
@@ -58,11 +59,11 @@ scratch directory, so every build and profile stays inside this checkout where
 
 ```sh
 git worktree add target/worktrees/base origin/main
-(cd target/worktrees/base && python3 tools/build_upstream.py && python3 tools/build_hybrid.py)
-python3 tools/build_hybrid.py
+(cd target/worktrees/base && python3 tools/build_ext.py --profile release-lto)
+python3 tools/build_ext.py --profile release-lto
 python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --profiles \
-  --engine base=target/worktrees/base/target/hybrid/rust/modules/swoole.so \
-  --engine branch=target/hybrid/rust/modules/swoole.so
+  --engine base=target/worktrees/base/target/ext/swoole.so \
+  --engine branch=target/ext/swoole.so
 git worktree remove --force target/worktrees/base
 ```
 
@@ -94,7 +95,7 @@ the job summary. It needs no quiet machine: memory doesn't depend on timing.
 
 ```sh
 python3 benchmarks/memory.py --workload plaintext --workload task \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so \
+  --engine cargo=target/ext/swoole.so \
   --engine upstream=target/upstream/src/modules/swoole.so
 ```
 

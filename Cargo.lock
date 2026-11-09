@@ -426,6 +426,7 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-reactor",
+ "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
 
@@ -1110,7 +1111,6 @@ dependencies = [
  "libc",
  "openssl-sys",
  "swoole-rs-buffer",
- "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
  "swoole-rs-reactor",
