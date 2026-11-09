@@ -441,9 +441,11 @@ mod php {
             println!("cargo::rustc-link-lib={library}");
         }
         if os == "linux" {
-            // Again after every archive: on musl (Alpine) cc's earlier -lstdc++ comes too soon.
-            println!("cargo::rustc-link-lib=stdc++");
             println!("cargo::rustc-link-lib=dl");
+            // phpprocess, server and tls call operator new and delete from Rust, and their
+            // rlibs come after this crate's libraries: a link arg goes after them all, or
+            // --as-needed drops libstdc++ before they ask for it (musl, Alpine).
+            println!("cargo::rustc-link-arg=-lstdc++");
         }
     }
 }
