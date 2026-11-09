@@ -1,9 +1,0 @@
-diff --git a/src/server/master.cc b/src/server/master.cc
-index 9c0cc50..837eb3c 100644
---- a/src/server/master.cc
-+++ b/src/server/master.cc
-@@ -2075,4 +2075,2 @@ static uint64_t server_call(void *context, uint32_t op, uint64_t arg) {
-         return 0;
--    case SWR_SERVER_OP_WORKER_ID:
--        return swoole_get_worker_id();
-     case SWR_SERVER_OP_ST_COUNT_SEND: {

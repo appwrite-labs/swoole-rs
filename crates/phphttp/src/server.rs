@@ -345,7 +345,7 @@ fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c
     let state = state(ctx);
     state.before_request = 1;
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
-    let zdata = &raw mut state.request.zdata;
+    let zdata = state.request.zdata.as_ptr();
     // SAFETY: the live server and its request; the data moves into the context.
     unsafe { php_swoole_get_recv_data(server.raw(), zdata, request) };
     crate::parse::init_request_parser(ctx);
@@ -412,7 +412,7 @@ pub(crate) fn call_handler(
             args.as_mut_ptr(),
             std::ptr::null_mut(),
             coroutine,
-            swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create,
+            swoole_rs_phpcoroutines::create_coroutine,
             swoole_rs_zend::sys::swr_zend_callable_warning,
         )
     };

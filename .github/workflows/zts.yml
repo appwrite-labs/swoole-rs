@@ -51,10 +51,12 @@ jobs:
       # The control is the pinned reference itself, unpatched.
       - run: |
           php="--php-config $PWD/target/php-zts/bin/php-config --configure=--enable-swoole-thread"
-          python3 tools/build_upstream.py $php --phpize $PWD/target/php-zts/bin/phpize
+          python3 tools/build_upstream.py $php --phpize $PWD/target/php-zts/bin/phpize | tee upstream.log
           python3 tools/build_ext.py $php
           mkdir -p target/phpt
-          cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
+          upstream=$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)
+          echo "UPSTREAM_SRC=$(dirname "$(dirname "$upstream")")" >> "$GITHUB_ENV"
+          cp -L "$upstream" target/phpt/upstream.so
           cp target/ext/swoole.so target/phpt/cargo.so
           for engine in upstream cargo; do target/php-zts/bin/php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -E '^thread '; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
@@ -83,8 +85,8 @@ jobs:
           python3 corpus/upstream/gate.py "$@" --output phpt-zts.json | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Thread server exit lifecycle companion
         run: |
-          python3 tests/modules/integration/server_exit.py --checkout "$PWD" --source target/upstream/src \
-            --runner target/upstream/src/run-tests.php --php "$PWD/target/php-zts/bin/php" \
+          python3 tests/modules/integration/server_exit.py --checkout "$PWD" --source "$UPSTREAM_SRC" \
+            --runner "$UPSTREAM_SRC/run-tests.php" --php "$PWD/target/php-zts/bin/php" \
             --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so \
             --output target/phpt/server-exit-companion.json
       - uses: actions/upload-artifact@v4

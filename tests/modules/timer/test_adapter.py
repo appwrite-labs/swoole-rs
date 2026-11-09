@@ -16,7 +16,7 @@ import sys
 
 import pytest
 
-from tools.build_ext import native_tree
+from tools.build_ext import native_flags
 from tools.build_upstream import COMMIT as PIN
 from tools.harness import run_isolated
 
@@ -83,7 +83,7 @@ def probe(pytestconfig, tmp_path_factory):
     assert manifest['upstream_commit'] == PIN, 'wrong selected source'
     extension = path.parent / 'swoole.so'
     assert sha(extension) == manifest['extension_sha256'], 'extension checksum mismatch'
-    _, flags = native_tree(pytestconfig.getoption('archive'))
+    flags = native_flags(pytestconfig.getoption('archive'))
     tree = tmp_path_factory.mktemp('timer-adapter')
     library = tree / ('probe.so' if linux else 'probe.dylib')
     compiler = shlex.split(os.environ.get('CXX', 'c++'))

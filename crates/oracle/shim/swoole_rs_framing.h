@@ -6,7 +6,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* One receive, for the oracle's native candidate from 0001-base.patch
+/* One receive, for the oracle's native candidate (crates/oracle/candidate base.cc)
  * (fuzz/src/framing_native.rs over crates/framing/src/recv.rs): Rust reads and
  * writes the swoole::String head and the Protocol's leading fields in place; `call`
  * applies the WAIT flag to socket->recv_wait, performs one effect and refreshes

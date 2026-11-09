@@ -8,7 +8,7 @@ import sys
 import tarfile
 from pathlib import Path
 
-from tools.build_ext import native_link, native_tree
+from tools.build_ext import native_flags, native_link
 from tools.build_upstream import COMMIT
 from tools.harness import run_isolated
 
@@ -40,7 +40,7 @@ def build(tree, engine, consumer, binary, archive=None, *, sanitize=False, optim
     String sources) or 'rust' (the Cargo build's headers, linked with its native archives and Rust
     archive). Returns the compiler result."""
     if engine == 'rust':
-        headers, link = native_tree(archive)[1], native_link(archive)
+        headers, link = native_flags(archive), native_link(archive)
     else:
         headers, link = ['-I' + str(tree / 'include')], [str(tree / name) for name in SOURCES]
     command = ['c++', '-std=c++17', '-O3' if optimize else '-O1', '-g', '-ffunction-sections', '-fdata-sections',

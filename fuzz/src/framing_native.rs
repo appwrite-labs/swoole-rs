@@ -1,5 +1,5 @@
 //! `swr_v1_framing_recv` (native/framing/swoole_rs_framing.h): the receive loop for
-//! the oracle's native candidate from `migration/patches/framing/0001-base.patch`,
+//! the oracle's native candidate from `crates/oracle/candidate/src/protocol/base.cc`,
 //! which the `framing_stream` target runs against the pinned base.cc. `io` holds
 //! the arguments and `call(context, op, arg)` performs each effect and refreshes
 //! `io.flags`. The hybrid runs the loop over crates/ports' effects instead.

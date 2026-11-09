@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Upstream's core-tests ported to Rust (by default core-tests/src/coroutine/{system,hook,socket}.cpp,
-tests/modules/hooks/system/; --package names another case package), against the patched tree's
-libswoole.so (Linux). Builds the patched tree's lib-swoole, with --fixture compiled in, links the
-case binary to it, and runs each case in its own process group.
+tests/modules/hooks/system/; --package names another case package), against a libswoole.so (Linux):
+the pin's lib-swoole target building native/'s Zend-free sources against the Cargo build SDK's
+headers, with --fixture compiled in and the SDK's Rust archive linked. Links the case binary to it
+and runs each case in its own process group.
 --exclude NAME=REASON reports a case `excluded` with its reason; it never counts as passed."""
 import argparse
 import io
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -16,7 +18,8 @@ import tarfile
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.build_ext import native_tree, overlay_native_tree  # noqa: E402
+from tools.build_ext import native_flags  # noqa: E402
+from tools.build_ext import zend_free_native_sources  # noqa: E402
 from tools.build_upstream import COMMIT as PIN  # noqa: E402
 from tools.harness import ROOT, run_isolated, write_report  # noqa: E402
 
@@ -70,11 +73,20 @@ def main():
         with tempfile.TemporaryDirectory(prefix='swr-hooks-system-') as temporary:
             staged = Path(temporary)
             stage(args.source, staged)
-            native_cmake = overlay_native_tree(args.archive, staged)
+            # lib-swoole builds native/'s Zend-free sources and upstream's thirdparty ones against
+            # the SDK's headers, so upstream's first-party sources and headers go.
+            for name in ['include', 'src', 'ext-src']:
+                shutil.rmtree(staged / name)
+            for name, path in zend_free_native_sources().items():
+                write_changed(staged / name, path.read_bytes())
             for path in staged.rglob('*'):
                 if path.is_file():
                     write_changed(tree / path.relative_to(staged), path.read_bytes())
-        write_changed(tree / 'config.h', (native_tree(args.archive)[0] / 'config.h').read_bytes())
+        flags = native_flags(args.archive)
+        include = flags[-1][2:]
+        write_changed(tree / 'config.h', (Path(include) / 'config.h').read_bytes())
+        # add_definitions and include_directories reach targets defined before them; add_compile_options does not.
+        native_cmake = f'add_definitions({" ".join(flags[:-1])})\ninclude_directories("{include}")\n'
         cmake = (tree / 'CMakeLists.txt').read_text()
         fixture = f'target_sources(lib-swoole PRIVATE "{args.fixture.resolve()}")\n' if args.fixture else ''
         write_changed(tree / 'CMakeLists.txt', f'{cmake}\n{native_cmake}target_link_libraries(lib-swoole "{args.archive.resolve()}" ${{SWOOLE_LINK_LIBRARIES}})\n'

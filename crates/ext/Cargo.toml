@@ -13,8 +13,8 @@ test = false
 doctest = false
 
 [features]
-# Build the extension for the PHP that `$PHP_CONFIG` names, from the patched
-# tree `$SWOOLE_SRC` (tools/build_ext.py prepares both). Without it the crate is empty.
+# Build the extension for the PHP that `$PHP_CONFIG` names, from the unpatched
+# pin `$SWOOLE_SRC` (tools/build_ext.py prepares both). Without it the crate is empty.
 php = ["swoole-rs-ffi/php", "dep:cc", "dep:openssl-sys"]
 # The merge tier's PHPT profile, one feature per configure switch (`--enable-sockets`,
 # `--enable-mysqlnd`, `--enable-swoole-pgsql`, ...): build.rs adds what config.m4 does.
@@ -27,7 +27,7 @@ sqlite = ["swoole-rs-ffi/sqlite"]
 oci = ["swoole-rs-ffi/oci"]
 curl = ["swoole-rs-ffi/curl"]
 ssh2 = ["swoole-rs-ffi/ssh2"]
-# The merge tier's build variants, as build_hybrid.py takes them: `--stdext`,
+# The merge tier's build variants, as tools/build_ext.py takes them: `--stdext`,
 # `--fix-halfclose`, `--enable-iouring` (with `--enable-uring-socket`), `--enable-cares`,
 # `--enable-thread-context` and `--enable-swoole-thread` (ZTS PHP).
 stdext = ["swoole-rs-ffi/stdext"]
