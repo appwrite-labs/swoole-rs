@@ -1,12 +1,18 @@
 #!/bin/sh
-# PHP 8.3 built from source in $1 with the configure options that follow, for the builds
-# Ubuntu doesn't ship: thread-safe (zts.yml, --enable-zts) and sanitized (tools/asan.py).
+# PHP built from source in $1 with the configure options that follow, for the builds
+# Ubuntu doesn't ship: thread-safe (zts.yml, --enable-zts), sanitized (tools/asan.py) and
+# the releases other than 8.3 that upstream supports (php-versions.yml, PHP_SERIES=8.2 …).
 # It has the extensions the PHPTs call (sockets, pcntl, posix, curl, openssl) compiled
 # in; install.sh has the libraries. CC and CFLAGS reach configure.
 # Does nothing when the prefix already holds this release with these options (CI caches it).
 set -e
-VERSION=8.3.36
-SHA256=c93f3441f87f6ab156bef4432db215d7e61ca2c0183bb3a2aa28d9886ab59f53
+case "${PHP_SERIES:-8.3}" in
+    8.2) VERSION=8.2.35 SHA256=9db4204f0a2d1911277ae832185e07bb4c3b3559772753a70d2968ca346d6910 ;;
+    8.3) VERSION=8.3.36 SHA256=c93f3441f87f6ab156bef4432db215d7e61ca2c0183bb3a2aa28d9886ab59f53 ;;
+    8.4) VERSION=8.4.27 SHA256=5bafed9994c1a49796b25b5f61c22c9183bfe046b6acc7b363842d03c77f972f ;;
+    8.5) VERSION=8.5.12 SHA256=81a0f450349e84b08eb43faa85f8a4c835684f3cc1c50471775d1317a046c525 ;;
+    *) echo "php.sh: no PHP $PHP_SERIES release pinned" >&2; exit 1 ;;
+esac
 PREFIX=$(realpath -m "$1")
 shift
 STAMP="$VERSION $* CC=$CC CFLAGS=$CFLAGS"
