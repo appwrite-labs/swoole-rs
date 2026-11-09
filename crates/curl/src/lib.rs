@@ -81,6 +81,8 @@ pub struct Multi {
     co: Cell<*mut c_void>,
     running: Cell<c_int>,
     defer_callback: Cell<bool>,
+    /// Freed while a deferred wake-up was queued: the wake-up frees it.
+    released: Cell<bool>,
     /// The selector: a timeout to report to curl, sockets with events (a
     /// set, in arrival order), and sockets curl removed while it ran.
     timer_callback: Cell<bool>,
@@ -154,6 +156,7 @@ impl Multi {
             co: Cell::new(ptr::null_mut()),
             running: Cell::new(0),
             defer_callback: Cell::new(false),
+            released: Cell::new(false),
             timer_callback: Cell::new(false),
             executing: Cell::new(false),
             active: RefCell::new(Vec::new()),
@@ -517,6 +520,9 @@ impl Multi {
 
     /// `Multi::callback`: a socket event (or, for `None`, the timeout).
     fn callback(&self, socket: Option<&Socket>) {
+        if self.released.get() {
+            return;
+        }
         if socket.is_none() {
             self.timer_callback.set(true);
         }
@@ -569,14 +575,8 @@ unsafe extern "C" fn handle_timeout(
     unsafe { &*userp.cast::<Multi>() }.on_timeout(timeout_ms)
 }
 
-/// # Safety
-/// `multi` came from `swoole_curl_multi_new` and is not freed.
-unsafe fn multi<'a>(multi: *mut Multi) -> &'a Multi {
-    // SAFETY: per the caller.
-    unsafe { &*multi }
-}
-
-/// `delete multi`.
+/// `Multi::release`: `delete multi`, or, while a deferred wake-up is
+/// queued, leave that to the wake-up.
 /// # Safety
 /// `multi` came from `swoole_curl_multi_new`; nothing uses it afterwards.
 #[unsafe(no_mangle)]
@@ -586,7 +586,11 @@ pub unsafe extern "C" fn swr_v1_curl_multi_free(multi: *mut Multi) {
     }
     {
         // SAFETY: per the caller.
-        let this = unsafe { self::multi(multi) };
+        let this = unsafe { &*multi };
+        if this.defer_callback.get() {
+            this.released.set(true);
+            return;
+        }
         this.del_timer();
         // SAFETY: its handle; the callbacks it runs still find the multi.
         unsafe { curl_multi_cleanup(this.handle) };
@@ -650,14 +654,19 @@ pub extern "C" fn swr_v1_curl_multi_exec(multi: &Multi, handle: &mut Handle) -> 
     multi.exec(handle)
 }
 
-/// The multi's deferred wake-up: resume its waiting coroutine.
-fn multi_deferred(this: &Multi) {
+/// The multi's deferred wake-up: resume its waiting coroutine. True when
+/// [`swr_v1_curl_multi_free`] released the multi meanwhile: free it now.
+fn multi_deferred(this: &Multi) -> bool {
     this.defer_callback.set(false);
+    if this.released.get() {
+        return true;
+    }
     let co = this.co.get();
     if !co.is_null() {
         // SAFETY: the coroutine waiting on this multi.
         unsafe { host::resume(co) };
     }
+    false
 }
 
 /// A reactor event (`CURL_CSELECT_*` in `bitmask`) on a cURL socket.

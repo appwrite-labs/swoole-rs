@@ -259,9 +259,33 @@ fn a_waiterless_socket_event_leaves_the_reactor() {
         "both events"
     );
     multi.co.set(ptr::null_mut());
-    multi_deferred(multi);
+    assert!(!multi_deferred(multi), "not released");
     assert!(!multi.defer_callback.get(), "wake-up done");
     transfer.finish();
+}
+
+#[test]
+fn a_multi_freed_with_a_queued_wake_up_is_freed_by_the_wake_up() {
+    LOOP.with(|on| on.set(true));
+    let multi = new_multi();
+    assert_eq!(multi.on_timeout(0), 0, "a timer");
+    multi.co.set(ptr::dangling_mut::<u8>().cast());
+    multi.callback(None);
+    multi.co.set(ptr::null_mut());
+    assert_eq!(take(), ["timer 1", "defer"], "a queued wake-up");
+    free(multi);
+    assert!(multi.released.get(), "released, not freed");
+    multi.timer_callback.set(false);
+    multi.callback(None);
+    assert!(
+        !multi.timer_callback.get(),
+        "a released multi ignores events"
+    );
+    assert!(take().is_empty(), "the timer stays until the wake-up");
+    assert!(multi_deferred(multi), "the wake-up frees it");
+    assert!(!multi.defer_callback.get(), "no wake-up queued");
+    free(multi);
+    assert_eq!(take(), ["timer del"], "freed");
 }
 
 #[test]
