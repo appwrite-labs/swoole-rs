@@ -46,20 +46,18 @@ const SW_ERR: u64 = u64::MAX;
 )]
 impl Context {
     pub(super) fn state(&self) -> &crate::ServerState {
-        // SAFETY: the context's live server.
-        unsafe { view::state(self.serv) }
+        self.server().state()
     }
     pub(super) fn config(&self) -> &mut crate::ServerConfig {
         // SAFETY: as above.
-        unsafe { view::config(self.serv) }
+        unsafe { self.server().config_mut() }
     }
     pub(super) fn counters(&self) -> &mut crate::ServerCounters {
         // SAFETY: the context's live server.
-        unsafe { view::counters_mut(self.serv) }
+        unsafe { self.server().counters_mut() }
     }
     pub(super) fn workers(&self) -> swoole_rs_process::server_workers::ServerWorkers {
-        // SAFETY: as above.
-        unsafe { view::workers(self.serv) }
+        self.server().workers()
     }
     /// `serv->ports`.
     pub(super) fn ports(&self) -> &[*mut c_void] {
@@ -82,8 +80,7 @@ impl Context {
     }
     /// `serv->get_worker(id)`.
     fn other(&self, id: u64) -> *mut WorkerRecord {
-        // SAFETY: the live server.
-        unsafe { view::worker(self.serv, u16::try_from(id).unwrap_or(u16::MAX)) }
+        self.server().worker(u16::try_from(id).unwrap_or(u16::MAX))
     }
     /// The server's own `MessageBus`.
     pub(super) fn bus(&self) -> Bus {
@@ -123,8 +120,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: the context's live server.
         OP_CREATE_PIPE_BUFFERS => sign(unsafe { crate::master_ops::create_pipe_buffers(ctx.serv) }),
         OP_RUN_SINGLE_WORKER => {
-            // SAFETY: the context's live server.
-            let pool = unsafe { view::workers(ctx.serv) }.event_pool;
+            let pool = ctx.server().workers().event_pool;
             // SAFETY: its live event pool, which has a worker.
             let worker = unsafe { (*pool).workers };
             let globals = swoole_rs_process::worker_globals::swr_v1_worker_globals();
@@ -222,8 +218,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             sign(reactor.add(pipe_master, EVENT_READ))
         }
         OP_TASK_PIPE_NONBLOCK => {
-            // SAFETY: the context's live server.
-            let pool = unsafe { view::task_pool(ctx.serv) };
+            let pool = ctx.server().task_pool();
             // SAFETY: its live task pool, whose worker `arg` is.
             let worker = unsafe { (*pool).workers }.wrapping_add(usize::try_from(arg).ok()?);
             // SAFETY: as above.
@@ -259,8 +254,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 /// `OP_POOL_CREATE`: the event worker pool over the server's workers.
 fn create_pool(ctx: &Context) -> u64 {
     let config = ctx.config();
-    // SAFETY: the context's live server.
-    let workers = unsafe { view::workers(ctx.serv) };
+    let workers = ctx.server().workers();
     let pool = workers.event_pool;
     // SAFETY: the server's event pool, reset to zero as `*pool = {}` did.
     unsafe { pool.write_bytes(0, 1) };

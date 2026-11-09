@@ -171,16 +171,17 @@ const HOOK_BEFORE_SERVER_CREATE: c_int = 10;
     unsafe(export_name = "_ZN6swoole6Server6createEv")
 )]
 pub unsafe extern "C-unwind" fn create(serv: *mut c_void) -> c_int {
-    // SAFETY: as the caller guarantees.
-    if !unsafe { view::config(serv) }.factory_.is_null() {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    if !serv.config().factory_.is_null() {
         return -1;
     }
     if hook::swoole_isset_hook(HOOK_BEFORE_SERVER_CREATE) {
         // SAFETY: the hook's callbacks take the server.
-        unsafe { hook::swoole_call_hook(HOOK_BEFORE_SERVER_CREATE, serv) };
+        unsafe { hook::swoole_call_hook(HOOK_BEFORE_SERVER_CREATE, serv.raw()) };
     }
     // SAFETY: as the caller guarantees.
-    c_int::narrow(unsafe { run(RUN_CREATE, 0, &mut NativeContext::new(serv)) })
+    c_int::narrow(unsafe { run(RUN_CREATE, 0, &mut NativeContext::new(serv.raw())) })
 }
 
 /// `Server::destroy()`: nothing before the server is created.
@@ -192,10 +193,12 @@ pub unsafe extern "C-unwind" fn create(serv: *mut c_void) -> c_int {
     unsafe(export_name = "_ZN6swoole6Server7destroyEv")
 )]
 pub unsafe extern "C-unwind" fn destroy(serv: *mut c_void) {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: as the caller guarantees.
-    if !unsafe { view::config(serv) }.factory_.is_null() {
+    if !serv.config().factory_.is_null() {
         // SAFETY: as the caller guarantees.
-        unsafe { run(RUN_DESTROY, 0, &mut NativeContext::new(serv)) };
+        unsafe { run(RUN_DESTROY, 0, &mut NativeContext::new(serv.raw())) };
     }
 }
 
@@ -273,12 +276,13 @@ pub unsafe extern "C-unwind" fn start_master_thread(
     unsafe(export_name = "_ZNK6swoole6Server17init_pipe_socketsEPNS_10MessageBusE")
 )]
 pub unsafe extern "C-unwind" fn init_pipe_sockets(serv: *mut c_void, mb: *mut c_void) {
-    // SAFETY: as the caller guarantees.
-    if !unsafe { view::is_started(serv) } {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    if !serv.is_started() {
         // upstream's `assert(is_started())`.
         std::process::abort();
     }
-    let mut ctx = NativeContext::new(serv);
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.object = mb;
     // SAFETY: as the caller guarantees.
     unsafe { run(RUN_ST_INIT_PIPE_SOCKETS, 0, &mut ctx) };
@@ -293,12 +297,13 @@ pub unsafe extern "C-unwind" fn connection_incoming(
     reactor: *mut c_void,
     conn: *mut ConnectionRecord,
 ) -> c_int {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: as the caller guarantees.
     let record = unsafe { &*conn };
-    let mut ctx = NativeContext::new(serv);
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.reactor = reactor;
-    // SAFETY: as the caller guarantees.
-    ctx.port = unsafe { view::port_by_server_fd(serv, record.server_fd) };
+    ctx.port = serv.port_by_server_fd(record.server_fd);
     ctx.sock = record.socket;
     ctx.conn = conn.cast();
     // SAFETY: as the caller guarantees.
@@ -364,10 +369,12 @@ pub unsafe extern "C" fn is_healthy_connection(
     now: f64,
     conn: *const ConnectionRecord,
 ) -> bool {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: as the caller guarantees.
     let conn = unsafe { &*conn };
     // SAFETY: as the caller guarantees.
-    unsafe { view::healthy(serv, now, conn) }
+    serv.healthy(now, conn)
 }
 
 unsafe extern "C" {
@@ -612,7 +619,7 @@ pub(crate) unsafe extern "C" fn idle_timeout_tick(conn: *mut c_void) {
     // SAFETY: as the caller guarantees.
     let record = unsafe { &*conn.cast::<ConnectionRecord>() };
     // SAFETY: the live server and the connection's listening fd.
-    ctx.port = unsafe { view::port_by_server_fd(serv, record.server_fd) };
+    ctx.port = unsafe { view::Server::from_raw(serv) }.port_by_server_fd(record.server_fd);
     ctx.reactor = swoole_rs_corebase::thread_reactor();
     ctx.sock = record.socket;
     ctx.conn = conn;
@@ -775,10 +782,11 @@ unsafe fn native_op(op: u32, ctx: &mut NativeContext) -> bool {
 /// # Safety
 /// `serv` is a live `Server` and `conn` one of its connections.
 pub unsafe fn package_max_length(serv: *mut c_void, conn: *mut c_void) -> u32 {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: as the caller guarantees.
     let fd = unsafe { &*conn.cast::<ConnectionRecord>() }.fd;
-    // SAFETY: as the caller guarantees.
-    let port = unsafe { view::port_by_fd(serv, fd) };
+    let port = serv.port_by_fd(fd);
     // SAFETY: the connection's live port, as in C++, which doesn't check it either.
     unsafe { view::port(port) }.protocol.package_max_length
 }

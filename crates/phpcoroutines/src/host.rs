@@ -125,7 +125,8 @@ pub(crate) fn flag(bit: u32) -> bool {
         SERVER_STARTED => {
             let serv = swoole_rs_corebase::swr_v1_core_server();
             // SAFETY: the process's live server.
-            !serv.is_null() && unsafe { swoole_rs_server::view::is_started(serv) }
+            !serv.is_null()
+                && unsafe { swoole_rs_server::view::Server::from_raw(serv) }.is_started()
         }
         FATAL => last_error_fatal() || reactor().is_some_and(|(fields, _)| fields.bailout),
         // `sw_is_main_thread()`.

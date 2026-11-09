@@ -180,10 +180,10 @@ fn helper(facts: &Facts, name: &CStr, args: &mut [zval]) -> bool {
 }
 
 fn facts(server: *mut c_void) -> Facts {
-    // SAFETY: a live server.
-    let config = unsafe { view::config(server) };
-    // SAFETY: as above.
-    let gs = unsafe { view::counters(server) };
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    let config = server.config();
+    let gs = server.counters();
     let task_worker = crate::server::worker_type() == crate::server::TASK_WORKER;
     Facts {
         master_pid: i64::from(gs.master_pid),
@@ -191,7 +191,7 @@ fn facts(server: *mut c_void) -> Facts {
         event_object: config.event_object,
         enable_coroutine: config.enable_coroutine,
         // SAFETY: as above.
-        coroutine: unsafe { is_enable_coroutine(server) },
+        coroutine: unsafe { is_enable_coroutine(server.raw()) },
         enable_library: swoole_rs_phpswoole::enable_library(),
         task_worker,
     }
@@ -201,8 +201,9 @@ fn facts(server: *mut c_void) -> Facts {
 /// # Safety
 /// `server` is a live `Server`.
 pub unsafe fn is_enable_coroutine(server: *mut c_void) -> bool {
-    // SAFETY: per the caller.
-    let config = unsafe { view::config(server) };
+    // SAFETY: per the caller, `server` is a live `Server` for the call.
+    let server = unsafe { view::Server::from_raw(server) };
+    let config = server.config();
     match crate::server::worker_type() {
         crate::server::TASK_WORKER => config.task_enable_coroutine,
         crate::server::MANAGER => false,
@@ -212,12 +213,12 @@ pub unsafe fn is_enable_coroutine(server: *mut c_void) -> bool {
 
 /// `serv->get_worker_message_bus()`: this thread's in thread mode, else the server's.
 pub(crate) fn message_bus(server: *mut c_void) -> *mut c_void {
-    // SAFETY: a live server.
-    if i64::from(unsafe { view::config(server) }.mode_) == crate::lifecycle::MODE_THREAD {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    if i64::from(server.config().mode_) == crate::lifecycle::MODE_THREAD {
         swoole_rs_corebase::thread_message_bus()
     } else {
-        // SAFETY: a live server.
-        unsafe { view::message_bus(server) }
+        server.message_bus()
     }
 }
 
@@ -232,10 +233,11 @@ fn bus_uses_zend_strings(bus: *mut c_void) {
 /// `SWR_PHPSERVER_INSTALL_ALLOCATORS`: the server's message bus, and its receive
 /// buffers in base and thread mode, allocate Zend strings.
 pub(crate) fn use_zend_strings(server: *mut c_void) {
-    // SAFETY: a live server, not started.
-    bus_uses_zend_strings(unsafe { view::message_bus(server) });
-    // SAFETY: as above.
-    let config = unsafe { view::config(server) };
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    bus_uses_zend_strings(server.message_bus());
+    // SAFETY: the server is configured on this thread, with no other reference to the field.
+    let config = unsafe { server.config_mut() };
     if i64::from(config.mode_) != crate::lifecycle::MODE_PROCESS {
         config.recv_buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
     }
@@ -244,15 +246,16 @@ pub(crate) fn use_zend_strings(server: *mut c_void) {
 /// onWorkerStart's preparation: a task worker without coroutines unhooks the
 /// runtime (not in thread mode), and the worker's bus allocates Zend strings.
 fn prepare_worker(server: *mut c_void) {
-    // SAFETY: a live server.
-    let config = unsafe { view::config(server) };
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    let config = server.config();
     if crate::server::worker_type() == crate::server::TASK_WORKER
         && !config.task_enable_coroutine
         && i64::from(config.mode_) != crate::lifecycle::MODE_THREAD
     {
         let _unhooked = swoole_rs_phpruntime::php_coroutine_enable_hook(0);
     }
-    bus_uses_zend_strings(message_bus(server));
+    bus_uses_zend_strings(message_bus(server.raw()));
 }
 
 fn zserv(server: *mut c_void) -> zval {
@@ -783,6 +786,8 @@ extern "C" fn on_finish(_: Ctx, server: *mut c_void, req: *mut c_void) -> c_int 
 }
 
 extern "C" fn on_pipe_message_slot(_: Ctx, server: *mut c_void, req: *mut c_void) {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     let mut data = undef();
     let (unpacked, mut bailed) = match crate::task::decode(req, &raw mut data) {
         Ok(unpacked) => (unpacked, false),
@@ -792,7 +797,7 @@ extern "C" fn on_pipe_message_slot(_: Ctx, server: *mut c_void, req: *mut c_void
         let info = head(req);
         // `Server::get_task_src_worker_id`.
         let source = i64::from(info.reactor_id);
-        bailed = on_pipe_message(server, &raw mut data, source, info.time);
+        bailed = on_pipe_message(server.raw(), &raw mut data, source, info.time);
     }
     if !bailed {
         dtor(&mut data);
@@ -808,15 +813,16 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_receive(
     server: *mut c_void,
     request: *mut c_void,
 ) -> c_int {
+    // SAFETY: per the caller, `server` is a live `Server` for the call.
+    let server = unsafe { view::Server::from_raw(server) };
     let info = head(request);
-    let cb = port_callback(server, info.server_fd, ON_RECEIVE);
+    let cb = port_callback(server.raw(), info.server_fd, ON_RECEIVE);
     if cb.is_null() {
         return SW_OK;
     }
-    // SAFETY: a live server.
-    let config = unsafe { view::config(server) };
-    let mut args = [zserv(server), undef(), undef(), undef()];
-    let argc = receive_args(server, request, info, config.event_object, &mut args);
+    let config = server.config();
+    let mut args = [zserv(server.raw()), undef(), undef(), undef()];
+    let argc = receive_args(server.raw(), request, info, config.event_object, &mut args);
     let called = invoke(
         cb,
         args.get_mut(..argc).unwrap_or_default(),
@@ -825,7 +831,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_receive(
     );
     relay(called.map_or(true, |succeeded| {
         receive_done(
-            server,
+            server.raw(),
             succeeded,
             info.fd,
             args.get_mut(..argc).unwrap_or_default(),
@@ -835,8 +841,10 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_receive(
 }
 
 extern "C" fn on_receive(_: Ctx, server: *mut c_void, request: *mut c_void) -> c_int {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: the Server's own event.
-    unsafe { swr_v1_phpserver_on_receive(server, request) }
+    unsafe { swr_v1_phpserver_on_receive(server.raw(), request) }
 }
 
 extern "C" fn on_http_receive(_: Ctx, server: *mut c_void, request: *mut c_void) -> c_int {
@@ -847,29 +855,32 @@ extern "C" fn on_http_receive(_: Ctx, server: *mut c_void, request: *mut c_void)
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
 /// crates/phpredis, others take the plain `onReceive`.
 extern "C" fn on_redis_receive(_: Ctx, server: *mut c_void, request: *mut c_void) -> c_int {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     let fd = head(request).fd;
     // SAFETY: a live server.
-    let Some(conn) = (unsafe { view::by_session(server, fd) }) else {
+    let Some(conn) = (unsafe { server.by_session(fd) }) else {
         log::warning(
             c"php_swoole_redis_server_onReceive",
             format_args!("connection[{fd}] is closed"),
         );
         return SW_ERR;
     };
-    // SAFETY: a live server.
-    let port = unsafe { view::port_by_fd(server, conn.fd) };
+    let port = server.port_by_fd(conn.fd);
     // SAFETY: null, or the connection's live port.
     if port.is_null() || !unsafe { view::port(port) }.open_redis_protocol {
         // SAFETY: the Server's own event.
-        return unsafe { swr_v1_phpserver_on_receive(server, request) };
+        return unsafe { swr_v1_phpserver_on_receive(server.raw(), request) };
     }
     // SAFETY: as above; the handler runs inside zend_try.
-    let result = unsafe { swr_v1_phpredis_receive(server, request) };
+    let result = unsafe { swr_v1_phpredis_receive(server.raw(), request) };
     relay(result == REDIS_BAILED);
     result
 }
 
 extern "C" fn on_packet_slot(_: Ctx, server: *mut c_void, request: *mut c_void) -> c_int {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: an onPacket event's payload is its `DgramPacket`.
     let packet = unsafe { (*request.cast::<RecvData>()).data };
     #[expect(clippy::cast_ptr_alignment, reason = "read unaligned")]
@@ -887,7 +898,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: *mut c_void, request: *mut c_void) 
         address: ptr::null(),
         port: -1,
         // SAFETY: a live server.
-        server_port: unsafe { view::at(server, c_int::from(info.server_fd)) }.map_or(-1, |sock| {
+        server_port: unsafe { server.at(c_int::from(info.server_fd)) }.map_or(-1, |sock| {
             // SAFETY: the listening socket's own address record.
             i64::from(unsafe { swr_v1_clients_address_port(&raw const sock.info) })
         }),
@@ -915,7 +926,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: *mut c_void, request: *mut c_void) 
         _ => {}
     }
     relay(on_packet(
-        server,
+        server.raw(),
         &sender,
         c_int::from(info.server_fd),
         info.time,
@@ -937,9 +948,9 @@ extern "C" fn on_connect(_: Ctx, server: *mut c_void, info: *mut DataHead) {
 /// Wake the coroutines `send_yield` parked on a session: resume them when
 /// its output drained, or cancel them when it closed (each leaves the queue
 /// as it wakes).
-fn send_wake(server: *mut c_void, session_id: i64, cancel: bool) {
+fn send_wake(server: view::Server<'_>, session_id: i64, cancel: bool) {
     // Raw handles only: a woken coroutine may bail out across this frame.
-    let waiters = crate::lifecycle::send_waiters(server, session_id);
+    let waiters = crate::lifecycle::send_waiters(server.raw(), session_id);
     if waiters.is_null() {
         return;
     }
@@ -960,39 +971,44 @@ fn send_wake(server: *mut c_void, session_id: i64, cancel: bool) {
 /// `server` is the running server and `info` the closed session's.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpserver_on_close(server: *mut c_void, info: *mut DataHead) {
+    // SAFETY: per the caller, `server` is a live `Server` for the call.
+    let server = unsafe { view::Server::from_raw(server) };
     let info = head(info);
     let session_id = info.fd;
-    // SAFETY: a live server.
-    let config = unsafe { view::config(server) };
+    let config = server.config();
     if config.enable_coroutine && config.send_yield {
         send_wake(server, session_id, true);
     }
-    let mut cb = port_callback(server, info.server_fd, ON_CLOSE);
+    let mut cb = port_callback(server.raw(), info.server_fd, ON_CLOSE);
     // SAFETY: a live server.
-    let Some(conn) = (unsafe { view::by_session(server, session_id) }).map(ptr::from_mut) else {
+    let Some(conn) = (unsafe { server.by_session(session_id) }).map(ptr::from_mut) else {
         return;
     };
     // SAFETY: the session's live connection slot.
     if unsafe { (*conn).websocket_status } != WEBSOCKET_ACTIVE {
-        // SAFETY: a live server.
-        let port = unsafe { view::port_by_server_fd(server, c_int::from(info.server_fd)) };
+        let port = server.port_by_server_fd(c_int::from(info.server_fd));
         // SAFETY: the session's live port.
         let websocket = !port.is_null() && unsafe { view::port(port) }.open_websocket_protocol;
-        if websocket && crate::lifecycle::isset(server, port, ON_DISCONNECT) {
-            cb = port_callback(server, info.server_fd, ON_DISCONNECT);
+        if websocket && crate::lifecycle::isset(server.raw(), port, ON_DISCONNECT) {
+            cb = port_callback(server.raw(), info.server_fd, ON_DISCONNECT);
         }
     }
     let reactor_id = i64::from(info.reactor_id);
     if !cb.is_null() {
         relay(on_connection(
-            server, cb, true, session_id, reactor_id, info.time,
+            server.raw(),
+            cb,
+            true,
+            session_id,
+            reactor_id,
+            info.time,
         ));
     }
     // SAFETY: as above; the callback may have changed it.
     let conn = unsafe { &*conn };
     if conn.http2_stream != 0 {
         // SAFETY: the closed session of a live server.
-        unsafe { php_swoole_http2_server_onClose(server, conn.session_id) };
+        unsafe { php_swoole_http2_server_onClose(server.raw(), conn.session_id) };
     }
 }
 
@@ -1017,13 +1033,14 @@ extern "C" fn on_buffer_full(_: Ctx, server: *mut c_void, info: *mut DataHead) {
 }
 
 extern "C" fn on_buffer_empty(_: Ctx, server: *mut c_void, info: *mut DataHead) {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     let info = head(info);
-    // SAFETY: a live server.
-    if unsafe { view::config(server) }.send_yield {
+    if server.config().send_yield {
         send_wake(server, info.fd, false);
     }
     relay(on_buffer(
-        server,
+        server.raw(),
         false,
         info.fd,
         c_int::from(info.server_fd),
@@ -1033,10 +1050,11 @@ extern "C" fn on_buffer_empty(_: Ctx, server: *mut c_void, info: *mut DataHead) 
 /// `php_swoole_server_onUserWorkerStart`: run the user process's callable in
 /// the worker `addProcess` added.
 extern "C" fn on_user_worker_start(_: Ctx, server: *mut c_void, worker: *mut WorkerRecord) {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     let id = worker_id(worker);
-    // SAFETY: a live server.
-    let config = unsafe { view::config(server) };
-    let zserv = zserv(server);
+    let config = server.config();
+    let zserv = zserv(server.raw());
     // SAFETY: the server's object zval.
     let server_object = unsafe { object_of(&raw const zserv) };
     let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {
@@ -1044,7 +1062,7 @@ extern "C" fn on_user_worker_start(_: Ctx, server: *mut c_void, worker: *mut Wor
         let index = usize::try_from(index).unwrap_or(usize::MAX);
         let process = crate::lifecycle::user_process(server_object, index);
         // A user worker: just the message bus allocator.
-        prepare_worker(server);
+        prepare_worker(server.raw());
         process
     } else {
         // SAFETY: the worker `addProcess` made holds its process object.
@@ -1053,8 +1071,7 @@ extern "C" fn on_user_worker_start(_: Ctx, server: *mut c_void, worker: *mut Wor
     // SAFETY: the process object.
     let object = unsafe { object_of(process) };
     set_long(crate::lifecycle::process_class(), object, c"id", id);
-    // SAFETY: as in `facts`.
-    let gs = unsafe { view::counters(server) };
+    let gs = server.counters();
     set_server_long(server_object, c"master_pid", i64::from(gs.master_pid));
     set_server_long(server_object, c"manager_pid", i64::from(gs.manager_pid));
     // SAFETY: the worker and its process object; this frame owns nothing that
@@ -1065,6 +1082,8 @@ extern "C" fn on_user_worker_start(_: Ctx, server: *mut c_void, worker: *mut Wor
 /// `SWR_PORTS_HOOK_*` of a port callback just set: install the Server's slot
 /// unless one is set.
 pub(crate) fn port_hook(server: *mut c_void, hook: u32) {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     let (slot, invoke) = match hook {
         1 => (CB_CONNECT, on_connect as *const c_void),
         2 => (CB_PACKET, on_packet_slot as *const c_void),
@@ -1073,10 +1092,9 @@ pub(crate) fn port_hook(server: *mut c_void, hook: u32) {
         5 => (CB_BUFFER_EMPTY, on_buffer_empty as *const c_void),
         _ => return,
     };
-    // SAFETY: a live server, configured before it starts.
-    if !unsafe { view::has_callback(server, slot) } {
+    if !server.has_callback(slot) {
         // SAFETY: as above; the fn has the slot's signature.
-        unsafe { view::set_callback(server, slot, invoke) };
+        unsafe { server.set_callback(slot, invoke) };
     }
 }
 
@@ -1086,6 +1104,8 @@ pub(crate) fn install(server: *mut c_void, which: u32) {
         BUFFER_EMPTY, CLOSE, CONTROL, HTTP_CLOSE, HTTP_RECEIVE, PIPE_MESSAGE, RECEIVE,
         REDIS_RECEIVE, TASK, USER_WORKER_START,
     };
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     let slots: &[(u32, *const c_void)] = match which {
         CONTROL => &[
             (CB_START, on_start as *const c_void),
@@ -1111,15 +1131,14 @@ pub(crate) fn install(server: *mut c_void, which: u32) {
         RECEIVE => &[(CB_RECEIVE, on_receive as *const c_void)],
         HTTP_RECEIVE => &[(CB_RECEIVE, on_http_receive as *const c_void)],
         REDIS_RECEIVE => &[(CB_RECEIVE, on_redis_receive as *const c_void)],
-        // SAFETY: a live server.
-        USER_WORKER_START if unsafe { view::has_callback(server, CB_USER_WORKER_START) } => &[],
+        USER_WORKER_START if server.has_callback(CB_USER_WORKER_START) => &[],
         USER_WORKER_START => &[(CB_USER_WORKER_START, on_user_worker_start as *const c_void)],
         _ => return,
     };
     for &(slot, invoke) in slots {
         // SAFETY: a live server, configured before it starts; each fn has its
         // slot's signature.
-        unsafe { view::set_callback(server, slot, invoke) };
+        unsafe { server.set_callback(slot, invoke) };
     }
 }
 
@@ -1136,11 +1155,13 @@ pub(crate) unsafe fn set_dispatch_func(
     server: *mut c_void,
     handle: *mut callable::Callable,
 ) -> Result<(), Bailout> {
-    // SAFETY: per the caller.
-    let config = unsafe { view::config(server) };
+    // SAFETY: per the caller, `server` is a live `Server` for the call.
+    let server = unsafe { view::Server::from_raw(server) };
+    // SAFETY: the server is configured on this thread, with no other reference to the field.
+    let config = unsafe { server.config_mut() };
     let previous = std::mem::replace(&mut config.private_data_3, handle.cast());
     // SAFETY: per the caller; the slot fn has `dispatch_func`'s signature.
-    unsafe { view::set_callback(server, CB_DISPATCH_FUNC, on_dispatch as *const c_void) };
+    unsafe { server.set_callback(CB_DISPATCH_FUNC, on_dispatch as *const c_void) };
     config.single_thread = true;
     release_dispatch_func(previous)
 }
@@ -1208,11 +1229,12 @@ extern "C" fn on_dispatch(
     conn: *const ConnectionRecord,
     data: *const RecvData,
 ) -> c_int {
-    // SAFETY: a live server whose dispatch_func `set_dispatch_func` stored.
-    let config = unsafe { view::config(server) };
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    let config = server.config();
     // SAFETY: as above.
     let cache = unsafe { callable::cache(config.private_data_3.cast()) };
-    let zserv = php_swoole_server_zval_ptr(server);
+    let zserv = php_swoole_server_zval_ptr(server.raw());
     // SAFETY: its live object, copied without a reference as upstream.
     let zserv = unsafe { zserv.read() };
     // SAFETY: null, or the event's live `SendData` (a head and its payload).

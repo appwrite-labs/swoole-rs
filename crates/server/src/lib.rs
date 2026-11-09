@@ -346,7 +346,7 @@ pub(crate) unsafe fn run_method(
         core::ptr::null()
     } else {
         // SAFETY: a live server, per the caller.
-        unsafe { view::state_ptr(serv) }
+        unsafe { view::Server::from_raw(serv) }.state_ptr()
     };
     run(
         &mut Native {

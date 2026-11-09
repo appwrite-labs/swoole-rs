@@ -274,29 +274,29 @@ fn cached(
 /// `server` is the live server and `request` its `RecvData`.
 #[unsafe(export_name = "_Z32php_swoole_http_server_onReceivePN6swoole6ServerEPNS_8RecvDataE")]
 pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_void) -> c_int {
+    // SAFETY: per the caller, `server` is a live `Server` for the call.
+    let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: a `RecvData` begins with its `DataHead`.
     let info = unsafe { *request.cast::<DataHead>() };
     match receive(server, request, &info) {
         CLOSED => -1,
         // SAFETY: the live server and its request.
-        TCP => unsafe { swr_v1_phpserver_on_receive(server, request) },
-        // SAFETY: as above.
-        WEBSOCKET => websocket::on_message(server, request, &info),
+        TCP => unsafe { swr_v1_phpserver_on_receive(server.raw(), request) },
+        WEBSOCKET => websocket::on_message(server.raw(), request, &info),
         HTTP2 => {
             // SAFETY: the live server.
-            let conn =
-                unsafe { view::verified(server, info.fd) }.map_or(ptr::null_mut(), ptr::from_mut);
+            let conn = unsafe { server.verified(info.fd) }.map_or(ptr::null_mut(), ptr::from_mut);
             // SAFETY: as above, with the session's connection.
-            unsafe { swoole_http2_server_onReceive(server, conn, request) }
+            unsafe { swoole_http2_server_onReceive(server.raw(), conn, request) }
         }
         _ => 0,
     }
 }
 
-fn receive(server: *mut c_void, request: *mut c_void, info: &DataHead) -> c_int {
+fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c_int {
     let (session, server_fd) = (info.fd, c_int::from(info.server_fd));
     // SAFETY: the live server.
-    let Some(conn) = (unsafe { view::verified(server, session) }) else {
+    let Some(conn) = (unsafe { server.verified(session) }) else {
         host::log(
             LOG_TRACE,
             SESSION_NOT_EXIST,
@@ -305,12 +305,11 @@ fn receive(server: *mut c_void, request: *mut c_void, info: &DataHead) -> c_int 
         );
         return CLOSED;
     };
-    // SAFETY: the live server; a listening socket's record holds its port.
-    let port = unsafe { view::port_by_server_fd(server, server_fd) };
+    let port = server.port_by_server_fd(server_fd);
     // SAFETY: the connection's live port.
     let config = unsafe { view::port(port) };
     // SAFETY: the live server and port.
-    let isset = |kind| unsafe { php_swoole_server_isset_callback(server, port, kind) };
+    let isset = |kind| unsafe { php_swoole_server_isset_callback(server.raw(), port, kind) };
     // Only whether either is set routes the data, so onMessage is asked only without onRequest.
     let http = config.open_http_protocol && isset(ON_REQUEST);
     let websocket = !http && config.open_websocket_protocol && isset(ON_MESSAGE);
@@ -336,32 +335,33 @@ fn receive(server: *mut c_void, request: *mut c_void, info: &DataHead) -> c_int 
     if unsafe { swr_v1_clients_address_loopback(&raw const conn.info) } {
         facts.loopback = if conn.info.kind == SOCK_TCP6 { 6 } else { 4 };
     }
-    facts.cache = can_cache(server)
+    facts.cache = can_cache(server.raw())
         .then(|| usize::try_from(conn.fd).ok())
         .flatten();
-    facts.coroutine = enable_coroutine(server);
+    facts.coroutine = enable_coroutine(server.raw());
     let ctx = context::context_new(session);
     // SAFETY: a new context and the live server.
-    unsafe { context::swr_v1_phphttp_context_init(ctx, server) };
+    unsafe { context::swr_v1_phphttp_context_init(ctx, server.raw()) };
     let state = state(ctx);
     state.before_request = 1;
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
     let zdata = &raw mut state.request.zdata;
     // SAFETY: the live server and its request; the data moves into the context.
-    unsafe { php_swoole_get_recv_data(server, zdata, request) };
+    unsafe { php_swoole_get_recv_data(server.raw(), zdata, request) };
     crate::parse::init_request_parser(ctx);
     let conn = ptr::from_mut(conn);
-    let result = handle(server, conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
-        if route == REQUEST {
-            // SAFETY: a live context; false leaves it queued.
-            if !unsafe { context::before_request(ctx) } {
-                return Ok(());
+    let result =
+        handle(server.raw(), conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
+            if route == REQUEST {
+                // SAFETY: a live context; false leaves it queued.
+                if !unsafe { context::before_request(ctx) } {
+                    return Ok(());
+                }
+                call(ctx, facts.coroutine)?;
             }
-            call(ctx, facts.coroutine)?;
-        }
-        release_objects(ctx);
-        Ok(())
-    });
+            release_objects(ctx);
+            Ok(())
+        });
     bailout::raise(result);
     DONE
 }
@@ -371,16 +371,18 @@ fn receive(server: *mut c_void, request: *mut c_void, info: &DataHead) -> c_int 
 /// the same worker.
 #[unsafe(export_name = "_Z41swoole_http_server_can_cache_session_addrPKN6swoole6ServerE")]
 pub(crate) extern "C" fn can_cache(server: *mut c_void) -> bool {
-    // SAFETY: the live server.
-    let config = unsafe { view::config(server) };
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    let config = server.config();
     config.mode_ == MODE_BASE
         || (config.mode_ == MODE_PROCESS && config.dispatch_mode == DISPATCH_FDMOD)
 }
 
 /// `Server::is_enable_coroutine`.
 fn enable_coroutine(server: *mut c_void) -> bool {
-    // SAFETY: the live server.
-    let config = unsafe { view::config(server) };
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    let config = server.config();
     match swoole_rs_process::methods::swoole_get_worker_type() {
         TASK_WORKER => config.task_enable_coroutine,
         MANAGER => false,
@@ -593,8 +595,10 @@ fn http2_connection(
     server: *mut c_void,
     fd: i64,
 ) -> Option<(*mut ConnectionRecord, Http2Connection)> {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: the live server.
-    let conn = unsafe { view::by_session(server, fd) }?;
+    let conn = unsafe { server.by_session(fd) }?;
     // SAFETY: the connection's own address record.
     let remote_port = i64::from(unsafe { swr_v1_clients_address_port(&raw const conn.info) });
     // SAFETY: as above.
@@ -603,21 +607,19 @@ fn http2_connection(
     } else {
         0
     };
-    // SAFETY: the live server.
-    let counters = unsafe { view::counters(server) };
+    let counters = server.counters();
     let facts = Http2Connection {
         last_recv_time: conn.last_recv_time,
         local_port: i64::from(conn.local_port),
         remote_port,
         loopback,
         server_fd: conn.server_fd,
-        cache: can_cache(server)
+        cache: can_cache(server.raw())
             .then(|| usize::try_from(conn.fd).ok())
             .flatten(),
-        // SAFETY: the live server.
-        static_handler: unsafe { view::config(server) }.enable_static_handler,
+        static_handler: server.config().enable_static_handler,
         unavailable: counters.concurrency.load(SeqCst) >= counters.max_concurrency,
-        coroutine: enable_coroutine(server),
+        coroutine: enable_coroutine(server.raw()),
     };
     Some((ptr::from_mut(conn), facts))
 }
@@ -738,10 +740,12 @@ fn release_objects(ctx: *mut Context) {
 /// `server` is the live server and `info` the closed session's.
 #[unsafe(export_name = "_Z30php_swoole_http_server_onClosePN6swoole6ServerEPNS_8DataHeadE")]
 pub(crate) unsafe extern "C" fn on_close(server: *mut c_void, info: *mut DataHead) {
+    // SAFETY: per the caller, `server` is a live `Server` for the call.
+    let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: per the caller.
     let session = unsafe { (*info).fd };
     // SAFETY: the live server; the session's slot, checked against the cache.
-    if let Some(conn) = unsafe { view::by_session(server, session) }
+    if let Some(conn) = unsafe { server.by_session(session) }
         && let Ok(fd) = usize::try_from(conn.fd)
         && let Some((_, addresses)) = ADDRESSES.with_borrow_mut(|cached| {
             cached
@@ -754,7 +758,7 @@ pub(crate) unsafe extern "C" fn on_close(server: *mut c_void, info: *mut DataHea
         release(addresses);
     }
     // SAFETY: per the caller.
-    unsafe { swr_v1_phpserver_on_close(server, info) };
+    unsafe { swr_v1_phpserver_on_close(server.raw(), info) };
 }
 
 /// The counters of the worker serving requests.
@@ -777,13 +781,15 @@ fn worker() -> Option<Worker> {
     if server.is_null() || current.is_null() {
         return None;
     }
-    // SAFETY: the running server.
-    let config = unsafe { view::config(server) };
+    // SAFETY: `server` is the live server here.
+    let config = unsafe { view::Server::from_raw(server) }.config();
     Some(Worker {
         // SAFETY: the current worker's live record.
         concurrency: unsafe { &raw mut (*current).concurrency },
-        // SAFETY: the running server's shared counters.
-        server_concurrency: &unsafe { view::counters(server) }.concurrency,
+        // SAFETY: `server` is the live server here.
+        server_concurrency: &unsafe { view::Server::from_raw(server) }
+            .counters()
+            .concurrency,
         max_concurrency: config.worker_max_concurrency,
         shutdown: swoole_rs_process::methods::worker_is_shutdown(current),
     })

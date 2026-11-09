@@ -115,8 +115,9 @@ pub unsafe extern "C" fn php_swoole_server_isset_callback(
     port: *mut c_void,
     kind: c_int,
 ) -> bool {
-    // SAFETY: per the caller.
-    let primary = unsafe { view::port_at(serv, 0) };
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let primary = serv.port_at(0);
     !port_callback(port, kind).is_null() || !port_callback(primary, kind).is_null()
 }
 
@@ -130,8 +131,9 @@ pub unsafe extern "C" fn php_swoole_server_get_callback(
     server_fd: c_int,
     kind: c_int,
 ) -> *mut c_void {
-    // SAFETY: per the caller.
-    let port = unsafe { view::port_by_server_fd(serv, server_fd) };
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let port = serv.port_by_server_fd(server_fd);
     if port.is_null() {
         return ptr::null_mut();
     }
@@ -139,8 +141,7 @@ pub unsafe extern "C" fn php_swoole_server_get_callback(
     if !callback.is_null() {
         return callback;
     }
-    // SAFETY: per the caller.
-    port_callback(unsafe { view::port_at(serv, 0) }, kind)
+    port_callback(serv.port_at(0), kind)
 }
 
 /// `serv->get_worker_message_bus()->move_packet()`.
@@ -175,6 +176,8 @@ pub unsafe extern "C" fn php_swoole_get_recv_data(
     zdata: *mut zval,
     req: *mut c_void,
 ) {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: per the caller.
     let req = unsafe { &*req.cast::<RecvData>() };
     let (flags, length) = (req.info.flags, req.info.len as usize);
@@ -184,17 +187,16 @@ pub unsafe extern "C" fn php_swoole_get_recv_data(
     } else if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
         // SAFETY: an OBJ_PTR payload is the bus's packet, a zend string.
         unsafe { assign_by_val(zdata, req.data, length) };
-        move_packet(serv);
+        move_packet(serv.raw());
     } else if let Some(buffer) = (flags & SW_EVENT_DATA_POP_PTR as u8 != 0)
         // SAFETY: per the caller; a POP_PTR request's session is live.
-        .then(|| unsafe { view::by_session(serv, req.info.fd) })
+        .then(|| unsafe { serv.by_session(req.info.fd) })
         .flatten()
         // SAFETY: the connection's live socket.
         .map(|conn| unsafe { view::recv_buffer(conn) })
         .filter(|buffer| !buffer.is_null())
     {
-        // SAFETY: per the caller.
-        let size = unsafe { view::config(serv) }.recv_buffer_size;
+        let size = serv.config().recv_buffer_size;
         // SAFETY: the connection's receive buffer, which holds the payload.
         let data = unsafe { string_pop(buffer, size) };
         // SAFETY: `pop` hands over its zend-allocated block of the payload.
@@ -278,8 +280,8 @@ pub extern "C" fn php_swoole_server_rshutdown() {
     // SAFETY: the running server.
     unsafe { entry::drain_worker_pipe(serv) };
     let kind = crate::server::worker_type();
-    // SAFETY: the running server, past its shared-memory setup.
-    let started = unsafe { view::is_started(serv) };
+    // SAFETY: `serv` is the live server here.
+    let started = unsafe { view::Server::from_raw(serv) }.is_started();
     if !started || !worker_is_running() || kind == USER_WORKER {
         return;
     }

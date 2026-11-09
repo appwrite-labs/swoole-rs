@@ -119,9 +119,14 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
+/// The live server; this reactor thread only reads its settings.
+fn server(c: &Read) -> view::Server<'_> {
+    // SAFETY: the reader's context holds its live server.
+    unsafe { view::Server::from_raw(c.serv) }
+}
+
 fn config(c: &Read) -> &ServerConfig {
-    // SAFETY: the live server; this reactor thread only reads its settings.
-    unsafe { view::config(c.serv) }
+    server(c).config()
 }
 
 /// The current buffer, borrowed until the next native call.
@@ -329,8 +334,7 @@ fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
         }
         OP_REQ_MULTIPART_INIT => {
             let request = conn().object.cast::<HttpRequest>();
-            // SAFETY: the live server.
-            let dir = unsafe { view::upload_tmp_dir(c.serv) };
+            let dir = server(c).upload_tmp_dir();
             let max = config(c).upload_max_filesize;
             // SAFETY: the connection's live request, with a form.
             let ok = unsafe { swoole_rs_http::init_multipart_parser(request, dir.as_bytes(), max) };

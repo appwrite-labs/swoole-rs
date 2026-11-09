@@ -102,10 +102,9 @@ fn pipe_socket(thread: &ThreadRecord, sock: *mut c_void) -> *mut SocketRecord {
     thread.message_bus().pipe_socket(socket(sock)).cast()
 }
 
-fn worker<'a>(serv: *mut c_void, id: impl TryInto<u16>) -> &'a mut WorkerRecord {
+fn worker<'a>(serv: view::Server<'_>, id: impl TryInto<u16>) -> &'a mut WorkerRecord {
     let id = id.try_into().unwrap_or(u16::MAX);
-    // SAFETY: a live server; every caller passes a worker id it has.
-    let worker = unsafe { view::worker(serv, id) };
+    let worker = serv.worker(id);
     // SAFETY: as above.
     unsafe { &mut *worker }
 }
@@ -151,6 +150,8 @@ pub(crate) unsafe fn answer(
     arg: u64,
 ) -> Option<u64> {
     let (serv, reactor) = (ctx.serv, ctx.reactor);
+    // SAFETY: the context's live server, as `reactor_ops::answer` requires.
+    let server = unsafe { view::Server::from_raw(serv) };
     // SAFETY: a live server's config, borrowed only by the arm that reads it.
     let config = || unsafe { &mut *state.config() };
     let reactor_id = || {
@@ -335,7 +336,7 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_WORKER_START | OP_WORKER_STOP => {
-            let worker = worker(serv, this(ctx).id);
+            let worker = worker(server, this(ctx).id);
             if op == OP_WORKER_START {
                 // SAFETY: the live server and this thread's worker.
                 unsafe { call_worker_start_callback(serv, worker) };
@@ -347,7 +348,7 @@ pub(crate) unsafe fn answer(
         }
         OP_STOP_THREAD_WORKER => {
             // SAFETY: the live server and this reactor's worker.
-            unsafe { stop_async_worker(serv, worker(serv, reactor_id())) };
+            unsafe { stop_async_worker(serv, worker(server, reactor_id())) };
             0
         }
         OP_THREAD_INIT | OP_THREAD0_INIT => {
@@ -403,7 +404,7 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_RT_THREAD_WORKER => {
-            let worker = worker(serv, reactor_id());
+            let worker = worker(server, reactor_id());
             // SAFETY: the live server and this thread's worker.
             unsafe { crate::worker_methods::init_event_worker(serv, worker) };
             sign(add_read(pipe_socket(this(ctx), worker.pipe_worker)));
@@ -437,7 +438,7 @@ pub(crate) unsafe fn answer(
             )
         }
         OP_RT_ADD_WORKER_PIPE | OP_WORKER_PIPE_UNREAD => {
-            let worker = worker(serv, arg);
+            let worker = worker(server, arg);
             let thread = this(ctx);
             let sock = pipe_socket(thread, worker.pipe_master);
             if op == OP_WORKER_PIPE_UNREAD {
@@ -549,7 +550,7 @@ pub(crate) unsafe fn answer(
             let id = i64::from(conn_ref().reactor_id) + index * i64::from(config().reactor_num);
             // the session id, so the reactor verifies the connection before closing it
             send_event(
-                worker(serv, id).pipe_worker,
+                worker(server, id).pipe_worker,
                 session,
                 crate::ops::EVENT_CLOSE_FORCE,
             );
@@ -657,8 +658,9 @@ unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
 /// # Safety
 /// `serv` is a live `Server`.
 unsafe fn state_of<'a>(serv: *mut c_void) -> &'a ServerState {
-    // SAFETY: per the caller.
-    let state = unsafe { view::state_ptr(serv) };
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let state = serv.state_ptr();
     // SAFETY: the state lives as long as the server.
     unsafe { &*state }
 }

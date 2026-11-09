@@ -56,15 +56,13 @@ const VERIFIED_TLS: u32 = 3;
 )]
 impl Context {
     pub(super) fn state(&self) -> &crate::ServerState {
-        // SAFETY: the context's live server.
-        unsafe { view::state(self.serv) }
+        self.server().state()
     }
     pub(super) fn config(&self) -> &crate::ServerConfig {
         self.state().config_ref()
     }
     pub(super) fn counters(&self) -> &crate::ServerCounters {
-        // SAFETY: the context's live server.
-        unsafe { view::counters(self.serv) }
+        self.server().counters()
     }
     pub(super) fn tables(&self) -> &crate::ServerTables {
         self.state().tables_ref()
@@ -80,8 +78,7 @@ impl Context {
     /// `serv->get_worker(id)`.
     fn other(&self, id: u64) -> &mut WorkerRecord {
         let id = u16::try_from(id).unwrap_or(u16::MAX);
-        // SAFETY: the live server.
-        let worker = unsafe { view::worker(self.serv, id) };
+        let worker = self.server().worker(id);
         // SAFETY: its worker `id`, live.
         unsafe { &mut *worker }
     }

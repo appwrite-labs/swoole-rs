@@ -88,8 +88,9 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
 /// `serv` came from [`swr_v1_server_new`] and is not used again.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
-    // SAFETY: as the caller guarantees.
-    let counters = unsafe { view::counters(serv) };
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let counters = serv.counters();
     let master = std::process::id().cast_signed() == counters.master_pid;
     if master
         && counters
@@ -98,16 +99,15 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
             == 0
     {
         // SAFETY: as the caller guarantees.
-        unsafe { crate::server_methods::destroy(serv) };
+        unsafe { crate::server_methods::destroy(serv.raw()) };
     }
-    // SAFETY: as the caller guarantees; deleting a port leaves the list as it is.
-    let ports = (0..).map(|index| unsafe { view::port_at(serv, index) });
+    let ports = (0..).map(|index| serv.port_at(index));
     for port in ports.take_while(|port| !port.is_null()) {
         // SAFETY: a live port, deleted once.
         unsafe { port_delete(port) };
     }
     // SAFETY: the object `swr_v1_server_new` boxed, freed once.
-    let object = unsafe { Box::from_raw(serv.cast::<ServerObject>()) };
+    let object = unsafe { Box::from_raw(serv.raw().cast::<ServerObject>()) };
     // SAFETY: the server's state, which this object owns.
     let state = unsafe { &*object.state };
     state.close_pipes();
@@ -150,13 +150,14 @@ pub(crate) unsafe fn port_delete(port: *mut c_void) {
 /// # Safety
 /// `serv` is a live `Server`.
 pub(crate) unsafe fn barrier<'a>(serv: *mut c_void, manager: bool) -> &'a Barrier {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     if manager {
-        // SAFETY: as the caller guarantees.
-        let gs = unsafe { view::config(serv) }.gs.cast::<ServerShared>();
+        let gs = serv.config().gs.cast::<ServerShared>();
         // SAFETY: the mapped record, which lives as long as the server.
         unsafe { &(*gs).manager_barrier }
     } else {
         // SAFETY: as the caller guarantees: `swr_v1_server_new`'s object.
-        unsafe { &(*serv.cast::<ServerObject>()).reactor_thread_barrier }
+        unsafe { &(*serv.raw().cast::<ServerObject>()).reactor_thread_barrier }
     }
 }

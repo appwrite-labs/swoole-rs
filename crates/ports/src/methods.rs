@@ -297,7 +297,8 @@ pub unsafe extern "C" fn create_socket(port: *mut c_void) -> c_int {
     // SAFETY: the port's live server, when it has one.
     let reuse_port = cfg!(target_os = "linux")
         && !serv.is_null()
-        && unsafe { view::config(serv) }.enable_reuse_port;
+        // SAFETY: the port's live server.
+        && unsafe { view::Server::from_raw(serv) }.config().enable_reuse_port;
     if !config.socket.is_null() {
         if !reuse_port {
             return 0;
@@ -674,8 +675,10 @@ pub unsafe extern "C" fn set_stream_protocol(port: *mut c_void) {
     unsafe(export_name = "_ZNK6swoole10ListenPort18get_connection_numEv")
 )]
 pub unsafe extern "C" fn get_connection_num(port: *mut c_void) -> usize {
+    // SAFETY: `sw_server()` is live, as the caller guarantees.
+    let serv = unsafe { view::Server::from_raw(swoole_rs_corebase::swr_v1_core_server()) };
     // SAFETY: as the caller guarantees.
-    unsafe { view::port_connection_num(swoole_rs_corebase::swr_v1_core_server(), port) }
+    unsafe { serv.port_connection_num(port) }
 }
 
 /// `ListenPort::ssl_init()`.

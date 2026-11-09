@@ -185,14 +185,17 @@ pub(crate) fn server_of(object: *mut zval) -> Option<*mut Server> {
 
 /// `Server::is_started()`.
 pub(crate) fn started(server: *mut Server) -> bool {
-    // SAFETY: a live server.
-    unsafe { view::is_started(server) }
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    server.is_started()
 }
 
 /// `conn->websocket_status = status` of the session's slot.
 fn set_status(server: *mut Server, fd: zend_long, status: i64) {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: a live server.
-    if let Some(conn) = unsafe { view::by_session(server, fd) } {
+    if let Some(conn) = unsafe { server.by_session(fd) } {
         conn.websocket_status = u8::try_from(status).unwrap_or_default();
     }
 }
@@ -215,25 +218,29 @@ fn send(server: *mut Server, fd: zend_long, data: &[u8], wait: bool) -> bool {
 
 /// `Server::close(fd, reset)`.
 fn close(server: *mut Server, fd: zend_long, reset: bool) -> bool {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: a live server.
-    unsafe { server_methods::close(server, fd, reset) }
+    unsafe { server_methods::close(server.raw(), fd, reset) }
 }
 
 /// The port's `open_websocket_{close,ping,pong}_frame` bits, or `None` when
 /// the session is gone (`get_port_by_session_id`).
 fn port_frames(server: *mut Server, fd: zend_long) -> Option<u8> {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: a live server.
-    let conn = unsafe { view::by_session(server, fd) }?;
-    // SAFETY: as above.
-    let port = unsafe { view::port_by_fd(server, conn.fd) };
+    let conn = unsafe { server.by_session(fd) }?;
+    let port = server.port_by_fd(conn.fd);
     // SAFETY: a live port.
     (!port.is_null()).then(|| unsafe { view::port(port) }.websocket_frames)
 }
 
 /// The `websocket_subprotocol` of the port listening on `server_fd`.
 fn port_protocol<'a>(server: *mut Server, server_fd: c_int) -> &'a [u8] {
-    // SAFETY: a live server.
-    let port = unsafe { view::port_by_server_fd(server, server_fd) };
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    let port = server.port_by_server_fd(server_fd);
     if port.is_null() {
         return &[];
     }
@@ -932,12 +939,14 @@ pub(crate) fn server_connection(server: *mut Server, fd: zend_long) -> bool {
 }
 
 fn connection(server: *mut Server, fd: zend_long, verify: bool) -> Option<Connection> {
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
     let conn = if verify {
         // SAFETY: a live server.
-        unsafe { view::verified(server, fd) }
+        unsafe { server.verified(fd) }
     } else {
         // SAFETY: as above.
-        unsafe { view::by_session(server, fd) }
+        unsafe { server.by_session(fd) }
     }?;
     Some(Connection {
         status: conn.websocket_status,
@@ -1352,8 +1361,7 @@ pub(crate) fn accept(context: *mut Context) {
     let offered = if context::co_socket(state) {
         state.websocket_settings & SETTING_COMPRESSION != 0
     } else {
-        // SAFETY: the context's live server.
-        unsafe { view::config(state.private_data) }.websocket_compression
+        crate::context::server(state).config().websocket_compression
     };
     let mut accepted = false;
     if offered && !state.request.zobject.ptr.is_null() {
@@ -1391,7 +1399,7 @@ pub(crate) fn accept(context: *mut Context) {
     state.websocket_compression = u8::from(accepted);
     if !crate::context::co_socket(state)
         // SAFETY: the server the context is bound to.
-        && let Some(conn) = unsafe { view::verified(state.private_data, state.fd) }
+        && let Some(conn) = unsafe { crate::context::server(state).verified(state.fd) }
     {
         conn.websocket_compression = u8::from(accepted);
     }

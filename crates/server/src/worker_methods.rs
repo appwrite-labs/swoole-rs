@@ -29,8 +29,9 @@ const SW_USER_WORKER: u8 = 5;
     unsafe(export_name = "_ZNK6swoole6Server10get_workerEt")
 )]
 pub unsafe extern "C" fn get_worker(serv: *mut c_void, worker_id: u16) -> *mut WorkerRecord {
-    // SAFETY: per the caller.
-    unsafe { view::worker(serv, worker_id) }
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    serv.worker(worker_id)
 }
 
 /// `Server::get_worker_by_pid(worker_pid)`.
@@ -42,10 +43,10 @@ pub unsafe extern "C" fn get_worker(serv: *mut c_void, worker_id: u16) -> *mut W
     unsafe(export_name = "_ZNK6swoole6Server17get_worker_by_pidEi")
 )]
 pub unsafe extern "C" fn get_worker_by_pid(serv: *mut c_void, pid: c_int) -> *mut WorkerRecord {
-    // SAFETY: per the caller.
-    let workers = unsafe { view::workers(serv) };
-    // SAFETY: per the caller.
-    let registry = unsafe { view::config(serv) }.worker_registry;
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let workers = serv.workers();
+    let registry = serv.config().worker_registry;
     // SAFETY: the server's live arrays and registry.
     unsafe { swr_v1_process_server_worker_by_pid(&raw const workers, registry.cast(), pid) }
 }
@@ -56,15 +57,15 @@ pub unsafe extern "C" fn get_worker_by_pid(serv: *mut c_void, pid: c_int) -> *mu
 /// `serv` is a live `Server`, starting, with its shared memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_workers_start(serv: *mut c_void) {
-    // SAFETY: per the caller.
-    let workers = unsafe { view::workers(serv) };
-    // SAFETY: per the caller.
-    let registry = unsafe { view::config(serv) }.worker_registry;
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let workers = serv.workers();
+    let registry = serv.config().worker_registry;
     // SAFETY: the server's live registry, configured only by the master.
     let pending =
         unsafe { worker_registry::swr_v1_process_worker_registry_pending_data(registry.cast()) };
     // SAFETY: the server's live arrays and its pending user workers.
-    unsafe { swr_v1_process_server_workers_start(&raw const workers, serv, pending.cast()) };
+    unsafe { swr_v1_process_server_workers_start(&raw const workers, serv.raw(), pending.cast()) };
 }
 
 /// `Server::add_worker(worker)`: a user worker, added before the server is created.
@@ -76,8 +77,9 @@ pub unsafe extern "C" fn swr_v1_server_workers_start(serv: *mut c_void) {
     unsafe(export_name = "_ZN6swoole6Server10add_workerEPNS_6WorkerE")
 )]
 pub unsafe extern "C" fn add_worker(serv: *mut c_void, worker: *mut WorkerRecord) -> c_int {
-    // SAFETY: per the caller.
-    let config = unsafe { view::config(serv) };
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let config = serv.config();
     if !config.factory_.is_null() {
         let m = format_args!("must add worker before server is created");
         log::error_log(
@@ -114,8 +116,9 @@ pub unsafe extern "C" fn add_worker(serv: *mut c_void, worker: *mut WorkerRecord
     unsafe(export_name = "_ZNK6swoole6Server20reset_worker_counterEPNS_6WorkerE")
 )]
 pub unsafe extern "C" fn reset_worker_counter(serv: *mut c_void, worker: *mut WorkerRecord) {
-    // SAFETY: per the caller.
-    let total = unsafe { view::counters(serv) }.concurrency.as_ptr();
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let total = serv.counters().concurrency.as_ptr();
     // SAFETY: the live worker and the server's shared concurrency counter.
     unsafe { swr_v1_worker_reset_counters(worker, total) };
 }
@@ -129,14 +132,15 @@ pub unsafe extern "C" fn reset_worker_counter(serv: *mut c_void, worker: *mut Wo
     unsafe(export_name = "_ZNK6swoole6Server12abort_workerEPNS_6WorkerE")
 )]
 pub unsafe extern "C" fn abort_worker(serv: *mut c_void, worker: *mut WorkerRecord) {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: per the caller.
-    unsafe { reset_worker_counter(serv, worker) };
+    unsafe { reset_worker_counter(serv.raw(), worker) };
     // SAFETY: per the caller.
-    if u64::from(unsafe { view::config(serv) }.mode_) == crate::MODE_BASE {
+    if u64::from(serv.config().mode_) == crate::MODE_BASE {
         // SAFETY: per the caller.
         let id = unsafe { swr_v1_worker_id(worker) };
-        // SAFETY: per the caller.
-        let state = unsafe { view::state_ptr(serv) };
+        let state = serv.state_ptr();
         // SAFETY: the server's live state and session table.
         unsafe { crate::records::swr_v1_server_sessions_retire(state, id) };
     }
@@ -147,10 +151,11 @@ pub unsafe extern "C" fn abort_worker(serv: *mut c_void, worker: *mut WorkerReco
 /// # Safety
 /// `serv` is a live `Server`; `worker` the current process's worker.
 pub unsafe extern "C" fn init_event_worker(serv: *mut c_void, worker: *mut WorkerRecord) {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: per the caller.
     unsafe { swr_v1_worker_init(worker) };
-    // SAFETY: per the caller.
-    let config = unsafe { view::config(serv) };
+    let config = serv.config();
     swoole_rs_process::methods::worker_set_max_request(
         worker,
         config.max_request,
@@ -163,8 +168,11 @@ pub unsafe extern "C" fn init_event_worker(serv: *mut c_void, worker: *mut Worke
 /// # Safety
 /// `serv` is a live `Server`, not started.
 pub unsafe extern "C" fn init_ipc_max_size(serv: *mut c_void) {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: per the caller.
-    unsafe { view::config(serv) }.ipc_max_size =
+    // SAFETY: the server is configured on this thread, with no other reference to the field.
+    unsafe { serv.config_mut() }.ipc_max_size =
         swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
 }
 
@@ -173,13 +181,13 @@ pub unsafe extern "C" fn init_ipc_max_size(serv: *mut c_void) {
 /// # Safety
 /// `serv` is a live `Server` with its shared memory, shutting down.
 pub unsafe extern "C" fn destroy_task_workers(serv: *mut c_void) {
-    // SAFETY: per the caller.
-    let results = unsafe { view::config(serv) }.task_results;
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let results = serv.config().task_results;
     if !results.is_null() {
         swoole_rs_memory::members::sw_shm_free(results);
     }
-    // SAFETY: per the caller.
-    let pool = unsafe { view::task_pool(serv) };
+    let pool = serv.task_pool();
     // SAFETY: the server's live task pool.
     unsafe { swoole_rs_process::methods::destroy(pool) };
 }
@@ -239,15 +247,15 @@ pub unsafe extern "C" fn destroy_worker(_serv: *mut c_void, worker: *mut WorkerR
 /// `serv` is a live `Server`, being created, with its worker arrays.
 #[cfg(feature = "upstream-symbols")]
 pub unsafe extern "C" fn create_event_workers(serv: *mut c_void) -> bool {
-    // SAFETY: per the caller.
-    let count = unsafe { view::config(serv) }.worker_num;
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let count = serv.config().worker_num;
     for id in 0..count {
         // `get_worker(uint16_t)`, as the C++ loop called it.
         let id = u16::try_from(id & 0xffff).unwrap_or_default();
-        // SAFETY: per the caller.
-        let worker = unsafe { view::worker(serv, id) };
+        let worker = serv.worker(id);
         // SAFETY: one of the server's event workers.
-        unsafe { create_worker(serv, worker) };
+        unsafe { create_worker(serv.raw(), worker) };
     }
     true
 }
@@ -259,12 +267,14 @@ pub unsafe extern "C" fn create_event_workers(serv: *mut c_void) -> bool {
 /// `serv` is a live `Server`, in the manager's startup.
 #[cfg(feature = "upstream-symbols")]
 pub unsafe extern "C" fn create_user_workers(serv: *mut c_void) -> bool {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     let size = size_of::<WorkerRecord>();
-    // SAFETY: per the caller.
-    let count = unsafe { view::user_worker_num(serv) };
+    let count = serv.user_worker_num();
     let copies = swoole_rs_memory::members::sw_shm_calloc(count, size).cast::<WorkerRecord>();
     // SAFETY: per the caller.
-    let config = unsafe { view::config(serv) };
+    // SAFETY: the server is configured on this thread, with no other reference to the field.
+    let config = unsafe { serv.config_mut() };
     config.user_workers = copies.cast();
     if copies.is_null() {
         let m = format_args!("sw_shm_calloc({count}, {size}) for user_workers failed");
@@ -283,7 +293,7 @@ pub unsafe extern "C" fn create_user_workers(serv: *mut c_void) -> bool {
         // SAFETY: its slot in the fresh shared array of `count` records.
         unsafe { copies.wrapping_add(index).write(record) };
         // SAFETY: per the caller.
-        unsafe { create_worker(serv, worker) };
+        unsafe { create_worker(serv.raw(), worker) };
         // SAFETY: the caller's live worker.
         unsafe { swr_v1_worker_set_type(worker, SW_USER_WORKER) };
     }

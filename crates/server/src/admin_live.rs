@@ -44,9 +44,10 @@ pub unsafe extern "C" fn swr_v1_server_admin_register(
     serv: *mut c_void,
     php_memory: extern "C" fn() -> usize,
 ) {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     PHP_MEMORY.get_or_init(|| php_memory);
-    // SAFETY: per the caller.
-    let config = unsafe { view::config(serv) };
+    let config = serv.config();
     let event_workers = u64::from(config.mode_) == MODE_BASE || config.single_thread;
     for (index, (name, types)) in commands(event_workers).enumerate() {
         let handler = CommandFn {
@@ -55,7 +56,7 @@ pub unsafe extern "C" fn swr_v1_server_admin_register(
         };
         let (name, length) = (name.as_ptr().cast(), name.len());
         // SAFETY: per the caller; `answer` is a command handler.
-        unsafe { crate::swr_v1_server_add_command(serv, name, length, types, handler) };
+        unsafe { crate::swr_v1_server_add_command(serv.raw(), name, length, types, handler) };
     }
 }
 
@@ -71,14 +72,15 @@ unsafe extern "C" fn answer(
     reply: CommandReply,
     out: *mut c_void,
 ) {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     let message = if message.is_null() {
         &[][..]
     } else {
         // SAFETY: per the caller.
         unsafe { core::slice::from_raw_parts(message.cast(), length) }
     };
-    // SAFETY: per the caller; the state lives as long as the server.
-    let state = unsafe { view::state(serv) };
+    let state = serv.state();
     let mut live = Live {
         serv,
         state,
@@ -171,7 +173,7 @@ fn timer_count() -> u64 {
 }
 
 struct Live<'a> {
-    serv: *mut c_void,
+    serv: view::Server<'a>,
     state: &'a ServerState,
     config: &'a ServerConfig,
     tables: &'a ServerTables,
@@ -190,8 +192,7 @@ impl Live<'_> {
 
     /// `serv->get_event_worker_pool()` or `get_task_worker_pool()`.
     fn pool(&self, task: bool) -> &swoole_rs_process::process_pool::PoolRecord {
-        // SAFETY: the live server, whose shared pools are mapped.
-        let workers = unsafe { view::workers(self.serv) };
+        let workers = self.serv.workers();
         let pool = if task {
             workers.task_pool
         } else {
@@ -265,8 +266,7 @@ impl Facts for Live<'_> {
 
     fn connections(&mut self) -> u64 {
         self.connections.clear();
-        // SAFETY: the live server's counters.
-        let gs = unsafe { view::counters(self.serv) };
+        let gs = self.serv.counters();
         let mode = u64::from(self.config.mode_);
         let reactor_id = i64::from(swoole_rs_corebase::thread_id());
         // SAFETY: this thread's worker record, if it is a worker.
@@ -276,7 +276,7 @@ impl Facts for Live<'_> {
         let mut fd = gs.min_fd;
         while fd <= gs.max_fd {
             // SAFETY: the live server's connection table.
-            let conn = unsafe { view::at(self.serv, fd) };
+            let conn = unsafe { self.serv.at(fd) };
             fd += 1;
             let Some(conn) = conn.filter(|conn| conn.active != 0 && !conn.socket.is_null()) else {
                 continue;
@@ -299,15 +299,14 @@ impl Facts for Live<'_> {
 
     fn session(&mut self, id: i64) -> bool {
         // SAFETY: the live server's connection table.
-        let conn = unsafe { view::verified(self.serv, id) };
+        let conn = unsafe { self.serv.verified(id) };
         self.connections = conn.map(core::ptr::from_mut).into_iter().collect();
         !self.connections.is_empty()
     }
 
     fn connection(&mut self, index: u64) -> Connection {
         let conn = self.connection_record(index);
-        // SAFETY: the live server's connection table.
-        let listener = unsafe { view::port_by_server_fd(self.serv, conn.server_fd) };
+        let listener = self.serv.port_by_server_fd(conn.server_fd);
         // SAFETY: the connection's live port.
         let listener = live(unsafe { view::port(listener) }.socket);
         let sock = live(conn.socket);
@@ -361,8 +360,7 @@ impl Facts for Live<'_> {
         };
         // SAFETY: a live bus.
         let bus_size = unsafe { swr_v1_bus_memory_size(bus) };
-        // SAFETY: the live server's registry.
-        let user_workers = unsafe { view::user_worker_num(self.serv) };
+        let user_workers = self.serv.user_worker_num();
         let workers = u64::from(config.worker_num) + u64::from(config.task_worker_num);
         let workers = workers + user_workers as u64;
         let pool = swoole_rs_corebase::swr_v1_core_memory_pool();
@@ -417,7 +415,7 @@ impl Facts for Live<'_> {
                 // SAFETY: a static name.
                 let protocols = unsafe { CStr::from_ptr(protocols) };
                 // SAFETY: as above.
-                let connections = unsafe { view::port_connection_num(serv, listener) };
+                let connections = unsafe { serv.port_connection_num(listener) };
                 Port {
                     host: Json::utf8(host),
                     protocols: Json::utf8(protocols.to_bytes()),

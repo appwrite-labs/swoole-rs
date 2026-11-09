@@ -667,13 +667,12 @@ fn websocket_connection(state: &State) -> bool {
     if crate::context::co_socket(state) {
         return true;
     }
-    let server = state.private_data;
-    // SAFETY: the context's live server.
-    let Some(conn) = (unsafe { view::by_session(server, state.fd) }) else {
+    let server = crate::context::server(state);
+    // SAFETY: the context's live session, which nothing else holds meanwhile.
+    let Some(conn) = (unsafe { server.by_session(state.fd) }) else {
         return false;
     };
-    // SAFETY: as above.
-    let port = unsafe { view::port_by_server_fd(server, conn.server_fd) };
+    let port = server.port_by_server_fd(conn.server_fd);
     // SAFETY: the connection's live port.
     if !port.is_null() && unsafe { view::port_websocket(port) } {
         conn.websocket_status = STATUS_CONNECTION;

@@ -48,6 +48,14 @@ struct Context {
     socket: *mut c_void,
 }
 
+impl Context {
+    /// The context's live server.
+    fn server(&self) -> view::Server<'_> {
+        // SAFETY: the method that built the context lent its live server for the call.
+        unsafe { view::Server::from_raw(self.serv) }
+    }
+}
+
 /// `swGlobalHookType`'s worker and shutdown hooks.
 const SW_GLOBAL_HOOK_BEFORE_WORKER_START: c_int = 2;
 const SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN: c_int = 6;
@@ -122,13 +130,11 @@ fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_CURRENT_WORKER_ID => u64::from(swoole_get_worker_id()),
         OP_WORKER_EXISTS => {
             let id = u16::try_from(arg.cast_signed()).ok();
-            // SAFETY: the live server.
-            u64::from(id.is_some_and(|id| !unsafe { view::worker(ctx.serv, id) }.is_null()))
+            u64::from(id.is_some_and(|id| !ctx.server().worker(id).is_null()))
         }
         OP_IS_EVENT_WORKER => u64::from(swoole_get_worker_type() == SW_EVENT_WORKER),
         OP_POOL_RUNNING => {
-            // SAFETY: the live server.
-            let pool = unsafe { view::workers(ctx.serv) }.event_pool;
+            let pool = ctx.server().workers().event_pool;
             // SAFETY: its live event worker pool.
             u64::from(unsafe { (*pool).running })
         }
@@ -235,7 +241,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
                 worker_id: u16::try_from(ctx.worker().id()).unwrap_or(u16::MAX),
             };
             // SAFETY: the context's live server.
-            let pool = unsafe { view::workers(serv) }.event_pool;
+            let pool = unsafe { view::Server::from_raw(serv) }.workers().event_pool;
             let data = (&raw const msg).cast::<u8>();
             // SAFETY: its live event pool and a message of the size passed.
             let sent =
@@ -253,7 +259,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     if op == OP_CONN_AT {
         let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
         // SAFETY: the context's live server.
-        let conn = unsafe { view::at(ctx.serv, fd) };
+        let conn = unsafe { ctx.server().at(fd) };
         let conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
         // SAFETY: null or a live connection whose socket is null or live.
         let valid = unsafe { crate::reactor_ops::valid(conn) };

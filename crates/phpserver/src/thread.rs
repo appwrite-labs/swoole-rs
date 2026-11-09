@@ -41,9 +41,10 @@ thread_local! {
 
 /// Thread mode, in a build with `SW_THREAD`.
 fn thread_mode(serv: *mut c_void) -> bool {
+    // SAFETY: its callers pass their live server.
+    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: a live server.
-    crate::server::THREAD.load(Ordering::Relaxed)
-        && i64::from(unsafe { view::config(serv) }.mode_) == MODE_THREAD
+    crate::server::THREAD.load(Ordering::Relaxed) && i64::from(serv.config().mode_) == MODE_THREAD
 }
 
 /// `__construct`'s check: 0 no server yet, 1 this worker thread's server
@@ -53,8 +54,8 @@ pub(crate) fn admit(existing: &mut *mut c_void) -> c_int {
     if !crate::server::THREAD.load(Ordering::Relaxed) {
         return if current.is_null() { 0 } else { 3 };
     }
-    // SAFETY: the running server.
-    if !current.is_null() && unsafe { view::is_worker_thread(current) } {
+    // SAFETY: the process's live server, when it has one.
+    if !current.is_null() && unsafe { view::Server::from_raw(current) }.is_worker_thread() {
         *existing = current;
         return 1;
     }
@@ -70,14 +71,16 @@ pub(crate) fn admit(existing: &mut *mut c_void) -> c_int {
 /// thread's coroutine options, then the worker's body. `None`: not a worker
 /// thread.
 pub(crate) fn worker(object: *mut zend_object, serv: *mut c_void) -> Option<Result<(), Bailout>> {
-    // SAFETY: a live server.
-    if !unsafe { view::is_worker_thread(serv) } {
+    // SAFETY: `serv` is the live server here.
+    if !unsafe { view::Server::from_raw(serv) }.is_worker_thread() {
         return None;
     }
     Some(run_worker(object, serv))
 }
 
 fn run_worker(object: *mut zend_object, serv: *mut c_void) -> Result<(), Bailout> {
+    // SAFETY: its callers pass their live server.
+    let serv = unsafe { view::Server::from_raw(serv) };
     let mut zserv = crate::dispatch::undef();
     // SAFETY: a borrowed view of the live object (`ZVAL_OBJ`, no reference).
     unsafe { swoole_rs_zend::set_object(&raw mut zserv, object) };
@@ -91,10 +94,7 @@ fn run_worker(object: *mut zend_object, serv: *mut c_void) -> Result<(), Bailout
     let undef = crate::dispatch::undef();
     // SAFETY: the slot just released.
     unsafe { setting.write(undef) };
-    // SAFETY: a live server.
-    let serialized = unsafe { view::config(serv) }
-        .private_data_4
-        .cast::<zend_string>();
+    let serialized = serv.config().private_data_4.cast::<zend_string>();
     // SAFETY: the persistent string `copy_setting` made.
     let text = unsafe { bytes(serialized) };
     // SAFETY: the empty slot.
@@ -274,6 +274,8 @@ unsafe extern "C" fn serializable(value: *mut zval) -> c_int {
 /// `copy_setting`: the serializable settings, serialized for the worker
 /// threads to read back.
 pub(crate) fn copy_setting(serv: *mut c_void, setting: *mut zval) -> Result<(), Bailout> {
+    // SAFETY: its callers pass their live server.
+    let serv = unsafe { view::Server::from_raw(serv) };
     let mut copy = crate::dispatch::undef();
     // SAFETY: the settings array.
     let source = unsafe { table(setting) };
@@ -287,18 +289,20 @@ pub(crate) fn copy_setting(serv: *mut c_void, setting: *mut zval) -> Result<(), 
     let (serialized, bailed) = unsafe { swoole_rs_phpswoole::serialize(&raw mut copy) };
     // SAFETY: the copy this function owns.
     unsafe { zval_ptr_dtor(&raw mut copy) };
-    // SAFETY: a live server.
-    unsafe { view::config(serv) }.private_data_4 = serialized.cast();
+    // SAFETY: the server is configured on this thread, with no other reference to the field.
+    unsafe { serv.config_mut() }.private_data_4 = serialized.cast();
     bailed
 }
 
 /// Before the Server is deleted: the serialized settings go.
 pub(crate) fn free_setting(serv: *mut c_void) {
-    if !thread_mode(serv) {
+    // SAFETY: its callers pass their live server.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    if !thread_mode(serv.raw()) {
         return;
     }
-    // SAFETY: a live server.
-    let config = unsafe { view::config(serv) };
+    // SAFETY: the server is configured on this thread, with no other reference to the field.
+    let config = unsafe { serv.config_mut() };
     let serialized = std::mem::replace(&mut config.private_data_4, ptr::null_mut());
     if !serialized.is_null() {
         // SAFETY: the persistent string `copy_setting` made.

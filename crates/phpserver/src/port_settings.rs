@@ -6,7 +6,7 @@ use crate::settings::{Settings, Step, Stop, checked};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
 use swoole_rs_ports::lifecycle_native::{swr_v1_ports_context_dup, swr_v1_ports_sni_add};
-use swoole_rs_server::{port_config::PortConfig, view};
+use swoole_rs_server::port_config::PortConfig;
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_zend::{
     E_ERROR, E_WARNING, Message,
@@ -407,8 +407,8 @@ impl Source for Zend {
     }
 
     fn single_thread(&self) {
-        // SAFETY: the port's live server, not started.
-        unsafe { view::config(self.settings.serv) }.single_thread = true;
+        // SAFETY: the live server being configured; nothing else holds its config.
+        unsafe { self.settings.server().config_mut() }.single_thread = true;
     }
 
     fn length_func(&self) -> *mut c_void {

@@ -36,7 +36,7 @@ pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
 /// `ctx.serv` is a live `Server` and the context's other objects are what `op` reads.
 pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
     // SAFETY: per the caller.
-    let state = unsafe { view::state_ptr(ctx.serv) };
+    let state = unsafe { view::Server::from_raw(ctx.serv) }.state_ptr();
     let context = ptr::from_mut(ctx).cast();
     // SAFETY: per the caller.
     unsafe { crate::run_reactor(op, arg, context, unanswered, state) }
@@ -72,8 +72,9 @@ fn int(value: i64) -> c_int {
 /// # Safety
 /// `serv` is a live `Server`.
 unsafe fn state<'a>(serv: *mut c_void) -> &'a crate::ServerState {
-    // SAFETY: per the caller.
-    let state = unsafe { view::state_ptr(serv) };
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let state = serv.state_ptr();
     // SAFETY: the state lives as long as the server.
     unsafe { &*state }
 }
@@ -172,7 +173,7 @@ pub unsafe extern "C" fn on_read(reactor: *mut c_void, event: *mut c_void) -> c_
     // SAFETY: per the caller.
     let fd = c_long::from(unsafe { (*ctx.event).fd });
     // SAFETY: per the caller, a live server's state.
-    let state = unsafe { view::state_ptr(ctx.serv) };
+    let state = unsafe { view::Server::from_raw(ctx.serv) }.state_ptr();
     // SAFETY: the fd's slot in the connection table.
     ctx.conn = unsafe { swr_v1_server_connection(state, fd, 0) };
     // SAFETY: per the caller.
