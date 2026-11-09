@@ -117,6 +117,15 @@ int main(void) {
         symbols = set(re.findall(r'\b_?(swr_v[0-9]+_\w+)\b', defined))
         self.assertEqual('swr_v1_phpswoole_minfo' in symbols, bool(ARGS.feature_bits & 16777216))
 
+    def test_rust_internal_symbols_are_hidden(self):
+        # config.m4's version script keeps Rust's v0-mangled symbols local, so
+        # --gc-sections can drop the code nothing reaches (#2242).
+        if not sys.platform.startswith('linux'):
+            self.skipTest('the version script is Linux-only')
+        exported = [line.split()[-1] for line in run(['nm', '-D', '--defined-only', str(ARGS.hybrid)]).stdout.splitlines()
+                    if line.split() and line.split()[-1].startswith('_R')]
+        self.assertFalse(exported, 'Rust internal symbols exported: ' + ', '.join(exported[:10]))
+
     def test_reference_has_no_bridge_marker(self):
         result = self.php(ARGS.reference, '-r', 'echo extension_loaded("swoole") ? "loaded\\n" : "missing\\n"; '
                           'echo defined("SWOOLE_RS_ABI_VERSION") || defined("SWOOLE_RS_FEATURE_BITS") ? "bridge\\n" : "upstream\\n";')
@@ -158,5 +167,6 @@ if __name__ == '__main__':
             parser.error(f'Missing built artifact: {path}; build reference and hybrid first')
     tests = ['BridgeTests.test_reference_has_no_bridge_marker', 'BridgeTests.test_hybrid_markers_and_phpinfo',
              'BridgeTests.test_selected_abi_exports', 'BridgeTests.test_public_http_status_array_export',
-             'BridgeTests.test_module_information_exports_follow_profile'] if ARGS.startup_only else []
+             'BridgeTests.test_module_information_exports_follow_profile',
+             'BridgeTests.test_rust_internal_symbols_are_hidden'] if ARGS.startup_only else []
     unittest.main(argv=[sys.argv[0], *tests], verbosity=2)

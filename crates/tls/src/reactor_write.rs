@@ -59,7 +59,7 @@ unsafe extern "C" fn write_nonblock(context: *mut c_void) {
     // SAFETY: a live write.
     let socket = unsafe { self::context(context) }.socket;
     // SAFETY: its live socket.
-    unsafe { socket_set_fd_option(socket, 1, -1) };
+    socket_set_fd_option(unsafe { &mut *socket }, 1, -1);
 }
 
 unsafe extern "C" fn write_send(context: *mut c_void) -> isize {
@@ -308,7 +308,7 @@ unsafe extern "C" fn flush_wait_writable(context: *mut c_void) -> c_int {
     // SAFETY: a live flush.
     let socket = unsafe { self::context(context) }.socket;
     // SAFETY: its live socket.
-    unsafe { socket_wait_event(socket, timeout, SW_EVENT_WRITE) }
+    socket_wait_event(unsafe { &*socket }, timeout, SW_EVENT_WRITE)
 }
 
 unsafe extern "C" fn flush_removed(context: *mut c_void) -> bool {

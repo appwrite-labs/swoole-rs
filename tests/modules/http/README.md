@@ -77,14 +77,14 @@ callbacks skip fields under `F_TRAILING`) is checked by the pinned PHPTs
 
 The 11 TESTs that start no server call the helpers, the request-line reader and the
 WebSocket codec directly. Their ports sit beside the Rust each one calls, with the
-same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-websocket --lib`.
+same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-websocket-ffi --lib`.
 
 | Upstream TEST | Rust test |
 | --- | --- |
 | `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `crates/http/src/http_server.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
 | `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
 | `has_expect_header`, `get_protocol`, `all_method` | `crates/http/src/request.rs`: same names |
-| `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
+| `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket-ffi/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
 | `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http/src/request.rs`: same names, over the bundled multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
@@ -136,6 +136,23 @@ The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printe
 covered by the PHPTs.
 
 ## PHP checks
+
+`test_smuggling.py` (`http-smuggling`) sends HTTP/1 framing ambiguities to a whole
+`Swoole\Http\Server` (`smuggling.php`) on each engine, one byte stream per fresh
+connection: conflicting and malformed `Content-Length`, `Transfer-Encoding` variants,
+CL.TE/TE.CL/TE.TE desyncs, bare `\n` and `\r`, chunk-size, extension and trailer
+edge cases, oversized and malformed headers and request lines, and requests
+pipelined behind an error. Every response's status line, `Connection` header and
+body (the handler echoes the method, URI, headers and body it received) and whether
+the server closed the connection must equal the first engine's:
+
+```sh
+python3 -m pytest tests/modules/http/test_smuggling.py \
+  --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so
+```
+
+A connection is read until the server closes it or sends nothing for a second; the
+cases run 32 at a time, so the phase takes about five seconds.
 
 The merge tier's `api-surface` phase (`tools/capability_inventory.py
 --require-same-api`) compares every Swoole class's reflected metadata,

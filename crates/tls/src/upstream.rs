@@ -19,13 +19,13 @@ use swoole_rs_reactor::socket_upstream::{
 };
 use swoole_rs_reactor::{
     CLASS_STREAM, CLASS_TCP, OutputHooks, ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
-    SYNC_SENDFILE, SocketAddress, SocketFileRequest, SocketRecord, SyncHooks,
-    cpp_socket_what_event_want, fd_recvfrom, sendfile_chunk, socket_record_peek,
-    socket_record_recv, socket_record_send, ssl_sendfile as ssl_sendfile_fd, steady_ms,
-    swr_v1_reactor_poll_events_to, swr_v1_socket_file_check, swr_v1_socket_file_cork,
-    swr_v1_socket_file_free, swr_v1_socket_file_length, swr_v1_socket_file_new,
-    swr_v1_socket_file_sent, swr_v1_socket_handle_send_owned, swr_v1_socket_iov_owned,
-    swr_v1_socket_sync, type_is,
+    SYNC_SENDFILE, SocketAddress, SocketFileRequest, SocketRecord, SyncHooks, fd_recvfrom,
+    sendfile_chunk, socket_record_peek, socket_record_recv, socket_record_send,
+    ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to,
+    swr_v1_socket_file_check, swr_v1_socket_file_cork, swr_v1_socket_file_free,
+    swr_v1_socket_file_length, swr_v1_socket_file_new, swr_v1_socket_file_sent,
+    swr_v1_socket_handle_send_owned, swr_v1_socket_iov_owned, swr_v1_socket_sync, type_is,
+    what_event_want,
 };
 
 // SAFETY: libc's, libssl's and libcrypto's own declarations.
@@ -541,8 +541,7 @@ unsafe extern "C" fn sync_prepare(call: *mut c_void) {
     let record = unsafe { &mut *socket };
     let (nonblock, ssl, tls) = (record.output.nonblock, record.ssl, tls(record));
     if nonblock == 0 {
-        // SAFETY: the call's live record.
-        unsafe { socket_set_fd_option(socket, 1, -1) };
+        socket_set_fd_option(record, 1, -1);
     }
     if !ssl.is_null() {
         // SAFETY: the record's TLS group.
@@ -554,7 +553,7 @@ unsafe extern "C" fn sync_events(call: *mut c_void, event: c_int) -> i16 {
     // SAFETY: `sync` lends its live call.
     let socket = unsafe { (*call.cast::<Call>()).socket };
     // SAFETY: the call's live record.
-    swr_v1_reactor_poll_events_to(unsafe { cpp_socket_what_event_want(socket, event) })
+    swr_v1_reactor_poll_events_to(what_event_want(unsafe { &*socket }, event))
 }
 
 unsafe extern "C" fn sync_io(
@@ -1062,7 +1061,7 @@ pub unsafe extern "C" fn socket_sendfile_sync(
     // SAFETY: the live request.
     let total = unsafe { swr_v1_socket_file_length(request) };
     // SAFETY: as the caller promises.
-    let corked = total > CORK_MIN_SIZE && unsafe { socket_cork(socket) };
+    let corked = total > CORK_MIN_SIZE && socket_cork(unsafe { &mut *socket });
     // SAFETY: the request outlives the loop, and the loop's buffer is unused.
     let rv = unsafe {
         sync(
@@ -1077,7 +1076,7 @@ pub unsafe extern "C" fn socket_sendfile_sync(
     };
     if corked {
         // SAFETY: as the caller promises.
-        unsafe { socket_uncork(socket) };
+        socket_uncork(unsafe { &mut *socket });
     }
     // SAFETY: the request made above, which the loop no longer holds.
     unsafe { swr_v1_socket_file_free(request) };
@@ -1110,12 +1109,12 @@ unsafe extern "C" fn output_send(socket: *mut c_void, data: *const c_void, lengt
 
 unsafe extern "C" fn output_cork(socket: *mut c_void) -> bool {
     // SAFETY: the output hooks lend their live record.
-    unsafe { socket_cork(socket.cast()) }
+    socket_cork(unsafe { &mut *socket.cast() })
 }
 
 unsafe extern "C" fn output_uncork(socket: *mut c_void) {
     // SAFETY: the output hooks lend their live record.
-    unsafe { socket_uncork(socket.cast()) };
+    socket_uncork(unsafe { &mut *socket.cast() });
 }
 
 unsafe extern "C" fn output_sent(socket: *mut c_void) {

@@ -8,10 +8,11 @@ use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
 
-use crate::{
-    DecodedFrame, INVALID_CONTROL, decode_in_place, frame_length, swr_v1_ws_control_invalid,
-    swr_v1_ws_encode, swr_v1_ws_encode_close, swr_v1_ws_encoded_size, swr_v1_ws_mask,
+use swoole_rs_websocket::{
+    DecodedFrame, INVALID_CONTROL, control_invalid, decode_in_place, encoded_size, frame_length,
 };
+
+use crate::{swr_v1_ws_encode, swr_v1_ws_encode_close, swr_v1_ws_mask};
 
 /// `SW_LOG_WARNING`.
 const LOG_WARNING: c_int = 4;
@@ -178,11 +179,11 @@ upstream! {
     /// # Safety
     /// `buffer` is a live String; `data` covers `length` readable bytes.
     pub unsafe extern "C" fn encode(buffer: *mut CppString, data: *const c_char, length: usize, opcode: u8, flags: u8) -> bool {
-        if swr_v1_ws_control_invalid(opcode, flags, length) {
+        if control_invalid(opcode, flags, length) {
             control_warning(c"websocket::encode", opcode, u8::from(flags & FIN != 0), length);
             return false;
         }
-        let size = swr_v1_ws_encoded_size(length, flags);
+        let size = encoded_size(length, flags);
         // SAFETY: as the caller promises.
         let buffer = unsafe { &mut *buffer };
         // SAFETY: `data`'s bytes and the `size` bytes just reserved.
@@ -238,11 +239,11 @@ upstream! {
             log::warning(origin, format_args!("the max length of close reason is {CLOSE_REASON_MAX_LEN}"));
             return false;
         }
-        if swr_v1_ws_control_invalid(OPCODE_CLOSE, FIN, CLOSE_CODE_LEN + length) {
+        if control_invalid(OPCODE_CLOSE, FIN, CLOSE_CODE_LEN + length) {
             control_warning(origin, OPCODE_CLOSE, 1, CLOSE_CODE_LEN + length);
             return false;
         }
-        let size = swr_v1_ws_encoded_size(length + CLOSE_CODE_LEN, flags | FIN);
+        let size = encoded_size(length + CLOSE_CODE_LEN, flags | FIN);
         // SAFETY: as the caller promises.
         let buffer = unsafe { &mut *buffer };
         // SAFETY: the reason's bytes and the `size` bytes just reserved.

@@ -219,6 +219,10 @@ def plan(args, reports):
     if integrate:
         script('api-surface', 'tools/capability_inventory.py', '--source', ROOT / 'target/upstream/src',
                *php_for('curl', 'sockets', 'tokenizer'), *engines, '--require-same-api', *report('api-surface'))
+        # A fixed seed, so a divergence here is a change's; the regression cases run with it.
+        script('api-fuzz', 'tests/differential/fuzz.py', *php, '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}',
+               '--seed', '0', '--programs', '500', '--jobs', args.jobs, '--cases', ROOT / 'tests/differential/cases',
+               *report('api-fuzz'))
     if integrate and {'base64', 'crc32'} & set(modules):
         reference_identity = reports / 'reference-identity.json'
         script('reference-identity', 'tools/extension_identity.py', '--source', ROOT / 'target/upstream/src',
@@ -247,6 +251,8 @@ def plan(args, reports):
                              ('http-locales', 'tests/modules/http/locale_gate.py')]:
             script(name, runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(name))
+        pytest('http-smuggling', 'tests/modules/http/test_smuggling.py', *php,
+               '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
     if 'locks' in modules:
         script('locks-native', 'tests/modules/locks/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('locks-native'))
@@ -342,9 +348,6 @@ def plan(args, reports):
     if 'tls' in modules:
         script('tls-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src',
                '--include-tls', *report('tls-constants'))
-    if 'framing' in modules:
-        script('framing-native', 'tests/modules/framing/gate.py', '--archive',
-               manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('framing-native'))
     if 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp, network/{client,dns,address,socket}.cpp,
         # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the hybrid's libswoole.so, and the repo-owned C++

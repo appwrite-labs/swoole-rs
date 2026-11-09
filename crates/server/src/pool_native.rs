@@ -910,13 +910,8 @@ unsafe extern "C" fn pipe_wait(arg: *mut c_void) {
         // SAFETY: this thread's timer, if any.
         let next = unsafe { swoole_timer_get_next_msec() };
         // SAFETY: the worker's pipe.
-        let ready = unsafe {
-            socket_wait_event(
-                worker_of(c.worker.cast()).pipe_worker.cast(),
-                next as c_int,
-                EVENT_READ,
-            )
-        };
+        let pipe = unsafe { &*worker_of(c.worker.cast()).pipe_worker.cast() };
+        let ready = socket_wait_event(pipe, next as c_int, EVENT_READ);
         ready as isize
     });
 }

@@ -299,10 +299,6 @@ struct Peer {
 unsafe extern "C" {
     #[link_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv"]
     fn get_read_buffer(socket: Socket) -> *mut Buffer;
-    /// `network::Socket::send(buf, n, flags)`.
-    #[link_name = "_ZN6swoole7network6Socket4sendEPKvmi"]
-    fn network_send(socket: *mut c_void, data: *const c_void, length: usize, flags: c_int)
-    -> isize;
     /// `php_swoole_create_dir(path, length)` (ext-src/swoole_server.cc).
     #[link_name = "_Z21php_swoole_create_dirPKcm"]
     fn create_dir(path: *const c_char, length: usize) -> c_int;
@@ -385,7 +381,9 @@ fn http2_begin(socket: Socket) {
     let length = swoole_rs_http2::sw_rs_http2_pack_settings(&mut frame, &settings, true);
     let record = record(socket);
     // SAFETY: its network socket and the frame's bytes.
-    unsafe { network_send(record.socket.cast(), frame.as_ptr().cast(), length, 0) };
+    unsafe {
+        swoole_rs_tls::upstream::socket_send(record.socket.cast(), frame.as_ptr().cast(), length, 0)
+    };
     record.open_length_check = true;
     record.protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
     record.protocol.package_length_offset = 0;

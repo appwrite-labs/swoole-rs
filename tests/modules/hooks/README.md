@@ -48,6 +48,8 @@ libc (`File`, `String`, `create_socket_pair`, `file_get_contents`,
 and `exists` reads the socket's `sock_fd` through the hybrid's record layout.
 Before each case the binary writes `TEST_TMP_FILE` as core-tests' run did and
 removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
+`statvfs` reads `/proc` where upstream reads `/tmp`: the free counts of the filesystem
+`/tmp` sits on change whenever anything on the host writes to it between the two calls.
 `sendmsg_and_recvmsg` stays excluded (below).
 
 `core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
@@ -207,9 +209,9 @@ worker), as GoogleTest's does only in the master. core-tests' counters are
 raw-bytes `swr_v1_process_pool_ipc_send_sync` and `_listener`, as core-tests' adapted
 copy did; `msgqueue_2` discards its child's status, as `spawn_exec_and_wait`'s caller
 does. `SyncClient` becomes `std::net::TcpStream` and `UnixStream`. The Server
-worker-retirement witness (formerly `tests/modules/process/worker_retirement.cc`, built
-in C++14 and C++17 against both engines) is a fixture function now, run once as
-`rust_worker_retirement.abort_and_reset` on the hybrid.
+worker-retirement witness (formerly `tests/modules/process/worker_retirement.cc`, then
+this fixture's `rust_worker_retirement.abort_and_reset`) is crates/server's
+`worker_methods::tests::abort_and_reset`.
 
 | Upstream TEST | Rust case |
 | --- | --- |

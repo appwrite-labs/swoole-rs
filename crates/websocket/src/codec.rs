@@ -9,7 +9,7 @@ const RSV1: u8 = 4;
 const MASK: u8 = 32;
 const HEADER_ONLY: u8 = 64;
 const MASK_KEY: [u8; 4] = *b"258E";
-/// `swr_v1_ws_decode` result for a complete compressed (RSV1) control frame.
+/// [`decode_in_place`] result for a complete compressed (RSV1) control frame.
 pub const INVALID_CONTROL: i64 = -2;
 
 #[repr(C)]
@@ -75,45 +75,19 @@ pub fn decode_in_place(data: &mut [u8]) -> (i64, DecodedFrame) {
     (total, frame)
 }
 
-/// [`decode_in_place`] over a C buffer.
-///
-/// # Safety
-/// Input covers `length` exclusive writable bytes, null only at length zero.
-/// Output is aligned, exclusive, writable and disjoint from the input.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ws_decode(
-    data: *mut u8,
-    length: usize,
-    output: *mut DecodedFrame,
-) -> i64 {
-    if output.is_null() || length > isize::MAX as usize || (data.is_null() && length != 0) {
-        return -1;
-    }
-    let data = if length == 0 {
-        &mut []
-    } else {
-        // SAFETY: as the caller promises, checked above.
-        unsafe { core::slice::from_raw_parts_mut(data, length) }
-    };
-    let (total, frame) = decode_in_place(data);
-    // SAFETY: The caller supplies a disjoint, aligned output.
-    unsafe { output.write(frame) };
-    total
-}
-
 fn is_control(opcode: u8) -> bool {
     matches!(opcode, 8..=10)
 }
 
 /// Close, ping and pong frames must be final and carry at most 125 bytes.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ws_control_invalid(opcode: u8, flags: u8, length: usize) -> bool {
+#[must_use]
+pub fn control_invalid(opcode: u8, flags: u8, length: usize) -> bool {
     is_control(opcode) && (flags & FIN == 0 || length > 125)
 }
 
 /// Actual encoded size, including the pinned header-only behavior.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ws_encoded_size(length: usize, flags: u8) -> usize {
+#[must_use]
+pub fn encoded_size(length: usize, flags: u8) -> usize {
     let header: usize = if length < 126 {
         2
     } else if length <= 65535 {
@@ -132,15 +106,15 @@ pub extern "C" fn swr_v1_ws_encoded_size(length: usize, flags: u8) -> usize {
 /// One frame of a `length`-byte payload into `out`; `data`, the payload, is
 /// unused for a header-only frame. Returns the encoded size, or 0 without
 /// writes when `out` is too short or the frame is invalid.
-fn encode_parts(
+pub fn encode_parts(
     length: usize,
     data: &[u8],
     opcode: u8,
     flags: u8,
     out: &mut [MaybeUninit<u8>],
 ) -> usize {
-    let size = swr_v1_ws_encoded_size(length, flags);
-    if size == 0 || swr_v1_ws_control_invalid(opcode, flags, length) {
+    let size = encoded_size(length, flags);
+    if size == 0 || control_invalid(opcode, flags, length) {
         return 0;
     }
     let (header, header_length) = header(length as u64, opcode, flags);
@@ -200,75 +174,6 @@ pub fn encode_close_into(
     reason_bytes.copy_from_slice(reason);
     let payload = payload.get(..reason.len() + 2).unwrap_or_default();
     encode_into(payload, 8, flags | FIN, out)
-}
-
-/// The `length` bytes at `data` a C caller lends (null only at length zero),
-/// and its `capacity`-byte output, or `None` when either is invalid.
-///
-/// # Safety
-/// As `swr_v1_ws_encode`, with `data` read only when `read`.
-unsafe fn borrowed<'a>(
-    data: *const u8,
-    length: usize,
-    read: bool,
-    output: *mut u8,
-    capacity: usize,
-) -> Option<(&'a [u8], &'a mut [MaybeUninit<u8>])> {
-    if output.is_null() || capacity > isize::MAX as usize {
-        return None;
-    }
-    let data = if !read || length == 0 {
-        &[]
-    } else if data.is_null() || length > isize::MAX as usize {
-        return None;
-    } else {
-        // SAFETY: the caller lends `length` readable bytes.
-        unsafe { std::slice::from_raw_parts(data, length) }
-    };
-    // SAFETY: the caller lends `capacity` exclusive writable bytes, disjoint from `data`.
-    let output = unsafe { std::slice::from_raw_parts_mut(output.cast(), capacity) };
-    Some((data, output))
-}
-
-/// [`encode_into`] over native-owned storage; errors leave it intact.
-///
-/// # Safety
-/// Input covers `length` readable bytes (null permitted for empty/header-only
-/// input), output covers `capacity` exclusive writable bytes. Ranges are disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ws_encode(
-    data: *const u8,
-    length: usize,
-    opcode: u8,
-    flags: u8,
-    output: *mut u8,
-    capacity: usize,
-) -> usize {
-    // SAFETY: as the caller promises.
-    match unsafe { borrowed(data, length, flags & HEADER_ONLY == 0, output, capacity) } {
-        Some((data, output)) => encode_parts(length, data, opcode, flags, output),
-        None => 0,
-    }
-}
-
-/// [`encode_close_into`] over native-owned storage.
-///
-/// # Safety
-/// Same disjoint borrowed ranges as `swr_v1_ws_encode`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ws_encode_close(
-    code: i32,
-    reason: *const u8,
-    length: usize,
-    flags: u8,
-    output: *mut u8,
-    capacity: usize,
-) -> usize {
-    // SAFETY: as the caller promises.
-    match unsafe { borrowed(reason, length, true, output, capacity) } {
-        Some((reason, output)) => encode_close_into(code, reason, flags, output),
-        None => 0,
-    }
 }
 
 #[repr(C)]
@@ -385,40 +290,11 @@ pub fn decide_frame(frame: &DecodedFrame, wire: usize, context: &Context) -> Opt
     Some(decide(*frame, wire, *context))
 }
 
-/// [`decide_frame`] over C pointers.
-///
-/// # Safety
-/// Inputs are valid, aligned readable values; output is aligned, exclusive and
-/// writable, disjoint from inputs. All are borrowed for this call only.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ws_decide(
-    frame: *const DecodedFrame,
-    wire_length: usize,
-    context: *const Context,
-    output: *mut Decision,
-) -> i32 {
-    // SAFETY: null or, per the caller, valid and aligned.
-    let frame = unsafe { frame.as_ref() };
-    // SAFETY: as above.
-    let context = unsafe { context.as_ref() };
-    let (Some(frame), Some(context)) = (frame, context) else {
-        return -1;
-    };
-    match decide_frame(frame, wire_length, context) {
-        Some(decision) if !output.is_null() => {
-            // SAFETY: non-null; the caller lends an aligned, exclusive output.
-            unsafe { output.write(decision) };
-            0
-        }
-        _ => -1,
-    }
-}
-
 /// Normalize outgoing PHP frame flags and choose compression. The low byte is
 /// the normalized flags; bit 8 requests native zlib compression. The caller
 /// still owns zlib, its buffer, warnings and PHP conversions.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ws_pack_policy(opcode: u8, flags: u8, length: usize) -> u16 {
+#[must_use]
+pub fn pack_policy(opcode: u8, flags: u8, length: usize) -> u16 {
     const COMPRESS: u8 = 2;
     let (flags, compress) = match opcode {
         // The pinned sw_unset_bit macro lacks parentheses: its compound
@@ -436,8 +312,8 @@ pub extern "C" fn swr_v1_ws_pack_policy(opcode: u8, flags: u8, length: usize) ->
 /// Choose native delivery for an incoming PHP message. Settings bits 0, 1 and 2
 /// enable close, ping and pong callbacks respectively. Return 0 to deliver, 1
 /// to discard, or 2 to send an automatic pong and discard. No state is retained.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ws_message_policy(opcode: u8, settings: u8) -> u8 {
+#[must_use]
+pub fn message_policy(opcode: u8, settings: u8) -> u8 {
     match opcode {
         8 if settings & 1 == 0 => 1,
         9 if settings & 2 == 0 => 2,

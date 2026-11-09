@@ -669,7 +669,6 @@ fn main() {
             )
             .flag_if_supported("-Wno-unused-parameter")
             .flag_if_supported("-Wno-unused-label")
-            .include("../../native/framing")
             .include(env::var("OUT_DIR").unwrap())
             .file("shim/framing_stream.cc")
             .compile(&format!("swoole_{engine}_framing_stream"));

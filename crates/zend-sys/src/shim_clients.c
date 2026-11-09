@@ -1,3 +1,5 @@
+/* Stays C (docs/zend.md, What stays C): allocator (zend_string_alloc, _realloc and
+ * _free). */
 #include "shim_clients.h"
 
 zend_string *swr_zend_string_alloc(size_t length) {
@@ -12,10 +14,3 @@ void swr_zend_string_free(zend_string *string) {
     zend_string_free(string);
 }
 
-void swr_zval_empty_string(zval *target) {
-    ZVAL_EMPTY_STRING(target);
-}
-
-void swr_zval_empty_array(zval *target) {
-    ZVAL_EMPTY_ARRAY(target);
-}

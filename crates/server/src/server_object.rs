@@ -12,11 +12,6 @@ use crate::{ServerConfig, ServerState, ServerTables, view};
 use swoole_rs_corebase::log;
 use swoole_rs_locks::Barrier;
 
-// SAFETY: crates/ports' body, linked into the same archive.
-unsafe extern "C" {
-    fn swr_v1_ports_tls_free(config: *mut c_void);
-}
-
 /// A `Server`: the head C++ and `view` read, then the reactor threads' barrier.
 #[repr(C)]
 struct ServerObject {
@@ -140,7 +135,7 @@ pub(crate) unsafe fn port_delete(port: *mut c_void) {
     // SAFETY: as the caller guarantees.
     let config = *unsafe { Box::from_raw(port.cast::<*mut PortConfig>()) };
     // SAFETY: the port's settings, which nothing else uses now.
-    unsafe { swr_v1_ports_tls_free(config.cast()) };
+    (crate::port_config::methods().tls_free)(unsafe { &mut *config });
     // SAFETY: as above; freed once.
     unsafe { crate::port_config::swr_v1_port_config_free(config) };
 }

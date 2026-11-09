@@ -62,8 +62,7 @@ pub unsafe extern "C" fn swr_v1_reactor_deferred_push(
 ///
 /// # Safety
 /// `owner` is null or a live queue from this module that no call frees.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_reactor_deferred_run(owner: *mut ReactorDeferred) {
+pub(crate) unsafe fn deferred_run(owner: *mut ReactorDeferred) {
     if owner.is_null() {
         return;
     }
@@ -80,11 +79,9 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_deferred_run(owner: *mut ReactorD
 /// Frees the queue in `slot`, disposing of the tasks that never ran, and nulls the slot.
 ///
 /// # Safety
-/// `slot` is live and holds null or a queue from this module, which nothing runs.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_reactor_deferred_free(slot: *mut *mut ReactorDeferred) {
-    // SAFETY: as the caller promises.
-    let owner = std::mem::replace(unsafe { &mut *slot }, ptr::null_mut());
+/// `slot` holds null or a queue from this module, which nothing runs.
+pub(crate) unsafe fn deferred_free(slot: &mut *mut ReactorDeferred) {
+    let owner = std::mem::replace(slot, ptr::null_mut());
     if owner.is_null() {
         return;
     }
@@ -133,12 +130,12 @@ pub(crate) unsafe fn run_defer(owner: *mut ReactorState) {
     }
     state.running_defer.push(queue);
     // SAFETY: the detached queue is ours; a task may defer onto the reactor.
-    unsafe { swr_v1_reactor_deferred_run(queue) };
+    unsafe { deferred_run(queue) };
     // SAFETY: as the caller promises; every task ran, and a nested pass popped its own.
     unsafe { (*owner).running_defer.pop() };
     let mut queue = queue;
     // SAFETY: as above; the reactor no longer names it.
-    unsafe { swr_v1_reactor_deferred_free(&raw mut queue) };
+    unsafe { deferred_free(&mut queue) };
 }
 
 #[cfg(test)]
@@ -250,14 +247,14 @@ mod tests {
                     );
                 }
                 assert_eq!(take(), []);
-                swr_v1_reactor_deferred_run(queue);
+                deferred_run(queue);
                 assert_eq!(take(), (0..count).collect::<Vec<_>>());
-                swr_v1_reactor_deferred_run(queue);
+                deferred_run(queue);
                 assert_eq!(take(), []);
                 swr_v1_reactor_deferred_push(&raw mut queue, record, token(99), None);
-                swr_v1_reactor_deferred_run(queue);
+                deferred_run(queue);
                 assert_eq!(take(), [99]);
-                swr_v1_reactor_deferred_free(&raw mut queue);
+                deferred_free(&mut queue);
                 assert!(queue.is_null());
             }
         }
@@ -270,10 +267,10 @@ mod tests {
         unsafe {
             swr_v1_reactor_deferred_push(&raw mut queue, record, token(99), Some(disposed));
             swr_v1_reactor_deferred_push(&raw mut queue, record, token(7), None);
-            swr_v1_reactor_deferred_free(&raw mut queue);
+            deferred_free(&mut queue);
             assert_eq!(take(), [1099]);
             assert!(queue.is_null());
-            swr_v1_reactor_deferred_free(&raw mut queue);
+            deferred_free(&mut queue);
         }
     }
 }

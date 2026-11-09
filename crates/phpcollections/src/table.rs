@@ -594,7 +594,7 @@ fn row_array(table: &Table, row: *mut Row, target: *mut zval) {
     // SAFETY: a writable zval.
     unsafe { swr_zend_array_init(target) };
     for column in table.columns() {
-        let (name, length) = (column.name().as_ptr().cast::<c_char>(), column.name().len());
+        let (name, length) = (swoole_rs_zend::key_ptr(column.name()), column.name().len());
         match read(row, column) {
             // SAFETY: an array; Zend copies the key and the bytes.
             Value::Long(value) => unsafe { add_assoc_long_ex(target, name, length, value) },

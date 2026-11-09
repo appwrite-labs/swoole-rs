@@ -2,29 +2,19 @@
 //! did it: one `deflate(Z_FINISH)` of the whole body into a buffer sized by
 //! upstream's bound, with the caller's allocator (PHP's request allocator in
 //! the server).
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 
-use libz_sys::{
-    alloc_func, deflate, deflateBound, deflateEnd, deflateInit2_, free_func, uInt, uLong, z_stream,
-    zlibVersion,
-};
 use std::ffi::c_int;
+
+pub use swoole_rs_zlib::Allocator;
+use swoole_rs_zlib::{
+    CHUNK, Stream, Z_BUF_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
+};
 
 /// `deflateInit2`'s window bits for gzip and zlib (`SW_ZLIB_ENCODING_*`).
 pub const GZIP: c_int = 0x1f;
 pub const DEFLATE: c_int = 0x0f;
 
-const Z_OK: c_int = 0;
-const Z_STREAM_END: c_int = 1;
-const Z_FINISH: c_int = 4;
-const Z_DEFLATED: c_int = 8;
-const Z_DEFAULT_STRATEGY: c_int = 0;
 /// `SW_ZLIB_DEF_MEM_LEVEL` (zlib's `MAX_MEM_LEVEL` is 9).
 const MEM_LEVEL: c_int = 8;
 
@@ -58,52 +48,27 @@ pub fn compress(
     out: &mut [u8],
     window_bits: c_int,
     level: c_int,
-    zalloc: alloc_func,
-    zfree: free_func,
+    allocator: Allocator,
 ) -> Result<usize, Failure> {
-    let mut storage = std::mem::MaybeUninit::<z_stream>::zeroed();
-    let stream = storage.as_mut_ptr();
-    // SAFETY: zeroed z_stream storage; the allocator fields must not stay null.
-    unsafe { (*stream).zalloc = zalloc };
-    // SAFETY: as above.
-    unsafe { (*stream).zfree = zfree };
-    let size = c_int::try_from(size_of::<z_stream>()).unwrap_or(c_int::MAX);
-    // SAFETY: zlibVersion returns a static version string.
-    let version = unsafe { zlibVersion() };
-    // SAFETY: a zeroed stream with its allocator, the running version and its size.
-    let status = unsafe {
-        deflateInit2_(
-            stream,
-            level,
-            Z_DEFLATED,
-            window_bits,
-            MEM_LEVEL,
-            Z_DEFAULT_STRATEGY,
-            version,
-            size,
-        )
-    };
-    if status != Z_OK {
-        return Err(Failure::Init(status));
+    let mut stream =
+        Stream::deflate(level, window_bits, MEM_LEVEL, allocator).map_err(Failure::Init)?;
+    let (mut data, mut written) = (data, 0);
+    loop {
+        // One Z_FINISH over the whole body, as upstream; a body past zlib's
+        // `uInt` goes in with Z_NO_FLUSH first rather than being cut off.
+        let flush = if data.len() <= CHUNK {
+            Z_FINISH
+        } else {
+            Z_NO_FLUSH
+        };
+        let step = stream.run(&mut data, out.get_mut(written..).unwrap_or_default(), flush);
+        written += step.written;
+        match step.status {
+            Z_STREAM_END => return Ok(written),
+            Z_OK if flush == Z_NO_FLUSH => {}
+            status => return Err(Failure::Deflate(status)),
+        }
     }
-    // SAFETY: an initialised stream; the input outlives the call.
-    unsafe { (*stream).next_in = data.as_ptr().cast_mut() };
-    // SAFETY: as above.
-    unsafe { (*stream).avail_in = uInt::try_from(data.len()).unwrap_or(uInt::MAX) };
-    // SAFETY: as above; the output outlives the call.
-    unsafe { (*stream).next_out = out.as_mut_ptr() };
-    // SAFETY: as above.
-    unsafe { (*stream).avail_out = uInt::try_from(out.len()).unwrap_or(uInt::MAX) };
-    // SAFETY: an initialised stream over live buffers.
-    let status = unsafe { deflate(stream, Z_FINISH) };
-    // SAFETY: as above; ends it once.
-    unsafe { deflateEnd(stream) };
-    if status != Z_STREAM_END {
-        return Err(Failure::Deflate(status));
-    }
-    // SAFETY: the stream deflateEnd left readable.
-    let total = unsafe { (*stream).total_out };
-    Ok(usize::try_from(total).unwrap_or(0))
 }
 
 /// Why [`message`] failed.
@@ -124,141 +89,62 @@ pub enum MessageFailure {
 /// `deflateInit2` failed, or deflate did not end in `Z_BUF_ERROR` with at
 /// least the 4-byte tail written.
 pub fn message(
-    data: &[u8],
+    mut data: &[u8],
     level: c_int,
-    zalloc: alloc_func,
-    zfree: free_func,
+    allocator: Allocator,
 ) -> Result<Vec<u8>, MessageFailure> {
-    const Z_NO_FLUSH: c_int = 0;
-    const Z_SYNC_FLUSH: c_int = 2;
-    const Z_BUF_ERROR: c_int = -5;
     /// `SW_ZLIB_ENCODING_RAW`.
     const RAW: c_int = -0xf;
     let level = match level {
         0 => -1,
         level => level.min(9),
     };
-    let mut storage = std::mem::MaybeUninit::<z_stream>::zeroed();
-    let stream = storage.as_mut_ptr();
-    // SAFETY: zeroed z_stream storage; the allocator fields must not stay null.
-    unsafe { (*stream).zalloc = zalloc };
-    // SAFETY: as above.
-    unsafe { (*stream).zfree = zfree };
-    let stream_size = c_int::try_from(size_of::<z_stream>()).unwrap_or(c_int::MAX);
-    // SAFETY: zlibVersion returns a static version string.
-    let version = unsafe { zlibVersion() };
-    // SAFETY: a zeroed stream with its allocator, the running version and its size.
-    let status = unsafe {
-        deflateInit2_(
-            stream,
-            level,
-            Z_DEFLATED,
-            RAW,
-            MEM_LEVEL,
-            Z_DEFAULT_STRATEGY,
-            version,
-            stream_size,
-        )
-    };
-    if status != Z_OK {
-        return Err(MessageFailure::Init(status));
-    }
-    // SAFETY: an initialised stream; the input outlives every deflate below.
-    unsafe { (*stream).next_in = data.as_ptr().cast_mut() };
-    // SAFETY: as above.
-    unsafe { (*stream).avail_in = uInt::try_from(data.len()).unwrap_or(uInt::MAX) };
-    // SAFETY: an initialised stream.
-    let bound = unsafe { deflateBound(stream, uLong::try_from(data.len()).unwrap_or(uLong::MAX)) };
-    let mut max = usize::try_from(bound).unwrap_or(usize::MAX);
+    let mut stream =
+        Stream::deflate(level, RAW, MEM_LEVEL, allocator).map_err(MessageFailure::Init)?;
+    let mut max = stream.deflate_bound(data.len());
     let mut out = Vec::new();
-    let mut length = 0;
-    let mut written = 0;
     let result = loop {
-        // SAFETY: an initialised stream.
-        if unsafe { (*stream).avail_out } == 0 {
+        if out.len() == out.capacity() {
             // Z_SYNC_FLUSH can produce more than deflateBound(): another
             // window, then 4096 bytes at a time.
-            if written + max > out.len() {
-                out.resize(written + max, 0);
-            }
-            length = written + max;
-            // SAFETY: as above; `out` holds `written + max` bytes.
-            unsafe { (*stream).avail_out = uInt::try_from(max).unwrap_or(uInt::MAX) };
-            // SAFETY: `written <= out.len()`, inside or one past `out`.
-            let next = unsafe { out.as_mut_ptr().add(written) };
-            // SAFETY: an initialised stream.
-            unsafe { (*stream).next_out = next };
+            out.reserve_exact(max);
             max = 4096;
         }
-        let remaining = length - written;
-        // SAFETY: an initialised stream.
-        let flush = if unsafe { (*stream).avail_in } == 0 {
+        let flush = if data.is_empty() {
             Z_SYNC_FLUSH
         } else {
             Z_NO_FLUSH
         };
-        // SAFETY: an initialised stream over live buffers.
-        let result = unsafe { deflate(stream, flush) };
-        // SAFETY: as above.
-        written += remaining - usize::try_from(unsafe { (*stream).avail_out }).unwrap_or(0);
-        if result != Z_OK {
-            break result;
+        let step = stream.run_into(&mut data, &mut out, flush);
+        if step.status != Z_OK {
+            break step.status;
         }
     };
-    // SAFETY: an initialised stream, ended once.
-    unsafe { deflateEnd(stream) };
-    if result != Z_BUF_ERROR || written < 4 {
+    if result != Z_BUF_ERROR || out.len() < 4 {
         return Err(MessageFailure::Deflate);
     }
-    out.truncate(written - 4);
+    out.truncate(out.len() - 4);
     Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libz_sys::{inflate, inflateEnd, inflateInit2_, voidpf};
 
-    unsafe extern "C" fn alloc(_: voidpf, items: uInt, size: uInt) -> voidpf {
-        unsafe { libc_calloc(items.try_into().unwrap(), size.try_into().unwrap()) }
-    }
-    unsafe extern "C" fn free(_: voidpf, address: voidpf) {
-        unsafe { libc_free(address) }
-    }
-    unsafe extern "C" {
-        #[link_name = "calloc"]
-        fn libc_calloc(items: usize, size: usize) -> voidpf;
-        #[link_name = "free"]
-        fn libc_free(address: voidpf);
-    }
+    const MALLOC: Allocator = Allocator::MALLOC;
 
     fn round_trip(window_bits: c_int) {
         let data = b"hello hello hello hello swoole ".repeat(40);
         let mut out = vec![0; bound(data.len())];
-        let length = compress(&data, &mut out, window_bits, 1, alloc, free).unwrap();
+        let length = compress(&data, &mut out, window_bits, 1, MALLOC).unwrap();
         assert!(length < data.len(), "compressible input shrinks");
         if window_bits == GZIP {
             assert_eq!(&out[..2], &[0x1f, 0x8b], "gzip magic");
         }
-        let mut stream = std::mem::MaybeUninit::<z_stream>::zeroed();
-        let ptr = stream.as_mut_ptr();
         let mut plain = vec![0u8; data.len()];
-        unsafe {
-            (*ptr).zalloc = alloc;
-            (*ptr).zfree = free;
-            let size = c_int::try_from(size_of::<z_stream>()).unwrap();
-            assert_eq!(
-                inflateInit2_(ptr, window_bits, zlibVersion(), size),
-                Z_OK,
-                "init"
-            );
-            (*ptr).next_in = out.as_mut_ptr();
-            (*ptr).avail_in = uInt::try_from(length).unwrap();
-            (*ptr).next_out = plain.as_mut_ptr();
-            (*ptr).avail_out = uInt::try_from(plain.len()).unwrap();
-            assert_eq!(inflate(ptr, Z_FINISH), Z_STREAM_END, "inflate");
-            inflateEnd(ptr);
-        }
+        let mut stream = Stream::inflate(window_bits).expect("init");
+        let step = stream.run(&mut &out[..length], &mut plain, Z_FINISH);
+        assert_eq!(step.status, Z_STREAM_END, "inflate");
         assert_eq!(plain, data, "round trip");
     }
 
@@ -275,7 +161,7 @@ mod tests {
             b"Hello".to_vec(),
             b"swoole websocket ".repeat(5000),
         ] {
-            let compressed = message(&data, 0, alloc, free).unwrap();
+            let compressed = message(&data, 0, MALLOC).unwrap();
             assert!(
                 !compressed.ends_with(&[0, 0, 0xff, 0xff]),
                 "the sync flush tail is dropped"
@@ -288,7 +174,7 @@ mod tests {
     #[test]
     fn rfc_7692_hello_compresses_as_in_its_example() {
         // RFC 7692 section 7.2.3.1: "Hello" with no context takeover.
-        let compressed = message(b"Hello", -1, alloc, free).unwrap();
+        let compressed = message(b"Hello", -1, MALLOC).unwrap();
         assert_eq!(
             compressed,
             [0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00],
@@ -308,7 +194,7 @@ mod tests {
         let mut out = vec![0; 4];
         assert!(
             matches!(
-                compress(&data, &mut out, GZIP, 1, alloc, free),
+                compress(&data, &mut out, GZIP, 1, MALLOC),
                 Err(Failure::Deflate(_))
             ),
             "Z_BUF_ERROR or Z_OK, not Z_STREAM_END"

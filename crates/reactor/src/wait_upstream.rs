@@ -243,7 +243,6 @@ pub unsafe extern "C" fn system_waitpid_safe(
         unsafe extern "C" {
             #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
             fn system_sleep(seconds: f64) -> c_int;
-            fn swr_v1_hook_backoff(current: f64, initial: f64, maximum: f64) -> f64;
         }
         let mut second = LOCK_DEFAULT_SECOND;
         loop {
@@ -253,8 +252,7 @@ pub unsafe extern "C" fn system_waitpid_safe(
             if result != 0 || unsafe { system_sleep(second) } != OK {
                 return result;
             }
-            // SAFETY: arithmetic only.
-            second = unsafe { swr_v1_hook_backoff(second, LOCK_DEFAULT_SECOND, LOCK_MAX_SECOND) };
+            second = crate::backoff(second, LOCK_DEFAULT_SECOND, LOCK_MAX_SECOND);
         }
     }
 }

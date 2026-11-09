@@ -1,3 +1,5 @@
+/* Stays C (docs/zend.md, What stays C): bailout (every error runs the user error
+ * handler) and variadic (php_error_docref and zend_error). */
 #include "shim.h"
 #include "shim_errors.h"
 

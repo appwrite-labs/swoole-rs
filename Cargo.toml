@@ -10,13 +10,14 @@ panic = "abort"
 panic = "abort"
 
 # The PHP extension's archive (tools/build_hybrid.py, immutable builds): calls
-# between module crates inline across crates (#889). Thin and fat LTO measured
-# within 1% of each other on every callgrind workload; thin keeps parallel
-# codegen. The native gates link the Zend-free release archive instead, whose
-# objects they can pull one at a time.
+# between module crates inline across crates (#889). Fat LTO in one codegen unit
+# is 8% less code than thin (resident in every server process) and 0.5-2% fewer
+# instructions per request (#2242). The native gates link the Zend-free release
+# archive instead, whose objects they can pull one at a time.
 [profile.release-lto]
 inherits = "release"
-lto = "thin"
+lto = "fat"
+codegen-units = 1
 
 # Lint levels live here only; see AGENTS.md "Rust lints".
 [workspace.lints.rust]

@@ -1,3 +1,4 @@
+/* Stays C (docs/zend.md, What stays C): bailout (methods and destructors run PHP). */
 #include "shim.h"
 #include "shim_resolver.h"
 
