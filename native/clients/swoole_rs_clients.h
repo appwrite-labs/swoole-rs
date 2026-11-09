@@ -50,30 +50,9 @@ uint8_t swr_v1_clients_ws_accept_valid(const uint8_t *key, size_t key_len, const
 /* Caller-owned bounded DNS codec buffers; no native execution or retained state. */
 int32_t swr_v1_clients_domain_encode(const uint8_t *, size_t, uint8_t *, size_t);
 uint8_t swr_v1_clients_domain_decode(uint8_t *, size_t, uint8_t signed_char);
-/* network::Client is Rust's (crates/clients/src/client.rs): its state, every operation,
- * its callbacks, reactor handlers, connect timer, TLS context, proxies and DNS lookup. The
- * state starts with its public record, swr_v1_clients_record. These are the calls
- * native/clients/client.cc makes; crates/phpclients and the core-tests port call Rust
- * directly. */
-typedef struct swr_v1_clients swr_v1_clients;
-/* delete client. */
-void swr_v1_clients_free(swr_v1_clients *client);
-int swr_v1_clients_connect(swr_v1_clients *client, const char *host, int port, double timeout, int flags);
-ssize_t swr_v1_clients_send(swr_v1_clients *client, const char *data, size_t length, int flags);
-int swr_v1_clients_sendfile(swr_v1_clients *client, const char *file, int64_t offset, size_t length);
-ssize_t swr_v1_clients_recv(swr_v1_clients *client, char *data, size_t length, int flags);
-int swr_v1_clients_close(swr_v1_clients *client);
-int swr_v1_clients_shutdown(swr_v1_clients *client, int how);
-int swr_v1_clients_sleep(swr_v1_clients *client);
-int swr_v1_clients_wakeup(swr_v1_clients *client);
-/* enable_ssl_encrypt: a TLS context, open_ssl, and DTLS for a datagram client; -1 when TLS
- * was already on. */
-int swr_v1_clients_enable_ssl(swr_v1_clients *client);
-int swr_v1_clients_ssl_handshake(swr_v1_clients *client);
-int swr_v1_clients_ssl_verify(swr_v1_clients *client, int allow_self_signed);
-/* Client::sendto; the callback logs. */
-int swr_v1_clients_sendto(swr_v1_clients *client, const char *host, size_t host_length, int port, const char *data, size_t length, void (*not_datagram)(int fd));
-/* Client::init_reactor: the client sockets' read, write and error handlers. */
+/* network::Client is Rust's (crates/clients/src/client.rs), and crates/phpclients
+ * calls it directly. Client::init_reactor: the client sockets' read, write and error
+ * handlers. */
 void swr_v1_clients_init_reactor(void *reactor);
 struct swr_v1_clients_resolv_line { uint32_t kind; size_t offset, length; };
 struct swr_v1_clients_resolv_line swr_v1_clients_resolv_line(const uint8_t *, size_t);

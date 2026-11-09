@@ -583,7 +583,7 @@ pub fn coroutine_check() -> Result<(), Bailout> {
 /// The warning's error handler bailed out.
 /// # Safety
 /// `value` is a live zval.
-pub(crate) unsafe fn convert_to_fd(value: *mut zval) -> Result<i32, Bailout> {
+pub unsafe fn convert_to_fd(value: *mut zval) -> Result<i32, Bailout> {
     let mut call = FdCall { value, fd: -1 };
     // SAFETY: per the caller; `convert_to_fd` takes an `FdCall`.
     unsafe { trap(ops().convert_to_fd, &mut call) }?;

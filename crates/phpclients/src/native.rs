@@ -1,14 +1,13 @@
 //! The coroutine socket's operations the methods need, over
 //! `swoole_rs_phpruntime::co` and the socket's record, plus Swoole's PHP error
-//! reporting; and what only C++ can do for `Swoole\Client` (defined in
-//! `native/clients/client.cc`, declared in
-//! `native/clients/swoole_rs_phpclients.h`).
+//! reporting; and `Swoole\Client`'s `network::Client`, whose operations
+//! crates/clients runs.
 use crate::settings::{default_length_func, mqtt_set_protocol, php_swoole_length_func};
 use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
-use std::ffi::CStr;
+use std::{ffi::CStr, ptr};
 use swoole_rs_clients::{
     address::{swr_v1_clients_address_host, swr_v1_clients_address_port},
-    client::ClientRecord,
+    client::{Call, Client, ClientRecord, Op, swr_v1_clients_run},
 };
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_phpruntime::{Report, co, report};
@@ -33,6 +32,8 @@ pub(crate) struct LengthCallable {
 }
 
 unsafe extern "C" {
+    /// `php_swoole_convert_to_socket`'s Socket over `fd`, into `out`.
+    fn swr_cpp_phpthread_php_socket_create(out: *mut zval, fd: c_int) -> bool;
     /// crates/server's `tcp_info` fields, in upstream's order.
     #[cfg(target_os = "linux")]
     fn swr_v1_server_tcp_info(info: *const c_void, out: *mut Fact, cap: usize) -> usize;
@@ -62,7 +63,6 @@ const IPC_BUFFER_SIZE: u16 = (swoole_rs_corebase::constants::SW_IPC_MAX_SIZE - 4
 /// # Safety
 /// PHP is running and `message` is NUL-terminated; the caller owns nothing a
 /// bailout would skip.
-#[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn swoole_rs_php_error(
     level: c_int,
     fatal: bool,
@@ -150,13 +150,13 @@ pub(crate) unsafe fn swoole_socket_coro_close_native(socket: Socket) -> u8 {
     // SAFETY: per the caller.
     u8::from(unsafe { co::close_trapped(socket) }.is_err())
 }
-unsafe extern "C" fn callable_free(callable: *mut c_void) {
+unsafe extern "C" fn free_callable(callable: *mut c_void) {
     // SAFETY: a `zend_try` body over a callable `callable_create` made.
     unsafe { swoole_rs_phpruntime::callable_free(callable) };
 }
 pub(crate) unsafe fn swoole_socket_coro_callable_free(callable: *mut c_void) -> u8 {
     // SAFETY: per the caller.
-    u8::from(unsafe { bailout::trap(callable_free, callable) }.is_err())
+    u8::from(unsafe { bailout::trap(free_callable, callable) }.is_err())
 }
 pub(crate) unsafe fn swoole_socket_coro_is_closed(socket: Socket) -> bool {
     co_record(socket).is_closed()
@@ -564,42 +564,147 @@ pub(crate) fn tcp_fields(info: &libc::tcp_info) -> impl Iterator<Item = (&'stati
     })
 }
 
-unsafe extern "C" {
-    /// `php_swoole_error`, `_fatal_error`, `_sys_error` or `_core_error`
-    /// (`kind`, [`ErrorKind`]) of `level` with `"%s"` and `message`.
-    pub(crate) fn swoole_client_php_error(kind: c_int, level: c_int, message: *const c_char);
-    /// A Socket over a dup of the client's fd into `zsocket`.
-    pub(crate) fn swoole_client_export_socket(cli: *mut c_void, zsocket: *mut zval) -> bool;
-    /// Run one [`ClientCall`]; a `bailout::trap` body.
-    pub(crate) fn swoole_client_run(call: *mut c_void);
+/// A live `network::Client` (crates/clients' state), from [`create`] until
+/// [`destroy`].
+#[derive(Clone, Copy)]
+pub(crate) struct Cli(pub(crate) *mut Client);
+
+impl Cli {
+    pub(crate) fn get<'a>(self) -> &'a Client {
+        // SAFETY: a live client, as the type promises.
+        unsafe { &*self.0 }
+    }
+
+    /// The client's public record, at the start of its state; borrowed only
+    /// between its operations.
+    pub(crate) fn record<'a>(self) -> &'a mut ClientRecord {
+        // SAFETY: as in `get`; nothing else touches the record while the borrow lasts.
+        unsafe { &mut *self.0.cast::<ClientRecord>() }
+    }
+
+    /// `cli->socket`, or null.
+    pub(crate) fn socket(self) -> *mut SocketRecord {
+        self.record().socket
+    }
+
+    /// The socket record of a client that has one.
+    pub(crate) fn socket_mut<'a>(self) -> &'a mut SocketRecord {
+        // SAFETY: a constructed client's socket, live while the client is.
+        unsafe { &mut *self.socket() }
+    }
+
+    /// A [`Call`] of `op` on this client.
+    pub(crate) fn call(self, op: Op) -> Call {
+        Call::new(self.0, op)
+    }
 }
 
-/// The client's public record, at the start of its state.
-/// # Safety
-/// `cli` is a live client, and nothing else touches its record
-/// while the borrow lasts.
-pub(crate) unsafe fn client<'a>(cli: Cli) -> &'a mut ClientRecord {
-    // SAFETY: per the caller.
-    unsafe { &mut *cli.cast::<ClientRecord>() }
+/// `new Client(type, async)`: the client, or the errno of its failed socket.
+pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
+    let cli = swoole_rs_clients::client::swr_v1_clients_new(kind, is_async);
+    if cli.is_null() {
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
+    } else {
+        Ok(Cli(cli))
+    }
 }
 
-/// The client's socket record (`cli->socket`), or null.
-/// # Safety
-/// `cli` is a live client.
-pub(crate) unsafe fn client_socket(cli: Cli) -> *mut SocketRecord {
-    // SAFETY: per the caller.
-    unsafe { client(cli) }.socket
+/// `delete cli`, after the length callable of `package_length_func`.
+/// # Errors
+/// Freeing the callable or closing the client ran PHP code that bailed out.
+pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
+    let callable = std::mem::replace(&mut cli.record().protocol.private_data_1, ptr::null_mut());
+    if !callable.is_null() {
+        callable_free(callable)?;
+    }
+    cli.call(Op::Free).run().map(drop)
 }
 
-/// The client's socket record.
-/// # Safety
-/// `cli` is a live client with a socket, which nothing else touches while the
-/// borrow lasts.
-pub(crate) unsafe fn client_socket_mut<'a>(cli: Cli) -> &'a mut SocketRecord {
-    // SAFETY: per the caller.
-    let socket = unsafe { client_socket(cli) };
-    // SAFETY: as above.
-    unsafe { &mut *socket }
+/// Running a [`Call`] from a PHP method.
+pub(crate) trait Run {
+    /// Run the call inside `zend_try`.
+    /// # Errors
+    /// PHP code it ran bailed out.
+    fn run(&mut self) -> Result<i64, Bailout>;
+
+    /// Run a call that cannot reach PHP code (a sync client's send or plain
+    /// receive), without the `zend_try` frame.
+    fn run_plain(&mut self) -> i64;
+}
+
+impl Run for Call {
+    fn run(&mut self) -> Result<i64, Bailout> {
+        // SAFETY: a call on a live client, holding what its operation reads and
+        // writes; the body owns nothing.
+        unsafe { bailout::trap(swr_v1_clients_run, ptr::from_mut(self).cast()) }?;
+        Ok(self.result)
+    }
+
+    fn run_plain(&mut self) -> i64 {
+        // SAFETY: as in `run`; the caller rules out callbacks and errors.
+        unsafe { swr_v1_clients_run(ptr::from_mut(self).cast()) };
+        self.result
+    }
+}
+
+/// `sw_callable_create(*slot)` into the slot: a `zend_try` body.
+unsafe extern "C" fn callable_create(slot: *mut c_void) {
+    // SAFETY: the caller's slot, holding a live zval.
+    let slot = unsafe { &mut *slot.cast::<*mut c_void>() };
+    // SAFETY: inside the caller's `zend_try`, owning nothing.
+    *slot = unsafe { swoole_rs_phpruntime::callable_create(slot.cast()) };
+}
+
+/// `sw_callable_create(value)`: the callable, or null after a warning.
+/// # Errors
+/// The warning's handler bailed out.
+pub(crate) fn callable(value: *mut zval) -> Result<*mut c_void, Bailout> {
+    let mut slot = value.cast::<c_void>();
+    // SAFETY: a body over the slot, which holds a live zval.
+    unsafe { bailout::trap(callable_create, (&raw mut slot).cast()) }?;
+    Ok(slot)
+}
+
+/// `sw_callable_free(callable)`.
+/// # Errors
+/// A destructor bailed out.
+pub(crate) fn callable_free(callable: *mut c_void) -> Result<(), Bailout> {
+    // SAFETY: a callable `callable` made, freed once.
+    if unsafe { swoole_socket_coro_callable_free(callable) } == 0 {
+        Ok(())
+    } else {
+        Err(Bailout)
+    }
+}
+
+/// `sw_zend_call_function_ex2(nullptr, callable->ptr(), argv, retval)`: whether
+/// the call succeeded.
+/// # Errors
+/// The callable bailed out.
+pub(crate) fn invoke(
+    callable: *mut c_void,
+    argv: &mut [zval],
+    retval: *mut zval,
+) -> Result<bool, Bailout> {
+    // SAFETY: a live callable and arguments; `retval` is null or writable.
+    unsafe { swoole_rs_phpruntime::callable_call(callable, argv, retval, true) }
+}
+
+/// A `Socket` over a dup of the client's fd: `php_swoole_convert_to_socket`, which
+/// makes one whatever the import's result. `None` without ext/sockets.
+pub(crate) fn export_socket(cli: Cli) -> Option<zval> {
+    if !built_with(Capability::Sockets) {
+        return None;
+    }
+    // SAFETY: dup(2) of the client's descriptor.
+    let fd = unsafe { libc::dup(cli.socket_mut().fd) };
+    if fd < 0 {
+        return None;
+    }
+    let mut socket = swoole_rs_zend::long_zval(0);
+    // SAFETY: a writable zval and a descriptor it takes.
+    unsafe { swr_cpp_phpthread_php_socket_create(&raw mut socket, fd) };
+    Some(socket)
 }
 
 /// The peer certificate of `socket`, a live record with TLS, as a new string,
@@ -642,103 +747,15 @@ pub(crate) fn package_too_big(length: c_int) {
     );
 }
 
-/// A `network::Client *`: crates/clients' per-client state.
-pub(crate) type Cli = *mut swoole_rs_clients::client::Client;
-
-/// `new Client(type, async)`: the client, or the errno of its failed socket.
-pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
-    let cli = swoole_rs_clients::client::swr_v1_clients_new(kind, is_async);
-    if cli.is_null() {
-        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
-    } else {
-        Ok(cli)
-    }
-}
-
-/// `SWOOLE_CLIENT_ERROR*`: which reporter `swoole_client_php_error` uses.
+/// Which reporter [`crate::net::report`] uses.
 #[derive(Clone, Copy)]
-#[repr(i32)]
 pub(crate) enum ErrorKind {
-    Error = 0,
-    Fatal = 1,
-    Sys = 2,
-    Core = 3,
-}
-
-/// `struct swoole_client_call`: one operation for `swoole_client_run`.
-#[repr(C)]
-pub(crate) struct ClientCall {
-    pub(crate) cli: *mut c_void,
-    pub(crate) op: Op,
-    pub(crate) data: *const c_char,
-    pub(crate) length: size_t,
-    pub(crate) buffer: *mut c_char,
-    pub(crate) a: i64,
-    pub(crate) b: i64,
-    pub(crate) timeout: f64,
-    pub(crate) settings: *const zval,
-    pub(crate) result: i64,
-}
-
-/// `SWOOLE_CLIENT_CONNECT` ...: what a [`ClientCall`] does.
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(i32)]
-pub(crate) enum Op {
-    Connect = 0,
-    Send = 1,
-    Sendto = 2,
-    Sendfile = 3,
-    Recv = 4,
-    PackageLength = 5,
-    Shutdown = 6,
-    Close = 7,
-    Sleep = 8,
-    Wakeup = 9,
-    EnableSsl = 11,
-    SslHandshake = 12,
-    SslVerify = 13,
-    SslWait = 14,
-    Destroy = 15,
-    Callable = 17,
-    CallableFree = 18,
-    Invoke = 19,
-    ConvertFd = 20,
-}
-
-impl ClientCall {
-    pub(crate) fn new(cli: *mut c_void, op: Op) -> Self {
-        Self {
-            cli,
-            op,
-            data: std::ptr::null(),
-            length: 0,
-            buffer: std::ptr::null_mut(),
-            a: 0,
-            b: 0,
-            timeout: 0.0,
-            settings: std::ptr::null(),
-            result: 0,
-        }
-    }
-
-    /// Run the call inside `zend_try`.
-    /// # Errors
-    /// PHP code it ran bailed out.
-    pub(crate) fn run(&mut self) -> Result<i64, swoole_rs_zend::bailout::Bailout> {
-        // SAFETY: a C++ body that reads and writes only this call.
-        unsafe {
-            swoole_rs_zend::bailout::trap(swoole_client_run, std::ptr::from_mut(self).cast())
-        }?;
-        Ok(self.result)
-    }
-
-    /// Run a call that cannot reach PHP code (a sync client's send or plain
-    /// receive), without the `zend_try` frame.
-    pub(crate) fn run_plain(&mut self) -> i64 {
-        // SAFETY: as in `run`; the caller rules out callbacks and errors.
-        unsafe { swoole_client_run(std::ptr::from_mut(self).cast()) };
-        self.result
-    }
+    /// `php_swoole_error`.
+    Error,
+    /// `php_swoole_fatal_error`.
+    Fatal,
+    /// `php_swoole_core_error`.
+    Core,
 }
 
 /// What `swoole_socket_coro_transfer` does.
@@ -769,11 +786,6 @@ pub(crate) unsafe fn record<'a>(socket: Socket) -> Option<&'a mut swoole_rs_reac
 /// `php_swoole_check_reactor()`; a `swr_zend_try_hook` body.
 pub(crate) unsafe extern "C" fn swoole_rs_check_reactor() {
     swoole_rs_phpruntime::check_reactor();
-}
-
-/// `swoole_set_last_error(code)`.
-pub(crate) unsafe fn swoole_rs_set_last_error(code: c_int) {
-    swoole_rs_corebase::log::set_last_error(code);
 }
 
 /// `SW_TIMEOUT_CONNECT` and `SW_TIMEOUT_RDWR`.

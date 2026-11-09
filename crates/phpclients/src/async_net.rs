@@ -3,7 +3,7 @@
 //! ([`Data`]); the callbacks are `zend::Callable`s by slot, and the events the
 //! client raises arrive through `async_event`.
 use crate::{
-    native::{self, ClientCall, ErrorKind, Op},
+    native::{self, ErrorKind, Run, callable_free},
     net::{
         self, CONNECT_TIMEOUT, Conn, INVALID_PARAMS, SOCK_TCP, SOCK_TCP6, bailed, check_type,
         destructing, errno, last_error, report, set_err_code, set_last_error, socket_type,
@@ -13,7 +13,7 @@ use crate::{
 use libc::{c_char, c_int, c_void};
 use std::{ffi::CStr, ptr};
 use swoole_rs_clients::client::{
-    self as state, ON_BUFFER_EMPTY, ON_BUFFER_FULL, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE,
+    self as state, ON_BUFFER_EMPTY, ON_BUFFER_FULL, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op,
     SSL_STATE_WAIT_STREAM,
 };
 use swoole_rs_clients::swr_v1_clients_port;
@@ -119,11 +119,6 @@ fn callbacks<'a>(data: &net::Data) -> Option<&'a mut [*mut c_void; 7]> {
     unsafe { data.callbacks.as_mut() }
 }
 
-/// `sw_callable_free`.
-fn callable_free(callable: *mut c_void) -> Result<(), Bailout> {
-    ClientCall::new(callable, Op::CallableFree).run().map(drop)
-}
-
 /// `php_swoole_client_async_free_object`: free every callback.
 pub(crate) fn free_callbacks(object: *mut zend_object) -> Result<(), Bailout> {
     let data = net::data(object);
@@ -139,10 +134,7 @@ pub(crate) fn free_callbacks(object: *mut zend_object) -> Result<(), Bailout> {
 
 /// Call `callable` with `argv`: whether the call succeeded.
 fn invoke(callable: *mut c_void, argv: &mut [zval]) -> Result<bool, Bailout> {
-    let mut call = ClientCall::new(callable, Op::Invoke);
-    call.settings = argv.as_mut_ptr();
-    call.a = i64::try_from(argv.len()).unwrap_or(0);
-    Ok(call.run()? != 0)
+    native::invoke(callable, argv, ptr::null_mut())
 }
 
 fn object_zval(object: *mut zend_object) -> zval {
@@ -406,7 +398,7 @@ fn connect(call: &Call) {
         }
     }
     // SAFETY: a live client; it raises its events on this object.
-    unsafe { state::swr_v1_clients_listen(fresh.cli, object.cast(), events, async_event) };
+    unsafe { state::swr_v1_clients_listen(fresh.cli.0, object.cast(), events, async_event) };
     net::this(call).conn = conn;
     // SAFETY: `zval_addref_p(ZEND_THIS)`: the client holds the object.
     unsafe { (*object).gc.refcount += 1 };
@@ -472,12 +464,9 @@ fn on(call: &Call) {
     };
     let zcallback = call.zval(2);
     let object = call.this();
-    let mut create = ClientCall::new(ptr::null_mut(), Op::Callable);
-    create.settings = zcallback;
-    if bailed(create.run()).is_none() {
+    let Some(callable) = bailed(native::callable(zcallback)) else {
         return call.set_bool(false);
-    }
-    let callable = create.buffer.cast::<c_void>();
+    };
     if callable.is_null() {
         return call.set_null();
     }
@@ -574,12 +563,9 @@ fn enable_ssl(call: &Call) {
     if !previous.is_null() && bailed(callable_free(previous)).is_none() {
         return call.set_bool(false);
     }
-    let mut create = ClientCall::new(ptr::null_mut(), Op::Callable);
-    create.settings = zcallback;
-    if bailed(create.run()).is_none() {
+    let Some(callable) = bailed(native::callable(zcallback)) else {
         return call.set_bool(false);
-    }
-    let callable = create.buffer.cast::<c_void>();
+    };
     if callable.is_null() {
         return call.set_bool(false);
     }
@@ -587,8 +573,7 @@ fn enable_ssl(call: &Call) {
     unsafe { update_property(ASYNC.entry(), object, c"onSSLReady", zcallback) };
     replace(object, SSL_READY, callable);
     conn.ssl_wait = true;
-    // SAFETY: a live client with TLS.
-    unsafe { (*conn.socket()).tls.state = SSL_STATE_WAIT_STREAM };
+    conn.cli.socket_mut().tls.state = SSL_STATE_WAIT_STREAM;
     call.set_bool(true);
 }
 

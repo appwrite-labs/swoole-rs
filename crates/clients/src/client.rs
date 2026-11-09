@@ -112,7 +112,7 @@ const TLS_HOST_NAME: usize = 8;
 /// OpenSSL's `SSL_CTRL_SET_TLSEXT_HOSTNAME` and `TLSEXT_NAMETYPE_host_name`.
 const SSL_CTRL_SET_TLSEXT_HOSTNAME: c_int = 55;
 const TLSEXT_NAMETYPE_HOST_NAME: libc::c_long = 0;
-/// The proxy states of `native/protocols/swoole_proxy.h`, which `native/clients/client.cc` asserts.
+/// The proxy states of `native/protocols/swoole_proxy.h`, which asserts them.
 const SOCKS5_WAIT: c_int = 0;
 const SOCKS5_HANDSHAKE: c_int = 1;
 const SOCKS5_READY: c_int = 4;
@@ -403,17 +403,27 @@ impl Client {
         }
     }
 
-    fn flag(&self, name: u32) -> bool {
+    /// One of the flags above; false for any other.
+    pub fn flag(&self, name: u32) -> bool {
         self.flags.get() & (1 << name) != 0
     }
 
-    fn set(&self, name: u32, value: bool) {
+    pub fn set(&self, name: u32, value: bool) {
         let bit = 1 << name;
         self.flags.set(if value {
             self.flags.get() | bit
         } else {
             self.flags.get() & !bit
         });
+    }
+
+    /// `buffer_high_watermark` (`high`) or `buffer_low_watermark`.
+    pub fn set_watermark(&self, high: bool, value: u32) {
+        if high {
+            self.high_watermark.set(value);
+        } else {
+            self.low_watermark.set(value);
+        }
     }
 }
 
@@ -927,13 +937,141 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     client
 }
 
-/// `delete client`.
+/// What a [`Call`] does: a `network::Client` method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Op {
+    /// `connect(data, a, timeout, b)`.
+    Connect,
+    /// `send(data, length, a)`.
+    Send,
+    /// `sendto(data, a, buffer, b)`: `length` bytes of host.
+    Sendto,
+    /// `sendfile(data, a, b)`.
+    Sendfile,
+    /// `recv(buffer, length, a)`.
+    Recv,
+    /// `protocol.get_package_length` of `length` bytes at `buffer`.
+    PackageLength,
+    /// `shutdown(a)`.
+    Shutdown,
+    Close,
+    Sleep,
+    Wakeup,
+    /// `enable_ssl_encrypt()`.
+    EnableSsl,
+    SslHandshake,
+    /// `ssl_verify(a != 0)`.
+    SslVerify,
+    /// `swoole_event_set(socket, SW_EVENT_WRITE)`, to finish a handshake.
+    SslWait,
+    /// `delete client`.
+    Free,
+}
+
+/// One client operation for [`swr_v1_clients_run`]. The texts at `data` (the host
+/// or file) are NUL-terminated.
+#[repr(C)]
+pub struct Call {
+    pub client: *mut Client,
+    pub op: Op,
+    pub data: *const c_char,
+    pub length: usize,
+    pub buffer: *mut c_char,
+    pub a: i64,
+    pub b: i64,
+    pub timeout: f64,
+    pub result: i64,
+}
+
+impl Call {
+    #[must_use]
+    pub fn new(client: *mut Client, op: Op) -> Self {
+        Self {
+            client,
+            op,
+            data: core::ptr::null(),
+            length: 0,
+            buffer: core::ptr::null_mut(),
+            a: 0,
+            b: 0,
+            timeout: 0.0,
+            result: 0,
+        }
+    }
+}
+
+/// `swoole::PacketLength`.
+#[repr(C)]
+struct PacketLength {
+    buf: *const c_char,
+    buf_size: u32,
+    header_len: u32,
+}
+
+/// `Protocol::get_package_length`.
+type LengthFunc =
+    unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *const PacketLength) -> isize;
+
+/// Run a [`Call`], whose operation may raise the client's callbacks: a
+/// `bailout::trap` body that owns nothing.
 ///
 /// # Safety
-/// `client` is a live state from `swr_v1_clients_new`, not used afterwards.
+/// `call` is a live [`Call`] on a live client, its pointers holding what the
+/// operation reads or writes; after `Free` the client is not used.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_free(client: *mut Client) {
-    let this = Handle(client);
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "C++'s implicit conversions of the call's integers"
+)]
+pub unsafe extern "C" fn swr_v1_clients_run(call: *mut c_void) {
+    // SAFETY: per the caller.
+    let call = unsafe { &mut *call.cast::<Call>() };
+    let this = Handle(call.client);
+    let (a, b) = (call.a as c_int, call.b);
+    call.result = match call.op {
+        Op::Connect => connect(this, call.data, a, call.timeout, b as c_int).into(),
+        Op::Send => send(this, call.data, call.length, a) as i64,
+        Op::Sendto => sendto(this, call.data, call.length, a, call.buffer, b as usize).into(),
+        Op::Sendfile => sendfile(this, call.data, call.a, b as usize).into(),
+        Op::Recv => recv(this, call.buffer, call.length, a) as i64,
+        Op::PackageLength => package_length(this, call.buffer, call.length) as i64,
+        Op::Shutdown => shutdown(this, a).into(),
+        Op::Close => close(this).into(),
+        Op::Sleep => sleep(this).into(),
+        Op::Wakeup => wakeup(this).into(),
+        Op::EnableSsl => enable_ssl(this).into(),
+        Op::SslHandshake => ssl_handshake(this).into(),
+        Op::SslVerify => ssl_verify(this, a != 0).into(),
+        Op::SslWait => this.event(EVENT_SET, EVENT_WRITE).into(),
+        Op::Free => {
+            free(this);
+            0
+        }
+    };
+}
+
+/// The client protocol's length of the packet in `length` bytes at `data`.
+#[expect(clippy::cast_possible_truncation, reason = "`(uint32_t) length`")]
+fn package_length(this: Handle, data: *const c_char, length: usize) -> isize {
+    let record = this.fields();
+    // SAFETY: the protocol's length function, which has this signature.
+    let get = unsafe {
+        core::mem::transmute::<*mut c_void, LengthFunc>(record.protocol.get_package_length)
+    };
+    let packet = PacketLength {
+        buf: data,
+        buf_size: length as u32,
+        header_len: 0,
+    };
+    // SAFETY: the live client's protocol and socket, and `length` bytes at `data`.
+    unsafe { get(&raw const record.protocol, record.socket, &raw const packet) }
+}
+
+/// `delete client`: the client is not used afterwards.
+fn free(this: Handle) {
+    let client = this.0;
     if !this.flag(CLOSED) {
         close(this);
     }
@@ -993,13 +1131,6 @@ pub unsafe extern "C" fn swr_v1_clients_flag(client: *const Client, name: u32) -
     Handle(client.cast_mut()).flag(name)
 }
 
-/// # Safety
-/// `client` is live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_set_flag(client: *mut Client, name: u32, value: bool) {
-    Handle(client).set(name, value);
-}
-
 /// `buffer_high_watermark` (`high`) or `buffer_low_watermark`: the address of the
 /// value, which C++'s `Client` keeps as a reference for its lifetime.
 ///
@@ -1056,20 +1187,8 @@ fn close(this: Handle) -> c_int {
     unsafe { libc::close(fd) }
 }
 
-/// # Safety
-/// `client` is live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_close(client: *mut Client) -> c_int {
-    close(Handle(client))
-}
-
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
-///
-/// # Safety
-/// `client` is live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_shutdown(client: *mut Client, how: c_int) -> c_int {
-    let this = Handle(client);
+fn shutdown(this: Handle, how: c_int) -> c_int {
     if this.socket_ptr().is_null() || this.flag(CLOSED) {
         return ERR;
     }
@@ -1096,12 +1215,7 @@ pub unsafe extern "C" fn swr_v1_clients_shutdown(client: *mut Client, how: c_int
 }
 
 /// `Client::sleep()`: stop reading (keeping write interest).
-///
-/// # Safety
-/// `client` is live with a socket.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_sleep(client: *mut Client) -> c_int {
-    let this = Handle(client);
+fn sleep(this: Handle) -> c_int {
     if this.socket().events & EVENT_WRITE != 0 {
         this.event(EVENT_SET, EVENT_WRITE)
     } else {
@@ -1110,12 +1224,7 @@ pub unsafe extern "C" fn swr_v1_clients_sleep(client: *mut Client) -> c_int {
 }
 
 /// `Client::wakeup()`: read again.
-///
-/// # Safety
-/// `client` is live with a socket.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_wakeup(client: *mut Client) -> c_int {
-    let this = Handle(client);
+fn wakeup(this: Handle) -> c_int {
     if this.socket().events & EVENT_WRITE != 0 {
         this.event(EVENT_SET, EVENT_READ | EVENT_WRITE)
     } else {
@@ -1125,12 +1234,7 @@ pub unsafe extern "C" fn swr_v1_clients_wakeup(client: *mut Client) -> c_int {
 
 /// `Client::enable_ssl_encrypt()`: a TLS context, TLS on, and DTLS for a datagram
 /// client. -1 when TLS was already on.
-///
-/// # Safety
-/// `client` is live with a socket.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_enable_ssl(client: *mut Client) -> c_int {
-    let this = Handle(client);
+fn enable_ssl(this: Handle) -> c_int {
     if !this.get().tls.get().is_null() {
         return ERR;
     }
@@ -1309,23 +1413,6 @@ fn ssl_verify(this: Handle, allow_self_signed: bool) -> c_int {
     OK
 }
 
-/// # Safety
-/// `client` is live with a TLS session.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ssl_verify(
-    client: *mut Client,
-    allow_self_signed: c_int,
-) -> c_int {
-    ssl_verify(Handle(client), allow_self_signed != 0)
-}
-
-/// # Safety
-/// `client` is live with a socket and a TLS context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ssl_handshake(client: *mut Client) -> c_int {
-    ssl_handshake(Handle(client))
-}
-
 /// `Client_inet_addr`: the first call routes through the proxies and records the
 /// server; every call assigns `server_addr`, or waits for DNS.
 fn inet_addr(this: Handle, host: *const c_char, port: c_int) -> c_int {
@@ -1413,21 +1500,7 @@ extern "C" fn resolve_completed(event: *mut AsyncEvent) {
     );
 }
 
-/// `Client::connect(host, port, timeout, flags)`.
-///
-/// # Safety
-/// `client` is live with a socket; `host` is NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_connect(
-    client: *mut Client,
-    host: *const c_char,
-    port: c_int,
-    timeout: f64,
-    flags: c_int,
-) -> c_int {
-    connect(Handle(client), host, port, timeout, flags)
-}
-
+/// `Client::connect(host, port, timeout, flags)`: `host` is NUL-terminated.
 fn connect(this: Handle, host: *const c_char, port: c_int, timeout: f64, flags: c_int) -> c_int {
     if !this.flag(STREAM) {
         udp_connect(this, host, port, timeout, flags)
@@ -1856,27 +1929,22 @@ pub unsafe extern "C" fn swr_v1_clients_bind(
 }
 
 /// `Client::sendto(host, port, data, length)`: one datagram to the host, resolved
-/// unless the client is async; a stream client logs through `not_datagram`.
-///
-/// # Safety
-/// `client` is live with a socket; `host` is NUL-terminated after `host_length`
-/// bytes; `length` bytes at `data`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_sendto(
-    client: *mut Client,
+/// unless the client is async; `host` is NUL-terminated after `host_length` bytes.
+fn sendto(
+    this: Handle,
     host: *const c_char,
     host_length: usize,
     port: c_int,
     data: *const c_char,
     length: usize,
-    not_datagram: Warn,
 ) -> c_int {
-    let this = Handle(client);
     let socket = this.socket();
     if !is_dgram(socket.socket_type) {
         log::set_last_error(ERROR_OPERATION_NOT_SUPPORT);
-        // SAFETY: a log line about this descriptor.
-        unsafe { not_datagram(socket.fd) };
+        log::warning(
+            c"sendto",
+            format_args!("only supports SWOOLE_SOCK_(UDP/UDP6/UNIX_DGRAM)"),
+        );
         return ERR;
     }
     // SAFETY: as the caller promises.
@@ -1911,19 +1979,6 @@ pub unsafe extern "C" fn swr_v1_clients_sendto(
 }
 
 /// `Client::send(data, length, flags)`.
-///
-/// # Safety
-/// `client` is live with a socket; `length` bytes at `data`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_send(
-    client: *mut Client,
-    data: *const c_char,
-    length: usize,
-    flags: c_int,
-) -> isize {
-    send(Handle(client), data, length, flags)
-}
-
 fn send(this: Handle, data: *const c_char, length: usize, flags: c_int) -> isize {
     if this.flag(DTLS) || this.flag(STREAM) && !this.flag(ASYNC) {
         this.send_sync(data, length, flags)
@@ -1960,18 +2015,8 @@ fn send_async(this: Handle, data: *const c_char, length: usize) -> isize {
     n
 }
 
-/// `Client::sendfile(file, offset, length)`.
-///
-/// # Safety
-/// `client` is live with a socket; `file` is NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_sendfile(
-    client: *mut Client,
-    file: *const c_char,
-    offset: i64,
-    length: usize,
-) -> c_int {
-    let this = Handle(client);
+/// `Client::sendfile(file, offset, length)`: `file` is NUL-terminated.
+fn sendfile(this: Handle, file: *const c_char, offset: i64, length: usize) -> c_int {
     if !this.flag(STREAM) {
         return ERR;
     }
@@ -1993,19 +2038,6 @@ pub unsafe extern "C" fn swr_v1_clients_sendfile(
 }
 
 /// `Client::recv(data, length, flags)`.
-///
-/// # Safety
-/// `client` is live with a socket; `length` writable bytes at `data`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_recv(
-    client: *mut Client,
-    data: *mut c_char,
-    length: usize,
-    flags: c_int,
-) -> isize {
-    recv(Handle(client), data, length, flags)
-}
-
 fn recv(this: Handle, data: *mut c_char, length: usize, flags: c_int) -> isize {
     if this.flag(STREAM) || this.flag(DTLS) {
         let n = this.recv_sync(data, length, flags);

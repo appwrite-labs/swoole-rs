@@ -1,7 +1,7 @@
 //! `php_swoole_client_check_setting` and `php_swoole_client_check_ssl_setting`:
 //! `Swoole\Client`'s and `Swoole\Async\Client`'s options, read and written
 //! into `network::Client`'s record and state here.
-use crate::native::{self, Cli, ClientCall, ErrorKind, Op};
+use crate::native::{self, Cli, ErrorKind};
 use crate::net::{self, bailed, report, warn, warn_sys};
 use crate::socket_options::PacketLength;
 use libc::{c_int, c_void};
@@ -62,20 +62,17 @@ fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
     // SAFETY: a fresh string; the zval takes its reference.
     unsafe { value::set_str(&raw mut data, string::copy(bytes)) };
     let mut retval = long_zval(0);
-    let mut call = ClientCall::new(callable, Op::Invoke);
-    call.settings = &raw const data;
-    call.a = 1;
-    call.buffer = (&raw mut retval).cast();
-    let length = match call.run() {
+    let called = native::invoke(callable, std::slice::from_mut(&mut data), &raw mut retval);
+    let length = match called {
         Err(bailout) => {
             bailout.defer();
             -1
         }
-        Ok(0) => {
+        Ok(false) => {
             warn(ErrorKind::Fatal, "length function handler error");
             -1
         }
-        Ok(_) => {
+        Ok(true) => {
             // SAFETY: the callable's result.
             let length = unsafe { value::get_long(&raw const retval) };
             // SAFETY: our reference to the result, released inside a trap.
@@ -158,8 +155,7 @@ fn clamp(value: i64, low: i64, high: i64) -> i64 {
 }
 
 fn record<'a>(cli: Cli) -> &'a mut ClientRecord {
-    // SAFETY: a live client, whose record only this call touches meanwhile.
-    unsafe { native::client(cli) }
+    cli.record()
 }
 
 /// `socket_buffer_size` (`socket->set_buffer_size(size)`, then
@@ -172,8 +168,7 @@ fn record<'a>(cli: Cli) -> &'a mut ClientRecord {
 fn buffers(cli: Cli, options: &Options) {
     if let Some(size) = options.size("socket_buffer_size") {
         let size = clamp(size, 1, i32::MAX.into()) as u32;
-        // SAFETY: a live client with a socket.
-        let socket = unsafe { native::client_socket_mut(cli) };
+        let socket = cli.socket_mut();
         swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd, true, true, size);
         socket.output.buffer_size = size;
     }
@@ -182,10 +177,8 @@ fn buffers(cli: Cli, options: &Options) {
         ("buffer_low_watermark", false),
     ] {
         if let Some(mark) = options.size(key) {
-            // SAFETY: the live client's state.
-            let slot = unsafe { swoole_rs_clients::client::swr_v1_clients_watermark(cli, high) };
-            // SAFETY: its watermark, which lives as long.
-            unsafe { *slot = clamp(mark, 0, u32::MAX.into()) as u32 };
+            cli.get()
+                .set_watermark(high, clamp(mark, 0, u32::MAX.into()) as u32);
         }
     }
 }
@@ -217,7 +210,7 @@ fn bind(cli: Cli, address: &[u8], port: i64) -> bool {
     // SAFETY: a live client with a socket; a NUL-terminated host.
     let bound = unsafe {
         swoole_rs_clients::client::swr_v1_clients_bind(
-            cli,
+            cli.0,
             host.as_ptr().cast(),
             address.len(),
             port as c_int,
@@ -312,15 +305,13 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
         record(cli).protocol.package_body_offset = clamp(offset, 0, u16::MAX.into()) as u16;
     }
     if let Some(function) = options.get("package_length_func") {
-        let mut create = ClientCall::new(ptr::null_mut(), Op::Callable);
-        create.settings = function;
-        bailed(create.run())?;
-        if create.buffer.is_null() {
+        let callable = bailed(native::callable(function))?;
+        if callable.is_null() {
             return Some(false);
         }
-        let previous = option_pointer(cli, create.buffer.cast());
+        let previous = option_pointer(cli, callable);
         if !previous.is_null() {
-            bailed(ClientCall::new(previous, Op::CallableFree).run())?;
+            bailed(native::callable_free(previous))?;
         }
     }
     let max_length = options
@@ -348,8 +339,7 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
         return Some(false);
     }
     if options.truthy("open_tcp_nodelay").unwrap_or(true) {
-        // SAFETY: a live client with a socket.
-        let socket = unsafe { native::client_socket_mut(cli) };
+        let socket = cli.socket_mut();
         let tcp = matches!(
             i64::from(socket.socket_type),
             net::SOCK_TCP | net::SOCK_TCP6
@@ -365,8 +355,7 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
     if !proxies(cli, &options) {
         return Some(false);
     }
-    // SAFETY: the live client's state.
-    if unsafe { swoole_rs_clients::client::swr_v1_clients_flag(cli, OPEN_SSL) } {
+    if cli.get().flag(OPEN_SSL) {
         apply_ssl(cli, settings);
     }
     Some(true)
@@ -420,7 +409,7 @@ fn proxy(
     // SAFETY: a live client; the proxy copies every string during the call.
     unsafe {
         swoole_rs_clients::client::swr_v1_clients_proxy(
-            cli,
+            cli.0,
             http,
             host.as_ptr().cast(),
             host.len(),
@@ -437,7 +426,7 @@ fn proxy(
 /// client's `SSLContext` (crates/tls).
 pub(crate) fn apply_ssl(cli: Cli, settings: *const zval) {
     // SAFETY: a live client.
-    let owner = unsafe { swoole_rs_clients::client::swr_v1_clients_ssl_context(cli) }
+    let owner = unsafe { swoole_rs_clients::client::swr_v1_clients_ssl_context(cli.0) }
         .cast::<tls::OwnedTlsContext>();
     if owner.is_null() {
         return;

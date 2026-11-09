@@ -36,7 +36,7 @@ mod stream;
 mod transport;
 pub use connect::*;
 pub use putenv::*;
-pub use socket::{Report, check_reactor, co, coroutine_check, report, strerror};
+pub use socket::{Report, check_reactor, co, convert_to_fd, coroutine_check, report, strerror};
 pub use stream::*;
 
 use std::{
@@ -192,21 +192,32 @@ struct CallableCall {
     callable: *mut c_void,
     argc: u32,
     argv: *mut zval,
+    retval: *mut zval,
+    from_loop: bool,
     result: bool,
 }
 
-/// `callable->call(args.len(), args, nullptr)` inside `zend_try`: whether the
-/// call succeeded.
+/// `callable->call(args.len(), args, retval)` inside `zend_try`, or with
+/// `from_loop` `sw_zend_call_function_ex2`, which raises an uncaught exception at
+/// once as the event loop's callbacks do: whether the call succeeded.
 /// # Errors
 /// The callable bailed out.
 /// # Safety
-/// PHP is running, `callable` is live and `args` are live zvals.
-pub unsafe fn callable_call(callable: *mut c_void, args: &mut [zval]) -> Result<bool, Bailout> {
+/// PHP is running, `callable` is live, `args` are live zvals and `retval` is
+/// null or writable.
+pub unsafe fn callable_call(
+    callable: *mut c_void,
+    args: &mut [zval],
+    retval: *mut zval,
+    from_loop: bool,
+) -> Result<bool, Bailout> {
     let mut call = CallableCall {
         callable,
         #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
         argc: args.len() as u32,
         argv: args.as_mut_ptr(),
+        retval,
+        from_loop,
         result: false,
     };
     // SAFETY: per the caller; the host op is C++ and takes a `CallableCall`.
