@@ -70,7 +70,7 @@ return value. Errors are Zend's own (`zend_wrong_parameters_count_error`,
 `crates/phpstubs` is every upstream stub's arginfo as Rust statics, one module
 per `ext-src/stubs/*.stub.php`, named as gen_stub names them
 (`phpstubs::atomic::arginfo_class_Swoole_Atomic_add`). `tools/arginfo.py`
-generates it from the pin's stubs; `--check` (the PR tier's `hybrid` job) fails
+generates it from the pin's stubs; `--check` (the PR tier's `ext` job) fails
 if it is stale or if the same model, rendered as gen_stub's C, differs by a
 byte from the pin's `*_arginfo.h`. The builders in `zend::arginfo` are one
 `const fn` per Zend macro over the headers' own type bits, so the arrays are
