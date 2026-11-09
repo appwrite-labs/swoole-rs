@@ -50,7 +50,8 @@ fn event(name: &[u8]) -> Option<(c_int, &'static CStr)> {
         .map(|&(_, kind, property)| (kind, property))
 }
 
-/// `zend::String(name)`, looked up as an event.
+/// `zend::String(name)`, looked up as an event. A conversion that leaves a bailout
+/// pending finds none; upstream's ended the call there, so callers check for it.
 fn lookup(name: &Value) -> Option<(c_int, &'static CStr)> {
     event(name.string().bytes())
 }
@@ -82,6 +83,9 @@ fn on(call: &Call) {
     }
     let (name, cb) = (call.zval(1), call.zval(2));
     let Some((kind, property)) = call.value(1).and_then(lookup) else {
+        if bailout::pending() {
+            return;
+        }
         let mut retval = crate::dispatch::undef();
         port_call(call, b"on", &raw mut retval, &[name, cb]);
         // RETURN_BOOL(Z_BVAL_P(&retval))
@@ -121,6 +125,9 @@ fn get_callback(call: &Call) {
             // SAFETY: `RETURN_ZVAL(property, 1, 0)`.
             return unsafe { swr_zval_copy(call.return_value(), value) };
         }
+    }
+    if bailout::pending() {
+        return;
     }
     port_call(call, b"getcallback", call.return_value(), &[name]);
 }
