@@ -12,10 +12,10 @@ cargo build --locked -p swoole-rs-ffi --release
 
 ## Native differential gates
 
-Each gate compiles pinned (v6.2.5) bodies against the hybrid build `--archive`
+Each gate compiles pinned (v6.2.5) bodies against the Cargo build SDK `--archive`
 comes from and compares outcomes. The two sides compile apart (`Sides` in
 `gate.py`): upstream fragments against the pin's headers only, the rest against
-the Cargo build's patched tree (`native_tree`). Native code runs under ASan/UBSan;
+the SDK's headers and switches (`native_flags`). Native code runs under ASan/UBSan;
 the Rust archive is uninstrumented unless `--rust-sanitize` is used (Linux;
 links a private ASan HTTP archive instead, precompiled std stays uninstrumented).
 All take `--source PINNED_GIT --archive HYBRID_ARCHIVE --output REPORT`; gates
