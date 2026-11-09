@@ -25,7 +25,7 @@ const EVENT_READ: c_int = 1 << 9;
 const EXIT_CONDITION_IOURING: c_int = 9;
 const PRIORITY_IOURING_SUBMIT: c_int = 7;
 
-// SAFETY: crates/coroutine's and native/reactor/reactor.cc's.
+// SAFETY: crates/coroutine's and crates/reactor's.
 unsafe extern "C-unwind" {
     fn swr_v1_coroutine_native_resume(co: *mut c_void);
     fn swr_v1_coroutine_yield_with_cancel(

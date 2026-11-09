@@ -63,16 +63,12 @@ swr_v1_reactor_iov_progress_reply swr_v1_reactor_iov_owned_progress(struct iovec
 struct pollfd;
 struct epoll_event;
 struct kevent;
-typedef struct { int32_t selected; uint32_t observe_kqueue, factory; } swr_v1_reactor_backend_plan;
-swr_v1_reactor_backend_plan swr_v1_reactor_backend_type(int32_t, uint32_t, uint32_t, uint32_t);
 
 typedef struct swr_v1_reactor_deferred swr_v1_reactor_deferred;
 /* Reactor::defer_tasks and destroy_callbacks: FIFO (call, data) queues, created on first push.
- * push is 0, or -2 when it cannot allocate; free disposes of the tasks that never ran. */
+ * push is 0, or -2 when it cannot allocate. */
 int32_t swr_v1_reactor_deferred_push(swr_v1_reactor_deferred **, void (*call)(void *), void *data,
                                      void (*dispose)(void *));
-void swr_v1_reactor_deferred_run(swr_v1_reactor_deferred *);
-void swr_v1_reactor_deferred_free(swr_v1_reactor_deferred **);
 
 /* Each backend's whole wait() loop in one call (#336, #391). Rust runs the loop and its readiness
    order; these are the native effects, each passed `context` (prepare/remove also the socket). */
@@ -315,39 +311,34 @@ static inline bool swr_socket_type_is(int socket_type, uint8_t classes) {
 bool swr_v1_socket_domain_and_type(int socket_type, int *domain, int *kind);
 swr_v1_socket_host_type_plan swr_v1_socket_host_type(const uint8_t *host, size_t length);
 
-/* One owner for Reactor public slots, registry, handlers and kernel resources. */
+/* Rust's reactor state (crates/reactor's ReactorState), which begins with swr_v1_reactor_head:
+ * a Reactor is that state. swoole_event_init/free and the Reactor's constructor and destructor
+ * are Rust's; nothing in C or C++ allocates one. */
 typedef struct swr_v1_reactor_state swr_v1_reactor_state;
 /* Reactor's idle and future tasks (Swoole\Event::cycle): null until set. */
 typedef struct { void (*callback)(void *); void *data; } swr_v1_reactor_task;
+/* The state's own views of itself; fields points at the head's type_. */
 typedef struct {
-    int kind; void *ptr; int native_handle; uint32_t max_event_num;
-    bool ready, running, start, once, wait_exit, destroyed, bailout, timed_out;
+    swr_v1_reactor_state *owner; void *fields;
+    swr_v1_reactor_registry *registry; swr_v1_reactor_handlers *handlers;
+} swr_v1_reactor_prepared;
+/* Rust's ReactorPrepared then ReactorFields, laid out as one struct (asserted on both sides). */
+typedef struct {
+    swr_v1_reactor_prepared state_;
+    int type_; void *ptr; int native_handle; uint32_t max_event_num;
+    bool ready_, running, start, once, wait_exit, destroyed, bailout, timed_out;
     int32_t timeout_msec; uint16_t id; uint32_t max_socket; time_t last_malloc_trim_time;
     swr_v1_reactor_write_fn write;
     swr_v1_reactor_writev_fn writev;
     swr_v1_reactor_close_fn close;
     swr_v1_reactor_deferred *defer_tasks, *destroy_callbacks;
     swr_v1_reactor_task idle_task, future_task;
-} swr_v1_reactor_fields;
-typedef struct {
-    swr_v1_reactor_state *owner; swr_v1_reactor_fields *fields;
-    swr_v1_reactor_registry *registry; swr_v1_reactor_handlers *handlers;
-} swr_v1_reactor_prepared;
-typedef struct { void *events; void **sockets; uint32_t backend; } swr_v1_reactor_backend_view;
-swr_v1_reactor_prepared swr_v1_reactor_state_new(void);
-void swr_v1_reactor_state_free(swr_v1_reactor_state *);
-int swr_v1_reactor_state_open(swr_v1_reactor_state *, int kind, int count);
-void swr_v1_reactor_state_close_backend(swr_v1_reactor_state *);
-swr_v1_reactor_backend_view swr_v1_reactor_state_backend(swr_v1_reactor_state *);
+} swr_v1_reactor_head;
 /* Reactor's end callbacks (set_end_callback, or erase_end_callback without fn) and exit
- * conditions (set_exit_condition, or remove_exit_condition without fn: whether one was set),
- * and the built-ins its constructor sets after the create hook. */
+ * conditions (set_exit_condition, or remove_exit_condition without fn: whether one was set). */
 void swr_v1_reactor_set_end(swr_v1_reactor_state *, int id, void (*callback)(void));
 bool swr_v1_reactor_set_exit(swr_v1_reactor_state *, int id, bool (*condition)(size_t *event_num));
 bool swr_v1_reactor_isset_exit(const swr_v1_reactor_state *, int id);
-void swr_v1_reactor_install_builtins(swr_v1_reactor_state *);
-int swr_v1_reactor_state_descriptor(const swr_v1_reactor_state *);
-int swr_v1_reactor_state_socket(swr_v1_reactor_state *, void *socket, uint32_t op, int events);
 /* Logs message as from origin: code 0 is swoole_sys_warning (errno is the kernel's), else
  * swoole_error_log(SW_LOG_WARNING, code, ...); then the backtrace on error. */
 typedef void (*swr_v1_reactor_change_log)(const char *origin, int code, const char *message);
@@ -359,6 +350,8 @@ int swr_v1_reactor_change(swr_v1_reactor_state *, void *socket, uint32_t op, int
 int swr_v1_reactor_interest(swr_v1_reactor_state *, void *socket, uint32_t kind, int event, swr_v1_reactor_change_log log);
 #ifdef __cplusplus
 }
-static_assert(sizeof(swr_v1_reactor_backend_plan) == 12, "reactor backend plan ABI");
+static_assert(offsetof(swr_v1_reactor_head, type_) == sizeof(swr_v1_reactor_prepared) &&
+                  (sizeof(void *) != 8 || (sizeof(swr_v1_reactor_prepared) == 32 && sizeof(swr_v1_reactor_head) == 160)),
+              "crates/reactor's ReactorState layout");
 #endif
 #endif

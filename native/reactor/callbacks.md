@@ -19,7 +19,7 @@ The C++ members (`set_end_callback`, `erase_end_callback`, `set_exit_condition`,
 `Reactor::wait` are Rust under their upstream symbols.
 
 The constructor's built-ins, set after the create hook
-(`swr_v1_reactor_install_builtins`): the deferred queue's end callback and exit
+(`install_builtins`): the deferred queue's end callback and exit
 condition, the idle task, signal dispatch (main thread), try-exit, `malloc_trim`
 (main thread, glibc) and the default condition (no sockets registered).
 

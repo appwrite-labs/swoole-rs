@@ -27,7 +27,7 @@ use swoole_rs_zend::{
 unsafe extern "C" {
     // native/phphelpers/module.cc: this module's TSRM cache, per thread.
     fn swr_cpp_phpthread_tsrmls_update();
-    // native/reactor/reactor.cc: `SwooleTG.reactor`.
+    // crates/reactor: `SwooleTG.reactor`.
     fn swr_v1_event_current() -> *mut c_void;
 }
 

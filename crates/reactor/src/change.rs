@@ -342,9 +342,6 @@ pub unsafe extern "C" fn swr_v1_reactor_interest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reactor_state::{
-        swr_v1_reactor_state_free, swr_v1_reactor_state_new, swr_v1_reactor_state_open,
-    };
     use std::cell::RefCell;
 
     const SW_EVENT_READ: c_int = 1 << 9;
@@ -377,8 +374,7 @@ mod tests {
     #[test]
     fn poll_checks_the_registry_and_its_limit() {
         unsafe {
-            let state = swr_v1_reactor_state_new();
-            assert_eq!(swr_v1_reactor_state_open(state.owner, 3, 1), 0);
+            let state = crate::reactor_state::tests::state(3, 1);
             (*state.fields).id = 3;
             let mut first = SocketRecord::with_fd(10, 5);
             let mut second = SocketRecord::with_fd(11, 5);
@@ -417,7 +413,7 @@ mod tests {
                     ),
                 ]
             );
-            swr_v1_reactor_state_free(state.owner);
+            crate::reactor_state::tests::free(state.owner);
         }
     }
 
@@ -430,8 +426,7 @@ mod tests {
         }
         let (kind, name) = NATIVE;
         unsafe {
-            let state = swr_v1_reactor_state_new();
-            assert_eq!(swr_v1_reactor_state_open(state.owner, kind, 4), 0);
+            let state = crate::reactor_state::tests::state(kind, 4);
             let mut fds = [0; 2];
             assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
             let mut socket = SocketRecord::with_fd(fds[0], 5);
@@ -485,15 +480,14 @@ mod tests {
             );
             assert_eq!(logged()[0].0, format!("{name}::add"));
             libc::close(fds[1]);
-            swr_v1_reactor_state_free(state.owner);
+            crate::reactor_state::tests::free(state.owner);
         }
     }
 
     #[test]
     fn interest_helpers_choose_upstreams_change() {
         unsafe {
-            let state = swr_v1_reactor_state_new();
-            assert_eq!(swr_v1_reactor_state_open(state.owner, 3, 4), 0);
+            let state = crate::reactor_state::tests::state(3, 4);
             let mut socket = SocketRecord::with_fd(20, 5);
             let interest = |socket: &mut SocketRecord, kind, event| {
                 swr_v1_reactor_interest(state.owner, socket, kind, event, log)
@@ -521,7 +515,7 @@ mod tests {
             assert_eq!(missing.events, SW_EVENT_READ | SW_EVENT_WRITE);
             assert_eq!(logged()[0].0, "ReactorPoll::set");
             assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 0);
-            swr_v1_reactor_state_free(state.owner);
+            crate::reactor_state::tests::free(state.owner);
         }
     }
 }

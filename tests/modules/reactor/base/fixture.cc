@@ -1,5 +1,5 @@
 // C entry points for the Rust cases in src/main.rs (upstream's core-tests/src/reactor/base.cpp):
-// the Reactor's constructor, members and callback slots, the SocketPair classes and the
+// the Reactor's members and callback slots, the SocketPair classes and the
 // C++-linkage event, hook, signal and timer APIs. Every assertion and callback body is Rust's.
 // Compiled into the hybrid tree's lib-swoole by tests/modules/hooks/system.py.
 #include <stddef.h>
@@ -43,12 +43,6 @@ struct swr_case_reactor_view {
     void *ptr;
 };
 
-Reactor *swr_case_reactor_new(int max_event, int type) {
-    return new Reactor(max_event, static_cast<Reactor::Type>(type));
-}
-void swr_case_reactor_delete(Reactor *reactor) {
-    delete reactor;
-}
 Reactor *swr_case_tg_reactor() {
     return SwooleTG.reactor;
 }
@@ -63,7 +57,7 @@ swr_case_reactor_view swr_case_reactor_view_of(const Reactor *r) {
             reinterpret_cast<const void *>(r->write),
             reinterpret_cast<const void *>(r->close),
             r->defer_tasks,
-            reinterpret_cast<const void *>(r->default_write_handler),
+            reinterpret_cast<const void *>(r->default_write_handler()),
             r->ptr};
 }
 // wait_exit, once and running take 0 or 1; -1 leaves the field.

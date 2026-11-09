@@ -4,10 +4,7 @@
 //! upstream reaches through `Reactor`'s callbacks.
 use crate::SocketRecord;
 use crate::handlers::{self, Handlers};
-use crate::reactor_state::{
-    ReactorFields, ReactorState, before_wait, kernel_wait, swr_v1_reactor_state_backend,
-    swr_v1_reactor_state_descriptor, swr_v1_reactor_state_socket,
-};
+use crate::reactor_state::{ReactorFields, ReactorState, before_wait, kernel_wait};
 use std::ffi::{c_int, c_void};
 use swoole_rs_corebase::log;
 
@@ -78,7 +75,7 @@ fn mask(read: bool, write: bool, hangup: bool) -> u32 {
 pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
     let reactor = ops.reactor;
     // SAFETY: the state is live; the backend's arrays stay put until the state closes it.
-    let view = unsafe { swr_v1_reactor_state_backend(owner) };
+    let view = unsafe { (*owner).backend_view() };
     // SAFETY: the state is live; its fields and handler tables live as long as it does.
     let fields = unsafe { &raw const (*owner).fields };
     // SAFETY: as above.
@@ -349,7 +346,7 @@ fn wait_failed(ops: &Loop<'_>, entries: c_int) {
     // SAFETY: the live state's fields; no native effect runs during the warning.
     let fields = unsafe { &*ops.fields };
     // SAFETY: a single read of the live state.
-    let epfd = unsafe { swr_v1_reactor_state_descriptor(ops.owner) };
+    let epfd = unsafe { (*ops.owner).backend_fd };
     let id = fields.id;
     // `Reactor::get_timeout_msec()`.
     let timeout = if fields.defer_tasks.is_null() {
@@ -464,9 +461,11 @@ fn oneshot(ops: &Loop<'_>, socket: *mut c_void, live: impl Fn() -> bool) {
     if live() && unsafe { (*socket.cast::<SocketRecord>()).events } & SW_EVENT_ONCE != 0 {
         let socket = socket.cast::<SocketRecord>();
         if ops.backend == EPOLL {
-            // SAFETY: the live state and a registered socket; no native effect is active.
+            // SAFETY: the live state; no native effect is active.
+            let state = unsafe { &mut *ops.owner };
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
-            unsafe { swr_v1_reactor_state_socket(ops.owner, socket, 2, 0) };
+            // SAFETY: a registered socket, distinct from the state.
+            state.record(unsafe { &mut *socket }, 2, 0);
         } else {
             // SAFETY: as above; poll and kqueue run `Reactor::del`.
             unsafe {
@@ -485,10 +484,6 @@ fn oneshot(ops: &Loop<'_>, socket: *mut c_void, live: impl Fn() -> bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reactor_state::{
-        swr_v1_reactor_state_descriptor, swr_v1_reactor_state_free, swr_v1_reactor_state_new,
-        swr_v1_reactor_state_open, swr_v1_reactor_state_socket,
-    };
     use std::cell::RefCell;
 
     thread_local! {
@@ -566,28 +561,21 @@ mod tests {
     unsafe fn run(kind: c_int, flags: [bool; 4]) -> (Vec<&'static str>, bool) {
         let [once, begin_stops, socket_once, deferred] = flags;
         EFFECTS.with(|effects| effects.borrow_mut().clear());
-        let state = swr_v1_reactor_state_new();
-        assert_eq!(
-            unsafe { swr_v1_reactor_state_open(state.owner, kind, 4) },
-            0
-        );
+        let state = crate::reactor_state::tests::state(kind, 4);
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let events = 512 | if socket_once { SW_EVENT_ONCE } else { 0 };
         let mut socket = SocketRecord::with_fd(fds[0], 5);
         let token: *mut c_void = (&raw mut socket).cast();
         unsafe {
-            assert_eq!(
-                swr_v1_reactor_state_socket(state.owner, &raw mut socket, 0, events),
-                0
-            );
+            assert_eq!((*state.owner).record(&mut socket, 0, events), 0);
             assert!(crate::swr_v1_reactor_handlers_set(
                 state.handlers,
                 5,
                 512,
                 Some(read)
             ));
-            let descriptor = swr_v1_reactor_state_descriptor(state.owner);
+            let descriptor = (*state.owner).backend_fd;
             #[cfg(target_os = "linux")]
             if kind == 1 {
                 assert_eq!(
@@ -630,7 +618,7 @@ mod tests {
         unsafe {
             assert!((*state.fields).start);
             (*state.fields).defer_tasks = std::ptr::null_mut();
-            swr_v1_reactor_state_free(state.owner);
+            crate::reactor_state::tests::free(state.owner);
             libc::close(fds[0]);
             libc::close(fds[1]);
         }

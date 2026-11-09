@@ -165,7 +165,7 @@ mod tests {
     /// lands on the next pass, and the queue is gone once run.
     #[test]
     fn deferred_tasks_run_in_order_and_reentrant_defers_wait_a_pass() {
-        let state = crate::swr_v1_reactor_state_new();
+        let state = crate::reactor_state::tests::state(3, 1);
         let fields = state.fields;
         FIELDS.set(fields);
         unsafe {
@@ -185,7 +185,7 @@ mod tests {
             assert!((*fields).defer_tasks.is_null());
             run_defer(&raw mut (*fields).defer_tasks);
             assert_eq!(take(), []);
-            crate::swr_v1_reactor_state_free(state.owner);
+            crate::reactor_state::tests::free(state.owner);
         }
     }
 
