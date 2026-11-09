@@ -564,6 +564,7 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-coroutine",
  "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
