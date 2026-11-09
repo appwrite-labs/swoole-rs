@@ -302,46 +302,11 @@ const char *swr_v1_server_startup_error(const char *message, int code);
 /* The number of a local interface address in the table Server::create read. */
 uint16_t swr_v1_server_local_addr_index(const swr_v1_server_state *state, bool v6, const uint8_t *addr);
 
-/*
- * The admin server's commands (crates/server/src/admin.rs). register_admin_server_commands
- * adds command i under swr_v1_server_admin_command(i) until it returns null; its handler
- * runs swr_v1_server_admin_run, which reads each fact through call(context, op, arg, out)
- * and hands back the JSON answer with SWR_SERVER_ADMIN_ANSWER. Text fields are lent
- * until the next call.
- */
-typedef uint64_t (*swr_v1_server_admin_call)(void *context, uint32_t op, uint64_t arg, void *out);
-const char *swr_v1_server_admin_command(uint32_t index, bool event_workers, int *accepted_process_types);
-void swr_v1_server_admin_run(uint32_t index, const char *msg, size_t len, void *context, swr_v1_server_admin_call call);
-
-enum {
-    SWR_SERVER_ADMIN_ANSWER, SWR_SERVER_ADMIN_PIPE_WORKERS, SWR_SERVER_ADMIN_PIPE_SOCKET,
-    SWR_SERVER_ADMIN_HAS_REACTOR, SWR_SERVER_ADMIN_SOCKETS, SWR_SERVER_ADMIN_SOCKET,
-    SWR_SERVER_ADMIN_SOCKET_NAME, SWR_SERVER_ADMIN_COMMANDS, SWR_SERVER_ADMIN_COMMAND,
-    SWR_SERVER_ADMIN_CONNECTIONS, SWR_SERVER_ADMIN_CONNECTION, SWR_SERVER_ADMIN_SESSION,
-    SWR_SERVER_ADMIN_THREAD, SWR_SERVER_ADMIN_MANAGER, SWR_SERVER_ADMIN_MEMORY, SWR_SERVER_ADMIN_PORTS,
-    SWR_SERVER_ADMIN_PORT,
-};
+/* register_admin_server_commands(serv) (crates/server/src/admin_live.rs): upstream's admin
+ * commands, whose get_memory_info reports php_memory(). */
+void swr_v1_server_admin_register(void *serv, size_t (*php_memory)(void));
 
 typedef struct { const char *name; uint64_t value; } swr_v1_server_fact;
-typedef struct { const char *data; size_t len; } swr_v1_server_text;
-typedef struct {
-    int64_t fd, events, socket_type, fd_type, port;
-    uint64_t total_recv_bytes, total_send_bytes, out_buffer_size;
-    swr_v1_server_text address;
-} swr_v1_server_admin_socket;
-typedef struct {
-    int64_t session_id, reactor_id, fd, server_port, port;
-    uint64_t overflow, recv_queued_bytes, send_queued_bytes, total_recv_bytes, total_send_bytes, uid;
-    double connect_time, last_recv_time, last_send_time, last_dispatch_time;
-    swr_v1_server_text server_address, address;
-} swr_v1_server_admin_connection;
-typedef struct {
-    swr_v1_server_text host, protocols;
-    int64_t port, backlog, type, ssl, connection_num;
-} swr_v1_server_admin_port;
-typedef struct { swr_v1_server_text name; int64_t id, accepted_process_types; } swr_v1_server_admin_command_info;
-typedef struct { int64_t id; uint64_t dispatch_count, event_num, timer_num; } swr_v1_server_admin_thread;
-typedef struct { uint64_t reload_count; int64_t reload_last_time; } swr_v1_server_admin_manager;
 
 /* The TCP_INFO fields of *info (struct tcp_info; tcp_connection_info on Apple) in
  * upstream's order, at most cap of them into out; returns how many. Linux and Apple. */

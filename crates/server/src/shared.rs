@@ -53,20 +53,15 @@ pub(crate) fn unix_now() -> libc::time_t {
 }
 
 pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCounters> {
-    let config = state.config();
-    if config.is_null() {
-        return None;
-    }
-    // SAFETY: a live state's configuration; its shared record stays mapped.
-    let gs = unsafe { (*config).gs }.cast::<ServerCounters>();
-    // SAFETY: a non-null `gs` is the server's shared counters.
+    let gs = state.config_ref().gs.cast::<ServerCounters>();
+    // SAFETY: a non-null `gs` is the server's shared counters, which stay mapped.
     unsafe { gs.as_ref() }
 }
 
 /// The counters of the port a session arrived on (`get_port_by_session_id(id)->gs`).
 fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<&PortCounters> {
     use crate::records::swr_v1_server_connection;
-    if state.tables().is_null() {
+    if !crate::base_factory::allocated(state) {
         return None;
     }
     // SAFETY: the state owns initialized tables; kind 1 is `get_connection_by_session_id`.
@@ -163,13 +158,8 @@ pub(crate) unsafe fn native_fact(
     ) {
         return None;
     }
-    // SAFETY: the state owns a stable configuration allocation for this call.
-    let config = unsafe { &*state }.config();
-    if config.is_null() {
-        return None;
-    }
-    // SAFETY: the config pointer is live; its shared record remains mapped for this call.
-    let gs = unsafe { (*config).gs }.cast::<ServerCounters>();
+    // SAFETY: the caller lends a live state.
+    let gs = unsafe { &*state }.config_ref().gs.cast::<ServerCounters>();
     if gs.is_null() {
         return None;
     }

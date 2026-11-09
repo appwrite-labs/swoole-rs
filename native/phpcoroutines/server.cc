@@ -14,12 +14,9 @@
 #include "swoole_rs_phpserver.h"
 #include "swoole_rs_phpprocess.h"
 #include "swoole_rs_phpruntime.h"
+#include "swoole_rs.h"
 
 using namespace swoole;
-
-namespace swoole {
-void register_admin_server_commands(Server *serv);
-}
 
 zend_class_entry *swoole_server_ce;
 zend_class_entry *swoole_server_port_ce;
@@ -93,7 +90,9 @@ void lifecycle_install(void *server, uint32_t which) {
             serv->recv_buffer_allocator = sw_zend_string_allocator();
         }
         break;
-    case SWR_PHPSERVER_INSTALL_ADMIN_COMMANDS: register_admin_server_commands(serv); break;
+    case SWR_PHPSERVER_INSTALL_ADMIN_COMMANDS:
+        swr_v1_server_admin_register(serv, [] { return zend_memory_usage(true); });
+        break;
     default: break;
     }
 }

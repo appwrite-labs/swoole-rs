@@ -265,9 +265,6 @@ pub(crate) unsafe fn answer(
     let ctx = unsafe { &mut *ctx };
     // SAFETY: per the caller.
     let state = unsafe { &*state };
-    if state.config().is_null() || state.tables().is_null() {
-        return None;
-    }
     let mut o = Objects { ctx, state };
     let cpus = c_int::from(swoole_rs_corebase::swr_v1_core_cpu_num());
     Some(match op {
@@ -2193,8 +2190,7 @@ unsafe extern "C" fn forced_exit(_: *mut usize) -> bool {
     let state = unsafe { crate::view::state_ptr(serv) };
     // SAFETY: as above.
     let state = unsafe { &*state };
-    // SAFETY: as above.
-    let max_wait_time = unsafe { (*state.config()).max_wait_time };
+    let max_wait_time = state.config_ref().max_wait_time;
     let now = crate::shared::unix_now();
     if now - FORCED_EXIT_TIME.load(Relaxed) > libc::time_t::from(max_wait_time) {
         error(
@@ -2234,13 +2230,11 @@ unsafe extern "C" {
 /// server's.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus {
-    // SAFETY: a live server's config.
-    let thread_mode = u64::from(unsafe { (*state.config()).mode_ }) == MODE_THREAD;
+    let thread_mode = u64::from(state.config_ref().mode_) == MODE_THREAD;
     let bus = if thread_mode {
         swoole_rs_corebase::thread_message_bus()
     } else {
-        // SAFETY: a live server's tables.
-        unsafe { (*state.tables()).message_bus }
+        state.tables_ref().message_bus
     };
     // SAFETY: the thread's or the server's live `MessageBus`.
     unsafe { crate::objects::Bus::of(bus) }
@@ -2870,8 +2864,7 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// The server's own `MessageBus`: its Rust bus, then its allocator.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn server_message_bus(state: &ServerState) -> crate::objects::Bus {
-    // SAFETY: a live server's tables, which lend `&Server::message_bus`.
-    let bus = unsafe { (*state.tables()).message_bus };
+    let bus = state.tables_ref().message_bus;
     // SAFETY: the server's live `MessageBus`.
     unsafe { crate::objects::Bus::of(bus) }
 }
@@ -2887,8 +2880,7 @@ pub(crate) unsafe extern "C" fn create_pipe_buffers(serv: *mut core::ffi::c_void
     let state = unsafe { crate::view::state_ptr(serv) };
     // SAFETY: the live server's state.
     let state = unsafe { &*state };
-    // SAFETY: a live server's config.
-    let size = unsafe { (*state.config()).ipc_max_size };
+    let size = state.config_ref().ipc_max_size;
     if server_message_bus(state).alloc_buffer(size as usize) {
         0
     } else {

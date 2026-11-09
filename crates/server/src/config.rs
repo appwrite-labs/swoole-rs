@@ -202,10 +202,10 @@ pub unsafe extern "C" fn swr_v1_server_config_init(
     timezone: libc::c_long,
     allocator: *const c_void,
 ) {
-    // SAFETY: the caller owns this fresh state's configuration exclusively for initialization.
-    let pointer = unsafe { &*state }.config();
-    // SAFETY: initialization owns the pointed-to configuration exclusively.
-    let config = unsafe { &mut *pointer };
+    // SAFETY: the caller lends a fresh state.
+    let state = unsafe { &*state };
+    // SAFETY: initialization owns the fresh state's configuration exclusively.
+    let config = unsafe { &mut *state.config() };
     config.reactor_num = u16::try_from(cpu_num.min(8)).unwrap_or(8);
     config.worker_num = cpu_num;
     config.timezone_ = timezone;
@@ -213,10 +213,8 @@ pub unsafe extern "C" fn swr_v1_server_config_init(
     config.http_compression_level = 1;
     config.compression_min_length = 20;
     config.recv_buffer_allocator = allocator;
-    // SAFETY: initialization exclusively owns this fresh state and its table-view box.
-    let tables_pointer = unsafe { &*state }.tables();
     // SAFETY: no native table view is read before this initialization finishes.
-    let tables = unsafe { &mut *tables_pointer };
+    let tables = unsafe { &mut *state.tables() };
     tables.max_connection = max_sockets.min(100_000);
 }
 
@@ -272,15 +270,10 @@ pub(crate) unsafe fn native_fact(
     }
     // SAFETY: the caller lends the state's stable record allocations for this leaf access.
     let owner = unsafe { &*state };
-    let config = owner.config();
-    let tables = owner.tables();
-    if config.is_null() || tables.is_null() {
-        return None;
-    }
     // SAFETY: no native callback runs during this leaf record access.
-    let config = unsafe { &mut *config };
+    let config = unsafe { &mut *owner.config() };
     // SAFETY: no native callback runs during this leaf table access.
-    let tables = unsafe { &mut *tables };
+    let tables = unsafe { &mut *owner.tables() };
     Some(match op {
         OP_MODE => u64::from(config.mode_),
         OP_SINGLE_THREAD => u64::from(config.single_thread),

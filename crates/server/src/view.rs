@@ -372,9 +372,7 @@ pub unsafe fn port_connection_num(serv: *mut c_void, port: *mut c_void) -> usize
 /// As [`config`].
 pub unsafe fn max_connection(serv: *mut c_void) -> u32 {
     // SAFETY: per the caller.
-    let tables = unsafe { state(serv) }.tables();
-    // SAFETY: the tables live as long as the server.
-    unsafe { &*tables }.max_connection
+    unsafe { state(serv) }.tables_ref().max_connection
 }
 
 /// `serv->get_task_worker_pool()`.
@@ -536,12 +534,7 @@ pub unsafe fn healthy(serv: *mut c_void, now: f64, conn: &ConnectionRecord) -> b
 /// `serv` is a live `Server`.
 pub unsafe fn port_at(serv: *mut c_void, index: usize) -> *mut c_void {
     // SAFETY: per the caller.
-    let tables = unsafe { state(serv) }.tables();
-    if tables.is_null() {
-        return core::ptr::null_mut();
-    }
-    // SAFETY: the live server's tables.
-    let ports = unsafe { &*tables }.ports();
+    let ports = unsafe { state(serv) }.tables_ref().ports();
     ports.get(index).copied().unwrap_or(core::ptr::null_mut())
 }
 
@@ -561,12 +554,8 @@ pub unsafe fn port_number(serv: *mut c_void, port: c_int) -> *mut c_void {
 /// `serv` is a live `Server`.
 pub unsafe fn find_port(serv: *mut c_void, wanted: impl Fn(&PortConfig) -> bool) -> *mut c_void {
     // SAFETY: per the caller.
-    let tables = unsafe { state(serv) }.tables();
-    if tables.is_null() {
-        return core::ptr::null_mut();
-    }
-    // SAFETY: the live server's tables, whose ports are live.
-    unsafe { &*tables }
+    unsafe { state(serv) }
+        .tables_ref()
         .ports()
         .iter()
         .copied()

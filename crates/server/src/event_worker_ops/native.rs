@@ -60,16 +60,14 @@ impl Context {
         unsafe { view::state(self.serv) }
     }
     pub(super) fn config(&self) -> &crate::ServerConfig {
-        // SAFETY: its config lives as long as it.
-        unsafe { &*self.state().config() }
+        self.state().config_ref()
     }
     pub(super) fn counters(&self) -> &crate::ServerCounters {
         // SAFETY: the context's live server.
         unsafe { view::counters(self.serv) }
     }
     pub(super) fn tables(&self) -> &crate::ServerTables {
-        // SAFETY: its tables live as long as it.
-        unsafe { &*self.state().tables() }
+        self.state().tables_ref()
     }
     pub(super) fn info(&self) -> &DataHead {
         // SAFETY: the ops reading it run with the event's live head.

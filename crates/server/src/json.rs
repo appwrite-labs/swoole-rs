@@ -19,6 +19,7 @@ impl Json {
         Self::Object(fields.into_iter().collect())
     }
 
+    #[cfg(not(test))]
     /// Text from native code; nlohmann refused to dump invalid UTF-8.
     pub(crate) fn utf8(bytes: &[u8]) -> String {
         match core::str::from_utf8(bytes) {

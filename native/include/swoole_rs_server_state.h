@@ -20,7 +20,6 @@ extern "C" {
 #endif
 
 typedef struct swr_v1_server_state swr_v1_server_state;
-typedef struct { const uint8_t *name; size_t length; int32_t id; int32_t accepted_types; } swr_v1_server_command_info;
 /* Commands (crates/server/src/commands.rs). A handler is `void (*)(void *ctx, void *serv,
    const char *message, size_t length, swr_v1_server_command_reply reply, void *out)`, a callback
    `void (*)(void *ctx, void *serv, const char *message, size_t length)`; the context's owner keeps
@@ -29,8 +28,6 @@ typedef void (*swr_v1_server_command_reply)(void *out, const char *data, size_t 
 typedef struct { void (*invoke)(void); void *ctx; } swr_v1_server_command_fn;
 /* What OP_ST_CMD_SEND writes to the target process. */
 typedef struct { int32_t action; uint32_t process_id; int32_t command_id; int64_t request_id; const char *message; size_t length; } swr_v1_server_command_send;
-bool swr_v1_server_command_at(const swr_v1_server_state *, size_t, swr_v1_server_command_info *);
-bool swr_v1_server_command_handler(const swr_v1_server_state *, int32_t, swr_v1_server_command_fn *);
 void swr_v1_server_command_result(const swr_v1_server_state *, void *serv, int64_t request_id, const char *, size_t);
 bool swr_v1_server_add_command(void *serv, const char *name, size_t, int accepted_types, swr_v1_server_command_fn handler);
 bool swr_v1_server_command(void *serv, uint32_t process_id, int process_type, const char *name, size_t,

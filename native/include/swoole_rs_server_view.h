@@ -69,16 +69,6 @@ template <class R, class... A> class Callback<R(A...)> : swr_v1_server_callback 
     }
 };
 
-// A command handler's reply to `message` (`Server::Command::Handler`'s call).
-inline std::string command_answer(const swr_v1_server_command_fn &handler, void *serv, const char *message,
-                                  size_t length) {
-    std::string out;
-    reinterpret_cast<void (*)(void *, void *, const char *, size_t, swr_v1_server_command_reply, void *)>(
-        handler.invoke)(handler.ctx, serv, message, length,
-                        [](void *o, const char *d, size_t n) { static_cast<std::string *>(o)->append(d, n); }, &out);
-    return out;
-}
-
 // Borrowed original API views over the configuration allocation owned by Rust.
 // The base owner outlives every derived native callback/container during teardown.
 class ServerFields {

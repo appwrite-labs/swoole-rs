@@ -121,11 +121,7 @@ fn pipe(ctx: &Context, op: u32) -> Option<u64> {
 /// `serv` is a live `Server`.
 pub(crate) unsafe fn ports<'a>(serv: *mut c_void) -> &'a [*mut c_void] {
     // SAFETY: per the caller.
-    let state = unsafe { view::state_ptr(serv) };
-    // SAFETY: its state and tables live as long as it.
-    let tables = unsafe { (*state).tables() };
-    // SAFETY: as above.
-    unsafe { tables.as_ref() }.map_or(&[], |tables| tables.ports())
+    unsafe { view::state(serv) }.tables_ref().ports()
 }
 
 /// `Socket::is_stream(type)`.
