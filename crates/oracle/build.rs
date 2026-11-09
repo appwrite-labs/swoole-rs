@@ -1,4 +1,4 @@
-// upstream/ holds unmodified files from Swoole v6.2.4 (c7e51450); see src/lib.rs.
+// upstream/ holds unmodified files from Swoole v6.2.5 (76c657d8); see src/lib.rs.
 #![expect(
     clippy::unwrap_used,
     clippy::expect_used,
