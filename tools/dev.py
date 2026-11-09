@@ -155,8 +155,7 @@ def plan(args, reports):
     script('ownership', 'tools/check_migration.py')
     if integrate or stdext or sockets:
         script('stdext-reference-build' if stdext else 'reference-build', 'tools/build_upstream.py',
-               *(['--stdext'] if stdext else []), *(['--php-sockets'] if sockets else []), '--jobs', args.jobs,
-               *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']))
+               *(['--stdext'] if stdext else []), *(['--php-sockets'] if sockets else []), '--jobs', args.jobs)
     script('cargo-build', 'tools/build_ext.py', '--native', *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []),
            *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []))
     # The native gates link fixtures against its Zend-free Rust archive and compile against its tree.
@@ -703,8 +702,6 @@ def main():
     parser.add_argument('--match-child-php', action='store_true',
                         help='Bind bare php children in direct official-runner phases to their selected parent; default off')
     parser.add_argument('--tls13-python', type=Path, help='Explicit Python SSL provider for native-repair TLS1.3 clients only; defaults to this driver, without fallback')
-    parser.add_argument('--ccache', type=Path, default=shutil.which('ccache'), help='Shared compiler cache executable, detected by default')
-    parser.add_argument('--no-ccache', dest='ccache', action='store_const', const=None)
     parser.add_argument('--php-extension', action='append', default=[])
     parser.add_argument('--hypothesis', help='What this experiment should establish')
     parser.add_argument('--expect', help='Observable outcome that supports the hypothesis')
