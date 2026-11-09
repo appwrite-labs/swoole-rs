@@ -700,13 +700,17 @@ pub unsafe extern "C" fn swr_v1_utils_log(
         }
         log::LOG_SYS_ERROR => (SW_LOG_ERROR, failed()),
         log::LOG_FATAL => (SW_LOG_ERROR, [origin, b"(): ", message].concat()),
+        log::LOG_FATAL_LINE => (SW_LOG_ERROR, message.to_vec()),
         _ => return,
     };
     let length = swoole_rs_error::set_last_error_msg(&line);
     if let Some(logger) = process_logger() {
         logger.put(level, line.as_ptr(), length);
     }
-    if matches!(kind, log::LOG_SYS_ERROR | log::LOG_FATAL) {
+    if matches!(
+        kind,
+        log::LOG_SYS_ERROR | log::LOG_FATAL | log::LOG_FATAL_LINE
+    ) {
         swoole_rs_corebase::swoole_exit(1);
     }
 }

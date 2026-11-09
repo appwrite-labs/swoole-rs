@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The C++ effects Rust sequences (`lifecycle.rs`): native/corebase/globals.cc
-//! registers them as it loads (`swr_v1_core_set_native_host`), so the archive
+//! The C++ effects Rust sequences (`lifecycle.rs`): native/corebase/globals.cc's
+//! `swoole_init` registers them (`swr_v1_core_set_native_host`), so the archive
 //! keeps no link-time reference to C++ and the native gates link it without them.
 //! They come as one function, not a table: a sanitizer keeps every global alive,
 //! and a table would keep the timer, event and signal code with it.

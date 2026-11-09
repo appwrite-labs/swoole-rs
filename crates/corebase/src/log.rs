@@ -53,6 +53,8 @@ pub const LOG_INFO: c_int = 4;
 pub const LOG_SYS_ERROR: c_int = 5;
 /// `swoole_error`; it exits the process.
 pub const LOG_FATAL: c_int = 6;
+/// `SwooleG.fatal_error`'s line, put as it is at `SW_LOG_ERROR`; it exits the process.
+pub const LOG_FATAL_LINE: c_int = 7;
 
 /// Native's log macros: `kind` is a `LOG_*`, `level` and `code` are what that
 /// macro takes, and `message` is the formatted text after `__SW_FUNC__`'s part.
@@ -77,13 +79,34 @@ fn errno() -> c_int {
 }
 
 fn emit(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
-    let Some(host) = HOST.get() else { return };
     // printf's %s stops at the first NUL, so the message does too.
     let mut text = message.to_string();
     text.truncate(text.find('\0').unwrap_or(text.len()));
     text.push('\0');
+    if let Ok(text) = CStr::from_bytes_with_nul(text.as_bytes()) {
+        emit_text(kind, level, code, origin, text);
+    }
+}
+
+fn emit_text(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+    let Some(host) = HOST.get() else { return };
     // SAFETY: both strings are NUL-terminated and outlive the call.
-    unsafe { host(kind, level, code, origin.as_ptr(), text.as_ptr().cast()) };
+    unsafe { host(kind, level, code, origin.as_ptr(), message.as_ptr()) };
+}
+
+/// `swr_v1_core_error_line` (`native/include/swoole_rs_corebase_state.h`).
+#[repr(C)]
+pub struct ErrorLine {
+    text: [u8; crate::constants::SW_ERROR_MSG_SIZE as usize],
+}
+
+/// The line `SwooleG.fatal_error` (`format.c`) formatted: the log host puts it,
+/// up to its first NUL, and exits the process.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_core_fatal_line(line: &ErrorLine) {
+    if let Ok(text) = CStr::from_bytes_until_nul(&line.text) {
+        emit_text(LOG_FATAL_LINE, 0, 0, c"", text);
+    }
 }
 
 /// `swoole_sys_warning` from `origin`, with this thread's errno as on entry.

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
 // What stays C++ of base.cc: the objects Rust's lifecycles create and delete (the
-// memory pool, whose vtable admin.cc's dynamic_cast needs; the thread's String), the
-// build's compile-time strings, the variadic fatal-error hook, and the std::string,
-// std::function and throwing APIs. Rust owns SwooleG, SwooleTG, the init, clean, fork
-// and thread sequences (crates/corebase), the process logger (crates/process) and the
-// log macros Rust's logs run (crates/utilities); swoole_init here only registers them
-// before Rust's body runs.
+// memory pool, a header-only class whose vtable Table and core-tests call and whose
+// constructor throws; the thread's String), the build's compile-time strings and
+// configure switches, and the std::string and throwing APIs. Rust owns SwooleG,
+// SwooleTG, the init, clean, fork and thread sequences (crates/corebase), the
+// fatal-error hook (crates/corebase/src/format.c), the process logger (crates/process)
+// and the log macros Rust's logs run (crates/utilities); swoole_init here only
+// registers them before Rust's body runs. The timer, event, signal and coroutine
+// leaves are Rust above corebase, so they come through here too.
 #include "swoole.h"
 #include "swoole_memory.h"
 #include "swoole_string.h"
@@ -16,18 +18,6 @@
 #include "swoole_coroutine_api.h"
 #include "swoole_rs_corebase.h"
 #include "swoole_rs_utilities.h"
-
-#include <cstdarg>
-
-static void fatal_error(int code, const char *format, ...) {
-    va_list args;
-    size_t length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "(ERROR %d): ", code);
-    va_start(args, format);
-    length += sw_vsnprintf(sw_error + length, SW_ERROR_MSG_SIZE - length, format, args);
-    va_end(args);
-    sw_logger()->put(SW_LOG_ERROR, sw_error, length);
-    swoole_exit(1);
-}
 
 bool swoole_get_env(const char *name, int *value) {
     const char *e = getenv(name);
@@ -60,7 +50,7 @@ static uintptr_t effect(int effect, uintptr_t argument) {
     case 15:
         sw_memset_zero(sw_error, SW_ERROR_MSG_SIZE);
         swr_v1_core_set_stdout(stdout);
-        swr_v1_core_set_fatal_error(reinterpret_cast<void *>(fatal_error));
+        swr_v1_core_set_fatal_error(reinterpret_cast<void *>(swr_v1_core_fatal_error_hook));
         break;
     case 16:  // once Rust has made the logger
 #ifdef SW_DEBUG

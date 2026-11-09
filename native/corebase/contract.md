@@ -1,10 +1,27 @@
 # Core base helpers
 
 Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. `src/core/base.cc`
-and `src/core/misc.cc` are gone: what stable Rust can't express of them (C++ object
-lifetimes, compile-time build strings, the variadic fatal-error hook, the log
-macros and the std::string/std::function and throwing APIs) is
-`native/corebase/globals.cc`. Rust owns `SwooleG` and `SwooleTG`; `swoole::Global`
+and `src/core/misc.cc` are gone. What has to stay C++ of them is
+`native/corebase/globals.cc`:
+
+- The memory pool's `new`/`delete`: `swoole::GlobalMemory` is a header-only class
+  whose vtable Table and core-tests call and whose constructor throws.
+- `new`/`delete` of `SwooleTG.buffer_stack`, a `swoole::String` (crates/buffer,
+  above corebase).
+- The build's compile-time strings (`__VERSION__`, `OPENSSL_VERSION_TEXT`) and
+  configure switches (`SW_DEBUG`, `HAVE_FUTEX`, `HAVE_SIGNALFD`), and `stdout`.
+- `swoole_get_env`, which throws as `std::stoi` does (the `envstoi` gate cases
+  catch `invalid_argument`, `out_of_range` and `bad_alloc`), and
+  `swoole_set_task_tmpdir(const std::string &)`, which throws on an empty path.
+- `swoole_init`, which registers the effects Rust's lifecycles run and the crates
+  above corebase define (the timer, event, signal, coroutine and logger leaves),
+  so gates that never call it link without them.
+
+The variadic fatal-error hook (`swr_v1_core_fatal_error_hook`) is C in the Rust
+archive (`crates/corebase/src/format.c`): it formats `(ERROR code): ` and the
+message into a `SW_ERROR_MSG_SIZE` line, and Rust's `swr_v1_core_fatal_line` hands
+it to the log host (`LOG_FATAL_LINE`), which copies it to `sw_error`, puts it at
+`SW_LOG_ERROR` and exits. Rust owns `SwooleG` and `SwooleTG`; `swoole::Global`
 and `swoole::ThreadGlobal` are their C++ views. `swoole_get_task_tmpdir` and
 `sw_thread_lock`, which nothing called, are gone.
 

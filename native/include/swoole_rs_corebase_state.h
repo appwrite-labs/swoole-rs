@@ -51,6 +51,14 @@ void swr_v1_core_set_last_error(int);
  * 4 swoole_info, 5 swoole_sys_error (errno = code), 6 swoole_error; origin is __SW_FUNC__. */
 typedef void (*swr_v1_core_log_host)(int kind, int level, int code, const char *origin, const char *message);
 void swr_v1_core_set_log_host(swr_v1_core_log_host);
+/* SwooleG.fatal_error as swoole_init installs it (crates/corebase/src/format.c):
+ * "(ERROR code): " and the message, formatted into a line the log host puts at
+ * SW_LOG_ERROR before it exits the process. */
+typedef struct {
+    char text[SW_ERROR_MSG_SIZE];
+} swr_v1_core_error_line;
+void swr_v1_core_fatal_error_hook(int code, const char *format, ...);
+void swr_v1_core_fatal_line(const swr_v1_core_error_line *line);
 /* The C++ effects Rust's lifecycles run (crates/corebase/src/native.rs), which
  * native/corebase/globals.cc's swoole_init registers, so the Rust archive links
  * without C++. effect runs one numbered effect (globals.cc lists them); logger is

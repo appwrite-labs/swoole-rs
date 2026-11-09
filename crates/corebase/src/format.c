@@ -1,13 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors). */
-/* base.cc's printf family, which stable Rust can't define (C variadics); Rust
- * bounds the result (crates/corebase/src/host.rs). */
+/* base.cc's C variadics, which stable Rust can't define: the printf family, whose
+ * result Rust bounds (crates/corebase/src/host.rs), and the fatal-error hook. */
+#include "swoole_rs_corebase_state.h"
+
 #include <stdarg.h>
-#include <stdbool.h>
-#include <stddef.h>
 #include <stdio.h>
 
-size_t swr_v1_core_format_result(char *buf, size_t size, int formatted, bool zero_query);
 void *swr_v1_core_stdout(void);
 
 size_t sw_vsnprintf(char *buf, size_t size, const char *format, va_list args) {
@@ -28,4 +27,14 @@ int sw_printf(const char *format, ...) {
     int retval = vfprintf(swr_v1_core_stdout(), format, args);
     va_end(args);
     return retval;
+}
+
+void swr_v1_core_fatal_error_hook(int code, const char *format, ...) {
+    swr_v1_core_error_line line;
+    size_t length = sw_snprintf(line.text, sizeof line.text, "(ERROR %d): ", code);
+    va_list args;
+    va_start(args, format);
+    sw_vsnprintf(line.text + length, sizeof line.text - length, format, args);
+    va_end(args);
+    swr_v1_core_fatal_line(&line);
 }
