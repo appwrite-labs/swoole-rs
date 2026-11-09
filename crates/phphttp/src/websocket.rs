@@ -13,7 +13,7 @@ use std::{
     ffi::{CStr, c_int, c_void},
     mem::MaybeUninit,
     ptr, slice,
-    sync::atomic::{AtomicBool, Ordering::Relaxed},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
@@ -29,12 +29,13 @@ use swoole_rs_zend::{
     init_object, method_table, register_long_constant,
     string::{self, bytes},
     sys::{
-        _zval_struct__bindgen_ty_1, HashTable, IS_FALSE, IS_NULL, IS_OBJECT, IS_STRING,
-        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_instanceof,
-        swr_zend_is_true, swr_zend_property_slot, swr_zend_string_release,
-        swr_zend_ws_property_not_null, swr_zval_is_true, swr_zval_str, zend_ce_stringable,
-        zend_class_entry, zend_class_implements, zend_hash_str_find, zend_long, zend_object,
-        zend_string, zend_update_property, zval, zval_ptr_dtor,
+        _zval_struct__bindgen_ty_1, HashTable, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_STRING,
+        IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC,
+        swr_zend_http_property_offset, swr_zend_instanceof, swr_zend_is_true,
+        swr_zend_property_slot, swr_zend_string_release, swr_zend_ws_property_not_null,
+        swr_zval_copy, swr_zval_is_true, swr_zval_str, zend_ce_stringable, zend_class_entry,
+        zend_class_implements, zend_hash_str_find, zend_long, zend_object, zend_string,
+        zend_update_property, zend_value, zval, zval_ptr_dtor,
     },
     type_of,
     value::{self, get_long, get_string, obj_of},
@@ -43,6 +44,35 @@ use swoole_rs_zend::{
 static SERVER: Class = Class::new();
 static FRAME: Class = Class::new();
 static CLOSE_FRAME: Class = Class::new();
+/// Frame's declared `fd`, `data`, `opcode`, `flags` and `finish`, as byte offsets
+/// into a `Frame` or `CloseFrame` (which keeps its parent's slots), set in MINIT.
+static SLOTS: [AtomicU32; 5] = [const { AtomicU32::new(0) }; 5];
+const SLOT_NAMES: [&CStr; 5] = [c"fd", c"data", c"opcode", c"flags", c"finish"];
+const FD: usize = 0;
+const DATA: usize = 1;
+const OPCODE: usize = 2;
+const FLAGS: usize = 3;
+const FINISH: usize = 4;
+
+/// Store `value` in the `which` declared property of a Frame just created, as
+/// `zend_update_property` does once it has found the slot by name: Frame's
+/// properties are untyped and it has no write handler. The default it replaces
+/// (a number, null or the interned "") needs no release.
+fn set(frame: *mut zend_object, which: usize, value: zval) {
+    let offset = SLOTS.get(which).map_or(0, |slot| slot.load(Relaxed));
+    let slot = frame.wrapping_byte_add(offset as usize).cast::<zval>();
+    // SAFETY: every caller's fresh Frame, whose declared slot this is.
+    unsafe { slot.write(value) };
+}
+
+/// A long (`IS_LONG`), `true` or `false` zval.
+fn scalar(type_info: u32, lval: zend_long) -> zval {
+    let mut value = new_zval();
+    value.value = zend_value { lval };
+    value.u1 = _zval_struct__bindgen_ty_1 { type_info };
+    value
+}
+
 /// `SW_HAVE_ZLIB`.
 pub(crate) static ZLIB: AtomicBool = AtomicBool::new(false);
 
@@ -299,6 +329,12 @@ pub unsafe extern "C" fn swr_v1_phphttp_websocket_minit(
     }
     // SAFETY: as above.
     unsafe { declare_property_null(ce, c"finish", ZEND_ACC_PUBLIC) };
+    for (slot, name) in SLOTS.iter().zip(SLOT_NAMES) {
+        // SAFETY: the registered class, which declares the property.
+        let offset =
+            unsafe { swr_zend_http_property_offset(ce, name.as_ptr(), name.count_bytes()) };
+        slot.store(offset, Relaxed);
+    }
     // SAFETY: as above, extending Frame.
     unsafe {
         CLOSE_FRAME.register_child(c"Swoole\\WebSocket\\CloseFrame", ptr::null(), ce, |_, _| {});
@@ -755,19 +791,22 @@ fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags:
             }
         }
     } else {
-        // SAFETY: a live Frame and payload; the property takes its own reference.
-        unsafe { zend_update_property(FRAME.entry(), object, c"data".as_ptr(), 4, payload) };
+        let mut data = new_zval();
+        // SAFETY: the live payload; the Frame takes its own reference.
+        unsafe { swr_zval_copy(&raw mut data, payload) };
+        set(object, DATA, data);
     }
     if flags & FLAG_RSV1 != 0 {
         flags |= FLAG_COMPRESS;
     }
-    let ce = FRAME.entry();
-    // SAFETY: a live Frame.
-    unsafe { value::update_long(ce, object, c"opcode", opcode) };
-    // SAFETY: as above.
-    unsafe { value::update_long(ce, object, c"flags", i64::from(flags)) };
-    // SAFETY: as above.
-    unsafe { value::update_bool(ce, object, c"finish", flags & FLAG_FIN != 0) };
+    set(object, OPCODE, scalar(IS_LONG, opcode));
+    set(object, FLAGS, scalar(IS_LONG, i64::from(flags)));
+    let finish = if flags & FLAG_FIN != 0 {
+        IS_TRUE
+    } else {
+        IS_FALSE
+    };
+    set(object, FINISH, scalar(finish, 0));
 }
 
 /// A zval holding `string`'s reference.
@@ -1118,8 +1157,7 @@ fn message(
     );
     // SAFETY: the Frame just built.
     let frame = unsafe { obj_of(&raw const args[1]) };
-    // SAFETY: as above.
-    unsafe { value::update_long(FRAME.entry(), frame, c"fd", fd) };
+    set(frame, FD, scalar(IS_LONG, fd));
     dispatch(server, server_fd, ON_MESSAGE, &mut args, fd)?;
     // SAFETY: the payload reference recv_data made.
     unsafe { zval_ptr_dtor(&raw mut data) };
@@ -1578,8 +1616,7 @@ fn deliver(return_value: *mut zval, sock: *mut c_void, opcode: u8, payload: &mut
     let fd = sock_fd(sock);
     // SAFETY: the frame just created.
     let object = unsafe { obj_of(return_value) };
-    // SAFETY: a live Frame, which declares `fd`.
-    unsafe { value::update_long(FRAME.entry(), object, c"fd", zend_long::from(fd)) };
+    set(object, FD, scalar(IS_LONG, zend_long::from(fd)));
 }
 
 fn bytes_of<'a>(data: *const u8, length: usize) -> &'a [u8] {

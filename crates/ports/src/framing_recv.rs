@@ -185,8 +185,12 @@ impl<K: Packages> Effects for With<K> {
     #[inline(always)]
     fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64 {
         let result = effect::<K>(&self.0, op, arg, *flags);
-        // SAFETY: the receive's live socket; the effect has returned.
-        *flags = socket_flags(unsafe { &*self.0.socket });
+        // A read or a length leaves the socket as it was; a callback or a failure
+        // may remove, pause or close it.
+        if !matches!(op, OP_RECV | OP_GET_LENGTH) || result < 0 {
+            // SAFETY: the receive's live socket; the effect has returned.
+            *flags = socket_flags(unsafe { &*self.0.socket });
+        }
         result
     }
 }

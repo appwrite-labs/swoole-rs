@@ -262,7 +262,6 @@ pub unsafe extern "C" fn swr_v1_socket_record_recv(
     // SAFETY: the caller's buffer; the TLS call gets the socket it is valid for.
     let total =
         unsafe { crate::socket_recv(fd, buffer, length, flags, nonblock, dont_restart, tls) };
-    let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     // SAFETY: as the caller promises; the TLS call has returned.
     let record = unsafe { &mut *socket };
     if total > 0 {
@@ -271,9 +270,12 @@ pub unsafe extern "C" fn swr_v1_socket_record_recv(
             // SAFETY: the caller's clock.
             record.last_received_time = unsafe { now() };
         }
-    }
-    if total < 0 && record.catch_error(error) == WAIT && record.event_hup != 0 {
-        return 0;
+    } else if total < 0 {
+        // Nothing since the call has touched errno.
+        let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        if record.catch_error(error) == WAIT && record.event_hup != 0 {
+            return 0;
+        }
     }
     total
 }

@@ -10,25 +10,19 @@ use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_reactor::{SocketRecord, reactor_upstream};
 
 use crate::ops::{
-    RUN_CLOSE_CONNECTION, RUN_DISPATCH_TASK, RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS,
-    RUN_PACKET_RECEIVED, RUN_PEER_CLOSE, RUN_PIPE_READ, RUN_REACTOR_THREAD_MAIN, RUN_RT_INIT,
-    RUN_RT_PIPE_WRITE, RUN_RT_READ, RUN_RT_WRITE, RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE,
-    RUN_THREAD_SHUTDOWN,
+    RUN_CLOSE_CONNECTION, RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED,
+    RUN_PIPE_READ, RUN_REACTOR_THREAD_MAIN, RUN_RT_INIT, RUN_RT_PIPE_WRITE,
+    RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE, RUN_THREAD_SHUTDOWN,
 };
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
 use crate::records::{ConnectionRecord, swr_v1_server_connection};
-use crate::view;
+use crate::{unanswered, view};
 
 /// `swoole::RecvData`.
 #[repr(C)]
 pub struct RecvData {
     pub(crate) info: DataHead,
     pub(crate) data: *const c_void,
-}
-
-/// An op no arm answers: 0, as master.cc's `default:` was.
-unsafe extern "C" fn unanswered(_: *mut c_void, _: u32, _: u64) -> u64 {
-    0
 }
 
 /// `serv->get_thread(id)`.
@@ -49,17 +43,21 @@ pub(crate) unsafe fn run(op: u32, arg: u64, ctx: &mut ReactorContext) -> i64 {
     unsafe { crate::run_reactor(op, arg, context, unanswered, state) }
 }
 
-/// Runs `op` over `ctx` with the `which` facts.
+/// `operation` over `ctx` with the `which` facts, outside [`run`]'s match.
 ///
 /// # Safety
 /// As [`run`].
-unsafe fn run_with(op: u32, which: Facts, ctx: &mut ReactorContext) -> c_int {
+unsafe fn run_with(
+    which: Facts,
+    ctx: &mut ReactorContext,
+    operation: impl FnOnce(&mut crate::Native<crate::ServerCall>, u64) -> crate::Effect<i64>,
+) -> c_int {
     // SAFETY: per the caller.
     let state = unsafe { state(ctx.serv) };
     // SAFETY: per the caller.
     let facts = unsafe { facts(ctx, state, which) };
     // SAFETY: per the caller.
-    int(unsafe { run(op, facts, ctx) })
+    int(unsafe { crate::run_reactor_with(ctx, state, |h| operation(h, facts)) })
 }
 
 #[expect(
@@ -134,7 +132,7 @@ pub unsafe extern "C" fn on_close(reactor: *mut c_void, event: *mut c_void) -> c
     // SAFETY: per the caller.
     let mut ctx = unsafe { event_context(reactor, event) };
     // SAFETY: per the caller.
-    unsafe { run_with(RUN_PEER_CLOSE, Facts::PeerClose, &mut ctx) }
+    unsafe { run_with(Facts::PeerClose, &mut ctx, crate::conn_io::peer_close) }
 }
 
 /// `ReactorThread_onPipeRead`: a worker's message.
@@ -179,7 +177,7 @@ pub unsafe extern "C" fn on_read(reactor: *mut c_void, event: *mut c_void) -> c_
     // SAFETY: the fd's slot in the connection table.
     ctx.conn = unsafe { swr_v1_server_connection(state, fd, 0) };
     // SAFETY: per the caller.
-    unsafe { run_with(RUN_RT_READ, Facts::Read, &mut ctx) }
+    unsafe { run_with(Facts::Read, &mut ctx, crate::conn_io::read) }
 }
 
 /// `ReactorThread_onWrite`: a connection is writable.
@@ -190,7 +188,7 @@ pub unsafe extern "C" fn on_write(reactor: *mut c_void, event: *mut c_void) -> c
     // SAFETY: per the caller.
     let mut ctx = unsafe { event_context(reactor, event) };
     // SAFETY: per the caller.
-    unsafe { run_with(RUN_RT_WRITE, Facts::Write, &mut ctx) }
+    unsafe { run_with(Facts::Write, &mut ctx, crate::conn_io::write) }
 }
 
 /// `static int Server::close_connection(Reactor *, Socket *)`.
@@ -332,12 +330,14 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     // SAFETY: the live connection.
     let fd = unsafe { (*ctx.conn).fd };
     // SAFETY: per the caller, a live server's.
-    ctx.port = crate::reactor_ops::port_by_fd(unsafe { state(serv) }, fd);
+    let state = unsafe { state(serv) };
+    ctx.port = crate::reactor_ops::port_by_fd(state, fd);
     ctx.rdata = rdata.cast();
     // SAFETY: per the caller.
-    let length = unsafe { (*rdata).info.len };
+    let length = u64::from(unsafe { (*rdata).info.len });
+    let dispatch = |h: &mut _| crate::reactor_thread::dispatch_task(h, length);
     // SAFETY: per the caller.
-    int(unsafe { run(RUN_DISPATCH_TASK, u64::from(length), &mut ctx) })
+    int(unsafe { crate::run_reactor_with(&mut ctx, state, dispatch) })
 }
 
 /// `void Server::join_reactor_thread()`.
