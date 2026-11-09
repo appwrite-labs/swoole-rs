@@ -4,6 +4,7 @@
 //! coroutine waits; outside one it runs here, as [`NATIVE`] decides. Native code
 //! lends the `io_uring` engine and the hooked sockets' constructors in [`Host`].
 //! The exports keep upstream's names: `swoole_coroutine_api.h` declares them.
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use libc::{
@@ -101,6 +102,10 @@ unsafe impl Sync for Host {}
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(std::ptr::null_mut());
 
+/// [`NATIVE`] once native registers its [`Host`]: [`offload`] reads it here, so a crate
+/// that links hooks without the runtime (sqlite's and oci's tests) never links it.
+static RUNTIME: OnceLock<&'static Ops> = OnceLock::new();
+
 /// Register native's [`Host`].
 ///
 /// # Safety
@@ -108,6 +113,7 @@ static HOST: AtomicPtr<Host> = AtomicPtr::new(std::ptr::null_mut());
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_set_host(host: *const Host) {
     HOST.store(host.cast_mut(), Ordering::Release);
+    RUNTIME.get_or_init(|| &NATIVE);
 }
 
 pub(crate) fn host() -> Option<&'static Host> {
@@ -123,7 +129,10 @@ pub(crate) fn coroutine() -> Option<&'static Host> {
 /// `async_job` inside a coroutine, else none: the call runs here.
 #[must_use]
 pub fn offload() -> Option<Offload> {
-    (NATIVE.in_coroutine)().then_some(NATIVE.offload)
+    RUNTIME
+        .get()
+        .filter(|ops| (ops.in_coroutine)())
+        .map(|ops| ops.offload)
 }
 
 /// The ring's host inside a coroutine when `io_uring` takes this call (`gate`).
