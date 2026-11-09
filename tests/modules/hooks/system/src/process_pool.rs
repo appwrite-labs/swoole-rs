@@ -14,7 +14,6 @@ use std::os::unix::net::UnixStream;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::SeqCst};
 use std::time::{SystemTime, UNIX_EPOCH};
-use swoole_rs_process::worker_record::Worker as Record;
 
 use super::timer::{TimerNode, after, swoole_timer_del, swoole_timer_free, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
@@ -1675,8 +1674,7 @@ fn listen_unixsock() {
 }
 
 fn worker_status(worker: &Worker) -> u8 {
-    // SAFETY: a live record; `Worker` mirrors `WorkerRecord`'s layout.
-    unsafe { Record::new((&raw const *worker).cast()) }.status()
+    worker.status
 }
 
 fn set_worker_type(kind: c_int) -> u8 {
@@ -1714,18 +1712,15 @@ fn worker() {
     assert_eq!(set_worker_type(SW_MASTER), b'#');
     assert_eq!(set_worker_type(SW_MANAGER), b'$');
 
-    // SAFETY: the live record; `Worker` mirrors `WorkerRecord`\'s layout.
-    unsafe { Record::new((&raw const *worker).cast()) }.set_status(SW_WORKER_IDLE);
+    worker.status = SW_WORKER_IDLE;
     assert_eq!(worker_status(&worker), SW_WORKER_IDLE);
     assert_ne!(worker_status(&worker), SW_WORKER_BUSY);
 
-    // SAFETY: the live record; `Worker` mirrors `WorkerRecord`\'s layout.
-    unsafe { Record::new((&raw const *worker).cast()) }.set_status(SW_WORKER_BUSY);
+    worker.status = SW_WORKER_BUSY;
     assert_ne!(worker_status(&worker), SW_WORKER_IDLE);
     assert_eq!(worker_status(&worker), SW_WORKER_BUSY);
 
-    // SAFETY: the live record; `Worker` mirrors `WorkerRecord`\'s layout.
-    unsafe { Record::new((&raw const *worker).cast()) }.set_status(SW_WORKER_EXIT);
+    worker.status = SW_WORKER_EXIT;
     assert_ne!(worker_status(&worker), SW_WORKER_IDLE);
     assert_ne!(worker_status(&worker), SW_WORKER_BUSY);
 }
