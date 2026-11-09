@@ -2,7 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
 //! `swoole_random_string`: alphanumerics drawn one at a time with `swoole_rand(0, 61)`.
 use crate::host::swoole_rand;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_int};
 use std::slice;
 
 /// Upstream's `characters` table.
@@ -71,14 +71,6 @@ pub fn random_bytes(buf: &mut [u8]) -> usize {
     }
 }
 
-/// [`random_bytes`] over a raw buffer.
-/// # Safety
-/// `buf` points to `size` writable bytes.
-pub unsafe fn swr_v1_os_random_bytes(buf: *mut c_void, size: usize) -> usize {
-    // SAFETY: as the caller promises.
-    random_bytes(unsafe { slice::from_raw_parts_mut(buf.cast(), size) })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,17 +78,9 @@ mod tests {
     #[test]
     fn random_bytes_fill_the_buffer() {
         let mut buf = [0_u8; 64];
-        assert_eq!(
-            unsafe { swr_v1_os_random_bytes(buf.as_mut_ptr().cast(), 64) },
-            64,
-            "all requested bytes"
-        );
+        assert_eq!(random_bytes(&mut buf), 64, "all requested bytes");
         assert!(buf.iter().any(|&b| b != 0), "not left zeroed");
-        assert_eq!(
-            unsafe { swr_v1_os_random_bytes(buf.as_mut_ptr().cast(), 0) },
-            0,
-            "empty request"
-        );
+        assert_eq!(random_bytes(&mut []), 0, "empty request");
     }
 
     /// Upstream's `characters` table, spelled out independently of `CHARACTERS`.

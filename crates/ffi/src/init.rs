@@ -58,6 +58,7 @@ extern "C-unwind" fn swoole_init() {
         event_free: || _ = swoole_event_free(),
         coroutine_is_in: || swoole_coroutine_is_in() != 0,
     });
+    swoole_rs_clients::client::set_framing(swoole_rs_ports::framing_recv::FRAMING);
     swoole_rs_ports::register_methods();
     // Links crates/http-ffi's exports into the extension.
     core::hint::black_box(swoole_rs_http_ffi::exports());

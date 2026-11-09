@@ -1,4 +1,4 @@
-"""Drive the hybrid extension's own timer from a native probe; unchanged baseline probe goldens.
+"""Drive the hybrid extension's own timer from a native probe; baseline probe goldens, but equal deadlines in insertion order.
 
 The probe compiles against the immutable --manifest build's headers and takes the
 Timer, the swoole_timer_* wrappers and the Rust queue from the loaded extension,
@@ -25,7 +25,8 @@ SCENARIOS = ['equal-deadlines', 'self-remove', 'remove-other', 'destructor-remov
              'delay-active-once', 'nested-select-once']
 
 EXPECTED = {
-    'equal-deadlines': ('AaCcBb', 'AaCcBb', 0, 3, False),
+    # Insertion order; upstream's heap gives AaCcBb (docs/timer-abi-v1.md, #2334).
+    'equal-deadlines': ('AaBbCc', 'AaBbCc', 0, 3, False),
     'self-remove': ('AYNVa', 'AYNVa', 0, 1, False),
     'remove-other': ('AbaCc', 'AbaCc', 0, 3, False),
     'destructor-remove-other': ('AabCc', 'AabCc', 0, 3, False),

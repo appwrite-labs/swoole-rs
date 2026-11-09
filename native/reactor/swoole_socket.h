@@ -225,7 +225,6 @@ struct Socket : swr_v1_socket {
 
     bool check_liveness();
 
-    int sendfile_async(const char *filename, off_t offset, size_t length);
     int sendfile_sync(const char *filename, off_t offset, size_t length);
     ssize_t sendfile(const File &fp, off_t *offset, size_t length);
 
@@ -241,7 +240,6 @@ struct Socket : swr_v1_socket {
 
 
     void clean() const;
-    ssize_t send_sync(const void *_data, size_t _len, int flags = 0);
     ssize_t send_async(const void *_data, size_t _len);
     ssize_t recv_sync(void *_data, size_t _len, int flags = 0);
     ssize_t writev_sync(const iovec *iov, size_t iovcnt);
@@ -262,8 +260,6 @@ struct Socket : swr_v1_socket {
 
     int connect_sync(const Address &sa);
 
-    int ssl_create(SSLContext *_ssl_context, int _flags);
-    int ssl_connect();
     ReturnCode ssl_accept();
     ssize_t ssl_recv(void *_buf, size_t _n);
     ssize_t ssl_send(const void *_buf, size_t _n);
@@ -276,9 +272,7 @@ struct Socket : swr_v1_socket {
     int ssl_get_peer_certificate(char *buf, size_t n) const;
     bool ssl_get_peer_certificate(String *buf) const;
     bool ssl_verify(bool allow_self_signed) const;
-    bool ssl_check_host(const char *tls_host_name) const;
     bool ssl_shutdown();
-    void ssl_close();
     static const char *ssl_get_error_reason(int *reason);
 
     ssize_t recvfrom_sync(char *_buf, size_t _len, int flags, Address *sa);

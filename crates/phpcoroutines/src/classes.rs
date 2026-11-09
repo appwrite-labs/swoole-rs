@@ -384,17 +384,13 @@ fn get_status(call: &Call) {
 unsafe extern "C" fn begin_silence(_: *mut zend_execute_data) -> c_int {
     // SAFETY: Zend's executor globals.
     let reporting = unsafe { swr_zend_error_reporting() };
-    // SAFETY: the running context.
-    let task = unsafe { context::at(context::current()) };
-    task.vm.in_silence = true;
-    task.vm.ori_error_reporting = reporting;
+    context::current().set_silence(Some(reporting));
     DISPATCH
 }
 
 /// `coro_end_silence_handler`.
 unsafe extern "C" fn end_silence(_: *mut zend_execute_data) -> c_int {
-    // SAFETY: the running context.
-    unsafe { context::at(context::current()) }.vm.in_silence = false;
+    context::current().set_silence(None);
     DISPATCH
 }
 

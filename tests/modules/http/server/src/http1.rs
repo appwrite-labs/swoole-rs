@@ -1,7 +1,7 @@
 //! The HTTP/1 TESTs that start a server (`get` .. `http_range2`, and `fail`), one Rust
 //! function per TEST with the same inputs and expected values.
 //!
-//! Unlike main.rs's cases these need no fixture: the `Server` is made and deleted by
+//! The `Server` is made and deleted by
 //! `swr_v1_server_new`/`swr_v1_server_delete` (crates/server/src/server_object.rs), and
 //! its configuration, callback slots, tables and static-handler sets are the Rust records
 //! whose pointers head the object (native/include/swoole_rs_server_state.h), as the
@@ -21,6 +21,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::client::{Client, USER_AGENT};
+
+pub(super) mod case;
 
 const TEST_HOST: &str = "127.0.0.1";
 const MODE_BASE: c_int = 1;
@@ -393,7 +395,16 @@ struct RecvData {
     data: *const c_char,
 }
 
-/// The head of `Connection`, through `close_actively`.
+/// `network::Address` (Linux): the storage, its length and its `swSocketType`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Address {
+    addr: [u32; 28],
+    len: u32,
+    kind: c_int,
+}
+
+/// `Connection`.
 #[repr(C)]
 struct Connection {
     active: u8,
@@ -409,7 +420,84 @@ struct Connection {
     http2_stream: u8,
     websocket_compression: u8,
     close_actively: u8,
+    close_queued: u8,
+    closing: u8,
+    close_reset: u8,
+    peer_closed: u8,
+    protect: u8,
+    close_notify: u8,
+    close_force: u8,
+    reactor_id: u8,
+    close_errno: u16,
+    recv_queued_bytes: u32,
+    send_queued_bytes: u32,
+    waiting_time: u16,
+    local_port: u16,
+    local_addr_index: u16,
+    timer: Native,
+    info: Address,
+    object: Native,
+    socket: Native,
+    connect_time: f64,
+    last_recv_time: f64,
+    last_send_time: f64,
+    last_dispatch_time: f64,
+    uid: u32,
+    websocket_status: u8,
+    websocket_buffer: Native,
+    ssl_client_cert: Native,
+    ssl_client_cert_pid: c_int,
+    lock: u32,
+    closed: u32,
+    server_fd: c_int,
 }
+
+/// The offsets `detail::check_server_layouts` checks for record 3, in its order.
+const CONNECTION_OFFSETS: &[usize] = &[
+    offset_of!(Connection, active),
+    offset_of!(Connection, socket_type),
+    offset_of!(Connection, fd),
+    offset_of!(Connection, worker_id),
+    offset_of!(Connection, session_id),
+    offset_of!(Connection, ssl),
+    offset_of!(Connection, ssl_ready),
+    offset_of!(Connection, overflow),
+    offset_of!(Connection, high_watermark),
+    offset_of!(Connection, http_upgrade),
+    offset_of!(Connection, http2_stream),
+    offset_of!(Connection, websocket_compression),
+    offset_of!(Connection, close_actively),
+    offset_of!(Connection, close_queued),
+    offset_of!(Connection, closing),
+    offset_of!(Connection, close_reset),
+    offset_of!(Connection, peer_closed),
+    offset_of!(Connection, protect),
+    offset_of!(Connection, close_notify),
+    offset_of!(Connection, close_force),
+    offset_of!(Connection, reactor_id),
+    offset_of!(Connection, close_errno),
+    offset_of!(Connection, recv_queued_bytes),
+    offset_of!(Connection, send_queued_bytes),
+    offset_of!(Connection, waiting_time),
+    offset_of!(Connection, local_port),
+    offset_of!(Connection, local_addr_index),
+    offset_of!(Connection, timer),
+    offset_of!(Connection, info),
+    offset_of!(Connection, object),
+    offset_of!(Connection, socket),
+    offset_of!(Connection, connect_time),
+    offset_of!(Connection, last_recv_time),
+    offset_of!(Connection, last_send_time),
+    offset_of!(Connection, last_dispatch_time),
+    offset_of!(Connection, uid),
+    offset_of!(Connection, websocket_status),
+    offset_of!(Connection, websocket_buffer),
+    offset_of!(Connection, ssl_client_cert),
+    offset_of!(Connection, ssl_client_cert_pid),
+    offset_of!(Connection, lock),
+    offset_of!(Connection, closed),
+    offset_of!(Connection, server_fd),
+];
 
 /// The pointers that head a `Server` (native/process/swoole_server.h).
 #[repr(C)]
@@ -552,6 +640,12 @@ impl Server {
             TABLES_OFFSETS,
         );
         check_layout(
+            3,
+            size_of::<Connection>(),
+            align_of::<Connection>(),
+            CONNECTION_OFFSETS,
+        );
+        check_layout(
             4,
             size_of::<PortConfig>(),
             align_of::<PortConfig>(),
@@ -589,9 +683,14 @@ impl Server {
 
     /// `serv.onX = fn`, for a slot that holds no closure to drop.
     fn set_callback(self, slot: usize, invoke: *const c_void) {
+        self.set_closure(slot, invoke, std::ptr::null_mut());
+    }
+
+    /// `serv.onX = [ctx](...) {...}`: `invoke(ctx, ...)`, with nothing to drop.
+    fn set_closure(self, slot: usize, invoke: *const c_void, ctx: *mut c_void) {
         *self.slot(slot) = Callback {
             invoke,
-            ctx: std::ptr::null_mut(),
+            ctx,
             drop: None,
         };
     }

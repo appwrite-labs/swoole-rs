@@ -169,15 +169,6 @@ pub(crate) unsafe fn swoole_http2_client_coro_enable_ssl(socket: Socket) -> bool
     unsafe { co::enable_ssl(socket) }
 }
 
-unsafe extern "C" {
-    /// `swoole::http2::get_frame_length` (crates/ports).
-    fn swr_v1_http2_frame_length(
-        protocol: *const c_void,
-        socket: *mut c_void,
-        pl: *mut c_void,
-    ) -> isize;
-}
-
 /// HTTP/2 framing on the socket, then `apply_setting(settings)`.
 pub(crate) unsafe fn swoole_http2_client_coro_protocol(socket: Socket, settings: *const zval) {
     // SAFETY: per the caller.
@@ -188,7 +179,8 @@ pub(crate) unsafe fn swoole_http2_client_coro_protocol(socket: Socket, settings:
     record.protocol.package_length_size = 9;
     record.protocol.package_length_offset = 0;
     record.protocol.package_body_offset = 0;
-    record.protocol.get_package_length = swr_v1_http2_frame_length as *mut c_void;
+    record.protocol.get_package_length =
+        swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
     // SAFETY: as above.
     unsafe { swoole_http2_client_coro_apply(socket, settings) };
 }

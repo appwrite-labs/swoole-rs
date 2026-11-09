@@ -21,6 +21,7 @@ swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-http-ffi = { path = "../http-ffi" }
 swoole-rs-coroutine = { path = "../coroutine" }
+swoole-rs-tls = { path = "../tls" }
 libc = "=0.2.191"
 
 [dev-dependencies]

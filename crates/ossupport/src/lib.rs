@@ -29,7 +29,6 @@ pub use file::{
 };
 pub use file_api::*;
 pub use file_record::*;
-pub use swoole_rs_corebase::swr_v1_os_random_bytes;
 mod system;
 #[cfg(feature = "upstream-symbols")]
 pub use system::swoole_daemon;

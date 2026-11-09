@@ -764,6 +764,26 @@ class ChangedModules(unittest.TestCase):
         self.assertEqual(self.changed('crates/ffi/src/lib.rs'), sorted(dev.MODULES))
         self.assertEqual(self.changed('crates/oracle/build.rs', 'fuzz/src/lib.rs'), [])
         self.assertEqual(self.changed('native/halfclose/contract.md'), sorted(dev.MODULES))
+        # The Cargo build every gate and PHPT job loads.
+        for path in ('crates/ext/build.rs', 'tools/build_ext.py', 'rust-toolchain.toml', '.cargo/config.toml'):
+            self.assertEqual(self.changed(path), sorted(dev.MODULES), path)
+        self.assertEqual(self.changed('crates/sqlite/src/lib.rs', 'crates/oci/src/lib.rs'), ['hooks'])
+
+    def test_every_crate_has_an_owner(self):
+        owned = [path for module in json.loads((dev.ROOT / 'migration/modules.json').read_text())['modules']
+                 for path in module['owned_paths']]
+        for crate in sorted((dev.ROOT / 'crates').glob('*/Cargo.toml')):
+            directory = f'crates/{crate.parent.name}/'
+            self.assertTrue(directory in owned or directory.startswith(dev.SHARED_PATHS), directory)
+
+    @unittest.skipUnless((ROOT / 'target/upstream/src/tests').is_dir(), 'Pinned checkout required')
+    def test_every_upstream_phpt_family_has_an_owner(self):
+        # Else a PR touching the code a family tests runs none of it; the runner's own test has no module.
+        owned = {family for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
+                 for family in module.get('phpt_families', [])}
+        tests = ROOT / 'target/upstream/src/tests'
+        families = {path.relative_to(tests).parts[0] for path in tests.rglob('*.phpt')}
+        self.assertEqual(families - owned - {'swoole_test_runner'}, set())
 
     def test_a_changed_crate_selects_the_modules_whose_packages_depend_on_it(self):
         # Their gates call its exports, so they catch one removed or renamed (#2236).

@@ -18,11 +18,11 @@ use std::{
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_zend::{
-    Call, Class, Invalid, declare_long, declare_property_null, handlers, init_object, push_string,
-    set_key,
+    Call, Class, Invalid, Value, ZStr, declare_long, declare_property_null, handlers, init_object,
+    push_string, set_key,
     sys::{
-        IS_ARRAY, IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long,
-        zend_object, zend_string,
+        IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
+        zend_string,
     },
     type_of,
     value::{self, obj_of},
@@ -284,15 +284,9 @@ fn end(call: &Call) {
 }
 
 /// `stat(2)` of a file name, as `php_swoole_sys_error` reports its failure.
-fn stat(file: *mut zend_string) -> Result<libc::stat, ()> {
+fn stat(file: &ZStr) -> Result<libc::stat, ()> {
     let mut stat = MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: a zend_string's bytes are NUL-terminated.
-    let path = unsafe {
-        CStr::from_ptr(
-            file.wrapping_byte_add(std::mem::offset_of!(zend_string, val))
-                .cast(),
-        )
-    };
+    let path = file.c_str();
     // SAFETY: a NUL-terminated path and a writable buffer.
     if unsafe { libc::stat(path.as_ptr(), stat.as_mut_ptr()) } == 0 {
         // SAFETY: stat succeeded, so it filled the buffer.
@@ -321,12 +315,11 @@ fn send_file(call: &Call) {
         }
         let parsed = call
             .arity(1, 3)
-            .and_then(|()| Ok((call.str(1)?, call.long(2, 0)?, call.long(3, 0)?)));
+            .and_then(|()| Ok((call.zstr(1)?, call.long(2, 0)?, call.long(3, 0)?)));
         let (Some(file), offset, requested) = parsed.ok()? else {
             return None;
         };
-        // SAFETY: a parsed string argument lives for the call.
-        let name = unsafe { bytes(file) };
+        let name = file.bytes();
         if name.is_empty() {
             host::notice("file name is empty");
             return None;
@@ -360,7 +353,7 @@ fn send_file(call: &Call) {
             _ => return None,
         }
         let length = usize::try_from(length).unwrap_or_default();
-        Some(after(ctx).and_then(|()| send::send_file(ctx, file, offset, length)))
+        Some(after(ctx).and_then(|()| send::send_file(ctx, file.as_ptr(), offset, length)))
     };
     match run() {
         Some(result) => sent(call, &result),
@@ -526,7 +519,7 @@ fn ping(call: &Call) {
         if ctx.is_null() {
             return None;
         }
-        let data = call.arity(0, 1).and_then(|()| call.str(1)).ok()?;
+        let data = call.arity(0, 1).and_then(|()| call.zstr(1)).ok()?;
         let flags = host::flags(ctx);
         if flags & (HTTP2 | WEBSOCKET) == 0 {
             host::fatal("only supports websocket or http2 client");
@@ -539,8 +532,7 @@ fn ping(call: &Call) {
             }
             return Some(());
         }
-        // SAFETY: the optional payload, live for the call.
-        let payload = data.map_or(&[][..], |data| unsafe { bytes(data) });
+        let payload = data.map_or(&[][..], ZStr::bytes);
         let Some(frame) = websocket::encode(payload, websocket::OPCODE_PING, websocket::FLAG_FIN)
         else {
             host::set_last_error(WEBSOCKET_PACK_FAILED);
@@ -667,7 +659,7 @@ fn create_response(call: &Call) {
     let run = || -> Option<()> {
         let parsed = call
             .arity(1, 2)
-            .and_then(|()| Ok((call.passed(1), call.long(2, -1)?)));
+            .and_then(|()| Ok((call.value(1), call.long(2, -1)?)));
         let (Some(object), fd) = parsed.ok()? else {
             return None;
         };
@@ -725,62 +717,46 @@ fn refuse(call: &Call, message: &str) {
     call.set_bool(false);
 }
 
-/// A found slot holding an object.
-fn is_object(slot: *mut z::zval) -> bool {
-    // SAFETY: a found slot is a live zval.
-    unsafe { type_of(slot) == IS_OBJECT }
-}
-
-fn instance_of(object: *mut z::zval, ce: *mut zend_class_entry) -> bool {
-    // SAFETY: a live object zval.
-    let object = unsafe { obj_of(object) };
-    // SAFETY: a live object.
-    let class = unsafe { (*object).ce };
+/// An object of `ce` or a subclass.
+fn instance_of(object: &Value, ce: *mut zend_class_entry) -> bool {
     // SAFETY: a live class and a registered one.
-    unsafe { z::swr_zend_instanceof(class, ce) }
+    object
+        .class()
+        .is_some_and(|class| unsafe { z::swr_zend_instanceof(class, ce) })
 }
 
 /// `Response::create($server|$socket|[$server|$socket, $request]|$fd, $fd)`:
 /// a response on a server connection or a coroutine socket, sharing the
 /// request's context when one is given.
-fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
-    let mut request = ptr::null_mut();
+fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
+    let mut paired = false;
     let mut ctx: *mut Context = ptr::null_mut();
     let mut server: *mut c_void = ptr::null_mut();
     let mut socket = ptr::null_mut();
-    // SAFETY: the argument, live for the call.
-    let kind = unsafe { type_of(object) };
-    if kind == IS_ARRAY {
-        // SAFETY: an array zval.
-        let table = unsafe { value::table(object) };
-        // SAFETY: a live table.
-        request = unsafe { z::zend_hash_index_find(table, 1) };
-        if request.is_null()
-            || !is_object(request)
-            || !instance_of(request, crate::request::entry())
-        {
+    if let Some(pair) = object.array() {
+        let Some(request) = pair
+            .index(1)
+            .filter(|found| instance_of(found, crate::request::entry()))
+            .and_then(Value::object)
+        else {
             return refuse(call, "parameter $1.second must be instanceof Http\\Request");
-        }
-        // SAFETY: as above.
-        object = unsafe { z::zend_hash_index_find(table, 0) };
-        // SAFETY: as above.
-        if object.is_null() || unsafe { type_of(object) } != IS_OBJECT {
+        };
+        let Some(first) = pair.index(0).filter(|first| first.object().is_some()) else {
             return refuse(
                 call,
                 "parameter $1 must be instanceof Server or Coroutine\\Socket",
             );
-        }
-        // SAFETY: as above.
-        let request = unsafe { obj_of(request) };
+        };
+        object = first;
+        paired = true;
         // SAFETY: a `Swoole\Http\Request`.
         ctx = unsafe { context::context_of(request) };
     }
-    // SAFETY: as above.
-    if unsafe { type_of(object) } == IS_OBJECT {
+    if object.object().is_some() {
         // SAFETY: the classes MINIT registered.
         let (server_ce, socket_ce) = unsafe { (swoole_server_ce, swoole_socket_coro_ce) };
         if instance_of(object, server_ce) {
-            let Some(checked) = websocket::server_of(object) else {
+            let Some(checked) = websocket::server_of(object.as_ptr()) else {
                 return;
             };
             server = checked;
@@ -791,10 +767,10 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
                 );
             }
         } else if instance_of(object, socket_ce) {
-            socket = object;
+            socket = object.as_ptr();
             // SAFETY: a `Swoole\Coroutine\Socket`.
             fd = zend_long::from(websocket::sock_fd(unsafe {
-                swr_v1_phpclients_socket_pointer(object)
+                swr_v1_phpclients_socket_pointer(socket)
             }));
         } else {
             return refuse(
@@ -803,8 +779,7 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
             );
         }
     } else {
-        // SAFETY: the argument.
-        fd = unsafe { z::swr_zval_get_long(object) };
+        fd = object.long();
         server = swoole_rs_corebase::swr_v1_core_server();
     }
     if !server.is_null() && !websocket::started(server) {
@@ -857,7 +832,7 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
         // SAFETY: as above; the property takes its own reference.
         unsafe { z::zend_update_property(ce, std, c"socket".as_ptr(), 6, socket) };
     }
-    if !request.is_null() {
+    if paired {
         // SAFETY: the request object, which declares `fd`.
         let request = unsafe { obj_of(send::state(ctx).request.zobject.ptr) };
         // SAFETY: as above.

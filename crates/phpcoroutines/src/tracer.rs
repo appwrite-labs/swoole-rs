@@ -673,8 +673,7 @@ impl Func<'_> {
 
 /// `blocking_detection_begin`, of an internal function.
 fn blocking_begin(func: Func<'_>) {
-    let task = context::current_task();
-    if task.is_null() || func.span.is_null() {
+    if context::current_task().is_none() || func.span.is_null() {
         return;
     }
     let began_at = now_us();

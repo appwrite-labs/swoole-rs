@@ -13,12 +13,10 @@ use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Value, bailout, message, php_error,
     string::bytes,
     sys::{
-        IS_ARRAY, IS_NULL, IS_REFERENCE, swr_zend_callable_warning, swr_zend_hash_foreach_key,
-        swr_zend_string_release, swr_zend_try_facade_update, zend_hash_str_find, zend_is_true,
-        zend_object, zend_string, zend_ulong, zval,
+        IS_REFERENCE, swr_zend_callable_warning, swr_zend_hash_foreach_key,
+        swr_zend_try_facade_update, zend_object, zend_string, zend_ulong, zval,
     },
     type_of,
-    value::{get_double, get_long, get_string, table},
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
@@ -220,16 +218,13 @@ impl Settings<'_> {
     }
 
     /// `php_swoole_array_get_value(vht, key, ztmp)`: present and not null.
-    pub(crate) fn get(&self, key: &CStr) -> Option<*mut zval> {
-        // SAFETY: an array argument.
-        let vht = unsafe { table(self.vht) };
-        // SAFETY: a live table and a NUL-terminated key.
-        let found = unsafe { zend_hash_str_find(vht, key.as_ptr(), key.count_bytes()) };
-        // SAFETY: a found value is live.
-        (!found.is_null() && unsafe { type_of(found) } != IS_NULL).then_some(found)
+    pub(crate) fn get(&self, key: &CStr) -> Option<&Value> {
+        // SAFETY: the settings array, live for the call.
+        let vht = unsafe { Value::from_ptr(self.vht) }?.array()?;
+        vht.get(key.to_bytes())
     }
 
-    fn get_any(&self, keys: &[&CStr]) -> Option<*mut zval> {
+    fn get_any(&self, keys: &[&CStr]) -> Option<&Value> {
         keys.iter().find_map(|key| self.get(key))
     }
 
@@ -242,32 +237,23 @@ impl Settings<'_> {
         unsafe { apply(self.serv, id, value) };
     }
 
-    pub(crate) fn long(value: *mut zval) -> Result<i64, Stop> {
-        // SAFETY: a live setting.
-        let value = unsafe { get_long(value) };
+    pub(crate) fn long(value: &Value) -> Result<i64, Stop> {
+        let value = value.long();
         checked().map(|()| value)
     }
 
-    pub(crate) fn size(value: *mut zval) -> Result<i64, Stop> {
-        // SAFETY: a live setting.
-        let value = unsafe { Value::from_ptr(value) }
-            .map_or(0, swoole_rs_phpswoole::php_swoole_parse_to_size);
+    pub(crate) fn size(value: &Value) -> Result<i64, Stop> {
+        let value = swoole_rs_phpswoole::php_swoole_parse_to_size(value);
         checked().map(|()| value)
     }
 
-    pub(crate) fn truth(value: *mut zval) -> i64 {
-        // SAFETY: a live setting.
-        i64::from(unsafe { zend_is_true(value) })
+    pub(crate) fn truth(value: &Value) -> i64 {
+        i64::from(value.truthy())
     }
 
     /// `zend::String(value)`, handed to `each` and released.
-    pub(crate) fn string<R>(value: *mut zval, each: impl FnOnce(&[u8]) -> R) -> Result<R, Stop> {
-        // SAFETY: a live setting; an owned reference, released below.
-        let string = unsafe { get_string(value) };
-        // SAFETY: live until released.
-        let result = each(unsafe { bytes(string) });
-        // SAFETY: the reference taken above.
-        unsafe { swr_zend_string_release(string) };
+    pub(crate) fn string<R>(value: &Value, each: impl FnOnce(&[u8]) -> R) -> Result<R, Stop> {
+        let result = each(value.string().bytes());
         checked().map(|()| result)
     }
 
@@ -310,21 +296,11 @@ impl Settings<'_> {
         let Some(value) = self.get_any(keys) else {
             return Ok(());
         };
-        // SAFETY: a live setting.
-        if unsafe { type_of(value) } != IS_ARRAY {
+        let Some(array) = value.array() else {
             fatal(E_ERROR, error);
             return Err(Stop);
-        }
-        let mut items = Vec::new();
-        // SAFETY: a live array setting.
-        let array = unsafe { table(value) };
-        // SAFETY: a live array; the values are only collected.
-        unsafe {
-            swoole_rs_zend::each_value(array, |item| {
-                items.push(item);
-                true
-            });
-        }
+        };
+        let items: Vec<&Value> = array.entries().map(|(_, item)| item).collect();
         for item in items {
             Self::string(item, &each)?;
         }
@@ -451,8 +427,7 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
         None => s.set(f::ENABLE_COROUTINE, s.fact(f::GLOBAL_ENABLE_COROUTINE)),
     }
     if let Some(value) = s.get(c"send_timeout") {
-        // SAFETY: a live setting.
-        let v = unsafe { get_double(value) };
+        let v = value.double();
         checked()?;
         // SAFETY: the live server being configured; nothing else holds its config.
         unsafe { s.server().config_mut() }.send_timeout = v;
@@ -474,7 +449,7 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
         // SAFETY: a live setting; `sw_callable_create`, whose bailouts stay deferred.
         let created = unsafe {
             callable::factory(
-                value,
+                value.as_ptr(),
                 ptr::null(),
                 true,
                 ptr::null_mut(),
@@ -505,8 +480,9 @@ fn thread_options(s: &Settings, this: *mut zend_object) -> Step {
         let ce = unsafe { (*this).ce };
         // SAFETY: `$this` of its class and a live value, which the property
         // copies; the shim traps a bailout.
-        let bailed =
-            unsafe { swr_zend_try_facade_update(ce, this, c"bootstrap".as_ptr(), 9, value) };
+        let bailed = unsafe {
+            swr_zend_try_facade_update(ce, this, c"bootstrap".as_ptr(), 9, value.as_ptr())
+        };
         if bailed != 0 {
             bailout::Bailout.defer();
             return Err(Stop);
@@ -514,7 +490,7 @@ fn thread_options(s: &Settings, this: *mut zend_object) -> Step {
     }
     if let Some(value) = s.get(c"init_arguments") {
         // SAFETY: a live value.
-        let value = unsafe { value.read() };
+        let value = unsafe { value.as_ptr().read() };
         // SAFETY: `$this` is a Server object.
         unsafe { crate::lifecycle::data(this) }.init_arguments = value;
     }
@@ -640,12 +616,11 @@ fn affinity() -> Result<Vec<c_int>, c_int> {
 
 /// `php_swoole_server_set_cpu_affinity_ignore`: the CPUs left to bind workers
 /// to once `value`'s are taken out of this process's affinity. False: rejected.
-fn cpu_affinity_ignore(s: &Settings, value: *mut zval) -> Result<bool, Stop> {
-    // SAFETY: a live setting.
-    if unsafe { type_of(value) } != IS_ARRAY {
+fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
+    let Some(ignored) = value.array() else {
         fatal(E_ERROR, c"cpu_affinity_ignore must be array");
         return Err(Stop);
-    }
+    };
     let mut cpus = match affinity() {
         Ok(cpus) => cpus,
         Err(error) => {
@@ -663,16 +638,7 @@ fn cpu_affinity_ignore(s: &Settings, value: *mut zval) -> Result<bool, Stop> {
             return checked().map(|()| false);
         }
     };
-    // SAFETY: an array setting.
-    let ignored = unsafe { table(value) };
-    let mut items = Vec::new();
-    // SAFETY: a live table; the values are only collected.
-    unsafe {
-        swoole_rs_zend::each_value(ignored, |item| {
-            items.push(item);
-            true
-        });
-    }
+    let items: Vec<&Value> = ignored.entries().map(|(_, item)| item).collect();
     for item in items {
         let cpu = Settings::long(item)?;
         cpus.retain(|&available| i64::from(available) != cpu);
@@ -875,19 +841,16 @@ fn rewrite_rules(s: &Settings) -> Step {
     let Some(value) = s.get(c"url_rewrite_rules") else {
         return Ok(());
     };
-    // SAFETY: a live setting.
-    if unsafe { type_of(value) } != IS_ARRAY {
+    let Some(array) = value.array() else {
         fatal(E_ERROR, c"The `url_rewrite_rules` must be array");
         return Err(Stop);
-    }
+    };
     let mut rules = Rules {
         settings: s,
         bad: false,
     };
     // SAFETY: a live array; `each` neither modifies it nor unwinds.
-    let array = unsafe { table(value) };
-    // SAFETY: a live array; `each` neither modifies it nor unwinds.
-    unsafe { swr_zend_hash_foreach_key(array, Some(each), (&raw mut rules).cast()) };
+    unsafe { swr_zend_hash_foreach_key(array.as_ptr(), Some(each), (&raw mut rules).cast()) };
     if rules.bad {
         fatal(E_ERROR, c"The `replacement` must be string");
         return Err(Stop);

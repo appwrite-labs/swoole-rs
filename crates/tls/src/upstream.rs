@@ -14,6 +14,7 @@ use crate::{
 use openssl_sys::{SSL, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, stack_st_X509};
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_reactor::socket_upstream::{
     make_socket_typed, signal_dispatch, socket_cork, socket_set_fd_option, socket_uncork,
 };
@@ -401,11 +402,7 @@ pub unsafe fn socket_ssl_accept(socket: *mut SocketRecord) -> c_int {
 ///
 /// # Safety
 /// `socket` is a live record holding an SSL.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket11ssl_connectEv")
-)]
-pub unsafe extern "C" fn socket_ssl_connect(socket: *mut SocketRecord) -> c_int {
+pub unsafe fn socket_ssl_connect(socket: *mut SocketRecord) -> c_int {
     // SAFETY: as the caller promises.
     let socket = unsafe { &mut *socket };
     let (tls, ssl) = (tls(socket), socket.ssl.cast());
@@ -660,11 +657,7 @@ unsafe fn sync(
 ///
 /// # Safety
 /// `socket` is a live record and `buffer` denotes `length` readable bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket9send_syncEPKvmi")
-)]
-pub unsafe extern "C" fn socket_send_sync(
+pub unsafe fn socket_send_sync(
     socket: *mut SocketRecord,
     buffer: *const c_void,
     length: usize,
@@ -803,14 +796,7 @@ pub fn ssl_get_peer_certificate(socket: &SocketRecord) -> *mut X509 {
 /// # Safety
 /// `socket` is a live record and `name` NUL-terminated.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7network6Socket14ssl_check_hostEPKc")
-)]
-pub unsafe extern "C" fn socket_ssl_check_host(
-    socket: *const SocketRecord,
-    name: *const c_char,
-) -> bool {
+pub unsafe fn socket_ssl_check_host(socket: *const SocketRecord, name: *const c_char) -> bool {
     // SAFETY: as the caller promises.
     let cert = ssl_get_peer_certificate(unsafe { &*socket });
     // SAFETY: the caller's NUL-terminated name.
@@ -1219,16 +1205,7 @@ pub unsafe fn socket_handle_sendfile(socket: *mut SocketRecord) -> c_int {
 ///
 /// # Safety
 /// `socket` is a live record and `filename` NUL-terminated.
-#[cfg(feature = "upstream-symbols")]
-#[cfg_attr(
-    target_os = "macos",
-    unsafe(export_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKcxm")
-)]
-#[cfg_attr(
-    not(target_os = "macos"),
-    unsafe(export_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKclm")
-)]
-pub unsafe extern "C-unwind" fn socket_sendfile_async(
+pub unsafe fn socket_sendfile_async(
     socket: *mut SocketRecord,
     filename: *const c_char,
     offset: libc::off_t,
@@ -1321,11 +1298,7 @@ pub unsafe fn socket_ssl_shutdown(socket: *mut SocketRecord) -> bool {
 ///
 /// # Safety
 /// `socket` is a live record holding an SSL.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket9ssl_closeEv")
-)]
-pub unsafe extern "C" fn socket_ssl_close(socket: *mut SocketRecord) {
+pub unsafe fn socket_ssl_close(socket: *mut SocketRecord) {
     // SAFETY: as the caller promises.
     if unsafe { (*socket).ssl_closed } == 0 {
         // SAFETY: as the caller promises.
@@ -1342,11 +1315,7 @@ pub unsafe extern "C" fn socket_ssl_close(socket: *mut SocketRecord) {
 ///
 /// # Safety
 /// `socket` is a live record and `context` a live `SSLContext` (its Rust owner).
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket10ssl_createEPNS_10SSLContextEi")
-)]
-pub unsafe extern "C" fn socket_ssl_create(
+pub unsafe fn socket_ssl_create(
     socket: *mut SocketRecord,
     context: *const crate::OwnedTlsContext,
     flags: c_int,
@@ -1490,19 +1459,23 @@ unsafe fn bind_host(socket: *mut SocketRecord, host: *const c_char, port: c_int)
     // SAFETY: an all-zero address is a valid, empty one.
     let mut address: SocketAddress = unsafe { std::mem::zeroed() };
     // SAFETY: as the caller promises.
-    let length = unsafe { CStr::from_ptr(host) }.count_bytes();
-    // SAFETY: the local address and the caller's host.
-    let error = unsafe {
-        swoole_rs_clients::address::swr_v1_clients_address_assign(
-            (&raw mut address.addr).cast(),
-            &raw mut address.len,
-            kind,
-            host,
-            length,
-            port,
-            None,
-        )
-    };
+    let text = unsafe { CStr::from_ptr(host) }.to_bytes();
+    let (storage, length) = (&mut address.addr, &mut address.len);
+    let error = assign(storage, length, kind, text, port, |family| {
+        // SAFETY: the platform's.
+        unsafe extern "C" {
+            fn inet_pton(family: c_int, source: *const c_char, destination: *mut c_void) -> c_int;
+        }
+        let mut bytes = [0; 16];
+        // SAFETY: the NUL-terminated host and room for either family's address.
+        let parsed = platform_parses(family, text)
+            && unsafe { inet_pton(family, host, bytes.as_mut_ptr().cast()) } == 1;
+        if parsed {
+            Ok(bytes)
+        } else {
+            Err(BAD_HOST_ADDR)
+        }
+    });
     if error != 0 {
         log::set_last_error(error);
         return -1;
