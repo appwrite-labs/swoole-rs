@@ -995,9 +995,11 @@ unsafe extern "C" fn warn(pool: *mut c_void, worker: *mut c_void, kind: c_int, a
     let origin = loop_origin(pool);
     match kind {
         WARN_MSGRCV => {
-            // SAFETY: the pool's queue.
-            let queue =
-                unsafe { swoole_rs_ossupport::swr_v1_os_msg_queue_id(record(pool).queue.cast()) };
+            let queue = record(pool)
+                .queue
+                .cast::<swoole_rs_ossupport::QueueRecord>();
+            // SAFETY: the pool's live queue.
+            let queue = unsafe { &*queue }.id();
             log::sys_warning(origin, format_args!("[Worker#{id}] msgrcv({queue}) failed"));
         }
         WARN_ACCEPT => {

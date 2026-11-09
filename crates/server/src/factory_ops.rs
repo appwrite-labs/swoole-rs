@@ -5,10 +5,6 @@ use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicI64, Ordering};
 use swoole_rs_process::worker_record::Worker;
 
-use swoole_rs_corebase::worker_registry::{
-    swr_v1_process_worker_registry_register as register,
-    swr_v1_process_worker_registry_unregister as unregister,
-};
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_process::methods::{
     ExitStatus, kill_all_workers, swoole_get_worker_id, swoole_get_worker_type,
@@ -403,7 +399,10 @@ fn low32(value: u64) -> u32 {
 /// Forking, registering and running event and user workers.
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
-    let registry = ctx.config().worker_registry.cast();
+    let registry = ctx
+        .config()
+        .worker_registry
+        .cast::<swoole_rs_corebase::worker_registry::WorkerRegistry>();
     // The pid or worker type in the argument, as native's `int` conversion keeps it.
     let int = c_int::from_ne_bytes(low32(arg).to_ne_bytes());
     let pid = int;
@@ -419,7 +418,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the context's live worker.
             unsafe { Worker::new(worker) }.set_pid(pid);
             // SAFETY: the server's live registry.
-            unsafe { register(registry, pid, worker.cast(), REGISTRY_EVENT) };
+            unsafe { (*registry).register(pid, worker.cast(), REGISTRY_EVENT) };
         }
         OP_REGISTER_USER_WORKER => {
             // worker: local memory; user_workers: shared memory
@@ -431,11 +430,11 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the worker's shared copy.
             unsafe { Worker::new(shared).set_pid(pid) };
             // SAFETY: the server's live registry.
-            unsafe { register(registry, pid, worker.cast(), REGISTRY_USER) };
+            unsafe { (*registry).register(pid, worker.cast(), REGISTRY_USER) };
         }
         OP_FORGET_USER_WORKER => {
             // SAFETY: the server's registry.
-            let _present = unsafe { unregister(registry, pid) };
+            let _present = unsafe { (*registry).unregister(pid) };
         }
         OP_ENTER_CHILD => {
             let own = std::process::id().cast_signed();

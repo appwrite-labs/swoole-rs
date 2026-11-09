@@ -38,13 +38,8 @@ pub unsafe extern "C" fn sw_atomic_futex_wait(atomic: *mut u32, timeout: f64) ->
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let mut error = 0;
-        // SAFETY: as the caller promises; `error` is a local.
-        let result = unsafe { crate::swr_v1_utils_registry_wait(atomic, timeout, &raw mut error) };
-        if error != 0 {
-            swoole_rs_corebase::log::set_last_error(error);
-        }
-        result
+        // SAFETY: as the caller promises.
+        unsafe { crate::wait_registry::registry_wait(atomic, timeout) }
     }
 }
 
@@ -64,13 +59,8 @@ pub unsafe extern "C" fn sw_atomic_futex_wakeup(atomic: *mut u32, n: c_int) -> c
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let mut error = 0;
-        // SAFETY: as the caller promises; `error` is a local.
-        let result = unsafe { crate::swr_v1_utils_registry_wakeup(atomic, n, &raw mut error) };
-        if error != 0 {
-            swoole_rs_corebase::log::set_last_error(error);
-        }
-        result
+        // SAFETY: as the caller promises.
+        unsafe { crate::wait_registry::registry_wakeup(atomic, n) }
     }
 }
 

@@ -328,9 +328,9 @@ impl<'a> Server<'a> {
         let registry = self.config().worker_registry;
         // SAFETY: the server's live registry, configured only by the master.
         unsafe {
-            swoole_rs_corebase::worker_registry::swr_v1_process_worker_registry_pending_count(
-                registry.cast(),
-            )
+            (*registry.cast::<swoole_rs_corebase::worker_registry::WorkerRegistry>())
+                .pending()
+                .len()
         }
     }
 
