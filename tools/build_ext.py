@@ -54,7 +54,8 @@ def main():
     subprocess.run(['cargo', 'build', '--locked', '--profile', args.profile, '-p', 'swoole-rs-ext',
                     '--features', ','.join(features)], cwd=ROOT, env=env, check=True)
     target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'))
-    built = target / ('debug' if args.profile == 'dev' else args.profile) / (
+    # tools/tsan.py builds for an explicit target, as `cargo --target` would.
+    built = target / os.environ.get('CARGO_BUILD_TARGET', '') / ('debug' if args.profile == 'dev' else args.profile) / (
         'libswoole.dylib' if sys.platform == 'darwin' else 'libswoole.so')
     extension = out / 'swoole.so'
     shutil.copy2(built, extension)
