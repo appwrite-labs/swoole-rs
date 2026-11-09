@@ -1,6 +1,11 @@
 #include "shim.h"
 #include "shim_event.h"
+/* php_sockets.h is empty unless HAVE_SOCKETS is set, which a distro PHP built with
+ * ext/sockets as a shared module does not define in php_config.h. */
 #if __has_include("ext/sockets/php_sockets.h")
+#ifndef HAVE_SOCKETS
+#define HAVE_SOCKETS 1
+#endif
 #include "ext/sockets/php_sockets.h"
 #endif
 
