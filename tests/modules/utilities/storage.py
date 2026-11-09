@@ -119,7 +119,7 @@ def main():
                 names = ['level', 'date_format_long_string', 'date_with_microseconds', 'ignore_error']
                 excerpt = ('\n'.join(body(original.decode(), 'TEST(log, ' + name + ')') for name in names)).encode()
                 expected = ['log.' + name for name in names]
-                config = '#include "swoole_file.h"\n#if __has_include("swoole_process_pool.h")\n#include "swoole_process_pool.h"\n#else\n#include "swoole_server.h"\n#endif\n#include <regex>\n#define M14_PRIVATE_LOG_FILE 1\n'
+                config = '#include "swoole_file.h"\n#if __has_include("swoole_process_pool.h")\n#include "swoole_process_pool.h"\n#else\n#include "swoole_rs_process_pool.h"\n#endif\n#include <regex>\n#define M14_PRIVATE_LOG_FILE 1\n'
                 config += original[original.index(b'const char *file ='):original.index(b'TEST(log, level)')].decode()
                 config += '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
                 report['limits'] = 'Four unchanged global Logger originals through real GoogleTest and coherent frozen native/selected SDKs. Ordinary String construction/read consumers only. Unsafe date_format scanf, hardcoded open_fail, spawn adapters and full39/performance unqualified.'
@@ -130,7 +130,7 @@ def main():
                 main_source = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/src/main.cpp'], text=True)
                 (work / 'pinned-main.cpp').write_text(main_source)
                 helpers = '\n'.join(body(main_source, signature) for signature in ['pid_t spawn_exec(', 'int spawn_exec_and_wait('])
-                config = '#include "swoole_file.h"\n#if __has_include("swoole_process_pool.h")\n#include "swoole_process_pool.h"\n#else\n#include "swoole_server.h"\n#endif\n#include <system_error>\n#define M14_PRIVATE_LOG_FILE 1\n#define M14_CHILD_ASSERTIONS 1\n#include "child_assertions.h"\n'
+                config = '#include "swoole_file.h"\n#if __has_include("swoole_process_pool.h")\n#include "swoole_process_pool.h"\n#else\n#include "swoole_rs_process_pool.h"\n#endif\n#include <system_error>\n#define M14_PRIVATE_LOG_FILE 1\n#define M14_CHILD_ASSERTIONS 1\n#include "child_assertions.h"\n'
                 config += original[original.index(b'const char *file ='):original.index(b'TEST(log, level)')].decode()
                 if args.redirect_originals:
                     original_inputs = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/include/test_core.h'], text=True)
