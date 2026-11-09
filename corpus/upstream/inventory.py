@@ -27,6 +27,9 @@ def shard(paths, index, count):
 # Outside tests/, but read by tests: config.php's TEST_IMAGE*, DOCUMENT_ROOT and
 # SOURCE_ROOT_PATH fixtures, and the static handlers' document_root (examples/).
 FIXTURES = ['README.md', 'docs/swoole-logo.svg', 'examples', 'package.xml', 'core-tests/fuzz/cases']
+# Each shard pays about 3 minutes of services and setup, so the PR tier runs one per PER_SHARD
+# tests (about 2.5 minutes of them), up to the merge tier's MAX_SHARDS.
+PER_SHARD, MAX_SHARDS = 150, 6
 
 
 def blobs(source):
@@ -47,7 +50,9 @@ def main():
     parser.add_argument('--source', type=Path, default=ROOT / 'target/upstream/src')
     parser.add_argument('--shard', default='1/1', help='INDEX/COUNT, 1-based')
     parser.add_argument('--module', action='append', help='Only this family; repeatable. Applied before sharding')
-    parser.add_argument('--output', type=Path, required=True)
+    output = parser.add_mutually_exclusive_group(required=True)
+    output.add_argument('--output', type=Path)
+    output.add_argument('--plan', action='store_true', help="Print the shard matrix for these tests, a JSON list of indexes")
     args = parser.parse_args()
     index, count = map(int, args.shard.split('/'))
     if not 1 <= index <= count:
@@ -55,6 +60,9 @@ def main():
     paths = list(blobs(args.source))
     tests = shard([path for path in paths if path.endswith('.phpt')
                    and (not args.module or path.split('/')[1] in args.module)], index, count)
+    if args.plan:
+        print(json.dumps(list(range(1, min(MAX_SHARDS, max(1, -(-len(tests) // PER_SHARD))) + 1))))
+        return 0
     support = [path for path in paths if not path.endswith('.phpt') and not path.startswith('tests/include/')]
     manifest = {'repository': 'https://github.com/swoole/swoole-src', 'commit': COMMIT,
                 'tests': [{'path': path, 'sha256': digest(args.source, path), 'module': path.split('/')[1],

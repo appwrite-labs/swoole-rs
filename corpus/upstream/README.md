@@ -127,7 +127,9 @@ python3 corpus/upstream/gate.py upstream-*.json cargo-*.json --output phpt.json
 ```
 
 `inventory.py` lists every `.phpt` at the pin (family = its `tests/` directory)
-and every other file under `tests/` as a support file. `gate.py` fails if any test
+and every other file under `tests/` as a support file. `--plan` prints the shard
+matrix for the families selected, one shard per 150 tests up to 6, as a JSON list of
+indexes (`--module swoole_server`: `[1, 2]`). `gate.py` fails if any test
 that passes on upstream does not pass on the Cargo build, including when its result is
 missing, and refuses interrupted shards. Tests failing on both are listed, not
 hidden. Tests of upstream fixes to code that is Rust now and not yet ported
