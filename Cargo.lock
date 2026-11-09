@@ -884,7 +884,13 @@ dependencies = [
 name = "swoole-rs-phptimer"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-corebase",
+ "swoole-rs-phpcoroutines",
+ "swoole-rs-phphelpers",
+ "swoole-rs-phpprocess",
  "swoole-rs-phpstubs",
+ "swoole-rs-phpswoole",
+ "swoole-rs-timer",
  "swoole-rs-zend",
 ]
 

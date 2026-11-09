@@ -49,7 +49,7 @@ Stateless helpers in `crates/timer/src/runtime.rs`.
 | `swr_v1_timer_rearm_after_add` | `Timer::add`; Native set still precedes the cached timeout write |
 | `swr_v1_timer_delay_deadline` | `Timer::delay`, before the queue update; no output write on rejection |
 
-`timer_uses_reactor` in `native/timer/phptimer.cc`: user workers and
+`timer_uses_reactor` in `crates/phpprocess/src/host.rs`: user workers and
 coroutine-enabled task workers use the reactor; other server roles and a
 process-pool master use the system timer.
 

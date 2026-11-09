@@ -93,7 +93,6 @@ extern zend_class_entry *swoole_error_ce;
 
 // Module hooks Rust's MINIT/RINIT/MSHUTDOWN sequence calls, defined in C++ here.
 void php_swoole_event_minit(int module_number);
-void php_swoole_timer_minit(int module_number);
 void php_swoole_runtime_minit(int module_number);
 void php_swoole_server_minit(int module_number);
 void php_swoole_runtime_mshutdown();

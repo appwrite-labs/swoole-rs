@@ -279,7 +279,8 @@ pub(crate) unsafe fn callable_call(
 }
 
 /// `php_swoole_is_enable_coroutine()`.
-pub(crate) fn enable_coroutine() -> bool {
+#[must_use]
+pub fn enable_coroutine() -> bool {
     // SAFETY: phphelpers' reader of the server and Swoole globals.
     unsafe { php_swoole_is_enable_coroutine() }
 }
@@ -317,14 +318,30 @@ pub(crate) fn signal_set(signo: c_int, handler: Handler, safety: bool) {
     }
 }
 
+/// The running server's `task_enable_coroutine`.
+fn task_coroutine(serv: *mut c_void) -> bool {
+    // SAFETY: the running server.
+    unsafe { view::config(serv) }.task_enable_coroutine
+}
+
 /// `Server::is_sync_process()` of the running server.
 pub(crate) fn sync_server() -> bool {
     server().is_some_and(|serv| match methods::swoole_get_worker_type() {
         MANAGER => true,
-        // SAFETY: the running server.
-        TASK_WORKER => !unsafe { view::config(serv) }.task_enable_coroutine,
+        TASK_WORKER => !task_coroutine(serv),
         _ => false,
     })
+}
+
+/// Whether a timer added in this process runs on its reactor: a server's user
+/// workers and coroutine task workers, and any process but a pool's master.
+#[must_use]
+pub fn timer_uses_reactor() -> bool {
+    let kind = methods::swoole_get_worker_type();
+    match server() {
+        Some(serv) => kind == USER_WORKER || (kind == TASK_WORKER && task_coroutine(serv)),
+        None => crate::swr_v1_phpprocess_pool_current().is_null() || kind != MASTER,
+    }
 }
 
 unsafe extern "C" fn listening(_event_num: *mut usize) -> bool {
