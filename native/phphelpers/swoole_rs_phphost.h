@@ -230,7 +230,6 @@ extern zend_string **sw_zend_known_strings;
 
 SW_API bool php_swoole_is_enable_coroutine();
 SW_API zif_handler php_swoole_get_original_handler(const char *name, size_t len);
-SW_API bool php_swoole_call_original_handler(const char *name, size_t len, INTERNAL_FUNCTION_PARAMETERS);
 
 static inline bool php_swoole_is_fatal_error() {
     return PG(last_error_message) && (PG(last_error_type) & E_FATAL_ERRORS);
@@ -238,25 +237,7 @@ static inline bool php_swoole_is_fatal_error() {
 
 const swoole::Allocator *sw_zend_string_allocator();
 
-static inline void sw_callable_warning(const char *message) {
-    php_swoole_fatal_error(E_WARNING, "%s", message);
-}
-
 namespace zend {
-class Callable {
-    SwrPhpCallable *owned;
-    explicit Callable(SwrPhpCallable *handle) : owned(handle) {}
-  public:
-    Callable(zval *value);
-    ~Callable();
-    uint32_t refcount() const;
-    zend_fcall_info_cache *ptr() { return swr_v1_phphelpers_callable_cache(owned); }
-    bool ready() const { return swr_v1_phphelpers_callable_ready(owned); }
-    Callable *dup() const { return new Callable(swr_v1_phphelpers_callable_copy(owned)); }
-    bool call(uint32_t argc, zval *argv, zval *retval) { return swr_v1_phphelpers_callable_invoke(owned, argc, argv, retval); }
-    static Callable *wrap(SwrPhpCallable *handle) { return handle ? new Callable(handle) : nullptr; }
-};
-
 namespace function {
 // Event callbacks go through this so exceptions are handled; crates/phphelpers.
 bool call(zend_fcall_info_cache *fci_cache, uint32_t argc, zval *argv, zval *retval, const bool enable_coroutine);
@@ -279,12 +260,3 @@ static inline zval *array_get(zval *arg, zend_ulong index) {
     return zend_hash_index_find(Z_ARRVAL_P(arg), index);
 }
 }  // namespace zend
-
-// void * to match C callback function pointers.
-static inline void sw_callable_free(void *ptr) {
-    delete (zend::Callable *) ptr;
-}
-
-static inline zend::Callable *sw_callable_create(zval *zfn) {
-    return zend::Callable::wrap(swr_v1_phphelpers_callable_factory(zfn, nullptr, true, swoole_exception_ce, sw_callable_warning));
-}

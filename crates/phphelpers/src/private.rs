@@ -275,7 +275,7 @@ unsafe fn direct_call(
 /// # Safety
 /// Live function-name/cache/argument zvals and optional return storage, as Zend requires.
 #[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_call(
+pub unsafe extern "C" fn swr_v1_phphelpers_call(
     name: *mut zval,
     cache: *mut zend_fcall_info_cache,
     argc: u32,

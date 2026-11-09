@@ -46,14 +46,15 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
+use swoole_rs_phphelpers::callable as handle;
 use swoole_rs_phpstubs::runtime;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Message,
     bailout::{self, Bailout},
     message, register_long_constant,
     sys::{
-        swr_zend_module_loaded, swr_zend_runtime_find_class, swr_zend_stream_factory,
-        swr_zend_stream_factory_set, zend_class_entry, zend_execute_data, zend_fcall_info_cache,
+        swr_zend_callable_warning, swr_zend_module_loaded, swr_zend_runtime_find_class,
+        swr_zend_stream_factory, swr_zend_stream_factory_set, zend_class_entry, zend_execute_data,
         zend_register_class_alias_ex, zif_handler, zval,
     },
 };
@@ -115,15 +116,6 @@ pub struct Ops {
     stream_ops: unsafe extern "C" fn(stdio: u8, hook: u8),
     /// `swoole_<driver>_set_blocking(blocking)` for a `HOOK_PDO_*` bit.
     pdo: unsafe extern "C" fn(flag: u32, blocking: u8),
-    /// `sw_callable_create(name)`: a `zend::Callable *` or null.
-    callable: unsafe extern "C" fn(name: *mut zval) -> *mut c_void,
-    /// `sw_callable_free`.
-    callable_free: unsafe extern "C" fn(callable: *mut c_void),
-    /// `callable->dup()`.
-    callable_dup: unsafe extern "C" fn(callable: *mut c_void) -> *mut c_void,
-    callable_call: unsafe extern "C" fn(call: *mut c_void),
-    /// `callable->ptr()`.
-    callable_fcc: unsafe extern "C" fn(callable: *mut c_void) -> *mut zend_fcall_info_cache,
     /// `php_swoole_fatal_error(level, "%s", message)`.
     fatal_error: unsafe extern "C" fn(level: i32, message: *const c_char),
     /// `php_swoole_error(level, "%s", message)`.
@@ -161,21 +153,34 @@ fn ops() -> &'static Ops {
     OPS.get().copied().unwrap_or_else(|| std::process::abort())
 }
 
-/// `sw_callable_create(value)`: a `zend::Callable *`, or null after a warning.
+/// `sw_callable_create(value)`: a crates/phphelpers callable, or null after a
+/// warning.
 /// # Safety
 /// PHP is running and `value` is a live zval. The warning's handler may bail
 /// out, so the caller runs inside `zend_try` and owns nothing.
 pub unsafe fn callable_create(value: *mut zval) -> *mut c_void {
-    // SAFETY: per the caller.
-    unsafe { (ops().callable)(value) }
+    // SAFETY: per the caller; the reporter is C.
+    let created = unsafe {
+        handle::factory(
+            value,
+            std::ptr::null(),
+            true,
+            ops().exception,
+            swr_zend_callable_warning,
+        )
+    };
+    bailout::finish();
+    created.unwrap_or(std::ptr::null_mut()).cast()
 }
 
-/// `sw_callable_free(callable)`.
+/// `sw_callable_free(callable)`; null is ignored.
 /// # Safety
 /// As [`callable_create`]; `callable` is one it made, freed once.
 pub unsafe fn callable_free(callable: *mut c_void) {
-    // SAFETY: per the caller.
-    unsafe { (ops().callable_free)(callable) };
+    if !callable.is_null() {
+        // SAFETY: per the caller.
+        bailout::raise(unsafe { handle::release(callable.cast()) });
+    }
 }
 
 /// `callable->dup()`.
@@ -183,10 +188,10 @@ pub unsafe fn callable_free(callable: *mut c_void) {
 /// `callable` is live.
 pub unsafe fn callable_dup(callable: *mut c_void) -> *mut c_void {
     // SAFETY: per the caller.
-    unsafe { (ops().callable_dup)(callable) }
+    unsafe { handle::copy(callable.cast()) }.cast()
 }
 
-/// `swr_v1_runtime_callable_call`.
+/// [`callable_call`]'s arguments and result.
 #[repr(C)]
 struct CallableCall {
     callable: *mut c_void,
@@ -195,6 +200,38 @@ struct CallableCall {
     retval: *mut zval,
     from_loop: bool,
     result: bool,
+}
+
+/// [`callable_call`]'s trapped body.
+/// # Safety
+/// `call` is a live [`CallableCall`] whose callable, arguments and return slot
+/// are live.
+unsafe extern "C" fn invoke(call: *mut c_void) {
+    // SAFETY: per the caller.
+    let call = unsafe { &mut *call.cast::<CallableCall>() };
+    let callable = call.callable.cast();
+    call.result = if call.from_loop {
+        // SAFETY: per the caller.
+        let cache = unsafe { handle::cache(callable) };
+        // SAFETY: per the caller; the reporter is C.
+        let called = unsafe {
+            swoole_rs_phphelpers::swr_v1_phphelpers_call(
+                std::ptr::null_mut(),
+                cache,
+                call.argc,
+                call.argv,
+                call.retval,
+                true,
+                swr_zend_callable_warning,
+            )
+        };
+        called == 0
+    } else {
+        // SAFETY: per the caller.
+        let called = unsafe { handle::invoke(callable, call.argc, call.argv, call.retval) };
+        bailout::finish();
+        called.unwrap_or(false)
+    };
 }
 
 /// `callable->call(args.len(), args, retval)` inside `zend_try`, or with
@@ -220,8 +257,8 @@ pub unsafe fn callable_call(
         from_loop,
         result: false,
     };
-    // SAFETY: per the caller; the host op is C++ and takes a `CallableCall`.
-    unsafe { bailout::trap(ops().callable_call, (&raw mut call).cast()) }?;
+    // SAFETY: per the caller; `invoke` takes a `CallableCall`.
+    unsafe { bailout::trap(invoke, (&raw mut call).cast()) }?;
     Ok(call.result)
 }
 
@@ -609,6 +646,12 @@ pub unsafe extern "C" fn original_handler(name: *const c_char, length: usize) ->
     functions::original_handler(name)
 }
 
+/// The handler `name` had before the first hook, or null.
+#[must_use]
+pub fn original(name: &[u8]) -> zif_handler {
+    functions::original_handler(name)
+}
+
 /// `swoole_user_func_handler`: run the function's PHP replacement (inside a
 /// coroutine) or its original handler.
 /// # Safety
@@ -672,17 +715,8 @@ mod tests {
     unsafe extern "C" fn pdo(flag: u32, blocking: u8) {
         record(format!("pdo:{flag}:{blocking}"));
     }
-    unsafe extern "C" fn callable(_: *mut zval) -> *mut c_void {
-        std::ptr::null_mut()
-    }
-    unsafe extern "C" fn free(_: *mut c_void) {}
-    unsafe extern "C" fn callable_dup(_: *mut c_void) -> *mut c_void {
-        std::ptr::null_mut()
-    }
-    unsafe extern "C" fn fcc(_: *mut c_void) -> *mut zend_fcall_info_cache {
-        std::ptr::null_mut()
-    }
     unsafe extern "C" fn error(_: i32, _: *const c_char) {}
+    unsafe extern "C" fn free(_: *mut c_void) {}
 
     /// Two PDO drivers built in, no native curl.
     static FAKE: Ops = Ops {
@@ -696,11 +730,6 @@ mod tests {
         active_threads: zero,
         stream_ops,
         pdo,
-        callable,
-        callable_free: free,
-        callable_dup,
-        callable_call: free,
-        callable_fcc: fcc,
         fatal_error: error,
         error,
         proc_open: None,

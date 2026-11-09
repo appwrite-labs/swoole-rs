@@ -38,7 +38,7 @@ unsafe extern "C" {
 /// is re-raised as the last step.
 /// # Safety
 /// C++ calls it with a live protocol whose `private_data_1` is a
-/// `zend::Callable`, and a live packet of `buf_size` bytes.
+/// callable, and a live packet of `buf_size` bytes.
 #[unsafe(export_name = "_Z22php_swoole_length_funcPKN6swoole8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE")]
 pub(crate) unsafe extern "C" fn php_swoole_length_func(
     protocol: *const Protocol,

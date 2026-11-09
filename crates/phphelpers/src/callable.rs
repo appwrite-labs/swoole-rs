@@ -199,16 +199,6 @@ pub unsafe fn invoke(
     outcome(success)
 }
 
-/// # Safety
-/// A live initialized handle. Zend's refcount convention includes scalar values.
-#[must_use]
-pub unsafe fn refs(handle: *const Callable) -> u32 {
-    // SAFETY: the handle contains a live initialized zval.
-    let value = unsafe { &raw const (*handle).value };
-    // SAFETY: the live handle contains an initialized zval.
-    unsafe { sys::swr_zval_facade_refcount(value) }
-}
-
 /// # Errors
 /// A native PHP leaf bailed out. No jump is resumed here; propagate the result
 /// and finish only from the outermost C-facing handler or export.
@@ -259,81 +249,4 @@ pub unsafe fn factory(
         deferred(unsafe { sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505) });
     }
     outcome(ptr::null_mut())
-}
-
-// C++ facade entry points are the only places that resume a deferred bailout.
-/// # Safety
-/// The live candidate and C/C++ warning reporter satisfy [`create`].
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_new(
-    value: *mut zval,
-    report: Report,
-) -> *mut Callable {
-    // SAFETY: forward the caller's live candidate and native reporter.
-    let result = unsafe { create(value, report) }.unwrap_or(ptr::null_mut());
-    bailout::finish();
-    result
-}
-/// # Safety
-/// The caller transfers the live owner exactly once, as [`release`] requires.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_free(handle: *mut Callable) {
-    // SAFETY: consume this live owner before resuming any contained bailout.
-    bailout::defer(unsafe { release(handle) });
-    bailout::finish();
-}
-/// The owner's cache, which stays put while it lives.
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn swr_v1_phphelpers_callable_cache(
-    handle: &mut Callable,
-) -> *mut zend_fcall_info_cache {
-    &raw mut handle.cache
-}
-/// Whether the owner, if any, resolved.
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn swr_v1_phphelpers_callable_ready(handle: Option<&Callable>) -> bool {
-    // SAFETY: a live owner; this query runs no PHP code.
-    handle.is_some_and(|handle| unsafe { ready(handle) })
-}
-/// An independent owner of the same callable.
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn swr_v1_phphelpers_callable_copy(handle: &Callable) -> *mut Callable {
-    // SAFETY: retain the live source's references in an independent owner.
-    unsafe { copy(handle) }
-}
-/// # Safety
-/// The caller keeps the owner, arguments and optional return slot live as [`invoke`] requires.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_invoke(
-    handle: *mut Callable,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
-) -> bool {
-    // SAFETY: the native caller lends the live call data through invocation.
-    let result = unsafe { invoke(handle, argc, argv, retval) }.unwrap_or(false);
-    bailout::finish();
-    result
-}
-/// The owner's reference count.
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn swr_v1_phphelpers_callable_refs(handle: &Callable) -> u32 {
-    // SAFETY: the query reads a live reference-counted payload.
-    unsafe { refs(handle) }
-}
-/// # Safety
-/// The candidate, diagnostic name, class and reporter satisfy [`factory`].
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_callable_factory(
-    value: *mut zval,
-    name: *const c_char,
-    allow_null: bool,
-    exception: *mut sys::zend_class_entry,
-    report: Report,
-) -> *mut Callable {
-    // SAFETY: forward the native caller's factory inputs without retaining Rust borrows.
-    let result =
-        unsafe { factory(value, name, allow_null, exception, report) }.unwrap_or(ptr::null_mut());
-    bailout::finish();
-    result
 }
