@@ -1,7 +1,7 @@
 # Validation
 
 These checks run in addition to the corpus applications and original upstream
-PHPTs (see [hybrid build](hybrid-build.md)). `EXT` is a path to a built
+PHPTs (see [corpus](../corpus/README.md)). `EXT` is a path to a built
 `swoole.so`. `tools/dev.py integrate` runs the registered ones (see
 [development](development.md)).
 

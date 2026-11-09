@@ -20,7 +20,7 @@ runs:
         shared-key: release
         save-if: false
     - shell: bash
-      run: rm -rf target/ext target/hybrid target/upstream target/thirdparty target/native-core
+      run: rm -rf target/ext target/upstream target/thirdparty target/native-core
     - id: install
       uses: ./.github/actions/install
       with:

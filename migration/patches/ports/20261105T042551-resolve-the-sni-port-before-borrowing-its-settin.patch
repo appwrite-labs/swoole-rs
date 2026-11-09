@@ -1,9 +1,0 @@
-diff --git a/src/server/port.cc b/src/server/port.cc
-index 8b33cec..a9536fc 100644
---- a/src/server/port.cc
-+++ b/src/server/port.cc
-@@ -203,3 +203,3 @@ static uint64_t port_run_call(void *context, uint32_t op, uint64_t arg) {
- static int port_run(PortRun &&context, uint32_t kind) {
--    return swr_v1_ports_run_state(kind, &context, port_run_call, context.port->config_handle());
-+    return swr_v1_ports_run_state(kind, &context, port_run_call, context.port ? context.port->config_handle() : nullptr);
- }

@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.build_upstream import COMMIT, VERSION
 from tools.check_migration import MODULES
 from tools.harness import ROOT
-from tools.patches import clone_pin, git
 
 # crates/ext's features that are swoole-rs-ffi's too: the Zend-free archive's build profile.
 FFI_FEATURES = {'sockets', 'stdext', 'halfclose', 'iouring', 'cares', 'pgsql', 'odbc', 'firebird', 'sqlite', 'oci', 'curl', 'ssh2'}
@@ -58,7 +57,7 @@ def headers_for(modules):
 
 def native_sources():
     """Owned C and C++ (native/<module>/*.c and *.cc: what stable Rust can't express), by the path
-    it compiles at in the patched tree, where config.m4's and CMake's src/ globs find it."""
+    it compiles at in a pin checkout, where CMake's src/ glob finds it."""
     paths = sorted((ROOT / 'native').glob('*/*.c')) + sorted((ROOT / 'native').glob('*/*.cc'))
     return {f'src/swoole_rs_{path.parent.name}_{path.name}': path for path in paths}
 
@@ -101,13 +100,19 @@ def sdk(messages, features, profile, env):
 
 
 def checkout(tree):
-    """The pin, unpatched, in `tree`: kept when it is already there and clean."""
-    if (tree / '.git').exists() and git(tree, 'status', '--porcelain', '--untracked-files=no') == '' \
-            and git(tree, 'rev-parse', 'HEAD').strip() == COMMIT:
+    """The pin, unpatched, in `tree`: kept when it is already there and clean. Cloned from
+    target/upstream/src when that exists, else from GitHub."""
+    def git(*args):
+        return subprocess.run(['git', '-C', str(tree), *args], check=True, capture_output=True, text=True).stdout
+    if (tree / '.git').exists() and git('status', '--porcelain', '--untracked-files=no') == '' \
+            and git('rev-parse', 'HEAD').strip() == COMMIT:
         return
     shutil.rmtree(tree, ignore_errors=True)
-    clone_pin(tree)
-    git(tree, 'checkout', '-q', COMMIT)
+    reference = ROOT / 'target/upstream/src'
+    source = [str(reference)] if (reference / '.git').exists() else ['--depth', '1', '--branch', VERSION,
+                                                                     'https://github.com/swoole/swoole-src.git']
+    subprocess.run(['git', '-c', 'advice.detachedHead=false', 'clone', '-q', *source, str(tree)], check=True)
+    git('checkout', '-q', COMMIT)
 
 
 def native_flags(archive):

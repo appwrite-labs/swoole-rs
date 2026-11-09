@@ -1,7 +1,6 @@
 # Clients and resolver migration
 
-The client and resolver (`crates/clients`, patches in
-`migration/patches/clients/`). Rust owns `network::Client` state and operations,
+The client and resolver (`crates/clients`). Rust owns `network::Client` state and operations,
 using the reactor's socket record directly, with its TLS context and proxies.
 The DNS lookup (`dns.rs`, `cares.rs`), the persistent client pool and the PHP
 classes (`crates/phpclients`) are Rust too; no C++ remains (native/clients/contract.md).
