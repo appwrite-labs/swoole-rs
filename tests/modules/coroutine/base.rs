@@ -94,7 +94,6 @@ struct AsyncEvent {
 unsafe extern "C-unwind" {
     fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
     fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
-    fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
     fn swr_v1_coroutine_bail(fn_: Callback, data: *mut c_void);
     fn swr_v1_coroutine_get(s: *const Scheduler, cid: c_long) -> *mut Co;
     fn swr_v1_coroutine_count(s: *const Scheduler) -> usize;
