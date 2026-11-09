@@ -24,10 +24,6 @@ pub(crate) struct Info {
     brotli_encoder: u32,
     brotli_decoder: u32,
 }
-unsafe extern "C" {
-    fn swr_cpp_phpswoole_info_ssh2() -> u8;
-    fn swr_cpp_phpswoole_info_ftp(module: *mut c_void) -> u8;
-}
 fn contained(bailed: impl Into<i32>) -> Result<(), Bailout> {
     if bailed.into() == 0 {
         Ok(())
@@ -121,14 +117,9 @@ impl Info {
         } else {
             Self::enabled(C::Execinfo, C::Execinfo)?;
         }
-        if built_with(C::Ssh2) {
-            // SAFETY: optional extension output is a single native hook with its own trap.
-            contained(unsafe { swr_cpp_phpswoole_info_ssh2() })?;
-        }
-        if built_with(C::Ftp) {
-            // SAFETY: PHP lends its live module entry to this guarded optional MINFO hook.
-            contained(unsafe { swr_cpp_phpswoole_info_ftp(module) })?;
-        }
+        // SAFETY: ssh2's and ftp's MINFO, a C++ body whose bailout the trap's
+        // setjmp catches below every Rust frame; PHP lends its live module entry.
+        unsafe { bailout::trap(crate::ops().optional_minfo, module) }?;
         // SAFETY: closes the PHP information table; output bailouts are contained.
         contained(unsafe { swr_zend_try_info_end() })?;
         // SAFETY: the live module entry selects its registered INI entries; guarded below Rust.

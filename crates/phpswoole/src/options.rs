@@ -4,7 +4,6 @@
 use crate::{
     constants::DEBUG,
     module::{globals, size_error},
-    ops,
 };
 use std::{
     ffi::{CStr, c_char, c_int},
@@ -38,6 +37,11 @@ const HTTP2_MAX_CONCURRENT_STREAMS: u32 = 3;
 const HTTP2_INIT_WINDOW_SIZE: u32 = 4;
 const HTTP2_MAX_FRAME_SIZE: u32 = 5;
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 6;
+
+unsafe extern "C" {
+    /// crates/clients' resolver address (`dns_server`).
+    fn swr_v1_clients_set_dns_server(server: *const u8, length: usize);
+}
 
 /// `php_swoole_array_get_value`: the value under `key`, unless absent or null.
 pub(crate) fn get(options: *mut zend_array, key: &CStr) -> Option<*mut zval> {
@@ -158,7 +162,6 @@ pub fn set_global(options: *mut zend_array) -> bool {
 }
 
 fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> {
-    let ops = ops();
     let size_of = |value| size(value).map_err(|error| (value, error));
     let flag = |key, set: &dyn Fn(bool)| option(options, key, truthy, |on| set(on != 0));
     let number = |key, set: &dyn Fn(i64)| option(options, key, long, set);
@@ -216,8 +219,8 @@ fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> 
     });
     // [DNS]
     text_option(options, c"dns_server", |server, length| {
-        // SAFETY: C++'s setter, with a string that lives for the call.
-        unsafe { (ops.set_dns_server)(server, length) };
+        // SAFETY: a string that lives for the call.
+        unsafe { swr_v1_clients_set_dns_server(server.cast(), length) };
     });
     // [Socket]
     if let Some(value) = get(options, c"socket_dns_timeout") {

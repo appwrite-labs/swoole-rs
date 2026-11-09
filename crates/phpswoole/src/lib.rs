@@ -84,6 +84,8 @@ pub struct HostOps {
     /// after the clients', and ssh2's MSHUTDOWN, after the drivers'.
     optional_client_minit: unsafe extern "C" fn(module_number: c_int),
     optional_mshutdown: unsafe extern "C" fn(),
+    /// Their MINFO, a `zend_try` body.
+    optional_minfo: unsafe extern "C" fn(module: *mut c_void),
     /// `zend::known_strings_dtor()`.
     known_strings_dtor: unsafe extern "C" fn(),
     /// `swoole_set_task_tmpdir(dir)`.
@@ -105,25 +107,13 @@ pub struct HostOps {
         options: i64,
         depth: i64,
     ),
-    set_dns_server: unsafe extern "C" fn(server: *const c_char, length: usize),
     // `swoole_async_set()` and the coroutine DNS cache's remaining native field.
     set_dns_cache_refresh_time: unsafe extern "C" fn(seconds: f64),
     dns_cache_refresh_time: unsafe extern "C" fn() -> f64,
-    /// `sw_reactor() != nullptr`.
-    reactor_created: unsafe extern "C" fn() -> u8,
     /// `Coroutine::get_current_safe()`: a fatal error outside a coroutine.
     current_coroutine_safe: unsafe extern "C" fn(),
     /// `php_swoole_check_reactor()`.
     check_reactor: unsafe extern "C" fn(),
-    /// `swoole::coroutine::dns_lookup(domain, family, timeout)`, each address
-    /// pushed onto `list` in order. The coroutine yields.
-    dns_lookup: unsafe extern "C" fn(
-        domain: *const c_char,
-        family: i32,
-        timeout: f64,
-        push: extern "C" fn(list: *mut c_void, address: *const c_char),
-        list: *mut c_void,
-    ),
     /// MINIT's start: the bridge ABI check, the native effect provider, the
     /// `SWOOLE_RS_*` constants, the module globals and ini entries. 0 on success.
     begin: unsafe extern "C" fn(kind: c_int, module_number: c_int) -> c_int,

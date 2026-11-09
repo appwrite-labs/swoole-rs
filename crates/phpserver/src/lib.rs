@@ -1,8 +1,5 @@
 //! PHP `Swoole\Server` family classes in Rust: registration, objects and
-//! method bodies. C++ keeps upstream's method tables built from the stubs'
-//! arginfo and the Server and `ListenPort` objects these configure, reached
-//! through host tables (`native/ports/swoole_rs_phpserver.h`,
-//! `native/process/swoole_rs_phpserver_server.h`). See docs/zend.md.
+//! method bodies over crates/server's Server and `ListenPort`. See docs/zend.md.
 //!
 //! Without the `php` feature the crate is empty.
 #![cfg_attr(

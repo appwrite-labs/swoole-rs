@@ -1,13 +1,10 @@
 //! `Swoole\Server`'s classes, its connection and worker methods, and
-//! `Swoole\Connection\Iterator`. C++ keeps the Server and its `Server\Task`
-//! objects and answers through the host table
-//! (`native/process/swoole_rs_phpserver_server.h`); lifecycle.rs owns the Server
-//! objects.
+//! `Swoole\Connection\Iterator`; lifecycle.rs owns the Server objects.
 use std::{
     cell::RefCell,
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
-    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
 use swoole_rs_corebase::DataHead;
@@ -42,18 +39,28 @@ fn closed(conn: &ConnectionRecord) -> bool {
 }
 /// `SW_MAX_FIND_COUNT`.
 const MAX_FIND_COUNT: i64 = 100;
-/// `swr_v1_phpserver_host`.
-#[repr(C)]
-pub struct ServerHost {
-    invalid: unsafe extern "C" fn(*mut zend_object),
+/// `php_swoole_fatal_error(E_ERROR, "Invalid instance of %s", ...)` of a live
+/// `object`: an `E_ERROR`, which bails out and does not return, so the caller's
+/// frames own nothing a bailout would skip (as `server` and its kin).
+pub(crate) fn invalid(object: *mut zend_object) {
+    crate::set_last_error(SW_ERROR_PHP_FATAL_ERROR);
+    // SAFETY: a live object, as above.
+    let name = unsafe { swoole_rs_zend::class_name(object) };
+    // SAFETY: a format with one string argument; the bailout jumps past this
+    // frame and the caller's, which own nothing.
+    unsafe {
+        z::php_error_docref(
+            ptr::null(),
+            swoole_rs_zend::E_ERROR,
+            c"Invalid instance of %s".as_ptr(),
+            name.as_ptr(),
+        );
+    };
 }
 
-static HOST: AtomicPtr<ServerHost> = AtomicPtr::new(ptr::null_mut());
-
-fn host() -> &'static ServerHost {
-    // SAFETY: MINIT stores C++'s static table before any object or method exists.
-    unsafe { &*HOST.load(Ordering::Acquire) }
-}
+/// `Swoole\Server`, as C++ and the other crates read it; MINIT writes it.
+#[unsafe(no_mangle)]
+pub static mut swoole_server_ce: *mut zend_class_entry = ptr::null_mut();
 
 pub(crate) static SERVER: Class = Class::new();
 pub(crate) static TASK: Class = Class::new();
@@ -162,8 +169,7 @@ pub(crate) fn task_server(object: *mut zend_object) -> *mut c_void {
     // SAFETY: a `Server\Task` object, which this class creates.
     let serv = unsafe { TaskObject::data(object) }.serv;
     if serv.is_null() {
-        // SAFETY: a live object.
-        unsafe { (host().invalid)(object) };
+        invalid(object);
     }
     serv
 }
@@ -417,19 +423,14 @@ unsafe extern "C" {
     fn zif_swoole_last_error(frame: *mut z::zend_execute_data, value: *mut z::zval);
 }
 
-/// MINIT, as `php_swoole_server_minit` did.
+/// `php_swoole_server_minit`: `Swoole\Server` and its classes, then
+/// `Swoole\Server\Port`.
 /// # Safety
-/// Called once, at MINIT, with a host table that lives for the process and a
-/// writable `handlers`; `sockets` is `SWOOLE_SOCKETS_SUPPORT`.
+/// Zend's MINIT, once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_minit(
-    table: *const ServerHost,
-    thread: bool,
-    sockets: bool,
-    module: c_int,
-    handlers: *mut *const zend_object_handlers,
-) -> *mut zend_class_entry {
-    HOST.store(table.cast_mut(), Ordering::Release);
+pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
+    use swoole_rs_corebase::{Switch, built_with};
+    let (thread, sockets) = (built_with(Switch::Thread), built_with(Switch::Sockets));
     THREAD.store(thread, Ordering::Relaxed);
     let methods = if sockets {
         SERVER_METHODS.as_ptr()
@@ -507,9 +508,9 @@ pub unsafe extern "C" fn swr_v1_phpserver_minit(
         // SAFETY: MINIT of `module`.
         unsafe { register_long_constant(name, value, module) };
     }
-    // SAFETY: the caller's writable out-parameter.
-    unsafe { handlers.write(SERVER.handlers()) };
-    server
+    // SAFETY: MINIT, once; nothing reads the class entry yet.
+    unsafe { swoole_server_ce = server };
+    crate::port::minit(!thread, sockets);
 }
 
 /// The constants `php_swoole_server_minit` registers, in its order (the values
@@ -604,8 +605,7 @@ pub(crate) fn server(call: &Call) -> *mut c_void {
     // SAFETY: `$this` is a Server, which C++ allocated as a `ServerObject`.
     let serv = unsafe { Object::<ServerData>::data(call.this()) }.serv;
     if serv.is_null() {
-        // SAFETY: `$this` of this call.
-        unsafe { (host().invalid)(call.this()) };
+        invalid(call.this());
     }
     serv
 }
@@ -874,8 +874,7 @@ fn get_socket(call: &Call) {
     // SAFETY: a live server.
     let ls = unsafe { view::port_number(serv, port as c_int) };
     match (!ls.is_null()).then_some(ls) {
-        // SAFETY: a live port and this call's return slot.
-        Some(ls) => unsafe { (crate::port::host().socket)(ls, call.return_value()) },
+        Some(ls) => crate::port::socket(ls, call),
         None => call.set_bool(false),
     }
 }
@@ -1171,8 +1170,8 @@ fn iterator<'a>(call: &Call) -> &'a mut Iterator {
     // SAFETY: the class's methods are non-static, so `$this` is an iterator.
     let iterator = unsafe { IteratorObject::data(call.this()) };
     if iterator.serv.is_null() {
-        // SAFETY: an `E_ERROR`, which does not return; the frames own nothing.
-        unsafe { (host().invalid)(call.this()) };
+        // An `E_ERROR`, which does not return; the frames own nothing.
+        invalid(call.this());
     }
     iterator
 }

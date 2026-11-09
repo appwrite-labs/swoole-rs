@@ -11,6 +11,7 @@
 #include "swoole_rs_server_view.h"
 #include "swoole_rs_corebase_worker_registry_view.h"
 #include "swoole_rs_port_state.h"
+#include "swoole_rs.h"
 
 #include <string>
 #include <queue>
@@ -361,6 +362,62 @@ static_assert(sizeof(DataHead) == 40 && offsetof(DataHead, time) == 32 && offset
 static_assert(SW_PROTOCOL_TASK == 1 && SW_PROTOCOL_STREAM == 2 && SW_PROTOCOL_MESSAGE == 3 && SW_MASTER == 1 &&
                   SW_MANAGER == 3 && SW_WORKER == 2 && SW_TASK_WORKER == 4 && SW_USER_WORKER == 5,
               "pool enums drift");
+// What crates/server, crates/phpserver and crates/phphttp mirror.
+static_assert(sizeof(Server) == 4 * sizeof(void *) && sizeof(ListenPort) == sizeof(void *) &&
+                  sizeof(ServerPortGS) == 80 && sizeof(Session) == 16 && sizeof(sw_atomic_t) == 4 &&
+                  offsetof(ReactorThread, heartbeat_timer) == 32 && offsetof(ReactorThread, message_bus) == 40 &&
+                  sizeof(ReactorThread) == 56 && sizeof(EventData) <= 8192 && alignof(EventData) <= 8 &&
+                  offsetof(network::SendfileTask, length) == 8 && offsetof(RecvData, data) == sizeof(DataHead) &&
+                  offsetof(DgramPacket, socket_addr) == 4 &&
+                  offsetof(DgramPacket, length) == 4 + sizeof(network::Address) && offsetof(String, length) == 0 &&
+                  offsetof(String, str) == 3 * sizeof(size_t),
+              "server record layout drift");
+static_assert(SW_ACCEPT_MAX_COUNT == 64 && SW_MAX_CONNECTION == 100000 && SW_SESSION_LIST_SIZE == 1024 * 1024 &&
+                  SW_MAX_THREAD_NCPU == 4 && SW_MAX_WORKER_NCPU == 1000 && SW_TIMER_MIN_SEC == 0.001 &&
+                  SW_BUFFER_MIN_SIZE == 65536 && SW_IPC_BUFFER_SIZE == SW_IPC_MAX_SIZE - 40 &&
+                  SW_MAX_LISTEN_PORT == 60000 && SW_SYSTEMD_FDS_START == 3 && SW_MAX_CONCURRENT_TASK == 1024 &&
+                  SW_WORKER_MIN_REQUEST == 10 && SW_HTTP_FORM_KEYLEN == 512 && SW_HTTP_UPLOAD_TMPDIR_SIZE == 256 &&
+                  SW_STACK_BUFFER_SIZE == 65536 && SW_HTTP_HEADER_KEY_SIZE == 128 && SW_HTTP_MAX_APPEND_DATA == 16384,
+              "server limits drift");
+static_assert(Server::MODE_BASE == 1 && Server::MODE_PROCESS == 2 && Server::MODE_THREAD == 3 &&
+                  Server::TASK_IPC_UNIXSOCK == 1 && Server::TASK_IPC_MSGQUEUE == 2 &&
+                  Server::TASK_IPC_PREEMPTIVE == 3 && Server::TASK_IPC_STREAM == 4 && SW_IPC_UNIXSOCK == 1 &&
+                  SW_IPC_MSGQUEUE == 2 && SW_IPC_SOCKET == 3 && Server::DISPATCH_ROUND == 1 &&
+                  Server::DISPATCH_FDMOD == 2 && Server::DISPATCH_IDLE_WORKER == 3 && Server::DISPATCH_IPMOD == 4 &&
+                  Server::DISPATCH_UIDMOD == 5 && Server::DISPATCH_USERFUNC == 6 && Server::DISPATCH_CO_CONN_LB == 8 &&
+                  Server::DISPATCH_CO_REQ_LB == 9 && Server::DISPATCH_CONCURRENT_LB == 10 &&
+                  Server::DISPATCH_RESULT_DISCARD_PACKET == -1 && Server::DISPATCH_RESULT_CLOSE_CONNECTION == -2 &&
+                  Server::DISPATCH_RESULT_USERFUNC_FALLBACK == -3 && Server::CLOSE_RESET == (1 << 1) &&
+                  Server::CLOSE_ACTIVELY == (1 << 2),
+              "server modes drift");
+static_assert(SW_SOCK_TCP == 1 && SW_SOCK_UDP == 2 && SW_SOCK_UDP6 == 4 && SW_SOCK_UNIX_STREAM == 5 &&
+                  SW_SOCK_UNIX_DGRAM == 6 && SW_SOCK_SSL == (1u << 9) && SW_EVENT_DATA_PTR == (1 << 1) &&
+                  SW_CONTINUE == 1 && SW_WAIT == 2 && SW_ERROR == 4 && SW_READY == 5 &&
+                  BufferChunk::TYPE_DATA == 0 && BufferChunk::TYPE_SENDFILE == 1 && BufferChunk::TYPE_CLOSE == 2 &&
+                  SW_LOG_TRACE == 1 && SW_LOG_NOTICE == 3 && SW_LOG_WARNING == 4,
+              "socket, return code, output and log enums drift");
+static_assert(SW_SERVER_EVENT_PAUSE_RECV == 11 && SW_SERVER_EVENT_RESUME_RECV == 12 &&
+                  SW_SERVER_EVENT_CLOSE_FORCE == SWR_SERVER_EVENT_CLOSE_FORCE &&
+                  SW_SERVER_EVENT_CLOSE_FORWARD == SWR_SERVER_EVENT_CLOSE_FORWARD &&
+                  SW_SERVER_EVENT_FINISH == SWR_SERVER_EVENT_FINISH &&
+                  SW_SERVER_EVENT_PIPE_MESSAGE == SWR_SERVER_EVENT_PIPE_MESSAGE &&
+                  SW_SERVER_EVENT_INCOMING == SWR_SERVER_EVENT_INCOMING &&
+                  SW_SERVER_EVENT_SHUTDOWN == SWR_SERVER_EVENT_SHUTDOWN &&
+                  SW_SERVER_EVENT_COMMAND_REQUEST == SWR_SERVER_EVENT_COMMAND_REQUEST &&
+                  SW_SERVER_EVENT_COMMAND_RESPONSE == SWR_SERVER_EVENT_COMMAND_RESPONSE &&
+                  SW_SERVER_EVENT_SHUTDOWN_SIGNAL == SWR_SERVER_EVENT_SHUTDOWN_SIGNAL,
+              "server pipe events drift");
+static_assert(SW_TASK_TMPFILE == 1 && SW_TASK_SERIALIZE == 1 << 1 && SW_TASK_NONBLOCK == 1 << 2 &&
+                  SW_TASK_CALLBACK == 1 << 3 && SW_TASK_WAITALL == 1 << 4 && SW_TASK_COROUTINE == 1 << 5 &&
+                  SW_TASK_PEEK == 1 << 6 && SW_TASK_NOREPLY == 1 << 7 && SW_WORKER_BUSY == 1 && SW_WORKER_EXIT == 3,
+              "task flags and worker states drift");
+static_assert(SW_ERROR_PHP_FATAL_ERROR == 503 && SW_ERROR_INVALID_PARAMS == 505 &&
+                  SW_ERROR_OPERATION_NOT_SUPPORT == 507 && SW_ERROR_PHP_RUNTIME_NOTICE == 510 &&
+                  SW_ERROR_NO_PAYLOAD == 550 && SW_ERROR_SESSION_CLOSED == 1004 && SW_ERROR_SESSION_NOT_EXIST == 1005 &&
+                  SW_ERROR_OUTPUT_SEND_YIELD == 1010 && SW_ERROR_TASK_DISPATCH_FAIL == 2002 &&
+                  SW_ERROR_HTTP_CONTEXT_UNAVAILABLE == 7106 && SW_ERROR_SERVER_INVALID_REQUEST == 9010 &&
+                  SW_ERROR_SERVER_IS_NOT_REGULAR_FILE == 9013 && SW_ERROR_SERVER_UNRELATED_THREAD == 9016,
+              "error codes drift");
 
 }  // namespace swoole
 

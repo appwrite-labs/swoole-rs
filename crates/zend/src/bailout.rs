@@ -208,8 +208,9 @@ pub unsafe fn report_flag(
 /// # Errors
 /// `body` bailed out; Zend's state is as `zend_catch` leaves it.
 /// # Safety
-/// `body` is C or C++, not Rust (a bailout inside it would jump over its
-/// frame), and may be called with `arg`.
+/// `body` may be called with `arg`. A bailout inside it jumps over its frame
+/// and those it calls, so a Rust `body` (and any Rust it calls before the
+/// bailout) holds nothing that needs dropping.
 pub unsafe fn trap(
     body: unsafe extern "C" fn(*mut c_void),
     arg: *mut c_void,

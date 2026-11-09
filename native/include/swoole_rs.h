@@ -340,24 +340,20 @@ typedef struct swr_v1_phpswoole_ops {
      * ssh2's MSHUTDOWN after the drivers'. */
     void (*optional_client_minit)(int module_number);
     void (*optional_mshutdown)(void);
+    /* Their MINFO, a zend_try body. */
+    void (*optional_minfo)(void *module);
     void (*known_strings_dtor)(void);
     void (*set_task_tmpdir)(const char *dir);
     /* php_swoole_load_library(), a zend_try body. */
     void (*load_library)(void *);
     void (*unserialize)(struct _zval_struct *value, const char *buf, size_t length, struct _zend_array *options);
     void (*json_decode)(struct _zval_struct *value, const char *str, size_t length, int64_t options, int64_t depth);
-    /* php_swoole_set_global_option's C++ effect. */
-    void (*set_dns_server)(const char *server, size_t length);
-    /* swoole_async_set() and php_swoole_set_aio_option's SwooleG fields. */
+    /* swoole_async_set() and php_swoole_set_aio_option's SwooleG field. */
     void (*set_dns_cache_refresh_time)(double seconds);
     double (*dns_cache_refresh_time)(void);
-    uint8_t (*reactor_created)(void);
     /* Coroutine::get_current_safe(): a fatal error outside a coroutine. */
     void (*current_coroutine_safe)(void);
     void (*check_reactor)(void);
-    /* swoole::coroutine::dns_lookup: each address pushed onto list in order. */
-    void (*dns_lookup)(const char *domain, int32_t family, double timeout, void (*push)(void *list, const char *address),
-                       void *list);
     /* MINIT's start: the bridge ABI check, native effects, SWOOLE_RS_* constants, the module
      * globals and ini entries. 0 on success. */
     int (*begin)(int type, int module_number);
