@@ -35,7 +35,8 @@ ftp = ["swoole-rs-phpswoole?/ftp"]
 sockets = ["swoole-rs-phpswoole?/sockets"]
 
 [dependencies]
-swoole-rs-websocket = { path = "../websocket", features = ["upstream-symbols"] }
+swoole-rs-websocket = { path = "../websocket" }
+swoole-rs-websocket-ffi = { path = "../websocket-ffi", features = ["upstream-symbols"] }
 swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
 swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error", features = ["upstream-symbols"] }

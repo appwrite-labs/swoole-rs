@@ -533,6 +533,7 @@ dependencies = [
  "swoole-rs-tls",
  "swoole-rs-utilities",
  "swoole-rs-websocket",
+ "swoole-rs-websocket-ffi",
 ]
 
 [[package]]
@@ -980,6 +981,7 @@ dependencies = [
  "swoole-rs-tls",
  "swoole-rs-utilities",
  "swoole-rs-websocket",
+ "swoole-rs-websocket-ffi",
 ]
 
 [[package]]
@@ -1112,10 +1114,17 @@ dependencies = [
 name = "swoole-rs-websocket"
 version = "0.1.0"
 dependencies = [
- "libc",
  "swoole-rs-base64",
+]
+
+[[package]]
+name = "swoole-rs-websocket-ffi"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-websocket",
 ]
 
 [[package]]
