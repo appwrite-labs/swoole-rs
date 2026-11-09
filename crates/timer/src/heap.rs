@@ -6,11 +6,12 @@ struct Slot {
     view: TimerView,
     position: usize,
 }
-/// `rank` is `(deadline, id)`: ids only grow, so equal deadlines fire in
-/// insertion order.
+/// `rank` is the deadline alone, and sifting stops on a tie, as upstream's
+/// `swoole::Heap` does, so equal deadlines fire in upstream's order: A, C, B for
+/// three timers added in that order.
 #[derive(Clone, Copy)]
 struct Key {
-    rank: (i64, i64),
+    rank: i64,
     slot: usize,
 }
 #[derive(Default)]
@@ -71,7 +72,7 @@ impl Heap {
         let index = self.order.len();
         self.order.push(Key {
             slot,
-            rank: (view.deadline, view.id),
+            rank: view.deadline,
         });
         self.sift_up(index);
         slot
@@ -93,7 +94,7 @@ impl Heap {
         let slot = self.slot(index)?;
         let view = self.slots.get(slot)?.view;
         Some(Key {
-            rank: (view.deadline, view.id),
+            rank: view.deadline,
             slot,
         })
     }
@@ -103,7 +104,7 @@ impl Heap {
         {
             *key = Key {
                 slot,
-                rank: (entry.view.deadline, entry.view.id),
+                rank: entry.view.deadline,
             };
             entry.position = index;
         }
@@ -133,7 +134,7 @@ impl Heap {
                 Some(&right) if right.rank < below_left.rank => (left + 1, right),
                 _ => (left, below_left),
             };
-            if key.rank < below.rank {
+            if key.rank <= below.rank {
                 break;
             }
             self.place(index, below.slot);
