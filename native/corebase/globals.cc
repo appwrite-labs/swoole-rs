@@ -19,8 +19,6 @@
 
 #include <cstdarg>
 
-static_assert(sizeof(swoole::DataHead) == 40 && offsetof(swoole::DataHead, time) == 32, "Rust DataHead layout");
-
 static void fatal_error(int code, const char *format, ...) {
     va_list args;
     size_t length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "(ERROR %d): ", code);
@@ -103,8 +101,4 @@ void swoole_init() {
 bool swoole_set_task_tmpdir(const std::string &dir) {
     (void) dir.at(0);  // throws on an empty path, as upstream
     return swr_v1_core_set_task_tmpdir(dir.c_str());
-}
-
-pid_t swoole_fork_exec(const std::function<void(void)> &fn) {
-    return swr_v1_core_fork_exec([](const void *f) { (*static_cast<const std::function<void(void)> *>(f))(); }, &fn);
 }
