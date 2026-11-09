@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The C++ effects Rust sequences (`lifecycle.rs`): native/corebase/globals.cc's
-//! `swoole_init` registers them (`swr_v1_core_set_native_host`), so the archive
+//! The C++ effects Rust sequences (`lifecycle.rs`): native/corebase/globals.cc
+//! registers them as it loads (`swr_v1_core_set_native_host`), so the archive
 //! keeps no link-time reference to C++ and the native gates link it without them.
 //! They come as one function, not a table: a sanitizer keeps every global alive,
 //! and a table would keep the timer, event and signal code with it.
@@ -23,13 +23,11 @@ impl NativeHost {
     fn run(&self, effect: c_int, argument: usize) -> usize {
         (self.effect)(effect, argument)
     }
-    /// This thread's `SwooleTG`.
-    pub(crate) fn thread(&self) -> *mut c_void {
-        ptr::with_exposed_provenance_mut(self.run(0, 0))
-    }
-    /// `SwooleG = {}`.
-    pub(crate) fn reset(&self) {
-        self.run(1, 0);
+    /// `swoole_init`'s native leaves, in upstream's order: `sw_error`, the stdout
+    /// stream, the fatal-error hook, the logger and its level, the memory pool, the
+    /// futex-less wait registry, signalfd and the bug report.
+    pub(crate) fn init(&self) {
+        self.run(15, 0);
     }
     /// Allocate (`new String(SW_STACK_BUFFER_SIZE)`) or delete `SwooleTG.buffer_stack`.
     pub(crate) fn buffer(&self, allocate: bool) {

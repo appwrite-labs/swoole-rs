@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* The core declarations native/ and the test fixtures compile against: macros, forward
- * declarations, the IPC records and SwooleG, whose values Rust holds (crates/corebase/src/global.rs),
+ * declarations, the IPC records and the views of SwooleG and SwooleTG, which Rust holds (crates/corebase),
  * keeping only what a C++ file uses. Was include/swoole.h. */
 #pragma once
 
@@ -116,8 +116,6 @@ static constexpr const char *sw_log_origin = nullptr;
 #define SW_THREAD_LOCAL
 #endif
 
-extern std::mutex sw_thread_lock;
-
 /*-----------------------------------Memory------------------------------------*/
 void *sw_malloc(size_t size);
 void sw_free(void *ptr);
@@ -224,7 +222,6 @@ inline void swoole_set_isolation(const std::string &group_, const std::string &u
     swr_v1_os_set_isolation(group_.c_str(), user_.c_str(), chroot_.c_str());
 }
 bool swoole_set_task_tmpdir(const std::string &dir);
-std::string swoole_get_task_tmpdir();
 
 namespace swoole {
 typedef long SessionId;
@@ -316,17 +313,24 @@ struct RustField {
 #define SW_RUST_FIELD(type, name)                                                                                     \
     RustField<type, decltype(swr_v1_core_##name()), swr_v1_core_##name, swr_v1_core_set_##name> name
 
-struct Global : private CoreConfigOwner {
-    Global() = default;
-    Global(const Global &) = delete;
-    swr_v1_core_config *config_handle() const { return config_.owner; }
-    Global &operator=(const Global &source) {
-        auto copied = swr_v1_core_config_copy_values(config_handle(), source.config_handle());
-        RustStringView *views[] = {&task_tmpfile, &dns_resolvconf_path};
-        if (copied.status) views[copied.index]->check(copied.status);
-        swr_v1_core_name_resolver_clear();  // the only source is `{}`
-        return *this;
+// A SwooleG path whose bytes Rust holds (crates/corebase/src/config_state.rs).
+template <const char *(*get)()>
+struct RustPath {
+    const char *c_str() const {
+        return get();
     }
+};
+
+// SwooleG's layout: Rust defines the symbol (crates/corebase/src/config_state.rs, which
+// asserts the same layout). The fields come first; the empty accessor members follow.
+struct Global {
+    Global() = delete;
+    Global(const Global &) = delete;
+    uint32_t max_sockets;
+    double dns_cache_refresh_time;
+    Allocator std_allocator;
+    RustPath<swr_v1_core_task_tmpfile> task_tmpfile;
+
     SW_RUST_FIELD(bool, running);
     SW_RUST_FIELD(bool, enable_signalfd);
     SW_RUST_FIELD(bool, enable_coroutine);
@@ -336,22 +340,17 @@ struct Global : private CoreConfigOwner {
 
     //-----------------------[System]--------------------------
     SW_RUST_FIELD(uint32_t, pagesize);
-    uint32_t &max_sockets = config_.fields->max_sockets;
-    //-----------------------[Memory]--------------------------
-    Allocator &std_allocator = config_.fields->std_allocator;
-    RustStringView task_tmpfile{config_.strings[0]};
-    //------------------[Single Instance]----------------------
     SW_RUST_FIELD(Server *, server);
-    //-----------------------[DNS]-----------------------------
-    double &dns_cache_refresh_time = config_.fields->dns_cache_refresh_time;
-    RustStringView dns_resolvconf_path{config_.strings[1]};
 };
+static_assert(offsetof(Global, dns_cache_refresh_time) == 8 && offsetof(Global, std_allocator) == 16 &&
+                  sizeof(Global) == 56,
+              "crates/corebase/src/config_state.rs's Global");
 
 double microtime();
 }  // namespace swoole
 
 extern swoole::Global SwooleG;                      // Local Global Variable
-extern thread_local swoole::ThreadGlobal SwooleTG;  // Thread Global Variable
+#define SwooleTG (*swr_v1_core_thread_global())     // Thread Global Variable, Rust's
 
 #define SW_CPU_NUM (swr_v1_core_cpu_num())
 

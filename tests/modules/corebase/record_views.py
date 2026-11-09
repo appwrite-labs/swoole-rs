@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Exercise actual core config/thread views, snapshots, stable addresses and allocator calls."""
+"""Exercise the Rust-owned SwooleG and SwooleTG through their C++ views: init's defaults, stable
+addresses, allocator calls, per-thread records and clean's reset."""
 import argparse
 import json
 from pathlib import Path
@@ -15,34 +16,35 @@ SOURCE = r'''
 #include "swoole.h"
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
+#include <thread>
+void swoole_clean();  // Rust's, declared by no header: native code never calls it
 int main() {
-    swoole::Global global;
-    auto *allocator_address=&global.std_allocator;
-    global.max_sockets=73;auto limit=global.max_sockets;global.max_sockets=91;
-    assert(limit==73 && global.max_sockets==91);
-    swr_v1_core_config_allocator(global.config_handle());
-    auto allocator=global.std_allocator;
+    auto *allocator_address=&SwooleG.std_allocator;
+    assert(SwooleG.std_allocator.malloc==nullptr && SwooleG.max_sockets==0 && !SwooleTG.main_thread);
+    swr_v1_core_swoole_init();
+    auto allocator=SwooleG.std_allocator;
     assert(allocator.malloc==::malloc && allocator.calloc==::calloc && allocator.realloc==::realloc && allocator.free==::free);
     void *bytes=allocator.malloc(17);assert(bytes);allocator.free(bytes);
-    global.task_tmpfile=std::string(100,'x');auto snapshot=global.task_tmpfile;
-    global.task_tmpfile="replacement";
-    assert(snapshot==std::string(100,'x'));
-    const std::string &reference=global.task_tmpfile;
-    auto *reference_address=&reference;
-    global.task_tmpfile="updated";
-    assert(reference=="updated" && &static_cast<const std::string &>(global.task_tmpfile)==reference_address);
-    global={};
-    assert(&global.std_allocator==allocator_address && global.std_allocator.malloc==nullptr && global.max_sockets==0 && global.task_tmpfile.empty());
-    assert(reference.empty());
-    swoole::ThreadGlobal first;
-    first.id=19;first.type=3;first.main_thread=true;
-    auto *id_address=&first.id;auto id=first.id;
-    swoole::ThreadGlobal copy=first;
-    assert(&copy.id!=&first.id && copy.id==19 && copy.type==3 && copy.main_thread);
-    first.id=23;assert(id==19 && copy.id==19);
-    first={};
-    assert(&first.id==id_address && first.id==0 && !first.main_thread && copy.id==19);
+    assert(SwooleG.max_sockets>0 && SwooleG.running && SwooleG.enable_coroutine && SwooleG.pagesize>0);
+    assert(std::strcmp(SwooleG.task_tmpfile.c_str(),"/tmp/swoole.task.XXXXXX")==0);
+    SwooleG.max_sockets=91;SwooleG.dns_cache_refresh_time=2.5;
+    assert(SwooleG.max_sockets==91 && SwooleG.dns_cache_refresh_time==2.5);
+    assert(swr_v1_core_set_task_tmpdir("/tmp") && std::strcmp(SwooleG.task_tmpfile.c_str(),"/tmp/swoole.task.XXXXXX")==0);
+    assert(!swr_v1_core_set_task_tmpdir("relative") && std::strcmp(SwooleG.task_tmpfile.c_str(),"/tmp/swoole.task.XXXXXX")==0);
+    assert(SwooleTG.main_thread && swoole_is_main_thread());
+    SwooleTG.id=19;SwooleTG.type=3;
+    auto *id_address=&SwooleTG.id;
+    std::thread([id_address] {
+        assert(&SwooleTG.id!=id_address && SwooleTG.id==0 && SwooleTG.type==0 && !SwooleTG.main_thread);
+        SwooleTG.id=23;
+        assert(SwooleTG.id==23);
+    }).join();
+    assert(&SwooleTG.id==id_address && SwooleTG.id==19 && SwooleTG.type==3);
+    swoole_clean();
+    assert(&SwooleG.std_allocator==allocator_address && SwooleG.std_allocator.malloc==nullptr && SwooleG.max_sockets==0);
+    assert(SwooleG.dns_cache_refresh_time==0 && *SwooleG.task_tmpfile.c_str()=='\0' && !SwooleG.running);
     std::cout<<"core config/thread views PASS\n";
 }
 '''
