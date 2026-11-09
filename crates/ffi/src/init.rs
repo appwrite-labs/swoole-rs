@@ -59,6 +59,8 @@ extern "C-unwind" fn swoole_init() {
         coroutine_is_in: || swoole_coroutine_is_in() != 0,
     });
     swoole_rs_ports::register_methods();
+    // Links crates/http-ffi's exports into the extension.
+    core::hint::black_box(swoole_rs_http_ffi::exports());
     swoole_rs_hooks::stdio::swr_v1_hook_install();
     swoole_rs_corebase::swr_v1_core_swoole_init();
 }
