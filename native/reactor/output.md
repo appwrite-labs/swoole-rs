@@ -23,7 +23,8 @@ typed Rust queue (`swoole_rs_buffer`).
 ## Writable callback
 
 `Reactor::_writable_callback` and `drain_write_buffer` are `swr_v1_reactor_flush` and
-`swr_v1_reactor_drain` (`crates/reactor/src/flush.rs`), over C++ effects in `FlushOps`.
+`swr_v1_reactor_drain` (`crates/reactor/src/flush.rs`), over the effects `FlushOps`
+carries (`crates/tls/src/reactor_write.rs`).
 
 - DATA (0), SENDFILE (1) or CLOSE (2) pick the send; other kinds fall back to
   DATA. The front kind is read only when the original loop would.
