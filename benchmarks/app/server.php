@@ -64,13 +64,16 @@ $routes = [
 $server = httpServer();
 $server->set(['hook_flags' => SWOOLE_HOOK_ALL]);
 $pool = null;
-$server->on('workerStart', static function () use (&$pool): void {
-    $address = 'tcp://' . (getenv('REDIS_HOST') ?: '127.0.0.1') . ':' . (getenv('REDIS_PORT') ?: '6379');
-    $pool = new Swoole\ConnectionPool(static fn() => stream_socket_client($address, $code, $message, 5)
-        ?: throw new RuntimeException("redis: $message"), 4);
-    redis($pool, 'SET', 'stock:A-1', '17');
-});
 $server->on('request', static function ($request, $response) use ($routes, &$pool): void {
+    // The first request sets up: with hooks on, I/O in workerStart yields, and the worker
+    // serves requests before it returns (#2235).
+    if ($pool === null) {
+        $address = 'tcp://' . (getenv('REDIS_HOST') ?: '127.0.0.1') . ':' . (getenv('REDIS_PORT') ?: '6379');
+        $connections = new Swoole\ConnectionPool(static fn() => stream_socket_client($address, $code, $message, 5)
+            ?: throw new RuntimeException("redis: $message"), 4);
+        redis($connections, 'SET', 'stock:A-1', '17');
+        $pool = $connections;
+    }
     $path = $request->server['request_uri'];
     $allowed = false;
     foreach ($routes as [$method, $pattern, $handler]) {
