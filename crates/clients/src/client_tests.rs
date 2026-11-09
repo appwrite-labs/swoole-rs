@@ -179,12 +179,12 @@ pub(super) unsafe extern "C-unwind" fn swoole_event_write(
         OK as isize
     }
 }
-// crates/reactor's and crates/ports' symbols, which the hybrid links.
-#[unsafe(export_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE")]
-extern "C-unwind" fn writable(_: *mut c_void, _: *mut c_void) -> c_int {
+/// crates/tls's `Reactor::_writable_callback`.
+pub(super) unsafe fn writable_callback(_: *mut c_void, _: *mut c_void) -> c_int {
     log("writable");
     OK
 }
+// crates/ports' symbols, which the hybrid links.
 #[unsafe(export_name = "_ZNK6swoole8Protocol25recv_with_length_protocolEPNS_7network6SocketEPNS_6StringE")]
 extern "C-unwind" fn recv_with_length(
     _: *const Protocol,

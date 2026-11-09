@@ -48,7 +48,7 @@ use tests::{
     async_dispatch, ops, socket_free, socket_recv, socket_recv_sync, socket_recvfrom_sync_address,
     socket_send_sync, socket_sendfile_async, socket_sendfile_sync, socket_ssl_check_host,
     socket_ssl_close, socket_ssl_connect, socket_ssl_create, socket_ssl_verify, ssl_context_create,
-    swoole_event_write, thread_buffer,
+    swoole_event_write, thread_buffer, writable_callback,
 };
 
 /// The flags `swr_v1_clients_flag` reads.
@@ -146,12 +146,18 @@ const ERROR_SOCKS5_HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SOCKS5_HANDSHAK
 const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
     ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR as c_int;
 
-// SAFETY: crates/reactor's and crates/ports' definitions under upstream's names,
-// which the hybrid links (the unit tests define doubles). They sit above this crate,
-// so it reaches them by symbol.
+// SAFETY: crates/tls's reactor write, which only its `upstream-symbols` build
+// defines, under upstream's name (the unit tests use a double instead).
+#[cfg(not(test))]
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE"]
     fn writable_callback(reactor: *mut c_void, event: *mut c_void) -> c_int;
+}
+
+// SAFETY: crates/ports' definitions under upstream's names, which the hybrid links
+// (the unit tests define doubles). It sits above this crate, so it reaches them by
+// symbol.
+unsafe extern "C-unwind" {
     #[link_name = "_ZNK6swoole8Protocol25recv_with_length_protocolEPNS_7network6SocketEPNS_6StringE"]
     fn recv_with_length_protocol(
         protocol: *const Protocol,
