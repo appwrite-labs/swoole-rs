@@ -11,6 +11,7 @@
 //! the bailout trap; when it bails out, the export returns [`RAISE`] and its
 //! native caller raises the bailout again once the Rust frames are gone.
 
+use crate::worker_record::Worker;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
@@ -21,10 +22,7 @@ use crate::pool::{
 };
 use crate::reaper::{RELOAD_KILL_ONE, RELOAD_NONE, ReapHost};
 use crate::reload_task::{ReloadTask, Warn, swr_v1_process_reload_task_free};
-use crate::worker_record::{
-    WorkerRecord, set_pool, swr_v1_worker_id, swr_v1_worker_pid, swr_v1_worker_set_id,
-    swr_v1_worker_set_pid, swr_v1_worker_set_type,
-};
+use crate::worker_record::WorkerRecord;
 use crate::worker_registry::{
     WorkerRegistry, swr_v1_process_worker_registry_detach, swr_v1_process_worker_registry_free,
     swr_v1_process_worker_registry_lookup, swr_v1_process_worker_registry_new,
@@ -635,7 +633,7 @@ impl<H: PoolHost> Pool<H> {
         self.set_max_wait_time(SW_WORKER_MAX_WAIT_TIME);
         for index in 0..worker_num {
             // SAFETY: one of the `worker_num` records just allocated.
-            unsafe { set_pool(self.worker(index), self.p.cast()) };
+            unsafe { Worker::new(self.worker(index)).set_pool(self.p.cast()) };
         }
         SW_OK
     }
@@ -725,12 +723,11 @@ impl<H: PoolHost> Pool<H> {
             let worker = self.worker(index);
             let id = u32::from(self.start_id()) + index;
             // SAFETY: one of the pool's records.
-            unsafe { set_pool(worker, self.p.cast()) };
-            // SAFETY: as above.
-            unsafe { swr_v1_worker_set_id(worker, id) };
-            // SAFETY: as above.
-            unsafe { swr_v1_worker_set_type(worker, self.kind()) };
-            self.on(worker, OP_UNLIMIT_PIPES, 0);
+            let worker = unsafe { Worker::new(worker) };
+            worker.set_pool(self.p.cast());
+            worker.set_id(id);
+            worker.set_kind(self.kind());
+            self.on(worker.raw(), OP_UNLIMIT_PIPES, 0);
         }
         SW_OK
     }
@@ -754,19 +751,20 @@ impl<H: PoolHost> Pool<H> {
     /// `ProcessPool::spawn`: fork `worker`, which runs its loop and exits.
     fn spawn(&mut self, worker: *mut WorkerRecord) -> Result<i64, Bailed> {
         // SAFETY: one of the pool's records.
-        let old = unsafe { swr_v1_worker_pid(worker) };
+        let worker = unsafe { Worker::new(worker) };
+        let old = worker.pid();
         // SAFETY: the pool's registry, which `create` made.
         unsafe { swr_v1_process_worker_registry_unregister(self.registry(), old) };
-        let pid = self.on(worker, OP_FORK, 0);
+        let pid = self.on(worker.raw(), OP_FORK, 0);
         if pid == 0 {
-            self.child(worker)?;
+            self.child(worker.raw())?;
             return Ok(0);
         }
         let pid = c_int::try_from(pid).unwrap_or(-1);
+        worker.set_pid(pid);
+        let record = worker.raw().cast();
         // SAFETY: as above.
-        unsafe { swr_v1_worker_set_pid(worker, pid) };
-        // SAFETY: as above.
-        unsafe { swr_v1_process_worker_registry_register(self.registry(), pid, worker.cast(), 0) };
+        unsafe { swr_v1_process_worker_registry_register(self.registry(), pid, record, 0) };
         Ok(pid.into())
     }
 
@@ -845,7 +843,7 @@ impl<H: PoolHost> Pool<H> {
     fn kill_all_workers(&mut self, signo: c_int) {
         for index in 0..self.worker_num() {
             // SAFETY: one of the pool's records.
-            kill(unsafe { swr_v1_worker_pid(self.worker(index)) }, signo);
+            kill(unsafe { Worker::new(self.worker(index)).pid() }, signo);
         }
     }
 
@@ -930,7 +928,7 @@ impl<H: PoolHost> Pool<H> {
             pool: self.p.cast(),
             worker: worker.cast(),
             // SAFETY: one of the pool's records.
-            worker_id: unsafe { swr_v1_worker_id(worker) },
+            worker_id: unsafe { Worker::new(worker).id() },
             ipc_mode,
             schedule_by_sysvmsg: self.schedule_by_sysvmsg(),
             max_packet_size: self.max_packet_size(),
@@ -1054,7 +1052,7 @@ impl<H: PoolHost> Pool<H> {
         }
         for index in 0..self.worker_num() {
             // SAFETY: one of the pool's records.
-            let pid = unsafe { swr_v1_worker_pid(self.worker(index)) };
+            let pid = unsafe { Worker::new(self.worker(index)).pid() };
             if kill(pid, libc::SIGTERM) < 0 {
                 self.op(LOG_KILL_FAILED, u64::from(pid.cast_unsigned()));
             }
@@ -1065,7 +1063,7 @@ impl<H: PoolHost> Pool<H> {
         // Upstream waits for the first worker only.
         if self.worker_num() > 0 {
             // SAFETY: the pool's first record.
-            let pid = unsafe { swr_v1_worker_pid(self.worker(0)) };
+            let pid = unsafe { Worker::new(self.worker(0)).pid() };
             if self.op(OP_WAITPID, u64::from(pid.cast_unsigned())) < 0 {
                 self.op(LOG_WAITPID_FAILED, u64::from(pid.cast_unsigned()));
             }
@@ -1397,7 +1395,7 @@ impl<H: PoolHost> Pool<H> {
                 self.set_kind(kind);
                 for index in 0..self.worker_num() {
                     // SAFETY: one of the pool's records.
-                    unsafe { swr_v1_worker_set_type(self.worker(index), kind) };
+                    unsafe { Worker::new(self.worker(index)).set_kind(kind) };
                 }
                 SW_OK
             }
@@ -1407,7 +1405,7 @@ impl<H: PoolHost> Pool<H> {
                 for index in 0..self.worker_num() {
                     // SAFETY: one of the pool's records.
                     unsafe {
-                        swr_v1_worker_set_id(self.worker(index), u32::from(start_id) + index);
+                        Worker::new(self.worker(index)).set_id(u32::from(start_id) + index);
                     };
                 }
                 SW_OK
@@ -1616,8 +1614,8 @@ mod tests {
         assert_eq!(pool.master_pid(), getpid());
         // SAFETY: the fixture's records.
         unsafe {
-            assert_eq!(swr_v1_worker_id(pool.worker(1)), 6);
-            assert_eq!(crate::worker_record::swr_v1_worker_type(pool.worker(1)), 4);
+            assert_eq!(Worker::new(pool.worker(1)).id(), 6);
+            assert_eq!(Worker::new(pool.worker(1)).kind(), 4);
         }
     }
 

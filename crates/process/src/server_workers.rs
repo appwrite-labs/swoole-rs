@@ -2,7 +2,8 @@
 //! enter here between the daemon/fork and factory/user callbacks, so no Rust
 //! frame spans a fork hook, PHP bailout or whole-thread exit.
 use crate::process_pool::PoolRecord;
-use crate::worker_record::{WorkerRecord, set_pool, swr_v1_worker_set_id, swr_v1_worker_set_type};
+use crate::worker_record::Worker;
+use crate::worker_record::WorkerRecord;
 use core::ffi::c_void;
 
 /// Loans of the existing canonical arrays. Event/task records belong to their
@@ -44,11 +45,10 @@ pub unsafe fn swr_v1_process_server_workers_start(
     for index in 0..view.event_count {
         let worker = view.event_workers.wrapping_add(index as usize);
         // SAFETY: the index is inside the live canonical event array.
-        unsafe { set_pool(worker, pool.cast()) };
-        // SAFETY: startup owns this worker's identity before factory publication.
-        unsafe { swr_v1_worker_set_id(worker, index) };
-        // SAFETY: same exclusively owned event record, SW_WORKER is 2.
-        unsafe { swr_v1_worker_set_type(worker, 2) };
+        let worker = unsafe { Worker::new(worker) };
+        worker.set_pool(pool.cast());
+        worker.set_id(index);
+        worker.set_kind(2);
     }
     let first_user = view.event_count.wrapping_add(view.task_count);
     for index in 0..view.user_count {
@@ -56,7 +56,7 @@ pub unsafe fn swr_v1_process_server_workers_start(
         let worker = unsafe { pending.wrapping_add(index).read() };
         let index = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
         // SAFETY: startup owns the pending user worker identity; preserve u32 wrap.
-        unsafe { swr_v1_worker_set_id(worker, first_user.wrapping_add(index)) };
+        unsafe { Worker::new(worker) }.set_id(first_user.wrapping_add(index));
     }
 }
 
@@ -138,9 +138,6 @@ pub unsafe fn swr_v1_process_server_worker_by_pid(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worker_record::{
-        swr_v1_worker_id, swr_v1_worker_pid, swr_v1_worker_set_pid, swr_v1_worker_type,
-    };
 
     fn worker() -> WorkerRecord {
         // Every WorkerRecord field is an integer, boolean or nullable raw pointer.
@@ -173,8 +170,8 @@ mod tests {
         };
         // Event pool workers remain null before publication: PID lookup has
         // always scanned the Server array directly, including direct PID writes.
-        unsafe { swr_v1_worker_set_pid(&raw mut events[0], -7) };
-        unsafe { swr_v1_worker_set_pid(&raw mut events[1], -7) };
+        unsafe { Worker::new(&raw mut events[0]).set_pid(-7) };
+        unsafe { Worker::new(&raw mut events[1]).set_pid(-7) };
         unsafe {
             swr_v1_process_worker_registry_register(tasks, -7, (&raw mut task).cast(), 1);
             swr_v1_process_worker_registry_register(
@@ -187,12 +184,12 @@ mod tests {
                 swr_v1_process_server_worker_by_pid(&raw const view, registry, -7),
                 &raw mut events[0]
             );
-            swr_v1_worker_set_pid(&raw mut events[0], 5);
+            Worker::new(&raw mut events[0]).set_pid(5);
             assert_eq!(
                 swr_v1_process_server_worker_by_pid(&raw const view, registry, -7),
                 &raw mut events[1]
             );
-            swr_v1_worker_set_pid(&raw mut events[1], 0);
+            Worker::new(&raw mut events[1]).set_pid(0);
             assert_eq!(
                 swr_v1_process_server_worker_by_pid(&raw const view, registry, 0),
                 &raw mut events[1]
@@ -255,11 +252,11 @@ mod tests {
             (2, 0, 91)
         );
         assert_eq!(
-            unsafe { swr_v1_worker_id(&raw const pending[0]) },
+            unsafe { Worker::new(&raw const pending[0]).id() },
             5,
             "duplicate pointer keeps last configured ID"
         );
-        assert_eq!(unsafe { swr_v1_worker_id(&raw const pending[1]) }, 4);
+        assert_eq!(unsafe { Worker::new(&raw const pending[1]).id() }, 4);
         let expected = [
             events.as_mut_ptr(),
             events.as_mut_ptr().wrapping_add(1),
@@ -274,10 +271,10 @@ mod tests {
             };
             assert_eq!(found, expected);
             unsafe {
-                swr_v1_worker_set_pid(found, 123);
+                Worker::new(found).set_pid(123);
             }
             assert_eq!(
-                unsafe { swr_v1_worker_pid(expected) },
+                unsafe { Worker::new(expected).pid() },
                 123,
                 "lookup lends canonical mutable records"
             );
@@ -285,10 +282,10 @@ mod tests {
         assert!(unsafe { swr_v1_process_server_worker(&raw const view, 6) }.is_null());
         for (id, event) in events.iter().enumerate() {
             assert_eq!(
-                unsafe { swr_v1_worker_id(event) },
+                unsafe { Worker::new(event).id() },
                 u32::try_from(id).unwrap()
             );
-            assert_eq!(unsafe { swr_v1_worker_type(event) }, 2);
+            assert_eq!(unsafe { Worker::new(event).kind() }, 2);
         }
     }
 }

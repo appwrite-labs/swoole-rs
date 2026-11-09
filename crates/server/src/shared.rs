@@ -1,5 +1,6 @@
 //! Rust-owned shared server and port counters in the existing shared-memory arena.
 use core::sync::atomic::{AtomicU32, AtomicU64};
+use swoole_rs_process::worker_record::Worker;
 #[derive(Default)]
 #[repr(C)]
 pub struct PortCounters {
@@ -110,7 +111,7 @@ pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) 
     let worker = unsafe { (*swoole_rs_process::worker_globals::swr_v1_worker_globals()).worker };
     if !worker.is_null() {
         // SAFETY: the current worker's record, which this worker loop owns.
-        unsafe { swoole_rs_process::worker_record::add_response_count(worker) };
+        unsafe { Worker::new(worker).add_response_count() };
     }
 }
 

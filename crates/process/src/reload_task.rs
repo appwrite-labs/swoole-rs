@@ -4,10 +4,11 @@
 //! (`ProcessPool::wait`, `Manager::wait`) drive it; the timeout timer stays native
 //! and its node is only stored here.
 
+use crate::worker_record::Worker;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_int, c_void};
 
-use crate::worker_record::{WorkerRecord, swr_v1_worker_id, swr_v1_worker_pid};
+use crate::worker_record::WorkerRecord;
 
 /// `warn(kind, pid, worker_id)`, called with `errno` still set by the failed `kill`:
 /// [`WARN_KILL_ALL_FAILED`], [`WARN_FORCE_KILL`] or [`WARN_KILL_ONE_FAILED`].
@@ -155,9 +156,9 @@ pub unsafe extern "C" fn swr_v1_process_reload_task_add_workers(
         // SAFETY: `index < count`, inside the caller's array.
         let worker = unsafe { workers.add(index) };
         // SAFETY: `worker` is a live record of the caller's array.
-        let pid = unsafe { swr_v1_worker_pid(worker) };
-        // SAFETY: as above.
-        let id = unsafe { swr_v1_worker_id(worker) };
+        let worker = unsafe { Worker::new(worker) };
+        let pid = worker.pid();
+        let id = worker.id();
         task.add(pid, id);
     }
 }
@@ -329,11 +330,8 @@ pub(crate) mod tests {
         let mut records: [WorkerRecord; 2] = unsafe { std::mem::zeroed() };
         for (index, record) in records.iter_mut().enumerate() {
             unsafe {
-                crate::worker_record::swr_v1_worker_set_pid(
-                    record,
-                    100 + c_int::try_from(index).unwrap(),
-                );
-                crate::worker_record::swr_v1_worker_set_id(record, u32::try_from(index).unwrap());
+                Worker::new(record).set_pid(100 + c_int::try_from(index).unwrap());
+                Worker::new(record).set_id(u32::try_from(index).unwrap());
             }
         }
         let task = swr_v1_process_reload_task_new();

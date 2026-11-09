@@ -3,6 +3,7 @@
 //! the hybrid links this crate (`upstream-symbols`). Each runs over crates/server's
 //! [`PoolNative`] table as its C++ forward did.
 
+use crate::worker_record::Worker;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 
@@ -22,10 +23,7 @@ use crate::reload_task::{WARN_KILL_ALL_FAILED, WARN_KILL_ONE_FAILED};
 use crate::worker_globals::{
     swr_v1_worker_global_get, swr_v1_worker_global_max_requests, swr_v1_worker_global_set,
 };
-use crate::worker_record::{
-    WorkerRecord, pipe_master, pipe_worker, pool_of, swr_v1_worker_exceeded_max_requests,
-    swr_v1_worker_id, swr_v1_worker_pid,
-};
+use crate::worker_record::{WorkerRecord, swr_v1_worker_exceeded_max_requests};
 use crate::worker_registry::{
     swr_v1_process_worker_registry_insert, swr_v1_process_worker_registry_lookup,
     swr_v1_process_worker_registry_unregister,
@@ -268,7 +266,7 @@ pub unsafe extern "C" fn add_worker(pool: *const PoolRecord, worker: *mut Worker
     // SAFETY: the caller lends a live pool.
     let registry = unsafe { (*pool).registry };
     // SAFETY: the caller lends a live worker.
-    let pid = unsafe { swr_v1_worker_pid(worker) };
+    let pid = unsafe { Worker::new(worker).pid() };
     // SAFETY: a created pool's registry is live.
     unsafe { swr_v1_process_worker_registry_insert(registry, pid, worker.cast(), 0) };
 }
@@ -286,7 +284,7 @@ pub unsafe extern "C" fn del_worker(pool: *const PoolRecord, worker: *const Work
     // SAFETY: the caller lends a live pool.
     let registry = unsafe { (*pool).registry };
     // SAFETY: the caller lends a live worker.
-    let pid = unsafe { swr_v1_worker_pid(worker) };
+    let pid = unsafe { Worker::new(worker).pid() };
     // SAFETY: a created pool's registry is live.
     unsafe { swr_v1_process_worker_registry_unregister(registry, pid) }
 }
@@ -353,15 +351,13 @@ pub unsafe extern "C" fn send_pipe_message(
     /// `SW_PIPE_MASTER`.
     const PIPE_MASTER: c_int = 1;
     // SAFETY: the caller lends a live worker.
-    let pool = unsafe { pool_of(worker) };
-    // SAFETY: as above.
-    let id = unsafe { swr_v1_worker_id(worker) };
+    let worker = unsafe { Worker::new(worker) };
+    let pool = worker.pool();
+    let id = worker.id();
     let pipe = if flags & PIPE_MASTER != 0 {
-        // SAFETY: as above.
-        unsafe { pipe_master(worker) }
+        worker.pipe_master()
     } else {
-        // SAFETY: as above.
-        unsafe { pipe_worker(worker) }
+        worker.pipe_worker()
     };
     // SAFETY: the worker's pool is live.
     let queue = unsafe { (*pool.cast::<PoolRecord>()).use_msgqueue } != 0;
@@ -519,7 +515,7 @@ pub unsafe extern "C" fn send_message(
     // `get_worker`: the pool's record for `worker_id`.
     let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
     // SAFETY: as the caller guarantees.
-    let pipe = unsafe { pipe_master(pool.workers.wrapping_add(index)) };
+    let pipe = unsafe { Worker::new(pool.workers.wrapping_add(index)).pipe_master() };
     if pool.message_bus.is_null() {
         // SAFETY: the worker's pipe and the caller's bytes.
         return unsafe { send_async(pipe, message.cast(), length) } != 0;
@@ -631,7 +627,7 @@ pub unsafe extern "C" fn worker_report_error(
     exit_status: *const ExitStatus,
 ) {
     // SAFETY: the caller lends a live worker.
-    let id = unsafe { swr_v1_worker_id(worker) };
+    let id = unsafe { Worker::new(worker).id() };
     // SAFETY: the caller lends a live status.
     let ExitStatus { pid, status } = unsafe { &*exit_status };
     let signal = libc::WTERMSIG(*status);
@@ -1045,7 +1041,7 @@ pub(crate) mod tests {
         // SAFETY: a zeroed record is a worker before `init`.
         let mut worker: WorkerRecord = unsafe { std::mem::zeroed() };
         // SAFETY: a live record.
-        unsafe { crate::worker_record::swr_v1_worker_set_id(&raw mut worker, 4) };
+        unsafe { Worker::new(&raw mut worker).set_id(4) };
         let status = ExitStatus {
             pid: 321,
             status: 3 << 8,

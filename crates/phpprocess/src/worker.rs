@@ -5,10 +5,7 @@ use std::ffi::{c_char, c_int, c_void};
 use swoole_rs_process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
     worker_globals::swr_v1_worker_globals,
-    worker_record::{
-        WorkerRecord, swr_v1_worker_id, swr_v1_worker_pid, swr_v1_worker_set_id,
-        swr_v1_worker_set_pid,
-    },
+    worker_record::{Worker, WorkerRecord},
 };
 use swoole_rs_reactor::{
     SocketRecord,
@@ -101,7 +98,7 @@ pub(crate) fn redirect(worker: *mut c_void) {
 
 pub(crate) fn set_id(worker: *mut c_void, id: u32) {
     // SAFETY: a live worker.
-    unsafe { swr_v1_worker_set_id(worker.cast(), id) };
+    unsafe { Worker::new(worker.cast()).set_id(id) };
     record(worker).shared = false;
 }
 
@@ -141,10 +138,8 @@ pub(crate) fn view(worker: *mut c_void) -> WorkerView {
     let socket = pipe(worker);
     let record = record(worker);
     WorkerView {
-        // SAFETY: a live worker.
-        id: unsafe { swr_v1_worker_id(record) },
-        // SAFETY: as above.
-        pid: unsafe { swr_v1_worker_pid(record) },
+        id: record.id(),
+        pid: record.pid(),
         // A worker's current pipe end is null or a live socket.
         pipe: if socket.is_null() { -1 } else { fd(socket) },
         pipe_object: !record.pipe_object.is_null(),
@@ -159,7 +154,7 @@ pub(crate) fn fork(worker: *mut c_void) -> c_int {
     let pid = swoole_rs_corebase::swoole_fork(0);
     if pid > 0 {
         // SAFETY: a live worker.
-        unsafe { swr_v1_worker_set_pid(worker.cast(), pid) };
+        unsafe { Worker::new(worker.cast()).set_pid(pid) };
     }
     if pid >= 0 {
         record(worker).child_process = u8::from(pid == 0);
@@ -173,10 +168,8 @@ pub(crate) fn child_enter(worker: *mut c_void) {
     let pid = unsafe { libc::getpid() };
     let process = record(worker);
     process.pipe_current = process.pipe_worker;
-    // SAFETY: a live worker.
-    unsafe { swr_v1_worker_set_pid(worker.cast(), pid) };
-    // SAFETY: as above.
-    swoole_set_worker_id(unsafe { swr_v1_worker_id(worker.cast()) });
+    process.set_pid(pid);
+    swoole_set_worker_id(process.id());
     swoole_set_worker_pid(pid);
     // SAFETY: this thread's worker globals; the Process object keeps the worker alive.
     unsafe { (*swr_v1_worker_globals()).worker = worker.cast() };

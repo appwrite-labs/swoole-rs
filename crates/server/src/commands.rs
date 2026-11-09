@@ -18,6 +18,7 @@ use swoole_rs_process::command::{
     LOG_NOT_WORKER_0, LOG_TOO_LARGE, LOG_UNKNOWN, LOG_UNSUPPORTED_MODE, LOG_UNSUPPORTED_TYPE,
     TO_MASTER, route,
 };
+use swoole_rs_process::worker_record::Worker;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use {
     crate::ops::EVENT_COMMAND_RESPONSE, swoole_rs_corebase::DataHead,
@@ -334,7 +335,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         accepted_types: found.map_or(0, |(_, types)| types),
         worker_id: if mode == MODE_BASE && !worker.is_null() {
             // SAFETY: this process's current worker.
-            unsafe { swoole_rs_process::worker_record::swr_v1_worker_id(worker) }
+            unsafe { Worker::new(worker).id() }
         } else {
             0
         },

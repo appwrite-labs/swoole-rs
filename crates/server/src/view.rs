@@ -12,7 +12,7 @@ use core::sync::atomic::Ordering;
 use std::ffi::CString;
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
-use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_tls::socket_pair::SocketPair;
 
@@ -383,6 +383,14 @@ impl<'a> Server<'a> {
         let view = self.workers();
         // SAFETY: the server's live pools and worker arrays, with their counts.
         unsafe { swr_v1_process_server_worker(&raw const view, id) }
+    }
+
+    /// [`Server::worker`]'s record, or `None` past the last.
+    #[must_use]
+    pub fn worker_record(self, id: u16) -> Option<Worker<'a>> {
+        // SAFETY: null or one of the server's live workers, in memory the server
+        // keeps for `'a`.
+        unsafe { Worker::from_raw(self.worker(id)) }
     }
 
     /// `Server::task_notify_pipe(worker_id)`, or null.

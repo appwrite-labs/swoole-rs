@@ -13,7 +13,8 @@ use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, net_types::Protocol};
 use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
 use swoole_rs_phphelpers::{callable, function_call};
-use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_id};
+use swoole_rs_process::worker_record::Worker;
+use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::ConnectionRecord;
 use swoole_rs_server::callbacks::{
     CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_BEFORE_SHUTDOWN, CB_BUFFER_EMPTY, CB_BUFFER_FULL,
@@ -713,7 +714,7 @@ fn port_callback(server: *mut c_void, server_fd: u16, kind: c_int) -> *mut c_voi
 
 fn worker_id(worker: *mut WorkerRecord) -> i64 {
     // SAFETY: the event's live worker.
-    i64::from(unsafe { swr_v1_worker_id(worker) })
+    i64::from(unsafe { Worker::new(worker).id() })
 }
 
 macro_rules! lifecycle_slots {
@@ -1066,7 +1067,7 @@ extern "C" fn on_user_worker_start(_: Ctx, server: *mut c_void, worker: *mut Wor
         process
     } else {
         // SAFETY: the worker `addProcess` made holds its process object.
-        unsafe { swoole_rs_process::worker_record::user_data(worker) }.cast::<zval>()
+        unsafe { Worker::new(worker).user_data() }.cast::<zval>()
     };
     // SAFETY: the process object.
     let object = unsafe { object_of(process) };

@@ -17,6 +17,7 @@ use core::cell::{Cell, UnsafeCell};
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::mem::MaybeUninit;
 use core::ptr;
+use swoole_rs_process::worker_record::Worker as Record;
 
 use swoole_rs_corebase::CoreAllocator;
 use swoole_rs_corebase::DataHead;
@@ -51,10 +52,7 @@ use swoole_rs_process::reload_task::{
     ReloadTask, swr_v1_process_reload_task_kill_all, swr_v1_process_reload_task_set_timer,
 };
 use swoole_rs_process::worker_globals::swr_v1_worker_globals;
-use swoole_rs_process::worker_record::{
-    WorkerRecord, swr_v1_worker_id, swr_v1_worker_init, swr_v1_worker_pid, swr_v1_worker_set_pid,
-    swr_v1_worker_shutdown,
-};
+use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_reactor::event_api::{
     swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
     swoole_event_write, swr_v1_event_current,
@@ -664,12 +662,11 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             // SAFETY: the worker this process now runs.
             unsafe { swr_v1_worker_init(worker) };
             // SAFETY: as above.
-            unsafe { swr_v1_worker_set_pid(worker, std::process::id() as c_int) };
+            let record = unsafe { Record::new(worker) };
+            record.set_pid(std::process::id() as c_int);
             swoole_set_worker_type(SW_WORKER);
-            // SAFETY: as above.
-            swoole_set_worker_id(unsafe { swr_v1_worker_id(worker) });
-            // SAFETY: as above.
-            swoole_set_worker_pid(unsafe { swr_v1_worker_pid(worker) });
+            swoole_set_worker_id(record.id());
+            swoole_set_worker_pid(record.pid());
             // SAFETY: this thread's worker globals.
             unsafe { (*swr_v1_worker_globals()).worker = worker };
             0
@@ -760,11 +757,11 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
             }
         }
         OP_PUSH_STOP => {
+            // SAFETY: the worker stopping.
+            let record = unsafe { Record::new(worker) };
             let message = WorkerStopMessage {
-                // SAFETY: the worker stopping.
-                pid: unsafe { swr_v1_worker_pid(worker) },
-                // SAFETY: as above.
-                worker_id: unsafe { swr_v1_worker_id(worker) } as u16,
+                pid: record.pid(),
+                worker_id: record.id() as u16,
             };
             // SAFETY: the live pool and the message's bytes.
             return i64::from(unsafe {
@@ -1056,7 +1053,7 @@ unsafe extern "C" fn warn(pool: *mut c_void, worker: *mut c_void, kind: c_int, a
         0
     } else {
         // SAFETY: the loop's worker.
-        unsafe { swr_v1_worker_id(worker) }
+        unsafe { Record::new(worker).id() }
     };
     let origin = loop_origin(pool);
     match kind {
