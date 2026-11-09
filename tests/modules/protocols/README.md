@@ -118,7 +118,7 @@ expected values:
 | `mqtt.echo` | `mqtt.echo` in `server.rs` |
 
 `server.rs` is built into the http server case binary (`tests/modules/http/server`,
-the merge tier's `http-server-rust` phase), whose `fixture.cc` builds the redis and
-mqtt Servers. That phase excludes `redis.get`, which needs a Redis server on
+the merge tier's `http-server-rust` phase), whose `src/http1/case.rs` builds the
+redis and mqtt Servers. That phase excludes `redis.get`, which needs a Redis server on
 127.0.0.1:6379, and `mqtt.echo`, which needs Node with the mqtt and pino packages
 (`core-tests/js/mqtt.js`).

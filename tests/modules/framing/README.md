@@ -29,7 +29,7 @@ swoole-rs-framing`), with the same inputs and expected values:
 `core-tests/src/protocol/base.cpp` no longer builds either. Its server TESTs are
 cases in [protocol.rs](protocol.rs), built into the http server case binary
 (`tests/modules/http/server`, the merge tier's http-server-rust phase), whose
-`fixture.cc` builds the Server and its port's framing. The rest are unit tests
+`src/http1/case.rs` builds the Server and its port's framing. The rest are unit tests
 (`cargo test -p swoole-rs-ports -p swoole-rs-protocols-ffi`):
 
 | Upstream TEST | Rust test |

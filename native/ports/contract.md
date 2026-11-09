@@ -44,7 +44,7 @@ socket record. Only the server calls them, through the table `swoole_init` regis
 `get_protocols`, `init_protocol`, `destroy_http_request`, `ssl_context_init`,
 `ssl_create`, `import`, `close` and the DTLS session lookups: ports depends on the
 server, so the server can't name them. `init_protocol` keeps its upstream symbol for
-tests/modules/http/server/fixture.cc. Options are those the platform defines:
+tests/modules/http/server/src/http1/case.rs. Options are those the platform defines:
 `TCP_DEFER_ACCEPT`, `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` and
 `TCP_USER_TIMEOUT` on Linux, `TCP_FASTOPEN` and `SO_KEEPALIVE` on both supported
 hosts (`SO_ACCEPTFILTER` is BSD-only). `host` is a Rust string slot in the
