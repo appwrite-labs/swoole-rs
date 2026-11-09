@@ -232,8 +232,7 @@ unsafe fn init_phpcollections_channel_minit(
 ) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     // SAFETY: MINIT, with a static table.
     unsafe { CHANNEL.register(c"Swoole\\Coroutine\\Channel", METHODS.as_ptr(), configure) };
-    // SAFETY: this thread's module globals, live from MINIT.
-    if unsafe { (*swoole_rs_phpswoole::globals()).use_shortname } {
+    if swoole_rs_phpswoole::globals().use_shortname.get() {
         // SAFETY: MINIT, after registration.
         unsafe { CHANNEL.alias(c"Co\\Channel") }?;
         // SAFETY: as above.

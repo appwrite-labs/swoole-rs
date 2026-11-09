@@ -21,12 +21,7 @@ use swoole_rs_corebase::{
     swr_v1_core_set_iouring_entries, swr_v1_core_set_iouring_flag, swr_v1_core_set_iouring_workers,
     swr_v1_core_set_wait_signal,
 };
-use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, bailout, handlers, php_error,
-    string::bytes,
-    sys::{IS_STRING, swr_zval_get_double, swr_zval_get_long, swr_zval_is_true, zend_array, zval},
-    type_of, value,
-};
+use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, handlers, php_error};
 
 /// `SW_ERROR_OPERATION_NOT_SUPPORT` and `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
 const OPERATION_NOT_SUPPORT: i32 = 507;
@@ -60,19 +55,16 @@ thread_local! {
     static CACHE: RefCell<HashMap<Vec<u8>, Cached>> = RefCell::new(HashMap::new());
 }
 
-fn truthy(value: *mut zval) -> bool {
-    // SAFETY: a live zval; Zend's own conversion.
-    unsafe { swr_zval_is_true(value) }
+fn truthy(value: &Value) -> bool {
+    value.truthy()
 }
 
-fn long(value: *mut zval) -> i64 {
-    // SAFETY: as above.
-    unsafe { swr_zval_get_long(value) }
+fn long(value: &Value) -> i64 {
+    value.long()
 }
 
-fn double(value: *mut zval) -> f64 {
-    // SAFETY: as above.
-    unsafe { swr_zval_get_double(value) }
+fn double(value: &Value) -> f64 {
+    value.double()
 }
 
 /// `SW_MAX(low, SW_MIN(v, UINT32_MAX))`.
@@ -81,16 +73,13 @@ fn bounded(value: i64, low: u32) -> u32 {
 }
 
 /// `php_swoole_async_coro_rshutdown`: the cache goes with the request.
-pub(crate) unsafe extern "C" fn rshutdown() {
+pub(crate) extern "C" fn rshutdown() {
     CACHE.with_borrow_mut(HashMap::clear);
 }
 
-/// `php_swoole_set_aio_option(options)`: the AIO pool's sizes and timeouts, and
-/// `io_uring`'s when the build has it.
-/// # Safety
-/// After MINIT, with a live options table.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_set_aio_option(options: *mut zend_array) {
+/// `php_swoole_set_aio_option(options)`, after MINIT: the AIO pool's sizes and
+/// timeouts, and `io_uring`'s when the build has it.
+pub fn php_swoole_set_aio_option(options: &Array) {
     if let Some(value) = get(options, c"aio_core_worker_num") {
         swr_v1_core_set_aio_core_worker_num(bounded(long(value), 1));
     }
@@ -150,17 +139,14 @@ fn async_set(call: &Call) {
         );
         return;
     }
-    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+    let Ok(options) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
         call.set_bool(false);
         return;
     };
-    // SAFETY: an array zval.
-    let options = unsafe { value::table(settings) };
     if !options::set_global(options) {
         return;
     }
-    // SAFETY: a live table.
-    unsafe { php_swoole_set_aio_option(options) };
+    php_swoole_set_aio_option(options);
     if let Some(value) = get(options, c"wait_signal") {
         swr_v1_core_set_wait_signal(truthy(value));
     }
@@ -198,9 +184,8 @@ fn dns_lookup(call: &Call) {
     // option setters write.
     let default_timeout = unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.dns };
     let parsed = call.arity(1, 3).and_then(|()| {
-        let domain = call.zval(1);
         Ok((
-            domain,
+            call.value(1),
             call.double(2, default_timeout)?,
             call.long(3, i64::from(libc::AF_INET))?,
         ))
@@ -209,16 +194,11 @@ fn dns_lookup(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: a passed argument is a live zval.
-    if unsafe { type_of(domain) } != IS_STRING {
+    let Some(name) = domain.and_then(Value::bytes) else {
         fatal_error(E_WARNING, c"invalid domain name");
         call.set_bool(false);
         return;
-    }
-    // SAFETY: a string zval holds a live string.
-    let string = unsafe { value::str_of(domain) };
-    // SAFETY: a live string, NUL-terminated after its bytes.
-    let name = unsafe { bytes(string) };
+    };
     if name.is_empty() {
         fatal_error(E_WARNING, c"domain name empty");
         call.set_bool(false);

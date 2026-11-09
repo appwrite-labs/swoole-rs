@@ -160,8 +160,9 @@ ad-hoc scripts, `gh run watch`).
 
 Three tiers: the pre-commit hook (~5s warm), the PR tier (`pr.yml`, under 3 minutes
 warm) and the merge tier (`merge.yml`, on `main`). `main`'s ruleset requires a
-pull request and the PR tier's `rust`, `tooling` and `hybrid` checks, so renaming
-those jobs means updating the ruleset in the same PR. `hybrid` (the all-modules
+pull request and the PR tier's `required` check, which passes when every job it
+`needs` passed or was skipped; add a blocking job there, and renaming `required`
+means updating the ruleset in the same PR. `hybrid` (the all-modules
 build, the only one there is, extension load and corpus, a few minutes cached) runs only when a PR
 touches patches, `native/`, the build tools, `crates/phpstubs/`, `.github/` or `.devcontainer/`, and
 is skipped, which counts as passing, otherwise. Checks run against `main` as of
@@ -169,8 +170,10 @@ the PR's last push, and a PR merged meanwhile can make this one's patches stop
 applying, so `tooling` applies the all-modules patch set to the pin
 (`tools/patches.py check`, seconds; run it before pushing a patch change) and
 `hybrid` re-runs that check over `main`'s head as its last step. A merged PR's
-patches can still stop compiling; the merge tier catches that. `gates` is informative; breakage
-it misses is caught by the merge tier and the red-main rule. Keep them cached and audit
+patches can still stop compiling; the merge tier catches that. `gates` runs the modules a PR
+touches and those depending on a touched crate, and fails only on a phase that didn't fail in
+main's latest completed merge-tier run (`ci.py new-failures`); breakage it misses is caught by
+the merge tier and the red-main rule. Keep them cached and audit
 them regularly for waste and duplicate steps; slow or flaky CI is a ticket.
 
 The merge tier runs one at a time, latest wins: while a run is in progress, each

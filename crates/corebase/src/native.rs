@@ -20,7 +20,7 @@ pub struct NativeHost {
     /// `delete SwooleG.memory_pool`.
     pub delete_pool: fn(),
     /// One `LOGGER_*` operation on the process logger (crates/process).
-    pub logger: extern "C" fn(op: c_int),
+    pub logger: fn(op: c_int),
     pub signal_clear: fn(),
     pub timer_free: fn(),
     pub event_available: fn() -> bool,

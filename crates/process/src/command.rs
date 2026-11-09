@@ -11,7 +11,7 @@ pub const EVENT_WORKER: i32 = 1 << 3;
 pub const TASK_WORKER: i32 = 1 << 4;
 pub const MANAGER: i32 = 1 << 5;
 
-/// Where a command goes (`swr_v1_process_command_route::action`).
+/// Where a command goes (`CommandRoute::action`).
 pub const FAIL: i32 = 0;
 pub const TO_REACTOR_THREAD: i32 = 1;
 pub const TO_EVENT_WORKER: i32 = 2;
@@ -141,20 +141,6 @@ pub fn route(input: &CommandInput) -> CommandRoute {
         process_id,
         request: true,
     }
-}
-
-/// [`route`] for native code.
-/// # Safety
-/// `input` is readable and `route` writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_route_command(
-    input: *const CommandInput,
-    output: *mut CommandRoute,
-) {
-    // SAFETY: per the caller.
-    let input = unsafe { &*input };
-    // SAFETY: per the caller.
-    unsafe { output.write(route(input)) };
 }
 
 #[cfg(test)]

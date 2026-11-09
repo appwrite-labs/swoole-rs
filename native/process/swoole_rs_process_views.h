@@ -3,18 +3,8 @@
 #else
 #ifndef SWOOLE_RS_PROCESS_VIEWS_H
 #define SWOOLE_RS_PROCESS_VIEWS_H
-// Generated from crates/process/src/{worker_globals,worker_record,process_pool}.rs and crates/tls/src/socket_pair.rs.
+// Generated from crates/process/src/{worker_record,process_pool}.rs and crates/tls/src/socket_pair.rs.
 // Typed native loans only; Rust owns the record layouts and operations.
-#define SWR_WORKER_GLOBAL_RECORD_FIELDS \
-    uint32_t id; \
-    uint8_t type; \
-    int pid; \
-    bool shutdown; \
-    bool running; \
-    uint32_t max_request; \
-    Worker * worker; \
-    Worker * worker_copy; \
-    time_t exit_time;
 #define SWR_WORKER_RECORD_FIELDS \
     int pid; \
     uint32_t id; \

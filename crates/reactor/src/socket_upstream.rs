@@ -521,3 +521,43 @@ mod tests {
         assert_eq!(log::last_error(), libc::ESOCKTNOSUPPORT);
     }
 }
+
+/// Upstream's `network::Socket` members over the record, under their own symbols for
+/// the hybrid tree's core-tests port (tests/modules/hooks/system), which links them.
+#[cfg(feature = "upstream-symbols")]
+mod members {
+    use crate::{SocketAddress, SocketRecord};
+    use std::ffi::c_int;
+
+    /// Each member as `extern "C" fn(this, args...)`: C++ passes `this` and reference
+    /// arguments as non-null pointers to live objects, which Rust takes as references.
+    macro_rules! members {
+        ($($symbol:literal fn $name:ident($this:ident $(, $arg:ident: $ty:ty)*) -> $ret:ty $body:block)*) => {$(
+            #[unsafe(export_name = $symbol)]
+            extern "C" fn $name($this: &mut SocketRecord $(, $arg: $ty)*) -> $ret $body
+        )*};
+    }
+
+    members! {
+        "_ZN6swoole7network6Socket8get_nameEv" fn get_name(this) -> c_int { this.get_name() }
+        "_ZN6swoole7network6Socket13get_peer_nameEPNS0_7AddressE"
+        fn get_peer_name(this, address: &mut SocketAddress) -> c_int { this.get_peer_name(address) }
+        "_ZN6swoole7network6Socket4bindERKNS0_7AddressE"
+        fn bind(this, address: &SocketAddress) -> c_int { this.bind(address) }
+        "_ZN6swoole7network6Socket6listenEi" fn listen(this, backlog: c_int) -> c_int { this.listen(backlog) }
+        "_ZN6swoole7network6Socket6acceptEv" fn accept(this) -> *mut SocketRecord { this.accept() }
+        "_ZNK6swoole7network6Socket3dupEv" fn dup(this) -> *mut SocketRecord { this.dup() }
+        "_ZN6swoole7network6Socket14set_tcp_nopushEi"
+        fn set_tcp_nopush(this, nopush: c_int) -> c_int { this.set_tcp_nopush(nopush) }
+        "_ZN6swoole7network6Socket15set_tcp_nodelayEi"
+        fn set_tcp_nodelay(this, nodelay: c_int) -> bool { this.set_tcp_nodelay(nodelay) }
+        "_ZN6swoole7network6Socket11set_timeoutEdi"
+        fn set_timeout(this, timeout: f64, kind: c_int) -> () { this.timeouts.set(timeout, kind) }
+        "_ZN6swoole7network6Socket17catch_write_errorEi"
+        fn catch_write_error(this, error: c_int) -> c_int { this.catch_error(error) }
+        "_ZN6swoole7network6Socket22catch_write_pipe_errorEi"
+        fn catch_write_pipe_error(this, error: c_int) -> c_int {
+            crate::catch_pipe_error(error, &mut this.kernel_nobufs)
+        }
+    }
+}

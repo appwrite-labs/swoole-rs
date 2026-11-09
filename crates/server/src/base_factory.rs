@@ -14,7 +14,7 @@ use core::ffi::{c_char, c_int, c_long};
 use core::sync::atomic::Ordering;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::log;
-use swoole_rs_process::worker_globals::swr_v1_worker_globals;
+use swoole_rs_process::worker_globals::thread_globals;
 use swoole_rs_process::worker_record::Worker;
 
 /// `swoole::SendData`.
@@ -169,7 +169,7 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
         return Ok(false);
     }
     // SAFETY: this thread's worker globals; only the fields are read.
-    let globals = unsafe { &*swr_v1_worker_globals() };
+    let globals = unsafe { &*thread_globals() };
     let (worker, max_request) = (globals.worker, globals.max_request);
     if worker.is_null() || max_request != 0 {
         return Ok(false);
@@ -538,7 +538,7 @@ mod tests {
         t.conn().recv_queued_bytes = AtomicU32::new(5);
         // SAFETY: a worker record is plain data; zero is a fresh one.
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
-        let globals = swr_v1_worker_globals();
+        let globals = thread_globals();
         // SAFETY: this test thread's worker globals.
         unsafe { (*globals).worker = &raw mut worker };
         let mut task = send(2, RECV_DATA, 5);

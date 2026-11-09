@@ -20,7 +20,7 @@ from tools.build_hybrid import overlay_hybrid_tree  # noqa: E402
 from tools.build_upstream import COMMIT as PIN  # noqa: E402
 from tools.harness import ROOT, run_isolated, write_report  # noqa: E402
 
-# The cases are system/src/main.rs (with hook.rs and socket.rs); system/Cargo.lock pins its dependencies (the reactor and process crates, whose record methods some cases call) for --locked.
+# The cases are system/src/main.rs (with hook.rs and socket.rs); system/Cargo.lock pins its (empty) dependency set for --locked.
 PACKAGE = ROOT / 'tests/modules/hooks/system'
 
 

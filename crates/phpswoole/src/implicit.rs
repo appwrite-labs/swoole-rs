@@ -6,15 +6,14 @@ use std::ffi::{c_char, c_int, c_void};
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_error::ErrorCode::{SW_ERROR_FOR_TEST, SW_ERROR_INVALID_PARAMS};
 use swoole_rs_zend::{
-    Call, Message,
+    Array, Call, Message, Value, ZString,
     bailout::{self, Bailout},
     handlers,
-    string::bytes,
     sys::{
-        swr_zend_facade_function_table, swr_zend_set_exit_status, swr_zend_string_release,
-        swr_zval_facade_refcount, zend_function, zend_hash_str_find,
+        swr_zend_facade_function_table, swr_zend_set_exit_status, swr_zval_facade_refcount,
+        zend_function,
     },
-    throw_exception, value,
+    throw_exception,
 };
 
 handlers! {
@@ -47,6 +46,7 @@ fn implicit_fn(call: &Call) {
         return;
     };
     let args = call.zval(2);
+    let arg = call.value(2);
     let is = |candidate: &[u8]| name.eq_ignore_ascii_case(candidate);
     if is(b"fatal_error") {
         let hook = swoole_rs_corebase::swr_v1_core_fatal_error();
@@ -59,15 +59,8 @@ fn implicit_fn(call: &Call) {
         // SAFETY: a literal format with no conversions.
         unsafe { php_printf(c"never be executed here\n".as_ptr()) };
     } else if is(b"bailout") {
-        let status = if args.is_null() {
-            95
-        } else {
-            // SAFETY: a passed argument is live.
-            let status = unsafe { value::get_long(args) };
-            #[expect(clippy::cast_possible_truncation, reason = "C's (int) of a zend_long")]
-            let status = status as c_int;
-            status
-        };
+        #[expect(clippy::cast_possible_truncation, reason = "C's (int) of a zend_long")]
+        let status = arg.map_or(95, |status| status.long() as c_int);
         // It bails out across this frame, which owns nothing.
         sw_php_exit(status);
     } else if is(b"abort") {
@@ -76,26 +69,18 @@ fn implicit_fn(call: &Call) {
         // SAFETY: upstream's zval_refcount_p of the second argument, which must be refcounted.
         call.set_long(i64::from(unsafe { swr_zval_facade_refcount(args) }));
     } else if is(b"func_handler") {
-        // SAFETY: the second argument, which must be passed.
-        let string = unsafe { value::get_string(args) };
-        // SAFETY: zval_get_string's new reference.
-        let lookup = unsafe { bytes(string) };
+        let lookup = arg.map_or_else(|| ZString::new(b""), Value::string);
         // SAFETY: a running request's EG(function_table).
         let table = unsafe { swr_zend_facade_function_table() };
-        // SAFETY: a live table and a borrowed key.
-        let found = unsafe { zend_hash_str_find(table, lookup.as_ptr().cast(), lookup.len()) };
-        // SAFETY: released once, after the lookup.
-        unsafe { swr_zend_string_release(string) };
-        if found.is_null() {
+        // SAFETY: the request's live table, which this lookup does not change.
+        let table = unsafe { Array::from_ptr(table) };
+        let found = table.and_then(|table| table.find(lookup.bytes()));
+        let Some(function) = found.and_then(Value::pointer) else {
             call.set_bool(false);
             return;
-        }
-        // SAFETY: a live table value.
-        let payload = unsafe { (*found).value };
-        // SAFETY: a function table's values are pointers to its functions.
-        let function = unsafe { payload.ptr }.cast::<zend_function>();
-        // SAFETY: a live function.
-        let function = unsafe { &*function };
+        };
+        // SAFETY: a function table's values point at its live functions.
+        let function = unsafe { &*function.cast::<zend_function>() };
         // SAFETY: upstream reads every function as internal.
         let handler = unsafe { function.internal_function.handler };
         let address = handler.map_or(std::ptr::null(), |handler| handler as *const c_void);

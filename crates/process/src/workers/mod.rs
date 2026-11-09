@@ -152,7 +152,7 @@ fn effect(op: u32) -> Option<u64> {
     const SEND_YIELD: c_int = 1010;
     const POLL_TIMEOUT: c_int = 6002;
     let int = |value: c_int| i64::from(value).cast_unsigned();
-    let globals = crate::worker_globals::swr_v1_worker_globals();
+    let globals = crate::worker_globals::thread_globals();
     Some(match op {
         // SAFETY: this thread's event loop.
         ops::OP_EVENT_INIT => int(unsafe { swoole_event_init(0) }),
@@ -203,7 +203,7 @@ fn effect(op: u32) -> Option<u64> {
         // SAFETY: as above.
         ops::OP_EXIT_TIME => unsafe { (*globals).exit_time }.cast_unsigned(),
         ops::OP_WORKER_STOPPED => {
-            crate::worker_globals::swr_v1_worker_global_stopped();
+            crate::worker_globals::worker_global_stopped();
             0
         }
         ops::OP_CLEAR_LAST_ERROR => {
@@ -237,8 +237,7 @@ fn effect(op: u32) -> Option<u64> {
 ///
 /// # Safety
 /// `call` acts on the objects in `context`, live for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_workers_run(
+pub unsafe fn workers_run(
     operation: u32,
     arg: u64,
     context: *mut c_void,

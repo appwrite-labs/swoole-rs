@@ -1,10 +1,12 @@
 //! `swoole_get_local_ip()` and `swoole_get_local_mac()`: the host's non-loopback
 //! interface addresses, keyed by interface name.
 use std::{
-    ffi::{CStr, CString, c_char, c_int},
-    io, ptr,
+    ffi::{CStr, CString, c_int},
+    io,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    ptr,
 };
-use swoole_rs_zend::{Call, E_WARNING, handlers, php_error, set_key};
+use swoole_rs_zend::{Call, E_WARNING, OwnedArray, handlers, php_error};
 
 handlers! {
     zif_swoole_get_local_ip => local_ip;
@@ -17,8 +19,7 @@ handlers! {
 pub fn sys_warning(what: &[u8]) {
     let code = io::Error::last_os_error().raw_os_error().unwrap_or(0);
     swoole_rs_corebase::log::set_last_error(code);
-    // SAFETY: this thread's live module globals.
-    if !unsafe { (*crate::module::globals()).display_errors } {
+    if !crate::module::display_errors() {
         return;
     }
     // SAFETY: libc's message table.
@@ -70,52 +71,29 @@ fn name(entry: &libc::ifaddrs) -> &[u8] {
     unsafe { CStr::from_ptr(entry.ifa_name) }.to_bytes()
 }
 
-unsafe extern "C" {
-    /// `<arpa/inet.h>`; not in the libc crate.
-    fn inet_ntop(
-        family: c_int,
-        source: *const std::ffi::c_void,
-        buffer: *mut c_char,
-        size: libc::socklen_t,
-    ) -> *const c_char;
+/// `ifa_addr`, when the interface has one.
+fn address(entry: &libc::ifaddrs) -> Option<&libc::sockaddr> {
+    // SAFETY: null or an address that lives as long as the list.
+    unsafe { entry.ifa_addr.as_ref() }
 }
 
-/// `INET6_ADDRSTRLEN`: room for any printable address.
-const INET6_ADDRSTRLEN: usize = 46;
-
 /// `Address::get_addr()` (`inet_ntop`) of a non-loopback IPv4 or IPv6 address.
-/// # Safety
-/// `address` is a live socket address of its family's size.
-unsafe fn printable(address: *const libc::sockaddr) -> Option<Vec<u8>> {
-    let mut buffer = [0 as c_char; INET6_ADDRSTRLEN];
-    // SAFETY: per the caller.
-    let family = c_int::from(unsafe { (*address).sa_family });
-    let source = match family {
+fn printable(address: &libc::sockaddr) -> Option<Vec<u8>> {
+    let ip: IpAddr = match c_int::from(address.sa_family) {
         libc::AF_INET => {
             // SAFETY: an AF_INET address is a sockaddr_in.
-            let inet = unsafe { &*address.cast::<libc::sockaddr_in>() };
-            // IN_IS_ADDR_LOOPBACK: 127.0.0.0/8.
-            if u32::from_be(inet.sin_addr.s_addr) >> 24 == 127 {
-                return None;
-            }
-            (&raw const inet.sin_addr).cast()
+            let inet = unsafe { &*ptr::from_ref(address).cast::<libc::sockaddr_in>() };
+            Ipv4Addr::from(u32::from_be(inet.sin_addr.s_addr)).into()
         }
         libc::AF_INET6 => {
             // SAFETY: an AF_INET6 address is a sockaddr_in6.
-            let inet6 = unsafe { &*address.cast::<libc::sockaddr_in6>() };
-            if inet6.sin6_addr.s6_addr == std::net::Ipv6Addr::LOCALHOST.octets() {
-                return None;
-            }
-            (&raw const inet6.sin6_addr).cast()
+            let inet6 = unsafe { &*ptr::from_ref(address).cast::<libc::sockaddr_in6>() };
+            Ipv6Addr::from(inet6.sin6_addr.s6_addr).into()
         }
         _ => return None,
     };
-    #[expect(clippy::cast_possible_truncation, reason = "INET6_ADDRSTRLEN is 46")]
-    let size = buffer.len() as libc::socklen_t;
-    // SAFETY: a source of `family` and a buffer of `size` bytes.
-    let text = unsafe { inet_ntop(family, source, buffer.as_mut_ptr(), size) };
-    // SAFETY: on success `inet_ntop` wrote a NUL-terminated string into `buffer`.
-    (!text.is_null()).then(|| unsafe { CStr::from_ptr(text) }.to_bytes().to_vec())
+    // IN_IS_ADDR_LOOPBACK: 127.0.0.0/8, and ::1.
+    (!ip.is_loopback()).then(|| ip.to_string().into_bytes())
 }
 
 fn local_ip(call: &Call) {
@@ -132,34 +110,31 @@ fn local_ip(call: &Call) {
         call.set_bool(false);
         return;
     };
-    call.set_array();
+    let mut array = OwnedArray::default();
     let up = libc::IFF_UP.unsigned_abs();
     for entry in interfaces.iter() {
-        if entry.ifa_addr.is_null() || entry.ifa_flags & up == 0 {
+        let Some(address) = address(entry).filter(|_| entry.ifa_flags & up != 0) else {
+            continue;
+        };
+        if i64::from(address.sa_family) != family {
             continue;
         }
-        // SAFETY: a live address.
-        if i64::from(unsafe { (*entry.ifa_addr).sa_family }) != family {
-            continue;
-        }
-        // SAFETY: a live address of its family's size.
-        if let Some(address) = unsafe { printable(entry.ifa_addr) } {
-            // SAFETY: the return slot holds an array.
-            unsafe { set_key(call.return_value(), name(entry), Some(&address)) };
+        if let Some(address) = printable(address) {
+            array.insert_bytes(name(entry), Some(&address));
         }
     }
+    call.set_owned(array.into_owned());
 }
 
 /// `add_assoc_address`: `"%02X:%02X:%02X:%02X:%02X:%02X"` under the name.
-fn add_address(call: &Call, name: &[u8], address: &[u8]) {
+fn add_address(array: &mut OwnedArray, name: &[u8], address: &[u8]) {
     let text = address
         .iter()
         .take(6)
         .map(|byte| format!("{byte:02X}"))
         .collect::<Vec<_>>()
         .join(":");
-    // SAFETY: the return slot holds an array.
-    unsafe { set_key(call.return_value(), name, Some(text.as_bytes())) };
+    array.insert_bytes(name, Some(text.as_bytes()));
 }
 
 #[cfg(target_os = "linux")]
@@ -199,7 +174,7 @@ fn local_mac(call: &Call) {
         call.set_bool(false);
         return;
     }
-    call.set_array();
+    let mut array = OwnedArray::default();
     let count = usize::try_from(conf.ifc_len).unwrap_or(0) / size_of::<libc::ifreq>();
     for entry in buffer.iter().take(count) {
         // SAFETY: plain data; all-zero is valid.
@@ -224,11 +199,12 @@ fn local_mac(call: &Call) {
             let bytes = data.map(|byte| byte.to_ne_bytes()[0]);
             // SAFETY: the name is NUL-terminated within IFNAMSIZ.
             let name = unsafe { CStr::from_ptr(request.ifr_name.as_ptr()) };
-            add_address(call, name.to_bytes(), &bytes);
+            add_address(&mut array, name.to_bytes(), &bytes);
         }
     }
     // SAFETY: our socket.
     unsafe { libc::close(sock) };
+    call.set_owned(array.into_owned());
 }
 
 #[cfg(target_os = "macos")]
@@ -238,18 +214,17 @@ fn local_mac(call: &Call) {
         call.set_bool(false);
         return;
     };
-    call.set_array();
+    let mut array = OwnedArray::default();
     let loopback = libc::IFF_LOOPBACK.unsigned_abs();
     for entry in interfaces.iter() {
-        if entry.ifa_addr.is_null() || entry.ifa_flags & loopback != 0 {
+        let Some(address) = address(entry).filter(|_| entry.ifa_flags & loopback == 0) else {
             continue;
-        }
-        // SAFETY: a live address.
-        if c_int::from(unsafe { (*entry.ifa_addr).sa_family }) != libc::AF_LINK {
+        };
+        if c_int::from(address.sa_family) != libc::AF_LINK {
             continue;
         }
         // SAFETY: an AF_LINK address is a sockaddr_dl.
-        let link = unsafe { &*entry.ifa_addr.cast::<libc::sockaddr_dl>() };
+        let link = unsafe { &*ptr::from_ref(address).cast::<libc::sockaddr_dl>() };
         if link.sdl_alen == 6 {
             // LLADDR: the address follows the name in sdl_data.
             let start = usize::from(link.sdl_nlen);
@@ -258,9 +233,10 @@ fn local_mac(call: &Call) {
             let address = unsafe { base.add(start) };
             // SAFETY: as above.
             let address = unsafe { std::slice::from_raw_parts(address, 6) };
-            add_address(call, name(entry), address);
+            add_address(&mut array, name(entry), address);
         }
     }
+    call.set_owned(array.into_owned());
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

@@ -197,13 +197,16 @@ jobs:
     if: needs.changes.outputs.asan == 'true'
     uses: ./.github/workflows/asan.yml
 
-  # Candidate-lane gates of the modules this PR touches (every module for shared
-  # build inputs); prints "No module touched" and passes otherwise. Advisory until
-  # the gates main already fails are fixed (#106): read its result, it never blocks.
+  # Candidate-lane gates of the modules this PR touches, and of those whose packages
+  # depend on a touched crate (every module for shared build inputs). It fails only on
+  # a phase that didn't fail in main's latest completed merge-tier run: red main
+  # doesn't block a PR, a new failure does.
   gates:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -236,11 +239,30 @@ jobs:
       - if: steps.touched.outputs.modules != ''
         run: cargo fetch --locked
       - if: steps.touched.outputs.modules != ''
+        id: candidate
+        continue-on-error: true
         run: >
           python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }}
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
+      - if: steps.candidate.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci.py new-failures target/reports/dev/*/loop.json
       - uses: actions/upload-artifact@v4
         if: always() && steps.touched.outputs.modules != ''
         with:
           name: gates-reports
           path: target/reports/
+
+  # The one check main's ruleset requires: every blocking job passed or was skipped.
+  # A skipped reusable-workflow caller reports no check at all, so the ruleset can't
+  # name those jobs directly. cares and asan stay informative.
+  required:
+    if: always()
+    needs: [rust, tooling, changes, hybrid, gates, iouring, zts, threadcontext]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'map_values(.result) | debug | all(. == "success" or . == "skipped")' <<< "$NEEDS"

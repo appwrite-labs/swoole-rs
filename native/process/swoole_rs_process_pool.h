@@ -100,10 +100,6 @@ struct Worker;
 #include "swoole_rs_process_views.h"
 #undef SWR_PROCESS_NATIVE_VIEW_CONTEXT
 
-struct WorkerGlobal {
-    SWR_WORKER_GLOBAL_RECORD_FIELDS
-};
-
 struct Worker {
     SWR_WORKER_RECORD_FIELDS
     bool has_exceeded_max_request() const;
@@ -177,8 +173,3 @@ static sw_inline int swoole_kill(pid_t _pid, int _sig) {
     return kill(_pid, _sig);
 }
 
-#define SwooleWG (*static_cast<swoole::WorkerGlobal *>(swr_v1_worker_globals()))
-
-static inline swoole::Worker *sw_worker() {
-    return SwooleWG.worker;
-}

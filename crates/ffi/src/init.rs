@@ -51,7 +51,7 @@ extern "C-unwind" fn swoole_init() {
         },
         delete_buffer: || BUFFER.with(|buffer| buffer.replace(CppString::EMPTY).dispose()),
         delete_pool: pool::delete,
-        logger: swoole_rs_process::methods::swr_v1_process_logger,
+        logger: swoole_rs_process::methods::logger_op,
         signal_clear: || swoole_signal_clear(),
         timer_free: || swoole_timer_free(),
         event_available: || swoole_event_is_available(),
@@ -67,7 +67,7 @@ fn init() {
     swoole_rs_error::swoole_clear_last_error_msg();
     swoole_rs_corebase::swr_v1_core_set_stdout(swr_v1_ffi_stdout());
     swoole_rs_corebase::swr_v1_core_set_fatal_error(swr_v1_ffi_fatal_error as *mut c_void);
-    swoole_rs_process::methods::swr_v1_process_logger(LOGGER_NEW);
+    swoole_rs_process::methods::logger_op(LOGGER_NEW);
     if built_with(Switch::Debug) {
         swoole_rs_utilities::swoole_set_log_level(0);
         swoole_rs_corebase::swr_v1_core_set_trace_flags(0x7fff_ffff);

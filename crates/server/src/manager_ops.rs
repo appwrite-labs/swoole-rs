@@ -8,9 +8,6 @@ use swoole_rs_corebase::{DataHead, log, worker_registry as registry};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::methods::{self, ExitStatus, swoole_set_worker_type};
 use swoole_rs_process::process_pool::PoolRecord;
-use swoole_rs_process::reload_task::{
-    swr_v1_process_reload_task_add_workers, swr_v1_process_reload_task_kill_all,
-};
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
@@ -343,7 +340,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_SET_RELOAD_INIT => ctx.pool().reload_init = arg != 0,
         OP_SET_READ_MESSAGE => ctx.pool().read_message = arg != 0,
         OP_REAP_WAIT => {
-            let reap = swoole_rs_process::process_pool::swr_v1_process_reap_wait;
+            let reap = swoole_rs_process::process_pool::pool_reap_wait;
             let (status, error) = (&raw mut ctx.wait_status, &raw mut ctx.wait_error);
             // SAFETY: the context's own status slots.
             return Some(signed(unsafe { reap(null_mut(), arg != 0, status, error) }));
@@ -355,15 +352,15 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             } else {
                 (ctx.task_pool().workers, config.task_worker_num)
             };
-            let task = ctx.pool().reload_task;
-            // SAFETY: the reload task the manager started and the server's workers.
-            unsafe { swr_v1_process_reload_task_add_workers(task, workers, count as usize) };
+            // SAFETY: the server's `count` worker records.
+            let workers: &[WorkerRecord] =
+                unsafe { core::slice::from_raw_parts(workers, count as usize) };
+            // SAFETY: the reload task the manager started.
+            unsafe { &mut *ctx.pool().reload_task }.add_workers(workers);
         }
         OP_RELOAD_KILL_ALL => {
-            let task = ctx.pool().reload_task;
-            let warn = methods::reload_warn;
             // SAFETY: the reload task the manager started.
-            unsafe { swr_v1_process_reload_task_kill_all(task, libc::SIGTERM, warn) };
+            unsafe { &mut *ctx.pool().reload_task }.kill_all(libc::SIGTERM, methods::reload_warn);
         }
         OP_RESTART_WORKER => {
             let status = exit_status(arg);

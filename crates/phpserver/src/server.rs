@@ -742,7 +742,7 @@ fn stats(call: &Call) {
     for (key, value) in STATS.into_iter().zip(values) {
         call.add_assoc_long(key, value);
     }
-    let worker = swoole_rs_process::worker_globals::swr_v1_worker_globals();
+    let worker = swoole_rs_process::worker_globals::thread_globals();
     // SAFETY: this thread's worker globals.
     let worker = unsafe { (*worker).worker };
     if !worker.is_null() {
