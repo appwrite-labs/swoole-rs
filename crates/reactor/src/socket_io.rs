@@ -1,7 +1,7 @@
 //! `network::Socket`'s descriptor-level I/O as whole operations, syscall included:
-//! `wait_event`'s poll, `clean`, `recvfrom`, `accept` and `connect`. Native code
-//! keeps the `Socket` fields, the last-error slot and signal dispatch, which it
-//! passes in.
+//! `wait_event`'s poll, `clean`, `recvfrom`, `accept` and `connect`. Callers keep
+//! the `Socket` fields, the last-error slot and signal dispatch, which they pass in.
+use crate::SocketAddress;
 use std::io::Error;
 use std::os::raw::{c_int, c_void};
 
@@ -11,7 +11,6 @@ fn errno() -> c_int {
 
 /// An I/O outcome: `status` 0 ready, 1 timed out (`wait`) or in progress
 /// (`connect`), 2 failed with `error` (an errno).
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SocketIoResult {
     pub status: c_int,
@@ -31,8 +30,8 @@ const fn failed(error: c_int) -> SocketIoResult {
 /// for `timeout_ms` (negative waits forever). On `EINTR` it fails if
 /// `dont_restart`, otherwise calls `dispatch` (`swoole_signal_dispatch`) and polls
 /// again.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_wait(
+#[must_use]
+pub fn fd_wait(
     fd: c_int,
     events: i16,
     timeout_ms: c_int,
@@ -62,15 +61,14 @@ pub extern "C" fn swr_v1_socket_wait(
             return failed(error);
         }
         if let Some(dispatch) = dispatch {
-            // SAFETY: the native caller passes swoole_signal_dispatch, callable on this thread.
+            // SAFETY: callers pass swoole_signal_dispatch, callable on this thread.
             unsafe { dispatch() };
         }
     }
 }
 
 /// `Socket::clean`: discard everything already received, without blocking.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_clean(fd: c_int) {
+pub fn fd_clean(fd: c_int) {
     let mut buffer = [0_u8; 2048];
     // SAFETY: `buffer` is a local of the length passed.
     while unsafe {
@@ -84,23 +82,22 @@ pub extern "C" fn swr_v1_socket_clean(fd: c_int) {
     {}
 }
 
-/// `Socket::recvfrom`: recvfrom(2), retried on `EINTR` up to `retries` times.
+/// `Socket::recvfrom`: recvfrom(2), retried on `EINTR` up to
+/// `SW_SOCKET_RETRY_COUNT` times.
 ///
 /// # Safety
 /// `buffer` denotes `length` writable bytes; `address` and `address_length` are
 /// null or valid for recvfrom(2).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_recvfrom(
+pub unsafe fn fd_recvfrom(
     fd: c_int,
     buffer: *mut c_void,
     length: usize,
     flags: c_int,
     address: *mut libc::sockaddr,
     address_length: *mut libc::socklen_t,
-    retries: u32,
 ) -> isize {
     let mut received = 0;
-    for _ in 0..retries {
+    for _ in 0..swoole_rs_corebase::constants::SW_SOCKET_RETRY_COUNT {
         // SAFETY: the caller lends the buffer and address storage for this call.
         received = unsafe { libc::recvfrom(fd, buffer, length, flags, address, address_length) };
         if received >= 0 || errno() != libc::EINTR {
@@ -110,57 +107,40 @@ pub unsafe extern "C" fn swr_v1_socket_recvfrom(
     received
 }
 
-/// `Socket::accept`'s syscall: the accepted fd, close-on-exec, nonblocking if
-/// `nonblock`, or -1. Without accept4 (macOS) it accepts, then sets the options
-/// `set_fd_option(nonblock, 1)` sets upstream; `*listener_cloexec` reports that
-/// upstream's call there marks the listening socket close-on-exec too.
-///
-/// # Safety
-/// `address` and `address_length` are valid for accept(2); `listener_cloexec`
-/// points to a writable bool.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_accept(
-    fd: c_int,
-    address: *mut libc::sockaddr,
-    address_length: *mut libc::socklen_t,
-    nonblock: bool,
-    listener_cloexec: *mut bool,
-) -> c_int {
+/// `Socket::accept`'s syscall into `address`, whose `len` is the capacity: the
+/// accepted fd (close-on-exec, nonblocking if `nonblock`) or -1, and whether the
+/// listening socket became close-on-exec. Without accept4 (macOS) it accepts, then
+/// makes upstream's `set_fd_option(nonblock, 1)` call, which applies to the
+/// listening socket, not the new one.
+#[must_use]
+pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_int, bool) {
+    let length = &raw mut address.len;
+    // Upstream's capacity is sizeof(Address), past the storage, so all of it is lent.
+    let storage = std::ptr::from_mut(address).cast::<libc::sockaddr>();
     #[cfg(target_os = "linux")]
     {
-        let _ = listener_cloexec;
         let flags = libc::SOCK_CLOEXEC | if nonblock { libc::SOCK_NONBLOCK } else { 0 };
-        // SAFETY: the caller lends the address storage for this call.
-        unsafe { libc::accept4(fd, address, address_length, flags) }
+        // SAFETY: the borrowed address, `len` bytes of it.
+        (unsafe { libc::accept4(fd, storage, length, flags) }, false)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // SAFETY: the caller lends the address storage for this call.
-        let accepted = unsafe { libc::accept(fd, address, address_length) };
-        if accepted >= 0 {
-            // Upstream applies set_fd_option to the listening socket here, not the new one.
-            let set = crate::swr_v1_socket_fd_option(fd, c_int::from(nonblock), 1).ok;
-            // SAFETY: the caller lends a writable bool.
-            unsafe { *listener_cloexec = set };
-        }
-        accepted
+        // SAFETY: the borrowed address, `len` bytes of it.
+        let accepted = unsafe { libc::accept(fd, storage, length) };
+        let cloexec =
+            accepted >= 0 && crate::swr_v1_socket_fd_option(fd, c_int::from(nonblock), 1).ok;
+        (accepted, cloexec)
     }
 }
 
-/// `connect_async`'s loop: connect(2), retried on `EINTR`. Status 1 is
-/// `EINPROGRESS` (wait for writability), 2 any other error.
-///
-/// # Safety
-/// `address` denotes `length` readable bytes of a sockaddr.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_connect(
-    fd: c_int,
-    address: *const libc::sockaddr,
-    length: libc::socklen_t,
-) -> SocketIoResult {
+/// `connect_async`'s loop: connect(2) to `address`, retried on `EINTR`. Status 1
+/// is `EINPROGRESS` (wait for writability), 2 any other error.
+#[must_use]
+pub fn fd_connect(fd: c_int, address: &SocketAddress) -> SocketIoResult {
+    let storage = std::ptr::from_ref(address).cast::<libc::sockaddr>();
     loop {
-        // SAFETY: the caller lends `length` bytes of sockaddr for this call.
-        if unsafe { libc::connect(fd, address, length) } == 0 {
+        // SAFETY: the borrowed address, whose storage holds `len` bytes of sockaddr.
+        if unsafe { libc::connect(fd, storage, address.len) } == 0 {
             return READY;
         }
         match errno() {
@@ -178,8 +158,8 @@ pub unsafe extern "C" fn swr_v1_socket_connect(
 
 /// `connect_sync`'s `SO_ERROR` read once the socket is writable: ready, or failed
 /// with the pending error (or getsockopt's own errno).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_pending_error(fd: c_int) -> SocketIoResult {
+#[must_use]
+pub fn fd_pending_error(fd: c_int) -> SocketIoResult {
     let mut pending: c_int = 0;
     // Upstream passes sizeof(len), which equals sizeof(int).
     #[expect(
@@ -209,16 +189,12 @@ pub extern "C" fn swr_v1_socket_pending_error(fd: c_int) -> SocketIoResult {
 /// `check_sendfile_parameters`: fstat(2) the open `file_fd` and resolve the range
 /// `[begin, *end)` to send, where a zero `length` means to the end of the file.
 /// Returns 0 with `*end` set, 1 when fstat failed (errno set), 2 for an empty
-/// file and 3 for a range outside it.
-///
-/// # Safety
-/// `end` points to a writable `off_t`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_sendfile_range(
+/// file and 3 (`*end` set) for a range outside it.
+pub fn sendfile_range(
     file_fd: c_int,
     begin: libc::off_t,
     length: libc::size_t,
-    end: *mut libc::off_t,
+    end: &mut libc::off_t,
 ) -> c_int {
     // SAFETY: an all-zero stat is a valid out-parameter for fstat.
     let mut status: libc::stat = unsafe { std::mem::zeroed() };
@@ -238,8 +214,7 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_range(
     } else {
         begin.wrapping_add(length as libc::off_t)
     };
-    // SAFETY: the caller lends `end` for this call.
-    unsafe { end.write(stop) };
+    *end = stop;
     if begin < 0 || stop > status.st_size {
         3
     } else {
@@ -249,11 +224,8 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_range(
 
 /// `get_sendfile_chunk_size`: what is left of `[begin, end)`, at most
 /// `SW_SENDFILE_CHUNK_SIZE`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_sendfile_chunk(
-    begin: libc::off_t,
-    end: libc::off_t,
-) -> libc::size_t {
+#[must_use]
+pub fn sendfile_chunk(begin: libc::off_t, end: libc::off_t) -> libc::size_t {
     const CHUNK: libc::size_t =
         swoole_rs_corebase::constants::SW_SENDFILE_CHUNK_SIZE as libc::size_t;
     // A range past its end converts to a huge size_t upstream, so a full chunk.
@@ -292,17 +264,17 @@ mod tests {
     fn wait_times_out_then_sees_data() {
         let [a, b] = pair();
         assert_eq!(
-            swr_v1_socket_wait(a, libc::POLLIN, 10, false, None),
+            fd_wait(a, libc::POLLIN, 10, false, None),
             SocketIoResult {
                 status: 1,
                 error: libc::EAGAIN
             }
         );
         write(b, b"x");
-        assert_eq!(swr_v1_socket_wait(a, libc::POLLIN, -5, false, None), READY);
-        swr_v1_socket_clean(a);
+        assert_eq!(fd_wait(a, libc::POLLIN, -5, false, None), READY);
+        fd_clean(a);
         assert_eq!(
-            swr_v1_socket_wait(a, libc::POLLIN, 0, false, None).status,
+            fd_wait(a, libc::POLLIN, 0, false, None).status,
             1,
             "clean drained it"
         );
@@ -316,14 +288,13 @@ mod tests {
         let mut buffer = [0_u8; 8];
         // SAFETY: `buffer` is a local; no address is requested.
         let n = unsafe {
-            swr_v1_socket_recvfrom(
+            fd_recvfrom(
                 a,
                 buffer.as_mut_ptr().cast(),
                 buffer.len(),
                 0,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                10,
             )
         };
         assert_eq!(&buffer[..n.cast_unsigned()], b"hello");
@@ -334,44 +305,33 @@ mod tests {
     fn connect_accept_and_pending_error() {
         // SAFETY: socket(2) has no memory preconditions.
         let listener = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-        address.sin_family = libc::AF_INET.try_into().unwrap_or_default();
-        address.sin_addr.s_addr = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
+        let mut address: SocketAddress = unsafe { std::mem::zeroed() };
+        address.addr.inet_v4.sin_family = libc::AF_INET.try_into().unwrap_or_default();
+        address.addr.inet_v4.sin_addr.s_addr = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
         #[expect(
             clippy::cast_possible_truncation,
             reason = "sizeof(sockaddr_in) fits socklen_t"
         )]
-        let mut length = size_of::<libc::sockaddr_in>() as libc::socklen_t;
-        let raw = (&raw mut address).cast::<libc::sockaddr>();
+        let length = size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        address.len = length;
+        let raw = (&raw mut address.addr).cast::<libc::sockaddr>();
         // SAFETY: `address` is a local sockaddr_in of `length` bytes.
         assert_eq!(unsafe { libc::bind(listener, raw, length) }, 0);
         // SAFETY: listen(2) has no memory preconditions.
         assert_eq!(unsafe { libc::listen(listener, 8) }, 0);
         // SAFETY: as above; getsockname fills in the bound port.
         assert_eq!(
-            unsafe { libc::getsockname(listener, raw, &raw mut length) },
+            unsafe { libc::getsockname(listener, raw, &raw mut address.len) },
             0
         );
 
         // SAFETY: socket(2) has no memory preconditions.
         let client = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        // SAFETY: as above.
-        assert_eq!(unsafe { swr_v1_socket_connect(client, raw, length) }, READY);
-        assert_eq!(swr_v1_socket_pending_error(client), READY);
+        assert_eq!(fd_connect(client, &address), READY);
+        assert_eq!(fd_pending_error(client), READY);
 
-        let mut peer: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-        let mut peer_length = length;
-        let mut listener_cloexec = false;
-        // SAFETY: `peer` is a local sockaddr_in; the flag is a local bool.
-        let accepted = unsafe {
-            swr_v1_socket_accept(
-                listener,
-                (&raw mut peer).cast(),
-                &raw mut peer_length,
-                true,
-                &raw mut listener_cloexec,
-            )
-        };
+        let mut peer = address;
+        let (accepted, _) = fd_accept(listener, &mut peer, true);
         assert!(accepted >= 0, "accepted");
         if cfg!(target_os = "linux") {
             // SAFETY: fcntl(F_GETFL) has no memory preconditions.
@@ -383,7 +343,7 @@ mod tests {
         }
         close(&[accepted, client, listener]);
         // -1, not the closed fd: a parallel test may reuse that number.
-        assert_eq!(swr_v1_socket_pending_error(-1).status, 2, "invalid fd");
+        assert_eq!(fd_pending_error(-1).status, 2, "invalid fd");
     }
 
     #[test]
@@ -394,11 +354,7 @@ mod tests {
         let empty = std::fs::File::create(path.with_extension("empty")).unwrap();
         let range = |fd, begin, length| {
             let mut end = -1;
-            // SAFETY: `end` is a local off_t.
-            (
-                unsafe { swr_v1_socket_sendfile_range(fd, begin, length, &raw mut end) },
-                end,
-            )
+            (sendfile_range(fd, begin, length, &mut end), end)
         };
         let fd = file.as_raw_fd();
         assert_eq!(range(fd, 0, 0), (0, 10), "whole file");
@@ -411,12 +367,8 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_file(path.with_extension("empty")).unwrap();
 
-        assert_eq!(swr_v1_socket_sendfile_chunk(0, 10), 10);
-        assert_eq!(swr_v1_socket_sendfile_chunk(0, 1 << 20), 65536);
-        assert_eq!(
-            swr_v1_socket_sendfile_chunk(5, 4),
-            65536,
-            "end before begin"
-        );
+        assert_eq!(sendfile_chunk(0, 10), 10);
+        assert_eq!(sendfile_chunk(0, 1 << 20), 65536);
+        assert_eq!(sendfile_chunk(5, 4), 65536, "end before begin");
     }
 }

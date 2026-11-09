@@ -41,13 +41,12 @@ use crate::{ServerState, factory, server_methods as methods, view};
 const SW_EVENT_READ: c_int = 1 << 9;
 const THREAD_REACTOR: u8 = 2;
 const SW_WAIT: c_int = 2;
-/// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_SERVER_EVENT_CLOSE`, `SW_SOCK_UDP`,
-/// `Server::CLOSE_ACTIVELY` and `SW_SOCKET_RETRY_COUNT`.
+/// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_SERVER_EVENT_CLOSE`, `SW_SOCK_UDP`
+/// and `Server::CLOSE_ACTIVELY`.
 const EVENT_RECV_DGRAM: u8 = 1;
 const EVENT_CLOSE: u8 = 4;
 const SOCK_UDP: c_int = 2;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
-const SOCKET_RETRY_COUNT: u32 = 10;
 
 /// `DgramPacket`: the datagram follows it.
 #[repr(C)]
@@ -216,17 +215,7 @@ pub(crate) unsafe fn answer(
             address.len = libc::socklen_t::try_from(size_of::<AddressStorage>()).unwrap_or(0);
             let (storage, len) = ((&raw mut address.addr).cast(), &raw mut address.len);
             // SAFETY: the buffer's room after the packet head, and the address's storage.
-            let n = unsafe {
-                swoole_rs_reactor::swr_v1_socket_recvfrom(
-                    fd,
-                    data,
-                    room,
-                    0,
-                    storage,
-                    len,
-                    SOCKET_RETRY_COUNT,
-                )
-            };
+            let n = unsafe { swoole_rs_reactor::fd_recvfrom(fd, data, room, 0, storage, len) };
             sign(i64::try_from(n).unwrap_or(-1))
         }
         OP_PACKET_DISPATCH => {

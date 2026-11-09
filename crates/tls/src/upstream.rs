@@ -20,11 +20,11 @@ use swoole_rs_reactor::socket_upstream::{
 use swoole_rs_reactor::{
     CLASS_STREAM, CLASS_TCP, OutputHooks, ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
     SYNC_SENDFILE, SocketAddress, SocketFileRequest, SocketRecord, SyncHooks,
-    cpp_socket_what_event_want, socket_record_peek, socket_record_recv, socket_record_send,
-    steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_file_check, swr_v1_socket_file_cork,
+    cpp_socket_what_event_want, fd_recvfrom, sendfile_chunk, socket_record_peek,
+    socket_record_recv, socket_record_send, ssl_sendfile as ssl_sendfile_fd, steady_ms,
+    swr_v1_reactor_poll_events_to, swr_v1_socket_file_check, swr_v1_socket_file_cork,
     swr_v1_socket_file_free, swr_v1_socket_file_length, swr_v1_socket_file_new,
     swr_v1_socket_file_sent, swr_v1_socket_handle_send_owned, swr_v1_socket_iov_owned,
-    swr_v1_socket_recvfrom, swr_v1_socket_sendfile_chunk, swr_v1_socket_ssl_sendfile,
     swr_v1_socket_sync, type_is,
 };
 
@@ -60,9 +60,8 @@ const SOCK_CLOEXEC: c_int = 1 << 3;
 const BUFFER_EMPTY: i32 = 1;
 const VERIFY_FAILED: c_int = 1014;
 const BAD_PROTOCOL: c_int = 1016;
-/// `swReturnCode`'s `SW_CLOSE`, `SW_SOCKET_RETRY_COUNT`, `SW_EVENT_READ` and `SW_EVENT_WRITE`.
+/// `swReturnCode`'s `SW_CLOSE`, `SW_EVENT_READ` and `SW_EVENT_WRITE`.
 const CLOSE: c_int = 3;
-const RETRY_COUNT: u32 = 10;
 const EVENT_READ: c_int = 1 << 9;
 const EVENT_WRITE: c_int = 1 << 10;
 
@@ -623,7 +622,7 @@ unsafe extern "C" fn sync_io(
         }
         Io::RecvFrom(address, size) => {
             // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
-            unsafe { swr_v1_socket_recvfrom(fd, buffer, length, flags, address, size, RETRY_COUNT) }
+            unsafe { fd_recvfrom(fd, buffer, length, flags, address, size) }
         }
         // SAFETY: the call's live record and request.
         Io::Sendfile(request) => unsafe { send_chunk(*socket, request) }.0,
@@ -1032,11 +1031,13 @@ unsafe fn ssl_sendfile(
     offset: *mut libc::off_t,
     size: usize,
 ) -> isize {
-    // SAFETY: the record's output flag, read while it stays live.
-    let nobufs = unsafe { &raw mut (*socket).kernel_nobufs };
+    let mut nobufs = false;
     // SAFETY: the caller's offset, and tls_send for this record.
-    let result =
-        unsafe { swr_v1_socket_ssl_sendfile(fd, offset, size, tls_send, socket.cast(), nobufs) };
+    let result = unsafe { ssl_sendfile_fd(fd, offset, size, tls_send, socket.cast(), &mut nobufs) };
+    if nobufs {
+        // SAFETY: the live record's output flag; tls_send has returned.
+        unsafe { (*socket).kernel_nobufs = true };
+    }
     if result.warn == 1 {
         log::sys_warning(c"Socket::ssl_sendfile", format_args!("write() failed"));
     } else if result.warn == 2 {
@@ -1106,7 +1107,7 @@ unsafe fn send_chunk(socket: *mut SocketRecord, request: *mut SocketFileRequest)
     let request = unsafe { &mut *request };
     let fd = request.descriptor();
     let fields = request.fields();
-    let chunk = swr_v1_socket_sendfile_chunk(fields.begin, fields.end);
+    let chunk = sendfile_chunk(fields.begin, fields.end);
     // SAFETY: the live record, the request's descriptor and its offset.
     (
         unsafe { sendfile(socket, fd, &raw mut fields.begin, chunk) },
