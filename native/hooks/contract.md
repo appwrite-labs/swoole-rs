@@ -39,9 +39,8 @@ socket through `swr_v1_runtime_socket`; `swoole_socket_hook.h` and
 - `swoole_coroutine_flock` is Rust, exported under that name: outside a
   coroutine or with `LOCK_NB` it is plain flock; `LOCK_UN` unlocks;
   `LOCK_EX`/`LOCK_SH` retry `flock(op | LOCK_NB)` only on -1/EWOULDBLOCK,
-  sleeping through the host's `System::sleep` with the `wait_for` backoff, and fail
-  when that sleep is cancelled; anything else fails with EINVAL as errno and, through
-  the host's `swoole_set_last_error`, the last error.
+  sleeping through `System::sleep` with the `wait_for` backoff, and fail when that
+  sleep is cancelled; anything else fails with EINVAL as errno and the last error.
 - `hook_file_result` rejects open fd 0 and does not reset close's fd.
 - `wait_for` uses a copied caller-local delay/phase/result plan selecting the
   next callback, sleep, success or canceled return. Backoff: capped doubling with
@@ -147,9 +146,10 @@ aliases are never uninstalled.
   `mkdir`, `rmdir`, `rename`, `fsync`, `fdatasync`, `ftruncate`, `lseek`,
   `readlink`, `statvfs`, `access`), `sleep`, `usleep`, `getaddrinfo` and
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
-  system.cc registers a host table while the library loads (`swr_v1_hook_set_host`): its
-  coroutine test, `async_job` (Rust's), `System::sleep`, the socket table and, in an
-  io_uring build, `swr_v1_uring_native`.
+  The coroutine test, `async_job`, `System::sleep` and the last error are Rust
+  (`stdio::NATIVE`). system.cc registers a host table while the library loads
+  (`swr_v1_hook_set_host`): the socket table and, in an io_uring build,
+  `swr_v1_uring_native` and the `HAVE_IOURING_*` opcodes.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;
   outside a coroutine the libc call runs in place; inside one it runs through native
   `async`, which parks the coroutine and restores the worker's errno; a refused

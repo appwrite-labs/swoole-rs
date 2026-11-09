@@ -1,8 +1,8 @@
 //! The hooked stdio, directory, file-system and resolver functions
 //! (`swoole_coroutine_fopen`, `swoole_coroutine_stat`, `swoole_coroutine_getaddrinfo`,
 //! …): inside a coroutine each libc call runs on the async thread pool while the
-//! coroutine waits; outside one it runs here. Native code lends its `async`
-//! (which also restores the worker's errno) and its coroutine test in [`Host`].
+//! coroutine waits; outside one it runs here, as [`NATIVE`] decides. Native code
+//! lends the `io_uring` engine and the hooked sockets' constructors in [`Host`].
 //! The exports keep upstream's names: `swoole_coroutine_api.h` declares them.
 use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -40,16 +40,50 @@ pub unsafe fn offloaded<T, F: FnMut() -> T>(offload: Option<Offload>, refused: T
     job.result.unwrap_or(refused)
 }
 
-/// What native lends the hooked functions; hook.cc registers it while the library
-/// loads, so it is set before any hook can run.
-#[repr(C)]
-pub struct Host {
+/// The runtime the hooked functions use.
+pub(crate) struct Ops {
     /// A reactor and a coroutine are running (hook.cc's `!is_no_coro()`).
-    pub in_coroutine: extern "C" fn() -> bool,
-    /// Native `async`.
+    pub in_coroutine: fn() -> bool,
+    /// `coroutine::async_job`.
     pub offload: Offload,
     /// `System::sleep`.
-    pub sleep: unsafe extern "C" fn(f64) -> c_int,
+    pub sleep: fn(f64) -> c_int,
+    /// `swoole_set_last_error`.
+    pub set_last_error: fn(c_int),
+}
+
+/// The coroutine runtime's.
+#[cfg(not(test))]
+pub(crate) static NATIVE: Ops = Ops {
+    in_coroutine: native::in_coroutine,
+    offload: crate::offload::async_job,
+    sleep: native::sleep,
+    set_last_error: swoole_rs_corebase::log::set_last_error,
+};
+
+/// The unit tests link no runtime: theirs is the fake.
+#[cfg(test)]
+pub(crate) static NATIVE: Ops = tests::OPS;
+
+#[cfg(not(test))]
+mod native {
+    use libc::c_int;
+
+    pub(super) fn in_coroutine() -> bool {
+        !swoole_rs_corebase::thread_reactor().is_null()
+            && !crate::wait_event::native::swr_v1_coroutine_current().is_null()
+    }
+
+    pub(super) fn sleep(seconds: f64) -> c_int {
+        // SAFETY: `System::sleep` raises upstream's fatal error outside a coroutine.
+        unsafe { crate::sleep::system_sleep(seconds) }
+    }
+}
+
+/// What only native lends the hooked functions; system.cc registers it while the
+/// library loads, so it is set before any hook can run.
+#[repr(C)]
+pub struct Host {
     /// `swr_v1_uring_native` with `io_uring`, else null: then the file calls go to the ring.
     pub uring: *const c_void,
     /// `HAVE_IOURING_STATX`: `fstat`, `stat` and `lstat` go to the ring too.
@@ -58,8 +92,6 @@ pub struct Host {
     pub uring_ftruncate: bool,
     /// `HAVE_IOURING_FUTEX`: the engine probes the futex opcodes.
     pub uring_futex: bool,
-    /// `swoole_set_last_error`.
-    pub set_last_error: extern "C" fn(c_int),
     /// The hooked fds' native sockets.
     pub socket: crate::hooked::SocketOps,
 }
@@ -85,20 +117,20 @@ pub(crate) fn host() -> Option<&'static Host> {
 
 /// The host inside a coroutine (hook.cc's `!is_no_coro()`), else none.
 pub(crate) fn coroutine() -> Option<&'static Host> {
-    host().filter(|host| (host.in_coroutine)())
+    host().filter(|_| (NATIVE.in_coroutine)())
 }
 
-/// Native `async` inside a coroutine, else none: the call runs here.
+/// `async_job` inside a coroutine, else none: the call runs here.
 #[must_use]
 pub fn offload() -> Option<Offload> {
-    coroutine().map(|host| host.offload)
+    (NATIVE.in_coroutine)().then_some(NATIVE.offload)
 }
 
 /// The ring's host inside a coroutine when `io_uring` takes this call (`gate`).
 #[cfg(feature = "iouring")]
 fn ring(gate: fn(&Host) -> bool) -> Option<*const crate::uring::Host> {
     let host = host().filter(|host| !host.uring.is_null() && gate(host))?;
-    (host.in_coroutine)().then_some(host.uring.cast())
+    (NATIVE.in_coroutine)().then_some(host.uring.cast())
 }
 
 macro_rules! hooked {
@@ -197,19 +229,13 @@ pub unsafe extern "C" fn swr_v1_hook_close_fd(fd: c_int, offload: Option<Offload
 /// Hooked `sleep`: `System::sleep` (fatal outside a coroutine, as upstream).
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_sleep(sec: c_int) {
-    if let Some(host) = host() {
-        // SAFETY: native's sleep.
-        unsafe { (host.sleep)(f64::from(sec)) };
-    }
+    (NATIVE.sleep)(f64::from(sec));
 }
 
 /// Hooked `usleep`, with upstream's 1024-based conversion.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_usleep(usec: c_int) {
-    if let Some(host) = host() {
-        // SAFETY: native's sleep.
-        unsafe { (host.sleep)(f64::from(usec) / 1024.0 / 1024.0) };
-    }
+    (NATIVE.sleep)(f64::from(usec) / 1024.0 / 1024.0);
 }
 
 /// Hooked `getaddrinfo`, always on the pool: upstream does not test for a coroutine.
@@ -225,8 +251,8 @@ pub unsafe extern "C" fn swoole_coroutine_getaddrinfo(
 ) -> c_int {
     // SAFETY: the caller's arguments are valid for getaddrinfo.
     let call = || unsafe { libc::getaddrinfo(name, service, req, pai) };
-    // SAFETY: native `async`.
-    unsafe { offloaded(host().map(|host| host.offload), -1, call) }
+    // SAFETY: `async_job`.
+    unsafe { offloaded(Some(NATIVE.offload), -1, call) }
 }
 
 unsafe extern "C" {
@@ -253,7 +279,7 @@ fn h_errno_slot() -> *mut c_int {
 /// `name` is a C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_coroutine_gethostbyname(name: *const c_char) -> *mut hostent {
-    let offload = host().map(|host| host.offload);
+    let offload = Some(NATIVE.offload);
     let call = || {
         // SAFETY: the caller passes a C string.
         let entry = unsafe { gethostbyname(name) };
@@ -291,7 +317,7 @@ pub(crate) mod tests {
         pub(crate) static LAST_ERROR: Cell<c_int> = const { Cell::new(0) };
     }
 
-    extern "C" fn in_coroutine() -> bool {
+    fn in_coroutine() -> bool {
         MODE.get() != Mode::Here
     }
     unsafe extern "C" fn pool(
@@ -314,22 +340,24 @@ pub(crate) mod tests {
             .unwrap();
         true
     }
-    unsafe extern "C" fn sleep(seconds: f64) -> c_int {
+    fn sleep(seconds: f64) -> c_int {
         SLEPT.set(seconds);
         0
     }
-    static TEST_HOST: Host = Host {
+    pub(crate) const OPS: Ops = Ops {
         in_coroutine,
         offload: pool,
         sleep,
+        set_last_error,
+    };
+    static TEST_HOST: Host = Host {
         uring: std::ptr::null(),
         uring_statx: false,
         uring_ftruncate: false,
         uring_futex: false,
-        set_last_error,
         socket: crate::hooked::tests::OPS,
     };
-    extern "C" fn set_last_error(error: c_int) {
+    fn set_last_error(error: c_int) {
         LAST_ERROR.set(error);
     }
 

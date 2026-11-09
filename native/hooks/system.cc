@@ -152,13 +152,11 @@ Socket::~Socket() {
 }  // namespace swoole
 
 // hook.cc's socket functions are Rust (crates/hooks/src/hooked.rs), as are the hooked
-// file, sleep and resolver functions (stdio.rs); this is what they need of native.
+// file, sleep and resolver functions (stdio.rs); this is what they need of native: the
+// io_uring engine and configure's io_uring opcodes, and SocketImpl's new and delete.
 
 #define SOCK(socket) static_cast<SocketImpl *>(socket)
 static const swr_v1_hook_host hook_host = {
-    [] { return SwooleTG.reactor != nullptr && swoole::Coroutine::get_current() != nullptr; },
-    swr_v1_hook_coroutine_async_job,
-    swoole::coroutine::System::sleep,
 #ifdef SW_USE_IOURING
     &swr_v1_uring_native,
 #else
@@ -179,7 +177,6 @@ static const swr_v1_hook_host hook_host = {
 #else
     false,
 #endif
-    swoole_set_last_error,
     {
         [](int domain, int type, int protocol) -> void * { return new SocketImpl(domain, type, protocol); },
         [](int fd) -> void * { return new SocketImpl(fd, SW_SOCK_RAW); },
