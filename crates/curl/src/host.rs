@@ -217,7 +217,7 @@ pub(crate) unsafe fn defer(multi: *const Multi) {
     // SAFETY: per the caller, `SwooleTG.reactor` is live.
     let fields = unsafe { prepared(swoole_rs_corebase::thread_reactor()) }.fields;
     // SAFETY: the live reactor's fields.
-    unsafe { swoole_rs_reactor::defer(fields, deferred, multi.cast_mut().cast()) };
+    unsafe { swoole_rs_reactor::defer(fields, deferred, multi.cast_mut().cast(), None) };
 }
 
 /// `swoole_curl_multi_new`: a multi for `curl_multi_init`.

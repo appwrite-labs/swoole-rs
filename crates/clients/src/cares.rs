@@ -110,7 +110,7 @@ unsafe extern "C" fn complete(data: *mut c_void) {
         unsafe { resume(coroutine) };
     }
 }
-unsafe extern "C" fn release_completion(data: *mut c_void) {
+unsafe extern "C-unwind" fn release_completion(data: *mut c_void) {
     // SAFETY: the queue transfers this Rust allocation exactly once, whether it
     // invoked or discarded its callback.
     drop(unsafe { Box::from_raw(data.cast::<Completion>()) });
@@ -191,7 +191,7 @@ unsafe fn free(socket: *mut SocketRecord) {
         // SAFETY: the available reactor is live.
         let fields = unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) }.fields;
         // SAFETY: its live queue.
-        unsafe { swoole_rs_reactor::defer(fields, dealloc, socket.cast()) };
+        unsafe { swoole_rs_reactor::defer(fields, dealloc, socket.cast(), None) };
     }
 }
 unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: i32) {
