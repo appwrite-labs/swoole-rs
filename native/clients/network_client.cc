@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // network::Client's C++ half (upstream's src/network/client.cc is deleted). The state,
-// every operation, the callbacks, the reactor handlers and the connect timer are
-// crates/clients/src/client.rs; this keeps the class's constructor, destructor and methods
-// over the members of C++ types (the SSLContext reference, the proxies, String buffers),
+// every operation, the callbacks, the reactor handlers, the connect timer, the socket IO and
+// the input buffer are crates/clients/src/client.rs; this keeps the class's constructor,
+// destructor and methods over the members of C++ types (the SSLContext reference, the proxies),
 // the one table Rust reaches them through, and the C calls crates/phpclients and the Rust
 // core-tests cases (tests/modules/clients/client.rs) make.
 #include "swoole_string.h"
@@ -16,7 +16,8 @@
 
 static_assert(SW_FD_STREAM_CLIENT == 17 && SW_FD_DGRAM_CLIENT == 18 && SW_SOCK_NONBLOCK == 4 &&
                   SW_SOCK_CLOEXEC == 8 && SW_SEND_BUFFER_SIZE == 65536 && SW_SSL_BUFFER_SIZE == 16384 &&
-                  SW_BUFFER_SIZE_UDP == 65536 && SW_EVENT_READ == 512 && SW_EVENT_WRITE == 1024 &&
+                  SW_BUFFER_SIZE_UDP == 65536 && SW_CLIENT_BUFFER_SIZE == 65536 && SW_SOCKET_RETRY_COUNT == 10 &&
+                  SW_EVENT_READ == 512 && SW_EVENT_WRITE == 1024 &&
                   SW_TIMEOUT_ALL == 15 && SW_WAIT == 2 && SW_CLOSE == 3 && SW_ERROR == 4 && SW_READY == 5 &&
                   SW_SOCK_UNIX_DGRAM == 6 && SW_SSL_STATE_READY == 1 && SW_SSL_STATE_WAIT_STREAM == 2 &&
                   SW_SOCKS5_STATE_HANDSHAKE == 1 && SW_SOCKS5_STATE_READY == 4 && SW_HTTP_PROXY_STATE_READY == 2,
@@ -41,44 +42,10 @@ static void Client_onResolveCompleted(AsyncEvent *event) {
 
 static const swr_v1_clients_native native = {
     swr_v1_clients_make_socket,
-    [](void *cli, bool deferred) {
-        if (deferred) {
-            of(cli)->socket->free();
-        } else {
-            delete of(cli)->socket;
-        }
-    },
     swr_v1_clients_kernel_timeout,
     swr_v1_clients_assign,
     swr_v1_clients_connect_socket,
-    [](void *cli, int op, char *data, size_t length, int flags) -> ssize_t {
-        Socket *socket = of(cli)->socket;
-        switch (op) {
-        case SWR_CLIENTS_IO_RECV: return socket->recv(data, length, flags);
-        case SWR_CLIENTS_IO_RECV_SYNC: return socket->recv_sync(data, length, flags);
-        case SWR_CLIENTS_IO_SEND_SYNC: return socket->send_sync(data, length, flags);
-        case SWR_CLIENTS_IO_SENDTO: return socket->sendto(of(cli)->server_addr, data, length, flags);
-        case SWR_CLIENTS_IO_RECVFROM: return socket->recvfrom(data, length, flags, &of(cli)->remote_addr);
-        default: return socket->recvfrom_sync(data, length, flags, &of(cli)->remote_addr);
-        }
-    },
-    [](void *cli, const char *file, int64_t offset, size_t length, bool is_async) -> int {
-        Socket *socket = of(cli)->socket;
-        if ((is_async ? socket->sendfile_async(file, offset, length) : socket->sendfile_sync(file, offset, length)) <
-            0) {
-            swoole_set_last_error(errno);
-            return SW_ERR;
-        }
-        return SW_OK;
-    },
     swr_v1_clients_event,
-    [](void *cli, const char *data, size_t length) -> int {
-        return swoole_event_write(of(cli)->socket, data, length);
-    },
-    [](void *cli) -> uint32_t { return of(cli)->socket->get_out_buffer_length(); },
-    [](void *reactor, void *event) -> int {
-        return Reactor::_writable_callback(static_cast<Reactor *>(reactor), static_cast<Event *>(event));
-    },
     swr_v1_clients_socket_error,
     [](void *cli, const char *host, int domain) -> int {
         GethostbynameRequest req(host, domain);
@@ -172,35 +139,6 @@ static const swr_v1_clients_native native = {
         String *buffer = shared ? sw_tg_buffer() : of(cli)->buffer;
         buffer->length = shared ? length : buffer->length + length;
         return swr_v1_http_proxy_accept(buffer->str, buffer->length);
-    },
-    [](void *cli, int op, size_t length, swr_v1_clients_buffer_view *view) {
-        String *&buffer = of(cli)->buffer;
-        switch (op) {
-        case SWR_CLIENTS_BUFFER_INIT:
-            if (!buffer) {
-                buffer = new String(SW_CLIENT_BUFFER_SIZE);
-            }
-            break;
-        case SWR_CLIENTS_BUFFER_GROW: buffer->length += length; break;
-        case SWR_CLIENTS_BUFFER_CLEAR: buffer->clear(); break;
-        case SWR_CLIENTS_BUFFER_FREE:
-            delete buffer;
-            buffer = nullptr;
-            break;
-        default: {
-            String *viewed = op == SWR_CLIENTS_BUFFER_SHARED ? sw_tg_buffer() : buffer;
-            *view = {viewed->str, viewed->length, viewed->size};
-            break;
-        }
-        }
-    },
-    [](void *_cli, bool eof) -> ssize_t {
-        Client *cli = of(_cli);
-        Socket *socket = cli->socket;
-        const ssize_t n = eof ? cli->protocol.recv_with_eof_protocol(socket, cli->buffer)
-                              : cli->protocol.recv_with_length_protocol(socket, cli->buffer);
-        // A callback may delete the client; only its deferred socket remains.
-        return socket->object == nullptr ? 0 : n;
     },
 };
 

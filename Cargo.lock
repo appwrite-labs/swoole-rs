@@ -408,6 +408,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
+ "swoole-rs-buffer",
  "swoole-rs-cares-sys",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",

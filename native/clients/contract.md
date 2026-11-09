@@ -108,6 +108,9 @@ watermarks), operations, callbacks and reactor handlers are Rust's
 event mask (`swr_v1_clients_listen`); a PHP bailout in one longjmps out, so no C++
 exception crosses Rust. The socket's `object` is the Rust state, which the handlers and
 `onPackage` read. Warnings log under upstream's function names so the lines match.
+The socket IO, sendfile, reactor writes, framed reads and the socket's release call
+crates/tls's, crates/reactor's and crates/ports' definitions by their upstream symbols
+(those crates sit above this one), and the input buffer is a Rust-owned `String`.
 The C++ half is the `swr_v1_clients_native` table over the members of C++ types.
 It is Zend-free so core-tests' `SyncClient` and the Rust client cases (through its `swoole_client_*` C calls) link it. The last error is corebase's, which Rust sets directly.
 `bind` and `sendto` are whole Rust operations; each method passes a lambda for

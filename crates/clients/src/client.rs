@@ -14,14 +14,21 @@
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
 use std::ffi::{CStr, CString};
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
+use swoole_rs_corebase::net_types::{AddressStorage, Protocol, SocketAddress};
+#[cfg(not(test))]
+use swoole_rs_corebase::thread_buffer;
+#[cfg(not(test))]
+use swoole_rs_reactor::event_api::swoole_event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
 use swoole_rs_reactor::{
     SocketRecord, event_api, socket_upstream, swr_v1_socket_bind, swr_v1_socket_buffer_size,
-    swr_v1_socket_catch_error, swr_v1_socket_clean, swr_v1_socket_defaults,
+    swr_v1_socket_catch_error, swr_v1_socket_clean, swr_v1_socket_dealloc, swr_v1_socket_defaults,
     swr_v1_socket_domain_and_type, swr_v1_socket_get_peer_name, swr_v1_socket_set_timeout,
 };
+#[cfg(test)]
+use tests::{swoole_event_write, thread_buffer};
 
 /// The flags `swr_v1_clients_flag` reads (`SWR_CLIENTS_*`).
 pub const ACTIVE: u32 = 0;
@@ -60,14 +67,6 @@ pub const CONNECT_ASYNC: c_int = 0;
 pub const CONNECT_SYNC: c_int = 1;
 pub const CONNECT_RAW: c_int = 2;
 
-/// [`Native::io`]'s operations (`SWR_CLIENTS_IO_*`).
-pub const IO_RECV: c_int = 0;
-pub const IO_RECV_SYNC: c_int = 1;
-pub const IO_SEND_SYNC: c_int = 2;
-pub const IO_SENDTO: c_int = 3;
-pub const IO_RECVFROM: c_int = 4;
-pub const IO_RECVFROM_SYNC: c_int = 5;
-
 /// [`Native::event`]'s operations (`SWR_CLIENTS_EVENT_*`).
 pub const EVENT_ADD: c_int = 0;
 pub const EVENT_SET: c_int = 1;
@@ -93,15 +92,6 @@ pub const SSL_DTLS: c_int = 8;
 pub const PROXY_SOCKS5: c_int = 0;
 pub const PROXY_HTTP: c_int = 1;
 
-/// [`Native::buffer`]'s operations on the input buffer (`SWR_CLIENTS_BUFFER_*`).
-pub const BUFFER_INIT: c_int = 0;
-pub const BUFFER_VIEW: c_int = 1;
-pub const BUFFER_GROW: c_int = 2;
-pub const BUFFER_CLEAR: c_int = 3;
-pub const BUFFER_FREE: c_int = 4;
-/// The thread's shared buffer (`sw_tg_buffer()`), for `BUFFER_VIEW`.
-pub const BUFFER_SHARED: c_int = 5;
-
 /// Swoole's constants this file uses; `native/clients/network_client.cc` asserts each.
 const OK: c_int = 0;
 const ERR: c_int = -1;
@@ -117,6 +107,10 @@ const SOCK_CLOEXEC: c_int = 1 << 3;
 const SEND_BUFFER_SIZE: u32 = 65536;
 const SSL_BUFFER_SIZE: u32 = 16384;
 const BUFFER_SIZE_UDP: usize = 65536;
+const CLIENT_BUFFER_SIZE: usize = 65536;
+const SOCKET_RETRY_COUNT: usize = 10;
+#[expect(clippy::cast_possible_truncation, reason = "a sockaddr union's size")]
+const ADDRESS_SIZE: libc::socklen_t = size_of::<AddressStorage>() as libc::socklen_t;
 const EVENT_READ: c_int = 1 << 9;
 const EVENT_WRITE: c_int = 1 << 10;
 const EVENT_ERROR: c_int = 1 << 11;
@@ -138,13 +132,91 @@ const ERROR_SOCKET_POLL_TIMEOUT: c_int = 6002;
 const ERROR_SOCKS5_HANDSHAKE_FAILED: c_int = 7005;
 const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int = 7101;
 
-/// A view of a `String`: its bytes, length and size.
-#[repr(C)]
+// SAFETY: crates/tls's, crates/reactor's and crates/ports' definitions under
+// upstream's names, which the hybrid links (the unit tests define doubles). They
+// sit above this crate, so it reaches them by symbol.
+unsafe extern "C-unwind" {
+    #[link_name = "_ZN6swoole7network6Socket4recvEPvmi"]
+    fn socket_recv(
+        socket: *mut SocketRecord,
+        data: *mut c_void,
+        length: usize,
+        flags: c_int,
+    ) -> isize;
+    #[link_name = "_ZN6swoole7network6Socket9recv_syncEPvmi"]
+    fn socket_recv_sync(
+        socket: *mut SocketRecord,
+        data: *mut c_void,
+        length: usize,
+        flags: c_int,
+    ) -> isize;
+    #[link_name = "_ZN6swoole7network6Socket9send_syncEPKvmi"]
+    fn socket_send_sync(
+        socket: *mut SocketRecord,
+        data: *const c_void,
+        length: usize,
+        flags: c_int,
+    ) -> isize;
+    #[link_name = "_ZN6swoole7network6Socket13recvfrom_syncEPcmiPNS0_7AddressE"]
+    fn socket_recvfrom_sync(
+        socket: *mut SocketRecord,
+        data: *mut c_char,
+        length: usize,
+        flags: c_int,
+        address: *mut SocketAddress,
+    ) -> isize;
+    #[cfg_attr(
+        target_os = "macos",
+        link_name = "_ZN6swoole7network6Socket13sendfile_syncEPKcxm"
+    )]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        link_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm"
+    )]
+    fn socket_sendfile_sync(
+        socket: *mut SocketRecord,
+        file: *const c_char,
+        offset: libc::off_t,
+        length: usize,
+    ) -> c_int;
+    #[cfg_attr(
+        target_os = "macos",
+        link_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKcxm"
+    )]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        link_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKclm"
+    )]
+    fn socket_sendfile_async(
+        socket: *mut SocketRecord,
+        file: *const c_char,
+        offset: libc::off_t,
+        length: usize,
+    ) -> c_int;
+    /// `socket->free()`: deferred to the reactor when there is one.
+    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
+    fn socket_free(socket: *mut SocketRecord);
+    #[link_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE"]
+    fn writable_callback(reactor: *mut c_void, event: *mut c_void) -> c_int;
+    #[link_name = "_ZNK6swoole8Protocol25recv_with_length_protocolEPNS_7network6SocketEPNS_6StringE"]
+    fn recv_with_length_protocol(
+        protocol: *const Protocol,
+        socket: *mut SocketRecord,
+        buffer: *mut CppString,
+    ) -> c_int;
+    #[link_name = "_ZNK6swoole8Protocol22recv_with_eof_protocolEPNS_7network6SocketEPNS_6StringE"]
+    fn recv_with_eof_protocol(
+        protocol: *const Protocol,
+        socket: *mut SocketRecord,
+        buffer: *mut CppString,
+    ) -> c_int;
+}
+
+/// A `String`'s free tail: where the next read lands and how much fits.
 #[derive(Clone, Copy)]
-pub struct BufferView {
-    pub str: *mut c_char,
-    pub length: usize,
-    pub size: usize,
+struct Tail {
+    str: *mut c_char,
+    size: usize,
 }
 
 /// What the C++ `Client` does for Rust (`swr_v1_clients_native`). `cli` is the
@@ -156,8 +228,6 @@ pub struct Native {
     /// `make_socket(type, fd_type, flags)`: the record or null; Rust publishes it.
     pub make_socket:
         unsafe extern "C" fn(kind: c_int, fd_type: c_int, flags: c_int) -> *mut SocketRecord,
-    /// Frees `cli->socket`: `socket->free()` when `deferred`, else `delete socket`.
-    pub free_socket: unsafe extern "C" fn(cli: *mut c_void, deferred: bool),
     /// `socket->set_kernel_timeout(timeout)`.
     pub kernel_timeout: unsafe extern "C" fn(record: *mut ClientRecord, timeout: f64),
     /// `server_addr.assign(socket_type, host, port, resolve)`.
@@ -169,31 +239,8 @@ pub struct Native {
     ) -> bool,
     /// Connects the socket to `server_addr` (`CONNECT_*`); errno is the call's.
     pub connect: unsafe extern "C" fn(record: *mut ClientRecord, mode: c_int) -> c_int,
-    /// The socket's IO (`IO_*`); `IO_SENDTO` sends to `server_addr` and the
-    /// `IO_RECVFROM*` read into `remote_addr`.
-    pub io: unsafe extern "C" fn(
-        cli: *mut c_void,
-        op: c_int,
-        data: *mut c_char,
-        length: usize,
-        flags: c_int,
-    ) -> isize,
-    /// `sendfile_async` (async) or `sendfile_sync`: 0, or -1 with the last error set to errno.
-    pub sendfile: unsafe extern "C" fn(
-        cli: *mut c_void,
-        file: *const c_char,
-        offset: i64,
-        length: usize,
-        is_async: bool,
-    ) -> c_int,
     /// The reactor's `swoole_event_*` (`EVENT_*`) on the socket.
     pub event: unsafe extern "C" fn(record: *mut ClientRecord, op: c_int, events: c_int) -> c_int,
-    /// `swoole_event_write`.
-    pub event_write:
-        unsafe extern "C" fn(cli: *mut c_void, data: *const c_char, length: usize) -> c_int,
-    pub out_buffer_length: unsafe extern "C" fn(cli: *mut c_void) -> u32,
-    /// `Reactor::_writable_callback(reactor, event)`.
-    pub writable: unsafe extern "C" fn(reactor: *mut c_void, event: *mut c_void) -> c_int,
     /// `get_option(SOL_SOCKET, SO_ERROR, error)`.
     pub socket_error: unsafe extern "C" fn(record: *mut ClientRecord, error: *mut c_int) -> c_int,
     /// Dispatches a `GethostbynameRequest` for `host` in `domain` to the async
@@ -224,12 +271,6 @@ pub struct Native {
     /// `HttpProxy::handshake` of the shared buffer (`shared`, its length set to
     /// `length`) or of the input buffer (its length grown by `length`).
     pub http_handshake: unsafe extern "C" fn(cli: *mut c_void, shared: bool, length: usize) -> bool,
-    /// The input buffer (`BUFFER_*`).
-    pub buffer:
-        unsafe extern "C" fn(cli: *mut c_void, op: c_int, length: usize, view: *mut BufferView),
-    /// Receives through the selected EOF/length protocol; returns zero when a
-    /// callback released the client.
-    pub recv_framed: unsafe extern "C" fn(cli: *mut c_void, eof: bool) -> isize,
 }
 
 /// The public, trivially copyable fields of `network::Client`. C++ keeps typed
@@ -320,9 +361,15 @@ impl Handle {
         self.get().set(name, value);
     }
 
-    fn socket_ptr(self) -> *mut SocketRecord {
+    /// The C++ client's public record: live with the client, and borrowed only
+    /// between effects, as the state is.
+    fn fields(self) -> &'static mut ClientRecord {
         // SAFETY: the live client's canonical public base record.
-        unsafe { (*self.get().record).socket }
+        unsafe { &mut *self.get().record }
+    }
+
+    fn socket_ptr(self) -> *mut SocketRecord {
+        self.fields().socket
     }
 
     fn socket(self) -> &'static mut SocketRecord {
@@ -346,8 +393,7 @@ impl Handle {
         } else {
             length
         };
-        // SAFETY: the live client's public record.
-        let object = unsafe { (*self.get().record).object };
+        let object = self.fields().object;
         // SAFETY: the listener and its object; nothing of the client is borrowed
         // across the call, which may release it.
         unsafe { listener(object, event, data, length) };
@@ -358,9 +404,70 @@ impl Handle {
         unsafe { (self.native().event)(self.get().record, op, events) }
     }
 
-    fn io(self, op: c_int, data: *mut c_char, length: usize, flags: c_int) -> isize {
-        // SAFETY: `length` bytes at `data` are the caller's buffer.
-        unsafe { (self.native().io)(self.cli(), op, data, length, flags) }
+    /// `Socket::recv`: one read, through the TLS session when there is one.
+    fn recv_once(self, data: *mut c_char, length: usize) -> isize {
+        // SAFETY: the live client's socket; `length` writable bytes at `data`.
+        unsafe { socket_recv(self.socket_ptr(), data.cast(), length, 0) }
+    }
+
+    fn recv_sync(self, data: *mut c_char, length: usize, flags: c_int) -> isize {
+        // SAFETY: as for `recv_once`.
+        unsafe { socket_recv_sync(self.socket_ptr(), data.cast(), length, flags) }
+    }
+
+    fn send_sync(self, data: *const c_char, length: usize, flags: c_int) -> isize {
+        // SAFETY: the live client's socket; `length` readable bytes at `data`.
+        unsafe { socket_send_sync(self.socket_ptr(), data.cast(), length, flags) }
+    }
+
+    /// `Socket::sendto(server_addr, data, length)`: one sendto(2).
+    fn sendto(self, data: *const c_char, length: usize) -> isize {
+        let address = &self.fields().server_addr;
+        // SAFETY: the socket's descriptor, `length` readable bytes at `data` and
+        // the address's storage and length.
+        unsafe {
+            libc::sendto(
+                self.socket().fd,
+                data.cast(),
+                length,
+                0,
+                (&raw const address.addr).cast(),
+                address.len,
+            )
+        }
+    }
+
+    /// `Socket::recvfrom(data, length, flags, &remote_addr)`: recvfrom(2),
+    /// retried on EINTR.
+    fn recvfrom(self, data: *mut c_char, length: usize, flags: c_int) -> isize {
+        let fd = self.socket().fd;
+        let address = &mut self.fields().remote_addr;
+        let mut n = -1;
+        for _ in 0..SOCKET_RETRY_COUNT {
+            address.len = ADDRESS_SIZE;
+            // SAFETY: `length` writable bytes at `data`, the address's storage and length.
+            n = unsafe {
+                libc::recvfrom(
+                    fd,
+                    data.cast(),
+                    length,
+                    flags,
+                    (&raw mut address.addr).cast(),
+                    &raw mut address.len,
+                )
+            };
+            if n >= 0 || errno() != libc::EINTR {
+                break;
+            }
+        }
+        n
+    }
+
+    /// `Socket::recvfrom_sync(data, length, flags, &remote_addr)`.
+    fn recvfrom_sync(self, data: *mut c_char, length: usize, flags: c_int) -> isize {
+        let address = &raw mut self.fields().remote_addr;
+        // SAFETY: the live socket, `length` writable bytes at `data` and the address.
+        unsafe { socket_recvfrom_sync(self.socket_ptr(), data, length, flags, address) }
     }
 
     fn ssl(self, op: c_int, arg: c_int) -> c_int {
@@ -378,15 +485,66 @@ impl Handle {
         unsafe { (self.native().set_proxy_state)(self.cli(), proxy, state) };
     }
 
-    fn buffer(self, op: c_int, length: usize) -> BufferView {
-        let mut view = BufferView {
-            str: core::ptr::null_mut(),
-            length: 0,
-            size: 0,
-        };
-        // SAFETY: the live client's buffer; `view` is writable.
-        unsafe { (self.native().buffer)(self.cli(), op, length, &raw mut view) };
-        view
+    /// `socket->get_out_buffer_length()`.
+    fn queued(self) -> u32 {
+        let buffer = self.socket().output.out_buffer;
+        if buffer.is_null() {
+            return 0;
+        }
+        // SAFETY: the socket's live output Buffer.
+        unsafe { swoole_rs_buffer::cpp::swr_cpp_buffer_length(buffer.cast()) }
+    }
+
+    /// The input buffer (`cli->buffer`), null until an async connect makes it.
+    fn input(self) -> *mut CppString {
+        self.fields().buffer.cast()
+    }
+
+    /// The input buffer, which exists.
+    fn input_mut(self) -> &'static mut CppString {
+        // SAFETY: the Box `input_init` made, live until `input_free`, and
+        // borrowed only between effects.
+        unsafe { &mut *self.input() }
+    }
+
+    /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
+    fn input_init(self) {
+        if self.input().is_null() {
+            let mut buffer = Box::new(CppString::EMPTY);
+            buffer.alloc(CLIENT_BUFFER_SIZE, core::ptr::null());
+            self.fields().buffer = Box::into_raw(buffer).cast();
+        }
+    }
+
+    /// `delete buffer`.
+    fn input_free(self) {
+        let buffer = self.input();
+        if !buffer.is_null() {
+            self.fields().buffer = core::ptr::null_mut();
+            // SAFETY: the Box `input_init` made, released once.
+            unsafe { Box::from_raw(buffer) }.dispose();
+        }
+    }
+
+    /// The input buffer's free tail; the buffer exists.
+    fn input_tail(self) -> Tail {
+        let buffer = self.input_mut();
+        Tail {
+            str: buffer.str.wrapping_add(buffer.length).cast(),
+            size: buffer.size - buffer.length,
+        }
+    }
+
+    /// The input buffer's length grows by `n` read bytes.
+    fn input_grow(self, n: usize) {
+        self.input_mut().length += n;
+    }
+
+    /// `buffer->clear()`.
+    fn input_clear(self) {
+        let buffer = self.input_mut();
+        buffer.length = 0;
+        buffer.offset = 0;
     }
 
     /// The SOCKS5 negotiation request: its bytes and length.
@@ -530,14 +688,24 @@ pub unsafe extern "C" fn swr_v1_clients_listen(
     listener: Listener,
 ) {
     let this = Handle(client);
-    // SAFETY: the live client's public record.
-    unsafe { (*this.get().record).object = object };
+    this.fields().object = object;
     this.get().listener.set(Some(listener));
     this.get().events.set(events);
 }
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+/// `sw_tg_buffer()`, whole: a sync proxy handshake reads into it.
+fn shared_buffer() -> Tail {
+    // SAFETY: the thread's shared String, set up by `swoole_init` before any
+    // proxied connect, and unborrowed elsewhere.
+    let buffer = unsafe { &*thread_buffer().cast::<CppString>() };
+    Tail {
+        str: buffer.str.cast(),
+        size: buffer.size,
+    }
 }
 
 fn set_errno(value: c_int) {
@@ -643,16 +811,18 @@ pub unsafe extern "C" fn swr_v1_clients_free(client: *mut Client) {
         if !this.flag(CLOSED) {
             close(this);
         }
-        this.buffer(BUFFER_FREE, 0);
+        this.input_free();
         // A pending connect timer would fire on a freed client.
         this.timer_clear();
-        let deferred = this.flag(ASYNC);
-        if deferred {
+        if this.flag(ASYNC) {
             // A cleared object tells a close in progress that the client is gone.
             this.socket().object = core::ptr::null_mut();
+            // SAFETY: the live client's socket, released once.
+            unsafe { socket_free(this.socket_ptr()) };
+        } else {
+            // SAFETY: `delete socket`: the record make_socket allocated, released once.
+            unsafe { swr_v1_socket_dealloc(this.socket_ptr()) };
         }
-        // SAFETY: the live client's socket, released once.
-        unsafe { (this.native().free_socket)(this.cli(), deferred) };
     }
     // SAFETY: a Box from swr_v1_clients_new, released once (see above).
     drop(unsafe { Box::from_raw(client) });
@@ -671,9 +841,9 @@ pub unsafe extern "C" fn swr_v1_clients_get_peer_name(
 ) -> c_int {
     let this = Handle(client.cast_mut());
     if is_dgram(this.socket().socket_type) {
-        // SAFETY: the live public record; copy the value before writing so an
-        // SDK caller may request the result in remote_addr itself.
-        let remote = unsafe { (*this.get().record).remote_addr };
+        // A copy before the write, so an SDK caller may request the result in
+        // remote_addr itself.
+        let remote = this.fields().remote_addr;
         // SAFETY: the caller supplied writable Address storage.
         unsafe { address.write(remote) };
         OK
@@ -983,7 +1153,7 @@ fn tcp_connect_sync(
     // Only a proxy handshake reads the thread's shared buffer, which a thread
     // that never set up SwooleTG doesn't have.
     if this.proxy_state(PROXY_SOCKS5) >= 0 {
-        let shared = this.buffer(BUFFER_SHARED, 0);
+        let shared = shared_buffer();
         let (data, length) = this.socks5_negotiate();
         if send(this, data, length, 0) < 0 {
             return ERR;
@@ -1005,7 +1175,7 @@ fn tcp_connect_sync(
             return ERR;
         }
         // After the pack, which may have grown it.
-        let shared = this.buffer(BUFFER_SHARED, 0);
+        let shared = shared_buffer();
         let n = recv(this, shared.str, shared.size, 0);
         if n <= 0 || !this.http_handshake(true, n.cast_unsigned()) {
             return ERR;
@@ -1030,7 +1200,7 @@ fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f6
         return ERR;
     }
     this.set_timeout(timeout);
-    this.buffer(BUFFER_INIT, 0);
+    this.input_init();
     if this.has(ON_BUFFER_FULL) && this.get().high_watermark.get() == 0 {
         #[expect(
             clippy::cast_possible_truncation,
@@ -1473,11 +1643,11 @@ pub unsafe extern "C" fn swr_v1_clients_send(
 
 fn send(this: Handle, data: *const c_char, length: usize, flags: c_int) -> isize {
     if this.flag(DTLS) || this.flag(STREAM) && !this.flag(ASYNC) {
-        this.io(IO_SEND_SYNC, data.cast_mut(), length, flags)
+        this.send_sync(data, length, flags)
     } else if this.flag(STREAM) {
         send_async(this, data, length)
     } else {
-        let n = this.io(IO_SENDTO, data.cast_mut(), length, 0);
+        let n = this.sendto(data, length);
         if n < 0 || n.cast_unsigned() < length {
             ERR as isize
         } else {
@@ -1489,21 +1659,20 @@ fn send(this: Handle, data: *const c_char, length: usize, flags: c_int) -> isize
 /// `Client_tcp_send_async`: queue on the reactor, raising `onBufferFull` at the high watermark.
 fn send_async(this: Handle, data: *const c_char, length: usize) -> isize {
     let mut n = length.cast_signed();
-    // SAFETY: `length` bytes at `data`, copied by the reactor.
-    if unsafe { (this.native().event_write)(this.cli(), data, length) } < 0 {
+    // SAFETY: the live client's socket; `length` bytes at `data`, copied by the reactor.
+    if unsafe { swoole_event_write(this.socket_ptr(), data.cast(), length) } < 0 {
         if log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW {
             return ERR as isize;
         }
         n = -1;
         this.set(HIGH_WATERMARK, true);
     }
-    if this.has(ON_BUFFER_FULL) && !this.flag(HIGH_WATERMARK) {
-        // SAFETY: the live client's socket.
-        let queued = unsafe { (this.native().out_buffer_length)(this.cli()) };
-        if queued >= this.get().high_watermark.get() {
-            this.set(HIGH_WATERMARK, true);
-            this.call(ON_BUFFER_FULL, core::ptr::null(), 0);
-        }
+    if this.has(ON_BUFFER_FULL)
+        && !this.flag(HIGH_WATERMARK)
+        && this.queued() >= this.get().high_watermark.get()
+    {
+        this.set(HIGH_WATERMARK, true);
+        this.call(ON_BUFFER_FULL, core::ptr::null(), 0);
     }
     n
 }
@@ -1524,8 +1693,14 @@ pub unsafe extern "C" fn swr_v1_clients_sendfile(
         return ERR;
     }
     let is_async = this.flag(ASYNC);
+    let sendfile = if is_async {
+        socket_sendfile_async
+    } else {
+        socket_sendfile_sync
+    };
     // SAFETY: as the caller promises.
-    if unsafe { (this.native().sendfile)(this.cli(), file, offset, length, is_async) } < 0 {
+    if unsafe { sendfile(this.socket_ptr(), file, offset, length) } < 0 {
+        log::set_last_error(errno());
         return ERR;
     }
     if is_async && this.event(EVENT_ADD_OR_UPDATE, EVENT_WRITE) == ERR {
@@ -1550,16 +1725,16 @@ pub unsafe extern "C" fn swr_v1_clients_recv(
 
 fn recv(this: Handle, data: *mut c_char, length: usize, flags: c_int) -> isize {
     if this.flag(STREAM) || this.flag(DTLS) {
-        let n = this.io(IO_RECV_SYNC, data, length, flags);
+        let n = this.recv_sync(data, length, flags);
         // A poll timeout reads as recv(2)'s EAGAIN, as it did before poll.
         if n == -1 && log::last_error() == ERROR_SOCKET_POLL_TIMEOUT {
             set_errno(libc::EAGAIN);
         }
         n
     } else if this.flag(ASYNC) {
-        this.io(IO_RECVFROM_SYNC, data, length, flags)
+        this.recvfrom_sync(data, length, flags)
     } else {
-        this.io(IO_RECVFROM, data, length, flags)
+        this.recvfrom(data, length, flags)
     }
 }
 
@@ -1576,20 +1751,17 @@ fn connect_failed(this: Handle) -> c_int {
 /// `Client_onStreamRead`: the proxy and TLS handshakes that finish a connect,
 /// then framed or plain reads, on a live async stream client with its input buffer.
 fn on_read(this: Handle) -> c_int {
-    let view = this.buffer(BUFFER_VIEW, 0);
-    // SAFETY: the unused tail of the input buffer.
-    let buf = unsafe { view.str.add(view.length) };
-    let size = view.size - view.length;
+    let Tail { str: buf, size } = this.input_tail();
     let do_ssl_handshake = this.flag(OPEN_SSL);
     let http = this.proxy_state(PROXY_HTTP);
     if http >= 0 && http != HTTP_PROXY_READY {
-        let n = this.io(IO_RECV, buf, size, 0);
+        let n = this.recv_once(buf, size);
         if n <= 0 || !this.http_handshake(false, n.cast_unsigned()) {
             log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
             return connect_failed(this);
         }
         this.set_proxy_state(PROXY_HTTP, HTTP_PROXY_READY);
-        this.buffer(BUFFER_CLEAR, 0);
+        this.input_clear();
         if !do_ssl_handshake {
             this.on_connect();
             return OK;
@@ -1597,12 +1769,12 @@ fn on_read(this: Handle) -> c_int {
     }
     let socks5 = this.proxy_state(PROXY_SOCKS5);
     if socks5 >= 0 && socks5 != SOCKS5_READY {
-        let n = this.io(IO_RECV, buf, size, 0);
+        let n = this.recv_once(buf, size);
         if n <= 0 {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
-        this.buffer(BUFFER_GROW, n.cast_unsigned());
+        this.input_grow(n.cast_unsigned());
         // Upstream hands the handshake the buffer's free size, not what was read.
         if !this.socks5_handshake(buf, size) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
@@ -1611,7 +1783,7 @@ fn on_read(this: Handle) -> c_int {
         if this.proxy_state(PROXY_SOCKS5) != SOCKS5_READY {
             return OK;
         }
-        this.buffer(BUFFER_CLEAR, 0);
+        this.input_clear();
         if !do_ssl_handshake {
             this.on_connect();
             return OK;
@@ -1627,22 +1799,28 @@ fn on_read(this: Handle) -> c_int {
         }
         return OK;
     }
-    // SAFETY: the record is live; no reference crosses the receiving callback,
-    // which may destroy the client.
-    let (eof, length) = unsafe {
-        let fields = &*this.get().record;
-        (fields.open_eof_check, fields.open_length_check)
-    };
+    // No reference crosses the receiving callback, which may destroy the client.
+    let fields = this.fields();
+    let (eof, length) = (fields.open_eof_check, fields.open_length_check);
     if eof || length {
-        // SAFETY: native receives using the live protocol and buffer; it returns
-        // zero if a callback destroys the client.
-        let n = unsafe { (this.native().recv_framed)(this.cli(), eof) };
-        if n < 0 && !this.flag(CLOSED) {
+        let framed = if eof {
+            recv_with_eof_protocol
+        } else {
+            recv_with_length_protocol
+        };
+        let socket = this.socket_ptr();
+        let protocol = &raw const this.fields().protocol;
+        // SAFETY: the live protocol, socket and input buffer. A package callback
+        // may destroy the client; its socket outlives this handler.
+        let n = unsafe { framed(protocol, socket, this.input()) };
+        // SAFETY: as above; a destroyed client cleared the socket's object.
+        let released = unsafe { (*socket).object }.is_null();
+        if n < 0 && !released && !this.flag(CLOSED) {
             close(this);
         }
         return OK;
     }
-    let n = this.io(IO_RECV, buf, size, 0);
+    let n = this.recv_once(buf, size);
     if n < 0 {
         let socket = this.socket();
         // SAFETY: the socket's own flag, set by the classification.
@@ -1674,12 +1852,12 @@ fn on_datagram(this: Handle) -> c_int {
     )]
     let mut buffer = [0_u8; BUFFER_SIZE_UDP];
     // Upstream's datagram receive, even once DTLS made `recv` a stream one.
-    let op = if this.flag(ASYNC) {
-        IO_RECVFROM_SYNC
+    let (data, length) = (buffer.as_mut_ptr().cast(), buffer.len());
+    let n = if this.flag(ASYNC) {
+        this.recvfrom_sync(data, length, 0)
     } else {
-        IO_RECVFROM
+        this.recvfrom(data, length, 0)
     };
-    let n = this.io(op, buffer.as_mut_ptr().cast(), buffer.len(), 0);
     if n < 0 {
         return ERR;
     }
@@ -1706,16 +1884,15 @@ fn on_write(this: Handle, reactor: *mut c_void, event: *mut c_void) -> c_int {
             return OK;
         }
         // SAFETY: the handler's reactor and event.
-        if unsafe { (this.native().writable)(reactor, event) } < 0 {
+        if unsafe { writable_callback(reactor, event) } < 0 {
             return ERR;
         }
-        if this.has(ON_BUFFER_EMPTY) && this.flag(HIGH_WATERMARK) {
-            // SAFETY: the live client's socket.
-            let queued = unsafe { (this.native().out_buffer_length)(this.cli()) };
-            if queued <= this.get().low_watermark.get() {
-                this.set(HIGH_WATERMARK, false);
-                this.call(ON_BUFFER_EMPTY, core::ptr::null(), 0);
-            }
+        if this.has(ON_BUFFER_EMPTY)
+            && this.flag(HIGH_WATERMARK)
+            && this.queued() <= this.get().low_watermark.get()
+        {
+            this.set(HIGH_WATERMARK, false);
+            this.call(ON_BUFFER_EMPTY, core::ptr::null(), 0);
         }
         return OK;
     }

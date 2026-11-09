@@ -70,11 +70,6 @@ enum {
 };
 /* connect: connect_async (SW_READY, SW_WAIT or SW_ERROR), connect_sync, connect(2) (errno kept). */
 enum { SWR_CLIENTS_CONNECT_ASYNC, SWR_CLIENTS_CONNECT_SYNC, SWR_CLIENTS_CONNECT_RAW };
-/* io: SENDTO sends to server_addr, the RECVFROMs read into remote_addr. */
-enum {
-    SWR_CLIENTS_IO_RECV, SWR_CLIENTS_IO_RECV_SYNC, SWR_CLIENTS_IO_SEND_SYNC,
-    SWR_CLIENTS_IO_SENDTO, SWR_CLIENTS_IO_RECVFROM, SWR_CLIENTS_IO_RECVFROM_SYNC,
-};
 enum { SWR_CLIENTS_EVENT_ADD, SWR_CLIENTS_EVENT_SET, SWR_CLIENTS_EVENT_DEL, SWR_CLIENTS_EVENT_ADD_OR_UPDATE };
 /* ssl: HAS_CONTEXT 1/0; PREPARE creates the context unless ready; SESSION is ssl_create and
  * the SNI name; VERIFY_PEER is verify_peer | allow_self_signed << 1; VERIFY is ssl_verify(arg);
@@ -85,26 +80,13 @@ enum {
     SWR_CLIENTS_SSL_CLOSE = 7, SWR_CLIENTS_SSL_DTLS = 8,
 };
 enum { SWR_CLIENTS_PROXY_SOCKS5, SWR_CLIENTS_PROXY_HTTP };
-/* buffer: the input buffer (INIT creates it), or SHARED, sw_tg_buffer(), for VIEW. */
-enum {
-    SWR_CLIENTS_BUFFER_INIT, SWR_CLIENTS_BUFFER_VIEW, SWR_CLIENTS_BUFFER_GROW,
-    SWR_CLIENTS_BUFFER_CLEAR, SWR_CLIENTS_BUFFER_FREE, SWR_CLIENTS_BUFFER_SHARED,
-};
-typedef struct { char *str; size_t length, size; } swr_v1_clients_buffer_view;
 struct swr_v1_clients_record;
 typedef struct {
     struct swr_v1_socket *(*make_socket)(int kind, int fd_type, int flags);
-    void (*free_socket)(void *cli, bool deferred);
     void (*kernel_timeout)(struct swr_v1_clients_record *record, double timeout);
     bool (*assign)(struct swr_v1_clients_record *record, const char *host, int port, bool resolve);
     int (*connect)(struct swr_v1_clients_record *record, int mode);
-    ssize_t (*io)(void *cli, int op, char *data, size_t length, int flags);
-    /* 0, or -1 with the last error set to errno. */
-    int (*sendfile)(void *cli, const char *file, int64_t offset, size_t length, bool is_async);
     int (*event)(struct swr_v1_clients_record *record, int op, int events);
-    int (*event_write)(void *cli, const char *data, size_t length);
-    uint32_t (*out_buffer_length)(void *cli);
-    int (*writable)(void *reactor, void *event);
     int (*socket_error)(struct swr_v1_clients_record *record, int *error);
     int (*dns_lookup)(void *cli, const char *host, int domain);
     int (*ssl)(void *cli, int op, int arg);
@@ -118,10 +100,6 @@ typedef struct {
     size_t (*http_pack)(void *cli, const char **data);
     /* Of the shared buffer (its length set to length) or the input buffer (grown by length). */
     bool (*http_handshake)(void *cli, bool shared, size_t length);
-    void (*buffer)(void *cli, int op, size_t length, swr_v1_clients_buffer_view *view);
-    /* Receive through the selected EOF/length protocol; zero once a callback
-     * released the client. */
-    ssize_t (*recv_framed)(void *cli, bool eof);
 } swr_v1_clients_native;
 struct swr_v1_socket *swr_v1_clients_make_socket(int kind, int fd_type, int flags);
 void swr_v1_clients_kernel_timeout(struct swr_v1_clients_record *record, double timeout);
