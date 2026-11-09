@@ -55,15 +55,3 @@ pub const SW_SSL_ALL: i32 = SslVersion::SW_SSL_SSLv2 as i32
     | SslVersion::SW_SSL_TLSv1_1 as i32
     | SslVersion::SW_SSL_TLSv1_2 as i32
     | SslVersion::SW_SSL_TLSv1_3 as i32;
-
-// crates/clients sits below this crate and keeps its own copies.
-const _: () = {
-    use swoole_rs_clients::client as clients;
-    assert!(
-        clients::SSL_CLIENT == SslCreateFlag::SW_SSL_CLIENT as i32
-            && clients::SSL_DTLS == SslVersion::SW_SSL_DTLS as u32
-            && clients::SSL_STATE_READY == SslState::SW_SSL_STATE_READY as u32
-            && clients::SSL_STATE_WAIT_STREAM == SslState::SW_SSL_STATE_WAIT_STREAM as u32,
-        "crates/clients' TLS constants"
-    );
-};

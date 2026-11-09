@@ -1295,17 +1295,9 @@ mod tests {
         assert_eq!(url, b"/index.html", "its URL");
 
         // A long URL: `append_random_bytes(swoole_rand(1024, 2048), 1)` after `?a=`.
-        let raw = vec![0u8; usize::try_from(swoole_rs_corebase::swoole_rand(1024, 2048)).unwrap()];
-        // SAFETY: `raw` is writable for its length.
-        assert_eq!(
-            unsafe {
-                swoole_rs_corebase::swr_v1_os_random_bytes(
-                    raw.as_ptr().cast_mut().cast(),
-                    raw.len(),
-                )
-            },
-            raw.len()
-        );
+        let mut raw =
+            vec![0u8; usize::try_from(swoole_rs_corebase::swoole_rand(1024, 2048)).unwrap()];
+        assert_eq!(swoole_rs_corebase::random_bytes(&mut raw), raw.len());
         let mut encoded = vec![0u8; raw.len().div_ceil(3) * 4 + 1];
         let n = swoole_rs_base64::encode(&raw, &mut encoded);
         let text = [
