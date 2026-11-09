@@ -16,6 +16,9 @@ phpt.json      applicable pinned PHPTs the hybrid passes in a merge-tier run (--
                run's gate outputs, one per build variant; a test counts if it passes in any),
                with the commit it measured. corpus/upstream/not_applicable.json lists the
                tests left out, and why, in the step summary too.
+coverage.json  lines of crates/ the Cargo build ran, from a nightly coverage.yml run's report
+               (--coverage: tools/coverage.py's output directory). coverage.md, beside it,
+               is the per-crate table and the entry points no run reached.
 """
 import argparse
 import json
@@ -150,6 +153,7 @@ def main():
     parser.add_argument('--commit', help='The commit that run measured')
     parser.add_argument('--callgrind', type=Path, help="A merge-tier run's callgrind.json")
     parser.add_argument('--callgrind-commit', help='The commit that callgrind run measured')
+    parser.add_argument('--coverage', type=Path, help="A coverage.yml run's report (summary.json, coverage.md)")
     parser.add_argument('--kept', action='store_true', help='Also list each file still built, with its kept upstream lines')
     args = parser.parse_args()
     if args.phpt and not args.commit:
@@ -184,6 +188,11 @@ def main():
         limits = json.loads((ROOT / 'benchmarks/callgrind_limits.json').read_text())
         badges['speed'], table = speed(json.loads(args.callgrind.read_text()), limits, args.callgrind_commit)
         (args.output / 'speed.md').write_text(table)
+    if args.coverage:
+        summary = json.loads((args.coverage / 'summary.json').read_text())
+        badges['coverage'] = endpoint('crates/ line coverage', f"{100 * summary['covered'] / summary['lines']:.1f}% "
+                                      f"of {summary['lines'] / 1000:.0f}k lines @ {summary['commit'][:7]}")
+        shutil.copy2(args.coverage / 'coverage.md', args.output / 'coverage.md')
     for name, badge in badges.items():
         (args.output / (name + '.json')).write_text(json.dumps(badge) + '\n')
         print(f"{name}: {badge['message']}")
