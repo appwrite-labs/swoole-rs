@@ -331,9 +331,7 @@ fn warn(message: &Message) {
 /// `setAffinity`/`getAffinity` (`HAVE_CPU_AFFINITY`: Linux here).
 pub mod thread_affinity {
     use super::{Call, message, warn};
-    use swoole_rs_phpprocess::{
-        swr_v1_phpprocess_array_to_cpu_set, swr_v1_phpprocess_cpu_set_to_array,
-    };
+    use swoole_rs_phpprocess::{array_to_cpu_set, cpu_set_to_array};
 
     pub(super) fn set(call: &Call) {
         let Ok(Some(_)) = call.arity(1, 1).and_then(|()| call.array_table(1)) else {
@@ -342,7 +340,7 @@ pub mod thread_affinity {
         // SAFETY: an all-zero cpu set is empty.
         let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
         // SAFETY: the array argument and a local set.
-        if !unsafe { swr_v1_phpprocess_array_to_cpu_set(call.zval(1), (&raw mut set).cast()) } {
+        if !unsafe { array_to_cpu_set(call.zval(1), (&raw mut set).cast()) } {
             call.set_bool(false);
             return;
         }
@@ -373,7 +371,7 @@ pub mod thread_affinity {
             return;
         }
         // SAFETY: the return slot and a valid set.
-        unsafe { swr_v1_phpprocess_cpu_set_to_array(call.return_value(), (&raw const set).cast()) };
+        unsafe { cpu_set_to_array(call.return_value(), (&raw const set).cast()) };
     }
 
     super::handlers! {

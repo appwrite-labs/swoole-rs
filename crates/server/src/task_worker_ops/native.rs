@@ -6,7 +6,7 @@ use core::mem::MaybeUninit;
 
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::process_pool::PoolRecord;
-use swoole_rs_process::worker_globals::swr_v1_worker_globals;
+use swoole_rs_process::worker_globals::thread_globals;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry::Bytes;
 use swoole_rs_process::workers::ops::{
@@ -140,7 +140,7 @@ extern "C" fn on_pipe_receive(reactor: *mut c_void, event: *mut c_void) -> c_int
     // SAFETY: the reactor running this handler, whose `ptr` is the task pool.
     let pool = unsafe { Reactor::of(reactor) }.fields().ptr.cast();
     // SAFETY: this thread's worker globals.
-    let worker = unsafe { (*swr_v1_worker_globals()).worker };
+    let worker = unsafe { (*thread_globals()).worker };
     let mut task = MaybeUninit::<EventData>::uninit();
     let mut ctx = Context::of(pool, worker);
     // SAFETY: the reactor's live event.

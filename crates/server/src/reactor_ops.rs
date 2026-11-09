@@ -17,10 +17,7 @@ use swoole_rs_buffer::string::delete_string;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{
-    Event, SocketRecord, cpp_socket_what_event_want, reactor_upstream,
-    swr_v1_reactor_handlers_set_default,
-};
+use swoole_rs_reactor::{Event, SocketRecord, cpp_socket_what_event_want, reactor_upstream};
 use swoole_rs_tls::upstream as tls;
 use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
 
@@ -218,6 +215,11 @@ impl Objects<'_> {
     fn front(&self) -> &DataHead {
         // SAFETY: OP_RT_FRONT stored the live front message first.
         unsafe { &*self.ctx.front }
+    }
+    /// The context's live reactor.
+    fn handle(&self) -> crate::reactor_handle::Reactor {
+        // SAFETY: the ops reading it run on the context's live reactor, on its thread.
+        unsafe { crate::reactor_handle::Reactor::of(self.ctx.reactor) }
     }
     fn reactor(&self) -> &mut swoole_rs_reactor::ReactorFields {
         // SAFETY: the context's live reactor, which begins with its prepared state.
@@ -747,14 +749,6 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: as above.
         sign(unsafe { reactor_upstream::reactor_interest(reactor, socket, kind, 0) })
     };
-    // `reactor->close(reactor, socket)`.
-    let close = |socket: *mut SocketRecord| {
-        let close = o.reactor().close;
-        close.map_or(0, |close| {
-            // SAFETY: the context's live reactor and a live socket of it.
-            sign(unsafe { close(o.ctx.reactor, socket.cast()) })
-        })
-    };
     let conn_socket = || o.conn().socket.cast::<SocketRecord>();
     let event_socket = || o.event().socket.cast::<SocketRecord>();
     let port = || {
@@ -793,10 +787,11 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_REACTOR_CLOSE => {
-            close(conn_socket());
+            // SAFETY: the connection's live socket.
+            o.handle().close(unsafe { &mut *conn_socket() });
             0
         }
-        OP_WR_CLOSE => close(o.ctx.sock),
+        OP_WR_CLOSE => sign(o.handle().close(o.sock())),
         OP_WR_CLOSE_ERRNO => {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             #[expect(
@@ -841,10 +836,8 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             fields.wait_exit = false;
             fields.max_socket = o.tables().max_connection;
             fields.close = Some(crate::reactor_entry::close_connection);
-            // SAFETY: the context's live reactor.
-            let handlers = unsafe { reactor_upstream::prepared(reactor) }.handlers;
-            // SAFETY: its live handler tables.
-            unsafe { swr_v1_reactor_handlers_set_default(handlers, 2, Some(entry::on_close)) };
+            let handle = o.handle();
+            handle.set_error_handler(entry::on_close);
             for (event, handler) in [
                 (
                     SW_EVENT_READ,
@@ -852,10 +845,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 ),
                 (SW_EVENT_WRITE, entry::on_pipe_write),
             ] {
-                // SAFETY: the context's live reactor.
-                unsafe {
-                    reactor_upstream::reactor_set_handler(reactor, FD_PIPE, event, Some(handler));
-                }
+                handle.set_handler(FD_PIPE, event, handler);
             }
             0
         }
@@ -1023,14 +1013,12 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_RESUME_READ => {
             // The firing timer's reactor: this thread's.
-            let reactor = swoole_rs_corebase::thread_reactor();
-            // SAFETY: this thread's live reactor and the timer's live socket.
-            unsafe { reactor_upstream::reactor_interest(reactor, o.ctx.sock, 2, 0) };
+            crate::reactor_handle::Reactor::thread().interest(o.sock(), 2, 0);
             o.conn().timer = core::ptr::null_mut();
             0
         }
         OP_SESSION_HANDLERS => {
-            let reactor = o.ctx.reactor.cast_const();
+            let reactor = o.handle();
             for (fd_type, event, handler) in [
                 (
                     FD_DGRAM_SERVER,
@@ -1040,10 +1028,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 (FD_SESSION, SW_EVENT_WRITE, entry::on_write),
                 (FD_SESSION, SW_EVENT_READ, entry::on_read),
             ] {
-                // SAFETY: the context's live reactor.
-                unsafe {
-                    reactor_upstream::reactor_set_handler(reactor, fd_type, event, Some(handler));
-                }
+                reactor.set_handler(fd_type, event, handler);
             }
             for &port in o.tables().ports() {
                 // SAFETY: one of the server's live ports.

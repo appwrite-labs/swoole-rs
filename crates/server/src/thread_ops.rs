@@ -387,13 +387,13 @@ pub(crate) unsafe fn answer(
         }
         OP_RT_INIT_PIPE_SOCKETS => {
             // SAFETY: the live server and this thread's bus.
-            unsafe { methods::init_pipe_sockets(serv, bus_of(this(ctx))) };
+            unsafe { methods::init_pipe_sockets(server, bus_of(this(ctx))) };
             0
         }
         OP_RT_THREAD_WORKER => {
             let worker = worker(server, reactor_id());
             // SAFETY: the live server and this thread's worker.
-            unsafe { crate::worker_methods::init_event_worker(serv, worker) };
+            unsafe { crate::worker_methods::init_event_worker(server, worker) };
             sign(add_read(pipe_socket(this(ctx), worker.pipe_worker)));
             0
         }
@@ -460,7 +460,9 @@ pub(crate) unsafe fn answer(
                 thread.pipe_command,
             );
             // SAFETY: the live server, this thread's bus holding the request and its pipe.
-            unsafe { crate::commands::call_command_handler(serv, bus_of(thread), id, pipe.cast()) };
+            unsafe {
+                crate::commands::call_command_handler(server, bus_of(thread), id, pipe.cast());
+            };
             0
         }
         OP_COMMAND_RESPONSE | OP_PIPE_SEND => {

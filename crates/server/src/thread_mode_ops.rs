@@ -257,7 +257,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                 std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
             }
             // SAFETY: a started server and its new bus.
-            unsafe { server_methods::init_pipe_sockets(serv, bus) };
+            unsafe { server_methods::init_pipe_sockets(ctx.server(), bus) };
             swoole_rs_corebase::set_thread_message_bus(bus);
             0
         }
@@ -371,9 +371,9 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             } != 0,
         ),
         // SAFETY: as above.
-        OP_CREATE_EVENT_WORKERS => u64::from(unsafe { create_event_workers(serv) }),
+        OP_CREATE_EVENT_WORKERS => u64::from(unsafe { create_event_workers(ctx.server()) }),
         // SAFETY: as above.
-        OP_CREATE_USER_WORKERS => u64::from(unsafe { create_user_workers(serv) }),
+        OP_CREATE_USER_WORKERS => u64::from(unsafe { create_user_workers(ctx.server()) }),
         // SAFETY: the server's live task pool.
         OP_TASK_START_CHECK => sign(unsafe { start_check(ctx.workers().task_pool) }),
         OP_STORE_LISTEN_SOCKET => {

@@ -16,10 +16,18 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
   (`struct { T data; zend_object std; }`: `create`, `data`, `install`, `dtor`),
   `Class` (registration from a method table), `unset_property_deny`,
   `throw_exception`/`throw_error`, and values: `&Value` (a borrowed zval, from
-  `Call::value` or `Value::from_ptr`), `&Array` (`count`, `is_list`,
-  `for_each`), `ZString` and `Owned`/`OwnedArray`, released in `Drop`. A family
-  crate reads values through these with no `unsafe` of its own
-  (`crates/phpredis/src/format.rs`). Add wrappers as callers need them.
+  `Call::value` or `Value::from_ptr`: `as_long`, `as_double`, `str`, `array`,
+  `object`, `class`, `pointer` read a type without converting it, `long`,
+  `double`, `string`, `truthy` convert as Zend does, `dereferenced` follows a
+  reference), `&Array` (`get`, `find`, `entries`, `for_each`, `count`,
+  `is_list`), `&ZStr` (a borrowed string: `bytes`, `c_str`, `parse_quantity`),
+  `ZString` and `Owned`/`OwnedArray` (`push_*`, `insert_*`), released in `Drop`
+  or handed to the return slot with `Call::set_owned`. `Call`'s parsers have
+  borrowed forms too (`zstr`, `zstr_or_null`, `array_ref`, `bool_or_null`). A
+  family crate reads values through these with no `unsafe` of its own
+  (`crates/phpredis/src/format.rs`, `crates/phpswoole/src/options.rs`); a raw
+  pointer becomes a `&Value`, `&Array` or `&ZStr` once, at the boundary. Add
+  wrappers as callers need them.
 - One `crates/php<family>` crate per family (`crates/phplocks`). It calls the
   mechanism crate directly (Rust calls Rust).
 

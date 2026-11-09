@@ -373,8 +373,7 @@ fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // Only a stream pool has IPC state: an event worker's pool has none.
             ctx.socket = if pool.use_socket != 0 {
                 // SAFETY: the stream pool's live IPC state.
-                unsafe { swoole_rs_process::pool::swr_v1_process_pool_ipc_connection(pool.ipc) }
-                    .cast()
+                unsafe { swoole_rs_process::pool::pool_ipc_connection(pool.ipc) }.cast()
             } else {
                 core::ptr::null_mut()
             };

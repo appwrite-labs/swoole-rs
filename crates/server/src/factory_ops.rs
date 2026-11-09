@@ -15,7 +15,7 @@ use swoole_rs_process::methods::{
     swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type, worker_report_error,
 };
 use swoole_rs_process::process_pool::PoolRecord;
-use swoole_rs_process::worker_globals::swr_v1_worker_globals;
+use swoole_rs_process::worker_globals::thread_globals;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
@@ -458,7 +458,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             swoole_set_worker_pid(record.pid());
             swoole_set_worker_type(int);
             // SAFETY: this thread's worker globals.
-            unsafe { (*swr_v1_worker_globals()).worker = worker };
+            unsafe { (*thread_globals()).worker = worker };
         }
         OP_POOL_MAIN_LOOP => {
             type MainLoop =
@@ -545,7 +545,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_INIT_IPC_MAX_SIZE => {
             // SAFETY: the live server.
-            unsafe { crate::worker_methods::init_ipc_max_size(serv) };
+            unsafe { crate::worker_methods::init_ipc_max_size(ctx.server()) };
             0
         }
         // SAFETY: as above.

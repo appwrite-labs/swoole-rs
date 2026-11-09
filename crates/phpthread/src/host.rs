@@ -17,8 +17,7 @@ use swoole_rs_zend::{
 
 /// `swoole_exception_ce`.
 pub(crate) fn exception() -> *mut zend_class_entry {
-    // SAFETY: written once by MINIT, before any method runs.
-    unsafe { swoole_rs_phpswoole::swoole_exception_ce }
+    swoole_rs_phpswoole::exception_class()
 }
 
 /// `php_swoole_serialize`: a persistent string or null; a bailout is deferred.
@@ -26,7 +25,10 @@ pub(crate) fn exception() -> *mut zend_class_entry {
 /// In a request, with a live zval.
 pub(crate) unsafe fn serialize(value: *mut zval) -> *mut zend_string {
     // SAFETY: per the caller.
-    let (serialized, bailed) = unsafe { swoole_rs_phpswoole::serialize(value) };
+    let Some(value) = (unsafe { swoole_rs_zend::Value::from_ptr(value) }) else {
+        return std::ptr::null_mut();
+    };
+    let (serialized, bailed) = swoole_rs_phpswoole::serialize(value);
     bailout::defer(bailed);
     serialized
 }
@@ -101,7 +103,7 @@ pub(crate) unsafe fn co_socket_create(out: *mut zval, fd: c_int, kind: c_int) ->
 /// `object` is a live object zval.
 pub(crate) unsafe fn php_socket_cast(object: *mut zval) -> c_int {
     // SAFETY: per the caller.
-    unsafe { swoole_rs_phpswoole::socket_cast(object) }
+    unsafe { swoole_rs_zend::Value::from_ptr(object) }.map_or(-3, swoole_rs_phpswoole::socket_cast)
 }
 
 /// An ext/sockets Socket over `fd`, which it takes; false on failure.

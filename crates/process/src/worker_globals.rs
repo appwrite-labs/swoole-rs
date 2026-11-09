@@ -51,8 +51,7 @@ static GLOBAL: Process = Process(UnsafeCell::new(INIT));
 
 /// Borrows the original native field view for this thread. It has no TLS destructor
 /// and remains available during native thread teardown, as the original POD did.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_worker_globals() -> *mut WorkerGlobalRecord {
+pub fn thread_globals() -> *mut WorkerGlobalRecord {
     #[cfg(any(zts, panic = "unwind"))]
     return GLOBAL.with(UnsafeCell::get);
     #[cfg(not(any(zts, panic = "unwind")))]
@@ -62,7 +61,7 @@ pub extern "C" fn swr_v1_worker_globals() -> *mut WorkerGlobalRecord {
 /// Fields: 0 id, 1 pid, 2 type, 3 running, 4 shutdown, 5 max requests.
 #[must_use]
 pub extern "C" fn swr_v1_worker_global_get(field: u32) -> i64 {
-    let global = swr_v1_worker_globals();
+    let global = thread_globals();
     macro_rules! read {
         ($field:ident) => {{
             // SAFETY: the live TLS record is loaned to this thread; no whole-record borrow crosses native signals.
@@ -82,7 +81,7 @@ pub extern "C" fn swr_v1_worker_global_get(field: u32) -> i64 {
 
 /// Updates the current worker's identity, preserving native integer narrowing.
 pub extern "C" fn swr_v1_worker_global_set(field: u32, value: i64) {
-    let global = swr_v1_worker_globals();
+    let global = thread_globals();
     macro_rules! write {
         ($field:ident,$value:expr) => {{
             // SAFETY: this leaf updates one field of this thread's live TLS view, without a whole-record borrow.
@@ -110,8 +109,7 @@ pub extern "C" fn swr_v1_worker_global_set(field: u32, value: i64) {
 /// # Safety
 /// `random` implements the existing `swoole_system_random(int,int)` contract,
 /// without exceptions or a PHP bailout.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_worker_global_max_requests(
+pub unsafe fn worker_global_max_requests(
     max_request: u32,
     grace: u32,
     random: unsafe extern "C" fn(c_int, c_int) -> c_int,
@@ -130,12 +128,11 @@ pub unsafe extern "C" fn swr_v1_worker_global_max_requests(
 ///
 /// # Safety
 /// `worker` is a live initialized worker; no previous detached copy is outstanding.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_worker_global_detach(worker: *mut WorkerRecord) {
+pub unsafe fn worker_global_detach(worker: *mut WorkerRecord) {
     // SAFETY: the native transition lends the initialized worker for this value copy.
     let copy = unsafe { worker.read() };
     let copy = Box::into_raw(Box::new(copy));
-    let global = swr_v1_worker_globals();
+    let global = thread_globals();
     // SAFETY: this thread exclusively owns its current worker/copy fields.
     unsafe { (*global).worker_copy = copy };
     // SAFETY: same thread-local leaf update; the shared worker remains borrowed.
@@ -143,9 +140,8 @@ pub unsafe extern "C" fn swr_v1_worker_global_detach(worker: *mut WorkerRecord) 
 }
 
 /// Stops the current worker and releases its local detached copy.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_worker_global_stopped() {
-    let global = swr_v1_worker_globals();
+pub fn worker_global_stopped() {
+    let global = thread_globals();
     // SAFETY: the current thread owns the leaf running-state update.
     unsafe { (*global).running = false };
     // SAFETY: the TLS record's copy slot is live and this thread owns its updates.
@@ -179,7 +175,7 @@ mod tests {
         swr_v1_worker_global_set(0, 7);
         swr_v1_worker_global_set(2, -1);
         assert_eq!(swr_v1_worker_global_get(2), 255);
-        let native_view = swr_v1_worker_globals();
+        let native_view = thread_globals();
         unsafe { (*native_view).pid = 123 };
         assert_eq!(swr_v1_worker_global_get(1), 123);
         std::thread::spawn(|| {
@@ -205,23 +201,23 @@ mod tests {
             assert_eq!(Worker::new(&raw const worker).status(), 2);
             assert_eq!(swr_v1_worker_global_get(3), 1);
             assert_eq!(swr_v1_worker_global_get(4), 0);
-            swr_v1_worker_global_max_requests(2, 0, maximum);
+            worker_global_max_requests(2, 0, maximum);
             Worker::new(&raw mut worker).add_request_count();
             assert!(!swr_v1_worker_exceeded_max_requests(&raw const worker));
             Worker::new(&raw mut worker).add_request_count();
             assert!(swr_v1_worker_exceeded_max_requests(&raw const worker));
-            swr_v1_worker_global_detach(&raw mut worker);
-            let copy = (*swr_v1_worker_globals()).worker_copy;
+            worker_global_detach(&raw mut worker);
+            let copy = (*thread_globals()).worker_copy;
             assert_ne!(copy, &raw mut worker);
             assert_eq!(Worker::new(copy).id(), 11);
             assert_eq!(Worker::new(copy).pid(), 1234);
             swr_v1_worker_shutdown(&raw mut worker);
             assert_eq!(Worker::new(&raw const worker).status(), 3);
             assert_eq!(swr_v1_worker_global_get(4), 1);
-            swr_v1_worker_global_stopped();
+            worker_global_stopped();
             assert_eq!(swr_v1_worker_global_get(3), 0);
-            assert!((*swr_v1_worker_globals()).worker_copy.is_null());
-            assert!((*swr_v1_worker_globals()).worker.is_null());
+            assert!((*thread_globals()).worker_copy.is_null());
+            assert!((*thread_globals()).worker.is_null());
         }
     }
 
@@ -229,12 +225,12 @@ mod tests {
     fn request_grace_keeps_native_unsigned_wrap_and_zero_short_circuit() {
         RANDOM_CALLS.store(0, Relaxed);
         unsafe {
-            swr_v1_worker_global_max_requests(0, 10, maximum);
+            worker_global_max_requests(0, 10, maximum);
             assert_eq!(swr_v1_worker_global_get(5), 0);
-            swr_v1_worker_global_max_requests(10, 0, maximum);
+            worker_global_max_requests(10, 0, maximum);
             assert_eq!(swr_v1_worker_global_get(5), 10);
             assert_eq!(RANDOM_CALLS.load(Relaxed), 0);
-            swr_v1_worker_global_max_requests(u32::MAX - 2, 10, maximum);
+            worker_global_max_requests(u32::MAX - 2, 10, maximum);
             assert_eq!(swr_v1_worker_global_get(5), 7);
             assert_eq!(RANDOM_CALLS.load(Relaxed), 1);
         }

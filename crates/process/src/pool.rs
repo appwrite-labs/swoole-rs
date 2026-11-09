@@ -9,9 +9,9 @@
 //!
 //! A hook that can reach PHP (a callback, a signal handler run while a socket
 //! waits, the Zend allocator under the message bus) runs inside the trap the
-//! extension installs with [`swr_v1_process_set_bailout`]. When PHP bails out
+//! extension installs with [`set_bailout`]. When PHP bails out
 //! (`exit()`, a fatal error), the loop returns [`BAILED`] at once and its native
-//! caller raises the bailout again with [`swr_v1_process_bailout`], so the
+//! caller raises the bailout again with [`raise_bailout`], so the
 //! `longjmp` never crosses a Rust frame.
 #![expect(
     clippy::cast_possible_wrap,
@@ -641,16 +641,14 @@ impl PoolIpc {
 /// # Safety
 /// `trap` runs its body inside `zend_try` and returns 1 when it bailed out;
 /// `raise` calls `zend_bailout()`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_set_bailout(trap: Trap, raise: Raise) {
+pub unsafe fn set_bailout(trap: Trap, raise: Raise) {
     TRAP.store(trap as *mut c_void, Ordering::Release);
     RAISE.store(raise as *mut c_void, Ordering::Release);
 }
 
 /// Raise the bailout a loop returned [`BAILED`] for. Holds nothing: the
 /// `longjmp` crosses only this frame.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_process_bailout() {
+pub fn raise_bailout() {
     let raise = RAISE.load(Ordering::Acquire);
     if !raise.is_null() {
         // SAFETY: RAISE only ever holds a `Raise`.
@@ -661,8 +659,8 @@ pub extern "C" fn swr_v1_process_bailout() {
 }
 
 /// A pool's IPC state. `listener`: the pool uses a stream socket (`SW_IPC_SOCKET`).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_process_pool_ipc_new(listener: bool) -> *mut PoolIpc {
+#[must_use]
+pub fn pool_ipc_new(listener: bool) -> *mut PoolIpc {
     let stream = listener.then_some(Stream {
         socket: ptr::null_mut(),
         file: None,
@@ -681,11 +679,7 @@ pub extern "C" fn swr_v1_process_pool_ipc_new(listener: bool) -> *mut PoolIpc {
 ///
 /// # Safety
 /// `ipc` is null or a live handle, not used afterwards; `close` frees a native socket.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_ipc_free(
-    ipc: *mut PoolIpc,
-    close: unsafe extern "C" fn(*mut c_void),
-) {
+pub unsafe fn pool_ipc_free(ipc: *mut PoolIpc, close: unsafe extern "C" fn(*mut c_void)) {
     if ipc.is_null() {
         return;
     }
@@ -842,8 +836,8 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_address_of(
 ///
 /// # Safety
 /// `ipc` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_ipc_connection(ipc: *const PoolIpc) -> *mut c_void {
+#[must_use]
+pub unsafe fn pool_ipc_connection(ipc: *const PoolIpc) -> *mut c_void {
     // SAFETY: the caller's live handle.
     unsafe { &*ipc }
         .stream
@@ -880,11 +874,7 @@ pub(crate) unsafe fn swr_v1_process_pool_ipc_respond(
 ///
 /// # Safety
 /// `ipc` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_ipc_prepare(
-    ipc: *mut PoolIpc,
-    max_packet_size: u32,
-) -> *mut c_char {
+pub unsafe fn pool_ipc_prepare(ipc: *mut PoolIpc, max_packet_size: u32) -> *mut c_char {
     // SAFETY: the caller's live handle.
     unsafe { &mut *ipc }.prepare(max_packet_size).cast()
 }
@@ -893,8 +883,7 @@ pub unsafe extern "C" fn swr_v1_process_pool_ipc_prepare(
 ///
 /// # Safety
 /// `ipc` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_ipc_packet(ipc: *mut PoolIpc) -> *mut c_char {
+pub unsafe fn pool_ipc_packet(ipc: *mut PoolIpc) -> *mut c_char {
     // SAFETY: the caller's live handle.
     unsafe { &mut *ipc }.packet.as_mut_ptr().cast()
 }
@@ -933,11 +922,8 @@ pub struct PoolLoop {
 ///
 /// # Safety
 /// `pool_loop` describes a live pool, worker and hooks for this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_run(
-    pool_loop: *const PoolLoop,
-    protocol: c_int,
-) -> c_int {
+#[must_use]
+pub unsafe fn pool_run(pool_loop: *const PoolLoop, protocol: c_int) -> c_int {
     // SAFETY: the caller's description.
     let pool_loop = unsafe { &*pool_loop };
     let mut worker = Worker {
@@ -968,8 +954,7 @@ pub unsafe extern "C" fn swr_v1_process_pool_run(
 /// # Safety
 /// `workers` holds `count` (> 0) live worker records; `round_id` is the pool's
 /// shared counter and `warning` its flag.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_schedule(
+pub unsafe fn pool_schedule(
     workers: *const WorkerRecord,
     count: u32,
     round_id: *mut u32,
@@ -1046,8 +1031,11 @@ pub unsafe extern "C" fn swr_v1_process_worker_send(
 /// # Safety
 /// As [`swr_v1_process_worker_send`]; `workers` holds `count` live records,
 /// `worker_id` is writable, `event` holds `size` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_dispatch(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the flat list of the former C export; `Pool::dispatch` is the one caller"
+)]
+pub unsafe fn pool_dispatch(
     hooks: *const PoolHooks,
     pool: *mut c_void,
     workers: *mut WorkerRecord,
@@ -1069,7 +1057,7 @@ pub unsafe extern "C" fn swr_v1_process_pool_dispatch(
             0
         } else {
             // SAFETY: as the caller guarantees.
-            unsafe { swr_v1_process_pool_schedule(workers, count, round_id, warning) }.cast_signed()
+            unsafe { pool_schedule(workers, count, round_id, warning) }.cast_signed()
         };
     }
     *target += c_int::from(start_id);
@@ -1119,11 +1107,11 @@ mod tests {
 
     #[test]
     fn respond_needs_a_connection_and_a_buffer() {
-        let ipc = swr_v1_process_pool_ipc_new(true);
+        let ipc = pool_ipc_new(true);
         // SAFETY: a live handle.
         unsafe {
             assert!(!swr_v1_process_pool_ipc_respond(ipc, b"x".as_ptr(), 1));
-            swr_v1_process_pool_ipc_prepare(ipc, 16);
+            pool_ipc_prepare(ipc, 16);
             assert!(!swr_v1_process_pool_ipc_respond(ipc, b"x".as_ptr(), 1));
             (*ipc).stream.as_mut().unwrap().connection = ptr::dangling_mut();
             assert!(!swr_v1_process_pool_ipc_respond(ipc, ptr::null(), 1));
@@ -1134,20 +1122,20 @@ mod tests {
                 Some(&b"ab"[..])
             );
             (*ipc).stream.as_mut().unwrap().connection = ptr::null_mut();
-            swr_v1_process_pool_ipc_free(ipc, noop);
+            pool_ipc_free(ipc, noop);
         }
     }
 
     #[test]
     fn a_pool_without_a_listener_has_no_address() {
-        let ipc = swr_v1_process_pool_ipc_new(false);
+        let ipc = pool_ipc_new(false);
         let mut port = 7;
         // SAFETY: a live handle.
         unsafe {
             assert!(!swr_v1_process_pool_ipc_address(ipc, c"/tmp/x".as_ptr(), 1));
             assert!(swr_v1_process_pool_ipc_address_of(ipc, &raw mut port).is_null());
             assert!(swr_v1_process_pool_ipc_listener(ipc).is_null());
-            swr_v1_process_pool_ipc_free(ipc, noop);
+            pool_ipc_free(ipc, noop);
         }
         assert_eq!(port, 7);
     }
@@ -1180,9 +1168,8 @@ mod tests {
         let mut round = 0;
         let mut warning = 0;
         // SAFETY: local records and counters.
-        let target = unsafe {
-            swr_v1_process_pool_schedule(workers.as_ptr(), 3, &raw mut round, &raw mut warning)
-        };
+        let target =
+            unsafe { pool_schedule(workers.as_ptr(), 3, &raw mut round, &raw mut warning) };
         assert_eq!((target, round, warning), (1, 2, 0));
     }
 
@@ -1192,9 +1179,8 @@ mod tests {
         let mut round = 5;
         let mut warning = 0;
         // SAFETY: local records and counters.
-        let target = unsafe {
-            swr_v1_process_pool_schedule(workers.as_ptr(), 2, &raw mut round, &raw mut warning)
-        };
+        let target =
+            unsafe { pool_schedule(workers.as_ptr(), 2, &raw mut round, &raw mut warning) };
         // Three tries (count + 1): rounds 5, 6, 7; the last is 7 % 2.
         assert_eq!((target, round, warning), (1, 8, 1));
     }
@@ -1352,7 +1338,7 @@ mod tests {
     };
 
     fn run_loop(script: Script, listener: bool, ipc_mode: u8, protocol: c_int) -> Script {
-        let ipc = swr_v1_process_pool_ipc_new(listener);
+        let ipc = pool_ipc_new(listener);
         with(|s| {
             *s = script;
             s.ipc = ipc as usize;
@@ -1369,12 +1355,9 @@ mod tests {
             event_size: 128,
         };
         // SAFETY: the scripted hooks and a live handle.
-        assert_eq!(
-            unsafe { swr_v1_process_pool_run(&raw const pool_loop, protocol) },
-            DONE
-        );
+        assert_eq!(unsafe { pool_run(&raw const pool_loop, protocol) }, DONE);
         // SAFETY: as above.
-        unsafe { swr_v1_process_pool_ipc_free(ipc, noop) };
+        unsafe { pool_ipc_free(ipc, noop) };
         with(std::mem::take)
     }
 

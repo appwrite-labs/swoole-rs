@@ -206,8 +206,7 @@ pub static mut swoole_client_ce: *mut zend_class_entry = ptr::null_mut();
 /// Called once, at MINIT, after `Swoole\Exception` is registered.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_client_minit(module: c_int) {
-    // SAFETY: MINIT registered `Swoole\Exception` first and nothing writes it now.
-    let exception = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
+    let exception = swoole_rs_phpswoole::exception_class();
     let methods = if built_with(Switch::Sockets) {
         METHODS.as_ptr()
     } else {

@@ -18,20 +18,6 @@ use crate::view;
 const SW_LOG_ERROR: c_int = 5;
 const SW_USER_WORKER: u8 = 5;
 
-/// `Server::get_worker(worker_id)`.
-///
-/// # Safety
-/// `serv` is a live `Server` with its shared memory.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Server10get_workerEt")
-)]
-pub unsafe extern "C" fn get_worker(serv: *mut c_void, worker_id: u16) -> *mut WorkerRecord {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    serv.worker(worker_id)
-}
-
 /// `Server::get_worker_by_pid(worker_pid)`.
 ///
 /// # Safety
@@ -50,13 +36,7 @@ pub unsafe extern "C" fn get_worker_by_pid(serv: *mut c_void, pid: c_int) -> *mu
 }
 
 /// Startup's `LC_PREPARE_WORKERS`: publish the event pool and number the workers.
-///
-/// # Safety
-/// `serv` is a live `Server`, starting, with its shared memory.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_workers_start(serv: *mut c_void) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+pub(crate) fn workers_start(serv: view::Server<'_>) {
     let workers = serv.workers();
     let registry = serv.config().worker_registry;
     // SAFETY: the server's live registry, configured only by the master.
@@ -143,10 +123,8 @@ pub unsafe extern "C" fn abort_worker(serv: *mut c_void, worker: *mut WorkerReco
 /// `Server::init_event_worker(worker)`.
 ///
 /// # Safety
-/// `serv` is a live `Server`; `worker` the current process's worker.
-pub unsafe extern "C" fn init_event_worker(serv: *mut c_void, worker: *mut WorkerRecord) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+/// `worker` is the current process's worker.
+pub unsafe fn init_event_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) {
     // SAFETY: per the caller.
     unsafe { swr_v1_worker_init(worker) };
     let config = serv.config();
@@ -160,11 +138,8 @@ pub unsafe extern "C" fn init_event_worker(serv: *mut c_void, worker: *mut Worke
 /// `Server::init_ipc_max_size()`.
 ///
 /// # Safety
-/// `serv` is a live `Server`, not started.
-pub unsafe extern "C" fn init_ipc_max_size(serv: *mut c_void) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    // SAFETY: per the caller.
+/// `serv` is not started.
+pub unsafe fn init_ipc_max_size(serv: view::Server<'_>) {
     // SAFETY: the server is configured on this thread, with no other reference to the field.
     unsafe { serv.config_mut() }.ipc_max_size =
         swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
@@ -173,10 +148,8 @@ pub unsafe extern "C" fn init_ipc_max_size(serv: *mut c_void) {
 /// `Server::destroy_task_workers()`: free the task results, then destroy the task pool.
 ///
 /// # Safety
-/// `serv` is a live `Server` with its shared memory, shutting down.
-pub unsafe extern "C" fn destroy_task_workers(serv: *mut c_void) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+/// `serv` is shutting down.
+pub unsafe fn destroy_task_workers(serv: view::Server<'_>) {
     let results = serv.config().task_results;
     if !results.is_null() {
         swoole_rs_memory::members::sw_shm_free(results);
@@ -238,11 +211,10 @@ pub unsafe extern "C" fn destroy_worker(_serv: *mut c_void, worker: *mut WorkerR
 /// `Server::create_event_workers()`.
 ///
 /// # Safety
-/// `serv` is a live `Server`, being created, with its worker arrays.
+/// `serv` is being created, with its worker arrays.
 #[cfg(feature = "upstream-symbols")]
-pub unsafe extern "C" fn create_event_workers(serv: *mut c_void) -> bool {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+#[must_use]
+pub unsafe fn create_event_workers(serv: view::Server<'_>) -> bool {
     let count = serv.config().worker_num;
     for id in 0..count {
         // `get_worker(uint16_t)`, as the C++ loop called it.
@@ -258,11 +230,10 @@ pub unsafe extern "C" fn create_event_workers(serv: *mut c_void) -> bool {
 /// memory (no process is forked) and give each its lock.
 ///
 /// # Safety
-/// `serv` is a live `Server`, in the manager's startup.
+/// `serv` is in the manager's startup.
 #[cfg(feature = "upstream-symbols")]
-pub unsafe extern "C" fn create_user_workers(serv: *mut c_void) -> bool {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+#[must_use]
+pub unsafe fn create_user_workers(serv: view::Server<'_>) -> bool {
     let size = size_of::<WorkerRecord>();
     let count = serv.user_worker_num();
     let copies = swoole_rs_memory::members::sw_shm_calloc(count, size).cast::<WorkerRecord>();

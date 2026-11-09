@@ -2,7 +2,7 @@
 //! blocked mask, the descriptor and the process that created it, registration and
 //! reading one `signalfd_siginfo`. Native code keeps the reactor `Socket` wrapping the
 //! descriptor, its event handler and callbacks, and the warnings.
-use crate::signal::{Slot, swr_v1_signal_reset, swr_v1_signals};
+use crate::signal::{SIGNALS, Slot, signal_reset};
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering::Relaxed};
 
@@ -46,26 +46,24 @@ fn errno() -> i32 {
 }
 
 fn slot(signo: c_int) -> Option<&'static Slot> {
-    swr_v1_signals.get(usize::try_from(signo).ok()?)
+    SIGNALS.get(usize::try_from(signo).ok()?)
 }
 
 /// `void swoole_signalfd_init()`: an empty mask and table.
 #[unsafe(export_name = "_Z20swoole_signalfd_initv")]
 pub extern "C" fn swoole_signalfd_init() {
     clear_mask();
-    swr_v1_signal_reset();
+    signal_reset();
 }
 
 /// The signalfd descriptor, or -1 (`swoole_signalfd_is_available`).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signalfd_fd() -> c_int {
+pub fn signalfd_fd() -> c_int {
     FD.load(Relaxed)
 }
 
 /// Whether this process created the descriptor (a forked child must not remove it
 /// from the parent's reactor).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signalfd_owned() -> bool {
+pub fn signalfd_owned() -> bool {
     // SAFETY: getpid has no preconditions.
     PID.load(Relaxed) == unsafe { libc::getpid() }
 }
@@ -73,8 +71,7 @@ pub extern "C" fn swr_v1_signalfd_owned() -> bool {
 /// `swoole_signalfd_set` before the reactor setup: a null `handler` unregisters an
 /// active `signo`; otherwise it is registered. The descriptor, if any, and the
 /// process mask follow. Returns the previous handler.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signalfd_set(signo: c_int, handler: usize) -> usize {
+pub fn signalfd_set(signo: c_int, handler: usize) -> usize {
     let mut previous = 0;
     let slot = slot(signo);
     if handler == 0 && slot.is_some_and(|slot| slot.activated.load(Relaxed)) {
@@ -117,8 +114,7 @@ pub struct Created {
 
 /// `swoole_signalfd_create`: a non-blocking signalfd for the mask, which is then
 /// blocked for the process.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signalfd_create() -> Created {
+pub fn signalfd_create() -> Created {
     let existing = FD.load(Relaxed);
     if existing != -1 {
         return Created {
@@ -159,8 +155,7 @@ pub extern "C" fn swr_v1_signalfd_create() -> Created {
 }
 
 /// `swoole_signalfd_close` once native has released its `Socket`: closes the descriptor.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signalfd_close() {
+pub fn signalfd_close() {
     let fd = FD.swap(-1, Relaxed);
     if fd != -1 {
         // SAFETY: `fd` was this module's signalfd.
@@ -170,13 +165,13 @@ pub extern "C" fn swr_v1_signalfd_close() {
 
 /// `swoole_signalfd_clear` before the close: unblocks the mask and empties it and the
 /// table. Whether the unblock succeeded.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signalfd_clear() -> bool {
+#[must_use]
+pub fn signalfd_clear() -> bool {
     let mask = sigset();
     // SAFETY: `mask` is initialized.
     let result =
         unsafe { libc::sigprocmask(libc::SIG_UNBLOCK, &raw const mask, std::ptr::null_mut()) };
-    swr_v1_signal_reset();
+    signal_reset();
     clear_mask();
     result >= 0
 }
@@ -195,8 +190,7 @@ pub struct Received {
 }
 
 /// `swoole_signalfd_event_callback`: reads one `signalfd_siginfo` from `fd`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signalfd_receive(fd: c_int) -> Received {
+pub fn signalfd_receive(fd: c_int) -> Received {
     // SAFETY: signalfd_siginfo is plain data.
     let mut info: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
     let size = size_of::<libc::signalfd_siginfo>();
@@ -241,19 +235,19 @@ mod tests {
         let _state = crate::signal_state_lock();
         let handler = handler as *const () as usize;
         swoole_signalfd_init();
-        assert_eq!(swr_v1_signalfd_set(libc::SIGURG, handler), 0);
-        let created = swr_v1_signalfd_create();
+        assert_eq!(signalfd_set(libc::SIGURG, handler), 0);
+        let created = signalfd_create();
         assert_eq!(created.status, 0);
-        assert!(swr_v1_signalfd_owned());
-        assert_eq!(swr_v1_signalfd_create().status, 1);
+        assert!(signalfd_owned());
+        assert_eq!(signalfd_create().status, 1);
         // SAFETY: SIGURG is blocked, so it waits on the signalfd (and is ignored by default).
         unsafe { libc::raise(libc::SIGURG) };
-        let received = swr_v1_signalfd_receive(created.fd);
+        let received = signalfd_receive(created.fd);
         assert_eq!((received.status, received.handler), (0, handler));
         assert_eq!(received.signo, libc::SIGURG.cast_unsigned());
-        assert_eq!(swr_v1_signalfd_receive(created.fd).status, 1);
-        assert!(swr_v1_signalfd_clear());
-        swr_v1_signalfd_close();
-        assert_eq!(swr_v1_signalfd_fd(), -1);
+        assert_eq!(signalfd_receive(created.fd).status, 1);
+        assert!(signalfd_clear());
+        signalfd_close();
+        assert_eq!(signalfd_fd(), -1);
     }
 }

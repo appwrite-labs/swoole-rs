@@ -115,8 +115,7 @@ unsafe extern "C" {
 /// Called once, at MINIT, after `Swoole\Exception` and SPL's classes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_coroutine_minit(module_number: i32) {
-    // SAFETY: crates/phpswoole's MINIT wrote it first.
-    let exception = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
+    let exception = swoole_rs_phpswoole::exception_class();
     // SAFETY: SPL registers its classes before any extension's MINIT.
     let array_iterator = unsafe { spl_ce_ArrayIterator };
     // SAFETY: as above.

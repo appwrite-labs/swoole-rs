@@ -668,8 +668,7 @@ fn websocket_connection(state: &State) -> bool {
         return true;
     }
     let server = crate::context::server(state);
-    // SAFETY: the context's live session, which nothing else holds meanwhile.
-    let Some(conn) = (unsafe { server.by_session(state.fd) }) else {
+    let Some(conn) = server.by_session(state.fd) else {
         return false;
     };
     let port = server.port_by_server_fd(conn.server_fd);

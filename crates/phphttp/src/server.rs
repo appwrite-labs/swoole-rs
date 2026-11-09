@@ -284,8 +284,9 @@ pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_
         TCP => unsafe { swr_v1_phpserver_on_receive(server.raw(), request) },
         WEBSOCKET => websocket::on_message(server.raw(), request, &info),
         HTTP2 => {
-            // SAFETY: the live server.
-            let conn = unsafe { server.verified(info.fd) }.map_or(ptr::null_mut(), ptr::from_mut);
+            let conn = server
+                .verified(info.fd)
+                .map_or(ptr::null_mut(), ptr::from_mut);
             // SAFETY: as above, with the session's connection.
             unsafe { swoole_http2_server_onReceive(server.raw(), conn, request) }
         }
@@ -295,8 +296,7 @@ pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_
 
 fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c_int {
     let (session, server_fd) = (info.fd, c_int::from(info.server_fd));
-    // SAFETY: the live server.
-    let Some(conn) = (unsafe { server.verified(session) }) else {
+    let Some(conn) = server.verified(session) else {
         host::log(
             LOG_TRACE,
             SESSION_NOT_EXIST,
@@ -597,8 +597,7 @@ fn http2_connection(
 ) -> Option<(*mut ConnectionRecord, Http2Connection)> {
     // SAFETY: its callers pass their live server.
     let server = unsafe { view::Server::from_raw(server) };
-    // SAFETY: the live server.
-    let conn = unsafe { server.by_session(fd) }?;
+    let conn = server.by_session(fd)?;
     // SAFETY: the connection's own address record.
     let remote_port = i64::from(unsafe { swr_v1_clients_address_port(&raw const conn.info) });
     // SAFETY: as above.
@@ -744,8 +743,7 @@ pub(crate) unsafe extern "C" fn on_close(server: *mut c_void, info: *mut DataHea
     let server = unsafe { view::Server::from_raw(server) };
     // SAFETY: per the caller.
     let session = unsafe { (*info).fd };
-    // SAFETY: the live server; the session's slot, checked against the cache.
-    if let Some(conn) = unsafe { server.by_session(session) }
+    if let Some(conn) = server.by_session(session)
         && let Ok(fd) = usize::try_from(conn.fd)
         && let Some((_, addresses)) = ADDRESSES.with_borrow_mut(|cached| {
             cached
@@ -775,7 +773,7 @@ struct Worker {
 /// server worker.
 fn worker() -> Option<Worker> {
     let server = swoole_rs_corebase::swr_v1_core_server();
-    let current = swoole_rs_process::worker_globals::swr_v1_worker_globals();
+    let current = swoole_rs_process::worker_globals::thread_globals();
     // SAFETY: this thread's worker record.
     let current = unsafe { (*current).worker };
     if server.is_null() || current.is_null() {

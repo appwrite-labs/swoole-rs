@@ -8,7 +8,7 @@ use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::methods::{swoole_get_worker_pid, swoole_get_worker_type};
-use swoole_rs_process::worker_globals::swr_v1_worker_globals;
+use swoole_rs_process::worker_globals::thread_globals;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
@@ -218,7 +218,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let id = u16::try_from(ctx.worker().id()).unwrap_or(0);
             let bus = ctx.tables().message_bus;
             // SAFETY: the live server, its bus holding the request, and the pipe.
-            unsafe { crate::commands::call_command_handler(ctx.serv, bus, id, pipe) };
+            unsafe { crate::commands::call_command_handler(ctx.server(), bus, id, pipe) };
             0
         }
         OP_THREAD_SHUTDOWN => {
@@ -329,7 +329,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             unsafe { swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, try_to_exit) };
             let now = crate::shared::unix_now();
             // SAFETY: this thread's worker globals.
-            unsafe { (*swr_v1_worker_globals()).exit_time = now };
+            unsafe { (*thread_globals()).exit_time = now };
             0
         }
         OP_DRAIN_WORKER_PIPES => {
@@ -415,7 +415,7 @@ fn context(serv: *mut c_void, reactor: Reactor) -> Context {
     Context {
         serv,
         // SAFETY: this thread's worker globals.
-        worker: unsafe { (*swr_v1_worker_globals()).worker },
+        worker: unsafe { (*thread_globals()).worker },
         info: core::ptr::null_mut(),
         reactor: reactor.ptr(),
         conn: core::ptr::null_mut(),

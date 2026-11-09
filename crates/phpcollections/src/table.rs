@@ -258,8 +258,7 @@ fn construct(call: &Call) {
     if let Some(made) = unsafe { table.as_mut() } {
         made.set_hash(zend_hash);
     } else {
-        // SAFETY: Swoole's exception class, registered at MINIT.
-        let exception = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
+        let exception = swoole_rs_phpswoole::exception_class();
         // SAFETY: as above.
         unsafe { throw_exception(exception, c"global memory allocation failure", MALLOC_FAIL) };
         call.set_bool(false);

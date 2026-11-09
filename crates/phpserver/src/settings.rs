@@ -10,7 +10,7 @@ use std::{
 use swoole_rs_phphelpers::callable;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, bailout, message, php_error,
+    Call, E_ERROR, E_WARNING, Value, bailout, message, php_error,
     string::bytes,
     sys::{
         IS_ARRAY, IS_NULL, IS_REFERENCE, swr_zend_callable_warning, swr_zend_hash_foreach_key,
@@ -261,7 +261,8 @@ impl Settings {
 
     pub(crate) fn size(value: *mut zval) -> Result<i64, Stop> {
         // SAFETY: a live setting.
-        let value = unsafe { swoole_rs_phpswoole::php_swoole_parse_to_size(value) };
+        let value = unsafe { Value::from_ptr(value) }
+            .map_or(0, swoole_rs_phpswoole::php_swoole_parse_to_size);
         checked().map(|()| value)
     }
 
@@ -416,15 +417,16 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
     use field as f;
     // php_swoole_set_global_option, _coroutine_option and _aio_option; the
     // first defers its fatal error for a size that does not parse.
-    // SAFETY: the settings argument.
-    let vht = unsafe { table(s.vht) };
+    // SAFETY: the settings argument, an array.
+    let Some(vht) = unsafe { Value::from_ptr(s.vht) }.and_then(Value::array) else {
+        return Ok(true);
+    };
     if !swoole_rs_phpswoole::set_global(vht) {
         return Err(Stop);
     }
     // SAFETY: as above.
-    unsafe { swoole_rs_phpcoroutines::php_swoole_set_coroutine_option(vht) };
-    // SAFETY: as above.
-    unsafe { swoole_rs_phpswoole::php_swoole_set_aio_option(vht) };
+    unsafe { swoole_rs_phpcoroutines::php_swoole_set_coroutine_option(vht.as_ptr()) };
+    swoole_rs_phpswoole::php_swoole_set_aio_option(vht);
     s.string_option(c"chroot", |v| s.text(0, v))?;
     s.string_option(c"user", |v| s.text(1, v))?;
     s.string_option(c"group", |v| s.text(2, v))?;

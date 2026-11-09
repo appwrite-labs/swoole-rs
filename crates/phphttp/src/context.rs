@@ -462,8 +462,8 @@ pub(crate) fn available(ctx: *mut Context) -> bool {
         // SAFETY: the context's live socket zval.
         return !unsafe { php_swoole_socket_is_closed(&raw const state.zsocket) };
     }
-    // SAFETY: the server the context is bound to.
-    unsafe { crate::context::server(state).by_session(state.fd) }
+    crate::context::server(state)
+        .by_session(state.fd)
         .is_some_and(|conn| conn.closed.load(Relaxed) == 0 && conn.peer_closed == 0)
 }
 

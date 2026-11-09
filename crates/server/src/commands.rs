@@ -141,22 +141,14 @@ pub unsafe extern "C" fn swr_v1_server_command_result(
 /// in `mb`'s buffer with its handler and writes the reply back over `sock`.
 ///
 /// # Safety
-/// `serv` is a live `Server`, `mb` a live `MessageBus` holding a command request
-/// packet, and `sock` the pipe the request came from.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole6Server20call_command_handlerERNS_10MessageBusEtPNS_7network6SocketE"
-    )
-)]
-pub unsafe extern "C-unwind" fn call_command_handler(
-    serv: *mut c_void,
+/// `mb` is a live `MessageBus` holding a command request packet, and `sock` the
+/// pipe the request came from.
+pub(crate) unsafe fn call_command_handler(
+    serv: crate::view::Server<'_>,
     mb: *mut c_void,
     worker_id: u16,
     sock: *mut c_void,
 ) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { crate::view::Server::from_raw(serv) };
     // SAFETY: per the caller.
     let bus = unsafe { crate::objects::Bus::of(mb) };
     let request = bus.head();
@@ -299,7 +291,7 @@ pub(crate) struct SendCommand<'a> {
 /// `swr_v1_server_command_send`: what `OP_ST_CMD_SEND` writes to the target process.
 #[repr(C)]
 pub(crate) struct CommandSend {
-    /// `swr_v1_process_command_route::action`.
+    /// `CommandRoute::action`.
     pub(crate) action: i32,
     pub(crate) process_id: u32,
     pub(crate) command_id: i32,
@@ -325,7 +317,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         .get(send.name)
         .map(|c| (c.id, c.accepted_types));
     // SAFETY: this thread's worker globals; only the field is read.
-    let worker = unsafe { (*swoole_rs_process::worker_globals::swr_v1_worker_globals()).worker };
+    let worker = unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker };
     let input = CommandInput {
         started,
         found: found.is_some(),
