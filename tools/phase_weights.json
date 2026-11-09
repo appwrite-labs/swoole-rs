@@ -44,7 +44,6 @@
  "error-php": 3,
  "error-unit": 1,
  "format": 3,
- "framing-native": 2,
  "framing-unit": 1,
  "hooks-compile": 38,
  "hooks-unit": 3,

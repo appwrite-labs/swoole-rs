@@ -192,7 +192,9 @@ impl CppString {
         source.offset = 0;
     }
 
-    fn view(&self) -> &[u8] {
+    /// The `length` bytes at `str`.
+    #[must_use]
+    pub fn view(&self) -> &[u8] {
         // SAFETY: `str` holds `length` bytes.
         unsafe { bytes(self.str, self.length) }
     }

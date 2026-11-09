@@ -14,15 +14,14 @@ use swoole_rs_corebase::constants::FdType::SW_FD_SESSION;
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_framing::recv::{Effects, recv};
+use swoole_rs_framing::recv::{self, Buffer, Effects, recv};
 use swoole_rs_framing::recv::{
     FLAG_DYNAMIC, FLAG_PAUSED, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, MODE_EOF, MODE_LENGTH,
     MODE_SPLIT, OP_CLEAR_SKIP, OP_DISPATCH, OP_EXTEND, OP_GET_LENGTH, OP_LOG_MALFORMED,
     OP_LOG_NO_LENGTH, OP_LOG_TOO_LARGE, OP_PAGE, OP_RECV, OP_REDUCE, OP_RESET, OP_SPLIT,
     OP_SSL_PENDING, RECV_CLOSE, RECV_DONE,
 };
-use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_hton64};
-use swoole_rs_framing::{swr_v1_framing_unpack, swr_v1_framing_width};
+use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack, width};
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
 use swoole_rs_websocket::frame_api::PacketLength;
@@ -57,6 +56,17 @@ pub(crate) struct Recv {
     pub(crate) protocol: *const Protocol,
     pub(crate) socket: *mut SocketRecord,
     buffer: *mut CppString,
+}
+
+impl Recv {
+    fn protocol(&self) -> &Protocol {
+        // SAFETY: the receive's live protocol.
+        unsafe { &*self.protocol }
+    }
+    fn string(&self) -> &CppString {
+        // SAFETY: the receive's live buffer, changed only inside an effect.
+        unsafe { &*self.buffer }
+    }
 }
 
 /// How a length receive measures and hands on each package.
@@ -192,6 +202,37 @@ impl<K: Packages> Effects for With<K> {
         }
         result
     }
+    #[inline(always)]
+    fn buffer(&self) -> Buffer {
+        let b = self.0.string();
+        Buffer {
+            length: b.length,
+            size: b.size,
+            offset: b.offset,
+        }
+    }
+    #[inline(always)]
+    fn set_buffer(&mut self, length: usize, offset: i64) {
+        // SAFETY: the receive's live buffer; no other reference to it is live.
+        let b = unsafe { &mut *self.0.buffer };
+        b.length = length;
+        b.offset = offset;
+    }
+    #[inline(always)]
+    fn data(&self) -> &[u8] {
+        self.0.string().view()
+    }
+    #[inline(always)]
+    fn protocol(&self) -> recv::Protocol {
+        let p = self.0.protocol();
+        recv::Protocol {
+            split_by_eof: p.split_by_eof,
+            package_eof: p.package_eof,
+            package_eof_len: p.package_eof_len,
+            package_length_offset: p.package_length_offset,
+            package_max_length: p.package_max_length,
+        }
+    }
 }
 
 /// Each call site's op is a constant, so the match folds: every frame's receive,
@@ -200,8 +241,7 @@ impl<K: Packages> Effects for With<K> {
 fn effect<K: Packages>(r: &Recv, op: u32, arg: u64, flags: u32) -> i64 {
     // SAFETY: the receive's live buffer; no other reference to it is live.
     let b = unsafe { &mut *r.buffer };
-    // SAFETY: the receive's live protocol.
-    let p = unsafe { &*r.protocol };
+    let p = r.protocol();
     // SAFETY: the receive's live socket; no other reference to it is live.
     let s = unsafe { &mut *r.socket };
     s.recv_wait = u8::from(flags & FLAG_WAIT != 0);
@@ -216,12 +256,7 @@ fn effect<K: Packages>(r: &Recv, op: u32, arg: u64, flags: u32) -> i64 {
             }
             rare(r, b, p, s, op, arg)
         }
-        OP_GET_LENGTH => {
-            // SAFETY: the buffer's `length` initialized bytes.
-            K::length(r, p, unsafe {
-                core::slice::from_raw_parts(b.str, b.length)
-            })
-        }
+        OP_GET_LENGTH => K::length(r, p, b.view()),
         OP_DISPATCH => i64::from(K::dispatch(r, b, arg)),
         _ => rare(r, b, p, s, op, arg),
     }
@@ -343,10 +378,6 @@ pub(crate) unsafe fn receive<K: Packages>(
     buffer: *mut CppString,
     mode: u32,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let p = unsafe { &*protocol };
-    // SAFETY: as the caller promises.
-    let s = unsafe { &*socket };
     let mut r = With::<K>(
         Recv {
             mode,
@@ -356,6 +387,9 @@ pub(crate) unsafe fn receive<K: Packages>(
         },
         PhantomData,
     );
+    let p = r.0.protocol();
+    // SAFETY: as the caller promises.
+    let s = unsafe { &*socket };
     let (mut head, mut flags) = (0, socket_flags(s));
     if let Some(fixed) = K::HEAD {
         head = fixed;
@@ -370,17 +404,7 @@ pub(crate) unsafe fn receive<K: Packages>(
         flags |= (if s.skip_recv != 0 { FLAG_SKIP } else { 0 })
             | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
     }
-    // SAFETY: the live protocol and buffer, changed only inside the effects.
-    let status = unsafe {
-        recv(
-            protocol.cast(),
-            buffer.cast(),
-            mode,
-            head,
-            &mut flags,
-            &mut r,
-        )
-    };
+    let status = recv(mode, head, &mut flags, &mut r);
     // SAFETY: the live socket; the receive has returned.
     unsafe { (*socket).recv_wait = u8::from(flags & FLAG_WAIT != 0) };
     status
@@ -472,32 +496,32 @@ pub unsafe extern "C" fn default_length_func(
         // SAFETY: upstream's call over the live socket.
         unsafe { size(socket) }
     };
-    let mut value = 0;
-    // SAFETY: the packet's bytes and a writable result.
-    let result = unsafe {
-        swr_v1_framing_default(
-            p.package_length_type,
-            pl.buf,
-            pl.buf_size as usize,
-            u32::from(p.package_length_offset),
-            u32::from(size),
-            u32::from(p.package_body_offset),
-            &raw mut value,
-        )
+    let bytes = if pl.buf.is_null() || pl.buf_size == 0 {
+        &[][..]
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { core::slice::from_raw_parts(pl.buf, pl.buf_size as usize) }
     };
-    if result == -2 {
-        invalid_format(p.package_length_type);
-    }
-    match result {
-        0 => {
-            pl.header_len = u32::try_from(value).unwrap_or(u32::MAX);
+    match default_length(
+        p.package_length_type,
+        bytes,
+        u32::from(p.package_length_offset),
+        u32::from(size),
+        u32::from(p.package_body_offset),
+    ) {
+        DefaultLength::Need(need) => {
+            pl.header_len = u32::try_from(need).unwrap_or(u32::MAX);
             0
         }
-        1 => {
+        DefaultLength::Total(total) => {
             pl.header_len = u32::from(p.package_length_size);
-            isize::try_from(value).unwrap_or(SW_ERR)
+            isize::try_from(total).unwrap_or(SW_ERR)
         }
-        _ => SW_ERR,
+        DefaultLength::Format => {
+            invalid_format(p.package_length_type);
+            SW_ERR
+        }
+        DefaultLength::Invalid => SW_ERR,
     }
 }
 
@@ -520,20 +544,21 @@ fn invalid_format(format: u8) {
 )]
 #[must_use]
 pub unsafe extern "C" fn swoole_unpack(format: u8, data: *const c_void) -> i64 {
-    let mut value = -1;
-    // SAFETY: as the caller promises.
-    let result = unsafe {
-        swr_v1_framing_unpack(
-            format,
-            data.cast(),
-            swr_v1_framing_width(format),
-            &raw mut value,
-        )
+    let width = width(format);
+    let bytes = if data.is_null() || width == 0 {
+        &[][..]
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { core::slice::from_raw_parts(data.cast::<u8>(), width) }
     };
-    if result == -1 {
-        invalid_format(format);
+    match unpack(format, bytes) {
+        Ok(value) => value,
+        Err(UnpackError::Format) => {
+            invalid_format(format);
+            -1
+        }
+        Err(UnpackError::Short) => -1,
     }
-    value
 }
 
 /// `uint64_t swoole_hton64(uint64_t)`.
@@ -547,7 +572,7 @@ pub unsafe extern "C" fn swoole_unpack(format: u8, data: *const c_void) -> i64 {
 )]
 #[must_use]
 pub extern "C" fn swoole_hton64(value: u64) -> u64 {
-    swr_v1_framing_hton64(value)
+    value.to_be()
 }
 
 /// `uint64_t swoole_ntoh64(uint64_t)`.
@@ -561,7 +586,7 @@ pub extern "C" fn swoole_hton64(value: u64) -> u64 {
 )]
 #[must_use]
 pub extern "C" fn swoole_ntoh64(value: u64) -> u64 {
-    swr_v1_framing_hton64(value)
+    value.to_be()
 }
 
 #[cfg(test)]

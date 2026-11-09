@@ -335,9 +335,6 @@ def plan(args, reports):
     if 'tls' in modules:
         script('tls-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src',
                '--include-tls', *report('tls-constants'))
-    if 'framing' in modules:
-        script('framing-native', 'tests/modules/framing/gate.py', '--archive',
-               manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('framing-native'))
     if 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp, network/{client,dns,address,socket}.cpp,
         # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the hybrid's libswoole.so, and the repo-owned C++

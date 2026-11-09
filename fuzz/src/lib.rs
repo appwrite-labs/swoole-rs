@@ -4,7 +4,7 @@
 
 use std::ffi::{CStr, c_char};
 use swoole_rs_clients::{cookie, domain_decode};
-use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_unpack, swr_v1_framing_width};
+use swoole_rs_framing::{DefaultLength, default_length, unpack, width};
 use swoole_rs_http::{
     HttpCookie, swr_v1_http_cookie_next, swr_v1_http_url_capacity, swr_v1_http_url_decode,
     swr_v1_http_url_encode,
@@ -16,6 +16,7 @@ use swoole_rs_oracle::{
     http_range, protocols, resp_stream, socks5, websocket as upstream_ws,
 };
 
+mod framing_native;
 mod network;
 pub use network::{dns_reply, http_chunked, http2_frame, http2_hpack, multipart, resp_server};
 use swoole_rs_websocket::{DecodedFrame, swr_v1_ws_decode, swr_v1_ws_frame_length, swr_v1_ws_mask};
@@ -378,17 +379,17 @@ pub fn framing_unpack(bytes: &[u8]) {
         return;
     };
     let format = FORMATS[usize::from(pick) % FORMATS.len()];
-    if data.len() < swr_v1_framing_width(format) {
+    if data.len() < width(format) {
         return;
     }
-    let mut got = 0;
-    // SAFETY: both read the format's width, which `data` covers.
+    // SAFETY: upstream reads the format's width, which `data` covers.
     let want = unsafe { upstream_framing::unpack(format, data.as_ptr()) };
     assert_eq!(
-        unsafe { swr_v1_framing_unpack(format, data.as_ptr(), data.len(), &mut got) },
-        0
+        Ok(want),
+        unpack(format, data),
+        "unpack {} of {data:?}",
+        format as char
     );
-    assert_eq!(want, got, "unpack {} of {data:?}", format as char);
 }
 
 /// A length type, field offset and body offset, then any received bytes: the same
@@ -401,7 +402,7 @@ pub fn framing_length(bytes: &[u8]) {
         return;
     };
     let format = FORMATS[usize::from(pick) % FORMATS.len()];
-    let size = swr_v1_framing_width(format) as u8;
+    let size = width(format) as u8;
     let (offset, body_offset) = (
         u16::from_le_bytes([offset_low, offset_high]) % 64,
         u16::from_le_bytes([body_low, body_high]),
@@ -419,23 +420,13 @@ pub fn framing_length(bytes: &[u8]) {
             &mut header,
         )
     };
-    let mut got = 0;
-    let status = unsafe {
-        swr_v1_framing_default(
-            format,
-            data.as_ptr(),
-            data.len(),
-            offset.into(),
-            size.into(),
-            body_offset.into(),
-            &mut got,
-        )
-    };
-    match status {
-        0 => assert_eq!((want, header as i64), (0, got), "need more for {bytes:?}"),
-        1 => assert_eq!(want as i64, got, "total for {bytes:?}"),
+    match default_length(format, data, offset.into(), size.into(), body_offset.into()) {
+        DefaultLength::Need(got) => {
+            assert_eq!((want, header as i64), (0, got), "need more for {bytes:?}");
+        }
+        DefaultLength::Total(got) => assert_eq!(want as i64, got, "total for {bytes:?}"),
         // Outside the compared domain only an error must match.
-        _ => assert!(want < 0, "error {status} vs {want} for {bytes:?}"),
+        status => assert!(want < 0, "error {status:?} vs {want} for {bytes:?}"),
     }
 }
 
@@ -951,6 +942,8 @@ pub fn framing_stream(bytes: &[u8]) {
         chunks: chunks.as_ptr(),
         chunk_count: chunks.len(),
     };
+    // The candidate calls this crate's `swr_v1_framing_recv`: keep it linked.
+    std::hint::black_box(framing_native::swr_v1_framing_recv as unsafe extern "C" fn(_, _, _) -> _);
     let want = stream_log(framing_stream::UPSTREAM, &stream);
     let got = stream_log(framing_stream::CANDIDATE, &stream);
     assert_eq!(

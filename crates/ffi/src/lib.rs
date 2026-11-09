@@ -44,12 +44,6 @@ pub use swoole_rs_phpswoole::*;
 #[cfg(feature = "php")]
 pub use swoole_rs_phpredis::*;
 
-pub use swoole_rs_framing::{
-    mime::{swr_v1_framing_mime_exists, swr_v1_framing_mime_get},
-    swr_v1_framing_default, swr_v1_framing_hton64, swr_v1_framing_recv, swr_v1_framing_unpack,
-    swr_v1_framing_width,
-};
-
 pub use swoole_rs_reactor::*;
 
 pub use swoole_rs_corebase::*;
