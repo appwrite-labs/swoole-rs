@@ -44,6 +44,8 @@ pub mod local_addr;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod manager_ops;
 mod master_ops;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+mod objects;
 pub mod ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod pool_native;

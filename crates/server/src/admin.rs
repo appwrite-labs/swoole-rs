@@ -460,8 +460,7 @@ fn thread_info<F: Facts>(f: &mut F) -> Json {
 
 fn manager_info<F: Facts>(f: &mut F) -> Json {
     let m: Manager = f.record(MANAGER, 0);
-    // SAFETY: no preconditions.
-    let pid = unsafe { libc::getpid() };
+    let pid = std::process::id().cast_signed();
     answer(
         0,
         Json::object([

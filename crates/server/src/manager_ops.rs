@@ -184,8 +184,7 @@ unsafe fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_HAS_ON_WORKER_MESSAGE => u64::from(!pool.on_worker_message.is_null()),
         OP_RELOAD_WARN => methods::reload_warn as *const () as u64,
         OP_IS_MANAGER => {
-            // SAFETY: a plain syscall.
-            let pid = unsafe { libc::getpid() };
+            let pid = std::process::id().cast_signed();
             // SAFETY: the server's live shared counters.
             u64::from(pid == unsafe { view::counters(serv) }.manager_pid)
         }
@@ -254,8 +253,7 @@ unsafe fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             return Some(u64::from(created));
         }
         OP_SET_MANAGER_PID => {
-            // SAFETY: a plain syscall.
-            let pid = unsafe { libc::getpid() };
+            let pid = std::process::id().cast_signed();
             // SAFETY: the server's shared counters, which only the manager writes meanwhile.
             unsafe { view::counters_mut(serv) }.manager_pid = pid;
         }
@@ -266,8 +264,7 @@ unsafe fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             config.manager_ = core::ptr::without_provenance_mut(index(arg));
             event_pool().on_worker_message = entry::read_worker_message as *const c_void;
             event_pool().max_wait_time = config.max_wait_time;
-            // SAFETY: a plain syscall.
-            let pid = unsafe { libc::getpid() };
+            let pid = std::process::id().cast_signed();
             // SAFETY: the server's shared counters.
             unsafe { view::counters_mut(serv) }.manager_pid = pid;
             event_pool().master_pid = pid;

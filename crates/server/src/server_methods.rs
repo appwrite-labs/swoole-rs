@@ -264,8 +264,7 @@ pub unsafe extern "C-unwind" fn swr_v1_server_close(
 ) {
     // SAFETY: as the caller guarantees.
     let counters = unsafe { view::counters(serv) };
-    // SAFETY: getpid has no preconditions.
-    let master = unsafe { libc::getpid() } == counters.master_pid;
+    let master = std::process::id().cast_signed() == counters.master_pid;
     if master
         && counters
             .shutdown

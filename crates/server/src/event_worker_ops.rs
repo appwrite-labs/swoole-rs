@@ -13,8 +13,7 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::worker_globals::{swr_v1_worker_global_detach, swr_v1_worker_globals};
 use swoole_rs_process::worker_record::{
-    WorkerRecord, swr_v1_worker_exceeded_max_requests, swr_v1_worker_id, swr_v1_worker_set_status,
-    swr_v1_worker_shutdown, swr_v1_worker_type,
+    WorkerRecord, swr_v1_worker_set_status, swr_v1_worker_shutdown,
 };
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
@@ -31,7 +30,6 @@ use swoole_rs_process::workers::ops::{
     OP_WORKER_SHUTDOWN, OP_WORKER_SIGNAL_INIT, OP_WORKER_START_CALLBACK, OP_WORKER_STATUS,
     OP_WORKER_STOP_CALLBACK, OP_WORKER_TYPE,
 };
-use swoole_rs_reactor::SocketRecord;
 
 use crate::ConnectionRecord;
 use crate::callbacks::{
@@ -39,6 +37,8 @@ use crate::callbacks::{
     CB_WORKER_START, CB_WORKER_STOP, CallbackSlot,
 };
 use crate::view;
+
+mod native;
 
 /// workers.cc's `WorkersNative<0>`.
 #[repr(C)]
@@ -85,55 +85,31 @@ pub unsafe extern "C-unwind" fn swr_v1_event_worker_call(
 ) -> u64 {
     // SAFETY: per the caller.
     let ctx = unsafe { &mut *context.cast::<Context>() };
-    // SAFETY: per the caller.
-    let answer = unsafe { fact(ctx, op, arg) };
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { callback(ctx, op) });
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { effect(ctx, op, arg) });
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { connection(ctx, op, arg) });
-    answer.unwrap_or_else(|| std::process::abort())
+    native::native(ctx, op, arg)
+        .or_else(|| fact(ctx, op, arg))
+        .or_else(|| callback(ctx, op))
+        .or_else(|| effect(ctx, op, arg))
+        .or_else(|| connection(ctx, op, arg))
+        .unwrap_or_else(|| std::process::abort())
 }
 
 /// The facts read from the server, the worker, the event head and the globals.
-///
-/// # Safety
-/// As [`swr_v1_event_worker_call`].
-unsafe fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let (serv, worker) = (ctx.serv, ctx.worker);
-    // SAFETY: the context's live server.
-    let config = unsafe { view::config(serv) };
-    let info = || {
-        // SAFETY: the ops that read it run with the event's live head.
-        unsafe { &*ctx.info }
-    };
+fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+    let config = ctx.config();
     Some(match op {
-        OP_FACTORY_END => {
-            // SAFETY: the context's live server.
-            let state = unsafe { view::state(serv) };
-            u64::from(crate::factory::end(state, info().fd, 0))
-        }
+        OP_FACTORY_END => u64::from(crate::factory::end(ctx.state(), ctx.info().fd, 0)),
         OP_MODE => u64::from(config.mode_),
         OP_SIGNAL_LIVE => u64::from(
-            swoole_rs_corebase::swr_v1_core_running()
-                && !serv.is_null()
-                && !worker.is_null()
-                && config.running,
+            swoole_rs_corebase::swr_v1_core_running() && !ctx.worker.is_null() && config.running,
         ),
-        OP_EXCEEDED_MAX_REQUEST => {
-            // SAFETY: the context's live worker.
-            u64::from(unsafe { swr_v1_worker_exceeded_max_requests(worker) })
-        }
-        OP_INFO_TYPE => u64::from(info().kind),
-        OP_INFO_FD => info().fd.cast_unsigned(),
-        OP_INFO_LEN => u64::from(info().len),
+        OP_EXCEEDED_MAX_REQUEST => u64::from(ctx.worker().exceeded_max_request()),
+        OP_INFO_TYPE => u64::from(ctx.info().kind),
+        OP_INFO_FD => ctx.info().fd.cast_unsigned(),
+        OP_INFO_LEN => u64::from(ctx.info().len),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
         OP_DISCARD_TIMEOUT_REQUEST => u64::from(config.discard_timeout_request),
-        // SAFETY: the context's live worker.
-        OP_WORKER_ID => u64::from(unsafe { swr_v1_worker_id(worker) }),
-        // SAFETY: the context's live worker.
-        OP_WORKER_TYPE => u64::from(unsafe { swr_v1_worker_type(worker) }),
+        OP_WORKER_ID => u64::from(ctx.worker().id()),
+        OP_WORKER_TYPE => u64::from(ctx.worker().kind()),
         OP_ALL_CORE_WORKER_NUM => u64::from(config.worker_num) + u64::from(config.task_worker_num),
         OP_WORKER_NUM => u64::from(config.worker_num),
         OP_REACTOR_NUM => u64::from(config.reactor_num),
@@ -147,34 +123,25 @@ unsafe fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_EXISTS => {
             let id = u16::try_from(arg.cast_signed()).ok();
             // SAFETY: the live server.
-            u64::from(id.is_some_and(|id| !unsafe { view::worker(serv, id) }.is_null()))
+            u64::from(id.is_some_and(|id| !unsafe { view::worker(ctx.serv, id) }.is_null()))
         }
         OP_IS_EVENT_WORKER => u64::from(swoole_get_worker_type() == SW_EVENT_WORKER),
         OP_POOL_RUNNING => {
             // SAFETY: the live server.
-            let pool = unsafe { view::workers(serv) }.event_pool;
+            let pool = unsafe { view::workers(ctx.serv) }.event_pool;
             // SAFETY: its live event worker pool.
             u64::from(unsafe { (*pool).running })
         }
-        // SAFETY: the live server's counters.
-        OP_MINFD => i64::from(unsafe { view::counters(serv) }.min_fd).cast_unsigned(),
-        // SAFETY: as above.
-        OP_MAXFD => i64::from(unsafe { view::counters(serv) }.max_fd).cast_unsigned(),
+        OP_MINFD => i64::from(ctx.counters().min_fd).cast_unsigned(),
+        OP_MAXFD => i64::from(ctx.counters().max_fd).cast_unsigned(),
         OP_HAS_REACTOR => u64::from(!swoole_rs_corebase::thread_reactor().is_null()),
         _ => return None,
     })
 }
 
 /// The server's PHP-facing callbacks.
-///
-/// # Safety
-/// As [`swr_v1_event_worker_call`].
-unsafe fn callback(ctx: &Context, op: u32) -> Option<u64> {
-    let serv = ctx.serv;
-    // SAFETY: the context's live server.
-    let state = unsafe { view::state_ptr(serv) };
-    // SAFETY: its state, live as long as it.
-    let callbacks = unsafe { &(*state).callbacks };
+fn callback(ctx: &Context, op: u32) -> Option<u64> {
+    let callbacks = &ctx.state().callbacks;
     let (index, data) = match op {
         OP_ON_CONNECT => (CB_CONNECT, ctx.info.cast()),
         OP_ON_BUFFER_FULL => (CB_BUFFER_FULL, ctx.info.cast()),
@@ -198,19 +165,16 @@ unsafe fn callback(ctx: &Context, op: u32) -> Option<u64> {
     let slot = callbacks.slot(index)?;
     if op == OP_ON_BEFORE_SHUTDOWN {
         // SAFETY: `onBeforeShutdown` takes the server.
-        unsafe { slot.call_server(serv) };
+        unsafe { slot.call_server(ctx.serv) };
     } else {
         // SAFETY: the slot takes the server and the event head or worker.
-        unsafe { slot.call(serv, data) };
+        unsafe { slot.call(ctx.serv, data) };
     }
     Some(0)
 }
 
 /// The effects on the worker, the server and the process.
-///
-/// # Safety
-/// As [`swr_v1_event_worker_call`].
-unsafe fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
     match op {
         // SAFETY: Rust's signal handler for the event worker.
@@ -219,8 +183,11 @@ unsafe fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_STOP_ASYNC => unsafe { entry::stop_async_worker(serv, worker.cast()) },
         // SAFETY: the context's live worker.
         OP_WORKER_SHUTDOWN => unsafe { swr_v1_worker_shutdown(worker) },
-        // SAFETY: as above.
-        OP_WORKER_STATUS => unsafe { set_worker_status(worker, arg) },
+        OP_WORKER_STATUS => ctx.worker().set_status(if arg == 0 {
+            SW_WORKER_IDLE
+        } else {
+            SW_WORKER_BUSY
+        }),
         OP_REOPEN_LOGGER => {
             if let Some(logger) = swoole_rs_utilities::process_logger() {
                 // SAFETY: the process logger, live while the process runs.
@@ -248,31 +215,23 @@ unsafe fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: the context's live worker.
         OP_DETACH_WORKER => unsafe { swr_v1_worker_global_detach(worker) },
         OP_WORKER_ENTER => {
-            // SAFETY: as above.
-            swoole_set_worker_id(unsafe { swr_v1_worker_id(worker) });
+            swoole_set_worker_id(ctx.worker().id());
             swoole_set_worker_type(SW_EVENT_WORKER);
             // SAFETY: the context's live server and worker.
             unsafe { crate::worker_methods::init_event_worker(serv, worker) };
         }
-        OP_CPU_AFFINITY => {
-            // SAFETY: the context's live server.
-            let config = unsafe { view::config(serv) };
+        OP_CPU_AFFINITY =>
+        {
             #[cfg(target_os = "linux")]
-            if config.open_cpu_affinity {
-                // SAFETY: the context's live worker.
-                set_cpu_affinity(config, unsafe { swr_v1_worker_id(worker) });
+            if ctx.config().open_cpu_affinity {
+                set_cpu_affinity(ctx.config(), ctx.worker().id());
             }
-            #[cfg(not(target_os = "linux"))]
-            let _ = config;
         }
-        // SAFETY: the context's live server and worker.
-        OP_GLOBAL_HOOK => unsafe { global_hook(serv, worker, arg) },
+        OP_GLOBAL_HOOK => global_hook(ctx, arg),
         OP_PUSH_STOP_MESSAGE => {
             let msg = WorkerStopMessage {
-                // SAFETY: a plain syscall.
-                pid: unsafe { libc::getpid() },
-                // SAFETY: the context's live worker.
-                worker_id: u16::try_from(unsafe { swr_v1_worker_id(worker) }).unwrap_or(u16::MAX),
+                pid: std::process::id().cast_signed(),
+                worker_id: u16::try_from(ctx.worker().id()).unwrap_or(u16::MAX),
             };
             // SAFETY: the context's live server.
             let pool = unsafe { view::workers(serv) }.event_pool;
@@ -288,11 +247,7 @@ unsafe fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// `Server::foreach_connection`'s selected connection.
-///
-/// # Safety
-/// As [`swr_v1_event_worker_call`]; the ops after `OP_CONN_AT` run with the
-/// connection it selected.
-unsafe fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     if op == OP_CONN_AT {
         let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
         // SAFETY: the context's live server.
@@ -307,9 +262,8 @@ unsafe fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let conn = unsafe { ctx.conn.as_ref() }?;
     Some(match op {
         OP_CONN_READABLE => {
-            // SAFETY: the valid connection's live socket.
-            let socket = unsafe { &*conn.socket.cast::<SocketRecord>() };
-            u64::from(conn.peer_closed == 0 && socket.removed == 0)
+            let removed = crate::objects::socket(conn.socket).is_none_or(|s| s.removed != 0);
+            u64::from(conn.peer_closed == 0 && !removed)
         }
         OP_CONN_REACTOR => u64::from(conn.reactor_id),
         OP_CLOSE_CONNECTION => {
@@ -370,10 +324,7 @@ pub unsafe extern "C" fn swr_workers_signal_set(arg: u64, own: unsafe extern "C"
 }
 
 /// `Worker_global_hook`: the worker start/stop and server shutdown hooks.
-///
-/// # Safety
-/// `serv` and `worker` are live.
-unsafe fn global_hook(serv: *mut c_void, worker: *mut WorkerRecord, hook: u64) {
+fn global_hook(ctx: &Context, hook: u64) {
     let id = match hook {
         HOOK_BEFORE_WORKER_START => SW_GLOBAL_HOOK_BEFORE_WORKER_START,
         HOOK_BEFORE_SERVER_SHUTDOWN => SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN,
@@ -384,12 +335,11 @@ unsafe fn global_hook(serv: *mut c_void, worker: *mut WorkerRecord, hook: u64) {
     }
     if hook == HOOK_BEFORE_SERVER_SHUTDOWN {
         // SAFETY: the shutdown hooks take the server.
-        unsafe { swoole_rs_corebase::swoole_call_hook(id, serv) };
+        unsafe { swoole_rs_corebase::swoole_call_hook(id, ctx.serv) };
         return;
     }
-    // SAFETY: per the caller.
-    let worker_id = unsafe { swr_v1_worker_id(worker) } as usize;
-    let mut args: [*mut c_void; 2] = [serv, core::ptr::without_provenance_mut(worker_id)];
+    let worker_id = ctx.worker().id() as usize;
+    let mut args: [*mut c_void; 2] = [ctx.serv, core::ptr::without_provenance_mut(worker_id)];
     // SAFETY: the worker hooks take { server, worker id }.
     unsafe { swoole_rs_corebase::swoole_call_hook(id, args.as_mut_ptr().cast()) };
 }

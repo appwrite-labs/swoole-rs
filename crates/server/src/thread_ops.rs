@@ -61,25 +61,10 @@ struct DgramPacket {
     length: u32,
 }
 
-/// `swoole::PacketPtr`.
-#[repr(C)]
-struct BusPacket {
-    length: usize,
-    data: *const c_char,
-}
-
 // SAFETY: crates/protocols' bus, linked into the archive.
 unsafe extern "C" {
-    fn swr_v1_bus_set_buffer_size(bus: *mut c_void, size: usize);
-    fn swr_v1_bus_buffer_size(bus: *mut c_void) -> usize;
     fn swr_v1_bus_set_always_chunked(bus: *mut c_void);
-    fn swr_v1_bus_set_buffer(bus: *mut c_void, buffer: *mut c_void);
-    fn swr_v1_bus_buffer(bus: *mut c_void) -> *mut DataHead;
-    fn swr_v1_bus_packet(bus: *mut c_void) -> BusPacket;
-    fn swr_v1_bus_pop(bus: *mut c_void);
     fn swr_v1_bus_count_ids(bus: *mut c_void, counter: *mut c_void);
-    fn swr_v1_bus_init_pipe_socket(bus: *mut c_void, fd: c_int);
-    fn swr_v1_bus_pipe_socket(bus: *mut c_void, fd: c_int) -> *mut SocketRecord;
 }
 
 // SAFETY: crates/process' and crates/ports' methods under their upstream symbols.
@@ -120,8 +105,7 @@ fn socket<'a>(socket: *mut c_void) -> &'a mut SocketRecord {
 
 /// `thread->message_bus.get_pipe_socket(sock)`.
 fn pipe_socket(thread: &ThreadRecord, sock: *mut c_void) -> *mut SocketRecord {
-    // SAFETY: the thread's live bus, and a live pipe socket.
-    unsafe { swr_v1_bus_pipe_socket(thread.bus, socket(sock).fd) }
+    thread.message_bus().pipe_socket(socket(sock)).cast()
 }
 
 fn worker<'a>(serv: *mut c_void, id: impl TryInto<u16>) -> &'a mut WorkerRecord {
@@ -377,16 +361,7 @@ pub(crate) unsafe fn answer(
         }
         OP_THREAD_CLEAN => {
             // `message_bus.free_buffer()`.
-            let thread = this(ctx);
-            // SAFETY: the thread's live bus.
-            let buffer = unsafe { swr_v1_bus_buffer(thread.bus) };
-            // SAFETY: the bus's allocator, which allocated its buffer.
-            if let Some(free) = unsafe { (*thread.allocator).free } {
-                // SAFETY: as above.
-                unsafe { free(buffer.cast()) };
-            }
-            // SAFETY: the thread's live bus.
-            unsafe { swr_v1_bus_set_buffer(thread.bus, ptr::null_mut()) };
+            this(ctx).message_bus().free_buffer();
             0
         }
         OP_THREAD_NOTIFY => {
@@ -441,10 +416,9 @@ pub(crate) unsafe fn answer(
             // SAFETY: the server's live command pipe.
             let fd = socket(unsafe { (*pair).worker_socket }.cast()).fd;
             let thread = this(ctx);
-            // SAFETY: the thread's live bus.
-            unsafe { swr_v1_bus_init_pipe_socket(thread.bus, fd) };
-            // SAFETY: as above.
-            thread.pipe_command = unsafe { swr_v1_bus_pipe_socket(thread.bus, fd) };
+            let bus = thread.message_bus();
+            bus.init_pipe_socket(fd);
+            thread.pipe_command = bus.pipe_fd(fd).cast();
             socket(thread.pipe_command.cast()).output.buffer_size = u32::MAX;
             0
         }
@@ -456,18 +430,12 @@ pub(crate) unsafe fn answer(
             // SAFETY: the thread's live bus, counting from the shared counter.
             unsafe { swr_v1_bus_count_ids(thread.bus, counter) };
             // SAFETY: as above.
-            unsafe { swr_v1_bus_set_buffer_size(thread.bus, config().ipc_max_size as usize) };
-            // SAFETY: as above.
             unsafe { swr_v1_bus_set_always_chunked(thread.bus) };
-            // SAFETY: as above.
-            let size = unsafe { swr_v1_bus_buffer_size(thread.bus) };
-            // SAFETY: the bus's live allocator.
-            let malloc = unsafe { (*thread.allocator).malloc };
-            // SAFETY: as above.
-            let buffer = malloc.map_or(ptr::null_mut(), |malloc| unsafe { malloc(size) });
-            // SAFETY: the bus takes the buffer.
-            unsafe { swr_v1_bus_set_buffer(thread.bus, buffer) };
-            u64::from(!buffer.is_null())
+            u64::from(
+                thread
+                    .message_bus()
+                    .alloc_buffer(config().ipc_max_size as usize),
+            )
         }
         OP_RT_ADD_WORKER_PIPE | OP_WORKER_PIPE_UNREAD => {
             let worker = worker(serv, arg);
@@ -490,16 +458,14 @@ pub(crate) unsafe fn answer(
 
         OP_PIPE_READ => {
             let thread = this(ctx);
-            // SAFETY: the thread's live bus.
-            ctx.resp = unsafe { swr_v1_bus_buffer(thread.bus) };
+            ctx.resp = thread.message_bus().buffer();
             // SAFETY: the context's live event.
             let sock = socket(unsafe { (*ctx.event).socket });
             let read = crate::pool_native::read_bus(thread.bus, thread.allocator, sock, true);
             sign(i64::try_from(read).unwrap_or(-1))
         }
         OP_PIPE_POP => {
-            // SAFETY: the thread's live bus.
-            unsafe { swr_v1_bus_pop(this(ctx).bus) };
+            this(ctx).message_bus().pop();
             0
         }
         OP_COMMAND_REQUEST => {
@@ -513,8 +479,7 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_COMMAND_RESPONSE | OP_PIPE_SEND => {
-            // SAFETY: the thread's live bus, holding a whole packet.
-            let packet = unsafe { swr_v1_bus_packet(this(ctx).bus) };
+            let packet = this(ctx).message_bus().packet();
             // SAFETY: the bus's buffer, which PIPE_READ stored.
             let mut info = unsafe { *resp };
             if op == OP_COMMAND_RESPONSE {

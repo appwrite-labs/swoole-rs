@@ -6,7 +6,7 @@
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering;
 
-use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_id};
+use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     OP_ADD_MASTER_TIMER, OP_ALL_WORKER_NUM, OP_CLOSE_CONNECTION, OP_CLOSE_EVENT_SOCKET,
@@ -29,6 +29,8 @@ use crate::ConnectionRecord;
 use crate::callbacks::CB_START;
 use crate::reactor_ops::sign;
 use crate::view;
+
+mod native;
 
 /// workers.cc's `WorkersNative<1>`.
 #[repr(C)]
@@ -65,8 +67,6 @@ unsafe extern "C-unwind" {
     fn port_create_socket(port: *mut c_void) -> c_int;
     #[link_name = "_ZN6swoole10ListenPort12close_socketEv"]
     fn port_close_socket(port: *mut c_void);
-    #[link_name = "_ZN6swoole7Reactor4waitEv"]
-    fn reactor_wait(reactor: *mut c_void) -> c_int;
     #[link_name = "_ZN6swoole11ProcessPool7destroyEv"]
     fn pool_destroy(pool: *mut c_void);
 }
@@ -83,42 +83,30 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_process_call(
 ) -> u64 {
     // SAFETY: per the caller.
     let ctx = unsafe { &mut *context.cast::<Context>() };
-    // SAFETY: per the caller.
-    let answer = unsafe { server(ctx, op, arg) };
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { worker(ctx, op) });
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { connection(ctx, op, arg) });
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { pipe(ctx, op) });
-    answer.unwrap_or_else(|| std::process::abort())
+    native::native(ctx, op, arg)
+        .or_else(|| server(ctx, op, arg))
+        .or_else(|| worker(ctx, op))
+        .or_else(|| connection(ctx, op, arg))
+        .or_else(|| pipe(ctx, op))
+        .unwrap_or_else(|| std::process::abort())
 }
 
 /// The factory's work on the message the server's bus just read from the pipe.
-///
-/// # Safety
-/// As [`swr_v1_reactor_process_call`]; the ops run with a message read.
-unsafe fn pipe(ctx: &Context, op: u32) -> Option<u64> {
+fn pipe(ctx: &Context, op: u32) -> Option<u64> {
     use crate::base_factory::SendData;
-    use crate::pool_native::{swr_v1_bus_buffer, swr_v1_bus_packet};
     /// `SW_SERVER_EVENT_RECV_DATA`, `Server::CLOSE_ACTIVELY`.
     const EVENT_RECV_DATA: u8 = 0;
     const CLOSE_ACTIVELY: c_int = 1 << 2;
-    // SAFETY: the context's live server.
-    let state = unsafe { view::state(ctx.serv) };
-    let [bus, _] = crate::master_ops::server_message_bus(state);
-    // SAFETY: the bus's `PipeBuffer`: the message's head, then its data.
-    let buffer = unsafe { swr_v1_bus_buffer(bus) };
-    // SAFETY: as above.
-    let info = unsafe { *buffer };
+    let (state, bus) = (ctx.state(), ctx.bus());
+    let info = bus.head();
     let mut send = match op {
         OP_FINISH_SEND_FILE => SendData {
             info,
-            data: buffer.wrapping_add(1).cast(),
+            // The bus's `PipeBuffer`: the message's head, then its data.
+            data: bus.buffer().wrapping_add(1).cast(),
         },
         OP_FINISH_SEND_DATA => {
-            // SAFETY: the live bus's packet.
-            let packet = unsafe { swr_v1_bus_packet(bus) };
+            let packet = bus.packet();
             let mut info = info;
             info.kind = EVENT_RECV_DATA;
             info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
@@ -161,32 +149,22 @@ fn reuse_port(config: &crate::ServerConfig) -> bool {
 }
 
 /// The facts and effects on the server and its ports.
-///
-/// # Safety
-/// As [`swr_v1_reactor_process_call`].
-unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
-    // SAFETY: the context's live server.
-    let config = unsafe { view::config(serv) };
+    let config = ctx.config();
     let port = || {
-        // SAFETY: as above.
-        let ports = unsafe { ports(serv) };
         usize::try_from(arg)
             .ok()
-            .and_then(|i| ports.get(i).copied())
+            .and_then(|i| ctx.ports().get(i).copied())
     };
-    let stream = |port: *mut c_void| {
-        // SAFETY: one of the server's live ports.
-        is_stream(unsafe { view::port(port) }.r#type)
-    };
+    let stream = |port: *mut c_void| is_stream(native::port_config(port).r#type);
     Some(match op {
         OP_SET_SINGLE_THREAD => {
             config.single_thread = true;
             0
         }
         OP_HAVE_STREAM_SOCK => u64::from(config.have_stream_sock),
-        // SAFETY: the context's live server.
-        OP_PORT_COUNT => unsafe { ports(serv) }.len() as u64,
+        OP_PORT_COUNT => ctx.ports().len() as u64,
         OP_PORT_STREAM => u64::from(stream(port()?)),
         OP_REUSE_PORT => u64::from(reuse_port(config)),
         OP_PORT_REUSE => u64::from(reuse_port(config) && stream(port()?)),
@@ -209,29 +187,24 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: as above.
         OP_PORT_LISTEN => sign(unsafe { port_listen(port()?) }),
         OP_INIT_IPC_MAX_SIZE => {
-            // SAFETY: the context's live server.
-            unsafe { crate::worker_methods::init_ipc_max_size(serv) };
+            config.ipc_max_size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
             0
         }
         OP_SINGLE_WORKER => u64::from(
             config.worker_num == 1
                 && config.task_worker_num == 0
                 && config.max_request == 0
-                // SAFETY: the context's live server.
-                && unsafe { view::user_worker_num(serv) } == 0,
+                && ctx.workers().user_count == 0,
         ),
-        // SAFETY: as above.
+        // SAFETY: the context's live server.
         OP_START_MANAGER => sign(unsafe { entry::start_manager_process(serv) }),
         OP_POOL_DESTROY => {
-            // SAFETY: the context's live server.
-            let pool = unsafe { view::workers(serv) }.event_pool;
-            // SAFETY: its live event worker pool.
-            unsafe { pool_destroy(pool.cast()) };
+            // SAFETY: the server's live event worker pool.
+            unsafe { pool_destroy(ctx.workers().event_pool.cast()) };
             0
         }
         OP_ALL_WORKER_NUM => {
-            // SAFETY: the context's live server.
-            let workers = unsafe { view::workers(serv) };
+            let workers = ctx.workers();
             u64::from(workers.event_count)
                 + u64::from(workers.task_count)
                 + workers.user_count as u64
@@ -245,10 +218,8 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
         OP_TASK_IPC_UNIXSOCK => u64::from(config.task_ipc_mode == TASK_IPC_UNIXSOCK),
         OP_TASK_POOL_WORKER_NUM => {
-            // SAFETY: the context's live server.
-            let pool = unsafe { view::task_pool(serv) };
-            // SAFETY: its live task pool.
-            u64::from(unsafe { (*pool).worker_num })
+            // SAFETY: the server's live task pool.
+            u64::from(unsafe { (*ctx.workers().task_pool).worker_num })
         }
         OP_INIT_REACTOR => {
             // SAFETY: the context's live server and the running reactor.
@@ -256,22 +227,17 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SET_MASTER_PID => {
-            // SAFETY: the live server's counters; a plain syscall.
-            unsafe { view::counters_mut(serv) }.master_pid = unsafe { libc::getpid() };
+            ctx.counters().master_pid = std::process::id().cast_signed();
             0
         }
-        // SAFETY: the context's live server.
-        OP_HAS_ON_START => u64::from(unsafe { view::has_callback(serv, CB_START) }),
-        // SAFETY: the live server's counters.
-        OP_ONSTART_CALLED => u64::from(unsafe { view::counters(serv) }.onstart_called),
+        OP_HAS_ON_START => u64::from(
+            ctx.callback_slot(CB_START)
+                .is_some_and(crate::callbacks::CallbackSlot::is_set),
+        ),
+        OP_ONSTART_CALLED => u64::from(ctx.counters().onstart_called),
         OP_ON_START => {
-            // SAFETY: the live server's counters.
-            unsafe { view::counters_mut(serv) }.onstart_called = true;
-            // SAFETY: the context's live server.
-            let state = unsafe { view::state_ptr(serv) };
-            // SAFETY: its state, live as long as it.
-            let state = unsafe { &*state };
-            if let Some(slot) = state.callbacks.slot(CB_START) {
+            ctx.counters().onstart_called = true;
+            if let Some(slot) = ctx.callback_slot(CB_START) {
                 // SAFETY: `onStart` takes the server.
                 unsafe { slot.call_server(serv) };
             }
@@ -286,12 +252,9 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(!node.is_null())
         }
         OP_HEARTBEAT_INTERVAL => u64::from(config.heartbeat_check_interval),
-        // SAFETY: the running reactor.
-        OP_REACTOR_WAIT => sign(unsafe { reactor_wait(reactor(ctx)) }),
-        // SAFETY: the live server's counters.
-        OP_MINFD => sign(unsafe { view::counters(serv) }.min_fd),
-        // SAFETY: as above.
-        OP_MAXFD => sign(unsafe { view::counters(serv) }.max_fd),
+        OP_REACTOR_WAIT => sign(ctx.reactor_handle().wait()),
+        OP_MINFD => sign(ctx.counters().min_fd),
+        OP_MAXFD => sign(ctx.counters().max_fd),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
         _ => return None,
     })
@@ -307,34 +270,26 @@ fn reactor(ctx: &Context) -> *mut c_void {
 }
 
 /// The effects on the context's worker.
-///
-/// # Safety
-/// As [`swr_v1_reactor_process_call`].
-unsafe fn worker(ctx: &Context, op: u32) -> Option<u64> {
+fn worker(ctx: &Context, op: u32) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
-    // SAFETY: the ops below run with the context's live worker.
-    let id = || unsafe { swr_v1_worker_id(worker) };
     match op {
         OP_WORKER_ENTER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_EVENT_WORKER);
-            swoole_rs_process::methods::swoole_set_worker_id(id());
-            // SAFETY: a plain syscall.
-            swoole_rs_process::methods::swoole_set_worker_pid(unsafe { libc::getpid() });
+            swoole_rs_process::methods::swoole_set_worker_id(ctx.worker_record().id());
+            swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
             // SAFETY: the context's live server and worker.
             unsafe { crate::worker_methods::init_event_worker(serv, worker) };
         }
         // SAFETY: the context's live server.
         OP_WORKER_SIGNAL_INIT => unsafe { entry::worker_signal_init(serv) },
         OP_RESET_CONNECTION_NUM => {
-            // SAFETY: the live server's counters, one slot per worker.
-            let nums = unsafe { view::counters(serv) }.connection_nums;
-            // SAFETY: the worker's slot.
-            let slot = unsafe { &*nums.wrapping_add(id() as usize) };
+            let id = ctx.worker_record().id() as usize;
+            // SAFETY: the live server's counters' slot for each worker.
+            let slot = unsafe { &*ctx.counters().connection_nums.wrapping_add(id) };
             slot.store(0, Ordering::Relaxed);
         }
-        // SAFETY: the context's live worker.
-        OP_HAS_PIPE_WORKER => return Some(u64::from(!unsafe { (*worker).pipe_worker }.is_null())),
-        OP_WORKER_ID => return Some(u64::from(id())),
+        OP_HAS_PIPE_WORKER => return Some(u64::from(!ctx.worker_record().pipe_worker.is_null())),
+        OP_WORKER_ID => return Some(u64::from(ctx.worker_record().id())),
         // SAFETY: the context's live server and worker.
         OP_WORKER_START_CALLBACK => unsafe { entry::worker_start_callback(serv, worker.cast()) },
         // SAFETY: as above.
@@ -349,11 +304,7 @@ const SW_EVENT_WORKER: c_int = 2;
 
 /// The connection the context selected (`OP_CONN_AT`, `OP_EVENT_CONN_ACTIVE`) and
 /// the event being closed.
-///
-/// # Safety
-/// As [`swr_v1_reactor_process_call`]; the connection ops run with the connection
-/// selected, the event ops with the context's event.
-unsafe fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     match op {
         OP_CONN_AT => {
@@ -375,16 +326,14 @@ unsafe fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             return Some(u64::from(active));
         }
         OP_EVENT_SOCKET_REMOVED => {
-            // SAFETY: the context's live event.
-            let socket = unsafe { (*ctx.event).socket };
-            // SAFETY: its live socket.
-            return Some(u64::from(unsafe { (*socket).removed }));
+            let socket = crate::objects::socket(ctx.event_socket())?;
+            return Some(u64::from(socket.removed));
         }
         OP_CLOSE_EVENT_SOCKET => {
-            // SAFETY: the context's live event.
-            let socket = unsafe { (*ctx.event).socket };
             // SAFETY: the running reactor and the event's session socket.
-            let closed = unsafe { crate::reactor_entry::close_connection(reactor(ctx), socket) };
+            let closed = unsafe {
+                crate::reactor_entry::close_connection(reactor(ctx), ctx.event_socket().cast())
+            };
             return Some(sign(closed));
         }
         OP_HEARTBEAT_NOW => {
@@ -415,8 +364,7 @@ unsafe fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: the context's live server and one of its connections.
         OP_CONN_HEALTHY => u64::from(unsafe { view::healthy(serv, ctx.now, conn) }),
         OP_CONN_SSL_PENDING => {
-            // SAFETY: the valid connection's live socket.
-            let socket = unsafe { &*socket };
+            let socket = crate::objects::socket(socket.cast())?;
             u64::from(!socket.ssl.is_null() && socket.tls.state != SSL_READY)
         }
         OP_CONN_CLOSE_FORCE => u64::from(conn.close_force),
