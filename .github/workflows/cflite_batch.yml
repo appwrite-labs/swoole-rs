@@ -29,3 +29,21 @@ jobs:
         with:
           name: cflite-crashes
           path: ./out/artifacts
+  # A failed batch on main otherwise reaches nobody: open one ready bug for it.
+  report:
+    needs: fuzz
+    if: failure()
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title='ClusterFuzzLite batch failed'
+          if [ -z "$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[].number')" ]; then
+            gh issue create --title "$title" --label kind:bug,p1,status:ready --assignee loks0n \
+              --body "$RUN failed. Download its \`cflite-crashes\` artifact, reproduce each crash with \`cargo +nightly fuzz run <target> <input> -- -runs=1\`, fix it, and add the input to \`fuzz/seeds/<target>/\`. If the crash is a likely upstream vulnerability, file it in the private security repository instead of here."
+          fi
