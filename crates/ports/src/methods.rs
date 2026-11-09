@@ -39,7 +39,7 @@ const SOCK_CLOEXEC: c_int = 1 << 3;
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::view;
 
-use swoole_rs_http::request_free;
+use swoole_rs_http_ffi::request_free;
 use swoole_rs_server::ConnectionRecord;
 
 use crate::lifecycle::{
@@ -1235,7 +1235,7 @@ mod tests {
         // SAFETY: an all-zero record is a closed connection with no object.
         let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
         // `request_new`'s boxed request, without the native effects it links.
-        let request = swoole_rs_http::HttpRequest::new(no_effects);
+        let request = swoole_rs_http_ffi::HttpRequest::new(no_effects);
         conn.object = Box::into_raw(Box::new(request)).cast();
         destroy_http_request(&raw mut conn);
         assert!(conn.object.is_null(), "the request is freed and cleared");
