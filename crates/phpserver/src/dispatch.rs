@@ -12,7 +12,7 @@ use std::{
 use swoole_rs_clients::address::{swr_v1_clients_address_port, swr_v1_clients_address_string};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, net_types::Protocol};
-use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::worker_record::WorkerRecord;
@@ -136,7 +136,7 @@ pub(crate) fn invoke(
             args.as_mut_ptr(),
             retval,
             coroutine,
-            swr_v1_phpcoroutines_create,
+            create_coroutine,
             swr_zend_callable_warning,
         )
     };
@@ -1133,7 +1133,7 @@ fn call_unlimited(
             args.as_mut_ptr(),
             retval,
             false,
-            swr_v1_phpcoroutines_create,
+            create_coroutine,
             swr_zend_callable_warning,
         )
     };

@@ -212,8 +212,8 @@ class FrozenReports(unittest.TestCase):
             root = Path(root)
             report = root / 'target/reports/dev/run/loop.json'
             report.parent.mkdir(parents=True)
-            self.assertEqual(dev_report.sidecar('/work/target/hybrid/builds/key/build-manifest.json', report),
-                             root / 'target/hybrid/builds/key/build-manifest.json')
+            self.assertEqual(dev_report.sidecar('/work/target/ext/build-manifest.json', report),
+                             root / 'target/ext/build-manifest.json')
             stale = root / 'stale.json'
             stale.write_text('{}')
             local = report.parent / 'stale.json'

@@ -42,7 +42,8 @@ pub use error::{
 };
 pub use function::create_object_deny;
 pub use helpers::{
-    declare_property_null, each_value, long_zval, module_loaded, property, update_property,
+    EMPTY_FCC, EMPTY_FCI, declare_property_null, each_value, long_zval, module_loaded, property,
+    update_property,
 };
 pub use object::{Object, Props, init_object, set_object};
 pub use swoole_rs_zend_sys as sys;

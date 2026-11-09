@@ -31,7 +31,7 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
 use swoole_rs_corebase::log::set_last_error;
-use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpstubs::redis_server as stubs;
 use swoole_rs_protocols::{RespPhpState, resp_handler_key, resp_php_next};
@@ -356,7 +356,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
             args.as_ptr().cast_mut().cast(),
             retval.as_ptr(),
             coroutine,
-            swr_v1_phpcoroutines_create,
+            create_coroutine,
             swr_zend_callable_warning,
         )
     }?;

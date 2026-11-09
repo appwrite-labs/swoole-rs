@@ -6,16 +6,13 @@
         reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
     )
 )]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
-use std::{mem::MaybeUninit, slice};
+#![forbid(unsafe_code)]
+use std::mem::MaybeUninit;
+use swoole_rs_locale::case_prefix;
 const INVALID: i32 = -1;
 const OVERFLOW: i32 = -2;
+mod chunked;
+pub use chunked::{CHUNK_DATA, CHUNK_SIZE, CHUNK_TRAILER, HttpChunked, HttpChunks};
 mod conditional;
 pub use conditional::{Calendar, Tm, conditional, http_date};
 mod directory;
@@ -23,10 +20,10 @@ use directory::HttpDirectory;
 mod dispatch;
 pub use dispatch::transport_route;
 mod framing;
-pub use framing::HttpFrame;
+pub use framing::{HttpFrame, expect as has_expect_header, header_value};
 mod headers;
 mod index_page;
-pub use headers::{HttpCookie, HttpHeaderInfo, cookie_next};
+pub use headers::{HttpCookie, HttpHeaderInfo, cookie_next, header_info};
 mod maps;
 mod multipart;
 pub use multipart::{multipart_disposition, multipart_filename, multipart_result};
@@ -37,11 +34,6 @@ pub use proxy::{
 mod range;
 mod range_response;
 use range_response::HttpRangeFinish;
-mod request;
-pub use request::{
-    HttpForm, HttpNative, HttpRequest, HttpString, destroy_multipart_parser, init_multipart_parser,
-    parse_multipart_data, request_free, request_new,
-};
 mod rewrite;
 pub use rewrite::RewriteRules;
 mod static_context;
@@ -59,8 +51,6 @@ use range::HttpRangeState;
 pub use static_headers::{HttpStaticHeaders, static_headers};
 pub use static_path::{HttpStaticPath, location_match};
 
-/// # Safety
-/// Nonempty input is readable and initialized for its length; no borrow escapes.
 /// `input` up to its first NUL, or all of it.
 fn c_text(input: &[u8]) -> &[u8] {
     input.split(|&b| b == 0).next().unwrap_or_default()
@@ -69,39 +59,9 @@ fn c_text(input: &[u8]) -> &[u8] {
 fn tail(input: &[u8], at: usize) -> &[u8] {
     input.get(at..).unwrap_or_default()
 }
-unsafe fn bytes<'a>(data: *const u8, length: usize) -> Result<&'a [u8], i32> {
-    if length > isize::MAX as usize {
-        return Err(OVERFLOW);
-    }
-    if length == 0 {
-        return Ok(&[]);
-    }
-    if data.is_null() {
-        return Err(INVALID);
-    }
-    // SAFETY: non-null, `length <= isize::MAX`; callers lend that many initialized bytes.
-    Ok(unsafe { slice::from_raw_parts(data, length) })
-}
-/// Preserve the pinned POSIX comparison's current locale and matching-NUL rules.
-/// This libc leaf borrows initialized bytes only; it has no allocator, callback,
-/// IO or Zend boundary. ASCII folding alone differs for configured binary paths.
-/// True when libc's case-insensitive comparison differs at this first byte pair in
-/// every locale, so the call can be skipped: `tolower` keeps ASCII in ASCII except
-/// Turkish `I` (to `ı`), and only Turkish `İ` lowers to an ASCII byte (`i`).
-fn differs_at_first(left: u8, right: u8) -> bool {
-    left.is_ascii()
-        && right.is_ascii()
-        && left | 0x20 != b'i'
-        && right | 0x20 != b'i'
-        && !left.eq_ignore_ascii_case(&right)
-}
-#[inline]
-fn case_prefix(input: &[u8], expected: &[u8]) -> bool {
-    input.len() >= expected.len()
-        && !matches!((input.first(), expected.first()), (Some(&left), Some(&right)) if differs_at_first(left, right))
-        && swoole_rs_locale::strncasecmp_equal(input, expected, expected.len())
-}
-fn case_equal(input: &[u8], expected: &[u8]) -> bool {
+/// `input` is `expected`, compared as [`case_prefix`] does.
+#[must_use]
+pub fn case_equal(input: &[u8], expected: &[u8]) -> bool {
     input.len() == expected.len() && case_prefix(input, expected)
 }
 fn unreserved(byte: u8) -> bool {
@@ -242,50 +202,4 @@ pub fn boundary(input: &[u8], mut offset: usize) -> Result<Option<HttpSpan>, i32
         offset,
         length: count,
     }))
-}
-
-/// Held by the test that switches `LC_CTYPE`, which `strncasecmp` reads, and by tests
-/// whose case-insensitive matches a Turkish locale would change.
-#[cfg(test)]
-pub(crate) static LOCALE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn skipped_first_bytes_differ_under_libc_in_each_locale() {
-        unsafe extern "C" {
-            fn setlocale(category: i32, locale: *const std::ffi::c_char) -> *mut std::ffi::c_char;
-        }
-        const LC_CTYPE: i32 = if cfg!(target_os = "linux") { 0 } else { 2 };
-        let locales = [
-            c"C",
-            c"C.UTF-8",
-            c"en_US.ISO8859-1",
-            c"en_US.UTF-8",
-            c"tr_TR.ISO8859-9",
-            c"tr_TR.UTF-8",
-        ];
-        let _locale = LOCALE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for locale in locales {
-            // SAFETY: a NUL-terminated name; this test alone changes LC_CTYPE, then restores it.
-            if unsafe { setlocale(LC_CTYPE, locale.as_ptr()) }.is_null() {
-                continue;
-            }
-            for left in 0..=u8::MAX {
-                for right in 0..=u8::MAX {
-                    if differs_at_first(left, right) {
-                        assert!(
-                            !swoole_rs_locale::strncasecmp_equal(&[left], &[right], 1),
-                            "{left:#x} {right:#x} in {locale:?}"
-                        );
-                    }
-                }
-            }
-        }
-        // SAFETY: restores the default locale.
-        unsafe { setlocale(LC_CTYPE, c"C".as_ptr()) };
-    }
 }

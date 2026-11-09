@@ -111,8 +111,7 @@ unsafe fn empty(buffer: *mut Buffer) -> Result<bool, i32> {
 /// # Safety
 /// `output` is the socket's embedded block and `kernel_nobufs` its flag; `buffer` is
 /// its `out_buffer`'s Rust handle or null; `payload` and `ops` are valid for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_write(
+pub unsafe fn swr_v1_reactor_write(
     output: *mut SocketOutput,
     kernel_nobufs: *mut bool,
     buffer: *mut Buffer,

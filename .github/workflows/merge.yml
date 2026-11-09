@@ -3,9 +3,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 # Latest wins: one run at a time; GitHub keeps only the newest push pending, so the
 # next run always covers main's head. Never cancel-in-progress, or no run finishes.
 concurrency:
@@ -33,15 +30,15 @@ jobs:
         # Gates compare against accepted patch states at older commits (git show <sha>:...).
         with:
           fetch-depth: 0
-      # Saved from main under a key the PR tier's hybrid and gates jobs restore.
+      # Saved from main under a key the PR tier's ext and gates jobs restore.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
-      # rust-cache restores all of target/: git checkouts without a usable .git, and
-      # native-core builds whose receipt outlives its binary or library. Those trees come
-      # from their own caches, a fresh clone or a ccache-backed rebuild instead.
-      - run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
-      - uses: ./.github/actions/install
+      # rust-cache restores all of target/, with git checkouts that lack a usable .git.
+      # Those trees come from their own caches or a fresh clone instead.
+      - run: rm -rf target/upstream target/upstream-builds target/thirdparty
+      - id: install
+        uses: ./.github/actions/install
       # Caches are saved as soon as they are built, so a failing gate later does not discard
       # them; PR branches can only restore caches saved on main.
       - id: upstream
@@ -56,11 +53,20 @@ jobs:
         with:
           path: target/upstream
           key: ${{ steps.upstream.outputs.cache-primary-key }}
-      - uses: actions/cache/restore@v4
+      # dev.py's reference-build is the --php-sockets profile: cached whole, it prints
+      # `Cached upstream` instead of compiling. build_upstream.py rebuilds it when PHP changes.
+      - id: sockets
+        uses: actions/cache/restore@v4
         with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
+          path: target/upstream-builds/php-sockets
+          key: upstream-php-sockets-${{ runner.os }}-${{ steps.install.outputs.php }}-${{ hashFiles('tools/build_upstream.py') }}
+      - if: steps.sockets.outputs.cache-hit != 'true'
+        run: python3 tools/build_upstream.py --php-sockets
+      - if: steps.sockets.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: target/upstream-builds/php-sockets
+          key: ${{ steps.sockets.outputs.cache-primary-key }}
       - run: cargo fetch --locked
       - run: python3 corpus/thirdparty/hyperf.py --prepare
       - run: python3 tests/modules/buffer/baseline.py --sanitize
@@ -68,11 +74,6 @@ jobs:
       - run: python3 tools/dev.py integrate --all-modules --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi --external-network --php-sockets --shard ${{ matrix.shard }}/3
       - if: always()
         run: python3 tools/merge_summary.py >> "$GITHUB_STEP_SUMMARY"
-      - if: always() && matrix.shard == 1
-        uses: actions/cache/save@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
       # Small on purpose: tools/ci.py downloads it to list failed, new and fixed phases.
       - uses: actions/upload-artifact@v4
         if: always()
@@ -91,29 +92,6 @@ jobs:
             !target/reports/**/*.a
             !target/reports/**/*.o
             target/upstream/build.log
-            target/hybrid/*/build-manifest.json
-
-  # Every merge-tier run saves a ccache of about 500 MB under its own sha, and the repo's
-  # caches share 10 GB; jobs restore the newest, so keep two and delete the rest. A prune
-  # the API rate limit refuses is caught up by the next run, so it doesn't fail main.
-  ccache-prune:
-    needs: full-gates
-    if: always()
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 5
-    permissions:
-      actions: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-    steps:
-      # zts.yml keeps its own ccache-zts- line.
-      - continue-on-error: true
-        run: |
-          for key in ccache-${{ runner.os }}- ccache-zts-${{ runner.os }}-; do
-            gh cache list --ref refs/heads/main --key "$key" --sort created_at --order desc \
-              --limit 100 --json id --jq '.[2:][].id' | xargs -r -n1 gh cache delete
-          done
 
   # Every pinned PHPT on upstream and the Cargo build (crates/ext): any test that passes on
   # upstream must pass on cargo (corpus/upstream/gate.py).
@@ -201,14 +179,9 @@ jobs:
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - if: hashFiles('target/upstream/src/run-tests.php') == ''
         run: python3 tools/build_upstream.py
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       - run: |
-          python3 tools/build_hybrid.py --backend upstream --stdext | tee upstream.log
+          python3 tools/build_upstream.py --stdext | tee upstream.log
           python3 tools/build_ext.py --stdext
           mkdir -p target/phpt
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
@@ -287,11 +260,6 @@ jobs:
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - if: hashFiles('target/upstream/src/run-tests.php') == ''
         run: python3 tools/build_upstream.py
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       - run: python3 tools/dev.py integrate --fix-halfclose --php-extension sockets --phase 'halfclose-*' --with-prerequisites
       # tools/ci.py reads phases* artifacts for new and fixed phases.
@@ -330,6 +298,8 @@ jobs:
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          # Only the pinned tests are read here, and those don't change with the build script.
+          restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
         with:
@@ -383,6 +353,8 @@ jobs:
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          # Only the pinned tests are read here, and those don't change with the build script.
+          restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
         with:
@@ -473,14 +445,14 @@ jobs:
       - run: >
           python3 corpus/run.py $PHP_EXTENSIONS --require-all
           $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
-          --engine upstream=target/upstream/src/modules/swoole.so
+          --engine upstream=target/upstream-builds/php-sockets/src/modules/swoole.so
           --engine cargo=target/ext/swoole.so
           --output target/reports/alpine-corpus.json
       # gate.py fails only what passes on upstream and not on cargo (no re-runs: no bash).
       - if: always()
         run: |
           python3 corpus/upstream/run.py $PHP_EXTENSIONS \
-            --engine upstream=target/upstream/src/modules/swoole.so \
+            --engine upstream=target/upstream-builds/php-sockets/src/modules/swoole.so \
             --engine cargo=target/ext/swoole.so \
             --output target/reports/alpine-phpt.json || [ $? -eq 1 ]
           python3 corpus/upstream/gate.py target/reports/alpine-phpt.json --output target/reports/alpine-gate.json >> "$GITHUB_STEP_SUMMARY"
@@ -491,10 +463,10 @@ jobs:
       - if: always()
         shell: bash
         run: |
-          python3 tools/build_hybrid.py --backend upstream --php-sockets --stdext --configure=--enable-swoole-curl
+          python3 tools/build_upstream.py --php-sockets --stdext --configure=--enable-swoole-curl
           python3 tools/build_ext.py --php-sockets --stdext --configure=--enable-swoole-curl
           mkdir -p target/php85/engines target/php85/results
-          cp -L target/hybrid/upstream-php-sockets-stdext/modules/swoole.so target/php85/engines/upstream.so
+          cp target/upstream-builds/php-sockets-stdext/src/modules/swoole.so target/php85/engines/upstream.so
           cp target/ext/swoole.so target/php85/engines/cargo.so
           python3 corpus/upstream/inventory.py --output target/php85/manifest.json
           set -- --manifest target/php85/manifest.json --timeout 30 $PHP_EXTENSIONS
