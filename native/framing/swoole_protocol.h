@@ -45,9 +45,6 @@ struct Protocol {
     ssize_t (*get_package_length)(const Protocol *, network::Socket *, PacketLength *pl);
     uint8_t (*get_package_length_size)(network::Socket *);
 
-    int recv_with_eof_protocol(network::Socket *socket, String *buffer) const;
-    int recv_with_length_protocol(network::Socket *socket, String *buffer) const;
-
     static ssize_t default_length_func(const Protocol *protocol, network::Socket *socket, PacketLength *pl);
 };
 }  // namespace swoole

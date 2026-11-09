@@ -10,6 +10,7 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
+use swoole_rs_clients::client::Framing;
 use swoole_rs_corebase::constants::FdType::SW_FD_SESSION;
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
@@ -17,9 +18,9 @@ use swoole_rs_error::ErrorCode;
 use swoole_rs_framing::recv::{Effects, recv};
 use swoole_rs_framing::recv::{
     FLAG_DYNAMIC, FLAG_PAUSED, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, MODE_EOF, MODE_LENGTH,
-    MODE_SPLIT, OP_CLEAR_SKIP, OP_DISPATCH, OP_EXTEND, OP_GET_LENGTH, OP_LOG_MALFORMED,
-    OP_LOG_NO_LENGTH, OP_LOG_TOO_LARGE, OP_PAGE, OP_RECV, OP_REDUCE, OP_RESET, OP_SPLIT,
-    OP_SSL_PENDING, RECV_CLOSE, RECV_DONE,
+    OP_CLEAR_SKIP, OP_DISPATCH, OP_EXTEND, OP_GET_LENGTH, OP_LOG_MALFORMED, OP_LOG_NO_LENGTH,
+    OP_LOG_TOO_LARGE, OP_PAGE, OP_RECV, OP_REDUCE, OP_RESET, OP_SPLIT, OP_SSL_PENDING, RECV_CLOSE,
+    RECV_DONE,
 };
 use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_hton64};
 use swoole_rs_framing::{swr_v1_framing_unpack, swr_v1_framing_width};
@@ -386,62 +387,32 @@ pub(crate) unsafe fn receive<K: Packages>(
     status
 }
 
-/// `int Protocol::recv_split_by_eof(Socket *, String *) const`.
-///
-/// # Safety
-/// As [`receive`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZNK6swoole8Protocol17recv_split_by_eofEPNS_7network6SocketEPNS_6StringE"
-    )
-)]
-pub unsafe extern "C" fn recv_split_by_eof(
-    protocol: *const Protocol,
-    socket: *mut SocketRecord,
-    buffer: *mut CppString,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    unsafe { receive::<Callbacks>(protocol, socket, buffer, MODE_SPLIT) }
-}
-
 /// `int Protocol::recv_with_length_protocol(Socket *, String *) const`.
-///
-/// # Safety
-/// As [`receive`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZNK6swoole8Protocol25recv_with_length_protocolEPNS_7network6SocketEPNS_6StringE"
-    )
-)]
-pub unsafe extern "C" fn recv_with_length_protocol(
+fn recv_with_length_protocol(
     protocol: *const Protocol,
     socket: *mut SocketRecord,
     buffer: *mut CppString,
 ) -> c_int {
-    // SAFETY: as the caller promises.
+    // SAFETY: the live protocol, socket and input buffer `Framing` takes.
     unsafe { receive::<Callbacks>(protocol, socket, buffer, MODE_LENGTH) }
 }
 
 /// `int Protocol::recv_with_eof_protocol(Socket *, String *) const`.
-///
-/// # Safety
-/// As [`receive`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZNK6swoole8Protocol22recv_with_eof_protocolEPNS_7network6SocketEPNS_6StringE"
-    )
-)]
-pub unsafe extern "C" fn recv_with_eof_protocol(
+fn recv_with_eof_protocol(
     protocol: *const Protocol,
     socket: *mut SocketRecord,
     buffer: *mut CppString,
 ) -> c_int {
-    // SAFETY: as the caller promises.
+    // SAFETY: the live protocol, socket and input buffer `Framing` takes.
     unsafe { receive::<Callbacks>(protocol, socket, buffer, MODE_EOF) }
 }
+
+/// The framed receives a client's reads use, which `swoole_init` registers
+/// (`swoole_rs_clients::client::set_framing`).
+pub const FRAMING: Framing = Framing {
+    length: recv_with_length_protocol,
+    eof: recv_with_eof_protocol,
+};
 
 /// `static ssize_t Protocol::default_length_func(const Protocol *, Socket *, PacketLength *)`.
 ///
@@ -617,13 +588,11 @@ mod tests {
         protocol.package_length_size = 2;
         protocol.package_body_offset = 2;
         protocol.get_package_length = default_length_func as *mut c_void;
-        let status = unsafe {
-            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer)
-        };
+        let status =
+            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);
-        let status = unsafe {
-            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer)
-        };
+        let status =
+            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| {
             assert_eq!(
@@ -633,9 +602,8 @@ mod tests {
         });
         unsafe { libc::close(peer) };
         // The peer's close ends the next receive.
-        let status = unsafe {
-            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer)
-        };
+        let status =
+            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, -1);
         buffer.dispose();
         unsafe { libc::close(socket.fd) };
@@ -648,9 +616,7 @@ mod tests {
         protocol.package_eof_len = 2;
         protocol.split_by_eof = true;
         buffer.extend(64);
-        let status = unsafe {
-            recv_with_eof_protocol(&raw const protocol, &raw mut socket, &raw mut buffer)
-        };
+        let status = recv_with_eof_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| assert_eq!(*p, [b"ab\r\n".to_vec(), b"cd\r\n".to_vec()]));
         assert_eq!(buffer.length, 1);

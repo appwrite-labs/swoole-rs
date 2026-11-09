@@ -205,24 +205,17 @@ extern "C-unwind" fn writable(_: *mut c_void, _: *mut c_void) -> c_int {
     log("writable");
     OK
 }
-#[unsafe(export_name = "_ZNK6swoole8Protocol25recv_with_length_protocolEPNS_7network6SocketEPNS_6StringE")]
-extern "C-unwind" fn recv_with_length(
-    _: *const Protocol,
-    _: *mut SocketRecord,
-    _: *mut CppString,
-) -> c_int {
-    log("framed false");
-    0
-}
-#[unsafe(export_name = "_ZNK6swoole8Protocol22recv_with_eof_protocolEPNS_7network6SocketEPNS_6StringE")]
-extern "C-unwind" fn recv_with_eof(
-    _: *const Protocol,
-    _: *mut SocketRecord,
-    _: *mut CppString,
-) -> c_int {
-    log("framed true");
-    0
-}
+/// The framed receives, as crates/ports registers them.
+const FRAMING: Framing = Framing {
+    length: |_, _, _| {
+        log("framed false");
+        0
+    },
+    eof: |_, _, _| {
+        log("framed true");
+        0
+    },
+};
 
 /// A socket IO double: logs, then returns the queued result or the whole length.
 fn io(name: &str, length: usize) -> isize {
@@ -401,6 +394,7 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 /// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| *m = Mock::default());
+    set_framing(FRAMING);
     log::set_last_error(0);
     let client = new_client(kind, is_async);
     if callbacks {
