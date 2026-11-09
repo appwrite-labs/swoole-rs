@@ -172,7 +172,9 @@ applying, so `tooling` applies the all-modules patch set to the pin
 `hybrid` re-runs that check over `main`'s head as its last step. A merged PR's
 patches can still stop compiling; the merge tier catches that. `gates` runs the modules a PR
 touches and those depending on a touched crate, and fails only on a phase that didn't fail in
-main's latest completed merge-tier run (`ci.py new-failures`); breakage it misses is caught by
+main's latest completed merge-tier run (`ci.py new-failures`). `phpt` runs the touched
+modules' PHPT families on the Cargo build in parallel shards, gated on upstream's results from
+main's latest merge-tier run (`ci.py phpt-baseline`). Breakage they miss is caught by
 the merge tier and the red-main rule. Keep them cached and audit
 them regularly for waste and duplicate steps; slow or flaky CI is a ticket.
 

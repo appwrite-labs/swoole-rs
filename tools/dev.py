@@ -95,6 +95,13 @@ def changed_modules(base, consumers=True):
     return sorted(selected - {None})
 
 
+def phpt_families(modules):
+    """The upstream PHPT families (tests/<family>/) the named modules own, sorted."""
+    ids = {MODULES[module][0] for module in modules}
+    return sorted({family for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
+                   if module['id'] in ids for family in module.get('phpt_families', [])})
+
+
 def selected_modules(args):
     """The modules whose gates run. Every build has every module; this only narrows the gates."""
     chosen = set(MODULES if getattr(args, 'all_modules', False) else args.module or [])
@@ -488,9 +495,7 @@ def plan(args, reports):
         # tier's phpt jobs, which run every family (and so cover a change to all modules).
         # Only the modules a change touches: a consumer's families can't change outcome
         # without its own code changing, and every family together overruns the phase cap.
-        ids = {MODULES[module][0] for module in getattr(args, 'phpt_module', None) or args.module or ['websocket']}
-        families = sorted({family for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
-                           if module['id'] in ids for family in module.get('phpt_families', [])})
+        families = phpt_families(getattr(args, 'phpt_module', None) or args.module or ['websocket'])
         if families:
             add('phpt', 'corpus/upstream/families.sh', reports / 'phpt', reference, cargo, *php,
                 *[arg for family in families for arg in ['--module', family]], *network)
@@ -802,6 +807,8 @@ def main():
     parser.add_argument('--benchmark', action='store_true', help='Run isolated benchmarks after all correctness phases pass')
     parser.add_argument('--compare', action='store_true', help='Also rerun upstream controls in the candidate lane (integration always does)')
     parser.add_argument('--phase', action='append', help='Run named canonical phases (or fnmatch patterns) only; omitted gates remain explicitly not run and cannot qualify full integration')
+    parser.add_argument('--skip-phase', action='append', default=[], metavar='PATTERN',
+                        help='Leave out the planned phases matching this fnmatch pattern; they remain explicitly not run')
     parser.add_argument('--with-prerequisites', action='store_true',
                         help='Add the phases each --phase needs: the reports it reads and the builds it uses')
     parser.add_argument('--phase-timeout', type=int, default=1200, metavar='SECONDS',
@@ -864,7 +871,8 @@ def main():
                 if missing:
                     parser.error('--phase ' + name + ' requires report-producing phases in the same run: '
                                  + ', '.join(sorted(missing)))
-    commands = [(name, command) for name, command in planned if not args.phase or name in args.phase]
+    commands = [(name, command) for name, command in planned if (not args.phase or name in args.phase)
+                and not any(fnmatchcase(name, pattern) for pattern in args.skip_phase)]
     if args.shard:
         commands = shard(commands, reports, *args.shard)
     if args.plan:
@@ -874,7 +882,7 @@ def main():
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'lane': args.lane,
               'hypothesis': args.hypothesis, 'expected_observation': args.expect,
               'match_child_php_requested': args.match_child_php, 'frozen_source_required': args.frozen_source,
-              'phases': [], 'status': 'running', 'selection_scope': 'explicit_phase_subset' if args.phase else 'complete_plan',
+              'phases': [], 'status': 'running', 'selection_scope': 'explicit_phase_subset' if args.phase or args.skip_phase else 'complete_plan',
               'planned_phases': [name for name, _ in planned], 'selected_phases': [name for name, _ in commands],
               'full_plan_passed': False, 'reused_artifacts': artifact_identity,
               'driver_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
@@ -1026,7 +1034,7 @@ def main():
         for thread in threads:
             thread.join()
         failed = report.get('infrastructure_error') or any(row['failed'] for row in report['phases'])
-        report['status'] = ('partial_failed' if failed else 'partial_passed') if args.phase else ('failed' if failed else 'passed')
+        report['status'] = ('partial_failed' if failed else 'partial_passed') if args.phase or args.skip_phase else ('failed' if failed else 'passed')
         report['full_plan_passed'] = not args.phase and not failed and len(report['phases']) == len(planned)
     finally:
         if report['status'] == 'running':

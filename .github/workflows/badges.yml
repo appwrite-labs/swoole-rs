@@ -35,7 +35,7 @@ jobs:
           git -C target/pin fetch -q --depth 1 https://github.com/swoole/swoole-src "$pin"
           git -C target/pin checkout -q FETCH_HEAD
       # The newest completed merge-tier run on main with a gate result (cancelled runs and
-      # runs whose phpt-gate failed upload no phpt.json), and its build variants' gates.
+      # runs whose PHPT gate failed upload no phpt.json), and its build variants' gates.
       - id: gate
         run: |
           for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 20 --json databaseId -q '.[].databaseId'); do

@@ -57,6 +57,24 @@ class PhptGate(unittest.TestCase):
         self.assertEqual(sorted(p for part in parts for p in part), sorted(paths))
         self.assertTrue(all(abs(len(part) - 25 / 4) < 1 for part in parts))
 
+    def test_family_selection_comes_before_sharding(self):
+        from corpus.upstream import inventory
+        paths = [f'tests/{family}/{n}.phpt' for family in ['a', 'b', 'c'] for n in range(4)] + ['tests/a/fixture.inc']
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(inventory, 'blobs', return_value=paths), \
+             mock.patch.object(inventory, 'digest', return_value='0'):
+            shards = []
+            for index in (1, 2):
+                output = Path(temp) / f'{index}.json'
+                with mock.patch('sys.argv', ['inventory.py', '--module', 'a', '--module', 'c', '--shard', f'{index}/2',
+                                             '--output', str(output)]):
+                    self.assertEqual(inventory.main(), 0)
+                manifest = json.loads(output.read_text())
+                shards.append([test['path'] for test in manifest['tests']])
+                self.assertEqual([row['path'] for row in manifest['support_files']], ['tests/a/fixture.inc'])
+        # The selected families' eight tests split evenly; family b is left out.
+        self.assertEqual([len(tests) for tests in shards], [4, 4])
+        self.assertEqual(sorted(t for tests in shards for t in tests), sorted(p for p in paths if p.endswith('.phpt') and '/b/' not in p))
+
     def test_skips_are_classified_and_only_passed_counts(self):
         detail = 'SKIP x [tests/x.phpt] reason: \x1b[33mmysql server not available\x1b[0m\n'
         self.assertEqual(skip_reason(detail), 'mysql server not available')

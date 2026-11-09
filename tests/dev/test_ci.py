@@ -152,17 +152,17 @@ class Ci(unittest.TestCase):
     def test_a_job_failing_without_failed_phases_is_new_when_it_passed_before(self):
         history = [{'databaseId': 7, 'conclusion': 'failure', 'url': 'u7'}, {'databaseId': 4, 'conclusion': 'failure', 'url': 'u4'}]
         phases = {'7': [['old', False]], '4': [['old', False]]}
-        jobs = {'7': [['full-gates (1)', 'failure'], ['phpt-gate', 'failure'], ['tooling', 'failure']],
-                '4': [['full-gates (1)', 'failure'], ['phpt-gate', 'success'], ['tooling', 'failure']]}
-        gate = 'phpt-gate\tRun gate\t2026-10-27T16:02:38.6Z '
+        jobs = {'7': [['full-gates (1)', 'failure'], ['phpt / gate', 'failure'], ['tooling', 'failure']],
+                '4': [['full-gates (1)', 'failure'], ['phpt / gate', 'success'], ['tooling', 'failure']]}
+        gate = 'phpt / gate\tRun gate\t2026-10-27T16:02:38.6Z '
         failed_log = '\n'.join(gate + line for line in [
             '<details><summary>2 regressions: pass on upstream, fail on a re-run here</summary>',
             '- `tests/a/one.phpt`', '- `tests/b/two.phpt`',
             '<details><summary>1 flaky on upstream</summary>', '- `tests/c/flaky.phpt`: hybrid passed'])
         code, result, _ = self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases,
                                   jobs=jobs, failed_log=failed_log)
-        # full-gates and tooling were already failing; phpt-gate passed in run 4.
-        self.assertEqual(result['new_failures'], ['phpt-gate job (tests/a/one.phpt, tests/b/two.phpt)'])
+        # full-gates and tooling were already failing; the PHPT gate passed in run 4.
+        self.assertEqual(result['new_failures'], ['phpt / gate job (tests/a/one.phpt, tests/b/two.phpt)'])
 
     def test_full_gates_shards_speak_through_their_phases_and_unseen_jobs_are_new(self):
         history = [{'databaseId': 7, 'conclusion': 'failure', 'url': 'u7'}, {'databaseId': 4, 'conclusion': 'success', 'url': 'u4'}]
@@ -233,6 +233,16 @@ class Ci(unittest.TestCase):
             self.assertEqual(code, 0)
         code, _, _ = self.ci('new-failures', runs={}, flags=())
         self.assertEqual(code, 1)
+
+    def test_phpt_baseline_is_the_newest_run_whose_upstream_shards_passed(self):
+        history = [{'databaseId': 9, 'headSha': 's9'}, {'databaseId': 8, 'headSha': 's8'}, {'databaseId': 7, 'headSha': 's7'}]
+        jobs = {'9': [['phpt / phpt (1, upstream)', 'success'], ['phpt / phpt (2, upstream)', 'cancelled']],
+                '8': [['phpt / phpt (1, upstream)', 'success'], ['phpt / phpt (1, cargo)', 'failure'], ['phpt / gate', 'failure']],
+                '7': [['phpt (1, upstream)', 'success']]}
+        code, _, _ = self.ci('phpt-baseline', runs={}, flags=(), history=history, jobs=jobs)
+        self.assertEqual((code, self.out), (0, '8 s8\n'))
+        code, _, _ = self.ci('phpt-baseline', runs={}, flags=(), history=history[:1], jobs=jobs)
+        self.assertEqual((code, self.out), (2, ''))
 
     def test_transient_gh_failures_are_retried(self):
         code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'run list': 2, 'api': 1})
