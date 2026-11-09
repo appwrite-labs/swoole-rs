@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_int, c_void};
 use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, query};
-use swoole_rs_http::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
+use swoole_rs_http_ffi::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
 use swoole_rs_http2::{
     frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
 };

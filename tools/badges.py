@@ -9,7 +9,7 @@ replaced.json  upstream first-party lines (src/, ext-src/, include/; not the emb
                one removes never counts.
 unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/budget.py), and
                how many crates forbid unsafe_code; the per-crate table goes to the step summary.
-speed.json     callgrind instructions per request, hybrid over upstream, from a merge-tier
+speed.json     callgrind instructions per request, Cargo build over upstream, from a merge-tier
                run's callgrind job (--callgrind): how many workloads beat upstream and the
                slowest one. speed.md, beside it, is the per-workload table the badge links to.
 phpt.json      applicable pinned PHPTs the hybrid passes in a merge-tier run (--phpt: that
@@ -121,8 +121,8 @@ def endpoint(label, message, color='blue'):
 
 def speed(result, limits, commit):
     """(speed.json endpoint, speed.md table) from benchmarks/callgrind.py's --output and the limits.
-    Ratios are hybrid over upstream instructions per request: below 1 is faster than upstream."""
-    ratios = {name: row['hybrid'] / row['upstream'] for name, row in result['instructions_per_request'].items()}
+    Ratios are the Cargo build over upstream instructions per request: below 1 is faster than upstream."""
+    ratios = {name: row['cargo'] / row['upstream'] for name, row in result['instructions_per_request'].items()}
     mean = 1.0
     for ratio in ratios.values():
         mean *= ratio ** (1 / len(ratios))
@@ -132,14 +132,14 @@ def speed(result, limits, commit):
     faster = sum(ratio <= 1 for ratio in ratios.values())
     badge = endpoint('speed vs upstream', f'{faster}/{len(ratios)} faster · slowest {slowest} {worst:.2f}×', color)
     rows = ''.join(
-        f"| {name} | {row['hybrid']:,.0f} | {row['upstream']:,.0f} | {ratios[name]:.4f}× | "
+        f"| {name} | {row['cargo']:,.0f} | {row['upstream']:,.0f} | {ratios[name]:.4f}× | "
         f"{limits.get(name, '')}{'×' if name in limits else ''} | {'✅' if ratios[name] <= 1 else '❌' if name in limits and ratios[name] > limits[name] else '➖'} |\n"
         for name, row in result['instructions_per_request'].items())
     table = (f'# Speed vs upstream Swoole\n\nCallgrind instructions per request (lower is better), measured by the '
              f'merge tier on `{commit[:7]}` (`benchmarks/callgrind.py`, {result.get("requests", "?")} requests). '
-             f'Ratio is hybrid ÷ upstream: below 1.00× is faster than upstream. The limit is '
+             f'Ratio is the Cargo build ÷ upstream: below 1.00× is faster than upstream. The limit is '
              f'`benchmarks/callgrind_limits.json`; ✅ beats upstream, ➖ within the limit, ❌ over it.\n\n'
-             f'| workload | hybrid | upstream | ratio | limit | |\n| --- | ---: | ---: | ---: | ---: | --- |\n{rows}\n'
+             f'| workload | cargo | upstream | ratio | limit | |\n| --- | ---: | ---: | ---: | ---: | --- |\n{rows}\n'
              f'Geometric mean {mean:.4f}×. Goal: ≤ 1.00× on every workload '
              f'([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)).\n')
     return badge, table

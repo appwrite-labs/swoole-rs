@@ -1,29 +1,15 @@
-//! `network::Address::assign(type, host, port, resolve_name)`: fill a native
-//! `Address`'s sockaddr union and length for an IPv4, IPv6 or Unix socket type, parsing
-//! the host as an IP literal or, if allowed, resolving it through native
-//! `gethostbyname`. Native code keeps `type`, set before the call, and the last error.
+//! `network::Address`'s operations for native code. `assign` is crates/corebase's,
+//! with a host that is not an IP literal going to the platform or, when allowed,
+//! native `gethostbyname`. Native code keeps `type`, set before the call, and the
+//! last error.
 use crate::ip::swr_v1_clients_ip;
-use crate::swr_v1_clients_port;
 use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_int, c_void};
-use swoole_rs_corebase::net_types::SocketAddress;
-
-/// `SocketType` values from `swoole.h`.
-pub(crate) const TCP: c_int = 1;
-pub(crate) const UDP: c_int = 2;
-pub(crate) const TCP6: c_int = 3;
-pub(crate) const UDP6: c_int = 4;
-pub(crate) const UNIX_STREAM: c_int = 5;
-pub(crate) const UNIX_DGRAM: c_int = 6;
-const RAW: c_int = 7;
-const RAW6: c_int = 8;
-
-/// `SW_ERROR_*` codes `assign` sets as the last error.
-const NAME_TOO_LONG: c_int = 504;
-const DNSLOOKUP_RESOLVE_FAILED: c_int = 711;
-const BAD_HOST_ADDR: c_int = 722;
-const BAD_PORT: c_int = 723;
-const BAD_SOCKET_TYPE: c_int = 724;
+use swoole_rs_corebase::net_address::{
+    BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED, RAW, RAW6, TCP, TCP6, UDP, UDP6, UNIX_DGRAM,
+    UNIX_STREAM, platform_parses,
+};
+use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 
 unsafe extern "C" {
     fn inet_ntop(
@@ -45,10 +31,8 @@ pub type Resolve = unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_
 unsafe fn parse_ip(family: c_int, host: *const c_char, destination: *mut u8) -> bool {
     // SAFETY: the caller passes a NUL-terminated host.
     let text = unsafe { std::ffi::CStr::from_ptr(host) }.to_bytes();
-    // Other families, and Apple's IPv6 scope names (resolved as it parses, changing
-    // errno), go to the platform.
-    let apple_scope = cfg!(target_os = "macos") && family == libc::AF_INET6 && text.contains(&b'%');
-    if (family != libc::AF_INET && family != libc::AF_INET6) || apple_scope {
+    // Other families, and the hosts crates/corebase leaves to it, go to the platform.
+    if (family != libc::AF_INET && family != libc::AF_INET6) || platform_parses(family, text) {
         // SAFETY: as above.
         return unsafe { inet_pton(family, host, destination.cast()) } == 1;
     }
@@ -106,60 +90,20 @@ pub unsafe extern "C" fn swr_v1_clients_address_assign(
     port: c_int,
     resolve: Option<Resolve>,
 ) -> c_int {
-    if swr_v1_clients_port(port, 0) == 0 {
-        return BAD_PORT;
-    }
-    // In range: `swr_v1_clients_port` accepted it.
-    let port = u16::try_from(port).unwrap_or(0).to_be();
-    let size = |of: usize| libc::socklen_t::try_from(of).unwrap_or(0);
-    match kind {
-        TCP | UDP | RAW => {
-            let v4 = address.cast::<libc::sockaddr_in>();
-            // SAFETY: `address` is the union, which holds a sockaddr_in.
-            let v4 = unsafe { &mut *v4 };
-            v4.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or(0);
-            v4.sin_port = port;
-            // SAFETY: the caller passes the union's length.
-            unsafe { *length = size(size_of::<libc::sockaddr_in>()) };
-            let destination = (&raw mut v4.sin_addr).cast();
-            // SAFETY: `sin_addr` holds an IPv4 address.
-            unsafe { host_address(libc::AF_INET, host, destination, resolve) }
+    // SAFETY: the caller passes the union.
+    let storage = unsafe { &mut *address.cast::<AddressStorage>() };
+    // SAFETY: and its length.
+    let size = unsafe { &mut *length };
+    // SAFETY: and `host_length` bytes of host.
+    let bytes = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), host_length) };
+    swoole_rs_corebase::net_address::assign(storage, size, kind, bytes, port, |family| {
+        let mut address = [0; 16];
+        // SAFETY: the NUL-terminated host and room for either family's address.
+        match unsafe { host_address(family, host, address.as_mut_ptr(), resolve) } {
+            0 => Ok(address),
+            error => Err(error),
         }
-        TCP6 | UDP6 | RAW6 => {
-            let v6 = address.cast::<libc::sockaddr_in6>();
-            // SAFETY: `address` is the union, which holds a sockaddr_in6.
-            let v6 = unsafe { &mut *v6 };
-            v6.sin6_family = libc::sa_family_t::try_from(libc::AF_INET6).unwrap_or(0);
-            v6.sin6_port = port;
-            // SAFETY: as above.
-            unsafe { *length = size(size_of::<libc::sockaddr_in6>()) };
-            let destination = (&raw mut v6.sin6_addr).cast();
-            // SAFETY: `sin6_addr` holds an IPv6 address.
-            unsafe { host_address(libc::AF_INET6, host, destination, resolve) }
-        }
-        UNIX_STREAM | UNIX_DGRAM => {
-            let un = address.cast::<libc::sockaddr_un>();
-            // SAFETY: `address` is the union, which holds a sockaddr_un.
-            let un = unsafe { &mut *un };
-            let path = &mut un.sun_path;
-            if host_length >= path.len() - 1 {
-                return NAME_TOO_LONG;
-            }
-            un.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap_or(0);
-            // SAFETY: the caller passes a NUL-terminated host.
-            let text = unsafe { std::ffi::CStr::from_ptr(host) }.to_bytes();
-            // `swoole_strlcpy` and the forced final NUL.
-            let terminated = text.iter().copied().chain(std::iter::repeat(0));
-            for (slot, byte) in path.iter_mut().zip(terminated).take(text.len() + 1) {
-                *slot = c_char::from_ne_bytes([byte]);
-            }
-            *path.last_mut().unwrap_or(&mut 0) = 0;
-            // SAFETY: as above.
-            unsafe { *length = size(path.len()) };
-            0
-        }
-        _ => BAD_SOCKET_TYPE,
-    }
+    })
 }
 
 // Address::addr_str and verify_ip deliberately share one per-thread buffer.
@@ -321,6 +265,7 @@ pub unsafe extern "C" fn swr_v1_clients_address_loopback(address: *const SocketA
 #[cfg(test)]
 mod tests {
     use super::*;
+    use swoole_rs_corebase::net_address::{BAD_PORT, BAD_SOCKET_TYPE, NAME_TOO_LONG};
 
     #[repr(C)]
     union Union {

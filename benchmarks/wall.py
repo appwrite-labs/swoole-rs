@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wall-clock throughput, latency and perf counters per request, hybrid vs upstream (#1906).
+"""Wall-clock throughput, latency and perf counters per request, Cargo build vs upstream (#1906).
 
 Each repetition starts every engine's server in turn (interleaved), checks the response,
 warms it up, then drives it for --seconds at fixed concurrency with wrk (HTTP/1), h2load

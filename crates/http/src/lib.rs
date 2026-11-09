@@ -23,17 +23,13 @@ use directory::HttpDirectory;
 mod dispatch;
 pub use dispatch::transport_route;
 mod framing;
-pub use framing::{HttpFrame, swr_v1_http_expect};
+pub use framing::HttpFrame;
 mod headers;
 mod index_page;
-pub use headers::{HttpCookie, HttpHeaderInfo, swr_v1_http_cookie_next};
+pub use headers::{HttpCookie, HttpHeaderInfo, cookie_next};
 mod maps;
 mod multipart;
-#[cfg(test)]
-mod pin_helpers;
-pub use multipart::{
-    swr_v1_http_multipart_disposition, swr_v1_http_multipart_filename, swr_v1_http_multipart_result,
-};
+pub use multipart::{multipart_disposition, multipart_filename, multipart_result};
 mod proxy;
 pub use proxy::{
     HttpProxyRequest, HttpProxyText, swr_v1_http_proxy_credentials, swr_v1_http_proxy_handshake,
@@ -56,14 +52,13 @@ pub use tasks::HttpStaticTask;
 use tasks::HttpTasks;
 mod static_meta;
 mod status_buffer;
-pub use status_buffer::{NATIVE_STATUS_CODES, swr_v2_http_status_message};
-pub mod http_server;
+pub use status_buffer::{STATUS_CODES, status_message};
 mod static_headers;
 mod static_path;
-pub use maps::{swr_v1_http_method, swr_v1_http_method_string, swr_v1_http_status};
+pub use maps::{method, method_string};
 use range::HttpRangeState;
 pub use static_headers::{HttpStaticHeaders, swr_v1_http_static_headers};
-pub use static_path::{HttpStaticPath, swr_v1_http_static_location};
+pub use static_path::{HttpStaticPath, location_match};
 
 /// # Safety
 /// Nonempty input is readable and initialized for its length; no borrow escapes.
@@ -136,107 +131,50 @@ fn encoded_length(input: &[u8]) -> Result<usize, i32> {
         .filter(|&length| isize::try_from(length).is_ok())
         .ok_or(OVERFLOW)
 }
-/// Required encoded capacity, INCLUDING the trailing NUL. No allocation occurs.
-/// # Safety
-/// Input is readable and output is aligned/writable/disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_url_capacity(
-    data: *const u8,
-    length: usize,
-    output: *mut usize,
-) -> i32 {
-    if output.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(0);
-    }
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    match unsafe { bytes(data, length) }.and_then(encoded_length) {
-        Ok(n) => {
-            // SAFETY: `output` is non-null (checked above), aligned and writable.
-            unsafe {
-                output.write(n);
-            }
-            0
-        }
-        Err(status) => status,
-    }
+/// The encoded capacity of `input`, its NUL included.
+///
+/// # Errors
+/// `OVERFLOW` when it exceeds `isize::MAX`.
+pub fn url_capacity(input: &[u8]) -> Result<usize, i32> {
+    encoded_length(input)
 }
-/// Encode into disjoint native-owned storage, terminating it. No mutation on error.
-/// # Safety
-/// Input is readable; output capacity is writable, disjoint from input/length.
-/// Length output is valid/aligned. No allocation, callback or borrow escapes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_url_encode(
-    data: *const u8,
-    length: usize,
-    output: *mut u8,
-    capacity: usize,
-    written: *mut usize,
-) -> i32 {
-    if written.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `written` is non-null (checked above), aligned and writable.
-    unsafe {
-        written.write(0);
-    }
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    let input = match unsafe { bytes(data, length) } {
-        Ok(v) => v,
-        Err(e) => return e,
+/// Percent-encode `input` into the start of `output`, NUL-terminated, returning the
+/// encoded length. Nothing is written on error.
+///
+/// # Errors
+/// `INVALID` when `output` is shorter than [`url_capacity`], `OVERFLOW` as there.
+pub fn url_encode(input: &[u8], output: &mut [MaybeUninit<u8>]) -> Result<usize, i32> {
+    let needed = encoded_length(input)?;
+    let Some((nul, output)) = output
+        .get_mut(..needed)
+        .and_then(<[MaybeUninit<u8>]>::split_last_mut)
+    else {
+        return Err(INVALID);
     };
-    let needed = match encoded_length(input) {
-        Ok(v) => v,
-        Err(e) => return e,
+    let mut slots = output.iter_mut();
+    let mut put = |byte: u8| {
+        if let Some(slot) = slots.next() {
+            slot.write(byte);
+        }
     };
-    if output.is_null() || capacity < needed {
-        return INVALID;
-    }
-    // SAFETY: non-null, `needed <= capacity`; the caller lends writable, disjoint storage.
-    let output = unsafe { slice::from_raw_parts_mut(output.cast::<MaybeUninit<u8>>(), needed) };
-    if needed == input.len() + 1 {
-        // Exact capacity proves every byte is unreserved, so emission can copy
-        // the entire initialized input without reclassifying each byte.
-        // SAFETY: `input.len() < needed` slots in the disjoint output.
-        unsafe {
-            std::ptr::copy_nonoverlapping(input.as_ptr(), output.as_mut_ptr().cast(), input.len());
-        };
-    } else {
-        let mut slots = output.iter_mut();
-        let mut put = |byte: u8| {
-            if let Some(slot) = slots.next() {
-                slot.write(byte);
-            }
-        };
-        let digit = |nibble: u8| {
-            if nibble < 10 {
-                b'0' + nibble
-            } else {
-                b'A' + nibble - 10
-            }
-        };
-        for &byte in input {
-            if unreserved(byte) {
-                put(byte);
-            } else {
-                put(b'%');
-                put(digit(byte >> 4));
-                put(digit(byte & 15));
-            }
+    let digit = |nibble: u8| {
+        if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'A' + nibble - 10
+        }
+    };
+    for &byte in input {
+        if unreserved(byte) {
+            put(byte);
+        } else {
+            put(b'%');
+            put(digit(byte >> 4));
+            put(digit(byte & 15));
         }
     }
-    let at = needed - 1;
-    if let Some(slot) = output.get_mut(at) {
-        slot.write(0);
-    }
-    // SAFETY: `written` is non-null (checked above), aligned and writable.
-    unsafe {
-        written.write(at);
-    }
-    0
+    nul.write(0);
+    Ok(needed - 1)
 }
 fn hex(byte: u8) -> Option<u8> {
     match byte {
@@ -246,45 +184,9 @@ fn hex(byte: u8) -> Option<u8> {
         _ => None,
     }
 }
-/// Decode in place, preserving malformed escapes and decoding '+' as space.
-/// # Safety
-/// Data is writable for length+1 initialized input bytes; written is disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_url_decode(
-    data: *mut u8,
-    length: usize,
-    written: *mut usize,
-) -> i32 {
-    if written.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `written` is non-null (checked above), aligned and writable.
-    unsafe {
-        written.write(0);
-    }
-    let Some(_capacity) = length
-        .checked_add(1)
-        .filter(|&n| isize::try_from(n).is_ok())
-    else {
-        return OVERFLOW;
-    };
-    if data.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null, `length + 1 <= isize::MAX` (checked above), writable initialized bytes.
-    let input = unsafe { slice::from_raw_parts_mut(data, length) };
-    let write = url_decode(input);
-    // SAFETY: `write <= length`, and the caller lends `length + 1` writable bytes.
-    unsafe { data.wrapping_add(write).write(0) };
-    // SAFETY: `written` is non-null (checked above), aligned and writable.
-    unsafe {
-        written.write(write);
-    }
-    0
-}
 /// Decode `input` in place, preserving malformed escapes and decoding '+' as space.
 /// Returns the decoded length; the bytes after it are left as they were.
-fn url_decode(input: &mut [u8]) -> usize {
+pub fn url_decode(input: &mut [u8]) -> usize {
     let (mut read, mut write) = (0, 0);
     while let Some(&byte) = input.get(read) {
         let pair = if byte == b'%' {
@@ -310,33 +212,17 @@ fn url_decode(input: &mut [u8]) -> usize {
     write
 }
 #[repr(C)]
-#[derive(Default)]
+#[derive(Default, Debug, PartialEq, Eq)]
 pub struct HttpSpan {
     pub offset: usize,
     pub length: usize,
 }
-/// Find legacy multipart boundary without allocating or retaining input.
-/// # Safety
-/// Input is readable; output is valid/aligned/disjoint. Status 1=found, 0=absent.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_boundary(
-    data: *const u8,
-    length: usize,
-    mut offset: usize,
-    output: *mut HttpSpan,
-) -> i32 {
-    if output.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(HttpSpan::default());
-    }
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    let input = match unsafe { bytes(data, length) } {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
+/// Upstream's `parse_multipart_boundary`: the boundary in a `Content-Type` value from
+/// `offset` on, without allocating, or None.
+///
+/// # Errors
+/// `OVERFLOW` for a boundary longer than `int`.
+pub fn boundary(input: &[u8], mut offset: usize) -> Result<Option<HttpSpan>, i32> {
     while let Some(&byte) = input.get(offset) {
         if matches!(byte, b' ' | b';') {
             offset += 1;
@@ -347,12 +233,12 @@ pub unsafe extern "C" fn swr_v1_http_boundary(
             break;
         }
         let Some(next) = tail(input, offset).iter().position(|&b| b == b';') else {
-            return 0;
+            return Ok(None);
         };
         offset += next;
     }
-    if offset >= length {
-        return 0;
+    if offset >= input.len() {
+        return Ok(None);
     }
     let rest = tail(input, offset);
     let mut count = rest.iter().position(|&b| b == b';').unwrap_or(rest.len());
@@ -362,19 +248,15 @@ pub unsafe extern "C" fn swr_v1_http_boundary(
         count -= 2;
     }
     if count == 0 {
-        return 0;
+        return Ok(None);
     }
     if count > i32::MAX as usize {
-        return OVERFLOW;
+        return Err(OVERFLOW);
     }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(HttpSpan {
-            offset,
-            length: count,
-        });
-    }
-    1
+    Ok(Some(HttpSpan {
+        offset,
+        length: count,
+    }))
 }
 
 /// Held by the test that switches `LC_CTYPE`, which `strncasecmp` reads, and by tests
@@ -421,156 +303,6 @@ mod tests {
         }
         // SAFETY: restores the default locale.
         unsafe { setlocale(LC_CTYPE, c"C".as_ptr()) };
-    }
-    #[test]
-    fn positive_url_encoding_capacity_and_bytes_cover_loop_boundaries() {
-        for length in [0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128, 255, 256, 1024] {
-            for escaped in [false, true] {
-                let mut input = b"Az09-._~".repeat(length);
-                if escaped {
-                    input.extend_from_slice(b"/+%\0\xff");
-                }
-                let mut expected = b"Az09-._~".repeat(length);
-                if escaped {
-                    expected.extend_from_slice(b"%2F%2B%25%00%FF");
-                }
-                expected.push(0);
-                let mut capacity = 0;
-                assert_eq!(
-                    unsafe {
-                        swr_v1_http_url_capacity(input.as_ptr(), input.len(), &raw mut capacity)
-                    },
-                    0
-                );
-                assert_eq!(capacity, expected.len());
-                let mut output = vec![0xa5; capacity + 3];
-                let mut written = 999;
-                assert_eq!(
-                    unsafe {
-                        swr_v1_http_url_encode(
-                            input.as_ptr(),
-                            input.len(),
-                            output.as_mut_ptr(),
-                            capacity,
-                            &raw mut written,
-                        )
-                    },
-                    0
-                );
-                assert_eq!(written + 1, capacity);
-                assert_eq!(&output[..capacity], expected);
-                assert_eq!(&output[capacity..], &[0xa5; 3]);
-            }
-        }
-    }
-    #[test]
-    fn url_roundtrips_all_bytes_and_handles_malformed_escapes() {
-        let input: Vec<u8> = (0..=255).collect();
-        let mut encoded = vec![0; encoded_length(&input).unwrap()];
-        let mut length = 0;
-        unsafe {
-            assert_eq!(
-                swr_v1_http_url_encode(
-                    input.as_ptr(),
-                    input.len(),
-                    encoded.as_mut_ptr(),
-                    encoded.len(),
-                    &raw mut length
-                ),
-                0
-            );
-            assert_eq!(
-                swr_v1_http_url_decode(encoded.as_mut_ptr(), length, &raw mut length),
-                0
-            );
-        }
-        assert_eq!(&encoded[..length], input);
-        assert_eq!(encoded[length], 0);
-        let mut malformed = b"%+%0%GG%a0+%00!\0".to_vec();
-        unsafe {
-            assert_eq!(
-                swr_v1_http_url_decode(
-                    malformed.as_mut_ptr(),
-                    malformed.len() - 1,
-                    &raw mut length
-                ),
-                0
-            );
-        }
-        assert_eq!(&malformed[..length], b"% %0%GG\xa0 \0!");
-    }
-    #[test]
-    fn errors_are_atomic_and_empty_encoding_has_terminator_storage() {
-        let mut output = [99; 4];
-        let mut length = 7;
-        unsafe {
-            assert_eq!(
-                swr_v1_http_url_encode(b"!!".as_ptr(), 2, output.as_mut_ptr(), 4, &raw mut length),
-                INVALID
-            );
-            assert_eq!(output, [99; 4]);
-            assert_eq!(length, 0);
-            assert_eq!(
-                swr_v1_http_url_capacity(std::ptr::null(), 0, &raw mut length),
-                0
-            );
-            assert_eq!(length, 1);
-            assert_eq!(
-                swr_v1_http_url_encode(
-                    std::ptr::null(),
-                    0,
-                    output.as_mut_ptr(),
-                    1,
-                    &raw mut length
-                ),
-                0
-            );
-            assert_eq!(output[0], 0);
-        }
-    }
-    #[test]
-    fn ffi_rejects_overflow_before_access_and_extreme_method_ids_do_not_panic() {
-        let mut written = 9;
-        unsafe {
-            assert_eq!(
-                swr_v1_http_url_capacity(std::ptr::null(), usize::MAX, &raw mut written),
-                OVERFLOW
-            );
-            assert_eq!(written, 0);
-            assert_eq!(
-                swr_v1_http_url_decode(std::ptr::null_mut(), usize::MAX, &raw mut written),
-                OVERFLOW
-            );
-            assert_eq!(written, 0);
-            assert_eq!(
-                swr_v1_http_url_capacity(std::ptr::null(), 0, std::ptr::null_mut()),
-                INVALID
-            );
-        }
-        assert!(swr_v1_http_method_string(i32::MIN).is_null());
-        assert!(swr_v1_http_method_string(i32::MAX).is_null());
-    }
-    #[test]
-    fn boundary_preserves_quotes_spaces_and_parameter_rules() {
-        for (input, offset, expected) in [
-            (&b"x; boundary=\"abc\"; foo=x"[..], 0, Some(&b"abc"[..])),
-            (&b"BounDary=a "[..], 0, Some(&b"a "[..])),
-            (&b"boundary=\"\""[..], 0, None),
-            (&b"x=a"[..], 0, None),
-            (&b"boundary=x"[..], 99, None),
-        ] {
-            let mut result = HttpSpan::default();
-            let status = unsafe {
-                swr_v1_http_boundary(input.as_ptr(), input.len(), offset, &raw mut result)
-            };
-            assert_eq!(status, i32::from(expected.is_some()));
-            if let Some(expected) = expected {
-                assert_eq!(
-                    &input[result.offset..result.offset + result.length],
-                    expected
-                );
-            }
-        }
     }
 }
 

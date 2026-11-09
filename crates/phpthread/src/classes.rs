@@ -13,18 +13,17 @@ use swoole_rs_phpstubs::thread_arraylist;
 use swoole_rs_phpstubs::thread_map;
 use swoole_rs_phpstubs::thread_queue;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Object, bailout, set_object,
+    Call, Class, Invalid, Object, Value as ZValue, bailout, set_object,
     sys::{
         _zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL,
         IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
-        ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, ZPP_ERROR_WRONG_ARG, swr_zend_array_is_list,
-        swr_zend_dval_to_lval_safe, swr_zend_handle_numeric_str, swr_zend_resource_handle,
-        zend_argument_type_error, zend_array, zend_ce_arrayaccess, zend_ce_countable,
-        zend_class_entry, zend_class_implements, zend_declare_property_long, zend_object,
-        zend_object_handlers, zend_type_error, zend_ulong, zend_use_resource_as_offset,
-        zend_wrong_parameter_error, zval,
+        ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, ZPP_ERROR_WRONG_ARG, swr_zend_dval_to_lval_safe,
+        swr_zend_handle_numeric_str, swr_zend_resource_handle, zend_argument_type_error,
+        zend_ce_arrayaccess, zend_ce_countable, zend_class_entry, zend_class_implements,
+        zend_declare_property_long, zend_object, zend_object_handlers, zend_type_error, zend_ulong,
+        zend_use_resource_as_offset, zend_wrong_parameter_error, zval,
     },
-    throw_constructed_twice, throw_error, throw_exception, unset_property_deny, value,
+    throw_constructed_twice, throw_error, throw_exception, unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -224,13 +223,8 @@ const NOTIFY_ALL: i64 = 2;
 
 /// Store a Map, `ArrayList` or Queue by reference (`CAST_OBJ_TO_RESOURCE`).
 /// An unconstructed one ends the request with upstream's fatal error.
-/// # Safety
-/// `value` is a live object zval.
-pub(crate) unsafe fn shared(value: *mut zval) -> Option<Item> {
-    // SAFETY: per the caller.
-    let std = unsafe { value::obj_of(value) };
-    // SAFETY: a live object.
-    let ce = unsafe { (*std).ce };
+pub(crate) fn shared(value: &ZValue) -> Option<Item> {
+    let (std, ce) = (value.object()?, value.class()?);
     let (kind, list) = if ce == MAP.entry() {
         (IS_MAP, false)
     } else if ce == LIST.entry() {
@@ -322,12 +316,12 @@ fn constructed<T>(call: &Call, list: bool) -> Option<&'static T> {
 }
 
 /// `Z_PARAM_ARRAY_HT_OR_NULL` of optional argument 1.
-fn array_or_null(call: &Call) -> Result<Option<*mut zend_array>, Invalid> {
+fn array_or_null(call: &Call) -> Result<Option<&swoole_rs_zend::Array>, Invalid> {
     let Some(arg) = call.value(1) else {
         return Ok(None);
     };
     match arg.array() {
-        Some(array) => Ok(Some(array.as_ptr())),
+        Some(array) => Ok(Some(array)),
         None if arg.is_null() => Ok(None),
         None => {
             #[expect(clippy::cast_possible_wrap, reason = "a small ZPP error code")]
@@ -357,14 +351,12 @@ fn construct_array(call: &Call, list: bool) {
         return;
     }
     let shared = match array {
-        // SAFETY: a live array argument.
-        Some(array) if list && !unsafe { swr_zend_array_is_list(array) } => {
+        Some(array) if list && !array.is_list() => {
             // SAFETY: in a handler.
             unsafe { throw_error(c"the parameter $array must be an array of type list") };
             return;
         }
-        // SAFETY: a live array argument.
-        Some(array) => unsafe { Array::from(array) },
+        Some(array) => Array::from(array),
         None => Arc::default(),
     };
     if bailout::pending() {
@@ -428,14 +420,19 @@ fn map_call(call: &Call, min: u32, max: u32) -> Option<(&'static Array, Key)> {
     Some((map, key))
 }
 
-/// `INIT_ARRAY_INCR_PARAMS`' `$value`, 1 by default.
-fn delta(call: &Call) -> zval {
-    let given = call.zval(2);
-    if given.is_null() {
-        return swoole_rs_zend::long_zval(1);
+/// `INIT_ARRAY_INCR_PARAMS`' `$value`, 1 by default, negated
+/// (`INIT_DECR_VALUE`) for a decrement, for `step`.
+fn delta(call: &Call, decrement: bool, step: impl FnOnce(&ZValue)) {
+    let one = swoole_rs_zend::Owned::long(1);
+    let given = call.value(2).unwrap_or(&one);
+    if !decrement {
+        return step(given);
     }
-    // SAFETY: a passed argument; a bitwise copy, as upstream's pointer reads it.
-    unsafe { *given }
+    let negated = negate(given);
+    // SAFETY: a live local zval, borrowed only by `step`.
+    if let Some(negated) = unsafe { ZValue::from_ptr(&raw const negated) } {
+        step(negated);
+    }
 }
 
 fn map_construct(call: &Call) {
@@ -456,41 +453,36 @@ fn map_exists(call: &Call) {
 }
 
 fn map_set(call: &Call) {
-    if let Some((map, key)) = map_call(call, 2, 2) {
-        // SAFETY: in a handler, with a passed argument.
-        unsafe { map.set(key, call.zval(2)) };
+    if let Some(((map, key), value)) = map_call(call, 2, 2).zip(call.value(2)) {
+        map.set(key, value);
+    }
+}
+
+fn map_step(call: &Call, decrement: bool) {
+    if let Some((map, key)) = map_call(call, 1, 2) {
+        delta(call, decrement, |delta| {
+            map.incr(key, delta, call.return_value());
+        });
     }
 }
 
 fn map_incr(call: &Call) {
-    if let Some((map, key)) = map_call(call, 1, 2) {
-        let mut delta = delta(call);
-        // SAFETY: in a handler; a live local and the return slot.
-        unsafe { map.incr(key, &raw mut delta, call.return_value()) };
-    }
+    map_step(call, false);
 }
 
 fn map_decr(call: &Call) {
-    if let Some((map, key)) = map_call(call, 1, 2) {
-        let delta = delta(call);
-        // SAFETY: a live local.
-        let mut negated = unsafe { negate(&raw const delta) };
-        // SAFETY: in a handler; a live local and the return slot.
-        unsafe { map.incr(key, &raw mut negated, call.return_value()) };
-    }
+    map_step(call, true);
 }
 
 fn map_add(call: &Call) {
-    if let Some((map, key)) = map_call(call, 2, 2) {
-        // SAFETY: in a handler, with a passed argument.
-        call.set_bool(unsafe { map.add(key, call.zval(2)) });
+    if let Some(((map, key), value)) = map_call(call, 2, 2).zip(call.value(2)) {
+        call.set_bool(map.add(key, value));
     }
 }
 
 fn map_update(call: &Call) {
-    if let Some((map, key)) = map_call(call, 2, 2) {
-        // SAFETY: in a handler, with a passed argument.
-        call.set_bool(unsafe { map.update(key, call.zval(2)) });
+    if let Some(((map, key), value)) = map_call(call, 2, 2).zip(call.value(2)) {
+        call.set_bool(map.update(key, value));
     }
 }
 
@@ -504,9 +496,9 @@ fn map_find(call: &Call) {
     if call.arity(1, 1).is_err() {
         return;
     }
-    if let Some(map) = constructed::<Array>(call, false) {
-        // SAFETY: in a handler, with a passed argument and the return slot.
-        unsafe { map.find(call.zval(1), call.return_value()) };
+    if let Some((map, search)) = constructed::<Array>(call, false).zip(call.value(1)) {
+        // SAFETY: in a handler; the return slot.
+        unsafe { map.find(search, call.return_value()) };
     }
 }
 
@@ -608,10 +600,10 @@ fn list_set(call: &Call) {
     let Some(list) = constructed::<Array>(call, true) else {
         return;
     };
-    // SAFETY: a passed argument.
-    let index = unsafe { list_index(call.zval(1)) };
-    // SAFETY: in a handler, with a passed argument.
-    if !unsafe { list.index_set(index, call.zval(2)) } {
+    let Some((index, value)) = call.value(1).zip(call.value(2)) else {
+        return;
+    };
+    if !list.index_set(list_index(index), value) {
         out_of_range();
     }
 }
@@ -620,21 +612,14 @@ fn list_step(call: &Call, decrement: bool) {
     if call.arity(1, 2).is_err() {
         return;
     }
-    let key = call.zval(1);
-    let mut delta = delta(call);
-    let Some(list) = constructed::<Array>(call, true) else {
+    let Some((list, key)) = constructed::<Array>(call, true).zip(call.value(1)) else {
         return;
     };
-    if decrement {
-        // SAFETY: a live local.
-        delta = unsafe { negate(&raw const delta) };
-    }
-    // SAFETY: a passed argument.
-    let index = unsafe { list_index(key) };
-    // SAFETY: in a handler; a live local and the return slot.
-    if !unsafe { list.index_incr(index, &raw mut delta, call.return_value()) } {
-        out_of_range();
-    }
+    delta(call, decrement, |delta| {
+        if !list.index_incr(list_index(key), delta, call.return_value()) {
+            out_of_range();
+        }
+    });
 }
 
 fn list_incr(call: &Call) {
@@ -655,9 +640,9 @@ fn list_find(call: &Call) {
     if call.arity(1, 1).is_err() {
         return;
     }
-    if let Some(list) = constructed::<Array>(call, true) {
-        // SAFETY: in a handler, with a passed argument and the return slot.
-        unsafe { list.find(call.zval(1), call.return_value()) };
+    if let Some((list, search)) = constructed::<Array>(call, true).zip(call.value(1)) {
+        // SAFETY: in a handler; the return slot.
+        unsafe { list.find(search, call.return_value()) };
     }
 }
 
@@ -723,8 +708,10 @@ fn queue_push(call: &Call) {
     let Some(queue) = constructed::<Queue>(call, false) else {
         return;
     };
-    // SAFETY: in a handler, with a passed argument.
-    let item = unsafe { Item::store(call.zval(1)) };
+    let Some(value) = call.value(1) else {
+        return;
+    };
+    let item = Item::store(value);
     if bailout::pending() {
         return;
     }
