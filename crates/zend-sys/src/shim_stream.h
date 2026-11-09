@@ -5,7 +5,8 @@
 #include "php.h"
 #include "php_network.h"
 
-/* php_stream_alloc_rel(ops, abstract, persistent_id, "r+"). */
+/* php_stream_alloc(ops, abstract, persistent_id, "r+"): upstream's _rel form relays the
+ * caller's STREAMS_DC file and line, which a debug PHP declares and these shims lack. */
 php_stream *swr_zend_stream_alloc(const php_stream_ops *ops, void *abstract, const char *persistent_id);
 /* php_stream_close. */
 void swr_zend_stream_close(php_stream *stream);
