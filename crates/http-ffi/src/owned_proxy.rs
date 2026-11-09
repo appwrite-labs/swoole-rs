@@ -1,75 +1,51 @@
-//! HTTP CONNECT construction reads the canonical Rust proxy owner directly.
-use crate::{
-    HttpProxyRequest, HttpProxyText, swr_v1_http_proxy_pack, swr_v2_http_proxy_authorization,
-};
+//! `HttpProxy`'s create, pack and handshake over corebase's proxy owner, which the
+//! clients and hooks call, over crates/http's CONNECT formatting.
 use swoole_rs_corebase::{
     CoreStringView, ProxyState, log, set_errno, swoole_version, swr_v1_core_proxy_configure,
 };
+use swoole_rs_http::{HttpProxyRequest, proxy_authorization, proxy_handshake, proxy_pack};
 
 use std::ffi::c_char;
 
 const HANDSHAKE_FAILED: i32 = 7103;
 
+/// The bytes of the owner's string slot `index`.
+///
 /// # Safety
-/// owner is live/stable; output lends512 bytes and written is writable/disjoint.
+/// No one changes the slot while the bytes are borrowed.
+unsafe fn slot(owner: &ProxyState, index: usize) -> &[u8] {
+    // SAFETY: the slot is stable, as the caller guarantees.
+    let view = unsafe { owner.string(index) };
+    // SAFETY: a slot's view names `length` initialized bytes.
+    unsafe { crate::bytes(view.data.cast(), view.length) }.unwrap_or_default()
+}
+
+/// `HttpProxy::get_auth_str()`'s Base64 credentials into 512 bytes at `output`,
+/// NUL-terminated: 1 when they were cut to fit (errno EOVERFLOW), else 0.
+/// # Safety
+/// owner is live/stable; output lends 512 bytes and written is writable/disjoint.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_http_proxy_owned_authorization(
     owner: *const ProxyState,
     output: *mut u8,
     written: *mut usize,
 ) -> i32 {
+    if output.is_null() || written.is_null() {
+        return crate::INVALID;
+    }
     // SAFETY: caller lends the live owner's unchanged string slots.
     let owner = unsafe { &*owner };
     // SAFETY: the username is stable through the bounded codec.
-    let user = unsafe { owner.string(1) };
+    let user = unsafe { slot(owner, 1) };
     // SAFETY: the password is stable through the bounded codec.
-    let password = unsafe { owner.string(2) };
-    let credentials = [
-        HttpProxyText {
-            data: user.data.cast(),
-            length: user.length,
-        },
-        HttpProxyText {
-            data: password.data.cast(),
-            length: password.length,
-        },
-    ];
-    // SAFETY: stable credentials and exclusive512-byte output/length match the codec contract.
-    unsafe { swr_v2_http_proxy_authorization(credentials.as_ptr(), output, written) }
-}
-/// # Safety
-/// owner/input spans remain stable; output and written are exclusive/disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_proxy_owned_pack(
-    owner: *const ProxyState,
-    host: HttpProxyText,
-    version: HttpProxyText,
-    authorization: HttpProxyText,
-    output: *mut u8,
-    capacity: usize,
-    written: *mut usize,
-) -> i32 {
-    // SAFETY: caller lends a live stable owner for request construction.
-    let owner = unsafe { &*owner };
-    // SAFETY: leaf scalar snapshot before formatting.
-    let fields = unsafe { *owner.fields.get() };
-    // SAFETY: the target bytes remain stable throughout formatting.
-    let target = unsafe { owner.string(3) };
-    // SAFETY: the password slot remains stable throughout formatting.
-    let password = unsafe { owner.string(2) };
-    let request = HttpProxyRequest {
-        target: HttpProxyText {
-            data: target.data.cast(),
-            length: target.length,
-        },
-        host,
-        version,
-        authorization,
-        port: fields.target_port,
-        authenticated: u32::from(password.length != 0),
-    };
-    // SAFETY: unchanged owner/spans and disjoint exclusive output follow the codec contract.
-    unsafe { swr_v1_http_proxy_pack(&raw const request, output, capacity, written) }
+    let password = unsafe { slot(owner, 2) };
+    let mut encoded = [0u8; 512];
+    let (status, length) = proxy_authorization(user, password, &mut encoded);
+    // SAFETY: `length + 1 <= 512` bytes into the caller's 512, disjoint from `encoded`.
+    unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), output, length + 1) };
+    // SAFETY: `written` is non-null (checked above) and writable.
+    unsafe { written.write(length) };
+    status
 }
 
 /// `HttpProxy::create`'s assignments on a fresh owner: the host and port, then the
@@ -105,8 +81,7 @@ pub unsafe extern "C" fn swr_v1_http_proxy_configure(
 
 /// `HttpProxy::get_auth_str()`: the Base64 credentials, empty on failure, errno
 /// EOVERFLOW when they were cut to fit.
-#[must_use]
-pub fn authorization(owner: &ProxyState) -> Vec<u8> {
+fn authorization(owner: &ProxyState) -> Vec<u8> {
     let (mut output, mut written) = ([0u8; 512], 0);
     // SAFETY: the live owner, 512 writable bytes and the length slot.
     let status = unsafe {
@@ -127,7 +102,8 @@ pub fn authorization(owner: &ProxyState) -> Vec<u8> {
 }
 
 /// `HttpProxy::pack`: the CONNECT request for `host` into `output[..capacity]`, with
-/// the authorization when the proxy has a password. Returns the bytes written.
+/// the authorization when the proxy has a password. Returns the bytes written (the
+/// whole length for a zero capacity).
 /// # Safety
 /// owner is live; host lends its bytes; output is `capacity` writable bytes disjoint from both.
 #[unsafe(no_mangle)]
@@ -141,7 +117,7 @@ pub unsafe extern "C" fn swr_v1_http_proxy_connect(
     // SAFETY: the caller's live owner.
     let state = unsafe { &*owner };
     // SAFETY: the live owner's password slot.
-    let authenticated = unsafe { state.string(2) }.length != 0;
+    let authenticated = !unsafe { slot(state, 2) }.is_empty();
     let auth = if authenticated {
         authorization(state)
     } else {
@@ -149,27 +125,36 @@ pub unsafe extern "C" fn swr_v1_http_proxy_connect(
     };
     // SAFETY: the pinned version, a static string.
     let version = unsafe { std::ffi::CStr::from_ptr(swoole_version()) }.to_bytes();
-    let text = |bytes: &[u8]| HttpProxyText {
-        data: bytes.as_ptr(),
-        length: bytes.len(),
+    // SAFETY: leaf scalar snapshot before formatting.
+    let fields = unsafe { *state.fields.get() };
+    // SAFETY: the caller lends `host_length` bytes at `host`.
+    let Ok(host) = (unsafe { crate::bytes(host, host_length) }) else {
+        return 0;
     };
-    let mut written = 0;
-    // SAFETY: the live owner, borrowed spans and the caller's disjoint output.
-    unsafe {
-        swr_v1_http_proxy_owned_pack(
-            owner,
-            HttpProxyText {
-                data: host,
-                length: host_length,
-            },
-            text(version),
-            text(&auth),
-            output,
-            capacity,
-            &raw mut written,
-        )
+    let request = HttpProxyRequest {
+        // SAFETY: the target bytes remain stable throughout formatting.
+        target: unsafe { slot(state, 3) },
+        host,
+        version,
+        authorization: &auth,
+        port: fields.target_port,
+        authenticated,
     };
-    written
+    let Ok(text) = proxy_pack(&request) else {
+        return 0;
+    };
+    if capacity == 0 {
+        return text.len();
+    }
+    if output.is_null() || capacity > i32::MAX as usize {
+        return 0;
+    }
+    let length = text.len().min(capacity - 1);
+    // SAFETY: `length < capacity` writable bytes, disjoint from `text`.
+    unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), output, length) };
+    // SAFETY: `length < capacity`, inside the writable output.
+    unsafe { output.wrapping_add(length).write(0) };
+    length
 }
 
 /// `HttpProxy::handshake`: whether `data[..length]` accepts the CONNECT, setting the
@@ -179,7 +164,10 @@ pub unsafe extern "C" fn swr_v1_http_proxy_connect(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_http_proxy_accept(data: *const u8, length: usize) -> bool {
     // SAFETY: the caller's bytes.
-    let status = unsafe { crate::swr_v1_http_proxy_handshake(data, length) };
+    let Ok(input) = (unsafe { crate::bytes(data, length) }) else {
+        return false;
+    };
+    let status = proxy_handshake(input);
     if status == -2 {
         log::set_last_error(HANDSHAKE_FAILED);
     }

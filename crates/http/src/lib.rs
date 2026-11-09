@@ -32,8 +32,7 @@ mod multipart;
 pub use multipart::{multipart_disposition, multipart_filename, multipart_result};
 mod proxy;
 pub use proxy::{
-    HttpProxyRequest, HttpProxyText, swr_v1_http_proxy_credentials, swr_v1_http_proxy_handshake,
-    swr_v1_http_proxy_pack, swr_v2_http_proxy_authorization,
+    HttpProxyRequest, proxy_authorization, proxy_credentials, proxy_handshake, proxy_pack,
 };
 mod range;
 mod range_response;
@@ -57,7 +56,7 @@ mod static_headers;
 mod static_path;
 pub use maps::{method, method_string};
 use range::HttpRangeState;
-pub use static_headers::{HttpStaticHeaders, swr_v1_http_static_headers};
+pub use static_headers::{HttpStaticHeaders, static_headers};
 pub use static_path::{HttpStaticPath, location_match};
 
 /// # Safety
@@ -305,6 +304,3 @@ mod tests {
         unsafe { setlocale(LC_CTYPE, c"C".as_ptr()) };
     }
 }
-
-mod owned_proxy;
-pub use owned_proxy::*;

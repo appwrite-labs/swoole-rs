@@ -16,7 +16,7 @@ use swoole_rs_corebase::{
     CoreStringView, NameResolverContext, ProxyFields, ProxyState, StringSlot, log,
     swr_v1_core_string_set, swr_v1_core_string_view,
 };
-use swoole_rs_http::{swr_v1_http_proxy_accept, swr_v1_http_proxy_connect};
+use swoole_rs_http_ffi::{swr_v1_http_proxy_accept, swr_v1_http_proxy_connect};
 use swoole_rs_protocols_ffi::{Socks5Proxy, handshake_step, pack_negotiate_request};
 use swoole_rs_reactor::{CLASS_INET4, CLASS_INET6, type_is};
 use swoole_rs_tls::owner_tls_host_name;
@@ -609,7 +609,7 @@ impl Co {
             let owner = swoole_rs_corebase::swr_v1_core_proxy_new(false).owner;
             // SAFETY: the new owner and the texts.
             unsafe {
-                swoole_rs_http::swr_v1_http_proxy_configure(
+                swoole_rs_http_ffi::swr_v1_http_proxy_configure(
                     owner,
                     host.as_ptr().cast(),
                     host.len(),
