@@ -5,7 +5,7 @@
 //! coroutine socket, files and callables are reached through
 //! `crate::http_native`, as is WebSocket framing, which stays C++.
 use crate::{
-    http_native as native,
+    http_native::{self as native, TIMEOUT_READ},
     http_request::{self as request, Compress},
     llhttp::{self, Parser, Settings},
     native::{Co, Socket, swoole_rs_php_error, unconstructed},
@@ -21,9 +21,9 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_inflate::{Inflate, brotli, zstd};
-use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_zend::{
     Array, Call, Class, Object, Value, ZString, bailout, declare_bool, declare_long,
@@ -273,16 +273,10 @@ fn set_error_properties(object: *mut zend_object, code: c_int, message: &CStr) {
 }
 
 /// `php_swoole_socket_set_error_properties(zobject, socket)`.
-fn socket_error_properties(object: *mut zend_object, socket: Socket) -> c_int {
-    let (code, message) = socket_error(socket);
+fn socket_error_properties(object: *mut zend_object, socket: Co) -> c_int {
+    let (code, message) = socket.error();
     set_error_properties(object, code, message);
     code
-}
-
-/// The socket's `errCode` and `errMsg`.
-fn socket_error<'a>(socket: Socket) -> (c_int, &'a CStr) {
-    // SAFETY: every caller passes the client's live socket.
-    unsafe { Co::new(socket) }.error()
 }
 
 /// Fill `rv` as `RETURN_ZVAL(property, 1, 0)` does.
@@ -333,33 +327,12 @@ impl Drop for Hold {
     }
 }
 
-/// A read `TimeoutController` for the response loop.
-struct Timeout(*mut c_void);
-
-impl Timeout {
-    fn timed_out(&self) -> bool {
-        // SAFETY: a live controller.
-        unsafe { native::swoole_http_client_coro_timed_out(self.0) }
-    }
-}
-
-impl Drop for Timeout {
-    fn drop(&mut self) {
-        // SAFETY: the controller `swoole_http_client_coro_timeout` made.
-        unsafe { native::swoole_http_client_coro_timeout_end(self.0) };
-    }
-}
-
 /// The socket's close hook (`Client::socket_dtor`): keep the written bytes,
 /// drop the socket and say so on the object.
 /// # Safety
 /// `conn` is the live `Conn` the client registered; `written` is the socket's
 /// popped write buffer (or null), which this takes over.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_http_client_socket_dtor(
-    conn: *mut c_void,
-    written: *mut c_void,
-) {
+pub(crate) unsafe fn socket_closed(conn: *mut c_void, written: *mut c_void) {
     let conn = conn.cast::<Conn>();
     // SAFETY: per the caller; no `&mut` to the conn is live across this hook.
     let saved = unsafe { (*conn).written };
@@ -529,8 +502,8 @@ impl Client {
         props::long(self.object, c"statusCode", status);
     }
 
-    fn set_socket_error(&self, socket: Socket, status: i64) {
-        let (code, message) = socket_error(socket);
+    fn set_socket_error(&self, socket: Co, status: i64) {
+        let (code, message) = socket.error();
         self.set_error(code, message, status);
     }
 
@@ -596,8 +569,7 @@ impl Client {
         if let Some(socket) = self.co() {
             crate::socket_options::apply(socket, settings, crate::socket_options::ALL);
             if !swoole_rs_zend::bailout::pending() {
-                // SAFETY: a live socket.
-                unsafe { native::swoole_http_client_coro_apply(socket.as_ptr()) };
+                socket.skip_proxy_handshake();
             }
         }
     }
@@ -632,8 +604,9 @@ impl Client {
         let socket = unsafe { socket_of(object) };
         // SAFETY: the conn lives as long as the client.
         unsafe { (*self.conn).socket = socket };
-        // SAFETY: a live socket.
-        if self.ssl && !unsafe { co::enable_ssl(socket) } {
+        // SAFETY: the new socket, which the conn's object keeps live.
+        let socket = unsafe { Co::new(socket) };
+        if self.ssl && !socket.enable_ssl() {
             self.set_socket_error(socket, CONNECT_FAILED);
             self.close(true);
             return false;
@@ -643,25 +616,15 @@ impl Client {
         self.apply_setting(settings, false);
         self.websocket = false;
         self.accept_websocket_compression = false;
-        // SAFETY: a live socket, the client's resolve context and conn.
+        // SAFETY: the client's resolve context and conn outlive its socket.
         unsafe {
-            native::swoole_http_client_coro_configure(
-                socket,
+            socket.configure_http(
                 self.connect_timeout,
                 (&raw mut *self.resolve).cast(),
                 self.conn.cast(),
             );
         }
-        // SAFETY: a live socket and the host bytes.
-        let connected = unsafe {
-            native::swoole_http_client_coro_connect(
-                socket,
-                self.host.as_ptr().cast(),
-                self.host.len(),
-                c_int::from(self.port),
-            )
-        };
-        if !connected {
+        if !socket.connect_http(&self.host, c_int::from(self.port)) {
             self.set_socket_error(socket, CONNECT_FAILED);
             self.close(true);
             return false;
@@ -672,11 +635,9 @@ impl Client {
     }
 
     fn keep_liveness(&mut self) -> bool {
-        let socket = self.socket();
         if !self.co().is_some_and(Co::check_liveness) {
-            if !socket.is_null() {
-                // SAFETY: as above.
-                unsafe { native::swoole_http_client_coro_check_bound(socket, EVENT_RDWR) };
+            if let Some(socket) = self.co() {
+                socket.check_bound(EVENT_RDWR);
                 self.set_socket_error(socket, SERVER_RESET);
                 self.close(false);
             }
@@ -711,9 +672,10 @@ impl Client {
         props::long(object, c"errCode", 0);
         props::string(object, c"errMsg", c"");
         props::long(object, c"statusCode", 0);
-        let socket = self.socket();
-        // SAFETY: a live socket (each native call below too).
-        unsafe { native::swoole_http_client_coro_check_bound(socket, EVENT_WRITE) };
+        let Some(socket) = self.co() else {
+            return false;
+        };
+        socket.check_bound(EVENT_WRITE);
         swoole_rs_corebase::log::set_last_error(0);
         self.body.clear();
 
@@ -749,9 +711,7 @@ impl Client {
         out.extend_from_slice(method_name);
         out.push(b' ');
 
-        // SAFETY: as above.
-        let proxy = unsafe { native::swoole_http_client_coro_proxy(socket) };
-        if proxy != 0 {
+        if socket.proxied() {
             let host = host_header.as_ref().map_or(&self.host[..], ZString::bytes);
             request::proxy_uri(&mut out, host, &self.path, self.port);
         } else {
@@ -802,12 +762,8 @@ impl Client {
                 }
             }
         }
-        if proxy == 2 {
-            // SAFETY: a live socket with an authenticating proxy.
-            let auth = unsafe { native::swoole_http_client_coro_proxy_auth(socket) };
-            // SAFETY: the new string's reference.
-            let auth = unsafe { ZString::from_raw(auth) };
-            request::header(&mut out, b"Proxy-Authorization", auth.bytes());
+        if let Some(auth) = socket.proxy_authorization() {
+            request::header(&mut out, b"Proxy-Authorization", &auth);
         }
         if !self.basic_auth.is_empty() {
             request::header(&mut out, b"Authorization", &self.basic_auth);
@@ -954,21 +910,11 @@ impl Client {
     }
 
     fn send(&self, data: &[u8]) -> bool {
-        // SAFETY: a live socket and the bytes to send.
-        unsafe {
-            native::swoole_http_client_coro_send(self.socket(), data.as_ptr().cast(), data.len())
-        }
+        self.co().is_some_and(|socket| socket.send_buffered(data))
     }
 
     fn send_raw(&self, data: &[u8]) -> bool {
-        // SAFETY: as above.
-        unsafe {
-            native::swoole_http_client_coro_send_raw(
-                self.socket(),
-                data.as_ptr().cast(),
-                data.len(),
-            )
-        }
+        self.co().is_some_and(|socket| socket.send_all(data))
     }
 
     fn sendfile(&self, path: &[u8], offset: i64, size: i64) -> bool {
@@ -979,7 +925,9 @@ impl Client {
     }
 
     fn send_failed(&mut self) -> bool {
-        self.set_socket_error(self.socket(), SEND_FAILED);
+        if let Some(socket) = self.co() {
+            self.set_socket_error(socket, SEND_FAILED);
+        }
         self.close(true);
         false
     }
@@ -1017,7 +965,9 @@ impl Client {
         if !self.wait_response {
             return false;
         }
-        let socket = self.socket();
+        let Some(socket) = self.co() else {
+            return false;
+        };
         let mut received: isize;
         let mut total = 0_usize;
         let mut header_completed = false;
@@ -1029,25 +979,18 @@ impl Client {
         } else {
             timeout
         };
-        // SAFETY: a live socket; the controller is ended when dropped.
-        let controller =
-            Timeout(unsafe { native::swoole_http_client_coro_timeout(socket, timeout) });
+        let mut controller = socket.read_timeout(timeout);
         let mut success = false;
         loop {
-            if controller.timed_out() {
+            if controller.timed_out(TIMEOUT_READ) {
                 break;
             }
-            let (mut length, mut size) = (0, 0);
-            // SAFETY: a live socket and writable locals.
-            let buffer = unsafe {
-                native::swoole_http_client_coro_read_buffer(socket, &raw mut length, &raw mut size)
-            };
-            // SAFETY: the read buffer has `size` bytes, `length` of them used.
-            received = unsafe { co::recv(socket, buffer.wrapping_add(length), size - length) };
+            received = socket.recv_input();
+            let input = socket.input();
+            let (buffer, mut length, size) = (input.str, input.length, input.size);
             if received <= 0 {
                 if received == 0 {
-                    // SAFETY: a live socket.
-                    unsafe { co::set_err(socket, libc::ECONNRESET) };
+                    socket.set_err(libc::ECONNRESET);
                     if total > 0 && !self.parser.keep_alive() {
                         self.parser.finish();
                         success = true;
@@ -1058,17 +1001,14 @@ impl Client {
             let mut count = received.unsigned_abs();
             if !header_completed {
                 length += count;
-                // SAFETY: as above.
-                unsafe { native::swoole_http_client_coro_read_buffer_set(socket, length) };
+                input.length = length;
+                input.offset = 0;
                 // SAFETY: the buffer's first `length` bytes are received data.
                 let data = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), length) };
                 let unparsed = data.get(header_offset..).unwrap_or_default();
                 if request::header_end(unparsed).is_none() {
                     if length == size {
-                        // SAFETY: as above.
-                        unsafe {
-                            co::set_err(socket, INVALID_PROTOCOL);
-                        };
+                        socket.set_err(INVALID_PROTOCOL);
                         break;
                     }
                     header_offset = length.saturating_sub(4);
@@ -1077,8 +1017,7 @@ impl Client {
                 header_completed = true;
                 header_offset = 0;
                 count = length;
-                // SAFETY: as above.
-                unsafe { native::swoole_http_client_coro_read_buffer_set(socket, 0) };
+                input.length = 0;
             }
             total += count;
             // SAFETY: the buffer's first `count` bytes are this response's data.
@@ -1087,16 +1026,14 @@ impl Client {
             if self.bailout {
                 return false;
             }
-            // SAFETY: as above.
-            if unsafe { Co::new(socket) }
+            if socket
                 .net()
                 .is_some_and(|record| record.output.close_wait != 0)
             {
                 break;
             }
             if self.parser.error != llhttp::OK {
-                // SAFETY: as above.
-                unsafe { co::set_err(socket, INVALID_PROTOCOL) };
+                socket.set_err(INVALID_PROTOCOL);
                 break;
             }
             if self.event_stream && self.parser.needs_eof() {
@@ -1104,10 +1041,13 @@ impl Client {
             }
             if self.completed {
                 if self.parser.upgrade != 0 && count > parsed + WEBSOCKET_HEADER {
-                    // SAFETY: as above.
-                    unsafe {
-                        native::swoole_http_client_coro_read_buffer_keep(socket, count, parsed);
-                    };
+                    // Keep the bytes past the handshake (`reduce`).
+                    #[expect(clippy::cast_possible_wrap, reason = "a buffer offset")]
+                    let parsed = parsed as i64;
+                    let input = socket.input();
+                    input.length = count;
+                    input.offset = parsed;
+                    input.reduce(parsed);
                 }
                 success = true;
                 break;
@@ -1135,8 +1075,7 @@ impl Client {
                 self.close(true);
                 return false;
             }
-            // SAFETY: a live socket.
-            unsafe { native::websocket_protocol(socket) };
+            socket.websocket_protocol();
         }
         if !self.websocket && (!self.keep_alive || self.connection_close) {
             self.close(true);
@@ -1178,10 +1117,14 @@ impl Client {
     }
 
     fn recv_websocket_frame(&mut self, call: &Call, timeout: f64) {
-        let socket = self.socket();
+        let Some(socket) = self.co() else {
+            return call.set_bool(false);
+        };
         let value = call.return_value();
         // SAFETY: a live socket, the client's WebSocket state and the return slot.
-        unsafe { native::swoole_http_client_coro_ws_recv(socket, self.ws, value, timeout) };
+        unsafe {
+            native::swoole_http_client_coro_ws_recv(socket.as_ptr(), self.ws, value, timeout);
+        }
         // SAFETY: the return slot recv_frame filled.
         let kind = unsafe { type_of(value) };
         // SAFETY: as above.
@@ -1258,12 +1201,14 @@ impl Client {
             props::long(object, c"statusCode", CONNECT_FAILED);
             return false;
         }
-        let socket = self.socket();
+        let Some(socket) = self.co() else {
+            return false;
+        };
         let flags = c_int::from(flags.to_le_bytes()[0]);
         // SAFETY: a live socket, WebSocket state and data zval.
         let result = unsafe {
             native::swoole_http_client_coro_ws_push(
-                socket,
+                socket.as_ptr(),
                 self.ws,
                 data,
                 opcode,
@@ -1315,20 +1260,17 @@ impl Client {
     /// `close`: the socket's members must not be read after its close, which
     /// can free it (the close hook clears `socket`).
     fn close(&mut self, should_be_reset: bool) -> bool {
-        let socket = self.socket();
-        if socket.is_null() {
+        let Some(socket) = self.co() else {
             return false;
-        }
+        };
         if self.in_callback {
-            // SAFETY: a live socket.
-            if let Some(record) = unsafe { Co::new(socket) }.net() {
+            if let Some(record) = socket.net() {
                 record.output.close_wait = 1;
             }
             return true;
         }
         props::bool(self.object, c"connected", false);
-        // SAFETY: as above.
-        if !unsafe { co::close(socket) } {
+        if !socket.close() {
             socket_error_properties(self.object, socket);
             return false;
         }
@@ -2289,17 +2231,19 @@ fn get_status_code(call: &Call) {
 /// `getHeaderOut(): string|false`: the request head last written.
 fn get_header_out(call: &Call) {
     let client = client(call);
-    let mut length = 0;
-    // SAFETY: the live socket or the buffer its close left.
-    let saved = unsafe { (*client.conn).written };
-    // SAFETY: as above.
-    let written =
-        unsafe { native::swoole_http_client_coro_written(client.socket(), saved, &raw mut length) };
-    if written.is_null() {
+    let buffer = if let Some(socket) = client.co() {
+        Some(&*socket.write_buffer())
+    } else {
+        // SAFETY: the conn lives as long as the client.
+        let saved = unsafe { (*client.conn).written }.cast::<CppString>();
+        // SAFETY: the buffer the socket's close left, or null.
+        unsafe { saved.as_ref() }
+    };
+    let Some(buffer) = buffer else {
         return call.set_bool(false);
-    }
+    };
     // SAFETY: the buffer's `length` bytes.
-    let data = unsafe { std::slice::from_raw_parts(written.cast::<u8>(), length) };
+    let data = unsafe { std::slice::from_raw_parts(buffer.str.cast::<u8>(), buffer.length) };
     match request::header_end(data) {
         Some(end) if end > 0 => {
             // SAFETY: the return slot takes the new string's reference.
@@ -2319,7 +2263,7 @@ fn getsockname(call: &Call) {
         return call.set_bool(false);
     };
     if !socket.getsockname() {
-        socket_error_properties(call.this(), socket.as_ptr());
+        socket_error_properties(call.this(), socket);
         return call.set_bool(false);
     }
     call.set_array();
@@ -2344,7 +2288,7 @@ fn getpeername(call: &Call) {
         return call.set_bool(false);
     };
     let Some((address, port)) = socket.getpeername() else {
-        socket_error_properties(call.this(), socket.as_ptr());
+        socket_error_properties(call.this(), socket);
         return call.set_bool(false);
     };
     set_endpoint(call, &address, port);
@@ -2356,15 +2300,16 @@ fn get_peer_cert(call: &Call) {
     if !client.is_available() {
         return call.set_bool(false);
     }
-    let socket = client.socket();
-    // SAFETY: a connected socket.
-    let cert = unsafe { native::swoole_http_client_coro_peer_cert(socket) };
-    if cert.is_null() {
+    let Some(socket) = client.co() else {
+        return call.set_bool(false);
+    };
+    let cert = socket.peer_cert_pem();
+    if cert.is_empty() {
         socket_error_properties(call.this(), socket);
         return call.set_bool(false);
     }
     // SAFETY: the return slot takes the new string's reference.
-    unsafe { call.set_string(cert) };
+    unsafe { call.set_string(string::copy(&cert)) };
 }
 
 /// A string zval for the payload of `ping` and `disconnect`: the argument, or
