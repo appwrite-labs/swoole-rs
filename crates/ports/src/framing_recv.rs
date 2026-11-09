@@ -25,7 +25,7 @@ use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_hton64};
 use swoole_rs_framing::{swr_v1_framing_unpack, swr_v1_framing_width};
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
-use swoole_rs_websocket::frame_api::PacketLength;
+use swoole_rs_websocket_ffi::frame_api::PacketLength;
 
 /// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
 const LOG_WARNING: c_int = 4;

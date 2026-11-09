@@ -75,6 +75,7 @@
       ],
       "owned_paths": [
         "crates/websocket/",
+        "crates/websocket-ffi/",
         "native/websocket/",
         "migration/patches/websocket/",
         "tests/modules/websocket/"

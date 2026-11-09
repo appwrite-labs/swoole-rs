@@ -25,6 +25,7 @@ swoole-rs-clients = { path = "../clients" }
 swoole-rs-tls = { path = "../tls" }
 swoole-rs-protocols = { path = "../protocols" }
 swoole-rs-websocket = { path = "../websocket" }
+swoole-rs-websocket-ffi = { path = "../websocket-ffi" }
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-utilities = { path = "../utilities" }
 swoole-rs-framing = { path = "../framing" }
