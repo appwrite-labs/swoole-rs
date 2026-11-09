@@ -295,8 +295,9 @@ def main():
                                                                 child_failure_hidden_by_original_exit=True, rejected_by_journal=rejected)
                         if not rejected:
                             raise ValueError('Child assertion negative control did not expose original zero-exit blindness')
-        if not all(row['passed'] for row in report['results']):
-            raise ValueError('Logger storage fixture failed; all engine outputs retained')
+        if failed := [row for row in report['results'] if not row['passed']]:
+            raise ValueError('Logger storage fixture failed; all engine outputs retained: ' + '; '.join(
+                f"{row['engine']} exit {row['exit']}, stderr {row['stderr'][-400:]!r}" for row in failed))
         compare(report['results'])
         receipt = report['source_attestation']
         if sha(args.build_manifest) != receipt['manifest_sha256'] or sha(args.archive) != receipt['archive_sha256']:
