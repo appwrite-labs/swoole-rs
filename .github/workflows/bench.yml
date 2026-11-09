@@ -1,0 +1,54 @@
+name: Bench
+# Wall-clock throughput, latency and perf counters, hybrid vs upstream (benchmarks/wall.py,
+# #1906). Runner timings are noisy, so only a counter-per-request ratio fails the job; the
+# rest is the spread-annotated report in the artifact. Nightly, off the merge tier so
+# nothing else loads the runner; a PR that changes the harness runs it too.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths: [benchmarks/wall.py, .github/workflows/bench.yml]
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 500M
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  wall:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          packages: wrk nghttp2-client
+      - run: |
+          sudo apt-get install -yq "linux-tools-$(uname -r)"
+          sudo sysctl kernel.perf_event_paranoid=-1
+      - uses: actions/cache/restore@v4
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+      - if: hashFiles('target/upstream/src/modules/swoole.so') == ''
+        run: python3 tools/build_upstream.py
+      - uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-
+      - run: cargo fetch --locked
+      - run: python3 tools/build_hybrid.py | tee hybrid.log
+      - run: >
+          python3 benchmarks/wall.py --max-ratio 1.25
+          --workload plaintext --workload json --workload http2 --workload websocket
+          --engine hybrid=$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)
+          --engine upstream=target/upstream/src/modules/swoole.so
+          --output target/wall/wall.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wall
+          path: target/wall/

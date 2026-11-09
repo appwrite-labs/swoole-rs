@@ -60,6 +60,16 @@ python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --profiles 
 git worktree remove --force target/worktrees/base
 ```
 
+## Wall clock and perf counters (nightly)
+
+`benchmarks/wall.py` drives each engine at fixed concurrency (wrk for HTTP/1, h2load
+for HTTP/2, a WebSocket echo loop) with engines interleaved over several repetitions,
+and records requests/s, p50/p99 latency and `perf stat` task-clock, cycles,
+instructions, branch and cache misses per request of the server's processes, each as
+a median with its spread. Wall time on shared runners is noise, so `--max-ratio`
+judges only a counter ratio (`--counter`, default cycles). The nightly `bench.yml`
+runs it with results as an artifact; never run it on a loaded machine.
+
 ## Module microbenchmarks
 
 `dev.py candidate --benchmark` runs the timer, buffer and WebSocket
