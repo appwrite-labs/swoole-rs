@@ -13,9 +13,6 @@ on:
   workflow_dispatch:
   pull_request:
     paths: [.github/workflows/debug.yml]
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 defaults:
   run:
     shell: bash
@@ -32,7 +29,7 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/ext target/upstream target/thirdparty target/native-core
+      - run: rm -rf target/ext target/upstream target/thirdparty
       - uses: ./.github/actions/install
       # Restored only: the pinned reference is rebuilt against the debug PHP below, never saved.
       - uses: actions/cache/restore@v4
@@ -45,12 +42,6 @@ jobs:
           path: target/php-debug
           key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
       - run: .devcontainer/php.sh target/php-debug --enable-debug
-      # Restored only: the release objects that don't include PHP's headers still hit.
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       # The control is the pinned reference itself, unpatched.
       - run: |

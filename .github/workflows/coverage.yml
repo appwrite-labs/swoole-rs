@@ -13,8 +13,6 @@ on:
   pull_request:
     paths: [tools/coverage.py, .github/workflows/coverage.yml]
 env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
   LLVM_PROFILE_FILE: ${{ github.workspace }}/target/coverage/profraw/%4m.profraw
 concurrency:
   group: coverage-${{ github.ref }}
@@ -44,11 +42,6 @@ jobs:
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - if: steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       # The services phpt-build's cargo engine has. As `cargo --target`, the build target
       # keeps build scripts and proc macros uninstrumented.

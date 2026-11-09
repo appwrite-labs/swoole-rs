@@ -8,9 +8,6 @@ on:
     - cron: '17 3 * * *'
   workflow_dispatch:
   workflow_call:
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 defaults:
   run:
     shell: bash
@@ -36,20 +33,9 @@ jobs:
         with:
           path: target/asan/php
           key: php-asan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/asan.py') }}
-      # Sanitized objects never hit the shared ccache (other flags), so this run keeps its own.
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-asan-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-asan-${{ runner.os }}-
       - run: cargo fetch --locked
       - run: python3 corpus/thirdparty/hyperf.py --prepare
       - run: python3 tools/asan.py
-      - if: always() && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: .ccache
-          key: ccache-asan-${{ runner.os }}-${{ github.sha }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
