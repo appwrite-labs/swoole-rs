@@ -10,14 +10,12 @@ use swoole_rs_bus::{BusPacket, MessageBus};
 
 use crate::pool_native::read_bus;
 
-// SAFETY: crates/reactor's and crates/tls' bodies, under their upstream symbols.
+// SAFETY: crates/reactor's bodies, under their upstream symbols.
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7Reactor7if_exitEv"]
     fn reactor_if_exit(reactor: *mut c_void) -> bool;
     #[link_name = "_ZN6swoole7Reactor4waitEv"]
     fn reactor_wait(reactor: *mut c_void) -> c_int;
-    #[link_name = "_ZN6swoole7Reactor18drain_write_bufferEPNS_7network6SocketE"]
-    fn drain_write_buffer(reactor: *mut c_void, socket: *mut c_void);
 }
 
 /// A live socket, or `None` for null.
@@ -169,7 +167,7 @@ impl Reactor {
     /// `reactor->drain_write_buffer(sock)`.
     pub(crate) fn drain(self, sock: &mut SocketRecord) {
         // SAFETY: as above.
-        unsafe { drain_write_buffer(self.0, (&raw mut *sock).cast()) };
+        unsafe { swoole_rs_tls::reactor_write::reactor_drain_write_buffer(self.0, sock) };
     }
     pub(crate) fn if_exit(self) -> bool {
         // SAFETY: a live reactor.

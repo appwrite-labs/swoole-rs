@@ -363,17 +363,17 @@ pub unsafe extern "C" fn send_pipe_message(
     unsafe { swr_v1_process_worker_send(hooks, pool, pipe, queue, id, data, length, flags) }
 }
 
-/// `make_server_socket(type, host, port, backlog)`.
-pub type MakeServerSocket = unsafe extern "C" fn(
+/// `make_server_socket(type, host, port, backlog)`: a native socket, or null.
+pub type MakeServerSocket<T> = unsafe extern "C-unwind" fn(
     kind: c_int,
     host: *const c_char,
     port: c_int,
     backlog: c_int,
-) -> *mut c_void;
+) -> *mut T;
 
 #[cfg(feature = "upstream-symbols")]
 // SAFETY: crates/tls defines it under its upstream symbol.
-unsafe extern "C" {
+unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
     fn make_server_socket(
         kind: c_int,
@@ -423,13 +423,13 @@ pub unsafe extern "C" fn listen_tcp(
 /// `pool` is a created `ProcessPool`; `host` a NUL-terminated string; `make`
 /// returns a native socket or null.
 #[must_use]
-pub unsafe fn listen(
+pub unsafe fn listen<T>(
     pool: *const PoolRecord,
     kind: c_int,
     host: *const c_char,
     port: c_int,
     backlog: c_int,
-    make: MakeServerSocket,
+    make: MakeServerSocket<T>,
 ) -> c_int {
     /// `SW_IPC_SOCKET`.
     const IPC_SOCKET: u8 = 3;
@@ -453,7 +453,7 @@ pub unsafe fn listen(
         return -1;
     }
     // SAFETY: as above; the pool now owns the listener.
-    unsafe { swr_v1_process_pool_ipc_set_listener(pool.ipc, socket) };
+    unsafe { swr_v1_process_pool_ipc_set_listener(pool.ipc, socket.cast()) };
     0
 }
 
@@ -863,7 +863,12 @@ pub(crate) mod tests {
 
     static LISTENER: u8 = 0;
 
-    unsafe extern "C" fn make(kind: c_int, _: *const c_char, port: c_int, _: c_int) -> *mut c_void {
+    unsafe extern "C-unwind" fn make(
+        kind: c_int,
+        _: *const c_char,
+        port: c_int,
+        _: c_int,
+    ) -> *mut c_void {
         if kind == 1 && port == 9501 {
             (&raw const LISTENER).cast_mut().cast()
         } else {
