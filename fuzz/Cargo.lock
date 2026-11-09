@@ -174,6 +174,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-coroutine"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-corebase",
+]
+
+[[package]]
 name = "swoole-rs-error"
 version = "0.1.0"
 
@@ -277,6 +285,8 @@ dependencies = [
  "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-coroutine",
+ "swoole-rs-memory",
  "swoole-rs-ossupport",
  "swoole-rs-process",
 ]

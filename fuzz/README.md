@@ -64,7 +64,10 @@ any received bytes. Outside the compared domain, Rust's -1 only has to match an 
 `recv_with_eof_protocol`, `recv_split_by_eof`) from the pinned base.cc and from it
 after `migration/patches/framing/0001-base.patch` (the Rust receive loop with
 native effects) over the same stream, delivered in fuzzer-chosen chunks:
-every call's result, every packet and the final buffer must match.
+every call's result, every packet and the final buffer must match for the EOF
+loops. The Rust length loop reads greedily (one `recv` of the buffer's free space,
+then every whole package), so for it the packets and whether the stream ends in an
+error must match.
 
 For the clients, `clients_url` compares `Address::assign(url)` from the pinned
 address.cc with `swoole_rs_clients::url` (type, host, port, or a `std::stoi`

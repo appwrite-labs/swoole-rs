@@ -7,20 +7,24 @@
 //! symbols. Logs name the upstream function that wrote them.
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::ptr;
+use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
+use swoole_rs_corebase::constants::FdType::SW_FD_SESSION;
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_framing::recv::{Effects, recv};
 use swoole_rs_framing::recv::{
-    FLAG_DYNAMIC, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, MODE_EOF, MODE_LENGTH, MODE_SPLIT,
-    OP_CLEAR_SKIP, OP_DISPATCH, OP_EXTEND, OP_GET_LENGTH, OP_LOG_MALFORMED, OP_LOG_NO_LENGTH,
-    OP_LOG_TOO_LARGE, OP_PAGE, OP_RECV, OP_REDUCE, OP_SPLIT, OP_SSL_PENDING, RECV_CLOSE, RECV_DONE,
+    FLAG_DYNAMIC, FLAG_PAUSED, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, MODE_EOF, MODE_LENGTH,
+    MODE_SPLIT, OP_CLEAR_SKIP, OP_DISPATCH, OP_EXTEND, OP_GET_LENGTH, OP_LOG_MALFORMED,
+    OP_LOG_NO_LENGTH, OP_LOG_TOO_LARGE, OP_PAGE, OP_RECV, OP_REDUCE, OP_RESET, OP_SPLIT,
+    OP_SSL_PENDING, RECV_CLOSE, RECV_DONE,
 };
 use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_hton64};
 use swoole_rs_framing::{swr_v1_framing_unpack, swr_v1_framing_width};
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_get_peer_name};
+use swoole_rs_server::ConnectionRecord;
 use swoole_rs_websocket::frame_api::PacketLength;
 
 /// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
@@ -59,6 +63,22 @@ fn socket_flags(socket: &SocketRecord) -> u32 {
     (if socket.removed != 0 { FLAG_REMOVED } else { 0 })
         | (if socket.recv_wait != 0 { FLAG_WAIT } else { 0 })
         | (if socket.ssl.is_null() { 0 } else { FLAG_TLS })
+        | (if paused(socket) { FLAG_PAUSED } else { 0 })
+}
+
+/// A session socket out of the reactor whose connection no one is closing: `pause`
+/// took it out to stop reading.
+fn paused(socket: &SocketRecord) -> bool {
+    if socket.removed == 0 || socket.fd_type != SW_FD_SESSION as c_int || socket.object.is_null() {
+        return false;
+    }
+    // SAFETY: a session socket's object is its live connection.
+    let conn = unsafe { &*socket.object.cast::<ConnectionRecord>() };
+    conn.active != 0
+        && conn.closed.load(Ordering::Relaxed) == 0
+        && (conn.closing | conn.close_actively | conn.close_queued | conn.close_reset)
+            | (conn.close_force | conn.peer_closed)
+            == 0
 }
 
 fn on_package(protocol: &Protocol) -> Option<OnPackage> {
@@ -279,6 +299,23 @@ fn rare(r: &Recv, b: &mut CppString, p: &Protocol, s: &mut SocketRecord, op: u32
                 &message,
             );
             0
+        }
+        OP_RESET => {
+            let linger = libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            // SAFETY: the live socket's fd and a `linger` of the size passed.
+            let result = unsafe {
+                libc::setsockopt(
+                    s.fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    (&raw const linger).cast(),
+                    libc::socklen_t::try_from(size_of::<libc::linger>()).unwrap_or(0),
+                )
+            };
+            i64::from(result)
         }
         _ => std::process::abort(),
     }

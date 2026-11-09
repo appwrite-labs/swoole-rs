@@ -230,12 +230,19 @@ extern "C" size_t SWR_CAT(swr_oracle_framing_stream, SWR_STREAM_ENGINE)(const Sw
         bool drained = socket.chunks.empty();
         int result = stream->mode == 0 ? protocol.recv_with_length_protocol(&socket, &buffer)
                                        : protocol.recv_with_eof_protocol(&socket, &buffer);
-        log += "R" + std::to_string(result) + ";";
+        // The length loop reads greedily in the candidate, so how many calls a packet
+        // takes and what is left buffered differ from upstream: compare the packets
+        // and whether the stream ends in an error. The EOF loops compare every call.
+        if (stream->mode != 0 || result == SW_ERR) {
+            log += "R" + std::to_string(result) + ";";
+        }
         if (result == SW_ERR || drained) {
             break;
         }
     }
-    log += "L" + std::to_string(buffer.length) + "O" + std::to_string(buffer.offset);
+    if (stream->mode != 0) {
+        log += "L" + std::to_string(buffer.length) + "O" + std::to_string(buffer.offset);
+    }
     free(buffer.str);
     size_t n = log.size() < capacity ? log.size() : capacity;
     memcpy(out, log.data(), n);
