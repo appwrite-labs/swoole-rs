@@ -1,5 +1,5 @@
 //! The build's configure switches, one bit each in `swr_cpp_switches`
-//! (native/phphelpers/switches.cc, which `tools/headers.sh` generates from
+//! (native/corebase/switches.cc, which `tools/headers.sh` generates from
 //! [`SWITCHES`]). Cargo builds the Rust archive before configure runs, so only
 //! a configured C++ compile sees them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

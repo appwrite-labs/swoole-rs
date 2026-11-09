@@ -46,7 +46,7 @@ else
     mv "$generated" "$header"
 fi
 generated=$(mktemp)
-header=native/phphelpers/switches.cc
+header=native/corebase/switches.cc
 cargo run --quiet --locked -p swoole-rs-corebase --bin switches > "$generated"
 if [ "$1" = --check ]; then
     if ! cmp -s "$generated" "$header"; then

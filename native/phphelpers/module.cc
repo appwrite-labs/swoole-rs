@@ -4,7 +4,7 @@
 // What crates/phpswoole and crates/phpruntime need of C++ that stable Rust can't express:
 // the module globals and get_module(), and the ops tables whose entries reach C++ objects (the
 // module globals, the DNS settings), the bundled C clients (ssh2, ftp), stdext's handler table,
-// or the library versions. The build's switches are switches.cc's; Rust reads them.
+// or the library versions. The build's switches are native/corebase/switches.cc's; Rust reads them.
 #include "swoole_rs_phphost.h"
 #include "swoole_rs_phphelpers.h"
 #include "swoole_rs_phpruntime.h"

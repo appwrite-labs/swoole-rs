@@ -26,7 +26,7 @@ pub mod switches;
 pub use switches::Switch;
 
 unsafe extern "C" {
-    /// native/phphelpers/switches.cc: a bit per [`Switch`] the build has.
+    /// native/corebase/switches.cc: a bit per [`Switch`] the build has.
     safe static swr_cpp_switches: u64;
 }
 

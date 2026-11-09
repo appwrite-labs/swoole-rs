@@ -314,7 +314,7 @@ size_t swr_v1_server_tcp_info(const void *info, swr_v1_server_fact *out, size_t 
  * module entry with its dependencies, function table, MINIT, MSHUTDOWN, RINIT, RSHUTDOWN and
  * MINFO. C++ (native/phphelpers/module.cc) keeps the module globals and lends what only it
  * reaches: Swoole's core, error, logger and MIME state, the stdext/ssh2/ftp handlers and
- * library versions. The build's switches are native/phphelpers/switches.cc's.
+ * library versions. The build's switches are native/corebase/switches.cc's.
  */
 struct _zval_struct;
 struct _zend_array;

@@ -1,7 +1,6 @@
 // Generated from crates/corebase/src/switches.rs by tools/headers.sh; do not edit.
 // The build's configure switches, which Rust reads (swoole_rs_corebase::built_with):
 // Cargo builds the Rust archive before configure runs.
-#include "swoole_rs_phphost.h"
 #include "swoole_ssl.h"
 
 extern "C" const uint64_t swr_cpp_switches = 0

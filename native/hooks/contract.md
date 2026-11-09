@@ -21,7 +21,7 @@ or as a local (the bundled ext/ssh2, the hooks fixture) and deletes its own.
 ## The build's switches
 
 - The `HAVE_IOURING_*` and `SW_USE_URING_SOCKET` configure macros are
-  `swoole_rs_corebase::built_with` switches (native/phphelpers/switches.cc), and the
+  `swoole_rs_corebase::built_with` switches (native/corebase/switches.cc), and the
   io_uring engine is the `iouring` feature's. `swoole_init` calls
   `swr_v1_hook_install`, which builds the hooks host from them and installs Rust's
   socket host (`co_io::Host`: the timers, the read `String`, `recv`/`recv_all`, the

@@ -64,7 +64,7 @@ operations under their upstream symbols (`yield_ex`, `cancel`, `activate`,
 `swr_v1_coroutine_{scheduler_get,create,bail}` exports and the `swoole_coroutine_*`
 C API. The configure switches it reads (`SW_USE_THREAD_CONTEXT`,
 `SW_CONTEXT_PROTECT_STACK_PAGE`, `SW_CONTEXT_DETECT_STACK_USAGE`, `SW_CORO_TIME`) are
-`swoole_rs_corebase::built_with`'s (native/phphelpers/switches.cc), so the module has
+`swoole_rs_corebase::built_with`'s (native/corebase/switches.cc), so the module has
 no native source left.
 
 ## Context stack
