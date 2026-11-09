@@ -82,7 +82,7 @@ pub mod exports {
     use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_server::{ConnectionRecord, view};
-    use swoole_rs_websocket::frame_api::decode_frame;
+    use swoole_rs_websocket::frame_api::{PacketLength, decode_frame};
     use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, swr_v1_ws_encode};
 
     use super::{WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
@@ -99,13 +99,25 @@ pub mod exports {
             socket: *mut SocketRecord,
             rdata: *const c_void,
         ) -> c_int;
-        /// `http2::get_frame_length` (crates/phphttp2).
-        #[link_name = "swr_v1_http2_frame_length"]
-        pub fn http2_length(
-            proto: *const c_void,
-            socket: *mut SocketRecord,
-            pl: *mut c_void,
-        ) -> isize;
+    }
+
+    /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
+    /// the length callback of an HTTP/2 port, and of crates/phphttp2's client and
+    /// crates/phphttp's coroutine server, which link it by this name.
+    ///
+    /// # Safety
+    /// `pl` is a live packet length over `buf_size` readable bytes.
+    #[unsafe(export_name = "swr_v1_http2_frame_length")]
+    pub unsafe extern "C" fn http2_length(
+        _proto: *const c_void,
+        _socket: *mut SocketRecord,
+        pl: *mut PacketLength,
+    ) -> isize {
+        // SAFETY: as the caller promises.
+        let pl = unsafe { &*pl };
+        // SAFETY: the packet's `buf_size` readable bytes.
+        let buffered = unsafe { std::slice::from_raw_parts(pl.buf, pl.buf_size as usize) };
+        swoole_rs_http2::frame_length(buffered)
     }
 
     /// The connection a server socket's `object` holds.
@@ -371,7 +383,7 @@ pub mod exports {
                 swoole_rs_websocket::frame_api::get_package_length(proto, socket.cast(), pl.cast())
             },
             // SAFETY: as above.
-            || unsafe { http2_length(proto, socket, pl) },
+            || unsafe { http2_length(proto, socket, pl.cast()) },
             -1,
         )
     }

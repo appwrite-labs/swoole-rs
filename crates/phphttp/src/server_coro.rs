@@ -308,7 +308,7 @@ unsafe extern "C" {
     fn create_dir(path: *const c_char, length: usize) -> c_int;
     /// `System::sleep(sec)` (crates/hooks).
     fn swoole_coroutine_sleep(sec: c_int);
-    /// `swoole::http2::get_frame_length` (crates/phphttp2).
+    /// `swoole::http2::get_frame_length` (crates/ports).
     fn swr_v1_http2_frame_length(
         protocol: *const c_void,
         socket: *mut c_void,
