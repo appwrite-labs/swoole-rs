@@ -4,7 +4,9 @@
   ci.py wait [--commit SHA]  wait for a workflow run (default: the merge tier on main); a run
                              replaced by a newer push to main follows the newer run
   ci.py status [--commit SHA]  the same, without waiting
-  ci.py next                 the claimable issues in claim order (exit 2 when there are none)
+  ci.py next                 the claimable issues in claim order (exit 2 when there are none),
+                             without those whose title says they need workflow scope when gh's
+                             token lacks it
   ci.py stuck                auto-merge PRs that conflict with main, failed a required check or
                              whose finished PR-tier run has none (GitHub abandoned its jobs:
                              re-run it), oldest first (exit 2 when there are none)
@@ -334,6 +336,21 @@ def report(result, as_json):
         report(result['last_completed'], False)
 
 
+WORKFLOW_SCOPE = re.compile(r'needs (?:a token with )?workflow scope')
+
+
+def workflow_scope():
+    """False only when gh's token is a classic OAuth token without the workflow scope; others
+    (fine-grained, app) don't list scopes."""
+    for line in gh('api', '-i', 'user').splitlines():
+        name, _, value = line.partition(':')
+        if name.lower() == 'x-oauth-scopes':
+            return 'workflow' in {scope.strip() for scope in value.split(',')}
+        if not line.strip():
+            break
+    return True
+
+
 def claimable():
     """Open, ready, unblocked issues without needs:decision: p0, p1, p2, then unprioritised,
     oldest first within each (AGENTS.md's claim order)."""
@@ -344,6 +361,13 @@ def claimable():
         '--jq', '.[]').splitlines())
         if 'pull_request' not in issue and not issue.get('issue_dependencies_summary', {}).get('blocked_by')
         and not any(label['name'] == 'needs:decision' for label in issue['labels'])]
+    # Editing .github/workflows/ needs a token with workflow scope; such issues say so in their title.
+    if not workflow_scope():
+        workflows = [issue for issue in issues if WORKFLOW_SCOPE.search(issue['title'])]
+        if workflows:
+            say(f"hiding {len(workflows)} issues that need a workflow-scoped token: "
+                + ', '.join(f"#{issue['number']}" for issue in workflows))
+        issues = [issue for issue in issues if issue not in workflows]
     def priority(issue):
         names = {label['name'] for label in issue['labels']}
         return next((rank for rank, name in enumerate(('p0', 'p1', 'p2')) if name in names), 3)

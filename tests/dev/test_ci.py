@@ -54,6 +54,12 @@ elif args[0] == 'api' and '/check-runs' in args[1]:
         print(json.dumps(check))
 elif args[0] == 'api' and '-X' in args:
     pass
+elif args[:3] == ['api', '-i', 'user']:
+    print('HTTP/2.0 200 OK')
+    if 'scopes' in data:
+        print('X-Oauth-Scopes: ' + data['scopes'])
+    print()
+    print('{}')
 elif args[0] == 'api' and '/compare/' in args[1]:
     print(data.get('compare', 'ahead'))
 elif args[0] == 'api' and '/actions/jobs/' in args[1]:
@@ -207,7 +213,7 @@ class Ci(unittest.TestCase):
 
     def test_next_orders_claimable_issues_by_priority_then_age(self):
         def issue(number, created, *labels, blocked_by=0, **extra):
-            return {'number': number, 'title': f't{number}', 'created_at': created,
+            return {'number': number, 'title': extra.pop('title', f't{number}'), 'created_at': created,
                     'labels': [{'name': name} for name in ('status:ready', *labels)],
                     'issue_dependencies_summary': {'blocked_by': blocked_by}, **extra}
         issues = [issue(1, '2026-10-01T00:00:00Z', 'p2'), issue(2, '2026-10-05T00:00:00Z', 'p1'),
@@ -222,6 +228,15 @@ class Ci(unittest.TestCase):
                       '--jq .[]', self.gh_calls)
         code, result, _ = self.ci('next', runs={}, flags=('--json',), issues=[])
         self.assertEqual((code, result), (2, []))
+        # A classic token without workflow scope can't do the issues whose title says they need it.
+        issues = [issue(1, '2026-10-01T00:00:00Z', 'p1', title='pr.yml: x (needs workflow scope)'),
+                  issue(2, '2026-10-02T00:00:00Z', 'p1', title='fuzz: y (needs a token with workflow scope)'),
+                  issue(3, '2026-10-03T00:00:00Z', 'p1')]
+        for scopes, expected in [('gist, repo', [3]), ('repo, workflow', [1, 2, 3]), (None, [1, 2, 3])]:
+            code, result, err = self.ci('next', runs={}, flags=('--json',), issues=issues,
+                                        **({'scopes': scopes} if scopes else {}))
+            self.assertEqual([row['number'] for row in result], expected, scopes)
+            self.assertEqual('hiding 2 issues that need a workflow-scoped token: #1, #2' in err, expected == [3])
 
     def test_stuck_lists_auto_merge_prs_that_conflict_or_failed_a_required_check(self):
         def pull(number, created, auto=True):
