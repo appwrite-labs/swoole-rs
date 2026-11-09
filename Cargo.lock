@@ -1109,7 +1109,6 @@ name = "swoole-rs-websocket"
 version = "0.1.0"
 dependencies = [
  "libc",
- "openssl-sys",
  "swoole-rs-base64",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
