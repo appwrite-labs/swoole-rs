@@ -164,7 +164,7 @@ corpus/upstream/families.sh target/reports/phpt target/upstream/src/modules/swoo
 
 Those run on Ubuntu's PHP 8.3. Every night `.github/workflows/php-versions.yml`
 builds upstream and the Cargo build against each other release upstream supports
-(8.1, 8.2, 8.4, 8.5, from source by `.devcontainer/php.sh` with `PHP_SERIES` set)
+(8.2, 8.4, 8.5, from source by `.devcontainer/php.sh` with `PHP_SERIES` set)
 and gates every PHPT the same way, in 4 shards per version and without services.
 
 ## Attributing a regression

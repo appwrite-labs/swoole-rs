@@ -1,13 +1,12 @@
 #!/bin/sh
 # PHP built from source in $1 with the configure options that follow, for the builds
 # Ubuntu doesn't ship: thread-safe (zts.yml, --enable-zts), sanitized (tools/asan.py) and
-# the releases other than 8.3 that upstream supports (php-versions.yml, PHP_SERIES=8.1 …).
+# the releases other than 8.3 that upstream supports (php-versions.yml, PHP_SERIES=8.2 …).
 # It has the extensions the PHPTs call (sockets, pcntl, posix, curl, openssl) compiled
 # in; install.sh has the libraries. CC and CFLAGS reach configure.
 # Does nothing when the prefix already holds this release with these options (CI caches it).
 set -e
 case "${PHP_SERIES:-8.3}" in
-    8.1) VERSION=8.1.34 SHA256=3c5b060ec8e0d5dd1d8237823f3161cc8bc5342aab3c46893eba9857759c4bfa ;;
     8.2) VERSION=8.2.35 SHA256=9db4204f0a2d1911277ae832185e07bb4c3b3559772753a70d2968ca346d6910 ;;
     8.3) VERSION=8.3.36 SHA256=c93f3441f87f6ab156bef4432db215d7e61ca2c0183bb3a2aa28d9886ab59f53 ;;
     8.4) VERSION=8.4.27 SHA256=5bafed9994c1a49796b25b5f61c22c9183bfe046b6acc7b363842d03c77f972f ;;
