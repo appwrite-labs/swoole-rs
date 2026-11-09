@@ -56,10 +56,8 @@ mod host {
         // SAFETY: SwooleG.memory_pool lives from swoole_init, before MINIT.
         unsafe { pool::alloc(4) }.cast()
     }
-    pub(super) unsafe extern "C" fn free_shared(word: *mut u32) {
-        // SAFETY: the word came from `alloc_shared`.
-        unsafe { pool::free(word.cast()) };
-    }
+    /// The global pool frees nothing.
+    pub(super) unsafe extern "C" fn free_shared(_word: *mut u32) {}
     #[cfg(not(feature = "iouring"))]
     pub(super) extern "C" fn sleep(seconds: f64) -> CoroutineOutcome {
         // SAFETY: crates/hooks's (upstream symbol).

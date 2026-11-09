@@ -643,11 +643,8 @@ fn objects(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             free_message_bus(pool);
             0
         }
-        OP_FREE_WORKERS => {
-            // SAFETY: `OP_ALLOC_WORKERS`'s block.
-            unsafe { mem_pool::free(record(pool).workers.cast()) };
-            0
-        }
+        // The global pool's `free` is a no-op.
+        OP_FREE_WORKERS => 0,
         _ => return None,
     })
 }

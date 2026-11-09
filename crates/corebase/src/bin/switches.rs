@@ -1,5 +1,5 @@
 //! Emit native/corebase/switches.cc: the build's configure switches, as
-//! `swr_cpp_switches` bits (`tools/headers.sh`).
+//! `swr_cpp_switches` bits, and the bug report's compile-time lines (`tools/headers.sh`).
 #[path = "../switches.rs"]
 pub mod switches;
 #[expect(clippy::print_stdout, reason = "stdout is the generated native source")]
@@ -17,5 +17,11 @@ fn main() {
             *switch as u8
         );
     }
-    println!("    ;");
+    println!(
+        r#"    ;
+
+// The bug report's compile-time lines (swoole_rs_corebase::bug_report_init).
+extern "C" const char *const swr_cpp_bug_report[3] = {{
+    SWOOLE_BUG_REPORT, __VERSION__, "OPENSSL_VERSION: " OPENSSL_VERSION_TEXT "\n"}};"#
+    );
 }

@@ -95,7 +95,7 @@ fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
         unsafe { swr_v1_memory_global_memory_new(4096, false, &raw mut pool) },
         0
     );
-    let object = [ptr::null_mut(), pool.cast::<c_void>()];
+    let object = [pool.cast::<c_void>()];
     let this = object.as_ptr().cast();
     let mut block = ptr::null_mut();
     assert_eq!(
@@ -132,10 +132,10 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
         let parent = pool;
         // As if another process made it.
         unsafe { (*parent).creator = if shared { std::process::id() + 1 } else { 0 } };
-        let mut object = [ptr::null_mut(), pool.cast::<c_void>()];
+        let mut object = [pool.cast::<c_void>()];
         let this = object.as_mut_ptr().cast_const().cast();
         assert_eq!(unsafe { swr_global_memory_capacity(this) }, 4096);
-        let child = object[1].cast::<GlobalImpl>();
+        let child = object[0].cast::<GlobalImpl>();
         assert_eq!(child == parent, !shared);
         if shared {
             assert_eq!(unsafe { (*child).inherited }, parent);
@@ -155,7 +155,8 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
 
 // Upstream's core-tests/src/memory/{fixed_pool,global_memory}.cpp, one test per
 // TEST, with its inputs and expected values (ringbuffer.cpp is ringbuffer_thread.rs).
-// `this` is a stand-in C++ object: a vtable pointer, then `impl`.
+// `this` is a stand-in C++ object: a FixedPool's vtable pointer, then `impl`, or a
+// GlobalMemory's `impl`.
 
 /// `TEST(fixed_pool, alloc)`: 1200 random allocs (3 in 4) and frees (front or back
 /// of the live list) over a 1024 x 256-byte private pool.
@@ -208,7 +209,7 @@ fn global_memory_alloc() {
         unsafe { swr_v1_memory_global_memory_new(2 * 1024 * 1024, false, &raw mut pool) },
         0
     );
-    let object = [ptr::null_mut(), pool.cast::<c_void>()];
+    let object = [pool.cast::<c_void>()];
     let this = object.as_ptr().cast();
     let alloc = |pool: &mut *mut GlobalImpl, size| {
         let mut block = ptr::null_mut();

@@ -16,6 +16,20 @@
 
 use std::ffi::c_char;
 
+// The archive's ABI queries live here, not in crates/ffi, whose object holds
+// swoole_init: a C consumer that asks for them links no lifecycle.
+/// Return the supported C ABI version.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_abi_version() -> u32 {
+    1
+}
+
+/// Return the migrated kernels: every module, as the bits `MODULES` in `tools/build_hybrid.py` names.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_feature_bits() -> u64 {
+    (1 << 28) - 1
+}
+
 mod codes;
 pub use codes::ErrorCode;
 mod state;

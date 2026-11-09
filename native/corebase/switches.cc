@@ -158,3 +158,7 @@ extern "C" const uint64_t swr_cpp_switches = 0
     | UINT64_C(1) << 50 /* CoroTime */
 #endif
     ;
+
+// The bug report's compile-time lines (swoole_rs_corebase::bug_report_init).
+extern "C" const char *const swr_cpp_bug_report[3] = {
+    SWOOLE_BUG_REPORT, __VERSION__, "OPENSSL_VERSION: " OPENSSL_VERSION_TEXT "\n"};

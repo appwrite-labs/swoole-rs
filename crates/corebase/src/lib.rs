@@ -59,7 +59,7 @@ pub use lifecycle::{
 pub use random::{swoole_random_string, swr_v1_os_random_bytes};
 pub use thread::*;
 
-use std::ffi::{c_char, c_int, c_long, c_ulong};
+use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};
 use std::{cmp::Ordering, ptr, slice};
 
 unsafe extern "C" {
@@ -131,6 +131,24 @@ pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
     // SAFETY: `output` is non-null, writable and disjoint from `input`.
     unsafe { output.write(value) };
     1
+}
+
+/// `swoole_get_env(name, &value)`: the variable as `std::stoi` reads it, or `None`
+/// when it is unset. Where `std::stoi` throws, which nothing above `swoole_get_env`
+/// catches, the process aborts as `std::terminate` does.
+#[must_use]
+pub fn get_env(name: &CStr) -> Option<c_int> {
+    // SAFETY: a NUL-terminated name; the value is read before the environment changes.
+    let value = unsafe { libc::getenv(name.as_ptr()) };
+    if value.is_null() {
+        return None;
+    }
+    let mut output = 0;
+    // SAFETY: getenv's NUL-terminated value and a live output.
+    if unsafe { swr_v1_corebase_parse_stoi(value, &raw mut output) } == 0 {
+        std::process::abort();
+    }
+    Some(output)
 }
 
 /// `int swoole_type_size(char)`: the byte width of a pack-style length type, or 0.
@@ -224,13 +242,13 @@ const TOO_MANY_LISTEN_PORT: c_int = 9005;
 
 /// `LISTEN_FDS`'s verdict: the count to return, or which log line (`true`: too big).
 #[cfg(any(test, feature = "upstream-symbols"))]
-fn systemd_listen_fds(found: bool, count: c_int) -> Result<c_int, bool> {
-    if !found {
-        Err(false)
-    } else if u32::try_from(count).is_ok_and(|count| count >= constants::SW_MAX_LISTEN_PORT) {
-        Err(true)
-    } else {
-        Ok(count)
+fn systemd_listen_fds(count: Option<c_int>) -> Result<c_int, bool> {
+    match count {
+        None => Err(false),
+        Some(count) if u32::try_from(count).is_ok_and(|n| n >= constants::SW_MAX_LISTEN_PORT) => {
+            Err(true)
+        }
+        Some(count) => Ok(count),
     }
 }
 
@@ -240,13 +258,8 @@ fn systemd_listen_fds(found: bool, count: c_int) -> Result<c_int, bool> {
 #[unsafe(export_name = "_Z29swoole_get_systemd_listen_fdsv")]
 #[must_use]
 pub extern "C-unwind" fn swoole_get_systemd_listen_fds() -> c_int {
-    let mut count = 0;
-    // SAFETY: base.cc's `swoole_get_env`, with a NUL-terminated name and a live
-    // out-parameter; without base.cc there is no environment to read.
-    let found = native::host()
-        .is_some_and(|host| unsafe { (host.get_env)(c"LISTEN_FDS".as_ptr(), &raw mut count) });
     let origin = c"swoole_get_systemd_listen_fds";
-    match systemd_listen_fds(found, count) {
+    match systemd_listen_fds(get_env(c"LISTEN_FDS")) {
         Ok(count) => count,
         Err(false) => {
             log::warning(origin, format_args!("invalid LISTEN_FDS"));
@@ -599,11 +612,11 @@ mod tests {
 
     #[test]
     fn systemd_listener_policy_preserves_missing_limit_and_signed_values() {
-        assert_eq!(systemd_listen_fds(false, 0), Err(false));
-        assert_eq!(systemd_listen_fds(true, 59999), Ok(59999));
-        assert_eq!(systemd_listen_fds(true, 60000), Err(true));
-        assert_eq!(systemd_listen_fds(true, 60001), Err(true));
-        assert_eq!(systemd_listen_fds(true, -1), Ok(-1));
+        assert_eq!(systemd_listen_fds(None), Err(false));
+        assert_eq!(systemd_listen_fds(Some(59999)), Ok(59999));
+        assert_eq!(systemd_listen_fds(Some(60000)), Err(true));
+        assert_eq!(systemd_listen_fds(Some(60001)), Err(true));
+        assert_eq!(systemd_listen_fds(Some(-1)), Ok(-1));
     }
 
     #[test]

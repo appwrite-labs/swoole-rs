@@ -1,7 +1,5 @@
-//! Versioned C seam for the hybrid extension; base queries are allocation-free.
-//!
-//! These queries accept no pointers, invoke no callbacks, and cannot panic.
-//! PHP/Zend values and all runtime ownership remain with upstream Swoole.
+//! The hybrid's Rust archive: every module crate, and `swoole_init` (src/init.rs).
+//! The C ABI queries are crates/error's.
 #![cfg_attr(
     not(test),
     deny(
@@ -10,17 +8,7 @@
     )
 )]
 
-/// Return the supported C ABI version.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_abi_version() -> u32 {
-    1
-}
-
-/// Return the migrated kernels: every module, as the bits `MODULES` in `tools/build_hybrid.py` names.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_feature_bits() -> u64 {
-    (1 << 28) - 1
-}
+mod init;
 
 pub use swoole_rs_error::*;
 

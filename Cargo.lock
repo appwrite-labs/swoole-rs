@@ -487,6 +487,7 @@ dependencies = [
 name = "swoole-rs-ffi"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",

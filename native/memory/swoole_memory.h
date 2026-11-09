@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_memory.h, owned here: the global pool over Rust's pages
- * (crates/memory/src/members.rs) and the sw_shm_* calls C++ still makes. The pool stays
- * a C++ object because Rust's Table and core-tests call it through its vtable
- * (destructors, alloc, free); its constructor throws. */
+ * (crates/memory/src/members.rs) and the sw_shm_* calls C++ still makes. Rust makes
+ * SwooleG.memory_pool (swoole_rs_memory::members::pool); core-tests make their own
+ * and call its members, and its constructor throws. Its one member is Rust's impl. */
 #pragma once
 
 #include "swoole.h"
@@ -12,13 +12,6 @@
 
 namespace swoole {
 
-class MemoryPool {
-  public:
-    virtual ~MemoryPool() = default;
-    virtual void *alloc(uint32_t size) = 0;
-    virtual void free(void *ptr) = 0;
-};
-
 static inline void memory_check(int status) {
     if (status == -1) swoole_throw_error(SW_ERROR_INVALID_PARAMS);
     if (status) throw std::bad_alloc();
@@ -27,22 +20,22 @@ static inline void memory_check(int status) {
 struct GlobalMemoryImpl;
 
 // Pages allocated once for the program's life; free is a no-op.
-class GlobalMemory : public MemoryPool {
+class GlobalMemory {
     GlobalMemoryImpl *impl;
 
   public:
     GlobalMemory(uint32_t page_size, bool shared) {
         memory_check(swr_v1_memory_global_memory_new(page_size, shared, (void **) &impl));
     }
-    ~GlobalMemory() override {
+    ~GlobalMemory() {
         swr_v1_memory_global_memory_delete(impl);
     }
-    void *alloc(uint32_t size) override {
+    void *alloc(uint32_t size) {
         void *ptr;
         memory_check(swr_v1_memory_global_memory_alloc((void **) &impl, size, &ptr));
         return ptr;
     }
-    void free(void *) override {}
+    void free(void *) {}
     size_t get_memory_size() const;
 };
 }  // namespace swoole

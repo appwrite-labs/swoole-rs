@@ -4,6 +4,7 @@
 //! the TLS session.
 use crate::vector::Barrier;
 use core::ffi::c_void;
+use swoole_rs_corebase::constants::EventType;
 
 /// Whether the socket is connected and which directions are shut.
 #[repr(C)]
@@ -14,9 +15,8 @@ pub struct SocketFlags {
     pub write: bool,
 }
 
-/// `SW_EVENT_READ` and `SW_EVENT_WRITE` (pinned by a `static_assert` in native/corebase/globals.cc).
-pub(crate) const READ: u32 = 1 << 9;
-pub(crate) const WRITE: u32 = 1 << 10;
+pub(crate) const READ: u32 = EventType::SW_EVENT_READ as u32;
+pub(crate) const WRITE: u32 = EventType::SW_EVENT_WRITE as u32;
 
 /// One coroutine socket's state; native code holds it only as a pointer.
 pub struct SocketState {

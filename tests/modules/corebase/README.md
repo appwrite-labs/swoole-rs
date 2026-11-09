@@ -3,8 +3,8 @@
 The corebase overlay deletes `src/core/base.cc` and `src/core/misc.cc` so that helper policy (type
 size, gcd/lcm, stoi env parsing, itoa/radix/hex, version compare, dirname,
 recursive mkdir), the lifecycles (clean, thread init/clean, fork, task
-tmpdir) and the hooks come from Rust, with `native/corebase/globals.cc` for what
-stable Rust can't express. Rust owns `SwooleG` and `SwooleTG` (`crates/corebase/src/
+tmpdir), the hooks and `swoole_init` (crates/ffi) come from Rust; swoole.h keeps
+base.cc's throwing APIs inline. Rust owns `SwooleG` and `SwooleTG` (`crates/corebase/src/
 config_state.rs`, `global.rs`, `lifecycle.rs`); `swoole::Global` and
 `swoole::ThreadGlobal` are their C++ views. Native code keeps the C++ objects,
 allocation, logging and callback execution. See `native/corebase/contract.md`.
@@ -19,16 +19,17 @@ native-TU gates.
   sizes, signedness and string bytes in Apple and non-Apple configuration branches.
 
 - `differential.py --source CONFIGURED_PINNED --archive A --output R [--sanitize] [--signed-char | --unsigned-char] [--include DIR]`
-  (`corebase-native`): compiles the complete original `base.cc` (pinned) and
-  the hybrid build's `globals.cc`, where base.cc's glue went (the build `A` comes from,
-  with its headers and `config.h`), into separate binaries with `driver.cc`, feeds
+  (`corebase-native`): compiles the complete original `base.cc` (pinned) and, for
+  the hybrid, a unit that only includes `swoole.h`, whose inline `swoole_get_env` is
+  what is left of base.cc (with the headers and `config.h` of the build `A` comes
+  from), into separate binaries with `driver.cc`, feeds
   both the corpus from `cases.py` and requires identical output/errno, plus the
   independently expected values. It also runs seven extracted upstream `TEST(base, ...)`
   bodies (dec2hex, hex2dec, version_compare, common_divisor, common_multiple,
   itoa, type_size) and the `allocator.cc` strndup interposer. The hybrid
   binary must contain real calls to each Rust helper; the original none. For the
   helpers Rust defines under upstream's own symbols (gcd, lcm, version compare,
-  dec2hex) the hybrid globals.o must not define them and the archive must.
+  dec2hex) the hybrid unit must not define them and the archive must.
   `--unsigned-char` also covers bytes 128..255.
 - `mkdir_startup.py --engine native=... --engine rust=... --output R`
   (`corebase-startup`): PHP startup through `sys_temp_dir` (create, repeated

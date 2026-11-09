@@ -3,8 +3,8 @@
 // shared_memory,table}.cc (Swoole contributors).
 //! The upstream members of `FixedPool`, `RingBuffer`, `GlobalMemory`, the `sw_shm_*`
 //! functions and `Table`'s shared-memory lifecycle. `native/memory/swoole_memory.h` keeps
-//! `GlobalMemory`'s constructor, which throws, and its virtual members, whose vtables
-//! every user emits; they call the `swr_v1_memory_global_memory_*` functions below. A
+//! `GlobalMemory`'s inline members for C++ callers, whose constructor throws; they call
+//! the `swr_v1_memory_global_memory_*` functions below. A
 //! constructor returns 0, -1 for upstream's `Exception(SW_ERROR_INVALID_PARAMS)` or -2
 //! for `std::bad_alloc`. `FixedPool` and `RingBuffer` have no C++ facade left; their
 //! members serve the Rust ports of upstream's core tests in `tests/modules/memory/members.rs`.
@@ -482,9 +482,9 @@ fn alloc(pages: &mut Global, size: u32) -> *mut c_void {
     block
 }
 
-/// A `GlobalMemory`'s `impl` slot, which follows the vtable pointer.
+/// A `GlobalMemory`'s `impl` slot, its one member.
 fn slot(this: *const c_void) -> *mut *mut GlobalImpl {
-    this.cast::<*mut GlobalImpl>().wrapping_add(1).cast_mut()
+    this.cast::<*mut GlobalImpl>().cast_mut()
 }
 
 upstream! {
@@ -603,45 +603,65 @@ pub extern "C" fn sw_shm_realloc(payload: *mut c_void, size: usize) -> *mut c_vo
 
 // ---------------------------------------------------------------- Table
 
-/// `sw_mem_pool()->alloc(size)` and `->free(ptr)`: virtual calls through the pool's
-/// Itanium vtable, whose slots are the two destructors, `alloc`, then `free`.
+/// `SwooleG.memory_pool`: a `GlobalMemory` (`native/memory/swoole_memory.h`), whose
+/// one member is its `impl` slot. Its `free` is a no-op, so nothing calls it.
 pub mod pool {
+    use super::{
+        GlobalImpl, swr_v1_memory_global_memory_alloc, swr_v1_memory_global_memory_delete,
+    };
     use std::ffi::c_void;
+    use std::ptr;
 
-    type Alloc = unsafe extern "C" fn(this: *mut c_void, size: u32) -> *mut c_void;
-    type Free = unsafe extern "C" fn(this: *mut c_void, ptr: *mut c_void);
+    /// `new GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true)`, `swoole_init`'s pool. Where
+    /// upstream's constructor throws, the process aborts.
+    #[must_use]
+    pub fn new() -> *mut c_void {
+        let page = swoole_rs_corebase::constants::SW_GLOBAL_MEMORY_PAGESIZE;
+        let Ok(pool) = GlobalImpl::new(page, true, ptr::null_mut()) else {
+            std::process::abort();
+        };
+        Box::into_raw(Box::new(pool)).cast()
+    }
 
-    /// The pool and its vtable.
+    /// `delete SwooleG.memory_pool`.
+    pub fn delete() {
+        let pool = swoole_rs_corebase::swr_v1_core_memory_pool().cast::<*mut GlobalImpl>();
+        if !pool.is_null() {
+            // SAFETY: `new`'s, deleted once, by `swoole_clean`.
+            let pool = unsafe { Box::from_raw(pool) };
+            // SAFETY: its live pages, which only it frees.
+            unsafe { swr_v1_memory_global_memory_delete(*pool) };
+        }
+    }
+
+    /// Without futex, waiters register in a Rust registry in shared memory, from the
+    /// pool `swoole_init` just made: a fatal error when it can't be had.
+    pub fn wait_registry_init() {
+        let size = u32::try_from(swoole_rs_utilities::swr_v1_utils_wait_registry_size());
+        // SAFETY: `swoole_init` has made the pool.
+        let registry = unsafe { alloc(size.unwrap_or(u32::MAX)) };
+        // SAFETY: null or that many shared bytes, for the program's life.
+        if !unsafe { swoole_rs_utilities::swr_v1_utils_wait_registry_init(registry) } {
+            let message = c"failed to allocate atomic wait registry";
+            // SAFETY: `swoole_init`'s hook exits; no frame here owns anything.
+            unsafe { swoole_rs_corebase::fatal_error(super::MALLOC_FAIL, message) };
+        }
+    }
+
+    /// `sw_mem_pool()->alloc(size)`.
     ///
     /// # Safety
-    /// `SwooleG.memory_pool` is a live `swoole::MemoryPool`.
-    unsafe fn pool() -> (*mut c_void, *const c_void) {
-        let pool = swoole_rs_corebase::swr_v1_core_memory_pool();
-        // SAFETY: as the caller promises; a polymorphic object starts with its vptr.
-        (pool, unsafe { pool.cast::<*const c_void>().read() })
-    }
-
-    /// # Safety
-    /// As `pool`.
+    /// `SwooleG.memory_pool` is a live pool.
     #[must_use]
     pub unsafe fn alloc(size: u32) -> *mut c_void {
-        // SAFETY: as the caller promises.
-        let (pool, vtable) = unsafe { pool() };
-        // SAFETY: slot 2 is `MemoryPool::alloc`'s override.
-        let alloc = unsafe { vtable.cast::<Alloc>().wrapping_add(2).read() };
-        // SAFETY: a virtual call on the live pool.
-        unsafe { alloc(pool, size) }
-    }
-
-    /// # Safety
-    /// As `pool`; `ptr` came from `alloc`.
-    pub unsafe fn free(ptr: *mut c_void) {
-        // SAFETY: as the caller promises.
-        let (pool, vtable) = unsafe { pool() };
-        // SAFETY: slot 3 is `MemoryPool::free`'s override.
-        let free = unsafe { vtable.cast::<Free>().wrapping_add(3).read() };
-        // SAFETY: a virtual call on the live pool.
-        unsafe { free(pool, ptr) };
+        let pool = swoole_rs_corebase::swr_v1_core_memory_pool().cast();
+        let mut block = ptr::null_mut();
+        // SAFETY: as the caller promises, `pool` is a live pool's `impl` slot.
+        if unsafe { swr_v1_memory_global_memory_alloc(pool, size, &raw mut block) } != 0 {
+            // A forked process's fresh pool failed: upstream's `alloc` throws.
+            std::process::abort();
+        }
+        block
     }
 }
 
@@ -676,8 +696,6 @@ pub unsafe fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
     let hash = swoole_rs_utilities::misc::swoole_hash_php;
     // SAFETY: the pool's blocks are 8-aligned; `size_of::<Table>()` writable bytes.
     if unsafe { !Table::init(table, rows, conflict, hash, table_warning, table_error) } {
-        // SAFETY: from the pool above.
-        unsafe { pool::free(table.cast()) };
         return ptr::null_mut();
     }
     table
@@ -717,8 +735,6 @@ pub unsafe fn swr_table_destroy(this: *mut Table) {
     if !arena.is_null() {
         sw_shm_free(arena.cast());
     }
-    // SAFETY: from the pool `make` used.
-    unsafe { pool::free(this.cast()) };
 }
 
 #[cfg(test)]
