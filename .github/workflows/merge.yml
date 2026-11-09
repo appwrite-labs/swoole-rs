@@ -617,22 +617,29 @@ jobs:
             --engine hybrid=target/hybrid/rust-php-sockets/modules/swoole.so \
             --output target/reports/alpine-phpt.json || [ $? -eq 1 ]
           python3 corpus/upstream/gate.py target/reports/alpine-phpt.json --output target/reports/alpine-gate.json >> "$GITHUB_STEP_SUMMARY"
-      # What the Ubuntu shards' PHP 8.3 can't show (#1993): the swoole_ftp PHPTs' PHP 8.4+
-      # getaddrinfo wording and stdext's mb_* methods, on stdext builds of both engines, with
-      # phpt-stdext's re-runs. tools/badges.py counts its phpt-alpine.json.
+      # What the Ubuntu shards' PHP 8.3 can't show (#1993, #2000): the swoole_ftp PHPTs' PHP 8.4+
+      # getaddrinfo wording, stdext's mb_* methods and the PHPTs that skip below PHP 8.4, on
+      # stdext builds of both engines, with phpt-stdext's re-runs. tools/badges.py counts its
+      # phpt-alpine.json.
       - if: always()
         shell: bash
         run: |
-          python3 tools/build_hybrid.py --backend upstream --php-sockets --stdext
-          python3 tools/build_hybrid.py --php-sockets --stdext
+          python3 tools/build_hybrid.py --backend upstream --php-sockets --stdext --configure=--enable-swoole-curl
+          python3 tools/build_hybrid.py --php-sockets --stdext --configure=--enable-swoole-curl
           mkdir -p target/php85/engines target/php85/results
           cp -L target/hybrid/upstream-php-sockets-stdext/modules/swoole.so target/php85/engines/upstream.so
           cp -L target/hybrid/rust-php-sockets-stdext/modules/swoole.so target/php85/engines/hybrid.so
           python3 corpus/upstream/inventory.py --output target/php85/manifest.json
-          set -- --manifest target/php85/manifest.json --module swoole_ftp --module swoole_stdext --timeout 30 $PHP_EXTENSIONS
+          set -- --manifest target/php85/manifest.json --timeout 30 $PHP_EXTENSIONS
+          php84=$(for t in swoole_coroutine/exit_84 swoole_coroutine/exit_exception_backtrace_84 swoole_curl/native_handle_destructor \
+            swoole_curl/reset_private swoole_curl/reset_private_destructor swoole_runtime/unsafe/http_get_last_response_headers; do
+            echo --case tests/$t.phpt; done)
           for engine in upstream hybrid; do
-            python3 corpus/upstream/run.py "$@" --engine $engine=target/php85/engines/$engine.so \
+            python3 corpus/upstream/run.py "$@" --module swoole_ftp --module swoole_stdext --engine $engine=target/php85/engines/$engine.so \
               --output target/php85/results/$engine.json || [ $? -eq 1 ]
+            # shellcheck disable=SC2086 # one --case per word
+            python3 corpus/upstream/run.py "$@" $php84 --engine $engine=target/php85/engines/$engine.so \
+              --output target/php85/results/$engine-php84.json || [ $? -eq 1 ]
           done
           corpus/upstream/recheck.sh target/php85/results target/php85/engines target/php85/recheck "$@"
           set -- target/php85/results/*.json
