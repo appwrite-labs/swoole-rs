@@ -9,10 +9,6 @@ license = "Apache-2.0"
 name = "swoole_rs_crc32"
 crate-type = ["rlib"]
 
-[features]
-# Export `swoole_crc32` under its mangled C++ name.
-upstream-symbols = []
-
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }
 swoole-rs-oracle = { path = "../oracle" }

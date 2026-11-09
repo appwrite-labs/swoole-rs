@@ -1,7 +1,6 @@
 # Base64 tests
 
-ABI: [`docs/core-abi-v1.md`](../../../docs/core-abi-v1.md) and
-`native/include/swoole_rs_base64.h`. Upstream pin:
+ABI: [`docs/core-abi-v1.md`](../../../docs/core-abi-v1.md). Upstream pin:
 `76c657d88be39b7af6bf85e46bcbac0da7387760` (Swoole v6.2.5).
 
 `crates/base64` replaces both low-level algorithms with allocation-free Rust.
@@ -11,14 +10,11 @@ compiled C++ calls `swoole::base64_encode` or `base64_decode` any more.
 The decoder intentionally accepts incomplete quartets, stops at the first `=`,
 and preserves provisional writes before invalid data returns zero. It does not
 skip whitespace. Normal completion writes a terminating NUL. Untouched bytes stay
-untouched, including on failure. Rust uses `MaybeUninit<u8>` output storage, so C
-callers may pass uninitialized writable storage. Only the FFI boundary constructs
-slices; checked size/address arithmetic rejects null and unrepresentable ranges.
-Allocation validity and disjointness remain caller preconditions.
+untouched, including on failure. Both take slices, and writes that would fall
+past the output slice are skipped; the crate forbids `unsafe_code`.
 
 **Zero-length encode is outside the compared domain** and is excluded from the
-C++ oracle. The Rust definition writes a NUL and returns zero; null input
-is permitted for zero length.
+C++ oracle. The Rust definition writes a NUL and returns zero.
 
 The encoder processes full three-byte groups without padding decisions; one tail
 step supplies padding. The decoder classifies each byte with an immutable
@@ -30,7 +26,7 @@ step supplies padding. The decoder classifies each byte with an immutable
 cargo test -p swoole-rs-base64
 ```
 
-`crates/base64/tests/upstream.rs` compares the Rust exports with the pinned
+`crates/base64/tests/upstream.rs` compares `encode` and `decode` with the pinned
 upstream C++, which `crates/oracle` compiles from unmodified copies under its
 `upstream/` directory. Return counts and every output byte must match, with three
 sentinels, 17-byte red zones and unaligned input: all one- and two-byte inputs,

@@ -363,8 +363,9 @@ impl CppString {
         }
         if base64 {
             let mut out = vec![0u8; encoded];
-            // SAFETY: `at` holds `length` bytes; `out` holds their encoding and NUL.
-            n = unsafe { swoole_rs_base64::swr_v1_base64_encode(at, length, out.as_mut_ptr()) };
+            // SAFETY: `at` holds the `length` random bytes just written.
+            let raw = unsafe { std::slice::from_raw_parts(at, length) };
+            n = swoole_rs_base64::encode(raw, &mut out);
             // SAFETY: the buffer's free space holds the encoding.
             unsafe { ptr::copy_nonoverlapping(out.as_ptr(), at, n) };
         }

@@ -28,10 +28,7 @@ pub fn accept(key: &[u8]) -> [u8; 28] {
     let digest = sha1::digest(&input);
     // 4 * ceil(20 / 3) = 28 characters and the encoder's trailing NUL.
     let mut encoded = [0u8; 29];
-    // SAFETY: 20 readable bytes and a disjoint 29-byte output, as the encoder needs.
-    unsafe {
-        swoole_rs_base64::swr_v1_base64_encode(digest.as_ptr(), digest.len(), encoded.as_mut_ptr())
-    };
+    swoole_rs_base64::encode(&digest, &mut encoded);
     let mut accept = [0u8; 28];
     accept.copy_from_slice(&encoded[..28]);
     accept

@@ -189,10 +189,11 @@ pub unsafe extern "C" fn swr_v2_http_proxy_authorization(
     if status < 0 {
         return status;
     }
-    // At most 255 bytes plus terminator: the fixed 512-byte output is ample.
-    // SAFETY: `count <= 255` initialized bytes in `plain`; `output` is non-null with 512
-    // writable bytes, enough for the encoding plus NUL, and disjoint from `plain`.
-    let encoded = unsafe { swoole_rs_base64::swr_v1_base64_encode(plain.as_ptr(), count, output) };
+    // At most 255 bytes encode to 340 characters and a NUL.
+    let mut text = [0u8; 341];
+    let encoded = swoole_rs_base64::encode(plain.get(..count).unwrap_or_default(), &mut text);
+    // SAFETY: `output` is non-null with 512 writable bytes, disjoint from `text`.
+    unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), output, encoded + 1) };
     // SAFETY: `written` is non-null (checked above), aligned and writable per the caller contract.
     unsafe { written.write(encoded) };
     status

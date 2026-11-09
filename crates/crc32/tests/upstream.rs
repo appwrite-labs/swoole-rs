@@ -1,7 +1,7 @@
 //! Differential tests against the pinned upstream C++ (`swoole-rs-oracle`).
 
 use proptest::prelude::*;
-use swoole_rs_crc32::{swoole_crc32, swr_v1_crc32};
+use swoole_rs_crc32::crc32;
 use swoole_rs_oracle::crc32 as upstream;
 
 /// Compare on input read one byte past an allocation start, so neither side
@@ -16,8 +16,7 @@ fn compare(bytes: &[u8]) {
         let input = buffer.as_ptr().wrapping_add(offset);
         // SAFETY: `input` points into `buffer`, which holds `bytes.len()` readable bytes after it.
         let want = unsafe { upstream::crc32(input, bytes.len()) };
-        // SAFETY: as above.
-        let got = unsafe { swr_v1_crc32(input, bytes.len()) };
+        let got = crc32(buffer.get(offset..).unwrap_or_default());
         assert_eq!(got, want, "crc32 at offset {offset} of {bytes:?}");
     }
 }
@@ -26,11 +25,7 @@ fn compare(bytes: &[u8]) {
 #[test]
 fn hash_crc32() {
     let data = c"hello world, PHP  the best.";
-    // SAFETY: `data` is a live C string of `count_bytes()` bytes.
-    assert_eq!(
-        unsafe { swoole_crc32(data.as_ptr(), data.count_bytes()) },
-        2_962_796_788
-    );
+    assert_eq!(crc32(data.to_bytes()), 2_962_796_788);
 }
 
 #[test]

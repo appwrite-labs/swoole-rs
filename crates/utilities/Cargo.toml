@@ -18,6 +18,7 @@ upstream-symbols = []
 libc = "=0.2.191"
 memchr = "2.8.3"
 swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-locks = { path = "../locks" }
 

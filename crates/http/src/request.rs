@@ -1455,10 +1455,7 @@ mod tests {
             raw.len()
         );
         let mut encoded = vec![0u8; raw.len().div_ceil(3) * 4 + 1];
-        // SAFETY: `encoded` holds the encoding and its NUL.
-        let n = unsafe {
-            swoole_rs_base64::swr_v1_base64_encode(raw.as_ptr(), raw.len(), encoded.as_mut_ptr())
-        };
+        let n = swoole_rs_base64::encode(&raw, &mut encoded);
         let text = [
             &b"GET /home/explore/?a="[..],
             &encoded[..n],

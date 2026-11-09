@@ -3,8 +3,6 @@
 //! token checks stay native; Rust owns computing the expected accept token and
 //! the comparison.
 
-use swoole_rs_base64::swr_v1_base64_encode;
-
 use swoole_rs_websocket::sha1;
 
 /// RFC 6455 handshake GUID, appended to the client key before hashing.
@@ -28,14 +26,9 @@ fn expected_accept(key: &[u8]) -> [u8; ACCEPT_LEN] {
 
     let digest = sha1::digest(input.get(..used).unwrap_or_default());
 
-    // swr_v1_base64_encode needs 4*ceil(20/3)+1 = 29 output bytes and writes a
-    // trailing NUL past the 28 it counts.
+    // 4*ceil(20/3) = 28 characters and the encoder's trailing NUL.
     let mut encoded = [0u8; 29];
-    // SAFETY: `digest` lends 20 readable bytes and `encoded` is a distinct
-    // 29-byte stack buffer, meeting the encoder's size contract; neither pointer
-    // is retained.
-    let written =
-        unsafe { swr_v1_base64_encode(digest.as_ptr(), digest.len(), encoded.as_mut_ptr()) };
+    let written = swoole_rs_base64::encode(&digest, &mut encoded);
 
     let mut accept = [0u8; ACCEPT_LEN];
     for (slot, &byte) in accept.iter_mut().zip(&encoded).take(written) {

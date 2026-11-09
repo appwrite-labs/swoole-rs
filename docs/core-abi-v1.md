@@ -3,38 +3,28 @@
 Reference: Swoole v6.2.5, `76c657d88be39b7af6bf85e46bcbac0da7387760`. Feature
 values: base64 8, CRC32 16, error messages 32.
 
-The primitive exports allocate nothing, retain no pointer, invoke no callback,
+The primitives allocate nothing, retain no pointer, invoke no callback,
 have no mutable global state and cannot panic or throw. They are safe on
-independent inputs from any thread and after fork. Byte alignment is 1. Lengths
-and output sizes must fit `isize::MAX`; invalid pointer/length combinations make
-base64 and CRC32 return 0 without dereferencing. Pointer validity and buffer
-extents are caller preconditions.
+independent inputs from any thread and after fork.
 
-## M09 Base64 (`native/include/swoole_rs_base64.h`, crate `swoole-rs-base64`)
+## M09 Base64 (crate `swoole-rs-base64`)
 
-The header is generated from the crate by cbindgen (`crates/base64/cbindgen.toml`);
-run `tools/headers.sh` after changing an export. The PR tier fails if it is stale.
+No C ABI: every caller is Rust and uses the safe `encode` and `decode` over
+slices. The crate forbids `unsafe_code`.
 
-Signatures mirror the pinned low-level functions. Null input is allowed only for
-length 0; output must be non-null.
+- **Encode** writes `4 * ceil(length / 3)` characters with the upstream alphabet
+  and padding, then a NUL, and returns the count excluding the NUL.
+- **Decode** keeps the pinned byte classifier, stops at the first `=`, accepts
+  incomplete groups, writes a NUL on normal completion and returns 0 on invalid
+  data while leaving the partial writes upstream makes.
 
-- **Encode** needs `4 * ceil(length / 3) + 1` output bytes and returns the
-  encoded length excluding the trailing NUL, with the upstream alphabet and
-  padding. Input and output may overlap: the encoder keeps upstream's exact
-  read/store order, including rereads after earlier stores. Disjoint input uses
-  a faster path (48-byte NEON blocks on little-endian AArch64). Empty input
-  writes a NUL and returns 0.
-- **Decode** needs `length + 1` output bytes and disjoint buffers. Keeps the
-  pinned byte classifier, stops at the first `=`, accepts incomplete groups,
-  writes a NUL on normal completion and returns 0 on invalid data while leaving
-  the partial writes upstream makes.
-
-## M10 CRC32 (`native/include/swoole_rs_crc32.h`, crate `swoole-rs-crc32`)
+## M10 CRC32 (crate `swoole-rs-crc32`)
 
 IEEE CRC32: reflected polynomial `0xedb88320`, initial value and final XOR
-`0xffffffff`. Empty input may be null and returns 0. The table is a compile-time
-constant (upstream lazily fills a mutable table, which races). Rust also defines
-`swoole_crc32` under its upstream symbol.
+`0xffffffff`; the safe `crc32(&[u8])`, in a crate that forbids `unsafe_code`.
+The table is a compile-time constant (upstream lazily fills a mutable table,
+which races). `crates/utilities` defines `swoole_crc32` under its upstream symbol for
+C++ callers; null or empty input returns 0.
 
 ## M11 error messages (`native/include/swoole_rs_error.h`, crate `swoole-rs-error`)
 

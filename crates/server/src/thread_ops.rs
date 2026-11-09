@@ -80,10 +80,9 @@ unsafe extern "C-unwind" {
     fn destroy_http_request(port: *mut c_void, conn: *mut ConnectionRecord);
 }
 
-// SAFETY: crates/clients' `Address::get_addr` and crates/crc32's `swoole_crc32`.
+// SAFETY: crates/clients' `Address::get_addr`.
 unsafe extern "C" {
     fn swr_v1_clients_address_host(address: *const SocketAddress) -> *const c_char;
-    fn swr_v1_crc32(input: *const u8, length: usize) -> u32;
 }
 
 /// The context's thread.
@@ -250,8 +249,14 @@ pub(crate) unsafe fn answer(
             } else {
                 // SAFETY: the packet's live address.
                 let host = unsafe { swr_v1_clients_address_host(&raw const pkt.socket_addr) };
-                // SAFETY: upstream hashes as many bytes of the text as the address is long.
-                c_long::from(unsafe { swr_v1_crc32(host.cast(), pkt.socket_addr.len as usize) })
+                let length = pkt.socket_addr.len as usize;
+                if host.is_null() || length == 0 {
+                    0
+                } else {
+                    // SAFETY: upstream hashes as many bytes of the text as the address is long.
+                    let text = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), length) };
+                    c_long::from(swoole_rs_crc32::crc32(text))
+                }
             };
             pkt.length = u32::try_from(arg).unwrap_or(u32::MAX);
             let len = size_of::<DgramPacket>() as u64 + arg;
