@@ -18,8 +18,8 @@ use crate::fixed::{self, Fixed, Layout, Slice};
 use std::cell::UnsafeCell;
 use std::ffi::{c_char, c_int, c_void};
 use std::mem::{offset_of, size_of};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 use std::{ptr, slice};
 use swoole_rs_locks::{swr_v1_locks_destroy, swr_v1_locks_init, swr_v1_locks_lock};
@@ -226,6 +226,32 @@ struct Cursor {
     absolute: usize,
     collision: usize,
     current: Vec<u64>,
+}
+
+/// The process-private parts of each table this process made and hasn't destroyed,
+/// as this process allocated them (header, columns, cursor): a fork copies them, and a
+/// table created after one has another process's cursor. The headers are in the shared
+/// pool, which leak checkers don't scan and `swoole_clean` frees: `release` frees these.
+static PRIVATE: Mutex<Vec<[usize; 3]>> = Mutex::new(Vec::new());
+
+fn private<T>(f: impl FnOnce(&mut Vec<[usize; 3]>) -> T) -> T {
+    f(&mut PRIVATE.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// Frees the process-private parts of every table this process hasn't destroyed, before
+/// the pool takes their headers: a step of MSHUTDOWN.
+///
+/// # Safety
+/// No table is used afterwards.
+pub unsafe extern "C" fn release() {
+    for [_, columns, cursor] in private(std::mem::take) {
+        // SAFETY: `init` made the columns and this process hasn't destroyed the table.
+        drop(unsafe { Box::from_raw(ptr::with_exposed_provenance_mut::<Columns>(columns)) });
+        if cursor != 0 {
+            // SAFETY: as above, from `create`.
+            drop(unsafe { Box::from_raw(ptr::with_exposed_provenance_mut::<Cursor>(cursor)) });
+        }
+    }
 }
 
 /// Storage for a pthread mutex and its attributes (`swr_v1_locks`).
@@ -505,6 +531,8 @@ impl Table {
             return false;
         }
         table.columns = Box::into_raw(Box::default());
+        let columns = table.columns.expose_provenance();
+        private(|tables| tables.push([this.addr(), columns, 0]));
         true
     }
 
@@ -667,6 +695,13 @@ impl Table {
         self.memory_size = plan.logical - self.size * (plan.row_size + size_of::<*mut Row>());
         self.memory = arena;
         self.created = true;
+        let (this, cursor) = (ptr::from_mut(self).addr(), self.cursor.expose_provenance());
+        private(|tables| {
+            tables
+                .iter_mut()
+                .filter(|t| t[0] == this)
+                .for_each(|t| t[2] = cursor);
+        });
         true
     }
 
@@ -689,6 +724,7 @@ impl Table {
         // SAFETY: as above.
         unsafe { swr_v1_locks_destroy(table.mutex.get(), MUTEX) };
         // The header is shared: forked processes see `ready()` turn false, as upstream's do.
+        private(|tables| tables.retain(|t| t[0] != this.addr()));
         std::mem::replace(&mut table.memory, ptr::null_mut())
     }
 

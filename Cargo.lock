@@ -911,6 +911,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-http2",
+ "swoole-rs-memory",
  "swoole-rs-phpstubs",
  "swoole-rs-reactor",
  "swoole-rs-timer",

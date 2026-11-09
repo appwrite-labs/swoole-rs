@@ -6,7 +6,6 @@
 //! and a table would keep the timer, event and signal code with it.
 
 use std::ffi::{c_char, c_int, c_void};
-use std::ptr;
 use std::sync::OnceLock;
 
 /// `swr_v1_core_native_host` (`native/include/swoole_rs_corebase_state.h`).
@@ -43,10 +42,6 @@ impl NativeHost {
     /// Allocate (`new String(SW_STACK_BUFFER_SIZE)`) or delete `SwooleTG.buffer_stack`.
     pub(crate) fn buffer(&self, allocate: bool) {
         self.run(2, usize::from(allocate));
-    }
-    /// `new GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true)`.
-    pub(crate) fn new_pool(&self) -> *mut c_void {
-        ptr::with_exposed_provenance_mut(self.run(3, 0))
     }
     /// `delete pool`: the pool `swoole_init` or the last fork made.
     pub(crate) fn delete_pool(&self, pool: *mut c_void) {

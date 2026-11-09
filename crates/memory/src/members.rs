@@ -343,26 +343,62 @@ pub unsafe extern "C" fn swr_v1_memory_ring_buffer_free(ring: *mut Storage, data
 /// `GlobalMemoryImpl`: the pages, under the lock `alloc` holds.
 pub struct GlobalImpl {
     pages: Mutex<Global>,
+    page_size: u32,
+    /// The process that made a shared pool, or 0: a forked process starts its own.
+    creator: u32,
+    /// The pool this one replaced in a forked process. Its pages stay mapped, since
+    /// the parent's objects in them stay in use, and go with this pool.
+    inherited: *mut GlobalImpl,
 }
 
 impl GlobalImpl {
     /// `new GlobalMemoryImpl(size, shared)`, with its first page.
-    fn new(size: u32, shared: bool) -> Result<*mut Self, i32> {
+    fn new(size: u32, shared: bool, inherited: *mut Self) -> Result<*mut Self, i32> {
         let page =
             global::page_size(size, swoole_rs_corebase::swr_v1_core_pagesize()).ok_or(INVALID)?;
-        // SAFETY: getpid has no preconditions.
-        let mut pages = Global::new(page, shared, unsafe { libc::getpid() });
+        let mut pages = Global::new(page, shared);
         if !pages.add_page() {
             return Err(NO_MEMORY);
         }
         Ok(Box::into_raw(Box::new(Self {
             pages: Mutex::new(pages),
+            page_size: page,
+            creator: if shared { std::process::id() } else { 0 },
+            inherited,
         })))
     }
 
     fn pages(&self) -> MutexGuard<'_, Global> {
         self.pages.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+impl Drop for GlobalImpl {
+    fn drop(&mut self) {
+        if !self.inherited.is_null() {
+            // SAFETY: `current` gave this pool the one it replaced, which only this frees.
+            drop(unsafe { Box::from_raw(self.inherited) });
+        }
+    }
+}
+
+/// The pool in `slot`. In a process forked from the one that made a shared pool, a
+/// fresh pool replaces it first, without taking the inherited lock a parent thread may
+/// have held at the fork, and keeps it.
+///
+/// # Safety
+/// `slot` is a constructed pool's `impl` slot.
+unsafe fn current<'a>(slot: *mut *mut GlobalImpl) -> Result<&'a GlobalImpl, i32> {
+    // SAFETY: as the caller promises.
+    let slot = unsafe { &mut *slot };
+    // SAFETY: as above; a pool lives until it is deleted.
+    let pool = unsafe { &**slot };
+    if pool.creator == 0 || pool.creator == std::process::id() {
+        return Ok(pool);
+    }
+    *slot = GlobalImpl::new(pool.page_size, true, *slot)?;
+    // SAFETY: as above.
+    Ok(unsafe { &**slot })
 }
 
 /// `GlobalMemory(pagesize, shared)`.
@@ -383,7 +419,7 @@ pub unsafe extern "C" fn swr_v1_memory_global_memory_new(
         pagesize >= MIN_PAGE_SIZE,
         "a page of at least SW_MIN_PAGE_SIZE"
     );
-    match GlobalImpl::new(pagesize, shared) {
+    match GlobalImpl::new(pagesize, shared, ptr::null_mut()) {
         Ok(this) => {
             // SAFETY: as the caller promises.
             unsafe { output.write(this) };
@@ -406,9 +442,7 @@ pub unsafe extern "C" fn swr_v1_memory_global_memory_delete(pool: *mut GlobalImp
     drop(unsafe { Box::from_raw(pool) });
 }
 
-/// `void *GlobalMemory::alloc(uint32_t size)`. In a process forked from the one that
-/// made a shared pool, `*pool` becomes a fresh pool first: the inherited pages and
-/// lock stay as they are.
+/// `void *GlobalMemory::alloc(uint32_t size)`, from this process's pool (`current`).
 ///
 /// # Safety
 /// `pool` is a constructed pool's `impl` slot; `output` is writable.
@@ -419,58 +453,38 @@ pub unsafe extern "C" fn swr_v1_memory_global_memory_alloc(
     output: *mut *mut c_void,
 ) -> i32 {
     // SAFETY: as the caller promises.
-    unsafe { output.write(ptr::null_mut()) };
-    // SAFETY: as the caller promises; the lock outlives the guard, since a reset
-    // keeps the old impl.
-    let current = unsafe { pool.read() };
-    // SAFETY: as above.
-    let current = unsafe { &*current };
-    let mut guard = current.pages();
-    if !guard.fits(size) {
+    let (status, block) = match unsafe { current(pool) } {
+        Ok(current) => (0, alloc(&mut current.pages(), size)),
+        Err(status) => (status, ptr::null_mut()),
+    };
+    // SAFETY: as the caller promises.
+    unsafe { output.write(block) };
+    status
+}
+
+/// `GlobalMemoryImpl::alloc`'s body: a block, or null with upstream's warning.
+fn alloc(pages: &mut Global, size: u32) -> *mut c_void {
+    if !pages.fits(size) {
         log::warning(
             c"GlobalMemory::alloc",
             format_args!(
                 "failed to alloc {} bytes, exceed the maximum size[{}]",
                 size.checked_add(7).map_or(0, |n| n & !7).cast_signed(),
-                guard.page_size.cast_signed()
+                pages.page_size.cast_signed()
             ),
         );
-        return 0;
+        return ptr::null_mut();
     }
-    // SAFETY: getpid has no preconditions.
-    let pages = if guard.inherited(unsafe { libc::getpid() }) {
-        let fresh = match GlobalImpl::new(guard.page_size, true) {
-            Ok(fresh) => fresh,
-            Err(status) => return status,
-        };
-        // SAFETY: as the caller promises.
-        unsafe { pool.write(fresh) };
-        // SAFETY: `fresh` is live and not yet shared.
-        unsafe { &mut *fresh }
-            .pages
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-    } else {
-        &mut guard
-    };
-    let result = pages.alloc(size);
-    if result.is_null() {
+    let block = pages.alloc(size);
+    if block.is_null() {
         log::warning(c"GlobalMemory::alloc", format_args!("alloc memory error"));
     }
-    // SAFETY: as the caller promises.
-    unsafe { output.write(result) };
-    0
+    block
 }
 
-/// `GlobalMemory`'s `impl`.
-///
-/// # Safety
-/// `this` is a constructed `swoole::GlobalMemory`.
-unsafe fn global<'a>(this: *const c_void) -> &'a GlobalImpl {
-    // SAFETY: as the caller promises; `impl` follows the vtable pointer.
-    let pool = unsafe { this.cast::<*const GlobalImpl>().wrapping_add(1).read() };
-    // SAFETY: a constructed pool's impl.
-    unsafe { &*pool }
+/// A `GlobalMemory`'s `impl` slot, which follows the vtable pointer.
+fn slot(this: *const c_void) -> *mut *mut GlobalImpl {
+    this.cast::<*mut GlobalImpl>().wrapping_add(1).cast_mut()
 }
 
 upstream! {
@@ -478,15 +492,15 @@ upstream! {
     /// `size_t GlobalMemory::capacity() const`.
     #[must_use]
     pub unsafe extern "C" fn swr_global_memory_capacity(this: *const c_void) -> usize {
-        // SAFETY: `this` is a constructed GlobalMemory.
-        unsafe { global(this) }.pages().capacity()
+        // SAFETY: `this` is a constructed GlobalMemory; zero if a fresh pool can't be had.
+        unsafe { current(slot(this)) }.map_or(0, |pool| pool.pages().capacity())
     }
     "_ZNK6swoole12GlobalMemory15get_memory_sizeEv", "_ZNK6swoole12GlobalMemory15get_memory_sizeEv" =>
     /// `size_t GlobalMemory::get_memory_size() const`.
     #[must_use]
     pub unsafe extern "C" fn swr_global_memory_size(this: *const c_void) -> usize {
-        // SAFETY: `this` is a constructed GlobalMemory.
-        unsafe { global(this) }.pages().memory_size()
+        // SAFETY: as above.
+        unsafe { current(slot(this)) }.map_or(0, |pool| pool.pages().memory_size())
     }
 }
 

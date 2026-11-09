@@ -50,7 +50,6 @@ static uintptr_t effect(int effect, uintptr_t argument) {
         delete SwooleTG.buffer_stack;  // Rust allocates only when there is none
         SwooleTG.buffer_stack = argument ? new swoole::String(SW_STACK_BUFFER_SIZE) : nullptr;
         break;
-    case 3: return reinterpret_cast<uintptr_t>(new swoole::GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true));
     case 4: delete reinterpret_cast<swoole::MemoryPool *>(argument); break;
     case 8: swoole_signal_clear(); break;
     case 10: return swoole_timer_is_available();

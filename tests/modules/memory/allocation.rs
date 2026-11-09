@@ -96,7 +96,7 @@ fn heap_oom_is_transactional_and_removal_never_allocates() {
 #[test]
 fn global_page_oom_fails_cleanly_and_bump_allocation_never_allocates() {
     use crate::global::Global;
-    let mut pages = Global::new(64, false, 41);
+    let mut pages = Global::new(64, false);
     FAIL_AFTER.set(Some(0));
     let added = pages.add_page();
     FAIL_AFTER.set(None);

@@ -12,7 +12,6 @@ pub(crate) struct Global {
     pub(crate) page_size: u32,
     offset: usize,
     shared: bool,
-    creator: i32,
 }
 
 /// `requested` rounded up to whole `system` pages, as `SW_MEM_ALIGNED_SIZE_EX`.
@@ -30,14 +29,13 @@ fn block(requested: u32) -> Option<(usize, usize)> {
 }
 
 impl Global {
-    /// A registry of `page_size`-byte pages made by process `creator`, with no pages.
-    pub(crate) fn new(page_size: u32, shared: bool, creator: i32) -> Self {
+    /// A registry of `page_size`-byte pages, with no pages.
+    pub(crate) fn new(page_size: u32, shared: bool) -> Self {
         Self {
             pages: Vec::new(),
             page_size,
             offset: 0,
             shared,
-            creator,
         }
     }
 
@@ -57,11 +55,6 @@ impl Global {
     /// Whether a block of `requested` bytes fits in a page.
     pub(crate) fn fits(&self, requested: u32) -> bool {
         block(requested).is_some_and(|(_, total)| total <= self.page_size as usize)
-    }
-
-    /// Whether `pid` is a process forked from the one that made this shared pool.
-    pub(crate) fn inherited(&self, pid: i32) -> bool {
-        self.shared && self.creator != pid
     }
 
     /// A zeroed block of `requested` bytes, which `fits`, from the last page or a new
