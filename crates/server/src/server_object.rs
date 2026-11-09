@@ -134,10 +134,9 @@ pub(crate) fn port_new(serv: *mut c_void) -> *mut c_void {
 pub(crate) unsafe fn port_delete(port: *mut c_void) {
     // SAFETY: as the caller guarantees.
     let config = *unsafe { Box::from_raw(port.cast::<*mut PortConfig>()) };
-    // SAFETY: the port's settings, which nothing else uses now.
-    (crate::port_config::methods().tls_free)(unsafe { &mut *config });
-    // SAFETY: as above; freed once.
-    unsafe { crate::port_config::swr_v1_port_config_free(config) };
+    // SAFETY: the port's settings, `PortConfig::boxed`'s, which nothing else uses now.
+    let mut config = unsafe { Box::from_raw(config) };
+    (crate::port_config::methods().tls_free)(&mut config);
 }
 
 /// The reactor threads' barrier, or the manager's, which is shared.
