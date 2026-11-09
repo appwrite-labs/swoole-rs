@@ -363,6 +363,16 @@ jobs:
       golang-h2demo:
         image: phpswoole/golang-h2demo
         ports: ['4430:4430']
+      # HTTP_PROXY_HOST:HTTP_PROXY_PORT and SOCKS5_PROXY_HOST:SOCKS5_PROXY_PORT; the SOCKS5
+      # image now refuses to start without credentials unless REQUIRE_AUTH is off.
+      tinyproxy:
+        image: kalaksi/tinyproxy
+        ports: ['8888:8888']
+      socks5:
+        image: serjs/go-socks5-proxy
+        env:
+          REQUIRE_AUTH: 'false'
+        ports: ['1080:1080']
       # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
       firebirdsql:
         image: firebirdsql/firebird
@@ -436,6 +446,16 @@ jobs:
       golang-h2demo:
         image: phpswoole/golang-h2demo
         ports: ['4430:4430']
+      # HTTP_PROXY_HOST:HTTP_PROXY_PORT and SOCKS5_PROXY_HOST:SOCKS5_PROXY_PORT; the SOCKS5
+      # image now refuses to start without credentials unless REQUIRE_AUTH is off.
+      tinyproxy:
+        image: kalaksi/tinyproxy
+        ports: ['8888:8888']
+      socks5:
+        image: serjs/go-socks5-proxy
+        env:
+          REQUIRE_AUTH: 'false'
+        ports: ['1080:1080']
       # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
       firebirdsql:
         image: firebirdsql/firebird
