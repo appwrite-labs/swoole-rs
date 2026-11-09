@@ -413,27 +413,6 @@ fn chunk_size(line: &[u8], max: usize) -> Result<usize, ChunkSize> {
     Ok(length)
 }
 
-/// `Request()`: initializes native in-place storage without allocating another request.
-/// # Safety
-/// `request` is writable, aligned uninitialized storage, with no live previous owner.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v3_http_request_init(request: *mut HttpRequest) {
-    if !request.is_null() {
-        // SAFETY: the caller provides exclusive uninitialized storage.
-        unsafe { request.write(HttpRequest::new(effects)) };
-    }
-}
-/// Reset parser fields while retaining the form, receive buffer and immutable effect table.
-/// # Safety
-/// Request is null or live and uniquely borrowed for this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v3_http_request_clean(request: *mut HttpRequest) {
-    // SAFETY: the caller lends exclusive access to a live initialized request.
-    if let Some(request) = unsafe { request.as_mut() } {
-        request.clean();
-    }
-}
-
 impl HttpRequest {
     /// `HttpRequest()`: what native code's constructor makes.
     #[must_use]
@@ -1052,148 +1031,21 @@ unsafe extern "C" fn on_body_end(parser: *mut Parser) -> c_int {
     0
 }
 
-/// `Request::get_protocol`.
-///
-/// # Safety
-/// `request` and its buffer are live, and nothing else uses them during the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_protocol(request: *mut HttpRequest) -> i32 {
-    // SAFETY: per the contract.
-    unsafe { &mut *request }.get_protocol()
-}
-
-/// `Request::get_header_length`.
-///
-/// # Safety
-/// As [`swr_v1_http_request_protocol`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_header_length(request: *mut HttpRequest) -> i32 {
-    // SAFETY: per the contract.
-    unsafe { &mut *request }.get_header_length()
-}
-
-/// `Request::get_chunked_body_length`.
-///
-/// # Safety
-/// As [`swr_v1_http_request_protocol`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_chunked_length(request: *mut HttpRequest) -> i32 {
-    // SAFETY: per the contract.
-    unsafe { &mut *request }.get_chunked_body_length()
-}
-
-/// `Request::parse_header_info`.
-///
-/// # Safety
-/// As [`swr_v1_http_request_protocol`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_parse_header(request: *mut HttpRequest) {
-    // SAFETY: per the contract.
-    unsafe { &mut *request }.parse_header_info();
-}
-
-/// `Request::has_expect_header`.
-///
-/// # Safety
-/// As [`swr_v1_http_request_protocol`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_expect(request: *const HttpRequest) -> u32 {
-    // SAFETY: per the contract.
-    unsafe { &*request }.has_expect_header().into()
-}
-
-/// `Request::get_header`: 1 with the value's span in the buffer, else 0.
-///
-/// # Safety
-/// As [`swr_v1_http_request_protocol`]; `name` holds `length` bytes; `value` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_header(
-    request: *const HttpRequest,
-    name: *const u8,
-    length: usize,
-    value: *mut HttpSpan,
-) -> i32 {
-    // SAFETY: per the contract.
-    let r = unsafe { &*request };
-    // SAFETY: per the contract.
-    let name = unsafe { core::slice::from_raw_parts(name, length) };
-    let Some(span) = r.get_header(name) else {
-        return 0;
-    };
-    // SAFETY: per the contract.
-    unsafe { value.write(span) };
-    1
-}
-
-/// `Request::init_multipart_parser(server)`, given its upload directory and limit.
-///
-/// # Safety
-/// As [`init_multipart_parser`]; `dir` holds `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_multipart_init(
-    request: *mut HttpRequest,
-    dir: *const u8,
-    length: usize,
-    upload_max: usize,
-) -> u32 {
-    // SAFETY: per the contract.
-    let dir = unsafe { core::slice::from_raw_parts(dir, length) };
-    // SAFETY: per the contract.
-    unsafe { init_multipart_parser(request, dir, upload_max) }.into()
-}
-
-/// `Request::parse_multipart_data(buffer)`.
-///
-/// # Safety
-/// As [`parse_multipart_data`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_multipart_parse(
-    request: *mut HttpRequest,
-    buffer: *mut HttpString,
-) -> u32 {
-    // SAFETY: per the contract.
-    unsafe { parse_multipart_data(request, buffer) }.into()
-}
-
-/// `Request::destroy_multipart_parser`, and `~HttpRequest` (which runs it for a form).
-///
-/// # Safety
-/// As [`destroy_multipart_parser`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_multipart_destroy(request: *mut HttpRequest) {
-    // SAFETY: per the contract.
-    unsafe { destroy_multipart_parser(request) };
-}
-
-/// `new http_server::Request()`: a request on Rust's heap.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_http_request_new() -> *mut HttpRequest {
+#[must_use]
+pub fn request_new() -> *mut HttpRequest {
     Box::into_raw(Box::new(HttpRequest::new(effects)))
 }
 
-/// `delete request` of one [`swr_v1_http_request_new`] made: the destructor, then the memory.
+/// `delete request` of one [`request_new`] made: the destructor, then the memory.
 ///
 /// # Safety
-/// `request` is null or from [`swr_v1_http_request_new`], not used afterwards.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_request_free(request: *mut HttpRequest) {
+/// `request` is null or from [`request_new`], not used afterwards.
+pub unsafe fn request_free(request: *mut HttpRequest) {
     if !request.is_null() {
         // SAFETY: per the contract.
         unsafe { destroy_multipart_parser(request) };
         // SAFETY: per the contract: the request is boxed and nothing uses it after.
         drop(unsafe { Box::from_raw(request) });
-    }
-}
-
-/// `delete form_data_` of a form no parser was made for: `FormData::operator delete`.
-///
-/// # Safety
-/// `form` is null or a request's form, not used afterwards.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_form_free(form: *mut HttpForm) {
-    if !form.is_null() {
-        // SAFETY: per the contract: forms are boxed.
-        drop(unsafe { Box::from_raw(form) });
     }
 }
 

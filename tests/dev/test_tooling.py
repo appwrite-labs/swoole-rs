@@ -729,6 +729,18 @@ class Lanes(unittest.TestCase):
                 self.assertEqual(commands[prefix + '-tls' + version][0],
                                  str(args.tls13_python) if version == '1.3' else sys.executable)
 
+    def test_candidate_phpt_families_come_from_the_touched_modules_only(self):
+        # Consumers run their gates, not their PHPT families: those overran the phase cap (#2270).
+        from argparse import Namespace
+        base = dict(lane='candidate', module=['ports', 'process'], php='php', php_extension=[],
+                    jobs=4, test=None, case=None, benchmark=False, compare=False)
+        families = lambda touched: [arg for arg in dict(dev.plan(Namespace(phpt_module=touched, **base),
+                                    ROOT / 'target/reports/test-plan')).get('phpt', []) if str(arg).startswith('swoole_')]
+        self.assertEqual(families([]), [])
+        self.assertIn('swoole_client_coro', families(['clients']))
+        self.assertNotIn('swoole_server', families(['clients']))
+        self.assertIn('swoole_server', families(None))
+
     def test_integration_cannot_filter_or_use_development_build(self):
         from argparse import Namespace
         args = Namespace(lane='integrate', module=['timer'], php='php', php_extension=[],
@@ -764,6 +776,19 @@ class ChangedModules(unittest.TestCase):
 
 
 class FocusedPhases(unittest.TestCase):
+    def test_skipped_phases_are_not_run_and_the_run_is_partial(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            planned = [('ownership', ['check-ownership']), ('phpt', ['families.sh'])]
+            with patch.object(dev, 'ROOT', root), patch.object(dev, 'plan', return_value=planned), \
+                 patch.object(dev, 'execute', return_value=SimpleNamespace(returncode=0)) as run, \
+                 patch('sys.argv', ['dev.py', 'candidate', '--module', 'locks', '--skip-phase', 'php*']):
+                self.assertEqual(dev.main(), 0)
+            report = json.loads(next(root.glob('target/reports/dev/*/loop.json')).read_text())
+            self.assertEqual((report['status'], report['selected_phases']), ('partial_passed', ['ownership']))
+            self.assertEqual(report['not_run'][0]['phase'], 'phpt')
+            self.assertEqual(run.call_count, 1)
+
     def test_explicit_selection_keeps_canonical_order_and_records_omitted_gates(self):
         for codes, status, exit_code in [([0, 0], 'partial_passed', 0), ([0, 2], 'partial_failed', 1)]:
             with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:

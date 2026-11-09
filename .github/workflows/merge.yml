@@ -22,7 +22,7 @@ jobs:
   # balanced by weight left one near 20 minutes (#318). Each slice builds the all-modules
   # hybrid and runs the builds; the rest is split by tools/phase_weights.json (dev.py --shard).
   full-gates:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -99,7 +99,7 @@ jobs:
   ccache-prune:
     needs: full-gates
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 5
     permissions:
       actions: write
@@ -118,48 +118,16 @@ jobs:
   # Every pinned PHPT on upstream, the all-modules hybrid and the extension Cargo builds
   # alone (crates/ext): any test that passes on upstream must pass on both (corpus/upstream/gate.py).
   phpt-build:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
     outputs:
-      php: ${{ steps.install.outputs.php }}
+      php: ${{ steps.build.outputs.php }}
     steps:
       - uses: actions/checkout@v4
-      - id: install
-        uses: ./.github/actions/install
+      - id: build
+        uses: ./.github/actions/phpt-build
         with:
-          # php-mysql: build_ext.py loads mysqlnd to check the cargo engine loads.
-          packages: firebird-dev libaio1t64 php-mysql
-          php: latest
-      - uses: ./.github/actions/instantclient
-      - id: upstream
-        uses: actions/cache@v4
-        with:
-          path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
-      - if: steps.upstream.outputs.cache-hit != 'true'
-        run: python3 tools/build_upstream.py
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
-      - run: cargo fetch --locked
-      - run: |
-          # Database, cURL and ssh2 hooks as upstream's own CI builds them (scripts/docker-compile.sh).
-          services="--configure=--enable-swoole-pgsql --configure=--enable-mysqlnd --configure=--with-swoole-odbc=unixODBC,/usr --configure=--with-swoole-firebird"
-          services="$services --configure=--enable-swoole-sqlite --configure=--with-swoole-oracle=instantclient,/usr/local/instantclient"
-          services="$services --configure=--enable-swoole-curl --configure=--with-swoole-ssh2"
-          python3 tools/build_hybrid.py --backend upstream --php-sockets $services | tee upstream.log
-          python3 tools/build_hybrid.py --php-sockets $services | tee hybrid.log
-          python3 tools/build_ext.py --php-sockets $services
-          mkdir -p target/phpt
-          cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
-          cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
-          cp target/ext/swoole.so target/phpt/cargo.so
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phpt-engines
-          path: target/phpt/
+          engines: upstream hybrid cargo
 
   # The speed ratchet (docs/migration.md#speed): instructions per request on the all-modules
   # hybrid over upstream may not rise more than 1% above benchmarks/callgrind_limits.json.
@@ -174,7 +142,7 @@ jobs:
   # http2, table and channel are benchmarks/primitives; task is a taskwait round trip (#1909).
   # mysql is benchmarks/mysql, a prepared SELECT through hooked PDO mysql (#2066).
   callgrind:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 40
     services:
       mysql:
@@ -226,7 +194,7 @@ jobs:
   # swoole_stdext needs the experimental --stdext build, which changes PHP itself
   # (typed arrays, methods on scalars), so it gets its own engines and its own gate.
   phpt-stdext:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -305,10 +273,14 @@ jobs:
   threadcontext:
     uses: ./.github/workflows/threadcontext.yml
 
+  # HTTP/2 conformance: h2spec on upstream and the Cargo build.
+  h2spec:
+    uses: ./.github/workflows/h2spec.yml
+
   # The opt-in --fix-halfclose repair (M15) is its own build variant, so its gates run
   # here; full-gates builds without it.
   halfclose:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -335,207 +307,12 @@ jobs:
 
   phpt:
     needs: phpt-build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        index: [1, 2, 3, 4, 5, 6]
-        engine: [upstream, hybrid, cargo]
-    # The services upstream's PHPTs expect, as in its scripts/docker-compose.yml, under
-    # the host names its tests/include/config.php uses on CI (httpbin at http://httpbin:80).
-    services:
-      httpbin:
-        image: kennethreitz/httpbin
-        ports: ['80:80']
-      pgsql:
-        image: postgres:14
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: root
-          POSTGRES_DB: test
-        ports: ['5432:5432']
-        options: --health-cmd pg_isready --health-interval 2s --health-retries 30
-      mysql:
-        image: mysql:8.4
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: test
-        ports: ['3306:3306']
-        options: --health-cmd "mysqladmin ping -proot" --health-interval 2s --health-retries 60
-      redis:
-        image: redis:7.4
-        ports: ['6379:6379']
-        options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
-      # Go's HTTP/2 demo, whose /serverpush pushes four assets (TEST_HTTP2_SERVERPUSH_URL).
-      golang-h2demo:
-        image: phpswoole/golang-h2demo
-        ports: ['4430:4430']
-      # HTTP_PROXY_HOST:HTTP_PROXY_PORT and SOCKS5_PROXY_HOST:SOCKS5_PROXY_PORT; the SOCKS5
-      # image now refuses to start without credentials unless REQUIRE_AUTH is off.
-      tinyproxy:
-        image: kalaksi/tinyproxy
-        ports: ['8888:8888']
-      socks5:
-        image: serjs/go-socks5-proxy
-        env:
-          REQUIRE_AUTH: 'false'
-        ports: ['1080:1080']
-      # FTP_HOST:FTP_PORT as admin/admin; curl reaches the passive ports on localhost.
-      ftp:
-        image: teezily/ftpd
-        env:
-          FTP_USER: admin
-          FTP_PASSWORD: admin
-          PASV_MIN_PORT: 65000
-          PASV_MAX_PORT: 65009
-        ports: ['21:21', '65000-65009:65000-65009']
-      # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
-      firebirdsql:
-        image: firebirdsql/firebird
-        env:
-          FIREBIRD_ROOT_PASSWORD: root
-          FIREBIRD_USER: test
-          FIREBIRD_PASSWORD: test
-          FIREBIRD_DATABASE: test.fdb
-          FIREBIRD_DATABASE_DEFAULT_CHARSET: UTF8
-        ports: ['3050:3050']
-      # Serves freepdb1, the service ORACLE_TNS names; the image's own healthcheck.sh
-      # reports healthy once the database opens (a minute or two).
-      oracle:
-        image: gvenzl/oracle-free:slim
-        env:
-          ORACLE_PASSWORD: oracle
-        ports: ['1521:1521']
-        options: --health-cmd healthcheck.sh --health-interval 5s --health-retries 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/phpt-env
-        with:
-          php: ${{ needs.phpt-build.outputs.php }}
-      - run: python3 corpus/upstream/inventory.py --shard ${{ matrix.index }}/6 --output target/phpt/manifest.json
-      # php -n loads nothing; load every extension the distribution enables, in its order.
-      - id: extensions
-        run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
-      # Exit 1 means some tests failed, which the gate judges; anything else (a runner
-      # crash) fails the shard.
-      - run: >
-          python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --timeout 30 --external-network
-          ${{ steps.extensions.outputs.args }}
-          --engine ${{ matrix.engine }}=target/phpt/${{ matrix.engine }}.so
-          --output target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json || [ $? -eq 1 ]
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: phpt-${{ matrix.engine }}-${{ matrix.index }}
-          path: target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json
-
-  phpt-gate:
-    needs: [phpt-build, phpt]
-    if: always()
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    # Same services as the shards: flagged tests are re-run here (#174).
-    services:
-      httpbin:
-        image: kennethreitz/httpbin
-        ports: ['80:80']
-      pgsql:
-        image: postgres:14
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: root
-          POSTGRES_DB: test
-        ports: ['5432:5432']
-        options: --health-cmd pg_isready --health-interval 2s --health-retries 30
-      mysql:
-        image: mysql:8.4
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: test
-        ports: ['3306:3306']
-        options: --health-cmd "mysqladmin ping -proot" --health-interval 2s --health-retries 60
-      redis:
-        image: redis:7.4
-        ports: ['6379:6379']
-        options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
-      # Go's HTTP/2 demo, whose /serverpush pushes four assets (TEST_HTTP2_SERVERPUSH_URL).
-      golang-h2demo:
-        image: phpswoole/golang-h2demo
-        ports: ['4430:4430']
-      # HTTP_PROXY_HOST:HTTP_PROXY_PORT and SOCKS5_PROXY_HOST:SOCKS5_PROXY_PORT; the SOCKS5
-      # image now refuses to start without credentials unless REQUIRE_AUTH is off.
-      tinyproxy:
-        image: kalaksi/tinyproxy
-        ports: ['8888:8888']
-      socks5:
-        image: serjs/go-socks5-proxy
-        env:
-          REQUIRE_AUTH: 'false'
-        ports: ['1080:1080']
-      # FTP_HOST:FTP_PORT as admin/admin; curl reaches the passive ports on localhost.
-      ftp:
-        image: teezily/ftpd
-        env:
-          FTP_USER: admin
-          FTP_PASSWORD: admin
-          PASV_MIN_PORT: 65000
-          PASV_MAX_PORT: 65009
-        ports: ['21:21', '65000-65009:65000-65009']
-      # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
-      firebirdsql:
-        image: firebirdsql/firebird
-        env:
-          FIREBIRD_ROOT_PASSWORD: root
-          FIREBIRD_USER: test
-          FIREBIRD_PASSWORD: test
-          FIREBIRD_DATABASE: test.fdb
-          FIREBIRD_DATABASE_DEFAULT_CHARSET: UTF8
-        ports: ['3050:3050']
-      oracle:
-        image: gvenzl/oracle-free:slim
-        env:
-          ORACLE_PASSWORD: oracle
-        ports: ['1521:1521']
-        options: --health-cmd healthcheck.sh --health-interval 5s --health-retries 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: phpt-*-*
-          merge-multiple: true
-          path: shards
-      # Tests that pass on upstream but not on the hybrid get 3 re-runs per engine, unless
-      # more than 20 are flagged: that is a broad breakage, not flakiness.
-      - id: flagged
-        run: |
-          python3 corpus/upstream/gate.py shards/*.json --print-regressions > flagged.txt
-          count=$(grep -c . flagged.txt || true)
-          echo "rerun=$([ "$count" -gt 0 ] && [ "$count" -le 20 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-      - if: steps.flagged.outputs.rerun == 'true'
-        uses: ./.github/actions/phpt-env
-        with:
-          php: ${{ needs.phpt-build.outputs.php }}
-      - if: steps.flagged.outputs.rerun == 'true'
-        run: |
-          python3 corpus/upstream/inventory.py --output target/phpt/all.json
-          extensions=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')
-          corpus/upstream/recheck.sh shards target/phpt recheck \
-            --manifest target/phpt/all.json --timeout 30 --external-network $extensions
-      - run: |
-          set -- shards/*.json
-          if [ -d recheck ]; then set -- "$@" --recheck recheck/*.json; fi
-          python3 corpus/upstream/gate.py "$@" --output phpt.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: phpt
-          path: |
-            phpt.json
-            flagged.txt
-            recheck/
-      - if: needs.phpt.result != 'success'
-        run: echo "A PHPT shard crashed; its tests are missing from the gate" && exit 1
+    uses: ./.github/workflows/phpt.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      php: ${{ needs.phpt-build.outputs.php }}
 
   # The PHPTs that skip unless run as root (SO_BINDTODEVICE, raw ICMP, a server dropping to
   # www-data, a chroot), as root on every engine, with their own re-runs and gate (#1998).
@@ -543,7 +320,7 @@ jobs:
   # its chroot and unreachable resolver need nothing the runner lacks (it passes as root).
   phpt-root:
     needs: phpt-build
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -596,7 +373,7 @@ jobs:
   # build-swoole workflow runs it (corpus/library/run.py).
   library:
     needs: phpt-build
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -642,11 +419,43 @@ jobs:
           name: library
           path: target/reports/library/
 
+  # The Autobahn WebSocket suite's default profile on upstream and the Cargo build
+  # (tests/modules/websocket/autobahn.py): a case may not do worse on cargo than on
+  # upstream. conformance.yml runs all 517 cases nightly.
+  autobahn:
+    needs: phpt-build
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          # The engines link unixODBC, libfbclient and the Instant Client.
+          packages: php-mysql php-pgsql unixodbc libfbclient2 libaio1t64
+          php: ${{ needs.phpt-build.outputs.php }}
+      - uses: ./.github/actions/instantclient
+      - uses: actions/download-artifact@v4
+        with:
+          name: phpt-engines
+          path: target/phpt
+      # php -n loads nothing; load every extension the distribution enables, in its order.
+      - id: extensions
+        run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      - run: >
+          python3 tests/modules/websocket/autobahn.py --timeout 1200 ${{ steps.extensions.outputs.args }}
+          --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
+          --output target/reports/autobahn.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: autobahn
+          path: target/reports/
+
   # musl and PHP 8.5, as on php:8.5-alpine in Appwrite's base image: build the
   # reference and the all-modules hybrid, then run the corpus and original PHPTs
   # against both. Project 11 needs --fix-halfclose and is covered by the PR tier.
   alpine:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
     container: php:8.5-alpine
     # The image has no bash, so this job can't use the workflow's bash default.

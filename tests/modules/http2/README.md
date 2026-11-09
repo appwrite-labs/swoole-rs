@@ -18,3 +18,17 @@ expected values since the hybrid has no `swoole_http2.h` to build them against:
 
 `http_server.get_package_length` is a Rust case in `tests/modules/http/server`
 (`http-server-rust`), packing its settings frame with crates/http2's codec.
+
+## Conformance
+
+`h2spec.py` runs h2spec (pinned release and SHA256, strict cases included) against
+`h2spec.php`, an `open_http2_protocol` server, over h2c and TLS on each engine. A
+case that passes on upstream and not on another engine fails the run; upstream's own
+failures are listed in the report, not hidden. The merge tier runs it on upstream
+and the Cargo build (`.github/workflows/h2spec.yml`), as does a PR that touches
+HTTP/2 code.
+
+```sh
+python3 tests/modules/http2/h2spec.py --engine upstream=target/upstream/src/modules/swoole.so \
+  --engine cargo=target/ext/swoole.so
+```

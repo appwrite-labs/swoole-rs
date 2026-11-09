@@ -20,8 +20,7 @@ pub struct HttpConditional {
     pub parsed_time: i64,
 }
 /// Native strptime format, immutable for process lifetime. Unknown index is null.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_http_date_format(index: u32) -> *const c_char {
+fn date_format(index: u32) -> *const c_char {
     FORMATS
         .get(index as usize)
         .map_or(std::ptr::null(), |format| format.as_ptr())
@@ -29,16 +28,9 @@ pub extern "C" fn swr_v1_http_date_format(index: u32) -> *const c_char {
 /// Kind0=If-Modified-Since; kind1=If-Range mismatch. Returns native actions:
 /// 0=false,1..4=strptime format0..3,5=gmtime(file),6=mktime(parsed),
 /// 7=mktime(file GMT),8=true. Native stores result validity/value before resume.
-/// # Safety
-/// State is writable/aligned and retained unchanged except native result fields.
+/// State is retained unchanged except native result fields.
 /// Native calendar objects survive between calls; Rust borrows none of them.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_conditional(state: *mut HttpConditional) -> i32 {
-    if state.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `state` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *state };
+fn conditional(state: &mut HttpConditional) -> i32 {
     if state.kind > 1 {
         return INVALID;
     }
@@ -184,15 +176,14 @@ pub unsafe extern "C" fn swr_v3_http_conditional(
     let mut parsed: libc::tm = unsafe { core::mem::zeroed() };
     let mut file = core::ptr::null_mut();
     loop {
-        // SAFETY: state is uniquely lent for this pure policy step.
-        let action = unsafe { swr_v1_http_conditional(&raw mut state) };
+        let action = conditional(&mut state);
         match action {
             1..=4 => {
                 // SAFETY: the caller lends terminated date bytes; parsed is this call's initialized calendar storage.
                 state.valid = u32::from(unsafe {
                     (calendar.parse)(
                         date,
-                        swr_v1_http_date_format((action - 1).cast_unsigned()),
+                        date_format((action - 1).cast_unsigned()),
                         core::ptr::from_mut(&mut parsed).cast(),
                     )
                 });
@@ -311,12 +302,12 @@ mod tests {
                 ..Default::default()
             };
             for action in 1..=4 {
-                assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, action);
+                assert_eq!(conditional(&mut state), action);
             }
             if kind == 1 {
-                assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, 5);
+                assert_eq!(conditional(&mut state), 5);
             }
-            assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, 0);
+            assert_eq!(conditional(&mut state), 0);
         }
     }
     #[test]
@@ -328,7 +319,7 @@ mod tests {
             timezone: 1,
             ..Default::default()
         };
-        assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, OVERFLOW);
+        assert_eq!(conditional(&mut state), OVERFLOW);
         state = HttpConditional {
             kind: 0,
             phase: 6,
@@ -337,13 +328,13 @@ mod tests {
             file_mtime: 99,
             ..Default::default()
         };
-        assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, 8);
+        assert_eq!(conditional(&mut state), 8);
         state = HttpConditional {
             kind: 0,
             length: 64,
             ..Default::default()
         };
-        assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, 0);
-        assert!(swr_v1_http_date_format(4).is_null());
+        assert_eq!(conditional(&mut state), 0);
+        assert!(date_format(4).is_null());
     }
 }

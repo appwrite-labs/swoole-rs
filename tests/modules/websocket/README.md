@@ -49,7 +49,8 @@ records it unsupported (`RACY`).
 
 `autobahn.py` runs the Autobahn fuzzing client in Docker against each engine
 (`--full` or `--cases GLOB` widen the default profile). It tests RFC
-conformance, separate from Swoole compatibility.
+conformance, separate from Swoole compatibility, and fails a case that does
+worse than on the first engine (`test_autobahn_verdict.py`).
 
 ## Benchmark
 

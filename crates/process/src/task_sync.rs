@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log::{self, set_last_error};
-use swoole_rs_ossupport::swr_v1_os_file_get_contents;
+use swoole_rs_ossupport::file_get_contents;
 
 pub use crate::pool::Bailed;
 use crate::pool::trapped;
@@ -284,8 +284,7 @@ impl<H: TaskHost> Tasks<'_, H> {
 
         self.host.lock(true);
         let mut content = CppString::EMPTY;
-        // SAFETY: a NUL-terminated path and a default-constructed String.
-        let read = unsafe { swr_v1_os_file_get_contents(path.as_ptr(), &raw mut content) };
+        let read = file_get_contents(path, &mut content);
         self.host.lock(false);
         let unpacked = if read {
             unpack_all(multi, &indexes, &content)

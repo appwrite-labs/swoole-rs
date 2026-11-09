@@ -131,12 +131,8 @@ pub(crate) fn make_tmpfile(template: &CStr, path: &mut [u8; TASK_TMP_PATH_SIZE])
 
 /// Writes the payload to the temp file as `File::write_all` does (warning on an
 /// IO error), then warns `write to tmpfile failed` on a short write.
-///
-/// # Safety
-/// `data` lends `len` readable bytes.
-unsafe fn spill(fd: c_int, data: *const u8, len: usize) -> bool {
-    // SAFETY: as the caller promises.
-    let wrote = unsafe { fd_write_all(fd, false, data.cast(), len) } == len;
+fn spill(fd: c_int, data: &[u8]) -> bool {
+    let wrote = fd_write_all(fd, false, data) == data.len();
     if !wrote {
         log::warning(
             c"Server::task_pack",
@@ -183,9 +179,9 @@ pub unsafe fn swr_v1_process_task_pack(
         return TaskPack::default();
     }
     // SAFETY: `data` lends `len` bytes.
-    let wrote = unsafe { spill(fd, data, len) };
-    // SAFETY: `fd` is open and owned here.
-    unsafe { libc::close(fd) };
+    let wrote = spill(fd, unsafe { std::slice::from_raw_parts(data, len) });
+    // `fd` is open and owned here.
+    swoole_rs_corebase::sys::close(fd);
     if !wrote {
         return TaskPack::default();
     }
@@ -622,7 +618,7 @@ mod tests {
         install();
         let fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
         let data = [1u8; 4];
-        assert!(!unsafe { spill(fd, data.as_ptr(), data.len()) });
+        assert!(!spill(fd, &data));
         let warned = logged("File::write_all");
         assert_eq!(warned.len(), 1);
         assert_eq!((warned[0].0, warned[0].2), (0, libc::EBADF));

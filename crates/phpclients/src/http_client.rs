@@ -137,7 +137,8 @@ struct Client {
     has_upload_files: bool,
     download_name: Option<ZString>,
     download_offset: i64,
-    download_file: *mut c_void,
+    /// The open download's descriptor.
+    download_file: Option<c_int>,
     /// The `write_func` callback bailed out; unwind and re-raise.
     bailout: bool,
 }
@@ -499,7 +500,7 @@ impl Client {
             has_upload_files: false,
             download_name: None,
             download_offset: 0,
-            download_file: ptr::null_mut(),
+            download_file: None,
             bailout: false,
         })
     }
@@ -1300,14 +1301,14 @@ impl Client {
         if self.has_upload_files {
             props::null(self.object, c"uploadFiles");
         }
-        if !self.download_file.is_null() {
-            // SAFETY: the client's open download file, freed once.
-            unsafe { native::swoole_http_client_coro_file_free(self.download_file) };
-            self.download_file = ptr::null_mut();
+        // The close can yield, and another coroutine's fatal error can free
+        // the client meanwhile, so the client lets go of the file first.
+        if let Some(fd) = self.download_file.take() {
             self.download_name = None;
             self.download_offset = 0;
             props::null(self.object, c"downloadFile");
             props::long(self.object, c"downloadOffset", 0);
+            native::swoole_http_client_coro_file_close(fd);
         }
     }
 
@@ -1414,8 +1415,9 @@ impl Drop for Client {
         unsafe { native::swoole_http_client_coro_callable_free(self.write_func) };
         // SAFETY: as above.
         unsafe { native::swoole_http_client_coro_ws_free(self.ws) };
-        // SAFETY: as above.
-        unsafe { native::swoole_http_client_coro_file_free(self.download_file) };
+        if let Some(fd) = self.download_file.take() {
+            native::swoole_http_client_coro_file_close(fd);
+        }
         // SAFETY: the conn the client allocated; the socket hook no longer runs
         // for it once the socket is closed or released below.
         let conn = unsafe { Box::from_raw(self.conn) };
@@ -1627,25 +1629,15 @@ unsafe extern "C" fn on_body(parser: *mut Parser, at: *const c_char, length: usi
         if client.body.is_empty() {
             return 0;
         }
-        if client.download_file.is_null() {
+        if client.download_file.is_none() {
             let path = c_bytes(name.bytes());
-            // SAFETY: a NUL-terminated path; the file is the client's to free.
-            client.download_file = unsafe {
-                native::swoole_http_client_coro_file_open(path.as_ptr(), client.download_offset)
-            };
-            if client.download_file.is_null() {
-                return -1;
-            }
+            client.download_file =
+                native::swoole_http_client_coro_file_open(&path, client.download_offset);
         }
-        // SAFETY: the client's open file and its body bytes.
-        let written = unsafe {
-            native::swoole_http_client_coro_file_write(
-                client.download_file,
-                client.body.as_ptr().cast(),
-                client.body.len(),
-            )
+        let Some(fd) = client.download_file else {
+            return -1;
         };
-        if !written {
+        if !native::swoole_http_client_coro_file_write(fd, &client.body) {
             return -1;
         }
         client.body.clear();
@@ -1666,7 +1658,7 @@ unsafe extern "C" fn on_message_complete(parser: *mut Parser) -> c_int {
         c"statusCode",
         i64::from(client.parser.status_code),
     );
-    if client.download_file.is_null() {
+    if client.download_file.is_none() {
         props::bytes(client.object, c"body", &client.body);
     } else {
         client.download_name = None;

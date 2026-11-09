@@ -113,9 +113,9 @@ without modifying the original PHPT assertions or capability probes.
 
 ## Every PHPT, gated on upstream
 
-The merge tier (`phpt-*` jobs in `.github/workflows/merge.yml`) runs every pinned
-PHPT against the upstream reference and the all-modules hybrid, both built with
-PHP sockets support, in 6 shards per engine. The shards don't run as root, so the five
+The merge tier (`.github/workflows/phpt.yml`, called from `merge.yml`) runs every pinned
+PHPT against the upstream reference, the all-modules hybrid and the Cargo build, all built
+with PHP sockets support, in 6 shards per engine. The shards don't run as root, so the five
 tests that skip unless root run again as root in the `phpt-root` job, with their own
 re-runs and gate (`phpt-root.json`). The shards run:
 
@@ -135,7 +135,7 @@ any of them the hybrid passes is listed so its entry is dropped. It records each
 (service, network, ZTS, stdext, platform, extension, other). Only the runner's
 PASSED counts as passed.
 
-A test the gate flags is re-run 3 times on both engines (in the `phpt-gate` job,
+A test the gate flags is re-run 3 times on both engines (in `phpt.yml`'s `gate` job,
 unless more than 20 are flagged). If upstream fails any re-run, the test is listed
 as flaky on upstream and doesn't fail the gate, provided the hybrid passes one of its
 re-runs or upstream then passes fewer than a third of 9 re-runs (a test both engines
@@ -151,16 +151,37 @@ either engine. It doesn't count towards the verdict and gets one more re-run in 
 place. A test whose re-runs on an engine are all inconclusive fails the gate, listed
 as inconclusive.
 
-Before that, the PR tier's `gates` job runs the families of the modules a PR
-touches: each module in `migration/modules.json` lists its `phpt_families`, and
-`dev.py candidate` hands them to `families.sh`, which runs them on both engines,
-re-runs and gates them the same way. A change that selects every module is left
-to the merge tier.
+Before that, the PR tier's `phpt` job runs the families of the modules a PR
+touches (each module in `migration/modules.json` lists its `phpt_families`; every family
+for a change to shared build inputs) through the same `phpt.yml`, on the Cargo build alone,
+6 shards with the services. Upstream doesn't change between PRs, so the gate takes upstream's
+reports and `upstream.so` from main's latest merge-tier run whose upstream shards passed
+(`tools/ci.py phpt-baseline`), cut to those families. A PR that changes
+`tools/build_upstream.py` or `corpus/upstream/` runs upstream too.
+
+To run some families on both engines locally, `families.sh` re-runs and gates them the same
+way (`dev.py candidate` does it for the modules it selects):
 
 ```sh
 corpus/upstream/families.sh target/reports/phpt target/upstream/src/modules/swoole.so \
   target/ext/swoole.so --module swoole_timer
 ```
+
+Those run on Ubuntu's PHP 8.3. Every night `.github/workflows/php-versions.yml`
+builds upstream and the Cargo build against each other release upstream supports
+(8.2, 8.4, 8.5, from source by `.devcontainer/php.sh` with `PHP_SERIES` set)
+and gates every PHPT the same way, in 4 shards per version and without services.
+
+## On a debug PHP
+
+`.github/workflows/debug.yml` (nightly) builds PHP with `--enable-debug`, builds
+upstream and the Cargo swoole.so against it, and runs every pinned PHPT on both in 6
+shards, with the re-runs and gate above (`phpt-debug.json`). A debug PHP prints Zend's
+leak report at request end and aborts on a failed assertion, so either fails the
+test. The summary lists each failure that carries one by engine, upstream's own
+included; only a cargo failure of a test upstream passes fails the gate. Each
+cargo-only report gets a `kind:bug`. There are no services and no external network,
+so tests that need them fail or skip on both engines.
 
 ## Attributing a regression
 

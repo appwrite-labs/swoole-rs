@@ -1,11 +1,9 @@
 //! `swoole::File` IO loops, `file_get_size` and the sendfile variants (upstream `src/os/{file,sendfile,base}.cc`). Rust runs the
 //! syscalls; native code keeps the descriptors and logs warnings, so every
 //! function returns right after the failing call with its errno intact.
-use libc::{c_char, c_int, c_void, off_t};
-
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use libc::{c_char, c_int, off_t};
+use std::ffi::CStr;
+use swoole_rs_corebase::sys::{self, errno};
 
 /// Bytes moved by a `File::read_all`/`write_all` loop, and whether it stopped on
 /// an error native must warn about (errno is still the failing call's).
@@ -44,40 +42,33 @@ const fn to_off(done: usize) -> off_t {
 }
 
 /// `File::open`: closes the open descriptor first; created files default to 0644.
-/// # Safety
-/// `path` is a valid NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_open(
-    fd: c_int,
-    path: *const c_char,
-    flags: c_int,
-    mode: c_int,
-) -> c_int {
+#[must_use]
+pub fn file_open(fd: c_int, path: &CStr, flags: c_int, mode: c_int) -> c_int {
     if fd != -1 {
-        // SAFETY: the caller's previous descriptor, released here as upstream does.
-        unsafe { libc::close(fd) };
+        // The caller's previous descriptor, released here as upstream does.
+        sys::close(fd);
     }
-    if flags & libc::O_CREAT == 0 {
-        // SAFETY: valid C string per the contract.
-        return unsafe { libc::open(path, flags) };
-    }
-    let mode = if mode == 0 { 0o644 } else { mode };
-    // SAFETY: valid C string per the contract; the mode is promoted as C does.
-    unsafe { libc::open(path, flags, mode.unsigned_abs()) }
+    let mode = if flags & libc::O_CREAT == 0 || mode != 0 {
+        mode
+    } else {
+        0o644
+    };
+    sys::open(path, flags, libc::mode_t::try_from(mode).unwrap_or(0o644))
 }
 
 /// `File::close`: false for an already-closed descriptor.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_file_close(fd: c_int) -> bool {
-    // SAFETY: the caller hands over its descriptor.
-    fd != -1 && unsafe { libc::close(fd) } == 0
+#[expect(
+    clippy::must_use_candidate,
+    reason = "upstream's callers ignore File::close's result"
+)]
+pub fn file_close(fd: c_int) -> bool {
+    fd != -1 && sys::close(fd) == 0
 }
 
 /// `swoole_tmpfile`: `mkostemp(O_WRONLY | O_CREAT)` on Linux, `mkstemp` elsewhere.
 /// # Safety
 /// `filename` is a writable NUL-terminated `XXXXXX` template.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_tmpfile(filename: *mut c_char) -> c_int {
+pub(crate) unsafe fn tmpfile(filename: *mut c_char) -> c_int {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: a writable template per the contract.
     unsafe {
@@ -91,42 +82,22 @@ pub unsafe extern "C" fn swr_v1_os_tmpfile(filename: *mut c_char) -> c_int {
 }
 
 /// `File::write_all`: `write` in append mode, otherwise `pwrite` at the progress.
-/// # Safety
-/// `data` points to `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_write_all(
-    fd: c_int,
-    append: bool,
-    data: *const c_void,
-    length: usize,
-) -> FileIo {
-    transfer(length, |done| {
-        // SAFETY: `done < length`, so the range stays inside the caller's buffer.
-        let at = unsafe { data.byte_add(done) };
+#[must_use]
+pub fn write_all(fd: c_int, append: bool, data: &[u8]) -> FileIo {
+    transfer(data.len(), |done| {
         if append {
-            // SAFETY: `at` has `length - done` readable bytes.
-            unsafe { libc::write(fd, at, length - done) }
+            sys::write(fd, data.get(done..).unwrap_or_default())
         } else {
-            // SAFETY: `at` has `length - done` readable bytes.
-            unsafe { libc::pwrite(fd, at, length - done, to_off(done)) }
+            sys::pwrite(fd, data.get(done..).unwrap_or_default(), to_off(done))
         }
     })
 }
 
-/// `File::read_all`: `pread` at the progress until `length` bytes, EOF or error.
-/// # Safety
-/// `buf` points to `length` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_read_all(
-    fd: c_int,
-    buf: *mut c_void,
-    length: usize,
-) -> FileIo {
-    transfer(length, |done| {
-        // SAFETY: `done < length`, so the range stays inside the caller's buffer.
-        let at = unsafe { buf.byte_add(done) };
-        // SAFETY: `at` has `length - done` writable bytes.
-        unsafe { libc::pread(fd, at, length - done, to_off(done)) }
+/// `File::read_all`: `pread` at the progress until the buffer is full, EOF or error.
+#[must_use]
+pub fn read_all(fd: c_int, buf: &mut [u8]) -> FileIo {
+    transfer(buf.len(), |done| {
+        sys::pread(fd, buf.get_mut(done..).unwrap_or_default(), to_off(done))
     })
 }
 
@@ -138,8 +109,8 @@ pub struct FileSize {
     pub error: c_int,
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_file_size(fd: c_int) -> FileSize {
+#[must_use]
+pub fn file_size(fd: c_int) -> FileSize {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: `stat` is writable storage for one `struct stat`.
     if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } < 0 {
@@ -204,16 +175,14 @@ pub unsafe extern "C" fn swr_v1_os_sendfile_copy(
     let amount = size.min(buf.len());
     // SAFETY: `offset` is valid per the contract.
     let at = unsafe { *offset };
-    // SAFETY: `buf` has `amount` writable bytes.
-    let n = unsafe { libc::pread(in_fd, buf.as_mut_ptr().cast(), amount, at) };
+    let n = sys::pread(in_fd, buf.get_mut(..amount).unwrap_or_default(), at);
     if n <= 0 {
         return Sendfile {
             result: -1,
             warn: 1,
         };
     }
-    // SAFETY: `buf` holds `n` bytes read above.
-    let written = unsafe { libc::write(out_fd, buf.as_ptr().cast(), n.unsigned_abs()) };
+    let written = sys::write(out_fd, buf.get(..n.unsigned_abs()).unwrap_or_default());
     if written < 0 {
         return Sendfile {
             result: written,
@@ -388,7 +357,7 @@ mod tests {
         let file = scratch(b"hello world");
         let fd = file.as_raw_fd();
         let mut buf = [0_u8; 32];
-        let io = unsafe { swr_v1_os_file_read_all(fd, buf.as_mut_ptr().cast(), buf.len()) };
+        let io = read_all(fd, &mut buf);
         assert_eq!(
             io,
             FileIo {
@@ -398,7 +367,7 @@ mod tests {
             "EOF ends the loop quietly"
         );
         assert_eq!(&buf[..11], b"hello world", "content read from offset zero");
-        let io = unsafe { swr_v1_os_file_write_all(fd, false, b"HELLO".as_ptr().cast(), 5) };
+        let io = write_all(fd, false, b"HELLO");
         assert_eq!(
             io,
             FileIo {
@@ -407,18 +376,18 @@ mod tests {
             },
             "pwrite writes it all"
         );
-        let io = unsafe { swr_v1_os_file_read_all(fd, buf.as_mut_ptr().cast(), 11) };
+        let io = read_all(fd, &mut buf[..11]);
         assert_eq!(
             (io.done, &buf[..11]),
             (11, &b"HELLO world"[..]),
             "pwrite starts at zero"
         );
         assert_eq!(
-            swr_v1_os_file_size(fd),
+            file_size(fd),
             FileSize { size: 11, error: 0 },
             "regular size"
         );
-        let io = unsafe { swr_v1_os_file_write_all(-1, true, b"x".as_ptr().cast(), 1) };
+        let io = write_all(-1, true, b"x");
         assert_eq!(
             io,
             FileIo {
@@ -437,7 +406,7 @@ mod tests {
     #[test]
     fn size_rejects_failures_and_non_regular_files() {
         assert_eq!(
-            swr_v1_os_file_size(-1),
+            file_size(-1),
             FileSize {
                 size: -1,
                 error: libc::EBADF
@@ -446,7 +415,7 @@ mod tests {
         );
         let dir = std::fs::File::open(std::env::temp_dir()).unwrap_or_else(|e| unreachable!("{e}"));
         assert_eq!(
-            swr_v1_os_file_size(dir.as_raw_fd()),
+            file_size(dir.as_raw_fd()),
             FileSize {
                 size: -1,
                 error: libc::EISDIR
@@ -480,7 +449,7 @@ mod tests {
             "an empty read warns"
         );
         let mut buf = [0_u8; 8];
-        let io = unsafe { swr_v1_os_file_read_all(sink.as_raw_fd(), buf.as_mut_ptr().cast(), 8) };
+        let io = read_all(sink.as_raw_fd(), &mut buf);
         assert_eq!(&buf[..io.done], b"23456", "written to the sink");
     }
 
@@ -509,17 +478,16 @@ mod tests {
     fn open_close_and_tmpfile_follow_upstream() {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut template = *b"/tmp/swr-ossupport-XXXXXX\0";
-        let fd = unsafe { swr_v1_os_tmpfile(template.as_mut_ptr().cast()) };
+        let fd = unsafe { tmpfile(template.as_mut_ptr().cast()) };
         assert!(fd >= 0, "a temporary file");
         let path = std::ffi::CStr::from_bytes_until_nul(&template).unwrap_or_default();
-        let reopened = unsafe { swr_v1_os_file_open(fd, path.as_ptr(), libc::O_RDONLY, 0) };
+        let reopened = file_open(fd, path, libc::O_RDONLY, 0);
         assert!(reopened >= 0, "reopened after closing the old descriptor");
-        assert!(swr_v1_os_file_close(reopened), "closed");
-        assert!(!swr_v1_os_file_close(-1), "nothing to close");
+        assert!(file_close(reopened), "closed");
+        assert!(!file_close(-1), "nothing to close");
         let created =
             std::ffi::CString::new(format!("{}.new", path.to_string_lossy())).unwrap_or_default();
-        let fd =
-            unsafe { swr_v1_os_file_open(-1, created.as_ptr(), libc::O_WRONLY | libc::O_CREAT, 0) };
+        let fd = file_open(-1, &created, libc::O_WRONLY | libc::O_CREAT, 0);
         let mode =
             std::fs::metadata(created.to_string_lossy().as_ref()).map(|m| m.permissions().mode());
         let reference = format!("{}.ref", path.to_string_lossy());
@@ -537,7 +505,7 @@ mod tests {
             expected.unwrap_or_default() & 0o777,
             "created with 0644 under the umask"
         );
-        assert!(swr_v1_os_file_close(fd), "closed");
+        assert!(file_close(fd), "closed");
         std::fs::remove_file(created.to_string_lossy().as_ref()).unwrap_or_default();
         std::fs::remove_file(path.to_string_lossy().as_ref()).unwrap_or_default();
     }

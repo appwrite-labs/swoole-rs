@@ -164,7 +164,7 @@ fn net(stream: *mut php_stream) -> *mut NetStream {
     unsafe { (*stream).abstract_ }.cast()
 }
 
-/// `php_stream_alloc_rel(ops, abstract, persistent_id, "r+")` of `socket`;
+/// `php_stream_alloc(ops, abstract, persistent_id, "r+")` of `socket`;
 /// null (the socket freed) if it fails.
 fn alloc(
     ops: *const php_stream_ops,

@@ -12,7 +12,7 @@ permissions:
   packages: write
 jobs:
   image:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 90
     strategy:
       fail-fast: false

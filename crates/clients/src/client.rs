@@ -28,8 +28,8 @@ use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::event_api::swoole_event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
 use swoole_rs_reactor::{
-    SocketRecord, catch_error, swr_v1_socket_buffer_size, swr_v1_socket_clean,
-    swr_v1_socket_defaults, swr_v1_socket_domain_and_type,
+    SocketRecord, catch_error, fd_clean, swr_v1_socket_buffer_size, swr_v1_socket_defaults,
+    swr_v1_socket_domain_and_type,
 };
 #[cfg(test)]
 use tests::{async_dispatch, ops, swoole_event_write, thread_buffer};
@@ -1699,7 +1699,7 @@ fn udp_connect(
             }
             return ERR;
         }
-        swr_v1_socket_clean(fd);
+        fd_clean(fd);
     }
     if is_async && this.has(ON_CONNECT) {
         if this.event(EVENT_ADD, EVENT_READ) < 0 {

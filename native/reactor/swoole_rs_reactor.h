@@ -193,13 +193,6 @@ bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
  * write_timeout), embedded in this order (Socket static_asserts it). */
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
-struct sockaddr;
-ssize_t swr_v1_socket_recvfrom(int fd, void *buffer, size_t length, int flags, struct sockaddr *address, socklen_t *address_length, uint32_t retries);
-int swr_v1_socket_accept(int fd, struct sockaddr *address, socklen_t *address_length, bool nonblock, bool *listener_cloexec);
-/* sendfile's range check (fstat included) and chunk size: 0 with *end set, 1
- * fstat failed (errno set), 2 empty file, 3 range outside the file. */
-int swr_v1_socket_sendfile_range(int file_fd, off_t begin, size_t length, off_t *end);
-size_t swr_v1_socket_sendfile_chunk(off_t begin, off_t end);
 /* network::Socket's TLS state group (ssl_state, ssl_want_read, ssl_want_write),
  * embedded in this order and these types (Socket static_asserts it). The calls below
  * that take it set it. */

@@ -232,15 +232,6 @@ unsafe extern "C-unwind" {
     static swr_v1_socket_defaults: [f64; 4];
 
     fn swr_v1_socket_buffer_size(fd: c_int, recv: bool, send: bool, size: u32) -> bool;
-    fn swr_v1_socket_recvfrom(
-        fd: c_int,
-        buf: *mut c_void,
-        n: usize,
-        flags: c_int,
-        address: *mut c_void,
-        length: *mut u32,
-        retries: u32,
-    ) -> isize;
     fn swr_v1_socket_type(domain: c_int, kind: c_int) -> c_int;
     fn swr_v1_socket_domain_and_type(
         kind: c_int,
@@ -549,21 +540,28 @@ impl Socket {
         unsafe { socket_sendto_sync(self.0, address, data.as_ptr().cast(), data.len(), 0) }
     }
 
-    /// `recvfrom(buf, len, flags, &sa)`.
+    /// `recvfrom(buf, len, flags, &sa)`: recvfrom(2), retried on `EINTR` up to
+    /// `SW_SOCKET_RETRY_COUNT` times.
     fn recvfrom(&self, buf: &mut [u8], address: &mut Address) -> isize {
         address.len = u32::try_from(size_of_val(&address.addr)).unwrap();
-        // SAFETY: `buf` and the address are writable.
-        unsafe {
-            swr_v1_socket_recvfrom(
-                self.get_fd(),
-                buf.as_mut_ptr().cast(),
-                buf.len(),
-                0,
-                address.addr.as_mut_ptr().cast(),
-                &mut address.len,
-                SW_SOCKET_RETRY_COUNT,
-            )
+        let mut received = -1;
+        for _ in 0..SW_SOCKET_RETRY_COUNT {
+            // SAFETY: `buf` and the address are writable.
+            received = unsafe {
+                recvfrom(
+                    self.get_fd(),
+                    buf.as_mut_ptr().cast(),
+                    buf.len(),
+                    0,
+                    address.addr.as_mut_ptr().cast(),
+                    &mut address.len,
+                )
+            };
+            if received >= 0 || errno() != EINTR {
+                break;
+            }
         }
+        received
     }
 
     fn recvfrom_sync(&self, buf: &mut [u8], address: &mut Address) -> isize {
@@ -745,7 +743,18 @@ fn ssl_fail() {
 unsafe extern "C" {
     #[link_name = "__errno_location"]
     fn errno_location() -> *mut c_int;
+    fn recvfrom(
+        fd: c_int,
+        buf: *mut c_void,
+        n: usize,
+        flags: c_int,
+        address: *mut c_void,
+        length: *mut u32,
+    ) -> isize;
 }
+
+/// Linux's `EINTR`.
+const EINTR: c_int = 4;
 
 fn unix_dgram_pair() -> (Socket, Socket) {
     unlink_path(c"/tmp/udp_unix1.sock");

@@ -305,17 +305,9 @@ impl SocketRecord {
         )]
         let capacity = size_of::<SocketAddress>() as libc::socklen_t;
         socket.info.len = capacity;
-        let mut listener_cloexec = false;
-        // SAFETY: the new record's address storage, and a local bool.
-        socket.fd = unsafe {
-            crate::swr_v1_socket_accept(
-                self.fd,
-                ptr::addr_of_mut!(socket.info.addr).cast(),
-                &raw mut socket.info.len,
-                self.output.nonblock != 0,
-                &raw mut listener_cloexec,
-            )
-        };
+        let listener_cloexec;
+        (socket.fd, listener_cloexec) =
+            crate::fd_accept(self.fd, &mut socket.info, self.output.nonblock != 0);
         if listener_cloexec {
             self.cloexec = 1;
         }

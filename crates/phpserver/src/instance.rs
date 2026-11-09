@@ -29,8 +29,6 @@ use swoole_rs_zend::{
 };
 
 unsafe extern "C" {
-    /// `MessageBus::move_packet` (crates/protocols).
-    fn swr_v1_bus_move_packet(bus: *mut c_void) -> *mut c_char;
     /// `String::pop` (crates/buffer).
     #[link_name = "_ZN6swoole6String3popEm"]
     fn string_pop(string: *mut c_void, init_size: usize) -> *mut u8;
@@ -138,11 +136,8 @@ pub unsafe extern "C" fn php_swoole_server_get_callback(
 
 /// `serv->get_worker_message_bus()->move_packet()`.
 fn move_packet(serv: view::Server<'_>) {
-    let bus = crate::dispatch::message_bus(serv);
-    // SAFETY: a `MessageBus` starts with its `swr_bus *`.
-    let bus = unsafe { *bus.cast::<*mut c_void>() };
     // SAFETY: the worker's live bus; the packet is now the caller's.
-    unsafe { swr_v1_bus_move_packet(bus) };
+    unsafe { swoole_rs_server::bus_move_packet(crate::dispatch::message_bus(serv)) };
 }
 
 /// `zend::assign_zend_string_by_val`: the zend string whose bytes start at

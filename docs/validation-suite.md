@@ -23,8 +23,11 @@ native callers, not Rust or PHP.
 
 ## Autobahn
 
-The suite is pinned by image digest in `autobahn.py`; `docker pull` it
-first. The default profile is a bounded subset; `--cases` replaces it, `--full`
-runs all 517 cases and `--host` overrides `host.docker.internal`. A case is a
-strict pass only if both `behavior` and `behaviorClose` are `OK`. The manual
-`conformance.yml` workflow runs it, with `full_suite=true` for the full suite.
+The suite is pinned by image digest in `autobahn.py`, which pulls it. The
+default profile is a bounded subset; `--cases` replaces it, `--full` runs all
+517 cases and `--host` overrides `host.docker.internal`. The first engine is the
+control: the run fails when a case does worse on another engine in `behavior`
+or `behaviorClose` (`OK`, then `NON-STRICT`, then `INFORMATIONAL`, then anything
+else), or when results are missing. Strict passes (both `OK`) are counted. The
+merge tier's `autobahn` job runs the default profile on upstream and the Cargo
+build; `conformance.yml` runs the full suite on them nightly.
