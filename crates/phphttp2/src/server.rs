@@ -29,9 +29,8 @@ use swoole_rs_zend::{
     bailout, string,
     sys::{
         IS_ARRAY, IS_NULL, IS_STRING, add_assoc_str_ex, add_assoc_stringl_ex,
-        swr_zend_hash_foreach_key, swr_zend_http_add_or_merge, swr_zend_property_array,
-        swr_zend_property_slot, swr_zend_url_decode, swr_zval_copy, swr_zval_stringl,
-        zend_hash_str_del, zend_hash_str_find, zend_object, zend_string, zend_ulong, zval,
+        swr_zend_hash_foreach_key, swr_zend_property_array, swr_zend_property_slot,
+        swr_zend_url_decode, zend_hash_str_find, zend_object, zend_string, zend_ulong, zval,
         zval_ptr_dtor,
     },
     type_of, value,
@@ -1197,11 +1196,10 @@ fn headers(
     session.header_end_stream.set(flags & FLAG_END_STREAM != 0);
     let (mut payload, mut length) = (payload, length);
     if flags & FLAG_PADDED != 0 {
-        if length < 1 {
+        let Some(&pad) = bytes(payload.cast(), length).first() else {
             return SW_ERR;
-        }
-        // SAFETY: the payload's first byte.
-        let pad = usize::from(unsafe { *payload });
+        };
+        let pad = usize::from(pad);
         if pad >= length {
             return SW_ERR;
         }
@@ -1225,7 +1223,7 @@ fn header_block(
         return SW_ERR;
     }
     let discard = stream.headers_received.get();
-    if parse_header(session, stream.ctx, flags, payload, length, discard) < 0 {
+    if parse_header(session, stream, flags, payload, length, discard) < 0 {
         return SW_ERR;
     }
     if flags & FLAG_END_HEADERS == 0 {
@@ -1233,7 +1231,7 @@ fn header_block(
         return SW_OK;
     }
     session.header_stream_id.set(0);
-    if !discard && !headers_complete(session, stream) {
+    if !discard && !headers_complete(stream) {
         return SW_ERR;
     }
     stream.headers_received.set(true);
@@ -1244,48 +1242,20 @@ fn header_block(
 }
 
 /// `std::strtol` consumed the whole Content-Length and it is within the body limit.
-fn content_length_valid(session: &Session, value: *const zval) -> bool {
-    string_of(value).is_some_and(|text| {
-        let (parsed, complete) = strtol(text.bytes());
-        sw_rs_http2_content_length_rejected(u32::from(complete), parsed, session.max_body_size) == 0
-    })
+fn content_length_valid(session: &Session, value: &[u8]) -> bool {
+    let (parsed, complete) = strtol(value);
+    sw_rs_http2_content_length_rejected(u32::from(complete), parsed, session.max_body_size) == 0
 }
 
 /// `http2_server_on_headers_complete`: the request's Content-Length, body
-/// parser, cookies and compression, from its whole initial header block.
-fn headers_complete(session: &Session, stream: &Stream) -> bool {
+/// parser and compression, from its whole initial header block.
+fn headers_complete(stream: &Stream) -> bool {
     let ctx = stream.ctx;
-    let headers = zval_of(ctx, Value::Header);
-    let length = find(headers, b"content-length");
-    if !length.is_null() {
-        let valid = if is(length, IS_ARRAY) {
-            let values = entries(length);
-            let valid = values.iter().fold(true, |valid, &(_, value)| {
-                content_length_valid(session, value) && valid
-            });
-            // The header keeps its last value, not the list.
-            if let Some(&(_, last)) = values.last() {
-                // SAFETY: all zeroes is `IS_UNDEF`.
-                let mut kept: zval = unsafe { std::mem::zeroed() };
-                // SAFETY: a live value, referenced again for the slot.
-                unsafe { swr_zval_copy(&raw mut kept, last) };
-                // SAFETY: the list's slot, released and refilled.
-                unsafe { zval_ptr_dtor(length) };
-                // `ZVAL_COPY_VALUE`: the slot's `u2` is the bucket's hash chain.
-                // SAFETY: as above.
-                unsafe { (*length).value = kept.value };
-                // SAFETY: as above.
-                unsafe { (*length).u1 = kept.u1 };
-            }
-            valid
-        } else {
-            content_length_valid(session, length)
-        };
-        if !valid {
-            send_status_code(ctx, ENTITY_TOO_LARGE);
-            return false;
-        }
+    if stream.bad_length.get() {
+        send_status_code(ctx, ENTITY_TOO_LARGE);
+        return false;
     }
+    let headers = zval_of(ctx, Value::Header);
     if let Some(value) = string_at(headers, b"content-type") {
         let (folded, length) = fold(value.bytes());
         // SAFETY: the folded prefix.
@@ -1298,27 +1268,6 @@ fn headers_complete(session: &Session, stream: &Stream) -> bool {
         {
             return false;
         }
-    }
-    let cookie = find(headers, b"cookie");
-    if !cookie.is_null() {
-        let cookies = zval_of(ctx, Value::Cookie);
-        let values = if is(cookie, IS_ARRAY) {
-            entries(cookie)
-                .into_iter()
-                .map(|(_, value)| value)
-                .collect()
-        } else {
-            vec![cookie]
-        };
-        for text in values.into_iter().filter_map(|value| string_of(value)) {
-            // SAFETY: the request's `$cookie`.
-            unsafe { swoole_rs_phphttp::http2::cookie(cookies, text.bytes()) };
-        }
-        // `$cookie` has them; `$header` has no cookie field.
-        // SAFETY: a live array.
-        let table = unsafe { value::table(headers) };
-        // SAFETY: a live table.
-        unsafe { zend_hash_str_del(table, c"cookie".as_ptr(), 6) };
     }
     if get(ctx, Field::EnableCompression) != 0
         && let Some(value) = string_at(headers, b"accept-encoding")
@@ -1353,22 +1302,12 @@ fn complete(session: &Session, stream: &Stream) -> c_int {
     SW_OK
 }
 
-/// `zend_hash_str_find(Z_ARRVAL_P(array), key)`.
-fn find(array: *mut zval, key: &[u8]) -> *mut zval {
-    // SAFETY: a live array.
-    let table = unsafe { value::table(array) };
-    // SAFETY: a live table.
-    unsafe { zend_hash_str_find(table, key.as_ptr().cast(), key.len()) }
-}
-
-/// The string at `key`, if the array has one.
+/// The string at `key` of an array, if it has one.
 fn string_at(array: *mut zval, key: &[u8]) -> Option<Text> {
-    let found = find(array, key);
-    if found.is_null() {
-        None
-    } else {
-        string_of(found)
-    }
+    let (_, value) = entries(array)
+        .into_iter()
+        .find(|&(name, _)| !name.is_null() && key_of(name) == key)?;
+    string_of(value)
 }
 
 fn read_u32(at: *const u8) -> u32 {
@@ -1508,7 +1447,7 @@ fn flow(session: &Session, stream: &Stream, ctx: *mut c_void, stream_id: u32, le
 /// `$server`, `$header`, `$get` and `$cookie`.
 fn parse_header(
     session: &Session,
-    ctx: *mut c_void,
+    stream: &Stream,
     flags: u32,
     mut input: *const u8,
     mut length: usize,
@@ -1540,8 +1479,8 @@ fn parse_header(
         input = input.wrapping_add(5);
         length -= 5;
     }
-    let zheader = zval_of(ctx, Value::Header);
-    let zserver = zval_of(ctx, Value::Server);
+    let zheader = zval_of(stream.ctx, Value::Header);
+    let zserver = zval_of(stream.ctx, Value::Server);
     loop {
         let mut header = Header {
             name: ptr::null(),
@@ -1583,7 +1522,7 @@ fn parse_header(
             let name = unsafe { std::slice::from_raw_parts(header.name, header.name_length) };
             // SAFETY: as above.
             let value = unsafe { std::slice::from_raw_parts(header.value, header.value_length) };
-            if !request_header(ctx, zheader, zserver, name, value) {
+            if !request_header(session, stream, zheader, zserver, name, value) {
                 continue;
             }
         }
@@ -1621,15 +1560,18 @@ fn add_string(array: *mut zval, key: &[u8], value: &[u8]) {
     };
 }
 
-/// One request header; `false` skips the rest of the step (a Cookie or
-/// Content-Length, which keeps every value until the block is complete).
+/// One request header; `false` skips the rest of the step (a Cookie, parsed
+/// into `$cookie` and never kept in `$header`, or a Content-Length, checked
+/// here and judged once the block is complete).
 fn request_header(
-    ctx: *mut c_void,
+    session: &Session,
+    stream: &Stream,
     zheader: *mut zval,
     zserver: *mut zval,
     name: &[u8],
     value: &[u8],
 ) -> bool {
+    let ctx = stream.ctx;
     let kind = header_plan(REQUEST_HEADERS, name, false).kind;
     if name.first() == Some(&b':') {
         match kind {
@@ -1640,23 +1582,25 @@ fn request_header(
         }
         return true;
     }
-    let key: &[u8] = match kind {
-        HEADER_COOKIE => b"cookie",
-        HEADER_CONTENT_LENGTH => b"content-length",
+    match kind {
+        HEADER_COOKIE => {
+            // SAFETY: the request's `$cookie`.
+            unsafe { swoole_rs_phphttp::http2::cookie(zval_of(ctx, Value::Cookie), value) };
+            false
+        }
+        HEADER_CONTENT_LENGTH => {
+            if !content_length_valid(session, value) {
+                stream.bad_length.set(true);
+            }
+            // The header keeps the last value.
+            add_string(zheader, b"content-length", value);
+            false
+        }
         _ => {
             add_string(zheader, name, value);
-            return true;
+            true
         }
-    };
-    // SAFETY: all zeroes is `IS_UNDEF`.
-    let mut element: zval = unsafe { std::mem::zeroed() };
-    // SAFETY: the header value's bytes, copied.
-    unsafe { swr_zval_stringl(&raw mut element, value.as_ptr().cast(), value.len()) };
-    // SAFETY: a live array taking the new string.
-    unsafe {
-        swr_zend_http_add_or_merge(zheader, key.as_ptr().cast(), key.len(), &raw mut element);
     }
-    false
 }
 
 /// `:path`: `request_uri`, `path_info` (decoded), `query_string` and `$get`.
