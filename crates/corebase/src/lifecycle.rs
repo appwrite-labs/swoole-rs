@@ -277,22 +277,14 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     0
 }
 
-/// `swoole_fork_exec`'s fork: the child runs `call(function)` and exits 0; the
-/// parent gets the pid, and 0 when fork fails (upstream returns `false`).
-///
-/// # Safety
-/// `call` accepts `function`; a C++ exception it throws unwinds through here.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_core_fork_exec(
-    call: unsafe extern "C-unwind" fn(*const c_void),
-    function: *const c_void,
-) -> libc::pid_t {
+/// `swoole_fork_exec`: the child runs `child` and exits 0; the parent gets the
+/// pid, and 0 when fork fails (upstream returns `false`).
+pub fn fork_exec(child: impl FnOnce()) -> libc::pid_t {
     // SAFETY: fork has no memory preconditions.
     match unsafe { libc::fork() } {
         pid if pid < 0 => 0,
         0 => {
-            // SAFETY: the caller's contract.
-            unsafe { call(function) };
+            child();
             // SAFETY: the child ends here, as upstream's exit(0).
             unsafe { libc::exit(0) }
         }

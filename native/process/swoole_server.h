@@ -455,7 +455,7 @@ static_assert(SW_SERVER_EVENT_RECV_DATA == 0 && SW_SERVER_EVENT_RECV_DGRAM == 1 
 static_assert(SW_MESSAGE_BOX_SIZE == 65536 && SW_INPUT_BUFFER_SIZE == 2 * 1024 * 1024 && SW_WORKER_MAX_WAIT_TIME == 3 &&
                   SW_IPC_BUFFER_MAX_SIZE == 64 * 1024,
               "pool constants drift");
-static_assert(sizeof(DataHead) == 40 && offsetof(DataHead, len) == 16 && offsetof(DataHead, type) == 22 &&
+static_assert(sizeof(DataHead) == 40 && offsetof(DataHead, time) == 32 && offsetof(DataHead, len) == 16 && offsetof(DataHead, type) == 22 &&
                   offsetof(EventData, data) == sizeof(DataHead) && sizeof(EventData) == SW_IPC_MAX_SIZE &&
                   sizeof(String) == 40 && offsetof(WorkerStopMessage, pid) == 0 &&
                   offsetof(WorkerStopMessage, worker_id) == 4 && sizeof(RecvData) == 48 && sizeof(ExitStatus) == 8,
