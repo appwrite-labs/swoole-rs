@@ -189,6 +189,20 @@ jobs:
           set -- shards/*.json
           if [ -d recheck ]; then set -- "$@" --recheck recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt.json | tee -a "$GITHUB_STEP_SUMMARY"
+      # A shard that crashed, or that GitHub never started (an Actions outage drops jobs
+      # without a trace in the run), leaves no report; a shard with no tests leaves none either.
+      # A gate over some of the shards measured part of the corpus, so its phpt.json is
+      # dropped before the upload: the PHPT badge would read it as the whole.
+      - if: always() && needs.phpt.result != 'success'
+        env:
+          ENGINES: ${{ inputs.engines }}
+        run: |
+          for engine in $(jq -r '.[]' <<< "$ENGINES"); do for index in 1 2 3 4 5 6; do
+            [ -f "shards/$engine-$index.json" ] || missing="$missing $engine-$index"
+          done; done
+          rm -f phpt.json
+          echo "A PHPT shard didn't succeed (\`phpt\`: ${{ needs.phpt.result }}); reports missing from the gate:${missing:- none}"
+          exit 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -197,14 +211,3 @@ jobs:
             phpt.json
             flagged.txt
             recheck/
-      # A shard that crashed, or that GitHub never started (an Actions outage drops jobs
-      # without a trace in the run), leaves no report; a shard with no tests leaves none either.
-      - if: needs.phpt.result != 'success'
-        env:
-          ENGINES: ${{ inputs.engines }}
-        run: |
-          for engine in $(jq -r '.[]' <<< "$ENGINES"); do for index in 1 2 3 4 5 6; do
-            [ -f "shards/$engine-$index.json" ] || missing="$missing $engine-$index"
-          done; done
-          echo "A PHPT shard didn't succeed (\`phpt\`: ${{ needs.phpt.result }}); reports missing from the gate:${missing:- none}"
-          exit 1
