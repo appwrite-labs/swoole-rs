@@ -3,9 +3,9 @@
 //! coroutine bound to a direction), `close` (close-wait while coroutines are
 //! bound, else release the descriptor), `connect(addr)` (the `connect(2)`
 //! retries, the wait to write and the `SO_ERROR` check) and `check_liveness`.
-//! Native code keeps the coroutine resume, the destructor callback, the TLS
-//! session and the liveness probe ([`Host`](crate::co_io::Host)).
-use crate::co_io::{CLOSE_WAIT_ERROR, Timer, available, errno, host, set_err};
+//! The coroutine resume, the TLS shutdown and the liveness probe are
+//! [`NATIVE`](crate::co_io::NATIVE)'s.
+use crate::co_io::{CLOSE_WAIT_ERROR, NATIVE, Timer, available, errno, set_err};
 use crate::co_socket::CoSocket;
 use crate::shutdown::{
     READ, WRITE, swr_v1_hook_shutdown, swr_v1_hook_socket_bound_co, swr_v1_hook_socket_co,
@@ -35,9 +35,8 @@ fn record<'a>(socket: *mut CoSocket) -> &'a CoSocket {
     unsafe { &*socket }
 }
 
-unsafe extern "C" fn ssl_shutdown(socket: *mut c_void) {
-    // SAFETY: the live record `shutdown` passes.
-    unsafe { (host().ssl_shutdown)(socket.cast()) };
+extern "C" fn ssl_shutdown(socket: *mut c_void) {
+    (NATIVE.ssl_shutdown)(socket.cast());
 }
 
 /// `Socket::shutdown(how)`.
@@ -90,8 +89,7 @@ unsafe fn cancel(socket: *mut CoSocket, event: u32) -> bool {
     unsafe { set_err(socket, libc::ECANCELED) };
     // SAFETY: the record's live state; `bound_co` found a coroutine for `event`.
     let co = unsafe { swr_v1_hook_socket_co(state, event) };
-    // SAFETY: wakes that coroutine; the socket may be gone when it returns.
-    unsafe { (host().resume)(co) };
+    (NATIVE.resume)(co);
     true
 }
 
@@ -140,8 +138,7 @@ unsafe fn liveness(socket: *mut CoSocket) -> bool {
         unsafe { set_err(socket, libc::EBADF) };
         return false;
     }
-    // SAFETY: the open record's probe.
-    let alive = unsafe { (host().liveness)(socket) };
+    let alive = (NATIVE.liveness)(socket);
     let error = match (alive, errno()) {
         (true, _) => 0,
         (false, 0) => libc::ECONNRESET,
@@ -318,7 +315,7 @@ mod tests {
             error = libc::ENOTCONN;
         } else {
             if !unsafe { record(s).record() }.ssl.is_null() {
-                unsafe { (host().ssl_shutdown)(s) };
+                (NATIVE.ssl_shutdown)(s);
             }
             if unsafe { (sys.shutdown)(record(s).sock_fd, how) } < 0 {
                 error = errno();
@@ -350,7 +347,7 @@ mod tests {
         }
         if event == READ || event == WRITE {
             unsafe { set_err(s, libc::ECANCELED) };
-            unsafe { (host().resume)(swr_v1_hook_socket_co(state, event)) };
+            (NATIVE.resume)(unsafe { swr_v1_hook_socket_co(state, event) });
             true
         } else {
             unsafe { set_err(s, libc::EINVAL) };
@@ -425,7 +422,7 @@ mod tests {
             unsafe { set_err(s, libc::EBADF) };
             return false;
         }
-        if !unsafe { (host().liveness)(s) } {
+        if !(NATIVE.liveness)(s) {
             let error = errno();
             unsafe { set_err(s, if error != 0 { error } else { libc::ECONNRESET }) };
             return false;

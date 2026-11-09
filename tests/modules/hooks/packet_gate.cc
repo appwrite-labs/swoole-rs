@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <functional>
@@ -14,6 +15,9 @@
 #define SWOOLE_RS_REACTOR 1
 #include "swoole_rs_socket.h"
 #include "swoole_rs_co_socket.h"
+// The bound-socket report links the scheduler native/coroutine owns; no scenario binds a
+// coroutine, so it is never reached.
+extern "C" void *swr_cpp_coroutine_scheduler(){std::abort();}
 static std::vector<std::string> trace;
 static void record(std::string value){trace.push_back(value);}
 static std::string number(double value){std::ostringstream out;out<<std::hexfloat<<value;return out.str();}

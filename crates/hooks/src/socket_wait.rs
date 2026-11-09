@@ -2,9 +2,9 @@
 //! reactor callbacks, over the Rust-owned state: which event to add (a TLS session
 //! may want the other direction), binding the coroutine for the wait, the barrier
 //! that retries a transfer before the waiter wakes, and removing the event after.
-//! `poll` waits the same way under a timer. Native code keeps the reactor, the
-//! coroutine switch and the write buffer ([`Host`](crate::co_io::Host)).
-use crate::co_io::{CLOSE_WAIT_ERROR, Timer, available, host, set_err};
+//! `poll` waits the same way under a timer. Native code keeps the yield and the
+//! write buffer ([`Host`](crate::co_io::Host)).
+use crate::co_io::{CLOSE_WAIT_ERROR, NATIVE, Timer, available, host, set_err};
 use crate::co_socket::CoSocket;
 use crate::shutdown::{READ, SocketState, WRITE, swr_v1_hook_socket_bind, swr_v1_hook_socket_co};
 use crate::vector::Barrier;
@@ -98,8 +98,7 @@ impl Wait {
         } else {
             status & (READ | WRITE) | event
         };
-        // SAFETY: a native effect on the live socket's reactor registration.
-        let added = status & event != 0 || unsafe { (host().reactor)(self.0, events, removed) };
+        let added = status & event != 0 || (NATIVE.reactor)(self.0, events, removed);
         self.set_err(if added { 0 } else { crate::co_io::errno() });
         added
     }
@@ -113,8 +112,7 @@ impl Wait {
         let event = if event == READ { READ } else { WRITE };
         if status & NOBUFS != 0 {
             self.bind(event, co);
-            // SAFETY: a native coroutine sleep; this coroutine stays bound across it.
-            unsafe { (host().sleep)() };
+            (NATIVE.sleep)();
             self.bind(event, core::ptr::null_mut());
             return !self.closed();
         }
@@ -146,8 +144,7 @@ impl Wait {
             !crate::shutdown::swr_v1_hook_socket_bound_co(self.state(), READ | WRITE).is_null()
         };
         if self.want() == 0 || !bound {
-            // SAFETY: a native effect on the live socket's reactor registration.
-            unsafe { (host().remove)(self.0, added) };
+            (NATIVE.remove)(self.0, added);
         }
         self.set_want(0);
         !self.closed() && self.socket().err_code == 0
@@ -169,7 +166,7 @@ pub(crate) unsafe fn wait(
     buffer: *mut *mut u8,
     length: usize,
 ) -> bool {
-    let co = (host().current)();
+    let co = (NATIVE.current)();
     if co.is_null() {
         return false;
     }
@@ -305,8 +302,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_error_event(
         if !co.is_null() {
             // SAFETY: as above.
             unsafe { set_err(socket, 0) };
-            // SAFETY: wakes the coroutine bound to `event`.
-            unsafe { (host().resume)(co) };
+            (NATIVE.resume)(co);
         }
     }
 }

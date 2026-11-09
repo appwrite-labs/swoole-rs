@@ -13,7 +13,7 @@
 //! Itanium ABI the record follows the vtable pointer; system.cc asserts that shape.
 use crate::buffered::{swr_v1_hook_co_socket_recv_buffered, swr_v1_hook_recv_line};
 use crate::co_io::{
-    Timer, available, check, errno, host, set_err, swr_v1_hook_co_socket_borrowed_err,
+    NATIVE, Timer, available, check, errno, host, set_err, swr_v1_hook_co_socket_borrowed_err,
     swr_v1_hook_co_socket_default_err, swr_v1_hook_co_socket_owned_err,
 };
 use crate::co_socket::{CoSocket, buffer, swr_v1_hook_co_socket_peer_name};
@@ -123,8 +123,7 @@ unsafe fn ready(event: *const Event, kind: u32) -> c_int {
     // SAFETY: the record's live state.
     let co = unsafe { swr_v1_hook_socket_ready(state, kind, source.event_hup != 0) };
     if !co.is_null() {
-        // SAFETY: the coroutine Rust chose.
-        unsafe { (host().resume)(co) };
+        (NATIVE.resume)(co);
     }
     0
 }

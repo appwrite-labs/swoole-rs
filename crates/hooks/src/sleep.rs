@@ -186,8 +186,10 @@ pub extern "C" fn swr_v1_hooks_sleep_until(
 /// # Safety
 /// In a coroutine (outside one it raises upstream's fatal error, which does not
 /// return), with the thread's reactor running.
-#[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZN6swoole9coroutine6System5sleepEd")]
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6System5sleepEd")
+)]
 #[must_use]
 pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
     #[cfg(feature = "iouring")]
