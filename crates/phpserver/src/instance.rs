@@ -138,7 +138,7 @@ pub unsafe extern "C" fn php_swoole_server_get_callback(
 }
 
 /// `serv->get_worker_message_bus()->move_packet()`.
-fn move_packet(serv: *mut c_void) {
+fn move_packet(serv: view::Server<'_>) {
     let bus = crate::dispatch::message_bus(serv);
     // SAFETY: a `MessageBus` starts with its `swr_bus *`.
     let bus = unsafe { *bus.cast::<*mut c_void>() };
@@ -180,7 +180,7 @@ pub unsafe extern "C" fn php_swoole_get_recv_data(
     } else if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
         // SAFETY: an OBJ_PTR payload is the bus's packet, a zend string.
         unsafe { assign_by_val(zdata, req.data, length) };
-        move_packet(serv.raw());
+        move_packet(serv);
     } else if let Some(buffer) = (flags & SW_EVENT_DATA_POP_PTR as u8 != 0)
         .then(|| serv.by_session(req.info.fd))
         .flatten()
@@ -219,10 +219,9 @@ pub unsafe extern "C" fn php_swoole_create_dir(path: *const c_char, _length: usi
 
 /// `php_swoole_server_check_kernel_nobufs`: in a coroutine, pause 10 ms after a
 /// send the kernel refused for lack of buffers.
-fn check_kernel_nobufs(serv: *mut c_void, session_id: c_long) {
+fn check_kernel_nobufs(serv: view::Server<'_>, session_id: c_long) {
     if swoole_rs_phpcoroutines::in_coroutine()
-        // SAFETY: a live server.
-        && server_methods::has_kernel_nobufs_error(unsafe { view::Server::from_raw(serv) }, session_id)
+        && server_methods::has_kernel_nobufs_error(serv, session_id)
     {
         // SAFETY: in a coroutine.
         unsafe { system_sleep(0.01) };
@@ -232,7 +231,7 @@ fn check_kernel_nobufs(serv: *mut c_void, session_id: c_long) {
 /// `serv->send(fd, data)`, then the `send_yield` wait or the kernel-nobufs pause.
 /// # Safety
 /// `serv` is the running server and `data` a live string.
-pub(crate) unsafe fn send(serv: *mut c_void, fd: c_long, data: *mut zend_string) -> bool {
+pub(crate) unsafe fn send(serv: view::Server<'_>, fd: c_long, data: *mut zend_string) -> bool {
     // SAFETY: per the caller.
     let bytes = unsafe { string::bytes(data) };
     #[expect(
@@ -241,12 +240,12 @@ pub(crate) unsafe fn send(serv: *mut c_void, fd: c_long, data: *mut zend_string)
     )]
     let length = bytes.len() as u32;
     // SAFETY: per the caller; `length` bytes.
-    let sent = unsafe { server_methods::send(serv, fd, bytes.as_ptr().cast(), length) };
+    let sent = unsafe { server_methods::send(serv.raw(), fd, bytes.as_ptr().cast(), length) };
     if !sent
         && swoole_rs_corebase::log::last_error() == crate::lifecycle::SW_ERROR_OUTPUT_SEND_YIELD
     {
         // SAFETY: per the caller.
-        return unsafe { crate::dispatch::php_swoole_server_send_yield(serv, fd, data) };
+        return unsafe { crate::dispatch::php_swoole_server_send_yield(serv.raw(), fd, data) };
     }
     check_kernel_nobufs(serv, fd);
     sent
