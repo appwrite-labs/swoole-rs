@@ -597,6 +597,7 @@ dependencies = [
  "swoole-rs-base64",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-locale",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
 ]
@@ -626,6 +627,13 @@ dependencies = [
  "brotli",
  "swoole-rs-zlib",
  "zstd",
+]
+
+[[package]]
+name = "swoole-rs-locale"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

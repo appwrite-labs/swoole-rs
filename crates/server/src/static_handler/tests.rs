@@ -8,10 +8,10 @@ use crate::ServerConfig;
 use crate::ops::OP_ST_SET_ROOT;
 use crate::state::{ServerState, native_fact};
 use core::cell::RefCell;
-use core::ffi::{c_char, c_long, c_void};
+use core::ffi::{CStr, c_char, c_long, c_void};
 use core::ptr;
 use std::ffi::CString;
-use swoole_rs_http::{BOUNDARY_SIZE, HttpCalendar, HttpStaticObservation, StaticEffects};
+use swoole_rs_http::{BOUNDARY_SIZE, Calendar, HttpStaticObservation, StaticEffects, Tm};
 use swoole_rs_oracle::http_static_context as oracle;
 
 #[test]
@@ -120,14 +120,6 @@ const LINK: u32 = 8;
 const DIRECTORY: u32 = 16;
 const FILE: u32 = 32;
 
-static CALENDAR: HttpCalendar = HttpCalendar {
-    tm_size: size_of::<libc::tm>(),
-    tm_align: align_of::<libc::tm>(),
-    parse: oracle::swr_oracle_calendar_parse,
-    to_time: oracle::swr_oracle_calendar_time,
-    to_gmt: oracle::swr_oracle_calendar_gmt,
-};
-
 /// The candidate's effects: the script, traced as the oracle traces its own.
 struct Scripted;
 
@@ -184,18 +176,36 @@ impl StaticEffects for Scripted {
         out[count] = 0;
     }
     fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
-        super::conditional(if_range, 1, mtime, ptr::null(), self.calendar())
+        swoole_rs_http::conditional(if_range, 1, mtime, 0, self)
     }
     fn overflow(&self) {
         errno::set(libc::EOVERFLOW);
     }
 }
 
-impl Effects for Scripted {
-    fn calendar(&self) -> *const HttpCalendar {
-        &raw const CALENDAR
+/// libc's calendar, recorded by the oracle as it records its own.
+impl Calendar for Scripted {
+    fn parse(&self, date: &CStr, format: &CStr, tm: &mut Tm) -> bool {
+        // SAFETY: two C strings and an exclusive tm.
+        unsafe {
+            oracle::swr_oracle_calendar_parse(
+                date.as_ptr(),
+                format.as_ptr(),
+                ptr::from_mut(tm).cast(),
+            )
+        }
+    }
+    fn to_time(&self, tm: &mut Tm) -> i64 {
+        // SAFETY: an exclusive, initialized tm.
+        unsafe { oracle::swr_oracle_calendar_time(ptr::from_mut(tm).cast()) }
+    }
+    fn to_gmt(&self, time: i64) -> Option<Tm> {
+        // SAFETY: null or libc's static tm, copied before another calendar call.
+        unsafe { oracle::swr_oracle_calendar_gmt(time).cast::<Tm>().as_ref() }.copied()
     }
 }
+
+impl Effects for Scripted {}
 
 /// A rewrite rule: pattern, replacement and whether it is a regex.
 type Rule = (&'static [u8], &'static [u8], bool);

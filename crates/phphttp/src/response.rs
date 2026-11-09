@@ -18,8 +18,8 @@ use std::{
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_zend::{
-    Call, Class, Invalid, Value, ZStr, declare_long, declare_property_null, handlers, init_object,
-    push_string, set_key,
+    Call, Class, Invalid, Props, Value, ZStr, declare_long, declare_property_null, handlers,
+    init_object, push_string, set_key,
     sys::{
         IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
         zend_string,
@@ -826,11 +826,12 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     // SAFETY: the object zval just created.
     state.response.zobject.value = unsafe { *response };
     state.response.zobject.ptr = &raw mut state.response.zobject.value;
-    // SAFETY: a live Response, which declares `fd`.
-    unsafe { value::update_long(ce, std, c"fd", fd) };
-    if !socket.is_null() {
-        // SAFETY: as above; the property takes its own reference.
-        unsafe { z::zend_update_property(ce, std, c"socket".as_ptr(), 6, socket) };
+    // SAFETY: the Response just created, under its class.
+    let props = unsafe { Props::new(ce, std) };
+    props.long(c"fd", fd);
+    // SAFETY: null or the caller's live socket; the property takes its own reference.
+    if let Some(socket) = unsafe { Value::from_ptr(socket) } {
+        props.value(c"socket", socket);
     }
     if paired {
         // SAFETY: the request object, which declares `fd`.
