@@ -171,6 +171,7 @@ jobs:
   # they ride the same ratchet so the merge tier measures graduation criterion 3 (#117,
   # #118). The fixed +5% graduation ceiling itself moves to Phase 6 (#430).
   # app is benchmarks/app, an application-shaped request with a Redis pool (#1907).
+  # http2, table and channel are benchmarks/primitives; task is a taskwait round trip (#1909).
   callgrind:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -201,6 +202,7 @@ jobs:
           python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits.json
           --workload plaintext --workload echo-1k --workload json --workload service-health
           --workload websocket --workload timer --workload app
+          --workload http2 --workload table --workload channel --workload task
           --php-extension pdo --php-extension pdo_sqlite
           --engine hybrid=$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)
           --engine upstream=target/upstream/src/modules/swoole.so
