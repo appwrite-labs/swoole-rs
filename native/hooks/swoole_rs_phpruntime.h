@@ -99,8 +99,8 @@ void php_swoole_runtime_rinit(void);
 void php_swoole_runtime_stream_ops(uint8_t stdio, uint8_t hook);
 
 /* What the coroutine streams and client classes need of the native coroutine socket (a SocketImpl *)
- * beyond its Rust members, defined by native/hooks/system.cc. make and close are
- * bodies for swr_zend_try over a swr_v1_runtime_socket_call. */
+ * beyond its Rust members, defined by native/hooks/system.cc. make is a body for
+ * swr_zend_try over a swr_v1_runtime_socket_call; so is Rust's close. */
 struct swr_v1_core_proxy;
 struct swr_v1_runtime_socket_call {
     void *socket; /* make's result, close's socket */
@@ -110,16 +110,11 @@ struct swr_v1_runtime_socket_call {
 };
 struct swr_v1_runtime_socket_ops {
     void (*make)(void *call);
-    void (*close)(void *call);
     void (*free)(void *socket);
-    /* setsockopt(level, name, value); logged: the coroutine socket's, which logs a failure. */
-    void (*option)(void *socket, int level, int name, int value, bool logged);
     /* connect(std::string(host, length), port, flags). */
     bool (*connect)(void *socket, const char *host, size_t length, int port, int flags);
     /* each(arg, pem, length) of each certificate in the peer's chain. */
     void (*peer_chain)(void *socket, void (*each)(void *, const char *, size_t), void *arg);
-    /* op: 0 readv, 1 readv_all, 2 writev, 3 writev_all; where it stopped into index and offset. */
-    ssize_t (*vector)(void *socket, int op, const struct iovec *vectors, int count, int *index, size_t *offset);
     /* set_http_proxy (http) or set_socks5_proxy. */
     void (*proxy)(void *socket, bool http, const char *host, size_t host_length, int port, const char *user,
                   size_t user_length, const char *password, size_t password_length);

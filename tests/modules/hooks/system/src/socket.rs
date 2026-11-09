@@ -179,19 +179,9 @@ struct RuntimeCall {
 #[repr(C)]
 struct RuntimeOps {
     make: unsafe extern "C" fn(*mut RuntimeCall),
-    close: unsafe extern "C" fn(*mut RuntimeCall),
     free: unsafe extern "C" fn(*mut c_void),
-    option: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, bool),
     connect: unsafe extern "C" fn(*mut c_void, *const c_char, usize, c_int, c_int) -> bool,
     peer_chain: *const c_void,
-    vector: unsafe extern "C" fn(
-        *mut c_void,
-        c_int,
-        *const IoVec,
-        c_int,
-        *mut c_int,
-        *mut usize,
-    ) -> isize,
     proxy: unsafe extern "C" fn(
         *mut c_void,
         bool,
@@ -276,9 +266,28 @@ struct SockAddrIn {
 
 type Warn = extern "C" fn(*const c_char, *const c_char);
 
+/// `swr_v1_reactor_iov_prepared` (crates/reactor/src/iov_owned.rs).
+#[repr(C)]
+struct IovPrepared {
+    owner: *mut c_void,
+    fields: *mut c_void,
+    status: c_int,
+}
+
 #[link(name = "swoole")]
 unsafe extern "C" {
     static swr_v1_runtime_socket: RuntimeOps;
+
+    fn swr_v1_reactor_iov_prepare(source: *const IoVec, count: c_int) -> IovPrepared;
+    fn swr_v1_reactor_iov_destroy(owner: *mut c_void);
+    #[link_name = "_ZN6swoole9coroutine6Socket5readvEPNS_7network8IOVectorE"]
+    fn socket_readv(this: *mut c_void, vector: *mut c_void) -> isize;
+    #[link_name = "_ZN6swoole9coroutine6Socket9readv_allEPNS_7network8IOVectorE"]
+    fn socket_readv_all(this: *mut c_void, vector: *mut c_void) -> isize;
+    #[link_name = "_ZN6swoole9coroutine6Socket6writevEPNS_7network8IOVectorE"]
+    fn socket_writev(this: *mut c_void, vector: *mut c_void) -> isize;
+    #[link_name = "_ZN6swoole9coroutine6Socket10writev_allEPNS_7network8IOVectorE"]
+    fn socket_writev_all(this: *mut c_void, vector: *mut c_void) -> isize;
 
     #[link_name = "_ZN6swoole9coroutine6Socket4recvEPvm"]
     fn socket_recv(this: *mut c_void, buf: *mut c_void, n: usize) -> isize;
@@ -773,19 +782,28 @@ impl Sock {
         pem
     }
 
+    /// The member over an `IOVector` of `iov`, as crates/phpruntime calls it: the
+    /// members read only the vector's first field, its owner.
     fn vector(&self, op: c_int, iov: &[IoVec]) -> isize {
-        let (mut index, mut offset) = (0, 0);
-        // SAFETY: the live socket and `iov`'s vectors.
-        unsafe {
-            (runtime().vector)(
-                self.ptr,
-                op,
-                iov.as_ptr(),
-                c_int::try_from(iov.len()).unwrap(),
-                &raw mut index,
-                &raw mut offset,
-            )
-        }
+        // SAFETY: `iov`'s live vectors.
+        let prepared = unsafe {
+            swr_v1_reactor_iov_prepare(iov.as_ptr(), c_int::try_from(iov.len()).unwrap())
+        };
+        assert_eq!(prepared.status, 0);
+        let mut owner = prepared.owner;
+        let vector = (&raw mut owner).cast::<c_void>();
+        // SAFETY: the live socket over the live vector.
+        let result = unsafe {
+            match op {
+                READV => socket_readv(self.ptr, vector),
+                READV_ALL => socket_readv_all(self.ptr, vector),
+                WRITEV => socket_writev(self.ptr, vector),
+                _ => socket_writev_all(self.ptr, vector),
+            }
+        };
+        // SAFETY: the owner prepare made, released once.
+        unsafe { swr_v1_reactor_iov_destroy(owner) };
+        result
     }
 }
 
@@ -1708,7 +1726,7 @@ fn write_and_read_2() {
     write_and_read_with(|fd| Sock::with_family(fd, AF_UNIX, SOCK_STREAM, 0));
 }
 
-/// `runtime().vector`'s operations.
+/// `Sock::vector`'s operations.
 const READV: c_int = 0;
 const READV_ALL: c_int = 1;
 const WRITEV: c_int = 2;

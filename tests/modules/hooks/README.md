@@ -53,7 +53,8 @@ removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
 TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports
 and expected values), run by `hooks-system-rust`. A `Socket` is made and deleted
 through `swr_v1_runtime_socket` (its constructors are inline in the hybrid header);
-its out-of-line members are called under their upstream symbols, its inline ones
+its out-of-line members are called under their upstream symbols (the vectored ones over
+an `IOVector` owner `swr_v1_reactor_iov_prepare` makes, as crates/phpruntime does), its inline ones
 through the `swr_v1_hook_co_socket_*` exports the header calls, and its fields
 through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and the
 `set_ssl_*` setters write the `SSLContext` owner (`swr_v1_tls_owner_new`,

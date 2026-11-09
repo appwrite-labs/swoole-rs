@@ -23,8 +23,11 @@ socket through `swr_v1_runtime_socket`; `swoole_socket_hook.h` and
   owner is a C++ member Rust has no offset for. Its reports are Rust
   (`swr_v1_hook_co_socket_created`), and so is `recvfrom(buf, n)` under its upstream
   symbol.
-- `swr_v1_runtime_socket`: `SocketImpl`'s constructors and members the coroutine
-  streams call (`std::string` hosts, proxies, `IOVector`).
+- `swr_v1_runtime_socket`: what the coroutine streams need of `SocketImpl` that
+  only C++ reaches: its constructors and `delete`, the `connect(host)` that reads the
+  resolver context and the proxies, the proxies' `unique_ptr`s and the peer's
+  certificate chain. Its `close`, `set_option` and the vectored reads and writes
+  (over an `IOVector` owner Rust prepares) are Rust calls in crates/phpruntime.
 - The hooks host's io_uring pointer and the `HAVE_IOURING_*` configure macros.
 
 ## Hooks and file locks

@@ -170,18 +170,7 @@ const swr_v1_runtime_socket_ops swr_v1_runtime_socket = {
                                         : new SocketImpl(call->fd, call->domain, call->type, call->protocol);
         }
     },
-    [](void *arg) {
-        auto *call = static_cast<RuntimeCall *>(arg);
-        call->result = SOCK(call->socket)->close();
-    },
     [](void *socket) { delete SOCK(socket); },
-    [](void *socket, int level, int name, int value, bool logged) {
-        if (logged) {
-            SOCK(socket)->set_option(level, name, value);
-        } else {
-            SOCK(socket)->get_socket()->set_option(level, name, value);
-        }
-    },
     [](void *socket, const char *host, size_t length, int port, int flags) {
         return SOCK(socket)->connect(std::string(host, length), port, flags);
     },
@@ -189,17 +178,6 @@ const swr_v1_runtime_socket_ops swr_v1_runtime_socket = {
         for (auto &cert : SOCK(socket)->get_socket()->ssl_get_peer_cert_chain(INT_MAX)) {
             each(arg, cert.c_str(), cert.length());
         }
-    },
-    [](void *socket, int op, const iovec *vectors, int count, int *index, size_t *offset) {
-        swoole::network::IOVector io_vector(vectors, count);
-        auto *sock = SOCK(socket);
-        ssize_t retval = op == 0 ? sock->readv(&io_vector)
-                         : op == 1 ? sock->readv_all(&io_vector)
-                         : op == 2 ? sock->writev(&io_vector)
-                                   : sock->writev_all(&io_vector);
-        *index = io_vector.get_index();
-        *offset = io_vector.get_offset_bytes();
-        return retval;
     },
     [](void *socket, bool http, const char *host, size_t host_length, int port, const char *user,
        size_t user_length, const char *password, size_t password_length) {
