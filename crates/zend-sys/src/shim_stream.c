@@ -3,7 +3,7 @@
  * What stays C): bailout (notifiers, frees and factories run PHP), globals
  * (FG(default_socket_timeout), EG(active)), version (has_buffered_data from 8.3,
  * the STREAMS_DC debug ABI, timeval's field widths) and allocator
- * (php_stream_alloc_rel). */
+ * (php_stream_alloc: on a debug PHP its _rel form needs the caller's STREAMS_DC). */
 #include "shim_stream.h"
 #include "ext/standard/file.h"
 
@@ -119,7 +119,7 @@ php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const ch
 
 int swr_zend_try_stream_alloc(const php_stream_ops *ops, void *abstract, const char *persistent, php_stream **stream) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *stream = php_stream_alloc_rel(ops, abstract, persistent, "r+"); }
+    SWR_ZEND_TRY { *stream = php_stream_alloc(ops, abstract, persistent, "r+"); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

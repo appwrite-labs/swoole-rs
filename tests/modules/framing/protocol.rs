@@ -3,7 +3,7 @@
 //! binary (tests/modules/http/server), whose fixture.cc builds the Server with its port's
 //! framing (`swr_case_protocol_server`). The client is a blocking `TcpStream`, as
 //! upstream's synchronous `network::Client`. The file's other TESTs are unit tests in
-//! crates/ports (`swap_byte_order`, `unpack`, `hton64`) and crates/protocols (`socks5_*`).
+//! crates/ports (`swap_byte_order`, `unpack`, `hton64`) and crates/protocols-ffi (`socks5_*`).
 
 use super::http1::{SW_LOG_WARNING, swoole_set_log_level};
 use super::{

@@ -30,7 +30,7 @@ swoole-rs-framing`), with the same inputs and expected values:
 cases in [protocol.rs](protocol.rs), built into the http server case binary
 (`tests/modules/http/server`, the merge tier's http-server-rust phase), whose
 `fixture.cc` builds the Server and its port's framing. The rest are unit tests
-(`cargo test -p swoole-rs-ports -p swoole-rs-protocols`):
+(`cargo test -p swoole-rs-ports -p swoole-rs-protocols-ffi`):
 
 | Upstream TEST | Rust test |
 | --- | --- |
@@ -38,8 +38,8 @@ cases in [protocol.rs](protocol.rs), built into the http server case binary
 | `protocol.length_2` | `protocol.length_2` (http-server-rust) |
 | `protocol.length_3` | `protocol.length_3` (http-server-rust) |
 | `protocol.eof` | `protocol.eof` (http-server-rust) |
-| `protocol.socks5_strerror` | `swoole-rs-protocols` `owned_proxy::tests::socks5_strerror` |
-| `protocol.socks5_dns_tunnel_target_host_max_length` | `swoole-rs-protocols` `owned_proxy::tests::socks5_dns_tunnel_target_host_max_length` |
+| `protocol.socks5_strerror` | `swoole-rs-protocols-ffi` `owned_proxy::tests::socks5_strerror` |
+| `protocol.socks5_dns_tunnel_target_host_max_length` | `swoole-rs-protocols-ffi` `owned_proxy::tests::socks5_dns_tunnel_target_host_max_length` |
 | `protocol.swap_byte_order` | `swoole-rs-ports` `framing_recv::tests::swap_byte_order` |
 | `protocol.unpack` | `swoole-rs-ports` `framing_recv::tests::unpack_formats` |
 | `protocol.hton64` | `swoole-rs-ports` `framing_recv::tests::hton64` |

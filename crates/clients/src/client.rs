@@ -264,7 +264,7 @@ struct TlsView {
 
 type TlsWarn = unsafe extern "C" fn(function: *const c_char, message: *const c_char);
 
-// SAFETY: crates/tls's and crates/protocols' definitions (the TLS context and
+// SAFETY: crates/tls's and crates/protocols-ffi's definitions (the TLS context and
 // session, the SOCKS5 codec) and OpenSSL's, which the hybrid links (the unit tests
 // define doubles). Those crates sit above this one, so it reaches them by symbol.
 unsafe extern "C" {

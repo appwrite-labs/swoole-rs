@@ -394,6 +394,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-bus"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-reactor",
+ "swoole-rs-tls",
+]
+
+[[package]]
 name = "swoole-rs-cares-sys"
 version = "0.1.0"
 dependencies = [
@@ -490,6 +500,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "swoole-rs-buffer",
+ "swoole-rs-bus",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
@@ -524,7 +535,7 @@ dependencies = [
  "swoole-rs-phptimer",
  "swoole-rs-ports",
  "swoole-rs-process",
- "swoole-rs-protocols",
+ "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-sqlite",
@@ -567,7 +578,7 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
- "swoole-rs-protocols",
+ "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-ssh2-sys",
  "swoole-rs-tls",
@@ -977,7 +988,7 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-http2",
  "swoole-rs-oracle",
- "swoole-rs-protocols",
+ "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
@@ -1001,12 +1012,16 @@ dependencies = [
 [[package]]
 name = "swoole-rs-protocols"
 version = "0.1.0"
+
+[[package]]
+name = "swoole-rs-protocols-ffi"
+version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-protocols",
  "swoole-rs-reactor",
- "swoole-rs-tls",
 ]
 
 [[package]]
@@ -1028,6 +1043,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-buffer",
+ "swoole-rs-bus",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-crc32",
@@ -1039,7 +1055,6 @@ dependencies = [
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
  "swoole-rs-process",
- "swoole-rs-protocols",
  "swoole-rs-reactor",
  "swoole-rs-tls",
  "swoole-rs-utilities",

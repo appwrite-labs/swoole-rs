@@ -6,7 +6,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::{CoreAllocator, DataHead};
 use swoole_rs_reactor::SocketRecord;
 
-use swoole_rs_protocols::{BusPacket, MessageBus};
+use swoole_rs_bus::{BusPacket, MessageBus};
 
 use crate::pool_native::read_bus;
 

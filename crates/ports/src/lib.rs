@@ -99,9 +99,14 @@ fn protocol_name(flags: u32) -> &'static CStr {
     }
 }
 
-/// The `ListenPort` methods the server calls, which `swoole_init` registers
-/// (`swoole_rs_server::port_config::set_methods`).
-pub const METHODS: PortMethods = PortMethods {
+/// Registers the `ListenPort` methods the server calls; `swoole_init` does this.
+pub fn register_methods() {
+    // SAFETY: each method takes a live port, socket or connection of the server,
+    // all the server passes; nothing outside it can reach them.
+    unsafe { swoole_rs_server::port_config::set_methods(METHODS) };
+}
+
+const METHODS: PortMethods = PortMethods {
     ssl_context_init: methods::ssl_context_init,
     ssl_create: methods::ssl_create,
     import: methods::import,

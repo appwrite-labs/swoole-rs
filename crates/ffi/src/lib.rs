@@ -23,7 +23,9 @@ pub use swoole_rs_timer::*;
 
 pub use swoole_rs_server::{swr_v1_server_run, *};
 
-pub use swoole_rs_protocols::*;
+pub use swoole_rs_protocols_ffi::*;
+
+pub use swoole_rs_bus::swr_v1_bus_write;
 
 pub use swoole_rs_memory::*;
 

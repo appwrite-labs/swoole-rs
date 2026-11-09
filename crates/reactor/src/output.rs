@@ -1,37 +1,83 @@
-//! Queued output over Rust socket and buffer records. The ordinary send owns
-//! cursor/wait-flag publication and queue detachment here. Native retains only
-//! nonthrowing I/O/logging leaves and releases returned compatibility tokens
-//! after Rust returns; sendfile requests own descriptor/path/range state in
-//! `file_output`. Scalar kernels remain for the preserved original matrices.
+//! Queued output over Rust socket and buffer records: the ordinary send commits
+//! the front chunk's cursor, the socket's wait flags and the queue's detachment;
+//! sendfile requests own their descriptor, path and range in `file_output`. The
+//! socket's I/O and cork effects are the caller's [`OutputHooks`].
 use std::io::Error;
 use std::os::raw::{c_int, c_void};
 
-/// `swReturnCode`: `SW_WAIT`, `SW_CLOSE`, `SW_ERROR`; and `SW_OK`/`SW_ERR`.
+/// `swReturnCode`: `SW_WAIT`, `SW_CLOSE`, `SW_ERROR`; and `SW_ERR`.
 const WAIT: c_int = 2;
 const CLOSE: c_int = 3;
 const ERROR: c_int = 4;
-const OK: c_int = 0;
 const ERR: c_int = -1;
 
-/// What queued output needs from its native `Socket`.
-#[repr(C)]
+/// What queued output needs from its `Socket`.
+#[derive(Clone, Copy)]
 pub struct OutputHooks {
-    pub socket: *mut c_void,
+    socket: *mut c_void,
     /// `Socket::kernel_nobufs`, which `catch_error` sets on ENOBUFS.
-    pub kernel_nobufs: *mut bool,
+    kernel_nobufs: *mut bool,
     /// `Socket::send(data, length, 0)`.
-    pub send:
-        unsafe extern "C" fn(socket: *mut c_void, data: *const c_void, length: usize) -> isize,
-    pub cork: unsafe extern "C" fn(socket: *mut c_void) -> bool,
-    pub uncork: unsafe extern "C" fn(socket: *mut c_void),
+    send: unsafe extern "C" fn(socket: *mut c_void, data: *const c_void, length: usize) -> isize,
+    cork: unsafe extern "C" fn(socket: *mut c_void) -> bool,
+    uncork: unsafe extern "C" fn(socket: *mut c_void),
     /// Records the send time when the socket has a send timer.
-    pub sent: unsafe extern "C" fn(socket: *mut c_void),
+    sent: unsafe extern "C" fn(socket: *mut c_void),
 }
 
-/// What native code applies after `handle_send`/`handle_sendfile`: pop the front
+impl OutputHooks {
+    /// # Safety
+    /// While the hooks live, `kernel_nobufs` is writable and each effect may be
+    /// called with `socket`, `send` with any readable bytes.
+    pub const unsafe fn new(
+        socket: *mut c_void,
+        kernel_nobufs: *mut bool,
+        send: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> isize,
+        cork: unsafe extern "C" fn(*mut c_void) -> bool,
+        uncork: unsafe extern "C" fn(*mut c_void),
+        sent: unsafe extern "C" fn(*mut c_void),
+    ) -> Self {
+        Self {
+            socket,
+            kernel_nobufs,
+            send,
+            cork,
+            uncork,
+            sent,
+        }
+    }
+
+    fn send(&self, data: &[u8]) -> isize {
+        // SAFETY: `new`'s contract, over the caller's readable bytes.
+        unsafe { (self.send)(self.socket, data.as_ptr().cast(), data.len()) }
+    }
+
+    fn cork(&self) -> bool {
+        // SAFETY: `new`'s contract.
+        unsafe { (self.cork)(self.socket) }
+    }
+
+    fn uncork(&self) {
+        // SAFETY: `new`'s contract.
+        unsafe { (self.uncork)(self.socket) }
+    }
+
+    fn sent(&self) {
+        // SAFETY: `new`'s contract.
+        unsafe { (self.sent)(self.socket) }
+    }
+
+    /// `catch_error` over the errno the last effect left.
+    fn classify(&self) -> c_int {
+        let error = Error::last_os_error().raw_os_error().unwrap_or(0);
+        // SAFETY: `new`'s writable flag, which no other borrow holds during this call.
+        crate::catch_error(error, unsafe { &mut *self.kernel_nobufs })
+    }
+}
+
+/// What the caller applies after `handle_send`/`handle_sendfile`: pop the front
 /// chunk, store `offset` into it, set `close_wait`/`send_wait`, and warn (1 the data
 /// send failed, 2 the sendfile of `requested` bytes failed). `code` is returned.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputResult {
     pub code: c_int,
@@ -44,42 +90,31 @@ pub struct OutputResult {
     pub requested: usize,
 }
 
-fn classify(hooks: &OutputHooks) -> c_int {
-    let error = Error::last_os_error().raw_os_error().unwrap_or(0);
-    // SAFETY: the caller's kernel_nobufs flag.
-    unsafe { crate::catch_error(error, &mut *hooks.kernel_nobufs) }
+impl OutputResult {
+    /// Sets the socket's `close_wait` and `send_wait` flags the result asks for.
+    pub const fn publish(&self, socket: &mut crate::SocketRecord) {
+        if self.close_wait {
+            socket.output.close_wait = 1;
+        }
+        if self.send_wait {
+            socket.output.send_wait = 1;
+        }
+    }
 }
 
-/// `Socket::handle_send`: send what is left of the front data chunk, `length`
-/// bytes at `data` of which `offset` are already sent.
-///
-/// # Safety
-/// `hooks` is valid for this call and `data` denotes `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_handle_send(
-    hooks: *const OutputHooks,
-    data: *const u8,
-    length: u32,
-    offset: u32,
-) -> OutputResult {
-    // SAFETY: the caller lends its hooks for this call.
-    let hooks = unsafe { &*hooks };
+/// `Socket::handle_send`: send what is left of the front data chunk `data`, of
+/// which `offset` bytes are already sent.
+#[must_use]
+pub fn handle_send(hooks: &OutputHooks, data: &[u8], offset: u32) -> OutputResult {
     let mut result = OutputResult::default();
-    let rest = length.wrapping_sub(offset);
-    if rest == 0 {
+    let rest = data.get(offset as usize..).unwrap_or_default();
+    if rest.is_empty() {
         result.pop = true;
         return result;
     }
-    // SAFETY: the unsent tail of the caller's chunk.
-    let sent = unsafe {
-        (hooks.send)(
-            hooks.socket,
-            data.wrapping_add(offset as usize).cast(),
-            rest as usize,
-        )
-    };
+    let sent = hooks.send(rest);
     if sent < 0 {
-        match classify(hooks) {
+        match hooks.classify() {
             ERROR => result.warn = 1,
             CLOSE => (result.close_wait, result.code) = (true, ERR),
             WAIT => (result.send_wait, result.code) = (true, ERR),
@@ -88,7 +123,7 @@ pub unsafe extern "C" fn swr_v1_socket_handle_send(
         return result;
     }
     let sent = sent.cast_unsigned();
-    if sent == rest as usize {
+    if sent == rest.len() {
         result.pop = true;
         return result;
     }
@@ -98,60 +133,45 @@ pub unsafe extern "C" fn swr_v1_socket_handle_send(
     )]
     let advanced = offset.wrapping_add(sent as u32);
     (result.set_offset, result.offset) = (true, advanced);
-    if sent < rest as usize {
+    if sent < rest.len() {
         (result.send_wait, result.code) = (true, ERR);
     }
     result
 }
 
 /// `Socket::handle_sendfile` before its send: cork once, when more than `cork_min`
-/// bytes of `[begin, end)` remain. `*corked` is the request's 0 unset / 1 / -1.
-///
-/// # Safety
-/// `hooks` is valid for this call and `corked` is the request's writable field.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_sendfile_cork(
-    hooks: *const OutputHooks,
-    corked: *mut i8,
+/// bytes of `[begin, end)` remain. `corked` is the request's 0 unset / 1 / -1.
+pub fn sendfile_cork(
+    hooks: &OutputHooks,
+    corked: &mut i8,
     begin: libc::off_t,
     end: libc::off_t,
     cork_min: libc::off_t,
 ) {
-    // SAFETY: the caller lends its hooks and request field for this call.
-    let hooks = unsafe { &*hooks };
-    // SAFETY: the caller lends the stable cork slot; copy before the native effect.
-    if unsafe { *corked } == 0 {
-        // SAFETY: the caller's socket.
-        let next = if end - begin > cork_min && unsafe { (hooks.cork)(hooks.socket) } {
+    if *corked == 0 {
+        *corked = if end - begin > cork_min && hooks.cork() {
             1
         } else {
             -1
         };
-        // SAFETY: the effect returned and the caller still lends this slot exclusively.
-        unsafe { *corked = next };
     }
 }
 
-/// `Socket::handle_sendfile` after native code sent `requested` bytes with result
+/// `Socket::handle_sendfile` after the caller sent `requested` bytes with result
 /// `sent`, leaving the request at `[begin, end)`: classify a failure, record the
 /// send time, and uncork and pop once the request is done.
-///
-/// # Safety
-/// `hooks` is valid for this call and `corked` is the request's writable field.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_sendfile_sent(
-    hooks: *const OutputHooks,
+#[must_use]
+pub fn sendfile_sent(
+    hooks: &OutputHooks,
     sent: isize,
     requested: usize,
-    corked: *mut i8,
+    corked: &mut i8,
     begin: libc::off_t,
     end: libc::off_t,
 ) -> OutputResult {
-    // SAFETY: the caller lends its hooks and request field for this call.
-    let hooks = unsafe { &*hooks };
     let result = OutputResult::default();
     if sent <= 0 {
-        match classify(hooks) {
+        match hooks.classify() {
             ERROR => {
                 return OutputResult {
                     warn: 2,
@@ -177,18 +197,14 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_sent(
             _ => {}
         }
     } else {
-        // SAFETY: the caller's socket.
-        unsafe { (hooks.sent)(hooks.socket) };
+        hooks.sent();
     }
     if begin != end {
         return result;
     }
-    // SAFETY: the caller lends a live cork slot; no borrow crosses uncork.
-    if unsafe { *corked } == 1 {
-        // SAFETY: the caller's socket.
-        unsafe { (hooks.uncork)(hooks.socket) };
-        // SAFETY: uncork returned; the caller still lends the stable slot.
-        unsafe { *corked = 0 };
+    if *corked == 1 {
+        hooks.uncork();
+        *corked = 0;
     }
     OutputResult {
         pop: true,
@@ -196,47 +212,22 @@ pub unsafe extern "C" fn swr_v1_socket_sendfile_sent(
     }
 }
 
-/// `Socket::sendfile_async`: `prepare` makes the request and checks its range
-/// (false fails the call, discarding it); then `buffer` makes the output buffer
-/// if there is none and `enqueue` hands the request to it.
-///
-/// # Safety
-/// Each callback is valid for `socket`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_sendfile_async(
-    socket: *mut c_void,
-    prepare: unsafe extern "C" fn(socket: *mut c_void) -> bool,
-    buffer: unsafe extern "C" fn(socket: *mut c_void),
-    enqueue: unsafe extern "C" fn(socket: *mut c_void),
-) -> c_int {
-    // SAFETY: the caller's request construction and check.
-    if !unsafe { prepare(socket) } {
-        return ERR;
-    }
-    // SAFETY: the caller's buffer and queue effects, in upstream's order.
-    unsafe { buffer(socket) };
-    // SAFETY: as above.
-    unsafe { enqueue(socket) };
-    OK
-}
-
-/// Completed queue mutation and an optional native token to dispose after return.
-#[repr(C)]
+/// Completed queue mutation and an optional token for the caller to dispose.
 pub struct OwnedOutputResult {
     pub result: OutputResult,
     pub status: i32,
     pub detached: swoole_rs_buffer::TypedDetached,
 }
-/// Send the real typed front and commit its cursor/socket flags in Rust.
-/// The native compatibility view supplies only its Rust queue handle and effects.
+
+/// `Socket::handle_send` over the socket's typed queue: send its front, then
+/// commit the cursor and the socket's wait flags, and detach a finished chunk.
+///
 /// # Safety
-/// socket/buffer are live and exclusive; hooks obey their nonthrowing contract.
-/// Native disposes any returned token after this call, under its existing guard.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_handle_send_owned(
+/// `socket` and `buffer` are live and exclusive apart from `hooks`' own use of the socket.
+pub unsafe fn handle_send_owned(
     socket: *mut crate::SocketRecord,
     buffer: *mut swoole_rs_buffer::Buffer,
-    hooks: *const OutputHooks,
+    hooks: &OutputHooks,
 ) -> OwnedOutputResult {
     let mut output = OwnedOutputResult {
         result: OutputResult::default(),
@@ -249,9 +240,13 @@ pub unsafe extern "C" fn swr_v1_socket_handle_send_owned(
     if output.status != 0 {
         return output;
     }
-    // SAFETY: the queue lends its immutable front bytes through the nonthrowing send effect.
-    output.result =
-        unsafe { swr_v1_socket_handle_send(hooks, front.data, front.length, front.offset) };
+    let data = if front.data.is_null() {
+        &[]
+    } else {
+        // SAFETY: the queue's front chunk, which it keeps until the pop below.
+        unsafe { std::slice::from_raw_parts(front.data, front.length as usize) }
+    };
+    output.result = handle_send(hooks, data, front.offset);
     if output.result.set_offset {
         // SAFETY: the observed front identity is committed only after the effect returned.
         output.status = unsafe {
@@ -266,16 +261,10 @@ pub unsafe extern "C" fn swr_v1_socket_handle_send_owned(
             return output;
         }
     }
-    if output.result.close_wait {
-        // SAFETY: no callback is active; the live socket's output flags are exclusive.
-        unsafe { (*socket).output.close_wait = 1 };
-    }
-    if output.result.send_wait {
-        // SAFETY: caller exclusively lends the socket through publication.
-        unsafe { (*socket).output.send_wait = 1 };
-    }
+    // SAFETY: the effects returned; the caller lends the socket exclusively.
+    output.result.publish(unsafe { &mut *socket });
     if output.result.pop {
-        // SAFETY: detach transfers custody to the native caller without invoking a disposer.
+        // SAFETY: detach transfers custody to the caller without invoking a disposer.
         output.status =
             unsafe { swoole_rs_buffer::swr_v1_buffer_typed_pop(buffer, &raw mut output.detached) };
     }
@@ -285,6 +274,8 @@ pub unsafe extern "C" fn swr_v1_socket_handle_send_owned(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const OK: c_int = 0;
     use std::cell::RefCell;
 
     #[derive(Default)]
@@ -380,7 +371,7 @@ mod tests {
             );
             let hooks = hooks(socket.cast(), &mut (*socket).kernel_nobufs);
             reset(2, 0, false);
-            let sent = swr_v1_socket_handle_send_owned(socket, queue, &raw const hooks);
+            let sent = handle_send_owned(socket, queue, &hooks);
             assert_eq!(
                 (sent.status, sent.result.code, sent.result.offset),
                 (0, -1, 2)
@@ -393,7 +384,7 @@ mod tests {
             );
             assert_eq!(front.offset, 2);
             reset(-1, libc::EPIPE, false);
-            let closed = swr_v1_socket_handle_send_owned(socket, queue, &raw const hooks);
+            let closed = handle_send_owned(socket, queue, &hooks);
             assert_eq!(
                 (
                     closed.status,
@@ -408,7 +399,7 @@ mod tests {
             );
             assert_eq!(front.offset, 2);
             reset(3, 0, false);
-            let completed = swr_v1_socket_handle_send_owned(socket, queue, &raw const hooks);
+            let completed = handle_send_owned(socket, queue, &hooks);
             assert_eq!((completed.status, completed.result.pop), (0, true));
             assert!(completed.detached.token.is_null() && completed.detached.dispose.is_none());
             assert_eq!(
@@ -424,10 +415,9 @@ mod tests {
         let mut nobufs = false;
         let hooks = hooks(std::ptr::null_mut(), &mut nobufs);
         let data = [0_u8; 10];
-        let run = |each, errno, length, offset| {
+        let run = |each, errno, length: u32, offset| {
             reset(each, errno, false);
-            // SAFETY: local hooks and data.
-            unsafe { swr_v1_socket_handle_send(&raw const hooks, data.as_ptr(), length, offset) }
+            handle_send(&hooks, &data[..length as usize], offset)
         };
         assert_eq!(
             run(5, 0, 10, 10),
@@ -488,37 +478,11 @@ mod tests {
         let mut corked: i8 = 0;
         reset(0, 0, true);
         // 100,000 bytes from 0 corks once; a partial send keeps the request.
-        // SAFETY: local hooks and request field.
-        unsafe {
-            swr_v1_socket_sendfile_cork(&raw const hooks, &raw mut corked, 0, 100_000, 65_536);
-        }
-        // SAFETY: as above.
-        unsafe {
-            swr_v1_socket_sendfile_cork(&raw const hooks, &raw mut corked, 65_536, 100_000, 65_536);
-        }
-        // SAFETY: as above.
-        let partial = unsafe {
-            swr_v1_socket_sendfile_sent(
-                &raw const hooks,
-                65_536,
-                65_536,
-                &raw mut corked,
-                65_536,
-                100_000,
-            )
-        };
+        sendfile_cork(&hooks, &mut corked, 0, 100_000, 65_536);
+        sendfile_cork(&hooks, &mut corked, 65_536, 100_000, 65_536);
+        let partial = sendfile_sent(&hooks, 65_536, 65_536, &mut corked, 65_536, 100_000);
         assert_eq!((partial, corked), (OutputResult::default(), 1));
-        // SAFETY: as above.
-        let done = unsafe {
-            swr_v1_socket_sendfile_sent(
-                &raw const hooks,
-                34_464,
-                34_464,
-                &raw mut corked,
-                100_000,
-                100_000,
-            )
-        };
+        let done = sendfile_sent(&hooks, 34_464, 34_464, &mut corked, 100_000, 100_000);
         assert_eq!(
             (done, corked),
             (
@@ -537,14 +501,10 @@ mod tests {
         // A small file never corks; EAGAIN waits; an error warns and pops.
         let mut corked: i8 = 0;
         reset(0, 0, true);
-        // SAFETY: as above.
-        unsafe { swr_v1_socket_sendfile_cork(&raw const hooks, &raw mut corked, 0, 10, 65_536) };
+        sendfile_cork(&hooks, &mut corked, 0, 10, 65_536);
         assert_eq!(corked, -1);
         set_errno(libc::EAGAIN);
-        // SAFETY: as above.
-        let waited = unsafe {
-            swr_v1_socket_sendfile_sent(&raw const hooks, -1, 10, &raw mut corked, 0, 10)
-        };
+        let waited = sendfile_sent(&hooks, -1, 10, &mut corked, 0, 10);
         assert_eq!(
             waited,
             OutputResult {
@@ -554,10 +514,7 @@ mod tests {
             }
         );
         set_errno(libc::EINVAL);
-        // SAFETY: as above.
-        let failed = unsafe {
-            swr_v1_socket_sendfile_sent(&raw const hooks, -1, 10, &raw mut corked, 0, 10)
-        };
+        let failed = sendfile_sent(&hooks, -1, 10, &mut corked, 0, 10);
         assert_eq!(
             failed,
             OutputResult {
@@ -570,40 +527,6 @@ mod tests {
         FAKE.with(|fake| assert_eq!(fake.borrow().corks, 0));
     }
 
-    #[test]
-    fn sendfile_async_order() {
-        unsafe extern "C" fn accept(socket: *mut c_void) -> bool {
-            // SAFETY: the test's log.
-            unsafe { (*socket.cast::<Vec<u8>>()).push(b'p') };
-            true
-        }
-        unsafe extern "C" fn refuse(socket: *mut c_void) -> bool {
-            // SAFETY: the test's log.
-            unsafe { (*socket.cast::<Vec<u8>>()).push(b'p') };
-            false
-        }
-        unsafe extern "C" fn buffer(socket: *mut c_void) {
-            // SAFETY: the test's log.
-            unsafe { (*socket.cast::<Vec<u8>>()).push(b'b') };
-        }
-        unsafe extern "C" fn enqueue(socket: *mut c_void) {
-            // SAFETY: the test's log.
-            unsafe { (*socket.cast::<Vec<u8>>()).push(b'e') };
-        }
-        let mut log: Vec<u8> = Vec::new();
-        let socket = (&raw mut log).cast();
-        // SAFETY: the callbacks write to the local log.
-        assert_eq!(
-            unsafe { swr_v1_socket_sendfile_async(socket, accept, buffer, enqueue) },
-            OK
-        );
-        // SAFETY: as above.
-        assert_eq!(
-            unsafe { swr_v1_socket_sendfile_async(socket, refuse, buffer, enqueue) },
-            ERR
-        );
-        assert_eq!(log, b"pbep");
-    }
     // The 53 ordinary compositions from the old output.cc source-body facade.
     // Call the shipped Rust policies directly; the native buffer/request effects
     // are scripted here; the PHPT corpus and hooks-system-rust run the real binding.
@@ -616,9 +539,7 @@ mod tests {
         for remaining in [1_u32, 7, 13] {
             for sent in 1..=remaining {
                 reset(isize::try_from(sent).unwrap(), 0, false);
-                let result = unsafe {
-                    swr_v1_socket_handle_send(&raw const hooks, data.as_ptr(), remaining + 3, 3)
-                };
+                let result = handle_send(&hooks, &data[..(remaining + 3) as usize], 3);
                 assert_eq!(result.code, if sent == remaining { OK } else { ERR });
                 FAKE.with_borrow(|fake| {
                     assert_eq!(fake.supplied, data[3..3 + remaining as usize]);
@@ -707,12 +628,11 @@ mod tests {
                             sent: timed_sent,
                             ..hooks
                         };
-                        assert_eq!(
-                            unsafe {
-                                swr_v1_socket_sendfile_async(context, prepare, buffer, enqueue)
-                            },
-                            OK
-                        );
+                        // `Socket::sendfile_async`'s order: check the range, make the
+                        // buffer, queue the request.
+                        assert!(unsafe { prepare(context) });
+                        unsafe { buffer(context) };
+                        unsafe { enqueue(context) };
                         assert!(request.buffer);
                         let actual_length = if length == 0 { 29 } else { length };
                         assert_eq!(
@@ -727,31 +647,21 @@ mod tests {
                         let (mut iterations, mut popped, mut corked) = (0, 0, 0);
                         reset(0, 0, cork_ok);
                         while remaining != 0 {
-                            unsafe {
-                                swr_v1_socket_sendfile_cork(
-                                    &raw const file_hooks,
-                                    &raw mut corked,
-                                    request.begin,
-                                    request.end,
-                                    8,
-                                );
-                            };
+                            sendfile_cork(&file_hooks, &mut corked, request.begin, request.end, 8);
                             let sent = 3.min(remaining.min(7));
                             let requested = crate::sendfile_chunk(request.begin, request.end);
                             assert!(sent <= requested);
                             request.sends += 1;
                             request.begin += libc::off_t::try_from(sent).unwrap();
                             remaining -= sent;
-                            let result = unsafe {
-                                swr_v1_socket_sendfile_sent(
-                                    &raw const file_hooks,
-                                    isize::try_from(sent).unwrap(),
-                                    requested,
-                                    &raw mut corked,
-                                    request.begin,
-                                    request.end,
-                                )
-                            };
+                            let result = sendfile_sent(
+                                &file_hooks,
+                                isize::try_from(sent).unwrap(),
+                                requested,
+                                &mut corked,
+                                request.begin,
+                                request.end,
+                            );
                             assert_eq!(result.code, OK);
                             if result.pop {
                                 unsafe { request.destroy.unwrap()(context) };

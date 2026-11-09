@@ -846,7 +846,7 @@ pub(crate) fn release_request() {
         // SAFETY: the thread's live reactor, which begins with its prepared state.
         let fields = unsafe { (*reactor.cast::<swoole_rs_reactor::ReactorPrepared>()).fields };
         // SAFETY: a queued context, alive until its deferred request ends.
-        unsafe { swoole_rs_reactor::defer(fields, deferred, ctx.cast()) };
+        unsafe { swoole_rs_reactor::defer(fields, deferred, ctx.cast(), None) };
     }
 }
 
