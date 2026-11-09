@@ -1,9 +1,15 @@
-//! Known-string ownership.
+//! Known-string ownership: `sw_zend_known_strings`, the table C++'s
+//! `SW_ZSTR_KNOWN` reads.
 use std::ptr;
 use swoole_rs_zend::{
     bailout,
     sys::{self, zend_string},
 };
+
+/// Zend's interned known strings, in `SW_ZEND_KNOWN_STRINGS` order: null until
+/// MINIT fills it, and again after MSHUTDOWN.
+#[unsafe(no_mangle)]
+pub static mut sw_zend_known_strings: *mut *mut zend_string = ptr::null_mut();
 
 fn failed(code: i32) -> bool {
     if code == 0 {
@@ -14,10 +20,9 @@ fn failed(code: i32) -> bool {
     }
 }
 
-/// # Safety
-/// `slot` is the exclusively owned process-global pointer slot, initialized to null before MINIT.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_known_init(slot: *mut *mut *mut zend_string) {
+/// MINIT: allocate and publish the table, then intern each string into it.
+pub fn known_init() {
+    let slot = &raw mut sw_zend_known_strings;
     let mut allocation = ptr::null_mut();
     // SAFETY: persistent allocation holds one pointer for each frozen known string.
     let error = unsafe {
@@ -28,7 +33,8 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_known_init(slot: *mut *mut *mu
     };
     if !failed(error) {
         let table = allocation.cast::<*mut zend_string>();
-        // SAFETY: publish the table before filling it, matching upstream MINIT ordering.
+        // SAFETY: MINIT alone writes the slot; the table is published before it is filled,
+        // matching upstream MINIT ordering.
         unsafe { slot.write(table) };
         for (index, bytes) in super::known_strings::STRINGS.iter().enumerate() {
             let mut string = ptr::null_mut();
@@ -54,11 +60,10 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_known_init(slot: *mut *mut *mu
     bailout::finish();
 }
 
-/// # Safety
-/// `slot` owns the table allocated by `known_init`; interned strings remain Zend's.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_known_free(slot: *mut *mut *mut zend_string) {
-    // SAFETY: the process-global slot is exclusively owned during module shutdown.
+/// MSHUTDOWN: free the table `known_init` allocated (the interned strings stay Zend's).
+pub extern "C" fn known_free() {
+    let slot = &raw mut sw_zend_known_strings;
+    // SAFETY: the slot is exclusively owned during module shutdown.
     let table = unsafe { slot.read() };
     // SAFETY: release only the persistent pointer array, not Zend's interned strings.
     unsafe { sys::swr_zend_facade_pfree(table.cast()) };

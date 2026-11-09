@@ -5,14 +5,13 @@
 use crate::{
     constants::IOURING,
     module::PHP_FATAL_ERROR,
-    ops,
     options::{self, get},
 };
 use std::{
     cell::RefCell,
     collections::HashMap,
     ffi::{CStr, c_char, c_void},
-    sync::atomic::Ordering,
+    sync::atomic::{AtomicU64, Ordering},
 };
 use swoole_rs_corebase::{
     log::set_last_error, swoole_rand_any, swr_v1_core_dns_lookup_random,
@@ -132,9 +131,12 @@ fn fatal_error(level: i32, message: &CStr) {
     bailout::defer(unsafe { php_error(level, message) });
 }
 
+/// `SwooleG.dns_cache_refresh_time`'s bits: the coroutine DNS cache's lifetime
+/// in seconds, 60 from MINIT.
+static DNS_REFRESH_SECONDS: AtomicU64 = AtomicU64::new(0x404E_0000_0000_0000);
+
 /// `swoole_async_set(array $settings)`.
 fn async_set(call: &Call) {
-    let ops = ops();
     if !crate::optional::main_thread() {
         set_last_error(OPERATION_NOT_SUPPORT);
         call.set_bool(true);
@@ -163,8 +165,7 @@ fn async_set(call: &Call) {
         swr_v1_core_set_wait_signal(truthy(value));
     }
     if let Some(value) = get(options, c"dns_cache_refresh_time") {
-        // SAFETY: C++'s setter.
-        unsafe { (ops.set_dns_cache_refresh_time)(double(value)) };
+        DNS_REFRESH_SECONDS.store(double(value).to_bits(), Ordering::Relaxed);
     }
     if let Some(value) = get(options, c"thread_num").or_else(|| get(options, c"min_thread_num")) {
         swr_v1_core_set_aio_core_worker_num(bounded(long(value), 1));
@@ -192,9 +193,7 @@ extern "C" fn push(list: *mut c_void, address: *const c_char) {
 
 /// `swoole_async_dns_lookup_coro(string $domain, float $timeout = 5, int $type = AF_INET)`.
 fn dns_lookup(call: &Call) {
-    let ops = ops();
-    // SAFETY: C++'s getters and effects, here and below.
-    unsafe { (ops.current_coroutine_safe)() };
+    crate::coroutine_check();
     // SAFETY: a read of the process-wide default, which only the main thread's
     // option setters write.
     let default_timeout = unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.dns };
@@ -236,8 +235,7 @@ fn dns_lookup(call: &Call) {
         call.set_bytes(&address);
         return;
     }
-    // SAFETY: as above.
-    unsafe { (ops.check_reactor)() };
+    crate::check_reactor();
     let mut answers: Vec<Vec<u8>> = Vec::new();
     #[expect(
         clippy::cast_possible_truncation,
@@ -267,8 +265,7 @@ fn dns_lookup(call: &Call) {
     };
     let address = answers.swap_remove(pick);
     call.set_bytes(&address);
-    // SAFETY: C++'s getter.
-    let refresh = unsafe { (ops.dns_cache_refresh_time)() };
+    let refresh = f64::from_bits(DNS_REFRESH_SECONDS.load(Ordering::Relaxed));
     let now = swoole_rs_timer::absolute_msec();
     #[expect(clippy::cast_possible_truncation, reason = "C's (int64_t) conversion")]
     let expires = now + (refresh * 1000.0) as i64;
@@ -286,5 +283,11 @@ mod tests {
         assert_eq!(bounded(0, 0), 0);
         assert_eq!(bounded(8, 1), 8);
         assert_eq!(bounded(i64::MAX, 1), u32::MAX);
+    }
+
+    #[test]
+    fn dns_cache_lives_a_minute() {
+        let bits = super::DNS_REFRESH_SECONDS.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(f64::from_bits(bits), 60.0);
     }
 }

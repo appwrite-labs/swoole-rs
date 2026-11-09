@@ -1,7 +1,7 @@
 //! The sleep family's replacements (`HOOK_SLEEP`): a coroutine sleeps by
 //! yielding (`System::sleep`), anything else as PHP would. The checks, the
 //! duration and the sleep are crates/hooks'.
-use crate::{in_coroutine, ops};
+use crate::{Report, in_coroutine, report};
 use swoole_rs_hooks::sleep::{
     CoroutineSleep, swr_v1_hooks_nanosleep, swr_v1_hooks_sleep, swr_v1_hooks_sleep_until,
     swr_v1_hooks_usleep,
@@ -15,12 +15,18 @@ swoole_rs_zend::handlers! {
     zif_swoole_time_sleep_until => time_sleep_until;
 }
 
+unsafe extern "C" {
+    /// `System::sleep(seconds)` (crates/hooks).
+    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
+    fn coroutine_sleep(seconds: f64) -> i32;
+}
+
 /// Statuses of a `SleepOutcome`.
 const INVALID: i32 = 1;
 const WARN: i32 = 3;
 
 fn sleeper() -> Option<CoroutineSleep> {
-    in_coroutine().then_some(ops().coroutine_sleep)
+    in_coroutine().then_some(coroutine_sleep)
 }
 
 /// `zend_argument_value_error(number, "must be greater than or equal to 0")`.
@@ -77,14 +83,11 @@ fn time_nanosleep(call: &Call) {
         return;
     }
     if outcome.status == WARN {
-        // SAFETY: a NUL-terminated message.
-        unsafe {
-            (ops().error)(
-                E_WARNING,
-                c"nanoseconds was not in the range 0 to 999 999 999 or seconds was negative"
-                    .as_ptr(),
-            );
-        }
+        swoole_rs_zend::bailout::defer(report(
+            Report::Swoole,
+            E_WARNING,
+            c"nanoseconds was not in the range 0 to 999 999 999 or seconds was negative",
+        ));
     }
     call.set_bool(true);
 }

@@ -6,8 +6,8 @@
 //! `CurlHandle`). Edits happen on the main thread; other threads read the table
 //! (their RINIT before PHP 8.3, and the trampoline).
 use crate::{
-    Bailout, SW_ERROR_UNDEFINED_BEHAVIOR, flags, in_coroutine, log_warning, message, ops, sleep,
-    throw, transition,
+    Bailout, SW_ERROR_UNDEFINED_BEHAVIOR, flags, in_coroutine, log_warning, message, sleep, throw,
+    transition,
 };
 use std::{
     collections::HashMap,
@@ -15,6 +15,7 @@ use std::{
     ptr,
     sync::{LazyLock, Mutex, MutexGuard, PoisonError},
 };
+use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{
     Call, E_WARNING, bailout,
     sys::{
@@ -27,6 +28,17 @@ use swoole_rs_zend::{
         zval_ptr_dtor,
     },
 };
+
+// The replacements that live elsewhere: `proc_open`'s (thirdparty proc_open.cc),
+// and crates/phpcoroutines' `gethostbyname` and (PHP 8.4+) `exit`.
+unsafe extern "C" {
+    fn zif_swoole_proc_open(frame: *mut zend_execute_data, value: *mut zval);
+    fn zif_swoole_proc_close(frame: *mut zend_execute_data, value: *mut zval);
+    fn zif_swoole_proc_get_status(frame: *mut zend_execute_data, value: *mut zval);
+    fn zif_swoole_proc_terminate(frame: *mut zend_execute_data, value: *mut zval);
+    fn zif_swoole_coroutine_gethostbyname(frame: *mut zend_execute_data, value: *mut zval);
+    fn zif_swoole_exit(frame: *mut zend_execute_data, value: *mut zval);
+}
 
 /// `ZEND_INTERNAL_FUNCTION`.
 const INTERNAL_FUNCTION: u8 = 1;
@@ -276,12 +288,15 @@ pub(crate) fn unsafe_functions(disable: bool) {
 /// replaced where the build does.
 pub(crate) fn start() {
     table().hooked = Some(HashMap::new());
-    let ops = ops();
-    if ops.putenv.is_some() {
-        hook(c"putenv", ops.putenv, ptr::null_mut());
+    if built_with(Switch::Thread) {
+        hook(
+            c"putenv",
+            Some(crate::putenv::zif_swoole_putenv),
+            ptr::null_mut(),
+        );
     }
-    if ops.exit.is_some() {
-        hook(c"exit", ops.exit, ptr::null_mut());
+    if php_version() >= 80400 {
+        hook(c"exit", Some(zif_swoole_exit), ptr::null_mut());
     }
 }
 
@@ -582,7 +597,6 @@ fn family(
 
 /// `hook_all_func`.
 pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout> {
-    let ops = ops();
     family(
         requested,
         installed,
@@ -614,10 +628,10 @@ pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout
         installed,
         flags::PROC,
         &[
-            (c"proc_open", ops.proc_open),
-            (c"proc_close", ops.proc_close),
-            (c"proc_get_status", ops.proc_get_status),
-            (c"proc_terminate", ops.proc_terminate),
+            (c"proc_open", Some(zif_swoole_proc_open)),
+            (c"proc_close", Some(zif_swoole_proc_close)),
+            (c"proc_get_status", Some(zif_swoole_proc_get_status)),
+            (c"proc_terminate", Some(zif_swoole_proc_terminate)),
         ],
     );
     let sockets = SOCKETS.map(|name| (name, None));
@@ -635,7 +649,8 @@ pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout
         Some(false) => detach_parent(c"Swoole\\Curl\\Handler"),
         None => {}
     }
-    let mut net = [(c"gethostbyname", ops.gethostbyname); 9];
+    let gethostbyname: zif_handler = Some(zif_swoole_coroutine_gethostbyname);
+    let mut net = [(c"gethostbyname", gethostbyname); 9];
     for (slot, name) in net.iter_mut().skip(1).zip(NET) {
         *slot = (name, None);
     }
@@ -646,13 +661,11 @@ pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout
 /// Native curl, which excludes the PHP curl hook.
 fn native_curl(requested: &mut u32, installed: u32) {
     if *requested & flags::NATIVE_CURL != 0 && *requested & flags::CURL != 0 {
-        // SAFETY: a NUL-terminated message.
-        unsafe {
-            (ops().fatal_error)(
-                E_WARNING,
-                c"cannot enable both hooks HOOK_NATIVE_CURL and HOOK_CURL at same time".as_ptr(),
-            );
-        }
+        bailout::defer(crate::report(
+            crate::Report::Fatal,
+            E_WARNING,
+            c"cannot enable both hooks HOOK_NATIVE_CURL and HOOK_CURL at same time",
+        ));
         *requested ^= flags::CURL;
     }
     let change = transition(*requested, installed, flags::NATIVE_CURL);

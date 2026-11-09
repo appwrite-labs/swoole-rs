@@ -15,12 +15,6 @@ use swoole_rs_zend::{
     sys::{swr_zend_instanceof, zend_class_entry, zend_object, zend_string, zval},
 };
 
-unsafe extern "C" {
-    // native/phphelpers/module.cc: ext/sockets, behind configure's switch.
-    fn swr_cpp_phpthread_php_socket_cast(value: *mut zval) -> c_int;
-    fn swr_cpp_phpthread_php_socket_create(return_value: *mut zval, fd: c_int) -> bool;
-}
-
 /// `swoole_exception_ce`.
 pub(crate) fn exception() -> *mut zend_class_entry {
     // SAFETY: written once by MINIT, before any method runs.
@@ -107,7 +101,7 @@ pub(crate) unsafe fn co_socket_create(out: *mut zval, fd: c_int, kind: c_int) ->
 /// `object` is a live object zval.
 pub(crate) unsafe fn php_socket_cast(object: *mut zval) -> c_int {
     // SAFETY: per the caller.
-    unsafe { swr_cpp_phpthread_php_socket_cast(object) }
+    unsafe { swoole_rs_phpswoole::socket_cast(object) }
 }
 
 /// An ext/sockets Socket over `fd`, which it takes; false on failure.
@@ -115,7 +109,7 @@ pub(crate) unsafe fn php_socket_cast(object: *mut zval) -> c_int {
 /// In a request; `out` is writable.
 pub(crate) unsafe fn php_socket_create(out: *mut zval, fd: c_int) -> bool {
     // SAFETY: per the caller.
-    unsafe { swr_cpp_phpthread_php_socket_create(out, fd) }
+    unsafe { swoole_rs_phpswoole::socket_create(out, fd) }
 }
 
 /// `php_swoole_error(level, "%s", message)`: reported when

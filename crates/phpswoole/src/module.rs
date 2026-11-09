@@ -4,7 +4,7 @@
 //! family's hook is C (`php_swoole_private.h` declares them `extern "C"`) and
 //! runs inside `zend_try`: a bailout stops the phase there, as it did
 //! upstream, and is raised once this frame is the only Rust one left.
-use crate::{Switch, ops, optional};
+use crate::{Switch, optional};
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
@@ -18,9 +18,10 @@ use swoole_rs_zend::{
     php_error,
     string::bytes,
     sys::{
-        HashTable, swr_zend_compiling_preload, swr_zend_execute_ex_reset,
+        HashTable, swr_zend_after_fork, swr_zend_compiling_preload, swr_zend_execute_ex_reset,
         swr_zend_execute_ex_restore, swr_zend_fatal_error, swr_zend_function_find,
-        swr_zend_leak_check, swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
+        swr_zend_leak_check, swr_zend_module_globals, swr_zend_module_globals_init,
+        swr_zend_php_version, swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
         swr_zend_runtime_call_handler, swr_zend_sapi_name, swr_zend_signals_uncheck,
         swr_zend_stream_constant_no_close, swr_zend_string_release, swr_zend_temporary_directory,
         swr_zend_try_hook, swr_zend_try_minit, zend_class_entry, zend_execute_data, zend_string,
@@ -29,7 +30,7 @@ use swoole_rs_zend::{
     value,
 };
 
-/// `zend_swoole_globals` (`php_swoole.h`); `native/phphelpers/module.cc` asserts the layout.
+/// `zend_swoole_globals` (`php_swoole.h`, which C++ reads through `SWOOLE_G`).
 #[repr(C)]
 pub struct Globals {
     pub(crate) display_errors: bool,
@@ -72,12 +73,31 @@ pub(crate) const PHP_FATAL_ERROR: i32 = 503;
 /// `SUCCESS`.
 const SUCCESS: c_int = 0;
 
+/// `swoole_globals`: the module globals outside ZTS, which C++ reads by name;
+/// under ZTS each thread's are TSRM's.
+#[unsafe(no_mangle)]
+// SAFETY: booleans, integers and a nullable pointer, for which zero is valid.
+static mut swoole_globals: Globals = unsafe { std::mem::zeroed() };
+
 /// This thread's module globals, which C++ reads and writes too: access them
 /// through the pointer, one field at a time.
 #[must_use]
 pub fn globals() -> *mut Globals {
-    // SAFETY: C++'s getter.
-    unsafe { (ops().globals)() }
+    // SAFETY: `ZEND_MODULE_GLOBALS_BULK(swoole)`, with the NTS storage.
+    unsafe { swr_zend_module_globals((&raw mut swoole_globals).cast()) }.cast()
+}
+
+/// `ZEND_INIT_MODULE_GLOBALS(swoole, init_globals, nullptr)`: what the ini
+/// entries take, the TSRM id under ZTS or else the storage.
+pub(crate) fn globals_init() -> *mut c_void {
+    // SAFETY: MINIT, once, before any thread reads them.
+    unsafe {
+        swr_zend_module_globals_init(
+            (&raw mut swoole_globals).cast(),
+            size_of::<Globals>(),
+            Some(init_globals),
+        )
+    }
 }
 
 /// `SWOOLE_G(display_errors)`.
@@ -209,9 +229,8 @@ fn run(steps: &[Step], module_number: c_int) -> Result<(), Bailout> {
 /// is deferred for `swr_v1_phpswoole_minit` to raise.
 pub(crate) fn startup(module_number: c_int) {
     use Step::{Hook as H, Minit as M};
-    let ops = ops();
     let mut steps = vec![
-        H(ops.startup),
+        H(core_startup),
         M(php_swoole_event_minit),
         // base
         M(php_swoole_atomic_minit),
@@ -234,7 +253,10 @@ pub(crate) fn startup(module_number: c_int) {
         M(client_coro_minit),
         M(http_client_coro_minit),
         M(http2_client_coro_minit),
-        M(ops.optional_client_minit),
+    ];
+    // The bundled C clients, ssh2 and ftp.
+    steps.extend(optional::client_minit());
+    steps.extend([
         // server
         M(php_swoole_server_minit),
         M(http_request_minit),
@@ -245,9 +267,9 @@ pub(crate) fn startup(module_number: c_int) {
         M(websocket_server_minit),
         M(php_swoole_redis_server_minit),
         M(php_swoole_name_resolver_minit),
-    ];
+    ]);
     steps.extend(optional::minit());
-    steps.extend([M(tracer_minit), H(php_hooks), H(ops.ready)]);
+    steps.extend([M(tracer_minit), H(php_hooks), H(ready)]);
     bailout::defer(run(&steps, module_number));
 }
 
@@ -374,14 +396,68 @@ unsafe extern "C" fn php_hooks() {
     swr_v1_core_set_print_backtrace(swr_zend_print_stack_trace as *const () as *mut c_void);
 }
 
+unsafe extern "C" {
+    /// `void swoole_init()`, crates/ffi's.
+    #[link_name = "_Z11swoole_initv"]
+    safe fn swoole_init();
+    /// native/phphelpers/host.c.
+    safe fn swr_phpswoole_pcre_jit_off();
+    fn php_swoole_load_library();
+}
+
+/// MINIT's first step: Swoole's core, its after-fork hook, and the bug
+/// report's PHP version.
+extern "C" fn core_startup() {
+    /// `SW_GLOBAL_HOOK_AFTER_FORK`.
+    const AFTER_FORK: c_int = 12;
+    swoole_init();
+    swoole_rs_corebase::swoole_add_hook(AFTER_FORK, swr_zend_after_fork, 0);
+    // SAFETY: no preconditions.
+    let version = unsafe { swr_zend_php_version() };
+    // SAFETY: PHP_VERSION, a static string.
+    let version = unsafe { CStr::from_ptr(version) }.to_string_lossy();
+    let line = CString::new(format!("PHP_VERSION : {version}\n")).unwrap_or_default();
+    // SAFETY: a NUL-terminated line, which the report copies.
+    unsafe { swoole_rs_corebase::swr_v1_core_bug_report_append(line.as_ptr()) };
+}
+
+/// MINIT's end: the ini's socket buffer size, macOS's `pcre.jit` and the known
+/// strings.
+extern "C" fn ready() {
+    // SAFETY: the module's globals, live from MINIT.
+    let size = unsafe { (*globals()).socket_buffer_size };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "upstream assigns the zend_long to a uint32_t"
+    )]
+    // SAFETY: MINIT, before any thread reads the process-wide defaults.
+    unsafe {
+        swoole_rs_reactor::swr_v1_socket_defaults.buffer_size = size as u32;
+    }
+    swr_phpswoole_pcre_jit_off();
+    swoole_rs_phphelpers::known_init();
+}
+
+/// `php_swoole_load_library()`, the bundled PHP library (host.c), inside `zend_try`.
+/// # Errors
+/// The library's code bailed out.
+pub fn load_library() -> Result<(), Bailout> {
+    // SAFETY: the loader, a zend_try body.
+    if unsafe { swr_zend_try_hook(Some(php_swoole_load_library)) } == 0 {
+        Ok(())
+    } else {
+        Err(Bailout)
+    }
+}
+
 /// `swoole_globals`' defaults (`php_swoole_init_globals`), before the ini
 /// entries apply.
 /// # Safety
 /// Zend's `ZEND_INIT_MODULE_GLOBALS` constructor, with this thread's globals.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpswoole_init_globals(globals: *mut Globals) {
+unsafe extern "C" fn init_globals(globals: *mut c_void) {
     // SAFETY: per the caller, and nothing else reads them yet.
-    let globals = unsafe { &mut *globals };
+    let globals = unsafe { &mut *globals.cast::<Globals>() };
     globals.enable_library = true;
     globals.enable_fiber_mock = false;
     globals.enable_preemptive_scheduler = false;
@@ -424,14 +500,13 @@ extern "C" fn event_free() {
 /// Zend's MSHUTDOWN.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number: c_int) -> c_int {
-    let ops = ops();
     let mut steps = vec![
-        Step::Hook(ops.known_strings_dtor),
+        Step::Hook(swoole_rs_phphelpers::known_free),
         Step::Hook(php_swoole_runtime_mshutdown),
     ];
     steps.extend(optional::mshutdown());
+    steps.extend(optional::client_mshutdown());
     steps.extend([
-        Step::Hook(ops.optional_mshutdown),
         // The tables' process-private parts, which upstream leaves to the exit.
         Step::Hook(swoole_rs_memory::table::release),
         Step::Hook(clean),
@@ -453,13 +528,12 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
     }
     // SAFETY: as above.
     unsafe { (*globals).req_status = RINIT_BEGIN };
-    let ops = ops();
     // Task files go to `sys_get_temp_dir()`: `/tmp` does not exist everywhere
     // (Android, termux).
     // SAFETY: PHP's directory, which lives for the request.
     let directory = unsafe { swr_zend_temporary_directory() };
-    // SAFETY: C++'s setter, which copies it.
-    unsafe { (ops.set_task_tmpdir)(directory) };
+    // SAFETY: a NUL-terminated path, which the setter copies.
+    unsafe { swoole_rs_corebase::swr_v1_core_set_task_tmpdir(directory) };
     // SAFETY: RINIT, with a function this module registers.
     unsafe {
         php_swoole_register_shutdown_function(c"swoole_internal_call_user_shutdown_begin".as_ptr());
@@ -470,8 +544,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
         // correctly (swoole/swoole-src#5182): load it under execute_ex.
         // SAFETY: RINIT, before any PHP code runs.
         let hook = unsafe { swr_zend_execute_ex_reset() };
-        // SAFETY: C++'s loader, a zend_try body.
-        if let Err(bailed) = unsafe { bailout::trap(ops.load_library, ptr::null_mut()) } {
+        if let Err(bailed) = load_library() {
             bailout::raise(Err(bailed));
             return SUCCESS;
         }
@@ -641,7 +714,7 @@ mod tests {
 
     #[test]
     fn globals_match_zend_swoole_globals() {
-        // native/phphelpers/module.cc asserts the same offsets on the C++ side.
+        // php_swoole.h's zend_swoole_globals, which C++ reads through SWOOLE_G.
         assert_eq!(offset_of!(Globals, blocking_threshold), 8);
         assert_eq!(offset_of!(Globals, socket_buffer_size), 24);
         assert_eq!(offset_of!(Globals, req_status), 32);

@@ -3,7 +3,6 @@ use crate::{
     constants::VERSION,
     log_put,
     module::{CALL_USER_SHUTDOWNFUNC_BEGIN, RINIT_END},
-    ops,
 };
 use std::{
     ffi::{CStr, c_char, c_int},
@@ -16,11 +15,33 @@ use swoole_rs_zend::{
     string::val,
     sys::{
         _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, IS_FALSE, IS_NULL, IS_TRUE,
-        ZPP_ERROR_WRONG_ARG, add_next_index_stringl, zend_hash_func, zend_parse_arg_bool_slow,
-        zend_string, zend_wrong_parameter_error,
+        ZPP_ERROR_WRONG_ARG, add_next_index_stringl, zend_array, zend_hash_func,
+        zend_parse_arg_bool_slow, zend_string, zend_wrong_parameter_error, zval,
     },
     type_of, value,
 };
+
+unsafe extern "C" {
+    /// PHP's `unserialize()`, as `zend::unserialize` calls it.
+    fn php_unserialize_with_options(
+        value: *mut zval,
+        buf: *const c_char,
+        length: usize,
+        options: *mut zend_array,
+        function: *const c_char,
+    );
+    /// `zend::json_decode` (`thirdparty/php/standard/var_decoder.cc`); `zend_long`
+    /// is `int64_t`, which mangles as each platform spells it.
+    #[cfg_attr(
+        target_os = "macos",
+        link_name = "_ZN4zend11json_decodeEP12_zval_structPKcmxx"
+    )]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        link_name = "_ZN4zend11json_decodeEP12_zval_structPKcmll"
+    )]
+    fn json_decode(value: *mut zval, text: *const c_char, length: usize, options: i64, depth: i64);
+}
 
 handlers! {
     zif_swoole_version => version;
@@ -351,13 +372,14 @@ fn substr_unserialize(call: &Call) {
     };
     // SAFETY: an array argument.
     let options = options.map_or(ptr::null_mut(), |array| unsafe { value::table(array) });
-    // SAFETY: C++'s decoder over the argument's live bytes.
+    // SAFETY: PHP's decoder over the argument's live bytes.
     unsafe {
-        (ops().unserialize)(
+        php_unserialize_with_options(
             call.return_value(),
             buf.as_ptr().wrapping_add(offset).cast(),
             length,
             options,
+            c"swoole_ext_unserialize".as_ptr(),
         );
     }
 }
@@ -418,7 +440,7 @@ fn substr_json_decode(call: &Call) {
             };
             // SAFETY: C++'s decoder over the argument's live bytes.
             unsafe {
-                (ops().json_decode)(
+                json_decode(
                     call.return_value(),
                     text.as_ptr().wrapping_add(offset).cast(),
                     length,

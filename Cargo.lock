@@ -908,6 +908,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
+ "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-firebird",
  "swoole-rs-framing",
@@ -916,6 +917,7 @@ dependencies = [
  "swoole-rs-oci",
  "swoole-rs-odbc",
  "swoole-rs-pgsql",
+ "swoole-rs-phphelpers",
  "swoole-rs-phpstubs",
  "swoole-rs-reactor",
  "swoole-rs-sqlite",

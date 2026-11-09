@@ -37,8 +37,6 @@ unsafe extern "C" {
     );
     #[link_name = "_Z21php_swoole_dup_socketi12swSocketType"]
     fn php_swoole_dup_socket(fd: c_int, kind: c_int) -> *mut zend_object;
-    #[link_name = "_Z30php_swoole_is_enable_coroutinev"]
-    fn php_swoole_is_enable_coroutine() -> bool;
     #[link_name = "_Z17swoole_signal_setiPFviEb"]
     fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
 }
@@ -269,11 +267,19 @@ pub(crate) unsafe fn callable_call(
     resume(called).unwrap_or(false)
 }
 
-/// `php_swoole_is_enable_coroutine()`.
+/// `php_swoole_is_enable_coroutine()`: the running server's
+/// `Server::is_enable_coroutine()`, else `SwooleG.enable_coroutine`.
+#[unsafe(export_name = "php_swoole_is_enable_coroutine")]
 #[must_use]
-pub fn enable_coroutine() -> bool {
-    // SAFETY: phphelpers' reader of the server and Swoole globals.
-    unsafe { php_swoole_is_enable_coroutine() }
+pub extern "C" fn enable_coroutine() -> bool {
+    let Some(serv) = server() else {
+        return swoole_rs_corebase::swr_v1_core_enable_coroutine();
+    };
+    match methods::swoole_get_worker_type() {
+        TASK_WORKER => task_coroutine(serv),
+        MANAGER => false,
+        _ => serv.config().enable_coroutine,
+    }
 }
 
 /// `tsrm_is_main_thread()`, true without threads.

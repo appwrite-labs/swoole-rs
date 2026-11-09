@@ -309,64 +309,6 @@ typedef struct { const char *name; uint64_t value; } swr_v1_server_fact;
  * upstream's order, at most cap of them into out; returns how many. Linux and Apple. */
 size_t swr_v1_server_tcp_info(const void *info, swr_v1_server_fact *out, size_t cap);
 
-/*
- * The module host (crates/phpswoole): get_module() returns swr_v1_phpswoole_module, Rust's
- * module entry with its dependencies, function table, MINIT, MSHUTDOWN, RINIT, RSHUTDOWN and
- * MINFO. C++ (native/phphelpers/module.cc) keeps the module globals and lends what only it
- * reaches: Swoole's core, error, logger and MIME state, the stdext/ssh2/ftp handlers and
- * library versions. The build's switches are native/corebase/switches.cc's.
- */
-struct _zval_struct;
-struct _zend_array;
-struct _zend_class_entry;
-struct _zend_object_handlers;
-struct _zend_execute_data;
-struct _zend_module_entry;
-typedef void (*swr_php_function)(struct _zend_execute_data *, struct _zval_struct *);
-typedef struct swr_v1_phpswoole_info {
-    uint32_t abi;
-    uint64_t features;
-    const char *version, *built, *openssl, *curl, *cares, *zlib, *zstd;
-    uint32_t brotli_encoder, brotli_decoder;
-} swr_v1_phpswoole_info;
-typedef struct swr_v1_phpswoole_ops {
-    /* ZEND_MODULE_GLOBALS_BULK(swoole): this thread's zend_swoole_globals. */
-    void *(*globals)(void);
-    /* MINIT: swoole_init(), the after-fork hook, the bug report; and its end: the
-     * fatal-error and backtrace hooks, socket buffer size, DNS refresh, pcre.jit, known strings. */
-    void (*startup)(void);
-    void (*ready)(void);
-    /* The bundled C clients configure builds in, ssh2 and ftp: MINIT after the clients,
-     * ssh2's MSHUTDOWN after the drivers'. */
-    void (*optional_client_minit)(int module_number);
-    void (*optional_mshutdown)(void);
-    /* Their MINFO, a zend_try body. */
-    void (*optional_minfo)(void *module);
-    void (*known_strings_dtor)(void);
-    void (*set_task_tmpdir)(const char *dir);
-    /* php_swoole_load_library(), a zend_try body. */
-    void (*load_library)(void *);
-    void (*unserialize)(struct _zval_struct *value, const char *buf, size_t length, struct _zend_array *options);
-    void (*json_decode)(struct _zval_struct *value, const char *str, size_t length, int64_t options, int64_t depth);
-    /* swoole_async_set() and php_swoole_set_aio_option's SwooleG field. */
-    void (*set_dns_cache_refresh_time)(double seconds);
-    double (*dns_cache_refresh_time)(void);
-    /* Coroutine::get_current_safe(): a fatal error outside a coroutine. */
-    void (*current_coroutine_safe)(void);
-    void (*check_reactor)(void);
-    /* MINIT's start: the bridge ABI check, native effects, SWOOLE_RS_* constants, the module
-     * globals and ini entries. 0 on success. */
-    int (*begin)(int type, int module_number);
-    void (*info)(swr_v1_phpswoole_info *info);
-    /* Null disables a family; arrays have 23/35/36 entries. FTP SSL alone may be null. */
-    const swr_php_function *stdext, *ssh2, *ftp;
-    int64_t (*socket_bound_cid)(void);
-} swr_v1_phpswoole_ops;
-struct _zend_module_entry *swr_v1_phpswoole_module(const swr_v1_phpswoole_ops *ops);
-/* ZEND_INIT_MODULE_GLOBALS' constructor of zend_swoole_globals. */
-void swr_v1_phpswoole_init_globals(void *globals);
-void swr_v1_phpswoole_register_ini(void *globals, int number, int kind);
-
 #ifdef __cplusplus
 }
 #endif

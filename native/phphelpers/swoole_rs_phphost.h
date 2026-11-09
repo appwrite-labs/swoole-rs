@@ -90,11 +90,7 @@ extern zend_class_entry *swoole_exception_ce;
 extern zend_object_handlers swoole_exception_handlers;
 extern zend_class_entry *swoole_error_ce;
 
-// Module hooks Rust's MINIT/RINIT/MSHUTDOWN sequence calls, defined in C++ here.
-void php_swoole_event_minit(int module_number);
-void php_swoole_runtime_minit(int module_number);
-void php_swoole_runtime_mshutdown();
-// The optional drivers' hooks, which native/phphelpers/module.cc calls.
+// The optional drivers' hooks, which crates/phpswoole calls.
 #ifdef SW_USE_PGSQL
 void php_swoole_pgsql_minit(int module_number);
 void php_swoole_pgsql_mshutdown();
@@ -122,38 +118,9 @@ void php_swoole_register_shutdown_function(const char *function);
 int php_swoole_convert_to_fd(zval *zsocket);
 zend_bool php_swoole_signal_isset_handler(int signo);
 
-// A Socket over fd, which it takes (native/phphelpers); false if it can't import fd.
-bool swr_cpp_phpthread_php_socket_create(zval *return_value, int fd);
-
-#define SW_Z_SOCKET_P(zsocket) Z_SOCKET_P(zsocket)
-
 static sw_inline zval *sw_zval_dup(zval *val) {
     return swr_v1_phphelpers_zval_dup(val);
 }
-
-#ifdef SWOOLE_SOCKETS_SUPPORT
-static inline bool sw_zval_is_php_socket(zval *val) {
-    return instanceof_function(Z_OBJCE_P(val), socket_ce);
-}
-#endif
-
-static inline bool sw_is_main_thread() {
-#ifdef ZTS
-    return tsrm_is_main_thread();
-#else
-    return true;
-#endif
-}
-
-#ifdef SW_THREAD
-size_t sw_active_thread_count(void);
-#else
-static inline size_t sw_active_thread_count() {
-    return 1;
-}
-#endif
-
-void sw_php_exit(int status);
 
 #define SW_REGISTER_LONG_CONSTANT(name, value) REGISTER_LONG_CONSTANT(name, value, CONST_CS | CONST_PERSISTENT)
 
@@ -226,7 +193,6 @@ SW_ZEND_KNOWN_STRINGS(_SW_ZEND_STR_ID)
 #define SW_ZSTR_KNOWN(idx) sw_zend_known_strings[idx]
 extern zend_string **sw_zend_known_strings;
 
-SW_API bool php_swoole_is_enable_coroutine();
 SW_API zif_handler php_swoole_get_original_handler(const char *name, size_t len);
 
 static inline bool php_swoole_is_fatal_error() {

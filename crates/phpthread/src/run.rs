@@ -25,8 +25,6 @@ use swoole_rs_zend::{
 };
 
 unsafe extern "C" {
-    // native/phphelpers/module.cc: this module's TSRM cache, per thread.
-    fn swr_cpp_phpthread_tsrmls_update();
     // crates/reactor: `SwooleTG.reactor`.
     fn swr_v1_event_current() -> *mut c_void;
 }
@@ -81,8 +79,6 @@ pub unsafe extern "C" fn swr_v1_phpthread_run(
     let file = CString::new(text).unwrap_or_default();
     // SAFETY: a new thread, before anything of PHP's runs on it.
     unsafe { swr_zend_thread_enter() };
-    // SAFETY: after its TSRM resources exist.
-    unsafe { swr_cpp_phpthread_tsrmls_update() };
     let (path, argc, argv_serialized) = request::main_request();
     swoole_rs_corebase::swoole_thread_init(false);
     let mut start = Start {

@@ -8,7 +8,7 @@ description = "The swoole module host: global constants, Swoole\\Exception/Error
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:swoole-rs-corebase", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-error", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-framing", "dep:swoole-rs-http2", "dep:swoole-rs-memory", "dep:swoole-rs-reactor", "dep:swoole-rs-timer", "dep:swoole-rs-utilities"]
+php = ["dep:swoole-rs-corebase", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-error", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-framing", "dep:swoole-rs-http2", "dep:swoole-rs-memory", "dep:swoole-rs-reactor", "dep:swoole-rs-timer", "dep:swoole-rs-utilities", "dep:swoole-rs-coroutine", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php"]
 # The coroutine PDO drivers configure built (crates/ffi's features of the same names):
 # their MINIT, MSHUTDOWN, RINIT and blocking switches.
 pgsql = ["dep:swoole-rs-pgsql", "swoole-rs-pgsql/php"]
@@ -18,6 +18,12 @@ sqlite = ["dep:swoole-rs-sqlite", "swoole-rs-sqlite/php"]
 oci = ["dep:swoole-rs-oci", "swoole-rs-oci/php"]
 # stdext's MINIT (crates/ffi's stdext, with --enable-swoole-stdext).
 stdext = []
+# The bundled C clients configure builds in (--with-swoole-ssh2, --enable-swoole-ftp):
+# their handlers, MINIT, MSHUTDOWN and MINFO.
+ssh2 = []
+ftp = []
+# ext/sockets' Socket (--enable-sockets), which Thread containers and ports import.
+sockets = []
 
 [dependencies]
 swoole-rs-corebase = { path = "../corebase", optional = true }
@@ -30,6 +36,8 @@ swoole-rs-memory = { path = "../memory", optional = true }
 swoole-rs-reactor = { path = "../reactor", optional = true }
 swoole-rs-timer = { path = "../timer", optional = true }
 swoole-rs-utilities = { path = "../utilities", optional = true }
+swoole-rs-coroutine = { path = "../coroutine", optional = true }
+swoole-rs-phphelpers = { path = "../phphelpers", optional = true }
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-pgsql = { path = "../pgsql", optional = true }
 swoole-rs-odbc = { path = "../odbc", optional = true }

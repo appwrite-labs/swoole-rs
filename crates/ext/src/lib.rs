@@ -12,17 +12,10 @@ pub use swoole_rs_ffi::*;
 #[cfg(feature = "php")]
 use openssl_sys as _;
 
-#[cfg(feature = "php")]
-unsafe extern "C" {
-    /// native/phphelpers/module.cc: the module entry, built once with C++'s
-    /// host ops. Safe to call: it takes no arguments.
-    safe fn swr_cpp_phpswoole_module() -> *mut std::ffi::c_void;
-}
-
 /// The `zend_module_entry` Zend looks up when it loads the extension. A C
 /// definition would stay hidden: a cdylib exports only Rust's symbols.
 #[cfg(feature = "php")]
 #[unsafe(no_mangle)]
 pub extern "C" fn get_module() -> *mut std::ffi::c_void {
-    swr_cpp_phpswoole_module()
+    swr_v1_phpswoole_module().cast()
 }

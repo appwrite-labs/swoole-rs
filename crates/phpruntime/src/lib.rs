@@ -40,13 +40,10 @@ pub use socket::{Report, check_reactor, co, convert_to_fd, coroutine_check, repo
 pub use stream::*;
 
 use std::{
-    ffi::{CStr, c_char, c_void},
-    sync::{
-        OnceLock,
-        atomic::{AtomicU32, Ordering},
-    },
+    ffi::{CStr, c_char, c_int, c_void},
+    sync::atomic::{AtomicU32, Ordering},
 };
-use swoole_rs_corebase::Switch;
+use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_phphelpers::callable as handle;
 use swoole_rs_phpstubs::runtime;
 use swoole_rs_zend::{
@@ -95,58 +92,30 @@ pub mod flags {
     }
 }
 
-/// What only C++ can do (`swr_v1_phpruntime_ops`).
-#[repr(C)]
-pub struct Ops {
-    /// `swoole_exception_ce`.
-    exception: *mut zend_class_entry,
-    /// `Coroutine::get_current() != nullptr`.
-    in_coroutine: unsafe extern "C" fn() -> u8,
-    /// `System::sleep(seconds)`.
-    coroutine_sleep: unsafe extern "C" fn(seconds: f64) -> i32,
-    /// `PHPCoroutine::set_hook_flags` and `get_hook_flags`.
-    set_hook_flags: unsafe extern "C" fn(flags: u32),
-    get_hook_flags: unsafe extern "C" fn() -> u32,
-    /// `sw_is_main_thread()`, and `sw_active_thread_count()`.
-    main_thread: unsafe extern "C" fn() -> u8,
-    active_threads: unsafe extern "C" fn() -> u32,
-    /// Swap the plain-files wrapper (0) or the stdio ops (1).
-    stream_ops: unsafe extern "C" fn(stdio: u8, hook: u8),
-    /// `php_swoole_fatal_error(level, "%s", message)`.
-    fatal_error: unsafe extern "C" fn(level: i32, message: *const c_char),
-    /// `php_swoole_error(level, "%s", message)`.
-    error: unsafe extern "C" fn(level: i32, message: *const c_char),
-    /// Handlers that stay C++: the replacements of those names (`exit` and
-    /// `putenv` null when not built).
-    proc_open: zif_handler,
-    proc_close: zif_handler,
-    proc_get_status: zif_handler,
-    proc_terminate: zif_handler,
-    gethostbyname: zif_handler,
-    exit: zif_handler,
-    putenv: zif_handler,
-    /// Bodies for `bailout::trap`: `openssl_x509_read`,
-    /// `Coroutine::get_current_safe()` and `php_swoole_convert_to_fd`, over
-    /// the calls in `socket`.
-    x509_read: unsafe extern "C" fn(call: *mut c_void),
-    coroutine_check: unsafe extern "C" fn(unused: *mut c_void),
-    convert_to_fd: unsafe extern "C" fn(call: *mut c_void),
-    /// `php_swoole_check_reactor()`.
-    check_reactor: unsafe extern "C" fn(),
+// SAFETY: crates/phpcoroutines' hook flags, crates/coroutine's check,
+// crates/phpthread's count, linked into every extension; none has
+// preconditions.
+unsafe extern "C" {
+    safe fn swr_v1_phpcoroutines_set_hook_option(flags: u32);
+    safe fn swr_v1_phpcoroutines_hook_flags() -> u32;
+    safe fn swoole_coroutine_is_in() -> u8;
+    safe fn sw_active_thread_count() -> usize;
 }
 
-// SAFETY: a static table of function pointers and a class entry, both
-// process-global and read-only.
-unsafe impl Sync for Ops {}
-
-static OPS: OnceLock<&'static Ops> = OnceLock::new();
 static RUNTIME: Class = Class::new();
 /// `runtime_hook_flags`: the families hooked now.
 static HOOKED: AtomicU32 = AtomicU32::new(0);
 
-fn ops() -> &'static Ops {
-    // Functions run only after MINIT stored the table.
-    OPS.get().copied().unwrap_or_else(|| std::process::abort())
+/// `swoole_exception_ce`, which MINIT registered before the runtime's.
+fn exception() -> *mut zend_class_entry {
+    // SAFETY: MINIT wrote it and nothing writes it now.
+    unsafe { swoole_rs_phpswoole::swoole_exception_ce }
+}
+
+/// `sw_is_main_thread()`.
+fn main_thread() -> bool {
+    // SAFETY: no preconditions.
+    unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() }
 }
 
 /// `sw_callable_create(value)`: a crates/phphelpers callable, or null after a
@@ -161,7 +130,7 @@ pub unsafe fn callable_create(value: *mut zval) -> *mut c_void {
             value,
             std::ptr::null(),
             true,
-            ops().exception,
+            exception(),
             swr_zend_callable_warning,
         )
     };
@@ -310,17 +279,29 @@ fn factory() -> *mut c_void {
     swr_zend_stream_factory as *mut c_void
 }
 
-/// MINIT: `Swoole\Runtime` (not instantiable) and the `SWOOLE_HOOK_*`
-/// constants, as `php_swoole_runtime_minit` registered them.
+unsafe extern "C" {
+    /// `thirdparty/php/standard/proc_open.cc`.
+    fn swoole_proc_open_init(module_number: i32);
+    /// `thirdparty/php/streams/plain_wrapper.c`'s copy of PHP's plain-files
+    /// wrapper (a `php_stream_wrapper`, which only its address matters here).
+    static mut sw_php_plain_files_wrapper: u8;
+    fn php_register_url_stream_wrapper(protocol: *const c_char, wrapper: *mut c_void) -> c_int;
+}
+
+#[cfg(feature = "curl")]
+unsafe extern "C" {
+    /// crates/curl's native curl (`swoole_rs_curl.h`).
+    fn swoole_native_curl_minit(module_number: i32);
+    fn swoole_native_curl_mshutdown();
+}
+
+/// `php_swoole_runtime_minit`: `Swoole\Runtime` (not instantiable), the
+/// `SWOOLE_HOOK_*` constants, native curl, `proc_open`'s resource and the
+/// `async.file` wrapper.
 /// # Safety
-/// Called once, at MINIT, with upstream's static method table and a static
-/// operations table.
+/// Called once, at MINIT.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_minit(module_number: i32, ops: *const Ops) {
-    // SAFETY: per the caller, a static table.
-    if let Some(ops) = unsafe { ops.as_ref() } {
-        OPS.get_or_init(|| ops);
-    }
+pub unsafe extern "C" fn php_swoole_runtime_minit(module_number: i32) {
     // SAFETY: MINIT, with a static table.
     unsafe { RUNTIME.register_static(c"Swoole\\Runtime", METHODS.as_ptr()) };
     let features = features();
@@ -335,6 +316,30 @@ pub unsafe extern "C" fn swr_v1_phpruntime_minit(module_number: i32, ops: *const
     // SAFETY: MINIT, before any PHP thread starts.
     unsafe { swr_zend_stream_factory_set(Some(stream::transport_factory_body)) };
     transport::register_async(factory());
+    #[cfg(feature = "curl")]
+    // SAFETY: MINIT, with the module's number.
+    unsafe {
+        swoole_native_curl_minit(module_number);
+    }
+    // SAFETY: as above.
+    unsafe { swoole_proc_open_init(module_number) };
+    // SAFETY: MINIT; PHP keeps the static wrapper.
+    unsafe {
+        php_register_url_stream_wrapper(
+            c"async.file".as_ptr(),
+            (&raw mut sw_php_plain_files_wrapper).cast(),
+        )
+    };
+}
+
+/// `php_swoole_runtime_mshutdown`: native curl's.
+#[unsafe(no_mangle)]
+pub extern "C" fn php_swoole_runtime_mshutdown() {
+    #[cfg(feature = "curl")]
+    // SAFETY: MSHUTDOWN, after its MINIT.
+    unsafe {
+        swoole_native_curl_mshutdown();
+    }
 }
 
 swoole_rs_zend::handlers! {
@@ -345,8 +350,7 @@ swoole_rs_zend::handlers! {
 
 /// `Runtime::getHookFlags()`.
 fn get_hook_flags(call: &Call) {
-    // SAFETY: C++'s accessor.
-    call.set_long(i64::from(unsafe { (ops().get_hook_flags)() }));
+    call.set_long(i64::from(swr_v1_phpcoroutines_hook_flags()));
 }
 
 /// `Runtime::enableCoroutine()`.
@@ -385,8 +389,7 @@ fn set_hook_flags(call: &Call, min: u32) -> Result<(), Bailout> {
         reason = "upstream passes the zend_long as uint32_t"
     )]
     let requested = requested as u32;
-    // SAFETY: C++'s setter.
-    unsafe { (ops().set_hook_flags)(requested) };
+    swr_v1_phpcoroutines_set_hook_option(requested);
     call.set_bool(enable_hook(requested)?);
     Ok(())
 }
@@ -411,9 +414,12 @@ pub extern "C" fn php_coroutine_disable_hook() -> bool {
 /// # Errors
 /// A hook's setup bailed out.
 pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
-    let ops = ops();
-    // SAFETY: C++'s thread checks.
-    if unsafe { (ops.main_thread)() } == 0 || unsafe { (ops.active_threads)() } > 1 {
+    let threads = if built_with(Switch::Thread) {
+        sw_active_thread_count()
+    } else {
+        1
+    };
+    if !main_thread() || threads > 1 {
         log_warning(
             c"PHPCoroutine::enable_hook(): The runtime hook can only set on the main thread and no child threads have been created",
         );
@@ -495,11 +501,9 @@ fn transports(
 /// `hook_stream_ops` and `hook_pdo_driver`: the plain-files wrapper, the stdio
 /// ops and the PDO drivers built in.
 fn wrappers(requested: u32, installed: u32) {
-    let ops = ops();
     for (bit, stdio) in [(flags::FILE, 0), (flags::STDIO, 1)] {
         if let Some(hook) = transition(requested, installed, bit) {
-            // SAFETY: C++'s wrapper swap.
-            unsafe { (ops.stream_ops)(stdio, u8::from(hook)) };
+            stream_ops(stdio, u8::from(hook));
         }
     }
     for (bit, driver) in flags::PDO.into_iter().zip(DRIVERS) {
@@ -544,7 +548,24 @@ fn class(name: &CStr) -> Option<*mut zend_class_entry> {
 #[cfg(not(test))]
 fn throw(message: &Message, code: i64) {
     // SAFETY: a handler's context; Zend copies the message.
-    unsafe { swoole_rs_zend::throw_exception(ops().exception, message.as_cstr(), code) };
+    unsafe { swoole_rs_zend::throw_exception(exception(), message.as_cstr(), code) };
+}
+
+/// Swap the plain-files wrapper (0) or the stdio ops (1).
+#[cfg(not(test))]
+fn stream_ops(stdio: u8, hook: u8) {
+    // SAFETY: `thirdparty/php/streams/plain_wrapper.c`'s swap, which keeps
+    // PHP's originals; it has no preconditions.
+    unsafe extern "C" {
+        safe fn php_swoole_runtime_stream_ops(stdio: u8, hook: u8);
+    }
+    php_swoole_runtime_stream_ops(stdio, hook);
+}
+
+/// Unit tests link no PHP, so they see the swap as a trace entry.
+#[cfg(test)]
+fn stream_ops(stdio: u8, hook: u8) {
+    tests::record(format!("stream:{stdio}:{hook}"));
 }
 
 /// The PDO drivers' switches, in [`flags::PDO`]'s order.
@@ -615,8 +636,7 @@ fn log_warning(message: &CStr) {
 }
 
 fn in_coroutine() -> bool {
-    // SAFETY: C++'s check.
-    unsafe { (ops().in_coroutine)() != 0 }
+    swoole_coroutine_is_in() != 0
 }
 
 /// `PHPCoroutine::disable_unsafe_function()`.
@@ -642,8 +662,7 @@ pub extern "C" fn enable_unsafe_function() {
 /// this thread's function table before PHP 8.3 (0).
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phpruntime_rinit() -> u8 {
-    // SAFETY: C++'s check.
-    if unsafe { (ops().main_thread)() } == 0 {
+    if !main_thread() {
         functions::copy_to_thread();
         return 0;
     }
@@ -659,8 +678,7 @@ pub extern "C" fn swr_v1_phpruntime_rinit() -> u8 {
     unsafe(export_name = "php_swoole_runtime_rshutdown")
 )]
 pub extern "C" fn rshutdown() {
-    // SAFETY: C++'s check.
-    if unsafe { (ops().main_thread)() } == 0 {
+    if !main_thread() {
         return;
     }
     let disabled = enable_hook(0);
@@ -735,49 +753,7 @@ mod tests {
         TRACE.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
     }
 
-    unsafe extern "C" fn no() -> u8 {
-        0
-    }
-    unsafe extern "C" fn zero() -> u32 {
-        0
-    }
-    unsafe extern "C" fn sleep(_: f64) -> i32 {
-        0
-    }
-    unsafe extern "C" fn flags_in(_: u32) {}
-    unsafe extern "C" fn stream_ops(stdio: u8, hook: u8) {
-        record(format!("stream:{stdio}:{hook}"));
-    }
-    unsafe extern "C" fn error(_: i32, _: *const c_char) {}
-    unsafe extern "C" fn free(_: *mut c_void) {}
-
-    static FAKE: Ops = Ops {
-        exception: std::ptr::null_mut(),
-        in_coroutine: no,
-        coroutine_sleep: sleep,
-        set_hook_flags: flags_in,
-        get_hook_flags: zero,
-        main_thread: no,
-        active_threads: zero,
-        stream_ops,
-        fatal_error: error,
-        error,
-        proc_open: None,
-        proc_close: None,
-        proc_get_status: None,
-        proc_terminate: None,
-        gethostbyname: None,
-        exit: None,
-        putenv: None,
-        x509_read: free,
-        coroutine_check: free,
-        convert_to_fd: free,
-        check_reactor: unchecked,
-    };
-    unsafe extern "C" fn unchecked() {}
-
     fn run(requested: u32, installed: u32) -> (u32, Vec<String>) {
-        OPS.get_or_init(|| &FAKE);
         let requested = transports(requested, installed, |index, hook| {
             record(format!("transport:{index}:{}", u8::from(hook)));
             0

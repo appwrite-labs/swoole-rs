@@ -7,8 +7,8 @@ use crate::{
     sys::{
         swr_zend_guard_pending, swr_zend_guard_resume, swr_zend_parse_func, swr_zend_try,
         swr_zend_try_call, swr_zend_try_call_method, swr_zend_try_report, swr_zend_try_report_code,
-        swr_zend_try_report_flag, swr_zend_try_report_level, zend_class_entry, zend_fcall_info,
-        zend_fcall_info_cache, zend_object, zval,
+        swr_zend_try_report_flag, zend_class_entry, zend_fcall_info, zend_fcall_info_cache,
+        zend_object, zval,
     },
 };
 use std::ffi::{CStr, c_char, c_int, c_void};
@@ -151,23 +151,6 @@ pub unsafe fn report(
     }
     // SAFETY: per the caller; the shim's setjmp sits between this frame and `report`.
     trapped(unsafe { swr_zend_try_report(Some(report), message.as_ptr()) })
-}
-
-/// [`report`] of a reporter that takes the error level.
-/// # Errors
-/// A user error handler bailed out.
-/// # Safety
-/// As [`report`].
-pub unsafe fn report_level(
-    report: unsafe extern "C" fn(c_int, *const c_char),
-    level: c_int,
-    message: &CStr,
-) -> Result<(), Bailout> {
-    if pending() {
-        return Err(Bailout);
-    }
-    // SAFETY: as in `report`.
-    trapped(unsafe { swr_zend_try_report_level(Some(report), level, message.as_ptr()) })
 }
 
 /// [`report`] of a reporter that takes an error code and an int flag.

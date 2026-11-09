@@ -19,4 +19,6 @@ mod private;
 mod utilities;
 
 #[cfg(feature = "php")]
+pub use common::{known_free, known_init, sw_zend_known_strings};
+#[cfg(feature = "php")]
 pub use private::{Create, array_property_of, function_call, named_call, swr_v1_phphelpers_call};

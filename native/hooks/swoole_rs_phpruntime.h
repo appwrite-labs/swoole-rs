@@ -2,9 +2,7 @@
  * constants, the hook flags, PHPCoroutine::enable_hook's family transitions,
  * the function-table hooks and the sleep family's replacements (their
  * zif_swoole_* handlers), its methods and the hooked stream functions; each
- * raises a trapped bailout last. C++ lends what it alone reaches: the stream
- * wrappers, Swoole's coroutine state and logger,
- * and the handlers that stay C++. */
+ * raises a trapped bailout last. plain_wrapper.c keeps PHP's stream wrappers. */
 #ifndef SWOOLE_RS_PHPRUNTIME_H
 #define SWOOLE_RS_PHPRUNTIME_H
 #include <stdbool.h>
@@ -17,46 +15,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-struct _zend_class_entry;
-struct _zend_execute_data;
-struct _zval_struct;
-typedef void (*swr_v1_phpruntime_handler)(struct _zend_execute_data *execute_data, struct _zval_struct *return_value);
-struct swr_v1_phpruntime_ops {
-    struct _zend_class_entry *exception;
-    uint8_t (*in_coroutine)(void);
-    int32_t (*coroutine_sleep)(double seconds);
-    void (*set_hook_flags)(uint32_t flags);
-    uint32_t (*get_hook_flags)(void);
-    uint8_t (*main_thread)(void);
-    uint32_t (*active_threads)(void);
-    void (*stream_ops)(uint8_t stdio, uint8_t hook);
-    void (*fatal_error)(int32_t level, const char *message);
-    void (*error)(int32_t level, const char *message);
-    swr_v1_phpruntime_handler proc_open;
-    swr_v1_phpruntime_handler proc_close;
-    swr_v1_phpruntime_handler proc_get_status;
-    swr_v1_phpruntime_handler proc_terminate;
-    swr_v1_phpruntime_handler gethostbyname;
-    swr_v1_phpruntime_handler exit;
-    swr_v1_phpruntime_handler putenv;
-    /* Bodies for swr_zend_try: openssl_x509_read, Coroutine::get_current_safe()
-     * and php_swoole_convert_to_fd. */
-    void (*x509_read)(void *call);    /* struct swr_v1_phpruntime_x509_call */
-    void (*coroutine_check)(void *unused);
-    void (*convert_to_fd)(void *call); /* struct swr_v1_phpruntime_fd_call */
-    void (*check_reactor)(void);
-};
-struct swr_v1_phpruntime_x509_call {
-    const char *pem;
-    size_t length;
-    struct _zval_struct *retval;
-};
-struct swr_v1_phpruntime_fd_call {
-    struct _zval_struct *value;
-    int fd;
-};
-void swr_v1_phpruntime_minit(int32_t module_number,
-                             const struct swr_v1_phpruntime_ops *ops);
 /* RINIT: 1 on the main thread (the plain wrapper then saves the original stream ops). */
 uint8_t swr_v1_phpruntime_rinit(void);
 /* PHPCoroutine::enable_hook(flags), 0 disabling every hook; a trapped bailout is raised last. */
