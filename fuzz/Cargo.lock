@@ -162,7 +162,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
- "swoole-rs-http",
  "swoole-rs-http-ffi",
  "swoole-rs-reactor",
  "swoole-rs-tls",

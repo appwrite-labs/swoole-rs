@@ -66,8 +66,8 @@ differ across platforms.
 
 `--sanitize` instruments C++ only, not the Rust archive.
 
-`error-native` (`tools/core_check.py --module error`, which runs
-`differential.py` on the build's archive) and `error-php` run these.
+`error-native` (`differential.py` on the hybrid build's archive) and `error-php`
+run these.
 
 ## Benchmarks
 

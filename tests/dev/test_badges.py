@@ -81,13 +81,13 @@ class Badges(unittest.TestCase):
                     self.assertEqual(badges.replaced(badges.kept(source, rows[:1])), (930, 1801))
                     self.assertEqual(badges.replaced(badges.kept(source, rows)), (927, 1801))
 
-    def test_phpt_counts_hybrid_passes_over_every_pinned_test(self):
-        rows = [{'test': 'a', 'engine': 'upstream', 'status': 'passed'}, {'test': 'a', 'engine': 'hybrid', 'status': 'passed'},
-                {'test': 'b', 'engine': 'upstream', 'status': 'passed'}, {'test': 'b', 'engine': 'hybrid', 'status': 'failed'},
-                {'test': 'c', 'engine': 'upstream', 'status': 'skipped'}, {'test': 'c', 'engine': 'hybrid', 'status': 'skipped'},
-                {'test': 'd', 'engine': 'upstream', 'status': 'passed'}, {'test': 'd', 'engine': 'hybrid', 'status': 'failed', 'rerun': 'passed'}]
+    def test_phpt_counts_cargo_passes_over_every_pinned_test(self):
+        rows = [{'test': 'a', 'engine': 'upstream', 'status': 'passed'}, {'test': 'a', 'engine': 'cargo', 'status': 'passed'},
+                {'test': 'b', 'engine': 'upstream', 'status': 'passed'}, {'test': 'b', 'engine': 'cargo', 'status': 'failed'},
+                {'test': 'c', 'engine': 'upstream', 'status': 'skipped'}, {'test': 'c', 'engine': 'cargo', 'status': 'skipped'},
+                {'test': 'd', 'engine': 'upstream', 'status': 'passed'}, {'test': 'd', 'engine': 'cargo', 'status': 'failed', 'rerun': 'passed'}]
         self.assertEqual(badges.phpt_passing(rows), (2, 4))
-        # Another job's gate (a build variant, on the Cargo build) passes b; c can't apply here.
+        # Another job's gate (a build variant) passes b; c can't apply here.
         rows.append({'test': 'b', 'engine': 'cargo', 'status': 'passed'})
         self.assertEqual(badges.phpt_passing(rows, {'c': 'darwin only'}), (3, 3))
 
@@ -101,6 +101,12 @@ class Badges(unittest.TestCase):
         self.assertIn('| websocket | 120 | 100 | 1.2000× | 1.1× | ❌ |', table)
         self.assertIn('| timer | 80 | 100 | 0.8000× |  | ✅ |', table)
         self.assertIn('`abcdef0`', table)
+
+    def test_speed_reads_a_result_from_before_the_cargo_build_by_its_hybrid_row(self):
+        result = {'instructions_per_request': {'plaintext': {'hybrid': 90.0, 'upstream': 100.0}}}
+        badge, table = badges.speed(result, {}, 'abcdef0123')
+        self.assertEqual(badge['message'], '1/1 faster · slowest plaintext 0.90×')
+        self.assertIn('| plaintext | 90 | 100 | 0.9000× |', table)
 
 
 if __name__ == '__main__':
