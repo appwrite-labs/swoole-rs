@@ -133,11 +133,7 @@ fn encode(header: &HttpStaticHeaders) -> Vec<u8> {
 }
 
 fn status_message(status: i32) -> Vec<u8> {
-    let message = swoole_rs_http::swr_v2_http_status_message(status);
-    // SAFETY: a NUL-terminated status text, copied before the next lookup.
-    unsafe { core::ffi::CStr::from_ptr(message) }
-        .to_bytes()
-        .to_vec()
+    swoole_rs_http::status_message(status).into_owned()
 }
 
 #[expect(

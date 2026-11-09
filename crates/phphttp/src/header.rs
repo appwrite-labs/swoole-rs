@@ -10,7 +10,6 @@ use std::io::Write;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_deflate::{Allocator, DEFLATE, Failure, GZIP, bound, compress as deflate};
-use swoole_rs_http::swr_v2_http_status_message;
 use swoole_rs_httpbindings::{
     response_header, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level,
     swr_v1_httpbindings_encoding,
@@ -308,9 +307,7 @@ fn build(
     // http status line
     out.extend_from_slice(b"HTTP/1.1 ");
     if state.response.reason.is_null() {
-        // SAFETY: the http module's static status texts.
-        let status = unsafe { CStr::from_ptr(swr_v2_http_status_message(state.response.status)) };
-        out.extend_from_slice(status.to_bytes());
+        out.extend_from_slice(&swoole_rs_http::status_message(state.response.status));
     } else {
         write!(out, "{}", state.response.status).unwrap_or_default();
         out.push(b' ');

@@ -33,7 +33,7 @@ compares `C0`/`E0` with ASCII rules where libc in `en_US.ISO8859-1` treats them
 as equal. Unavailable locales are reported as unsupported.
 
 `gate.py` holds the helpers these share (`body`, `Sides`, `run`). The status, method,
-URL and boundary helpers are Rust behind thin facades, so the crate's
+URL and boundary helpers are Rust behind thin facades, so crates/http-ffi's
 `pin_helpers` tests compare them with v6.2.4's bodies instead.
 
 ### Ported GoogleTests
@@ -77,12 +77,12 @@ callbacks skip fields under `F_TRAILING`) is checked by the pinned PHPTs
 
 The 11 TESTs that start no server call the helpers, the request-line reader and the
 WebSocket codec directly. Their ports sit beside the Rust each one calls, with the
-same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-websocket-ffi --lib`.
+same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-http-ffi -p swoole-rs-websocket-ffi --lib`.
 
 | Upstream TEST | Rust test |
 | --- | --- |
-| `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `crates/http/src/http_server.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
-| `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
+| `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `crates/http-ffi/src/http_server.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
+| `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http-ffi/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
 | `has_expect_header`, `get_protocol`, `all_method` | `crates/http/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket-ffi/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
 | `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http/src/request.rs`: same names, over the bundled multipart parser (#1938) |
