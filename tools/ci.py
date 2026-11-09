@@ -7,6 +7,8 @@
   ci.py next                 the claimable issues in claim order (exit 2 when there are none)
   ci.py stuck                auto-merge PRs that conflict with main or failed a required check,
                              oldest first (exit 2 when there are none)
+  ci.py phpt-baseline        `RUN SHA` of main's latest completed merge-tier run whose upstream
+                             PHPT shards all passed, the PR tier's upstream results (exit 2: none)
   ci.py new-failures LOOP... the failed phases in these dev.py loop.json reports that passed, or
                              didn't exist, in main's latest completed merge-tier run (exit 1 if any)
 
@@ -38,7 +40,7 @@ import time
 
 EXIT = {'passed': 0, 'failed': 1, 'none': 2, 'running': 2, 'cancelled': 3, 'conflicts': 4}
 LOG_LINES = 40
-GATE_JOB = 'phpt-gate'
+GATE_JOB = 'phpt / gate'
 # The merge-tier jobs (full-gates, or its shards "full-gates (N)") whose dev.py phases the
 # `phases*` artifacts list, replacing their log tails.
 PHASES_JOB = 'full-gates'
@@ -314,6 +316,20 @@ def claimable():
             for issue in sorted(issues, key=lambda issue: (priority(issue), issue['created_at']))]
 
 
+def phpt_baseline():
+    """(run, head sha) of main's newest completed merge-tier run whose `phpt (n, upstream)` shards
+    all succeeded: its phpt-upstream-* reports and phpt-engines' upstream.so stand in for running
+    upstream on every PR."""
+    runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--status', 'completed',
+                         '--limit', '30', '--json', 'databaseId,headSha'))
+    for run in runs:
+        shards = [conclusion for name, conclusion in job_conclusions(run['databaseId']).items()
+                  if re.fullmatch(r'(phpt / )?phpt \(\d+, upstream\)', name)]
+        if shards and all(conclusion == 'success' for conclusion in shards):
+            return run['databaseId'], run['headSha']
+    return None
+
+
 # The PR tier's aggregate check, the one main's ruleset requires; it needs every blocking job.
 REQUIRED = ('required',)
 
@@ -366,8 +382,17 @@ def main(argv=None):
         command.add_argument('--json', action='store_true')
     for name in ['next', 'stuck']:
         commands.add_parser(name).add_argument('--json', action='store_true')
+    commands.add_parser('phpt-baseline')
     commands.add_parser('new-failures').add_argument('loops', nargs='*', type=Path, metavar='LOOP_JSON')
     args = parser.parse_args(argv)
+    if args.command == 'phpt-baseline':
+        try:
+            baseline = phpt_baseline()
+        except subprocess.CalledProcessError as failure:
+            sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
+        if baseline:
+            print(*baseline)
+        return 0 if baseline else 2
     if args.command == 'new-failures':
         if not args.loops:
             sys.exit('new-failures: no loop.json given; the gates ran nothing')
