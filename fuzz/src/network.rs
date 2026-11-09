@@ -7,10 +7,10 @@ use std::net::IpAddr;
 use swoole_rs_clients::dns::swr_v1_clients_dns_query;
 use swoole_rs_http::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
 use swoole_rs_http2::{
-    Http2FrameFacts, PacketLength, get_frame_length, sw_rs_http2_decode_frame,
-    sw_rs_http2_unpack_setting,
+    Http2FrameFacts, Http2InflateStep, PacketLength, get_frame_length, sw_rs_http2_decode_frame,
+    sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
 };
-use swoole_rs_oracle::multipart;
+use swoole_rs_oracle::{multipart, nghttp2};
 use swoole_rs_protocols::{RespPhpState, RespSpan, swr_v1_resp_php_next};
 
 /// Any bytes as an HTTP/2 frame header (RFC 9113 4.1) and a SETTINGS entry (6.5.1):
@@ -341,6 +341,78 @@ pub fn http_chunked(bytes: &[u8]) {
         BODY.get(),
         body.len()
     );
+}
+
+/// Any bytes as HEADERS frame payloads of one connection (a fuzzer-chosen frame size,
+/// server or client role), each decoded by the bundled nghttp2 inflater through the
+/// step loop the hybrid runs (`sw_rs_http2_inflate_step`): every call consumes at most
+/// what is left, every emitted name and value is readable and NUL-terminated, and the
+/// loop ends within one step per input byte.
+pub fn http2_hpack(bytes: &[u8]) {
+    let Some((&[role, size], blocks)) = bytes.split_first_chunk::<2>() else {
+        return;
+    };
+    let mut inflater = std::ptr::null_mut();
+    // SAFETY: `inflater` is a writable pointer.
+    assert_eq!(unsafe { nghttp2::nghttp2_hd_inflate_new(&mut inflater) }, 0);
+    'blocks: for block in blocks.chunks(usize::from(size).max(1)) {
+        let mut input = block;
+        let mut steps = 0;
+        loop {
+            steps += 1;
+            assert!(steps <= block.len() + 1, "inflate loop over {block:?}");
+            let mut nv = nghttp2::Nv {
+                name: std::ptr::null(),
+                value: std::ptr::null(),
+                name_length: 0,
+                value_length: 0,
+                flags: 0,
+            };
+            let mut flags = 0;
+            // SAFETY: a live inflater over `input`; `nv` and `flags` are writable.
+            let read = unsafe {
+                nghttp2::nghttp2_hd_inflate_hd(
+                    inflater,
+                    &mut nv,
+                    &mut flags,
+                    input.as_ptr(),
+                    input.len(),
+                    1,
+                )
+            };
+            // A decoding error ends the connection.
+            let Ok(read) = usize::try_from(read) else {
+                break 'blocks;
+            };
+            input = input.get(read..).expect("inflate read past its input");
+            if flags & nghttp2::INFLATE_EMIT != 0 {
+                for (text, length) in [(nv.name, nv.name_length), (nv.value, nv.value_length)] {
+                    // SAFETY: nghttp2's NUL-terminated copy, live until the next call.
+                    let text = unsafe { std::slice::from_raw_parts(text, length + 1) };
+                    assert_eq!(text.last(), Some(&0), "unterminated header {text:?}");
+                }
+            }
+            let mut step = Http2InflateStep {
+                end_headers: 0,
+                finish: 0,
+            };
+            #[expect(clippy::cast_sign_loss, reason = "nghttp2's flag bits")]
+            // SAFETY: a writable step.
+            unsafe {
+                sw_rs_http2_inflate_step(flags as u32, input.len(), u32::from(role & 1), &mut step);
+            };
+            if step.end_headers != 0 {
+                // SAFETY: a live inflater.
+                unsafe { nghttp2::nghttp2_hd_inflate_end_headers(inflater) };
+                break;
+            }
+            if step.finish != 0 {
+                break;
+            }
+        }
+    }
+    // SAFETY: the inflater made above.
+    unsafe { nghttp2::nghttp2_hd_inflate_del(inflater) };
 }
 
 /// Any bytes as a `Redis\Server` request, walked with `swr_v1_resp_php_next` as the

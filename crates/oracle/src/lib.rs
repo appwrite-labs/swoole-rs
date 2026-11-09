@@ -858,6 +858,40 @@ pub mod multipart {
     }
 }
 
+/// The bundled nghttp2 HPACK inflater the HTTP/2 server and client decode headers with.
+pub mod nghttp2 {
+    use core::ffi::{c_int, c_void};
+
+    /// `nghttp2_nv`.
+    #[repr(C)]
+    pub struct Nv {
+        pub name: *const u8,
+        pub value: *const u8,
+        pub name_length: usize,
+        pub value_length: usize,
+        pub flags: u8,
+    }
+
+    /// `NGHTTP2_HD_INFLATE_FINAL`.
+    pub const INFLATE_FINAL: c_int = 1;
+    /// `NGHTTP2_HD_INFLATE_EMIT`.
+    pub const INFLATE_EMIT: c_int = 2;
+
+    unsafe extern "C" {
+        pub fn nghttp2_hd_inflate_new(inflater: *mut *mut c_void) -> c_int;
+        pub fn nghttp2_hd_inflate_del(inflater: *mut c_void);
+        pub fn nghttp2_hd_inflate_hd(
+            inflater: *mut c_void,
+            nv: *mut Nv,
+            flags: *mut c_int,
+            input: *const u8,
+            length: usize,
+            in_final: c_int,
+        ) -> isize;
+        pub fn nghttp2_hd_inflate_end_headers(inflater: *mut c_void) -> c_int;
+    }
+}
+
 /// Upstream core-tests' recorded requests (`core-tests/fuzz/cases`).
 pub mod cases {
     /// A multipart POST of three form fields.
