@@ -160,46 +160,16 @@ fn http_frame() {
     fs::write(out("http_frame_enums.inc"), enums.concat()).unwrap();
 }
 
-/// `StaticHandler::parse_range` from the pinned `static_handler.cc` (upstream, for
-/// `shim/http_range.cc`) and, with the http static-ranges patch applied, the Rust
-/// static context's `parse_range` with `ensure_boundary` and `resume_range_header`
-/// (candidate, for `shim/http_range_context.cc`), copied unchanged.
+/// `StaticHandler::parse_range` from the pinned `static_handler.cc`, copied unchanged
+/// for `shim/http_range.cc`.
 fn http_range() {
-    let patch = "../../migration/patches/http/0002-static-ranges.patch";
-    println!("cargo:rerun-if-changed={patch}");
     let upstream = fs::read_to_string("upstream/src/server/static_handler.cc")
         .expect("vendored static_handler.cc");
-    let candidate = apply(
-        &upstream,
-        &fs::read_to_string(patch).expect("static-ranges patch"),
-    );
-    let engines = [
-        (
-            "upstream",
-            &upstream,
-            &["void StaticHandler::parse_range("][..],
-        ),
-        (
-            "candidate",
-            &candidate,
-            &[
-                "static int32_t resume_range_header(",
-                "uint32_t StaticHandler::ensure_boundary(",
-                "void StaticHandler::parse_range(",
-            ][..],
-        ),
-    ];
-    for (name, text, signatures) in engines {
-        let parts: Vec<String> = signatures
-            .iter()
-            .map(|signature| definition(text, signature))
-            .collect();
-        fs::write(
-            out(&format!("http_range_{name}.inc")),
-            parts.join("\n") + "\n",
-        )
-        .unwrap();
-    }
+    fs::write(
+        out("http_range_upstream.inc"),
+        definition(&upstream, "void StaticHandler::parse_range(") + "\n",
+    )
+    .unwrap();
 }
 
 /// `Server::select_static_handler` from the pinned `static_handler.cc` and
@@ -619,11 +589,6 @@ fn main() {
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/http_range.cc")
         .compile("swoole_upstream_http_range");
-    cpp()
-        .include("../../native/http")
-        .include(env::var("OUT_DIR").unwrap())
-        .file("shim/http_range_context.cc")
-        .compile("swoole_candidate_http_range");
     cpp()
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/http_static_select.cc")

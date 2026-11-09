@@ -235,6 +235,10 @@ pub unsafe extern "C" fn swr_v1_server_static_rewrite(
     let state = unsafe { &*state };
     // SAFETY: the caller lends the context exclusively.
     let context = unsafe { &mut *context };
+    apply_rewrite_rules(state, context)
+}
+/// Upstream's `Server::apply_rewrite_rules` over the server's rules.
+pub(crate) fn apply_rewrite_rules(state: &ServerState, context: &mut HttpStaticContext) -> bool {
     context.rewrite(&owner(state).rewrite_rules)
 }
 
@@ -284,28 +288,15 @@ mod tests {
     #[test]
     fn rewrite_rules_rewrite_the_context_url() {
         let state = ServerState::new();
-        let url = b"/view/post/3";
-        unsafe {
-            let context = swoole_rs_http::swr_v2_http_context_new(url.as_ptr(), url.len(), 128);
-            assert!(!swr_v1_server_static_rewrite(&raw const state, context));
-            let rule = |pattern: &[u8], replacement: &[u8]| {
-                swr_v1_server_static_rewrite_add(
-                    &raw const state,
-                    pattern.as_ptr(),
-                    pattern.len(),
-                    replacement.as_ptr(),
-                    replacement.len(),
-                );
-            };
-            rule(b"~^/view/post/(\\d+)$~", b"/static/$1.html");
-            rule(b"/article/", b"/static/article/");
-            assert!(swr_v1_server_static_rewrite(&raw const state, context));
-            assert!(
-                !swr_v1_server_static_rewrite(&raw const state, context),
-                "/static/3.html matches neither"
-            );
-            swoole_rs_http::swr_v2_http_context_drop(context);
-        }
+        let mut context = HttpStaticContext::new(b"/view/post/3", 128).unwrap();
+        assert!(!apply_rewrite_rules(&state, &mut context));
+        add_rewrite_rule(&state, b"~^/view/post/(\\d+)$~", b"/static/$1.html");
+        add_rewrite_rule(&state, b"/article/", b"/static/article/");
+        assert!(apply_rewrite_rules(&state, &mut context));
+        assert!(
+            !apply_rewrite_rules(&state, &mut context),
+            "/static/3.html matches neither"
+        );
     }
     #[test]
     fn shared_context_owner_observes_mutation_and_outlives_native_server() {

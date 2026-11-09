@@ -6,7 +6,8 @@ use std::ffi::{CStr, c_char};
 use swoole_rs_clients::{cookie, domain_decode};
 use swoole_rs_framing::{DefaultLength, default_length, unpack, width};
 use swoole_rs_http::{
-    HttpCookie, swr_v1_http_cookie_next, swr_v1_http_url_capacity, swr_v1_http_url_decode,
+    BOUNDARY_SIZE, HttpCookie, HttpStaticContext, HttpStaticObservation, StaticEffects,
+    swr_v1_http_cookie_next, swr_v1_http_url_capacity, swr_v1_http_url_decode,
     swr_v1_http_url_encode,
 };
 use swoole_rs_oracle::{
@@ -791,8 +792,8 @@ fn multipart_nul(bytes: &[u8], start: usize, end: usize) -> bool {
 
 const RANGE_BOUNDARY: &[u8] = b"SwooleBoundary0123456789abcdefghijklmn\0";
 
-fn range_on(
-    engine: http_range::ParseRange,
+/// Upstream's `parse_range` through its facade (`crates/oracle/shim/http_range.cc`).
+fn range_upstream(
     range: &[c_char],
     filesize: u64,
     mime: &[c_char],
@@ -806,7 +807,7 @@ fn range_on(
     // SAFETY: range, mime and the boundary are NUL-terminated; tasks has room for
     // capacity tasks; outcome is a local.
     unsafe {
-        engine(
+        http_range::UPSTREAM(
             range.as_ptr(),
             filesize,
             mime.as_ptr(),
@@ -820,6 +821,81 @@ fn range_on(
     };
     tasks.truncate(outcome.tasks.min(capacity) * http_range::TASK_SIZE);
     (outcome, tasks)
+}
+
+/// The facade's world: a file of `filesize` bytes with this MIME type, the boundary's
+/// random characters and the If-Range verdict.
+struct RangeFacade {
+    filesize: usize,
+    mime: Vec<u8>,
+    modified: bool,
+}
+impl StaticEffects for RangeFacade {
+    fn stat(&self, _: &[u8]) -> Option<HttpStaticObservation> {
+        Some(HttpStaticObservation {
+            filesize: self.filesize,
+            ..HttpStaticObservation::default()
+        })
+    }
+    fn mime(&self, _: &[u8]) -> Vec<u8> {
+        self.mime.clone()
+    }
+    fn mime_exists(&self, _: &[u8]) -> bool {
+        false
+    }
+    fn random(&self, out: &mut [u8; BOUNDARY_SIZE], count: usize) {
+        let random = c_text(&RANGE_BOUNDARY[b"SwooleBoundary".len()..]);
+        let count = count.min(random.len());
+        out[..count].copy_from_slice(&random[..count]);
+    }
+    fn modified_range(&self, _: &[u8], _: i64) -> bool {
+        self.modified
+    }
+    fn overflow(&self) {}
+}
+
+/// The selected `parse_range`, crates/http's static context, as the facade runs it.
+fn range_candidate(
+    range: &[u8],
+    filesize: u64,
+    mime: &[u8],
+    flags: u8,
+    capacity: usize,
+) -> (http_range::Outcome, Vec<u8>) {
+    let facade = RangeFacade {
+        filesize: usize::try_from(filesize).unwrap_or(usize::MAX),
+        mime: mime.to_vec(),
+        modified: flags & 2 != 0,
+    };
+    let mut context = HttpStaticContext::new(b"/file", 4096).expect("a static context");
+    context.stat(&facade);
+    context.parse_range(Some(range), (flags & 1 != 0).then_some(b""), &facade);
+    let facts = context.observe();
+    let end = context.end_part();
+    let mut outcome = http_range::Outcome {
+        content_length: facts.content_length,
+        status_code: facts.status,
+        thrown: 0,
+        tasks: facts.task_count,
+        end_part_length: end.len(),
+        ..http_range::Outcome::default()
+    };
+    let shown = end.len().min(outcome.end_part.len());
+    outcome.end_part[..shown].copy_from_slice(&end[..shown]);
+    let mut tasks = Vec::new();
+    for task in context.tasks().iter().take(capacity) {
+        tasks.extend_from_slice(&task.offset.cast_unsigned().to_ne_bytes());
+        tasks.extend_from_slice(&(task.length as u64).to_ne_bytes());
+        let header = c_text(&task.part_header);
+        tasks.extend_from_slice(header);
+        tasks.resize(tasks.len() + task.part_header.len() - header.len(), 0);
+    }
+    (outcome, tasks)
+}
+
+/// The text up to its first NUL, as a C string reads it.
+fn c_text(text: &[u8]) -> &[u8] {
+    text.split(|&byte| byte == 0).next().unwrap_or_default()
 }
 
 /// A flags byte (If-Range sent, file modified), a MIME type length, a file size and a
@@ -836,36 +912,28 @@ pub fn http_range(bytes: &[u8]) {
     if i64::try_from(filesize).is_err() {
         return;
     }
-    let mime: Vec<c_char> = b"application/octet-stream"
+    let mime: Vec<u8> = b"application/octet-stream"
         .iter()
         .cycle()
         .take(usize::from(mime_length))
-        .chain(&[0])
-        .map(|&byte| byte as c_char)
+        .copied()
         .collect();
-    let range: Vec<c_char> = range
-        .iter()
-        .take_while(|&&byte| byte != 0)
-        .chain(&[0])
-        .map(|&byte| byte as c_char)
-        .collect();
-    let capacity = range.len() + 2;
-    let want = range_on(
-        http_range::UPSTREAM,
-        &range,
+    let range = c_text(range);
+    let terminated = |text: &[u8]| -> Vec<c_char> {
+        text.iter()
+            .chain(&[0])
+            .map(|&byte| byte as c_char)
+            .collect()
+    };
+    let capacity = range.len() + 3;
+    let want = range_upstream(
+        &terminated(range),
         filesize,
-        &mime,
+        &terminated(&mime),
         flags,
         capacity,
     );
-    let got = range_on(
-        http_range::CANDIDATE,
-        &range,
-        filesize,
-        &mime,
-        flags,
-        capacity,
-    );
+    let got = range_candidate(range, filesize, &mime, flags, capacity);
     assert_eq!(got, want, "range for {bytes:?}");
 }
 

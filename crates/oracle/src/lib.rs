@@ -433,11 +433,10 @@ pub mod http_range {
         }
     }
 
-    /// `StaticHandler::parse_range(range, if_range ? "" : nullptr)` compiled from one
-    /// engine's `static_handler.cc` (`upstream` pinned, `candidate` with the http
-    /// static-ranges patch, over the Rust static context), on a file of `filesize`
-    /// bytes with this MIME type and boundary, `is_modified_range` answering
-    /// `modified`. Up to `capacity` tasks go to `tasks` ([`TASK_SIZE`] bytes each).
+    /// `StaticHandler::parse_range(range, if_range ? "" : nullptr)` compiled from the
+    /// pinned `static_handler.cc`, on a file of `filesize` bytes with this MIME type
+    /// and boundary, `is_modified_range` answering `modified`. Up to `capacity`
+    /// tasks go to `tasks` ([`TASK_SIZE`] bytes each).
     pub type ParseRange = unsafe extern "C" fn(
         range: *const c_char,
         filesize: u64,
@@ -462,21 +461,9 @@ pub mod http_range {
             tasks: *mut u8,
             capacity: usize,
         );
-        fn swr_oracle_http_range_candidate(
-            range: *const c_char,
-            filesize: u64,
-            mime: *const c_char,
-            boundary: *const c_char,
-            if_range: i32,
-            modified: i32,
-            out: *mut Outcome,
-            tasks: *mut u8,
-            capacity: usize,
-        );
     }
 
     pub const UPSTREAM: ParseRange = swr_oracle_http_range_upstream;
-    pub const CANDIDATE: ParseRange = swr_oracle_http_range_candidate;
 }
 
 pub mod http_static_select {

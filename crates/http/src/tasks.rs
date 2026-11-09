@@ -1,6 +1,6 @@
 //! Sole persistent `StaticHandler` task storage. Native owns one local immutable
 //! send snapshot and executes RNG/MIME/date/allocation/IO effects after return.
-use crate::range_response::{HttpRangeFormat, swr_v1_http_range_format};
+use crate::range_response::{HttpRangeFormat, range_format};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,7 +19,7 @@ impl Default for HttpStaticTask {
     }
 }
 #[derive(Default)]
-pub struct HttpTasks {
+pub(crate) struct HttpTasks {
     items: Vec<HttpStaticTask>,
     scratch: HttpStaticTask,
 }
@@ -60,43 +60,29 @@ impl HttpTasks {
     /// Prepare a range task: copied metadata and the part's header in the scratch
     /// task, formatted with the range formatter's byte/errno-count policy, including
     /// retained initialized tail bytes. This does not commit a task.
-    ///
-    /// # Safety
-    /// `format`'s spans name readable, initialized bytes.
-    pub(crate) unsafe fn prepare_range(
+    pub(crate) fn prepare_range(
         &mut self,
         offset: i64,
         length: usize,
-        format: &HttpRangeFormat,
+        format: &HttpRangeFormat<'_>,
         written: &mut usize,
     ) -> i32 {
         self.prepare_full(offset, length);
-        // SAFETY: the caller's readable spans; the scratch header holds 256 writable
-        // bytes, and `written` is a live exclusive output.
-        unsafe {
-            swr_v1_http_range_format(format, self.scratch.part_header.as_mut_ptr(), 256, written)
-        }
+        range_format(format, &mut self.scratch.part_header, written)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::HttpProxyText;
     #[test]
     fn owned_tasks_copy_headers_and_snapshot_survives_owner_mutation() {
         let mut owner = HttpTasks::default();
         owner.begin();
         let mut boundary = b"fixed-boundary".to_vec();
         let format = HttpRangeFormat {
-            boundary: HttpProxyText {
-                data: boundary.as_ptr(),
-                length: boundary.len(),
-            },
-            mime: HttpProxyText {
-                data: b"text/plain".as_ptr(),
-                length: 10,
-            },
+            boundary: &boundary,
+            mime: b"text/plain",
             offset: 3,
             length: 5,
             filesize: 100,
@@ -104,10 +90,7 @@ mod tests {
             separator: 0,
         };
         let mut written = 0;
-        assert_eq!(
-            unsafe { owner.prepare_range(3, 5, &format, &mut written) },
-            0
-        );
+        assert_eq!(owner.prepare_range(3, 5, &format, &mut written), 0);
         assert!(written > 0);
         assert_eq!(owner.push(), 0);
         boundary.fill(b'x');

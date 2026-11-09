@@ -7,16 +7,6 @@ extern "C" {
 #endif
 typedef struct { size_t offset, length; } swr_v1_http_span;
 
-typedef struct { int64_t offset; size_t length; char part_header[256]; } swr_v2_http_static_task;
-
-typedef struct {
-    const uint8_t *data; size_t length;
-} swr_v1_http_range_text;
-typedef struct {
-    swr_v1_http_range_text boundary, mime;
-    size_t offset, length, filesize; uint32_t part, separator;
-} swr_v1_http_range_format_input;
-int32_t swr_v1_http_range_format(const swr_v1_http_range_format_input *, uint8_t *, size_t, size_t *);
 int32_t swr_v1_http_multipart_disposition(const uint8_t *, size_t);
 int32_t swr_v1_http_multipart_filename(uint8_t *, size_t);
 typedef struct { size_t key_offset, key_length, value_offset, value_length; uint32_t has_value; } swr_v1_http_cookie;
@@ -39,26 +29,8 @@ typedef struct {
 } swr_v3_http_calendar;
 int32_t swr_v3_http_conditional(const char *, size_t, uint32_t, const int64_t *, const long *, const swr_v3_http_calendar *);
 size_t swr_v3_http_date(const int64_t *, uint8_t *, size_t);
-enum swr_v1_http_path_action {
-    SWR_HTTP_PATH_SKIP=0, SWR_HTTP_PATH_SERVE=1, SWR_HTTP_PATH_LOCATIONS=2,
-    SWR_HTTP_PATH_DIRECTORY=3, SWR_HTTP_PATH_STAT=4, SWR_HTTP_PATH_CANONICAL=5,
-    SWR_HTTP_PATH_MIME=6, SWR_HTTP_PATH_ERROR=7
-};
-enum swr_v1_http_path_fact {
-    SWR_HTTP_PATH_HAS_LOCATIONS=1, SWR_HTTP_PATH_STAT_OK=2, SWR_HTTP_PATH_CANONICAL_OK=4,
-    SWR_HTTP_PATH_LINK=8, SWR_HTTP_PATH_IS_DIRECTORY=16, SWR_HTTP_PATH_FILE=32,
-    SWR_HTTP_PATH_INDEX=64, SWR_HTTP_PATH_AUTOINDEX=128, SWR_HTTP_PATH_MIME_OK=256
-};
-typedef struct {
-    swr_v1_http_proxy_text path, entry, css, powered;
-    uint32_t part;
-} swr_v1_http_index_page_input;
-int32_t swr_v1_http_index_page(const swr_v1_http_index_page_input *, uint8_t *, size_t, size_t *);
-
 typedef struct { uint32_t phase, last; size_t url_length, filename_length; } swr_v1_http_static_path_state;
 int32_t swr_v1_http_static_location(const uint8_t *, size_t, const uint8_t *, size_t, swr_v1_http_static_path_state *);
-int32_t swr_v1_http_static_path(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, size_t, swr_v1_http_static_path_state *, uint32_t);
-const uint8_t *swr_v1_http_static_boundary(size_t, size_t *);
 int32_t swr_v1_http_static_headers(const swr_v1_http_static_header *, uint8_t *, size_t, size_t *);
 struct swr_v1_core_proxy;
 int32_t swr_v1_http_proxy_owned_authorization(const struct swr_v1_core_proxy *, uint8_t *, size_t *);
