@@ -14,6 +14,7 @@ use std::{
     cell::RefCell,
     collections::VecDeque,
     ffi::{CStr, c_char, c_int, c_void},
+    mem::ManuallyDrop,
     ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
@@ -22,11 +23,10 @@ use swoole_rs_memory::flat::Table;
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::sys::{
     HashTable, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit,
-    swr_zend_http_uploads_rshutdown, swr_zend_string_copy, swr_zend_string_init,
-    swr_zend_string_release, swr_zval_str, zend_class_entry, zend_hash_add_new, zend_long,
+    swr_zend_http_uploads_rshutdown, swr_zval_str, zend_class_entry, zend_hash_add_new, zend_long,
     zend_string, zval, zval_ptr_dtor,
 };
-use swoole_rs_zend::{Class, bailout, string, value};
+use swoole_rs_zend::{Class, ZStr, ZString, bailout, string, value};
 
 /// `Swoole\Http\Server`: `Swoole\Server` with no methods of its own.
 static SERVER: Class = Class::new();
@@ -152,10 +152,13 @@ unsafe extern "C" {
     fn swr_v1_event_reactor() -> *mut c_void;
 }
 
+/// A keep-alive session's server and remote address, until it closes, by its
+/// connection's fd. The session check drops a reused fd's entry. RSHUTDOWN
+/// releases them; a thread's exit, after the request heap is gone, must not.
+type Addresses = ManuallyDrop<Table<(i64, [ZString; 2])>>;
+
 php_local! {
-    /// A keep-alive session's server and remote address, until it closes,
-    /// by its connection's fd. The session check drops a reused fd's entry.
-    static ADDRESSES: RefCell<Table<(i64, [*mut zend_string; 2])>> = RefCell::new(Table::new());
+    static ADDRESSES: RefCell<Addresses> = RefCell::new(ManuallyDrop::new(Table::new()));
     /// Requests waiting for the worker's concurrency to drop.
     static QUEUED: RefCell<VecDeque<*mut Context>> = RefCell::new(VecDeque::new());
 }
@@ -182,7 +185,7 @@ pub(crate) fn add_long(table: *mut HashTable, name: Key, long: zend_long) {
     unsafe { zend_hash_add_new(table, key(name), &raw mut value) };
 }
 
-fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> *mut zend_string {
+fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> ZString {
     let text = if local {
         // SAFETY: the live server and connection the caller passed.
         unsafe { swoole_rs_server::local_addr::get_local_addr(server, conn) }
@@ -193,9 +196,7 @@ fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> *mu
         unsafe { swr_v1_clients_address_host(info) }
     };
     // SAFETY: the server's NUL-terminated address text.
-    let text = unsafe { CStr::from_ptr(text) };
-    // SAFETY: a byte span of the address text.
-    unsafe { swr_zend_string_init(text.as_ptr(), text.to_bytes().len()) }
+    ZString::new(unsafe { CStr::from_ptr(text) }.to_bytes())
 }
 
 /// `swoole_http_server_populate_ip_and_port`: `$request->server`'s ports and
@@ -229,8 +230,8 @@ fn addresses(
     let cached = cache.and_then(|fd| cached(server, conn, fd, session));
     let [local, remote] =
         cached.unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]);
-    add(table, Key::ServerAddr, local);
-    add(table, Key::RemoteAddr, remote);
+    add(table, Key::ServerAddr, local.into_raw());
+    add(table, Key::RemoteAddr, remote.into_raw());
 }
 
 /// The session's cached addresses, each referenced once more for the caller;
@@ -240,31 +241,17 @@ fn cached(
     conn: *mut ConnectionRecord,
     fd: usize,
     session: i64,
-) -> Option<[*mut zend_string; 2]> {
-    let [local, remote] = ADDRESSES.with_borrow_mut(|cached| {
-        if let Some(&(owner, addresses)) = cached.get(fd)
-            && owner == session
+) -> Option<[ZString; 2]> {
+    ADDRESSES.with_borrow_mut(|cached| {
+        if let Some((owner, addresses)) = cached.get(fd)
+            && *owner == session
         {
-            return Some(addresses);
+            return Some(addresses.each_ref().map(|address| ZStr::to_owned(address)));
         }
         let addresses = [address(server, conn, true), address(server, conn, false)];
-        match cached.insert(fd, (session, addresses)) {
-            Ok(old) => {
-                if let Some((_, old)) = old {
-                    release(old);
-                }
-                Some(addresses)
-            }
-            Err((_, made)) => {
-                release(made);
-                None
-            }
-        }
-    })?;
-    // SAFETY: cached strings, each referenced once more by the array.
-    let local = unsafe { swr_zend_string_copy(local) };
-    // SAFETY: as above.
-    Some([local, unsafe { swr_zend_string_copy(remote) }])
+        let copies = addresses.each_ref().map(|address| ZStr::to_owned(address));
+        cached.insert(fd, (session, addresses)).ok().map(|_| copies)
+    })
 }
 
 /// `php_swoole_http_server_onReceive`: route the data to another protocol's
@@ -569,13 +556,6 @@ fn handle(
     Ok(REQUEST)
 }
 
-fn release([local, remote]: [*mut zend_string; 2]) {
-    // SAFETY: the cache's references.
-    unsafe { swr_zend_string_release(local) };
-    // SAFETY: as above.
-    unsafe { swr_zend_string_release(remote) };
-}
-
 /// An HTTP/2 request's connection and server state.
 struct Http2Connection {
     last_recv_time: f64,
@@ -744,15 +724,12 @@ pub(crate) unsafe extern "C" fn on_close(server: *mut c_void, info: *mut DataHea
     let session = unsafe { (*info).fd };
     if let Some(conn) = server.by_session(session)
         && let Ok(fd) = usize::try_from(conn.fd)
-        && let Some((_, addresses)) = ADDRESSES.with_borrow_mut(|cached| {
-            cached
-                .get(fd)
-                .is_some_and(|&(owner, _)| owner == session)
-                .then(|| cached.remove(fd))
-                .flatten()
-        })
     {
-        release(addresses);
+        ADDRESSES.with_borrow_mut(|cached| {
+            if cached.get(fd).is_some_and(|(owner, _)| *owner == session) {
+                cached.remove(fd);
+            }
+        });
     }
     // SAFETY: per the caller.
     unsafe { swr_v1_phpserver_on_close(server.raw(), info) };
@@ -864,9 +841,9 @@ pub extern "C" fn swr_v1_phphttp_server_rinit() {
 pub extern "C" fn swr_v1_phphttp_server_rshutdown() {
     // SAFETY: RSHUTDOWN, on the request's thread.
     unsafe { swr_zend_http_uploads_rshutdown() };
-    for (_, (_, addresses)) in ADDRESSES.with_borrow_mut(std::mem::take).iter() {
-        release(*addresses);
-    }
+    let addresses = ADDRESSES
+        .with_borrow_mut(|cached| std::mem::replace(cached, ManuallyDrop::new(Table::new())));
+    drop(ManuallyDrop::into_inner(addresses));
     while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
         abandon(ctx);
     }
