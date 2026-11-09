@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 // http_server::Request and the HTTP helpers: what the compiled core-tests still use. crates/http and crates/ports define the functions under their
-// upstream symbols; crates/http/src/request.rs owns Request's state.
+// upstream symbols; crates/http-ffi/src/request.rs owns Request's state.
 #pragma once
 
 #include "swoole_protocol.h"

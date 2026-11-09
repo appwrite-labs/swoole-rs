@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,7 +16,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_ext import native_tree
+from tools.build_ext import native_flags
 from tools.ext_identity import attest, unchanged
 from tools.harness import parse_engines, run_isolated, write_report
 from coherent_sdk import stage
@@ -40,12 +39,6 @@ def body(source, signature):
         depth += (source[end] == '{') - (source[end] == '}')
         end += 1
     return source[start:end]
-
-
-def owned(hybrid, name):
-    """The Cargo build's copy of an upstream header: the patched one, or the owned native/ one
-    that replaced it once the patch set deleted upstream's."""
-    return hybrid / name if (hybrid / name).is_file() else next(ROOT.glob('native/*/' + Path(name).name))
 
 
 def public(*prefixes, count=None):
@@ -84,8 +77,7 @@ def main():
                   scope=__doc__, fixture=fixture, engines=[], results=[])
     try:
         # The selected side's sources, headers and config.h are the Cargo build's.
-        hybrid, hybrid_flags = native_tree(args.archive)
-        report['native_tree'] = str(hybrid)
+        hybrid_flags = native_flags(args.archive)
         for name in [fixture + '.cc', fixture + '.php', 'storage_summary.py'] + ['coherent_sdk.py'] + (['child_assertions.h', 'terminal_stdout.py'] if redirect else []):
             path = Path(__file__).with_name(name)
             (work / name).write_bytes(path.read_bytes())
@@ -141,7 +133,7 @@ def main():
                 config += '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
             # Each engine's config takes its declarations from its own swoole.h.
             headers = {'native': subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole.h'], text=True),
-                       'selected': owned(hybrid, 'include/swoole.h').read_text()}
+                       'selected': (ROOT / 'native/corebase/swoole.h').read_text()}
             for name, text in headers.items():
                 def declared(match):
                     prefixes, count = json.loads(match.group(1))
@@ -163,9 +155,7 @@ def main():
             raise ValueError('Require native and selected utilities engines')
         selected = next(row for row in report['engines'] if row['rust_feature_bits'] & 512)
         report['source_attestation'] = attest(args.build_manifest, selected, 512)
-        # Every helper gets its own engine's headers: the pinned SDK, or the Cargo build's tree's,
-        # whose Logger layout differs from the pin's once Rust owns the Logger's state.
-        logger_layout = owned(hybrid, 'include/swoole_log.h').read_bytes() != header
+        # Every helper gets its own engine's headers: the pinned SDK, or the Cargo build's.
         version = subprocess.check_output([args.php_config, '--version'], text=True).strip()
         if any(row['php'] != version for row in report['engines']):
             raise ValueError('PHP SDK differs from loaded runtime version')
@@ -191,11 +181,9 @@ def main():
                 raise ValueError('GoogleTest library identity unavailable')
         native_identity = next(row for row in report['engines'] if not row['rust_feature_bits'] & 512)
         report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parents[1], args.source, PIN),
-                                  'selected': dict(native_tree=str(hybrid), flags=hybrid_flags,
+                                  'selected': dict(flags=hybrid_flags,
                                                    string_header_sha256=sha(ROOT / 'native/buffer/swoole_string.h'))}
-        (work / 'selected').mkdir()
-        shutil.copyfile(hybrid / 'config.h', work / 'selected/config.h')
-        sdk_headers = {'native': ['-I' + str(work / 'native/include')], 'selected': ['-I' + str(work / 'selected'), *hybrid_flags]}
+        sdk_headers = {'native': ['-I' + str(work / 'native/include')], 'selected': hybrid_flags}
         openssl = shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))
         if coherent and report['coherent_sdk']['native']['string_header_sha256'] == report['coherent_sdk']['selected']['string_header_sha256']:
             raise ValueError('Selected SDK lacks actual String overlay')
@@ -235,7 +223,7 @@ def main():
         symbols = run_isolated(['nm', '-u', str(inline_helper)], timeout=15)
         report['selected_inline_imports'] = dict(exit=symbols.returncode, stdout=symbols.stdout, stderr=symbols.stderr)
         required = ['_ZN6swoole6StringD1Ev'] if coherent else []
-        if logger_layout and args.backtrace:
+        if args.backtrace:
             required += ['swr_v1_logger_set']
         if symbols.returncode or any(name not in symbols.stdout for name in required):
             raise ValueError('Selected inline helper lacks required Rust utility imports')

@@ -15,7 +15,9 @@ pub struct HttpFrame {
     pub known_length: u32,
 }
 impl HttpFrame {
-    pub(crate) fn parse(&mut self, input: &[u8], operation: u32) -> i32 {
+    /// Operation 0 reads the request line (or an HTTP/2 preface), 1 finds the header
+    /// block's end: 0 on success.
+    pub fn parse(&mut self, input: &[u8], operation: u32) -> i32 {
         match operation {
             0 => request_line(input, self),
             1 => header_end(input, self),
@@ -135,7 +137,8 @@ fn header_end(input: &[u8], frame: &mut HttpFrame) -> i32 {
 }
 /// Upstream's `has_expect_header`: an `Expect: 100-continue` header, found with the
 /// native scanner's exact skip/matching behavior.
-pub(crate) fn expect(input: &[u8]) -> bool {
+#[must_use]
+pub fn expect(input: &[u8]) -> bool {
     let length = input.len();
     // The native byte loop, jumping between CRs: with a body attached (echo-64k) the
     // scan runs over the whole request, so per-byte cost dominates (#338).
@@ -153,7 +156,9 @@ pub(crate) fn expect(input: &[u8]) -> bool {
     }
     false
 }
-pub(crate) fn header_value(
+/// The value of header `name` among the lines of `input[start..end]`, into `output`:
+/// 1 when found, 0 when not, `INVALID` for bad bounds.
+pub fn header_value(
     input: &[u8],
     start: usize,
     end: usize,

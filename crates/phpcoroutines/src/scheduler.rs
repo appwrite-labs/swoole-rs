@@ -398,8 +398,7 @@ fn can_exit() -> Result<bool, Bailout> {
     if handle.is_null() {
         return Ok(true);
     }
-    // SAFETY: all-zero is a zval; it is made null.
-    let mut retval: zval = unsafe { mem::zeroed() };
+    let mut retval = swoole_rs_zend::UNDEF;
     retval.u1.type_info = IS_NULL;
     // SAFETY: the kept callable, no arguments and a result slot, which (as
     // upstream's) is not released.

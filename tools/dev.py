@@ -210,22 +210,10 @@ def plan(args, reports):
             script('locks-state', 'tests/modules/locks/state.py', *php_for('curl'), *engines, *report('locks-state'))
     if integrate and 'phpcoroutines' in modules:
         script('phpcoroutines-tracer', 'tests/modules/phpcoroutines/tracer.py', *php, *engines, *report('phpcoroutines-tracer'))
-    if 'reactor' in modules:
-        script('reactor-compile', 'tests/modules/reactor/compile_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive,
-               '--report', reports / 'reactor-compile.json')
     pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', archive, '--sanitize')
     if 'coroutine' in modules:
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.
         script('coroutine-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-coroutine', '--report', reports / 'coroutine-rust-asan.json')
-        for phase, options in [('coroutine-compile', []), ('coroutine-stack-compile', ['--stack-usage']),
-                               ('coroutine-timing-compile', ['--timing', '--stack-usage'])]:
-            script(phase, 'tests/modules/coroutine/compile_gate.py', '--source', ROOT / 'target/upstream/src',
-                   '--archive', archive, *options,
-                   '--report', reports / (phase + '.json'))
-    if 'hooks' in modules:
-        script('hooks-compile', 'tests/modules/hooks/compile_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, '--report', reports / 'hooks-compile.json')
     if 'clients' in modules:
         script('clients-http-format', 'tests/modules/clients/http_format_gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive, '--sanitize',

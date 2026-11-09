@@ -150,8 +150,9 @@ def tree(stdext=False, php_sockets=False, configure=()):
 
 def runner(source, pin):
     """PHPT runs read the pin's tests with phpize's run-tests.php (corpus/upstream/run.py --source),
-    which only a build in the pin itself leaves there; a profile's build lends it its own."""
-    if source != pin and not (pin / 'run-tests.php').is_file():
+    which only a build in the pin itself leaves there; a profile's build lends it its own, since
+    the runner comes from the PHP (phpize) that profile was built with."""
+    if source != pin:
         shutil.copy2(source / 'run-tests.php', pin / 'run-tests.php')
 
 
