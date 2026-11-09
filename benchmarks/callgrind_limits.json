@@ -1,14 +1,14 @@
 {
   "plaintext": 0.93,
-  "echo-1k": 0.95,
+  "echo-1k": 0.94,
   "json": 0.96,
-  "service-health": 0.95,
+  "service-health": 0.94,
   "websocket": 0.82,
   "timer": 0.72,
-  "app": 0.94,
-  "http2": 0.96,
+  "app": 0.93,
+  "http2": 0.95,
   "table": 0.99,
   "channel": 0.89,
-  "task": 1.01,
-  "mysql": 0.99
+  "task": 0.96,
+  "mysql": 0.98
 }

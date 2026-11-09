@@ -438,16 +438,14 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
     Some(match op {
         OP_OPEN_RESULT_FILE => {
             let flags = libc::O_APPEND | libc::O_WRONLY;
-            // SAFETY: a NUL-terminated path.
-            ctx.file =
-                unsafe { swoole_rs_ossupport::swr_v1_os_file_open(-1, path().as_ptr(), flags, 0) };
+            ctx.file = swoole_rs_ossupport::file_open(-1, path(), flags, 0);
             u64::from(ctx.file != -1)
         }
         OP_WRITE_RESULT_FILE => {
             let bytes = ctx.packed_size();
-            // SAFETY: the open file and the packed result.
-            let written =
-                unsafe { swoole_rs_ossupport::fd_write_all(ctx.file, true, ctx.buf.cast(), bytes) };
+            // SAFETY: the packed result's bytes.
+            let packed = unsafe { std::slice::from_raw_parts(ctx.buf.cast::<u8>(), bytes) };
+            let written = swoole_rs_ossupport::fd_write_all(ctx.file, true, packed);
             u64::from(written == bytes)
         }
         LOG_RESULT_WRITE => {
@@ -464,7 +462,7 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
             // SAFETY: the slot's leading counter, which every waiting process shares.
             let count = unsafe { AtomicU32::from_ptr(count) };
             count.fetch_add(1, Ordering::SeqCst);
-            swoole_rs_ossupport::swr_v1_os_file_close(ctx.file);
+            swoole_rs_ossupport::file_close(ctx.file);
             ctx.file = -1;
             0
         }

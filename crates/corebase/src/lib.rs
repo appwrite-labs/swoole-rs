@@ -22,6 +22,8 @@ pub mod native;
 pub mod net_types;
 mod random;
 mod signal_mask;
+pub mod sys;
+pub use sys::set_errno;
 pub mod switches;
 pub use switches::Switch;
 
@@ -43,7 +45,7 @@ pub mod worker_registry;
 pub use global::*;
 pub use hook::{swoole_add_hook, swoole_call_hook, swoole_isset_hook};
 pub use host::{
-    DataHead, datahead_dump, microtime, set_errno, sw_calloc, sw_free, sw_malloc, sw_realloc,
+    DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, sw_realloc,
     swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_hex2dec,
     swoole_print_backtrace, swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any,
     swoole_random_int, swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec,
@@ -56,7 +58,7 @@ pub use lifecycle::{
     swoole_thread_init, swr_v1_core_swoole_init, swr_v1_core_thread_global, swr_v1_core_timer_slot,
     thread_async_threads, thread_id, thread_kind, thread_message_bus, thread_reactor,
 };
-pub use random::{swoole_random_string, swr_v1_os_random_bytes};
+pub use random::{random_bytes, swoole_random_string, swr_v1_os_random_bytes};
 pub use thread::*;
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};
@@ -115,13 +117,13 @@ pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
     if input.is_null() || output.is_null() {
         return 0;
     }
-    let saved = host::errno();
-    host::set_errno(0);
+    let saved = sys::errno();
+    sys::set_errno(0);
     let mut end = ptr::null_mut();
     // SAFETY: `input` is a non-null, NUL-terminated string; `end` is a live local.
     let value = unsafe { strtol(input, &raw mut end, 10) };
-    let range = host::errno() == libc::ERANGE;
-    host::set_errno(saved);
+    let range = sys::errno() == libc::ERANGE;
+    sys::set_errno(saved);
     if end.cast_const() == input || range {
         return 0;
     }

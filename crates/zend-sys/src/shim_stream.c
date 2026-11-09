@@ -4,7 +4,7 @@
 #include "ext/standard/file.h"
 
 php_stream *swr_zend_stream_alloc(const php_stream_ops *ops, void *abstract, const char *persistent_id) {
-    return php_stream_alloc_rel(ops, abstract, persistent_id, "r+");
+    return php_stream_alloc(ops, abstract, persistent_id, "r+");
 }
 
 void swr_zend_stream_close(php_stream *stream) {
@@ -155,7 +155,7 @@ php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const ch
 
 int swr_zend_try_stream_alloc(const php_stream_ops *ops, void *abstract, const char *persistent, php_stream **stream) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *stream = php_stream_alloc_rel(ops, abstract, persistent, "r+"); }
+    SWR_ZEND_TRY { *stream = php_stream_alloc(ops, abstract, persistent, "r+"); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

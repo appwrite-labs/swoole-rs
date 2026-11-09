@@ -349,8 +349,13 @@ pub extern "C" fn swoole_set_trace_flags(flags: c_long) {
 /// `::time(nullptr)`: the wall clock's seconds.
 #[must_use]
 pub fn time_now() -> libc::time_t {
-    // SAFETY: time accepts a null output pointer.
-    unsafe { libc::time(ptr::null_mut()) }
+    let seconds = |elapsed: std::time::Duration| {
+        libc::time_t::try_from(elapsed.as_secs()).unwrap_or(libc::time_t::MAX)
+    };
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(elapsed) => seconds(elapsed),
+        Err(before) => -seconds(before.duration()),
+    }
 }
 
 #[cfg(test)]

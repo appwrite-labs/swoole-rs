@@ -2098,24 +2098,6 @@ unsafe extern "C" fn forced_exit(_: *mut usize) -> bool {
     true
 }
 
-// SAFETY: crates/protocols' bus, linked into the same archive.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-unsafe extern "C" {
-    fn swr_v1_bus_pass(
-        bus: *mut core::ffi::c_void,
-        info: *const swoole_rs_corebase::DataHead,
-        data: *const c_char,
-    );
-    fn swr_v1_bus_buffer(bus: *mut core::ffi::c_void) -> *mut swoole_rs_corebase::DataHead;
-    fn swr_v1_bus_write(
-        bus: *mut core::ffi::c_void,
-        socket: *mut core::ffi::c_void,
-        head: *mut swoole_rs_corebase::DataHead,
-        data: *const u8,
-    ) -> bool;
-    fn swr_v1_bus_pipe_socket(bus: *mut core::ffi::c_void, fd: c_int) -> *mut SocketRecord;
-}
-
 /// `serv->get_worker_message_bus()`: this thread's in thread mode, else the
 /// server's.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -2130,13 +2112,6 @@ pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus {
     unsafe { crate::objects::Bus::of(bus) }
 }
 
-/// `serv->get_worker_message_bus()`'s Rust bus: this thread's in thread mode,
-/// else the server's. A `MessageBus` starts with its Rust bus.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-fn worker_bus(state: &ServerState) -> *mut core::ffi::c_void {
-    worker_message_bus(state).raw()
-}
-
 /// `OP_BASE_PASS`: the worker message bus takes `send`, then `worker_accept_event`
 /// of it.
 ///
@@ -2144,11 +2119,9 @@ fn worker_bus(state: &ServerState) -> *mut core::ffi::c_void {
 /// `serv` is a live server and `state` its own.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) unsafe fn base_pass(serv: *mut core::ffi::c_void, state: &ServerState, send: &SendData) {
-    let bus = worker_bus(state);
-    // SAFETY: the live bus and the send it copies.
-    unsafe { swr_v1_bus_pass(bus, &raw const send.info, send.data) };
-    // SAFETY: the live bus.
-    let event = unsafe { swr_v1_bus_buffer(bus) };
+    let bus = worker_message_bus(state);
+    bus.rust().pass(&send.info, send.data);
+    let event = bus.buffer();
     // SAFETY: the live server and the bus's buffer, which now holds the event.
     unsafe { entry::worker_accept_event(serv, event.cast()) };
 }
@@ -2311,18 +2284,17 @@ fn forward(o: &Objects<'_>, send: &SendData) -> u64 {
     };
     let id = session.reactor_bits & 0xff;
     let pipe = worker_record(o.server(), id).pipe_master;
-    let bus = worker_bus(o.state);
+    let bus = worker_message_bus(o.state);
     let socket = if u64::from(o.config().mode_) == MODE_THREAD {
         // SAFETY: the worker's live pipe socket.
         let fd = unsafe { (*pipe.cast::<SocketRecord>()).fd };
-        // SAFETY: the live bus.
-        unsafe { swr_v1_bus_pipe_socket(bus, fd) }.cast()
+        bus.pipe_fd(fd)
     } else {
         pipe
     };
-    let (info, data) = ((&raw const send.info).cast_mut(), send.data.cast());
-    // SAFETY: the live bus, a live pipe socket and the send it writes.
-    u64::from(unsafe { swr_v1_bus_write(bus, socket, info, data) })
+    let mut info = send.info;
+    // SAFETY: a live pipe socket and the send it writes.
+    u64::from(unsafe { bus.rust().send(socket.cast(), &mut info, send.data.cast()) })
 }
 
 /// `serv->factory_->finish(send)`.
@@ -2693,14 +2665,11 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             } else {
                 worker.pipe_master
             };
-            // SAFETY: the server's live bus, a worker pipe and the message.
+            let bus = server_message_bus(o.state);
+            // SAFETY: a worker pipe and the message.
             u64::from(unsafe {
-                swr_v1_bus_write(
-                    server_message_bus(o.state).raw(),
-                    pipe,
-                    &raw mut task.info,
-                    task.data.cast(),
-                )
+                bus.rust()
+                    .send(pipe.cast(), &mut task.info, task.data.cast())
             })
         }
         OP_ST_PIPE_COMMAND_NEW => {

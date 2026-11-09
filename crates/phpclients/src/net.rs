@@ -119,7 +119,7 @@ impl Conn {
     /// `cli->socket->check_liveness()` of a client that has a socket.
     fn alive(&self) -> bool {
         // SAFETY: the client's live socket.
-        unsafe { swoole_rs_tls::upstream::socket_check_liveness(self.socket()) }
+        swoole_rs_tls::upstream::socket_check_liveness(unsafe { &mut *self.socket() })
     }
 
     pub(crate) fn fd(&self) -> c_int {

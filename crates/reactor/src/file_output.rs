@@ -121,15 +121,12 @@ pub unsafe extern "C" fn swr_v1_socket_file_check(
         crate::socket_sync::set_errno(owner.open_error);
         return 1;
     }
-    // SAFETY: end is the request's writable range slot.
-    let status = unsafe {
-        crate::swr_v1_socket_sendfile_range(
-            owner.file.descriptor(),
-            owner.fields.begin,
-            length,
-            &raw mut owner.fields.end,
-        )
-    };
+    let status = crate::sendfile_range(
+        owner.file.descriptor(),
+        owner.fields.begin,
+        length,
+        &mut owner.fields.end,
+    );
     if status == 0 { 0 } else { status + 1 }
 }
 

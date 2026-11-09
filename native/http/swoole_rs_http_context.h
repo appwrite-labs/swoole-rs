@@ -42,7 +42,6 @@ enum swr_v2_http_context_text {
 swr_v2_http_context *swr_v2_http_context_new(const uint8_t *, size_t, size_t);
 void swr_v2_http_context_drop(swr_v2_http_context *);
 int32_t swr_v2_http_context_text(const swr_v2_http_context *, uint32_t, uint8_t *, size_t, size_t *);
-int32_t swr_v2_http_context_publish(swr_v2_http_context *, uint32_t, const uint8_t *, size_t);
 int32_t swr_v2_http_context_observe(const swr_v2_http_context *, swr_v2_http_observation *);
 int32_t swr_v2_http_context_observed(swr_v2_http_context *, uint32_t, const swr_v2_http_observation *);
 /* Admit the positive RNG byte count requested by static_boundary into empty
@@ -57,10 +56,7 @@ int32_t swr_v2_http_context_range_begin(swr_v2_http_context *, size_t, uint32_t)
 int32_t swr_v2_http_context_range_step(swr_v2_http_context *, const uint8_t *, size_t);
 int32_t swr_v2_http_context_range_resume(swr_v2_http_context *, const swr_v2_http_range_observation *);
 int32_t swr_v2_http_context_path(swr_v2_http_context *, uint32_t, const uint8_t *, size_t, uint32_t);
-int32_t swr_v2_http_context_directory(swr_v2_http_context *, uint32_t, const uint8_t *, size_t);
 typedef struct { size_t required, length; } swr_v2_http_page_buffer;
-int32_t swr_v2_http_directory_emit(const swr_v2_http_directory *, size_t,
-    const swr_v1_http_index_page_input *, uint8_t *, size_t, size_t, swr_v2_http_page_buffer *);
 /* Actions skip0/reserve1(required)/extend2(required)/written3(length). Buffer
  * storage is observed fresh after Native reserve/extend; no pointer is retained. */
 int32_t swr_v2_http_context_page_emit(const swr_v2_http_context *, size_t,
@@ -76,7 +72,6 @@ int32_t swr_v2_http_context_scan(swr_v2_http_context *, uint32_t, const uint8_t 
  * Actions reject0/accept1/scan2/candidate3(cursor)/filename4/autoindex5. */
 int32_t swr_v2_http_context_index(swr_v2_http_context *, uint32_t, size_t, const uint8_t *, size_t, size_t *);
 int32_t swr_v2_http_context_page(const swr_v2_http_context *, size_t, const swr_v1_http_index_page_input *, uint8_t *, size_t, size_t *);
-int32_t swr_v2_http_context_task(swr_v2_http_context *, uint32_t, int64_t, size_t, const swr_v1_http_range_format_input *, size_t *);
 int32_t swr_v2_http_context_tasks(const swr_v2_http_context *, swr_v2_http_static_task *, size_t, size_t *);
 #ifdef __cplusplus
 }

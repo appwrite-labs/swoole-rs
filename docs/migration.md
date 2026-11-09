@@ -101,15 +101,15 @@ all-modules patch set deletes (`tools/badges.py`). A pinned line a patch moves t
 another file is still compiled, so it counts as kept where it now lives. The
 migration is done when nothing remains apart from declared third-party code.
 
-Phases 1 to 3 and 5 are done: green baseline ([#20](https://github.com/loks0n/swoole-rs/issues/20)),
-wider oracle ([#58](https://github.com/loks0n/swoole-rs/issues/58)), graduate and
-delete ([#125](https://github.com/loks0n/swoole-rs/issues/125)) and the Zend surface
-([#754](https://github.com/loks0n/swoole-rs/issues/754)). Open:
+Phases 1 to 3 and 5 are done: green baseline ([#20](https://github.com/appwrite-labs/swoole-rs/issues/20)),
+wider oracle ([#58](https://github.com/appwrite-labs/swoole-rs/issues/58)), graduate and
+delete ([#125](https://github.com/appwrite-labs/swoole-rs/issues/125)) and the Zend surface
+([#754](https://github.com/appwrite-labs/swoole-rs/issues/754)). Open:
 
-- **Phase 4, deepen thin modules** ([#439](https://github.com/loks0n/swoole-rs/issues/439)).
+- **Phase 4, deepen thin modules** ([#439](https://github.com/appwrite-labs/swoole-rs/issues/439)).
   Process, hooks, coroutine, reactor and clients move from Rust policy over
   C++ mechanisms to Rust mechanisms.
-- **Phase 6, speed** ([#366](https://github.com/loks0n/swoole-rs/issues/366)). The
+- **Phase 6, speed** ([#366](https://github.com/appwrite-labs/swoole-rs/issues/366)). The
   all-modules hybrid is within 5% of upstream on every callgrind workload;
   `benchmarks/callgrind_limits.json` records where it stands.
 

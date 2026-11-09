@@ -40,8 +40,11 @@ pub(crate) fn workers_start(serv: view::Server<'_>) {
     let workers = serv.workers();
     let registry = serv.config().worker_registry;
     // SAFETY: the server's live registry, configured only by the master.
-    let pending =
-        unsafe { worker_registry::swr_v1_process_worker_registry_pending_data(registry.cast()) };
+    let pending = unsafe {
+        (*registry.cast::<worker_registry::WorkerRegistry>())
+            .pending()
+            .as_ptr()
+    };
     // SAFETY: the server's live arrays and its pending user workers.
     unsafe { swr_v1_process_server_workers_start(&raw const workers, serv.raw(), pending.cast()) };
 }
@@ -70,10 +73,10 @@ pub unsafe extern "C" fn add_worker(serv: *mut c_void, worker: *mut WorkerRecord
     }
     // SAFETY: the server's live registry, configured only by the master.
     let index = unsafe {
-        worker_registry::swr_v1_process_worker_registry_pending_add(
-            config.worker_registry.cast(),
-            worker.cast(),
-        )
+        (*config
+            .worker_registry
+            .cast::<worker_registry::WorkerRegistry>())
+        .pending_add(worker.cast())
     };
     // `user_worker_list.size() - 1`, as a `WorkerId`.
     let id = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
@@ -248,7 +251,11 @@ pub unsafe fn create_user_workers(serv: view::Server<'_>) -> bool {
     }
     // SAFETY: the server's live registry, configured only by the master.
     let pending = unsafe {
-        worker_registry::swr_v1_process_worker_registry_pending_data(config.worker_registry.cast())
+        (*config
+            .worker_registry
+            .cast::<worker_registry::WorkerRegistry>())
+        .pending()
+        .as_ptr()
     };
     for index in 0..count {
         // SAFETY: `count` live worker pointers.

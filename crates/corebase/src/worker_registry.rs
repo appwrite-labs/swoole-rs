@@ -5,12 +5,10 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_int, c_void};
 
-// `category` is an opaque tag the registry only groups by; its values are the
-// `SWR_WORKER_*` constants in the C header (event workers and user workers; task
-// workers live in the task pool and are not registered).
+// `category` is an opaque tag the registry only groups by: event workers (1) and
+// user workers (2); task workers live in the task pool and are not registered.
 
-/// User workers in the server registry (`SWR_WORKER_USER`).
-/// cbindgen:ignore
+/// User workers in the server registry.
 pub const CATEGORY_USER: c_int = 2;
 
 struct Entry {
@@ -33,243 +31,66 @@ impl WorkerRegistry {
             .filter(move |(_, entry)| entry.category == category)
             .map(|(pid, _)| *pid)
     }
-}
 
-/// Scan a caller-owned record array in its original order, including direct PID writes.
-/// This accepts both the original native Worker and its canonical Rust layout, without
-/// per-record callbacks or a cached PID index that could miss an earlier duplicate.
-/// # Safety
-/// `array` is null or a live array of `count` records, each `stride` bytes, with an
-/// initialized `c_int` PID at `pid_offset`. Reads follow the caller's synchronization.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_find_array(
-    array: *mut c_void,
-    count: u32,
-    stride: usize,
-    pid_offset: usize,
-    pid: c_int,
-) -> *mut c_void {
-    if array.is_null() {
-        return core::ptr::null_mut();
+    /// Register (or overwrite) the worker at `pid` with its pointer and category.
+    pub fn register(&mut self, pid: c_int, worker: *mut c_void, category: c_int) {
+        self.workers.insert(pid, Entry { worker, category });
     }
-    for index in 0..usize::try_from(count).unwrap_or_default() {
-        let record = array.cast::<u8>().wrapping_add(index.wrapping_mul(stride));
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "Byte-strided native records may be unaligned; the only access uses read_unaligned"
-        )]
-        let slot = record.wrapping_add(pid_offset).cast::<c_int>();
-        // SAFETY: the caller lends this record's initialized PID bytes; no whole-record borrow.
-        if unsafe { slot.read_unaligned() } == pid {
-            return record.cast();
-        }
+
+    /// Insert a worker without replacing an existing PID, matching `ProcessPool::add_worker`.
+    pub fn insert(&mut self, pid: c_int, worker: *mut c_void, category: c_int) {
+        self.workers
+            .entry(pid)
+            .or_insert(Entry { worker, category });
     }
-    core::ptr::null_mut()
-}
 
-/// Create an empty registry. Native frees it with [`swr_v1_process_worker_registry_free`].
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_process_worker_registry_new() -> *mut WorkerRegistry {
-    Box::into_raw(Box::<WorkerRegistry>::default())
-}
-
-/// Free a registry.
-///
-/// # Safety
-/// `registry` is null or a live handle from `_new`, not freed before.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_free(registry: *mut WorkerRegistry) {
-    if registry.is_null() {
-        return;
+    /// Remove the worker at `pid`. Returns whether one was present.
+    pub fn unregister(&mut self, pid: c_int) -> bool {
+        self.workers.remove(&pid).is_some()
     }
-    // SAFETY: the caller lends a live handle previously leaked by `_new`.
-    drop(unsafe { Box::from_raw(registry) });
-}
 
-/// Register (or overwrite) the worker at `pid` with its native pointer and category
-/// (`SWR_WORKER_EVENT` or `SWR_WORKER_USER`).
-///
-/// # Safety
-/// `registry` is a live handle; `worker` is an opaque pointer the registry only stores.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_register(
-    registry: *mut WorkerRegistry,
-    pid: c_int,
-    worker: *mut c_void,
-    category: c_int,
-) {
-    // SAFETY: the caller lends a live registry handle.
-    let registry = unsafe { &mut *registry };
-    registry.workers.insert(pid, Entry { worker, category });
-}
-
-/// Insert a worker without replacing an existing PID, matching `ProcessPool::add_worker`.
-/// # Safety
-/// `registry` is live; `worker` is an opaque native loan.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_insert(
-    registry: *mut WorkerRegistry,
-    pid: c_int,
-    worker: *mut c_void,
-    category: c_int,
-) {
-    // SAFETY: the caller lends the registry exclusively for this leaf mutation.
-    let registry = unsafe { &mut *registry };
-    registry
-        .workers
-        .entry(pid)
-        .or_insert(Entry { worker, category });
-}
-
-/// Remove the worker at `pid`. Returns whether one was present.
-///
-/// # Safety
-/// `registry` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_unregister(
-    registry: *mut WorkerRegistry,
-    pid: c_int,
-) -> bool {
-    // SAFETY: the caller lends a live registry handle.
-    let registry = unsafe { &mut *registry };
-    registry.workers.remove(&pid).is_some()
-}
-
-/// The native pointer registered for `pid`, or null.
-///
-/// # Safety
-/// `registry` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_lookup(
-    registry: *const WorkerRegistry,
-    pid: c_int,
-) -> *mut c_void {
-    // SAFETY: the caller lends a live registry handle.
-    let registry = unsafe { &*registry };
-    registry
-        .workers
-        .get(&pid)
-        .map_or(std::ptr::null_mut(), |entry| entry.worker)
-}
-
-/// Look up a registered worker of the specified category only.
-/// # Safety
-/// `registry` is a live handle; returned pointers remain native loans.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_lookup_category(
-    registry: *const WorkerRegistry,
-    pid: c_int,
-    category: c_int,
-) -> *mut c_void {
-    // SAFETY: the caller lends a live registry for this leaf query.
-    let registry = unsafe { &*registry };
-    registry
-        .workers
-        .get(&pid)
-        .filter(|entry| entry.category == category)
-        .map_or(core::ptr::null_mut(), |entry| entry.worker)
-}
-
-/// Detach the worker at `pid`: it has been replaced and exits on its own, so it
-/// leaves the lookup and its exit is later reaped by
-/// [`swr_v1_process_worker_registry_reap_detached`].
-///
-/// # Safety
-/// `registry` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_detach(
-    registry: *mut WorkerRegistry,
-    pid: c_int,
-) {
-    // SAFETY: the caller lends a live registry handle.
-    let registry = unsafe { &mut *registry };
-    registry.workers.remove(&pid);
-    registry.detached.insert(pid);
-}
-
-/// Reap a detached worker's exit. Returns false when `pid` was never detached.
-///
-/// # Safety
-/// `registry` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_reap_detached(
-    registry: *mut WorkerRegistry,
-    pid: c_int,
-) -> bool {
-    // SAFETY: the caller lends a live registry handle.
-    let registry = unsafe { &mut *registry };
-    registry.detached.remove(&pid)
-}
-
-/// A detached native read view of a Rust worker-pointer vector. Capacity is opaque deallocation metadata.
-#[repr(C)]
-#[derive(Default)]
-pub struct WorkerSnapshot {
-    pub data: *mut *mut c_void,
-    pub length: usize,
-    pub capacity: usize,
-}
-
-/// Collect opaque worker pointers before native signalling, waiting or allocation effects can reenter.
-/// Returns false on allocation failure, leaving `output` untouched.
-/// # Safety
-/// `registry` is null or live and synchronized. `output` lends writable disjoint
-/// storage; on success its buffer is freed once by `_snapshot_free`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_snapshot(
-    registry: *const WorkerRegistry,
-    category: c_int,
-    output: *mut WorkerSnapshot,
-) -> bool {
-    let mut values = Vec::new();
-    if !registry.is_null() {
-        // SAFETY: the caller lends a live registry for this leaf collection.
-        let registry = unsafe { &*registry };
-        if values.try_reserve_exact(registry.workers.len()).is_err() {
-            return false;
-        }
-        values.extend(
-            registry
-                .workers
-                .values()
-                .filter(|entry| entry.category == category)
-                .map(|entry| entry.worker),
-        );
+    /// The pointer registered for `pid`, or null.
+    #[must_use]
+    pub fn lookup(&self, pid: c_int) -> *mut c_void {
+        self.workers
+            .get(&pid)
+            .map_or(std::ptr::null_mut(), |entry| entry.worker)
     }
-    let snapshot = WorkerSnapshot {
-        data: if values.capacity() == 0 {
-            core::ptr::null_mut()
-        } else {
-            values.as_mut_ptr()
-        },
-        length: values.len(),
-        capacity: values.capacity(),
-    };
-    // SAFETY: the caller lends disjoint writable output storage.
-    unsafe { output.write(snapshot) };
-    core::mem::forget(values);
-    true
-}
 
-/// Release a successful worker snapshot; its slots become empty so cleanup is repeatable.
-/// # Safety
-/// `snapshot` lends live initialized slots from `_snapshot`; its buffer metadata
-/// has not been modified or freed separately.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_snapshot_free(
-    snapshot: *mut WorkerSnapshot,
-) {
-    // SAFETY: the caller lends initialized snapshot slots for their final release.
-    let value = unsafe { snapshot.read() };
-    if value.capacity != 0 {
-        // SAFETY: this is the exact pointer/length/capacity of the forgotten Rust vector.
-        drop(unsafe { Vec::from_raw_parts(value.data, value.length, value.capacity) });
+    /// The pointer registered for `pid` in `category` only, or null.
+    #[must_use]
+    pub fn lookup_category(&self, pid: c_int, category: c_int) -> *mut c_void {
+        self.workers
+            .get(&pid)
+            .filter(|entry| entry.category == category)
+            .map_or(std::ptr::null_mut(), |entry| entry.worker)
     }
-    // SAFETY: the caller lends these slots exclusively until cleanup returns.
-    unsafe { snapshot.write(WorkerSnapshot::default()) };
-}
 
-impl WorkerRegistry {
+    /// Detach the worker at `pid`: it has been replaced and exits on its own, so it
+    /// leaves the lookup and its exit is later reaped by [`Self::reap_detached`].
+    pub fn detach(&mut self, pid: c_int) {
+        self.workers.remove(&pid);
+        self.detached.insert(pid);
+    }
+
+    /// Reap a detached worker's exit. Returns false when `pid` was never detached.
+    pub fn reap_detached(&mut self, pid: c_int) -> bool {
+        self.detached.remove(&pid)
+    }
+
+    /// Append one pending user worker before Server creation, preserving insertion
+    /// order. The returned index is its original pre-start worker ID.
+    pub fn pending_add(&mut self, worker: *mut c_void) -> usize {
+        self.pending_users.push(worker);
+        self.pending_users.len() - 1
+    }
+
+    /// The pending user workers, in the order they were added.
+    #[must_use]
+    pub fn pending(&self) -> &[*mut c_void] {
+        &self.pending_users
+    }
+
     /// Terminate every worker of `category`: send `signo` to each, then wait for each.
     /// `kill(pid, signo)` sends the signal; `wait(pid)` reaps (it is `swoole_waitpid`,
     /// which services signals and timers across `EINTR`); `warn(pid)` is called when a
@@ -294,6 +115,37 @@ impl WorkerRegistry {
     }
 }
 
+/// Scan a caller-owned record array in its original order, including direct PID writes.
+/// This accepts both the original native Worker and its canonical Rust layout, without
+/// per-record callbacks or a cached PID index that could miss an earlier duplicate.
+/// # Safety
+/// `array` is null or a live array of `count` records, each `stride` bytes, with an
+/// initialized `c_int` PID at `pid_offset`. Reads follow the caller's synchronization.
+pub unsafe fn find_array(
+    array: *mut c_void,
+    count: u32,
+    stride: usize,
+    pid_offset: usize,
+    pid: c_int,
+) -> *mut c_void {
+    if array.is_null() {
+        return core::ptr::null_mut();
+    }
+    for index in 0..usize::try_from(count).unwrap_or_default() {
+        let record = array.cast::<u8>().wrapping_add(index.wrapping_mul(stride));
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "Byte-strided native records may be unaligned; the only access uses read_unaligned"
+        )]
+        let slot = record.wrapping_add(pid_offset).cast::<c_int>();
+        // SAFETY: the caller lends this record's initialized PID bytes; no whole-record borrow.
+        if unsafe { slot.read_unaligned() } == pid {
+            return record.cast();
+        }
+    }
+    core::ptr::null_mut()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,31 +153,21 @@ mod tests {
 
     const CATEGORY_EVENT: c_int = 1;
 
-    fn registry() -> *mut WorkerRegistry {
-        swr_v1_process_worker_registry_new()
-    }
-
     #[test]
     fn registers_looks_up_and_unregisters() {
-        let reg = registry();
+        let mut reg = WorkerRegistry::default();
         let mut worker_a = 0u8;
         let a = std::ptr::from_mut(&mut worker_a).cast::<c_void>();
-        unsafe {
-            swr_v1_process_worker_registry_register(reg, 100, a, CATEGORY_EVENT);
-            let mut worker_b = 1_u8;
-            let b = std::ptr::from_mut(&mut worker_b).cast::<c_void>();
-            swr_v1_process_worker_registry_insert(reg, 100, b, CATEGORY_USER);
-            assert_eq!(swr_v1_process_worker_registry_lookup(reg, 100), a);
-            assert_eq!(
-                swr_v1_process_worker_registry_lookup_category(reg, 100, CATEGORY_EVENT),
-                a
-            );
-            assert!(swr_v1_process_worker_registry_lookup(reg, 999).is_null());
-            assert!(swr_v1_process_worker_registry_unregister(reg, 100));
-            assert!(!swr_v1_process_worker_registry_unregister(reg, 100));
-            assert!(swr_v1_process_worker_registry_lookup(reg, 100).is_null());
-            swr_v1_process_worker_registry_free(reg);
-        }
+        reg.register(100, a, CATEGORY_EVENT);
+        let mut worker_b = 1_u8;
+        let b = std::ptr::from_mut(&mut worker_b).cast::<c_void>();
+        reg.insert(100, b, CATEGORY_USER);
+        assert_eq!(reg.lookup(100), a);
+        assert_eq!(reg.lookup_category(100, CATEGORY_EVENT), a);
+        assert!(reg.lookup(999).is_null());
+        assert!(reg.unregister(100));
+        assert!(!reg.unregister(100));
+        assert!(reg.lookup(100).is_null());
     }
 
     #[test]
@@ -333,52 +175,16 @@ mod tests {
         let mut bytes = [0_u8; 26];
         let array = bytes.as_mut_ptr().cast::<c_void>();
         unsafe {
-            assert_eq!(
-                swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 0),
-                array
-            );
+            assert_eq!(find_array(array, 2, 13, 3, 0), array);
             bytes[3..7].copy_from_slice(&9_i32.to_ne_bytes());
             assert_eq!(
-                swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 0),
+                find_array(array, 2, 13, 3, 0),
                 array.cast::<u8>().add(13).cast()
             );
             bytes[3..7].copy_from_slice(&0_i32.to_ne_bytes());
-            assert_eq!(
-                swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 0),
-                array
-            );
-            assert!(swr_v1_process_worker_registry_find_array(array, 2, 13, 3, 7).is_null());
-            assert!(
-                swr_v1_process_worker_registry_find_array(core::ptr::null_mut(), 2, 13, 3, 0)
-                    .is_null()
-            );
-        }
-    }
-
-    #[test]
-    fn native_pointer_snapshot_outlives_registry_mutation_and_destruction() {
-        let reg = registry();
-        let mut first = 1_u8;
-        let mut second = 2_u8;
-        let a = core::ptr::from_mut(&mut first).cast();
-        let b = core::ptr::from_mut(&mut second).cast();
-        let mut snapshot = WorkerSnapshot::default();
-        unsafe {
-            swr_v1_process_worker_registry_register(reg, 10, a, CATEGORY_USER);
-            swr_v1_process_worker_registry_register(reg, 20, b, CATEGORY_EVENT);
-            assert!(swr_v1_process_worker_registry_snapshot(
-                reg,
-                CATEGORY_USER,
-                &raw mut snapshot
-            ));
-            swr_v1_process_worker_registry_unregister(reg, 10);
-            swr_v1_process_worker_registry_free(reg);
-            assert_eq!(snapshot.length, 1);
-            assert_eq!(*snapshot.data, a);
-            swr_v1_process_worker_registry_snapshot_free(&raw mut snapshot);
-            assert!(snapshot.data.is_null());
-            assert_eq!((snapshot.length, snapshot.capacity), (0, 0));
-            swr_v1_process_worker_registry_snapshot_free(&raw mut snapshot);
+            assert_eq!(find_array(array, 2, 13, 3, 0), array);
+            assert!(find_array(array, 2, 13, 3, 7).is_null());
+            assert!(find_array(core::ptr::null_mut(), 2, 13, 3, 0).is_null());
         }
     }
 
@@ -406,16 +212,13 @@ mod tests {
 
     #[test]
     fn terminate_hits_only_its_category_kill_all_then_wait_all() {
-        let reg = registry();
+        let mut reg = WorkerRegistry::default();
         let mut w = 0u8;
         let p = std::ptr::from_mut(&mut w).cast::<c_void>();
-        unsafe {
-            swr_v1_process_worker_registry_register(reg, 10, p, CATEGORY_EVENT);
-            swr_v1_process_worker_registry_register(reg, 11, p, CATEGORY_EVENT);
-            swr_v1_process_worker_registry_register(reg, 20, p, CATEGORY_USER);
-            (*reg).terminate(CATEGORY_EVENT, 15, record_kill, record_wait_ok, record_warn);
-            swr_v1_process_worker_registry_free(reg);
-        }
+        reg.register(10, p, CATEGORY_EVENT);
+        reg.register(11, p, CATEGORY_EVENT);
+        reg.register(20, p, CATEGORY_USER);
+        reg.terminate(CATEGORY_EVENT, 15, record_kill, record_wait_ok, record_warn);
         let mut killed = KILLED.with(|k| k.borrow().clone());
         let mut waited = WAITED.with(|w| w.borrow().clone());
         killed.sort_unstable();
@@ -427,120 +230,52 @@ mod tests {
 
     #[test]
     fn terminate_warns_on_wait_failure() {
-        let reg = registry();
+        let mut reg = WorkerRegistry::default();
         let mut w = 0u8;
         let p = std::ptr::from_mut(&mut w).cast::<c_void>();
         WARNED.with(|w| w.borrow_mut().clear());
-        unsafe {
-            swr_v1_process_worker_registry_register(reg, 30, p, CATEGORY_USER);
-            (*reg).terminate(
-                CATEGORY_USER,
-                15,
-                record_kill,
-                record_wait_fail,
-                record_warn,
-            );
-            swr_v1_process_worker_registry_free(reg);
-        }
+        reg.register(30, p, CATEGORY_USER);
+        reg.terminate(
+            CATEGORY_USER,
+            15,
+            record_kill,
+            record_wait_fail,
+            record_warn,
+        );
         assert_eq!(WARNED.with(|w| w.borrow().clone()), vec![30]);
     }
 
     #[test]
     fn detached_workers_leave_the_lookup_and_are_reaped_once() {
-        let reg = registry();
+        let mut reg = WorkerRegistry::default();
         let mut w = 0u8;
         let p = std::ptr::from_mut(&mut w).cast::<c_void>();
-        unsafe {
-            swr_v1_process_worker_registry_register(reg, 40, p, CATEGORY_EVENT);
-            swr_v1_process_worker_registry_detach(reg, 40);
-            assert!(swr_v1_process_worker_registry_lookup(reg, 40).is_null());
-            assert!(!swr_v1_process_worker_registry_reap_detached(reg, 41));
-            assert!(swr_v1_process_worker_registry_reap_detached(reg, 40));
-            assert!(!swr_v1_process_worker_registry_reap_detached(reg, 40));
-            swr_v1_process_worker_registry_free(reg);
-        }
+        reg.register(40, p, CATEGORY_EVENT);
+        reg.detach(40);
+        assert!(reg.lookup(40).is_null());
+        assert!(!reg.reap_detached(41));
+        assert!(reg.reap_detached(40));
+        assert!(!reg.reap_detached(40));
     }
 
     #[test]
-    fn free_handles_null() {
-        unsafe { swr_v1_process_worker_registry_free(std::ptr::null_mut()) };
+    fn pending_workers_keep_their_order_and_indexes() {
+        let mut reg = WorkerRegistry::default();
+        let (a, b) = (
+            core::ptr::without_provenance_mut(1),
+            core::ptr::without_provenance_mut(2),
+        );
+        assert_eq!(reg.pending_add(a), 0);
+        assert_eq!(reg.pending_add(b), 1);
+        assert_eq!(reg.pending(), [a, b]);
     }
-}
 
-#[cfg(test)]
-mod category_compat_tests {
-    use super::*;
     #[test]
     fn user_lookup_cannot_return_an_event_worker_index_entry() {
         let mut registry = WorkerRegistry::default();
-        unsafe {
-            swr_v1_process_worker_registry_register(
-                &raw mut registry,
-                30,
-                core::ptr::without_provenance_mut(11),
-                1,
-            );
-            swr_v1_process_worker_registry_register(
-                &raw mut registry,
-                40,
-                core::ptr::without_provenance_mut(13),
-                CATEGORY_USER,
-            );
-            assert!(
-                swr_v1_process_worker_registry_lookup_category(
-                    &raw const registry,
-                    30,
-                    CATEGORY_USER
-                )
-                .is_null()
-            );
-            assert_eq!(
-                swr_v1_process_worker_registry_lookup_category(
-                    &raw const registry,
-                    40,
-                    CATEGORY_USER
-                )
-                .addr(),
-                13
-            );
-        }
+        registry.register(30, core::ptr::without_provenance_mut(11), 1);
+        registry.register(40, core::ptr::without_provenance_mut(13), CATEGORY_USER);
+        assert!(registry.lookup_category(30, CATEGORY_USER).is_null());
+        assert_eq!(registry.lookup_category(40, CATEGORY_USER).addr(), 13);
     }
-}
-
-/// Append one pending user worker before Server creation, preserving insertion order.
-/// The returned index is its original pre-start worker ID.
-/// # Safety
-/// `registry` is live and exclusively loaned; `worker` remains a native loan.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_pending_add(
-    registry: *mut WorkerRegistry,
-    worker: *mut c_void,
-) -> usize {
-    // SAFETY: configuration exclusively lends the registry for this leaf append.
-    let registry = unsafe { &mut *registry };
-    let index = registry.pending_users.len();
-    registry.pending_users.push(worker);
-    index
-}
-
-/// # Safety
-/// `registry` is live and pending-list configuration is not concurrently mutated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_pending_count(
-    registry: *const WorkerRegistry,
-) -> usize {
-    // SAFETY: this read is serialized with pending-list configuration.
-    unsafe { &*registry }.pending_users.len()
-}
-
-/// Borrow the original ordered pending worker list. No Rust frame remains while
-/// native code initializes worker resources; the list is immutable after creation.
-/// # Safety
-/// `registry` is live; the loan ends before any append or registry destruction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_registry_pending_data(
-    registry: *const WorkerRegistry,
-) -> *const *mut c_void {
-    // SAFETY: configuration lends the live registry without concurrent mutation.
-    unsafe { &*registry }.pending_users.as_ptr()
 }

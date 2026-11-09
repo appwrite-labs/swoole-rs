@@ -6,14 +6,15 @@
 //! what a read reports.
 //!
 //! Native code keeps allocation: the allocator may be Zend's, whose `emalloc` can
-//! bail out (longjmp), so `swr_v1_bus_read` returns to its caller to allocate a
+//! bail out (longjmp), so `Bus::receive` returns to its caller to allocate a
 //! packet and is called again to resume. Freeing a packet calls its allocator's
 //! `free`, which never bails out.
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr;
-use swoole_rs_corebase::log;
+use std::sync::atomic::{AtomicU64, Ordering};
+use swoole_rs_corebase::{DataHead as BusHead, log};
 use swoole_rs_reactor::SocketRecord;
 
 /// `SW_EVENT_DATA_*`.
@@ -35,27 +36,11 @@ const REDUCE_SIZE: c_int = 7;
 /// `SW_DEFAULT_ALIGNMENT`.
 const ALIGNMENT: usize = size_of::<std::ffi::c_ulong>();
 
-/// `BusRead::event`: what the caller does after `swr_v1_bus_read` returns.
+/// `BusRead::event`: what the caller does after `Bus::receive` returns.
 pub const BUS_ALLOCATE: u8 = 1;
 pub const BUS_CLOSED: u8 = 2;
 pub const BUS_ABNORMAL: u8 = 3;
 pub const BUS_READV_CLOSED: u8 = 4;
-
-/// `swoole::DataHead`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct BusHead {
-    pub fd: i64,
-    pub msg_id: u64,
-    pub len: u32,
-    pub reactor_id: i16,
-    pub kind: u8,
-    pub flags: u8,
-    pub server_fd: u16,
-    pub ext_flags: u16,
-    pub reserved: u32,
-    pub time: f64,
-}
 
 /// `swoole::PacketPtr`.
 #[repr(C)]
@@ -93,12 +78,12 @@ pub struct BusRead {
 }
 
 /// Writes `count` iovecs to `socket`; never bails out.
-pub type BusSend =
+type BusSend =
     unsafe extern "C" fn(socket: *mut c_void, iov: *const libc::iovec, count: usize) -> isize;
 /// The next message id (`MessageBus`'s `id_generator_`).
-pub type BusNextId = unsafe extern "C" fn(context: *mut c_void) -> u64;
+type BusNextId = unsafe extern "C" fn(context: *mut c_void) -> u64;
 /// Whether the failed write's errno asks for smaller chunks (`SW_REDUCE_SIZE`).
-pub type BusReduce = unsafe extern "C" fn(socket: *mut c_void) -> bool;
+type BusReduce = unsafe extern "C" fn(socket: *mut c_void) -> bool;
 
 struct Packet {
     data: *mut u8,
@@ -224,11 +209,14 @@ impl Bus {
         self.buffer.cast::<u8>().wrapping_add(HEAD)
     }
 
-    fn memory_size(&self) -> usize {
+    #[must_use]
+    pub fn memory_size(&self) -> usize {
         self.buffer_size + self.packets.values().map(|p| p.size).sum::<usize>()
     }
 
-    fn packet(&self) -> BusPacket {
+    /// `MessageBus::get_packet`.
+    #[must_use]
+    pub fn packet(&self) -> BusPacket {
         let head = self.head();
         if head.flags & PTR != 0 {
             // SAFETY: `pass` stored a `BusPacket` at the start of the data.
@@ -252,7 +240,8 @@ impl Bus {
         }
     }
 
-    fn pass(&self, info: &BusHead, data: *const c_char) {
+    /// `MessageBus::pass`: the buffer points at `data` instead of holding it.
+    pub fn pass(&self, info: &BusHead, data: *const c_char) {
         let mut head = *info;
         if info.len > 0 {
             head.flags = PTR;
@@ -268,21 +257,29 @@ impl Bus {
         unsafe { self.buffer.write(head) };
     }
 
-    fn move_packet(&mut self) -> *mut c_char {
+    /// `MessageBus::move_packet`: the current packet's block, now the caller's.
+    pub fn move_packet(&mut self) -> *mut c_char {
         let id = self.head().msg_id;
         self.packets.get_mut(&id).map_or(ptr::null_mut(), |p| {
             std::mem::replace(&mut p.data, ptr::null_mut()).cast()
         })
     }
 
-    fn pop(&mut self) {
+    /// `MessageBus::pop`: frees the current packet once its last chunk arrived.
+    pub fn pop(&mut self) {
         let head = self.head();
         if head.flags & END != 0 {
             self.packets.remove(&head.msg_id);
         }
     }
 
-    fn adopt(&mut self, data: *mut u8, size: usize, allocator: *const Allocator) {
+    /// Hands the block `BUS_ALLOCATE` asked for to the current packet.
+    ///
+    /// # Safety
+    /// The buffer is set; `data` holds `size` bytes from `allocator` (a
+    /// `swoole::Allocator` that outlives the bus), which the packet now owns.
+    pub unsafe fn adopt(&mut self, data: *mut c_void, size: usize, allocator: *const c_void) {
+        let (data, allocator) = (data.cast::<u8>(), allocator.cast::<Allocator>());
         let packet = self.packets.entry(self.head().msg_id).or_insert(Packet {
             data: ptr::null_mut(),
             length: 0,
@@ -586,315 +583,208 @@ impl BusWriter {
     }
 }
 
-/// # Safety
-/// `bus` is a live handle from `swr_v1_bus_create`, not used elsewhere for this call.
-unsafe fn bus<'a>(bus: *mut Bus) -> &'a mut Bus {
-    // SAFETY: the caller's contract.
-    unsafe { &mut *bus }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_bus_create(buffer_size: usize) -> *mut Bus {
-    Box::into_raw(Box::new(Bus::new(buffer_size)))
-}
-
-/// Frees the bus and its packets (not the buffer: see `swr_v1_bus_set_buffer`).
-///
-/// # Safety
-/// `bus` came from `swr_v1_bus_create` and is not used again.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_free(bus: *mut Bus) {
-    // SAFETY: the caller's contract.
-    drop(unsafe { Box::from_raw(bus) });
-}
-
-/// # Safety
-/// As `bus`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_set_buffer_size(bus: *mut Bus, size: usize) {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.buffer_size = size;
-}
-
-/// # Safety
-/// As `bus`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_buffer_size(bus: *mut Bus) -> usize {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.buffer_size
-}
-
-/// # Safety
-/// As `bus`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_set_always_chunked(bus: *mut Bus) {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.always_chunked = true;
-}
-
-/// Sets the receive buffer, `buffer_size` bytes the caller allocated and frees,
-/// and zeroes its header; or forgets it (null).
-///
-/// # Safety
-/// As `bus`; a non-null `buffer` holds `buffer_size` writable bytes and stays
-/// valid until it is replaced.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_set_buffer(bus: *mut Bus, buffer: *mut c_void) {
-    // SAFETY: the caller's contract.
-    let bus = unsafe { self::bus(bus) };
-    bus.buffer = buffer.cast();
-    if !buffer.is_null() {
-        // SAFETY: the caller lends a buffer that starts with a writable header.
-        unsafe { bus.buffer.write(BusHead::default()) };
+/// `MessageBus`'s operations for the server and pools that hold one.
+impl Bus {
+    /// `new MessageBus()` with no buffer yet.
+    #[must_use]
+    pub fn create(buffer_size: usize) -> Box<Self> {
+        Box::new(Self::new(buffer_size))
     }
-}
 
-/// # Safety
-/// As `bus`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_buffer(bus: *mut Bus) -> *mut c_void {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.buffer.cast()
-}
-
-/// Packets being reassembled.
-///
-/// # Safety
-/// As `bus`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_count(bus: *mut Bus) -> usize {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.packets.len()
-}
-
-/// # Safety
-/// As `bus`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_clear(bus: *mut Bus) {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.packets.clear();
-}
-
-/// # Safety
-/// As `bus`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_memory_size(bus: *mut Bus) -> usize {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.memory_size()
-}
-
-/// `MessageBus::pass`: the buffer points at `data` instead of holding it.
-///
-/// # Safety
-/// As `bus`, with the buffer set; `info` is readable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_pass(bus: *mut Bus, info: *const BusHead, data: *const c_char) {
-    // SAFETY: the caller's contract.
-    let bus = unsafe { self::bus(bus) };
-    // SAFETY: the caller lends a readable header.
-    bus.pass(unsafe { &*info }, data);
-}
-
-/// `MessageBus::get_packet`.
-///
-/// # Safety
-/// As `bus`, with the buffer set.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_packet(bus: *mut Bus) -> BusPacket {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.packet()
-}
-
-/// `MessageBus::move_packet`: the current packet's block, now the caller's.
-///
-/// # Safety
-/// As `bus`, with the buffer set.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_move_packet(bus: *mut Bus) -> *mut c_char {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.move_packet()
-}
-
-/// `MessageBus::pop`: frees the current packet once its last chunk arrived.
-///
-/// # Safety
-/// As `bus`, with the buffer set.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_pop(bus: *mut Bus) {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.pop();
-}
-
-/// Reads from the pipe `fd`; see `Bus::read`. On `BUS_ALLOCATE` the caller
-/// allocates (or reallocates) `state.size` bytes, calls `swr_v1_bus_adopt`, and
-/// calls this again with the same `state`.
-///
-/// # Safety
-/// As `bus`, with the buffer set; `nobufs` and `state` are writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_read(
-    bus: *mut Bus,
-    fd: c_int,
-    dgram: bool,
-    nobufs: *mut bool,
-    state: *mut BusRead,
-) -> isize {
-    // SAFETY: the caller's contract.
-    let bus = unsafe { self::bus(bus) };
-    // SAFETY: the caller lends a writable state.
-    let state = unsafe { &mut *state };
-    // SAFETY: the caller's contract.
-    let n = unsafe { bus.read(fd, dgram, state, nobufs) };
-    let origin = if dgram {
-        c"MessageBus::read_with_buffer"
-    } else {
-        c"MessageBus::read"
-    };
-    match state.event {
-        BUS_CLOSED => log::warning(
-            origin,
-            format_args!("receive data from socket#{fd} returns 0"),
-        ),
-        BUS_READV_CLOSED => log::warning(
-            origin,
-            format_args!(
-                "receive pipeline data error, pipe_fd={fd}, reactor_id={}",
-                bus.head().reactor_id
-            ),
-        ),
-        BUS_ABNORMAL => log::error_log(
-            /* SW_LOG_WARNING */ 4,
-            /* SW_ERROR_SERVER_WORKER_ABNORMAL_PIPE_DATA */ 9102,
-            origin,
-            format_args!(
-                "abnormal pipeline data, msg_id={}, pipe_fd={fd}, reactor_id={}",
-                bus.head().msg_id,
-                bus.head().reactor_id
-            ),
-        ),
-        _ => {}
+    pub fn set_buffer_size(&mut self, size: usize) {
+        self.buffer_size = size;
     }
-    n
-}
 
-/// Hands the block `BUS_ALLOCATE` asked for to the current packet.
-///
-/// # Safety
-/// As `bus`, with the buffer set; `data` holds `size` bytes from `allocator`
-/// (a `swoole::Allocator` that outlives the bus).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_adopt(
-    bus: *mut Bus,
-    data: *mut c_void,
-    size: usize,
-    allocator: *const c_void,
-) {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.adopt(data.cast(), size, allocator.cast());
-}
+    #[must_use]
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
 
-/// `MessageBus::count_ids`: numbers each message written from `counter`, an
-/// atomic `sw_atomic_long_t` that buses in other processes may share.
-///
-/// # Safety
-/// As `bus`; `counter` stays live and aligned while the bus lives.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_count_ids(bus: *mut Bus, counter: *mut c_void) {
+    pub fn set_always_chunked(&mut self) {
+        self.always_chunked = true;
+    }
+
+    /// Sets the receive buffer, `buffer_size` bytes the caller allocated and frees,
+    /// and zeroes its header; or forgets it (null).
+    ///
     /// # Safety
-    /// `counter` is the live atomic `swr_v1_bus_count_ids` was given.
-    unsafe extern "C" fn next(counter: *mut c_void) -> u64 {
-        // SAFETY: the caller's contract.
-        unsafe { &*counter.cast::<core::sync::atomic::AtomicU64>() }
-            .fetch_add(1, core::sync::atomic::Ordering::SeqCst)
+    /// A non-null `buffer` holds `buffer_size` writable bytes and stays valid until
+    /// it is replaced; the reads, packets and passes below need one set.
+    pub unsafe fn set_buffer(&mut self, buffer: *mut c_void) {
+        self.buffer = buffer.cast();
+        if !buffer.is_null() {
+            // SAFETY: the caller lends a buffer that starts with a writable header.
+            unsafe { self.buffer.write(BusHead::default()) };
+        }
     }
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.next_id = Some((next, counter));
+
+    /// The receive buffer, which starts with the current message's head.
+    #[must_use]
+    pub fn buffer(&self) -> *mut BusHead {
+        self.buffer
+    }
+
+    /// Packets being reassembled.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.packets.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.packets.clear();
+    }
+
+    /// Reads from the pipe `fd`; see `Bus::read`. On `BUS_ALLOCATE` the caller
+    /// allocates (or reallocates) `state.size` bytes, calls [`Bus::adopt`], and
+    /// calls this again with the same `state`.
+    ///
+    /// # Safety
+    /// The buffer is set.
+    pub unsafe fn receive(
+        &mut self,
+        fd: c_int,
+        dgram: bool,
+        nobufs: &mut bool,
+        state: &mut BusRead,
+    ) -> isize {
+        // SAFETY: the caller's contract.
+        let n = unsafe { self.read(fd, dgram, state, nobufs) };
+        let origin = if dgram {
+            c"MessageBus::read_with_buffer"
+        } else {
+            c"MessageBus::read"
+        };
+        match state.event {
+            BUS_CLOSED => log::warning(
+                origin,
+                format_args!("receive data from socket#{fd} returns 0"),
+            ),
+            BUS_READV_CLOSED => log::warning(
+                origin,
+                format_args!(
+                    "receive pipeline data error, pipe_fd={fd}, reactor_id={}",
+                    self.head().reactor_id
+                ),
+            ),
+            BUS_ABNORMAL => log::error_log(
+                /* SW_LOG_WARNING */ 4,
+                /* SW_ERROR_SERVER_WORKER_ABNORMAL_PIPE_DATA */ 9102,
+                origin,
+                format_args!(
+                    "abnormal pipeline data, msg_id={}, pipe_fd={fd}, reactor_id={}",
+                    self.head().msg_id,
+                    self.head().reactor_id
+                ),
+            ),
+            _ => {}
+        }
+        n
+    }
+
+    /// `MessageBus::count_ids`: numbers each message written from `counter`, an
+    /// atomic `sw_atomic_long_t` that buses in other processes may share.
+    pub fn count_ids(&mut self, counter: &'static AtomicU64) {
+        /// # Safety
+        /// `counter` is the `&'static AtomicU64` `count_ids` was given.
+        unsafe extern "C" fn next(counter: *mut c_void) -> u64 {
+            // SAFETY: the caller's contract.
+            unsafe { &*counter.cast::<AtomicU64>() }.fetch_add(1, Ordering::SeqCst)
+        }
+        self.next_id = Some((next, ptr::from_ref(counter).cast_mut().cast()));
+    }
+
+    /// `MessageBus::write`: numbers the message, then writes it through the event
+    /// loop while one is available, else synchronously. False if the pipe failed.
+    ///
+    /// # Safety
+    /// `socket` is a live record; `data` covers `head.len` bytes or is null.
+    pub unsafe fn send(
+        &self,
+        socket: *mut SocketRecord,
+        head: &mut BusHead,
+        data: *const u8,
+    ) -> bool {
+        /// # Safety
+        /// `socket` is a live record and `iov` denotes `count` readable iovecs.
+        unsafe extern "C" fn send(
+            socket: *mut c_void,
+            iov: *const libc::iovec,
+            count: usize,
+        ) -> isize {
+            use swoole_rs_reactor::event_api;
+            if event_api::swoole_event_is_available() {
+                // SAFETY: the write's live record and iovecs, on the thread's live loop.
+                unsafe { event_api::swoole_event_writev(socket.cast(), iov, count) }
+            } else {
+                // SAFETY: the write's live record and iovecs.
+                unsafe { writev_sync(socket.cast(), iov, count) }
+            }
+        }
+        /// # Safety
+        /// `socket` is a live record.
+        unsafe extern "C" fn reduce(socket: *mut c_void) -> bool {
+            // SAFETY: the write's live record.
+            let nobufs = unsafe { &mut (*socket.cast::<SocketRecord>()).kernel_nobufs };
+            swoole_rs_reactor::catch_pipe_error(errno(), nobufs) == REDUCE_SIZE
+        }
+        if let Some((next, context)) = self.next_id {
+            // SAFETY: the counter `count_ids` set for this bus.
+            head.msg_id = unsafe { next(context) };
+        }
+        // SAFETY: the caller's contract.
+        unsafe { self.write(socket.cast(), head, data, send, reduce) }
+    }
+
+    /// `MessageBus::init_pipe_socket`: this bus's own nonblocking record of the pipe
+    /// `fd`, with no send-buffer limit.
+    pub fn init_pipe_socket(&mut self, fd: c_int) {
+        let Ok(index) = usize::try_from(fd) else {
+            return;
+        };
+        if index >= self.pipe_sockets.len() {
+            self.pipe_sockets.resize(index + 1, ptr::null_mut());
+        }
+        // `make_socket`: a new record, which the bus frees on drop.
+        let socket = Box::leak(Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3)));
+        socket.output.buffer_size = u32::MAX;
+        if socket.output.nonblock == 0 {
+            // SAFETY: the live record just made.
+            unsafe { swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1) };
+        }
+        if let Some(slot) = self.pipe_sockets.get_mut(index) {
+            *slot = socket;
+        }
+    }
+
+    /// `MessageBus::get_pipe_socket`: the record `init_pipe_socket` made for `fd`.
+    #[must_use]
+    pub fn pipe_socket(&self, fd: c_int) -> *mut SocketRecord {
+        usize::try_from(fd)
+            .ok()
+            .and_then(|index| self.pipe_sockets.get(index).copied())
+            .unwrap_or(ptr::null_mut())
+    }
 }
 
-/// `MessageBus::write`: numbers the message, then writes it through the event loop
-/// while one is available, else synchronously. False if the pipe failed.
+/// [`Bus::send`] for crates/process' `ProcessPool::send_message`, which cannot
+/// depend on this crate.
 ///
 /// # Safety
-/// As `bus`; `socket` is a live record; `head` is writable; `data` covers
-/// `head.len` bytes or is null.
+/// `bus` is a live bus; `socket` is a live record; `head` is writable; `data`
+/// covers `head.len` bytes or is null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_bus_write(
-    bus: *mut Bus,
+    bus: *const Bus,
     socket: *mut SocketRecord,
     head: *mut BusHead,
     data: *const c_char,
 ) -> bool {
-    /// # Safety
-    /// `socket` is a live record and `iov` denotes `count` readable iovecs.
-    unsafe extern "C" fn send(socket: *mut c_void, iov: *const libc::iovec, count: usize) -> isize {
-        use swoole_rs_reactor::event_api;
-        if event_api::swoole_event_is_available() {
-            // SAFETY: the write's live record and iovecs, on the thread's live loop.
-            unsafe { event_api::swoole_event_writev(socket.cast(), iov, count) }
-        } else {
-            // SAFETY: the write's live record and iovecs.
-            unsafe { writev_sync(socket.cast(), iov, count) }
-        }
-    }
-    /// # Safety
-    /// `socket` is a live record.
-    unsafe extern "C" fn reduce(socket: *mut c_void) -> bool {
-        // SAFETY: the write's live record.
-        let nobufs = unsafe { &raw mut (*socket.cast::<SocketRecord>()).kernel_nobufs };
-        // SAFETY: `nobufs` is the record's writable field.
-        unsafe { swoole_rs_reactor::catch_pipe_error(errno(), &mut *nobufs) == REDUCE_SIZE }
-    }
-    // SAFETY: the caller's contract.
-    let bus = unsafe { self::bus(bus) };
-    // SAFETY: the caller lends a writable header.
+    // SAFETY: the caller's live bus.
+    let bus = unsafe { &*bus };
+    // SAFETY: the caller's writable head.
     let head = unsafe { &mut *head };
-    if let Some((next, context)) = bus.next_id {
-        // SAFETY: the source the caller set for this bus.
-        head.msg_id = unsafe { next(context) };
-    }
     // SAFETY: the caller's contract.
-    unsafe { bus.write(socket.cast(), head, data.cast(), send, reduce) }
-}
-
-/// `MessageBus::init_pipe_socket`: this bus's own nonblocking record of the pipe
-/// `fd`, with no send-buffer limit.
-///
-/// # Safety
-/// As `bus`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_init_pipe_socket(bus: *mut Bus, fd: c_int) {
-    // SAFETY: the caller's contract.
-    let bus = unsafe { self::bus(bus) };
-    let Ok(index) = usize::try_from(fd) else {
-        return;
-    };
-    if index >= bus.pipe_sockets.len() {
-        bus.pipe_sockets.resize(index + 1, ptr::null_mut());
-    }
-    // `make_socket`: a new record, which the bus frees on drop.
-    let socket = Box::leak(Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3)));
-    socket.output.buffer_size = u32::MAX;
-    if socket.output.nonblock == 0 {
-        // SAFETY: the live record just made.
-        unsafe { swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1) };
-    }
-    if let Some(slot) = bus.pipe_sockets.get_mut(index) {
-        *slot = socket;
-    }
-}
-
-/// `MessageBus::get_pipe_socket`: the record `init_pipe_socket` made for `fd`.
-///
-/// # Safety
-/// As `bus`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_pipe_socket(bus: *mut Bus, fd: c_int) -> *mut SocketRecord {
-    // SAFETY: the caller's contract.
-    let bus = unsafe { self::bus(bus) };
-    usize::try_from(fd)
-        .ok()
-        .and_then(|index| bus.pipe_sockets.get(index).copied())
-        .unwrap_or(ptr::null_mut())
+    unsafe { bus.send(socket, head, data.cast()) }
 }
 
 #[cfg(test)]
@@ -908,14 +798,13 @@ mod tests {
 
     #[test]
     fn count_ids_takes_each_id_from_the_shared_counter() {
-        let counter = core::sync::atomic::AtomicU64::new(1);
-        let bus = swr_v1_bus_create(64);
-        unsafe { swr_v1_bus_count_ids(bus, (&raw const counter).cast_mut().cast()) };
-        let (next, context) = unsafe { &*bus }.next_id.unwrap();
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        let mut bus = Bus::create(64);
+        bus.count_ids(&COUNTER);
+        let (next, context) = bus.next_id.unwrap();
         assert_eq!(unsafe { next(context) }, 1);
         assert_eq!(unsafe { next(context) }, 2);
-        assert_eq!(counter.load(core::sync::atomic::Ordering::Relaxed), 3);
-        unsafe { swr_v1_bus_free(bus) };
+        assert_eq!(COUNTER.load(Ordering::Relaxed), 3);
     }
     struct Static(Allocator);
     unsafe impl Sync for Static {}
@@ -1002,8 +891,8 @@ mod tests {
                 };
                 if state.event == BUS_ALLOCATE {
                     let data = unsafe { libc::realloc(state.data, state.size) };
-                    self.bus
-                        .adopt(data.cast(), state.size, &raw const ALLOCATOR.0);
+                    let allocator = (&raw const ALLOCATOR.0).cast();
+                    unsafe { self.bus.adopt(data, state.size, allocator) };
                     continue;
                 }
                 if n < 0 {
@@ -1083,8 +972,8 @@ mod tests {
         );
         assert_eq!((state.event, state.size), (BUS_ALLOCATE, 5000));
         let data = unsafe { libc::malloc(state.size) };
-        pipe.bus
-            .adopt(data.cast(), state.size, &raw const ALLOCATOR.0);
+        let allocator = (&raw const ALLOCATOR.0).cast();
+        unsafe { pipe.bus.adopt(data, state.size, allocator) };
         assert_eq!(pipe.bus.memory_size(), 4096 + 5000);
         assert!(
             unsafe {
@@ -1201,7 +1090,7 @@ mod tests {
                 return n;
             }
             let data = unsafe { libc::realloc(state.data, state.size) };
-            bus.adopt(data.cast(), state.size, &raw const ALLOCATOR.0);
+            unsafe { bus.adopt(data, state.size, (&raw const ALLOCATOR.0).cast()) };
         }
     }
 

@@ -320,23 +320,19 @@ pub unsafe fn websocket_protocol(socket: Socket) {
     record.protocol.get_package_length = websocket_package_length as *mut c_void;
 }
 
-/// An `AsyncFile` for a download, truncated or positioned; null after
-/// upstream's warning.
-pub(crate) unsafe fn swoole_http_client_coro_file_open(
-    name: *const c_char,
-    offset: i64,
-) -> *mut c_void {
-    // SAFETY: the caller's NUL-terminated path.
-    let path = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-    // SAFETY: as above.
-    let fd = unsafe { swoole_coroutine_open(name, libc::O_CREAT | libc::O_WRONLY, 0o664) };
+/// An `AsyncFile` for a download, truncated or positioned: its descriptor,
+/// or `None` after upstream's warning.
+pub(crate) fn swoole_http_client_coro_file_open(name: &CStr, offset: i64) -> Option<c_int> {
+    let path = name.to_string_lossy();
+    // SAFETY: a NUL-terminated path.
+    let fd = unsafe { swoole_coroutine_open(name.as_ptr(), libc::O_CREAT | libc::O_WRONLY, 0o664) };
     let origin = c"http_parser_on_body";
     let failed = if fd == -1 {
         log::sys_warning(
             origin,
             format_args!("open({path}, O_CREAT | O_WRONLY) failed"),
         );
-        true
+        return None;
     // SAFETY: the open descriptor.
     } else if offset == 0 && unsafe { swoole_coroutine_ftruncate(fd, 0) } != 0 {
         log::sys_warning(origin, format_args!("ftruncate({path}) failed"));
@@ -349,40 +345,24 @@ pub(crate) unsafe fn swoole_http_client_coro_file_open(
         false
     };
     if failed {
-        // SAFETY: as above.
-        unsafe { swoole_rs_file_close(fd) };
-        return std::ptr::null_mut();
+        swoole_http_client_coro_file_close(fd);
+        return None;
     }
-    Box::into_raw(Box::new(fd)).cast()
+    Some(fd)
 }
 
-/// `AsyncFile::close()`.
-unsafe fn swoole_rs_file_close(fd: c_int) {
-    if fd != -1 {
-        // SAFETY: an owned descriptor, closed once.
-        unsafe { swoole_coroutine_close(fd) };
-    }
+/// `AsyncFile::write()`: whether all of `data` was written.
+pub(crate) fn swoole_http_client_coro_file_write(fd: c_int, data: &[u8]) -> bool {
+    // SAFETY: a descriptor and the caller's bytes.
+    unsafe { swoole_coroutine_write(fd, data.as_ptr().cast(), data.len()) }.cast_unsigned()
+        == data.len()
 }
 
-pub(crate) unsafe fn swoole_http_client_coro_file_write(
-    file: *mut c_void,
-    data: *const c_char,
-    length: size_t,
-) -> bool {
-    // SAFETY: an open file.
-    let fd = unsafe { *file.cast::<c_int>() };
-    // SAFETY: its descriptor and the caller's bytes.
-    unsafe { swoole_coroutine_write(fd, data.cast(), length) }.cast_unsigned() == length
-}
-
-pub(crate) unsafe fn swoole_http_client_coro_file_free(file: *mut c_void) {
-    if file.is_null() {
-        return;
-    }
-    // SAFETY: a file `swoole_http_client_coro_file_open` made, freed once.
-    let fd = *unsafe { Box::from_raw(file.cast::<c_int>()) };
-    // SAFETY: its descriptor.
-    unsafe { swoole_rs_file_close(fd) };
+/// `AsyncFile::close()`. It can yield, so a caller lets go of the descriptor
+/// (and anything that refers to it) before calling it.
+pub(crate) fn swoole_http_client_coro_file_close(fd: c_int) {
+    // SAFETY: a plain close of a descriptor nothing else holds.
+    unsafe { swoole_coroutine_close(fd) };
 }
 
 pub(crate) unsafe fn swoole_http_client_coro_callable_free(callable: *mut c_void) {

@@ -7,26 +7,7 @@ extern "C" {
 #endif
 typedef struct { size_t offset, length; } swr_v1_http_span;
 
-typedef struct swr_v2_http_tasks swr_v2_http_tasks;
 typedef struct { int64_t offset; size_t length; char part_header[256]; } swr_v2_http_static_task;
-swr_v2_http_tasks *swr_v2_http_tasks_new(void);
-void swr_v2_http_tasks_drop(swr_v2_http_tasks *);
-int32_t swr_v2_http_tasks_begin(swr_v2_http_tasks *);
-int32_t swr_v2_http_tasks_push(swr_v2_http_tasks *);
-size_t swr_v2_http_tasks_count(const swr_v2_http_tasks *);
-int32_t swr_v2_http_tasks_copy(const swr_v2_http_tasks *, size_t, swr_v2_http_static_task *);
-int32_t swr_v2_http_tasks_clear(swr_v2_http_tasks *);
-int32_t swr_v2_http_tasks_snapshot(const swr_v2_http_tasks *, swr_v2_http_static_task *, size_t, size_t *);
-
-typedef struct swr_v2_http_directory swr_v2_http_directory;
-swr_v2_http_directory *swr_v2_http_directory_new(void);
-void swr_v2_http_directory_drop(swr_v2_http_directory *);
-int32_t swr_v2_http_directory_clone(const swr_v2_http_directory *, swr_v2_http_directory **);
-int32_t swr_v2_http_directory_scan_append(swr_v2_http_directory *, const uint8_t *, size_t);
-void swr_v2_http_directory_scan_finish(swr_v2_http_directory *);
-int32_t swr_v2_http_directory_insert(swr_v2_http_directory *, const uint8_t *, size_t);
-size_t swr_v2_http_directory_count(const swr_v2_http_directory *);
-int32_t swr_v2_http_directory_contains(const swr_v2_http_directory *, const uint8_t *, size_t);
 
 typedef struct {
     const uint8_t *data; size_t length;
@@ -36,7 +17,6 @@ typedef struct {
     size_t offset, length, filesize; uint32_t part, separator;
 } swr_v1_http_range_format_input;
 int32_t swr_v1_http_range_format(const swr_v1_http_range_format_input *, uint8_t *, size_t, size_t *);
-int32_t swr_v2_http_tasks_prepare(swr_v2_http_tasks *, int64_t, size_t, const swr_v1_http_range_format_input *, size_t *);
 int32_t swr_v1_http_multipart_disposition(const uint8_t *, size_t);
 int32_t swr_v1_http_multipart_filename(uint8_t *, size_t);
 typedef struct { size_t key_offset, key_length, value_offset, value_length; uint32_t has_value; } swr_v1_http_cookie;
@@ -51,17 +31,6 @@ typedef struct {
     int64_t content_length, range_offset; size_t range_length, filesize;
     uint32_t variant, keep_alive, range_kind;
 } swr_v1_http_static_header;
-enum swr_v1_http_date_action {
-    SWR_HTTP_DATE_IGNORE=0, SWR_HTTP_DATE_GMT=1, SWR_HTTP_DATE_UTC=2,
-    SWR_HTTP_DATE_RFC850=3, SWR_HTTP_DATE_ASCTIME=4, SWR_HTTP_DATE_FILE_GMT=5,
-    SWR_HTTP_DATE_PARSED_TIME=6, SWR_HTTP_DATE_FILE_TIME=7, SWR_HTTP_DATE_MATCH=8
-};
-typedef struct {
-    uint32_t phase, kind, valid; size_t length;
-    int64_t timezone, file_mtime, value, parsed_time;
-} swr_v1_http_conditional_state;
-const char *swr_v1_http_date_format(uint32_t);
-int32_t swr_v1_http_conditional(swr_v1_http_conditional_state *);
 typedef struct {
     size_t tm_size, tm_align;
     bool (*parse)(const char *, const char *, void *);
@@ -85,19 +54,11 @@ typedef struct {
     uint32_t part;
 } swr_v1_http_index_page_input;
 int32_t swr_v1_http_index_page(const swr_v1_http_index_page_input *, uint8_t *, size_t, size_t *);
-int32_t swr_v2_http_directory_page(const swr_v2_http_directory *, size_t, const swr_v1_http_index_page_input *, uint8_t *, size_t, size_t *);
 
 typedef struct { uint32_t phase, last; size_t url_length, filename_length; } swr_v1_http_static_path_state;
-int32_t swr_v1_http_static_index_path(uint8_t *, size_t, size_t, const uint8_t *, size_t);
 int32_t swr_v1_http_static_location(const uint8_t *, size_t, const uint8_t *, size_t, swr_v1_http_static_path_state *);
 int32_t swr_v1_http_static_path(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, size_t, swr_v1_http_static_path_state *, uint32_t);
-int32_t swr_v1_http_transport_route(uint32_t, uint32_t);
-int32_t swr_v1_http_proxy_auth_enabled(size_t, size_t);
-int32_t swr_v1_http_unknown_status(int32_t, uint8_t *, size_t, size_t *);
 const uint8_t *swr_v1_http_static_boundary(size_t, size_t *);
-const uint8_t *swr_v1_http_static_content_prefix(size_t);
-int32_t swr_v1_http_static_content_type(const swr_v1_http_proxy_text *, uint8_t *, size_t, size_t *);
-int32_t swr_v1_http_static_catch(uint32_t, int32_t *);
 int32_t swr_v1_http_static_headers(const swr_v1_http_static_header *, uint8_t *, size_t, size_t *);
 struct swr_v1_core_proxy;
 int32_t swr_v1_http_proxy_owned_authorization(const struct swr_v1_core_proxy *, uint8_t *, size_t *);

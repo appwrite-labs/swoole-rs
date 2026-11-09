@@ -23,6 +23,9 @@ A re-run whose test passed but whose runner then aborted with the heap-corruptio
 signature both engines hit at the same rate (#200, #406) is inconclusive: it is left out
 of the verdict and re-run once more. A test whose re-runs on an engine are all
 inconclusive fails the gate, labelled inconclusive.
+
+On a debug PHP (debug.yml) a failure may carry Zend's leak report or a failed assertion;
+the summary lists those per engine, upstream's own too, and gates them as any failure.
 """
 import argparse
 from collections import Counter, defaultdict
@@ -45,6 +48,8 @@ ANSI = re.compile(r'\x1b\[[0-9;]*m')
 TIMED_OUT = re.compile(r'process timed out|exceeded its isolated group deadline')
 # The official runner's own abort after a passing test (#200).
 ABORTED = re.compile(r'corrupted double-linked list[\s\S]*Aborted')
+# A debug PHP's report at request end, and a failed ZEND_ASSERT, in the test's output.
+REPORTS = [('leak', re.compile(r'memory leaks? detected')), ('assertion', re.compile(r'Assertion .* failed'))]
 RERUNS = 3
 # Upstream re-runs for a test the hybrid failed every re-run of after upstream failed
 # one (#998, #1948), and for a test the hybrid both passed and failed on re-run (#1285: an
@@ -87,6 +92,7 @@ def rows(reports):
                 # WARNED failed its first attempt: that failure counts, whatever the runner did next.
                 entry['inconclusive'] = (row.get('upstream_status') == 'PASSED'
                                          and bool(ABORTED.search(row.get('detail') or '')))
+                entry['report'] = next((name for name, pattern in REPORTS if pattern.search(row.get('detail') or '')), None)
             yield entry
 
 
@@ -233,6 +239,9 @@ def markdown(results, rechecked=None):
     elif len(engines) > 1:
         lines += listing('passing on upstream but not here (regressions)', regressions)
         lines += listing('failing on upstream too', both)
+    reported = [f'{row["test"]} ({row["engine"]}: {row["report"]})' for row in results if row.get('report')]
+    if reported:
+        lines += listing('leak or assertion reports (gated like any failure)', reported)
     lines += ['| Family | ' + ' | '.join(f'{e} {s}' for e in engines for s in STATUSES) + ' |',
               '| --- |' + ' --- |' * (len(engines) * len(STATUSES))]
     lines += [f'| {family} | ' + ' | '.join(str(c[e, s]) for e in engines for s in STATUSES) + ' |'
