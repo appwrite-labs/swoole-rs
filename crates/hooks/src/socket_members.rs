@@ -475,7 +475,7 @@ pub unsafe extern "C" fn accept(this: *mut c_void, timeout: f64) -> *mut c_void 
         // SAFETY: the live listening socket.
         unsafe { set_err(socket, error) };
         // SAFETY: the new native socket, used no more.
-        unsafe { crate::co_socket::swr_v1_hook_co_socket_free(client) };
+        unsafe { (crate::hooked::SOCKETS.free)(client) };
         return null_mut();
     }
     client
