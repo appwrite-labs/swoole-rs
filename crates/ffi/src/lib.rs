@@ -30,6 +30,7 @@ pub use swoole_rs_bus::swr_v1_bus_write;
 pub use swoole_rs_memory::*;
 
 pub use swoole_rs_http::*;
+pub use swoole_rs_http_ffi::*;
 
 pub use swoole_rs_utilities::*;
 

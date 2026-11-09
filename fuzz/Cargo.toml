@@ -14,6 +14,7 @@ swoole-rs-base64 = { path = "../crates/base64" }
 swoole-rs-clients = { path = "../crates/clients" }
 swoole-rs-framing = { path = "../crates/framing" }
 swoole-rs-http = { path = "../crates/http" }
+swoole-rs-http-ffi = { path = "../crates/http-ffi" }
 swoole-rs-http2 = { path = "../crates/http2" }
 libc = "=0.2.191"
 swoole-rs-oracle = { path = "../crates/oracle" }

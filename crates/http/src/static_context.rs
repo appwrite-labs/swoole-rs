@@ -168,8 +168,11 @@ impl HttpStaticContext {
     pub fn end_part(&self) -> &[u8] {
         &self.end
     }
-    /// One of the context's texts (`URL` .. `END`); the filename stops at its NUL.
-    fn text(&self, kind: u32) -> Option<&[u8]> {
+    /// One of the context's texts: 0 the URL, 1 the original URL, 2 the directory,
+    /// 3 the index file, 4 the filename (to its NUL), 5 the boundary, 6 the content
+    /// type and 7 the closing boundary.
+    #[must_use]
+    pub fn text(&self, kind: u32) -> Option<&[u8]> {
         Some(match kind {
             URL => self.url(),
             ORIGINAL => &self.original,
@@ -292,65 +295,6 @@ impl HttpStaticContext {
         self.end = value;
         0
     }
-}
-
-/// A context for `tests/modules/http/rewrite_gate.cc`, which frees it with
-/// `swr_v2_http_context_drop`; null on failure.
-/// # Safety
-/// `url` lends `length` initialized bytes (null only when empty).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_new(
-    url: *const u8,
-    length: usize,
-    capacity: usize,
-) -> *mut HttpStaticContext {
-    // SAFETY: as the caller guarantees.
-    let Ok(url) = (unsafe { crate::bytes(url, length) }) else {
-        return std::ptr::null_mut();
-    };
-    HttpStaticContext::new(url, capacity).map_or(std::ptr::null_mut(), |context| {
-        Box::into_raw(Box::new(context))
-    })
-}
-/// # Safety
-/// Null or a context from `swr_v2_http_context_new`, dropped once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_drop(owner: *mut HttpStaticContext) {
-    if !owner.is_null() {
-        // SAFETY: a unique, live context from `context_new`, dropped once.
-        drop(unsafe { Box::from_raw(owner) });
-    }
-}
-/// Text `kind`'s length into `written`, and its bytes into `output` when `capacity`
-/// is nonzero; a short capacity copies nothing.
-/// # Safety
-/// `owner` is null or live; `written` is writable; `output` holds `capacity`
-/// writable bytes disjoint from the context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_text(
-    owner: *const HttpStaticContext,
-    kind: u32,
-    output: *mut u8,
-    capacity: usize,
-    written: *mut usize,
-) -> i32 {
-    // SAFETY: `owner` is null or live.
-    let Some(text) = (unsafe { owner.as_ref() }).and_then(|owner| owner.text(kind)) else {
-        return INVALID;
-    };
-    if written.is_null() {
-        return INVALID;
-    }
-    if capacity != 0 {
-        if capacity < text.len() || output.is_null() {
-            return OVERFLOW;
-        }
-        // SAFETY: `text.len() <= capacity` writable bytes, disjoint from the context.
-        unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), output, text.len()) };
-    }
-    // SAFETY: `written` is non-null (checked above) and writable.
-    unsafe { written.write(text.len()) };
-    0
 }
 
 #[cfg(test)]
