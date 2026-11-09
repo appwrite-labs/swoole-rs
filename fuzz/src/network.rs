@@ -10,7 +10,7 @@ use swoole_rs_http2::{
     frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
 };
 use swoole_rs_oracle::{multipart, nghttp2};
-use swoole_rs_protocols::{RespPhpState, RespSpan, swr_v1_resp_php_next};
+use swoole_rs_protocols::{RespPhpState, resp_php_next};
 
 /// Any bytes as an HTTP/2 frame header (RFC 9113 4.1) and a SETTINGS entry (6.5.1):
 /// `frame_length`, `sw_rs_http2_decode_frame` and `sw_rs_http2_unpack_setting`
@@ -359,28 +359,17 @@ pub fn http2_hpack(bytes: &[u8]) {
     unsafe { nghttp2::nghttp2_hd_inflate_del(inflater) };
 }
 
-/// Any bytes as a `Redis\Server` request, walked with `swr_v1_resp_php_next` as the
+/// Any bytes as a `Redis\Server` request, walked with `resp_php_next` as the
 /// server's receive loop does: every event's span lies inside the request, the walk
 /// moves forward and ends, and only the first string is the command.
 pub fn resp_server(bytes: &[u8]) {
     let mut state = RespPhpState::default();
-    let mut span = RespSpan::default();
-    let (mut range, mut commands) = (0u8, 0);
+    let mut commands = 0;
     for _ in 0..=bytes.len() {
         let before = state.cursor.position;
-        // SAFETY: `bytes` holds its length; state, span and range are locals.
-        let next = unsafe {
-            swr_v1_resp_php_next(
-                bytes.as_ptr(),
-                bytes.len(),
-                &mut state,
-                &mut span,
-                &mut range,
-            )
-        };
-        if next <= 0 {
+        let Ok(Some(span)) = resp_php_next(bytes, &mut state, &mut false) else {
             return;
-        }
+        };
         assert!(state.cursor.position > before, "stalled on {bytes:?}");
         assert!(
             span.kind == 1

@@ -256,7 +256,7 @@ mod native {
         unsafe { Box::from_raw(change.cast::<Change>()) }.apply();
     }
 
-    unsafe extern "C" fn dispose(change: *mut c_void) {
+    unsafe extern "C-unwind" fn dispose(change: *mut c_void) {
         // SAFETY: the box `listen` deferred, never run.
         drop(unsafe { Box::from_raw(change.cast::<Change>()) });
     }

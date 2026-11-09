@@ -18,6 +18,9 @@ use swoole_rs_oracle::{
 };
 
 mod framing_native;
+// The C ABI the oracle's candidate protocol sources call.
+use swoole_rs_protocols_ffi as _;
+
 mod network;
 pub use network::{dns_reply, http_chunked, http2_frame, http2_hpack, multipart, resp_server};
 use swoole_rs_websocket::{decode_in_place, frame_length, mask};

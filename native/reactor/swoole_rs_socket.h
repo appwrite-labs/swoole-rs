@@ -90,9 +90,6 @@ typedef struct {
 
 extern "C" {
 extern swr_v1_socket_defaults_t swr_v1_socket_defaults;
-/* Socket's methods over the record (crates/reactor/src/socket_methods.rs): SW_OK or
- * SW_ERR, setting info, bound, listened or the TCP flags on success. */
-swr_v1_socket_output_result swr_v1_socket_file_sent(swr_v1_socket_file_request *owner, swr_v1_socket *socket, const swr_v1_socket_output_hooks *hooks, ssize_t sent, size_t requested);
 }
 
 static_assert(sizeof(void *) == 8, "the socket record's offsets are LP64's");

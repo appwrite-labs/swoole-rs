@@ -38,20 +38,6 @@ int64_t swr_v1_resp_parse_range(const uint8_t *, size_t, swr_resp_span *, size_t
  * Unlike parse, output may be partially written on error. */
 int64_t swr_v1_resp_scan(const uint8_t *, size_t, swr_resp_span *, size_t capacity, uint8_t *range);
 size_t swr_v1_resp_format(uint8_t kind, const uint8_t *, size_t, int64_t integer, uint8_t *, size_t);
-/* PHP reply wire fragments. Native conversions/allocations run outside Rust.
- * Prefix is complete header/inline bytes; body borrows the input's bounded
- * prefix; suffix_length is 0 or2 for CRLF. Kinds match PHP0/1/2/3/4/5/6,
- * plus8 string-map-key and9 unsigned-map-key. number carries integer bits/count.
- * present only controls status/error defaults. Output untouched on error. */
-typedef struct {
-    uint8_t prefix[32];
-    uint32_t prefix_length;
-    size_t body_length;
-    uint32_t suffix_length;
-} swr_resp_reply_parts;
-int32_t swr_v1_resp_reply_parts(uint8_t kind, uint8_t present, uint64_t number,
-                               const uint8_t *, size_t, swr_resp_reply_parts *);
-
 typedef struct {
     uint8_t state;
     int32_t lines_total, lines_received, bytes_total, bytes_received, offset;
@@ -62,7 +48,7 @@ int32_t swr_v1_resp_receive_range(const uint8_t *, size_t length, size_t capacit
                                 swr_resp_request *, uint8_t *set_offset, uint8_t *range);
 /* After receive action 1: new buffer size, or 0 to keep reading without growth. */
 size_t swr_v1_resp_extend_size(size_t length, size_t size, size_t maximum, size_t page);
-/* redis::recv_packet's loop (crates/protocols/src/resp_recv.rs) over the caller's
+/* redis::recv_packet's loop (crates/protocols-ffi/src/resp_recv.rs) over the caller's
  * effects. buffer is a swoole::String's head; *request is null or from sw_malloc.
  * recv: bytes received, -1 to close (SW_ERR), -2 to stop (SW_OK).
  * dispatch: onPackage of the first length bytes: <0 failed, 1 socket removed, else 0. */
@@ -73,7 +59,7 @@ typedef struct {
     int (*dispatch)(void *context, size_t length);
 } swr_resp_io;
 int swr_v1_resp_recv(const swr_resp_io *, void *buffer, swr_resp_request **request, uint32_t maximum, size_t page);
-/* MessageBus (crates/protocols/src/bus.rs), for crates/process' send_message.
+/* MessageBus (crates/bus), for crates/process' send_message.
  * socket is a swoole::network::Socket. */
 typedef struct swr_bus swr_bus;
 bool swr_v1_bus_write(const swr_bus *, void *socket, void *head, const char *data);

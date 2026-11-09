@@ -40,7 +40,8 @@ swoole-rs-websocket-ffi = { path = "../websocket-ffi", features = ["upstream-sym
 swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
 swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error", features = ["upstream-symbols"] }
-swoole-rs-protocols = { path = "../protocols", features = ["upstream-symbols"] }
+swoole-rs-bus = { path = "../bus", features = ["upstream-symbols"] }
+swoole-rs-protocols-ffi = { path = "../protocols-ffi" }
 swoole-rs-memory = { path = "../memory", features = ["upstream-symbols"] }
 swoole-rs-http = { path = "../http", features = ["upstream-symbols"] }
 swoole-rs-utilities = { path = "../utilities", features = ["upstream-symbols"] }

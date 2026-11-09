@@ -113,7 +113,7 @@ crates/tls's, crates/reactor's and crates/ports' definitions by their upstream s
 (those crates sit above this one), and the input buffer is a Rust-owned `String`.
 The TLS context is crates/tls's owner and the proxies are corebase's `ProxyState`s,
 held by the state. The TLS session calls, `SSLContext::create` and the SOCKS5 codec
-(crates/protocols) are called by their upstream symbols too; the HTTP proxy's are
+(crates/protocols-ffi) are called by their upstream symbols too; the HTTP proxy's are
 crates/http's, called directly. The DNS lookup dispatches a resolver request to
 crates/hooks' `async::dispatch` by its upstream symbol, with crates/clients'
 resolver as the pool handler. No C++ remains. The last error is corebase's, which

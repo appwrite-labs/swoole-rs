@@ -266,7 +266,7 @@ pub(super) unsafe extern "C" fn async_dispatch(event: *const c_void) -> *mut c_v
     log(format!("dns {} {family}", String::from_utf8_lossy(name)));
     core::ptr::without_provenance_mut(8)
 }
-// crates/tls's, crates/protocols' and OpenSSL's, which the hybrid links. A TLS
+// crates/tls's, crates/protocols-ffi's and OpenSSL's, which the hybrid links. A TLS
 // owner is a leaked view of itself.
 #[unsafe(no_mangle)]
 extern "C" fn swr_v1_tls_warning(_: *const c_char, _: *const c_char) {}

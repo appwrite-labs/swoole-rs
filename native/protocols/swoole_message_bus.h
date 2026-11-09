@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_message_bus.h, owned here: MessageBus as the layout of the
- * Rust bus's owner (crates/protocols/src/bus.rs). Upstream's file is deleted, so
+ * Rust bus's owner (crates/bus/src/lib.rs). Upstream's file is deleted, so
  * `#include "swoole_message_bus.h"` finds this copy. */
 
 #pragma once

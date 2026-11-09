@@ -5,7 +5,7 @@
 use std::ffi::{CStr, c_int, c_void};
 use swoole_rs_corebase::constants::{EventType, FdType};
 use swoole_rs_reactor::{
-    DeferCall, ReactorFields, ReactorPrepared, ReactorTask, SocketRecord, event_api,
+    DeferCall, DeferDispose, ReactorFields, ReactorPrepared, ReactorTask, SocketRecord, event_api,
 };
 use swoole_rs_zend::{
     E_ERROR, E_WARNING, Message,
@@ -248,10 +248,11 @@ pub(crate) unsafe fn socket_free_record(socket: *mut SocketRecord, detach_fd: bo
     unsafe { swoole_rs_tls::upstream::socket_free(socket) };
 }
 
-/// `Reactor::defer(call, data)` on this thread's reactor.
-pub(crate) fn defer(call: DeferCall, data: *mut c_void) {
+/// `Reactor::defer(call, data)` on this thread's reactor; `dispose(data)` if the
+/// reactor is freed before the call runs.
+pub(crate) fn defer(call: DeferCall, data: *mut c_void, dispose: DeferDispose) {
     // SAFETY: the live reactor's fields.
-    unsafe { swoole_rs_reactor::defer(fields(), call, data) };
+    unsafe { swoole_rs_reactor::defer(fields(), call, data, Some(dispose)) };
 }
 
 /// The reactor's future (`before`) or idle task.

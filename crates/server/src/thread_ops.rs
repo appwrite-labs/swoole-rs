@@ -1,7 +1,7 @@
 //! The reactor-thread ops over a thread's own state that were master.cc's: its
 //! entry and setup, its message bus and worker pipes, the messages workers send
 //! it, its timers and the server methods it calls. Each is a Rust call: the bus
-//! is crates/protocols', the methods are this crate's and crates/process' and
+//! is crates/bus', the methods are this crate's and crates/process' and
 //! crates/ports', reached under their upstream symbols.
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;

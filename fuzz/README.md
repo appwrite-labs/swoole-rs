@@ -92,7 +92,7 @@ nghttp2 inflater (`upstream/thirdparty/nghttp2`) through the step loop the HTTP/
 server and client run (`sw_rs_http2_inflate_step`): each call consumes at most what
 is left, each emitted name and value is NUL-terminated, and the loop ends within one
 step per byte. `resp_server` walks a
-`Redis\Server` request with `swr_v1_resp_php_next`: spans stay inside the request,
+`Redis\Server` request with `resp_php_next`: spans stay inside the request,
 the walk advances and ends, and there is one command at most.
 `sni_wildcard` splits its input at NUL into an SNI name and a certificate name and
 checks `swoole_rs_utilities::sni_wildcard_matches` against a glob over the lowercased

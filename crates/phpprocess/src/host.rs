@@ -235,7 +235,7 @@ fn defer(call: swoole_rs_reactor::DeferCall, data: *mut c_void) {
     // SAFETY: the live loop, which begins with its prepared state.
     let fields = unsafe { (*reactor).fields };
     // SAFETY: the loop's live fields.
-    unsafe { swoole_rs_reactor::defer(fields, call, data) };
+    unsafe { swoole_rs_reactor::defer(fields, call, data, None) };
 }
 
 /// `zend::function::call(callable->ptr(), argc, argv, nullptr, coroutine)`: a

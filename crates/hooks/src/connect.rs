@@ -17,7 +17,7 @@ use swoole_rs_corebase::{
     swr_v1_core_string_set, swr_v1_core_string_view,
 };
 use swoole_rs_http::{swr_v1_http_proxy_accept, swr_v1_http_proxy_connect};
-use swoole_rs_protocols::{Socks5Proxy, handshake_step, pack_negotiate_request};
+use swoole_rs_protocols_ffi::{Socks5Proxy, handshake_step, pack_negotiate_request};
 use swoole_rs_reactor::{CLASS_INET4, CLASS_INET6, type_is};
 use swoole_rs_tls::owner_tls_host_name;
 use swoole_rs_tls::upstream::socket_free;
@@ -622,7 +622,7 @@ impl Co {
             }
             owner
         } else {
-            match swoole_rs_protocols::admit(user.len(), password.len()) {
+            match swoole_rs_protocols_ffi::admit(user.len(), password.len()) {
                 0 => null_mut(),
                 config => {
                     let owner = swoole_rs_corebase::swr_v1_core_proxy_new(true).owner;

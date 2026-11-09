@@ -4,7 +4,7 @@
 //! (tests/modules/http/server), whose fixture.cc builds the Servers. The redis client is
 //! a blocking `TcpStream` speaking RESP with core-tests' `RedisClient` (hiredis) reply
 //! rules; upstream's runs in a coroutine, here in the worker's case thread. The file's
-//! other TESTs are unit tests: `format` and `parse` in crates/protocols/src/redis.rs,
+//! other TESTs are unit tests: `format` and `parse` in crates/protocols-ffi/src/redis.rs,
 //! `recv_packet_with_partially_filled_buffer` in crates/ports/src/resp_recv.rs.
 
 use super::protocol::random_bytes;
