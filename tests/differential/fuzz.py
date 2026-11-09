@@ -386,7 +386,10 @@ def run_program(engines, workdir, keep, private, seed, index):
     if verdict == 'divergent':
         with ALONE.exclusive():
             lines = minimise(engines, path, lines)
-            _, found = check(engines, path, lines, alone=True)
+            again, minimised = check(engines, path, lines, alone=True)
+        # The report shows a divergence: the minimised program's, unless it didn't recur.
+        if again == 'divergent':
+            found = minimised
         row['calls'] = sum(removable for removable, _ in lines)
         if keep:
             keep.mkdir(parents=True, exist_ok=True)
