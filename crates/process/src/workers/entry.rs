@@ -1,8 +1,8 @@
 //! The `Server` methods of the deleted worker-side files (`src/server/manager.cc`,
 //! `worker.cc`, `reactor_process.cc`, `task_worker.cc` and `thread.cc`), defined under their upstream (Itanium)
 //! symbols when the hybrid links this crate (`upstream-symbols`). Each one enters
-//! native code with its operation and objects; workers.cc's `workers_enter` builds
-//! the context the C++ forward built and runs the operation over it.
+//! crates/server with its operation and objects, which builds the context the C++
+//! forward built and runs the operation over it.
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
 use std::sync::OnceLock;
@@ -20,8 +20,9 @@ use super::ops::{
 use crate::methods::{Narrow, send_pipe_message};
 use crate::worker_record::WorkerRecord;
 
-/// workers.cc's `workers_enter(operation, object, other, extra, arg)`.
-pub type WorkersEnter = unsafe extern "C-unwind" fn(
+/// What an operation runs over: crates/server's builder of its context, which runs
+/// it with `arg` over the objects.
+pub type WorkersEnter = unsafe fn(
     operation: u32,
     object: *mut c_void,
     other: *mut c_void,
@@ -29,16 +30,18 @@ pub type WorkersEnter = unsafe extern "C-unwind" fn(
     arg: u64,
 ) -> i64;
 
-static ENTER: OnceLock<WorkersEnter> = OnceLock::new();
+/// crates/server's `workers_enter`: each operation's [`WorkersEnter`].
+pub type WorkersRoute = fn(operation: u32) -> WorkersEnter;
 
-/// Registers workers.cc's `workers_enter`, which the methods below enter.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_workers_set_enter(enter: WorkersEnter) {
+static ROUTE: OnceLock<WorkersRoute> = OnceLock::new();
+
+/// Registers crates/server's `workers_enter`, which the methods below enter.
+pub fn set_enter(route: WorkersRoute) {
     // A second registration is the same function; keeping the first is equivalent.
-    ENTER.get_or_init(|| enter);
+    ROUTE.get_or_init(|| route);
 }
 
-/// Runs `operation` with `arg` over the context native code builds from the objects.
+/// Runs `operation` with `arg` over the context crates/server builds from the objects.
 ///
 /// # Safety
 /// The objects are what `operation`'s context takes, live for the call.
@@ -49,10 +52,11 @@ unsafe fn enter<R: Narrow>(
     extra: *const c_void,
     arg: u64,
 ) -> R {
-    let Some(&enter) = ENTER.get() else {
-        // workers.cc registers before any Server exists.
+    let Some(&route) = ROUTE.get() else {
+        // crates/server registers when a Server opens.
         std::process::abort()
     };
+    let enter = route(operation);
     // SAFETY: as the caller guarantees.
     R::narrow(unsafe {
         enter(
@@ -210,10 +214,9 @@ thread_factory_methods! {
 }
 
 /// `Server::finish`'s result bytes, as `workers_enter`'s `extra`.
-#[repr(C)]
-struct Bytes {
-    data: *const c_char,
-    length: usize,
+pub struct Bytes {
+    pub data: *const c_char,
+    pub length: usize,
 }
 
 methods! {
@@ -287,7 +290,7 @@ mod tests {
     type Entry = (u32, usize, usize, usize, u64);
     static SEEN: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
-    unsafe extern "C-unwind" fn fake(
+    unsafe fn fake(
         operation: u32,
         object: *mut c_void,
         other: *mut c_void,
@@ -315,7 +318,7 @@ mod tests {
 
     #[test]
     fn methods_enter_with_their_operation_and_objects() {
-        swr_v1_workers_set_enter(fake);
+        set_enter(|_| fake);
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
         // A `ThreadFactory`: `server_`, then `manager_`.
         let mut factory: [usize; 2] = [0x10, 0];

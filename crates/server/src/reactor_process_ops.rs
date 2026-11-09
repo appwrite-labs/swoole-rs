@@ -1,8 +1,6 @@
 //! The base-mode reactor process's facts and effects
 //! (`crates/process/src/workers/reactor_process.rs`'s `OP_*`) over the server,
-//! port, worker and connection records Rust lays out. workers.cc's
-//! `ReactorProcessContext::call` hands every op it has no case for to
-//! [`swr_v1_reactor_process_call`].
+//! port, worker and connection records Rust lays out.
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering;
 
@@ -31,12 +29,11 @@ use crate::reactor_ops::sign;
 use crate::view;
 
 mod native;
+pub(crate) use native::enter;
 
-/// workers.cc's `WorkersNative<1>`.
-#[repr(C)]
+/// What an operation runs over.
 struct Context {
     serv: *mut c_void,
-    pool: *mut c_void,
     worker: *mut WorkerRecord,
     reactor: *mut c_void,
     event: *mut Event,
@@ -71,24 +68,17 @@ unsafe extern "C-unwind" {
     fn pool_destroy(pool: *mut c_void);
 }
 
-/// Answers reactor-process op `op` with `arg` over the `WorkersNative<1>` at `context`.
-///
-/// # Safety
-/// `context` is workers.cc's live `ReactorProcessContext`, whose objects the op reads are live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_reactor_process_call(
-    context: *mut c_void,
-    op: u32,
-    arg: u64,
-) -> u64 {
-    // SAFETY: per the caller.
-    let ctx = unsafe { &mut *context.cast::<Context>() };
-    native::native(ctx, op, arg)
-        .or_else(|| server(ctx, op, arg))
-        .or_else(|| worker(ctx, op))
-        .or_else(|| connection(ctx, op, arg))
-        .or_else(|| pipe(ctx, op))
-        .unwrap_or_else(|| std::process::abort())
+/// Answers each reactor-process op over the context.
+impl swoole_rs_process::workers::Answer for Context {
+    fn answer(&mut self, op: u32, arg: u64) -> u64 {
+        let ctx = self;
+        native::native(ctx, op, arg)
+            .or_else(|| server(ctx, op, arg))
+            .or_else(|| worker(ctx, op))
+            .or_else(|| connection(ctx, op, arg))
+            .or_else(|| pipe(ctx, op))
+            .unwrap_or_else(|| std::process::abort())
+    }
 }
 
 /// The factory's work on the message the server's bus just read from the pipe.

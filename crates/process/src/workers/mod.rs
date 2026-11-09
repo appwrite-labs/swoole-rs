@@ -56,6 +56,30 @@ pub(crate) trait Host {
     }
 }
 
+/// What crates/server answers each fact or effect with, over a context it built.
+pub trait Answer {
+    fn answer(&mut self, op: u32, arg: u64) -> u64;
+}
+
+/// A context crates/server built, which Rust runs an operation over.
+struct Over<'a>(&'a mut dyn Answer);
+
+impl Host for Over<'_> {
+    fn op(&mut self, op: u32, arg: u64) -> u64 {
+        // Unit tests link no upstream objects, so native does these ops there.
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        if let Some(result) = effect(op) {
+            return result;
+        }
+        self.0.answer(op, arg)
+    }
+}
+
+/// Runs `operation` with `arg` over `context`.
+pub fn run_over(context: &mut dyn Answer, operation: u32, arg: u64) -> i64 {
+    run(&mut Over(context), operation, arg)
+}
+
 struct Native {
     context: *mut c_void,
     call: WorkersCall,

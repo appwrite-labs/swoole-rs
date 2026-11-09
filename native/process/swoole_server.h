@@ -10,7 +10,6 @@
 #include "swoole_rs_server_strings.h"
 #include "swoole_rs_server_view.h"
 #include "swoole_rs_corebase_worker_registry_view.h"
-#include "swoole_rs_workers.h"
 #include "swoole_rs_port_state.h"
 
 #include <string>
@@ -24,7 +23,6 @@
 namespace swoole {
 
 class Server;
-class Thread;
 
 struct ReactorThread {
     int id;
@@ -64,7 +62,6 @@ class Factory {
 // Thread mode's factory, as workers.cc's thread ops see it.
 class ThreadFactory : public Factory {
   public:
-    std::shared_ptr<Thread> &thread_at(size_t index) const;
     WorkerId get_master_thread_id() const;
 };
 
@@ -93,10 +90,6 @@ enum ServerEventType {
 };
 
 class Server : public detail::ServerFields {
-    // The native halves of crates/process/src/workers, one per source file.
-    template <int>
-    friend struct WorkersNative;
-
   public:
     enum Mode {
         MODE_BASE = 1,

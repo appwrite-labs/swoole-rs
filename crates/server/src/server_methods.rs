@@ -247,7 +247,56 @@ pub unsafe extern "C" fn swr_v1_server_open(
     swoole_rs_process::workers::factory_methods::set_factory_call(
         crate::factory_ops::swr_v1_factory_call,
     );
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    swoole_rs_process::workers::entry::set_enter(workers_enter);
     true
+}
+
+/// The module whose context each `Server` and `ThreadFactory` method of
+/// crates/process's entry.rs runs its operation over, as workers.cc's
+/// `workers_enter` built it.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+fn workers_enter(operation: u32) -> swoole_rs_process::workers::entry::WorkersEnter {
+    use swoole_rs_process::workers::ops::{
+        RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_CALL_WORKER_START, RUN_CALL_WORKER_STOP,
+        RUN_CLEAN_CONNECTIONS, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY,
+        RUN_DRAIN_PIPES, RUN_FINISH, RUN_INIT_TASK_WORKERS, RUN_KILL_WORKER,
+        RUN_REACTOR_PROCESS_MAIN, RUN_REACTOR_PROCESS_START, RUN_READ_WORKER_MESSAGE, RUN_RELOAD,
+        RUN_RESTART_WORKER, RUN_SEND_TO_REACTOR_THREAD, RUN_SIGNAL_INIT, RUN_START_EVENT_WORKER,
+        RUN_START_MANAGER, RUN_START_WORKER_THREADS, RUN_STOP_ASYNC, RUN_STOP_WORKER_THREADS,
+        RUN_THREAD_FACTORY_START, RUN_THREAD_ID, RUN_THREAD_MANAGER_WAIT, RUN_THREAD_RELOAD,
+        RUN_THREAD_TERMINATE_MANAGER, RUN_WORKER_SIGNAL, RUN_WORKER_START,
+    };
+    match operation {
+        RUN_SIGNAL_INIT
+        | RUN_WORKER_SIGNAL
+        | RUN_ACCEPT_EVENT
+        | RUN_SEND_TO_REACTOR_THREAD
+        | RUN_CALL_WORKER_ERROR
+        | RUN_KILL_WORKER
+        | RUN_DRAIN_PIPES
+        | RUN_WORKER_START
+        | RUN_CALL_WORKER_START
+        | RUN_CALL_WORKER_STOP
+        | RUN_STOP_ASYNC
+        | RUN_CLEAN_CONNECTIONS
+        | RUN_START_EVENT_WORKER => crate::event_worker_ops::enter,
+        RUN_INIT_TASK_WORKERS | RUN_FINISH => crate::task_worker_ops::enter,
+        RUN_REACTOR_PROCESS_START | RUN_REACTOR_PROCESS_MAIN => crate::reactor_process_ops::enter,
+        RUN_START_MANAGER | RUN_RELOAD | RUN_RESTART_WORKER | RUN_READ_WORKER_MESSAGE => {
+            crate::manager_ops::enter
+        }
+        RUN_CREATE_THREAD_FACTORY
+        | RUN_DESTROY_THREAD_FACTORY
+        | RUN_THREAD_FACTORY_START
+        | RUN_THREAD_MANAGER_WAIT
+        | RUN_THREAD_RELOAD
+        | RUN_THREAD_TERMINATE_MANAGER
+        | RUN_THREAD_ID
+        | RUN_START_WORKER_THREADS
+        | RUN_STOP_WORKER_THREADS => crate::thread_mode_ops::enter,
+        _ => std::process::abort(),
+    }
 }
 
 /// `Server::~Server()` before native/integration/server.cc destroys the C++

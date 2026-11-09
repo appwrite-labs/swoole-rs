@@ -7,12 +7,13 @@ use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 
 use swoole_rs_corebase::DataHead;
+use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::factory_methods::{SendData, run};
 use swoole_rs_process::workers::ops::{
     EVENT_CLOSE, RUN_PROCESS_DISPATCH, RUN_PROCESS_END, RUN_PROCESS_FACTORY_SHUTDOWN,
     RUN_PROCESS_FACTORY_START, RUN_PROCESS_FINISH,
 };
-use swoole_rs_process::workers::{entry, thread};
+use swoole_rs_process::workers::thread::ThreadManager;
 
 use crate::ops::{RUN_BASE_DISPATCH, RUN_BASE_END, RUN_BASE_FINISH, RUN_BASE_NOTIFY};
 use crate::server_methods::{end_arg, on_base};
@@ -36,23 +37,22 @@ pub(crate) fn new(serv: *mut c_void, manager: *mut c_void) -> *mut c_void {
     .cast()
 }
 
-/// `new ThreadFactory(serv)` for workers.cc, which made the thread manager.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_factory_new(
-    serv: *mut c_void,
-    manager: *mut c_void,
-) -> *mut c_void {
-    new(serv, manager)
+/// `new ThreadFactory(serv)`: a factory whose manager holds `threads` threads, one
+/// for each worker and the manager.
+pub(crate) fn new_thread(serv: *mut c_void, threads: usize) -> *mut c_void {
+    let manager = Box::into_raw(Box::new(ThreadManager::new(threads)));
+    new(serv, manager.cast())
 }
 
-/// `ThreadFactory::shutdown()`: joins every thread. A failed join was a
-/// `std::system_error` nothing caught, which terminated the process.
-fn join_threads(factory: &Factory) -> bool {
-    // SAFETY: the thread factory's live manager.
-    if unsafe { thread::swr_v1_thread_manager_join_all(factory.manager.cast()) } != 0 {
-        std::process::abort();
-    }
-    true
+/// Thread mode's manager, of the thread factory at `factory`.
+///
+/// # Safety
+/// `factory` is a live thread factory [`new_thread`] made.
+pub(crate) unsafe fn manager<'a>(factory: *mut c_void) -> &'a ThreadManager {
+    // SAFETY: as the caller guarantees.
+    let manager = unsafe { (*factory.cast::<Factory>()).manager };
+    // SAFETY: its manager, which lives as long as it.
+    unsafe { &*manager.cast::<ThreadManager>() }
 }
 
 /// `delete factory_`: thread mode's joins its threads and frees its manager first,
@@ -64,9 +64,9 @@ pub(crate) unsafe fn delete(factory: *mut c_void) {
     // SAFETY: as the caller guarantees.
     let factory = unsafe { Box::from_raw(factory.cast::<Factory>()) };
     if !factory.manager.is_null() {
-        join_threads(&factory);
-        // SAFETY: the manager the thread factory made, freed once.
-        unsafe { thread::swr_v1_thread_manager_free(factory.manager.cast()) };
+        // SAFETY: the manager `new_thread` made, freed once.
+        let manager = unsafe { Box::from_raw(factory.manager.cast::<ThreadManager>()) };
+        manager.join_all();
     }
 }
 
@@ -112,8 +112,11 @@ pub(crate) fn shutdown(state: &ServerState) -> bool {
         (factory, MODE_PROCESS) => {
             process(factory, RUN_PROCESS_FACTORY_SHUTDOWN, ptr::null_mut(), 0)
         }
-        // SAFETY: the server's live thread factory.
-        (factory, MODE_THREAD) => join_threads(unsafe { &*factory.cast::<Factory>() }),
+        (factory, MODE_THREAD) => {
+            // SAFETY: the server's live thread factory.
+            unsafe { manager(factory) }.join_all();
+            true
+        }
         _ => true,
     }
 }

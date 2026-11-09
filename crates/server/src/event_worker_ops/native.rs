@@ -2,7 +2,7 @@
 //! and the connection's client certificate), and the reactor callbacks that run its
 //! operations: what workers.cc's `WorkerContext::call` did.
 use core::cell::Cell;
-use core::ffi::{c_int, c_void};
+use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering;
 
 use swoole_rs_buffer::string::CppString;
@@ -20,10 +20,12 @@ use swoole_rs_process::workers::ops::{
     OP_REACTOR_IF_EXIT, OP_REACTOR_STOP, OP_REACTOR_TIMEOUT, OP_REACTOR_WAIT, OP_REACTOR_WAIT_EXIT,
     OP_RECV_CONN, OP_SEND_SHUTDOWN, OP_SET_ISOLATION, OP_SET_REACTOR_TIMEOUT, OP_STORE_CLIENT_CERT,
     OP_THREAD_SHUTDOWN, OP_UNLIMIT_PIPES, OP_UNREAD_PIPE_MASTER, OP_UNREAD_PIPE_WORKER,
-    OP_UNREAD_THREAD_PIPE, RUN_PIPE_RECEIVE, RUN_TRY_EXIT,
+    OP_UNREAD_THREAD_PIPE, RUN_ACCEPT_EVENT, RUN_CALL_WORKER_ERROR, RUN_DRAIN_PIPES,
+    RUN_KILL_WORKER, RUN_PIPE_RECEIVE, RUN_SEND_TO_REACTOR_THREAD, RUN_SIGNAL_INIT, RUN_TRY_EXIT,
+    RUN_WORKER_SIGNAL,
 };
 
-use super::{Context, SW_EVENT_WORKER, SW_WORKER_BUSY, SW_WORKER_IDLE, swr_v1_event_worker_call};
+use super::{Context, SW_EVENT_WORKER, SW_WORKER_BUSY, SW_WORKER_IDLE};
 use crate::callbacks::{CB_FINISH, CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE, CB_WORKER_ERROR};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, socket};
 use crate::view;
@@ -415,6 +417,11 @@ fn worker_context(reactor: Reactor) -> Context {
         // SAFETY: a task worker's reactor holds its live pool.
         serv = unsafe { (*serv.cast::<swoole_rs_process::process_pool::PoolRecord>()).ptr };
     }
+    context(serv, reactor)
+}
+
+/// The context over `serv`, this thread's worker and `reactor`.
+fn context(serv: *mut c_void, reactor: Reactor) -> Context {
     Context {
         serv,
         // SAFETY: this thread's worker globals.
@@ -430,7 +437,7 @@ fn worker_context(reactor: Reactor) -> Context {
 /// `Worker_reactor_try_to_exit`: the loop's end callback while the worker exits.
 extern "C" fn try_to_exit() {
     let mut ctx = worker_context(Reactor::thread());
-    run(&mut ctx, RUN_TRY_EXIT);
+    run(&mut ctx, RUN_TRY_EXIT, 0);
 }
 
 /// `Worker_onPipeReceive`: a message from a reactor thread or the master (process mode).
@@ -440,14 +447,48 @@ extern "C" fn on_pipe_receive(reactor: *mut c_void, event: *mut c_void) -> c_int
     ctx.info = ctx.bus().buffer();
     // SAFETY: the reactor's live event.
     ctx.socket = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket };
-    run(&mut ctx, RUN_PIPE_RECEIVE);
+    run(&mut ctx, RUN_PIPE_RECEIVE, 0);
     0
 }
 
-/// Runs `operation` over `ctx`, whose objects are live.
-fn run(ctx: &mut Context, operation: u32) {
-    let context = (&raw mut *ctx).cast();
-    let call = swr_v1_event_worker_call;
-    // SAFETY: the context's live objects.
-    let _ = unsafe { swoole_rs_process::workers::swr_v1_workers_run(operation, 0, context, call) };
+/// Runs `operation` with `arg` over `ctx`, whose objects are live.
+fn run(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
+    swoole_rs_process::workers::run_over(ctx, operation, arg)
+}
+
+/// The event worker's `Server` methods (crates/process's entry.rs): `operation` over
+/// `serv` and this thread's worker, or the method's `worker`.
+///
+/// # Safety
+/// The objects are what `operation`'s method took, live for the call.
+pub(crate) unsafe fn enter(
+    operation: u32,
+    serv: *mut c_void,
+    worker: *mut c_void,
+    extra: *mut c_void,
+    arg: u64,
+) -> i64 {
+    let mut ctx = context(serv, Reactor::thread());
+    match operation {
+        RUN_SIGNAL_INIT | RUN_KILL_WORKER | RUN_DRAIN_PIPES => {}
+        RUN_WORKER_SIGNAL => ctx.serv = swoole_rs_corebase::swr_v1_core_server(),
+        RUN_ACCEPT_EVENT => ctx.info = extra.cast(),
+        RUN_SEND_TO_REACTOR_THREAD => {
+            // `worker` is the event's head and `extra` its session id.
+            ctx.info = worker.cast();
+            // SAFETY: the method lends its session id.
+            let session = unsafe { *extra.cast::<c_long>() };
+            // `serv->get_reactor_pipe_socket(session_id, info->reactor_id)`.
+            let pipes = c_long::from(ctx.tables().reactor_pipe_num);
+            let id = c_long::from(ctx.info().reactor_id)
+                + (session % pipes) * c_long::from(ctx.config().reactor_num);
+            ctx.socket = ctx.other(id.cast_unsigned()).pipe_worker;
+        }
+        RUN_CALL_WORKER_ERROR => {
+            ctx.worker = worker.cast();
+            ctx.status = extra.cast_const();
+        }
+        _ => ctx.worker = worker.cast(),
+    }
+    run(&mut ctx, operation, arg)
 }

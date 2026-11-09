@@ -14,11 +14,11 @@ use swoole_rs_process::workers::ops::{
     OP_INFO_TYPE, OP_ON_FINISH, OP_ON_PIPE_MESSAGE, OP_POOL_CREATE, OP_PORT_ADD,
     OP_REACTOR_DEL_EVENT, OP_REACTOR_SETUP, OP_RUN_SINGLE_WORKER, OP_STOP_ASYNC,
     OP_TASK_PIPE_NONBLOCK, OP_TIMER_DETACHED, OP_TIMER_REINIT, RUN_REACTOR_PROCESS_CLOSE,
-    RUN_REACTOR_PROCESS_PIPE_READ, RUN_REACTOR_PROCESS_TIMEOUT,
+    RUN_REACTOR_PROCESS_MAIN, RUN_REACTOR_PROCESS_PIPE_READ, RUN_REACTOR_PROCESS_TIMEOUT,
 };
 use swoole_rs_reactor::Event;
 
-use super::{Context, swr_v1_reactor_process_call};
+use super::Context;
 use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, socket};
 use crate::reactor_ops::sign;
@@ -307,18 +307,48 @@ fn run(reactor: *mut c_void, event: *mut c_void, operation: u32) -> c_int {
     let mut ctx = Context {
         // A reactor process's reactor holds its server.
         serv: reactor.fields().ptr,
-        pool: core::ptr::null_mut(),
         worker: core::ptr::null_mut(),
         reactor: reactor.ptr(),
         event: event.cast(),
         conn: core::ptr::null_mut(),
         now: 0.0,
     };
-    let (context, call) = ((&raw mut ctx).cast(), swr_v1_reactor_process_call);
-    // SAFETY: the context's live objects.
-    let result =
-        unsafe { swoole_rs_process::workers::swr_v1_workers_run(operation, 0, context, call) };
-    c_int::try_from(result).unwrap_or(-1)
+    c_int::try_from(run_over(&mut ctx, operation)).unwrap_or(-1)
+}
+
+/// Runs `operation` over `ctx`, whose objects are live.
+fn run_over(ctx: &mut Context, operation: u32) -> i64 {
+    swoole_rs_process::workers::run_over(ctx, operation, 0)
+}
+
+/// `Server::start_reactor_processes` over `object`, the server, and
+/// `Server::reactor_process_main_loop` over `object`, a pool, and its `worker`
+/// (crates/process's entry.rs).
+///
+/// # Safety
+/// The objects are what `operation`'s method took, live for the call.
+pub(crate) unsafe fn enter(
+    operation: u32,
+    object: *mut c_void,
+    worker: *mut c_void,
+    _extra: *mut c_void,
+    _arg: u64,
+) -> i64 {
+    let serv = if operation == RUN_REACTOR_PROCESS_MAIN {
+        // SAFETY: as the caller guarantees: a reactor process pool's `ptr` is its server.
+        unsafe { (*object.cast::<PoolRecord>()).ptr }
+    } else {
+        object
+    };
+    let mut ctx = Context {
+        serv,
+        worker: worker.cast(),
+        reactor: core::ptr::null_mut(),
+        event: core::ptr::null_mut(),
+        conn: core::ptr::null_mut(),
+        now: 0.0,
+    };
+    run_over(&mut ctx, operation)
 }
 
 /// `ReactorProcess_onPipeRead`.
