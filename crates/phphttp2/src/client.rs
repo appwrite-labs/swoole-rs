@@ -1124,7 +1124,9 @@ impl Drop for Client {
         self.reap();
         self.streams.clear();
         // SAFETY: the conn the client allocated; the socket is closed or gone.
-        drop(unsafe { Box::from_raw(self.conn) });
+        let mut conn = unsafe { Box::from_raw(self.conn) };
+        // Emptied first, as the close hook does, in case releasing it runs the hook.
+        drop(std::mem::take(&mut conn.zsocket));
         if !self.inflater.is_null() || !self.deflater.is_null() {
             // SAFETY: codecs still held (the socket closed without its hook).
             unsafe { native::swoole_http2_client_coro_hpack_free(self.inflater, self.deflater) };
