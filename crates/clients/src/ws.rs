@@ -37,50 +37,20 @@ fn expected_accept(key: &[u8]) -> [u8; ACCEPT_LEN] {
     accept
 }
 
-/// Verify a server WebSocket handshake accept token against our request key.
-///
-/// Returns 1 when `base64(SHA-1(key + GUID))` equals `accept`, else 0. `key` is
-/// the client's `Sec-WebSocket-Key` request header; `accept` is the server's
-/// `Sec-WebSocket-Accept` response header. The accept token is a fixed 28 bytes,
-/// so any other length can never match.
-///
-/// # Safety
-/// `key` must point to `key_len` readable bytes or be null when `key_len` is 0;
-/// `accept` must point to `accept_len` readable bytes or be null when
-/// `accept_len` is 0. Neither pointer is retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ws_accept_valid(
-    key: *const u8,
-    key_len: usize,
-    accept: *const u8,
-    accept_len: usize,
-) -> u8 {
-    if accept_len != ACCEPT_LEN || accept.is_null() {
-        return 0;
-    }
-    let key_slice: &[u8] = if key_len == 0 {
-        &[]
-    } else if key.is_null() {
-        return 0;
-    } else {
-        // SAFETY: the caller lends `key_len` readable bytes at non-null `key`.
-        unsafe { core::slice::from_raw_parts(key, key_len) }
-    };
-    // SAFETY: the caller lends `accept_len` readable bytes at non-null `accept`.
-    let accept_slice = unsafe { core::slice::from_raw_parts(accept, accept_len) };
-
-    u8::from(expected_accept(key_slice) == accept_slice)
+/// Whether `accept`, the server's `Sec-WebSocket-Accept`, is
+/// `base64(SHA-1(key + GUID))` for `key`, the client's `Sec-WebSocket-Key`. The
+/// token is a fixed 28 bytes, so any other length never matches.
+#[must_use]
+pub fn accept_valid(key: &[u8], accept: &[u8]) -> bool {
+    expected_accept(key) == accept
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ACCEPT_LEN, expected_accept, swr_v1_clients_ws_accept_valid};
+    use super::{ACCEPT_LEN, accept_valid, expected_accept};
 
     fn verify(key: &[u8], accept: &[u8]) -> u8 {
-        // SAFETY: both slices lend their full length of readable bytes.
-        unsafe {
-            swr_v1_clients_ws_accept_valid(key.as_ptr(), key.len(), accept.as_ptr(), accept.len())
-        }
+        u8::from(accept_valid(key, accept))
     }
 
     #[test]
@@ -123,12 +93,6 @@ mod tests {
         // No key: just base64(SHA-1(GUID)). Must not panic; token is deterministic.
         let token = expected_accept(b"");
         assert_eq!(token.len(), ACCEPT_LEN);
-        // SAFETY: null key with zero length is the documented empty case.
-        assert_eq!(
-            unsafe {
-                swr_v1_clients_ws_accept_valid(core::ptr::null(), 0, token.as_ptr(), token.len())
-            },
-            1
-        );
+        assert_eq!(verify(b"", &token), 1);
     }
 }

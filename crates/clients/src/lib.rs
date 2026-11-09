@@ -192,7 +192,6 @@ pub extern "C" fn swr_v1_clients_port(port: i32, for_connect: u8) -> u8 {
     u8::from((0..=65535).contains(&port) && (port != 0 || for_connect == 0))
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HostMatch {
     pub found: u32,
@@ -200,7 +199,9 @@ pub struct HostMatch {
     pub length: usize,
 }
 
-fn hosts_match(line: &[u8], search: &[u8], spaces: &[u8]) -> HostMatch {
+/// The address field of a hosts-file `line` naming `search`, its fields split by
+/// the 256-entry `spaces` table.
+pub(crate) fn hosts_match(line: &[u8], search: &[u8], spaces: &[u8]) -> HostMatch {
     if matches!(line.first(), None | Some(0 | b'\r' | b'\n')) {
         return HostMatch::default();
     }
@@ -221,40 +222,6 @@ fn hosts_match(line: &[u8], search: &[u8], spaces: &[u8]) -> HostMatch {
     }
 }
 
-/// # Safety
-/// Nonempty line/search pointers denote initialized spans no larger than `isize::MAX`;
-/// spaces denotes256 initialized classification bytes. None is retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_hosts_match(
-    line: *const u8,
-    line_length: usize,
-    search: *const u8,
-    search_length: usize,
-    spaces: *const u8,
-) -> HostMatch {
-    if line_length == 0
-        || line.is_null()
-        || spaces.is_null()
-        || line_length > isize::MAX as usize
-        || search_length > isize::MAX as usize
-        || (search_length != 0 && search.is_null())
-    {
-        return HostMatch::default();
-    }
-    // SAFETY: `line` is non-null and `line_length <= isize::MAX` (checked above); the caller lends `line_length` initialized bytes for this call.
-    let line = unsafe { std::slice::from_raw_parts(line, line_length) };
-    let search = if search_length == 0 {
-        &[]
-    } else {
-        // SAFETY: `search` is non-null and `search_length <= isize::MAX` (checked above); the caller lends `search_length` initialized bytes for this call.
-        unsafe { std::slice::from_raw_parts(search, search_length) }
-    };
-    // SAFETY: non-null (checked above); the caller lends its 256-entry class table.
-    let spaces = unsafe { std::slice::from_raw_parts(spaces, 256) };
-    hosts_match(line, search, spaces)
-}
-
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CookiePlan {
     pub key_length: usize,
@@ -262,15 +229,14 @@ pub struct CookiePlan {
     pub value_length: usize,
 }
 
-/// # Safety
-/// data denotes length initialized bytes, or is null for length0; no pointer retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_cookie(data: *const u8, length: usize) -> CookiePlan {
-    if length == 0 || data.is_null() || length > isize::MAX as usize {
+/// `php_swoole_http_parse_set_cookies`' split of a `Set-Cookie` value: the key's
+/// length and the value's offset and length.
+#[must_use]
+pub fn cookie(bytes: &[u8]) -> CookiePlan {
+    let length = bytes.len();
+    if length == 0 {
         return CookiePlan::default();
     }
-    // SAFETY: `data` is non-null and `length <= isize::MAX` (checked above); the caller lends `length` initialized bytes for this call.
-    let bytes = unsafe { std::slice::from_raw_parts(data, length) };
     let equals = bytes.iter().position(|&b| b == b'=');
     let value_offset = equals.map_or(0, |offset| offset + 1);
     CookiePlan {
@@ -284,34 +250,16 @@ pub unsafe extern "C" fn swr_v1_clients_cookie(data: *const u8, length: usize) -
     }
 }
 
-/// # Safety
-/// source denotes length initialized bytes; output denotes capacity writable bytes.
-/// The native caller guarantees the two spans do not overlap. No pointer retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_domain_encode(
-    source: *const u8,
-    length: usize,
-    output: *mut u8,
-    capacity: usize,
-) -> i32 {
-    let Some(required) = length.checked_add(3) else {
+/// `domain_encode`: `input` as DNS labels into `output`; -1 when `output` cannot
+/// hold `input.len() + 3` bytes.
+pub fn domain_encode(input: &[u8], output: &mut [u8]) -> i32 {
+    let Some(output) = input
+        .len()
+        .checked_add(3)
+        .and_then(|required| output.get_mut(..required))
+    else {
         return -1;
     };
-    if required > capacity
-        || capacity > isize::MAX as usize
-        || output.is_null()
-        || (length != 0 && source.is_null())
-    {
-        return -1;
-    }
-    let input = if length == 0 {
-        &[]
-    } else {
-        // SAFETY: `source` is non-null and `length <= isize::MAX` (checked above); the caller lends `length` initialized bytes for this call.
-        unsafe { std::slice::from_raw_parts(source, length) }
-    };
-    // SAFETY: `output` is non-null and `required <= isize::MAX` (checked above); the caller lends `required` writable bytes for this call.
-    let output = unsafe { std::slice::from_raw_parts_mut(output, required) };
     // `[len]label[len]label` with each dot turned into the next label's length
     // byte, then two NULs.
     let mut start = 0;
@@ -334,54 +282,47 @@ pub unsafe extern "C" fn swr_v1_clients_domain_encode(
     0
 }
 
-/// # Safety
-/// data denotes capacity initialized writable bytes. `signed_char` records native
-/// plain-char promotion. No pointer retained; every read/write stays in this span.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_domain_decode(
-    data: *mut u8,
-    capacity: usize,
-    signed_char: u8,
-) -> u8 {
-    if data.is_null() || capacity == 0 || capacity > isize::MAX as usize {
-        return 0;
+/// `domain_decode` over `bytes`, whose plain `char` is signed when `signed_char`;
+/// false where a read or write would leave `bytes`.
+pub fn domain_decode(bytes: &mut [u8], signed_char: bool) -> bool {
+    let capacity = bytes.len();
+    if capacity == 0 {
+        return false;
     }
-    // SAFETY: `data` is non-null and `capacity <= isize::MAX` (checked above); the caller lends `capacity` writable bytes for this call.
-    let bytes = unsafe { std::slice::from_raw_parts_mut(data, capacity) };
     let mut index = 0;
     loop {
         let Some(end) = bytes.iter().position(|&byte| byte == 0) else {
-            return 0;
+            return false;
         };
         if index >= end {
             break;
         }
         let Some(&byte) = bytes.get(index) else {
-            return 0;
+            return false;
         };
-        let length = if signed_char != 0 {
+        let length = if signed_char {
             i32::from(byte.cast_signed()).cast_unsigned()
         } else {
             u32::from(byte)
         };
         for _ in 0..length {
             let Some(next) = index.checked_add(1).filter(|&next| next < capacity) else {
-                return 0;
+                return false;
             };
             bytes.copy_within(next..=next, index);
             index = next;
         }
         let Some(slot) = bytes.get_mut(index) else {
-            return 0;
+            return false;
         };
         *slot = b'.';
         index += 1;
     }
     let Some(last) = index.checked_sub(1).and_then(|last| bytes.get_mut(last)) else {
-        return 0;
+        return false;
     };
     *last = 0;
-    1
+    true
 }
 
 #[cfg(test)]
@@ -438,7 +379,6 @@ mod tests {
     }
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ResolvLine {
     /// 0: no prefix; 1: defined native token pair; 2: outside the compared domain.
@@ -447,7 +387,7 @@ pub struct ResolvLine {
     pub length: usize,
 }
 
-fn resolv_line(line: &[u8]) -> ResolvLine {
+pub(crate) fn resolv_line(line: &[u8]) -> ResolvLine {
     let line = c_str(line);
     if !line.starts_with(b"nameserver") {
         return ResolvLine::default();
@@ -484,19 +424,6 @@ fn resolv_line(line: &[u8]) -> ResolvLine {
     }
 }
 
-/// # Safety
-/// Input denotes initialized line bytes. No pointer is retained. Kind2 records
-/// inputs where the original null strtok/copy overflow has no defined parity.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_resolv_line(data: *const u8, length: usize) -> ResolvLine {
-    if data.is_null() || length > isize::MAX as usize {
-        return ResolvLine::default();
-    }
-    // SAFETY: `data` is non-null and `length <= isize::MAX` (checked above); the caller lends `length` initialized bytes for this call.
-    resolv_line(unsafe { std::slice::from_raw_parts(data, length) })
-}
-
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DnsEndpoint {
     pub has_port: u32,
@@ -504,19 +431,8 @@ pub struct DnsEndpoint {
     pub port_offset: usize,
 }
 
-/// # Safety
-/// Input is an initialized borrowed string span. Native strtol owns locale,
-/// errno and long-to-int narrowing; only C-string component spans enter Rust.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_dns_endpoint(
-    data: *const u8,
-    length: usize,
-) -> DnsEndpoint {
-    if data.is_null() || length > isize::MAX as usize {
-        return DnsEndpoint::default();
-    }
-    // SAFETY: `data` is non-null and `length <= isize::MAX` (checked above); the caller lends `length` initialized bytes for this call.
-    let bytes = unsafe { std::slice::from_raw_parts(data, length) };
+/// The host and port spans of a `host[:port]` DNS server, up to its first NUL.
+pub(crate) fn dns_endpoint(bytes: &[u8]) -> DnsEndpoint {
     let bytes = c_str(bytes);
     match bytes.iter().position(|&byte| byte == b':') {
         Some(colon) => DnsEndpoint {

@@ -6,13 +6,12 @@ use swoole_rs_clients::address::{
     swr_v1_clients_address_string, swr_v1_clients_address_verify,
 };
 use swoole_rs_clients::dns::{
-    INVALID_DOMAIN, swr_v1_clients_dns_query, swr_v1_clients_hosts_lookup,
-    swr_v1_clients_set_hosts_path,
+    DnsExchange, INVALID_DOMAIN, swr_v1_clients_hosts_lookup, swr_v1_clients_set_hosts_path,
 };
 use swoole_rs_clients::ip::swr_v1_clients_ip_text;
 use swoole_rs_clients::{
-    URL_INVALID, URL_PORT_RANGE, swr_v1_clients_cookie, swr_v1_clients_domain_decode,
-    swr_v1_clients_domain_encode, swr_v1_clients_port, swr_v1_clients_url,
+    URL_INVALID, URL_PORT_RANGE, cookie as split_cookie, domain_decode, domain_encode,
+    swr_v1_clients_port, swr_v1_clients_url,
 };
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_oracle::clients as upstream;
@@ -54,8 +53,7 @@ fn set_cookie_split_matches_upstream() {
                 &raw mut value,
             );
         }
-        // SAFETY: as above.
-        let plan = unsafe { swr_v1_clients_cookie(cookie.as_ptr(), cookie.len()) };
+        let plan = split_cookie(cookie);
         assert_eq!(
             (plan.key_length, plan.value_offset, plan.value_length),
             (key, offset, value),
@@ -642,14 +640,16 @@ fn hosts_lookup_matches_upstream() {
 const PACKET: usize = 8192;
 const QUESTION: usize = PACKET - 12;
 
-/// The bounds `swr_v1_clients_dns_query` puts on the Rust encoder, over `n` bytes
+/// The bounds `dns::query` puts on the Rust encoder, over `n` bytes
 /// of the NUL-terminated `source`.
 fn rust_encode(source: &[u8], n: usize, dest: &mut [u8]) -> c_int {
     if n > QUESTION - 3 || source.get(n) == Some(&b'.') {
         return INVALID_DOMAIN;
     }
-    // SAFETY: `source` holds `n` bytes and `dest` at least `QUESTION`; they don't overlap.
-    unsafe { swr_v1_clients_domain_encode(source.as_ptr(), n, dest.as_mut_ptr(), QUESTION) }
+    domain_encode(
+        source.get(..n).unwrap_or_default(),
+        dest.get_mut(..QUESTION).unwrap_or_default(),
+    )
 }
 
 fn upstream_encode(source: &[u8], n: usize, dest: &mut [u8]) -> c_int {
@@ -716,10 +716,7 @@ fn domain_encode_matches_upstream() {
 }
 
 fn rust_decode(name: &mut [u8], capacity: usize) {
-    // SAFETY: `name` holds at least `capacity` initialized bytes.
-    unsafe {
-        swr_v1_clients_domain_decode(name.as_mut_ptr(), capacity, u8::from(signed_char()));
-    }
+    domain_decode(name.get_mut(..capacity).unwrap_or_default(), signed_char());
 }
 
 fn upstream_decode(name: &mut [u8]) {
@@ -818,59 +815,45 @@ struct Exchange {
     lookup: Lookup,
 }
 
-unsafe extern "C" fn sent(context: *mut c_void, data: *const u8, length: usize) -> bool {
-    // SAFETY: the context is the `Exchange` the query borrows; `data` holds `length` bytes.
-    let (exchange, data) = unsafe {
-        (
-            &mut *context.cast::<Exchange>(),
-            std::slice::from_raw_parts(data, length),
-        )
-    };
-    exchange.lookup.effects.push(b"send".to_vec());
-    exchange.lookup.query = data.to_vec();
-    exchange.send_success
-}
-
-/// The patched caller's `recv`: a failed receive reports `-ECANCELED` when the
-/// socket's errCode is ECANCELED.
-unsafe extern "C" fn received(context: *mut c_void, data: *mut u8, capacity: usize) -> isize {
-    // SAFETY: the context is the `Exchange` the query borrows.
-    let exchange = unsafe { &mut *context.cast::<Exchange>() };
-    exchange.lookup.effects.push(b"receive".to_vec());
-    // SAFETY: the query holds its bytes and `data` holds `capacity`.
-    let n = unsafe {
-        upstream::dns_answer(
-            exchange.record_type,
-            exchange.receive_mode,
-            exchange.bad_id,
-            exchange.lookup.query.as_ptr().cast(),
-            exchange.lookup.query.len(),
-            data.cast(),
-            capacity,
-        )
-    };
-    if n <= 0 && exchange.canceled {
-        -isize::try_from(libc::ECANCELED).unwrap_or(0)
-    } else {
-        n
+impl DnsExchange for Exchange {
+    fn send(&mut self, data: &[u8]) -> bool {
+        self.lookup.effects.push(b"send".to_vec());
+        self.lookup.query = data.to_vec();
+        self.send_success
     }
-}
 
-unsafe extern "C" fn pushed(context: *mut c_void, text: *const u8, length: usize) {
-    // SAFETY: the context is the `Exchange` the query borrows; `text` holds `length` bytes.
-    let (exchange, text) = unsafe {
-        (
-            &mut *context.cast::<Exchange>(),
-            std::slice::from_raw_parts(text, length),
-        )
-    };
-    exchange.lookup.addresses.push(text.to_vec());
+    /// The patched caller's `recv`: a failed receive reports `-ECANCELED` when the
+    /// socket's errCode is ECANCELED.
+    fn recv(&mut self, data: &mut [u8]) -> isize {
+        self.lookup.effects.push(b"receive".to_vec());
+        // SAFETY: the query holds its bytes and `data` its length.
+        let n = unsafe {
+            upstream::dns_answer(
+                self.record_type,
+                self.receive_mode,
+                self.bad_id,
+                self.lookup.query.as_ptr().cast(),
+                self.lookup.query.len(),
+                data.as_mut_ptr().cast(),
+                data.len(),
+            )
+        };
+        if n <= 0 && self.canceled {
+            -isize::try_from(libc::ECANCELED).unwrap_or(0)
+        } else {
+            n
+        }
+    }
+
+    fn push(&mut self, text: &[u8]) {
+        self.lookup.addresses.push(text.to_vec());
+    }
 }
 
 /// `dns_lookup_impl_with_socket` over a UDP socket double, for A, AAAA and CNAME
 /// answers, with and without a timeout, a failed send, a failed, short or whole
 /// receive, cancellation and a mismatched id. The Rust side is the patched
-/// caller: its socket calls, `swr_v1_clients_dns_query` and the last error it sets.
+/// caller: its socket calls, `dns::query` and the last error it sets.
 #[test]
 fn dns_lookup_matches_upstream() {
     let mut request_id = 1u16;
@@ -914,19 +897,13 @@ fn dns_lookup_matches_upstream() {
                                 if timeout > 0.0 {
                                     exchange.lookup.effects.push(b"timeout".to_vec());
                                 }
-                                // SAFETY: `domain` is NUL-terminated; the callbacks take `exchange`.
-                                let error = unsafe {
-                                    swr_v1_clients_dns_query(
-                                        domain.as_ptr(),
-                                        family,
-                                        request_id,
-                                        (&raw mut exchange).cast(),
-                                        sent,
-                                        received,
-                                        pushed,
-                                        signed_char(),
-                                    )
-                                };
+                                let error = swoole_rs_clients::dns::query(
+                                    domain,
+                                    family,
+                                    request_id,
+                                    &mut exchange,
+                                    signed_char(),
+                                );
                                 request_id = request_id.wrapping_add(1);
                                 if error != 0 && error != INVALID_DOMAIN {
                                     exchange
