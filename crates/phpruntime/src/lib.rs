@@ -46,6 +46,7 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
+use swoole_rs_corebase::Switch;
 use swoole_rs_phphelpers::callable as handle;
 use swoole_rs_phpstubs::runtime;
 use swoole_rs_zend::{
@@ -97,9 +98,6 @@ pub mod flags {
 /// What only C++ can do (`swr_v1_phpruntime_ops`).
 #[repr(C)]
 pub struct Ops {
-    /// The `HOOK_*` bits of the PDO drivers built in, and `HOOK_NATIVE_CURL`
-    /// when native curl is (`SW_USE_*`).
-    features: u32,
     /// `swoole_exception_ce`.
     exception: *mut zend_class_entry,
     /// `Coroutine::get_current() != nullptr`.
@@ -114,8 +112,6 @@ pub struct Ops {
     active_threads: unsafe extern "C" fn() -> u32,
     /// Swap the plain-files wrapper (0) or the stdio ops (1).
     stream_ops: unsafe extern "C" fn(stdio: u8, hook: u8),
-    /// `swoole_<driver>_set_blocking(blocking)` for a `HOOK_PDO_*` bit.
-    pdo: unsafe extern "C" fn(flag: u32, blocking: u8),
     /// `php_swoole_fatal_error(level, "%s", message)`.
     fatal_error: unsafe extern "C" fn(level: i32, message: *const c_char),
     /// `php_swoole_error(level, "%s", message)`.
@@ -327,7 +323,7 @@ pub unsafe extern "C" fn swr_v1_phpruntime_minit(module_number: i32, ops: *const
     }
     // SAFETY: MINIT, with a static table.
     unsafe { RUNTIME.register_static(c"Swoole\\Runtime", METHODS.as_ptr()) };
-    let features = self::ops().features;
+    let features = features();
     let all = flags::all(features & flags::NATIVE_CURL != 0);
     for (name, value) in CONSTANTS.into_iter().chain([(c"SWOOLE_HOOK_ALL", all)]) {
         if flags::PDO.contains(&value) && features & value == 0 {
@@ -375,7 +371,7 @@ fn set_hook_flags(call: &Call, min: u32) -> Result<(), Bailout> {
         call.set_bool(false);
         return reported;
     }
-    let all = flags::all(ops().features & flags::NATIVE_CURL != 0);
+    let all = flags::all(features() & flags::NATIVE_CURL != 0);
     let Ok(requested) = call
         .arity(min, 1)
         .and_then(|()| call.long(1, i64::from(all)))
@@ -506,13 +502,12 @@ fn wrappers(requested: u32, installed: u32) {
             unsafe { (ops.stream_ops)(stdio, u8::from(hook)) };
         }
     }
-    for bit in flags::PDO {
-        if ops.features & bit == 0 {
+    for (bit, driver) in flags::PDO.into_iter().zip(DRIVERS) {
+        if features() & bit == 0 {
             continue;
         }
         if let Some(hook) = transition(requested, installed, bit) {
-            // SAFETY: a driver that is built in.
-            unsafe { (ops.pdo)(bit, u8::from(!hook)) };
+            set_blocking(driver, !hook);
         }
     }
 }
@@ -550,6 +545,47 @@ fn class(name: &CStr) -> Option<*mut zend_class_entry> {
 fn throw(message: &Message, code: i64) {
     // SAFETY: a handler's context; Zend copies the message.
     unsafe { swoole_rs_zend::throw_exception(ops().exception, message.as_cstr(), code) };
+}
+
+/// The PDO drivers' switches, in [`flags::PDO`]'s order.
+const DRIVERS: [Switch; 5] = [
+    Switch::Pgsql,
+    Switch::Odbc,
+    Switch::Oracle,
+    Switch::Sqlite,
+    Switch::Firebird,
+];
+
+/// The `HOOK_*` bits of the PDO drivers built in, and `HOOK_NATIVE_CURL`
+/// when native curl is.
+#[cfg(not(test))]
+fn features() -> u32 {
+    let native_curl = [(Switch::Curl, flags::NATIVE_CURL)];
+    flags::PDO
+        .into_iter()
+        .zip(DRIVERS)
+        .map(|(bit, driver)| (driver, bit))
+        .chain(native_curl)
+        .filter(|(switch, _)| swoole_rs_corebase::built_with(*switch))
+        .fold(0, |features, (_, bit)| features | bit)
+}
+
+/// Unit tests have two PDO drivers built in, and no native curl.
+#[cfg(test)]
+fn features() -> u32 {
+    flags::PDO_PGSQL | flags::PDO_SQLITE
+}
+
+/// `swoole_<driver>_set_blocking(blocking)`.
+#[cfg(not(test))]
+fn set_blocking(driver: Switch, blocking: bool) {
+    swoole_rs_phpswoole::set_blocking(driver, blocking);
+}
+
+#[cfg(test)]
+fn set_blocking(driver: Switch, blocking: bool) {
+    let bit = flags::PDO[DRIVERS.iter().position(|d| *d == driver).unwrap_or(0)];
+    tests::record(format!("pdo:{bit}:{}", u8::from(blocking)));
 }
 
 /// Unit tests link no PHP, so they see the exception as a trace entry.
@@ -712,15 +748,10 @@ mod tests {
     unsafe extern "C" fn stream_ops(stdio: u8, hook: u8) {
         record(format!("stream:{stdio}:{hook}"));
     }
-    unsafe extern "C" fn pdo(flag: u32, blocking: u8) {
-        record(format!("pdo:{flag}:{blocking}"));
-    }
     unsafe extern "C" fn error(_: i32, _: *const c_char) {}
     unsafe extern "C" fn free(_: *mut c_void) {}
 
-    /// Two PDO drivers built in, no native curl.
     static FAKE: Ops = Ops {
-        features: flags::PDO_PGSQL | flags::PDO_SQLITE,
         exception: std::ptr::null_mut(),
         in_coroutine: no,
         coroutine_sleep: sleep,
@@ -729,7 +760,6 @@ mod tests {
         main_thread: no,
         active_threads: zero,
         stream_ops,
-        pdo,
         fatal_error: error,
         error,
         proc_open: None,

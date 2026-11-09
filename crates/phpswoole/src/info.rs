@@ -1,6 +1,6 @@
 //! PHP information output and conditional row ordering owned by the module.
-use crate::info_inventory::{CAPABILITIES, Capability as C};
 use std::ffi::{CStr, CString, c_char, c_void};
+use swoole_rs_corebase::{Switch as C, built_with, switches::SWITCHES};
 use swoole_rs_zend::{
     bailout::{self, Bailout},
     sys::{
@@ -12,7 +12,6 @@ use swoole_rs_zend::{
 /// Native compiler and dependency facts, with no PHP output or row policy.
 #[repr(C)]
 pub(crate) struct Info {
-    flags: u64,
     abi: u32,
     features: u64,
     version: *const c_char,
@@ -24,7 +23,6 @@ pub(crate) struct Info {
     zstd: *const c_char,
     brotli_encoder: u32,
     brotli_decoder: u32,
-    libpq: [c_char; 16],
 }
 unsafe extern "C" {
     fn swr_cpp_phpswoole_info_ssh2() -> u8;
@@ -47,12 +45,9 @@ fn text(key: &CStr, value: &str) -> Result<(), Bailout> {
     row(key, value.as_ptr())
 }
 impl Info {
-    pub(crate) fn has(&self, capability: C) -> bool {
-        self.flags & (1 << capability as u8) != 0
-    }
-    fn enabled(&self, first: C, last: C) -> Result<(), Bailout> {
-        for &(capability, _, label) in CAPABILITIES {
-            if (first as u8..=last as u8).contains(&(capability as u8)) && self.has(capability) {
+    fn enabled(first: C, last: C) -> Result<(), Bailout> {
+        for &(switch, _, label) in SWITCHES {
+            if (first as u8..=last as u8).contains(&(switch as u8)) && built_with(switch) {
                 row(label, c"enabled".as_ptr())?;
             }
         }
@@ -81,55 +76,56 @@ impl Info {
         )?;
         row(
             c"coroutine",
-            if self.has(C::ThreadContext) {
+            if built_with(C::ThreadContext) {
                 c"enabled with thread context"
-            } else if self.has(C::AsmContext) {
+            } else if built_with(C::AsmContext) {
                 c"enabled with boost asm context"
             } else {
                 c"enabled with ucontext"
             }
             .as_ptr(),
         )?;
-        self.enabled(C::Debug, C::Sockets)?;
+        Self::enabled(C::Debug, C::Sockets)?;
         row(c"openssl", self.openssl)?;
-        self.enabled(C::Dtls, C::Dtls)?;
+        Self::enabled(C::Dtls, C::Dtls)?;
         row(c"http2", c"enabled".as_ptr())?;
         row(c"json", c"enabled".as_ptr())?;
-        if self.has(C::Curl) {
-            self.enabled(C::Curl, C::Curl)?;
+        if built_with(C::Curl) {
+            Self::enabled(C::Curl, C::Curl)?;
             row(c"curl-version", self.curl)?;
         }
-        if self.has(C::Cares) {
+        if built_with(C::Cares) {
             row(c"c-ares", self.cares)?;
         }
-        if self.has(C::Zlib) {
+        if built_with(C::Zlib) {
             row(c"zlib", self.zlib)?;
         }
-        if self.has(C::Brotli) {
+        if built_with(C::Brotli) {
             text(
                 c"brotli",
                 &format!("E{}/D{}", self.brotli_encoder, self.brotli_decoder),
             )?;
         }
-        if self.has(C::Zstd) {
+        if built_with(C::Zstd) {
             row(c"zstd", self.zstd)?;
         }
-        self.enabled(C::Timedlock, C::Tcmalloc)?;
-        if self.has(C::Pgsql) {
-            row(c"postgresql(libpq) version", self.libpq.as_ptr())?;
+        Self::enabled(C::Timedlock, C::Tcmalloc)?;
+        #[cfg(feature = "pgsql")]
+        {
+            text(c"postgresql(libpq) version", &swoole_rs_pgsql::version())?;
             row(c"coroutine_pgsql", c"enabled".as_ptr())?;
         }
-        self.enabled(C::Odbc, C::UringSocket)?;
-        if self.has(C::Stacktrace) {
-            self.enabled(C::Stacktrace, C::Stacktrace)?;
+        Self::enabled(C::Odbc, C::UringSocket)?;
+        if built_with(C::Stacktrace) {
+            Self::enabled(C::Stacktrace, C::Stacktrace)?;
         } else {
-            self.enabled(C::Execinfo, C::Execinfo)?;
+            Self::enabled(C::Execinfo, C::Execinfo)?;
         }
-        if self.has(C::Ssh2) {
+        if built_with(C::Ssh2) {
             // SAFETY: optional extension output is a single native hook with its own trap.
             contained(unsafe { swr_cpp_phpswoole_info_ssh2() })?;
         }
-        if self.has(C::Ftp) {
+        if built_with(C::Ftp) {
             // SAFETY: PHP lends its live module entry to this guarded optional MINFO hook.
             contained(unsafe { swr_cpp_phpswoole_info_ftp(module) })?;
         }
@@ -139,20 +135,6 @@ impl Info {
         contained(unsafe { swr_zend_try_info_ini(module) })
     }
 }
-/// Whether C++ was compiled with `capability` (its `#if` in the inventory).
-#[must_use]
-pub fn built_with(capability: C) -> bool {
-    static FLAGS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    let flags = *FLAGS.get_or_init(|| {
-        // SAFETY: a plain C record of pointers, integers and bytes, for which zero is valid.
-        let mut info: Info = unsafe { std::mem::zeroed() };
-        // SAFETY: C++ fills it with static strings and its libpq version.
-        unsafe { (crate::ops().info)(&raw mut info) };
-        info.flags
-    });
-    flags & (1 << capability as u8) != 0
-}
-
 /// `PHP_MINFO_FUNCTION(swoole)`: the module's complete PHP information table
 /// and INI entries, from C++'s compiler and library facts.
 /// # Safety

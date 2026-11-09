@@ -14,7 +14,7 @@ pub struct SocketFlags {
     pub write: bool,
 }
 
-/// `SW_EVENT_READ` and `SW_EVENT_WRITE` (pinned by a `static_assert` in system.cc).
+/// `SW_EVENT_READ` and `SW_EVENT_WRITE` (pinned by a `static_assert` in native/corebase/globals.cc).
 pub(crate) const READ: u32 = 1 << 9;
 pub(crate) const WRITE: u32 = 1 << 10;
 

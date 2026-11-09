@@ -14,7 +14,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_phpstubs::socket_coro;
-use swoole_rs_phpswoole::{Capability, built_with};
+use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_zend::{
     Call, Class, Invalid, Object, declare_bool, declare_long, declare_string,
     register_long_constant, set_object, string,
@@ -142,7 +142,7 @@ pub unsafe extern "C" fn swr_v1_phpclients_socket_minit(
     shortname: bool,
     module: c_int,
 ) {
-    let sockets = built_with(Capability::Sockets);
+    let sockets = built_with(Switch::Sockets);
     // SAFETY: the native MINIT entry lends these original startup arguments.
     let result = unsafe { init_phpclients_socket_minit(exception, shortname, sockets, module) };
     match result {
@@ -218,11 +218,11 @@ unsafe fn init_phpclients_socket_minit(
 /// MINIT of `module`.
 unsafe fn register_constants(module: c_int) {
     let ai = [
-        built_with(Capability::AiV4mapped).then_some(constants::AI_V4MAPPED),
-        built_with(Capability::AiAll).then_some(constants::AI_ALL),
+        built_with(Switch::AiV4mapped).then_some(constants::AI_V4MAPPED),
+        built_with(Switch::AiAll).then_some(constants::AI_ALL),
         Some(constants::AI_ADDRCONFIG),
     ];
-    let idn = if built_with(Capability::AiIdn) {
+    let idn = if built_with(Switch::AiIdn) {
         constants::AI_IDN
     } else {
         &[][..]

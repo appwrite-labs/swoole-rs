@@ -123,13 +123,12 @@ fn fatal_error(level: i32, message: &CStr) {
 /// `swoole_async_set(array $settings)`.
 fn async_set(call: &Call) {
     let ops = ops();
-    // SAFETY: C++'s getters and setters, here and below.
-    if unsafe { (ops.main_thread)() } == 0 {
+    if !crate::optional::main_thread() {
         set_last_error(OPERATION_NOT_SUPPORT);
         call.set_bool(true);
         return;
     }
-    // SAFETY: as above.
+    // SAFETY: C++'s getters and setters, here and below.
     if unsafe { (ops.reactor_created)() } != 0 {
         // E_ERROR bails out: upstream goes no further.
         fatal_error(

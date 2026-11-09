@@ -1,17 +1,13 @@
 //! `swoole_module_entry`, which `get_module()` hands Zend, with its
 //! dependencies, and the tail of `SwooleG.fatal_error`.
-use crate::{
-    HostOps, OPS, constants,
-    info::{self, Info},
-    info_inventory::Capability as C,
-    module, ops, table,
-};
+use crate::{HostOps, OPS, constants, info, module, ops, optional, table};
 use std::{
     ffi::{CStr, c_int, c_long},
     io::Write,
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_corebase::{Switch as C, built_with};
 use swoole_rs_zend::{
     bailout::{self, Bailout},
     sys::{swr_zend_module_template, zend_module_dep, zend_module_entry, zval},
@@ -44,25 +40,25 @@ fn dep(name: &'static CStr, kind: u8) -> zend_module_dep {
 }
 
 /// `swoole_deps[]`: json always, the rest as the build's `#ifdef`s decide.
-fn deps(info: &Info) -> Vec<zend_module_dep> {
+fn deps() -> Vec<zend_module_dep> {
     let mut deps = vec![dep(c"json", REQUIRED)];
     for (capability, name) in [
         (C::Mysqlnd, c"mysqlnd"),
         (C::Sockets, c"sockets"),
         (C::Curl, c"curl"),
     ] {
-        if info.has(capability) {
+        if built_with(capability) {
             deps.push(dep(name, REQUIRED));
         }
     }
     if [C::Pgsql, C::Odbc, C::Oracle, C::Sqlite, C::Firebird]
         .into_iter()
-        .any(|c| info.has(c))
+        .any(built_with)
     {
         deps.push(dep(c"pdo", REQUIRED));
     }
     for (capability, name) in [(C::Ftp, c"ftp"), (C::Ssh2, c"ssh2")] {
-        if info.has(capability) {
+        if built_with(capability) {
             deps.push(dep(name, CONFLICTS));
         }
     }
@@ -91,15 +87,11 @@ pub unsafe extern "C" fn swr_v1_phpswoole_module(ops: *const HostOps) -> *mut ze
         return ptr::null_mut();
     };
     OPS.get_or_init(|| ops);
-    // SAFETY: a plain C record of pointers, integers and bytes, for which zero is valid.
-    let mut info: Info = unsafe { std::mem::zeroed() };
-    // SAFETY: C++ fills it with its compiler and library facts.
-    unsafe { (ops.info)(&raw mut info) };
     // SAFETY: a plain C record, for which zero is valid; the template fills its header.
     let mut entry: zend_module_entry = unsafe { std::mem::zeroed() };
     // SAFETY: a live record.
     unsafe { swr_zend_module_template(&raw mut entry) };
-    entry.deps = Box::leak(deps(&info).into_boxed_slice()).as_ptr();
+    entry.deps = Box::leak(deps().into_boxed_slice()).as_ptr();
     entry.name = c"swoole".as_ptr();
     // SAFETY: C++'s static handler arrays, or null.
     entry.functions = unsafe { table::functions(ops.stdext, ops.ssh2, ops.ftp) };
@@ -140,10 +132,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
             return;
         }
     }
-    // SAFETY: C++'s thread test.
-    if unsafe { (ops.main_thread)() } == 0 {
-        // SAFETY: the thread's bailout; this frame owns nothing.
-        unsafe { (ops.thread_bailout)() };
-    }
+    // Outside the main thread, the thread's bailout; this frame owns nothing.
+    optional::thread_bailout();
     swoole_rs_corebase::swoole_exit(255);
 }

@@ -4,7 +4,7 @@
 //! family's hook is C (`php_swoole_private.h` declares them `extern "C"`) and
 //! runs inside `zend_try`: a bailout stops the phase there, as it did
 //! upstream, and is raised once this frame is the only Rust one left.
-use crate::{Capability, ops};
+use crate::{Switch, ops, optional};
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
@@ -181,7 +181,7 @@ unsafe extern "C" {
 
 /// One step of a phase: a family's MINIT hook, or any other hook.
 #[derive(Clone, Copy)]
-enum Step {
+pub(crate) enum Step {
     Minit(Minit),
     Hook(Hook),
 }
@@ -210,7 +210,7 @@ fn run(steps: &[Step], module_number: c_int) -> Result<(), Bailout> {
 pub(crate) fn startup(module_number: c_int) {
     use Step::{Hook as H, Minit as M};
     let ops = ops();
-    let steps = [
+    let mut steps = vec![
         H(ops.startup),
         M(php_swoole_event_minit),
         // base
@@ -245,11 +245,9 @@ pub(crate) fn startup(module_number: c_int) {
         M(websocket_server_minit),
         M(php_swoole_redis_server_minit),
         M(php_swoole_name_resolver_minit),
-        M(ops.optional_minit),
-        M(tracer_minit),
-        H(php_hooks),
-        H(ops.ready),
     ];
+    steps.extend(optional::minit());
+    steps.extend([M(tracer_minit), H(php_hooks), H(ops.ready)]);
     bailout::defer(run(&steps, module_number));
 }
 
@@ -293,7 +291,7 @@ unsafe extern "C" fn socket_coro_minit(module_number: c_int) {
 
 /// The codecs the build has: 1 zlib, 2 brotli, 4 zstd.
 fn codecs() -> u32 {
-    [Capability::Zlib, Capability::Brotli, Capability::Zstd]
+    [Switch::Zlib, Switch::Brotli, Switch::Zstd]
         .iter()
         .enumerate()
         .filter(|(_, capability)| crate::built_with(**capability))
@@ -427,15 +425,18 @@ extern "C" fn event_free() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number: c_int) -> c_int {
     let ops = ops();
-    let steps = [
+    let mut steps = vec![
         Step::Hook(ops.known_strings_dtor),
         Step::Hook(php_swoole_runtime_mshutdown),
+    ];
+    steps.extend(optional::mshutdown());
+    steps.extend([
         Step::Hook(ops.optional_mshutdown),
         // The tables' process-private parts, which upstream leaves to the exit.
         Step::Hook(swoole_rs_memory::table::release),
         Step::Hook(clean),
         Step::Hook(swr_zend_leak_check),
-    ];
+    ]);
     bailout::raise(run(&steps, module_number));
     SUCCESS
 }
@@ -479,13 +480,13 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
     }
     // SAFETY: RINIT.
     unsafe { swr_zend_signals_uncheck() };
-    let steps = [
+    let mut steps = vec![
         Step::Hook(swr_v1_phphttp_server_rinit),
         Step::Hook(php_swoole_coroutine_rinit),
         Step::Hook(php_swoole_runtime_rinit),
-        Step::Hook(ops.optional_rinit),
-        Step::Hook(swr_v1_phpcoroutines_tracer_rinit),
     ];
+    steps.extend(optional::rinit());
+    steps.push(Step::Hook(swr_v1_phpcoroutines_tracer_rinit));
     if let Err(bailed) = run(&steps, module_number) {
         bailout::raise(Err(bailed));
         return SUCCESS;
@@ -507,8 +508,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
     }
     // SAFETY: as above.
     unsafe { (*globals).req_status = RSHUTDOWN_BEGIN };
-    let ops = ops();
-    let steps = [
+    let mut steps = vec![
         Step::Hook(php_swoole_server_rshutdown),
         Step::Hook(swr_v1_phphttp_server_rshutdown),
         Step::Hook(swr_v1_phphttp_response_rshutdown),
@@ -519,10 +519,12 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
         Step::Hook(php_swoole_timer_rshutdown),
         Step::Hook(php_swoole_runtime_rshutdown),
         Step::Hook(php_swoole_process_rshutdown),
-        Step::Hook(ops.optional_rshutdown),
+    ];
+    steps.extend(optional::rshutdown());
+    steps.extend([
         Step::Hook(swr_v1_phpcoroutines_tracer_rshutdown),
         Step::Hook(event_free),
-    ];
+    ]);
     if let Err(bailed) = run(&steps, module_number) {
         bailout::raise(Err(bailed));
         return SUCCESS;

@@ -3,7 +3,7 @@
  * the function-table hooks and the sleep family's replacements (their
  * zif_swoole_* handlers), its methods and the hooked stream functions; each
  * raises a trapped bailout last. C++ lends what it alone reaches: the stream
- * wrappers, the PDO drivers, Swoole's coroutine state and logger,
+ * wrappers, Swoole's coroutine state and logger,
  * and the handlers that stay C++. */
 #ifndef SWOOLE_RS_PHPRUNTIME_H
 #define SWOOLE_RS_PHPRUNTIME_H
@@ -22,7 +22,6 @@ struct _zend_execute_data;
 struct _zval_struct;
 typedef void (*swr_v1_phpruntime_handler)(struct _zend_execute_data *execute_data, struct _zval_struct *return_value);
 struct swr_v1_phpruntime_ops {
-    uint32_t features;
     struct _zend_class_entry *exception;
     uint8_t (*in_coroutine)(void);
     int32_t (*coroutine_sleep)(double seconds);
@@ -31,7 +30,6 @@ struct swr_v1_phpruntime_ops {
     uint8_t (*main_thread)(void);
     uint32_t (*active_threads)(void);
     void (*stream_ops)(uint8_t stdio, uint8_t hook);
-    void (*pdo)(uint32_t flag, uint8_t blocking);
     void (*fatal_error)(int32_t level, const char *message);
     void (*error)(int32_t level, const char *message);
     swr_v1_phpruntime_handler proc_open;

@@ -11,7 +11,7 @@ use swoole_rs_clients::{
 };
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_phpruntime::{Report, co, report};
-use swoole_rs_phpswoole::{Capability, built_with};
+use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
     bailout::{self, Bailout},
@@ -523,8 +523,8 @@ pub(crate) unsafe fn swoole_socket_coro_ssl_context(socket: Socket) -> *const c_
 /// (1, `BoringSSL`'s).
 pub(crate) unsafe fn swoole_socket_coro_ssl_supports(option: c_int) -> bool {
     match option {
-        0 => built_with(Capability::TlsHostName),
-        1 => built_with(Capability::BoringSsl),
+        0 => built_with(Switch::TlsHostName),
+        1 => built_with(Switch::BoringSsl),
         _ => false,
     }
 }
@@ -691,7 +691,7 @@ pub(crate) fn invoke(
 /// A `Socket` over a dup of the client's fd: `php_swoole_convert_to_socket`, which
 /// makes one whatever the import's result. `None` without ext/sockets.
 pub(crate) fn export_socket(cli: Cli) -> Option<zval> {
-    if !built_with(Capability::Sockets) {
+    if !built_with(Switch::Sockets) {
         return None;
     }
     // SAFETY: dup(2) of the client's descriptor.

@@ -168,26 +168,10 @@ fn version_text(version: c_int) -> String {
     }
 }
 
-/// `swoole_libpq_version`: the version into `buf`, cut and NUL-terminated as
-/// `snprintf` does.
-/// # Safety
-/// `buf` holds `len` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_libpq_version(buf: *mut c_char, len: usize) {
-    if buf.is_null() || len == 0 {
-        return;
-    }
-    let text = version_text(lib_version());
-    // SAFETY: per the caller.
-    let out = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), len) };
-    let mut n = 0;
-    for (slot, &byte) in out.iter_mut().zip(text.as_bytes().iter().take(len - 1)) {
-        *slot = byte;
-        n += 1;
-    }
-    if let Some(terminator) = out.get_mut(n) {
-        *terminator = 0;
-    }
+/// libpq's version, as `phpinfo()` shows it.
+#[must_use]
+pub fn version() -> String {
+    version_text(lib_version())
 }
 
 /// `translate_events_to_poll`.

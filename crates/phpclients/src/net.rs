@@ -18,7 +18,7 @@ use swoole_rs_clients::{
 use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
-use swoole_rs_phpswoole::{Capability, built_with, display_errors};
+use swoole_rs_phpswoole::{Switch, built_with, display_errors};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object,
@@ -208,7 +208,7 @@ pub static mut swoole_client_ce: *mut zend_class_entry = ptr::null_mut();
 pub unsafe extern "C" fn php_swoole_client_minit(module: c_int) {
     // SAFETY: MINIT registered `Swoole\Exception` first and nothing writes it now.
     let exception = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
-    let methods = if built_with(Capability::Sockets) {
+    let methods = if built_with(Switch::Sockets) {
         METHODS.as_ptr()
     } else {
         METHODS.without(&[c"getSocket"])

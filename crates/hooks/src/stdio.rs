@@ -81,9 +81,9 @@ mod native {
     }
 }
 
-/// What only native lends the hooked functions; system.cc registers it while the
-/// library loads, so it is set before any hook can run.
-#[repr(C)]
+/// What the build decides of the hooked functions: the `io_uring` engine and
+/// configure's `io_uring` switches. Native's `swoole_init` installs it
+/// ([`swr_v1_hook_install`]) before any hook can run.
 pub struct Host {
     /// `swr_v1_uring_native` with `io_uring`, else null: then the file calls go to the ring.
     pub uring: *const c_void,
@@ -97,29 +97,44 @@ pub struct Host {
     pub uring_socket: bool,
 }
 
-// SAFETY: native's table is static and read-only; `uring` points to another.
+// SAFETY: written once, then read-only; `uring` points to a static table.
 unsafe impl Sync for Host {}
+// SAFETY: as above.
+unsafe impl Send for Host {}
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(std::ptr::null_mut());
 
-/// [`NATIVE`] once native registers its [`Host`]: [`offload`] reads it here, so a crate
+/// [`NATIVE`] once native installs the [`Host`]: [`offload`] reads it here, so a crate
 /// that links hooks without the runtime (the PDO drivers' tests) never links it.
 static RUNTIME: OnceLock<&'static Ops> = OnceLock::new();
 
-/// Register native's [`Host`].
-///
-/// # Safety
-/// `host` is null or a static table.
+/// Install the build's [`Host`] and the runtime: native's `swoole_init` calls it.
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_set_host(host: *const Host) {
-    HOST.store(host.cast_mut(), Ordering::Release);
-    RUNTIME.get_or_init(|| &NATIVE);
-    #[cfg(not(test))]
+pub extern "C" fn swr_v1_hook_install() {
+    use swoole_rs_corebase::{Switch, built_with};
+    static BUILT: OnceLock<Host> = OnceLock::new();
+    #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
+    let uring = (&raw const crate::iouring::HOST).cast();
+    #[cfg(not(all(feature = "iouring", feature = "upstream-symbols")))]
+    let uring = std::ptr::null();
+    set_host(BUILT.get_or_init(|| Host {
+        uring,
+        uring_statx: built_with(Switch::IouringStatx),
+        uring_ftruncate: built_with(Switch::IouringFtruncate),
+        uring_futex: built_with(Switch::IouringFutex),
+        uring_socket: built_with(Switch::UringSocket),
+    }));
     crate::co_io::install_native();
 }
 
+fn set_host(host: &'static Host) {
+    HOST.store(std::ptr::from_ref(host).cast_mut(), Ordering::Release);
+    RUNTIME.get_or_init(|| &NATIVE);
+}
+
 pub(crate) fn host() -> Option<&'static Host> {
-    // SAFETY: `swr_v1_hook_set_host` stores null or a static table.
+    // SAFETY: `set_host` stores only a static table.
     unsafe { HOST.load(Ordering::Acquire).as_ref() }
 }
 
@@ -374,7 +389,7 @@ pub(crate) mod tests {
 
     /// `call` under the test host in `mode`.
     pub(crate) fn with<T>(mode: Mode, call: impl FnOnce() -> T) -> T {
-        unsafe { swr_v1_hook_set_host(&raw const TEST_HOST) };
+        set_host(&TEST_HOST);
         MODE.set(mode);
         let result = call();
         MODE.set(Mode::Here);

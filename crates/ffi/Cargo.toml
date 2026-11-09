@@ -21,14 +21,14 @@ php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswo
 # --with-swoole-ssh2).
 iouring = ["swoole-rs-hooks/iouring", "swoole-rs-reactor/iouring", "swoole-rs-phplocks/iouring", "swoole-rs-phpcoroutines/iouring"]
 cares = ["swoole-rs-clients/cares"]
-stdext = ["swoole-rs-phpstdext/active"]
+stdext = ["swoole-rs-phpstdext/active", "swoole-rs-phpswoole?/stdext"]
 # --fix-halfclose (M15, native/halfclose): the queued-close drain, synchronous prequeue and TLS repairs.
 halfclose = ["swoole-rs-server/halfclose", "swoole-rs-tls/halfclose"]
-pgsql = ["dep:swoole-rs-pgsql"]
-odbc = ["dep:swoole-rs-odbc"]
-firebird = ["dep:swoole-rs-firebird"]
-sqlite = ["dep:swoole-rs-sqlite"]
-oci = ["dep:swoole-rs-oci"]
+pgsql = ["dep:swoole-rs-pgsql", "swoole-rs-phpswoole?/pgsql"]
+odbc = ["dep:swoole-rs-odbc", "swoole-rs-phpswoole?/odbc"]
+firebird = ["dep:swoole-rs-firebird", "swoole-rs-phpswoole?/firebird"]
+sqlite = ["dep:swoole-rs-sqlite", "swoole-rs-phpswoole?/sqlite"]
+oci = ["dep:swoole-rs-oci", "swoole-rs-phpswoole?/oci"]
 curl = ["dep:swoole-rs-curl"]
 ssh2 = ["dep:swoole-rs-ssh2", "swoole-rs-hooks/ssh2"]
 

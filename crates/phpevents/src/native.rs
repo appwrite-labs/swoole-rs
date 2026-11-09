@@ -228,8 +228,8 @@ pub(crate) fn property_name(index: u8) -> *mut z::zend_string {
 /// # Safety
 /// `value` is a live object zval.
 pub(crate) unsafe fn php_socket_fd(value: *mut z::zval) -> Option<(c_int, bool)> {
-    use swoole_rs_phpswoole::{Capability, built_with};
-    if !built_with(Capability::Sockets) {
+    use swoole_rs_phpswoole::{Switch, built_with};
+    if !built_with(Switch::Sockets) {
         return None;
     }
     let mut closed = 0;

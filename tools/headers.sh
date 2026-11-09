@@ -46,8 +46,8 @@ else
     mv "$generated" "$header"
 fi
 generated=$(mktemp)
-header=native/phphelpers/swoole_rs_phpswoole_info.h
-cargo run --quiet --locked -p swoole-rs-phpswoole --bin module-info-header > "$generated"
+header=native/phphelpers/switches.cc
+cargo run --quiet --locked -p swoole-rs-corebase --bin switches > "$generated"
 if [ "$1" = --check ]; then
     if ! cmp -s "$generated" "$header"; then
         echo "$header is stale; run tools/headers.sh" >&2
