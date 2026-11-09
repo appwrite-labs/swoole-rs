@@ -261,15 +261,19 @@ def phase_changes(result):
 SEARCH_TERMS = 5  # per failure: the search API allows 30 queries a minute
 
 
-def filed(failure):
-    """Open issues mentioning a new failure's phase, job or (for the PHPT gate) regressed tests,
-    so Red main's p0 is filed once; None when the search fails."""
+def search_terms(failure):
+    """What identifies a new failure in an issue: its phase, its job or the PHPT gate's regressed tests."""
     job = re.fullmatch(r'(.+) job(?: \((.+)\))?', failure)
-    terms = [test.removeprefix('tests/') for test in job.group(2).split(', ')] if job and job.group(2) else [
+    return [test.removeprefix('tests/') for test in job.group(2).split(', ')] if job and job.group(2) else [
         job.group(1) if job else failure]
+
+
+def filed(failure):
+    """Open issues mentioning the first SEARCH_TERMS of a new failure's search_terms, so Red main's
+    p0 is filed once; None when the search fails."""
     found = []
     try:
-        for term in terms[:SEARCH_TERMS]:
+        for term in search_terms(failure)[:SEARCH_TERMS]:
             query = urllib.parse.quote(f'"{term}" is:issue is:open repo:', safe=':')
             found += [number for number in json.loads(gh('api', f'search/issues?q={query}{{owner}}/{{repo}}',
                                                          '--jq', '[.items[].number]')) if number not in found]
@@ -313,9 +317,11 @@ def report(result, as_json):
     if 'previous_run' in result:
         issues = result.get('issues', {})
         def known(name):
-            numbers = issues.get(name, [])
+            numbers, terms = issues.get(name, []), len(search_terms(name))
+            # A gate failure with more regressed tests than were searched may have an issue naming a later one.
+            partial = f'; searched {SEARCH_TERMS} of {terms} tests' if terms > SEARCH_TERMS else ''
             return (' (issue search failed)' if numbers is None else
-                    f" (open: {', '.join(f'#{n}' for n in numbers)})" if numbers else ' (no open issue)')
+                    f" (open: {', '.join(f'#{n}' for n in numbers)}{partial})" if numbers else f' (no open issue{partial})')
         print(f"  since {result['previous_run']}: new failures: "
               f"{', '.join(name + known(name) for name in result['new_failures']) or 'none'}; "
               f"fixed: {', '.join(result['fixed']) or 'none'}")

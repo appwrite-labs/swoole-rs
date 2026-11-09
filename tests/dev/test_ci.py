@@ -182,6 +182,14 @@ class Ci(unittest.TestCase):
         code, result, _ = self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases,
                                   jobs=jobs, failed_log=failed_log, search={'a/one.phpt': [12], 'b/two.phpt': [12, 13]})
         self.assertEqual(result['issues'], {result['new_failures'][0]: [12, 13]})
+        # Only the first five tests are searched, and the line says so: an issue may name a later one.
+        failed_log = '\n'.join(gate + line for line in [
+            '<details><summary>7 regressions: pass on upstream, fail on a re-run here</summary>',
+            *[f'- `tests/t/{n}.phpt`' for n in range(7)]])
+        self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases, flags=('--poll', '0'),
+                jobs=jobs, failed_log=failed_log, search={})
+        self.assertIn('.phpt) (no open issue; searched 5 of 7 tests)', self.out)
+        self.assertEqual(sum('search/issues' in call for call in self.gh_calls), 5)
 
     def test_full_gates_shards_speak_through_their_phases_and_unseen_jobs_are_new(self):
         history = [{'databaseId': 7, 'conclusion': 'failure', 'url': 'u7'}, {'databaseId': 4, 'conclusion': 'success', 'url': 'u4'}]
