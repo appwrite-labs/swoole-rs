@@ -657,7 +657,7 @@ fn abort_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
 /// `Server::send`: through the factory, then the server's, port's and worker's counts.
 /// A base or thread mode worker that owns the session sends it here, as
 /// `BaseFactory::finish` would, without a second trip through native code.
-fn send<H: Host>(h: &mut H, data: *const SendData) -> crate::Effect<bool> {
+pub(crate) fn send<H: Host>(h: &mut H, data: *const SendData) -> crate::Effect<bool> {
     // SAFETY: native code lends the live `SendData` it built for the call.
     let here = h.get(OP_MODE)? != MODE_PROCESS && sends_here(h, unsafe { &*data })?;
     let sent = if here {
@@ -696,7 +696,7 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
         RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT,
-        RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_RESET_COUNTER, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
+        RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_RESET_COUNTER, RUN_ST_STORE_PIPE_FD,
     };
     Ok(Some(match operation {
         RUN_ST_ADD_COMMAND => {
@@ -738,10 +738,6 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
             abort_connection(h)?;
             0
         }
-        RUN_ST_SEND => i64::from(send(
-            h,
-            core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0)),
-        )?),
         RUN_ST_CLEAR_TIMER => {
             clear_timer(h)?;
             0
