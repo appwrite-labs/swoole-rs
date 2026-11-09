@@ -52,63 +52,20 @@ static_assert(offsetof(ServerGS, task_workers) ==
                   offsetof(ServerGS, event_workers) == offsetof(ServerGS, task_workers) + sizeof(ProcessPool),
               "the pools crates/server's view reads");
 
+// serv->factory_: the record crates/server/src/factory.rs makes, whose members (upstream's
+// BaseFactory, ProcessFactory and ThreadFactory virtuals) dispatch on the server's mode.
 class Factory {
-  protected:
+  public:
     Server *server_;
-
-  public:
-    explicit Factory(Server *_server) {
-        server_ = _server;
-    }
-    pid_t spawn_task_worker(Worker *worker) const;
-    void kill_user_workers() const;
-    void kill_event_workers() const;
-    virtual ~Factory() = default;
-    virtual bool start() = 0;
-    virtual bool shutdown() = 0;
-    virtual bool dispatch(SendData *) = 0;
-    virtual bool finish(SendData *) = 0;
-    virtual bool notify(DataHead *) = 0;
-    virtual bool end(SessionId session_id, int flags) = 0;
-};
-
-class BaseFactory : public Factory {
-  public:
-    explicit BaseFactory(Server *server);
-    ~BaseFactory() override;
-    bool start() override;
-    bool shutdown() override;
-    bool dispatch(SendData *) override;
-    bool finish(SendData *) override;
-    bool notify(DataHead *) override;
-    bool end(SessionId session_id, int flags) override;
-};
-
-class ProcessFactory : public Factory {
-  public:
-    explicit ProcessFactory(Server *server);
-    ~ProcessFactory() override;
-    bool start() override;
-    bool shutdown() override;
-    bool dispatch(SendData *) override;
-    bool finish(SendData *) override;
-    bool notify(DataHead *) override;
-    bool end(SessionId session_id, int flags) override;
-};
-
-class ThreadFactory : public BaseFactory {
-    template <int>
-    friend struct WorkersNative;
-    std::shared_ptr<Thread> &thread_at(size_t index) const;
-    // The manager thread's state (crates/process/src/workers/thread.rs).
+    // Thread mode's manager state (crates/process/src/workers/thread.rs); null otherwise.
     void *manager_;
+};
 
+// Thread mode's factory, as workers.cc's thread ops see it.
+class ThreadFactory : public Factory {
   public:
-    explicit ThreadFactory(Server *server);
-    ~ThreadFactory() override;
+    std::shared_ptr<Thread> &thread_at(size_t index) const;
     WorkerId get_master_thread_id() const;
-    bool start() override;
-    bool shutdown() override;
 };
 
 // The numbering crates/server's events use.

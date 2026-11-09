@@ -1852,17 +1852,6 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         owner: *mut c_void,
         fields: *const swoole_rs_corebase::CoreConfigFields,
     }
-    /// `factory_->start()` and `factory_->finish(send)`: `Factory`'s vtable slots
-    /// after its two destructors.
-    type Start = unsafe extern "C-unwind" fn(*mut c_void) -> bool;
-    type Finish = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool;
-    let factory = o.config().factory_;
-    let slot = |at: usize| {
-        // SAFETY: the started server's live factory, which starts with its vptr.
-        let vtable = unsafe { *factory.cast::<*const *const c_void>() };
-        // SAFETY: `Factory`'s vtable has eight slots.
-        unsafe { *vtable.wrapping_add(at) }
-    };
     let serv = o.ctx.serv;
     Some(match op {
         OP_LC_DAEMON => {
@@ -1878,18 +1867,8 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the master, before it starts any thread.
             sign(unsafe { swoole_daemon(0, 1) })
         }
-        OP_LC_FACTORY_START => {
-            // SAFETY: slot 2 of the factory's vtable is `start`.
-            let start = unsafe { core::mem::transmute::<*const c_void, Start>(slot(2)) };
-            // SAFETY: the live factory.
-            u64::from(unsafe { start(factory) })
-        }
-        OP_ST_FINISH => {
-            // SAFETY: slot 5 of the factory's vtable is `finish`.
-            let finish = unsafe { core::mem::transmute::<*const c_void, Finish>(slot(5)) };
-            // SAFETY: the live factory and the context's send.
-            u64::from(unsafe { finish(factory, o.ctx.send) })
-        }
+        OP_LC_FACTORY_START => u64::from(crate::factory::start(o.state)),
+        OP_ST_FINISH => u64::from(crate::factory::finish(o.state, o.ctx.send)),
         // SAFETY: the master, starting its reactor threads.
         OP_LC_START_PROCESS => sign(unsafe { crate::reactor_entry::start_reactor_threads(serv) }),
         // SAFETY: `SwooleG`'s fields, set by `swoole_init`.
@@ -2163,13 +2142,8 @@ unsafe fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             sw_shm_free(core::mem::replace(&mut config.workers, core::ptr::null_mut()).cast());
             let factory = core::mem::replace(&mut config.factory_, core::ptr::null_mut());
             if !factory.is_null() {
-                // SAFETY: `delete factory_`: a live polymorphic `Factory`, whose first
-                // virtual is its destructor, so its vtable's second slot deletes it.
-                let vtable = unsafe { *factory.cast::<*const unsafe extern "C" fn(*mut c_void)>() };
-                // SAFETY: as above.
-                let delete = unsafe { *vtable.wrapping_add(1) };
-                // SAFETY: as above; nothing names the factory afterwards.
-                unsafe { delete(factory.cast()) };
+                // SAFETY: `delete factory_`: nothing names the factory afterwards.
+                unsafe { crate::factory::delete(factory) };
             }
             swoole_rs_corebase::swr_v1_core_set_server(core::ptr::null_mut());
             0
@@ -2482,19 +2456,10 @@ fn forward(o: &Objects<'_>, send: &SendData) -> u64 {
     u64::from(unsafe { swr_v1_bus_write(bus, socket, info, data) })
 }
 
-/// `serv->factory_->finish(send)`: the factory is a process one in process mode,
-/// else a base one (`ThreadFactory` keeps `BaseFactory::finish`).
+/// `serv->factory_->finish(send)`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn factory_finish(o: &Objects<'_>, send: &mut SendData) -> bool {
-    let factory = o.config().factory_;
-    let send = (&raw mut *send).cast();
-    if u64::from(o.config().mode_) == MODE_PROCESS {
-        // SAFETY: the server's live process factory and the send it delivers.
-        unsafe { swoole_rs_process::workers::factory_methods::finish(factory, send) }
-    } else {
-        // SAFETY: the server's live base factory and the send it delivers.
-        unsafe { crate::server_methods::base_factory_finish(factory, send.cast()) }
-    }
+    crate::factory::finish(o.state, (&raw mut *send).cast())
 }
 
 /// The ops over the server's factory and task pool: the process factory's and
@@ -2510,20 +2475,17 @@ unsafe fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_NEW_BASE_FACTORY, OP_PIPE_TO_WORKER, OP_TASK_PACK, OP_TASK_PIPE, OP_TASK_POOL_CREATE,
         OP_TASK_POOL_LISTEN, OP_TASK_POOL_SETUP,
     };
-    use crate::thread_ops::{FACTORY_NOTIFY, factory_call, factory_end, factory_shutdown};
+    use core::ptr::{null, null_mut};
+    use swoole_rs_process::workers::ops::{
+        RUN_CREATE_PROCESS_FACTORY, RUN_DESTROY_PROCESS_FACTORY,
+    };
     use swoole_rs_process::{methods as pool, task_file, workers::factory_methods as process};
-    /// `SW_IPC_MSGQUEUE`, `SW_TASK_WORKER`, `SW_PIPE_MASTER | SW_PIPE_NONBLOCK` and
-    /// `sizeof(BaseFactory)`.
+    /// `SW_IPC_MSGQUEUE`, `SW_TASK_WORKER` and `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
     const IPC_MSGQUEUE: u64 = 2;
     const SW_TASK_WORKER: c_int = 4;
     const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
-    const BASE_FACTORY_SIZE: usize = 2 * size_of::<usize>();
-    // SAFETY: the C++ runtime's and native/integration/server.cc's.
+    // SAFETY: crates/process' method, under its upstream symbol.
     unsafe extern "C-unwind" {
-        #[link_name = "_Znwm"]
-        fn operator_new(size: usize) -> *mut core::ffi::c_void;
-        #[link_name = "_ZN6swoole11BaseFactoryC1EPNS_6ServerE"]
-        fn base_factory_new(this: *mut core::ffi::c_void, serv: *mut core::ffi::c_void);
         /// crates/process' `ProcessPool::listen(socket_file, backlog)`.
         #[link_name = "_ZNK6swoole11ProcessPool6listenEPKci"]
         fn pool_listen(
@@ -2537,12 +2499,32 @@ unsafe fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_CREATE_FACTORY => {
             // SAFETY: the live server, at startup.
-            config.factory_ = unsafe { process::create_process_factory(serv) };
+            let made = unsafe {
+                process::run(
+                    serv,
+                    RUN_CREATE_PROCESS_FACTORY,
+                    null_mut(),
+                    null_mut(),
+                    null(),
+                    0,
+                )
+            };
+            config.factory_ =
+                core::ptr::with_exposed_provenance_mut(usize::try_from(made).unwrap_or(0));
             u64::from(!config.factory_.is_null())
         }
         OP_DESTROY_FACTORY => {
             // SAFETY: the live server, whose process factory shutdown destroys.
-            unsafe { process::destroy_process_factory(serv) };
+            unsafe {
+                process::run(
+                    serv,
+                    RUN_DESTROY_PROCESS_FACTORY,
+                    null_mut(),
+                    null_mut(),
+                    null(),
+                    0,
+                )
+            };
             0
         }
         OP_DESTROY_TASK_WORKERS => {
@@ -2594,19 +2576,15 @@ unsafe fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(ready)
         }
         OP_FACTORY_SHUTDOWN => {
-            factory_shutdown(o.state);
+            crate::factory::shutdown(o.state);
             0
         }
         OP_NEW_BASE_FACTORY => {
-            // SAFETY: `new BaseFactory(serv)`: fresh storage, constructed once.
-            let factory = unsafe { operator_new(BASE_FACTORY_SIZE) };
-            // SAFETY: as above.
-            unsafe { base_factory_new(factory, serv) };
-            o.ctx.object = factory;
+            o.ctx.object = crate::factory::new(serv, core::ptr::null_mut());
             0
         }
-        OP_FACTORY_END => u64::from(factory_end(o.state, o.ctx.session_id, o.ctx.number)),
-        OP_FACTORY_NOTIFY => u64::from(factory_call(o.state, FACTORY_NOTIFY, o.ctx.object)),
+        OP_FACTORY_END => u64::from(crate::factory::end(o.state, o.ctx.session_id, o.ctx.number)),
+        OP_FACTORY_NOTIFY => u64::from(crate::factory::notify(o.state, o.ctx.object)),
         OP_TASK_PACK => {
             let length = usize::try_from(o.ctx.offset).unwrap_or(0);
             // SAFETY: the `EventData` and the bytes `Server::send_pipe_message` lends.
@@ -2893,7 +2871,7 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 
 /// The server's own `MessageBus`: its Rust bus, then its allocator.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-fn server_message_bus(state: &ServerState) -> [*mut core::ffi::c_void; 2] {
+pub(crate) fn server_message_bus(state: &ServerState) -> [*mut core::ffi::c_void; 2] {
     // SAFETY: a live server's tables, which lend `&Server::message_bus`.
     let bus = unsafe { (*state.tables()).message_bus };
     // SAFETY: a live `MessageBus`, which starts with these two words.
@@ -2913,7 +2891,7 @@ fn bus_allocator<'a>(state: &ServerState) -> &'a swoole_rs_corebase::CoreAllocat
 /// `serv` is a live `Server`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[unsafe(export_name = "_ZN6swoole6Server19create_pipe_buffersEv")]
-unsafe extern "C" fn create_pipe_buffers(serv: *mut core::ffi::c_void) -> c_int {
+pub(crate) unsafe extern "C" fn create_pipe_buffers(serv: *mut core::ffi::c_void) -> c_int {
     use crate::pool_native::{
         swr_v1_bus_buffer_size, swr_v1_bus_set_buffer, swr_v1_bus_set_buffer_size,
     };

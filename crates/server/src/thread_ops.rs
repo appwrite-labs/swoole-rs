@@ -37,7 +37,7 @@ use crate::ops::{
 use crate::reactor_entry::{self as entry, run, thread};
 use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign};
 use crate::records::ConnectionRecord;
-use crate::{ServerState, server_methods as methods, view};
+use crate::{ServerState, factory, server_methods as methods, view};
 
 /// `SW_EVENT_READ`, `Server::THREAD_REACTOR` and `SW_WAIT`.
 const SW_EVENT_READ: c_int = 1 << 9;
@@ -100,53 +100,6 @@ unsafe extern "C-unwind" {
 unsafe extern "C" {
     fn swr_v1_clients_address_host(address: *const SocketAddress) -> *const c_char;
     fn swr_v1_crc32(input: *const u8, length: usize) -> u32;
-}
-
-/// `serv->factory_`'s virtual members, in their Itanium vtable slots after the two
-/// destructors and `start`.
-const FACTORY_SHUTDOWN: usize = 3;
-const FACTORY_DISPATCH: usize = 4;
-pub(crate) const FACTORY_NOTIFY: usize = 6;
-const FACTORY_END: usize = 7;
-
-/// The server's factory and its vtable slot `slot`.
-fn factory_slot(state: &ServerState, slot: usize) -> (*mut c_void, *const ()) {
-    // SAFETY: a live server's config, whose factory is live while its reactors run.
-    let factory = unsafe { (*state.config()).factory_ };
-    // SAFETY: a polymorphic object starts with its vtable pointer.
-    let vtable = unsafe { *factory.cast::<*const *const ()>() };
-    // SAFETY: `Factory` declares the slot (swoole_server.h).
-    (factory, unsafe { vtable.wrapping_add(slot).read() })
-}
-
-/// `serv->factory_->shutdown()`.
-pub(crate) fn factory_shutdown(state: &ServerState) -> bool {
-    let (factory, member) = factory_slot(state, FACTORY_SHUTDOWN);
-    // SAFETY: the slot holds `bool Factory::shutdown()`.
-    let member: unsafe extern "C-unwind" fn(*mut c_void) -> bool =
-        unsafe { core::mem::transmute(member) };
-    // SAFETY: the live factory.
-    unsafe { member(factory) }
-}
-
-/// `serv->factory_->end(session_id, flags)`.
-pub(crate) fn factory_end(state: &ServerState, session_id: c_long, flags: c_int) -> bool {
-    let (factory, member) = factory_slot(state, FACTORY_END);
-    // SAFETY: the slot holds `bool Factory::end(SessionId, int)`.
-    let end: unsafe extern "C-unwind" fn(*mut c_void, c_long, c_int) -> bool =
-        unsafe { core::mem::transmute(member) };
-    // SAFETY: the live factory.
-    unsafe { end(factory, session_id, flags) }
-}
-
-/// `serv->factory_->dispatch(task)` or `->notify(head)`, which take one pointer.
-pub(crate) fn factory_call(state: &ServerState, slot: usize, arg: *mut c_void) -> bool {
-    let (factory, member) = factory_slot(state, slot);
-    // SAFETY: the slot holds a `bool (Factory::*)(T *)`.
-    let member: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool =
-        unsafe { core::mem::transmute(member) };
-    // SAFETY: the live factory and the record the member takes.
-    unsafe { member(factory, arg) }
 }
 
 /// The context's thread.
@@ -321,11 +274,7 @@ pub(crate) unsafe fn answer(
             let len = size_of::<DgramPacket>() as u64 + arg;
             ctx.task.info.len = u32::try_from(len).unwrap_or(u32::MAX);
             ctx.task.data = ctx.pkt.cast();
-            u64::from(factory_call(
-                state,
-                FACTORY_DISPATCH,
-                (&raw mut ctx.task).cast(),
-            ))
+            u64::from(factory::dispatch(state, (&raw mut ctx.task).cast()))
         }
         OP_DESTROY_CALLBACK => {
             // SAFETY: the context's live reactor, which begins with its prepared state.
@@ -340,7 +289,7 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_CLOSE_FORWARD => {
-            factory_end(state, arg.cast_signed(), CLOSE_ACTIVELY);
+            factory::end(state, arg.cast_signed(), CLOSE_ACTIVELY);
             0
         }
         OP_WR_SENDFILE => {
@@ -360,7 +309,7 @@ pub(crate) unsafe fn answer(
             // arg: peer_closed, the connection is no longer available
             conn_ref().peer_closed = u8::from(arg != 0);
             socket(ctx.sock.cast()).close_notified = 1;
-            u64::from(factory_call(state, FACTORY_NOTIFY, (&raw mut head).cast()))
+            u64::from(factory::notify(state, (&raw mut head).cast()))
         }
         OP_CC_COUNT => {
             use core::sync::atomic::Ordering::SeqCst;
@@ -745,11 +694,7 @@ pub(crate) unsafe fn answer(
             // SAFETY: the slot's `int (Server *, RecvData *)` callback over the frame at arg.
             u64::from(unsafe { slot.receive(serv, arg as *mut c_void) } == 0)
         }
-        OP_FACTORY_DISPATCH => u64::from(factory_call(
-            state,
-            FACTORY_DISPATCH,
-            (&raw mut ctx.task).cast(),
-        )),
+        OP_FACTORY_DISPATCH => u64::from(factory::dispatch(state, (&raw mut ctx.task).cast())),
         OP_COUNT_DISPATCH => {
             use core::sync::atomic::Ordering::SeqCst;
             if u64::from(config().mode_) == crate::MODE_PROCESS {

@@ -33,7 +33,6 @@ class MessageBus {
     // First: crates/process reads it.
     swr_bus *bus_;
     const Allocator *allocator_;
-    std::function<uint64_t(void)> id_generator_;
 
     // A native frame: the allocator may be Zend's, which can bail out.
     ssize_t receive(network::Socket *sock, bool dgram) {
@@ -67,11 +66,6 @@ class MessageBus {
     }
     void set_allocator(const Allocator *allocator) {
         allocator_ = allocator;
-    }
-    void set_id_generator(const std::function<uint64_t(void)> &id_generator) {
-        id_generator_ = id_generator;
-        swr_v1_bus_set_id_source(
-            bus_, [](void *fn) { return (*static_cast<std::function<uint64_t(void)> *>(fn))(); }, &id_generator_);
     }
     void count_ids(sw_atomic_long_t *counter) {
         swr_v1_bus_count_ids(bus_, const_cast<int64_t *>(counter));

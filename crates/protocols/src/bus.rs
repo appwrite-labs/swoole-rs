@@ -793,20 +793,6 @@ pub unsafe extern "C" fn swr_v1_bus_adopt(
     unsafe { self::bus(bus) }.adopt(data.cast(), size, allocator.cast());
 }
 
-/// `MessageBus::set_id_generator`: `next(context)` numbers each message written.
-///
-/// # Safety
-/// As `bus`; `next` may be called with `context` while the bus lives.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_bus_set_id_source(
-    bus: *mut Bus,
-    next: BusNextId,
-    context: *mut c_void,
-) {
-    // SAFETY: the caller's contract.
-    unsafe { self::bus(bus) }.next_id = Some((next, context));
-}
-
 /// `MessageBus::count_ids`: numbers each message written from `counter`, an
 /// atomic `sw_atomic_long_t` that buses in other processes may share.
 ///

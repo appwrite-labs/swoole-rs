@@ -14,12 +14,11 @@ use crate::ops::{
     RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
 };
 use crate::ops::{
-    RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_BASE_DISPATCH, RUN_BASE_END,
-    RUN_BASE_FINISH, RUN_BASE_NOTIFY, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
-    RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT,
-    RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER,
-    RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS,
-    RUN_TASKING,
+    RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
+    RUN_IDLE_WORKERS, RUN_KERNEL_NOBUFS, RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER,
+    RUN_SENDFILE, RUN_SENDWAIT, RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT,
+    RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_SEND,
+    RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
 use crate::records::ConnectionRecord;
 use crate::view;
@@ -244,6 +243,10 @@ pub unsafe extern "C" fn swr_v1_server_open(
     config.gs = gs;
     config.mode_ = u8::try_from(mode).unwrap_or_default();
     swoole_rs_corebase::swr_v1_core_set_server(serv);
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    swoole_rs_process::workers::factory_methods::set_factory_call(
+        crate::factory_ops::swr_v1_factory_call,
+    );
     true
 }
 
@@ -283,7 +286,7 @@ pub unsafe extern "C-unwind" fn swr_v1_server_close(
         // SAFETY: as the caller guarantees.
         let state = unsafe { view::state_ptr(serv) };
         // SAFETY: the server's state, which outlives this call.
-        unsafe { &*state }.close_task_pipes();
+        unsafe { &*state }.close_pipes();
     }
     // SAFETY: as the caller guarantees.
     let config = unsafe { view::config(serv) };
@@ -756,58 +759,25 @@ pub unsafe extern "C" fn create_base_factory(serv: *mut c_void) -> *mut c_void {
     }
 }
 
-/// `BaseFactory::start()`: base mode has nothing to start.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11BaseFactory5startEv")
-)]
-pub extern "C" fn base_factory_start(_factory: *mut c_void) -> bool {
-    true
-}
-
-/// `BaseFactory::shutdown()`: nor to stop.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11BaseFactory8shutdownEv")
-)]
-pub extern "C" fn base_factory_shutdown(_factory: *mut c_void) -> bool {
-    true
-}
-
-/// Runs a `BaseFactory` operation over its server, with `send` lent.
+/// Runs `BaseFactory` member `op` (a `RUN_BASE_*`) with `arg` over its server, with
+/// `send` lent.
 ///
 /// # Safety
 /// `factory` is a live `Factory`; `send` null or what `op` reads.
-unsafe fn on_base(factory: *mut c_void, send: *mut c_void, op: u32, arg: u64) -> bool {
-    // `Factory::server_`, the one member after the vtable pointer (server.cc asserts it).
+pub(crate) unsafe fn on_base(factory: *mut c_void, send: *mut c_void, op: u32, arg: u64) -> bool {
+    // `Factory::server_`, its first member (server.cc asserts the layout).
     // SAFETY: as the caller guarantees.
-    let serv = unsafe { *factory.cast::<*mut c_void>().wrapping_add(1) };
+    let serv = unsafe { *factory.cast::<*mut c_void>() };
     let mut ctx = NativeContext::new(serv);
     ctx.send = send;
     // SAFETY: as the caller guarantees.
     unsafe { run(op, arg, &mut ctx) != 0 }
 }
 
-/// A `BaseFactory` method over one pointer, which is the operation's argument.
-macro_rules! base_methods {
-    ($($symbol:literal fn $name:ident($p:ident) = $op:ident, lend $lend:expr;)*) => {$(
-        #[doc = concat!("`", $symbol, "`.")]
-        ///
-        /// # Safety
-        /// `factory` is a live `BaseFactory`; the argument is the live record it takes.
-        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
-        pub unsafe extern "C" fn $name(factory: *mut c_void, $p: *mut c_void) -> bool {
-            let arg = $p.expose_provenance() as u64;
-            // SAFETY: as the caller guarantees.
-            unsafe { on_base(factory, if $lend { $p } else { ptr::null_mut() }, $op, arg) }
-        }
-    )*};
-}
-
-base_methods! {
-    "_ZN6swoole11BaseFactory8dispatchEPNS_8SendDataE" fn base_factory_dispatch(task) = RUN_BASE_DISPATCH, lend true;
-    "_ZN6swoole11BaseFactory6finishEPNS_8SendDataE" fn base_factory_finish(data) = RUN_BASE_FINISH, lend true;
-    "_ZN6swoole11BaseFactory6notifyEPNS_8DataHeadE" fn base_factory_notify(info) = RUN_BASE_NOTIFY, lend false;
+/// `BaseFactory::end(session_id, flags)`'s argument: the C++ forward's
+/// `(uint64_t) session_id | ((uint64_t) flags << 48)`.
+pub(crate) fn end_arg(session_id: c_long, flags: c_int) -> u64 {
+    session_id.cast_unsigned() | (i64::from(flags).cast_unsigned() << 48)
 }
 
 /// `serv->reactor_thread_barrier.wait()`.
@@ -951,25 +921,6 @@ pub unsafe extern "C" fn send_pipe_message_data(
     unsafe { send_pipe_message(serv, worker_id, buf.0.as_mut_ptr().cast()) }
 }
 
-/// `BaseFactory::end(session_id, flags)`.
-///
-/// # Safety
-/// `factory` is a live `BaseFactory`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11BaseFactory3endEli")
-)]
-pub unsafe extern "C" fn base_factory_end(
-    factory: *mut c_void,
-    session_id: c_long,
-    flags: c_int,
-) -> bool {
-    // The C++ forward's `(uint64_t) session_id | ((uint64_t) flags << 48)`.
-    let arg = session_id.cast_unsigned() | (i64::from(flags).cast_unsigned() << 48);
-    // SAFETY: as the caller guarantees.
-    unsafe { on_base(factory, ptr::null_mut(), RUN_BASE_END, arg) }
-}
-
 /// `Server::add_command(name, accepted_process_types, handler)`: whether the
 /// command joined. The handler's context lives as long as the server.
 ///
@@ -1030,6 +981,7 @@ pub unsafe extern "C" fn swr_v1_server_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::{RUN_BASE_DISPATCH, RUN_BASE_END, RUN_BASE_NOTIFY};
     use std::sync::Mutex;
 
     /// The last call the fake runner saw: op, arg and the context's fields.
@@ -1228,12 +1180,12 @@ mod tests {
                 "the created factory"
             );
             assert_eq!(sent().0, RUN_BASE_CREATE, "create op");
-            // A Factory: its vptr, then server_.
-            let mut factory = [at(0x90), serv];
+            // A Factory: server_, then manager_.
+            let mut factory = [serv, at(0x90)];
             let factory_at = factory.as_mut_ptr().cast::<c_void>();
-            assert!(base_factory_start(factory_at) && base_factory_shutdown(factory_at));
+            let task_arg = task_at.addr() as u64;
             assert!(
-                !base_factory_dispatch(factory_at, task_at),
+                !on_base(factory_at, task_at, RUN_BASE_DISPATCH, task_arg),
                 "dispatch result"
             );
             let (op, arg, s, lent, ..) = sent();
@@ -1244,13 +1196,13 @@ mod tests {
                     && lent == task_at.addr(),
                 "dispatch lends the task"
             );
-            base_factory_notify(factory_at, at(0xa0));
+            on_base(factory_at, ptr::null_mut(), RUN_BASE_NOTIFY, 0xa0);
             let (op, arg, s, lent, ..) = sent();
             assert!(
                 op == RUN_BASE_NOTIFY && arg == 0xa0 && s == 0x10 && lent == 0,
                 "notify passes the head"
             );
-            base_factory_end(factory_at, 7, 6);
+            on_base(factory_at, ptr::null_mut(), RUN_BASE_END, end_arg(7, 6));
             assert_eq!(sent().1, 7 | (6 << 48), "end packs flags above the session");
             close_notify_and_pipe_messages(serv);
         }

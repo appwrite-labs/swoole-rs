@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // What crates/server needs from C++ about swoole::Server: building and destroying
-// it, its ListenPorts and its BaseFactory (whose vtable this file emits), the
-// std::string methods and the barriers. The rest is crates/server, from
+// it, its ListenPorts, the std::string methods and the barriers. The rest is crates/server, from
 // swr_v1_server_open to swr_v1_server_close.
 #include "swoole_server.h"
 #include "swoole_rs.h"
@@ -33,7 +32,7 @@ static_assert(Server::MODE_BASE == 1 && Server::MODE_PROCESS == 2 && Server::MOD
 static_assert(Server::CLOSE_RESET == (1 << 1) && Server::CLOSE_ACTIVELY == (1 << 2) && SW_EVENT_DATA_PTR == (1 << 1) &&
                   SW_SERVER_EVENT_CLOSE_FORWARD == 7 && SW_SERVER_EVENT_BUFFER_EMPTY == 14,
               "crates/server/src/base_factory.rs");
-// crates/server/src/server_methods.rs: Server::sendfile's buffer, and BaseFactory reads server_ after the vptr.
+// crates/server/src/server_methods.rs: Server::sendfile's buffer, and crates/server/src/factory.rs's record.
 static_assert(SW_IPC_BUFFER_SIZE == SW_IPC_MAX_SIZE - 40 && sizeof(EventData) == SW_IPC_MAX_SIZE &&
                   offsetof(SendfileTask, length) == 8 && SW_SERVER_EVENT_PIPE_MESSAGE == 10 &&
                   sizeof(Factory) == 2 * sizeof(void *),
@@ -56,7 +55,7 @@ static_assert(SW_SERVER_EVENT_CLOSE_FORCE == SWR_SERVER_EVENT_CLOSE_FORCE &&
                   SW_SERVER_EVENT_SHUTDOWN_SIGNAL == SWR_SERVER_EVENT_SHUTDOWN_SIGNAL,
               "crates/server/src/ops.rs pipe events");
 static_assert(offsetof(ReactorThread, heartbeat_timer) == 32 && offsetof(ReactorThread, message_bus) == 40 &&
-                  sizeof(ReactorThread) == 88 && SW_SERVER_EVENT_CLOSE == 4 && SW_SERVER_EVENT_CONNECT == 5,
+                  sizeof(ReactorThread) == 56 && SW_SERVER_EVENT_CLOSE == 4 && SW_SERVER_EVENT_CONNECT == 5,
               "crates/server/src/reactor_ops.rs");
 static_assert(BufferChunk::TYPE_DATA == 0 && BufferChunk::TYPE_SENDFILE == 1 && BufferChunk::TYPE_CLOSE == 2,
               "crates/server/src/conn_io.rs output kinds");
@@ -107,10 +106,6 @@ bool Server::set_document_root(const std::string &path) {
 void Server::add_http_compression_type(const std::string &type) {
     http_compression_types.insert(type);
 }
-
-BaseFactory::BaseFactory(Server *server) : Factory(server) {}
-
-BaseFactory::~BaseFactory() = default;
 }  // namespace swoole
 
 using swoole::ListenPort;

@@ -56,6 +56,13 @@ pub struct ServerState {
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
     /// `task_sync` waits on; `swr_v1_server_close` closes them, as `~Server` did.
     task_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
+    /// `Server::worker_pipes`: each event worker's `UnixSocket`, which
+    /// `swr_v1_server_close` closes, as `~Server` did.
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the hybrid makes pipes")
+    )]
+    worker_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
@@ -89,7 +96,33 @@ impl ServerState {
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: AtomicPtr::new(core::ptr::null_mut()),
             task_pipes: std::sync::Mutex::new(Vec::new()),
+            worker_pipes: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// `new UnixSocket(true, SOCK_DGRAM)` for `worker`'s pipes: false, closing it,
+    /// when the pair isn't ready.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn push_worker_pipe(
+        &self,
+        worker: &mut swoole_rs_process::worker_record::WorkerRecord,
+    ) -> bool {
+        let pipe = Box::into_raw(Box::new(core::mem::MaybeUninit::<SocketPair>::uninit())).cast();
+        // SAFETY: fresh storage for a pair.
+        unsafe { swoole_rs_tls::socket_pair::unix_socket_new(pipe, true, libc::SOCK_DGRAM) };
+        // SAFETY: the pair just built.
+        let pair = unsafe { &*pipe };
+        let (master, end) = (pair.master_socket, pair.worker_socket);
+        if master.is_null() || end.is_null() {
+            // SAFETY: the pair just built, which nothing else has seen.
+            unsafe { free_pipe(pipe) };
+            return false;
+        }
+        lock(&self.worker_pipes).push(AtomicPtr::new(pipe));
+        worker.pipe_master = master.cast();
+        worker.pipe_worker = end.cast();
+        worker.pipe_object = pipe.cast();
+        true
     }
 
     #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -114,27 +147,21 @@ impl ServerState {
         true
     }
 
-    /// `~Server`'s close of `task_notify_pipes`. Not the state's drop: an archive
-    /// user that never runs a server links no C++ for `Socket::free`.
+    /// `~Server`'s close of `task_notify_pipes` and `worker_pipes`. Not the state's
+    /// drop: an archive user that never runs a server links no C++ for `Socket::free`.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
-    pub(crate) fn close_task_pipes(&self) {
-        let pipes = core::mem::take(
-            &mut *self
-                .task_pipes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        for pipe in pipes {
-            // SAFETY: a pipe `push_task_pipe` boxed, now out of the list.
+    pub(crate) fn close_pipes(&self) {
+        let task = core::mem::take(&mut *lock(&self.task_pipes));
+        let worker = core::mem::take(&mut *lock(&self.worker_pipes));
+        for pipe in task.into_iter().chain(worker) {
+            // SAFETY: a pipe `push_task_pipe` or `push_worker_pipe` boxed, now out of its list.
             unsafe { free_pipe(pipe.into_inner()) };
         }
     }
 
     /// `task_notify_pipes.at(index)`, or null past the end.
     pub(crate) fn task_pipe(&self, index: usize) -> *mut SocketPair {
-        self.task_pipes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.task_pipes)
             .get(index)
             .map_or(core::ptr::null_mut(), |pipe| pipe.load(Ordering::Relaxed))
     }
@@ -409,11 +436,17 @@ pub unsafe extern "C" fn swr_v1_server_state_free(state: *mut ServerState) {
     }
 }
 
+/// A lock of one of the state's lists, which a panic can't leave inconsistent.
+fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    list.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// `delete pipe`. Only the hybrid makes pipes: the unit tests link no C++
 /// for `Socket::free` to call.
 ///
 /// # Safety
-/// `pipe` is a pair `push_task_pipe` boxed, not used again.
+/// `pipe` is a pair `push_task_pipe` or `push_worker_pipe` boxed, not used again.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 unsafe fn free_pipe(pipe: *mut SocketPair) {
     // SAFETY: as the caller promises.

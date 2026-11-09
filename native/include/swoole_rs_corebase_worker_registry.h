@@ -25,12 +25,6 @@ void *const *swr_v1_process_worker_registry_pending_data(const swr_v1_process_wo
 typedef struct swr_v1_worker_snapshot { void **data; size_t length; size_t capacity; } swr_v1_worker_snapshot;
 bool swr_v1_process_worker_registry_snapshot(const swr_v1_process_worker_registry *, int category, swr_v1_worker_snapshot *);
 void swr_v1_process_worker_registry_snapshot_free(swr_v1_worker_snapshot *);
-/* Send signo to every worker of category, then wait for each. kill_fn/wait_fn are
- * swoole_kill / swoole_waitpid; warn_fn reports a wait failure. */
-void swr_v1_process_worker_registry_terminate(const swr_v1_process_worker_registry *, int category, int signo,
-                                              int (*kill_fn)(int pid, int signo),
-                                              int (*wait_fn)(int pid, int *status, int options),
-                                              void (*warn_fn)(int pid));
 #ifdef __cplusplus
 }
 #endif

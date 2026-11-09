@@ -44,7 +44,7 @@ pub(crate) unsafe fn state_ptr(serv: *mut c_void) -> *const ServerState {
 ///
 /// # Safety
 /// `serv` is a live `Server`.
-unsafe fn state<'a>(serv: *mut c_void) -> &'a ServerState {
+pub(crate) unsafe fn state<'a>(serv: *mut c_void) -> &'a ServerState {
     // SAFETY: per the caller.
     let state = unsafe { fields(serv) }.state;
     // SAFETY: the state lives as long as the server.
