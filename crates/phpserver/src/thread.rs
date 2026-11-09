@@ -8,6 +8,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_corebase::Thread;
 use swoole_rs_process::workers::thread::{WorkerMain, set_worker_thread_start};
 use swoole_rs_server::view;
 use swoole_rs_zend::{
@@ -225,16 +226,16 @@ unsafe fn start_thread(thread: *mut c_void, run: WorkerMain, context: *mut c_voi
     }
 }
 
-/// `Thread::enter()`: a `swoole::Thread` is its `CoreThread`.
+/// `Thread::enter()`.
 extern "C" fn entered(thread: *mut c_void) {
     // SAFETY: the live `swoole::Thread` `start_thread` was given.
-    unsafe { swoole_rs_corebase::swr_v1_core_thread_enter(thread.cast()) };
+    unsafe { &*thread.cast::<Thread>() }.enter();
 }
 
 /// `Thread::exit(status)`.
 extern "C" fn left(thread: *mut c_void, status: c_int) {
     // SAFETY: as in `entered`.
-    unsafe { swoole_rs_corebase::swr_v1_core_thread_exit(thread.cast(), status) };
+    unsafe { &*thread.cast::<Thread>() }.exit(status);
 }
 
 /// After `start()`: the bootstrap script and arguments go.

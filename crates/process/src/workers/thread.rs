@@ -1,14 +1,16 @@
 //! Thread mode (upstream's `src/server/thread.cc`; workers.cc's `ThreadContext`):
 //! every worker is a thread, and a manager
 //! thread rejoins and respawns each one that exits and walks reloads one worker
-//! at a time. Rust owns the manager's state ([`ThreadManager`]: its wait queue,
-//! the reload request and the reload's progress) and each thread's body; native
-//! keeps the threads, the message bus, the callbacks and the server.
+//! at a time. Rust owns the manager's state ([`ThreadManager`]: its threads, wait
+//! queue, reload request and reload progress) and each thread's body;
+//! crates/server's `thread_mode_ops.rs` answers the ops over the server.
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+
 use std::time::Duration;
+use swoole_rs_corebase::Thread;
 
 use super::event_worker::EVENT_WORKER;
 use super::log::{
@@ -33,8 +35,7 @@ use super::ops::{
     OP_WORKER_THREAD_START, OP_WORKER_TYPE, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY,
     RUN_START_WORKER_THREADS, RUN_STOP_WORKER_THREADS, RUN_THREAD_BODY, RUN_THREAD_FACTORY_START,
     RUN_THREAD_ID, RUN_THREAD_MAIN, RUN_THREAD_MANAGER_WAIT, RUN_THREAD_RELOAD,
-    RUN_THREAD_TERMINATE_MANAGER, TRACE_MANAGER_EXITED, TRACE_MANAGER_WAKE,
-    TRACE_NOTIFY_MANAGER_EXIT,
+    RUN_THREAD_TERMINATE_MANAGER,
 };
 use super::{Host, SW_ERR, SW_OK};
 use crate::methods::{swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type};
@@ -58,8 +59,8 @@ fn thread_arg(id: u64, kind: u64) -> u64 {
 
 /// What the manager thread waits for.
 enum Wake {
-    /// A worker thread exited (its native `Worker *`).
-    Exited(*mut c_void),
+    /// A worker thread exited (its native `Worker *`'s address).
+    Exited(u64),
     Reload,
     Exit,
 }
@@ -72,29 +73,8 @@ struct Reload {
     reloaded: u16,
 }
 
-/// Native thread primitives. Handles are shared-pointer objects owned by the Rust table;
-/// thread bodies and their Zend bailout boundaries stay native.
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct ThreadOps {
-    pub create: unsafe extern "C" fn() -> *mut c_void,
-    pub destroy: unsafe extern "C" fn(*mut c_void),
-    pub join: unsafe extern "C" fn(*mut c_void) -> i32,
-}
-
-struct NativeThread {
-    handle: *mut c_void,
-    ops: ThreadOps,
-}
-
-impl Drop for NativeThread {
-    fn drop(&mut self) {
-        // SAFETY: the table owns this unique shared-pointer object, after the factory joined it.
-        unsafe { (self.ops.destroy)(self.handle) };
-    }
-}
-
-/// The thread factory's manager state, behind `ThreadFactory`'s opaque handle.
+/// The thread factory's manager state, behind `ThreadFactory`'s opaque handle, and
+/// a thread for each worker and the manager.
 #[derive(Default)]
 pub struct ThreadManager {
     queue: Mutex<VecDeque<Wake>>,
@@ -102,21 +82,39 @@ pub struct ThreadManager {
     reloading: AtomicBool,
     reload_all: AtomicBool,
     reload: Mutex<Option<Reload>>,
-    threads: Mutex<Vec<NativeThread>>,
-}
-
-// SAFETY: the queued `Worker *` values are opaque tokens handed back to native
-// code on the manager thread; Rust never dereferences them. Native thread slots
-// are likewise opaque, have a fixed lifetime and are destroyed only after joining.
-unsafe impl Send for ThreadManager {}
-// SAFETY: as above; every other field is synchronised.
-unsafe impl Sync for ThreadManager {}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    threads: Box<[Arc<Thread>]>,
 }
 
 impl ThreadManager {
+    /// `new ThreadFactory(serv)`'s state: `count` threads, none started.
+    #[must_use]
+    pub fn new(count: usize) -> Self {
+        Self {
+            threads: (0..count).map(|_| Arc::default()).collect(),
+            ..Self::default()
+        }
+    }
+
+    /// The thread in slot `index`; an index past the table was upstream's
+    /// out-of-range `std::shared_ptr` dereference.
+    #[must_use]
+    pub fn thread(&self, index: u64) -> &Arc<Thread> {
+        let thread = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.threads.get(index));
+        thread.unwrap_or_else(|| std::process::abort())
+    }
+
+    /// `ThreadFactory::shutdown()`: joins every started thread. A failed join was a
+    /// `std::system_error` nothing caught, which terminated the process.
+    pub fn join_all(&self) {
+        for thread in &self.threads {
+            if thread.joinable() && thread.join().is_err() {
+                std::process::abort();
+            }
+        }
+    }
+
     fn push(&self, wake: Wake) {
         lock(&self.queue).push_back(wake);
         self.ready.notify_one();
@@ -141,118 +139,10 @@ impl ThreadManager {
         };
         queue.pop_front()
     }
-
-    fn len(&self) -> usize {
-        lock(&self.queue).len()
-    }
 }
 
-/// A new manager state; native frees it with [`swr_v1_thread_manager_free`].
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_thread_manager_new() -> *mut ThreadManager {
-    Box::into_raw(Box::<ThreadManager>::default())
-}
-
-/// Free a manager state.
-///
-/// # Safety
-/// `manager` is null or a live handle from `_new`, not freed before; any started
-/// native thread slots have already been joined.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_thread_manager_free(manager: *mut ThreadManager) {
-    if !manager.is_null() {
-        // SAFETY: the caller hands back the handle `_new` leaked.
-        drop(unsafe { Box::from_raw(manager) });
-    }
-}
-
-/// Allocates the factory's fixed thread table before any worker starts.
-///
-/// # Safety
-/// The manager is fresh and exclusive. Primitives return owned handles or null,
-/// never throw/bail out, and remain callable until the manager is freed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_thread_manager_threads_init(
-    manager: *const ThreadManager,
-    count: usize,
-    ops: *const ThreadOps,
-) -> bool {
-    // SAFETY: the native constructor lends its fresh manager exclusively.
-    let manager = unsafe { &*manager };
-    if !lock(&manager.threads).is_empty() {
-        return false;
-    }
-    // SAFETY: the constructor lends initialized, stable native primitive addresses.
-    let ops = unsafe { *ops };
-    let mut threads = Vec::new();
-    if threads.try_reserve_exact(count).is_err() {
-        return false;
-    }
-    for _ in 0..count {
-        // SAFETY: create transfers one owned shared-pointer object, without callbacks or unwinding.
-        let handle = unsafe { (ops.create)() };
-        if handle.is_null() {
-            return false;
-        }
-        threads.push(NativeThread { handle, ops });
-    }
-    *lock(&manager.threads) = threads;
-    true
-}
-
-/// Borrows a stable native thread slot from the fixed Rust-owned table.
-///
-/// # Safety
-/// The initialized manager lives until the native caller releases this view.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_thread_manager_thread(
-    manager: *const ThreadManager,
-    index: usize,
-) -> *mut c_void {
-    // SAFETY: the factory lends its live initialized table.
-    let manager = unsafe { &*manager };
-    lock(&manager.threads)
-        .get(index)
-        .map_or(std::ptr::null_mut(), |thread| thread.handle)
-}
-
-/// Joins every joinable native thread, preserving a native system error as its code.
-///
-/// # Safety
-/// The live manager's table is immutable and no other actor joins these slots.
-/// The native join primitive catches exceptions and cannot bail out.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_thread_manager_join_all(manager: *const ThreadManager) -> i32 {
-    // SAFETY: factory shutdown lends its live table until every join returns.
-    let manager = unsafe { &*manager };
-    let count = lock(&manager.threads).len();
-    for index in 0..count {
-        let Some((handle, join)) = lock(&manager.threads)
-            .get(index)
-            .map(|thread| (thread.handle, thread.ops.join))
-        else {
-            break;
-        };
-        // SAFETY: the fixed table keeps this slot alive, without a mutex/borrow held over joining.
-        let error = unsafe { join(handle) };
-        if error != 0 {
-            return error;
-        }
-    }
-    0
-}
-
-/// Queue a worker thread's exit for the manager thread (`at_thread_exit`).
-///
-/// # Safety
-/// `manager` is a live handle; `worker` is an opaque `Worker *`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_thread_manager_exited(
-    manager: *const ThreadManager,
-    worker: *mut c_void,
-) {
-    // SAFETY: the caller lends a live handle.
-    unsafe { &*manager }.push(Wake::Exited(worker));
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// `ThreadFactory`'s manager state, from `OP_THREAD_MANAGER`.
@@ -271,13 +161,11 @@ pub(super) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         }
         RUN_THREAD_RELOAD => i64::from(reload(h, arg != 0)),
         RUN_THREAD_TERMINATE_MANAGER => {
-            h.get(TRACE_NOTIFY_MANAGER_EXIT);
             manager(h).push(Wake::Exit);
             // The manager thread may still be joining workers when the server stops:
             // reclaim it first, so it has surely exited.
             let id = h.get(OP_MANAGER_THREAD_ID);
             h.op(OP_JOIN_THREAD, id);
-            h.get(TRACE_MANAGER_EXITED);
             SW_OK
         }
         RUN_START_WORKER_THREADS => start(h),
@@ -335,7 +223,6 @@ fn wait<H: Host>(h: &mut H) {
     let manager = manager(h);
     loop {
         let wake = manager.next(h.signed(OP_TIMER_NEXT_MSEC));
-        h.op(TRACE_MANAGER_WAKE, manager.len() as u64);
         match wake {
             Some(Wake::Reload) => {
                 do_reload(h, manager);
@@ -355,8 +242,8 @@ fn wait<H: Host>(h: &mut H) {
 }
 
 /// Rejoin an exited worker thread, report an abnormal exit, and respawn it.
-fn restart<H: Host>(h: &mut H, worker: *mut c_void) {
-    h.op(OP_SELECT_WORKER, worker as u64);
+fn restart<H: Host>(h: &mut H, worker: u64) {
+    h.op(OP_SELECT_WORKER, worker);
     let id = h.get(OP_WORKER_ID);
     if h.get(OP_THREAD_EXIT_STATUS) != 0 {
         h.get(OP_CALL_WORKER_ERROR);
@@ -518,7 +405,7 @@ fn body<H: Host>(h: &mut H, arg: u64) {
         }
         h.get(OP_TIMER_FREE);
     } else {
-        manager(h).push(Wake::Exited(worker.cast()));
+        manager(h).push(Wake::Exited(worker.expose_provenance() as u64));
     }
     h.op(OP_THREAD_EXIT, id);
 }
@@ -543,12 +430,7 @@ pub fn set_worker_thread_start(start: Option<WorkerThreadStart>) {
 ///
 /// # Safety
 /// `thread` is the thread's live `swoole::Thread` and `run(context)` its body.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_workers_thread_start(
-    thread: *mut c_void,
-    run: WorkerMain,
-    context: *mut c_void,
-) {
+pub unsafe fn worker_thread_start(thread: *mut c_void, run: WorkerMain, context: *mut c_void) {
     let start = *WORKER_THREAD_START
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
@@ -665,7 +547,7 @@ mod tests {
             h.args(OP_WORKER_THREAD_START),
             vec![thread_arg(6, TASK_WORKER)]
         );
-        assert!(matches!(manager.next(5), Some(Wake::Exited(w)) if w as u64 == address));
+        assert!(matches!(manager.next(5), Some(Wake::Exited(w)) if w == address));
     }
 
     #[test]
@@ -749,7 +631,7 @@ mod tests {
     #[test]
     fn the_manager_thread_respawns_exited_workers_until_told_to_exit() {
         let manager = ThreadManager::default();
-        let worker = 0x1000 as *mut c_void;
+        let worker = 0x1000;
         manager.push(Wake::Exited(worker));
         manager.push(Wake::Exit);
         let mut h = Script::with(&[
@@ -840,99 +722,28 @@ mod tests {
     fn the_queue_wakes_on_push_or_times_out() {
         let manager = ThreadManager::default();
         assert!(manager.next(5).is_none());
-        // SAFETY (test): a live handle.
-        unsafe { swr_v1_thread_manager_exited(&raw const manager, 0x10 as *mut c_void) };
-        assert!(matches!(manager.next(5), Some(Wake::Exited(w)) if w as usize == 0x10));
+        manager.push(Wake::Exited(0x10));
+        assert!(matches!(manager.next(5), Some(Wake::Exited(0x10))));
     }
 }
 
 #[cfg(test)]
-mod native_thread_tests {
+mod table_tests {
     use super::*;
-    use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::Relaxed};
-
-    static SERIAL: Mutex<()> = Mutex::new(());
-    static CREATED: AtomicUsize = AtomicUsize::new(0);
-    static DESTROYED: AtomicUsize = AtomicUsize::new(0);
-    static FAIL_AT: AtomicUsize = AtomicUsize::new(usize::MAX);
-    static MANAGER: AtomicPtr<ThreadManager> = AtomicPtr::new(std::ptr::null_mut());
-
-    unsafe extern "C" fn create() -> *mut c_void {
-        let index = CREATED.fetch_add(1, Relaxed);
-        if index == FAIL_AT.load(Relaxed) {
-            return std::ptr::null_mut();
-        }
-        Box::into_raw(Box::new(index)).cast()
-    }
-    unsafe extern "C" fn destroy(handle: *mut c_void) {
-        drop(unsafe { Box::from_raw(handle.cast::<usize>()) });
-        DESTROYED.fetch_add(1, Relaxed);
-    }
-    unsafe extern "C" fn join(_: *mut c_void) -> i32 {
-        let manager = unsafe { &*MANAGER.load(Relaxed) };
-        // Joining can execute native cleanup; the Rust table mutex must be released.
-        if manager.threads.try_lock().is_ok() {
-            0
-        } else {
-            libc::EDEADLK
-        }
-    }
-    static OPS: ThreadOps = ThreadOps {
-        create,
-        destroy,
-        join,
-    };
-
-    fn reset() {
-        CREATED.store(0, Relaxed);
-        DESTROYED.store(0, Relaxed);
-        FAIL_AT.store(usize::MAX, Relaxed);
-    }
 
     #[test]
-    fn owns_fixed_slots_and_joins_without_holding_a_table_lock() {
-        let _serial = lock(&SERIAL);
-        reset();
-        let manager = swr_v1_thread_manager_new();
-        MANAGER.store(manager, Relaxed);
-        unsafe {
-            assert!(swr_v1_thread_manager_threads_init(
-                manager,
-                3,
-                &raw const OPS
-            ));
-            let first = swr_v1_thread_manager_thread(manager, 0);
-            assert!(!first.is_null());
-            assert_eq!(swr_v1_thread_manager_thread(manager, 0), first);
-            assert!(swr_v1_thread_manager_thread(manager, 3).is_null());
-            assert!(!swr_v1_thread_manager_threads_init(
-                manager,
-                1,
-                &raw const OPS
-            ));
-            assert_eq!(swr_v1_thread_manager_join_all(manager), 0);
-            swr_v1_thread_manager_free(manager);
-        }
-        assert_eq!(CREATED.load(Relaxed), 3);
-        assert_eq!(DESTROYED.load(Relaxed), 3);
-    }
-
-    #[test]
-    fn failed_initialization_releases_every_created_native_slot() {
-        let _serial = lock(&SERIAL);
-        reset();
-        FAIL_AT.store(2, Relaxed);
-        let manager = swr_v1_thread_manager_new();
-        unsafe {
-            assert!(!swr_v1_thread_manager_threads_init(
-                manager,
-                4,
-                &raw const OPS
-            ));
-            assert!(swr_v1_thread_manager_thread(manager, 0).is_null());
-            swr_v1_thread_manager_free(manager);
-        }
-        assert_eq!(CREATED.load(Relaxed), 3);
-        assert_eq!(DESTROYED.load(Relaxed), 2);
+    fn the_manager_owns_a_thread_per_slot_and_joins_only_started_ones() {
+        let manager = ThreadManager::new(3);
+        assert!(Arc::ptr_eq(manager.thread(0), manager.thread(0)));
+        assert!(!Arc::ptr_eq(manager.thread(0), manager.thread(2)));
+        let seen = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&seen);
+        manager
+            .thread(1)
+            .start(move || flag.store(true, Ordering::Release))
+            .unwrap();
+        manager.join_all();
+        assert!(seen.load(Ordering::Acquire));
+        assert!(!manager.thread(1).joinable());
     }
 }

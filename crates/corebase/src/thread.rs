@@ -1,263 +1,130 @@
-//! The lower Thread's OS handle and status. Native owns only its C++ callable:
-//! pthread invokes that callable's native trampoline directly, with no Rust
-//! child-entry frame for a C++ exception or pthread forced unwind to cross.
-use std::{
-    ffi::{c_int, c_void},
-    ptr,
-    sync::atomic::{AtomicI32, AtomicU8, Ordering},
-};
+//! Upstream's `swoole::Thread`: a pthread started with every signal blocked, as
+//! upstream's `Thread::start` does, and the exit status its body reports. Thread
+//! mode keeps one per worker slot, shared with the PHP thread that runs on it.
+use std::ffi::{c_int, c_void};
+use std::ptr;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Mutex, PoisonError};
 
-#[repr(C)]
+/// A thread's body, run once on it.
+type Body = Box<dyn FnOnce() + Send>;
+
+/// A started thread's handle, until it is joined.
+struct Handle(libc::pthread_t);
+
+// SAFETY: a pthread handle names a thread, not memory; any thread may join it,
+// and the record's mutex lets only one do so.
+unsafe impl Send for Handle {}
+
 #[derive(Default)]
-pub struct CoreThread {
-    handle: libc::pthread_t,
-    exit_status: c_int,
-    living: u8,
+pub struct Thread {
+    handle: Mutex<Option<Handle>>,
+    exit_status: AtomicI32,
 }
-unsafe fn status<'a>(record: *const CoreThread) -> &'a AtomicI32 {
-    // SAFETY: the caller lends an initialized, aligned live record.
-    let slot = unsafe { &raw const (*record).exit_status };
-    // SAFETY: all concurrent accesses to this slot use this same atomic view.
-    unsafe { AtomicI32::from_ptr(slot.cast_mut()) }
+
+extern "C" fn entry(body: *mut c_void) -> *mut c_void {
+    // SAFETY: `start` handed this thread the box it leaked.
+    let body = unsafe { Box::from_raw(body.cast::<Body>()) };
+    body();
+    ptr::null_mut()
 }
-unsafe fn living<'a>(record: *const CoreThread) -> &'a AtomicU8 {
-    // SAFETY: the caller lends an initialized, aligned live record.
-    let slot = unsafe { &raw const (*record).living };
-    // SAFETY: all concurrent accesses to this slot use this same atomic view.
-    unsafe { AtomicU8::from_ptr(slot.cast_mut()) }
-}
-/// # Safety
-/// `record` is a live owner used exclusively by its controlling thread.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_joinable(record: *const CoreThread) -> bool {
-    // SAFETY: the controlling thread alone reads/writes the OS handle.
-    unsafe { (*record).handle != libc::pthread_t::default() }
-}
-/// # Safety
-/// A live record whose running thread may publish its state concurrently.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_alive(record: *const CoreThread) -> bool {
-    // SAFETY: per the live-record contract; the state slot is only accessed atomically.
-    unsafe { living(record) }.load(Ordering::Acquire) != 0
-}
-/// # Safety
-/// A live record whose running thread may publish its state concurrently.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_status(record: *const CoreThread) -> c_int {
-    // SAFETY: per the live-record contract; the state slot is only accessed atomically.
-    unsafe { status(record) }.load(Ordering::Acquire)
-}
-/// # Safety
-/// The record outlives the running thread; only that thread publishes status.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_enter(record: *const CoreThread) {
-    // SAFETY: the record's atomic state remains live until the thread has ended.
-    unsafe { status(record) }.store(0, Ordering::Release);
-    // SAFETY: the same live state record.
-    unsafe { living(record) }.store(1, Ordering::Release);
-}
-/// # Safety
-/// As `swr_v1_core_thread_enter`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_exit(record: *const CoreThread, code: c_int) {
-    // SAFETY: the running thread publishes into its live atomic state.
-    unsafe { status(record) }.store(code, Ordering::Release);
-    // SAFETY: publish completion after the exit status.
-    unsafe { living(record) }.store(0, Ordering::Release);
-}
-/// # Safety
-/// Both records are live and owned exclusively by this controlling thread.
-/// Native terminates on a false result, as `std::thread`'s move assignment does.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_move(
-    destination: *mut CoreThread,
-    source: *mut CoreThread,
-) -> bool {
-    // SAFETY: copy scalar state before std::thread's original joinable check.
-    let code = unsafe { swr_v1_core_thread_status(source) };
-    // SAFETY: source is a live record.
-    let alive = unsafe { swr_v1_core_thread_alive(source) };
-    // SAFETY: destination is live; its state slots have atomic-only accesses.
-    unsafe { status(destination) }.store(code, Ordering::Release);
-    // SAFETY: as above.
-    unsafe { living(destination) }.store(u8::from(alive), Ordering::Release);
-    // SAFETY: the controlling thread alone reads/writes both handles.
-    if unsafe { (*destination).handle != libc::pthread_t::default() } {
-        return false;
+
+impl Thread {
+    fn handle(&self) -> std::sync::MutexGuard<'_, Option<Handle>> {
+        self.handle.lock().unwrap_or_else(PoisonError::into_inner)
     }
-    // SAFETY: source's controlling thread transfers its unique handle.
-    let handle = unsafe { (*source).handle };
-    // SAFETY: destination has no owned thread and receives this unique handle.
-    unsafe {
-        (*destination).handle = handle;
+
+    /// `start(fn)`: runs `body` on a new pthread with default attributes, which
+    /// inherits a fully blocked signal mask. A thread already started and not yet
+    /// joined was `std::terminate()`; so it is here.
+    ///
+    /// # Errors
+    /// `pthread_create`'s error; nothing started.
+    pub fn start(&self, body: impl FnOnce() + Send + 'static) -> Result<(), c_int> {
+        let mut handle = self.handle();
+        if handle.is_some() {
+            std::process::abort();
+        }
+        let body: *mut Body = Box::into_raw(Box::new(Box::new(body)));
+        let mut thread = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
+        let code = crate::with_signals_blocked(|| {
+            // SAFETY: default attributes; `entry` owns `body` once the thread starts.
+            unsafe { libc::pthread_create(thread.as_mut_ptr(), ptr::null(), entry, body.cast()) }
+        });
+        if code != 0 {
+            // SAFETY: no thread started, so the box is still ours.
+            drop(unsafe { Box::from_raw(body) });
+            return Err(code);
+        }
+        // SAFETY: a successful `pthread_create` wrote the handle.
+        *handle = Some(Handle(unsafe { thread.assume_init() }));
+        Ok(())
     }
-    // SAFETY: source is now moved from (also valid for a nonjoinable self-move).
-    unsafe {
-        (*source).handle = libc::pthread_t::default();
+
+    /// `joinable()`: started and not yet joined.
+    pub fn joinable(&self) -> bool {
+        self.handle().is_some()
     }
-    true
-}
-/// # Safety
-/// A live record used exclusively by its controlling thread.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_id(record: *const CoreThread) -> libc::pthread_t {
-    // SAFETY: the controlling thread alone reads/writes the OS handle.
-    unsafe { (*record).handle }
-}
-/// # Safety
-/// `entry` is a native pthread entry, owning `argument` after success. It must
-/// not require a Rust entry frame; a failed creation leaves ownership native.
-/// The controlling thread exclusively owns `record` and terminates after a
-/// successful creation on an already-occupied record. That record retains its
-/// original handle until native terminates, as `std::thread` move assignment does.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_start(
-    record: *mut CoreThread,
-    entry: extern "C" fn(*mut c_void) -> *mut c_void,
-    argument: *mut c_void,
-) -> c_int {
-    let mut thread = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
-    // The new thread inherits a fully blocked mask (upstream's `Thread::start`).
-    let code = crate::with_signals_blocked(|| {
-        // SAFETY: default pthread attributes; native entry owns argument only on success.
-        unsafe { libc::pthread_create(thread.as_mut_ptr(), ptr::null(), entry, argument) }
-    });
-    if code == 0 {
-        // SAFETY: successful pthread_create initialized the handle.
-        let thread = unsafe { thread.assume_init() };
-        // SAFETY: only the controlling thread reads/publishes the owned handle.
-        let occupied = unsafe { (*record).handle != libc::pthread_t::default() };
-        if !occupied {
-            // SAFETY: this empty record receives the new unique handle. An occupied
-            // record preserves its original handle for native's required termination.
-            unsafe {
-                (*record).handle = thread;
-            }
+
+    /// `join()`: waits for the thread to end.
+    ///
+    /// # Errors
+    /// `EINVAL` when there is no thread to join, or `pthread_join`'s error.
+    pub fn join(&self) -> Result<(), c_int> {
+        let Some(Handle(thread)) = self.handle().take() else {
+            return Err(libc::EINVAL);
+        };
+        // SAFETY: the handle `start` stored, taken so no one else joins it.
+        match unsafe { libc::pthread_join(thread, ptr::null_mut()) } {
+            0 => Ok(()),
+            code => Err(code),
         }
     }
-    code
-}
-/// Validate the owned handle before native performs the cancellable join.
-/// # Safety
-/// The controlling thread exclusively owns this record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_join_check(record: *const CoreThread) -> c_int {
-    // SAFETY: the controlling thread alone reads/writes its owned handle.
-    if unsafe { (*record).handle == libc::pthread_t::default() } {
-        libc::EINVAL
-    } else {
-        0
+
+    /// `enter()`: the body began; its exit status is 0 until it reports one.
+    pub fn enter(&self) {
+        self.exit_status.store(0, Ordering::Release);
     }
-}
-/// Commit the native join's result; a cancelled join never reaches this leaf.
-/// # Safety
-/// `code` is the result of joining this record's current handle, or the failed
-/// validation status. The controlling thread exclusively owns the record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_join_complete(
-    record: *mut CoreThread,
-    code: c_int,
-) -> c_int {
-    if code == 0 {
-        // SAFETY: successful native join consumed exactly this owner handle.
-        unsafe {
-            (*record).handle = libc::pthread_t::default();
-        }
+
+    /// `exit(status)`: the body's exit status.
+    pub fn exit(&self, status: c_int) {
+        self.exit_status.store(status, Ordering::Release);
     }
-    code
-}
-/// # Safety
-/// The controlling thread exclusively owns this record and detaches at most once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_thread_detach(record: *mut CoreThread) -> c_int {
-    // SAFETY: exclusive access to the owner handle.
-    let handle = unsafe { (*record).handle };
-    if handle == libc::pthread_t::default() {
-        return libc::EINVAL;
+
+    /// `get_exit_status()`.
+    pub fn exit_status(&self) -> c_int {
+        self.exit_status.load(Ordering::Acquire)
     }
-    // SAFETY: this is the owner's current joinable pthread handle.
-    let code = unsafe { libc::pthread_detach(handle) };
-    if code == 0 {
-        // SAFETY: a successful detach consumed this handle; failures preserve it.
-        unsafe {
-            (*record).handle = libc::pthread_t::default();
-        }
-    }
-    code
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
-    // The test controls its own uncancelled pthread; production's cancellable
-    // join is native and executes only after the Rust validation leaf returns.
-    unsafe fn join(record: *mut CoreThread) -> c_int {
-        let code = unsafe { swr_v1_core_thread_join_check(record) };
-        let code = if code == 0 {
-            unsafe { libc::pthread_join(swr_v1_core_thread_id(record), ptr::null_mut()) }
-        } else {
-            code
-        };
-        unsafe { swr_v1_core_thread_join_complete(record, code) }
-    }
-    struct Running {
-        record: *mut CoreThread,
-        ready: AtomicBool,
-        release: AtomicBool,
-    }
-    extern "C" fn child(context: *mut c_void) -> *mut c_void {
-        unsafe {
-            let context = &*context.cast::<Running>();
-            swr_v1_core_thread_enter(context.record);
-            context.ready.store(true, Ordering::Release);
-            while !context.release.load(Ordering::Acquire) {
-                std::thread::yield_now();
-            }
-            swr_v1_core_thread_exit(context.record, 37);
-        }
-        ptr::null_mut()
-    }
-    #[test]
-    fn real_pthread_handle_and_status_are_owned_until_join() {
-        unsafe {
-            let mut owner = Box::<CoreThread>::default();
-            let mut context = Box::new(Running {
-                record: &raw mut *owner,
-                ready: AtomicBool::new(false),
-                release: AtomicBool::new(false),
-            });
-            assert!(!swr_v1_core_thread_joinable(&raw const *owner));
-            assert!(!swr_v1_core_thread_alive(&raw const *owner));
-            assert_eq!(join(&raw mut *owner), libc::EINVAL);
-            assert_eq!(
-                swr_v1_core_thread_start(&raw mut *owner, child, (&raw mut *context).cast()),
-                0
-            );
-            while !context.ready.load(Ordering::Acquire) {
-                std::thread::yield_now();
-            }
-            assert!(swr_v1_core_thread_alive(&raw const *owner));
-            assert!(swr_v1_core_thread_joinable(&raw const *owner));
-            assert_eq!(swr_v1_core_thread_status(&raw const *owner), 0);
-            assert_ne!(
-                swr_v1_core_thread_id(&raw const *owner),
-                libc::pthread_t::default()
-            );
-            context.release.store(true, Ordering::Release);
-            assert_eq!(join(&raw mut *owner), 0);
-            assert!(!swr_v1_core_thread_alive(&raw const *owner));
-            assert!(!swr_v1_core_thread_joinable(&raw const *owner));
-            assert_eq!(swr_v1_core_thread_status(&raw const *owner), 37);
-            assert_eq!(join(&raw mut *owner), libc::EINVAL);
-            assert_eq!(swr_v1_core_thread_detach(&raw mut *owner), libc::EINVAL);
-        }
-    }
 
-    extern "C" fn inherit(context: *mut c_void) -> *mut c_void {
-        // Read before any child-thread initialization can block signals.
-        unsafe { *context.cast::<libc::sigset_t>() = crate::signal_mask::tests::current() };
-        ptr::null_mut()
+    #[test]
+    fn a_thread_is_joinable_until_joined_and_keeps_its_exit_status() {
+        let thread = Arc::new(Thread::default());
+        assert!(!thread.joinable());
+        assert_eq!(thread.join(), Err(libc::EINVAL));
+        let release = Arc::new(AtomicBool::new(false));
+        let (body_thread, body_release) = (Arc::clone(&thread), Arc::clone(&release));
+        thread
+            .start(move || {
+                body_thread.enter();
+                while !body_release.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                body_thread.exit(37);
+            })
+            .unwrap();
+        assert!(thread.joinable());
+        release.store(true, Ordering::Release);
+        assert_eq!(thread.join(), Ok(()));
+        assert!(!thread.joinable());
+        assert_eq!(thread.exit_status(), 37);
+        assert_eq!(thread.join(), Err(libc::EINVAL));
     }
 
     /// core-tests/src/os/thread.cpp `TEST(thread, start_with_signals_blocked)`, each
@@ -273,13 +140,14 @@ mod tests {
                     crate::signal_block_all();
                 }
                 let expected = current();
-                let mut inherited: libc::sigset_t = std::mem::zeroed();
-                let mut thread = CoreThread::default();
-                assert_eq!(
-                    swr_v1_core_thread_start(&raw mut thread, inherit, (&raw mut inherited).cast()),
-                    0
-                );
-                assert_eq!(join(&raw mut thread), 0);
+                let inherited = Arc::new(Mutex::new(None));
+                let slot = Arc::clone(&inherited);
+                let thread = Thread::default();
+                thread
+                    .start(move || *slot.lock().unwrap() = Some(current()))
+                    .unwrap();
+                assert_eq!(thread.join(), Ok(()));
+                let inherited = inherited.lock().unwrap().unwrap();
                 for signo in [libc::SIGCHLD, libc::SIGUSR1, libc::SIGTERM] {
                     assert_eq!(
                         libc::sigismember(&raw const inherited, signo),

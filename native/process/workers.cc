@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // What crates/process's event worker, task worker, reactor process, thread mode and manager
 // operations need from C++ (swoole_rs_workers.h): the calls into Server, Reactor,
-// MessageBus, Pipe and Thread, the thread factory's threads, and the
+// MessageBus and Pipe, and the
 // Worker and ProcessPool layout checks.
 #include <sys/uio.h>
 #include <sys/mman.h>
-#include <system_error>
 
 #include "swoole_server.h"
-#include "swoole_thread.h"
 #include "swoole_rs_process.h"
 #include "swoole_rs_workers.h"
 #include "swoole_rs_locks.h"
@@ -120,168 +118,19 @@ static_assert(sizeof(TaskWorkerContext) == 112 && SW_SERVER_EVENT_FINISH == 9 &&
 static_assert(sizeof(DataHead) == 40 && offsetof(EventData, data) == sizeof(DataHead) && sizeof(String) == 40,
               "crates/process/src/task_file.rs layouts");
 
-static const swr_v1_thread_ops thread_ops = {
-    []() -> void * {
-        try { return new std::shared_ptr<Thread>(std::make_shared<Thread>()); }
-        catch (...) { return nullptr; }
-    },
-    [](void *slot) { delete static_cast<std::shared_ptr<Thread> *>(slot); },
-    [](void *slot) -> int32_t {
-        try {
-            auto &thread = *static_cast<std::shared_ptr<Thread> *>(slot);
-            if (thread->joinable()) thread->join();
-            return 0;
-        } catch (const std::system_error &error) { return error.code().value(); }
-          catch (...) { return EFAULT; }
-    },
-};
-
-std::shared_ptr<Thread> &ThreadFactory::thread_at(size_t index) const {
-    return *static_cast<std::shared_ptr<Thread> *>(swr_v1_thread_manager_thread(manager_, index));
-}
-
-// `new ThreadFactory(serv)`: a factory whose manager holds a thread for each worker and the manager.
-static Factory *thread_factory_new(Server *serv) {
-    void *manager = swr_v1_thread_manager_new();
-    if (!swr_v1_thread_manager_threads_init(manager, serv->get_all_worker_num() + 1, &thread_ops)) {
-        swr_v1_thread_manager_free(manager);
-        throw std::bad_alloc();
-    }
-    return static_cast<Factory *>(swr_v1_server_factory_new(serv, manager));
-}
-
-// What a crates/process/src/workers/thread.rs operation acts on.
+// What a crates/process/src/workers/thread.rs operation acts on: crates/server's
+// thread_mode_ops.rs.
 template <>
 struct WorkersNative<5> {
     Server *serv;
     ThreadFactory *factory;
     Worker *worker;
 
-    static uint64_t call(void *context, uint32_t op, uint64_t arg);
-
     int64_t run(uint32_t operation, uint64_t arg = 0) {
-        return swr_v1_workers_run(operation, arg, this, call);
+        return swr_v1_workers_run(operation, arg, this, swr_v1_thread_mode_call);
     }
 };
 using ThreadContext = WorkersNative<5>;
-
-uint64_t ThreadContext::call(void *context, uint32_t op, uint64_t arg) {
-    auto *ctx = static_cast<ThreadContext *>(context);
-    Server *serv = ctx->serv;
-    ThreadFactory *factory = ctx->factory;
-    Worker *worker = ctx->worker;
-    switch (op) {
-    case SWR_WORKERS_OP_THREAD_MANAGER:
-        return (uintptr_t) factory->manager_;
-    case SWR_WORKERS_OP_THREAD_SUPPORTED:
-#ifdef SW_THREAD
-        return 1;
-#else
-        return 0;
-#endif
-    case SWR_WORKERS_LOG_CALLOC_CONNECTIONS:
-        swoole_log_as("Server::create_thread_factory",
-                      swoole_sys_warning("calloc[2](%d) failed",
-                                         static_cast<int>(serv->max_connection * sizeof(Connection))));
-        return 0;
-    case SWR_WORKERS_OP_NEW_THREAD_FACTORY:
-        return (uintptr_t) thread_factory_new(serv);
-    case SWR_WORKERS_TRACE_NOTIFY_MANAGER_EXIT:
-        swoole_log_as("ThreadFactory::terminate_manager_thread",
-                      swoole_trace_log(SW_TRACE_THREAD, "notify manager thread to exit"));
-        return 0;
-    case SWR_WORKERS_OP_JOIN_THREAD:
-        factory->thread_at(arg)->join();
-        swoole_log_as("ThreadFactory::wait", swoole_trace_log(SW_TRACE_THREAD, "thread=%d join", (int) arg));
-        return 0;
-    case SWR_WORKERS_TRACE_MANAGER_EXITED:
-        swoole_log_as("ThreadFactory::terminate_manager_thread",
-                      swoole_trace_log(SW_TRACE_THREAD, "manager thread is exited"));
-        return 0;
-    case SWR_WORKERS_TRACE_MANAGER_WAKE:
-        swoole_log_as("ThreadFactory::wait",
-                      swoole_trace_log(SW_TRACE_THREAD,
-                                       "manager thread is waiting for worker exit, queue size: %zu",
-                                       (size_t) arg));
-        return 0;
-    case SWR_WORKERS_OP_SELECT_WORKER:
-        ctx->worker = reinterpret_cast<Worker *>(arg);
-        swoole_log_as("ThreadFactory::wait",
-                      swoole_trace_log(SW_TRACE_THREAD,
-                                       "worker(type=%d, tid=%d, id=%d) exit, status=%d",
-                                       ctx->worker->get_type(),
-                                       ctx->worker->get_pid(),
-                                       ctx->worker->get_id(),
-                                       swr_v1_worker_status(reinterpret_cast<const swr_v1_worker_record *>(ctx->worker))));
-        return 0;
-    case SWR_WORKERS_OP_THREAD_EXIT_STATUS:
-        return (int64_t) factory->thread_at(worker->get_id())->get_exit_status();
-    case SWR_WORKERS_OP_CALL_WORKER_ERROR: {
-        ExitStatus exit_status(worker->get_pid(), factory->thread_at(worker->get_id())->get_exit_status() << 8);
-        serv->call_worker_error_callback(worker, exit_status);
-        swoole_log_as("ThreadFactory::wait",
-                      swoole_trace_log(SW_TRACE_THREAD,
-                                       "worker(tid=%d, id=%d) abnormal exit, status=%d",
-                                       exit_status.get_pid(),
-                                       worker->get_id(),
-                                       exit_status.get_code()));
-        return 0;
-    }
-    case SWR_WORKERS_OP_SPAWN_THREAD:
-        factory->thread_at(arg & UINT32_MAX)->start([serv, factory, arg]() {
-            ThreadContext{serv, factory}.run(SWR_WORKERS_RUN_THREAD_BODY, arg);
-        });
-        return 0;
-    case SWR_WORKERS_OP_THREAD_ENTER:
-        swoole_thread_init(false);
-        swoole_set_thread_id(arg);
-        swoole_set_thread_type(Server::THREAD_WORKER);
-        swoole_trace_log(SW_TRACE_THREAD, "at_thread_enter=%d", (int) arg);
-        return swoole_thread_get_native_id();
-    case SWR_WORKERS_OP_THREAD_EXIT:
-        swoole_trace_log(SW_TRACE_THREAD, "at_thread_exit=%d", (int) arg);
-        swoole_thread_clean(false);
-        return 0;
-    case SWR_WORKERS_OP_CREATE_MESSAGE_BUS: {
-        auto mb = new MessageBus();
-        mb->count_ids(&serv->gs->pipe_packet_msg_id);
-        mb->set_buffer_size(serv->ipc_max_size);
-        mb->set_always_chunked_transfer();
-        if (!mb->alloc_buffer()) {
-            throw std::bad_alloc();
-        }
-        serv->init_pipe_sockets(mb);
-        SwooleTG.message_bus = mb;
-        return 0;
-    }
-    case SWR_WORKERS_OP_DESTROY_MESSAGE_BUS:
-        SwooleTG.message_bus->clear();
-        delete SwooleTG.message_bus;
-        SwooleTG.message_bus = nullptr;
-        return 0;
-    case SWR_WORKERS_OP_WORKER_THREAD_START: {
-        struct Main {
-            ThreadContext context;
-            uint64_t arg;
-        } main{{serv, factory, worker}, arg};
-        swr_v1_workers_thread_start(factory->thread_at(arg & UINT32_MAX).get(), [](void *context) {
-            auto *main = static_cast<Main *>(context);
-            main->context.run(SWR_WORKERS_RUN_THREAD_MAIN, main->arg);
-        }, &main);
-        return 0;
-    }
-    case SWR_WORKERS_OP_REACTOR_THREAD_MAIN:
-        Server::reactor_thread_main_loop(serv, static_cast<int>(arg));
-        return 0;
-    case SWR_WORKERS_OP_SET_MASTER_THREAD_ID:
-        SwooleTG.id = sw_reactor()->id = factory->get_master_thread_id();
-        return 0;
-    case SWR_WORKERS_OP_START_MASTER_THREAD:
-        return (int64_t) serv->start_master_thread(sw_reactor());
-    default:
-        return swr_v1_thread_mode_call(context, op, arg);
-    }
-}
 
 // What a crates/process/src/workers/manager.rs operation acts on: crates/server's
 // manager_ops.rs.

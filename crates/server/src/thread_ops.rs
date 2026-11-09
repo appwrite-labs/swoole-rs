@@ -63,7 +63,6 @@ struct DgramPacket {
 
 // SAFETY: crates/protocols' bus, linked into the archive.
 unsafe extern "C" {
-    fn swr_v1_bus_set_always_chunked(bus: *mut c_void);
     fn swr_v1_bus_count_ids(bus: *mut c_void, counter: *mut c_void);
 }
 
@@ -429,8 +428,7 @@ pub(crate) unsafe fn answer(
             let counter = gs.pipe_packet_msg_id.as_ptr().cast();
             // SAFETY: the thread's live bus, counting from the shared counter.
             unsafe { swr_v1_bus_count_ids(thread.bus, counter) };
-            // SAFETY: as above.
-            unsafe { swr_v1_bus_set_always_chunked(thread.bus) };
+            thread.message_bus().set_always_chunked();
             u64::from(
                 thread
                     .message_bus()

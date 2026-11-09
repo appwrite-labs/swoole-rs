@@ -7,7 +7,7 @@ use std::{
     cell::RefCell,
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
 use swoole_rs_corebase::DataHead;
@@ -77,7 +77,7 @@ pub(crate) struct ServerData {
 }
 
 /// `SW_THREAD`, as MINIT was told.
-pub(crate) static THREAD: AtomicBool = AtomicBool::new(false);
+pub(crate) use swoole_rs_server::thread_mode_ops::SUPPORTED as THREAD;
 
 thread_local! {
     /// Each thread's `ServerPortProperty` per port `object_id` (`SW_THREAD`):

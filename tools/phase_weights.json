@@ -31,7 +31,6 @@
  "corebase-native": 36,
  "corebase-record-views": 1,
  "corebase-startup": 1,
- "corebase-thread-owner": 20,
  "corebase-unit": 2,
  "coroutine-compile": 9,
  "coroutine-rust-asan": 3,
