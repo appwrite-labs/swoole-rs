@@ -3,7 +3,7 @@
 //! in another coroutine may longjmp across them on the main stack.
 use crate::{
     classes,
-    context::{self, Context, INVALID},
+    context::{self, Ctx, INVALID},
     host::{
         self, SW_ERROR_CO_CANCELED, SW_ERROR_CO_NOT_EXISTS, SW_ERROR_INVALID_PARAMS,
         SW_ERROR_WRONG_OPERATION,
@@ -196,7 +196,7 @@ fn resume(call: &Call) {
 
 /// A `Co::join()` in progress: the contexts it still waits for.
 pub(crate) struct Join {
-    pending: Vec<*mut Context>,
+    pending: Vec<Ctx>,
     co: *mut c_void,
     canceled: Rc<Cell<bool>>,
 }
@@ -204,7 +204,7 @@ pub(crate) struct Join {
 impl Join {
     /// A joined coroutine closed: once none are left, resume the joiner from
     /// the event loop (unless it gave up first).
-    pub(crate) fn closed(join: *mut Self, ctx: *mut Context) {
+    pub(crate) fn closed(join: *mut Self, ctx: Ctx) {
         // SAFETY: a join stays live while it is set on a context.
         let this = unsafe { &mut *join };
         this.pending.retain(|&pending| pending != ctx);
@@ -217,9 +217,9 @@ impl Join {
 
     /// Stop waiting for the contexts registered so far.
     fn forget(&self) {
-        for &ctx in &self.pending {
-            // SAFETY: a context still waited for is live.
-            unsafe { context::at(ctx) }.join = ptr::null_mut();
+        // A context still waited for is live.
+        for ctx in &self.pending {
+            ctx.set_join(ptr::null_mut());
         }
     }
 }
@@ -267,18 +267,15 @@ fn join(call: &Call) {
             failed = true;
             return false;
         }
-        let ctx = context::by_cid(cid);
-        if ctx.is_null() {
+        let Some(ctx) = context::by_cid(cid) else {
             return true;
-        }
-        // SAFETY: a live context.
-        let this = unsafe { context::at(ctx) };
-        if !this.join.is_null() {
+        };
+        if !ctx.join().is_null() {
             host::set_last_error(SW_ERROR_WRONG_OPERATION);
             failed = true;
             return false;
         }
-        this.join = &raw mut join;
+        ctx.set_join(&raw mut join);
         join.pending.push(ctx);
         true
     };
@@ -315,19 +312,13 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         }
         return host::cancel(co);
     }
-    let task = context::by_cid(cid);
-    // SAFETY: null or a live context.
-    let co = unsafe { task.as_ref() }.map_or(ptr::null_mut(), |task| task.co);
-    if co.is_null() {
+    let Some(task) = context::by_cid(cid).filter(|task| !task.co().is_null()) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         return false;
-    }
-    let is_current = co == host::current();
-    let (pending, class) = {
-        // SAFETY: a live context.
-        let vm = &unsafe { context::at(task) }.vm;
-        (vm.exception, vm.exception_class)
     };
+    let co = task.co();
+    let is_current = co == host::current();
+    let (pending, class) = task.exception();
     if !is_current && !pending.is_null() && class == ce {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         return false;
@@ -349,27 +340,20 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         unsafe { zend_throw_exception_object(&raw mut thrown) };
         return true;
     }
-    {
-        // SAFETY: a suspended coroutine's context.
-        let vm = &mut unsafe { context::at(task) }.vm;
-        vm.exception_class = ce;
-        vm.exception = exception;
-    }
+    task.set_exception(exception, ce);
     if !pending.is_null() {
         // SAFETY: two live exceptions.
         unsafe { zend_exception_set_previous(exception, pending) };
     }
-    // SAFETY: as above.
-    let frame = unsafe { context::at(task) }.vm.execute_data;
     // SAFETY: the suspended coroutine's frame, restored below.
-    let backup = unsafe { swr_zend_coroutine_set_frame(frame) };
+    let backup = unsafe { swr_zend_coroutine_set_frame(task.execute_data()) };
     // SAFETY: the exception, located in that frame.
     unsafe { swr_zend_coroutine_locate(exception) };
     // SAFETY: restores the running frame.
     unsafe { swr_zend_coroutine_set_frame(backup) };
     if pending.is_null() {
         // SAFETY: the suspended coroutine's VM state.
-        unsafe { swr_zend_coroutine_redirect(context::vm(task)) };
+        unsafe { swr_zend_coroutine_redirect(task.vm()) };
     }
     // Even an irrevocable wait ends: the exception terminates the coroutine.
     host::cancel(co);
@@ -400,7 +384,10 @@ fn set_time_limit(call: &Call) {
         return;
     }
     let cid = host::cid(co);
-    let ctx = context::current_task();
+    let Some(ctx) = context::current_task() else {
+        call.set_bool(false);
+        return;
+    };
     // Coroutine ids are positive.
     let data = ptr::without_provenance_mut(usize::try_from(cid).unwrap_or_default());
     // SAFETY: time_limit takes the id as its data.
@@ -409,8 +396,8 @@ fn set_time_limit(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: the running coroutine's context.
-    let old = mem::replace(&mut unsafe { context::at(ctx) }.timer_limit, timer);
+    let old = ctx.timer_limit();
+    ctx.set_timer_limit(timer);
     if !old.is_null() {
         // SAFETY: the coroutine's armed timer.
         unsafe { host::timer_del(old) };
@@ -420,10 +407,9 @@ fn set_time_limit(call: &Call) {
 
 unsafe extern "C" fn time_limit(cid: *mut c_void) {
     let cid = c_long::try_from(cid.addr()).unwrap_or_default();
-    let ctx = context::by_cid(cid);
-    if !ctx.is_null() {
-        // SAFETY: a live context; its timer has fired.
-        unsafe { context::at(ctx) }.timer_limit = ptr::null_mut();
+    if let Some(ctx) = context::by_cid(cid) {
+        // Its timer has fired.
+        ctx.set_timer_limit(ptr::null_mut());
         throw_exception(cid, true, classes::timeout());
     }
 }
@@ -477,12 +463,11 @@ fn get_pcid(call: &Call) {
         return;
     };
     let ctx = if cid == 0 {
-        context::current()
+        Some(context::current())
     } else {
         context::by_cid(cid)
     };
-    // SAFETY: null or a live context.
-    let pcid = unsafe { ctx.as_ref() }.map_or(0, |ctx| ctx.pcid);
+    let pcid = ctx.map_or(0, Ctx::pcid);
     if pcid == 0 {
         call.set_bool(false);
     } else {
@@ -499,15 +484,14 @@ fn get_context(call: &Call) {
     let ctx = if cid == 0 {
         context::current_task()
     } else {
-        host::task_by_cid(cid).cast::<Context>()
+        context::task(cid)
     };
-    if ctx.is_null() {
+    let Some(ctx) = ctx else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         call.set_null();
         return;
-    }
-    // SAFETY: a live context.
-    let object = unsafe { context::at(ctx) }.context;
+    };
+    let object = ctx.context();
     if object.addr() == INVALID {
         // A context destroyed with its coroutine (swoole-src#2991).
         host::fatal_error(E_WARNING, c"The context of coroutine has been destroyed");
@@ -519,8 +503,8 @@ fn get_context(call: &Call) {
         unsafe { init_object(call.return_value(), classes::context_class()) };
         // SAFETY: the new object.
         let object = unsafe { swoole_rs_zend::value::obj_of(call.return_value()) };
-        // SAFETY: a live context takes the object's first reference.
-        unsafe { context::at(ctx) }.context = object;
+        // The context takes the object's first reference.
+        ctx.set_context(object);
         object
     } else {
         object
@@ -553,16 +537,13 @@ fn get_stack_usage(call: &Call) {
     };
     let current = runtime::get_cid();
     let cid = if cid == 0 { current } else { cid };
-    let ctx = context::by_cid(cid);
-    if ctx.is_null() {
+    let Some(ctx) = context::by_cid(cid) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         call.set_bool(false);
         return;
-    }
-    // SAFETY: a live context.
-    let stack = unsafe { context::at(ctx) }.vm.vm_stack;
+    };
     // SAFETY: a VM stack chain (or the running one).
-    let usage = unsafe { swr_zend_coroutine_stack_usage(stack, cid == current) };
+    let usage = unsafe { swr_zend_coroutine_stack_usage(ctx.vm_stack(), cid == current) };
     call.set_long(i64::try_from(usage).unwrap_or(i64::MAX));
 }
 
@@ -585,16 +566,13 @@ fn get_back_trace(call: &Call) {
         unsafe { zend_fetch_debug_backtrace(call.return_value(), 0, options, limit) };
         return;
     }
-    let ctx = context::by_cid(cid);
-    if ctx.is_null() {
+    let Some(ctx) = context::by_cid(cid) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         call.set_bool(false);
         return;
-    }
-    // SAFETY: a live context.
-    let frame = unsafe { context::at(ctx) }.vm.execute_data;
+    };
     // SAFETY: the coroutine's frame, restored below.
-    let backup = unsafe { swr_zend_coroutine_set_frame(frame) };
+    let backup = unsafe { swr_zend_coroutine_set_frame(ctx.execute_data()) };
     // SAFETY: the return slot.
     unsafe { zend_fetch_debug_backtrace(call.return_value(), 0, options, limit) };
     // SAFETY: restores the running frame.
@@ -622,8 +600,7 @@ fn print_backtrace(
         // SAFETY: output handlers run inside the shim's zend_try.
         return trapped(unsafe { swr_zend_coroutine_print_trace(1, options, limit) });
     }
-    let ctx = context::by_cid(cid);
-    if ctx.is_null() {
+    let Some(ctx) = context::by_cid(cid) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         if !return_value.is_null() {
             // SAFETY: the caller's return slot.
@@ -631,11 +608,9 @@ fn print_backtrace(
             slot.u1.type_info = swoole_rs_zend::sys::IS_FALSE;
         }
         return Ok(());
-    }
-    // SAFETY: a live context.
-    let frame = unsafe { context::at(ctx) }.vm.execute_data;
+    };
     // SAFETY: the coroutine's frame, restored below unless output bailed.
-    let backup = unsafe { swr_zend_coroutine_set_frame(frame) };
+    let backup = unsafe { swr_zend_coroutine_set_frame(ctx.execute_data()) };
     // SAFETY: as above.
     trapped(unsafe { swr_zend_coroutine_print_trace(0, options, limit) })?;
     // SAFETY: restores the running frame.
@@ -732,15 +707,12 @@ fn disable_scheduler(call: &Call) {
 }
 
 fn set_scheduler(enable: bool) -> bool {
-    let ctx = context::current_task();
-    if ctx.is_null() {
+    let Some(ctx) = context::current_task() else {
+        return false;
+    };
+    if ctx.enable_scheduler() == enable {
         return false;
     }
-    // SAFETY: the running coroutine's context.
-    let this = unsafe { context::at(ctx) };
-    if this.enable_scheduler == enable {
-        return false;
-    }
-    this.enable_scheduler = enable;
+    ctx.set_enable_scheduler(enable);
     true
 }
