@@ -12,15 +12,96 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import re
+import shlex
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.build_hybrid import module_patches, patches_for
 from tools.build_upstream import COMMIT, VERSION
 from tools.harness import ROOT
+
+
+def digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def module_patches(directory):
+    """A patch directory's patches in application order, which is filename order: older ones are
+    numbered (0001-topic.patch), newer ones timestamped (20261102T153012-topic.patch), so adding
+    one never renames another. Each row is its file name, sha256 and the upstream files its diff
+    headers name."""
+    rows = []
+    for path in sorted(Path(directory).glob('*.patch'), key=lambda path: path.name):
+        body = path.read_bytes()
+        actual = []
+        line_delta = 0
+        for line in body.decode().splitlines():
+            if line.startswith('diff --git '):
+                line_delta = 0
+                fields = shlex.split(line)
+                if len(fields) != 4 or not fields[2].startswith('a/') or fields[2][2:] != fields[3][2:]:
+                    raise ValueError('Renames or malformed patch headers require review')
+                target = fields[2][2:]
+                if Path(target).is_absolute() or '..' in Path(target).parts:
+                    raise ValueError(f'Unsafe patch target: {target}')
+                actual.append(target)
+            elif line.startswith('@@ '):
+                hunk = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
+                if not hunk:
+                    raise ValueError(f'Malformed overlay hunk: {path}')
+                old, removed, new, added = [int(value) if value is not None else 1 for value in hunk.groups()]
+                if new - bool(added) != old - bool(removed) + line_delta:
+                    raise ValueError(f'Overlay new-line offset differs: {path}: {line}')
+                line_delta += added - removed
+        if not actual:
+            raise ValueError(f'Patch names no upstream file: {path}')
+        rows.append({'path': path.name, 'sha256': hashlib.sha256(body).hexdigest(), 'upstream_paths': actual})
+    return rows
+
+
+def patches_for(modules):
+    """Each module's patches, in application order, with paths relative to the checkout."""
+    collected = []
+    for module in modules:
+        directories = [path.rstrip('/') for path in module['owned_paths'] if path.startswith('migration/patches/')]
+        if len(directories) != 1:
+            raise ValueError(f'A module must own exactly one patch directory: {module["id"]}')
+        collected += [{**row, 'path': f'{directories[0]}/{row["path"]}'} for row in module_patches(ROOT / directories[0])]
+    return collected
+
+
+def apply_patch_verified(source, patch, targets, expected_sha256=None):
+    """Apply inside a private tree and prove every declared destination changed."""
+    source, patch = Path(source).resolve(), Path(patch).resolve()
+    if any(Path(name).is_absolute() or '..' in Path(name).parts for name in targets):
+        raise ValueError('Patch requires safe, explicit file destinations')
+    paths = {name: source / name for name in targets}
+    if not paths or any(source not in path.resolve().parents for path in paths.values()):
+        raise ValueError('Patch requires safe, explicit file destinations')
+    patch_sha = digest(patch)
+    if expected_sha256 is not None and patch_sha != expected_sha256:
+        raise ValueError('Patch changed before application')
+    before = {name: digest(path) if path.is_file() else None for name, path in paths.items()}
+    # A staging directory under an ignored parent worktree otherwise lets Git
+    # silently skip every hunk with exit0. Give it its own repository boundary.
+    if not (source / '.git').exists():
+        subprocess.run(['git', 'init', '-q', str(source)], check=True)
+    commands = []
+    for options in [['--check'], []]:
+        command = ['git', 'apply', *options, str(patch)]
+        result = subprocess.run(command, cwd=source, capture_output=True, text=True)
+        commands.append({'command': command, 'returncode': result.returncode,
+                         'stdout': result.stdout, 'stderr': result.stderr})
+        if result.returncode:
+            raise RuntimeError(f'Patch application failed: {commands}')
+    if digest(patch) != patch_sha:
+        raise ValueError('Patch changed during application')
+    after = {name: digest(path) if path.is_file() else None for name, path in paths.items()}
+    if any(before[name] == after[name] for name in paths):
+        raise ValueError(f'Patch left a declared destination unchanged: {before} -> {after}')
+    return {'patch_sha256': patch_sha, 'before': before, 'after': after, 'commands': commands}
 
 
 def git(work, *args):

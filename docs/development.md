@@ -48,7 +48,7 @@ The `cargo-build` phase runs `tools/build_ext.py --native`: Cargo builds
 `target/ext/sdk/` (the Zend-free `libswoole_rs_ffi.a`, crates/ext's native C and
 C++ archives and the ABI headers) for the native gates, which link fixtures
 outside PHP. Cargo rebuilds only what changed. Integrate's upstream control is
-`tools/build_hybrid.py --backend upstream` (`reference-build`).
+the unpatched pin built by `tools/build_upstream.py` (`reference-build`).
 
 Patches apply in file-name order, and `tools/patches.py export` names a new one
 `<UTC timestamp>-<subject>.patch`, so adding a patch never conflicts with

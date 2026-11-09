@@ -21,7 +21,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.build_ext import native_tree, overlay_native_tree
-from tools.build_hybrid import module_patches
+from tools.patches import module_patches
 from tools.build_upstream import COMMIT as PIN
 
 def main():

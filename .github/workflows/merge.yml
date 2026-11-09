@@ -208,7 +208,7 @@ jobs:
           restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       - run: |
-          python3 tools/build_hybrid.py --backend upstream --stdext | tee upstream.log
+          python3 tools/build_upstream.py --stdext | tee upstream.log
           python3 tools/build_ext.py --stdext
           mkdir -p target/phpt
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
@@ -473,14 +473,14 @@ jobs:
       - run: >
           python3 corpus/run.py $PHP_EXTENSIONS --require-all
           $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
-          --engine upstream=target/upstream/src/modules/swoole.so
+          --engine upstream=target/upstream-builds/php-sockets/src/modules/swoole.so
           --engine cargo=target/ext/swoole.so
           --output target/reports/alpine-corpus.json
       # gate.py fails only what passes on upstream and not on cargo (no re-runs: no bash).
       - if: always()
         run: |
           python3 corpus/upstream/run.py $PHP_EXTENSIONS \
-            --engine upstream=target/upstream/src/modules/swoole.so \
+            --engine upstream=target/upstream-builds/php-sockets/src/modules/swoole.so \
             --engine cargo=target/ext/swoole.so \
             --output target/reports/alpine-phpt.json || [ $? -eq 1 ]
           python3 corpus/upstream/gate.py target/reports/alpine-phpt.json --output target/reports/alpine-gate.json >> "$GITHUB_STEP_SUMMARY"
@@ -491,10 +491,10 @@ jobs:
       - if: always()
         shell: bash
         run: |
-          python3 tools/build_hybrid.py --backend upstream --php-sockets --stdext --configure=--enable-swoole-curl
+          python3 tools/build_upstream.py --php-sockets --stdext --configure=--enable-swoole-curl
           python3 tools/build_ext.py --php-sockets --stdext --configure=--enable-swoole-curl
           mkdir -p target/php85/engines target/php85/results
-          cp -L target/hybrid/upstream-php-sockets-stdext/modules/swoole.so target/php85/engines/upstream.so
+          cp target/upstream-builds/php-sockets-stdext/src/modules/swoole.so target/php85/engines/upstream.so
           cp target/ext/swoole.so target/php85/engines/cargo.so
           python3 corpus/upstream/inventory.py --output target/php85/manifest.json
           set -- --manifest target/php85/manifest.json --timeout 30 $PHP_EXTENSIONS

@@ -41,8 +41,8 @@ A module graduates when:
 Every Rust build applies every module's patches, sets its feature bit and links
 its crate; no module has a configure switch, a `SWOOLE_RS_<MODULE>` guard or a
 cargo feature. A graduated module is listed in `GRADUATED` in
-`tools/build_hybrid.py`, and `dev.py` runs its gates on every run. Reference builds (`tools/build_upstream.py`,
-`build_hybrid.py --backend upstream`) stay pristine: they are the oracle that
+`tools/check_migration.py`, and `dev.py` runs its gates on every run. Reference builds (`tools/build_upstream.py`)
+stay pristine: they are the oracle that
 differential tests compare against, not a fallback.
 
 Graduated: base64, buffer, corebase, crc32, error, framing, http, protocols, websocket, timer.

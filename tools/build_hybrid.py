@@ -16,26 +16,16 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.build_upstream import COMMIT, VERSION, add_build_arguments, build_extension, extension_configuration, require_build_space, compiler_cache_identity
-from tools.check_migration import validate
+from tools.build_ext import HOOK_SWITCHES, headers_for, native_sources
+from tools.check_migration import GRADUATED, MODULES, validate
 from tools.harness import ROOT, write_report
 from tools.harness import exclusive
+from tools.patches import apply_patch_verified, module_patches, patches_for
 from tools.private_copy import copy_private
 
-MODULES = {'websocket': ('M02', 1), 'buffer': ('M01', 2), 'timer': ('M03', 4),
-           'base64': ('M09', 8), 'crc32': ('M10', 16), 'error': ('M11', 32), 'protocols': ('M13', 128), 'memory': ('M12', 64),
-           'http': ('M04', 256), 'utilities': ('M14', 512), 'locks': ('M16', 1024), 'wrappers': ('M17', 2048), 'framing': ('M18', 4096), 'corebase': ('M19', 8192), 'reactor': ('M05', 16384), 'coroutine': ('M06', 32768), 'hooks': ('M07', 65536), 'ossupport': ('M20', 131072), 'tls': ('M21', 262144), 'process': ('M08', 524288), 'clients': ('M22', 1048576), 'httpbindings': ('M23', 2097152), 'http2': ('M24', 4194304), 'ports': ('M25', 8388608), 'phphelpers': ('M26', 16777216), 'phpcollections': ('M27', 33554432), 'phpevents': ('M28', 67108864), 'phpcoroutines': ('M29', 134217728)}
-# Every Rust build has every module: none has a configure switch or a cargo feature.
-# Graduated modules (docs/migration.md#graduation) have their gates run on every dev.py run.
-GRADUATED = ('base64', 'buffer', 'corebase', 'crc32', 'error', 'framing', 'http', 'protocols', 'websocket', 'timer')
 # The integration patch that adds the --with(out)-swoole-rs switch; later patches to
 # the same files call into Rust.
 BRIDGE_PATCH = 'migration/patches/integration/0001-rust-bridge.patch'
-# The ffi features that replace upstream's optional hooks, by the configure switch
-# that builds each: the Rust code links what that switch makes the extension link.
-HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
-                  'firebird': '--with-swoole-firebird', 'sqlite': '--enable-swoole-sqlite',
-                  'oci': '--with-swoole-oracle', 'curl': '--enable-swoole-curl',
-                  'ssh2': '--with-swoole-ssh2', 'ftp': '--enable-swoole-ftp'}
 # The build's two Rust archives in rust-prefix/lib, by the input that records each: the
 # Zend-free one the native gates link, and the PHP extension's (with LTO unless --dev, #889).
 ARCHIVES = {'libswoole_rs_ffi.a': 'rust_archive_sha256', 'libswoole_rs_php.a': 'rust_php_archive_sha256'}
@@ -48,22 +38,6 @@ def profile_suffix(args):
 def build_alias(backend, suffix='', *, dev=False):
     """target/hybrid/<alias>: rust or upstream, with the profile's suffix."""
     return ('dev-' if dev else '') + backend + suffix
-
-
-def headers_for(modules):
-    headers = [ROOT / 'native/include/swoole_rs.h', ROOT / 'native/include/swoole_rs_server_state.h',
-               ROOT / 'native/include/swoole_rs_server_view.h', ROOT / 'native/include/swoole_rs_server_records.h', ROOT / 'native/include/swoole_rs_port_state.h', ROOT / 'native/include/swoole_rs_server_shared.h', ROOT / 'native/include/swoole_rs_server_strings.h']
-    headers.extend((ROOT / 'native/include').glob('swoole_rs_corebase_*.h'))
-    for module in modules:
-        if module != 'corebase':
-            headers.extend((ROOT / 'native/include').glob(f'swoole_rs_{module}_*.h'))
-        contract = ROOT / 'native/include' / f'swoole_rs_{module}.h'
-        if contract.is_file():
-            headers.append(contract)
-        headers.extend((ROOT / 'native' / module).rglob('*.h'))
-    if len({path.name.casefold() for path in headers}) != len(headers):
-        raise ValueError('ABI header basenames overlap in the build prefix')
-    return sorted(headers)
 
 
 def digest(path):
@@ -211,65 +185,6 @@ def output(command, cwd=ROOT):
     return subprocess.check_output(command, cwd=cwd, text=True).strip()
 
 
-def module_patches(directory):
-    """A patch directory's patches in application order, which is filename order: older ones are
-    numbered (0001-topic.patch), newer ones timestamped (20261102T153012-topic.patch), so adding
-    one never renames another. Each row is its file name, sha256 and the upstream files its diff
-    headers name."""
-    rows = []
-    for path in sorted(Path(directory).glob('*.patch'), key=lambda path: path.name):
-        body = path.read_bytes()
-        actual = []
-        line_delta = 0
-        for line in body.decode().splitlines():
-            if line.startswith('diff --git '):
-                line_delta = 0
-                fields = shlex.split(line)
-                if len(fields) != 4 or not fields[2].startswith('a/') or fields[2][2:] != fields[3][2:]:
-                    raise ValueError('Renames or malformed patch headers require review')
-                target = fields[2][2:]
-                if Path(target).is_absolute() or '..' in Path(target).parts:
-                    raise ValueError(f'Unsafe patch target: {target}')
-                actual.append(target)
-            elif line.startswith('@@ '):
-                hunk = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
-                if not hunk:
-                    raise ValueError(f'Malformed overlay hunk: {path}')
-                old, removed, new, added = [int(value) if value is not None else 1 for value in hunk.groups()]
-                if new - bool(added) != old - bool(removed) + line_delta:
-                    raise ValueError(f'Overlay new-line offset differs: {path}: {line}')
-                line_delta += added - removed
-        if not actual:
-            raise ValueError(f'Patch names no upstream file: {path}')
-        rows.append({'path': path.name, 'sha256': hashlib.sha256(body).hexdigest(), 'upstream_paths': actual})
-    return rows
-
-
-def patches_for(modules):
-    """Each module's patches, in application order, with paths relative to the checkout."""
-    collected = []
-    for module in modules:
-        directories = [path.rstrip('/') for path in module['owned_paths'] if path.startswith('migration/patches/')]
-        if len(directories) != 1:
-            raise ValueError(f'A module must own exactly one patch directory: {module["id"]}')
-        collected += [{**row, 'path': f'{directories[0]}/{row["path"]}'} for row in module_patches(ROOT / directories[0])]
-    return collected
-
-
-def native_sources():
-    """Owned C and C++ (native/<module>/*.c and *.cc: what stable Rust can't express), by the path
-    it compiles at in the patched tree, where config.m4's and CMake's src/ globs find it."""
-    paths = sorted((ROOT / 'native').glob('*/*.c')) + sorted((ROOT / 'native').glob('*/*.cc'))
-    return {f'src/swoole_rs_{path.parent.name}_{path.name}': path for path in paths}
-
-
-def zend_free_native_sources():
-    """native_sources() without the extension's own glue, which includes PHP's headers: it belongs
-    in swoole.so, not in a Zend-free libswoole such as core-tests and the SDK consumers link."""
-    return {name: path for name, path in native_sources().items()
-            if not any(header in path.read_bytes() for header in (b'#include "swoole_rs_phphost.h"', b'#include "php_swoole.h"'))}
-
-
 def stage_native_sources(source):
     sources = native_sources()
     # An incremental tree still holds the copy of a native file deleted since it was staged.
@@ -280,38 +195,6 @@ def stage_native_sources(source):
         if not (source / name).exists() or (source / name).read_bytes() != path.read_bytes():
             (source / name).parent.mkdir(exist_ok=True)  # the patched tree may have no src/ left
             shutil.copyfile(path, source / name)
-
-
-def apply_patch_verified(source, patch, targets, expected_sha256=None):
-    """Apply inside a private tree and prove every declared destination changed."""
-    source, patch = Path(source).resolve(), Path(patch).resolve()
-    if any(Path(name).is_absolute() or '..' in Path(name).parts for name in targets):
-        raise ValueError('Patch requires safe, explicit file destinations')
-    paths = {name: source / name for name in targets}
-    if not paths or any(source not in path.resolve().parents for path in paths.values()):
-        raise ValueError('Patch requires safe, explicit file destinations')
-    patch_sha = digest(patch)
-    if expected_sha256 is not None and patch_sha != expected_sha256:
-        raise ValueError('Patch changed before application')
-    before = {name: digest(path) if path.is_file() else None for name, path in paths.items()}
-    # A staging directory under an ignored parent worktree otherwise lets Git
-    # silently skip every hunk with exit0. Give it its own repository boundary.
-    if not (source / '.git').exists():
-        subprocess.run(['git', 'init', '-q', str(source)], check=True)
-    commands = []
-    for options in [['--check'], []]:
-        command = ['git', 'apply', *options, str(patch)]
-        result = subprocess.run(command, cwd=source, capture_output=True, text=True)
-        commands.append({'command': command, 'returncode': result.returncode,
-                         'stdout': result.stdout, 'stderr': result.stderr})
-        if result.returncode:
-            raise RuntimeError(f'Patch application failed: {commands}')
-    if digest(patch) != patch_sha:
-        raise ValueError('Patch changed during application')
-    after = {name: digest(path) if path.is_file() else None for name, path in paths.items()}
-    if any(before[name] == after[name] for name in paths):
-        raise ValueError(f'Patch left a declared destination unchanged: {before} -> {after}')
-    return {'patch_sha256': patch_sha, 'before': before, 'after': after, 'commands': commands}
 
 
 def switch_link(path, destination):

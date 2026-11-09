@@ -18,7 +18,6 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.build_ext import native_tree
-from tools.build_hybrid import patches_for
 from tools.ext_identity import attest, unchanged
 from tools.harness import parse_engines, run_isolated, write_report
 from coherent_sdk import stage
@@ -64,7 +63,6 @@ def main():
     parser.add_argument('--engine', action='append', required=True)
     parser.add_argument('--build-manifest', type=Path, required=True, help="tools/build_ext.py's manifest of the selected engine")
     parser.add_argument('--archive', type=Path, required=True, help="tools/build_ext.py --native's SDK archive, whose patched tree supplies the selected SDK headers")
-    parser.add_argument('--source-ref', required=True)
     parser.add_argument('--output', type=Path, required=True)
     phase = parser.add_mutually_exclusive_group()
     phase.add_argument('--backtrace', action='store_true', help='Run normal enabled/filter/reset backtrace behavior instead of storage/concurrent reopen')
@@ -165,10 +163,9 @@ def main():
             raise ValueError('Require native and selected utilities engines')
         selected = next(row for row in report['engines'] if row['rust_feature_bits'] & 512)
         report['source_attestation'] = attest(args.build_manifest, selected, 512)
-        # Every helper gets its own engine's headers: the pinned SDK, or the patched tree's.
-        plan = json.loads((ROOT / 'migration/modules.json').read_text())['modules']
-        logger_layout = any('include/swoole_log.h' in row['upstream_paths'] for row in patches_for(
-            [m for m in plan if any(p.startswith('migration/patches/') for p in m['owned_paths'])]))
+        # Every helper gets its own engine's headers: the pinned SDK, or the Cargo build's tree's,
+        # whose Logger layout differs from the pin's once Rust owns the Logger's state.
+        logger_layout = owned(hybrid, 'include/swoole_log.h').read_bytes() != header
         version = subprocess.check_output([args.php_config, '--version'], text=True).strip()
         if any(row['php'] != version for row in report['engines']):
             raise ValueError('PHP SDK differs from loaded runtime version')
@@ -193,7 +190,7 @@ def main():
             if not report['google_test']['libraries']:
                 raise ValueError('GoogleTest library identity unavailable')
         native_identity = next(row for row in report['engines'] if not row['rust_feature_bits'] & 512)
-        report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parent, args.source, args.source_ref, ROOT),
+        report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parents[1], args.source, PIN),
                                   'selected': dict(native_tree=str(hybrid), flags=hybrid_flags,
                                                    string_header_sha256=sha(ROOT / 'native/buffer/swoole_string.h'))}
         (work / 'selected').mkdir()

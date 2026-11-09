@@ -75,7 +75,6 @@ python3 tools/check_migration.py
 python3 tools/build_upstream.py
 
 python3 tools/build_hybrid.py                      # every module
-python3 tools/build_hybrid.py --backend upstream   # bridge patch only, Rust bridge disabled
 ```
 
 `--backend rust` is the default. Module names and feature values are listed in
@@ -93,7 +92,7 @@ Stable paths point to the latest build of each variant:
 | --- | --- |
 | Reference | `target/upstream/src/modules/swoole.so` |
 | Hybrid | `target/hybrid/rust/modules/swoole.so` |
-| Upstream fallback | `target/hybrid/upstream/modules/swoole.so` |
+| Reference with `--stdext`, `--php-sockets` or `--configure` | `target/upstream-builds/<profile>/src/modules/swoole.so` (`build_upstream.tree()`) |
 
 Builds live in `target/hybrid/builds/<input-sha256>/` with `src`, `modules`,
 `rust-prefix/` (archive and headers), `state.json`, `build-manifest.json` and

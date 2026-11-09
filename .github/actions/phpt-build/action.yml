@@ -53,7 +53,7 @@ runs:
         for engine in $ENGINES; do
           case $engine in
             upstream)
-              python3 tools/build_hybrid.py --backend upstream --php-sockets $services | tee upstream.log
+              python3 tools/build_upstream.py --php-sockets $services | tee upstream.log
               cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so ;;
             cargo)
               python3 tools/build_ext.py --php-sockets $services
