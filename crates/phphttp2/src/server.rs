@@ -101,8 +101,6 @@ const MAX_FRAME_SIZE: usize = 4;
 const INFLATE_EMIT: c_int = 2;
 /// `NGHTTP2_NV_FLAG_NO_COPY_NAME | NGHTTP2_NV_FLAG_NO_COPY_VALUE`.
 const NV_NO_COPY: u8 = 0x02 | 0x04;
-/// The largest DATA frame sent from a stack buffer.
-const SMALL_FRAME: usize = 4096;
 /// Swoole error codes and log levels.
 const PHP_FATAL_ERROR: c_int = 503;
 const NO_PAYLOAD: c_int = 550;
@@ -770,20 +768,10 @@ pub(crate) fn send_body(
         let header = frame_header(TYPE_DATA, send_n, send_flags, stream.id);
         let (part, tail) = rest.split_at(send_n.min(rest.len()));
         if send_n < page {
-            // One send of header and payload, on the stack when it fits.
-            let mut small = [0; FRAME_HEADER + SMALL_FRAME];
-            let mut large = Vec::new();
-            let frame = if let Some(frame) = small.get_mut(..FRAME_HEADER + part.len()) {
-                frame
-            } else {
-                large.resize(FRAME_HEADER + part.len(), 0);
-                large.as_mut_slice()
-            };
-            if let Some((head, body)) = frame.split_first_chunk_mut::<FRAME_HEADER>() {
-                *head = header;
-                body.copy_from_slice(part);
-            }
-            if !send(ctx, frame) {
+            // One send of header and payload. Not a zeroed stack buffer: zeroing
+            // it costs more than the allocation (#331).
+            let frame = [header.as_slice(), part].concat();
+            if !send(ctx, &frame) {
                 return false;
             }
         } else if !send(ctx, &header) || !send(ctx, part) {

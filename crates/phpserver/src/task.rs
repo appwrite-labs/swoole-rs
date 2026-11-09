@@ -11,6 +11,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     ffi::{CStr, c_int, c_void},
+    mem::MaybeUninit,
     ptr,
     sync::atomic::Ordering,
 };
@@ -208,13 +209,14 @@ impl MultiTask for Multi {
     }
 }
 
-/// An `EventData`, which C++ asserts fits.
+/// An `EventData`, which C++ asserts fits. Uninitialized, as upstream's stack
+/// `EventData`: `task_pack` writes the head and the payload its length counts.
 #[repr(C, align(8))]
-pub(crate) struct EventData([u8; 8192]);
+pub(crate) struct EventData(MaybeUninit<[u8; 8192]>);
 
 impl EventData {
     pub(crate) fn new() -> Self {
-        Self([0; 8192])
+        Self(MaybeUninit::uninit())
     }
 
     pub(crate) fn ptr(&mut self) -> *mut c_void {

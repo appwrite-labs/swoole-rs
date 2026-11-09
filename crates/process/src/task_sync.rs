@@ -168,8 +168,10 @@ impl<H: TaskHost> Tasks<'_, H> {
         worker_id: &mut c_int,
         timeout: f64,
     ) -> Result<bool, Bailed> {
-        // SAFETY: this worker's result slot, an `EventData`.
-        unsafe { self.result.write_bytes(0, EVENT_SIZE) };
+        // Upstream zeroes the whole slot; its head is what is read before a result
+        // lands (the task id), and the data is read only up to the head's length.
+        // SAFETY: this worker's result slot starts with its `DataHead`.
+        unsafe { self.result.write_bytes(0, HEAD) };
         // SAFETY: `info.fd` heads the task.
         let task_id = unsafe { task.cast::<i64>().read_unaligned() };
         self.pipe_clean()?;
