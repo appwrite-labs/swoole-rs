@@ -347,12 +347,12 @@ pub(crate) fn tls(s: &impl Source, owner: *const OwnedTlsContext, dgram: bool) -
 }
 
 /// The settings array of a PHP `set()` call, for a bound port.
-pub(crate) struct Zend {
-    pub(crate) settings: Settings,
+pub(crate) struct Zend<'a> {
+    pub(crate) settings: Settings<'a>,
     pub(crate) port: *mut c_void,
 }
 
-impl Source for Zend {
+impl Source for Zend<'_> {
     fn long(&self, key: &CStr) -> Result<Option<i64>, Stop> {
         self.settings.get(key).map(Settings::long).transpose()
     }

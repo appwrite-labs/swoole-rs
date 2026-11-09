@@ -46,8 +46,7 @@ fn already_gone(error: c_int) -> bool {
 
 /// `kill(pid, signo)`: `Ok` or the `errno` it failed with.
 fn kill(pid: c_int, signo: c_int) -> Result<(), c_int> {
-    // SAFETY: kill(2) takes plain integers and touches no memory.
-    if unsafe { libc::kill(pid, signo) } == 0 {
+    if crate::os::kill(pid, signo) == 0 {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
@@ -227,8 +226,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_real_kill_reports_errno() {
-        // SAFETY: getpid has no preconditions.
-        let me = unsafe { libc::getpid() };
+        let me = crate::os::getpid();
         assert_eq!(kill(me, 0), Ok(()));
         assert_eq!(kill(c_int::MAX, 0), Err(libc::ESRCH));
     }

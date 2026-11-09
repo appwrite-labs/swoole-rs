@@ -13,6 +13,7 @@
 pub mod affinity;
 pub mod command;
 pub mod methods;
+pub mod os;
 pub mod pool;
 pub mod process_pool;
 pub mod reaper;

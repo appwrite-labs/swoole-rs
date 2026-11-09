@@ -345,7 +345,7 @@ def plan(args, reports):
     if 'framing' in modules:
         script('framing-native', 'tests/modules/framing/gate.py', '--archive',
                manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('framing-native'))
-    if integrate and 'hooks' in modules and sys.platform.startswith('linux'):
+    if 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp, network/{client,dns,address,socket}.cpp,
         # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the hybrid's libswoole.so, and the repo-owned C++
         # witnesses in its fixture.
@@ -376,14 +376,14 @@ def plan(args, reports):
                             'kernel returns EPROTONOSUPPORT',
                '--exclude', 'socket.connect_sync=' + NETWORK, '--exclude', 'socket.fail=' + NETWORK,
                *report('hooks-system-rust'))
-    if integrate and 'reactor' in modules and sys.platform.startswith('linux'):
+    if 'reactor' in modules and sys.platform.startswith('linux'):
         # core-tests/src/reactor/base.cpp, ported to Rust over the hybrid's libswoole.so.
         script('reactor-base-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--build-root', ROOT / 'target/native-originals/reactor-base', '--jobs', args.jobs,
                '--package', ROOT / 'tests/modules/reactor/base', '--fixture', ROOT / 'tests/modules/reactor/base/fixture.cc',
                *report('reactor-base-rust'))
-    if integrate and 'http' in modules and sys.platform.startswith('linux'):
+    if 'http' in modules and sys.platform.startswith('linux'):
         # core-tests/src/server/http_server.cpp's, protocol/base.cpp's and redis.cpp's and server/mqtt.cpp's server
         # TESTs, ported to Rust over the hybrid's libswoole.so.
         script('http-server-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
@@ -495,7 +495,9 @@ def plan(args, reports):
         # tier's phpt jobs, which run every family (and so cover a change to all modules).
         # Only the modules a change touches: a consumer's families can't change outcome
         # without its own code changing, and every family together overruns the phase cap.
-        families = phpt_families(getattr(args, 'phpt_module', None) or args.module or ['websocket'])
+        # An empty list (only consumers changed) means no families, not a fallback.
+        touched = getattr(args, 'phpt_module', None)
+        families = phpt_families(args.module or ['websocket'] if touched is None else touched)
         if families:
             add('phpt', 'corpus/upstream/families.sh', reports / 'phpt', reference, cargo, *php,
                 *[arg for family in families for arg in ['--module', family]], *network)

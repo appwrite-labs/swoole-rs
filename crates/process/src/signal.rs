@@ -78,7 +78,7 @@ static HAS_REACTOR: AtomicUsize = AtomicUsize::new(0);
 /// `swoole_signal_callback`: runs the registered handler, or warns.
 pub type Callback = unsafe extern "C" fn(c_int);
 /// Whether this thread has a reactor (`sw_reactor()`).
-pub type HasReactor = unsafe extern "C" fn() -> bool;
+pub type HasReactor = fn() -> bool;
 
 fn slot(signo: c_int) -> Option<&'static Slot> {
     SIGNALS.get(usize::try_from(signo).ok()?)
@@ -188,8 +188,7 @@ extern "C" fn immediate(signo: c_int) {
     static RUNNING: AtomicBool = AtomicBool::new(false);
     // SAFETY: `signal_set` stored a `HasReactor` before installing this handler.
     let has_reactor: HasReactor = unsafe { std::mem::transmute(HAS_REACTOR.load(Relaxed)) };
-    // SAFETY: the native accessor only reads a thread-local.
-    if unsafe { has_reactor() } {
+    if has_reactor() {
         deferred(signo);
         return;
     }
@@ -372,10 +371,10 @@ mod tests {
     unsafe extern "C" fn record(signo: c_int) {
         SEEN.store(signo, Relaxed);
     }
-    unsafe extern "C" fn no_reactor() -> bool {
+    fn no_reactor() -> bool {
         false
     }
-    unsafe extern "C" fn with_reactor() -> bool {
+    fn with_reactor() -> bool {
         true
     }
 

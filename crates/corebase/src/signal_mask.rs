@@ -14,9 +14,19 @@ thread_local! {
     static PREVIOUS: Cell<Option<libc::sigset_t>> = const { Cell::new(None) };
 }
 
+/// `NSIG`.
+const NSIG: libc::c_int = if cfg!(target_os = "linux") { 65 } else { 32 };
+
 fn empty() -> libc::sigset_t {
     // SAFETY: plain data; all zeroes is the empty set.
     unsafe { std::mem::zeroed() }
+}
+
+fn full() -> libc::sigset_t {
+    let mut all = empty();
+    // SAFETY: `all` is a valid set.
+    unsafe { libc::sigfillset(&raw mut all) };
+    all
 }
 
 /// `pthread_sigmask(how, set, old)`, warning as `origin` when it fails.
@@ -49,11 +59,8 @@ pub fn signal_block_all() -> bool {
     if BLOCKING_ALL.get() {
         return false;
     }
-    let mut all = empty();
-    // SAFETY: `all` is a valid set.
-    unsafe { libc::sigfillset(&raw mut all) };
     let mut previous = empty();
-    if !set_mask(libc::SIG_BLOCK, &all, Some(&mut previous)) {
+    if !set_mask(libc::SIG_BLOCK, &full(), Some(&mut previous)) {
         return false;
     }
     PREVIOUS.set(Some(previous));
@@ -76,6 +83,34 @@ pub fn signal_unblock_all() {
 #[must_use]
 pub fn signal_blocking_all() -> bool {
     BLOCKING_ALL.get()
+}
+
+/// Blocks every signal for a fork, and returns the mask before for
+/// [`restore_after_fork`].
+pub(crate) fn block_for_fork() -> libc::sigset_t {
+    let mut previous = empty();
+    set_mask(libc::SIG_BLOCK, &full(), Some(&mut previous));
+    previous
+}
+
+/// After [`block_for_fork`]: the parent puts `previous` back. The child, once it has
+/// dropped the parent's handlers, keeps blocked what both `previous` and that reset
+/// left blocked (it unblocks signalfd's signals), and a signal sent meanwhile
+/// arrives now.
+pub(crate) fn restore_after_fork(previous: &libc::sigset_t, child: bool) {
+    let mut keep = *previous;
+    if child {
+        let mut now = empty();
+        set_mask(libc::SIG_BLOCK, &empty(), Some(&mut now));
+        for signo in 1..NSIG {
+            // SAFETY: a valid set.
+            if unsafe { libc::sigismember(&raw const now, signo) } != 1 {
+                // SAFETY: a valid set.
+                unsafe { libc::sigdelset(&raw mut keep, signo) };
+            }
+        }
+    }
+    set_mask(libc::SIG_SETMASK, &keep, None);
 }
 
 /// Runs `start` with every signal blocked, then puts back this thread's mask, so
@@ -114,9 +149,6 @@ pub(crate) mod tests {
         );
         mask
     }
-
-    /// `NSIG`.
-    const NSIG: libc::c_int = if cfg!(target_os = "linux") { 65 } else { 32 };
 
     pub(crate) fn same(left: libc::sigset_t, right: libc::sigset_t) -> bool {
         (1..NSIG).all(|signo| unsafe {
