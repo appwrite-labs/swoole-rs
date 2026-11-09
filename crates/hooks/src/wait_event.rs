@@ -167,7 +167,7 @@ pub(crate) mod native {
 
     // SAFETY: crates/coroutine's.
     unsafe extern "C" {
-        safe fn swr_v1_coroutine_current() -> *mut c_void;
+        pub(crate) safe fn swr_v1_coroutine_current() -> *mut c_void;
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
         pub(crate) fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
     }

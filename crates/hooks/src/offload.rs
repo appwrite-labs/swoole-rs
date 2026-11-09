@@ -162,7 +162,6 @@ pub unsafe fn swr_v1_hook_async(
 ///
 /// # Safety
 /// As [`swr_v1_hook_async_job`].
-#[unsafe(export_name = "swr_v1_hook_coroutine_async_job")]
 pub unsafe extern "C" fn async_job(
     job: unsafe extern "C" fn(*mut c_void),
     context: *mut c_void,

@@ -2,7 +2,7 @@
 //! exclusive or shared lock becomes non-blocking attempts with `System::sleep` between
 //! them, backing off from `SW_FILE_LOCK_DEFAULT_SECOND` to `SW_FILE_LOCK_MAX_SECOND`;
 //! unlocking, `LOCK_NB` and calls outside a coroutine go straight to flock.
-use crate::sleep::CoroutineSleep;
+use crate::stdio::NATIVE;
 use crate::swr_v1_hook_backoff;
 use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
 use swoole_rs_corebase::set_errno;
@@ -18,7 +18,7 @@ fn flock(fd: i32, operation: i32) -> i32 {
 fn coroutine_flock(
     fd: i32,
     operation: i32,
-    coroutine_sleep: Option<CoroutineSleep>,
+    coroutine_sleep: Option<fn(f64) -> i32>,
 ) -> Result<i32, ()> {
     let Some(sleep) = coroutine_sleep.filter(|_| operation & libc::LOCK_NB == 0) else {
         return Ok(flock(fd, operation));
@@ -36,8 +36,7 @@ fn coroutine_flock(
             -1 if std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) => {}
             _ => return Ok(-1),
         }
-        // SAFETY: native passes System::sleep, valid inside the current coroutine.
-        if unsafe { sleep(delay) } != 0 {
+        if sleep(delay) != 0 {
             return Ok(-1);
         }
         delay = swr_v1_hook_backoff(delay, SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND);
@@ -48,15 +47,10 @@ fn coroutine_flock(
 /// EINVAL as errno and the last error.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_flock(fd: i32, operation: i32) -> i32 {
-    let host = crate::stdio::host();
-    let sleep = host
-        .filter(|host| (host.in_coroutine)())
-        .map(|host| host.sleep);
+    let sleep = (NATIVE.in_coroutine)().then_some(NATIVE.sleep);
     coroutine_flock(fd, operation, sleep).unwrap_or_else(|()| {
         set_errno(libc::EINVAL);
-        if let Some(host) = host {
-            (host.set_last_error)(libc::EINVAL);
-        }
+        (NATIVE.set_last_error)(libc::EINVAL);
         -1
     })
 }
@@ -71,7 +65,7 @@ mod tests {
         /// The delays slept, and the descriptor to unlock on the second sleep.
         static SLEPT: RefCell<(Vec<f64>, i32)> = const { RefCell::new((Vec::new(), -1)) };
     }
-    unsafe extern "C" fn release_on_second(seconds: f64) -> i32 {
+    fn release_on_second(seconds: f64) -> i32 {
         SLEPT.with_borrow_mut(|(slept, holder)| {
             slept.push(seconds);
             if slept.len() == 2 {
@@ -80,11 +74,11 @@ mod tests {
         });
         0
     }
-    unsafe extern "C" fn cancelled(_: f64) -> i32 {
+    fn cancelled(_: f64) -> i32 {
         -1
     }
 
-    fn lock(fd: i32, operation: i32, sleep: Option<super::CoroutineSleep>) -> Result<i32, ()> {
+    fn lock(fd: i32, operation: i32, sleep: Option<fn(f64) -> i32>) -> Result<i32, ()> {
         coroutine_flock(fd, operation, sleep)
     }
 
@@ -124,7 +118,7 @@ mod tests {
         static MATRIX: RefCell<(Vec<f64>, i32, Result<usize, usize>)> =
             const { RefCell::new((Vec::new(), -1, Ok(0))) };
     }
-    unsafe extern "C" fn matrix_sleep(seconds: f64) -> i32 {
+    fn matrix_sleep(seconds: f64) -> i32 {
         MATRIX.with_borrow_mut(|(slept, holder, end)| {
             slept.push(seconds);
             match *end {

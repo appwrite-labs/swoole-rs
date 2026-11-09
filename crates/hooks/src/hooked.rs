@@ -283,9 +283,7 @@ pub unsafe extern "C" fn swoole_coroutine_poll_fake(
     timeout: c_int,
 ) -> c_int {
     if nfds != 1 {
-        if let Some(host) = crate::stdio::host() {
-            (host.set_last_error)(INVALID_PARAMS);
-        }
+        (crate::stdio::NATIVE.set_last_error)(INVALID_PARAMS);
         log::warning(
             c"swoole_coroutine_poll_fake",
             format_args!("fake poll() implementation, only supports one fd"),
@@ -438,7 +436,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
         return unsafe { crate::uring::swr_v1_uring_close_fd(ring, fd) };
     }
     // SAFETY: native `async`, in a coroutine.
-    unsafe { swr_v1_hook_close_fd(fd, Some(host.offload)) }
+    unsafe { swr_v1_hook_close_fd(fd, Some(crate::stdio::NATIVE.offload)) }
 }
 
 /// Hooked `read(2)`: a coroutine socket reads; any other fd reads on the ring, or
@@ -452,17 +450,17 @@ pub unsafe extern "C" fn swoole_coroutine_read(
     buf: *mut c_void,
     count: size_t,
 ) -> ssize_t {
-    let Some(host) = coroutine() else {
+    if coroutine().is_none() {
         // SAFETY: as the caller promises.
         return unsafe { libc::read(fd, buf, count) };
-    };
+    }
     let socket = swr_v1_hook_socket_get(fd);
     if !socket.is_null() {
         // SAFETY: the map's live socket; the caller's buffer.
         return unsafe { members::read(socket, buf, count) };
     }
     #[cfg(feature = "iouring")]
-    if let Some(ring) = ring(host) {
+    if let Some(ring) = crate::stdio::host().and_then(ring) {
         // SAFETY: the ring's host; the caller's buffer.
         return unsafe { crate::uring::swr_v1_uring_read(ring, fd, buf, count, -1.0) };
     }
@@ -472,7 +470,7 @@ pub unsafe extern "C" fn swoole_coroutine_read(
         unsafe { swoole_rs_tls::upstream::socket_read_sync(&raw mut socket, buf, count) }
     };
     // SAFETY: native `async`, in a coroutine; the job only touches its record and the buffer.
-    unsafe { offloaded(Some(host.offload), -1, call) }
+    unsafe { offloaded(Some(crate::stdio::NATIVE.offload), -1, call) }
 }
 
 /// Hooked `write(2)`, as [`swoole_coroutine_read`].
@@ -485,17 +483,17 @@ pub unsafe extern "C" fn swoole_coroutine_write(
     buf: *const c_void,
     count: size_t,
 ) -> ssize_t {
-    let Some(host) = coroutine() else {
+    if coroutine().is_none() {
         // SAFETY: as the caller promises.
         return unsafe { libc::write(fd, buf, count) };
-    };
+    }
     let socket = swr_v1_hook_socket_get(fd);
     if !socket.is_null() {
         // SAFETY: the map's live socket; the caller's buffer.
         return unsafe { members::write(socket, buf, count) };
     }
     #[cfg(feature = "iouring")]
-    if let Some(ring) = ring(host) {
+    if let Some(ring) = crate::stdio::host().and_then(ring) {
         // SAFETY: the ring's host; the caller's buffer.
         return unsafe { crate::uring::swr_v1_uring_write(ring, fd, buf, count, -1.0) };
     }
@@ -505,7 +503,7 @@ pub unsafe extern "C" fn swoole_coroutine_write(
         unsafe { swoole_rs_tls::upstream::socket_write_sync(&raw mut socket, buf, count) }
     };
     // SAFETY: native `async`, in a coroutine; the job only touches its record and the buffer.
-    unsafe { offloaded(Some(host.offload), -1, call) }
+    unsafe { offloaded(Some(crate::stdio::NATIVE.offload), -1, call) }
 }
 
 /// The pool's `network::Socket` over `fd`: nonblocking, waiting without limit.
