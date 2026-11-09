@@ -3,9 +3,8 @@
 // What crates/hooks can't express of System and coroutine::Socket (upstream's
 // src/coroutine/system.cc is deleted): configure's io_uring switches. Registering
 // them installs Rust's socket host too. native/hooks/contract.md lists what stays and why.
-#include "swoole_rs_hooks.h"
-#include "swoole_rs_uring.h"
 #include "swoole_rs_coroutine_socket.h"
+#include "swoole_rs_uring.h"
 
 static_assert(SW_EVENT_READ == 1 << 9 && SW_EVENT_WRITE == 1 << 10, "swr_v1_hook_socket_* event bits");
 static_assert(SW_FD_CO_SOCKET == 6 && SW_SOCK_RAW == 7 && SW_BUFFER_SIZE_BIG == 65536 &&
