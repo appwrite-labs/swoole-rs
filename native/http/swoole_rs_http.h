@@ -11,14 +11,6 @@ int32_t swr_v1_http_multipart_disposition(const uint8_t *, size_t);
 int32_t swr_v1_http_multipart_filename(uint8_t *, size_t);
 typedef struct { size_t key_offset, key_length, value_offset, value_length; uint32_t has_value; } swr_v1_http_cookie;
 int32_t swr_v1_http_cookie_next(uint8_t *, size_t, size_t *, swr_v1_http_cookie *);
-typedef struct {
-    size_t tm_size, tm_align;
-    bool (*parse)(const char *, const char *, void *);
-    int64_t (*to_time)(void *);
-    void *(*to_gmt)(int64_t);
-} swr_v3_http_calendar;
-int32_t swr_v3_http_conditional(const char *, size_t, uint32_t, const int64_t *, const long *, const swr_v3_http_calendar *);
-size_t swr_v3_http_date(const int64_t *, uint8_t *, size_t);
 typedef struct { uint32_t phase, last; size_t url_length, filename_length; } swr_v1_http_static_path_state;
 int32_t swr_v1_http_static_location(const uint8_t *, size_t, const uint8_t *, size_t, swr_v1_http_static_path_state *);
 struct swr_v1_core_proxy;

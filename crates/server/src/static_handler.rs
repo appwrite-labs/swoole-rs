@@ -6,10 +6,8 @@
 use crate::view;
 use core::cell::RefCell;
 use core::ffi::c_void;
-use core::ptr;
 use swoole_rs_http::{
-    BOUNDARY_SIZE, HttpCalendar, HttpStaticContext, HttpStaticTask, StaticEffects,
-    swr_v3_http_conditional, swr_v3_http_date,
+    BOUNDARY_SIZE, Calendar, HttpStaticContext, HttpStaticTask, StaticEffects, http_date,
 };
 
 /// The path kinds' directory bit (`crates/http/src/static_path.rs`).
@@ -40,36 +38,7 @@ pub fn page_404() -> Vec<u8> {
 
 /// Production's effects: the process's filesystem, the MIME table, random
 /// characters and libc's calendar.
-pub trait Effects: StaticEffects {
-    /// The calendar; null is libc's.
-    fn calendar(&self) -> *const HttpCalendar {
-        ptr::null()
-    }
-}
-
-/// Upstream's `is_modified` (kind 0, with the server's timezone) and
-/// `is_modified_range` (kind 1) of `date` against the file's `mtime`.
-fn conditional(
-    date: &[u8],
-    kind: u32,
-    mtime: i64,
-    timezone: *const libc::c_long,
-    calendar: *const HttpCalendar,
-) -> bool {
-    // strptime reads the date up to a NUL, as upstream's `c_str()`.
-    let text = [date, b"\0"].concat();
-    // SAFETY: the date's bytes and its NUL, a local mtime and the timezone (or null).
-    unsafe {
-        swr_v3_http_conditional(
-            text.as_ptr().cast(),
-            date.len(),
-            kind,
-            &raw const mtime,
-            timezone,
-            calendar,
-        ) == 1
-    }
-}
+pub trait Effects: StaticEffects + Calendar {}
 
 /// Production's effects.
 pub struct Native;
@@ -89,12 +58,13 @@ impl StaticEffects for Native {
         unsafe { swoole_rs_corebase::swoole_random_string(out.as_mut_ptr().cast(), count) };
     }
     fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
-        conditional(if_range, 1, mtime, ptr::null(), self.calendar())
+        swoole_rs_http::conditional(if_range, 1, mtime, 0, self)
     }
     fn overflow(&self) {
         errno::set(libc::EOVERFLOW);
     }
 }
+impl Calendar for Native {}
 impl Effects for Native {}
 
 /// A `StaticHandler` for one request URI on one server.
@@ -181,32 +151,20 @@ impl<E: Effects> StaticHandler<E> {
     /// `get_date()`: now, as an HTTP date.
     #[must_use]
     pub fn date() -> Vec<u8> {
-        let mut value = [0u8; 64];
-        // SAFETY: a null mtime asks for now; a local output.
-        let length = unsafe { swr_v3_http_date(ptr::null(), value.as_mut_ptr(), value.len()) };
-        value.get(..length).unwrap_or(&value).to_vec()
+        http_date(None)
     }
 
     #[must_use]
     pub fn date_last_modified(&self) -> Vec<u8> {
-        let mtime = self.context.borrow().mtime();
-        let mut value = [0u8; 64];
-        // SAFETY: a local mtime and output.
-        let length = unsafe { swr_v3_http_date(&raw const mtime, value.as_mut_ptr(), value.len()) };
-        value.get(..length).unwrap_or(&value).to_vec()
+        http_date(Some(self.context.borrow().mtime()))
     }
 
     /// The file changed since `date` (an `If-Modified-Since`).
     #[must_use]
     pub fn is_modified(&self, date: &[u8]) -> bool {
-        let timezone = &raw const self.server.config().timezone_;
-        conditional(
-            date,
-            0,
-            self.context.borrow().mtime(),
-            timezone,
-            self.effects.calendar(),
-        )
+        let timezone = self.server.config().timezone_;
+        let mtime = self.context.borrow().mtime();
+        swoole_rs_http::conditional(date, 0, mtime, timezone, &self.effects)
     }
 
     /// Whether the static handler answers the request.
