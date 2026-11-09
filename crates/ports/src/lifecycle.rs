@@ -2,7 +2,8 @@
 //! operations. Each step asks one `call(context, op, arg)` per fact or effect
 //! ([`crate::lifecycle_native`] answers them; tests answer with fakes).
 use crate::read::PortsCall;
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{CStr, c_char, c_void};
+use swoole_rs_utilities::sni_wildcard_matches;
 
 /// Which operation runs.
 pub const RUN_SNI_ADD: u32 = 0;
@@ -258,7 +259,7 @@ fn sni(n: &Native) -> i32 {
             return TLSEXT_NOACK;
         }
         // SAFETY: both are NUL-terminated strings native code keeps alive for the call.
-        if unsafe { wildcard_match(name as *const c_char, cert as *const c_char) } {
+        if unsafe { ssl_matches_wildcard_name(name as *const c_char, cert as *const c_char) } {
             n.effect(OP_SNI_SELECT);
             return TLSEXT_OK;
         }
@@ -302,12 +303,7 @@ fn close(n: &Native) {
     }
 }
 
-unsafe extern "C" {
-    fn strcasecmp(a: *const c_char, b: *const c_char) -> c_int;
-    fn strncasecmp(a: *const c_char, b: *const c_char, n: usize) -> c_int;
-}
-
-/// `ListenPort::ssl_matches_wildcard_name`, with libc's case folding.
+/// `ListenPort::ssl_matches_wildcard_name`.
 ///
 /// # Safety
 /// Both are NUL-terminated strings, live for the call.
@@ -320,92 +316,16 @@ pub unsafe extern "C" fn ssl_matches_wildcard_name(
     subject: *const c_char,
     cert: *const c_char,
 ) -> bool {
-    // SAFETY: the caller's contract.
-    unsafe { wildcard_match(subject, cert) }
-}
-
-/// # Safety
-/// Both are NUL-terminated strings, live for the call.
-unsafe fn wildcard_match(subject: *const c_char, cert: *const c_char) -> bool {
-    // SAFETY: two live C strings.
-    if unsafe { strcasecmp(subject, cert) } == 0 {
-        return true;
-    }
-    // SAFETY: a live C string.
-    let cert_bytes = unsafe { core::ffi::CStr::from_ptr(cert) }.to_bytes();
-    // SAFETY: a live C string.
-    let subject_bytes = unsafe { core::ffi::CStr::from_ptr(subject) }.to_bytes();
-    // A wildcard may only be in the left-most label.
-    let Some(prefix) = cert_bytes.iter().position(|&b| b == b'*') else {
-        return false;
-    };
-    if cert_bytes.iter().take(prefix).any(|&b| b == b'.') {
-        return false;
-    }
-    // The prefix, when not empty, must match the subject.
-    // SAFETY: two live C strings; strncasecmp stops at either NUL.
-    if prefix != 0 && unsafe { strncasecmp(subject, cert, prefix) } != 0 {
-        return false;
-    }
-    let suffix_len = cert_bytes.len() - prefix - 1;
-    let subject_len = subject_bytes.len();
-    if suffix_len > subject_len {
-        return false;
-    }
-    // The suffix must match, with no `.` between prefix and suffix.
-    // SAFETY: both offsets are within their strings' bounds, so both stay NUL-terminated.
-    let suffix_matches = unsafe {
-        strcasecmp(
-            cert.wrapping_add(prefix + 1),
-            subject.wrapping_add(subject_len - suffix_len),
-        )
-    } == 0;
-    // Between prefix and suffix; when they overlap, the rest of the subject.
-    let rest = subject_bytes.get(prefix..).unwrap_or_default();
-    let middle = subject_bytes
-        .get(prefix..subject_len - suffix_len)
-        .unwrap_or(rest);
-    suffix_matches && !middle.contains(&b'.')
+    // SAFETY: a live C string, by the caller's contract.
+    let subject = unsafe { CStr::from_ptr(subject) };
+    // SAFETY: a live C string, by the caller's contract.
+    let cert = unsafe { CStr::from_ptr(cert) };
+    sni_wildcard_matches(subject.to_bytes(), cert.to_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn matches(subject: &str, cert: &str) -> bool {
-        let (s, c) = (
-            std::ffi::CString::new(subject).unwrap(),
-            std::ffi::CString::new(cert).unwrap(),
-        );
-        unsafe { ssl_matches_wildcard_name(s.as_ptr(), c.as_ptr()) }
-    }
-
-    #[test]
-    fn wildcards_cover_one_left_most_label() {
-        assert!(
-            matches("Example.COM", "example.com"),
-            "case-insensitive exact"
-        );
-        assert!(matches("a.example.com", "*.example.com"), "one label");
-        assert!(
-            !matches("a.b.example.com", "*.example.com"),
-            "not two labels"
-        );
-        assert!(
-            !matches("example.com", "*.example.com"),
-            "not the bare domain"
-        );
-        assert!(matches("www1.example.com", "www*.example.com"), "prefix");
-        assert!(
-            !matches("w.example.com", "ww*.example.com"),
-            "prefix must match"
-        );
-        assert!(
-            !matches("a.example.com", "a.*.com"),
-            "wildcard not left-most"
-        );
-        assert!(!matches("a.example.com", "b.example.com"), "no wildcard");
-    }
 
     #[derive(Default)]
     struct Port {

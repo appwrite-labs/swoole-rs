@@ -26,6 +26,7 @@ swoole-rs-tls = { path = "../tls" }
 swoole-rs-protocols = { path = "../protocols" }
 swoole-rs-websocket = { path = "../websocket" }
 swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-utilities = { path = "../utilities" }
 swoole-rs-framing = { path = "../framing" }
 swoole-rs-http2 = { path = "../http2" }
 openssl-sys = "=0.9.117"

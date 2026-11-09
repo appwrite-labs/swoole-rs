@@ -90,6 +90,9 @@ in chunks, and runs `swr_v1_http_multipart_filename` on each part's headers.
 spans stay inside their chunk and never exceed the input. `resp_server` walks a
 `Redis\Server` request with `swr_v1_resp_php_next`: spans stay inside the request,
 the walk advances and ends, and there is one command at most.
+`sni_wildcard` splits its input at NUL into an SNI name and a certificate name and
+checks `swoole_rs_utilities::sni_wildcard_matches` against a glob over the lowercased
+names, in which the first `*`, with no `.` before it, matches any run without a `.`.
 
 libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in

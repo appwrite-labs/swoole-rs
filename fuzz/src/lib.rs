@@ -1084,3 +1084,32 @@ pub fn socks5(bytes: &[u8]) {
         "socks5 for {bytes:?}"
     );
 }
+
+/// `sni_wildcard_matches` over the two NUL-separated names in `bytes`, against a
+/// glob over the lowercased names: the first `*`, if no `.` comes before it,
+/// matches any run of bytes without a `.`.
+pub fn sni_wildcard(bytes: &[u8]) {
+    let mut names = bytes.split(|&b| b == 0);
+    let (subject, cert) = (names.next().unwrap_or_default(), names.next().unwrap_or_default());
+    assert_eq!(
+        swoole_rs_utilities::sni_wildcard_matches(subject, cert),
+        sni_glob(&subject.to_ascii_lowercase(), &cert.to_ascii_lowercase()),
+        "sni wildcard for {subject:?} and {cert:?}"
+    );
+}
+
+fn sni_glob(subject: &[u8], cert: &[u8]) -> bool {
+    if subject == cert {
+        return true;
+    }
+    let Some(star) = cert.iter().position(|&b| b == b'*') else {
+        return false;
+    };
+    let (prefix, tail) = (&cert[..star], &cert[star + 1..]);
+    let Some(after) = subject.strip_prefix(prefix).filter(|_| !prefix.contains(&b'.')) else {
+        return false;
+    };
+    (0..=after.len())
+        .take_while(|&covered| covered == 0 || after[covered - 1] != b'.')
+        .any(|covered| after[covered..] == *tail)
+}
