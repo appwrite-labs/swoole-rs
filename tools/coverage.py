@@ -103,7 +103,7 @@ def markdown(summary):
             f'nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records '
             f'nothing.\n\n{table(summary)}\n# Entry points no run reached\n\n'
             f'`zif_`/`zim_` handlers and `swr_v1_` exports whose counter stayed zero, per crate: candidates for '
-            f'targeted differential tests ([#2249](https://github.com/loks0n/swoole-rs/issues/2249)).\n{lists}')
+            f'targeted differential tests ([#2249](https://github.com/appwrite-labs/swoole-rs/issues/2249)).\n{lists}')
 
 
 def main():
