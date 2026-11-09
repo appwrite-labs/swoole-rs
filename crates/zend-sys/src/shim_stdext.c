@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): globals (EG and CG function tables,
+ * EG(uninitialized_zval), the VM stack zend_vm_stack_push_call_frame grows),
+ * bailout (calls, autoloading, array writes) and budget (ZEND_HASH_FOREACH). */
 #include "shim.h"
 #include "shim_stdext.h"
 #include "SAPI.h"

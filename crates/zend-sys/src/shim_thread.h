@@ -39,8 +39,6 @@ php_stream *swr_zend_stream_open(const char *path, const char *mode);
 int swr_zend_stream_select_fd(php_stream *stream, int *fd);
 /* php_stream_cast(stream, PHP_STREAM_AS_FD, &fd, 0) == SUCCESS. */
 bool swr_zend_stream_fd(php_stream *stream, int *fd);
-/* stream->flags |= PHP_STREAM_FLAG_NO_CLOSE. */
-void swr_zend_stream_no_close(php_stream *stream);
 /* Register `stream` as the case-sensitive constant `name` (STDIN and friends). */
 void swr_zend_register_stream_constant(const char *name, php_stream *stream);
 

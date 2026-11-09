@@ -137,6 +137,23 @@ covered by the PHPTs.
 
 ## PHP checks
 
+`test_smuggling.py` (`http-smuggling`) sends HTTP/1 framing ambiguities to a whole
+`Swoole\Http\Server` (`smuggling.php`) on each engine, one byte stream per fresh
+connection: conflicting and malformed `Content-Length`, `Transfer-Encoding` variants,
+CL.TE/TE.CL/TE.TE desyncs, bare `\n` and `\r`, chunk-size, extension and trailer
+edge cases, oversized and malformed headers and request lines, and requests
+pipelined behind an error. Every response's status line, `Connection` header and
+body (the handler echoes the method, URI, headers and body it received) and whether
+the server closed the connection must equal the first engine's:
+
+```sh
+python3 -m pytest tests/modules/http/test_smuggling.py \
+  --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so
+```
+
+A connection is read until the server closes it or sends nothing for a second; the
+cases run 32 at a time, so the phase takes about five seconds.
+
 The merge tier's `api-surface` phase (`tools/capability_inventory.py
 --require-same-api`) compares every Swoole class's reflected metadata,
 including parameter and property defaults, against upstream.

@@ -19,10 +19,9 @@ use swoole_rs_zend::{
     each_value, handlers, message, object_of, register_long_constant, set_object,
     sys::{
         _zend_bailout, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, swr_zend_emalloc,
-        swr_zend_is_true, swr_zend_module_loaded, swr_zend_object_addref, swr_zend_object_release,
-        swr_zend_string_alloc, swr_zend_string_free, zend_class_entry, zend_get_executed_filename,
-        zend_hash_str_find, zend_object, zend_object_handlers, zend_read_property, zend_string,
-        zval,
+        swr_zend_is_true, swr_zend_object_addref, swr_zend_object_release, swr_zend_string_alloc,
+        swr_zend_string_free, zend_class_entry, zend_get_executed_filename, zend_hash_str_find,
+        zend_object, zend_object_handlers, zend_read_property, zend_string, zval,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of, unset_property_deny,
     update_property, update_property_long,
@@ -236,8 +235,7 @@ pub unsafe extern "C" fn php_swoole_process_minit(module: c_int) {
     }
     // SAFETY: as above.
     unsafe { declare_property_null(entry(), c"callback", ZEND_ACC_PRIVATE) };
-    // SAFETY: MINIT; the module registry is populated.
-    if !unsafe { swr_zend_module_loaded(c"pcntl".as_ptr(), 5) } {
+    if !swoole_rs_zend::module_loaded(c"pcntl") {
         for (name, value) in signal_constants() {
             // SAFETY: MINIT of `module`.
             unsafe { register_long_constant(name, value, module) };

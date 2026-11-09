@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): bailout (property hooks, user calls,
+ * allocation failures), allocator, globals (EG(function_table), EG(exception),
+ * CG(function_table)) and private (ZEND_CLOSURE_OBJECT). */
 #include "shim.h"
 #include "shim_private.h"
 int swr_zend_try_facade_read(zend_class_entry *scope, zend_object *object, const char *name, size_t length,

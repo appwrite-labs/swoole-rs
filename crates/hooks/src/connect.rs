@@ -772,13 +772,8 @@ impl TlsOps {
 
 /// `Socket::ssl_handshake`, up to marking the socket handshaked, which native
 /// code does when this returns true.
-///
-/// # Safety
-/// `ops` is live for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_ssl_handshake(ops: *const TlsOps) -> bool {
-    // SAFETY: the caller passes a live table (see above).
-    let ops = unsafe { &*ops };
+#[must_use]
+pub fn ssl_handshake(ops: &TlsOps) -> bool {
     if ops.handshaked {
         ops.set_err(WRONG_OPERATION);
         return false;
@@ -1158,8 +1153,7 @@ mod tests {
             wait,
             verify,
         };
-        // SAFETY: a local table.
-        let ok = unsafe { swr_v1_hook_ssl_handshake(&raw const ops) };
+        let ok = ssl_handshake(&ops);
         (ok, LOG.with(|log| log.borrow().clone()))
     }
 
@@ -1225,8 +1219,7 @@ mod tests {
             wait,
             verify,
         };
-        // SAFETY: a local table.
-        assert!(!unsafe { swr_v1_hook_ssl_handshake(&raw const ops) });
+        assert!(!ssl_handshake(&ops));
         assert_eq!(LOG.with(|log| log.borrow().clone()), ["err 509"]);
     }
 

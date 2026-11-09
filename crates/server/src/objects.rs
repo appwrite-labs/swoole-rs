@@ -43,8 +43,7 @@ pub(crate) fn in_worker_bus(
 
 /// `sock->set_nonblock()`.
 pub(crate) fn set_nonblock(sock: &mut SocketRecord) {
-    // SAFETY: a live socket.
-    let _ = unsafe { swoole_rs_reactor::socket_upstream::socket_set_fd_option(sock, 1, -1) };
+    let _ = swoole_rs_reactor::socket_upstream::socket_set_fd_option(sock, 1, -1);
 }
 
 /// A `MessageBus`: its Rust bus and the allocator of its packets.

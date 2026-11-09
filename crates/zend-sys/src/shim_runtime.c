@@ -1,4 +1,7 @@
-/* Swoole\Runtime's function and class table edits (crates/phpruntime). */
+/* Swoole\Runtime's function and class table edits (crates/phpruntime). Stays C
+ * (docs/zend.md, What stays C): allocator (pemalloc, zend_string_dup), version
+ * (ZEND_TYPE_LIST_FOREACH_MUTABLE, ZPP macros, ce->parent in an anonymous union),
+ * globals (EG(class_table)) and bailout (a replaced handler runs PHP). */
 #include "shim_runtime.h"
 #include "shim.h"
 

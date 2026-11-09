@@ -204,8 +204,7 @@ pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
         const CANCELED: i32 = 10017;
         let co = current();
         // SAFETY: `co` is the running coroutine.
-        let resumed =
-            unsafe { coroutine_yield_ex(co, crate::swr_v1_hook_sleep_timeout(sec, 0.001)) };
+        let resumed = unsafe { coroutine_yield_ex(co, crate::sleep_timeout(sec, 0.001)) };
         if !resumed && swoole_rs_corebase::log::last_error() == CANCELED {
             -1
         } else {

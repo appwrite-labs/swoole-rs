@@ -15,10 +15,6 @@ mod wait_loop;
 #[cfg(unix)]
 pub use wait_loop::*;
 #[cfg(unix)]
-mod backend;
-#[cfg(unix)]
-pub use backend::*;
-#[cfg(unix)]
 mod poll;
 #[cfg(unix)]
 pub use poll::*;

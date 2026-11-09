@@ -482,14 +482,17 @@ fn fstat_() {
     test_fstat();
 }
 
+// Upstream reads /tmp, whose free counts change whenever anything on the host writes to
+// its filesystem between the two calls. procfs's never change, and its block size, name
+// length and flags are nonzero, so a call that left the buffer unfilled still differs.
 fn test_statvfs() {
     let mut statbuf_1: Stat = [0; 32];
     // SAFETY: a buffer larger than `struct statvfs`.
-    unsafe { swoole_coroutine_statvfs(c"/tmp".as_ptr(), &mut statbuf_1) };
+    unsafe { swoole_coroutine_statvfs(c"/proc".as_ptr(), &mut statbuf_1) };
 
     let mut statbuf_2: Stat = [0; 32];
     // SAFETY: as above.
-    unsafe { statvfs(c"/tmp".as_ptr(), &mut statbuf_2) };
+    unsafe { statvfs(c"/proc".as_ptr(), &mut statbuf_2) };
 
     assert_eq!(statbuf_1, statbuf_2);
 }

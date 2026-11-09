@@ -121,56 +121,15 @@ typedef struct {
 } swr_v1_reactor_event;
 typedef struct swr_v1_reactor_handlers swr_v1_reactor_handlers;
 typedef int (*swr_v1_reactor_handler)(void *, void *);
-swr_v1_reactor_handlers *swr_v1_reactor_handlers_new(void);
-void swr_v1_reactor_handlers_free(swr_v1_reactor_handlers *);
-bool swr_v1_reactor_handlers_set(swr_v1_reactor_handlers *, int fd_type, int events, swr_v1_reactor_handler);
-bool swr_v1_reactor_handlers_isset(const swr_v1_reactor_handlers *, int fd_type, int events);
 swr_v1_reactor_handler swr_v1_reactor_handlers_get(const swr_v1_reactor_handlers *, uint32_t kind, int fd_type, bool error_only);
 void swr_v1_reactor_handlers_set_default(swr_v1_reactor_handlers *, uint32_t kind, swr_v1_reactor_handler);
 const swr_v1_reactor_handler *swr_v1_reactor_handlers_default(const swr_v1_reactor_handlers *, uint32_t kind);
-typedef struct { size_t size, alignment, fields[6]; } swr_v1_reactor_backend_layout;
-#if defined(__linux__) && !defined(__ANDROID__)
-typedef struct swr_v1_reactor_epoll_events swr_v1_reactor_epoll_events;
-swr_v1_reactor_epoll_events *swr_v1_reactor_epoll_new(size_t);
-void swr_v1_reactor_epoll_free(swr_v1_reactor_epoll_events *);
-struct epoll_event *swr_v1_reactor_epoll_data(swr_v1_reactor_epoll_events *);
-swr_v1_reactor_backend_layout swr_v1_reactor_epoll_layout(void);
-#endif
-#if (defined(__APPLE__) && TARGET_OS_OSX) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
-typedef struct swr_v1_reactor_kqueue_events swr_v1_reactor_kqueue_events;
-swr_v1_reactor_kqueue_events *swr_v1_reactor_kqueue_new(size_t);
-void swr_v1_reactor_kqueue_free(swr_v1_reactor_kqueue_events *);
-struct kevent *swr_v1_reactor_kqueue_data(swr_v1_reactor_kqueue_events *);
-swr_v1_reactor_backend_layout swr_v1_reactor_kqueue_layout(void);
-#endif
-typedef struct swr_v1_reactor_poll_snapshot swr_v1_reactor_poll_snapshot;
-typedef struct { size_t size, alignment, fd, events, revents; } swr_v1_reactor_poll_layout_info;
-swr_v1_reactor_poll_layout_info swr_v1_reactor_poll_layout(void);
-/* translate_events_to_poll / translate_events_from_poll. */
+/* translate_events_to_poll. */
 int16_t swr_v1_reactor_poll_events_to(int events);
-int swr_v1_reactor_poll_events_from(int16_t events);
-swr_v1_reactor_poll_snapshot *swr_v1_reactor_poll_new(size_t);
-void swr_v1_reactor_poll_free(swr_v1_reactor_poll_snapshot *);
-/* Actual target libc pollfd storage, borrowed until owner destruction. */
-struct pollfd *swr_v1_reactor_poll_data(swr_v1_reactor_poll_snapshot *);
-/* The socket of each pollfd entry, borrowed likewise. */
-void **swr_v1_reactor_poll_sockets(swr_v1_reactor_poll_snapshot *);
-/* The fd -> socket registry (Reactor::sockets_); null reads as empty. put: 0, or -2 out of memory. */
+/* The fd -> socket registry (Reactor::sockets_); null reads as empty. */
 typedef struct swr_v1_reactor_registry swr_v1_reactor_registry;
-swr_v1_reactor_registry *swr_v1_reactor_registry_new(void);
-void swr_v1_reactor_registry_free(swr_v1_reactor_registry *);
-int swr_v1_reactor_registry_put(swr_v1_reactor_registry *, int fd, void *socket, int events);
-void swr_v1_reactor_registry_set(swr_v1_reactor_registry *, int fd, int events); /* if registered */
-void swr_v1_reactor_registry_remove(swr_v1_reactor_registry *, int fd);
 void *swr_v1_reactor_registry_get(const swr_v1_reactor_registry *, int fd);
 size_t swr_v1_reactor_registry_count(const swr_v1_reactor_registry *);
-/* Visits a copy of the entries; 0, or -2 out of memory. */
-int swr_v1_reactor_registry_foreach(const swr_v1_reactor_registry *, void *context, void (*visit)(void *, int fd, void *socket));
-/* Rebuilds the snapshot from the registry; the entry count. */
-int swr_v1_reactor_poll_fill(swr_v1_reactor_poll_snapshot *, const swr_v1_reactor_registry *);
-typedef struct { int64_t seconds, nanoseconds; uint32_t finite; } swr_v1_reactor_kqueue_timeout_result;
-// Independent zero state; requests10running/11EINTR/12uring-handler/13once.
-swr_v1_reactor_kqueue_timeout_result swr_v1_reactor_kqueue_timeout(int32_t, uint32_t);
 /* Reactor::_writable_callback and drain_write_buffer over the socket's block and its
  * output queue (null when there's none); the native effects below. drain also needs
  * wait_writable and removed. */
@@ -201,11 +160,8 @@ typedef struct {
     uint8_t want_read;
     uint8_t want_write;
 } swr_v1_socket_tls;
-/* Socket::ssl_clear_error: ERR_clear_error and clear the want flags.
- * Socket::what_event_want: the event a pending TLS read or write waits for when ssl
- * is set, else default_event. */
+/* Socket::ssl_clear_error: ERR_clear_error and clear the want flags. */
 void swr_v1_socket_ssl_clear(swr_v1_socket_tls *tls);
-int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_event);
 /* _ssl_read_x509_file: a certificate as PEM into at most length bytes, warning and
  * returning -1 on failure; frees cert when consume. */
 int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);

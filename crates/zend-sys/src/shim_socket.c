@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): bailout (stream casts), version
+ * (zend_zval_value_name from 8.3) and budget (Z_OBJPROP_P, convert_to_array,
+ * php_stream_set_option). */
 #include "shim.h"
 #include "shim_socket.h"
 #include "ext/standard/file.h"

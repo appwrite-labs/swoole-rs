@@ -32,7 +32,7 @@ fn sockets() -> MutexGuard<'static, Option<HashMap<c_int, Socket>>> {
 
 /// `fd`'s socket, or null with errno `ENOTSOCK`.
 #[must_use]
-pub extern "C" fn swr_v1_hook_socket_get(fd: c_int) -> *mut c_void {
+pub fn get(fd: c_int) -> *mut c_void {
     let socket = sockets()
         .as_ref()
         .and_then(|map| map.get(&fd))
@@ -45,18 +45,14 @@ pub extern "C" fn swr_v1_hook_socket_get(fd: c_int) -> *mut c_void {
 
 /// Whether `fd` has a socket.
 #[must_use]
-pub extern "C" fn swr_v1_hook_socket_exists(fd: c_int) -> bool {
+pub fn exists(fd: c_int) -> bool {
     sockets().as_ref().is_some_and(|map| map.contains_key(&fd))
 }
 
 /// Map `fd` to `socket`. With `replace` an existing socket gives way (`map[fd] =`),
 /// else the new one does (`emplace`). Returns the socket the map no longer holds,
 /// for native code to delete, or null.
-pub extern "C" fn swr_v1_hook_socket_insert(
-    fd: c_int,
-    socket: *mut c_void,
-    replace: bool,
-) -> *mut c_void {
+pub fn insert(fd: c_int, socket: *mut c_void, replace: bool) -> *mut c_void {
     let mut sockets = sockets();
     let map = sockets.get_or_insert_with(HashMap::new);
     match map.get_mut(&fd) {
@@ -72,7 +68,7 @@ pub extern "C" fn swr_v1_hook_socket_insert(
 /// Take `fd`'s socket out of the map, for native code to delete; null with errno
 /// `ENOTSOCK` if there is none.
 #[must_use]
-pub extern "C" fn swr_v1_hook_socket_remove(fd: c_int) -> *mut c_void {
+pub fn remove(fd: c_int) -> *mut c_void {
     let socket = sockets()
         .as_mut()
         .and_then(|map| map.remove(&fd))
@@ -97,12 +93,12 @@ thread_local! {
 ///
 /// # Safety
 /// `close` and `delete` act on live sockets from this map.
-pub unsafe extern "C" fn swr_v1_hook_socket_close(
+pub unsafe fn close(
     fd: c_int,
     close: unsafe extern "C" fn(*mut c_void) -> bool,
     delete_socket: unsafe extern "C" fn(*mut c_void),
 ) -> c_int {
-    let socket = swr_v1_hook_socket_get(fd);
+    let socket = get(fd);
     if socket.is_null() {
         return 1;
     }
@@ -110,7 +106,7 @@ pub unsafe extern "C" fn swr_v1_hook_socket_close(
     // SAFETY: the socket is live: nothing deletes it before this close returns.
     let closed = unsafe { close(socket) };
     let removed = if closed {
-        swr_v1_hook_socket_remove(fd)
+        remove(fd)
     } else {
         std::ptr::null_mut()
     };
@@ -144,23 +140,23 @@ mod tests {
     fn lends_until_removed() {
         let (a, b) = (8usize as *mut c_void, 16usize as *mut c_void);
         let fd = 1_000_001;
-        assert!(swr_v1_hook_socket_get(fd).is_null());
+        assert!(get(fd).is_null());
         assert_eq!(errno(), libc::ENOTSOCK);
-        assert!(!swr_v1_hook_socket_exists(fd));
+        assert!(!exists(fd));
 
-        assert!(swr_v1_hook_socket_insert(fd, a, true).is_null());
-        assert!(swr_v1_hook_socket_exists(fd));
-        assert_eq!(swr_v1_hook_socket_get(fd), a);
+        assert!(insert(fd, a, true).is_null());
+        assert!(exists(fd));
+        assert_eq!(get(fd), a);
         // emplace keeps the first; the new one comes back to be deleted.
-        assert_eq!(swr_v1_hook_socket_insert(fd, b, false), b);
-        assert_eq!(swr_v1_hook_socket_get(fd), a);
+        assert_eq!(insert(fd, b, false), b);
+        assert_eq!(get(fd), a);
         // assignment replaces; the old one comes back.
-        assert_eq!(swr_v1_hook_socket_insert(fd, b, true), a);
-        assert_eq!(swr_v1_hook_socket_get(fd), b);
+        assert_eq!(insert(fd, b, true), a);
+        assert_eq!(get(fd), b);
 
-        assert_eq!(swr_v1_hook_socket_remove(fd), b);
-        assert!(!swr_v1_hook_socket_exists(fd));
-        assert!(swr_v1_hook_socket_remove(fd).is_null());
+        assert_eq!(remove(fd), b);
+        assert!(!exists(fd));
+        assert!(remove(fd).is_null());
         assert_eq!(errno(), libc::ENOTSOCK);
     }
 
@@ -188,30 +184,21 @@ mod tests {
     /// fails with close-wait while still holding the socket.
     unsafe extern "C" fn outer_close(_: *mut c_void) -> bool {
         log("outer close");
-        assert_eq!(
-            unsafe { swr_v1_hook_socket_close(NESTED, inner_close, delete) },
-            0
-        );
-        assert!(!swr_v1_hook_socket_exists(NESTED));
+        assert_eq!(unsafe { close(NESTED, inner_close, delete) }, 0);
+        assert!(!exists(NESTED));
         log("outer returns");
         false
     }
 
     #[test]
     fn nested_close_defers_the_delete() {
-        assert!(swr_v1_hook_socket_insert(NESTED, 8usize as *mut c_void, true).is_null());
-        assert_eq!(
-            unsafe { swr_v1_hook_socket_close(NESTED, outer_close, delete) },
-            -1
-        );
+        assert!(insert(NESTED, 8usize as *mut c_void, true).is_null());
+        assert_eq!(unsafe { close(NESTED, outer_close, delete) }, -1);
         assert_eq!(
             LOG.with_borrow(Clone::clone),
             ["outer close", "inner close", "outer returns", "delete 8"]
         );
-        assert_eq!(
-            unsafe { swr_v1_hook_socket_close(NESTED, outer_close, delete) },
-            1
-        );
+        assert_eq!(unsafe { close(NESTED, outer_close, delete) }, 1);
         assert_eq!(errno(), libc::ENOTSOCK);
     }
 }

@@ -251,6 +251,8 @@ def plan(args, reports):
                              ('http-locales', 'tests/modules/http/locale_gate.py')]:
             script(name, runner, '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report(name))
+        pytest('http-smuggling', 'tests/modules/http/test_smuggling.py', *php,
+               '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
     if 'locks' in modules:
         script('locks-native', 'tests/modules/locks/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('locks-native'))

@@ -154,6 +154,16 @@ pub struct Worker<'a> {
     life: core::marker::PhantomData<&'a WorkerRecord>,
 }
 
+impl<'a> From<&'a mut WorkerRecord> for Worker<'a> {
+    /// The record a unique borrow keeps live for `'a`.
+    fn from(record: &'a mut WorkerRecord) -> Self {
+        Self {
+            raw: record,
+            life: core::marker::PhantomData,
+        }
+    }
+}
+
 macro_rules! field {
     ($(#[$doc:meta])* $get:ident, $set:ident, $field:ident: $ty:ty) => {
         $(#[$doc])*

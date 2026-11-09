@@ -41,8 +41,9 @@ use crate::callbacks::{
     CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP, CB_USER_WORKER_START,
 };
 use crate::objects::{Bus, Reactor};
+use crate::port_config::methods;
 use crate::reactor_ops::sign;
-use crate::reactor_process_ops::{port_listen, ports};
+use crate::reactor_process_ops::ports;
 use crate::records::ConnectionRecord;
 use crate::worker_methods::{create_event_workers, create_user_workers};
 use crate::{factory, pool_native, server_methods, view};
@@ -383,8 +384,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: as above.
         OP_PORT_COUNT => unsafe { ports(serv) }.len() as u64,
         OP_PORT_DGRAM => u64::from(matches!(port()?.1.r#type, 2 | 4 | 6)),
-        // SAFETY: one of the server's live ports.
-        OP_PORT_LISTEN => sign(unsafe { port_listen(port()?.0) }),
+        OP_PORT_LISTEN => sign((methods().listen)(port()?.0)),
         OP_PORT_ADD => {
             let socket = port()?.1.socket.cast::<SocketRecord>();
             // SAFETY: the port's live socket.

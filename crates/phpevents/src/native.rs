@@ -23,9 +23,6 @@ unsafe extern "C-unwind" {
     fn reactor_if_exit(reactor: *mut c_void) -> bool;
     #[link_name = "_ZN6swoole7Reactor4waitEv"]
     fn reactor_wait(reactor: *mut c_void) -> c_int;
-    // crates/tls's `Socket::free`.
-    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free(socket: *mut SocketRecord);
     // crates/phpprocess, crates/coroutine and crates/phptimer.
     safe fn php_swoole_is_enable_coroutine() -> bool;
     fn swoole_coroutine_is_in() -> u8;
@@ -233,9 +230,9 @@ pub(crate) unsafe fn php_socket_fd(value: *mut z::zval) -> Option<(c_int, bool)>
 pub(crate) fn socket_make(fd: c_int, object: *mut c_void) -> *mut SocketRecord {
     let socket = swoole_rs_reactor::socket_upstream::make_socket_fd(fd, FD_USER);
     // SAFETY: the record just made, which nothing else holds.
-    unsafe { swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1) };
-    // SAFETY: as above.
-    unsafe { (*socket).object = object };
+    let record = unsafe { &mut *socket };
+    swoole_rs_reactor::socket_upstream::socket_set_fd_option(record, 1, -1);
+    record.object = object;
     socket
 }
 
@@ -248,7 +245,7 @@ pub(crate) unsafe fn socket_free_record(socket: *mut SocketRecord, detach_fd: bo
         unsafe { (*socket).fd = -1 };
     }
     // SAFETY: per the caller.
-    unsafe { socket_free(socket) };
+    unsafe { swoole_rs_tls::upstream::socket_free(socket) };
 }
 
 /// `Reactor::defer(call, data)` on this thread's reactor.

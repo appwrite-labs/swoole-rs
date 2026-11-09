@@ -209,7 +209,7 @@ pub unsafe extern "C" fn set_blocking(this: *mut SocketPair, blocking: bool) {
     let [master, worker] = unsafe { ends(this) };
     for socket in [worker, master] {
         // SAFETY: as the caller promises.
-        unsafe { socket_set_fd_option(socket, c_int::from(!blocking), -1) };
+        socket_set_fd_option(unsafe { &mut *socket }, c_int::from(!blocking), -1);
     }
     // SAFETY: as the caller promises.
     unsafe { (*this).blocking = blocking };
@@ -283,13 +283,12 @@ pub unsafe extern "C" fn write(
 pub unsafe extern "C" fn clean(this: *const SocketPair) {
     // SAFETY: as the caller promises.
     let socket = unsafe { (*this).worker_socket };
-    let mut buffer = [0_u8; 1024];
     // SAFETY: as the caller promises.
-    while unsafe { socket_wait_event(socket, 0, EVENT_READ) } == OK {
-        // SAFETY: as the caller promises.
-        let fd = unsafe { (*socket).fd };
+    let socket = unsafe { &*socket };
+    let mut buffer = [0_u8; 1024];
+    while socket_wait_event(socket, 0, EVENT_READ) == OK {
         // SAFETY: a local buffer of that size.
-        if unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) } <= 0 {
+        if unsafe { libc::read(socket.fd, buffer.as_mut_ptr().cast(), buffer.len()) } <= 0 {
             break;
         }
     }

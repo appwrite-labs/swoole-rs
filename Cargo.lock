@@ -455,6 +455,7 @@ dependencies = [
  "swoole-rs-curl-sys",
  "swoole-rs-phpswoole",
  "swoole-rs-reactor",
+ "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 
@@ -740,6 +741,7 @@ dependencies = [
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 
@@ -774,6 +776,7 @@ dependencies = [
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-tls",
  "swoole-rs-websocket",
  "swoole-rs-zend",
 ]
