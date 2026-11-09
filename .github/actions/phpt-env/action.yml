@@ -22,6 +22,10 @@ runs:
     # curl_multi_segfault.phpt's server, the ftp service above.
     - shell: bash
       run: printf 'PHP_CURL_FTP_REMOTE_SERVER=ftp\nPHP_CURL_FTP_REMOTE_USER=admin\nPHP_CURL_FTP_REMOTE_PASSWD=admin\n' >> "$GITHUB_ENV"
+    # pdo_oci_attr_call_timeout.phpt's SKIPIF reads the user from PDOTEST_USER; the
+    # pdo_oracle tests log in as config.php's ORACLE_USER, system.
+    - shell: bash
+      run: echo PDOTEST_USER=system >> "$GITHUB_ENV"
     # msgq_capacity sets a 64 MiB queue, which upstream's root test container may; we aren't root.
     - shell: bash
       run: sudo sysctl -w kernel.msgmnb=67108864

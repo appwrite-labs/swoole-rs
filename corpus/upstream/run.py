@@ -57,6 +57,10 @@ def timed_phase(report, phase):
 # runs, so it can never talk to an unrelated process; TIME_WAIT is tolerated.
 FIXED_PORTS = {'tests/swoole_timer/bug_4794_8.phpt': 9601}
 
+# Cases whose SKIPIF's only bar is skip_if_in_ci() and that need nothing the PHPT jobs lack
+# (the ssh2 key login phpt-env sets up). They run with the CI marker removed.
+OUTSIDE_CI = {'tests/swoole_ssh2/ssh2_auth_pubkey.phpt', 'tests/swoole_ssh2/ssh2_auth_pubkey_file.phpt'}
+
 
 # Only this named ZTS original is excluded after the same output interleaving was
 # reproduced on native and hybrid (#1120). Its registered source/hash is retained;
@@ -295,6 +299,8 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
     env['PHP_INI_SCAN_DIR'] = os.environ.get('PHP_INI_SCAN_DIR', '') + os.pathsep + str(scan)
     if not offline:
         env['SKIP_ONLINE_TESTS'] = '0'
+    if all(case['path'] in OUTSIDE_CI for case in cases):
+        env.pop('GITHUB_ACTIONS', None)
     child_selector = None
     if match_child_php:
         php = shutil.which(engine.php)
