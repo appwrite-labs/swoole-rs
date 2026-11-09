@@ -25,9 +25,7 @@ or as a local (the bundled ext/ssh2, the hooks fixture) and deletes its own.
 - The hooks host's io_uring pointer and the `HAVE_IOURING_*` and
   `SW_USE_URING_SOCKET` configure macros. Registering it also installs Rust's
   socket host (`co_io::Host`: the timers, the read `String`, `recv`/`recv_all`, the
-  `Protocol` length callback and the packet diagnostics), which
-  `hooks-packet-policy` replaces with its fakes through
-  `swr_v1_hook_co_socket_host`. The socket's other effects (the yield with its
+  `Protocol` length callback and the packet diagnostics). The socket's other effects (the yield with its
   cancel, the write buffer, last error, `strerror`, the current coroutine and its
   id, the bound-socket report, the no-buffers sleep, the reactor and the TLS
   shutdown and liveness probe) are Rust too (`co_io::NATIVE`).

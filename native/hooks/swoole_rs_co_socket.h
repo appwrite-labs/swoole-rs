@@ -81,19 +81,6 @@ void *swr_v1_hook_co_socket_pop_buffer(swr_v1_co_socket *socket, bool write);
  * members through the ring (crates/hooks/src/uring_socket.rs). */
 void swr_v1_hook_co_socket_uring(swr_v1_co_socket *socket);
 
-/* What the packet gate (tests/modules/hooks) fakes of the Rust operations
-   (crates/hooks/src/co_io.rs); Rust installs the runtime's. */
-typedef struct {
-    /* A timer for the read or the write wait, or null. */
-    void *(*timer_add)(swr_v1_co_socket *, double timeout, bool write);
-    void (*timer_del)(void *node);
-    /* The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes view. */
-    void (*read_buffer)(swr_v1_co_socket *, swr_v1_hook_read_buffer *view, uint32_t action, size_t size);
-    ssize_t (*recv)(swr_v1_co_socket *, char *, size_t, bool all);
-    /* The protocol's length callback and packet error diagnostics. */
-    ssize_t (*package_length)(swr_v1_co_socket *, uint32_t size, uint32_t *header_length);
-    void (*packet_fail)(swr_v1_co_socket *, uint32_t kind, ssize_t length);
-} swr_v1_hook_co_socket_host_t;
 /* Socket::connect(host, port) (crates/hooks/src/connect.rs), through the socket's proxies. */
 bool swr_v1_hook_co_socket_connect_host(swr_v1_co_socket *socket, const char *host, size_t length, int port);
 /* Complete packet/buffer reads, including availability, buffer and timer. */
@@ -105,7 +92,6 @@ bool swr_v1_hook_co_socket_cancel(swr_v1_co_socket *socket, uint32_t event);
 bool swr_v1_hook_co_socket_close(swr_v1_co_socket *socket);
 bool swr_v1_hook_co_socket_check_liveness(swr_v1_co_socket *socket);
 bool swr_v1_hook_co_socket_connect(swr_v1_co_socket *socket, const struct sockaddr *addr, socklen_t length);
-void swr_v1_hook_co_socket_host(const swr_v1_hook_co_socket_host_t *host);
 /* set_err(e), check_return_value, is_available, get_bound_cid, check_bound_co,
    get_event_str (a static string) and TimeoutController::has_timedout (startup is
    its clock, now microtime()). */

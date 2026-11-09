@@ -5,20 +5,21 @@ Pin `76c657d88be39b7af6bf85e46bcbac0da7387760`.
 ## Native-facade gates
 
 ```sh
-python3 tests/modules/hooks/packet_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --sanitize --report OWN/packet.json
 python3 tests/modules/hooks/compile_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --report OWN/compile.json
 ```
 
-`packet_gate.py` extracts the pinned function bodies and
-the patched ones from the hybrid build `--archive` comes from (`hybrid_tree`), compiles both
-against a deterministic native facade (`packet_fixture.h`) and runs identical
-scenarios through each, comparing effects and order. Syscalls, contexts, TLS
-and kernel IO are faked; these are policy/order checks, not runtime proof.
-`--sanitize` adds ASan/UBSan to C++ only, not the Rust archive.
+Gates whose bodies moved to Rust became `ported_*` tests in `crates/hooks`.
+The packet gate (`hooks-packet-policy`) ran the pinned `Socket::recv_packet`,
+`recv_packet_with_length_protocol` and `recv_packet_with_eof_protocol` and the
+Rust framing over one scripted native socket and compared their traces. Its 240
+scenarios, same inputs, are three tests in `crates/hooks/src/packet/ported.rs`,
+checked against the pinned bodies' traces in `ported.txt`:
 
-`packet_gate.py` (`hooks-packet-policy`, 240 cases) covers the length/EOF/raw
-framing paths. Gates whose bodies moved to Rust became `ported_*` tests in
-`crates/hooks`.
+| Scenarios | Rust test |
+| --- | --- |
+| 0-95, 216-227 (length protocol) | `packet::ported::ported_length_protocol_scenarios` |
+| 96-191, 228-239 (EOF protocol, raw when EOF is off) | `packet::ported::ported_eof_protocol_scenarios` |
+| 192-215 (raw receive, availability, timer failure) | `packet::ported::ported_raw_receive_scenarios` |
 
 `compile_gate.py` (`hooks-compile`) compiles all eight original and patched translation units as
 C++14: the pinned ones, then the pin with every file the hybrid build patched
@@ -163,8 +164,6 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   finished parent's stack). hook.cpp's other 25 cases pass (Linux aarch64,
   docker); `gethostbyname`, `getaddrinfo` and `socket` need external DNS and
   network.
-- macOS (clang): `packet_gate.py` stops at a narrowing error in the selected
-  `recv_packet` initializer. It passes on Linux, which is where CI runs it.
 
 `core-tests/src/os/timer.cpp` and `protocol/ssl.cpp` are Rust: `system/src/timer.rs`
 and `ssl.rs`, one function per TEST (`timer.<name>`, `ssl.<name>`), run by
