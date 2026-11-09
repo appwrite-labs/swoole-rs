@@ -6,9 +6,6 @@ name: h2spec
 # Called by the merge tier, and by the PR tier when a PR touches HTTP/2 code.
 on:
   workflow_call:
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 defaults:
   run:
     shell: bash
@@ -23,7 +20,7 @@ jobs:
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/ext target/thirdparty target/native-core
+      - run: rm -rf target/ext target/thirdparty
       - uses: ./.github/actions/install
       - uses: actions/cache/restore@v4
         with:
@@ -31,11 +28,6 @@ jobs:
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - if: hashFiles('target/upstream/src/modules/swoole.so') == ''
         run: python3 tools/build_upstream.py
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       - run: python3 tools/build_ext.py
       - run: >
