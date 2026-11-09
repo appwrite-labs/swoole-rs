@@ -41,13 +41,13 @@ def cargo(arguments, env):
     return messages
 
 
-def sdk(tree, messages, features, env):
+def sdk(tree, messages, features, profile, env):
     """target/ext/sdk: the Zend-free FFI archive (no Zend references, so fixtures link it into
     executables), crates/ext's native archives, and the ABI headers; and config.h in the tree."""
     out = Path(next(m['out_dir'] for m in messages if m['reason'] == 'build-script-executed'
                     and m['package_id'].split('#')[0].endswith('/ext')))
     # `--crate-type staticlib` alone: rustc skips thin LTO whenever an rlib is among the outputs.
-    built = cargo(['rustc', '--crate-type', 'staticlib', '--release', '--no-default-features', '-p', 'swoole-rs-ffi',
+    built = cargo(['rustc', '--crate-type', 'staticlib', '--profile', profile, '--no-default-features', '-p', 'swoole-rs-ffi',
                    *(['--features', ','.join(features)] if features else [])], env)
     archive, = [name for m in built if m['reason'] == 'compiler-artifact' and m['target']['name'] == 'swoole_rs_ffi'
                 for name in m['filenames'] if name.endswith('.a')]
@@ -155,7 +155,7 @@ def main():
             env['SWOOLE_ODBC_DIR' if feature == 'odbc' else 'SWOOLE_ORACLE_DIR'] = value.split(',')[1]
     messages = cargo(['build', '--profile', args.profile, '-p', 'swoole-rs-ext', '--features', ','.join(features)], env)
     if args.native:
-        sdk(tree, messages, [f for f in features if f in FFI_FEATURES], env)
+        sdk(tree, messages, [f for f in features if f in FFI_FEATURES], args.profile, env)
     # CARGO_BUILD_TARGET (coverage.yml) puts the library under target/<triple>/.
     target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'), os.environ.get('CARGO_BUILD_TARGET', ''))
     built = target / ('debug' if args.profile == 'dev' else args.profile) / (
