@@ -53,8 +53,6 @@ pub(crate) const CONNECT_TIMEOUT: f64 = 0.5;
 /// `SW_ERROR_CLIENT_NO_CONNECTION` and `SW_ERROR_INVALID_PARAMS`.
 const NO_CONNECTION: c_int = 5001;
 pub(crate) const INVALID_PARAMS: c_int = 505;
-/// `SW_CLOSE`.
-const CLOSE: c_int = 1;
 
 /// One connection: the `network::Client` and what the PHP layer keeps with it
 /// (upstream's `keep`, `server_id`, `reuse_count`, `buffer` and
@@ -112,6 +110,12 @@ impl Conn {
 
     pub(crate) fn has_socket(&self) -> bool {
         !self.socket().is_null()
+    }
+
+    /// `cli->socket->check_liveness()` of a client that has a socket.
+    fn alive(&self) -> bool {
+        // SAFETY: the client's live socket.
+        unsafe { swoole_rs_tls::upstream::socket_check_liveness(self.socket()) }
     }
 
     pub(crate) fn fd(&self) -> c_int {
@@ -538,8 +542,7 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
                 unsafe { pool::swr_v1_clients_pool_take(handle, key.as_ptr(), key.len()) }.cast();
             // SAFETY: a pooled connection, now this object's.
             let pooled = unsafe { &mut *conn };
-            // SAFETY: a live client's socket.
-            if unsafe { swoole_rs_tls::upstream::socket_check_liveness(pooled.socket()) } {
+            if pooled.alive() {
                 pooled.reuse_count += 1;
                 // SAFETY: a live client object.
                 let ce = unsafe { (*object).ce };
@@ -1220,7 +1223,13 @@ fn close(call: &Call) {
         warn(ErrorKind::Error, "client socket is closed");
         return call.set_bool(false);
     }
-    if force || !conn.keep || conn.cli.socket_mut().catch_error(last_error()) == CLOSE {
+    // Only a live connection with no shutdown direction returns to the pool.
+    if force
+        || !conn.keep
+        || conn.flag(state::SHUTDOWN_READ)
+        || conn.flag(state::SHUTDOWN_WRITE)
+        || !conn.alive()
+    {
         let Some(result) = bailed(conn.call(Op::Close).run()) else {
             return call.set_bool(false);
         };

@@ -210,6 +210,14 @@ mod props {
         unsafe { value::update_long(ce(), object, name, number) };
     }
 
+    /// `zval_get_long` of a declared property.
+    pub(super) fn get_long(object: *mut zend_object, name: &CStr) -> i64 {
+        // SAFETY: a live client object, which declares `name`.
+        let slot = unsafe { table::property(object, name) };
+        // SAFETY: a live property slot.
+        unsafe { table::long(slot) }
+    }
+
     pub(super) fn bool(object: *mut zend_object, name: &CStr, flag: bool) {
         // SAFETY: as above.
         unsafe { value::update_bool(ce(), object, name, flag) };
@@ -735,10 +743,7 @@ impl Client {
         if let Some(download) = download {
             // SAFETY: as above.
             self.download_name = Some(unsafe { Owned::of(download) });
-            // SAFETY: as above.
-            let offset = unsafe { table::property(object, c"downloadOffset") };
-            // SAFETY: as above.
-            self.download_offset = unsafe { table::long(offset) };
+            self.download_offset = props::get_long(object, c"downloadOffset");
         }
 
         let mut out = Vec::with_capacity(256);
@@ -2313,7 +2318,10 @@ fn push(call: &Call) {
 fn close(call: &Call) {
     let client = client(call);
     let Some(_hold) = Hold::new(client.zsocket()) else {
-        set_error_properties(call.this(), NO_CONNECTION, strerror(NO_CONNECTION));
+        // A failed request already closed its socket; keep its error.
+        if props::get_long(call.this(), c"errCode") == 0 {
+            set_error_properties(call.this(), NO_CONNECTION, strerror(NO_CONNECTION));
+        }
         return call.set_bool(false);
     };
     let result = client.close(true);

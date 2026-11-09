@@ -56,11 +56,6 @@ STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 # (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
 # failing on them, and lists those the hybrid already passes so their entries go.
 PENDING_PORTS = {
-    1940: [
-        'swoole_client_sync/keep_shutdown.phpt',
-        'swoole_client_sync/keep_socket_state.phpt',
-        'swoole_http_client_coro/close_preserves_request_error.phpt',
-    ],
     1942: [
         'swoole_process_pool/msgqueue_ignores_package_size.phpt',
         'swoole_process_pool/message_bus_sync_timer.phpt',
