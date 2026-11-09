@@ -226,6 +226,7 @@ dependencies = [
  "swoole-rs-base64",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-locale",
  "swoole-rs-ossupport",
 ]
 
@@ -241,6 +242,13 @@ dependencies = [
 [[package]]
 name = "swoole-rs-http2"
 version = "0.1.0"
+
+[[package]]
+name = "swoole-rs-locale"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "swoole-rs-locks"
