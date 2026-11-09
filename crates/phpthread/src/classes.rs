@@ -14,10 +14,9 @@ use swoole_rs_phpstubs::thread_map;
 use swoole_rs_phpstubs::thread_queue;
 use swoole_rs_zend::{
     Call, Class, Invalid, Object, bailout, set_object,
-    string::bytes,
     sys::{
-        _zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG,
-        IS_NULL, IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
+        _zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL,
+        IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
         ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, ZPP_ERROR_WRONG_ARG, swr_zend_array_is_list,
         swr_zend_dval_to_lval_safe, swr_zend_handle_numeric_str, swr_zend_resource_handle,
         zend_argument_type_error, zend_array, zend_ce_arrayaccess, zend_ce_countable,
@@ -25,8 +24,7 @@ use swoole_rs_zend::{
         zend_object_handlers, zend_type_error, zend_ulong, zend_use_resource_as_offset,
         zend_wrong_parameter_error, zval,
     },
-    throw_constructed_twice, throw_error, throw_exception, type_of, unset_property_deny, value,
-    value_of,
+    throw_constructed_twice, throw_error, throw_exception, unset_property_deny, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -325,16 +323,13 @@ fn constructed<T>(call: &Call, list: bool) -> Option<&'static T> {
 
 /// `Z_PARAM_ARRAY_HT_OR_NULL` of optional argument 1.
 fn array_or_null(call: &Call) -> Result<Option<*mut zend_array>, Invalid> {
-    let arg = call.zval(1);
-    if arg.is_null() {
+    let Some(arg) = call.value(1) else {
         return Ok(None);
-    }
-    // SAFETY: a passed argument.
-    match unsafe { type_of(arg) } {
-        // SAFETY: an array zval.
-        IS_ARRAY => Ok(Some(unsafe { value::table(arg) })),
-        IS_NULL => Ok(None),
-        _ => {
+    };
+    match arg.array() {
+        Some(array) => Ok(Some(array.as_ptr())),
+        None if arg.is_null() => Ok(None),
+        None => {
             #[expect(clippy::cast_possible_wrap, reason = "a small ZPP error code")]
             // SAFETY: in a handler, with the argument that failed.
             unsafe {
@@ -343,7 +338,7 @@ fn array_or_null(call: &Call) -> Result<Option<*mut zend_array>, Invalid> {
                     1,
                     ptr::null_mut(),
                     _zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL,
-                    arg,
+                    arg.as_ptr(),
                 );
             }
             Err(Invalid)
@@ -382,18 +377,10 @@ fn construct_array(call: &Call, list: bool) {
 
 /// `handle_array_key` and `ZEND_ARRAY_CALL_METHOD`'s dispatch: the key, or
 /// `None` after Zend's errors.
-/// # Safety
-/// `key` is a live zval.
-unsafe fn map_key(key: *mut zval) -> Option<Key> {
-    // SAFETY: per the caller.
-    let payload = unsafe { value_of(key) };
-    // SAFETY: per the caller.
-    match unsafe { type_of(key) } {
+fn map_key(key: &swoole_rs_zend::Value) -> Option<Key> {
+    match key.kind() {
         IS_STRING => {
-            // SAFETY: a string zval.
-            let string = unsafe { payload.str_ };
-            // SAFETY: a live string.
-            let text = unsafe { bytes(string) };
+            let text = key.str()?.bytes();
             let mut index: zend_ulong = 0;
             // SAFETY: a live string and a writable local.
             if unsafe {
@@ -408,13 +395,10 @@ unsafe fn map_key(key: *mut zval) -> Option<Key> {
                 Some(Key::Str(text.into()))
             }
         }
-        // SAFETY: an int zval.
-        IS_LONG => Some(Key::Int(unsafe { payload.lval })),
+        IS_LONG => key.as_long().map(Key::Int),
         IS_NULL => Some(Key::Str(Box::default())),
-        // SAFETY: a float zval.
         IS_DOUBLE => {
-            // SAFETY: a float zval.
-            let number = unsafe { payload.dval };
+            let number = key.as_double()?;
             // SAFETY: a pure conversion.
             Some(Key::Int(unsafe { swr_zend_dval_to_lval_safe(number) }))
         }
@@ -422,9 +406,9 @@ unsafe fn map_key(key: *mut zval) -> Option<Key> {
         IS_TRUE => Some(Key::Int(1)),
         IS_RESOURCE => {
             // SAFETY: a resource zval; Zend's warning.
-            unsafe { zend_use_resource_as_offset(key) };
+            unsafe { zend_use_resource_as_offset(key.as_ptr()) };
             // SAFETY: as above.
-            Some(Key::Int(unsafe { swr_zend_resource_handle(key) }))
+            Some(Key::Int(unsafe { swr_zend_resource_handle(key.as_ptr()) }))
         }
         _ => {
             // SAFETY: in a handler; both of upstream's errors, in its order.
@@ -439,10 +423,8 @@ unsafe fn map_key(key: *mut zval) -> Option<Key> {
 /// Parse `(mixed $key[, ...])`, check the object, and resolve the key.
 fn map_call(call: &Call, min: u32, max: u32) -> Option<(&'static Array, Key)> {
     call.arity(min, max).ok()?;
-    let key = call.zval(1);
     let map = constructed::<Array>(call, false)?;
-    // SAFETY: a passed argument.
-    let key = unsafe { map_key(key) }?;
+    let key = map_key(call.value(1)?)?;
     Some((map, key))
 }
 
