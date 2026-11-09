@@ -13,6 +13,7 @@
 use core::cell::{Cell, RefCell, UnsafeCell};
 use core::ffi::{c_char, c_int, c_void};
 use std::ffi::{CStr, CString};
+use std::sync::OnceLock;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::constants::{
     EventType, FdType, ResultCode, ReturnCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE,
@@ -154,22 +155,32 @@ unsafe extern "C-unwind" {
     fn writable_callback(reactor: *mut c_void, event: *mut c_void) -> c_int;
 }
 
-// SAFETY: crates/ports' definitions under upstream's names, which the hybrid links
-// (the unit tests define doubles). It sits above this crate, so it reaches them by
-// symbol.
-unsafe extern "C-unwind" {
-    #[link_name = "_ZNK6swoole8Protocol25recv_with_length_protocolEPNS_7network6SocketEPNS_6StringE"]
-    fn recv_with_length_protocol(
-        protocol: *const Protocol,
-        socket: *mut SocketRecord,
-        buffer: *mut CppString,
-    ) -> c_int;
-    #[link_name = "_ZNK6swoole8Protocol22recv_with_eof_protocolEPNS_7network6SocketEPNS_6StringE"]
-    fn recv_with_eof_protocol(
-        protocol: *const Protocol,
-        socket: *mut SocketRecord,
-        buffer: *mut CppString,
-    ) -> c_int;
+/// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
+/// live protocol, socket and input buffer.
+pub type Framed = fn(*const Protocol, *mut SocketRecord, *mut CppString) -> c_int;
+
+/// The framed receives crates/ports defines; ports depends on this crate, so
+/// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
+/// client's `on_read` calls them, so the fields stay private.
+pub struct Framing {
+    length: Framed,
+    eof: Framed,
+}
+
+impl Framing {
+    /// # Safety
+    /// `length` and `eof` must be sound for any live protocol, socket and input
+    /// buffer of a client, which is all a client's `on_read` passes them.
+    pub const unsafe fn new(length: Framed, eof: Framed) -> Self {
+        Self { length, eof }
+    }
+}
+
+static FRAMING: OnceLock<Framing> = OnceLock::new();
+
+/// Registers crates/ports' framed receives; later registrations are ignored.
+pub fn set_framing(framing: Framing) {
+    FRAMING.get_or_init(|| framing);
 }
 
 // SAFETY: crates/protocols-ffi's definitions (the SOCKS5 codec) and OpenSSL's, which
@@ -2030,17 +2041,15 @@ fn on_read(this: Handle) -> c_int {
     let fields = this.fields();
     let (eof, length) = (fields.open_eof_check, fields.open_length_check);
     if eof || length {
-        let framed = if eof {
-            recv_with_eof_protocol
-        } else {
-            recv_with_length_protocol
-        };
+        // `swoole_init` registered them before any client existed.
+        let framing = FRAMING.get().unwrap_or_else(|| std::process::abort());
+        let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket_ptr();
         let protocol = &raw const this.fields().protocol;
-        // SAFETY: the live protocol, socket and input buffer. A package callback
-        // may destroy the client; its socket outlives this handler.
-        let n = unsafe { framed(protocol, socket, this.input()) };
-        // SAFETY: as above; a destroyed client cleared the socket's object.
+        // The live protocol, socket and input buffer `Framing::new` asks for. A
+        // package callback may destroy the client; its socket outlives this handler.
+        let n = framed(protocol, socket, this.input());
+        // SAFETY: the socket outlives this handler; a destroyed client cleared its object.
         let released = unsafe { (*socket).object }.is_null();
         if n < 0 && !released && !this.flag(CLOSED) {
             close(this);

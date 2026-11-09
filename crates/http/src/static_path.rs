@@ -1,5 +1,5 @@
 //! Static path/selection policy with native filesystem and allocation boundaries.
-use crate::{INVALID, OVERFLOW, bytes, swr_v1_http_url_decode};
+use crate::{INVALID, OVERFLOW, bytes};
 
 #[repr(C)]
 #[derive(Default)]
@@ -36,8 +36,7 @@ pub(crate) fn prefix(input: &[u8], expected: &[u8], ignore_case: bool) -> bool {
     }
     true
 }
-/// Feed a native-owned location entry between path steps, preserving the
-/// full untrimmed URL comparison and monotonically set `last` flag.
+/// `location_match` for `tests/modules/http/locale_gate.cc`.
 /// # Safety
 /// Input spans are initialized; aligned state is writable and disjoint. No
 /// allocation, callback or retained Rust reference occurs.
@@ -89,72 +88,32 @@ fn selected(state: &mut HttpStaticPath, facts: u32) -> i32 {
         6
     }
 }
-/// Resume selection: 0=false,1=true,2=visit locations,3=assign native `dir_path`,
-/// `4=lstat,5=realpath/get_absolute_path,6=MIME` lookup,7=native `catch_error`.
-/// Facts: locations1,statOK2,canonicalOK4,link8,dir16,file32,index64,auto128,MIME256.
-/// # Safety
-/// URL/root spans are initialized and disjoint from output/state. Output is
-/// writable through capacity, initially may be uninitialized. Native preserves
-/// inputs/state between steps and initializes canonical output through its NUL
-/// before resuming a realpath step. No borrow survives native work.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_static_path(
-    url: *const u8,
-    url_length: usize,
-    root: *const u8,
-    root_length: usize,
-    output: *mut u8,
-    capacity: usize,
-    state: *mut HttpStaticPath,
-    facts: u32,
-) -> i32 {
-    if state.is_null() || output.is_null() {
-        return INVALID;
-    }
-    if capacity > isize::MAX as usize {
-        return OVERFLOW;
-    }
-    // SAFETY: the caller lends `url_length` initialized URL bytes.
-    let url = unsafe { bytes(url, url_length) };
-    // SAFETY: the caller lends `root_length` initialized root bytes.
-    let root = unsafe { bytes(root, root_length) };
-    let (url, root) = match (url, root) {
-        (Ok(a), Ok(b)) => (a, b),
-        (Err(e), _) | (_, Err(e)) => return e,
-    };
-    // SAFETY: `state` is non-null (checked above), aligned and exclusive.
-    let state = unsafe { &mut *state };
-    // SAFETY: `output` is non-null and writable through `capacity <= isize::MAX`, disjoint
-    // from the inputs and state; the phase contract is static_path's.
-    unsafe { path_step(url, root, output, capacity, state, facts) }
-}
-
-// Inputs and state are already typed and checked by the public C boundary or
-// the Rust configuration owner. Only the caller-owned possibly uninitialized
-// filename backing requires unsafe access; its phase/publication contract is
-// exactly static_path's existing contract. No borrow survives Native effects.
-pub(crate) unsafe fn path_step(
+/// Resume selection into the filename buffer `output`: 0=false, 1=true, 2=visit
+/// locations, 3=assign `dir_path`, 4=lstat, 5=realpath, 6=MIME lookup, 7=`catch_error`.
+/// Facts: locations1, statOK2, canonicalOK4, link8, dir16, file32, index64, auto128, MIME256.
+/// The caller keeps the URL, root and state between steps, and NUL-terminates a
+/// canonical path it writes into `output` before resuming a realpath step.
+pub(crate) fn path_step(
     url: &[u8],
     root: &[u8],
-    output: *mut u8,
-    capacity: usize,
+    output: &mut [u8],
     state: &mut HttpStaticPath,
     facts: u32,
 ) -> i32 {
+    let capacity = output.len();
     match state.phase {
         0 => {
             // Old root copy precedes location rejection. Reject only its old
             // out-of-allocation case; exact-capacity copies remain observable.
-            if root.len() > capacity {
+            let Some(head) = output.get_mut(..root.len()) else {
                 return OVERFLOW;
-            }
+            };
             state.url_length = url
                 .iter()
                 .position(|&b| b == b'?')
                 .or_else(|| url.iter().position(|&b| b == b'#'))
                 .unwrap_or(url.len());
-            // SAFETY: `root.len() <= capacity` writable output bytes, disjoint from `root`.
-            unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), output, root.len()) };
+            head.copy_from_slice(root);
             state.phase = 1;
             return 2;
         }
@@ -163,28 +122,21 @@ pub(crate) unsafe fn path_step(
                 state.phase = 8;
                 return 0;
             }
-            if state.url_length > url.len() {
+            let Some(url) = url.get(..state.url_length) else {
                 return INVALID;
-            }
-            let Some(length) = root
-                .len()
-                .checked_add(state.url_length)
-                .filter(|&n| n < capacity)
-            else {
+            };
+            let Some(length) = root.len().checked_add(url.len()).filter(|&n| n < capacity) else {
                 state.phase = 8;
                 return 7;
             };
-            // `root.len() + url_length == length < capacity` writable output bytes.
-            // SAFETY: as above; `url_length <= url.len()` readable bytes.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    url.as_ptr(),
-                    output.wrapping_add(root.len()),
-                    state.url_length,
-                );
+            let Some((nul, path)) = output
+                .get_mut(root.len()..=length)
+                .and_then(<[u8]>::split_last_mut)
+            else {
+                return INVALID;
             };
-            // SAFETY: as above.
-            unsafe { output.wrapping_add(length).write(0) };
+            path.copy_from_slice(url);
+            *nul = 0;
             state.phase = 2;
             return 3;
         }
@@ -192,19 +144,22 @@ pub(crate) unsafe fn path_step(
             if state.url_length > url.len() {
                 return INVALID;
             }
-            let Some(length) = root
+            if state.url_length > url.len() {
+                return INVALID;
+            }
+            let Some(path) = root
                 .len()
                 .checked_add(state.url_length)
                 .filter(|&n| n < capacity)
+                .and_then(|length| output.get_mut(..length))
             else {
                 return INVALID;
             };
-            // SAFETY: phase 1 initialized `length + 1 <= capacity` output bytes.
-            let result =
-                unsafe { swr_v1_http_url_decode(output, length, &raw mut state.filename_length) };
-            if result != 0 {
-                return result;
+            let length = crate::url_decode(path);
+            if let Some(nul) = output.get_mut(length) {
+                *nul = 0;
             }
+            state.filename_length = length;
             state.phase = 3;
             return 4;
         }
@@ -214,9 +169,7 @@ pub(crate) unsafe fn path_step(
     if state.filename_length >= capacity {
         return INVALID;
     }
-    // SAFETY: `filename_length < capacity`, and earlier phases (or native canonicalization)
-    // initialized those bytes.
-    let filename = unsafe { std::slice::from_raw_parts(output, state.filename_length) };
+    let filename = output.get(..state.filename_length).unwrap_or_default();
     match state.phase {
         3 => {
             if facts & STAT_OK == 0 {
@@ -307,26 +260,6 @@ mod tests {
         assert_eq!(static_index_path(&mut out, 2, b"ixxx"), OVERFLOW);
         assert_eq!(static_index_path(&mut out, 6, b""), INVALID);
     }
-    unsafe fn step(
-        url: &[u8],
-        root: &[u8],
-        out: &mut [u8],
-        state: &mut HttpStaticPath,
-        facts: u32,
-    ) -> i32 {
-        unsafe {
-            swr_v1_http_static_path(
-                url.as_ptr(),
-                url.len(),
-                root.as_ptr(),
-                root.len(),
-                out.as_mut_ptr(),
-                out.len(),
-                state,
-                facts,
-            )
-        }
-    }
     #[test]
     fn path_publication_waits_for_native_directory_allocation() {
         let mut out = [0xa5; 64];
@@ -336,42 +269,22 @@ mod tests {
         };
         let url = b"/a%2eb#before?query";
         let root = b"/r";
-        assert_eq!(
-            unsafe { step(url, root, &mut out, &mut state, LOCATIONS) },
-            2
-        );
+        assert_eq!(path_step(url, root, &mut out, &mut state, LOCATIONS), 2);
         assert_eq!(&out[..3], &[b'/', b'r', 0xa5]);
         assert_eq!(state.filename_length, 12);
-        assert_eq!(
-            unsafe {
-                swr_v1_http_static_location(
-                    url.as_ptr(),
-                    url.len(),
-                    b"/A".as_ptr(),
-                    2,
-                    &raw mut state,
-                )
-            },
-            1
-        );
-        assert_eq!(
-            unsafe { step(url, root, &mut out, &mut state, LOCATIONS) },
-            3
-        );
+        assert_eq!(location_match(url, b"/A", &mut state), Ok(true));
+        assert_eq!(path_step(url, root, &mut out, &mut state, LOCATIONS), 3);
         assert_eq!(&out[..17], b"/r/a%2eb#before\0\xa5");
         assert_eq!(state.filename_length, 12);
-        assert_eq!(
-            unsafe { step(url, root, &mut out, &mut state, LOCATIONS) },
-            4
-        );
+        assert_eq!(path_step(url, root, &mut out, &mut state, LOCATIONS), 4);
         assert_eq!(state.filename_length, 13);
         assert_eq!(&out[..14], b"/r/a.b#before\0");
         assert_eq!(
-            unsafe { step(url, root, &mut out, &mut state, STAT_OK | FILE) },
+            path_step(url, root, &mut out, &mut state, STAT_OK | FILE),
             6
         );
         assert_eq!(
-            unsafe { step(url, root, &mut out, &mut state, STAT_OK | FILE) },
+            path_step(url, root, &mut out, &mut state, STAT_OK | FILE),
             1
         );
     }
@@ -382,13 +295,13 @@ mod tests {
         let mut out = [0xa5; 4];
         let mut state = HttpStaticPath::default();
         assert_eq!(
-            unsafe { step(b"/", b"oversized", &mut out, &mut state, 0) },
+            path_step(b"/", b"oversized", &mut out, &mut state, 0),
             OVERFLOW
         );
         assert_eq!(out, [0xa5; 4]);
         assert_eq!(state.phase, 0);
-        assert_eq!(unsafe { step(b"x", b"1234", &mut out, &mut state, 0) }, 2);
+        assert_eq!(path_step(b"x", b"1234", &mut out, &mut state, 0), 2);
         assert_eq!(out, *b"1234");
-        assert_eq!(unsafe { step(b"x", b"1234", &mut out, &mut state, 0) }, 7);
+        assert_eq!(path_step(b"x", b"1234", &mut out, &mut state, 0), 7);
     }
 }

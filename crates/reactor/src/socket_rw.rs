@@ -183,16 +183,15 @@ impl IovState {
     /// # Safety
     /// `iterator` names `remain_count` writable initialized iovecs.
     pub(crate) unsafe fn update(&mut self, n: isize) {
-        // SAFETY: the caller's live iterator and counters.
-        let reply = unsafe {
-            crate::swr_v1_reactor_iov_owned_progress(
-                self.iterator,
-                n,
-                self.remain_count,
-                self.index,
-                self.offset_bytes,
-            )
-        };
+        // SAFETY: as the caller promises.
+        let iterator = unsafe { crate::iov_owned::span(self.iterator, self.remain_count) };
+        let reply = crate::iov_owned::owned_progress(
+            iterator,
+            n,
+            self.remain_count,
+            self.index,
+            self.offset_bytes,
+        );
         if reply.action == 0 {
             return;
         }

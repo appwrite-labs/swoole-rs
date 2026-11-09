@@ -13,8 +13,9 @@ use crate::{
         swr_zend_array_init, swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next,
         swr_zend_string_copy, swr_zend_string_release, swr_zend_try_get_double,
         swr_zend_try_get_long, swr_zend_try_get_string, swr_zval_is_true, zend_array_count,
-        zend_class_entry, zend_hash_str_find, zend_ini_parse_quantity, zend_long, zend_object,
-        zend_reference, zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        zend_class_entry, zend_hash_index_find, zend_hash_str_find, zend_ini_parse_quantity,
+        zend_long, zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval,
+        zval_ptr_dtor,
     },
     value,
 };
@@ -267,6 +268,16 @@ impl Array {
     pub fn find(&self, key: &[u8]) -> Option<&Value> {
         // SAFETY: a live table; Zend reads `key` only.
         let found = unsafe { zend_hash_str_find(self.as_ptr(), key.as_ptr().cast(), key.len()) };
+        // SAFETY: null or an element of the borrowed table.
+        unsafe { Value::from_ptr(found) }
+    }
+
+    /// `zend_hash_index_find`.
+    #[must_use]
+    #[inline]
+    pub fn index(&self, index: zend_ulong) -> Option<&Value> {
+        // SAFETY: a live table.
+        let found = unsafe { zend_hash_index_find(self.as_ptr(), index) };
         // SAFETY: null or an element of the borrowed table.
         unsafe { Value::from_ptr(found) }
     }

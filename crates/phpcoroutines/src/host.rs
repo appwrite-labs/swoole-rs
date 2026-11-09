@@ -363,30 +363,17 @@ pub(crate) fn stats(stats: &mut Stats) {
 /// The `io_uring` engine's counts, once the thread has one.
 #[cfg(feature = "iouring")]
 fn iouring_stats(stats: &mut Stats) {
-    // SAFETY: crates/hooks's engine, read with no other access.
-    unsafe extern "C" {
-        fn swr_v1_uring_current() -> *mut c_void;
-        fn swr_v1_uring_task_num(uring: *const c_void) -> u32;
-        fn swr_v1_uring_waiting_num(uring: *const c_void) -> usize;
-        fn swr_v1_uring_sq_usage_percent(uring: *const c_void) -> f32;
-    }
-    // SAFETY: no preconditions.
-    let uring = unsafe { swr_v1_uring_current() };
-    if uring.is_null() {
+    let Some((tasks, waiting, percent)) = swoole_rs_hooks::iouring::stats() else {
         return;
-    }
+    };
     stats.iouring = 1;
-    // SAFETY: the thread's live engine.
-    stats.iouring_task_num = i64::from(unsafe { swr_v1_uring_task_num(uring) });
+    stats.iouring_task_num = i64::from(tasks);
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream stores the float percentage in an integer"
     )]
-    // SAFETY: as above.
-    let percent = unsafe { swr_v1_uring_sq_usage_percent(uring) } as i64;
+    let percent = percent as i64;
     stats.iouring_sq_usage_percent = percent;
-    // SAFETY: as above.
-    let waiting = unsafe { swr_v1_uring_waiting_num(uring) };
     stats.iouring_waiting_task_num = i64::try_from(waiting).unwrap_or(i64::MAX);
 }
 

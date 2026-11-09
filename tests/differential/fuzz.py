@@ -10,7 +10,10 @@ Divergences are minimised (calls dropped while the divergence stays) and written
 --keep as PHP files. A program that runs out of time on the control (10 s) counts as a
 timeout. A signal ending the control is counted but never named in the report or the
 log; --private writes those programs to a local directory for a person to triage
-privately. The exit status is 1 when any program diverged.
+privately. --cases also runs each *.php in a directory: kept regressions and scripts
+aimed at code the coverage report marks unreached. A case's expected output is the
+control's, which must print it twice running, so a case fails the run unless it is
+the same. The exit status is 1 when any program diverged or any case failed.
 
   fuzz.py --engine upstream=EXT --engine cargo=EXT --seed 1 --programs 10000 --output R.json
 """
@@ -405,7 +408,7 @@ def main():
     parser.add_argument('--jobs', type=int, default=os.cpu_count() or 2)
     parser.add_argument('--keep', type=Path, help='directory for minimised divergent programs')
     parser.add_argument('--private', type=Path, help='local directory for the programs the control crashed on; never publish it')
-    parser.add_argument('--cases', type=Path, help='also run every *.php in DIR: minimised programs kept as regressions')
+    parser.add_argument('--cases', type=Path, help='also run every *.php in DIR: regressions and coverage-targeted cases')
     parser.add_argument('--print', type=int, metavar='INDEX', help='print one program and exit')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
@@ -421,7 +424,11 @@ def main():
                              range(args.first, args.first + args.programs)))
         for case in cases:
             # A case is a minimised program's calls, after its own `<?php` line.
-            verdict, found = check(engines, Path(workdir) / 'case.php', [(False, case.read_text().removeprefix('<?php\n'))])
+            path = Path(workdir) / 'case.php'
+            verdict, found = check(engines, path, [(False, case.read_text().removeprefix('<?php\n'))])
+            # A case's expected output is upstream's, so upstream must repeat it.
+            if verdict == 'same' and outcome(engines[0], path) != found[0]:
+                verdict = 'flaky'
             rows.append({'case': case.name, 'verdict': verdict,
                          **({} if verdict == 'same' else {'outcomes': dict(zip([e.name for e in engines], found))})})
     counts = {verdict: sum(row['verdict'] == verdict for row in rows) for verdict in VERDICTS}
@@ -433,7 +440,7 @@ def main():
     for row in report['findings']:
         print(f"{row['verdict']}: {row.get('case') or f'seed {args.seed} program {row['program']}'}", file=sys.stderr)
     print(json.dumps(counts))
-    return 1 if counts['divergent'] else 0
+    return 1 if counts['divergent'] or any('case' in row and row['verdict'] != 'same' for row in rows) else 0
 
 
 if __name__ == '__main__':

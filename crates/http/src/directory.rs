@@ -1,10 +1,8 @@
 //! Private `StaticHandler` directory owner. No native container or name mirror.
-use crate::proxy::HttpProxyText;
-use crate::{HttpIndexPage, INVALID, swr_v1_http_index_page};
-use std::ptr;
+use crate::INVALID;
 
 #[derive(Default)]
-pub struct HttpDirectory {
+pub(crate) struct HttpDirectory {
     names: Vec<std::ops::Range<usize>>,
     bytes: Vec<u8>,
     pending: bool,
@@ -17,7 +15,11 @@ fn at<'a>(bytes: &'a [u8], span: &std::ops::Range<usize>) -> &'a [u8] {
 }
 
 impl HttpDirectory {
-    fn name(&self, index: usize) -> Option<&[u8]> {
+    /// The finished store's name at `index`.
+    pub(crate) fn name(&self, index: usize) -> Option<&[u8]> {
+        if self.pending {
+            return None;
+        }
         self.names.get(index).map(|span| at(&self.bytes, span))
     }
     fn copy_name(&mut self, name: &[u8]) -> Result<std::ops::Range<usize>, i32> {
@@ -29,18 +31,18 @@ impl HttpDirectory {
     }
     /// The names stored.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.names.len()
     }
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
     /// Whether the finished store holds `name`.
     ///
     /// # Errors
     /// `INVALID` while a scan is unfinished.
-    pub fn contains(&self, name: &[u8]) -> Result<bool, i32> {
+    pub(crate) fn contains(&self, name: &[u8]) -> Result<bool, i32> {
         if self.pending {
             return Err(INVALID);
         }
@@ -54,14 +56,14 @@ impl HttpDirectory {
     ///
     /// # Errors
     /// `ALLOCATION` when the copy cannot be stored; no name is published.
-    pub fn scan_append(&mut self, name: &[u8]) -> Result<(), i32> {
+    pub(crate) fn scan_append(&mut self, name: &[u8]) -> Result<(), i32> {
         let span = self.copy_name(name)?;
         self.names.push(span);
         self.pending = true;
         Ok(())
     }
     /// Finishes the scan in place: unsigned byte sort, then duplicates go.
-    pub fn scan_finish(&mut self) {
+    pub(crate) fn scan_finish(&mut self) {
         if self.pending {
             let bytes = &self.bytes;
             self.names
@@ -69,54 +71,6 @@ impl HttpDirectory {
             self.names.dedup_by(|a, b| at(bytes, a) == at(bytes, b));
             self.pending = false;
         }
-    }
-
-    /// Render directly from owned ordered name bytes, without exporting a borrowed
-    /// pointer or making a persistent native copy. Part0/2 ignore index; part1 uses
-    /// the indexed directory entry. Existing page serialization/size policy is shared.
-    /// # Safety
-    /// The page's spans are initialized; part1 requires a live indexed entry.
-    /// Output/written obey `index_page`'s disjointness contract and cannot alias
-    /// this owner's storage. Query and fill are separate complete calls.
-    pub(crate) unsafe fn page(
-        &self,
-        index: usize,
-        page: &HttpIndexPage,
-        output: *mut u8,
-        capacity: usize,
-        written: *mut usize,
-    ) -> i32 {
-        let owner = self;
-        let entry = if page.part == 1 {
-            if owner.pending {
-                return INVALID;
-            }
-            let Some(name) = owner.name(index) else {
-                return INVALID;
-            };
-            HttpProxyText {
-                data: name.as_ptr(),
-                length: name.len(),
-            }
-        } else {
-            HttpProxyText {
-                data: ptr::null(),
-                length: 0,
-            }
-        };
-        let copy_span = |text: &HttpProxyText| HttpProxyText {
-            data: text.data,
-            length: text.length,
-        };
-        let page = HttpIndexPage {
-            path: copy_span(&page.path),
-            entry,
-            css: copy_span(&page.css),
-            powered: copy_span(&page.powered),
-            part: page.part,
-        };
-        // SAFETY: `page` is a local copy of the caller's spans; output follows its contract.
-        unsafe { swr_v1_http_index_page(&raw const page, output, capacity, written) }
     }
 }
 
@@ -150,37 +104,5 @@ mod tests {
             assert_eq!(owner.contains(name), Ok(true));
         }
         assert_eq!(owner.contains(b"x"), Ok(false));
-    }
-    #[test]
-    fn rendering_reads_owned_entry_and_preserves_page_query_prefix_contract() {
-        let mut owner = HttpDirectory::default();
-        let span = |bytes: &[u8]| HttpProxyText {
-            data: bytes.as_ptr(),
-            length: bytes.len(),
-        };
-        assert_eq!(owner.scan_append(b"a & <name>"), Ok(()));
-        owner.scan_finish();
-        let page = HttpIndexPage {
-            path: span(b"/dir/"),
-            entry: span(b"ignored"),
-            css: span(b""),
-            powered: span(b""),
-            part: 1,
-        };
-        let expected = b"\t\t<li><a href=/dir/a & <name>>a & <name></a></li>\n";
-        for capacity in 0..=expected.len() + 2 {
-            let mut output = vec![0xcc; capacity + 1];
-            let mut written = 99;
-            assert_eq!(
-                unsafe { owner.page(0, &page, output.as_mut_ptr(), capacity, &raw mut written) },
-                0
-            );
-            assert_eq!(written, expected.len());
-            assert_eq!(
-                &output[..capacity.min(written)],
-                &expected[..capacity.min(written)]
-            );
-            assert_eq!(output[capacity], 0xcc);
-        }
     }
 }

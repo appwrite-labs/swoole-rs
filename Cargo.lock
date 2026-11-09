@@ -784,6 +784,7 @@ dependencies = [
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-ports",
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
@@ -809,6 +810,7 @@ dependencies = [
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-ports",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-zend",
@@ -819,6 +821,7 @@ name = "swoole-rs-phplocks"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
+ "swoole-rs-hooks",
  "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-phpcoroutines",

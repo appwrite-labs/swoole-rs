@@ -304,12 +304,6 @@ unsafe extern "C" {
     fn create_dir(path: *const c_char, length: usize) -> c_int;
     /// `System::sleep(sec)` (crates/hooks).
     fn swoole_coroutine_sleep(sec: c_int);
-    /// `swoole::http2::get_frame_length` (crates/ports).
-    fn swr_v1_http2_frame_length(
-        protocol: *const c_void,
-        socket: *mut c_void,
-        pl: *mut c_void,
-    ) -> isize;
     /// The HTTP/2 server (crates/phphttp2): a stream's reset, and a
     /// connection's session. `receive` leaves a bailout pending.
     fn swr_v1_phphttp2_server_reset(ctx: *mut c_void, stream_id: u32, code: u32);
@@ -388,7 +382,8 @@ fn http2_begin(socket: Socket) {
     record.protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
     record.protocol.package_length_offset = 0;
     record.protocol.package_body_offset = 0;
-    record.protocol.get_package_length = swr_v1_http2_frame_length as *mut c_void;
+    record.protocol.get_package_length =
+        swoole_rs_ports::http_routes::exports::http2_length as *mut c_void;
 }
 
 /// `recv_wait`: the socket waits for a request.

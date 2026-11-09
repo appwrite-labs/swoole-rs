@@ -194,8 +194,7 @@ pub extern "C" fn swr_v1_hooks_sleep_until(
 pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
     #[cfg(feature = "iouring")]
     {
-        // SAFETY: the engine's host, in a coroutine as the caller promises.
-        unsafe { crate::uring::swr_v1_uring_sleep(&raw const crate::iouring::HOST, sec) }
+        crate::uring::sleep(&crate::iouring::HOST, sec)
     }
     #[cfg(not(feature = "iouring"))]
     {

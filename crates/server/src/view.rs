@@ -161,12 +161,8 @@ impl<'a> Server<'a> {
     }
 
     /// `apply_rewrite_rules` on a static context: true when a rule applied.
-    ///
-    /// # Safety
-    /// `context` is a live context no one else uses meanwhile.
-    pub unsafe fn static_rewrite(self, context: *mut swoole_rs_http::HttpStaticContext) -> bool {
-        // SAFETY: the live state and the caller's context.
-        unsafe { crate::swr_v1_server_static_rewrite(self.state(), context) }
+    pub fn static_rewrite(self, context: &mut swoole_rs_http::HttpStaticContext) -> bool {
+        crate::static_config::apply_rewrite_rules(self.state(), context)
     }
 
     /// `document_root`, copied.

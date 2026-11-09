@@ -1,7 +1,7 @@
 // Upstream's StaticHandler::parse_range behind a C entry point: build.rs copies the
 // pinned body into SWR_RANGE_INC unchanged. The facade gives it upstream's
 // StaticHandler fields, with the file size, MIME type, boundary and If-Range verdict
-// chosen by the caller. shim/http_range_context.cc is the candidate.
+// chosen by the caller. The candidate is crates/http's static context (fuzz/src/lib.rs).
 #include <cerrno>
 #include <cstdarg>
 #include <cstdint>

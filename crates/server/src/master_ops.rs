@@ -2447,16 +2447,11 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_SOCKET, OP_REACTOR_BARRIER, OP_RELEASE_PIPE_BUFFERS, OP_SC_IDLE_TIMER,
         OP_ST_CMD_SEND, OP_ST_PIPE_COMMAND_NEW,
     };
-    use core::ffi::c_void;
     use swoole_rs_process::command::{TO_MANAGER, TO_REACTOR_THREAD, TO_TASK_WORKER};
     /// `SW_SOCK_SSL`.
     const SOCK_SSL: c_int = 1 << 9;
     use crate::server_object::{barrier, port_delete, port_new};
-    // SAFETY: crates/reactor's, under its upstream symbol.
-    unsafe extern "C-unwind" {
-        #[link_name = "_ZN6swoole7network6Socket13set_fd_optionEii"]
-        fn set_fd_option(socket: *mut c_void, nonblock: c_int, cloexec: c_int) -> bool;
-    }
+    use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
     let serv = o.ctx.serv;
     Some(match op {
         // `swoole_timer_add(sec2msec(port->max_idle_time), true, get_timeout_callback(...))`
@@ -2542,8 +2537,9 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 return Some(0);
             }
             o.ctx.port = ls;
-            // SAFETY: the socket `import` made: O_NONBLOCK and O_CLOEXEC.
-            unsafe { set_fd_option(o.port().socket, 1, 1) };
+            // SAFETY: the record `import` made, which nothing else borrows here: O_NONBLOCK
+            // and O_CLOEXEC.
+            socket_set_fd_option(unsafe { &mut *o.port().socket.cast() }, 1, 1);
             1
         }
         OP_ST_CMD_SEND => {

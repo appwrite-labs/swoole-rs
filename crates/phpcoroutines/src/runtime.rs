@@ -122,7 +122,7 @@ pub(crate) fn create(
     };
     let ctx = context::current();
     // SAFETY: the running context.
-    unsafe { swoole_rs_zend::sys::swr_zend_coroutine_save(context::vm(ctx)) };
+    unsafe { swoole_rs_zend::sys::swr_zend_coroutine_save(ctx.vm()) };
     let cid = host::create((&raw mut args).cast());
     bailout::trapped(0)?;
     Ok(cid)
@@ -223,11 +223,7 @@ pub(crate) fn shutdown() -> bool {
 /// then run the interrupt function Zend had.
 unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
     let task = context::current();
-    let (co, enabled, last) = {
-        // SAFETY: a live context.
-        let this = unsafe { context::at(task) };
-        (this.co, this.enable_scheduler, this.last_msec)
-    };
+    let (co, enabled, last) = (task.co(), task.enable_scheduler(), task.last_msec());
     if !co.is_null()
         && interrupt_running()
         && enabled
