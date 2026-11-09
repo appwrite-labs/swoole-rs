@@ -57,9 +57,9 @@ def require_frozen_source(expected):
 
 
 # A change here can affect every module's native build or behaviour.
-SHARED_PATHS = ('crates/ffi/', 'native/include/', 'native/integration/', 'native/halfclose/',
-                'migration/patches/integration/', 'Cargo.toml', 'Cargo.lock',
-                'tools/build_hybrid.py', 'tools/build_upstream.py', 'migration/modules.json')
+SHARED_PATHS = ('crates/ffi/', 'crates/ext/', 'native/include/', 'native/halfclose/',
+                'migration/patches/integration/', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/',
+                'tools/build_hybrid.py', 'tools/build_ext.py', 'tools/build_upstream.py', 'migration/modules.json')
 
 
 def dependents():
