@@ -86,11 +86,10 @@ enum Log {
     UnknownMethod,
     NoHttp2,
     HeaderTooLarge,
+    TransferEncoding,
     ChunkedError,
     ChunkedTooLarge,
     TooLarge,
-    /// The bytes discarded.
-    Discard(u64),
 }
 
 /// Canned responses for `OP_SEND`.
@@ -105,11 +104,10 @@ const SW_ERROR: u64 = 4;
 const SW_OK: i32 = 0;
 const SW_ERR: i32 = -1;
 /// `SW_HTTP_PRI`, `SW_HTTP_HEADER_MAX_SIZE`, `sizeof(SW_HTTP2_PRI_STRING) - 1`,
-/// `sizeof(SW_HTTP_CHUNK_EOF) - 1`, `SW_BUFFER_SIZE_BIG`; native asserts each.
+/// `SW_BUFFER_SIZE_BIG`; native asserts each.
 const HTTP_PRI: u8 = 27;
 const HEADER_MAX_SIZE: u64 = 65536;
 const HTTP2_PREFACE: u64 = 24;
-const CHUNK_EOF: u32 = 5;
 const BUFFER_SIZE_BIG: u64 = 65536;
 
 /// The head of every read context (`SwrPortsShared`): the current buffer and request,
@@ -379,6 +377,7 @@ fn log(n: &Native<impl Call>, which: Log) {
             TRACE,
             "Bad Request: request header size is too large".to_owned(),
         ),
+        Log::TransferEncoding => (TRACE, "Bad Request: invalid Transfer-Encoding".to_owned()),
         Log::ChunkedError => (
             TRACE,
             "Bad Request: protocol error when parse chunked length".to_owned(),
@@ -386,8 +385,9 @@ fn log(n: &Native<impl Call>, which: Log) {
         Log::ChunkedTooLarge => (
             WARNING,
             format!(
-                "Request Entity Too Large: request length (chunked) has already been greater \
-                 than the package_max_length({})",
+                "Request Entity Too Large: the chunked request length ({}) has reached the \
+                 package_max_length({})",
+                n.buffer().length,
                 max()
             ),
         ),
@@ -403,10 +403,6 @@ fn log(n: &Native<impl Call>, which: Log) {
                 ),
             )
         }
-        Log::Discard(bytes) => (
-            TRACE,
-            format!("Invalid Request: {bytes} bytes has been discard"),
-        ),
     };
     log::error_log(
         level,
@@ -452,6 +448,9 @@ fn head(n: &Native<impl Call>) -> Option<Step> {
     }
     if !n.request().header_parsed {
         n.request().parse_header_info();
+        if n.request().excepted {
+            return Some(bad(n, Log::TransferEncoding));
+        }
         // `package_max_length` is a `uint32_t`.
         n.request().max_length = u32::try_from(n.get(OP_MAX_LENGTH)).unwrap_or(u32::MAX);
         if n.request().form.is_some() {
@@ -460,7 +459,11 @@ fn head(n: &Native<impl Call>) -> Option<Step> {
                 u64::from(request.header_length).wrapping_add(request.content_length)
                     > u64::from(request.max_length)
             } {
+                let send_continue = continues(n);
                 n.get(OP_REQ_MULTIPART_INIT);
+                if send_continue {
+                    n.op(OP_SEND, SEND_CONTINUE);
+                }
             } else {
                 // `delete form_data_`: no parser was made for it.
                 n.request().form = None;
@@ -519,17 +522,9 @@ fn form(n: &Native<impl Call>) -> Option<Step> {
 /// The first look at a request: one without a body is served here, pipelined
 /// requests behind it parsed next.
 fn bodyless(n: &Native<impl Call>) -> Option<Step> {
-    if n.request().nobody_chunked {
-        let header_length = n.request().header_length;
-        if (n.buffer().length as u64) < u64::from(header_length) + u64::from(CHUNK_EOF) {
-            return Some(Step::Receive);
-        }
-        n.request().header_length = header_length.wrapping_add(CHUNK_EOF);
-    }
     let request = n.request();
     request.tried_to_dispatch = true;
-    let bodyless = request.content_length == 0 && (request.known_length || !request.chunked);
-    if !bodyless {
+    if request.content_length != 0 || request.chunked {
         return None;
     }
     let header_length = u64::from(n.request().header_length);
@@ -553,55 +548,72 @@ fn bodyless(n: &Native<impl Call>) -> Option<Step> {
     Some(Step::Done)
 }
 
-/// A request with a body: wait for all of it, then dispatch.
+/// Whether the client waits for `100 Continue`: it sent only the head, asking for one.
+fn continues(n: &Native<impl Call>) -> bool {
+    n.buffer().length as u64 == u64::from(n.request().header_length)
+        && n.request().has_expect_header()
+}
+
+/// A request with a body: wait for all of it, then dispatch; pipelined requests
+/// behind it are parsed next.
 fn body(n: &Native<impl Call>) -> Step {
     let max = n.get(OP_MAX_LENGTH);
     let request_length;
     if n.request().chunked {
         if n.request().get_chunked_body_length() < 0 {
+            if n.request().too_large {
+                return Step::Reply(SEND_TOO_LARGE);
+            }
             if n.request().excepted {
                 return bad(n, Log::ChunkedError);
             }
-            let wanted = (n.buffer().size as u64).wrapping_add(BUFFER_SIZE_BIG);
-            if wanted > max {
+            if n.buffer().length as u64 >= max {
                 log(n, Log::ChunkedTooLarge);
                 return Step::Reply(SEND_TOO_LARGE);
             }
+            if continues(n) {
+                n.op(OP_SEND, SEND_CONTINUE);
+            }
             let buffer = n.buffer();
             if buffer.length == buffer.size {
-                n.op(OP_BUF_EXTEND, wanted);
+                // The limit check above makes the new size larger.
+                n.op(
+                    OP_BUF_EXTEND,
+                    (buffer.size as u64 + BUFFER_SIZE_BIG).min(max),
+                );
             }
             return Step::Receive;
         }
         let request = n.request();
-        request_length = u64::from(request.header_length).wrapping_add(request.content_length);
+        request_length = u64::from(request.header_length) + request.content_length;
     } else {
         let request = n.request();
-        request_length = u64::from(request.header_length).wrapping_add(request.content_length);
-        if request_length > max {
+        let header_length = u64::from(request.header_length);
+        if header_length > max || request.content_length > max - header_length {
             log(n, Log::TooLarge);
             return Step::Reply(SEND_TOO_LARGE);
         }
+        request_length = header_length + request.content_length;
         if request_length > n.buffer().size as u64 {
             n.op(OP_BUF_EXTEND, request_length);
         }
         if (n.buffer().length as u64) < request_length {
-            if n.request().has_expect_header() {
+            if continues(n) {
                 n.op(OP_SEND, SEND_CONTINUE);
             }
             return Step::Receive;
         }
     }
-    let length = n.buffer().length as u64;
-    if length > request_length {
-        log(n, Log::Discard(length - request_length));
-        n.buffer().length = size(request_length);
-    }
     n.set_offset(request_length);
-    if n.signed(OP_DISPATCH_REQUEST, n.buffer().length as u64) < 0 {
+    if n.signed(OP_DISPATCH_REQUEST, request_length) < 0 {
         return Step::Close;
     }
     if n.is(OP_ACTIVE) {
+        if n.buffer().length as u64 > request_length {
+            n.op(OP_BUF_REDUCE, request_length);
+            n.request().clean();
+            return Step::Parse;
+        }
         n.get(OP_REQ_DESTROY);
         if !n.is(OP_RELEASE) {
             n.clear();
@@ -953,6 +965,101 @@ mod tests {
         assert!(
             f.effects.contains(&OP_RELEASE),
             "large buffers released after dispatch"
+        );
+    }
+
+    #[test]
+    fn a_request_behind_a_body_is_parsed_next() {
+        let post = b"POST /a HTTP/1.1\r\nContent-Length: 2\r\n\r\nab";
+        let chunked = b"POST /b HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nc\r\n0\r\n\r\n";
+        let mut f = fake(&[&[&post[..], GET].concat()]);
+        run(ON_READ_HTTP, &mut f);
+        assert_eq!(f.dispatched, [post.to_vec(), GET.to_vec()], "both, whole");
+        let mut f = fake(&[&[&chunked[..], GET].concat()]);
+        f.buf.size = 128;
+        f.bytes.resize(128, 0);
+        run(ON_READ_HTTP, &mut f);
+        assert_eq!(
+            f.dispatched,
+            [chunked.to_vec(), GET.to_vec()],
+            "both, whole"
+        );
+    }
+
+    #[test]
+    fn continue_is_sent_once_before_the_body() {
+        let head = b"POST / HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 4\r\n\r\n";
+        let mut f = fake(&[head, b"ab", b"cd"]);
+        f.buf.size = 128;
+        f.bytes.resize(128, 0);
+        for _ in 0..3 {
+            run(ON_READ_HTTP, &mut f);
+        }
+        assert_eq!(f.sent, [SEND_CONTINUE], "only while just the head arrived");
+        assert_eq!(f.dispatched.len(), 1, "then the request");
+
+        let head = b"POST / HTTP/1.1\r\nExpect: 100-continue\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let mut f = fake(&[head, b"1\r\na\r\n", b"0\r\n\r\n"]);
+        f.buf.size = 128;
+        f.bytes.resize(128, 0);
+        for _ in 0..3 {
+            run(ON_READ_HTTP, &mut f);
+        }
+        assert_eq!(
+            f.sent,
+            [SEND_CONTINUE],
+            "chunked: once, before the first chunk"
+        );
+        assert_eq!(f.dispatched.len(), 1, "then the request");
+    }
+
+    #[test]
+    fn bad_transfer_codings_and_chunks_are_rejected() {
+        let mut f = fake(&[b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked, gzip\r\n\r\n"]);
+        run(ON_READ_HTTP, &mut f);
+        assert_eq!(f.sent, [SEND_BAD_REQUEST], "400");
+        assert_eq!(
+            logged(),
+            [(
+                TRACE,
+                7102,
+                "Bad Request: invalid Transfer-Encoding from session#7 on 127.0.0.1:9501"
+                    .to_owned()
+            )],
+            "logged"
+        );
+
+        let mut f = fake(&[b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n801\r\n"]);
+        run(ON_READ_HTTP, &mut f);
+        assert_eq!(
+            f.sent,
+            [SEND_TOO_LARGE],
+            "a chunk past package_max_length: 413"
+        );
+        assert!(logged().is_empty(), "without a log");
+
+        let mut f = fake(&[
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+            &[b'1'; 1000],
+        ]);
+        for _ in 0..4 {
+            run(ON_READ_HTTP, &mut f);
+        }
+        assert_eq!(
+            f.sent,
+            [SEND_TOO_LARGE],
+            "a size line filling package_max_length: 413"
+        );
+        assert_eq!(
+            logged(),
+            [(
+                WARNING,
+                7102,
+                "Request Entity Too Large: the chunked request length (1024) has reached the \
+                 package_max_length(1024) from session#7 on 127.0.0.1:9501"
+                    .to_owned()
+            )],
+            "logged"
         );
     }
 

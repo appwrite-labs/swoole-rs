@@ -303,7 +303,8 @@ pub struct HttpRequest {
     pub known_length: bool,
     pub keep_alive: bool,
     pub chunked: bool,
-    pub nobody_chunked: bool,
+    /// `CHUNK_SIZE`, `CHUNK_DATA` or `CHUNK_TRAILER`: what the chunked body expects next.
+    pub chunk_state: u8,
     pub url_offset: u32,
     pub url_length: u32,
     pub max_length: u32,
@@ -315,6 +316,87 @@ pub struct HttpRequest {
     pub form: Option<Box<HttpForm>>,
     pub buffer: *mut HttpString,
     pub native: HttpNative,
+    /// The current chunk's size, where its line or data starts (0 until the body
+    /// is first scanned), and how far its size line has been scanned.
+    pub chunk_length: usize,
+    pub chunk_offset: usize,
+    pub chunk_scan_offset: usize,
+}
+
+/// `ChunkState`.
+const CHUNK_SIZE: u8 = 0;
+const CHUNK_DATA: u8 = 1;
+const CHUNK_TRAILER: u8 = 2;
+
+/// Why a chunk size line is rejected: `CHUNK_SIZE_MALFORMED`, `CHUNK_SIZE_TOO_LARGE`.
+enum ChunkSize {
+    Malformed,
+    TooLarge,
+}
+
+/// RFC 9110 `tchar`.
+fn token(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+/// `qdtext`, or with `pair` the character of a `quoted-pair`, which may also be `"` or `\\`.
+fn quoted_text(byte: u8, pair: bool) -> bool {
+    byte == b'\t' || (byte >= 0x20 && byte != 0x7f && (pair || (byte != b'"' && byte != b'\\')))
+}
+
+/// A chunk size line without its CRLF: hex digits, then `;name[=token|"quoted"]`
+/// extensions, with no size above `max`.
+fn chunk_size(line: &[u8], max: usize) -> Result<usize, ChunkSize> {
+    let mut length = 0usize;
+    let mut at = 0;
+    while let Some(digit) = line.get(at).and_then(|&b| char::from(b).to_digit(16)) {
+        let digit = digit as usize;
+        if digit > max || length > (max - digit) / 16 {
+            return Err(ChunkSize::TooLarge);
+        }
+        length = length * 16 + digit;
+        at += 1;
+    }
+    if at == 0 {
+        return Err(ChunkSize::Malformed);
+    }
+    let run = |at: &mut usize, test: fn(u8) -> bool| {
+        let start = *at;
+        while line.get(*at).is_some_and(|&b| test(b)) {
+            *at += 1;
+        }
+        *at > start
+    };
+    while let Some(&byte) = line.get(at) {
+        at += 1;
+        if byte != b';' || !run(&mut at, token) {
+            return Err(ChunkSize::Malformed);
+        }
+        match line.get(at) {
+            None => break,
+            Some(b'=') => at += 1,
+            Some(_) => continue,
+        }
+        match line.get(at) {
+            Some(b'"') => loop {
+                at += 1;
+                match line.get(at) {
+                    Some(b'"') => {
+                        at += 1;
+                        break;
+                    }
+                    Some(b'\\') if line.get(at + 1).is_some_and(|&b| quoted_text(b, true)) => {
+                        at += 1;
+                    }
+                    Some(&b) if quoted_text(b, false) => {}
+                    _ => return Err(ChunkSize::Malformed),
+                }
+            },
+            _ if run(&mut at, token) => {}
+            _ => return Err(ChunkSize::Malformed),
+        }
+    }
+    Ok(length)
 }
 
 /// `Request()`: initializes native in-place storage without allocating another request.
@@ -354,7 +436,7 @@ impl HttpRequest {
             known_length: false,
             keep_alive: false,
             chunked: false,
-            nobody_chunked: false,
+            chunk_state: CHUNK_SIZE,
             url_offset: 0,
             url_length: 0,
             max_length: 0,
@@ -364,6 +446,9 @@ impl HttpRequest {
             form: None,
             buffer: ptr::null_mut(),
             native,
+            chunk_length: 0,
+            chunk_offset: 0,
+            chunk_scan_offset: 0,
         }
     }
 
@@ -440,7 +525,6 @@ impl HttpRequest {
             flags: u32::from(self.known_length)
                 | u32::from(self.keep_alive) << 1
                 | u32::from(self.chunked) << 2
-                | u32::from(self.nobody_chunked) << 3
                 | u32::from(self.header_parsed) << 4,
             number_errors: 0,
         };
@@ -452,7 +536,6 @@ impl HttpRequest {
             self.known_length = state.flags & 1 != 0;
             self.keep_alive = state.flags & 2 != 0;
             self.chunked = state.flags & 4 != 0;
-            self.nobody_chunked = state.flags & 8 != 0;
             self.header_parsed = state.flags & 16 != 0;
             if state.number_errors != 0 {
                 self.op(
@@ -485,31 +568,96 @@ impl HttpRequest {
         }
     }
 
-    /// Finds the chunked body's end: `SW_OK` once its zero-length chunk arrived.
+    /// Scans the chunked body from where the last call stopped: `SW_OK` once its
+    /// trailer section ended, with `content_length` up to there; `SW_ERR` to wait for
+    /// more, or with `excepted` (bad framing) or `too_large` (past `max_length`) set.
     pub fn get_chunked_body_length(&mut self) -> i32 {
-        let (buffer, input) = self.input();
-        let mut cursor = usize::try_from(buffer.offset).unwrap_or(usize::MAX);
-        let mut initial = true;
-        loop {
-            let (status, step) =
-                framing::chunk_step(input, cursor, self.header_length as usize, initial);
-            if status < 0 {
-                if status == -2 {
-                    self.excepted = true;
-                }
-                return SW_ERR;
-            }
-            if status == 2 {
-                self.known_length = true;
-                self.content_length = step.body_length;
-                return SW_OK;
-            }
-            if status == 3 {
-                return SW_ERR;
-            }
-            cursor = step.next;
-            initial = false;
+        let (_, input) = self.input();
+        let max = self.max_length as usize;
+        // `clean()` leaves zero as the uninitialized offset, and the header has been parsed here.
+        if self.chunk_offset == 0 {
+            self.chunk_offset = self.header_length as usize;
+            self.chunk_scan_offset = self.chunk_offset;
         }
+        loop {
+            if self.chunk_state == CHUNK_DATA {
+                if self.chunk_offset > input.len()
+                    || self.chunk_length > input.len() - self.chunk_offset
+                {
+                    return SW_ERR;
+                }
+                let end = self.chunk_offset + self.chunk_length;
+                for (at, byte) in [(end, b'\r'), (end + 1, b'\n')] {
+                    match input.get(at) {
+                        None => return SW_ERR,
+                        Some(&b) if b != byte => return self.chunk_error(false),
+                        _ => {}
+                    }
+                }
+                (self.chunk_offset, self.chunk_scan_offset) = (end + 2, end + 2);
+                self.chunk_length = 0;
+                self.chunk_state = CHUNK_SIZE;
+                continue;
+            }
+            let line_start = self.chunk_offset;
+            let scan = self.chunk_scan_offset.min(input.len());
+            let rest = input.get(scan..).unwrap_or_default();
+            let Some(found) = memchr::memchr2(b'\r', b'\n', rest) else {
+                self.chunk_scan_offset = input.len();
+                return SW_ERR;
+            };
+            let line_end = scan + found;
+            match input.get(line_end..) {
+                Some([b'\r', b'\n', ..]) => {}
+                Some([b'\r']) => {
+                    self.chunk_scan_offset = line_end;
+                    return SW_ERR;
+                }
+                _ => return self.chunk_error(false),
+            }
+            (self.chunk_offset, self.chunk_scan_offset) = (line_end + 2, line_end + 2);
+            if self.chunk_state == CHUNK_TRAILER {
+                if self.chunk_offset > max {
+                    return self.chunk_error(true);
+                }
+                if line_end == line_start {
+                    self.known_length = true;
+                    self.content_length = (self.chunk_offset - self.header_length as usize) as u64;
+                    return SW_OK;
+                }
+                continue;
+            }
+            let line = input.get(line_start..line_end).unwrap_or_default();
+            self.chunk_length = match chunk_size(line, max) {
+                Ok(length) => length,
+                Err(ChunkSize::TooLarge) => return self.chunk_error(true),
+                Err(ChunkSize::Malformed) => return self.chunk_error(false),
+            };
+            // What must still fit: the chunk and its CRLF, then the last chunk and the
+            // trailer section's end; the last chunk's trailer only needs its CRLF.
+            let (state, rest) = if self.chunk_length == 0 {
+                (CHUNK_TRAILER, Some(2))
+            } else {
+                (CHUNK_DATA, self.chunk_length.checked_add(2 + 5))
+            };
+            self.chunk_state = state;
+            if rest.is_none_or(|rest| {
+                max.checked_sub(self.chunk_offset)
+                    .is_none_or(|room| room < rest)
+            }) {
+                return self.chunk_error(true);
+            }
+        }
+    }
+
+    /// Bad chunk framing (`excepted`), or a body past `max_length` (`too_large`).
+    fn chunk_error(&mut self, too_large: bool) -> i32 {
+        if too_large {
+            self.too_large = true;
+        } else {
+            self.excepted = true;
+        }
+        SW_ERR
     }
 
     /// An `Expect: 100-continue` header.
@@ -1221,7 +1369,7 @@ mod tests {
             offset_of!(HttpRequest, native),
             size_of::<HttpRequest>(),
         ];
-        assert_eq!(tail, [48, 56, 64], "HttpRequest tail");
+        assert_eq!(tail, [48, 56, 88], "HttpRequest tail");
         let parser = [
             offset_of!(Parser, boundary_length),
             offset_of!(Parser, fp),
@@ -1385,26 +1533,148 @@ mod tests {
 
         let (_, r) =
             parsed(b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n");
-        assert!(r.chunked && r.nobody_chunked, "chunked with no body");
+        assert!(r.chunked && !r.excepted, "chunked with Content-Length: 0");
     }
 
     #[test]
-    fn chunked_bodies_end_at_the_zero_chunk() {
-        let head = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
-        let offset = i64::try_from(head.len()).unwrap();
-        let (mut i, mut r) = parsed(&[&head[..], b"3\r\nabc\r\n0\r\n\r\n"].concat());
-        i.buffer.offset = offset;
-        assert_eq!(r.get_chunked_body_length(), SW_OK, "complete");
-        assert!(r.known_length, "length known");
-        assert_eq!(
-            r.content_length, 13,
-            "upstream: up to the zero chunk's line, plus 4"
-        );
+    fn chunked_must_be_the_final_transfer_coding() {
+        for (codings, chunked, excepted) in [
+            (&b"Transfer-Encoding: chunked"[..], true, false),
+            (b"Transfer-Encoding: gzip, \tCHUNKED  ", true, false),
+            (
+                b"Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked",
+                true,
+                false,
+            ),
+            (b"Transfer-Encoding: chunked, gzip", false, true),
+            (
+                b"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked",
+                false,
+                true,
+            ),
+            (b"Transfer-Encoding: chunkedchunked", false, true),
+            (b"Transfer-Encoding: chunked\t", false, true),
+            (b"Transfer-Encoding:", false, true),
+            (b"Content-Length: 3", false, false),
+        ] {
+            let head = [&b"POST / HTTP/1.1\r\n"[..], codings, b"\r\n\r\n"].concat();
+            let (_, r) = parsed(&head);
+            assert_eq!(
+                (r.chunked, r.excepted, r.header_parsed),
+                (chunked, excepted, true),
+                "{}",
+                String::from_utf8_lossy(codings)
+            );
+        }
+    }
 
-        let (mut i, mut r) = parsed(&[&head[..], b"q\r\n0\r\n\r\n"].concat());
-        i.buffer.offset = offset;
-        assert_eq!(r.get_chunked_body_length(), SW_ERR, "bad chunk");
-        assert!(r.excepted, "a bad chunk length is an error");
+    /// `get_chunked_body_length` over `body` after a chunked head, under `max`.
+    fn chunked(body: &[u8], max: u32) -> (i32, HttpRequest, Box<Input>) {
+        let head = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let (i, mut r) = parsed(&[&head[..], body].concat());
+        r.max_length = max;
+        (r.get_chunked_body_length(), r, i)
+    }
+
+    #[test]
+    fn chunked_bodies_end_after_the_trailer_section() {
+        let head = 47u64;
+        for (body, length) in [
+            (&b"3\r\nabc\r\n0\r\n\r\n"[..], 13),
+            (b"3;a=b;c;d=\"x\\\"y\"\r\nabc\r\n0\r\n\r\n", 28),
+            (b"0\r\nX-Trailer: 1\r\n\r\n", 19),
+            // A pipelined request behind the body stays out of it.
+            (b"0\r\n\r\nGET / HTTP/1.1\r\n\r\n", 5),
+        ] {
+            let (status, r, _) = chunked(body, 1 << 20);
+            assert_eq!(
+                (status, r.known_length, r.content_length),
+                (SW_OK, true, length),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+            assert_eq!(r.chunk_offset as u64, head + length, "the body's end");
+        }
+    }
+
+    #[test]
+    fn malformed_chunks_are_errors_and_partial_ones_wait() {
+        for body in [
+            &b"q\r\n0\r\n\r\n"[..],
+            b"3 \r\nabc\r\n0\r\n\r\n",
+            b"3\nabc\r\n0\r\n\r\n",
+            b"3\r\nabcd\r\n0\r\n\r\n",
+            b"3\r\nabc\rx",
+            b"3;\r\nabc\r\n0\r\n\r\n",
+            b"3;a=\r\nabc\r\n0\r\n\r\n",
+            b"3;a=\"b\r\nabc\r\n0\r\n\r\n",
+            b"3;a b\r\nabc\r\n0\r\n\r\n",
+        ] {
+            let (status, r, _) = chunked(body, 1 << 20);
+            assert_eq!(
+                (status, r.excepted, r.too_large),
+                (SW_ERR, true, false),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        for body in [
+            &b""[..],
+            b"3",
+            b"3\r",
+            b"3\r\nab",
+            b"3\r\nabc\r",
+            b"0\r\n",
+            b"0\r\nX: 1\r\n",
+        ] {
+            let (status, r, _) = chunked(body, 1 << 20);
+            assert_eq!(
+                (status, r.excepted, r.too_large),
+                (SW_ERR, false, false),
+                "waits: {}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
+    #[test]
+    fn a_split_body_resumes_where_the_scan_stopped() {
+        let (status, mut r, mut i) = chunked(b"3\r\nab", 1 << 20);
+        assert_eq!(
+            (status, r.chunk_state, r.chunk_length),
+            (SW_ERR, CHUNK_DATA, 3)
+        );
+        let rest = b"c\r\n0\r\n\r\n";
+        let length = i.buffer.length;
+        i.bytes[length..length + rest.len()].copy_from_slice(rest);
+        i.buffer.length += rest.len();
+        assert_eq!(r.get_chunked_body_length(), SW_OK, "complete");
+        assert_eq!(r.content_length, 13, "the whole body");
+    }
+
+    #[test]
+    fn chunked_bodies_past_package_max_length_are_too_large() {
+        // 47 header bytes: a 3-byte chunk needs 47 + 3 + 3 + 2 + 5 = 60.
+        let (status, r, _) = chunked(b"3\r\nabc\r\n0\r\n\r\n", 60);
+        assert_eq!(
+            (status, r.content_length),
+            (SW_OK, 13),
+            "exactly at the limit"
+        );
+        let (status, r, _) = chunked(b"3\r\nabc\r\n0\r\n\r\n", 59);
+        assert_eq!(
+            (status, r.too_large, r.excepted),
+            (SW_ERR, true, false),
+            "one byte over"
+        );
+        let (status, r, _) = chunked(b"FFFFFFFFFFFFFFFFFFFF\r\n", u32::MAX);
+        assert_eq!((status, r.too_large), (SW_ERR, true), "no overflow");
+        let (status, r, _) = chunked(b"0\r\nX-Trailer: 1\r\n\r\n", 60);
+        assert_eq!(
+            (status, r.too_large),
+            (SW_ERR, true),
+            "a trailer past the limit"
+        );
     }
 
     #[test]

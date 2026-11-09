@@ -133,85 +133,6 @@ fn header_end(input: &[u8], frame: &mut HttpFrame) -> i32 {
     frame.offset = frame.offset.max(input.len().saturating_sub(3));
     INVALID
 }
-fn hex(byte: u8) -> Option<usize> {
-    match byte {
-        b'0'..=b'9' => Some(usize::from(byte - b'0')),
-        b'a'..=b'f' => Some(usize::from(byte - b'a' + 10)),
-        b'A'..=b'F' => Some(usize::from(byte - b'A' + 10)),
-        _ => None,
-    }
-}
-fn chunk_number(input: &[u8], begin: usize) -> (usize, usize) {
-    let mut at = begin;
-    while input.get(at).is_some_and(|&b| c_space(b)) {
-        at += 1;
-    }
-    let negative = input.get(at) == Some(&b'-');
-    if negative || input.get(at) == Some(&b'+') {
-        at += 1;
-    }
-    if input.get(at) == Some(&b'0')
-        && matches!(input.get(at + 1), Some(b'x' | b'X'))
-        && input.get(at + 2).and_then(|&b| hex(b)).is_some()
-    {
-        at += 2;
-    }
-    let digits = at;
-    let mut value = Some(0usize);
-    while let Some(digit) = input.get(at).and_then(|&b| hex(b)) {
-        value = value.and_then(|v| v.checked_mul(16)?.checked_add(digit));
-        at += 1;
-    }
-    if at == digits {
-        return (0, begin);
-    }
-    let value = value.map_or(usize::MAX, |v| if negative { v.wrapping_neg() } else { v });
-    (value, at)
-}
-#[repr(C)]
-#[derive(Default)]
-pub struct HttpChunkStep {
-    pub line_offset: usize,
-    pub line_length: usize,
-    pub chunk_length: usize,
-    pub next: usize,
-    pub body_length: u64,
-}
-pub(crate) fn chunk_step(
-    input: &[u8],
-    cursor: usize,
-    header: usize,
-    initial: bool,
-) -> (i32, HttpChunkStep) {
-    let mut step = HttpChunkStep::default();
-    if cursor > input.len() || header > input.len() {
-        return (INVALID, step);
-    }
-    if initial && (input.len() - cursor < 5 || !input.ends_with(b"0\r\n\r\n")) {
-        return (INVALID, step);
-    }
-    let (length, end) = chunk_number(input, cursor);
-    if input.get(end) != Some(&b'\r') {
-        return (-2, step);
-    }
-    step.line_offset = cursor;
-    step.line_length = end - cursor;
-    step.chunk_length = length;
-    if length == 0 {
-        step.body_length = (end as u64).wrapping_sub(header as u64).wrapping_add(4);
-        return (2, step);
-    }
-    if let Some(next) = end
-        .checked_add(4)
-        .and_then(|v| v.checked_add(length))
-        .filter(|&n| n < input.len())
-    {
-        step.next = next;
-        (1, step)
-    } else {
-        (3, step)
-    }
-}
 /// Preserve the native Expect scanner's exact skip/matching behavior.
 /// # Safety
 /// Input is readable. No references, callbacks or allocation escape.
@@ -367,19 +288,11 @@ mod tests {
         assert_eq!(f.offset, 24);
     }
     #[test]
-    fn incremental_headers_and_bounded_chunk_scanning() {
+    fn incremental_headers() {
         let mut f = HttpFrame::default();
         assert_eq!(header_end(b"abc\r\n\r", &mut f), INVALID);
         assert_eq!(f.offset, 3);
         assert_eq!(header_end(b"abc\r\n\r\n", &mut f), 0);
         assert_eq!(f.header_length, 7);
-        let (status, step) = chunk_step(b"3\r\nabc\r\n0\r\n\r\n", 0, 0, true);
-        assert_eq!((status, step.chunk_length, step.next), (1, 3, 8));
-        let (status, step) = chunk_step(b"3\r\nabc\r\n0\r\n\r\n", 8, 0, false);
-        assert_eq!((status, step.body_length), (2, 13));
-        assert_eq!(
-            chunk_step(b"FFFFFFFFFFFFFFFF\r\nx0\r\n\r\n", 0, 0, true).0,
-            3
-        );
     }
 }

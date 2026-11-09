@@ -40,7 +40,7 @@ domain are not compared; the candidate is still checked. Seeds include the reque
 
 `http_header_info` runs `Request::parse_header_info` on both engines over any
 request head (up to its blank line): content length, keep-alive, chunked and
-nobody-chunked flags, errno and the multipart boundary must match. `http_range`
+excepted (a Transfer-Encoding not ending in chunked) flags, errno and the multipart boundary must match. `http_range`
 runs `StaticHandler::parse_range` from the pinned static_handler.cc and the one
 `migration/patches/http/0002-static-ranges.patch` puts in its place (over the Rust
 static context), over a file size up to `i64::MAX` (an `off_t`), MIME type length,

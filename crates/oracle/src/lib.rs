@@ -187,6 +187,12 @@ pub mod http_frame {
         pub url_length: u32,
         pub line_length: u32,
         pub header_length: u32,
+        pub max_length: u32,
+        pub too_large: u32,
+        pub chunk_state: u32,
+        pub chunk_length: usize,
+        pub chunk_offset: usize,
+        pub chunk_scan_offset: usize,
     }
 
     /// Request framing from one engine: `UPSTREAM` is the pinned http.cc; a candidate
@@ -217,7 +223,7 @@ pub mod http_frame {
     }
 
     /// The request after `parse_header_info`. Flags: `known_length` 1, `keep_alive`
-    /// 2, `chunked` 4, `nobody_chunked` 8, `header_parsed` 16, `excepted` 32. Without
+    /// 2, `chunked` 4, `header_parsed` 16, `excepted` 32. Without
     /// a multipart Content-Type, `boundary_offset` is -1.
     #[repr(C)]
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
