@@ -1,17 +1,17 @@
 # swoole-rs
 
-[![Merge tier](https://github.com/loks0n/swoole-rs/actions/workflows/merge.yml/badge.svg?branch=main)](https://github.com/loks0n/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain)
-[![Upstream C++ replaced](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Freplaced.json)](docs/migration.md#upstream-files-still-in-the-build)
-[![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/loks0n/swoole-rs/issues/58)
-[![Speed vs upstream](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fspeed.json)](https://github.com/loks0n/swoole-rs/blob/badges/speed.md)
-[![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/loks0n/swoole-rs/issues/1902)
-[![crates/ line coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fcoverage.json)](https://github.com/loks0n/swoole-rs/blob/badges/coverage.md)
+[![Merge tier](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain)
+[![Upstream C++ replaced](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Freplaced.json)](docs/migration.md#upstream-files-still-in-the-build)
+[![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/appwrite-labs/swoole-rs/issues/58)
+[![Speed vs upstream](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fspeed.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/speed.md)
+[![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/appwrite-labs/swoole-rs/issues/1902)
+[![crates/ line coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fcoverage.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/coverage.md)
 
 Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 5 are done and nothing is
-compiled from upstream; open are [dropping upstream from the build](https://github.com/loks0n/swoole-rs/issues/1921),
-[every applicable PHPT passing](https://github.com/loks0n/swoole-rs/issues/1957),
-[faster than upstream](https://github.com/loks0n/swoole-rs/issues/1894) and
-[a hardened runtime](https://github.com/loks0n/swoole-rs/issues/1893). The badges come from `tools/badges.py`
+compiled from upstream; open are [dropping upstream from the build](https://github.com/appwrite-labs/swoole-rs/issues/1921),
+[every applicable PHPT passing](https://github.com/appwrite-labs/swoole-rs/issues/1957),
+[faster than upstream](https://github.com/appwrite-labs/swoole-rs/issues/1894) and
+[a hardened runtime](https://github.com/appwrite-labs/swoole-rs/issues/1893). The badges come from `tools/badges.py`
 (`.github/workflows/badges.yml`): upstream C++ replaced counts upstream first-party
 lines the all-modules patch set deletes, and the PHPT badge counts tests the hybrid
 passes in any of a merge-tier run's PHPT jobs, over those that can apply to 64-bit Linux

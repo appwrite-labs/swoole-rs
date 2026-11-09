@@ -141,7 +141,7 @@ def speed(result, limits, commit):
              f'`benchmarks/callgrind_limits.json`; ✅ beats upstream, ➖ within the limit, ❌ over it.\n\n'
              f'| workload | hybrid | upstream | ratio | limit | |\n| --- | ---: | ---: | ---: | ---: | --- |\n{rows}\n'
              f'Geometric mean {mean:.4f}×. Goal: ≤ 1.00× on every workload '
-             f'([#1894](https://github.com/loks0n/swoole-rs/issues/1894)).\n')
+             f'([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)).\n')
     return badge, table
 
 

@@ -147,7 +147,7 @@ GitHub work. Nothing is installed by hand. In a fresh environment:
 
 ```sh
 export GH_TOKEN=<token with repo scope>   # the cloud host usually injects this
-git clone https://github.com/loks0n/swoole-rs && cd swoole-rs
+git clone https://github.com/appwrite-labs/swoole-rs && cd swoole-rs
 git config core.hooksPath .githooks        # pre-commit/pre-push checks
 ```
 
