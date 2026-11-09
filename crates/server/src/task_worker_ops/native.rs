@@ -2,6 +2,7 @@
 //! reactor and the commands sent to it), and the callbacks that run its operations:
 //! what workers.cc's `TaskWorkerContext::call` and `TaskWorker_*` did.
 use core::ffi::{c_int, c_void};
+use core::mem::MaybeUninit;
 
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::process_pool::PoolRecord;
@@ -128,7 +129,9 @@ extern "C-unwind" fn loop_async(pool: *mut PoolRecord, worker: *mut WorkerRecord
     run(&mut Context::of(pool, worker), RUN_TASK_LOOP_ASYNC)
 }
 
-/// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes, aligned for its head.
+/// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes, aligned for its head. Left
+/// uninitialized as upstream's are: a read or `task_pack` writes the head and
+/// the payload its `len` counts, and nothing reads past them.
 #[repr(C, align(8))]
 struct EventData([u8; super::EVENT_DATA_SIZE]);
 
@@ -138,11 +141,11 @@ extern "C" fn on_pipe_receive(reactor: *mut c_void, event: *mut c_void) -> c_int
     let pool = unsafe { Reactor::of(reactor) }.fields().ptr.cast();
     // SAFETY: this thread's worker globals.
     let worker = unsafe { (*swr_v1_worker_globals()).worker };
-    let mut task = EventData([0; super::EVENT_DATA_SIZE]);
+    let mut task = MaybeUninit::<EventData>::uninit();
     let mut ctx = Context::of(pool, worker);
     // SAFETY: the reactor's live event.
     ctx.socket = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket }.cast();
-    ctx.buf = (&raw mut task).cast();
+    ctx.buf = task.as_mut_ptr().cast();
     run(&mut ctx, RUN_TASK_ON_PIPE)
 }
 
@@ -169,13 +172,13 @@ pub(crate) unsafe fn enter(
     bytes: *mut c_void,
     arg: u64,
 ) -> i64 {
-    let mut buf = EventData([0; super::EVENT_DATA_SIZE]);
+    let mut buf = MaybeUninit::<EventData>::uninit();
     let mut ctx = Context::over(serv);
     if operation == RUN_FINISH {
         // SAFETY: as the caller guarantees.
         let bytes = unsafe { &*bytes.cast::<Bytes>() };
         ctx.task = task.cast();
-        ctx.buf = (&raw mut buf).cast();
+        ctx.buf = buf.as_mut_ptr().cast();
         (ctx.data, ctx.data_len) = (bytes.data.cast(), bytes.length);
     } else {
         // SAFETY: the live server.
