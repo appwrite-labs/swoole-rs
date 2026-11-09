@@ -197,14 +197,6 @@ pub extern "C" fn swr_v1_hook_sleep_timeout(seconds: f64, minimum: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// crates/timer's, which the hybrid links: `network::Socket::free` (crates/tls)
-    /// names it, and these tests make no timers.
-    #[unsafe(export_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE")]
-    extern "C-unwind" fn timer_del(_: *mut core::ffi::c_void) -> bool {
-        unreachable!("hooks tests make no timers")
-    }
-
     #[test]
     fn transfer_preserves_partial_error_and_wrap() {
         assert_eq!(swr_v1_hook_transfer_result(-1, 0), -1);
