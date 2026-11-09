@@ -1116,6 +1116,7 @@ impl Client {
                     input.len(),
                     &raw mut inflate_flags,
                     &raw mut header,
+                    true,
                 )
             };
             if read < 0 {

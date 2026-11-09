@@ -332,16 +332,17 @@ pub(crate) unsafe fn swoole_http2_client_coro_deflate(
     unsafe { nghttp2_hd_deflate_hd(deflater, out, capacity, headers, count) }
 }
 
-/// One `nghttp2_hd_inflate_hd` step (`in_final` set).
+/// One `nghttp2_hd_inflate_hd` step; `last` when the input ends the header block.
 pub(crate) unsafe fn swoole_http2_client_coro_inflate(
     inflater: *mut c_void,
     input: *const u8,
     length: size_t,
     flags: *mut c_int,
     header: *mut Header,
+    last: bool,
 ) -> ssize_t {
     // SAFETY: per the caller.
-    unsafe { nghttp2_hd_inflate_hd(inflater, header, flags, input, length, 1) }
+    unsafe { nghttp2_hd_inflate_hd(inflater, header, flags, input, length, c_int::from(last)) }
 }
 
 pub(crate) unsafe fn swoole_http2_client_coro_inflate_end(inflater: *mut c_void) {
