@@ -5,8 +5,8 @@
                              replaced by a newer push to main follows the newer run
   ci.py status [--commit SHA]  the same, without waiting
   ci.py next                 the claimable issues in claim order (exit 2 when there are none)
-  ci.py stuck                auto-merge PRs that conflict with main or failed a required check,
-                             oldest first (exit 2 when there are none)
+  ci.py stuck                auto-merge PRs that conflict with main, failed a required check, or
+                             whose PR-tier run ended without one, oldest first (exit 2: none)
   ci.py phpt-baseline        `RUN SHA` of main's latest completed merge-tier run whose upstream
                              PHPT shards all passed, the PR tier's upstream results (exit 2: none)
   ci.py new-failures LOOP... the failed phases in these dev.py loop.json reports that passed, or
@@ -350,8 +350,9 @@ def new_failures(loops):
 
 
 def stuck():
-    """Open auto-merge PRs that won't merge by themselves: conflicting with main, or with a
-    failed required check on their head. Oldest first, each with what blocks it."""
+    """Open auto-merge PRs that won't merge by themselves: conflicting with main, with a failed
+    required check on their head, or whose head's PR-tier run finished without one (it failed
+    to start, as in an Actions outage; rerun it). Oldest first, each with what blocks it."""
     pulls = [pull for pull in map(json.loads, gh(
         'api', '--paginate', 'repos/{owner}/{repo}/pulls?state=open&per_page=100', '--jq', '.[]').splitlines())
         if pull.get('auto_merge')]
@@ -359,11 +360,15 @@ def stuck():
     for pull in sorted(pulls, key=lambda pull: pull['created_at']):
         # mergeable_state is only on the single-PR endpoint; 'dirty' means conflicts.
         detail = json.loads(gh('api', f"repos/{{owner}}/{{repo}}/pulls/{pull['number']}"))
-        checks = map(json.loads, gh('api', f"repos/{{owner}}/{{repo}}/commits/{pull['head']['sha']}/check-runs?per_page=100",
-                                    '--jq', '.check_runs[]').splitlines())
+        sha = pull['head']['sha']
+        checks = [check for check in map(json.loads, gh('api', f'repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100',
+                                                        '--jq', '.check_runs[]').splitlines()) if check['name'] in REQUIRED]
         blocking = (['conflicts'] if detail.get('mergeable_state') == 'dirty' else []) + sorted(
-            {check['name'] for check in checks
-             if check['name'] in REQUIRED and check.get('conclusion') in ('failure', 'timed_out', 'cancelled')})
+            {check['name'] for check in checks if check.get('conclusion') in ('failure', 'timed_out', 'cancelled')})
+        if not checks and any(run['status'] == 'completed' for run in map(json.loads, gh(
+                'api', f'repos/{{owner}}/{{repo}}/actions/workflows/pr.yml/runs?head_sha={sha}&per_page=1',
+                '--jq', '.workflow_runs[]').splitlines())):
+            blocking.append('required missing')
         if blocking:
             rows.append({'number': pull['number'], 'title': pull['title'], 'created': pull['created_at'],
                          'blocking': blocking})

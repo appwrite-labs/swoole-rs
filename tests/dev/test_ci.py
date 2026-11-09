@@ -46,6 +46,9 @@ elif args[0] == 'api' and '/pulls/' in args[1]:
 elif args[0] == 'api' and '/check-runs' in args[1]:
     for check in data.get('checks', {}).get(args[1].split('/')[-2], []):
         print(json.dumps(check))
+elif args[0] == 'api' and '/actions/workflows/' in args[1]:
+    for run in data.get('pr_runs', {}).get(args[1].split('head_sha=')[1].split('&')[0], []):
+        print(json.dumps(run))
 elif args[0] == 'api' and '-X' in args:
     pass
 elif args[0] == 'api' and '/compare/' in args[1]:
@@ -196,21 +199,25 @@ class Ci(unittest.TestCase):
         code, result, _ = self.ci('next', runs={}, flags=('--json',), issues=[])
         self.assertEqual((code, result), (2, []))
 
-    def test_stuck_lists_auto_merge_prs_that_conflict_or_failed_a_required_check(self):
+    def test_stuck_lists_auto_merge_prs_that_conflict_failed_or_never_got_a_required_check(self):
         def pull(number, created, auto=True):
             return {'number': number, 'title': f't{number}', 'created_at': created,
                     'auto_merge': {'merge_method': 'squash'} if auto else None, 'head': {'sha': f'sha{number}'}}
         open_pulls = [pull(1, '2026-11-03T00:00:00Z'), pull(2, '2026-11-01T00:00:00Z'), pull(3, '2026-11-02T00:00:00Z'),
-                      pull(4, '2026-10-01T00:00:00Z', auto=False), pull(5, '2026-10-02T00:00:00Z')]
+                      pull(4, '2026-10-01T00:00:00Z', auto=False), pull(5, '2026-10-02T00:00:00Z'),
+                      pull(6, '2026-11-04T00:00:00Z'), pull(7, '2026-11-05T00:00:00Z')]
         pulls = {str(n): [{'mergeable_state': state}] for n, state in
-                 [(1, 'dirty'), (2, 'blocked'), (3, 'clean'), (4, 'dirty'), (5, 'blocked')]}
+                 [(1, 'dirty'), (2, 'blocked'), (3, 'clean'), (4, 'dirty'), (5, 'blocked'), (6, 'blocked'), (7, 'blocked')]}
         checks = {'sha1': [], 'sha2': [{'name': 'required', 'conclusion': 'failure'}, {'name': 'rust', 'conclusion': 'failure'}],
                   'sha3': [{'name': 'required', 'conclusion': 'success'}, {'name': 'asan / asan', 'conclusion': 'failure'}],
-                  'sha5': [{'name': 'required', 'conclusion': None}]}
-        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=open_pulls, pulls=pulls, checks=checks)
-        # 3 only fails an informative check, 4 has no auto-merge and 5 is still running.
+                  'sha5': [{'name': 'required', 'conclusion': None}], 'sha6': [{'name': 'Hansi', 'conclusion': 'success'}]}
+        # 6's PR-tier run failed before any job started (a workflow error or an Actions outage); 7's is queued.
+        pr_runs = {'sha6': [{'status': 'completed', 'conclusion': 'failure'}], 'sha7': [{'status': 'queued', 'conclusion': None}]}
+        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=open_pulls, pulls=pulls, checks=checks,
+                                  pr_runs=pr_runs)
+        # 3 only fails an informative check, 4 has no auto-merge, and 5 and 7 are still running.
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
-                         (0, [(2, ['required']), (1, ['conflicts'])]))
+                         (0, [(2, ['required']), (1, ['conflicts']), (6, ['required missing'])]))
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[])
         self.assertEqual((code, result), (2, []))
 
