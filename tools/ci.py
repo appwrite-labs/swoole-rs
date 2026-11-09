@@ -8,7 +8,12 @@
   ci.py stuck                auto-merge PRs that conflict with main, failed a required check or
                              whose finished PR-tier run has none (GitHub abandoned its jobs:
                              re-run it), oldest first (exit 2 when there are none)
-  ci.py phpt-baseline        `RUN SHA` of main's latest completed merge-tier run whose upstream
+  ci.py claim ISSUE AGENT    AGENTS.md's claim: comment `claim AGENT`, re-read the comments after a
+                             few seconds and keep the issue (status:ready -> status:claimed) only if
+                             that is the earliest claim since the last release; otherwise delete
+                             the comment (exit 1 lost, 2 not status:ready)
+  ci.py release ISSUE AGENT  comment `release AGENT` and move status:claimed back to status:ready
+  ci.py phpt-baseline       `RUN SHA` of main's latest completed merge-tier run whose upstream
                              PHPT shards all passed, the PR tier's upstream results (exit 2: none)
   ci.py new-failures LOOP... the failed phases in these dev.py loop.json reports that passed, or
                              didn't exist, in main's latest completed merge-tier run (exit 1 if any)
@@ -331,6 +336,41 @@ def phpt_baseline():
     return None
 
 
+CLAIM_SETTLE = 5.0  # seconds before re-reading, so a rival's earlier comment is visible
+
+
+def holder(issue):
+    """The agent whose `claim` comment is the earliest since the last `release` one, or None."""
+    claims = []
+    for comment in map(json.loads, gh('api', '--paginate', f'repos/{{owner}}/{{repo}}/issues/{issue}/comments',
+                                      '--jq', '.[]').splitlines()):
+        word, _, agent = comment['body'].strip().partition(' ')
+        if word == 'release':
+            claims = []
+        elif word == 'claim' and agent.split():
+            claims.append(agent.split()[0])
+    return claims[0] if claims else None
+
+
+def relabel(issue, old, new):
+    gh('api', '-X', 'POST', f'repos/{{owner}}/{{repo}}/issues/{issue}/labels', '-f', f'labels[]={new}')
+    gh('api', '-X', 'DELETE', f"repos/{{owner}}/{{repo}}/issues/{issue}/labels/{old.replace(':', '%3A')}")
+
+
+def claim(issue, agent, settle):
+    labels = {label['name'] for label in json.loads(gh('api', f'repos/{{owner}}/{{repo}}/issues/{issue}'))['labels']}
+    if 'status:ready' not in labels:
+        return 2, f"#{issue} is not status:ready ({', '.join(sorted(labels)) or 'no labels'})"
+    comment = gh('api', f'repos/{{owner}}/{{repo}}/issues/{issue}/comments', '-f', f'body=claim {agent}', '-q', '.id').strip()
+    time.sleep(settle)
+    winner = holder(issue)
+    if winner != agent:
+        gh('api', '-X', 'DELETE', f'repos/{{owner}}/{{repo}}/issues/comments/{comment}')
+        return 1, f'#{issue} lost to {winner}; claim comment deleted'
+    relabel(issue, 'status:ready', 'status:claimed')
+    return 0, f'#{issue} claimed by {agent}'
+
+
 # The PR tier's aggregate check, the one main's ruleset requires; it needs every blocking job.
 REQUIRED = ('required',)
 
@@ -392,9 +432,26 @@ def main(argv=None):
         command.add_argument('--json', action='store_true')
     for name in ['next', 'stuck']:
         commands.add_parser(name).add_argument('--json', action='store_true')
+    for name in ['claim', 'release']:
+        command = commands.add_parser(name)
+        command.add_argument('issue', type=int)
+        command.add_argument('agent')
+        command.add_argument('--settle', type=float, default=CLAIM_SETTLE, help=argparse.SUPPRESS)
     commands.add_parser('phpt-baseline')
     commands.add_parser('new-failures').add_argument('loops', nargs='*', type=Path, metavar='LOOP_JSON')
     args = parser.parse_args(argv)
+    if args.command in ('claim', 'release'):
+        try:
+            if args.command == 'claim':
+                code, message = claim(args.issue, args.agent, args.settle)
+            else:
+                gh('api', f'repos/{{owner}}/{{repo}}/issues/{args.issue}/comments', '-f', f'body=release {args.agent}')
+                relabel(args.issue, 'status:claimed', 'status:ready')
+                code, message = 0, f'#{args.issue} released by {args.agent}'
+        except subprocess.CalledProcessError as failure:
+            sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
+        print(message)
+        return code
     if args.command == 'phpt-baseline':
         try:
             baseline = phpt_baseline()

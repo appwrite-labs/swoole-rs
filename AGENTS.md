@@ -148,9 +148,11 @@ compare-and-swap):
    claim with no heartbeat or PR activity for 2 hours returns to `status:ready`.
 4. Comment `release <agent-id>` and restore `status:ready` to give a ticket up.
 
+`python3 tools/ci.py claim <n> <agent-id>` does steps 1 and 2, and `ci.py release` does step 4.
+
 ## CI CLI
 
-`tools/ci.py` (`wait`, `status`, `next`, `stuck`; see `--help`) is the only way agents watch
+`tools/ci.py` (`wait`, `status`, `next`, `stuck`, `claim`, `release`; see `--help`) is the only way agents watch
 CI; GitHub's auto-merge does the merging. It needs a checkout, `gh` and Python, so it works in every session.
 The pre-commit and pre-push hooks remind you of the next command. Agents
 improve it: add a subcommand when an agent would otherwise improvise (polling,

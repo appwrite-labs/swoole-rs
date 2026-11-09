@@ -31,6 +31,20 @@ deleted = [branch for branch in data.get('deleted', []) if call.startswith('api 
 if deleted:
     sys.stderr.write(f'gh: No commit found for SHA: {deleted[0]} (HTTP 422)\\n')
     sys.exit(1)
+elif args[0] == 'api' and '/comments' in call:
+    comments = data.setdefault('comments', [])
+    if '--paginate' in args:
+        for comment in comments:
+            print(json.dumps(comment))
+    elif '-X' in args:
+        data['comments'] = [comment for comment in comments if str(comment['id']) != args[-1].rsplit('/', 1)[1]]
+    else:
+        # A rival's comment, posted just before this one, shows up only when the comments are re-read.
+        comments += data.pop('rival', []) + [{'id': 100 + len(comments), 'body': args[args.index('-f') + 1][5:]}]
+        print(comments[-1]['id'])
+    save()
+elif args[0] == 'api' and '/issues/' in args[1] and '-X' not in args:
+    print(json.dumps(data['issue']))
 elif args[:2] == ['api', '--paginate']:
     for issue in data.get('open_pulls' if '/pulls?' in args[2] else 'issues', []):
         print(json.dumps(issue))
@@ -216,6 +230,37 @@ class Ci(unittest.TestCase):
                          (0, [(2, ['required']), (1, ['conflicts']), (6, ['no required check'])]))
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[])
         self.assertEqual((code, result), (2, []))
+
+    def test_claim_keeps_the_earliest_claim_since_the_last_release(self):
+        ready = {'labels': [{'name': 'status:ready'}, {'name': 'p1'}]}
+        def claim(comments, rival=(), issue=ready):
+            rival = [{'id': 99, 'body': body} for body in rival]
+            code, _, _ = self.ci('claim', '5', 'exec-9', runs={}, flags=('--settle', '0'),
+                                 issue=issue, comments=comments, rival=rival)
+            return code, self.out.strip()
+        relabel = ['api -X POST repos/{owner}/{repo}/issues/5/labels -f labels[]=status:claimed',
+                   'api -X DELETE repos/{owner}/{repo}/issues/5/labels/status%3Aready']
+        released = [{'id': 1, 'body': 'claim exec-1'}, {'id': 2, 'body': 'heartbeat exec-1'},
+                    {'id': 3, 'body': 'release exec-1\n'}]
+        self.assertEqual(claim(released), (0, '#5 claimed by exec-9'))
+        self.assertEqual(self.gh_calls[-2:], relabel)
+        self.assertEqual(claim([{'id': 1, 'body': 'claim exec-2 (taking this)'}]),
+                         (1, '#5 lost to exec-2; claim comment deleted'))
+        self.assertIn('api -X DELETE repos/{owner}/{repo}/issues/comments/101', self.gh_calls)
+        self.assertFalse(any('/labels' in call for call in self.gh_calls))
+        # A rival whose comment landed first, but wasn't visible when this one was posted, wins.
+        self.assertEqual(claim(released, rival=['claim exec-3']), (1, '#5 lost to exec-3; claim comment deleted'))
+        code, out = claim([], issue={'labels': [{'name': 'status:claimed'}]})
+        self.assertEqual((code, out), (2, '#5 is not status:ready (status:claimed)'))
+        self.assertFalse(any('/comments' in call for call in self.gh_calls))
+
+    def test_release_comments_and_restores_ready(self):
+        code, _, _ = self.ci('release', '5', 'exec-9', runs={}, flags=())
+        self.assertEqual((code, self.out.strip()), (0, '#5 released by exec-9'))
+        self.assertEqual(self.gh_calls, [
+            'api repos/{owner}/{repo}/issues/5/comments -f body=release exec-9',
+            'api -X POST repos/{owner}/{repo}/issues/5/labels -f labels[]=status:ready',
+            'api -X DELETE repos/{owner}/{repo}/issues/5/labels/status%3Aclaimed'])
 
     def test_new_failures_are_gate_failures_main_does_not_share(self):
         history = [{'databaseId': 9, 'conclusion': 'cancelled', 'url': 'u9'},
