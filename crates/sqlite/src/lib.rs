@@ -90,9 +90,18 @@ pub extern "C" fn swoole_sqlite_set_blocking(blocking: bool) {
     BLOCKING.set(blocking);
 }
 
+// The hooks' pool inside a coroutine. The unit tests link no coroutine
+// runtime, so they never have one.
+#[cfg(not(test))]
+use swoole_rs_hooks::stdio::offload as hooked_offload;
+#[cfg(test)]
+fn hooked_offload() -> Option<swoole_rs_hooks::stdio::Offload> {
+    None
+}
+
 /// The pool while the hook is on inside a coroutine, else none.
 fn pool() -> Option<swoole_rs_hooks::stdio::Offload> {
-    swoole_rs_hooks::stdio::offload().filter(|_| !BLOCKING.get())
+    hooked_offload().filter(|_| !BLOCKING.get())
 }
 
 /// `php_swoole_async(swoole_sqlite_blocking, call)`: the call's result, or 0

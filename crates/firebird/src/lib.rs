@@ -42,10 +42,19 @@ pub extern "C" fn swoole_firebird_set_blocking(blocking: bool) {
     BLOCKING.set(blocking);
 }
 
+// The hooks' pool inside a coroutine. The unit tests link no coroutine
+// runtime, so they never have one.
+#[cfg(not(test))]
+use swoole_rs_hooks::stdio::offload as hooked_offload;
+#[cfg(test)]
+fn hooked_offload() -> Option<swoole_rs_hooks::stdio::Offload> {
+    None
+}
+
 /// `php_swoole_async(swoole_firebird_blocking, call)`: the call's result, or
 /// `fallback` when the pool did not run it.
 fn offload<R>(fallback: R, call: impl FnMut() -> R) -> R {
-    let offload = swoole_rs_hooks::stdio::offload().filter(|_| !BLOCKING.get());
+    let offload = hooked_offload().filter(|_| !BLOCKING.get());
     // SAFETY: native `async` inside a coroutine, or none; the call waits for the job.
     unsafe { swoole_rs_hooks::stdio::offloaded(offload, fallback, call) }
 }

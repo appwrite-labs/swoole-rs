@@ -99,10 +99,19 @@ pub extern "C" fn swoole_oracle_set_blocking(blocking: bool) {
     BLOCKING.store(blocking, Ordering::Relaxed);
 }
 
+// The hooks' pool inside a coroutine. The unit tests link no coroutine
+// runtime, so they never have one.
+#[cfg(not(test))]
+use swoole_rs_hooks::stdio::offload as hooked_offload;
+#[cfg(test)]
+fn hooked_offload() -> Option<swoole_rs_hooks::stdio::Offload> {
+    None
+}
+
 /// `php_swoole_async(swoole_oracle_blocking, call)`: the call's result, or 0
 /// (upstream's untouched `result`) when the pool did not run it.
 fn offload(call: impl FnMut() -> Sword) -> Sword {
-    let pool = swoole_rs_hooks::stdio::offload().filter(|_| !BLOCKING.load(Ordering::Relaxed));
+    let pool = hooked_offload().filter(|_| !BLOCKING.load(Ordering::Relaxed));
     // SAFETY: native `async` inside a coroutine, or none; the call waits for the job.
     unsafe { swoole_rs_hooks::stdio::offloaded(pool, 0, call) }
 }
