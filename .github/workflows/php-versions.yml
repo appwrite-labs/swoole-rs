@@ -21,7 +21,7 @@ defaults:
 
 jobs:
   build:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -73,7 +73,7 @@ jobs:
   phpt:
     needs: build
     if: ${{ !cancelled() }}
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false

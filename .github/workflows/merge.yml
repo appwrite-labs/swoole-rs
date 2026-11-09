@@ -22,7 +22,7 @@ jobs:
   # balanced by weight left one near 20 minutes (#318). Each slice builds the all-modules
   # hybrid and runs the builds; the rest is split by tools/phase_weights.json (dev.py --shard).
   full-gates:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -99,7 +99,7 @@ jobs:
   ccache-prune:
     needs: full-gates
     if: always()
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 5
     permissions:
       actions: write
@@ -118,7 +118,7 @@ jobs:
   # Every pinned PHPT on upstream, the all-modules hybrid and the extension Cargo builds
   # alone (crates/ext): any test that passes on upstream must pass on both (corpus/upstream/gate.py).
   phpt-build:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 30
     outputs:
       php: ${{ steps.build.outputs.php }}
@@ -142,7 +142,7 @@ jobs:
   # http2, table and channel are benchmarks/primitives; task is a taskwait round trip (#1909).
   # mysql is benchmarks/mysql, a prepared SELECT through hooked PDO mysql (#2066).
   callgrind:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 40
     services:
       mysql:
@@ -194,7 +194,7 @@ jobs:
   # swoole_stdext needs the experimental --stdext build, which changes PHP itself
   # (typed arrays, methods on scalars), so it gets its own engines and its own gate.
   phpt-stdext:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -280,7 +280,7 @@ jobs:
   # The opt-in --fix-halfclose repair (M15) is its own build variant, so its gates run
   # here; full-gates builds without it.
   halfclose:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -320,7 +320,7 @@ jobs:
   # its chroot and unreachable resolver need nothing the runner lacks (it passes as root).
   phpt-root:
     needs: phpt-build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -373,7 +373,7 @@ jobs:
   # build-swoole workflow runs it (corpus/library/run.py).
   library:
     needs: phpt-build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -423,7 +423,7 @@ jobs:
   # reference and the all-modules hybrid, then run the corpus and original PHPTs
   # against both. Project 11 needs --fix-halfclose and is covered by the PR tier.
   alpine:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' && github.event_name != 'workflow_run' || github.event.pull_request.head.repo.full_name == github.repository || github.event.workflow_run.head_repository.full_name == github.repository) && format(vars.RUNNER || 'ubuntu-24.04', github.run_id, strategy.job-index) || 'ubuntu-24.04' }}
     timeout-minutes: 30
     container: php:8.5-alpine
     # The image has no bash, so this job can't use the workflow's bash default.

@@ -102,8 +102,12 @@ docker run --rm -it -v "$PWD:/work" -w /work swoole-rs-dev bash
 ```
 
 CI jobs run on the runner label in the repository variable `RUNNER`, or
-`ubuntu-24.04` when it is unset. This repo is public, so a self-hosted label must
-not run fork pull requests.
+`ubuntu-24.04` when it is unset. It is a `format` template: `{0}` is the run id
+and `{1}` the matrix index, which gcrunner labels need, for example
+`gcrunner={0}-{1}/family=c3d/cpu=4/ram=16/disk=80gb/image=ubuntu24-full-x64`.
+This repo is public, so a pull request or `workflow_run` whose head repository
+isn't this one, including one whose source fork was deleted, always uses
+`ubuntu-24.04`.
 
 Tooling tests: `tests/dev/run.sh` (parallel; prints only failing files), or `python3 -m unittest discover -b -s tests/dev` (`-b` hides output from passing tests).
 
