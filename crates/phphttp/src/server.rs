@@ -152,13 +152,13 @@ unsafe extern "C" {
     fn swr_v1_event_reactor() -> *mut c_void;
 }
 
+/// A keep-alive session's server and remote address, until it closes, by its
+/// connection's fd. The session check drops a reused fd's entry. RSHUTDOWN
+/// releases them; a thread's exit, after the request heap is gone, must not.
+type Addresses = ManuallyDrop<Table<(i64, [ZString; 2])>>;
+
 php_local! {
-    /// A keep-alive session's server and remote address, until it closes,
-    /// by its connection's fd. The session check drops a reused fd's entry.
-    /// RSHUTDOWN releases them; a thread's exit, after the request heap is
-    /// gone, must not.
-    static ADDRESSES: RefCell<ManuallyDrop<Table<(i64, [ZString; 2])>>> =
-        RefCell::new(ManuallyDrop::new(Table::new()));
+    static ADDRESSES: RefCell<Addresses> = RefCell::new(ManuallyDrop::new(Table::new()));
     /// Requests waiting for the worker's concurrency to drop.
     static QUEUED: RefCell<VecDeque<*mut Context>> = RefCell::new(VecDeque::new());
 }
