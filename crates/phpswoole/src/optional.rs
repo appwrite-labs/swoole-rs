@@ -7,7 +7,7 @@ use crate::module::{PHP_FATAL_ERROR, Step};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::{Switch, built_with, log::set_last_error};
 use swoole_rs_zend::{
-    E_ERROR, bailout, php_error,
+    E_ERROR, Value, bailout, php_error,
     sys::{zend_class_entry, zval},
 };
 
@@ -68,13 +68,13 @@ pub(crate) fn client_minit() -> Vec<Step> {
 }
 
 #[cfg(feature = "ssh2")]
-unsafe extern "C" fn ssh2_minit(module_number: c_int) {
+extern "C" fn ssh2_minit(module_number: c_int) {
     // SAFETY: MINIT, with the module's number; upstream ignores the result too.
     unsafe { php_swoole_ssh2_minit(module_number) };
 }
 
 #[cfg(feature = "ftp")]
-unsafe extern "C" fn ftp_minit(module_number: c_int) {
+extern "C" fn ftp_minit(module_number: c_int) {
     /// `MODULE_PERSISTENT`.
     const PERSISTENT: c_int = 1;
     // SAFETY: as above.
@@ -90,7 +90,7 @@ pub(crate) fn client_mshutdown() -> Vec<Step> {
 }
 
 #[cfg(feature = "ssh2")]
-unsafe extern "C" fn ssh2_mshutdown() {
+extern "C" fn ssh2_mshutdown() {
     // SAFETY: MSHUTDOWN, after its MINIT.
     unsafe { php_swoole_ssh2_mshutdown() };
 }
@@ -115,15 +115,13 @@ pub(crate) unsafe extern "C" fn client_minfo(module: *mut c_void) {
 /// A duplicate of an ext/sockets `Socket`'s descriptor; -1 after throwing
 /// "failed to dup socket fd", -2 after "invalid socket fd", -3 when `value` is
 /// no `Socket` or the build lacks ext/sockets.
-/// # Safety
-/// In a request; `value` is a live object zval.
-pub unsafe fn socket_cast(value: *mut zval) -> c_int {
+/// In a request.
+pub fn socket_cast(value: &Value) -> c_int {
     #[cfg(feature = "sockets")]
     {
-        // SAFETY: an object zval.
-        let object = unsafe { swoole_rs_zend::value::obj_of(value) };
-        // SAFETY: a live object's class.
-        let class = unsafe { (*object).ce };
+        let (Some(object), Some(class)) = (value.object(), value.class()) else {
+            return -3;
+        };
         // SAFETY: ext/sockets' class, set at its MINIT.
         let socket = unsafe { socket_ce };
         // SAFETY: two live classes.
@@ -131,7 +129,7 @@ pub unsafe fn socket_cast(value: *mut zval) -> c_int {
             return -3;
         }
         // SAFETY: a `Socket`, whose `php_socket` starts with its descriptor.
-        let fd = unsafe { *php_socket(value).cast::<c_int>() };
+        let fd = unsafe { *php_socket(object).cast::<c_int>() };
         let (fd, message, code) = if fd == -1 {
             (-2, c"invalid socket fd", libc::EBADF)
         } else {
@@ -145,8 +143,7 @@ pub unsafe fn socket_cast(value: *mut zval) -> c_int {
                 .unwrap_or_default();
             (-1, c"failed to dup socket fd", errno)
         };
-        // SAFETY: MINIT wrote it and nothing writes it now.
-        let exception = unsafe { crate::swoole_exception_ce };
+        let exception = crate::EXCEPTION.entry();
         // SAFETY: a request, with a registered class.
         unsafe { swoole_rs_zend::throw_exception(exception, message, i64::from(code)) };
         fd
@@ -161,10 +158,8 @@ pub unsafe fn socket_cast(value: *mut zval) -> c_int {
 /// `Z_SOCKET_P`: ext/sockets' `php_socket` (`int bsd_socket, type, error,
 /// blocking; zval zstream; zend_object std`) ends with the object.
 #[cfg(feature = "sockets")]
-fn php_socket(value: *mut zval) -> *mut c_void {
+fn php_socket(object: *mut swoole_rs_zend::sys::zend_object) -> *mut c_void {
     const STD: usize = 4 * size_of::<c_int>() + size_of::<zval>();
-    // SAFETY: per the callers, an object zval.
-    let object = unsafe { swoole_rs_zend::value::obj_of(value) };
     object.cast::<u8>().wrapping_sub(STD).cast()
 }
 
@@ -177,8 +172,10 @@ pub unsafe fn socket_create(out: *mut zval, fd: c_int) -> bool {
     {
         // SAFETY: ext/sockets' class, set at its MINIT; `out` per the caller.
         unsafe { swoole_rs_zend::sys::object_init_ex(out, socket_ce) };
+        // SAFETY: the new `Socket` object.
+        let object = unsafe { swoole_rs_zend::value::obj_of(out) };
         // SAFETY: the new `Socket`, whose `php_socket` precedes its object.
-        unsafe { socket_import_file_descriptor(fd, php_socket(out)) }
+        unsafe { socket_import_file_descriptor(fd, php_socket(object)) }
     }
     #[cfg(not(feature = "sockets"))]
     {
@@ -287,14 +284,14 @@ pub(crate) fn thread_bailout() {
 }
 
 #[cfg(feature = "odbc")]
-unsafe extern "C" fn odbc_minit(module_number: std::ffi::c_int) {
+extern "C" fn odbc_minit(module_number: std::ffi::c_int) {
     // SAFETY: MINIT, with the module's number; upstream ignores the result too.
     unsafe { swoole_rs_odbc::minit::php_swoole_odbc_minit(module_number) };
 }
 
 /// `Swoole\Thread` and its locks, atomics, barrier and containers, in
 /// upstream's order, inside one `zend_try` as upstream's MINIT.
-unsafe extern "C" fn thread_minit() {
+extern "C" fn thread_minit() {
     // SAFETY: MINIT, before any PHP thread starts (as for each below).
     unsafe { swr_v1_phpthread_minit() };
     // SAFETY: as above.

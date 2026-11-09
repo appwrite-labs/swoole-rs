@@ -114,7 +114,6 @@ void php_swoole_firebird_mshutdown();
 
 // Defined in Rust.
 int php_swoole_reactor_init();
-void php_swoole_register_shutdown_function(const char *function);
 int php_swoole_convert_to_fd(zval *zsocket);
 zend_bool php_swoole_signal_isset_handler(int signo);
 

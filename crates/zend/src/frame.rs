@@ -2,10 +2,7 @@
 //! zval and string returns (crates/phpprocess).
 use crate::{
     Call, Invalid,
-    sys::{
-        IS_NULL, swr_zend_parse_arg_func, swr_zend_set_stringl, zend_array, zend_execute_data, zval,
-    },
-    type_of,
+    sys::{swr_zend_parse_arg_func, swr_zend_set_stringl, zend_array, zend_execute_data, zval},
 };
 
 impl Call {
@@ -14,8 +11,7 @@ impl Call {
     /// As [`Call::long`].
     #[inline]
     pub fn long_or_null(&self, n: u32) -> Result<Option<i64>, Invalid> {
-        // SAFETY: `n` is a passed argument, so its zval is live.
-        if n > self.num_args() || unsafe { type_of(self.zval(n)) } == IS_NULL {
+        if n > self.num_args() || self.arg_value(n).is_null() {
             return Ok(None);
         }
         self.long(n, 0).map(Some)
@@ -38,8 +34,7 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn zval_or_null(&self, n: u32) -> Option<*mut zval> {
-        // SAFETY: `n` is a passed argument, so its zval is live.
-        if n > self.num_args() || unsafe { type_of(self.zval(n)) } == IS_NULL {
+        if n > self.num_args() || self.arg_value(n).is_null() {
             return None;
         }
         Some(self.zval(n))
@@ -53,9 +48,7 @@ impl Call {
         if n > self.num_args() {
             return Ok(None);
         }
-        let array = self.array(n)?;
-        // SAFETY: an array zval.
-        Ok(Some(unsafe { crate::value::table(array) }))
+        self.array_ref(n).map(|array| Some(array.as_ptr()))
     }
 
     /// `ZEND_THIS`: the zval holding `$this`, in a non-static method.

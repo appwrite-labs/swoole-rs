@@ -113,15 +113,16 @@ const HOOK_ON_CORO_START: c_int = 3;
 
 /// Whether `bit` of the host's flags is set.
 pub(crate) fn flag(bit: u32) -> bool {
-    // SAFETY: this thread's module globals, live from MINIT.
-    let g = unsafe { &*swoole_rs_phpswoole::globals() };
+    let g = swoole_rs_phpswoole::globals();
     match bit {
-        CLI => g.cli,
-        SHORTNAME => g.use_shortname,
-        LIBRARY => g.enable_library,
-        FIBER_MOCK => g.enable_fiber_mock,
-        PREEMPTIVE => g.enable_preemptive_scheduler,
-        SHUTDOWN_FUNCTIONS => g.req_status == swoole_rs_phpswoole::CALL_USER_SHUTDOWNFUNC_BEGIN,
+        CLI => g.cli.get(),
+        SHORTNAME => g.use_shortname.get(),
+        LIBRARY => g.enable_library.get(),
+        FIBER_MOCK => g.enable_fiber_mock.get(),
+        PREEMPTIVE => g.enable_preemptive_scheduler.get(),
+        SHUTDOWN_FUNCTIONS => {
+            g.req_status.get() == swoole_rs_phpswoole::CALL_USER_SHUTDOWNFUNC_BEGIN
+        }
         SERVER_STARTED => {
             let serv = swoole_rs_corebase::swr_v1_core_server();
             // SAFETY: the process's live server.
@@ -768,13 +769,16 @@ pub(crate) fn event_wait() {
 
 pub(crate) fn set_global_option(options: *mut zend_array) {
     // SAFETY: a live array.
-    unsafe { swoole_rs_phpswoole::php_swoole_set_global_option(options) };
+    if let Some(options) = unsafe { swoole_rs_zend::Array::from_ptr(options) } {
+        swoole_rs_phpswoole::php_swoole_set_global_option(options);
+    }
 }
 
 /// `Coroutine::set_stack_size(php_swoole_parse_to_size(size))`.
 pub(crate) fn set_stack_size(size: *mut zval) {
     // SAFETY: a live zval.
-    let size = unsafe { swoole_rs_phpswoole::php_swoole_parse_to_size(size) };
+    let size = unsafe { swoole_rs_zend::Value::from_ptr(size) }
+        .map_or(0, swoole_rs_phpswoole::php_swoole_parse_to_size);
     let size = usize::try_from(size.cast_unsigned()).unwrap_or(usize::MAX);
     // SAFETY: this thread's scheduler.
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_set_stack_size(scheduler(), size) };

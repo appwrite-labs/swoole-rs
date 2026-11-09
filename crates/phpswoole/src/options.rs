@@ -3,31 +3,25 @@
 //! upstream's order. And `sw_zval_is_serializable`.
 use crate::{
     constants::DEBUG,
-    module::{globals, size_error},
+    module::{PHP_FATAL_ERROR, globals},
 };
 use std::{
-    ffi::{CStr, c_char, c_int},
+    ffi::{CStr, CString, c_char, c_int},
     ptr,
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::{
-    Switch, built_with, swr_v1_core_set_enable_kqueue, swr_v1_core_set_enable_signalfd,
-    swr_v1_core_set_print_backtrace_on_error, swr_v1_core_set_trace_flags,
+    Switch, built_with, log::set_last_error, swr_v1_core_set_enable_kqueue,
+    swr_v1_core_set_enable_signalfd, swr_v1_core_set_print_backtrace_on_error,
+    swr_v1_core_set_trace_flags,
 };
 use swoole_rs_utilities::{
     Logger, LoggerSetting, process_logger, swoole_set_log_file, swoole_set_log_level,
     swr_v1_logger_set, swr_v1_logger_set_date_format,
 };
 use swoole_rs_zend::{
-    bailout, each_value,
-    string::bytes,
-    sys::{
-        IS_ARRAY, IS_NULL, IS_OBJECT, IS_REFERENCE, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE,
-        swr_zend_string_release, swr_zval_get_double, swr_zval_get_long, swr_zval_get_string,
-        swr_zval_is_true, zend_array, zend_hash_str_find, zend_ini_parse_quantity, zend_string,
-        zval,
-    },
-    throw_exception, type_of, value,
+    Array, E_ERROR, Value, ZStr, ZString, bailout, php_error, sys::ZEND_ACC_NOT_SERIALIZABLE,
+    throw_exception,
 };
 
 /// `swHttp2SettingId`.
@@ -44,27 +38,21 @@ unsafe extern "C" {
 }
 
 /// `php_swoole_array_get_value`: the value under `key`, unless absent or null.
-pub(crate) fn get(options: *mut zend_array, key: &CStr) -> Option<*mut zval> {
-    // SAFETY: a live table; Zend returns a slot or null.
-    let found = unsafe { zend_hash_str_find(options, key.as_ptr(), key.count_bytes()) };
-    // SAFETY: a found slot is a live zval.
-    (!found.is_null() && unsafe { type_of(found) } != IS_NULL).then_some(found)
+pub(crate) fn get<'a>(options: &'a Array, key: &CStr) -> Option<&'a Value> {
+    options.get(key.to_bytes())
 }
 
-fn truthy(value: *mut zval) -> u8 {
-    // SAFETY: a live zval; Zend's own conversion.
-    u8::from(unsafe { swr_zval_is_true(value) })
+fn truthy(value: &Value) -> u8 {
+    u8::from(value.truthy())
 }
 
-fn long(value: *mut zval) -> i64 {
-    // SAFETY: as above.
-    unsafe { swr_zval_get_long(value) }
+fn long(value: &Value) -> i64 {
+    value.long()
 }
 
 /// `timeout_format`: non-positive or oversized timeouts mean `INT_MAX` seconds.
-fn timeout(value: *mut zval) -> f64 {
-    // SAFETY: as above.
-    clamp(unsafe { swr_zval_get_double(value) })
+fn timeout(value: &Value) -> f64 {
+    clamp(value.double())
 }
 
 fn clamp(timeout: f64) -> f64 {
@@ -75,31 +63,45 @@ fn clamp(timeout: f64) -> f64 {
     }
 }
 
-/// `php_swoole_parse_to_size`, or the error string to report fatally.
-pub(crate) fn size(value: *mut zval) -> Result<i64, *mut zend_string> {
-    // SAFETY: a live zval.
-    if unsafe { type_of(value) } != IS_STRING {
-        return Ok(long(value));
-    }
-    let mut error = ptr::null_mut();
-    // SAFETY: a string zval holds a live string.
-    let string = unsafe { value::str_of(value) };
-    // SAFETY: a live string; Zend writes an error string or leaves null.
-    let size = unsafe { zend_ini_parse_quantity(string, &raw mut error) };
-    if error.is_null() {
-        Ok(size)
-    } else {
-        Err(error)
+/// `php_swoole_parse_to_size`, or the string that did not parse and Zend's
+/// reason.
+fn size(value: &Value) -> Result<i64, (&ZStr, ZString)> {
+    match value.str() {
+        None => Ok(long(value)),
+        Some(string) => string.parse_quantity().map_err(|error| (string, error)),
     }
 }
 
+/// `php_swoole_fatal_error(E_ERROR, "failed to parse '%s' to size, Error: %s")`:
+/// a bailout, deferred for the caller's [`bailout::finish`].
+fn size_error(failed: &ZStr, error: &ZStr) {
+    set_last_error(PHP_FATAL_ERROR);
+    let message = [
+        b"failed to parse '",
+        failed.c_str().to_bytes(),
+        b"' to size, Error: ",
+        error.c_str().to_bytes(),
+    ]
+    .concat();
+    let message = CString::new(message).unwrap_or_default();
+    // SAFETY: an error from Rust, through the shim's zend_try.
+    bailout::defer(unsafe { php_error(E_ERROR, &message) });
+}
+
+/// `php_swoole_parse_to_size(zv)`: a size string as an ini quantity
+/// ("64M"), anything else as `zval_get_long`. A string that does not parse
+/// is a fatal error, raised from here.
+pub fn php_swoole_parse_to_size(value: &Value) -> i64 {
+    let size = size(value).unwrap_or_else(|(failed, error)| {
+        size_error(failed, &error);
+        0
+    });
+    bailout::finish();
+    size
+}
+
 /// The option under `key`, if set, as `convert` reads it, passed to `set`.
-fn option<T>(
-    options: *mut zend_array,
-    key: &CStr,
-    convert: impl FnOnce(*mut zval) -> T,
-    set: impl FnOnce(T),
-) {
+fn option<T>(options: &Array, key: &CStr, convert: impl FnOnce(&Value) -> T, set: impl FnOnce(T)) {
     if let Some(value) = get(options, key) {
         set(convert(value));
     }
@@ -107,17 +109,11 @@ fn option<T>(
 
 /// The option under `key`, if set, as a NUL-terminated string (`zend::String`)
 /// with its length, for `set`.
-fn text_option(options: *mut zend_array, key: &CStr, set: impl FnOnce(*const c_char, usize)) {
-    let Some(value) = get(options, key) else {
-        return;
-    };
-    // SAFETY: a live zval; a new reference released below.
-    let string = unsafe { swr_zval_get_string(value) };
-    // SAFETY: a live string, NUL-terminated after its bytes.
-    let text = unsafe { bytes(string) };
-    set(text.as_ptr().cast(), text.len());
-    // SAFETY: the reference taken above.
-    unsafe { swr_zend_string_release(string) };
+fn text_option(options: &Array, key: &CStr, set: impl FnOnce(*const c_char, usize)) {
+    if let Some(value) = get(options, key) {
+        let text = value.string();
+        set(text.bytes().as_ptr().cast(), text.bytes().len());
+    }
 }
 
 /// C's implicit `zend_long` to `int` conversion.
@@ -134,13 +130,9 @@ fn logger() -> *const Logger {
     process_logger().map_or(ptr::null(), ptr::from_ref)
 }
 
-/// `php_swoole_set_global_option(options)`. A size that does not parse stops
-/// here with a fatal error.
-/// # Safety
-/// After MINIT, with a live options table; the caller is C or C++ (the fatal
-/// error bails out from here).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_set_global_option(options: *mut zend_array) {
+/// `php_swoole_set_global_option(options)`, after MINIT. A size that does not
+/// parse stops here with a fatal error.
+pub fn php_swoole_set_global_option(options: &Array) {
     set_global(options);
     bailout::finish();
 }
@@ -150,19 +142,16 @@ const OPERATION_NOT_SUPPORT: i64 = 507;
 
 /// `php_swoole_set_global_option`'s body: false after a size that does not
 /// parse, whose fatal error is deferred.
-pub fn set_global(options: *mut zend_array) -> bool {
-    let Err((value, error)) = apply(options) else {
+pub fn set_global(options: &Array) -> bool {
+    let Err((failed, error)) = apply(options) else {
         return true;
     };
-    // SAFETY: only a string fails to parse.
-    let failed = unsafe { value::str_of(value) };
-    // SAFETY: a live string, and Zend's error string.
-    unsafe { size_error(failed, error) };
+    size_error(failed, &error);
     false
 }
 
-fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> {
-    let size_of = |value| size(value).map_err(|error| (value, error));
+fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
+    let size_of = size;
     let flag = |key, set: &dyn Fn(bool)| option(options, key, truthy, |on| set(on != 0));
     let number = |key, set: &dyn Fn(i64)| option(options, key, long, set);
     let defaults = &raw mut swoole_rs_reactor::swr_v1_socket_defaults;
@@ -200,8 +189,7 @@ fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> 
         unsafe { swr_v1_logger_set(logger(), LoggerSetting::Rotation, int(rotation)) };
     });
     if let Some(value) = get(options, c"display_errors") {
-        // SAFETY: this thread's live module globals.
-        unsafe { (*globals()).display_errors = truthy(value) != 0 };
+        globals().display_errors.set(truthy(value) != 0);
     }
     flag(c"print_backtrace_on_error", &|on| {
         if built_with(Switch::Stacktrace) || built_with(Switch::Execinfo) {
@@ -286,47 +274,17 @@ fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> 
 
 /// `sw_zval_is_serializable`: false if `value` is, or holds in nested arrays,
 /// an object of a class marked not serializable.
-/// # Safety
-/// `value` is a live zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sw_zval_is_serializable(value: *const zval) -> bool {
-    let mut value = value;
-    loop {
-        // SAFETY: per the caller.
-        match unsafe { type_of(value) } {
-            IS_OBJECT => {
-                // SAFETY: an object zval.
-                let object = unsafe { value::obj_of(value) };
-                // SAFETY: a live object's class lives for the process.
-                let class = unsafe { (*object).ce };
-                // SAFETY: as above.
-                let flags = unsafe { (*class).ce_flags };
-                return flags & ZEND_ACC_NOT_SERIALIZABLE == 0;
-            }
-            IS_ARRAY => {
-                let mut serializable = true;
-                let check = |element: *mut zval| {
-                    // SAFETY: a live element.
-                    serializable = unsafe { sw_zval_is_serializable(element) };
-                    serializable
-                };
-                // SAFETY: an array zval.
-                let table = unsafe { value::table(value) };
-                // SAFETY: a live table, which the walk does not modify.
-                unsafe { each_value(table, check) };
-                return serializable;
-            }
-            IS_REFERENCE => {
-                // SAFETY: a live zval.
-                let inner = unsafe { (*value).value };
-                // SAFETY: a reference zval holds a live reference.
-                let reference = unsafe { inner.ref_ };
-                // SAFETY: as above.
-                value = unsafe { &raw const (*reference).val };
-            }
-            _ => return true,
-        }
+#[must_use]
+pub fn sw_zval_is_serializable(value: &Value) -> bool {
+    let value = value.dereferenced();
+    if let Some(flags) = value.class_flags() {
+        return flags & ZEND_ACC_NOT_SERIALIZABLE == 0;
     }
+    value.array().is_none_or(|array| {
+        array
+            .entries()
+            .all(|(_, element)| sw_zval_is_serializable(element))
+    })
 }
 
 #[cfg(test)]

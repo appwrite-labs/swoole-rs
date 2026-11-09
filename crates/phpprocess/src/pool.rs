@@ -27,10 +27,9 @@ use swoole_rs_zend::{
     string,
     sys::{
         IS_ARRAY, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, object_init_ex,
-        swr_zend_array_init, swr_zend_is_true, swr_zval_try_addref, zend_array, zend_class_entry,
-        zend_declare_property_bool, zend_hash_index_find, zend_hash_index_update,
-        zend_hash_str_find, zend_object, zend_object_handlers, zend_read_property,
-        zend_update_property_bool, zval, zval_ptr_dtor,
+        swr_zend_array_init, swr_zval_try_addref, zend_class_entry, zend_declare_property_bool,
+        zend_hash_index_find, zend_hash_index_update, zend_object, zend_object_handlers,
+        zend_read_property, zend_update_property_bool, zval, zval_ptr_dtor,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of, unset_property_deny,
     update_property_long, value,
@@ -612,45 +611,31 @@ fn construct(call: &Call) {
 
 fn destruct(_call: &Call) {}
 
-/// `php_swoole_array_get_value`: the element, unless absent or null.
-fn option(options: *mut zend_array, key: &std::ffi::CStr) -> Option<*mut zval> {
-    // SAFETY: a live array and a NUL-terminated key.
-    let value = unsafe { zend_hash_str_find(options, key.as_ptr(), key.count_bytes()) };
-    // SAFETY: a live element.
-    (!value.is_null() && unsafe { type_of(value) } != IS_NULL).then_some(value)
-}
-
 fn set(call: &Call) {
-    let Ok(Some(options)) = call.arity(1, 1).and_then(|()| call.array_table(1)) else {
+    let Ok(options) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
         call.set_bool(false);
         return;
     };
     let this = this(call);
     let pool = record(checked(this));
+    swoole_rs_phpswoole::php_swoole_set_global_option(options);
     // SAFETY: the options array.
-    unsafe { swoole_rs_phpswoole::php_swoole_set_global_option(options) };
-    // SAFETY: as above.
-    unsafe { swoole_rs_phpcoroutines::php_swoole_set_coroutine_option(options) };
-    // SAFETY: as above.
-    unsafe { swoole_rs_phpswoole::php_swoole_set_aio_option(options) };
-    if let Some(value) = option(options, c"max_package_size") {
-        // SAFETY: a live element.
-        let size = unsafe { swoole_rs_phpswoole::php_swoole_parse_to_size(value) };
+    unsafe { swoole_rs_phpcoroutines::php_swoole_set_coroutine_option(options.as_ptr()) };
+    swoole_rs_phpswoole::php_swoole_set_aio_option(options);
+    if let Some(value) = options.get(b"max_package_size") {
+        let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);
         pool.max_packet_size = packet_limit(pool.use_msgqueue != 0, max_package_size(size));
     }
-    if let Some(value) = option(options, c"max_wait_time") {
-        // SAFETY: a live element.
-        let seconds = unsafe { value::get_long(value) };
+    if let Some(value) = options.get(b"max_wait_time") {
+        let seconds = value.long();
         pool.max_wait_time = u32::try_from(seconds.clamp(0, u32::MAX.into())).unwrap_or(u32::MAX);
     }
-    if let Some(value) = option(options, c"enable_coroutine") {
-        // SAFETY: a live element.
-        this.enable_coroutine = unsafe { swr_zend_is_true(value) };
+    if let Some(value) = options.get(b"enable_coroutine") {
+        this.enable_coroutine = value.truthy();
         pool.is_async = this.enable_coroutine;
     }
-    if let Some(value) = option(options, c"enable_message_bus") {
-        // SAFETY: a live element.
-        this.enable_message_bus = unsafe { swr_zend_is_true(value) };
+    if let Some(value) = options.get(b"enable_message_bus") {
+        this.enable_message_bus = value.truthy();
     }
 }
 

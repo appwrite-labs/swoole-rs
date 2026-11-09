@@ -154,8 +154,7 @@ fn construct(call: &Call) {
     let supported = (0..32).contains(&kind) && KINDS & (1 << kind) != 0;
     let Some(kind) = i32::try_from(kind).ok().filter(|_| supported) else {
         // Upstream passes the format unformatted, with the type as the code.
-        // SAFETY: MINIT set Swoole's exception class before any handler runs.
-        let exception = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
+        let exception = swoole_rs_phpswoole::exception_class();
         // SAFETY: in a handler, with Swoole's exception class.
         unsafe {
             throw_exception(exception, c"lock type[%d] is not support", kind);

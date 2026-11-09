@@ -623,8 +623,7 @@ fn bind(call: &Call, serv: *mut c_void) {
 
 /// `zend_throw_exception_ex(swoole_exception_ce, code, message)`.
 fn exception(message: &CStr, code: i64) {
-    // SAFETY: Swoole's exception class, registered at MINIT.
-    let ce = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
+    let ce = swoole_rs_phpswoole::exception_class();
     // SAFETY: from a handler.
     unsafe { throw_exception(ce, message, code) };
 }
@@ -644,8 +643,7 @@ fn construct(call: &Call) {
         unsafe { throw_constructed_twice(object) };
         return call.set_bool(false);
     }
-    // SAFETY: this thread's live globals.
-    if !unsafe { (*swoole_rs_phpswoole::globals()).cli } {
+    if !swoole_rs_phpswoole::globals().cli.get() {
         let text = message!("{} can only be used in CLI mode", class(object));
         exception(text.as_cstr(), -1);
         return call.set_bool(false);

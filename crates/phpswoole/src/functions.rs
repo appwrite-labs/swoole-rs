@@ -11,14 +11,8 @@ use std::{
 use swoole_rs_corebase::log::{last_error as swoole_last_error, set_last_error};
 use swoole_rs_framing::mime;
 use swoole_rs_zend::{
-    Call, E_WARNING, Invalid, handlers, php_error,
-    string::val,
-    sys::{
-        _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, IS_FALSE, IS_NULL, IS_TRUE,
-        ZPP_ERROR_WRONG_ARG, add_next_index_stringl, zend_array, zend_hash_func,
-        zend_parse_arg_bool_slow, zend_string, zend_wrong_parameter_error, zval,
-    },
-    type_of, value,
+    Array, Call, E_WARNING, Invalid, OwnedArray, ZStr, handlers, php_error,
+    sys::{zend_array, zend_hash_func, zval},
 };
 
 unsafe extern "C" {
@@ -88,19 +82,6 @@ fn or_false<T>(call: &Call, parsed: Result<T, Invalid>) -> Option<T> {
     parsed.map_err(|Invalid| call.set_bool(false)).ok()
 }
 
-/// `RETURN_STRING` of a C string.
-/// # Safety
-/// `text` is a live NUL-terminated string.
-unsafe fn set_c_string(call: &Call, text: *const c_char) {
-    // SAFETY: per the caller.
-    call.set_bytes(unsafe { CStr::from_ptr(text) }.to_bytes());
-}
-
-/// `ZSTR_VAL`.
-fn text(string: *mut zend_string) -> *const c_char {
-    val(string).cast_const().cast()
-}
-
 /// `zend_long` to the `int` upstream passes on, as C converts it.
 #[expect(clippy::cast_possible_truncation, reason = "C's (int) conversion")]
 fn int(value: i64) -> i32 {
@@ -154,7 +135,7 @@ fn strerror(call: &Call) {
         system_error(int(code))
     };
     // SAFETY: each table returns a NUL-terminated message.
-    unsafe { set_c_string(call, message) };
+    call.set_bytes(unsafe { CStr::from_ptr(message) }.to_bytes());
 }
 
 /// Bob Jenkins' one-at-a-time hash over C `char`s (sign-extended where `char`
@@ -237,41 +218,36 @@ fn ignore_error(call: &Call) {
     }
 }
 
-/// `Z_PARAM_STR` of each of the first `N` arguments, all required.
-fn strings<const N: usize>(call: &Call) -> Option<[*mut zend_string; N]> {
-    let mut out = [ptr::null_mut(); N];
+/// `Z_PARAM_STR` of each of the first `N` arguments, all required, as
+/// upstream passes them on: up to the first NUL.
+fn strings<const N: usize>(call: &Call) -> Option<[&CStr; N]> {
+    let mut out = [c""; N];
     #[expect(clippy::cast_possible_truncation, reason = "one or two arguments")]
     let count = N as u32;
     let parsed = call.arity(count, count).and_then(|()| {
         for (index, slot) in (1..).zip(out.iter_mut()) {
-            *slot = call.str(index)?.unwrap_or(ptr::null_mut());
+            *slot = call.zstr(index)?.map_or(c"", ZStr::c_str);
         }
         Ok(out)
     });
     or_false(call, parsed)
 }
 
-/// `ZSTR_VAL` as upstream passes it on: up to the first NUL.
-fn c_text<'a>(string: *mut zend_string) -> &'a CStr {
-    // SAFETY: a live argument string, NUL-terminated as every zend_string is.
-    unsafe { CStr::from_ptr(text(string)) }
-}
-
 fn mime_type_add(call: &Call) {
     if let Some([suffix, kind]) = strings(call) {
-        call.set_bool(mime::add(c_text(suffix).to_bytes(), c_text(kind)));
+        call.set_bool(mime::add(suffix.to_bytes(), kind));
     }
 }
 
 fn mime_type_set(call: &Call) {
     if let Some([suffix, kind]) = strings(call) {
-        mime::set(c_text(suffix).to_bytes(), c_text(kind));
+        mime::set(suffix.to_bytes(), kind);
     }
 }
 
 fn mime_type_delete(call: &Call) {
     if let Some([suffix]) = strings(call) {
-        call.set_bool(mime::del(c_text(suffix).to_bytes()));
+        call.set_bool(mime::del(suffix.to_bytes()));
     }
 }
 
@@ -284,32 +260,26 @@ pub fn mime_type(path: &[u8]) -> &'static CStr {
 
 fn mime_type_get(call: &Call) {
     if let Some([filename]) = strings(call) {
-        call.set_bytes(mime_type(c_text(filename).to_bytes()).to_bytes());
+        call.set_bytes(mime_type(filename.to_bytes()).to_bytes());
     }
 }
 
 fn mime_type_exists(call: &Call) {
     if let Some([filename]) = strings(call) {
-        call.set_bool(mime::exists(c_text(filename).to_bytes()));
+        call.set_bool(mime::exists(filename.to_bytes()));
     }
 }
 
 fn mime_type_list(call: &Call) {
-    call.set_array();
-    let array = call.return_value();
-    mime::each(|kind| {
-        let kind = kind.to_bytes();
-        // SAFETY: the return slot holds an array; Zend copies the type.
-        unsafe { add_next_index_stringl(array, kind.as_ptr().cast(), kind.len()) };
-    });
+    let mut array = OwnedArray::default();
+    mime::each(|kind| array.push_bytes(kind.to_bytes()));
+    call.set_owned(array.into_owned());
 }
 
 fn shutdown_begin(call: &Call) {
-    let globals = crate::module::globals();
-    // SAFETY: this thread's live module globals.
-    if unsafe { (*globals).req_status } == RINIT_END {
-        // SAFETY: as above.
-        unsafe { (*globals).req_status = CALL_USER_SHUTDOWNFUNC_BEGIN };
+    let status = &crate::module::globals().req_status;
+    if status.get() == RINIT_END {
+        status.set(CALL_USER_SHUTDOWNFUNC_BEGIN);
         call.set_bool(true);
     } else {
         // SAFETY: a handler, with a literal message.
@@ -360,7 +330,9 @@ fn substr_unserialize(call: &Call) {
             call.string(1, b"")?,
             call.long(2, 0)?,
             call.long(3, 0)?,
-            call.array_opt(4)?,
+            (call.num_args() >= 4)
+                .then(|| call.array_ref(4))
+                .transpose()?,
         ))
     });
     let Ok((buf, offset, length, options)) = parsed else {
@@ -370,8 +342,7 @@ fn substr_unserialize(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: an array argument.
-    let options = options.map_or(ptr::null_mut(), |array| unsafe { value::table(array) });
+    let options = options.map_or(ptr::null_mut(), Array::as_ptr);
     // SAFETY: PHP's decoder over the argument's live bytes.
     unsafe {
         php_unserialize_with_options(
@@ -384,45 +355,13 @@ fn substr_unserialize(call: &Call) {
     }
 }
 
-/// `Z_PARAM_BOOL_EX(dest, is_null, 1, 0)` of argument `n`: `None` when null or
-/// not passed.
-fn bool_or_null(call: &Call, n: u32) -> Result<Option<bool>, Invalid> {
-    let Some(arg) = call.passed(n) else {
-        return Ok(None);
-    };
-    // SAFETY: a passed, live argument.
-    match unsafe { type_of(arg) } {
-        IS_TRUE => return Ok(Some(true)),
-        IS_FALSE => return Ok(Some(false)),
-        IS_NULL => return Ok(None),
-        _ => {}
-    }
-    let mut out = false;
-    // SAFETY: a live argument and a writable local.
-    if unsafe { zend_parse_arg_bool_slow(arg, &raw mut out, n) } {
-        return Ok(Some(out));
-    }
-    #[expect(clippy::cast_possible_wrap, reason = "ZPP error codes are small")]
-    // SAFETY: as Zend's macro reports it, with the argument that failed.
-    unsafe {
-        zend_wrong_parameter_error(
-            ZPP_ERROR_WRONG_ARG as i32,
-            n,
-            ptr::null_mut(),
-            _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL,
-            arg,
-        );
-    }
-    Err(Invalid)
-}
-
 fn substr_json_decode(call: &Call) {
     let parsed = call.arity(2, 6).and_then(|()| {
         Ok((
             call.string(1, b"")?,
             call.long(2, 0)?,
             call.long(3, 0)?,
-            bool_or_null(call, 4)?,
+            call.bool_or_null(4)?,
             call.long(5, JSON_DEFAULT_DEPTH)?,
             call.long(6, 0)?,
         ))

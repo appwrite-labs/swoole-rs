@@ -108,8 +108,7 @@ static HOOKED: AtomicU32 = AtomicU32::new(0);
 
 /// `swoole_exception_ce`, which MINIT registered before the runtime's.
 fn exception() -> *mut zend_class_entry {
-    // SAFETY: MINIT wrote it and nothing writes it now.
-    unsafe { swoole_rs_phpswoole::swoole_exception_ce }
+    swoole_rs_phpswoole::exception_class()
 }
 
 /// `sw_is_main_thread()`.
@@ -365,8 +364,7 @@ fn set_hook_flags_method(call: &Call) {
 
 /// `runtime_set_hook_flags`: CLI only, then `min` to one flags argument.
 fn set_hook_flags(call: &Call, min: u32) -> Result<(), Bailout> {
-    // SAFETY: this thread's module globals, live from MINIT.
-    if !unsafe { (*swoole_rs_phpswoole::globals()).cli } {
+    if !swoole_rs_phpswoole::globals().cli.get() {
         let reported = socket::report(
             socket::Report::Fatal,
             swoole_rs_zend::E_ERROR,

@@ -1,36 +1,32 @@
-//! `php_swoole_serialize` and `php_swoole_unserialize`, under their upstream
-//! symbols. A bailout in `__serialize`, `__sleep` or `__wakeup` is trapped in C
-//! and raised again as each returns, as upstream let it through; [`serialize`]
-//! and [`unserialize`] hand it back instead.
+//! `php_swoole_serialize` and `php_swoole_unserialize`. A bailout in
+//! `__serialize`, `__sleep` or `__wakeup` is trapped in C and handed back for
+//! the caller to raise once its frames are gone.
 use std::{ffi::c_int, ptr};
 use swoole_rs_zend::{
+    Value, ZString,
     bailout::{self, Bailout},
-    string::bytes,
     sys::{
         swr_zend_facade_exception, swr_zend_serialize, swr_zend_string_persistent,
-        swr_zend_string_release, swr_zend_unserialize, zend_string, zval,
+        swr_zend_unserialize, zend_string, zval,
     },
 };
 
 /// `serialize($value)` as a persistent string (null when it threw), and
 /// whether it bailed out.
-/// # Safety
-/// `value` is a live zval, on a thread running PHP.
-pub unsafe fn serialize(value: *mut zval) -> (*mut zend_string, Result<(), Bailout>) {
+pub fn serialize(value: &Value) -> (*mut zend_string, Result<(), Bailout>) {
     let mut bailed = false;
-    // SAFETY: per the caller.
-    let serialized = unsafe { swr_zend_serialize(value, &raw mut bailed) };
+    // SAFETY: a live zval, on the thread running PHP that holds it.
+    let serialized = unsafe { swr_zend_serialize(value.as_ptr(), &raw mut bailed) };
     let mut result = ptr::null_mut();
     if !bailed && !serialized.is_null() {
+        // SAFETY: the new string serialize made, released on drop.
+        let serialized = unsafe { ZString::from_raw(serialized) };
         // SAFETY: a pure read of EG(exception).
         if unsafe { swr_zend_facade_exception() }.is_null() {
-            // SAFETY: the string serialize made.
-            let text = unsafe { bytes(serialized) };
+            let text = serialized.bytes();
             // SAFETY: persistent memory, owned by the caller.
             result = unsafe { swr_zend_string_persistent(text.as_ptr().cast(), text.len()) };
         }
-        // SAFETY: released once.
-        unsafe { swr_zend_string_release(serialized) };
     }
     (result, bailout::trapped(c_int::from(bailed)))
 }
@@ -61,30 +57,4 @@ pub unsafe fn unserialize(text: &[u8], out: *mut zval) -> (bool, Result<(), Bail
         );
     }
     (done, bailout::trapped(c_int::from(bailed)))
-}
-
-/// `zend_string *php_swoole_serialize(zval *zdata)`: `serialize($zdata)` as a
-/// persistent string, or null when it threw.
-/// # Safety
-/// `value` is a live zval, on a thread running PHP.
-#[unsafe(export_name = "_Z20php_swoole_serializeP12_zval_struct")]
-pub unsafe extern "C" fn php_swoole_serialize(value: *mut zval) -> *mut zend_string {
-    // SAFETY: per the caller.
-    let (result, bailed) = unsafe { serialize(value) };
-    bailout::raise(bailed);
-    result
-}
-
-/// `bool php_swoole_unserialize(const zend_string *data, zval *zv)`: whether
-/// `unserialize($data)` into `zv` succeeded; a failure warns with its offset.
-/// # Safety
-/// `data` is a live string and `out` a writable zval, on a thread running PHP.
-#[unsafe(export_name = "_Z22php_swoole_unserializePK12_zend_stringP12_zval_struct")]
-pub unsafe extern "C" fn php_swoole_unserialize(data: *const zend_string, out: *mut zval) -> bool {
-    // SAFETY: per the caller, a live string.
-    let text = unsafe { bytes(data) };
-    // SAFETY: per the caller.
-    let (done, bailed) = unsafe { unserialize(text, out) };
-    bailout::raise(bailed);
-    done
 }

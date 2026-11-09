@@ -264,7 +264,9 @@ const APPLY_REMOVE: c_int = 1;
 
 unsafe extern "C" fn serializable(value: *mut zval) -> c_int {
     // SAFETY: a live element of the copy.
-    if unsafe { swoole_rs_phpswoole::sw_zval_is_serializable(value) } {
+    if unsafe { swoole_rs_zend::Value::from_ptr(value) }
+        .is_none_or(swoole_rs_phpswoole::sw_zval_is_serializable)
+    {
         APPLY_KEEP
     } else {
         APPLY_REMOVE
@@ -285,8 +287,9 @@ pub(crate) fn copy_setting(serv: *mut c_void, setting: *mut zval) -> Result<(), 
     unsafe { zend_hash_apply(array, Some(serializable)) };
     copy.value = zend_value { arr: array };
     copy.u1.type_info = IS_ARRAY_EX;
-    // SAFETY: a live array.
-    let (serialized, bailed) = unsafe { swoole_rs_phpswoole::serialize(&raw mut copy) };
+    // SAFETY: a live array this function owns.
+    let value = unsafe { &*(&raw const copy).cast::<swoole_rs_zend::Value>() };
+    let (serialized, bailed) = swoole_rs_phpswoole::serialize(value);
     // SAFETY: the copy this function owns.
     unsafe { zval_ptr_dtor(&raw mut copy) };
     // SAFETY: the server is configured on this thread, with no other reference to the field.

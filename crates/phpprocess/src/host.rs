@@ -55,8 +55,7 @@ const WRONG_OPERATION: c_int = 509;
 
 /// `swoole_exception_ce`.
 pub(crate) fn exception() -> *mut zend_class_entry {
-    // SAFETY: phpswoole's class entry, registered at MINIT before Process's.
-    unsafe { swoole_rs_phpswoole::swoole_exception_ce }
+    swoole_rs_phpswoole::exception_class()
 }
 
 /// `swoole_server_ce`, registered after Process.
