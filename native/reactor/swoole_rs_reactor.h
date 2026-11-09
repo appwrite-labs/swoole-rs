@@ -22,35 +22,6 @@ typedef ssize_t (*swr_v1_reactor_write_fn)(void *, void *, const void *, size_t)
 typedef ssize_t (*swr_v1_reactor_writev_fn)(void *, void *, const struct iovec *, size_t);
 typedef int (*swr_v1_reactor_close_fn)(void *, void *);
 #endif
-/* Socket's queued output: handle_send sends the rest of the front data chunk and
- * classifies the result; handle_sendfile corks (sendfile_cork), lets native code
- * send, then classifies and completes the request (sendfile_sent); sendfile_async
- * runs prepare (make and check the request), buffer and enqueue in order. Native
- * code applies the result: pop, store offset, close_wait/send_wait, and warn (1
- * send, 2 sendfile of requested bytes); code is returned. */
-typedef struct {
-    void *socket;
-    bool *kernel_nobufs;
-    ssize_t (*send)(void *socket, const void *data, size_t length);
-    bool (*cork)(void *socket);
-    void (*uncork)(void *socket);
-    void (*sent)(void *socket);
-} swr_v1_socket_output_hooks;
-typedef struct {
-    int code;
-    bool pop;
-    bool set_offset;
-    uint32_t offset;
-    bool close_wait;
-    bool send_wait;
-    int warn;
-    size_t requested;
-} swr_v1_socket_output_result;
-swr_v1_socket_output_result swr_v1_socket_handle_send(const swr_v1_socket_output_hooks *hooks, const uint8_t *data, uint32_t length, uint32_t offset);
-void swr_v1_socket_sendfile_cork(const swr_v1_socket_output_hooks *hooks, int8_t *corked, off_t begin, off_t end, off_t cork_min);
-swr_v1_socket_output_result swr_v1_socket_sendfile_sent(const swr_v1_socket_output_hooks *hooks, ssize_t sent, size_t requested, int8_t *corked, off_t begin, off_t end);
-int swr_v1_socket_sendfile_async(void *socket, bool (*prepare)(void *), void (*buffer)(void *), void (*enqueue)(void *));
-
 struct iovec;
 /* Rust-owned IOVector descriptor storage, used by every Rust reactor build. */
 typedef struct { struct iovec *original, *iterator; int32_t status; } swr_v1_reactor_iov_allocation;
@@ -196,24 +167,6 @@ void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
 swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner);
 size_t swr_v1_reactor_iov_length(const swr_v1_reactor_iov *owner);
 void swr_v1_reactor_iov_advance(swr_v1_reactor_iov *owner, intptr_t n);
-/* Sendfile requests own their file and range; Rust sends and frees them. */
-typedef struct swr_v1_os_file_record swr_v1_os_file_record;
-typedef struct swr_v1_socket_file_request swr_v1_socket_file_request;
-typedef struct { int8_t corked; off_t begin; off_t end; } swr_v1_socket_file_fields;
-typedef struct {
-    swr_v1_socket_file_request *owner;
-    swr_v1_os_file_record *file;
-    swr_v1_socket_file_fields *fields;
-} swr_v1_socket_file_prepared;
-swr_v1_socket_file_prepared swr_v1_socket_file_new(const char *filename, off_t offset);
-void swr_v1_socket_file_free(swr_v1_socket_file_request *owner);
-int swr_v1_socket_file_check(swr_v1_socket_file_request *owner, size_t length);
-/* Socket::sendfile_async's request, checked with check_sendfile_parameters' warnings
- * (null when it fails), and the typed queue's disposer for it. */
-swr_v1_socket_file_request *swr_v1_socket_file_checked(const char *filename, off_t offset, size_t length);
-void swr_v1_socket_file_dispose(void *token);
-size_t swr_v1_socket_file_length(const swr_v1_socket_file_request *owner);
-void swr_v1_socket_file_cork(swr_v1_socket_file_request *owner, const swr_v1_socket_output_hooks *hooks);
 /* Socket::wait_for and the *_sync methods: Rust runs the loop (prepare, retry
  * classification, ENOBUFS backoff, poll, timeout) and each kind's progress rule;
  * native code gives the socket's flags and performs each I/O call. Returns the

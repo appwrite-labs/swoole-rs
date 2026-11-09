@@ -3,7 +3,7 @@
  * swoole_socket.h: C++ exceptions, std::string and std::vector. Everything they
  * call is Rust. */
 #pragma once
-#include "swoole_rs_socket_queue.h"
+#include "swoole_rs_reactor.h"
 #include <algorithm>
 
 namespace swoole {
