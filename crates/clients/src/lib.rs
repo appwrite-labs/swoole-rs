@@ -22,9 +22,11 @@ pub mod pool;
 pub mod resolver;
 pub mod ws;
 
-use address::{TCP, TCP6, UDP, UDP6, UNIX_DGRAM, UNIX_STREAM};
 use std::ffi::c_int;
 use std::ops::Range;
+use swoole_rs_corebase::net_address::{
+    TCP, TCP6, UDP, UDP6, UNIX_DGRAM, UNIX_STREAM, c_str, format_into,
+};
 
 /// `dns_lookup_impl_with_cares(domain, family, timeout)` when built with c-ares
 /// (`--enable-cares`), else `None`.
@@ -37,19 +39,6 @@ pub fn cares_lookup(domain: &std::ffi::CStr, family: c_int, timeout: f64) -> Opt
         let _ = (domain, family, timeout);
         None
     }
-}
-
-/// The bytes before the first NUL, as a C string reads them.
-fn c_str(bytes: &[u8]) -> &[u8] {
-    bytes.split(|&byte| byte == 0).next().unwrap_or_default()
-}
-
-/// Formats `args` into `buffer` without allocating; `None` when it does not fit.
-fn format_into<'a>(buffer: &'a mut [u8], args: std::fmt::Arguments<'_>) -> Option<&'a [u8]> {
-    let mut rest = &mut *buffer;
-    std::io::Write::write_fmt(&mut rest, args).ok()?;
-    let unused = rest.len();
-    buffer.get(..buffer.len() - unused)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

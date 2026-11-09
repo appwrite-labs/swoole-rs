@@ -19,6 +19,7 @@ mod host;
 mod lifecycle;
 pub mod log;
 pub mod native;
+pub mod net_address;
 pub mod net_types;
 mod random;
 mod signal_mask;
@@ -58,7 +59,7 @@ pub use lifecycle::{
     swoole_thread_init, swr_v1_core_swoole_init, swr_v1_core_thread_global, swr_v1_core_timer_slot,
     thread_async_threads, thread_id, thread_kind, thread_message_bus, thread_reactor,
 };
-pub use random::{random_bytes, swoole_random_string, swr_v1_os_random_bytes};
+pub use random::{random_bytes, swoole_random_string};
 pub use thread::*;
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};

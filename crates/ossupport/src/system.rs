@@ -369,7 +369,7 @@ pub unsafe extern "C" fn swoole_thread_get_name(buf: *mut c_char, len: usize) ->
 )]
 pub unsafe extern "C" fn swoole_random_bytes(buf: *mut c_char, size: usize) -> usize {
     // SAFETY: as the caller promises.
-    unsafe { swoole_rs_corebase::swr_v1_os_random_bytes(buf.cast(), size) }
+    swoole_rs_corebase::random_bytes(unsafe { std::slice::from_raw_parts_mut(buf.cast(), size) })
 }
 
 #[cfg(test)]
