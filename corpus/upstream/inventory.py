@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Write a run.py manifest for every pinned upstream PHPT, or one shard of them.
+"""Write a run.py manifest for every pinned upstream PHPT, or one shard of them, of every
+family or the --module ones.
 
 Every other file under tests/ (fixtures, helpers) becomes a support file, as do
 the fixtures tests reach outside tests/ (examples/, package.xml, the HTTP fuzz
@@ -45,13 +46,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, default=ROOT / 'target/upstream/src')
     parser.add_argument('--shard', default='1/1', help='INDEX/COUNT, 1-based')
+    parser.add_argument('--module', action='append', help='Only this PHPT family (tests/<module>/), before sharding; repeatable')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     index, count = map(int, args.shard.split('/'))
     if not 1 <= index <= count:
         parser.error('--shard must be INDEX/COUNT with 1 <= INDEX <= COUNT')
     paths = list(blobs(args.source))
-    tests = shard([path for path in paths if path.endswith('.phpt')], index, count)
+    tests = [path for path in paths if path.endswith('.phpt')]
+    unknown = set(args.module or []) - {path.split('/')[1] for path in tests}
+    if unknown:
+        parser.error(f'Unknown modules: {", ".join(sorted(unknown))}')
+    tests = shard([path for path in tests if not args.module or path.split('/')[1] in args.module], index, count)
     support = [path for path in paths if not path.endswith('.phpt') and not path.startswith('tests/include/')]
     manifest = {'repository': 'https://github.com/swoole/swoole-src', 'commit': COMMIT,
                 'tests': [{'path': path, 'sha256': digest(args.source, path), 'module': path.split('/')[1],

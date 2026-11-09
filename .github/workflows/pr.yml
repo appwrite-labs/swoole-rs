@@ -200,58 +200,73 @@ jobs:
   # Candidate-lane gates of the modules this PR touches, and of those whose packages
   # depend on a touched crate (every module for shared build inputs). It fails only on
   # a phase that didn't fail in main's latest completed merge-tier run: red main
-  # doesn't block a PR, a new failure does.
+  # doesn't block a PR, a new failure does. The phpt phase's cases are split over the
+  # shards, since the families of a crate like crates/server take ~50 minutes on one
+  # runner (#2294): shard 1 runs every phase and its slice, the others build and run
+  # their slice, and only when there is a phpt phase.
   gates:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
       actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - id: touched
-        run: python3 -c "from tools.dev import changed_modules; print('modules=' + ' '.join(changed_modules('origin/${{ github.base_ref }}')))" >> "$GITHUB_OUTPUT"
-      - if: steps.touched.outputs.modules != ''
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          from tools.dev import changed_modules, phpt_families
+          base = 'origin/${{ github.base_ref }}'
+          modules = changed_modules(base)
+          phpt = modules and phpt_families(modules, changed_modules(base, consumers=False))
+          print('run=' + str(bool(modules) and (${{ matrix.shard }} == 1 or bool(phpt))).lower())
+          EOF
+      - if: steps.touched.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
           save-if: false
-      - if: steps.touched.outputs.modules != ''
+      - if: steps.touched.outputs.run == 'true'
         run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
-      - if: steps.touched.outputs.modules != ''
+      - if: steps.touched.outputs.run == 'true'
         uses: ./.github/actions/install
-      - if: steps.touched.outputs.modules != ''
+      - if: steps.touched.outputs.run == 'true'
         id: upstream
         uses: actions/cache/restore@v4
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
-      - if: steps.touched.outputs.modules != '' && steps.upstream.outputs.cache-hit != 'true'
+      - if: steps.touched.outputs.run == 'true' && steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
-      - if: steps.touched.outputs.modules != ''
+      - if: steps.touched.outputs.run == 'true'
         uses: actions/cache/restore@v4
         with:
           path: .ccache
           key: ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: ccache-${{ runner.os }}-
-      - if: steps.touched.outputs.modules != ''
+      - if: steps.touched.outputs.run == 'true'
         run: cargo fetch --locked
-      - if: steps.touched.outputs.modules != ''
+      - if: steps.touched.outputs.run == 'true'
         id: candidate
         continue-on-error: true
         run: >
-          python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }}
+          python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }} --phpt-shard ${{ matrix.shard }}/6
+          ${{ matrix.shard > 1 && '--phase phpt --with-prerequisites' || '' }}
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
       - if: steps.candidate.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 tools/ci.py new-failures target/reports/dev/*/loop.json
       - uses: actions/upload-artifact@v4
-        if: always() && steps.touched.outputs.modules != ''
+        if: always() && steps.touched.outputs.run == 'true'
         with:
-          name: gates-reports
+          name: gates-reports-${{ matrix.shard }}
           path: target/reports/
 
   # The one check main's ruleset requires: every blocking job passed or was skipped.

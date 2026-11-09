@@ -155,7 +155,8 @@ Before that, the PR tier's `gates` job runs the families of the modules a PR
 touches: each module in `migration/modules.json` lists its `phpt_families`, and
 `dev.py candidate` hands them to `families.sh`, which runs them on both engines,
 re-runs and gates them the same way. A change that selects every module is left
-to the merge tier.
+to the merge tier. The job runs as six shards, and `--phpt-shard I/6` gives each one
+every sixth case (`families.sh --shard`). Shard 1 also runs every other phase.
 
 ```sh
 corpus/upstream/families.sh target/reports/phpt target/upstream/src/modules/swoole.so \

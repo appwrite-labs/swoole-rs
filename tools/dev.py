@@ -95,6 +95,19 @@ def changed_modules(base, consumers=True):
     return sorted(selected - {None})
 
 
+def phpt_families(modules, phpt_modules=None):
+    """The original PHPT families a candidate run gates on upstream, like the merge tier's phpt
+    jobs, which run every family (and so cover a change to all modules): those of PHPT_MODULES,
+    the modules a change touches, else of MODULES. A consumer's families can't change outcome
+    without its own code changing, and every family together overruns the phase cap."""
+    modules = modules or ['websocket']
+    if not set(modules) < set(MODULES):
+        return []
+    ids = {MODULES[module][0] for module in phpt_modules or modules}
+    return sorted({family for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
+                   if module['id'] in ids for family in module.get('phpt_families', [])})
+
+
 def selected_modules(args):
     """The modules whose gates run. Every build has every module; this only narrows the gates."""
     chosen = set(MODULES if getattr(args, 'all_modules', False) else args.module or [])
@@ -483,17 +496,12 @@ def plan(args, reports):
     if args.case and not integrate:
         script('phpt', 'corpus/upstream/run.py', '--source', manifest.parent / 'src', *php, *engines, '--jobs', args.jobs,
                *[arg for case in args.case for arg in ['--case', case]], '--require-all', *network, *report('phpt'))
-    elif not integrate and not getattr(args, 'all_modules', False) and set(args.module or ['websocket']) < set(MODULES):
-        # The original PHPT families of the chosen modules, gated on upstream like the merge
-        # tier's phpt jobs, which run every family (and so cover a change to all modules).
-        # Only the modules a change touches: a consumer's families can't change outcome
-        # without its own code changing, and every family together overruns the phase cap.
-        ids = {MODULES[module][0] for module in getattr(args, 'phpt_module', None) or args.module or ['websocket']}
-        families = sorted({family for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
-                           if module['id'] in ids for family in module.get('phpt_families', [])})
+    elif not integrate and not getattr(args, 'all_modules', False):
+        families = phpt_families(args.module, getattr(args, 'phpt_module', None))
         if families:
-            add('phpt', 'corpus/upstream/families.sh', reports / 'phpt', reference, cargo, *php,
-                *[arg for family in families for arg in ['--module', family]], *network)
+            index, count = getattr(args, 'phpt_shard', None) or (1, 1)
+            add('phpt', 'corpus/upstream/families.sh', reports / 'phpt', reference, cargo, '--shard', f'{index}/{count}',
+                *php, *[arg for family in families for arg in ['--module', family]], *network)
     if args.benchmark:
         # These phases are strictly after correctness checks and never concurrent.
         if 'timer' in modules:
@@ -806,6 +814,8 @@ def main():
                         help='Add the phases each --phase needs: the reports it reads and the builds it uses')
     parser.add_argument('--phase-timeout', type=int, default=1200, metavar='SECONDS',
                         help='Kill a phase (and the processes it started) after this long; it fails')
+    parser.add_argument('--phpt-shard', type=shard_spec, metavar='I/N',
+                        help="Candidate: run slice I of N of the phpt phase's cases (the PR tier spreads them over runners)")
     parser.add_argument('--shard', type=shard_spec, metavar='I/N',
                         help='Run slice I of N of the integrate plan; every slice builds and runs the barriers')
     parser.add_argument('--artifacts-from', type=Path, help='Reuse verified exports from an existing same-source report for explicit correctness phases; never reuse test outcomes')
