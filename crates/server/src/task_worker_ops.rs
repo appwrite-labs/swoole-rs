@@ -171,18 +171,29 @@ fn errno() -> c_int {
 /// Answers each task-worker op over the context. The groups each task asks of
 /// (`task`, `finish`, then `worker`) come first; setup and commands come last.
 impl swoole_rs_process::workers::Answer for Context {
+    #[inline(always)]
     fn answer(&mut self, op: u32, arg: u64) -> u64 {
+        // Plain branches, not `or_else` closures, so each group inlines and an op
+        // known at the call folds to its arm.
         let ctx = self;
-        task(ctx, op)
-            .or_else(|| finish(ctx, op, arg))
-            .or_else(|| worker(ctx, op, arg))
-            .or_else(|| native::native(ctx, op, arg))
-            .or_else(|| result(ctx, op))
-            .unwrap_or_else(|| std::process::abort())
+        if let Some(value) = task(ctx, op) {
+            return value;
+        }
+        if let Some(value) = finish(ctx, op, arg) {
+            return value;
+        }
+        if let Some(value) = worker(ctx, op, arg) {
+            return value;
+        }
+        if let Some(value) = native::native(ctx, op, arg) {
+            return value;
+        }
+        result(ctx, op).unwrap_or_else(|| std::process::abort())
     }
 }
 
 /// The task pool and worker: setup, state and callbacks.
+#[inline(always)]
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
     let config = ctx.config();
@@ -246,6 +257,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The task being run: its header, its callbacks and the pipe it came over.
+#[inline(always)]
 fn task(ctx: &mut Context, op: u32) -> Option<u64> {
     let serv = ctx.serv;
     Some(match op {
@@ -304,6 +316,7 @@ fn task(ctx: &mut Context, op: u32) -> Option<u64> {
 }
 
 /// `Server::finish`: the result goes back to the worker that sent the task.
+#[inline(always)]
 fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     Some(match op {
@@ -401,6 +414,7 @@ fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 
 /// `Server::finish`'s blocking result: the waitall file, the shared slot's
 /// count and the source worker's notify pipe.
+#[inline(always)]
 fn result(ctx: &mut Context, op: u32) -> Option<u64> {
     let slot = ctx.result_slot();
     let path = || {
