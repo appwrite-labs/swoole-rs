@@ -147,6 +147,11 @@ is deleted). Its TESTs are Rust tests over the DNS cache's `Lru` in
 `lru_cache.basic` is `lru_cache_basic`, `lru_cache.memory_free` is
 `lru_cache_memory_free` and `lru_cache.lru_kick` is `lru_cache_lru_kick`.
 
+`core-tests/src/coroutine/uring_socket.cpp`'s `uring_socket.ssl_close_notify` (v6.2.5)
+is `ssl_close_notify` in `crates/hooks/src/uring_tls.rs`, with the same exchange and
+assertions over the ring's TLS transport; both sessions use an anonymous TLS 1.2 cipher
+in place of the pin's `tests/include/ssl_certs`, which the crate's tests cannot read.
+
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Known failures
