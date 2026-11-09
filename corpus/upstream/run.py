@@ -131,9 +131,6 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'it connects to live www.baidu.com:80 with a 1 s timeout, and every engine sometimes '
         'misses it with the same "Unable to connect" (16 merge-tier runs: upstream 3/32, hybrid '
         '4/32, cargo 2/15 first runs; hybrid 2/4 then upstream 0/25 in one iouring gate, #2116)',
-        'tests/swoole_server/shutdown_in_master.phpt':
-        'shutdown() from onStart, before the random 1-4 workers are up, sometimes hangs until '
-        'the deadline on both engines (upstream 2/8, hybrid 3/8, #438)',
         'tests/swoole_websocket_server/pack.phpt':
         'mt_rand(0, 128000) can draw 0, and get_safe_random(0) reaches '
         'openssl_random_pseudo_bytes(0), which throws ValueError: about 0.8% of runs on any '
@@ -142,10 +139,6 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "disconnect() pushes the close frame, then closes the session; the client closes on "
         "receiving it, and when the reactor thread handles that first the session is gone and "
         'disconnect() returns false (#321)',
-        'tests/swoole_server/task/task_pack.phpt':
-        "the server waits on its SysV message queue for a third task and sometimes never gets "
-        'it under CI load, on both engines: hybrid timed out in a shard while upstream passed, '
-        'then upstream timed out on re-run (#438, #664)',
         'tests/swoole_server/close_max_fd.phpt':
         "the parent SIGTERMs the SWOOLE_PROCESS server and only then drops client 1, so the "
         "worker's close event for fd-1 races the master freeing its connections at shutdown; "
