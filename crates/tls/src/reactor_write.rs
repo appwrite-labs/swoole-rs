@@ -173,8 +173,11 @@ unsafe fn write(reactor: *mut c_void, socket: *mut SocketRecord, payload: &Write
 ///
 /// # Safety
 /// `reactor` is a live `Reactor`, `socket` a live record and `data` holds `length` bytes.
-#[unsafe(export_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm")]
-unsafe extern "C-unwind" fn reactor_write(
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm")
+)]
+pub unsafe extern "C-unwind" fn reactor_write(
     reactor: *mut c_void,
     socket: *mut SocketRecord,
     data: *const c_void,
@@ -195,8 +198,11 @@ unsafe extern "C-unwind" fn reactor_write(
 ///
 /// # Safety
 /// `reactor` is a live `Reactor`, `socket` a live record and `iov` holds `count` entries.
-#[unsafe(export_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm")]
-unsafe extern "C-unwind" fn reactor_writev(
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm")
+)]
+pub unsafe extern "C-unwind" fn reactor_writev(
     reactor: *mut c_void,
     socket: *mut SocketRecord,
     iov: *const libc::iovec,
@@ -339,8 +345,11 @@ fn flush_ops(context: &mut Context, drain: bool) -> FlushOps {
 ///
 /// # Safety
 /// `reactor` is a live `Reactor` and `event` a live event naming a live socket.
-#[unsafe(export_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE")]
-unsafe extern "C-unwind" fn reactor_writable_callback(
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE")
+)]
+pub unsafe extern "C-unwind" fn reactor_writable_callback(
     reactor: *mut c_void,
     event: *mut Event,
 ) -> c_int {
@@ -363,8 +372,11 @@ unsafe extern "C-unwind" fn reactor_writable_callback(
 ///
 /// # Safety
 /// `reactor` is a live `Reactor` and `socket` a live record.
-#[unsafe(export_name = "_ZN6swoole7Reactor18drain_write_bufferEPNS_7network6SocketE")]
-unsafe extern "C-unwind" fn reactor_drain_write_buffer(
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7Reactor18drain_write_bufferEPNS_7network6SocketE")
+)]
+pub unsafe extern "C-unwind" fn reactor_drain_write_buffer(
     reactor: *mut c_void,
     socket: *mut SocketRecord,
 ) {
@@ -392,8 +404,11 @@ unsafe extern "C-unwind" fn reactor_drain_write_buffer(
 ///
 /// # Safety
 /// `socket` is a live record nothing uses afterwards.
-#[unsafe(export_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE")]
-unsafe extern "C-unwind" fn reactor_close(
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE")
+)]
+pub unsafe extern "C-unwind" fn reactor_close(
     _reactor: *mut c_void,
     socket: *mut SocketRecord,
 ) -> c_int {
