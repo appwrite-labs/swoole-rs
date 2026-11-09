@@ -78,7 +78,7 @@ def moved_in(tree):
     more alphanumeric characters, so stray braces don't match)."""
     colours = [f'color.diff.{slot}=reverse magenta' for slot in ('newMoved', 'newMovedAlternative')]
     output = git(*[arg for colour in colours for arg in ('-c', colour)], 'diff', '--diff-algorithm=minimal',
-                 '--color=always', '--color-moved=blocks', '--color-moved-ws=allow-indentation-change', cwd=tree)
+                 '--src-prefix=a/', '--dst-prefix=b/', '--color=always', '--color-moved=blocks', '--color-moved-ws=allow-indentation-change', cwd=tree)
     counts, path = {}, None
     for line in output.splitlines():
         if line.startswith(('\x1b[1mdiff --git ', 'diff --git ')):

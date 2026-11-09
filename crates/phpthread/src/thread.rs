@@ -1,7 +1,7 @@
 //! `Swoole\Thread`: the object, its OS thread and every method. The thread's
 //! body (TSRM, request startup, running the script) is [`crate::run`].
 use crate::{
-    array::{Array, handle},
+    array::{Arguments, Array},
     host::{self, handlers},
     run,
 };
@@ -141,25 +141,10 @@ fn this(call: &Call) -> &'static mut PhpThread {
     unsafe { &mut *thread }
 }
 
-extern "C" fn enter(state: *mut c_void) {
-    // SAFETY: the thread's closure keeps the state alive while C++ runs.
-    let state = unsafe { &*state.cast::<State>() };
-    state.exit_status.store(0, Ordering::Release);
-    state.living.store(true, Ordering::Release);
-}
-
-extern "C" fn exit(state: *mut c_void, status: c_int) {
-    // SAFETY: as in `enter`.
-    let state = unsafe { &*state.cast::<State>() };
-    state.exit_status.store(status, Ordering::Release);
-    state.living.store(false, Ordering::Release);
-}
-
 /// What a new thread takes: `construct` boxes it, the thread frees it.
 struct Start {
     file: Vec<u8>,
-    /// A shared table handle (an `Arc`), released by the thread, or null.
-    argv: *mut c_void,
+    argv: Option<Arguments>,
     state: Arc<State>,
 }
 
@@ -168,19 +153,17 @@ struct Start {
 /// new thread's first malloc can map an arena, and `yield.phpt` gives it 10 µs).
 extern "C" fn start(start: *mut c_void) -> *mut c_void {
     // SAFETY: `construct` boxed it for this thread alone.
-    let start = unsafe { Box::from_raw(start.cast::<Start>()) };
-    let context = Arc::as_ptr(&start.state).cast_mut().cast();
-    // SAFETY: the thread's body; `start` outlives it.
-    unsafe {
-        run::swr_v1_phpthread_run(
-            start.file.as_ptr().cast(),
-            start.file.len(),
-            start.argv,
-            context,
-            enter,
-            exit,
-        );
-    }
+    let Start { file, argv, state } = *unsafe { Box::from_raw(start.cast::<Start>()) };
+    let enter = || {
+        state.exit_status.store(0, Ordering::Release);
+        state.living.store(true, Ordering::Release);
+    };
+    let exit = |status| {
+        state.exit_status.store(status, Ordering::Release);
+        state.living.store(false, Ordering::Release);
+    };
+    // SAFETY: the new OS thread, before anything of PHP's.
+    unsafe { run::run(&file, argv, enter, exit) };
     ptr::null_mut()
 }
 
@@ -215,9 +198,9 @@ fn construct(call: &Call) {
                 return;
             }
         }
-        handle(argv)
+        Some(Arguments(argv))
     } else {
-        ptr::null_mut()
+        None
     };
     let boxed = Box::into_raw(Box::new(Start {
         file: file.to_vec(),

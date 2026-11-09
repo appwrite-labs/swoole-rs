@@ -5,7 +5,7 @@ use std::ffi::{CStr, c_int, c_long, c_void};
 use swoole_rs_coroutine::{RC_CANCELED, Scheduler};
 use swoole_rs_zend::{
     E_ERROR, bailout,
-    sys::{swr_zend_callable, zend_array, zend_execute_data, zval},
+    sys::{swr_zend_callable, zend_execute_data, zval},
 };
 
 /// `Co::stats()`'s native counts.
@@ -765,13 +765,6 @@ pub(crate) fn reactor_init() -> i32 {
 pub(crate) fn event_wait() {
     // SAFETY: crates/phpevents runs the loop.
     unsafe { swr_v1_phpevents_wait() };
-}
-
-pub(crate) fn set_global_option(options: *mut zend_array) {
-    // SAFETY: a live array.
-    if let Some(options) = unsafe { swoole_rs_zend::Array::from_ptr(options) } {
-        swoole_rs_phpswoole::php_swoole_set_global_option(options);
-    }
 }
 
 /// `Coroutine::set_stack_size(php_swoole_parse_to_size(size))`.

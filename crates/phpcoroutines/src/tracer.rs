@@ -649,8 +649,7 @@ unsafe fn blocking_begin(frame: *mut zend_execute_data) {
         return;
     }
     let began_at = now_us();
-    // SAFETY: the running coroutine's context.
-    let switch_count = unsafe { context::swr_v1_phpcoroutines_watch_switches(task.cast(), 1) };
+    let switch_count = context::watch_switches(true);
     let span = Box::into_raw(Box::new(Span {
         began_at,
         switch_count,
@@ -666,8 +665,7 @@ unsafe fn blocking_begin(frame: *mut zend_execute_data) {
 /// # Safety
 /// As [`span_slot`].
 unsafe fn blocking_end(frame: *mut zend_execute_data) {
-    // SAFETY: the running context.
-    let switches = unsafe { context::swr_v1_phpcoroutines_watch_switches(ptr::null_mut(), 0) };
+    let switches = context::watch_switches(false);
     // SAFETY: per the caller.
     let slot = unsafe { span_slot(frame) };
     // SAFETY: as above.
@@ -697,7 +695,7 @@ unsafe fn blocking_end(frame: *mut zend_execute_data) {
     let common = unsafe { &common.common };
     let mut message = format!(
         " >>> [Detected blocking I/O in Coroutine#{}, internal function `",
-        runtime::cid()
+        runtime::get_cid()
     )
     .into_bytes();
     if !common.scope.is_null() {

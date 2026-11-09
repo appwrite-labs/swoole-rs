@@ -613,8 +613,7 @@ fn set(call: &Call) {
     let this = this(call);
     let pool = record(checked(this));
     swoole_rs_phpswoole::php_swoole_set_global_option(options);
-    // SAFETY: the options array.
-    unsafe { swoole_rs_phpcoroutines::php_swoole_set_coroutine_option(options.as_ptr()) };
+    swoole_rs_phpcoroutines::set_coroutine_option(options);
     swoole_rs_phpswoole::php_swoole_set_aio_option(options);
     if let Some(value) = options.get(b"max_package_size") {
         let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);

@@ -396,7 +396,7 @@ fn set(call: &Call) {
 /// `$this->setting`.
 fn finish(this: *mut zend_object, settings: *mut zval) -> Result<(), bailout::Bailout> {
     // SAFETY: `$this` is a Server object.
-    let port = unsafe { crate::lifecycle::swr_v1_phpserver_port(this, 0) };
+    let port = unsafe { crate::lifecycle::port_at(this, 0) };
     // SAFETY: the primary port's object zval.
     let port = unsafe { swoole_rs_zend::object_of(port) };
     // SAFETY: the live Port object, its class and the settings argument.
@@ -424,8 +424,7 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
     if !swoole_rs_phpswoole::set_global(vht) {
         return Err(Stop);
     }
-    // SAFETY: as above.
-    unsafe { swoole_rs_phpcoroutines::php_swoole_set_coroutine_option(vht.as_ptr()) };
+    swoole_rs_phpcoroutines::set_coroutine_option(vht);
     swoole_rs_phpswoole::php_swoole_set_aio_option(vht);
     s.string_option(c"chroot", |v| s.text(0, v))?;
     s.string_option(c"user", |v| s.text(1, v))?;

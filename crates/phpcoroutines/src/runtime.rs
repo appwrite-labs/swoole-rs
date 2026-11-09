@@ -75,7 +75,8 @@ pub(crate) fn interrupt_running() -> bool {
 }
 
 /// `PHPCoroutine::get_cid()`.
-pub(crate) fn cid() -> c_long {
+#[must_use]
+pub fn get_cid() -> c_long {
     if activated() { host::current_cid() } else { -1 }
 }
 
@@ -308,17 +309,11 @@ fn interrupt_stop() {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_cid() -> c_long {
-    cid()
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phpcoroutines_hook_flags() -> u32 {
     CONFIG.with(|c| c.hook_flags.get())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_set_hook_flags(flags: u32) {
+pub(crate) fn set_hook_flags(flags: u32) {
     CONFIG.with(|c| c.hook_flags.set(flags));
 }
 
@@ -330,9 +325,8 @@ pub(crate) fn set_deadlock_check(enable: bool) {
     CONFIG.with(|c| c.deadlock_check.set(enable));
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_set_preemptive(enable: u8) {
-    CONFIG.with(|c| c.preemptive.set(enable != 0));
+pub(crate) fn set_preemptive(enable: bool) {
+    CONFIG.with(|c| c.preemptive.set(enable));
 }
 
 /// `PHPCoroutine::create` for C++ callers.

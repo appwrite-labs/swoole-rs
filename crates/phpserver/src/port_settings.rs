@@ -412,7 +412,7 @@ impl Source for Zend {
     }
 
     fn length_func(&self) -> *mut c_void {
-        crate::swr_v1_phpserver_length_func as *mut c_void
+        crate::dispatch::length_func as *mut c_void
     }
 
     fn sni(&self) -> Step {
