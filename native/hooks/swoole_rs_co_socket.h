@@ -83,13 +83,12 @@ void swr_v1_hook_co_socket_borrowed_err(swr_v1_co_socket *socket, int error, con
 int swr_v1_hook_co_socket_owned_err(swr_v1_co_socket *socket, int error, const char *bytes, size_t length);
 /* The public constructors, by how: Socket(domain, type, protocol), Socket(SocketType),
  * Socket(fd, SocketType), Socket(fd, domain, type, protocol). owner is the Socket the
- * network::Socket points back to. Returns SWR_CO_SOCKET_OPENED unless socket(2) failed
- * (errno says why), SWR_CO_SOCKET_NODELAY_FAILED when TCP_NODELAY could not be set,
- * and set_nonblock's fd_option warnings from bit 8. */
+ * network::Socket points back to. Returns what it did, for swr_v1_hook_co_socket_created. */
 enum { SWR_CO_SOCKET_BY_FAMILY, SWR_CO_SOCKET_BY_TYPE, SWR_CO_SOCKET_FD_BY_TYPE, SWR_CO_SOCKET_FD_BY_FAMILY };
-enum { SWR_CO_SOCKET_OPENED = 1, SWR_CO_SOCKET_NODELAY_FAILED = 2 };
 uint32_t swr_v1_hook_co_socket_new(
     swr_v1_co_socket *socket, void *owner, int how, int fd, int socket_type, int domain, int kind, int protocol);
+/* Socket::created: a failed socket(2) becomes the last error; the others are warnings. */
+void swr_v1_hook_co_socket_created(const swr_v1_co_socket *socket, uint32_t result);
 /* The accepting constructor's fields; accept shares the TLS context after. */
 uint32_t swr_v1_hook_co_socket_accepted(swr_v1_co_socket *socket,
                                         void *owner,
@@ -133,10 +132,6 @@ bool swr_v1_hook_co_socket_cancel(swr_v1_co_socket *socket, uint32_t event);
 bool swr_v1_hook_co_socket_close(swr_v1_co_socket *socket);
 bool swr_v1_hook_co_socket_check_liveness(swr_v1_co_socket *socket);
 bool swr_v1_hook_co_socket_connect(swr_v1_co_socket *socket, const struct sockaddr *addr, socklen_t length);
-/* recvfrom(buffer, length) through the socket's own recvfrom into its
-   network::Socket's peer address. */
-ssize_t swr_v1_hook_co_socket_recvfrom(
-    swr_v1_co_socket *socket, void *buffer, size_t length, ssize_t (*call)(swr_v1_co_socket *, void *, size_t, sockaddr *, socklen_t *));
 void swr_v1_hook_co_socket_host(const swr_v1_hook_co_socket_host_t *host);
 /* set_err(e), check_return_value, is_available, get_bound_cid, check_bound_co,
    get_event_str (a static string) and TimeoutController::has_timedout (startup is

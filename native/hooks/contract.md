@@ -19,6 +19,10 @@ socket through `swr_v1_runtime_socket`; `swoole_socket_hook.h` and
   no-buffers sleep, the reactor and the TLS shutdown and liveness probe) are Rust
   (`co_io::NATIVE`).
 - `Socket::~Socket`, the vtable's key function.
+- `Socket::created`'s `extra_ = extra_owner_.value.owner`, inline in the header: the
+  owner is a C++ member Rust has no offset for. Its reports are Rust
+  (`swr_v1_hook_co_socket_created`), and so is `recvfrom(buf, n)` under its upstream
+  symbol.
 - `swr_v1_runtime_socket`: `SocketImpl`'s constructors and members the coroutine
   streams call (`std::string` hosts, proxies, `IOVector`).
 - The hooks host's io_uring pointer and the `HAVE_IOURING_*` configure macros.

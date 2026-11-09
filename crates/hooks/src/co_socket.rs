@@ -454,6 +454,42 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_accepted(
     result
 }
 
+/// What a constructor's bits report (`Socket::created`): a failed socket(2) becomes
+/// the last error; the fd option and `TCP_NODELAY` failures are warnings.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_hook_co_socket_created(socket: &CoSocket, result: u32) {
+    use swoole_rs_corebase::log;
+    if result & OPENED == 0 {
+        log::set_last_error(crate::co_io::errno());
+        return;
+    }
+    let fd = socket.sock_fd;
+    let warnings = result >> FD_WARNINGS_SHIFT;
+    if warnings & 1 != 0 {
+        log::sys_warning(
+            c"Socket::created",
+            format_args!("fcntl({fd}, GETFL) failed"),
+        );
+    }
+    if warnings & 2 != 0 {
+        log::sys_warning(
+            c"Socket::created",
+            format_args!("fcntl({fd}, SETFL, opts) failed"),
+        );
+    }
+    if result & NODELAY_FAILED != 0 {
+        log::sys_warning(
+            c"Socket::created",
+            format_args!(
+                "setsockopt({fd}, {}, {}, {}) failed",
+                libc::IPPROTO_TCP,
+                libc::TCP_NODELAY,
+                size_of::<c_int>()
+            ),
+        );
+    }
+}
+
 /// `pop_read_buffer` / `pop_write_buffer`: the buffer, which the caller now owns, or null.
 ///
 /// # Safety
@@ -753,5 +789,19 @@ mod tests {
         assert_eq!(error, libc::ENOTCONN);
         assert_eq!(address.kind, 0);
         release(socket);
+    }
+
+    /// Upstream's constructors: a failed socket(2) leaves its errno as the last error;
+    /// warnings leave it alone.
+    #[test]
+    fn created_publishes_a_failed_socket() {
+        let socket = TestSocket::new();
+        swoole_rs_corebase::log::set_last_error(0);
+        crate::co_io::set_errno(libc::EMFILE);
+        swr_v1_hook_co_socket_created(&socket.0, 0);
+        assert_eq!(swoole_rs_corebase::log::last_error(), libc::EMFILE);
+        swoole_rs_corebase::log::set_last_error(0);
+        swr_v1_hook_co_socket_created(&socket.0, OPENED | NODELAY_FAILED | 3 << FD_WARNINGS_SHIFT);
+        assert_eq!(swoole_rs_corebase::log::last_error(), 0);
     }
 }
