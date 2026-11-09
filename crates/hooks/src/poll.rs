@@ -331,7 +331,7 @@ pub static NATIVE: PollOps = PollOps {
 pub static NATIVE: PollOps = tests::OPS;
 
 #[cfg(not(test))]
-mod native {
+pub(crate) mod native {
     use crate::wait_event::native as event;
     use core::ffi::c_void;
     use swoole_rs_corebase::constants::FdType;
@@ -370,7 +370,7 @@ mod native {
 
     pub(super) fn defer(task: *mut c_void) {
         // SAFETY: the task stays parked until the deferred completion runs.
-        unsafe { crate::reactor_handlers::defer(super::swr_v1_hook_poll_completed, task) };
+        unsafe { crate::reactor_handlers::defer(super::swr_v1_hook_poll_completed, task, None) };
     }
 
     pub(super) fn park(co: *mut c_void) {
@@ -378,7 +378,7 @@ mod native {
         unsafe { crate::resolve::park(co) };
     }
 
-    pub(super) fn resume(co: *mut c_void) {
+    pub(crate) fn resume(co: *mut c_void) {
         // SAFETY: the coroutine parked in the poll.
         unsafe { crate::resolve::resume(co) };
     }
