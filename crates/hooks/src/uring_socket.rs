@@ -401,8 +401,7 @@ pub(crate) unsafe fn swr_v1_hook_uring_io_all(
     transfer_result(result, total)
 }
 
-/// `swr_v1_hook_transfer_result`: -1 when it failed before moving anything, else
-/// the bytes moved.
+/// -1 when it failed before moving anything, else the bytes moved.
 fn transfer_result(result: isize, total: usize) -> isize {
     if result < 0 && total == 0 {
         -1

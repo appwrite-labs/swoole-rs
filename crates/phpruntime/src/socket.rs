@@ -235,10 +235,7 @@ impl Socket {
 
     /// The coroutine socket of hooked `fd`, if any.
     pub(crate) fn of_fd(fd: i32) -> Option<Self> {
-        Self::wrap(
-            swoole_rs_hooks::socket_map::swr_v1_hook_socket_get(fd),
-            false,
-        )
+        Self::wrap(swoole_rs_hooks::socket_map::get(fd), false)
     }
 
     fn wrap(socket: *mut c_void, owned: bool) -> Option<Self> {

@@ -8,10 +8,7 @@ use crate::co_io::set_errno;
 use crate::co_socket::Co;
 use crate::fd_control::{ALL, fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
 use crate::poll::swr_v1_hook_poll;
-use crate::socket_map::{
-    swr_v1_hook_socket_close, swr_v1_hook_socket_exists, swr_v1_hook_socket_get,
-    swr_v1_hook_socket_insert, swr_v1_hook_socket_remove,
-};
+use crate::socket_map;
 use crate::stdio::{Host, coroutine, offloaded, swr_v1_hook_close_fd};
 use libc::{c_int, c_void, msghdr, nfds_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
 use swoole_rs_corebase::log;
@@ -59,14 +56,14 @@ fn hooked(fd: c_int) -> Option<(&'static Host, Co)> {
 
 /// `fd`'s socket in the map.
 fn mapped(fd: c_int) -> Option<Co> {
-    let socket = swr_v1_hook_socket_get(fd);
+    let socket = socket_map::get(fd);
     // SAFETY: the map holds live native sockets.
     (!socket.is_null()).then(|| unsafe { Co::of(socket) })
 }
 
 /// Map `fd` to `socket`, deleting the socket the map lets go.
 fn keep(fd: c_int, socket: Co, replace: bool) {
-    let released = swr_v1_hook_socket_insert(fd, socket.this(), replace);
+    let released = socket_map::insert(fd, socket.this(), replace);
     if !released.is_null() {
         // SAFETY: the map no longer holds it.
         unsafe { (SOCKETS.free)(released) };
@@ -322,7 +319,7 @@ pub extern "C" fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int {
     if coroutine().is_none() {
         return -1;
     }
-    let socket = swr_v1_hook_socket_remove(fd);
+    let socket = socket_map::remove(fd);
     if socket.is_null() {
         return -1;
     }
@@ -339,7 +336,7 @@ pub extern "C" fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int {
 /// Whether `fd` has a coroutine socket.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_socket_exists(fd: c_int) -> u8 {
-    swr_v1_hook_socket_exists(fd).into()
+    socket_map::exists(fd).into()
 }
 
 /// `SO_RCVTIMEO` or `SO_SNDTIMEO` on `fd`'s socket: 0, or -1 with errno `EINVAL`.
@@ -394,7 +391,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
         return unsafe { libc::close(fd) };
     }
     // SAFETY: both act on live sockets from the map.
-    let result = unsafe { swr_v1_hook_socket_close(fd, close_socket, SOCKETS.free) };
+    let result = unsafe { socket_map::close(fd, close_socket, SOCKETS.free) };
     if result <= 0 {
         return result;
     }
@@ -516,7 +513,7 @@ fn blocking(fd: c_int, write: bool) -> SocketRecord {
 )]
 #[must_use]
 pub extern "C" fn swoole_coroutine_get_socket_object(fd: c_int) -> *mut c_void {
-    swr_v1_hook_socket_get(fd)
+    socket_map::get(fd)
 }
 
 /// `SocketImpl *swoole_coroutine_get_socket_object_ex(int)`: as

@@ -24,3 +24,16 @@ pub extern "C" fn swr_v1_reactor_kqueue_timeout(milliseconds: i32, deferred: u32
         }
     }
 }
+
+/// Coroutine `flock` and `waitpid`'s next poll delay: double up to `maximum`, then
+/// start over at `initial`.
+#[must_use]
+pub fn backoff(current: f64, initial: f64, maximum: f64) -> f64 {
+    if current >= maximum {
+        initial
+    } else {
+        let doubled = current * 2.0;
+        // Preserve native SW_MIN rather than f64::min's different NaN policy.
+        if doubled < maximum { doubled } else { maximum }
+    }
+}
