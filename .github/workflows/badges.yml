@@ -40,7 +40,7 @@ jobs:
         run: |
           for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 20 --json databaseId -q '.[].databaseId'); do
             if gh run download "$run" -n phpt -D gate/phpt 2>/dev/null && [ -f gate/phpt/phpt.json ]; then
-              for variant in zts stdext iouring cares threadcontext alpine; do
+              for variant in zts stdext iouring cares threadcontext alpine root; do
                 gh run download "$run" -n "phpt-$variant" -D "gate/$variant" 2>/dev/null || echo "::warning::run $run has no phpt-$variant gate"
               done
               echo "commit=$(gh run view "$run" --json headSha -q .headSha)" >> "$GITHUB_OUTPUT"

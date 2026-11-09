@@ -529,6 +529,58 @@ jobs:
       - if: needs.phpt.result != 'success'
         run: echo "A PHPT shard crashed; its tests are missing from the gate" && exit 1
 
+  # The PHPTs that skip unless run as root (SO_BINDTODEVICE, raw ICMP, a server dropping to
+  # www-data, a chroot), as root on every engine, with their own re-runs and gate (#1998).
+  # sudo drops GITHUB_ACTIONS, so getaddrinfo_timeout's skip_if_in_ci() doesn't skip it either:
+  # its chroot and unreachable resolver need nothing the runner lacks (it passes as root).
+  phpt-root:
+    needs: phpt-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          # The engines link unixODBC, libfbclient and the Instant Client.
+          packages: php-mysql php-pgsql unixodbc libfbclient2 libaio1t64
+          php: ${{ needs.phpt-build.outputs.php }}
+      - uses: ./.github/actions/instantclient
+      - uses: actions/cache/restore@v4
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: phpt-engines
+          path: target/phpt
+      - run: |
+          python3 corpus/upstream/inventory.py --output target/phpt/all.json
+          extensions=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')
+          # shellcheck disable=SC2086 # one argument per word
+          set -- --manifest target/phpt/all.json --timeout 30 --external-network $extensions \
+            --case tests/swoole_coroutine_system/getaddrinfo_timeout.phpt \
+            --case tests/swoole_runtime/sockets/basic/socket_set_option_bindtodevice.phpt \
+            --case tests/swoole_server/single_thread/user_setting.phpt \
+            --case tests/swoole_socket_coro/icmp.phpt \
+            --case tests/swoole_socket_coro/setopt/bindtodevice.phpt
+          for engine in upstream hybrid cargo; do
+            sudo python3 corpus/upstream/run.py "$@" --engine $engine=target/phpt/$engine.so \
+              --output target/phpt/root/$engine.json || [ $? -eq 1 ]
+          done
+          sudo corpus/upstream/recheck.sh target/phpt/root target/phpt target/phpt/recheck "$@"
+          set -- target/phpt/root/*.json
+          if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
+          python3 corpus/upstream/gate.py "$@" --output phpt-root.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phpt-root
+          path: |
+            phpt-root.json
+            target/phpt/root/
+            target/phpt/recheck/
+
   # swoole/library's own PHPUnit suite against the library each engine embeds, with the
   # services of the library's docker-compose.yml published on localhost, as its
   # build-swoole workflow runs it (corpus/library/run.py).

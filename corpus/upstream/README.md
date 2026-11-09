@@ -115,7 +115,9 @@ without modifying the original PHPT assertions or capability probes.
 
 The merge tier (`phpt-*` jobs in `.github/workflows/merge.yml`) runs every pinned
 PHPT against the upstream reference and the all-modules hybrid, both built with
-PHP sockets support, in 6 shards per engine:
+PHP sockets support, in 6 shards per engine. The shards don't run as root, so the five
+tests that skip unless root run again as root in the `phpt-root` job, with their own
+re-runs and gate (`phpt-root.json`). The shards run:
 
 ```sh
 python3 corpus/upstream/inventory.py --shard 3/6 --output manifest.json
