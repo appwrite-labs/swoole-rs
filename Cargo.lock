@@ -1094,6 +1094,7 @@ dependencies = [
  "libc",
  "memchr",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-locks",
 ]
 

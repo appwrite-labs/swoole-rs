@@ -100,7 +100,10 @@ lock (the level is an atomic, so `get_level` takes no lock). Diagnostics go
 through corebase's log host under upstream's method names; worker identity,
 `swoole_redirect_stdout` and backtraces call `swr_logger_host` (Rust, in `crates/process`).
 Both run after the lock is released, so a diagnostic can log through the same
-logger. A failed open warns as upstream's
+logger. The process logger (`SwooleG.logger`) is `crates/process`'s
+(`swr_v1_process_logger`), and a log Rust emits runs the macros' semantics in
+`swr_v1_utils_log`: the last error, the level check, the line in `sw_error`, the
+put and, for `swoole_error`/`swoole_sys_error`, the exit. A failed open warns as upstream's
 `Logger::open` did; a failed open during `put`'s rotation, which deadlocked
 upstream, warns after the line is written. `get_file`/`get_real_file` pointers are
 valid until the file next changes.

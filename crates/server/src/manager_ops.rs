@@ -380,8 +380,7 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_SERVER_RELOAD => _ = unsafe { entry::reload(serv, arg != 0) },
         OP_REOPEN_LOGGER => {
             if let Some(logger) = swoole_rs_utilities::process_logger() {
-                // SAFETY: the process logger, live while the process runs.
-                unsafe { swoole_rs_utilities::swr_v1_logger_reopen(logger) };
+                logger.reopen();
             }
         }
         OP_REAP_DETACHED => {

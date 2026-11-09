@@ -1995,8 +1995,7 @@ unsafe fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let slot = |index| o.state.callbacks.slot(index);
     let reopen_logger = || {
         if let Some(logger) = swoole_rs_utilities::process_logger() {
-            // SAFETY: the process's live logger.
-            unsafe { swoole_rs_utilities::swr_v1_logger_reopen(logger) };
+            logger.reopen();
         }
     };
     Some(match op {

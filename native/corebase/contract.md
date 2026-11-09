@@ -68,6 +68,10 @@ Each C++ effect (an object's `new`/`delete`, `swoole_init`'s native leaves, the
 timer, event, signal and coroutine leaves) is an entry of the host globals.cc's
 `swoole_init` registers (`swr_v1_core_native_host`) before it runs the body;
 registering only there keeps those leaves out of the gates that never call it.
+The same host carries the process logger's lifecycle (`swr_v1_process_logger`,
+crates/process), and `swoole_init` registers the log macros Rust's logs run
+(`swr_v1_utils_log`, crates/utilities) as the log host: both crates sit above
+corebase, so corebase reaches them only through what native code registers.
 Before that the sequences skip their native effects and `swoole_fork` returns -1.
 
 - Init: the record's defaults (`swr_v1_core_init`, below), `SwooleG = {}`, libc's
@@ -77,7 +81,7 @@ Before that the sequences skip their native effects and `swoole_fork` returns -1
   the descriptor limit (warning when getrlimit fails).
 
 - Clean releases the hook lists, then: clear signals, clean the thread,
-  close the logger when there is one, delete the logger and memory pool, and
+  close the logger, delete the logger and memory pool, and
   reset Global last.
 - Thread init allocates the stack buffer when absent, blocks signals only for
   non-main threads, then publishes `main_thread`. Thread clean frees the timer,
