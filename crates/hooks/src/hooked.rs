@@ -439,17 +439,17 @@ unsafe extern "C" fn close_socket(socket: *mut c_void) -> bool {
 /// closes on the pool or the ring.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
-    let Some(_host) = coroutine() else {
+    if coroutine().is_none() {
         // SAFETY: closing an fd touches no memory.
         return unsafe { libc::close(fd) };
-    };
+    }
     // SAFETY: both act on live sockets from the map.
     let result = unsafe { swr_v1_hook_socket_close(fd, close_socket, SOCKETS.free) };
     if result <= 0 {
         return result;
     }
     #[cfg(feature = "iouring")]
-    if let Some(ring) = ring(_host) {
+    if let Some(ring) = crate::stdio::host().and_then(ring) {
         // SAFETY: the ring's host.
         return unsafe { crate::uring::swr_v1_uring_close_fd(ring, fd) };
     }
