@@ -7,11 +7,13 @@ counted: instrumentation is switched on after startup and warmup, and off before
 shutdown. Every process (master, manager, worker) is followed and summed.
 With two engines and --max-ratio, exits 1 if any workload's first/second ratio exceeds it.
 --limits is the merge tier's ratchet: per-workload ratios recorded in a JSON file, each
-allowed to drift by NOISE (docs/migration.md, Speed).
+allowed to drift by NOISE (docs/migration.md, Speed). --ratchet lowers those records to what
+two consecutive merge-tier results both beat (.github/workflows/badges.yml files the issue).
 """
 import argparse
 import http.client
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -163,9 +165,26 @@ def verdict(ratio, recorded=None, max_ratio=None):
     return limit, bool(limit and ratio > limit), bool(recorded and ratio < recorded / NOISE)
 
 
+def lowest(ratio):
+    """The record a workload's ratio could be lowered to: rounded up to two decimals."""
+    return math.ceil(round(ratio * 100, 6)) / 100
+
+
+def ratchet(results, limits):
+    """{workload: lower record} for each recorded workload that every result beats once rounded up."""
+    lowered = {}
+    for workload, limit in limits.items():
+        rows = [result['instructions_per_request'].get(workload) for result in results]
+        if results and all(rows):
+            record = max(lowest(row['hybrid'] / row['upstream']) for row in rows)
+            if record < limit:
+                lowered[workload] = record
+    return lowered
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--engine', action='append', required=True, help='NAME=/path/to/extension')
+    parser.add_argument('--engine', action='append', help='NAME=/path/to/extension')
     parser.add_argument('--workload', choices=list(WORKLOADS), action='append')
     parser.add_argument('--requests', type=int, default=2000)
     parser.add_argument('--warmup', type=int, default=100)
@@ -179,7 +198,21 @@ def main():
     parser.add_argument('--max-ratio', type=float, help='Fail if first/second exceeds this for any workload')
     parser.add_argument('--limits', type=Path, help='JSON {workload: recorded first/second ratio}; '
                         'fail if one is exceeded by more than noise (overrides --max-ratio per workload)')
+    parser.add_argument('--ratchet', type=Path, nargs='+', metavar='RESULT',
+                        help='Lower --limits in place to what every RESULT (an --output) beats; run nothing')
     args = parser.parse_args()
+    if args.ratchet:
+        if not args.limits:
+            parser.error('--ratchet needs --limits')
+        limits = json.loads(args.limits.read_text())
+        lowered = ratchet([json.loads(path.read_text()) for path in args.ratchet], limits)
+        for workload, record in lowered.items():
+            print(f'{workload}: {limits[workload]:.2f} -> {record:.2f}')
+        args.limits.write_text('{\n' + ',\n'.join(f'  "{workload}": {record:.2f}' for workload, record
+                                                     in {**limits, **lowered}.items()) + '\n}\n')
+        return 0
+    if not args.engine:
+        parser.error('--engine is required')
     engines = parse_engines(args.engine, args.php, args.php_extension)
     if (args.max_ratio or args.limits) and len(engines) != 2:
         parser.error('--max-ratio and --limits need exactly two engines')
@@ -196,7 +229,7 @@ def main():
             limit, over, stale = verdict(a / b, recorded.get(workload), args.max_ratio)
             failed |= over
             print(f'ratio {first}/{second} {workload}: {a / b:.4f}' + (f' exceeds {limit:.4f}' if over else '')
-                  + (f'; below the recorded {recorded[workload]}, lower it in {args.limits}' if stale else ''))
+                  + (f'; below the recorded {recorded[workload]}, lowest record {lowest(a / b):.2f}' if stale else ''))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps({'requests': args.requests, 'max_ratio': args.max_ratio,
                                        'instructions_per_request': results}, indent=2) + '\n')

@@ -23,6 +23,15 @@ class Ratchet(unittest.TestCase):
         self.assertFalse(callgrind.verdict(1.10, recorded=1.10, max_ratio=1.05)[1])
         self.assertTrue(callgrind.verdict(1.10, max_ratio=1.05)[1])
 
+    def test_ratchet_lowers_to_what_every_result_beats_rounded_up(self):
+        def result(**ratios):
+            return {'instructions_per_request': {w: {'hybrid': r * 1000, 'upstream': 1000} for w, r in ratios.items()}}
+        results = [result(plaintext=0.951, json=0.99, timer=0.70), result(plaintext=0.962, json=1.0, websocket=0.5)]
+        limits = {'plaintext': 1.00, 'json': 1.00, 'timer': 0.72, 'websocket': 0.87}
+        # json beats nothing once rounded up; timer and websocket lack a result in one run.
+        self.assertEqual(callgrind.ratchet(results, limits), {'plaintext': 0.97})
+        self.assertEqual(callgrind.lowest(0.94), 0.94)
+
     def test_every_merge_tier_workload_is_recorded(self):
         limits = json.loads((ROOT / 'benchmarks/callgrind_limits.json').read_text())
         workflow = (ROOT / '.github/workflows/merge.yml').read_text()

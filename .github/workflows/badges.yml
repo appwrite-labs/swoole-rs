@@ -13,6 +13,7 @@ on:
 permissions:
   contents: write
   actions: read
+  issues: write
 concurrency:
   group: badges
 defaults:
@@ -47,17 +48,41 @@ jobs:
             fi
             rm -rf gate
           done
-      # The newest completed merge-tier run on main whose callgrind job uploaded a result
-      # (it uploads one when the limits fail too, which is when the badge matters most).
+      # The two newest completed merge-tier runs on main whose callgrind job uploaded a result
+      # (it uploads one when the limits fail too, which is when the badge matters most):
+      # cg/ is the newest, for the badge, and cg-previous/ the one before it.
       - id: callgrind
         run: |
-          for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 20 --json databaseId -q '.[].databaseId'); do
-            if gh run download "$run" -n callgrind -D cg 2>/dev/null && [ -f cg/callgrind.json ]; then
+          for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 40 --json databaseId -q '.[].databaseId'); do
+            dir=cg
+            [ -f cg/callgrind.json ] && dir=cg-previous
+            if ! gh run download "$run" -n callgrind -D "$dir" 2>/dev/null || [ ! -f "$dir/callgrind.json" ]; then
+              rm -rf "$dir"
+            elif [ "$dir" = cg ]; then
               echo "commit=$(gh run view "$run" --json headSha -q .headSha)" >> "$GITHUB_OUTPUT"
+            else
               break
             fi
-            rm -rf cg
           done
+      # When both runs beat a record once rounded up, file one ready ticket for an executor
+      # (GITHUB_TOKEN may not open pull requests here, and one it opened would start no PR tier).
+      - if: hashFiles('cg-previous/callgrind.json') != ''
+        run: |
+          lowered=$(python3 benchmarks/callgrind.py --limits benchmarks/callgrind_limits.json --ratchet cg/callgrind.json cg-previous/callgrind.json)
+          [ -n "$lowered" ] || exit 0
+          title='callgrind: lower the limits the last two merge runs beat'
+          body="The last two merge-tier callgrind results both beat these records, rounded up to two decimals (benchmarks/callgrind.py --ratchet). Lower them in benchmarks/callgrind_limits.json in a one-line PR (#1910).
+
+          $(git diff -U0 benchmarks/callgrind_limits.json | sed 's/^/    /')"
+          git checkout benchmarks/callgrind_limits.json
+          open=$(gh issue list --state open --search "\"$title\" in:title" --json number -q '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue edit "$open" --body "$body"
+          else
+            url=$(gh issue create --title "$title" --body "$body" --label status:ready --label p2 --label kind:ci --assignee loks0n)
+            id=$(gh api "repos/$GITHUB_REPOSITORY/issues/${url##*/}" -q .id)
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/1894/sub_issues" -F sub_issue_id="$id"
+          fi
       - run: git clone -q --depth 1 --branch badges "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" out || git init -q -b badges out
       - run: >
           python3 tools/badges.py --source target/pin --output out

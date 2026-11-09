@@ -54,7 +54,10 @@ The merge tier's `callgrind` job is a ratchet, not a target:
 records the all-modules hybrid/upstream instruction ratio per workload, and the
 job fails if one rises more than 1% (noise) above its record.
 
-- A PR that makes a workload cheaper lowers its record in the same PR.
+- A PR that makes a workload cheaper lowers its record in the same PR. When
+  two consecutive merge runs both beat a record rounded up to two decimals,
+  the Badges workflow files a ready ticket to lower it
+  (`benchmarks/callgrind.py --ratchet`).
 - A PR that moves work into Rust may raise a record by up to 3% of its value,
   stating the before/after numbers in the PR. Migration may be slow before it
   is fast; the ratchet keeps that visible and bounded.
