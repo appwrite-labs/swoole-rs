@@ -98,6 +98,17 @@ impl Call {
         unsafe { this.value.obj }
     }
 
+    /// `ZVAL_COPY(&value, ZEND_THIS)`: `$this` with a reference of its own,
+    /// valid in a non-static method only.
+    #[must_use]
+    pub fn this_owned(&self) -> crate::Owned {
+        let this = self.this();
+        // SAFETY: a method's live `$this`.
+        unsafe { (*this).gc.refcount += 1 };
+        // SAFETY: as above, carrying the reference added.
+        unsafe { crate::Owned::object(this) }
+    }
+
     /// `ZEND_CALL_ARG(execute_data, n)`, 1-based; `n` is at most `num_args()`.
     #[inline]
     pub(crate) fn arg(&self, n: u32) -> *mut zval {
