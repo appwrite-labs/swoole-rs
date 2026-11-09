@@ -757,6 +757,9 @@ class ChangedModules(unittest.TestCase):
         # Their gates call its exports, so they catch one removed or renamed (#2236).
         with patch.object(dev, 'dependents', return_value={'crates/base64/': {'crates/http/', 'tests/modules/websocket/'}}):
             self.assertEqual(self.changed('crates/base64/src/lib.rs'), ['base64', 'http', 'websocket'])
+            # The PHPT families come from the touched modules alone.
+            with patch.object(dev.subprocess, 'check_output', return_value='crates/base64/src/lib.rs'):
+                self.assertEqual(dev.changed_modules('origin/main', consumers=False), ['base64'])
         self.assertIn('crates/http/', dev.dependents()['crates/base64/'])
 
 
