@@ -101,11 +101,10 @@ pub mod exports {
 
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
     /// the length callback of an HTTP/2 port, and of crates/phphttp2's client and
-    /// crates/phphttp's coroutine server, which link it by this name.
+    /// crates/phphttp's coroutine server.
     ///
     /// # Safety
     /// `pl.buf` holds `pl.buf_size` readable bytes.
-    #[unsafe(export_name = "swr_v1_http2_frame_length")]
     pub unsafe extern "C" fn http2_length(
         _proto: *const c_void,
         _socket: *mut SocketRecord,
