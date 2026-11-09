@@ -1081,10 +1081,12 @@ unsafe extern "C" fn warn(pool: *mut c_void, worker: *mut c_void, kind: c_int, a
             let fd = socket(worker_of(worker).pipe_worker).fd;
             log::sys_warning(origin, format_args!("[Worker#{id}] read({fd}) failed"));
         }
-        WARN_BAD_PACKET => log::warning(
+        WARN_BAD_PACKET => log::error_log(
+            4, // SW_LOG_WARNING
+            swoole_rs_error::ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int,
             origin,
             format_args!(
-                "[Worker#{id}] bad task packet, The received data-length[{a}] is inconsistent with the packet-length[{b}]"
+                "[Worker#{id}] bad task packet, received data length[{a}], packet length[{b}]"
             ),
         ),
         WARN_TASK_FAILED => log::warning(

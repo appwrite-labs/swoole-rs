@@ -23,6 +23,11 @@ const SW_ERR: c_int = -1;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
+const SW_ERROR_PROTOCOL_ERROR: c_int = 508;
+const SW_PIPE_MASTER: c_int = 1;
+const SW_TASK_TMPFILE: u16 = 1;
+const SW_MSGMAX: u32 = 65536;
+const IPC_PRIVATE: c_int = 0;
 // swIPCMode, ProtocolType, swWorkerType, swWorkerStatus.
 const SW_IPC_NONE: c_int = 0;
 const SW_IPC_UNIXSOCK: c_int = 1;
@@ -291,6 +296,14 @@ unsafe extern "C" {
 
     #[link_name = "_ZN6swoole6Worker4initEv"]
     fn worker_init(worker: *mut Worker);
+    #[link_name = "_ZNK6swoole6Worker17send_pipe_messageEPKvmi"]
+    fn worker_send_pipe_message(
+        worker: *const Worker,
+        data: *const u8,
+        n: usize,
+        flags: c_int,
+    ) -> isize;
+    fn swr_v1_os_msg_queue_push(queue: *const c_void, node: *const c_void, length: usize) -> bool;
     #[link_name = "_ZN6swoole6Worker10is_runningEv"]
     fn worker_is_running() -> bool;
     #[link_name = "_ZN6swoole6Worker15set_max_requestEjj"]
@@ -548,6 +561,7 @@ fn test_func(pool: *mut Pool) {
 
     // SAFETY: the case's pool; `rmem` outlives the loop.
     unsafe {
+        worker_init(get_worker(pool, 0));
         (*pool).running = true;
         (*pool).ptr = (&raw mut rmem).cast();
         if let Some(on_worker_start) = (*pool).on_worker_start {
@@ -686,6 +700,8 @@ fn tcp_raw() {
         }
     });
 
+    // SAFETY: the created pool's worker.
+    unsafe { worker_init(get_worker(pool, 0)) };
     main_loop(pool, get_worker(pool, 0));
     let dispatch_result = sender.join().unwrap();
 
@@ -1372,6 +1388,243 @@ fn listen_rejects_truncated_task_packet() {
     assert_eq!(messages[1], b"sentinel");
 }
 
+extern "C" fn malformed_on_task(pool: *mut Pool, _: *mut Worker, task: *mut EventData) -> c_int {
+    // SAFETY: the case's counter.
+    unsafe { *(*pool).ptr.cast::<usize>() += 1 };
+    // SAFETY: the pool's task.
+    if unsafe { (*task).payload() } == b"x" {
+        // SAFETY: the running pool.
+        unsafe { (*pool).running = false };
+    }
+    SW_OK
+}
+
+/// `get_worker(0)->send_pipe_message(event, n, SW_PIPE_MASTER)`.
+fn send_to_worker(pool: *mut Pool, event: &EventData, n: usize) -> isize {
+    // SAFETY: the created pool's worker and `n` of the event's bytes.
+    unsafe {
+        worker_send_pipe_message(
+            get_worker(pool, 0),
+            event.bytes(n).as_ptr(),
+            n,
+            SW_PIPE_MASTER,
+        )
+    }
+}
+
+fn task_protocol_rejects_malformed_packets() {
+    let pool = new_pool();
+    assert_eq!(create(pool, 1, 0, SW_IPC_UNIXSOCK), SW_OK);
+    set_protocol(pool, SW_PROTOCOL_TASK);
+    let mut dispatched = 0usize;
+    // SAFETY: the case's pool and worker; `dispatched` outlives the loop.
+    unsafe {
+        worker_init(get_worker(pool, 0));
+        (*pool).running = true;
+        (*pool).ptr = (&raw mut dispatched).cast();
+        (*pool).on_task = Some(malformed_on_task);
+    }
+    let head = size_of::<DataHead>();
+
+    let mut task = EventData::new();
+    task.info.len = u32::MAX;
+    assert_eq!(send_to_worker(pool, &task, head - 1), (head - 1) as isize);
+
+    task.info.len = 5000;
+    assert_eq!(send_to_worker(pool, &task, 100), 100);
+
+    task.info.ext_flags = SW_TASK_TMPFILE;
+    task.info.len = 1;
+    task.data[0] = b't';
+    assert_eq!(send_to_worker(pool, &task, head + 1), (head + 1) as isize);
+
+    task.info.ext_flags = 0;
+    task.info.len = SW_IPC_BUFFER_SIZE as u32;
+    let whole = size_of::<EventData>();
+    assert_eq!(send_to_worker(pool, &task, whole), whole as isize);
+
+    task.info.len = 1;
+    task.data[0] = b'x';
+    assert_eq!(send_to_worker(pool, &task, head + 1), (head + 1) as isize);
+
+    main_loop(pool, get_worker(pool, 0));
+
+    assert_eq!(dispatched, 2);
+    assert_eq!(last_error(), SW_ERROR_PROTOCOL_ERROR);
+    destroy(pool);
+}
+
+fn task_protocol_rejects_malformed_socket_packet() {
+    const SOCKET_FILE: &CStr = c"/tmp/swoole_process_pool_task.sock";
+    // SAFETY: signal(2).
+    unsafe { signal(SIGPIPE, SIG_IGN) };
+    let pool = new_pool();
+    assert_eq!(create(pool, 1, 0, SW_IPC_SOCKET), SW_OK);
+    assert_eq!(listen_file(pool, SOCKET_FILE), SW_OK);
+    set_protocol(pool, SW_PROTOCOL_TASK);
+    let mut dispatched = 0usize;
+    // SAFETY: the case's pool and worker; `dispatched` outlives the loop.
+    unsafe {
+        worker_init(get_worker(pool, 0));
+        (*pool).running = true;
+        (*pool).ptr = (&raw mut dispatched).cast();
+        (*pool).on_task = Some(malformed_on_task);
+    }
+
+    let address = pool as usize;
+    let sender = std::thread::spawn(move || {
+        let pool = address as *mut Pool;
+        // SAFETY: a thread of this process.
+        unsafe { swoole_thread_init(false) };
+        let mut acknowledgment_received = SW_ERR as isize;
+        let mut acknowledgment = -1;
+        let client = UnixStream::connect(SOCKET_FILE.to_str().unwrap());
+        assert!(client.is_ok());
+        if let Ok(mut client) = client {
+            client
+                .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                .unwrap();
+            let mut invalid_task = EventData::new();
+            invalid_task.info.len = u32::MAX;
+            let head = size_of::<DataHead>();
+            let packet_length = ((head - 1) as u32).to_be_bytes();
+            assert_eq!(client.write(&packet_length).unwrap(), size_of::<u32>());
+            assert_eq!(
+                client.write(invalid_task.bytes(head - 1)).unwrap(),
+                head - 1
+            );
+            let mut ack = [0u8; 4];
+            if client.read_exact(&mut ack).is_ok() {
+                acknowledgment_received = ack.len() as isize;
+                acknowledgment = c_int::from_ne_bytes(ack);
+            }
+        }
+
+        let mut valid_task = EventData::new();
+        valid_task.info.len = 1;
+        valid_task.data[0] = b'x';
+        let valid_packet_sent = dispatch_sync(pool, &mut valid_task);
+        if valid_packet_sent != SW_OK {
+            // SAFETY: the pool's stream listener, which outlives the join.
+            unsafe {
+                let listener = swr_v1_process_pool_ipc_listener((*pool).ipc);
+                shutdown(*listener.cast::<c_int>(), SHUT_RDWR);
+            }
+        }
+        // SAFETY: as above.
+        unsafe { swoole_thread_clean(false) };
+        (acknowledgment_received, acknowledgment, valid_packet_sent)
+    });
+
+    main_loop(pool, get_worker(pool, 0));
+    let (acknowledgment_received, acknowledgment, valid_packet_sent) = sender.join().unwrap();
+
+    assert_eq!(acknowledgment_received, size_of::<c_int>() as isize);
+    assert_eq!(acknowledgment, 0);
+    assert_eq!(valid_packet_sent, SW_OK);
+    assert_eq!(dispatched, 1);
+    destroy(pool);
+}
+
+/// The header's inline `set_max_packet_size`.
+fn set_max_packet_size(pool: *mut Pool, size: u32) {
+    // SAFETY: a created pool.
+    unsafe {
+        (*pool).max_packet_size = if (*pool).use_msgqueue != 0 {
+            SW_MSGMAX
+        } else {
+            size
+        }
+    };
+}
+
+extern "C" fn small_packet_on_message(pool: *mut Pool, rdata: *mut RecvData) {
+    // SAFETY: the pool's message.
+    let rdata = unsafe { &*rdata };
+    assert_eq!(rdata.info.len, 1);
+    assert_eq!(rdata.bytes()[0], b'x');
+    // SAFETY: the running pool.
+    unsafe { (*pool).running = false };
+}
+
+fn stream_protocol_small_packet() {
+    // The one-byte allocation exposes the former QueueNode write under ASAN.
+    let pool = new_pool();
+    assert_eq!(create(pool, 1, 0, SW_IPC_UNIXSOCK), SW_OK);
+    set_max_packet_size(pool, 1);
+    set_protocol(pool, SW_PROTOCOL_STREAM);
+    // SAFETY: the case's pool and worker.
+    unsafe {
+        worker_init(get_worker(pool, 0));
+        (*pool).running = true;
+        (*pool).on_message = Some(small_packet_on_message);
+    }
+
+    // SAFETY: the created pool's worker and one byte.
+    let sent =
+        unsafe { worker_send_pipe_message(get_worker(pool, 0), b"x".as_ptr(), 1, SW_PIPE_MASTER) };
+    assert_eq!(sent, 1);
+    main_loop(pool, get_worker(pool, 0));
+    // SAFETY: the case's pool.
+    assert!(!unsafe { (*pool).running });
+    destroy(pool);
+}
+
+extern "C" fn msgqueue_package_size_on_message(pool: *mut Pool, rdata: *mut RecvData) {
+    // SAFETY: the pool's message.
+    let rdata = unsafe { &*rdata };
+    messages(pool).push(rdata.bytes().to_vec());
+    if rdata.info.len == 0 {
+        // SAFETY: the running pool.
+        unsafe { (*pool).running = false };
+    }
+}
+
+fn stream_protocol_msgqueue_ignores_package_size() {
+    let sent: Vec<Vec<u8>> = vec![
+        vec![b'a'; 1025],
+        vec![b'b'; 1024],
+        b"x".to_vec(),
+        Vec::new(),
+    ];
+    for limit in [0, 1, 1024, SW_MSGMAX + 1] {
+        let pool = new_pool();
+        assert_eq!(
+            create(pool, 1, IPC_PRIVATE, SW_IPC_MSGQUEUE),
+            SW_OK,
+            "limit {limit}"
+        );
+        set_max_packet_size(pool, limit);
+        set_protocol(pool, SW_PROTOCOL_STREAM);
+        let mut received: Vec<Vec<u8>> = Vec::new();
+        // SAFETY: the case's pool and worker; `received` outlives the loop.
+        unsafe {
+            worker_init(get_worker(pool, 0));
+            (*pool).running = true;
+            (*pool).ptr = (&raw mut received).cast();
+            (*pool).on_message = Some(msgqueue_package_size_on_message);
+        }
+
+        // `QueueNode message{}`: its mtype, then SW_MSGMAX bytes.
+        let mut message = vec![0u8; size_of::<c_long>() + SW_MSGMAX as usize];
+        let mut mtype: c_long = 0;
+        for data in &sent {
+            mtype += 1;
+            message[..size_of::<c_long>()].copy_from_slice(&mtype.to_ne_bytes());
+            message[size_of::<c_long>()..][..data.len()].copy_from_slice(data);
+            // SAFETY: the pool's queue and a node holding `data.len()` bytes.
+            let pushed = unsafe {
+                swr_v1_os_msg_queue_push((*pool).queue, message.as_ptr().cast(), data.len())
+            };
+            assert!(pushed, "limit {limit}");
+        }
+        main_loop(pool, get_worker(pool, 0));
+
+        assert_eq!(received, sent, "limit {limit}");
+        destroy(pool);
+    }
+}
+
 const TEST_SOCK: &CStr = c"/tmp/swoole_process_pool.sock";
 
 extern "C" fn listen_unixsock_on_message(pool: *mut Pool, _: *mut RecvData) {
@@ -1621,12 +1874,25 @@ pub(super) fn check_layout() {
 pub(super) const CASES: super::Cases = &[
     ("tcp", tcp),
     ("unix_sock", unix_sock),
+    (
+        "task_protocol_rejects_malformed_packets",
+        task_protocol_rejects_malformed_packets,
+    ),
+    (
+        "task_protocol_rejects_malformed_socket_packet",
+        task_protocol_rejects_malformed_socket_packet,
+    ),
     ("tcp_raw", tcp_raw),
     ("msgqueue", msgqueue),
     ("msgqueue_2", msgqueue_2),
     ("message_protocol", message_protocol),
     ("message_protocol_with_timer", message_protocol_with_timer),
     ("stream_protocol", stream_protocol),
+    ("stream_protocol_small_packet", stream_protocol_small_packet),
+    (
+        "stream_protocol_msgqueue_ignores_package_size",
+        stream_protocol_msgqueue_ignores_package_size,
+    ),
     ("stream_protocol_with_msgq", stream_protocol_with_msgq),
     ("shutdown", shutdown_),
     ("reload", reload),

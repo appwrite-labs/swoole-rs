@@ -16,7 +16,7 @@ use swoole_rs_phpstubs::process_pool;
 use swoole_rs_process::{
     methods,
     pool::swr_v1_process_pool_ipc_listener,
-    process_pool::{PROTOCOL_MESSAGE, PROTOCOL_STREAM, PoolRecord},
+    process_pool::{PROTOCOL_MESSAGE, PROTOCOL_STREAM, PoolRecord, max_package_size, packet_limit},
     signal::swoole_signal_isset,
     worker_globals::swr_v1_worker_globals,
     worker_record,
@@ -302,6 +302,16 @@ pub unsafe extern "C" fn php_swoole_process_pool_minit(_module: c_int) {
             );
         }
     }
+}
+
+/// `timer_if_use_reactor()` inside a running pool: not in its master, nor in a
+/// synchronous worker loop, which dispatches timers itself. `None` outside a pool.
+pub(crate) fn timer_uses_reactor(master: bool) -> Option<bool> {
+    let pool = CURRENT.load(Ordering::Acquire);
+    (!pool.is_null()).then(|| {
+        let pool = record(pool);
+        !master && (pool.is_async || pool.main_loop.is_null())
+    })
 }
 
 /// `sw_process_pool()`: the pool `start()` is running, or null.
@@ -624,14 +634,9 @@ fn set(call: &Call) {
     // SAFETY: as above.
     unsafe { swoole_rs_phpswoole::php_swoole_set_aio_option(options) };
     if let Some(value) = option(options, c"max_package_size") {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "upstream's uint32_t"
-        )]
         // SAFETY: a live element.
-        let size = unsafe { swoole_rs_phpswoole::php_swoole_parse_to_size(value) } as u32;
-        pool.max_packet_size = size;
+        let size = unsafe { swoole_rs_phpswoole::php_swoole_parse_to_size(value) };
+        pool.max_packet_size = packet_limit(pool.use_msgqueue != 0, max_package_size(size));
     }
     if let Some(value) = option(options, c"max_wait_time") {
         // SAFETY: a live element.

@@ -334,13 +334,14 @@ pub(crate) fn sync_server() -> bool {
 }
 
 /// Whether a timer added in this process runs on its reactor: a server's user
-/// workers and coroutine task workers, and any process but a pool's master.
+/// workers and coroutine task workers, a pool's async or loopless workers, and any
+/// process outside both.
 #[must_use]
 pub fn timer_uses_reactor() -> bool {
     let kind = methods::swoole_get_worker_type();
     match server() {
         Some(serv) => kind == USER_WORKER || (kind == TASK_WORKER && task_coroutine(serv)),
-        None => crate::swr_v1_phpprocess_pool_current().is_null() || kind != MASTER,
+        None => crate::pool::timer_uses_reactor(kind == MASTER).unwrap_or(true),
     }
 }
 
