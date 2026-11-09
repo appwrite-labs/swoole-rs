@@ -18,12 +18,12 @@ use swoole_rs_zend::sys::{
     swr_zend_coroutine_main, swr_zend_coroutine_output_reset, swr_zend_coroutine_restore,
     swr_zend_coroutine_set_frame, swr_zend_coroutine_start, swr_zend_coroutine_switch,
     swr_zend_coroutine_vm, swr_zend_coroutine_vm_destroy, swr_zend_efree, swr_zend_emalloc,
-    swr_zend_object_release, swr_zval_try_addref, swr_zval_try_delref, zend_execute_data,
-    zend_fcall_info, zend_fcall_info_cache, zend_fiber_context, zend_fiber_status,
+    swr_zend_object_release, swr_zval_try_addref, zend_execute_data, zend_fcall_info,
+    zend_fcall_info_cache, zend_fiber_context, zend_fiber_status,
     zend_fiber_status_ZEND_FIBER_STATUS_DEAD, zend_fiber_status_ZEND_FIBER_STATUS_INIT,
     zend_fiber_status_ZEND_FIBER_STATUS_RUNNING, zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
     zend_object, zend_observer_fiber_destroy_notify, zend_observer_fiber_init_notify,
-    zend_observer_fiber_switch_notify, zval,
+    zend_observer_fiber_switch_notify, zval, zval_ptr_dtor,
 };
 
 /// Upstream's `INVALID_PTR`: a destroyed context object, or an unusable fiber
@@ -384,18 +384,20 @@ pub(crate) unsafe fn close(context: *mut c_void) {
         // SAFETY: the context's own reference.
         unsafe { swr_zend_object_release(object) };
     }
+    // Upstream only drops the references (Z_TRY_DELREF), leaking a callable or
+    // return value the coroutine held last, such as `go([new Foo, 'bar'])`'s array.
     let call = call(ctx);
     // SAFETY: a live context; `open` added this reference.
     let function_name = unsafe { &raw mut (*call).fci.function_name };
     // SAFETY: as above.
-    unsafe { swr_zval_try_delref(function_name) };
+    unsafe { zval_ptr_dtor(function_name) };
     // SAFETY: as above.
     let undef = unsafe { &mut *function_name };
     undef.u1.type_info = IS_UNDEF;
     // SAFETY: as above; `open` held its object and closure.
     unsafe { swr_zend_coroutine_fcc_discard(fcc(call)) };
     // SAFETY: a live context's return value.
-    unsafe { swr_zval_try_delref(return_value(ctx)) };
+    unsafe { zval_ptr_dtor(return_value(ctx)) };
     fiber_try_destroy(ctx, origin(ctx));
     // A context-owned __destruct() may have rearmed the time limit.
     // SAFETY: a live context.
