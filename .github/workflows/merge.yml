@@ -554,7 +554,7 @@ jobs:
       run:
         shell: sh
     env:
-      PHP_EXTENSIONS: --php-extension sockets --php-extension pcntl
+      PHP_EXTENSIONS: --php-extension sockets --php-extension pcntl --php-extension ftp
       # musl build scripts link statically and cannot dlopen libclang (zend-sys's bindgen).
       RUSTFLAGS: -C target-feature=-crt-static
     steps:
@@ -579,8 +579,34 @@ jobs:
             --engine hybrid=target/hybrid/rust-php-sockets/modules/swoole.so \
             --output target/reports/alpine-phpt.json || [ $? -eq 1 ]
           python3 corpus/upstream/gate.py target/reports/alpine-phpt.json --output target/reports/alpine-gate.json >> "$GITHUB_STEP_SUMMARY"
+      # What the Ubuntu shards' PHP 8.3 can't show (#1993): the swoole_ftp PHPTs' PHP 8.4+
+      # getaddrinfo wording and stdext's mb_* methods, on stdext builds of both engines, with
+      # phpt-stdext's re-runs. tools/badges.py counts its phpt-alpine.json.
+      - if: always()
+        shell: bash
+        run: |
+          python3 tools/build_hybrid.py --backend upstream --php-sockets --stdext
+          python3 tools/build_hybrid.py --php-sockets --stdext
+          mkdir -p target/php85/engines target/php85/results
+          cp -L target/hybrid/upstream-php-sockets-stdext/modules/swoole.so target/php85/engines/upstream.so
+          cp -L target/hybrid/rust-php-sockets-stdext/modules/swoole.so target/php85/engines/hybrid.so
+          python3 corpus/upstream/inventory.py --output target/php85/manifest.json
+          set -- --manifest target/php85/manifest.json --module swoole_ftp --module swoole_stdext --timeout 30 $PHP_EXTENSIONS
+          for engine in upstream hybrid; do
+            python3 corpus/upstream/run.py "$@" --engine $engine=target/php85/engines/$engine.so \
+              --output target/php85/results/$engine.json || [ $? -eq 1 ]
+          done
+          corpus/upstream/recheck.sh target/php85/results target/php85/engines target/php85/recheck "$@"
+          set -- target/php85/results/*.json
+          if ls target/php85/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/php85/recheck/*.json; fi
+          python3 corpus/upstream/gate.py "$@" --output target/reports/phpt-alpine.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: alpine-reports
           path: target/reports/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phpt-alpine
+          path: target/reports/phpt-alpine.json
