@@ -165,6 +165,7 @@ pub fn signalfd_close() {
 
 /// `swoole_signalfd_clear` before the close: unblocks the mask and empties it and the
 /// table. Whether the unblock succeeded.
+#[must_use]
 pub fn signalfd_clear() -> bool {
     let mask = sigset();
     // SAFETY: `mask` is initialized.

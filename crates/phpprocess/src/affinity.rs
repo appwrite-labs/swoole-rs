@@ -17,14 +17,14 @@ fn cpu_num() -> usize {
 /// `array` is a live array zval and `set` a writable `cpu_set_t`.
 pub unsafe fn array_to_cpu_set(array: *const zval, set: *mut c_void) -> bool {
     // SAFETY: per the caller.
-    let valid = unsafe { array_to_cpu_set(array, set) };
+    let valid = unsafe { convert(array, set) };
     swoole_rs_zend::bailout::finish();
     valid
 }
 
 /// # Safety
 /// As `array_to_cpu_set`.
-unsafe fn array_to_cpu_set(array: *const zval, set: *mut c_void) -> bool {
+unsafe fn convert(array: *const zval, set: *mut c_void) -> bool {
     // SAFETY: per the caller.
     let value = unsafe { (*array).value };
     // SAFETY: an array zval holds its table.

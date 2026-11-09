@@ -24,6 +24,7 @@ fn select(allowed: impl Fn(usize) -> bool, worker_id: u32, set_size: usize) -> O
 /// Pins the calling worker. `available` is `Server::cpu_affinity_available` (none for
 /// every CPU); `thread` is `Server::is_thread_mode()`.
 #[cfg(target_os = "linux")]
+#[must_use]
 pub fn worker_affinity(worker_id: u32, available: Option<&[i32]>, thread: bool) -> AffinityOutcome {
     use std::mem::{size_of, zeroed};
     let failed = |status| AffinityOutcome {
