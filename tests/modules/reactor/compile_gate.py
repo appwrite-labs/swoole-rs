@@ -2,7 +2,7 @@
 """Compile unchanged and hybrid backend translation units, where the hybrid keeps them, as C++14.
 
 original: the pinned tree. patched: the hybrid build's tree with its switches and
-headers (hybrid_tree, #796).
+headers (native_tree, #796).
 """
 from pathlib import Path
 import argparse
@@ -15,7 +15,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_tree
 from tools.build_upstream import COMMIT as PIN
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--source', type=Path, required=True)
@@ -24,7 +24,7 @@ p.add_argument('--report', type=Path, required=True)
 a = p.parse_args()
 if a.report.exists():
     raise SystemExit('Refusing to replace an existing compile receipt')
-hybrid_source, hybrid_flags = hybrid_tree(a.archive)
+hybrid_source, hybrid_flags = native_tree(a.archive)
 inputs = ['include', 'src/reactor', 'src/network/socket.cc', 'thirdparty']
 rows = []
 with tempfile.TemporaryDirectory(prefix='swr-reactor-compile-') as tmp:
@@ -53,5 +53,5 @@ with tempfile.TemporaryDirectory(prefix='swr-reactor-compile-') as tmp:
             print(variant, name, result.returncode, 'PASS' if passed else 'FAIL', flush=True)
             rows.append(dict(variant=variant, backend=name, command=cmd, returncode=result.returncode, passed=passed, stderr=result.stderr))
 a.report.parent.mkdir(parents=True, exist_ok=True)
-a.report.write_text(json.dumps(dict(pin=PIN, hybrid_tree=str(hybrid_source), compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0], rows=rows), indent=2)+'\n')
+a.report.write_text(json.dumps(dict(pin=PIN, native_tree=str(hybrid_source), compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0], rows=rows), indent=2)+'\n')
 raise SystemExit(any(not row['passed'] for row in rows))

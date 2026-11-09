@@ -10,7 +10,7 @@ import sys
 import tarfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.harness import ROOT, run_isolated, write_report
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_tree
 from tools.build_upstream import COMMIT as PIN
 def body(source, signature):
     """The definition starting at signature. Braces count only in the first branch of
@@ -74,9 +74,9 @@ class Sides:
             for member in members:
                 if member.isfile():
                     path = self.pin/member.name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(members.extractfile(member).read())
-        self.hybrid, hybrid = hybrid_tree(archive)
+        self.hybrid, hybrid = native_tree(archive)
         # Rust ABI headers: declarations only, the same for both sides.
-        self.abi = Path(next(flag for flag in hybrid if flag.endswith('rust-prefix/include'))[2:])
+        self.abi = Path(next(flag for flag in hybrid if flag.endswith('sdk/include'))[2:])
         common = ['-std=c++17', *self.sanitize, '-I'+str(Path(__file__).resolve().parent), '-I'+str(tree), *openssl('--cflags')]
         self.flags = {'upstream': ['-I'+str(self.pin/'include'), '-I'+str(self.pin), '-I'+str(self.abi), *common],
                       'candidate': [*hybrid, '-I'+str(self.hybrid), *common]}

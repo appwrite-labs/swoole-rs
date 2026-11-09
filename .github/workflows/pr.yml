@@ -250,7 +250,7 @@ jobs:
           shared-key: release
           save-if: false
       - if: steps.touched.outputs.modules != ''
-        run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
+        run: rm -rf target/upstream target/thirdparty target/native-core
       - if: steps.touched.outputs.modules != ''
         uses: ./.github/actions/install
       - if: steps.touched.outputs.modules != ''
@@ -261,12 +261,6 @@ jobs:
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - if: steps.touched.outputs.modules != '' && steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
-      - if: steps.touched.outputs.modules != ''
-        uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - if: steps.touched.outputs.modules != ''
         run: cargo fetch --locked
       - if: steps.touched.outputs.modules != ''

@@ -8,6 +8,7 @@ use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
 use crate::{ConnectionRecord, PortCounters, ServerConfig, ServerCounters, ServerState};
 use core::ffi::{c_int, c_long, c_void};
+use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use std::ffi::CString;
 use swoole_rs_process::process_pool::PoolRecord;
@@ -26,10 +27,13 @@ struct Fields {
 /// A live `Server`, borrowed for `'a`. [`Server::from_raw`] is the one unsafe
 /// step; the reads it then allows are safe, and only the methods that hand out
 /// `&mut` to state other threads share, or take another raw pointer, stay unsafe.
+/// It is laid out as the `Server *` it views, so a slot fn
+/// ([`Server::set_callback`]) takes one where native code passes its server.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Server<'a> {
     raw: *mut c_void,
-    fields: &'a Fields,
+    live: PhantomData<&'a Fields>,
 }
 
 impl<'a> Server<'a> {
@@ -41,9 +45,15 @@ impl<'a> Server<'a> {
     /// [`Server::config_mut`]) apart from the references the safe readers return.
     #[must_use]
     pub unsafe fn from_raw(serv: *mut c_void) -> Self {
-        // SAFETY: the head of a live Server, per the module comment and the caller.
-        let fields = unsafe { &*serv.cast::<Fields>() };
-        Self { raw: serv, fields }
+        Self {
+            raw: serv,
+            live: PhantomData,
+        }
+    }
+
+    fn fields(self) -> &'a Fields {
+        // SAFETY: the head of a live Server, per the module comment and `from_raw`'s caller.
+        unsafe { &*self.raw.cast::<Fields>() }
     }
 
     /// `serv` itself, for the native-shaped calls that still take it.
@@ -54,17 +64,18 @@ impl<'a> Server<'a> {
 
     /// The server's Rust-owned state, as a pointer.
     pub(crate) fn state_ptr(self) -> *const ServerState {
-        self.fields.state
+        self.fields().state
     }
 
     /// The server's Rust-owned state.
     pub(crate) fn state(self) -> &'a ServerState {
         // SAFETY: the state lives as long as the server.
-        unsafe { &*self.fields.state }
+        unsafe { &*self.fields().state }
     }
 
     /// `serv->onX = f`: callback slot `index` (`callbacks::CB_*`) now calls `invoke`, a
-    /// Rust `extern "C"` fn taking a null `ctx` and then the member's own arguments.
+    /// Rust `extern "C"` fn taking a null `ctx` and then the member's own arguments
+    /// (its `Server *` may be a `Server`).
     ///
     /// # Safety
     /// No other thread reads the slot meanwhile, and `invoke` has the slot's signature.
@@ -88,7 +99,7 @@ impl<'a> Server<'a> {
     pub fn config(self) -> &'a ServerConfig {
         // SAFETY: the config allocation lives as long as the server, and writers
         // hold no reference across a read (`config_mut`).
-        unsafe { &*self.fields.config }
+        unsafe { &*self.fields().config }
     }
 
     /// The server's configuration, to write.
@@ -99,7 +110,7 @@ impl<'a> Server<'a> {
     #[must_use]
     pub unsafe fn config_mut(self) -> &'a mut ServerConfig {
         // SAFETY: per the caller; the allocation lives as long as the server.
-        unsafe { &mut *self.fields.config }
+        unsafe { &mut *self.fields().config }
     }
 
     /// `&serv->message_bus`, the server's own `MessageBus`.

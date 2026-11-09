@@ -18,8 +18,8 @@ use swoole_rs_server::{
     swr_v1_server_command, view,
 };
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, Message, Object, Value, bailout, class_name, message, object_of,
-    php_error,
+    Call, Class, E_ERROR, E_WARNING, Message, Object, Value, bailout, class_name, init_object,
+    message, object_of, php_error,
     string::bytes,
     sys::{
         IS_NULL, IS_OBJECT, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree,
@@ -27,7 +27,8 @@ use swoole_rs_zend::{
         swr_zend_separate_array, swr_zend_string_release, swr_zend_try_json_encode, swr_zval_copy,
         swr_zval_stringl, zend_class_entry, zend_hash_next_index_insert, zend_hash_str_find,
         zend_object, zend_object_std_dtor, zend_update_property, zend_update_property_bool,
-        zend_update_property_long, zend_update_property_stringl, zval, zval_ptr_dtor,
+        zend_update_property_double, zend_update_property_long, zend_update_property_string,
+        zend_update_property_stringl, zval, zval_ptr_dtor,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of,
     value::table,
@@ -526,19 +527,33 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
 /// A live object and a class declaring the properties written, for as long as
 /// the handle is used. Zend copies every name and value.
 #[derive(Clone, Copy)]
-struct Props(*mut zend_class_entry, *mut zend_object);
+pub(crate) struct Props(*mut zend_class_entry, *mut zend_object);
 
 impl Props {
     /// A live object, under its own class.
     /// # Safety
     /// `object` is live for as long as the handle is used.
-    unsafe fn of(object: *mut zend_object) -> Self {
+    pub(crate) unsafe fn of(object: *mut zend_object) -> Self {
         // SAFETY: per the caller.
         Self(unsafe { (*object).ce }, object)
     }
 
+    /// `object_init_ex(target, class)`: a new object in `target`, under its class,
+    /// live while `target` holds it.
+    pub(crate) fn init(target: &mut zval, class: &Class) -> Self {
+        let ce = class.entry();
+        // SAFETY: a writable zval and a registered data class.
+        unsafe { init_object(target, ce) };
+        // SAFETY: the object zval just made.
+        Self(ce, unsafe { object_of(target) })
+    }
+
+    pub(crate) fn object(self) -> *mut zend_object {
+        self.1
+    }
+
     /// A Server object, under the Server class.
-    fn server(object: ServerObject) -> Self {
+    pub(crate) fn server(object: ServerObject) -> Self {
         Self(SERVER.entry(), object.raw())
     }
 
@@ -547,14 +562,48 @@ impl Props {
         Self(object.class(), object.raw())
     }
 
-    fn long(self, name: &CStr, value: i64) {
+    pub(crate) fn long(self, name: &CStr, value: i64) {
         // SAFETY: the handle's live object and class.
         unsafe {
             zend_update_property_long(self.0, self.1, name.as_ptr(), name.count_bytes(), value);
         }
     }
 
-    fn bool(self, name: &CStr, value: bool) {
+    pub(crate) fn double(self, name: &CStr, value: f64) {
+        // SAFETY: as above.
+        unsafe {
+            zend_update_property_double(self.0, self.1, name.as_ptr(), name.count_bytes(), value);
+        }
+    }
+
+    pub(crate) fn string(self, name: &CStr, value: &CStr) {
+        // SAFETY: as above.
+        unsafe {
+            zend_update_property_string(
+                self.0,
+                self.1,
+                name.as_ptr(),
+                name.count_bytes(),
+                value.as_ptr(),
+            );
+        }
+    }
+
+    pub(crate) fn bytes(self, name: &CStr, value: &[u8]) {
+        // SAFETY: as above.
+        unsafe {
+            zend_update_property_stringl(
+                self.0,
+                self.1,
+                name.as_ptr(),
+                name.count_bytes(),
+                value.as_ptr().cast(),
+                value.len(),
+            );
+        }
+    }
+
+    pub(crate) fn bool(self, name: &CStr, value: bool) {
         // SAFETY: as above.
         unsafe {
             zend_update_property_bool(
@@ -567,7 +616,7 @@ impl Props {
         }
     }
 
-    fn value(self, name: &CStr, value: &mut zval) {
+    pub(crate) fn value(self, name: &CStr, value: &mut zval) {
         // SAFETY: as above, and a live value.
         unsafe { zend_update_property(self.0, self.1, name.as_ptr(), name.count_bytes(), value) };
     }
@@ -1081,7 +1130,7 @@ fn port_facts(zport: *mut zval) -> PortFacts {
     }
 }
 
-pub(crate) fn isset(serv: *mut c_void, port: *mut c_void, kind: c_int) -> bool {
+pub(crate) fn isset(serv: view::Server<'_>, port: *mut c_void, kind: c_int) -> bool {
     // SAFETY: a live server and one of its ports.
     unsafe { crate::instance::php_swoole_server_isset_callback(serv, port, kind) }
 }
@@ -1176,10 +1225,10 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
         put(serv, install::REDIS_RECEIVE);
     } else if http_server {
         if kind == KIND_WEBSOCKET {
-            if !isset(serv.raw(), primary.port, ON_MESSAGE) {
+            if !isset(serv, primary.port, ON_MESSAGE) {
                 return stop(E_ERROR, c"require onMessage callback");
             }
-        } else if !isset(serv.raw(), primary.port, ON_REQUEST) {
+        } else if !isset(serv, primary.port, ON_REQUEST) {
             return stop(E_ERROR, c"require onRequest callback");
         }
         add_bool(setting, c"open_http_protocol", true);
@@ -1199,11 +1248,11 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
         find_http_port = true;
         put(serv, install::HTTP_RECEIVE);
     } else {
-        if primary.dgram && !primary.ssl && !isset(serv.raw(), primary.port, ON_PACKET) {
+        if primary.dgram && !primary.ssl && !isset(serv, primary.port, ON_PACKET) {
             return stop(E_ERROR, c"require onPacket callback");
         }
         if ((primary.dgram && primary.ssl) || primary.stream)
-            && !isset(serv.raw(), primary.port, ON_RECEIVE)
+            && !isset(serv, primary.port, ON_RECEIVE)
         {
             return stop(E_ERROR, c"require onReceive callback");
         }
@@ -1232,7 +1281,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     }
     for &zport in &ports {
         let port = port_facts(zport);
-        if port.dgram && !port.ssl && !isset(serv.raw(), port.port, ON_PACKET) {
+        if port.dgram && !port.ssl && !isset(serv, port.port, ON_PACKET) {
             return stop(E_ERROR, c"require onPacket callback");
         }
         if port.ssl_verify_without_ca {
@@ -1254,15 +1303,15 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
         }
         if http {
             find_http_port = true;
-            let receive = isset(serv.raw(), port.port, ON_RECEIVE);
+            let receive = isset(serv, port.port, ON_RECEIVE);
             if port.protocols & WEBSOCKET != 0 {
-                if !isset(serv.raw(), port.port, ON_MESSAGE) && !receive {
+                if !isset(serv, port.port, ON_MESSAGE) && !receive {
                     return stop(E_ERROR, c"require onMessage callback");
                 }
-            } else if !isset(serv.raw(), port.port, ON_REQUEST) && !receive {
+            } else if !isset(serv, port.port, ON_REQUEST) && !receive {
                 return stop(E_ERROR, c"require onRequest callback");
             }
-            if !http_server && isset(serv.raw(), port.port, ON_REQUEST) {
+            if !http_server && isset(serv, port.port, ON_REQUEST) {
                 let text = message!(
                     "use {} class and open http related protocols may lead to some errors (inconsistent class type)",
                     class(object)
@@ -1272,9 +1321,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
                     return Err(Stop);
                 }
             }
-        } else if port.protocols & REDIS == 0
-            && port.stream
-            && !isset(serv.raw(), port.port, ON_RECEIVE)
+        } else if port.protocols & REDIS == 0 && port.stream && !isset(serv, port.port, ON_RECEIVE)
         {
             return stop(E_ERROR, c"require onReceive callback");
         }

@@ -25,14 +25,12 @@ use swoole_rs_http2::{
     sw_rs_http2_setting_plan, sw_rs_http2_window_action, sw_rs_http2_window_plan,
 };
 use swoole_rs_zend::{
-    bailout, string,
+    Array, Owned, Value as Zval, ZString, bailout, string,
     sys::{
-        IS_ARRAY, IS_NULL, IS_STRING, add_assoc_str_ex, add_assoc_stringl_ex,
-        swr_zend_hash_foreach_key, swr_zend_property_array, swr_zend_property_slot,
-        swr_zend_url_decode, zend_hash_str_find, zend_object, zend_string, zend_ulong, zval,
-        zval_ptr_dtor,
+        add_assoc_str_ex, add_assoc_stringl_ex, swr_zend_property_array, swr_zend_url_decode,
+        zend_object, zval,
     },
-    type_of, value,
+    value,
 };
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
@@ -436,10 +434,10 @@ impl Drop for Headers {
 }
 
 /// A response property (`sw_zend_read_property_ex`).
-fn property(ctx: *mut c_void, name: &CStr) -> *mut zval {
-    let response = zval_of(ctx, Value::Response);
-    // SAFETY: the live Response object and its declared property.
-    unsafe { swr_zend_property_slot(object(response), name.as_ptr(), name.count_bytes()) }
+fn property<'a>(ctx: *mut c_void, name: &CStr) -> &'a Zval {
+    let response = object(zval_of(ctx, Value::Response));
+    // SAFETY: the live Response object, which declares `name`, for the context.
+    unsafe { swoole_rs_zend::property(response, name) }
 }
 
 fn object(value: *mut zval) -> *mut zend_object {
@@ -447,73 +445,14 @@ fn object(value: *mut zval) -> *mut zend_object {
     unsafe { value::obj_of(value) }
 }
 
-fn is(value: *const zval, kind: u32) -> bool {
-    // SAFETY: a live zval.
-    !value.is_null() && unsafe { type_of(value) } == kind
-}
-
 /// `php_swoole_array_length_safe`.
-fn length_safe(array: *const zval) -> usize {
-    if is(array, IS_ARRAY) {
-        // SAFETY: a live array.
-        unsafe { value::count(array) as usize }
-    } else {
-        0
-    }
-}
-
-/// The entries of an array in order, with their string keys (null for an
-/// integer key), borrowed from the array.
-fn entries(array: *const zval) -> Vec<(*mut zend_string, *mut zval)> {
-    unsafe extern "C" fn each(
-        _: zend_ulong,
-        key: *mut zend_string,
-        value: *mut zval,
-        out: *mut c_void,
-    ) -> bool {
-        // SAFETY: the vector `entries` lends.
-        unsafe { (*out.cast::<Vec<(*mut zend_string, *mut zval)>>()).push((key, value)) };
-        true
-    }
-    let mut out = Vec::with_capacity(length_safe(array));
-    // SAFETY: a live array.
-    let table = unsafe { value::table(array) };
-    // SAFETY: a live table; `each` only collects.
-    unsafe { swr_zend_hash_foreach_key(table, Some(each), (&raw mut out).cast()) };
-    out
-}
-
-/// A string key's bytes.
-fn key_of<'a>(key: *mut zend_string) -> &'a [u8] {
-    // SAFETY: a live key of a live array.
-    unsafe { string::bytes(key) }
-}
-
-/// A reference `zval_get_string` returned, released on drop.
-struct Text(*mut zend_string);
-
-impl Text {
-    fn bytes(&self) -> &[u8] {
-        // SAFETY: a live string this holds a reference to.
-        unsafe { string::bytes(self.0) }
-    }
-}
-
-impl Drop for Text {
-    fn drop(&mut self) {
-        // SAFETY: the reference `string_of` took.
-        unsafe { swoole_rs_zend::sys::swr_zend_string_release(self.0) };
-    }
+fn length_safe(value: &Zval) -> usize {
+    value.array().map_or(0, |array| array.count() as usize)
 }
 
 /// `zval_get_string`, `None` once a bailout is pending.
-fn string_of(value: *const zval) -> Option<Text> {
-    // SAFETY: a live zval; the result owns a new reference.
-    let string = unsafe { value::get_string(value) };
-    if string.is_null() {
-        return None;
-    }
-    let text = Text(string);
+fn string_of(value: &Zval) -> Option<ZString> {
+    let text = value.string();
     (!bailout::pending()).then_some(text)
 }
 
@@ -555,12 +494,12 @@ fn build_trailer(ctx: *mut c_void, session: &Session) -> Option<Headers> {
         headers.buffers.frame.resize(FRAME_HEADER, 0);
         return Some(headers);
     }
-    for (key, value) in entries(trailer) {
-        if key.is_null() || is(value, IS_NULL) {
+    for (key, value) in trailer.array().into_iter().flat_map(Array::entries) {
+        let Some(key) = key.filter(|_| !value.is_null()) else {
             continue;
-        }
+        };
         let value = string_of(value)?;
-        headers.add_folded(key_of(key), value.bytes());
+        headers.add_folded(key, value.bytes());
     }
     headers.deflate(session, c"http2_server_build_trailer")
 }
@@ -589,12 +528,12 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
     headers.add(b":status", decimal(&mut [0; 20], i64::from(status as i32)));
 
     let mut header_flags = 0;
-    if is(zheader, IS_ARRAY) {
+    if let Some(zheader) = zheader.array() {
         let can_capture =
             get(ctx, Field::AcceptCompression) != 0 && get(ctx, Field::CompressionTypes) != 0;
         let mut content_type = None;
-        let mut add = |headers: &mut Headers, key: &[u8], value: *mut zval| -> Option<()> {
-            if is(value, IS_NULL) {
+        let mut add = |headers: &mut Headers, key: &[u8], value: &Zval| -> Option<()> {
+            if value.is_null() {
                 return Some(());
             }
             let owned = string_of(value)?;
@@ -613,13 +552,12 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
             headers.add_folded(key, text);
             Some(())
         };
-        for (key, value) in entries(zheader) {
-            if key.is_null() || is(value, IS_NULL) {
+        for (key, value) in zheader.entries() {
+            let Some(key) = key.filter(|_| !value.is_null()) else {
                 continue;
-            }
-            let key = key_of(key);
-            if is(value, IS_ARRAY) {
-                for (_, item) in entries(value) {
+            };
+            if let Some(items) = value.array() {
+                for (_, item) in items.entries() {
                     add(&mut headers, key, item)?;
                 }
             } else {
@@ -627,7 +565,9 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
             }
         }
         if can_capture {
-            let kind = content_type.as_ref().map_or(&b"text/html"[..], Text::bytes);
+            let kind = content_type
+                .as_ref()
+                .map_or(&b"text/html"[..], ZString::bytes);
             // SAFETY: a live context.
             let accept = unsafe { swoole_rs_phphttp::http2::compressible(ctx, kind) };
             set(ctx, Field::AcceptCompression, u32::from(accept));
@@ -647,14 +587,9 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
     if missing & MISSING_CONTENT_TYPE != 0 {
         headers.add(b"content-type", b"text/html");
     }
-    if is(zcookie, IS_ARRAY) {
-        for (_, value) in entries(zcookie) {
-            if is(value, IS_STRING) {
-                // SAFETY: a live string zval.
-                let cookie = unsafe { value::str_of(value) };
-                // SAFETY: its live string.
-                headers.add(b"set-cookie", unsafe { string::bytes(cookie) });
-            }
+    for (_, value) in zcookie.array().into_iter().flat_map(Array::entries) {
+        if let Some(cookie) = value.bytes() {
+            headers.add(b"set-cookie", cookie);
         }
     }
     if let Some(body) = body {
@@ -978,7 +913,9 @@ pub(crate) fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -
     let ce = unsafe { (*object).ce };
     // SAFETY: the live object of that class.
     let zheader = unsafe { swr_zend_property_array(ce, object, c"header".as_ptr(), 6) };
-    if find(zheader, c"content-type").is_null() {
+    // SAFETY: the property's live array.
+    let zheader = unsafe { Zval::from_ptr(zheader) }.and_then(Zval::array);
+    if zheader.is_none_or(|zheader| zheader.find(b"content-type").is_none()) {
         swoole_rs_phphttp::set_header_bytes(ctx, b"content-type", content_type);
     }
     let body = Body {
@@ -1060,19 +997,15 @@ pub unsafe extern "C" fn swoole_http2_server_on_receive(
         };
         SessionState::find(session_id)
     });
-    // SAFETY: all zeroes is `IS_UNDEF`.
-    let mut zdata: zval = unsafe { std::mem::zeroed() };
+    let zdata = Owned::default();
     // SAFETY: the live server and its request; the data is a new string.
-    unsafe { php_swoole_get_recv_data(server, &raw mut zdata, request) };
-    // SAFETY: a string zval.
-    let data = unsafe { value::str_of(&raw mut zdata) };
-    // SAFETY: its live string.
-    let data = unsafe { string::bytes(data) };
+    unsafe { php_swoole_get_recv_data(server, zdata.as_ptr(), request) };
+    let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
     let result = session.map_or(SW_ERR, |session| parse(&session, data.as_ptr()));
+    // Released before a deferred bailout can jump past it.
+    drop(zdata);
     bailout::finish();
-    // SAFETY: the data's own reference.
-    unsafe { zval_ptr_dtor(&raw mut zdata) };
     result
 }
 
@@ -1249,8 +1182,7 @@ fn headers_complete(stream: &Stream) -> bool {
     if !stream.negotiates.get() {
         return true;
     }
-    let headers = zval_of(ctx, Value::Header);
-    if let Some(value) = string_at(headers, c"content-type") {
+    if let Some(value) = header(ctx, b"content-type") {
         let (folded, length) = fold(value.bytes());
         let media = sw_rs_http2_media_kind(folded.get(..length).unwrap_or_default());
         if media == MEDIA_URLENCODED {
@@ -1263,7 +1195,7 @@ fn headers_complete(stream: &Stream) -> bool {
         }
     }
     if get(ctx, Field::EnableCompression) != 0
-        && let Some(value) = string_at(headers, c"accept-encoding")
+        && let Some(value) = header(ctx, b"accept-encoding")
     {
         // SAFETY: a live context.
         unsafe { swoole_rs_phphttp::http2::compression_method(ctx, value.bytes()) };
@@ -1295,22 +1227,11 @@ fn complete(session: &Session, stream: &Stream) -> c_int {
     SW_OK
 }
 
-/// `zend_hash_str_find` on a live array: the value at `key`, or null.
-fn find(array: *mut zval, key: &CStr) -> *mut zval {
-    // SAFETY: a live array.
-    let table = unsafe { value::table(array) };
-    // SAFETY: a live table and a NUL-terminated key.
-    unsafe { zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) }
-}
-
-/// The string at `key` of an array, if it has one.
-fn string_at(array: *mut zval, key: &CStr) -> Option<Text> {
-    let value = find(array, key);
-    if value.is_null() {
-        None
-    } else {
-        string_of(value)
-    }
+/// The request header `key` as a string, if it has one.
+fn header(ctx: *mut c_void, key: &[u8]) -> Option<ZString> {
+    // SAFETY: the context's live header array.
+    let headers = unsafe { Zval::from_ptr(zval_of(ctx, Value::Header)) }?;
+    string_of(headers.array()?.find(key)?)
 }
 
 fn read_u32(at: *const u8) -> u32 {

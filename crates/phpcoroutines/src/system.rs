@@ -13,7 +13,7 @@ use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_zend::{
     Call, Class, E_WARNING,
-    sys::{IS_ARRAY, zend_array, zend_value_error, zval},
+    sys::{IS_ARRAY, zend_value_error, zval},
     type_of, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -506,22 +506,13 @@ fn wait_signal(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let given = call.zval(1);
     let mut signals = Vec::new();
-    // SAFETY: a passed argument.
-    if unsafe { type_of(given) } == IS_ARRAY {
-        // SAFETY: an array argument.
-        let table: *const zend_array = unsafe { value::table(given) };
-        let mut each = |item: *mut zval| {
-            // SAFETY: a live element.
-            signals.push(unsafe { value::get_long(item) });
-            true
-        };
-        // SAFETY: the array is live and the closure does not modify it.
-        unsafe { swoole_rs_zend::each_value(table, &mut each) };
-    } else {
-        // SAFETY: a passed argument.
-        signals.push(unsafe { value::get_long(given) });
+    if let Some(given) = call.value(1) {
+        if let Some(array) = given.array() {
+            signals.extend(array.entries().map(|(_, item)| item.long()));
+        } else {
+            signals.push(given.long());
+        }
     }
     if swoole_rs_zend::bailout::pending() {
         return;

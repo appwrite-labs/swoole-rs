@@ -11,7 +11,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_tree
 from tools.build_upstream import COMMIT
 from tools.harness import run_isolated
 
@@ -27,7 +27,7 @@ def main():
                   limitations=['C ABI leaves use traced real filesystem syscalls; actual coroutine backend is qualified separately by unchanged originals.',
                                'No physical allocation/OOM parity claim for removed private write-only storage.'])
     try:
-        selected, flags = hybrid_tree(args.archive)
+        selected, flags = native_tree(args.archive)
         with tempfile.TemporaryDirectory(prefix='async-file-', dir=args.output.parent) as directory:
             work = Path(directory)
             pinned = work / 'pin'

@@ -256,42 +256,6 @@ def patches_for(modules):
     return collected
 
 
-def hybrid_tree(archive):
-    """The hybrid build an archive came from (`<build>/rust-prefix/lib/libswoole_rs_ffi.a`): its
-    fully patched source tree and the compiler flags for its headers, i.e. the patched include/,
-    the Rust ABI headers and the module switches its config.h turns on. A gate's hybrid side
-    compiles against these, never against the pinned headers; its upstream side uses the pin."""
-    build = Path(archive).resolve().parents[2]
-    source, abi = build / 'src', build / 'rust-prefix/include'
-    if not (source / 'config.h').is_file() or not abi.is_dir():
-        raise ValueError(f'Not a hybrid build archive (<build>/rust-prefix/lib/): {archive}')
-    switches = re.findall(r'^#define (SWOOLE_RS_\w+) 1$', (source / 'config.h').read_text(), re.M)
-    return source, [*('-D' + name for name in switches), '-I' + str(source / 'include'), '-I' + str(abi)]
-
-
-def hybrid_link(archive, directory):
-    """Linker inputs for a fixture that calls the Rust `archive` outside PHP: the archive grouped
-    with an archive of the extension's own native objects, which the Rust ops reach (the shims and
-    the upstream C++ still in the build), and the libraries the extension links. Members are pulled
-    in only when referenced, so a fixture never links the extension's Zend glue it doesn't reach."""
-    source = Path(archive).resolve().parents[2] / 'src'
-    make = {}
-    for line in (source / 'Makefile').read_text().splitlines():
-        key, separator, value = line.partition(' = ')
-        if separator and not line.startswith('\t'):
-            make[key] = value
-    objects = [str(source / Path(lo).parent / '.libs' / (Path(lo).stem + '.o'))
-               for lo in make['shared_objects_swoole'].split()]
-    native = Path(directory) / 'libswoole_native.a'
-    native.unlink(missing_ok=True)
-    subprocess.run(['ar', 'rcs', str(native), *objects], check=True)
-    libraries = [flag for flag in shlex.split(make.get('SWOOLE_SHARED_LIBADD', '')) if flag.startswith(('-l', '-L'))]
-    if sys.platform == 'darwin':
-        return [str(native), str(Path(archive).resolve()), '-Wl,-dead_strip', *libraries]
-    return ['-Wl,--start-group', str(native), str(Path(archive).resolve()), '-Wl,--end-group',
-            '-Wl,--gc-sections', *libraries, '-pthread', '-ldl', '-lm']
-
-
 def native_sources():
     """Owned C and C++ (native/<module>/*.c and *.cc: what stable Rust can't express), by the path
     it compiles at in the patched tree, where config.m4's and CMake's src/ globs find it."""
@@ -316,40 +280,6 @@ def stage_native_sources(source):
         if not (source / name).exists() or (source / name).read_bytes() != path.read_bytes():
             (source / name).parent.mkdir(exist_ok=True)  # the patched tree may have no src/ left
             shutil.copyfile(path, source / name)
-
-
-def overlay_hybrid_tree(archive, tree):
-    """Copy every file the archive's hybrid build patched over `tree`, a pinned checkout (such as
-    one staged with upstream's core-tests), and delete the ones it deleted. Returns the CMake
-    lines that give the tree's existing targets hybrid_tree's switches and include directories."""
-    source, flags = hybrid_tree(archive)
-    for directory in (ROOT / 'migration/patches').iterdir():
-        for patch in module_patches(directory):
-            for name in patch['upstream_paths']:
-                target = Path(tree) / name
-                if not (source / name).exists():
-                    target.unlink(missing_ok=True)
-                elif not target.is_file() or (source / name).read_bytes() != target.read_bytes():
-                    # A tree may lack the file: `git archive` export-ignores core-tests/.
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(source / name, target)
-    for name in zend_free_native_sources():
-        shutil.copyfile(source / name, Path(tree) / name)
-    # core-tests include a header the hybrid folded into another one; they include the survivor.
-    for path in (Path(tree) / 'core-tests').rglob('*'):
-        text = path.read_text() if path.suffix in ('.h', '.cpp') else ''
-        folded = text
-        for header, survivor in (('swoole_process_pool.h', 'swoole_server.h'), ('swoole_config.h', 'swoole.h'),
-                                 ('swoole_coroutine_channel.h', 'swoole_coroutine.h'),
-                                 ('swoole_socket_impl.h', 'swoole_rs_coroutine_socket.h'),
-                                 ('swoole_coroutine_socket.h', 'swoole_rs_coroutine_socket.h')):
-            folded = folded.replace(f'#include "{header}"', f'#include "{survivor}"')
-        if folded != text:
-            path.write_text(folded)
-    # add_definitions and include_directories reach targets defined before them; add_compile_options does not.
-    defines = ' '.join(flag for flag in flags if flag.startswith('-D'))
-    includes = ' '.join(f'"{flag[2:]}"' for flag in flags if flag.startswith('-I'))
-    return f'add_definitions({defines})\ninclude_directories({includes})\n'
 
 
 def apply_patch_verified(source, patch, targets, expected_sha256=None):

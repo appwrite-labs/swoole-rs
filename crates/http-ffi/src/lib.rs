@@ -15,6 +15,8 @@ use std::{ptr, slice};
 use swoole_rs_http::{HttpCookie, HttpSpan, HttpStaticContext, HttpStaticPath, STATUS_CODES};
 
 pub mod http_server;
+mod owned_proxy;
+pub use owned_proxy::*;
 #[cfg(test)]
 mod pin_helpers;
 
@@ -389,7 +391,7 @@ pub unsafe extern "C" fn swr_v2_http_context_text(
 /// Every export, which crates/ffi's `swoole_init` references: native code calls few
 /// of them, and a static archive links only the objects something references.
 #[must_use]
-pub fn exports() -> [*const (); 22] {
+pub fn exports() -> [*const (); 26] {
     [
         swr_v1_http_url_capacity as *const (),
         swr_v1_http_url_encode as *const (),
@@ -413,6 +415,10 @@ pub fn exports() -> [*const (); 22] {
         http_server::parse_multipart_boundary as *const (),
         http_server::url_decode as *const (),
         http_server::url_encode as *const (),
+        swr_v1_http_proxy_owned_authorization as *const (),
+        swr_v1_http_proxy_configure as *const (),
+        swr_v1_http_proxy_connect as *const (),
+        swr_v1_http_proxy_accept as *const (),
     ]
 }
 
