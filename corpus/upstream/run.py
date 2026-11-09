@@ -154,6 +154,16 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "the worker, woken by that packet, discards it only if the close came first. Idle, "
         'upstream 19/19, hybrid 25/31; with a timestamp write around each client step, upstream '
         '9/10 and hybrid 9/10; with a user process polling exist(), upstream 6/10, hybrid 7/10 (#2097)',
+        'tests/swoole_server/bug_2639.phpt':
+        "onReceive replies, then tasks getClientInfo($fd); the client closes on the reply, and "
+        'once the reactor has closed the session getClientInfo is false on every engine (a 5 ms '
+        'sleep in onTask: upstream 0/10, hybrid 0/10 arrays). Idle, upstream wins the race in 15 '
+        'merge-tier runs and the hybrid loses it in most; under CPU load in the aarch64 dev image, '
+        'upstream passes 9/16, hybrid 10/16 (#2198)',
+        'tests/swoole_server/max_idle_time_1.phpt':
+        'it asserts onClose ran at least 1000 ms after onReceive in whole wall-clock ms, and the '
+        "1 s idle timer is scheduled in whole steady ms, so it can land 1 ms short: `Got: 999` on "
+        'upstream, cargo and hybrid, once each in 15 merge-tier runs (#2198)',
         'tests/swoole_server/kill_user_process_01.phpt':
         "the same 10 ms restart window as kill_user_process_02, checked by `ps` after SIGTERM: "
         'under CI load both engines miss it (shards failed upstream 4/6, hybrid 4/6 over six '
