@@ -201,16 +201,19 @@ class Ci(unittest.TestCase):
             return {'number': number, 'title': f't{number}', 'created_at': created,
                     'auto_merge': {'merge_method': 'squash'} if auto else None, 'head': {'sha': f'sha{number}'}}
         open_pulls = [pull(1, '2026-11-03T00:00:00Z'), pull(2, '2026-11-01T00:00:00Z'), pull(3, '2026-11-02T00:00:00Z'),
-                      pull(4, '2026-10-01T00:00:00Z', auto=False), pull(5, '2026-10-02T00:00:00Z')]
+                      pull(4, '2026-10-01T00:00:00Z', auto=False), pull(5, '2026-10-02T00:00:00Z'),
+                      pull(6, '2026-11-04T00:00:00Z'), pull(7, '2026-11-05T00:00:00Z')]
         pulls = {str(n): [{'mergeable_state': state}] for n, state in
-                 [(1, 'dirty'), (2, 'blocked'), (3, 'clean'), (4, 'dirty'), (5, 'blocked')]}
+                 [(1, 'dirty'), (2, 'blocked'), (3, 'clean'), (4, 'dirty'), (5, 'blocked'), (6, 'blocked'), (7, 'blocked')]}
         checks = {'sha1': [], 'sha2': [{'name': 'required', 'conclusion': 'failure'}, {'name': 'rust', 'conclusion': 'failure'}],
                   'sha3': [{'name': 'required', 'conclusion': 'success'}, {'name': 'asan / asan', 'conclusion': 'failure'}],
-                  'sha5': [{'name': 'required', 'conclusion': None}]}
-        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=open_pulls, pulls=pulls, checks=checks)
+                  'sha5': [{'name': 'required', 'conclusion': None}], 'sha6': [{'name': 'gates', 'conclusion': 'success'}]}
+        # 6's PR-tier run finished without creating `required` (GitHub abandoned its jobs); 7's is still starting.
+        runs = {'sha6': ['failure'], 'sha7': ['running']}
+        code, result, _ = self.ci('stuck', runs=runs, flags=('--json',), open_pulls=open_pulls, pulls=pulls, checks=checks)
         # 3 only fails an informative check, 4 has no auto-merge and 5 is still running.
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
-                         (0, [(2, ['required']), (1, ['conflicts'])]))
+                         (0, [(2, ['required']), (1, ['conflicts']), (6, ['no required check'])]))
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[])
         self.assertEqual((code, result), (2, []))
 
