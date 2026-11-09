@@ -13,6 +13,7 @@ use std::{
 };
 use swoole_rs_corebase::DataHead;
 use swoole_rs_phpstubs::process_pool;
+use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::{
     methods,
     pool::swr_v1_process_pool_ipc_listener,
@@ -138,14 +139,13 @@ fn pool_free(pool: Pool) {
 fn worker_busy(busy: bool) {
     // SAFETY: this thread's worker globals.
     let worker = unsafe { (*swr_v1_worker_globals()).worker };
+    // SAFETY: this process's worker.
+    let worker = unsafe { Worker::new(worker) };
     if busy {
-        // SAFETY: this process's worker.
-        unsafe { worker_record::swr_v1_worker_set_status(worker, WORKER_BUSY) };
+        worker.set_status(WORKER_BUSY);
     } else {
-        // SAFETY: as above.
-        unsafe { worker_record::swr_v1_worker_add_request_count(worker) };
-        // SAFETY: as above.
-        unsafe { worker_record::swr_v1_worker_set_status(worker, WORKER_IDLE) };
+        worker.add_request_count();
+        worker.set_status(WORKER_IDLE);
     }
 }
 
@@ -1015,11 +1015,10 @@ fn get_process(call: &Call) {
             reason = "a checked worker id"
         )]
         // SAFETY: the running pool's worker `id`.
-        let pid =
-            unsafe { worker_record::swr_v1_worker_pid(view.workers.wrapping_add(id as usize)) };
+        let pid = unsafe { Worker::new(view.workers.wrapping_add(id as usize)).pid() };
         if worker_pid(worker) != pid {
             // SAFETY: the object's worker copy.
-            unsafe { worker_record::swr_v1_worker_set_pid(worker.cast(), pid) };
+            unsafe { Worker::new(worker.cast()).set_pid(pid) };
             // SAFETY: a Process object.
             unsafe { update_property_long(process_ce, std, c"pid", i64::from(pid)) };
         }

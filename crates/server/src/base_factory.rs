@@ -15,7 +15,7 @@ use core::sync::atomic::Ordering;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::log;
 use swoole_rs_process::worker_globals::swr_v1_worker_globals;
-use swoole_rs_process::worker_record::{swr_v1_worker_add_request_count, swr_v1_worker_set_status};
+use swoole_rs_process::worker_record::Worker;
 
 /// `swoole::SendData`.
 #[repr(C)]
@@ -190,7 +190,8 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
         return Ok(false);
     }
     // SAFETY: the current worker's record, which this worker loop owns.
-    unsafe { swr_v1_worker_set_status(worker, WORKER_BUSY) };
+    let worker = unsafe { Worker::new(worker) };
+    worker.set_status(WORKER_BUSY);
     // SAFETY: as above.
     let c = unsafe { record(conn) };
     if task.info.len > 0 {
@@ -206,14 +207,12 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
         recv.info.flags = DATA_PTR;
     }
     if h.op(OP_ON_RECEIVE, address(&raw const recv))? != 0 {
-        // SAFETY: as above.
-        unsafe { swr_v1_worker_add_request_count(worker) };
+        worker.add_request_count();
         if let Some(gs) = crate::shared::server_counters(h.state()?) {
             gs.request_count.fetch_add(1, Ordering::SeqCst);
         }
     }
-    // SAFETY: as above.
-    unsafe { swr_v1_worker_set_status(worker, WORKER_IDLE) };
+    worker.set_status(WORKER_IDLE);
     Ok(true)
 }
 
@@ -544,7 +543,7 @@ mod tests {
 
     #[test]
     fn base_mode_receives_without_the_bus() {
-        use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_status};
+        use swoole_rs_process::worker_record::WorkerRecord;
         let mut t = Tables::new();
         t.conn().recv_queued_bytes = AtomicU32::new(5);
         // SAFETY: a worker record is plain data; zero is a fresh one.
@@ -559,7 +558,7 @@ mod tests {
         assert_eq!((s.called(OP_ON_RECEIVE), s.called(OP_BASE_PASS)), (1, 0));
         // SAFETY: as above.
         assert_eq!(
-            unsafe { swr_v1_worker_status(&raw const worker) },
+            unsafe { Worker::new(&raw const worker).status() },
             WORKER_IDLE
         );
         let c = t.conn();

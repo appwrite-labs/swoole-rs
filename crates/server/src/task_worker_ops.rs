@@ -12,9 +12,7 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::process_pool::{PoolRecord, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{EventHead, task_pack};
-use swoole_rs_process::worker_record::{
-    WorkerRecord, pool_of, swr_v1_worker_init, swr_v1_worker_shutdown,
-};
+use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     LOG_INVALID_SOURCE, LOG_READ_TASK, LOG_RESULT_WRITE, LOG_UNKNOWN_COMMAND, OP_ADD_REQUEST_COUNT,
@@ -367,7 +365,9 @@ fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_STREAM_CONNECTION => {
             // SAFETY: the source worker.
-            let pool = unsafe { pool_of(ctx.worker) }.cast::<PoolRecord>();
+            let pool = unsafe { swoole_rs_process::worker_record::Worker::new(ctx.worker) }
+                .pool()
+                .cast::<PoolRecord>();
             // SAFETY: its live pool.
             let pool = unsafe { &*pool };
             // Only a stream pool has IPC state: an event worker's pool has none.

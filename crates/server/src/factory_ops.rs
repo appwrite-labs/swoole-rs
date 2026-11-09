@@ -3,6 +3,7 @@
 //! [`swr_v1_factory_call`] answers.
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicI64, Ordering};
+use swoole_rs_process::worker_record::Worker;
 
 use swoole_rs_corebase::worker_registry::{
     swr_v1_process_worker_registry_register as register,
@@ -15,9 +16,7 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_globals::swr_v1_worker_globals;
-use swoole_rs_process::worker_record::{
-    WorkerRecord, swr_v1_worker_id, swr_v1_worker_pid, swr_v1_worker_set_pid,
-};
+use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::ops::{
     LOG_ALLOC_CONNECTIONS, LOG_KILL_MANAGER, LOG_WAIT_MANAGER, LOG_WAIT_TASK_WORKER,
@@ -450,22 +449,22 @@ unsafe fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             unsafe { libc::exit(0) }
         }
         // SAFETY: the context's live worker.
-        OP_WORKER_PID => return Some(signed(unsafe { swr_v1_worker_pid(worker) })),
+        OP_WORKER_PID => return Some(signed(unsafe { Worker::new(worker) }.pid())),
         OP_REGISTER_WORKER => {
             // SAFETY: the context's live worker.
-            unsafe { swr_v1_worker_set_pid(worker, pid) };
+            unsafe { Worker::new(worker) }.set_pid(pid);
             // SAFETY: the server's live registry.
             unsafe { register(registry, pid, worker.cast(), REGISTRY_EVENT) };
         }
         OP_REGISTER_USER_WORKER => {
             // worker: local memory; user_workers: shared memory
             // SAFETY: the context's live worker.
-            unsafe { swr_v1_worker_set_pid(worker, pid) };
-            // SAFETY: as above.
-            let id = worker_id(u64::from(unsafe { swr_v1_worker_id(worker) }));
+            let record = unsafe { Worker::new(worker) };
+            record.set_pid(pid);
+            let id = worker_id(u64::from(record.id()));
             let shared = ctx.worker_at(id);
             // SAFETY: the worker's shared copy.
-            unsafe { swr_v1_worker_set_pid(shared, pid) };
+            unsafe { Worker::new(shared).set_pid(pid) };
             // SAFETY: the server's live registry.
             unsafe { register(registry, pid, worker.cast(), REGISTRY_USER) };
         }
@@ -476,11 +475,10 @@ unsafe fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_ENTER_CHILD => {
             let own = std::process::id().cast_signed();
             // SAFETY: the context's live worker.
-            unsafe { swr_v1_worker_set_pid(worker, own) };
-            // SAFETY: as above.
-            swoole_set_worker_id(unsafe { swr_v1_worker_id(worker) });
-            // SAFETY: as above.
-            swoole_set_worker_pid(unsafe { swr_v1_worker_pid(worker) });
+            let record = unsafe { Worker::new(worker) };
+            record.set_pid(own);
+            swoole_set_worker_id(record.id());
+            swoole_set_worker_pid(record.pid());
             swoole_set_worker_type(int);
             // SAFETY: this thread's worker globals.
             unsafe { (*swr_v1_worker_globals()).worker = worker };
@@ -537,7 +535,7 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         let pool = unsafe { &*ctx.task_pool() };
         let index = usize::try_from(arg).unwrap_or(usize::MAX);
         // SAFETY: a task worker of it; arg is below task_worker_num.
-        unsafe { swr_v1_worker_pid(pool.workers.wrapping_add(index)) }
+        unsafe { Worker::new(pool.workers.wrapping_add(index)).pid() }
     };
     let waitpid = |pid| {
         let mut status = 0;

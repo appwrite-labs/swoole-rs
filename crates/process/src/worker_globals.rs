@@ -164,9 +164,7 @@ pub extern "C" fn swr_v1_worker_global_stopped() {
 mod tests {
     use super::*;
     use crate::worker_record::{
-        swr_v1_worker_add_request_count, swr_v1_worker_exceeded_max_requests, swr_v1_worker_id,
-        swr_v1_worker_init, swr_v1_worker_pid, swr_v1_worker_set_id, swr_v1_worker_set_pid,
-        swr_v1_worker_shutdown, swr_v1_worker_status,
+        Worker, swr_v1_worker_exceeded_max_requests, swr_v1_worker_init, swr_v1_worker_shutdown,
     };
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
@@ -201,24 +199,24 @@ mod tests {
     fn lifecycle_limit_and_detached_copy_preserve_private_record_fields() {
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
         unsafe {
-            swr_v1_worker_set_id(&raw mut worker, 11);
-            swr_v1_worker_set_pid(&raw mut worker, 1234);
+            Worker::new(&raw mut worker).set_id(11);
+            Worker::new(&raw mut worker).set_pid(1234);
             swr_v1_worker_init(&raw mut worker);
-            assert_eq!(swr_v1_worker_status(&raw const worker), 2);
+            assert_eq!(Worker::new(&raw const worker).status(), 2);
             assert_eq!(swr_v1_worker_global_get(3), 1);
             assert_eq!(swr_v1_worker_global_get(4), 0);
             swr_v1_worker_global_max_requests(2, 0, maximum);
-            swr_v1_worker_add_request_count(&raw mut worker);
+            Worker::new(&raw mut worker).add_request_count();
             assert!(!swr_v1_worker_exceeded_max_requests(&raw const worker));
-            swr_v1_worker_add_request_count(&raw mut worker);
+            Worker::new(&raw mut worker).add_request_count();
             assert!(swr_v1_worker_exceeded_max_requests(&raw const worker));
             swr_v1_worker_global_detach(&raw mut worker);
             let copy = (*swr_v1_worker_globals()).worker_copy;
             assert_ne!(copy, &raw mut worker);
-            assert_eq!(swr_v1_worker_id(copy), 11);
-            assert_eq!(swr_v1_worker_pid(copy), 1234);
+            assert_eq!(Worker::new(copy).id(), 11);
+            assert_eq!(Worker::new(copy).pid(), 1234);
             swr_v1_worker_shutdown(&raw mut worker);
-            assert_eq!(swr_v1_worker_status(&raw const worker), 3);
+            assert_eq!(Worker::new(&raw const worker).status(), 3);
             assert_eq!(swr_v1_worker_global_get(4), 1);
             swr_v1_worker_global_stopped();
             assert_eq!(swr_v1_worker_global_get(3), 0);

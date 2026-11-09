@@ -65,21 +65,10 @@ typedef struct swr_v1_worker_record {
     void *pipe_current;
     void *ptr;
 } swr_v1_worker_record;
-void swr_v1_worker_add_request_count(swr_v1_worker_record *);
-void swr_v1_worker_reset_counters(swr_v1_worker_record *, uint32_t *);
 void *swr_v1_worker_globals(void);
 void swr_v1_worker_global_max_requests(uint32_t max_request, uint32_t grace, int (*random)(int,int));
 void swr_v1_worker_global_detach(swr_v1_worker_record *worker);
 void swr_v1_worker_global_stopped(void);
-swr_v1_worker_record *swr_v1_worker_array_lookup(swr_v1_worker_record *, uint32_t, int);
-uint8_t swr_v1_worker_status(const swr_v1_worker_record *);
-void swr_v1_worker_set_status(swr_v1_worker_record *, uint8_t status);
-uint8_t swr_v1_worker_type(const swr_v1_worker_record *);
-void swr_v1_worker_set_type(swr_v1_worker_record *, uint8_t kind);
-int swr_v1_worker_pid(const swr_v1_worker_record *);
-void swr_v1_worker_set_pid(swr_v1_worker_record *, int pid);
-uint32_t swr_v1_worker_id(const swr_v1_worker_record *);
-void swr_v1_worker_set_id(swr_v1_worker_record *, uint32_t id);
 typedef struct swr_v1_process_reload_task swr_v1_process_reload_task;
 #define SWR_RELOAD_WARN_KILL_ALL_FAILED 1
 #define SWR_RELOAD_WARN_FORCE_KILL 2

@@ -84,7 +84,6 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::{sw_shm_calloc, sw_shm_free};
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::worker_record::swr_v1_worker_status;
 use swoole_rs_process::workers::entry;
 use swoole_rs_tls::socket_pair::SocketPair;
 use swoole_rs_utilities::misc::swoole_hash_php;
@@ -1599,9 +1598,8 @@ unsafe fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_IDLE => {
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint16_t) id")]
             let id = arg as u16;
-            let worker = o.server().worker(id);
-            // SAFETY: null or one of the server's live workers.
-            u64::from(!worker.is_null() && unsafe { swr_v1_worker_status(worker) } == WORKER_IDLE)
+            let worker = o.server().worker_record(id);
+            u64::from(worker.is_some_and(|worker| worker.status() == WORKER_IDLE))
         }
         OP_IP_KEY => {
             let fd = libc::c_long::from(o.ctx.server_fd);

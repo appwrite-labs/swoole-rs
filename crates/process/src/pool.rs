@@ -18,11 +18,12 @@
     clippy::cast_sign_loss,
     reason = "upstream's C conversions between ssize_t, uint32_t and long, kept so lengths and logged numbers match"
 )]
+use crate::worker_record::Worker as Record;
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-use crate::worker_record::{WorkerRecord, pipe_master, swr_v1_worker_id, swr_v1_worker_status};
+use crate::worker_record::WorkerRecord;
 
 /// A loop's result: it ended, or PHP bailed out inside a hook.
 pub const DONE: c_int = 0;
@@ -980,7 +981,7 @@ pub unsafe extern "C" fn swr_v1_process_pool_schedule(
     for _ in 0..=count {
         target = round.fetch_add(1, Ordering::SeqCst) % count;
         // SAFETY: `target` < `count`.
-        if unsafe { swr_v1_worker_status(workers.wrapping_add(target as usize)) } == WORKER_IDLE {
+        if unsafe { Record::new(workers.wrapping_add(target as usize)).status() } == WORKER_IDLE {
             return target;
         }
     }
@@ -1075,9 +1076,9 @@ pub unsafe extern "C" fn swr_v1_process_pool_dispatch(
     let index = (*target - c_int::from(start_id)).cast_unsigned() as usize;
     let worker = workers.wrapping_add(index);
     // SAFETY: the chosen worker's record.
-    let id = unsafe { swr_v1_worker_id(worker) };
+    let id = unsafe { Record::new(worker).id() };
     // SAFETY: as above.
-    let pipe = unsafe { pipe_master(worker) };
+    let pipe = unsafe { Record::new(worker).pipe_master() };
     let flags = PIPE_MASTER | if blocking { 0 } else { PIPE_NONBLOCK };
     // SAFETY: as the caller guarantees.
     let sent = unsafe {
@@ -1167,7 +1168,7 @@ mod tests {
                 // SAFETY: a record is plain data; zero is a valid value.
                 let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
                 // SAFETY: a local record.
-                unsafe { crate::worker_record::swr_v1_worker_set_status(&raw mut record, status) };
+                unsafe { Record::new(&raw mut record).set_status(status) };
                 record
             })
             .collect()

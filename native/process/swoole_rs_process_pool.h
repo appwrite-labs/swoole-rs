@@ -116,50 +116,6 @@ struct Worker {
     void shutdown();
     bool is_shutdown();
     static bool is_running();
-
-    void set_status(swWorkerStatus _status) {
-        swr_v1_worker_set_status(reinterpret_cast<swr_v1_worker_record *>(this), static_cast<uint8_t>(_status));
-    }
-
-    void set_status_to_idle() {
-        set_status(SW_WORKER_IDLE);
-    }
-
-    void set_status_to_busy() {
-        set_status(SW_WORKER_BUSY);
-    }
-
-    void add_request_count() {
-        swr_v1_worker_add_request_count(reinterpret_cast<swr_v1_worker_record *>(this));
-    }
-
-    bool is_busy() const {
-        return swr_v1_worker_status(reinterpret_cast<const swr_v1_worker_record *>(this)) == SW_WORKER_BUSY;
-    }
-
-    bool is_idle() const {
-        return swr_v1_worker_status(reinterpret_cast<const swr_v1_worker_record *>(this)) == SW_WORKER_IDLE;
-    }
-
-    uint8_t get_type() const {
-        return swr_v1_worker_type(reinterpret_cast<const swr_v1_worker_record *>(this));
-    }
-
-    void set_type(uint8_t _type) {
-        swr_v1_worker_set_type(reinterpret_cast<swr_v1_worker_record *>(this), _type);
-    }
-
-    pid_t get_pid() const {
-        return swr_v1_worker_pid(reinterpret_cast<const swr_v1_worker_record *>(this));
-    }
-
-    WorkerId get_id() const {
-        return swr_v1_worker_id(reinterpret_cast<const swr_v1_worker_record *>(this));
-    }
-
-    void set_id(WorkerId _id) {
-        swr_v1_worker_set_id(reinterpret_cast<swr_v1_worker_record *>(this), _id);
-    }
 };
 
 struct ProcessPool {

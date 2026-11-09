@@ -4,6 +4,7 @@
 //! at a time. Rust owns the manager's state ([`ThreadManager`]: its threads, wait
 //! queue, reload request and reload progress) and each thread's body;
 //! crates/server's `thread_mode_ops.rs` answers the ops over the server.
+use crate::worker_record::Worker;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,9 +41,7 @@ use super::ops::{
 use super::{Host, SW_ERR, SW_OK};
 use crate::methods::{swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type};
 use crate::worker_globals::swr_v1_worker_globals;
-use crate::worker_record::{
-    WorkerRecord, swr_v1_worker_set_pid, swr_v1_worker_set_status, swr_v1_worker_set_type,
-};
+use crate::worker_record::WorkerRecord;
 
 /// `swoole::WorkerType`.
 const MANAGER: u64 = 3;
@@ -385,15 +384,14 @@ fn body<H: Host>(h: &mut H, arg: u64) {
     } else {
         worker = usize::try_from(h.op(OP_GET_WORKER, id)).unwrap_or(0) as *mut WorkerRecord;
         // SAFETY: native lends the server's live record for this slot, which this thread runs.
-        unsafe { swr_v1_worker_set_type(worker, kind as u8) };
-        // SAFETY: as above.
-        unsafe { swr_v1_worker_set_pid(worker, pid) };
+        let worker = unsafe { Worker::new(worker) };
+        worker.set_kind(kind as u8);
+        worker.set_pid(pid);
         if kind == TASK_WORKER {
-            // SAFETY: as above.
-            unsafe { swr_v1_worker_set_status(worker, WORKER_IDLE) };
+            worker.set_status(WORKER_IDLE);
         }
         // SAFETY: this thread's live worker-globals record.
-        unsafe { (*swr_v1_worker_globals()).worker = worker };
+        unsafe { (*swr_v1_worker_globals()).worker = worker.raw() };
     }
     h.op(OP_WORKER_THREAD_START, arg);
     if message_bus {
@@ -467,7 +465,6 @@ fn thread_main<H: Host>(h: &mut H, arg: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worker_record::{swr_v1_worker_pid, swr_v1_worker_status, swr_v1_worker_type};
     use crate::workers::script::Script;
 
     #[test]
@@ -528,10 +525,10 @@ mod tests {
         });
         assert_eq!(globals, (6, 4, 4321, address));
         // SAFETY (test): the thread above has ended.
-        let fields = unsafe { (swr_v1_worker_type(worker), swr_v1_worker_pid(worker)) };
+        let fields = unsafe { (Worker::new(worker).kind(), Worker::new(worker).pid()) };
         assert_eq!(fields, (4, 4321));
         // SAFETY (test): as above.
-        assert_eq!(unsafe { swr_v1_worker_status(worker) }, WORKER_IDLE);
+        assert_eq!(unsafe { Worker::new(worker).status() }, WORKER_IDLE);
         assert_eq!(
             h.effects(&[OP_THREAD_MANAGER]),
             vec![

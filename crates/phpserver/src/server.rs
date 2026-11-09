@@ -10,7 +10,7 @@ use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_add
 use swoole_rs_corebase::DataHead;
 use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::server;
-use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_pid, swr_v1_worker_status};
+use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{ConnectionRecord, server_methods, view};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Object, declare_bool, declare_long, declare_property_null,
@@ -748,8 +748,7 @@ fn stats(call: &Call) {
     let worker = unsafe { (*worker).worker };
     if !worker.is_null() {
         // SAFETY: this process's live worker.
-        let [request, response, dispatch, concurrency] =
-            unsafe { swoole_rs_process::worker_record::counters(worker) };
+        let [request, response, dispatch, concurrency] = unsafe { Worker::new(worker).counters() };
         call.add_assoc_long(c"worker_request_count", request);
         call.add_assoc_long(c"worker_response_count", response);
         call.add_assoc_long(c"worker_dispatch_count", dispatch);
@@ -1097,7 +1096,7 @@ fn get_worker_id(call: &Call) {
 }
 
 /// The worker `get*` asks about: the argument, or this process's worker.
-fn worker(call: &Call, serv: view::Server<'_>) -> Option<*mut WorkerRecord> {
+fn worker<'a>(call: &Call, serv: view::Server<'a>) -> Option<Worker<'a>> {
     let Ok(worker_id) = call.arity(0, 1).and_then(|()| call.long(1, -1)) else {
         call.set_bool(false);
         return None;
@@ -1113,27 +1112,24 @@ fn worker(call: &Call, serv: view::Server<'_>) -> Option<*mut WorkerRecord> {
         reason = "get_worker's uint16_t id, as upstream"
     )]
     let worker_id = worker_id as u16;
-    let worker = serv.worker(worker_id);
-    if worker.is_null() {
+    let worker = serv.worker_record(worker_id);
+    if worker.is_none() {
         call.set_bool(false);
-        return None;
     }
-    Some(worker)
+    worker
 }
 
 fn get_worker_status(call: &Call) {
     let Some(serv) = running(call) else { return };
     if let Some(worker) = worker(call, serv) {
-        // SAFETY: a live worker of the server.
-        call.set_long(i64::from(unsafe { swr_v1_worker_status(worker) }));
+        call.set_long(i64::from(worker.status()));
     }
 }
 
 fn get_worker_pid(call: &Call) {
     let serv = server(call);
     if let Some(worker) = worker(call, serv) {
-        // SAFETY: a live worker of the server.
-        call.set_long(i64::from(unsafe { swr_v1_worker_pid(worker) }));
+        call.set_long(i64::from(worker.pid()));
     }
 }
 

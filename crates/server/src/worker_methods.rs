@@ -4,16 +4,14 @@
 //! `Server` pointer ([`crate::view`]).
 
 use core::ffi::{c_int, c_void};
+use swoole_rs_process::worker_record::Worker;
 
 use swoole_rs_corebase::{log, worker_registry};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::server_workers::{
     swr_v1_process_server_worker_by_pid, swr_v1_process_server_workers_start,
 };
-use swoole_rs_process::worker_record::{
-    WorkerRecord, swr_v1_worker_id, swr_v1_worker_init, swr_v1_worker_reset_counters,
-    swr_v1_worker_set_id, swr_v1_worker_set_type,
-};
+use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init};
 
 use crate::view;
 
@@ -100,11 +98,10 @@ pub unsafe extern "C" fn add_worker(serv: *mut c_void, worker: *mut WorkerRecord
     // `user_worker_list.size() - 1`, as a `WorkerId`.
     let id = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
     // SAFETY: the caller's live worker.
-    unsafe { swr_v1_worker_set_id(worker, id) };
-    // SAFETY: as above.
-    unsafe { swr_v1_worker_set_type(worker, SW_USER_WORKER) };
-    // SAFETY: as above.
-    unsafe { swr_v1_worker_id(worker) }.cast_signed()
+    let worker = unsafe { Worker::new(worker) };
+    worker.set_id(id);
+    worker.set_kind(SW_USER_WORKER);
+    worker.id().cast_signed()
 }
 
 /// `Server::reset_worker_counter(worker)`.
@@ -118,9 +115,8 @@ pub unsafe extern "C" fn add_worker(serv: *mut c_void, worker: *mut WorkerRecord
 pub unsafe extern "C" fn reset_worker_counter(serv: *mut c_void, worker: *mut WorkerRecord) {
     // SAFETY: per the caller, `serv` is a live `Server` for the call.
     let serv = unsafe { view::Server::from_raw(serv) };
-    let total = serv.counters().concurrency.as_ptr();
-    // SAFETY: the live worker and the server's shared concurrency counter.
-    unsafe { swr_v1_worker_reset_counters(worker, total) };
+    // SAFETY: per the caller, one of the server's live workers.
+    unsafe { Worker::new(worker) }.reset_counters(&serv.counters().concurrency);
 }
 
 /// `Server::abort_worker(worker)`: reset its counters and, in base mode, retire its sessions.
@@ -139,7 +135,7 @@ pub unsafe extern "C" fn abort_worker(serv: *mut c_void, worker: *mut WorkerReco
     // SAFETY: per the caller.
     if u64::from(serv.config().mode_) == crate::MODE_BASE {
         // SAFETY: per the caller.
-        let id = unsafe { swr_v1_worker_id(worker) };
+        let id = unsafe { Worker::new(worker).id() };
         let state = serv.state_ptr();
         // SAFETY: the server's live state and session table.
         unsafe { crate::records::swr_v1_server_sessions_retire(state, id) };
@@ -295,7 +291,7 @@ pub unsafe extern "C" fn create_user_workers(serv: *mut c_void) -> bool {
         // SAFETY: per the caller.
         unsafe { create_worker(serv.raw(), worker) };
         // SAFETY: the caller's live worker.
-        unsafe { swr_v1_worker_set_type(worker, SW_USER_WORKER) };
+        unsafe { Worker::new(worker).set_kind(SW_USER_WORKER) };
     }
     true
 }

@@ -16,7 +16,7 @@ use swoole_rs_ossupport::{
     QueueRecord, swr_v1_os_msg_queue_free, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push,
 };
 use swoole_rs_phpstubs::process;
-use swoole_rs_process::worker_record;
+use swoole_rs_process::worker_record::Worker;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object, add_assoc_long, class_name, declare_property_null,
     each_value, handlers, message, object_of, register_long_constant, set_object,
@@ -137,7 +137,7 @@ pub(crate) fn worker_view(worker: *mut c_void) -> WorkerView {
 /// A live worker's queue, or null.
 fn queue_of(worker: *mut c_void) -> *mut QueueRecord {
     // SAFETY: a live worker.
-    unsafe { worker_record::queue(worker.cast()) }.cast()
+    unsafe { Worker::new(worker.cast()).queue() }.cast()
 }
 
 fn view(worker: *mut c_void) -> WorkerView {
@@ -592,7 +592,7 @@ fn use_queue(call: &Call) {
     }
     let id = queue.id();
     // SAFETY: a live worker; it owns the queue from here.
-    unsafe { worker_record::set_queue(worker.cast(), Box::into_raw(Box::new(queue)).cast()) };
+    unsafe { Worker::new(worker.cast()).set_queue(Box::into_raw(Box::new(queue)).cast()) };
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -600,7 +600,7 @@ fn use_queue(call: &Call) {
     )]
     // SAFETY: as above.
     unsafe {
-        worker_record::set_msgqueue_mode(worker.cast(), mode as u8);
+        Worker::new(worker.cast()).set_msgqueue_mode(mode as u8);
     }
     let object = call.this();
     // SAFETY: `$this`.
@@ -650,7 +650,7 @@ fn free_queue(call: &Call) {
         // SAFETY: the worker's queue, freed once and forgotten.
         unsafe { swr_v1_os_msg_queue_free(queue) };
         // SAFETY: a live worker.
-        unsafe { worker_record::set_queue(worker.cast(), ptr::null_mut()) };
+        unsafe { Worker::new(worker.cast()).set_queue(ptr::null_mut()) };
     }
     call.set_bool(freed);
 }
@@ -897,7 +897,7 @@ fn pop(call: &Call) {
     }
     // SAFETY: a live worker.
     let balance =
-        i64::from(unsafe { worker_record::msgqueue_mode(worker.cast()) }) == MSGQUEUE_BALANCE;
+        i64::from(unsafe { Worker::new(worker.cast()).msgqueue_mode() }) == MSGQUEUE_BALANCE;
     let mut message = QueueMessage::new(if balance {
         0
     } else {
