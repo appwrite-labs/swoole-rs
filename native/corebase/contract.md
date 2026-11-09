@@ -148,9 +148,4 @@ shim in the Rust archive (`crates/corebase/src/format.c`, C linkage).
 
 Still native: C++ containers/objects, filesystem IO and other runtime operations.
 
-The lower `swoole::Thread` (`native/corebase/swoole_thread.h`; upstream's header is
-deleted) owns a generated `CoreThread` record: Rust controls
-its pthread handle, status publication, moves, joins and detaches. pthread starts
-the native callable trampoline directly, so C++ exceptions and pthread forced
-unwind do not cross a Rust child-entry frame. The cancellable `pthread_join` and
-`std::system_error` run in native code after Rust returns.
+`swoole::Thread` is Rust (`crates/corebase/src/thread.rs`); upstream's header is deleted.

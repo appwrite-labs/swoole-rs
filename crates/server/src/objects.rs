@@ -18,6 +18,7 @@ use crate::pool_native::{
 unsafe extern "C" {
     fn swr_v1_bus_count(bus: *mut c_void) -> usize;
     fn swr_v1_bus_clear(bus: *mut c_void);
+    fn swr_v1_bus_set_always_chunked(bus: *mut c_void);
     fn swr_v1_bus_init_pipe_socket(bus: *mut c_void, fd: c_int);
     fn swr_v1_bus_pipe_socket(bus: *mut c_void, fd: c_int) -> *mut SocketRecord;
     fn swr_v1_bus_write(
@@ -137,6 +138,11 @@ impl Bus {
         head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
         // SAFETY: a live bus and socket, and `head.len` readable bytes.
         unsafe { swr_v1_bus_write(self.bus, (&raw mut *sock).cast(), head, data.as_ptr()) }
+    }
+    /// `MessageBus::set_always_chunked_transfer()`.
+    pub(crate) fn set_always_chunked(self) {
+        // SAFETY: a live bus.
+        unsafe { swr_v1_bus_set_always_chunked(self.bus) };
     }
     /// `MessageBus::init_pipe_socket(sock)`.
     pub(crate) fn init_pipe_socket(self, fd: c_int) {

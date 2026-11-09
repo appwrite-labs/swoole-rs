@@ -24,7 +24,6 @@
 namespace swoole {
 
 class Server;
-class Thread;
 
 struct ReactorThread {
     int id;
@@ -64,7 +63,6 @@ class Factory {
 // Thread mode's factory, as workers.cc's thread ops see it.
 class ThreadFactory : public Factory {
   public:
-    std::shared_ptr<Thread> &thread_at(size_t index) const;
     WorkerId get_master_thread_id() const;
 };
 

@@ -1,17 +1,27 @@
 //! Thread mode's facts and effects (`crates/process/src/workers/thread.rs`'s `OP_*`)
-//! over the server, pool, worker and port records Rust lays out. workers.cc's
-//! `ThreadContext::call` hands every op it has no case for to
-//! [`swr_v1_thread_mode_call`].
+//! over the server, pool, worker and port records Rust lays out, the factory's
+//! threads ([`ThreadManager`]) and each thread's message bus: what workers.cc's
+//! `ThreadContext::call` did.
 use core::ffi::{c_int, c_void};
 use core::ptr::{null, null_mut};
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use swoole_rs_corebase::{sw_calloc, sw_free};
-use swoole_rs_process::methods::{start_check, swoole_get_worker_type};
+use swoole_rs_process::methods::{ExitStatus, start_check, swoole_get_worker_type};
 use swoole_rs_process::process_pool::PoolRecord;
-use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_id, swr_v1_worker_type};
+use swoole_rs_process::server_workers::ServerWorkers;
+use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::entry;
 use swoole_rs_process::workers::factory_methods::run;
 use swoole_rs_process::workers::ops::RUN_CREATE_WORKER_PIPES;
+use swoole_rs_process::workers::ops::{
+    LOG_CALLOC_CONNECTIONS, OP_CALL_WORKER_ERROR, OP_CREATE_MESSAGE_BUS, OP_DESTROY_MESSAGE_BUS,
+    OP_JOIN_THREAD, OP_NEW_THREAD_FACTORY, OP_REACTOR_THREAD_MAIN, OP_SELECT_WORKER,
+    OP_SET_MASTER_THREAD_ID, OP_SPAWN_THREAD, OP_START_MASTER_THREAD, OP_THREAD_ENTER,
+    OP_THREAD_EXIT, OP_THREAD_EXIT_STATUS, OP_THREAD_MANAGER, OP_THREAD_SUPPORTED,
+    OP_WORKER_THREAD_START, RUN_THREAD_BODY, RUN_THREAD_MAIN,
+};
 use swoole_rs_process::workers::ops::{
     OP_ABORT, OP_ALL_CORE_WORKER_NUM, OP_ALL_WORKER_NUM, OP_CALLOC_CONNECTIONS,
     OP_CREATE_EVENT_WORKERS, OP_CREATE_USER_WORKERS, OP_CREATE_WORKER_PIPES,
@@ -23,32 +33,93 @@ use swoole_rs_process::workers::ops::{
     OP_TASK_START_CHECK, OP_TASK_WORKER_NUM, OP_TERMINATE_MANAGER_THREAD, OP_THREAD_REACTOR_NUM,
     OP_USER_WORKER_NUM, OP_WORKER_ID, OP_WORKER_NUM, OP_WORKER_TYPE,
 };
-use swoole_rs_reactor::{SocketRecord, reactor_upstream};
+use swoole_rs_process::workers::swr_v1_workers_run;
+use swoole_rs_process::workers::thread::{ThreadManager, worker_thread_start};
+use swoole_rs_reactor::SocketRecord;
 
 use crate::callbacks::{
     CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP, CB_USER_WORKER_START,
 };
+use crate::objects::{Bus, Reactor};
 use crate::reactor_ops::sign;
 use crate::reactor_process_ops::{port_listen, ports};
 use crate::records::ConnectionRecord;
 use crate::worker_methods::{create_event_workers, create_user_workers};
-use crate::{server_methods, view};
+use crate::{factory, pool_native, server_methods, view};
+
+/// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says.
+pub static SUPPORTED: AtomicBool = AtomicBool::new(false);
 
 /// workers.cc's `WorkersNative<5>`.
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct Context {
     serv: *mut c_void,
     factory: *mut c_void,
     worker: *mut WorkerRecord,
 }
 
-/// `SW_MANAGER` and `SW_EVENT_READ`.
+/// `SW_MANAGER`, `SW_EVENT_READ` and `Server::THREAD_WORKER`.
 const SW_MANAGER: c_int = 3;
 const SW_EVENT_READ: c_int = 1 << 9;
+const THREAD_WORKER: u8 = 4;
 
 /// A task pool's `onWorkerStart` and `onWorkerStop`, and `main_loop`, whose result
 /// thread mode ignores.
 type PoolHook = unsafe extern "C-unwind" fn(*mut PoolRecord, *mut WorkerRecord);
+
+/// The context's objects, each live when the op reading it runs.
+#[expect(
+    clippy::mut_from_ref,
+    reason = "native records shared with C++, written by the thread that owns them as workers.cc did"
+)]
+impl Context {
+    fn state(&self) -> &crate::ServerState {
+        // SAFETY: the context's live server.
+        unsafe { view::state(self.serv) }
+    }
+    fn config(&self) -> &mut crate::ServerConfig {
+        // SAFETY: the context's live server.
+        unsafe { view::config(self.serv) }
+    }
+    fn tables(&self) -> &mut crate::records::ServerTables {
+        // SAFETY: the server's tables, which live as long as it.
+        unsafe { &mut *self.state().tables() }
+    }
+    fn workers(&self) -> ServerWorkers {
+        // SAFETY: the context's live server.
+        unsafe { view::workers(self.serv) }
+    }
+    /// `serv->get_all_worker_num()`.
+    fn all_worker_num(&self) -> u64 {
+        let workers = self.workers();
+        u64::from(workers.event_count) + u64::from(workers.task_count) + workers.user_count as u64
+    }
+    /// The context's worker.
+    fn worker(&self) -> &WorkerRecord {
+        // SAFETY: the ops reading it run with a live worker in the context.
+        unsafe { &*self.worker }
+    }
+    /// The thread factory's threads.
+    fn manager(&self) -> &ThreadManager {
+        // SAFETY: the ops reading it run with the context's live thread factory.
+        unsafe { factory::manager(self.factory) }
+    }
+    /// The server's `(Server *)` callback `index`, when set.
+    fn call_server(&self, index: u32) -> u64 {
+        if let Some(slot) = self.state().callbacks.slot(index) {
+            // SAFETY: the manager and reload callbacks take the server.
+            unsafe { slot.call_server(self.serv) };
+        }
+        0
+    }
+    /// Runs thread-mode `operation` with `arg` over this context.
+    fn run(mut self, operation: u32, arg: u64) {
+        let context = (&raw mut self).cast();
+        // SAFETY: the context's live server and factory.
+        let _ = unsafe { swr_v1_workers_run(operation, arg, context, swr_v1_thread_mode_call) };
+    }
+}
 
 /// Answers thread-mode op `op` with `arg` over the `WorkersNative<5>` at `context`.
 ///
@@ -62,74 +133,175 @@ pub unsafe extern "C-unwind" fn swr_v1_thread_mode_call(
 ) -> u64 {
     // SAFETY: per the caller.
     let ctx = unsafe { &mut *context.cast::<Context>() };
-    // SAFETY: per the caller.
-    let answer = unsafe { server(ctx, op, arg) };
-    // SAFETY: per the caller.
-    let answer = answer.or_else(|| unsafe { worker(ctx, op, arg) });
+    let answer = server(ctx, op, arg);
+    let answer = answer.or_else(|| worker(ctx, op, arg));
+    let answer = answer.or_else(|| threads(ctx, op, arg));
     answer.unwrap_or_else(|| std::process::abort())
 }
 
-/// The facts and effects on the server, its tables and its ports.
-///
-/// # Safety
-/// As [`swr_v1_thread_mode_call`].
-unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+/// A thread's body inside `worker_thread_start`: [`RUN_THREAD_MAIN`] over the context.
+extern "C" fn thread_main(main: *mut c_void) {
+    // SAFETY: `OP_WORKER_THREAD_START`'s live context, lent for the call.
+    let (ctx, arg) = unsafe { *main.cast::<(Context, u64)>() };
+    ctx.run(RUN_THREAD_MAIN, arg);
+}
+
+/// The facts and effects on the factory's threads and the thread's own state.
+fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
-    // SAFETY: the context's live server.
-    let config = unsafe { view::config(serv) };
-    let tables = || {
-        // SAFETY: as above.
-        let state = unsafe { view::state_ptr(serv) };
-        // SAFETY: its state, which lives as long as it.
-        let tables = unsafe { (*state).tables() };
-        // SAFETY: its tables, which live as long as it.
-        unsafe { &mut *tables }
-    };
-    let port = || {
-        // SAFETY: as above.
-        let ports = unsafe { ports(serv) };
-        usize::try_from(arg)
-            .ok()
-            .and_then(|i| ports.get(i).copied())
-    };
-    let call_server = |index| {
-        // SAFETY: as above.
-        let state = unsafe { view::state_ptr(serv) };
-        // SAFETY: its state, whose `(Server *)` slot `index` is.
-        if let Some(slot) = unsafe { &(*state).callbacks }.slot(index) {
-            // SAFETY: as above.
-            unsafe { slot.call_server(serv) };
+    let slot = arg & u64::from(u32::MAX);
+    Some(match op {
+        OP_THREAD_MANAGER => (&raw const *ctx.manager()).addr() as u64,
+        OP_THREAD_SUPPORTED => u64::from(SUPPORTED.load(Ordering::Relaxed)),
+        LOG_CALLOC_CONNECTIONS => {
+            let max = ctx.tables().max_connection as usize;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                reason = "upstream prints the size as an int"
+            )]
+            let size = (max * size_of::<ConnectionRecord>()) as c_int;
+            swoole_rs_corebase::log::sys_warning(
+                c"Server::create_thread_factory",
+                format_args!("calloc[2]({size}) failed"),
+            );
+            0
         }
-        0
+        OP_NEW_THREAD_FACTORY => {
+            let threads = usize::try_from(ctx.all_worker_num() + 1).ok()?;
+            factory::new_thread(serv, threads).addr() as u64
+        }
+        OP_JOIN_THREAD => {
+            // An uncaught `std::system_error` upstream: the process ends.
+            if ctx.manager().thread(arg).join().is_err() {
+                std::process::abort();
+            }
+            0
+        }
+        OP_SELECT_WORKER => {
+            ctx.worker = core::ptr::with_exposed_provenance_mut(usize::try_from(arg).ok()?);
+            0
+        }
+        OP_THREAD_EXIT_STATUS => {
+            let thread = ctx.manager().thread(ctx.worker().id().into());
+            i64::from(thread.exit_status()).cast_unsigned()
+        }
+        OP_CALL_WORKER_ERROR => {
+            let worker = ctx.worker();
+            let status = ctx.manager().thread(worker.id().into()).exit_status() << 8;
+            let status = ExitStatus::new(worker.pid(), status);
+            let status = (&raw const status).cast();
+            // SAFETY: the live server, its worker, and the status for the call.
+            unsafe { entry::call_worker_error_callback(serv, ctx.worker.cast(), status) };
+            0
+        }
+        OP_SPAWN_THREAD => {
+            let (serv, factory) = (serv.expose_provenance(), ctx.factory.expose_provenance());
+            let body = move || {
+                let ctx = Context {
+                    serv: core::ptr::with_exposed_provenance_mut(serv),
+                    factory: core::ptr::with_exposed_provenance_mut(factory),
+                    worker: null_mut(),
+                };
+                ctx.run(RUN_THREAD_BODY, arg);
+            };
+            // An uncaught `std::system_error` upstream: the process ends.
+            if ctx.manager().thread(slot).start(body).is_err() {
+                std::process::abort();
+            }
+            0
+        }
+        OP_THREAD_ENTER => {
+            swoole_rs_corebase::swoole_thread_init(false);
+            swoole_rs_corebase::set_thread(THREAD_WORKER, u16::try_from(arg).unwrap_or(u16::MAX));
+            swoole_rs_ossupport::swr_v1_os_thread_native_id().cast_unsigned()
+        }
+        OP_THREAD_EXIT => {
+            swoole_rs_corebase::swoole_thread_clean(false);
+            0
+        }
+        OP_CREATE_MESSAGE_BUS => {
+            // SAFETY: the started server's shared counters.
+            let counter = unsafe { view::counters(serv) }.pipe_packet_msg_id.as_ptr();
+            let bus = pool_native::new_bus(counter.cast());
+            // SAFETY: the new bus, used by this thread alone.
+            let handle = unsafe { Bus::of(bus) };
+            handle.set_always_chunked();
+            if !handle.alloc_buffer(ctx.config().ipc_max_size as usize) {
+                std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
+            }
+            // SAFETY: a started server and its new bus.
+            unsafe { server_methods::init_pipe_sockets(serv, bus) };
+            swoole_rs_corebase::set_thread_message_bus(bus);
+            0
+        }
+        OP_DESTROY_MESSAGE_BUS => {
+            let bus = swoole_rs_corebase::thread_message_bus();
+            // SAFETY: the bus `OP_CREATE_MESSAGE_BUS` made for this thread, freed once.
+            unsafe { pool_native::free_bus(bus) };
+            swoole_rs_corebase::set_thread_message_bus(null_mut());
+            0
+        }
+        OP_WORKER_THREAD_START => {
+            let thread = Arc::as_ptr(ctx.manager().thread(slot)).cast_mut().cast();
+            let mut main = (*ctx, arg);
+            // SAFETY: the slot's live thread, and `thread_main` over the context it lends.
+            unsafe { worker_thread_start(thread, thread_main, (&raw mut main).cast()) };
+            0
+        }
+        OP_REACTOR_THREAD_MAIN => {
+            let id = c_int::try_from(arg).ok()?;
+            // SAFETY: the live server, on its reactor thread `id`.
+            unsafe { crate::reactor_entry::reactor_thread_main_loop(serv, id) };
+            0
+        }
+        OP_SET_MASTER_THREAD_ID => {
+            let id = u16::try_from(ctx.all_worker_num() + 1).unwrap_or(u16::MAX);
+            swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
+            Reactor::thread().fields().id = id;
+            0
+        }
+        OP_START_MASTER_THREAD => {
+            let reactor = Reactor::thread().ptr();
+            // SAFETY: the live server and this thread's reactor.
+            sign(unsafe { server_methods::start_master_thread(serv, reactor) })
+        }
+        _ => return None,
+    })
+}
+
+/// The facts and effects on the server, its tables and its ports.
+fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+    let serv = ctx.serv;
+    let config = ctx.config();
+    let port = || {
+        // SAFETY: the context's live server.
+        let ports = unsafe { ports(serv) };
+        let port = usize::try_from(arg)
+            .ok()
+            .and_then(|i| ports.get(i).copied())?;
+        // SAFETY: one of the server's live ports.
+        Some((port, unsafe { view::port(port) }))
     };
     Some(match op {
         OP_NEW_REACTOR_THREADS => {
-            // SAFETY: as above.
-            let state = unsafe { view::state(serv) };
-            let threads = crate::factory_ops::new_reactor_threads(state, config.reactor_num);
-            tables().reactor_threads = threads;
+            let threads = crate::factory_ops::new_reactor_threads(ctx.state(), config.reactor_num);
+            ctx.tables().reactor_threads = threads;
             0
         }
         OP_DELETE_REACTOR_THREADS => {
-            let threads = tables().reactor_threads;
+            let threads = ctx.tables().reactor_threads;
             // SAFETY: the array `OP_NEW_REACTOR_THREADS` made, not used again.
             unsafe {
                 crate::reactor_ops::ThreadRecord::delete_array(threads, config.reactor_num.into());
             }
             0
         }
-        OP_MANAGER_THREAD_ID | OP_ALL_WORKER_NUM => {
-            // SAFETY: as above.
-            let workers = unsafe { view::workers(serv) };
-            u64::from(workers.event_count)
-                + u64::from(workers.task_count)
-                + workers.user_count as u64
-        }
+        OP_MANAGER_THREAD_ID | OP_ALL_WORKER_NUM => ctx.all_worker_num(),
         OP_ALL_CORE_WORKER_NUM => u64::from(config.worker_num) + u64::from(config.task_worker_num),
         OP_WORKER_NUM => u64::from(config.worker_num),
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
-        // SAFETY: as above.
-        OP_USER_WORKER_NUM => (unsafe { view::user_worker_num(serv) }) as u64,
+        OP_USER_WORKER_NUM => ctx.workers().user_count as u64,
         OP_RUNNING => u64::from(config.running),
         OP_IS_MANAGER => u64::from(swoole_get_worker_type() == SW_MANAGER),
         OP_THREAD_REACTOR_NUM => {
@@ -142,11 +314,11 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SINGLE_REACTOR_PIPE => {
-            tables().reactor_pipe_num = 1;
+            ctx.tables().reactor_pipe_num = 1;
             0
         }
         OP_CALLOC_CONNECTIONS => {
-            let tables = tables();
+            let tables = ctx.tables();
             let list = sw_calloc(
                 tables.max_connection as usize,
                 size_of::<ConnectionRecord>(),
@@ -156,7 +328,7 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_FREE_THREAD_CONNECTIONS => {
             // SAFETY: the list OP_CALLOC_CONNECTIONS allocated, or null.
-            unsafe { sw_free(tables().connection_list.cast()) };
+            unsafe { sw_free(ctx.tables().connection_list.cast()) };
             0
         }
         // SAFETY: the live server.
@@ -176,12 +348,8 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_CREATE_EVENT_WORKERS => u64::from(unsafe { create_event_workers(serv) }),
         // SAFETY: as above.
         OP_CREATE_USER_WORKERS => u64::from(unsafe { create_user_workers(serv) }),
-        OP_TASK_START_CHECK => {
-            // SAFETY: the live server.
-            let pool = unsafe { view::task_pool(serv) };
-            // SAFETY: its live task pool.
-            sign(unsafe { start_check(pool) })
-        }
+        // SAFETY: the server's live task pool.
+        OP_TASK_START_CHECK => sign(unsafe { start_check(ctx.workers().task_pool) }),
         OP_STORE_LISTEN_SOCKET => {
             // SAFETY: the live server.
             unsafe { server_methods::store_listen_socket(serv) };
@@ -189,37 +357,30 @@ unsafe fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         // SAFETY: as above.
         OP_PORT_COUNT => unsafe { ports(serv) }.len() as u64,
+        OP_PORT_DGRAM => u64::from(matches!(port()?.1.r#type, 2 | 4 | 6)),
         // SAFETY: one of the server's live ports.
-        OP_PORT_DGRAM => u64::from(matches!(unsafe { view::port(port()?) }.r#type, 2 | 4 | 6)),
-        // SAFETY: as above.
-        OP_PORT_LISTEN => sign(unsafe { port_listen(port()?) }),
+        OP_PORT_LISTEN => sign(unsafe { port_listen(port()?.0) }),
         OP_PORT_ADD => {
-            // SAFETY: as above.
-            let socket = unsafe { view::port(port()?) }.socket.cast::<SocketRecord>();
-            let reactor = swoole_rs_corebase::thread_reactor();
-            // SAFETY: this thread's live reactor and the port's live socket.
-            unsafe { reactor_upstream::reactor_change(reactor, socket, 0, SW_EVENT_READ) };
+            let socket = port()?.1.socket.cast::<SocketRecord>();
+            // SAFETY: the port's live socket.
+            Reactor::thread().add(unsafe { &mut *socket }, SW_EVENT_READ);
             0
         }
-        OP_ON_MANAGER_START => call_server(CB_MANAGER_START),
-        OP_ON_MANAGER_STOP => call_server(CB_MANAGER_STOP),
-        OP_ON_BEFORE_RELOAD => call_server(CB_BEFORE_RELOAD),
-        OP_ON_AFTER_RELOAD => call_server(CB_AFTER_RELOAD),
+        OP_ON_MANAGER_START => ctx.call_server(CB_MANAGER_START),
+        OP_ON_MANAGER_STOP => ctx.call_server(CB_MANAGER_STOP),
+        OP_ON_BEFORE_RELOAD => ctx.call_server(CB_BEFORE_RELOAD),
+        OP_ON_AFTER_RELOAD => ctx.call_server(CB_AFTER_RELOAD),
         OP_ABORT => std::process::abort(),
         _ => return None,
     })
 }
 
 /// The facts and effects on the context's worker and the thread manager.
-///
-/// # Safety
-/// As [`swr_v1_thread_mode_call`].
-unsafe fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
+fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
     let pool_hook = |hook: fn(&PoolRecord) -> *const c_void| {
+        let pool = ctx.workers().task_pool;
         // SAFETY: the live server's task pool.
-        let pool = unsafe { view::task_pool(serv) };
-        // SAFETY: as above.
         let hook = hook(unsafe { &*pool });
         // SAFETY: the pool's hook is null or a `(ProcessPool *, Worker *)` function.
         let hook = unsafe { core::mem::transmute::<*const c_void, Option<PoolHook>>(hook) };
@@ -230,10 +391,8 @@ unsafe fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         0
     };
     Some(match op {
-        // SAFETY: the context's live worker.
-        OP_WORKER_ID => u64::from(unsafe { swr_v1_worker_id(worker) }),
-        // SAFETY: as above.
-        OP_WORKER_TYPE => u64::from(unsafe { swr_v1_worker_type(worker) }),
+        OP_WORKER_ID => u64::from(ctx.worker().id()),
+        OP_WORKER_TYPE => u64::from(ctx.worker().kind()),
         OP_GET_WORKER => {
             let id = u16::try_from(arg).ok()?;
             // SAFETY: the live server.
@@ -252,11 +411,8 @@ unsafe fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ON_USER_WORKER_START => {
-            // SAFETY: the live server's state.
-            let state = unsafe { view::state_ptr(serv) };
-            // SAFETY: its `(Server *, Worker *)` slot.
-            if let Some(slot) = unsafe { &(*state).callbacks }.slot(CB_USER_WORKER_START) {
-                // SAFETY: as above, with the context's live worker.
+            if let Some(slot) = ctx.state().callbacks.slot(CB_USER_WORKER_START) {
+                // SAFETY: its `(Server *, Worker *)` slot, with the context's live worker.
                 unsafe { slot.call(serv, worker.cast()) };
             }
             0

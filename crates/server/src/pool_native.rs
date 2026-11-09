@@ -323,6 +323,13 @@ fn new_message_bus(pool: Pool) -> i64 {
     }
     // SAFETY: a fresh, aligned counter.
     unsafe { msg_id.write(1) };
+    record(pool).message_bus = new_bus(msg_id.cast());
+    1
+}
+
+/// `new MessageBus()` numbering its messages from `counter`, which outlives it;
+/// [`free_bus`] frees it.
+pub(crate) fn new_bus(counter: *mut c_void) -> *mut c_void {
     let bus = PoolBus {
         // SAFETY: no preconditions.
         bus: unsafe {
@@ -330,10 +337,9 @@ fn new_message_bus(pool: Pool) -> i64 {
         },
         allocator: &raw const STD_ALLOCATOR,
     };
-    // SAFETY: the new bus numbers its messages from the shared counter.
-    unsafe { swr_v1_bus_count_ids(bus.bus, msg_id.cast()) };
-    record(pool).message_bus = Box::into_raw(Box::new(bus)).cast();
-    1
+    // SAFETY: the new bus numbers its messages from the caller's counter.
+    unsafe { swr_v1_bus_count_ids(bus.bus, counter) };
+    Box::into_raw(Box::new(bus)).cast()
 }
 
 fn bus_buffer(pool: Pool, size: u64) -> i64 {
@@ -341,9 +347,17 @@ fn bus_buffer(pool: Pool, size: u64) -> i64 {
 }
 
 fn free_message_bus(pool: Pool) {
-    let bus = record(pool).message_bus.cast::<PoolBus>();
-    // SAFETY: `new_message_bus`'s box, freed once.
-    let bus = unsafe { Box::from_raw(bus) };
+    // SAFETY: `new_message_bus`'s bus, freed once.
+    unsafe { free_bus(record(pool).message_bus) };
+}
+
+/// `delete bus`.
+///
+/// # Safety
+/// `bus` is [`new_bus`]'s, not used again.
+pub(crate) unsafe fn free_bus(bus: *mut c_void) {
+    // SAFETY: as the caller guarantees.
+    let bus = unsafe { Box::from_raw(bus.cast::<PoolBus>()) };
     // SAFETY: the bus, not used again.
     unsafe { swr_v1_bus_free(bus.bus) };
 }

@@ -64,6 +64,12 @@ a lookup that outlives its deadline; the thread-pool lookup reports
 `SW_ERROR_CO_TIMEDOUT` (10018) on both engines, so the case isn't run there. The
 test and its assertions are unchanged.
 
+`core-tests/src/os/thread.cpp`'s `start_with_signals_blocked` is
+`crates/corebase/src/thread.rs`'s test of the same name. Its
+`start_failure_restores_signal_mask` makes the C++ callable's second copy throw;
+Rust's `Thread::start` moves the body once and never copies it, so the case has no
+counterpart.
+
 ## Known failures and gaps
 
 - Locales missing on the host are reported as unavailable, not passed.

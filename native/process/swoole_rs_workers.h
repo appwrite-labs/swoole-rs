@@ -32,28 +32,9 @@ uint64_t swr_v1_manager_call(void *context, uint32_t op, uint64_t arg);
 /* The task worker's ops over Rust-owned records, for the TaskWorkerContext (`WorkersNative<2>`)
  * at `context`: crates/server's task_worker_ops.rs. */
 uint64_t swr_v1_task_worker_call(void *context, uint32_t op, uint64_t arg);
-/* A thread-mode factory over `serv` and the thread manager `manager` (crates/server/src/factory.rs). */
-void *swr_v1_server_factory_new(void *serv, void *manager);
 /* Thread mode's ops over Rust-owned records, for the ThreadContext (`WorkersNative<5>`)
  * at `context`: crates/server's thread_mode_ops.rs. */
 uint64_t swr_v1_thread_mode_call(void *context, uint32_t op, uint64_t arg);
-/* A thread-mode worker thread's body, run(context): directly, or inside the PHP thread
- * crates/phpserver starts on `thread` (the ThreadFactory's swoole::Thread). */
-void swr_v1_workers_thread_start(void *thread, void (*run)(void *context), void *context);
-/* Thread mode's manager state (crates/process/src/workers/thread.rs), owned by
- * ThreadFactory: its wait queue, reload request and reload progress. */
-typedef struct {
-    void *(*create)(void);
-    void (*destroy)(void *);
-    int32_t (*join)(void *);
-} swr_v1_thread_ops;
-void *swr_v1_thread_manager_new(void);
-bool swr_v1_thread_manager_threads_init(const void *manager, size_t count, const swr_v1_thread_ops *ops);
-void *swr_v1_thread_manager_thread(const void *manager, size_t index);
-int32_t swr_v1_thread_manager_join_all(const void *manager);
-void swr_v1_thread_manager_free(void *manager);
-/* A worker thread exited: wake the manager thread to rejoin and respawn it. */
-void swr_v1_thread_manager_exited(const void *manager, void *worker);
 /* BEGIN NUMBERED */
 #define SWR_WORKERS_RUN_SIGNAL_INIT 0
 #define SWR_WORKERS_RUN_WORKER_SIGNAL 1
@@ -439,11 +420,9 @@ void swr_v1_thread_manager_exited(const void *manager, void *worker);
 #define SWR_WORKERS_OP_THREAD_MANAGER 369
 #define SWR_WORKERS_OP_JOIN_THREAD 370
 #define SWR_WORKERS_OP_MANAGER_THREAD_ID 371
-#define SWR_WORKERS_TRACE_MANAGER_EXITED 372
 #define SWR_WORKERS_OP_TERMINATE_MANAGER_THREAD 373
 #define SWR_WORKERS_OP_KILL_WORKER 374
 #define SWR_WORKERS_OP_TIMER_NEXT_MSEC 375
-#define SWR_WORKERS_TRACE_MANAGER_WAKE 376
 #define SWR_WORKERS_OP_SELECT_WORKER 377
 #define SWR_WORKERS_OP_THREAD_EXIT_STATUS 378
 #define SWR_WORKERS_OP_SET_NOT_SUPPORTED 383
@@ -472,7 +451,6 @@ void swr_v1_thread_manager_exited(const void *manager, void *worker);
 #define SWR_WORKERS_OP_SINGLE_REACTOR_PIPE 410
 #define SWR_WORKERS_OP_NEW_THREAD_FACTORY 411
 #define SWR_WORKERS_OP_FREE_THREAD_CONNECTIONS 412
-#define SWR_WORKERS_TRACE_NOTIFY_MANAGER_EXIT 413
 #define SWR_WORKERS_OP_SEND_FD 414
 #define SWR_WORKERS_OP_INFO_FD 415
 /* END NUMBERED */
