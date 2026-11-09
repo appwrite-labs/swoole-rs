@@ -409,22 +409,8 @@ fn profiling() -> bool {
 }
 
 /// `profiling_begin`: open a call of a user function.
-/// # Safety
-/// `frame` is the live frame of a user function.
-unsafe fn profiling_begin(frame: *mut zend_execute_data) {
-    // SAFETY: per the caller.
-    let func = unsafe { (*frame).func };
-    // SAFETY: a user function's common header.
-    let common = unsafe { &*func };
-    // SAFETY: as above.
-    let common = unsafe { &common.common };
-    let mut name = Vec::new();
-    if !common.scope.is_null() {
-        // SAFETY: a live class entry and its name.
-        name.extend_from_slice(c_bytes(unsafe { (*common.scope).name }));
-        name.extend_from_slice(b"::");
-    }
-    name.extend_from_slice(c_bytes(common.function_name));
+fn profiling_begin(func: Func<'_>) {
+    let name = func.name();
     let began_at = now_us();
     let cid = coroutine_id();
     PROFILE.with(|profile| {
@@ -628,24 +614,67 @@ struct Span {
     switch_count: usize,
 }
 
-/// `&execute_data->func->internal_function.reserved[SPAN_SLOT]`.
-/// # Safety
-/// `frame` is the live frame of an internal function.
-unsafe fn span_slot(frame: *mut zend_execute_data) -> *mut *mut c_void {
-    // SAFETY: per the caller.
-    let func = unsafe { (*frame).func };
-    // SAFETY: an internal function's header.
-    let internal = unsafe { &raw mut (*func).internal_function };
-    // SAFETY: as above.
-    unsafe { &raw mut (*internal).reserved[SPAN_SLOT] }
+/// The function a live frame calls, which Zend keeps alive for the call.
+#[derive(Clone, Copy)]
+struct Func<'a> {
+    common: &'a z::_zend_function__bindgen_ty_1,
+    /// `internal_function.reserved[SPAN_SLOT]` of an internal function, else null.
+    span: *mut *mut c_void,
 }
 
-/// `blocking_detection_begin`.
-/// # Safety
-/// As [`span_slot`].
-unsafe fn blocking_begin(frame: *mut zend_execute_data) {
+impl Func<'_> {
+    /// The function `frame` calls, unless it has none or no name.
+    /// # Safety
+    /// `frame` is a live frame, for the lifetime the result is used.
+    unsafe fn of(frame: *mut zend_execute_data) -> Option<Self> {
+        // SAFETY: per the caller.
+        let func = unsafe { (*frame).func };
+        if func.is_null() {
+            return None;
+        }
+        // `zend_function` is a union, so each member starts at its address.
+        let common = func.cast::<z::_zend_function__bindgen_ty_1>();
+        // SAFETY: a live function; every one starts with its common header.
+        let common = unsafe { &*common };
+        let span = if common.type_ == INTERNAL_FUNCTION {
+            let internal = func.cast::<z::zend_internal_function>();
+            // SAFETY: an internal function; only the address is taken.
+            unsafe { &raw mut (*internal).reserved[SPAN_SLOT] }
+        } else {
+            ptr::null_mut()
+        };
+        (!common.function_name.is_null()).then_some(Self { common, span })
+    }
+
+    fn internal(self) -> bool {
+        self.common.type_ == INTERNAL_FUNCTION
+    }
+
+    /// `Class::function`, or the bare function name.
+    fn name(self) -> Vec<u8> {
+        let mut name = Vec::new();
+        if !self.common.scope.is_null() {
+            // SAFETY: the function's live class entry.
+            name.extend_from_slice(c_bytes(unsafe { (*self.common.scope).name }));
+            name.extend_from_slice(b"::");
+        }
+        name.extend_from_slice(c_bytes(self.common.function_name));
+        name
+    }
+
+    fn profiles(self) -> bool {
+        profile() && profiling() && !self.internal()
+    }
+
+    fn detects_blocking(self) -> bool {
+        blocking_detection() && self.internal()
+    }
+}
+
+/// `blocking_detection_begin`, of an internal function.
+fn blocking_begin(func: Func<'_>) {
     let task = context::current_task();
-    if task.is_null() {
+    if task.is_null() || func.span.is_null() {
         return;
     }
     let began_at = now_us();
@@ -654,22 +683,19 @@ unsafe fn blocking_begin(frame: *mut zend_execute_data) {
         began_at,
         switch_count,
     }));
-    // SAFETY: per the caller.
-    let slot = unsafe { span_slot(frame) };
-    // SAFETY: as above.
-    unsafe { *slot = span.cast() };
+    // SAFETY: the internal function's reserved slot.
+    unsafe { *func.span = span.cast() };
 }
 
-/// `blocking_detection_end`: report the call when it ran longer than the
-/// threshold without switching coroutines.
-/// # Safety
-/// As [`span_slot`].
-unsafe fn blocking_end(frame: *mut zend_execute_data) {
+/// `blocking_detection_end`: report the internal function's call when it ran
+/// longer than the threshold without switching coroutines.
+fn blocking_end(func: Func<'_>) {
     let switches = context::watch_switches(false);
-    // SAFETY: per the caller.
-    let slot = unsafe { span_slot(frame) };
-    // SAFETY: as above.
-    let span = unsafe { mem::replace(&mut *slot, ptr::null_mut()) };
+    if func.span.is_null() {
+        return;
+    }
+    // SAFETY: the internal function's reserved slot.
+    let span = unsafe { mem::replace(&mut *func.span, ptr::null_mut()) };
     if span.is_null() {
         return;
     }
@@ -687,23 +713,12 @@ unsafe fn blocking_end(frame: *mut zend_execute_data) {
     let trace_text = unsafe { trace_to_string(&raw const trace) };
     // SAFETY: our backtrace.
     unsafe { z::zval_ptr_dtor(&raw mut trace) };
-    // SAFETY: per the caller.
-    let func = unsafe { (*frame).func };
-    // SAFETY: an internal function's header.
-    let common = unsafe { &*func };
-    // SAFETY: as above.
-    let common = unsafe { &common.common };
     let mut message = format!(
         " >>> [Detected blocking I/O in Coroutine#{}, internal function `",
         runtime::get_cid()
     )
     .into_bytes();
-    if !common.scope.is_null() {
-        // SAFETY: a live class entry and its name.
-        message.extend_from_slice(c_bytes(unsafe { (*common.scope).name }));
-        message.extend_from_slice(b"::");
-    }
-    message.extend_from_slice(c_bytes(common.function_name));
+    message.extend_from_slice(&func.name());
     message.extend_from_slice(b"()` blocked for ");
     message.extend_from_slice(c_bytes(duration));
     message.extend_from_slice(b" us]\n");
@@ -719,55 +734,29 @@ unsafe fn blocking_end(frame: *mut zend_execute_data) {
 
 // --- observer ---------------------------------------------------------------
 
-/// Whether the function is an internal one.
-/// # Safety
-/// `frame` is a live frame with a function.
-unsafe fn internal(frame: *mut zend_execute_data) -> bool {
-    // SAFETY: per the caller.
-    let func = unsafe { (*frame).func };
-    // SAFETY: as above.
-    let func = unsafe { &*func };
-    // SAFETY: every function starts with its type.
-    let kind = unsafe { func.type_ };
-    kind == INTERNAL_FUNCTION
-}
-
-/// # Safety
-/// `frame` is a live frame with a function.
-unsafe fn profiles(frame: *mut zend_execute_data) -> bool {
-    // SAFETY: per the caller.
-    profile() && profiling() && !unsafe { internal(frame) }
-}
-
-/// # Safety
-/// `frame` is a live frame with a function.
-unsafe fn detects_blocking(frame: *mut zend_execute_data) -> bool {
-    // SAFETY: per the caller.
-    blocking_detection() && unsafe { internal(frame) }
-}
-
 unsafe extern "C" fn observer_begin(frame: *mut zend_execute_data) {
     // SAFETY: Zend observes a live frame.
-    if unsafe { profiles(frame) } {
-        // SAFETY: a user function's frame.
-        unsafe { profiling_begin(frame) };
+    let Some(func) = (unsafe { Func::of(frame) }) else {
+        return;
+    };
+    if func.profiles() {
+        profiling_begin(func);
     }
-    // SAFETY: as above.
-    if unsafe { detects_blocking(frame) } {
-        // SAFETY: an internal function's frame.
-        unsafe { blocking_begin(frame) };
+    if func.detects_blocking() {
+        blocking_begin(func);
     }
 }
 
 unsafe extern "C" fn observer_end(frame: *mut zend_execute_data, _: *mut zval) {
     // SAFETY: Zend observes a live frame.
-    if unsafe { profiles(frame) } {
+    let Some(func) = (unsafe { Func::of(frame) }) else {
+        return;
+    };
+    if func.profiles() {
         profiling_end();
     }
-    // SAFETY: as above.
-    if unsafe { detects_blocking(frame) } {
-        // SAFETY: an internal function's frame.
-        unsafe { blocking_end(frame) };
+    if func.detects_blocking() {
+        blocking_end(func);
     }
 }
 
@@ -775,29 +764,16 @@ unsafe extern "C" fn observer_end(frame: *mut zend_execute_data, _: *mut zval) {
 /// profiling covers it (a user function) or blocking detection does (an
 /// internal one).
 unsafe extern "C" fn observer(frame: *mut zend_execute_data) -> zend_observer_fcall_handlers {
-    let none = zend_observer_fcall_handlers {
-        begin: None,
-        end: None,
-    };
     // SAFETY: Zend passes a live frame.
-    let func = unsafe { (*frame).func };
-    // SAFETY: a function's common header, when there is one.
-    if func.is_null() {
-        return none;
-    }
-    // SAFETY: a live function.
-    let func = unsafe { &*func };
-    // SAFETY: every function starts with its common header.
-    if unsafe { func.common.function_name }.is_null() {
-        return none;
-    }
-    // SAFETY: a live frame with a function.
-    if !unsafe { profiles(frame) } && !unsafe { detects_blocking(frame) } {
-        return none;
-    }
-    zend_observer_fcall_handlers {
-        begin: Some(observer_begin),
-        end: Some(observer_end),
+    match unsafe { Func::of(frame) } {
+        Some(func) if func.profiles() || func.detects_blocking() => zend_observer_fcall_handlers {
+            begin: Some(observer_begin),
+            end: Some(observer_end),
+        },
+        _ => zend_observer_fcall_handlers {
+            begin: None,
+            end: None,
+        },
     }
 }
 

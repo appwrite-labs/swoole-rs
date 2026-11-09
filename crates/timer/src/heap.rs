@@ -6,9 +6,11 @@ struct Slot {
     view: TimerView,
     position: usize,
 }
+/// `rank` is `(deadline, id)`: ids only grow, so equal deadlines fire in
+/// insertion order.
 #[derive(Clone, Copy)]
 struct Key {
-    deadline: i64,
+    rank: (i64, i64),
     slot: usize,
 }
 #[derive(Default)]
@@ -69,7 +71,7 @@ impl Heap {
         let index = self.order.len();
         self.order.push(Key {
             slot,
-            deadline: view.deadline,
+            rank: (view.deadline, view.id),
         });
         self.sift_up(index);
         slot
@@ -86,11 +88,14 @@ impl Heap {
         let index = self.sift_up(index);
         self.sift_down(index);
     }
-    // The ordering key at `index`, with the deadline read from its slot's view.
+    // The ordering key at `index`, with the rank read from its slot's view.
     fn key(&self, index: usize) -> Option<Key> {
         let slot = self.slot(index)?;
-        let deadline = self.slots.get(slot)?.view.deadline;
-        Some(Key { deadline, slot })
+        let view = self.slots.get(slot)?.view;
+        Some(Key {
+            rank: (view.deadline, view.id),
+            slot,
+        })
     }
     fn place(&mut self, index: usize, slot: usize) {
         if let Some(key) = self.order.get_mut(index)
@@ -98,7 +103,7 @@ impl Heap {
         {
             *key = Key {
                 slot,
-                deadline: entry.view.deadline,
+                rank: (entry.view.deadline, entry.view.id),
             };
             entry.position = index;
         }
@@ -109,7 +114,7 @@ impl Heap {
         };
         while let Some(parent) = index.checked_sub(1).map(|i| i / 2)
             && let Some(&above) = self.order.get(parent)
-            && key.deadline < above.deadline
+            && key.rank < above.rank
         {
             self.place(index, above.slot);
             index = parent;
@@ -125,10 +130,10 @@ impl Heap {
             && let Some(&below_left) = self.order.get(left)
         {
             let (child, below) = match self.order.get(left + 1) {
-                Some(&right) if right.deadline < below_left.deadline => (left + 1, right),
+                Some(&right) if right.rank < below_left.rank => (left + 1, right),
                 _ => (left, below_left),
             };
-            if key.deadline <= below.deadline {
+            if key.rank < below.rank {
                 break;
             }
             self.place(index, below.slot);
