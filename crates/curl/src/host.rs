@@ -23,7 +23,7 @@ const CO_OUT_OF_COROUTINE: c_int = 10001;
 const CO_HAS_BEEN_BOUND: c_int = 10002;
 
 // SAFETY: native/timer/timer.cc's,
-// crates/coroutine's, crates/timer's and crates/tls's upstream functions.
+// crates/coroutine's and crates/timer's upstream functions.
 unsafe extern "C-unwind" {
     fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
     fn swr_v1_timer_add_plain(
@@ -38,8 +38,6 @@ unsafe extern "C-unwind" {
     fn swoole_timer_is_available() -> bool;
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free_record(socket: *mut SocketRecord);
 }
 
 fn scheduler() -> *mut Scheduler {
@@ -145,7 +143,7 @@ impl ReactorSocket {
         // SAFETY: as above.
         unsafe { (*self.record()).fd = -1 };
         // SAFETY: per the caller; with fd -1 it closes nothing.
-        unsafe { socket_free_record(self.record()) };
+        unsafe { swoole_rs_tls::upstream::socket_free(self.record()) };
     }
 }
 
