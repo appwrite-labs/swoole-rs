@@ -12,10 +12,9 @@ use swoole_rs_phpstubs::http_request;
 use swoole_rs_zend::{
     Call, Class, declare_long, declare_property_null, handlers, init_object, string,
     sys::{
-        IS_STRING, ZEND_ACC_PUBLIC, swr_zend_hash_foreach_kv, swr_zend_string_release,
-        swr_zval_is_true, zend_class_entry, zend_object, zend_string, zend_ulong, zval,
+        ZEND_ACC_PUBLIC, swr_zend_hash_foreach_kv, swr_zend_string_release, swr_zval_is_true,
+        zend_class_entry, zend_object, zend_string, zend_ulong, zval,
     },
-    type_of,
     value::{self, get_long, get_string, obj_of},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -122,12 +121,9 @@ fn get_data(call: &Call) {
         host::fatal("unable to get data from HTTP2 request");
         return call.set_bool(false);
     }
-    // SAFETY: a live context; only the field's address is taken.
-    let data = unsafe { &raw mut (*ctx.cast::<State>()).request.zdata };
-    // SAFETY: the context's request data is a live zval.
-    if unsafe { type_of(data) } == IS_STRING {
-        // SAFETY: as above.
-        return unsafe { call.set_copy(data) };
+    let data = &send::state(ctx).request.zdata;
+    if data.str().is_some() {
+        return call.set_owned(data.copy());
     }
     call.set_empty_string();
 }

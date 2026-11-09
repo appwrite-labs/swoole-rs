@@ -1,9 +1,0 @@
-diff --git a/src/server/master.cc b/src/server/master.cc
-index 9c7ad80..906421e 100644
---- a/src/server/master.cc
-+++ b/src/server/master.cc
-@@ -1789,3 +1789,3 @@ uint64_t Server::rust_call(void *context, uint32_t op, uint64_t arg) {
-     case SWR_SERVER_OP_WORKER_IDLE:
--        return serv->workers[arg].is_idle();
-+        return (arg < serv->worker_num ? &serv->workers[arg] : serv->get_worker((uint16_t) arg))->is_idle();
-     case SWR_SERVER_OP_TASKING:
