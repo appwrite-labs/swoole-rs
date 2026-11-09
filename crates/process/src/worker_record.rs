@@ -79,6 +79,11 @@ impl WorkerRecord {
         self.status = status;
     }
 
+    /// `worker->ptr = data`: what its owner keeps there.
+    pub fn set_user_data(&mut self, data: *mut c_void) {
+        self.ptr = data;
+    }
+
     /// `worker->request_count++`, with the native unsigned wrapping.
     pub fn add_request_count(&mut self) {
         self.request_count = self.request_count.wrapping_add(1);

@@ -87,8 +87,10 @@ calls PHP code directly where it could bail out:
 
 - `zend::bailout::call(fci, fcc)` runs `zend_call_function` inside a
   `zend_try` that lives in the C shim, and returns `Err(Bailout)` if it bailed.
-- `zend::bailout::trap(body, arg)` does the same for a C or C++ `body` (for
-  example Swoole's coroutine-aware `zend::function::call`, lent by C++).
+- `zend::bailout::trap(body, arg)` does the same for any `body`: C or C++, or
+  a Rust `unsafe extern "C" fn` whose frame owns nothing that needs a drop, so
+  the bailout's jump to the shim's `setjmp` skips no destructor (crates/phpserver
+  runs `Server::start` and `addProcess`'s worker this way).
 - `Bailout` is `#[must_use]`: finish the Rust work (release what you hold),
   return it to the C/C++ caller as a flag, and let that caller call
   `zend_bailout()` once the Rust frames are gone. Callbacks driven by a C++
@@ -120,7 +122,10 @@ reactor or timer callback), bails out. So every error Rust raises goes through
   `zend::value::get_long`/`get_double`/`get_string` (`zval_get_*`: an object or
   array warns, `__toString` runs PHP).
 
-Each returns (or, for the converters, defers) a `Bailout`. The usual owner is
+Each returns (or, for the converters, defers) a `Bailout`. The one exception
+is an `E_ERROR` its caller relies on not returning (crates/phpserver's
+"Invalid instance of"): it calls `php_error_docref` directly, from frames that
+own nothing. The usual owner is
 `bailout::defer`: the bailout waits in a thread-local, nothing more is
 reported, and the handler's last step, `bailout::finish()`, raises it
 (`zend::handlers!` does this; so must every export C/C++ calls that can raise

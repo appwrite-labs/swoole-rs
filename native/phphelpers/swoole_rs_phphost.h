@@ -83,10 +83,9 @@ enum php_swoole_hook_type {
     PHP_SWOOLE_HOOK_BEFORE_REQUEST,
     PHP_SWOOLE_HOOK_AFTER_RESPONSE,
 };
+static_assert(PHP_SWOOLE_HOOK_AFTER_RESPONSE == 27 && SW_MAX_FIND_COUNT == 100,
+              "crates/phphttp/src/response.rs and crates/phpserver mirror these");
 
-extern zend_class_entry *swoole_server_ce;
-extern zend_object_handlers swoole_server_handlers;
-extern zend_class_entry *swoole_server_port_ce;
 extern zend_class_entry *swoole_exception_ce;
 extern zend_object_handlers swoole_exception_handlers;
 extern zend_class_entry *swoole_error_ce;
@@ -94,7 +93,6 @@ extern zend_class_entry *swoole_error_ce;
 // Module hooks Rust's MINIT/RINIT/MSHUTDOWN sequence calls, defined in C++ here.
 void php_swoole_event_minit(int module_number);
 void php_swoole_runtime_minit(int module_number);
-void php_swoole_server_minit(int module_number);
 void php_swoole_runtime_mshutdown();
 // The optional drivers' hooks, which native/phphelpers/module.cc calls.
 #ifdef SW_USE_PGSQL

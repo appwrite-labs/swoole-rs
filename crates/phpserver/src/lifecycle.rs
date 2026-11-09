@@ -2,8 +2,7 @@
 //! `ServerProperty` held (the Port objects, user processes, server callbacks and
 //! command callables), the object's creation and release, `__construct`,
 //! `start()` with `register_callback` and `on_before_start`, `addProcess`,
-//! `addCommand` and `command`. C++ keeps the `zend_try` frames around `start()`
-//! and `addProcess`'s worker (`native/process/swoole_rs_phpserver_lifecycle.h`).
+//! `addCommand` and `command`.
 use crate::server::{SERVER, ServerData, fatal, running, server};
 use std::{
     cell::RefCell,
@@ -11,8 +10,9 @@ use std::{
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
     rc::Rc,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::Ordering,
 };
+use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::{
     CommandFn, CommandReply as Reply, server_methods, swr_v1_server_add_command,
     swr_v1_server_command, view,
@@ -137,20 +137,15 @@ impl PortInfo {
     }
 }
 
-/// `swr_v1_phpserver_lifecycle_host`.
-#[repr(C)]
-pub struct LifecycleHost {
-    start: unsafe extern "C" fn(*mut c_void, *mut *const c_char) -> c_int,
-    add_process: unsafe extern "C" fn(*mut c_void, *mut zval) -> i64,
-}
-
 unsafe extern "C" {
     /// crates/server's `new Server(mode)`, `delete serv` and the admin commands.
     fn swr_v1_server_new(mode: c_int) -> *mut c_void;
     fn swr_v1_server_delete(serv: *mut c_void);
     fn swr_v1_server_admin_register(serv: *mut c_void, php_memory: extern "C" fn() -> usize);
-    /// `Swoole\Process` (crates/phpprocess).
+    /// `Swoole\Process` (crates/phpprocess), and its object's `Worker`; an
+    /// `E_ERROR` for an unconstructed one.
     static swoole_process_ce: *mut zend_class_entry;
+    fn swr_v1_phpprocess_worker(object: *const zval, check: bool) -> *mut c_void;
     /// `Swoole\Http\Server` and `Swoole\WebSocket\Server` (crates/phphttp).
     static swoole_http_server_ce: *mut zend_class_entry;
     static swoole_websocket_server_ce: *mut zend_class_entry;
@@ -195,19 +190,68 @@ unsafe fn kind(object: *mut zend_object) -> c_int {
     }
 }
 
-static HOST: AtomicPtr<LifecycleHost> = AtomicPtr::new(ptr::null_mut());
-
-fn host() -> &'static LifecycleHost {
-    // SAFETY: MINIT installs C++'s static table before any object exists.
-    unsafe { &*HOST.load(Ordering::Acquire) }
+/// `serv->start()` inside `zend_try`: the server runs PHP's callbacks, and one
+/// may bail out. The trap's `setjmp` sits in C just below `body`, whose frame
+/// owns nothing, so a bailout skips no destructor.
+fn start_server(serv: *mut c_void) -> Result<c_int, bailout::Bailout> {
+    struct Start(*mut c_void, c_int);
+    unsafe extern "C" fn body(start: *mut c_void) {
+        // SAFETY: `start_server`'s record, live across the trap.
+        let start = unsafe { &mut *start.cast::<Start>() };
+        // SAFETY: a live server.
+        start.1 = unsafe { server_methods::start(start.0) };
+    }
+    let mut start = Start(serv, 0);
+    // SAFETY: as above.
+    unsafe { bailout::trap(body, (&raw mut start).cast()) }?;
+    Ok(start.1)
 }
 
-/// MINIT: the table the lifecycle calls.
-/// # Safety
-/// `table` lives for the process.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_lifecycle_init(table: *const LifecycleHost) {
-    HOST.store(table.cast_mut(), Ordering::Release);
+/// `addProcess`'s worker: -3 bailed out, -2 a thread that is not a user
+/// worker, -1 `add_worker` failed, else the id.
+fn add_worker(serv: *mut c_void, process: *mut zval) -> i64 {
+    /// `SW_USER_WORKER`.
+    const USER_WORKER: c_int = 5;
+    struct Add(*mut c_void, *mut zval, i64);
+    unsafe extern "C" fn body(add: *mut c_void) {
+        // SAFETY: `add_worker`'s record, live across the trap. A bailout
+        // (an unconstructed process) jumps past this frame, which owns nothing.
+        let add = unsafe { &mut *add.cast::<Add>() };
+        // SAFETY: a live process object.
+        let worker = unsafe { swr_v1_phpprocess_worker(add.1, true) }.cast::<WorkerRecord>();
+        // SAFETY: a live server that has not started, and the process's worker.
+        let id = unsafe { swoole_rs_server::worker_methods::add_worker(add.0, worker) };
+        add.2 = if id >= 0 {
+            // SAFETY: the process's live worker.
+            unsafe { &mut *worker }.set_user_data(add.1.cast());
+            id.into()
+        } else {
+            -1
+        };
+    }
+    if fact(serv, fact::WORKER_THREAD) {
+        if crate::server::worker_type() != USER_WORKER {
+            return -2;
+        }
+        let id = swoole_rs_process::methods::swoole_get_worker_id();
+        #[expect(clippy::cast_possible_truncation, reason = "get_worker(uint16_t)")]
+        // SAFETY: a live server and this thread's worker.
+        let worker = unsafe { view::worker(serv, id as u16) };
+        // SAFETY: the server's live record of this worker.
+        let worker = unsafe { &mut *worker };
+        worker.redirect_stdin = false;
+        worker.redirect_stdout = false;
+        worker.redirect_stderr = false;
+        return i64::from(id)
+            - number(serv, fact::WORKER_NUM)
+            - number(serv, fact::TASK_WORKER_NUM);
+    }
+    let mut add = Add(serv, process, -3);
+    // SAFETY: as above.
+    match unsafe { bailout::trap(body, (&raw mut add).cast()) } {
+        Ok(()) => add.2,
+        Err(_) => -3,
+    }
 }
 
 /// `send_yield`'s coroutines waiting on one session, each with its token.
@@ -685,7 +729,6 @@ fn construct(call: &Call) {
 
 fn add_process(call: &Call) {
     let serv = server(call);
-    let host = host();
     if !fact(serv, fact::WORKER_THREAD) && fact(serv, fact::STARTED) {
         fatal(E_WARNING, c"server is running, cannot add process");
         return call.set_bool(false);
@@ -712,9 +755,7 @@ fn add_process(call: &Call) {
     unsafe { swr_zval_copy(copy, process) };
     // SAFETY: `$this` is a Server.
     unsafe { property(call.this()) }.user_processes.push(copy);
-    // SAFETY: a live server and the process.
-    let worker_id = unsafe { (host.add_process)(serv, copy) };
-    match worker_id {
+    match add_worker(serv, copy) {
         -3 => bailout::defer(Err(bailout::Bailout)),
         -2 => {
             set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);
@@ -1232,7 +1273,6 @@ fn before_start(object: *mut zend_object, serv: *mut c_void) -> Result<(), Stop>
 fn start(call: &Call) {
     let serv = server(call);
     let object = call.this();
-    let host = host();
     match crate::thread::worker(object, serv) {
         Some(Ok(())) => return call.set_bool(true),
         Some(Err(bailout)) => return bailout.defer(),
@@ -1259,11 +1299,10 @@ fn start(call: &Call) {
     if before_start(object, serv).is_err() {
         return;
     }
-    let mut error = ptr::null();
-    // SAFETY: a live server and a writable out-parameter.
-    match unsafe { (host.start)(serv, &raw mut error) } {
-        1 => return bailout::defer(Err(bailout::Bailout)),
-        -1 => {
+    match start_server(serv) {
+        Err(bailout) => return bailout.defer(),
+        Ok(..0) => {
+            let error = server_methods::get_startup_error_message(serv);
             // SAFETY: the startup error message, NUL-terminated.
             let reason = unsafe { CStr::from_ptr(error) };
             let mut text = Message::new();

@@ -1,6 +1,5 @@
-//! `Swoole\Server\Port`: registration, objects and every method. C++ keeps the
-//! `ListenPort` and Server these configure and reaches them for Rust through
-//! the host table (`native/ports/swoole_rs_phpserver.h`).
+//! `Swoole\Server\Port`: registration, objects and every method over the
+//! `ListenPort` and Server these configure.
 use crate::{
     port_settings,
     settings::{Settings, Stop},
@@ -9,7 +8,6 @@ use std::{
     ffi::{c_char, c_int, c_void},
     mem::MaybeUninit,
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_phpstubs::server_port;
 use swoole_rs_ports::{
@@ -67,19 +65,31 @@ const PROPERTY_END: u32 = 0;
 const PROPERTY_LONG: u32 = 2;
 const PROPERTY_BOOL: u32 = 3;
 
-/// `swr_v1_phpserver_port_host`: what the methods ask of C++.
-#[repr(C)]
-pub struct PortHost {
-    invalid: unsafe extern "C" fn(*mut zend_object),
-    pub(crate) socket: unsafe extern "C" fn(*mut c_void, *mut zval),
-}
-
-static HOST: AtomicPtr<PortHost> = AtomicPtr::new(ptr::null_mut());
 pub(crate) static PORT: Class = Class::new();
 
-pub(crate) fn host() -> &'static PortHost {
-    // SAFETY: MINIT stores C++'s static table before any object or method exists.
-    unsafe { &*HOST.load(Ordering::Acquire) }
+unsafe extern "C" {
+    /// native/phphelpers' ext/sockets `Socket` over `fd`, which it takes.
+    fn swr_cpp_phpthread_php_socket_create(out: *mut zval, fd: c_int) -> bool;
+}
+
+/// `getSocket()` of a bound port: a `Socket` over a duplicate of its
+/// descriptor, kept alive by an extra reference as upstream's
+/// `php_swoole_convert_to_socket`; false if `dup` fails. Registered only when
+/// Swoole was built with ext/sockets. `port` is a live `ListenPort`.
+pub(crate) fn socket(port: *mut c_void, call: &Call) {
+    // SAFETY: a live port, as above.
+    let fd = unsafe { swoole_rs_server::view::port_fd(port) };
+    // SAFETY: a descriptor the port owns.
+    let fd = unsafe { libc::dup(fd) };
+    if fd < 0 {
+        return call.set_bool(false);
+    }
+    // SAFETY: this call's return slot, which takes `fd` whatever the result.
+    unsafe { swr_cpp_phpthread_php_socket_create(call.return_value(), fd) };
+    // SAFETY: an emalloc'd slot for the reference upstream leaks.
+    let keep = unsafe { z::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
+    // SAFETY: a writable slot and the Socket just made.
+    unsafe { swr_zval_copy(keep, call.return_value()) };
 }
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
@@ -152,8 +162,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_port_port(object: *mut zend_object) ->
     // SAFETY: one of ours, per the contract.
     let port = unsafe { Port::data(object) }.port;
     if port.is_null() {
-        // SAFETY: as above.
-        unsafe { (host().invalid)(object) };
+        crate::server::invalid(object);
     }
     port
 }
@@ -215,17 +224,9 @@ method_table! {
     ];
 }
 
-/// MINIT: register the class as `php_swoole_server_port_minit` did.
-/// # Safety
-/// Called once, at MINIT, with a host table that lives for the process;
-/// `sockets` is `SWOOLE_SOCKETS_SUPPORT`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_port_minit(
-    table: *const PortHost,
-    not_serializable: bool,
-    sockets: bool,
-) -> *mut zend_class_entry {
-    HOST.store(table.cast_mut(), Ordering::Release);
+/// MINIT: register the class as `php_swoole_server_port_minit` did; `sockets`
+/// is `SWOOLE_SOCKETS_SUPPORT`.
+pub(crate) fn minit(not_serializable: bool, sockets: bool) {
     let methods = if sockets {
         METHODS.as_ptr()
     } else {
@@ -267,7 +268,6 @@ pub unsafe extern "C" fn swr_v1_phpserver_port_minit(
             _ => unsafe { zend_declare_property_null(ce, name, length, access) },
         }
     }
-    ce
 }
 
 fn data<'a>(call: &Call) -> &'a mut PortData {
@@ -278,8 +278,8 @@ fn data<'a>(call: &Call) -> &'a mut PortData {
 /// `php_swoole_server_port_get_and_check_*`: an `E_ERROR`, which does not
 /// return, when the port is not bound to a server. The caller owns nothing.
 fn invalid(call: &Call) {
-    // SAFETY: `$this` of this call; the frames above own nothing to drop.
-    unsafe { (host().invalid)(call.this()) };
+    // `$this` of this call; the frames above own nothing to drop.
+    crate::server::invalid(call.this());
 }
 
 fn construct(call: &Call) {
@@ -378,8 +378,7 @@ fn get_socket(call: &Call) {
     if port.is_null() {
         invalid(call);
     }
-    // SAFETY: a bound port and this call's return slot.
-    unsafe { (host().socket)(port, call.return_value()) };
+    socket(port, call);
 }
 
 /// `zsetting = sw_zend_read_and_convert_property_array(scope, object, "setting")`,

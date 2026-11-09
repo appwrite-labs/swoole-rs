@@ -3,8 +3,10 @@
 // swoole_runtime.cc (Swoole contributors).
 // What crates/phpswoole and crates/phpruntime need of C++ that stable Rust can't express:
 // the module globals and get_module(), and the ops tables whose entries reach C++ objects (the
-// module globals, the DNS settings), the bundled C clients (ssh2, ftp), stdext's handler table,
-// or the library versions. The build's switches are native/corebase/switches.cc's; Rust reads them.
+// module globals, swoole_server.h's layout check), the bundled C clients (ssh2, ftp) whose
+// symbols exist only when configure builds them, stdext's handler table, or the library
+// versions. No zend_try frame is left here: Rust traps the C++ bodies (bailout::trap). The
+// build's switches are native/corebase/switches.cc's; Rust reads them.
 #include "swoole_rs_phphost.h"
 #include "swoole_rs_phphelpers.h"
 #include "swoole_rs_phpruntime.h"
@@ -189,6 +191,7 @@ static const zif_handler *swoole_ftp_handlers = nullptr;
 static const swr_v1_phpswoole_ops phpswoole_ops = {
     [] { return (void *) ZEND_MODULE_GLOBALS_BULK(swoole); },
     [] {
+        swoole::detail::check_server_layouts();
         swoole_init();
         swoole_add_hook(SW_GLOBAL_HOOK_AFTER_FORK, swr_zend_after_fork, 0);
         swr_v1_core_bug_report_append("PHP_VERSION : " PHP_VERSION "\n");
@@ -217,6 +220,14 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
         php_swoole_ssh2_mshutdown();
 #endif
     },
+    [](void *module) {
+#ifdef SW_HAVE_SSH2LIB
+        php_swoole_ssh2_minfo();
+#endif
+#ifdef SW_HAVE_FTP
+        PHP_MINFO(ftp)(static_cast<zend_module_entry *>(module));
+#endif
+    },
     [] { swr_v1_phphelpers_known_free(&sw_zend_known_strings); },
     [](const char *dir) { swoole_set_task_tmpdir(dir); },
     [](void *) { php_swoole_load_library(); },
@@ -226,13 +237,10 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
     [](zval *value, const char *str, size_t length, int64_t options, int64_t depth) {
         zend::json_decode(value, str, length, options, depth);
     },
-    [](const char *server, size_t length) { swr_v1_clients_set_dns_server(reinterpret_cast<const uint8_t *>(server), length); },
     [](double seconds) { SwooleG.dns_cache_refresh_time = seconds; },
     [] { return SwooleG.dns_cache_refresh_time; },
-    [] { return (uint8_t) (sw_reactor() != nullptr); },
     [] { Coroutine::get_current_safe(); },
     [] { php_swoole_check_reactor(); },
-    swr_v1_hook_dns_lookup,
     [](int type, int module_number) -> int {
         const uint32_t rust_abi = swr_v1_abi_version();
         if (rust_abi != SWR_ABI_VERSION) {
@@ -300,23 +308,6 @@ extern "C" ZEND_DLEXPORT zend_module_entry *get_module() {
     return swr_cpp_phpswoole_module();
 }
 #endif
-
-extern "C" uint8_t swr_cpp_phpswoole_info_ssh2() {
-    uint8_t bailed = 0;
-#ifdef SW_HAVE_SSH2LIB
-    zend_try { php_swoole_ssh2_minfo(); } zend_catch { bailed = 1; } zend_end_try();
-#endif
-    return bailed;
-}
-
-extern "C" uint8_t swr_cpp_phpswoole_info_ftp(void *module) {
-    uint8_t bailed = 0;
-#ifdef SW_HAVE_FTP
-    zend_try { PHP_MINFO(ftp)(static_cast<zend_module_entry *>(module)); }
-    zend_catch { bailed = 1; } zend_end_try();
-#endif
-    return bailed;
-}
 
 // Swoole\Runtime is Rust (crates/phpruntime); this is what C++ alone reaches for it.
 // PHP's plain-files wrapper and its originals are thirdparty/php/streams/plain_wrapper.c's.

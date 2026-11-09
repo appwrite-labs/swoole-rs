@@ -1,7 +1,7 @@
 //! `swoole_async_coro.cc`: `swoole_async_set()`, the AIO options it shares with
 //! `Server::set()` and `Process\Pool::set()`, and `swoole_async_dns_lookup_coro()`
-//! with its per-thread cache. Core settings go directly to corebase's record;
-//! C++ lends the DNS cache refresh setting and coroutine lookup.
+//! with its per-thread cache. Core settings go directly to corebase's record and
+//! the lookup to crates/hooks; C++ lends the DNS cache refresh setting.
 use crate::{
     constants::IOURING,
     module::PHP_FATAL_ERROR,
@@ -32,6 +32,18 @@ use swoole_rs_zend::{
 /// `SW_ERROR_OPERATION_NOT_SUPPORT` and `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
 const OPERATION_NOT_SUPPORT: i32 = 507;
 const DNSLOOKUP_RESOLVE_FAILED: i32 = 711;
+
+unsafe extern "C" {
+    /// crates/hooks' `swoole::coroutine::dns_lookup(domain, family, timeout)`,
+    /// each address pushed onto `list` in order. The coroutine yields.
+    fn swr_v1_hook_dns_lookup(
+        domain: *const c_char,
+        family: i32,
+        timeout: f64,
+        push: extern "C" fn(list: *mut c_void, address: *const c_char),
+        list: *mut c_void,
+    );
+}
 
 handlers! {
     zif_swoole_async_set => async_set;
@@ -128,8 +140,7 @@ fn async_set(call: &Call) {
         call.set_bool(true);
         return;
     }
-    // SAFETY: C++'s getters and setters, here and below.
-    if unsafe { (ops.reactor_created)() } != 0 {
+    if !swoole_rs_corebase::thread_reactor().is_null() {
         // E_ERROR bails out: upstream goes no further.
         fatal_error(
             E_ERROR,
@@ -152,7 +163,7 @@ fn async_set(call: &Call) {
         swr_v1_core_set_wait_signal(truthy(value));
     }
     if let Some(value) = get(options, c"dns_cache_refresh_time") {
-        // SAFETY: as above.
+        // SAFETY: C++'s setter.
         unsafe { (ops.set_dns_cache_refresh_time)(double(value)) };
     }
     if let Some(value) = get(options, c"thread_num").or_else(|| get(options, c"min_thread_num")) {
@@ -236,7 +247,7 @@ fn dns_lookup(call: &Call) {
     // SAFETY: the domain as a C string (it ends at a NUL, as upstream passes
     // it), and a vector `push` fills during the call; the coroutine may yield.
     unsafe {
-        (ops.dns_lookup)(
+        swr_v1_hook_dns_lookup(
             name.as_ptr().cast(),
             family,
             timeout,
@@ -256,7 +267,7 @@ fn dns_lookup(call: &Call) {
     };
     let address = answers.swap_remove(pick);
     call.set_bytes(&address);
-    // SAFETY: as above.
+    // SAFETY: C++'s getter.
     let refresh = unsafe { (ops.dns_cache_refresh_time)() };
     let now = swoole_rs_timer::absolute_msec();
     #[expect(clippy::cast_possible_truncation, reason = "C's (int64_t) conversion")]
