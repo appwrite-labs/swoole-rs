@@ -127,6 +127,7 @@ fn sized(n: isize) -> u64 {
 }
 
 /// The ops on native objects. The first ones run for each received event.
+#[inline(always)]
 pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let len = || usize::try_from(arg).unwrap_or(usize::MAX);
     Some(match op {
@@ -451,7 +452,7 @@ extern "C" fn on_pipe_receive(reactor: *mut c_void, event: *mut c_void) -> c_int
 
 /// Runs `operation` with `arg` over `ctx`, whose objects are live.
 fn run(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
-    swoole_rs_process::workers::run_over(ctx, operation, arg)
+    swoole_rs_process::workers::run_event_worker(ctx, operation, arg)
 }
 
 /// The event worker's `Server` methods (crates/process's entry.rs): `operation` over
