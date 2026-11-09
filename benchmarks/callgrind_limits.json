@@ -4,7 +4,7 @@
   "json": 0.96,
   "service-health": 0.94,
   "websocket": 0.82,
-  "timer": 0.72,
+  "timer": 0.71,
   "app": 0.93,
   "http2": 0.95,
   "table": 0.99,
