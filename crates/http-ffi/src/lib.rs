@@ -386,5 +386,35 @@ pub unsafe extern "C" fn swr_v2_http_context_text(
     0
 }
 
+/// Every export, which crates/ffi's `swoole_init` references: native code calls few
+/// of them, and a static archive links only the objects something references.
+#[must_use]
+pub fn exports() -> [*const (); 22] {
+    [
+        swr_v1_http_url_capacity as *const (),
+        swr_v1_http_url_encode as *const (),
+        swr_v1_http_url_decode as *const (),
+        swr_v1_http_boundary as *const (),
+        swr_v1_http_method as *const (),
+        swr_v1_http_method_string as *const (),
+        swr_v2_http_status_message as *const (),
+        swr_v1_http_multipart_result as *const (),
+        swr_v1_http_multipart_disposition as *const (),
+        swr_v1_http_multipart_filename as *const (),
+        swr_v1_http_cookie_next as *const (),
+        swr_v1_http_static_location as *const (),
+        swr_v2_http_context_new as *const (),
+        swr_v2_http_context_drop as *const (),
+        swr_v2_http_context_text as *const (),
+        (&raw const NATIVE_STATUS_CODES).cast(),
+        http_server::get_status_message as *const (),
+        http_server::get_method as *const (),
+        http_server::get_method_string as *const (),
+        http_server::parse_multipart_boundary as *const (),
+        http_server::url_decode as *const (),
+        http_server::url_encode as *const (),
+    ]
+}
+
 #[cfg(test)]
 mod tests;
