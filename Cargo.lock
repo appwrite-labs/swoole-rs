@@ -606,6 +606,7 @@ dependencies = [
 name = "swoole-rs-http-ffi"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "swoole-rs-corebase",
  "swoole-rs-http",
  "swoole-rs-oracle",
