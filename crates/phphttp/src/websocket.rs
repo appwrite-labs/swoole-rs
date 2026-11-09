@@ -25,17 +25,16 @@ use swoole_rs_websocket::{
     message_policy, pack_policy,
 };
 use swoole_rs_zend::{
-    Call, Class, bailout, declare_long, declare_property_null, declare_string, handlers,
-    init_object, method_table, register_long_constant,
+    Array, Call, Class, Value, bailout, declare_long, declare_property_null, declare_string,
+    handlers, init_object, method_table, register_long_constant,
     string::{self, bytes},
     sys::{
-        _zval_struct__bindgen_ty_1, HashTable, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_STRING,
-        IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC,
-        swr_zend_http_property_offset, swr_zend_instanceof, swr_zend_is_true,
-        swr_zend_property_slot, swr_zend_string_release, swr_zend_ws_property_not_null,
-        swr_zval_copy, swr_zval_is_true, swr_zval_str, zend_ce_stringable, zend_class_entry,
-        zend_class_implements, zend_hash_str_find, zend_long, zend_object, zend_string,
-        zend_update_property, zend_value, zval, zval_ptr_dtor,
+        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_STRING, IS_TRUE,
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset,
+        swr_zend_instanceof, swr_zend_string_release, swr_zend_ws_property_not_null, swr_zval_copy,
+        swr_zval_is_true, swr_zval_str, zend_ce_stringable, zend_class_entry,
+        zend_class_implements, zend_long, zend_object, zend_string, zend_update_property,
+        zend_value, zval, zval_ptr_dtor,
     },
     type_of,
     value::{self, empty_string, get_long, get_string, obj_of},
@@ -250,15 +249,8 @@ fn port_protocol<'a>(server: *mut Server, server_fd: c_int) -> &'a [u8] {
 }
 
 /// A boolean setting's value, when set and not null.
-pub(crate) fn setting(table: *mut HashTable, key: &[u8]) -> Option<bool> {
-    // SAFETY: the live settings table and the key's bytes.
-    let found = unsafe { zend_hash_str_find(table, key.as_ptr().cast(), key.len()) };
-    // SAFETY: a found entry is live.
-    if found.is_null() || unsafe { type_of(found) } == IS_NULL {
-        return None;
-    }
-    // SAFETY: as above.
-    Some(unsafe { swr_zend_is_true(found) })
+pub(crate) fn setting(table: &Array, key: &[u8]) -> Option<bool> {
+    table.get(key).map(Value::truthy)
 }
 
 method_table! {
@@ -431,16 +423,13 @@ impl FrameObject {
     /// `FrameObject(zdata, opcode, flags, code)`: a `Frame` object's
     /// properties, or the arguments around any other value.
     fn new(data: *mut zval, opcode: i64, flags: i64, code: i64) -> Self {
-        // SAFETY: a live zval.
-        let object = unsafe { type_of(data) } == IS_OBJECT && {
-            // SAFETY: an object zval.
-            let object = unsafe { obj_of(data) };
-            // SAFETY: a live object.
-            let class = unsafe { (*object).ce };
-            // SAFETY: two registered classes.
-            unsafe { swr_zend_instanceof(class, FRAME.entry()) }
-        };
-        if !object {
+        // SAFETY: the caller's live zval.
+        let value = unsafe { Value::from_ptr(data) };
+        let frame = value.and_then(|value| Some((value.object()?, value.class()?)));
+        // SAFETY: two registered classes.
+        let frame =
+            frame.filter(|&(_, class)| unsafe { swr_zend_instanceof(class, FRAME.entry()) });
+        let Some((object, _)) = frame else {
             #[expect(clippy::cast_possible_truncation, reason = "upstream's uint16_t code")]
             #[expect(clippy::cast_sign_loss, reason = "upstream's uint16_t code")]
             let code = code as u16;
@@ -450,15 +439,9 @@ impl FrameObject {
                 code,
                 data,
             };
-        }
-        // SAFETY: an object zval.
-        let object = unsafe { obj_of(data) };
-        let long = |name: &CStr| {
-            // SAFETY: a live Frame, which declares the property.
-            let slot = unsafe { swr_zend_property_slot(object, name.as_ptr(), name.count_bytes()) };
-            // SAFETY: the live slot.
-            unsafe { get_long(slot) }
         };
+        // SAFETY: a live Frame, which declares the property.
+        let long = |name: &CStr| unsafe { swoole_rs_zend::property(object, name) }.long();
         let opcode = byte(long(c"opcode"));
         let mut code = 0;
         let data = if opcode == OPCODE_CLOSE {
@@ -570,12 +553,10 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
         host::fatal("the maximum value of opcode is 10");
         return None;
     }
-    // SAFETY: a live zval when set.
-    let data = if frame.data.is_null() || unsafe { type_of(frame.data) } == IS_NULL {
-        Str(ptr::null_mut())
-    } else {
-        // SAFETY: as above; the new reference is released on drop.
-        Str(unsafe { get_string(frame.data) })
+    // SAFETY: null or a live zval; the new reference is released on drop.
+    let data = match unsafe { Value::from_ptr(frame.data) }.filter(|data| !data.is_null()) {
+        Some(data) => Str(data.string().into_raw()),
+        None => Str(ptr::null_mut()),
     };
     if bailout::pending() {
         return None;
@@ -1466,7 +1447,10 @@ unsafe fn client<'a>(ws: *mut c_void) -> &'a mut ClientWebSocket {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_http_client_coro_ws_apply(ws: *mut c_void, settings: *const zval) {
     // SAFETY: per the caller.
-    let (state, table) = (unsafe { client(ws) }, unsafe { value::table(settings) });
+    let (state, settings) = (unsafe { client(ws) }, unsafe { Value::from_ptr(settings) });
+    let Some(table) = settings.and_then(Value::array) else {
+        return;
+    };
     state.mask = setting(table, b"websocket_mask").unwrap_or(true);
     if ZLIB.load(Relaxed)
         && let Some(on) = setting(table, b"websocket_compression")
