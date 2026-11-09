@@ -31,6 +31,9 @@ int32_t swr_v1_corebase_mkdir_next(const uint8_t *input, size_t input_length, ui
  * gets the pid, 0 when fork fails. call may throw. Rust also defines swoole_fork,
  * swoole_clean, swoole_thread_init/_clean and swoole_is_main_thread. */
 pid_t swr_v1_core_fork_exec(void (*call)(const void *function), const void *function);
+/* swoole_init's body (crates/corebase/src/lifecycle.rs), which globals.cc's
+ * swoole_init calls once it has registered the native effects. */
+void swr_v1_core_swoole_init(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
  * native/framing/swoole_protocol.h stay their declarations: sw_malloc/sw_free/
  * sw_calloc/sw_realloc (libc's allocator), swoole_common_divisor/_multiple,

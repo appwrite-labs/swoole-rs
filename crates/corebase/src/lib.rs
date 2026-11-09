@@ -38,9 +38,10 @@ pub use host::{
 };
 pub use lifecycle::{SharedThread, adopt_shared_thread, shared_thread, thread_buffer};
 pub use lifecycle::{
-    set_thread, set_thread_async_threads, set_thread_message_bus, set_thread_reactor, swoole_clean,
-    swoole_fork, swoole_is_main_thread, swoole_thread_clean, swoole_thread_init,
-    swr_v1_core_fork_exec, thread_async_threads, thread_id, thread_kind, thread_message_bus,
+    ThreadGlobal, set_thread, set_thread_async_threads, set_thread_message_bus, set_thread_reactor,
+    swoole_clean, swoole_fork, swoole_is_main_thread, swoole_thread_clean, swoole_thread_init,
+    swr_v1_core_fork_exec, swr_v1_core_swoole_init, swr_v1_core_thread_global,
+    swr_v1_core_timer_slot, thread_async_threads, thread_id, thread_kind, thread_message_bus,
     thread_reactor,
 };
 pub use random::{swoole_random_string, swr_v1_os_random_bytes};

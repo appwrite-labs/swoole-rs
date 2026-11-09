@@ -34,10 +34,12 @@ def hybrid_corebase(archive):
     patched = (source / 'src/swoole_rs_corebase_globals.cc').read_bytes()
     if any(('swr_v1_corebase_' + name + '(').encode() not in patched for name in CALLS):
         raise ValueError('Required corebase caller absent')
-    if b'swr_v1_core_init()' not in patched:
-        raise ValueError('swoole_init does not take its guard and defaults from the Rust core record')
+    if b'swr_v1_core_swoole_init()' not in patched:
+        raise ValueError("swoole_init does not run Rust's body (crates/corebase/src/lifecycle.rs)")
+    if re.search(rb'^(?:swoole::Global SwooleG|thread_local swoole::ThreadGlobal SwooleTG)', patched, re.M):
+        raise ValueError('SwooleG and SwooleTG are Rust (crates/corebase); globals.cc must not define them')
     return patched, [*flags, '-DHAVE_CONFIG_H', '-I' + str(source)], {
-        'hybrid_tree': str(source), 'required_callers': [*CALLS, 'core_init']}
+        'hybrid_tree': str(source), 'required_callers': [*CALLS, 'core_swoole_init']}
 
 
 def prove_calls(binary, names, selected, run, prefix):

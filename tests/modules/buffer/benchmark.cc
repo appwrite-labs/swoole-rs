@@ -7,7 +7,9 @@
 #include <stdexcept>
 #include <vector>
 
-swoole::Global SwooleG{};
+#ifndef SWOOLE_RS_BUFFER
+swoole::Global SwooleG{};  // upstream's; the Rust archive defines its own
+#endif
 // The first entry's unsent bytes: upstream's front() view, the Rust Buffer's typed_front().
 struct Head { const char *data; uint32_t length, size, offset; };
 static Head head(const swoole::Buffer &buffer) {
