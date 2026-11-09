@@ -22,10 +22,6 @@ pub extern "C" fn swr_v1_feature_bits() -> u64 {
     (1 << 28) - 1
 }
 
-pub use swoole_rs_base64::{swr_v1_base64_decode, swr_v1_base64_encode};
-
-pub use swoole_rs_crc32::swr_v1_crc32;
-
 pub use swoole_rs_error::*;
 
 pub use swoole_rs_websocket::*;

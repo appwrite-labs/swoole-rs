@@ -591,14 +591,7 @@ impl Client {
     fn set_basic_auth(&mut self, username: &[u8], password: &[u8]) {
         let input = [username, b":", password].concat();
         let mut encoded = vec![0_u8; input.len().div_ceil(3) * 4 + 1];
-        // SAFETY: the input and an output of 4 * ceil(n / 3) + 1 bytes.
-        let written = unsafe {
-            swoole_rs_base64::swr_v1_base64_encode(
-                input.as_ptr(),
-                input.len(),
-                encoded.as_mut_ptr(),
-            )
-        };
+        let written = swoole_rs_base64::encode(&input, &mut encoded);
         let encoded = encoded.get(..written).unwrap_or(&encoded);
         self.basic_auth = [b"Basic ".as_slice(), encoded].concat();
     }
@@ -1257,10 +1250,7 @@ impl Client {
         props::string(self.object, c"requestMethod", c"GET");
         let token = request::token::<WEBSOCKET_KEY>();
         let mut key = vec![0_u8; WEBSOCKET_KEY.div_ceil(3) * 4 + 1];
-        // SAFETY: the token and an output of 4 * ceil(n / 3) + 1 bytes.
-        let written = unsafe {
-            swoole_rs_base64::swr_v1_base64_encode(token.as_ptr(), token.len(), key.as_mut_ptr())
-        };
+        let written = swoole_rs_base64::encode(&token, &mut key);
         let add = |name: &CStr, text: &CStr| {
             // SAFETY: a live array property; Zend copies both.
             unsafe {

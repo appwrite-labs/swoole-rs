@@ -487,12 +487,10 @@ dependencies = [
 name = "swoole-rs-ffi"
 version = "0.1.0"
 dependencies = [
- "swoole-rs-base64",
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
- "swoole-rs-crc32",
  "swoole-rs-curl",
  "swoole-rs-error",
  "swoole-rs-firebird",
@@ -1026,6 +1024,7 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-http",
@@ -1101,6 +1100,7 @@ dependencies = [
  "libc",
  "memchr",
  "swoole-rs-corebase",
+ "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-locks",
 ]

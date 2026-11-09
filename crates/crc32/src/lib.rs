@@ -1,150 +1,71 @@
 //! IEEE CRC32, ported from Swoole v6.2.2 src/core/crc32.cc (Apache-2.0).
 //! Original author: Tianfeng Han <rango@swoole.com>.
 //! The lookup table is immutable and generated during compilation.
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 
-// Use instructions only when the compiler's target contract already guarantees
-// IEEE CRC support. No runtime CPU query, lazy state or OS effect is introduced.
-// Other targets retain the exact slicing-by-eight implementation below.
-#[cfg(any(test, not(all(target_arch = "aarch64", target_feature = "crc"))))]
-mod portable {
-    // Row n is the byte contribution followed by n zero bytes. Divide the base
-    // row once, then append each zero byte using that same immutable recurrence.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "const-evaluated into TABLES: an out-of-range index fails the build, \
-                  and const fn has no get()"
-    )]
-    const fn tables() -> [[u32; 256]; 8] {
-        let mut entries = [[0; 256]; 8];
-        let mut index = 0;
+// Row n is the byte contribution followed by n zero bytes. Divide the base
+// row once, then append each zero byte using that same immutable recurrence.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const-evaluated into TABLES: an out-of-range index fails the build, \
+              and const fn has no get()"
+)]
+const fn tables() -> [[u32; 256]; 8] {
+    let mut entries = [[0; 256]; 8];
+    let mut index = 0;
+    while index < 256 {
+        #[expect(clippy::cast_possible_truncation, reason = "index < 256")]
+        let mut value = index as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            value = (value >> 1) ^ (0xedb8_8320 * (value & 1));
+            bit += 1;
+        }
+        entries[0][index] = value;
+        index += 1;
+    }
+    let mut row = 1;
+    while row < entries.len() {
+        index = 0;
         while index < 256 {
-            #[expect(clippy::cast_possible_truncation, reason = "index < 256")]
-            let mut value = index as u32;
-            let mut bit = 0;
-            while bit < 8 {
-                value = (value >> 1) ^ (0xedb8_8320 * (value & 1));
-                bit += 1;
-            }
-            entries[0][index] = value;
+            let value = entries[row - 1][index];
+            entries[row][index] = (value >> 8) ^ entries[0][(value & 0xff) as usize];
             index += 1;
         }
-        let mut row = 1;
-        while row < entries.len() {
-            index = 0;
-            while index < 256 {
-                let value = entries[row - 1][index];
-                entries[row][index] = (value >> 8) ^ entries[0][(value & 0xff) as usize];
-                index += 1;
-            }
-            row += 1;
-        }
-        entries
+        row += 1;
     }
-
-    pub(super) static TABLES: [[u32; 256]; 8] = tables();
-
-    /// Return IEEE CRC32 with the upstream initial and final XOR.
-    pub(super) fn crc32(input: &[u8]) -> u32 {
-        let mut crc = u32::MAX;
-        let (blocks, tail) = input.as_chunks::<8>();
-        for block in blocks {
-            // Exact chunks establish the conversion length. Explicit little-endian
-            // decoding retains the same byte recurrence on either host endianness.
-            let bytes = (u64::from_le_bytes(*block) ^ u64::from(crc)).to_le_bytes();
-            crc = TABLES
-                .iter()
-                .rev()
-                .zip(bytes)
-                .fold(0, |crc, (row, byte)| crc ^ entry(row, byte));
-        }
-        !tail.iter().fold(crc, |crc, &byte| {
-            (crc >> 8) ^ entry(&TABLES[0], crc.to_le_bytes()[0] ^ byte)
-        })
-    }
-
-    // A byte always indexes a 256-entry row, so the fallback is never taken.
-    fn entry(row: &[u32; 256], byte: u8) -> u32 {
-        row.get(usize::from(byte)).copied().unwrap_or_default()
-    }
+    entries
 }
+
+static TABLES: [[u32; 256]; 8] = tables();
 
 /// Return IEEE CRC32 with the upstream initial and final XOR.
 #[must_use]
 pub fn crc32(input: &[u8]) -> u32 {
-    #[cfg(all(target_arch = "aarch64", target_feature = "crc"))]
-    // SAFETY: the selected compile target already guarantees the crc feature.
-    unsafe {
-        crc32_instructions(input)
-    }
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "crc")))]
-    portable::crc32(input)
-}
-
-#[cfg(all(target_arch = "aarch64", target_feature = "crc"))]
-#[target_feature(enable = "crc")]
-unsafe fn crc32_instructions(input: &[u8]) -> u32 {
-    use core::arch::aarch64::{__crc32b, __crc32d, __crc32h, __crc32w};
     let mut crc = u32::MAX;
-    let (blocks, mut tail) = input.as_chunks::<8>();
+    let (blocks, tail) = input.as_chunks::<8>();
     for block in blocks {
-        crc = __crc32d(crc, u64::from_le_bytes(*block));
+        // Exact chunks establish the conversion length. Explicit little-endian
+        // decoding retains the same byte recurrence on either host endianness.
+        let bytes = (u64::from_le_bytes(*block) ^ u64::from(crc)).to_le_bytes();
+        crc = TABLES
+            .iter()
+            .rev()
+            .zip(bytes)
+            .fold(0, |crc, (row, byte)| crc ^ entry(row, byte));
     }
-    if let Some((word, remaining)) = tail.split_first_chunk::<4>() {
-        crc = __crc32w(crc, u32::from_le_bytes(*word));
-        tail = remaining;
-    }
-    if let Some((half, remaining)) = tail.split_first_chunk::<2>() {
-        crc = __crc32h(crc, u16::from_le_bytes(*half));
-        tail = remaining;
-    }
-    if let Some(&byte) = tail.first() {
-        crc = __crc32b(crc, byte);
-    }
-    !crc
+    !tail.iter().fold(crc, |crc, &byte| {
+        (crc >> 8) ^ entry(&TABLES[0], crc.to_le_bytes()[0] ^ byte)
+    })
 }
 
-/// Borrow input for one call; no allocations, callbacks, or retained pointers.
-///
-/// # Safety
-/// Nonempty input must point to `length` readable bytes in one allocation.
-/// Empty input may be null. Invalid null/oversized input returns zero.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_crc32(input: *const u8, length: usize) -> u32 {
-    if length == 0
-        || input.is_null()
-        || length > isize::MAX as usize
-        || (input as usize).checked_add(length).is_none()
-    {
-        return 0;
-    }
-    // SAFETY: null, representability and address wrap checked; caller provides extent.
-    crc32(unsafe { core::slice::from_raw_parts(input, length) })
-}
-
-/// `uint32_t swoole_crc32(const char *data, size_t size)` under upstream's symbol.
-///
-/// # Safety
-/// As [`swr_v1_crc32`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z12swoole_crc32PKcm")
-)]
-#[must_use]
-pub unsafe extern "C" fn swoole_crc32(data: *const core::ffi::c_char, size: usize) -> u32 {
-    // SAFETY: as the caller promises.
-    unsafe { swr_v1_crc32(data.cast(), size) }
+// A byte always indexes a 256-entry row, so the fallback is never taken.
+fn entry(row: &[u32; 256], byte: u8) -> u32 {
+    row.get(usize::from(byte)).copied().unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::portable::TABLES;
     use super::*;
 
     #[test]
@@ -194,7 +115,6 @@ mod tests {
                 }
             }
             assert_eq!(crc32(&bytes), !expected);
-            assert_eq!(portable::crc32(&bytes), !expected);
         }
     }
 
@@ -226,37 +146,7 @@ mod tests {
                 let bytes = &data[offset..offset + length];
                 let expected = bitwise(bytes);
                 assert_eq!(crc32(bytes), expected, "offset={offset}, length={length}");
-                assert_eq!(
-                    portable::crc32(bytes),
-                    expected,
-                    "portable offset={offset}, length={length}"
-                );
-                // The same actual C entrypoint is linked by production callers.
-                // SAFETY: `bytes` is a live slice of exactly `bytes.len()` readable bytes.
-                let actual = unsafe { swr_v1_crc32(bytes.as_ptr(), bytes.len()) };
-                assert_eq!(actual, expected);
             }
-        }
-    }
-
-    #[test]
-    fn defensive_bounds() {
-        // The export rejects null, overlong and address-wrapping
-        // ranges before reading, so none of these pointers is dereferenced.
-        let cases: [(*const u8, usize); 5] = [
-            (core::ptr::null(), 0),
-            (core::ptr::null(), 1),
-            (core::ptr::dangling(), usize::MAX),
-            (core::ptr::without_provenance(usize::MAX), 1),
-            (core::ptr::without_provenance(usize::MAX - 7), 8),
-        ];
-        for (data, length) in cases {
-            // SAFETY: see above; the export returns 0 without reading.
-            assert_eq!(
-                unsafe { swr_v1_crc32(data, length) },
-                0,
-                "{data:?} {length}"
-            );
         }
     }
 }

@@ -1,7 +1,7 @@
 //! Differential tests against the pinned upstream C++ (`swoole-rs-oracle`).
 
 use proptest::prelude::*;
-use swoole_rs_base64::{swr_v1_base64_decode, swr_v1_base64_encode};
+use swoole_rs_base64::{decode, encode};
 use swoole_rs_oracle::base64 as upstream;
 
 const RED_ZONE: usize = 17;
@@ -9,11 +9,12 @@ const RED_ZONE: usize = 17;
 /// Return counts and every output byte must match, including provisional
 /// decoder writes and red zones on both sides. Input is read one byte past an
 /// allocation start so neither side sees aligned buffers.
-fn compare(bytes: &[u8], encode: bool) {
+fn compare(bytes: &[u8], encoding: bool) {
     let mut shifted = vec![0xa5];
     shifted.extend_from_slice(bytes);
     let input = shifted.as_ptr().wrapping_add(1);
-    let capacity = if encode {
+    let rest = shifted.get(1..).unwrap_or_default();
+    let capacity = if encoding {
         bytes.len().div_ceil(3) * 4 + 1
     } else {
         bytes.len() + 1
@@ -21,29 +22,27 @@ fn compare(bytes: &[u8], encode: bool) {
     for sentinel in [0x00, 0xa5, 0xff] {
         let mut expected = vec![sentinel; capacity + 2 * RED_ZONE];
         let mut actual = expected.clone();
-        // SAFETY: both outputs have `capacity` writable bytes after the red zone,
+        let e = expected.as_mut_ptr().wrapping_add(RED_ZONE);
+        let a = actual
+            .get_mut(RED_ZONE..RED_ZONE + capacity)
+            .unwrap_or_default();
+        // SAFETY: `expected` has `capacity` writable bytes after the red zone,
         // and zero-length encode (undefined upstream) is never passed.
-        let (want, got) = unsafe {
-            let (e, a) = (
-                expected.as_mut_ptr().add(RED_ZONE),
-                actual.as_mut_ptr().add(RED_ZONE),
-            );
-            if encode {
-                (
-                    upstream::encode(input, bytes.len(), e),
-                    swr_v1_base64_encode(input, bytes.len(), a),
-                )
-            } else {
-                (
-                    upstream::decode(input, bytes.len(), e),
-                    swr_v1_base64_decode(input, bytes.len(), a),
-                )
-            }
+        let (want, got) = if encoding {
+            (
+                unsafe { upstream::encode(input, bytes.len(), e) },
+                encode(rest, a),
+            )
+        } else {
+            (
+                unsafe { upstream::decode(input, bytes.len(), e) },
+                decode(rest, a),
+            )
         };
-        assert_eq!(got, want, "return for encode={encode} input={bytes:?}");
+        assert_eq!(got, want, "return for encode={encoding} input={bytes:?}");
         assert!(
             actual == expected,
-            "output for encode={encode} input={bytes:?} sentinel={sentinel}"
+            "output for encode={encoding} input={bytes:?} sentinel={sentinel}"
         );
     }
 }
@@ -57,8 +56,7 @@ fn base64_encode() {
         .collect();
     let mut outbuf = [0u8; 2048];
     let n = inbuf.len();
-    // SAFETY: 1023 readable bytes in, room for their 1364 encoded bytes and NUL out.
-    let n2 = unsafe { swr_v1_base64_encode(inbuf.as_ptr(), n, outbuf.as_mut_ptr()) };
+    let n2 = encode(&inbuf, &mut outbuf);
     assert!(n2 > n);
 }
 
@@ -67,8 +65,7 @@ fn base64_encode() {
 fn base64_decode() {
     let inbuf = b"aGVsbG8gd29ybGQ=";
     let mut outbuf = [0u8; 2048];
-    // SAFETY: the input's readable bytes in, ample room out.
-    let n2 = unsafe { swr_v1_base64_decode(inbuf.as_ptr(), inbuf.len(), outbuf.as_mut_ptr()) };
+    let n2 = decode(inbuf, &mut outbuf);
     assert_eq!(&outbuf[..n2], b"hello world");
 }
 

@@ -1,9 +1,8 @@
-//! Differential fuzz targets: the same bytes go to a `swr_v1_*` export and to
+//! Differential fuzz targets: the same bytes go to a Rust entry point and to
 //! the pinned upstream C++ in `swoole-rs-oracle`; return values and every output
 //! byte, red zones included, must match.
 
 use std::ffi::{CStr, c_char};
-use swoole_rs_base64::{swr_v1_base64_decode, swr_v1_base64_encode};
 use swoole_rs_clients::{swr_v1_clients_cookie, swr_v1_clients_domain_decode};
 use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_unpack, swr_v1_framing_width};
 use swoole_rs_http::{
@@ -193,23 +192,19 @@ pub fn base64(bytes: &[u8], encode: bool) {
     };
     let mut expected = vec![0xa5; capacity + 2 * RED_ZONE];
     let mut actual = expected.clone();
-    // SAFETY: both outputs have `capacity` writable bytes after the red zone.
-    let (want, got) = unsafe {
-        let (e, a) = (
-            expected.as_mut_ptr().add(RED_ZONE),
-            actual.as_mut_ptr().add(RED_ZONE),
-        );
-        if encode {
-            (
-                upstream::encode(bytes.as_ptr(), bytes.len(), e),
-                swr_v1_base64_encode(bytes.as_ptr(), bytes.len(), a),
-            )
-        } else {
-            (
-                upstream::decode(bytes.as_ptr(), bytes.len(), e),
-                swr_v1_base64_decode(bytes.as_ptr(), bytes.len(), a),
-            )
-        }
+    let e = expected.as_mut_ptr().wrapping_add(RED_ZONE);
+    let a = &mut actual[RED_ZONE..RED_ZONE + capacity];
+    // SAFETY: `expected` has `capacity` writable bytes after the red zone.
+    let (want, got) = if encode {
+        (
+            unsafe { upstream::encode(bytes.as_ptr(), bytes.len(), e) },
+            swoole_rs_base64::encode(bytes, a),
+        )
+    } else {
+        (
+            unsafe { upstream::decode(bytes.as_ptr(), bytes.len(), e) },
+            swoole_rs_base64::decode(bytes, a),
+        )
     };
     assert_eq!(got, want, "return for encode={encode} input={bytes:?}");
     assert!(
