@@ -25,7 +25,7 @@ use swoole_rs_zend::sys::{
     zend_class_entry, zend_hash_add_new, zend_hash_str_find, zend_hash_update, zend_object,
     zend_string, zend_value, zval, zval_ptr_dtor,
 };
-use swoole_rs_zend::{string, type_of, value};
+use swoole_rs_zend::{OwnedArray, Value, string, type_of, value};
 
 /// The bundled `multipart_parser` (`thirdparty/multipart_parser.h`), up to
 /// the fields its callbacks use.
@@ -1137,9 +1137,8 @@ fn add_bytes(array: *mut zval, key: &CStr, bytes: &[u8]) {
 }
 
 /// A string zval's bytes up to its first NUL (`%s`, `strlen`), and its length.
-fn string_value<'a>(found: *mut zval) -> Option<(&'a [u8], usize)> {
-    // SAFETY: a live zval from a live array.
-    let bytes = unsafe { swoole_rs_zend::string_of(found) }?;
+fn string_value(found: &Value) -> Option<(&[u8], usize)> {
+    let bytes = found.bytes()?;
     let text = bytes.split(|&byte| byte == 0).next().unwrap_or_default();
     Some((text, bytes.len()))
 }
@@ -1212,16 +1211,16 @@ unsafe extern "C" fn on_part_header_value(
             host::log(0, 0, func, message);
             return 0;
         };
-        let mut fields = new_zval();
-        // SAFETY: an empty zval.
-        unsafe { swr_zend_array_init(&raw mut fields) };
+        // Released on every return, which upstream's early ones leak.
+        let fields = OwnedArray::default().into_owned();
         parse_cookie(
-            &raw mut fields,
+            fields.as_ptr(),
             value_.as_ptr().wrapping_add(offset),
             length - offset,
         );
+        let field = |key: &[u8]| fields.array().and_then(|fields| fields.find(key));
 
-        let Some((form_name, form_name_len)) = string_value(find(&raw mut fields, b"name")) else {
+        let Some((form_name, form_name_len)) = field(b"name").and_then(string_value) else {
             return 0;
         };
         if form_name_len >= FORM_KEYLEN {
@@ -1232,11 +1231,7 @@ unsafe extern "C" fn on_part_header_value(
             return -1;
         }
         let form_name = trimmed(form_name, form_name_len);
-        let filename = find(&raw mut fields, b"filename");
-        if filename.is_null() {
-            // POST form data
-            state.parse.form_data_name = Some(c_copy(&form_name));
-        } else {
+        if let Some(filename) = field(b"filename") {
             // upload file
             let (filename, filename_len) = string_value(filename).unwrap_or((&[], 0));
             if filename_len >= FORM_KEYLEN {
@@ -1277,9 +1272,10 @@ unsafe extern "C" fn on_part_header_value(
                 },
             );
             state.parse.multipart_header = header;
+        } else {
+            // POST form data
+            state.parse.form_data_name = Some(c_copy(&form_name));
         }
-        // SAFETY: the array this function made.
-        unsafe { zval_ptr_dtor(&raw mut fields) };
     } else if name.eq_ignore_ascii_case(b"content-type") {
         if has_header(state) {
             let header = &raw mut state.parse.multipart_header;

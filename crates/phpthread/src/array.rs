@@ -345,8 +345,7 @@ fn length(table: &Table<Item>) -> i64 {
 }
 
 fn zval_null() -> zval {
-    // SAFETY: a zval is plain data; all-zero bytes are IS_UNDEF.
-    let mut value: zval = unsafe { std::mem::zeroed() };
+    let mut value = swoole_rs_zend::UNDEF;
     set(&raw mut value, IS_NULL, zend_value { lval: 0 });
     value
 }

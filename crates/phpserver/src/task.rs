@@ -28,14 +28,14 @@ use swoole_rs_process::{
 use swoole_rs_server::view;
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
-    Call, E_WARNING,
+    Array, Call, E_WARNING, Value,
     bailout::Bailout,
-    each_value, long_zval, message, php_error,
+    long_zval, message, php_error,
     string::bytes,
     sys::{
-        IS_ARRAY, IS_NULL, add_index_bool, swr_zend_serialize, swr_zend_string_release,
-        swr_zend_unserialize, swr_zval_is_true, swr_zval_stringl, zend_hash_index_find,
-        zend_hash_index_update, zval, zval_ptr_dtor,
+        IS_NULL, add_index_bool, swr_zend_serialize, swr_zend_string_release, swr_zend_unserialize,
+        swr_zval_is_true, swr_zval_stringl, zend_hash_index_find, zend_hash_index_update, zval,
+        zval_ptr_dtor,
     },
     type_of,
     value::{array_init, count, table},
@@ -575,14 +575,15 @@ fn task_wait_multi(call: &Call) {
     let tasks = call.zval(1);
     // SAFETY: the return slot.
     unsafe { array_init(call.return_value()) };
-    if length(tasks) >= MAX_CONCURRENT_TASK {
+    let n_task = length(call.value(1));
+    if n_task >= MAX_CONCURRENT_TASK {
         fatal(E_WARNING, c"too many concurrent tasks");
         return call.set_bool(false);
     }
     let mut multi = Multi {
         tasks,
         out: call.return_value(),
-        count: u16::try_from(length(tasks)).unwrap_or_default(),
+        count: u16::try_from(n_task).unwrap_or_default(),
     };
     let done = task_state(serv, true)
         .task_sync_many(&mut multi, timeout)
@@ -598,13 +599,8 @@ fn task_wait_multi(call: &Call) {
 }
 
 /// `php_swoole_array_length`, as 0 for what is not an array.
-fn length(array: *mut zval) -> u32 {
-    // SAFETY: a live argument.
-    if unsafe { type_of(array) } != IS_ARRAY {
-        return 0;
-    }
-    // SAFETY: an array.
-    unsafe { count(array) }
+fn length(array: Option<&Value>) -> u32 {
+    array.and_then(Value::array).map_or(0, Array::count)
 }
 
 fn task_co_method(call: &Call) {
@@ -619,8 +615,8 @@ fn task_co(call: &Call, fill_false: bool) {
     let (Ok(()), Ok(timeout)) = (call.arity(1, 2), call.double(2, TASKWAIT_TIMEOUT)) else {
         return call.set_bool(false);
     };
-    let tasks = call.zval(1);
-    let mut n_task = length(tasks);
+    let tasks = call.value(1).and_then(Value::array);
+    let mut n_task = tasks.map_or(0, Array::count);
     if n_task >= MAX_CONCURRENT_TASK {
         fatal(E_WARNING, c"too many concurrent tasks");
         return call.set_bool(false);
@@ -643,37 +639,30 @@ fn task_co(call: &Call, fill_false: bool) {
         fill_false,
     };
     let mut list = Vec::with_capacity(n_task as usize);
-    if n_task > 0 {
-        // SAFETY: an array argument.
-        let tasks = unsafe { table(tasks) };
-        let each = |ztask: *mut zval| {
-            let index = list.len() as u64;
-            let mut buf = EventData::new();
-            let mut id = pack(ztask, &mut buf);
-            let mut dispatched = false;
-            if id < 0 {
-                fatal(E_WARNING, c"failed to pack task");
+    for (_, ztask) in tasks.into_iter().flat_map(Array::entries) {
+        let index = list.len() as u64;
+        let mut buf = EventData::new();
+        let mut id = pack(ztask.as_ptr(), &mut buf);
+        let mut dispatched = false;
+        if id < 0 {
+            fatal(E_WARNING, c"failed to pack task");
+        } else {
+            flag(&mut buf, NONBLOCK | COROUTINE);
+            let mut dst: c_int = -1;
+            if dispatch(serv, &mut buf, &mut dst) {
+                dispatched = true;
             } else {
-                flag(&mut buf, NONBLOCK | COROUTINE);
-                let mut dst: c_int = -1;
-                if dispatch(serv, &mut buf, &mut dst) {
-                    dispatched = true;
-                } else {
-                    id = -1;
-                }
+                id = -1;
             }
-            if dispatched {
-                pending(serv, |p| p.coroutines.insert(id, &raw mut task_co));
-            } else {
-                // SAFETY: the result array.
-                unsafe { add_index_bool(result, index, false) };
-                n_task -= 1;
-            }
-            list.push(id);
-            true
-        };
-        // SAFETY: a live array, not modified by the loop.
-        unsafe { each_value(tasks, each) };
+        }
+        if dispatched {
+            pending(serv, |p| p.coroutines.insert(id, &raw mut task_co));
+        } else {
+            // SAFETY: the result array.
+            unsafe { add_index_bool(result, index, false) };
+            n_task -= 1;
+        }
+        list.push(id);
     }
     if n_task == 0 {
         set_last_error(SW_ERROR_TASK_DISPATCH_FAIL);

@@ -16,13 +16,12 @@ use swoole_rs_ports::{
 };
 use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Object, bailout, message,
-    string::bytes,
+    Call, Class, E_WARNING, Object, Value, ZString, bailout, message,
     sys::{
-        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        swr_zend_string_release, swr_zval_copy, swr_zval_get_string, zend_class_entry,
-        zend_declare_property_bool, zend_declare_property_long, zend_declare_property_null,
-        zend_object, zend_object_handlers, zend_read_property, zend_update_property, zval,
+        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
+        zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
+        zend_declare_property_null, zend_object, zend_object_handlers, zend_read_property,
+        zend_update_property, zval,
     },
     throw_error, type_of, unset_property_deny,
 };
@@ -315,14 +314,10 @@ fn get_callback(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    // SAFETY: `zend::String(name)`: an owned reference, released below.
-    let name = unsafe { swr_zval_get_string(call.zval(1)) };
-    // SAFETY: the reference is live until released.
-    let name_bytes = unsafe { bytes(name) };
+    let name = call.value(1).map(Value::string);
+    let name = name.as_ref().map_or(&[][..], ZString::bytes);
     // SAFETY: the name's bytes.
-    let property = unsafe { swr_v1_ports_callback_property(name_bytes.as_ptr(), name_bytes.len()) };
-    // SAFETY: releasing the reference taken above.
-    unsafe { swr_zend_string_release(name) };
+    let property = unsafe { swr_v1_ports_callback_property(name.as_ptr(), name.len()) };
     if !property.data.is_null() {
         let mut rv = MaybeUninit::<zval>::uninit();
         // SAFETY: `$this`, the catalog's property name and a writable scratch zval.

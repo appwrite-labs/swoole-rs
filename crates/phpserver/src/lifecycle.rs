@@ -18,15 +18,14 @@ use swoole_rs_server::{
     swr_v1_server_command, view,
 };
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Message, Object, Value, bailout, class_name, init_object,
-    message, object_of, php_error,
-    string::bytes,
+    Call, Class, E_ERROR, E_WARNING, Message, Object, Value, ZString, bailout, class_name,
+    init_object, message, object_of, php_error,
     sys::{
         IS_NULL, IS_OBJECT, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree,
         swr_zend_instanceof, swr_zend_json_decode, swr_zend_property_array, swr_zend_property_slot,
-        swr_zend_separate_array, swr_zend_string_release, swr_zend_try_json_encode, swr_zval_copy,
-        swr_zval_stringl, zend_class_entry, zend_hash_next_index_insert, zend_hash_str_find,
-        zend_object, zend_object_std_dtor, zend_update_property, zend_update_property_bool,
+        swr_zend_separate_array, swr_zend_try_json_encode, swr_zval_copy, swr_zval_stringl,
+        zend_class_entry, zend_hash_next_index_insert, zend_hash_str_find, zend_object,
+        zend_object_std_dtor, zend_update_property, zend_update_property_bool,
         zend_update_property_double, zend_update_property_long, zend_update_property_string,
         zend_update_property_stringl, zval, zval_ptr_dtor,
     },
@@ -616,6 +615,20 @@ impl Props {
         }
     }
 
+    /// The property takes a copy of a live value.
+    pub(crate) fn set(self, name: &CStr, value: &Value) {
+        // SAFETY: as above.
+        unsafe {
+            zend_update_property(
+                self.0,
+                self.1,
+                name.as_ptr(),
+                name.count_bytes(),
+                value.as_ptr(),
+            );
+        }
+    }
+
     pub(crate) fn value(self, name: &CStr, value: &mut zval) {
         // SAFETY: as above, and a live value.
         unsafe { zend_update_property(self.0, self.1, name.as_ptr(), name.count_bytes(), value) };
@@ -1010,9 +1023,9 @@ fn command(call: &Call) {
     if encoded.is_null() {
         return call.set_bool(false);
     }
+    // SAFETY: the new string the encoder returned.
+    let encoded = unsafe { ZString::from_raw(encoded) };
     if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
-        // SAFETY: the string encoded above.
-        unsafe { swr_zend_string_release(encoded) };
         return bailout.defer();
     }
     let coroutine = swoole_rs_phpcoroutines::current();
@@ -1022,8 +1035,7 @@ fn command(call: &Call) {
         coroutine,
         replied: false,
     };
-    // SAFETY: the encoded string, live until released.
-    let data = unsafe { bytes(encoded) };
+    let data = encoded.bytes();
     let callback = CommandFn {
         invoke: command_done as *const c_void,
         ctx: (&raw mut wait).cast(),
@@ -1050,8 +1062,7 @@ fn command(call: &Call) {
             callback,
         )
     };
-    // SAFETY: the string encoded above.
-    unsafe { swr_zend_string_release(encoded) };
+    drop(encoded);
     if !sent {
         return call.set_bool(false);
     }

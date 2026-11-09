@@ -9,7 +9,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_tree
 from tools.harness import run_isolated
 
 SOURCE = r'''
@@ -55,8 +55,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    source, flags = hybrid_tree(args.archive)
-    report = dict(passed=False, scope=__doc__, hybrid_tree=str(source), commands=[])
+    source, flags = native_tree(args.archive)
+    report = dict(passed=False, scope=__doc__, native_tree=str(source), commands=[])
     with tempfile.TemporaryDirectory(dir=args.output.parent, prefix='core-records-') as directory:
         tree = Path(directory)
         cpp = tree / 'probe.cc'

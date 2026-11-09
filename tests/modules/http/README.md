@@ -15,7 +15,7 @@ cargo build --locked -p swoole-rs-ffi --release
 Each gate compiles pinned (v6.2.5) bodies against the hybrid build `--archive`
 comes from and compares outcomes. The two sides compile apart (`Sides` in
 `gate.py`): upstream fragments against the pin's headers only, the rest against
-the hybrid build's patched tree (`hybrid_tree`). Native code runs under ASan/UBSan;
+the Cargo build's patched tree (`native_tree`). Native code runs under ASan/UBSan;
 the Rust archive is uninstrumented unless `--rust-sanitize` is used (Linux;
 links a private ASan HTTP archive instead, precompiled std stays uninstrumented).
 All take `--source PINNED_GIT --archive HYBRID_ARCHIVE --output REPORT`; gates

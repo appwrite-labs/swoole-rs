@@ -2,7 +2,7 @@
 """Compile unchanged and hybrid coroutine translation units.
 
 original: the pinned tree. patched: the hybrid build's tree with its switches and
-headers (hybrid_tree, #796).
+headers (native_tree, #796).
 """
 from pathlib import Path
 import argparse
@@ -15,7 +15,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree  # noqa: E402
+from tools.build_ext import native_tree  # noqa: E402
 from tools.build_upstream import COMMIT as PIN  # noqa: E402
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--source', type=Path, required=True)
@@ -27,7 +27,7 @@ p.add_argument('--standard', choices=['c++14', 'c++17'], default='c++14')
 p.add_argument('--backend', choices=['header-default', 'asm', 'thread'], default='header-default',
                help='Compile the requested context backend; no switching or runtime execution')
 a = p.parse_args()
-hybrid_source, hybrid_flags = hybrid_tree(a.archive)
+hybrid_source, hybrid_flags = native_tree(a.archive)
 units = ['base', 'context', 'thread_context']
 rows = []
 with tempfile.TemporaryDirectory(prefix='swr-coroutine-compile-') as tmp:
@@ -59,7 +59,7 @@ with tempfile.TemporaryDirectory(prefix='swr-coroutine-compile-') as tmp:
             rows.append(dict(variant=variant, backend=name, command=cmd, returncode=result.returncode, passed=passed,
                              stderr=result.stderr))
 a.report.parent.mkdir(parents=True, exist_ok=True)
-a.report.write_text(json.dumps(dict(pin=PIN, hybrid_tree=str(hybrid_source), backend=a.backend, standard=a.standard,
+a.report.write_text(json.dumps(dict(pin=PIN, native_tree=str(hybrid_source), backend=a.backend, standard=a.standard,
                                     compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0],
                                     rows=rows), indent=2) + '\n')
 raise SystemExit(any(not row['passed'] for row in rows))

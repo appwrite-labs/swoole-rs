@@ -2,7 +2,7 @@
 """Compile the native units the hooks patches touch, unchanged and selected.
 
 original: the pinned tree. selected: the same tree with every file the hybrid build
-`--archive` comes from patched (overlay_hybrid_tree, #796) and that build's config.h.
+`--archive` comes from patched (overlay_native_tree, #796) and that build's config.h.
 Actual io_uring units require a build configured with liburing2.8+. A compiled-out unit is
 recorded UNSUPPORTED, never enabled-backend proof.
 """
@@ -20,7 +20,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree, module_patches, overlay_hybrid_tree
+from tools.build_ext import native_tree, overlay_native_tree
+from tools.build_hybrid import module_patches
 from tools.build_upstream import COMMIT as PIN
 
 def main():
@@ -31,7 +32,7 @@ def main():
     p.add_argument('--report', type=Path, required=True)
     a = p.parse_args()
     paths = sorted({path for entry in module_patches(ROOT/'migration/patches/hooks') for path in entry['upstream_paths']})
-    hybrid_source, hybrid_flags = hybrid_tree(a.archive)
+    hybrid_source, hybrid_flags = native_tree(a.archive)
     abi = [flag for flag in hybrid_flags if flag.startswith('-I') and flag != '-I'+str(hybrid_source/'include')]
     config = (hybrid_source/'config.h').read_bytes()
     rows = []
@@ -63,7 +64,7 @@ def main():
         (tree/'config.h').write_bytes(config)
         for variant in ['original', 'selected']:
             if variant == 'selected':
-                overlay_hybrid_tree(a.archive, tree)
+                overlay_native_tree(a.archive, tree)
             flags = common + (abi if variant != 'original' else [])
             # Translation units only: the patches also touch headers (stubs), which the units include.
             # A unit the hybrid deletes (its Rust replaces it) has no selected build.
@@ -76,7 +77,7 @@ def main():
                 status = 'UNSUPPORTED' if passed and compiled_out else 'PASS' if passed else 'FAIL'
                 print(variant, path, result.returncode, status, flush=True)
                 rows.append(dict(variant=variant, path=path, command=command, returncode=result.returncode, passed=passed, status=status, stderr=result.stderr))
-    report = dict(pin=PIN, scope=__doc__, hybrid_tree=str(hybrid_source), pkg_config_path=pkg_env.get('PKG_CONFIG_PATH', ''), discovered_prefixes=discovered_prefixes, compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0], rows=rows)
+    report = dict(pin=PIN, scope=__doc__, native_tree=str(hybrid_source), pkg_config_path=pkg_env.get('PKG_CONFIG_PATH', ''), discovered_prefixes=discovered_prefixes, compiler=subprocess.check_output(['c++', '--version'], text=True).splitlines()[0], rows=rows)
     a.report.parent.mkdir(parents=True, exist_ok=True)
     a.report.write_text(json.dumps(report, indent=2)+'\n')
     raise SystemExit(any(not row['passed'] for row in rows))
