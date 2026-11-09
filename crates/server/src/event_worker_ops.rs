@@ -71,18 +71,29 @@ struct WorkerStopMessage {
 
 /// Answers each event-worker op over the context.
 impl swoole_rs_process::workers::Answer for Context {
+    #[inline(always)]
     fn answer(&mut self, op: u32, arg: u64) -> u64 {
+        // Plain branches, not `or_else` closures, so each group inlines and an op
+        // known at the call folds to its arm.
         let ctx = self;
-        native::native(ctx, op, arg)
-            .or_else(|| fact(ctx, op, arg))
-            .or_else(|| callback(ctx, op))
-            .or_else(|| effect(ctx, op, arg))
-            .or_else(|| connection(ctx, op, arg))
-            .unwrap_or_else(|| std::process::abort())
+        if let Some(value) = native::native(ctx, op, arg) {
+            return value;
+        }
+        if let Some(value) = fact(ctx, op, arg) {
+            return value;
+        }
+        if let Some(value) = callback(ctx, op) {
+            return value;
+        }
+        if let Some(value) = effect(ctx, op, arg) {
+            return value;
+        }
+        connection(ctx, op, arg).unwrap_or_else(|| std::process::abort())
     }
 }
 
 /// The facts read from the server, the worker, the event head and the globals.
+#[inline(always)]
 fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let config = ctx.config();
     Some(match op {
@@ -129,6 +140,7 @@ fn fact(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The server's PHP-facing callbacks.
+#[inline(always)]
 fn callback(ctx: &Context, op: u32) -> Option<u64> {
     let callbacks = &ctx.state().callbacks;
     let (index, data) = match op {
@@ -163,6 +175,7 @@ fn callback(ctx: &Context, op: u32) -> Option<u64> {
 }
 
 /// The effects on the worker, the server and the process.
+#[inline(always)]
 fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
     match op {
@@ -235,6 +248,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// `Server::foreach_connection`'s selected connection.
+#[inline(always)]
 fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     if op == OP_CONN_AT {
         let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
