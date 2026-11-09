@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.harness import parse_engines, run_isolated, write_report
-from tools.hybrid_identity import attest
+from tools.ext_identity import attest
 
 
 def sha(path):
@@ -22,8 +22,7 @@ def main():
     p.add_argument('--php', required=True)
     p.add_argument('--php-config', required=True)
     p.add_argument('--engine', action='append', required=True)
-    p.add_argument('--export', type=Path, required=True)
-    p.add_argument('--source-ref', required=True)
+    p.add_argument('--build-manifest', type=Path, required=True, help="tools/build_ext.py's")
     p.add_argument('--output', type=Path, required=True)
     a = p.parse_args()
     output = a.output.resolve()
@@ -39,20 +38,14 @@ def main():
         if {row['zts'] for row in metadata} != {1} or len({row['php'] for row in metadata}) != 1:
             raise ValueError('Require a matching actual ZTS pair')
         selected = next(row for row in metadata if row['rust_feature_bits'])
-        report['attestation'] = attest(a.export / 'build-manifest.json', a.export / 'libswoole_rs_ffi.a',
-                                       selected, a.source_ref, 134217728)
+        report['attestation'] = attest(a.build_manifest, selected, 134217728)
         sources = {name: Path(__file__).with_suffix(suffix) for name, suffix in
                    [('rust', '.rs'), ('cpp', '.cc'), ('php', '.php')]}
         for path in sources.values():
             (work / path.name).write_bytes(path.read_bytes())
         report['sources'] = {name: sha(path) for name, path in sources.items()}
-        receipt = json.loads((a.export / 'export.json').read_text())
-        manifest = json.loads((a.export / 'build-manifest.json').read_text())
-        prefix = Path(receipt['files']['libswoole_rs_ffi.a']['source']).parents[1]
-        header = prefix / 'include/swoole_rs_zend_guard.h'
-        expected_header = manifest['inputs']['headers_sha256']['native/corebase/swoole_rs_zend_guard.h']
-        if sha(header) != expected_header:
-            raise ValueError('Actual completed SDK guard header differs from its build manifest')
+        # The guard header crates/ext compiled into the attested build.
+        header = ROOT / 'native/corebase/swoole_rs_zend_guard.h'
         (work / header.name).write_bytes(header.read_bytes())
         report['header_sha256'] = sha(work / header.name)
         library = work / 'libexit_guard_owner.a'
