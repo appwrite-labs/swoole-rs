@@ -755,10 +755,8 @@ pub(crate) fn event_wait() {
 }
 
 /// `Coroutine::set_stack_size(php_swoole_parse_to_size(size))`.
-pub(crate) fn set_stack_size(size: *mut zval) {
-    // SAFETY: a live zval.
-    let size = unsafe { swoole_rs_zend::Value::from_ptr(size) }
-        .map_or(0, swoole_rs_phpswoole::php_swoole_parse_to_size);
+pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
+    let size = swoole_rs_phpswoole::php_swoole_parse_to_size(size);
     let size = usize::try_from(size.cast_unsigned()).unwrap_or(usize::MAX);
     // SAFETY: this thread's scheduler.
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_set_stack_size(scheduler(), size) };

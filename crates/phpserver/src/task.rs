@@ -6,6 +6,7 @@
 //! with `SW_TASK_SERIALIZE`), packed, sent and waited for by crates/process's
 //! `Server` methods over this worker's task pool, notify pipe and lock ([`Host`]).
 use crate::dispatch::{handler_error, invoke, server_callback, server_zval, set_last_error, undef};
+use crate::lifecycle::Props;
 use crate::server::{DATA, TASK, fatal, running};
 use std::{
     cell::RefCell,
@@ -29,13 +30,12 @@ use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
     Call, E_WARNING,
     bailout::Bailout,
-    each_value, init_object, long_zval, message, object_of, php_error,
+    each_value, long_zval, message, php_error,
     string::bytes,
     sys::{
         IS_ARRAY, IS_NULL, add_index_bool, swr_zend_serialize, swr_zend_string_release,
-        swr_zend_unserialize, swr_zval_is_true, swr_zval_stringl, zend_class_entry,
-        zend_hash_index_find, zend_hash_index_update, zend_object, zend_update_property,
-        zend_update_property_double, zend_update_property_long, zval, zval_ptr_dtor,
+        swr_zend_unserialize, swr_zval_is_true, swr_zval_stringl, zend_hash_index_find,
+        zend_hash_index_update, zval, zval_ptr_dtor,
     },
     type_of,
     value::{array_init, count, table},
@@ -757,21 +757,6 @@ fn event_warning(text: &CStr) -> Result<(), Bailout> {
     unsafe { php_error(E_WARNING, text) }
 }
 
-fn set_long(ce: *mut zend_class_entry, object: *mut zend_object, name: &CStr, value: i64) {
-    // SAFETY: a live object of `ce`; Zend copies the name.
-    unsafe { zend_update_property_long(ce, object, name.as_ptr(), name.count_bytes(), value) };
-}
-
-fn set_double(ce: *mut zend_class_entry, object: *mut zend_object, name: &CStr, value: f64) {
-    // SAFETY: as above.
-    unsafe { zend_update_property_double(ce, object, name.as_ptr(), name.count_bytes(), value) };
-}
-
-fn set_value(ce: *mut zend_class_entry, object: *mut zend_object, name: &CStr, value: *mut zval) {
-    // SAFETY: as above; the property takes its own reference.
-    unsafe { zend_update_property(ce, object, name.as_ptr(), name.count_bytes(), value) };
-}
-
 /// Unpack `req` into a value, or `None` (`Err` for a trapped bailout).
 fn unpack(req: *mut c_void) -> Result<Option<zval>, Bailout> {
     let mut data = undef();
@@ -790,17 +775,13 @@ pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_in
     let info = info(req);
     let mut args = [zserv, undef(), undef(), undef()];
     let argc = if facts.task_object {
-        let ce = TASK.entry();
-        // SAFETY: a writable zval and the registered Task class.
-        unsafe { init_object(&raw mut args[1], ce) };
-        // SAFETY: an object zval.
-        let object = unsafe { object_of(&raw const args[1]) };
-        crate::server::task_bind(object, server.raw(), head(req));
-        set_long(ce, object, c"worker_id", info.worker_id);
-        set_long(ce, object, c"id", info.id);
-        set_value(ce, object, c"data", &raw mut data);
-        set_double(ce, object, c"dispatch_time", info.time);
-        set_long(ce, object, c"flags", info.flags);
+        let props = Props::init(&mut args[1], &TASK);
+        crate::server::task_bind(props.object(), server.raw(), head(req));
+        props.long(c"worker_id", info.worker_id);
+        props.long(c"id", info.id);
+        props.value(c"data", &mut data);
+        props.double(c"dispatch_time", info.time);
+        props.long(c"flags", info.flags);
         2
     } else {
         args[1] = long_zval(info.id);
@@ -869,15 +850,11 @@ pub(crate) fn on_finish(server: view::Server<'_>, req: *mut c_void) -> Result<c_
     let facts = facts(server);
     let mut args = [zserv, undef(), undef()];
     let argc = if facts.event_object {
-        let ce = DATA[TASK_RESULT].entry();
-        // SAFETY: a writable zval and the registered TaskResult class.
-        unsafe { init_object(&raw mut args[1], ce) };
-        // SAFETY: an object zval.
-        let object = unsafe { object_of(&raw const args[1]) };
-        set_long(ce, object, c"task_id", id);
-        set_long(ce, object, c"task_worker_id", info.worker_id);
-        set_double(ce, object, c"dispatch_time", info.time);
-        set_value(ce, object, c"data", &raw mut data);
+        let props = Props::init(&mut args[1], &DATA[TASK_RESULT]);
+        props.long(c"task_id", id);
+        props.long(c"task_worker_id", info.worker_id);
+        props.double(c"dispatch_time", info.time);
+        props.value(c"data", &mut data);
         2
     } else {
         args[1] = long_zval(id);
