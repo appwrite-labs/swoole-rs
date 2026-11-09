@@ -152,10 +152,15 @@ unsafe extern "C" {
 #[must_use]
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phphttp_context_new() -> *mut Context {
-    // SAFETY: all zeroes is a valid `State`: null pointers, `None`s and
-    // `IS_UNDEF` zvals, as C++'s value-initialisation left it.
-    let state: Box<State> = unsafe { Box::new_zeroed().assume_init() };
-    Box::into_raw(state).cast()
+    // Not `Box::new_zeroed`: glibc's `calloc` skips the thread cache and cost
+    // 500 instructions a request where `malloc` and a memset cost about 100
+    // (#2129). `black_box` keeps LLVM from folding them back into `calloc`.
+    let state = std::hint::black_box(Box::into_raw(Box::<State>::new_uninit()));
+    // SAFETY: a fresh, writable `State`; all zeroes is a valid one (null
+    // pointers, `None`s and `IS_UNDEF` zvals, as C++'s value-initialisation
+    // left it), which `swr_v1_phphttp_context_free` drops as a `Box<State>`.
+    unsafe { state.write_bytes(0, 1) };
+    state.cast()
 }
 
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
