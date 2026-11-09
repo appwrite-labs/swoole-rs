@@ -142,9 +142,11 @@ pub unsafe extern "C" fn swr_v1_server_connection(
     let tables = unsafe { &*state }.tables_ref();
     let mut session_id = 0;
     let fd = if matches!(kind, 1..=3) {
-        let slot = tables
-            .session_list
-            .wrapping_offset(isize::try_from(key % 1_048_576).unwrap_or_default());
+        // Session ids are positive; a negative key names no session.
+        let Ok(index) = usize::try_from(key % 1_048_576) else {
+            return core::ptr::null_mut();
+        };
+        let slot = tables.session_list.wrapping_add(index);
         // SAFETY: the requested session is in the initialized shared table.
         let session = unsafe { &*slot };
         session_id = session.id;
@@ -278,6 +280,8 @@ mod tests {
             assert_eq!(swr_v1_server_connection(state, 1, 2), expected);
             assert!(swr_v1_server_connection(state, 1_048_577, 2).is_null());
             assert!(swr_v1_server_connection(state, -1, 0).is_null());
+            assert!(swr_v1_server_connection(state, -1, 1).is_null());
+            assert!(swr_v1_server_connection(state, -1, 2).is_null());
             assert!(swr_v1_server_connection(state, 3, 0).is_null());
             connections[2].ssl = 1;
             assert!(swr_v1_server_connection(state, 1, 3).is_null());
