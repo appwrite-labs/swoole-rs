@@ -656,8 +656,7 @@ impl HttpRequest {
     #[must_use]
     pub fn has_expect_header(&self) -> bool {
         let (_, input) = self.input();
-        // SAFETY: `input` is readable for its length.
-        unsafe { crate::swr_v1_http_expect(input.as_ptr(), input.len()) > 0 }
+        crate::framing::expect(input)
     }
 
     /// The value of header `name`, as a span of the buffer.
@@ -692,19 +691,11 @@ pub unsafe fn init_multipart_parser(
     let Some(form) = r.form.as_deref() else {
         return false;
     };
-    let mut boundary = HttpSpan::default();
     // SAFETY: the boundary still points into the header buffer it was found in.
-    if unsafe {
-        crate::swr_v1_http_boundary(
-            form.boundary,
-            form.boundary_length as usize,
-            0,
-            &raw mut boundary,
-        )
-    } != 1
-    {
+    let text = unsafe { crate::bytes(form.boundary, form.boundary_length as usize) };
+    let Ok(Some(boundary)) = text.and_then(|text| crate::boundary(text, 0)) else {
         return false;
-    }
+    };
     let at = form.boundary.wrapping_add(boundary.offset);
     let parser = r.op(
         PARSER_NEW,
@@ -806,7 +797,7 @@ pub unsafe fn parse_multipart_data(request: *mut HttpRequest, buffer: *mut HttpS
         unsafe { native(PARSER_EXECUTE, parser.cast(), data, length as u64, 0) }.cast_signed();
     // SAFETY: per the contract.
     let r = unsafe { &*request };
-    match crate::swr_v1_http_multipart_result(processed, length, r.excepted.into()) {
+    match crate::multipart::multipart_result(processed, length, r.excepted.into()) {
         outcome if outcome < 0 => {
             r.op(LOG_PARSE_REASON, parser.cast(), ptr::null(), 0, 0);
             false
@@ -897,8 +888,7 @@ unsafe extern "C" fn on_header_value(
     // SAFETY: the parser lends `length` bytes at `at`.
     let mut value = unsafe { core::slice::from_raw_parts(at.cast::<u8>(), length) }.to_vec();
     value.push(0);
-    // SAFETY: `value` is writable and NUL-terminated.
-    if unsafe { crate::swr_v1_http_multipart_filename(value.as_mut_ptr(), value.len()) } != 1 {
+    if crate::multipart::multipart_filename(&mut value) != 1 {
         return 0;
     }
     let form = form_of(request);
@@ -1295,17 +1285,9 @@ mod tests {
         assert_eq!(url, b"/index.html", "its URL");
 
         // A long URL: `append_random_bytes(swoole_rand(1024, 2048), 1)` after `?a=`.
-        let raw = vec![0u8; usize::try_from(swoole_rs_corebase::swoole_rand(1024, 2048)).unwrap()];
-        // SAFETY: `raw` is writable for its length.
-        assert_eq!(
-            unsafe {
-                swoole_rs_corebase::swr_v1_os_random_bytes(
-                    raw.as_ptr().cast_mut().cast(),
-                    raw.len(),
-                )
-            },
-            raw.len()
-        );
+        let mut raw =
+            vec![0u8; usize::try_from(swoole_rs_corebase::swoole_rand(1024, 2048)).unwrap()];
+        assert_eq!(swoole_rs_corebase::random_bytes(&mut raw), raw.len());
         let mut encoded = vec![0u8; raw.len().div_ceil(3) * 4 + 1];
         let n = swoole_rs_base64::encode(&raw, &mut encoded);
         let text = [
@@ -1377,13 +1359,12 @@ mod tests {
     fn all_method() {
         let pri = 27;
         for i in 0..pri + 4 {
-            let name = crate::http_server::get_method_string(i);
-            if i == 0 || i > pri {
-                assert!(name.is_null(), "{i}");
+            let Some(name) = crate::method_string(i) else {
+                assert!(i == 0 || i > pri, "{i}");
                 continue;
-            }
-            // SAFETY: a known method's name is static NUL-terminated text.
-            let name = unsafe { core::ffi::CStr::from_ptr(name) }.to_bytes();
+            };
+            assert!(i != 0 && i <= pri, "{i}");
+            let name = name.to_bytes();
             let mut i_ = input(&[name, b" / HTTP/1.1\r\nHost: example.com\r\n\r\n"].concat());
             let mut r = request(&mut i_);
             if i == pri {

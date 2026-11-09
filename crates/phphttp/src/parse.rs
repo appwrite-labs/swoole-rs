@@ -10,7 +10,6 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
 use swoole_rs_corebase::log;
-use swoole_rs_http::{HttpSpan, swr_v1_http_boundary};
 use swoole_rs_httpbindings::{
     RequestHeader, Text, Trimmed, UrlParts, request_header, request_key,
     swr_v1_httpbindings_body_prefix, swr_v1_httpbindings_compression,
@@ -975,18 +974,19 @@ fn multipart_boundary(
     length: usize,
     offset: usize,
 ) -> Option<(*const u8, usize)> {
-    let mut span = HttpSpan {
-        offset: 0,
-        length: 0,
+    let input = if length == 0 {
+        &[][..]
+    } else {
+        // SAFETY: the header value's span.
+        unsafe { core::slice::from_raw_parts(at, length) }
     };
-    // SAFETY: the header value's span and a writable result.
-    if unsafe { swr_v1_http_boundary(at, length, offset, &raw mut span) } != 1 {
+    let Ok(Some(span)) = swoole_rs_http::boundary(input, offset) else {
         let message = format!("boundary of multipart/form-data not found, fd:{}", state.fd);
         host::log(0, 0, c"Context::get_multipart_boundary", message);
         /* make it same with protocol error */
         state.parser.error = INVALID_HEADER_TOKEN;
         return None;
-    }
+    };
     Some((at.wrapping_add(span.offset), span.length))
 }
 

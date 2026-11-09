@@ -19,6 +19,7 @@ mod host;
 mod lifecycle;
 pub mod log;
 pub mod native;
+pub mod net_address;
 pub mod net_types;
 mod random;
 mod signal_mask;
@@ -58,7 +59,7 @@ pub use lifecycle::{
     swoole_thread_init, swr_v1_core_swoole_init, swr_v1_core_thread_global, swr_v1_core_timer_slot,
     thread_async_threads, thread_id, thread_kind, thread_message_bus, thread_reactor,
 };
-pub use random::{random_bytes, swoole_random_string, swr_v1_os_random_bytes};
+pub use random::{random_bytes, swoole_random_string};
 pub use thread::*;
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};
@@ -234,6 +235,37 @@ pub extern "C" fn swoole_dec2hex(value: c_ulong, base: c_int) -> *mut c_char {
     let digits = buffer.as_ptr().wrapping_add(first).cast();
     // SAFETY: `digits` starts the NUL-terminated digits `radix` just wrote into `buffer`.
     unsafe { strndup(digits, buffer.len() - first - 1) }
+}
+
+/// format.c's printf family under its public names, which swoole.h's inline logging
+/// calls from native extensions. A C definition would stay hidden in the Cargo-built
+/// swoole.so, as a cdylib exports only Rust's symbols, so each is a naked tail jump to
+/// the C body, which keeps its variadic arguments in place.
+macro_rules! format_exports {
+    ($($export:ident => $definition:ident),* $(,)?) => {
+        #[cfg(feature = "upstream-symbols")]
+        unsafe extern "C" {
+            $(fn $definition();)*
+        }
+        $(
+            #[doc = concat!("`", stringify!($export), "`, exported.")]
+            #[cfg(feature = "upstream-symbols")]
+            #[unsafe(naked)]
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $export() {
+                #[cfg(target_arch = "x86_64")]
+                core::arch::naked_asm!("jmp {}@PLT", sym $definition);
+                #[cfg(target_arch = "aarch64")]
+                core::arch::naked_asm!("b {}", sym $definition);
+            }
+        )*
+    };
+}
+
+format_exports! {
+    sw_vsnprintf => swr_c_sw_vsnprintf,
+    sw_snprintf => swr_c_sw_snprintf,
+    sw_printf => swr_c_sw_printf,
 }
 
 /// `SW_LOG_ERROR` and `SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT`.

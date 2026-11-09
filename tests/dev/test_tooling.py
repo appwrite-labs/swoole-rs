@@ -439,7 +439,7 @@ class Lanes(unittest.TestCase):
                     patch.object(dev.subprocess, 'run', return_value=SimpleNamespace(stdout=compiled_in)):
                 commands = dict(dev.plan(args, ROOT / 'target/reports/collections'))
             for phase in ['phpcollections-runtime',
-                          'base64-consumers-upstream', 'base64-consumers-hybrid', 'phphelpers-module']:
+                          'base64-consumers-upstream', 'base64-consumers-cargo', 'phphelpers-module']:
                 loaded = [commands[phase][i+1] for i, argument in enumerate(commands[phase])
                           if argument == '--php-extension']
                 self.assertEqual(loaded.count('curl'), expected)
@@ -481,8 +481,8 @@ class Lanes(unittest.TestCase):
         self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
         self.assertIn('--archive',commands['hooks-compile'])
-        for name in ['reference-identity','base64-consumers-upstream','base64-consumers-hybrid',
-                     'crc32-consumers-upstream','crc32-consumers-hybrid',
+        for name in ['reference-identity','base64-consumers-upstream','base64-consumers-cargo',
+                     'crc32-consumers-upstream','crc32-consumers-cargo',
                      'corebase-startup','corebase-record-views']:
             self.assertIn(name,commands)
         self.assertIn('--build-manifest', commands['corebase-startup'])
@@ -494,12 +494,19 @@ class Lanes(unittest.TestCase):
         self.assertIn('--export', commands['reference-build'])
         self.assertIn('--reference', commands['abi'])
         self.assertNotIn('--startup-only', commands['abi'])
+        # Nothing loads the hybrid's swoole.so (#2199); the native gates link only its archive and tree.
+        self.assertTrue(commands['abi'][commands['abi'].index('--extension') + 1].endswith('target/ext/swoole.so'))
+        self.assertFalse([name for name, command in commands.items()
+                          if any('target/hybrid/rust' in arg and arg.endswith('swoole.so') for arg in command)])
+        self.assertNotIn('--export', commands['build'])
+        self.assertNotIn('core_check', ' '.join(commands['error-native']))
         self.assertIn('--sanitize', commands['buffer-posix-iovec'])
         self.assertIn('--sanitize', commands['ports-callback-property'])
         for family in ['logger', 'hash', 'global-logger', 'redirect']:
             command = commands['utilities-' + family + '-originals']
             self.assertIn('--' + family + '-originals', command)
-            self.assertTrue(any('selected-export/swoole.so' in arg for arg in command))
+            self.assertIn('cargo=' + str(ROOT / 'target/ext/swoole.so'), command)
+            self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
             self.assertNotEqual(command[command.index('--source-ref') + 1], 'HEAD')
         for family in ['logger', 'hash']:
             command = commands['utilities-' + family + '-originals']
@@ -529,7 +536,6 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('ports-php', commands)
         self.assertNotIn('ports-callback-php', commands)
         self.assertNotIn('--case', commands['ports-configuration'])
-        self.assertIn('--export', commands['build'])
         self.assertIn('--build-manifest', stdext['phphelpers-runtime'])
         self.assertEqual(stdext['phphelpers-runtime'].count('--engine'), 2)
         self.assertNotIn('phphelpers-policy', commands)
@@ -605,36 +611,6 @@ class Lanes(unittest.TestCase):
                 self.assertIn('tests/swoole_server/sendfile_02.phpt', original)
                 self.assertIn('--require-all', original)
                 self.assertIn('--isolate-cases', original)
-
-    def test_php_sockets_reuse_rejects_mismatched_native_or_configured_profile(self):
-        import hashlib
-        profiles = [(False, False, False, False, True), (True, True, True, True, True),
-                    (True, True, False, True, False), (True, False, True, True, False),
-                    (True, True, True, False, False), (False, True, True, True, False)]
-        for requested, selected, native, configured, accepted in profiles:
-            with self.subTest(profile=(requested, selected, native, configured)), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                args = SimpleNamespace(lane='integrate', module=['http'], stdext=False,
-                                       php_sockets=requested, fix_halfclose=False, artifacts_from=root/'exports')
-                for label, variant in [('selected', dev.build_variant(args)),
-                                       ('native', 'upstream' + ('-php-sockets' if requested else ''))]:
-                    folder = args.artifacts_from/(label+'-export'); folder.mkdir(parents=True)
-                    manifest = json.dumps(dict(build_mode='immutable',
-                        configure=['--enable-sockets'] if configured else ['--disable-sockets'],
-                        inputs=dict(modules=sorted(dev.MODULES), fix_halfclose=False,
-                                    php_sockets_requested=selected if label=='selected' else native))).encode()
-                    files = {}
-                    for name, data in [('build-manifest.json', manifest), ('swoole.so', b'fixture only')]:
-                        (folder/name).write_bytes(data); files[name] = {'sha256': hashlib.sha256(data).hexdigest()}
-                        target = root/'target/hybrid'/variant/('modules/swoole.so' if name=='swoole.so' else name)
-                        target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
-                    (folder/'export.json').write_text(json.dumps(dict(source_ref='fixture', files=files)))
-                with patch.object(dev, 'ROOT', root), patch.object(dev.subprocess, 'check_output', return_value='fixture'):
-                    if accepted:
-                        self.assertEqual(set(dev.verify_artifact_report(args)), {'selected', 'native'})
-                    else:
-                        with self.assertRaisesRegex(ValueError, 'Artifact configuration differs'):
-                            dev.verify_artifact_report(args)
 
     def test_stdext_uses_separate_real_native_and_rust_profiles(self):
         args = SimpleNamespace(lane='integrate', module=['phphelpers'], stdext=True, php='php',

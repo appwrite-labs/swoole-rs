@@ -1,5 +1,5 @@
 //! Static path/selection policy with native filesystem and allocation boundaries.
-use crate::{INVALID, OVERFLOW, bytes};
+use crate::{INVALID, OVERFLOW};
 
 #[repr(C)]
 #[derive(Default)]
@@ -36,36 +36,12 @@ pub(crate) fn prefix(input: &[u8], expected: &[u8], ignore_case: bool) -> bool {
     }
     true
 }
-/// `location_match` for `tests/modules/http/locale_gate.cc`.
-/// # Safety
-/// Input spans are initialized; aligned state is writable and disjoint. No
-/// allocation, callback or retained Rust reference occurs.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_static_location(
-    url: *const u8,
-    url_length: usize,
-    location: *const u8,
-    location_length: usize,
-    state: *mut HttpStaticPath,
-) -> i32 {
-    if state.is_null() {
-        return INVALID;
-    }
-    // SAFETY: the caller lends `url_length` initialized URL bytes.
-    let url = unsafe { bytes(url, url_length) };
-    // SAFETY: the caller lends `location_length` initialized location bytes.
-    let location = unsafe { bytes(location, location_length) };
-    let (url, location) = match (url, location) {
-        (Ok(a), Ok(b)) => (a, b),
-        (Err(e), _) | (_, Err(e)) => return e,
-    };
-    // SAFETY: `state` is non-null (checked above), aligned and exclusive per the caller contract.
-    match location_match(url, location, unsafe { &mut *state }) {
-        Ok(found) => i32::from(found),
-        Err(error) => error,
-    }
-}
-pub(crate) fn location_match(
+/// A configured location against the URL, in the locations step: true, recording
+/// the path as the request's last, when the URL starts with it (any case).
+///
+/// # Errors
+/// `INVALID` outside the locations step.
+pub fn location_match(
     url: &[u8],
     location: &[u8],
     state: &mut HttpStaticPath,

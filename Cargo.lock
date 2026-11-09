@@ -426,6 +426,7 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-reactor",
+ "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
 
@@ -509,6 +510,7 @@ dependencies = [
  "swoole-rs-firebird",
  "swoole-rs-hooks",
  "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-http2",
  "swoole-rs-httpbindings",
  "swoole-rs-locks",
@@ -597,6 +599,14 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
+]
+
+[[package]]
+name = "swoole-rs-http-ffi"
+version = "0.1.0"
+dependencies = [
+ "swoole-rs-corebase",
+ "swoole-rs-http",
 ]
 
 [[package]]
@@ -1101,7 +1111,6 @@ dependencies = [
  "libc",
  "openssl-sys",
  "swoole-rs-buffer",
- "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
  "swoole-rs-reactor",

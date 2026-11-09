@@ -77,11 +77,23 @@ impl Heap {
         slot
     }
     pub(super) fn swap_remove(&mut self, index: usize) -> Option<TimerView> {
-        let key = (index < self.order.len()).then(|| self.order.swap_remove(index))?;
-        self.repair(index);
-        let entry = self.slots.get_mut(key.slot)?;
+        let removed = *self.order.get(index)?;
+        let last = self.order.pop()?;
+        if index < self.order.len() {
+            // Floyd's: walk the hole to a leaf along the smaller children, one
+            // comparison a level, then sift the last entry up from there, which
+            // usually stops at once: the last entry was a leaf, so it ranks late.
+            let mut hole = index;
+            while let Some((child, below)) = self.smaller_child(hole) {
+                self.put(hole, below);
+                hole = child;
+            }
+            self.put(hole, last);
+            self.sift_up(hole);
+        }
+        let entry = self.slots.get_mut(removed.slot)?;
         entry.position = self.free;
-        self.free = key.slot + 1;
+        self.free = removed.slot + 1;
         Some(entry.view)
     }
     fn repair(&mut self, index: usize) {
@@ -97,16 +109,23 @@ impl Heap {
             slot,
         })
     }
-    fn place(&mut self, index: usize, slot: usize) {
-        if let Some(key) = self.order.get_mut(index)
-            && let Some(entry) = self.slots.get_mut(slot)
+    // Stores `key` at `index`; its rank is its slot's current one.
+    fn put(&mut self, index: usize, key: Key) {
+        if let Some(entry) = self.order.get_mut(index)
+            && let Some(slot) = self.slots.get_mut(key.slot)
         {
-            *key = Key {
-                slot,
-                rank: (entry.view.deadline, entry.view.id),
-            };
-            entry.position = index;
+            *entry = key;
+            slot.position = index;
         }
+    }
+    // The lower-ranked child of `index` and its key, if it has one.
+    fn smaller_child(&self, index: usize) -> Option<(usize, Key)> {
+        let left = index.checked_mul(2)?.checked_add(1)?;
+        let below_left = *self.order.get(left)?;
+        Some(match self.order.get(left + 1) {
+            Some(&right) if right.rank < below_left.rank => (left + 1, right),
+            _ => (left, below_left),
+        })
     }
     fn sift_up(&mut self, mut index: usize) -> usize {
         let Some(key) = self.key(index) else {
@@ -116,29 +135,22 @@ impl Heap {
             && let Some(&above) = self.order.get(parent)
             && key.rank < above.rank
         {
-            self.place(index, above.slot);
+            self.put(index, above);
             index = parent;
         }
-        self.place(index, key.slot);
+        self.put(index, key);
         index
     }
     fn sift_down(&mut self, mut index: usize) {
         let Some(key) = self.key(index) else {
             return;
         };
-        while let Some(left) = index.checked_mul(2).and_then(|i| i.checked_add(1))
-            && let Some(&below_left) = self.order.get(left)
+        while let Some((child, below)) = self.smaller_child(index)
+            && below.rank <= key.rank
         {
-            let (child, below) = match self.order.get(left + 1) {
-                Some(&right) if right.rank < below_left.rank => (left + 1, right),
-                _ => (left, below_left),
-            };
-            if key.rank < below.rank {
-                break;
-            }
-            self.place(index, below.slot);
+            self.put(index, below);
             index = child;
         }
-        self.place(index, key.slot);
+        self.put(index, key);
     }
 }

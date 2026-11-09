@@ -23,7 +23,7 @@ use swoole_rs_corebase::constants::{
 use swoole_rs_corebase::net_types::{AddressStorage, Protocol, SocketAddress};
 #[cfg(not(test))]
 use swoole_rs_corebase::thread_buffer;
-use swoole_rs_corebase::{ProxyState, ResolverRequest, StringSlot, log, swr_v1_core_proxy_free};
+use swoole_rs_corebase::{ProxyState, ResolverRequest, log, swr_v1_core_proxy_free};
 use swoole_rs_error::ErrorCode;
 #[cfg(not(test))]
 use swoole_rs_reactor::event_api::swoole_event_write;
@@ -32,8 +32,25 @@ use swoole_rs_reactor::{
     SocketRecord, catch_error, fd_clean, swr_v1_socket_buffer_size, swr_v1_socket_defaults,
     swr_v1_socket_domain_and_type,
 };
+#[cfg(not(test))]
+use swoole_rs_tls::ssl_context_create;
+#[cfg(not(test))]
+use swoole_rs_tls::upstream::{
+    socket_free, socket_recv, socket_recv_sync, socket_recvfrom_sync_address, socket_send_sync,
+    socket_sendfile_async, socket_sendfile_sync, socket_ssl_check_host, socket_ssl_close,
+    socket_ssl_connect, socket_ssl_create, socket_ssl_verify,
+};
+use swoole_rs_tls::{
+    OwnedTlsContext, OwnedTlsFields, OwnedTlsPrepared, SslCreateFlag, SslState, SslVersion,
+    swr_v1_tls_owner_free, swr_v1_tls_owner_new, swr_v1_tls_owner_view, swr_v1_tls_warning,
+};
 #[cfg(test)]
-use tests::{async_dispatch, ops, swoole_event_write, thread_buffer};
+use tests::{
+    async_dispatch, ops, socket_free, socket_recv, socket_recv_sync, socket_recvfrom_sync_address,
+    socket_send_sync, socket_sendfile_async, socket_sendfile_sync, socket_ssl_check_host,
+    socket_ssl_close, socket_ssl_connect, socket_ssl_create, socket_ssl_verify, ssl_context_create,
+    swoole_event_write, thread_buffer, writable_callback,
+};
 
 /// The flags `swr_v1_clients_flag` reads.
 pub const ACTIVE: u32 = 0;
@@ -102,11 +119,11 @@ const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 const EVENT_ERROR: c_int = EventType::SW_EVENT_ERROR as c_int;
 const TIMEOUT_ALL: c_int = TimeoutType::SW_TIMEOUT_ALL as c_int;
 /// crates/tls's `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`, `SW_SSL_CLIENT`
-/// and `SW_SSL_DTLS`, which it asserts these match.
-pub const SSL_STATE_READY: u32 = 1;
-pub const SSL_STATE_WAIT_STREAM: u32 = 2;
-pub const SSL_CLIENT: c_int = 2;
-pub const SSL_DTLS: u32 = 1 << 7;
+/// and `SW_SSL_DTLS`.
+pub const SSL_STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
+pub const SSL_STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32;
+pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
+pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
 /// `SSLContext::TLS_HOST_NAME`'s string slot.
 const TLS_HOST_NAME: usize = 8;
 /// OpenSSL's `SSL_CTRL_SET_TLSEXT_HOSTNAME` and `TLSEXT_NAMETYPE_host_name`.
@@ -130,70 +147,10 @@ const ERROR_SOCKS5_HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SOCKS5_HANDSHAK
 const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
     ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR as c_int;
 
-// SAFETY: crates/tls's, crates/reactor's and crates/ports' definitions under
-// upstream's names, which the hybrid links (the unit tests define doubles). They
-// sit above this crate, so it reaches them by symbol.
+// SAFETY: crates/tls's reactor write, which only its `upstream-symbols` build
+// defines, under upstream's name (the unit tests use a double instead).
+#[cfg(not(test))]
 unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole7network6Socket4recvEPvmi"]
-    fn socket_recv(
-        socket: *mut SocketRecord,
-        data: *mut c_void,
-        length: usize,
-        flags: c_int,
-    ) -> isize;
-    #[link_name = "_ZN6swoole7network6Socket9recv_syncEPvmi"]
-    fn socket_recv_sync(
-        socket: *mut SocketRecord,
-        data: *mut c_void,
-        length: usize,
-        flags: c_int,
-    ) -> isize;
-    #[link_name = "_ZN6swoole7network6Socket9send_syncEPKvmi"]
-    fn socket_send_sync(
-        socket: *mut SocketRecord,
-        data: *const c_void,
-        length: usize,
-        flags: c_int,
-    ) -> isize;
-    #[link_name = "_ZN6swoole7network6Socket13recvfrom_syncEPcmiPNS0_7AddressE"]
-    fn socket_recvfrom_sync(
-        socket: *mut SocketRecord,
-        data: *mut c_char,
-        length: usize,
-        flags: c_int,
-        address: *mut SocketAddress,
-    ) -> isize;
-    #[cfg_attr(
-        target_os = "macos",
-        link_name = "_ZN6swoole7network6Socket13sendfile_syncEPKcxm"
-    )]
-    #[cfg_attr(
-        not(target_os = "macos"),
-        link_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm"
-    )]
-    fn socket_sendfile_sync(
-        socket: *mut SocketRecord,
-        file: *const c_char,
-        offset: libc::off_t,
-        length: usize,
-    ) -> c_int;
-    #[cfg_attr(
-        target_os = "macos",
-        link_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKcxm"
-    )]
-    #[cfg_attr(
-        not(target_os = "macos"),
-        link_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKclm"
-    )]
-    fn socket_sendfile_async(
-        socket: *mut SocketRecord,
-        file: *const c_char,
-        offset: libc::off_t,
-        length: usize,
-    ) -> c_int;
-    /// `socket->free()`: deferred to the reactor when there is one.
-    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free(socket: *mut SocketRecord);
     #[link_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE"]
     fn writable_callback(reactor: *mut c_void, event: *mut c_void) -> c_int;
 }
@@ -226,64 +183,10 @@ pub fn set_framing(framing: Framing) {
     FRAMING.get_or_init(|| framing);
 }
 
-/// `SSLContext`: crates/tls's reference-counted owner.
-pub type TlsOwner = c_void;
-
-/// crates/tls's `OwnedTlsFields` (`swr_v1_tls_owner_fields`).
-#[repr(C)]
-struct TlsFields {
-    http: u8,
-    http_v2: u8,
-    prefer_server_ciphers: u8,
-    session_tickets: u8,
-    stapling: u8,
-    stapling_verify: u8,
-    disable_tls_host_name: u8,
-    grease: u8,
-    verify_depth: u8,
-    disable_compress: u8,
-    verify_peer: u8,
-    allow_self_signed: u8,
-    protocols: u32,
-    create_flag: u8,
-    context: *mut c_void,
-}
-
-const _: () = assert!(
-    size_of::<TlsFields>() == 32 && core::mem::offset_of!(TlsFields, context) == 24,
-    "crates/tls's OwnedTlsFields layout"
-);
-
-/// crates/tls's `OwnedTlsPrepared` (`swr_v1_tls_owner_prepared`).
-#[repr(C)]
-struct TlsView {
-    owner: *const TlsOwner,
-    fields: *mut TlsFields,
-    strings: [*const c_void; 11],
-}
-
-type TlsWarn = unsafe extern "C" fn(function: *const c_char, message: *const c_char);
-
-// SAFETY: crates/tls's and crates/protocols-ffi's definitions (the TLS context and
-// session, the SOCKS5 codec) and OpenSSL's, which the hybrid links (the unit tests
-// define doubles). Those crates sit above this one, so it reaches them by symbol.
+// SAFETY: crates/protocols-ffi's definitions (the SOCKS5 codec) and OpenSSL's, which
+// the hybrid links (the unit tests define doubles). crates/protocols-ffi sits above
+// this one, so it reaches them by symbol.
 unsafe extern "C" {
-    fn swr_v1_tls_warning(function: *const c_char, message: *const c_char);
-    fn swr_v1_tls_owner_new(warn: TlsWarn) -> TlsView;
-    fn swr_v1_tls_owner_view(owner: *const TlsOwner) -> TlsView;
-    fn swr_v1_tls_owner_free(owner: *const TlsOwner);
-    #[link_name = "_ZN6swoole10SSLContext6createEv"]
-    fn tls_create(owner: *const TlsOwner) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket10ssl_createEPNS_10SSLContextEi"]
-    fn socket_ssl_create(socket: *mut SocketRecord, owner: *const TlsOwner, flags: c_int) -> c_int;
-    #[link_name = "_ZN6swoole7network6Socket11ssl_connectEv"]
-    fn socket_ssl_connect(socket: *mut SocketRecord) -> c_int;
-    #[link_name = "_ZNK6swoole7network6Socket10ssl_verifyEb"]
-    fn socket_ssl_verify(socket: *const SocketRecord, allow_self_signed: bool) -> bool;
-    #[link_name = "_ZNK6swoole7network6Socket14ssl_check_hostEPKc"]
-    fn socket_ssl_check_host(socket: *const SocketRecord, name: *const c_char) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket9ssl_closeEv"]
-    fn socket_ssl_close(socket: *mut SocketRecord);
     #[link_name = "SSL_ctrl"]
     fn ssl_ctrl(
         ssl: *mut c_void,
@@ -398,7 +301,7 @@ pub struct Client {
     /// `1 << event` for each event the listener hears.
     events: Cell<u32>,
     /// The `SSLContext`, null while TLS is off.
-    tls: Cell<*const TlsOwner>,
+    tls: Cell<*const OwnedTlsContext>,
     /// The proxies, null when unset.
     socks5: Cell<*mut ProxyState>,
     http_proxy: Cell<*mut ProxyState>,
@@ -568,23 +471,25 @@ impl Handle {
     fn recvfrom_sync(self, data: *mut c_char, length: usize, flags: c_int) -> isize {
         let address = &raw mut self.fields().remote_addr;
         // SAFETY: the live socket, `length` writable bytes at `data` and the address.
-        unsafe { socket_recvfrom_sync(self.socket_ptr(), data, length, flags, address) }
+        unsafe {
+            socket_recvfrom_sync_address(self.socket_ptr(), data.cast(), length, flags, address)
+        }
     }
 
     /// The TLS context's view; TLS is on.
-    fn tls(self) -> TlsView {
+    fn tls(self) -> OwnedTlsPrepared {
         // SAFETY: the client's live context.
         unsafe { swr_v1_tls_owner_view(self.get().tls.get()) }
     }
 
-    fn tls_fields(self) -> &'static mut TlsFields {
+    fn tls_fields(self) -> &'static mut OwnedTlsFields {
         // SAFETY: the live context's fields, borrowed only between effects.
         unsafe { &mut *self.tls().fields }
     }
 
     /// The context's SNI host name, NUL-terminated and empty when unset.
     fn tls_host_name(self) -> &'static CStr {
-        let slot = self.tls().strings[TLS_HOST_NAME].cast::<StringSlot>();
+        let slot = self.tls().strings[TLS_HOST_NAME];
         // SAFETY: the live context's slot.
         let name = unsafe { swoole_rs_corebase::swr_v1_core_string_view(slot) };
         // SAFETY: a slot's view is NUL-terminated.
@@ -1253,8 +1158,8 @@ fn enable_ssl(this: Handle) -> c_int {
     if !this.get().tls.get().is_null() {
         return ERR;
     }
-    // SAFETY: a new context and the client's reference to it.
-    let tls = unsafe { swr_v1_tls_owner_new(swr_v1_tls_warning) };
+    // A new context and the client's reference to it.
+    let tls = swr_v1_tls_owner_new(swr_v1_tls_warning);
     this.get().tls.set(tls.owner);
     this.set(OPEN_SSL, true);
     if is_dgram(this.socket().socket_type) {
@@ -1353,7 +1258,9 @@ pub unsafe extern "C" fn swr_v1_clients_proxy_fields(
 /// # Safety
 /// `client` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ssl_context(client: *const Client) -> *const TlsOwner {
+pub unsafe extern "C" fn swr_v1_clients_ssl_context(
+    client: *const Client,
+) -> *const OwnedTlsContext {
     Handle(client.cast_mut()).get().tls.get()
 }
 
@@ -1375,7 +1282,7 @@ fn ssl_handshake(this: Handle) -> c_int {
     if this.tls_fields().context.is_null() {
         this.tls_fields().http_v2 = u8::from(this.fields().http2);
         // SAFETY: the client's live context.
-        if !unsafe { tls_create(tls) } {
+        if !unsafe { ssl_context_create(tls) } {
             return ERR;
         }
     }
@@ -2035,13 +1942,15 @@ fn sendfile(this: Handle, file: *const c_char, offset: i64, length: usize) -> c_
         return ERR;
     }
     let is_async = this.flag(ASYNC);
-    let sendfile = if is_async {
-        socket_sendfile_async
+    let socket = this.socket_ptr();
+    let sent = if is_async {
+        // SAFETY: as the caller promises.
+        unsafe { socket_sendfile_async(socket, file, offset, length) }
     } else {
-        socket_sendfile_sync
+        // SAFETY: as the caller promises.
+        unsafe { socket_sendfile_sync(socket, file, offset, length) }
     };
-    // SAFETY: as the caller promises.
-    if unsafe { sendfile(this.socket_ptr(), file, offset, length) } < 0 {
+    if sent < 0 {
         log::set_last_error(errno());
         return ERR;
     }
