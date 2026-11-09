@@ -101,33 +101,15 @@ void *swr_v1_hook_co_socket_pop_buffer(swr_v1_co_socket *socket, bool write);
  * members through the ring (crates/hooks/src/uring_socket.rs). */
 void swr_v1_hook_co_socket_uring(swr_v1_co_socket *socket);
 
-/* What the Rust operations need from C++ (crates/hooks/src/co_io.rs), installed once. */
+/* What the Rust operations need of C++ types (crates/hooks/src/co_io.rs), installed once. */
 typedef struct {
-    void (*set_last_error)(int);
-    const char *(*strerror)(int);
-    /* Coroutine::get_current_safe(). */
-    void *(*current)(void);
-    /* A coroutine's id, and Coroutine::print_socket_bound_error. */
-    long (*cid)(void *co);
-    void (*bound_error)(int fd, const char *event, long cid);
     /* swoole_timer_add(timeout, false, timer_callback, socket), or null. */
     void *(*timer_add)(swr_v1_co_socket *, double timeout);
     void (*timer_del)(void *node);
-    /* System::sleep(0.01). */
-    void (*sleep)(void);
-    /* swoole_event_add(events) when add, else swoole_event_set(events). */
-    bool (*reactor)(swr_v1_co_socket *, uint32_t events, bool add);
     /* Yields co with cancel(event) as its cancel function. */
     void (*suspend)(swr_v1_co_socket *, void *co, uint32_t event);
     /* Moves a write's bytes to the write buffer unless they are there or the socket is zero-copy. */
     void (*buffer)(swr_v1_co_socket *, char **buffer, size_t length);
-    /* remove_read_event/remove_write_event. */
-    void (*remove)(swr_v1_co_socket *, uint32_t event);
-    /* Resumes a coroutine. */
-    void (*resume)(void *co);
-    /* socket->ssl_shutdown() and socket->check_liveness(). */
-    void (*ssl_shutdown)(swr_v1_co_socket *);
-    bool (*liveness)(swr_v1_co_socket *);
     /* The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes view. */
     void (*read_buffer)(swr_v1_co_socket *, swr_v1_hook_read_buffer *view, uint32_t action, size_t size);
     ssize_t (*recv)(swr_v1_co_socket *, char *, size_t, bool all);

@@ -8,6 +8,21 @@ the coroutine Socket is `native/hooks/system.cc`; `coroutine::Socket` and
 socket through `swr_v1_runtime_socket`; `swoole_socket_hook.h` and
 `swoole_file_hook.h` keep only what `ftp.c` and `plain_wrapper.c` use.
 
+## What stays C++ (`system.cc`)
+
+- `Socket::host_`, for what needs C++ types: the yield with its `std::function`
+  cancel, the read and write `String` buffers, `recv`/`recv_all`, the `Protocol`
+  length callback, the packet diagnostics and `new`/`delete Socket`; and the
+  socket's timers, which `hooks-packet-policy` fakes to fail an allocation as
+  upstream's `TimerController` can. The socket's other effects (last error,
+  `strerror`, the current coroutine and its id, the bound-socket report, the
+  no-buffers sleep, the reactor and the TLS shutdown and liveness probe) are Rust
+  (`co_io::NATIVE`).
+- `Socket::~Socket`, the vtable's key function.
+- `swr_v1_runtime_socket`: `SocketImpl`'s constructors and members the coroutine
+  streams call (`std::string` hosts, proxies, `IOVector`).
+- The hooks host's io_uring pointer and the `HAVE_IOURING_*` configure macros.
+
 ## Hooks and file locks
 
 - hook.cc's socket functions (`swoole_coroutine_socket`, `send`, `recv`,
@@ -58,8 +73,8 @@ aliases are never uninstalled.
   positive progress and picks the next vector after native updates it. Signed
   accumulation is defined only within `ssize_t`.
 - Header policy uses copied event masks/binding facts to select the read or write
-  coroutine field (read wins). CID queries and fatal bound diagnostics stay
-  native and run first. Availability observes native closed state first, then
+  coroutine field (read wins). CID queries and fatal bound diagnostics run
+  first. Availability observes native closed state first, then
   selects EBADF / close-wait / success. Return-value policy selects
   clear / errno-publication / retain without reading errno eagerly.
 - Timeouts: timeval conversion keeps the original two float divisions. The

@@ -22,6 +22,7 @@ swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-coroutine = { path = "../coroutine" }
+swoole-rs-error = { path = "../error" }
 swoole-rs-http = { path = "../http" }
 swoole-rs-ossupport = { path = "../ossupport" }
 swoole-rs-protocols = { path = "../protocols" }
