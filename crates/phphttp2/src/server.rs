@@ -18,7 +18,7 @@ use std::{
 };
 use swoole_rs_http2::{
     Http2ChunkPlan, Http2FrameFacts, Http2HeaderPlan, Http2InflateStep, Http2ReceiveFacts,
-    Http2RespondFacts, Http2SettingPlan, Http2WindowPlan, receive_action as recv,
+    Http2RespondFacts, Http2SettingPlan, Http2WindowPlan, receive_action as recv, send_frame_size,
     sw_rs_http2_chunk, sw_rs_http2_content_length_rejected, sw_rs_http2_decode_frame,
     sw_rs_http2_file_complete, sw_rs_http2_header_defaults, sw_rs_http2_header_plan,
     sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
@@ -194,6 +194,19 @@ pub(crate) fn of(ctx: *mut c_void) -> Option<(Session, Stream)> {
     let session = SessionState::of(ctx)?;
     let stream = session.stream(get(ctx, Field::StreamId), false)?;
     Some((session, stream))
+}
+
+/// `http2_server_check_stream`: whether `stream` is still its session's. A
+/// stream the peer reset, or whose connection closed, ends its response.
+pub(crate) fn current(session: &Session, stream: &Stream) -> bool {
+    if session
+        .stream(stream.id, false)
+        .is_some_and(|found| std::rc::Rc::ptr_eq(&found, stream))
+    {
+        return true;
+    }
+    set(stream.ctx, Field::End, 1);
+    false
 }
 
 /// The HPACK deflater, created on first use as `func`.
@@ -530,15 +543,16 @@ fn has_crlf(value: &[u8]) -> bool {
     false
 }
 
-/// `http2_server_build_trailer`, as an unsealed frame: `None` on an error or
-/// without a trailer.
+/// `http2_server_build_trailer`, as an unsealed frame (an empty block
+/// without a trailer): `None` on an error.
 fn build_trailer(ctx: *mut c_void, session: &Session) -> Option<Headers> {
     let trailer = property(ctx, c"trailer");
     let size = length_safe(trailer);
-    if size == 0 {
-        return None;
-    }
     let mut headers = Headers::new(size);
+    if size == 0 {
+        headers.buffers.frame.resize(FRAME_HEADER, 0);
+        return Some(headers);
+    }
     for (key, value) in entries(trailer) {
         if key.is_null() || is(value, IS_NULL) {
             continue;
@@ -710,6 +724,11 @@ fn send_header(
     end_stream: bool,
 ) -> bool {
     let Some(mut headers) = build_header(ctx, session, body) else {
+        // A failed HPACK encoding leaves the peer's decoder out of step.
+        if !session.deflater.get().is_null() {
+            set(ctx, Field::End, 1);
+            close(ctx);
+        }
         return false;
     };
     let empty = body.is_none_or(|body| body.length == 0);
@@ -732,12 +751,16 @@ pub(crate) fn send_body(
     data: &[u8],
     end_stream: bool,
 ) -> bool {
+    if !current(session, stream) {
+        return false;
+    }
     let flags = if end_stream { FLAG_END_STREAM } else { 0 };
-    let max_frame_size = session.local(MAX_FRAME_SIZE);
     // SAFETY: plain libc.
     let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096);
     let mut rest = data;
     while !rest.is_empty() {
+        // Re-read after a flow-control wait: the peer may have changed it.
+        let max_frame_size = send_frame_size(session.remote[MAX_FRAME_SIZE].get());
         let mut chunk = Http2ChunkPlan::default();
         // SAFETY: a writable plan.
         unsafe { sw_rs_http2_chunk(rest.len(), max_frame_size, flags, &raw mut chunk) };
@@ -755,8 +778,14 @@ pub(crate) fn send_body(
                     "The data sent exceeded remote_window_size",
                 ),
                 2 => {
-                    // In a coroutine: WINDOW_UPDATE wakes it.
+                    // In a coroutine: WINDOW_UPDATE, or the stream's removal, wakes it.
+                    if !current(session, stream) {
+                        return false;
+                    }
                     stream.wait();
+                    if !current(session, stream) {
+                        return false;
+                    }
                     continue;
                 }
                 _ => {
@@ -793,12 +822,10 @@ pub(crate) fn send_body(
     true
 }
 
-/// `Stream::send_trailer`.
+/// `Stream::send_trailer`: HEADERS with `END_STREAM`, even an empty block.
 fn send_trailer(ctx: *mut c_void, session: &Session, stream_id: u32) -> bool {
-    let Some(mut headers) =
-        build_trailer(ctx, session).filter(|headers| headers.buffers.frame.len() > FRAME_HEADER)
-    else {
-        return true;
+    let Some(mut headers) = build_trailer(ctx, session) else {
+        return false;
     };
     send(
         ctx,
@@ -871,7 +898,10 @@ pub(crate) fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
             }
             RESP_ERROR_CLOSE | RESP_REMOVE => {
                 if action == RESP_ERROR_CLOSE {
-                    close(ctx);
+                    // Not when the peer reset the stream or closed meanwhile.
+                    if session.stream(stream.id, false).is_some() {
+                        close(ctx);
+                    }
                 } else {
                     session.remove(stream.id);
                 }
@@ -961,9 +991,10 @@ pub(crate) fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -
     c_int::from(trailer)
 }
 
-pub(crate) fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) {
+/// The trailer, then the stream is done: false after an error.
+pub(crate) fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) -> bool {
     let Some(session) = SessionState::of(ctx) else {
-        return;
+        return false;
     };
     let stream_id = get(ctx, Field::StreamId);
     let mut action = sw_rs_http2_file_complete(u32::from(!error), u32::from(trailer));
@@ -973,8 +1004,17 @@ pub(crate) fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) {
                 let sent = send_trailer(ctx, &session, stream_id);
                 action = sw_rs_http2_file_complete(u32::from(sent), 0);
             }
-            FILE_CLOSE => return close(ctx),
-            _ => return session.remove(stream_id),
+            FILE_CLOSE => {
+                // Not when the peer reset the stream or closed meanwhile.
+                if session.stream(stream_id, false).is_some() {
+                    close(ctx);
+                }
+                return false;
+            }
+            _ => {
+                session.remove(stream_id);
+                return true;
+            }
         }
     }
 }
@@ -1480,9 +1520,7 @@ fn request_header(
 
 /// `:path`: `request_uri`, `path_info` (decoded), `query_string` and `$get`.
 fn path(ctx: *mut c_void, zserver: *mut zval, value: &[u8]) {
-    // `strchr`: the value ends at its first NUL.
-    let text = value.split(|&byte| byte == 0).next().unwrap_or_default();
-    let question = text.iter().position(|&byte| byte == b'?');
+    let question = value.iter().position(|&byte| byte == b'?');
     let path = match question.and_then(|question| value.split_at_checked(question)) {
         Some((path, query)) => {
             let query = query.get(1..).unwrap_or_default();
