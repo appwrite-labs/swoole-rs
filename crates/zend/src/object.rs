@@ -1,13 +1,14 @@
 //! Objects that embed their `zend_object` after Rust data, as Swoole's C++
 //! structs do (`struct { T data; zend_object std; }`).
 use crate::{
-    Class, Value,
+    ArrayMut, Class, Value,
     sys::{
         _zval_struct__bindgen_ty_1, IS_OBJECT_EX, object_init_ex, object_properties_init,
-        swr_zend_class_set_create_object, swr_zend_object_alloc, zend_class_entry, zend_long,
-        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_update_property, zend_update_property_bool, zend_update_property_long,
-        zend_update_property_null, zend_update_property_stringl, zend_value, zval,
+        swr_zend_class_set_create_object, swr_zend_object_alloc, swr_zend_property_array,
+        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
+        zend_object_std_init, zend_update_property, zend_update_property_bool,
+        zend_update_property_long, zend_update_property_null, zend_update_property_stringl,
+        zend_value, zval,
     },
 };
 use std::{
@@ -204,6 +205,23 @@ impl Props<'_> {
         let (scope, object, name, length) = self.at(name);
         // SAFETY: as above, and a live value.
         unsafe { zend_update_property(scope, object, name, length, value.as_ptr()) };
+    }
+}
+
+impl<'a> Props<'a> {
+    /// The array property `name`, made an empty array first unless it is one
+    /// (`swr_zend_property_array`), to add to.
+    /// # Safety
+    /// Nothing else borrows the property, and no PHP code runs, while the
+    /// result is borrowed.
+    #[must_use]
+    #[inline]
+    pub unsafe fn array(self, name: &CStr) -> &'a mut ArrayMut {
+        let (scope, object, name, length) = self.at(name);
+        // SAFETY: a live object and a registered class or null.
+        let array = unsafe { swr_zend_property_array(scope, object, name, length) };
+        // SAFETY: an array property of a live object; per the caller.
+        unsafe { ArrayMut::from_ptr(array) }
     }
 }
 
