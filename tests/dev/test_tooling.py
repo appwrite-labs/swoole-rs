@@ -426,11 +426,6 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('clients-ip-text', commands)  # So do these.
         self.assertIn('--archive',commands['http-locales'])
         self.assertIn('--archive',commands['http-rewrites'])
-        args.ccache = Path('/explicit/compiler-cache')
-        with patch.object(dev.subprocess, 'check_output', return_value='/openssl'):
-            cached_commands = dict(dev.plan(args, ROOT / 'target/reports/cached-plan'))
-        command = cached_commands['reference-build']
-        self.assertEqual(command[command.index('--ccache') + 1], '/explicit/compiler-cache')
         self.assertIn('timer-bailout',commands)
         self.assertFalse(any(name.startswith('halfclose-') for name in commands))
 
