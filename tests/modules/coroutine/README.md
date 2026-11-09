@@ -30,15 +30,9 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 ## Source-body and ABI gates
 
 ```
-python3 tests/modules/coroutine/compile_gate.py --source PINNED_TREE --archive ARCHIVE [--timing] [--stack-usage] \
-  [--backend asm|thread] [--standard c++14|c++17] --report OUT.json
 python3 tools/cargo_asan.py --package swoole-rs-coroutine --report OUT.json
 ```
 
-- `compile_gate.py` compiles `base`, `context` and `thread_context`
-  from the pin (original), and those still in the archive's hybrid tree with its
-  switches, plus native/coroutine's shim (patched, `native_tree`; `base.cc` and
-  `context.cc` are gone).
 - `tools/cargo_asan.py` runs crates/coroutine's unit tests under Rust ASan (the plain
   run is `coroutine-unit`).
 - The scheduler, coroutine state, the live map, stacks and the context switch (crates/coroutine)
