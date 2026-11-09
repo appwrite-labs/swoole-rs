@@ -1,6 +1,6 @@
 name: Sanitizers
-# The all-modules hybrid under ASan and UBSan, with the PHPT selection and the application
-# corpus (tools/asan.py). Nightly, and from the PR tier when a PR touches this run. Any
+# The all-modules hybrid under ASan and UBSan, with the module gates that load it into PHP
+# (the application corpus among them) and the PHPT selection (tools/asan.py). Nightly, and from the PR tier when a PR touches this run. Any
 # sanitizer report fails the run; rerun tools/asan.py locally to read it and file it as a
 # p0 kind:bug, or privately if upstream code is at fault. Reports are never uploaded here.
 on:
@@ -18,9 +18,12 @@ defaults:
 jobs:
   asan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        # Gates compare against accepted patch states at older commits.
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/install
         with:
           packages: clang libclang-rt-dev llvm
@@ -32,7 +35,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/asan/php
-          key: php-asan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+          key: php-asan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/asan.py') }}
       # Sanitized objects never hit the shared ccache (other flags), so this run keeps its own.
       - uses: actions/cache/restore@v4
         with:
@@ -40,6 +43,7 @@ jobs:
           key: ccache-asan-${{ runner.os }}-${{ github.sha }}
           restore-keys: ccache-asan-${{ runner.os }}-
       - run: cargo fetch --locked
+      - run: python3 corpus/thirdparty/hyperf.py --prepare
       - run: python3 tools/asan.py
       - if: always() && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
@@ -50,4 +54,6 @@ jobs:
         if: always()
         with:
           name: asan
-          path: target/asan/*.json
+          path: |
+            target/asan/*.json
+            target/reports/dev/*/loop.json
