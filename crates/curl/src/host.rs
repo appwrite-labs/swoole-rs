@@ -22,10 +22,10 @@ const EVENT_ERROR: c_int = 1 << 11;
 const CO_OUT_OF_COROUTINE: c_int = 10001;
 const CO_HAS_BEEN_BOUND: c_int = 10002;
 
-// SAFETY: native/coroutine/coroutine.cc's, native/timer/timer.cc's,
+// SAFETY: native/timer/timer.cc's,
 // crates/coroutine's, crates/timer's and crates/tls's upstream functions.
 unsafe extern "C-unwind" {
-    fn swr_cpp_coroutine_scheduler() -> *mut c_void;
+    fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
     fn swr_v1_timer_add_plain(
         msec: c_long,
         persistent: bool,
@@ -44,7 +44,7 @@ unsafe extern "C-unwind" {
 
 fn scheduler() -> *mut Scheduler {
     // SAFETY: the address of this thread's scheduler.
-    unsafe { swr_cpp_coroutine_scheduler() }.cast()
+    unsafe { swr_v1_coroutine_scheduler_get() }.cast()
 }
 
 /// The reactor's handler for the cURL fd type: `BITMASK` happened on the

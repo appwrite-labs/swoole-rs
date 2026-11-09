@@ -1,16 +1,16 @@
 //! Upstream's `core-tests/src/coroutine/base.cpp` (`coroutine_base`) and
 //! `coroutine/file.cpp` (`coroutine_async_file`), one function per TEST with the same
-//! inputs and expected values, and the repo-owned `rust_coroutine_lifetime` witness.
+//! inputs and expected values.
 //! Built into the hooks case binary (tests/modules/hooks/system), which links
 //! libswoole.so.
 //!
-//! A `swoole::Coroutine` is a facade whose first member is crates/coroutine's record
-//! (`swr_v1_coroutine`, swoole_rs_coroutine.h), so the two pointers are the same: the
-//! facade's inline getters are field reads here, its operations the
-//! `swr_v1_coroutine_*` exports they call, and its out-of-line members their upstream
-//! symbols. `Coroutine::create` is `swr_cpp_coroutine_create`; what takes a
-//! `std::function` (`coroutine::run`, `bailout`, `swoole_event_defer`) and the
-//! witness, which throws from a `CancelFunc` copy, are in system/fixture.cc.
+//! A `swoole::Coroutine` is crates/coroutine's record (`swr_v1_coroutine`, then its
+//! `swr_v1_context`; swoole_rs_coroutine.h): its getters are field reads here, its
+//! operations the `swr_v1_coroutine_*` exports and upstream symbols.
+//! `Coroutine::create`, `coroutine::run` and `Coroutine::bailout` take a function and
+//! its data here (`swr_v1_coroutine_create`, `swoole_coroutine_create`,
+//! `swr_v1_coroutine_bail`); `swoole_event_defer` has C++ linkage and is in
+//! system/fixture.cc.
 //! `AsyncFile`'s inline members are its `swr_v1_os_async_file_*` calls.
 
 use super::hook::{
@@ -40,10 +40,9 @@ const O_RDWR: c_int = 2;
 const O_CREAT: c_int = 0o100;
 const SEEK_SET: c_int = 0;
 const SEEK_CUR: c_int = 1;
-/// The offset of `Context::ctx_.end` in the facade: `co_` (96 bytes), then the
-/// Context's libstdc++ `std::function` (32), `private_data_` (8) and the
-/// `swr_v1_context` fields before `end` (64).
-const FACADE_END: usize = 96 + 32 + 8 + 64;
+/// The offset of the context's `end` in a coroutine's record: the
+/// `swr_v1_coroutine` (96 bytes), then the `swr_v1_context` fields before `end` (64).
+const FACADE_END: usize = 96 + 64;
 
 type SwapCallback = Option<extern "C" fn(*mut c_void)>;
 type Routine = unsafe extern "C-unwind" fn(*mut c_void);
@@ -93,8 +92,10 @@ struct AsyncEvent {
 
 #[link(name = "swoole")]
 unsafe extern "C-unwind" {
-    fn swr_cpp_coroutine_scheduler() -> *mut Scheduler;
-    fn swr_cpp_coroutine_create(routine: Routine, arg: *mut c_void, func: *const c_void) -> c_long;
+    fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
+    fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
+    fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
+    fn swr_v1_coroutine_bail(fn_: Callback, data: *mut c_void);
     fn swr_v1_coroutine_get(s: *const Scheduler, cid: c_long) -> *mut Co;
     fn swr_v1_coroutine_count(s: *const Scheduler) -> usize;
     fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Co);
@@ -117,10 +118,7 @@ unsafe extern "C-unwind" {
     fn async_dispatch(event: *const AsyncEvent) -> *mut AsyncEvent;
 
     // system/fixture.cc.
-    fn swr_case_coroutine_run(routine: Routine, arg: *mut c_void) -> bool;
-    fn swr_case_bailout(fn_: Callback, data: *mut c_void);
     fn swr_case_event_defer(fn_: Callback, data: *mut c_void);
-    fn swr_case_cancellation_copy_failure_preserves_wait();
 
     fn swr_v1_os_async_file_new() -> *mut c_void;
     fn swr_v1_os_async_file_free(file: *mut c_void);
@@ -176,7 +174,7 @@ unsafe extern "C" {
 
 fn scheduler() -> *mut Scheduler {
     // SAFETY: this thread's scheduler.
-    unsafe { swr_cpp_coroutine_scheduler() }
+    unsafe { swr_v1_coroutine_scheduler_get() }
 }
 
 /// `Coroutine::create(fn)`: runs `body` in a new coroutine until it first yields
@@ -186,15 +184,16 @@ fn create<'a>(body: impl FnOnce() + 'a) -> c_long {
     let arg = Box::into_raw(Box::new(body)).cast::<c_void>();
     // SAFETY: `trampoline` takes the box `arg` owns; the borrows outlive the
     // coroutine, as the C++ lambdas' captures do.
-    unsafe { swr_cpp_coroutine_create(trampoline, arg, std::ptr::null()) }
+    unsafe { swr_v1_coroutine_create(trampoline, arg) }
 }
 
-/// `swoole::coroutine::run(fn)`.
+/// `swoole::coroutine::run(fn)`: outside a loop, `swoole_coroutine_create` runs a
+/// fresh one to the end.
 fn co_run<'a>(body: impl FnOnce() + 'a) -> bool {
     let body: Box<dyn FnOnce() + 'a> = Box::new(body);
     let arg = Box::into_raw(Box::new(body)).cast::<c_void>();
     // SAFETY: as in `create`.
-    unsafe { swr_case_coroutine_run(trampoline, arg) }
+    unsafe { swoole_coroutine_create(trampoline, arg) > 0 }
 }
 
 /// `Coroutine::get_current()`.
@@ -319,9 +318,9 @@ unsafe extern "C" fn call(data: *mut c_void) {
 fn bailout(body: Option<&dyn Fn()>) {
     match body {
         // SAFETY: `body` outlives the call, or the process ends first.
-        Some(body) => unsafe { swr_case_bailout(Some(call), (&raw const body).cast_mut().cast()) },
+        Some(body) => unsafe { swr_v1_coroutine_bail(Some(call), (&raw const body).cast_mut().cast()) },
         // SAFETY: no callback.
-        None => unsafe { swr_case_bailout(None, std::ptr::null_mut()) },
+        None => unsafe { swr_v1_coroutine_bail(None, std::ptr::null_mut()) },
     }
 }
 
@@ -841,16 +840,6 @@ fn async_file() {
     });
 }
 
-/// `rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait` (was
-/// tests/modules/coroutine/lifetime.cpp): its body is system/fixture.cc's.
-fn cancellation_copy_failure_preserves_wait() {
-    // test::coroutine::run.
-    super::run(|| {
-        // SAFETY: in a coroutine.
-        unsafe { swr_case_cancellation_copy_failure_preserves_wait() };
-    });
-    assert_eq!(count(), 0);
-}
 
 /// `coroutine_base.<name>`, in upstream's order.
 pub(super) const CASES: super::Cases = &[
@@ -884,9 +873,3 @@ pub(super) const CASES: super::Cases = &[
 
 /// `coroutine_async_file.<name>`.
 pub(super) const ASYNC_FILE_CASES: super::Cases = &[("async_file", async_file)];
-
-/// `rust_coroutine_lifetime.<name>`.
-pub(super) const LIFETIME_CASES: super::Cases = &[(
-    "cancellation_copy_failure_preserves_wait",
-    cancellation_copy_failure_preserves_wait,
-)];
