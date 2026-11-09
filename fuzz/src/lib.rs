@@ -18,7 +18,7 @@ use swoole_rs_oracle::{
 };
 
 mod network;
-pub use network::{dns_reply, http_chunked, http2_frame, multipart, resp_server};
+pub use network::{dns_reply, http_chunked, http2_frame, http2_hpack, multipart, resp_server};
 use swoole_rs_websocket::{DecodedFrame, swr_v1_ws_decode, swr_v1_ws_frame_length, swr_v1_ws_mask};
 
 const RED_ZONE: usize = 17;

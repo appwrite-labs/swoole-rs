@@ -217,5 +217,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "http2_hpack"
+path = "fuzz_targets/http2_hpack.rs"
+test = false
+doc = false
+bench = false
+
 # Built only by `cargo +nightly fuzz`, outside the pinned stable workspace.
 [workspace]

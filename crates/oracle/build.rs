@@ -695,6 +695,22 @@ fn main() {
         )
         .extra_warnings(false)
         .compile("swoole_oracle_llhttp");
+    // The bundled nghttp2 HPACK coder the HTTP/2 server and client link.
+    cc::Build::new()
+        .files(
+            [
+                "nghttp2_hd.c",
+                "nghttp2_rcbuf.c",
+                "nghttp2_helper.c",
+                "nghttp2_buf.c",
+                "nghttp2_mem.c",
+                "nghttp2_hd_huffman.c",
+                "nghttp2_hd_huffman_data.c",
+            ]
+            .map(|file| format!("upstream/thirdparty/nghttp2/{file}")),
+        )
+        .extra_warnings(false)
+        .compile("swoole_oracle_nghttp2");
     cpp()
         .define("SWR_PROTO_ENGINE", "candidate")
         .define("SWR_PROTO_INC", "\"protocols_candidate.inc\"")
