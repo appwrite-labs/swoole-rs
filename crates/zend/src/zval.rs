@@ -5,14 +5,16 @@
 use crate::{
     string::bytes,
     sys::{
-        HashTable, IS_ARRAY, IS_NULL, IS_STRING, add_next_index_long, add_next_index_null,
+        _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
+        IS_NULL, IS_STRING, IS_UNDEF, add_next_index_long, add_next_index_null,
         add_next_index_stringl, swr_zend_array_init, swr_zend_array_is_list,
-        swr_zend_hash_foreach_kv, swr_zend_string_release, zend_array_count, zend_long,
-        zend_string, zend_ulong, zval, zval_ptr_dtor,
+        swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_string_release, swr_zval_is_true,
+        zend_array_count, zend_hash_str_find, zend_long, zend_string, zend_ulong, zend_value, zval,
+        zval_ptr_dtor,
     },
     value,
 };
-use std::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit};
+use std::{cell::UnsafeCell, ffi::c_void, ptr};
 
 /// A borrowed zval. Zend may change what it points to (refcounts, a
 /// conversion's cache), hence the cell.
@@ -57,6 +59,22 @@ impl Value {
     pub fn long(&self) -> zend_long {
         // SAFETY: a live zval.
         unsafe { value::get_long(self.as_ptr()) }
+    }
+
+    /// `zval_get_double`, as [`Value::long`].
+    #[must_use]
+    #[inline]
+    pub fn double(&self) -> f64 {
+        // SAFETY: a live zval.
+        unsafe { value::get_double(self.as_ptr()) }
+    }
+
+    /// `zval_is_true`.
+    #[must_use]
+    #[inline]
+    pub fn truthy(&self) -> bool {
+        // SAFETY: a live zval.
+        unsafe { swr_zval_is_true(self.as_ptr()) }
     }
 
     /// `zval_get_string`, as [`Value::long`].
@@ -130,6 +148,35 @@ impl Array {
         unsafe { swr_zend_array_is_list(self.as_ptr()) }
     }
 
+    /// `zend_hash_str_find`.
+    #[must_use]
+    #[inline]
+    pub fn find(&self, key: &[u8]) -> Option<&Value> {
+        // SAFETY: a live table; Zend reads `key` only.
+        let found = unsafe { zend_hash_str_find(self.as_ptr(), key.as_ptr().cast(), key.len()) };
+        // SAFETY: null or an element of the borrowed table.
+        unsafe { Value::from_ptr(found) }
+    }
+
+    /// `php_swoole_array_get_value`: the value under `key` unless absent or null.
+    #[must_use]
+    #[inline]
+    pub fn get(&self, key: &[u8]) -> Option<&Value> {
+        self.find(key).filter(|found| !found.is_null())
+    }
+
+    /// `SW_HASHTABLE_FOREACH_START2`: each element in order, not dereferenced,
+    /// with its string key (None for an integer key). Nothing may change the
+    /// table while iterating, which the borrow ensures.
+    #[must_use]
+    #[inline]
+    pub fn entries(&self) -> Entries<'_> {
+        Entries {
+            table: self,
+            position: 0,
+        }
+    }
+
     /// `ZEND_HASH_FOREACH_KEY_VAL` with `ZVAL_DEREF`, stopping once a bailout
     /// is pending.
     pub fn for_each<'a, F: FnMut(Key<'a>, &'a Value)>(&'a self, mut each: F) {
@@ -158,6 +205,28 @@ impl Array {
     }
 }
 
+/// [`Array::entries`].
+pub struct Entries<'a> {
+    table: &'a Array,
+    position: HashPosition,
+}
+
+impl<'a> Iterator for Entries<'a> {
+    type Item = (Option<&'a [u8]>, &'a Value);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut key = ptr::null_mut();
+        // SAFETY: a live table and our position in it; `key` is a writable local.
+        let found = unsafe {
+            swr_zend_hash_next(self.table.as_ptr(), &raw mut self.position, &raw mut key)
+        };
+        // SAFETY: null or an element of the borrowed table.
+        let value = unsafe { Value::from_ptr(found) }?;
+        // SAFETY: the table keeps its key strings alive.
+        Some(((!key.is_null()).then(|| unsafe { bytes(key) }), value))
+    }
+}
+
 /// A `zend_string` reference this holds (`zend::String`), released on drop.
 pub struct ZString(*mut zend_string);
 
@@ -174,6 +243,15 @@ impl ZString {
     pub fn bytes(&self) -> &[u8] {
         // SAFETY: the reference this holds keeps the string alive.
         unsafe { bytes(self.0) }
+    }
+
+    /// Take over a reference the caller owns.
+    /// # Safety
+    /// `string` is a live string carrying a reference the caller gives up.
+    #[must_use]
+    #[inline]
+    pub unsafe fn from_raw(string: *mut zend_string) -> Self {
+        Self(string)
     }
 
     /// Give up the reference to whoever takes the pointer.
@@ -200,9 +278,12 @@ impl Default for Owned {
     /// `ZVAL_UNDEF`.
     #[inline]
     fn default() -> Self {
-        // SAFETY: all-zero bytes are `IS_UNDEF`, which owns nothing.
-        Self(Value(UnsafeCell::new(unsafe {
-            MaybeUninit::zeroed().assume_init()
+        Self(Value(UnsafeCell::new(zval {
+            value: zend_value { lval: 0 },
+            u1: _zval_struct__bindgen_ty_1 {
+                type_info: IS_UNDEF,
+            },
+            u2: _zval_struct__bindgen_ty_2 { next: 0 },
         })))
     }
 }

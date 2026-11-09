@@ -8,12 +8,11 @@ use libc::{c_int, c_void};
 use std::ptr;
 use swoole_rs_clients::client::{ClientRecord, OPEN_SSL};
 use swoole_rs_corebase::net_types::Protocol;
-use swoole_rs_phptable::{self as table, Owned};
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::{
-    E_ERROR, bailout, long_zval, string,
+    Array, E_ERROR, Value as Zval, ZString, bailout, long_zval, string,
     sys::{self, IS_STRING, zend_ini_parse_quantity, zval, zval_ptr_dtor},
-    type_of, value,
+    value,
 };
 
 /// `SW_DATA_EOF_MAXLEN`.
@@ -88,28 +87,31 @@ fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
 }
 
 /// The options array of one `set()`/`connect()`.
-struct Options(*const zval);
+struct Options<'a>(Option<&'a Array>);
 
-impl Options {
-    fn get(&self, key: &str) -> Option<*mut zval> {
-        // SAFETY: a live array zval for the call.
-        unsafe { table::get(self.0, key.as_bytes()) }
+impl Options<'_> {
+    /// # Safety
+    /// `settings` is null or a live zval for the call.
+    unsafe fn new(settings: *const zval) -> Self {
+        // SAFETY: per the caller.
+        Self(unsafe { Zval::from_ptr(settings) }.and_then(Zval::array))
+    }
+
+    fn get(&self, key: &str) -> Option<&Zval> {
+        self.0?.get(key.as_bytes())
     }
 
     fn truthy(&self, key: &str) -> Option<bool> {
-        // SAFETY: a value found in the array.
-        self.get(key).map(|found| unsafe { table::truthy(found) })
+        self.get(key).map(Zval::truthy)
     }
 
     fn long(&self, key: &str) -> Option<i64> {
-        // SAFETY: as above.
-        self.get(key).map(|found| unsafe { table::long(found) })
+        self.get(key).map(Zval::long)
     }
 
     /// `zend::String(value)`.
-    fn string(&self, key: &str) -> Option<Owned> {
-        // SAFETY: as above; a new reference, released on drop.
-        self.get(key).map(|found| unsafe { Owned::of(found) })
+    fn string(&self, key: &str) -> Option<ZString> {
+        self.get(key).map(Zval::string)
     }
 
     /// `php_swoole_parse_to_size`.
@@ -119,20 +121,18 @@ impl Options {
 }
 
 /// `php_swoole_parse_to_size(value)`.
-fn parse_to_size(value: *mut zval) -> i64 {
-    // SAFETY: a live zval.
-    if unsafe { type_of(value) } != IS_STRING {
-        // SAFETY: as above.
-        return unsafe { table::long(value) };
+fn parse_to_size(value: &Zval) -> i64 {
+    if value.kind() != IS_STRING {
+        return value.long();
     }
     // SAFETY: a string zval holds a live string.
-    let string = unsafe { value::str_of(value) };
+    let string = unsafe { value::str_of(value.as_ptr()) };
     let mut error = ptr::null_mut();
     // SAFETY: a live string; Zend writes an error string or leaves null.
     let size = unsafe { zend_ini_parse_quantity(string, &raw mut error) };
     if !error.is_null() {
         // SAFETY: Zend's new error string, released on drop.
-        let error = unsafe { Owned::from_raw(error) };
+        let error = unsafe { ZString::from_raw(error) };
         // SAFETY: the live string above.
         let text = c_text(unsafe { swoole_rs_zend::string::bytes(string) });
         let reason = c_text(error.bytes());
@@ -223,7 +223,8 @@ fn bind(cli: Cli, address: &[u8], port: i64) -> bool {
 /// `php_swoole_client_check_setting(cli, settings)`: false on an invalid
 /// option, None after a bailout.
 pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
-    let options = Options(settings);
+    // SAFETY: the caller's live settings.
+    let options = unsafe { Options::new(settings) };
     if let Some(on) = options.truthy("open_eof_check") {
         record(cli).open_eof_check = on;
     }
@@ -305,7 +306,7 @@ pub(crate) fn apply(cli: Cli, settings: *const zval) -> Option<bool> {
         record(cli).protocol.package_body_offset = clamp(offset, 0, u16::MAX.into()) as u16;
     }
     if let Some(function) = options.get("package_length_func") {
-        let callable = bailed(native::callable(function))?;
+        let callable = bailed(native::callable(function.as_ptr()))?;
         if callable.is_null() {
             return Some(false);
         }
@@ -398,14 +399,14 @@ fn option_pointer(cli: Cli, callable: *mut c_void) -> *mut c_void {
 fn proxy(
     cli: Cli,
     http: bool,
-    host: &Owned,
+    host: &ZString,
     port: i64,
-    user: Option<&Owned>,
-    password: Option<&Owned>,
+    user: Option<&ZString>,
+    password: Option<&ZString>,
 ) {
     let host = host.bytes();
-    let user = user.map_or(&[][..], Owned::bytes);
-    let password = password.map_or(&[][..], Owned::bytes);
+    let user = user.map_or(&[][..], ZString::bytes);
+    let password = password.map_or(&[][..], ZString::bytes);
     // SAFETY: a live client; the proxy copies every string during the call.
     unsafe {
         swoole_rs_clients::client::swr_v1_clients_proxy(
@@ -433,7 +434,8 @@ pub(crate) fn apply_ssl(cli: Cli, settings: *const zval) {
     }
     // SAFETY: the live client's context, which nothing else writes during the call.
     let value = |value| unsafe { tls::set_value(owner, value) };
-    let options = Options(settings);
+    // SAFETY: the caller's live settings.
+    let options = unsafe { Options::new(settings) };
     let text = |key: &str, which| {
         if let Some(text) = options.string(key) {
             // SAFETY: as above.

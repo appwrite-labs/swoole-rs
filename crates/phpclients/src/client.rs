@@ -242,7 +242,7 @@ fn report_socket(call: &Call, socket: Socket) {
 /// `object` is a live client.
 unsafe fn setting(object: *mut zend_object) -> *mut zval {
     // SAFETY: per the caller; the class declares `setting`.
-    unsafe { swoole_rs_phptable::property(object, c"setting") }
+    unsafe { z::swr_zend_property_slot(object, c"setting".as_ptr(), 7) }
 }
 
 /// Merge `settings` into the client's `setting` property.
@@ -266,9 +266,7 @@ unsafe fn merge_setting(object: *mut zend_object, settings: *const zval) {
 /// `object` is a live client.
 unsafe fn type_property(object: *mut zend_object) -> i64 {
     // SAFETY: per the caller; the class declares `type`.
-    let kind = unsafe { swoole_rs_phptable::property(object, c"type") };
-    // SAFETY: a live property.
-    unsafe { value::get_long(kind) }
+    unsafe { swoole_rs_zend::property(object, c"type") }.long()
 }
 
 /// `client_coro_socket_dtor`: the socket is going; the client lets go of it.

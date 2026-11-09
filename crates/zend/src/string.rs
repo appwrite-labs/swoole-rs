@@ -58,9 +58,7 @@ pub unsafe fn truncate(string: *mut zend_string, length: usize) {
     // SAFETY: per the caller.
     unsafe { (*string).len = length };
     // SAFETY: an allocation of at least `length` bytes has room for the NUL.
-    let end = unsafe { val(string).add(length) };
-    // SAFETY: as above.
-    unsafe { *end = 0 };
+    unsafe { *val(string).wrapping_add(length) = 0 };
 }
 
 /// `zend_string_free` of a live, unshared, non-interned string nothing else references.

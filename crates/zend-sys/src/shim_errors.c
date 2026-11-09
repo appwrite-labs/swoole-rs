@@ -37,11 +37,6 @@ int swr_zend_try_report_level(void (*report)(int level, const char *message), in
     SWR_TRAP(report(level, message));
 }
 
-int swr_zend_try_report_length(void (*report)(const char *text, int length), const char *text,
-                               int length) {
-    SWR_TRAP(report(text, length));
-}
-
 int swr_zend_try_report_code(void (*report)(int code, int flag, const char *message), int code,
                              int flag, const char *message) {
     SWR_TRAP(report(code, flag, message));

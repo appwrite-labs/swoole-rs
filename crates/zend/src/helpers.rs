@@ -1,8 +1,11 @@
 //! Zvals, arrays and properties for crates/phpprocess: zval construction,
 //! hash iteration, typed property updates.
-use crate::sys::{
-    swr_zend_hash_foreach, zend_array, zend_class_entry, zend_declare_property_null, zend_object,
-    zend_update_property, zval,
+use crate::{
+    Value,
+    sys::{
+        swr_zend_hash_foreach, swr_zend_property_slot, zend_array, zend_class_entry,
+        zend_declare_property_null, zend_object, zend_update_property, zval,
+    },
 };
 use std::ffi::{CStr, c_int, c_void};
 
@@ -22,6 +25,18 @@ pub unsafe fn each_value<F: FnMut(*mut zval) -> bool>(table: *const zend_array, 
     let context = (&raw mut each).cast::<c_void>();
     // SAFETY: per the caller; the closure outlives the loop.
     unsafe { swr_zend_hash_foreach(table, Some(trampoline::<F>), context) };
+}
+
+/// `sw_zend_read_property_ex`: the declared property's slot (an uninitialised
+/// typed property reads as null).
+/// # Safety
+/// `object` is live and declares `name`, for `'a`.
+#[must_use]
+pub unsafe fn property<'a>(object: *mut zend_object, name: &CStr) -> &'a Value {
+    // SAFETY: per the caller.
+    let slot = unsafe { swr_zend_property_slot(object, name.as_ptr(), name.count_bytes()) };
+    // SAFETY: a live slot, never null.
+    unsafe { &*slot.cast::<Value>() }
 }
 
 /// `zend_update_property(scope, object, name, value)`: the property takes a copy.
@@ -54,11 +69,11 @@ pub unsafe fn declare_property_null(class: *mut zend_class_entry, name: &CStr, a
 /// `ZVAL_LONG`: a zval holding `value`.
 #[must_use]
 pub fn long_zval(value: i64) -> zval {
-    // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
-    let mut zv: zval = unsafe { std::mem::zeroed() };
-    zv.value = crate::sys::zend_value { lval: value };
-    zv.u1 = crate::sys::_zval_struct__bindgen_ty_1 {
-        type_info: crate::sys::IS_LONG,
-    };
-    zv
+    zval {
+        value: crate::sys::zend_value { lval: value },
+        u1: crate::sys::_zval_struct__bindgen_ty_1 {
+            type_info: crate::sys::IS_LONG,
+        },
+        u2: crate::sys::_zval_struct__bindgen_ty_2 { next: 0 },
+    }
 }

@@ -16,10 +16,9 @@ use swoole_rs_http2::{
 };
 use swoole_rs_inflate::Inflate;
 use swoole_rs_phpstubs::http2_client_coro;
-use swoole_rs_phptable::{self as table, Owned};
 use swoole_rs_zend::{
-    Call, Class, Object, declare_bool, declare_long, declare_string, register_long_constant,
-    set_object, string,
+    Call, Class, Object, Value, ZString, declare_bool, declare_long, declare_string,
+    register_long_constant, set_object, string,
     sys::{
         _zval_struct__bindgen_ty_1, IS_NULL, IS_OBJECT, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         add_assoc_long_ex, add_assoc_stringl_ex, add_assoc_zval_ex, object_init_ex,
@@ -169,8 +168,17 @@ fn set_long(object: *mut zend_object, ce: *mut zend_class_entry, name: &CStr, nu
 }
 
 fn set_bytes(object: *mut zend_object, ce: *mut zend_class_entry, name: &CStr, data: &[u8]) {
-    // SAFETY: as above.
-    unsafe { table::update_bytes(ce, object, name, data) };
+    // SAFETY: as above; Zend copies the bytes.
+    unsafe {
+        z::zend_update_property_stringl(
+            ce,
+            object,
+            name.as_ptr(),
+            name.count_bytes(),
+            data.as_ptr().cast(),
+            data.len(),
+        );
+    }
 }
 
 /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
@@ -268,7 +276,7 @@ pub unsafe extern "C" fn swr_v1_phphttp2_client_socket_dtor(conn: *mut c_void) {
     // SAFETY: a live client object.
     unsafe { value::update_bool(ce(), object, c"connected", false) };
     // SAFETY: as above.
-    unsafe { table::update_null(ce(), object, c"socket") };
+    unsafe { z::zend_update_property_null(ce(), object, c"socket".as_ptr(), 6) };
     // SAFETY: as above.
     let zsocket = unsafe { &raw mut (*conn).zsocket };
     // SAFETY: the conn's reference to the socket object.
@@ -396,7 +404,7 @@ impl Client {
         };
         if !converted.is_null() {
             // SAFETY: the new string's reference.
-            self.host = unsafe { Owned::from_raw(converted) }.bytes().to_vec();
+            self.host = unsafe { ZString::from_raw(converted) }.bytes().to_vec();
         }
         if object.is_null() {
             self.update_error(error, strerror(error).to_bytes());
@@ -413,7 +421,7 @@ impl Client {
             return self.connect_failed(socket, None);
         }
         // SAFETY: `$this` declares `setting`.
-        let settings = unsafe { table::property(self.object, c"setting") };
+        let settings = unsafe { swoole_rs_zend::property(self.object, c"setting") }.as_ptr();
         // SAFETY: a live socket and property.
         unsafe { native::swoole_http2_client_coro_protocol(socket, settings) };
         // SAFETY: a live socket and the host bytes.
@@ -451,7 +459,9 @@ impl Client {
         // SAFETY: a live client object.
         let object_ce = unsafe { (*self.object).ce };
         // SAFETY: as above.
-        unsafe { table::update(object_ce, self.object, c"socket", self.zsocket()) };
+        unsafe {
+            swoole_rs_zend::update_property(object_ce, self.object, c"socket", self.zsocket());
+        };
         // SAFETY: as above.
         unsafe { value::update_bool(ce(), self.object, c"connected", true) };
         true
@@ -600,37 +610,26 @@ impl Client {
     /// `build_header`: a HEADERS frame whose first nine bytes are left for
     /// its header, then the request's HPACK block; None after the error.
     fn build_header(&mut self, request: *mut zend_object) -> Option<Vec<u8>> {
-        // SAFETY: a live request object, which declares each property.
-        let method = unsafe { table::property(request, c"method") };
-        // SAFETY: as above.
-        let path = unsafe { table::property(request, c"path") };
-        // SAFETY: as above.
-        let headers = unsafe { table::property(request, c"headers") };
-        // SAFETY: as above.
-        let cookies = unsafe { table::property(request, c"cookies") };
+        // SAFETY: a live request object, which declares each property and
+        // keeps them while building.
+        let property = |name| unsafe { swoole_rs_zend::property(request, name) };
+        let text = |name| property(name).bytes().filter(|text| !text.is_empty());
+        let (method, path) = (text(c"method"), text(c"path"));
+        let (headers, cookies) = (property(c"headers"), property(c"cookies"));
         let mut set = std::mem::take(&mut self.headers);
         set.clear();
-        let text = |value: *mut zval| {
-            // SAFETY: live property zvals.
-            unsafe { table::string_bytes(value) }.filter(|text| !text.is_empty())
-        };
-        set.add(b":method", &[text(method).unwrap_or(b"GET")]);
-        set.add(b":path", &[text(path).unwrap_or(b"/")]);
+        set.add(b":method", &[method.unwrap_or(b"GET")]);
+        set.add(b":path", &[path.unwrap_or(b"/")]);
         set.add(b":scheme", &[if self.ssl { b"https" } else { b"http" }]);
         set.slots.push(None);
         let mut host = false;
-        // SAFETY: as above.
-        if unsafe { table::is_array(headers) } {
-            // SAFETY: as above.
-            for (key, value) in unsafe { table::entries(headers) } {
-                // SAFETY: values in the array.
-                let Some(key) = key
-                    .filter(|key| key.first() != Some(&b':') && !unsafe { table::is_null(value) })
+        if let Some(headers) = headers.array() {
+            for (key, value) in headers.entries() {
+                let Some(key) = key.filter(|key| key.first() != Some(&b':') && !value.is_null())
                 else {
                     continue;
                 };
-                // SAFETY: as above.
-                let value = unsafe { Owned::of(value) };
+                let value = value.string();
                 if header_kind(CLIENT_HEADERS, key) == HEADER_HOST {
                     set.set(AUTHORITY, b":authority", value.bytes());
                     host = true;
@@ -648,16 +647,12 @@ impl Client {
             };
             set.set(AUTHORITY, b":authority", &authority);
         }
-        // SAFETY: as above.
-        if unsafe { table::is_array(cookies) } {
-            // SAFETY: as above.
-            for (key, value) in unsafe { table::entries(cookies) } {
-                // SAFETY: values in the array.
-                let Some(key) = key.filter(|_| !unsafe { table::is_null(value) }) else {
+        if let Some(cookies) = cookies.array() {
+            for (key, value) in cookies.entries() {
+                let Some(key) = key.filter(|_| !value.is_null()) else {
                     continue;
                 };
-                // SAFETY: as above.
-                let value = unsafe { Owned::of(value) };
+                let value = value.string();
                 // SAFETY: the value's bytes; Zend returns a new string.
                 let encoded = unsafe {
                     swoole_rs_zend::sys::php_url_encode(
@@ -666,7 +661,7 @@ impl Client {
                     )
                 };
                 // SAFETY: the reference php_url_encode returned.
-                let encoded = unsafe { Owned::from_raw(encoded) };
+                let encoded = unsafe { ZString::from_raw(encoded) };
                 set.add(b"cookie", &[key, b"=", encoded.bytes()]);
             }
         }
@@ -705,25 +700,18 @@ impl Client {
     /// `send_request`: the new stream's id, or 0.
     fn send_request(&mut self, request: *mut zend_object) -> u32 {
         // SAFETY: a live request object, which declares each property.
-        let headers = unsafe { table::property_array(REQUEST.entry(), request, c"headers") };
+        let headers =
+            unsafe { z::swr_zend_property_array(REQUEST.entry(), request, c"headers".as_ptr(), 7) };
         // SAFETY: as above.
-        let data = unsafe { table::property(request, c"data") };
-        // SAFETY: as above.
-        let pipeline = unsafe { table::property(request, c"pipeline") };
-        // SAFETY: a live property.
-        let pipeline = unsafe { table::truthy(pipeline) };
-        // SAFETY: as above.
-        let use_pipeline_read = unsafe { table::property(request, c"usePipelineRead") };
-        // SAFETY: a live property.
-        let use_pipeline_read = unsafe { table::truthy(use_pipeline_read) };
-        // SAFETY: a live zval.
-        let empty = match unsafe { table::string_bytes(data) } {
+        let property = |name| unsafe { swoole_rs_zend::property(request, name) };
+        let data = property(c"data");
+        let pipeline = property(c"pipeline").truthy();
+        let use_pipeline_read = property(c"usePipelineRead").truthy();
+        let empty = match data.bytes() {
             Some(text) => text.is_empty(),
-            // SAFETY: as above.
-            None => !unsafe { table::truthy(data) },
+            None => !data.truthy(),
         };
-        // SAFETY: as above.
-        if unsafe { table::is_array(data) } {
+        if data.array().is_some() {
             let name = c"content-type";
             let kind = b"application/x-www-form-urlencoded";
             // SAFETY: a live array property; Zend copies both.
@@ -803,7 +791,8 @@ impl Client {
             return false;
         }
         let flag = if end { FLAG_END_STREAM } else { 0 };
-        let Some(body) = body_bytes(data) else {
+        // SAFETY: the caller's live argument.
+        let Some(body) = unsafe { Value::from_ptr(data) }.and_then(body_bytes) else {
             return false;
         };
         if !self.send_data(id, body.bytes(), flag) {
@@ -1070,7 +1059,14 @@ impl Client {
         let response = unsafe { value::obj_of(&raw const stream.response) };
         let property = |name: &CStr| {
             // SAFETY: a live response object, which declares `name`.
-            unsafe { table::property_array(RESPONSE.entry(), response, name) }
+            unsafe {
+                z::swr_zend_property_array(
+                    RESPONSE.entry(),
+                    response,
+                    name.as_ptr(),
+                    name.count_bytes(),
+                )
+            }
         };
         let (headers, cookies, set_cookie_headers) = (
             property(c"headers"),
@@ -1225,20 +1221,18 @@ fn media_kind(value: &[u8]) -> u32 {
 
 /// A request body: an array as a query string, else the value as a string;
 /// None after `http_build_query failed`.
-fn body_bytes(data: *mut zval) -> Option<Owned> {
-    // SAFETY: a live zval.
-    if unsafe { table::is_array(data) } {
+fn body_bytes(data: &Value) -> Option<ZString> {
+    if data.array().is_some() {
         // SAFETY: an array zval.
-        let query = unsafe { swr_zend_http_build_query(data) };
+        let query = unsafe { swr_zend_http_build_query(data.as_ptr()) };
         if query.is_null() {
             warn(c"http_build_query failed");
             return None;
         }
         // SAFETY: the reference the builder returned.
-        return Some(unsafe { Owned::from_raw(query) });
+        return Some(unsafe { ZString::from_raw(query) });
     }
-    // SAFETY: as above.
-    Some(unsafe { Owned::of(data) })
+    Some(data.string())
 }
 
 unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
