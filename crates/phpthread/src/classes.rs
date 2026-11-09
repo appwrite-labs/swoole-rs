@@ -23,7 +23,7 @@ use swoole_rs_zend::{
         zend_declare_property_long, zend_object, zend_object_handlers, zend_type_error, zend_ulong,
         zend_use_resource_as_offset, zend_wrong_parameter_error, zval,
     },
-    throw_constructed_twice, throw_error, throw_exception, unset_property_deny, value,
+    throw_constructed_twice, throw_error, throw_exception, unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -223,13 +223,8 @@ const NOTIFY_ALL: i64 = 2;
 
 /// Store a Map, `ArrayList` or Queue by reference (`CAST_OBJ_TO_RESOURCE`).
 /// An unconstructed one ends the request with upstream's fatal error.
-/// # Safety
-/// `value` is a live object zval.
-pub(crate) unsafe fn shared(value: *mut zval) -> Option<Item> {
-    // SAFETY: per the caller.
-    let std = unsafe { value::obj_of(value) };
-    // SAFETY: a live object.
-    let ce = unsafe { (*std).ce };
+pub(crate) fn shared(value: &ZValue) -> Option<Item> {
+    let (std, ce) = (value.object()?, value.class()?);
     let (kind, list) = if ce == MAP.entry() {
         (IS_MAP, false)
     } else if ce == LIST.entry() {

@@ -134,11 +134,9 @@ impl Item {
     /// The `IS_OBJECT` branch: sockets, containers and thread resources by
     /// reference, anything else serialized.
     fn store_object(object: &ZValue) -> Self {
-        let value = object.as_ptr();
-        // SAFETY: a live object zval.
-        if unsafe { host::is_co_socket(value) } {
+        if host::is_co_socket(object) {
             // SAFETY: a coroutine socket object.
-            let (fd, kind) = unsafe { host::co_socket_cast(value) };
+            let (fd, kind) = unsafe { host::co_socket_cast(object.as_ptr()) };
             if fd == -1 {
                 socket_error(c"failed to convert to socket fd");
             }
@@ -147,8 +145,7 @@ impl Item {
                 value: Value::Socket { fd, kind },
             };
         }
-        // SAFETY: a live object zval.
-        match unsafe { host::php_socket_cast(value) } {
+        match host::php_socket_cast(object) {
             -3 => {}
             // upstream breaks out before setting the type.
             -2 => return bare(IS_OBJECT),
@@ -172,12 +169,7 @@ impl Item {
                 value: Value::Resource(resource),
             };
         }
-        // SAFETY: a live object zval.
-        if let Some(shared) = unsafe { classes::shared(value) } {
-            return shared;
-        }
-        // SAFETY: a live object zval.
-        if let Some(shared) = unsafe { barrier::shared(value) } {
+        if let Some(shared) = classes::shared(object).or_else(|| barrier::shared(object)) {
             return shared;
         }
         Self::serialize(object)
