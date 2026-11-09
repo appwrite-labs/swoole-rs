@@ -10,7 +10,6 @@
 #include "swoole_rs_server_strings.h"
 #include "swoole_rs_server_view.h"
 #include "swoole_rs_corebase_worker_registry_view.h"
-#include "swoole_rs_workers.h"
 #include "swoole_rs_port_state.h"
 
 #include <string>
@@ -91,10 +90,6 @@ enum ServerEventType {
 };
 
 class Server : public detail::ServerFields {
-    // The native halves of crates/process/src/workers, one per source file.
-    template <int>
-    friend struct WorkersNative;
-
   public:
     struct MultiTask {
         uint16_t count;

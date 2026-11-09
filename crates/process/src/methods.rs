@@ -605,6 +605,12 @@ impl ExitStatus {
         Self { pid, status }
     }
 
+    /// `ExitStatus::get_pid()`.
+    #[must_use]
+    pub fn pid(&self) -> c_int {
+        self.pid
+    }
+
     /// `ExitStatus::get_status()`: the `waitpid` status.
     #[must_use]
     pub fn status(&self) -> c_int {

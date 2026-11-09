@@ -7,13 +7,14 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_globals::swr_v1_worker_globals;
 use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::workers::entry::Bytes;
 use swoole_rs_process::workers::ops::{
     OP_COMMAND_REPLY, OP_HAS_COMMAND, OP_LISTEN_TASK_PIPE, OP_POOL_INIT, OP_SET_ASYNC_LOOP,
-    OP_UNLIMIT_BUS_PIPES, OP_UNPACK_COMMAND, RUN_TASK_LOOP_ASYNC, RUN_TASK_ON_PIPE,
+    OP_UNLIMIT_BUS_PIPES, OP_UNPACK_COMMAND, RUN_FINISH, RUN_TASK_LOOP_ASYNC, RUN_TASK_ON_PIPE,
     RUN_TASK_ON_START, RUN_TASK_ON_STOP, RUN_TASK_ON_TASK,
 };
 
-use super::{Context, swr_v1_task_worker_call};
+use super::Context;
 use crate::objects::{EVENT_READ, Reactor, in_worker_bus, set_nonblock, socket};
 
 /// `SW_FD_PIPE`.
@@ -147,10 +148,38 @@ extern "C" fn on_pipe_receive(reactor: *mut c_void, event: *mut c_void) -> c_int
 
 /// Runs `operation` over `ctx`, whose objects are live.
 fn run(ctx: &mut Context, operation: u32) -> c_int {
-    let context = (&raw mut *ctx).cast();
-    let call = swr_v1_task_worker_call;
-    // SAFETY: the context's live objects.
-    let ret =
-        unsafe { swoole_rs_process::workers::swr_v1_workers_run(operation, 0, context, call) };
-    c_int::try_from(ret).unwrap_or(-1)
+    c_int::try_from(run_with(ctx, operation, 0)).unwrap_or(-1)
+}
+
+/// Runs `operation` with `arg` over `ctx`, whose objects are live.
+fn run_with(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
+    swoole_rs_process::workers::run_over(ctx, operation, arg)
+}
+
+/// `Server::init_task_workers` over the server's task pool, and `Server::finish`
+/// (crates/process's entry.rs) of `task`'s result `bytes`.
+///
+/// # Safety
+/// `serv` is a live `Server`; for `RUN_FINISH`, `task` is null or a live
+/// `EventData` and `bytes` the method's live result.
+pub(crate) unsafe fn enter(
+    operation: u32,
+    serv: *mut c_void,
+    task: *mut c_void,
+    bytes: *mut c_void,
+    arg: u64,
+) -> i64 {
+    let mut buf = EventData([0; super::EVENT_DATA_SIZE]);
+    let mut ctx = Context::over(serv);
+    if operation == RUN_FINISH {
+        // SAFETY: as the caller guarantees.
+        let bytes = unsafe { &*bytes.cast::<Bytes>() };
+        ctx.task = task.cast();
+        ctx.buf = (&raw mut buf).cast();
+        (ctx.data, ctx.data_len) = (bytes.data.cast(), bytes.length);
+    } else {
+        // SAFETY: the live server.
+        ctx.pool = unsafe { crate::view::task_pool(serv) };
+    }
+    run_with(&mut ctx, operation, arg)
 }

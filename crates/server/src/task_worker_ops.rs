@@ -37,9 +37,9 @@ use crate::event_worker_ops::swr_workers_signal_set;
 use crate::view;
 
 mod native;
+pub(crate) use native::enter;
 
-/// workers.cc's `WorkersNative<2>`.
-#[repr(C)]
+/// What an operation runs over.
 struct Context {
     serv: *mut c_void,
     pool: *mut PoolRecord,
@@ -58,11 +58,6 @@ struct Context {
     packet: (usize, *const c_char),
 }
 
-const _: () = assert!(
-    size_of::<Context>() == 112,
-    "workers.cc TaskWorkerContext layout"
-);
-
 /// The context's objects, each live when the op reading it runs.
 #[expect(
     clippy::mut_from_ref,
@@ -72,10 +67,18 @@ impl Context {
     /// The context over `pool`'s server and `worker`.
     fn of(pool: *mut PoolRecord, worker: *mut WorkerRecord) -> Self {
         Self {
-            // SAFETY: a task pool, whose `ptr` is its server, calls back with itself.
-            serv: unsafe { (*pool).ptr },
             pool,
             worker,
+            // SAFETY: a task pool, whose `ptr` is its server, calls back with itself.
+            ..Self::over(unsafe { (*pool).ptr })
+        }
+    }
+    /// The context over `serv` alone.
+    fn over(serv: *mut c_void) -> Self {
+        Self {
+            serv,
+            pool: core::ptr::null_mut(),
+            worker: core::ptr::null_mut(),
             task: core::ptr::null(),
             socket: core::ptr::null_mut(),
             data: core::ptr::null(),
@@ -165,24 +168,17 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// Answers task-worker op `op` with `arg` over the `WorkersNative<2>` at `context`.
-///
-/// # Safety
-/// `context` is a live `TaskWorkerContext`, whose objects the op reads are live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_task_worker_call(
-    context: *mut c_void,
-    op: u32,
-    arg: u64,
-) -> u64 {
-    // SAFETY: per the caller.
-    let ctx = unsafe { &mut *context.cast::<Context>() };
-    native::native(ctx, op, arg)
-        .or_else(|| worker(ctx, op, arg))
-        .or_else(|| task(ctx, op))
-        .or_else(|| finish(ctx, op, arg))
-        .or_else(|| result(ctx, op))
-        .unwrap_or_else(|| std::process::abort())
+/// Answers each task-worker op over the context.
+impl swoole_rs_process::workers::Answer for Context {
+    fn answer(&mut self, op: u32, arg: u64) -> u64 {
+        let ctx = self;
+        native::native(ctx, op, arg)
+            .or_else(|| worker(ctx, op, arg))
+            .or_else(|| task(ctx, op))
+            .or_else(|| finish(ctx, op, arg))
+            .or_else(|| result(ctx, op))
+            .unwrap_or_else(|| std::process::abort())
+    }
 }
 
 /// The task pool and worker: setup, state and callbacks.

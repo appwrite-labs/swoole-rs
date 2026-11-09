@@ -20,7 +20,8 @@ use swoole_rs_process::workers::ops::{
     OP_JOIN_THREAD, OP_NEW_THREAD_FACTORY, OP_REACTOR_THREAD_MAIN, OP_SELECT_WORKER,
     OP_SET_MASTER_THREAD_ID, OP_SPAWN_THREAD, OP_START_MASTER_THREAD, OP_THREAD_ENTER,
     OP_THREAD_EXIT, OP_THREAD_EXIT_STATUS, OP_THREAD_MANAGER, OP_THREAD_SUPPORTED,
-    OP_WORKER_THREAD_START, RUN_THREAD_BODY, RUN_THREAD_MAIN,
+    OP_WORKER_THREAD_START, RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_THREAD_BODY,
+    RUN_THREAD_MAIN,
 };
 use swoole_rs_process::workers::ops::{
     OP_ABORT, OP_ALL_CORE_WORKER_NUM, OP_ALL_WORKER_NUM, OP_CALLOC_CONNECTIONS,
@@ -33,7 +34,6 @@ use swoole_rs_process::workers::ops::{
     OP_TASK_START_CHECK, OP_TASK_WORKER_NUM, OP_TERMINATE_MANAGER_THREAD, OP_THREAD_REACTOR_NUM,
     OP_USER_WORKER_NUM, OP_WORKER_ID, OP_WORKER_NUM, OP_WORKER_TYPE,
 };
-use swoole_rs_process::workers::swr_v1_workers_run;
 use swoole_rs_process::workers::thread::{ThreadManager, worker_thread_start};
 use swoole_rs_reactor::SocketRecord;
 
@@ -50,8 +50,7 @@ use crate::{factory, pool_native, server_methods, view};
 /// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says.
 pub static SUPPORTED: AtomicBool = AtomicBool::new(false);
 
-/// workers.cc's `WorkersNative<5>`.
-#[repr(C)]
+/// What an operation runs over.
 #[derive(Clone, Copy)]
 struct Context {
     serv: *mut c_void,
@@ -114,29 +113,47 @@ impl Context {
         0
     }
     /// Runs thread-mode `operation` with `arg` over this context.
-    fn run(mut self, operation: u32, arg: u64) {
-        let context = (&raw mut self).cast();
-        // SAFETY: the context's live server and factory.
-        let _ = unsafe { swr_v1_workers_run(operation, arg, context, swr_v1_thread_mode_call) };
+    fn run(mut self, operation: u32, arg: u64) -> i64 {
+        swoole_rs_process::workers::run_over(&mut self, operation, arg)
     }
 }
 
-/// Answers thread-mode op `op` with `arg` over the `WorkersNative<5>` at `context`.
+/// Thread mode's `Server` and `ThreadFactory` methods (crates/process's entry.rs):
+/// over `serv` and a `ThreadFactory` method's own factory, `other`, or else the
+/// server's in thread mode.
 ///
 /// # Safety
-/// `context` is workers.cc's live `ThreadContext`, whose objects the op reads are live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_thread_mode_call(
-    context: *mut c_void,
-    op: u32,
+/// The objects are what `operation`'s method took, live for the call.
+pub(crate) unsafe fn enter(
+    operation: u32,
+    serv: *mut c_void,
+    other: *mut c_void,
+    _extra: *mut c_void,
     arg: u64,
-) -> u64 {
-    // SAFETY: per the caller.
-    let ctx = unsafe { &mut *context.cast::<Context>() };
-    let answer = server(ctx, op, arg);
-    let answer = answer.or_else(|| worker(ctx, op, arg));
-    let answer = answer.or_else(|| threads(ctx, op, arg));
-    answer.unwrap_or_else(|| std::process::abort())
+) -> i64 {
+    let mut ctx = Context {
+        serv,
+        factory: null_mut(),
+        worker: null_mut(),
+    };
+    ctx.factory = match operation {
+        RUN_CREATE_THREAD_FACTORY | RUN_DESTROY_THREAD_FACTORY => null_mut(),
+        _ if !other.is_null() => other,
+        _ if u64::from(ctx.config().mode_) == crate::MODE_THREAD => ctx.config().factory_,
+        _ => null_mut(),
+    };
+    ctx.run(operation, arg)
+}
+
+/// Answers each thread-mode op over the context.
+impl swoole_rs_process::workers::Answer for Context {
+    fn answer(&mut self, op: u32, arg: u64) -> u64 {
+        let ctx = self;
+        let answer = server(ctx, op, arg);
+        let answer = answer.or_else(|| worker(ctx, op, arg));
+        let answer = answer.or_else(|| threads(ctx, op, arg));
+        answer.unwrap_or_else(|| std::process::abort())
+    }
 }
 
 /// A thread's body inside `worker_thread_start`: [`RUN_THREAD_MAIN`] over the context.

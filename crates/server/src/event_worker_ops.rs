@@ -37,9 +37,9 @@ use crate::callbacks::{
 use crate::view;
 
 mod native;
+pub(crate) use native::enter;
 
-/// workers.cc's `WorkersNative<0>`.
-#[repr(C)]
+/// What an operation runs over.
 struct Context {
     serv: *mut c_void,
     worker: *mut WorkerRecord,
@@ -71,24 +71,17 @@ struct WorkerStopMessage {
     worker_id: u16,
 }
 
-/// Answers event-worker op `op` with `arg` over the `WorkersNative<0>` at `context`.
-///
-/// # Safety
-/// `context` is workers.cc's live `WorkerContext`, whose objects the op reads are live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_event_worker_call(
-    context: *mut c_void,
-    op: u32,
-    arg: u64,
-) -> u64 {
-    // SAFETY: per the caller.
-    let ctx = unsafe { &mut *context.cast::<Context>() };
-    native::native(ctx, op, arg)
-        .or_else(|| fact(ctx, op, arg))
-        .or_else(|| callback(ctx, op))
-        .or_else(|| effect(ctx, op, arg))
-        .or_else(|| connection(ctx, op, arg))
-        .unwrap_or_else(|| std::process::abort())
+/// Answers each event-worker op over the context.
+impl swoole_rs_process::workers::Answer for Context {
+    fn answer(&mut self, op: u32, arg: u64) -> u64 {
+        let ctx = self;
+        native::native(ctx, op, arg)
+            .or_else(|| fact(ctx, op, arg))
+            .or_else(|| callback(ctx, op))
+            .or_else(|| effect(ctx, op, arg))
+            .or_else(|| connection(ctx, op, arg))
+            .unwrap_or_else(|| std::process::abort())
+    }
 }
 
 /// The facts read from the server, the worker, the event head and the globals.
@@ -279,8 +272,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 ///
 /// # Safety
 /// `own` is a signal handler nothing unloads.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_workers_signal_set(arg: u64, own: unsafe extern "C" fn(c_int)) {
+pub(crate) unsafe extern "C" fn swr_workers_signal_set(arg: u64, own: unsafe extern "C" fn(c_int)) {
     // SAFETY: crates/reactor's body, under its upstream symbol.
     unsafe extern "C-unwind" {
         #[link_name = "_Z17swoole_signal_setiPFviEb"]

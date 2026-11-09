@@ -36,7 +36,7 @@ use swoole_rs_process::workers::ops::{
 };
 use swoole_rs_process::workers::ops::{
     RUN_CHECK_EXIT_STATUS, RUN_KILL_TASK_WORKERS, RUN_MANAGER_MAIN, RUN_MANAGER_SIGNAL,
-    RUN_SPAWN_EVENT_WORKER, RUN_SPAWN_USER_WORKER,
+    RUN_READ_WORKER_MESSAGE, RUN_RESTART_WORKER, RUN_SPAWN_EVENT_WORKER, RUN_SPAWN_USER_WORKER,
 };
 
 use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP};
@@ -58,8 +58,7 @@ struct WorkerStopMessage {
     worker_id: u16,
 }
 
-/// workers.cc's `WorkersNative<3>`.
-#[repr(C)]
+/// What an operation runs over.
 struct Context {
     serv: *mut c_void,
     /// The worker being restarted, or the message being read.
@@ -73,10 +72,8 @@ struct Context {
 }
 
 const _: () = assert!(
-    core::mem::offset_of!(Context, msg) == 48
-        && size_of::<EventData>() == swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize
-        && size_of::<Context>() == 56 + size_of::<EventData>(),
-    "workers.cc ManagerContext layout"
+    size_of::<EventData>() == swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize,
+    "EventData layout"
 );
 
 /// The context's objects, each live when the op reading it runs.
@@ -185,31 +182,24 @@ const MESSAGE_BOX_SIZE: usize = 65536;
 const SW_MANAGER: c_int = 3;
 const SW_LOG_ERROR: c_int = 5;
 
-/// Answers manager op `op` with `arg` over the `WorkersNative<3>` at `context`.
-///
-/// # Safety
-/// `context` is a live `ManagerContext`, whose objects the op reads are live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_manager_call(
-    context: *mut c_void,
-    op: u32,
-    arg: u64,
-) -> u64 {
-    // SAFETY: per the caller.
-    let ctx = unsafe { &mut *context.cast::<Context>() };
-    if op == OP_MANAGER {
-        // `serv ? serv->manager_ : 0`: a signal may arrive before the server exists.
-        return if ctx.serv.is_null() {
-            0
-        } else {
-            ctx.config().manager_ as u64
-        };
+/// Answers each manager op over the context.
+impl swoole_rs_process::workers::Answer for Context {
+    fn answer(&mut self, op: u32, arg: u64) -> u64 {
+        let ctx = self;
+        if op == OP_MANAGER {
+            // `serv ? serv->manager_ : 0`: a signal may arrive before the server exists.
+            return if ctx.serv.is_null() {
+                0
+            } else {
+                ctx.config().manager_ as u64
+            };
+        }
+        fact(ctx, op, arg)
+            .or_else(|| effect(ctx, op, arg))
+            .or_else(|| child(ctx, op, arg))
+            .or_else(|| native(ctx, op, arg))
+            .unwrap_or_else(|| std::process::abort())
     }
-    fact(ctx, op, arg)
-        .or_else(|| effect(ctx, op, arg))
-        .or_else(|| child(ctx, op, arg))
-        .or_else(|| native(ctx, op, arg))
-        .unwrap_or_else(|| std::process::abort())
 }
 
 fn signed(value: c_int) -> u64 {
@@ -577,10 +567,44 @@ extern "C" fn signal_handler(signo: c_int) {
 
 /// Runs manager `operation` with `arg` over `serv`.
 fn run_manager(serv: *mut c_void, operation: u32, arg: u64) {
-    let mut ctx = Context::of(serv);
-    let context = (&raw mut ctx).cast();
-    // SAFETY: the context's live objects.
-    let _ = unsafe {
-        swoole_rs_process::workers::swr_v1_workers_run(operation, arg, context, swr_v1_manager_call)
+    run_over(&mut Context::of(serv), operation, arg);
+}
+
+/// Runs `operation` with `arg` over `ctx`, whose objects are live.
+fn run_over(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
+    swoole_rs_process::workers::run_over(ctx, operation, arg)
+}
+
+/// The manager's `Server` methods (crates/process's entry.rs) over `object`, the
+/// server: `restart_worker_process` of an exit status, `other`; or, for
+/// `read_worker_message`, over `object`, the event worker pool, and its message `other`.
+///
+/// # Safety
+/// The objects are what `operation`'s method took, live for the call.
+pub(crate) unsafe fn enter(
+    operation: u32,
+    object: *mut c_void,
+    other: *mut c_void,
+    _extra: *mut c_void,
+    arg: u64,
+) -> i64 {
+    let mut arg = arg;
+    let mut ctx = if operation == RUN_READ_WORKER_MESSAGE {
+        // SAFETY: as the caller guarantees: the event worker pool's `ptr` is its server.
+        let mut ctx = Context::of(unsafe { (*object.cast::<PoolRecord>()).ptr });
+        ctx.task = other.cast_const().cast();
+        ctx
+    } else {
+        Context::of(object)
     };
+    if operation == RUN_RESTART_WORKER {
+        // SAFETY: as the caller guarantees.
+        let status = unsafe { &*other.cast::<ExitStatus>() };
+        let (pid, status) = (
+            status.pid().cast_unsigned(),
+            status.status().cast_unsigned(),
+        );
+        arg = u64::from(pid) | u64::from(status) << 32;
+    }
+    run_over(&mut ctx, operation, arg)
 }

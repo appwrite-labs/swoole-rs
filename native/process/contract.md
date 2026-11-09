@@ -2,8 +2,8 @@
 
 Feature bit 524288 (`process`). ABI:
 `swoole_rs_process.h`. crates/process runs the event worker, task worker,
-reactor process, manager and factory operations; `native/process/workers.cc` is
-what they need from C++ (`swoole_rs_workers.h`). Decisions it keeps from upstream:
+reactor process, manager and factory operations, and crates/server builds each
+operation's context and answers its ops. Decisions it keeps from upstream:
 
 - WorkerExit observes `if_exit` before callback presence, publishes its local
   `called` flag before the native callback, then observes reactor/settings/clock

@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// What crates/process's event worker, task worker, reactor process, thread mode and manager
-// operations need from C++ (swoole_rs_workers.h): the calls into Server, Reactor,
-// MessageBus and Pipe, the task hooks, and the
-// Worker and ProcessPool layout checks.
+// What crates/process's task calls need from C++ (the task hooks), and the Worker,
+// Factory and ProcessPool layout checks against the records Rust lays out.
 #include <sys/uio.h>
 #include <sys/mman.h>
 
 #include "swoole_server.h"
 #include "swoole_rs_process.h"
-#include "swoole_rs_workers.h"
 #include "swoole_rs_locks.h"
 #include "swoole_util.h"
 #include "swoole_memory.h"
@@ -31,12 +28,6 @@ static_assert(offsetof(Worker, pool) == offsetof(swr_v1_worker_record, pool), "W
 static_assert(offsetof(Worker, msgqueue_mode) == offsetof(swr_v1_worker_record, msgqueue_mode),
               "Worker.msgqueue_mode drift");
 
-using network::Socket;
-
-
-template <int>
-struct WorkersNative;
-
 // crates/server/src/factory.rs's record, and crates/process reads its server first.
 static_assert(sizeof(Factory) == 2 * sizeof(void *) && offsetof(Factory, manager_) == sizeof(void *),
               "Factory layout");
@@ -50,69 +41,7 @@ static_assert(SW_SERVER_EVENT_RECV_DATA == 0 && SW_SERVER_EVENT_RECV_DGRAM == 1 
               "crates/process/src/workers/ops.rs events");
 static_assert(SW_EVENT_WORKER == 2, "crates/process/src/workers/event_worker.rs EVENT_WORKER");
 
-// What a crates/process/src/workers/event_worker.rs operation acts on.
-template <>
-struct WorkersNative<0> {
-    Server *serv;
-    Worker *worker;
-    DataHead *info;
-    Reactor *reactor;
-    Connection *conn;
-    const ExitStatus *status;
-    Socket *socket;
-
-    int64_t run(uint32_t operation, uint64_t arg = 0) {
-        return swr_v1_workers_run(operation, arg, this, swr_v1_event_worker_call);
-    }
-};
-using WorkerContext = WorkersNative<0>;
-
-static WorkerContext Worker_context(Server *serv, Worker *worker) {
-    return WorkerContext{serv, worker, nullptr, sw_reactor(), nullptr, nullptr, nullptr};
-}
-
-// What a crates/process/src/workers/reactor_process.rs operation acts on.
-template <>
-struct WorkersNative<1> {
-    Server *serv;
-    ProcessPool *pool;
-    Worker *worker;
-    Reactor *reactor;
-    Event *event;
-    Connection *conn;
-    double now;
-
-    int64_t run(uint32_t operation) {
-        return swr_v1_workers_run(operation, 0, this, swr_v1_reactor_process_call);
-    }
-};
-using ReactorProcessContext = WorkersNative<1>;
-
-// What a crates/process/src/workers/task_worker.rs operation acts on: crates/server's
-// task_worker_ops.rs.
-template <>
-struct WorkersNative<2> {
-    Server *serv;
-    ProcessPool *pool;
-    Worker *worker;
-    const EventData *task;
-    Socket *socket;
-    const char *data;
-    size_t data_len;
-    EventData *packed;
-    EventData *buf;
-    int file;
-    swr_v1_server_command_fn handler;
-    PacketPtr packet;
-
-    int64_t run(uint32_t operation, uint64_t arg = 0) {
-        return swr_v1_workers_run(operation, arg, this, swr_v1_task_worker_call);
-    }
-};
-using TaskWorkerContext = WorkersNative<2>;
-
-static_assert(sizeof(TaskWorkerContext) == 112 && SW_SERVER_EVENT_FINISH == 9 && SW_WORKER_IDLE == 2,
-              "crates/server/src/task_worker_ops.rs layout and constants");
+static_assert(SW_WORKER_IDLE == 2, "crates/server/src/task_worker_ops.rs SW_WORKER_IDLE");
 
 // Server::task_pack, task_unpack and task_dump are Rust's (crates/process/src/task_file.rs).
 static_assert(sizeof(DataHead) == 40 && offsetof(EventData, data) == sizeof(DataHead) && sizeof(String) == 40,
@@ -197,129 +126,6 @@ static const swr_v1_task_native task_native = {
     },
 };
 [[maybe_unused]] static const bool task_native_set = (swr_v1_process_task_set_native(&task_native), true);
-
-// What a crates/process/src/workers/thread.rs operation acts on: crates/server's
-// thread_mode_ops.rs.
-template <>
-struct WorkersNative<5> {
-    Server *serv;
-    ThreadFactory *factory;
-    Worker *worker;
-
-    int64_t run(uint32_t operation, uint64_t arg = 0) {
-        return swr_v1_workers_run(operation, arg, this, swr_v1_thread_mode_call);
-    }
-};
-using ThreadContext = WorkersNative<5>;
-
-// What a crates/process/src/workers/manager.rs operation acts on: crates/server's
-// manager_ops.rs.
-template <>
-struct WorkersNative<3> {
-    Server *serv;
-    Worker *worker;
-    const EventData *task;
-    swr_v1_server_command_fn handler;
-    int wait_status;
-    int wait_error;
-    EventData msg;
-    WorkerStopMessage stop;
-
-    int64_t run(uint32_t operation, uint64_t arg = 0) {
-        return swr_v1_workers_run(operation, arg, this, swr_v1_manager_call);
-    }
-};
-using ManagerContext = WorkersNative<3>;
-static_assert(offsetof(ManagerContext, msg) == 48 && sizeof(ManagerContext) == 56 + sizeof(EventData),
-              "crates/server/src/manager_ops.rs layout");
-
-// The Server methods of the deleted worker-side files are Rust
-// (crates/process/src/workers/entry.rs); each enters here with its operation, and
-// this builds the context its C++ forward built.
-static int64_t workers_enter(uint32_t operation, void *object, void *other, void *extra, uint64_t arg) {
-    auto *serv = static_cast<Server *>(object);
-    auto *worker = static_cast<Worker *>(other);
-    switch (operation) {
-    case SWR_WORKERS_RUN_SIGNAL_INIT:
-    case SWR_WORKERS_RUN_KILL_WORKER:
-    case SWR_WORKERS_RUN_DRAIN_PIPES:
-        return Worker_context(serv, sw_worker()).run(operation, arg);
-    case SWR_WORKERS_RUN_WORKER_SIGNAL:
-        return Worker_context(sw_server(), sw_worker()).run(operation, arg);
-    case SWR_WORKERS_RUN_ACCEPT_EVENT: {
-        auto ctx = Worker_context(serv, sw_worker());
-        ctx.info = static_cast<DataHead *>(extra);
-        return ctx.run(operation, arg);
-    }
-    case SWR_WORKERS_RUN_SEND_TO_REACTOR_THREAD: {
-        auto ctx = Worker_context(serv, sw_worker());
-        ctx.info = static_cast<DataHead *>(other);
-        ctx.socket = serv->get_reactor_pipe_socket(*static_cast<const SessionId *>(extra), ctx.info->reactor_id);
-        return ctx.run(operation, arg);
-    }
-    case SWR_WORKERS_RUN_CALL_WORKER_ERROR: {
-        auto ctx = Worker_context(serv, worker);
-        ctx.status = static_cast<const ExitStatus *>(extra);
-        return ctx.run(operation, arg);
-    }
-    case SWR_WORKERS_RUN_WORKER_START:
-    case SWR_WORKERS_RUN_CALL_WORKER_START:
-    case SWR_WORKERS_RUN_CALL_WORKER_STOP:
-    case SWR_WORKERS_RUN_STOP_ASYNC:
-    case SWR_WORKERS_RUN_CLEAN_CONNECTIONS:
-    case SWR_WORKERS_RUN_START_EVENT_WORKER:
-        return Worker_context(serv, worker).run(operation, arg);
-    case SWR_WORKERS_RUN_CREATE_THREAD_FACTORY:
-    case SWR_WORKERS_RUN_DESTROY_THREAD_FACTORY:
-        return ThreadContext{serv}.run(operation, arg);
-    // A ThreadFactory method's factory, or the server's for a Server method.
-    case SWR_WORKERS_RUN_THREAD_FACTORY_START:
-    case SWR_WORKERS_RUN_THREAD_MANAGER_WAIT:
-    case SWR_WORKERS_RUN_THREAD_RELOAD:
-    case SWR_WORKERS_RUN_THREAD_TERMINATE_MANAGER:
-    case SWR_WORKERS_RUN_THREAD_ID:
-    case SWR_WORKERS_RUN_START_WORKER_THREADS:
-    case SWR_WORKERS_RUN_STOP_WORKER_THREADS:
-        return ThreadContext{serv,
-                             static_cast<ThreadFactory *>(other ? other
-                                                        : serv->is_thread_mode() ? serv->factory_ : nullptr)}
-            .run(operation, arg);
-    case SWR_WORKERS_RUN_INIT_TASK_WORKERS:
-        return TaskWorkerContext{serv, serv->get_task_worker_pool()}.run(operation, arg);
-    case SWR_WORKERS_RUN_FINISH: {
-        const auto *bytes = static_cast<const swr_v1_workers_bytes *>(extra);
-        EventData buf;
-        TaskWorkerContext ctx{serv, nullptr, nullptr, static_cast<const EventData *>(other)};
-        ctx.buf = &buf;
-        ctx.data = bytes->data;
-        ctx.data_len = bytes->length;
-        return ctx.run(operation, arg);
-    }
-    case SWR_WORKERS_RUN_REACTOR_PROCESS_START:
-        return ReactorProcessContext{serv, nullptr, nullptr, nullptr, nullptr, nullptr, 0}.run(operation);
-    case SWR_WORKERS_RUN_REACTOR_PROCESS_MAIN: {
-        auto *pool = static_cast<ProcessPool *>(object);
-        return ReactorProcessContext{static_cast<Server *>(pool->ptr), pool, worker, nullptr, nullptr, nullptr, 0}.run(
-            operation);
-    }
-    case SWR_WORKERS_RUN_START_MANAGER:
-    case SWR_WORKERS_RUN_RELOAD:
-        return ManagerContext{serv}.run(operation, arg);
-    case SWR_WORKERS_RUN_RESTART_WORKER: {
-        const auto *status = static_cast<const ExitStatus *>(other);
-        return ManagerContext{serv}.run(
-            operation, (uint64_t) (uint32_t) status->get_pid() | ((uint64_t) (uint32_t) status->get_status() << 32));
-    }
-    case SWR_WORKERS_RUN_READ_WORKER_MESSAGE:
-        return ManagerContext{static_cast<Server *>(static_cast<ProcessPool *>(object)->ptr),
-                              nullptr,
-                              static_cast<EventData *>(other)}
-            .run(operation, arg);
-    default:
-        abort();
-    }
-}
-static const bool workers_enter_registered = (swr_v1_workers_set_enter(workers_enter), true);
 
 // ProcessPool's layout is Rust's swr_v1_pool_record (crates/process/src/process_pool.rs).
 #define SWR_POOL_FIELD(field, mirror)                                                                                  \
