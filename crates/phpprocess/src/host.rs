@@ -35,8 +35,6 @@ unsafe extern "C" {
         id: c_int,
         condition: unsafe extern "C" fn(*mut usize) -> bool,
     );
-    #[link_name = "_Z21php_swoole_dup_socketi12swSocketType"]
-    fn php_swoole_dup_socket(fd: c_int, kind: c_int) -> *mut zend_object;
     #[link_name = "_Z17swoole_signal_setiPFviEb"]
     fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
 }
@@ -168,8 +166,7 @@ pub(crate) fn dup_socket(fd: c_int, stream: bool) -> *mut zend_object {
     } else {
         SOCK_UNIX_DGRAM
     };
-    // SAFETY: phpclients' constructor, from a PHP call.
-    unsafe { php_swoole_dup_socket(fd, kind) }
+    swoole_rs_phpclients::dup(fd, kind)
 }
 
 /// `php_swoole_convert_to_fd(value)`.

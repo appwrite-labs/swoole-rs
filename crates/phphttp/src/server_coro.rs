@@ -20,9 +20,7 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
-use swoole_rs_phpclients::{
-    php_swoole_get_socket, php_swoole_socket_is_closed, php_swoole_socket_set_protocol,
-};
+use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_protocol};
 use swoole_rs_phphelpers::callable;
 use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
@@ -1019,7 +1017,7 @@ unsafe extern "C" fn collect(
     out: *mut c_void,
 ) {
     // SAFETY: a socket object in the server's array.
-    let socket = unsafe { php_swoole_get_socket(connection) };
+    let socket = unsafe { get_socket(connection) };
     if network(socket).recv_wait != 0 {
         // SAFETY: `shutdown`'s vector, borrowed for the scan.
         unsafe { (*out.cast::<Vec<(z::zend_ulong, Socket)>>()).push((index, socket)) };
@@ -1087,7 +1085,7 @@ fn on_accept(call: &Call) {
     };
     let server = server(server_of(call));
     // SAFETY: a coroutine socket object.
-    let socket = unsafe { php_swoole_get_socket(zconn) };
+    let socket = unsafe { get_socket(zconn) };
     // The request allocator first.
     record(socket).buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator().cast();
     // SAFETY: a live socket.
@@ -1291,7 +1289,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         context = ptr::null_mut();
         let running = conn.server.running.get();
         // SAFETY: a live connection object.
-        if !running || !keep_alive || unsafe { php_swoole_socket_is_closed(conn.zconn) } {
+        if !running || !keep_alive || unsafe { is_socket_closed(conn.zconn) } {
             break;
         }
         header_completed = false;

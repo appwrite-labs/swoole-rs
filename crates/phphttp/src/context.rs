@@ -136,12 +136,6 @@ pub(crate) extern "C" fn context_new(fd: i64) -> *mut Context {
     ctx
 }
 
-unsafe extern "C" {
-    /// crates/phpclients' `php_swoole_socket_is_closed`.
-    #[link_name = "_Z27php_swoole_socket_is_closedPK12_zval_struct"]
-    fn php_swoole_socket_is_closed(socket: *const zval) -> bool;
-}
-
 /// `new Context()`: a value-initialised context, which
 /// `free` releases.
 #[must_use]
@@ -313,7 +307,7 @@ pub(crate) unsafe fn bind(ctx: *mut Context, server: *mut c_void, socket: *mut z
         // SAFETY: per the caller; the context takes a reference.
         unsafe { copy_zval(&raw mut state.zsocket, socket) };
         // SAFETY: per the caller.
-        state.private_data = unsafe { swoole_rs_phpclients::php_swoole_get_socket(socket) };
+        state.private_data = unsafe { swoole_rs_phpclients::get_socket(socket) };
     } else {
         state.private_data = server;
         // SAFETY: the context's own zval; a server's context holds no socket.
@@ -427,7 +421,7 @@ pub(crate) fn available(ctx: *mut Context) -> bool {
     }
     if co_socket(state) {
         // SAFETY: the context's live socket zval.
-        return !unsafe { php_swoole_socket_is_closed(&raw const state.zsocket) };
+        return !unsafe { swoole_rs_phpclients::is_socket_closed(&raw const state.zsocket) };
     }
     crate::context::server(state)
         .by_session(state.fd)

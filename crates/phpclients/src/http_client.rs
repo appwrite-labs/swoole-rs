@@ -286,30 +286,6 @@ pub fn parse_set_cookies(bytes: &[u8], cookies: &mut ArrayMut, set_cookie_header
     set_cookie_headers.push_bytes(bytes);
 }
 
-/// [`parse_set_cookies`] for crates/phphttp2.
-/// # Safety
-/// `at` lends `length` bytes; both arrays are live array zvals nothing else
-/// borrows.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_parse_set_cookies(
-    at: *const c_char,
-    length: usize,
-    cookies: *mut zval,
-    set_cookie_headers: *mut zval,
-) {
-    let bytes = if length == 0 {
-        &[][..]
-    } else {
-        // SAFETY: per the caller.
-        unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) }
-    };
-    // SAFETY: per the caller.
-    let cookies = unsafe { ArrayMut::from_ptr(cookies) };
-    // SAFETY: as above.
-    let set_cookie_headers = unsafe { ArrayMut::from_ptr(set_cookie_headers) };
-    parse_set_cookies(bytes, cookies, set_cookie_headers);
-}
-
 impl Client {
     fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Box<Self> {
         let use_default_port = port == 0;
@@ -485,15 +461,13 @@ impl Client {
         if self.body.capacity() == 0 {
             self.body.reserve(BODY_SIZE);
         }
-        let mut error = 0;
-        // SAFETY: the host bytes and a writable local.
-        let object = unsafe {
-            native::swoole_http_client_coro_create_socket(self.socket_type, &raw mut error)
+        let object = match native::swoole_http_client_coro_create_socket(self.socket_type) {
+            Ok(object) => object,
+            Err(error) => {
+                self.set_error(error, strerror(error), CONNECT_FAILED);
+                return false;
+            }
         };
-        if object.is_null() {
-            self.set_error(error, strerror(error), CONNECT_FAILED);
-            return false;
-        }
         // SAFETY: the conn takes the new object's reference.
         let zsocket = unsafe { Owned::object(object) };
         // SAFETY: the conn lives as long as the client; its old value is empty.

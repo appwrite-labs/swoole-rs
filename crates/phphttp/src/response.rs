@@ -66,7 +66,6 @@ unsafe extern "C" {
     ) -> bool;
     static swoole_server_ce: *mut zend_class_entry;
     static swoole_socket_coro_ce: *mut zend_class_entry;
-    fn swr_v1_phpclients_socket_pointer(value: *const z::zval) -> *mut c_void;
 }
 
 /// `Swoole\Http\Response`, as C++ reads it; MINIT writes it.
@@ -770,7 +769,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
             socket = object.as_ptr();
             // SAFETY: a `Swoole\Coroutine\Socket`.
             fd = zend_long::from(websocket::sock_fd(unsafe {
-                swr_v1_phpclients_socket_pointer(socket)
+                swoole_rs_phpclients::get_socket(socket)
             }));
         } else {
             return refuse(

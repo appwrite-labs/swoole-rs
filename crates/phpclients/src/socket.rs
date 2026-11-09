@@ -7,7 +7,7 @@ use crate::{
     constants,
     native::{self, Co, Socket, Transfer},
 };
-use libc::{c_char, c_int, iovec};
+use libc::{c_int, iovec};
 use std::{
     ffi::{CStr, CString},
     ptr,
@@ -244,7 +244,7 @@ unsafe fn register_constants(module: c_int) {
 /// `php_swoole_get_socket`: the C++ socket of a `Coroutine\Socket` object.
 /// # Safety
 /// `object` is a live `Coroutine\Socket` object.
-pub(crate) unsafe fn socket_of(object: *mut zend_object) -> Socket {
+pub unsafe fn socket_of(object: *mut zend_object) -> Socket {
     // SAFETY: per the caller.
     unsafe { SocketObject::data(object) }.socket
 }
@@ -1100,167 +1100,59 @@ swoole_rs_zend::handlers! {
     zim_swoole_socket_coro_isClosed => is_closed;
 }
 
-/// # Safety
-/// A native Swoole socket kind; the resulting object owns its new core socket.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_socket_create(kind: i32) -> *mut zend_object {
-    // SAFETY: the SDK caller supplies its original constructor kind.
-    let result = match unsafe { owner::create_kind(kind) } {
-        Ok(object) => object,
-        Err(error) => {
-            error.defer();
-            ptr::null_mut()
-        }
-    };
-    swoole_rs_zend::bailout::finish();
-    result
-}
-/// `php_swoole_create_socket(type)`.
-/// # Safety
-/// As [`swr_v1_phpclients_socket_create`].
-#[unsafe(export_name = "_Z24php_swoole_create_socket12swSocketType")]
-#[must_use]
-pub unsafe extern "C" fn php_swoole_create_socket(kind: i32) -> *mut zend_object {
-    // SAFETY: per the caller.
-    unsafe { swr_v1_phpclients_socket_create(kind) }
-}
-/// `php_swoole_create_socket_from_fd(fd, type)`.
-/// # Safety
-/// Transfer one descriptor classified by its native Swoole socket kind.
-#[unsafe(export_name = "_Z32php_swoole_create_socket_from_fdi12swSocketType")]
-#[must_use]
-pub unsafe extern "C" fn php_swoole_create_socket_from_fd(fd: i32, kind: i32) -> *mut zend_object {
-    // SAFETY: the SDK caller transfers this descriptor to its new object.
-    let result = match unsafe { owner::from_fd(fd, kind) } {
-        Ok(object) => object,
-        Err(error) => {
-            error.defer();
-            ptr::null_mut()
-        }
-    };
-    swoole_rs_zend::bailout::finish();
-    result
-}
-/// `php_swoole_create_socket_from_fd(fd, domain, type, protocol)`.
-/// # Safety
-/// Transfer the descriptor with its native domain/type/protocol classification.
-#[unsafe(export_name = "_Z32php_swoole_create_socket_from_fdiiii")]
-#[must_use]
-pub unsafe extern "C" fn php_swoole_create_socket_from_fd_family(
-    fd: i32,
-    domain: i32,
-    kind: i32,
-    protocol: i32,
-) -> *mut zend_object {
-    // SAFETY: the native SDK lends the original constructor arguments and transfers the fd.
-    let result = match unsafe { owner::from_fd_family(fd, domain, kind, protocol) } {
-        Ok(object) => object,
-        Err(error) => {
-            error.defer();
-            ptr::null_mut()
-        }
-    };
-    swoole_rs_zend::bailout::finish();
-    result
-}
-/// `php_swoole_dup_socket(fd, type)`.
-/// # Safety
-/// Borrow a valid source descriptor, as the original SDK dup helper does.
-#[unsafe(export_name = "_Z21php_swoole_dup_socketi12swSocketType")]
-#[must_use]
-pub unsafe extern "C" fn php_swoole_dup_socket(fd: i32, kind: i32) -> *mut zend_object {
-    // SAFETY: the SDK caller keeps the source descriptor live through dup.
-    let result = match unsafe { owner::duplicate(fd, kind) } {
-        Ok(object) => object,
-        Err(error) => {
-            error.defer();
-            ptr::null_mut()
-        }
-    };
-    swoole_rs_zend::bailout::finish();
-    result
-}
-/// # Safety
-/// The argument is a live Coroutine Socket object zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_socket_pointer(value: *const zval) -> *mut libc::c_void {
-    // SAFETY: the native SDK supplies an initialized object zval of this class.
-    let object = unsafe { value::obj_of(value) };
-    // SAFETY: this live object has the registered SocketObject layout.
-    unsafe { socket_of(object) }
-}
-/// `php_swoole_get_socket(zobject)`.
-/// # Safety
-/// As [`swr_v1_phpclients_socket_pointer`].
-#[unsafe(export_name = "_Z21php_swoole_get_socketPK12_zval_struct")]
-#[must_use]
-pub unsafe extern "C" fn php_swoole_get_socket(value: *const zval) -> Socket {
-    // SAFETY: per the caller.
-    unsafe { swr_v1_phpclients_socket_pointer(value) }
-}
-/// `php_swoole_socket_is_closed(zobject)`.
-/// # Safety
-/// The argument is a live Coroutine Socket object zval, constructed or unconstructed.
-#[unsafe(export_name = "_Z27php_swoole_socket_is_closedPK12_zval_struct")]
-#[must_use]
-pub unsafe extern "C" fn php_swoole_socket_is_closed(value: *const zval) -> bool {
-    // SAFETY: the SDK argument is a live object zval of this class.
-    let object = unsafe { value::obj_of(value) };
-    // SAFETY: copy the object's optional core socket pointer.
-    let socket = unsafe { socket_of(object) };
-    // SAFETY: a non-null core socket remains live while this object is borrowed.
-    socket.is_null() || unsafe { Co::new(socket) }.is_closed()
-}
-
-/// `php_swoole_socket_set_error_properties(zobject, socket)`: its error.
-/// # Safety
-/// A live socket object zval and a live socket.
-#[unsafe(export_name = "_Z38php_swoole_socket_set_error_propertiesPK12_zval_structPKN6swoole9coroutine6SocketE")]
-pub unsafe extern "C" fn php_swoole_socket_set_error_properties_socket(
-    value: *const zval,
-    socket: Socket,
-) {
-    // SAFETY: per the caller.
-    let (code, message) = unsafe { Co::new(socket) }.error();
-    // SAFETY: as above; the message lives in the socket.
-    unsafe { php_swoole_socket_set_error_properties(value, code, message.as_ptr()) };
-}
-/// `php_swoole_socket_set_error_properties(zobject, code)`: `swoole_strerror(code)`.
-/// # Safety
-/// A live socket object zval.
-#[unsafe(export_name = "_Z38php_swoole_socket_set_error_propertiesPK12_zval_structi")]
-pub unsafe extern "C" fn php_swoole_socket_set_error_properties_code(
-    value: *const zval,
-    code: i32,
-) {
-    // SAFETY: per the caller; a static message.
-    unsafe { php_swoole_socket_set_error_properties(value, code, native::swoole_strerror(code)) };
-}
-/// `php_swoole_socket_set_error_properties(zobject, code, message)`.
-/// # Safety
-/// A live SDK socket object zval and borrowed diagnostic message, as the original helper requires.
-#[unsafe(export_name = "_Z38php_swoole_socket_set_error_propertiesPK12_zval_structiPKc")]
-pub unsafe extern "C" fn php_swoole_socket_set_error_properties(
-    value: *const zval,
-    code: i32,
-    message: *const c_char,
-) {
-    swoole_rs_corebase::log::set_last_error(code);
-    // SAFETY: the SDK supplies an initialized object zval of this class.
-    let object = unsafe { value::obj_of(value) };
-    // SAFETY: the live object's actual class is the original SDK helper's scope.
-    let scope = unsafe { (*object).ce };
-    let message = if message.is_null() {
-        c""
-    } else {
-        // SAFETY: a non-null diagnostic message is a borrowed NUL-terminated native string.
-        unsafe { CStr::from_ptr(message) }
-    };
-    // SAFETY: scope, object and message satisfy the SDK helper's live-argument contract.
-    swoole_rs_zend::bailout::defer(unsafe {
-        owner::error_properties(scope, object, code, message)
+/// A created object, or null with a deferred bailout finished.
+fn created(result: Result<*mut zend_object, swoole_rs_zend::bailout::Bailout>) -> *mut zend_object {
+    let object = result.unwrap_or_else(|error| {
+        error.defer();
+        ptr::null_mut()
     });
     swoole_rs_zend::bailout::finish();
+    object
+}
+
+/// `php_swoole_create_socket(type)`: a new socket object of a native Swoole
+/// socket kind, or null.
+#[must_use]
+pub fn create_socket(kind: i32) -> *mut zend_object {
+    created(owner::create_kind(kind))
+}
+
+/// `php_swoole_create_socket_from_fd(fd, type)`.
+/// # Safety
+/// The caller gives up `fd`, which the new object owns.
+#[must_use]
+pub unsafe fn create_from_fd(fd: i32, kind: i32) -> *mut zend_object {
+    // SAFETY: per the caller.
+    created(unsafe { owner::from_fd(fd, kind) })
+}
+
+/// `php_swoole_dup_socket(fd, type)`: an object over a duplicate of `fd`,
+/// which stays the caller's.
+#[must_use]
+pub fn dup(fd: i32, kind: i32) -> *mut zend_object {
+    created(owner::duplicate(fd, kind))
+}
+
+/// `php_swoole_get_socket(zobject)`: the object's core socket, or null.
+/// # Safety
+/// `value` is a live `Coroutine\Socket` object zval.
+#[must_use]
+pub unsafe fn get_socket(value: *const zval) -> Socket {
+    // SAFETY: per the caller.
+    let object = unsafe { value::obj_of(value) };
+    // SAFETY: a live object with the registered SocketObject layout.
+    unsafe { socket_of(object) }
+}
+
+/// `php_swoole_socket_is_closed(zobject)`.
+/// # Safety
+/// As [`get_socket`], constructed or not.
+#[must_use]
+pub unsafe fn is_socket_closed(value: *const zval) -> bool {
+    // SAFETY: per the caller.
+    let socket = unsafe { get_socket(value) };
+    // SAFETY: a non-null core socket stays live while its object is.
+    socket.is_null() || unsafe { Co::new(socket) }.is_closed()
 }
 
 #[cfg(test)]

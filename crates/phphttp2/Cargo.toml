@@ -19,6 +19,8 @@ php = [
     "swoole-rs-phpstubs/php",
     "dep:swoole-rs-phphttp",
     "swoole-rs-phphttp/php",
+    "dep:swoole-rs-phpclients",
+    "swoole-rs-phpclients/php",
     "dep:swoole-rs-phpruntime",
     "swoole-rs-phpruntime/php",
     "dep:swoole-rs-reactor",
@@ -52,6 +54,7 @@ swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
 swoole-rs-server = { path = "../server", optional = true }
 swoole-rs-ports = { path = "../ports", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
+swoole-rs-phpclients = { path = "../phpclients", optional = true }
 
 [lints]
 workspace = true

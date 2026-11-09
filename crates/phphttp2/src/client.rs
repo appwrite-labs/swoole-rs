@@ -17,8 +17,8 @@ use swoole_rs_http2::{
 use swoole_rs_inflate::Inflate;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
-    Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, declare_bool, declare_long,
-    declare_string, register_long_constant, string,
+    ArrayMut, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, declare_bool,
+    declare_long, declare_string, register_long_constant, string,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, add_assoc_stringl_ex,
         swr_zend_http_build_query, swr_zend_instanceof, swr_zend_property_merge, zend_class_entry,
@@ -1080,15 +1080,12 @@ impl Client {
                     if kind == HEADER_CONTENT_ENCODING && media_kind(text) == MEDIA_GZIP {
                         stream.gzip = Some(Inflate::gzip_only());
                     } else if kind == HEADER_SET_COOKIE {
-                        // SAFETY: the value's bytes and two live array properties.
-                        unsafe {
-                            native::swoole_http2_client_coro_set_cookies(
-                                header.value.cast(),
-                                header.value_length,
-                                cookies,
-                                set_cookie_headers,
-                            );
-                        }
+                        // SAFETY: a live array property nothing else borrows
+                        // while parsing.
+                        let cookies = unsafe { ArrayMut::from_ptr(cookies) };
+                        // SAFETY: as above.
+                        let headers = unsafe { ArrayMut::from_ptr(set_cookie_headers) };
+                        swoole_rs_phpclients::parse_set_cookies(text, cookies, headers);
                     }
                     // SAFETY: a live array property; Zend copies both.
                     unsafe {

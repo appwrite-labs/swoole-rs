@@ -297,8 +297,7 @@ unsafe extern "C" fn socket_closed(data: *mut libc::c_void, _socket: *mut libc::
 unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
     #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
     let socket_kind = socket_type(kind) as i32;
-    // SAFETY: crates/phpclients' constructor.
-    let created = unsafe { crate::socket::swr_v1_phpclients_socket_create(socket_kind) };
+    let created = crate::socket::create_socket(socket_kind);
     // SAFETY: per the caller.
     let ce = unsafe { (*object).ce };
     if created.is_null() {
