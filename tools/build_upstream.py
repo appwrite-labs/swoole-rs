@@ -167,7 +167,9 @@ def main():
     library, record_path = source / 'modules/swoole.so', source.parent / 'build.json'
     # The pin never changes, so a build stays current while its configuration does.
     record = {'commit': COMMIT, 'configure': extension_configuration(args)[0], 'platform': [sys.platform, os.uname().machine],
-              'php': subprocess.check_output([args.php_config, '--version'], text=True).strip()}
+              'php': subprocess.check_output([args.php_config, '--version'], text=True).strip(),
+              # build_extension inherits the toolchain from the environment.
+              'env': {name: os.environ.get(name) for name in ('CC', 'CXX', 'CFLAGS', 'CPPFLAGS', 'CXXFLAGS', 'LDFLAGS')}}
     if library.is_file() and record_path.is_file() and json.loads(record_path.read_text()) == record:
         print(f'Cached upstream: {library}')
         return 0
