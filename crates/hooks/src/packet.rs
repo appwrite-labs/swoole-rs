@@ -268,6 +268,9 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_recv_packet(
 }
 
 #[cfg(test)]
+mod ported;
+
+#[cfg(test)]
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,

@@ -47,7 +47,6 @@
  "framing-native": 2,
  "framing-unit": 1,
  "hooks-compile": 38,
- "hooks-packet-policy": 7,
  "hooks-unit": 3,
  "http-locales": 3,
  "http-rewrites": 36,

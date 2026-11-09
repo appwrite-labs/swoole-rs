@@ -1,12 +1,13 @@
 //! The coroutine socket's effects: [`NATIVE`] (the last error and its messages, the
 //! coroutine, the reactor and the write buffer) and [`Host`] (the timers, the read
-//! buffer, `recv` and the packet callbacks, which the packet gate fakes). Over them,
+//! buffer, `recv` and the packet callbacks). Over them,
 //! the record's `set_err`, `check_return_value` and `is_available`, and the
 //! per-direction timer (`TimerController`).
 use crate::co_socket::CoSocket;
 use crate::shutdown::{READ, swr_v1_hook_socket_bound_co, swr_v1_hook_socket_event_name};
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::ptr;
+#[cfg(not(test))]
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
@@ -14,10 +15,10 @@ pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
 /// `SW_WAIT`.
 const WAIT: c_int = 2;
 
-/// What the packet gate (`tests/modules/hooks`) fakes: the timers, the read
+/// The native socket's effects the packet framing uses: the timers, the read
 /// `String`, `recv`, the `Protocol` callback and the packet diagnostics. The
-/// runtime's table is installed when native registers the hooks host; the gate
-/// installs its own (`swr_v1_hook_co_socket_host`). Each takes a live record.
+/// runtime's table is installed when native registers the hooks host; tests set
+/// theirs per thread. Each takes a live record.
 #[repr(C)]
 pub struct Host {
     /// A timer for the read or the `write` wait that calls `timer_fired`, or null.
@@ -33,15 +34,14 @@ pub struct Host {
     pub packet_fail: extern "C" fn(*mut CoSocket, u32, isize),
 }
 
+#[cfg(not(test))]
 static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
 
-/// Installs a table in place of the runtime's: the packet gate's.
-///
-/// # Safety
-/// `host` is a live table that outlives every socket operation.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_host(host: *const Host) {
-    HOST.store(host.cast_mut(), Ordering::Release);
+#[cfg(test)]
+thread_local! {
+    /// Each test thread's table: the recording host's unless a test sets its own.
+    pub(crate) static HOST: core::cell::Cell<&'static Host> =
+        const { core::cell::Cell::new(&test_host::HOST_TABLE) };
 }
 
 /// Installs the runtime's table when native registers the hooks host
@@ -53,10 +53,17 @@ pub(crate) fn install_native() {
 }
 
 /// The installed table.
+#[cfg(not(test))]
 pub(crate) fn host() -> &'static Host {
-    // SAFETY: a static table is installed before any socket operation runs: the
-    // runtime's while the library loads (system.cc), else the gate's or the tests'.
+    // SAFETY: the runtime's static table is installed while the library loads
+    // (system.cc), before any socket operation runs.
     unsafe { &*HOST.load(Ordering::Acquire) }
+}
+
+/// This thread's table.
+#[cfg(test)]
+pub(crate) fn host() -> &'static Host {
+    HOST.get()
 }
 
 /// The runtime effects the operations use, each over a live record or coroutine.
@@ -751,8 +758,7 @@ pub(crate) mod test_host {
 
     /// Installs the host and clears this thread's events and settings.
     pub(crate) fn install() {
-        // SAFETY: a static table.
-        unsafe { swr_v1_hook_co_socket_host(&raw const HOST_TABLE) };
+        super::HOST.set(&HOST_TABLE);
         take();
         TIMER_OK.set(true);
         REACTOR_OK.set(true);
@@ -836,7 +842,7 @@ pub(crate) mod test_host {
         suspend,
         buffer,
     };
-    static HOST_TABLE: Host = Host {
+    pub(super) static HOST_TABLE: Host = Host {
         timer_add,
         timer_del,
         read_buffer: crate::packet::tests::read_buffer,
