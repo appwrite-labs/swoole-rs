@@ -41,12 +41,15 @@ pub(crate) const MODE_THREAD: u64 = 3;
 pub(crate) trait Host {
     fn op(&mut self, op: u32, arg: u64) -> u64;
 
+    #[inline(always)]
     fn get(&mut self, op: u32) -> u64 {
         self.op(op, 0)
     }
+    #[inline(always)]
     fn is(&mut self, op: u32) -> bool {
         self.get(op) != 0
     }
+    #[inline(always)]
     fn signed(&mut self, op: u32) -> i64 {
         self.get(op).cast_signed()
     }
@@ -62,9 +65,10 @@ pub trait Answer {
 }
 
 /// A context crates/server built, which Rust runs an operation over.
-struct Over<'a>(&'a mut dyn Answer);
+struct Over<'a, A: Answer + ?Sized>(&'a mut A);
 
-impl Host for Over<'_> {
+impl<A: Answer + ?Sized> Host for Over<'_, A> {
+    #[inline(always)]
     fn op(&mut self, op: u32, arg: u64) -> u64 {
         // Unit tests link no upstream objects, so native does these ops there.
         #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -78,6 +82,12 @@ impl Host for Over<'_> {
 /// Runs `operation` with `arg` over `context`.
 pub fn run_over(context: &mut dyn Answer, operation: u32, arg: u64) -> i64 {
     run(&mut Over(context), operation, arg)
+}
+
+/// Runs a task-worker `operation` with `arg` over `context`, compiled for its
+/// type: each step's op is a constant, so an inlined answer folds to its arm.
+pub fn run_task_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) -> i64 {
+    task_worker::run(&mut Over(context), operation, arg)
 }
 
 struct Native {
@@ -102,6 +112,7 @@ impl Host for Native {
 /// in a context. They mean the same in every context, so Rust does them; `None`
 /// for the rest, which native code does.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
+#[inline(always)]
 fn effect(op: u32) -> Option<u64> {
     use core::ffi::c_int;
     use swoole_rs_corebase::log::{last_error, set_last_error};

@@ -22,6 +22,7 @@ use crate::objects::{EVENT_READ, Reactor, in_worker_bus, set_nonblock, socket};
 const SW_FD_PIPE: c_int = 3;
 
 /// The ops on native objects.
+#[inline(always)]
 pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_POOL_INIT => {
@@ -156,7 +157,7 @@ fn run(ctx: &mut Context, operation: u32) -> c_int {
 
 /// Runs `operation` with `arg` over `ctx`, whose objects are live.
 fn run_with(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
-    swoole_rs_process::workers::run_over(ctx, operation, arg)
+    swoole_rs_process::workers::run_task_worker(ctx, operation, arg)
 }
 
 /// `Server::init_task_workers` over the server's task pool, and `Server::finish`
