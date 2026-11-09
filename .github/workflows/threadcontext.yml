@@ -1,7 +1,7 @@
 name: thread-context
-# Upstream and the all-modules hybrid built with --enable-thread-context (each
+# Upstream and the Cargo-built swoole.so with --enable-thread-context (each
 # coroutine on its own thread, crates/coroutine/src/thread.rs), then the coroutine
-# PHPT families. Any test that passes on upstream must pass on the hybrid.
+# PHPT families. Any test that passes on upstream must pass on the Cargo build.
 # Called by the merge tier, and by the PR tier when a PR touches the coroutine
 # context or the coroutine state the loop thread shares with coroutine threads.
 on:
@@ -34,18 +34,18 @@ jobs:
       # The control is the pinned reference itself, unpatched.
       - run: |
           python3 tools/build_upstream.py --configure=--enable-thread-context
-          python3 tools/build_hybrid.py --configure=--enable-thread-context | tee hybrid.log
+          python3 tools/build_ext.py --configure=--enable-thread-context
           mkdir -p target/phpt
           cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
-          cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
-          for engine in upstream hybrid; do php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep 'thread context'; done
+          cp target/ext/swoole.so target/phpt/cargo.so
+          for engine in upstream cargo; do php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep 'thread context'; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
       - id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       - run: |
           families="--module swoole_coroutine --module swoole_channel_coro --module swoole_coroutine_scheduler --module swoole_coroutine_system"
           mkdir -p target/phpt/threadcontext
-          for engine in upstream hybrid; do
+          for engine in upstream cargo; do
             python3 corpus/upstream/run.py --manifest target/phpt/manifest.json $families --timeout 30 \
               ${{ steps.extensions.outputs.args }} --engine $engine=target/phpt/$engine.so \
               --output target/phpt/threadcontext/$engine.json || [ $? -eq 1 ]

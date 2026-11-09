@@ -1,7 +1,7 @@
 name: c-ares
-# Upstream and the all-modules hybrid built with --enable-cares (libcares resolves
+# Upstream and the Cargo-built swoole.so with --enable-cares (libcares resolves
 # coroutine DNS lookups instead of the built-in UDP client), then the PHPT families
-# that resolve names. Any test that passes on upstream must pass on the hybrid.
+# that resolve names. Any test that passes on upstream must pass on the Cargo build.
 # Called by the merge tier, and by the PR tier when a PR touches resolver code.
 on:
   workflow_call:
@@ -35,22 +35,17 @@ jobs:
       # The control is the pinned reference itself, unpatched.
       - run: |
           python3 tools/build_upstream.py --configure=--enable-cares
-          python3 tools/build_hybrid.py --configure=--enable-cares | tee hybrid.log
+          python3 tools/build_ext.py --configure=--enable-cares
           mkdir -p target/phpt
           cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
-          cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
-          for engine in upstream hybrid; do php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -i 'c-ares'; done
+          cp target/ext/swoole.so target/phpt/cargo.so
+          for engine in upstream cargo; do php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -i 'c-ares'; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
       - id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
-      - run: >
-          python3 tests/modules/integration/test_bridge.py --startup-only
-          ${{ steps.extensions.outputs.args }}
-          --reference target/upstream/src/modules/swoole.so
-          --hybrid "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)"
       - run: |
           python3 tests/modules/clients/cares.py ${{ steps.extensions.outputs.args }} \
-            --engine upstream=target/phpt/upstream.so --engine hybrid=target/phpt/hybrid.so \
+            --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so \
             --output target/phpt/cares-runtime.json
       # The original System DNS timeout case against a resolver that answers late (#1190).
       # Its 712 comes from c-ares's own timeout; the thread-pool lookup reports 10018 on
@@ -60,12 +55,12 @@ jobs:
           python3 corpus/upstream/run.py
           --manifest tests/modules/corebase/dns-timeout-originals.json --external-network --require-all
           ${{ steps.extensions.outputs.args }}
-          --engine upstream=target/phpt/upstream.so --engine hybrid=target/phpt/hybrid.so
+          --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
           --output target/phpt/dns-timeout-originals.json
       - run: |
           families="--module swoole_coroutine --module swoole_coroutine_system --module swoole_client_coro --module swoole_http_client_coro --module swoole_socket_coro"
           mkdir -p target/phpt/cares
-          for engine in upstream hybrid; do
+          for engine in upstream cargo; do
             python3 corpus/upstream/run.py --manifest target/phpt/manifest.json $families --timeout 30 \
               ${{ steps.extensions.outputs.args }} --engine $engine=target/phpt/$engine.so \
               --output target/phpt/cares/$engine.json || [ $? -eq 1 ]

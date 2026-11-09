@@ -1,8 +1,8 @@
 name: io_uring
-# Upstream and the all-modules hybrid built with --enable-iouring --enable-uring-socket,
+# Upstream and the Cargo-built swoole.so with --enable-iouring --enable-uring-socket,
 # then the original PHPTs upstream's own io_uring CI runs (scripts/run-tests.sh with
 # SWOOLE_IOURING), plus the families whose code paths io_uring replaces (System::sleep,
-# waitpid, coroutine locks). Any test that passes on upstream must pass on the hybrid.
+# waitpid, coroutine locks). Any test that passes on upstream must pass on the Cargo build.
 # Called by the merge tier, and by the PR tier when a PR touches io_uring code.
 on:
   workflow_call:
@@ -35,18 +35,18 @@ jobs:
       - run: |
           iouring="--configure=--enable-iouring --configure=--enable-uring-socket"
           python3 tools/build_upstream.py $iouring
-          python3 tools/build_hybrid.py $iouring | tee hybrid.log
+          python3 tools/build_ext.py $iouring
           mkdir -p target/phpt
           cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
-          cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
-          for engine in upstream hybrid; do php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -E 'io_uring|uring_socket'; done
+          cp target/ext/swoole.so target/phpt/cargo.so
+          for engine in upstream cargo; do php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -E 'io_uring|uring_socket'; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
       - id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       - run: |
           families="--module swoole_iouring --module swoole_runtime --module swoole_coroutine_lock --module swoole_coroutine_system"
           mkdir -p target/phpt/iouring
-          for engine in upstream hybrid; do
+          for engine in upstream cargo; do
             python3 corpus/upstream/run.py --manifest target/phpt/manifest.json $families --timeout 30 \
               ${{ steps.extensions.outputs.args }} --engine $engine=target/phpt/$engine.so \
               --output target/phpt/iouring/$engine.json || [ $? -eq 1 ]
