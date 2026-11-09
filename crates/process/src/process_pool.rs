@@ -550,11 +550,6 @@ setters!(
     reload_task / set_reload_task: *mut ReloadTask,
 );
 
-fn time_now() -> i64 {
-    // SAFETY: time(2) with no out-pointer.
-    unsafe { libc::time(ptr::null_mut()) }
-}
-
 fn getpid() -> c_int {
     // SAFETY: getpid(2) cannot fail.
     unsafe { libc::getpid() }
@@ -886,7 +881,7 @@ impl<H: PoolHost> Pool<H> {
         }
         self.set_reload_count(self.reload_count() + 1);
         self.set_reload_init(true);
-        self.set_reload_last_time(time_now());
+        self.set_reload_last_time(swoole_rs_corebase::time_now());
         Ok(true)
     }
 

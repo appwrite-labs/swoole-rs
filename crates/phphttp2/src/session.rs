@@ -266,12 +266,6 @@ impl Drop for StreamState {
 const SW_LOG_WARNING: libc::c_int = 4;
 const SW_ERROR_HTTP2_STREAM_NO_HEADER: libc::c_int = 3002;
 
-/// Whether connection `fd` has a session.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphttp2_session_exists(fd: i64) -> bool {
-    SESSIONS.with_borrow(|sessions| sessions.contains_key(&fd))
-}
-
 /// A session for connection `fd` (`swoole_http2_server_session_new`), unless
 /// it has one. `handle` gets each finished request with `data`.
 /// # Safety

@@ -191,8 +191,7 @@ pub extern "C" fn swr_v1_core_init() -> bool {
     }
     swr_v1_core_set_max_file_content(MAX_FILE_CONTENT);
     RECORD.dns_tries.store(1, Ordering::Relaxed);
-    // SAFETY: time accepts a null output pointer.
-    let now = unsafe { libc::time(ptr::null_mut()) };
+    let now = time_now();
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -350,6 +349,13 @@ pub extern "C" fn swoole_get_stdout_stream() -> *mut c_void {
 )]
 pub extern "C" fn swoole_set_trace_flags(flags: c_long) {
     swr_v1_core_set_trace_flags(flags);
+}
+
+/// `::time(nullptr)`: the wall clock's seconds.
+#[must_use]
+pub fn time_now() -> libc::time_t {
+    // SAFETY: time accepts a null output pointer.
+    unsafe { libc::time(ptr::null_mut()) }
 }
 
 #[cfg(test)]

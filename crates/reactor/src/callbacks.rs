@@ -170,11 +170,9 @@ fn run_task(task: crate::ReactorTask) {
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn malloc_trim(last: &mut libc::time_t) {
     use swoole_rs_corebase::constants::{SW_MALLOC_TRIM_INTERVAL, SW_MALLOC_TRIM_PAD};
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            libc::time_t::try_from(elapsed.as_secs()).unwrap_or(libc::time_t::MAX)
-        });
+    // `time(nullptr)`, as upstream: a third of `SystemTime::now` and
+    // `duration_since`, at the end of every wait.
+    let now = swoole_rs_corebase::time_now();
     if *last < now - libc::time_t::from(SW_MALLOC_TRIM_INTERVAL) {
         // SAFETY: glibc's heap trim, with no preconditions.
         unsafe { libc::malloc_trim(usize::try_from(SW_MALLOC_TRIM_PAD).unwrap_or(0)) };

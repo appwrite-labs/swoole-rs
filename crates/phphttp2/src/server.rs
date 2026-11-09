@@ -693,14 +693,28 @@ fn fold(text: &[u8]) -> ([u8; 33], usize) {
     (folded, length)
 }
 
-/// `value` in decimal, written into `buffer` (`swoole_itoa`).
+/// `value` in decimal, written into the end of `buffer` (`swoole_itoa`);
+/// twenty bytes hold any i64. Not `write!`: `core::fmt` costs four times as much
+/// on every response header.
 fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
-    use std::io::Write;
-    let mut cursor = std::io::Cursor::new(&mut buffer[..]);
-    // Twenty bytes hold any i64.
-    write!(cursor, "{value}").unwrap_or_default();
-    let length = usize::try_from(cursor.position()).unwrap_or(0);
-    buffer.get(..length).unwrap_or_default()
+    let mut rest = value.unsigned_abs();
+    let mut start = buffer.len();
+    for slot in buffer.iter_mut().rev() {
+        *slot = b'0' + (rest % 10) as u8;
+        start -= 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    if value < 0
+        && let Some(sign) = start.checked_sub(1)
+        && let Some(slot) = buffer.get_mut(sign)
+    {
+        *slot = b'-';
+        start = sign;
+    }
+    buffer.get(start..).unwrap_or_default()
 }
 
 /// `Stream::send_header`.
@@ -1020,7 +1034,7 @@ pub unsafe extern "C" fn swoole_http2_server_on_receive(
 ) -> c_int {
     // SAFETY: a `RecvData` begins with its `DataHead`.
     let session_id = unsafe { (*request.cast::<swoole_rs_corebase::DataHead>()).fd };
-    if !crate::session::swr_v1_phphttp2_session_exists(session_id) {
+    let session = SessionState::find(session_id).or_else(|| {
         // SAFETY: the live server.
         let default_ctx = unsafe { swoole_rs_phphttp::http2::server_context(server, session_id) };
         // SAFETY: the live server and the session's connection.
@@ -1037,7 +1051,8 @@ pub unsafe extern "C" fn swoole_http2_server_on_receive(
                 ptr::null_mut(),
             );
         };
-    }
+        SessionState::find(session_id)
+    });
     // SAFETY: all zeroes is `IS_UNDEF`.
     let mut zdata: zval = unsafe { std::mem::zeroed() };
     // SAFETY: the live server and its request; the data is a new string.
@@ -1046,8 +1061,9 @@ pub unsafe extern "C" fn swoole_http2_server_on_receive(
     let data = unsafe { value::str_of(&raw mut zdata) };
     // SAFETY: its live string.
     let data = unsafe { string::bytes(data) };
-    // SAFETY: a whole frame.
-    let result = unsafe { swr_v1_phphttp2_session_parse(session_id, data.as_ptr().cast()) };
+    // The session stays alive until its frame is handled.
+    let result = session.map_or(SW_ERR, |session| parse(&session, data.as_ptr()));
+    bailout::finish();
     // SAFETY: the data's own reference.
     unsafe { zval_ptr_dtor(&raw mut zdata) };
     result
@@ -1059,25 +1075,11 @@ pub extern "C" fn php_swoole_http2_server_on_close(_server: *mut c_void, session
     crate::session::swr_v1_phphttp2_session_free(session_id);
 }
 
-/// `swoole_http2_server_parse`: one frame from the peer of connection `fd`,
-/// whose session stays alive until the frame is handled.
+/// `swoole_http2_server_parse` for the coroutine server's connection loop: one
+/// frame from the peer of connection `fd`; a bailout stays pending for the
+/// caller's `finish`.
 /// # Safety
 /// `buf` holds a whole frame.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_session_parse(fd: i64, buf: *const c_char) -> c_int {
-    let Some(session) = SessionState::find(fd) else {
-        return SW_ERR;
-    };
-    let result = parse(&session, buf.cast());
-    drop(session);
-    bailout::finish();
-    result
-}
-
-/// `swr_v1_phphttp2_session_parse` for a Rust caller (the coroutine server's
-/// connection loop): a bailout stays pending for the caller's `finish`.
-/// # Safety
-/// As `swr_v1_phphttp2_session_parse`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp2_session_receive(fd: i64, buf: *const c_char) -> c_int {
     SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, buf.cast()))
@@ -1657,6 +1659,13 @@ mod tests {
         assert_eq!(strtol(b"abc"), (0, false));
         assert_eq!(strtol(b""), (0, true));
         assert_eq!(strtol(b"99999999999999999999999"), (i64::MAX, true));
+    }
+
+    #[test]
+    fn decimal_matches_display() {
+        for value in [0, 7, 200, 404, 1_048_576, -1, -503, i64::MAX, i64::MIN] {
+            assert_eq!(decimal(&mut [0; 20], value), value.to_string().as_bytes());
+        }
     }
 
     #[test]
