@@ -75,10 +75,6 @@ PENDING_PORTS = {
         'swoole_pdo_pgsql/split_reply.phpt',
         'swoole_pdo_pgsql/split_reply_local.phpt',
     ],
-    1944: [
-        'swoole_curl/multi/free_pending_resume.phpt',
-        'swoole_curl/fatal_error_while_suspended.phpt',
-    ],
 }
 PENDING = {f'tests/{test}': issue for issue, tests in PENDING_PORTS.items() for test in tests}
 

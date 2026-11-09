@@ -204,7 +204,10 @@ pub(crate) unsafe fn resume(co: *mut c_void) {
 
 unsafe extern "C-unwind" fn deferred(multi: *mut c_void) {
     // SAFETY: the multi waits on the deferral it queued.
-    crate::multi_deferred(unsafe { &*multi.cast::<Multi>() });
+    if crate::multi_deferred(unsafe { &*multi.cast::<Multi>() }) {
+        // SAFETY: released while the deferral was queued; nothing else uses it.
+        unsafe { crate::swr_v1_curl_multi_free(multi.cast()) };
+    }
 }
 
 /// `swoole_event_defer` of the multi's wake-up.
