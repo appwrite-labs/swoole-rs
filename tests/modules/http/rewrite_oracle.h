@@ -1,5 +1,5 @@
 #pragma once
-#include "swoole_server.h"
+#include "swoole.h"
 #include "swoole_util.h"
 #include <memory>
 #include <regex>
