@@ -23,6 +23,14 @@ mod tests {
 #[cfg(test)]
 #[path = "loaded_tests.rs"]
 mod loaded;
+#[cfg(test)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "a multi-line attribute [between] cfg(test) and the module"
+)]
+mod spanned {
+    fn t() { unsafe { skipped() } }
+}
 use std::collections::{HashMap, VecDeque};
 static DATE_CACHE: u8 = 0;
 pub(crate) struct Cached;

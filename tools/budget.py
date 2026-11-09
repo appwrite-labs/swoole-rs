@@ -45,7 +45,7 @@ PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 def count_file(path, test_files):
     """{kind: matches} in `path` outside #[cfg(test)] modules; adds files those modules load to `test_files`."""
     count = dict.fromkeys(KINDS, 0)
-    skip_until, pending, pending_path = None, False, None
+    skip_until, pending, pending_path, depth = None, False, None, 0
     for line in path.read_text(errors='replace').splitlines():
         if skip_until is not None:
             if line.rstrip() == skip_until:
@@ -54,7 +54,7 @@ def count_file(path, test_files):
         if pending:
             if match := PATH_ATTR.search(line):
                 pending_path = match.group(1)
-            if match := TEST_MOD.match(line):
+            if depth == 0 and (match := TEST_MOD.match(line)):
                 pending = False
                 if match.group(3) == '{':
                     skip_until = match.group(1) + '}'
@@ -65,11 +65,13 @@ def count_file(path, test_files):
                     test_files.add((base / name).resolve())
                     test_files.add((base / match.group(2) / 'mod.rs').resolve())
                 continue
-            if line.strip().startswith('#['):
+            # Another attribute, which may span lines, before the module.
+            if depth or line.strip().startswith('#['):
+                depth += line.count('[') - line.count(']')
                 continue
             pending = False  # #[cfg(test)] on an item that is not a module: counted
         if line.strip() == '#[cfg(test)]':
-            pending, pending_path = True, None
+            pending, pending_path, depth = True, None, 0
             continue
         code = line.split('//', 1)[0]
         for kind, pattern in KINDS.items():
