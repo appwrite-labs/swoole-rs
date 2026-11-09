@@ -3,27 +3,45 @@
 //! a connection whose wait was interrupted fails with a connection error and
 //! is never reused, and a hooked persistent connection resets without
 //! blocking the event loop.
-use crate::{blocking, has_io_error, take_io_error, wait_connect};
-use pq_sys::{
-    ConnStatusType, PGconn, PQconsumeInput, PQreset, PQresetPoll, PQresetStart, PQsetnonblocking,
-    PQsocket, PQstatus,
-};
+use crate::{Conn, blocking, has_io_error, take_io_error, wait_connect};
+use pq_sys::{ConnStatusType, PQreset, PQresetPoll, PQresetStart, PostgresPollingStatusType};
 use std::ffi::{c_char, c_int, c_void};
 use swoole_rs_zend::sys::{swr_zend_pdo_driver_data, swr_zend_pdo_forget_persistent};
+
+impl Conn {
+    fn reset_poll(self) -> PostgresPollingStatusType {
+        // SAFETY: a live connection.
+        unsafe { PQresetPoll(self.0) }
+    }
+
+    fn reset_start(self) -> bool {
+        // SAFETY: as above.
+        unsafe { PQresetStart(self.0) != 0 }
+    }
+
+    fn reset(self) {
+        // SAFETY: as above.
+        unsafe { PQreset(self.0) };
+    }
+}
 
 /// `SUCCESS` and `FAILURE`.
 const SUCCESS: c_int = 0;
 const FAILURE: c_int = -1;
 
-/// The connection of `dbh`, a `pdo_dbh_t` whose driver data is a
-/// `pdo_pgsql_db_handle` (its first field, `server`).
-/// # Safety
-/// `dbh` is a live pgsql `pdo_dbh_t`.
-unsafe fn server(dbh: *mut c_void) -> *mut PGconn {
-    // SAFETY: per the caller.
-    let handle = unsafe { swr_zend_pdo_driver_data(dbh) };
-    // SAFETY: `server` starts the handle.
-    unsafe { *handle.cast::<*mut PGconn>() }
+/// A live pgsql `pdo_dbh_t` the driver handed over: its driver data is a
+/// `pdo_pgsql_db_handle`, whose first field is the connection.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Dbh(*mut c_void);
+
+impl Dbh {
+    fn server(self) -> Conn {
+        // SAFETY: a live pgsql `pdo_dbh_t`.
+        let handle = unsafe { swr_zend_pdo_driver_data(self.0) };
+        // SAFETY: `server` starts the handle.
+        unsafe { *handle.cast::<Conn>() }
+    }
 }
 
 /// `php_swoole_pgsql_handle_io_error`: whether the connection's I/O was
@@ -32,28 +50,25 @@ unsafe fn server(dbh: *mut c_void) -> *mut PGconn {
 /// persistent pool lets go of the handle; PDO's own owners keep it until
 /// their destructors `PQfinish` it.
 /// # Safety
-/// `dbh` is a live pgsql `pdo_dbh_t`; `message` is writable.
+/// `message` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_pgsql_handle_io_error(
-    dbh: *mut c_void,
+    dbh: Dbh,
     message: *mut *const c_char,
 ) -> bool {
-    // SAFETY: per the caller.
-    let conn = unsafe { server(dbh) };
+    let conn = dbh.server();
     let Some((code, first)) = take_io_error(conn) else {
         return false;
     };
     if first {
-        // SAFETY: a live connection.
-        let fd = unsafe { PQsocket(conn) };
+        let fd = conn.socket();
         if fd >= 0 {
             // SAFETY: the connection's own socket.
             unsafe { libc::shutdown(fd, libc::SHUT_RDWR) };
-            // SAFETY: a live connection.
-            unsafe { PQconsumeInput(conn) };
+            conn.consume_input();
         }
-        // SAFETY: per the caller.
-        unsafe { swr_zend_pdo_forget_persistent(dbh) };
+        // SAFETY: a live `pdo_dbh_t`.
+        unsafe { swr_zend_pdo_forget_persistent(dbh.0) };
     }
     // SAFETY: per the caller.
     unsafe { *message = swoole_rs_error::swoole_strerror(code) };
@@ -62,40 +77,27 @@ pub unsafe extern "C" fn php_swoole_pgsql_handle_io_error(
 
 /// `php_swoole_pgsql_check_liveness`: an interrupted connection is dead; a
 /// broken one resets, by polling with the hook on.
-/// # Safety
-/// `dbh` is a live pgsql `pdo_dbh_t`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_pgsql_check_liveness(dbh: *mut c_void) -> c_int {
-    // SAFETY: per the caller.
-    let conn = unsafe { server(dbh) };
+pub extern "C" fn php_swoole_pgsql_check_liveness(dbh: Dbh) -> c_int {
+    let conn = dbh.server();
     if has_io_error(conn) {
         return FAILURE;
     }
-    // SAFETY: a live connection.
-    let alive = unsafe { PQconsumeInput(conn) } != 0;
-    // SAFETY: as above.
-    if !alive || unsafe { PQstatus(conn) } == ConnStatusType::CONNECTION_BAD {
+    if !conn.consume_input() || conn.status() == ConnStatusType::CONNECTION_BAD {
         if !blocking() {
-            // SAFETY: as above.
-            let started = unsafe { PQresetStart(conn) } != 0;
-            // SAFETY: as above.
-            if !started || unsafe { PQsocket(conn) } < 0 {
+            if !conn.reset_start() || conn.socket() < 0 {
                 return FAILURE;
             }
-            // SAFETY: as above.
-            unsafe { PQsetnonblocking(conn, 1) };
-            // SAFETY: a live connection with a socket; the hook is on, in a coroutine.
-            return if unsafe { wait_connect(conn, PQresetPoll) } {
+            conn.set_nonblocking(true);
+            return if wait_connect(conn, Conn::reset_poll) {
                 SUCCESS
             } else {
                 FAILURE
             };
         }
-        // SAFETY: as above.
-        unsafe { PQreset(conn) };
+        conn.reset();
     }
-    // SAFETY: as above.
-    if unsafe { PQstatus(conn) } == ConnStatusType::CONNECTION_OK {
+    if conn.status() == ConnStatusType::CONNECTION_OK {
         SUCCESS
     } else {
         FAILURE

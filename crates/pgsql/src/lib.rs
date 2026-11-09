@@ -47,18 +47,86 @@ static BLOCKING: AtomicBool = AtomicBool::new(true);
 /// `SW_ERROR_CO_TIMEDOUT`: the last error a timed-out wait leaves.
 const CO_TIMEDOUT: c_int = 10018;
 
+/// A connection the driver handed over: live, as libpq's own calls require,
+/// for as long as the value is used. The exports take it in place of
+/// `PGconn *`.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Conn(*mut PGconn);
+
+impl Conn {
+    fn socket(self) -> c_int {
+        // SAFETY: a live connection.
+        unsafe { PQsocket(self.0) }
+    }
+
+    fn status(self) -> ConnStatusType {
+        // SAFETY: as above.
+        unsafe { PQstatus(self.0) }
+    }
+
+    fn consume_input(self) -> bool {
+        // SAFETY: as above.
+        unsafe { PQconsumeInput(self.0) != 0 }
+    }
+
+    fn is_busy(self) -> bool {
+        // SAFETY: as above.
+        unsafe { PQisBusy(self.0) != 0 }
+    }
+
+    fn set_nonblocking(self, on: bool) {
+        // SAFETY: as above.
+        unsafe { PQsetnonblocking(self.0, c_int::from(on)) };
+    }
+
+    fn connect_poll(self) -> PostgresPollingStatusType {
+        // SAFETY: as above.
+        unsafe { PQconnectPoll(self.0) }
+    }
+
+    /// The options set on the connection, as keyword and value bytes.
+    fn options(self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        // SAFETY: as above.
+        let options = unsafe { PQconninfo(self.0) };
+        let mut pairs = Vec::new();
+        let mut option = options;
+        while !option.is_null() {
+            // SAFETY: libpq's array, which ends with a null keyword.
+            let entry = unsafe { &*option };
+            if entry.keyword.is_null() {
+                break;
+            }
+            if !entry.val.is_null() {
+                // SAFETY: NUL-terminated strings libpq owns until PQconninfoFree.
+                let keyword = unsafe { CStr::from_ptr(entry.keyword) };
+                // SAFETY: as above.
+                let value = unsafe { CStr::from_ptr(entry.val) };
+                pairs.push((keyword.to_bytes().to_vec(), value.to_bytes().to_vec()));
+            }
+            // SAFETY: the array continues to its terminator.
+            option = unsafe { option.add(1) };
+        }
+        if !options.is_null() {
+            // SAFETY: the array PQconninfo returned.
+            unsafe { PQconninfoFree(options) };
+        }
+        pairs
+    }
+}
+
 thread_local! {
     /// `pgsql_io_errors`: each connection whose wait was interrupted, with the
     /// error and whether PDO has shut it down for it. Only interrupted I/O is
     /// recorded; PDO owns the connection's disposal and its eviction from the
     /// persistent pool. A thread holds few connections, so a list will do.
-    static IO_ERRORS: RefCell<Vec<(*mut PGconn, c_int, bool)>> = const { RefCell::new(Vec::new()) };
+    static IO_ERRORS: RefCell<Vec<(Conn, c_int, bool)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The connection's interrupted I/O, if any: its error, and whether this is
 /// the first time it is asked for (the caller then shuts the connection down).
 #[cfg(feature = "php")]
-fn take_io_error(conn: *mut PGconn) -> Option<(c_int, bool)> {
+fn take_io_error(conn: Conn) -> Option<(c_int, bool)> {
     IO_ERRORS.with_borrow_mut(|errors| {
         let (_, code, handled) = errors.iter_mut().find(|(c, _, _)| *c == conn)?;
         Some((*code, !std::mem::replace(handled, true)))
@@ -66,13 +134,13 @@ fn take_io_error(conn: *mut PGconn) -> Option<(c_int, bool)> {
 }
 
 #[cfg(feature = "php")]
-fn has_io_error(conn: *mut PGconn) -> bool {
+fn has_io_error(conn: Conn) -> bool {
     IO_ERRORS.with_borrow(|errors| errors.iter().any(|(c, _, _)| *c == conn))
 }
 
 // SAFETY: crates/coroutine's.
 unsafe extern "C" {
-    fn swr_v1_coroutine_current() -> *mut c_void;
+    safe fn swr_v1_coroutine_current() -> *mut c_void;
 }
 
 /// `swoole_pgsql_set_blocking`: the runtime hook flag.
@@ -83,6 +151,11 @@ pub extern "C" fn swoole_pgsql_set_blocking(blocking: bool) {
 
 fn blocking() -> bool {
     BLOCKING.load(Ordering::Relaxed)
+}
+
+fn lib_version() -> c_int {
+    // SAFETY: a constant of libpq's.
+    unsafe { PQlibVersion() }
 }
 
 /// libpq's version as `major.minor` (10 and later) or `major.minor.revision`.
@@ -104,8 +177,7 @@ pub unsafe extern "C" fn swoole_libpq_version(buf: *mut c_char, len: usize) {
     if buf.is_null() || len == 0 {
         return;
     }
-    // SAFETY: libpq's version.
-    let text = version_text(unsafe { PQlibVersion() });
+    let text = version_text(lib_version());
     // SAFETY: per the caller.
     let out = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), len) };
     let mut n = 0;
@@ -133,11 +205,8 @@ fn to_poll(event: c_int) -> i16 {
 /// `swoole_pgsql_socket_poll`: wait for `event` on the connection's socket;
 /// 1 ready, 0 timed out, -1 failed. A failed coroutine wait (cancelled, or
 /// refused by the reactor) is recorded against the connection.
-/// # Safety
-/// `conn` is a live connection; with the hook on, in a coroutine.
-unsafe fn socket_poll(conn: *mut PGconn, event: c_int) -> c_int {
-    // SAFETY: per the caller.
-    let fd = unsafe { PQsocket(conn) };
+fn socket_poll(conn: Conn, event: c_int) -> c_int {
+    let fd = conn.socket();
     if blocking() {
         let mut poll = libc::pollfd {
             fd,
@@ -155,7 +224,8 @@ unsafe fn socket_poll(conn: *mut PGconn, event: c_int) -> c_int {
             result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR);
         return if interrupted { 0 } else { result };
     }
-    // SAFETY: per the caller, with the thread's reactor running.
+    // SAFETY: the hook is on, so a coroutine runs the request, as upstream
+    // requires, with the thread's reactor running.
     if unsafe { swoole_rs_hooks::wait_event::system_wait_event(fd, event, POLL_TIMEOUT) } >= 0 {
         return 1;
     }
@@ -172,77 +242,62 @@ unsafe fn socket_poll(conn: *mut PGconn, event: c_int) -> c_int {
 }
 
 /// `swoole_pgsql_flush`: flush the outgoing request, waiting while it would block.
-/// # Safety
-/// As [`socket_poll`].
-unsafe fn flush(conn: *mut PGconn) -> c_int {
+fn flush(conn: Conn) -> c_int {
     loop {
-        // SAFETY: per the caller.
-        let flushed = unsafe { PQflush(conn) };
+        // SAFETY: a live connection.
+        let flushed = unsafe { PQflush(conn.0) };
         if flushed != 1 {
             return flushed;
         }
-        // SAFETY: as above.
-        if unsafe { socket_poll(conn, WRITE) } < 0 {
+        if socket_poll(conn, WRITE) < 0 {
             return -1;
         }
     }
 }
 
 /// `swoole_pgsql_wait_result`: read until libpq holds a whole result.
-/// # Safety
-/// As [`socket_poll`].
-unsafe fn wait_result(conn: *mut PGconn) -> bool {
-    // SAFETY: per the caller.
-    while unsafe { PQisBusy(conn) } != 0 {
-        // SAFETY: as above.
-        if unsafe { socket_poll(conn, READ) } < 0 {
-            return false;
-        }
-        // SAFETY: as above.
-        if unsafe { PQconsumeInput(conn) } == 0 {
+fn wait_result(conn: Conn) -> bool {
+    while conn.is_busy() {
+        if socket_poll(conn, READ) < 0 || !conn.consume_input() {
             return false;
         }
     }
     true
 }
 
+/// `PQclear`.
+fn clear(result: *mut PGresult) {
+    // SAFETY: a result libpq returned and nothing else holds, or null.
+    unsafe { PQclear(result) };
+}
+
 /// `swoole_pgsql_get_result`: wait for the results and keep the last one.
 /// Without the hook one poll precedes `PQgetResult`, which may then block.
-/// # Safety
-/// As [`socket_poll`].
-unsafe fn get_result(conn: *mut PGconn) -> *mut PGresult {
+fn get_result(conn: Conn) -> *mut PGresult {
     let blocking = blocking();
-    // SAFETY: per the caller.
-    if blocking && unsafe { socket_poll(conn, READ) } < 0 {
+    if blocking && socket_poll(conn, READ) < 0 {
         return ptr::null_mut();
     }
     let mut last = ptr::null_mut();
-    // SAFETY: as above.
-    while blocking || unsafe { wait_result(conn) } {
-        // SAFETY: as above.
-        let result = unsafe { PQgetResult(conn) };
+    while blocking || wait_result(conn) {
+        // SAFETY: a live connection.
+        let result = unsafe { PQgetResult(conn.0) };
         if result.is_null() {
             return last;
         }
-        // SAFETY: a result libpq returned, or null.
-        unsafe { PQclear(last) };
+        clear(last);
         last = result;
     }
-    // SAFETY: as above.
-    unsafe { PQclear(last) };
+    clear(last);
     ptr::null_mut()
 }
 
 /// A sent request's result: flush, then wait for it.
-/// # Safety
-/// As [`socket_poll`].
-unsafe fn finish(conn: *mut PGconn, sent: c_int) -> *mut PGresult {
-    // SAFETY: per the caller.
-    if sent == 0 || unsafe { flush(conn) } == -1 {
+fn finish(conn: Conn, sent: c_int) -> *mut PGresult {
+    if sent == 0 || flush(conn) == -1 {
         return ptr::null_mut();
     }
-    // SAFETY: as above.
-    unsafe { get_result(conn) }
+    get_result(conn)
 }
 
 /// `strtol(value, NULL, 10)`, saturating.
@@ -288,51 +343,15 @@ fn connect_budget<'a>(
     (u64::try_from(timeout).unwrap_or(0), targets)
 }
 
-/// [`connect_budget`] of a live connection.
-/// # Safety
-/// `conn` is a live connection.
-unsafe fn conn_budget(conn: *mut PGconn) -> (u64, u64) {
-    // SAFETY: per the caller.
-    let options = unsafe { PQconninfo(conn) };
-    let mut pairs = Vec::new();
-    let mut option = options;
-    // SAFETY: libpq's array, ended by a null keyword.
-    while !option.is_null() && !unsafe { (*option).keyword }.is_null() {
-        // SAFETY: a live option.
-        let entry = unsafe { *option };
-        if !entry.val.is_null() {
-            // SAFETY: NUL-terminated strings libpq owns until PQconninfoFree.
-            let keyword = unsafe { CStr::from_ptr(entry.keyword) }.to_bytes().to_vec();
-            // SAFETY: as above.
-            let value = unsafe { CStr::from_ptr(entry.val) }.to_bytes().to_vec();
-            pairs.push((keyword, value));
-        }
-        // SAFETY: the array continues to its terminator.
-        option = unsafe { option.add(1) };
-    }
-    if !options.is_null() {
-        // SAFETY: the array PQconninfo returned.
-        unsafe { PQconninfoFree(options) };
-    }
-    // SAFETY: libpq's version.
-    let version = unsafe { PQlibVersion() };
-    connect_budget(
-        pairs.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
-        version,
-    )
-}
-
 /// `swoole_pgsql_wait_connect`: drive `poll_connection` to its end. libpq
 /// leaves `connect_timeout` to the caller here; the whole target list gets it
 /// once per target, so libpq can still fail over.
-/// # Safety
-/// `conn` is a live connection with a socket.
-unsafe fn wait_connect(
-    conn: *mut PGconn,
-    poll_connection: unsafe extern "C" fn(*mut PGconn) -> PostgresPollingStatusType,
-) -> bool {
-    // SAFETY: per the caller.
-    let (timeout, targets) = unsafe { conn_budget(conn) };
+fn wait_connect(conn: Conn, poll_connection: fn(Conn) -> PostgresPollingStatusType) -> bool {
+    let options = conn.options();
+    let (timeout, targets) = connect_budget(
+        options.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+        lib_version(),
+    );
     let start = Instant::now();
     let mut status = PostgresPollingStatusType::PGRES_POLLING_WRITING;
     loop {
@@ -347,24 +366,20 @@ unsafe fn wait_connect(
                 return false;
             }
         };
-        // SAFETY: as above.
-        let polled = unsafe { socket_poll(conn, event) };
+        let polled = socket_poll(conn, event);
         if polled < 0 || (timeout > 0 && start.elapsed().as_secs() / targets >= timeout) {
             break;
         }
-        // SAFETY: as above.
-        let state = unsafe { PQstatus(conn) };
         // libpq sends its first packet from these states and assumes the socket is writable.
         if polled == 0
             && matches!(
-                state,
+                conn.status(),
                 ConnStatusType::CONNECTION_STARTED | ConnStatusType::CONNECTION_MADE
             )
         {
             continue;
         }
-        // SAFETY: as above.
-        status = unsafe { poll_connection(conn) };
+        status = poll_connection(conn);
         if matches!(
             status,
             PostgresPollingStatusType::PGRES_POLLING_OK
@@ -373,9 +388,7 @@ unsafe fn wait_connect(
             break;
         }
     }
-    // SAFETY: as above.
-    let status = unsafe { PQstatus(conn) };
-    status == ConnStatusType::CONNECTION_OK
+    conn.status() == ConnStatusType::CONNECTION_OK
 }
 
 /// `swoole_pgsql_close_prepared`: `PQsendClosePrepared`, then its result.
@@ -386,10 +399,10 @@ unsafe fn wait_connect(
 /// As `PQclosePrepared`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_pgsql_close_prepared(
-    conn: *mut PGconn,
+    conn: Conn,
     stmt_name: *const c_char,
 ) -> *mut PGresult {
-    type Send = unsafe extern "C" fn(*mut PGconn, *const c_char) -> c_int;
+    type Send = unsafe extern "C" fn(Conn, *const c_char) -> c_int;
     // SAFETY: a NUL-terminated name.
     let send = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"PQsendClosePrepared".as_ptr()) };
     if send.is_null() {
@@ -401,8 +414,7 @@ pub unsafe extern "C" fn swoole_pgsql_close_prepared(
     if unsafe { send(conn, stmt_name) } == 0 {
         return ptr::null_mut();
     }
-    // SAFETY: as above.
-    unsafe { get_result(conn) }
+    get_result(conn)
 }
 
 /// `swoole_pgsql_connectdb`: `PQconnectStart`, then poll the handshake to its
@@ -412,28 +424,21 @@ pub unsafe extern "C" fn swoole_pgsql_close_prepared(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_pgsql_connectdb(conninfo: *const c_char) -> *mut PGconn {
     // SAFETY: per the caller.
-    let conn = unsafe { PQconnectStart(conninfo) };
-    // SAFETY: a live connection.
-    if conn.is_null() || unsafe { PQsocket(conn) } < 0 {
-        return conn;
+    let conn = Conn(unsafe { PQconnectStart(conninfo) });
+    if conn.0.is_null() || conn.socket() < 0 {
+        return conn.0;
     }
-    // SAFETY: reads the running coroutine.
-    let nonblocking = !blocking() && !unsafe { swr_v1_coroutine_current() }.is_null();
-    // SAFETY: a live connection.
-    unsafe { PQsetnonblocking(conn, c_int::from(nonblocking)) };
-    // SAFETY: as above.
-    unsafe { wait_connect(conn, PQconnectPoll) };
-    conn
+    conn.set_nonblocking(!blocking() && !swr_v1_coroutine_current().is_null());
+    wait_connect(conn, Conn::connect_poll);
+    conn.0
 }
 
 /// `swoole_pgsql_finish`: forget the connection's interrupted I/O, then `PQfinish`.
-/// # Safety
-/// As `PQfinish`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_pgsql_finish(conn: *mut PGconn) {
+pub extern "C" fn swoole_pgsql_finish(conn: Conn) {
     IO_ERRORS.with_borrow_mut(|errors| errors.retain(|(c, _, _)| *c != conn));
-    // SAFETY: per the caller.
-    unsafe { PQfinish(conn) };
+    // SAFETY: the driver's connection, which nothing uses after this.
+    unsafe { PQfinish(conn.0) };
 }
 
 /// `swoole_pgsql_prepare`: `PQsendPrepare`, then its result.
@@ -441,16 +446,15 @@ pub unsafe extern "C" fn swoole_pgsql_finish(conn: *mut PGconn) {
 /// As `PQprepare`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_pgsql_prepare(
-    conn: *mut PGconn,
+    conn: Conn,
     stmt_name: *const c_char,
     query: *const c_char,
     n_params: c_int,
     param_types: *const Oid,
 ) -> *mut PGresult {
     // SAFETY: per the caller.
-    let sent = unsafe { PQsendPrepare(conn, stmt_name, query, n_params, param_types) };
-    // SAFETY: as above.
-    unsafe { finish(conn, sent) }
+    let sent = unsafe { PQsendPrepare(conn.0, stmt_name, query, n_params, param_types) };
+    finish(conn, sent)
 }
 
 /// `swoole_pgsql_exec_prepared`: `PQsendQueryPrepared`, then its result.
@@ -458,7 +462,7 @@ pub unsafe extern "C" fn swoole_pgsql_prepare(
 /// As `PQexecPrepared`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_pgsql_exec_prepared(
-    conn: *mut PGconn,
+    conn: Conn,
     stmt_name: *const c_char,
     n_params: c_int,
     param_values: *const *const c_char,
@@ -469,7 +473,7 @@ pub unsafe extern "C" fn swoole_pgsql_exec_prepared(
     // SAFETY: per the caller.
     let sent = unsafe {
         PQsendQueryPrepared(
-            conn,
+            conn.0,
             stmt_name,
             n_params,
             param_values,
@@ -478,22 +482,17 @@ pub unsafe extern "C" fn swoole_pgsql_exec_prepared(
             result_format,
         )
     };
-    // SAFETY: as above.
-    unsafe { finish(conn, sent) }
+    finish(conn, sent)
 }
 
 /// `swoole_pgsql_exec`: `PQsendQuery`, then its result.
 /// # Safety
 /// As `PQexec`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_pgsql_exec(
-    conn: *mut PGconn,
-    query: *const c_char,
-) -> *mut PGresult {
+pub unsafe extern "C" fn swoole_pgsql_exec(conn: Conn, query: *const c_char) -> *mut PGresult {
     // SAFETY: per the caller.
-    let sent = unsafe { PQsendQuery(conn, query) };
-    // SAFETY: as above.
-    unsafe { finish(conn, sent) }
+    let sent = unsafe { PQsendQuery(conn.0, query) };
+    finish(conn, sent)
 }
 
 /// `swoole_pgsql_exec_params`: `PQsendQueryParams`, then its result.
@@ -501,7 +500,7 @@ pub unsafe extern "C" fn swoole_pgsql_exec(
 /// As `PQexecParams`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_pgsql_exec_params(
-    conn: *mut PGconn,
+    conn: Conn,
     command: *const c_char,
     n_params: c_int,
     param_types: *const Oid,
@@ -513,7 +512,7 @@ pub unsafe extern "C" fn swoole_pgsql_exec_params(
     // SAFETY: per the caller.
     let sent = unsafe {
         PQsendQueryParams(
-            conn,
+            conn.0,
             command,
             n_params,
             param_types,
@@ -523,8 +522,7 @@ pub unsafe extern "C" fn swoole_pgsql_exec_params(
             result_format,
         )
     };
-    // SAFETY: as above.
-    unsafe { finish(conn, sent) }
+    finish(conn, sent)
 }
 
 #[cfg(test)]

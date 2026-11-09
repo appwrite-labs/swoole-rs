@@ -69,20 +69,21 @@ unsafe fn park(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps) -> Result
         return Err(error);
     }
     // SAFETY: native code's, in the current coroutine.
-    let error = unsafe { (ops.park)(co, timeout) };
-    // SAFETY: the socket `add` made.
-    unsafe { (ops.remove)(socket) };
-    if error == 0 {
-        return Ok(waiter.revents);
-    }
-    if waiter.revents != 0 {
+    let park = |timeout| unsafe { (ops.park)(co, timeout) };
+    let error = park(timeout);
+    if error != 0 && waiter.revents != 0 {
         // An event fired in the loop pass that timed out or cancelled the
         // wait, and its deferred resume is still queued: take it here, or it
         // resumes this coroutine wherever it next waits, or after it ends.
-        // SAFETY: as above.
-        unsafe { (ops.park)(co, 0.0) };
+        park(0.0);
     }
-    Err(error)
+    // SAFETY: the socket `add` made.
+    unsafe { (ops.remove)(socket) };
+    if error == 0 {
+        Ok(waiter.revents)
+    } else {
+        Err(error)
+    }
 }
 
 /// What `wait_event` returns.
