@@ -1150,7 +1150,7 @@ fn on_accept(call: &Call) {
         call.set_null();
         return;
     }
-    let cid = swoole_rs_phpcoroutines::swr_v1_phpcoroutines_cid();
+    let cid = swoole_rs_phpcoroutines::get_cid();
     // SAFETY: the server's live array takes a reference to the connection.
     unsafe { z::swr_zval_try_addref(zconn) };
     // SAFETY: as above.

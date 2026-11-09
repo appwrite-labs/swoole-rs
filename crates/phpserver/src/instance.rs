@@ -88,15 +88,8 @@ fn port_property<'a>(port: *mut c_void) -> Option<&'a PortProperty> {
     }
     // SAFETY: a live `ListenPort`.
     let config = unsafe { port_config::of(port) };
-    // SAFETY: the port's own `ptr` field.
-    let property = unsafe {
-        crate::server::swr_v1_phpserver_port_property(
-            config.object_id,
-            &raw mut config.ptr,
-            ptr::null_mut(),
-            false,
-        )
-    };
+    let property =
+        crate::server::port_property(config.object_id, &mut config.ptr, ptr::null_mut(), false);
     // SAFETY: null, or the property its Port object holds while the port lives.
     unsafe { property.cast::<PortProperty>().as_ref() }
 }

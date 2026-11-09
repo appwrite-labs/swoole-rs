@@ -3,10 +3,10 @@
 //! teardown; with the module's MINIT, RINIT and RSHUTDOWN for threads, the
 //! running thread count and each thread's arguments. Zend's setjmp, TSRM and
 //! request macros are zend-sys shims.
-use crate::{request, thread};
+use crate::{Arguments, request, thread};
 use std::{
     cell::{Cell, UnsafeCell},
-    ffi::{CString, c_char, c_int, c_void},
+    ffi::{CString, c_int, c_void},
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -44,8 +44,8 @@ thread_local! {
 struct Start {
     argv_serialized: *mut zend_string,
     argc: c_int,
-    /// An array handle the thread releases, or null.
-    argv: *mut c_void,
+    /// The thread's arguments, taken by the prologue.
+    argv: Option<Arguments>,
 }
 
 /// `sw_active_thread_count()`, declared `extern "C"` in `php_swoole_private.h`.
@@ -55,27 +55,22 @@ pub extern "C" fn sw_active_thread_count() -> usize {
 }
 
 /// A PHP thread's body: Swoole\Thread's (Rust starts the OS thread) and a
-/// thread-mode Server's workers. `entered` and `left` report its life to the
-/// owner. Nothing allocates before `entered`: a new thread's first malloc can
-/// map an arena.
+/// thread-mode Server's workers: `file` as the primary script with `argv` as
+/// its arguments. `entered` and `left` (with the exit status) report its life
+/// to the owner. Nothing allocates before `entered`: a new thread's first
+/// malloc can map an arena.
 /// # Safety
-/// `file` holds `length` bytes; `argv` is null or an array handle this thread
-/// takes; `context` is what `entered` and `left` expect, live until `left`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_run(
-    file: *const c_char,
-    length: usize,
-    argv: *mut c_void,
-    context: *mut c_void,
-    entered: extern "C" fn(*mut c_void),
-    left: extern "C" fn(*mut c_void, c_int),
+/// A new OS thread, on which nothing of PHP's has run.
+pub unsafe fn run(
+    file: &[u8],
+    argv: Option<Arguments>,
+    entered: impl FnOnce(),
+    left: impl FnOnce(c_int),
 ) {
     THREADS.fetch_add(1, Ordering::SeqCst);
-    entered(context);
-    // SAFETY: per the caller.
-    let bytes = unsafe { std::slice::from_raw_parts(file.cast::<u8>(), length) };
+    entered();
     // A C string, as Zend opens it.
-    let text = bytes.split(|byte| *byte == 0).next().unwrap_or_default();
+    let text = file.split(|byte| *byte == 0).next().unwrap_or_default();
     let file = CString::new(text).unwrap_or_default();
     // SAFETY: a new thread, before anything of PHP's runs on it.
     unsafe { swr_zend_thread_enter() };
@@ -101,7 +96,7 @@ pub unsafe extern "C" fn swr_v1_phpthread_run(
     };
     request::stdio_close();
     drop(file);
-    left(context, status);
+    left(status);
     // SAFETY: the request is over.
     unsafe { swr_zend_thread_leave() };
     swoole_rs_corebase::swoole_thread_clean(false);
@@ -112,8 +107,8 @@ pub unsafe extern "C" fn swr_v1_phpthread_run(
 /// request, the thread's arguments, and its stdio constants. A bailout is
 /// raised from here, which owns nothing.
 unsafe extern "C" fn prologue(start: *mut c_void) {
-    // SAFETY: `swr_v1_phpthread_run`'s `Start`.
-    let start = unsafe { &*start.cast::<Start>() };
+    // SAFETY: `run`'s `Start`.
+    let start = unsafe { &mut *start.cast::<Start>() };
     if !start.argv_serialized.is_null() {
         // SAFETY: an all-zero zval is undef.
         let mut global_argv: zval = unsafe { std::mem::zeroed() };
@@ -125,11 +120,11 @@ unsafe extern "C" fn prologue(start: *mut c_void) {
         // SAFETY: the symbol table takes the value.
         unsafe { swr_zend_thread_set_argv(&raw mut global_argv, i64::from(start.argc)) };
     }
-    if !start.argv.is_null() {
-        // SAFETY: an array handle and this thread's slot.
-        unsafe { crate::swr_v1_phpthread_array_to_array(start.argv, ARGV.with(UnsafeCell::get)) };
-        // SAFETY: the reference the owner took for this thread.
-        unsafe { crate::swr_v1_phpthread_array_release(start.argv) };
+    if let Some(argv) = start.argv.take() {
+        // SAFETY: in the thread's request; its slot holds nothing yet.
+        unsafe { argv.0.to_array(ARGV.with(UnsafeCell::get)) };
+        drop(argv);
+        bailout::finish();
     }
     // SAFETY: in the thread's request, inside its `zend_try`.
     unsafe { request::stdio_open() };

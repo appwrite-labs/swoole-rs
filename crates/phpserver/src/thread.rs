@@ -9,26 +9,28 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_corebase::Thread;
+use swoole_rs_phpthread::Arguments;
 use swoole_rs_process::workers::thread::{WorkerMain, set_worker_thread_start};
 use swoole_rs_server::view;
 use swoole_rs_zend::{
+    Value,
     bailout::{self, Bailout},
     string::bytes,
     sys::{
-        IS_ARRAY, IS_ARRAY_EX, IS_NULL, IS_STRING, swr_zend_property_slot,
-        swr_zend_string_persistent, swr_zend_string_release, swr_zend_thread_main_request,
-        swr_zend_tsrm_is_main_thread, zend_array_dup, zend_fcall_info, zend_hash_apply,
-        zend_object, zend_string, zend_value, zval, zval_ptr_dtor,
+        IS_ARRAY_EX, IS_NULL, IS_STRING, swr_zend_property_slot, swr_zend_string_persistent,
+        swr_zend_string_release, swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread,
+        zend_array_dup, zend_fcall_info, zend_hash_apply, zend_object, zend_string, zend_value,
+        zval, zval_ptr_dtor,
     },
     type_of,
     value::{str_of, table, update_string},
 };
 
 /// What every worker thread starts its PHP request with: the bootstrap script
-/// and the `init_arguments` result (a thread array handle, or null).
+/// and the `init_arguments` result.
 struct Start {
     bootstrap: *mut zend_string,
-    argv: *mut c_void,
+    argv: Option<Arguments>,
 }
 
 /// The running thread-mode server's [`Start`], or null.
@@ -100,13 +102,10 @@ fn run_worker(object: *mut zend_object, serv: *mut c_void) -> Result<(), Bailout
     // SAFETY: the empty slot.
     let (_, bailed) = unsafe { swoole_rs_phpswoole::unserialize(text, setting) };
     bailed?;
-    // SAFETY: the slot unserialize filled.
-    if unsafe { type_of(setting) } == IS_ARRAY {
-        // SAFETY: an array setting.
-        let options = unsafe { table(setting) };
-        // SAFETY: as above. The coroutine options are thread-local: each
-        // worker thread sets them once.
-        unsafe { swoole_rs_phpcoroutines::php_swoole_set_coroutine_option(options) };
+    // SAFETY: the slot unserialize filled. The coroutine options are
+    // thread-local: each worker thread sets them once.
+    if let Some(options) = unsafe { Value::from_ptr(setting) }.and_then(Value::array) {
+        swoole_rs_phpcoroutines::set_coroutine_option(options);
     }
     match MAIN.get() {
         // SAFETY: the body the ThreadFactory handed this thread, which is C++.
@@ -170,13 +169,13 @@ fn string_of<'a>(slot: *mut zval) -> &'a [u8] {
     unsafe { bytes(string) }
 }
 
-/// `init_arguments()`'s array as a thread array handle, or null.
-fn init_arguments(object: *mut zend_object) -> Result<*mut c_void, Bailout> {
+/// `init_arguments()`'s array, copied for the threads.
+fn init_arguments(object: *mut zend_object) -> Result<Option<Arguments>, Bailout> {
     // SAFETY: `$this` is a Server object.
     let callable = unsafe { data(object) }.init_arguments;
     // SAFETY: a live zval.
     if unsafe { type_of(&raw const callable) } == IS_NULL {
-        return Ok(ptr::null_mut());
+        return Ok(None);
     }
     let mut result = crate::dispatch::undef();
     // SAFETY: all-zero is an empty call (no object, no arguments).
@@ -186,17 +185,14 @@ fn init_arguments(object: *mut zend_object) -> Result<*mut c_void, Bailout> {
     fci.retval = &raw mut result;
     // SAFETY: `call_user_function(NULL, nullptr, &init_arguments, &result, 0, nullptr)`.
     unsafe { bailout::call(&raw mut fci, ptr::null_mut()) }?;
-    let mut argv = ptr::null_mut();
     // SAFETY: the call's result.
-    if unsafe { type_of(&raw const result) } == IS_ARRAY {
-        // SAFETY: an array result.
-        let array = unsafe { table(&raw const result) };
-        // SAFETY: as above, copied into a thread array.
-        argv = unsafe { swoole_rs_phpthread::swr_v1_phpthread_array_from(array) };
-    }
+    let argv = unsafe { Value::from_ptr(&raw const result) }
+        .and_then(Value::array)
+        .map(Arguments::copy)
+        .transpose();
     // SAFETY: the result this call owns.
     unsafe { zval_ptr_dtor(&raw mut result) };
-    Ok(argv)
+    argv
 }
 
 /// The thread starter: this `ThreadFactory` thread becomes a PHP thread running
@@ -206,36 +202,19 @@ unsafe fn start_thread(thread: *mut c_void, run: WorkerMain, context: *mut c_voi
     // SAFETY: `prepare` set it before the server started threads; `release`
     // frees it once `start()` returned, after every thread ended.
     let start = unsafe { &*START.load(Ordering::Acquire) };
-    if !start.argv.is_null() {
-        // SAFETY: a live thread array; the thread releases its reference.
-        unsafe { swoole_rs_phpthread::swr_v1_phpthread_array_add_ref(start.argv) };
-    }
     // SAFETY: a live persistent string.
     let script = unsafe { bytes(start.bootstrap) };
-    // SAFETY: the script's bytes, an array reference the thread takes, and the
-    // thread's live `swoole::Thread`, which `entered` and `left` report to.
+    // SAFETY: the factory's live `swoole::Thread` for this thread.
+    let thread = unsafe { &*thread.cast::<Thread>() };
+    // SAFETY: the factory's new OS thread, before anything of PHP's.
     unsafe {
-        swoole_rs_phpthread::swr_v1_phpthread_run(
-            script.as_ptr().cast(),
-            script.len(),
-            start.argv,
-            thread,
-            entered,
-            left,
+        swoole_rs_phpthread::run(
+            script,
+            start.argv.clone(),
+            || thread.enter(),
+            |status| thread.exit(status),
         );
     }
-}
-
-/// `Thread::enter()`.
-extern "C" fn entered(thread: *mut c_void) {
-    // SAFETY: the live `swoole::Thread` `start_thread` was given.
-    unsafe { &*thread.cast::<Thread>() }.enter();
-}
-
-/// `Thread::exit(status)`.
-extern "C" fn left(thread: *mut c_void, status: c_int) {
-    // SAFETY: as in `entered`.
-    unsafe { &*thread.cast::<Thread>() }.exit(status);
 }
 
 /// After `start()`: the bootstrap script and arguments go.
@@ -252,10 +231,6 @@ fn release_start(start: *mut Start) {
     let start = unsafe { Box::from_raw(start) };
     // SAFETY: the persistent copy `prepare` made.
     unsafe { swr_zend_string_release(start.bootstrap) };
-    if !start.argv.is_null() {
-        // SAFETY: the reference `init_arguments` took.
-        unsafe { swoole_rs_phpthread::swr_v1_phpthread_array_release(start.argv) };
-    }
 }
 
 /// `ZEND_HASH_APPLY_KEEP` and `ZEND_HASH_APPLY_REMOVE`.

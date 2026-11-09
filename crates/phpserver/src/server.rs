@@ -96,22 +96,17 @@ thread_local! {
 /// kept per thread in thread mode and in the port's own `slot` (`port->ptr`)
 /// otherwise. `set` stores `property` first; a get returns null for a port this
 /// thread has none for.
-/// # Safety
-/// `slot` is the port's `ptr` field.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_port_property(
+pub(crate) fn port_property(
     object_id: u16,
-    slot: *mut *mut c_void,
+    slot: &mut *mut c_void,
     property: *mut c_void,
     set: bool,
 ) -> *mut c_void {
     if !THREAD.load(Ordering::Relaxed) {
         if set {
-            // SAFETY: the port's field, per the contract.
-            unsafe { *slot = property };
+            *slot = property;
         }
-        // SAFETY: as above.
-        return unsafe { *slot };
+        return *slot;
     }
     let index = usize::from(object_id);
     PORT_PROPERTIES.with_borrow_mut(|properties| {
@@ -453,8 +448,8 @@ pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
             Object::<ServerData>::install(
                 entry,
                 handlers,
-                crate::lifecycle::swr_v1_phpserver_create,
-                crate::lifecycle::swr_v1_phpserver_free,
+                crate::lifecycle::create,
+                crate::lifecycle::free,
             );
         });
     }

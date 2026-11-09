@@ -71,7 +71,7 @@ fn lookup(name: *mut zval) -> Option<(c_int, &'static CStr)> {
 /// raised from the handler, which owns nothing.
 fn port_call(call: &Call, method: &[u8], retval: *mut zval, args: &[*mut zval]) {
     // SAFETY: `$this` is a Server object.
-    let port = unsafe { crate::lifecycle::swr_v1_phpserver_port(call.this(), 0) };
+    let port = unsafe { crate::lifecycle::port_at(call.this(), 0) };
     // SAFETY: the primary port's object zval.
     let object = unsafe { swoole_rs_zend::object_of(port) };
     // SAFETY: a live Port object, its class, the result slot and the arguments.
@@ -177,7 +177,7 @@ fn listen(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: `$this` is bound to `serv`, and `ls` is one of its ports.
-    let zport = unsafe { crate::lifecycle::swr_v1_phpserver_add_port(call.this(), ls) };
+    let zport = unsafe { crate::lifecycle::add_port(call.this(), ls) };
     // SAFETY: `RETVAL_ZVAL(port_object, 1, 0)`.
     unsafe { swr_zval_copy(call.return_value(), zport) };
 }

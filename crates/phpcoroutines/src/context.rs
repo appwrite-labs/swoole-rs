@@ -218,22 +218,12 @@ fn count_switch(ctx: *mut Context) {
 }
 
 /// The tracer's blocking detection (upstream's `on_yield`/`on_resume`
-/// callbacks counting `switch_count`).
-/// # Safety
-/// `task` is null or a live coroutine context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_watch_switches(
-    task: *mut c_void,
-    watch: u8,
-) -> usize {
-    let ctx = if task.is_null() {
-        current()
-    } else {
-        task.cast()
-    };
-    // SAFETY: per the caller, or the running context.
-    let this = unsafe { at(ctx) };
-    this.watch_switches = watch != 0;
+/// callbacks counting `switch_count`): with `watch`, count the running
+/// context's switches from 0; without, stop. Returns the count.
+pub(crate) fn watch_switches(watch: bool) -> usize {
+    // SAFETY: the running context.
+    let this = unsafe { at(current()) };
+    this.watch_switches = watch;
     if this.watch_switches {
         this.switch_count = 0;
     }

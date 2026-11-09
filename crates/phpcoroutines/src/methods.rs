@@ -462,7 +462,7 @@ fn stats(call: &Call) {
 
 /// `Co::getCid()`/`Co::getuid()`.
 fn get_cid(call: &Call) {
-    call.set_long(runtime::cid());
+    call.set_long(runtime::get_cid());
 }
 
 /// The optional `int $cid = 0` most methods take.
@@ -551,7 +551,7 @@ fn get_stack_usage(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let current = runtime::cid();
+    let current = runtime::get_cid();
     let cid = if cid == 0 { current } else { cid };
     let ctx = context::by_cid(cid);
     if ctx.is_null() {
@@ -580,7 +580,7 @@ fn get_back_trace(call: &Call) {
         return;
     };
     let (options, limit) = (narrow(options), narrow(limit));
-    if cid == 0 || cid == runtime::cid() {
+    if cid == 0 || cid == runtime::get_cid() {
         // SAFETY: the return slot.
         unsafe { zend_fetch_debug_backtrace(call.return_value(), 0, options, limit) };
         return;
@@ -618,7 +618,7 @@ fn print_backtrace(
     return_value: *mut zval,
 ) -> Result<(), Bailout> {
     let (options, limit) = (narrow(options), narrow(limit));
-    if cid == 0 || cid == runtime::cid() {
+    if cid == 0 || cid == runtime::get_cid() {
         // SAFETY: output handlers run inside the shim's zend_try.
         return trapped(unsafe { swr_zend_coroutine_print_trace(1, options, limit) });
     }

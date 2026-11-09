@@ -1,7 +1,6 @@
 //! Upstream's `ZendArray`: a table of items behind a reader-writer lock,
 //! shared by every Map or `ArrayList` object (in any thread) that refers to it.
 use crate::{
-    host::finish,
     item::{Item, set},
     table::{Key, Table},
 };
@@ -426,81 +425,22 @@ pub(crate) unsafe fn negate(delta: *const zval) -> zval {
     value
 }
 
-// Shared tables for Swoole\Thread's arguments (C++ holds them as `ZendArray *`).
+/// A thread's arguments: a shared table each new thread copies into its
+/// `Thread::getArguments()` (upstream's `ZendArray *`). Cloning takes another
+/// reference.
+#[derive(Clone, Debug)]
+pub struct Arguments(pub(crate) Arc<Array>);
 
-pub(crate) fn handle(array: Arc<Array>) -> *mut c_void {
-    Arc::into_raw(array).cast_mut().cast()
-}
-
-/// # Safety
-/// `array` came from `handle` and is still held.
-unsafe fn borrow<'a>(array: *mut c_void) -> &'a Array {
-    // SAFETY: per the caller.
-    unsafe { &*array.cast::<Array>() }
-}
-
-/// `new ZendArray()`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpthread_array_new() -> *mut c_void {
-    handle(Arc::default())
-}
-
-/// `ZendArray::from(array)`.
-/// # Safety
-/// In a request, with a live array.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_array_from(array: *mut zend_array) -> *mut c_void {
-    // SAFETY: per the caller.
-    let shared = unsafe { Array::from(array) };
-    if bailout::pending() {
-        drop(shared);
-        finish();
-        return std::ptr::null_mut();
+impl Arguments {
+    /// `ZendArray::from(array)`.
+    /// # Errors
+    /// A bailout PHP code raised while copying, pending for the caller to raise.
+    pub fn copy(array: &swoole_rs_zend::Array) -> Result<Self, bailout::Bailout> {
+        // SAFETY: a live table, in its request.
+        let shared = unsafe { Array::from(array.as_ptr()) };
+        if bailout::pending() {
+            return Err(bailout::Bailout);
+        }
+        Ok(Self(shared))
     }
-    handle(shared)
-}
-
-/// `argv->append(value)`.
-/// # Safety
-/// `array` is a live handle; in a request, with a live zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_array_append(array: *mut c_void, value: *mut zval) {
-    // SAFETY: per the caller.
-    let array = unsafe { borrow(array) };
-    // SAFETY: per the caller.
-    unsafe { array.push(value) };
-    finish();
-}
-
-/// `argv->to_array(return_value)`.
-/// # Safety
-/// `array` is a live handle; in a request; `out` is writable and holds nothing.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_array_to_array(
-    array: *mut c_void,
-    return_value: *mut zval,
-) {
-    // SAFETY: per the caller.
-    let array = unsafe { borrow(array) };
-    // SAFETY: per the caller.
-    unsafe { array.to_array(return_value) };
-    finish();
-}
-
-/// `argv->add_ref()`: another holder of the handle.
-/// # Safety
-/// `array` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_array_add_ref(array: *mut c_void) {
-    // SAFETY: per the caller, a reference `handle` gave out.
-    unsafe { Arc::increment_strong_count(array.cast_const().cast::<Array>()) };
-}
-
-/// `argv->del_ref()`.
-/// # Safety
-/// `array` is a live handle, released here.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_array_release(array: *mut c_void) {
-    // SAFETY: per the caller: the reference `handle` gave out.
-    drop(unsafe { Arc::from_raw(array.cast_const().cast::<Array>()) });
 }

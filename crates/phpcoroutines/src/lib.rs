@@ -58,7 +58,6 @@ impl<T> Process<T> {
 mod classes;
 pub use classes::*;
 mod context;
-pub use context::*;
 mod host;
 pub use host::{
     cid, counts, current, current_safe, in_coroutine, is_canceled, is_suspending, park, suspend,
