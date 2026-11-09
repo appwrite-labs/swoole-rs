@@ -212,12 +212,16 @@ in C++14 and C++17 against both engines) is a fixture function now, run once as
 | `pipe.base` | `pipe.base` |
 | `process_pool.tcp` | `process_pool.tcp` |
 | `process_pool.unix_sock` | `process_pool.unix_sock` |
+| `process_pool.task_protocol_rejects_malformed_packets` | `process_pool.task_protocol_rejects_malformed_packets` |
+| `process_pool.task_protocol_rejects_malformed_socket_packet` | `process_pool.task_protocol_rejects_malformed_socket_packet` |
 | `process_pool.tcp_raw` | `process_pool.tcp_raw` |
 | `process_pool.msgqueue` | `process_pool.msgqueue` |
 | `process_pool.msgqueue_2` | `process_pool.msgqueue_2` |
 | `process_pool.message_protocol` | `process_pool.message_protocol` |
 | `process_pool.message_protocol_with_timer` | `process_pool.message_protocol_with_timer` |
 | `process_pool.stream_protocol` | `process_pool.stream_protocol` |
+| `process_pool.stream_protocol_small_packet` | `process_pool.stream_protocol_small_packet` |
+| `process_pool.stream_protocol_msgqueue_ignores_package_size` | `process_pool.stream_protocol_msgqueue_ignores_package_size` |
 | `process_pool.stream_protocol_with_msgq` | `process_pool.stream_protocol_with_msgq` |
 | `process_pool.shutdown` | `process_pool.shutdown` |
 | `process_pool.reload` | `process_pool.reload` |

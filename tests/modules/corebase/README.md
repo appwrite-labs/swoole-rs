@@ -44,6 +44,7 @@ their assertions run now:
 
 | Upstream TEST | Rust test or reason |
 | --- | --- |
+| `base.clamp` | `crates/process` `process_pool.rs` `base_clamp`, over `max_package_size`'s clamp (the one `swoole::clamp` caller) |
 | `base.datahead_dump` | `host.rs` `base_datahead_dump` (same input and assertion; `print` is gone) |
 | `base.mkdir_recursive` | `lib.rs` `base_mkdir_recursive`, over `swr_v1_corebase_mkdir_complete` |
 | `base.hook`, `base.snprintf` | `hook.rs` and `host.rs` tests |

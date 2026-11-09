@@ -35,10 +35,16 @@ const MSGMAX: usize = 65536;
 /// `SW_BUFFER_SIZE_STD`: the response buffer's first capacity.
 const RESPONSE_CAPACITY: usize = 8192;
 /// `sizeof(swoole::DataHead)`; `info.len` is its `u32` at offset 16, `info.fd`
-/// (the task id) its `i64` at 0 and `info.server_fd` its `u16` at 24.
+/// (the task id) its `i64` at 0, `info.server_fd` its `u16` at 24 and
+/// `info.ext_flags` its `u16` at 26.
 const HEAD: usize = 40;
 const HEAD_LEN: usize = 16;
 const HEAD_SERVER_FD: usize = 24;
+const HEAD_EXT_FLAGS: usize = 26;
+/// `SW_TASK_TMPFILE`: the task's data is a `PacketTask` naming a temporary file.
+const TASK_TMPFILE: u16 = 1;
+/// `sizeof(PacketTask)`: its `size_t` length and `SW_TASK_TMP_PATH_SIZE` path.
+const PACKET_TASK: u32 = 8 + 256;
 /// `sizeof(long)`, `QueueNode::mtype`.
 const MTYPE: usize = size_of::<c_long>();
 
@@ -60,10 +66,10 @@ pub const TRACE_PUSH: c_int = 9;
 
 const _: () = assert!(MTYPE == 8, "QueueNode::mtype is the u64 heading the buffer");
 
-/// The `u32` at `at` bytes into `buf`.
-fn read_u32(buf: *const u8, at: usize) -> u32 {
+/// The `T` at `at` bytes into `buf`.
+fn read<T: Copy>(buf: *const u8, at: usize) -> T {
     // SAFETY: every caller reads a DataHead field inside its buffer.
-    unsafe { buf.wrapping_add(at).cast::<u32>().read_unaligned() }
+    unsafe { buf.wrapping_add(at).cast::<T>().read_unaligned() }
 }
 
 /// One hook's arguments and results.
@@ -180,7 +186,7 @@ fn set_errno(value: c_int) {
 
 /// `catch_system_error`: whether `error` ends a loop.
 fn fatal(error: c_int) -> bool {
-    !matches!(error, 0 | libc::EAGAIN | libc::EINTR)
+    !matches!(error, 0 | libc::EAGAIN | libc::EINTR | libc::ETIMEDOUT)
 }
 
 /// Run native hook `step` over `call`.
@@ -421,29 +427,31 @@ impl Worker<'_> {
                 }
             };
             if n >= 0 {
-                let size = HEAD as isize + read_u32(buf, HEAD_LEN) as isize;
-                if n != size {
-                    self.warn(WARN_BAD_PACKET, 0, n as i64, size as i64);
-                }
-                // Without a connection to answer, nothing comes between the task and
-                // the iteration's end, so one trap covers both.
+                let length = read::<u32>(buf, HEAD_LEN);
+                let size = HEAD as u64 + u64::from(length);
+                let tmpfile = read::<u16>(buf, HEAD_EXT_FLAGS) & TASK_TMPFILE != 0;
                 let alone = self.connection().is_none();
-                let mut call = self.call();
-                call.data = buf.cast();
-                call.length = event_size;
-                trapped(|| {
-                    invoke(self.hooks.task, &mut call);
-                    if call.result < 0 {
-                        // SAFETY: `info.fd` heads `buf`.
-                        let task_id = unsafe { buf.cast::<i64>().read_unaligned() };
-                        self.warn(WARN_TASK_FAILED, 0, task_id, 0);
-                    }
+                if n as u64 != size || (tmpfile && length != PACKET_TASK) {
+                    // No task runs; a connection is still answered.
+                    self.warn(WARN_BAD_PACKET, 0, n as i64, size.cast_signed());
+                } else {
+                    // Without a connection to answer, nothing comes between the task
+                    // and the iteration's end, so one trap covers both.
+                    let mut call = self.call();
+                    call.data = buf.cast();
+                    call.length = event_size;
+                    trapped(|| {
+                        invoke(self.hooks.task, &mut call);
+                        if call.result < 0 {
+                            self.warn(WARN_TASK_FAILED, 0, read::<i64>(buf, 0), 0);
+                        }
+                        if alone {
+                            invoke(self.hooks.end, &mut call);
+                        }
+                    })?;
                     if alone {
-                        invoke(self.hooks.end, &mut call);
+                        continue;
                     }
-                })?;
-                if alone {
-                    continue;
                 }
                 if let Some(stream) = self.connection() {
                     let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
@@ -556,8 +564,7 @@ impl Worker<'_> {
     fn run_message(&mut self) -> Result<(), Bailed> {
         while self.running() {
             match self.receive_message()? {
-                Received::Continue => self.end()?,
-                Received::Ready => {}
+                Received::Continue | Received::Ready => self.end()?,
                 Received::Error(error) => {
                     self.warn(WARN_PIPE, error, 0, 0);
                     // SAFETY: the host's worker.
@@ -580,7 +587,11 @@ impl Worker<'_> {
             let mut call = self.call();
             run(self.hooks.pipe_wait, &mut call)?;
             if call.result < 0 {
-                return Ok(interrupted(call.error));
+                return Ok(if fatal(call.error) {
+                    Received::Error(call.error)
+                } else {
+                    Received::Continue
+                });
             }
             let mut call = self.call();
             run(self.hooks.bus_read, &mut call)?;
@@ -1101,6 +1112,7 @@ mod tests {
         assert!(!fatal(0));
         assert!(!fatal(libc::EAGAIN));
         assert!(!fatal(libc::EINTR));
+        assert!(!fatal(libc::ETIMEDOUT));
         assert!(fatal(libc::EBADF));
     }
 
@@ -1409,14 +1421,26 @@ mod tests {
     }
 
     #[test]
-    fn the_task_protocol_reports_a_short_packet_and_a_failed_task() {
-        let mut packet = vec![0u8; HEAD + 2];
-        packet[..8].copy_from_slice(&42i64.to_ne_bytes());
-        packet[HEAD_LEN..HEAD_LEN + 4].copy_from_slice(&4u32.to_ne_bytes());
+    fn the_task_protocol_skips_a_bad_packet_and_reports_a_failed_task() {
+        let packet = |length: u32, size: usize, ext_flags: u16| {
+            let mut packet = vec![0u8; size];
+            packet[..8].copy_from_slice(&42i64.to_ne_bytes());
+            packet[HEAD_LEN..HEAD_LEN + 4].copy_from_slice(&length.to_ne_bytes());
+            packet[HEAD_EXT_FLAGS..HEAD_EXT_FLAGS + 2].copy_from_slice(&ext_flags.to_ne_bytes());
+            packet
+        };
+        let short = packet(4, HEAD + 2, 0);
+        let tmpfile = packet(4, HEAD + 4, TASK_TMPFILE);
+        let good = packet(4, HEAD + 4, 0);
         let script = run_loop(
             Script {
-                rounds: 3,
-                reads: vec![(packet, 0), (Vec::new(), libc::EBADF)],
+                rounds: 5,
+                reads: vec![
+                    (short, 0),
+                    (tmpfile, 0),
+                    (good, 0),
+                    (Vec::new(), libc::EBADF),
+                ],
                 task_result: -1,
                 ..Script::default()
             },
@@ -1424,17 +1448,19 @@ mod tests {
             1,
             1,
         );
+        // Neither bad packet reaches the task.
         assert_eq!(script.tasks, 1);
         assert_eq!(
             script.warnings,
             vec![
                 (WARN_BAD_PACKET, HEAD as i64 + 2, HEAD as i64 + 4),
+                (WARN_BAD_PACKET, HEAD as i64 + 4, HEAD as i64 + 4),
                 (WARN_TASK_FAILED, 42, 0),
                 (WARN_READ, 0, 0),
             ]
         );
-        // The failed read ends the loop before the end callback.
-        assert_eq!(script.ends, 1);
+        // Each packet ends its iteration; the failed read ends the loop before one.
+        assert_eq!(script.ends, 3);
     }
 
     #[test]
@@ -1450,7 +1476,8 @@ mod tests {
             3,
         );
         assert_eq!(script.delivered, 1);
-        assert_eq!(script.ends, 1);
+        // The delivered message and the interrupted read each end an iteration.
+        assert_eq!(script.ends, 2);
         assert_eq!(script.shutdowns, 1);
         assert_eq!(script.warnings, vec![(WARN_PIPE, 0, 0)]);
     }

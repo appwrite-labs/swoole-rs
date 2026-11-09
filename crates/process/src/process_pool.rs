@@ -123,6 +123,32 @@ const SW_MASTER: u64 = 1;
 pub const SW_MESSAGE_BOX_SIZE: u64 = 65536;
 pub const SW_INPUT_BUFFER_SIZE: u32 = 2 * 1024 * 1024;
 pub const SW_WORKER_MAX_WAIT_TIME: u32 = 3;
+/// `SW_MSGMAX`: a `SysV` message's fixed receive limit.
+pub const SW_MSGMAX: u32 = 65536;
+
+/// `set_max_packet_size`'s value: a `SysV` message queue keeps its fixed receive
+/// limit and ignores `max_package_size`.
+#[must_use]
+pub const fn packet_limit(use_msgqueue: bool, size: u32) -> u32 {
+    if use_msgqueue { SW_MSGMAX } else { size }
+}
+
+/// `max_package_size`'s `swoole::clamp<int64_t>(v, 1, UINT32_MAX)`.
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the last arm's value is within 1..=u32::MAX"
+)]
+pub const fn max_package_size(value: i64) -> u32 {
+    if value < 1 {
+        1
+    } else if value > u32::MAX as i64 {
+        u32::MAX
+    } else {
+        value as u32
+    }
+}
 #[cfg(target_os = "macos")]
 pub const SW_IPC_MAX_SIZE: u64 = 2048;
 #[cfg(not(target_os = "macos"))]
@@ -610,7 +636,7 @@ impl<H: PoolHost> Pool<H> {
         self.set_ipc(swr_v1_process_pool_ipc_new(mode == IPC_SOCKET));
         self.set_ipc_mode(mode);
         self.set_protocol(PROTOCOL_TASK);
-        self.set_max_packet_size(SW_INPUT_BUFFER_SIZE);
+        self.set_max_packet_size(packet_limit(self.use_msgqueue() != 0, SW_INPUT_BUFFER_SIZE));
         self.set_max_wait_time(SW_WORKER_MAX_WAIT_TIME);
         for index in 0..worker_num {
             // SAFETY: one of the `worker_num` records just allocated.
@@ -1410,6 +1436,24 @@ impl<H: PoolHost> Pool<H> {
 mod tests {
     use super::*;
     use std::mem::offset_of;
+
+    /// core-tests' `base.clamp`, over `max_package_size`'s clamp.
+    #[test]
+    fn base_clamp() {
+        const _: () = assert!(max_package_size(-1) == 1, "clamp must be a constant");
+        assert_eq!(max_package_size(0), 1);
+        assert_eq!(max_package_size(1), 1);
+        assert_eq!(max_package_size(1024), 1024);
+        assert_eq!(max_package_size(u32::MAX.into()), u32::MAX);
+        assert_eq!(max_package_size(i64::from(u32::MAX) + 1), u32::MAX);
+        assert_eq!(u32::MAX.clamp(0, 1024), 1024);
+    }
+
+    #[test]
+    fn a_message_queue_ignores_the_packet_size() {
+        assert_eq!(packet_limit(true, 1), SW_MSGMAX);
+        assert_eq!(packet_limit(false, 1), 1);
+    }
 
     #[test]
     fn the_record_has_process_pools_layout() {
