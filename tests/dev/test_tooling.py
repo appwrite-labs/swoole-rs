@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from tools import build_ext, build_hybrid, dev, harness
+from tools import build_ext, build_upstream, dev, harness
 from tools.harness import Engine
 
 spec = importlib.util.spec_from_file_location('phpt_runner', ROOT / 'corpus/upstream/run.py')
@@ -31,65 +31,7 @@ class Exclusive(unittest.TestCase):
                         self.fail('Concurrent writer acquired lock')
 
 
-class RustCache(unittest.TestCase):
-    def test_cargo_artifact_selects_actual_archive_and_rejects_failed_or_ambiguous_build(self):
-        artifact = dict(reason='compiler-artifact', target=dict(name='swoole_rs_ffi'),
-                        filenames=['/explicit/private-target/release/libswoole_rs_ffi.a'])
-        result = subprocess.CompletedProcess(['cargo'], 0, json.dumps(artifact) + '\n')
-        with patch.object(build_hybrid.subprocess, 'run', return_value=result):
-            archive, receipt = build_hybrid.rust_archive()
-        self.assertEqual(archive, Path(artifact['filenames'][0]))
-        self.assertIn('--features', receipt['command'])
-        for result in [subprocess.CompletedProcess(['cargo'], 1, ''),
-                       subprocess.CompletedProcess(['cargo'], 0, ''),
-                       subprocess.CompletedProcess(['cargo'], 0, (json.dumps(artifact) + '\n') * 2)]:
-            with patch.object(build_hybrid.subprocess, 'run', return_value=result):
-                with self.assertRaises((ValueError, subprocess.CalledProcessError)):
-                    build_hybrid.rust_archive(php=False)
-
-    def test_selected_source_attestation_follows_build_dependencies(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            for name in ['Cargo.toml', 'Cargo.lock', '.cargo/config.toml']:
-                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(name)
-            packages, nodes = [], []
-            for name, dependencies in [('ffi', [('selected', None), ('dev', 'dev')]),
-                                       ('selected', [('shared', 'build')]), ('shared', []), ('dev', []), ('inactive', [])]:
-                crate = root / 'crates' / name; (crate / 'src').mkdir(parents=True)
-                (crate / 'Cargo.toml').write_text(name); (crate / 'src/lib.rs').write_text(name)
-                packages.append(dict(id=name, source=None, manifest_path=str(crate / 'Cargo.toml'), targets=[]))
-                nodes.append(dict(id=name, deps=[dict(pkg=dep, dep_kinds=[dict(kind=kind)]) for dep, kind in dependencies]))
-            metadata = dict(packages=packages, resolve=dict(root='ffi', nodes=nodes))
-            with patch.object(build_hybrid, 'ROOT', root), patch.object(build_hybrid.subprocess, 'check_output', return_value=json.dumps(metadata)):
-                first = build_hybrid.rust_sources()
-                self.assertIn('crates/shared/src/lib.rs', first)
-                self.assertIn('.cargo/config.toml', first)
-                self.assertNotIn('crates/dev/src/lib.rs', first)
-                self.assertNotIn('crates/inactive/src/lib.rs', first)
-                (root / 'crates/inactive/src/lib.rs').write_text('unrelated')
-                self.assertEqual(first, build_hybrid.rust_sources())
-                (root / 'crates/shared/src/lib.rs').write_text('changed dependency')
-                second = build_hybrid.rust_sources()
-                self.assertNotEqual(first, second)
-                before = {'rust_sources_sha256': first, 'patches': [], 'headers_sha256': {}}
-                after = {**before, 'rust_sources_sha256': second}
-                self.assertEqual(build_hybrid.configuration_key(before, True), build_hybrid.configuration_key(after, True))
-                self.assertNotEqual(build_hybrid.configuration_key(before), build_hybrid.configuration_key(after))
-
 class Overlays(unittest.TestCase):
-    def test_cached_export_rebuilds_unknown_or_old_producer_without_relabeling(self):
-        inputs = {'upstream_commit': 'pinned', 'configure': ['--enable-sockets']}
-        for producer in [None, 'old-source', 'current-source']:
-            record = {'inputs': inputs.copy()}
-            if producer is not None:
-                record['producer_source_ref'] = producer
-            before = json.dumps(record, sort_keys=True)
-            self.assertEqual(build_hybrid.cached_build_matches(record, inputs, 'current-source'),
-                             producer == 'current-source')
-            self.assertTrue(build_hybrid.cached_build_matches(record, inputs))
-            self.assertFalse(build_hybrid.cached_build_matches(record, {**inputs, 'configure': []}, 'current-source'))
-            self.assertEqual(json.dumps(record, sort_keys=True), before)
-
     def test_only_selected_contracts_are_staged_and_collisions_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -104,66 +46,6 @@ class Overlays(unittest.TestCase):
                 (root / 'native/websocket/swoole_rs.h').touch()
                 with self.assertRaises(ValueError):
                     build_ext.headers_for(['websocket'])
-
-    def test_development_configuration_invalidation(self):
-        inputs = {'patches': [{'upstream_paths': ['src/core/buffer.cc'], 'sha256': 'one'}],
-                  'rust_archive_sha256': 'one', 'headers_sha256': {'abi.h': 'one'}, 'modules': ['buffer']}
-        native_edit = {**inputs, 'rust_archive_sha256': 'two',
-                       'patches': [{'upstream_paths': ['src/core/buffer.cc'], 'sha256': 'two'}]}
-        self.assertEqual(build_hybrid.configuration_key(inputs, True), build_hybrid.configuration_key(native_edit, True))
-        self.assertNotEqual(build_hybrid.configuration_key(inputs), build_hybrid.configuration_key(native_edit))
-        with_module = {**inputs, 'headers_sha256': {**inputs['headers_sha256'], 'native/buffer/local.h': 'one'}}
-        module_edit = {**with_module, 'headers_sha256': {**inputs['headers_sha256'], 'native/buffer/local.h': 'two'}}
-        self.assertEqual(build_hybrid.configuration_key(with_module, True), build_hybrid.configuration_key(module_edit, True))
-        self.assertNotEqual(build_hybrid.configuration_key(with_module), build_hybrid.configuration_key(module_edit))
-
-        sources = {**inputs, 'native_sources_sha256': {'src/swoole_rs_buffer_a.cc': 'one'}}
-        source_edit = {**sources, 'native_sources_sha256': {'src/swoole_rs_buffer_a.cc': 'two'}}
-        self.assertEqual(build_hybrid.configuration_key(sources, True), build_hybrid.configuration_key(source_edit, True))
-        self.assertNotEqual(build_hybrid.configuration_key(sources, True), build_hybrid.configuration_key(inputs, True))
-        for changed in [{**inputs, 'headers_sha256': {'abi.h': 'two'}},
-                        {**inputs, 'modules': ['websocket']},
-                        {**inputs, 'patches': [{'upstream_paths': ['config.m4'], 'sha256': 'two'}]}]:
-            self.assertNotEqual(build_hybrid.configuration_key(inputs, True), build_hybrid.configuration_key(changed, True))
-
-    def test_staging_drops_a_deleted_native_source(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root, source = Path(directory) / 'repo', Path(directory) / 'tree'
-            (root / 'native/buffer').mkdir(parents=True)
-            (root / 'native/buffer/kept.cc').write_text('kept')
-            (source / 'src').mkdir(parents=True)
-            (source / 'src/swoole_rs_buffer_gone.cc').write_text('gone')
-            (source / 'src/upstream.cc').write_text('upstream')
-            with patch.object(build_hybrid, 'ROOT', root), patch.object(build_ext, 'ROOT', root):
-                build_hybrid.stage_native_sources(source)
-            self.assertEqual(sorted(p.name for p in (source / 'src').iterdir()),
-                             ['swoole_rs_buffer_kept.cc', 'upstream.cc'])
-
-    def test_updates_preserve_unchanged_mtimes_and_restore_removed_patch(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            reference, source = root / 'reference', root / 'source'
-            reference.mkdir()
-            source.mkdir()
-            subprocess.run(['git', 'init', '-q', str(reference)], check=True)
-            (reference / 'value.cc').write_text('old\n')
-            subprocess.run(['git', '-C', str(reference), 'add', '.'], check=True)
-            subprocess.run(['git', '-C', str(reference), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
-                            'commit', '-qm', 'fixture'], check=True)
-            commit = subprocess.check_output(['git', '-C', str(reference), 'rev-parse', 'HEAD'], text=True).strip()
-            (source / 'value.cc').write_text('old\n')
-            patch_file = root / 'change.patch'
-            patch_file.write_text('diff --git a/value.cc b/value.cc\n--- a/value.cc\n+++ b/value.cc\n@@ -1 +1 @@\n-old\n+new\n')
-            patches = [{'path': str(patch_file), 'upstream_paths': ['value.cc']}]
-            with patch.object(build_hybrid, 'COMMIT', commit):
-                build_hybrid.refresh_dev_sources(reference, source, [], patches)
-                self.assertEqual((source / 'value.cc').read_text(), 'new\n')
-                modified = (source / 'value.cc').stat().st_mtime_ns
-                build_hybrid.refresh_dev_sources(reference, source, patches, patches)
-                self.assertEqual((source / 'value.cc').stat().st_mtime_ns, modified)
-                build_hybrid.refresh_dev_sources(reference, source, patches, [])
-                self.assertEqual((source / 'value.cc').read_text(), 'old\n')
-
 
 class Phpt(unittest.TestCase):
     def test_manifest_lists_every_pinned_timer_original(self):
@@ -430,11 +312,6 @@ class Lanes(unittest.TestCase):
         result = subprocess.run([sys.executable, ROOT / 'tools/dev.py', '--help'], capture_output=True, text=True)
         self.assertIn('dev.py docker [-- dev.py arguments | -- SCRIPT.py arguments]', ' '.join(result.stdout.split()))
 
-    def test_aliases_name_the_profile(self):
-        from tools.build_hybrid import build_alias
-        self.assertEqual(build_alias('rust', '-halfclose-stdext'), 'rust-halfclose-stdext')
-        self.assertEqual(build_alias('upstream', dev=True), 'dev-upstream')
-
     def test_linux_consumer_hooks_load_curl_once_unless_compiled_in(self):
         for explicit, compiled_in, expected in [([], '', 1), (['curl'], '', 1), ([], 'Core\ncurl\n', 0)]:
             args = SimpleNamespace(lane='integrate', module=['phpcollections', 'base64', 'phphelpers'], all_modules=False,
@@ -498,9 +375,6 @@ class Lanes(unittest.TestCase):
         # Nothing uses the hybrid's rust backend (#2199, #2415): the native gates link the Cargo build's SDK.
         self.assertTrue(commands['abi'][commands['abi'].index('--extension') + 1].endswith('target/ext/swoole.so'))
         self.assertIn('--native', commands['cargo-build'])
-        self.assertFalse([name for name, command in commands.items()
-                          if any('target/hybrid/rust' in arg for arg in command)])
-        self.assertFalse([name for name, command in commands.items() if 'tools/build_hybrid.py' in command])
         self.assertNotIn('core_check', ' '.join(commands['error-native']))
         self.assertIn('--sanitize', commands['buffer-posix-iovec'])
         self.assertIn('--sanitize', commands['ports-callback-property'])
@@ -560,29 +434,25 @@ class Lanes(unittest.TestCase):
         self.assertIn('timer-bailout',commands)
         self.assertFalse(any(name.startswith('halfclose-') for name in commands))
 
-    def test_stdext_changes_actual_configure_and_immutable_identity(self):
+    def test_stdext_changes_actual_configure(self):
         args = SimpleNamespace(jobs=2, php_config='php-config', openssl_dir='/fixture/openssl', stdext=False)
-        with patch.object(build_hybrid.subprocess, 'check_output', return_value='-I/fixture/pcre'):
-            disabled, _ = build_hybrid.extension_configuration(args)
+        with patch.object(build_upstream.subprocess, 'check_output', return_value='-I/fixture/pcre'):
+            disabled, _ = build_upstream.extension_configuration(args)
             args.stdext = True
-            enabled, _ = build_hybrid.extension_configuration(args)
+            enabled, _ = build_upstream.extension_configuration(args)
         self.assertNotIn('--enable-swoole-stdext', disabled)
         self.assertIn('--enable-swoole-stdext', enabled)
-        self.assertNotEqual(build_hybrid.configuration_key({'effective_configure': disabled}),
-                            build_hybrid.configuration_key({'effective_configure': enabled}))
 
     def test_php_sockets_configuration_is_explicit_and_not_inherited(self):
         args = SimpleNamespace(jobs=2, php_config='php-config', openssl_dir='/fixture/openssl')
         with patch.dict(os.environ, {'PHP_SOCKETS': 'yes'}), patch.object(
-                build_hybrid.subprocess, 'check_output', return_value='-I/fixture/pcre'):
-            disabled, _ = build_hybrid.extension_configuration(args)
+                build_upstream.subprocess, 'check_output', return_value='-I/fixture/pcre'):
+            disabled, _ = build_upstream.extension_configuration(args)
             args.php_sockets = True
-            enabled, _ = build_hybrid.extension_configuration(args)
+            enabled, _ = build_upstream.extension_configuration(args)
         self.assertIn('--disable-sockets', disabled)
         self.assertNotIn('--enable-sockets', disabled)
         self.assertIn('--enable-sockets', enabled)
-        self.assertNotEqual(build_hybrid.configuration_key({'effective_configure': disabled}),
-                            build_hybrid.configuration_key({'effective_configure': enabled}))
 
     def test_php_sockets_selects_both_profiles_without_enabling_storage_in_native(self):
         from itertools import product

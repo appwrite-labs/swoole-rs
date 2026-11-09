@@ -33,14 +33,14 @@ jobs:
         # Gates compare against accepted patch states at older commits (git show <sha>:...).
         with:
           fetch-depth: 0
-      # Saved from main under a key the PR tier's hybrid and gates jobs restore.
+      # Saved from main under a key the PR tier's ext and gates jobs restore.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
       # rust-cache restores all of target/: git checkouts without a usable .git, and
       # native-core builds whose receipt outlives its binary or library. Those trees come
       # from their own caches, a fresh clone or a ccache-backed rebuild instead.
-      - run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
+      - run: rm -rf target/upstream target/thirdparty target/native-core
       - uses: ./.github/actions/install
       # Caches are saved as soon as they are built, so a failing gate later does not discard
       # them; PR branches can only restore caches saved on main.
@@ -91,7 +91,6 @@ jobs:
             !target/reports/**/*.a
             !target/reports/**/*.o
             target/upstream/build.log
-            target/hybrid/*/build-manifest.json
 
   # Every merge-tier run saves a ccache of about 500 MB under its own sha, and the repo's
   # caches share 10 GB; jobs restore the newest, so keep two and delete the rest. A prune

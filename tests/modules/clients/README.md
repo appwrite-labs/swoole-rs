@@ -1,7 +1,6 @@
 # Clients and resolver migration
 
-The client and resolver (`crates/clients`, patches in
-`migration/patches/clients/`). Rust owns `network::Client` state and operations,
+The client and resolver (`crates/clients`). Rust owns `network::Client` state and operations,
 using the reactor's socket record directly, with its TLS context and proxies.
 C++ retains the DNS lookup and Zend boundaries.
 The persistent client pool is also Rust-owned.

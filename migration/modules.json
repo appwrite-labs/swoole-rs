@@ -22,8 +22,6 @@
         "tools/arginfo.py",
         "native/include/",
         "native/swoole-src/",
-        "migration/patches/integration/",
-        "tools/build_hybrid.py",
         "tests/modules/integration/",
         "tests/modules/zend/",
         "Cargo.toml",
@@ -51,7 +49,6 @@
       "owned_paths": [
         "crates/buffer/",
         "native/buffer/",
-        "migration/patches/buffer/",
         "tests/modules/buffer/"
       ],
       "phpt_families": [
@@ -77,7 +74,6 @@
         "crates/websocket/",
         "crates/websocket-ffi/",
         "native/websocket/",
-        "migration/patches/websocket/",
         "tests/modules/websocket/"
       ],
       "phpt_families": [
@@ -99,7 +95,6 @@
         "crates/timer/",
         "crates/phptimer/",
         "native/timer/",
-        "migration/patches/timer/",
         "tests/modules/timer/"
       ],
       "phpt_families": [
@@ -131,7 +126,6 @@
         "crates/inflate/",
         "crates/zlib/",
         "native/http/",
-        "migration/patches/http/",
         "tests/modules/http/"
       ],
       "phpt_families": [
@@ -156,7 +150,6 @@
       "owned_paths": [
         "crates/reactor/",
         "native/reactor/",
-        "migration/patches/reactor/",
         "tests/modules/reactor/"
       ],
       "phpt_families": [
@@ -188,7 +181,6 @@
       "owned_paths": [
         "crates/coroutine/",
         "native/coroutine/",
-        "migration/patches/coroutine/",
         "tests/modules/coroutine/"
       ],
       "phpt_families": [
@@ -232,7 +224,6 @@
         "crates/ssh2/",
         "crates/ssh2-sys/",
         "native/hooks/",
-        "migration/patches/hooks/",
         "tests/modules/hooks/"
       ],
       "phpt_families": [
@@ -291,8 +282,7 @@
         "crates/phpprocess/",
         "crates/phpthread/",
         "tests/modules/process/",
-        "native/process/",
-        "migration/patches/process/"
+        "native/process/"
       ],
       "phpt_families": [
         "swoole_process",
@@ -338,7 +328,6 @@
       ],
       "owned_paths": [
         "crates/base64/",
-        "migration/patches/base64/",
         "tests/modules/base64/"
       ],
       "phpt_families": [
@@ -358,7 +347,6 @@
       ],
       "owned_paths": [
         "crates/crc32/",
-        "migration/patches/crc32/",
         "tests/modules/crc32/"
       ],
       "phpt_families": [
@@ -379,7 +367,6 @@
       "owned_paths": [
         "crates/error/",
         "native/error/",
-        "migration/patches/error/",
         "tests/modules/error/"
       ],
       "phpt_families": [
@@ -401,7 +388,6 @@
       "owned_paths": [
         "crates/memory/",
         "native/memory/",
-        "migration/patches/memory/",
         "tests/modules/memory/"
       ],
       "phpt_families": [
@@ -431,7 +417,6 @@
         "crates/bus/",
         "crates/phpredis/",
         "native/protocols/",
-        "migration/patches/protocols/",
         "tests/modules/protocols/"
       ],
       "phpt_families": [
@@ -463,7 +448,6 @@
       "owned_paths": [
         "crates/utilities/",
         "native/utilities/",
-        "migration/patches/utilities/",
         "tests/modules/utilities/"
       ],
       "phpt_families": [
@@ -506,7 +490,6 @@
         "crates/locks/",
         "crates/phplocks/",
         "native/locks/",
-        "migration/patches/locks/",
         "tests/modules/locks/"
       ],
       "phpt_families": [
@@ -541,8 +524,7 @@
         "M04"
       ],
       "owned_paths": [
-        "native/wrappers/",
-        "migration/patches/wrappers/"
+        "native/wrappers/"
       ],
       "phpt_families": [
         "swoole_event",
@@ -568,7 +550,6 @@
       "owned_paths": [
         "crates/framing/",
         "native/framing/",
-        "migration/patches/framing/",
         "tests/modules/framing/"
       ],
       "phpt_families": [
@@ -594,7 +575,6 @@
       "owned_paths": [
         "crates/corebase/",
         "native/corebase/",
-        "migration/patches/corebase/",
         "tests/modules/corebase/"
       ],
       "phpt_families": [
@@ -628,8 +608,7 @@
       "owned_paths": [
         "crates/ossupport/",
         "native/ossupport/",
-        "tests/modules/ossupport/",
-        "migration/patches/ossupport/"
+        "tests/modules/ossupport/"
       ],
       "phpt_families": [
         "swoole_coroutine_system"
@@ -658,8 +637,7 @@
       ],
       "owned_paths": [
         "crates/tls/",
-        "native/tls/",
-        "migration/patches/tls/"
+        "native/tls/"
       ],
       "phpt_families": [
         "swoole_socket_coro"
@@ -694,7 +672,6 @@
         "crates/cares-sys/",
         "crates/phpclients/",
         "native/clients/",
-        "migration/patches/clients/",
         "tests/modules/clients/"
       ],
       "phpt_families": [
@@ -737,7 +714,6 @@
         "crates/httpbindings/",
         "crates/phphttp/",
         "native/httpbindings/",
-        "migration/patches/httpbindings/",
         "tests/modules/httpbindings/"
       ],
       "phpt_families": [
@@ -775,7 +751,6 @@
       "owned_paths": [
         "crates/http2/",
         "crates/phphttp2/",
-        "migration/patches/http2/",
         "tests/modules/http2/"
       ],
       "phpt_families": [
@@ -817,7 +792,6 @@
         "crates/ports/",
         "crates/phpserver/",
         "native/ports/",
-        "migration/patches/ports/",
         "tests/modules/ports/"
       ],
       "phpt_families": [
@@ -844,7 +818,6 @@
         "crates/phphelpers/",
         "crates/phpstdext/",
         "native/phphelpers/",
-        "migration/patches/phphelpers/",
         "tests/modules/phphelpers/"
       ],
       "phpt_families": [
@@ -872,7 +845,6 @@
       ],
       "owned_paths": [
         "crates/phpcollections/",
-        "migration/patches/phpcollections/",
         "tests/modules/phpcollections/"
       ],
       "phpt_families": [
@@ -899,7 +871,6 @@
       ],
       "owned_paths": [
         "crates/phpevents/",
-        "migration/patches/phpevents/",
         "tests/modules/phpevents/"
       ],
       "phpt_families": [
@@ -927,7 +898,6 @@
       ],
       "owned_paths": [
         "crates/phpcoroutines/",
-        "migration/patches/phpcoroutines/",
         "tests/modules/phpcoroutines/"
       ],
       "phpt_families": [

@@ -57,8 +57,8 @@ def require_frozen_source(expected):
 
 # A change here can affect every module's native build or behaviour.
 SHARED_PATHS = ('crates/ffi/', 'crates/ext/', 'native/include/', 'native/swoole-src/', 'native/halfclose/',
-                'migration/patches/integration/', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/',
-                'tools/build_hybrid.py', 'tools/build_ext.py', 'tools/build_upstream.py', 'migration/modules.json')
+                'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/',
+                'tools/build_ext.py', 'tools/build_upstream.py', 'migration/modules.json')
 
 
 def dependents():
@@ -130,7 +130,7 @@ def plan(args, reports):
         return php + [argument for extension in dependencies
                       if sys.platform.startswith('linux') and extension not in args.php_extension and extension not in builtin
                       for argument in ['--php-extension', extension]]
-    # A module that is only patches (wrappers) has no crate to test.
+    # A module without a crate (wrappers) has nothing to unit-test.
     crates = Path(__file__).resolve().parents[1] / 'crates'
     for module in (m for m in modules if (crates / m / 'Cargo.toml').exists()):
         add(module + '-unit', 'cargo', 'test', '--locked', '-p', 'swoole-rs-' + module,
@@ -285,7 +285,7 @@ def plan(args, reports):
                '--include-tls', *report('tls-constants'))
     if 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file}.cpp, network/{client,dns,address,socket}.cpp,
-        # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the hybrid tree's libswoole, and the repo-owned C++
+        # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the Cargo build's libswoole, and the repo-owned C++
         # witnesses in its fixture.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive,
@@ -315,7 +315,7 @@ def plan(args, reports):
                '--exclude', 'socket.connect_sync=' + NETWORK, '--exclude', 'socket.fail=' + NETWORK,
                *report('hooks-system-rust'))
     if 'reactor' in modules and sys.platform.startswith('linux'):
-        # core-tests/src/reactor/base.cpp, ported to Rust over the hybrid tree's libswoole.
+        # core-tests/src/reactor/base.cpp, ported to Rust over the Cargo build's libswoole.
         script('reactor-base-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive,
                '--build-root', ROOT / 'target/native-originals/reactor-base', '--jobs', args.jobs,
@@ -323,7 +323,7 @@ def plan(args, reports):
                *report('reactor-base-rust'))
     if 'http' in modules and sys.platform.startswith('linux'):
         # core-tests/src/server/http_server.cpp's, protocol/base.cpp's and redis.cpp's and server/mqtt.cpp's server
-        # TESTs, ported to Rust over the hybrid tree's libswoole.
+        # TESTs, ported to Rust over the Cargo build's libswoole.
         script('http-server-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive,
                '--build-root', ROOT / 'target/native-originals/http-server', '--jobs', args.jobs,
@@ -520,19 +520,16 @@ def shard(commands, reports, index, count):
     return [(name, command) for name, command in commands if name in everywhere or slot[root(name)] == index - 1]
 
 
-# Pinned reference and patch-editing checkouts: rebuilt rarely, or may hold uncommitted work.
-PRUNE_KEEP = {'upstream', 'patches'}
+# The pinned reference: rebuilt rarely.
+PRUNE_KEEP = {'upstream'}
 
 
 def prune(root, older_than_hours):
     """Delete per-build output under target/ untouched for the window; return (paths, bytes) freed."""
     cutoff = time.time() - older_than_hours * 3600
     target = root / 'target'
-    hybrid = target / 'hybrid'
     candidates = []
-    # Each hybrid build (and its alias) is its own candidate; per-branch builds are the growth.
-    for directory, keep in [(target, PRUNE_KEEP | {'hybrid', 'worktrees'}), (hybrid, {'builds'}), (hybrid / 'builds', set()),
-                            (target / 'worktrees', set())]:
+    for directory, keep in [(target, PRUNE_KEEP | {'worktrees'}), (target / 'worktrees', set())]:
         if directory.is_dir():
             candidates += [path for path in directory.iterdir() if path.name not in keep]
     freed, removed = 0, []
@@ -607,10 +604,10 @@ def docker(arguments):
     architecture = os.uname().machine
     mounts = [ROOT, common] if not common.is_relative_to(ROOT) else [ROOT]
     # Linux builds live in target/docker/<arch>/, seen inside at their usual paths, so
-    # the host's own target/upstream and target/hybrid never hold another platform's.
+    # the host's own target/upstream and target/ext never hold another platform's.
     private = ROOT / 'target/docker' / architecture
     builds = []
-    for name in ['upstream', 'upstream-builds', 'hybrid', 'ext']:
+    for name in ['upstream', 'upstream-builds', 'ext']:
         (private / name).mkdir(parents=True, exist_ok=True)
         builds += ['-v', f'{private / name}:{ROOT / "target" / name}']
     command = ['docker', 'run', '--rm', '--init', '-w', str(ROOT),
