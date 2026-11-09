@@ -353,8 +353,10 @@ def holder(issue):
 
 
 def relabel(issue, old, new):
-    gh('api', '-X', 'POST', f'repos/{{owner}}/{{repo}}/issues/{issue}/labels', '-f', f'labels[]={new}')
+    # Old first: a release that added status:ready before removing status:claimed could, if
+    # delayed, remove the label of a claim made in between.
     gh('api', '-X', 'DELETE', f"repos/{{owner}}/{{repo}}/issues/{issue}/labels/{old.replace(':', '%3A')}")
+    gh('api', '-X', 'POST', f'repos/{{owner}}/{{repo}}/issues/{issue}/labels', '-f', f'labels[]={new}')
 
 
 def claim(issue, agent, settle):

@@ -238,8 +238,8 @@ class Ci(unittest.TestCase):
             code, _, _ = self.ci('claim', '5', 'exec-9', runs={}, flags=('--settle', '0'),
                                  issue=issue, comments=comments, rival=rival)
             return code, self.out.strip()
-        relabel = ['api -X POST repos/{owner}/{repo}/issues/5/labels -f labels[]=status:claimed',
-                   'api -X DELETE repos/{owner}/{repo}/issues/5/labels/status%3Aready']
+        relabel = ['api -X DELETE repos/{owner}/{repo}/issues/5/labels/status%3Aready',
+                   'api -X POST repos/{owner}/{repo}/issues/5/labels -f labels[]=status:claimed']
         released = [{'id': 1, 'body': 'claim exec-1'}, {'id': 2, 'body': 'heartbeat exec-1'},
                     {'id': 3, 'body': 'release exec-1\n'}]
         self.assertEqual(claim(released), (0, '#5 claimed by exec-9'))
@@ -259,8 +259,8 @@ class Ci(unittest.TestCase):
         self.assertEqual((code, self.out.strip()), (0, '#5 released by exec-9'))
         self.assertEqual(self.gh_calls, [
             'api repos/{owner}/{repo}/issues/5/comments -f body=release exec-9',
-            'api -X POST repos/{owner}/{repo}/issues/5/labels -f labels[]=status:ready',
-            'api -X DELETE repos/{owner}/{repo}/issues/5/labels/status%3Aclaimed'])
+            'api -X DELETE repos/{owner}/{repo}/issues/5/labels/status%3Aclaimed',
+            'api -X POST repos/{owner}/{repo}/issues/5/labels -f labels[]=status:ready'])
 
     def test_new_failures_are_gate_failures_main_does_not_share(self):
         history = [{'databaseId': 9, 'conclusion': 'cancelled', 'url': 'u9'},
