@@ -21,19 +21,11 @@ fn select(allowed: impl Fn(usize) -> bool, worker_id: u32, set_size: usize) -> O
     (0..set_size).filter(|&cpu| allowed(cpu)).nth(index)
 }
 
-/// Pins the calling worker. `available`/`available_len` is `Server::cpu_affinity_available`
-/// (null for every CPU); `thread` is `Server::is_thread_mode()`.
-///
-/// # Safety
-/// `available` is null or points to `available_len` CPU numbers in `0..CPU_SETSIZE`.
+/// Pins the calling worker. `available` is `Server::cpu_affinity_available` (none for
+/// every CPU); `thread` is `Server::is_thread_mode()`.
 #[cfg(target_os = "linux")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_worker_affinity(
-    worker_id: u32,
-    available: *const i32,
-    available_len: i32,
-    thread: bool,
-) -> AffinityOutcome {
+#[must_use]
+pub fn worker_affinity(worker_id: u32, available: Option<&[i32]>, thread: bool) -> AffinityOutcome {
     use std::mem::{size_of, zeroed};
     let failed = |status| AffinityOutcome {
         status,
@@ -47,19 +39,11 @@ pub unsafe extern "C" fn swr_v1_process_worker_affinity(
     if unsafe { libc::sched_getaffinity(pid, size_of::<libc::cpu_set_t>(), &raw mut current) } < 0 {
         return failed(1);
     }
-    let ignored: &[i32] = if available.is_null() {
-        &[]
-    } else {
-        // SAFETY: the caller passes `available_len` CPU numbers at `available`.
-        unsafe {
-            std::slice::from_raw_parts(available, usize::try_from(available_len).unwrap_or(0))
-        }
-    };
     let set_size = usize::try_from(libc::CPU_SETSIZE).unwrap_or(0);
     let allowed = |cpu: usize| {
         // SAFETY: `select` asks only for cpu < CPU_SETSIZE.
         let present = unsafe { libc::CPU_ISSET(cpu, &current) };
-        present && (available.is_null() || ignored.iter().any(|&c| usize::try_from(c) == Ok(cpu)))
+        present && available.is_none_or(|cpus| cpus.iter().any(|&c| usize::try_from(c) == Ok(cpu)))
     };
     let Some(cpu) = select(allowed, worker_id, set_size) else {
         return AffinityOutcome {
@@ -107,8 +91,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn pins_the_thread_to_an_allowed_cpu() {
-        let outcome =
-            unsafe { super::swr_v1_process_worker_affinity(0, std::ptr::null(), 0, true) };
+        let outcome = super::worker_affinity(0, None, true);
         assert_eq!(outcome, super::AffinityOutcome::default());
     }
 }

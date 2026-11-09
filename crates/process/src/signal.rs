@@ -2,7 +2,7 @@
 //! the two async-signal handlers, dispatching triggered signals from a safe context,
 //! looking a handler up, clearing the table and blocking every signal.
 //! The signalfd and kqueue paths (`signalfd.rs`, `signal_kqueue.rs`) share the
-//! table, `swr_v1_signals`.
+//! table, `SIGNALS`.
 use std::ffi::{CStr, c_char, c_int};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Mutex, PoisonError};
@@ -38,8 +38,7 @@ impl Slot {
 }
 
 /// The handler table (upstream's `signals`).
-#[unsafe(no_mangle)]
-pub static swr_v1_signals: [Slot; SIGNO_MAX] = [const { Slot::empty() }; SIGNO_MAX];
+pub static SIGNALS: [Slot; SIGNO_MAX] = [const { Slot::empty() }; SIGNO_MAX];
 /// Each signal's action from before Swoole first registered it (upstream's
 /// `origin_actions`; none: `SIG_DFL`), put back when its handler is removed.
 static ORIGIN: Mutex<[Option<libc::sigaction>; SIGNO_MAX]> =
@@ -82,7 +81,7 @@ pub type Callback = unsafe extern "C" fn(c_int);
 pub type HasReactor = unsafe extern "C" fn() -> bool;
 
 fn slot(signo: c_int) -> Option<&'static Slot> {
-    swr_v1_signals.get(usize::try_from(signo).ok()?)
+    SIGNALS.get(usize::try_from(signo).ok()?)
 }
 
 /// `SignalHandler swoole_signal_set(int signo, SignalHandler func, int restart, int mask)`.
@@ -145,8 +144,7 @@ pub(crate) fn install(
 /// `handler` and installs the safe (deferred) or simple (immediate unless a reactor
 /// runs) async handler, with every signal masked while it runs. A null `handler`
 /// removes a registered signal and puts back the action it replaced.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signal_set(
+pub fn signal_set(
     signo: c_int,
     handler: usize,
     safety: bool,
@@ -188,7 +186,7 @@ extern "C" fn deferred(signo: c_int) {
 /// the signal frame, dropping a signal that arrives while one is running.
 extern "C" fn immediate(signo: c_int) {
     static RUNNING: AtomicBool = AtomicBool::new(false);
-    // SAFETY: `swr_v1_signal_set` stored a `HasReactor` before installing this handler.
+    // SAFETY: `signal_set` stored a `HasReactor` before installing this handler.
     let has_reactor: HasReactor = unsafe { std::mem::transmute(HAS_REACTOR.load(Relaxed)) };
     // SAFETY: the native accessor only reads a thread-local.
     if unsafe { has_reactor() } {
@@ -212,7 +210,7 @@ pub extern "C" fn swoole_signal_dispatch() {
     if !PENDING.load(Relaxed) {
         return;
     }
-    // SAFETY: only the deferred handler marks a signal, and `swr_v1_signal_set`
+    // SAFETY: only the deferred handler marks a signal, and `signal_set`
     // stores its `Callback` before installing that handler.
     let callback: Callback = unsafe { std::mem::transmute(CALLBACK.load(Relaxed)) };
     // SAFETY: upstream calls dispatch from a safe context, never a signal frame.
@@ -250,8 +248,8 @@ pub struct Lookup {
 }
 
 /// The handler registered for `signo`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signal_lookup(signo: c_int) -> Lookup {
+#[must_use]
+pub fn signal_lookup(signo: c_int) -> Lookup {
     let Some(slot) = slot(signo) else {
         return Lookup {
             status: 1,
@@ -275,16 +273,14 @@ pub extern "C" fn swoole_signal_isset(signo: c_int) -> bool {
 }
 
 /// Empties the table (upstream's `sw_memset_zero(signals, sizeof(signals))`).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signal_reset() {
-    swr_v1_signals.iter().for_each(Slot::reset);
+pub fn signal_reset() {
+    SIGNALS.iter().for_each(Slot::reset);
 }
 
 /// `swoole_signal_clear` without signalfd or kqueue: restores `SIG_DFL` for every
 /// registered signal, then empties the table.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_signal_clear() {
-    for slot in &swr_v1_signals {
+pub fn signal_clear() {
+    for slot in &SIGNALS {
         if slot.activated.load(Relaxed) {
             set_action(
                 c_int::from(slot.signo.load(Relaxed)),
@@ -294,7 +290,7 @@ pub extern "C" fn swr_v1_signal_clear() {
             );
         }
     }
-    swr_v1_signal_reset();
+    signal_reset();
 }
 
 /// `bool swoole_signal_block_all()`: [`swoole_rs_corebase::signal_block_all`].
@@ -387,17 +383,14 @@ mod tests {
     fn registers_dispatches_and_clears() {
         let _state = crate::signal_state_lock();
         let handler = record as *const () as usize;
-        swr_v1_signal_set(libc::SIGUSR1, handler, false, record, no_reactor);
+        signal_set(libc::SIGUSR1, handler, false, record, no_reactor);
         assert!(swoole_signal_isset(libc::SIGUSR1));
-        assert_eq!(
-            swr_v1_signal_lookup(libc::SIGUSR1),
-            Lookup { status: 0, handler }
-        );
+        assert_eq!(signal_lookup(libc::SIGUSR1), Lookup { status: 0, handler });
         // SAFETY: SIGUSR1 has the immediate handler installed above.
         unsafe { libc::raise(libc::SIGUSR1) };
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR1);
 
-        swr_v1_signal_set(libc::SIGUSR2, handler, true, record, with_reactor);
+        signal_set(libc::SIGUSR2, handler, true, record, with_reactor);
         // SAFETY: SIGUSR2 has the deferred handler installed above.
         unsafe { libc::raise(libc::SIGUSR2) };
         assert_eq!(SEEN.load(Relaxed), 0);
@@ -406,21 +399,18 @@ mod tests {
 
         // Removing a handler puts back the action from before its registration.
         set_action(libc::SIGUSR2, 0, false, false);
-        swr_v1_signal_set(libc::SIGUSR2, handler, true, record, with_reactor);
-        swr_v1_signal_set(libc::SIGUSR2, handler, false, record, with_reactor);
-        assert_eq!(
-            swr_v1_signal_set(libc::SIGUSR2, 0, false, record, with_reactor),
-            0
-        );
+        signal_set(libc::SIGUSR2, handler, true, record, with_reactor);
+        signal_set(libc::SIGUSR2, handler, false, record, with_reactor);
+        assert_eq!(signal_set(libc::SIGUSR2, 0, false, record, with_reactor), 0);
         assert!(!swoole_signal_isset(libc::SIGUSR2));
         assert_eq!(set_action(libc::SIGUSR2, usize::MAX, false, false), SIG_IGN);
 
-        swr_v1_signal_clear();
+        signal_clear();
         assert!(!swoole_signal_isset(libc::SIGUSR1));
-        assert_eq!(swr_v1_signal_lookup(libc::SIGUSR1).status, 2);
-        assert_eq!(swr_v1_signal_lookup(200).status, 1);
+        assert_eq!(signal_lookup(libc::SIGUSR1).status, 2);
+        assert_eq!(signal_lookup(200).status, 1);
         assert_eq!(set_action(libc::SIGUSR1, 0, false, false), SIG_DFL);
-        assert_eq!(swr_v1_signal_lookup(libc::SIGUSR1).status, 2);
+        assert_eq!(signal_lookup(libc::SIGUSR1).status, 2);
         set_action(libc::SIGUSR1, usize::MAX, false, false);
     }
 

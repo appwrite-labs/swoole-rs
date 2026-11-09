@@ -74,8 +74,7 @@ fn waitpid(pid: libc::pid_t, status: &mut c_int, options: c_int) -> libc::pid_t 
 ///
 /// # Safety
 /// `status` is writable; `ops` holds the native coroutine operations.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_wait_pid(
+pub unsafe fn wait_pid(
     pid: libc::pid_t,
     status: *mut c_int,
     options: c_int,
@@ -156,8 +155,7 @@ pub unsafe extern "C" fn swr_v1_wait_pid(
 ///
 /// # Safety
 /// `resume` is `co->resume()`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_wait_reap(signo: c_int, resume: unsafe extern "C" fn(*mut c_void)) {
+pub unsafe fn wait_reap(signo: c_int, resume: unsafe extern "C" fn(*mut c_void)) {
     if signo != libc::SIGCHLD {
         return;
     }
@@ -184,15 +182,15 @@ pub unsafe extern "C" fn swr_v1_wait_reap(signo: c_int, resume: unsafe extern "C
             task.status = code;
             task.pid = child;
             let co = task.co;
-            // SAFETY: `co` is suspended in `swr_v1_wait_pid`.
+            // SAFETY: `co` is suspended in `wait_pid`.
             unsafe { resume(co) };
         }
     }
 }
 
 /// `swoole_coroutine_wait_count`: coroutines waiting for a child.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_wait_count() -> usize {
+#[must_use]
+pub fn wait_count() -> usize {
     waits(|waits| waits.any.len() + waits.by_pid.len())
 }
 
@@ -218,8 +216,8 @@ mod tests {
     /// Stands in for a suspension during which the child exits and SIGCHLD is reaped.
     unsafe extern "C" fn reap_while_yielded(_: *mut c_void, _: f64) {
         YIELDED.set(true);
-        while swr_v1_wait_count() > 0 {
-            unsafe { swr_v1_wait_reap(libc::SIGCHLD, resume) };
+        while wait_count() > 0 {
+            unsafe { wait_reap(libc::SIGCHLD, resume) };
             let handed = waits(|waits| {
                 waits
                     .any
@@ -252,7 +250,7 @@ mod tests {
         };
         let child = spawn(3);
         let mut status = 0;
-        let waited = unsafe { swr_v1_wait_pid(child, &raw mut status, 0, -1.0, &plain) };
+        let waited = unsafe { wait_pid(child, &raw mut status, 0, -1.0, &plain) };
         assert_eq!((waited.pid, libc::WEXITSTATUS(status)), (child, 3));
 
         let coroutine = Coroutines {
@@ -260,15 +258,15 @@ mod tests {
             ..plain
         };
         let child = spawn(5);
-        let waited = unsafe { swr_v1_wait_pid(-1, &raw mut status, 0, -1.0, &coroutine) };
+        let waited = unsafe { wait_pid(-1, &raw mut status, 0, -1.0, &coroutine) };
         assert_eq!((waited.pid, waited.timed_out), (child, false));
         assert_eq!(libc::WEXITSTATUS(status), 5);
-        assert_eq!(swr_v1_wait_count(), 0);
+        assert_eq!(wait_count(), 0);
 
         let child = spawn(7);
         unsafe { libc::usleep(50_000) };
-        unsafe { swr_v1_wait_reap(libc::SIGCHLD, resume) };
-        let waited = unsafe { swr_v1_wait_pid(child, &raw mut status, 0, -1.0, &coroutine) };
+        unsafe { wait_reap(libc::SIGCHLD, resume) };
+        let waited = unsafe { wait_pid(child, &raw mut status, 0, -1.0, &coroutine) };
         assert_eq!((waited.pid, libc::WEXITSTATUS(status)), (child, 7));
     }
 }

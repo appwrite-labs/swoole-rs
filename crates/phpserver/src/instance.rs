@@ -270,7 +270,7 @@ const SW_ERROR_SERVER_WORKER_TERMINATED: c_int = 9003;
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_server_rshutdown() {
     let serv = swoole_rs_corebase::swr_v1_core_server();
-    let globals = worker_globals::swr_v1_worker_globals();
+    let globals = worker_globals::thread_globals();
     // SAFETY: this thread's worker globals.
     let worker = unsafe { (*globals).worker };
     if serv.is_null() || worker.is_null() {
