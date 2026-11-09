@@ -32,158 +32,90 @@ pub struct SocketState {
     pub(crate) timers: [*mut c_void; 2],
 }
 
-/// A new socket's state: not connected, nothing shut, no coroutine bound.
-/// The record makes its own; the hooks gates' socket facades use this.
-#[must_use]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_socket_state_new() -> *mut SocketState {
-    Box::into_raw(Box::new(SocketState {
-        flags: SocketFlags::default(),
-        read_co: core::ptr::null_mut(),
-        write_co: core::ptr::null_mut(),
-        want: 0,
-        barriers: [None; 2],
-        timers: [core::ptr::null_mut(); 2],
-    }))
-}
-
-/// The coroutine bound to `event` (`SW_EVENT_READ` or `SW_EVENT_WRITE`), or null.
-///
-/// # Safety
-/// `state` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_co(
-    state: *const SocketState,
-    event: u32,
-) -> *mut c_void {
-    // SAFETY: a live handle (see above).
-    let state = unsafe { &*state };
-    if event == READ {
-        state.read_co
-    } else {
-        state.write_co
+impl SocketState {
+    /// A new socket's state: not connected, nothing shut, no coroutine bound.
+    #[must_use]
+    pub fn alloc() -> *mut Self {
+        Box::into_raw(Box::new(Self {
+            flags: SocketFlags::default(),
+            read_co: core::ptr::null_mut(),
+            write_co: core::ptr::null_mut(),
+            want: 0,
+            barriers: [None; 2],
+            timers: [core::ptr::null_mut(); 2],
+        }))
     }
-}
 
-/// Binds `co` (null to unbind) for reading, writing, or both when `event` has both bits.
-///
-/// # Safety
-/// `state` is a live handle, not borrowed elsewhere during the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_bind(
-    state: *mut SocketState,
-    event: u32,
-    co: *mut c_void,
-) {
-    // SAFETY: a live, unborrowed handle (see above).
-    let state = unsafe { &mut *state };
-    if event & READ != 0 {
-        state.read_co = co;
+    /// # Safety
+    /// `state` is null or came from [`SocketState::alloc`], and is not used afterwards.
+    pub unsafe fn free(state: *mut Self) {
+        if !state.is_null() {
+            // SAFETY: as the caller promises.
+            drop(unsafe { Box::from_raw(state) });
+        }
     }
-    if event & WRITE != 0 {
-        state.write_co = co;
+
+    /// The coroutine bound to `event` (`SW_EVENT_READ` or `SW_EVENT_WRITE`), or null.
+    #[must_use]
+    pub fn co(&self, event: u32) -> *mut c_void {
+        if event == READ {
+            self.read_co
+        } else {
+            self.write_co
+        }
     }
-}
 
-/// `get_bound_co(event)`: the reader if `event` includes reading and one is bound,
-/// otherwise the writer if it includes writing, otherwise null.
-///
-/// # Safety
-/// `state` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_bound_co(
-    state: *const SocketState,
-    event: u32,
-) -> *mut c_void {
-    // SAFETY: a live handle (see above).
-    let state = unsafe { &*state };
-    if event & READ != 0 && !state.read_co.is_null() {
-        state.read_co
-    } else if event & WRITE != 0 && !state.write_co.is_null() {
-        state.write_co
-    } else {
-        core::ptr::null_mut()
+    /// Binds `co` (null to unbind) for reading, writing, or both when `event` has both bits.
+    pub fn bind(&mut self, event: u32, co: *mut c_void) {
+        if event & READ != 0 {
+            self.read_co = co;
+        }
+        if event & WRITE != 0 {
+            self.write_co = co;
+        }
     }
-}
 
-/// `get_event_str`'s choice: 0 "reading", 1 "writing", 2 "reading or writing". An
-/// event other than read or write names whichever coroutine is bound.
-///
-/// # Safety
-/// `state` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_event_name(
-    state: *const SocketState,
-    event: u32,
-) -> u32 {
-    // SAFETY: a live handle (see above).
-    let state = unsafe { &*state };
-    let (read_bound, write_bound) = (!state.read_co.is_null(), !state.write_co.is_null());
-    if event == READ {
-        0
-    } else if event == WRITE {
-        1
-    } else if read_bound && write_bound {
-        2
-    } else {
-        u32::from(!read_bound)
+    /// `get_bound_co(event)`: the reader if `event` includes reading and one is bound,
+    /// otherwise the writer if it includes writing, otherwise null.
+    #[must_use]
+    pub fn bound_co(&self, event: u32) -> *mut c_void {
+        if event & READ != 0 && !self.read_co.is_null() {
+            self.read_co
+        } else if event & WRITE != 0 && !self.write_co.is_null() {
+            self.write_co
+        } else {
+            core::ptr::null_mut()
+        }
     }
-}
 
-/// # Safety
-/// `state` is null or a handle from `swr_v1_hook_socket_state_new`, not used afterwards.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_state_free(state: *mut SocketState) {
-    if !state.is_null() {
-        // SAFETY: a live handle from Box::into_raw, released once (see above).
-        drop(unsafe { Box::from_raw(state) });
+    /// `get_event_str`'s choice: 0 "reading", 1 "writing", 2 "reading or writing". An
+    /// event other than read or write names whichever coroutine is bound.
+    #[must_use]
+    pub fn event_name(&self, event: u32) -> u32 {
+        let (read_bound, write_bound) = (!self.read_co.is_null(), !self.write_co.is_null());
+        if event == READ {
+            0
+        } else if event == WRITE {
+            1
+        } else if read_bound && write_bound {
+            2
+        } else {
+            u32::from(!read_bound)
+        }
     }
-}
-
-/// # Safety
-/// `state` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_flags(state: *const SocketState) -> SocketFlags {
-    // SAFETY: a live handle (see above).
-    unsafe { (*state).flags }
-}
-
-/// # Safety
-/// `state` is a live handle, not borrowed elsewhere during the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_set_flags(state: *mut SocketState, flags: SocketFlags) {
-    // SAFETY: a live, unborrowed handle (see above).
-    unsafe { (*state).flags = flags };
-}
-
-/// The socket connected (or was accepted).
-///
-/// # Safety
-/// `state` is a live handle, not borrowed elsewhere during the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_connect(state: *mut SocketState) {
-    // SAFETY: a live, unborrowed handle (see above).
-    unsafe { (*state).flags.connected = true };
 }
 
 /// `Socket::shutdown(how)` after `set_err(0)`: 0 on success, otherwise the error
 /// to set. `closed` is `is_closed()`; `ssl_shutdown`, when the socket has TLS,
 /// closes the session first. `syscall` is `shutdown(2)`, which sets errno.
-///
-/// # Safety
-/// `state` is a live, unborrowed handle; `ssl_shutdown`, if set, acts on the live
-/// socket in `context`.
-pub(crate) unsafe fn swr_v1_hook_shutdown(
+pub(crate) fn shutdown(
     syscall: unsafe extern "C" fn(i32, i32) -> i32,
     fd: i32,
     how: i32,
     closed: bool,
-    state: *mut SocketState,
-    ssl_shutdown: Option<unsafe extern "C" fn(*mut c_void)>,
-    context: *mut c_void,
+    flags: &mut SocketFlags,
+    ssl_shutdown: Option<&dyn Fn()>,
 ) -> i32 {
-    // SAFETY: a live, unborrowed handle (see above).
-    let flags = unsafe { &mut (*state).flags };
     if !flags.connected
         || closed
         || how == libc::SHUT_RD && flags.read
@@ -192,8 +124,7 @@ pub(crate) unsafe fn swr_v1_hook_shutdown(
         return libc::ENOTCONN;
     }
     if let Some(ssl_shutdown) = ssl_shutdown {
-        // SAFETY: a native effect on the live socket in `context`.
-        unsafe { ssl_shutdown(context) };
+        ssl_shutdown();
     }
     // SAFETY: shutdown(2) on the socket's descriptor; failure is reported through errno.
     let error = if unsafe { syscall(fd, how) } < 0 {
@@ -237,37 +168,24 @@ mod tests {
         fds
     }
 
-    fn connected() -> *mut SocketState {
-        let state = swr_v1_hook_socket_state_new();
-        unsafe { swr_v1_hook_socket_connect(state) };
-        state
-    }
-
-    fn flags(state: *mut SocketState) -> SocketFlags {
-        unsafe { swr_v1_hook_socket_flags(state) }
-    }
-
-    fn shutdown(fd: i32, how: i32, closed: bool, state: *mut SocketState) -> i32 {
-        unsafe {
-            swr_v1_hook_shutdown(
-                libc::shutdown,
-                fd,
-                how,
-                closed,
-                state,
-                None,
-                core::ptr::null_mut(),
-            )
+    fn connected() -> SocketFlags {
+        SocketFlags {
+            connected: true,
+            ..SocketFlags::default()
         }
+    }
+
+    fn down(fd: i32, how: i32, closed: bool, flags: &mut SocketFlags) -> i32 {
+        shutdown(libc::shutdown, fd, how, closed, flags, None)
     }
 
     #[test]
     fn half_closes_then_both_disconnects() {
         let fds = pair();
-        let state = connected();
-        assert_eq!(shutdown(fds[0], libc::SHUT_RD, false, state), 0);
+        let mut flags = connected();
+        assert_eq!(down(fds[0], libc::SHUT_RD, false, &mut flags), 0);
         assert_eq!(
-            flags(state),
+            flags,
             SocketFlags {
                 connected: true,
                 read: true,
@@ -275,92 +193,79 @@ mod tests {
             }
         );
         assert_eq!(
-            shutdown(fds[0], libc::SHUT_RD, false, state),
+            down(fds[0], libc::SHUT_RD, false, &mut flags),
             libc::ENOTCONN
         );
-        assert_eq!(shutdown(fds[0], libc::SHUT_WR, false, state), 0);
+        assert_eq!(down(fds[0], libc::SHUT_WR, false, &mut flags), 0);
         assert_eq!(
-            flags(state),
+            flags,
             SocketFlags {
                 connected: false,
                 read: true,
                 write: true
             }
         );
-        unsafe { swr_v1_hook_socket_state_free(state) };
         unsafe { libc::close(fds[0]) };
         unsafe { libc::close(fds[1]) };
     }
 
     #[test]
     fn not_connected_closed_and_bad_descriptors_fail() {
-        let state = swr_v1_hook_socket_state_new();
-        assert_eq!(shutdown(-1, libc::SHUT_RDWR, false, state), libc::ENOTCONN);
-        unsafe { swr_v1_hook_socket_connect(state) };
-        assert_eq!(shutdown(-1, libc::SHUT_RDWR, true, state), libc::ENOTCONN);
-        assert_eq!(shutdown(-1, libc::SHUT_RDWR, false, state), libc::EBADF);
+        let mut flags = SocketFlags::default();
+        assert_eq!(down(-1, libc::SHUT_RDWR, false, &mut flags), libc::ENOTCONN);
+        flags.connected = true;
+        assert_eq!(down(-1, libc::SHUT_RDWR, true, &mut flags), libc::ENOTCONN);
+        assert_eq!(down(-1, libc::SHUT_RDWR, false, &mut flags), libc::EBADF);
         assert_eq!(
-            flags(state),
+            flags,
             SocketFlags {
                 connected: true,
                 read: false,
                 write: false
             }
         );
-        unsafe { swr_v1_hook_socket_state_free(state) };
     }
 
     #[test]
     fn tls_closes_first() {
-        unsafe extern "C" fn mark(context: *mut c_void) {
-            unsafe { *context.cast::<bool>() = true };
-        }
         let fds = pair();
-        let mut closed = false;
-        let state = connected();
-        let error = unsafe {
-            swr_v1_hook_shutdown(
-                libc::shutdown,
-                fds[0],
-                libc::SHUT_RDWR,
-                false,
-                state,
-                Some(mark),
-                (&raw mut closed).cast(),
-            )
-        };
-        assert_eq!((error, closed, flags(state).connected), (0, true, false));
-        unsafe { swr_v1_hook_socket_state_free(state) };
+        let closed = core::cell::Cell::new(false);
+        let mut flags = connected();
+        let mark = || closed.set(true);
+        let error = shutdown(
+            libc::shutdown,
+            fds[0],
+            libc::SHUT_RDWR,
+            false,
+            &mut flags,
+            Some(&mark),
+        );
+        assert_eq!((error, closed.get(), flags.connected), (0, true, false));
         unsafe { libc::close(fds[0]) };
         unsafe { libc::close(fds[1]) };
     }
 
     #[test]
     fn binding_follows_get_bound_co_and_event_names() {
-        let state = swr_v1_hook_socket_state_new();
+        let state = unsafe { &mut *SocketState::alloc() };
         let (mut reader, mut writer) = (1u8, 2u8);
         let (r, w) = (
             (&raw mut reader).cast::<c_void>(),
             (&raw mut writer).cast::<c_void>(),
         );
-        unsafe {
-            assert!(swr_v1_hook_socket_bound_co(state, READ | WRITE).is_null());
-            assert_eq!(swr_v1_hook_socket_event_name(state, READ | WRITE), 1);
-            swr_v1_hook_socket_bind(state, WRITE, w);
-            assert_eq!(swr_v1_hook_socket_bound_co(state, READ | WRITE), w);
-            assert!(swr_v1_hook_socket_bound_co(state, READ).is_null());
-            assert_eq!(swr_v1_hook_socket_event_name(state, READ | WRITE), 1);
-            swr_v1_hook_socket_bind(state, READ, r);
-            assert_eq!(swr_v1_hook_socket_bound_co(state, READ | WRITE), r);
-            assert_eq!(swr_v1_hook_socket_co(state, WRITE), w);
-            assert_eq!(swr_v1_hook_socket_event_name(state, READ | WRITE), 2);
-            assert_eq!(swr_v1_hook_socket_event_name(state, READ), 0);
-            swr_v1_hook_socket_bind(state, READ | WRITE, core::ptr::null_mut());
-            assert!(
-                swr_v1_hook_socket_co(state, READ).is_null()
-                    && swr_v1_hook_socket_co(state, WRITE).is_null()
-            );
-            swr_v1_hook_socket_state_free(state);
-        }
+        assert!(state.bound_co(READ | WRITE).is_null());
+        assert_eq!(state.event_name(READ | WRITE), 1);
+        state.bind(WRITE, w);
+        assert_eq!(state.bound_co(READ | WRITE), w);
+        assert!(state.bound_co(READ).is_null());
+        assert_eq!(state.event_name(READ | WRITE), 1);
+        state.bind(READ, r);
+        assert_eq!(state.bound_co(READ | WRITE), r);
+        assert_eq!(state.co(WRITE), w);
+        assert_eq!(state.event_name(READ | WRITE), 2);
+        assert_eq!(state.event_name(READ), 0);
+        state.bind(READ | WRITE, core::ptr::null_mut());
+        assert!(state.co(READ).is_null() && state.co(WRITE).is_null());
+        unsafe { SocketState::free(state) };
     }
 }

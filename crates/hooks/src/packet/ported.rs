@@ -4,9 +4,9 @@
 //! Rust's framing with the same inputs. `ported.txt` holds the pinned bodies'
 //! traces, one line per scenario, without their EOF scans and `String::clear`
 //! calls, which Rust performs itself.
-use super::{ReadBuffer, swr_v1_hook_co_socket_recv_packet};
+use super::{ReadBuffer, recv_packet};
 use crate::co_io::{HOST, Host, errno, set_errno};
-use crate::co_socket::{CoSocket, TestSocket};
+use crate::co_socket::{Co, CoSocket, TestSocket};
 use core::ffi::c_void;
 use core::fmt::Write;
 use std::cell::RefCell;
@@ -44,7 +44,7 @@ fn with<T>(run: impl FnOnce(&mut Script) -> T) -> T {
     SCRIPT.with_borrow_mut(run)
 }
 
-extern "C" fn timer_add(_: *mut CoSocket, _: f64, _: bool) -> *mut c_void {
+extern "C" fn timer_add(_: Co, _: f64, _: bool) -> *mut c_void {
     with(|s| {
         s.trace.push("timer:start".into());
         if s.timer_ok {
@@ -57,7 +57,7 @@ extern "C" fn timer_add(_: *mut CoSocket, _: f64, _: bool) -> *mut c_void {
 
 extern "C" fn timer_del(_: *mut c_void) {}
 
-extern "C" fn read_buffer(_: *mut CoSocket, view: *mut ReadBuffer, action: u32, size: usize) {
+extern "C" fn read_buffer(_: Co, view: *mut ReadBuffer, action: u32, size: usize) {
     with(|s| {
         if action == 0 {
             s.trace.push("buffer:get".into());
@@ -97,7 +97,7 @@ extern "C" fn read_buffer(_: *mut CoSocket, view: *mut ReadBuffer, action: u32, 
     });
 }
 
-extern "C" fn recv(_: *mut CoSocket, at: *mut u8, n: usize, all: bool) -> isize {
+extern "C" fn recv(_: Co, at: *mut u8, n: usize, all: bool) -> isize {
     with(|s| {
         let Script {
             trace,
@@ -142,7 +142,7 @@ extern "C" fn recv(_: *mut CoSocket, at: *mut u8, n: usize, all: bool) -> isize 
     })
 }
 
-extern "C" fn package_length(_: *mut CoSocket, n: u32, header: *mut u32) -> isize {
+extern "C" fn package_length(_: Co, n: u32, header: *mut u32) -> isize {
     with(|s| {
         s.trace.push(format!("parse:{n}"));
         unsafe { *header = 4 };
@@ -153,7 +153,7 @@ extern "C" fn package_length(_: *mut CoSocket, n: u32, header: *mut u32) -> isiz
     })
 }
 
-extern "C" fn packet_fail(_: *mut CoSocket, kind: u32, length: isize) {
+extern "C" fn packet_fail(_: Co, kind: u32, length: isize) {
     with(|s| {
         let (error, message) = match kind {
             0 => (1781, "get package length failed"),
@@ -325,7 +325,7 @@ fn run(scenario: usize) -> String {
     let (result, error) = if available {
         with(|s| s.trace.push("timer:new:0x1p+0".into()));
         let previous = HOST.replace(&SCRIPTED);
-        let result = unsafe { swr_v1_hook_co_socket_recv_packet(socket.ptr(), 0.0) };
+        let result = recv_packet(socket.co(), 0.0);
         let error = errno();
         HOST.set(previous);
         with(|s| s.trace.push("timer:destroy".into()));

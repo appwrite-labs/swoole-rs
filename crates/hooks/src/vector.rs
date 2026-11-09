@@ -3,8 +3,7 @@
 //! themselves are in `socket_members.rs`; they pass the `network::Socket` call and
 //! the vector's remaining count.
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
-use crate::co_socket::CoSocket;
-use crate::shutdown::READ;
+use crate::co_socket::Co;
 use crate::socket_wait::wait;
 use core::ffi::c_void;
 
@@ -12,7 +11,7 @@ use core::ffi::c_void;
 pub type Barrier = unsafe extern "C" fn(*mut c_void) -> bool;
 
 struct Transfer<T, R> {
-    socket: *mut CoSocket,
+    socket: Co,
     transfer: T,
     remaining: R,
     result: isize,
@@ -28,8 +27,7 @@ impl<T: FnMut() -> isize, R: FnMut() -> usize> Transfer<T, R> {
     }
 
     fn would_block(&self) -> bool {
-        // SAFETY: an open record (it was available).
-        unsafe { would_block(self.socket) }
+        would_block(self.socket)
     }
 }
 
@@ -52,29 +50,17 @@ unsafe extern "C" fn retry<T: FnMut() -> isize, R: FnMut() -> usize>(state: *mut
 /// or failed, or -1 when the socket is not available. `transfer` is one
 /// `network::Socket` call over the vector and `remaining` its remaining count.
 ///
-/// # Safety
-/// `socket` is a live record, not borrowed elsewhere for the call.
-pub(crate) unsafe fn vector_all<T: FnMut() -> isize, R: FnMut() -> usize>(
-    socket: *mut CoSocket,
+pub(crate) fn vector_all<T: FnMut() -> isize, R: FnMut() -> usize>(
+    socket: Co,
     event: u32,
     transfer: T,
     remaining: R,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    if !unsafe { available(socket, event) } {
+    if !available(socket, event) {
         return -1;
     }
-    // SAFETY: as the caller promises.
-    let record = unsafe { &*socket };
-    // SAFETY: an available record is open; the read ends here.
-    let timeouts = unsafe { record.record() }.timeouts;
-    let timeout = if event == READ {
-        timeouts.read
-    } else {
-        timeouts.write
-    };
-    // SAFETY: the live record; the timer stops before this returns.
-    let mut timer = unsafe { Timer::new(socket, event, timeout) };
+    let timeout = socket.timeout(crate::transfer::timeout_kind(event));
+    let mut timer = Timer::new(socket, event, timeout);
     let mut state = Transfer {
         socket,
         transfer,
@@ -85,8 +71,7 @@ pub(crate) unsafe fn vector_all<T: FnMut() -> isize, R: FnMut() -> usize>(
     state.transfer();
     let first = state.result;
     let result = if first < 0 && !state.would_block() {
-        // SAFETY: the live record.
-        unsafe { set_err(socket, errno()) };
+        set_err(socket, errno());
         first
     // The iov must not be touched again once complete.
     } else if first == 0 || (state.remaining)() == 0 {
@@ -96,8 +81,7 @@ pub(crate) unsafe fn vector_all<T: FnMut() -> isize, R: FnMut() -> usize>(
         // SAFETY: `state` outlives the wait, which calls `retry` with it.
         if timer.start() && unsafe { wait(socket, event, Some(barrier), core::ptr::null_mut(), 0) }
         {
-            // SAFETY: the live record.
-            unsafe { check(socket, state.result) };
+            check(socket, state.result);
         }
         state.total
     };
@@ -115,9 +99,10 @@ mod tests {
     use super::*;
     use crate::co_io::set_errno;
     use crate::co_io::test_host::{ON_SUSPEND, TIMER_OK, install, log, take};
+    use crate::co_socket::Co;
     use crate::co_socket::TestSocket;
-    use crate::shutdown::WRITE;
-    use crate::socket_wait::swr_v1_hook_socket_ready;
+    use crate::shutdown::{READ, WRITE};
+    use crate::socket_wait::ready;
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -195,13 +180,12 @@ mod tests {
             socket.0.sock_fd = -1;
         }
         TIMER_OK.set(failure != 2);
-        ON_SUSPEND.set(Some(Box::new(move |socket: *mut CoSocket, event| {
-            let state = unsafe { (*socket).state };
-            while unsafe { swr_v1_hook_socket_ready(state, event, false) }.is_null() {
+        ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| {
+            while unsafe { ready(socket, event, false) }.is_null() {
                 log("again");
             }
             if failure == 3 {
-                unsafe { (*socket).err_code = libc::ETIMEDOUT };
+                socket.set_err_code(libc::ETIMEDOUT);
             }
         })));
         let vector = RefCell::new(Vector::new(layout, results));
@@ -218,7 +202,7 @@ mod tests {
             effects.into_iter().for_each(log);
             count
         };
-        let result = unsafe { vector_all(socket.ptr(), event, transfer, remaining) };
+        let result = vector_all(socket.co(), event, transfer, remaining);
         let error = socket.0.err_code;
         socket.0.sock_fd = 100;
         ON_SUSPEND.set(None);

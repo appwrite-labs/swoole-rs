@@ -4,7 +4,7 @@
 //! transfer of `recv_all`/`send_all`, each with its availability check, timer and
 //! waits. Native code passes only the `network::Socket` (or syscall) call.
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
-use crate::co_socket::CoSocket;
+use crate::co_socket::Co;
 use crate::shutdown::{READ, WRITE};
 use crate::socket_wait::wait;
 use core::ffi::c_void;
@@ -23,7 +23,7 @@ pub const CHECKED: u32 = 4;
 
 #[derive(Clone, Copy)]
 struct Op {
-    socket: *mut CoSocket,
+    socket: Co,
     call: Call,
     context: *mut c_void,
 }
@@ -35,8 +35,7 @@ impl Op {
     }
 
     fn would_block(self) -> bool {
-        // SAFETY: an open record (it was available).
-        unsafe { would_block(self.socket) }
+        would_block(self.socket)
     }
 }
 
@@ -71,8 +70,7 @@ fn all(op: Op, timer: &mut Timer, event: u32, buffer: *mut u8, length: usize) ->
         return first;
     }
     if first < 0 && !op.would_block() {
-        // SAFETY: the live record.
-        unsafe { set_err(op.socket, errno()) };
+        set_err(op.socket, errno());
         return first;
     }
     let mut all = All {
@@ -85,8 +83,7 @@ fn all(op: Op, timer: &mut Timer, event: u32, buffer: *mut u8, length: usize) ->
     let barrier: (crate::vector::Barrier, *mut c_void) = (rest, (&raw mut all).cast());
     // SAFETY: `all` outlives the wait, which calls `rest` with it.
     if timer.start() && unsafe { wait(op.socket, event, Some(barrier), core::ptr::null_mut(), 0) } {
-        // SAFETY: the live record.
-        unsafe { check(op.socket, all.result) };
+        check(op.socket, all.result);
     }
     if all.result < 0 && all.total == 0 {
         -1
@@ -122,8 +119,7 @@ fn one(op: Op, timer: &mut Timer, event: u32, flags: u32, buffer: *mut u8, lengt
         }
         result = op.call(buffer, length);
     }
-    // SAFETY: the live record.
-    unsafe { check(op.socket, result) };
+    check(op.socket, result);
     result
 }
 
@@ -133,11 +129,10 @@ fn one(op: Op, timer: &mut Timer, event: u32, flags: u32, buffer: *mut u8, lengt
 /// [`CHECKED`]. -1 when the socket is not available.
 ///
 /// # Safety
-/// `socket` is a live record; `buffer` holds `length` bytes or is null; `call`
-/// with `context` transfers on it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_transfer(
-    socket: *mut CoSocket,
+/// `buffer` holds `length` bytes or is null; `call` with `context` transfers on the
+/// socket.
+pub(crate) unsafe fn transfer(
+    socket: Co,
     event: u32,
     flags: u32,
     buffer: *mut u8,
@@ -145,22 +140,11 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_transfer(
     call: Call,
     context: *mut c_void,
 ) -> isize {
-    // SAFETY: the live record.
-    if flags & CHECKED == 0 && !unsafe { available(socket, event) } {
+    if flags & CHECKED == 0 && !available(socket, event) {
         return -1;
     }
     let event = if event == READ { READ } else { WRITE };
-    // SAFETY: the live record.
-    let record = unsafe { &*socket };
-    // SAFETY: an available record is open; the read ends here.
-    let timeouts = unsafe { record.record() }.timeouts;
-    let timeout = if event == READ {
-        timeouts.read
-    } else {
-        timeouts.write
-    };
-    // SAFETY: the live record; the timer stops before this returns.
-    let mut timer = unsafe { Timer::new(socket, event, timeout) };
+    let mut timer = Timer::new(socket, event, socket.timeout(timeout_kind(event)));
     let op = Op {
         socket,
         call,
@@ -180,21 +164,17 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_transfer(
 /// empty.
 ///
 /// # Safety
-/// `socket` is a live record, not borrowed elsewhere for the call; `call` transfers on
-/// the record.
+/// `call` transfers on the record.
 pub(crate) unsafe fn recvfrom_peer(
-    socket: *mut CoSocket,
+    socket: Co,
     call: impl FnOnce(*mut libc::sockaddr, *mut libc::socklen_t) -> isize,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    if !unsafe { available(socket, READ) } {
+    if !available(socket, READ) {
         return -1;
     }
-    // SAFETY: as the caller promises.
-    let record = unsafe { &*socket };
     // SAFETY: an available record is open; the network::Socket outlives the call,
     // and this borrow ends before it.
-    let network = unsafe { record.record() };
+    let network = unsafe { &mut *socket.socket() };
     let local = network.is_local();
     network.info.len = socklen(size_of::<AddressStorage>());
     let info = &raw mut network.info;
@@ -213,6 +193,11 @@ pub(crate) unsafe fn recvfrom_peer(
     result
 }
 
+/// `SW_TIMEOUT_READ` for a read, else `SW_TIMEOUT_WRITE`.
+pub(crate) fn timeout_kind(event: u32) -> core::ffi::c_int {
+    if event == READ { 1 << 2 } else { 1 << 3 }
+}
+
 fn socklen(length: usize) -> libc::socklen_t {
     libc::socklen_t::try_from(length).unwrap_or(libc::socklen_t::MAX)
 }
@@ -227,8 +212,9 @@ mod tests {
     use super::*;
     use crate::co_io::set_errno;
     use crate::co_io::test_host::{ON_SUSPEND, REACTOR_OK, TIMER_OK, install, log, take};
+    use crate::co_socket::Co;
     use crate::co_socket::TestSocket;
-    use crate::socket_wait::swr_v1_hook_socket_ready;
+    use crate::socket_wait::ready;
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -272,13 +258,12 @@ mod tests {
         }
         TIMER_OK.set(failure != 2);
         // A woken wait runs the installed barrier while it keeps waiting.
-        ON_SUSPEND.set(Some(Box::new(move |socket: *mut CoSocket, event| {
-            let state = unsafe { (*socket).state };
-            while unsafe { swr_v1_hook_socket_ready(state, event, false) }.is_null() {
+        ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| {
+            while unsafe { ready(socket, event, false) }.is_null() {
                 log("again");
             }
             if failure == 3 {
-                unsafe { (*socket).err_code = libc::ETIMEDOUT };
+                socket.set_err_code(libc::ETIMEDOUT);
             }
         })));
         let mut buffer = [0u8; 16];
@@ -288,8 +273,8 @@ mod tests {
             core::ptr::null_mut()
         };
         let result = unsafe {
-            swr_v1_hook_co_socket_transfer(
-                socket.ptr(),
+            transfer(
+                socket.co(),
                 event,
                 flags,
                 at,
@@ -490,8 +475,8 @@ mod tests {
         unsafe { socket.0.record() }.timeouts.read = 0.0;
         RESULTS.set([EAGAIN].into_iter().collect());
         let result = unsafe {
-            swr_v1_hook_co_socket_transfer(
-                socket.ptr(),
+            transfer(
+                socket.co(),
                 READ,
                 CHECKED,
                 core::ptr::null_mut(),
@@ -506,14 +491,14 @@ mod tests {
     }
 
     unsafe extern "C" fn peer(
-        socket: *mut CoSocket,
+        socket: Co,
         _: *mut c_void,
         _: usize,
         addr: *mut libc::sockaddr,
         length: *mut libc::socklen_t,
     ) -> isize {
         let result = RESULTS.with_borrow_mut(VecDeque::pop_front).unwrap_or(0);
-        let expected = unsafe { &raw mut (*socket).record().info };
+        let expected = unsafe { &raw mut (*socket.socket()).info };
         log(format!(
             "recvfrom:{}:{}",
             addr == unsafe { &raw mut (*expected).addr.ss },
@@ -535,7 +520,7 @@ mod tests {
             unsafe { socket.0.record() }.socket_type = socket_type;
             RESULTS.set([result].into());
             let got = unsafe {
-                let s = socket.ptr();
+                let s = socket.co();
                 recvfrom_peer(s, |addr, len| peer(s, core::ptr::null_mut(), 8, addr, len))
             };
             assert_eq!(got, result);
@@ -548,7 +533,7 @@ mod tests {
         socket.0.sock_fd = -1;
         assert_eq!(
             unsafe {
-                let s = socket.ptr();
+                let s = socket.co();
                 recvfrom_peer(s, |addr, len| peer(s, core::ptr::null_mut(), 8, addr, len))
             },
             -1
