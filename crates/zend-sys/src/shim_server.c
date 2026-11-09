@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): bailout (serialize, unserialize and array
+ * merges run PHP), globals (EG(stack_limit), PG(last_error_*)) and version
+ * (ZEND_CHECK_STACK_LIMIT). */
 #include "shim.h"
 #include "shim_server.h"
 #include "main/php_globals.h"

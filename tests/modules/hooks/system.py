@@ -89,9 +89,12 @@ def main():
             result = run_isolated(command, timeout=900, env=env)
             (logs / (step + '.log')).write_text(result.stdout + result.stderr)
             if result.returncode:
-                raise RuntimeError(f'{step} failed: {logs / (step + ".log")}')
+                # The tail names the error in the report, which is all a CI artifact keeps.
+                tail = '\n'.join((result.stdout + result.stderr).splitlines()[-20:])
+                raise RuntimeError(f'{step} failed: {logs / (step + ".log")}\n{tail}')
         name = re.search(r'^name = "(.+)"$', (args.package / 'Cargo.toml').read_text(), re.M).group(1)
-        binary = args.build_root.resolve() / 'cargo/debug' / name
+        # CARGO_BUILD_TARGET (tools/asan.py) puts the binary under cargo/<triple>/.
+        binary = args.build_root.resolve() / 'cargo' / os.environ.get('CARGO_BUILD_TARGET', '') / 'debug' / name
         inventory = subprocess.check_output([str(binary), '--list'], text=True).split()
         if not inventory or len(set(inventory)) != len(inventory) or set(excluded) - set(inventory):
             raise ValueError('Empty or duplicate inventory, or an exclusion names no case')

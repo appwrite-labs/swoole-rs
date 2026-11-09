@@ -203,10 +203,20 @@ unsafe extern "C-unwind" {
 pub type Framed = fn(*const Protocol, *mut SocketRecord, *mut CppString) -> c_int;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
-/// `swoole_init` (crates/ffi) registers them with [`set_framing`].
+/// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
+/// client's `on_read` calls them, so the fields stay private.
 pub struct Framing {
-    pub length: Framed,
-    pub eof: Framed,
+    length: Framed,
+    eof: Framed,
+}
+
+impl Framing {
+    /// # Safety
+    /// `length` and `eof` must be sound for any live protocol, socket and input
+    /// buffer of a client, which is all a client's `on_read` passes them.
+    pub const unsafe fn new(length: Framed, eof: Framed) -> Self {
+        Self { length, eof }
+    }
 }
 
 static FRAMING: OnceLock<Framing> = OnceLock::new();
@@ -1767,9 +1777,9 @@ mod ops {
     /// read one is set.
     pub(super) fn kernel_timeout(record: &ClientRecord, timeout: f64) {
         // SAFETY: a constructed client's live socket.
-        if unsafe { socket_upstream::socket_set_kernel_read_timeout(record.socket, timeout) } {
-            // SAFETY: as above.
-            unsafe { socket_upstream::socket_set_kernel_write_timeout(record.socket, timeout) };
+        let socket = unsafe { &mut *record.socket };
+        if socket_upstream::socket_set_kernel_read_timeout(socket, timeout) {
+            socket_upstream::socket_set_kernel_write_timeout(socket, timeout);
         }
     }
 
@@ -1794,14 +1804,16 @@ mod ops {
 
     /// Connects the socket to `server_addr`, by `mode` (`CONNECT_*`); errno is the call's.
     pub(super) fn connect(record: &ClientRecord, mode: c_int) -> c_int {
-        let address = &raw const record.server_addr;
+        let address = &record.server_addr;
         match mode {
-            // SAFETY: the live socket and the record's address.
-            CONNECT_ASYNC => unsafe {
-                socket_upstream::socket_connect_async(record.socket, address)
-            },
-            // SAFETY: as above.
-            CONNECT_SYNC => unsafe { socket_upstream::socket_connect_sync(record.socket, address) },
+            CONNECT_ASYNC => {
+                // SAFETY: the live socket.
+                socket_upstream::socket_connect_async(unsafe { &mut *record.socket }, address)
+            }
+            CONNECT_SYNC => {
+                // SAFETY: the live socket.
+                socket_upstream::socket_connect_sync(unsafe { &mut *record.socket }, address)
+            }
             _ => {
                 // SAFETY: the live socket.
                 let fd = unsafe { (*record.socket).fd };
@@ -2125,9 +2137,10 @@ fn on_read(this: Handle) -> c_int {
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket_ptr();
         let protocol = &raw const this.fields().protocol;
-        // A package callback may destroy the client; its socket outlives this handler.
+        // The live protocol, socket and input buffer `Framing::new` asks for. A
+        // package callback may destroy the client; its socket outlives this handler.
         let n = framed(protocol, socket, this.input());
-        // SAFETY: as above; a destroyed client cleared the socket's object.
+        // SAFETY: the socket outlives this handler; a destroyed client cleared its object.
         let released = unsafe { (*socket).object }.is_null();
         if n < 0 && !released && !this.flag(CLOSED) {
             close(this);

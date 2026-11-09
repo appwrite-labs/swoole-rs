@@ -678,13 +678,12 @@ mod tests {
         let length = usize::try_from(n).unwrap();
         let file = a.cast::<libc::FILE>();
         match op {
-            // `new String(n)` or `new String(b, n)`.
+            // `new String(n)` or `new String(b, n)`, which has room for a NUL after the copy.
             0 => {
-                let bytes = if b.is_null() {
-                    Vec::with_capacity(length)
-                } else {
-                    unsafe { core::slice::from_raw_parts(b, length) }.to_vec()
-                };
+                let mut bytes = Vec::with_capacity(length + usize::from(!b.is_null()));
+                if !b.is_null() {
+                    bytes.extend_from_slice(unsafe { core::slice::from_raw_parts(b, length) });
+                }
                 let mut text = Box::new(Text {
                     head: Buffer {
                         length: bytes.len(),

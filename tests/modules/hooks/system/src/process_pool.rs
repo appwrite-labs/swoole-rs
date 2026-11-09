@@ -1912,15 +1912,3 @@ pub(super) const CASES: super::Cases = &[
         reload_from_child_exit_callback,
     ),
 ];
-
-unsafe extern "C" {
-    fn swr_case_worker_retirement();
-}
-
-fn abort_and_reset() {
-    // SAFETY: the fixture's witness; it exits the process on a failed check.
-    unsafe { swr_case_worker_retirement() };
-}
-
-/// The repo-owned Server witness (formerly tests/modules/process/worker_retirement.cc).
-pub(super) const RETIREMENT_CASES: super::Cases = &[("abort_and_reset", abort_and_reset)];

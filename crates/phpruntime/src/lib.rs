@@ -51,8 +51,8 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     message, register_long_constant,
     sys::{
-        swr_zend_callable_warning, swr_zend_module_loaded, swr_zend_runtime_find_class,
-        swr_zend_stream_factory, swr_zend_stream_factory_set, zend_class_entry, zend_execute_data,
+        swr_zend_callable_warning, swr_zend_runtime_find_class, swr_zend_stream_factory,
+        swr_zend_stream_factory_set, zend_class_entry, zend_execute_data,
         zend_register_class_alias_ex, zif_handler, zval,
     },
 };
@@ -425,8 +425,7 @@ pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     }
     call_hook(BEFORE_ENABLE_HOOK, &mut requested);
     let mut unavailable = 0;
-    // SAFETY: a name and its length.
-    if !unsafe { swr_zend_module_loaded(c"sockets".as_ptr(), 7) } {
+    if !swoole_rs_zend::module_loaded(c"sockets") {
         unavailable |= flags::SOCKETS;
     }
     if !swoole_rs_phpswoole::enable_library() {

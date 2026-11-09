@@ -194,8 +194,6 @@ class Server {
 
     int add_worker(Worker *worker);
     ListenPort *add_port(SocketType type, const char *host, int port);
-    void abort_worker(Worker *worker) const;
-    void reset_worker_counter(Worker *worker) const;
 
     uint32_t get_idle_worker_num() const;
 
@@ -218,7 +216,6 @@ class Server {
     }
 
     Worker *get_worker(uint16_t worker_id) const;
-    Worker *get_worker_by_pid(pid_t worker_pid) const;
 
     size_t get_core_worker_num() const {
         return config_->worker_num + config_->task_worker_num;

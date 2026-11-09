@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/* liburing's static inline functions. Stays C (docs/zend.md, What stays C):
+ * private (the ring internals get_sqe and cq_advance touch change between
+ * liburing releases) and budget (each prep_* fills an SQE through a raw pointer). */
 #include "shim.h"
 
 struct io_uring_sqe *swr_uring_get_sqe(struct io_uring *ring) {

@@ -50,10 +50,12 @@ def main():
     args = parser.parse_args()
     php = OUT / 'php'
     # One link recipe for every executable the run builds, whatever compiler name it calls.
+    # A gate's own flags follow, so its -fno-sanitize= choices hold (the WebSocket codec's
+    # pinned C++ reads unaligned); vptr stays off whatever it asks.
     shims = OUT / 'bin'
     shims.mkdir(parents=True, exist_ok=True)
     for name, compiler in [('cc', 'clang'), ('c++', 'clang++')]:
-        (shims / name).write_text(f'#!/bin/sh\nexec {compiler} "$@" {SANITIZE}\n')
+        (shims / name).write_text(f'#!/bin/sh\nexec {compiler} {SANITIZE} "$@" -fno-sanitize=vptr\n')
         (shims / name).chmod(0o755)
     compilers = {**os.environ, 'CC': 'clang', 'CXX': 'clang++', 'PATH': f"{shims}{os.pathsep}{os.environ['PATH']}"}
     subprocess.run([ROOT / '.devcontainer/php.sh', php, '--enable-address-sanitizer', '--enable-undefined-sanitizer',

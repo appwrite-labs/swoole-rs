@@ -1,3 +1,4 @@
+/* Stays C (docs/zend.md, What stays C): bailout (a subclass's __get). */
 #include "shim.h"
 #include "shim_websocket.h"
 

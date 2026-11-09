@@ -48,7 +48,6 @@ bundled ext/ssh2 uses: `new SocketImpl`, `connect(host)` (`swr_v1_hook_co_socket
   `LOCK_EX`/`LOCK_SH` retry `flock(op | LOCK_NB)` only on -1/EWOULDBLOCK,
   sleeping through `System::sleep` with the `wait_for` backoff, and fail when that
   sleep is cancelled; anything else fails with EINVAL as errno and the last error.
-- `hook_file_result` rejects open fd 0 and does not reset close's fd.
 - `wait_for` uses a copied caller-local delay/phase/result plan selecting the
   next callback, sleep, success or canceled return. Backoff: capped doubling with
   reset.

@@ -79,8 +79,9 @@ pub mod exports {
     use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_server::{ConnectionRecord, view};
-    use swoole_rs_websocket::frame_api::{PacketLength, decode_frame};
-    use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, swr_v1_ws_encode};
+    use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame};
+    use swoole_rs_websocket_ffi::frame_api::{PacketLength, decode_frame};
+    use swoole_rs_websocket_ffi::swr_v1_ws_encode;
 
     use super::{WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
     use crate::framing_recv::{Packages, Recv};
@@ -375,7 +376,7 @@ pub mod exports {
         match route(conn, || Some(true), || Some(false), None) {
             // SAFETY: upstream's arguments, forwarded.
             Some(true) => unsafe {
-                swoole_rs_websocket::frame_api::get_package_length(proto, socket.cast(), pl)
+                swoole_rs_websocket_ffi::frame_api::get_package_length(proto, socket.cast(), pl)
             },
             // SAFETY: as above.
             Some(false) => unsafe { http2_length(proto, socket, pl) },

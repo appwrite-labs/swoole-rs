@@ -748,8 +748,7 @@ impl Bus {
         let socket = Box::leak(Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3)));
         socket.output.buffer_size = u32::MAX;
         if socket.output.nonblock == 0 {
-            // SAFETY: the live record just made.
-            unsafe { swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1) };
+            swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1);
         }
         if let Some(slot) = self.pipe_sockets.get_mut(index) {
             *slot = socket;

@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): globals (PG, SG and EG of a ZTS request),
+ * version (ZTS-only TSRM calls, refresh_memory_manager), bailout (a thread's
+ * request, stream casts), allocator and budget (hash iteration, numeric strings). */
 #include "shim.h"
 #include "shim_thread.h"
 #include "SAPI.h"
@@ -71,10 +74,6 @@ int swr_zend_stream_select_fd(php_stream *stream, int *fd) {
 
 bool swr_zend_stream_fd(php_stream *stream, int *fd) {
     return php_stream_cast(stream, PHP_STREAM_AS_FD, (void **) fd, 0) == SUCCESS;
-}
-
-void swr_zend_stream_no_close(php_stream *stream) {
-    stream->flags |= PHP_STREAM_FLAG_NO_CLOSE;
 }
 
 void swr_zend_register_stream_constant(const char *name, php_stream *stream) {

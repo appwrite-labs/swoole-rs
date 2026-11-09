@@ -17,7 +17,7 @@ use swoole_rs_buffer::string::delete_string;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, SocketRecord, cpp_socket_what_event_want, reactor_upstream};
+use swoole_rs_reactor::{Event, SocketRecord, reactor_upstream, what_event_want};
 use swoole_rs_tls::upstream as tls;
 use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
 
@@ -876,7 +876,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CC_WATCH_WRITE => {
             // SAFETY: the context's live socket.
-            let events = unsafe { cpp_socket_what_event_want(o.ctx.sock, SW_EVENT_WRITE) };
+            let events = what_event_want(unsafe { &*o.ctx.sock }, SW_EVENT_WRITE);
             // arg: the socket is out of the reactor
             change(o.ctx.sock, u32::from(arg == 0), events)
         }
@@ -976,9 +976,6 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         fn swoole_event_free() -> c_int;
         #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
         fn reactor_close(reactor: *mut c_void, socket: *mut SocketRecord) -> c_int;
-        /// crates/ports' `ListenPort::init_protocol`.
-        #[link_name = "_ZN6swoole10ListenPort13init_protocolEv"]
-        fn init_protocol(port: *mut c_void);
     }
     Some(match op {
         OP_DTLS_ACCEPT => {
@@ -1030,8 +1027,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 reactor.set_handler(fd_type, event, handler);
             }
             for &port in o.tables().ports() {
-                // SAFETY: one of the server's live ports.
-                unsafe { init_protocol(port) };
+                (crate::port_config::methods().init_protocol)(port);
             }
             0
         }

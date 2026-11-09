@@ -9,7 +9,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::Write;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
+use swoole_rs_deflate::{Allocator, DEFLATE, Failure, GZIP, bound, compress as deflate};
 use swoole_rs_http::swr_v2_http_status_message;
 use swoole_rs_httpbindings::{
     response_header, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level,
@@ -526,7 +526,7 @@ pub(crate) fn trailer<R>(
     })
 }
 
-pub(crate) unsafe extern "C" fn zalloc(_: *mut c_void, items: u32, size: u32) -> *mut c_void {
+extern "C" fn zalloc(_: *mut c_void, items: u32, size: u32) -> *mut c_void {
     // `safe_emalloc(items, size, 0)`; an overflow fails the allocation.
     let Some(bytes) = (items as usize).checked_mul(size as usize) else {
         return ptr::null_mut();
@@ -535,10 +535,15 @@ pub(crate) unsafe extern "C" fn zalloc(_: *mut c_void, items: u32, size: u32) ->
     unsafe { swr_zend_emalloc(bytes) }
 }
 
-pub(crate) unsafe extern "C" fn zfree(_: *mut c_void, address: *mut c_void) {
+unsafe extern "C" fn zfree(_: *mut c_void, address: *mut c_void) {
     // SAFETY: memory `zalloc` returned.
     unsafe { swr_zend_efree(address) };
 }
+
+/// zlib allocating from PHP's request allocator, as upstream's `php_zlib_alloc`.
+// SAFETY: `zalloc` returns null or `items * size` bytes of emalloc'd memory,
+// which `zfree` efrees.
+pub(crate) const ZEND_ZLIB: Allocator = unsafe { Allocator::new(zalloc, zfree) };
 
 fn compress_warning(message: &str) {
     host::log(0, 0, c"Context::compress", message);
@@ -606,7 +611,7 @@ fn zlib(state: &mut State, input: &[u8], method: i32, level: i32) -> Result<Vec<
     // zlib's clamp lands in -1..=9, which fits int8_t.
     state.compression_level = i8::try_from(level).unwrap_or(-1);
     let mut out = vec![0; bound(input.len())];
-    match deflate(input, &mut out, window_bits, level, zalloc, zfree) {
+    match deflate(input, &mut out, window_bits, level, ZEND_ZLIB) {
         Ok(compressed) => {
             out.truncate(compressed);
             Ok(out)

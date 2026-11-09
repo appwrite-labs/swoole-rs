@@ -432,8 +432,7 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             spawn(RUN_SPAWN_USER_WORKER, worker)
         }
         OP_WORKER_BY_PID => {
-            // SAFETY: the context's live server.
-            ctx.worker = unsafe { worker_methods::get_worker_by_pid(serv, pid_of(arg)) };
+            ctx.worker = worker_methods::get_worker_by_pid(ctx.server(), pid_of(arg));
             return Some(u64::from(!ctx.worker.is_null()));
         }
         OP_CHECK_EXIT_STATUS => {
