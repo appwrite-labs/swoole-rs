@@ -1,7 +1,7 @@
 # Half-close correctness checks
 
 The half-close correction is an opt-in fix selected by
-`tools/build_hybrid.py --fix-halfclose` (crates/ffi's `halfclose` cargo feature;
+`tools/build_ext.py --fix-halfclose` (crates/ffi's `halfclose` cargo feature;
 default builds keep upstream's behavior). It drains
 queued stream/file output before graceful close, protects explicit application
 pause/resume, preserves synchronous PROCESS responses across early FIN, retries

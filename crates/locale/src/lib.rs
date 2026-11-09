@@ -64,3 +64,56 @@ pub fn strncasecmp_equal(left: &[u8], right: &[u8], length: usize) -> bool {
     // SAFETY: both slices hold at least `length` readable bytes.
     unsafe { libc::strncasecmp(left.as_ptr().cast(), right.as_ptr().cast(), length) == 0 }
 }
+/// True when libc's case-insensitive comparison differs at this first byte pair in
+/// every locale, so the call can be skipped: `tolower` keeps ASCII in ASCII except
+/// Turkish `I` (to `ı`), and only Turkish `İ` lowers to an ASCII byte (`i`).
+fn differs_at_first(left: u8, right: u8) -> bool {
+    left.is_ascii()
+        && right.is_ascii()
+        && left | 0x20 != b'i'
+        && right | 0x20 != b'i'
+        && !left.eq_ignore_ascii_case(&right)
+}
+/// `input` starts with `expected` as `strncasecmp` compares them in the current
+/// locale, which the pinned header matching uses.
+#[inline]
+#[must_use]
+pub fn case_prefix(input: &[u8], expected: &[u8]) -> bool {
+    input.len() >= expected.len()
+        && !matches!((input.first(), expected.first()), (Some(&left), Some(&right)) if differs_at_first(left, right))
+        && strncasecmp_equal(input, expected, expected.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn skipped_first_bytes_differ_under_libc_in_each_locale() {
+        let locales = [
+            c"C",
+            c"C.UTF-8",
+            c"en_US.ISO8859-1",
+            c"en_US.UTF-8",
+            c"tr_TR.ISO8859-9",
+            c"tr_TR.UTF-8",
+        ];
+        for locale in locales {
+            // SAFETY: a NUL-terminated name; this test alone changes LC_CTYPE, then restores it.
+            if unsafe { libc::setlocale(libc::LC_CTYPE, locale.as_ptr()) }.is_null() {
+                continue;
+            }
+            for left in 0..=u8::MAX {
+                for right in 0..=u8::MAX {
+                    if differs_at_first(left, right) {
+                        assert!(
+                            !strncasecmp_equal(&[left], &[right], 1),
+                            "{left:#x} {right:#x} in {locale:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // SAFETY: restores the default locale.
+        unsafe { libc::setlocale(libc::LC_CTYPE, c"C".as_ptr()) };
+    }
+}

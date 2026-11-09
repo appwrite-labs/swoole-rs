@@ -1,9 +1,0 @@
-diff --git a/src/server/reactor_thread.cc b/src/server/reactor_thread.cc
-index 739b877..d34307b 100644
---- a/src/server/reactor_thread.cc
-+++ b/src/server/reactor_thread.cc
-@@ -759,3 +759,3 @@ static uint64_t reactor_thread_call(void *context, uint32_t op, uint64_t arg) {
-         }
--        sock->out_buffer->alloc(BufferChunk::TYPE_CLOSE, 0);
-+        sock->out_buffer->typed_close();
-         conn->close_queued = 1;

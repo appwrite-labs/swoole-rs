@@ -5,7 +5,6 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
 use swoole_rs_buffer as buffer;
-use swoole_rs_http as http;
 use swoole_rs_memory as memory;
 use swoole_rs_timer as timer;
 
@@ -72,24 +71,6 @@ fn run(name: &str, rounds: usize) -> u64 {
                     }
                 }
                 assert_eq!(buffer::swr_v1_buffer_release(owner), 0);
-            }
-            "directory-17" | "directory-1024" => {
-                let count = if name == "directory-17" { 17 } else { 1024 };
-                let names: Vec<_> = (0..count)
-                    .rev()
-                    .map(|i| format!("file-{i:04}.txt"))
-                    .collect();
-                for _ in 0..rounds {
-                    let mut owner = http::HttpDirectory::default();
-                    for name in &names {
-                        assert_eq!(owner.scan_append(name.as_bytes()), Ok(()));
-                    }
-                    owner.scan_finish();
-                    assert_eq!(owner.len(), count);
-                    for name in &names {
-                        sum += u64::from(owner.contains(name.as_bytes()) == Ok(true));
-                    }
-                }
             }
             "heap-1" | "heap-128" | "heap-512" => {
                 let n = if name == "heap-1" {

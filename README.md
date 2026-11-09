@@ -1,7 +1,6 @@
 # swoole-rs
 
 [![Merge tier](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain)
-[![Upstream C++ replaced](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Freplaced.json)](docs/migration.md#upstream-files-still-in-the-build)
 [![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/appwrite-labs/swoole-rs/issues/58)
 [![Speed vs upstream](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fspeed.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/speed.md)
 [![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/appwrite-labs/swoole-rs/issues/1902)
@@ -12,8 +11,7 @@ compiled from upstream; open are [dropping upstream from the build](https://gith
 [every applicable PHPT passing](https://github.com/appwrite-labs/swoole-rs/issues/1957),
 [faster than upstream](https://github.com/appwrite-labs/swoole-rs/issues/1894) and
 [a hardened runtime](https://github.com/appwrite-labs/swoole-rs/issues/1893). The badges come from `tools/badges.py`
-(`.github/workflows/badges.yml`): upstream C++ replaced counts upstream first-party
-lines the all-modules patch set deletes, and the PHPT badge counts tests the Cargo build
+(`.github/workflows/badges.yml`): the PHPT badge counts tests the Cargo build
 passes in any of a merge-tier run's PHPT jobs, over those that can apply to 64-bit Linux
 (`corpus/upstream/not_applicable.json` lists the rest), naming the commit it measured. The speed badge links to the latest merge-tier callgrind
 results, per workload, against upstream. The unsafe badge counts `unsafe` blocks, fns and impls in
@@ -24,11 +22,10 @@ the PHPT corpus, the corpus apps and swoole/library's suite (`tools/coverage.py`
 to the per-crate table and the entry points no run reached.
 
 A gradual C/C++ to Rust migration of the [Swoole](https://github.com/swoole/swoole-src)
-PHP extension. Rust is linked into the build of upstream Swoole v6.2.5 (pinned at
-`76c657d8`), which now compiles little upstream code beyond its build system (see
-the badge). Every build links
-every module; the pinned upstream build is the oracle. See the
-[migration approach](docs/migration.md) and [hybrid variants and evidence](docs/hybrid-build.md).
+PHP extension. `swoole.so` builds with Cargo alone (`crates/ext`) from Rust, the owned
+C and C++ in `native/` and the bundled thirdparty C of upstream Swoole v6.2.5 (pinned at
+`76c657d8`); the pinned upstream build is the oracle. See the
+[migration approach](docs/migration.md).
 
 ## Build
 
@@ -37,8 +34,8 @@ the upstream build toolchain described in the [corpus instructions](corpus/READM
 
 ```sh
 python3 tools/build_upstream.py
-python3 tools/build_hybrid.py
-php -n -d extension="$PWD/target/hybrid/rust/modules/swoole.so" -r 'echo SWOOLE_VERSION, "\n";'
+python3 tools/build_ext.py
+php -n -d extension="$PWD/target/ext/swoole.so" -r 'echo SWOOLE_VERSION, "\n";'
 ```
 
 Do not load the hybrid alongside another Swoole extension: both register the same classes.
@@ -49,7 +46,7 @@ For edit/candidate loops, incremental hybrid builds and the reusable Linux toolc
 see [local development](docs/development.md).
 
 ```sh
-git config core.hooksPath .githooks   # pre-commit: fmt, clippy, manifest, patches, tooling tests (~5s warm)
+git config core.hooksPath .githooks   # pre-commit: fmt, clippy, manifest, tooling tests (~5s warm)
 python3 tools/dev.py integrate --module timer   # the timer gates, on the all-modules build
 ```
 

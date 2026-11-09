@@ -146,26 +146,32 @@ pub(crate) unsafe fn deref(object: *mut zend_object) {
     let data = unsafe { Port::data(object) };
     if !data.property.serv.is_null() {
         for slot in &mut data.property.callbacks {
-            free_callable(slot);
+            free_callable(take(slot));
         }
         data.property.serv = ptr::null_mut();
     }
     if !data.port.is_null() {
         // SAFETY: a bound port, which outlives this call.
-        free_callable(
+        free_callable(take(
             &mut unsafe { port_config::of(data.port) }
                 .protocol
                 .private_data_1,
-        );
+        ));
         data.port = ptr::null_mut();
     }
 }
 
-fn free_callable(slot: &mut *mut c_void) {
-    if !slot.is_null() {
-        // SAFETY: a callable C++ created for this port.
-        unsafe { swoole_rs_phpruntime::callable_free(*slot) };
-        *slot = ptr::null_mut();
+/// A slot's callable, which leaves it null.
+fn take(slot: &mut *mut c_void) -> *mut c_void {
+    std::mem::replace(slot, ptr::null_mut())
+}
+
+/// Free a callable already out of its slot: a destructor this runs may reach
+/// the slot again.
+fn free_callable(callable: *mut c_void) {
+    if !callable.is_null() {
+        // SAFETY: a callable created for this port, owned by no slot now.
+        unsafe { swoole_rs_phpruntime::callable_free(callable) };
     }
 }
 
@@ -296,16 +302,26 @@ fn on(call: &Call) {
             cb,
         );
     }
-    let Some(slot) = property.callbacks.get_mut(index) else {
+    // The property write, the release and the create can each run PHP that
+    // calls on() again, so no borrow of the slot lives across them.
+    let Some(old) = data(call).property.callbacks.get_mut(index).map(take) else {
         return call.set_bool(false);
     };
-    free_callable(slot);
+    free_callable(old);
     // SAFETY: the callback argument.
     let callable = unsafe { swoole_rs_phpruntime::callable_create(cb) };
     if callable.is_null() {
         return call.set_bool(false);
     }
-    *slot = callable;
+    if let Some(slot) = data(call).property.callbacks.get_mut(index) {
+        // A nested on() stored its callable, and the property, after this one's
+        // write: keep that pair and drop ours.
+        free_callable(if slot.is_null() {
+            std::mem::replace(slot, callable)
+        } else {
+            callable
+        });
+    }
     crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event.index));
     call.set_bool(true);
 }
