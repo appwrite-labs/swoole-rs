@@ -6,11 +6,13 @@
 //! `swoole::String` allocation, the third-party multipart parser, stdio,
 //! `swoole_tmpfile` and logs. Trace logs are compiled out, as in upstream's builds
 //! without `--enable-trace-log`.
-use crate::{HttpFrame, HttpHeaderInfo, HttpSpan, case_equal, framing, headers};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string, new_string};
 use swoole_rs_corebase::{log, set_errno};
+use swoole_rs_http::{
+    CHUNK_SIZE, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, case_equal,
+};
 use swoole_rs_ossupport::swoole_tmpfile;
 
 const SW_OK: i32 = 0;
@@ -337,82 +339,6 @@ pub struct HttpRequest {
     pub chunk_scan_offset: usize,
 }
 
-/// `ChunkState`.
-const CHUNK_SIZE: u8 = 0;
-const CHUNK_DATA: u8 = 1;
-const CHUNK_TRAILER: u8 = 2;
-
-/// Why a chunk size line is rejected: `CHUNK_SIZE_MALFORMED`, `CHUNK_SIZE_TOO_LARGE`.
-enum ChunkSize {
-    Malformed,
-    TooLarge,
-}
-
-/// RFC 9110 `tchar`.
-fn token(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
-}
-
-/// `qdtext`, or with `pair` the character of a `quoted-pair`, which may also be `"` or `\\`.
-fn quoted_text(byte: u8, pair: bool) -> bool {
-    byte == b'\t' || (byte >= 0x20 && byte != 0x7f && (pair || (byte != b'"' && byte != b'\\')))
-}
-
-/// A chunk size line without its CRLF: hex digits, then `;name[=token|"quoted"]`
-/// extensions, with no size above `max`.
-fn chunk_size(line: &[u8], max: usize) -> Result<usize, ChunkSize> {
-    let mut length = 0usize;
-    let mut at = 0;
-    while let Some(digit) = line.get(at).and_then(|&b| char::from(b).to_digit(16)) {
-        let digit = digit as usize;
-        if digit > max || length > (max - digit) / 16 {
-            return Err(ChunkSize::TooLarge);
-        }
-        length = length * 16 + digit;
-        at += 1;
-    }
-    if at == 0 {
-        return Err(ChunkSize::Malformed);
-    }
-    let run = |at: &mut usize, test: fn(u8) -> bool| {
-        let start = *at;
-        while line.get(*at).is_some_and(|&b| test(b)) {
-            *at += 1;
-        }
-        *at > start
-    };
-    while let Some(&byte) = line.get(at) {
-        at += 1;
-        if byte != b';' || !run(&mut at, token) {
-            return Err(ChunkSize::Malformed);
-        }
-        match line.get(at) {
-            None => break,
-            Some(b'=') => at += 1,
-            Some(_) => continue,
-        }
-        match line.get(at) {
-            Some(b'"') => loop {
-                at += 1;
-                match line.get(at) {
-                    Some(b'"') => {
-                        at += 1;
-                        break;
-                    }
-                    Some(b'\\') if line.get(at + 1).is_some_and(|&b| quoted_text(b, true)) => {
-                        at += 1;
-                    }
-                    Some(&b) if quoted_text(b, false) => {}
-                    _ => return Err(ChunkSize::Malformed),
-                }
-            },
-            _ if run(&mut at, token) => {}
-            _ => return Err(ChunkSize::Malformed),
-        }
-    }
-    Ok(length)
-}
-
 impl HttpRequest {
     /// `HttpRequest()`: what native code's constructor makes.
     #[must_use]
@@ -524,7 +450,7 @@ impl HttpRequest {
         loop {
             let mut boundary = HttpSpan::default();
             let end = self.header_length.wrapping_sub(4) as usize;
-            let status = headers::header_info(input, end, &mut state, &mut boundary);
+            let status = swoole_rs_http::header_info(input, end, &mut state, &mut boundary);
             self.content_length = state.content_length;
             self.known_length = state.flags & 1 != 0;
             self.keep_alive = state.flags & 2 != 0;
@@ -565,89 +491,26 @@ impl HttpRequest {
     /// more, or with `excepted` (bad framing) or `too_large` (past `max_length`) set.
     pub fn get_chunked_body_length(&mut self) -> i32 {
         let (_, input) = self.input();
-        let max = self.max_length as usize;
-        // `clean()` leaves zero as the uninitialized offset, and the header has been parsed here.
-        if self.chunk_offset == 0 {
-            self.chunk_offset = self.header_length as usize;
-            self.chunk_scan_offset = self.chunk_offset;
-        }
-        loop {
-            if self.chunk_state == CHUNK_DATA {
-                if self.chunk_offset > input.len()
-                    || self.chunk_length > input.len() - self.chunk_offset
-                {
-                    return SW_ERR;
-                }
-                let end = self.chunk_offset + self.chunk_length;
-                for (at, byte) in [(end, b'\r'), (end + 1, b'\n')] {
-                    match input.get(at) {
-                        None => return SW_ERR,
-                        Some(&b) if b != byte => return self.chunk_error(false),
-                        _ => {}
-                    }
-                }
-                (self.chunk_offset, self.chunk_scan_offset) = (end + 2, end + 2);
-                self.chunk_length = 0;
-                self.chunk_state = CHUNK_SIZE;
-                continue;
+        let mut chunks = HttpChunks {
+            state: self.chunk_state,
+            length: self.chunk_length,
+            offset: self.chunk_offset,
+            scan_offset: self.chunk_scan_offset,
+        };
+        let outcome = chunks.scan(input, self.header_length as usize, self.max_length as usize);
+        self.chunk_state = chunks.state;
+        self.chunk_length = chunks.length;
+        self.chunk_offset = chunks.offset;
+        self.chunk_scan_offset = chunks.scan_offset;
+        match outcome {
+            HttpChunked::Complete(length) => {
+                self.known_length = true;
+                self.content_length = length;
+                return SW_OK;
             }
-            let line_start = self.chunk_offset;
-            let scan = self.chunk_scan_offset.min(input.len());
-            let rest = input.get(scan..).unwrap_or_default();
-            let Some(found) = memchr::memchr2(b'\r', b'\n', rest) else {
-                self.chunk_scan_offset = input.len();
-                return SW_ERR;
-            };
-            let line_end = scan + found;
-            match input.get(line_end..) {
-                Some([b'\r', b'\n', ..]) => {}
-                Some([b'\r']) => {
-                    self.chunk_scan_offset = line_end;
-                    return SW_ERR;
-                }
-                _ => return self.chunk_error(false),
-            }
-            (self.chunk_offset, self.chunk_scan_offset) = (line_end + 2, line_end + 2);
-            if self.chunk_state == CHUNK_TRAILER {
-                if self.chunk_offset > max {
-                    return self.chunk_error(true);
-                }
-                if line_end == line_start {
-                    self.known_length = true;
-                    self.content_length = (self.chunk_offset - self.header_length as usize) as u64;
-                    return SW_OK;
-                }
-                continue;
-            }
-            let line = input.get(line_start..line_end).unwrap_or_default();
-            self.chunk_length = match chunk_size(line, max) {
-                Ok(length) => length,
-                Err(ChunkSize::TooLarge) => return self.chunk_error(true),
-                Err(ChunkSize::Malformed) => return self.chunk_error(false),
-            };
-            // What must still fit: the chunk and its CRLF, then the last chunk and the
-            // trailer section's end; the last chunk's trailer only needs its CRLF.
-            let (state, rest) = if self.chunk_length == 0 {
-                (CHUNK_TRAILER, Some(2))
-            } else {
-                (CHUNK_DATA, self.chunk_length.checked_add(2 + 5))
-            };
-            self.chunk_state = state;
-            if rest.is_none_or(|rest| {
-                max.checked_sub(self.chunk_offset)
-                    .is_none_or(|room| room < rest)
-            }) {
-                return self.chunk_error(true);
-            }
-        }
-    }
-
-    /// Bad chunk framing (`excepted`), or a body past `max_length` (`too_large`).
-    fn chunk_error(&mut self, too_large: bool) -> i32 {
-        if too_large {
-            self.too_large = true;
-        } else {
-            self.excepted = true;
+            HttpChunked::Partial => {}
+            HttpChunked::Malformed => self.excepted = true,
+            HttpChunked::TooLarge => self.too_large = true,
         }
         SW_ERR
     }
@@ -656,7 +519,7 @@ impl HttpRequest {
     #[must_use]
     pub fn has_expect_header(&self) -> bool {
         let (_, input) = self.input();
-        crate::framing::expect(input)
+        swoole_rs_http::has_expect_header(input)
     }
 
     /// The value of header `name`, as a span of the buffer.
@@ -665,8 +528,13 @@ impl HttpRequest {
         let (_, input) = self.input();
         let mut value = HttpSpan::default();
         let start = self.url_offset as usize + self.url_length as usize + 10;
-        let found =
-            framing::header_value(input, start, self.header_length as usize, name, &mut value);
+        let found = swoole_rs_http::header_value(
+            input,
+            start,
+            self.header_length as usize,
+            name,
+            &mut value,
+        );
         (found == 1).then_some(value)
     }
 
@@ -693,7 +561,7 @@ pub unsafe fn init_multipart_parser(
     };
     // SAFETY: the boundary still points into the header buffer it was found in.
     let text = unsafe { crate::bytes(form.boundary, form.boundary_length as usize) };
-    let Ok(Some(boundary)) = text.and_then(|text| crate::boundary(text, 0)) else {
+    let Ok(Some(boundary)) = text.and_then(|text| swoole_rs_http::boundary(text, 0)) else {
         return false;
     };
     let at = form.boundary.wrapping_add(boundary.offset);
@@ -797,7 +665,7 @@ pub unsafe fn parse_multipart_data(request: *mut HttpRequest, buffer: *mut HttpS
         unsafe { native(PARSER_EXECUTE, parser.cast(), data, length as u64, 0) }.cast_signed();
     // SAFETY: per the contract.
     let r = unsafe { &*request };
-    match crate::multipart::multipart_result(processed, length, r.excepted.into()) {
+    match swoole_rs_http::multipart_result(processed, length, r.excepted.into()) {
         outcome if outcome < 0 => {
             r.op(LOG_PARSE_REASON, parser.cast(), ptr::null(), 0, 0);
             false
@@ -888,7 +756,7 @@ unsafe extern "C" fn on_header_value(
     // SAFETY: the parser lends `length` bytes at `at`.
     let mut value = unsafe { core::slice::from_raw_parts(at.cast::<u8>(), length) }.to_vec();
     value.push(0);
-    if crate::multipart::multipart_filename(&mut value) != 1 {
+    if swoole_rs_http::multipart_filename(&mut value) != 1 {
         return 0;
     }
     let form = form_of(request);
@@ -1043,6 +911,7 @@ pub unsafe fn request_free(request: *mut HttpRequest) {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+    use swoole_rs_http::CHUNK_DATA;
 
     /// A `swoole::String` stand-in: the head and the bytes it points at.
     #[repr(C)]
@@ -1359,7 +1228,7 @@ mod tests {
     fn all_method() {
         let pri = 27;
         for i in 0..pri + 4 {
-            let Some(name) = crate::method_string(i) else {
+            let Some(name) = swoole_rs_http::method_string(i) else {
                 assert!(i == 0 || i > pri, "{i}");
                 continue;
             };
@@ -1739,10 +1608,6 @@ mod tests {
     // core-tests/src/server/http_upload_provenance.cpp: reject_client_upload_marker.
     #[test]
     fn reject_client_upload_marker() {
-        // `sWoOlE-uPlOaD-fIlE` matches only while no test has a Turkish LC_CTYPE.
-        let _locale = crate::LOCALE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for name in [&b"Swoole-Upload-File"[..], b"sWoOlE-uPlOaD-fIlE"] {
             let body = [
                 PART_PREFIX,

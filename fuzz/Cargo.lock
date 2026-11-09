@@ -224,10 +224,7 @@ dependencies = [
  "memchr",
  "regex-automata",
  "swoole-rs-base64",
- "swoole-rs-buffer",
- "swoole-rs-corebase",
  "swoole-rs-locale",
- "swoole-rs-ossupport",
 ]
 
 [[package]]
@@ -235,8 +232,10 @@ name = "swoole-rs-http-ffi"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-http",
+ "swoole-rs-ossupport",
 ]
 
 [[package]]

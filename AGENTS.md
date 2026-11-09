@@ -193,9 +193,10 @@ What must not slip through is a **new** failure: a phase that passed in the
 previous completed merge-tier run, or one that didn't exist then. Before you
 claim, glance at `python3 tools/ci.py status`: it lists them as `new failures`.
 
-For each new failure, search open issues for the phase name. If none mentions
-it, file a `p0` `kind:bug` issue with the run link, the phase and its log path,
-and the commit range since the previous run (group phases of one module into one
-issue). Then carry on with your own ticket.
+For each new failure, search open issues for the phase name (`ci.py status` lists
+the open issues that mention it). If none mentions it, file a `p0` `kind:bug`
+issue with the run link, the phase and its log path, and the commit range since
+the previous run (group phases of one module into one issue). Then carry on with
+your own ticket.
 `p0` sorts first, so the next free executor picks it up. Failures that already
 have an issue keep that issue's priority.

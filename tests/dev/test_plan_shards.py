@@ -1,9 +1,12 @@
 """dev.py --shard: slices cover the full plan, builds run everywhere, readers stay with producers."""
+from contextlib import redirect_stdout
+import io
 import json
 from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -42,6 +45,15 @@ class PlanShards(unittest.TestCase):
                                  '--phase', 'build', '--plan'], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn('--shard', result.stderr)
+
+    def test_weights_name_only_merge_tier_phases(self):
+        # A renamed phase silently loses its weight and falls back to DEFAULT_WEIGHT.
+        argv = ['dev.py', 'integrate', '--all-modules', '--php-sockets', '--external-network', '--plan']
+        with mock.patch.object(sys, 'argv', argv), mock.patch.object(sys, 'platform', 'linux'), \
+                redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(dev.main(), 0)
+        planned = {row['phase'] for row in json.loads(out.getvalue())}
+        self.assertEqual(set(json.loads(dev.PHASE_WEIGHTS.read_text())) - planned, set())
 
 
 if __name__ == '__main__':

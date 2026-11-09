@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # Runs are scripted per commit in FAKE_RUNS: {sha: [conclusion, ...]}, one entry
 # consumed per `run list`.
 FAKE_GH = '''#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, urllib.parse
 from pathlib import Path
 args = sys.argv[1:]
 state = Path(os.environ['FAKE_STATE'])
@@ -57,6 +57,12 @@ elif args[0] == 'api' and '/pulls/' in args[1]:
     pull = queue.pop(0) if len(queue) > 1 else queue[0]
     save()
     print(json.dumps({'html_url': 'p', 'merged': False, 'merge_commit_sha': None, **pull}))
+elif args[0] == 'api' and args[1].startswith('search/issues?q='):
+    if data.get('search') is None:
+        sys.stderr.write('HTTP 403: API rate limit exceeded\\n')
+        sys.exit(1)
+    term = urllib.parse.unquote(args[1].split('=', 1)[1]).split('"')[1]
+    print(json.dumps(data['search'].get(term, [])))
 elif args[0] == 'api' and '/check-runs' in args[1]:
     for check in data.get('checks', {}).get(args[1].split('/')[-2], []):
         print(json.dumps(check))
@@ -145,6 +151,15 @@ class Ci(unittest.TestCase):
         self.assertEqual((result['previous_run'], result['new_failures'], result['fixed']),
                          ('u4', ['http-native', 'ports-added'], ['timer-model']))
         self.assertEqual(result['logs'], {'rust': ['2026-10-25T21:00:01Z error: boom']})
+        # Each new failure names the open issues that mention it, so Red main's p0 is filed once.
+        self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases, flags=('--poll', '0'),
+                search={'http-native': [40, 41]})
+        self.assertIn('new failures: http-native (open: #40, #41), ports-added (no open issue); fixed: timer-model',
+                      self.out)
+        self.assertIn('search/issues?q=%22ports-added%22%20is:issue%20is:open%20repo:{owner}/{repo} '
+                      '--jq [.items[].number]', ' '.join(self.gh_calls))
+        self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases, flags=('--poll', '0'))
+        self.assertIn('http-native (issue search failed), ports-added (issue search failed)', self.out)
 
     def test_shard_artifacts_are_merged(self):
         history = [{'databaseId': 7, 'conclusion': 'failure', 'url': 'u7'}, {'databaseId': 4, 'conclusion': 'failure', 'url': 'u4'}]
@@ -177,6 +192,10 @@ class Ci(unittest.TestCase):
                                   jobs=jobs, failed_log=failed_log)
         # full-gates and tooling were already failing; the PHPT gate passed in run 4.
         self.assertEqual(result['new_failures'], ['phpt / gate job (tests/a/one.phpt, tests/b/two.phpt)'])
+        # A gate failure's issues are those naming its regressed tests.
+        code, result, _ = self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases,
+                                  jobs=jobs, failed_log=failed_log, search={'a/one.phpt': [12], 'b/two.phpt': [12, 13]})
+        self.assertEqual(result['issues'], {result['new_failures'][0]: [12, 13]})
 
     def test_full_gates_shards_speak_through_their_phases_and_unseen_jobs_are_new(self):
         history = [{'databaseId': 7, 'conclusion': 'failure', 'url': 'u7'}, {'databaseId': 4, 'conclusion': 'success', 'url': 'u4'}]
