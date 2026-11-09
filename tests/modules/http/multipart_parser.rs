@@ -160,7 +160,7 @@ impl Multipart {
         let p = self.p();
         p.boundary[..usize::from(p.boundary_length)]
             .iter()
-            .map(|&c| c.cast_unsigned())
+            .map(|&c| u8::from_ne_bytes(c.to_ne_bytes()))
             .collect()
     }
 }
@@ -196,7 +196,7 @@ fn error_message() {
         "MPPE_OK"
     );
     for expected in *b"\0\r\na" {
-        parser.p().error_expected = expected.cast_signed();
+        parser.p().error_expected = c_char::from_ne_bytes([expected]);
         create_error(&mut parser, MPPE_PAUSED, "parser paused");
         create_error(
             &mut parser,
@@ -270,7 +270,7 @@ fn header_error() {
     );
     assert_eq!(
         parser.p().error_expected,
-        b'\r'.cast_signed(),
+        c_char::from_ne_bytes(*b"\r"),
         "expected CR"
     );
 }
