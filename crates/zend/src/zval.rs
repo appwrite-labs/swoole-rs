@@ -469,8 +469,8 @@ impl Drop for ZString {
 #[repr(transparent)]
 pub struct Owned(Value);
 
-/// `ZVAL_UNDEF`.
-const UNDEF: zval = zval {
+/// `ZVAL_UNDEF`: an empty slot, which Zend fills or ignores.
+pub const UNDEF: zval = zval {
     value: zend_value { lval: 0 },
     u1: _zval_struct__bindgen_ty_1 {
         type_info: IS_UNDEF,
