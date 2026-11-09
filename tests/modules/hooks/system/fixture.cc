@@ -1,8 +1,8 @@
 // What the Rust cases in src/ can't express, compiled into the hybrid tree's lib-swoole by
 // tests/modules/hooks/system.py (--fixture): swoole_event_defer and the timer, which have C++
 // linkage, and the repo-owned witnesses that check C++ copies and std::bad_alloc containment,
-// which only C++ can throw (formerly tests/modules/hooks/socket_scopes.cpp and
-// dns_request_owner.cpp, unchanged but for these macros in place of GoogleTest's), and the
+// which only C++ can throw (formerly tests/modules/hooks/dns_request_owner.cpp, unchanged
+// but for these macros in place of GoogleTest's), and the
 // Server worker-retirement witness (formerly tests/modules/process/worker_retirement.cc).
 #include "swoole_coroutine.h"
 #include "swoole_coroutine_system.h"
@@ -19,8 +19,6 @@
 #include <unistd.h>
 
 using namespace swoole;
-using swoole::coroutine::ProtocolSwitch;
-using swoole::coroutine::Socket;
 
 // A failed assertion ends the case's process, which the runner reports as failed.
 #define CHECK(c)                                                                                                       \
@@ -230,71 +228,6 @@ void swr_case_worker_retirement() {
     ASSERT_TRUE(worker->concurrency == 0 && server.config()->gs->concurrency == 0);
     server.destroy();
     swr_v1_server_delete(&server);
-}
-
-// rust_socket_scopes.protocol_snapshot_and_copy_restore, in a coroutine.
-void swr_case_protocol_snapshot_and_copy_restore() {
-    Socket socket(SW_SOCK_TCP);
-    socket.open_eof_check = true;
-    socket.open_length_check = false;
-    std::memset(&socket.protocol, 0, sizeof(socket.protocol));
-    socket.protocol.package_max_length = 117;
-    socket.protocol.package_eof[0] = '\0';
-    socket.protocol.package_eof[1] = 'z';
-    const auto original = socket.protocol;
-    {
-        ProtocolSwitch scope(&socket);
-        auto copy = scope;
-        socket.open_eof_check = false;
-        socket.open_length_check = true;
-        std::memset(&socket.protocol, 1, sizeof(socket.protocol));
-    }
-    ASSERT_TRUE(socket.open_eof_check);
-    ASSERT_FALSE(socket.open_length_check);
-    ASSERT_EQ(std::memcmp(&original, &socket.protocol, sizeof(original)), 0);
-    {
-        ProtocolSwitch first(&socket);
-        socket.protocol.package_max_length = 222;
-        {
-            ProtocolSwitch nested(&socket);
-            socket.protocol.package_max_length = 333;
-        }
-        ASSERT_EQ(socket.protocol.package_max_length, 222u);
-    }
-    ASSERT_EQ(socket.protocol.package_max_length, 117u);
-}
-
-// rust_socket_scopes.error_text_publication, in a coroutine. The error text is the
-// socket's Rust string; a Socket has no C++ copy of it to cache or throw from.
-void swr_case_error_text_publication() {
-    Socket socket(SW_SOCK_TCP);
-    swoole_set_last_error(0);
-    errno = EINVAL;
-    socket.set_err();
-    ASSERT_EQ(socket.errCode, EINVAL);
-    ASSERT_EQ(swoole_get_last_error(), 0);
-    ASSERT_EQ(errno, EINVAL);
-    swoole_set_last_error(EACCES);
-    socket.set_err();
-    ASSERT_EQ(socket.errCode, EACCES);
-    ASSERT_EQ(errno, EINVAL);
-    const char *borrowed = "borrowed";
-    socket.set_err(EIO, borrowed);
-    ASSERT_EQ(socket.errMsg, borrowed);
-    ASSERT_EQ(errno, EIO);
-    ASSERT_EQ(swoole_get_last_error(), EIO);
-    const std::string first(100, 'a');
-    const std::string second(600, 'b');
-    socket.set_err(ERANGE, first);
-    ASSERT_EQ(std::string(socket.errMsg), first);
-    socket.set_err(ENOSPC, second);
-    ASSERT_EQ(socket.errCode, ENOSPC);
-    ASSERT_EQ(errno, ENOSPC);
-    ASSERT_EQ(swoole_get_last_error(), ENOSPC);
-    ASSERT_EQ(std::string(socket.errMsg), second);
-    socket.set_err(0, std::string("a\0b", 3));
-    ASSERT_EQ(std::string(socket.errMsg, 3), std::string("a\0b", 3));
-    ASSERT_EQ(socket.errMsg[2], 'b');
 }
 
 // rust_dns_request.numeric_host_owner_and_independent_copies.

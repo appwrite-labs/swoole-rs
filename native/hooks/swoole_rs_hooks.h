@@ -52,18 +52,8 @@ void *swr_v1_async_threads_ensure(void);
 void swr_v1_hook_dns_lookup(const char *domain, int family, double timeout, void (*push)(void *list, const char *address), void *list);
 int32_t swr_v1_hook_dns_error(int32_t error, int32_t asynchronous_timeout, int32_t resolve_timeout);
 double swr_v1_hook_sleep_timeout(double seconds, double minimum);
-typedef struct { size_t length, size; int64_t offset; char *str; } swr_v1_hook_read_buffer;
-/* A wait barrier: retries the transfer once the socket is ready; true to keep waiting. */
-typedef bool (*swr_v1_hook_barrier)(void *barrier_state);
 /* The coroutine Socket's connection state, Rust-owned behind an opaque handle (#439) in its record. */
 typedef struct swr_v1_hook_socket_state swr_v1_hook_socket_state;
-typedef struct { bool connected, read, write; } swr_v1_hook_socket_flags_t;
-/* The record makes its own state; the hooks gates' socket facades use these. */
-swr_v1_hook_socket_state *swr_v1_hook_socket_state_new(void);
-void swr_v1_hook_socket_state_free(swr_v1_hook_socket_state *state);
-swr_v1_hook_socket_flags_t swr_v1_hook_socket_flags(const swr_v1_hook_socket_state *state);
-void swr_v1_hook_socket_set_flags(swr_v1_hook_socket_state *state, swr_v1_hook_socket_flags_t flags);
-void swr_v1_hook_socket_connect(swr_v1_hook_socket_state *state);
 /* TimeoutSetter: save and set (restore false), or restore, each SW_TIMEOUT_* type in types;
  * original holds timeout_type_list's four entries. */
 typedef struct {
@@ -72,12 +62,6 @@ typedef struct {
 } swr_v1_hook_timeout_ops;
 void swr_v1_hook_timeouts(const swr_v1_hook_timeout_ops *ops, void *socket, double timeout, int types, double *original,
                           bool restore);
-/* The coroutine bound for reading or writing (event SW_EVENT_READ/WRITE; bind accepts both bits).
-   bound_co follows get_bound_co; event_name returns 0 reading, 1 writing, 2 reading or writing. */
-void *swr_v1_hook_socket_co(const swr_v1_hook_socket_state *state, uint32_t event);
-void swr_v1_hook_socket_bind(swr_v1_hook_socket_state *state, uint32_t event, void *co);
-void *swr_v1_hook_socket_bound_co(const swr_v1_hook_socket_state *state, uint32_t event);
-uint32_t swr_v1_hook_socket_event_name(const swr_v1_hook_socket_state *state, uint32_t event);
 #ifdef __cplusplus
 }
 // Callables stay on the native stack. Rust returns before every IO, errno

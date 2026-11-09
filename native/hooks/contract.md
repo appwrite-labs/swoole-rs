@@ -12,11 +12,12 @@ A `coroutine::Socket` is Rust's record (`swr_v1_co_socket`, crates/hooks/src/co_
 and nothing more: no vtable and no C++ members, which the header asserts. Its strings,
 proxies, TLS context and destructor callback are the record's `SocketExtra`, which the
 constructors make and `~Socket` (`swr_v1_hook_co_socket_release`) frees. Rust makes the
-sockets it hands out (`swr_v1_hook_co_socket_make`: the coroutine streams, the hooked
-fds, the DNS socket; a `UringSocket` when the build has `SW_USE_URING_SOCKET`), the accepted ones (`accept`) and frees them (`swr_v1_hook_co_socket_free`);
-`connect(host)` with its resolver context and proxies, `set_*_proxy` and the peer's
-certificate chain are Rust as well. C++ still constructs a socket with `new SocketImpl`
-or as a local (the bundled ext/ssh2, the hooks fixture) and deletes its own.
+sockets it hands out (`co_socket::make`: the coroutine streams, the hooked fds, the DNS
+socket; a `UringSocket` when the build has `SW_USE_URING_SOCKET`), the accepted ones
+(`Co::accept`) and frees them (`swr_v1_hook_co_socket_free`). Rust code reaches a socket
+through the `Co` handle, whose members are plain Rust methods. C++ keeps only what the
+bundled ext/ssh2 uses: `new SocketImpl`, `connect(host)` (`swr_v1_hook_co_socket_connect_host`),
+`get_fd()` and `delete`.
 
 ## The build's switches
 

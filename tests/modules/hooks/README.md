@@ -52,19 +52,20 @@ removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
 
 `core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
 TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports
-and expected values), run by `hooks-system-rust`. A `Socket` is made and deleted
-through `swr_v1_hook_co_socket_make` and `_free`, as crates/phpruntime does;
-its out-of-line members are called under their upstream symbols (the vectored ones over
-an `IOVector` owner `swr_v1_reactor_iov_prepare` makes, as crates/phpruntime does), its inline ones
-through the `swr_v1_hook_co_socket_*` exports the header calls, and its fields
+and expected values), run by `hooks-system-rust`. A `Socket` is the hooks crate's
+`Co`, reached by symbol through exports kept for this package alone
+(crates/hooks/src/socket_symbols.rs, under `upstream-symbols`): made and deleted
+through `swr_v1_hook_co_socket_make` and `_free`, its members called under their
+upstream symbols (the vectored ones over an `IOVector` owner
+`swr_v1_reactor_iov_prepare` makes, as crates/phpruntime does) and the rest through
+`swr_v1_hook_co_socket_*`, and its fields
 through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and the
 `set_ssl_*` setters write the `SSLContext` owner (`swr_v1_tls_owner_new`,
 `_set_path` and its string slots and fields); `TimeoutSetter` and
 `TimeoutController` are `swr_v1_hook_timeout_scope` and
 `swr_v1_hook_co_socket_timed_out` (the `rust_socket_scopes.selected_timeout_restore_and_copy`
-witness, whose `TimeoutSetter` left the hybrid header, is a Rust case there too); `pop_read_buffer`/`pop_write_buffer` are
-`swr_v1_hook_co_socket_pop_buffer`; `ssl_handshake` and `ssl_verify` are exported
-under their upstream symbols for this. The `Server` fixture `recv_success` and
+witness, whose `TimeoutSetter` left the hybrid header, is a Rust case there too); `pop_read_buffer`/`pop_write_buffer`
+take the record's buffer fields. The `Server` fixture `recv_success` and
 `recv_fail` fork is a std echo (or close-on-receive) server: those cases assert only
 on the client. Excluded as before: `tcp6` (IPv6) and the four proxy cases (a local
 HTTP or SOCKS5 proxy).
@@ -90,10 +91,12 @@ same assertions: the record's fields and value copies, and the per-thread scratc
 The repo-owned C++ witnesses of copies and `std::bad_alloc` containment, which only
 C++ can throw, are the same binary's cases with bodies in `system/fixture.cc`
 (compiled into the hybrid's lib-swoole with `--fixture`), unchanged but for plain
-assertion macros in place of GoogleTest's: `rust_socket_scopes.protocol_snapshot_and_copy_restore`
-and `.error_text_publication` (formerly `socket_scopes.cpp`; its checks of the
-C++ `errString` cache went with the cache, since a `Socket` has no C++ members),
-and the five `rust_dns_request.*` cases (formerly `dns_request_owner.cpp`). The fixture also holds the allocation fault
+assertion macros in place of GoogleTest's: the five `rust_dns_request.*` cases
+(formerly `dns_request_owner.cpp`). `rust_socket_scopes.protocol_snapshot_and_copy_restore`
+and `.error_text_publication` (formerly `socket_scopes.cpp`) witnessed the C++
+`ProtocolSwitch` and `set_err` overloads; with those gone from the header they are
+crates/hooks unit tests, `socket_scope::tests::protocol_snapshot_and_restore` (less
+the C++ copy) and `co_io::tests::error_text_publication`. The fixture also holds the allocation fault
 oracle they share. coroutine/base.cpp and file.cpp run here too
 (tests/modules/coroutine/README.md).
 

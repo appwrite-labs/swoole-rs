@@ -2,7 +2,7 @@
 //! reads served from the socket's read buffer, refilled by one `recv`. Native code
 //! keeps the buffer, which it lends as `BufferFields`, and the `recv`.
 use crate::co_io::{available, host};
-use crate::co_socket::CoSocket;
+use crate::co_socket::Co;
 use crate::packet::ReadBuffer;
 use crate::shutdown::READ;
 use core::ffi::c_void;
@@ -128,7 +128,7 @@ pub unsafe extern "C" fn swr_v1_hook_recv_line(
 }
 
 struct Context {
-    socket: *mut CoSocket,
+    socket: Co,
     view: ReadBuffer,
 }
 
@@ -151,7 +151,7 @@ unsafe extern "C" fn record_recv(at: *mut c_void, buffer: *mut u8, size: usize) 
     (host().recv)(ctx.socket, buffer, size, false)
 }
 
-fn buffer(socket: *mut CoSocket) -> Context {
+fn buffer(socket: Co) -> Context {
     let mut ctx = Context {
         socket,
         view: ReadBuffer {
@@ -168,14 +168,9 @@ fn buffer(socket: *mut CoSocket) -> Context {
 /// `Socket::recv_with_buffer`, including availability and lazy buffer allocation.
 ///
 /// # Safety
-/// `socket` is live; `out` holds `size` writable bytes and cannot overlap its buffer.
-pub unsafe extern "C" fn swr_v1_hook_co_socket_recv_buffered(
-    socket: *mut CoSocket,
-    out: *mut u8,
-    size: usize,
-) -> isize {
-    // SAFETY: the live record.
-    if !unsafe { available(socket, READ) } {
+/// `out` holds `size` writable bytes and cannot overlap the socket's buffer.
+pub unsafe fn recv_buffered(socket: Co, out: *mut u8, size: usize) -> isize {
+    if !available(socket, READ) {
         return -1;
     }
     let mut ctx = buffer(socket);

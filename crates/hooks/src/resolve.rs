@@ -5,8 +5,8 @@
 //! and `getaddrinfo` over the async pool, `coroutine::dns_lookup` and the pool's DNS
 //! handlers. The query itself is crates/clients (dns.rs, cares.rs) and the request
 //! record crates/corebase.
+use crate::co_socket::Co;
 use crate::offload::{AsyncEvent, AsyncOps, Handler, swr_v1_hook_async};
-use crate::socket_members::{record, recv, sendto_cstr, set_timeout};
 use crate::wait_event::native::{coroutine_yield_ex, current};
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use swoole_rs_clients::dns::DnsSocket;
@@ -116,7 +116,7 @@ fn gethostbyname_with_async(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8>
 
 /// `System::gethostbyname`: the DNS cache, then c-ares or the async pool; empty on
 /// failure.
-fn system_gethostbyname(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8> {
+pub(crate) fn system_gethostbyname(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8> {
     if let Some(cached) = crate::dns_cache::get(domain, name) {
         return cached;
     }
@@ -274,7 +274,7 @@ pub unsafe extern "C" fn swr_v1_system_getaddrinfo(
 }
 
 /// `new Socket(SW_SOCK_UDP)`, deleted on drop.
-struct DnsUdp(*mut c_void);
+struct DnsUdp(Co);
 
 impl DnsUdp {
     /// The socket, with `timeout` set when positive.
@@ -285,8 +285,7 @@ impl DnsUdp {
             0,
         ));
         if timeout > 0.0 {
-            // SAFETY: the socket just made.
-            unsafe { set_timeout(socket.0, timeout, TIMEOUT_ALL) };
+            socket.0.set_timeout(timeout, TIMEOUT_ALL);
         }
         socket
     }
@@ -294,23 +293,12 @@ impl DnsUdp {
 
 impl DnsSocket for DnsUdp {
     fn sendto(&mut self, host: &CStr, port: c_int, data: &[u8]) -> bool {
-        // SAFETY: the live socket; `data` and `host` borrowed for the call.
-        unsafe {
-            sendto_cstr(
-                self.0,
-                host.as_ptr(),
-                port,
-                data.as_ptr().cast(),
-                data.len(),
-            ) != 0
-        }
+        self.0.sendto(host.to_bytes(), port, data) != 0
     }
 
     fn recv(&mut self, buffer: &mut [u8]) -> isize {
-        // SAFETY: the live socket; `buffer` borrowed for the call.
-        let n = unsafe { recv(self.0, buffer.as_mut_ptr().cast(), buffer.len()) };
-        // SAFETY: the live socket's record.
-        if n <= 0 && unsafe { (*record(self.0)).err_code } == libc::ECANCELED {
+        let n = self.0.recv(buffer);
+        if n <= 0 && self.0.err_code() == libc::ECANCELED {
             return -isize::try_from(libc::ECANCELED).unwrap_or(isize::MAX);
         }
         n
@@ -320,7 +308,7 @@ impl DnsSocket for DnsUdp {
 impl Drop for DnsUdp {
     fn drop(&mut self) {
         // SAFETY: the socket `open` made.
-        unsafe { (crate::hooked::SOCKETS.free)(self.0) };
+        unsafe { (crate::hooked::SOCKETS.free)(self.0.this()) };
     }
 }
 
