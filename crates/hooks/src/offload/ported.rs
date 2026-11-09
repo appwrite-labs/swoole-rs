@@ -2,10 +2,10 @@
 //! Upstream's `coroutine::async`, `async(fn)`, `System::sleep`, `gethostbyname_impl_with_async`
 //! and `System::getaddrinfo` run in `swoole_rs_oracle::hooks_async` over a recording facade;
 //! here the hybrid's offload (`swr_v1_hook_async`, `swr_v1_hook_async_job`,
-//! `swr_v1_hook_sleep_timeout`, `swr_v1_core_resolver_finish`), composed as system.cc's
+//! `sleep_timeout`, `swr_v1_core_resolver_finish`), composed as system.cc's
 //! glue composes it, runs over the same facade, and every scenario's effects must match.
 use super::*;
-use crate::swr_v1_hook_sleep_timeout;
+use crate::sleep_timeout;
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::rc::Rc;
 use swoole_rs_corebase::swr_v1_core_resolver_finish;
@@ -239,7 +239,7 @@ fn async_event(
 /// `System::sleep` as the hybrid's system.cc composes it.
 fn sleep(seconds: f64) -> c_int {
     let co = current();
-    let seconds = swr_v1_hook_sleep_timeout(seconds, 0.001);
+    let seconds = sleep_timeout(seconds, 0.001);
     // SAFETY: fake.
     unsafe { park_for(co, seconds) };
     if is_canceled() { -1 } else { 0 }

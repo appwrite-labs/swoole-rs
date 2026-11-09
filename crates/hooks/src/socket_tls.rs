@@ -3,7 +3,7 @@
 //! `enable_ssl_encrypt` makes it, and an accepted socket shares its server's.
 use crate::co_io::{Timer, available, default_err, set_err};
 use crate::co_socket::Co;
-use crate::connect::{TlsOps, swr_v1_hook_ssl_handshake};
+use crate::connect::{TlsOps, ssl_handshake};
 use crate::socket_wait::wait_for;
 use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::log;
@@ -139,7 +139,7 @@ impl Co {
         self.net(|record| record.timeouts.read).unwrap_or(0.0)
     }
 
-    /// `Socket::ssl_handshake()`: Rust's sequence (`swr_v1_hook_ssl_handshake`) over
+    /// `Socket::ssl_handshake()`: Rust's sequence ([`crate::connect::ssl_handshake`]) over
     /// this socket, then the socket is handshaked. In a coroutine.
     #[must_use]
     pub fn ssl_handshake(self) -> bool {
@@ -170,8 +170,7 @@ impl Co {
             wait: tls_wait,
             verify: tls_verify,
         };
-        // SAFETY: the table and its state are live for the call.
-        let done = unsafe { swr_v1_hook_ssl_handshake(&raw const ops) };
+        let done = ssl_handshake(&ops);
         state.timer.stop();
         if done {
             self.set_ssl_handshaked(true);

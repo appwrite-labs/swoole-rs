@@ -1033,7 +1033,7 @@ mod tests {
         for seconds in [-1i64, 0, 1, 9_007_199_254_740_993] {
             for micros in [-1i64, 0, 1, 999_999, 1_000_000, i64::from(i32::MAX)] {
                 let expected = seconds as f64 + micros as f64 / 1000.0 / 1000.0;
-                let got = crate::swr_v1_hook_timeval(seconds as f64, micros as f64);
+                let got = crate::timeval(seconds as f64, micros as f64);
                 assert_eq!(got.to_bits(), expected.to_bits(), "{seconds} {micros}");
             }
         }

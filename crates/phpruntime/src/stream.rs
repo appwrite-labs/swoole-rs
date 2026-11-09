@@ -16,7 +16,7 @@ use std::{
     ptr,
     rc::Rc,
 };
-use swoole_rs_hooks::{address::swr_v1_hooks_parse_address, swr_v1_hook_timeval};
+use swoole_rs_hooks::address::swr_v1_hooks_parse_address;
 use swoole_rs_zend::{
     Call, E_WARNING, Message,
     bailout::Bailout,
@@ -219,7 +219,7 @@ pub(crate) fn seconds(time: *const timeval) -> f64 {
     let (mut seconds, mut micros) = (0.0, 0.0);
     // SAFETY: Zend lends a live timeval.
     unsafe { swr_zend_stream_timeval(time, &raw mut seconds, &raw mut micros) };
-    swr_v1_hook_timeval(seconds, micros)
+    swoole_rs_hooks::timeval(seconds, micros)
 }
 
 /// A context option of the stream, if set.
