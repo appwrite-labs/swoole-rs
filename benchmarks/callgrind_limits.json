@@ -7,7 +7,7 @@
   "timer": 0.72,
   "app": 0.96,
   "http2": 1.10,
-  "table": 1.20,
+  "table": 1.00,
   "channel": 0.92,
-  "task": 1.31
+  "task": 1.06
 }
