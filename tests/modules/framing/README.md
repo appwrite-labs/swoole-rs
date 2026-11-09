@@ -5,19 +5,11 @@ Packet framing and the MIME table (`crates/framing`); the ABI is in
 
 ## Gates
 
-`tools/dev.py` runs `gate.py` (framing-native).
-
-```sh
-mkdir -p target/reports
-rustc --edition=2024 --crate-type=staticlib --crate-name swoole_rs_framing \
-  -O -Dwarnings crates/framing/src/lib.rs -o target/libframing.a
-python3 tests/modules/framing/gate.py --archive target/libframing.a \
-  --sanitize --output target/reports/framing-gate.json
-```
-
-- `gate.py` runs the ABI, MIME lookup and malformed-input checks in
-  `gate.cc`. Add `--rust-asan` with an instrumented archive to also require
-  that a one-past read in the invalid caller is detected.
+- `cargo test -p swoole-rs-framing` (framing-unit) runs the receive loop, unpack,
+  length and MIME tests. The crate forbids `unsafe_code` and exports nothing to C,
+  so it has no ABI gate; the value checks the old one made are Rust tests.
+- The `framing_unpack`, `framing_length` and `framing_stream` fuzz targets
+  (`fuzz/`) compare against the pinned base.cc.
 - Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Ported GoogleTests

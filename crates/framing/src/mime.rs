@@ -24,29 +24,18 @@ fn map() -> MutexGuard<'static, BTreeMap<Vec<u8>, CString>> {
     MAP.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-unsafe extern "C" {
-    fn tolower(c: i32) -> i32;
-}
-
-/// The bytes after the last dot (all of them without one), through C `tolower`
-/// as upstream's `std::transform` applies it to each `char`. A signed `char`
-/// 0xff is EOF there; other negative values, UB in C, map as unsigned.
+/// The bytes after the last dot (all of them without one), ASCII-lowercased:
+/// upstream's `std::transform` of each `char` through C `tolower` in the "C"
+/// locale PHP starts in.
 fn suffix(filename: &[u8]) -> Vec<u8> {
     let start = filename
         .iter()
         .rposition(|&c| c == b'.')
         .map_or(0, |n| n + 1);
-    let signed = c_char::MIN != 0;
     filename
         .get(start..)
         .unwrap_or_default()
-        .iter()
-        .map(|&c| {
-            let input = if signed && c == 255 { -1 } else { i32::from(c) };
-            // SAFETY: `input` is EOF or an unsigned char value, as tolower requires.
-            unsafe { tolower(input) }.to_le_bytes()[0]
-        })
-        .collect()
+        .to_ascii_lowercase()
 }
 
 /// `mime_type::add`: false, changing nothing, when the suffix is known.
@@ -90,23 +79,6 @@ pub fn each(mut f: impl FnMut(&CStr)) {
     for kind in map().values() {
         f(kind);
     }
-}
-
-/// [`get`] for C++, over `length` bytes at `filename`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_framing_mime_get(
-    filename: *const u8,
-    length: usize,
-) -> *const c_char {
-    // SAFETY: the caller lends `length` initialized bytes.
-    get(unsafe { crate::bytes(filename, length) }.unwrap_or_default())
-}
-
-/// [`exists`] for C++, over `length` bytes at `filename`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_framing_mime_exists(filename: *const u8, length: usize) -> bool {
-    // SAFETY: the caller lends `length` initialized bytes.
-    exists(unsafe { crate::bytes(filename, length) }.unwrap_or_default())
 }
 
 // Copied byte-for-byte from the pinned reference.
@@ -501,13 +473,20 @@ mod tests {
         SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The text of the table value or fallback `kind` points at, read under `SERIAL`.
     fn text(kind: *const c_char) -> Vec<u8> {
-        // SAFETY: a table value or the fallback, read under `SERIAL`.
-        unsafe { CStr::from_ptr(kind) }.to_bytes().to_vec()
+        if kind == FALLBACK.as_ptr() {
+            return FALLBACK.to_bytes().to_vec();
+        }
+        map()
+            .values()
+            .find(|value| value.as_ptr() == kind)
+            .expect("a table value")
+            .to_bytes()
+            .to_vec()
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn get() {
         let _serial = serial();
         let result = text(super::get(b"test.html.json"));
@@ -515,14 +494,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn exists() {
         let _serial = serial();
         assert!(super::exists(b"test.html.json"));
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn set() {
         let _serial = serial();
         let test_mime_type = c"application/swoole-core-test";
@@ -533,7 +510,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn add() {
         let _serial = serial();
         let test_mime_type = c"application/swoole-core-test2";
@@ -545,7 +521,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
     fn del() {
         let _serial = serial();
         assert!(super::del(b"json"));
@@ -554,12 +529,22 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "calls C tolower, which Miri cannot")]
-    fn suffix_is_the_last_one_through_tolower() {
+    fn suffix_is_the_last_one_lowercased() {
         assert_eq!(suffix(b"a.B.JSON"), b"json");
         assert_eq!(suffix(b"noDot"), b"nodot");
         assert_eq!(suffix(b"trailing."), b"");
         assert_eq!(suffix(b"x.\0Y"), b"\0y");
+        assert_eq!(suffix(b"x.\xc0\xff"), b"\xc0\xff");
         assert_eq!(CATALOG.len(), 362);
+    }
+
+    /// The C ABI gate's lookups (`tests/modules/framing/gate.cc`).
+    #[test]
+    fn lookup_lowercases_and_an_empty_name_finds_nothing() {
+        let _serial = serial();
+        assert_eq!(text(super::get(b"a.html.JSON")), b"application/json");
+        assert!(super::exists(b"a.html.JSON"));
+        assert_eq!(text(super::get(b"")), FALLBACK.to_bytes());
+        assert!(!super::exists(b""));
     }
 }

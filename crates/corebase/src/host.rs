@@ -157,18 +157,14 @@ pub unsafe extern "C" fn swoole_dump_bin(data: *const u8, kind: c_char, size: us
         return;
     }
     let [format] = kind.to_ne_bytes();
-    for index in 0..size / width {
-        let mut value = -1_i64;
-        // SAFETY: value `index` lies inside the caller's `size` readable bytes, and
-        // `value` is a live local.
-        unsafe {
-            swoole_rs_framing::swr_v1_framing_unpack(
-                format,
-                data.wrapping_add(index * width),
-                width,
-                &raw mut value,
-            )
-        };
+    let bytes = if data.is_null() || size < width {
+        &[][..]
+    } else {
+        // SAFETY: the caller's `size` readable bytes.
+        unsafe { core::slice::from_raw_parts(data, size) }
+    };
+    for field in bytes.chunks_exact(width) {
+        let value = swoole_rs_framing::unpack(format, field).unwrap_or(-1);
         // SAFETY: `%ld,` takes one long.
         unsafe { printf(c"%ld,".as_ptr(), value as c_long) };
     }
