@@ -74,24 +74,19 @@ int swr_zend_try(void (*body)(void *), void *arg) {
         bailed = 1;
     }
     SWR_ZEND_END_TRY();
-    return bailed ? (swr_zend_guard_pending() ? SWR_ZEND_THREAD_EXIT : SWR_ZEND_BAILOUT) : SWR_ZEND_RETURN;
-}
-
-typedef struct {
-    zend_fcall_info *fci;
-    zend_fcall_info_cache *fcc;
-    zend_result result;
-} swr_zend_call;
-
-static void swr_zend_call_body(void *arg) {
-    swr_zend_call *call = arg;
-    call->result = zend_call_function(call->fci, call->fcc);
+    return bailed ? (SWR_ZEND_EXIT_PENDING() ? SWR_ZEND_THREAD_EXIT : SWR_ZEND_BAILOUT) : SWR_ZEND_RETURN;
 }
 
 int swr_zend_try_call(zend_fcall_info *fci, zend_fcall_info_cache *fcc, int *result) {
-    swr_zend_call call = {fci, fcc, FAILURE};
-    int bailed = swr_zend_try(swr_zend_call_body, &call);
-    *result = call.result == SUCCESS;
+    volatile int bailed = 0;
+    *result = 0;
+    SWR_ZEND_TRY {
+        *result = zend_call_function(fci, fcc) == SUCCESS;
+    }
+    SWR_ZEND_CATCH {
+        bailed = 1;
+    }
+    SWR_ZEND_END_TRY();
     return bailed;
 }
 

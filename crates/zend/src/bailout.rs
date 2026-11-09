@@ -84,9 +84,11 @@ pub fn defer(result: Result<(), Bailout>) {
 }
 
 /// Whole-thread provenance remains native and survives ordinary PHP catches.
+/// Only `Swoole\Thread` marks one, and it needs ZTS: never on NTS.
+#[inline]
 fn native_thread_exit() -> bool {
     // SAFETY: a pure read of this OS thread's native pending outcome.
-    unsafe { swr_zend_guard_pending() != 0 }
+    cfg!(zts) && unsafe { swr_zend_guard_pending() != 0 }
 }
 
 /// Whether a bailout waits for [`finish`]. No error is raised meanwhile:

@@ -31,8 +31,12 @@ void swr_zend_guard_resume(void);
 }
 #endif
 /* C shims compile with -fexceptions so native C++ unwinding runs cleanup.
- * Zend longjmp does not run compiler cleanup: unlink explicitly on both arms.
- * No C++ exception may propagate through an active Rust caller. */
+ * No C++ exception may propagate through an active Rust caller.
+ * Only Swoole\Thread marks a whole-thread exit, and it needs ZTS: on NTS a
+ * scope is a plain zend_try, with no record and nothing pending. */
+#ifdef ZTS
+#define SWR_ZEND_EXIT_PENDING() swr_zend_guard_pending()
+/* Zend longjmp does not run compiler cleanup: unlink explicitly on both arms. */
 #define SWR_ZEND_TRY                                                               \
     { volatile swr_zend_guard swr_guard                                            \
         __attribute__((cleanup(swr_zend_guard_scope_cleanup))) = {0};              \
@@ -43,4 +47,10 @@ void swr_zend_guard_resume(void);
         swr_zend_guard_leave(&swr_guard); } zend_catch
 #define SWR_ZEND_END_TRY()                                                         \
     swr_zend_guard_leave(&swr_guard); zend_end_try(); }
+#else
+#define SWR_ZEND_EXIT_PENDING() 0
+#define SWR_ZEND_TRY { zend_try {
+#define SWR_ZEND_CATCH } zend_catch
+#define SWR_ZEND_END_TRY() zend_end_try(); }
+#endif
 #endif
