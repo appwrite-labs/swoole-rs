@@ -1,9 +1,8 @@
 //! Object properties and arrays, through Zend's own update and add functions.
 use crate::sys::{
     _zval_struct__bindgen_ty_1, HashTable, IS_LONG, add_assoc_long_ex, add_assoc_string_ex,
-    zend_array_count, zend_class_entry, zend_long, zend_object, zend_string,
-    zend_update_property_bool, zend_update_property_long, zend_update_property_string, zend_value,
-    zval,
+    zend_class_entry, zend_long, zend_object, zend_string, zend_update_property_bool,
+    zend_update_property_long, zend_update_property_string, zend_value, zval,
 };
 use crate::{
     bailout,
@@ -15,16 +14,20 @@ use crate::{
 };
 use std::ffi::CStr;
 
+/// Every `zend_value` field sits at the zval's first byte, so one read takes it.
+const _: () = assert!(
+    std::mem::offset_of!(zval, value) == 0,
+    "the value union leads the zval"
+);
+
 /// `Z_ARRVAL_P`.
 /// # Safety
 /// `array` is a live array zval.
 #[must_use]
 #[inline]
 pub unsafe fn table(array: *const zval) -> *mut HashTable {
-    // SAFETY: per the caller.
-    let value = unsafe { (*array).value };
-    // SAFETY: an array zval holds `arr`.
-    unsafe { value.arr }
+    // SAFETY: per the caller, an array zval holds `arr`, at offset 0.
+    unsafe { array.cast::<*mut HashTable>().read() }
 }
 
 /// `Z_STR_P`.
@@ -33,10 +36,8 @@ pub unsafe fn table(array: *const zval) -> *mut HashTable {
 #[must_use]
 #[inline]
 pub unsafe fn str_of(string: *const zval) -> *mut zend_string {
-    // SAFETY: per the caller.
-    let value = unsafe { (*string).value };
-    // SAFETY: a string zval holds `str`.
-    unsafe { value.str_ }
+    // SAFETY: per the caller, a string zval holds `str`, at offset 0.
+    unsafe { string.cast::<*mut zend_string>().read() }
 }
 
 /// `zval_get_long`: any value converted as PHP does. An object warns, and a
@@ -67,10 +68,8 @@ pub unsafe fn get_long(value: *const zval) -> zend_long {
 pub unsafe fn get_double(value: *const zval) -> f64 {
     // SAFETY: per the caller.
     if unsafe { type_of(value) } == IS_DOUBLE {
-        // SAFETY: per the caller.
-        let value = unsafe { (*value).value };
-        // SAFETY: a float zval holds `dval`.
-        return unsafe { value.dval };
+        // SAFETY: a float zval holds `dval`, at offset 0.
+        return unsafe { value.cast::<f64>().read() };
     }
     let mut out = 0.0;
     // SAFETY: per the caller; Zend reads the value only.
@@ -109,10 +108,8 @@ pub unsafe fn get_string(value: *const zval) -> *mut zend_string {
 #[must_use]
 #[inline]
 pub unsafe fn obj_of(object: *const zval) -> *mut zend_object {
-    // SAFETY: per the caller.
-    let value = unsafe { (*object).value };
-    // SAFETY: an object zval holds `obj`.
-    unsafe { value.obj }
+    // SAFETY: per the caller, an object zval holds `obj`, at offset 0.
+    unsafe { object.cast::<*mut zend_object>().read() }
 }
 
 /// `Z_LVAL_P`.
@@ -121,10 +118,8 @@ pub unsafe fn obj_of(object: *const zval) -> *mut zend_object {
 #[must_use]
 #[inline]
 pub unsafe fn long_of(long: *const zval) -> zend_long {
-    // SAFETY: per the caller.
-    let value = unsafe { (*long).value };
-    // SAFETY: an int zval holds `lval`.
-    unsafe { value.lval }
+    // SAFETY: per the caller, an int zval holds `lval`, at offset 0.
+    unsafe { long.cast::<zend_long>().read() }
 }
 
 /// `zend_array_count(Z_ARRVAL_P(array))`.
@@ -134,9 +129,9 @@ pub unsafe fn long_of(long: *const zval) -> zend_long {
 #[inline]
 pub unsafe fn count(array: *const zval) -> u32 {
     // SAFETY: per the caller.
-    let table = unsafe { table(array) };
-    // SAFETY: a live table.
-    unsafe { zend_array_count(table) }
+    unsafe { crate::Value::from_ptr(array) }
+        .and_then(crate::Value::array)
+        .map_or(0, crate::Array::count)
 }
 
 /// `zend_update_property_long(ce, object, name, value)`.

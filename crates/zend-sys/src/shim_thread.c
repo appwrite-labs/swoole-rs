@@ -21,6 +21,15 @@ void swr_zend_hash_foreach_kv(const HashTable *table,
     ZEND_HASH_FOREACH_END();
 }
 
+zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key) {
+    zval *value = zend_hash_get_current_data_ex((HashTable *) table, position);
+    if (!value) return NULL;
+    zend_ulong index;
+    if (zend_hash_get_current_key_ex((HashTable *) table, key, &index, position) != HASH_KEY_IS_STRING) *key = NULL;
+    zend_hash_move_forward_ex((HashTable *) table, position);
+    return value;
+}
+
 bool swr_zend_handle_numeric_str(const char *key, size_t length, zend_ulong *index) {
     return _zend_handle_numeric_str(key, length, index);
 }

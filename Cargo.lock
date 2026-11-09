@@ -691,7 +691,6 @@ dependencies = [
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
- "swoole-rs-phptable",
  "swoole-rs-reactor",
  "swoole-rs-tls",
  "swoole-rs-zend",
@@ -795,7 +794,6 @@ dependencies = [
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
- "swoole-rs-phptable",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-zend",
@@ -916,13 +914,6 @@ dependencies = [
  "swoole-rs-reactor",
  "swoole-rs-timer",
  "swoole-rs-utilities",
- "swoole-rs-zend",
-]
-
-[[package]]
-name = "swoole-rs-phptable"
-version = "0.1.0"
-dependencies = [
  "swoole-rs-zend",
 ]
 

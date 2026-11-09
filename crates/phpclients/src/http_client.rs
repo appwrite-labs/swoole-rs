@@ -30,12 +30,11 @@ use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::http_client_coro;
-use swoole_rs_phptable::{self as table, Owned};
 use swoole_rs_zend::{
-    Call, Class, Object, bailout, declare_bool, declare_long, declare_string,
-    register_long_constant, set_object, string,
+    Array, Call, Class, Object, Value, ZString, bailout, declare_bool, declare_long,
+    declare_string, register_long_constant, set_object, string,
     sys::{
-        E_WARNING, IS_OBJECT, IS_REFERENCE, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
+        E_WARNING, IS_OBJECT, IS_REFERENCE, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         add_assoc_str_ex, add_assoc_string_ex, add_assoc_zval_ex, add_next_index_stringl,
         php_url_encode, swr_zend_http_build_query, swr_zend_property_merge,
         swr_zend_sensitive_parameter, swr_zend_url_decode, swr_zval_empty_string,
@@ -142,7 +141,7 @@ struct Client {
     event_stream: bool,
     in_callback: bool,
     has_upload_files: bool,
-    download_name: Option<Owned>,
+    download_name: Option<ZString>,
     download_offset: i64,
     download_file: *mut c_void,
     /// The `write_func` callback bailed out; unwind and re-raise.
@@ -203,19 +202,32 @@ fn ce() -> *mut zend_class_entry {
 
 /// Property updates on a client object.
 mod props {
-    use super::{CStr, ce, table, value, zend_object, zval};
+    use super::{CStr, Value, ce, value, zend_object, zval};
+    use swoole_rs_zend::sys::{
+        swr_zend_property_array, swr_zend_property_not_null, zend_update_property_null,
+        zend_update_property_stringl,
+    };
 
     pub(super) fn long(object: *mut zend_object, name: &CStr, number: i64) {
         // SAFETY: a live client object, which declares `name`.
         unsafe { value::update_long(ce(), object, name, number) };
     }
 
+    /// `sw_zend_read_property_not_null_ex`: the property unless it is null.
+    /// # Safety
+    /// As [`swoole_rs_zend::property`].
+    pub(super) unsafe fn not_null<'a>(object: *mut zend_object, name: &CStr) -> Option<&'a Value> {
+        // SAFETY: per the caller.
+        let found =
+            unsafe { swr_zend_property_not_null(object, name.as_ptr(), name.count_bytes()) };
+        // SAFETY: null or a live property.
+        unsafe { Value::from_ptr(found) }
+    }
+
     /// `zval_get_long` of a declared property.
     pub(super) fn get_long(object: *mut zend_object, name: &CStr) -> i64 {
         // SAFETY: a live client object, which declares `name`.
-        let slot = unsafe { table::property(object, name) };
-        // SAFETY: a live property slot.
-        unsafe { table::long(slot) }
+        unsafe { swoole_rs_zend::property(object, name) }.long()
     }
 
     pub(super) fn bool(object: *mut zend_object, name: &CStr, flag: bool) {
@@ -230,22 +242,31 @@ mod props {
 
     pub(super) fn bytes(object: *mut zend_object, name: &CStr, data: &[u8]) {
         // SAFETY: as above.
-        unsafe { table::update_bytes(ce(), object, name, data) };
+        unsafe {
+            zend_update_property_stringl(
+                ce(),
+                object,
+                name.as_ptr(),
+                name.count_bytes(),
+                data.as_ptr().cast(),
+                data.len(),
+            );
+        }
     }
 
     pub(super) fn null(object: *mut zend_object, name: &CStr) {
         // SAFETY: as above.
-        unsafe { table::update_null(ce(), object, name) };
+        unsafe { zend_update_property_null(ce(), object, name.as_ptr(), name.count_bytes()) };
     }
 
     pub(super) fn zval(object: *mut zend_object, name: &CStr, data: *mut zval) {
         // SAFETY: as above; `data` is a live zval.
-        unsafe { table::update(ce(), object, name, data) };
+        unsafe { swoole_rs_zend::update_property(ce(), object, name, data) };
     }
 
     pub(super) fn array(object: *mut zend_object, name: &CStr) -> *mut zval {
         // SAFETY: as above.
-        unsafe { table::property_array(ce(), object, name) }
+        unsafe { swr_zend_property_array(ce(), object, name.as_ptr(), name.count_bytes()) }
     }
 }
 
@@ -280,7 +301,7 @@ fn socket_error<'a>(socket: Socket) -> (c_int, &'a CStr) {
 /// Fill `rv` as `RETURN_ZVAL(property, 1, 0)` does.
 fn return_property(call: &Call, name: &CStr) {
     // SAFETY: `$this` is a live client object, which declares `name`.
-    let mut property = unsafe { table::property(call.this(), name) };
+    let mut property = unsafe { swoole_rs_zend::property(call.this(), name) }.as_ptr();
     // SAFETY: a live property slot.
     if unsafe { type_of(property) } == IS_REFERENCE {
         // SAFETY: a live zval.
@@ -408,8 +429,10 @@ pub unsafe extern "C" fn swr_v1_phpclients_parse_set_cookies(
         unsafe { value::set_str(cookie.as_mut_ptr(), decoded) };
     }
     if plan.key_length == 0 {
+        // SAFETY: a live array zval.
+        let table = unsafe { value::table(cookies) };
         // SAFETY: a live array takes the value.
-        unsafe { table::push(cookies, cookie.as_mut_ptr()) };
+        unsafe { z::zend_hash_next_index_insert(table, cookie.as_mut_ptr()) };
     } else {
         // SAFETY: as above; Zend copies the key.
         unsafe { add_assoc_zval_ex(cookies, at, plan.key_length, cookie.as_mut_ptr()) };
@@ -526,25 +549,21 @@ impl Client {
 
     fn apply_setting(&mut self, settings: *mut zval, check_all: bool) {
         // SAFETY: a live zval.
-        if !unsafe { table::is_array(settings) } || unsafe { table::length(settings) } == 0 {
+        let array = unsafe { Value::from_ptr(settings) }.and_then(Value::array);
+        let Some(array) = array.filter(|array| array.count() > 0) else {
             return;
-        }
+        };
         if check_all {
-            // SAFETY: an array zval, read as `php_swoole_array_get_value` does.
-            let get = |key: &[u8]| unsafe { table::get(settings, key) };
-            // SAFETY: values Zend found in the array (each conversion below too).
-            let truthy = |value: *mut zval| unsafe { table::truthy(value) };
+            let get = |key: &[u8]| array.get(key);
+            let truthy = Value::truthy;
             if let Some(found) = get(b"connect_timeout") {
-                // SAFETY: as above.
-                self.connect_timeout = unsafe { table::double(found) };
+                self.connect_timeout = found.double();
             }
             if let Some(found) = get(b"timeout") {
-                // SAFETY: as above.
-                self.response_timeout = unsafe { table::double(found) };
+                self.response_timeout = found.double();
             }
             if let Some(found) = get(b"max_retries") {
-                // SAFETY: as above.
-                let retries = unsafe { table::long(found) }.min(i64::from(u8::MAX));
+                let retries = found.long().min(i64::from(u8::MAX));
                 #[expect(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -573,7 +592,7 @@ impl Client {
                 // SAFETY: the callable the client owns, if any.
                 unsafe { native::swoole_http_client_coro_callable_free(self.write_func) };
                 // SAFETY: a live zval.
-                self.write_func = unsafe { swoole_rs_phpruntime::callable_create(found) };
+                self.write_func = unsafe { swoole_rs_phpruntime::callable_create(found.as_ptr()) };
             }
             // SAFETY: the client's WebSocket state and a live array.
             unsafe { native::swoole_http_client_coro_ws_apply(self.ws, settings) };
@@ -625,7 +644,7 @@ impl Client {
             return false;
         }
         // SAFETY: `$this` declares `setting`.
-        let settings = unsafe { table::property(self.object, c"setting") };
+        let settings = unsafe { swoole_rs_zend::property(self.object, c"setting") }.as_ptr();
         self.apply_setting(settings, false);
         self.websocket = false;
         self.accept_websocket_compression = false;
@@ -681,7 +700,6 @@ impl Client {
 
     #[expect(
         clippy::too_many_lines,
-        clippy::cognitive_complexity,
         reason = "upstream's send_request, in its order"
     )]
     fn send_request(&mut self) -> bool {
@@ -705,45 +723,29 @@ impl Client {
         swoole_rs_corebase::log::set_last_error(0);
         self.body.clear();
 
-        // SAFETY: `$this` declares each property.
-        let method = unsafe { table::property_not_null(object, c"requestMethod") };
+        // SAFETY: `$this` declares each property, and nothing changes them while sending.
+        let method = unsafe { props::not_null(object, c"requestMethod") };
         // SAFETY: as above.
-        let headers = unsafe { table::property(object, c"requestHeaders") };
+        let headers = unsafe { swoole_rs_zend::property(object, c"requestHeaders") }.array();
         // SAFETY: as above.
-        let body = unsafe { table::property_not_null(object, c"requestBody") };
+        let body = unsafe { props::not_null(object, c"requestBody") };
         // SAFETY: as above.
-        let files = unsafe { table::property(object, c"uploadFiles") };
+        let files = unsafe { swoole_rs_zend::property(object, c"uploadFiles") }.array();
         // SAFETY: as above.
-        let cookies = unsafe { table::property(object, c"cookies") };
+        let cookies = unsafe { swoole_rs_zend::property(object, c"cookies") }.array();
         // SAFETY: as above.
-        let download = unsafe { table::property_not_null(object, c"downloadFile") };
-        // SAFETY: live property zvals (each table call below reads one).
-        let headers_array = unsafe { table::is_array(headers) };
+        let download = unsafe { props::not_null(object, c"downloadFile") };
 
-        let mut host_header = None;
-        if headers_array {
-            // SAFETY: as above.
-            let mut found = unsafe { table::find(headers, b"Host") };
-            if found.is_null() {
-                // SAFETY: as above.
-                found = unsafe { table::find(headers, b"host") };
-            }
-            if !found.is_null() {
-                // SAFETY: as above.
-                host_header = Some(unsafe { Owned::of(found) });
-            }
-        }
+        let host_header = headers
+            .and_then(|headers| headers.find(b"Host").or_else(|| headers.find(b"host")))
+            .map(Value::string);
         if let Some(download) = download {
-            // SAFETY: as above.
-            self.download_name = Some(unsafe { Owned::of(download) });
+            self.download_name = Some(download.string());
             self.download_offset = props::get_long(object, c"downloadOffset");
         }
 
         let mut out = Vec::with_capacity(256);
-        let method = method.map(|method| {
-            // SAFETY: as above.
-            unsafe { Owned::of(method) }
-        });
+        let method = method.map(Value::string);
         let method_name: &[u8] = match &method {
             Some(method) => method.bytes(),
             None if body.is_some() => b"POST",
@@ -756,7 +758,7 @@ impl Client {
         // SAFETY: as above.
         let proxy = unsafe { native::swoole_http_client_coro_proxy(socket) };
         if proxy != 0 {
-            let host = host_header.as_ref().map_or(&self.host[..], Owned::bytes);
+            let host = host_header.as_ref().map_or(&self.host[..], ZString::bytes);
             request::proxy_uri(&mut out, host, &self.path, self.port);
         } else {
             out.extend_from_slice(&self.path);
@@ -774,11 +776,9 @@ impl Client {
 
         let compression = request::accept_encoding(features());
         let (mut has_length, mut has_connection, mut has_encoding) = (false, false, false);
-        if headers_array {
-            // SAFETY: as above.
-            for (key, value) in unsafe { table::entries(headers) } {
-                // SAFETY: a value in the array.
-                let Some(key) = key.filter(|_| !unsafe { table::is_null(value) }) else {
+        if let Some(headers) = headers {
+            for (key, value) in headers.entries() {
+                let Some(key) = key.filter(|_| !value.is_null()) else {
                     continue;
                 };
                 if key.eq_ignore_ascii_case(b"Host") {
@@ -798,8 +798,7 @@ impl Client {
                     }
                     has_encoding = true;
                 }
-                // SAFETY: as above.
-                let text = unsafe { Owned::of(value) };
+                let text = value.string();
                 request::header(&mut out, key, text.bytes());
                 if key.eq_ignore_ascii_case(b"Connection") {
                     has_connection = true;
@@ -813,7 +812,7 @@ impl Client {
             // SAFETY: a live socket with an authenticating proxy.
             let auth = unsafe { native::swoole_http_client_coro_proxy_auth(socket) };
             // SAFETY: the new string's reference.
-            let auth = unsafe { Owned::from_raw(auth) };
+            let auth = unsafe { ZString::from_raw(auth) };
             request::header(&mut out, b"Proxy-Authorization", auth.bytes());
         }
         if !self.basic_auth.is_empty() {
@@ -831,18 +830,14 @@ impl Client {
             request::header(&mut out, b"Accept-Encoding", encoding);
         }
 
-        // SAFETY: as above.
-        if unsafe { table::is_array(cookies) } {
+        if let Some(cookies) = cookies {
             out.extend_from_slice(b"Cookie: ");
-            // SAFETY: as above.
-            let count = unsafe { table::length(cookies) };
+            let count = cookies.count();
             let mut index = 0;
-            // SAFETY: as above.
-            for (key, value) in unsafe { table::entries(cookies) } {
+            for (key, value) in cookies.entries() {
                 index += 1;
                 let Some(key) = key else { continue };
-                // SAFETY: a value in the array.
-                let text = unsafe { Owned::of(value) };
+                let text = value.string();
                 if text.bytes().is_empty() {
                     continue;
                 }
@@ -852,7 +847,7 @@ impl Client {
                 let encoded =
                     unsafe { php_url_encode(text.bytes().as_ptr().cast(), text.bytes().len()) };
                 // SAFETY: the reference php_url_encode returned.
-                out.extend_from_slice(unsafe { Owned::from_raw(encoded) }.bytes());
+                out.extend_from_slice(unsafe { ZString::from_raw(encoded) }.bytes());
                 if index < count {
                     out.extend_from_slice(b"; ");
                 }
@@ -860,37 +855,34 @@ impl Client {
             out.extend_from_slice(b"\r\n");
         }
 
-        // SAFETY: as above.
-        self.has_upload_files = unsafe { table::length_safe(files) } > 0;
-        if self.has_upload_files {
+        let files = files.filter(|files| files.count() > 0);
+        self.has_upload_files = files.is_some();
+        if let Some(files) = files {
             return self.send_multipart(out, body, files);
         }
         if let Some(body) = body {
-            // SAFETY: as above.
-            if unsafe { table::is_array(body) } {
+            if let Some(fields) = body.array() {
                 request::header(
                     &mut out,
                     b"Content-Type",
                     b"application/x-www-form-urlencoded",
                 );
-                // SAFETY: as above.
-                if unsafe { table::length(body) } > 0 {
-                    // SAFETY: as above.
-                    let query = unsafe { swr_zend_http_build_query(body) };
+                if fields.count() > 0 {
+                    // SAFETY: a live array zval.
+                    let query = unsafe { swr_zend_http_build_query(body.as_ptr()) };
                     if query.is_null() {
                         warn(false, c"http_build_query failed");
                         return false;
                     }
                     // SAFETY: the reference the query builder returned.
-                    let query = unsafe { Owned::from_raw(query) };
+                    let query = unsafe { ZString::from_raw(query) };
                     request::content_length(&mut out, query.bytes().len());
                     out.extend_from_slice(query.bytes());
                 } else {
                     request::content_length(&mut out, 0);
                 }
             } else {
-                // SAFETY: as above.
-                let data = unsafe { Owned::of(body) };
+                let data = body.string();
                 request::content_length(&mut out, data.bytes().len());
                 out.extend_from_slice(data.bytes());
             }
@@ -907,35 +899,22 @@ impl Client {
     }
 
     /// `send_request`'s multipart/form-data branch, from the headers so far.
-    fn send_multipart(
-        &mut self,
-        mut out: Vec<u8>,
-        body: Option<*mut zval>,
-        files: *mut zval,
-    ) -> bool {
+    fn send_multipart(&mut self, mut out: Vec<u8>, body: Option<&Value>, files: &Array) -> bool {
         let boundary = request::boundary();
         request::multipart_type(&mut out, &boundary);
-        // SAFETY: a live property zval.
-        let fields = body.filter(|&body| unsafe { table::is_array(body) });
+        let fields = body.and_then(Value::array);
         let field_entries = || {
-            // SAFETY: as above; nothing changes the array while sending.
             fields
                 .into_iter()
-                .flat_map(|fields| unsafe { table::entries(fields) })
-                .filter_map(|(key, value)| {
-                    // SAFETY: values in the array.
-                    let null = unsafe { table::is_null(value) };
-                    key.filter(|_| !null).map(|key| (key, value))
-                })
+                .flat_map(Array::entries)
+                .filter_map(|(key, value)| key.filter(|_| !value.is_null()).map(|key| (key, value)))
         };
         let mut length = 0_usize;
         for (key, value) in field_entries() {
-            // SAFETY: a value in the array.
-            let text = unsafe { Owned::of(value) };
+            let text = value.string();
             length = length.wrapping_add(request::field_length(key.len(), text.bytes().len()));
         }
-        // SAFETY: `uploadFiles` is a non-empty array.
-        for (_, file) in unsafe { table::entries(files) } {
+        for (_, file) in files.entries() {
             let Some(part) = FilePart::sizes(file) else {
                 continue;
             };
@@ -943,8 +922,7 @@ impl Client {
         }
         request::content_length(&mut out, request::multipart_length(length));
         for (key, value) in field_entries() {
-            // SAFETY: a value in the array.
-            let text = unsafe { Owned::of(value) };
+            let text = value.string();
             request::field_header(&mut out, &boundary, key);
             out.extend_from_slice(text.bytes());
             out.extend_from_slice(b"\r\n");
@@ -952,8 +930,7 @@ impl Client {
         if !self.send(&out) {
             return self.send_failed();
         }
-        // SAFETY: as above.
-        for (_, file) in unsafe { table::entries(files) } {
+        for (_, file) in files.entries() {
             let Some(part) = FilePart::read(file) else {
                 continue;
             };
@@ -1175,21 +1152,15 @@ impl Client {
 
     /// `websocket_verify_server_handshake`.
     fn verify_handshake(&self) -> bool {
-        // SAFETY: `$this` declares both properties.
-        let request = unsafe { table::property(self.object, c"requestHeaders") };
-        // SAFETY: as above.
-        let response = unsafe { table::property(self.object, c"headers") };
-        // SAFETY: live property zvals (each lookup below reads one).
-        if !unsafe { table::is_array(request) } || !unsafe { table::is_array(response) } {
-            return false;
+        fn text<'a>(array: &'a Array, key: &[u8]) -> Option<&'a [u8]> {
+            array.find(key).and_then(Value::bytes)
         }
-        let text = |array: *mut zval, key: &[u8]| {
-            // SAFETY: as above.
-            let found = unsafe { table::find(array, key) };
-            // SAFETY: a value Zend found.
-            (!found.is_null())
-                .then(|| unsafe { table::string_bytes(found) })
-                .flatten()
+        // SAFETY: `$this` declares both properties.
+        let request = unsafe { swoole_rs_zend::property(self.object, c"requestHeaders") }.array();
+        // SAFETY: as above.
+        let response = unsafe { swoole_rs_zend::property(self.object, c"headers") }.array();
+        let (Some(request), Some(response)) = (request, response) else {
+            return false;
         };
         let Some(key) = text(request, b"Sec-WebSocket-Key").filter(|key| !key.is_empty()) else {
             return false;
@@ -1226,8 +1197,7 @@ impl Client {
         // SAFETY: the return slot recv_frame filled.
         let kind = unsafe { type_of(value) };
         // SAFETY: as above.
-        if kind == IS_STRING && unsafe { table::string_bytes(value) }.is_some_and(<[u8]>::is_empty)
-        {
+        if unsafe { swoole_rs_zend::string_of(value) }.is_some_and(<[u8]>::is_empty) {
             self.close(true);
             return;
         }
@@ -1431,7 +1401,14 @@ impl Client {
         // SAFETY: a writable zval takes the new string's reference.
         unsafe { value::set_str(element.as_mut_ptr(), string::copy(data)) };
         // SAFETY: a live array property takes the element.
-        unsafe { table::add_or_merge(headers, key, element.as_mut_ptr()) };
+        unsafe {
+            z::swr_zend_array_add_or_merge(
+                headers,
+                key.as_ptr().cast(),
+                key.len(),
+                element.as_mut_ptr(),
+            );
+        };
     }
 }
 
@@ -1480,11 +1457,8 @@ struct FilePart<'a> {
 impl<'a> FilePart<'a> {
     /// `name`, `filename`, `size` and `type` of an upload entry, as the first
     /// pass reads them: its part's size.
-    fn sizes(file: *mut zval) -> Option<usize> {
-        // SAFETY: an element of the live `uploadFiles` array.
-        if !unsafe { table::is_array(file) } {
-            return None;
-        }
+    fn sizes(file: &'a Value) -> Option<usize> {
+        let file = file.array()?;
         let name = Self::field(file, b"name")?;
         let filename = Self::field(file, b"filename")?;
         let size = Self::field(file, b"size")?;
@@ -1498,11 +1472,8 @@ impl<'a> FilePart<'a> {
     }
 
     /// The second pass's reading: content, or path and offset, then size and type.
-    fn read(file: *mut zval) -> Option<Self> {
-        // SAFETY: as above.
-        if !unsafe { table::is_array(file) } {
-            return None;
-        }
+    fn read(file: &'a Value) -> Option<Self> {
+        let file = file.array()?;
         let name = Self::text(Self::field(file, b"name")?);
         let filename = Self::text(Self::field(file, b"filename")?);
         let source = if let Some(content) = Self::field(file, b"content") {
@@ -1523,24 +1494,19 @@ impl<'a> FilePart<'a> {
         })
     }
 
-    fn field(file: *mut zval, key: &[u8]) -> Option<*mut zval> {
-        // SAFETY: an array element of `uploadFiles`.
-        let found = unsafe { table::find(file, key) };
-        (!found.is_null()).then_some(found)
+    fn field(file: &'a Array, key: &[u8]) -> Option<&'a Value> {
+        file.find(key)
     }
 
     /// `Z_STRVAL_P`/`Z_STRLEN_P`, which upstream assumes; a non-string is empty.
-    fn text(value: *mut zval) -> &'a [u8] {
-        // SAFETY: a live element, read while the array is.
-        unsafe { table::string_bytes(value) }.unwrap_or_default()
+    fn text(value: &'a Value) -> &'a [u8] {
+        value.bytes().unwrap_or_default()
     }
 
     /// `Z_LVAL_P`, which upstream assumes; a non-int is 0.
-    fn number(value: *mut zval) -> i64 {
-        // SAFETY: as above.
-        if unsafe { type_of(value) } == swoole_rs_zend::sys::IS_LONG {
-            // SAFETY: an int zval.
-            unsafe { value::long_of(value) }
+    fn number(value: &Value) -> i64 {
+        if value.kind() == swoole_rs_zend::sys::IS_LONG {
+            value.long()
         } else {
             0
         }
@@ -1943,7 +1909,7 @@ fn set(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: an array argument.
-    if unsafe { table::length(settings) } == 0 {
+    if unsafe { value::count(settings) } == 0 {
         return call.set_bool(false);
     }
     // SAFETY: `$this` declares `setting`; the settings are a live array.
@@ -2040,8 +2006,10 @@ fn add_upload(call: &Call, entry: &[(&CStr, Upload<'_>)]) {
             Upload::Number(number) => unsafe { value::add_long(file.as_mut_ptr(), key, *number) },
         }
     }
-    // SAFETY: a live array property takes the entry.
-    let added = unsafe { table::push(files, file.as_mut_ptr()) };
+    // SAFETY: a live array property.
+    let table = unsafe { value::table(files) };
+    // SAFETY: the array takes the entry.
+    let added = !unsafe { z::zend_hash_next_index_insert(table, file.as_mut_ptr()) }.is_null();
     call.set_bool(added);
 }
 
@@ -2291,14 +2259,10 @@ fn push(call: &Call) {
     let Ok(opcode) = parsed else {
         return call.set_bool(false);
     };
-    let flags = call.zval(3);
     // SAFETY: a passed argument (null when absent).
-    let flags = if flags.is_null() || unsafe { table::is_null(flags) } {
-        FLAG_FIN
-    } else {
-        // SAFETY: as above.
-        unsafe { table::long(flags) }
-    };
+    let flags = unsafe { Value::from_ptr(call.zval(3)) }
+        .filter(|flags| !flags.is_null())
+        .map_or(FLAG_FIN, Value::long);
     let _hold = Hold::new(client.zsocket());
     let result = client.push(call.zval(1), opcode, flags & FLAGS_ALL, CLOSE_NORMAL);
     call.set_bool(result);
