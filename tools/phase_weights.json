@@ -1,5 +1,6 @@
 {
  "abi": 39,
+ "api-fuzz": 30,
  "api-surface": 1,
  "applications": 4,
  "base64-consumers-hybrid": 1,

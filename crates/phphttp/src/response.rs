@@ -26,7 +26,6 @@ use swoole_rs_zend::{
     },
     type_of,
     value::{self, obj_of},
-    value_of,
 };
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
@@ -409,15 +408,11 @@ fn set_cookie(call: &Call, encode: bool) {
         host::notice("The first argument must be a string or an cookie object");
         return call.set_bool(false);
     }
-    let Some(ctx) = checked(call) else {
-        return call.set_bool(false);
-    };
-    // The Set-Cookie line (crates/httpbindings), or null after a warning.
+    // The Set-Cookie line (crates/httpbindings), or null after a warning. Upstream builds
+    // it before it uses the context, so a bad name warns on any response.
     let cookie = if kind == IS_STRING {
-        // SAFETY: a passed argument is a live zval.
-        let name = unsafe { value_of(name) };
-        // SAFETY: a string argument holds `str_`.
-        let name = unsafe { name.str_ };
+        // A string argument, so `Z_PARAM_STR` reads it as it is.
+        let name = call.str(1).ok().flatten().unwrap_or(ptr::null_mut());
         // SAFETY: the parsed arguments of this call.
         unsafe {
             header_line(
@@ -441,6 +436,11 @@ fn set_cookie(call: &Call, encode: bool) {
     if cookie.is_null() {
         return call.set_bool(false);
     }
+    let Some(ctx) = checked(call) else {
+        // SAFETY: the line this call made and nothing else references.
+        unsafe { z::swr_zend_string_release(cookie) };
+        return call.set_bool(false);
+    };
     // SAFETY: the cookie property is a live array; it takes over the string.
     unsafe { push_string(property(ctx, COOKIE), cookie) };
     call.set_bool(true);
