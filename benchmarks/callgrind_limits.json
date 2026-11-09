@@ -9,5 +9,6 @@
   "http2": 1.05,
   "table": 1.00,
   "channel": 0.92,
-  "task": 1.05
+  "task": 1.05,
+  "mysql": 1.10
 }
