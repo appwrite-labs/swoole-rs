@@ -431,6 +431,8 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number:
         Step::Hook(ops.known_strings_dtor),
         Step::Hook(php_swoole_runtime_mshutdown),
         Step::Hook(ops.optional_mshutdown),
+        // The tables' process-private parts, which upstream leaves to the exit.
+        Step::Hook(swoole_rs_memory::table::release),
         Step::Hook(clean),
         Step::Hook(swr_zend_leak_check),
     ];

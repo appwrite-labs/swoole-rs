@@ -120,6 +120,39 @@ fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
     unsafe { swr_v1_memory_global_memory_delete(pool) };
 }
 
+#[test]
+fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
+    swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
+    for shared in [false, true] {
+        let mut pool = ptr::null_mut();
+        assert_eq!(
+            unsafe { swr_v1_memory_global_memory_new(4096, shared, &raw mut pool) },
+            0
+        );
+        let parent = pool;
+        // As if another process made it.
+        unsafe { (*parent).creator = if shared { std::process::id() + 1 } else { 0 } };
+        let mut object = [ptr::null_mut(), pool.cast::<c_void>()];
+        let this = object.as_mut_ptr().cast_const().cast();
+        assert_eq!(unsafe { swr_global_memory_capacity(this) }, 4096);
+        let child = object[1].cast::<GlobalImpl>();
+        assert_eq!(child == parent, !shared);
+        if shared {
+            assert_eq!(unsafe { (*child).inherited }, parent);
+            assert_eq!(unsafe { (*child).creator }, std::process::id());
+        }
+        pool = child;
+        let mut block = ptr::null_mut();
+        assert_eq!(
+            unsafe { swr_v1_memory_global_memory_alloc(&raw mut pool, 8, &raw mut block) },
+            0
+        );
+        assert!(!block.is_null());
+        assert_eq!(pool, child, "the fresh pool is this process's");
+        unsafe { swr_v1_memory_global_memory_delete(pool) };
+    }
+}
+
 // Upstream's core-tests/src/memory/{fixed_pool,global_memory}.cpp, one test per
 // TEST, with its inputs and expected values (ringbuffer.cpp is ringbuffer_thread.rs).
 // `this` is a stand-in C++ object: a vtable pointer, then `impl`.

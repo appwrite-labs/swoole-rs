@@ -39,7 +39,7 @@ pub struct ReactorFields {
     pub write: Option<ReactorWrite>,
     pub writev: Option<ReactorWritev>,
     pub close: Option<ReactorClose>,
-    /// `Reactor::defer_tasks`: null until a task is deferred; never freed unrun.
+    /// `Reactor::defer_tasks`: null until a task is deferred.
     pub defer_tasks: *mut crate::ReactorDeferred,
     /// `Reactor::destroy_callbacks`.
     pub destroy_callbacks: *mut crate::ReactorDeferred,
@@ -74,8 +74,14 @@ pub(crate) enum Backend {
 impl Drop for ReactorState {
     fn drop(&mut self) {
         self.close_backend();
-        // SAFETY: the queue slot is this state's own.
-        unsafe { crate::swr_v1_reactor_deferred_free(&raw mut self.fields.destroy_callbacks) };
+        let fields = &mut self.fields;
+        for slot in [
+            &raw mut fields.destroy_callbacks,
+            &raw mut fields.defer_tasks,
+        ] {
+            // SAFETY: the queue slots are this state's own, and nothing runs them now.
+            unsafe { crate::swr_v1_reactor_deferred_free(slot) };
+        }
     }
 }
 #[repr(C)]

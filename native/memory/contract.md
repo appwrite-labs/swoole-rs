@@ -93,8 +93,9 @@ system pages, and are freed when the pool is.
 - alloc writes the 8-byte block header size and returns a zeroed, 8-aligned
   payload; size 0 still consumes a header. A full page starts a new one. A block
   that can't fit a page is refused with upstream's warning.
-- Fork: a shared GlobalMemory alloc in a different PID starts a new pool;
-  inherited pages and pointers stay valid until exit, parent offsets unchanged.
+- Fork: a shared GlobalMemory used in a different PID starts a new pool, which
+  keeps the inherited one: its pages and pointers stay valid until the pool is
+  deleted, parent offsets unchanged. `swoole_fork` relies on this.
   Arbitrary multithreaded-fork mutex state is not addressed.
 - Huge sizes are rejected rather than reproducing upstream's u32 alignment wrap.
 

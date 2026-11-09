@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn bump_pages_match_alignment_zeroing_capacity_and_growth() {
     for shared in [false, true] {
-        let mut pages = Global::new(64, shared, 41);
+        let mut pages = Global::new(64, shared);
         assert_eq!(pages.memory_size(), 0);
         let first = pages.alloc(1);
         assert!(!first.is_null());
@@ -29,7 +29,7 @@ fn bump_pages_match_alignment_zeroing_capacity_and_growth() {
 
 #[test]
 fn oversized_requests_never_fit_and_page_sizes_round_to_system_pages() {
-    let pages = Global::new(64, false, 41);
+    let pages = Global::new(64, false);
     assert!(pages.fits(56));
     assert!(!pages.fits(57));
     assert!(!pages.fits(u32::MAX));
@@ -37,13 +37,4 @@ fn oversized_requests_never_fit_and_page_sizes_round_to_system_pages() {
     assert_eq!(page_size(4097, 4096), Some(8192));
     assert_eq!(page_size(4096, 3), None);
     assert_eq!(page_size(u32::MAX, 16384), None);
-}
-
-#[test]
-fn only_a_forked_child_of_a_shared_pool_inherits_it() {
-    for shared in [false, true] {
-        let pages = Global::new(4096, shared, 41);
-        assert!(!pages.inherited(41));
-        assert_eq!(pages.inherited(42), shared);
-    }
 }

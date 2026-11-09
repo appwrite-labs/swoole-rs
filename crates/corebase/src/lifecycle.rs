@@ -260,8 +260,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
         host.timer_free();
     }
     if flags & FORK_EXEC == 0 {
-        // The parent's shared pages stay with the OS.
-        crate::swr_v1_core_set_memory_pool(host.new_pool());
+        // The pool starts its own pages at its first use here (crates/memory's `current`).
         host.logger(native::LOGGER_REOPEN);
         if host.event_available() {
             host.event_free();
