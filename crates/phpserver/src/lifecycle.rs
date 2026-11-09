@@ -516,8 +516,7 @@ unsafe fn connections(
     serv: *mut c_void,
     port: *mut c_void,
 ) {
-    // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
-    let mut iterator: zval = unsafe { std::mem::zeroed() };
+    let mut iterator = crate::dispatch::undef();
     crate::server::new_iterator(&mut iterator, serv, port);
     // SAFETY: per the caller; Zend copies the value.
     unsafe { zend_update_property(ce, object, c"connections".as_ptr(), 11, &raw mut iterator) };
@@ -780,13 +779,11 @@ unsafe extern "C" fn command_run(
         // SAFETY: per the caller.
         unsafe { reply(out, text.as_ptr().cast(), text.len()) };
     };
-    // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
-    let mut args: [zval; 2] = unsafe { std::mem::zeroed() };
+    let mut args = [crate::dispatch::undef(), crate::dispatch::undef()];
     args[0] = crate::dispatch::server_zval(server);
     // SAFETY: a writable zval and the message's bytes.
     unsafe { swr_zval_stringl(&raw mut args[1], message, length) };
-    // SAFETY: as above.
-    let mut retval: zval = unsafe { std::mem::zeroed() };
+    let mut retval = crate::dispatch::undef();
     let called = crate::dispatch::invoke(callable, &mut args, &raw mut retval, false);
     // SAFETY: the message string made above.
     unsafe { zval_ptr_dtor(&raw mut args[1]) };

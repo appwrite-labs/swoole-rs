@@ -390,8 +390,7 @@ pub(crate) fn merge_setting(
     object: *mut zend_object,
     settings: *mut zval,
 ) -> Result<*mut zval, bailout::Bailout> {
-    // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
-    let mut zobject: zval = unsafe { std::mem::zeroed() };
+    let mut zobject = crate::dispatch::undef();
     // SAFETY: a borrowed view of the live object (`ZVAL_OBJ`, no reference).
     unsafe { swoole_rs_zend::set_object(&raw mut zobject, object) };
     // SAFETY: the object and its class, which declares `setting`.

@@ -470,19 +470,6 @@ unsafe fn free_pipe(pipe: *mut SocketPair) {
     drop(unsafe { Box::from_raw(pipe) });
 }
 
-/// `serv->task_notify_pipes.at(index)` for workers.cc: the pipe, or null.
-///
-/// # Safety
-/// `state` is a live `Server::state_`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_task_pipe(
-    state: *const ServerState,
-    index: u16,
-) -> *mut SocketPair {
-    // SAFETY: as the caller guarantees.
-    unsafe { &*state }.task_pipe(index.into())
-}
-
 impl Drop for ServerState {
     fn drop(&mut self) {
         // SAFETY: the table `local_addr::init` boxed, if any; nothing reads it after the state.
