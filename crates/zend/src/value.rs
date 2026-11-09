@@ -1,9 +1,9 @@
 //! Object properties and arrays, through Zend's own update and add functions.
 use crate::sys::{
     _zval_struct__bindgen_ty_1, HashTable, IS_LONG, add_assoc_long_ex, add_assoc_string_ex,
-    add_next_index_str, swr_zend_array_init, swr_zval_str, zend_array_count, zend_class_entry,
-    zend_long, zend_object, zend_string, zend_update_property_bool, zend_update_property_long,
-    zend_update_property_string, zend_value, zval,
+    zend_array_count, zend_class_entry, zend_long, zend_object, zend_string,
+    zend_update_property_bool, zend_update_property_long, zend_update_property_string, zend_value,
+    zval,
 };
 use crate::{
     bailout,
@@ -197,16 +197,6 @@ pub unsafe fn update_string(
     }
 }
 
-/// `ZVAL_STR(target, string)`: `target` takes over the string's reference.
-/// # Safety
-/// `target` is writable and holds nothing that needs releasing; the caller owns
-/// a reference to `string`.
-#[inline]
-pub unsafe fn set_str(target: *mut zval, string: *mut zend_string) {
-    // SAFETY: per the caller.
-    unsafe { swr_zval_str(target, string) };
-}
-
 /// `ZVAL_LONG(target, value)`.
 /// # Safety
 /// `target` is writable and holds nothing that needs releasing.
@@ -216,15 +206,6 @@ pub unsafe fn set_long(target: *mut zval, value: zend_long) {
     unsafe { (*target).value = zend_value { lval: value } };
     // SAFETY: as above.
     unsafe { (*target).u1 = _zval_struct__bindgen_ty_1 { type_info: IS_LONG } };
-}
-
-/// `array_init(target)`.
-/// # Safety
-/// `target` is a writable zval holding nothing that needs releasing.
-#[inline]
-pub unsafe fn array_init(target: *mut zval) {
-    // SAFETY: per the caller.
-    unsafe { swr_zend_array_init(target) };
 }
 
 /// `add_assoc_long(array, key, value)`.
@@ -246,10 +227,8 @@ pub unsafe fn add_string(array: *mut zval, key: &CStr, value: &CStr) {
 }
 
 /// `add_next_index_str(array, string)`: the array takes over the reference.
-/// # Safety
-/// `array` is a live array zval and the caller owns a reference to `string`.
-#[inline]
-pub unsafe fn push_str(array: *mut zval, string: *mut zend_string) {
-    // SAFETY: per the caller.
-    unsafe { add_next_index_str(array, string) };
-}
+pub use crate::sys::add_next_index_str as push_str;
+/// `array_init(target)`.
+pub use crate::sys::swr_zend_array_init as array_init;
+/// `ZVAL_STR(target, string)`: `target` takes over the string's reference.
+pub use crate::sys::swr_zval_str as set_str;

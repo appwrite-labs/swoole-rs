@@ -15,7 +15,11 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
   parsed as `Z_PARAM_LONG`/`Z_PARAM_DOUBLE`, `set_long`/`set_bool`), `Object<T>`
   (`struct { T data; zend_object std; }`: `create`, `data`, `install`, `dtor`),
   `Class` (registration from a method table), `unset_property_deny`,
-  `throw_exception`/`throw_error`. Add wrappers as callers need them.
+  `throw_exception`/`throw_error`, and values: `&Value` (a borrowed zval, from
+  `Call::value` or `Value::from_ptr`), `&Array` (`count`, `is_list`,
+  `for_each`), `ZString` and `Owned`/`OwnedArray`, released in `Drop`. A family
+  crate reads values through these with no `unsafe` of its own
+  (`crates/phpredis/src/format.rs`). Add wrappers as callers need them.
 - One `crates/php<family>` crate per family (`crates/phplocks`). It calls the
   mechanism crate directly (Rust calls Rust).
 

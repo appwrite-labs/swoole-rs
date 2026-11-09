@@ -18,7 +18,8 @@ use std::{
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_zend::{
-    Call, Class, Invalid, declare_long, declare_null, handlers, init_object, push_string, set_key,
+    Call, Class, Invalid, declare_long, declare_property_null, handlers, init_object, push_string,
+    set_key,
     sys::{
         IS_ARRAY, IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long,
         zend_object, zend_string,
@@ -150,7 +151,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_response_minit(codecs: u32) {
     unsafe { declare_long(ce, c"fd", 0, ZEND_ACC_PUBLIC) };
     for name in [c"socket", c"header", c"cookie", c"trailer"] {
         // SAFETY: as above.
-        unsafe { declare_null(ce, name) };
+        unsafe { declare_property_null(ce, name, swoole_rs_zend::sys::ZEND_ACC_PUBLIC) };
     }
     crate::header::minit(ce);
     context::response_minit(ce);

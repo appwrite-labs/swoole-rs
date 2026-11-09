@@ -1,26 +1,10 @@
 //! Zvals, arrays and properties for crates/phpprocess: zval construction,
 //! hash iteration, typed property updates.
 use crate::sys::{
-    add_assoc_long_ex, swr_zend_hash_foreach, zend_array, zend_class_entry,
-    zend_declare_property_null, zend_object, zend_update_property, zend_update_property_long, zval,
+    swr_zend_hash_foreach, zend_array, zend_class_entry, zend_declare_property_null, zend_object,
+    zend_update_property, zval,
 };
 use std::ffi::{CStr, c_int, c_void};
-
-/// `add_assoc_long_ex(array, key, value)`.
-/// # Safety
-/// `array` is a live array zval.
-pub unsafe fn add_assoc_long(array: *mut zval, key: &CStr, value: i64) {
-    // SAFETY: per the caller; Zend copies the key.
-    unsafe { add_assoc_long_ex(array, key.as_ptr(), key.count_bytes(), value) };
-}
-
-/// `add_next_index_long(array, value)`.
-/// # Safety
-/// `array` is a live array zval.
-pub unsafe fn add_next_index_long(array: *mut zval, value: i64) {
-    // SAFETY: per the caller.
-    unsafe { crate::sys::add_next_index_long(array, value) };
-}
 
 /// `ZEND_HASH_FOREACH_VAL`: `each` returns false to stop early.
 /// # Safety
@@ -38,19 +22,6 @@ pub unsafe fn each_value<F: FnMut(*mut zval) -> bool>(table: *const zend_array, 
     let context = (&raw mut each).cast::<c_void>();
     // SAFETY: per the caller; the closure outlives the loop.
     unsafe { swr_zend_hash_foreach(table, Some(trampoline::<F>), context) };
-}
-
-/// `zend_update_property_long(scope, object, name, value)`.
-/// # Safety
-/// `scope` is a registered class and `object` a live object.
-pub unsafe fn update_property_long(
-    scope: *mut zend_class_entry,
-    object: *mut zend_object,
-    name: &CStr,
-    value: i64,
-) {
-    // SAFETY: per the caller.
-    unsafe { zend_update_property_long(scope, object, name.as_ptr(), name.count_bytes(), value) };
 }
 
 /// `zend_update_property(scope, object, name, value)`: the property takes a copy.
@@ -90,16 +61,4 @@ pub fn long_zval(value: i64) -> zval {
         type_info: crate::sys::IS_LONG,
     };
     zv
-}
-
-/// `Z_OBJ_P`.
-/// # Safety
-/// `value` is a live object zval.
-#[must_use]
-#[inline]
-pub unsafe fn object_of(value: *const zval) -> *mut zend_object {
-    // SAFETY: per the caller.
-    let value = unsafe { (*value).value };
-    // SAFETY: an object zval holds its object.
-    unsafe { value.obj }
 }

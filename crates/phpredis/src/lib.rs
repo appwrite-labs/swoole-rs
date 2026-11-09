@@ -36,15 +36,12 @@ use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpstubs::redis_server as stubs;
 use swoole_rs_protocols::{RespPhpState, RespSpan, swr_v1_resp_handler_key, swr_v1_resp_php_next};
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, bailout, handlers, method_table, php_error,
-    string::{self, bytes},
+    Call, Class, E_ERROR, E_WARNING, Owned, OwnedArray, bailout, handlers, method_table, php_error,
     sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, add_next_index_long,
-        add_next_index_null, add_next_index_stringl, swr_zend_callable_warning,
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_callable_warning,
         swr_zend_try_facade_update, swr_zval_copy, zend_class_entry, zend_long, zend_read_property,
-        zval, zval_ptr_dtor,
+        zval,
     },
-    value,
 };
 
 static SERVER: Class = Class::new();
@@ -252,8 +249,7 @@ fn get_handler(call: &Call) {
         return;
     };
     let key = handler_key(command);
-    // SAFETY: a zval is plain data.
-    let mut rv = unsafe { std::mem::zeroed::<zval>() };
+    let rv = Owned::default();
     // SAFETY: `$this` of the class, the key's bytes, silently, into `rv`.
     let handler = unsafe {
         zend_read_property(
@@ -262,7 +258,7 @@ fn get_handler(call: &Call) {
             key.as_ptr().cast(),
             key.len(),
             true,
-            &raw mut rv,
+            rv.as_ptr(),
         )
     };
     // SAFETY: the property's live value; `RETURN_ZVAL(handler, 1, 0)`.
@@ -298,24 +294,12 @@ unsafe fn send(server: *mut Server, fd: zend_long, reply: &[u8]) -> bool {
 fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout::Bailout> {
     // SAFETY: the live request, which starts with its `DataHead` and its `fd`.
     let fd = unsafe { *request.cast::<zend_long>() };
-    // SAFETY: a zval is plain data.
-    let mut zdata = unsafe { std::mem::zeroed::<zval>() };
+    let zdata = Owned::default();
     // SAFETY: a live server and request; `zdata` takes the payload string.
-    unsafe { recv_data(server, &raw mut zdata, request) };
-    // SAFETY: `php_swoole_get_recv_data` leaves a string.
-    let payload = unsafe { value::str_of(&raw const zdata) };
-    // SAFETY: the payload, live until `release`.
-    let data = unsafe { bytes(payload) };
-    // SAFETY: a zval is plain data.
-    let mut params = unsafe { std::mem::zeroed::<zval>() };
-    // SAFETY: an empty slot.
-    unsafe { value::array_init(&raw mut params) };
-    let release = |zdata: &mut zval, params: &mut zval| {
-        // SAFETY: the payload and parameters, released once.
-        unsafe { zval_ptr_dtor(zdata) };
-        // SAFETY: as above.
-        unsafe { zval_ptr_dtor(params) };
-    };
+    unsafe { recv_data(server, zdata.as_ptr(), request) };
+    // `php_swoole_get_recv_data` leaves a string.
+    let data = zdata.bytes().unwrap_or_default();
+    let mut params = OwnedArray::default();
     let mut state = RespPhpState::default();
     let mut span = RespSpan::default();
     let mut range = 0u8;
@@ -340,23 +324,13 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         let text = data.get(span.offset..span.offset + span.length);
         let text = text.unwrap_or_default();
         match span.kind {
-            // SAFETY: the live parameter array; Zend copies the bytes.
-            0 => unsafe {
-                add_next_index_stringl(&raw mut params, text.as_ptr().cast(), text.len());
-            },
-            // SAFETY: as above.
-            1 => unsafe {
-                add_next_index_long(&raw mut params, zend_long::from(span.integer));
-            },
-            // SAFETY: as above.
-            2 => unsafe {
-                add_next_index_null(&raw mut params);
-            },
+            0 => params.push_bytes(text),
+            1 => params.push_long(zend_long::from(span.integer)),
+            2 => params.push_null(),
             _ => command = text,
         }
     };
     if result < 0 {
-        release(&mut zdata, &mut params);
         // SAFETY: a live server.
         unsafe { server_close(server, fd, false) };
         return Ok(OK);
@@ -366,7 +340,6 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         let mut message = b"command [".to_vec();
         message.extend_from_slice(until_nul(head));
         message.extend_from_slice(format!("...](length={}) is too long", command.len()).as_bytes());
-        release(&mut zdata, &mut params);
         report(false, E_WARNING, &message)?;
         // SAFETY: a live server.
         unsafe { server_close(server, fd, false) };
@@ -377,14 +350,12 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         let mut reply = b"-ERR unknown command '".to_vec();
         reply.extend_from_slice(until_nul(command));
         reply.extend_from_slice(b"'\r\n");
-        release(&mut zdata, &mut params);
         // SAFETY: a live server and the reply's bytes.
         let sent = unsafe { send(server, fd, &reply) };
         return Ok(if sent { OK } else { ERR });
     };
-    let mut args = [swoole_rs_zend::long_zval(fd), params];
-    // SAFETY: a zval is plain data (IS_UNDEF).
-    let mut retval = unsafe { std::mem::zeroed::<zval>() };
+    let args = [Owned::long(fd), params.into_owned()];
+    let retval = Owned::default();
     // SAFETY: a live server.
     let coroutine = unsafe { swoole_rs_phpserver::is_enable_coroutine(server) };
     // SAFETY: a handler `set_handler` stored.
@@ -395,8 +366,8 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         function_call(
             cache,
             2,
-            args.as_mut_ptr(),
-            &raw mut retval,
+            args.as_ptr().cast_mut().cast(),
+            retval.as_ptr(),
             coroutine,
             swr_v1_phpcoroutines_create,
             swr_zend_callable_warning,
@@ -408,15 +379,10 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         message.extend_from_slice(b"' handler error");
         report(false, E_WARNING, &message)?;
     }
-    // SAFETY: the handler's return value.
-    if let Some(reply) = unsafe { swoole_rs_zend::string_of(&raw const retval) } {
+    if let Some(reply) = retval.bytes() {
         // SAFETY: a live server and the reply's bytes.
         unsafe { send(server, fd, reply) };
     }
-    // SAFETY: the return value, released once.
-    unsafe { zval_ptr_dtor(&raw mut retval) };
-    let [_, mut params] = args;
-    release(&mut zdata, &mut params);
     Ok(OK)
 }
 
@@ -430,11 +396,6 @@ fn set_errno(value: c_int) {
     let slot = unsafe { libc::__error() };
     // SAFETY: `slot` is this thread's errno.
     unsafe { slot.write(value) };
-}
-
-/// `string::copy`, re-exported for `format`.
-pub(crate) fn zend_string(bytes: &[u8]) -> *mut swoole_rs_zend::sys::zend_string {
-    string::copy(bytes)
 }
 
 /// The exception class `format` throws.

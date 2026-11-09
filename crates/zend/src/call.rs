@@ -329,6 +329,14 @@ impl Call {
         self.arg(n)
     }
 
+    /// [`Call::zval`], borrowed for the call.
+    #[must_use]
+    #[inline]
+    pub fn value(&self, n: u32) -> Option<&crate::Value> {
+        // SAFETY: a passed argument lives for the call, or null.
+        unsafe { crate::Value::from_ptr(self.zval(n)) }
+    }
+
     /// The return slot (`return_value`).
     #[must_use]
     #[inline]
@@ -350,6 +358,13 @@ impl Call {
         // SAFETY: the return slot is live for the handler; per the caller,
         // `string` carries a reference.
         unsafe { swr_zval_str(self.value, string) };
+    }
+
+    /// `RETVAL_STR(string)`, taking over its reference.
+    #[inline]
+    pub fn set_zstring(&self, string: crate::ZString) {
+        // SAFETY: a live string and the reference it gives up.
+        unsafe { self.set_string(string.into_raw()) };
     }
 
     /// `RETURN_ZVAL(ZEND_THIS, 1, 0)`: return `$this` with a new reference.

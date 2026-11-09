@@ -1,8 +1,6 @@
 //! Non-persistent `zend_string`s: allocated here, handed to Zend by a return
 //! value or an array, or freed.
-use crate::sys::{
-    swr_zend_string_alloc, swr_zend_string_free, swr_zend_string_realloc, zend_string,
-};
+use crate::sys::{swr_zend_string_alloc, zend_string};
 use std::mem::offset_of;
 
 /// `ZSTR_VAL`/`ZSTR_LEN` as bytes (without the terminating NUL, which follows).
@@ -52,25 +50,6 @@ pub fn copy(bytes: &[u8]) -> *mut zend_string {
     string
 }
 
-/// `zend_string_realloc(string, length, 0)`.
-/// # Safety
-/// `string` is a live, unshared, non-interned string.
-#[must_use]
-#[inline]
-pub unsafe fn realloc(string: *mut zend_string, length: usize) -> *mut zend_string {
-    // SAFETY: per the caller.
-    unsafe { swr_zend_string_realloc(string, length) }
-}
-
-/// `zend_string_free`.
-/// # Safety
-/// `string` is a live, unshared, non-interned string nothing else references.
-#[inline]
-pub unsafe fn free(string: *mut zend_string) {
-    // SAFETY: per the caller.
-    unsafe { swr_zend_string_free(string) };
-}
-
 /// `ZSTR_LEN(string) = length; ZSTR_VAL(string)[length] = '\0'`.
 /// # Safety
 /// `string` is live, unshared and holds at least `length` bytes.
@@ -83,3 +62,8 @@ pub unsafe fn truncate(string: *mut zend_string, length: usize) {
     // SAFETY: as above.
     unsafe { *end = 0 };
 }
+
+/// `zend_string_free` of a live, unshared, non-interned string nothing else references.
+pub use crate::sys::swr_zend_string_free as free;
+/// `zend_string_realloc(string, length, 0)` of a live, unshared, non-interned string.
+pub use crate::sys::swr_zend_string_realloc as realloc;
