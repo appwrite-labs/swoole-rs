@@ -822,7 +822,7 @@ pub(crate) fn send_body(
     true
 }
 
-/// `Stream::send_trailer`: HEADERS with END_STREAM, even an empty block.
+/// `Stream::send_trailer`: HEADERS with `END_STREAM`, even an empty block.
 fn send_trailer(ctx: *mut c_void, session: &Session, stream_id: u32) -> bool {
     let Some(mut headers) = build_trailer(ctx, session) else {
         return false;
