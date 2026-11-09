@@ -394,8 +394,7 @@ fn exec(call: &Call) {
     let command = unsafe { CStr::from_ptr(command.as_ptr().cast()) };
     // SAFETY: in a method call, which raises the fatal error outside a coroutine.
     let done = unsafe { exec_into(command, errors, output, &mut status) };
-    // SAFETY: all-zero is IS_UNDEF.
-    let mut output_value: zval = unsafe { mem::zeroed() };
+    let mut output_value = swoole_rs_zend::UNDEF;
     if done {
         // SAFETY: the String's bytes, copied into an empty slot.
         unsafe {

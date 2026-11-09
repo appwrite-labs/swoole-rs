@@ -34,8 +34,7 @@ static THREADS: AtomicUsize = AtomicUsize::new(1);
 
 thread_local! {
     /// The thread's arguments (`Thread::getArguments()`), undef if none.
-    // SAFETY: an all-zero zval is undef.
-    static ARGV: UnsafeCell<zval> = const { UnsafeCell::new(unsafe { std::mem::zeroed() }) };
+    static ARGV: UnsafeCell<zval> = const { UnsafeCell::new(swoole_rs_zend::UNDEF) };
     /// The jump buffer of the thread's `zend_first_try` while its script runs.
     static BAILOUT: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
 }
@@ -110,8 +109,7 @@ unsafe extern "C" fn prologue(start: *mut c_void) {
     // SAFETY: `run`'s `Start`.
     let start = unsafe { &mut *start.cast::<Start>() };
     if !start.argv_serialized.is_null() {
-        // SAFETY: an all-zero zval is undef.
-        let mut global_argv: zval = unsafe { std::mem::zeroed() };
+        let mut global_argv = swoole_rs_zend::UNDEF;
         // SAFETY: the main request's string, live until its RSHUTDOWN.
         let data = unsafe { string::bytes(start.argv_serialized) };
         // SAFETY: in the request; a bailout is deferred.

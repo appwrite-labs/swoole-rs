@@ -99,8 +99,7 @@ enum Called {
 /// An `IS_UNDEF` zval.
 #[inline]
 pub(crate) fn undef() -> zval {
-    // SAFETY: all-zero bytes are `IS_UNDEF`.
-    unsafe { std::mem::zeroed() }
+    swoole_rs_zend::UNDEF
 }
 
 /// `zend::function::call(cb, argc, args, nullptr, coroutine)`, warning

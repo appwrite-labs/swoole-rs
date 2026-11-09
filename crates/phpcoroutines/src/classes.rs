@@ -18,7 +18,7 @@ use swoole_rs_zend::{
         swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_coroutine_set_autoload,
         swr_zend_error_reporting, swr_zend_exit_status, swr_zval_try_addref, zend_ce_exception,
         zend_class_entry, zend_execute_data, zend_read_property, zend_string, zend_throw_exception,
-        zend_update_property, zend_update_property_long, zend_update_property_str, zval,
+        zend_update_property, zend_update_property_long, zend_update_property_str,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -287,8 +287,7 @@ fn throw_exit(
 unsafe extern "C" fn exit_handler(execute_data: *mut zend_execute_data) -> c_int {
     let flags = exit_flags();
     if flags != 0 {
-        // SAFETY: all-zero is IS_UNDEF, then the status.
-        let mut status: zval = unsafe { mem::zeroed() };
+        let mut status = swoole_rs_zend::UNDEF;
         // SAFETY: the exit opcode's frame.
         unsafe { swr_zend_exit_status(execute_data, &raw mut status) };
         let object = throw_exit(c"swoole exit".as_ptr(), flags);
@@ -350,8 +349,8 @@ fn exit(call: &Call) {
 /// `SW_RETURN_PROPERTY(name)` of `$this`.
 fn property(call: &Call, name: &CStr) {
     let this = call.this();
-    // SAFETY: all-zero is IS_UNDEF, the read's scratch slot.
-    let mut scratch: zval = unsafe { mem::zeroed() };
+    // The read's scratch slot.
+    let mut scratch = swoole_rs_zend::UNDEF;
     // SAFETY: a live object.
     let scope = unsafe { (*this).ce };
     // SAFETY: as above, read in its own class's scope.
