@@ -973,6 +973,7 @@ dependencies = [
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
+ "swoole-rs-utilities",
  "swoole-rs-websocket",
 ]
 

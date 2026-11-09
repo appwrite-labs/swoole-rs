@@ -18,6 +18,7 @@ swoole-rs-http2 = { path = "../crates/http2" }
 libc = "=0.2.191"
 swoole-rs-oracle = { path = "../crates/oracle" }
 swoole-rs-protocols = { path = "../crates/protocols" }
+swoole-rs-utilities = { path = "../crates/utilities" }
 swoole-rs-websocket = { path = "../crates/websocket" }
 
 [[bin]]
@@ -205,6 +206,13 @@ bench = false
 [[bin]]
 name = "resp_server"
 path = "fuzz_targets/resp_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sni_wildcard"
+path = "fuzz_targets/sni_wildcard.rs"
 test = false
 doc = false
 bench = false
