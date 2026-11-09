@@ -272,7 +272,7 @@ fn worker(ctx: &Context, op: u32) -> Option<u64> {
             swoole_rs_process::methods::swoole_set_worker_id(ctx.worker_record().id());
             swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
             // SAFETY: the context's live server and worker.
-            unsafe { crate::worker_methods::init_event_worker(serv, worker) };
+            unsafe { crate::worker_methods::init_event_worker(ctx.server(), worker) };
         }
         // SAFETY: the context's live server.
         OP_WORKER_SIGNAL_INIT => unsafe { entry::worker_signal_init(serv) },
@@ -305,8 +305,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     match op {
         OP_CONN_AT => {
             let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
-            // SAFETY: the context's live server.
-            let conn = unsafe { server.at(fd) }.map_or(core::ptr::null_mut(), |c| &raw mut *c);
+            let conn = server.at(fd).map_or(core::ptr::null_mut(), |c| &raw mut *c);
             // SAFETY: null or a live connection whose socket is null or live.
             let valid = unsafe { crate::reactor_ops::valid(conn) };
             ctx.conn = if valid { conn } else { core::ptr::null_mut() };
@@ -315,8 +314,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_EVENT_CONN_ACTIVE => {
             // SAFETY: the context's live event.
             let fd = unsafe { (*ctx.event).fd };
-            // SAFETY: the context's live server.
-            let conn = unsafe { server.at(fd) };
+            let conn = server.at(fd);
             let active = conn.as_ref().is_some_and(|c| c.active != 0);
             ctx.conn = conn.map_or(core::ptr::null_mut(), |c| &raw mut *c);
             return Some(u64::from(active));

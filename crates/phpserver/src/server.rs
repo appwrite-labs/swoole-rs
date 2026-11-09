@@ -662,8 +662,7 @@ fn feedback(call: &Call, pause: bool) {
     let Ok(fd) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server.
-    let Some(conn) = (unsafe { serv.verified(fd) }) else {
+    let Some(conn) = serv.verified(fd) else {
         set_last_error(SW_ERROR_SESSION_NOT_EXIST);
         return call.set_bool(false);
     };
@@ -813,8 +812,7 @@ fn heartbeat(call: &Call) {
     let mut fd = serv.counters().min_fd;
     // SAFETY: as above.
     while fd <= serv.counters().max_fd {
-        // SAFETY: a live server.
-        if let Some(conn) = unsafe { serv.iterated(fd) } {
+        if let Some(conn) = serv.iterated(fd) {
             let session_id = conn.session_id;
             if session_id > 0 && !serv.healthy(now, conn) {
                 if close {
@@ -851,8 +849,7 @@ fn bind(call: &Call) {
         reason = "(uint32_t) uid, as upstream"
     )]
     let uid = uid as u32;
-    // SAFETY: a live server.
-    let Some(conn) = (unsafe { serv.verified(fd) }) else {
+    let Some(conn) = serv.verified(fd) else {
         return call.set_bool(false);
     };
     let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
@@ -928,8 +925,7 @@ fn get_client_info(call: &Call) {
     let Ok((fd, _, _)) = parsed else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server.
-    let Some(conn) = (unsafe { serv.verified(fd) }) else {
+    let Some(conn) = serv.verified(fd) else {
         return call.set_bool(false);
     };
     let dispatch_mode = serv.config().dispatch_mode;
@@ -953,8 +949,7 @@ fn get_client_info(call: &Call) {
         let cert = unsafe { &*cert };
         add_bytes(call, c"ssl_client_cert", cert.str, cert.length);
     }
-    // SAFETY: a live server.
-    if let Some(server_socket) = unsafe { serv.at(conn.server_fd) } {
+    if let Some(server_socket) = serv.at(conn.server_fd) {
         // SAFETY: the listening socket's address.
         let port = unsafe { swr_v1_clients_address_port(&raw const server_socket.info) };
         call.add_assoc_long(c"server_port", i64::from(port));
@@ -998,8 +993,7 @@ fn get_client_list(call: &Call) {
     let start_fd = if start_session_id == 0 {
         counters.min_fd
     } else {
-        // SAFETY: as above.
-        match unsafe { serv.verified(start_session_id) } {
+        match serv.verified(start_session_id) {
             None => return call.set_bool(false),
             Some(conn) => conn.fd,
         }
@@ -1010,8 +1004,7 @@ fn get_client_list(call: &Call) {
     }
     call.set_array();
     for fd in start_fd + 1..=max_fd {
-        // SAFETY: a live server.
-        if let Some(conn) = unsafe { serv.iterated(fd) } {
+        if let Some(conn) = serv.iterated(fd) {
             let session_id = conn.session_id;
             if session_id <= 0 {
                 continue;
@@ -1053,8 +1046,7 @@ fn exists(call: &Call) {
     let Ok(session_id) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server.
-    let conn = unsafe { serv.verified(session_id) };
+    let conn = serv.verified(session_id);
     call.set_bool(conn.is_some_and(|conn| !closed(conn) && conn.closing == 0));
 }
 
@@ -1066,8 +1058,7 @@ fn protect(call: &Call) {
     let Ok((session_id, value)) = parsed else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server.
-    match unsafe { serv.verified(session_id) } {
+    match serv.verified(session_id) {
         Some(conn) if !closed(conn) => {
             conn.protect = u8::from(value);
             call.set_bool(true);
@@ -1179,8 +1170,7 @@ fn valid(call: &Call) {
     let iterator = iterator(call);
     let max_fd = iterator.server().counters().max_fd;
     for fd in iterator.current_fd..=max_fd {
-        // SAFETY: a live server.
-        let Some(conn) = (unsafe { iterator.server().iterated(fd) }) else {
+        let Some(conn) = iterator.server().iterated(fd) else {
             continue;
         };
         let (session_id, server_fd) = (conn.session_id, conn.server_fd);

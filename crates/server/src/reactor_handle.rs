@@ -70,11 +70,11 @@ impl Reactor {
         let _ = self.interest(sock, REMOVE_READ, 0);
     }
     /// The reactor's own `close` of `sock`, when it has one.
-    pub(crate) fn close(self, sock: *mut SocketRecord) {
-        if let Some(close) = self.fields().close {
+    pub(crate) fn close(self, sock: &mut SocketRecord) -> c_int {
+        self.fields().close.map_or(0, |close| {
             // SAFETY: the reactor's close on one of its live sockets.
-            unsafe { close(self.0, sock.cast()) };
-        }
+            unsafe { close(self.0, (&raw mut *sock).cast()) }
+        })
     }
     pub(crate) fn set_handler(self, fd_type: c_int, event: c_int, handler: Handler) {
         // SAFETY: a live reactor.

@@ -179,8 +179,6 @@ typedef struct swr_v1_server_tables {
 } swr_v1_server_tables;
 
 void *swr_v1_server_session(const swr_v1_server_state *state, long id);
-/* Startup's LC_PREPARE_WORKERS: publish the event pool and number the workers (crates/server/src/worker_methods.rs). */
-void swr_v1_server_workers_start(void *serv);
 void *swr_v1_server_connection(const swr_v1_server_state *state, long key, uint32_t kind);
 swr_v1_server_state *swr_v1_server_state_new(void);
 void swr_v1_server_state_free(swr_v1_server_state *state);

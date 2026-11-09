@@ -156,7 +156,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let pipe = unsafe { (*ctx.other(0)).pipe_master };
             let bus = ctx.tables().message_bus;
             // SAFETY: the live server, its bus holding the request, and the pipe.
-            unsafe { crate::commands::call_command_handler(ctx.serv, bus, id, pipe) };
+            unsafe { crate::commands::call_command_handler(ctx.server(), bus, id, pipe) };
             0
         }
         OP_COMMAND_RESPONSE => {
@@ -185,8 +185,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let port = *unsafe { super::ports(ctx.serv) }.get(usize::try_from(arg).ok()?)?;
             // SAFETY: one of its live ports.
             let port = unsafe { view::port(port) };
-            // SAFETY: the port's live counters.
-            let gs = unsafe { &*port.gs.cast::<crate::shared::PortCounters>() };
+            let gs = port.counters()?;
             let id = ctx.worker_record().id() as usize;
             // SAFETY: the worker's slot of them.
             unsafe { &*gs.connection_nums.wrapping_add(id) }.store(0, Ordering::Relaxed);

@@ -545,7 +545,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_INIT_IPC_MAX_SIZE => {
             // SAFETY: the live server.
-            unsafe { crate::worker_methods::init_ipc_max_size(serv) };
+            unsafe { crate::worker_methods::init_ipc_max_size(ctx.server()) };
             0
         }
         // SAFETY: as above.

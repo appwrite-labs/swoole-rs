@@ -275,8 +275,7 @@ impl Facts for Live<'_> {
         // Server::foreach_connection: each valid connection, max_fd read afresh.
         let mut fd = gs.min_fd;
         while fd <= gs.max_fd {
-            // SAFETY: the live server's connection table.
-            let conn = unsafe { self.serv.at(fd) };
+            let conn = self.serv.at(fd);
             fd += 1;
             let Some(conn) = conn.filter(|conn| conn.active != 0 && !conn.socket.is_null()) else {
                 continue;
@@ -298,8 +297,7 @@ impl Facts for Live<'_> {
     }
 
     fn session(&mut self, id: i64) -> bool {
-        // SAFETY: the live server's connection table.
-        let conn = unsafe { self.serv.verified(id) };
+        let conn = self.serv.verified(id);
         self.connections = conn.map(core::ptr::from_mut).into_iter().collect();
         !self.connections.is_empty()
     }

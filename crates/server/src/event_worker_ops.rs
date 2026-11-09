@@ -224,7 +224,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             swoole_set_worker_id(ctx.worker().id());
             swoole_set_worker_type(SW_EVENT_WORKER);
             // SAFETY: the context's live server and worker.
-            unsafe { crate::worker_methods::init_event_worker(serv, worker) };
+            unsafe { crate::worker_methods::init_event_worker(ctx.server(), worker) };
         }
         OP_CPU_AFFINITY =>
         {
@@ -257,8 +257,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     if op == OP_CONN_AT {
         let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
-        // SAFETY: the context's live server.
-        let conn = unsafe { ctx.server().at(fd) };
+        let conn = ctx.server().at(fd);
         let conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
         // SAFETY: null or a live connection whose socket is null or live.
         let valid = unsafe { crate::reactor_ops::valid(conn) };

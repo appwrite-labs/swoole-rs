@@ -15,8 +15,6 @@
 )]
 use core::ffi::c_void;
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub use commands::call_command_handler;
 pub use commands::{CommandFn, CommandReply, swr_v1_server_command_result};
 pub use server_methods::{swr_v1_server_add_command, swr_v1_server_command};
 

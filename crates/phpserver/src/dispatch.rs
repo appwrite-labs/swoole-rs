@@ -859,8 +859,7 @@ extern "C" fn on_redis_receive(_: Ctx, server: *mut c_void, request: *mut c_void
     // SAFETY: its callers pass their live server.
     let server = unsafe { view::Server::from_raw(server) };
     let fd = head(request).fd;
-    // SAFETY: a live server.
-    let Some(conn) = (unsafe { server.by_session(fd) }) else {
+    let Some(conn) = server.by_session(fd) else {
         log::warning(
             c"php_swoole_redis_server_onReceive",
             format_args!("connection[{fd}] is closed"),
@@ -898,8 +897,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: *mut c_void, request: *mut c_void) 
         length: length as usize,
         address: ptr::null(),
         port: -1,
-        // SAFETY: a live server.
-        server_port: unsafe { server.at(c_int::from(info.server_fd)) }.map_or(-1, |sock| {
+        server_port: server.at(c_int::from(info.server_fd)).map_or(-1, |sock| {
             // SAFETY: the listening socket's own address record.
             i64::from(unsafe { swr_v1_clients_address_port(&raw const sock.info) })
         }),
@@ -981,8 +979,7 @@ pub unsafe extern "C" fn swr_v1_phpserver_on_close(server: *mut c_void, info: *m
         send_wake(server, session_id, true);
     }
     let mut cb = port_callback(server.raw(), info.server_fd, ON_CLOSE);
-    // SAFETY: a live server.
-    let Some(conn) = (unsafe { server.by_session(session_id) }).map(ptr::from_mut) else {
+    let Some(conn) = server.by_session(session_id).map(ptr::from_mut) else {
         return;
     };
     // SAFETY: the session's live connection slot.
