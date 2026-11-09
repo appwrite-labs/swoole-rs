@@ -101,7 +101,8 @@ class Ci(unittest.TestCase):
             result = subprocess.run([sys.executable, ROOT / 'tools/ci.py', *args, *flags],
                                     env=env, capture_output=True, text=True)
             self.gh_calls = log.read_text().splitlines() if log.exists() else []
-        return result.returncode, json.loads(result.stdout or '{}'), result.stderr
+        self.out = result.stdout
+        return result.returncode, json.loads(result.stdout) if result.stdout.startswith(('{', '[')) else {}, result.stderr
 
     def test_wait_defaults_to_the_merge_tier_on_main(self):
         code, result, stderr = self.ci('wait', runs={'c' * 40: ['running', 'success']})
@@ -203,16 +204,35 @@ class Ci(unittest.TestCase):
                       pull(4, '2026-10-01T00:00:00Z', auto=False), pull(5, '2026-10-02T00:00:00Z')]
         pulls = {str(n): [{'mergeable_state': state}] for n, state in
                  [(1, 'dirty'), (2, 'blocked'), (3, 'clean'), (4, 'dirty'), (5, 'blocked')]}
-        checks = {'sha1': [], 'sha2': [{'name': 'hybrid', 'conclusion': 'failure'}, {'name': 'rust', 'conclusion': 'timed_out'},
-                                       {'name': 'gates', 'conclusion': 'failure'}],
-                  'sha3': [{'name': 'rust', 'conclusion': 'success'}, {'name': 'gates', 'conclusion': 'failure'}],
-                  'sha5': [{'name': 'tooling', 'conclusion': None}]}
+        checks = {'sha1': [], 'sha2': [{'name': 'required', 'conclusion': 'failure'}, {'name': 'rust', 'conclusion': 'failure'}],
+                  'sha3': [{'name': 'required', 'conclusion': 'success'}, {'name': 'asan / asan', 'conclusion': 'failure'}],
+                  'sha5': [{'name': 'required', 'conclusion': None}]}
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=open_pulls, pulls=pulls, checks=checks)
-        # 3 only fails the informative gates, 4 has no auto-merge and 5 is still running.
+        # 3 only fails an informative check, 4 has no auto-merge and 5 is still running.
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
-                         (0, [(2, ['hybrid', 'rust']), (1, ['conflicts'])]))
+                         (0, [(2, ['required']), (1, ['conflicts'])]))
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[])
         self.assertEqual((code, result), (2, []))
+
+    def test_new_failures_are_gate_failures_main_does_not_share(self):
+        history = [{'databaseId': 9, 'conclusion': 'cancelled', 'url': 'u9'},
+                   {'databaseId': 8, 'conclusion': 'failure', 'url': 'u8'}]
+        main_phases = {'8': [['build', True], ['abi-native', False], ['timer-native', True]]}
+        with tempfile.TemporaryDirectory() as temp:
+            loop = Path(temp) / 'loop.json'
+            loop.write_text(json.dumps({'phases': [{'phase': 'build', 'failed': False},
+                                                   {'phase': 'abi-native', 'failed': True},
+                                                   {'phase': 'timer-native', 'failed': True},
+                                                   {'phase': 'added-native', 'failed': True}]}))
+            code, _, _ = self.ci('new-failures', str(loop), runs={}, flags=(), history=history, phases=main_phases)
+            self.assertEqual(code, 1)
+            # abi-native fails on main too; timer-native regressed and added-native is new.
+            self.assertIn('new failures: added-native, timer-native', self.out)
+            loop.write_text(json.dumps({'phases': [{'phase': 'abi-native', 'failed': True}]}))
+            code, _, _ = self.ci('new-failures', str(loop), runs={}, flags=(), history=history, phases=main_phases)
+            self.assertEqual(code, 0)
+        code, _, _ = self.ci('new-failures', runs={}, flags=())
+        self.assertEqual(code, 1)
 
     def test_transient_gh_failures_are_retried(self):
         code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'run list': 2, 'api': 1})
