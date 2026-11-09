@@ -46,9 +46,6 @@ pub use file_output::*;
 #[cfg(unix)]
 pub use output::*;
 
-mod initialize;
-pub use initialize::*;
-
 mod deferred;
 pub use deferred::*;
 

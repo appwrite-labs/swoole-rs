@@ -132,7 +132,10 @@ unsafe extern "C" {
     static swr_case_error_event_remove_failed: c_int;
     static swr_case_socket_offsets: [usize; 8];
 
+    // crates/reactor's `new Reactor(max_event, type)` and `delete reactor`.
+    #[link_name = "swr_v1_reactor_new"]
     fn swr_case_reactor_new(max_event: c_int, kind: c_int) -> *mut Reactor;
+    #[link_name = "swr_v1_reactor_delete"]
     fn swr_case_reactor_delete(reactor: *mut Reactor);
     fn swr_case_tg_reactor() -> *mut Reactor;
     fn swr_case_set_tg_reactor(reactor: *mut Reactor);

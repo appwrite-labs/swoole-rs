@@ -47,8 +47,6 @@ pub use swoole_rs_locks::*;
 #[cfg(feature = "php")]
 pub use swoole_rs_phplocks::*;
 
-pub use swoole_rs_wrappers::*;
-
 #[cfg(feature = "php")]
 pub use swoole_rs_phptimer::*;
 

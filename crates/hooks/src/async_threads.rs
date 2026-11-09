@@ -36,7 +36,7 @@ const WRONG_OPERATION: c_int = 509;
 const AIO_BAD_REQUEST: c_int = 4001;
 const AIO_CANCELED: c_int = 4002;
 
-// SAFETY: native/reactor/reactor.cc's.
+// SAFETY: crates/reactor's.
 unsafe extern "C" {
     fn swr_v1_event_set_exit_condition(
         id: c_int,

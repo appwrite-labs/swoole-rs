@@ -97,12 +97,7 @@ impl Callbacks {
 }
 
 /// Installs the built-ins upstream's constructor sets, after its create hook.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_install_builtins(owner: &mut ReactorState) {
-    install_builtins(&mut owner.callbacks);
-}
-
-fn install_builtins(callbacks: &mut Callbacks) {
+pub(crate) fn install_builtins(callbacks: &mut Callbacks) {
     callbacks.set_end(PRIORITY_DEFER_TASK, Some(End::Defer));
     callbacks.set_exit(EXIT_CONDITION_DEFER_TASK, Some(Exit::Defer));
     callbacks.set_end(PRIORITY_IDLE_TASK, Some(End::Idle));
@@ -377,11 +372,11 @@ mod tests {
     }
     /// A fresh state with no callbacks, as `OWNER`.
     fn with_state(test: impl FnOnce(*mut ReactorState)) {
-        let state = crate::swr_v1_reactor_state_new();
+        let state = crate::reactor_state::tests::state(3, 1);
         OWNER.set(state.owner);
         test(state.owner);
         // SAFETY: the state the test made.
-        unsafe { crate::swr_v1_reactor_state_free(state.owner) };
+        unsafe { crate::reactor_state::tests::free(state.owner) };
         take();
     }
 
@@ -540,10 +535,7 @@ mod tests {
             assert!(!(*fields).running);
             (*fields).running = true;
             let mut socket = crate::SocketRecord::with_fd(3, 0);
-            assert_eq!(
-                crate::swr_v1_reactor_state_socket(owner, &raw mut socket, 0, 512),
-                0
-            );
+            assert_eq!((*owner).record(&mut socket, 0, 512), 0);
             assert!(!if_exit(owner));
             execute_end(owner, false);
             assert!((*fields).running);

@@ -86,7 +86,7 @@ const BUS_ALLOCATE: u8 = 1;
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
 // SAFETY: crates/timer's and crates/protocols' C entries,
-// native/reactor/reactor.cc's, and their upstream symbols.
+// crates/reactor's, and their upstream symbols.
 unsafe extern "C-unwind" {
     #[link_name = "_Z19swoole_timer_selectv"]
     fn swoole_timer_select();

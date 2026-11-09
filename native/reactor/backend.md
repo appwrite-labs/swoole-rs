@@ -1,19 +1,20 @@
 # Reactor construction and backends
 
 Upstream's poll/epoll/kqueue backends are Rust over the reactor state
-(`crates/reactor/src/reactor_state.rs`, `wait_loop.rs`, `change.rs`); the C++
-constructor and destructor in `reactor.cc` open and close it.
+(`crates/reactor/src/reactor_state.rs`, `wait_loop.rs`, `change.rs`). The
+`Reactor`'s constructor and destructor are Rust too (`swr_v1_reactor_new`,
+`swr_v1_reactor_delete`, behind `swoole_event_init` and `swoole_event_free`).
 
 ## Construction
 
-The constructor's backend plan (`swr_v1_reactor_backend_type`) preserves the
-requested type and chooses the compiled factory separately. AUTO keeps epoll
+The constructor (`select` in `reactor_state.rs`) preserves the requested type and
+chooses the compiled backend separately. AUTO keeps epoll
 priority, then runtime-enabled kqueue, then poll. An explicitly requested but
 uncompiled type keeps its original `type_` value while selecting poll. kqueue
-enablement is observed only when Rust asks at the AUTO decision point.
+enablement is read only at the AUTO decision point.
 
 Once the backend is ready the constructor sets the write functions and timeout,
-calls the create hook, then `swr_v1_reactor_install_builtins` sets the built-in end
+calls the create hook, then installs the built-in end
 callbacks and exit conditions ([callbacks.md](callbacks.md)).
 
 ## Registration

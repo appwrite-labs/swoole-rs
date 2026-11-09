@@ -1,6 +1,6 @@
 //! What `Swoole\Event` drives outside the crate (once native/phpevents/event.cc's
 //! table): the thread's reactor and its sockets (crates/reactor, with
-//! native/reactor/reactor.cc's `Reactor` lifetime, wait and exit check), the
+//! crates/reactor's `Reactor` lifetime, wait and exit check), the
 //! server's role, timers, and Swoole's PHP error reports.
 use std::ffi::{CStr, c_int, c_void};
 use swoole_rs_corebase::constants::{EventType, FdType};

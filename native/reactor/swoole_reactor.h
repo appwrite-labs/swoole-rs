@@ -14,18 +14,9 @@ static_assert(SW_EVENT_READ == (1 << 9) && SW_EVENT_WRITE == (1 << 10) && SW_EVE
 
 namespace swoole {
 
-class Reactor;
-
-class ReactorStateOwner {
-  protected:
-    swr_v1_reactor_prepared state_ = swr_v1_reactor_state_new();
-    ReactorStateOwner() { if (!state_.owner) throw std::bad_alloc(); }
-    ReactorStateOwner(const ReactorStateOwner &) = delete;
-    ReactorStateOwner &operator=(const ReactorStateOwner &) = delete;
-    ~ReactorStateOwner() { swr_v1_reactor_state_free(state_.owner); }
-};
-
-class Reactor : private ReactorStateOwner {
+// Methods over Rust's reactor state, which a Reactor pointer is: its fields are
+// swr_v1_reactor_head's. swoole_event_init/free (crates/reactor) make and free it.
+class Reactor : public swr_v1_reactor_head {
   public:
     enum Type {
         TYPE_AUTO,
@@ -65,24 +56,8 @@ class Reactor : private ReactorStateOwner {
         EXIT_CONDITION_USER_AFTER_DEFAULT,
     };
 
-    int &type_ = state_.fields->kind;
-    void *&ptr = state_.fields->ptr;
-    int &native_handle = state_.fields->native_handle;
-    uint32_t &max_event_num = state_.fields->max_event_num;
-    bool &ready_ = state_.fields->ready;
-    bool &running = state_.fields->running;
-    bool &start = state_.fields->start;
-    bool &once = state_.fields->once;
-    bool &wait_exit = state_.fields->wait_exit;
-    bool &destroyed = state_.fields->destroyed;
-    bool &bailout = state_.fields->bailout;
-    bool &timed_out = state_.fields->timed_out;
-    int32_t &timeout_msec = state_.fields->timeout_msec;
-    uint16_t &id = state_.fields->id;
-    uint32_t &max_socket = state_.fields->max_socket;
-#ifdef HAVE_MALLOC_TRIM
-    time_t &last_malloc_trim_time = state_.fields->last_malloc_trim_time;
-#endif
+    Reactor() = delete;
+    ~Reactor() = delete;
     swr_v1_reactor_state *handle() const { return state_.owner; }
 
     // ReactorEpoll/ReactorKqueue/ReactorPoll add, set and del are Rust's (swr_v1_reactor_change).
@@ -102,30 +77,22 @@ class Reactor : private ReactorStateOwner {
 
     int wait();
 
-    swr_v1_reactor_deferred *&defer_tasks = state_.fields->defer_tasks;
-    swr_v1_reactor_deferred *&destroy_callbacks = state_.fields->destroy_callbacks;
-    swr_v1_reactor_task &idle_task = state_.fields->idle_task;
-    swr_v1_reactor_task &future_task = state_.fields->future_task;
-
     using Write = ssize_t (*)(Reactor *, network::Socket *, const void *, size_t);
     using Writev = ssize_t (*)(Reactor *, network::Socket *, const iovec *, size_t);
     using Close = int (*)(Reactor *, network::Socket *);
-    Write &write = state_.fields->write;
-    Writev &writev = state_.fields->writev;
-    Close &close = state_.fields->close;
 
   private:
     static_assert(SW_MAX_FDTYPE == 32, "the Rust handler tables hold 32 fd types");
 
   public:
-    // Read-only views of the Rust defaults, set through set_default_*_handler.
-    const ReactorHandler &default_write_handler =
-        *reinterpret_cast<const ReactorHandler *>(swr_v1_reactor_handlers_default(state_.handlers, 1));
-    const ReactorHandler &default_error_handler =
-        *reinterpret_cast<const ReactorHandler *>(swr_v1_reactor_handlers_default(state_.handlers, 2));
+    // The Rust defaults, set through set_default_*_handler.
+    ReactorHandler default_write_handler() const {
+        return *reinterpret_cast<const ReactorHandler *>(swr_v1_reactor_handlers_default(state_.handlers, 1));
+    }
+    ReactorHandler default_error_handler() const {
+        return *reinterpret_cast<const ReactorHandler *>(swr_v1_reactor_handlers_default(state_.handlers, 2));
+    }
 
-    explicit Reactor(int max_event = SW_REACTOR_MAXEVENTS, Type _type = TYPE_AUTO);
-    ~Reactor();
     // if_exit, wait and the end callbacks and exit conditions are Rust's (crates/reactor's
     // callbacks.rs), keyed as upstream's maps were and holding plain functions.
     bool if_exit();
@@ -239,7 +206,7 @@ class Reactor : private ReactorStateOwner {
     }
 
     int trigger_close_event(Event *event) {
-        return default_error_handler(this, event);
+        return default_error_handler()(this, event);
     }
 
     void set_wait_exit(const bool enable) {

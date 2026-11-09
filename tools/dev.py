@@ -144,7 +144,9 @@ def plan(args, reports):
         return php + [argument for extension in dependencies
                       if sys.platform.startswith('linux') and extension not in args.php_extension and extension not in builtin
                       for argument in ['--php-extension', extension]]
-    for module in modules:
+    # A module that is only patches (wrappers) has no crate to test.
+    crates = Path(__file__).resolve().parents[1] / 'crates'
+    for module in (m for m in modules if (crates / m / 'Cargo.toml').exists()):
         add(module + '-unit', 'cargo', 'test', '--locked', '-p', 'swoole-rs-' + module,
             *([args.test] if args.test and args.lane == 'edit' else []))
     if args.lane == 'edit':

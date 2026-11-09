@@ -8,7 +8,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_process::signal::swoole_signal_dispatch;
 use swoole_rs_process::wait::swr_v1_wait_count;
 
-// SAFETY: native/reactor/reactor.cc's, crates/coroutine's and crates/timer's.
+// SAFETY: crates/reactor's, crates/coroutine's and crates/timer's.
 unsafe extern "C" {
     fn swr_v1_event_current() -> *mut c_void;
     fn swr_v1_coroutine_current() -> *mut c_void;
@@ -33,7 +33,7 @@ mod registry {
     /// `Reactor::EXIT_CONDITION_WAIT_PID`.
     const EXIT_CONDITION_WAIT_PID: c_int = 2;
 
-    // SAFETY: native/reactor/reactor.cc's and crates/coroutine's.
+    // SAFETY: crates/reactor's and crates/coroutine's.
     unsafe extern "C" {
         fn swr_v1_event_set_exit_condition(
             id: c_int,

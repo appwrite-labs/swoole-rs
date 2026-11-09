@@ -126,7 +126,7 @@ unsafe extern "C-unwind" fn call_plain(_timer: *mut c_void, node: *mut TimerNode
     }
 }
 
-// SAFETY: native/reactor/reactor.cc's and Swoole's signal API.
+// SAFETY: crates/reactor's and Swoole's signal API.
 unsafe extern "C-unwind" {
     fn swr_v1_event_set_end_callback(id: c_int, callback: extern "C-unwind" fn());
     fn swr_v1_event_set_exit_condition(

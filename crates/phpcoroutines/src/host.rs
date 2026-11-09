@@ -48,7 +48,7 @@ unsafe extern "C" {
     fn swr_cpp_phpcoroutines_stack(co: Co, size: *mut usize) -> *mut c_void;
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
-    // native/reactor/reactor.cc.
+    // crates/reactor.
     fn swr_v1_event_set_exit_condition(
         id: c_int,
         condition: unsafe extern "C" fn(*mut usize) -> bool,

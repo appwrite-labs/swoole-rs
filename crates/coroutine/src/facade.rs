@@ -28,7 +28,7 @@ type Func = *const c_void;
 type Routine = Option<unsafe extern "C-unwind" fn(*mut c_void)>;
 
 // SAFETY: native/coroutine/coroutine.cc's, and crates/timer's and
-// native/reactor/reactor.cc's upstream functions.
+// crates/reactor's upstream functions.
 unsafe extern "C-unwind" {
     fn swr_cpp_coroutine_scheduler() -> *mut c_void;
     fn swr_cpp_coroutine_create(routine: Routine, arg: *mut c_void, func: Func) -> c_long;

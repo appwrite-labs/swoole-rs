@@ -24,7 +24,7 @@ pub(crate) const ERROR: usize = 2;
 pub struct Handlers {
     tables: [[Option<Handler>; FD_TYPES]; 3],
     /// Write and error fallbacks (`default_write_handler`, `default_error_handler`).
-    defaults: [Option<Handler>; 2],
+    pub(crate) defaults: [Option<Handler>; 2],
 }
 
 /// `Reactor::isset_*_event`'s order: the table an `events` mask names, if any.

@@ -1,5 +1,9 @@
-//! Reactor public state and backend resources share one Rust lifetime. Native
-//! reference fields are borrowed slots, never owning copies or callback proxies.
+// SPDX-License-Identifier: Apache-2.0
+// Compatibility derived from Swoole v6.2.4 src/wrapper/event.cc and src/reactor/base.cc
+// (Swoole contributors).
+//! The `Reactor` object: its public fields and backend resources share one Rust
+//! lifetime, from its constructor and `swoole_event_init` to its destructor and
+//! `swoole_event_free`. The C++ class is methods over this state (`swoole_reactor.h`).
 use crate::{SocketRecord, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
 use std::ptr;
@@ -47,7 +51,11 @@ pub struct ReactorFields {
     pub future_task: ReactorTask,
 }
 
+/// The C++ `Reactor` object (`swr_v1_reactor_head`, which the methods-only class
+/// extends): its prepared views of this state, then its public fields, then Rust's own.
+#[repr(C)]
 pub struct ReactorState {
+    pub(crate) head: ReactorPrepared,
     pub(crate) fields: ReactorFields,
     pub(crate) registry: Registry,
     pub(crate) handlers: Handlers,
@@ -56,6 +64,16 @@ pub struct ReactorState {
     pub(crate) backend_limit: c_int,
     pub(crate) callbacks: crate::callbacks::Callbacks,
 }
+// swoole_rs_reactor.h asserts the same layout for swr_v1_reactor_head.
+const _: () = assert!(
+    std::mem::offset_of!(ReactorState, fields) == size_of::<ReactorPrepared>(),
+    "Reactor's fields follow its prepared views"
+);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(
+    size_of::<ReactorPrepared>() == 32 && size_of::<ReactorFields>() == 128,
+    "swr_v1_reactor_head's layout"
+);
 
 pub(crate) enum Backend {
     None,
@@ -92,112 +110,109 @@ pub struct ReactorPrepared {
     pub registry: *mut Registry,
     pub handlers: *mut Handlers,
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_state_new() -> ReactorPrepared {
-    let Some(mut state) = crate::owner::try_owner(|| ReactorState {
-        fields: ReactorFields {
-            kind: 0,
-            ptr: ptr::null_mut(),
-            native_handle: -1,
-            max_event_num: 0,
-            ready: false,
-            running: false,
-            start: false,
-            once: false,
-            wait_exit: false,
-            destroyed: false,
-            bailout: false,
-            timed_out: false,
-            timeout_msec: 0,
-            id: 0,
-            max_socket: 0,
-            last_malloc_trim_time: 0,
-            write: None,
-            writev: None,
-            close: None,
-            defer_tasks: ptr::null_mut(),
-            destroy_callbacks: ptr::null_mut(),
-            idle_task: ReactorTask {
-                callback: None,
-                data: ptr::null_mut(),
-            },
-            future_task: ReactorTask {
-                callback: None,
-                data: ptr::null_mut(),
-            },
-        },
-        registry: Registry::default(),
-        handlers: Handlers::default(),
-        backend: Backend::None,
-        backend_fd: -1,
-        backend_limit: 0,
-        callbacks: crate::callbacks::Callbacks::default(),
-    }) else {
-        return ReactorPrepared {
-            owner: ptr::null_mut(),
-            fields: ptr::null_mut(),
-            registry: ptr::null_mut(),
-            handlers: ptr::null_mut(),
-        };
-    };
-    ReactorPrepared {
-        fields: &raw mut state.fields,
-        registry: &raw mut state.registry,
-        handlers: &raw mut state.handlers,
-        owner: Box::into_raw(state),
-    }
-}
-/// # Safety
-/// owner is null or the unique allocation returned by `state_new`; views have ended.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_state_free(owner: *mut ReactorState) {
-    // SAFETY: forwards unique ownership.
-    unsafe { crate::owner::release(owner) };
-}
 
-/// Open the selected backend (`Reactor::Type` values). 0 ready,1 kernel failure,
-/// 2 allocation refusal,3 negative array bound; errno is the kernel's on failure.
-/// # Safety
-/// owner is live/exclusive, with no backend installed yet.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_state_open(
-    owner: *mut ReactorState,
-    kind: c_int,
-    count: c_int,
-) -> c_int {
-    // SAFETY: exclusive initialization, with no native callback.
-    let owner = unsafe { &mut *owner };
-    owner.fields.kind = kind;
-    #[cfg(target_os = "linux")]
-    if kind == 1 {
-        // SAFETY: the fixed hint matches the original epoll_create argument.
-        owner.backend_fd = unsafe { libc::epoll_create(512) };
-    }
-    #[cfg(any(
+/// `Reactor::type_` for a requested type (`Reactor::Type`: auto 0, epoll 1, kqueue 2,
+/// poll 3), and the backend that opens for it: auto picks epoll, else kqueue when
+/// `SwooleG.enable_kqueue`, else poll; a type not compiled in opens poll.
+fn select(requested: c_int) -> (c_int, c_int) {
+    let linux = cfg!(target_os = "linux");
+    let bsd = cfg!(any(
         target_os = "macos",
         target_os = "freebsd",
         target_os = "openbsd",
         target_os = "netbsd",
         target_os = "dragonfly"
-    ))]
-    if kind == 2 {
-        // SAFETY: kqueue creates a new descriptor owned by this state.
-        owner.backend_fd = unsafe { libc::kqueue() };
-    }
-    if kind != 3 && owner.backend_fd < 0 {
-        return 1;
-    }
-    let Ok(length) = usize::try_from(count) else {
-        return 3;
+    ));
+    let selected = match requested {
+        0 if linux => 1,
+        0 if bsd && swoole_rs_corebase::swr_v1_core_enable_kqueue() => 2,
+        0 => 3,
+        _ => requested,
     };
-    owner.backend = match kind {
+    let opened = match selected {
+        1 if linux => 1,
+        2 if bsd => 2,
+        _ => 3,
+    };
+    (selected, opened)
+}
+
+impl ReactorState {
+    /// `Reactor::Reactor(max_event, type)` without its native effects: the state with
+    /// the backend `requested` selects open for `count` events, or not ready after
+    /// logging the kernel's refusal. Allocation failure aborts (upstream's `bad_alloc`),
+    /// as does a negative `count` (`bad_array_new_length`).
+    pub(crate) fn open(requested: c_int, count: c_int) -> &'static mut Self {
+        let (kind, opened) = select(requested);
+        let owner = Box::leak(Box::new(Self {
+            head: ReactorPrepared {
+                owner: ptr::null_mut(),
+                fields: ptr::null_mut(),
+                registry: ptr::null_mut(),
+                handlers: ptr::null_mut(),
+            },
+            fields: ReactorFields {
+                kind,
+                ptr: ptr::null_mut(),
+                native_handle: -1,
+                max_event_num: 0,
+                ready: false,
+                running: false,
+                start: false,
+                once: false,
+                wait_exit: false,
+                destroyed: false,
+                bailout: false,
+                timed_out: false,
+                timeout_msec: 0,
+                id: 0,
+                max_socket: 0,
+                last_malloc_trim_time: 0,
+                write: None,
+                writev: None,
+                close: None,
+                defer_tasks: ptr::null_mut(),
+                destroy_callbacks: ptr::null_mut(),
+                idle_task: ReactorTask {
+                    callback: None,
+                    data: ptr::null_mut(),
+                },
+                future_task: ReactorTask {
+                    callback: None,
+                    data: ptr::null_mut(),
+                },
+            },
+            registry: Registry::default(),
+            handlers: Handlers::default(),
+            backend: Backend::None,
+            backend_fd: -1,
+            backend_limit: 0,
+            callbacks: crate::callbacks::Callbacks::default(),
+        }));
+        if !owner.open_backend(opened, count) {
+            let (origin, call) = if opened == 1 {
+                (c"ReactorEpoll::ReactorEpoll", "epoll_create")
+            } else {
+                (c"ReactorKqueue::ReactorKqueue", "kqueue")
+            };
+            swoole_rs_corebase::log::sys_warning(origin, format_args!("{call}() failed"));
+        }
+        owner.head = ReactorPrepared {
+            owner: ptr::from_mut(owner),
+            fields: &raw mut owner.fields,
+            registry: &raw mut owner.registry,
+            handlers: &raw mut owner.handlers,
+        };
+        owner
+    }
+
+    /// Opens backend `kind` (1 epoll, 2 kqueue, 3 poll) for `count` events: false when
+    /// the kernel refuses its descriptor, errno being the kernel's.
+    fn open_backend(&mut self, kind: c_int, count: c_int) -> bool {
         #[cfg(target_os = "linux")]
-        1 => {
-            let array = crate::swr_v1_reactor_epoll_new(length);
-            if array.is_null() {
-                return 2;
-            }
-            Backend::Epoll(array)
+        if kind == 1 {
+            // SAFETY: the fixed hint matches the original epoll_create argument.
+            self.backend_fd = unsafe { libc::epoll_create(512) };
         }
         #[cfg(any(
             target_os = "macos",
@@ -206,25 +221,174 @@ pub unsafe extern "C" fn swr_v1_reactor_state_open(
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        2 => {
-            let array = crate::swr_v1_reactor_kqueue_new(length);
-            if array.is_null() {
-                return 2;
-            }
-            Backend::Kqueue(array, count)
+        if kind == 2 {
+            // SAFETY: kqueue creates a new descriptor owned by this state.
+            self.backend_fd = unsafe { libc::kqueue() };
         }
-        _ => {
-            let array = crate::swr_v1_reactor_poll_new(length);
-            if array.is_null() {
-                return 2;
-            }
-            Backend::Poll(array)
+        if kind != 3 && self.backend_fd < 0 {
+            return false;
         }
-    };
-    owner.backend_limit = count;
-    owner.fields.native_handle = owner.backend_fd;
-    owner.fields.max_event_num = count.unsigned_abs();
-    owner.fields.ready = true;
+        let Ok(length) = usize::try_from(count) else {
+            std::process::abort();
+        };
+        self.backend = match kind {
+            #[cfg(target_os = "linux")]
+            1 => Backend::Epoll(allocated(crate::swr_v1_reactor_epoll_new(length))),
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            2 => Backend::Kqueue(allocated(crate::swr_v1_reactor_kqueue_new(length)), count),
+            _ => Backend::Poll(allocated(crate::swr_v1_reactor_poll_new(length))),
+        };
+        self.backend_limit = count;
+        self.fields.native_handle = self.backend_fd;
+        self.fields.max_event_num = count.unsigned_abs();
+        self.fields.ready = true;
+        true
+    }
+}
+
+/// A backend array, aborting as upstream's `bad_alloc` when it could not be allocated.
+fn allocated<T>(array: *mut T) -> *mut T {
+    if array.is_null() {
+        std::alloc::handle_alloc_error(std::alloc::Layout::new::<T>());
+    }
+    array
+}
+
+/// `SW_GLOBAL_HOOK_ON_REACTOR_CREATE` and `SW_GLOBAL_HOOK_ON_REACTOR_DESTROY`.
+const HOOK_ON_REACTOR_CREATE: c_int = 5;
+const HOOK_ON_REACTOR_DESTROY: c_int = 9;
+
+#[cfg(feature = "upstream-symbols")]
+// SAFETY: crates/tls's `Reactor` statics and crates/hooks's `System::init_reactor`,
+// under their upstream symbols.
+unsafe extern "C-unwind" {
+    #[link_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm"]
+    fn reactor_write(
+        reactor: *mut c_void,
+        socket: *mut SocketRecord,
+        data: *const c_void,
+        length: usize,
+    ) -> isize;
+    #[link_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm"]
+    fn reactor_writev(
+        reactor: *mut c_void,
+        socket: *mut SocketRecord,
+        iov: *const libc::iovec,
+        count: usize,
+    ) -> isize;
+    #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
+    fn reactor_close(reactor: *mut c_void, socket: *mut SocketRecord) -> c_int;
+    #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
+    fn system_init_reactor(reactor: *mut c_void);
+}
+#[cfg(feature = "upstream-symbols")]
+// SAFETY: crates/tls's, under its upstream symbol, and crates/clients's.
+unsafe extern "C" {
+    fn swr_v1_clients_init_reactor(reactor: *mut c_void);
+    #[link_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE"]
+    fn reactor_writable_callback(reactor: *mut c_void, event: *mut c_void) -> c_int;
+}
+
+/// `new Reactor(max_event, type)`: the state [`ReactorState::open`] makes and, once
+/// ready, upstream's write, writev, close and default write handler, the create hook
+/// and then the built-in end callbacks and exit conditions. The write functions are
+/// crates/tls's, so only the hybrid (`upstream-symbols`) sets them.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *mut c_void {
+    let owner = ReactorState::open(kind, max_event);
+    if !owner.fields.ready {
+        return ptr::from_mut(owner).cast();
+    }
+    owner.fields.timeout_msec = -1;
+    #[cfg(feature = "upstream-symbols")]
+    {
+        owner.fields.write = Some(reactor_write);
+        owner.fields.writev = Some(reactor_writev);
+        owner.fields.close = Some(reactor_close);
+        owner.handlers.defaults[0] = Some(reactor_writable_callback);
+    }
+    let state = ptr::from_mut(owner);
+    if swoole_rs_corebase::swoole_isset_hook(HOOK_ON_REACTOR_CREATE) {
+        // SAFETY: hooks receive the live `Reactor`.
+        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_ON_REACTOR_CREATE, state.cast()) };
+    }
+    // SAFETY: the live state; the hook has returned.
+    crate::callbacks::install_builtins(unsafe { &mut (*state).callbacks });
+    state.cast()
+}
+
+/// `delete reactor`: marks it destroyed, runs its destroy callbacks, closes its
+/// backend, calls the destroy hook and frees it.
+///
+/// # Safety
+/// `reactor` is from [`swr_v1_reactor_new`] and nothing uses it afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
+    let state = reactor.cast::<ReactorState>();
+    // SAFETY: as the caller promises; this borrow ends before the callbacks run.
+    let fields = unsafe { &mut (*state).fields };
+    fields.destroyed = true;
+    let queue = fields.destroy_callbacks;
+    // SAFETY: the state's own queue, which only its drop frees.
+    unsafe { crate::swr_v1_reactor_deferred_run(queue) };
+    // SAFETY: the live state, which no reference holds; the callbacks have returned.
+    unsafe { (*state).close_backend() };
+    if swoole_rs_corebase::swoole_isset_hook(HOOK_ON_REACTOR_DESTROY) {
+        // SAFETY: hooks receive the live `Reactor`.
+        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_ON_REACTOR_DESTROY, reactor) };
+    }
+    // SAFETY: as the caller promises: `ReactorState::open`'s allocation, used no more.
+    drop(unsafe { Box::from_raw(state) });
+}
+
+/// `int swoole_event_init(int flags)`: the thread's `Reactor` with
+/// `SW_REACTOR_MAXEVENTS` events, waiting to exit under `SW_EVENTLOOP_WAIT_EXIT`, and the
+/// coroutine system's and client's handlers set; `SW_ERR` when no backend opens.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_Z17swoole_event_initi")]
+#[must_use]
+pub extern "C-unwind" fn swoole_event_init(flags: c_int) -> c_int {
+    const SW_REACTOR_MAXEVENTS: c_int = 4096;
+    const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
+    let reactor = swr_v1_reactor_new(SW_REACTOR_MAXEVENTS, 0);
+    // SAFETY: the new reactor, borrowed for these writes alone.
+    let fields = unsafe { &mut (*reactor.cast::<ReactorState>()).fields };
+    if !fields.ready {
+        // SAFETY: the reactor just made, which nothing else holds.
+        unsafe { swr_v1_reactor_delete(reactor) };
+        return -1;
+    }
+    fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0;
+    // SAFETY: registers handlers on the new reactor.
+    unsafe { system_init_reactor(reactor) };
+    // SAFETY: as above.
+    unsafe { swr_v1_clients_init_reactor(reactor) };
+    swoole_rs_corebase::set_thread_reactor(reactor);
+    0
+}
+
+/// `int swoole_event_free()`: deletes the thread's `Reactor`, then clears it; `SW_ERR`
+/// without one.
+#[cfg(feature = "upstream-symbols")]
+#[unsafe(export_name = "_Z17swoole_event_freev")]
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers, `swoole_event_wait` among them, ignore it as upstream's do"
+)]
+pub extern "C-unwind" fn swoole_event_free() -> c_int {
+    let reactor = swoole_rs_corebase::thread_reactor();
+    if reactor.is_null() {
+        return -1;
+    }
+    // SAFETY: the thread's reactor, which `swoole_event_init` made; it is cleared below.
+    unsafe { swr_v1_reactor_delete(reactor) };
+    swoole_rs_corebase::set_thread_reactor(ptr::null_mut());
     0
 }
 #[repr(C)]
@@ -233,47 +397,44 @@ pub struct ReactorBackendView {
     pub sockets: *mut *mut c_void,
     pub backend: u32,
 }
-/// # Safety
-/// owner is live; borrowed arrays remain owned until `state_free`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_state_backend(
-    owner: *mut ReactorState,
-) -> ReactorBackendView {
-    // SAFETY: the state is live; no reference crosses a callback.
-    let backend = unsafe { &(*owner).backend };
-    let mut view = ReactorBackendView {
-        events: ptr::null_mut(),
-        sockets: ptr::null_mut(),
-        backend: 0,
-    };
-    match *backend {
-        Backend::None => (),
-        Backend::Poll(array) => {
-            // SAFETY: this state's live snapshot.
-            view.events = unsafe { crate::swr_v1_reactor_poll_data(array) }.cast();
-            // SAFETY: the same snapshot owns the socket array.
-            view.sockets = unsafe { crate::swr_v1_reactor_poll_sockets(array) };
+impl ReactorState {
+    /// The backend's arrays, which stay owned until the state is freed.
+    pub(crate) fn backend_view(&self) -> ReactorBackendView {
+        let backend = &self.backend;
+        let mut view = ReactorBackendView {
+            events: ptr::null_mut(),
+            sockets: ptr::null_mut(),
+            backend: 0,
+        };
+        match *backend {
+            Backend::None => (),
+            Backend::Poll(array) => {
+                // SAFETY: this state's live snapshot.
+                view.events = unsafe { crate::swr_v1_reactor_poll_data(array) }.cast();
+                // SAFETY: the same snapshot owns the socket array.
+                view.sockets = unsafe { crate::swr_v1_reactor_poll_sockets(array) };
+            }
+            #[cfg(target_os = "linux")]
+            Backend::Epoll(array) => {
+                // SAFETY: the live epoll output array.
+                view.events = unsafe { crate::swr_v1_reactor_epoll_data(array) }.cast();
+                view.backend = 1;
+            }
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Backend::Kqueue(array, _) => {
+                // SAFETY: the live kevent output array.
+                view.events = unsafe { crate::swr_v1_reactor_kqueue_data(array) }.cast();
+                view.backend = 2;
+            }
         }
-        #[cfg(target_os = "linux")]
-        Backend::Epoll(array) => {
-            // SAFETY: the live epoll output array.
-            view.events = unsafe { crate::swr_v1_reactor_epoll_data(array) }.cast();
-            view.backend = 1;
-        }
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "openbsd",
-            target_os = "netbsd",
-            target_os = "dragonfly"
-        ))]
-        Backend::Kqueue(array, _) => {
-            // SAFETY: the live kevent output array.
-            view.events = unsafe { crate::swr_v1_reactor_kqueue_data(array) }.cast();
-            view.backend = 2;
-        }
+        view
     }
-    view
 }
 /// Actual kernel wait over the owner's stable arrays. No native callbacks run.
 /// # Safety
@@ -377,41 +538,6 @@ pub(crate) unsafe fn before_wait(owner: *mut ReactorState) {
     }
 }
 
-/// Close backend resources at the native impl destruction point, before destroy hooks.
-/// # Safety
-/// owner is live/exclusive; backend arrays have no active wait or consumer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_state_close_backend(owner: *mut ReactorState) {
-    // SAFETY: exclusive state, no callback or kernel wait is active.
-    let owner = unsafe { &mut *owner };
-    owner.close_backend();
-}
-
-/// Private backend descriptor, independent of the public compatibility slot.
-/// # Safety
-/// owner is a live state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_state_descriptor(owner: *const ReactorState) -> c_int {
-    // SAFETY: immutable observation of a live state.
-    unsafe { (*owner).backend_fd }
-}
-/// Keep registry and socket flags in one operation. op: add=0,set=1,delete=2.
-/// Returns -2 only when add cannot allocate, without changing the socket flags.
-/// # Safety
-/// State and socket are distinct live/exclusive records; no native effect runs.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_state_socket(
-    owner: *mut ReactorState,
-    socket: *mut SocketRecord,
-    op: u32,
-    events: c_int,
-) -> c_int {
-    // SAFETY: live exclusively lent records, not accessed by any callback.
-    let state = unsafe { &mut *owner };
-    // SAFETY: socket is distinct from the state and exclusively lent.
-    state.record(unsafe { &mut *socket }, op, events)
-}
-
 impl ReactorState {
     /// `Reactor::_add` (0), `_set` (1) and `_del` (2): the registry and the socket's
     /// flags together. -2 when add cannot allocate, leaving the flags alone.
@@ -450,7 +576,7 @@ impl ReactorState {
         0
     }
 
-    fn close_backend(&mut self) {
+    pub(crate) fn close_backend(&mut self) {
         if self.backend_fd >= 0 {
             // SAFETY: this state owns the descriptor and invalidates ownership immediately.
             unsafe { libc::close(self.backend_fd) };
@@ -484,36 +610,44 @@ impl ReactorState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    /// A state with backend `kind` open for `count` events: `new Reactor` without its
+    /// native effects.
+    pub(crate) fn state(kind: c_int, count: c_int) -> ReactorPrepared {
+        ReactorState::open(kind, count).head
+    }
+    pub(crate) unsafe fn free(owner: *mut ReactorState) {
+        drop(unsafe { Box::from_raw(owner) });
+    }
     #[test]
     fn owner_keeps_stable_public_slots_and_socket_registry() {
         unsafe {
-            let state = swr_v1_reactor_state_new();
-            assert!(!state.owner.is_null());
+            let state = state(3, 4);
             let fields = state.fields;
-            assert_eq!((*fields).native_handle, -1);
-            assert_eq!(swr_v1_reactor_state_open(state.owner, 3, 4), 0);
-            assert_eq!(state.fields, fields);
+            assert_eq!(
+                state.owner.cast::<ReactorPrepared>(),
+                &raw mut (*state.owner).head
+            );
+            assert_eq!(fields, &raw mut (*state.owner).fields);
+            assert_eq!((*fields).kind, 3);
+            assert!((*fields).ready);
             assert_eq!((*state.owner).backend_limit, 4);
             let mut socket = SocketRecord::with_fd(123, 0);
-            assert_eq!(
-                swr_v1_reactor_state_socket(state.owner, &raw mut socket, 0, 512),
-                0
-            );
+            assert_eq!((*state.owner).record(&mut socket, 0, 512), 0);
             assert_eq!(socket.events, 512);
             assert_eq!(socket.removed, 0);
             assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 1);
-            swr_v1_reactor_state_socket(state.owner, &raw mut socket, 1, 1024);
+            (*state.owner).record(&mut socket, 1, 1024);
             assert_eq!(socket.events, 1024);
-            swr_v1_reactor_state_socket(state.owner, &raw mut socket, 2, 0);
+            (*state.owner).record(&mut socket, 2, 0);
             assert_eq!(socket.events, 0);
             assert_eq!(socket.removed, 1);
             assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 0);
             before_wait(state.owner);
             assert!((*fields).running && (*fields).start);
             assert_eq!((*fields).timeout_msec, -1);
-            swr_v1_reactor_state_free(state.owner);
+            free(state.owner);
         }
     }
     #[test]
@@ -529,16 +663,12 @@ mod tests {
         let native_kind = 2;
         for kind in [3, native_kind] {
             unsafe {
-                let state = swr_v1_reactor_state_new();
-                assert_eq!(swr_v1_reactor_state_open(state.owner, kind, 4), 0);
-                let descriptor = swr_v1_reactor_state_descriptor(state.owner);
+                let state = state(kind, 4);
+                let descriptor = (*state.owner).backend_fd;
                 let mut fds = [0; 2];
                 assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
                 let mut socket = SocketRecord::with_fd(fds[0], 0);
-                assert_eq!(
-                    swr_v1_reactor_state_socket(state.owner, &raw mut socket, 0, 512),
-                    0
-                );
+                assert_eq!((*state.owner).record(&mut socket, 0, 512), 0);
                 #[cfg(target_os = "linux")]
                 if kind == 1 {
                     assert_eq!(
@@ -566,25 +696,22 @@ mod tests {
                 }
                 assert_eq!(libc::write(fds[1], b"a".as_ptr().cast(), 1), 1);
                 (*state.fields).timeout_msec = 0;
-                let view = swr_v1_reactor_state_backend(state.owner);
+                let view = (*state.owner).backend_view();
                 let mut entries = 0;
                 assert_eq!(kernel_wait(state.owner, false, &raw mut entries), 1);
-                assert_eq!(
-                    view.events,
-                    swr_v1_reactor_state_backend(state.owner).events
-                );
+                assert_eq!(view.events, (*state.owner).backend_view().events);
                 if kind == 3 {
                     assert_eq!(entries, 1);
                 }
                 // Public handle assignment never transfers or changes private ownership.
                 (*state.fields).native_handle = -1;
-                assert_eq!(swr_v1_reactor_state_descriptor(state.owner), descriptor);
-                swr_v1_reactor_state_close_backend(state.owner);
+                assert_eq!((*state.owner).backend_fd, descriptor);
+                (*state.owner).close_backend();
                 if descriptor >= 0 {
                     assert_eq!(libc::fcntl(descriptor, libc::F_GETFD), -1);
                 }
                 assert_eq!((*state.fields).native_handle, -1);
-                swr_v1_reactor_state_free(state.owner);
+                free(state.owner);
                 libc::close(fds[0]);
                 libc::close(fds[1]);
             }
@@ -602,14 +729,13 @@ mod tests {
         #[cfg(not(target_os = "linux"))]
         let kind = 2;
         unsafe {
-            let state = swr_v1_reactor_state_new();
-            assert_eq!(swr_v1_reactor_state_open(state.owner, kind, 4), 0);
-            let fd = swr_v1_reactor_state_descriptor(state.owner);
-            swr_v1_reactor_state_close_backend(state.owner);
-            assert_eq!(swr_v1_reactor_state_descriptor(state.owner), -1);
+            let state = state(kind, 4);
+            let fd = (*state.owner).backend_fd;
+            (*state.owner).close_backend();
+            assert_eq!((*state.owner).backend_fd, -1);
             assert_eq!((*state.fields).native_handle, fd);
             crate::isolated_process::replacement_survives(fd, || {
-                swr_v1_reactor_state_free(state.owner);
+                free(state.owner);
             });
         }
     }
