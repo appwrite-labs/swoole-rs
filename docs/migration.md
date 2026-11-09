@@ -95,11 +95,13 @@ A use that must stay (output order PHP can see, a cold path) keeps the `expect`.
 
 ## Roadmap
 
-Progress is measured by the upstream first-party lines (`src/`, `ext-src/`,
-`include/`, excluding `thirdparty/` and the generated embedded library) that the
-all-modules patch set deletes (`tools/badges.py`). A pinned line a patch moves to
-another file is still compiled, so it counts as kept where it now lives. The
-migration is done when nothing remains apart from declared third-party code.
+Progress is measured by the pinned upstream first-party lines (`src/`, `ext-src/`,
+`include/`, excluding `thirdparty/` and the generated embedded library) in files the
+Cargo build no longer reads (`tools/badges.py`): it follows the `#include`s of
+native/'s units and the thirdparty units `crates/ext/build.rs` names through the
+tree `tools/build_ext.py` hands the build, and a pinned file it reaches counts as
+kept, whole. The migration is done when nothing remains apart from declared
+third-party code.
 
 Phases 1 to 3 and 5 are done: green baseline ([#20](https://github.com/appwrite-labs/swoole-rs/issues/20)),
 wider oracle ([#58](https://github.com/appwrite-labs/swoole-rs/issues/58)), graduate and
@@ -119,6 +121,10 @@ None, since #959 (2026-11-08): `tools/badges.py --source target/upstream/src --o
 target/badges --kept` lists no upstream first-party file. The last two headers left as owned
 copies trimmed to what C++ still uses: `include/swoole_server.h` in #1465
 (`native/process/swoole_server.h`) and `include/swoole.h` in #959 (`native/corebase/swoole.h`).
+The patch set still matters here: over the unpatched pin, as stage 4
+([#2200](https://github.com/appwrite-labs/swoole-rs/issues/2200)) would build, the pinned
+`thirdparty/php/standard/proc_open.h` and the curl and ssh2 sources reach seven `ext-src/`
+headers (2,626 lines), which their patched versions don't.
 
 References: [Rust FFI](https://doc.rust-lang.org/nomicon/ffi.html),
 [upstream CMake build](https://github.com/swoole/swoole-src/blob/v6.2.5/CMakeLists.txt),

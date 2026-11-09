@@ -3,10 +3,10 @@
 
   badges.py --source PINNED_UPSTREAM --output DIR [--phpt GATE_JSON... --commit SHA]
 
-replaced.json  upstream first-party lines (src/, ext-src/, include/; not the embedded
-               PHP library) that the all-modules patch set deletes, over the pinned total:
-               the minimal net diff after applying every patch, so glue a patch adds and a later
-               one removes never counts.
+replaced.json  pinned first-party lines (src/, ext-src/, include/; not the embedded PHP
+               library) in files crates/ext's build no longer reads, over the pinned total. The
+               build reads the tree tools/build_ext.py prepares (source_tree); built() follows
+               its units' #includes there, so a file counts as kept while anything reaches it.
 unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/budget.py), and
                how many crates forbid unsafe_code; the per-crate table goes to the step summary.
 speed.json     callgrind instructions per request, Cargo build over upstream, from a merge-tier
@@ -24,15 +24,14 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
-import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import MODULES, apply_patch_verified, patches_for  # noqa: E402
-from tools import budget  # noqa: E402
+from tools import budget, build_ext  # noqa: E402
 
 FIRST_PARTY = ('src/', 'ext-src/', 'include/')
 NOT_COUNTED = {'ext-src/php_swoole_library.h'}  # generated embedded PHP library
@@ -43,63 +42,51 @@ def first_party(path):
     return path.startswith(FIRST_PARTY) and path.endswith(SOURCE_SUFFIXES) and path not in NOT_COUNTED
 
 
-def git(*args, cwd):
-    return subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+INCLUDE = re.compile(r'^\s*#\s*include\s*([<"])([^">]+)[">]', re.M)
+NATIVE, BUILD_SCRIPT = ROOT / 'native', ROOT / 'crates/ext/build.rs'
 
 
-def kept(source, patches):
-    """{path: (kept, total)} first-party upstream lines after applying `patches`, in order, to `source`."""
-    with tempfile.TemporaryDirectory(prefix='swr-badges-') as directory:
-        tree = Path(directory)
-        shutil.copytree(source, tree, dirs_exist_ok=True, ignore=shutil.ignore_patterns('.git'))
-        git('init', '-q', cwd=tree)
-        git('add', '-A', cwd=tree)
-        git('-c', 'user.name=badges', '-c', 'user.email=badges@localhost', 'commit', '-qm', 'pin', cwd=tree)
-        total = {path: len((tree / path).read_bytes().splitlines())
-                 for path in git('ls-files', cwd=tree).splitlines() if first_party(path)}
-        files = {path: (lines, lines) for path, lines in total.items()}
-        for patch in patches:
-            apply_patch_verified(tree, ROOT / patch['path'], patch['upstream_paths'], patch['sha256'])
-        # Added glue must not earn credit by changing Git's greedy alignment.
-        for line in git('diff', '--diff-algorithm=minimal', '--numstat', cwd=tree).splitlines():
-            _, removed, path = line.split('\t')
-            if path in files and removed != '-':
-                files[path] = (total[path] - int(removed), total[path])
-        # A pinned line moved elsewhere is still compiled: it stays kept where it now lives.
-        for path, lines in moved_in(tree).items():
-            if first_party(path):
-                kept_lines, total_lines = files.get(path, (0, 0))
-                files[path] = (kept_lines + lines, total_lines)
-        return files
+def built(tree, native=NATIVE, build_script=BUILD_SCRIPT):
+    """Paths of `tree` (crates/ext's SWOOLE_SRC) the Cargo build reads: the thirdparty units
+    build.rs names, and every file they and native/'s units #include, resolved as build.rs's
+    include path does (the includer's directory for "...", then native/include, native/'s module
+    directories, the tree, its ext-src/ and thirdparty/). Includes under a condition count too."""
+    tree = Path(os.path.abspath(tree))
+    modules = sorted(path for path in native.iterdir() if path.is_dir() and path.name != 'include')
+    search = [native / 'include', *modules, tree, tree / 'ext-src', tree / 'thirdparty']
+    named = set(re.findall(r'"([\w./-]+\.(?:c|cc|cpp))"', build_script.read_text()))
+    units = {path for module in modules for path in module.iterdir() if path.suffix in ('.c', '.cc')}
+    units |= {path for path in (tree / 'thirdparty').rglob('*')
+              if path.is_file() and any(f'/{path.as_posix()}'.endswith(f'/{name}') for name in named)}
+    reached, pending = set(units), list(units)
+    while pending:
+        file = pending.pop()
+        for kind, name in INCLUDE.findall(file.read_text(errors='replace')):
+            for directory in [file.parent] * (kind == '"') + search:
+                candidate = Path(os.path.normpath(directory / name))
+                if candidate.is_file():
+                    if candidate not in reached:
+                        reached.add(candidate)
+                        pending.append(candidate)
+                    break
+    return {path.relative_to(tree).as_posix() for path in reached if path.is_relative_to(tree)}
 
 
-MOVED = '\x1b[7;35m'  # the colour moved-in lines get below, and nothing else
-
-
-def moved_in(tree):
-    """{path: pinned lines a patch moved into it}, by Git's own move detection (blocks of 20 or
-    more alphanumeric characters, so stray braces don't match)."""
-    colours = [f'color.diff.{slot}=reverse magenta' for slot in ('newMoved', 'newMovedAlternative')]
-    output = git(*[arg for colour in colours for arg in ('-c', colour)], 'diff', '--diff-algorithm=minimal',
-                 '--src-prefix=a/', '--dst-prefix=b/', '--color=always', '--color-moved=blocks', '--color-moved-ws=allow-indentation-change', cwd=tree)
-    counts, path = {}, None
-    for line in output.splitlines():
-        if line.startswith(('\x1b[1mdiff --git ', 'diff --git ')):
-            path = line.rsplit(' b/', 1)[1].removesuffix('\x1b[m')
-        elif line.startswith(MOVED) and path:
-            counts[path] = counts.get(path, 0) + 1
-    return counts
+def kept(source, read):
+    """{path: (kept, total)} pinned first-party lines of `source`: a file stays kept, whole, while
+    the build reads a file at its path (`read`, from built), and is replaced once nothing does."""
+    files = {}
+    for path in Path(source).rglob('*'):
+        name = path.relative_to(source).as_posix()
+        if first_party(name) and path.is_file():
+            lines = len(path.read_bytes().splitlines())
+            files[name] = (lines if name in read else 0, lines)
+    return files
 
 
 def replaced(files):
     """(deleted, total) first-party upstream lines over `kept`'s files."""
     return sum(total - lines for lines, total in files.values()), sum(total for _, total in files.values())
-
-
-def all_module_patches():
-    plan = json.loads((ROOT / 'migration/modules.json').read_text())
-    selected = {'M00', *(module_id for module_id, _ in MODULES.values())}
-    return patches_for([module for module in plan['modules'] if module['id'] in selected])
 
 
 NOT_APPLICABLE = ROOT / 'corpus/upstream/not_applicable.json'
@@ -162,7 +149,9 @@ def main():
     if args.callgrind and not args.callgrind_commit:
         parser.error('--callgrind needs --callgrind-commit')
     args.output.mkdir(parents=True, exist_ok=True)
-    files = kept(args.source, all_module_patches())
+    with tempfile.TemporaryDirectory(prefix='swr-badges-') as directory:
+        build_ext.source_tree(Path(directory) / 'src')
+        files = kept(args.source, built(Path(directory) / 'src'))
     for path, (lines, _) in sorted(files.items(), key=lambda item: -item[1][0]) if args.kept else ():
         if lines:
             print(f'{lines:6} {path}')

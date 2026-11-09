@@ -32,6 +32,12 @@ from tools.patches import apply
 FFI_FEATURES = {'sockets', 'stdext', 'halfclose', 'iouring', 'cares', 'pgsql', 'odbc', 'firebird', 'sqlite', 'oci', 'curl', 'ssh2'}
 
 
+def source_tree(tree):
+    """Lay out `tree`, the source crates/ext's build.rs compiles (SWOOLE_SRC): for now the pin with
+    the all-modules patch set applied. tools/badges.py measures what the build reads of it."""
+    apply(tree)
+
+
 def cargo(arguments, env):
     """Run a Cargo command; return its JSON messages (diagnostics render to stderr)."""
     result = subprocess.run(['cargo', *arguments, '--locked', '--message-format=json-render-diagnostics'],
@@ -137,7 +143,7 @@ def main():
     args = parser.parse_args()
     out = ROOT / 'target/ext'
     tree = out / 'src'
-    apply(tree)
+    source_tree(tree)
     env = {**os.environ, 'SWOOLE_SRC': str(tree), 'PHP_CONFIG': args.php_config}
     switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd', 'uring-socket': '--enable-uring-socket',
                 'cares': '--enable-cares', 'thread-context': '--enable-thread-context',
