@@ -66,8 +66,9 @@ operations over it and deletes their upstream bodies, and it only ever moves int
 Rust.
 
 1. If `python3 tools/ci.py stuck` lists a PR (conflicting, or a required check
-   failed), fix the oldest one first, whoever opened it. Otherwise claim the first
-   issue `python3 tools/ci.py next` prints (see Tickets).
+   failed), fix the oldest one first, whoever opened it, unless it shows another
+   agent's claim; `ci.py claim <pr> <agent-id>` claims it until its next push.
+   Otherwise claim the first issue `python3 tools/ci.py next` prints (see Tickets).
 2. Branch from `main` and commit; `git config core.hooksPath .githooks` enables
    the quick pre-commit checks.
 3. Push, open a PR whose body says `Closes #n` and what you checked, run

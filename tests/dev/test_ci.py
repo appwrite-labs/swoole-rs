@@ -40,7 +40,8 @@ elif args[0] == 'api' and '/comments' in call:
         data['comments'] = [comment for comment in comments if str(comment['id']) != args[-1].rsplit('/', 1)[1]]
     else:
         # A rival's comment, posted just before this one, shows up only when the comments are re-read.
-        comments += data.pop('rival', []) + [{'id': 100 + len(comments), 'body': args[args.index('-f') + 1][5:]}]
+        comments += data.pop('rival', []) + [{'id': 100 + len(comments), 'body': args[args.index('-f') + 1][5:],
+                                              'created_at': '2026-11-09T00:00:00Z'}]
         print(comments[-1]['id'])
     save()
 elif args[0] == 'api' and '/issues/' in args[1] and '-X' not in args:
@@ -68,6 +69,8 @@ elif args[0] == 'api' and '/check-runs' in args[1]:
         print(json.dumps(check))
 elif args[0] == 'api' and '-X' in args:
     pass
+elif args[0] == 'api' and '.commit.committer.date' in args:
+    print(data.get('dates', {}).get(args[1].rsplit('/', 1)[1], '2026-11-01T00:00:00Z'))
 elif args[0] == 'api' and '/compare/' in args[1]:
     print(data.get('compare', 'ahead'))
 elif args[0] == 'api' and '/actions/jobs/' in args[1]:
@@ -247,8 +250,27 @@ class Ci(unittest.TestCase):
         # 3 only fails an informative check, 4 has no auto-merge and 5 is still running.
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
                          (0, [(2, ['required']), (1, ['conflicts']), (6, ['no required check'])]))
+        # A claim counts until the PR's next push: #2's head predates exec-4's claim, #1's and #6's don't.
+        comments = [{'id': 1, 'body': 'claim exec-4', 'created_at': '2026-11-05T00:00:00Z'}]
+        dates = {'sha1': '2026-11-06T00:00:00Z', 'sha6': '2026-11-06T00:00:00Z'}
+        self.ci('stuck', runs=runs, flags=(), open_pulls=open_pulls, pulls=pulls, checks=checks,
+                comments=comments, dates=dates)
+        self.assertEqual(self.out.splitlines(), ['#2 required (claimed by exec-4) t2', '#1 conflicts t1',
+                                                 '#6 no required check t6'])
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[])
         self.assertEqual((code, result), (2, []))
+
+    def test_claiming_a_pull_request_counts_claims_since_its_head_commit(self):
+        def claim(created):
+            code, _, _ = self.ci('claim', '7', 'exec-9', runs={}, flags=('--settle', '0'),
+                                 issue={'labels': [], 'pull_request': {}}, pulls={'7': [{'head': {'sha': 'sha7'}}]},
+                                 dates={'sha7': '2026-11-05T00:00:00Z'},
+                                 comments=[{'id': 1, 'body': 'claim exec-1', 'created_at': created}])
+            return code, self.out.strip()
+        # exec-1 claimed before the last push, so that claim lapsed; a pull request has no status label.
+        self.assertEqual(claim('2026-11-04T00:00:00Z'), (0, '#7 claimed by exec-9'))
+        self.assertFalse(any('/labels' in call for call in self.gh_calls))
+        self.assertEqual(claim('2026-11-06T00:00:00Z'), (1, '#7 lost to exec-1; claim comment deleted'))
 
     def test_claim_keeps_the_earliest_claim_since_the_last_release(self):
         ready = {'labels': [{'name': 'status:ready'}, {'name': 'p1'}]}

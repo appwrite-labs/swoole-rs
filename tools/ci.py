@@ -7,11 +7,14 @@
   ci.py next                 the claimable issues in claim order (exit 2 when there are none)
   ci.py stuck                auto-merge PRs that conflict with main, failed a required check or
                              whose finished PR-tier run has none (GitHub abandoned its jobs:
-                             re-run it), oldest first (exit 2 when there are none)
+                             re-run it), oldest first, each with who claimed it since its last
+                             push (exit 2 when there are none)
   ci.py claim ISSUE AGENT    AGENTS.md's claim: comment `claim AGENT`, re-read the comments after a
                              few seconds and keep the issue (status:ready -> status:claimed) only if
                              that is the earliest claim since the last release; otherwise delete
-                             the comment (exit 1 lost, 2 not status:ready)
+                             the comment (exit 1 lost, 2 not status:ready). On a pull request
+                             (a stuck one), only claims since its head commit count, and no label
+                             changes
   ci.py release ISSUE AGENT  comment `release AGENT` and move status:claimed back to status:ready
   ci.py phpt-baseline       `RUN SHA` of main's latest completed merge-tier run whose upstream
                              PHPT shards all passed, the PR tier's upstream results (exit 2: none)
@@ -368,12 +371,15 @@ def phpt_baseline():
 CLAIM_SETTLE = 5.0  # seconds before re-reading, so a rival's earlier comment is visible
 
 
-def holder(issue):
-    """The agent whose `claim` comment is the earliest since the last `release` one, or None."""
+def holder(issue, since=''):
+    """The agent whose `claim` comment is the earliest since the last `release` one (and, for a
+    pull request, since `since`: its head commit, as a claim on a PR lasts until its next push), or None."""
     claims = []
     for comment in map(json.loads, gh('api', '--paginate', f'repos/{{owner}}/{{repo}}/issues/{issue}/comments',
                                       '--jq', '.[]').splitlines()):
         word, _, agent = comment['body'].strip().partition(' ')
+        if since and comment['created_at'] <= since:
+            continue
         if word == 'release':
             claims = []
         elif word == 'claim' and agent.split():
@@ -385,6 +391,11 @@ def labels(issue):
     return [label['name'] for label in json.loads(gh('api', f'repos/{{owner}}/{{repo}}/issues/{issue}'))['labels']]
 
 
+def pushed(sha):
+    """When a PR's head commit was made: its claims count from then."""
+    return gh('api', f'repos/{{owner}}/{{repo}}/commits/{sha}', '-q', '.commit.committer.date').strip()
+
+
 def relabel(issue, old, new):
     # One PUT of the whole set: a remove and an add could leave no status label if the second
     # failed, or, done add-first, let a delayed remove strip a later claim's label.
@@ -393,16 +404,21 @@ def relabel(issue, old, new):
 
 
 def claim(issue, agent, settle):
-    current = labels(issue)
-    if 'status:ready' not in current:
+    """An issue must be status:ready; a pull request (a stuck one to fix) has no status label."""
+    item = json.loads(gh('api', f'repos/{{owner}}/{{repo}}/issues/{issue}'))
+    current = [label['name'] for label in item['labels']]
+    pull = 'pull_request' in item
+    if not pull and 'status:ready' not in current:
         return 2, f"#{issue} is not status:ready ({', '.join(sorted(current)) or 'no labels'})"
+    since = pushed(json.loads(gh('api', f'repos/{{owner}}/{{repo}}/pulls/{issue}'))['head']['sha']) if pull else ''
     comment = gh('api', f'repos/{{owner}}/{{repo}}/issues/{issue}/comments', '-f', f'body=claim {agent}', '-q', '.id').strip()
     time.sleep(settle)
-    winner = holder(issue)
+    winner = holder(issue, since)
     if winner != agent:
         gh('api', '-X', 'DELETE', f'repos/{{owner}}/{{repo}}/issues/comments/{comment}')
         return 1, f'#{issue} lost to {winner}; claim comment deleted'
-    relabel(issue, 'status:ready', 'status:claimed')
+    if not pull:
+        relabel(issue, 'status:ready', 'status:claimed')
     return 0, f'#{issue} claimed by {agent}'
 
 
@@ -451,7 +467,7 @@ def stuck():
                 blocking = ['no required check']
         if blocking:
             rows.append({'number': pull['number'], 'title': pull['title'], 'created': pull['created_at'],
-                         'blocking': blocking})
+                         'blocking': blocking, 'claimed': holder(pull['number'], pushed(sha))})
     return rows
 
 
@@ -511,7 +527,8 @@ def main(argv=None):
         except subprocess.CalledProcessError as failure:
             sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
         print(json.dumps(queue, indent=1) if args.json else '\n'.join(
-            f"#{row['number']} {row.get('priority') or ', '.join(row['blocking'])} {row['title']}" for row in queue))
+            f"#{row['number']} {row.get('priority') or ', '.join(row['blocking'])}"
+            + (f" (claimed by {row['claimed']})" if row.get('claimed') else '') + f" {row['title']}" for row in queue))
         return 0 if queue else 2
     deadline = time.monotonic() + args.timeout
     global RETRY_DEADLINE, RETRY_BASE
