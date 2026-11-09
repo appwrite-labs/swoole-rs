@@ -8,10 +8,13 @@ runtime, the one clang links into the PHP executable, so every object in the pro
 reports through it. dev.py integrate builds it (and the upstream reference beside it) and
 runs every module gate that loads an extension into PHP, the application corpus among
 them; then the PHPT selection runs on it. Any sanitizer report fails the run whatever
-the tests say. Reports stay in target/asan/reports/ and are only counted on stdout: a report may locate an upstream
-bug, which goes to the private security repository (AGENTS.md), so a public CI log
-never shows one. Rerun locally to read them. Leak checking is off (PHP frees nothing
-at exit by design), and so is PCRE's JIT, whose SIMD scans read past the subject.
+the tests say. Reports stay in target/asan/reports/ and are only counted on stdout: a
+report may locate an upstream bug, which goes to the private security repository (AGENTS.md), so a public CI log
+never shows one. Rerun locally to read them. LeakSanitizer runs at the extension's
+MSHUTDOWN, not at exit: a worker or child process exits without shutting PHP down, so
+only a process that does is checked. tools/lsan.supp names PHP's own allocations that
+look lost there. USE_TRACKED_ALLOC hands the request heap to malloc, as PHP's CI runs
+it. PCRE's JIT is off, its SIMD scans read past the subject.
 
     python3 tools/dev.py docker -- tools/asan.py
 """
@@ -52,8 +55,10 @@ def main():
     shutil.rmtree(reports, ignore_errors=True)
     reports.mkdir(parents=True)
     options = f'log_path={reports}/report:print_stacktrace=1'
+    leaks = f':leak_check_at_exit=0:suppressions={ROOT}/tools/lsan.supp:print_suppressions=0'
     run = {**build, 'PATH': f"{php / 'bin'}{os.pathsep}{os.environ['PATH']}", 'USE_ZEND_ALLOC': '0',
-           'ASAN_OPTIONS': options + ':detect_leaks=0', 'UBSAN_OPTIONS': options}
+           'USE_TRACKED_ALLOC': '1', 'ASAN_OPTIONS': options, 'LSAN_OPTIONS': options + leaks,
+           'UBSAN_OPTIONS': options}
     gates = [sys.executable, 'tools/dev.py', 'integrate', '--all-modules', '--php', str(php / 'bin/php')]
     # The gates that run PHP with the extension; the rest are native or Rust-only and build their own way.
     planned = json.loads(subprocess.check_output([*gates, '--plan'], cwd=ROOT, env=run, text=True))

@@ -1,5 +1,6 @@
 #include "shim.h"
 #include "shim_module.h"
+#include <dlfcn.h>
 #include "SAPI.h"
 #include "php_main.h"
 #include "php_open_temporary_file.h"
@@ -66,6 +67,13 @@ void swr_zend_signals_uncheck(void) {
     /* Disable warning even in ZEND_DEBUG because we may register our own signal handlers */
     SIGG(check) = 0;
 #endif
+}
+
+void swr_zend_leak_check(void) {
+    int (*check)(void) = (int (*)(void)) dlsym(RTLD_DEFAULT, "__lsan_do_recoverable_leak_check");
+    if (check) {
+        check();
+    }
 }
 
 void swr_zend_register_shutdown_function(const char *name) {
