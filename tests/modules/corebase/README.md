@@ -31,10 +31,10 @@ native-TU gates.
   helpers Rust defines under upstream's own symbols (gcd, lcm, version compare,
   dec2hex) the hybrid unit must not define them and the archive must.
   `--unsigned-char` also covers bytes 128..255.
-- `mkdir_startup.py --engine native=... --engine rust=... --output R`
+- `mkdir_startup.py --engine native=... --engine cargo=... --build-manifest M --output R`
   (`corebase-startup`): PHP startup through `sys_temp_dir` (create, repeated
-  slashes, file parent), comparing warnings and `swoole_last_error`. The Rust
-  build manifest must contain the current corebase patch.
+  slashes, file parent), comparing warnings and `swoole_last_error`. The Cargo
+  engine must be the one `tools/build_ext.py` recorded in `M` (`tools/ext_identity.py`).
 ## Helpers
 
 Rust unit tests: the task-directory policy in `crates/corebase/src/config_state.rs`,

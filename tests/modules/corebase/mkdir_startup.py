@@ -13,7 +13,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.harness import parse_engines, run_isolated
-from tools.build_upstream import COMMIT
+from tools.ext_identity import attest, unchanged
 
 
 def main():
@@ -22,12 +22,12 @@ def main():
     parser.add_argument('--php', default='php')
     parser.add_argument('--php-extension', action='append', default=[])
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--build-manifest', type=Path, required=True)
     args = parser.parse_args()
-    report = dict(passed=False, created_utc=datetime.now(timezone.utc).isoformat(), engines=[], probes=[], builds=[],
+    report = dict(passed=False, created_utc=datetime.now(timezone.utc).isoformat(), engines=[], probes=[],
                   scope='Actual PHP MINIT sys_temp_dir -> set_task_tmpdir -> recursive mkdir; real native logging/last_error, private paths only. No fixed-path full-core case/performance claim.')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     report['php_command'] = str(Path(shutil.which(args.php) or args.php).resolve())
-    report['upstream_commit'] = COMMIT
     code = r'''
 $path = $argv[1]; clearstatcache(true, $path); $exists = is_dir($path);
 echo "\nM19_STARTUP ", json_encode(['exists' => $exists, 'last_error' => swoole_last_error(),
@@ -38,17 +38,8 @@ echo "\nM19_STARTUP ", json_encode(['exists' => $exists, 'last_error' => swoole_
         report['engines'] = [engine.metadata() for engine in engines]
         if {bool(item['rust_feature_bits'] & 8192) for item in report['engines']} != {False, True}:
             raise ValueError('Need actual native and Rust-corebase engines')
-        for item in report['engines']:
-            if not item['rust_feature_bits'] & 8192:
-                continue
-            path = Path(item['extension']).resolve().parents[2] / 'build-manifest.json'
-            build = json.loads(path.read_text())
-            if (build['build_mode'] != 'immutable' or build['extension_sha256'] != item['sha256']
-                    or build['migrated_feature_bits'] != item['rust_feature_bits']
-                    or build['inputs']['upstream_commit'] != report['upstream_commit']):
-                raise ValueError('Rust engine lacks an immutable build identity')
-            report['builds'].append(dict(engine=item['name'], manifest=str(path),
-                rust_archive_sha256=build['inputs']['rust_archive_sha256']))
+        selected = next(item for item in report['engines'] if item['rust_feature_bits'] & 8192)
+        report['source_attestation'] = attest(args.build_manifest, selected, 8192)
         with tempfile.TemporaryDirectory(prefix='swoole-mkdir-php-') as temporary:
             results = {}
             for engine in engines:
@@ -82,6 +73,7 @@ echo "\nM19_STARTUP ", json_encode(['exists' => $exists, 'last_error' => swoole_
                         assert not normalized
                     results[engine.name].append((result, normalized))
             assert all(value == results[engines[0].name] for value in results.values())
+        unchanged(args.build_manifest, report['source_attestation'])
         report['passed'] = True
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'
