@@ -340,10 +340,10 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_SET_RELOAD_INIT => ctx.pool().reload_init = arg != 0,
         OP_SET_READ_MESSAGE => ctx.pool().read_message = arg != 0,
         OP_REAP_WAIT => {
-            let reap = swoole_rs_process::process_pool::pool_reap_wait;
-            let (status, error) = (&raw mut ctx.wait_status, &raw mut ctx.wait_error);
-            // SAFETY: the context's own status slots.
-            return Some(signed(unsafe { reap(null_mut(), arg != 0, status, error) }));
+            let waited = swoole_rs_process::reaper::wait_child(arg != 0);
+            ctx.wait_status = waited.status;
+            ctx.wait_error = waited.error;
+            return Some(signed(waited.pid));
         }
         OP_SIGNAL_DISPATCH => swoole_rs_process::signal::swoole_signal_dispatch(),
         OP_RELOAD_ADD_EVENT_WORKERS | OP_RELOAD_ADD_TASK_WORKERS => {

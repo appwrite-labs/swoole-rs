@@ -339,8 +339,7 @@ fn update_long(object: *mut zend_object, name: &std::ffi::CStr, value: i64) {
 }
 
 fn getpid() -> i64 {
-    // SAFETY: getpid has no preconditions.
-    i64::from(unsafe { libc::getpid() })
+    i64::from(swoole_rs_process::os::getpid())
 }
 
 /// Call a pool callback with `$pool` (and the worker id), as upstream's
@@ -995,8 +994,7 @@ fn get_process(call: &Call) {
         // SAFETY: the running pool's worker `id`.
         let pid = unsafe { Worker::new(view.workers.wrapping_add(id as usize)).pid() };
         if worker_pid(worker) != pid {
-            // SAFETY: the object's worker copy.
-            unsafe { Worker::new(worker.cast()).set_pid(pid) };
+            crate::worker::record(worker).set_pid(pid);
             // SAFETY: a Process object.
             unsafe { update_property_long(process_ce, std, c"pid", i64::from(pid)) };
         }

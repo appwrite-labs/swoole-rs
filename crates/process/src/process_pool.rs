@@ -15,11 +15,12 @@ use crate::worker_record::Worker;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
+use crate::os::{getpid, kill};
 use crate::pool::{
     Bailed, PoolCall, PoolHooks, PoolIpc, PoolLoop, Step, pool_ipc_free, pool_ipc_new,
     pool_ipc_prepare, pool_run, swr_v1_process_pool_ipc_listener,
 };
-use crate::reaper::{RELOAD_KILL_ONE, RELOAD_NONE, ReapHost};
+use crate::reaper::{self, RELOAD_KILL_ONE, RELOAD_NONE, Reap, Waited, wait_child};
 use crate::reload_task::{ReloadTask, Warn};
 use crate::worker_record::WorkerRecord;
 use crate::worker_registry::{
@@ -547,16 +548,6 @@ setters!(
     reload_task / set_reload_task: *mut ReloadTask,
 );
 
-fn getpid() -> c_int {
-    // SAFETY: getpid(2) cannot fail.
-    unsafe { libc::getpid() }
-}
-
-fn kill(pid: c_int, signo: c_int) -> c_int {
-    // SAFETY: kill(2) takes plain integers.
-    unsafe { libc::kill(pid, signo) }
-}
-
 /// A native op's pointer result.
 fn pointer<T>(address: i64) -> *mut T {
     ptr::with_exposed_provenance_mut(usize::try_from(address).unwrap_or(0))
@@ -577,6 +568,13 @@ impl<H: PoolHost> Pool<H> {
 
     fn worker(&self, index: u32) -> *mut WorkerRecord {
         self.workers().wrapping_add(index as usize)
+    }
+
+    /// The worker at `index`, which must be below `worker_num`.
+    fn worker_at(&self, index: u32) -> Worker<'_> {
+        assert!(index < self.worker_num(), "worker {index} out of range");
+        // SAFETY: one of the `worker_num` records `create` allocated, live for the pool's lifetime.
+        unsafe { Worker::new(self.worker(index)) }
     }
 
     /// The pool's `worker_num` records.
@@ -640,8 +638,7 @@ impl<H: PoolHost> Pool<H> {
         self.set_max_packet_size(packet_limit(self.use_msgqueue() != 0, SW_INPUT_BUFFER_SIZE));
         self.set_max_wait_time(SW_WORKER_MAX_WAIT_TIME);
         for index in 0..worker_num {
-            // SAFETY: one of the `worker_num` records just allocated.
-            unsafe { Worker::new(self.worker(index)).set_pool(self.p.cast()) };
+            self.worker_at(index).set_pool(self.p.cast());
         }
         SW_OK
     }
@@ -780,8 +777,8 @@ impl<H: PoolHost> Pool<H> {
     fn child(&mut self, worker: *mut WorkerRecord) -> Result<(), Bailed> {
         self.on(worker, OP_WORKER_INIT, 0);
         if self.is_async() && self.op(OP_EVENT_INIT, 0) < 0 {
-            // SAFETY: exit(3), as upstream.
-            unsafe { libc::exit(254) };
+            // exit(3), as upstream.
+            std::process::exit(254);
         }
         if !self.on_worker_start().is_null() {
             self.h.callback(CB_WORKER_START, worker.cast())?;
@@ -793,8 +790,8 @@ impl<H: PoolHost> Pool<H> {
         if !self.on_worker_stop().is_null() {
             self.h.callback(CB_WORKER_STOP, worker.cast())?;
         }
-        // SAFETY: exit(3), as upstream.
-        unsafe { libc::exit(code) }
+        // exit(3), as upstream.
+        std::process::exit(code)
     }
 
     /// `ProcessPool::stop`.
@@ -850,8 +847,7 @@ impl<H: PoolHost> Pool<H> {
     /// `ProcessPool::kill_all_workers`.
     fn kill_all_workers(&mut self, signo: c_int) {
         for index in 0..self.worker_num() {
-            // SAFETY: one of the pool's records.
-            kill(unsafe { Worker::new(self.worker(index)).pid() }, signo);
+            kill(self.worker_at(index).pid(), signo);
         }
     }
 
@@ -1041,22 +1037,7 @@ impl<H: PoolHost> Pool<H> {
     /// `ProcessPool::wait`: reap and restart workers until the pool stops, then
     /// stop them all.
     fn wait(&mut self) -> Result<i64, Bailed> {
-        let host = ReapHost {
-            ctx: ptr::from_mut(self).cast(),
-            leave_when_stopped: true,
-            skip_no_child: false,
-            running: reap_running::<H>,
-            reload_requested: reap_reload_requested::<H>,
-            reload_task: reap_reload_task::<H>,
-            wait: pool_reap_wait,
-            service: reap_service::<H>,
-            wait_failed: reap_wait_failed::<H>,
-            start_reload: reap_start_reload::<H>,
-            reap: reap_exited::<H>,
-            finish_reload: reap_finish_reload::<H>,
-            warn: self.h.warn(),
-        };
-        host.run();
+        reaper::run(self);
 
         self.set_running(false);
         self.drop_reload_task();
@@ -1064,8 +1045,7 @@ impl<H: PoolHost> Pool<H> {
             self.h.callback(CB_SHUTDOWN, ptr::null_mut())?;
         }
         for index in 0..self.worker_num() {
-            // SAFETY: one of the pool's records.
-            let pid = unsafe { Worker::new(self.worker(index)).pid() };
+            let pid = self.worker_at(index).pid();
             if kill(pid, libc::SIGTERM) < 0 {
                 self.op(LOG_KILL_FAILED, u64::from(pid.cast_unsigned()));
             }
@@ -1075,8 +1055,7 @@ impl<H: PoolHost> Pool<H> {
         }
         // Upstream waits for the first worker only.
         if self.worker_num() > 0 {
-            // SAFETY: the pool's first record.
-            let pid = unsafe { Worker::new(self.worker(0)).pid() };
+            let pid = self.worker_at(0).pid();
             if self.op(OP_WAITPID, u64::from(pid.cast_unsigned())) < 0 {
                 self.op(LOG_WAITPID_FAILED, u64::from(pid.cast_unsigned()));
             }
@@ -1128,10 +1107,12 @@ impl<H: PoolHost> Pool<H> {
             return if sent { SW_OK } else { SW_ERR };
         }
         let p = self.p;
-        // SAFETY: the pool's shared counter, in place.
-        let round_id = unsafe { &raw mut (*p).round_id };
-        // SAFETY: the pool's flag, in place.
-        let warning = unsafe { &raw mut (*p).scheduler_warning };
+        let round_id = p
+            .wrapping_byte_add(std::mem::offset_of!(PoolRecord, round_id))
+            .cast::<u32>();
+        let warning = p
+            .wrapping_byte_add(std::mem::offset_of!(PoolRecord, scheduler_warning))
+            .cast::<u8>();
         // SAFETY: the pool's records, counter and flag; the caller's event and out-pointer.
         let sent = unsafe {
             crate::pool::pool_dispatch(
@@ -1180,78 +1161,63 @@ impl<H: PoolHost> Pool<H> {
     }
 }
 
-fn pool_of<'a, H>(ctx: *mut c_void) -> &'a mut Pool<H> {
-    // SAFETY: the reap host's context is the `Pool` running `wait`, on its stack.
-    unsafe { &mut *ctx.cast::<Pool<H>>() }
-}
-
-unsafe extern "C" fn reap_running<H: PoolHost>(ctx: *mut c_void) -> bool {
-    pool_of::<H>(ctx).running()
-}
-
-unsafe extern "C" fn reap_reload_requested<H: PoolHost>(ctx: *mut c_void) -> bool {
-    pool_of::<H>(ctx).reload_init()
-}
-
-unsafe extern "C" fn reap_reload_task<H: PoolHost>(ctx: *mut c_void) -> *mut ReloadTask {
-    pool_of::<H>(ctx).reload_task()
-}
-
-/// The reap loop's wait: `wait()`, or `waitpid(-1, WNOHANG)` when `nonblock`,
-/// with the status and the wait's `errno` written out.
-///
-/// # Safety
-/// `status` and `error` are writable.
-pub unsafe extern "C" fn pool_reap_wait(
-    _ctx: *mut c_void,
-    nonblock: bool,
-    status: *mut c_int,
-    error: *mut c_int,
-) -> c_int {
-    let mut exit_status = 0;
-    let pid = if nonblock {
-        // SAFETY: waitpid(2) into a local.
-        unsafe { libc::waitpid(-1, &raw mut exit_status, libc::WNOHANG) }
-    } else {
-        // SAFETY: wait(2) into a local.
-        unsafe { libc::wait(&raw mut exit_status) }
-    };
-    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    // SAFETY: the reap loop's out-pointers.
-    unsafe { *error = errno };
-    // SAFETY: as above.
-    unsafe { *status = exit_status };
-    pid
-}
-
-unsafe extern "C" fn reap_service<H: PoolHost>(ctx: *mut c_void) {
-    pool_of::<H>(ctx).service();
-}
-
-unsafe extern "C" fn reap_wait_failed<H: PoolHost>(ctx: *mut c_void) {
-    pool_of::<H>(ctx).op(LOG_WAIT_FAILED, 0);
-}
-
-unsafe extern "C" fn reap_start_reload<H: PoolHost>(ctx: *mut c_void) -> u32 {
-    let pool = pool_of::<H>(ctx);
-    if !pool.reload_init() {
-        return RELOAD_NONE;
+impl<H: PoolHost> Reap for Pool<H> {
+    fn leave_when_stopped(&self) -> bool {
+        true
     }
-    pool.set_reload_init(false);
-    // SAFETY: the reload `reload` started, live until `drop_reload_task`.
-    unsafe { &mut *pool.reload_task() }.add_workers(pool.worker_records());
-    RELOAD_KILL_ONE
-}
 
-unsafe extern "C" fn reap_exited<H: PoolHost>(ctx: *mut c_void, pid: c_int, status: c_int) -> bool {
-    pool_of::<H>(ctx).reap(pid, status)
-}
+    fn skip_no_child(&self) -> bool {
+        false
+    }
 
-unsafe extern "C" fn reap_finish_reload<H: PoolHost>(ctx: *mut c_void) {
-    let pool = pool_of::<H>(ctx);
-    pool.drop_reload_task();
-    if !pool.on_after_reload().is_null() {
-        pool.op(OP_ON_AFTER_RELOAD, 0);
+    fn running(&mut self) -> bool {
+        Pool::running(self)
+    }
+
+    fn reload_requested(&mut self) -> bool {
+        self.reload_init()
+    }
+
+    fn active_reload(&mut self) -> Option<&mut ReloadTask> {
+        // SAFETY: the reload `reload` started, live until `drop_reload_task`.
+        unsafe { Pool::reload_task(self).as_mut() }
+    }
+
+    fn wait(&mut self, nonblock: bool) -> Waited {
+        wait_child(nonblock)
+    }
+
+    fn service(&mut self) {
+        Pool::service(self);
+    }
+
+    fn wait_failed(&mut self) {
+        self.op(LOG_WAIT_FAILED, 0);
+    }
+
+    fn start_reload(&mut self) -> u32 {
+        if !self.reload_init() {
+            return RELOAD_NONE;
+        }
+        self.set_reload_init(false);
+        // SAFETY: the reload `reload` started, live until `drop_reload_task`.
+        unsafe { &mut *Pool::reload_task(self) }.add_workers(self.worker_records());
+        RELOAD_KILL_ONE
+    }
+
+    fn reap(&mut self, pid: c_int, status: c_int) -> bool {
+        Pool::reap(self, pid, status)
+    }
+
+    fn finish_reload(&mut self) {
+        self.drop_reload_task();
+        if !self.on_after_reload().is_null() {
+            self.op(OP_ON_AFTER_RELOAD, 0);
+        }
+    }
+
+    fn warn(&self) -> Warn {
+        self.h.warn()
     }
 }
 
@@ -1399,8 +1365,7 @@ impl<H: PoolHost> Pool<H> {
                 let kind = u8::try_from(arg).unwrap_or(0);
                 self.set_kind(kind);
                 for index in 0..self.worker_num() {
-                    // SAFETY: one of the pool's records.
-                    unsafe { Worker::new(self.worker(index)).set_kind(kind) };
+                    self.worker_at(index).set_kind(kind);
                 }
                 SW_OK
             }
@@ -1408,10 +1373,7 @@ impl<H: PoolHost> Pool<H> {
                 let start_id = u16::try_from(arg).unwrap_or(0);
                 self.set_start_id(start_id);
                 for index in 0..self.worker_num() {
-                    // SAFETY: one of the pool's records.
-                    unsafe {
-                        Worker::new(self.worker(index)).set_id(u32::from(start_id) + index);
-                    };
+                    self.worker_at(index).set_id(u32::from(start_id) + index);
                 }
                 SW_OK
             }

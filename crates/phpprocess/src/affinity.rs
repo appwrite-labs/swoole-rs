@@ -92,8 +92,7 @@ fn set_affinity(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: getpid has no preconditions.
-    let pid = unsafe { libc::getpid() };
+    let pid = swoole_rs_process::os::getpid();
     // SAFETY: `set` is a valid cpu set.
     if unsafe { libc::sched_setaffinity(pid, size_of::<libc::cpu_set_t>(), &raw const set) } < 0 {
         sys(E_WARNING, &message!("sched_setaffinity() failed"));
@@ -106,8 +105,7 @@ fn set_affinity(call: &Call) {
 fn get_affinity(call: &Call) {
     // SAFETY: an all-zero cpu set is empty.
     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-    // SAFETY: getpid has no preconditions.
-    let pid = unsafe { libc::getpid() };
+    let pid = swoole_rs_process::os::getpid();
     // SAFETY: `set` is writable.
     if unsafe { libc::sched_getaffinity(pid, size_of::<libc::cpu_set_t>(), &raw mut set) } < 0 {
         sys(E_WARNING, &message!("sched_getaffinity() failed"));
