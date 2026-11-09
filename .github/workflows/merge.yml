@@ -419,6 +419,38 @@ jobs:
           name: library
           path: target/reports/library/
 
+  # The Autobahn WebSocket suite's default profile on upstream and the Cargo build
+  # (tests/modules/websocket/autobahn.py): a case may not do worse on cargo than on
+  # upstream. conformance.yml runs all 517 cases nightly.
+  autobahn:
+    needs: phpt-build
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          # The engines link unixODBC, libfbclient and the Instant Client.
+          packages: php-mysql php-pgsql unixodbc libfbclient2 libaio1t64
+          php: ${{ needs.phpt-build.outputs.php }}
+      - uses: ./.github/actions/instantclient
+      - uses: actions/download-artifact@v4
+        with:
+          name: phpt-engines
+          path: target/phpt
+      # php -n loads nothing; load every extension the distribution enables, in its order.
+      - id: extensions
+        run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      - run: >
+          python3 tests/modules/websocket/autobahn.py --timeout 1200 ${{ steps.extensions.outputs.args }}
+          --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
+          --output target/reports/autobahn.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: autobahn
+          path: target/reports/
+
   # musl and PHP 8.5, as on php:8.5-alpine in Appwrite's base image: build the
   # reference and the all-modules hybrid, then run the corpus and original PHPTs
   # against both. Project 11 needs --fix-halfclose and is covered by the PR tier.
