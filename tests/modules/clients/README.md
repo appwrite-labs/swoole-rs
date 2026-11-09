@@ -104,4 +104,5 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 - Async gate locale coverage is the C locale only.
 - The pinned `SHUT_RDWR` branch sets only `shutdown_read`; this is preserved.
 - `network::Client` itself (crates/clients/src/client.rs) is covered by its Rust
-  unit tests against a recording double of the C++ half, and by the PHPTs.
+  unit tests against recording doubles of the C++ half and of the socket, reactor
+  and framing symbols it calls, and by the PHPTs.

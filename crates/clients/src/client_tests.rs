@@ -1,6 +1,7 @@
 //! The operations against a recording double of the C++ client.
 use super::*;
 use std::cell::RefCell;
+use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_append, swr_cpp_buffer_new};
 
 #[derive(Default)]
 struct Mock {
@@ -10,10 +11,10 @@ struct Mock {
     io: Vec<isize>,
     ssl_connect_ready: bool,
     socket_error: c_int,
-    out_buffer: u32,
     /// The callback that releases the client's socket object (as a PHP close would).
     releases: Option<c_int>,
-    socket: Option<Box<SocketRecord>>,
+    /// The record `make_socket` allocated; the client releases it.
+    socket: Option<core::ptr::NonNull<SocketRecord>>,
     record: Option<Box<core::mem::MaybeUninit<ClientRecord>>>,
     fail_socket: bool,
 }
@@ -40,20 +41,156 @@ extern "C" fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> *mut Soc
         set_errno(libc::EMFILE);
         return core::ptr::null_mut();
     }
-    let mut socket = Box::new(SocketRecord::new());
-    socket.socket_type = kind;
-    socket.fd = -1;
-    let pointer: *mut SocketRecord = &raw mut *socket;
-    mock(|m| m.socket = Some(socket));
-    pointer
+    let socket = swoole_rs_reactor::swr_v1_socket_alloc();
+    let mut record = SocketRecord::new();
+    record.socket_type = kind;
+    record.fd = -1;
+    // SAFETY: fresh storage for one record.
+    unsafe { socket.write(record) };
+    mock(|m| m.socket = core::ptr::NonNull::new(socket));
+    socket
 }
-extern "C" fn free_socket(_: *mut c_void, deferred: bool) {
-    log(format!("free {deferred}"));
+
+/// The last socket `make_socket` made.
+fn sock() -> &'static mut SocketRecord {
+    // SAFETY: the test's live record.
+    unsafe { mock(|m| m.socket).unwrap().as_mut() }
+}
+
+/// `sw_tg_buffer()`: a 64-byte String per test thread.
+pub(super) fn thread_buffer() -> *mut c_void {
+    thread_local! {
+        static SHARED: *mut CppString = {
+            let mut buffer = Box::new(CppString::EMPTY);
+            buffer.alloc(64, core::ptr::null());
+            Box::into_raw(buffer)
+        };
+    }
+    SHARED.with(|shared| shared.cast())
+}
+
+// crates/tls's, crates/reactor's and crates/ports' symbols, which the hybrid links.
+#[unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")]
+extern "C-unwind" fn socket_free(_: *mut SocketRecord) {
+    log("free");
+}
+#[unsafe(export_name = "_ZN6swoole7network6Socket4recvEPvmi")]
+extern "C-unwind" fn socket_recv(
+    _: *mut SocketRecord,
+    _: *mut c_void,
+    length: usize,
+    _: c_int,
+) -> isize {
+    io("recv", length)
+}
+#[unsafe(export_name = "_ZN6swoole7network6Socket9recv_syncEPvmi")]
+extern "C-unwind" fn socket_recv_sync(
+    _: *mut SocketRecord,
+    _: *mut c_void,
+    length: usize,
+    _: c_int,
+) -> isize {
+    io("recv_sync", length)
+}
+#[unsafe(export_name = "_ZN6swoole7network6Socket9send_syncEPKvmi")]
+extern "C-unwind" fn socket_send_sync(
+    _: *mut SocketRecord,
+    _: *const c_void,
+    length: usize,
+    _: c_int,
+) -> isize {
+    io("send_sync", length)
+}
+#[unsafe(export_name = "_ZN6swoole7network6Socket13recvfrom_syncEPcmiPNS0_7AddressE")]
+extern "C-unwind" fn socket_recvfrom_sync(
+    _: *mut SocketRecord,
+    _: *mut c_char,
+    length: usize,
+    _: c_int,
+    _: *mut SocketAddress,
+) -> isize {
+    io("recvfrom_sync", length)
+}
+#[cfg_attr(
+    target_os = "macos",
+    unsafe(export_name = "_ZN6swoole7network6Socket13sendfile_syncEPKcxm")
+)]
+#[cfg_attr(
+    not(target_os = "macos"),
+    unsafe(export_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm")
+)]
+extern "C-unwind" fn sendfile_sync(
+    _: *mut SocketRecord,
+    _: *const c_char,
+    _: i64,
+    _: usize,
+) -> c_int {
+    log("sendfile false");
+    OK
+}
+#[cfg_attr(
+    target_os = "macos",
+    unsafe(export_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKcxm")
+)]
+#[cfg_attr(
+    not(target_os = "macos"),
+    unsafe(export_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKclm")
+)]
+extern "C-unwind" fn sendfile_async(
+    _: *mut SocketRecord,
+    _: *const c_char,
+    _: i64,
+    _: usize,
+) -> c_int {
+    log("sendfile true");
+    OK
+}
+/// crates/reactor's, which reads the thread's reactor.
+pub(super) unsafe extern "C-unwind" fn swoole_event_write(
+    _: *mut SocketRecord,
+    _: *const c_void,
+    length: usize,
+) -> isize {
+    log(format!("write {length}"));
+    if log::last_error() == ERROR_OUTPUT_BUFFER_OVERFLOW {
+        ERR as isize
+    } else {
+        OK as isize
+    }
+}
+#[unsafe(export_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE")]
+extern "C-unwind" fn writable(_: *mut c_void, _: *mut c_void) -> c_int {
+    log("writable");
+    OK
+}
+#[unsafe(export_name = "_ZNK6swoole8Protocol25recv_with_length_protocolEPNS_7network6SocketEPNS_6StringE")]
+extern "C-unwind" fn recv_with_length(
+    _: *const Protocol,
+    _: *mut SocketRecord,
+    _: *mut CppString,
+) -> c_int {
+    log("framed false");
+    0
+}
+#[unsafe(export_name = "_ZNK6swoole8Protocol22recv_with_eof_protocolEPNS_7network6SocketEPNS_6StringE")]
+extern "C-unwind" fn recv_with_eof(
+    _: *const Protocol,
+    _: *mut SocketRecord,
+    _: *mut CppString,
+) -> c_int {
+    log("framed true");
+    0
+}
+
+/// A socket IO double: logs, then returns the queued result or the whole length.
+fn io(name: &str, length: usize) -> isize {
+    log(format!("{name} {length}"));
+    mock(|m| m.io.pop()).unwrap_or(length.cast_signed())
 }
 extern "C" fn listener(_: *mut c_void, event: c_int, _: *const c_char, length: usize) {
     log(format!("call {event} {length}"));
     if mock(|m| m.releases) == Some(event) {
-        mock(|m| m.socket.as_mut().unwrap().object = core::ptr::null_mut());
+        sock().object = core::ptr::null_mut();
     }
 }
 // crates/timer's, which the hybrid links.
@@ -100,37 +237,8 @@ extern "C" fn connect_socket(_: *mut ClientRecord, mode: c_int) -> c_int {
     }
     ret
 }
-extern "C" fn io(_: *mut c_void, op: c_int, _: *mut c_char, length: usize, _: c_int) -> isize {
-    log(format!("io {op} {length}"));
-    mock(|m| m.io.pop()).unwrap_or(length.cast_signed())
-}
-extern "C" fn sendfile(
-    _: *mut c_void,
-    _: *const c_char,
-    _: i64,
-    _: usize,
-    is_async: bool,
-) -> c_int {
-    log(format!("sendfile {is_async}"));
-    OK
-}
 extern "C" fn event(_: *mut ClientRecord, op: c_int, events: c_int) -> c_int {
     log(format!("event {op} {events}"));
-    OK
-}
-extern "C" fn event_write(_: *mut c_void, _: *const c_char, length: usize) -> c_int {
-    log(format!("write {length}"));
-    if log::last_error() == ERROR_OUTPUT_BUFFER_OVERFLOW {
-        ERR
-    } else {
-        OK
-    }
-}
-extern "C" fn out_buffer_length(_: *mut c_void) -> u32 {
-    mock(|m| m.out_buffer)
-}
-extern "C" fn writable(_: *mut c_void, _: *mut c_void) -> c_int {
-    log("writable");
     OK
 }
 extern "C" fn socket_error(_: *mut ClientRecord, error: *mut c_int) -> c_int {
@@ -149,7 +257,7 @@ extern "C" fn dns_lookup(_: *mut c_void, host: *const c_char, domain: c_int) -> 
 extern "C" fn ssl(_: *mut c_void, op: c_int, arg: c_int) -> c_int {
     log(format!("ssl {op} {arg}"));
     if op == SSL_CONNECT && mock(|m| m.ssl_connect_ready) {
-        mock(|m| m.socket.as_mut().unwrap().tls.state = SSL_STATE_READY);
+        sock().tls.state = SSL_STATE_READY;
     }
     if op == SSL_HAS_CONTEXT { 1 } else { OK }
 }
@@ -194,35 +302,13 @@ extern "C" fn http_handshake(_: *mut c_void, shared: bool, length: usize) -> boo
     log(format!("http {shared} {length}"));
     true
 }
-extern "C" fn buffer(_: *mut c_void, op: c_int, _: usize, view: *mut BufferView) {
-    static mut STORAGE: [c_char; 64] = [0; 64];
-    log(format!("buffer {op}"));
-    // SAFETY: the operation passes a writable view; the storage is this test thread's.
-    unsafe {
-        *view = BufferView {
-            str: (&raw mut STORAGE).cast(),
-            length: 0,
-            size: 64,
-        }
-    };
-}
-extern "C" fn recv_framed(_: *mut c_void, eof: bool) -> isize {
-    log(format!("framed {eof}"));
-    0
-}
 
 static NATIVE: Native = Native {
     make_socket,
-    free_socket,
     kernel_timeout,
     assign,
     connect: connect_socket,
-    io,
-    sendfile,
     event,
-    event_write,
-    out_buffer_length,
-    writable,
     socket_error,
     dns_lookup,
     ssl,
@@ -233,8 +319,6 @@ static NATIVE: Native = Native {
     socks5_handshake,
     http_pack,
     http_handshake,
-    buffer,
-    recv_framed,
 };
 
 unsafe fn new_client(kind: c_int, is_async: bool) -> *mut Client {
@@ -300,12 +384,9 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
     let client = unsafe { new_client(1, true) };
     assert_eq!(taken(), ["make 1 17 12"]);
     assert!(flag(client, ASYNC) && flag(client, STREAM));
-    assert_eq!(
-        mock(|m| m.socket.as_ref().unwrap().chunk_size),
-        SEND_BUFFER_SIZE
-    );
+    assert_eq!(sock().chunk_size, SEND_BUFFER_SIZE);
     free(client);
-    assert_eq!(taken(), ["event 2 0", "buffer 4", "free true"]);
+    assert_eq!(taken(), ["event 2 0", "free"]);
     let client = unsafe { new_client(2, false) };
     assert_eq!(taken(), ["make 2 18 8"]);
     free(client);
@@ -336,7 +417,7 @@ fn close_returns_zero_when_on_close_released_the_client() {
     mock(|m| m.releases = Some(ON_CLOSE));
     // SAFETY: a live state.
     assert_eq!(unsafe { swr_v1_clients_close(client) }, OK);
-    assert_eq!(mock(|m| m.socket.as_ref().unwrap().fd), -1);
+    assert_eq!(sock().fd, -1);
     free(client);
 }
 
@@ -374,7 +455,6 @@ fn async_connect_in_progress_adds_a_timer_and_write_interest() {
     assert_eq!(
         taken(),
         [
-            "buffer 0",
             "assign example.test:80 false",
             "connect 2",
             "timer 2.5",
@@ -384,7 +464,7 @@ fn async_connect_in_progress_adds_a_timer_and_write_interest() {
     free(client);
     assert_eq!(
         taken(),
-        ["event 2 0", "timer del", "buffer 4", "free true"],
+        ["event 2 0", "timer del", "free"],
         "inactive: no onClose"
     );
 }
@@ -394,21 +474,13 @@ fn async_connect_waits_for_dns_then_connects_the_resolved_address() {
     let client = client(1, true, true);
     assert_eq!(connect(client, c"dns.test", 1.0, 0), OK);
     assert!(flag(client, WAIT_DNS));
-    assert_eq!(
-        taken(),
-        ["buffer 0", "assign dns.test:80 false", "dns dns.test 2"]
-    );
+    assert_eq!(taken(), ["assign dns.test:80 false", "dns dns.test 2"]);
     // SAFETY: a live state and a NUL-terminated address.
     unsafe { swr_v1_clients_on_resolved(client, 0, c"192.0.2.1".as_ptr()) };
     assert!(!flag(client, WAIT_DNS));
     assert_eq!(
         taken(),
-        [
-            "buffer 0",
-            "assign 192.0.2.1:80 false",
-            "connect 2",
-            "event 0 1024"
-        ]
+        ["assign 192.0.2.1:80 false", "connect 2", "event 0 1024"]
     );
     free(client);
 }
@@ -453,10 +525,9 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
             "route 0 80",
             "assign proxy.test:1080 true",
             "connect 1",
-            "buffer 5",
-            "io 2 3",
+            "send_sync 3",
             "proxy 0 1",
-            "io 1 64",
+            "recv_sync 64",
             "socks5 64",
         ]
     );
@@ -471,7 +542,13 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
 #[test]
 fn async_send_raises_buffer_full_at_the_high_watermark() {
     let client = client(1, true, true);
-    mock(|m| m.out_buffer = 10);
+    // Ten bytes queued on the socket.
+    let queue = Box::into_raw(Box::new(core::mem::MaybeUninit::<CppBuffer>::uninit())).cast();
+    unsafe {
+        swr_cpp_buffer_new(queue, 1024);
+        swr_cpp_buffer_append(queue, [0_u8; 10].as_ptr(), 10);
+    }
+    sock().output.out_buffer = queue.cast();
     // SAFETY: a live state.
     unsafe { swr_v1_clients_watermark(client, true).write(8) };
     // SAFETY: a live state and four bytes.
@@ -532,10 +609,7 @@ fn tls_connect_waits_for_the_stream_then_connects() {
     taken();
     // SAFETY: as above.
     on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
-    assert_eq!(
-        mock(|m| m.socket.as_ref().unwrap().tls.state),
-        SSL_STATE_WAIT_STREAM
-    );
+    assert_eq!(sock().tls.state, SSL_STATE_WAIT_STREAM);
     taken();
     mock(|m| m.ssl_connect_ready = true);
     // SAFETY: as above.
@@ -569,40 +643,38 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
 fn stream_read_delivers_data_and_closes_at_eof() {
     let client = client(1, true, true);
     Handle(client).set(ACTIVE, true);
+    Handle(client).input_init();
     mock(|m| m.io = vec![5]);
     // SAFETY: a live state.
     assert_eq!(on_read(Handle(client)), OK);
-    assert_eq!(taken(), ["buffer 1", "io 0 64", "call 2 5"]);
+    assert_eq!(taken(), ["recv 65536", "call 2 5"]);
     mock(|m| m.io = vec![0]);
     // SAFETY: as above.
     on_read(Handle(client));
-    assert_eq!(taken(), ["buffer 1", "io 0 64", "event 2 0", "call 3 0"]);
+    assert_eq!(taken(), ["recv 65536", "event 2 0", "call 3 0"]);
     free(client);
 }
 
 #[test]
-fn datagram_sends_fail_when_short_and_dtls_sends_as_a_stream() {
+fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
     let client = client(2, false, false);
-    mock(|m| m.io = vec![3]);
-    // SAFETY: a live state and four bytes.
+    // SAFETY: a live state and four bytes; the record's descriptor is -1, so
+    // sendto(2) fails.
     assert_eq!(
         unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) },
         -1
     );
-    assert_eq!(taken(), ["io 3 4"]);
+    assert_eq!(errno(), libc::EBADF);
     // SAFETY: as above.
     assert_eq!(unsafe { swr_v1_clients_enable_ssl(client) }, OK);
-    assert_eq!(
-        mock(|m| m.socket.as_ref().unwrap().chunk_size),
-        SSL_BUFFER_SIZE
-    );
+    assert_eq!(sock().chunk_size, SSL_BUFFER_SIZE);
     taken();
     // SAFETY: as above.
     assert_eq!(
         unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) },
         4
     );
-    assert_eq!(taken(), ["io 2 4"]);
+    assert_eq!(taken(), ["send_sync 4"]);
     free(client);
 }
 
@@ -620,6 +692,7 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         assert_eq!((*fields).protocol.on_package, on_package as *mut c_void);
         assert_eq!((*fields).socket, Handle(client).socket_ptr());
         assert!((*fields).object.is_null() && (*fields).buffer.is_null());
+        Handle(client).input_init();
         (*fields).open_length_check = true;
         assert_eq!(on_read(Handle(client)), OK);
         assert!(taken().contains(&"framed false".to_owned()));
@@ -691,7 +764,7 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
         OK
     );
     assert_eq!(taken(), ["call 2 4"]);
-    mock(|m| m.socket.as_mut().unwrap().output.close_wait = 1);
+    sock().output.close_wait = 1;
     assert_eq!(
         on_package(core::ptr::null(), socket, &raw const package),
         ERR
