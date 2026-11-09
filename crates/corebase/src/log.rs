@@ -2,9 +2,9 @@
 // Compatibility derived from Swoole v6.2.4 include/swoole.h and include/swoole_log.h
 // (Swoole contributors).
 //! The thread's last error (`swoole_get_last_error`) and the logs Rust emits on
-//! behalf of an upstream function. Native code registers its log macros once
-//! (`swr_v1_core_set_log_host`), so Rust names the function upstream's
-//! `__SW_FUNC__` did and the archive keeps no link-time reference to C++.
+//! behalf of an upstream function. crates/ffi's `swoole_init` registers the log
+//! macros once (`swr_v1_core_set_log_host`, crates/utilities'), so Rust names the
+//! function upstream's `__SW_FUNC__` did and corebase links without utilities.
 
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int};

@@ -131,15 +131,17 @@ min(old_total-8, new_total-8) payload bytes.
 ## Upstream members
 
 `crates/memory/src/members.rs` holds upstream's memory members. With
-`upstream-symbols`, `GlobalMemory`'s non-virtual members and `sw_shm_malloc`,
+`upstream-symbols`, `GlobalMemory`'s out-of-line members and `sw_shm_malloc`,
 `sw_shm_calloc`, `sw_shm_free` and `sw_shm_protect` are under their upstream C++
 symbols. `native/memory/swoole_memory.h` (upstream's is deleted) keeps `GlobalMemory`'s constructor (it throws on the
 `swr_v1_memory_global_memory_new` status: -1 `Exception(SW_ERROR_INVALID_PARAMS)`,
--2 `std::bad_alloc`) and its virtual members, so each user emits the vtable.
+-2 `std::bad_alloc`) and its inline members, for core-tests. It has no vtable: its one
+member is the `impl` slot, and `SwooleG.memory_pool` is Rust's (`members::pool::new`,
+`swoole_init`'s; `delete`, `swoole_clean`'s).
 `FixedPool`, `RingBuffer` and `sw_shm_realloc` have no C++ caller left; their members
 stay Rust-only for upstream's GoogleTests, ported to `tests/modules/memory/`.
-`swr_table_make` allocates through `sw_mem_pool()`'s vtable (slot 2 `alloc`, 3
-`free`). These run allocators, mmap and logs with a Rust frame active.
+`swr_table_make` allocates through `members::pool::alloc`; the pool's `free` is
+a no-op, so nothing calls it. These run allocators, mmap and logs with a Rust frame active.
 
 ## Shared tables
 

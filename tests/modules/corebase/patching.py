@@ -1,4 +1,4 @@
-"""The hybrid build's corebase glue (native/corebase/globals.cc) and actual-call proof for corebase correctness gates."""
+"""What is left of base.cc in the hybrid build (swoole.h's inline swoole_get_env) and actual-call proof for corebase correctness gates."""
 import os
 from pathlib import Path
 import platform
@@ -27,19 +27,16 @@ def check_git_environment():
 
 
 def hybrid_corebase(archive):
-    """globals.cc as the hybrid build the archive came from staged it (what is left of base.cc
-    and misc.cc), the flags its build compiled it with (its patched headers, Rust headers and
-    config.h) and a receipt. The error functions it calls are in the archive."""
+    """base.cc's hybrid translation unit, which has no body: what is left of base.cc is
+    swoole.h's inline swoole_get_env, which the driver calls. With it, the flags the
+    archive's hybrid build compiled C++ with (its patched headers, Rust headers and
+    config.h) and a receipt. The functions it calls are in the archive."""
     source, flags = hybrid_tree(archive)
-    patched = (source / 'src/swoole_rs_corebase_globals.cc').read_bytes()
-    if any(('swr_v1_corebase_' + name + '(').encode() not in patched for name in CALLS):
+    header = (ROOT / 'native/corebase/swoole.h').read_bytes()
+    if any(('swr_v1_corebase_' + name + '(').encode() not in header for name in CALLS):
         raise ValueError('Required corebase caller absent')
-    if b'swr_v1_core_swoole_init()' not in patched:
-        raise ValueError("swoole_init does not run Rust's body (crates/corebase/src/lifecycle.rs)")
-    if re.search(rb'^(?:swoole::Global SwooleG|thread_local swoole::ThreadGlobal SwooleTG)', patched, re.M):
-        raise ValueError('SwooleG and SwooleTG are Rust (crates/corebase); globals.cc must not define them')
-    return patched, [*flags, '-DHAVE_CONFIG_H', '-I' + str(source)], {
-        'hybrid_tree': str(source), 'required_callers': [*CALLS, 'core_swoole_init']}
+    return b'#include "swoole.h"\n', [*flags, '-DHAVE_CONFIG_H', '-I' + str(source)], {
+        'hybrid_tree': str(source), 'required_callers': list(CALLS)}
 
 
 def prove_calls(binary, names, selected, run, prefix):

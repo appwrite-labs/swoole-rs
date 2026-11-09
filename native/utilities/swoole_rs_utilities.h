@@ -32,11 +32,8 @@ int32_t swr_v1_utils_wait(uint32_t *, double timeout);
 int32_t swr_v1_utils_wakeup(uint32_t *, int32_t n);
 #endif
 /* The same pair without futex: a registry in memory shared by every waiting
- * process, adopted (and zeroed) by init before any fork; init is false for
- * null or misaligned memory. wait returns 0 or -1, wakeup the number notified
- * or -1; *error is the errno to record, or 0. */
-size_t swr_v1_utils_wait_registry_size(void);
-bool swr_v1_utils_wait_registry_init(void *memory);
+ * process, which swoole_init adopts before any fork. wait returns 0 or -1, wakeup
+ * the number notified or -1; *error is the errno to record, or 0. */
 int32_t swr_v1_utils_registry_wait(uint32_t *, double timeout, int32_t *error);
 int32_t swr_v1_utils_registry_wakeup(uint32_t *, int32_t n, int32_t *error);
 /* The local zone's current offset from UTC, in seconds. */
@@ -66,10 +63,6 @@ struct SwrLoggerHost {
     struct SwrLoggerIdentity (*identity)(void);
 };
 extern const struct SwrLoggerHost swr_logger_host;
-/* The process logger's lifecycle (crates/process) and the log macros Rust's logs run
- * (crates/utilities), which swoole_init registers for corebase. */
-void swr_v1_process_logger(int op);
-void swr_v1_utils_log(int kind, int level, int code, const char *origin, const char *message);
 enum SwrLoggerSetting {
     SWR_LOGGER_ROTATION = 0, SWR_LOGGER_MICROSECONDS = 1,
     SWR_LOGGER_BACKTRACE = 2, SWR_LOGGER_RESET = 3

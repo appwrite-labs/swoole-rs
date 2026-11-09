@@ -12,7 +12,7 @@ use swoole_rs_corebase::{log, swoole_print_backtrace};
 const ERR: c_long = -1;
 const MIN_SEC: f64 = 0.001;
 
-// SAFETY: native/corebase/globals.cc's.
+// SAFETY: crates/corebase's (lifecycle.rs).
 #[expect(
     improper_ctypes,
     reason = "the slot holds an address C++ never dereferences"

@@ -6,7 +6,7 @@
 //! (the memory pool, the stdout stream, the logger, the server, the AIO pipe
 //! socket, the fatal-error and backtrace hooks) are opaque: native code
 //! allocates and frees them, Rust only holds the pointer.
-use std::ffi::{c_char, c_int, c_long, c_uint, c_void};
+use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{
@@ -258,48 +258,43 @@ pub unsafe extern "C" fn swr_v1_core_bug_report_append(text: *const c_char) {
     bug_report_push(unsafe { std::ffi::CStr::from_ptr(text) }.to_bytes());
 }
 
-/// base.cc's `bug_report_message_init`: the banner line, the host's uname, the
-/// compiler (null when the native compiler names none) and the TLS library line.
-/// # Safety
-/// `banner` and `ssl` are valid NUL-terminated strings; `compiler` is one or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_bug_report_init(
-    banner: *const c_char,
-    compiler: *const c_char,
-    ssl: *const c_char,
-) {
-    let text = |pointer: *const c_char| {
-        // SAFETY: the caller passes valid NUL-terminated strings.
-        unsafe { std::ffi::CStr::from_ptr(pointer) }
-            .to_bytes()
-            .to_vec()
-    };
+unsafe extern "C" {
+    /// native/corebase/switches.cc: the banner, the compiler and the TLS library
+    /// line, as C++ compiled them.
+    safe static swr_cpp_bug_report: [*const c_char; 3];
+}
+
+/// base.cc's `bug_report_message_init`, from the lines C++ compiled. Inline, so
+/// only `swoole_init`'s object references switches.cc: gates that link the Rust
+/// archive without libswoole still resolve every symbol.
+#[inline]
+pub fn bug_report_init() {
+    // SAFETY: switches.cc's NUL-terminated strings.
+    let [banner, compiler, ssl] = swr_cpp_bug_report.map(|line| unsafe { CStr::from_ptr(line) });
+    bug_report_lines(banner, compiler, ssl);
+}
+
+/// The banner line, the host's uname, the compiler and the TLS library line.
+fn bug_report_lines(banner: &CStr, compiler: &CStr, ssl: &CStr) {
     let mut message = b"\n".to_vec();
-    message.extend(text(banner));
+    message.extend(banner.to_bytes());
     message.push(b'\n');
     // SAFETY: utsname is plain bytes, valid zeroed.
     let mut host: libc::utsname = unsafe { std::mem::zeroed() };
     // SAFETY: `host` is a live, writable utsname.
     if unsafe { libc::uname(&raw mut host) } != -1 {
-        let fields = [
-            host.sysname.as_ptr(),
-            host.release.as_ptr(),
-            host.version.as_ptr(),
-            host.machine.as_ptr(),
-        ];
         message.extend_from_slice(b"OS:");
-        for field in fields {
+        for field in [host.sysname, host.release, host.version, host.machine] {
             message.push(b' ');
-            message.extend(text(field));
+            // SAFETY: uname's fields are NUL-terminated.
+            message.extend(unsafe { CStr::from_ptr(field.as_ptr()) }.to_bytes());
         }
         message.push(b'\n');
     }
-    if !compiler.is_null() {
-        message.extend_from_slice(b"GCC_VERSION: ");
-        message.extend(text(compiler));
-        message.push(b'\n');
-    }
-    message.extend(text(ssl));
+    message.extend_from_slice(b"GCC_VERSION: ");
+    message.extend(compiler.to_bytes());
+    message.push(b'\n');
+    message.extend(ssl.to_bytes());
     bug_report_push(&message);
 }
 
@@ -400,10 +395,7 @@ mod tests {
         assert!(swr_v1_core_print_backtrace_on_error());
         assert_eq!(swr_v1_core_trace_flags(), 0x7fff_ffff);
 
-        // SAFETY: literals are NUL-terminated.
-        unsafe {
-            swr_v1_core_bug_report_init(c"Banner".as_ptr(), c"cc 1".as_ptr(), c"SSL\n".as_ptr());
-        };
+        bug_report_lines(c"Banner", c"cc 1", c"SSL\n");
         // SAFETY: a literal is NUL-terminated.
         unsafe { swr_v1_core_bug_report_append(c"PHP_VERSION : 8\n".as_ptr()) };
         // SAFETY: the message is NUL-terminated and unchanged while read.

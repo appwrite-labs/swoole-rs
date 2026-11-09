@@ -42,7 +42,7 @@ typedef struct swr_v1_memory_channel_capacity {
 } swr_v1_memory_channel_capacity;
 int32_t swr_v1_memory_channel_full(const swr_v1_memory_channel_capacity *);
 /* GlobalMemory is Rust's (crates/memory/src/members.rs); swoole_memory.h keeps its
- * constructor, which throws, and its virtual members. new and alloc return 0, -1 for
+ * constructor, which throws, and its inline members. new and alloc return 0, -1 for
  * Exception(SW_ERROR_INVALID_PARAMS) or -2 for std::bad_alloc. */
 int32_t swr_v1_memory_global_memory_new(uint32_t pagesize, bool shared, void **output);
 void swr_v1_memory_global_memory_delete(void *pool);

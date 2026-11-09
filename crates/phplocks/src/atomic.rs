@@ -56,11 +56,8 @@ unsafe extern "C" fn create<W: Kind>(ce: *mut zend_class_entry) -> *mut zend_obj
 }
 
 unsafe extern "C" fn free<W: Kind>(std: *mut zend_object) {
+    // The word stays: the global pool frees nothing.
     // SAFETY: Zend frees an object this class created.
-    let word = unsafe { *Atomic::<W>::data(std) };
-    // SAFETY: the word came from the pool, as upstream frees it.
-    unsafe { pool::free(word.cast()) };
-    // SAFETY: as above.
     unsafe { Atomic::<W>::dtor(std) };
 }
 

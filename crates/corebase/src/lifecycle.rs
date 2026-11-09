@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
-//! base.cc's init, thread, clean and fork sequences, and `SwooleTG`. Each C++
-//! effect (an object's `new`/`delete`, the timer, event, signal and coroutine
-//! leaves) runs through the host native/corebase/globals.cc registers
-//! (`native.rs`); without it there is nothing native to set up or tear down.
+//! base.cc's init, thread, clean and fork sequences, and `SwooleTG`. Each leaf in
+//! a crate above this one (an object's `new`/`delete`, the timer, event, signal
+//! and coroutine leaves) runs through the host crates/ffi's `swoole_init`
+//! registers (`native.rs`); without it there is nothing to set up or tear down.
 use crate::log;
 use crate::native;
 use std::cell::UnsafeCell;
@@ -135,8 +135,7 @@ pub fn set_thread_async_threads(threads: *mut c_void) {
 /// `void swoole_init()`'s body: the core record's defaults, `SwooleG`'s
 /// configuration, the native leaves (`NativeHost::init`: streams, logger, memory
 /// pool, signalfd, bug report) and the main thread. Once per process; later calls
-/// do nothing. globals.cc's `swoole_init` registers the host, then calls this:
-/// registering at load would keep every C++ leaf linked in the native gates.
+/// do nothing. crates/ffi's `swoole_init` registers the host, then calls this.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn swr_v1_core_swoole_init() {
     if !crate::swr_v1_core_init() {
@@ -146,7 +145,7 @@ pub extern "C-unwind" fn swr_v1_core_swoole_init() {
     crate::swr_v1_core_name_resolver_clear();
     crate::config_state::init_allocator();
     if let Some(host) = native::host() {
-        host.init();
+        (host.init)();
     }
     swoole_thread_init(true);
     crate::config_state::init();
@@ -161,7 +160,8 @@ pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
     if let Some(host) = native::host()
         && read(|thread| thread.buffer_stack.is_null())
     {
-        host.buffer(true);
+        let buffer = (host.new_buffer)();
+        write(|thread| thread.buffer_stack = buffer);
     }
     if !main_thread {
         crate::signal_block_all();
@@ -177,13 +177,14 @@ pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
 pub extern "C-unwind" fn swoole_thread_clean(_main_thread: bool) {
     let Some(host) = native::host() else { return };
     if read(|thread| !thread.timer.is_null()) {
-        host.timer_free();
+        (host.timer_free)();
     }
     if read(|thread| !thread.reactor.is_null()) {
-        host.event_free();
+        (host.event_free)();
     }
     if read(|thread| !thread.buffer_stack.is_null()) {
-        host.buffer(false);
+        (host.delete_buffer)();
+        write(|thread| thread.buffer_stack = ptr::null_mut());
     }
 }
 
@@ -206,11 +207,11 @@ pub extern "C" fn swoole_is_main_thread() -> bool {
 pub extern "C-unwind" fn swoole_clean() {
     crate::hook::clear();
     if let Some(host) = native::host() {
-        host.signal_clear();
+        (host.signal_clear)();
         swoole_thread_clean(true);
-        host.logger(native::LOGGER_CLOSE);
-        host.logger(native::LOGGER_DELETE);
-        host.delete_pool(crate::swr_v1_core_memory_pool());
+        (host.logger)(native::LOGGER_CLOSE);
+        (host.logger)(native::LOGGER_DELETE);
+        (host.delete_pool)();
     }
     crate::config_state::reset();
     crate::swr_v1_core_name_resolver_clear();
@@ -229,7 +230,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     };
     if flags & FORK_EXEC == 0 {
         // `SwooleG.fatal_error` may return, so each check runs.
-        if host.coroutine_is_in() {
+        if (host.coroutine_is_in)() {
             let message = c"must be forked outside the coroutine";
             // SAFETY: the frames a native longjmp skips own nothing.
             unsafe { crate::fatal_error(OPERATION_NOT_SUPPORT, message) };
@@ -256,19 +257,19 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     if pid > 0 || flags & FORK_DAEMON != 0 {
         return pid;
     }
-    if host.timer_available() {
-        host.timer_free();
+    if read(|thread| !thread.timer.is_null()) {
+        (host.timer_free)();
     }
     if flags & FORK_EXEC == 0 {
         // The pool starts its own pages at its first use here (crates/memory's `current`).
-        host.logger(native::LOGGER_REOPEN);
-        if host.event_available() {
-            host.event_free();
+        (host.logger)(native::LOGGER_REOPEN);
+        if (host.event_available)() {
+            (host.event_free)();
         }
     } else {
-        host.logger(native::LOGGER_CLOSE);
+        (host.logger)(native::LOGGER_CLOSE);
     }
-    host.signal_clear();
+    (host.signal_clear)();
     if crate::swoole_isset_hook(HOOK_AFTER_FORK) {
         // SAFETY: the after-fork hooks take no argument.
         unsafe { crate::swoole_call_hook(HOOK_AFTER_FORK, std::ptr::null_mut()) };

@@ -1916,15 +1916,7 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             } else {
                 c"LISTEN_FDS_START"
             };
-            let mut value: c_int = 0;
-            // SAFETY: base.cc's `swoole_get_env`, with a NUL-terminated name and a live out-parameter.
-            let found = swoole_rs_corebase::native::host()
-                .is_some_and(|host| unsafe { (host.get_env)(name.as_ptr(), &raw mut value) });
-            if found {
-                sign(value)
-            } else {
-                i64::MIN.cast_unsigned()
-            }
+            swoole_rs_corebase::get_env(name).map_or(i64::MIN.cast_unsigned(), sign)
         }
         // SAFETY: reads the environment.
         OP_SYSTEMD_FDS => sign(unsafe { swoole_get_systemd_listen_fds() }),

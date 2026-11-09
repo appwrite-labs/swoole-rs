@@ -124,7 +124,7 @@ void sw_free(void *ptr);
 
 /*-------------------------------Declare Struct--------------------------------*/
 namespace swoole {
-class MemoryPool;
+class GlobalMemory;
 class Reactor;
 class String;
 class Timer;
@@ -185,8 +185,6 @@ int swoole_rand(int min, int max);
 
 int swoole_version_compare(const char *version1, const char *version2);
 
-bool swoole_get_env(const char *name, int *value);
-
 void swoole_init();
 void swoole_exit(int _status);
 pid_t swoole_fork(int flags);
@@ -197,7 +195,6 @@ extern "C" void swr_v1_os_set_isolation(const char *group, const char *user, con
 inline void swoole_set_isolation(const std::string &group_, const std::string &user_, const std::string &chroot_) {
     swr_v1_os_set_isolation(group_.c_str(), user_.c_str(), chroot_.c_str());
 }
-bool swoole_set_task_tmpdir(const std::string &dir);
 
 namespace swoole {
 typedef long SessionId;
@@ -248,6 +245,25 @@ struct EventData {
 #include "swoole_rs_corebase.h"
 #include "swoole_rs_corebase_state.h"
 #include "swoole_rs_corebase_string_view.h"
+
+// base.cc's throwing APIs, which only C++ callers see: Rust reads the environment
+// itself (swoole_rs_corebase::get_env).
+static inline bool swoole_get_env(const char *name, int *value) {
+    const char *e = getenv(name);
+    if (!e) {
+        return false;
+    }
+    const std::string input(e);
+    if (!swr_v1_corebase_parse_stoi(input.c_str(), value)) {
+        *value = std::stoi(input);  // throws, as upstream
+    }
+    return true;
+}
+
+static inline bool swoole_set_task_tmpdir(const std::string &dir) {
+    (void) dir.at(0);  // throws on an empty path, as upstream
+    return swr_v1_core_set_task_tmpdir(dir.c_str());
+}
 
 namespace swoole {
 // A SwooleG member whose value Rust holds (crates/corebase/src/global.rs): reads
@@ -369,8 +385,8 @@ static sw_inline swoole::String *sw_tg_buffer() {
     return SwooleTG.buffer_stack;
 }
 
-static sw_inline swoole::MemoryPool *sw_mem_pool() {
-    return static_cast<swoole::MemoryPool *>(swr_v1_core_memory_pool());
+static sw_inline swoole::GlobalMemory *sw_mem_pool() {
+    return static_cast<swoole::GlobalMemory *>(swr_v1_core_memory_pool());
 }
 
 static sw_inline swoole::Reactor *sw_reactor() {

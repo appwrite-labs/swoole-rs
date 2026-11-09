@@ -29,8 +29,8 @@ int32_t swr_v1_corebase_mkdir_next(const uint8_t *input, size_t input_length, ui
                                  size_t capacity, struct swr_v1_corebase_mkdir_state *state);
 /* Rust also defines swoole_fork, swoole_clean, swoole_thread_init/_clean and
  * swoole_is_main_thread. */
-/* swoole_init's body (crates/corebase/src/lifecycle.rs), which globals.cc's
- * swoole_init calls once it has registered the native effects. */
+/* swoole_init's body (crates/corebase/src/lifecycle.rs), which crates/ffi's
+ * swoole_init calls once it has registered the leaves. */
 void swr_v1_core_swoole_init(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
  * native/framing/swoole_protocol.h stay their declarations: sw_malloc/sw_free/
@@ -120,7 +120,6 @@ void swr_v1_core_set_print_backtrace(void *value);
  * lines. Strings are NUL-terminated. */
 const char *swr_v1_core_bug_report_message(void);
 void swr_v1_core_bug_report_append(const char *text);
-void swr_v1_core_bug_report_init(const char *banner, const char *compiler, const char *ssl);
 /* crates/corebase/src/format.c: vfprintf to SwooleG.stdout_. No compiled source
  * calls it; core-tests/src/_lib/ssl.cpp does. */
 int sw_printf(const char *format, ...) __attribute__((format(printf, 1, 2)));

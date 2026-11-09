@@ -229,10 +229,8 @@ pub unsafe extern "C" fn destroy_worker(_serv: *mut c_void, worker: *mut WorkerR
     if lock.is_null() {
         return;
     }
-    // SAFETY: an initialized mutex nobody holds.
+    // SAFETY: an initialized mutex nobody holds; the global pool's `free` is a no-op.
     unsafe { swoole_rs_locks::swr_v1_locks_destroy(lock, MUTEX) };
-    // SAFETY: the pool block `create_worker` took.
-    unsafe { swoole_rs_memory::members::pool::free(lock) };
 }
 
 /// `Server::create_event_workers()`.

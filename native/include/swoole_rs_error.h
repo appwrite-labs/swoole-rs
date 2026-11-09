@@ -146,6 +146,10 @@ typedef struct SwrErrorIgnored SwrErrorIgnored;
 extern "C" {
 #endif // __cplusplus
 
+uint32_t swr_v1_abi_version(void);
+
+uint64_t swr_v1_feature_bits(void);
+
 const char *swr_v1_error_message(int32_t code);
 
 const char *swr_v1_error_resolve(int32_t code, const char *(*fallback)(int32_t));

@@ -13,6 +13,9 @@ use core::ffi::{c_char, c_int, c_void};
 use core::mem::{offset_of, size_of};
 use core::ptr;
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
+use swoole_rs_corebase::constants::{
+    FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
+};
 use swoole_rs_reactor::{SocketAddress, SocketRecord};
 use swoole_rs_tls::upstream::{socket_free, socket_ssl_close};
 
@@ -73,13 +76,11 @@ const _: () = {
     );
 };
 
-/// `SW_FD_CO_SOCKET`, `SW_SOCK_RAW`, `SW_SOCK_NONBLOCK | SW_SOCK_CLOEXEC`,
-/// `SW_BUFFER_SIZE_BIG` and `SW_INPUT_BUFFER_SIZE` (asserted in native/corebase/globals.cc).
-const FD_CO_SOCKET: c_int = 6;
-const SOCK_RAW: c_int = 7;
-const OPEN_FLAGS: c_int = (1 << 2) | (1 << 3);
-const BUFFER_SIZE_BIG: usize = 65536;
-const INPUT_BUFFER_SIZE: u32 = 2 * 1024 * 1024;
+const FD_CO_SOCKET: c_int = FdType::SW_FD_CO_SOCKET as c_int;
+const SOCK_RAW: c_int = SocketType::SW_SOCK_RAW as c_int;
+const OPEN_FLAGS: c_int =
+    SocketFlag::SW_SOCK_NONBLOCK as c_int | SocketFlag::SW_SOCK_CLOEXEC as c_int;
+const BUFFER_SIZE_BIG: usize = SW_BUFFER_SIZE_BIG as usize;
 
 /// How a constructor makes its `network::Socket` (`swr_v1_hook_co_socket_new`).
 pub const NEW_BY_FAMILY: c_int = 0;
@@ -238,7 +239,7 @@ impl CoSocket {
         self.protocol.package_length_size = 4;
         self.protocol.package_length_offset = 0;
         self.protocol.package_body_offset = 0;
-        self.protocol.package_max_length = INPUT_BUFFER_SIZE;
+        self.protocol.package_max_length = SW_INPUT_BUFFER_SIZE;
         result
     }
 }

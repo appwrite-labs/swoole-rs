@@ -1,10 +1,14 @@
 # Core base helpers
 
 Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. `src/core/base.cc`
-and `src/core/misc.cc` are gone: what stable Rust can't express of them (C++ object
-lifetimes, compile-time build strings, the variadic fatal-error hook, the log
-macros and the std::string/std::function and throwing APIs) is
-`native/corebase/globals.cc`. Rust owns `SwooleG` and `SwooleTG`; `swoole::Global`
+and `src/core/misc.cc` are gone, and no C++ source of theirs is left. What stable
+Rust can't express of them stays where it has to: the compile-time build strings
+are on the generated switch table (`switches.cc`, `swr_cpp_bug_report`), the
+variadic fatal-error hook and libc's `stdout` are crates/ffi's `src/fatal.c`, and
+the two throwing APIs, `swoole_get_env` (`std::stoi`) and `swoole_set_task_tmpdir`
+(`std::string::at`), are inline in `swoole.h` for C++ callers; Rust reads the
+environment itself (`get_env`, which aborts where `std::stoi` would throw an
+exception nothing catches). Rust owns `SwooleG` and `SwooleTG`; `swoole::Global`
 and `swoole::ThreadGlobal` are their C++ views. `swoole_get_task_tmpdir` and
 `sw_thread_lock`, which nothing called, are gone.
 
@@ -64,15 +68,12 @@ string needing an appended slash are undefined upstream; Rust rejects them.
 Rust defines `swoole_thread_init`, `swoole_thread_clean`, `swoole_is_main_thread`,
 `swoole_clean` and `swoole_fork` under their C++ symbols, `swoole_init`'s body
 (`swr_v1_core_swoole_init`) and `swoole_fork_exec` (`fork_exec`, which crates/server's manager calls).
-Each C++ effect (an object's `new`/`delete`, `swoole_init`'s native leaves, the
-timer, event, signal and coroutine leaves) is an entry of the host globals.cc's
-`swoole_init` registers (`swr_v1_core_native_host`) before it runs the body;
-registering only there keeps those leaves out of the gates that never call it.
-The same host carries the process logger's lifecycle (`swr_v1_process_logger`,
-crates/process), and `swoole_init` registers the log macros Rust's logs run
-(`swr_v1_utils_log`, crates/utilities) as the log host: both crates sit above
-corebase, so corebase reaches them only through what native code registers.
-Before that the sequences skip their native effects and `swoole_fork` returns -1.
+`swoole_init` itself is crates/ffi's (`src/init.rs`): each leaf in a crate above
+corebase (the stack buffer's and memory pool's `new`/`delete`, `swoole_init`'s
+native leaves, the timer, event, signal and coroutine leaves, the process logger's
+lifecycle) is a function of the host (`native::NativeHost`) it registers before it
+runs the body, with the log macros Rust's logs run (`swr_v1_utils_log`) as the log
+host. Before that the sequences skip those leaves and `swoole_fork` returns -1.
 
 - Init: the record's defaults (`swr_v1_core_init`, below), `SwooleG = {}`, libc's
   allocator, the native leaves in upstream's order (`sw_error`, stdout, the
@@ -104,8 +105,8 @@ Rust defines the `SwooleG` symbol: the fields native code reads in place
 (`max_sockets`, `dns_cache_refresh_time`, `std_allocator`) followed by the bytes of
 `swoole::Global`'s empty accessor members. `task_tmpfile` is a `RustPath` view
 over Rust's string slot (`swr_v1_core_task_tmpfile`). `swr_v1_core_set_task_tmpdir` is
-`swoole_set_task_tmpdir` under its lock; the C++ wrapper keeps upstream's throw on
-an empty path. Both sides assert the layout.
+`swoole_set_task_tmpdir` under its lock; swoole.h's inline wrapper keeps upstream's
+throw on an empty path. Both sides assert the layout.
 
 Rust owns `SwooleG`'s scalars in one process-wide record of atomics: the init
 guard, `cpu_num`, `dns_tries`, the flags (`running`, `enable_signalfd`,
@@ -125,8 +126,8 @@ record; `swoole_clean` resets `SwooleG`'s fields, paths and name resolvers with 
 `swr_v1_core_init` is `swoole_init`'s guard: false when already initialised,
 otherwise it resets the record and sets running, coroutines on, the page size,
 `SW_MAX_FILE_CONTENT`, `SW_MAX(1, sysconf(...))` CPUs, one DNS try and the
-`srandom(time(nullptr))` seed. `swr_v1_core_bug_report_init` writes base.cc's bug-report
-banner, `uname` and compiler lines around the TLS line native code passes.
+`srandom(time(nullptr))` seed. `bug_report_init` writes base.cc's bug-report
+banner, `uname`, compiler and TLS lines, from what C++ compiled (`swr_cpp_bug_report`).
 `swr_v1_core_max_sockets` is the `RLIMIT_NOFILE` soft limit as `uint32_t`,
 capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept.
 
