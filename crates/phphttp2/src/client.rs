@@ -1,14 +1,11 @@
 //! The HTTP/2 coroutine client: upstream's `swoole::coroutine::http2::Client`
 //! and its PHP classes.
-use crate::native::{self, Header, Socket};
-use libc::{c_char, c_int, c_void};
-use std::{
-    collections::{HashMap, VecDeque},
-    ffi::CStr,
-    hash::{BuildHasherDefault, Hasher},
-    mem::MaybeUninit,
-    ptr,
+use crate::{
+    native::{self, Header, Socket},
+    session::IdMap,
 };
+use libc::{c_char, c_int, c_void};
+use std::{collections::VecDeque, ffi::CStr, mem::MaybeUninit, ptr};
 use swoole_rs_http2::{
     Http2ChunkPlan, Http2FrameFacts, Http2HeaderPlan, Http2InflateStep, Http2ResponsePlan,
     Http2SettingPlan, Http2Settings, Http2WindowPlan, sw_rs_http2_chunk, sw_rs_http2_decode_frame,
@@ -261,28 +258,7 @@ impl Headers {
     }
 }
 
-/// Stream ids are small and spread by the server's odd/even rule: hash them
-/// by a multiply instead of `SipHash`.
-#[derive(Default)]
-struct IdHasher(u64);
-
-impl Hasher for IdHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = (self.0 << 8 | u64::from(byte)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        }
-    }
-
-    fn write_u32(&mut self, id: u32) {
-        self.0 = u64::from(id).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-}
-
-type Streams<T = Stream> = HashMap<u32, T, BuildHasherDefault<IdHasher>>;
+type Streams<T = Stream> = IdMap<u32, T>;
 
 /// The socket's close hook.
 /// # Safety
