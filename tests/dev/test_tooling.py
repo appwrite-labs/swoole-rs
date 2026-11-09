@@ -516,21 +516,18 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['utilities-public-storage'])
         self.assertEqual(commands['utilities-public-storage'].count('--engine'), 2)
         self.assertIn('utilities-php-logger',commands)
-        self.assertIn('--build-manifest', commands['utilities-php-logger'])
-        self.assertIn('--archive', commands['utilities-php-logger'])
-        self.assertIn('--source-ref', commands['utilities-php-logger'])
+        # Attested gates check the Cargo build's manifest, not the hybrid's (#2199).
+        for name in ['utilities-php-logger', 'phpcollections-runtime', 'ports-configuration', 'clients-php-http']:
+            command = commands[name]
+            self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
+            self.assertNotIn('--archive', command)
+            self.assertNotIn('--source-ref', command)
         self.assertNotIn('httpbindings-php', commands)
-        self.assertIn('--build-manifest', commands['phpcollections-runtime'])
-        self.assertIn('--archive', commands['phpcollections-runtime'])
         self.assertIn('--archive', commands['ports-callback-property'])
         self.assertIn('--sanitize', commands['ports-callback-property'])
         self.assertNotIn('ports-php', commands)
         self.assertNotIn('ports-callback-php', commands)
-        for name in ['ports-configuration']:
-            self.assertIn('--build-manifest', commands[name])
-            self.assertIn('--archive', commands[name])
-            self.assertIn('--source-ref', commands[name])
-            self.assertNotIn('--case', commands[name])
+        self.assertNotIn('--case', commands['ports-configuration'])
         self.assertIn('--export', commands['build'])
         self.assertIn('--build-manifest', stdext['phphelpers-runtime'])
         self.assertEqual(stdext['phphelpers-runtime'].count('--engine'), 2)

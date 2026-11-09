@@ -160,14 +160,13 @@ def plan(args, reports):
     native_variant = build_alias('upstream', profile_suffix(args))
     reference = (ROOT / 'target/hybrid' / native_variant / 'modules/swoole.so'
                  if captured_reference or getattr(args, 'stdext', False) or getattr(args, 'php_sockets', False) else ROOT / 'target/upstream/src/modules/swoole.so')
-    # The Cargo-built swoole.so is the engine under test (#2199). Gates that attest the
-    # hybrid's build manifest still run the hybrid until their attestation moves.
+    # The Cargo-built swoole.so is the engine under test (#2199); `built` is the manifest
+    # tools/build_ext.py writes beside it, which gates check their engine against.
     cargo = ROOT / 'target/ext/swoole.so'
+    built = cargo.parent / 'build-manifest.json'
     engines = ['--engine', f'cargo={cargo}']
-    attested = ['--engine', f'hybrid={hybrid}']
     if integrate or args.compare or args.benchmark:
         engines += ['--engine', f'upstream={reference}']
-        attested += ['--engine', f'upstream={reference}']
     if integrate:
         pytest('timer-kernel', 'tests/modules/timer/test_kernel.py', '--sanitize')
         add('format', 'cargo', 'fmt', '--all', '--check')
@@ -263,29 +262,25 @@ def plan(args, reports):
                                    ('http_format', 'tests/modules/clients/php_http_format.py'), ('coro', 'tests/modules/clients/php_coro.py'),
                                    ('async', 'tests/modules/clients/php_async.py'), ('coro_io', 'tests/modules/clients/php_coro_io.py')]:
                 name = 'clients-php-' + family
-                script(name, runner, '--build-manifest', manifest,
-                       *php_for('curl', 'sockets'), *attested, *report(name))
+                script(name, runner, '--build-manifest', built,
+                       *php_for('curl', 'sockets'), *engines, *report(name))
     if 'phpevents' in modules:
         script('phpevents-lifecycle', 'tests/modules/phpevents/lifecycle.py', *php_for('curl', 'sockets'), *engines,
                *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []), *report('phpevents-lifecycle'))
     if 'phpcollections' in modules:
         if integrate:
-            script('phpcollections-runtime', 'tests/modules/phpcollections/php_runtime.py', *php_for('curl'), *attested,
-                   '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                   '--source-ref', 'HEAD', *report('phpcollections-runtime'))
-            script('phpcollections-column-bytes', 'tests/modules/phpcollections/php_runtime.py', *php_for('curl'), *attested,
-                   '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                   '--source-ref', 'HEAD', '--profile', 'column-bytes', *report('phpcollections-column-bytes'))
+            script('phpcollections-runtime', 'tests/modules/phpcollections/php_runtime.py', *php_for('curl'), *engines,
+                   '--build-manifest', built, *report('phpcollections-runtime'))
+            script('phpcollections-column-bytes', 'tests/modules/phpcollections/php_runtime.py', *php_for('curl'), *engines,
+                   '--build-manifest', built, '--profile', 'column-bytes', *report('phpcollections-column-bytes'))
     if 'phphelpers' in modules:
         if integrate:
-            script('phphelpers-module', 'tests/modules/phphelpers/module.py', *php_for('curl'), *attested,
-                   '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                   '--source-ref', 'HEAD', *report('phphelpers-module'))
+            script('phphelpers-module', 'tests/modules/phphelpers/module.py', *php_for('curl'), *engines,
+                   '--build-manifest', built, *report('phphelpers-module'))
             # The fixtures call stdext helpers (swoole_typed_array), so they need --stdext builds.
             if getattr(args, 'stdext', False):
-                script('phphelpers-runtime', 'tests/modules/phphelpers/runtime.py', *php, *attested,
-                       '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                       '--source-ref', 'HEAD', *report('phphelpers-runtime'))
+                script('phphelpers-runtime', 'tests/modules/phphelpers/runtime.py', *php, *engines,
+                       '--build-manifest', built, *report('phphelpers-runtime'))
     if 'ports' in modules:
         # SNI resolves its port inside the callback; exercise the production wrapper,
         # not only the protocol-plan and scalar-setting mini gates.
@@ -294,9 +289,8 @@ def plan(args, reports):
                '--manifest', 'tests/modules/ports/sni-originals.json', *php_for('curl', 'sockets'), *sni_engines,
                '--require-all', '--isolate-cases', *report('ports-sni-originals'))
         if integrate:
-            script('ports-configuration', 'tests/modules/ports/configuration.py', *php_for('curl', 'sockets'), *attested,
-                   '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-                   '--source-ref', 'HEAD', *report('ports-configuration'))
+            script('ports-configuration', 'tests/modules/ports/configuration.py', *php_for('curl', 'sockets'), *engines,
+                   '--build-manifest', built, *report('ports-configuration'))
         script('ports-policy', 'tests/modules/ports/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('ports-policy'))
         phase = 'ports-callback-property'
@@ -389,9 +383,8 @@ def plan(args, reports):
                    *php_for('curl'), *utility_engines, '--build-manifest', manifest,
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                    '--source-ref', utility_source, '--' + family + '-originals', *report(name))
-        script('utilities-php-logger', 'tests/modules/utilities/php_logger.py', *php, *attested,
-               '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               '--source-ref', 'HEAD', *report('utilities-php-logger'))
+        script('utilities-php-logger', 'tests/modules/utilities/php_logger.py', *php, *engines,
+               '--build-manifest', built, *report('utilities-php-logger'))
         script('utilities-public-storage', 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
                *php, *utility_engines, '--build-manifest', manifest,
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
@@ -707,12 +700,12 @@ def with_prerequisites(planned, phases):
                 grown |= {owner for owner in names if owner != name and argument.endswith('/' + owner + '.json')}
                 grown |= {owner for owner, paths in exports.items() if owner != name
                           and any(argument == path or argument.startswith(path + '/') for path in paths)}
-                if 'build' in names and ('/target/hybrid/' in argument or 'libswoole_rs_ffi' in argument):
+                reference = '/target/upstream/' in argument or '/target/hybrid/upstream' in argument
+                if 'build' in names and not reference and ('/target/hybrid/' in argument or 'libswoole_rs_ffi' in argument):
                     grown.add('build')
                 if 'cargo-build' in names and '/target/ext/' in argument:
                     grown.add('cargo-build')
-                if 'reference-build' in names and '/target/upstream/' in argument:
-                    grown.add('reference-build')
+                grown |= {owner for owner in ('reference-build', 'stdext-reference-build') if owner in names and reference}
         if grown == selected:
             return [name for name in names if name in selected]
         selected = grown

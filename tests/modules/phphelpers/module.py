@@ -10,14 +10,13 @@ import sys
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
 from tools.harness import parse_engines,run_isolated,write_report
-from tools.hybrid_identity import attest
+from tools.ext_identity import attest
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--php',default='php');p.add_argument('--php-extension',action='append',default=[])
     p.add_argument('--engine',action='append',required=True);p.add_argument('--build-manifest',type=Path,required=True)
-    p.add_argument('--archive',type=Path,required=True);p.add_argument('--source-ref',required=True)
     p.add_argument('--output',type=Path,required=True);a=p.parse_args()
     report=dict(created_utc=datetime.now(timezone.utc).isoformat(),passed=False,scope=__doc__,results=[])
     try:
@@ -25,7 +24,7 @@ def main():
         report['engines']=identities
         if {bool(row['rust_feature_bits'] &16777216) for row in identities}!={False,True}:raise ValueError('Require native and PHPhelpers-selected engines')
         selected=next(row for row in identities if row['rust_feature_bits'] &16777216)
-        report['source_attestation']=attest(a.build_manifest,a.archive,selected,a.source_ref,16777216)
+        report['source_attestation']=attest(a.build_manifest,selected,16777216)
         outputs=[]
         for engine,identity in zip(engines,identities):
             for mode in ['ordinary','output-exit']:

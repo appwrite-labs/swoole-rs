@@ -25,9 +25,9 @@ class RuntimeOutcomes(unittest.TestCase):
             results=[SimpleNamespace(returncode=7,stdout='original failure',stderr='native diagnostic'),
                      SimpleNamespace(returncode=0,stdout='{"fixture":true}',stderr='')]
             argv=['runtime.py','--engine','native=fixture','--engine','hybrid=fixture','--build-manifest','fixture',
-                  '--archive','fixture','--source-ref','fixture','--output',str(output)]
+                  '--output',str(output)]
             with patch.object(sys,'argv',argv),patch.object(runtime,'parse_engines',return_value=engines), \
-                 patch.object(runtime,'attest',return_value={}),patch.object(runtime,'run_isolated',side_effect=results) as runs, \
+                 patch.object(runtime,'attest',return_value={}),patch.object(runtime,'unchanged'),patch.object(runtime,'run_isolated',side_effect=results) as runs, \
                  contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(runtime.main(),1)
             report=json.loads(output.read_text());self.assertFalse(report['passed'])

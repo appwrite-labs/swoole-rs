@@ -13,7 +13,7 @@ import sys
 
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
-from tools.build_upstream import COMMIT
+from tools.ext_identity import attest
 from tools.harness import parse_engines,run_isolated,write_report
 
 
@@ -38,11 +38,8 @@ def main():
         if a.native_only and kinds!={False}:raise ValueError('Native-only mode cannot credit selected code')
         if not a.native_only:
             if not a.build_manifest:raise ValueError('Selected lifecycle proof requires --build-manifest')
-            manifest=json.loads(a.build_manifest.read_text())
             selected=next(identity for identity in report['engines'] if identity['rust_feature_bits']&1048576)
-            report['build_attestation']=dict(path=str(a.build_manifest),extension_sha256=manifest['extension_sha256'])
-            if manifest['extension_sha256']!=selected['sha256']:raise ValueError('Manifest extension identity mismatch')
-            if manifest['inputs']['upstream_commit']!=COMMIT:raise ValueError('Manifest pinned upstream mismatch')
+            report['build_attestation']=attest(a.build_manifest,selected,1048576)
         summaries={mode:[] for mode in ['connect','receive']}
         for engine,identity in zip(engines,report['engines']):
             for mode in summaries:

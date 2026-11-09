@@ -13,7 +13,7 @@ calls whose bodies are private to PHP (its README says why).
 - `module.py` (`phphelpers-module`): module INI handlers and information-output
   bailouts, compared across engines.
 - `runtime.py` (`phphelpers-runtime`) takes `--engine native=DSO --engine
-  selected=DSO`, `--build-manifest`, `--archive`, `--source-ref` and `--output`:
+  selected=DSO`, `--build-manifest` (tools/build_ext.py's) and `--output`:
   stdext copied arrays, native callbacks, autoload and object lifetime
   (`runtime.php`), `bailout.php` children for direct/coroutine return/exception,
   and `vm_bailout.php` children that exit from PCRE/JSON warning handlers and a

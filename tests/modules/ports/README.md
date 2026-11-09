@@ -28,7 +28,7 @@ python3 tests/modules/ports/callback_property.py --source PINNED_REFERENCE --arc
 PHP runtime checks:
 
 ```text
-python3 tests/modules/ports/configuration.py --engine ... --build-manifest MANIFEST --archive SELECTED_ARCHIVE --source-ref REF [--case NAME] --output REPORT
+python3 tests/modules/ports/configuration.py --engine ... --build-manifest target/ext/build-manifest.json [--case NAME] --output REPORT
 python3 tests/modules/ports/php.py --engine ... --output REPORT
 ```
 

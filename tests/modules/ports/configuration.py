@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Actual Port configuration conversion/reentry/rejection/lifetime; original suites remain separate."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -9,40 +8,18 @@ import sys
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
 from tools.harness import parse_engines,run_isolated,write_report
+from tools.ext_identity import attest as ext_attest
 
 
-def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def attest(manifest,archive,source_ref,metadata):
-    data=json.loads(manifest.read_text());archive_hash=sha(archive)
+def attest(manifest,metadata):
     candidates=[m for m in metadata if m['rust_feature_bits']&8388608]
-    if len(candidates)!=1 or candidates[0]['sha256']!=data['extension_sha256']:raise ValueError('Manifest does not identify exactly one actual M25 candidate')
-    if not data['migrated_feature_bits']&8388608 or 'ports' not in data['inputs']['modules']:raise ValueError('Manifest lacks expected M25 feature8388608')
-    if data['inputs']['rust_archive_sha256']!=archive_hash:raise ValueError('Selected archive does not match build manifest')
-    module_source=data['inputs']['rust_sources_sha256']['crates/ports/src/lib.rs']
-    if module_source!=sha(ROOT/'crates/ports/src/lib.rs'):raise ValueError('Manifest M25 source differs from this current socket-controller consumer')
-    caller_digests={k:v for k,v in data['inputs']['headers_sha256'].items() if k.startswith('native/ports/')}
-    caller_digests.update({item['path']:item['sha256'] for item in data['inputs']['patches'] if item['path'].startswith('migration/patches/ports/')})
-    # Every ports header and patch the build applied, as this checkout has them.
-    expected={str(path.relative_to(ROOT)) for pattern in ('native/ports/*.h','migration/patches/ports/*.patch') for path in ROOT.glob(pattern)}
-    if set(caller_digests)!=expected or any(sha(ROOT/path)!=digest for path,digest in caller_digests.items()):raise ValueError('Manifest M25 header/callers differ from current socket-controller consumer')
-    export=manifest.parent/'export.json'
-    if export.exists():
-        identity=json.loads(export.read_text())
-        if identity['source_ref']!=source_ref:raise ValueError('Export source reference differs')
-        expected=identity['files']
-        if expected['build-manifest.json']['sha256']!=sha(manifest) or expected['libswoole_rs_ffi.a']['sha256']!=archive_hash or expected['swoole.so']['sha256']!=candidates[0]['sha256']:raise ValueError('Immutable export identities differ')
-        kind='immutable producer export'
-    else:
-        blob=subprocess.check_output(['git','-C',str(ROOT),'show',source_ref+':crates/ports/src/lib.rs'])
-        if hashlib.sha256(blob).hexdigest()!=module_source:raise ValueError('Frozen source reference differs from manifest M25 source')
-        kind='frozen Git M25 source blob'
+    if len(candidates)!=1:raise ValueError('Require exactly one M25 candidate engine')
+    receipt=ext_attest(manifest,candidates[0],8388608)
     symbols=subprocess.check_output(['nm','-g',candidates[0]['extension']],text=True,stderr=subprocess.DEVNULL)
     defined={parts[-1].lstrip('_') for line in symbols.splitlines() if len(parts:=line.split())>=2 and parts[-2].upper() in {'T','W'}}
     required=['protocol','protocol_name','event','callback_property','callback_hook']
     if not all('swr_v1_ports_'+name in defined for name in required):raise ValueError('Actual candidate DSO lacks required M25 controller exports')
-    return {'passed':True,'source_ref':source_ref,'source_reference':kind,'required_candidate_dso_exports':required}
+    return {'passed':True,**receipt,'required_candidate_dso_exports':required}
 
 CASES={
     'convert_eof':None, 'convert_length_type':None, 'settings_release_reentry':None,
@@ -58,10 +35,10 @@ CASES={
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--engine',action='append',required=True);p.add_argument('--php',default='php');p.add_argument('--php-extension',action='append',default=[]);p.add_argument('--build-manifest',type=Path,required=True);p.add_argument('--archive',type=Path,required=True);p.add_argument('--source-ref',required=True);p.add_argument('--case',action='append',choices=list(CASES));p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--engine',action='append',required=True);p.add_argument('--php',default='php');p.add_argument('--php-extension',action='append',default=[]);p.add_argument('--build-manifest',type=Path,required=True);p.add_argument('--case',action='append',choices=list(CASES));p.add_argument('--output',type=Path,required=True);a=p.parse_args()
     script=Path(__file__).with_suffix('.php');engines=parse_engines(a.engine,a.php,a.php_extension)
     report={'scope':__doc__,'engines':[e.metadata() for e in engines],'results':[],'passed':False,'unmeasured_cases':[c for c in CASES if a.case and c not in a.case]}
-    try:report['candidate_attestation']=attest(a.build_manifest,a.archive,a.source_ref,report['engines'])
+    try:report['candidate_attestation']=attest(a.build_manifest,report['engines'])
     except Exception as error:report['candidate_attestation']={'passed':False,'error':str(error)};write_report(a.output,report);return 1
     for engine in engines:
         for case,message in CASES.items():

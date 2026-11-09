@@ -3,10 +3,13 @@
 
 crates/ext's build.rs compiles native/ and the bundled thirdparty C from the patched tree this
 prepares in target/ext/src, then the extension is checked to load and report the pinned version.
-Prints `Built cargo: <path>` (target/ext/swoole.so). `--php-sockets`, `--stdext`, `--fix-halfclose`
+Prints `Built cargo: <path>` (target/ext/swoole.so) and writes target/ext/build-manifest.json,
+which tools/ext_identity.py checks gates' engines against. `--php-sockets`, `--stdext`, `--fix-halfclose`
 and build_hybrid's `--configure` switches turn on the crates/ext feature of the same build profile.
 """
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -15,7 +18,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.build_hybrid import HOOK_SWITCHES
-from tools.build_upstream import VERSION
+from tools.build_upstream import COMMIT, VERSION
 from tools.harness import ROOT
 from tools.patches import apply
 
@@ -66,6 +69,10 @@ def main():
                              capture_output=True, text=True)
     if version.stdout != VERSION.removeprefix('v'):
         raise SystemExit(f'{extension} does not load as Swoole {VERSION}:\n{version.stdout}{version.stderr}')
+    source_ref = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    (out / 'build-manifest.json').write_text(json.dumps({
+        'extension_sha256': hashlib.sha256(extension.read_bytes()).hexdigest(), 'upstream_commit': COMMIT,
+        'features': sorted(features), 'profile': args.profile, 'source_ref': source_ref}, indent=1) + '\n')
     print(f'Built cargo: {extension}')
 
 
