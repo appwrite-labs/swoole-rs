@@ -753,6 +753,12 @@ class ChangedModules(unittest.TestCase):
         self.assertEqual(self.changed('crates/oracle/build.rs', 'fuzz/src/lib.rs'), [])
         self.assertEqual(self.changed('native/halfclose/contract.md'), sorted(dev.MODULES))
 
+    def test_a_changed_crate_selects_the_modules_whose_packages_depend_on_it(self):
+        # Their gates call its exports, so they catch one removed or renamed (#2236).
+        with patch.object(dev, 'dependents', return_value={'crates/base64/': {'crates/http/', 'tests/modules/websocket/'}}):
+            self.assertEqual(self.changed('crates/base64/src/lib.rs'), ['base64', 'http', 'websocket'])
+        self.assertIn('crates/http/', dev.dependents()['crates/base64/'])
+
 
 class FocusedPhases(unittest.TestCase):
     def test_explicit_selection_keeps_canonical_order_and_records_omitted_gates(self):
