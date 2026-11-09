@@ -23,7 +23,7 @@ use swoole_rs_framing::recv::{
 };
 use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_hton64};
 use swoole_rs_framing::{swr_v1_framing_unpack, swr_v1_framing_width};
-use swoole_rs_reactor::{SocketRecord, swr_v1_socket_get_peer_name};
+use swoole_rs_reactor::{SocketRecord, swr_v1_socket_get_peer_name, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
 use swoole_rs_websocket::frame_api::PacketLength;
 
@@ -150,10 +150,8 @@ fn proto_error(socket: &SocketRecord, code: ErrorCode, origin: &CStr, message: &
 impl Effects for Recv {
     #[inline(always)]
     fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64 {
-        // SAFETY: the receive's live socket.
-        unsafe { (*self.socket).recv_wait = u8::from(*flags & FLAG_WAIT != 0) };
-        let result = effect(self, op, arg);
-        // SAFETY: as above; the effect has returned.
+        let result = effect(self, op, arg, *flags);
+        // SAFETY: the receive's live socket; the effect has returned.
         *flags = socket_flags(unsafe { &*self.socket });
         result
     }
@@ -162,13 +160,14 @@ impl Effects for Recv {
 /// Each call site's op is a constant, so the match folds: every frame's receive,
 /// length and dispatch run inline, and a failed receive and the rare ops don't.
 #[inline(always)]
-fn effect(r: &Recv, op: u32, arg: u64) -> i64 {
+fn effect(r: &Recv, op: u32, arg: u64, flags: u32) -> i64 {
     // SAFETY: the receive's live buffer; no other reference to it is live.
     let b = unsafe { &mut *r.buffer };
     // SAFETY: the receive's live protocol.
     let p = unsafe { &*r.protocol };
     // SAFETY: the receive's live socket; no other reference to it is live.
     let s = unsafe { &mut *r.socket };
+    s.recv_wait = u8::from(flags & FLAG_WAIT != 0);
     match op {
         OP_RECV => {
             let at = b.str.wrapping_add(b.length);
@@ -300,23 +299,7 @@ fn rare(r: &Recv, b: &mut CppString, p: &Protocol, s: &mut SocketRecord, op: u32
             );
             0
         }
-        OP_RESET => {
-            let linger = libc::linger {
-                l_onoff: 1,
-                l_linger: 0,
-            };
-            // SAFETY: the live socket's fd and a `linger` of the size passed.
-            let result = unsafe {
-                libc::setsockopt(
-                    s.fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_LINGER,
-                    (&raw const linger).cast(),
-                    libc::socklen_t::try_from(size_of::<libc::linger>()).unwrap_or(0),
-                )
-            };
-            i64::from(result)
-        }
+        OP_RESET => i64::from(swr_v1_socket_reset_on_close(s.fd)) - 1,
         _ => std::process::abort(),
     }
 }
