@@ -7,8 +7,9 @@
 namespace upstream_locale {
 int get_method(const char *, size_t);
 bool parse_multipart_boundary(const char *,size_t,size_t,char **,int *);
-// The pinned swoole_strcaseeq; the hybrid headers no longer carry it.
+// The pinned swoole_strcaseeq and swoole_str_istarts_with; the hybrid headers no longer carry them.
 unsigned strcaseeq(const char *,size_t,const char *,size_t);
+unsigned istarts_with(const char *,size_t,const char *,size_t);
 }
 int main() {
  size_t total=0,errors=0,available=0;
@@ -22,7 +23,7 @@ int main() {
   // Actual pinned inline location helper, including every high-byte pair and NUL.
   for(unsigned a=0;a<256;++a)for(unsigned b=0;b<256;++b){
    std::string url="/"+std::string(1,char(a))+"/file",location="/"+std::string(1,char(b));
-   bool old=swoole_str_istarts_with(url.data(),url.size(),location.data(),location.size());
+   bool old=upstream_locale::istarts_with(url.data(),url.size(),location.data(),location.size());
    swr_v1_http_static_path_state state{1,0,0,0};
    int now=swr_v1_http_static_location(reinterpret_cast<const uint8_t *>(url.data()),url.size(),reinterpret_cast<const uint8_t *>(location.data()),location.size(),&state);
    compare(now==int(old)&&state.last==unsigned(old),"location:"+std::to_string(a)+":"+std::to_string(b));

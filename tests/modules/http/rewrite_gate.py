@@ -22,7 +22,7 @@ def main():
         sides = Sides(args.source, args.archive, tree, path)
         text = sides.original(path); extracted = tree/'upstream_rewrite.cc'
         parts = [body(text, 'void Server::add_rewrite_rule('), body(text, 'bool Server::apply_rewrite_rules(')]
-        extracted.write_text('#include "rewrite_oracle.h"\nnamespace upstream_rewrite {\n'+'\n'.join(parts)+'\n}\n')
+        extracted.write_text('#include "rewrite_oracle.h"\nnamespace upstream_rewrite {\nusing swoole::starts_with;\n'+'\n'.join(parts)+'\n}\n')
         binary = tree/'gate'
         if not sides.build(binary, [('upstream', extracted), ('candidate', local/'rewrite_gate.cc')], archive, report, gc_sections=True): write_report(args.output, report); return 1
         return run(binary, ['swr_v1_server_static_rewrite', 'swr_v1_server_static_rewrite_add'], args.output, report)
