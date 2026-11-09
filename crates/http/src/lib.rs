@@ -17,21 +17,11 @@ use std::{mem::MaybeUninit, slice};
 const INVALID: i32 = -1;
 const OVERFLOW: i32 = -2;
 mod conditional;
-pub use conditional::{
-    HttpCalendar, HttpConditional, swr_v1_http_conditional, swr_v1_http_date_format,
-    swr_v3_http_conditional, swr_v3_http_date,
-};
+pub use conditional::{HttpCalendar, HttpConditional, swr_v3_http_conditional, swr_v3_http_date};
 mod directory;
-pub use directory::{
-    HttpDirectory, swr_v2_http_directory_clone, swr_v2_http_directory_contains,
-    swr_v2_http_directory_count, swr_v2_http_directory_drop, swr_v2_http_directory_emit,
-    swr_v2_http_directory_insert, swr_v2_http_directory_new, swr_v2_http_directory_page,
-    swr_v2_http_directory_scan_append, swr_v2_http_directory_scan_finish,
-};
+pub use directory::HttpDirectory;
 mod dispatch;
-pub use dispatch::{
-    swr_v1_http_proxy_auth_enabled, swr_v1_http_transport_route, swr_v1_http_unknown_status,
-};
+pub use dispatch::transport_route;
 mod framing;
 pub use framing::{HttpFrame, swr_v1_http_expect};
 mod headers;
@@ -56,28 +46,16 @@ pub use range_response::{HttpRangeFinish, HttpRangeFormat, swr_v1_http_range_for
 mod request;
 pub use request::{
     HttpForm, HttpNative, HttpRequest, HttpString, destroy_multipart_parser, init_multipart_parser,
-    parse_multipart_data, swr_v1_http_form_free, swr_v1_http_request_chunked_length,
-    swr_v1_http_request_expect, swr_v1_http_request_free, swr_v1_http_request_header,
-    swr_v1_http_request_header_length, swr_v1_http_request_multipart_destroy,
-    swr_v1_http_request_multipart_init, swr_v1_http_request_multipart_parse,
-    swr_v1_http_request_new, swr_v1_http_request_parse_header, swr_v1_http_request_protocol,
-    swr_v3_http_request_clean, swr_v3_http_request_init,
+    parse_multipart_data, request_free, request_new,
 };
 mod rewrite;
 pub use rewrite::RewriteRules;
 mod static_context;
 pub use static_context::*;
 mod tasks;
-pub use tasks::{
-    HttpStaticTask, HttpTasks, swr_v2_http_tasks_begin, swr_v2_http_tasks_clear,
-    swr_v2_http_tasks_copy, swr_v2_http_tasks_count, swr_v2_http_tasks_drop, swr_v2_http_tasks_new,
-    swr_v2_http_tasks_prepare, swr_v2_http_tasks_push, swr_v2_http_tasks_snapshot,
-};
+pub use tasks::{HttpStaticTask, HttpTasks};
 mod static_meta;
-pub use static_meta::{
-    swr_v1_http_static_boundary, swr_v1_http_static_catch, swr_v1_http_static_content_prefix,
-    swr_v1_http_static_content_type,
-};
+pub use static_meta::{static_boundary, static_multipart};
 mod status_buffer;
 pub use status_buffer::{NATIVE_STATUS_CODES, swr_v2_http_status_message};
 pub mod http_server;
@@ -86,10 +64,7 @@ mod static_path;
 pub use maps::{swr_v1_http_method, swr_v1_http_method_string, swr_v1_http_status};
 pub use range::HttpRangeState;
 pub use static_headers::{HttpStaticHeaders, swr_v1_http_static_headers};
-pub use static_path::{
-    HttpStaticPath, swr_v1_http_static_index_path, swr_v1_http_static_location,
-    swr_v1_http_static_path,
-};
+pub use static_path::{HttpStaticPath, swr_v1_http_static_location, swr_v1_http_static_path};
 
 /// # Safety
 /// Nonempty input is readable and initialized for its length; no borrow escapes.

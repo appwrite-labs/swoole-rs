@@ -519,3 +519,14 @@ mod mode_tests {
         unsafe { crate::swr_v1_server_state_free(state) };
     }
 }
+
+/// `message_bus->move_packet()`: the current packet's block, now the caller's.
+///
+/// # Safety
+/// `message_bus` is a live `MessageBus` that only this thread uses meanwhile.
+pub unsafe fn bus_move_packet(message_bus: *mut core::ffi::c_void) -> *mut core::ffi::c_char {
+    // SAFETY: as the caller guarantees; a `MessageBus` starts with its Rust bus.
+    let bus = unsafe { *message_bus.cast::<*mut swoole_rs_protocols::MessageBus>() };
+    // SAFETY: that live bus, only this thread's meanwhile.
+    unsafe { &mut *bus }.move_packet()
+}

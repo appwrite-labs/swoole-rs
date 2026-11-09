@@ -57,11 +57,6 @@ struct DgramPacket {
     length: u32,
 }
 
-// SAFETY: crates/protocols' bus, linked into the archive.
-unsafe extern "C" {
-    fn swr_v1_bus_count_ids(bus: *mut c_void, counter: *mut c_void);
-}
-
 // SAFETY: crates/process' and crates/ports' methods under their upstream symbols.
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole6Server26call_worker_start_callbackEPNS_6WorkerE"]
@@ -413,9 +408,13 @@ pub(crate) unsafe fn answer(
         OP_RT_BUS_SETUP => {
             let thread = this(ctx);
             let gs = crate::shared::server_counters(state)?;
-            let counter = gs.pipe_packet_msg_id.as_ptr().cast();
-            // SAFETY: the thread's live bus, counting from the shared counter.
-            unsafe { swr_v1_bus_count_ids(thread.bus, counter) };
+            // SAFETY: the shared counter outlives every reactor thread's bus.
+            let counter = unsafe {
+                &*gs.pipe_packet_msg_id
+                    .as_ptr()
+                    .cast::<core::sync::atomic::AtomicU64>()
+            };
+            thread.message_bus().rust().count_ids(counter);
             thread.message_bus().set_always_chunked();
             u64::from(
                 thread
@@ -446,7 +445,12 @@ pub(crate) unsafe fn answer(
             ctx.resp = thread.message_bus().buffer();
             // SAFETY: the context's live event.
             let sock = socket(unsafe { (*ctx.event).socket });
-            let read = crate::pool_native::read_bus(thread.bus, thread.allocator, sock, true);
+            let read = crate::pool_native::read_bus(
+                thread.message_bus().rust(),
+                thread.allocator,
+                sock,
+                true,
+            );
             sign(i64::try_from(read).unwrap_or(-1))
         }
         OP_PIPE_POP => {

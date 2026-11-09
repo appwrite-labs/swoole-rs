@@ -220,7 +220,7 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
             // SAFETY: the live connection.
             let conn = unsafe { &mut *c.conn };
             if conn.object.is_null() {
-                conn.object = swoole_rs_http::swr_v1_http_request_new().cast();
+                conn.object = swoole_rs_http::request_new().cast();
             }
             let request = conn.object.cast::<HttpRequest>();
             // SAFETY: the connection's live request.

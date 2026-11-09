@@ -73,46 +73,10 @@ typedef struct {
     int (*dispatch)(void *context, size_t length);
 } swr_resp_io;
 int swr_v1_resp_recv(const swr_resp_io *, void *buffer, swr_resp_request **request, uint32_t maximum, size_t page);
-/* MessageBus (crates/protocols/src/bus.rs). The bus owns its packets; the
- * caller allocates them (the allocator may bail out) and the receive buffer. */
+/* MessageBus (crates/protocols/src/bus.rs), for crates/process' send_message.
+ * socket is a swoole::network::Socket. */
 typedef struct swr_bus swr_bus;
-typedef struct { size_t length; char *data; } swr_bus_packet;
-enum { SWR_BUS_ALLOCATE = 1, SWR_BUS_CLOSED, SWR_BUS_ABNORMAL, SWR_BUS_READV_CLOSED };
-typedef struct {
-    ssize_t received;
-    size_t size;            /* SWR_BUS_ALLOCATE: bytes to allocate */
-    void *data;             /* SWR_BUS_ALLOCATE: block to realloc, or NULL */
-    const void *allocator;  /* SWR_BUS_ALLOCATE with data: its allocator */
-    uint16_t chunks;
-    bool resume;
-    uint8_t event;
-} swr_bus_read;
-swr_bus *swr_v1_bus_create(size_t buffer_size);
-void swr_v1_bus_free(swr_bus *);
-void swr_v1_bus_set_buffer_size(swr_bus *, size_t);
-size_t swr_v1_bus_buffer_size(swr_bus *);
-void swr_v1_bus_set_always_chunked(swr_bus *);
-void swr_v1_bus_set_buffer(swr_bus *, void *buffer);
-void *swr_v1_bus_buffer(swr_bus *);
-size_t swr_v1_bus_count(swr_bus *);
-void swr_v1_bus_clear(swr_bus *);
-size_t swr_v1_bus_memory_size(swr_bus *);
-void swr_v1_bus_pass(swr_bus *, const void *info, const char *data);
-swr_bus_packet swr_v1_bus_packet(swr_bus *);
-char *swr_v1_bus_move_packet(swr_bus *);
-void swr_v1_bus_pop(swr_bus *);
-/* On SWR_BUS_ALLOCATE: allocate state->size bytes, adopt them, call again.
- * The other events are logged before it returns. */
-ssize_t swr_v1_bus_read(swr_bus *, int fd, bool dgram, bool *nobufs, swr_bus_read *state);
-void swr_v1_bus_adopt(swr_bus *, void *data, size_t size, const void *allocator);
-/* next(context) numbers each message swr_v1_bus_write sends. */
-/* Each message swr_v1_bus_write sends takes the next value of counter, an atomic int64_t. */
-void swr_v1_bus_count_ids(swr_bus *, void *counter);
-/* socket is a swoole::network::Socket. */
-bool swr_v1_bus_write(swr_bus *, void *socket, void *head, const char *data);
-/* The bus's own records of its pipes, freed (not closed) with it. */
-void swr_v1_bus_init_pipe_socket(swr_bus *, int fd);
-void *swr_v1_bus_pipe_socket(swr_bus *, int fd);
+bool swr_v1_bus_write(const swr_bus *, void *socket, void *head, const char *data);
 #ifdef __cplusplus
 }
 #endif

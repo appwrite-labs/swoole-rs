@@ -1,5 +1,6 @@
 //! Selected filesystem-path policy; Native returns copied observations after effects.
-use super::{FILENAME, HttpProxyText, HttpStaticContext, INVALID, bytes, swr_v1_http_static_catch};
+use super::{FILENAME, HttpProxyText, HttpStaticContext, INVALID, bytes};
+use crate::static_meta::static_catch;
 use crate::static_path as path;
 
 #[derive(Default)]
@@ -103,10 +104,7 @@ pub unsafe extern "C" fn swr_v2_http_context_serve(
         match action {
             3 => {} // Directory bytes were published by the owned path step.
             7 => {
-                // SAFETY: `owner.facts.status` is a live, exclusive field.
-                let result = unsafe {
-                    swr_v1_http_static_catch(owner.path.last, &raw mut owner.facts.status)
-                };
+                let result = static_catch(owner.path.last, &mut owner.facts.status);
                 owner.serve.pending = result;
                 return result;
             }
