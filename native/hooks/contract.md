@@ -120,12 +120,12 @@ aliases are never uninstalled.
   fsync and unlock on the async pool, into a `Vec`, logging each warning on the pool
   thread as upstream named it (`System::read_file`, `File::read_all`, ...).
   `write_file` keeps its upstream symbol; C reads through `swr_v1_system_read_file`.
-- `System::wait_signal` is one Rust call, `hook_wait_signal`: the listener table,
-  the EBUSY/EINVAL checks, registering through native `listen`, the park, the wake-up handler
-  `hook_signal_wake` (clears the slot, records the signal, resumes) and the
-  unregistering after it. Native passes the coroutine operations, signal
-  registration (deferred under `SW_USE_THREAD_CONTEXT`), the reactor exit condition
-  and `signal_async_listener_num`.
+- `System::wait_signal` is Rust (`wait_signal.rs`): the listener table, the
+  EBUSY/EINVAL checks, registering through the signal table (deferred to the loop's
+  thread while thread contexts are active), the reactor exit condition and
+  `signal_async_listener_num`, the park, the wake-up handler `hook_signal_wake`
+  (clears the slot, records the signal, resumes) and the unregistering after it.
+  C reads it through `swr_v1_system_wait_signal`.
 - The hooked stdio, directory and file-system functions (`fopen`, `fdopen`,
   `freopen`, `fread`, `fwrite`, `fgets`, `fputs`, `feof`, `fflush`, `fclose`,
   `opendir`, `readdir`, `closedir`, `open`, `fstat`, `stat`, `lstat`, `unlink`,

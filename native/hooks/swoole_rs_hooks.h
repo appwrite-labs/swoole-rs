@@ -43,18 +43,6 @@ typedef struct { uint64_t total; bool again; } swr_v1_hook_transfer_plan;
 swr_v1_hook_transfer_plan swr_v1_hook_transfer(int64_t result, uint64_t total, uint64_t requested, bool wait);
 typedef struct { uint32_t revents; bool wake; } swr_v1_hook_event_plan;
 swr_v1_hook_event_plan swr_v1_hook_event_waiter(uint32_t received, uint32_t event);
-typedef struct { uintptr_t handler; bool registered; } swr_v1_hook_previous_signal;
-typedef struct {
-    void *(*current)(void);
-    bool (*busy)(void);
-    void (*listen)(int signo, swr_v1_hook_previous_signal *previous, bool on);
-    void (*waiting)(bool on);
-    bool (*yield_for)(void *co, double timeout);
-    void (*resume)(void *co);
-} swr_v1_hook_signal_ops;
-typedef struct { int32_t signo; int32_t last_error; } swr_v1_hook_signalled;
-void swr_v1_hook_signal_wake(int signo);
-swr_v1_hook_signalled swr_v1_hook_wait_signal(const int32_t *signals, size_t count, double timeout, const swr_v1_hook_signal_ops *ops);
 typedef struct { int32_t fd; int32_t events; int32_t revents; } swr_v1_hook_poll_fd;
 /* System::socket_poll over count distinct fds, storing each one's revents. */
 bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout);
