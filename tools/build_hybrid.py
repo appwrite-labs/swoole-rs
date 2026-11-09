@@ -420,8 +420,10 @@ def configuration_key(inputs, development=False):
         # Prefix staging below updates their mtimes; native dependency files rebuild callers.
         configuration['headers_sha256'] = {path: value for path, value in inputs.get('headers_sha256', {}).items()
                                             if not path.startswith('native/') or path.startswith('native/include/')}
-        # config.m4 globs src/ at configure, so adding or deleting a native file reconfigures.
+        # config.m4 globs src/ at configure, so adding or deleting a native file reconfigures,
+        # and so does deleting a header, which the old tree's dependency files still name.
         configuration['native_sources'] = sorted(inputs.get('native_sources_sha256', {}))
+        configuration['headers'] = sorted(inputs.get('headers_sha256', {}))
         configuration['configure_patches'] = [patch for patch in inputs['patches'] if
                                               any(path in {'config.m4', 'CMakeLists.txt'} for path in patch['upstream_paths'])]
     return hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()
