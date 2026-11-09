@@ -10,6 +10,12 @@
 #include "ext/standard/url.h"
 #include "ext/date/php_date.h"
 
+/* ZEND_TYPE_INIT_CLASS_CONST's bit: PHP 8.2 marks a literal class name with
+ * the name bit, which zend_register_functions turns into a zend_string. */
+#if PHP_VERSION_ID < 80300
+#define _ZEND_TYPE_LITERAL_NAME_BIT _ZEND_TYPE_NAME_BIT
+#endif
+
 /* zend_object_alloc: emalloc the object and its property slots and zero the
  * bytes before the embedded zend_object. */
 void *swr_zend_object_alloc(size_t size, zend_class_entry *ce);
