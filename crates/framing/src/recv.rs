@@ -182,6 +182,10 @@ impl<E: Effects> Recv<'_, E> {
         if self.flag(FLAG_DYNAMIC) && head == 0 {
             return SW_ERR;
         }
+        // A length header the buffer can never hold fails before any read.
+        if self.header(head) > self.size() {
+            return SW_ERR;
+        }
         // Whether the last `recv` left space in the buffer, so the kernel had no more.
         let mut drained = false;
         let mut at = if self.flag(FLAG_SKIP) {
@@ -248,12 +252,17 @@ impl<E: Effects> Recv<'_, E> {
         }
     }
 
+    /// Bytes up to and including the length field: `package_length_offset` plus `head`.
+    fn header(&self, head: u32) -> usize {
+        // SAFETY: as in `eof_len`.
+        (u32::from(unsafe { (*self.protocol).package_length_offset }) + head) as usize
+    }
+
     /// The next package's length from the buffered bytes: dispatch it if it is all
     /// here, else read more (unless the socket left the reactor).
     fn get_length(&mut self, head: u32, drained: bool) -> Step {
         let packet = self.op(OP_GET_LENGTH, 0);
-        // SAFETY: as in `eof_len`.
-        let header = (u32::from(unsafe { (*self.protocol).package_length_offset }) + head) as usize;
+        let header = self.header(head);
         if packet < 0 {
             self.op(OP_LOG_MALFORMED, 0);
             return self.fail(header);
