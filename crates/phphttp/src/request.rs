@@ -10,7 +10,7 @@ use std::{ffi::c_void, sync::atomic::Ordering::Relaxed};
 use swoole_rs_httpbindings::{Text, swr_v1_httpbindings_request_option};
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_zend::{
-    Call, Class, declare_long, declare_null, handlers, init_object, string,
+    Call, Class, declare_long, declare_property_null, handlers, init_object, string,
     sys::{
         IS_STRING, ZEND_ACC_PUBLIC, swr_zend_hash_foreach_kv, swr_zend_string_release,
         swr_zval_is_true, zend_class_entry, zend_object, zend_string, zend_ulong, zval,
@@ -89,7 +89,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_request_minit() -> *mut zend_class_entry
         c"tmpfiles",
     ] {
         // SAFETY: as above.
-        unsafe { declare_null(ce, name) };
+        unsafe { declare_property_null(ce, name, swoole_rs_zend::sys::ZEND_ACC_PUBLIC) };
     }
     ce
 }
