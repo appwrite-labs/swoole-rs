@@ -1,12 +1,13 @@
 name: Badges
 # README progress badges: shields.io endpoint JSON (tools/badges.py) on the `badges`
 # branch. The static ones update on every push to main; the PHPT and speed ones when a
-# merge-tier run on main completes, from that run's gate and callgrind job.
+# merge-tier run on main completes, from that run's gate and callgrind job; coverage from
+# the newest nightly coverage.yml run on main.
 on:
   push:
     branches: [main]
   workflow_run:
-    workflows: [Merge]
+    workflows: [Merge, Coverage]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -21,7 +22,7 @@ defaults:
     shell: bash
 jobs:
   badges:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
@@ -83,11 +84,18 @@ jobs:
             id=$(gh api "repos/$GITHUB_REPOSITORY/issues/${url##*/}" -q .id)
             gh api -X POST "repos/$GITHUB_REPOSITORY/issues/1894/sub_issues" -F sub_issue_id="$id"
           fi
+      # The newest completed Coverage run on main whose report job uploaded a summary.
+      - run: |
+          for run in $(gh run list --workflow coverage.yml --branch main --status completed --limit 5 --json databaseId -q '.[].databaseId'); do
+            gh run download "$run" -n coverage -D coverage 2>/dev/null && [ -f coverage/summary.json ] && break
+            rm -rf coverage
+          done
       - run: git clone -q --depth 1 --branch badges "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" out || git init -q -b badges out
       - run: >
           python3 tools/badges.py --source target/pin --output out
           ${{ steps.gate.outputs.commit && format('--phpt gate/*/phpt*.json --commit {0}', steps.gate.outputs.commit) || '' }}
           ${{ steps.callgrind.outputs.commit && format('--callgrind cg/callgrind.json --callgrind-commit {0}', steps.callgrind.outputs.commit) || '' }}
+          ${{ hashFiles('coverage/summary.json') != '' && '--coverage coverage' || '' }}
       - working-directory: out
         run: |
           git add -A

@@ -222,6 +222,11 @@ pub extern "C-unwind" fn swoole_clean() {
 /// retrying each second while fork fails; the child drops the parent's timer,
 /// pool, reactor and signals, then runs the after-fork hooks. -1 before
 /// `swoole_init`.
+///
+/// Signals stay blocked from just before the fork until the child has dropped the
+/// parent's handlers. Delivered earlier, a signal would run the parent's handler,
+/// which takes it as the parent's or ignores it (the manager's ignores a SIGTERM
+/// to another pid), and a worker the manager is stopping would never stop.
 #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z11swoole_forki"))]
 #[must_use]
 pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
@@ -244,6 +249,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     if flags & FORK_PRECHECK != 0 {
         return 0;
     }
+    let previous = crate::signal_mask::block_for_fork();
     let pid = loop {
         // SAFETY: fork has no memory preconditions; the child continues here.
         let pid = unsafe { libc::fork() };
@@ -251,10 +257,10 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
             break pid;
         }
         log::sys_warning(c"swoole_fork", format_args!("fork() failed"));
-        // SAFETY: sleep has no memory preconditions.
-        unsafe { libc::sleep(1) };
+        std::thread::sleep(std::time::Duration::from_secs(1));
     };
     if pid > 0 || flags & FORK_DAEMON != 0 {
+        crate::signal_mask::restore_after_fork(&previous, false);
         return pid;
     }
     if read(|thread| !thread.timer.is_null()) {
@@ -270,6 +276,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
         (host.logger)(native::LOGGER_CLOSE);
     }
     (host.signal_clear)();
+    crate::signal_mask::restore_after_fork(&previous, true);
     if crate::swoole_isset_hook(HOOK_AFTER_FORK) {
         // SAFETY: the after-fork hooks take no argument.
         unsafe { crate::swoole_call_hook(HOOK_AFTER_FORK, std::ptr::null_mut()) };
@@ -285,8 +292,8 @@ pub fn fork_exec(child: impl FnOnce()) -> libc::pid_t {
         pid if pid < 0 => 0,
         0 => {
             child();
-            // SAFETY: the child ends here, as upstream's exit(0).
-            unsafe { libc::exit(0) }
+            // The child ends here, as upstream's exit(0).
+            std::process::exit(0)
         }
         pid => pid,
     }
@@ -329,4 +336,109 @@ pub fn adopt_shared_thread(shared: SharedThread) {
         thread.timer = timer;
         thread.async_threads = async_threads;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    extern "C" fn ignore(_signo: c_int) {}
+
+    fn signal(signo: c_int, handler: libc::sighandler_t) {
+        unsafe { libc::signal(signo, handler) };
+    }
+
+    fn blocked(signo: c_int) -> bool {
+        let mut now = unsafe { std::mem::zeroed() };
+        unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, ptr::null(), &raw mut now) };
+        unsafe { libc::sigismember(&raw const now, signo) == 1 }
+    }
+
+    fn change(how: c_int, signo: c_int) {
+        let mut set = unsafe { std::mem::zeroed() };
+        unsafe { libc::sigaddset(&raw mut set, signo) };
+        unsafe { libc::pthread_sigmask(how, &raw const set, ptr::null_mut()) };
+    }
+
+    /// The child takes a while to drop the parent's handlers, as on a busy machine,
+    /// and the reset unblocks SIGUSR1, as signalfd's does.
+    fn host() {
+        native::set_native_host(native::NativeHost {
+            init: || {},
+            new_buffer: ptr::null_mut,
+            delete_buffer: || {},
+            delete_pool: || {},
+            logger: |op| {
+                if op == native::LOGGER_REOPEN {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            },
+            signal_clear: || {
+                signal(libc::SIGTERM, libc::SIG_DFL);
+                change(libc::SIG_UNBLOCK, libc::SIGUSR1);
+            },
+            timer_free: || {},
+            event_available: || false,
+            event_free: || {},
+            coroutine_is_in: || false,
+        });
+    }
+
+    fn wait(pid: libc::pid_t) -> c_int {
+        assert!(pid > 0);
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        status
+    }
+
+    /// A SIGTERM sent to a new child before it drops the parent's handlers reaches
+    /// it once it has, instead of going to the parent's handler, which ignores it.
+    #[test]
+    fn fork_holds_signals_until_the_child_resets_handlers() {
+        host();
+        std::thread::spawn(|| {
+            signal(libc::SIGTERM, ignore as *const () as libc::sighandler_t);
+            let pid = swoole_fork(0);
+            if pid == 0 {
+                unsafe { libc::_exit(0) };
+            }
+            assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+            let status = wait(pid);
+            signal(libc::SIGTERM, libc::SIG_DFL);
+            assert!(
+                libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGTERM,
+                "the child outlived SIGTERM: status {status:#x}"
+            );
+            assert!(!blocked(libc::SIGTERM), "the parent's mask is back");
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// The child keeps what the parent blocked, less what its reset unblocked.
+    #[test]
+    fn fork_child_keeps_the_mask_its_reset_leaves() {
+        host();
+        std::thread::spawn(|| {
+            change(libc::SIG_BLOCK, libc::SIGUSR1);
+            change(libc::SIG_BLOCK, libc::SIGUSR2);
+            let pid = swoole_fork(0);
+            if pid == 0 {
+                let wrong = i32::from(blocked(libc::SIGUSR1))
+                    | i32::from(!blocked(libc::SIGUSR2)) << 1
+                    | i32::from(blocked(libc::SIGTERM)) << 2;
+                unsafe { libc::_exit(wrong) };
+            }
+            let status = wait(pid);
+            assert!(libc::WIFEXITED(status));
+            assert_eq!(libc::WEXITSTATUS(status), 0, "the child's mask");
+            assert!(
+                blocked(libc::SIGUSR1) && blocked(libc::SIGUSR2),
+                "the parent's"
+            );
+            assert!(!blocked(libc::SIGTERM));
+        })
+        .join()
+        .unwrap();
+    }
 }
