@@ -53,7 +53,6 @@ unsafe extern "C" {
         put: Put,
         out: *mut c_void,
     ) -> bool;
-    fn swr_v1_system_wait_signal(signals: *const c_long, count: usize, timeout: f64) -> c_int;
     fn swoole_coroutine_statvfs(path: *const c_char, buf: *mut libc::statvfs) -> c_int;
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
     fn swr_v1_core_last_error() -> c_int;
@@ -530,9 +529,8 @@ fn wait_signal(call: &Call) {
     // Held as a raw box while the coroutine waits, so no frame here owns a drop
     // if a fatal error ends the wait.
     let signals = Box::into_raw(signals.into_boxed_slice());
-    // SAFETY: C++ waits for one of the signals.
-    let signo =
-        unsafe { swr_v1_system_wait_signal(signals.cast::<c_long>(), signals.len(), timeout) };
+    // SAFETY: boxed above; only this call reads it.
+    let signo = swoole_rs_hooks::wait_signal::system_wait_signal(unsafe { &*signals }, timeout);
     // SAFETY: boxed above, not used again.
     drop(unsafe { Box::from_raw(signals) });
     if signo != -1 {

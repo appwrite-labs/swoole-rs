@@ -38,7 +38,7 @@ unsafe extern "C" {
 }
 
 /// `co->yield()`.
-unsafe extern "C" fn park(co: *mut c_void) {
+pub(crate) unsafe extern "C" fn park(co: *mut c_void) {
     // SAFETY: this thread's scheduler.
     let scheduler = unsafe { swr_cpp_coroutine_scheduler() };
     // SAFETY: `co` is the running coroutine, as the caller promises.
@@ -46,7 +46,7 @@ unsafe extern "C" fn park(co: *mut c_void) {
 }
 
 /// `co->resume()`.
-unsafe extern "C" fn resume(co: *mut c_void) {
+pub(crate) unsafe extern "C" fn resume(co: *mut c_void) {
     // SAFETY: a coroutine parked in `coroutine::async`.
     unsafe { swr_v1_coroutine_native_resume(co) };
 }

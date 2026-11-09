@@ -8,6 +8,25 @@ the coroutine Socket is `native/hooks/system.cc`; `coroutine::Socket` and
 socket through `swr_v1_runtime_socket`; `swoole_socket_hook.h` and
 `swoole_file_hook.h` keep only what `ftp.c` and `plain_wrapper.c` use.
 
+## What stays C++ (`system.cc`)
+
+- `Socket::host_`, for what needs C++ types: the yield with its `std::function`
+  cancel, the read and write `String` buffers, `recv`/`recv_all`, the `Protocol`
+  length callback, the packet diagnostics and `new`/`delete Socket`; and the
+  socket's timers, which `hooks-packet-policy` fakes to fail an allocation as
+  upstream's `TimerController` can. The socket's other effects (last error,
+  `strerror`, the current coroutine and its id, the bound-socket report, the
+  no-buffers sleep, the reactor and the TLS shutdown and liveness probe) are Rust
+  (`co_io::NATIVE`).
+- `Socket::~Socket`, the vtable's key function.
+- `Socket::created`'s `extra_ = extra_owner_.value.owner`, inline in the header: the
+  owner is a C++ member Rust has no offset for. Its reports are Rust
+  (`swr_v1_hook_co_socket_created`), and so is `recvfrom(buf, n)` under its upstream
+  symbol.
+- `swr_v1_runtime_socket`: `SocketImpl`'s constructors and members the coroutine
+  streams call (`std::string` hosts, proxies, `IOVector`).
+- The hooks host's io_uring pointer and the `HAVE_IOURING_*` configure macros.
+
 ## Hooks and file locks
 
 - hook.cc's socket functions (`swoole_coroutine_socket`, `send`, `recv`,
@@ -24,9 +43,8 @@ socket through `swr_v1_runtime_socket`; `swoole_socket_hook.h` and
 - `swoole_coroutine_flock` is Rust, exported under that name: outside a
   coroutine or with `LOCK_NB` it is plain flock; `LOCK_UN` unlocks;
   `LOCK_EX`/`LOCK_SH` retry `flock(op | LOCK_NB)` only on -1/EWOULDBLOCK,
-  sleeping through the host's `System::sleep` with the `wait_for` backoff, and fail
-  when that sleep is cancelled; anything else fails with EINVAL as errno and, through
-  the host's `swoole_set_last_error`, the last error.
+  sleeping through `System::sleep` with the `wait_for` backoff, and fail when that
+  sleep is cancelled; anything else fails with EINVAL as errno and the last error.
 - `hook_file_result` rejects open fd 0 and does not reset close's fd.
 - `wait_for` uses a copied caller-local delay/phase/result plan selecting the
   next callback, sleep, success or canceled return. Backoff: capped doubling with
@@ -58,8 +76,8 @@ aliases are never uninstalled.
   positive progress and picks the next vector after native updates it. Signed
   accumulation is defined only within `ssize_t`.
 - Header policy uses copied event masks/binding facts to select the read or write
-  coroutine field (read wins). CID queries and fatal bound diagnostics stay
-  native and run first. Availability observes native closed state first, then
+  coroutine field (read wins). CID queries and fatal bound diagnostics run
+  first. Availability observes native closed state first, then
   selects EBADF / close-wait / success. Return-value policy selects
   clear / errno-publication / retain without reading errno eagerly.
 - Timeouts: timeval conversion keeps the original two float divisions. The
@@ -102,7 +120,10 @@ aliases are never uninstalled.
   (`hook_poll_ready`) coalesces revents (error becomes the requested read/write
   unless error was requested), deletes the timer and defers one completion; the
   completion or the timer removes every socket without closing its fd and resumes.
-  The hooked `poll` counts a repeated fd once, through its first entry.
+  The hooked `poll` counts a repeated fd once, through its first entry. The reactor
+  socket, timer, deferred completion and coroutine operations are Rust too
+  (`poll::NATIVE`); `stream_select`'s rows merge by fd in the order libstdc++'s
+  `unordered_map<int, _>` iterated upstream's map (`socket_poll_rows`).
 - `System::wait_event` and `System::init_reactor` are Rust under their upstream
   symbols (`wait_event.rs`, `reactor_handlers.rs`). `wait_event` masks to read/write
   (none is EINVAL), answers a zero timeout with one `poll(2)` (POLLNVAL is EBADF,
@@ -117,21 +138,22 @@ aliases are never uninstalled.
   fsync and unlock on the async pool, into a `Vec`, logging each warning on the pool
   thread as upstream named it (`System::read_file`, `File::read_all`, ...).
   `write_file` keeps its upstream symbol; C reads through `swr_v1_system_read_file`.
-- `System::wait_signal` is one Rust call, `hook_wait_signal`: the listener table,
-  the EBUSY/EINVAL checks, registering through native `listen`, the park, the wake-up handler
-  `hook_signal_wake` (clears the slot, records the signal, resumes) and the
-  unregistering after it. Native passes the coroutine operations, signal
-  registration (deferred under `SW_USE_THREAD_CONTEXT`), the reactor exit condition
-  and `signal_async_listener_num`.
+- `System::wait_signal` is Rust (`wait_signal.rs`): the listener table, the
+  EBUSY/EINVAL checks, registering through the signal table (deferred to the loop's
+  thread while thread contexts are active), the reactor exit condition and
+  `signal_async_listener_num`, the park, the wake-up handler `hook_signal_wake`
+  (clears the slot, records the signal, resumes) and the unregistering after it.
+  C reads it through `swr_v1_system_wait_signal`.
 - The hooked stdio, directory and file-system functions (`fopen`, `fdopen`,
   `freopen`, `fread`, `fwrite`, `fgets`, `fputs`, `feof`, `fflush`, `fclose`,
   `opendir`, `readdir`, `closedir`, `open`, `fstat`, `stat`, `lstat`, `unlink`,
   `mkdir`, `rmdir`, `rename`, `fsync`, `fdatasync`, `ftruncate`, `lseek`,
   `readlink`, `statvfs`, `access`), `sleep`, `usleep`, `getaddrinfo` and
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
-  system.cc registers a host table while the library loads (`swr_v1_hook_set_host`): its
-  coroutine test, `async_job` (Rust's), `System::sleep`, the poll table, the socket table and, in an
-  io_uring build, `swr_v1_uring_native`.
+  The coroutine test, `async_job`, `System::sleep` and the last error are Rust
+  (`stdio::NATIVE`). system.cc registers a host table while the library loads
+  (`swr_v1_hook_set_host`): the socket table and, in an io_uring build,
+  `swr_v1_uring_native` and the `HAVE_IOURING_*` opcodes.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;
   outside a coroutine the libc call runs in place; inside one it runs through native
   `async`, which parks the coroutine and restores the worker's errno; a refused

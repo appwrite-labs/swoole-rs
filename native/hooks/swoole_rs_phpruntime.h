@@ -116,10 +116,6 @@ struct swr_v1_runtime_socket_ops {
     bool (*connect)(void *socket, const char *host, size_t length, int port, int flags);
     /* each(arg, pem, length) of each certificate in the peer's chain. */
     void (*peer_chain)(void *socket, void (*each)(void *, const char *, size_t), void *arg);
-    /* swr_v1_hook_socket_poll of count (fd, events) rows, merged by fd as stream_select
-     * merges them; the polled fds and their revents in the poll set's order. */
-    bool (*poll_set)(const int *fds, const int *events, size_t count, double timeout, int *ready, int *revents,
-                     size_t *size);
     /* op: 0 readv, 1 readv_all, 2 writev, 3 writev_all; where it stopped into index and offset. */
     ssize_t (*vector)(void *socket, int op, const struct iovec *vectors, int count, int *index, size_t *offset);
     /* set_http_proxy (http) or set_socks5_proxy. */

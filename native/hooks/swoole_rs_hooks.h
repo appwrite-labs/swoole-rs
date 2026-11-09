@@ -18,9 +18,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef bool (*swr_v1_hook_offload)(void (*job)(void *), void *context);
-/* coroutine::async_job: job(context) on the pool while the current coroutine waits. */
-bool swr_v1_hook_coroutine_async_job(void (*job)(void *), void *context);
 int32_t swr_v1_hook_transition(uint32_t requested, uint32_t installed, uint32_t bit);
 uint32_t swr_v1_hook_filter(uint32_t flags, uint32_t unavailable);
 bool swr_v1_hook_file_result(bool open, int64_t result);
@@ -43,32 +40,9 @@ typedef struct { uint64_t total; bool again; } swr_v1_hook_transfer_plan;
 swr_v1_hook_transfer_plan swr_v1_hook_transfer(int64_t result, uint64_t total, uint64_t requested, bool wait);
 typedef struct { uint32_t revents; bool wake; } swr_v1_hook_event_plan;
 swr_v1_hook_event_plan swr_v1_hook_event_waiter(uint32_t received, uint32_t event);
-typedef struct { uintptr_t handler; bool registered; } swr_v1_hook_previous_signal;
-typedef struct {
-    void *(*current)(void);
-    bool (*busy)(void);
-    void (*listen)(int signo, swr_v1_hook_previous_signal *previous, bool on);
-    void (*waiting)(bool on);
-    bool (*yield_for)(void *co, double timeout);
-    void (*resume)(void *co);
-} swr_v1_hook_signal_ops;
-typedef struct { int32_t signo; int32_t last_error; } swr_v1_hook_signalled;
-void swr_v1_hook_signal_wake(int signo);
-swr_v1_hook_signalled swr_v1_hook_wait_signal(const int32_t *signals, size_t count, double timeout, const swr_v1_hook_signal_ops *ops);
 typedef struct { int32_t fd; int32_t events; int32_t revents; } swr_v1_hook_poll_fd;
-typedef struct {
-    void *(*add)(int fd, int events, void *task);
-    void (*remove)(void *socket);
-    void *(*timer_add)(double timeout, void *task);
-    void (*timer_del)(void *timer);
-    void (*defer)(void *task);
-    void *(*current)(void);
-    void (*park)(void *co);
-    void (*resume)(void *co);
-} swr_v1_hook_poll_ops;
-void swr_v1_hook_poll_completed(void *task);
-void swr_v1_hook_poll_timeout(void *task);
-bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout, const swr_v1_hook_poll_ops *ops);
+/* System::socket_poll over count distinct fds, storing each one's revents. */
+bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout);
 /* What C++ keeps of the native coroutine socket (SocketImpl: coroutine::Socket, or
  * UringSocket with --enable-uring-socket): new and delete. Its members are Rust. */
 typedef struct swr_v1_hook_socket_ops {
@@ -79,15 +53,10 @@ typedef struct swr_v1_hook_socket_ops {
 /* What the hooked functions (Rust, under upstream's swoole_coroutine_<name>) need
  * of native; registered at load (swr_v1_hook_set_host). */
 typedef struct swr_v1_hook_host {
-    bool (*in_coroutine)(void);    /* a reactor and a coroutine are running */
-    swr_v1_hook_offload offload;   /* swoole::coroutine::async */
-    int (*sleep)(double seconds);  /* System::sleep */
     const void *uring;             /* &swr_v1_uring_native with io_uring, else NULL */
     bool uring_statx;              /* HAVE_IOURING_STATX */
     bool uring_ftruncate;          /* HAVE_IOURING_FTRUNCATE */
     bool uring_futex;              /* HAVE_IOURING_FUTEX */
-    void (*set_last_error)(int error);
-    const swr_v1_hook_poll_ops *poll; /* System's, for the hooked poll */
     swr_v1_hook_socket_ops socket;
 } swr_v1_hook_host;
 void swr_v1_hook_set_host(const swr_v1_hook_host *host);

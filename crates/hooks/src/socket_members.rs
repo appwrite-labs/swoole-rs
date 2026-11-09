@@ -13,7 +13,7 @@
 //! Itanium ABI the record follows the vtable pointer; system.cc asserts that shape.
 use crate::buffered::{swr_v1_hook_co_socket_recv_buffered, swr_v1_hook_recv_line};
 use crate::co_io::{
-    Timer, available, check, errno, host, set_err, swr_v1_hook_co_socket_borrowed_err,
+    NATIVE, Timer, available, check, errno, host, set_err, swr_v1_hook_co_socket_borrowed_err,
     swr_v1_hook_co_socket_default_err, swr_v1_hook_co_socket_owned_err,
 };
 use crate::co_socket::{CoSocket, buffer, swr_v1_hook_co_socket_peer_name};
@@ -123,8 +123,7 @@ unsafe fn ready(event: *const Event, kind: u32) -> c_int {
     // SAFETY: the record's live state.
     let co = unsafe { swr_v1_hook_socket_ready(state, kind, source.event_hup != 0) };
     if !co.is_null() {
-        // SAFETY: the coroutine Rust chose.
-        unsafe { (host().resume)(co) };
+        (NATIVE.resume)(co);
     }
     0
 }
@@ -1282,6 +1281,23 @@ pub unsafe extern "C" fn recvfrom(
     ));
     // SAFETY: as the caller promises; each try receives into the transfer's buffer.
     unsafe { transfer(this, READ, RETRY_INTERRUPTED, buf.cast(), n, call) }
+}
+
+/// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address.
+///
+/// # Safety
+/// `this` is a live native socket and `buf` holds `n` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket8recvfromEPvm")
+)]
+pub unsafe extern "C" fn recvfrom_peer(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    let receive = |addr, addrlen| {
+        // SAFETY: as the caller promises, into the record's peer address.
+        unsafe { recvfrom(this, buf, n, addr, addrlen) }
+    };
+    // SAFETY: the live socket's record.
+    unsafe { crate::transfer::recvfrom_peer(record(this), receive) }
 }
 
 /// `Socket::recvmsg(msg, flags)`.

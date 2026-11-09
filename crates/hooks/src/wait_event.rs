@@ -4,6 +4,7 @@
 //! drive (the reactor's and the coroutine's under `System::wait_event`, fakes in tests).
 use crate::{swr_v1_hook_event_waiter, swr_v1_hook_wait_revents};
 use core::ffi::c_void;
+use swoole_rs_corebase::constants::FdType;
 
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_EVENT_ERROR`.
 pub(crate) const READ: i32 = 1 << 9;
@@ -141,7 +142,7 @@ pub(crate) fn from_poll(revents: i16) -> i32 {
 pub unsafe extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
     let ops = EventWaitOps {
         current: native::current,
-        add: native::add,
+        add: native::add::<{ FdType::SW_FD_CO_EVENT as i32 }>,
         park: native::park,
         remove: native::remove,
     };
@@ -160,14 +161,13 @@ pub unsafe extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -
 /// `swoole_event_add`/`del` and `Coroutine::yield_ex`.
 pub(crate) mod native {
     use core::ffi::{c_int, c_void};
-    use swoole_rs_corebase::constants::FdType;
     use swoole_rs_corebase::log;
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del};
 
     // SAFETY: crates/coroutine's.
     unsafe extern "C" {
-        safe fn swr_v1_coroutine_current() -> *mut c_void;
+        pub(crate) safe fn swr_v1_coroutine_current() -> *mut c_void;
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
         pub(crate) fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
     }
@@ -191,22 +191,25 @@ pub(crate) mod native {
     }
 
     /// Releases the record, not its fd: the waiter doesn't own it.
-    unsafe fn release(socket: *mut SocketRecord) {
+    pub(crate) unsafe fn release(socket: *mut SocketRecord) {
         // SAFETY: a live record of this module's.
         unsafe { (*socket).fd = -1 };
         // SAFETY: as above; nothing uses it afterwards.
         unsafe { swoole_rs_tls::upstream::socket_free(socket) };
     }
 
-    pub(super) unsafe extern "C" fn add(
+    /// A `FD_TYPE` socket for `fd` with `object` as its object, or null (released, its
+    /// fd left open: the caller doesn't own it) with the error in `error` if the
+    /// reactor refused it.
+    pub(crate) unsafe extern "C" fn add<const FD_TYPE: c_int>(
         fd: i32,
         events: i32,
-        waiter: *mut c_void,
+        object: *mut c_void,
         error: *mut i32,
     ) -> *mut c_void {
-        let socket = swoole_rs_reactor::swr_v1_socket_make(fd, FdType::SW_FD_CO_EVENT as c_int);
+        let socket = swoole_rs_reactor::swr_v1_socket_make(fd, FD_TYPE);
         // SAFETY: the new record.
-        unsafe { (*socket).object = waiter };
+        unsafe { (*socket).object = object };
         // SAFETY: the new record, on the running reactor.
         if unsafe { swoole_event_add(socket, events) } < 0 {
             // SAFETY: the caller's slot.
@@ -227,7 +230,7 @@ pub(crate) mod native {
         }
     }
 
-    pub(super) unsafe extern "C" fn remove(socket: *mut c_void) {
+    pub(crate) unsafe extern "C" fn remove(socket: *mut c_void) {
         let socket = socket.cast::<SocketRecord>();
         // SAFETY: the record `add` registered.
         unsafe { swoole_event_del(socket) };

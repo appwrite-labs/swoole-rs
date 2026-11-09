@@ -48,15 +48,6 @@ struct SocketOps {
         unsafe extern "C" fn(*mut c_void, *const c_char, size_t),
         *mut c_void,
     ),
-    poll_set: unsafe extern "C" fn(
-        *const c_int,
-        *const c_int,
-        size_t,
-        f64,
-        *mut c_int,
-        *mut c_int,
-        *mut size_t,
-    ) -> bool,
     vector: unsafe extern "C" fn(
         *mut c_void,
         c_int,
@@ -603,24 +594,7 @@ pub(crate) unsafe fn convert_to_fd(value: *mut zval) -> Result<i32, Bailout> {
 /// `stream_select` added them: `None` on a timeout or failure, else each polled
 /// fd and its revents in the poll set's order.
 pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>> {
-    let fds: Vec<c_int> = rows.iter().map(|row| row.0).collect();
-    let events: Vec<c_int> = rows.iter().map(|row| row.1).collect();
-    let mut ready = vec![0; rows.len()];
-    let mut revents = vec![0; rows.len()];
-    let mut size = 0;
-    // SAFETY: each buffer holds `rows.len()` entries, at least the poll set.
-    let polled = unsafe {
-        (native().poll_set)(
-            fds.as_ptr(),
-            events.as_ptr(),
-            rows.len(),
-            timeout,
-            ready.as_mut_ptr(),
-            revents.as_mut_ptr(),
-            &raw mut size,
-        )
-    };
-    polled.then(|| ready.into_iter().zip(revents).take(size).collect())
+    swoole_rs_hooks::poll::socket_poll_rows(rows, timeout)
 }
 
 /// What the client classes (crates/phpclients and crates/phphttp2) need of a

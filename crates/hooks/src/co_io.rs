@@ -1,7 +1,6 @@
-//! What the coroutine socket's Rust operations need from C++, installed once
-//! (`swr_v1_hook_co_socket_host`): Swoole's thread-local last error and its
-//! messages, the coroutine switch, timers, the reactor and the write buffer. Over
-//! it, the record's `set_err`, `check_return_value` and `is_available`, and the
+//! The coroutine socket's effects: [`NATIVE`] (the last error and its messages, the
+//! coroutine and the reactor) and what stays native (timers, buffers), installed
+//! once ([`Host`], `swr_v1_hook_co_socket_host`). Over them, the record's `set_err`, `check_return_value` and `is_available`, and the
 //! per-direction timer (`TimerController`).
 use crate::co_socket::CoSocket;
 use crate::shutdown::{READ, swr_v1_hook_socket_bound_co, swr_v1_hook_socket_event_name};
@@ -15,40 +14,19 @@ pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
 /// `SW_WAIT`.
 const WAIT: c_int = 2;
 
-/// Native effects. Each takes the record native code handed Rust.
+/// What only C++ can do, or the packet gate (`tests/modules/hooks`) fakes: the timers,
+/// the coroutine yield with its `std::function` cancel, the `String` buffers, the `Protocol` callback, the packet diagnostics and the
+/// `Socket` constructor and destructor. Each takes the record native code handed Rust.
 #[repr(C)]
 pub struct Host {
-    /// `swoole_set_last_error`.
-    pub set_last_error: extern "C" fn(c_int),
-    /// `swoole_strerror`.
-    pub strerror: unsafe extern "C" fn(c_int) -> *const c_char,
-    /// `Coroutine::get_current_safe()`.
-    pub current: extern "C" fn() -> *mut c_void,
-    /// A coroutine's id.
-    pub cid: unsafe extern "C" fn(*mut c_void) -> c_long,
-    /// `Coroutine::print_socket_bound_error(fd, event, cid)`.
-    pub bound_error: unsafe extern "C" fn(c_int, *const c_char, c_long),
     /// `swoole_timer_add(timeout, false, timer_callback, socket)`, or null.
     pub timer_add: unsafe extern "C" fn(*mut CoSocket, f64) -> *mut c_void,
     pub timer_del: unsafe extern "C" fn(*mut c_void),
-    /// `System::sleep(0.01)`.
-    pub sleep: unsafe extern "C" fn(),
-    /// `swoole_event_add(events)` when `add`, else `swoole_event_set(events)`;
-    /// false, with errno set, on failure.
-    pub reactor: unsafe extern "C" fn(*mut CoSocket, u32, bool) -> bool,
     /// Yields `co` with `cancel(event)` as its cancel function.
     pub suspend: unsafe extern "C" fn(*mut CoSocket, *mut c_void, u32),
     /// Moves a write's `length` bytes at `*buffer` to the write buffer unless they
     /// are there already or the socket is zero-copy.
     pub buffer: unsafe extern "C" fn(*mut CoSocket, *mut *mut u8, usize),
-    /// `remove_read_event`/`remove_write_event`.
-    pub remove: unsafe extern "C" fn(*mut CoSocket, u32),
-    /// Resumes a coroutine.
-    pub resume: unsafe extern "C" fn(*mut c_void),
-    /// `socket->ssl_shutdown()`.
-    pub ssl_shutdown: unsafe extern "C" fn(*mut CoSocket),
-    /// `socket->check_liveness()`, errno set when it fails.
-    pub liveness: unsafe extern "C" fn(*mut CoSocket) -> bool,
     /// The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes the view.
     pub read_buffer:
         unsafe extern "C" fn(*mut CoSocket, *mut crate::packet::ReadBuffer, u32, usize),
@@ -82,6 +60,120 @@ pub(crate) fn host() -> &'static Host {
     unsafe { &*HOST.load(Ordering::Acquire) }
 }
 
+/// The runtime effects the operations use, each over a live record or coroutine.
+pub(crate) struct Ops {
+    /// `swoole_set_last_error`.
+    pub set_last_error: fn(c_int),
+    /// `swoole_strerror`.
+    pub strerror: fn(c_int) -> *const c_char,
+    /// `Coroutine::get_current_safe()`.
+    pub current: fn() -> *mut c_void,
+    /// A coroutine's id.
+    pub cid: fn(*mut c_void) -> c_long,
+    /// `Coroutine::print_socket_bound_error(fd, event, cid)`.
+    pub bound_error: fn(c_int, &CStr, c_long),
+    /// `System::sleep(0.01)`.
+    pub sleep: fn(),
+    /// `swoole_event_add(events)` when `add`, else `swoole_event_set(events)`;
+    /// false, with errno set, on failure.
+    pub reactor: fn(*mut CoSocket, u32, bool) -> bool,
+    /// `remove_read_event`/`remove_write_event`.
+    pub remove: fn(*mut CoSocket, u32),
+    /// Resumes a coroutine.
+    pub resume: fn(*mut c_void),
+    /// `socket->ssl_shutdown()`.
+    pub ssl_shutdown: fn(*mut CoSocket),
+    /// `socket->check_liveness()`, errno set when it fails.
+    pub liveness: fn(*mut CoSocket) -> bool,
+}
+
+/// The runtime's effects: the error slot, the coroutine, the timer and the reactor.
+#[cfg(not(test))]
+pub(crate) static NATIVE: Ops = Ops {
+    set_last_error: swoole_rs_corebase::log::set_last_error,
+    strerror: |error| swoole_rs_error::swoole_strerror(error),
+    current: || crate::wait_event::native::current(),
+    cid: native::cid,
+    bound_error: native::bound_error,
+    sleep: native::sleep,
+    reactor: native::reactor,
+    remove: native::remove,
+    resume: crate::poll::native::resume,
+    ssl_shutdown: native::ssl_shutdown,
+    liveness: native::liveness,
+};
+
+/// The unit tests link no runtime: theirs is the recording fake.
+#[cfg(test)]
+pub(crate) static NATIVE: Ops = test_host::OPS;
+
+#[cfg(not(test))]
+mod native {
+    use crate::co_socket::CoSocket;
+    use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+
+    // SAFETY: crates/coroutine's.
+    unsafe extern "C-unwind" {
+        #[link_name = "_ZN6swoole9Coroutine24print_socket_bound_errorEiPKcl"]
+        fn print_socket_bound_error(fd: c_int, event: *const c_char, cid: c_long);
+    }
+
+    pub(super) fn cid(co: *mut c_void) -> c_long {
+        // SAFETY: a live coroutine, which starts with its Rust state.
+        unsafe { (*co.cast::<swoole_rs_coroutine::Coroutine>()).cid }
+    }
+
+    pub(super) fn bound_error(fd: c_int, event: &CStr, cid: c_long) {
+        // SAFETY: a NUL-terminated name; the report is fatal in a running server.
+        unsafe { print_socket_bound_error(fd, event.as_ptr(), cid) };
+    }
+
+    pub(super) fn sleep() {
+        // SAFETY: socket waits run in a coroutine.
+        _ = unsafe { crate::sleep::system_sleep(0.01) };
+    }
+
+    pub(super) fn reactor(socket: *mut CoSocket, events: u32, add: bool) -> bool {
+        use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_set};
+        // SAFETY: the record of a live socket.
+        let record = unsafe { (*socket).socket };
+        let events = events.cast_signed();
+        let result = if add {
+            // SAFETY: an open socket's record, on this thread's running reactor.
+            unsafe { swoole_event_add(record, events) }
+        } else {
+            // SAFETY: as above.
+            unsafe { swoole_event_set(record, events) }
+        };
+        result == 0
+    }
+
+    pub(super) fn remove(socket: *mut CoSocket, event: u32) {
+        /// `Reactor::interest`'s `remove_read_event`; `remove_write_event` follows it.
+        const REMOVE_READ: u32 = 4;
+        let kind = REMOVE_READ + u32::from(event != crate::shutdown::READ);
+        // SAFETY: the record of a live socket.
+        let record = unsafe { (*socket).socket };
+        let reactor = swoole_rs_corebase::thread_reactor();
+        // SAFETY: this thread's live reactor and a socket registered in it.
+        unsafe { swoole_rs_reactor::reactor_upstream::reactor_interest(reactor, record, kind, 0) };
+    }
+
+    pub(super) fn ssl_shutdown(socket: *mut CoSocket) {
+        // SAFETY: the record of a live socket.
+        let record = unsafe { (*socket).socket };
+        // SAFETY: an open record holding an SSL.
+        unsafe { swoole_rs_tls::upstream::socket_ssl_shutdown(record) };
+    }
+
+    pub(super) fn liveness(socket: *mut CoSocket) -> bool {
+        // SAFETY: the record of a live socket.
+        let record = unsafe { (*socket).socket };
+        // SAFETY: an open record.
+        unsafe { swoole_rs_tls::upstream::socket_check_liveness(record) }
+    }
+}
+
 pub(crate) fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
@@ -96,12 +188,11 @@ pub(crate) unsafe fn set_err(socket: *mut CoSocket, error: c_int) {
     // SAFETY: as the caller promises.
     unsafe { (*socket).err_code = error };
     set_errno(error);
-    (host().set_last_error)(error);
+    (NATIVE.set_last_error)(error);
     let message = if error == 0 {
         c"".as_ptr()
     } else {
-        // SAFETY: as above; the message outlives the record.
-        unsafe { (host().strerror)(error) }
+        (NATIVE.strerror)(error)
     };
     // SAFETY: as the caller promises.
     unsafe { (*socket).err_msg = message };
@@ -157,12 +248,7 @@ unsafe fn bound_cid(socket: *const CoSocket, event: u32) -> c_long {
     let state = unsafe { (*socket).state };
     // SAFETY: the record's live state.
     let co = unsafe { swr_v1_hook_socket_bound_co(state, event) };
-    if co.is_null() {
-        0
-    } else {
-        // SAFETY: a live native coroutine.
-        unsafe { (host().cid)(co) }
-    }
+    if co.is_null() { 0 } else { (NATIVE.cid)(co) }
 }
 
 /// `get_event_str(event)`.
@@ -192,8 +278,7 @@ pub(crate) unsafe fn check_bound(socket: *const CoSocket, event: u32) {
         let fd = unsafe { (*socket).sock_fd };
         // SAFETY: as the caller promises.
         let name = unsafe { event_str(socket, event) };
-        // SAFETY: a native report (fatal in a running server).
-        unsafe { (host().bound_error)(fd, name.as_ptr(), cid) };
+        (NATIVE.bound_error)(fd, name, cid);
     }
 }
 
@@ -397,8 +482,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_timer_fired(
     }
     // SAFETY: as above.
     let co = unsafe { crate::shutdown::swr_v1_hook_socket_co(state, event) };
-    // SAFETY: the coroutine waiting on the socket.
-    unsafe { (host().resume)(co) };
+    (NATIVE.resume)(co);
 }
 
 /// A recording host for the operations' tests. Each thread records its own events.
@@ -441,7 +525,7 @@ pub(crate) mod test_host {
         }
     }
 
-    unsafe extern "C" fn resume(co: *mut c_void) {
+    fn resume(co: *mut c_void) {
         let cid = unsafe { *co.cast::<c_long>() };
         log(format!("resume:{cid}"));
         hook(&ON_RESUME, |f| f(cid));
@@ -451,11 +535,11 @@ pub(crate) mod test_host {
         log("release");
         hook(&ON_RELEASE, |f| f(socket.cast()));
     }
-    unsafe extern "C" fn ssl_shutdown(_: *mut CoSocket) {
+    fn ssl_shutdown(_: *mut CoSocket) {
         log("ssl-shutdown");
         set_errno(SSL_ERRNO.get());
     }
-    unsafe extern "C" fn liveness(_: *mut CoSocket) -> bool {
+    fn liveness(_: *mut CoSocket) -> bool {
         log("probe");
         let (alive, error) = PROBE.get();
         set_errno(error);
@@ -485,23 +569,23 @@ pub(crate) mod test_host {
         SSL_ERRNO.set(0);
     }
 
-    extern "C" fn set_last_error(error: c_int) {
+    fn set_last_error(error: c_int) {
         log(format!("last-error:{error}"));
     }
-    unsafe extern "C" fn strerror(_: c_int) -> *const c_char {
+    fn strerror(_: c_int) -> *const c_char {
         c"native-error".as_ptr()
     }
-    extern "C" fn current() -> *mut c_void {
+    fn current() -> *mut c_void {
         ptr::dangling_mut::<u64>().cast()
     }
     /// A test coroutine is a `c_long` holding its id.
-    unsafe extern "C" fn cid(co: *mut c_void) -> c_long {
+    fn cid(co: *mut c_void) -> c_long {
         let cid = unsafe { *co.cast::<c_long>() };
         log(format!("cid:{cid}"));
         cid
     }
-    unsafe extern "C" fn bound_error(fd: c_int, event: *const c_char, cid: c_long) {
-        let event = unsafe { CStr::from_ptr(event) }.to_str().unwrap();
+    fn bound_error(fd: c_int, event: &CStr, cid: c_long) {
+        let event = event.to_str().unwrap();
         log(format!("bound-error:{fd}:{event}:{cid}"));
         let hook = ON_BOUND.take();
         if let Some(mut hook) = hook {
@@ -520,10 +604,10 @@ pub(crate) mod test_host {
     unsafe extern "C" fn timer_del(_: *mut c_void) {
         log("timer:delete");
     }
-    unsafe extern "C" fn sleep() {
+    fn sleep() {
         log("sleep");
     }
-    unsafe extern "C" fn reactor(_: *mut CoSocket, events: u32, add: bool) -> bool {
+    fn reactor(_: *mut CoSocket, events: u32, add: bool) -> bool {
         log(format!("{}:{events}", if add { "add" } else { "set" }));
         REACTOR_OK.get()
     }
@@ -538,7 +622,7 @@ pub(crate) mod test_host {
     unsafe extern "C" fn buffer(_: *mut CoSocket, _: *mut *mut u8, length: usize) {
         log(format!("buffer:{length}"));
     }
-    unsafe extern "C" fn remove(_: *mut CoSocket, event: u32) {
+    fn remove(_: *mut CoSocket, event: u32) {
         log(format!("remove:{event}"));
     }
 
@@ -549,22 +633,24 @@ pub(crate) mod test_host {
     unsafe extern "C" fn destroy(_: *mut c_void) {
         log("destroy");
     }
-    static HOST_TABLE: Host = Host {
+    pub(crate) const OPS: Ops = Ops {
         set_last_error,
         strerror,
         current,
         cid,
         bound_error,
-        timer_add,
-        timer_del,
         sleep,
         reactor,
-        suspend,
-        buffer,
         remove,
         resume,
         ssl_shutdown,
         liveness,
+    };
+    static HOST_TABLE: Host = Host {
+        timer_add,
+        timer_del,
+        suspend,
+        buffer,
         read_buffer: crate::packet::tests::read_buffer,
         recv: crate::packet::tests::receive,
         package_length: crate::packet::tests::get_length,
@@ -951,8 +1037,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_default_err(
     let error = if last_error == 0 { errno() } else { last_error };
     // SAFETY: the caller lends a live writable socket.
     unsafe { (*socket).err_code = error };
-    // SAFETY: installed strerror is a native leaf returning stable text.
-    let message = unsafe { (host().strerror)(error) };
+    let message = (NATIVE.strerror)(error);
     // SAFETY: the socket remains live through the leaf operation.
     unsafe { (*socket).err_msg = message };
 }
@@ -968,7 +1053,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_borrowed_err(
     // SAFETY: the caller lends the live socket.
     unsafe { (*socket).err_code = error };
     set_errno(error);
-    (host().set_last_error)(error);
+    (NATIVE.set_last_error)(error);
     // SAFETY: the borrowed message outlives publication.
     unsafe { (*socket).err_msg = message };
 }
@@ -989,7 +1074,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_owned_err(
     // SAFETY: the caller lends a live writable socket.
     unsafe { (*socket).err_code = error };
     set_errno(error);
-    (host().set_last_error)(error);
+    (NATIVE.set_last_error)(error);
     // SAFETY: the metadata owner outlives this synchronized call.
     let extra = unsafe { (*socket).extra };
     // SAFETY: its first stable slot owns the error string; take no Rust borrow.
