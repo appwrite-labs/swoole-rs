@@ -264,8 +264,7 @@ type Streams<T = Stream> = IdMap<u32, T>;
 /// The socket's close hook.
 /// # Safety
 /// `conn` is the live `Conn` the client registered.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_client_socket_dtor(conn: *mut c_void) {
+pub(crate) unsafe fn socket_dtor(conn: *mut c_void) {
     let conn = conn.cast::<Conn>();
     // SAFETY: per the caller; no `&mut` to the conn is live across the hook.
     unsafe { (*conn).socket = ptr::null_mut() };

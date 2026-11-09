@@ -460,34 +460,25 @@ swoole_rs_zend::handlers! {
 }
 
 /// `Response::cookie()`/`rawcookie()` with a name: the line of a temporary
-/// cookie built from the arguments, or null after a warning.
+/// cookie built from the arguments, or null after a warning. `strings` are the
+/// name, value, path, domain, `SameSite` and priority; `flags` are secure,
+/// `HttpOnly` and partitioned.
 /// # Safety
 /// Each string is null or live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_cookie_line(
-    encode: u8,
-    name: *mut zend_string,
-    value: *mut zend_string,
+pub(crate) unsafe fn header_line(
+    encode: bool,
+    strings: [*mut zend_string; 6],
     expires: i64,
-    path: *mut zend_string,
-    domain: *mut zend_string,
-    secure: u8,
-    http_only: u8,
-    same_site: *mut zend_string,
-    priority: *mut zend_string,
-    partitioned: u8,
+    (secure, http_only, partitioned): (bool, bool, bool),
 ) -> *mut zend_string {
-    let mut cookie = Cookie::new(encode != 0);
-    for (field, string) in [name, value, path, domain, same_site, priority]
-        .into_iter()
-        .enumerate()
-    {
+    let mut cookie = Cookie::new(encode);
+    for (field, string) in strings.into_iter().enumerate() {
         cookie.set(field, (!string.is_null()).then_some(string));
     }
     cookie.expires = expires;
-    cookie.secure = secure != 0;
-    cookie.http_only = http_only != 0;
-    cookie.partitioned = partitioned != 0;
+    cookie.secure = secure;
+    cookie.http_only = http_only;
+    cookie.partitioned = partitioned;
     cookie.line()
 }
 
@@ -495,10 +486,7 @@ pub unsafe extern "C" fn swr_v1_httpbindings_cookie_line(
 /// warning, which also resets the cookie, or for an unconstructed cookie).
 /// # Safety
 /// `object` is a live `Swoole\Http\Cookie` zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_httpbindings_cookie_object_line(
-    object: *const zval,
-) -> *mut zend_string {
+pub(crate) unsafe fn object_header_line(object: *const zval) -> *mut zend_string {
     // SAFETY: per the caller, a live zval.
     let value = unsafe { (*object).value };
     // SAFETY: an object zval holds `obj`.
