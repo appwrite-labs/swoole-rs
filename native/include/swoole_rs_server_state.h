@@ -190,8 +190,6 @@ void *swr_v1_server_connection(const swr_v1_server_state *state, long key, uint3
 swr_v1_server_tables *swr_v1_server_tables_get(swr_v1_server_state *state);
 swr_v1_server_state *swr_v1_server_state_new(void);
 void swr_v1_server_state_free(swr_v1_server_state *state);
-/* Server::task_notify_pipes.at(index): the Pipe, or null (crates/server/src/state.rs). */
-void *swr_v1_server_task_pipe(const swr_v1_server_state *state, uint16_t index);
 swr_v1_server_config *swr_v1_server_config_get(swr_v1_server_state *state);
 void swr_v1_server_config_init(swr_v1_server_state *state, uint32_t cpu_num, uint32_t max_sockets, long timezone, const void *allocator);
 /* Server::Server's and ~Server's work besides the C++ members (crates/server/src/server_methods.rs). */

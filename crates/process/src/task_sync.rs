@@ -1,106 +1,155 @@
 //! `Server::task` and the blocking `Server::task_sync` pair (one task, or a
 //! `MultiTask` gathered through a temporary file): the task counters, dispatch
 //! and rollback, waiting on the worker's notify pipe for the matching result or
-//! for every result, and walking the result file. Native code lends its objects
-//! through [`TaskHooks`]: the task pool's dispatch, the notify pipe, the
-//! worker's lock, the temporary file, and the `MultiTask`'s PHP pack/unpack.
-//! Hooks that can reach PHP run inside the bailout trap ([`crate::pool`]); a
-//! bailout returns [`crate::pool::BAILED`] for the native caller to re-raise.
-use std::ffi::{c_int, c_void};
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+//! for every result, and walking the result file. The server lends its task pool,
+//! notify pipe and lock through [`TaskHost`], and `taskWaitMulti` its tasks through
+//! [`MultiTask`]. The dispatch and the pipe's waits can reach PHP (a blocking
+//! write or wait dispatches signals), so they run inside the bailout trap
+//! ([`crate::pool`]); a bailout returns [`Bailed`] for the caller to re-raise.
+use std::ffi::{CStr, c_int, c_void};
+use std::ptr;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use std::ffi::CStr;
-use std::mem::MaybeUninit;
-use std::ptr;
+use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::log::{self, set_last_error};
+use swoole_rs_ossupport::swr_v1_os_file_get_contents;
 
-use swoole_rs_corebase::log::set_last_error;
-
-use crate::pool::{BAILED, Bailed, DONE, PoolCall, Step, run, swr_v1_process_bailout};
-use crate::task_file::{TASK_TMP_PATH_SIZE, errno, make_tmpfile, native};
+pub use crate::pool::Bailed;
+use crate::pool::{PoolCall, run};
+use crate::process_pool::SW_IPC_MAX_SIZE;
+use crate::task_file::{TASK_TMP_PATH_SIZE, errno, make_tmpfile, task_tmpfile};
 
 /// `swoole::DataHead`: `fd` (the task id) at 0, `len` at 16, `ext_flags` at 26.
 const HEAD: usize = 40;
 const HEAD_LEN: usize = 16;
 const HEAD_EXT_FLAGS: usize = 26;
+/// `sizeof(EventData)`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "SW_IPC_MAX_SIZE is 2048 or 8192"
+)]
+const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 /// `SW_TASK_WAITALL`.
 const TASK_WAITALL: u16 = 1 << 4;
+/// `SW_ERROR_TASK_DISPATCH_FAIL`.
+const ERROR_TASK_DISPATCH_FAIL: c_int = 2002;
 
-/// Warnings native code formats.
-pub const WARN_PACK: c_int = 1;
-pub const WARN_DISPATCH: c_int = 2;
-/// `swr_v1_process_task_sync_many`'s `*ok` when no task could be dispatched
-/// (`SW_ERROR_TASK_DISPATCH_FAIL`).
-pub const NONE_DISPATCHED: c_int = 2;
-
-/// The server's task objects, one function per operation. A [`PoolCall`]'s
-/// `pool` is the server, `data`/`length` the operation's buffer, `flags` its
-/// index or option, `result` its return value.
-#[repr(C)]
-pub struct TaskHooks {
-    /// `get_task_worker_pool()->dispatch_sync` (`flags` 1) or `dispatch` (0) of
-    /// the `EventData` at `data`, to the worker at `socket` (an `int*`): 1 when sent.
-    pub dispatch: Step,
-    /// The notify pipe: `clean()`.
-    pub pipe_clean: Step,
-    /// The notify pipe: `set_timeout(timeout)`, the `f64` at `data`.
-    pub pipe_timeout: Step,
-    /// The notify pipe: `read(data, length)`.
-    pub pipe_read: Step,
-    /// The worker's lock: `lock()` (`flags` 1) or `unlock()` (0).
-    pub lock: Step,
-    /// `mtask.pack(flags, data)`: the task id, negative when it failed.
-    pub pack: Step,
-    /// `mtask.unpack(flags, data)`.
-    pub unpack: Step,
-    /// `mtask.fail(flags)`.
-    pub fail: Step,
-    /// `file_get_contents(path)` under the lock: the file's bytes at `data`, its
-    /// length in `length` (null when it could not be read), freed by `release`.
-    pub contents: Step,
-    pub release: Step,
-    /// Report a `WARN_*`.
-    pub warn: unsafe extern "C" fn(kind: c_int),
+/// What a task call borrows of the server.
+pub trait TaskHost {
+    /// `get_task_worker_pool()->dispatch_sync` (`blocking`) or `dispatch` of the
+    /// `EventData` at `task` to `worker_id`: true when sent.
+    fn dispatch(&mut self, task: *mut u8, worker_id: &mut c_int, blocking: bool) -> bool;
+    /// This worker's notify pipe: `clean()`.
+    fn pipe_clean(&mut self);
+    /// This worker's notify pipe: `set_timeout(timeout)`.
+    fn set_timeout(&mut self, timeout: f64);
+    /// This worker's notify pipe: `read` of one notification.
+    fn read_notify(&mut self) -> isize;
+    /// This worker's lock: `lock()` (`on`) or `unlock()`.
+    fn lock(&mut self, on: bool);
 }
 
-/// The server state a task call works on.
-#[repr(C)]
-pub struct TaskServer {
-    pub hooks: *const TaskHooks,
-    pub server: *mut c_void,
-    /// The `MultiTask` being gathered (each call's `worker`), or null.
-    pub mtask: *mut c_void,
+/// `Server::MultiTask`: tasks packed, and their results unpacked, by index.
+pub trait MultiTask {
+    fn count(&self) -> u16;
+    /// Packs task `index` into the `EventData` at `event`: its id, negative when it failed.
+    ///
+    /// # Errors
+    /// PHP bailed out (a user `__serialize`).
+    fn pack(&mut self, index: u16, event: *mut u8) -> Result<i64, Bailed>;
+    /// Task `index`'s result, a packed `EventData`.
+    ///
+    /// # Errors
+    /// PHP bailed out (a user `__unserialize`).
+    fn unpack(&mut self, index: u16, result: *mut u8) -> Result<(), Bailed>;
+    /// Task `index` was not dispatched.
+    fn fail(&mut self, index: u16);
+}
+
+/// The server's task state.
+pub struct Tasks<'a, H> {
+    pub host: H,
     /// `gs->tasking_num` and `gs->task_count`, shared with every process.
-    pub tasking_num: *mut u32,
-    pub task_count: *mut i64,
-    /// This worker's `task_results` slot (an `EventData`).
+    pub tasking: &'a AtomicU32,
+    pub count: &'a AtomicU64,
+    /// This worker's `task_results` slot (an `EventData`), which the `task_sync`s
+    /// wait on.
     pub result: *mut u8,
-    pub result_size: usize,
 }
 
-struct Server<'a> {
-    hooks: &'a TaskHooks,
-    server: *mut c_void,
-    mtask: *mut c_void,
-    tasking: &'a AtomicU32,
-    count: &'a AtomicI64,
-    result: *mut u8,
+/// `Server::task`'s counting around `dispatch`: one more in flight, counted when
+/// sent and taken back when not.
+///
+/// # Errors
+/// The dispatch bailed out; the task stays in flight, as upstream.
+pub fn count_task(
+    tasking: &AtomicU32,
+    count: &AtomicU64,
+    dispatch: impl FnOnce() -> Result<bool, Bailed>,
+) -> Result<bool, Bailed> {
+    tasking.fetch_add(1, Ordering::SeqCst);
+    if dispatch()? {
+        count.fetch_add(1, Ordering::SeqCst);
+        return Ok(true);
+    }
+    tasking.fetch_sub(1, Ordering::SeqCst);
+    Ok(false)
 }
 
-impl Server<'_> {
-    fn call(
-        &self,
-        step: Step,
-        data: *mut u8,
-        length: usize,
-        flags: c_int,
-    ) -> Result<PoolCall, Bailed> {
-        let mut call = PoolCall::new(self.server, self.mtask);
-        call.data = data.cast();
-        call.length = length;
-        call.flags = flags;
-        run(step, &mut call)?;
-        Ok(call)
+/// A body [`trapped`] runs, and what it returned.
+struct Body<F, R> {
+    body: Option<F>,
+    result: Option<R>,
+}
+
+unsafe extern "C" fn step<F: FnOnce() -> R, R>(call: *mut c_void) {
+    // SAFETY: `trapped` passes its call.
+    let data = unsafe { (*call.cast::<PoolCall>()).data };
+    // SAFETY: the call's data is `trapped`'s body, which owns nothing a bailout skips.
+    let body = unsafe { &mut *data.cast::<Body<F, R>>() };
+    body.result = body.body.take().map(|body| body());
+}
+
+/// Runs `body` inside the bailout trap.
+fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
+    let mut body = Body {
+        body: Some(body),
+        result: None,
+    };
+    let mut call = PoolCall::new(ptr::null_mut(), ptr::null_mut());
+    call.data = (&raw mut body).cast();
+    run(step::<F, R>, &mut call)?;
+    body.result.ok_or(Bailed)
+}
+
+impl<H: TaskHost> Tasks<'_, H> {
+    /// `Server::task(task, dst_worker_id, blocking)`.
+    ///
+    /// # Errors
+    /// The dispatch bailed out.
+    pub fn task(
+        &mut self,
+        task: *mut u8,
+        worker_id: &mut c_int,
+        blocking: bool,
+    ) -> Result<bool, Bailed> {
+        let host = &mut self.host;
+        count_task(self.tasking, self.count, || {
+            trapped(|| host.dispatch(task, worker_id, blocking))
+        })
+    }
+
+    fn pipe_clean(&mut self) -> Result<(), Bailed> {
+        trapped(|| self.host.pipe_clean())
+    }
+
+    fn set_timeout(&mut self, timeout: f64) -> Result<(), Bailed> {
+        trapped(|| self.host.set_timeout(timeout))
+    }
+
+    fn read_notify(&mut self) -> Result<isize, Bailed> {
+        trapped(|| self.host.read_notify())
     }
 
     fn result_task_id(&self) -> i64 {
@@ -108,70 +157,22 @@ impl Server<'_> {
         unsafe { self.result.cast::<i64>().read_unaligned() }
     }
 
-    /// `Server::task`: count the task, dispatch it, and roll the count back on failure.
-    fn task(&self, task: *mut u8, worker_id: *mut c_int, blocking: bool) -> Result<bool, Bailed> {
-        self.tasking.fetch_add(1, Ordering::SeqCst);
-        let mut call = PoolCall::new(self.server, std::ptr::null_mut());
-        call.socket = worker_id.cast();
-        call.data = task.cast();
-        call.flags = c_int::from(blocking);
-        run(self.hooks.dispatch, &mut call)?;
-        if call.result != 0 {
-            self.count.fetch_add(1, Ordering::SeqCst);
-            return Ok(true);
-        }
-        self.tasking.fetch_sub(1, Ordering::SeqCst);
-        Ok(false)
-    }
-
-    fn set_timeout(&self, mut timeout: f64) -> Result<(), Bailed> {
-        self.call(self.hooks.pipe_timeout, (&raw mut timeout).cast(), 0, 0)
-            .map(drop)
-    }
-
-    fn read_notify(&self) -> Result<isize, Bailed> {
-        let mut notify = 0u64;
-        Ok(self
-            .call(self.hooks.pipe_read, (&raw mut notify).cast(), 8, 0)?
-            .result)
-    }
-
-    /// Names the result file in this worker's slot under its lock: no results yet,
-    /// then `path` (`swoole_strlcpy`'d).
-    fn name_result_file(&self, path: &CStr) -> Result<(), Bailed> {
-        let path = path.to_bytes_with_nul();
-        let length = path.len().min(TASK_TMP_PATH_SIZE);
-        self.lock(true)?;
-        // The slot is an `EventData`, whose data holds the count and a path.
-        let count = self.result.wrapping_add(HEAD);
-        let named = count.wrapping_add(size_of::<c_int>());
-        // SAFETY: as above.
-        unsafe { count.cast::<c_int>().write_unaligned(0) };
-        // SAFETY: as above; `length` is at most `SW_TASK_TMP_PATH_SIZE`.
-        unsafe { ptr::copy_nonoverlapping(path.as_ptr(), named, length) };
-        // SAFETY: as above.
-        unsafe { named.wrapping_add(length - 1).write(0) };
-        self.lock(false)
-    }
-
-    fn lock(&self, on: bool) -> Result<(), Bailed> {
-        self.call(self.hooks.lock, std::ptr::null_mut(), 0, c_int::from(on))
-            .map(drop)
-    }
-
-    /// One task: dispatch it and wait for its own result.
-    fn sync_one(
-        &self,
+    /// `Server::task_sync(task, dst_worker_id, timeout)`: dispatch one task and
+    /// wait for its own result in this worker's slot.
+    ///
+    /// # Errors
+    /// The dispatch or a wait bailed out.
+    pub fn task_sync(
+        &mut self,
         task: *mut u8,
-        worker_id: *mut c_int,
+        worker_id: &mut c_int,
         timeout: f64,
-        result_size: usize,
     ) -> Result<bool, Bailed> {
-        // SAFETY: this worker's result slot.
-        unsafe { self.result.write_bytes(0, result_size) };
+        // SAFETY: this worker's result slot, an `EventData`.
+        unsafe { self.result.write_bytes(0, EVENT_SIZE) };
         // SAFETY: `info.fd` heads the task.
         let task_id = unsafe { task.cast::<i64>().read_unaligned() };
-        self.call(self.hooks.pipe_clean, std::ptr::null_mut(), 0, 0)?;
+        self.pipe_clean()?;
         self.set_timeout(timeout)?;
         if !self.task(task, worker_id, true)? {
             return Ok(false);
@@ -184,39 +185,80 @@ impl Server<'_> {
         Ok(false)
     }
 
-    /// Several tasks: dispatch each (WAITALL) and wait until every result is in
-    /// the file, then unpack each by its task id. `path` is the result file,
-    /// already named in this worker's result slot; `event_size` is `sizeof(EventData)`.
-    fn sync_many(
-        &self,
-        count: u16,
+    /// `Server::task_sync(mtask, timeout)`: the result slot cleared and pointed at
+    /// a new temporary file, then every task dispatched and its results unpacked.
+    ///
+    /// # Errors
+    /// A dispatch, a wait, or the `MultiTask` bailed out.
+    pub fn task_sync_many(
+        &mut self,
+        multi: &mut impl MultiTask,
         timeout: f64,
-        path: &std::ffi::CStr,
-        event_size: usize,
-    ) -> Result<c_int, Bailed> {
+    ) -> Result<bool, Bailed> {
+        // SAFETY: the result slot starts with its `DataHead`.
+        unsafe { self.result.write_bytes(0, HEAD) };
+        let mut path = [0; TASK_TMP_PATH_SIZE];
+        let fd = make_tmpfile(task_tmpfile(), &mut path);
+        if fd < 0 {
+            set_last_error(errno());
+            return Ok(false);
+        }
+        // SAFETY: `fd` is open and owned here; upstream keeps only the path.
+        unsafe { libc::close(fd) };
+        let Ok(path) = CStr::from_bytes_until_nul(&path) else {
+            return Ok(false);
+        };
+        self.name_result_file(path);
+        let Some(done) = self.sync_many(multi, timeout, path)? else {
+            set_last_error(ERROR_TASK_DISPATCH_FAIL);
+            return Ok(false);
+        };
+        Ok(done)
+    }
+
+    /// Names the result file in this worker's slot under its lock: no results yet,
+    /// then `path` (`swoole_strlcpy`'d).
+    fn name_result_file(&mut self, path: &CStr) {
+        let path = path.to_bytes_with_nul();
+        let length = path.len().min(TASK_TMP_PATH_SIZE);
+        self.host.lock(true);
+        // The slot is an `EventData`, whose data holds the count and a path.
+        let count = self.result.wrapping_add(HEAD);
+        let named = count.wrapping_add(size_of::<c_int>());
+        // SAFETY: as above.
+        unsafe { count.cast::<c_int>().write_unaligned(0) };
+        // SAFETY: as above; `length` is at most `SW_TASK_TMP_PATH_SIZE`.
+        unsafe { ptr::copy_nonoverlapping(path.as_ptr(), named, length) };
+        // SAFETY: as above.
+        unsafe { named.wrapping_add(length - 1).write(0) };
+        self.host.lock(false);
+    }
+
+    /// Dispatch each task (WAITALL) and wait until every result is in the file at
+    /// `path`, already named in this worker's result slot, then unpack each by its
+    /// task id: whether the results were read, or `None` when no task was dispatched.
+    fn sync_many(
+        &mut self,
+        multi: &mut impl MultiTask,
+        timeout: f64,
+        path: &CStr,
+    ) -> Result<Option<bool>, Bailed> {
         #[expect(
             clippy::cast_ptr_alignment,
             reason = "the result slot is an EventData, 8-aligned; its count is the first word"
         )]
         let finish_count = self.result.wrapping_add(HEAD).cast::<AtomicU32>();
-        self.call(self.hooks.pipe_clean, std::ptr::null_mut(), 0, 0)?;
+        self.pipe_clean()?;
 
+        let count = multi.count();
         let mut pending = i64::from(count);
-        let mut indexes = std::collections::HashMap::new();
-        let mut event = vec![0u64; event_size.div_ceil(8)];
+        let mut indexes = Vec::with_capacity(usize::from(count));
+        let mut event = vec![0u64; EVENT_SIZE / 8];
         for index in 0..count {
-            let mut task_id = self
-                .call(
-                    self.hooks.pack,
-                    event.as_mut_ptr().cast(),
-                    event_size,
-                    c_int::from(index),
-                )?
-                .result as i64;
+            let mut task_id = multi.pack(index, event.as_mut_ptr().cast())?;
             let mut failed = task_id < 0;
             if failed {
-                // SAFETY: native's warning.
-                unsafe { (self.hooks.warn)(WARN_PACK) };
+                log::warning(c"task_sync", format_args!("task pack failed"));
             } else {
                 // `info.ext_flags`: bytes 26..28, in the event's fourth word.
                 if let Some(word) = event.get_mut(HEAD_EXT_FLAGS / 8) {
@@ -224,23 +266,22 @@ impl Server<'_> {
                 }
                 self.tasking.fetch_add(1, Ordering::SeqCst);
                 let mut worker_id: c_int = -1;
-                if self.task(event.as_mut_ptr().cast(), &raw mut worker_id, true)? {
+                if self.task(event.as_mut_ptr().cast(), &mut worker_id, true)? {
                     self.tasking.fetch_sub(1, Ordering::SeqCst);
                 } else {
-                    // SAFETY: native's warning.
-                    unsafe { (self.hooks.warn)(WARN_DISPATCH) };
+                    log::warning(c"task_sync", format_args!("failed to dispatch task"));
                     task_id = -1;
                     failed = true;
                 }
             }
             if failed {
-                self.call(self.hooks.fail, std::ptr::null_mut(), 0, c_int::from(index))?;
+                multi.fail(index);
                 pending -= 1;
             }
-            indexes.insert(task_id, index);
+            indexes.push((task_id, index));
         }
         if pending == 0 {
-            return Ok(NONE_DISPATCHED);
+            return Ok(None);
         }
         if timeout > 0.0 {
             self.set_timeout(timeout)?;
@@ -252,51 +293,59 @@ impl Server<'_> {
                 break;
             }
         }
+        // As the map upstream fills: a later id replaces an earlier one's index.
+        indexes.reverse();
+        indexes.sort_by_key(|&(task_id, _)| task_id);
+        indexes.dedup_by_key(|&mut (task_id, _)| task_id);
 
-        self.lock(true)?;
-        let contents = self.call(self.hooks.contents, path.as_ptr().cast_mut().cast(), 0, 0);
-        self.lock(false)?;
-        let contents = contents?;
-        if contents.data.is_null() {
-            return Ok(0);
-        }
-        // SAFETY: the file's bytes native read, until `release`.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(contents.data.cast::<u8>(), contents.length) };
-        let mut offset = 0;
-        let mut unpacked = Ok(());
-        while let Some(record) = bytes.get(offset..).filter(|record| record.len() >= HEAD) {
-            let task_id = i64::from_ne_bytes(record.first_chunk().copied().unwrap_or_default());
-            let len = u32::from_ne_bytes(
-                record
-                    .get(HEAD_LEN..)
-                    .and_then(<[u8]>::first_chunk)
-                    .copied()
-                    .unwrap_or_default(),
-            );
-            if let Some(&index) = indexes.get(&task_id)
-                && let Err(bailed) = self.call(
-                    self.hooks.unpack,
-                    record.as_ptr().cast_mut(),
-                    record.len(),
-                    c_int::from(index),
-                )
-            {
-                unpacked = Err(bailed);
-                break;
-            }
-            offset += HEAD + len as usize;
-        }
-        let mut release = PoolCall::new(self.server, std::ptr::null_mut());
-        release.data = contents.data;
-        release.socket = contents.socket;
-        // SAFETY: native frees what `contents` returned; this cannot reach PHP.
-        unsafe { (self.hooks.release)((&raw mut release).cast()) };
+        self.host.lock(true);
+        let mut content = CppString::EMPTY;
+        // SAFETY: a NUL-terminated path and a default-constructed String.
+        let read = unsafe { swr_v1_os_file_get_contents(path.as_ptr(), &raw mut content) };
+        self.host.lock(false);
+        let unpacked = if read {
+            unpack_all(multi, &indexes, &content)
+        } else {
+            Ok(())
+        };
+        content.dispose();
         unpacked?;
+        if !read {
+            return Ok(Some(false));
+        }
         // SAFETY: the result file's NUL-terminated path.
         unsafe { libc::unlink(path.as_ptr()) };
-        Ok(1)
+        Ok(Some(true))
     }
+}
+
+/// Unpacks each record of the result file `content` whose task id is in
+/// `indexes` (sorted by id).
+fn unpack_all(
+    multi: &mut impl MultiTask,
+    indexes: &[(i64, u16)],
+    content: &CppString,
+) -> Result<(), Bailed> {
+    // SAFETY: the file's bytes, read into the String.
+    let bytes = unsafe { std::slice::from_raw_parts(content.str, content.length) };
+    let mut offset = 0;
+    while let Some(record) = bytes.get(offset..).filter(|record| record.len() >= HEAD) {
+        let task_id = i64::from_ne_bytes(record.first_chunk().copied().unwrap_or_default());
+        let len = u32::from_ne_bytes(
+            record
+                .get(HEAD_LEN..)
+                .and_then(<[u8]>::first_chunk)
+                .copied()
+                .unwrap_or_default(),
+        );
+        if let Ok(found) = indexes.binary_search_by_key(&task_id, |&(id, _)| id)
+            && let Some(&(_, index)) = indexes.get(found)
+        {
+            multi.unpack(index, record.as_ptr().cast_mut())?;
+        }
+        offset += HEAD + len as usize;
+    }
+    Ok(())
 }
 
 fn now() -> f64 {
@@ -305,306 +354,62 @@ fn now() -> f64 {
         .map_or(0.0, |elapsed| elapsed.as_secs_f64())
 }
 
-fn server(task_server: &TaskServer) -> Server<'_> {
-    Server {
-        // SAFETY: the caller's hooks.
-        hooks: unsafe { &*task_server.hooks },
-        server: task_server.server,
-        mtask: task_server.mtask,
-        // SAFETY: the shared counters, updated atomically by every process.
-        tasking: unsafe { AtomicU32::from_ptr(task_server.tasking_num) },
-        // SAFETY: as above.
-        count: unsafe { AtomicI64::from_ptr(task_server.task_count) },
-        result: task_server.result,
-    }
-}
-
-fn outcome<T>(result: Result<T, Bailed>, ok: *mut T) -> c_int {
-    match result {
-        Ok(done) => {
-            // SAFETY: the caller's out-value.
-            unsafe { ok.write(done) };
-            DONE
-        }
-        Err(Bailed) => BAILED,
-    }
-}
-
-/// `Server::task`.
-///
-/// # Safety
-/// `task_server` is live; `task` an `EventData`; `worker_id` writable; `ok` writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_task(
-    task_server: *const TaskServer,
-    task: *mut u8,
-    worker_id: *mut c_int,
-    blocking: bool,
-    ok: *mut bool,
-) -> c_int {
-    // SAFETY: the caller's state.
-    let server = server(unsafe { &*task_server });
-    outcome(server.task(task, worker_id, blocking), ok)
-}
-
-/// `Server::task_sync` of one task: [`DONE`] with `*ok`, or [`BAILED`].
-///
-/// # Safety
-/// As [`swr_v1_process_task`]; the result slot holds `result_size` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_task_sync(
-    task_server: *const TaskServer,
-    task: *mut u8,
-    worker_id: *mut c_int,
-    timeout: f64,
-    ok: *mut bool,
-) -> c_int {
-    // SAFETY: the caller's state.
-    let task_server = unsafe { &*task_server };
-    let server = server(task_server);
-    outcome(
-        server.sync_one(task, worker_id, timeout, task_server.result_size),
-        ok,
-    )
-}
-
-/// `Server::task_sync` of a `MultiTask` of `count` tasks, gathered in the file
-/// at `path` (already named in the result slot, its count zeroed): `*ok` is 1
-/// when the results were unpacked, 0 when they could not be read, or
-/// [`NONE_DISPATCHED`].
-///
-/// # Safety
-/// As [`swr_v1_process_task`]; `path` is NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_task_sync_many(
-    task_server: *const TaskServer,
-    count: u16,
-    timeout: f64,
-    path: *const std::ffi::c_char,
-    event_size: usize,
-    ok: *mut c_int,
-) -> c_int {
-    // SAFETY: the caller's state and path.
-    let (server, path) = (server(unsafe { &*task_server }), unsafe {
-        std::ffi::CStr::from_ptr(path)
-    });
-    outcome(server.sync_many(count, timeout, path, event_size), ok)
-}
-
-/// `SW_ERROR_TASK_DISPATCH_FAIL`; workers.cc asserts it.
-const ERROR_TASK_DISPATCH_FAIL: c_int = 2002;
-
-/// The server's task state from native code, and its `MultiTask`'s count.
-///
-/// # Safety
-/// `serv` is a live `Server`, `mtask` null or a live `MultiTask`.
-unsafe fn task_server(
-    serv: *mut c_void,
-    mtask: *mut c_void,
-    with_result: bool,
-) -> (TaskServer, u16) {
-    let mut state = MaybeUninit::<TaskServer>::uninit();
-    // SAFETY: as the caller guarantees; native fills every field.
-    let count = unsafe { (native().server)(serv, mtask, with_result, state.as_mut_ptr()) };
-    // SAFETY: filled above.
-    (unsafe { state.assume_init() }, count)
-}
-
-/// Raises the bailout a task call returned [`BAILED`] for. The frames it crosses
-/// hold nothing with a destructor.
-fn raise(outcome: c_int) {
-    if outcome == BAILED {
-        swr_v1_process_bailout();
-    }
-}
-
-/// `Server::task(task, dst_worker_id, blocking)`.
-///
-/// # Safety
-/// `serv` is a live `Server`, `task` an `EventData` and `dst_worker_id` writable.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server4taskEPNS_9EventDataEPib")
-)]
-pub unsafe extern "C" fn task(
-    serv: *mut c_void,
-    task: *mut u8,
-    dst_worker_id: *mut c_int,
-    blocking: bool,
-) -> bool {
-    // SAFETY: as the caller guarantees.
-    let (state, _) = unsafe { task_server(serv, ptr::null_mut(), false) };
-    let mut ok = false;
-    // SAFETY: as the caller guarantees; the state is live.
-    raise(unsafe {
-        swr_v1_process_task(&raw const state, task, dst_worker_id, blocking, &raw mut ok)
-    });
-    ok
-}
-
-/// `Server::task_sync(task, dst_worker_id, timeout)`.
-///
-/// # Safety
-/// As [`task`].
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server9task_syncEPNS_9EventDataEPid")
-)]
-pub unsafe extern "C" fn task_sync(
-    serv: *mut c_void,
-    task: *mut u8,
-    dst_worker_id: *mut c_int,
-    timeout: f64,
-) -> bool {
-    // SAFETY: as the caller guarantees.
-    let (state, _) = unsafe { task_server(serv, ptr::null_mut(), true) };
-    let mut ok = false;
-    // SAFETY: as the caller guarantees; the state is live.
-    raise(unsafe {
-        swr_v1_process_task_sync(&raw const state, task, dst_worker_id, timeout, &raw mut ok)
-    });
-    ok
-}
-
-/// `Server::task_sync(mtask, timeout)`: the result slot cleared and pointed at a
-/// new temporary file, then every task dispatched and its results unpacked.
-///
-/// # Safety
-/// `serv` is a live `Server` and `mtask` a live `MultiTask`.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server9task_syncERNS0_9MultiTaskEd")
-)]
-pub unsafe extern "C" fn task_sync_many(
-    serv: *mut c_void,
-    mtask: *mut c_void,
-    timeout: f64,
-) -> bool {
-    // SAFETY: as the caller guarantees.
-    let (state, count) = unsafe { task_server(serv, mtask, true) };
-    // SAFETY: the result slot starts with its `DataHead`.
-    unsafe { state.result.write_bytes(0, HEAD) };
-    let mut path = [0; TASK_TMP_PATH_SIZE];
-    // SAFETY: native's table returns `SwooleG.task_tmpfile`'s NUL-terminated text.
-    let template = unsafe { (native().tmpfile)() };
-    // SAFETY: as above.
-    let template = unsafe { CStr::from_ptr(template) };
-    let fd = make_tmpfile(template, &mut path);
-    if fd < 0 {
-        set_last_error(errno());
-        return false;
-    }
-    // SAFETY: `fd` is open and owned here; upstream keeps only the path.
-    unsafe { libc::close(fd) };
-    let Ok(path) = CStr::from_bytes_until_nul(&path) else {
-        return false;
-    };
-    let server = server(&state);
-    let mut ok = 0;
-    raise(outcome(
-        server
-            .name_result_file(path)
-            .and_then(|()| server.sync_many(count, timeout, path, state.result_size)),
-        &raw mut ok,
-    ));
-    if ok == NONE_DISPATCHED {
-        set_last_error(ERROR_TASK_DISPATCH_FAIL);
-        return false;
-    }
-    ok == 1
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
 
-    /// A scripted server: dispatch results, notifications, the result file.
+    /// A scripted server: dispatch results, notifications.
     #[derive(Default)]
     struct Script {
         dispatched: Vec<bool>,
-        packs: Vec<isize>,
         notify: Vec<isize>,
-        file: Vec<u8>,
-        result: Vec<u64>,
-        unpacked: Vec<(c_int, i64)>,
-        failed: Vec<c_int>,
-        warnings: Vec<c_int>,
-        locks: Vec<c_int>,
+        locks: Vec<bool>,
     }
 
-    thread_local! {
-        static SCRIPT: RefCell<Script> = RefCell::default();
-    }
-
-    fn with<R>(f: impl FnOnce(&mut Script) -> R) -> R {
-        SCRIPT.with(|script| f(&mut script.borrow_mut()))
-    }
-
-    fn call(arg: *mut c_void) -> &'static mut PoolCall {
-        // SAFETY: the call under test.
-        unsafe { &mut *arg.cast::<PoolCall>() }
-    }
-
-    unsafe extern "C" fn dispatch(arg: *mut c_void) {
-        call(arg).result = isize::from(with(|s| s.dispatched.remove(0)));
-    }
-    unsafe extern "C" fn nothing(_: *mut c_void) {}
-    unsafe extern "C" fn pipe_read(arg: *mut c_void) {
-        call(arg).result = with(|s| {
-            if s.notify.is_empty() {
+    impl TaskHost for Script {
+        fn dispatch(&mut self, _: *mut u8, _: &mut c_int, _: bool) -> bool {
+            self.dispatched.remove(0)
+        }
+        fn pipe_clean(&mut self) {}
+        fn set_timeout(&mut self, _: f64) {}
+        fn read_notify(&mut self) -> isize {
+            if self.notify.is_empty() {
                 -1
             } else {
-                s.notify.remove(0)
+                self.notify.remove(0)
             }
-        });
-    }
-    unsafe extern "C" fn lock(arg: *mut c_void) {
-        with(|s| s.locks.push(call(arg).flags));
-    }
-    unsafe extern "C" fn pack(arg: *mut c_void) {
-        let c = call(arg);
-        let id = with(|s| s.packs.remove(0));
-        // SAFETY: the event buffer under test.
-        unsafe { c.data.cast::<i64>().write(id as i64) };
-        c.result = id;
-    }
-    unsafe extern "C" fn unpack(arg: *mut c_void) {
-        let c = call(arg);
-        // SAFETY: a record of the file under test.
-        let id = unsafe { c.data.cast::<i64>().read_unaligned() };
-        with(|s| s.unpacked.push((c.flags, id)));
-    }
-    unsafe extern "C" fn fail(arg: *mut c_void) {
-        with(|s| s.failed.push(call(arg).flags));
-    }
-    unsafe extern "C" fn contents(arg: *mut c_void) {
-        let c = call(arg);
-        with(|s| {
-            c.data = s.file.as_mut_ptr().cast();
-            c.length = s.file.len();
-        });
-    }
-    unsafe extern "C" fn warn(kind: c_int) {
-        with(|s| s.warnings.push(kind));
+        }
+        fn lock(&mut self, on: bool) {
+            self.locks.push(on);
+        }
     }
 
-    static HOOKS: TaskHooks = TaskHooks {
-        dispatch,
-        pipe_clean: nothing,
-        pipe_timeout: nothing,
-        pipe_read,
-        lock,
-        pack,
-        unpack,
-        fail,
-        contents,
-        release: nothing,
-        warn,
-    };
+    /// Scripted tasks: their pack results, and what was unpacked and failed.
+    #[derive(Default)]
+    struct Multi {
+        packs: Vec<i64>,
+        unpacked: Vec<(u16, i64)>,
+        failed: Vec<u16>,
+    }
+
+    impl MultiTask for Multi {
+        fn count(&self) -> u16 {
+            u16::try_from(self.packs.len()).unwrap()
+        }
+        fn pack(&mut self, index: u16, event: *mut u8) -> Result<i64, Bailed> {
+            let id = self.packs[usize::from(index)];
+            unsafe { event.cast::<i64>().write_unaligned(id) };
+            Ok(id)
+        }
+        fn unpack(&mut self, index: u16, result: *mut u8) -> Result<(), Bailed> {
+            let id = unsafe { result.cast::<i64>().read_unaligned() };
+            self.unpacked.push((index, id));
+            Ok(())
+        }
+        fn fail(&mut self, index: u16) {
+            self.failed.push(index);
+        }
+    }
 
     fn record(task_id: i64, payload: &[u8]) -> Vec<u8> {
         let mut record = vec![0u8; HEAD];
@@ -615,130 +420,100 @@ mod tests {
         record
     }
 
-    fn state(tasking: &mut u32, count: &mut i64) -> TaskServer {
-        TaskServer {
-            hooks: &raw const HOOKS,
-            server: std::ptr::null_mut(),
-            mtask: std::ptr::null_mut(),
-            tasking_num: tasking,
-            task_count: count,
-            result: with(|s| s.result.as_mut_ptr().cast()),
-            result_size: 64,
+    fn tasks<'a>(
+        script: Script,
+        counters: &'a (AtomicU32, AtomicU64),
+        result: &mut [u64],
+    ) -> Tasks<'a, Script> {
+        Tasks {
+            host: script,
+            tasking: &counters.0,
+            count: &counters.1,
+            result: result.as_mut_ptr().cast(),
         }
     }
 
     #[test]
     fn a_task_counts_and_rolls_back() {
-        with(|s| {
-            *s = Script {
-                dispatched: vec![true, false],
-                ..Script::default()
-            }
-        });
-        let (mut tasking, mut count) = (0, 0);
-        let state = state(&mut tasking, &mut count);
+        let counters = (AtomicU32::new(0), AtomicU64::new(0));
+        let script = Script {
+            dispatched: vec![true, false],
+            ..Script::default()
+        };
+        let mut tasks = tasks(script, &counters, &mut []);
         let mut task = [0u64; 8];
         let mut worker_id = -1;
-        let mut ok = false;
         for expected in [true, false] {
-            // SAFETY: the scripted state.
-            let done = unsafe {
-                swr_v1_process_task(
-                    &raw const state,
-                    task.as_mut_ptr().cast(),
-                    &raw mut worker_id,
-                    false,
-                    &raw mut ok,
-                )
-            };
-            assert_eq!((done, ok), (DONE, expected));
+            let sent = tasks.task(task.as_mut_ptr().cast(), &mut worker_id, false);
+            assert_eq!(sent.ok(), Some(expected));
         }
-        assert_eq!((tasking, count), (1, 1));
+        assert_eq!((counters.0.into_inner(), counters.1.into_inner()), (1, 1));
     }
 
     #[test]
     fn a_sync_task_waits_for_its_own_result() {
-        with(|s| {
-            *s = Script {
-                dispatched: vec![true],
-                notify: vec![8, 8],
-                result: vec![0; 8],
-                ..Script::default()
-            }
-        });
-        let (mut tasking, mut count) = (0, 0);
-        let state = state(&mut tasking, &mut count);
+        let counters = (AtomicU32::new(0), AtomicU64::new(0));
+        let script = Script {
+            dispatched: vec![true],
+            notify: vec![8, 8],
+            ..Script::default()
+        };
+        let mut result = vec![0u64; EVENT_SIZE / 8];
+        let mut tasks = tasks(script, &counters, &mut result);
         let mut task = [7u64, 0, 0, 0, 0, 0, 0, 0];
         let mut worker_id = -1;
-        let mut ok = false;
         // Another task's result arrives first; this one never does.
-        // SAFETY: the scripted state.
-        let done = unsafe {
-            swr_v1_process_task_sync(
-                &raw const state,
-                task.as_mut_ptr().cast(),
-                &raw mut worker_id,
-                1.0,
-                &raw mut ok,
-            )
-        };
-        assert_eq!((done, ok), (DONE, false));
-        assert_eq!(with(|s| s.notify.len()), 0);
+        let done = tasks.task_sync(task.as_mut_ptr().cast(), &mut worker_id, 1.0);
+        assert_eq!(done.ok(), Some(false));
+        assert_eq!(tasks.host.notify, []);
     }
 
     #[test]
     fn many_tasks_unpack_each_result_by_id() {
+        swoole_rs_corebase::swr_v1_core_set_max_file_content(1 << 20);
         let mut file = record(11, b"ab");
         file.extend(record(99, b""));
         file.extend(record(12, b"c"));
+        let path = std::env::temp_dir().join(format!("swr-task-sync-{}", std::process::id()));
+        std::fs::write(&path, file).unwrap();
+        let path = std::ffi::CString::new(path.into_os_string().into_encoded_bytes()).unwrap();
         // The finish count (the result's data) already says both finished.
-        let mut result = vec![0u64; 16];
+        let mut result = vec![0u64; EVENT_SIZE / 8];
         result[HEAD / 8] = 2;
-        with(|s| {
-            *s = Script {
-                dispatched: vec![true, true, false],
-                packs: vec![11, 12, 13, -1],
-                file,
-                result,
-                ..Script::default()
-            };
-        });
-        let (mut tasking, mut count) = (0, 0);
-        let state = state(&mut tasking, &mut count);
-        let mut ok = 0;
-        let path = c"/nonexistent/swr-task-sync-test";
-        // SAFETY: the scripted state.
-        let done = unsafe {
-            swr_v1_process_task_sync_many(&raw const state, 4, -1.0, path.as_ptr(), 64, &raw mut ok)
+        let counters = (AtomicU32::new(0), AtomicU64::new(0));
+        let script = Script {
+            dispatched: vec![true, true, false],
+            ..Script::default()
         };
-        assert_eq!((done, ok), (DONE, 1));
-        let script = with(std::mem::take);
-        assert_eq!(script.unpacked, vec![(0, 11), (1, 12)]);
-        assert_eq!(script.failed, vec![2, 3]);
-        assert_eq!(script.warnings, vec![WARN_DISPATCH, WARN_PACK]);
-        assert_eq!(script.locks, vec![1, 0]);
+        let mut tasks = tasks(script, &counters, &mut result);
+        let mut multi = Multi {
+            packs: vec![11, 12, 13, -1],
+            ..Multi::default()
+        };
+        let done = tasks.sync_many(&mut multi, -1.0, &path);
+        assert_eq!(done.ok(), Some(Some(true)));
+        assert_eq!(multi.unpacked, vec![(0, 11), (1, 12)]);
+        assert_eq!(multi.failed, vec![2, 3]);
+        assert_eq!(tasks.host.locks, vec![true, false]);
+        assert!(
+            std::fs::metadata(path.to_str().unwrap()).is_err(),
+            "unlinked"
+        );
         // One in flight per dispatched task (its task worker takes it off), and the
         // failed dispatch keeps its extra count, as upstream.
-        assert_eq!((tasking, count), (3, 2));
+        assert_eq!((counters.0.into_inner(), counters.1.into_inner()), (3, 2));
     }
 
     #[test]
     fn the_result_file_is_named_under_the_lock() {
         // A slot whose count and path bytes are dirty.
-        with(|s| {
-            *s = Script {
-                result: vec![u64::MAX; 64],
-                ..Script::default()
-            }
-        });
-        let (mut tasking, mut count) = (0, 0);
-        let state = state(&mut tasking, &mut count);
+        let mut result = vec![u64::MAX; 64];
+        let counters = (AtomicU32::new(0), AtomicU64::new(0));
+        let mut tasks = tasks(Script::default(), &counters, &mut result);
         let path = c"/tmp/swoole.task.abc123";
-        assert!(server(&state).name_result_file(path).is_ok());
-        let script = with(std::mem::take);
-        assert_eq!(script.locks, vec![1, 0]);
-        let data = script
-            .result
+        tasks.name_result_file(path);
+        assert_eq!(tasks.host.locks, vec![true, false]);
+        let data = result
             .iter()
             .flat_map(|word| word.to_ne_bytes())
             .skip(HEAD)
@@ -750,27 +525,15 @@ mod tests {
 
     #[test]
     fn nothing_dispatched_is_reported() {
-        with(|s| {
-            *s = Script {
-                packs: vec![-1],
-                result: vec![0; 16],
-                ..Script::default()
-            }
-        });
-        let (mut tasking, mut count) = (0, 0);
-        let state = state(&mut tasking, &mut count);
-        let mut ok = 0;
-        // SAFETY: the scripted state.
-        let done = unsafe {
-            swr_v1_process_task_sync_many(
-                &raw const state,
-                1,
-                -1.0,
-                c"/x".as_ptr(),
-                64,
-                &raw mut ok,
-            )
+        let mut result = vec![0u64; EVENT_SIZE / 8];
+        let counters = (AtomicU32::new(0), AtomicU64::new(0));
+        let mut tasks = tasks(Script::default(), &counters, &mut result);
+        let mut multi = Multi {
+            packs: vec![-1],
+            ..Multi::default()
         };
-        assert_eq!((done, ok), (DONE, NONE_DISPATCHED));
+        let done = tasks.sync_many(&mut multi, -1.0, c"/x");
+        assert_eq!(done.ok(), Some(None));
+        assert_eq!(multi.failed, vec![0]);
     }
 }

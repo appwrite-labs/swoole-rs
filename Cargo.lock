@@ -869,6 +869,7 @@ dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-locks",
  "swoole-rs-ossupport",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phphelpers",
@@ -981,6 +982,7 @@ name = "swoole-rs-process"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-memory",
  "swoole-rs-ossupport",

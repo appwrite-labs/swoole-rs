@@ -165,7 +165,7 @@ static TRAP: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static RAISE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 /// The hook bailed out.
-pub(crate) struct Bailed;
+pub struct Bailed;
 
 fn set_errno(value: c_int) {
     #[cfg(target_os = "linux")]
