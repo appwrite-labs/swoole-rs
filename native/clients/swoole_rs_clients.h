@@ -23,15 +23,6 @@ int swr_v1_clients_gethostbyname(int flags, const char *name, char *addr);
 void swr_v1_clients_set_dns_server(const uint8_t *server, size_t length);
 int swr_v1_clients_dns_server(void *context, void (*push)(void *context, const uint8_t *text, size_t length));
 int swr_v1_clients_load_resolv_conf(const char *path);
-/* dns_lookup_impl_with_socket over native's coroutine UDP socket. */
-struct swr_v1_clients_dns_socket {
-    void *(*open)(double timeout);
-    bool (*sendto)(void *socket, const char *host, int port, const uint8_t *data, size_t length);
-    long (*recv)(void *socket, uint8_t *data, size_t capacity);
-    void (*close)(void *socket);
-};
-void swr_v1_clients_dns_lookup(const char *domain, int family, double timeout, const char *resolv_conf,
-    const struct swr_v1_clients_dns_socket *socket, void *output, void (*push)(void *output, const uint8_t *text, size_t length));
 void swr_v1_clients_set_hosts_path(const uint8_t *path, size_t length);
 bool swr_v1_clients_hosts_lookup(const uint8_t *domain, size_t domain_length, const uint8_t *spaces, void *context, void (*push)(void *context, const uint8_t *text, size_t length));
 typedef struct { int error; int count; } swr_v1_clients_resolved;

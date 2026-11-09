@@ -14,6 +14,7 @@ use libc::{c_int, c_void};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use swoole_rs_corebase::set_errno;
 
 /// A native `SocketImpl *`, only dereferenced by native code.
 struct Socket(*mut c_void);
@@ -27,17 +28,6 @@ static SOCKETS: Mutex<Option<HashMap<c_int, Socket>>> = Mutex::new(None);
 fn sockets() -> MutexGuard<'static, Option<HashMap<c_int, Socket>>> {
     // A panic never happens while the lock is held, but stay usable if it did.
     SOCKETS.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn set_errno(code: c_int) {
-    // SAFETY: this thread's errno slot.
-    #[cfg(target_os = "linux")]
-    let slot = unsafe { libc::__errno_location() };
-    // SAFETY: as above.
-    #[cfg(not(target_os = "linux"))]
-    let slot = unsafe { libc::__error() };
-    // SAFETY: the slot is this thread's and live.
-    unsafe { *slot = code };
 }
 
 /// `fd`'s socket, or null with errno `ENOTSOCK`.

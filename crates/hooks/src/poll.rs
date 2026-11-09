@@ -31,7 +31,7 @@ pub struct PollOps {
     /// Defers `swr_v1_hook_poll_completed(task)` to the reactor.
     pub defer: unsafe extern "C" fn(*mut c_void),
     /// `Coroutine::get_current_safe()`.
-    pub current: unsafe extern "C" fn() -> *mut c_void,
+    pub current: extern "C" fn() -> *mut c_void,
     /// `co->yield()`.
     pub park: unsafe extern "C" fn(*mut c_void),
     /// `co->resume()`.
@@ -168,8 +168,7 @@ unsafe fn poll_sockets(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps) -> boo
             .iter()
             .map(|_| Cell::new(std::ptr::null_mut()))
             .collect(),
-        // SAFETY: native's accessor; it bails out outside a coroutine.
-        co: unsafe { (ops.current)() },
+        co: (ops.current)(),
         timer: Cell::new(std::ptr::null_mut()),
         success: Cell::new(false),
         wait: Cell::new(true),
@@ -302,7 +301,7 @@ mod tests {
         log("defer".into());
         DEFERRED.set(task as usize);
     }
-    unsafe extern "C" fn current() -> *mut c_void {
+    extern "C" fn current() -> *mut c_void {
         std::ptr::dangling_mut()
     }
     /// The reactor runs while parked: fire an event (or the timer), then the defer.

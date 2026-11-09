@@ -14,7 +14,7 @@ pub(crate) const ERROR: i32 = 1 << 11;
 #[repr(C)]
 pub struct EventWaitOps {
     /// The current coroutine.
-    pub current: unsafe extern "C" fn() -> *mut c_void,
+    pub current: extern "C" fn() -> *mut c_void,
     /// `make_socket(fd, SW_FD_CO_EVENT)` carrying `waiter`, added to the reactor for
     /// `events`; null with the last error in `*error` if the reactor refuses it (the
     /// socket is then released, not its fd).
@@ -59,8 +59,7 @@ pub(crate) unsafe fn event_ready(waiter: *mut c_void, event: i32) -> *mut c_void
 /// # Safety
 /// `ops` is native code's, callable in the current coroutine.
 unsafe fn park(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps) -> Result<u32, i32> {
-    // SAFETY: native code's.
-    let co = unsafe { (ops.current)() };
+    let co = (ops.current)();
     let mut waiter = Waiter { co, revents: 0 };
     let mut error = 0;
     // SAFETY: `waiter` outlives the socket, which `remove` takes off the reactor.
@@ -168,7 +167,7 @@ pub(crate) mod native {
 
     // SAFETY: crates/coroutine's.
     unsafe extern "C" {
-        fn swr_v1_coroutine_current() -> *mut c_void;
+        safe fn swr_v1_coroutine_current() -> *mut c_void;
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
         pub(crate) fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
     }
@@ -177,9 +176,8 @@ pub(crate) mod native {
     const OUT_OF_COROUTINE: c_int = 10001;
 
     /// `Coroutine::get_current_safe()`.
-    pub(crate) unsafe extern "C" fn current() -> *mut c_void {
-        // SAFETY: no preconditions.
-        let co = unsafe { swr_v1_coroutine_current() };
+    pub(crate) extern "C" fn current() -> *mut c_void {
+        let co = swr_v1_coroutine_current();
         if co.is_null() {
             // SAFETY: Swoole's fatal error hook; this frame owns nothing.
             unsafe {
@@ -312,7 +310,7 @@ mod tests {
         static ADDED: Cell<i32> = const { Cell::new(0) };
     }
 
-    unsafe extern "C" fn current() -> *mut c_void {
+    extern "C" fn current() -> *mut c_void {
         CO
     }
     unsafe extern "C" fn add(fd: i32, _: i32, waiter: *mut c_void, error: *mut i32) -> *mut c_void {

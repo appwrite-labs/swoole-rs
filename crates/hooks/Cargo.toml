@@ -19,6 +19,7 @@ ssh2 = ["dep:swoole-rs-ssh2-sys"]
 [dependencies]
 libc = "=0.2.191"
 swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-clients = { path = "../clients" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-http = { path = "../http" }
 swoole-rs-ossupport = { path = "../ossupport" }

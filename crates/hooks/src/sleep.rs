@@ -200,8 +200,7 @@ pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
         use crate::wait_event::native::{coroutine_yield_ex, current};
         /// `SW_ERROR_CO_CANCELED`: what `yield_ex` sets when the coroutine was canceled.
         const CANCELED: i32 = 10017;
-        // SAFETY: in a coroutine, as the caller promises.
-        let co = unsafe { current() };
+        let co = current();
         // SAFETY: `co` is the running coroutine.
         let resumed =
             unsafe { coroutine_yield_ex(co, crate::swr_v1_hook_sleep_timeout(sec, 0.001)) };

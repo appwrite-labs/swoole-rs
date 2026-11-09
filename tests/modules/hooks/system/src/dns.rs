@@ -1,7 +1,7 @@
 //! Upstream's `core-tests/src/network/dns.cpp`, one Rust function per TEST with the
-//! same inputs and expected values. `dns_lookup`, `get_ip_by_hosts` and the DNS server
-//! and hosts-path setters are called under their upstream symbols, passing and reading
-//! libstdc++'s `std::string` and `std::vector` by their layouts; the name-resolver list
+//! same inputs and expected values. `dns_lookup` is `swr_v1_hook_dns_lookup`;
+//! `get_ip_by_hosts`, the DNS server and hosts-path setters and `swoole_load_resolv_conf`
+//! are the `swr_v1_clients_*` exports they were over; the name-resolver list
 //! is Rust's (`swr_v1_core_name_resolver_*`), its `each` a remove; `GethostbynameRequest` and `GetaddrinfoRequest`
 //! are views of the resolver record, so the cases drive that record
 //! (`swr_v1_core_resolver_*`) as `network::gethostbyname`/`getaddrinfo` do; the
@@ -19,89 +19,6 @@ const SW_ERROR_CO_CANCELED: c_int = 10017;
 const SW_DNS_SERVER_PORT: c_int = 53;
 const TYPE_USER: c_int = 2;
 const TEST_HTTP_DOMAIN: &CStr = c"www.gov.cn";
-
-/// libstdc++'s `std::string`: data, length, then the local buffer or the capacity.
-#[repr(C)]
-pub(super) struct CxxString {
-    ptr: *const u8,
-    len: usize,
-    local: [usize; 2],
-}
-
-impl CxxString {
-    /// A view of `text` the callee only reads (`const std::string &`): an out-of-line
-    /// string whose capacity is its length.
-    pub(super) fn borrow(text: &CStr) -> Self {
-        let len = text.to_bytes().len();
-        Self {
-            ptr: text.as_ptr().cast(),
-            len,
-            local: [len, 0],
-        }
-    }
-
-    /// A string the callee owns and frees: out of line in `operator new` memory.
-    fn owned(text: &str) -> Self {
-        // SAFETY: operator new returns `len + 1` writable bytes or throws.
-        let ptr = unsafe { operator_new(text.len() + 1) }.cast::<u8>();
-        // SAFETY: `ptr` holds `len + 1` bytes; `text` doesn't overlap it.
-        unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), ptr, text.len()) };
-        // SAFETY: the terminator is within the allocation.
-        unsafe { *ptr.add(text.len()) = 0 };
-        Self {
-            ptr,
-            len: text.len(),
-            local: [text.len(), 0],
-        }
-    }
-
-    /// A string returned by value, read on the thread's own stack. A local
-    /// (short) string pointed into the slot the callee wrote, which was in this
-    /// frame and has since moved here; an out-of-line one points to the heap.
-    fn take(self) -> String {
-        let here = (&raw const self) as usize;
-        let bytes = if self.len < 16 && (self.ptr as usize).abs_diff(here) < 1 << 16 {
-            // SAFETY: the local buffer holds the short string.
-            unsafe { std::slice::from_raw_parts(self.local.as_ptr().cast::<u8>(), self.len) }
-        } else {
-            // SAFETY: the out-of-line buffer holds `len` bytes; it leaks with the case.
-            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-        };
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
-
-    /// An element of a `std::vector<std::string>`, read in place.
-    fn text(&self) -> String {
-        // SAFETY: an in-place string's data holds `len` bytes.
-        String::from_utf8(unsafe { std::slice::from_raw_parts(self.ptr, self.len) }.to_vec())
-            .unwrap()
-    }
-}
-
-/// `std::vector<std::string>`.
-#[repr(C)]
-struct CxxVector {
-    begin: *const CxxString,
-    end: *const CxxString,
-    capacity: *const CxxString,
-}
-
-impl CxxVector {
-    fn list(&self) -> Vec<String> {
-        let len = (self.end as usize - self.begin as usize) / size_of::<CxxString>();
-        // SAFETY: the vector's elements; they leak with the case.
-        (0..len)
-            .map(|i| unsafe { &*self.begin.add(i) }.text())
-            .collect()
-    }
-}
-
-/// `swoole::DnsServer`.
-#[repr(C)]
-struct DnsServer {
-    host: CxxString,
-    port: c_int,
-}
 
 /// `swoole::NameResolver::Context`.
 #[repr(C)]
@@ -173,20 +90,34 @@ struct StringView {
     length: usize,
 }
 
+// As crates/clients' C declarations (and ../../../clients/client.rs) have them.
+#[link(name = "swoole")]
+unsafe extern "C" {
+    fn swr_v1_clients_dns_server(
+        context: *mut c_void,
+        push: unsafe extern "C" fn(*mut c_void, *const u8, usize),
+    ) -> c_int;
+    fn swr_v1_clients_load_resolv_conf(path: *const c_char) -> c_int;
+}
+
 #[link(name = "swoole")]
 unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole9coroutine10dns_lookupB5cxx11EPKcid"]
-    fn dns_lookup(domain: *const c_char, family: c_int, timeout: f64) -> CxxVector;
-    #[link_name = "_ZN6swoole9coroutine15get_ip_by_hostsERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"]
-    fn get_ip_by_hosts(domain: *const CxxString) -> CxxString;
-    #[link_name = "_Z21swoole_set_dns_serverRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"]
-    fn swoole_set_dns_server(server: *const CxxString);
-    #[link_name = "_Z21swoole_get_dns_serverv"]
-    fn swoole_get_dns_server() -> DnsServer;
-    #[link_name = "_Z23swoole_load_resolv_confv"]
-    fn swoole_load_resolv_conf() -> bool;
-    #[link_name = "_Z21swoole_set_hosts_pathRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"]
-    fn swoole_set_hosts_path(path: *const CxxString);
+    fn swr_v1_hook_dns_lookup(
+        domain: *const c_char,
+        family: c_int,
+        timeout: f64,
+        push: unsafe extern "C" fn(*mut c_void, *const c_char),
+        list: *mut c_void,
+    );
+    fn swr_v1_clients_hosts_lookup(
+        domain: *const u8,
+        length: usize,
+        spaces: *const u8,
+        out: *mut c_void,
+        push: unsafe extern "C" fn(*mut c_void, *const u8, usize),
+    ) -> bool;
+    fn swr_v1_clients_set_dns_server(server: *const u8, length: usize);
+    fn swr_v1_clients_set_hosts_path(path: *const u8, length: usize);
     /// `swoole_name_resolver_add({resolve, private_data, kind}, append)`.
     fn swr_v1_core_name_resolver_add(
         resolve: unsafe extern "C" fn(
@@ -207,8 +138,6 @@ unsafe extern "C-unwind" {
         argument: *mut c_void,
     ) -> *mut c_void;
     fn swoole_name_resolver_lookup_run(call: *mut LookupCall);
-    #[link_name = "_Znwm"]
-    fn operator_new(size: usize) -> *mut c_void;
 
     fn swr_v1_core_resolver_create(
         family: c_int,
@@ -238,28 +167,70 @@ pub(super) fn verify_ip(family: c_int, ip: &str) -> bool {
     unsafe { swr_v1_clients_address_verify(family, ip.as_ptr()) }
 }
 
-fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {
-    // SAFETY: a NUL-terminated domain, in a coroutine.
-    unsafe { dns_lookup(domain.as_ptr(), family, timeout) }.list()
+unsafe extern "C" fn push_address(list: *mut c_void, address: *const c_char) {
+    // SAFETY: `list` is the caller's Vec; `address` is NUL-terminated.
+    unsafe { &mut *list.cast::<Vec<String>>() }
+        .push(unsafe { CStr::from_ptr(address) }.to_str().unwrap().to_owned());
 }
 
+unsafe extern "C" fn put_text(out: *mut c_void, text: *const u8, length: usize) {
+    // SAFETY: `out` is the caller's String; `text` holds `length` bytes.
+    let text = unsafe { std::slice::from_raw_parts(text, length) };
+    // SAFETY: as above.
+    *unsafe { &mut *out.cast::<String>() } = String::from_utf8(text.to_vec()).unwrap();
+}
+
+fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {
+    let mut list = Vec::<String>::new();
+    // SAFETY: a NUL-terminated domain, in a coroutine; `push_address` fills `list`.
+    unsafe {
+        swr_v1_hook_dns_lookup(domain.as_ptr(), family, timeout, push_address, (&raw mut list).cast())
+    };
+    list
+}
+
+/// `get_ip_by_hosts`: its lines split by the classic locale's spaces, as
+/// `std::istringstream` reads them.
 fn hosts(domain: &CStr) -> String {
-    let domain = CxxString::borrow(domain);
-    // SAFETY: a borrowed string the callee reads.
-    unsafe { get_ip_by_hosts(&domain) }.take()
+    let spaces: [u8; 256] = std::array::from_fn(|c| u8::from(b" \t\n\x0b\x0c\r".contains(&(c as u8))));
+    let mut address = String::new();
+    let domain = domain.to_bytes();
+    // SAFETY: the domain's bytes, 256 spaces and `put_text` into `address`.
+    unsafe {
+        swr_v1_clients_hosts_lookup(
+            domain.as_ptr(),
+            domain.len(),
+            spaces.as_ptr(),
+            (&raw mut address).cast(),
+            put_text,
+        )
+    };
+    address
 }
 
 fn set_dns_server(server: &str) {
-    let server = CString::new(server).unwrap();
-    let server = CxxString::borrow(&server);
-    // SAFETY: as above.
-    unsafe { swoole_set_dns_server(&server) };
+    // SAFETY: the server's bytes.
+    unsafe { swr_v1_clients_set_dns_server(server.as_ptr(), server.len()) };
 }
 
+/// `swoole_load_resolv_conf()`: `SwooleG.dns_resolvconf_path` is `SW_DNS_RESOLV_CONF`.
+fn load_resolv_conf_() -> bool {
+    // SAFETY: a NUL-terminated path.
+    unsafe { swr_v1_clients_load_resolv_conf(c"/etc/resolv.conf".as_ptr()) > 0 }
+}
+
+/// `swoole_get_dns_server()`: the configured server, read from resolv.conf while none is.
 fn dns_server() -> (String, c_int) {
-    // SAFETY: returns the server by value.
-    let server = unsafe { swoole_get_dns_server() };
-    (server.host.take(), server.port)
+    let read = || {
+        let mut host = String::new();
+        // SAFETY: `put_text` writes `host`.
+        let port = unsafe { swr_v1_clients_dns_server((&raw mut host).cast(), put_text) };
+        (host, port)
+    };
+    if read().0.is_empty() {
+        load_resolv_conf_();
+    }
+    read()
 }
 
 unsafe extern "C" fn assign(out: *mut c_void, text: *const c_char, length: usize) {
@@ -460,8 +431,7 @@ fn load_resolv_conf() {
     set_dns_server("127.0.0.1:808088");
     assert_eq!(dns_server().1, SW_DNS_SERVER_PORT);
 
-    // SAFETY: reads the configured resolv.conf.
-    assert!(unsafe { swoole_load_resolv_conf() });
+    assert!(load_resolv_conf_());
     assert_eq!(dns_server(), ori_dns_server);
 }
 
@@ -480,9 +450,9 @@ fn gethosts() {
     }
     let _unlink = Unlink;
 
-    let path = CxxString::borrow(hosts_file);
-    // SAFETY: a borrowed string the callee copies.
-    unsafe { swoole_set_hosts_path(&path) };
+    let path = hosts_file.to_bytes();
+    // SAFETY: the path's bytes, which the callee copies.
+    unsafe { swr_v1_clients_set_hosts_path(path.as_ptr(), path.len()) };
 
     assert_eq!(hosts(c"localhost"), "127.0.0.1");
     assert_eq!(hosts(c"aaa.com"), "");

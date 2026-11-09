@@ -106,8 +106,6 @@ typedef struct swr_v1_hook_host {
     swr_v1_hook_socket_ops socket;
 } swr_v1_hook_host;
 void swr_v1_hook_set_host(const swr_v1_hook_host *host);
-bool swr_v1_hook_dns_cache_get(int domain, const char *name, size_t length, void *out, void (*assign)(void *out, const char *address, size_t length));
-void swr_v1_hook_dns_cache_set(int domain, const char *name, size_t length, const char *address, size_t address_length);
 double swr_v1_hook_timeval(double seconds, double micros);
 typedef struct { uint32_t flags; bool conflict; } swr_v1_hook_curl_plan;
 swr_v1_hook_curl_plan swr_v1_hook_curl_flags(uint32_t flags, uint32_t native, uint32_t php);
@@ -124,6 +122,10 @@ typedef struct {
 /* The thread's AsyncThreads, created first when it has none (null on failure). */
 void *swr_v1_async_threads_ensure(void);
 bool swr_v1_hook_async(void *event, void (*handler)(void *event), double timeout, const swr_v1_hook_async_ops *ops);
+/* The coroutine and pool operations above (crates/hooks/src/resolve.rs). */
+/* coroutine::dns_lookup: each address of domain pushed onto list, in order. */
+void swr_v1_hook_dns_lookup(const char *domain, int family, double timeout, void (*push)(void *list, const char *address), void *list);
+extern const swr_v1_hook_async_ops swr_v1_hook_coroutine_async;
 bool swr_v1_hook_async_job(void (*job)(void *), void *context, const swr_v1_hook_async_ops *ops);
 int32_t swr_v1_hook_dns_error(int32_t error, int32_t asynchronous_timeout, int32_t resolve_timeout);
 double swr_v1_hook_sleep_timeout(double seconds, double minimum);

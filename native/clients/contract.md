@@ -65,33 +65,36 @@ does. On allocation failure Rust returns a status and native throws `bad_alloc`.
 - Unsupported families and Apple scoped-IPv6 parsing go to the platform's
   `inet_pton` from Rust, errno included.
 
-## DNS (`native/clients/dns.cc`)
+## DNS
 
-`native/clients/dns.cc` keeps what needs C++: the `std::string` signatures of
-swoole.h's DNS API and `swoole_name_resolver_lookup` (which asks the Rust list,
-`swr_v1_core_name_resolver_resolve`, before the system lookup), the coroutine
-`Socket` and `Coroutine` calls, the C++ locale's space table and the
-`ResolverOwner` exception paths. Upstream's `swoole_name_resolver_add`/`_each` and
-their `std::function`/`std::list` signatures are gone: resolvers are C functions
-added and removed with `swr_v1_core_name_resolver_add`/`_remove`.
+No C++ remains. The query is here (`dns.rs`, `cares.rs`); its coroutine side is
+`crates/hooks/src/resolve.rs`: `swoole_name_resolver_lookup` (the Rust list,
+`swr_v1_core_name_resolver_resolve`, then `System::gethostbyname` in a coroutine or
+the blocking lookup), `System::gethostbyname`/`getaddrinfo` over the async pool,
+`coroutine::dns_lookup` (`swr_v1_hook_dns_lookup`) and the pool's DNS handlers.
+Upstream's `std::string` DNS API (`swoole_set_dns_server`, `swoole_get_dns_server`,
+`swoole_load_resolv_conf`, `swoole_set_hosts_path`, `get_ip_by_hosts`) is gone:
+callers use the `swr_v1_clients_*` exports. Resolvers are C functions added and
+removed with `swr_v1_core_name_resolver_add`/`_remove`.
 
 - `dns_lookup_impl_with_socket` is `clients_dns_lookup`: the DNS server, read from
-  `resolv.conf` while none is set (`SW_ERROR_DNSLOOKUP_NO_SERVER` otherwise), the
-  request id, `clients_dns_query` (query packet, one send and one receive, then the
-  answer's A/AAAA addresses as text), the invalid-domain warning and the last
-  error. Native opens and deletes the UDP socket, sets its timeout, and maps
-  `ECANCELED` for Rust.
+  `resolv.conf` (`SW_DNS_RESOLV_CONF`) while none is set
+  (`SW_ERROR_DNSLOOKUP_NO_SERVER` otherwise), the request id, `clients_dns_query`
+  (query packet, one send and one receive, then the answer's A/AAAA addresses as
+  text), the invalid-domain warning and the last error. crates/hooks opens and
+  deletes the coroutine UDP socket, sets its timeout, and maps `ECANCELED`.
 - Both `network::gethostbyname` variants are `clients_gethostbyname`
   (`gethostbyname2_r` with a growing buffer on Linux, `gethostbyname2` under a
   lock elsewhere); `network::getaddrinfo` is `clients_getaddrinfo` into a native
   array of `SW_DNS_HOST_BUFFER_SIZE`.
 - `swoole_load_resolv_conf` is `clients_load_resolv_conf` (libc `fopen` and
   `fgets`, and the `fopen` warning); `get_ip_by_hosts` is `clients_hosts_lookup`,
-  with the native locale's space table passed in.
-- With c-ares, `clients_cares_lookup` registers the `SW_FD_CARES` handlers and the
-  library cleanup, wraps and registers c-ares' descriptors, defers the resumes
-  and sets the last error itself; native passes the `Coroutine` calls, the
-  warnings and the trace lines.
+  given a 256-entry space table (the classic locale's for upstream's
+  `std::istringstream`).
+- With c-ares (`cares_lookup`), `cares.rs` registers the `SW_FD_CARES` handlers and
+  the library cleanup, wraps and registers c-ares' descriptors, parks and resumes
+  the coroutine, defers the resumes, warns and sets the last error itself.
+  Upstream's `SW_TRACE_CARES` trace lines (trace builds only) are not kept.
 - `ip_text` writes into 40-byte caller-local storage and returns the length.
   IPv6 is emitted as eight four-digit lowercase groups (as the original DNS
   helper does, not compressed `inet_ntop` text). Native builds the

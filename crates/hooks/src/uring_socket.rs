@@ -258,8 +258,7 @@ impl UringSocketOps {
     fn bound<T>(&self, event: u32, call: impl FnOnce() -> T) -> T {
         // SAFETY: the native static host table.
         let current = unsafe { (*self.host()).current };
-        // SAFETY: the host's current coroutine.
-        let co = unsafe { current() };
+        let co = current();
         // SAFETY: the live state.
         unsafe { swr_v1_hook_socket_bind(self.state, event, co) };
         let result = call();

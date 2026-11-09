@@ -105,7 +105,7 @@ fn complete_worker() {
     }
 }
 
-unsafe extern "C" fn current() -> *mut c_void {
+extern "C" fn current() -> *mut c_void {
     record("current".into());
     core::ptr::dangling_mut()
 }
@@ -155,7 +155,7 @@ unsafe extern "C" fn park_for(_: *mut c_void, seconds: f64) -> bool {
 unsafe extern "C" fn resume(_: *mut c_void) {
     record("resume".into());
 }
-unsafe extern "C" fn last_error() -> c_int {
+extern "C" fn last_error() -> c_int {
     let value = LAST_ERROR.get();
     record(format!("last:get:{value}"));
     value
@@ -238,8 +238,7 @@ fn async_event(
 
 /// `System::sleep` as the hybrid's system.cc composes it.
 fn sleep(seconds: f64) -> c_int {
-    // SAFETY: fake.
-    let co = unsafe { current() };
+    let co = current();
     let seconds = swr_v1_hook_sleep_timeout(seconds, 0.001);
     // SAFETY: fake.
     unsafe { park_for(co, seconds) };

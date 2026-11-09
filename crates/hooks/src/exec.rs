@@ -6,7 +6,7 @@ use swoole_rs_buffer::string::CppString;
 
 // SAFETY: crates/coroutine's and crates/reactor's (upstream symbols).
 unsafe extern "C" {
-    fn swr_v1_coroutine_current() -> *mut core::ffi::c_void;
+    safe fn swr_v1_coroutine_current() -> *mut core::ffi::c_void;
     #[link_name = "_ZN6swoole9coroutine6System12waitpid_safeEiPii"]
     fn system_waitpid_safe(pid: libc::pid_t, status: *mut c_int, options: c_int) -> libc::pid_t;
 }
@@ -27,8 +27,7 @@ pub unsafe fn exec(
     buffer: &mut CppString,
     status: &mut c_int,
 ) -> bool {
-    // SAFETY: no preconditions.
-    if unsafe { swr_v1_coroutine_current() }.is_null() {
+    if swr_v1_coroutine_current().is_null() {
         // SAFETY: Swoole's fatal error hook; this frame owns nothing.
         unsafe {
             swoole_rs_corebase::fatal_error(

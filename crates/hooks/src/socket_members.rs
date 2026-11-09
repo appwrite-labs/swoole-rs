@@ -662,14 +662,6 @@ unsafe extern "C" {
         port: c_int,
         resolve: Option<unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_int>,
     ) -> c_int;
-    fn swr_v1_system_gethostbyname(
-        host: *const c_char,
-        length: usize,
-        family: core::ffi::c_long,
-        timeout: f64,
-        put: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
-        out: *mut c_void,
-    ) -> bool;
 }
 
 /// `SW_ERROR_BAD_HOST_ADDR` and `SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE`.
@@ -835,7 +827,14 @@ pub unsafe fn sendto_host(
         let out = (&raw mut ip).cast();
         // SAFETY: the host's bytes; `put_host` appends to `ip`, live for the call.
         if unsafe {
-            swr_v1_system_gethostbyname(host, length, domain.into(), timeout, put_host, out)
+            crate::resolve::swr_v1_system_gethostbyname(
+                host,
+                length,
+                domain.into(),
+                timeout,
+                put_host,
+                out,
+            )
         } {
             let resolved = ip.len();
             ip.push(0);

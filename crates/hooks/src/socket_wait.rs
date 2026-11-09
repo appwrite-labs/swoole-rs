@@ -169,8 +169,7 @@ pub(crate) unsafe fn wait(
     buffer: *mut *mut u8,
     length: usize,
 ) -> bool {
-    // SAFETY: a native read (fatal outside a coroutine).
-    let co = unsafe { (host().current)() };
+    let co = (host().current)();
     if co.is_null() {
         return false;
     }

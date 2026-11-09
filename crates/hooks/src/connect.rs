@@ -477,19 +477,17 @@ impl Connecting for Live<'_> {
         // SAFETY: the record's network::Socket.
         let timeout = unsafe { (*network).timeouts.dns };
         let mut address = Vec::<u8>::new();
-        // SAFETY: the current coroutine.
-        let co = unsafe { (host().current)() };
+        let co = (host().current)();
         // Locked like wait_event.
         // SAFETY: the live record's bound state.
         unsafe { swr_v1_hook_socket_bind(state, RDWR, co) };
         // SAFETY: the resolver context, the name and the Vec `put_host` appends to.
         let with_port = unsafe {
-            (host().lookup)(
+            crate::resolve::socket_lookup(
                 self.resolve,
                 domain,
                 timeout,
-                name.as_ptr().cast(),
-                name.len(),
+                &name,
                 (&raw mut address).cast(),
                 put_host,
             )
