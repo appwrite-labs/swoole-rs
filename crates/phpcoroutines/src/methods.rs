@@ -229,7 +229,7 @@ impl Join {
     }
 }
 
-unsafe extern "C" fn join_resume(data: *mut c_void) {
+unsafe extern "C-unwind" fn join_resume(data: *mut c_void) {
     // SAFETY: the box `Join::closed` passed.
     let resume = unsafe { Box::from_raw(data.cast::<(*mut c_void, Rc<Cell<bool>>)>()) };
     let (co, canceled) = (resume.0, resume.1.get());
