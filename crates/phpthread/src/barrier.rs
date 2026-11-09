@@ -10,9 +10,9 @@ use std::{
 };
 use swoole_rs_phpstubs::thread_barrier;
 use swoole_rs_zend::{
-    Call, Class, Object, set_object,
+    Call, Class, Object, Value as ZValue, set_object,
     sys::{ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_object, zval},
-    throw_constructed_twice, throw_exception, unset_property_deny, value,
+    throw_constructed_twice, throw_exception, unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -68,15 +68,11 @@ pub unsafe extern "C" fn swr_v1_phpthread_barrier_minit() -> *mut zend_class_ent
 }
 
 /// A Barrier stored in a container, by reference; `None` for other objects.
-/// # Safety
-/// `value` is a live object zval.
-pub(crate) unsafe fn shared(value: *mut zval) -> Option<Item> {
-    // SAFETY: per the caller.
-    let std = unsafe { value::obj_of(value) };
-    // SAFETY: a live object.
-    if unsafe { (*std).ce } != BARRIER.entry() {
+pub(crate) fn shared(value: &ZValue) -> Option<Item> {
+    if value.class()? != BARRIER.entry() {
         return None;
     }
+    let std = value.object()?;
     // SAFETY: one of our objects.
     let barrier = unsafe { *BarrierObject::data(std) };
     let value = if barrier.is_null() {
