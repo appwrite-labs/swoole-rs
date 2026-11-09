@@ -312,8 +312,9 @@ void swr_case_protocol_snapshot_and_copy_restore() {
     ASSERT_EQ(socket.protocol.package_max_length, 117u);
 }
 
-// rust_socket_scopes.error_text_publication_and_cache_exception, in a coroutine.
-void swr_case_error_text_publication_and_cache_exception() {
+// rust_socket_scopes.error_text_publication, in a coroutine. The error text is the
+// socket's Rust string; a Socket has no C++ copy of it to cache or throw from.
+void swr_case_error_text_publication() {
     Socket socket(SW_SOCK_TCP);
     swoole_set_last_error(0);
     errno = EINVAL;
@@ -333,26 +334,14 @@ void swr_case_error_text_publication_and_cache_exception() {
     const std::string first(100, 'a');
     const std::string second(600, 'b');
     socket.set_err(ERANGE, first);
-    const std::string &cache = socket.errString;
-    const std::string *identity = &cache;
-    const char *message = socket.errMsg;
-    allocation::begin(1);
-    bool caught = false;
-    try {
-        socket.set_err(ENOSPC, second);
-    } catch (const std::bad_alloc &) {
-        caught = true;
-    }
-    allocation::end();
-    ASSERT_TRUE(caught);
+    ASSERT_EQ(std::string(socket.errMsg), first);
+    socket.set_err(ENOSPC, second);
     ASSERT_EQ(socket.errCode, ENOSPC);
     ASSERT_EQ(errno, ENOSPC);
     ASSERT_EQ(swoole_get_last_error(), ENOSPC);
-    ASSERT_EQ(socket.errMsg, message);
-    ASSERT_EQ(cache, first);
-    ASSERT_EQ(&static_cast<const std::string &>(socket.errString), identity);
+    ASSERT_EQ(std::string(socket.errMsg), second);
     socket.set_err(0, std::string("a\0b", 3));
-    ASSERT_EQ(static_cast<const std::string &>(socket.errString), std::string("a\0b", 3));
+    ASSERT_EQ(std::string(socket.errMsg, 3), std::string("a\0b", 3));
     ASSERT_EQ(socket.errMsg[2], 'b');
 }
 

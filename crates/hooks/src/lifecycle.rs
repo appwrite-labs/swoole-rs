@@ -502,8 +502,6 @@ mod tests {
         operation: &dyn Fn(*mut CoSocket) -> bool,
     ) -> Outcome {
         let mut socket = TestSocket::new();
-        let extra = crate::socket_extra::swr_v1_hook_socket_extra_new().owner;
-        socket.0.extra = extra;
         let owner = socket.ptr().cast();
         unsafe {
             crate::socket_extra::set_close_hook(
@@ -538,8 +536,6 @@ mod tests {
         };
         socket.0.sock_fd = 100;
         unsafe { swr_v1_hook_socket_bind(state, READ | WRITE, core::ptr::null_mut()) };
-        unsafe { crate::socket_extra::swr_v1_hook_socket_extra_free(extra) };
-        socket.0.extra = core::ptr::null_mut();
         outcome
     }
 

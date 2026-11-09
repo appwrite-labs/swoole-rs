@@ -1,10 +1,9 @@
 #ifndef SWOOLE_RS_CO_SOCKET_H
 #define SWOOLE_RS_CO_SOCKET_H
-/* coroutine::Socket's scalar fields: Rust's CoSocket (crates/hooks/src/co_socket.rs),
- * in its order and types. swoole_rs_coroutine_socket.h derives Socket from it and keeps
- * only the fields C++ owns (strings, proxies). Rust initialises,
- * opens, accepts and releases records; both sides assert the offsets below.
- * network::Socket is the reactor's record. */
+/* coroutine::Socket's fields: Rust's CoSocket (crates/hooks/src/co_socket.rs), in its
+ * order and types. swoole_rs_coroutine_socket.h derives Socket from it and adds no
+ * fields. Rust initialises, opens, accepts and releases records; both sides assert the
+ * offsets below. network::Socket is the reactor's record. */
 #include "swoole_rs_hooks.h"
 #include "swoole_socket.h"
 #include "swoole_protocol.h"
@@ -61,22 +60,9 @@ swr_v1_co_timeout_scope swr_v1_hook_timeout_scope(swr_v1_co_socket *socket, doub
 void swr_v1_hook_timeout_restore(const swr_v1_co_timeout_scope *scope);
 }
 
-#include "swoole_rs_corebase_string_slot.h"
-struct swr_v1_co_socket_extra;
-struct swr_v1_co_socket_extra_prepared {
-    swr_v1_co_socket_extra *owner;
-    const swr_v1_core_string *error;
-    const swr_v1_core_string *connect_host;
-    const swr_v1_core_string *ssl_host_name;
-    /* The SSLContext's owner: enable_ssl_encrypt's, or the server's for an accepted socket. */
-    const void **tls;
-};
 extern "C" {
-swr_v1_co_socket_extra_prepared swr_v1_hook_socket_extra_new();
-void swr_v1_hook_socket_extra_free(swr_v1_co_socket_extra *owner);
-
 /* ~Socket: runs the destructor callback if close() has not, then frees the buffers,
- * the bound state and the network::Socket. */
+ * the network::Socket, the bound state and the extra record (strings, proxies, TLS). */
 void swr_v1_hook_co_socket_release(swr_v1_co_socket *socket);
 void swr_v1_hook_co_socket_default_err(swr_v1_co_socket *socket, int last_error);
 void swr_v1_hook_co_socket_borrowed_err(swr_v1_co_socket *socket, int error, const char *message);
@@ -89,11 +75,6 @@ uint32_t swr_v1_hook_co_socket_new(
     swr_v1_co_socket *socket, void *owner, int how, int fd, int socket_type, int domain, int kind, int protocol);
 /* Socket::created: a failed socket(2) becomes the last error; the others are warnings. */
 void swr_v1_hook_co_socket_created(const swr_v1_co_socket *socket, uint32_t result);
-/* The accepting constructor's fields; accept shares the TLS context after. */
-uint32_t swr_v1_hook_co_socket_accepted(swr_v1_co_socket *socket,
-                                        void *owner,
-                                        swr_v1_socket *conn,
-                                        const swr_v1_co_socket *server);
 /* pop_read_buffer / pop_write_buffer. */
 void *swr_v1_hook_co_socket_pop_buffer(swr_v1_co_socket *socket, bool write);
 /* UringSocket's constructors (swoole_rs_coroutine_socket.h): with io_uring, Rust runs the socket's
@@ -115,14 +96,9 @@ typedef struct {
     /* The native protocol callback/trace and packet error diagnostics. */
     ssize_t (*package_length)(swr_v1_co_socket *, uint32_t size, uint32_t *header_length);
     void (*packet_fail)(swr_v1_co_socket *, uint32_t kind, ssize_t length);
-    /* new Socket(conn, server), the accepting constructor, and delete of a Socket. */
-    void *(*accepted)(swr_v1_co_socket *server, swr_v1_socket *conn);
-    void (*destroy)(void *socket);
 } swr_v1_hook_co_socket_host_t;
-/* Socket::connect(host, port) of the native socket (crates/hooks/src/connect.rs): context is the
- * NameResolver::Context its lookup uses, socks5 and http its proxies' owners or null. */
-bool swr_v1_hook_co_socket_connect_host(void *socket, const char *host, size_t length, int port, void *context,
-                                        struct swr_v1_core_proxy *socks5, struct swr_v1_core_proxy *http);
+/* Socket::connect(host, port) (crates/hooks/src/connect.rs), through the socket's proxies. */
+bool swr_v1_hook_co_socket_connect_host(swr_v1_co_socket *socket, const char *host, size_t length, int port);
 /* Complete packet/buffer reads, including availability, buffer and timer. */
 ssize_t swr_v1_hook_co_socket_recv_packet(swr_v1_co_socket *socket, double timeout);
 /* The lifecycle (crates/hooks/src/lifecycle.rs): shutdown(how), cancel(event), close()

@@ -43,13 +43,6 @@ swr_v1_hook_event_plan swr_v1_hook_event_waiter(uint32_t received, uint32_t even
 typedef struct { int32_t fd; int32_t events; int32_t revents; } swr_v1_hook_poll_fd;
 /* System::socket_poll over count distinct fds, storing each one's revents. */
 bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout);
-/* What C++ keeps of the native coroutine socket (SocketImpl: coroutine::Socket, or
- * UringSocket with --enable-uring-socket): new and delete. Its members are Rust. */
-typedef struct swr_v1_hook_socket_ops {
-    void *(*open)(int domain, int type, int protocol); /* new SocketImpl(domain, type, protocol) */
-    void *(*wrap)(int fd);                             /* new SocketImpl(fd, SW_SOCK_RAW) */
-    void (*free)(void *socket);
-} swr_v1_hook_socket_ops;
 /* What the hooked functions (Rust, under upstream's swoole_coroutine_<name>) need
  * of native; registered at load (swr_v1_hook_set_host). */
 typedef struct swr_v1_hook_host {
@@ -57,7 +50,7 @@ typedef struct swr_v1_hook_host {
     bool uring_statx;              /* HAVE_IOURING_STATX */
     bool uring_ftruncate;          /* HAVE_IOURING_FTRUNCATE */
     bool uring_futex;              /* HAVE_IOURING_FUTEX */
-    swr_v1_hook_socket_ops socket;
+    bool uring_socket;             /* SW_USE_URING_SOCKET: Rust's sockets are UringSockets */
 } swr_v1_hook_host;
 void swr_v1_hook_set_host(const swr_v1_hook_host *host);
 double swr_v1_hook_timeval(double seconds, double micros);

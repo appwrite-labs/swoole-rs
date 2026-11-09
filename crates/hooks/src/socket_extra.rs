@@ -1,21 +1,27 @@
-//! Rust-owned variable-length coroutine socket metadata. Native string members
-//! borrow these stable slots; snapshot copies own independent Rust bytes.
+//! The coroutine socket's variable-length metadata, which its record owns: the error,
+//! connect and TLS host strings, the proxies, the TLS context and the destructor
+//! callback.
 use crate::co_socket::CoSocket;
 use std::ffi::c_void;
 use std::ptr;
-use swoole_rs_corebase::StringSlot;
+use swoole_rs_corebase::{ProxyState, StringSlot, swr_v1_core_proxy_free};
 use swoole_rs_tls::{OwnedTlsContext, swr_v1_tls_owner_free};
 
 /// A destructor callback: `hook(arg, socket)`.
 pub type CloseHook = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
+/// `repr(C)` for `tls`, first: the hooks system tests set it as `enable_ssl_encrypt`
+/// does.
+#[repr(C)]
 pub struct SocketExtra {
-    pub(crate) strings: [StringSlot; 3],
     /// The socket's `SSLContext` owner (null without one): one reference, which an
     /// accepted socket shares with its server and the record releases.
     pub(crate) tls: *const OwnedTlsContext,
+    pub(crate) strings: [StringSlot; 3],
     /// `set_dtor`'s callback, its argument and the native `Socket` it is passed.
     close_hook: Option<(CloseHook, *mut c_void, *mut c_void)>,
+    /// `socks5_proxy` and `http_proxy`: each an owner, or null.
+    pub(crate) proxies: [*mut ProxyState; 2],
     /// The ring's host when the socket is a `UringSocket`, else null.
     #[cfg(feature = "iouring")]
     pub(crate) uring: *const c_void,
@@ -23,45 +29,49 @@ pub struct SocketExtra {
     #[cfg(feature = "iouring")]
     pub(crate) bio: [*mut c_void; 2],
 }
-#[repr(C)]
-pub struct PreparedSocketExtra {
-    pub(crate) owner: *mut SocketExtra,
-    error: *const StringSlot,
-    connect_host: *const StringSlot,
-    ssl_host_name: *const StringSlot,
-    tls: *const *const OwnedTlsContext,
-}
+const _: () = assert!(
+    core::mem::offset_of!(SocketExtra, tls) == 0,
+    "the hooks system tests set the TLS owner at the record's extra pointer"
+);
+
 impl Drop for SocketExtra {
     fn drop(&mut self) {
         // SAFETY: the record's own reference, released once; the network::Socket and
         // its session went first (`swr_v1_hook_co_socket_release`).
         unsafe { swr_v1_tls_owner_free(self.tls) };
+        for proxy in self.proxies {
+            // SAFETY: the socket's own proxy, released once.
+            unsafe { swr_v1_core_proxy_free(proxy) };
+        }
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_socket_extra_new() -> PreparedSocketExtra {
-    let owner = Box::into_raw(Box::new(SocketExtra {
-        strings: std::array::from_fn(|_| StringSlot::default()),
-        tls: ptr::null(),
-        close_hook: None,
-        #[cfg(feature = "iouring")]
-        uring: ptr::null(),
-        #[cfg(feature = "iouring")]
-        bio: [ptr::null_mut(); 2],
-    }));
-    // SAFETY: the fresh Box remains allocated until its enclosing native owner drops.
-    let strings = unsafe { ptr::addr_of!((*owner).strings).cast::<StringSlot>() };
-    PreparedSocketExtra {
-        owner,
-        error: strings,
-        // SAFETY: all three inline slots exist at their stable Box address.
-        connect_host: unsafe { strings.add(1) },
-        // SAFETY: the third slot is within the same live array.
-        ssl_host_name: unsafe { strings.add(2) },
-        // SAFETY: the fresh Box's own field.
-        tls: unsafe { &raw const (*owner).tls },
+impl SocketExtra {
+    /// A record's fresh metadata, which [`SocketExtra::free`] releases.
+    pub(crate) fn alloc() -> *mut Self {
+        Box::into_raw(Box::new(Self {
+            strings: std::array::from_fn(|_| StringSlot::default()),
+            tls: ptr::null(),
+            close_hook: None,
+            proxies: [ptr::null_mut(); 2],
+            #[cfg(feature = "iouring")]
+            uring: ptr::null(),
+            #[cfg(feature = "iouring")]
+            bio: [ptr::null_mut(); 2],
+        }))
+    }
+
+    /// Release what [`SocketExtra::alloc`] made, or nothing for null.
+    ///
+    /// # Safety
+    /// `owner` is null or from `alloc`, released once.
+    pub(crate) unsafe fn free(owner: *mut Self) {
+        if !owner.is_null() {
+            // SAFETY: as the caller promises.
+            drop(unsafe { Box::from_raw(owner) });
+        }
     }
 }
+
 /// `UringSocket`'s constructors (`swoole_rs_coroutine_socket.h`): with `io_uring`, Rust runs
 /// the socket's operations through the ring (`crate::uring_socket`).
 ///
@@ -115,26 +125,16 @@ pub unsafe fn run_close_hook(socket: *mut CoSocket) {
     }
 }
 
-/// # Safety
-/// owner came from `extra_new` and is released once after every borrowed view ends.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_socket_extra_free(owner: *mut SocketExtra) {
-    if !owner.is_null() {
-        // SAFETY: the caller returns its unique Box after all views are destroyed.
-        unsafe { drop(Box::from_raw(owner)) };
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn tls_slot_is_the_extra_records_owner() {
-        let prepared = swr_v1_hook_socket_extra_new();
+        let extra = SocketExtra::alloc();
         let owner = swoole_rs_tls::swr_v1_tls_owner_new(swoole_rs_tls::swr_v1_tls_warning).owner;
-        unsafe { (*prepared.owner).tls = owner };
-        assert_eq!(unsafe { *prepared.tls }, owner);
-        unsafe { swr_v1_hook_socket_extra_free(prepared.owner) };
+        unsafe { (*extra).tls = owner };
+        assert_eq!(unsafe { (*extra).tls }, owner);
+        unsafe { SocketExtra::free(extra) };
     }
 }

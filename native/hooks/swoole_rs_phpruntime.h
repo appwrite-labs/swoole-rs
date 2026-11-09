@@ -98,30 +98,6 @@ struct _php_stream *swr_v1_phpruntime_stream_from_socket(int fd, int domain, int
 void php_swoole_runtime_rinit(void);
 void php_swoole_runtime_stream_ops(uint8_t stdio, uint8_t hook);
 
-/* What the coroutine streams and client classes need of the native coroutine socket (a SocketImpl *)
- * beyond its Rust members, defined by native/hooks/system.cc. make is a body for
- * swr_zend_try over a swr_v1_runtime_socket_call; so is Rust's close. */
-struct swr_v1_core_proxy;
-struct swr_v1_runtime_socket_call {
-    void *socket; /* make's result, close's socket */
-    int fd, domain, type, protocol; /* make: without fd when fd < 0 */
-    bool family; /* make: by domain, type and protocol, else by swSocketType type */
-    bool result; /* close's */
-};
-struct swr_v1_runtime_socket_ops {
-    void (*make)(void *call);
-    void (*free)(void *socket);
-    /* connect(std::string(host, length), port, flags). */
-    bool (*connect)(void *socket, const char *host, size_t length, int port, int flags);
-    /* each(arg, pem, length) of each certificate in the peer's chain. */
-    void (*peer_chain)(void *socket, void (*each)(void *, const char *, size_t), void *arg);
-    /* set_http_proxy (http) or set_socks5_proxy. */
-    void (*proxy)(void *socket, bool http, const char *host, size_t host_length, int port, const char *user,
-                  size_t user_length, const char *password, size_t password_length);
-    /* The HTTP proxy's owner (crates/corebase's ProxyState); NULL without one. */
-    struct swr_v1_core_proxy *(*http_proxy)(void *socket);
-};
-extern const struct swr_v1_runtime_socket_ops swr_v1_runtime_socket;
 #ifdef __cplusplus
 }
 #endif

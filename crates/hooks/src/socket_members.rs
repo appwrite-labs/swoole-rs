@@ -8,12 +8,11 @@
 //! `peek` and `poll`.
 //! Upstream's `GoogleTest` suites call them through the class's own declarations.
 //!
-//! Each takes the native object (`this`). `Socket` is dynamic and its one base is
-//! the record (`swr_v1_co_socket`, not dynamic, pointer-aligned), so under the
-//! Itanium ABI the record follows the vtable pointer; system.cc asserts that shape.
+//! Each takes the native object (`this`), which is the record: `Socket` derives from
+//! `swr_v1_co_socket` and adds nothing (`swoole_rs_coroutine_socket.h` asserts it).
 use crate::buffered::{swr_v1_hook_co_socket_recv_buffered, swr_v1_hook_recv_line};
 use crate::co_io::{
-    NATIVE, Timer, available, check, errno, host, set_err, swr_v1_hook_co_socket_borrowed_err,
+    NATIVE, Timer, available, check, errno, set_err, swr_v1_hook_co_socket_borrowed_err,
     swr_v1_hook_co_socket_default_err, swr_v1_hook_co_socket_owned_err,
 };
 use crate::co_socket::{CoSocket, buffer, swr_v1_hook_co_socket_peer_name};
@@ -30,7 +29,6 @@ use crate::transfer::{ALL, CHECKED, RETRY_INTERRUPTED, swr_v1_hook_co_socket_tra
 use crate::uring_socket as ring;
 use crate::vector::vector_all;
 use core::ffi::{CStr, c_char, c_int, c_void};
-use core::mem::{align_of, size_of};
 use core::ptr::null_mut;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
@@ -50,17 +48,10 @@ const WRITE: u32 = 1 << 10;
 /// `sizeof(int)`.
 const INT_LENGTH: libc::socklen_t = c_int::BITS / 8;
 
-const _: () = assert!(
-    align_of::<CoSocket>() <= size_of::<*const c_void>(),
-    "the record follows the vtable pointer"
-);
-
-/// The record inside the native `Socket` at `this`.
+/// The record the native `Socket` at `this` is.
 #[must_use]
 pub fn record(this: *const c_void) -> *mut CoSocket {
-    this.wrapping_byte_add(size_of::<*const c_void>())
-        .cast_mut()
-        .cast()
+    this.cast_mut().cast()
 }
 
 /// With `io_uring`, a `UringSocket`'s member takes the ring's path
@@ -484,7 +475,7 @@ pub unsafe extern "C" fn accept(this: *mut c_void, timeout: f64) -> *mut c_void 
         // SAFETY: the live listening socket.
         unsafe { set_err(socket, error) };
         // SAFETY: the new native socket, used no more.
-        unsafe { (host().destroy)(client) };
+        unsafe { (crate::hooked::SOCKETS.free)(client) };
         return null_mut();
     }
     client
@@ -528,7 +519,7 @@ unsafe fn accepted(socket: *mut CoSocket, timeout: f64) -> *mut c_void {
 /// socket takes.
 pub(crate) unsafe fn adopt(server: *mut CoSocket, conn: *mut SocketRecord) -> *mut c_void {
     // SAFETY: as the caller promises.
-    let client = unsafe { (host().accepted)(server, conn) };
+    let client = unsafe { crate::co_socket::accepted(server, conn) };
     // SAFETY: both live records, their extra records set by their constructors.
     unsafe { share(server, record(client)) };
     client
@@ -1453,10 +1444,9 @@ mod tests {
     use core::ffi::c_long;
     use core::mem::MaybeUninit;
 
-    /// A native `Socket`'s shape: the vtable pointer, then the record.
+    /// A native `Socket`: the record, nothing more.
     #[repr(C)]
     struct Native {
-        vptr: *const c_void,
         record: CoSocket,
     }
 
@@ -1468,7 +1458,6 @@ mod tests {
             let native = storage.as_mut_ptr();
             unsafe { init(&raw mut (*native).record) };
             let mut native = unsafe { Box::from_raw(Box::into_raw(storage).cast::<Native>()) };
-            native.vptr = core::ptr::null();
             native.record.socket = swoole_rs_reactor::swr_v1_socket_make(-1, 6);
             native.record.sock_fd = 100;
             let object = (&raw mut *native).cast::<c_void>();
@@ -1507,7 +1496,7 @@ mod tests {
     }
 
     #[test]
-    fn the_record_follows_the_vtable_pointer() {
+    fn the_record_is_the_native_socket() {
         let mut object = Object::new();
         assert_eq!(record(object.this()), &raw mut object.0.record);
     }
@@ -1555,8 +1544,6 @@ mod tests {
     fn sendfile_reports_a_file_it_cannot_open() {
         install();
         let mut object = Object::new();
-        let extra = crate::socket_extra::swr_v1_hook_socket_extra_new();
-        object.0.record.extra = extra.owner;
         let path = c"/nonexistent/swoole-rs-sendfile";
         assert!(!unsafe { sendfile(object.this(), path.as_ptr(), 0, 0) });
         assert_eq!(object.0.record.err_code, libc::ENOENT);
@@ -1569,7 +1556,6 @@ mod tests {
                 strerror(libc::ENOENT)
             )
         );
-        unsafe { crate::socket_extra::swr_v1_hook_socket_extra_free(extra.owner) };
     }
 
     #[test]

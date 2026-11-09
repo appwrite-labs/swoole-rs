@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/coroutine/system.cc (Swoole contributors).
 // What crates/hooks can't express of System and coroutine::Socket (upstream's
-// src/coroutine/system.cc is deleted): the host tables whose entries need C++ types,
-// ~Socket (the vtable's key function) and SocketImpl's members the coroutine streams
-// call (swr_v1_runtime_socket). native/hooks/contract.md lists what stays and why.
+// src/coroutine/system.cc is deleted): the host tables whose entries need C++ types or
+// configure's macros. native/hooks/contract.md lists what stays and why.
 #include "swoole_coroutine_system.h"
 #include "swoole_rs_hooks.h"
-#include "swoole_rs_phpruntime.h"
 #include "swoole_util.h"
 
 #include "swoole_signal.h"
@@ -16,21 +14,11 @@
 namespace swoole {
 namespace coroutine {
 
-// coroutine::Socket's native side (src/coroutine/socket.cc is gone): the effects its
-// Rust operations call back into, the C++-typed members (std::string, std::function,
-// the proxies, File and String objects) and the destructor, which is the
-// vtable's key function.
 static_assert(SW_EVENT_READ == 1 << 9 && SW_EVENT_WRITE == 1 << 10, "swr_v1_hook_socket_* event bits");
-// Rust defines the reactor callbacks and the members it runs whole under their
-// upstream symbols (crates/hooks/src/socket_members.rs); it finds the record one pointer
-// into a Socket.
-static_assert(std::is_polymorphic<Socket>::value && !std::is_polymorphic<swr_v1_co_socket>::value &&
-                  alignof(swr_v1_co_socket) <= sizeof(void *),
-              "coroutine::Socket's layout for crates/hooks/src/socket_members.rs");
 
 // What the Rust operations can't do without C++ types (crates/hooks/src/co_io.rs): the
 // timers (the packet gate fakes them), the yield's std::function cancel, the String
-// buffers, the Protocol callback and new/delete.
+// buffers and the Protocol callback.
 const swr_v1_hook_co_socket_host_t Socket::host_{
     [](swr_v1_co_socket *s, double timeout) -> void * {
         return swoole_timer_add(timeout, false, [](Timer *, TimerNode *tnode) {
@@ -92,10 +80,6 @@ const swr_v1_hook_co_socket_host_t Socket::host_{
             sock->set_err(SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, "no package eof, package_max_length exceeded");
         }
     },
-    [](swr_v1_co_socket *server, swr_v1_socket *conn) -> void * {
-        return new Socket(static_cast<network::Socket *>(conn), static_cast<Socket *>(server));
-    },
-    [](void *s) { delete static_cast<Socket *>(s); },
 };
 const bool Socket::host_installed_ = (swr_v1_hook_co_socket_host(&Socket::host_), true);
 
@@ -103,31 +87,12 @@ static_assert(SW_FD_CO_SOCKET == 6 && SW_SOCK_RAW == 7 && SW_BUFFER_SIZE_BIG == 
                   SW_INPUT_BUFFER_SIZE == 2 * 1024 * 1024,
               "swr_v1_hook_co_socket constants");
 
-/**
- * Warn:
- * the destructor should only be called in following two cases:
- * 1. construct failed
- * 2. called close() and it returns true
- * 3. called close() and it returns false, but it will not be accessed anywhere else
- */
-Socket::~Socket() {
-#ifdef SW_DEBUG
-    if (SwooleG.running) {
-        SW_ASSERT(!has_bound() && socket->removed);
-    }
-#endif
-    // The destructor callback, the buffers and the network::Socket are Rust's to release
-    // (crates/hooks/src/co_socket.rs).
-    swr_v1_hook_co_socket_release(this);
-}
 }  // namespace coroutine
 }  // namespace swoole
 
 // hook.cc's socket functions are Rust (crates/hooks/src/hooked.rs), as are the hooked
 // file, sleep and resolver functions (stdio.rs); this is what they need of native: the
-// io_uring engine and configure's io_uring opcodes, and SocketImpl's new and delete.
-
-#define SOCK(socket) static_cast<SocketImpl *>(socket)
+// io_uring engine and configure's io_uring switches.
 static const swr_v1_hook_host hook_host = {
 #ifdef SW_USE_IOURING
     &swr_v1_uring_native,
@@ -149,49 +114,11 @@ static const swr_v1_hook_host hook_host = {
 #else
     false,
 #endif
-    {
-        [](int domain, int type, int protocol) -> void * { return new SocketImpl(domain, type, protocol); },
-        [](int fd) -> void * { return new SocketImpl(fd, SW_SOCK_RAW); },
-        [](void *socket) { delete SOCK(socket); },
-    },
+#ifdef SW_USE_URING_SOCKET
+    true,
+#else
+    false,
+#endif
 };
 
-// What the Rust coroutine streams (crates/phpruntime/src/socket.rs) need of SocketImpl.
-using RuntimeCall = swr_v1_runtime_socket_call;
-// Declared extern "C" in swoole_rs_phpruntime.h, so the definition has C linkage.
-const swr_v1_runtime_socket_ops swr_v1_runtime_socket = {
-    [](void *arg) {
-        auto *call = static_cast<RuntimeCall *>(arg);
-        if (!call->family) {
-            call->socket = call->fd < 0 ? new SocketImpl((swSocketType) call->type)
-                                        : new SocketImpl(call->fd, (swSocketType) call->type);
-        } else {
-            call->socket = call->fd < 0 ? new SocketImpl(call->domain, call->type, call->protocol)
-                                        : new SocketImpl(call->fd, call->domain, call->type, call->protocol);
-        }
-    },
-    [](void *socket) { delete SOCK(socket); },
-    [](void *socket, const char *host, size_t length, int port, int flags) {
-        return SOCK(socket)->connect(std::string(host, length), port, flags);
-    },
-    [](void *socket, void (*each)(void *, const char *, size_t), void *arg) {
-        for (auto &cert : SOCK(socket)->get_socket()->ssl_get_peer_cert_chain(INT_MAX)) {
-            each(arg, cert.c_str(), cert.length());
-        }
-    },
-    [](void *socket, bool http, const char *host, size_t host_length, int port, const char *user,
-       size_t user_length, const char *password, size_t password_length) {
-        std::string h(host, host_length), u(user, user_length), p(password, password_length);
-        if (http) {
-            SOCK(socket)->set_http_proxy(h, port, u, p);
-        } else {
-            SOCK(socket)->set_socks5_proxy(h, port, u, p);
-        }
-    },
-    [](void *socket) -> swr_v1_core_proxy * {
-        auto &proxy = SOCK(socket)->http_proxy;
-        return proxy ? proxy->handle() : nullptr;
-    },
-};
-#undef SOCK
 [[maybe_unused]] static const bool hook_host_set = (swr_v1_hook_set_host(&hook_host), true);

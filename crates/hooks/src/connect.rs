@@ -10,16 +10,17 @@ use crate::co_io::{
 use crate::co_socket::{CoSocket, buffer, swr_v1_hook_co_socket_reinit};
 use crate::lifecycle::swr_v1_hook_co_socket_connect;
 use crate::shutdown::swr_v1_hook_socket_bind;
-use crate::socket_members::{assign, put_host, record, recv, recv_packet, send};
+use crate::socket_members::{assign, put_host, recv, recv_packet, send};
 use crate::socket_scope::{swr_v1_hook_protocol_restore, swr_v1_hook_protocol_scope};
 use crate::socket_tls::{owner, ssl_handshake};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::{self as ptr, null_mut};
 use swoole_rs_buffer::string::CppString;
+
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{
-    CoreStringView, ProxyFields, ProxyState, StringSlot, log, swr_v1_core_string_set,
-    swr_v1_core_string_view,
+    CoreStringView, NameResolverContext, ProxyFields, ProxyState, StringSlot, log,
+    swr_v1_core_string_set, swr_v1_core_string_view,
 };
 use swoole_rs_http::{swr_v1_http_proxy_accept, swr_v1_http_proxy_connect};
 use swoole_rs_protocols::{Socks5Proxy, handshake_step, pack_negotiate_request};
@@ -621,38 +622,105 @@ impl Connecting for Live<'_> {
     }
 }
 
-/// `Socket::connect(host, port)` of the native `socket`: `context` is the
-/// `NameResolver::Context` its lookup uses, `socks5` and `http` its proxies' owners
-/// or null.
+/// `Socket::connect(host, port)` of the native `socket`, through its proxies; the
+/// lookup uses the socket's `NameResolver::Context`, or a fresh one.
 ///
 /// # Safety
-/// `socket` is a live native socket in a coroutine, `host` holds `length` bytes,
-/// and `context` and the proxies stay live for the call.
+/// `socket` is a live native socket in a coroutine and `host` holds `length` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_connect_host(
-    socket: *mut c_void,
+    socket: *mut CoSocket,
     host: *const c_char,
     length: usize,
     port: c_int,
-    context: *mut c_void,
-    socks5: *mut ProxyState,
-    http: *mut ProxyState,
 ) -> bool {
     // SAFETY: the caller's host bytes, copied before any effect.
     let host = unsafe { core::slice::from_raw_parts(host.cast::<u8>(), length) }.to_vec();
+    let mut fallback = NameResolverContext::default();
+    // SAFETY: as the caller promises.
+    let record = unsafe { &*socket };
+    let resolve = if record.resolve_context.is_null() {
+        (&raw mut fallback).cast()
+    } else {
+        record.resolve_context
+    };
+    let [socks5, http] = record.proxies();
     let mut live = Live {
-        this: socket,
-        socket: record(socket),
-        resolve: context,
-        // SAFETY: null or live owners, as the caller promises.
-        socks5: unsafe { socks5.as_ref() },
-        // SAFETY: as above.
-        http: unsafe { http.as_ref() },
+        this: socket.cast(),
+        socket,
+        resolve,
+        socks5,
+        http,
         // SAFETY: an all-zero address, as `Address` starts.
         address: unsafe { core::mem::zeroed() },
         resolved: false,
     };
     connect_host(&mut live, &host, port)
+}
+
+/// `set_http_proxy` (`http`) or `set_socks5_proxy`: a new proxy, which replaces the
+/// socket's. A SOCKS5 proxy whose credentials are too long (logged) clears it.
+///
+/// # Safety
+/// No connect of the socket is running, and each text lends its bytes for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_hook_co_socket_proxy(
+    record: &mut CoSocket,
+    http: bool,
+    host: CoreStringView,
+    port: c_int,
+    user: CoreStringView,
+    password: CoreStringView,
+) {
+    let proxy = if http {
+        let owner = swoole_rs_corebase::swr_v1_core_proxy_new(false).owner;
+        // SAFETY: the new owner and the caller's texts.
+        unsafe {
+            swoole_rs_http::swr_v1_http_proxy_configure(
+                owner,
+                host.data,
+                host.length,
+                port,
+                user.data,
+                user.length,
+                password.data,
+                password.length,
+            );
+        }
+        owner
+    } else {
+        match swoole_rs_protocols::admit(user.length, password.length) {
+            0 => null_mut(),
+            config => {
+                let owner = swoole_rs_corebase::swr_v1_core_proxy_new(true).owner;
+                let texts = [host, user, password];
+                // SAFETY: the new owner, which has no native cache to refuse a value,
+                // and the caller's texts.
+                unsafe {
+                    swoole_rs_corebase::swr_v1_core_proxy_configure(
+                        owner,
+                        texts.as_ptr(),
+                        port,
+                        config == 2,
+                        record.kind,
+                    )
+                };
+                owner
+            }
+        }
+    };
+    // SAFETY: the record's live metadata.
+    let [socks5, http_proxy] = unsafe { &mut (*record.extra).proxies };
+    let slot = if http { http_proxy } else { socks5 };
+    // SAFETY: the replaced proxy, released once.
+    unsafe { swoole_rs_corebase::swr_v1_core_proxy_free(core::mem::replace(slot, proxy)) };
+}
+
+/// The socket's HTTP proxy owner, or null.
+#[must_use]
+pub fn http_proxy(socket: &CoSocket) -> *mut ProxyState {
+    let [_, http] = socket.proxies();
+    http.map_or(null_mut(), |http| ptr::from_ref(http).cast_mut())
 }
 
 /// How `TlsOps::step` drives the handshake.

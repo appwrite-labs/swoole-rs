@@ -279,11 +279,11 @@ struct DnsUdp(*mut c_void);
 impl DnsUdp {
     /// The socket, with `timeout` set when positive.
     fn open(timeout: f64) -> Self {
-        let Some(host) = crate::stdio::host() else {
-            std::process::abort()
-        };
-        // SAFETY: native's constructor.
-        let socket = Self(unsafe { (host.socket.open)(libc::AF_INET, libc::SOCK_DGRAM, 0) });
+        let socket = Self((crate::hooked::SOCKETS.open)(
+            libc::AF_INET,
+            libc::SOCK_DGRAM,
+            0,
+        ));
         if timeout > 0.0 {
             // SAFETY: the socket just made.
             unsafe { set_timeout(socket.0, timeout, TIMEOUT_ALL) };
@@ -319,10 +319,8 @@ impl DnsSocket for DnsUdp {
 
 impl Drop for DnsUdp {
     fn drop(&mut self) {
-        if let Some(host) = crate::stdio::host() {
-            // SAFETY: the socket `open` made.
-            unsafe { (host.socket.free)(self.0) };
-        }
+        // SAFETY: the socket `open` made.
+        unsafe { (crate::hooked::SOCKETS.free)(self.0) };
     }
 }
 

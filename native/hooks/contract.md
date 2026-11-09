@@ -4,31 +4,33 @@ Feature bit 65536 (`hooks`). ABI:
 `swoole_rs_hooks.h`. Upstream's coroutine runtime, hook, socket, system, file-lock
 and io_uring sources have left the build. What Rust can't express of `System` and
 the coroutine Socket is `native/hooks/system.cc`; `coroutine::Socket` and
-`SocketImpl` are `swoole_rs_coroutine_socket.h`; the coroutine streams reach the
-socket through `swr_v1_runtime_socket`; `swoole_socket_hook.h` and
+`SocketImpl` are `swoole_rs_coroutine_socket.h`; `swoole_socket_hook.h` and
 `swoole_file_hook.h` keep only what `ftp.c` and `plain_wrapper.c` use.
+
+## The coroutine socket
+
+A `coroutine::Socket` is Rust's record (`swr_v1_co_socket`, crates/hooks/src/co_socket.rs)
+and nothing more: no vtable and no C++ members, which the header asserts. Its strings,
+proxies, TLS context and destructor callback are the record's `SocketExtra`, which the
+constructors make and `~Socket` (`swr_v1_hook_co_socket_release`) frees. Rust makes the
+sockets it hands out (`swr_v1_hook_co_socket_make`: the coroutine streams, the hooked
+fds, the DNS socket; a `UringSocket` when `SW_USE_URING_SOCKET`, which the hooks host
+reports), the accepted ones (`accept`) and frees them (`swr_v1_hook_co_socket_free`);
+`connect(host)` with its resolver context and proxies, `set_*_proxy` and the peer's
+certificate chain are Rust as well. C++ still constructs a socket with `new SocketImpl`
+or as a local (the bundled ext/ssh2, the hooks fixture) and deletes its own.
 
 ## What stays C++ (`system.cc`)
 
 - `Socket::host_`, for what needs C++ types: the yield with its `std::function`
   cancel, the read and write `String` buffers, `recv`/`recv_all`, the `Protocol`
-  length callback, the packet diagnostics and `new`/`delete Socket`; and the
-  socket's timers, which `hooks-packet-policy` fakes to fail an allocation as
-  upstream's `TimerController` can. The socket's other effects (last error,
-  `strerror`, the current coroutine and its id, the bound-socket report, the
-  no-buffers sleep, the reactor and the TLS shutdown and liveness probe) are Rust
-  (`co_io::NATIVE`).
-- `Socket::~Socket`, the vtable's key function.
-- `Socket::created`'s `extra_ = extra_owner_.value.owner`, inline in the header: the
-  owner is a C++ member Rust has no offset for. Its reports are Rust
-  (`swr_v1_hook_co_socket_created`), and so is `recvfrom(buf, n)` under its upstream
-  symbol.
-- `swr_v1_runtime_socket`: what the coroutine streams need of `SocketImpl` that
-  only C++ reaches: its constructors and `delete`, the `connect(host)` that reads the
-  resolver context and the proxies, the proxies' `unique_ptr`s and the peer's
-  certificate chain. Its `close`, `set_option` and the vectored reads and writes
-  (over an `IOVector` owner Rust prepares) are Rust calls in crates/phpruntime.
-- The hooks host's io_uring pointer and the `HAVE_IOURING_*` configure macros.
+  length callback and the packet diagnostics; and the socket's timers, which
+  `hooks-packet-policy` fakes to fail an allocation as upstream's `TimerController`
+  can. The socket's other effects (last error, `strerror`, the current coroutine and
+  its id, the bound-socket report, the no-buffers sleep, the reactor and the TLS
+  shutdown and liveness probe) are Rust (`co_io::NATIVE`).
+- The hooks host's io_uring pointer and the `HAVE_IOURING_*` and
+  `SW_USE_URING_SOCKET` configure macros.
 
 ## Hooks and file locks
 
@@ -38,8 +40,7 @@ socket through `swr_v1_runtime_socket`; `swoole_socket_hook.h` and
   `socket_wait_event`, and `swoole_coroutine_get_socket_object[_ex]` under their C++
   symbols) are Rust. The hooked fds' socket map is Rust's too: fd to a lent
   `SocketImpl *`, no reference count; hooked `close` removes it only after
-  `Socket::close()` succeeds. The host's `socket` table is what stays C++ of
-  `SocketImpl`: its constructors and `delete`. The hooks call the Rust members
+  `Socket::close()` succeeds. The hooks make and delete those sockets in Rust and call the Rust members
   directly, and those pick the ring for a `UringSocket`. A C++ exception or a
   pthread cancellation in one of those calls, or in a libc call a hook falls back
   to, aborts at the Rust frame.
@@ -155,8 +156,8 @@ aliases are never uninstalled.
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
   The coroutine test, `async_job`, `System::sleep` and the last error are Rust
   (`stdio::NATIVE`). system.cc registers a host table while the library loads
-  (`swr_v1_hook_set_host`): the socket table and, in an io_uring build,
-  `swr_v1_uring_native` and the `HAVE_IOURING_*` opcodes.
+  (`swr_v1_hook_set_host`): in an io_uring build, `swr_v1_uring_native`, the
+  `HAVE_IOURING_*` opcodes and whether sockets are `UringSocket`s.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;
   outside a coroutine the libc call runs in place; inside one it runs through native
   `async`, which parks the coroutine and restores the worker's errno; a refused

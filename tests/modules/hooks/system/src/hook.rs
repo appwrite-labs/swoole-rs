@@ -110,11 +110,10 @@ struct Protocol {
     callbacks: [*mut c_void; 5],
 }
 
-/// The head of the hybrid's coroutine `Socket`: its vtable pointer, then
-/// `swr_v1_co_socket` (native/hooks/swoole_rs_co_socket.h) up to `sock_fd`.
+/// The head of the hybrid's coroutine `Socket`, which is `swr_v1_co_socket`
+/// (native/hooks/swoole_rs_co_socket.h), up to `sock_fd`.
 #[repr(C)]
 struct CoSocket {
-    vtable: *const c_void,
     err_code: c_int,
     err_msg: *const c_char,
     open_length_check: bool,

@@ -383,17 +383,10 @@ pub unsafe extern "C" fn ssl_handshake(this: *mut c_void) -> bool {
 mod tests {
     use super::*;
     use crate::co_socket::TestSocket;
-    use crate::socket_extra::{swr_v1_hook_socket_extra_free, swr_v1_hook_socket_extra_new};
 
     #[test]
     fn enabling_tls_makes_one_owner_which_an_accepted_socket_needs_a_server_owner_to_share() {
         let (mut server, mut client) = (TestSocket::new(), TestSocket::new());
-        let extras = [
-            swr_v1_hook_socket_extra_new(),
-            swr_v1_hook_socket_extra_new(),
-        ];
-        server.0.extra = extras[0].owner;
-        client.0.extra = extras[1].owner;
         unsafe { share(server.ptr(), client.ptr()) };
         assert!(unsafe { owner(client.ptr()) }.is_null());
         assert!(unsafe { enable_ssl(server.ptr()) });
@@ -401,8 +394,5 @@ mod tests {
         assert!(!made.is_null());
         assert!(!unsafe { enable_ssl(server.ptr()) });
         assert_eq!(unsafe { owner(server.ptr()) }, made);
-        for extra in extras {
-            unsafe { swr_v1_hook_socket_extra_free(extra.owner) };
-        }
     }
 }

@@ -1,13 +1,12 @@
-//! The coroutine socket (`SocketImpl`): the streams call its Rust members
-//! directly, and what is still C++ of it is `swr_v1_runtime_socket`, a table
-//! `native/hooks/system.cc` defines; what they need of Swoole's PHP side is
-//! in the runtime's [`Ops`](crate::Ops). Both are declared in
-//! `native/hooks/swoole_rs_phpruntime.h`.
+//! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and frees;
+//! what the streams need of Swoole's PHP side is in the runtime's
+//! [`Ops`](crate::Ops), declared in `native/hooks/swoole_rs_phpruntime.h`.
 use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t};
 use std::{ffi::CStr, ptr::NonNull};
 use swoole_rs_hooks::{
     co_io::swr_v1_hook_co_socket_set_err,
-    co_socket::CoSocket,
+    co_socket::{CoSocket, swr_v1_hook_co_socket_free, swr_v1_hook_co_socket_make},
+    connect::swr_v1_hook_co_socket_connect_host,
     lifecycle::{
         swr_v1_hook_co_socket_check_liveness, swr_v1_hook_co_socket_close,
         swr_v1_hook_co_socket_shutdown,
@@ -24,8 +23,7 @@ use swoole_rs_zend::{
 
 use crate::ops;
 
-/// `swr_v1_runtime_socket_call`: `make`'s and `close`'s arguments and results.
-#[repr(C)]
+/// `make`'s and `close`'s arguments and results, for [`trap`].
 struct SocketCall {
     socket: *mut c_void,
     fd: c_int,
@@ -38,33 +36,7 @@ struct SocketCall {
 
 type Body = unsafe extern "C" fn(*mut c_void);
 
-/// `swr_v1_runtime_socket_ops`.
-#[repr(C)]
-struct SocketOps {
-    make: Body,
-    free: Body,
-    connect: unsafe extern "C" fn(*mut c_void, *const c_char, size_t, c_int, c_int) -> bool,
-    peer_chain: unsafe extern "C" fn(
-        *mut c_void,
-        unsafe extern "C" fn(*mut c_void, *const c_char, size_t),
-        *mut c_void,
-    ),
-    proxy: unsafe extern "C" fn(
-        *mut c_void,
-        bool,
-        *const c_char,
-        size_t,
-        c_int,
-        *const c_char,
-        size_t,
-        *const c_char,
-        size_t,
-    ),
-    http_proxy: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-}
-
 unsafe extern "C" {
-    static swr_v1_runtime_socket: SocketOps;
     /// crates/phpclients' settings over a coroutine socket; `which` 2 applies
     /// the SSL ones (`php_swoole_socket_set_ssl`). Raises a bailout it caught.
     fn swr_v1_phpclients_socket_settings(
@@ -72,12 +44,6 @@ unsafe extern "C" {
         settings: *const zval,
         which: c_int,
     ) -> bool;
-}
-
-/// The native table: static and read-only.
-fn native() -> &'static SocketOps {
-    // SAFETY: system.cc defines the table as a constant.
-    unsafe { &swr_v1_runtime_socket }
 }
 
 /// [`set_ssl_body`]'s call.
@@ -108,6 +74,15 @@ struct FdCall {
 unsafe fn trap<T>(body: Body, call: &mut T) -> Result<(), Bailout> {
     // SAFETY: per the caller; `call` is live for the call.
     unsafe { bailout::trap(body, (&raw mut *call).cast()) }
+}
+
+/// `call.socket = new SocketImpl(...)` over a [`SocketCall`]: a body for [`trap`],
+/// since the constructor's warnings can run a PHP error handler.
+unsafe extern "C" fn make_body(call: *mut c_void) {
+    // SAFETY: `trap` passes the caller's live `SocketCall`.
+    let call = unsafe { &mut *call.cast::<SocketCall>() };
+    call.socket =
+        swr_v1_hook_co_socket_make(call.fd, call.domain, call.kind, call.protocol, call.family);
 }
 
 /// `call.result = socket->close()` over a [`SocketCall`]: a body for [`trap`],
@@ -199,7 +174,7 @@ impl Drop for Socket {
     fn drop(&mut self) {
         if self.owned {
             // SAFETY: the socket is owned and live; `free` is native.
-            if unsafe { bailout::trap(native().free, self.raw()) }.is_err() {
+            if unsafe { bailout::trap(swr_v1_hook_co_socket_free, self.raw()) }.is_err() {
                 Bailout.defer();
             }
         }
@@ -233,7 +208,7 @@ impl Socket {
             result: false,
         };
         // SAFETY: `make` takes a `SocketCall` and writes the uniquely owned socket.
-        if unsafe { trap(native().make, &mut call) }.is_err() {
+        if unsafe { trap(make_body, &mut call) }.is_err() {
             Bailout.defer();
             return None;
         }
@@ -259,7 +234,7 @@ impl Socket {
         self.socket.as_ptr()
     }
 
-    /// A compiler-adjusted base projection; `coroutine::Socket` has virtual methods.
+    /// The record, which the native `coroutine::Socket` is.
     fn co_ptr(&self) -> *mut CoSocket {
         socket_members::record(self.raw())
     }
@@ -392,7 +367,14 @@ impl Socket {
     pub(crate) fn connect(&self, host: &CStr, port: i32) -> bool {
         let host = host.to_bytes();
         // SAFETY: a live socket and `host.len()` readable bytes.
-        unsafe { (native().connect)(self.raw(), host.as_ptr().cast(), host.len(), port, 0) }
+        unsafe {
+            swr_v1_hook_co_socket_connect_host(
+                self.co_ptr(),
+                host.as_ptr().cast(),
+                host.len(),
+                port,
+            )
+        }
     }
 
     pub(crate) fn listen(&self, backlog: i32) -> bool {
@@ -473,21 +455,40 @@ impl Socket {
         unsafe { socket_members::peer_cert(self.raw()) }
     }
 
-    /// The peer's certificate chain.
+    /// The peer's certificate chain: `ssl_get_peer_cert_chain(INT_MAX)`, each
+    /// certificate as PEM, skipping one that fails.
     pub(crate) fn peer_chain(&self) -> Vec<Vec<u8>> {
-        unsafe extern "C" fn each(arg: *mut c_void, pem: *const c_char, length: size_t) {
-            // SAFETY: `pem` holds `length` bytes.
-            let pem = unsafe { std::slice::from_raw_parts(pem.cast::<u8>(), length) };
-            // SAFETY: `arg` is the vector below.
-            let certs = unsafe { &mut *arg.cast::<Vec<Vec<u8>>>() };
-            certs.push(pem.to_vec());
-        }
-        let mut certs: Vec<Vec<u8>> = Vec::new();
-        // SAFETY: a live socket; `each` gets the vector, live for the call.
-        unsafe {
-            (native().peer_chain)(self.raw(), each, (&raw mut certs).cast());
-        }
-        certs
+        use openssl_sys::{OPENSSL_STACK, OPENSSL_sk_num, OPENSSL_sk_value};
+        use swoole_rs_tls::upstream::{
+            socket_ssl_get_peer_cert_chain, swr_v1_socket_ssl_read_x509,
+        };
+        self.with_record(Vec::new(), |record| {
+            // SAFETY: a live record.
+            let chain = unsafe { socket_ssl_get_peer_cert_chain(record) }.cast::<OPENSSL_STACK>();
+            if chain.is_null() {
+                return Vec::new();
+            }
+            // SAFETY: the SSL's live chain.
+            let count = unsafe { OPENSSL_sk_num(chain) };
+            let mut pem = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
+            (0..count)
+                .filter_map(|index| {
+                    // SAFETY: an index within the live chain.
+                    let cert = unsafe { OPENSSL_sk_value(chain, index) };
+                    // SAFETY: that certificate, written into the local buffer.
+                    let written = unsafe {
+                        swr_v1_socket_ssl_read_x509(
+                            cert.cast(),
+                            pem.as_mut_ptr().cast(),
+                            pem.len(),
+                            false,
+                        )
+                    };
+                    let written = usize::try_from(written).ok().filter(|&n| n > 0)?;
+                    pem.get(..written).map(<[u8]>::to_vec)
+                })
+                .collect()
+        })
     }
 
     /// `php_swoole_socket_set_ssl(socket, settings)`.
@@ -598,12 +599,12 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
 }
 
 /// What the client classes (crates/phpclients and crates/phphttp2) need of a
-/// `SocketImpl *` beyond the record: its virtual and C++-only members, through
-/// the native table.
+/// `SocketImpl *` beyond the record.
 pub mod co {
     pub use super::Io;
-    use super::{SocketCall, close_body, native, trap};
+    use super::{SocketCall, close_body, make_body, trap};
     use libc::{c_char, c_int, c_void, iovec};
+    use swoole_rs_corebase::CoreStringView;
     pub use swoole_rs_hooks::co_socket::CoSocket;
     use swoole_rs_hooks::{
         TimeoutScope,
@@ -612,6 +613,8 @@ pub mod co {
             swr_v1_hook_co_socket_owned_err, swr_v1_hook_co_socket_set_err,
             swr_v1_hook_co_socket_timed_out,
         },
+        co_socket::swr_v1_hook_co_socket_free,
+        connect::{self, swr_v1_hook_co_socket_connect_host, swr_v1_hook_co_socket_proxy},
         lifecycle::{
             swr_v1_hook_co_socket_cancel, swr_v1_hook_co_socket_check_liveness,
             swr_v1_hook_co_socket_close, swr_v1_hook_co_socket_shutdown,
@@ -651,7 +654,7 @@ pub mod co {
             result: false,
         };
         // SAFETY: `make` takes a `SocketCall` and writes the uniquely owned socket.
-        unsafe { trap(native().make, &mut call) }?;
+        unsafe { trap(make_body, &mut call) }?;
         Ok(call.socket)
     }
 
@@ -662,7 +665,7 @@ pub mod co {
     /// `socket` is live and owned; it is gone after the call.
     pub unsafe fn free(socket: Socket) -> Result<(), Bailout> {
         // SAFETY: per the caller; `free` takes the socket.
-        unsafe { swoole_rs_zend::bailout::trap(native().free, socket) }
+        unsafe { swoole_rs_zend::bailout::trap(swr_v1_hook_co_socket_free, socket) }
     }
 
     /// `close()` inside `zend_try`.
@@ -892,19 +895,15 @@ pub mod co {
         user: &[u8],
         password: &[u8],
     ) {
-        // SAFETY: per the caller; each slice holds its bytes.
+        let view = |text: &[u8]| CoreStringView {
+            data: text.as_ptr().cast(),
+            length: text.len(),
+        };
+        // SAFETY: per the caller.
+        let record = unsafe { record(socket) };
+        // SAFETY: each view lends its bytes for the call.
         unsafe {
-            (native().proxy)(
-                socket,
-                http,
-                host.as_ptr().cast(),
-                host.len(),
-                port,
-                user.as_ptr().cast(),
-                user.len(),
-                password.as_ptr().cast(),
-                password.len(),
-            );
+            swr_v1_hook_co_socket_proxy(record, http, view(host), port, view(user), view(password));
         }
     }
 
@@ -1014,7 +1013,7 @@ pub mod co {
     /// `socket` is live.
     #[must_use]
     pub unsafe fn record<'a>(socket: Socket) -> &'a mut CoSocket {
-        // SAFETY: per the caller; the record follows the vtable pointer.
+        // SAFETY: per the caller; the socket is its record.
         unsafe { &mut *socket_members::record(socket) }
     }
 
@@ -1090,8 +1089,11 @@ pub mod co {
         port: c_int,
         flags: c_int,
     ) -> bool {
+        let _ = flags;
         // SAFETY: per the caller.
-        unsafe { (native().connect)(socket, host, length, port, flags) }
+        unsafe {
+            swr_v1_hook_co_socket_connect_host(socket_members::record(socket), host, length, port)
+        }
     }
 
     /// `enable_ssl_encrypt()`: false when TLS was already on.
@@ -1152,7 +1154,7 @@ pub mod co {
     #[must_use]
     pub unsafe fn http_proxy(socket: Socket) -> *mut c_void {
         // SAFETY: per the caller.
-        unsafe { (native().http_proxy)(socket) }
+        connect::http_proxy(unsafe { record(socket) }).cast()
     }
 
     /// `ssl_get_peer_cert()`: empty (with the socket's error set) without one.
