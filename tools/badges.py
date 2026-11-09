@@ -103,10 +103,12 @@ NOT_APPLICABLE = ROOT / 'corpus/upstream/not_applicable.json'
 
 
 def phpt_passing(rows, not_applicable=()):
-    """(hybrid passes, first run or ungated re-run, over applicable pinned PHPTs) from every job's
-    corpus/upstream/gate.py --output rows together."""
+    """(Rust build passes, first run or ungated re-run, over applicable pinned PHPTs) from every job's
+    corpus/upstream/gate.py --output rows together. Jobs run the hybrid or the Cargo build while
+    they move to Cargo (#2199): a pass on either counts."""
     tests = {row['test'] for row in rows} - set(not_applicable)
-    passing = {row['test'] for row in rows if row['engine'] == 'hybrid' and 'passed' in (row['status'], row.get('rerun'))}
+    passing = {row['test'] for row in rows if row['engine'] in ('hybrid', 'cargo')
+               and 'passed' in (row['status'], row.get('rerun'))}
     return len(passing & tests), len(tests)
 
 

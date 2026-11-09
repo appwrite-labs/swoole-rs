@@ -87,8 +87,8 @@ class Badges(unittest.TestCase):
                 {'test': 'c', 'engine': 'upstream', 'status': 'skipped'}, {'test': 'c', 'engine': 'hybrid', 'status': 'skipped'},
                 {'test': 'd', 'engine': 'upstream', 'status': 'passed'}, {'test': 'd', 'engine': 'hybrid', 'status': 'failed', 'rerun': 'passed'}]
         self.assertEqual(badges.phpt_passing(rows), (2, 4))
-        # Another job's gate (a build variant) passes b; c can't apply to this platform.
-        rows.append({'test': 'b', 'engine': 'hybrid', 'status': 'passed'})
+        # Another job's gate (a build variant, on the Cargo build) passes b; c can't apply here.
+        rows.append({'test': 'b', 'engine': 'cargo', 'status': 'passed'})
         self.assertEqual(badges.phpt_passing(rows, {'c': 'darwin only'}), (3, 3))
 
     def test_speed_counts_workloads_faster_than_upstream_and_names_the_slowest(self):
