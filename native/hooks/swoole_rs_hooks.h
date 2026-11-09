@@ -19,23 +19,8 @@
 extern "C" {
 #endif
 typedef bool (*swr_v1_hook_offload)(void (*job)(void *), void *context);
-/* System::read_file / write_file: the whole operation on the pool (offload). Each
- * warning reaches warn on the pool thread, formatted as upstream logged it. */
-typedef struct swr_v1_hook_file_ops {
-    /* swoole_sys_warning("%s", message) with errno = error, logged as from origin. */
-    void (*warn)(int error, const char *origin, const char *message);
-    /* out's String (created on first use): length bytes of content, room for size; its buffer. */
-    char *(*buffer)(void *out, size_t length, size_t size);
-} swr_v1_hook_file_ops;
-void swr_v1_hook_read_file(
-    const char *file, bool lock, void *out, const swr_v1_hook_file_ops *ops, swr_v1_hook_offload offload);
-ssize_t swr_v1_hook_write_file(const char *file,
-                               const void *data,
-                               size_t length,
-                               bool lock,
-                               int flags,
-                               const swr_v1_hook_file_ops *ops,
-                               swr_v1_hook_offload offload);
+/* coroutine::async_job: job(context) on the pool while the current coroutine waits. */
+bool swr_v1_hook_coroutine_async_job(void (*job)(void *), void *context);
 int32_t swr_v1_hook_transition(uint32_t requested, uint32_t installed, uint32_t bit);
 uint32_t swr_v1_hook_filter(uint32_t flags, uint32_t unavailable);
 bool swr_v1_hook_file_result(bool open, int64_t result);
@@ -109,24 +94,10 @@ void swr_v1_hook_set_host(const swr_v1_hook_host *host);
 double swr_v1_hook_timeval(double seconds, double micros);
 typedef struct { uint32_t flags; bool conflict; } swr_v1_hook_curl_plan;
 swr_v1_hook_curl_plan swr_v1_hook_curl_flags(uint32_t flags, uint32_t native, uint32_t php);
-/* coroutine::async over the AsyncThreads pool. The event is upstream's AsyncEvent
- * (layout asserted in system.cc); dispatch is async::dispatch. */
-typedef struct {
-    void *(*current)(void);                       /* Coroutine::get_current_safe() */
-    void *(*dispatch)(const void *event);         /* async::dispatch */
-    void (*park)(void *co);                       /* co->yield() */
-    bool (*park_for)(void *co, double timeout);   /* co->yield_ex(timeout) */
-    void (*resume)(void *co);
-    int (*last_error)(void);
-} swr_v1_hook_async_ops;
 /* The thread's AsyncThreads, created first when it has none (null on failure). */
 void *swr_v1_async_threads_ensure(void);
-bool swr_v1_hook_async(void *event, void (*handler)(void *event), double timeout, const swr_v1_hook_async_ops *ops);
-/* The coroutine and pool operations above (crates/hooks/src/resolve.rs). */
 /* coroutine::dns_lookup: each address of domain pushed onto list, in order. */
 void swr_v1_hook_dns_lookup(const char *domain, int family, double timeout, void (*push)(void *list, const char *address), void *list);
-extern const swr_v1_hook_async_ops swr_v1_hook_coroutine_async;
-bool swr_v1_hook_async_job(void (*job)(void *), void *context, const swr_v1_hook_async_ops *ops);
 int32_t swr_v1_hook_dns_error(int32_t error, int32_t asynchronous_timeout, int32_t resolve_timeout);
 double swr_v1_hook_sleep_timeout(double seconds, double minimum);
 typedef struct { size_t length, size; int64_t offset; char *str; } swr_v1_hook_read_buffer;

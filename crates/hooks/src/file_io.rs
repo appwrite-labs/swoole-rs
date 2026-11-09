@@ -1,287 +1,255 @@
 //! `System::read_file` and `System::write_file`: open, lock, read or write the whole
 //! file, sync and unlock, all on the async pool while the coroutine waits, as upstream's
-//! lambda over a `File` did. Native code owns the `String` the content lands in and
-//! the log; each warning reaches it on the pool thread with the failing call's errno.
+//! lambda over a `File` did. Each warning is logged on the pool thread with the
+//! failing call's errno.
 use crate::stdio::{Offload, offloaded};
-use libc::{c_char, c_int, c_void, size_t};
+use libc::{c_char, c_int, c_void};
 use std::ffi::CStr;
-
-/// Native code's side of a whole-file operation.
-#[repr(C)]
-pub struct FileOps {
-    /// `swoole_sys_warning("%s", message)` with errno `error`, logged as from `origin`.
-    pub warn: unsafe extern "C" fn(error: c_int, origin: *const c_char, message: *const c_char),
-    /// Give `out`'s `String` (created on first use) `length` bytes of content and at
-    /// least `size` bytes of room; returns its buffer.
-    pub buffer: unsafe extern "C" fn(out: *mut c_void, length: size_t, size: size_t) -> *mut c_char,
-}
+use std::fs::File;
+use std::io::{ErrorKind, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::FileExt;
+use swoole_rs_corebase::log;
 
 /// `SW_AIO_WRITE_FSYNC`, tested against the open flags as upstream does.
 const WRITE_FSYNC: c_int = 1 << 1;
 /// `SW_BUFFER_SIZE_STD`: `File::read_content`'s first buffer.
 const READ_CONTENT_SIZE: usize = 8192;
 
-fn offset(done: usize) -> libc::off_t {
-    libc::off_t::try_from(done).unwrap_or(libc::off_t::MAX)
+/// Logs a warning: errno, origin, message.
+type Warn = fn(c_int, &CStr, &str);
+
+fn sys_warning(error: c_int, origin: &CStr, message: &str) {
+    log::sys_warning_errno(error, origin, format_args!("{message}"));
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+fn offset(done: usize) -> u64 {
+    u64::try_from(done).unwrap_or(u64::MAX)
 }
 
-/// An open fd, closed on drop like `File`.
-struct Fd(c_int);
-
-impl Drop for Fd {
-    fn drop(&mut self) {
-        // SAFETY: the fd this operation opened.
-        unsafe { libc::close(self.0) };
-    }
+/// The open file: `flags` as `open(2)` takes them, created 0644.
+fn open(file: &CStr, flags: c_int) -> Option<File> {
+    let mode: libc::c_uint = 0o644;
+    // SAFETY: a C string; the mode is read only with O_CREAT.
+    let fd = unsafe { libc::open(file.as_ptr(), flags, mode) };
+    // SAFETY: a new fd, owned by the `File` from here.
+    (fd != -1).then(|| unsafe { File::from_raw_fd(fd) })
 }
 
-impl Fd {
-    fn open(file: *const c_char, flags: c_int) -> Option<Self> {
-        let fd = if flags & libc::O_CREAT != 0 {
-            let mode: libc::c_uint = 0o644;
-            // SAFETY: the caller passes a C string.
-            unsafe { libc::open(file, flags, mode) }
-        } else {
-            // SAFETY: as above.
-            unsafe { libc::open(file, flags) }
-        };
-        if fd == -1 { None } else { Some(Self(fd)) }
-    }
+fn flock(file: &File, operation: c_int) -> bool {
+    // SAFETY: flock has no memory preconditions.
+    unsafe { libc::flock(file.as_raw_fd(), operation) == 0 }
+}
 
-    fn flock(&self, operation: c_int) -> bool {
-        // SAFETY: flock has no memory preconditions.
-        unsafe { libc::flock(self.0, operation) == 0 }
-    }
-
-    /// `file_get_size`: the size of a regular file, else -1.
-    fn size(&self) -> i64 {
-        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
-        // SAFETY: a writable stat buffer.
-        if unsafe { libc::fstat(self.0, status.as_mut_ptr()) } < 0 {
-            return -1;
-        }
-        // SAFETY: fstat filled it.
-        let status = unsafe { status.assume_init() };
-        if status.st_mode & libc::S_IFMT != libc::S_IFREG {
-            return -1;
-        }
-        status.st_size
-    }
+/// `file_get_size`: the size of a regular file.
+fn regular_size(file: &File) -> Option<usize> {
+    let metadata = file.metadata().ok().filter(std::fs::Metadata::is_file)?;
+    usize::try_from(metadata.len()).ok()
 }
 
 /// `File::read_all` and `File::write_all`'s loop: retry on EINTR/EAGAIN, stop at 0 or
 /// an error, which `fail` reports. Returns the bytes done.
 fn transfer_all(
     len: usize,
-    mut step: impl FnMut(usize) -> isize,
+    mut step: impl FnMut(usize) -> std::io::Result<usize>,
     fail: impl FnOnce(c_int, usize),
 ) -> usize {
     let mut done = 0;
     while done < len {
-        let n = step(done);
-        if n > 0 {
-            done += n.unsigned_abs();
-            continue;
+        match step(done) {
+            Ok(0) => break,
+            Ok(n) => done += n,
+            Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {}
+            Err(e) => {
+                fail(e.raw_os_error().unwrap_or(0), done);
+                break;
+            }
         }
-        let error = errno();
-        if n == 0 {
-            break;
-        }
-        if error == libc::EINTR || error == libc::EAGAIN || error == libc::EWOULDBLOCK {
-            continue;
-        }
-        fail(error, done);
-        break;
     }
     done
 }
 
-/// What a whole-file operation needs from its caller, lent to the pool thread.
+/// One whole-file operation, run on the pool thread.
 struct Job<'a> {
-    file: *const c_char,
-    ops: &'a FileOps,
-    out: *mut c_void,
+    file: &'a CStr,
+    warn: Warn,
 }
 
 impl Job<'_> {
-    /// Log `message` with errno `error` as from `origin`.
-    fn log(&self, origin: &CStr, error: c_int, message: impl Into<Vec<u8>>) {
-        let mut message = message.into();
-        message.push(0);
-        // SAFETY: native code's logger with two C strings.
-        unsafe { (self.ops.warn)(error, origin.as_ptr(), message.as_ptr().cast()) };
-    }
-
     /// `"{call}({file}{args}) failed"` from `origin`, with the current errno.
     fn warn(&self, origin: &CStr, call: &str, args: &str) {
-        // SAFETY: the caller passes a C string.
-        let file = unsafe { CStr::from_ptr(self.file) }.to_bytes();
-        let message = [call.as_bytes(), b"(", file, args.as_bytes(), b") failed"].concat();
-        self.log(origin, errno(), message);
+        let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        let file = self.file.to_string_lossy();
+        (self.warn)(error, origin, &format!("{call}({file}{args}) failed"));
     }
 
-    fn buffer(&self, length: usize, size: usize) -> *mut c_char {
-        // SAFETY: the caller's `String` slot.
-        unsafe { (self.ops.buffer)(self.out, length, size) }
-    }
-
-    fn read(&self, lock: bool) {
-        let Some(fd) = Fd::open(self.file, libc::O_RDONLY) else {
-            return self.warn(c"System::read_file", "open", ", O_RDONLY");
+    fn read(&self, lock: bool) -> Option<Vec<u8>> {
+        let Some(file) = open(self.file, libc::O_RDONLY) else {
+            self.warn(c"System::read_file", "open", ", O_RDONLY");
+            return None;
         };
-        if lock && !fd.flock(libc::LOCK_SH) {
-            return self.warn(c"System::read_file", "flock", ", LOCK_SH");
+        if lock && !flock(&file, libc::LOCK_SH) {
+            self.warn(c"System::read_file", "flock", ", LOCK_SH");
+            return None;
         }
-        match usize::try_from(fd.size()) {
-            Ok(size) if size > 0 => self.read_all(&fd, size),
-            _ => self.read_content(&fd),
-        }
-        if lock && !fd.flock(libc::LOCK_UN) {
+        let content = match regular_size(&file) {
+            Some(size) if size > 0 => self.read_all(&file, size),
+            _ => Self::read_content(&file),
+        };
+        if lock && !flock(&file, libc::LOCK_UN) {
             self.warn(c"System::read_file", "flock", ", LOCK_UN");
         }
+        Some(content)
     }
 
-    fn read_all(&self, fd: &Fd, size: usize) {
-        let buf = self.buffer(0, size + 1);
+    fn read_all(&self, file: &File, size: usize) -> Vec<u8> {
+        let mut buf = vec![0; size];
+        let at = buf.as_ptr();
         let read = transfer_all(
             size,
-            // SAFETY: `buf` has room for `size` bytes.
-            |done| unsafe {
-                libc::pread(
-                    fd.0,
-                    buf.wrapping_add(done).cast(),
-                    size - done,
-                    offset(done),
-                )
-            },
+            |done| file.read_at(buf.get_mut(done..).unwrap_or_default(), offset(done)),
             |error, done| {
-                let message = format!("pread({}, {buf:p}, {}, {done}) failed", fd.0, size - done);
-                self.log(c"File::read_all", error, message);
+                let fd = file.as_raw_fd();
+                let message = format!("pread({fd}, {at:p}, {}, {done}) failed", size - done);
+                (self.warn)(error, c"File::read_all", &message);
             },
         );
-        self.terminate(read, size + 1);
+        buf.truncate(read);
+        buf
     }
 
-    fn read_content(&self, fd: &Fd) {
-        let mut size = READ_CONTENT_SIZE;
-        let mut length = 0;
-        let mut buf = self.buffer(0, size);
-        loop {
-            // SAFETY: `buf` has room for `size` bytes, `length` of them used.
-            let n = unsafe { libc::read(fd.0, buf.wrapping_add(length).cast(), size - length) };
-            if n <= 0 {
-                break;
-            }
-            length += n.unsigned_abs();
-            if length == size {
-                size *= 2;
-            }
-            buf = self.buffer(length, size);
-        }
-        self.terminate(length, size);
+    /// `File::read_content`: until end of file or the first error.
+    fn read_content(mut file: &File) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(READ_CONTENT_SIZE);
+        // Upstream stops at the first error, keeping what it read.
+        drop(file.read_to_end(&mut buf));
+        buf
     }
 
-    /// `content->length = length; content->str[length] = 0`.
-    fn terminate(&self, length: usize, size: usize) {
-        let buf = self.buffer(length, size);
-        // SAFETY: `length < size`, inside the buffer.
-        unsafe { buf.wrapping_add(length).write(0) };
-    }
-
-    fn write(&self, data: *const c_void, length: usize, lock: bool, flags: c_int) -> isize {
-        let Some(fd) = Fd::open(self.file, flags) else {
+    fn write(&self, data: &[u8], lock: bool, flags: c_int) -> isize {
+        let Some(mut file) = open(self.file, flags) else {
             self.warn(c"System::write_file", "open", &format!(", {flags}"));
             return -1;
         };
-        if lock && !fd.flock(libc::LOCK_EX) {
+        if lock && !flock(&file, libc::LOCK_EX) {
             self.warn(c"System::write_file", "flock", ", LOCK_EX");
             return -1;
         }
         let append = flags & libc::O_APPEND != 0;
+        let fd = file.as_raw_fd();
         let written = transfer_all(
-            length,
+            data.len(),
             |done| {
-                // SAFETY: `data` holds `length` bytes.
-                let from = unsafe { data.cast::<u8>().add(done) }.cast();
+                let rest = data.get(done..).unwrap_or_default();
                 if append {
-                    // SAFETY: as above.
-                    unsafe { libc::write(fd.0, from, length - done) }
+                    file.write(rest)
                 } else {
-                    // SAFETY: as above.
-                    unsafe { libc::pwrite(fd.0, from, length - done, offset(done)) }
+                    file.write_at(rest, offset(done))
                 }
             },
             |error, done| {
                 let message = format!(
-                    "pwrite({}, {data:p}, {}, {done}) failed",
-                    fd.0,
-                    length - done
+                    "pwrite({fd}, {:p}, {}, {done}) failed",
+                    data.as_ptr(),
+                    data.len() - done
                 );
-                self.log(c"File::write_all", error, message);
+                (self.warn)(error, c"File::write_all", &message);
             },
         );
-        // SAFETY: fsync has no memory preconditions.
-        if flags & WRITE_FSYNC != 0 && unsafe { libc::fsync(fd.0) } != 0 {
+        if flags & WRITE_FSYNC != 0 && file.sync_all().is_err() {
             self.warn(c"System::write_file", "fsync", "");
         }
-        if lock && !fd.flock(libc::LOCK_UN) {
+        if lock && !flock(&file, libc::LOCK_UN) {
             self.warn(c"System::write_file", "flock", ", LOCK_UN");
         }
         isize::try_from(written).unwrap_or(isize::MAX)
     }
 }
 
-/// `System::read_file`: the content lands in `out`'s `String`, which stays unset when
-/// the file can't be opened or locked, or the pool refuses the job.
-///
-/// # Safety
-/// `file` is a C string; `ops` and `out` are valid for the call; `offload` is native
-/// `async`, valid in the current coroutine.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_read_file(
-    file: *const c_char,
-    lock: bool,
-    out: *mut c_void,
-    ops: *const FileOps,
-    offload: Option<Offload>,
-) {
-    let job = Job {
-        file,
-        // SAFETY: the caller's ops, valid for the call.
-        ops: unsafe { &*ops },
-        out,
-    };
-    // SAFETY: the job only touches what the caller lent until `offload` returns.
-    unsafe { offloaded(offload, (), || job.read(lock)) };
+/// `System::read_file`, in a coroutine: the content, or none when the file can't be
+/// opened or locked, or the pool refuses the job.
+#[must_use]
+pub fn read_file(file: &CStr, lock: bool) -> Option<Vec<u8>> {
+    read_with(file, lock, sys_warning, Some(crate::offload::async_job))
 }
 
-/// `System::write_file`: bytes written, or -1 when the file can't be opened or
-/// locked, or the pool refuses the job. `flags` already has `O_CREAT | O_WRONLY`.
+/// `System::write_file`, in a coroutine: bytes written, or -1 when the file can't be
+/// opened or locked, or the pool refuses the job. `O_CREAT | O_WRONLY` are added.
+#[must_use]
+pub fn write_file(file: &CStr, data: &[u8], lock: bool, flags: c_int) -> isize {
+    let flags = flags | libc::O_CREAT | libc::O_WRONLY;
+    write_with(
+        file,
+        data,
+        lock,
+        flags,
+        sys_warning,
+        Some(crate::offload::async_job),
+    )
+}
+
+/// `ssize_t System::write_file(const char *file, const char *buf, size_t length, bool
+/// lock, int flags)`, whose signature is plain C; the hooks-system-rust cases call it.
 ///
 /// # Safety
-/// As [`swr_v1_hook_read_file`]; `data` holds `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_write_file(
+/// `file` is a C string and `buf` holds `length` bytes; in a coroutine.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6System10write_fileEPKcS3_mbi")
+)]
+#[must_use]
+pub unsafe extern "C" fn system_write_file(
     file: *const c_char,
-    data: *const c_void,
-    length: size_t,
+    buf: *const u8,
+    length: usize,
     lock: bool,
     flags: c_int,
-    ops: *const FileOps,
+) -> isize {
+    // SAFETY: the caller's C string.
+    let file = unsafe { CStr::from_ptr(file) };
+    // SAFETY: the caller's `length` bytes.
+    let data = unsafe { std::slice::from_raw_parts(buf, length) };
+    write_file(file, data, lock, flags)
+}
+
+/// `System::read_file` for C callers (upstream returns a `shared_ptr<String>`): the
+/// content goes to `put(out, data, length)`; false when there is none.
+///
+/// # Safety
+/// `file` is a C string; `put(out, ..)` is callable; in a coroutine.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_system_read_file(
+    file: *const c_char,
+    lock: bool,
+    put: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
+    out: *mut c_void,
+) -> bool {
+    // SAFETY: the caller's C string.
+    let Some(content) = read_file(unsafe { CStr::from_ptr(file) }, lock) else {
+        return false;
+    };
+    // SAFETY: the caller's sink, given the content's bytes.
+    unsafe { put(out, content.as_ptr().cast(), content.len()) };
+    true
+}
+
+fn read_with(file: &CStr, lock: bool, warn: Warn, offload: Option<Offload>) -> Option<Vec<u8>> {
+    let job = Job { file, warn };
+    // SAFETY: the job only touches what this frame lends until `offload` returns.
+    unsafe { offloaded(offload, None, || job.read(lock)) }
+}
+
+fn write_with(
+    file: &CStr,
+    data: &[u8],
+    lock: bool,
+    flags: c_int,
+    warn: Warn,
     offload: Option<Offload>,
 ) -> isize {
-    let job = Job {
-        file,
-        // SAFETY: the caller's ops, valid for the call.
-        ops: unsafe { &*ops },
-        out: std::ptr::null_mut(),
-    };
-    // SAFETY: as in `swr_v1_hook_read_file`.
-    unsafe { offloaded(offload, -1, || job.write(data, length, lock, flags)) }
+    let job = Job { file, warn };
+    // SAFETY: as in `read_with`.
+    unsafe { offloaded(offload, -1, || job.write(data, lock, flags)) }
 }
 
 #[cfg(test)]
@@ -294,55 +262,24 @@ mod tests {
         static WARNINGS: RefCell<Vec<(String, c_int)>> = const { RefCell::new(Vec::new()) };
     }
 
-    unsafe extern "C" fn warn(error: c_int, origin: *const c_char, message: *const c_char) {
-        // SAFETY: two C strings from `Job::log`.
-        let (origin, message) = unsafe { (CStr::from_ptr(origin), CStr::from_ptr(message)) };
-        let line = format!(
-            "{}(): {}",
-            origin.to_str().unwrap(),
-            message.to_str().unwrap()
-        );
+    fn warn(error: c_int, origin: &CStr, message: &str) {
+        let line = format!("{}(): {message}", origin.to_str().unwrap());
         WARNINGS.with(|warnings| warnings.borrow_mut().push((line, error)));
     }
 
-    /// A `String` stand-in: `(content, set)`.
-    unsafe extern "C" fn buffer(out: *mut c_void, length: size_t, size: size_t) -> *mut c_char {
-        // SAFETY: the test's own slot.
-        let out = unsafe { &mut *out.cast::<Option<(Vec<u8>, usize)>>() };
-        let (bytes, used) = out.get_or_insert_with(|| (Vec::new(), 0));
-        if bytes.len() < size {
-            bytes.resize(size, 0);
-        }
-        *used = length;
-        bytes.as_mut_ptr().cast()
-    }
-
-    const OPS: FileOps = FileOps { warn, buffer };
-
     fn read(path: &CString, lock: bool) -> Option<Vec<u8>> {
-        let mut out: Option<(Vec<u8>, usize)> = None;
-        // SAFETY: a C string and the test's ops and slot; no pool.
-        unsafe { swr_v1_hook_read_file(path.as_ptr(), lock, (&raw mut out).cast(), &OPS, None) };
-        out.map(|(mut bytes, used)| {
-            assert_eq!(bytes[used], 0);
-            bytes.truncate(used);
-            bytes
-        })
+        read_with(path, lock, warn, None)
     }
 
     fn write(path: &CString, data: &[u8], flags: c_int) -> isize {
-        // SAFETY: a C string, `data` and the test's ops; no pool.
-        unsafe {
-            swr_v1_hook_write_file(
-                path.as_ptr(),
-                data.as_ptr().cast(),
-                data.len(),
-                true,
-                flags | libc::O_CREAT | libc::O_WRONLY,
-                &OPS,
-                None,
-            )
-        }
+        write_with(
+            path,
+            data,
+            true,
+            flags | libc::O_CREAT | libc::O_WRONLY,
+            warn,
+            None,
+        )
     }
 
     fn warnings() -> Vec<(String, c_int)> {

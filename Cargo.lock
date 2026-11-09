@@ -784,6 +784,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-framing",
+ "swoole-rs-hooks",
  "swoole-rs-http2",
  "swoole-rs-inflate",
  "swoole-rs-phpcoroutines",

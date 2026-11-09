@@ -35,7 +35,7 @@ the hybrid tree and runs each case in its own process,
 excluding `getaddrinfo` (external DNS and network) and `getaddrinfo_timeout` (a
 lookup that misses the resolver cache), as the GoogleTest run did. Where
 upstream's `System` signature carries C++ library types the cases call what the
-hybrid's callers call instead: `swr_v1_system_read_file`, `_getaddrinfo` and
+hybrid exports for C instead: `swr_v1_system_read_file`, `_getaddrinfo` and
 `_wait_signal`, and `swr_v1_hook_socket_poll` with `System`'s poll operations.
 
 `core-tests/src/coroutine/hook.cpp` is Rust too: `system/src/hook.rs` holds its 26

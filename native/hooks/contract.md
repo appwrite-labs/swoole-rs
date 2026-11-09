@@ -112,11 +112,11 @@ aliases are never uninstalled.
   `SW_FD_CO_EVENT`, `SW_FD_AIO` (and `SW_FD_IOURING`) handlers; the event waiter's
   defers the coroutine's resume on the thread's deferred queue on the first event
   only. Error readiness becomes the requested read/write bits.
-- `System::read_file`/`write_file` are one Rust call each, `hook_read_file` and
-  `hook_write_file`: open, flock, size, the whole read or write (`File::read_all`,
-  `write_all`, `read_content` semantics), fsync and unlock on the async pool.
-  Native creates and grows the `String` and logs each warning on the pool thread,
-  named as upstream (`System::read_file`, `File::read_all`, ...).
+- `System::read_file`/`write_file` are Rust (`file_io.rs`): open, flock, size, the
+  whole read or write (`File::read_all`, `write_all`, `read_content` semantics),
+  fsync and unlock on the async pool, into a `Vec`, logging each warning on the pool
+  thread as upstream named it (`System::read_file`, `File::read_all`, ...).
+  `write_file` keeps its upstream symbol; C reads through `swr_v1_system_read_file`.
 - `System::wait_signal` is one Rust call, `hook_wait_signal`: the listener table,
   the EBUSY/EINVAL checks, registering through native `listen`, the park, the wake-up handler
   `hook_signal_wake` (clears the slot, records the signal, resumes) and the
@@ -130,7 +130,7 @@ aliases are never uninstalled.
   `readlink`, `statvfs`, `access`), `sleep`, `usleep`, `getaddrinfo` and
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
   system.cc registers a host table while the library loads (`swr_v1_hook_set_host`): its
-  coroutine test, `async`, `System::sleep`, the poll table, the socket table and, in an
+  coroutine test, `async_job` (Rust's), `System::sleep`, the poll table, the socket table and, in an
   io_uring build, `swr_v1_uring_native`.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;
   outside a coroutine the libc call runs in place; inside one it runs through native
@@ -146,13 +146,12 @@ aliases are never uninstalled.
 
 ## Async tasks, DNS and io_uring
 
-- `coroutine::async` (both forms) is Rust, `hook_async` and `hook_async_job`: it
-  fills the event (Rust mirrors `AsyncEvent`'s layout; system.cc asserts it), parks
-  and resumes the coroutine, and publishes the result. Native passes
-  `async::dispatch` and the coroutine operations; `async(std::function)` is a
-  trampoline into `hook_async_job`. A refused dispatch returns false before
-  parking; a timeout or cancel marks the pool's copy canceled, so its completion
-  never touches the parked task.
+- `coroutine::async` and `async_job` are Rust (`offload.rs`): they fill the event
+  (Rust mirrors `AsyncEvent`'s layout; swoole_async.h asserts it), dispatch it to
+  the pool, park and resume the coroutine, and publish the result. Upstream's
+  `async(std::function)` had no caller left and is gone. A refused dispatch returns
+  false before parking; a timeout or cancel marks the pool's copy canceled, so its
+  completion never touches the parked task.
 - DNS async-timeout error mapping is scalar policy in both host/address lookup
   wrappers; requests, parsing and c-ares/libc stay native. The DNS cache
   (LRU, expiry, family key, hit/miss counters) is Rust, and so are `System`'s

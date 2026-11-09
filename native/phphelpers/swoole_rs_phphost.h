@@ -238,19 +238,6 @@ static inline bool php_swoole_is_fatal_error() {
 
 const swoole::Allocator *sw_zend_string_allocator();
 
-static inline bool php_swoole_async(bool blocking, const std::function<void(void)> &fn) {
-    uint32_t phase = 0;
-    bool observation = false;
-    for (;;) {
-        switch (swr_v1_phphelpers_async(&phase, blocking, observation)) {
-        case SWR_PHP_ASYNC_OBSERVE_COROUTINE: observation = swoole_coroutine_is_in(); break;
-        case SWR_PHP_ASYNC_DISPATCH: return swoole::coroutine::async(fn);
-        case SWR_PHP_ASYNC_DIRECT: fn(); return true;
-        default: return false;
-        }
-    }
-}
-
 static inline void sw_callable_warning(const char *message) {
     php_swoole_fatal_error(E_WARNING, "%s", message);
 }

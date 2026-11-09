@@ -117,23 +117,18 @@ unsafe extern "C" fn completed(event: *mut AsyncEvent) {
 ///
 /// # Safety
 /// `event` and `ops` are valid; `handler` is a pool handler for `event`; inside a coroutine.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_async(
-    event: *mut AsyncEvent,
+pub unsafe fn swr_v1_hook_async(
+    event: &mut AsyncEvent,
     handler: Handler,
     timeout: f64,
-    ops: *const AsyncOps,
+    ops: &AsyncOps,
 ) -> bool {
-    // SAFETY: the caller passes a valid ops table.
-    let ops = unsafe { &*ops };
     let co = (ops.current)();
     let mut task = Task {
         co,
         resume: ops.resume,
         job: None,
     };
-    // SAFETY: the caller's event, unaliased during the call.
-    let event = unsafe { &mut *event };
     event.object = (&raw mut task).cast();
     event.handler = Some(handler);
     event.callback = Some(completed);
@@ -162,19 +157,30 @@ pub unsafe extern "C" fn swr_v1_hook_async(
     }
 }
 
+/// `coroutine::async_job`: [`swr_v1_hook_async_job`] over the coroutine's own
+/// operations; the hooked functions' and `System::read_file`'s offload.
+///
+/// # Safety
+/// As [`swr_v1_hook_async_job`].
+#[unsafe(export_name = "swr_v1_hook_coroutine_async_job")]
+pub unsafe extern "C" fn async_job(
+    job: unsafe extern "C" fn(*mut c_void),
+    context: *mut c_void,
+) -> bool {
+    // SAFETY: the coroutine's operations; the caller's job.
+    unsafe { swr_v1_hook_async_job(job, context, &crate::resolve::COROUTINE_ASYNC) }
+}
+
 /// `coroutine::async(fn)`: runs `job(context)` on the pool and waits for it, then sets
 /// errno to the job's. False if the pool refused it.
 ///
 /// # Safety
 /// `ops` is valid; `job(context)` is safe to run on another thread; inside a coroutine.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_async_job(
+pub unsafe fn swr_v1_hook_async_job(
     job: unsafe extern "C" fn(*mut c_void),
     context: *mut c_void,
-    ops: *const AsyncOps,
+    ops: &AsyncOps,
 ) -> bool {
-    // SAFETY: the caller passes a valid ops table.
-    let ops = unsafe { &*ops };
     let co = (ops.current)();
     let mut task = Task {
         co,
@@ -302,7 +308,7 @@ mod tests {
     fn handler_result_or_timeout_reaches_the_event() {
         RESUMED.set(0);
         let mut event = empty();
-        assert!(unsafe { swr_v1_hook_async(&raw mut event, handler, 1.0, &OPS) });
+        assert!(unsafe { swr_v1_hook_async(&mut event, handler, 1.0, &OPS) });
         assert_eq!(
             (
                 event.retval,
@@ -316,7 +322,7 @@ mod tests {
 
         TIME_OUT.set(true);
         let mut event = empty();
-        assert!(!unsafe { swr_v1_hook_async(&raw mut event, handler, 1.0, &OPS) });
+        assert!(!unsafe { swr_v1_hook_async(&mut event, handler, 1.0, &OPS) });
         TIME_OUT.set(false);
         assert_eq!(
             (event.retval, event.error, event.canceled, errno()),

@@ -303,11 +303,6 @@ class Coroutine {
 };
 
 namespace coroutine {
-// async is defined in native/hooks/system.cc, run in crates/coroutine. The handler form keeps
-// `event.data` alive by reference count across a timeout or cancel; the closure
-// form supports neither and must not hand the pool memory the caller frees.
-bool async(async::Handler handler, AsyncEvent &event, double timeout = -1);
-bool async(const std::function<void()> &fn);
 bool run(const CoroutineFunc &fn, void *arg = nullptr);
 }  // namespace coroutine
 }  // namespace swoole

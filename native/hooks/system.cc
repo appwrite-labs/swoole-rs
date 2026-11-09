@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/coroutine/system.cc (Swoole contributors).
 // What crates/hooks can't express of System and coroutine::Socket (upstream's
-// src/coroutine/system.cc is deleted): the std::string, std::shared_ptr and
-// std::function signatures, the host tables whose entries call C++ members, and
-// ~Socket, the vtable's key function. System::sleep is Rust (crates/hooks/src/sleep.rs).
+// src/coroutine/system.cc is deleted): the host tables whose entries call C++ members,
+// and ~Socket, the vtable's key function. System::sleep, read_file, write_file and
+// coroutine::async are Rust (crates/hooks/src/sleep.rs, file_io.rs, offload.rs).
 #include "swoole_coroutine_system.h"
 #include "swoole_rs_hooks.h"
 #include "swoole_rs_phpruntime.h"
@@ -15,30 +15,6 @@
 
 namespace swoole {
 namespace coroutine {
-
-bool async_job(void (*job)(void *), void *context);
-
-static void file_warning(int error, const char *origin, const char *message) {
-    errno = error;
-    swoole_log_as(origin, swoole_sys_warning("%s", message));
-}
-
-static char *file_buffer(void *out, size_t length, size_t size) {
-    auto &content = *static_cast<std::shared_ptr<String> *>(out);
-    if (!content) {
-        content = std::make_shared<String>(size);
-    } else if (content->size < size) {
-        content->reserve(size);
-    }
-    content->length = length;
-    return content->str;
-}
-
-static const swr_v1_hook_file_ops file_ops = {file_warning, file_buffer};
-
-ssize_t System::write_file(const char *file, const char *buf, size_t length, bool lock, int flags) {
-    return swr_v1_hook_write_file(file, buf, length, lock, flags | O_CREAT | O_WRONLY, &file_ops, async_job);
-}
 
 static void *co_current() {
     return Coroutine::get_current_safe();
@@ -165,15 +141,6 @@ extern const swr_v1_hook_poll_ops poll_ops = {
 // is copied out through `put`, one call per string.
 typedef void (*swr_v1_system_put)(void *out, const char *data, size_t length);
 
-extern "C" bool swr_v1_system_read_file(const char *file, bool lock, swr_v1_system_put put, void *out) {
-    std::shared_ptr<String> content;
-    swr_v1_hook_read_file(file, lock, &content, &file_ops, async_job);
-    if (content) {
-        put(out, content->str, content->length);
-    }
-    return content != nullptr;
-}
-
 extern "C" int swr_v1_system_wait_signal(const long *signals, size_t count, double timeout) {
     static const swr_v1_hook_signal_ops ops = {
         co_current, signal_busy, signal_listen, signal_waiting, co_park_for, co_resume};
@@ -183,23 +150,6 @@ extern "C" int swr_v1_system_wait_signal(const long *signals, size_t count, doub
         swoole_set_last_error(signalled.last_error);
     }
     return signalled.signo;
-}
-
-static_assert(sizeof(AsyncEvent) == 72 && offsetof(AsyncEvent, error) == 12 && offsetof(AsyncEvent, retval) == 24 &&
-                  offsetof(AsyncEvent, object) == 48 && offsetof(AsyncEvent, callback) == 64,
-              "crates/hooks/src/offload.rs mirrors AsyncEvent");
-
-bool async(async::Handler handler, AsyncEvent &event, double timeout) {
-    return swr_v1_hook_async(&event, reinterpret_cast<void (*)(void *)>(handler), timeout, &swr_v1_hook_coroutine_async);
-}
-
-bool async_job(void (*job)(void *), void *context) {
-    return swr_v1_hook_async_job(job, context, &swr_v1_hook_coroutine_async);
-}
-
-bool async(const std::function<void()> &fn) {
-    return async_job([](void *fn) { (*static_cast<const std::function<void()> *>(fn))(); },
-                     const_cast<std::function<void()> *>(&fn));
 }
 
 // coroutine::Socket's native side (src/coroutine/socket.cc is gone): the effects its
@@ -361,7 +311,7 @@ Socket::~Socket() {
 #define SOCK(socket) static_cast<SocketImpl *>(socket)
 static const swr_v1_hook_host hook_host = {
     [] { return SwooleTG.reactor != nullptr && swoole::Coroutine::get_current() != nullptr; },
-    swoole::coroutine::async_job,
+    swr_v1_hook_coroutine_async_job,
     swoole::coroutine::System::sleep,
 #ifdef SW_USE_IOURING
     &swr_v1_uring_native,
