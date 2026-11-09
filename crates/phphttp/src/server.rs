@@ -412,7 +412,7 @@ pub(crate) fn call_handler(
             args.as_mut_ptr(),
             std::ptr::null_mut(),
             coroutine,
-            swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create,
+            swoole_rs_phpcoroutines::create_coroutine,
             swoole_rs_zend::sys::swr_zend_callable_warning,
         )
     };

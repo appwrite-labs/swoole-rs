@@ -869,7 +869,7 @@ unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i6
     // name; the shim traps what the new coroutine raises.
     let bailed = bailout::trapped(unsafe {
         z::swr_zend_try_facade_coroutine(
-            Some(swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create),
+            Some(swoole_rs_phpcoroutines::create_coroutine),
             &raw mut accept.cache,
             1,
             &raw mut zsocket,
