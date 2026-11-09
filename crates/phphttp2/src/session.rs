@@ -94,6 +94,9 @@ pub(crate) struct StreamState {
     pub(crate) request_received: Cell<bool>,
     /// A Content-Length of the request's header block was malformed or too large.
     pub(crate) bad_length: Cell<bool>,
+    /// The block named a Content-Type or Accept-Encoding, which are read
+    /// back from `$header` once it is complete.
+    pub(crate) negotiates: Cell<bool>,
     /// The coroutine waiting for the peer to open the window.
     waiting: Cell<*mut c_void>,
 }
@@ -189,6 +192,7 @@ impl SessionState {
             headers_received: Cell::new(false),
             request_received: Cell::new(false),
             bad_length: Cell::new(false),
+            negotiates: Cell::new(false),
             waiting: Cell::new(std::ptr::null_mut()),
         });
         let replaced = self.streams.borrow_mut().insert(id, stream.clone());
