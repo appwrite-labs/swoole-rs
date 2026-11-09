@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
 // What stays C++ of base.cc: the objects Rust's lifecycles create and delete (the
-// memory pool, whose vtable admin.cc's dynamic_cast needs; the thread's String; the
-// logger), the build's compile-time strings, the variadic fatal-error hook, the log
-// macros, and the std::string/std::function and throwing APIs. Rust owns SwooleG,
-// SwooleTG and the init, clean, fork and thread sequences (crates/corebase); swoole_init
-// here only registers the effects before Rust's body runs.
+// memory pool, whose vtable admin.cc's dynamic_cast needs; the thread's String), the
+// build's compile-time strings, the variadic fatal-error hook, and the std::string,
+// std::function and throwing APIs. Rust owns SwooleG, SwooleTG, the init, clean, fork
+// and thread sequences (crates/corebase), the process logger (crates/process) and the
+// log macros Rust's logs run (crates/utilities); swoole_init here only registers them
+// before Rust's body runs.
 #include "swoole.h"
 #include "swoole_memory.h"
 #include "swoole_string.h"
@@ -19,19 +20,6 @@
 #include <cstdarg>
 
 static_assert(sizeof(swoole::DataHead) == 40 && offsetof(swoole::DataHead, time) == 32, "Rust DataHead layout");
-
-// The log macros Rust emits through as an upstream function (crates/corebase/src/log.rs).
-static void corebase_log(int kind, int level, int code, const char *origin, const char *message) {
-    switch (kind) {
-    case 0: errno = code; swoole_log_as(origin, swoole_sys_warning("%s", message)); break;
-    case 1: swoole_log_as(origin, swoole_warning("%s", message)); break;
-    case 2: swoole_notice("%s", message); break;
-    case 4: swoole_info("%s", message); break;
-    case 5: errno = code; swoole_log_as(origin, swoole_sys_error("%s", message)); break;
-    case 6: swoole_log_as(origin, swoole_error("%s", message)); break;
-    default: swoole_log_as(origin, swoole_error_log(level, code, "%s", message)); break;
-    }
-}
 
 static void fatal_error(int code, const char *format, ...) {
     va_list args;
@@ -66,9 +54,6 @@ static uintptr_t effect(int effect, uintptr_t argument) {
         break;
     case 3: return reinterpret_cast<uintptr_t>(new swoole::GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true));
     case 4: delete reinterpret_cast<swoole::MemoryPool *>(argument); break;
-    case 5: sw_logger()->close(); break;
-    case 6: sw_logger()->reopen(); break;
-    case 7: delete sw_logger(); break;
     case 8: swoole_signal_clear(); break;
     case 10: return swoole_timer_is_available();
     case 11: swoole_timer_free(); break;
@@ -79,12 +64,11 @@ static uintptr_t effect(int effect, uintptr_t argument) {
         sw_memset_zero(sw_error, SW_ERROR_MSG_SIZE);
         swr_v1_core_set_stdout(stdout);
         swr_v1_core_set_fatal_error(reinterpret_cast<void *>(fatal_error));
-        swr_v1_core_set_logger(new swoole::Logger());
+        break;
+    case 16:  // once Rust has made the logger
 #ifdef SW_DEBUG
         sw_logger()->set_level(0);
         swr_v1_core_set_trace_flags(0x7fffffff);
-#else
-        sw_logger()->set_level(SW_LOG_INFO);
 #endif
         swr_v1_core_set_memory_pool(new swoole::GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true));
 #ifndef HAVE_FUTEX
@@ -108,12 +92,11 @@ static uintptr_t effect(int effect, uintptr_t argument) {
     return 0;
 }
 
-static const bool corebase_log_registered = (swr_v1_core_set_log_host(corebase_log), true);
-
 // Rust's swoole_init (crates/corebase/src/lifecycle.rs), once the effects are registered. Only
 // here, not as this file loads, so the gates that never call it link without those leaves.
 void swoole_init() {
-    swr_v1_core_set_native_host({swoole_get_env, effect});
+    swr_v1_core_set_log_host(swr_v1_utils_log);
+    swr_v1_core_set_native_host({swoole_get_env, effect, swr_v1_process_logger});
     swr_v1_core_swoole_init();
 }
 

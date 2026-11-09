@@ -735,12 +735,9 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
 fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
     match op {
         OP_REOPEN_LOGGER => {
-            let logger = swoole_rs_corebase::swr_v1_core_logger()
-                .cast::<*const swoole_rs_utilities::Logger>();
-            // SAFETY: `swoole::Logger` starts with its Rust logger.
-            let logger = unsafe { *logger };
-            // SAFETY: the process's logger.
-            unsafe { swoole_rs_utilities::swr_v1_logger_reopen(logger) };
+            swoole_rs_utilities::process_logger()
+                .into_iter()
+                .for_each(swoole_rs_utilities::Logger::reopen);
         }
         OP_RELOAD_TIMER => {
             let task = record(pool).reload_task;

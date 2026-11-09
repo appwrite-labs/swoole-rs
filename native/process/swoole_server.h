@@ -96,19 +96,6 @@ class Server : public detail::ServerFields {
     friend struct WorkersNative;
 
   public:
-    struct MultiTask {
-        uint16_t count;
-        std::unordered_map<TaskId, uint16_t> map;
-
-        std::function<TaskId(uint16_t index, EventData *buf)> pack;
-        std::function<void(uint16_t index, EventData *result)> unpack;
-        std::function<void(uint16_t index)> fail;
-
-        explicit MultiTask(uint16_t n) {
-            count = n;
-        }
-    };
-
     enum Mode {
         MODE_BASE = 1,
         MODE_PROCESS = 2,
@@ -192,10 +179,6 @@ class Server : public detail::ServerFields {
         return worker->pipe_worker;
     }
 
-    // Server::task_notify_pipes are Rust's (crates/server/src/state.rs).
-    Pipe *task_notify_pipe(uint16_t worker_id) const {
-        return reinterpret_cast<Pipe *>(swr_v1_server_task_pipe(state_, worker_id));
-    }
 
     detail::ServerStrings locations{state_,0};
     detail::ServerStrings http_compression_types{state_,2};
@@ -249,10 +232,6 @@ class Server : public detail::ServerFields {
 
     static uint16_t get_command_id(const EventData *cmd) {
         return cmd->info.server_fd;
-    }
-
-    EventData *get_task_result() const {
-        return &(task_results[swoole_get_worker_id()]);
     }
 
     pid_t get_master_pid() const {
@@ -380,10 +359,6 @@ class Server : public detail::ServerFields {
     bool send(SessionId session_id, const void *data, uint32_t length) const;
     bool sendfile(SessionId session_id, const char *file, uint32_t l_file, off_t offset, size_t length) const;
     bool close(SessionId session_id, bool reset = false) const;
-
-
-    bool task_sync(EventData *task, int *dst_worker_id, double timeout = -1);
-    bool task_sync(MultiTask &mtask, double timeout = -1);
 
     void init_pipe_sockets(MessageBus *mb) const;
 

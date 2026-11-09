@@ -63,9 +63,13 @@ struct SwrLoggerIdentity { int worker_id, worker_pid; char worker_symbol; };
 struct SwrLoggerHost {
     void (*redirect)(int fd);
     void (*backtrace)(void);
-    void (*identity)(struct SwrLoggerIdentity *);
+    struct SwrLoggerIdentity (*identity)(void);
 };
 extern const struct SwrLoggerHost swr_logger_host;
+/* The process logger's lifecycle (crates/process) and the log macros Rust's logs run
+ * (crates/utilities), which swoole_init registers for corebase. */
+void swr_v1_process_logger(int op);
+void swr_v1_utils_log(int kind, int level, int code, const char *origin, const char *message);
 enum SwrLoggerSetting {
     SWR_LOGGER_ROTATION = 0, SWR_LOGGER_MICROSECONDS = 1,
     SWR_LOGGER_BACKTRACE = 2, SWR_LOGGER_RESET = 3

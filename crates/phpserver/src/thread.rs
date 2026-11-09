@@ -78,8 +78,7 @@ pub(crate) fn worker(object: *mut zend_object, serv: *mut c_void) -> Option<Resu
 }
 
 fn run_worker(object: *mut zend_object, serv: *mut c_void) -> Result<(), Bailout> {
-    // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
-    let mut zserv: zval = unsafe { std::mem::zeroed() };
+    let mut zserv = crate::dispatch::undef();
     // SAFETY: a borrowed view of the live object (`ZVAL_OBJ`, no reference).
     unsafe { swoole_rs_zend::set_object(&raw mut zserv, object) };
     // SAFETY: a live object.
@@ -89,8 +88,7 @@ fn run_worker(object: *mut zend_object, serv: *mut c_void) -> Result<(), Bailout
         unsafe { swoole_rs_phphelpers::array_property_of(ce, &raw mut zserv, c"setting") }?;
     // SAFETY: the property's array, replaced below.
     unsafe { zval_ptr_dtor(setting) };
-    // SAFETY: zvals are plain data; all-zero bytes are `IS_UNDEF`.
-    let undef: zval = unsafe { std::mem::zeroed() };
+    let undef = crate::dispatch::undef();
     // SAFETY: the slot just released.
     unsafe { setting.write(undef) };
     // SAFETY: a live server.
@@ -180,8 +178,7 @@ fn init_arguments(object: *mut zend_object) -> Result<*mut c_void, Bailout> {
     if unsafe { type_of(&raw const callable) } == IS_NULL {
         return Ok(ptr::null_mut());
     }
-    // SAFETY: zvals are plain data; all-zero bytes are `IS_UNDEF`.
-    let mut result: zval = unsafe { std::mem::zeroed() };
+    let mut result = crate::dispatch::undef();
     // SAFETY: all-zero is an empty call (no object, no arguments).
     let mut fci: zend_fcall_info = unsafe { std::mem::zeroed() };
     fci.size = size_of::<zend_fcall_info>();
@@ -277,8 +274,7 @@ unsafe extern "C" fn serializable(value: *mut zval) -> c_int {
 /// `copy_setting`: the serializable settings, serialized for the worker
 /// threads to read back.
 pub(crate) fn copy_setting(serv: *mut c_void, setting: *mut zval) -> Result<(), Bailout> {
-    // SAFETY: zvals are plain data; all-zero bytes are `IS_UNDEF`.
-    let mut copy: zval = unsafe { std::mem::zeroed() };
+    let mut copy = crate::dispatch::undef();
     // SAFETY: the settings array.
     let source = unsafe { table(setting) };
     // SAFETY: as above, duplicated.

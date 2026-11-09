@@ -208,10 +208,8 @@ pub extern "C-unwind" fn swoole_clean() {
     if let Some(host) = native::host() {
         host.signal_clear();
         swoole_thread_clean(true);
-        if !crate::swr_v1_core_logger().is_null() {
-            host.close_logger();
-        }
-        host.delete_logger();
+        host.logger(native::LOGGER_CLOSE);
+        host.logger(native::LOGGER_DELETE);
         host.delete_pool(crate::swr_v1_core_memory_pool());
     }
     crate::config_state::reset();
@@ -264,12 +262,12 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     if flags & FORK_EXEC == 0 {
         // The parent's shared pages stay with the OS.
         crate::swr_v1_core_set_memory_pool(host.new_pool());
-        host.reopen_logger();
+        host.logger(native::LOGGER_REOPEN);
         if host.event_available() {
             host.event_free();
         }
     } else {
-        host.close_logger();
+        host.logger(native::LOGGER_CLOSE);
     }
     host.signal_clear();
     if crate::swoole_isset_hook(HOOK_AFTER_FORK) {

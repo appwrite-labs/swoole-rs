@@ -1995,8 +1995,7 @@ unsafe fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let slot = |index| o.state.callbacks.slot(index);
     let reopen_logger = || {
         if let Some(logger) = swoole_rs_utilities::process_logger() {
-            // SAFETY: the process's live logger.
-            unsafe { swoole_rs_utilities::swr_v1_logger_reopen(logger) };
+            logger.reopen();
         }
     };
     Some(match op {
@@ -2790,15 +2789,23 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 }
                 let sent = if c.action == TO_TASK_WORKER {
                     let mut dst = c_int::from(process_id);
-                    // SAFETY: the live server and the packed task.
-                    unsafe {
-                        swoole_rs_process::task_sync::task(
-                            serv,
-                            (&raw mut buf).cast(),
-                            &raw mut dst,
-                            false,
-                        )
-                    }
+                    let (gs, pool) = (o.gs(), o.task_pool());
+                    swoole_rs_process::task_sync::count_task(
+                        &gs.tasking_num,
+                        &gs.task_count,
+                        || {
+                            // SAFETY: the live task pool and the packed task.
+                            let sent = unsafe {
+                                swoole_rs_process::methods::dispatch(
+                                    pool,
+                                    (&raw mut buf).cast(),
+                                    &raw mut dst,
+                                )
+                            };
+                            Ok(sent == 0)
+                        },
+                    )
+                    .unwrap_or(false)
                 } else {
                     let pool = core::ptr::from_mut(o.event_pool());
                     // SAFETY: the live event pool and the message.

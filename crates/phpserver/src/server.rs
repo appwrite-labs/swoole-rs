@@ -1249,8 +1249,7 @@ fn delegate(call: &Call, method: &[u8]) {
         return call.set_bool(false);
     }
     let zserv = crate::dispatch::server_zval(serv);
-    // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
-    let mut retval: zval = unsafe { std::mem::zeroed() };
+    let mut retval = crate::dispatch::undef();
     // SAFETY: the server's object zval.
     let object = unsafe { swoole_rs_zend::object_of(&raw const zserv) };
     // SAFETY: the server's live object, its class, a writable result and the argument.

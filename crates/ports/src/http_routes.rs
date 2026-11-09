@@ -8,6 +8,7 @@
 use std::ffi::c_int;
 
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_error::ErrorCode;
 use swoole_rs_server::ConnectionRecord;
 
@@ -33,16 +34,7 @@ fn route<T>(
         1 => websocket(),
         2 => http2(),
         _ => {
-            // SAFETY: a connection's address holds its socket type's member.
-            let host = unsafe {
-                swoole_rs_clients::address::swr_v1_clients_address_host(&raw const conn.info)
-            };
-            // SAFETY: as above.
-            let port = unsafe {
-                swoole_rs_clients::address::swr_v1_clients_address_port(&raw const conn.info)
-            };
-            // SAFETY: the address text is NUL-terminated and lives until the next lookup.
-            let host = unsafe { std::ffi::CStr::from_ptr(host) }.to_string_lossy();
+            let (host, port) = host_port(&conn.info);
             log::error_log(
                 LOG_WARNING,
                 ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int,
@@ -55,6 +47,20 @@ fn route<T>(
             error
         }
     }
+}
+
+/// The host and port of an address that holds its socket type's member, as
+/// upstream's warnings print them.
+pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
+    use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
+    // SAFETY: a live address holding its socket type's member.
+    let host = unsafe { swr_v1_clients_address_host(address) };
+    // SAFETY: the address text is NUL-terminated and lives until the next lookup.
+    let host = unsafe { std::ffi::CStr::from_ptr(host) }
+        .to_string_lossy()
+        .into_owned();
+    // SAFETY: as above.
+    (host, unsafe { swr_v1_clients_address_port(address) })
 }
 
 /// `get_package_length_size`'s result for `conn`.
@@ -79,7 +85,8 @@ pub mod exports {
     use swoole_rs_websocket::frame_api::decode_frame;
     use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, swr_v1_ws_encode};
 
-    use super::{length_size, route};
+    use super::{WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
+    use crate::framing_recv::{Packages, Recv};
 
     /// `SW_HTTP_SERVICE_UNAVAILABLE_PACKET`.
     const SERVICE_UNAVAILABLE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\r\n";
@@ -136,16 +143,7 @@ pub mod exports {
             ),
             PolicyError::None | PolicyError::CloseTooBig => return,
         };
-        // SAFETY: a connection's address holds its socket type's member.
-        let host = unsafe {
-            swoole_rs_clients::address::swr_v1_clients_address_host(&raw const conn.info)
-        };
-        // SAFETY: as above.
-        let port = unsafe {
-            swoole_rs_clients::address::swr_v1_clients_address_port(&raw const conn.info)
-        };
-        // SAFETY: the address text is NUL-terminated and lives until the next lookup.
-        let host = unsafe { std::ffi::CStr::from_ptr(host) }.to_string_lossy();
+        let (host, port) = super::host_port(&conn.info);
         log::warning(
             c"websocket::dispatch_frame",
             format_args!("{what}. remote_addr={host}:{port}"),
@@ -290,6 +288,33 @@ pub mod exports {
             }
         }
         0
+    }
+
+    /// A WebSocket connection's frames, measured by `frame_length` and handed to
+    /// [`websocket_dispatch_frame`] directly: an HTTP port's own callbacks route
+    /// each frame through the connection's status to the same two.
+    pub(crate) struct Frames;
+
+    impl Packages for Frames {
+        const HEAD: Option<u32> = Some(WEBSOCKET_FRAME_HEADER_SIZE as u32);
+        #[inline(always)]
+        fn length(_: &Recv, _: &Protocol, bytes: &[u8]) -> i64 {
+            swoole_rs_websocket::frame_length(bytes).0
+        }
+        #[inline(always)]
+        fn dispatch(r: &Recv, b: &CppString, length: u64) -> c_int {
+            let frame = RecvData {
+                info: DataHead {
+                    len: u32::try_from(length).unwrap_or(u32::MAX),
+                    ..DataHead::default()
+                },
+                data: b.str,
+            };
+            // SAFETY: the port's protocol, a connection socket and its whole frame.
+            unsafe {
+                websocket_dispatch_frame(r.protocol.cast(), r.socket, (&raw const frame).cast())
+            }
+        }
     }
 
     /// `int dispatch_request(Server *, const Protocol *, Socket *, const RecvData *)`:
