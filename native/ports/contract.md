@@ -38,8 +38,13 @@ One immutable 12-event catalog.
 
 ## Sockets: `ListenPort::create_socket`, `listen` and `close_socket`
 
-All three are Rust (`crates/ports/src/methods.rs`) under their upstream symbols, over the
-Rust-owned settings and socket record. Options are those the platform defines:
+All three are Rust (`crates/ports/src/methods.rs`), over the Rust-owned settings and
+socket record. Only the server calls them, through the table `swoole_init` registers
+(`swoole_rs_ports::METHODS`, `swoole_rs_server::port_config::PortMethods`), with
+`get_protocols`, `init_protocol`, `destroy_http_request`, `ssl_context_init`,
+`ssl_create`, `import`, `close` and the DTLS session lookups: ports depends on the
+server, so the server can't name them. `init_protocol` keeps its upstream symbol for
+tests/modules/http/server/fixture.cc. Options are those the platform defines:
 `TCP_DEFER_ACCEPT`, `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` and
 `TCP_USER_TIMEOUT` on Linux, `TCP_FASTOPEN` and `SO_KEEPALIVE` on both supported
 hosts (`SO_ACCEPTFILTER` is BSD-only). `host` is a Rust string slot in the

@@ -56,7 +56,7 @@ struct DgramPacket {
     length: u32,
 }
 
-// SAFETY: crates/process' and crates/ports' methods under their upstream symbols.
+// SAFETY: crates/process' methods under their upstream symbols.
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole6Server26call_worker_start_callbackEPNS_6WorkerE"]
     fn call_worker_start_callback(serv: *mut c_void, worker: *mut WorkerRecord);
@@ -64,10 +64,6 @@ unsafe extern "C-unwind" {
     fn call_worker_stop_callback(serv: *mut c_void, worker: *mut WorkerRecord);
     #[link_name = "_ZN6swoole6Server17stop_async_workerEPNS_6WorkerE"]
     fn stop_async_worker(serv: *mut c_void, worker: *mut WorkerRecord);
-    #[link_name = "_ZN6swoole10ListenPort6listenEv"]
-    fn port_listen(port: *mut c_void) -> c_int;
-    #[link_name = "_ZN6swoole10ListenPort20destroy_http_requestEPNS_10ConnectionE"]
-    fn destroy_http_request(port: *mut c_void, conn: *mut ConnectionRecord);
 }
 
 // SAFETY: crates/clients' `Address::get_addr`.
@@ -291,8 +287,7 @@ pub(crate) unsafe fn answer(
             0
         }
         OP_CC_HTTP_DESTROY => {
-            // SAFETY: the context's live port and connection.
-            unsafe { destroy_http_request(ctx.port, conn) };
+            (crate::port_config::methods().destroy_http_request)(conn);
             0
         }
         OP_THREAD_ENTER => {
@@ -545,8 +540,7 @@ pub(crate) unsafe fn answer(
         OP_PORT_LISTEN | OP_PORT_READ => {
             let &port = state.tables_ref().ports().get(usize::try_from(arg).ok()?)?;
             if op == OP_PORT_LISTEN {
-                // SAFETY: one of the server's live ports.
-                return Some(sign(unsafe { port_listen(port) }));
+                return Some(sign((crate::port_config::methods().listen)(port)));
             }
             // SAFETY: as above.
             let socket = unsafe { crate::port_config::of(port) }

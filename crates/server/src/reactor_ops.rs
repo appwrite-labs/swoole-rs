@@ -976,9 +976,6 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         fn swoole_event_free() -> c_int;
         #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
         fn reactor_close(reactor: *mut c_void, socket: *mut SocketRecord) -> c_int;
-        /// crates/ports' `ListenPort::init_protocol`.
-        #[link_name = "_ZN6swoole10ListenPort13init_protocolEv"]
-        fn init_protocol(port: *mut c_void);
     }
     Some(match op {
         OP_DTLS_ACCEPT => {
@@ -1030,8 +1027,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 reactor.set_handler(fd_type, event, handler);
             }
             for &port in o.tables().ports() {
-                // SAFETY: one of the server's live ports.
-                unsafe { init_protocol(port) };
+                (crate::port_config::methods().init_protocol)(port);
             }
             0
         }

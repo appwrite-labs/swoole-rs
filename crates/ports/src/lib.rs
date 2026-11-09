@@ -14,8 +14,10 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::ffi::{c_char, c_int};
+use std::ffi::{CStr, c_char, c_int};
 use std::slice;
+
+use swoole_rs_server::port_config::PortMethods;
 
 pub mod framing_recv;
 pub mod http_routes;
@@ -77,23 +79,44 @@ pub extern "C" fn swr_v1_ports_callback_hook(index: i32) -> u32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_ports_protocol_name(flags: u32) -> *const c_char {
-    let name: &'static [u8] = if flags & 1 != 0 {
-        b"dgram\0"
-    } else {
-        match swr_v1_ports_protocol(flags, 1) {
-            1 => b"eof\0",
-            2 => b"length\0",
-            3 => b"http\0",
-            4 => b"http|http2\0",
-            5 => b"http|websocket\0",
-            6 => b"http|http2|websocket\0",
-            7 => b"mqtt\0",
-            8 => b"redis\0",
-            _ => b"raw\0",
-        }
-    };
-    name.as_ptr().cast()
+    protocol_name(flags).as_ptr()
 }
+
+fn protocol_name(flags: u32) -> &'static CStr {
+    if flags & 1 != 0 {
+        return c"dgram";
+    }
+    match swr_v1_ports_protocol(flags, 1) {
+        1 => c"eof",
+        2 => c"length",
+        3 => c"http",
+        4 => c"http|http2",
+        5 => c"http|websocket",
+        6 => c"http|http2|websocket",
+        7 => c"mqtt",
+        8 => c"redis",
+        _ => c"raw",
+    }
+}
+
+/// The `ListenPort` methods the server calls, which `swoole_init` registers
+/// (`swoole_rs_server::port_config::set_methods`).
+pub const METHODS: PortMethods = PortMethods {
+    ssl_context_init: methods::ssl_context_init,
+    ssl_create: methods::ssl_create,
+    import: methods::import,
+    close: methods::close,
+    listen: methods::listen,
+    create_socket: methods::create_socket,
+    close_socket: methods::close_socket,
+    get_protocols: methods::get_protocols,
+    init_protocol: |port| methods::init_protocol(port),
+    destroy_http_request: methods::destroy_http_request,
+    tls_free: lifecycle_native::tls_free,
+    dtls_create: lifecycle_native::dtls_create,
+    dtls_session: lifecycle_native::dtls_session,
+    dtls_free: lifecycle_native::dtls_free,
+};
 
 #[repr(C)]
 pub struct PortsSpan {
