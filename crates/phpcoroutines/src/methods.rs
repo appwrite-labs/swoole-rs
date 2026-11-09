@@ -325,8 +325,7 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         // caller when it returns.
         // SAFETY: a new exception, in the running frame.
         unsafe { swr_zend_coroutine_locate(exception) };
-        // SAFETY: all-zero is IS_UNDEF, then set to the exception.
-        let mut thrown: zval = unsafe { mem::zeroed() };
+        let mut thrown = swoole_rs_zend::UNDEF;
         // SAFETY: the zval takes over the new object's reference.
         unsafe { set_object(&raw mut thrown, exception) };
         // SAFETY: Zend takes the exception.

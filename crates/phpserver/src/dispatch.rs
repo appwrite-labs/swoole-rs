@@ -24,12 +24,11 @@ use swoole_rs_server::callbacks::{
     CB_WORKER_ERROR, CB_WORKER_EXIT, CB_WORKER_START, CB_WORKER_STOP,
 };
 use swoole_rs_zend::{
-    E_WARNING,
+    E_WARNING, OwnedArray,
     bailout::{self, Bailout},
     class_name, long_zval, message, object_of, php_error, string,
     sys::{
-        IS_NULL, ZEND_ACC_VARIADIC, add_assoc_double_ex, add_assoc_long_ex, add_assoc_string_ex,
-        swr_zend_array_init, swr_zend_callable_warning, swr_zend_stack_restore,
+        IS_NULL, ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
         swr_zend_stack_unlimit, zend_fcall_info_cache, zend_string, zend_update_property_long,
         zval, zval_ptr_dtor,
     },
@@ -365,11 +364,6 @@ fn on_buffer(server: view::Server<'_>, full: bool, fd: i64, server_fd: c_int) ->
     call(cb, &mut args, false, event) == Called::Bailout
 }
 
-fn assoc_long(array: &mut zval, key: &CStr, value: i64) {
-    // SAFETY: an array zval; Zend copies the key.
-    unsafe { add_assoc_long_ex(array, key.as_ptr(), key.count_bytes(), value) };
-}
-
 /// `php_swoole_server_onPacket`'s call, once the datagram is read.
 fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, time: f64) -> bool {
     let facts = facts(server);
@@ -390,22 +384,16 @@ fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, ti
         props.bytes(c"data", packet.data);
         2
     } else {
-        let mut address = undef();
-        // SAFETY: a writable zval.
-        unsafe { swr_zend_array_init(&raw mut address) };
-        assoc_long(&mut address, c"server_socket", i64::from(server_fd));
-        // SAFETY: an array zval; Zend copies the key.
-        unsafe { add_assoc_double_ex(&raw mut address, c"dispatch_time".as_ptr(), 13, time) };
+        let mut address = OwnedArray::default();
+        address.insert_long(b"server_socket", i64::from(server_fd));
+        address.insert_double(b"dispatch_time", time);
         if packet.server_port >= 0 {
-            assoc_long(&mut address, c"server_port", packet.server_port);
+            address.insert_long(b"server_port", packet.server_port);
         }
         if let Some(text) = packet.address {
-            // SAFETY: an array zval; Zend copies the key and address.
-            unsafe {
-                add_assoc_string_ex(&raw mut address, c"address".as_ptr(), 7, text.as_ptr());
-            };
+            address.insert_bytes(b"address", Some(text.to_bytes()));
             if packet.port >= 0 {
-                assoc_long(&mut address, c"port", packet.port);
+                address.insert_long(b"port", packet.port);
             }
         }
         // SAFETY: the datagram's bytes, copied into a new string.
@@ -416,7 +404,7 @@ fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, ti
                 packet.data.len(),
             );
         };
-        args[2] = address;
+        args[2] = address.into_owned().into_zval();
         3
     };
     let cb = php_swoole_server_get_callback(server, server_fd, ON_PACKET);
