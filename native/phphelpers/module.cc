@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 ext-src/php_swoole_cxx.cc, php_swoole.cc and
 // swoole_runtime.cc (Swoole contributors).
-// What crates/phphelpers, crates/phpswoole and crates/phpruntime need of C++ that stable
-// Rust can't express: zend::Callable (C++ members other C++ files call; its constructor
-// takes the header-inline sw_callable_warning), the module globals and get_module(), and the ops tables whose entries
-// configure's #ifdefs decide (the optional drivers, ssh2, ftp, stdext, Swoole\Thread,
+// What crates/phpswoole and crates/phpruntime need of C++ that stable Rust can't express:
+// the module globals and get_module(), and the ops tables whose entries configure's #ifdefs decide (the optional drivers, ssh2, ftp, stdext, Swoole\Thread,
 // the PDO hooks) or that reach C++ objects (the module globals, the DNS settings).
 #include "swoole_rs_phphost.h"
 #include "swoole_rs_phphelpers.h"
@@ -21,12 +19,6 @@ static_assert(SUCCESS == 0, "Zend SUCCESS ABI");
 extern "C" PHP_FUNCTION(swoole_coroutine_gethostbyname);  // crates/phpcoroutines
 
 SW_API zend_string **sw_zend_known_strings = nullptr;
-
-namespace zend {
-Callable::Callable(zval *value) : owned(swr_v1_phphelpers_callable_new(value, sw_callable_warning)) {}
-Callable::~Callable() { swr_v1_phphelpers_callable_free(owned); }
-uint32_t Callable::refcount() const { return swr_v1_phphelpers_callable_refs(owned); }
-}  // namespace zend
 
 // The module host. crates/phpswoole owns the module: its entry, dependencies, MINIT,
 // MSHUTDOWN, RINIT, RSHUTDOWN and MINFO, fatal_error and the backtrace hook. C++ keeps
@@ -538,17 +530,6 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
         []() -> uint32_t { return sw_active_thread_count(); },
         php_swoole_runtime_stream_ops,
         runtime_pdo,
-        [](zval *name) -> void * { return sw_callable_create(name); },
-        [](void *callable) { sw_callable_free(callable); },
-        [](void *callable) -> void * { return static_cast<zend::Callable *>(callable)->dup(); },
-        [](void *call) {
-            auto *c = static_cast<swr_v1_runtime_callable_call *>(call);
-            auto *callable = static_cast<zend::Callable *>(c->callable);
-            c->result = c->from_loop
-                            ? sw_zend_call_function_ex2(nullptr, callable->ptr(), c->argc, c->argv, c->retval) == SUCCESS
-                            : callable->call(c->argc, c->argv, c->retval);
-        },
-        [](void *callable) { return static_cast<zend::Callable *>(callable)->ptr(); },
         [](int32_t level, const char *message) { php_swoole_fatal_error(level, "%s", message); },
         [](int32_t level, const char *message) { php_swoole_error(level, "%s", message); },
         PHP_FN(swoole_proc_open),
@@ -597,13 +578,4 @@ void php_swoole_runtime_mshutdown() {
 #ifdef SW_USE_CURL
     swoole_native_curl_mshutdown();
 #endif
-}
-
-bool php_swoole_call_original_handler(const char *name, size_t len, INTERNAL_FUNCTION_PARAMETERS) {
-    auto ori_handler = php_swoole_get_original_handler(name, len);
-    if (!ori_handler) {
-        return false;
-    }
-    ori_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
-    return true;
 }

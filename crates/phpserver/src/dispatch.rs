@@ -128,11 +128,8 @@ pub(crate) fn invoke(
 ) -> Result<bool, Bailout> {
     #[expect(clippy::cast_possible_truncation, reason = "at most five arguments")]
     let argc = args.len() as u32;
-    // SAFETY: `cb` is a live `zend::Callable *`, whose one member is its
-    // `SwrPhpCallable *` (php_swoole_cxx.h).
-    let owned = unsafe { *cb.cast::<*mut callable::Callable>() };
-    // SAFETY: a live handle.
-    let cache = unsafe { callable::cache(owned) };
+    // SAFETY: `cb` is a live callable handle.
+    let cache = unsafe { callable::cache(cb.cast()) };
     // SAFETY: a resolved cache, `argc` initialised arguments and the return
     // slot or null; the coroutine leaf and the reporter run inside C traps.
     let called = unsafe {
@@ -1281,7 +1278,7 @@ struct PacketLength {
 /// `php_swoole_server_length_func`: a port's `package_length_func($data)`.
 /// # Safety
 /// `protocol` is a port's live protocol whose `private_data_1` is the
-/// `zend::Callable *` its settings made; `packet` the bytes so far.
+/// callable its settings made; `packet` the bytes so far.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpserver_length_func(
     protocol: *const Protocol,
@@ -1290,10 +1287,8 @@ pub unsafe extern "C" fn swr_v1_phpserver_length_func(
 ) -> isize {
     // SAFETY: per the caller.
     let owner = unsafe { (*protocol).private_data_1 };
-    // SAFETY: a `zend::Callable`'s one member is its handle.
-    let handle = unsafe { owner.cast::<*mut callable::Callable>().read() };
     // SAFETY: a live handle.
-    let cache = unsafe { callable::cache(handle) };
+    let cache = unsafe { callable::cache(owner.cast()) };
     // SAFETY: per the caller.
     let PacketLength {
         buf,
@@ -1349,7 +1344,7 @@ pub(crate) fn server_zval(server: *mut c_void) -> zval {
     zserv(server)
 }
 
-/// `server_object->get_callback(kind)`: a `zend::Callable *`, or null.
+/// `server_object->get_callback(kind)`: a callable, or null.
 pub(crate) fn server_callback(server: *mut c_void, kind: c_int) -> *mut c_void {
     crate::lifecycle::callback(server, kind)
 }

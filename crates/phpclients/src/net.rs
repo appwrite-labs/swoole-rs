@@ -141,7 +141,7 @@ pub(crate) struct Data {
     pub(crate) conn: *mut Conn,
     /// `getSocket()`'s socket (`IS_UNDEF`: none).
     zsocket: zval,
-    /// The async callbacks (`zend::Callable *`, by [`crate::async_net`] slot).
+    /// The async callbacks (callables, by [`crate::async_net`] slot).
     pub(crate) callbacks: *mut [*mut c_void; 7],
 }
 

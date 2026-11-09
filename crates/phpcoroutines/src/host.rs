@@ -3,7 +3,7 @@
 //! module host, the runtime hooks, the event loop and the server, and
 //! native/phpcoroutines/coroutine.cc for what takes a `std::function` or reads
 //! a Coroutine's C++ context.
-use std::ffi::{CStr, c_char, c_int, c_long, c_void};
+use std::ffi::{CStr, c_int, c_long, c_void};
 use swoole_rs_coroutine::{RC_CANCELED, Scheduler};
 use swoole_rs_zend::{
     E_ERROR, bailout,
@@ -76,14 +76,7 @@ unsafe extern "C" {
     ) -> *mut c_void;
     #[link_name = "_Z30swoole_signal_get_listener_numv"]
     fn swoole_signal_get_listener_num() -> u32;
-    // native/phphelpers/module.cc, crates/phpevents, crates/phpclients, crates/phphelpers and PHP.
-    #[link_name = "_Z32php_swoole_call_original_handlerPKcmP18_zend_execute_dataP12_zval_struct"]
-    fn php_swoole_call_original_handler(
-        name: *const c_char,
-        length: usize,
-        execute_data: *mut zend_execute_data,
-        return_value: *mut zval,
-    ) -> bool;
+    // crates/phpevents, crates/phpclients, crates/phphelpers and PHP.
     fn sw_php_exit(status: c_int);
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
@@ -727,8 +720,12 @@ pub unsafe fn timer_del(timer: *mut c_void) {
 
 /// PHP 8.4+ `exit()`: the original handler, false if there is none.
 pub(crate) fn exit_original(execute_data: *mut zend_execute_data, return_value: *mut zval) -> bool {
+    let Some(handler) = swoole_rs_phpruntime::original(b"exit") else {
+        return false;
+    };
     // SAFETY: the handler's own frame and result.
-    unsafe { php_swoole_call_original_handler(c"exit".as_ptr(), 4, execute_data, return_value) }
+    unsafe { handler(execute_data, return_value) };
+    true
 }
 
 /// `exit()` without the original handler: print `message`, then exit.

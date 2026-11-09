@@ -34,7 +34,7 @@ pub(crate) const SIG_IGN: i64 = 1;
 /// `SIG_IGN` as a `swSignalHandler`.
 const IGNORE: usize = 1;
 
-/// `signal_fci_caches`: the `zend::Callable` per signal (null: none).
+/// `signal_fci_caches`: the callable per signal (null: none).
 static CALLABLES: [AtomicPtr<c_void>; SLOTS] = [const { AtomicPtr::new(ptr::null_mut()) }; SLOTS];
 
 /// The slot of `signo`, or `None` outside `0..SW_SIGNO_MAX`.

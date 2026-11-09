@@ -1,6 +1,6 @@
 //! `Swoole\Async\Client`: a `Swoole\Client` whose `network::Client` runs on
 //! the reactor and raises PHP callbacks. It shares the parent's object
-//! ([`Data`]); the callbacks are `zend::Callable`s by slot, and the events the
+//! ([`Data`]); the callbacks are callables by slot, and the events the
 //! client raises arrive through `async_event`.
 use crate::{
     native::{self, ErrorKind, Run, callable_free},

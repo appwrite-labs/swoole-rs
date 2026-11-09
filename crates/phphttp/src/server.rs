@@ -390,13 +390,6 @@ fn enable_coroutine(server: *mut c_void) -> bool {
 
 pub(crate) use swoole_rs_phphelpers::callable::Callable;
 
-/// The handle of a port's `zend::Callable *`, whose one member it is
-/// (`php_swoole_cxx.h`).
-fn port_callable(callable: *mut c_void) -> *mut Callable {
-    // SAFETY: a live `zend::Callable`.
-    unsafe { *callable.cast::<*mut Callable>() }
-}
-
 /// `zend::function::call(callable, args.len(), args, nullptr, coroutine)`:
 /// whether the handler was called.
 /// # Errors
@@ -442,7 +435,7 @@ pub(crate) fn call_port(
     if callback.is_null() {
         return Ok(None);
     }
-    call_handler(port_callable(callback), args, enable_coroutine(server)).map(Some)
+    call_handler(callback.cast(), args, enable_coroutine(server)).map(Some)
 }
 
 /// `php_swoole_get_recv_data`: the request's payload into `zdata`.
@@ -455,7 +448,7 @@ pub(crate) fn recv_data(server: *mut c_void, request: *mut c_void, zdata: *mut z
 fn call(ctx: *mut Context, coroutine: bool) -> Result<(), bailout::Bailout> {
     let state = state(ctx);
     let mut args = [state.request.zobject.value, state.response.zobject.value];
-    match call_handler(port_callable(state.callback), &mut args, coroutine) {
+    match call_handler(state.callback.cast(), &mut args, coroutine) {
         Err(bailout) => return Err(bailout),
         Ok(false) => {
             host::notice("Swoole\\Http\\Server->onRequest handler error");
@@ -717,7 +710,7 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     }
     let state = self::state(ctx);
     let mut args = [state.request.zobject.value, state.response.zobject.value];
-    match call_handler(port_callable(state.callback), &mut args, facts.coroutine) {
+    match call_handler(state.callback.cast(), &mut args, facts.coroutine) {
         Err(bailout) => return Err(bailout),
         Ok(false) => {
             let stream_id = self::state(ctx).stream_id;

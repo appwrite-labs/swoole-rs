@@ -42,7 +42,7 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// `EventObject`: the fd's PHP value and its callbacks (`zend::Callable *`).
+/// `EventObject`: the fd's PHP value and its callbacks (callables).
 #[repr(C)]
 struct EventObject {
     zsocket: zval,

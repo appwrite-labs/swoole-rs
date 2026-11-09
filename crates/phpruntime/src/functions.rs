@@ -41,7 +41,7 @@ struct Hooked {
     ori_fn_flags: u32,
     /// The arginfo copy installed with the handler, freed at RSHUTDOWN.
     arg_info_copy: *mut zend_internal_arg_info,
-    /// The library replacement's `zend::Callable *`, and its name.
+    /// The library replacement's callable, and its name.
     callable: *mut c_void,
     name: zval,
 }
@@ -169,8 +169,8 @@ fn library_callable(key: &[u8]) {
     // SAFETY: a writable zval and the name's bytes, which Zend copies.
     unsafe { swr_zend_set_stringl(&raw mut zname, name.as_ptr().cast(), name.len()) };
     name.clear();
-    // SAFETY: a string zval; C++ keeps its own copy.
-    let callable = unsafe { (ops().callable)(&raw mut zname) };
+    // SAFETY: a string zval; the callable keeps its own copy.
+    let callable = unsafe { crate::callable_create(&raw mut zname) };
     let mut table = table();
     if let Some(record) = table.hooked.as_mut().and_then(|hooked| hooked.get_mut(key)) {
         record.name = zname;
@@ -326,8 +326,8 @@ pub(crate) fn finish() {
     };
     for (_, mut record) in hooked.unwrap_or_default() {
         if !record.callable.is_null() {
-            // SAFETY: the callable `ops.callable` made, freed once.
-            unsafe { (ops().callable_free)(record.callable) };
+            // SAFETY: the callable `callable_create` made, freed once.
+            unsafe { crate::callable_free(record.callable) };
         }
         // SAFETY: every zval sets its type.
         if unsafe { record.name.u1.type_info } & 0xff == IS_STRING {
@@ -405,7 +405,7 @@ pub(crate) fn user_func(
         return Ok(());
     }
     // SAFETY: a live callable.
-    let fcc = unsafe { (ops().callable_fcc)(callable) };
+    let fcc = unsafe { swoole_rs_phphelpers::callable::cache(callable.cast()) };
     // SAFETY: all-zero is an empty call (`function_name` undefined, no object).
     let mut fci: zend_fcall_info = unsafe { std::mem::zeroed() };
     fci.size = size_of::<zend_fcall_info>();

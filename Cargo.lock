@@ -854,6 +854,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-hooks",
+ "swoole-rs-phphelpers",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-reactor",

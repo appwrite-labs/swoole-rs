@@ -220,7 +220,7 @@ pub(crate) struct Property {
     ports: Vec<*mut zval>,
     /// `addProcess`'s processes (`emalloc`ed copies holding a reference).
     user_processes: Vec<*mut zval>,
-    /// Server-level callbacks (`zend::Callable *`) by type.
+    /// Server-level callbacks (callables) by type.
     callbacks: [*mut c_void; CALLBACKS],
     /// `addCommand`'s callables.
     commands: Vec<*mut c_void>,
@@ -321,7 +321,7 @@ fn instance(server: *mut c_void) -> *mut zend_object {
     unsafe { object_of(&raw const zserv) }
 }
 
-/// `server_object->get_callback(kind)`: a `zend::Callable *`, or null.
+/// `server_object->get_callback(kind)`: a callable, or null.
 pub(crate) fn callback(server: *mut c_void, kind: c_int) -> *mut c_void {
     let kind = usize::try_from(kind).unwrap_or(CALLBACKS);
     // SAFETY: the running server's live object.
