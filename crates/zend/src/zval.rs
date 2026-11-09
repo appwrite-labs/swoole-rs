@@ -9,13 +9,14 @@ use crate::{
     sys::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
         IS_DOUBLE, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR, IS_REFERENCE, IS_STRING, IS_UNDEF,
-        add_assoc_long_ex, add_next_index_long, add_next_index_null, add_next_index_stringl,
-        swr_zend_array_init, swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next,
-        swr_zend_string_copy, swr_zend_string_release, swr_zend_try_get_double,
-        swr_zend_try_get_long, swr_zend_try_get_string, swr_zval_is_true, zend_array_count,
-        zend_class_entry, zend_hash_index_find, zend_hash_str_find, zend_ini_parse_quantity,
-        zend_long, zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval,
-        zval_ptr_dtor,
+        add_assoc_bool_ex, add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex,
+        add_next_index_long, add_next_index_null, add_next_index_stringl, swr_zend_array_init,
+        swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_string_copy,
+        swr_zend_string_release, swr_zend_try_get_double, swr_zend_try_get_long,
+        swr_zend_try_get_string, swr_zval_is_true, swr_zval_try_addref, zend_array_count,
+        zend_class_entry, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
+        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
+        zend_value, zval, zval_ptr_dtor,
     },
     value,
 };
@@ -554,10 +555,60 @@ impl OwnedArray {
         unsafe { add_assoc_long_ex(self.0.as_ptr(), key.as_ptr().cast(), key.len(), value) };
     }
 
+    /// `add_assoc_double_ex`.
+    #[inline]
+    pub fn insert_double(&mut self, key: &[u8], value: f64) {
+        // SAFETY: an array this owns; Zend copies the key.
+        unsafe { add_assoc_double_ex(self.0.as_ptr(), key.as_ptr().cast(), key.len(), value) };
+    }
+
+    /// `add_assoc_bool_ex`.
+    #[inline]
+    pub fn insert_bool(&mut self, key: &[u8], value: bool) {
+        // SAFETY: an array this owns; Zend copies the key.
+        unsafe { add_assoc_bool_ex(self.0.as_ptr(), key.as_ptr().cast(), key.len(), value) };
+    }
+
+    /// `zend::array_set`: `Z_TRY_ADDREF_P(value)`, then `add_assoc_zval_ex`, so
+    /// the array holds its own reference.
+    #[inline]
+    pub fn insert_value(&mut self, key: &[u8], value: &Value) {
+        // SAFETY: a live value.
+        unsafe { swr_zval_try_addref(value.as_ptr()) };
+        // SAFETY: an array this owns; it takes the reference, and Zend copies the key.
+        unsafe {
+            add_assoc_zval_ex(
+                self.0.as_ptr(),
+                key.as_ptr().cast(),
+                key.len(),
+                value.as_ptr(),
+            );
+        }
+    }
+
+    /// `add_next_index_zval`: the array takes `value`.
+    #[inline]
+    pub fn push(&mut self, value: Owned) {
+        let mut value = value.into_zval();
+        if let Some(array) = self.0.array() {
+            // SAFETY: an array this owns; it takes the value.
+            unsafe { zend_hash_next_index_insert(array.as_ptr(), &raw mut value) };
+        }
+    }
+
     #[must_use]
     #[inline]
     pub fn into_owned(self) -> Owned {
         self.0
+    }
+}
+
+impl std::ops::Deref for OwnedArray {
+    type Target = Value;
+
+    #[inline]
+    fn deref(&self) -> &Value {
+        &self.0
     }
 }
 
