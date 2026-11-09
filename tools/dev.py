@@ -146,8 +146,9 @@ def plan(args, reports):
     integrate = args.lane == 'integrate'
     repair = ['--fix-halfclose'] if getattr(args, 'fix_halfclose', False) else []
     variant = build_variant(args)
-    # The hybrid build is left only for the native gates, which link its Zend-free archive
-    # and compile against its configured tree; nothing loads its swoole.so (#2199).
+    # The hybrid build is left only for its Zend-free archive and configured tree: the native
+    # gates link and compile against them, and the PHPT runners read its phpize'd tests.
+    # Nothing loads its swoole.so (#2199); #2415 moves the rest.
     manifest = ROOT / 'target/hybrid' / variant / 'build-manifest.json'
     captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines'} & set(modules)))
     native_variant = build_alias('upstream', profile_suffix(args))
@@ -180,7 +181,8 @@ def plan(args, reports):
            *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']))
     script('cargo-build', 'tools/build_ext.py', *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []),
            *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []))
-    archive = manifest.parent / 'rust-prefix/lib/libswoole_rs_ffi.a'
+    # The alias holds only symlinks; its src/.. is the build directory.
+    archive = manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a'
     script('abi', 'tests/modules/integration/test_bridge.py', *php_for('sockets'), '--extension', cargo, '--reference', reference,
            *(['--archive', archive] if integrate else ['--startup-only']))
     if integrate:
@@ -283,7 +285,7 @@ def plan(args, reports):
         # SNI resolves its port inside the callback; exercise the production wrapper,
         # not only the protocol-plan and scalar-setting mini gates.
         sni_engines = engines if integrate or args.compare else ['--engine', f'cargo={cargo}']
-        script('ports-sni-originals', 'corpus/upstream/run.py', '--source', cargo.parent / 'src',
+        script('ports-sni-originals', 'corpus/upstream/run.py', '--source', manifest.parent / 'src',
                '--manifest', 'tests/modules/ports/sni-originals.json', *php_for('curl', 'sockets'), *sni_engines,
                '--require-all', '--isolate-cases', *report('ports-sni-originals'))
         if integrate:
@@ -413,7 +415,7 @@ def plan(args, reports):
                '--archive', archive, '--sanitize')
         if integrate and getattr(args, 'php_sockets', False):
             script('php-sockets-sendfile-original', 'corpus/upstream/run.py',
-                   '--source', cargo.parent / 'src', '--manifest', ROOT / 'tests/modules/buffer/originals.json',
+                   '--source', manifest.parent / 'src', '--manifest', ROOT / 'tests/modules/buffer/originals.json',
                    '--case', 'tests/swoole_server/sendfile_02.phpt', *php_for('curl', 'sockets'),
                    *engines, '--require-all', '--isolate-cases', *report('php-sockets-sendfile-original'))
         pytest('buffer-posix-iovec', 'tests/modules/buffer/test_iovec.py', '--archive', archive, '--sanitize')
@@ -457,7 +459,7 @@ def plan(args, reports):
         script('applications', 'corpus/run.py', *php, *engines, *projects, '--require-all', *report('applications'))
     network = ['--external-network'] if getattr(args, 'external_network', False) else []
     if args.case and not integrate:
-        script('phpt', 'corpus/upstream/run.py', '--source', cargo.parent / 'src', *php, *engines, '--jobs', args.jobs,
+        script('phpt', 'corpus/upstream/run.py', '--source', manifest.parent / 'src', *php, *engines, '--jobs', args.jobs,
                *[arg for case in args.case for arg in ['--case', case]], '--require-all', *network, *report('phpt'))
     elif not integrate and not getattr(args, 'all_modules', False) and set(args.module or ['websocket']) < set(MODULES):
         # The original PHPT families of the chosen modules, gated on upstream like the merge
