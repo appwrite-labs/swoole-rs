@@ -47,9 +47,9 @@ struct Start {
     argv: Option<Arguments>,
 }
 
-/// `sw_active_thread_count()`, declared `extern "C"` in `php_swoole_private.h`.
-#[unsafe(no_mangle)]
-pub extern "C" fn sw_active_thread_count() -> usize {
+/// `sw_active_thread_count()`: the PHP threads running.
+#[must_use]
+pub fn sw_active_thread_count() -> usize {
     THREADS.load(Ordering::SeqCst)
 }
 
