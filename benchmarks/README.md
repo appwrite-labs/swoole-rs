@@ -78,6 +78,29 @@ expose no hardware counters, so cycles and the rest are recorded only where coun
 The nightly `bench.yml` runs it with results as an artifact; never run it on a loaded
 machine.
 
+## Memory (nightly)
+
+`benchmarks/memory.py` starts each engine's server for a workload and reads
+`/proc/<pid>/smaps_rollup` of every server process at three points: idle after the
+warmup, after `--requests` more requests, and while `--connections` clients each also
+hold a connection open. It reports PSS (the footprint, with pages the forked processes
+share split between them), USS, RSS and private dirty pages. PSS and USS also split
+file pages with unrelated processes mapping the same files (any other PHP), so compare
+engines on RSS and dirty pages. The
+per-connection and per-request figures use dirty pages: heap, stacks and written data
+are what connections and leaks grow, and the kernel can't drop them the way it drops
+clean code pages. The nightly `bench.yml` runs it after `wall.py` and puts the table in
+the job summary. It needs no quiet machine: memory doesn't depend on timing.
+
+```sh
+python3 benchmarks/memory.py --workload plaintext --workload task \
+  --engine hybrid=target/hybrid/rust/modules/swoole.so \
+  --engine upstream=target/upstream/src/modules/swoole.so
+```
+
+To see which mappings make up a difference, sum `Pss` and `Private_Dirty` per pathname
+in `/proc/<pid>/smaps` of each engine's idle server.
+
 ## Module microbenchmarks
 
 `dev.py candidate --benchmark` runs the timer, buffer and WebSocket
