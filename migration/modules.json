@@ -524,7 +524,6 @@
         "M04"
       ],
       "owned_paths": [
-        "crates/wrappers/",
         "native/wrappers/",
         "migration/patches/wrappers/"
       ],

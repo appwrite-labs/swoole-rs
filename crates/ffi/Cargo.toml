@@ -46,7 +46,6 @@ swoole-rs-phplocks = { path = "../phplocks" }
 swoole-rs-phptimer = { path = "../phptimer", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpredis = { path = "../phpredis", optional = true }
-swoole-rs-wrappers = { path = "../wrappers" }
 swoole-rs-framing = { path = "../framing" }
 swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
 swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }

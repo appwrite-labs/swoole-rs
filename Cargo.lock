@@ -533,7 +533,6 @@ dependencies = [
  "swoole-rs-tls",
  "swoole-rs-utilities",
  "swoole-rs-websocket",
- "swoole-rs-wrappers",
 ]
 
 [[package]]
@@ -1107,10 +1106,6 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-corebase",
 ]
-
-[[package]]
-name = "swoole-rs-wrappers"
-version = "0.1.0"
 
 [[package]]
 name = "swoole-rs-zend"

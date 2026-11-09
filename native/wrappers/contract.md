@@ -1,12 +1,8 @@
 # Wrapper boundary
 
-Feature bit 2048 (`wrappers`). Header: `swoole_rs_wrappers.h`. Its one export
-plans `swoole_event_init` (`native/reactor/reactor.cc`). Supported targets: macOS
-and Linux.
-
-`swr_v1_wrappers_event_init(flags, wait_exit_mask, ready)` returns 20 bytes:
-`u32` accepted, `u32` wait_exit and three `u32` initializer IDs. Rejected
-readiness returns all zero; otherwise the wait flag is normalized and the
-initializer order is Socket, System, Client. C++ allocates the Reactor and
-reads `ready()` before the call, runs each initializer after, then publishes the
-reactor to `SwooleTG` last.
+Feature bit 2048 (`wrappers`). The module is its patches: upstream's
+`src/wrapper/event.cc` and `src/wrapper/http.cc` leave the build. Their
+functions are Rust: `swoole_event_*` in crates/reactor (`event_api.rs`,
+`callbacks.rs`, and `reactor_state.rs` for `swoole_event_init` and
+`swoole_event_free`), and the HTTP server's SDK callbacks in their own crates.
+There is no wrapper crate and no C ABI. Supported targets: macOS and Linux.
