@@ -236,6 +236,37 @@ pub extern "C" fn swoole_dec2hex(value: c_ulong, base: c_int) -> *mut c_char {
     unsafe { strndup(digits, buffer.len() - first - 1) }
 }
 
+/// format.c's printf family under its public names, which swoole.h's inline logging
+/// calls from native extensions. A C definition would stay hidden in the Cargo-built
+/// swoole.so, as a cdylib exports only Rust's symbols, so each is a naked tail jump to
+/// the C body, which keeps its variadic arguments in place.
+macro_rules! format_exports {
+    ($($export:ident => $definition:ident),* $(,)?) => {
+        #[cfg(feature = "upstream-symbols")]
+        unsafe extern "C" {
+            $(fn $definition();)*
+        }
+        $(
+            #[doc = concat!("`", stringify!($export), "`, exported.")]
+            #[cfg(feature = "upstream-symbols")]
+            #[unsafe(naked)]
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $export() {
+                #[cfg(target_arch = "x86_64")]
+                core::arch::naked_asm!("jmp {}@PLT", sym $definition);
+                #[cfg(target_arch = "aarch64")]
+                core::arch::naked_asm!("b {}", sym $definition);
+            }
+        )*
+    };
+}
+
+format_exports! {
+    sw_vsnprintf => swr_c_sw_vsnprintf,
+    sw_snprintf => swr_c_sw_snprintf,
+    sw_printf => swr_c_sw_printf,
+}
+
 /// `SW_LOG_ERROR` and `SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT`.
 #[cfg(feature = "upstream-symbols")]
 const LOG_ERROR: c_int = 5;
