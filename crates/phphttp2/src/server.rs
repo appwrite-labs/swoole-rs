@@ -1271,8 +1271,11 @@ fn headers_complete(session: &Session, stream: &Stream) -> bool {
                 unsafe { swr_zval_copy(&raw mut kept, last) };
                 // SAFETY: the list's slot, released and refilled.
                 unsafe { zval_ptr_dtor(length) };
+                // `ZVAL_COPY_VALUE`: the slot's `u2` is the bucket's hash chain.
                 // SAFETY: as above.
-                unsafe { length.write(kept) };
+                unsafe { (*length).value = kept.value };
+                // SAFETY: as above.
+                unsafe { (*length).u1 = kept.u1 };
             }
             valid
         } else {
