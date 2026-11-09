@@ -59,8 +59,6 @@ mod php {
     /// `COMPILE_DL_SWOOLE` (lib.rs exports `get_module()`).
     const COMMON: &[&str] = &[
         "SWOOLE_RS_BRIDGE",
-        "SW_HALFCLOSE_DRAIN",
-        "SW_HALFCLOSE_PREQUEUE",
         "SW_HAVE_BROTLI",
         "SW_HAVE_ZLIB",
         "SW_HAVE_ZSTD",

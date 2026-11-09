@@ -94,7 +94,10 @@ unsupported instead of running it. So does `dnslookup_ipv6.phpt`, whose verdict
 depends on the runner's resolver reply: both engines fail on some replies (#428),
 and `shutdown_in_master.phpt`, which calls `shutdown()` from `onStart` before its
 random 1–4 workers are up and sometimes hangs until the deadline: upstream 2 of 8
-runs, hybrid 3 of 8 in the dev container (#438).
+runs, hybrid 3 of 8 in the dev container (#438). `close_max_fd.phpt` SIGTERMs its
+server before its first client closes, so `onClose` for that client runs only when
+the worker beats the master's shutdown: upstream 27 of 30 runs, hybrid 23, the
+Cargo build 21; closing the client before the kill, 20 of 20 (#2018).
 
 Module owners can pass `--manifest /absolute/selection.json` to select additional
 original PHPTs without changing the central selection. Use the same pinned

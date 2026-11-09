@@ -142,6 +142,11 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "the server waits on its SysV message queue for a third task and sometimes never gets "
         'it under CI load, on both engines: hybrid timed out in a shard while upstream passed, '
         'then upstream timed out on re-run (#438, #664)',
+        'tests/swoole_server/close_max_fd.phpt':
+        "the parent SIGTERMs the SWOOLE_PROCESS server and only then drops client 1, so the "
+        "worker's close event for fd-1 races the master freeing its connections at shutdown; "
+        'losing it, onClose never logs `close: fd-1` (upstream 27/30, hybrid 23/30, cargo 21/30 '
+        'in the aarch64 dev image; closing the client 200 ms before the kill, 20/20, #2018)',
         'tests/swoole_server/kill_user_process_01.phpt':
         "the same 10 ms restart window as kill_user_process_02, checked by `ps` after SIGTERM: "
         'under CI load both engines miss it (shards failed upstream 4/6, hybrid 4/6 over six '
