@@ -1,16 +1,9 @@
 //! Object properties and arrays, through Zend's own update and add functions.
+use crate::Value;
 use crate::sys::{
     _zval_struct__bindgen_ty_1, HashTable, IS_LONG, add_assoc_long_ex, add_assoc_string_ex,
     zend_class_entry, zend_long, zend_object, zend_string, zend_update_property_bool,
     zend_update_property_long, zend_update_property_string, zend_value, zval,
-};
-use crate::{
-    bailout,
-    call::type_of,
-    sys::{
-        IS_DOUBLE, IS_STRING, swr_zend_string_copy, swr_zend_try_get_double, swr_zend_try_get_long,
-        swr_zend_try_get_string,
-    },
 };
 use std::ffi::CStr;
 
@@ -40,66 +33,34 @@ pub unsafe fn str_of(string: *const zval) -> *mut zend_string {
     unsafe { string.cast::<*mut zend_string>().read() }
 }
 
-/// `zval_get_long`: any value converted as PHP does. An object warns, and a
-/// user error handler that bails out leaves 0 with the bailout deferred.
+/// [`Value::long`] of a raw zval.
 /// # Safety
 /// `value` is a live zval.
 #[must_use]
 #[inline]
 pub unsafe fn get_long(value: *const zval) -> zend_long {
     // SAFETY: per the caller.
-    if unsafe { type_of(value) } == IS_LONG {
-        // SAFETY: as above.
-        return unsafe { long_of(value) };
-    }
-    let mut out = 0;
-    // SAFETY: per the caller; Zend reads the value only.
-    bailout::defer(bailout::trapped(unsafe {
-        swr_zend_try_get_long(value.cast_mut(), &raw mut out)
-    }));
-    out
+    unsafe { &*value.cast::<Value>() }.long()
 }
 
-/// `zval_get_double`, as [`get_long`].
+/// [`Value::double`] of a raw zval.
 /// # Safety
 /// `value` is a live zval.
 #[must_use]
 #[inline]
 pub unsafe fn get_double(value: *const zval) -> f64 {
     // SAFETY: per the caller.
-    if unsafe { type_of(value) } == IS_DOUBLE {
-        // SAFETY: a float zval holds `dval`, at offset 0.
-        return unsafe { value.cast::<f64>().read() };
-    }
-    let mut out = 0.0;
-    // SAFETY: per the caller; Zend reads the value only.
-    bailout::defer(bailout::trapped(unsafe {
-        swr_zend_try_get_double(value.cast_mut(), &raw mut out)
-    }));
-    out
+    unsafe { &*value.cast::<Value>() }.double()
 }
 
-/// `zval_get_string`: a new reference to the value as a string. An array
-/// warns and an object runs `__toString`; a bailout leaves the empty string
-/// with the bailout deferred.
+/// [`Value::string`] of a raw zval: a new reference the caller owns.
 /// # Safety
 /// `value` is a live zval.
 #[must_use]
 #[inline]
 pub unsafe fn get_string(value: *const zval) -> *mut zend_string {
     // SAFETY: per the caller.
-    if unsafe { type_of(value) } == IS_STRING {
-        // SAFETY: per the caller, a string zval.
-        let string = unsafe { str_of(value) };
-        // SAFETY: a live string; the caller owns the new reference.
-        return unsafe { swr_zend_string_copy(string) };
-    }
-    let mut out = std::ptr::null_mut();
-    // SAFETY: per the caller.
-    bailout::defer(bailout::trapped(unsafe {
-        swr_zend_try_get_string(value.cast_mut(), &raw mut out)
-    }));
-    out
+    unsafe { &*value.cast::<Value>() }.string().into_raw()
 }
 
 /// `Z_OBJ_P`.

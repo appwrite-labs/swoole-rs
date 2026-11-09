@@ -43,8 +43,7 @@ unsafe extern "C" fn create<W: Kind>(ce: *mut zend_class_entry) -> *mut zend_obj
     // SAFETY: the global pool lives from swoole_init, before MINIT.
     let word = unsafe { pool::alloc(size_of::<W>() as u32) };
     if word.is_null() {
-        // SAFETY: MINIT set Swoole's exception class before any handler runs.
-        let exception = unsafe { swoole_rs_phpswoole::swoole_exception_ce };
+        let exception = swoole_rs_phpswoole::exception_class();
         // SAFETY: in a handler, with Swoole's exception class.
         unsafe {
             throw_exception(exception, c"global memory allocation failure", MALLOC_FAIL);

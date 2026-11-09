@@ -43,13 +43,15 @@ pub use interfaces::sys_warning;
 pub use memory::sw_zend_string_allocator;
 pub use module::{
     CALL_USER_SHUTDOWNFUNC_BEGIN, Globals, RSHUTDOWN_BEGIN, RSHUTDOWN_END, display_errors,
-    enable_library, globals, load_library, php_swoole_parse_to_size,
-    php_swoole_register_shutdown_function, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,
-    swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
+    enable_library, globals, load_library, php_swoole_register_shutdown_function,
+    swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown,
+    zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
-pub use options::{php_swoole_set_global_option, set_global, sw_zval_is_serializable};
-pub use serialize::{php_swoole_serialize, php_swoole_unserialize, serialize, unserialize};
+pub use options::{
+    php_swoole_parse_to_size, php_swoole_set_global_option, set_global, sw_zval_is_serializable,
+};
+pub use serialize::{serialize, unserialize};
 pub use swoole_rs_corebase::{Switch, built_with};
 
 use std::{
@@ -59,7 +61,7 @@ use std::{
 };
 use swoole_rs_zend::{
     Class, register_long_constant,
-    sys::{zend_ce_error, zend_ce_exception, zend_class_entry, zend_object_handlers},
+    sys::{zend_ce_error, zend_ce_exception, zend_class_entry},
 };
 
 /// The `swr_v1_phpswoole_minit` flags.
@@ -83,19 +85,22 @@ fn log_put(level: c_int, message: &[u8]) {
     }
 }
 
-/// `Swoole\Exception`, its handlers (which its subclasses copy) and
-/// `Swoole\Error`, as C++ reads them; MINIT writes them.
+/// `Swoole\Exception` and `Swoole\Error`, for code that links them by name
+/// (crates/phpredis, crates/phpevents and the shims); MINIT writes them.
 #[unsafe(no_mangle)]
 pub static mut swoole_exception_ce: *mut zend_class_entry = ptr::null_mut();
 #[unsafe(no_mangle)]
-// SAFETY: a table of nullable pointers and an offset, for which zero is valid.
-pub static mut swoole_exception_handlers: zend_object_handlers = unsafe { std::mem::zeroed() };
-#[unsafe(no_mangle)]
 pub static mut swoole_error_ce: *mut zend_class_entry = ptr::null_mut();
+
+/// `swoole_exception_ce`: `Swoole\Exception`, registered at MINIT.
+#[must_use]
+pub fn exception_class() -> *mut zend_class_entry {
+    EXCEPTION.entry()
+}
 
 /// `PHP_MINIT_FUNCTION(swoole)`: the module globals and ini entries, the
 /// global constants, then `Swoole\Exception` and `Swoole\Error`
-/// (`swoole_exception_ce`, `swoole_exception_handlers` and `swoole_error_ce`),
+/// (`swoole_exception_ce` and `swoole_error_ce`),
 /// the short-name function aliases, then Swoole's core and every family
 /// (`module::startup`).
 /// # Safety
@@ -104,8 +109,7 @@ pub static mut swoole_error_ce: *mut zend_class_entry = ptr::null_mut();
 pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_int) -> c_int {
     begin(kind, module_number);
     let mut flags = constants::flags();
-    // SAFETY: this thread's globals, which the ini entries just set.
-    if unsafe { (*module::globals()).use_shortname } {
+    if module::globals().use_shortname.get() {
         flags |= constants::SHORTNAME;
     }
     FLAGS.store(flags, Ordering::Relaxed);
@@ -116,10 +120,6 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
     let parent = unsafe { zend_ce_exception };
     // SAFETY: MINIT, extending Exception, with no methods.
     unsafe { EXCEPTION.register_child(c"Swoole\\Exception", ptr::null(), parent, |_, _| {}) };
-    // SAFETY: registered above, so its handlers are set.
-    let handlers = unsafe { *EXCEPTION.handlers() };
-    // SAFETY: MINIT, before any family copies it.
-    unsafe { swoole_exception_handlers = handlers };
     // SAFETY: Zend registers Error before any extension's MINIT.
     let parent = unsafe { zend_ce_error };
     // SAFETY: MINIT, extending Error, with no methods.
@@ -163,8 +163,7 @@ fn begin(kind: c_int, module_number: c_int) {
 /// `php_swoole_check_reactor()`: this thread's event loop, unless the request
 /// is shutting down.
 pub fn check_reactor() {
-    // SAFETY: this thread's globals, live from MINIT.
-    let shutting_down = unsafe { (*module::globals()).req_status } == RSHUTDOWN_BEGIN;
+    let shutting_down = module::globals().req_status.get() == RSHUTDOWN_BEGIN;
     if !shutting_down && swoole_rs_corebase::thread_reactor().is_null() {
         php_swoole_reactor_init();
     }

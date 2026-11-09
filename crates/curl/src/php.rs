@@ -34,9 +34,8 @@ pub unsafe extern "C" fn swoole_curl_get_handle(
         .cast::<u8>()
         .wrapping_sub(usize::try_from(offset).unwrap_or(0))
         .cast::<*mut CURL>();
-    // SAFETY: the module's globals, live in a request.
-    let shut_down = unsafe { (*swoole_rs_phpswoole::globals()).req_status }
-        == swoole_rs_phpswoole::RSHUTDOWN_END;
+    let shut_down =
+        swoole_rs_phpswoole::globals().req_status.get() == swoole_rs_phpswoole::RSHUTDOWN_END;
     if !exclusive || shut_down || host::current().is_null() {
         return ch;
     }

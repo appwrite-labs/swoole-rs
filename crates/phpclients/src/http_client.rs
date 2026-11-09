@@ -2139,7 +2139,7 @@ fn finish(client: &mut Client, call: &Call, result: bool) -> bool {
 }
 
 /// The path argument of `execute`, `get`, `upgrade`.
-fn path_arg<'a>(call: &Call) -> Option<&'a [u8]> {
+fn path_arg(call: &Call) -> Option<&[u8]> {
     let path = call.arity(1, 1).and_then(|()| call.string(1, b"")).ok();
     if path.is_none() {
         call.set_bool(false);

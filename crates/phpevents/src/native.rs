@@ -70,14 +70,12 @@ fn fields() -> &'static mut ReactorFields {
 
 /// `SWOOLE_G(cli)`.
 pub(crate) fn cli() -> bool {
-    // SAFETY: the module's globals, live from MINIT.
-    unsafe { (*swoole_rs_phpswoole::globals()).cli }
+    swoole_rs_phpswoole::globals().cli.get()
 }
 
 /// `SWOOLE_G(req_status) == PHP_SWOOLE_RSHUTDOWN_BEGIN`.
 pub(crate) fn shutdown_begun() -> bool {
-    // SAFETY: as above.
-    unsafe { (*swoole_rs_phpswoole::globals()).req_status == swoole_rs_phpswoole::RSHUTDOWN_BEGIN }
+    swoole_rs_phpswoole::globals().req_status.get() == swoole_rs_phpswoole::RSHUTDOWN_BEGIN
 }
 
 /// Why async-io is refused in this server process, if it is.
@@ -134,12 +132,7 @@ pub(crate) fn create() -> bool {
     if unsafe { swoole_event_init(flags) } < 0 {
         return false;
     }
-    // SAFETY: during a request, with a registered global function.
-    unsafe {
-        swoole_rs_phpswoole::php_swoole_register_shutdown_function(
-            c"swoole_event_rshutdown".as_ptr(),
-        );
-    }
+    swoole_rs_phpswoole::php_swoole_register_shutdown_function(c"swoole_event_rshutdown");
     true
 }
 

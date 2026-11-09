@@ -33,8 +33,7 @@ pub(crate) use swoole_rs_corebase::log::set_last_error;
 
 /// `SWOOLE_G(cli)`.
 pub(crate) fn cli() -> bool {
-    // SAFETY: the module's globals, live from MINIT.
-    unsafe { (*swoole_rs_phpswoole::globals()).cli }
+    swoole_rs_phpswoole::globals().cli.get()
 }
 
 /// `php_swoole_fatal_error`: always reported.

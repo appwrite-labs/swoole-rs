@@ -87,7 +87,6 @@ static_assert(PHP_SWOOLE_HOOK_AFTER_RESPONSE == 27 && SW_MAX_FIND_COUNT == 100,
               "crates/phphttp/src/response.rs and crates/phpserver mirror these");
 
 extern zend_class_entry *swoole_exception_ce;
-extern zend_object_handlers swoole_exception_handlers;
 extern zend_class_entry *swoole_error_ce;
 
 // The optional drivers' hooks, which crates/phpswoole calls.
@@ -114,7 +113,6 @@ void php_swoole_firebird_mshutdown();
 
 // Defined in Rust.
 int php_swoole_reactor_init();
-void php_swoole_register_shutdown_function(const char *function);
 int php_swoole_convert_to_fd(zval *zsocket);
 zend_bool php_swoole_signal_isset_handler(int signo);
 
