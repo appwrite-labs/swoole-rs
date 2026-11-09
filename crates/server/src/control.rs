@@ -144,8 +144,7 @@ pub(crate) fn stop_master_thread<H: Host>(h: &mut H) -> crate::Effect<()> {
 /// `Server::timer_callback`: rate-limited scheduler warnings, the timer hook, and
 /// stopping once the server no longer runs.
 pub(crate) fn master_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
-    // SAFETY: `time` accepts a null out pointer.
-    let now = unsafe { libc::time(core::ptr::null_mut()) };
+    let now = crate::shared::unix_now();
     for pool in [0, 1] {
         if h.op(OP_WARNING, pool)? != 0 && h.op(OP_WARNING_TIME, pool)?.cast_signed() < now {
             h.op(OP_WARNING_RESET, (now.cast_unsigned() << 1) | pool)?;

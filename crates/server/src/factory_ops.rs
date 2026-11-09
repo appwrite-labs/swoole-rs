@@ -251,7 +251,7 @@ unsafe fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let id = i64::from(info.reactor_id) + (info.fd % pipes) * i64::from(config.reactor_num);
             // The worker serving that reactor's pipe.
             let pipe = ctx.worker_at(worker_id(id.cast_unsigned())).pipe_worker;
-            let [bus, _] = crate::master_ops::server_message_bus(state);
+            let bus = crate::master_ops::server_message_bus(state).raw();
             // SAFETY: the live bus and pipe, and the data sent.
             u64::from(unsafe { swr_v1_bus_write(bus, pipe, &raw mut info, data.cast()) })
         }
@@ -262,8 +262,10 @@ unsafe fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 
 /// `new ReactorThread[count]()`, each bus over the allocator of the server's.
 pub(crate) fn new_reactor_threads(state: &crate::ServerState, count: u16) -> *mut c_void {
-    let [_, allocator] = crate::master_ops::server_message_bus(state);
-    ThreadRecord::new_array(count.into(), allocator.cast())
+    ThreadRecord::new_array(
+        count.into(),
+        crate::master_ops::server_message_bus(state).allocator(),
+    )
 }
 
 /// The facts read from the server config, the data sent and the worker globals.
@@ -471,8 +473,7 @@ unsafe fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let _present = unsafe { unregister(registry, pid) };
         }
         OP_ENTER_CHILD => {
-            // SAFETY: a plain syscall.
-            let own = unsafe { libc::getpid() };
+            let own = std::process::id().cast_signed();
             // SAFETY: the context's live worker.
             unsafe { swr_v1_worker_set_pid(worker, own) };
             // SAFETY: as above.

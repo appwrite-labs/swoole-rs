@@ -48,6 +48,48 @@ impl WorkerRecord {
         // all-zero is a valid value.
         Box::new(unsafe { core::mem::zeroed() })
     }
+
+    /// Makes the record `pool`'s worker `id`, of `kind`.
+    pub fn place(&mut self, pool: *mut c_void, id: u32, kind: u8) {
+        self.pool = pool;
+        self.id = id;
+        self.kind = kind;
+    }
+
+    /// The worker's id (its slot in the worker pool).
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// The worker's kind (C++ `type`).
+    #[must_use]
+    pub fn kind(&self) -> u8 {
+        self.kind
+    }
+
+    /// The worker's process (or thread) id.
+    #[must_use]
+    pub fn pid(&self) -> c_int {
+        self.pid
+    }
+
+    /// `SW_WORKER_IDLE`, `SW_WORKER_BUSY`, ...
+    pub fn set_status(&mut self, status: u8) {
+        self.status = status;
+    }
+
+    /// `worker->request_count++`, with the native unsigned wrapping.
+    pub fn add_request_count(&mut self) {
+        self.request_count = self.request_count.wrapping_add(1);
+    }
+
+    /// `has_exceeded_max_request()`: this thread's request limit against the count.
+    #[must_use]
+    pub fn exceeded_max_request(&self) -> bool {
+        let limit = crate::worker_globals::swr_v1_worker_global_get(5).cast_unsigned();
+        limit != 0 && self.request_count.cast_unsigned() >= limit
+    }
 }
 
 /// First event worker with this pid, preserving array order and public raw writes.
@@ -314,9 +356,7 @@ pub unsafe fn counters(worker: *const WorkerRecord) -> [i64; 4] {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_worker_add_request_count(worker: *mut WorkerRecord) {
     // SAFETY: the worker loop owns the original non-atomic counter update.
-    let count = unsafe { (*worker).request_count };
-    // SAFETY: the same worker loop owns this write; wrapping preserves the native word bits.
-    unsafe { (*worker).request_count = count.wrapping_add(1) };
+    unsafe { &mut *worker }.add_request_count();
 }
 
 /// `worker->response_count++`.
@@ -375,13 +415,8 @@ pub unsafe extern "C" fn swr_v1_worker_shutdown(worker: *mut WorkerRecord) {
 )]
 #[must_use]
 pub unsafe extern "C" fn swr_v1_worker_exceeded_max_requests(worker: *const WorkerRecord) -> bool {
-    let limit = crate::worker_globals::swr_v1_worker_global_get(5).cast_unsigned();
-    if limit == 0 {
-        return false;
-    }
-    // SAFETY: the caller lends the loop's initialized counter; preserve native unsigned word bits.
-    let count = unsafe { (*worker).request_count }.cast_unsigned();
-    count >= limit
+    // SAFETY: the caller lends the loop's live record.
+    unsafe { &*worker }.exceeded_max_request()
 }
 
 /// Reset one retired worker's counters and remove its concurrency from the

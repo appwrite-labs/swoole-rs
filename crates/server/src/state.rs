@@ -185,6 +185,22 @@ impl ServerState {
         unsafe { core::slice::from_raw_parts(view.data.cast(), view.length) }
     }
 
+    /// `swoole_set_isolation(group_, user_, chroot_)`: a worker drops to the
+    /// configured group and user, then chroots.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn set_isolation(&self) {
+        let text = |index| CString::new(self.text(index)).unwrap_or_default();
+        let (root, user, group) = (text(0), text(1), text(2));
+        // SAFETY: three C strings.
+        unsafe {
+            swoole_rs_ossupport::swr_v1_os_set_isolation(
+                group.as_ptr(),
+                user.as_ptr(),
+                root.as_ptr(),
+            );
+        }
+    }
+
     /// `Server::lock()`: blocks until this thread holds the lock.
     pub(crate) fn lock(&self) {
         let (held, released) = &self.locked;
@@ -381,8 +397,7 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
             let file = state.text(TEXT_PID_FILE);
             if !file.is_empty() {
                 let file = c_path(file);
-                // SAFETY: getpid has no preconditions.
-                let pid = unsafe { libc::getpid() }.to_string();
+                let pid = std::process::id().cast_signed().to_string();
                 // SAFETY: a terminated path and the pid's bytes.
                 unsafe {
                     swoole_rs_ossupport::swr_v1_os_file_put_contents(

@@ -680,6 +680,15 @@ pub(crate) struct ThreadRecord {
     pub(crate) allocator: *const swoole_rs_corebase::CoreAllocator,
 }
 
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+impl ThreadRecord {
+    /// `message_bus`.
+    pub(crate) fn message_bus(&self) -> crate::objects::Bus {
+        // SAFETY: a live thread's bus and allocator, made together.
+        unsafe { crate::objects::Bus::from_parts(self.bus, self.allocator) }
+    }
+}
+
 const _: () = assert!(
     core::mem::offset_of!(ThreadRecord, heartbeat_timer) == 32
         && core::mem::offset_of!(ThreadRecord, bus) == 40

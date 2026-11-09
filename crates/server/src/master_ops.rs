@@ -787,8 +787,7 @@ pub(crate) unsafe fn answer(
             _ => !o.tables().enable_accept_timer.is_null(),
         }),
         OP_SET_MASTER_PID => {
-            // SAFETY: getpid has no preconditions.
-            o.gs().master_pid = unsafe { libc::getpid() };
+            o.gs().master_pid = std::process::id().cast_signed();
             0
         }
         OP_TASKING => sign(o.gs().tasking_num.load(SeqCst).cast_signed()),
@@ -1210,8 +1209,7 @@ pub(crate) unsafe fn answer(
                 let tid = swoole_rs_ossupport::swr_v1_os_thread_native_id() as c_int;
                 swoole_rs_process::methods::swoole_set_worker_pid(tid);
             } else if arg == MODE_PROCESS {
-                // SAFETY: getpid has no preconditions.
-                swoole_rs_process::methods::swoole_set_worker_pid(unsafe { libc::getpid() });
+                swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
             }
             0
         }
@@ -1833,7 +1831,6 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         fn swoole_redirect_stdout(file: *const c_char);
         #[link_name = "_Z29swoole_get_systemd_listen_fdsv"]
         fn swoole_get_systemd_listen_fds() -> c_int;
-        fn swr_v1_bus_init_pipe_socket(bus: *mut c_void, fd: c_int);
         fn swr_v1_clients_address_assign(
             address: *mut c_void,
             length: *mut libc::socklen_t,
@@ -1944,8 +1941,8 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: reads the environment.
         OP_SYSTEMD_FDS => sign(unsafe { swoole_get_systemd_listen_fds() }),
         OP_ST_INIT_PIPE => {
-            // SAFETY: the context's live `MessageBus`, which starts with its Rust bus.
-            let bus = unsafe { *o.ctx.object.cast::<*mut core::ffi::c_void>() };
+            // SAFETY: the context's live `MessageBus`.
+            let bus = unsafe { crate::objects::Bus::of(o.ctx.object) };
             // SAFETY: the context's live server; `arg` is one of its worker ids.
             let worker =
                 unsafe { crate::view::worker(serv, u16::try_from(arg).unwrap_or(u16::MAX)) };
@@ -1955,10 +1952,8 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let master = unsafe { &*worker.pipe_master.cast::<SocketRecord>() };
             // SAFETY: as above.
             let worker = unsafe { &*worker.pipe_worker.cast::<SocketRecord>() };
-            // SAFETY: the live bus.
-            unsafe { swr_v1_bus_init_pipe_socket(bus, master.fd) };
-            // SAFETY: as above.
-            unsafe { swr_v1_bus_init_pipe_socket(bus, worker.fd) };
+            bus.init_pipe_socket(master.fd);
+            bus.init_pipe_socket(worker.fd);
             0
         }
         // SAFETY: per the caller.
@@ -2095,8 +2090,7 @@ unsafe fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_FORCED_EXIT => {
             FORCED_EXIT_SERVER.store(serv, Relaxed);
-            // SAFETY: time(2) with no output pointer.
-            FORCED_EXIT_TIME.store(unsafe { libc::time(core::ptr::null_mut()) }, Relaxed);
+            FORCED_EXIT_TIME.store(crate::shared::unix_now(), Relaxed);
             // SAFETY: this thread's live reactor.
             unsafe {
                 swr_v1_event_set_exit_condition(EXIT_CONDITION_FORCED_TERMINATION, forced_exit);
@@ -2211,8 +2205,7 @@ unsafe extern "C" fn forced_exit(_: *mut usize) -> bool {
     let state = unsafe { &*state };
     // SAFETY: as above.
     let max_wait_time = unsafe { (*state.config()).max_wait_time };
-    // SAFETY: time(2) with no output pointer.
-    let now = unsafe { libc::time(core::ptr::null_mut()) };
+    let now = crate::shared::unix_now();
     if now - FORCED_EXIT_TIME.load(Relaxed) > libc::time_t::from(max_wait_time) {
         error(
             SW_LOG_WARNING,
@@ -2247,10 +2240,10 @@ unsafe extern "C" {
     fn swr_v1_bus_pipe_socket(bus: *mut core::ffi::c_void, fd: c_int) -> *mut SocketRecord;
 }
 
-/// `serv->get_worker_message_bus()`'s Rust bus: this thread's in thread mode,
-/// else the server's. A `MessageBus` starts with its Rust bus.
+/// `serv->get_worker_message_bus()`: this thread's in thread mode, else the
+/// server's.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-fn worker_bus(state: &ServerState) -> *mut core::ffi::c_void {
+pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus {
     // SAFETY: a live server's config.
     let thread_mode = u64::from(unsafe { (*state.config()).mode_ }) == MODE_THREAD;
     let bus = if thread_mode {
@@ -2259,8 +2252,15 @@ fn worker_bus(state: &ServerState) -> *mut core::ffi::c_void {
         // SAFETY: a live server's tables.
         unsafe { (*state.tables()).message_bus }
     };
-    // SAFETY: a live `MessageBus`.
-    unsafe { *bus.cast::<*mut core::ffi::c_void>() }
+    // SAFETY: the thread's or the server's live `MessageBus`.
+    unsafe { crate::objects::Bus::of(bus) }
+}
+
+/// `serv->get_worker_message_bus()`'s Rust bus: this thread's in thread mode,
+/// else the server's. A `MessageBus` starts with its Rust bus.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+fn worker_bus(state: &ServerState) -> *mut core::ffi::c_void {
+    worker_message_bus(state).raw()
 }
 
 /// `OP_BASE_PASS`: the worker message bus takes `send`, then `worker_accept_event`
@@ -2839,7 +2839,7 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the server's live bus, a worker pipe and the message.
             u64::from(unsafe {
                 swr_v1_bus_write(
-                    server_message_bus(o.state)[0],
+                    server_message_bus(o.state).raw(),
                     pipe,
                     &raw mut task.info,
                     task.data.cast(),
@@ -2871,18 +2871,11 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 
 /// The server's own `MessageBus`: its Rust bus, then its allocator.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn server_message_bus(state: &ServerState) -> [*mut core::ffi::c_void; 2] {
+pub(crate) fn server_message_bus(state: &ServerState) -> crate::objects::Bus {
     // SAFETY: a live server's tables, which lend `&Server::message_bus`.
     let bus = unsafe { (*state.tables()).message_bus };
-    // SAFETY: a live `MessageBus`, which starts with these two words.
-    unsafe { *bus.cast::<[*mut core::ffi::c_void; 2]>() }
-}
-
-/// The allocator of the server's `MessageBus`.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-fn bus_allocator<'a>(state: &ServerState) -> &'a swoole_rs_corebase::CoreAllocator {
-    // SAFETY: the bus's allocator, which outlives the server.
-    unsafe { &*server_message_bus(state)[1].cast::<swoole_rs_corebase::CoreAllocator>() }
+    // SAFETY: the server's live `MessageBus`.
+    unsafe { crate::objects::Bus::of(bus) }
 }
 
 /// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.
@@ -2892,42 +2885,23 @@ fn bus_allocator<'a>(state: &ServerState) -> &'a swoole_rs_corebase::CoreAllocat
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[unsafe(export_name = "_ZN6swoole6Server19create_pipe_buffersEv")]
 pub(crate) unsafe extern "C" fn create_pipe_buffers(serv: *mut core::ffi::c_void) -> c_int {
-    use crate::pool_native::{
-        swr_v1_bus_buffer_size, swr_v1_bus_set_buffer, swr_v1_bus_set_buffer_size,
-    };
     // SAFETY: as the caller guarantees.
     let state = unsafe { crate::view::state_ptr(serv) };
     // SAFETY: the live server's state.
     let state = unsafe { &*state };
-    let bus = server_message_bus(state)[0];
     // SAFETY: a live server's config.
     let size = unsafe { (*state.config()).ipc_max_size };
-    // SAFETY: the server's live bus.
-    unsafe { swr_v1_bus_set_buffer_size(bus, size as usize) };
-    // SAFETY: the server's live bus.
-    let size = unsafe { swr_v1_bus_buffer_size(bus) };
-    let buffer = match bus_allocator(state).malloc {
-        // SAFETY: a fresh block of the bus's buffer size.
-        Some(malloc) => unsafe { malloc(size) },
-        None => core::ptr::null_mut(),
-    };
-    // SAFETY: the server's live bus and its new buffer.
-    unsafe { swr_v1_bus_set_buffer(bus, buffer) };
-    if buffer.is_null() { -1 } else { 0 }
+    if server_message_bus(state).alloc_buffer(size as usize) {
+        0
+    } else {
+        -1
+    }
 }
 
 /// `MessageBus::free_buffer()` of the server's bus.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn release_pipe_buffers(state: &ServerState) {
-    let bus = server_message_bus(state)[0];
-    // SAFETY: the server's live bus.
-    let buffer = unsafe { swr_v1_bus_buffer(bus) };
-    if let Some(free) = bus_allocator(state).free {
-        // SAFETY: the bus's buffer, from this allocator, which nothing uses afterwards.
-        unsafe { free(buffer.cast()) };
-    }
-    // SAFETY: the server's live bus.
-    unsafe { crate::pool_native::swr_v1_bus_set_buffer(bus, core::ptr::null_mut()) };
+    server_message_bus(state).free_buffer();
 }
 
 /// `Server::accept_command_result`: the master's command pipe is readable; a
@@ -2942,7 +2916,6 @@ unsafe extern "C" fn accept_command_result(
     reactor: *mut core::ffi::c_void,
     event: *mut core::ffi::c_void,
 ) -> c_int {
-    use crate::pool_native::{read_bus, swr_v1_bus_packet, swr_v1_bus_pop};
     // SAFETY: as the caller guarantees.
     let fields = unsafe { reactor_upstream::prepared(reactor) }.fields;
     // SAFETY: as above.
@@ -2951,19 +2924,17 @@ unsafe extern "C" fn accept_command_result(
     let state = unsafe { crate::view::state_ptr(serv) };
     // SAFETY: its live state.
     let state = unsafe { &*state };
-    let [bus, allocator] = server_message_bus(state);
+    let bus = server_message_bus(state);
     // SAFETY: the event's live socket.
     let sock = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket };
-    // SAFETY: as above.
-    if read_bus(bus, allocator.cast(), unsafe { &mut *sock.cast() }, false) <= 0 {
+    let Some(sock) = crate::objects::socket(sock.cast()) else {
+        return 0;
+    };
+    if bus.read(sock) <= 0 {
         return 0;
     }
-    // SAFETY: the bus holds a whole packet.
-    let packet = unsafe { swr_v1_bus_packet(bus) };
-    // SAFETY: as above; its buffer's head names the request.
-    let buffer = unsafe { swr_v1_bus_buffer(bus) };
-    // SAFETY: as above.
-    let request_id = unsafe { (*buffer).fd };
+    let packet = bus.packet();
+    let request_id = bus.head().fd;
     // SAFETY: the live state and server, and the packet's bytes.
     unsafe {
         crate::commands::swr_v1_server_command_result(
@@ -2974,8 +2945,7 @@ unsafe extern "C" fn accept_command_result(
             packet.length,
         );
     };
-    // SAFETY: the packet just delivered.
-    unsafe { swr_v1_bus_pop(bus) };
+    bus.pop();
     0
 }
 

@@ -235,15 +235,14 @@ fn exit_status(exited: u64) -> ExitStatus {
 
 // ---------------------------------------------------------------- message bus
 
-fn bus_of<'a>(pool: Pool) -> &'a PoolBus {
+fn bus_of(pool: Pool) -> crate::objects::Bus {
     // SAFETY: the pool's bus, which `OP_NEW_MESSAGE_BUS` made.
-    unsafe { &*record(pool).message_bus.cast::<PoolBus>() }
+    unsafe { crate::objects::Bus::of(record(pool).message_bus) }
 }
 
 /// `MessageBus::read(sock)`.
 fn bus_read(pool: Pool, sock: *mut c_void) -> isize {
-    let PoolBus { bus, allocator } = *bus_of(pool);
-    read_bus(bus, allocator, socket(sock), false)
+    bus_of(pool).read(socket(sock))
 }
 
 /// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`) over the bus and its
@@ -302,13 +301,9 @@ pub(crate) fn read_bus(
 
 /// `onMessage` with the bus's packet, then `message_bus->pop()`.
 fn bus_deliver(pool: Pool) {
-    let bus = bus_of(pool).bus;
-    // SAFETY: the bus's buffer, a `PipeBuffer` that starts with its `DataHead`.
-    let buffer = unsafe { swr_v1_bus_buffer(bus) };
-    // SAFETY: as above.
-    let mut info = unsafe { buffer.read() };
-    // SAFETY: the pool's bus, holding a whole packet.
-    let packet = unsafe { swr_v1_bus_packet(bus) };
+    let bus = bus_of(pool);
+    let mut info = bus.head();
+    let packet = bus.packet();
     info.len = packet.length as u32;
     on_message(
         pool,
@@ -317,8 +312,7 @@ fn bus_deliver(pool: Pool) {
             data: packet.data,
         },
     );
-    // SAFETY: the packet just delivered.
-    unsafe { swr_v1_bus_pop(bus) };
+    bus.pop();
 }
 
 fn new_message_bus(pool: Pool) -> i64 {
@@ -343,18 +337,7 @@ fn new_message_bus(pool: Pool) -> i64 {
 }
 
 fn bus_buffer(pool: Pool, size: u64) -> i64 {
-    let PoolBus { bus, allocator } = *bus_of(pool);
-    // SAFETY: the pool's bus.
-    unsafe { swr_v1_bus_set_buffer_size(bus, size as usize) };
-    // SAFETY: a live `swoole::Allocator`.
-    let malloc = unsafe { (*allocator).malloc };
-    // SAFETY: the pool's bus.
-    let size = unsafe { swr_v1_bus_buffer_size(bus) };
-    // SAFETY: the allocator's malloc.
-    let buffer = malloc.map_or(ptr::null_mut(), |malloc| unsafe { malloc(size) });
-    // SAFETY: the pool's bus takes the buffer.
-    unsafe { swr_v1_bus_set_buffer(bus, buffer) };
-    i64::from(!buffer.is_null())
+    i64::from(bus_of(pool).alloc_buffer(size as usize))
 }
 
 fn free_message_bus(pool: Pool) {
