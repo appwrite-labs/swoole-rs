@@ -20,7 +20,6 @@ sys.path.insert(0, str(ROOT))
 from tools.build_hybrid import hybrid_tree
 from tools.harness import parse_engines, run_isolated, write_report
 from tools.hybrid_identity import attest
-from bytes_gate import SIGNATURES, body
 from coherent_sdk import stage
 from storage_summary import compare
 
@@ -30,6 +29,17 @@ HEADER = '3e6dd302ac18d32f9a173dcbfca0680f16b9682a5f5031456099cda5b1bbb180'
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def body(source, signature):
+    """The text of the brace-delimited definition starting at `signature`."""
+    start = source.index(signature)
+    end = source.index('{', start) + 1
+    depth = 1
+    while depth:
+        depth += (source[end] == '{') - (source[end] == '}')
+        end += 1
+    return source[start:end]
 
 
 def owned(hybrid, name):
@@ -61,14 +71,13 @@ def main():
     phase.add_argument('--pretty-originals', action='store_true', help='Execute two unchanged pretty-name original GoogleTests through the actual public method')
     phase.add_argument('--logger-originals', action='store_true', help='Execute unchanged rotation, memory-stream and pretty-name original GoogleTests')
     phase.add_argument('--hash-originals', action='store_true', help='Execute unchanged defined PHP/Jenkins hash original GoogleTests')
-    phase.add_argument('--inline-originals', action='store_true', help='Execute seven unchanged inline-utility originals with engine-specific native/selected header bodies')
     phase.add_argument('--global-logger-originals', action='store_true', help='Execute four unchanged global Logger originals with coherent per-engine SDKs')
     phase.add_argument('--redirect-original', action='store_true', help='Execute original redirect_1 and verify child assertion observability')
     phase.add_argument('--redirect-originals', action='store_true', help='Execute both redirect originals with private path inputs and child-failure observer')
     args = parser.parse_args()
     redirect = args.redirect_original or args.redirect_originals
     coherent = args.global_logger_originals or redirect
-    originals = args.pretty_originals or args.logger_originals or args.hash_originals or args.inline_originals or args.global_logger_originals or redirect
+    originals = args.pretty_originals or args.logger_originals or args.hash_originals or args.global_logger_originals or redirect
     fixture = 'pretty_originals' if originals else 'pretty' if args.pretty else 'backtrace' if args.backtrace else 'storage'
     work = args.output.resolve().parent / ('logger-storage-' + uuid.uuid4().hex)
     work.mkdir(parents=True)
@@ -106,28 +115,6 @@ def main():
                 declarations = public('uint64_t swoole_random_int(', 'size_t swoole_random_bytes(', '#define SW_LOOP_N(', count=3)
                 config = '#include "swoole_hash.h"\n' + declarations + '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
                 report['limits'] = 'Two unchanged hash originals PHP/Jenkins with real random input provider,8192originalsizes andassertions. Austin signedbinary undefined-shift original andCRC32 unselected/unqualified. No fullgroup/39original inventory, worldbuild, sanitizer, fault/crash/OOM/lifetime or performance claim.'
-            if args.inline_originals:
-                original = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/src/core/string.cpp'])
-                (work / 'pinned-string.cpp').write_bytes(original)
-                names = ['ltrim', 'rtrim', 'strnpos', 'strnstr', 'substr_len', 'starts_with', 'ends_with']
-                fragments = [body(original.decode(), 'TEST(string, ' + name + ')') for name in names]
-                excerpt = ('using namespace std;\n' + '\n'.join(fragments)).encode()
-                expected = ['string.' + name for name in names]
-                # Native bodies from the pin, selected bodies from the hybrid build's headers (the
-                # owned copy in native/utilities once upstream's is deleted), which leave out the
-                # helpers nothing in the build calls.
-                for name, signatures in SIGNATURES.items():
-                    pinned = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':' + name]).decode()
-                    selected = owned(hybrid, name)
-                    for variant, content in [('native', pinned), ('selected', selected.read_text())]:
-                        (work / (variant + '-' + Path(name).name + '.inc')).write_text('\n'.join(
-                            body(content, signature) for signature in signatures if variant == 'native' or signature in content))
-                config = '#include <cassert>\n#include <cctype>\n#include <sys/types.h>\n#include <strings.h>\n' + public('#define SW_STRL(', '#define sw_likely(')
-                for index, variant in enumerate(['selected', 'native']):
-                    config += ('#ifdef M14_SELECTED_INLINE\n#include "swoole_rs_utilities.h"\n' if index == 0 else '#else\n')
-                    config += 'namespace swoole {\n#include "' + variant + '-swoole_util.h.inc"\n}\n#include "' + variant + '-swoole.h.inc"\n'
-                config += '#endif\n#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
-                report['limits'] = 'Seven unchanged original TEST/ASSERT bodies, exact engine-specific native/selected M14inline wrappers and loaded selected Rust exports. No M01String object/copy or fullheader/worldbuild, full39inventory, sanitizer/lifetime/performance claim.'
             if args.global_logger_originals:
                 names = ['level', 'date_format_long_string', 'date_with_microseconds', 'ignore_error']
                 excerpt = ('\n'.join(body(original.decode(), 'TEST(log, ' + name + ')') for name in names)).encode()
@@ -237,10 +224,6 @@ def main():
             required += ['read_content']
         if args.hash_originals:
             required = ['swoole_hash_php', 'swoole_hash_jenkins', 'swoole_random_int', 'swoole_random_bytes']
-        if args.inline_originals:
-            required = []
-            if re.search(r'swr_v[0-9]+_utils_', symbols.stdout):
-                raise ValueError('Native inline helper unexpectedly imports Rust utilities')
         if symbols.returncode or any(name not in symbols.stdout for name in required):
             raise ValueError('Helper lacks required imported production Logger methods')
         inline_helper = work / 'm14_inline_selected.so'
@@ -252,7 +235,7 @@ def main():
             raise ValueError('Selected inline helper compilation failed')
         symbols = run_isolated(['nm', '-u', str(inline_helper)], timeout=15)
         report['selected_inline_imports'] = dict(exit=symbols.returncode, stdout=symbols.stdout, stderr=symbols.stderr)
-        required = (['_ZN6swoole6StringD1Ev'] if coherent else ['swr_v2_utils_ltrim', 'swr_v2_utils_rtrim', 'swr_v2_utils_search', 'swr_v1_utils_compare', 'swr_v1_utils_partition'] if args.inline_originals else [])
+        required = ['_ZN6swoole6StringD1Ev'] if coherent else []
         if logger_layout and args.backtrace:
             required += ['swr_v1_logger_set']
         if symbols.returncode or any(name not in symbols.stdout for name in required):

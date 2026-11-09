@@ -17,7 +17,6 @@ for test in \
     tests/modules/phpcollections/test_prepare_benchmark.py \
     tests/modules/phpcollections/test_runtime.py \
     tests/modules/phphelpers/test_runtime.py \
-    tests/modules/utilities/test_prepare_benchmark.py \
     tests/modules/utilities/test_storage_summary.py
 do
     name=$(echo "$test" | tr / _)

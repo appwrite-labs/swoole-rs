@@ -6,7 +6,6 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-mod bytes;
 mod frontdoor;
 pub use frontdoor::*;
 mod helpers;
@@ -16,7 +15,6 @@ mod sni;
 pub use sni::sni_wildcard_matches;
 pub mod misc;
 mod wait_registry;
-pub use bytes::*;
 pub use logger::*;
 pub use wait_registry::{
     swr_v1_utils_registry_wait, swr_v1_utils_registry_wakeup, swr_v1_utils_wait_registry_init,

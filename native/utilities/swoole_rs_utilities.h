@@ -90,33 +90,6 @@ bool swr_v1_logger_is_opened(const SwrLogger *);
 /* get_file (false) or get_real_file (true), valid until the file next changes. */
 const char *swr_v1_logger_file(const SwrLogger *, bool real);
 size_t swr_v1_logger_rotation_date(const SwrLogger *, uint8_t (*date)[16]);
-/* Additive complete inline publication ABI; all v1 declarations stay frozen.
- * Cursor/range are caller-owned and quiescent. ltrim length0 does not read the
- * cursor slot; rtrim length0 performs no access. Defined host ctype inputs only.
- * Writes/pointer progression occur at original per-byte boundaries in Rust. */
-size_t swr_v2_utils_ltrim(char **cursor, size_t length, uint8_t signed_char);
-size_t swr_v2_utils_rtrim(char *data, size_t length, uint8_t signed_char);
-struct SwrUtilsSearchResult {
-    const char *pointer;
-    ptrdiff_t offset;
-    uint32_t needle_length;
-};
-/* Search0/1 binary/libc casefold;2 discovers original C-needle uint32 length.
- * Initialized spans and nonempty needle; reverse length>=needle length.
- * Pointer preserves input provenance, offset-1/null on miss. No retention.
- * Native debug assertion effects follow return; invalid needle/order excluded. */
-struct SwrUtilsSearchResult swr_v2_utils_search(const char *, size_t,
-    const char *, uint32_t needle_length, uint8_t mode);
-/* Borrowed inline byte policy; search modes binary=0, libc casefold=1, reverse=2. */
-size_t swr_v1_utils_trim(const uint8_t *, size_t, uint8_t right, uint8_t signed_char);
-ptrdiff_t swr_v1_utils_find(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t mode);
-/* C equality=0/1 (plain/casefold), C prefix=2/3, binary prefix=4/suffix=5.
- * C modes preserve early NUL; borrowed compared ranges only, no retention. */
-uint8_t swr_v1_utils_compare(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t mode);
-ptrdiff_t swr_v1_utils_partition(const uint8_t *, size_t, uint8_t separator, uint8_t before);
-/* Exclusive mutable char range; native tolower locale/promotions, no retention.
- * Nonpositive length performs no access. Original undefined ctype inputs excluded. */
-void swr_v1_utils_lowercase(uint8_t *, int32_t length, uint8_t signed_char);
 #ifdef __cplusplus
 }
 #include <type_traits>

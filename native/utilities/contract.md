@@ -23,11 +23,8 @@ upstream's and keep what C++, the compiled core-tests and the utilities gates us
   allocation, warnings and field writes happen natively between steps. Null or
   unknown phase returns INVALID without reading facts.
 
-## Byte helpers
+## Hashing and logging helpers
 
-- `swr_v1_utils_lowercase(bytes, int32 length, signed_char)`: in-place
-  `swoole_strtolower` traversal with host `tolower` once per byte, including after
-  NUL. Nonpositive length does no access.
 - `swr_v1_utils_hash(bytes, len, algorithm, signed_char)`: 0 PHP/DJBX33A (64-bit
   wrapping), 1 Jenkins (original u32/u32/u64 mix and truncated block counter),
   2 Austin (64-bit state, signed-int promotions). Unknown algorithm or invalid range
@@ -36,34 +33,6 @@ upstream's and keep what C++, the compiled core-tests and the utilities gates us
 - `swr_v1_utils_pretty_range`: offset/length for `Logger::get_pretty_name`. Never
   writes input. Invalid outputs/ranges return -1; outputs are zeroed first; no
   bracket returns an empty span. Native builds the `std::string` afterwards.
-- `swr_v1_utils_trim(bytes, len, right, signed_char)`: skipped prefix count, or
-  retained suffix length. Native mutable rtrim zeros the removed bytes.
-- `swr_v1_utils_find(hay, len, needle, len, mode)`: 0 binary (`memchr`), 1 libc
-  casefold (`strncasecmp` with exact-first-byte guard), 2 reverse (excludes
-  offset 0). Returns offset or -1. Needle must be nonempty; reverse needs
-  length >= needle.
-- `swr_v1_utils_compare(a, alen, b, blen, mode)`: 0/1 C-string equality plain/casefold,
-  2/3 C-string prefix plain/casefold, 4 binary prefix, 5 binary suffix. Length guards
-  short-circuit before access; C modes call host `strncmp`/`strncasecmp` and may stop
-  at an early NUL. Binary modes keep embedded NULs. Empty compared ranges return true.
-- `swr_v1_utils_partition(bytes, len, separator, before)`: bytes before/after the
-  first separator (`memchr`), or -1.
-
-### v2 inline publication
-
-All public utility signatures are unchanged; v1 is frozen.
-
-- `swr_v2_utils_ltrim(char **cursor, length, signed_char)`: length 0 does not read
-  the cursor slot. Follows the original NUL short circuit and publishes each cursor
-  increment; returns remaining length.
-- `swr_v2_utils_rtrim(data, length, signed_char)`: walks backwards, clearing each
-  whitespace byte before visiting its left neighbor. Length 0 does no access.
-- `swr_v2_utils_search(hay, len, needle, needle_len, mode)` returns
-  `SwrUtilsSearchResult {pointer, offset, uint32 needle_length}`. Modes: 0 binary,
-  1 libc casefold, 2 reverse (discovers the C-needle length with native uint32
-  narrowing). The pointer is derived from the input pointer; miss returns null/-1.
-  Native debug assertions run after return.
-
 ## Concurrency primitives
 
 - `swr_v1_utils_spinlock(u32 *, cpus, backoff_limit)`: SeqCst compare-exchange like

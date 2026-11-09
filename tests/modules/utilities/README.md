@@ -2,8 +2,13 @@
 
 ABI: [native/utilities/contract.md](../../../native/utilities/contract.md). Rust
 owns the hash arithmetic, shared spin acquisition, the locks module's wait/wake
-calls, pretty-name slicing, the Logger (`crates/utilities/src/logger.rs`) and 16
-shared inline helpers.
+calls, pretty-name slicing and the Logger (`crates/utilities/src/logger.rs`).
+
+Upstream's inline string helpers (`swoole::ltrim`, `rtrim`, `substr_len`,
+`starts_with`, `ends_with`, `swoole_strnstr`, `swoole_strnpos`,
+`swoole_str_istarts_with` and the rest) have no caller left in the hybrid, so they
+left `swoole_util.h` and `swoole.h` with their Rust bodies, and
+`core-tests/src/core/string.cpp` has nothing left to test (#2089).
 
 Use a release archive matching the current utility sources, headers and overlays.
 
@@ -12,8 +17,6 @@ Use a release archive matching the current utility sources, headers and overlays
 ```sh
 python3 tests/modules/utilities/gate.py --source /pinned/reference \
   --archive /inputs/libswoole_rs_ffi.a --sanitize --output target/utilities.json
-python3 tests/modules/utilities/bytes_gate.py --source /pinned/reference \
-  --archive /inputs/libswoole_rs_ffi.a --output target/utilities-bytes.json
 python3 tests/modules/utilities/wait.py --source /pinned/reference \
   --archive /inputs/libswoole_rs_ffi.a --sanitize --output target/utilities-wait.json
 ```
@@ -21,18 +24,12 @@ python3 tests/modules/utilities/wait.py --source /pinned/reference \
 | Script (dev.py phase) | Checks |
 | --- | --- |
 | `gate.py` (`utilities-native`) | Pinned vs Rust: defined hashes, pretty ranges, levels/labels/rotation, exact line/microsecond formatting, truncation, NUL and errno, thread/shared-mapping spin witnesses; signed and unsigned char |
-| `bytes_gate.py` (`utilities-bytes`) | All 16 pinned inline helpers vs the hybrid build's headers: binary/NUL input, bounds/sentinels/errno, locale classification and casefold, both char modes |
 | `wait.py` (`utilities-wait`) | Wait/wake result, errno and word; real shared fork wake, Linux futex wait channel and fallback, macOS polling |
 
 `--rust-asan` (with `--sanitize`) additionally requires the utility Rust objects
-to carry ASan imports (`rust_asan.py`). On macOS the installed Apple and Rust ASan
+to carry ASan imports. On macOS the installed Apple and Rust ASan
 runtimes are incompatible: use `--native-ubsan-only --asan-runtime
 /absolute/path/to/librustc-stable_rt.asan.dylib`. Rust's std stays uninstrumented.
-
-Defined domains exclude empty search needles, reverse-search underflow and
-undefined signed-char ctype inputs. Reverse search omits offset 0;
-case-insensitive search keeps the exact-first-byte guard and host `strncasecmp`.
-Unavailable locales (for example Linux `en_US.UTF-8`) are unqualified.
 
 ## Logger
 
@@ -57,13 +54,12 @@ Rust storage and there is no bitmap left to test.
 | `--logger-originals` | Unchanged GoogleTests `pretty_name`, `pretty_name_lambda`, `rotation`, `set_stream` |
 | `--pretty-originals` | The two pretty-name originals only |
 | `--hash-originals` | `hash.php`, `hash.jenkins` |
-| `--inline-originals` | `ltrim`, `rtrim`, `strnpos`, `strnstr`, `substr_len`, `starts_with`, `ends_with` |
 | `--global-logger-originals` | `level`, `date_format_long_string`, `date_with_microseconds`, `ignore_error` |
 | `--redirect-originals` / `--redirect-original` | `redirect_1` and `redirect_2` (or just the first) |
 
 Originals run with real GoogleTest and strict XML/status/exit checks. The global
 and redirect profiles need complete exports beside both DSOs. Registered as
-`utilities-public-storage` and `utilities-{logger,hash,inline,global-logger,redirect}-originals`.
+`utilities-public-storage` and `utilities-{logger,hash,global-logger,redirect}-originals`.
 
 The original spawn helper calls `exit(0)` after its callback, even after a child
 `ASSERT` failure, so parent XML and exit status cannot prove child success.
@@ -79,9 +75,6 @@ Other consumers:
   (`utilities-php-logger`): PHP Logger thresholds, rotation/reopen, date
   rejection/recovery, binary NUL, inherited/private file custody, and four forked
   writers with 128 records per file.
-- `lowercase_runtime.py` (`utilities-lowercase-runtime`, same pair arguments plus
-  `--source`): the unchanged trailer PHPT from `lowercase-originals.json` and the
-  raw HTTP/1 wire fixture `lowercase_wire.py`. Linux needs `--php-extension sockets`.
 
 ## Logging macros (`macro_profile.py`)
 
@@ -91,7 +84,7 @@ python3 tests/modules/utilities/macro_profile.py \
   --output target/macro-profile/report.json
 ```
 
-Takes a passing `storage.py --inline-originals` receipt, re-verifies its SDK
+Takes a passing `storage.py` originals receipt, re-verifies its SDK
 headers and DSOs, and runs unchanged macro bodies through the production Logger
 DSOs for four debug/trace combinations per engine: filtered argument laziness,
 repeated level/error reads, last-error publication, trace masks, labels/order and
@@ -99,23 +92,6 @@ hex rows. `--candidate-header` / `--candidate-archive` test a private frontdoor
 implementation (macOS also needs `--asan-runtime`).
 `--single-profile`, `--cpp-standard` and `--extra-cxx-flag` adjust the build. The
 output directory must exist.
-
-## Benchmark preparation
-
-```sh
-python3 tests/modules/utilities/prepare_benchmark.py --source /pinned/reference \
-  --archive /copies/selected/libswoole_rs_ffi.a \
-  --build-manifest /copies/selected/build-manifest.json --output target/prepared.json
-python3 -m unittest discover -s tests/modules/utilities -p 'test_*.py'
-```
-
-Requires an immutable optimized release archive whose manifest matches the
-current utility sources, header and patches. Builds `benchmark.cc` at `-O3` and
-runs all 34 workloads in check mode (no clock; `elapsed_ns` must be 0): hash,
-pretty, formatting, trim/search/compare/partition, enum policy, ready-word
-wait/wake, and lowercase at
-32/256/4096 bytes. Measurement uses the printed `--measure` template and must run
-without concurrent workloads; none has run.
 
 ## Known gaps
 

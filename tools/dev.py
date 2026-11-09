@@ -370,8 +370,6 @@ def plan(args, reports):
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-native'))
-        script('utilities-bytes', 'tests/modules/utilities/bytes_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', *report('utilities-bytes'))
         if sys.platform.startswith('linux'):  # Rust implements only the futex path; others run upstream's registry.
             script('utilities-wait', 'tests/modules/utilities/wait.py', '--source', ROOT / 'target/upstream/src',
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *report('utilities-wait'))
@@ -379,16 +377,12 @@ def plan(args, reports):
         utility_source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
         utility_engines = ['--engine', f'hybrid={selected_export / "swoole.so"}',
                            '--engine', f'upstream={native_export / "swoole.so"}']
-        for family in ['logger', 'hash', 'inline', 'global-logger', 'redirect']:
+        for family in ['logger', 'hash', 'global-logger', 'redirect']:
             name = 'utilities-' + family + '-originals'
             script(name, 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
                    *php_for('curl'), *utility_engines, '--build-manifest', manifest,
                    '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                    '--source-ref', utility_source, '--' + family + '-originals', *report(name))
-        script('utilities-lowercase-runtime', 'tests/modules/utilities/lowercase_runtime.py',
-               '--source', manifest.parent / 'src', *php_for('sockets'), *engines,
-               '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
-               '--source-ref', 'HEAD', *report('utilities-lowercase-runtime'))
         script('utilities-php-logger', 'tests/modules/utilities/php_logger.py', *php, *engines,
                '--build-manifest', manifest, '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--source-ref', 'HEAD', *report('utilities-php-logger'))
@@ -520,13 +514,9 @@ def retain_build_manifest(build, reports):
 BARRIER_PHASES = {'ownership', 'build', 'reference-build', 'stdext-reference-build'}
 
 
-# Phases that run original PHPTs under another name (their servers race for ports under load).
-PHPT_PHASES = {'phpt', 'utilities-lowercase-runtime'}
-
-
 def serial_phase(name):
     """Phases that can't share the machine: fixed ports (the PHPT runners), timing, benchmarks."""
-    return (name in PHPT_PHASES or name.endswith('-originals') or 'benchmark' in name or 'timing' in name)
+    return (name == 'phpt' or name.endswith('-originals') or 'benchmark' in name or 'timing' in name)
 
 
 def phase_dependencies(commands, reports):
