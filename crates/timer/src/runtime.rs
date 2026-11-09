@@ -1,4 +1,4 @@
-//! Stateless native clock/backend adaptation, and the system timer
+//! The timer's backend choice and clock arithmetic, and the system timer
 //! (`setitimer`, upstream `src/os/timer.cc`).
 use libc::c_int;
 
@@ -9,9 +9,9 @@ pub struct NativeTime {
     pub fraction: i64,
 }
 
-/// Native init mode: manual=0, reactor=1, system=2. No worker-role inference.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_timer_backend(manual: u32, reactor: u32) -> u32 {
+/// `Timer::init`'s mode: manual=0, reactor=1, system=2. No worker-role inference.
+#[must_use]
+pub fn swr_v1_timer_backend(manual: u32, reactor: u32) -> u32 {
     if manual != 0 {
         0
     } else if reactor != 0 {
@@ -38,8 +38,11 @@ fn system_interval(milliseconds: i64) -> NativeTime {
 
 /// Upstream `SystemTimer_set`: `ITIMER_REAL` fires every `milliseconds` (zero or
 /// less disarms it). `SW_OK`, or `SW_ERR` with errno from `setitimer`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
+#[expect(
+    clippy::must_use_candidate,
+    reason = "Timer::set ignores the status, as upstream's set() callers do"
+)]
+pub fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
     let interval = system_interval(milliseconds);
     let every = libc::timeval {
         tv_sec: interval.seconds,
@@ -97,15 +100,15 @@ pub fn absolute_msec() -> i64 {
     now.tv_sec * 1000 + now.tv_nsec / 1_000_000
 }
 
-/// Native clocks remain outside Rust; overflow was outside original defined input.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_timer_relative_msec(absolute: i64, base: i64) -> i64 {
+/// `Timer::get_relative_msec`'s subtraction; overflow was outside upstream's defined input.
+#[must_use]
+pub fn swr_v1_timer_relative_msec(absolute: i64, base: i64) -> i64 {
     absolute.wrapping_sub(base)
 }
 
 /// Preserve the armed timeout unless an accepted add needs an earlier wakeup.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_timer_rearm_after_add(current: i64, delay: i64) -> i64 {
+#[must_use]
+pub fn swr_v1_timer_rearm_after_add(current: i64, delay: i64) -> i64 {
     if current < 0 || current > delay {
         delay
     } else {
@@ -115,8 +118,7 @@ pub extern "C" fn swr_v1_timer_rearm_after_add(current: i64, delay: i64) -> i64 
 
 /// # Safety
 /// Deadline is aligned/writable; failure leaves it unchanged. No pointers retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_delay_deadline(
+pub unsafe fn swr_v1_timer_delay_deadline(
     now: i64,
     previous: i64,
     delay: i64,

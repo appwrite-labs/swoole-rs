@@ -17,6 +17,11 @@ use swoole_rs_http::{HttpCookie, HttpSpan, HttpStaticContext, HttpStaticPath, ST
 pub mod http_server;
 mod owned_proxy;
 pub use owned_proxy::*;
+mod request;
+pub use request::{
+    HttpForm, HttpNative, HttpRequest, HttpString, destroy_multipart_parser, init_multipart_parser,
+    parse_multipart_data, request_free, request_new,
+};
 #[cfg(test)]
 mod pin_helpers;
 

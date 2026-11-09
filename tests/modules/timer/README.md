@@ -13,7 +13,7 @@ Each test's docstring says what it checks.
 ```sh
 python3 -m pytest tests/modules/timer/test_bailout.py \
   --engine upstream=target/upstream/src/modules/swoole.so \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so
+  --engine cargo=target/ext/swoole.so
 ```
 
 The original timer PHPTs run in the PHPT gate (`corpus/upstream/run.py --module

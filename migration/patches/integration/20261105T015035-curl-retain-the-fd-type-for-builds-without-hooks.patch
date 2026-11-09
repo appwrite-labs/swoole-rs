@@ -1,8 +1,0 @@
-diff --git a/ext-src/php_swoole_private.h b/ext-src/php_swoole_private.h
-index ecfff99..0b3f3ea 100644
---- a/ext-src/php_swoole_private.h
-+++ b/ext-src/php_swoole_private.h
-@@ -132,2 +132,3 @@ BEGIN_EXTERN_C()
- //---------------------------------------------------------
-+
- enum php_swoole_req_status {

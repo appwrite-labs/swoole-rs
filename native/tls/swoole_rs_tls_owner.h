@@ -42,25 +42,8 @@ swr_v1_tls_owner_prepared swr_v1_tls_owner_new(void (*warn)(const char *,
 void swr_v1_tls_owner_free(const swr_v1_tls_owner *);
 /* The owner's fields and string slots. */
 swr_v1_tls_owner_prepared swr_v1_tls_owner_view(const swr_v1_tls_owner *);
-/* status 0, -2 out of memory, or the failed string's status at index. */
-typedef struct {
-  int32_t status;
-  uint32_t index;
-} swr_v1_tls_owner_copy;
-swr_v1_tls_owner_copy swr_v1_tls_owner_assign(const swr_v1_tls_owner *,
-                                              const swr_v1_tls_owner *);
 int swr_v1_tls_owner_set_path(const swr_v1_tls_owner *, uint32_t, const char *,
                               size_t);
-struct swr_v1_socket;
-int swr_v1_tls_owner_socket_context(const swr_v1_tls_owner *,
-                                    struct swr_v1_socket *, bool, bool);
-typedef struct {
-  int status;
-  unsigned long error;
-} swr_v1_tls_owner_session_result;
-swr_v1_tls_owner_session_result swr_v1_tls_owner_socket_session(
-    const swr_v1_tls_owner *, struct swr_v1_socket *,
-    const swr_v1_core_string *, void (*)(SSL *, bool));
 #ifdef __cplusplus
 }
 #endif

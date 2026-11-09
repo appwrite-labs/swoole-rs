@@ -551,7 +551,7 @@ fn invoke(callable: *mut c_void, argv: *mut zval, argc: u32) -> Result<bool, Bai
             argv,
             ptr::null_mut(),
             native::enable_coroutine(),
-            swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create,
+            swoole_rs_phpcoroutines::create_coroutine,
             swr_zend_callable_warning,
         )
     };

@@ -1,9 +1,0 @@
-diff --git a/src/network/dns.cc b/src/network/dns.cc
-index 2012c9e..49cd99c 100644
---- a/src/network/dns.cc
-+++ b/src/network/dns.cc
-@@ -159,3 +159,3 @@ std::vector<std::string> dns_lookup_impl_with_socket(const char *domain, int fam
-             return exchange->sock->sendto(
--                exchange->server->host, exchange->server->port, reinterpret_cast<const char *>(data), length) != 0;
-+                exchange->server->host.c_str(), exchange->server->port, reinterpret_cast<const char *>(data), length) != 0;
-         },

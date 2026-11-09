@@ -20,7 +20,7 @@ runs:
         shared-key: release
         save-if: false
     - shell: bash
-      run: rm -rf target/ext target/hybrid target/upstream target/thirdparty target/native-core
+      run: rm -rf target/ext target/upstream target/thirdparty target/native-core
     - id: install
       uses: ./.github/actions/install
       with:
@@ -53,7 +53,7 @@ runs:
         for engine in $ENGINES; do
           case $engine in
             upstream)
-              python3 tools/build_hybrid.py --backend upstream --php-sockets $services | tee upstream.log
+              python3 tools/build_upstream.py --php-sockets $services | tee upstream.log
               cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so ;;
             cargo)
               python3 tools/build_ext.py --php-sockets $services

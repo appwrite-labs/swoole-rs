@@ -41,7 +41,7 @@ const CANDIDATE: Engine = Engine {
 mod request {
     use std::cell::Cell;
     use std::ffi::{CStr, c_char, c_void};
-    use swoole_rs_http::{HttpRequest as Request, HttpString};
+    use swoole_rs_http_ffi::{HttpRequest as Request, HttpString};
 
     thread_local! {
         /// The errno native code would leave after `strtoull`.

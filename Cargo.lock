@@ -595,11 +595,8 @@ dependencies = [
  "memchr",
  "regex-automata",
  "swoole-rs-base64",
- "swoole-rs-buffer",
- "swoole-rs-corebase",
  "swoole-rs-locale",
  "swoole-rs-oracle",
- "swoole-rs-ossupport",
 ]
 
 [[package]]
@@ -607,9 +604,12 @@ name = "swoole-rs-http-ffi"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-base64",
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-http",
  "swoole-rs-oracle",
+ "swoole-rs-ossupport",
 ]
 
 [[package]]
@@ -1010,6 +1010,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-http2",
  "swoole-rs-oracle",
  "swoole-rs-protocols-ffi",
@@ -1074,6 +1075,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-oracle",

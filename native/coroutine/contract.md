@@ -102,8 +102,7 @@ families against upstream built the same way.
 ## Channel
 
 `crates/coroutine/src/chan.rs` is the whole Channel; `src/coroutine/channel.cc`
-and its header are gone, and core-tests' `test_coroutine.h` includes
-`swoole_coroutine.h` in the header's place (`overlay_native_tree`). pop/push/close
+and its header are gone. pop/push/close
 run the host's coroutines through the `Effects` trait: crates/phpcollections
 implements it over PHP's coroutines (timer, cancelable yield, resume), and the
 crate's tests over a thread-per-coroutine model that runs upstream's

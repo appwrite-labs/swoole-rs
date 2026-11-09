@@ -24,7 +24,7 @@ pub extern "C" fn swr_v1_abi_version() -> u32 {
     1
 }
 
-/// Return the migrated kernels: every module, as the bits `MODULES` in `tools/build_hybrid.py` names.
+/// Return the migrated kernels: every module, as the bits `MODULES` in `tools/check_migration.py` names.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_feature_bits() -> u64 {
     (1 << 28) - 1

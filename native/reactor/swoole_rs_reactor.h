@@ -33,18 +33,8 @@ typedef struct swr_v1_reactor_deferred swr_v1_reactor_deferred;
 int32_t swr_v1_reactor_deferred_push(swr_v1_reactor_deferred **, void (*call)(void *), void *data,
                                      void (*dispose)(void *));
 
-/* Each backend's whole wait() loop in one call (#336, #391). Rust runs the loop and its readiness
-   order; these are the native effects, each passed `context` (prepare/remove also the socket). */
-enum { SWR_REACTOR_POLL, SWR_REACTOR_EPOLL, SWR_REACTOR_KQUEUE };
-/* Reactor handler tables (read/write/error per fd type, write and error defaults).
- * Handlers are ReactorHandler: int (*)(Reactor *, Event *). get kind: 0 read, 1 write,
- * 2 error; error_only false adds get_error_handler's read and write fallbacks. */
 /* network::Socket's write-path fields, embedded in Socket in this order and with these
- * types (Socket static_asserts it), and the reactor's buffered write over them
- * (Reactor::write_func). The data, or iov[count], is what to queue; offset is what the
- * send took. Outcome 0: value is the result. Otherwise return SW_ERR after: 1 the
- * "data packet is too large" warning, 2 the output buffer overflow warning, 3
- * swoole_set_last_error(errno), 4 Buffer::check(status). */
+ * types (Socket static_asserts it). */
 typedef struct swr_v1_buffer swr_v1_buffer;
 typedef struct {
     void *out_buffer;
@@ -55,33 +45,9 @@ typedef struct {
     uint8_t ssl_send;
     uint8_t send_wait;
 } swr_v1_socket_output;
-typedef struct {
-    const uint8_t *data;
-    const struct iovec *iov;
-    size_t count;
-    size_t length;
-} swr_v1_reactor_write_payload;
-typedef struct {
-    void *context;
-    void (*set_nonblock)(void *);
-    ssize_t (*send)(void *); /* keeps the kernel's errno */
-    swr_v1_buffer *(*create_buffer)(void *); /* out_buffer = new Buffer(chunk_size) */
-    void (*watch_writable)(void *); /* add_write_event unless already writable */
-} swr_v1_reactor_write_ops;
-typedef struct {
-    ssize_t value;
-    int32_t outcome;
-    int32_t status;
-} swr_v1_reactor_write_result;
-swr_v1_reactor_write_result swr_v1_reactor_write(swr_v1_socket_output *output, bool *kernel_nobufs, swr_v1_buffer *buffer,
-    uint32_t default_buffer_size, const swr_v1_reactor_write_payload *payload, const swr_v1_reactor_write_ops *ops);
-/* swoole::Event; the wait loop reads and writes the socket record (swoole_rs_socket.h). */
-typedef struct {
-    int fd;
-    int16_t reactor_id;
-    int type;
-    void *socket;
-} swr_v1_reactor_event;
+/* Reactor handler tables (read/write/error per fd type, write and error defaults).
+ * Handlers are ReactorHandler: int (*)(Reactor *, Event *). get kind: 0 read, 1 write,
+ * 2 error; error_only false adds get_error_handler's read and write fallbacks. */
 typedef struct swr_v1_reactor_handlers swr_v1_reactor_handlers;
 typedef int (*swr_v1_reactor_handler)(void *, void *);
 swr_v1_reactor_handler swr_v1_reactor_handlers_get(const swr_v1_reactor_handlers *, uint32_t kind, int fd_type, bool error_only);
@@ -93,23 +59,6 @@ int16_t swr_v1_reactor_poll_events_to(int events);
 typedef struct swr_v1_reactor_registry swr_v1_reactor_registry;
 void *swr_v1_reactor_registry_get(const swr_v1_reactor_registry *, int fd);
 size_t swr_v1_reactor_registry_count(const swr_v1_reactor_registry *);
-/* Reactor::_writable_callback and drain_write_buffer over the socket's block and its
- * output queue (null when there's none); the native effects below. drain also needs
- * wait_writable and removed. */
-typedef struct {
-    void *context;
-    int (*front_kind)(void *); /* typed_front().kind or front()->type */
-    int (*handle_send)(void *);
-    int (*handle_sendfile)(void *);
-    int (*close)(void *);
-    int (*trigger_close)(void *);
-    void (*delete_timer)(void *); /* swoole_timer_del(send_timer) */
-    void (*remove_write_event)(void *);
-    int (*wait_writable)(void *);
-    bool (*removed)(void *);
-} swr_v1_reactor_flush_ops;
-int swr_v1_reactor_flush(swr_v1_socket_output *output, swr_v1_buffer *buffer, const swr_v1_reactor_flush_ops *ops);
-void swr_v1_reactor_drain(swr_v1_socket_output *output, swr_v1_buffer *buffer, const swr_v1_reactor_flush_ops *ops);
 /* network::Socket's buffer sizes, setsockopt included. */
 bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
@@ -123,17 +72,9 @@ typedef struct {
     uint8_t want_read;
     uint8_t want_write;
 } swr_v1_socket_tls;
-/* Socket::ssl_clear_error: ERR_clear_error and clear the want flags. */
-void swr_v1_socket_ssl_clear(swr_v1_socket_tls *tls);
 /* _ssl_read_x509_file: a certificate as PEM into at most length bytes, warning and
  * returning -1 on failure; frees cert when consume. */
 int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);
-/* sw_reactor()->set_exit_condition, remove_exit_condition and set_end_callback. */
-void swr_v1_event_set_exit_condition(int id, bool (*condition)(size_t *event_num));
-void swr_v1_event_remove_exit_condition(int id);
-void swr_v1_event_set_end_callback(int id, void (*callback)(void));
-/* The swr_v1_reactor_change_log the C++ passes. */
-void swr_v1_reactor_log(const char *origin, int code, const char *message);
 /* An IOVector's cursor. */
 typedef struct {
     struct iovec *iterator;
@@ -158,25 +99,6 @@ void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
 swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner);
 size_t swr_v1_reactor_iov_length(const swr_v1_reactor_iov *owner);
 void swr_v1_reactor_iov_advance(swr_v1_reactor_iov *owner, intptr_t n);
-/* Socket::wait_for and the *_sync methods: Rust runs the loop (prepare, retry
- * classification, ENOBUFS backoff, poll, timeout) and each kind's progress rule;
- * native code gives the socket's flags and performs each I/O call. Returns the
- * bytes moved or -1 with the last error and errno set. */
-enum {
-    SWR_SOCKET_SYNC_SENDFILE = 3, /* all of length; a zero return is an error (Socket::sendfile_sync) */
-};
-typedef struct {
-    void *socket;
-    int fd;
-    bool dont_restart;
-    bool *kernel_nobufs;
-    void (*prepare)(void *socket);
-    int16_t (*events)(void *socket, int event);
-    ssize_t (*io)(void *socket, void *buffer, size_t length, int flags);
-    void (*set_last_error)(int error);
-    void (*dispatch)(void);
-} swr_v1_socket_sync_hooks;
-ssize_t swr_v1_socket_sync(const swr_v1_socket_sync_hooks *hooks, int kind, void *buffer, size_t length, int flags, int event, int timeout_ms);
 /* network::Socket's swSocketType <-> (domain, type), and the type a host names
  * with how many leading bytes convert_to_type erases. */
 typedef struct { int socket_type; size_t erase; } swr_v1_socket_host_type_plan;

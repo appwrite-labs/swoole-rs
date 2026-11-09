@@ -9,7 +9,7 @@ use std::{
 use swoole_rs_corebase::{
     swr_v1_core_server, swr_v1_core_signal_listener_num, thread_async_threads,
 };
-use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_process::{methods, worker_record::WorkerRecord};
@@ -256,7 +256,7 @@ pub(crate) unsafe fn callable_call(
             argv,
             ptr::null_mut(),
             coroutine,
-            swr_v1_phpcoroutines_create,
+            create_coroutine,
             swr_zend_callable_warning,
         )
     };

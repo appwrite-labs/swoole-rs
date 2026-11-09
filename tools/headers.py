@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Check the hand-written swr_v1_* prototypes under native/ against cbindgen.
+"""Check the hand-written swr_v<N>_* prototypes under native/ against cbindgen.
 
-cbindgen runs once per crate. Every swr_v1_* function declared in a native header
+cbindgen runs once per crate. Every swr_v<N>_* function declared in a native header
 must be exported by a crate, with the same return type, parameter types (pointer
 depth, const-ness and scalar width), and parameter names, whitespace aside.
 Struct, typedef and function-pointer types are named differently on the two sides
-(the headers use swr_v1_* names, cbindgen the Rust ones), so only their pointer
+(the headers use swr_v<N>_* names, cbindgen the Rust ones), so only their pointer
 shape is compared: a named type matches a function pointer or, as an enum, a 32-bit
 integer, and `void *` matches any data pointer of the same depth and const-ness.
 Exports that a macro generates are invisible to cbindgen; for those the check is
@@ -89,7 +89,7 @@ def shape(decl):
 
 def prototypes(text):
     found = {}
-    for match in re.finditer(r'([\w\s\*]*?)\b(swr_v1_\w+)\s*\(((?:[^;{}()]|\([^;{}]*?\))*)\)\s*;', strip(text)):
+    for match in re.finditer(r'([\w\s\*]*?)\b(swr_v[0-9]+_\w+)\s*\(((?:[^;{}()]|\([^;{}]*?\))*)\)\s*;', strip(text)):
         ret, name, params = match.groups()
         # A call in an inline body, not a declaration.
         if not ret.split() or set(ret.split()) & {'return', 'else', 'case', 'throw', 'new', 'delete'}:

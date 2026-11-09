@@ -2,7 +2,6 @@
 //! (prepare, retry classification, the ENOBUFS backoff, poll and timeout) and each
 //! `*_sync` method's progress rule. Native code performs each I/O call, keeping its
 //! counters and TLS, and reads the socket's bitfields, through [`SyncHooks`].
-use std::io::Error;
 use std::os::raw::{c_int, c_void};
 use std::time::{Duration, Instant};
 
@@ -49,20 +48,8 @@ enum Step {
     Error,
 }
 
-fn errno() -> c_int {
-    Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-pub(crate) fn set_errno(value: c_int) {
-    #[cfg(target_os = "linux")]
-    // SAFETY: this thread's errno slot.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(target_os = "linux"))]
-    // SAFETY: this thread's errno slot.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: the slot is this thread's live errno.
-    unsafe { *slot = value };
-}
+use swoole_rs_corebase::sys::errno;
+pub(crate) use swoole_rs_corebase::sys::set_errno;
 
 /// `Socket::wait_for`'s loop around `kind`'s progress rule on `length` bytes at
 /// `buffer`, waiting for `event` up to `timeout_ms` (no limit unless positive;
@@ -72,8 +59,7 @@ pub(crate) fn set_errno(value: c_int) {
 /// # Safety
 /// `hooks` is valid for this call: its functions are callable with its socket, and
 /// `kernel_nobufs` is writable. `buffer` denotes `length` bytes valid for `io`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_sync(
+pub unsafe fn swr_v1_socket_sync(
     hooks: *const SyncHooks,
     kind: c_int,
     buffer: *mut c_void,
