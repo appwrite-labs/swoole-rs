@@ -467,8 +467,8 @@ version = "0.1.0"
 name = "swoole-rs-deflate"
 version = "0.1.0"
 dependencies = [
- "libz-sys",
  "swoole-rs-inflate",
+ "swoole-rs-zlib",
 ]
 
 [[package]]
@@ -500,7 +500,6 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-http2",
  "swoole-rs-httpbindings",
- "swoole-rs-inflate",
  "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-oci",
@@ -601,7 +600,7 @@ name = "swoole-rs-inflate"
 version = "0.1.0"
 dependencies = [
  "brotli",
- "libz-sys",
+ "swoole-rs-zlib",
  "zstd",
 ]
 
@@ -1132,6 +1131,13 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "cc",
+]
+
+[[package]]
+name = "swoole-rs-zlib"
+version = "0.1.0"
+dependencies = [
+ "libz-sys",
 ]
 
 [[package]]

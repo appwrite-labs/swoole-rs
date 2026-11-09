@@ -126,6 +126,7 @@
         "crates/http/",
         "crates/deflate/",
         "crates/inflate/",
+        "crates/zlib/",
         "native/http/",
         "migration/patches/http/",
         "tests/modules/http/"

@@ -12,8 +12,7 @@ name = "swoole_rs_deflate"
 crate-type = ["rlib"]
 
 [dependencies]
-# System zlib (the same libz the PHP build links), per #439's -sys decision.
-libz-sys = { version = "1.1.20", default-features = false, features = ["libc"] }
+swoole-rs-zlib = { path = "../zlib" }
 
 [lints]
 workspace = true
