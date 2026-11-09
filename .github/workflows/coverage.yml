@@ -25,7 +25,7 @@ defaults:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 40
     outputs:
       php: ${{ steps.install.outputs.php }}
@@ -68,7 +68,7 @@ jobs:
 
   phpt:
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -162,7 +162,7 @@ jobs:
   # PHPUnit suite, set up as the merge tier's library job sets it up.
   apps:
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -209,7 +209,7 @@ jobs:
   report:
     needs: [build, phpt, apps]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

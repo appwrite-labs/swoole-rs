@@ -30,7 +30,7 @@ defaults:
 
 jobs:
   phpt:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -136,7 +136,7 @@ jobs:
   gate:
     needs: phpt
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 40
     permissions:
       contents: read
