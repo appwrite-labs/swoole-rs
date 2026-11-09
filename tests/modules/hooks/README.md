@@ -93,9 +93,7 @@ C++ can throw, are the same binary's cases with bodies in `system/fixture.cc`
 assertion macros in place of GoogleTest's: `rust_socket_scopes.protocol_snapshot_and_copy_restore`
 and `.error_text_publication` (formerly `socket_scopes.cpp`; its checks of the
 C++ `errString` cache went with the cache, since a `Socket` has no C++ members),
-the five `rust_dns_request.*` cases (formerly `dns_request_owner.cpp`) and
-`rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait` (formerly
-tests/modules/coroutine/lifetime.cpp). The fixture also holds the allocation fault
+and the five `rust_dns_request.*` cases (formerly `dns_request_owner.cpp`). The fixture also holds the allocation fault
 oracle they share. coroutine/base.cpp and file.cpp run here too
 (tests/modules/coroutine/README.md).
 

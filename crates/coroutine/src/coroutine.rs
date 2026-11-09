@@ -3,12 +3,12 @@
 //! resume code, task, cancel function, the origin tree, timing and the live map
 //! (`live.rs`), with whole run/resume/yield/close/bailout operations.
 //!
-//! C++ stores the scheduler in its original thread-local scope and each
-//! [`Coroutine`] inside its `swoole::Coroutine` facade, and reads fields inline;
-//! every write goes through these functions. The operations call back into C++
-//! for the swap callbacks and the [`Hooks`]: the context switch, `delete` and the
-//! bailout callback. No `&mut` into the scheduler or a coroutine is held across
-//! one of those calls, since C++ and other Rust calls change both meanwhile.
+//! The extension keeps the scheduler per thread (facade.rs) and each
+//! [`Coroutine`] at the start of its `swoole::Coroutine` record; C++ reads fields
+//! inline, and every write goes through these functions. The operations call the
+//! swap callbacks and the [`Hooks`]: the context switch, the release of an ended
+//! coroutine and the bailout callback. No `&mut` into the scheduler or a
+//! coroutine is held across one of those calls, since they change both.
 use core::ffi::{c_long, c_void};
 use core::ptr;
 
@@ -26,7 +26,7 @@ const STACK_ALIGNMENT: usize = 4 * 1024;
 
 pub type SwapCallback = Option<unsafe extern "C" fn(*mut c_void)>;
 
-/// One coroutine. `native` is the C++ facade that embeds it.
+/// One coroutine. `native` is the `swoole::Coroutine` record that starts with it.
 #[repr(C)]
 #[derive(Debug)]
 pub struct Coroutine {
@@ -58,7 +58,7 @@ pub struct Canceler {
     pub data: *mut c_void,
 }
 
-/// The effects the scheduler asks of C++, each given a facade
+/// The effects the scheduler runs, each given a `swoole::Coroutine` record
 /// (`Coroutine::native`). Rust frames between these calls own nothing with a
 /// destructor, so a coroutine stack the bailout abandons, or a longjmp out of a
 /// callback, skips no cleanup.
@@ -69,10 +69,12 @@ pub struct Hooks {
     pub swap_in: unsafe extern "C" fn(*mut c_void) -> bool,
     /// Switches out of the coroutine, back to whatever last switched in.
     pub swap_out: unsafe extern "C" fn(*mut c_void),
-    /// Deletes an ended coroutine's facade (and its stack).
+    /// Frees an ended coroutine's record (and its stack).
     pub destroy: unsafe extern "C" fn(*mut c_void),
-    /// Runs the bailout callback, which PHP's longjmps out of.
-    pub bailout: unsafe extern "C" fn(),
+    /// The bailout callback (upstream's `on_bailout`), which PHP's longjmps out
+    /// of, and its data; set while the scheduler bails out.
+    pub bailout: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub bailout_data: *mut c_void,
     /// `SW_CORO_TIME`'s clock in microseconds; null without it.
     pub clock: Option<unsafe extern "C" fn() -> c_long>,
 }
@@ -95,7 +97,7 @@ pub struct Scheduler {
     /// Where `swoole_coroutine_iterator_each` (gdb's walk) resumes.
     pub cursor: c_long,
     pub activated: bool,
-    /// Mirrors C++'s `on_bailout` being set: resumes are refused, and a switch
+    /// Mirrors `hooks.bailout` being set: resumes are refused, and a switch
     /// back that did not end the coroutine runs the callback.
     pub bailout: bool,
 }
@@ -150,7 +152,9 @@ impl Scheduler {
         self.stack_size = (bounded + STACK_ALIGNMENT - 1) & !(STACK_ALIGNMENT - 1);
     }
 
-    fn set_active(&mut self, active: bool) {
+    /// Activation also clears the bailout mark; deactivation sets it (the
+    /// caller sets the callback to match) and frees the live map if it is empty.
+    pub(crate) fn set_active(&mut self, active: bool) {
         self.activated = active;
         self.bailout = !active;
         if !active {
@@ -307,10 +311,20 @@ unsafe fn switch_in(s: *mut Scheduler, co: *mut Coroutine) {
         unsafe { release(s, co) };
         // SAFETY: the facade is deleted here, and `co` with it.
         unsafe { (hooks.destroy)(native) };
-        // SAFETY: `s` is live.
-    } else if unsafe { (*s).bailout } {
+        return;
+    }
+    // The hook as it is now: the coroutine that bailed out set it while it ran.
+    let bailout = {
+        // SAFETY: `s` is live; the borrow ends before the callback runs.
+        let s = unsafe { &*s };
+        s.hooks
+            .bailout
+            .filter(|_| s.bailout)
+            .map(|f| (f, s.hooks.bailout_data))
+    };
+    if let Some((bailout, data)) = bailout {
         // SAFETY: the callback longjmps over this frame, which owns nothing.
-        unsafe { (hooks.bailout)() };
+        unsafe { bailout(data) };
     }
 }
 
@@ -380,36 +394,9 @@ macro_rules! export {
 }
 
 export! {
-    /// Constructor: seeds `co` with the next id and the creation clocks, makes
-    /// it live and tracks the peak. Returns whether to activate the scheduler.
-    fn swr_v1_coroutine_register(s: *mut Scheduler, co: *mut Coroutine, native: *mut c_void, init_msec: c_long, now: c_long) -> bool {
-        // SAFETY: the caller lends the scheduler exclusively.
-        let s = unsafe { &mut *s };
-        // SAFETY: the caller lends `co`, embedded in a facade that stays put.
-        unsafe { s.register(co, native, init_msec, now) }
-    }
-}
-
-export! {
-    /// Activation also clears the bailout mark; deactivation sets it (C++ sets
-    /// `on_bailout` to match) and frees the live map if it is empty.
-    fn swr_v1_coroutine_set_active(s: *mut Scheduler, active: bool) {
-        // SAFETY: the caller lends the scheduler exclusively.
-        unsafe { (*s).set_active(active) };
-    }
-}
-
-export! {
     fn swr_v1_coroutine_set_stack_size(s: *mut Scheduler, size: usize) {
         // SAFETY: the caller lends the scheduler exclusively.
         unsafe { (*s).set_stack_size(size) };
-    }
-}
-
-export! {
-    fn swr_v1_coroutine_bind_socket(s: *mut Scheduler, cid: c_long) {
-        // SAFETY: the caller lends the scheduler exclusively.
-        unsafe { (*s).socket_bound_cid = cid };
     }
 }
 
@@ -484,7 +471,7 @@ export! {
 }
 
 export! {
-    /// `Coroutine::bailout`, after C++ set `on_bailout`: marks the scheduler, and
+    /// `Coroutine::bailout`, once the callback is set: marks the scheduler, and
     /// inside a coroutine yields the one closest to the main context, which
     /// switches there directly and never returns.
     fn swr_v1_coroutine_bailout(s: *mut Scheduler) {
@@ -574,7 +561,7 @@ pub(crate) mod tests {
     unsafe extern "C" fn destroy(native: *mut c_void) {
         event(format!("destroy {}", native as usize));
     }
-    unsafe extern "C" fn bailout() {
+    unsafe extern "C" fn bailout(_: *mut c_void) {
         event("bailout".into());
     }
     unsafe extern "C" fn clock() -> c_long {
@@ -604,7 +591,8 @@ pub(crate) mod tests {
                 swap_in,
                 swap_out,
                 destroy,
-                bailout,
+                bailout: Some(bailout),
+                bailout_data: ptr::null_mut(),
                 clock: None,
             },
             live: ptr::null_mut(),
@@ -625,9 +613,9 @@ pub(crate) mod tests {
         // swoole_coroutine.h static_asserts the same sizes on the C++ side.
         assert_eq!(size_of::<Coroutine>(), 96);
         assert_eq!(core::mem::offset_of!(Coroutine, origin), 40);
-        assert_eq!(size_of::<Scheduler>(), 128);
+        assert_eq!(size_of::<Scheduler>(), 136);
         assert_eq!(core::mem::offset_of!(Scheduler, hooks), 64);
-        assert_eq!(core::mem::offset_of!(Scheduler, activated), 120);
+        assert_eq!(core::mem::offset_of!(Scheduler, activated), 128);
     }
 
     #[test]

@@ -17,13 +17,13 @@ case binary to the hybrid tree's libswoole.so; Linux):
 | `coroutine_async_file.async_file` | `coroutine_async_file.async_file` |
 
 The facade's getters are field reads over crates/coroutine's record, its operations
-the `swr_v1_coroutine_*` exports and upstream symbols the header calls.
-`coroutine::run` and `Coroutine::bailout` take a `std::function` and
-`swoole_event_defer` has C++ linkage, so tests/modules/hooks/system/fixture.cc wraps them. The
-repo-owned `rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait`
-witness (formerly `lifetime.cpp`) throws from a `CancelFunc` copy, which only C++
-can do; its body is the fixture's, unchanged, and it runs as a case of the same
-binary.
+the `swr_v1_coroutine_*` exports and upstream symbols. `coroutine::run` and
+`Coroutine::bailout` take a function and its data (`swoole_coroutine_create`,
+`swr_v1_coroutine_bail`); `swoole_event_defer` has C++ linkage, so
+tests/modules/hooks/system/fixture.cc wraps it. The repo-owned
+`rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait` witness checked
+that a throwing `CancelFunc` copy left the wait intact; it went with C++'s
+`std::function` cancel callbacks, since nothing is copied now.
 
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 

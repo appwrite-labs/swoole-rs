@@ -1,8 +1,6 @@
 //! What PHP coroutines ask of the rest of Swoole: the coroutine core's
-//! scheduler (crates/coroutine's state, which C++ keeps thread-local), the
-//! module host, the runtime hooks, the event loop and the server, and
-//! native/phpcoroutines/coroutine.cc for what takes a `std::function` or reads
-//! a Coroutine's C++ context.
+//! scheduler and records (crates/coroutine), the module host, the runtime
+//! hooks, the event loop and the server.
 use std::ffi::{CStr, c_int, c_long, c_void};
 use swoole_rs_coroutine::{RC_CANCELED, Scheduler};
 use swoole_rs_zend::{
@@ -32,20 +30,21 @@ pub(crate) struct Stats {
 type Co = *mut c_void;
 
 unsafe extern "C" {
-    // native/coroutine/coroutine.cc, crates/coroutine and native/phpcoroutines/coroutine.cc
-    fn swr_cpp_coroutine_scheduler() -> *mut c_void;
-    fn swr_cpp_coroutine_create(
-        entry: unsafe extern "C" fn(*mut c_void),
-        args: *mut c_void,
-        func: *const c_void,
+    // crates/coroutine's facade.
+    safe fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
+    fn swr_v1_coroutine_create(
+        routine: unsafe extern "C" fn(*mut c_void),
+        arg: *mut c_void,
     ) -> c_long;
+    fn swr_v1_coroutine_bail(
+        callback: Option<unsafe extern "C" fn(*mut c_void)>,
+        data: *mut c_void,
+    );
     fn swr_v1_coroutine_yield_with_cancel(
         co: Co,
         cancel: unsafe extern "C-unwind" fn(Co, *mut c_void) -> bool,
         data: *mut c_void,
     );
-    fn swr_cpp_phpcoroutines_bailout();
-    fn swr_cpp_phpcoroutines_stack(co: Co, size: *mut usize) -> *mut c_void;
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
     // crates/reactor.
@@ -54,7 +53,7 @@ unsafe extern "C" {
         condition: unsafe extern "C" fn(*mut usize) -> bool,
     );
     fn swr_v1_event_remove_exit_condition(id: c_int);
-    // crates/coroutine, native/coroutine/coroutine.cc, crates/timer, crates/reactor,
+    // crates/coroutine, crates/timer, crates/reactor,
     // crates/process and crates/hooks.
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: Co, timeout: f64) -> bool;
@@ -212,8 +211,7 @@ pub(crate) fn error_ex(level: c_int, code: c_int, message: &CStr) {
 }
 
 fn scheduler() -> *mut Scheduler {
-    // SAFETY: this thread's scheduler, which lives as long as the thread.
-    unsafe { swr_cpp_coroutine_scheduler() }.cast()
+    swr_v1_coroutine_scheduler_get().cast()
 }
 
 /// This thread's scheduler, borrowed for one read.
@@ -403,7 +401,7 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
     }
     let mut args = (count, sleep);
     // SAFETY: the coroutine runs at once and reads `args` before it yields.
-    unsafe { swr_cpp_coroutine_create(sleeper, (&raw mut args).cast(), std::ptr::null()) };
+    unsafe { swr_v1_coroutine_create(sleeper, (&raw mut args).cast()) };
 }
 
 pub(crate) fn set_task(co: Co, task: *mut c_void) {
@@ -434,10 +432,13 @@ pub(crate) fn state_of(co: Co) -> c_int {
 
 /// `co`'s C stack and its size, null under thread contexts.
 pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
-    let mut size = 0;
-    // SAFETY: a live coroutine and a writable size.
-    let stack = unsafe { swr_cpp_phpcoroutines_stack(co, &raw mut size) };
-    (stack, size)
+    // SAFETY: a live coroutine's record.
+    let (stack, size) = unsafe {
+        (*co.cast::<swoole_rs_coroutine::context::Native>())
+            .ctx
+            .stack()
+    };
+    (stack.cast(), size)
 }
 
 /// Switch out of `co`, the running coroutine. The caller's frames must own
@@ -548,7 +549,7 @@ pub(crate) fn is_end(co: Co) -> bool {
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
 pub(crate) fn create(args: *mut c_void) -> c_long {
     // SAFETY: the coroutine's entry, with the creator's live arguments.
-    unsafe { swr_cpp_coroutine_create(main, args, std::ptr::null()) }
+    unsafe { swr_v1_coroutine_create(main, args) }
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside
@@ -563,9 +564,19 @@ unsafe extern "C" fn main(args: *mut c_void) {
     // SAFETY: the context, which nothing uses again.
     unsafe { crate::context::close(ctx) };
     if caught != 0 {
-        // SAFETY: C++ bails out to the main context.
-        unsafe { swr_cpp_phpcoroutines_bailout() };
+        // SAFETY: the main context runs `bail_out`; this frame owns nothing.
+        unsafe { swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
     }
+}
+
+/// The bailout of a coroutine that ended in an exception or a bailout, in the
+/// main context: the loop stops, then PHP bails out.
+extern "C" fn bail_out(_: *mut c_void) {
+    if let Some((fields, _)) = reactor() {
+        fields.running = false;
+        fields.bailout = true;
+    }
+    bailout::raise(Err(bailout::Bailout));
 }
 
 unsafe extern "C" fn enter(context: *mut c_void) -> *mut swr_zend_callable {

@@ -3,15 +3,16 @@
 //! fiber annotations, so they run whenever the process has its runtime. With
 //! [`THREAD`] in its flags the context is a thread instead (`thread.rs`).
 
+use crate::Coroutine;
 use crate::stack::{swr_v1_context_stack_alloc, swr_v1_context_stack_free};
 use crate::thread::{self, THREAD};
 use core::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 
-/// `swoole::coroutine::Context`'s record; C++ embeds it in each `Coroutine`, which
-/// never moves, so the switch may hand out its address. Both stacks reach it
-/// through raw pointers, and neither holds a borrow across a switch.
+/// A coroutine's context record, which follows its state in its [`Native`]
+/// record and never moves, so the switch may hand out its address. Both stacks
+/// reach it through raw pointers, and neither holds a borrow across a switch.
 #[repr(C)]
 pub struct Context {
     /// The suspended context, or the [`THREAD`] context's thread.
@@ -28,7 +29,22 @@ pub struct Context {
     pub(crate) end: bool,
 }
 
+/// A `swoole::Coroutine`: its scheduler state, then its context. The
+/// extension allocates and frees it (facade.rs); `Coroutine::native` points
+/// back at it.
+#[repr(C)]
+pub struct Native {
+    pub co: Coroutine,
+    pub ctx: Context,
+}
+
 impl Context {
+    /// The C stack and its size; null under [`THREAD`].
+    #[must_use]
+    pub fn stack(&self) -> (*mut u8, usize) {
+        (self.stack, self.stack_size as usize)
+    }
+
     /// A [`THREAD`] context's record before its thread starts: no stack.
     pub(crate) const fn threaded(
         flags: u32,
@@ -268,7 +284,7 @@ extern "C" fn first_frame(transfer: Transfer) {
         let ctx = unsafe { &*ctx };
         (ctx.entry, ctx.data)
     };
-    // SAFETY: C++'s entry over its own data.
+    // SAFETY: the creator's entry over its own data.
     unsafe { entry(data) };
     // SAFETY: as above.
     unsafe { (*ctx).end = true };
