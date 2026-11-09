@@ -6,24 +6,24 @@ use crate::ops::{
     FIELD_HEARTBEAT_INTERVAL, LOG_NO_SESSION, LOG_RECVFROM, OP_CERT_TASK, OP_CLIENT_CERT, OP_CLOSE,
     OP_CLOSE_FORWARD, OP_COMMAND_REQUEST, OP_COMMAND_RESPONSE, OP_CONN_AT, OP_CONN_FD,
     OP_CONN_FORCE, OP_CONN_HANDSHAKING, OP_CONN_HEALTHY, OP_CONN_REACTOR, OP_CONN_READING,
-    OP_CONN_SESSION, OP_CONN_UNREAD, OP_COUNT_DISPATCH, OP_DELAY_RECEIVE, OP_DESTROY_CALLBACK,
-    OP_DGRAM_BUFFER, OP_DISABLE_NOTIFY, OP_DTLS_ACCEPT, OP_ERRNO, OP_EVENT_FREE, OP_EVENT_INIT,
-    OP_EVENT_WAIT, OP_FACTORY_DISPATCH, OP_FIELD, OP_FORCE_CLOSE, OP_HAS_ON_CONNECT, OP_HAVE_DGRAM,
+    OP_CONN_SESSION, OP_CONN_UNREAD, OP_DELAY_RECEIVE, OP_DESTROY_CALLBACK, OP_DGRAM_BUFFER,
+    OP_DISABLE_NOTIFY, OP_DTLS_ACCEPT, OP_ERRNO, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT,
+    OP_FACTORY_DISPATCH, OP_FIELD, OP_FORCE_CLOSE, OP_HAS_ON_CONNECT, OP_HAVE_DGRAM,
     OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER, OP_HEARTBEAT_TIMER_CLEAR, OP_INCOMING, OP_KILL_SELF,
     OP_MASTER_REACTOR_ID, OP_MAXFD, OP_MICROTIME, OP_MINFD, OP_MODE, OP_NOTIFY_CONNECT,
     OP_ON_FINISH, OP_ON_PIPE_MESSAGE, OP_PACKET_DISPATCH, OP_PACKET_INIT, OP_PEER_CERT, OP_PIPE_FD,
     OP_PIPE_POP, OP_PIPE_READ, OP_PIPE_SEND, OP_PIPE_TYPE, OP_PORT_COUNT, OP_PORT_DEL,
     OP_PORT_DGRAM, OP_PORT_DTLS, OP_PORT_FD, OP_PORT_LISTEN, OP_PORT_READ, OP_PORT_REMOVED,
-    OP_QUEUE_FULL, OP_QUEUE_SUB, OP_REACTOR_BARRIER, OP_REACTOR_CLOSE, OP_REACTOR_DEL,
-    OP_REACTOR_ID, OP_REACTOR_NUM, OP_REACTOR_THREAD_ENTRY, OP_REACTOR_THREAD_TYPE, OP_RECVFROM,
-    OP_RESUME_READ, OP_RESUME_TIMER, OP_RUNNING, OP_SEND_CLOSE_FORCE, OP_SERVER, OP_SESSION_CONN,
+    OP_QUEUE_FULL, OP_REACTOR_BARRIER, OP_REACTOR_CLOSE, OP_REACTOR_DEL, OP_REACTOR_ID,
+    OP_REACTOR_NUM, OP_REACTOR_THREAD_ENTRY, OP_REACTOR_THREAD_TYPE, OP_RECVFROM, OP_RESUME_READ,
+    OP_RESUME_TIMER, OP_RUNNING, OP_SEND_CLOSE_FORCE, OP_SERVER, OP_SESSION_CONN,
     OP_SESSION_HANDLERS, OP_SET_WAITING_TIME, OP_SINGLE_THREAD, OP_SSL_ACCEPT, OP_SSL_READY,
     OP_SSL_VERIFY, OP_START_MASTER_THREAD, OP_STOP_THREAD_WORKER, OP_STORE_LISTEN_SOCKET,
-    OP_TASK_INIT, OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT, OP_THREAD_NOTIFY,
-    OP_THREAD0_INIT, OP_VERIFY_PEER, OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM,
-    OP_WORKER_PIPE_UNREAD, OP_WORKER_START, OP_WORKER_STOP,
+    OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT, OP_THREAD_NOTIFY, OP_THREAD0_INIT,
+    OP_VERIFY_PEER, OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM, OP_WORKER_PIPE_UNREAD,
+    OP_WORKER_START, OP_WORKER_STOP,
 };
-use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
+use crate::{Host, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
 
 /// `swReturnCode` values.
 pub(crate) const SW_CONTINUE: i64 = 1;
@@ -325,28 +325,6 @@ pub(crate) fn resume_receiving<H: Host>(h: &mut H) -> crate::Effect<()> {
     }
     h.get(OP_RESUME_READ)?;
     Ok(())
-}
-
-/// `Server::dispatch_task`: one received data frame to a worker, counting the bytes
-/// queued for it until the worker takes them. Base and thread mode run
-/// `BaseFactory::dispatch` here rather than through the native factory.
-pub(crate) fn dispatch_task<H: Host>(h: &mut H, len: u64) -> crate::Effect<i64> {
-    let task = h.op(OP_TASK_INIT, len)?;
-    let mode = h.get(OP_MODE)?;
-    let dispatched = if mode == MODE_PROCESS {
-        h.is(OP_FACTORY_DISPATCH)?
-    } else {
-        let task = core::ptr::with_exposed_provenance_mut(usize::try_from(task).unwrap_or(0));
-        crate::base_factory::dispatch(h, task, mode == MODE_BASE)?
-    };
-    if !dispatched {
-        if len > 0 {
-            h.op(OP_QUEUE_SUB, len)?;
-        }
-        return Ok(SW_ERR);
-    }
-    h.get(OP_COUNT_DISPATCH)?;
-    Ok(SW_OK)
 }
 
 /// The destroy callback `ReactorThread::shutdown` adds: close each connection this
@@ -685,44 +663,5 @@ mod tests {
         resume_receiving(&mut s).unwrap();
         assert_eq!(s.called(OP_SET_WAITING_TIME), 0, "capped");
         assert_eq!(s.called(OP_RESUME_READ), 1, "timer failed: read now");
-    }
-
-    #[test]
-    fn dispatch_counts_queued_bytes() {
-        let process = |dispatched| {
-            Script::with(&[(OP_MODE, MODE_PROCESS), (OP_FACTORY_DISPATCH, dispatched)])
-        };
-        let mut s = process(1);
-        assert_eq!(dispatch_task(&mut s, 10).unwrap(), SW_OK, "dispatched");
-        assert_eq!(s.args(OP_TASK_INIT), vec![10], "queued");
-        assert_eq!(s.called(OP_COUNT_DISPATCH), 1, "counted");
-
-        let mut s = process(0);
-        assert_eq!(dispatch_task(&mut s, 0).unwrap(), SW_ERR, "failed");
-        assert_eq!(s.called(OP_QUEUE_SUB), 0, "nothing queued");
-        let mut s = process(0);
-        assert_eq!(dispatch_task(&mut s, 10).unwrap(), SW_ERR, "failed");
-        assert_eq!(s.args(OP_QUEUE_SUB), vec![10], "unqueued");
-    }
-
-    #[test]
-    fn base_mode_dispatches_without_the_factory() {
-        use crate::ops::OP_BASE_PASS;
-        // A non-stream event needs no connection table.
-        let mut task = crate::base_factory::SendData {
-            info: swoole_rs_corebase::DataHead {
-                kind: 9,
-                ..Default::default()
-            },
-            data: core::ptr::null(),
-        };
-        let address = u64::try_from((&raw mut task).expose_provenance()).unwrap();
-        let mut s = Script::with(&[(OP_TASK_INIT, address)]);
-        assert_eq!(dispatch_task(&mut s, 0).unwrap(), SW_OK, "dispatched");
-        assert_eq!(
-            (s.called(OP_FACTORY_DISPATCH), s.args(OP_BASE_PASS)),
-            (0, vec![address])
-        );
-        assert_eq!(s.called(OP_COUNT_DISPATCH), 1, "counted");
     }
 }
