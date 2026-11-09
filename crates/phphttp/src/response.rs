@@ -64,7 +64,6 @@ unsafe extern "C" {
         data: *const c_char,
         length: usize,
     ) -> bool;
-    static swoole_server_ce: *mut zend_class_entry;
     static swoole_socket_coro_ce: *mut zend_class_entry;
 }
 
@@ -750,8 +749,9 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         ctx = unsafe { context::context_of(request) };
     }
     if object.object().is_some() {
-        // SAFETY: the classes MINIT registered.
-        let (server_ce, socket_ce) = unsafe { (swoole_server_ce, swoole_socket_coro_ce) };
+        let server_ce = swoole_rs_phpserver::server_class_entry();
+        // SAFETY: a class MINIT registered.
+        let socket_ce = unsafe { swoole_socket_coro_ce };
         if instance_of(object, server_ce) {
             let Some(checked) = websocket::server_of(object.as_ptr()) else {
                 return;

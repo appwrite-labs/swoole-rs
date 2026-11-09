@@ -123,8 +123,8 @@ pub type Hook = unsafe extern "C" fn();
 
 /// The hooks of the crates above this one in the dependency graph
 /// (crates/phpcoroutines, phpthread and phpserver), which it runs where
-/// upstream's phases did, and which crates/phpruntime, between them, reads
-/// too. crates/ffi, which links them all, registers them with
+/// upstream's phases did, and which crates/phpruntime and phpprocess, between
+/// them, read too. crates/ffi, which links them all, registers them with
 /// [`crate::module_entry`] when Zend asks for the module entry, before any phase.
 pub struct Families {
     /// `php_swoole_coroutine_minit`, `_system_minit` and `_scheduler_minit`.
@@ -158,6 +158,8 @@ pub struct Families {
     pub set_hook_flags: fn(u32),
     /// `sw_active_thread_count()`: the PHP threads running.
     pub active_threads: fn() -> usize,
+    /// `swoole_server_ce`, for `Swoole\Process` (crates/phpprocess).
+    pub server_class: fn() -> *mut zend_class_entry,
 }
 
 static FAMILIES: OnceLock<&'static Families> = OnceLock::new();
