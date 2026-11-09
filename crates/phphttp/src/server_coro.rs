@@ -287,9 +287,6 @@ struct Peer {
 unsafe extern "C" {
     #[link_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv"]
     fn get_read_buffer(socket: Socket) -> *mut Buffer;
-    /// `php_swoole_create_dir(path, length)` (ext-src/swoole_server.cc).
-    #[link_name = "_Z21php_swoole_create_dirPKcm"]
-    fn create_dir(path: *const c_char, length: usize) -> c_int;
     /// `System::sleep(sec)` (crates/hooks).
     fn swoole_coroutine_sleep(sec: c_int);
     /// The HTTP/2 server (crates/phphttp2): a stream's reset, and a
@@ -798,8 +795,7 @@ fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>,
                 return Err(bailout::Bailout);
             }
             let text = dir.bytes();
-            // SAFETY: the directory's bytes.
-            let created = unsafe { create_dir(text.as_ptr().cast(), text.len()) } >= 0;
+            let created = swoole_rs_phpserver::php_swoole_create_dir(text);
             if created {
                 text_setting(server, kind, Some(text));
             }
