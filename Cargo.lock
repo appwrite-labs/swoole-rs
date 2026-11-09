@@ -1033,6 +1033,7 @@ dependencies = [
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
  "swoole-rs-process",
+ "swoole-rs-protocols",
  "swoole-rs-reactor",
  "swoole-rs-tls",
  "swoole-rs-utilities",

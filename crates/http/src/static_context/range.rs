@@ -48,19 +48,7 @@ fn finishing(owner: &mut HttpStaticContext) {
     owner.range.stage = Stage::Finish;
 }
 fn full_task(owner: &mut HttpStaticContext) -> i32 {
-    let mut ignored = 0;
-    // SAFETY: a null format is allowed; `ignored` is a writable local.
-    let result = unsafe {
-        owner.tasks.prepare(
-            0,
-            owner.range.last_length,
-            std::ptr::null(),
-            &raw mut ignored,
-        )
-    };
-    if result < 0 {
-        return result;
-    }
+    owner.tasks.prepare_full(0, owner.range.last_length);
     owner.tasks.push()
 }
 /// Begin one method invocation; previous committed tasks persist, scratch resets.
@@ -235,13 +223,13 @@ pub unsafe extern "C" fn swr_v2_http_context_range_resume(
                 part: 0,
                 separator: u32::from(owner.tasks.count() != 0),
             };
-            // SAFETY: `format` is a local with spans into this owner; the output is an owner field.
+            // SAFETY: `format`'s spans are this owner's boundary and the caller's MIME.
             let result = unsafe {
-                owner.tasks.prepare(
+                owner.tasks.prepare_range(
                     i64::try_from(owner.range.part.offset).unwrap_or(i64::MAX),
                     owner.range.part.length,
-                    &raw const format,
-                    &raw mut owner.range.written,
+                    &format,
+                    &mut owner.range.written,
                 )
             };
             if result >= 0 {
@@ -274,12 +262,10 @@ pub unsafe extern "C" fn swr_v2_http_context_range_resume(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HttpStaticTask;
     use crate::static_context::{
         HttpStaticObservation, swr_v2_http_context_drop, swr_v2_http_context_new,
-        swr_v2_http_context_observed, swr_v2_http_context_publish,
-    };
-    use crate::{
-        HttpStaticTask, swr_v2_http_tasks_copy, swr_v2_http_tasks_count, swr_v2_http_tasks_snapshot,
+        swr_v2_http_context_observed,
     };
     fn owner() -> *mut HttpStaticContext {
         let owner = unsafe { swr_v2_http_context_new(b"/file".as_ptr(), 5, 128) };
@@ -294,10 +280,7 @@ mod tests {
             unsafe { swr_v2_http_context_observed(owner, 0, &raw const file) },
             0
         );
-        assert_eq!(
-            unsafe { swr_v2_http_context_publish(owner, 5, b"boundary".as_ptr(), 8) },
-            0
-        );
+        assert_eq!(unsafe { &mut *owner }.publish(5, b"boundary"), 0);
         owner
     }
     fn observed(modified: u32) -> HttpContextRangeObservation {
@@ -331,18 +314,13 @@ mod tests {
         let owner = owner();
         unsafe { (*owner).facts.filesize = 0 };
         complete(owner, b"bytes=0-", 0);
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            1
-        );
+        assert_eq!(unsafe { (*owner).tasks.count() }, 1);
         assert_eq!(unsafe { (*owner).facts.content_length }, 0);
         assert_eq!(unsafe { (*owner).facts.status }, 200);
-        let mut task = HttpStaticTask::default();
         assert_eq!(
-            unsafe { swr_v2_http_tasks_copy(&raw const (*owner).tasks, 0, &raw mut task) },
-            0
+            unsafe { (*owner).tasks.items() },
+            [HttpStaticTask::default()]
         );
-        assert_eq!(task, HttpStaticTask::default());
         unsafe { swr_v2_http_context_drop(owner) };
     }
     #[test]
@@ -362,19 +340,13 @@ mod tests {
             0
         );
         assert_eq!(unsafe { (*owner).facts.content_length }, 0);
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            0
-        );
+        assert_eq!(unsafe { (*owner).tasks.count() }, 0);
         // Native applies any errno effect before this next call can commit.
         assert_eq!(
             unsafe { swr_v2_http_context_range_step(owner, text.as_ptr(), text.len()) },
             1
         );
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            1
-        );
+        assert_eq!(unsafe { (*owner).tasks.count() }, 1);
         assert!(unsafe { (*owner).facts.content_length } > 3);
         assert_eq!(
             unsafe { swr_v2_http_context_range_resume(owner, &observed(0)) },
@@ -393,19 +365,7 @@ mod tests {
             0
         );
         assert_eq!(unsafe { (*owner).facts.status }, 206);
-        let mut tasks = [HttpStaticTask::default(); 2];
-        let mut written = 0;
-        assert_eq!(
-            unsafe {
-                swr_v2_http_tasks_snapshot(
-                    &raw const (*owner).tasks,
-                    tasks.as_mut_ptr(),
-                    2,
-                    &raw mut written,
-                )
-            },
-            0
-        );
+        let tasks: [HttpStaticTask; 2] = unsafe { (*owner).tasks.items() }.try_into().unwrap();
         assert_eq!(
             (
                 tasks[0].offset,
@@ -425,15 +385,9 @@ mod tests {
         complete(owner, b"bytes=1-3,5-6", 1);
         assert_eq!(unsafe { (*owner).facts.status }, 200);
         assert_eq!(unsafe { (*owner).facts.content_length }, 10);
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            1
-        );
+        assert_eq!(unsafe { (*owner).tasks.count() }, 1);
         complete(owner, b"", 0);
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            2
-        );
+        assert_eq!(unsafe { (*owner).tasks.count() }, 2);
         assert_eq!(unsafe { (*owner).facts.content_length }, 10);
         assert_eq!(unsafe { (*owner).facts.status }, 200);
         unsafe { swr_v2_http_context_drop(owner) };
@@ -454,10 +408,7 @@ mod tests {
             unsafe { swr_v2_http_context_range_step(owner, text.as_ptr(), text.len() - 1) },
             INVALID
         );
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            0
-        );
+        assert_eq!(unsafe { (*owner).tasks.count() }, 0);
         assert_eq!(
             unsafe { swr_v2_http_context_range_step(owner, text.as_ptr(), text.len()) },
             1

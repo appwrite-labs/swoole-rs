@@ -90,7 +90,7 @@ pub static DEFAULT_BUFFER_SIZE: NativeRef<u32> =
 )]
 pub unsafe extern "C" fn socket_clean(socket: *const SocketRecord) {
     // SAFETY: as the caller promises.
-    crate::swr_v1_socket_clean(unsafe { (*socket).fd });
+    crate::fd_clean(unsafe { (*socket).fd });
 }
 
 /// `int Socket::wait_event(int timeout_ms, int events) const`.
@@ -109,7 +109,7 @@ pub unsafe extern "C" fn socket_wait_event(
 ) -> c_int {
     // SAFETY: as the caller promises.
     let socket = unsafe { &*socket };
-    let result = crate::swr_v1_socket_wait(
+    let result = crate::fd_wait(
         socket.fd,
         crate::swr_v1_reactor_poll_events_to(events),
         timeout_ms,
@@ -148,10 +148,7 @@ pub unsafe extern "C" fn socket_connect_async(
     // SAFETY: as the caller promises.
     let fd = unsafe { (*socket).fd };
     // SAFETY: as the caller promises.
-    let address = unsafe { &*address };
-    // SAFETY: the address's storage holds `len` bytes of sockaddr.
-    let result =
-        unsafe { crate::swr_v1_socket_connect(fd, (&raw const address.addr).cast(), address.len) };
+    let result = crate::fd_connect(fd, unsafe { &*address });
     match result.status {
         0 => READY,
         status => {
@@ -198,7 +195,7 @@ pub unsafe extern "C" fn socket_connect_sync(
         return ERR;
     }
     // SAFETY: as the caller promises.
-    let pending = crate::swr_v1_socket_pending_error(unsafe { (*socket).fd });
+    let pending = crate::fd_pending_error(unsafe { (*socket).fd });
     if pending.status != 0 {
         log::set_last_error(pending.error);
         return ERR;
@@ -329,11 +326,9 @@ unsafe fn cork_as(socket: *mut SocketRecord, cork: bool) -> bool {
         tcp_nodelay: socket.tcp_nodelay,
     };
     let result = if cork {
-        // SAFETY: `state` is a local.
-        unsafe { crate::swr_v1_socket_cork(socket.fd, &raw mut state) }
+        crate::swr_v1_socket_cork(socket.fd, &mut state)
     } else {
-        // SAFETY: `state` is a local.
-        unsafe { crate::swr_v1_socket_uncork(socket.fd, socket.enable_tcp_nodelay, &raw mut state) }
+        crate::swr_v1_socket_uncork(socket.fd, socket.enable_tcp_nodelay, &mut state)
     };
     socket.tcp_nopush = state.tcp_nopush;
     socket.tcp_nodelay = state.tcp_nodelay;

@@ -31,13 +31,10 @@ pub extern "C" fn swr_v2_http_status_message(code: i32) -> *const c_char {
         return known;
     }
     UNKNOWN.with(|cell| {
-        let output = cell.get().cast::<u8>();
-        let mut written = 0;
-        // i32 formatting is bounded well below128 bytes; the existing formatter
-        // completes within this thread's initialized array before pointer return.
-        // SAFETY: `output` is this thread's 128-byte array and `written` a local.
-        unsafe { crate::swr_v1_http_unknown_status(code, output, 128, &raw mut written) };
-        output.cast::<c_char>()
+        // SAFETY: this thread's array; no reference from an earlier call survives,
+        // and this one ends before the pointer returns.
+        crate::dispatch::unknown_status(code, unsafe { &mut *cell.get() });
+        cell.get().cast::<c_char>()
     })
 }
 #[cfg(test)]

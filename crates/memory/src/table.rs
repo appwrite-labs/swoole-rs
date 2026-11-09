@@ -180,8 +180,7 @@ impl Live {
             }
             std::thread::yield_now();
         }
-        // SAFETY: getpid has no preconditions.
-        let pid = unsafe { libc::getpid() };
+        let pid = swoole_rs_corebase::sys::getpid();
         self.owner().store(pid, Ordering::Relaxed);
     }
 

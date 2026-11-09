@@ -12,9 +12,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
-use swoole_rs_ossupport::{
-    QueueRecord, swr_v1_os_msg_queue_free, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push,
-};
+use swoole_rs_ossupport::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object, add_assoc_long, class_name, declare_property_null,
@@ -152,8 +150,11 @@ unsafe extern "C" fn free(object: *mut zend_object) {
     // SAFETY: Zend frees an object this class created.
     let process = unsafe { data(object) };
     if !process.worker.is_null() {
-        // SAFETY: the object owns its worker and the worker its queue.
-        unsafe { swr_v1_os_msg_queue_free(queue_of(process.worker)) };
+        let queue = queue_of(process.worker);
+        if !queue.is_null() {
+            // SAFETY: the object owns its worker and the worker its boxed queue.
+            drop(unsafe { Box::from_raw(queue) });
+        }
         // SAFETY: as above.
         unsafe { worker::free(process.worker) };
     }
@@ -617,8 +618,8 @@ fn free_queue(call: &Call) {
     // SAFETY: the worker's live queue, if any.
     let freed = !queue.is_null() && unsafe { &mut *queue }.destroy();
     if freed {
-        // SAFETY: the worker's queue, freed once and forgotten.
-        unsafe { swr_v1_os_msg_queue_free(queue) };
+        // SAFETY: the worker's boxed queue, freed once and forgotten.
+        drop(unsafe { Box::from_raw(queue) });
         worker::record(worker).set_queue(ptr::null_mut());
     }
     call.set_bool(freed);

@@ -1,16 +1,17 @@
 # swoole-rs
 
-[![Merge tier](https://github.com/loks0n/swoole-rs/actions/workflows/merge.yml/badge.svg?branch=main)](https://github.com/loks0n/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain)
-[![Upstream C++ replaced](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Freplaced.json)](docs/migration.md#upstream-files-still-in-the-build)
-[![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/loks0n/swoole-rs/issues/58)
-[![Speed vs upstream](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Fspeed.json)](https://github.com/loks0n/swoole-rs/blob/badges/speed.md)
-[![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Floks0n%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/loks0n/swoole-rs/issues/1902)
+[![Merge tier](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml/badge.svg?branch=main)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain)
+[![Upstream C++ replaced](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Freplaced.json)](docs/migration.md#upstream-files-still-in-the-build)
+[![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/appwrite-labs/swoole-rs/issues/58)
+[![Speed vs upstream](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fspeed.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/speed.md)
+[![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/appwrite-labs/swoole-rs/issues/1902)
+[![crates/ line coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fcoverage.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/coverage.md)
 
 Progress ([roadmap](docs/migration.md#roadmap)): phases 1 to 5 are done and nothing is
-compiled from upstream; open are [dropping upstream from the build](https://github.com/loks0n/swoole-rs/issues/1921),
-[every applicable PHPT passing](https://github.com/loks0n/swoole-rs/issues/1957),
-[faster than upstream](https://github.com/loks0n/swoole-rs/issues/1894) and
-[a hardened runtime](https://github.com/loks0n/swoole-rs/issues/1893). The badges come from `tools/badges.py`
+compiled from upstream; open are [dropping upstream from the build](https://github.com/appwrite-labs/swoole-rs/issues/1921),
+[every applicable PHPT passing](https://github.com/appwrite-labs/swoole-rs/issues/1957),
+[faster than upstream](https://github.com/appwrite-labs/swoole-rs/issues/1894) and
+[a hardened runtime](https://github.com/appwrite-labs/swoole-rs/issues/1893). The badges come from `tools/badges.py`
 (`.github/workflows/badges.yml`): upstream C++ replaced counts upstream first-party
 lines the all-modules patch set deletes, and the PHPT badge counts tests the hybrid
 passes in any of a merge-tier run's PHPT jobs, over those that can apply to 64-bit Linux
@@ -18,7 +19,9 @@ passes in any of a merge-tier run's PHPT jobs, over those that can apply to 64-b
 results, per workload, against upstream. The unsafe badge counts `unsafe` blocks, fns and impls in
 non-test crate code and how many crates forbid `unsafe_code`; `tools/budget.py` (PR tier)
 fails a PR that raises any crate's count above `main`'s (`crates/zend`'s unsafe may rise while the total falls) or drops a crate's `forbid`, and counts the data layouts in
-[Data layout](docs/migration.md#data-layout) the same way.
+[Data layout](docs/migration.md#data-layout) the same way. The coverage badge counts lines of `crates/` the Cargo build ran under
+the PHPT corpus, the corpus apps and swoole/library's suite (`tools/coverage.py`, nightly), and links
+to the per-crate table and the entry points no run reached.
 
 A gradual C/C++ to Rust migration of the [Swoole](https://github.com/swoole/swoole-src)
 PHP extension. Rust is linked into the build of upstream Swoole v6.2.5 (pinned at

@@ -138,7 +138,7 @@ pub unsafe extern "C" fn swr_v2_http_context_scan(
     match (&owner.scan, event) {
         (_, 0) => {
             owner.scan = Scan::Idle;
-            if owner.directory.len() != 0 {
+            if !owner.directory.is_empty() {
                 1
             } else if owner.facts.file_ready == 0 || owner.facts.kind & DIRECTORY_KIND == 0 {
                 0
@@ -272,10 +272,7 @@ pub unsafe extern "C" fn swr_v2_http_context_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        HttpProxyText, swr_v2_http_context_drop, swr_v2_http_context_new,
-        swr_v2_http_directory_count,
-    };
+    use crate::{HttpProxyText, swr_v2_http_context_drop, swr_v2_http_context_new};
     use std::ptr;
 
     struct Context(*mut HttpStaticContext);
@@ -317,10 +314,7 @@ mod tests {
     fn directory_scan_reuses_owned_sorted_unique_names_after_close() {
         let context = Context::directory();
         context.load(&[b"z", b"index.html", b"z", b"a"]);
-        assert_eq!(
-            unsafe { swr_v2_http_directory_count(&raw const (*context.0).directory) },
-            3
-        );
+        assert_eq!(unsafe { (*context.0).directory.len() }, 3);
         assert_eq!(context.scan(0, b""), 1);
         let mut cursor = usize::MAX;
         assert_eq!(context.index(0, 3, b"", &mut cursor), 2);

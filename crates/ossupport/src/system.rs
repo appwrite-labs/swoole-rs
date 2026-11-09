@@ -22,6 +22,7 @@ pub extern "C" fn swr_v1_os_is_root_user() -> bool {
 /// then stdin/stdout/stderr onto `/dev/null` unless `noclose`. Logs the failed step.
 #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
 fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
+    use swoole_rs_corebase::sys;
     // SAFETY: a static C string.
     if !nochdir && unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
         log::sys_warning(c"swoole_daemon", format_args!("chdir() failed"));
@@ -30,19 +31,17 @@ fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
     if noclose {
         return true;
     }
-    // SAFETY: a static C string.
-    let fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
+    let fd = sys::open(c"/dev/null", libc::O_RDWR, 0);
     if fd < 0 {
         log::sys_warning(c"swoole_daemon", format_args!("open() failed"));
         return false;
     }
-    // SAFETY: dup2 onto the standard descriptors, as upstream.
-    let redirected = (0..3).all(|target| unsafe { libc::dup2(fd, target) } >= 0);
+    // dup2 onto the standard descriptors, as upstream.
+    let redirected = (0..3).all(|target| sys::dup2(fd, target) >= 0);
     if !redirected {
         log::sys_warning(c"swoole_daemon", format_args!("dup2() failed"));
     }
-    // SAFETY: the descriptor opened above.
-    unsafe { libc::close(fd) };
+    sys::close(fd);
     redirected
 }
 
@@ -239,9 +238,8 @@ pub unsafe extern "C" fn swoole_get_cpu_affinity(set: *mut CpuSet) -> c_int {
     }
     #[cfg(not(target_os = "freebsd"))]
     {
-        // SAFETY: getpid has no preconditions. Upstream pins the process's main
-        // thread (tid == pid), not the calling thread.
-        let pid = unsafe { libc::getpid() };
+        // Upstream pins the process's main thread (tid == pid), not the calling thread.
+        let pid = swoole_rs_corebase::sys::getpid();
         // SAFETY: `set` is a writable `cpu_set_t` per the contract.
         unsafe { libc::sched_getaffinity(pid, size_of::<CpuSet>(), set) }
     }

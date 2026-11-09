@@ -707,8 +707,7 @@ impl ThreadRecord {
                 dispatch_count: 0,
                 pipe_command: core::ptr::null_mut(),
                 heartbeat_timer: core::ptr::null_mut(),
-                // SAFETY: no preconditions.
-                bus: unsafe { crate::pool_native::swr_v1_bus_create(size) },
+                bus: Box::into_raw(swoole_rs_protocols::MessageBus::create(size)).cast(),
                 allocator,
             })
             .collect();
@@ -724,8 +723,8 @@ impl ThreadRecord {
         // SAFETY: as the caller guarantees.
         let threads = unsafe { Box::from_raw(threads) };
         for thread in &threads {
-            // SAFETY: the thread's own bus, freed once.
-            unsafe { crate::pool_native::swr_v1_bus_free(thread.bus) };
+            // SAFETY: the thread's own bus, `new_array` boxed, freed once.
+            drop(unsafe { Box::from_raw(thread.bus.cast::<swoole_rs_protocols::MessageBus>()) });
         }
     }
 }

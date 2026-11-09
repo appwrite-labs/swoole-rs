@@ -1,0 +1,70 @@
+name: PHPT engines
+description: >-
+  Build the engines upstream's PHPTs run on, with the database, cURL and ssh2 hooks as
+  upstream's own CI builds them (scripts/docker-compile.sh), into the phpt-engines artifact:
+  upstream.so, hybrid.so (the all-modules hybrid) and cargo.so (crates/ext alone).
+inputs:
+  engines:
+    description: The engines to build, space separated (upstream hybrid cargo)
+    required: true
+outputs:
+  php:
+    description: The PHP package version the engines were built against
+    value: ${{ steps.install.outputs.php }}
+runs:
+  using: composite
+  steps:
+    # Main's release build: the dependencies. Build trees must start clean.
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: release
+        save-if: false
+    - shell: bash
+      run: rm -rf target/ext target/hybrid target/upstream target/thirdparty target/native-core
+    - id: install
+      uses: ./.github/actions/install
+      with:
+        # php-mysql: build_ext.py loads mysqlnd to check the cargo engine loads.
+        packages: firebird-dev libaio1t64 php-mysql
+        php: latest
+    - uses: ./.github/actions/instantclient
+    - id: upstream
+      uses: actions/cache@v4
+      with:
+        path: target/upstream
+        key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+    - if: steps.upstream.outputs.cache-hit != 'true'
+      shell: bash
+      run: python3 tools/build_upstream.py
+    - uses: actions/cache/restore@v4
+      with:
+        path: .ccache
+        key: ccache-${{ runner.os }}-${{ github.sha }}
+        restore-keys: ccache-${{ runner.os }}-
+    - shell: bash
+      env:
+        ENGINES: ${{ inputs.engines }}
+      run: |
+        cargo fetch --locked
+        services="--configure=--enable-swoole-pgsql --configure=--enable-mysqlnd --configure=--with-swoole-odbc=unixODBC,/usr --configure=--with-swoole-firebird"
+        services="$services --configure=--enable-swoole-sqlite --configure=--with-swoole-oracle=instantclient,/usr/local/instantclient"
+        services="$services --configure=--enable-swoole-curl --configure=--with-swoole-ssh2"
+        mkdir -p target/phpt
+        for engine in $ENGINES; do
+          case $engine in
+            upstream)
+              python3 tools/build_hybrid.py --backend upstream --php-sockets $services | tee upstream.log
+              cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so ;;
+            hybrid)
+              python3 tools/build_hybrid.py --php-sockets $services | tee hybrid.log
+              cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so ;;
+            cargo)
+              python3 tools/build_ext.py --php-sockets $services
+              cp target/ext/swoole.so target/phpt/cargo.so ;;
+            *) echo "Unknown engine $engine" && exit 1 ;;
+          esac
+        done
+    - uses: actions/upload-artifact@v4
+      with:
+        name: phpt-engines
+        path: target/phpt/

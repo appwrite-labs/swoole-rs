@@ -24,10 +24,6 @@ use crate::worker_globals::{
     swr_v1_worker_global_get, swr_v1_worker_global_set, worker_global_max_requests,
 };
 use crate::worker_record::{WorkerRecord, swr_v1_worker_exceeded_max_requests};
-use crate::worker_registry::{
-    swr_v1_process_worker_registry_insert, swr_v1_process_worker_registry_lookup,
-    swr_v1_process_worker_registry_unregister,
-};
 
 /// crates/server's table, which every method below lends its export
 /// (`crates/server/src/pool_native.rs`); null in tests, which drive the exports
@@ -268,7 +264,7 @@ pub unsafe extern "C" fn add_worker(pool: *const PoolRecord, worker: *mut Worker
     // SAFETY: the caller lends a live worker.
     let pid = unsafe { Worker::new(worker).pid() };
     // SAFETY: a created pool's registry is live.
-    unsafe { swr_v1_process_worker_registry_insert(registry, pid, worker.cast(), 0) };
+    unsafe { (*registry).insert(pid, worker.cast(), 0) };
 }
 
 /// `ProcessPool::del_worker(worker)`: whether the worker's pid was registered.
@@ -286,7 +282,7 @@ pub unsafe extern "C" fn del_worker(pool: *const PoolRecord, worker: *const Work
     // SAFETY: the caller lends a live worker.
     let pid = unsafe { Worker::new(worker).pid() };
     // SAFETY: a created pool's registry is live.
-    unsafe { swr_v1_process_worker_registry_unregister(registry, pid) }
+    unsafe { (*registry).unregister(pid) }
 }
 
 /// `ProcessPool::get_worker_by_pid(pid)`: null before `create` or for an unknown pid.
@@ -308,7 +304,7 @@ pub unsafe extern "C" fn get_worker_by_pid(
         return ptr::null_mut();
     }
     // SAFETY: a non-null registry is live.
-    unsafe { swr_v1_process_worker_registry_lookup(registry, pid) }.cast()
+    unsafe { (*registry).lookup(pid) }.cast()
 }
 
 /// `ProcessPool::is_worker_running(worker)`.

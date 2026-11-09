@@ -189,8 +189,7 @@ impl Owner {
         let timer = Box::into_raw(Box::new(Owner {
             reactor: Cell::new(std::ptr::null_mut()),
             queue,
-            // SAFETY: getpid has no preconditions.
-            owner_pid: unsafe { libc::getpid() },
+            owner_pid: std::process::id().cast_signed(),
             backend: Cell::new(MANUAL),
             abandoned: Cell::new(false),
             pending_bailout: Cell::new(None),
@@ -480,8 +479,7 @@ impl Owner {
         );
         self.set(-1);
         let mut view = TimerView::default();
-        // SAFETY: getpid has no preconditions.
-        if self.abandoned.get() || unsafe { libc::getpid() } != self.owner_pid {
+        if self.abandoned.get() || std::process::id().cast_signed() != self.owner_pid {
             let mut stats = TimerStats::default();
             // SAFETY: the live queue and writable stats.
             check(unsafe { swr_v1_timer_stats_get(self.queue, &raw mut stats) });

@@ -10,8 +10,13 @@ runs every module gate, the application corpus among them; then the PHPT selecti
 on it. The native gates and the crates' unit tests link the instrumented Rust archive into
 executables of their own: target/asan/bin puts `cc` and `c++` first on PATH as clang with
 the sanitizers, so every link takes clang's runtime, and -Zexternal-clangrt stops rustc
-adding its own beside it. Any sanitizer report fails the run whatever
-the tests say. Reports stay in target/asan/reports/ and are only counted on stdout: a
+adding its own beside it; the gates that call $CC and $CXX get the same shims. Rust
+globals carry no redzones (-asan-globals=0): rustc registers each one from a section GNU
+ld keeps whole, so under --gc-sections every global and every function a global's table
+points to stays, and the gates' executables would need all the extension's libraries
+(OpenSSL, the multipart parser, the context switch) to link. C and C++ globals keep
+theirs. PHP has FFI built in for the timer and ports gates. Any sanitizer report fails
+the run whatever the tests say. Reports stay in target/asan/reports/ and are only counted on stdout: a
 report may locate an upstream bug, which goes to the private security repository (AGENTS.md), so a public CI log
 never shows one. Rerun locally to read them. LeakSanitizer runs at the extension's
 MSHUTDOWN, not at exit: a worker or child process exits without shutting PHP down, so
@@ -52,12 +57,12 @@ def main():
         (shims / name).chmod(0o755)
     compilers = {**os.environ, 'CC': 'clang', 'CXX': 'clang++', 'PATH': f"{shims}{os.pathsep}{os.environ['PATH']}"}
     subprocess.run([ROOT / '.devcontainer/php.sh', php, '--enable-address-sanitizer', '--enable-undefined-sanitizer',
-                    '--without-pcre-jit', '--with-pdo-sqlite'],
+                    '--without-pcre-jit', '--with-pdo-sqlite', '--with-ffi'],
                    env=compilers, check=True)
     host = next(line.split()[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines()
                 if line.startswith('host:'))
     build = {**compilers, 'CFLAGS': SANITIZE, 'CXXFLAGS': SANITIZE, 'LDFLAGS': SANITIZE, 'RUSTC_BOOTSTRAP': '1',
-             'RUSTFLAGS': '-Zsanitizer=address -Zexternal-clangrt=yes -Cforce-frame-pointers=yes',
+             'RUSTFLAGS': '-Zsanitizer=address -Zexternal-clangrt=yes -Cforce-frame-pointers=yes -Cllvm-args=-asan-globals=0',
              # As `cargo --target`: build scripts and proc macros, which rustc loads, stay uninstrumented.
              'CARGO_BUILD_TARGET': host}
     reports = OUT / 'reports'
@@ -65,7 +70,8 @@ def main():
     reports.mkdir(parents=True)
     options = f'log_path={reports}/report:print_stacktrace=1'
     leaks = f':leak_check_at_exit=0:suppressions={ROOT}/tools/lsan.supp:print_suppressions=0'
-    run = {**build, 'PATH': f"{php / 'bin'}{os.pathsep}{build['PATH']}", 'USE_ZEND_ALLOC': '0',
+    run = {**build, 'CC': str(shims / 'cc'), 'CXX': str(shims / 'c++'),
+           'PATH': f"{php / 'bin'}{os.pathsep}{build['PATH']}", 'USE_ZEND_ALLOC': '0',
            'USE_TRACKED_ALLOC': '1', 'ASAN_OPTIONS': options, 'LSAN_OPTIONS': options + leaks,
            'UBSAN_OPTIONS': options}
     gates = [sys.executable, 'tools/dev.py', 'integrate', '--all-modules', '--php', str(php / 'bin/php')]

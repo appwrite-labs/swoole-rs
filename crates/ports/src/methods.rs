@@ -39,7 +39,7 @@ const SOCK_CLOEXEC: c_int = 1 << 3;
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::view;
 
-use swoole_rs_http::swr_v1_http_request_free;
+use swoole_rs_http::request_free;
 use swoole_rs_server::ConnectionRecord;
 
 use crate::lifecycle::{
@@ -695,7 +695,7 @@ pub unsafe extern "C" fn ssl_init(port: *const c_void) -> bool {
 /// `ListenPort::destroy_http_request(conn)`: frees the connection's request, if any.
 ///
 /// # Safety
-/// `conn` is a live connection whose `object` is null or from `swr_v1_http_request_new`.
+/// `conn` is a live connection whose `object` is null or from `request_new`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole10ListenPort20destroy_http_requestEPNS_10ConnectionE")
@@ -705,7 +705,7 @@ pub unsafe extern "C" fn destroy_http_request(_port: *mut c_void, conn: *mut Con
     let conn = unsafe { &mut *conn };
     let request = std::mem::replace(&mut conn.object, ptr::null_mut());
     // SAFETY: as the caller guarantees; nothing holds the request after.
-    unsafe { swr_v1_http_request_free(request.cast()) };
+    unsafe { request_free(request.cast()) };
 }
 
 #[cfg(not(test))]
@@ -1317,7 +1317,7 @@ mod tests {
         }
         // SAFETY: an all-zero record is a closed connection with no object.
         let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
-        // `swr_v1_http_request_new`'s boxed request, without the native effects it links.
+        // `request_new`'s boxed request, without the native effects it links.
         let request = swoole_rs_http::HttpRequest::new(no_effects);
         conn.object = Box::into_raw(Box::new(request)).cast();
         unsafe { destroy_http_request(ptr::null_mut(), &raw mut conn) };

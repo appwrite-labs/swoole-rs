@@ -1,7 +1,7 @@
 name: PHPT environment
 description: >-
   What upstream's PHPTs expect beside the services, for the phpt shards and the
-  phpt-gate re-runs alike: client packages, service host names, the ODBC DSN,
+  gate's re-runs alike: client packages, service host names, the ODBC DSN,
   upstream's test tables and its composer test libraries, plus both engines.
 inputs:
   php:

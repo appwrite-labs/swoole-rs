@@ -658,14 +658,7 @@ mod tests {
     }
     unsafe extern "C" fn prepare(context: *mut c_void) -> bool {
         let request = unsafe { &mut *context.cast::<Request>() };
-        unsafe {
-            crate::swr_v1_socket_sendfile_range(
-                request.fd,
-                request.begin,
-                request.length,
-                &raw mut request.end,
-            ) == 0
-        }
+        crate::sendfile_range(request.fd, request.begin, request.length, &mut request.end) == 0
     }
     unsafe extern "C" fn buffer(context: *mut c_void) {
         unsafe { (*context.cast::<Request>()).buffer = true };
@@ -744,8 +737,7 @@ mod tests {
                                 );
                             };
                             let sent = 3.min(remaining.min(7));
-                            let requested =
-                                crate::swr_v1_socket_sendfile_chunk(request.begin, request.end);
+                            let requested = crate::sendfile_chunk(request.begin, request.end);
                             assert!(sent <= requested);
                             request.sends += 1;
                             request.begin += libc::off_t::try_from(sent).unwrap();

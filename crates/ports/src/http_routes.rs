@@ -27,10 +27,7 @@ fn route<T>(
     http2: impl FnOnce() -> T,
     error: T,
 ) -> T {
-    match swoole_rs_http::swr_v1_http_transport_route(
-        conn.websocket_status.into(),
-        conn.http2_stream.into(),
-    ) {
+    match swoole_rs_http::transport_route(conn.websocket_status.into(), conn.http2_stream.into()) {
         1 => websocket(),
         2 => http2(),
         _ => {
