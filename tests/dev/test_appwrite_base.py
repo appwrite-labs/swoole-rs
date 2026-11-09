@@ -11,6 +11,7 @@ RUN \\\\
   git fetch swoole && \\\\
   ./configure \\\\
     --enable-brotli \\\\
+    --enable-cares \\\\
     --enable-sockets \\\\
     --with-openssl-dir=/usr && \\\\
   make && make install && \\\\
@@ -23,17 +24,20 @@ COPY --from=swoole /artifacts/ /tmp/exts/
 
 class AppwriteBase(unittest.TestCase):
     def test_only_the_swoole_stage_changes(self):
-        for variant in ['hybrid', 'upstream']:
+        for variant in ['cargo', 'upstream']:
             out = rewrite(DOCKERFILE, variant)
             self.assertTrue(out.startswith('FROM php AS compile\nRUN apk add git\n\nFROM compile AS swoole\n'))
             self.assertTrue(out.endswith('FROM compile AS final\nCOPY --from=swoole /artifacts/ /tmp/exts/\n'))
-            self.assertIn('--configure=--enable-brotli --configure=--with-openssl-dir=/usr', out)
             self.assertNotIn('--configure=--enable-sockets', out)  # --php-sockets covers it
-            self.assertEqual('build_hybrid.py' in out, variant == 'hybrid')
+            self.assertIn('--configure=--enable-cares', out)
+            # The Cargo build always has Brotli and OpenSSL.
+            self.assertEqual('--configure=--enable-brotli --configure=--enable-cares --configure=--with-openssl-dir=/usr' in out,
+                             variant == 'upstream')
+            self.assertEqual('build_ext.py' in out, variant == 'cargo')
 
     def test_unknown_shape_is_refused(self):
         with self.assertRaises(ValueError):
-            rewrite('FROM php AS compile\n', 'hybrid')
+            rewrite('FROM php AS compile\n', 'cargo')
 
 
 if __name__ == '__main__':
