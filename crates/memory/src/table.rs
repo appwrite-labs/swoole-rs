@@ -16,7 +16,6 @@
 //! more than two seconds.
 use crate::fixed::{self, Fixed, Layout, Slice};
 use std::cell::UnsafeCell;
-use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::mem::{offset_of, size_of};
 use std::sync::OnceLock;
@@ -210,7 +209,8 @@ impl Column {
 }
 
 /// Every declaration in order, repeats included (upstream's `column_list`),
-/// and the first declaration of each name (upstream's `column_map`).
+/// and where the first declaration of each name sits (upstream's `column_map`).
+/// Tables have a handful of columns, so a scan beats hashing the name.
 #[derive(Default)]
 struct Columns {
     #[expect(
@@ -218,7 +218,7 @@ struct Columns {
         reason = "callers keep column pointers across later declarations"
     )]
     list: Vec<Box<Column>>,
-    first: HashMap<Box<[u8]>, usize>,
+    first: Vec<usize>,
 }
 
 /// The iterator's position and its private copy of the current row.
@@ -542,10 +542,9 @@ impl Table {
         self.item_size = self.item_size.wrapping_add(width as usize);
         // SAFETY: as in `column_set`; `&mut self` excludes other users.
         let columns = unsafe { &mut *self.columns };
-        columns
-            .first
-            .entry(name.into())
-            .or_insert(columns.list.len());
+        if columns.list.iter().all(|column| *column.name != *name) {
+            columns.first.push(columns.list.len());
+        }
         columns.list.push(Box::new(column));
         true
     }
@@ -556,8 +555,9 @@ impl Table {
         let columns = self.column_set();
         columns
             .first
-            .get(name)
-            .and_then(|&at| columns.list.get(at))
+            .iter()
+            .filter_map(|&at| columns.list.get(at))
+            .find(|column| *column.name == *name)
             .map(|column| &**column)
     }
 
