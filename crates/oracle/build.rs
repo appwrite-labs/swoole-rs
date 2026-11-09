@@ -137,6 +137,10 @@ fn http_frame() {
         "void Request::parse_header_info(",
         "int Request::get_protocol(",
         "int Request::get_header_length(",
+        "static bool is_http_token_char(",
+        "static bool is_http_quoted_char(",
+        "static bool is_http_quoted_pair_char(",
+        "static ChunkSizeResult parse_chunk_size(",
         "int Request::get_chunked_body_length(",
         "bool Request::has_expect_header(",
         "std::string Request::get_header(",
@@ -150,6 +154,8 @@ fn http_frame() {
     let enums = [
         slice(&header, "enum swHttpVersion {", "\n};") + "\n};\n",
         slice(&header, "enum swHttpMethod {", "\n};") + "\n};\n",
+        slice(&header, "enum ChunkState {", "\n};") + "\n};\n",
+        slice(&header, "enum ChunkSizeResult {", "\n};") + "\n};\n",
     ];
     fs::write(out("http_frame_enums.inc"), enums.concat()).unwrap();
 }
