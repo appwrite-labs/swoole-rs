@@ -332,7 +332,13 @@ pub unsafe extern "C" fn sw_rs_http2_respond_next(
         START => COMMIT_END,
         HEADER if succeeded != 0 => COMMIT_END,
         HEADER => FALSE,
-        COMMIT_END if facts.chunked != 0 && facts.body_length == 0 => EMPTY,
+        // A trailer's HEADERS carry END_STREAM: a streamed response with one
+        // ends with it, not with an empty DATA frame.
+        COMMIT_END
+            if facts.chunked != 0 && facts.body_length == 0 && facts.trailer_present == 0 =>
+        {
+            EMPTY
+        }
         COMMIT_END => BODY,
         EMPTY | BODY | TRAILER if succeeded == 0 => ERROR_CLOSE,
         EMPTY => BODY,
@@ -572,6 +578,13 @@ pub unsafe extern "C" fn sw_rs_http2_setting_plan(
             ),
         },
     );
+}
+
+/// The largest DATA frame to send under the peer's `max_frame_size`: legacy
+/// SETTINGS values outside RFC 9113's range are accepted but never used.
+#[must_use]
+pub fn send_frame_size(remote: u32) -> u32 {
+    remote.clamp(1 << 14, (1 << 24) - 1)
 }
 
 /// # Safety
@@ -986,6 +999,14 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn frames_are_sent_within_the_rfc_frame_size_range() {
+        assert_eq!(send_frame_size(0), 16384);
+        assert_eq!(send_frame_size(16383), 16384);
+        assert_eq!(send_frame_size(40000), 40000);
+        assert_eq!(send_frame_size(16_777_216), 16_777_215);
+    }
+
     #[test]
     fn chunk_window_and_pipeline_bits() {
         let mut chunk = Http2ChunkPlan::default();

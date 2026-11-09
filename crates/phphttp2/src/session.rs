@@ -181,10 +181,13 @@ impl SessionState {
         Some(stream)
     }
 
-    /// `remove_stream`: the stream is released once nothing holds it.
+    /// `remove_stream`: the stream is released once nothing holds it, and a
+    /// response waiting on its window resumes to find it gone.
     pub(crate) fn remove(&self, id: u32) {
         let removed = self.streams.borrow_mut().remove(&id);
-        drop(removed);
+        if let Some(stream) = removed {
+            stream.wake();
+        }
     }
 
     pub(crate) fn idle(&self) -> bool {
@@ -278,12 +281,20 @@ pub unsafe extern "C" fn swr_v1_phphttp2_session_new(
     });
 }
 
-/// `swoole_http2_server_session_free`: forget connection `fd`'s session; its
-/// streams are released once nothing holds them.
+/// `swoole_http2_server_session_free`: forget connection `fd`'s session,
+/// removing its streams; each is released once nothing holds it.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phphttp2_session_free(fd: i64) {
-    let session = SESSIONS.with_borrow_mut(|sessions| sessions.remove(&fd));
-    drop(session);
+    let Some(session) = SESSIONS.with_borrow(|sessions| sessions.get(&fd).cloned()) else {
+        return;
+    };
+    loop {
+        let next = session.streams.borrow().keys().next().copied();
+        let Some(id) = next else { break };
+        session.remove(id);
+    }
+    let removed = SESSIONS.with_borrow_mut(|sessions| sessions.remove(&fd));
+    drop(removed);
 }
 
 #[cfg(test)]
