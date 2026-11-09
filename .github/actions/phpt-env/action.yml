@@ -18,7 +18,10 @@ runs:
     # The engines link the Instant Client (--with-swoole-oracle).
     - uses: ./.github/actions/instantclient
     - shell: bash
-      run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql oracle golang-h2demo tinyproxy socks5' | sudo tee -a /etc/hosts
+      run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql oracle golang-h2demo tinyproxy socks5 ftp' | sudo tee -a /etc/hosts
+    # curl_multi_segfault.phpt's server, the ftp service above.
+    - shell: bash
+      run: printf 'PHP_CURL_FTP_REMOTE_SERVER=ftp\nPHP_CURL_FTP_REMOTE_USER=admin\nPHP_CURL_FTP_REMOTE_PASSWD=admin\n' >> "$GITHUB_ENV"
     # msgq_capacity sets a 64 MiB queue, which upstream's root test container may; we aren't root.
     - shell: bash
       run: sudo sysctl -w kernel.msgmnb=67108864

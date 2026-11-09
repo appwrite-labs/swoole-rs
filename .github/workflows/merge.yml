@@ -373,6 +373,15 @@ jobs:
         env:
           REQUIRE_AUTH: 'false'
         ports: ['1080:1080']
+      # FTP_HOST:FTP_PORT as admin/admin; curl reaches the passive ports on localhost.
+      ftp:
+        image: teezily/ftpd
+        env:
+          FTP_USER: admin
+          FTP_PASSWORD: admin
+          PASV_MIN_PORT: 65000
+          PASV_MAX_PORT: 65009
+        ports: ['21:21', '65000-65009:65000-65009']
       # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
       firebirdsql:
         image: firebirdsql/firebird
@@ -456,6 +465,15 @@ jobs:
         env:
           REQUIRE_AUTH: 'false'
         ports: ['1080:1080']
+      # FTP_HOST:FTP_PORT as admin/admin; curl reaches the passive ports on localhost.
+      ftp:
+        image: teezily/ftpd
+        env:
+          FTP_USER: admin
+          FTP_PASSWORD: admin
+          PASV_MIN_PORT: 65000
+          PASV_MAX_PORT: 65009
+        ports: ['21:21', '65000-65009:65000-65009']
       # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
       firebirdsql:
         image: firebirdsql/firebird
