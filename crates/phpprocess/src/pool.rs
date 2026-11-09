@@ -599,6 +599,9 @@ fn set(call: &Call) {
     let pool = record(checked(this));
     swoole_rs_phpswoole::php_swoole_set_global_option(options);
     swoole_rs_phpcoroutines::set_coroutine_option(options);
+    if swoole_rs_zend::bailout::pending() {
+        return;
+    }
     swoole_rs_phpswoole::php_swoole_set_aio_option(options);
     if let Some(value) = options.get(b"max_package_size") {
         let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);

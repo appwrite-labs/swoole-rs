@@ -27,7 +27,7 @@ def rewrite(dockerfile, variant):
     cargo = variant == 'cargo'
     configure = ' '.join(f'--configure={flag}' for flag in flags if not flag.startswith(BUILT_IN if cargo else BUILT_IN[0]))
     build = 'build_ext.py' if cargo else 'build_upstream.py --no-ccache'
-    output = 'target/ext/swoole.so' if cargo else 'target/upstream/src/modules/swoole.so'
+    output = 'target/ext/swoole.so' if cargo else 'target/upstream-builds/php-sockets/src/modules/swoole.so'
     stage = f'''FROM compile AS swoole
 COPY --from=swoole-rs / /swoole-rs
 RUN \\

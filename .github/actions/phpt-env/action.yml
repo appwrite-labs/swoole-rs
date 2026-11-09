@@ -50,6 +50,8 @@ runs:
       with:
         path: target/upstream
         key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+        # Only the pinned tests are read here, and those don't change with the build script.
+        restore-keys: upstream-${{ runner.os }}-
         fail-on-cache-miss: true
     # The ssh2 tests' account on localhost (ssh2_test.inc's defaults), password and key
     # logins, as upstream's tests/init creates it.

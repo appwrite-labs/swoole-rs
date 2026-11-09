@@ -1,9 +1,8 @@
 //! `swoole::SSLContext`'s OpenSSL side: library initialization and the `ex_data`
 //! indexes, the error text, creating and configuring the `SSL_CTX`, and its
-//! callbacks (password, ALPN, verify, DTLS cookies). Native code keeps the
-//! configuration fields (other modules read and write them), the info callback
-//! (it touches `network::Socket` bitfields) and the logger, which Rust reaches
-//! through the configuration's `warn` callback. Requires OpenSSL 3.
+//! callbacks (password, ALPN, verify, DTLS cookies). The configuration lives in the
+//! owner (`owned.rs`), the info callback in `info.rs`; warnings go through the
+//! configuration's `warn` callback. Requires OpenSSL 3.
 use openssl_sys::{
     BIO, BIO_ctrl, DTLS_method, ERR_clear_error, ERR_get_error, ERR_reason_error_string, EVP_MD,
     EVP_PKEY, EVP_PKEY_free, EVP_sha1, OPENSSL_NPN_NEGOTIATED, OPENSSL_init_ssl, SSL,

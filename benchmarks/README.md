@@ -114,7 +114,7 @@ outside timing. They are different workloads, not a before/after speedup ratio.
 
 `storage.py --baseline PATH --output target/storage-results.json` builds the
 same release harness against an untouched baseline and this checkout. It covers
-buffer reuse, flat directory names, heap node pooling and timer heap keys, with
+buffer reuse, heap node pooling and timer heap keys, with
 seven alternating trials calibrated toward at least 100 ms for the faster engine.
 Allocation probes run separately from timing; all timed checksums must match.
 Use `--prepare-only` to build without measuring. Stop builds and tests before

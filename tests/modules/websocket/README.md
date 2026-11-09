@@ -35,7 +35,7 @@ staticlib` and add `--rust-asan`.
 python3 -m pytest tests/modules/websocket/test_differential.py \
   tests/modules/websocket/test_invalid.py tests/modules/websocket/test_close.py \
   --engine upstream=target/upstream/src/modules/swoole.so \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so
+  --engine cargo=target/ext/swoole.so
 ```
 
 - `test_differential.py` (`websocket-differential`): PHP `Frame` pack/unpack

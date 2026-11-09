@@ -1,4 +1,5 @@
 """The PHPT gate shards every test once, classifies skips and fails only on upstream passes cargo loses."""
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -74,6 +75,17 @@ class PhptGate(unittest.TestCase):
         # The selected families' eight tests split evenly; family b is left out.
         self.assertEqual([len(tests) for tests in shards], [4, 4])
         self.assertEqual(sorted(t for tests in shards for t in tests), sorted(p for p in paths if p.endswith('.phpt') and '/b/' not in p))
+
+    def test_the_shard_matrix_grows_with_the_tests_selected(self):
+        from corpus.upstream import inventory
+        paths = [f'tests/{family}/{n}.phpt' for family, count in [('small', 3), ('server', 221), ('big', 2000)]
+                 for n in range(count)]
+        for modules, matrix in [(['none'], [1]), (['small'], [1]), (['server'], [1, 2]),
+                                (['small', 'server'], [1, 2]), ([], [1, 2, 3, 4, 5, 6])]:
+            with mock.patch.object(inventory, 'blobs', return_value=paths), mock.patch('sys.stdout', new=io.StringIO()) as out, \
+                 mock.patch('sys.argv', ['inventory.py', '--plan', *(f'--module={module}' for module in modules)]):
+                self.assertEqual(inventory.main(), 0)
+            self.assertEqual(json.loads(out.getvalue()), matrix, modules)
 
     def test_skips_are_classified_and_only_passed_counts(self):
         detail = 'SKIP x [tests/x.phpt] reason: \x1b[33mmysql server not available\x1b[0m\n'
