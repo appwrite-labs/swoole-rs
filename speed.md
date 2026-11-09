@@ -17,4 +17,4 @@ Callgrind instructions per request (lower is better), measured by the merge tier
 | task | 31,537 | 33,177 | 0.9506× | 0.96× | ✅ |
 | mysql | 49,660 | 51,083 | 0.9721× | 0.98× | ✅ |
 
-Geometric mean 0.9073×. Goal: ≤ 1.00× on every workload ([#1894](https://github.com/loks0n/swoole-rs/issues/1894)).
+Geometric mean 0.9073×. Goal: ≤ 1.00× on every workload ([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)).
