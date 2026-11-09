@@ -12,7 +12,7 @@ use crate::{
     websocket,
 };
 use std::{
-    cell::{Cell, RefCell, UnsafeCell},
+    cell::{Cell, RefCell},
     ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
     rc::Rc,
@@ -27,8 +27,8 @@ use swoole_rs_phphelpers::callable;
 use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_zend::{
-    Call, Class, Object, bailout, declare_bool, declare_long, declare_property_null,
-    declare_string, handlers, method_table,
+    Array, Call, Class, Object, Owned, OwnedArray, Value, bailout, declare_bool, declare_long,
+    declare_property_null, declare_string, handlers, method_table,
     string::{self, bytes},
     sys::{
         self as z, IS_STRING, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
@@ -60,7 +60,7 @@ struct HttpServer {
     default_handler: Cell<*mut Callable>,
     running: Cell<bool>,
     /// The connections, by the coroutine serving each.
-    clients: UnsafeCell<zval>,
+    clients: Owned,
     parse_cookie: Cell<bool>,
     parse_post: Cell<bool>,
     parse_files: Cell<bool>,
@@ -81,16 +81,12 @@ const COMPRESSION_MIN_LENGTH_DEFAULT: u32 = 20;
 
 impl HttpServer {
     fn new(socket: Socket) -> Self {
-        // SAFETY: a zval is plain data, initialised below.
-        let mut clients = unsafe { std::mem::zeroed::<zval>() };
-        // SAFETY: an empty slot takes a new array.
-        unsafe { value::array_init(&raw mut clients) };
         Self {
             socket,
             handlers: RefCell::new(Vec::new()),
             default_handler: Cell::new(ptr::null_mut()),
             running: Cell::new(true),
-            clients: UnsafeCell::new(clients),
+            clients: OwnedArray::default().into_owned(),
             parse_cookie: Cell::new(true),
             parse_post: Cell::new(true),
             parse_files: Cell::new(false),
@@ -107,15 +103,11 @@ impl HttpServer {
     /// `WebSocket::apply_setting(hs->websocket_settings, vht, true)`, the
     /// settings a coroutine server's contexts read.
     #[expect(clippy::cast_possible_truncation, reason = "the bits fit")]
-    fn apply_websocket(&self, table: *mut z::HashTable) {
+    fn apply_websocket(&self, table: &Array) {
         let mut bits = self.websocket_settings.get();
         let mut flag = |key: &[u8], bit: u8| {
-            // SAFETY: the live settings table and the key's bytes.
-            let found = unsafe { z::zend_hash_str_find(table, key.as_ptr().cast(), key.len()) };
-            // SAFETY: a found entry is live.
-            if !found.is_null() && unsafe { type_of(found) } != z::IS_NULL {
-                // SAFETY: as above.
-                if unsafe { z::swr_zend_is_true(found) } {
+            if let Some(found) = table.get(key) {
+                if found.truthy() {
                     bits |= bit;
                 } else {
                     bits &= !bit;
@@ -142,8 +134,7 @@ impl HttpServer {
     }
 
     fn clients(&self) -> *mut z::HashTable {
-        // SAFETY: the server's array, live until drop.
-        unsafe { value::table(self.clients.get()) }
+        self.clients.array().map_or(ptr::null_mut(), Array::as_ptr)
     }
 
     /// `set_handler`: `handle` replaces the pattern's handler, if any.
@@ -235,8 +226,6 @@ impl HttpServer {
 
 impl Drop for HttpServer {
     fn drop(&mut self) {
-        // SAFETY: the server's own array, released once.
-        unsafe { zval_ptr_dtor(self.clients.get()) };
         for (_, handle) in self.handlers.take() {
             // SAFETY: a handler `handle` made, released once.
             bailout::defer(unsafe { callable::release(handle) });
@@ -712,10 +701,12 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         return Ok(Some(false));
     }
     // SAFETY: the live settings array.
-    let table = unsafe { value::table(settings) };
+    let Some(table) = unsafe { Value::from_ptr(settings) }.and_then(Value::array) else {
+        return Ok(None);
+    };
     let mut cursor = SettingsCursor::default();
     let mut found = 0;
-    let mut value = ptr::null_mut();
+    let mut value = None;
     let compression = u32::from(COMPRESSION.load(Relaxed));
     loop {
         let mut action = Action::default();
@@ -728,18 +719,20 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         }
         match action.kind {
             SETTING_LOOKUP => {
-                // SAFETY: a live table and the action's key bytes.
-                value = unsafe {
-                    z::zend_hash_str_find(table, action.text.data.cast(), action.text.length)
-                };
-                // SAFETY: a found entry is live.
-                found = u32::from(!value.is_null() && unsafe { type_of(value) } != z::IS_NULL);
+                // SAFETY: the action's key bytes.
+                value = table.get(unsafe {
+                    std::slice::from_raw_parts(action.text.data, action.text.length)
+                });
+                found = u32::from(value.is_some());
             }
             SETTING_DONE => break,
             SETTING_WEBSOCKET => server.apply_websocket(table),
-            kind => match setting(server, kind, value)? {
-                Some(value) => server.apply(kind, value),
-                None => return Ok(None),
+            kind => match value
+                .map(|value| setting(server, kind, value))
+                .transpose()?
+            {
+                Some(Some(value)) => server.apply(kind, value),
+                _ => return Ok(None),
             },
         }
     }
@@ -778,11 +771,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
 /// One `start` setting (`SWR_HTTPBINDINGS_SETTING_*`) from its value: a
 /// flag's or a number's value for [`HttpServer::apply`], or `None` (no
 /// return value); an `E_ERROR` bails out.
-fn setting(
-    server: &HttpServer,
-    kind: u32,
-    value: *mut zval,
-) -> Result<Option<i64>, bailout::Bailout> {
+fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>, bailout::Bailout> {
     let fatal = |message: String| {
         host::set_last_error(host::PHP_FATAL_ERROR);
         let message = CString::new(message).unwrap_or_default();
@@ -792,53 +781,35 @@ fn setting(
     let compression = COMPRESSION.load(Relaxed);
     let result = match kind {
         SETTING_COOKIE | SETTING_POST | SETTING_FILES | SETTING_COMPRESSION => {
-            // SAFETY: the setting's live value.
-            Some(i64::from(unsafe { z::swr_zend_is_true(value) }))
+            Some(i64::from(value.truthy()))
         }
-        SETTING_LEVEL if compression => {
-            // SAFETY: as above.
-            let level = unsafe { value::get_long(value) };
-            Some(i64::from(
-                swoole_rs_httpbindings::swr_v1_httpbindings_server_level(level),
-            ))
-        }
-        // SAFETY: as above.
-        SETTING_MINIMUM if compression => Some(unsafe { value::get_long(value) }),
+        SETTING_LEVEL if compression => Some(i64::from(
+            swoole_rs_httpbindings::swr_v1_httpbindings_server_level(value.long()),
+        )),
+        SETTING_MINIMUM if compression => Some(value.long()),
         SETTING_TYPES if compression => {
             text_setting(server, kind, None);
-            // SAFETY: as above.
-            if unsafe { type_of(value) } != z::IS_ARRAY {
+            let Some(types) = value.array() else {
                 fatal("http_compression_types must be array".into())?;
                 return Ok(None);
-            }
-            // SAFETY: an array.
-            let types = unsafe { value::table(value) };
-            let each = |kind: *mut zval| {
-                // SAFETY: a live element.
-                let kind = unsafe { value::get_string(kind) };
-                if !bailout::pending() {
-                    // SAFETY: a live string.
-                    let text = unsafe { bytes(kind) };
-                    if !text.is_empty() {
-                        text_setting(server, SETTING_TYPES, Some(text));
-                    }
-                    // SAFETY: the string, released once.
-                    unsafe { z::swr_zend_string_release(kind) };
-                }
-                !bailout::pending()
             };
-            // SAFETY: a live array, which the loop only reads.
-            unsafe { swoole_rs_zend::each_value(types, each) };
+            for (_, kind) in types.entries() {
+                let kind = kind.string();
+                if bailout::pending() {
+                    break;
+                }
+                if !kind.bytes().is_empty() {
+                    text_setting(server, SETTING_TYPES, Some(kind.bytes()));
+                }
+            }
             Some(0)
         }
         SETTING_UPLOAD => {
-            // SAFETY: as above.
-            let dir = unsafe { value::get_string(value) };
+            let dir = value.string();
             if bailout::pending() {
                 return Err(bailout::Bailout);
             }
-            // SAFETY: a live string.
-            let text = unsafe { bytes(dir) };
+            let text = dir.bytes();
             // SAFETY: the directory's bytes.
             let created = unsafe { create_dir(text.as_ptr().cast(), text.len()) } >= 0;
             if created {
@@ -848,8 +819,7 @@ fn setting(
                 "Unable to create upload_tmp_dir[{}]",
                 String::from_utf8_lossy(nul_terminated(text))
             );
-            // SAFETY: the string, released once.
-            unsafe { z::swr_zend_string_release(dir) };
+            drop(dir);
             if !created {
                 fatal(message)?;
                 return Ok(None);
@@ -1397,14 +1367,10 @@ fn find_crlf2(data: &[u8]) -> Option<usize> {
 /// `Expect: 100-continue` (case-insensitive) among the request headers.
 fn expects_continue(context: *mut Context) -> bool {
     let expect = find(send::state(context).request.zheader.ptr, b"expect");
-    // SAFETY: a live header value.
-    !expect.is_null() && unsafe { type_of(expect) } == IS_STRING && {
-        // SAFETY: a string zval.
-        let string = unsafe { value::str_of(expect) };
-        // SAFETY: a live string.
-        let text = unsafe { bytes(string) };
-        text.eq_ignore_ascii_case(b"100-continue")
-    }
+    // SAFETY: null or a live header value.
+    unsafe { Value::from_ptr(expect) }
+        .and_then(Value::bytes)
+        .is_some_and(|text| text.eq_ignore_ascii_case(b"100-continue"))
 }
 
 handlers! {
