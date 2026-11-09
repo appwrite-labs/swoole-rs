@@ -729,6 +729,18 @@ class Lanes(unittest.TestCase):
                 self.assertEqual(commands[prefix + '-tls' + version][0],
                                  str(args.tls13_python) if version == '1.3' else sys.executable)
 
+    def test_candidate_phpt_families_come_from_the_touched_modules_only(self):
+        # Consumers run their gates, not their PHPT families: those overran the phase cap (#2270).
+        from argparse import Namespace
+        base = dict(lane='candidate', module=['ports', 'process'], php='php', php_extension=[],
+                    jobs=4, test=None, case=None, benchmark=False, compare=False)
+        families = lambda touched: [arg for arg in dict(dev.plan(Namespace(phpt_module=touched, **base),
+                                    ROOT / 'target/reports/test-plan')).get('phpt', []) if str(arg).startswith('swoole_')]
+        self.assertEqual(families([]), [])
+        self.assertIn('swoole_client_coro', families(['clients']))
+        self.assertNotIn('swoole_server', families(['clients']))
+        self.assertIn('swoole_server', families(None))
+
     def test_integration_cannot_filter_or_use_development_build(self):
         from argparse import Namespace
         args = Namespace(lane='integrate', module=['timer'], php='php', php_extension=[],

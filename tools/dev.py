@@ -488,7 +488,9 @@ def plan(args, reports):
         # tier's phpt jobs, which run every family (and so cover a change to all modules).
         # Only the modules a change touches: a consumer's families can't change outcome
         # without its own code changing, and every family together overruns the phase cap.
-        ids = {MODULES[module][0] for module in getattr(args, 'phpt_module', None) or args.module or ['websocket']}
+        # An empty list (only consumers changed) means no families, not a fallback.
+        touched = getattr(args, 'phpt_module', None)
+        ids = {MODULES[module][0] for module in (args.module or ['websocket'] if touched is None else touched)}
         families = sorted({family for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
                            if module['id'] in ids for family in module.get('phpt_families', [])})
         if families:
