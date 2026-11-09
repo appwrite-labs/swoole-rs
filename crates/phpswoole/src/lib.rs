@@ -61,7 +61,7 @@ use std::{
 };
 use swoole_rs_zend::{
     Class, register_long_constant,
-    sys::{zend_ce_error, zend_ce_exception, zend_class_entry},
+    sys::{zend_ce_error, zend_ce_exception, zend_class_entry, zend_object_handlers},
 };
 
 /// The `swr_v1_phpswoole_minit` flags.
@@ -86,9 +86,14 @@ fn log_put(level: c_int, message: &[u8]) {
 }
 
 /// `Swoole\Exception` and `Swoole\Error`, for code that links them by name
-/// (crates/phpredis, crates/phpevents and the shims); MINIT writes them.
+/// (crates/phpredis, crates/phpevents and the shims), and Exception's handlers,
+/// which upstream's bundled curl copies by name for its exception class
+/// (`SW_INIT_CLASS_ENTRY_EX`); MINIT writes them.
 #[unsafe(no_mangle)]
 pub static mut swoole_exception_ce: *mut zend_class_entry = ptr::null_mut();
+#[unsafe(no_mangle)]
+// SAFETY: a table of nullable pointers and an offset, for which zero is valid.
+pub static mut swoole_exception_handlers: zend_object_handlers = unsafe { std::mem::zeroed() };
 #[unsafe(no_mangle)]
 pub static mut swoole_error_ce: *mut zend_class_entry = ptr::null_mut();
 
@@ -120,6 +125,10 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
     let parent = unsafe { zend_ce_exception };
     // SAFETY: MINIT, extending Exception, with no methods.
     unsafe { EXCEPTION.register_child(c"Swoole\\Exception", ptr::null(), parent, |_, _| {}) };
+    // SAFETY: registered above, so its handlers are set.
+    let handlers = unsafe { *EXCEPTION.handlers() };
+    // SAFETY: MINIT, before any family copies it.
+    unsafe { swoole_exception_handlers = handlers };
     // SAFETY: Zend registers Error before any extension's MINIT.
     let parent = unsafe { zend_ce_error };
     // SAFETY: MINIT, extending Error, with no methods.
