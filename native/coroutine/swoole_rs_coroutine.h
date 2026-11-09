@@ -9,13 +9,14 @@
 extern "C" {
 #endif
 /* The scheduler and each coroutine's state (crates/coroutine/src/coroutine.rs,
- * live.rs). C++ stores them in their original scopes and reads fields inline;
- * every write goes through a function below. Pointer arguments are live and
- * unshared. run/resume/yield/bailout are whole operations that call the swap
- * callbacks and the hooks, which take a swoole::Coroutine facade. */
+ * live.rs, facade.rs). Rust owns both: this thread's scheduler, and each
+ * swoole::Coroutine record (a swr_v1_coroutine, then its swr_v1_context). C++
+ * reads fields inline; every write goes through a function below. Pointer
+ * arguments are live and unshared. run/resume/yield/bailout are whole
+ * operations that call the swap callbacks and the hooks, which take a record. */
 typedef struct swr_v1_coroutine swr_v1_coroutine;
 struct swr_v1_coroutine {
-    void *native; /* the swoole::Coroutine facade */
+    void *native; /* the swoole::Coroutine record */
     long cid;
     int32_t state, resume_code;
     void *task, *cancel_fn;
@@ -33,9 +34,10 @@ typedef void (*swr_v1_coroutine_swap_function)(void *);
 typedef struct {
     bool (*swap_in)(void *); /* returns whether the coroutine ended */
     void (*swap_out)(void *);
-    void (*destroy)(void *); /* deletes the ended facade */
-    void (*bailout)(void);   /* calls on_bailout */
-    long (*clock)(void);     /* SW_CORO_TIME's clock, or null */
+    void (*destroy)(void *);        /* frees the ended record */
+    void (*bailout)(void *);        /* on_bailout(bailout_data), or null */
+    void *bailout_data;
+    long (*clock)(void);            /* SW_CORO_TIME's clock, or null */
 } swr_v1_coroutine_hooks;
 typedef struct {
     swr_v1_coroutine *current;
@@ -49,8 +51,19 @@ typedef struct {
     bool activated, bailout;
 } swr_v1_coroutine_scheduler;
 enum { SWR_CO_ON_YIELD = 0, SWR_CO_ON_RESUME = 1, SWR_CO_ON_CLOSE = 2 };
-/* register returns whether to activate the scheduler. */
-bool swr_v1_coroutine_register(swr_v1_coroutine_scheduler *, swr_v1_coroutine *, void *native, long init_msec, long now);
+/* This thread's scheduler (upstream's SW_THREAD_LOCAL Coroutine::scheduler_). */
+swr_v1_coroutine_scheduler *swr_v1_coroutine_scheduler_get(void);
+/* Coroutine::create: the new coroutine runs routine(arg) until it first yields
+ * or ends. Its id, or -1 when its thread context failed to start. */
+long swr_v1_coroutine_create(void (*routine)(void *), void *arg);
+/* Coroutine::bailout: inside a coroutine callback(data) runs in the main
+ * context (PHP's bailout, or the process exits); outside one, later resumes
+ * are refused. */
+void swr_v1_coroutine_bail(void (*callback)(void *), void *data);
+/* The build's switches, which crates/coroutine reads: SWR_CTX_* and SWR_CO_TIME
+ * (native/coroutine/coroutine.cc). */
+enum { SWR_CO_TIME = 8 };
+extern const uint32_t swr_cpp_coroutine_build;
 long swr_v1_coroutine_run(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
 void swr_v1_coroutine_resume(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
 void swr_v1_coroutine_yield(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
@@ -66,10 +79,7 @@ void *swr_v1_coroutine_older(const swr_v1_coroutine_scheduler *, long before, lo
 void swr_v1_coroutine_iterator_reset(swr_v1_coroutine_scheduler *);
 void *swr_v1_coroutine_iterator_each(swr_v1_coroutine_scheduler *);
 void swr_v1_coroutine_print_list(const swr_v1_coroutine_scheduler *, FILE *out);
-/* set_active also clears (true) or sets (false) the bailout mark. */
-void swr_v1_coroutine_set_active(swr_v1_coroutine_scheduler *, bool);
 void swr_v1_coroutine_set_stack_size(swr_v1_coroutine_scheduler *, size_t);
-void swr_v1_coroutine_bind_socket(swr_v1_coroutine_scheduler *, long cid);
 void swr_v1_coroutine_set_callback(swr_v1_coroutine_scheduler *, uint32_t slot, swr_v1_coroutine_swap_function);
 void swr_v1_coroutine_set_task(swr_v1_coroutine *, void *);
 void swr_v1_coroutine_cancel(swr_v1_coroutine *);

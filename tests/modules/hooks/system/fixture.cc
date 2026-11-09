@@ -1,8 +1,7 @@
 // What the Rust cases in src/ can't express, compiled into the hybrid tree's lib-swoole by
-// tests/modules/hooks/system.py (--fixture): the std::function arguments of
-// coroutine::run, Coroutine::bailout, swoole_event_defer and the timer, and the repo-owned witnesses
-// that check C++ copies and std::bad_alloc containment, which only C++ can throw (formerly
-// tests/modules/coroutine/lifetime.cpp, tests/modules/hooks/socket_scopes.cpp and
+// tests/modules/hooks/system.py (--fixture): swoole_event_defer and the timer, which have C++
+// linkage, and the repo-owned witnesses that check C++ copies and std::bad_alloc containment,
+// which only C++ can throw (formerly tests/modules/hooks/socket_scopes.cpp and
 // dns_request_owner.cpp, unchanged but for these macros in place of GoogleTest's), and the
 // Server worker-retirement witness (formerly tests/modules/process/worker_retirement.cc).
 #include "swoole_coroutine.h"
@@ -132,31 +131,7 @@ void operator delete[](void *p, const std::nothrow_t &) noexcept {
     ::operator delete[](p);
 }
 
-struct ThrowingCancelCopy {
-    bool *fail;
-    explicit ThrowingCancelCopy(bool *value) : fail(value) {}
-    ThrowingCancelCopy(const ThrowingCancelCopy &other) : fail(other.fail) {
-        if (*fail) {
-            throw std::bad_alloc();
-        }
-    }
-    bool operator()(Coroutine *co) const {
-        co->resume();
-        return true;
-    }
-};
-
 extern "C" {
-// `swoole::coroutine::run(fn, arg)`.
-bool swr_case_coroutine_run(void (*fn)(void *), void *arg) {
-    return coroutine::run(fn, arg);
-}
-
-// `Coroutine::bailout(fn)`, or `bailout(nullptr)` when `fn` is null.
-void swr_case_bailout(void (*fn)(void *), void *data) {
-    Coroutine::bailout(fn ? Coroutine::BailoutCallback([fn, data]() { fn(data); }) : nullptr);
-}
-
 // `swoole_event_defer(fn, data)`.
 void swr_case_event_defer(void (*fn)(void *), void *data) {
     swoole_event_defer(fn, data);
@@ -255,29 +230,6 @@ void swr_case_worker_retirement() {
     ASSERT_TRUE(worker->concurrency == 0 && server.config()->gs->concurrency == 0);
     server.destroy();
     swr_v1_server_delete(&server);
-}
-
-// rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait, in a coroutine.
-void swr_case_cancellation_copy_failure_preserves_wait() {
-    bool fail = false;
-    bool resumed_canceled = false;
-    long cid = Coroutine::create([&](void *) {
-        Coroutine::CancelFunc cancel = ThrowingCancelCopy(&fail);
-        Coroutine *co = Coroutine::get_current();
-        co->yield(&cancel);
-        resumed_canceled = co->is_canceled();
-    });
-    Coroutine *co = Coroutine::get_by_cid(cid);
-    ASSERT_TRUE(co->is_suspending());
-    fail = true;
-    EXPECT_THROW(co->cancel(), std::bad_alloc);
-    ASSERT_TRUE(co->is_suspending());
-    ASSERT_FALSE(co->is_canceled());
-    fail = false;
-    ASSERT_TRUE(co->cancel());
-    // cancel's callback has resumed and deleted co; never read it again.
-    ASSERT_EQ(Coroutine::get_by_cid(cid), nullptr);
-    ASSERT_TRUE(resumed_canceled);
 }
 
 // rust_socket_scopes.protocol_snapshot_and_copy_restore, in a coroutine.

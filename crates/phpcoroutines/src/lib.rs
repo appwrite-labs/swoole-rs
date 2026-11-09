@@ -6,8 +6,7 @@
 //! exit and `@` handlers and the coroutine-aware autoloader.
 //!
 //! Rust reads the coroutine core's state directly; `host.rs` names what it
-//! asks of the rest of Swoole, including native/phpcoroutines/coroutine.cc for
-//! the C++ objects. The coroutine's entry runs the user callable and its defer
+//! asks of the rest of Swoole. The coroutine's entry runs the user callable and its defer
 //! tasks inside the zend-sys shim's `zend_first_try`; Rust frames that may
 //! switch coroutines or bail out own nothing that needs a drop.
 #![expect(

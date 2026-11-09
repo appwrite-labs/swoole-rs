@@ -9,8 +9,8 @@ Header: `swoole_rs_coroutine.h`.
 | 0004-coroutine-core, …-coroutine-operations-are-rust | `src/coroutine/base.cc` (deleted) |
 | phpcoroutines' …-swoole-coroutine-h-swoole-coroutine-co | `include/swoole_coroutine{,_context,_api,_system}.h` (deleted) |
 
-`swoole_coroutine.h` here is upstream's `Coroutine` and `Context` facades, and
-`swoole_coroutine_system.h` and `swoole_coroutine_api.h` the `System` members and
+`swoole_coroutine.h` here is an opaque `Coroutine` with the three inline getters
+native/ still calls, and `swoole_coroutine_system.h` and `swoole_coroutine_api.h` the `System` members and
 `swoole_coroutine_*` exports, each keeping only what native/, the vendored code
 and the compiled core-tests call. The deletion is in phpcoroutines' patch set
 because hooks' and phpcoroutines' patches edit the headers first.
@@ -25,10 +25,11 @@ out of a callback, skips no cleanup.
 `swr_v1_coroutine_scheduler` (current coroutine, last and socket-bound ids, peak
 count, stack size, the three swap callbacks, the C++ hooks, the live map, gdb's
 cursor, activation and the bailout mark) and `swr_v1_coroutine` (id, state,
-resume code, task, cancel function, the origin tree and timing). C++ stores the
-scheduler in upstream's `SW_THREAD_LOCAL` scope (a plain global in NTS builds,
-so `get_current()` stays one load) and embeds one record in each
-`swoole::Coroutine`, whose `native` field points back at it. C++ getters read
+resume code, task, cancel function, the origin tree and timing). Rust keeps the
+scheduler in upstream's `SW_THREAD_LOCAL` scope (`thread_local!` under ZTS, a
+plain static otherwise; `swr_v1_coroutine_scheduler_get`) and allocates each
+`swoole::Coroutine` as a `swr_v1_coroutine` followed by its `swr_v1_context`
+(`context::Native`), whose `native` field points back at it. C++ getters read
 fields inline; every write is a Rust call.
 
 The live coroutines (`live.rs`, upstream's `Coroutine::coroutines`) are a map by
@@ -36,37 +37,34 @@ id that the scheduler points to, allocated with the first coroutine and freed
 on deactivation once empty; no lookup goes through a thread-local. Lists run
 newest first.
 
-`swoole::Coroutine` is a facade: run, resume, yield (with or without a cancel
-function), the timed `yield_ex`, cancel and bailout are whole Rust operations, in upstream's order (the
+Create, run, resume, yield (with or without a cancel function), the timed
+`yield_ex`, cancel and bailout are whole Rust operations, in upstream's order (the
 resume callback still sees the old current; yield clears the resume code before
-its callback). They call back through `swr_v1_coroutine_hooks`, which C++ sets in
-the scheduler's initializer: `swap_in` (returns whether the coroutine ended),
-`swap_out`, `destroy` (the stack-usage trace and `delete`), `bailout` (calls
-`on_bailout`) and, under `SW_CORO_TIME`, `clock`. After a switch in, an ended
+its callback). They call back through `swr_v1_coroutine_hooks`: `swap_in` (returns
+whether the coroutine ended), `swap_out`, `destroy` (the stack-usage trace, then
+the context and record are freed), `bailout` (`on_bailout`, a C function and its
+data) and, under `SW_CORO_TIME`, `clock`. After a switch in, an ended
 coroutine closes: the close callback, then `release` restores current, orphans
 the coroutines this one resumed, unlinks it from its origin and drops it from
 the live map, then `destroy`. Otherwise a set bailout mark runs the bailout
-hook. The bailout callback, `on_bailout`, stays a C++ `std::function`; the
-scheduler's `bailout` flag mirrors whether it is set.
+hook. `swr_v1_coroutine_bail(callback, data)` is `Coroutine::bailout`: inside a
+coroutine it sets the hook, jumps to the main context and exits with
+`SW_CORO_BAILOUT_EXIT_CODE` if that returns; outside one it marks the scheduler.
 
 A cancelable yield's `cancel_fn` points at a `swr_v1_coroutine_canceler` (a C
-function and its data) on the yielder's stack; `yield(CancelFunc *)` wraps the
-`CancelFunc` in one whose function copies it, marks the coroutine canceled,
-then calls the copy, so a copy that throws leaves the wait as it was; Rust
-callers' cancelers are wrapped the same way. Cancel copies the canceler and
-calls it; it stays C++ because the `CancelFunc` copy may throw and no C++
-exception may cross a Rust frame (the archive aborts on unwinding). `yield_ex` adds its timeout timer through
+function and its data) on the yielder's stack. Cancel (`Coroutine::cancel`'s
+symbol) refuses a coroutine that is not suspended with one, then calls it.
+`yield_ex` adds its timeout timer through
 `swr_v1_timer_add_plain_sec` (crates/timer, a C callback and data) and deletes it after a
 wake that was not the timeout.
 
 `src/coroutine/base.cc` is gone. `crates/coroutine/src/facade.rs` defines its
-operations under their upstream symbols (`yield_ex`, `print_list`,
-`print_socket_bound_error`, `coroutine::run`) and the `swoole_coroutine_*` C
-API; `native/coroutine/coroutine.cc` keeps what Rust can't express: the
-thread-local scheduler (with its hooks) and `on_bailout`, the constructor and
-`delete` (the context keeps a `CoroutineFunc`), `activate`/`deactivate` (the
-thread backend's hooks and `on_bailout`), `bailout`'s `std::function` argument,
-cancel, and creating a coroutine from C callbacks.
+operations under their upstream symbols (`yield_ex`, `cancel`, `activate`,
+`deactivate`, `print_list`, `print_socket_bound_error`), the
+`swr_v1_coroutine_{scheduler_get,create,bail}` exports and the `swoole_coroutine_*`
+C API. `native/coroutine/coroutine.cc` keeps only `swr_cpp_coroutine_build`, the
+configure switches (`SWR_CTX_*`, `SWR_CO_TIME`) that only a configured C++ compile
+sees.
 
 ## Context stack
 
@@ -80,12 +78,11 @@ markers before the context is made: at `size - offset + 31` for each doubling
 samples them while `offset < size` and reports twice the last changed offset,
 or 64 KiB. `swr_v1_context_stack_free` takes the same size and flags.
 
-`crates/coroutine/src/context.rs` owns the `swr_v1_context` record that each
-`Coroutine` embeds through `swoole::coroutine::Context`'s inline view: init
+`crates/coroutine/src/context.rs` owns the `swr_v1_context` record that follows
+each coroutine's `swr_v1_coroutine`: init
 allocates the stack and makes the boost.context fcontext (out of memory is
 upstream's fatal error and exit 254), swap_in/swap_out jump with
-`swoole_jump_fcontext`, and the first frame runs the view's `CoroutineFunc`
-through one C entry, sets `end` and switches out. ASan's fiber annotations run
+`swoole_jump_fcontext`, and the first frame runs the coroutine's C routine, sets `end` and switches out. ASan's fiber annotations run
 when `dlsym` finds `__sanitizer_{start,finish}_switch_fiber`. ucontext and
 valgrind stack registration are not kept; config.m4 fails on a CPU without
 boost asm, and links it with the thread backend too, since the Rust context
@@ -95,8 +92,7 @@ With `SWR_CTX_THREAD` (`--enable-thread-context`) the record has no stack and
 `fctx` owns a thread (`crates/coroutine/src/thread.rs`; `thread_context.cc` is
 gone). A switch hands a baton, a binary semaphore, from one thread to the next,
 where upstream unlocks `std::mutex`es from threads that didn't lock them. init
-returns the errno of a failed spawn, which the view throws as upstream's
-`std::system_error`. `activate` adds the keep-alive timer and async threads as
+returns the errno of a failed spawn, which create reports as a warning and -1. `activate` adds the keep-alive timer and async threads as
 upstream did, then `swr_v1_thread_context_init` records the reactor, timer,
 buffer stack and async threads that each coroutine thread adopts once it first
 holds the baton. The `threadcontext` workflow compares the coroutine PHPT

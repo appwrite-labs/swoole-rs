@@ -905,7 +905,6 @@ const SUITES: &[(&str, Cases)] = &[
     ("address", address::CASES),
     ("coroutine_base", base::CASES),
     ("coroutine_async_file", base::ASYNC_FILE_CASES),
-    ("rust_coroutine_lifetime", base::LIFETIME_CASES),
     ("rust_dns_request", socket::DNS_REQUEST_CASES),
     ("socket", network_socket::CASES),
     ("timer", timer::CASES),

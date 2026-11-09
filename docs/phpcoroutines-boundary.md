@@ -15,9 +15,8 @@ zend-sys shim that runs the user callable and its defer tasks inside
 `zend_first_try`. Rust reads the coroutine core's state (crates/coroutine's
 scheduler and each coroutine's record) and calls the module host, the runtime
 hooks and the event loop directly. Rust callers start coroutines with
-`swr_v1_phpcoroutines_create`. `native/phpcoroutines/coroutine.cc` keeps what
-needs C++: a `Coroutine`'s context, whose record follows a `std::function`, and
-the `std::function` `Coroutine::bailout` takes. The server, reactor and io_uring
+`swr_v1_phpcoroutines_create`; a coroutine that ends in an exception or a
+bailout stops the loop and bails out through `swr_v1_coroutine_bail`. The server, reactor and io_uring
 reads, deferred tasks, timers and the build's switches are Rust (`host.rs`).
 
 `Swoole\Coroutine\Scheduler`, the coroutine options and the reactor's user exit
