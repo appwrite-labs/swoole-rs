@@ -337,14 +337,21 @@ impl Headers {
         Self { size, buffers }
     }
 
+    /// A header the script named: its name lowercased.
+    fn add_folded(&mut self, name: &[u8], value: &[u8]) {
+        let start = self.buffers.bytes.len();
+        self.add(name, value);
+        if let Some(added) = self.buffers.bytes.get_mut(start..start + name.len()) {
+            added.make_ascii_lowercase();
+        }
+    }
+
+    /// A header whose name is already lowercase.
     fn add(&mut self, name: &[u8], value: &[u8]) {
         let buffers = &mut self.buffers;
         if buffers.slots.len() < self.size {
             let start = buffers.bytes.len();
             buffers.bytes.extend_from_slice(name);
-            if let Some(added) = buffers.bytes.get_mut(start..) {
-                added.make_ascii_lowercase();
-            }
             buffers.bytes.extend_from_slice(value);
             buffers.slots.push((start, name.len(), value.len()));
         } else {
@@ -553,7 +560,7 @@ fn build_trailer(ctx: *mut c_void, session: &Session) -> Option<Headers> {
             continue;
         }
         let value = string_of(value)?;
-        headers.add(key_of(key), value.bytes());
+        headers.add_folded(key_of(key), value.bytes());
     }
     headers.deflate(session, c"http2_server_build_trailer")
 }
@@ -603,7 +610,7 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
             if plan.capture_content_type != 0 {
                 content_type = Some(string_of(value)?);
             }
-            headers.add(key, text);
+            headers.add_folded(key, text);
             Some(())
         };
         for (key, value) in entries(zheader) {
