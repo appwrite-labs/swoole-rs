@@ -17,17 +17,28 @@ pub struct NativeHost {
     pub get_env: unsafe extern "C-unwind" fn(name: *const c_char, value: *mut c_int) -> bool,
     /// Runs one numbered effect; native code promises each is safe to run.
     effect: extern "C-unwind" fn(effect: c_int, argument: usize) -> usize,
+    /// One `LOGGER_*` operation on the process logger (crates/process).
+    logger: extern "C" fn(op: c_int),
 }
+
+/// `new Logger()` on `SwooleG.stdout`, into `SwooleG.logger`.
+pub const LOGGER_NEW: c_int = 0;
+/// `SwooleG.logger->reopen()`, `->close()` and `delete SwooleG.logger`.
+pub const LOGGER_REOPEN: c_int = 1;
+pub const LOGGER_CLOSE: c_int = 2;
+pub const LOGGER_DELETE: c_int = 3;
 
 impl NativeHost {
     fn run(&self, effect: c_int, argument: usize) -> usize {
         (self.effect)(effect, argument)
     }
     /// `swoole_init`'s native leaves, in upstream's order: `sw_error`, the stdout
-    /// stream, the fatal-error hook, the logger and its level, the memory pool, the
-    /// futex-less wait registry, signalfd and the bug report.
+    /// stream and the fatal-error hook, then the logger, then the debug log level,
+    /// the memory pool, the futex-less wait registry, signalfd and the bug report.
     pub(crate) fn init(&self) {
         self.run(15, 0);
+        self.logger(LOGGER_NEW);
+        self.run(16, 0);
     }
     /// Allocate (`new String(SW_STACK_BUFFER_SIZE)`) or delete `SwooleTG.buffer_stack`.
     pub(crate) fn buffer(&self, allocate: bool) {
@@ -41,15 +52,8 @@ impl NativeHost {
     pub(crate) fn delete_pool(&self, pool: *mut c_void) {
         self.run(4, pool.expose_provenance());
     }
-    /// `SwooleG.logger->close()`, `->reopen()` and `delete SwooleG.logger`.
-    pub(crate) fn close_logger(&self) {
-        self.run(5, 0);
-    }
-    pub(crate) fn reopen_logger(&self) {
-        self.run(6, 0);
-    }
-    pub(crate) fn delete_logger(&self) {
-        self.run(7, 0);
+    pub(crate) fn logger(&self, op: c_int) {
+        (self.logger)(op);
     }
     pub(crate) fn signal_clear(&self) {
         self.run(8, 0);
