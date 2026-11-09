@@ -128,12 +128,8 @@ pub(crate) unsafe fn execute_end(owner: *mut ReactorState, timed_out: bool) {
         };
         match end {
             End::Call(call) => call(),
-            End::Defer => {
-                // SAFETY: the live reactor's queue slot.
-                let slot = unsafe { &raw mut (*fields).defer_tasks };
-                // SAFETY: as above.
-                unsafe { crate::deferred::run_defer(slot) };
-            }
+            // SAFETY: as the caller promises.
+            End::Defer => unsafe { crate::deferred::run_defer(owner) },
             // SAFETY: a single field read.
             End::Idle => run_task(unsafe { (*fields).idle_task }),
             End::Signal => swoole_rs_process::signal::swoole_signal_dispatch(),
@@ -275,7 +271,7 @@ pub extern "C" fn swr_v1_event_remove_exit_condition(id: c_int) {
 pub unsafe extern "C" fn swoole_event_defer(call: crate::DeferCall, data: *mut c_void) {
     if let Some(owner) = current() {
         // SAFETY: the thread's live reactor; the loop runs `call(data)` as its caller set.
-        unsafe { crate::deferred::defer(&raw mut owner.fields, call, data) };
+        unsafe { crate::deferred::defer(&raw mut owner.fields, call, data, None) };
     }
 }
 
@@ -522,7 +518,7 @@ mod tests {
             install_builtins(callbacks());
             let fields = &raw mut (*owner).fields;
             assert!(if_exit(owner));
-            crate::deferred::defer(fields, record, std::ptr::without_provenance_mut(4));
+            crate::deferred::defer(fields, record, std::ptr::without_provenance_mut(4), None);
             assert!(!if_exit(owner));
             (*fields).idle_task.callback = Some(record);
             (*fields).idle_task.data = std::ptr::without_provenance_mut(6);

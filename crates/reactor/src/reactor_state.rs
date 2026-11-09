@@ -64,6 +64,9 @@ pub struct ReactorState {
     pub(crate) backend_fd: c_int,
     pub(crate) backend_limit: c_int,
     pub(crate) callbacks: crate::callbacks::Callbacks,
+    /// The `defer_tasks` queues the defer end callback detached and is running, innermost
+    /// last: one a task bailed out of stays here for the drop to free.
+    pub(crate) running_defer: Vec<*mut crate::ReactorDeferred>,
 }
 // swoole_rs_reactor.h asserts the same layout for swr_v1_reactor_head.
 const _: () = assert!(
@@ -96,7 +99,11 @@ impl Drop for ReactorState {
     fn drop(&mut self) {
         self.close_backend();
         let fields = &mut self.fields;
-        for slot in [&mut fields.destroy_callbacks, &mut fields.defer_tasks] {
+        let running = self.running_defer.iter_mut();
+        for slot in [&mut fields.destroy_callbacks, &mut fields.defer_tasks]
+            .into_iter()
+            .chain(running)
+        {
             // SAFETY: the queue slots are this state's own, and nothing runs them now.
             unsafe { crate::deferred::deferred_free(slot) };
         }
@@ -188,6 +195,7 @@ impl ReactorState {
             backend_fd: -1,
             backend_limit: 0,
             callbacks: crate::callbacks::Callbacks::default(),
+            running_defer: Vec::new(),
         }));
         if !owner.open_backend(opened, count) {
             let (origin, call) = if opened == 1 {

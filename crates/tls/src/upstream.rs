@@ -1462,8 +1462,16 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
                     )
                 };
             }
-            // SAFETY: `swoole_event_defer(socket_free_defer, this)`.
-            unsafe { swoole_rs_reactor::defer(reactor.fields, socket_free_defer, socket.cast()) };
+            // SAFETY: `swoole_event_defer(socket_free_defer, this)`; a reactor freed
+            // before it runs closes the socket all the same.
+            unsafe {
+                swoole_rs_reactor::defer(
+                    reactor.fields,
+                    socket_free_defer,
+                    socket.cast(),
+                    Some(socket_free_defer),
+                );
+            }
             return;
         }
     }

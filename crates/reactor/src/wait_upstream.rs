@@ -95,7 +95,7 @@ mod registry {
             // Coroutine threads block every signal: register SIGCHLD on the loop's
             // thread, then reap the children that exited before it ran.
             // SAFETY: the live loop's fields.
-            unsafe { crate::deferred::defer(fields, register_deferred, ptr::null_mut()) };
+            unsafe { crate::deferred::defer(fields, register_deferred, ptr::null_mut(), None) };
         } else {
             register();
         }
