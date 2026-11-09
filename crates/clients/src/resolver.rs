@@ -72,14 +72,7 @@ impl Request {
     /// The text address `host` wrote.
     #[must_use]
     pub fn address(&self) -> Vec<u8> {
-        let view = swr_v1_core_resolver_view(self.get());
-        // SAFETY: the record's live address slot.
-        let text = unsafe { swr_v1_core_string_view(view.address) };
-        if text.length == 0 {
-            return Vec::new();
-        }
-        // SAFETY: the slot holds `length` bytes until it changes.
-        unsafe { core::slice::from_raw_parts(text.data.cast::<u8>(), text.length) }.to_vec()
+        address(self.get())
     }
 
     /// The text addresses `lookup` found.
@@ -139,6 +132,19 @@ fn checked(status: c_int) -> isize {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
     }
     status as isize
+}
+
+/// The text address `host` wrote into `owner`.
+#[must_use]
+pub fn address(owner: &ResolverRequest) -> Vec<u8> {
+    let view = swr_v1_core_resolver_view(owner);
+    // SAFETY: the record's live address slot.
+    let text = unsafe { swr_v1_core_string_view(view.address) };
+    if text.length == 0 {
+        return Vec::new();
+    }
+    // SAFETY: the slot holds `length` bytes until it changes.
+    unsafe { core::slice::from_raw_parts(text.data.cast::<u8>(), text.length) }.to_vec()
 }
 
 /// `async::handler_gethostbyname`'s body, on a pool thread: its `(retval, error)`.

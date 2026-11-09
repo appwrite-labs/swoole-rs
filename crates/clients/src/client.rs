@@ -1,24 +1,29 @@
 //! `network::Client` (upstream's `src/network/client.cc`) in Rust: its state and every
 //! operation over it, from construction to close, with its callbacks (one
 //! listener and its object), its reactor handlers, its connect timer, its TLS
-//! context and its proxies. The C++ `Client` is a facade that holds this behind
-//! `state_`; the public POD fields use [`ClientRecord`]. Rust reaches the rest
-//! of the native effects through [`Native`], one static
-//! table the C++ side defines once. The socket is the reactor's record, read and
-//! written here directly; its `object` is this state.
+//! context, its proxies and its DNS lookup. The public POD fields are
+//! [`ClientRecord`], at the state's start, so a client is also its record. The
+//! socket is the reactor's record, read and written here directly; its `object`
+//! is this state.
 //!
 //! A user callback can destroy the client (and this state with it), so no
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use core::cell::{Cell, RefCell};
+use core::cell::{Cell, RefCell, UnsafeCell};
 use core::ffi::{c_char, c_int, c_void};
 use std::ffi::{CStr, CString};
 use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::constants::{
+    EventType, FdType, ResultCode, ReturnCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE,
+    SW_SEND_BUFFER_SIZE, SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
+    TimeoutType,
+};
 use swoole_rs_corebase::net_types::{AddressStorage, Protocol, SocketAddress};
 #[cfg(not(test))]
 use swoole_rs_corebase::thread_buffer;
-use swoole_rs_corebase::{ProxyState, StringSlot, log, swr_v1_core_proxy_free};
+use swoole_rs_corebase::{ProxyState, ResolverRequest, StringSlot, log, swr_v1_core_proxy_free};
+use swoole_rs_error::ErrorCode;
 #[cfg(not(test))]
 use swoole_rs_reactor::event_api::swoole_event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
@@ -28,9 +33,9 @@ use swoole_rs_reactor::{
     swr_v1_socket_domain_and_type, swr_v1_socket_get_peer_name, swr_v1_socket_set_timeout,
 };
 #[cfg(test)]
-use tests::{ops, swoole_event_write, thread_buffer};
+use tests::{async_dispatch, ops, swoole_event_write, thread_buffer};
 
-/// The flags `swr_v1_clients_flag` reads (`SWR_CLIENTS_*`).
+/// The flags `swr_v1_clients_flag` reads.
 pub const ACTIVE: u32 = 0;
 pub const CLOSED: u32 = 1;
 pub const ASYNC: u32 = 2;
@@ -47,7 +52,7 @@ const HIGH_WATERMARK: u32 = 11;
 const DTLS: u32 = 12;
 const STREAM: u32 = 13;
 
-/// The events a [`Listener`] hears (`SWOOLE_CLIENT_ON_*`): bit `1 << event` of
+/// The events a [`Listener`] hears: bit `1 << event` of
 /// [`swr_v1_clients_listen`]'s mask is set for each it wants.
 pub const ON_CONNECT: c_int = 1;
 pub const ON_RECEIVE: c_int = 2;
@@ -73,52 +78,57 @@ const EVENT_SET: c_int = 1;
 const EVENT_DEL: c_int = 2;
 const EVENT_ADD_OR_UPDATE: c_int = 3;
 
-/// Swoole's constants this file uses; `native/clients/network_client.cc` asserts each.
-const OK: c_int = 0;
-const ERR: c_int = -1;
-const SW_WAIT: c_int = 2;
-const SW_CLOSE: c_int = 3;
-const SW_ERROR: c_int = 4;
-const SW_READY: c_int = 5;
-const SOCK_UNIX_DGRAM: c_int = 6;
-const FD_STREAM_CLIENT: c_int = 17;
-const FD_DGRAM_CLIENT: c_int = 18;
-const SOCK_NONBLOCK: c_int = 1 << 2;
-const SOCK_CLOEXEC: c_int = 1 << 3;
-const SEND_BUFFER_SIZE: u32 = 65536;
-const SSL_BUFFER_SIZE: u32 = 16384;
-const BUFFER_SIZE_UDP: usize = 65536;
-const CLIENT_BUFFER_SIZE: usize = 65536;
-const SOCKET_RETRY_COUNT: usize = 10;
+/// Swoole's constants this file uses.
+const OK: c_int = ResultCode::SW_OK as c_int;
+const ERR: c_int = ResultCode::SW_ERR as c_int;
+const SW_WAIT: c_int = ReturnCode::SW_WAIT as c_int;
+const SW_CLOSE: c_int = ReturnCode::SW_CLOSE as c_int;
+const SW_ERROR: c_int = ReturnCode::SW_ERROR as c_int;
+const SW_READY: c_int = ReturnCode::SW_READY as c_int;
+const SOCK_UNIX_DGRAM: c_int = SocketType::SW_SOCK_UNIX_DGRAM as c_int;
+const FD_STREAM_CLIENT: c_int = FdType::SW_FD_STREAM_CLIENT as c_int;
+const FD_DGRAM_CLIENT: c_int = FdType::SW_FD_DGRAM_CLIENT as c_int;
+const SOCK_NONBLOCK: c_int = SocketFlag::SW_SOCK_NONBLOCK as c_int;
+const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
+const SEND_BUFFER_SIZE: u32 = SW_SEND_BUFFER_SIZE;
+const SSL_BUFFER_SIZE: u32 = SW_SSL_BUFFER_SIZE;
+const BUFFER_SIZE_UDP: usize = SW_BUFFER_SIZE_UDP as usize;
+const CLIENT_BUFFER_SIZE: usize = SW_CLIENT_BUFFER_SIZE as usize;
+const SOCKET_RETRY_COUNT: usize = SW_SOCKET_RETRY_COUNT as usize;
 #[expect(clippy::cast_possible_truncation, reason = "a sockaddr union's size")]
 const ADDRESS_SIZE: libc::socklen_t = size_of::<AddressStorage>() as libc::socklen_t;
-const EVENT_READ: c_int = 1 << 9;
-const EVENT_WRITE: c_int = 1 << 10;
-const EVENT_ERROR: c_int = 1 << 11;
-const TIMEOUT_ALL: c_int = 15;
-const SSL_STATE_READY: u32 = 1;
-const SSL_STATE_WAIT_STREAM: u32 = 2;
-/// `SW_SSL_CLIENT`, `SW_SSL_DTLS` and `SSLContext::TLS_HOST_NAME`'s slot.
-const SSL_CLIENT: c_int = 2;
-const SSL_DTLS: u32 = 1 << 7;
+const EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
+const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
+const EVENT_ERROR: c_int = EventType::SW_EVENT_ERROR as c_int;
+const TIMEOUT_ALL: c_int = TimeoutType::SW_TIMEOUT_ALL as c_int;
+/// crates/tls's `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`, `SW_SSL_CLIENT`
+/// and `SW_SSL_DTLS`, which it asserts these match.
+pub const SSL_STATE_READY: u32 = 1;
+pub const SSL_STATE_WAIT_STREAM: u32 = 2;
+pub const SSL_CLIENT: c_int = 2;
+pub const SSL_DTLS: u32 = 1 << 7;
+/// `SSLContext::TLS_HOST_NAME`'s string slot.
 const TLS_HOST_NAME: usize = 8;
 /// OpenSSL's `SSL_CTRL_SET_TLSEXT_HOSTNAME` and `TLSEXT_NAMETYPE_host_name`.
 const SSL_CTRL_SET_TLSEXT_HOSTNAME: c_int = 55;
 const TLSEXT_NAMETYPE_HOST_NAME: libc::c_long = 0;
+/// The proxy states of `native/protocols/swoole_proxy.h`, which `native/clients/client.cc` asserts.
 const SOCKS5_WAIT: c_int = 0;
 const SOCKS5_HANDSHAKE: c_int = 1;
 const SOCKS5_READY: c_int = 4;
 const HTTP_PROXY_WAIT: c_int = 0;
 const HTTP_PROXY_READY: c_int = 2;
-const ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
-const ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = 711;
-const ERROR_BAD_HOST_ADDR: c_int = 722;
-const ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
-const ERROR_SSL_HANDSHAKE_FAILED: c_int = 1018;
-const ERROR_SSL_CREATE_SESSION_FAILED: c_int = 1020;
-const ERROR_SOCKET_POLL_TIMEOUT: c_int = 6002;
-const ERROR_SOCKS5_HANDSHAKE_FAILED: c_int = 7005;
-const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int = 7101;
+const ERROR_OPERATION_NOT_SUPPORT: c_int = ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
+const ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED as c_int;
+const ERROR_BAD_HOST_ADDR: c_int = ErrorCode::SW_ERROR_BAD_HOST_ADDR as c_int;
+const ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = ErrorCode::SW_ERROR_OUTPUT_BUFFER_OVERFLOW as c_int;
+const ERROR_SSL_HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SSL_HANDSHAKE_FAILED as c_int;
+const ERROR_SSL_CREATE_SESSION_FAILED: c_int =
+    ErrorCode::SW_ERROR_SSL_CREATE_SESSION_FAILED as c_int;
+const ERROR_SOCKET_POLL_TIMEOUT: c_int = ErrorCode::SW_ERROR_SOCKET_POLL_TIMEOUT as c_int;
+const ERROR_SOCKS5_HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SOCKS5_HANDSHAKE_FAILED as c_int;
+const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
+    ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR as c_int;
 
 // SAFETY: crates/tls's, crates/reactor's and crates/ports' definitions under
 // upstream's names, which the hybrid links (the unit tests define doubles). They
@@ -290,14 +300,42 @@ struct Tail {
     size: usize,
 }
 
-/// What the C++ `Client` does for Rust (`swr_v1_clients_native`). `cli` is the
-/// C++ `Client *`.
+/// `async::Handler`: runs on a pool thread, or as the completion.
+type AsyncHandler = extern "C" fn(*mut AsyncEvent);
+
+/// Upstream's `AsyncEvent` as crates/hooks' pool takes it, its request a counted
+/// DNS record.
 #[repr(C)]
-pub struct Native {
-    /// Dispatches a `GethostbynameRequest` for `host` in `domain` to the async
-    /// pool, completing in `swr_v1_clients_on_resolved`.
-    pub dns_lookup:
-        unsafe extern "C" fn(cli: *mut c_void, host: *const c_char, domain: c_int) -> c_int,
+#[derive(Clone, Copy)]
+struct AsyncEvent {
+    task_id: usize,
+    canceled: u8,
+    error: c_int,
+    data: *mut ResolverRequest,
+    retval: isize,
+    pipe_socket: *mut c_void,
+    timestamp: f64,
+    object: *mut c_void,
+    handler: Option<AsyncHandler>,
+    callback: Option<AsyncHandler>,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(
+    size_of::<AsyncEvent>() == 72
+        && core::mem::offset_of!(AsyncEvent, data) == 16
+        && core::mem::offset_of!(AsyncEvent, object) == 48,
+    "crates/hooks' AsyncEvent layout moved"
+);
+
+// SAFETY: crates/hooks' pool (async_threads.rs), which the hybrid links; it sits
+// above this crate.
+#[cfg(not(test))]
+unsafe extern "C" {
+    /// `async::dispatch`: queues a copy of the event, holding its own reference
+    /// to the request; null without a pool.
+    #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
+    fn async_dispatch(event: *const c_void) -> *mut c_void;
 }
 
 /// The public, trivially copyable fields of `network::Client`. C++ keeps typed
@@ -328,11 +366,10 @@ const _: () = {
     );
 };
 
-/// One client's state.
+/// One client's state, its public record first: `network::Client`.
+#[repr(C)]
 pub struct Client {
-    cli: *mut c_void,
-    record: *mut ClientRecord,
-    native: &'static Native,
+    record: UnsafeCell<ClientRecord>,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -391,14 +428,6 @@ impl Handle {
         unsafe { &*self.0 }
     }
 
-    fn cli(self) -> *mut c_void {
-        self.get().cli
-    }
-
-    fn native(self) -> &'static Native {
-        self.get().native
-    }
-
     fn flag(self, name: u32) -> bool {
         self.get().flag(name)
     }
@@ -407,11 +436,12 @@ impl Handle {
         self.get().set(name, value);
     }
 
-    /// The C++ client's public record: live with the client, and borrowed only
+    /// The client's public record: live with the client, and borrowed only
     /// between effects, as the state is.
     fn fields(self) -> &'static mut ClientRecord {
-        // SAFETY: the live client's canonical public base record.
-        unsafe { &mut *self.get().record }
+        // SAFETY: the live client's record, which SDK callers reach only between
+        // its operations.
+        unsafe { &mut *self.get().record.get() }
     }
 
     fn socket_ptr(self) -> *mut SocketRecord {
@@ -792,7 +822,7 @@ pub unsafe extern "C" fn swr_v1_clients_init_reactor(reactor: *mut c_void) {
 }
 
 /// `Client::onConnect` and the rest: `listener(object, event, ...)` for each
-/// event in `events` (`1 << SWOOLE_CLIENT_ON_*`), `object` the record's.
+/// event in `events` (`1 << ON_*`), `object` the record's.
 ///
 /// # Safety
 /// `client` is live.
@@ -843,39 +873,26 @@ fn is_dgram(kind: c_int) -> bool {
     matches!(kind, 2 | 4 | 6)
 }
 
-/// `Client::Client(type, async)`: the socket and the state. Null only when the
-/// allocation failed; a client whose socket failed has a null `socket`.
-///
-/// # Safety
-/// `cli` is the C++ client being constructed, `record` its writable trivial base,
-/// and `native` the static table.
+/// `new Client(type, async)`: the socket and the state, or null with errno set
+/// when the socket could not be made (logged as upstream's constructor does).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_new(
-    cli: *mut c_void,
-    native: &'static Native,
-    record: *mut ClientRecord,
-    kind: c_int,
-    is_async: bool,
-) -> *mut Client {
-    // SAFETY: the native base is writable, trivial storage, before any callback
-    // can observe it. All-zero pointers, bools, addresses and Protocol are valid.
-    let defaults = unsafe { core::mem::zeroed() };
-    // SAFETY: writable, disjoint base storage of the constructing client.
-    unsafe { record.write(defaults) };
-    let stream = is_stream(kind);
-    let fd_type = if stream {
+pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client {
+    let fd_type = if is_stream(kind) {
         FD_STREAM_CLIENT
     } else {
         FD_DGRAM_CLIENT
     };
     let flags = if is_async { SOCK_NONBLOCK } else { 0 } | SOCK_CLOEXEC;
     let socket = ops::make_socket(kind, fd_type, flags);
-    // C++ warns of a failed socket() with its errno.
-    let error = errno();
-    let client = Box::new(Client {
-        cli,
-        record,
-        native,
+    if socket.is_null() {
+        let error = errno();
+        log::sys_warning(c"Client", format_args!("socket() failed"));
+        set_errno(error);
+        return core::ptr::null_mut();
+    }
+    let mut client = Box::new(Client {
+        // SAFETY: all-zero pointers, bools, addresses and Protocol are valid.
+        record: UnsafeCell::new(unsafe { core::mem::zeroed() }),
         flags: Cell::new(0),
         domain: 0,
         sock_flags: Cell::new(0),
@@ -891,20 +908,13 @@ pub unsafe extern "C" fn swr_v1_clients_new(
         http_proxy: Cell::new(core::ptr::null_mut()),
     });
     client.set(ASYNC, is_async);
-    if socket.is_null() {
-        set_errno(error);
-        return Box::into_raw(client);
-    }
-    // SAFETY: the base belongs to this constructing client and is disjoint
-    // from the socket. Failed socket construction deliberately leaves defaults zero.
-    let fields = unsafe { &mut *record };
+    let fields = client.record.get_mut();
     fields.socket = socket;
     fields.remote_addr.kind = kind;
     fields.protocol.package_length_type = b'N';
     fields.protocol.package_length_size = 4;
     fields.protocol.package_max_length = 2 * 1024 * 1024;
     fields.protocol.on_package = on_package as *mut c_void;
-    let mut client = client;
     // SAFETY: the new socket record, which nothing else holds yet.
     let record = unsafe { &mut *socket };
     record.chunk_size = SEND_BUFFER_SIZE;
@@ -917,30 +927,27 @@ pub unsafe extern "C" fn swr_v1_clients_new(
     client
 }
 
-/// `Client::~Client()`, then the state's release.
+/// `delete client`.
 ///
 /// # Safety
-/// `client` is a live state from `swr_v1_clients_new`, not used afterwards; the
-/// C++ client is live for the call.
+/// `client` is a live state from `swr_v1_clients_new`, not used afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_free(client: *mut Client) {
     let this = Handle(client);
-    if !this.socket_ptr().is_null() {
-        if !this.flag(CLOSED) {
-            close(this);
-        }
-        this.input_free();
-        // A pending connect timer would fire on a freed client.
-        this.timer_clear();
-        if this.flag(ASYNC) {
-            // A cleared object tells a close in progress that the client is gone.
-            this.socket().object = core::ptr::null_mut();
-            // SAFETY: the live client's socket, released once.
-            unsafe { socket_free(this.socket_ptr()) };
-        } else {
-            // SAFETY: `delete socket`: the record make_socket allocated, released once.
-            unsafe { swr_v1_socket_dealloc(this.socket_ptr()) };
-        }
+    if !this.flag(CLOSED) {
+        close(this);
+    }
+    this.input_free();
+    // A pending connect timer would fire on a freed client.
+    this.timer_clear();
+    if this.flag(ASYNC) {
+        // A cleared object tells a close in progress that the client is gone.
+        this.socket().object = core::ptr::null_mut();
+        // SAFETY: the live client's socket, released once.
+        unsafe { socket_free(this.socket_ptr()) };
+    } else {
+        // SAFETY: `delete socket`: the record make_socket allocated, released once.
+        unsafe { swr_v1_socket_dealloc(this.socket_ptr()) };
     }
     // SAFETY: a Box from swr_v1_clients_new, released once (see above).
     let client = unsafe { Box::from_raw(client) };
@@ -1355,10 +1362,55 @@ fn inet_addr(this: Handle, host: *const c_char, port: c_int) -> c_int {
     OK
 }
 
+/// Dispatches a `GethostbynameRequest` for the server host to the async pool,
+/// completing in [`resolved`].
 fn dns_lookup(this: Handle) -> c_int {
-    let host = this.get().server_host.borrow().clone();
-    // SAFETY: a NUL-terminated host, copied by the request.
-    unsafe { (this.native().dns_lookup)(this.cli(), host.as_ptr(), this.get().domain) }
+    let request = {
+        let host = this.get().server_host.borrow();
+        crate::resolver::Request::new(this.get().domain, 0, 0, host.to_bytes(), b"")
+    };
+    let event = AsyncEvent {
+        task_id: 0,
+        canceled: 0,
+        error: 0,
+        data: request.as_ptr(),
+        retval: 0,
+        pipe_socket: core::ptr::null_mut(),
+        timestamp: 0.0,
+        object: this.0.cast(),
+        handler: Some(resolve),
+        callback: Some(resolve_completed),
+    };
+    // SAFETY: a complete event over a live request; the pool's copy holds its
+    // own reference to it.
+    if unsafe { async_dispatch((&raw const event).cast()) }.is_null() {
+        ERR
+    } else {
+        OK
+    }
+}
+
+/// `async::handler_gethostbyname`, on a pool thread, over the pool's copy of the
+/// event [`dns_lookup`] dispatched.
+extern "C" fn resolve(event: *mut AsyncEvent) {
+    // SAFETY: the pool's copy of the event, exclusive while the handler runs.
+    let event = unsafe { &mut *event };
+    // SAFETY: its request record, held by the copy.
+    (event.retval, event.error) = crate::resolver::host(unsafe { &*event.data });
+}
+
+/// `Client_onResolveCompleted`, on the client's thread, over the completed copy
+/// of the event [`dns_lookup`] dispatched.
+extern "C" fn resolve_completed(event: *mut AsyncEvent) {
+    // SAFETY: the completed copy, live for the call.
+    let event = unsafe { &*event };
+    // SAFETY: its request record, held by the copy.
+    let address = crate::resolver::address(unsafe { &*event.data });
+    resolved(
+        Handle(event.object.cast()),
+        event.error,
+        &crate::resolver::c_name(&address),
+    );
 }
 
 /// `Client::connect(host, port, timeout, flags)`.
@@ -2205,25 +2257,17 @@ extern "C-unwind" fn on_timeout(data: *mut c_void) {
     }
 }
 
-/// `Client_onResolveCompleted`: connect to the resolved `address`, or report
-/// the failure through `onError`.
-///
-/// # Safety
-/// `client` is a live async client waiting for DNS; `address` is NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_on_resolved(
-    client: *mut Client,
-    error: c_int,
-    address: *const c_char,
-) {
-    let this = Handle(client);
+/// Connects to the resolved `address`, or reports the failure through `onError`.
+/// `this` is a live async client waiting for DNS.
+fn resolved(this: Handle, error: c_int, address: &CStr) {
     this.set(WAIT_DNS, false);
     this.set(DNS_COMPLETED, true);
     if error == 0 {
         // The application can't see connect's result here, so onError reports it.
         let timeout = this.socket().timeouts.connect;
         let (port, flags) = (this.get().server_port.get(), this.get().sock_flags.get());
-        if connect(this, address, port, timeout, flags) != ERR || this.flag(ONERROR_CALLED) {
+        if connect(this, address.as_ptr(), port, timeout, flags) != ERR || this.flag(ONERROR_CALLED)
+        {
             return;
         }
     } else {

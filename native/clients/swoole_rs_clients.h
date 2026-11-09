@@ -50,36 +50,14 @@ uint8_t swr_v1_clients_ws_accept_valid(const uint8_t *key, size_t key_len, const
 /* Caller-owned bounded DNS codec buffers; no native execution or retained state. */
 int32_t swr_v1_clients_domain_encode(const uint8_t *, size_t, uint8_t *, size_t);
 uint8_t swr_v1_clients_domain_decode(uint8_t *, size_t, uint8_t signed_char);
-/* network::Client: its state, every operation, its callbacks, reactor handlers, connect
- * timer, TLS context and proxies are Rust's (crates/clients/src/client.rs). The C++ Client
- * holds the state and gives Rust one static table of what it still needs of C++,
- * swr_v1_clients_native, whose entries take the Client *. */
+/* network::Client is Rust's (crates/clients/src/client.rs): its state, every operation,
+ * its callbacks, reactor handlers, connect timer, TLS context, proxies and DNS lookup. The
+ * state starts with its public record, swr_v1_clients_record. These are the calls
+ * native/clients/client.cc makes; crates/phpclients and the core-tests port call Rust
+ * directly. */
 typedef struct swr_v1_clients swr_v1_clients;
-struct swr_v1_socket;
-enum {
-    SWR_CLIENTS_ACTIVE = 0,
-    SWR_CLIENTS_CLOSED = 1,
-    SWR_CLIENTS_ASYNC = 2,
-    SWR_CLIENTS_SHUTDOWN_READ = 3,
-    SWR_CLIENTS_SHUTDOWN_WRITE = 4,
-    SWR_CLIENTS_ASYNC_CONNECT = 5,
-    SWR_CLIENTS_WAIT_DNS = 6,
-    SWR_CLIENTS_ONERROR_CALLED = 7,
-    SWR_CLIENTS_OPEN_SSL = 8,
-};
-struct swr_v1_clients_record;
-typedef struct {
-    int (*dns_lookup)(void *cli, const char *host, int domain);
-} swr_v1_clients_native;
-/* Client::Client: the state, with cli->socket made (null when socket() failed, errno kept). */
-swr_v1_clients *swr_v1_clients_new(void *cli, const swr_v1_clients_native *native, struct swr_v1_clients_record *record, int kind, bool is_async);
-/* Client::~Client, then the state's release. */
+/* delete client. */
 void swr_v1_clients_free(swr_v1_clients *client);
-int swr_v1_clients_get_peer_name(const swr_v1_clients *client, void *address);
-bool swr_v1_clients_flag(const swr_v1_clients *client, uint32_t name);
-void swr_v1_clients_set_flag(swr_v1_clients *client, uint32_t name, bool value);
-/* buffer_high_watermark (high) or buffer_low_watermark, for the C++ Client's reference views. */
-uint32_t *swr_v1_clients_watermark(swr_v1_clients *client, bool high);
 int swr_v1_clients_connect(swr_v1_clients *client, const char *host, int port, double timeout, int flags);
 ssize_t swr_v1_clients_send(swr_v1_clients *client, const char *data, size_t length, int flags);
 int swr_v1_clients_sendfile(swr_v1_clients *client, const char *file, int64_t offset, size_t length);
@@ -93,33 +71,10 @@ int swr_v1_clients_wakeup(swr_v1_clients *client);
 int swr_v1_clients_enable_ssl(swr_v1_clients *client);
 int swr_v1_clients_ssl_handshake(swr_v1_clients *client);
 int swr_v1_clients_ssl_verify(swr_v1_clients *client, int allow_self_signed);
-/* The client's SSLContext owner, which crates/tls configures; NULL while TLS is off. */
-const struct swr_v1_tls_owner *swr_v1_clients_ssl_context(const swr_v1_clients *client);
-/* set_http_proxy (http) or set_socks5_proxy. */
-void swr_v1_clients_proxy(swr_v1_clients *client, bool http, const char *host, size_t host_length, int64_t port,
-                          const char *user, size_t user_length, const char *password, size_t password_length);
-/* The proxy's swr_v1_core_proxy_fields, NULL without one. */
-void *swr_v1_clients_proxy_fields(const swr_v1_clients *client, bool http);
-/* Client::bind and Client::sendto; the callback logs, named as the calling method. */
-int swr_v1_clients_bind(swr_v1_clients *client, const char *host, size_t host_length, int port, void (*reuse_failed)(int fd));
+/* Client::sendto; the callback logs. */
 int swr_v1_clients_sendto(swr_v1_clients *client, const char *host, size_t host_length, int port, const char *data, size_t length, void (*not_datagram)(int fd));
 /* Client::init_reactor: the client sockets' read, write and error handlers. */
 void swr_v1_clients_init_reactor(void *reactor);
-/* The DNS completion. */
-void swr_v1_clients_on_resolved(swr_v1_clients *client, int error, const char *address);
-/* The callbacks: listener(object, event, data, length) for each event in `events`
- * (1 << SWOOLE_CLIENT_ON_*); `object` becomes the client's. For SWOOLE_CLIENT_ON_ERROR,
- * `length` is swoole_get_last_error(). */
-enum {
-    SWOOLE_CLIENT_ON_CONNECT = 1,
-    SWOOLE_CLIENT_ON_RECEIVE = 2,
-    SWOOLE_CLIENT_ON_CLOSE = 3,
-    SWOOLE_CLIENT_ON_ERROR = 4,
-    SWOOLE_CLIENT_ON_BUFFER_FULL = 5,
-    SWOOLE_CLIENT_ON_BUFFER_EMPTY = 6,
-};
-typedef void (*swoole_client_listener)(void *object, int event, const char *data, size_t length);
-void swr_v1_clients_listen(swr_v1_clients *client, void *object, uint32_t events, swoole_client_listener listener);
 struct swr_v1_clients_resolv_line { uint32_t kind; size_t offset, length; };
 struct swr_v1_clients_resolv_line swr_v1_clients_resolv_line(const uint8_t *, size_t);
 struct swr_v1_clients_dns_endpoint { uint32_t has_port; size_t host_length, port_offset; };
@@ -139,13 +94,6 @@ struct swr_v1_clients_format_result { size_t written; uint32_t error; };
 /* Output is disjoint native-owned writable bytes, possibly uninitialized.
  * Required inputs initialized.0 success,1 invalid,2 printf-count overflow. */
 struct swr_v1_clients_format_result swr_v1_clients_http_format(uint32_t kind, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, struct swr_v1_clients_format_span, size_t number, uint8_t *output, size_t capacity);
-/* network::Client for its C callers (crates/phpclients, the Rust core-tests cases), defined by
- * native/clients/network_client.cc. create: new Client(type, async), or null with errno in
- * `error` when it has no socket. */
-void *swoole_client_create(int type, bool async, int *error);
-void swoole_client_free(void *cli);
-/* The client's Rust state (crates/clients' ClientState). */
-void *swoole_client_state(void *cli);
 #ifdef __cplusplus
 }
 #endif
