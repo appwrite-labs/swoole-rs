@@ -430,7 +430,6 @@ unsafe extern "C" {
 /// `Swoole\Server\Port`.
 /// # Safety
 /// Zend's MINIT, once.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
     use swoole_rs_corebase::{Switch, built_with};
     let (thread, sockets) = (built_with(Switch::Thread), built_with(Switch::Sockets));

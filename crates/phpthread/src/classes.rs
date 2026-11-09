@@ -124,9 +124,8 @@ method_table! {
 
 /// `php_swoole_thread_map_minit`.
 /// # Safety
-/// MINIT, after `swr_v1_phpthread_minit`, with a static method table.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_map_minit() -> *mut zend_class_entry {
+/// MINIT, after `thread_minit`, with a static method table.
+pub unsafe fn map_minit() {
     // SAFETY: MINIT, with a static table.
     unsafe {
         MAP.register(
@@ -137,7 +136,6 @@ pub unsafe extern "C" fn swr_v1_phpthread_map_minit() -> *mut zend_class_entry {
     };
     // SAFETY: MINIT; Zend's own interfaces.
     unsafe { implements(&MAP, true) };
-    MAP.entry()
 }
 
 method_table! {
@@ -159,9 +157,8 @@ method_table! {
 
 /// `php_swoole_thread_arraylist_minit`.
 /// # Safety
-/// As `swr_v1_phpthread_map_minit`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_arraylist_minit() -> *mut zend_class_entry {
+/// As [`map_minit`].
+pub unsafe fn arraylist_minit() {
     // SAFETY: MINIT, with a static table.
     unsafe {
         LIST.register(
@@ -183,7 +180,6 @@ pub unsafe extern "C" fn swr_v1_phpthread_arraylist_minit() -> *mut zend_class_e
             (ZEND_ACC_PUBLIC | ZEND_ACC_READONLY) as i32,
         );
     }
-    LIST.entry()
 }
 
 method_table! {
@@ -198,9 +194,8 @@ method_table! {
 
 /// `php_swoole_thread_queue_minit`.
 /// # Safety
-/// As `swr_v1_phpthread_map_minit`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_queue_minit() -> *mut zend_class_entry {
+/// As [`map_minit`].
+pub unsafe fn queue_minit() {
     // SAFETY: MINIT, with a static table.
     unsafe {
         QUEUE.register(
@@ -215,7 +210,6 @@ pub unsafe extern "C" fn swr_v1_phpthread_queue_minit() -> *mut zend_class_entry
     unsafe { QUEUE.constant_long(c"NOTIFY_ONE", NOTIFY_ONE) };
     // SAFETY: as above.
     unsafe { QUEUE.constant_long(c"NOTIFY_ALL", NOTIFY_ALL) };
-    QUEUE.entry()
 }
 
 const NOTIFY_ONE: i64 = 1;

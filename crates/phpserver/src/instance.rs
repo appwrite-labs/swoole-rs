@@ -246,7 +246,6 @@ const SW_ERROR_SERVER_WORKER_TERMINATED: c_int = 9003;
 
 /// `php_swoole_server_rshutdown`: a worker whose request ended (`exit()`,
 /// `die()` or a fatal error) drains its pipe, shuts down and logs why.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_server_rshutdown() {
     let serv = swoole_rs_corebase::swr_v1_core_server();
     let globals = worker_globals::thread_globals();

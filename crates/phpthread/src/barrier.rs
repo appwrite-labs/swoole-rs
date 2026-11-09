@@ -48,9 +48,8 @@ method_table! {
 
 /// `php_swoole_thread_barrier_minit`.
 /// # Safety
-/// MINIT, after `swr_v1_phpthread_minit`, with a static method table.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_barrier_minit() -> *mut zend_class_entry {
+/// MINIT, after `thread_minit`, with a static method table.
+pub unsafe fn barrier_minit() {
     // SAFETY: MINIT, with a static table.
     unsafe {
         BARRIER.register(
@@ -64,7 +63,6 @@ pub unsafe extern "C" fn swr_v1_phpthread_barrier_minit() -> *mut zend_class_ent
             },
         );
     }
-    BARRIER.entry()
 }
 
 /// A Barrier stored in a container, by reference; `None` for other objects.

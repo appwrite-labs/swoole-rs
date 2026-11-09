@@ -35,15 +35,15 @@ mod table;
 mod vm;
 
 pub use asynchronous::php_swoole_set_aio_option;
-pub use entry::{swr_v1_phpswoole_fatal_exit, swr_v1_phpswoole_module};
+pub use entry::{module_entry, swr_v1_phpswoole_fatal_exit};
 pub use functions::mime_type;
 pub use info::swr_v1_phpswoole_minfo;
 pub use ini::swr_v1_phpswoole_register_ini;
 pub use interfaces::sys_warning;
 pub use memory::sw_zend_string_allocator;
 pub use module::{
-    CALL_USER_SHUTDOWNFUNC_BEGIN, Globals, RSHUTDOWN_BEGIN, RSHUTDOWN_END, display_errors,
-    enable_library, globals, load_library, php_swoole_register_shutdown_function,
+    CALL_USER_SHUTDOWNFUNC_BEGIN, Families, Globals, Hook, Minit, RSHUTDOWN_BEGIN, RSHUTDOWN_END,
+    display_errors, enable_library, globals, load_library, php_swoole_register_shutdown_function,
     swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown,
     zif_swoole_set_process_name,
 };

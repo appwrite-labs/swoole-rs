@@ -615,17 +615,11 @@ fn trapped(bailed: std::ffi::c_int) -> Result<(), Bailout> {
     if bailed == 0 { Ok(()) } else { Err(Bailout) }
 }
 
-/// `sw_php_print_backtrace` for C++: 1 if output bailed out.
-/// # Safety
-/// `return_value` is null or a writable zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_print_backtrace(
-    cid: c_long,
-    options: c_long,
-    limit: c_long,
-    return_value: *mut zval,
-) -> u8 {
-    u8::from(print_backtrace(cid, options, limit, return_value).is_err())
+/// `sw_php_print_backtrace(cid)`, printed (crates/phpswoole's fatal error).
+/// # Errors
+/// The output bailed out.
+pub fn print_coroutine_backtrace(cid: c_long) -> Result<(), Bailout> {
+    print_backtrace(cid, 0, 0, ptr::null_mut())
 }
 
 /// `Co::printBackTrace(int $cid = 0, int $options = 0, int $limit = 0)`.

@@ -91,11 +91,10 @@ method_table! {
     ];
 }
 
-/// MINIT (upstream's symbol): `Swoole\Coroutine\System` (`Co\System`), not
+/// MINIT: `Swoole\Coroutine\System` (`Co\System`), not
 /// instantiable, and the `FILE_LOCK` constant.
 /// # Safety
 /// Called once, at MINIT, with the extension's module number.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_coroutine_system_minit(module_number: c_int) {
     // SAFETY: MINIT, with a static table.
     unsafe { SYSTEM.register_static(c"Swoole\\Coroutine\\System", METHODS.as_ptr()) };
