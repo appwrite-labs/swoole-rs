@@ -1,8 +1,9 @@
 //! A DTLS port's sessions on the reactor thread: `Server::accept_dtls_connection`
 //! and the datagram, read and close steps over them. crates/tls owns each
 //! session's queue and handshake; crates/ports stores them by fd.
-use core::ffi::{c_char, c_int, c_long, c_void};
+use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::ptr;
+use std::ffi::CString;
 
 use swoole_rs_clients::address::swr_v1_clients_address_assign;
 use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE};
@@ -54,7 +55,7 @@ fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
 ///
 /// # Safety
 /// `sock` is a live socket.
-unsafe fn bind(sock: *mut SocketRecord, kind: c_int, host: &[u8], port: c_int) -> bool {
+unsafe fn bind(sock: *mut SocketRecord, kind: c_int, host: &CStr, port: c_int) -> bool {
     let mut address = SocketAddress {
         // SAFETY: the sockaddr union is plain data.
         addr: unsafe { core::mem::zeroed() },
@@ -67,8 +68,8 @@ unsafe fn bind(sock: *mut SocketRecord, kind: c_int, host: &[u8], port: c_int) -
             (&raw mut address.addr).cast(),
             &raw mut address.len,
             kind,
-            host.as_ptr().cast(),
-            host.len(),
+            host.as_ptr(),
+            host.count_bytes(),
             port,
             None,
         )
@@ -96,7 +97,9 @@ unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *m
         let host = unsafe { core::slice::from_raw_parts(host.data.cast::<u8>(), host.length) };
         // SAFETY: the port's live listening socket.
         let server_fd = unsafe { (*config.socket.cast::<SocketRecord>()).fd };
-        (config.r#type, config.port, host.to_vec(), server_fd)
+        // NUL-terminated: the address parser reads the host as a C string.
+        let host = CString::new(host).unwrap_or_default();
+        (config.r#type, config.port, host, server_fd)
     };
     let sock = make_socket_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK);
     if sock.is_null() {
