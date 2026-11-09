@@ -90,18 +90,8 @@ typedef struct {
 
 extern "C" {
 extern swr_v1_socket_defaults_t swr_v1_socket_defaults;
-/* operator new (uninitialised; aborts on failure), the constructor, operator delete. */
-swr_v1_socket *swr_v1_socket_alloc(void);
-void swr_v1_socket_init(swr_v1_socket *socket);
-void swr_v1_socket_dealloc(swr_v1_socket *socket);
-/* Socket::dup; Socket::accept (null with errno set). */
-swr_v1_socket *swr_v1_socket_dup(const swr_v1_socket *socket);
-swr_v1_socket *swr_v1_socket_accept_new(swr_v1_socket *listener);
 /* Socket's methods over the record (crates/reactor/src/socket_methods.rs): SW_OK or
  * SW_ERR, setting info, bound, listened or the TCP flags on success. */
-/* socket_free_defer: unlink a bound Unix socket's path, close the fd; false (errno
- * set) when close(2) failed. */
-bool swr_v1_socket_release(swr_v1_socket *socket);
 swr_v1_socket_output_result swr_v1_socket_file_sent(swr_v1_socket_file_request *owner, swr_v1_socket *socket, const swr_v1_socket_output_hooks *hooks, ssize_t sent, size_t requested);
 }
 

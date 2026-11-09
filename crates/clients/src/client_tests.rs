@@ -47,12 +47,10 @@ pub(super) mod ops {
             set_errno(libc::EMFILE);
             return core::ptr::null_mut();
         }
-        let socket = swoole_rs_reactor::swr_v1_socket_alloc();
         let mut record = SocketRecord::new();
         record.socket_type = kind;
         record.fd = -1;
-        // SAFETY: fresh storage for one record.
-        unsafe { socket.write(record) };
+        let socket = record.into_raw();
         mock(|m| m.socket = core::ptr::NonNull::new(socket));
         socket
     }

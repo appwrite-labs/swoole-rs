@@ -18,7 +18,7 @@ use swoole_rs_reactor::event_api::{
     swoole_event_is_available, swoole_event_is_running, swr_v1_event_current,
 };
 use swoole_rs_reactor::reactor_upstream::{prepared, reactor_change};
-use swoole_rs_reactor::{SocketRecord, swr_v1_reactor_deferred_push, swr_v1_socket_make};
+use swoole_rs_reactor::{SocketRecord, swr_v1_reactor_deferred_push};
 
 /// `SW_EVENT_READ`, `Reactor::EXIT_CONDITION_IOURING` and `Reactor::PRIORITY_IOURING_SUBMIT`
 const EVENT_READ: c_int = 1 << 9;
@@ -183,7 +183,7 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
     }
     // SAFETY: the engine opened.
     let fd = unsafe { swr_v1_uring_fd(opened.uring) };
-    let socket = swr_v1_socket_make(fd, FdType::SW_FD_IOURING as c_int);
+    let socket = SocketRecord::with_fd(fd, FdType::SW_FD_IOURING as c_int).into_raw();
     // SAFETY: the new record.
     unsafe { (*socket).object = iouring.cast() };
     // SAFETY: the new instance, not yet shared.

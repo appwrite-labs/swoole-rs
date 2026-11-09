@@ -179,7 +179,7 @@ const FD: i32 = FdType::SW_FD_CARES as i32;
 unsafe fn free(socket: *mut SocketRecord) {
     unsafe extern "C-unwind" fn dealloc(socket: *mut c_void) {
         // SAFETY: the detached wrapper, unused since.
-        unsafe { swoole_rs_reactor::swr_v1_socket_dealloc(socket.cast()) };
+        unsafe { SocketRecord::free(socket.cast()) };
     }
     // SAFETY: a live wrapper; c-ares retains the OS descriptor.
     unsafe { (*socket).fd = -1 };

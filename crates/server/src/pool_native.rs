@@ -59,7 +59,7 @@ use swoole_rs_reactor::event_api::{
 };
 use swoole_rs_reactor::reactor_upstream::prepared;
 use swoole_rs_reactor::socket_upstream::socket_wait_event;
-use swoole_rs_reactor::{Event, SocketRecord, swr_v1_socket_accept_new};
+use swoole_rs_reactor::{Event, SocketRecord};
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket_new};
 use swoole_rs_tls::upstream::{socket_free, socket_read_sync, socket_recv_sync, socket_send_sync};
 
@@ -927,7 +927,7 @@ unsafe extern "C" fn accept(arg: *mut c_void) {
     // SAFETY: the pool's stream listener.
     let listener = unsafe { swr_v1_process_pool_ipc_listener(record(c.pool.cast()).ipc.cast()) };
     // SAFETY: as above.
-    c.socket = unsafe { swr_v1_socket_accept_new(listener.cast()) }.cast();
+    c.socket = unsafe { (*listener.cast::<SocketRecord>()).accept() }.cast();
     c.error = errno();
 }
 

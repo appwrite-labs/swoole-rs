@@ -142,16 +142,9 @@ struct Socket : swr_v1_socket {
     static double &default_write_timeout;
     static uint32_t &default_buffer_size;
 
-    Socket() {
-        swr_v1_socket_init(this);
-    }
-
-    static void *operator new(size_t) {
-        return swr_v1_socket_alloc();
-    }
-
-    static void operator delete(void *socket) {
-        swr_v1_socket_dealloc(static_cast<swr_v1_socket *>(socket));
+    // SocketRecord::new: zeroed, with the default timeouts. Records Rust frees come from Rust.
+    Socket() : swr_v1_socket{} {
+        *timeouts() = swr_v1_socket_defaults.timeouts;
     }
 
     // for reactor
@@ -246,14 +239,6 @@ struct Socket : swr_v1_socket {
     ssize_t recv(void *_buf, size_t _n, int _flags);
     ssize_t send(const void *_buf, size_t _n, int _flags);
     ssize_t peek(void *_buf, size_t _n, int _flags) const;
-    Socket *accept() {
-        return static_cast<Socket *>(swr_v1_socket_accept_new(this));
-    }
-
-    Socket *dup() const {
-        return static_cast<Socket *>(swr_v1_socket_dup(this));
-    }
-
     ssize_t readv(IOVector *io_vector);
     ssize_t writev(IOVector *io_vector);
 

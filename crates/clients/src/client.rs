@@ -29,7 +29,7 @@ use swoole_rs_reactor::event_api::swoole_event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
 use swoole_rs_reactor::{
     SocketRecord, catch_error, swr_v1_socket_buffer_size, swr_v1_socket_clean,
-    swr_v1_socket_dealloc, swr_v1_socket_defaults, swr_v1_socket_domain_and_type,
+    swr_v1_socket_defaults, swr_v1_socket_domain_and_type,
 };
 #[cfg(test)]
 use tests::{async_dispatch, ops, swoole_event_write, thread_buffer};
@@ -1083,7 +1083,7 @@ fn free(this: Handle) {
         unsafe { socket_free(this.socket_ptr()) };
     } else {
         // SAFETY: `delete socket`: the record make_socket allocated, released once.
-        unsafe { swr_v1_socket_dealloc(this.socket_ptr()) };
+        unsafe { SocketRecord::free(this.socket_ptr()) };
     }
     // SAFETY: a Box from swr_v1_clients_new, released once (see above).
     let client = unsafe { Box::from_raw(client) };

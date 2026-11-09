@@ -18,9 +18,7 @@ use openssl_sys::{
 use swoole_rs_clients::address::{swr_v1_clients_address_host, swr_v1_clients_address_port};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, swr_v1_core_string_set};
-use swoole_rs_reactor::{
-    SocketRecord, swr_v1_socket_dealloc, swr_v1_socket_make, swr_v1_socket_type,
-};
+use swoole_rs_reactor::{SocketRecord, swr_v1_socket_type};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
@@ -479,7 +477,7 @@ fn context_op(run: &mut Run, op: u32, arg: u64) -> u64 {
 fn socket_op(run: &mut Run, op: u32, arg: u64) -> u64 {
     match op {
         OP_SOCKET_NEW => {
-            run.sock = swr_v1_socket_make(run.fd, 0);
+            run.sock = SocketRecord::with_fd(run.fd, 0).into_raw();
             run.config().socket = run.sock.cast();
             0
         }
@@ -498,7 +496,7 @@ fn socket_op(run: &mut Run, op: u32, arg: u64) -> u64 {
             // SAFETY: the record `OP_SOCKET_NEW` made.
             unsafe { (*run.sock).fd = -1 };
             // SAFETY: as above, freed once.
-            unsafe { swr_v1_socket_dealloc(run.sock) };
+            unsafe { SocketRecord::free(run.sock) };
             0
         }
         OP_ADOPT => {

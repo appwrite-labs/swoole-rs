@@ -13,8 +13,8 @@ use swoole_rs_clients::address::{
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{log, swr_v1_clients_gethostbyname};
+use swoole_rs_reactor::SocketRecord;
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
-use swoole_rs_reactor::{SocketRecord, swr_v1_socket_dealloc};
 #[cfg(not(test))]
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
@@ -27,7 +27,7 @@ pub(crate) unsafe fn socket_free(socket: *mut SocketRecord) {
     // SAFETY: close(2) has no memory preconditions.
     unsafe { libc::close(fd) };
     // SAFETY: Rust allocated the record and nothing uses it after.
-    unsafe { swr_v1_socket_dealloc(socket) };
+    unsafe { SocketRecord::free(socket) };
 }
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
@@ -414,7 +414,7 @@ pub unsafe extern "C" fn close_socket(port: *mut c_void) {
         );
     }
     // SAFETY: `delete socket`: Rust allocated the record and nothing uses it after.
-    unsafe { swr_v1_socket_dealloc(socket) };
+    unsafe { SocketRecord::free(socket) };
     config.socket = ptr::null_mut();
 }
 
@@ -813,9 +813,8 @@ mod tests {
     /// unless `bind`.
     fn socket_port(kind: c_int, bind: bool) -> *mut PortConfig {
         let config = port_config::swr_v1_port_config_new(1000);
-        let socket = swoole_rs_reactor::swr_v1_socket_alloc();
+        let socket = SocketRecord::new().into_raw();
         unsafe {
-            socket.write(SocketRecord::new());
             (*socket).fd = libc::socket(libc::AF_INET, kind, 0);
             assert!((*socket).fd >= 0, "socket(2)");
             if bind {

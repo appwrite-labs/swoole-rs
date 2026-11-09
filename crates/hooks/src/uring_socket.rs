@@ -26,7 +26,6 @@ use std::sync::OnceLock;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
     ReactorIov, SocketRecord, swr_v1_reactor_iov_advance, swr_v1_reactor_iov_view,
-    swr_v1_socket_alloc,
 };
 use swoole_rs_tls::upstream::{socket_recv, socket_send};
 
@@ -623,9 +622,7 @@ pub(crate) unsafe fn accept(socket: *mut CoSocket, ops: &UringSocketOps) -> *mut
     conn.info.kind = unsafe { (*listener).socket_type };
     conn.output.nonblock = 1;
     conn.cloexec = 1;
-    let accepted = swr_v1_socket_alloc();
-    // SAFETY: fresh storage for one record.
-    unsafe { accepted.write(conn) };
+    let accepted = conn.into_raw();
     // SAFETY: the listening socket and the record it accepted.
     let client = unsafe { crate::socket_members::adopt(socket, accepted) };
     let marked = crate::socket_members::record(client);

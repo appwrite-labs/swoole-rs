@@ -214,7 +214,7 @@ pub(crate) mod native {
         object: *mut c_void,
         error: *mut i32,
     ) -> *mut c_void {
-        let socket = swoole_rs_reactor::swr_v1_socket_make(fd, FD_TYPE);
+        let socket = SocketRecord::with_fd(fd, FD_TYPE).into_raw();
         // SAFETY: the new record.
         unsafe { (*socket).object = object };
         // SAFETY: the new record, on the running reactor.

@@ -1572,13 +1572,13 @@ pub unsafe extern "C" fn socket_ssl_create(
 unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
     let socket = socket.cast::<SocketRecord>();
     // SAFETY: as the caller promises.
-    if !unsafe { swoole_rs_reactor::swr_v1_socket_release(socket) } {
-        // SAFETY: as above.
-        let fd = unsafe { (*socket).fd };
+    let record = unsafe { &mut *socket };
+    if !record.release() {
+        let fd = record.fd;
         log::sys_warning(c"socket_free_defer", format_args!("close({fd}) failed"));
     }
     // SAFETY: as above.
-    unsafe { swoole_rs_reactor::swr_v1_socket_dealloc(socket) };
+    unsafe { SocketRecord::free(socket) };
 }
 
 /// `void Socket::free()`: deletes the timers and buffers, then, while the thread's

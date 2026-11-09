@@ -150,6 +150,10 @@ pub struct Bus {
 impl Drop for Bus {
     /// `~MessageBus`: the pipe records go, their descriptors stay open.
     fn drop(&mut self) {
+        // Outside the hybrid (and in tests, which link no C++) a record has no
+        // timers, buffers or loop: `Socket::free` is the record's deallocation.
+        #[cfg(not(all(feature = "upstream-symbols", not(test))))]
+        let free_socket: unsafe fn(*mut SocketRecord) = SocketRecord::free;
         for &socket in self.pipe_sockets.iter().filter(|socket| !socket.is_null()) {
             // SAFETY: a record `init_pipe_socket` made, used by nothing else now.
             unsafe { (*socket).fd = -1 };
@@ -159,10 +163,6 @@ impl Drop for Bus {
     }
 }
 
-// Outside the hybrid (and in tests, which link no C++) a record has no timers,
-// buffers or loop: `Socket::free` is the record's deallocation.
-#[cfg(not(all(feature = "upstream-symbols", not(test))))]
-use swoole_rs_reactor::swr_v1_socket_dealloc as free_socket;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use swoole_rs_tls::upstream::socket_free as free_socket;
 #[cfg(feature = "upstream-symbols")]
@@ -871,10 +871,8 @@ pub unsafe extern "C" fn swr_v1_bus_init_pipe_socket(bus: *mut Bus, fd: c_int) {
     if index >= bus.pipe_sockets.len() {
         bus.pipe_sockets.resize(index + 1, ptr::null_mut());
     }
-    // SAFETY: `make_socket` returns a new record, which nothing else holds yet.
-    let socket = unsafe {
-        &mut *swoole_rs_reactor::swr_v1_socket_make(fd, /* SW_FD_PIPE */ 3)
-    };
+    // `make_socket`: a new record, which the bus frees on drop.
+    let socket = Box::leak(Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3)));
     socket.output.buffer_size = u32::MAX;
     if socket.output.nonblock == 0 {
         // SAFETY: the live record just made.

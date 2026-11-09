@@ -33,8 +33,7 @@ use core::ptr::null_mut;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
-    CLASS_DGRAM, Event, ReactorIov, SocketAddress, SocketRecord, swr_v1_reactor_iov_view,
-    swr_v1_socket_accept_new, type_is,
+    CLASS_DGRAM, Event, ReactorIov, SocketAddress, SocketRecord, swr_v1_reactor_iov_view, type_is,
 };
 use swoole_rs_tls::owner_fields;
 use swoole_rs_tls::upstream::{
@@ -404,7 +403,7 @@ unsafe extern "C" fn accept_call(context: *mut c_void, _: c_int) -> c_int {
     // SAFETY: the live listening socket.
     let listener = unsafe { (*state.socket).socket };
     // SAFETY: its live network::Socket.
-    state.conn = unsafe { swr_v1_socket_accept_new(listener) };
+    state.conn = unsafe { (*listener).accept() };
     if state.conn.is_null() { -1 } else { 0 }
 }
 
@@ -1425,7 +1424,7 @@ mod tests {
             let native = storage.as_mut_ptr();
             unsafe { init(&raw mut (*native).record) };
             let mut native = unsafe { Box::from_raw(Box::into_raw(storage).cast::<Native>()) };
-            native.record.socket = swoole_rs_reactor::swr_v1_socket_make(-1, 6);
+            native.record.socket = SocketRecord::with_fd(-1, 6).into_raw();
             native.record.sock_fd = 100;
             let object = (&raw mut *native).cast::<c_void>();
             native.record.socket_mut().object = object;
@@ -1447,7 +1446,7 @@ mod tests {
     impl Drop for Object {
         fn drop(&mut self) {
             unsafe {
-                swoole_rs_reactor::swr_v1_socket_dealloc(self.0.record.socket);
+                SocketRecord::free(self.0.record.socket);
                 crate::co_socket::swr_v1_hook_co_socket_fini(&raw mut self.0.record);
             }
         }

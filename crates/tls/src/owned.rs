@@ -752,7 +752,8 @@ mod tests {
                     ),
                     0
                 );
-                let socket = swoole_rs_reactor::swr_v1_socket_make(stream.as_raw_fd(), 6);
+                let socket =
+                    swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
                 assert_eq!(
                     swr_v1_tls_owner_socket_context(prepared.owner, socket, true, true),
                     0
@@ -788,7 +789,7 @@ mod tests {
                     0
                 );
                 openssl_sys::SSL_free(ssl);
-                swoole_rs_reactor::swr_v1_socket_dealloc(socket);
+                swoole_rs_reactor::SocketRecord::free(socket);
                 swr_v1_tls_owner_free(prepared.owner);
             }
         }
