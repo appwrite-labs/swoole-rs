@@ -99,7 +99,8 @@ pub mod exports {
             socket: *mut SocketRecord,
             rdata: *const c_void,
         ) -> c_int;
-        #[link_name = "_ZN6swoole5http216get_frame_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
+        /// `http2::get_frame_length` (crates/phphttp2).
+        #[link_name = "swr_v1_http2_frame_length"]
         pub fn http2_length(
             proto: *const c_void,
             socket: *mut SocketRecord,

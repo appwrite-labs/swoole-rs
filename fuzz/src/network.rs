@@ -7,53 +7,29 @@ use std::net::IpAddr;
 use swoole_rs_clients::dns::swr_v1_clients_dns_query;
 use swoole_rs_http::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
 use swoole_rs_http2::{
-    Http2FrameFacts, Http2InflateStep, PacketLength, get_frame_length, sw_rs_http2_decode_frame,
-    sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
+    frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
 };
 use swoole_rs_oracle::{multipart, nghttp2};
 use swoole_rs_protocols::{RespPhpState, RespSpan, swr_v1_resp_php_next};
 
 /// Any bytes as an HTTP/2 frame header (RFC 9113 4.1) and a SETTINGS entry (6.5.1):
-/// `get_frame_length`, `sw_rs_http2_decode_frame` and `sw_rs_http2_unpack_setting`
+/// `frame_length`, `sw_rs_http2_decode_frame` and `sw_rs_http2_unpack_setting`
 /// agree with the wire layout.
 pub fn http2_frame(bytes: &[u8]) {
     let Some((&[previous, client], data)) = bytes.split_first_chunk::<2>() else {
         return;
     };
-    let pl = PacketLength {
-        buf: data.as_ptr(),
-        buf_size: u32::try_from(data.len()).unwrap_or(u32::MAX),
-        header_len: 0,
-    };
-    // SAFETY: `buf` addresses `buf_size` bytes; the protocol and socket are unused.
-    let length = unsafe { get_frame_length(std::ptr::null(), std::ptr::null_mut(), &pl) };
-    let mut facts = Http2FrameFacts {
-        length: 0,
-        kind: 0,
-        flags: 0,
-        stream_id: 0,
-        publish_last_id: 0,
-        action: 0,
-    };
+    let length = frame_length(data);
     let previous = u32::from(previous) << 23;
-    // SAFETY: `data` holds `data.len()` bytes; `facts` is a local.
-    let decoded = unsafe {
-        sw_rs_http2_decode_frame(
-            data.as_ptr(),
-            data.len(),
-            previous,
-            u32::from(client & 1),
-            &mut facts,
-        )
-    };
+    let decoded = sw_rs_http2_decode_frame(data, previous, u32::from(client & 1));
     let Some(header) = data.first_chunk::<9>() else {
-        assert_eq!((length, decoded), (0, 0), "short header {data:?}");
+        assert_eq!((length, decoded), (0, None), "short header {data:?}");
         return;
     };
     let wire = u32::from_be_bytes([0, header[0], header[1], header[2]]);
     let id = u32::from_be_bytes([header[5], header[6], header[7], header[8]]) & 0x7fff_ffff;
     assert_eq!(length, wire as isize + 9, "frame length of {header:?}");
-    assert_eq!(decoded, 1);
+    let facts = decoded.expect("a whole header decodes");
     assert_eq!(
         (facts.length, facts.kind, facts.flags, facts.stream_id),
         (wire, u32::from(header[3]), u32::from(header[4]), id),
@@ -61,9 +37,7 @@ pub fn http2_frame(bytes: &[u8]) {
     );
     assert_eq!(facts.publish_last_id, u32::from(id > previous));
     if let Some(entry) = data.get(9..).and_then(|rest| rest.first_chunk::<6>()) {
-        let (mut setting, mut value) = (0u16, 0u32);
-        // SAFETY: `entry` holds six bytes; both outputs are locals.
-        unsafe { sw_rs_http2_unpack_setting(entry.as_ptr(), &mut setting, &mut value) };
+        let (setting, value) = sw_rs_http2_unpack_setting(entry);
         assert_eq!(
             (setting, value),
             (
@@ -392,15 +366,8 @@ pub fn http2_hpack(bytes: &[u8]) {
                     assert_eq!(text.last(), Some(&0), "unterminated header {text:?}");
                 }
             }
-            let mut step = Http2InflateStep {
-                end_headers: 0,
-                finish: 0,
-            };
             #[expect(clippy::cast_sign_loss, reason = "nghttp2's flag bits")]
-            // SAFETY: a writable step.
-            unsafe {
-                sw_rs_http2_inflate_step(flags as u32, input.len(), u32::from(role & 1), &mut step);
-            };
+            let step = sw_rs_http2_inflate_step(flags as u32, input.len(), u32::from(role & 1));
             if step.end_headers != 0 {
                 // SAFETY: a live inflater.
                 unsafe { nghttp2::nghttp2_hd_inflate_end_headers(inflater) };

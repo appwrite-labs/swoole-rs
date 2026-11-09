@@ -169,6 +169,31 @@ pub(crate) unsafe fn swoole_http2_client_coro_enable_ssl(socket: Socket) -> bool
     unsafe { co::enable_ssl(socket) }
 }
 
+/// The leading fields of `swoole::PacketLength`.
+#[repr(C)]
+pub(crate) struct PacketLength {
+    buf: *const u8,
+    buf_size: u32,
+}
+
+/// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`, the
+/// length callback of an HTTP/2 socket's protocol (and crates/phphttp's coroutine server).
+///
+/// # Safety
+/// `pl` is live and its `buf` holds `buf_size` bytes.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn swr_v1_http2_frame_length(
+    _protocol: *const c_void,
+    _socket: *mut c_void,
+    pl: *const PacketLength,
+) -> isize {
+    // SAFETY: as the caller promises.
+    let pl = unsafe { &*pl };
+    // SAFETY: as the caller promises.
+    let buffered = unsafe { std::slice::from_raw_parts(pl.buf, pl.buf_size as usize) };
+    swoole_rs_http2::frame_length(buffered)
+}
+
 /// HTTP/2 framing on the socket, then `apply_setting(settings)`.
 pub(crate) unsafe fn swoole_http2_client_coro_protocol(socket: Socket, settings: *const zval) {
     // SAFETY: per the caller.
@@ -179,7 +204,7 @@ pub(crate) unsafe fn swoole_http2_client_coro_protocol(socket: Socket, settings:
     record.protocol.package_length_size = 9;
     record.protocol.package_length_offset = 0;
     record.protocol.package_body_offset = 0;
-    record.protocol.get_package_length = swoole_rs_http2::get_frame_length as *mut c_void;
+    record.protocol.get_package_length = swr_v1_http2_frame_length as *mut c_void;
     // SAFETY: as above.
     unsafe { swoole_http2_client_coro_apply(socket, settings) };
 }

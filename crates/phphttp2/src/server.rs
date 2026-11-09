@@ -17,8 +17,7 @@ use std::{
     ptr,
 };
 use swoole_rs_http2::{
-    Http2ChunkPlan, Http2FrameFacts, Http2HeaderPlan, Http2InflateStep, Http2RespondFacts,
-    Http2SettingPlan, Http2WindowPlan, send_frame_size, sw_rs_http2_chunk,
+    Http2HeaderPlan, Http2RespondFacts, Http2WindowPlan, send_frame_size, sw_rs_http2_chunk,
     sw_rs_http2_content_length_rejected, sw_rs_http2_data_rejected, sw_rs_http2_decode_frame,
     sw_rs_http2_file_complete, sw_rs_http2_header_defaults, sw_rs_http2_header_plan,
     sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
@@ -181,13 +180,8 @@ fn strerror(code: c_int) -> String {
 
 /// A frame's nine header bytes.
 fn frame_header(kind: u32, length: usize, flags: u32, stream_id: u32) -> [u8; FRAME_HEADER] {
-    let mut header = [0; FRAME_HEADER];
     #[expect(clippy::cast_possible_truncation, reason = "frame lengths are 24-bit")]
-    // SAFETY: nine writable bytes.
-    unsafe {
-        sw_rs_http2_pack_frame_header(header.as_mut_ptr(), kind, length as u32, flags, stream_id);
-    };
-    header
+    sw_rs_http2_pack_frame_header(kind, length as u32, flags, stream_id)
 }
 
 /// The session and stream of a response's context.
@@ -681,19 +675,12 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
 /// `rust_header_plan`: the header name folded as `std::tolower` does.
 fn header_plan(role: u32, name: &[u8], can_capture: bool) -> Http2HeaderPlan {
     let (folded, length) = fold(name);
-    let mut plan = Http2HeaderPlan::default();
-    // SAFETY: the folded prefix and a writable plan.
-    unsafe {
-        sw_rs_http2_header_plan(
-            role,
-            folded.as_ptr(),
-            length,
-            name.len(),
-            u32::from(can_capture),
-            &raw mut plan,
-        );
-    };
-    plan
+    sw_rs_http2_header_plan(
+        role,
+        folded.get(..length).unwrap_or_default(),
+        name.len(),
+        u32::from(can_capture),
+    )
 }
 
 /// The first 33 bytes, lowercased (`rust_fold_header`).
@@ -762,9 +749,7 @@ pub(crate) fn send_body(
     while !rest.is_empty() {
         // Re-read after a flow-control wait: the peer may have changed it.
         let max_frame_size = send_frame_size(session.remote[MAX_FRAME_SIZE].get());
-        let mut chunk = Http2ChunkPlan::default();
-        // SAFETY: a writable plan.
-        unsafe { sw_rs_http2_chunk(rest.len(), max_frame_size, flags, &raw mut chunk) };
+        let chunk = sw_rs_http2_chunk(rest.len(), max_frame_size, flags);
         let (mut send_n, mut send_flags) = (chunk.length, chunk.flags);
         let window = stream.remote_window_size.get();
         if send_n > window as usize {
@@ -858,8 +843,7 @@ pub(crate) fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
         body_length: 0,
     };
     let next = |action, ok: bool, facts: &Http2RespondFacts| {
-        // SAFETY: initialised facts.
-        unsafe { sw_rs_http2_respond_next(action, u32::from(ok), facts) }
+        sw_rs_http2_respond_next(action, u32::from(ok), facts)
     };
     let mut action = next(RESP_START, true, &facts);
     loop {
@@ -1100,10 +1084,10 @@ pub unsafe extern "C" fn swr_v1_phphttp2_session_receive(fd: i64, buf: *const c_
 }
 
 fn parse(session: &Session, buf: *const u8) -> c_int {
-    let mut facts = Http2FrameFacts::default();
     let last_stream_id = session.last_stream_id.get();
-    // SAFETY: nine readable header bytes and a writable result.
-    unsafe { sw_rs_http2_decode_frame(buf, FRAME_HEADER, last_stream_id, 0, &raw mut facts) };
+    // SAFETY: nine readable header bytes.
+    let head = unsafe { std::slice::from_raw_parts(buf, FRAME_HEADER) };
+    let facts = sw_rs_http2_decode_frame(head, last_stream_id, 0).unwrap_or_default();
     let stream_id = facts.stream_id;
     let new_stream = facts.publish_last_id != 0;
     if facts.kind == TYPE_HEADERS && new_stream {
@@ -1259,8 +1243,7 @@ fn headers_complete(stream: &Stream) -> bool {
     let headers = zval_of(ctx, Value::Header);
     if let Some(value) = string_at(headers, c"content-type") {
         let (folded, length) = fold(value.bytes());
-        // SAFETY: the folded prefix.
-        let media = unsafe { sw_rs_http2_media_kind(folded.as_ptr(), length) };
+        let media = sw_rs_http2_media_kind(folded.get(..length).unwrap_or_default());
         if media == MEDIA_URLENCODED {
             set(ctx, Field::Form, 1);
         } else if media == MEDIA_MULTIPART
@@ -1327,10 +1310,7 @@ fn read_u32(at: *const u8) -> u32 {
 }
 
 fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2WindowPlan {
-    let mut plan = Http2WindowPlan::default();
-    // SAFETY: a writable plan.
-    unsafe { sw_rs_http2_window_plan(current, amount, initial, u32::from(credit), &raw mut plan) };
-    plan
+    sw_rs_http2_window_plan(current, amount, initial, u32::from(credit))
 }
 
 fn credit(current: u32, amount: u32) -> u32 {
@@ -1341,9 +1321,9 @@ fn credit(current: u32, amount: u32) -> u32 {
 fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
     let mut left = isize::try_from(length).unwrap_or(isize::MAX);
     while left > 0 {
-        let (mut id, mut value) = (0_u16, 0_u32);
         // SAFETY: six readable bytes, as upstream reads them.
-        unsafe { swoole_rs_http2::sw_rs_http2_unpack_setting(at, &raw mut id, &raw mut value) };
+        let entry = unsafe { at.cast::<[u8; 6]>().read_unaligned() };
+        let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(&entry);
         let deflater = session.deflater.get();
         let old = if id == SETTING_HEADER_TABLE_SIZE {
             session.remote[0].get()
@@ -1351,18 +1331,7 @@ fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
             0
         };
         let change = id == SETTING_HEADER_TABLE_SIZE && value != old && !deflater.is_null();
-        let mut plan = Http2SettingPlan::default();
-        // SAFETY: a writable plan.
-        unsafe {
-            sw_rs_http2_setting_plan(
-                u32::from(id),
-                value,
-                old,
-                u32::from(change),
-                1,
-                &raw mut plan,
-            );
-        };
+        let plan = sw_rs_http2_setting_plan(u32::from(id), value, old, u32::from(change), 1);
         if plan.set_value != 0
             && let Ok(field) = usize::try_from(plan.field)
             && let Some(setting) = session.remote.get(field)
@@ -1537,15 +1506,8 @@ fn parse_header(
                 continue;
             }
         }
-        let mut step = Http2InflateStep {
-            end_headers: 0,
-            finish: 0,
-        };
         #[expect(clippy::cast_sign_loss, reason = "nghttp2's flag bits")]
-        // SAFETY: a writable step.
-        unsafe {
-            sw_rs_http2_inflate_step(inflate_flags as u32, length, 0, &raw mut step);
-        };
+        let step = sw_rs_http2_inflate_step(inflate_flags as u32, length, 0);
         if step.end_headers != 0 {
             // SAFETY: a live inflater.
             unsafe { swoole_http2_client_coro_inflate_end(inflater) };

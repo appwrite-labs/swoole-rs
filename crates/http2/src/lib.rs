@@ -1,16 +1,9 @@
 //! HTTP/2 policy for crates/phphttp2, and `src/protocol/http2.cc`'s functions under
 //! their upstream symbols.
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 mod files;
 pub use files::*;
-use std::ffi::{c_char, c_void};
-use std::ptr;
+use std::ffi::CStr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[repr(C)]
@@ -78,21 +71,19 @@ fn default_slot(id: u32) -> &'static AtomicU32 {
 }
 
 /// `swoole::http2::put_default_setting(swHttp2SettingId, uint32_t)`.
-#[unsafe(export_name = "_ZN6swoole5http219put_default_settingE16swHttp2SettingIdj")]
-pub extern "C" fn put_default_setting(id: u32, value: u32) {
+pub fn put_default_setting(id: u32, value: u32) {
     default_slot(id).store(value, Ordering::Relaxed);
 }
 
 /// `swoole::http2::get_default_setting(swHttp2SettingId)`.
 #[must_use]
-#[unsafe(export_name = "_ZN6swoole5http219get_default_settingE16swHttp2SettingId")]
-pub extern "C" fn get_default_setting(id: u32) -> u32 {
+pub fn get_default_setting(id: u32) -> u32 {
     default_slot(id).load(Ordering::Relaxed)
 }
 
 /// All defaults, for the server's SETTINGS frame.
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_default_settings() -> Http2Settings {
+#[must_use]
+pub fn sw_rs_http2_default_settings() -> Http2Settings {
     let get = get_default_setting;
     Http2Settings {
         header_table_size: get(1),
@@ -117,19 +108,15 @@ pub struct Http2WindowPlan {
     pub increment: u32,
 }
 
-/// # Safety
-/// `out` is writable POD. The caller refreshes facts after every native send/resume.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_window_plan(
+/// The window after `amount` is credited or debited, and the update to send.
+/// The caller refreshes facts after every native send/resume.
+#[must_use]
+pub fn sw_rs_http2_window_plan(
     current: u32,
     amount: usize,
     initial: u32,
     credit: u32,
-    out: *mut Http2WindowPlan,
-) {
-    if out.is_null() {
-        return;
-    }
+) -> Http2WindowPlan {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "native uint32_t window arithmetic"
@@ -144,11 +131,11 @@ pub unsafe extern "C" fn sw_rs_http2_window_plan(
     } else {
         0
     };
-    ptr::write(out, Http2WindowPlan { value, increment });
+    Http2WindowPlan { value, increment }
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_data_rejected(
+#[must_use]
+pub fn sw_rs_http2_data_rejected(
     current: usize,
     additional: usize,
     maximum: u32,
@@ -191,8 +178,8 @@ fn frame_action(client: u32, kind: u32, flags: u32) -> u32 {
 }
 
 /// Queue storage and native allocation/release remain owned by the client.
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_queue_action(bound: u32, queued: usize, limit: u32) -> u32 {
+#[must_use]
+pub fn sw_rs_http2_queue_action(bound: u32, queued: usize, limit: u32) -> u32 {
     if bound == 0 {
         0 // direct send
     } else if queued > limit as usize {
@@ -202,20 +189,17 @@ pub extern "C" fn sw_rs_http2_queue_action(bound: u32, queued: usize, limit: u32
     }
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_send_complete(sent: isize, wanted: usize) -> u32 {
+#[must_use]
+pub fn sw_rs_http2_send_complete(sent: isize, wanted: usize) -> u32 {
     // Native compares `send_all(...) != (ssize_t) len`: the cast wraps.
     u32::from(sent == wanted.cast_signed())
 }
 
 /// Match locale-folded native header bytes; Rust selects role-specific effects.
-/// # Safety
-/// `folded` addresses `copied` initialized bytes, or is null when copied is zero.
-unsafe fn header_kind(role: u32, folded: *const u8, copied: usize, logical: usize) -> u32 {
-    if copied == 0 || copied != logical || folded.is_null() {
+fn header_kind(role: u32, name: &[u8], logical: usize) -> u32 {
+    if name.is_empty() || name.len() != logical {
         return 0;
     }
-    let name = std::slice::from_raw_parts(folded, copied);
     match (role, name) {
         (0, b":method") => 1,
         (0, b":path") => 2,
@@ -243,21 +227,15 @@ pub struct Http2HeaderPlan {
     pub capture_content_type: u32,
 }
 
-/// # Safety
-/// `folded` addresses `copied` initialized bytes; `out` is writable POD.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_header_plan(
+/// The plan for a header whose `logical`-byte name folds to `folded`.
+#[must_use]
+pub fn sw_rs_http2_header_plan(
     role: u32,
-    folded: *const u8,
-    copied: usize,
+    folded: &[u8],
     logical: usize,
     can_capture: u32,
-    out: *mut Http2HeaderPlan,
-) {
-    if out.is_null() {
-        return;
-    }
-    let kind = header_kind(role, folded, copied, logical);
+) -> Http2HeaderPlan {
+    let kind = header_kind(role, folded, logical);
     let server = role == 2;
     let publish_flags = if server {
         match kind {
@@ -269,15 +247,12 @@ pub unsafe extern "C" fn sw_rs_http2_header_plan(
     } else {
         0
     };
-    ptr::write(
-        out,
-        Http2HeaderPlan {
-            kind,
-            publish_flags,
-            suppress: u32::from(server && kind == 6),
-            capture_content_type: u32::from(server && kind == 4 && can_capture != 0),
-        },
-    );
+    Http2HeaderPlan {
+        kind,
+        publish_flags,
+        suppress: u32::from(server && kind == 6),
+        capture_content_type: u32::from(server && kind == 4 && can_capture != 0),
+    }
 }
 
 #[repr(C)]
@@ -307,24 +282,14 @@ mod respond_action {
 }
 
 /// Choose one native effect. No borrowed state or Rust frame survives its execution.
-///
-/// # Safety
-/// `facts` addresses initialized POD; the caller refreshes only the facts needed
-/// after each native effect, preserving cached trailer presence and end flags.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_respond_next(
-    previous: u32,
-    succeeded: u32,
-    facts: *const Http2RespondFacts,
-) -> u32 {
+/// The caller refreshes only the facts needed after each native effect, preserving
+/// cached trailer presence and end flags.
+#[must_use]
+pub fn sw_rs_http2_respond_next(previous: u32, succeeded: u32, facts: &Http2RespondFacts) -> u32 {
     use respond_action::{
         BODY, COMMIT_END, EMPTY, ERROR_CLOSE, ERROR_SHUTDOWN, FALSE, HEADER, REMOVE, START,
         SUCCESS_SHUTDOWN, TRAILER, TRUE,
     };
-    if facts.is_null() {
-        return FALSE;
-    }
-    let facts = &*facts;
     match previous {
         START if facts.header_sent == 0 => HEADER,
         START => COMMIT_END,
@@ -350,8 +315,8 @@ pub unsafe extern "C" fn sw_rs_http2_respond_next(
     }
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_response_status(status: i32) -> i32 {
+#[must_use]
+pub fn sw_rs_http2_response_status(status: i32) -> i32 {
     if status == 0 {
         200
     } else {
@@ -359,28 +324,19 @@ pub extern "C" fn sw_rs_http2_response_status(status: i32) -> i32 {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_header_defaults(published: u32) -> u32 {
+#[must_use]
+pub fn sw_rs_http2_header_defaults(published: u32) -> u32 {
     (2 | 16 | 32) & !published
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_content_length_rejected(
-    complete: u32,
-    parsed: i64,
-    maximum: u32,
-) -> u32 {
+#[must_use]
+pub fn sw_rs_http2_content_length_rejected(complete: u32, parsed: i64, maximum: u32) -> u32 {
     u32::from(complete == 0 || parsed > i64::from(maximum))
 }
 
-/// # Safety
-/// `folded` addresses `copied` initialized locale-folded bytes (maximum 33 needed).
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_media_kind(folded: *const u8, copied: usize) -> u32 {
-    if copied == 0 || folded.is_null() {
-        return 0;
-    }
-    let value = std::slice::from_raw_parts(folded, copied);
+/// The media kind of locale-folded bytes (at most 33 needed).
+#[must_use]
+pub fn sw_rs_http2_media_kind(value: &[u8]) -> u32 {
     if value.starts_with(b"application/x-www-form-urlencoded") {
         1
     } else if value.starts_with(b"multipart/form-data") {
@@ -392,41 +348,29 @@ pub unsafe extern "C" fn sw_rs_http2_media_kind(folded: *const u8, copied: usize
     }
 }
 
-/// # Safety
-/// `out` addresses nine writable bytes. Integer truncation matches the native header API.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_pack_frame_header(
-    out: *mut u8,
+/// A frame header. Integer truncation matches the native header API.
+#[must_use]
+pub fn sw_rs_http2_pack_frame_header(
     kind: u32,
     length: u32,
     flags: u32,
     stream_id: u32,
-) {
-    if !out.is_null() {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the native uint8_t frame type and flags"
-        )]
-        let bytes = header(kind as u8, length, flags as u8, stream_id);
-        ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
-    }
+) -> [u8; 9] {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the native uint8_t frame type and flags"
+    )]
+    header(kind as u8, length, flags as u8, stream_id)
 }
 
-/// # Safety
-/// `out` addresses `capacity` writable bytes; `settings` addresses an initialized POD.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_pack_settings(
-    out: *mut u8,
-    capacity: usize,
-    settings: *const Http2Settings,
-    server: u32,
-) -> usize {
-    let count = if server != 0 { 5 } else { 6 };
+/// `swoole::http2::pack_setting_frame` into the front of `out`: the frame's size, or 0
+/// when `out` is shorter than the frame (45 bytes, 39 for a server).
+pub fn sw_rs_http2_pack_settings(out: &mut [u8], s: &Http2Settings, server: bool) -> usize {
+    let count = if server { 5 } else { 6 };
     let size = 9 + count * 6;
-    if capacity < size || out.is_null() || settings.is_null() {
+    let Some(out) = out.get_mut(..size) else {
         return 0;
-    }
-    let s = ptr::read(settings);
+    };
     let values = [
         s.header_table_size,
         s.enable_push,
@@ -435,147 +379,86 @@ pub unsafe extern "C" fn sw_rs_http2_pack_settings(
         s.max_frame_size,
         s.max_header_list_size,
     ];
-    let mut bytes = [0u8; 45];
-    let (head, entries) = bytes.split_at_mut(9);
+    let (head, entries) = out.split_at_mut(9);
     head.copy_from_slice(&header(4, u32::try_from(count * 6).unwrap_or(0), 0, 0));
     let sent = values
         .iter()
         .enumerate()
-        .filter(|&(index, _)| server == 0 || index != 1);
+        .filter(|&(index, _)| !server || index != 1);
     for ((index, value), entry) in sent.zip(entries.as_chunks_mut::<6>().0) {
         let (id, value_bytes) = entry.split_at_mut(2);
         id.copy_from_slice(&u16::try_from(index + 1).unwrap_or(0).to_be_bytes());
         value_bytes.copy_from_slice(&value.to_be_bytes());
     }
-    ptr::copy_nonoverlapping(bytes.as_ptr(), out, size);
     size
 }
 
-/// `swoole::http2::pack_setting_frame(char *, const Settings &, bool)`.
-/// # Safety
-/// `out` addresses a whole frame (45 bytes, 39 for a server); `settings` is initialized.
-#[unsafe(export_name = "_ZN6swoole5http218pack_setting_frameEPcRKNS0_8SettingsEb")]
-pub unsafe extern "C" fn pack_setting_frame(
-    out: *mut u8,
-    settings: *const Http2Settings,
-    server: bool,
-) -> usize {
-    sw_rs_http2_pack_settings(
-        out,
-        if server { 39 } else { 45 },
-        settings,
-        u32::from(server),
+/// Decode one setting: its id and value. Native code invokes the callback before
+/// decoding another.
+#[must_use]
+pub fn sw_rs_http2_unpack_setting(b: &[u8; 6]) -> (u16, u32) {
+    (
+        u16::from_be_bytes([b[0], b[1]]),
+        u32::from_be_bytes([b[2], b[3], b[4], b[5]]),
     )
 }
 
-/// Decode one item only. Native code invokes the callback before decoding another.
-/// # Safety
-/// `bytes` addresses six initialized bytes, including original backing-storage
-/// preconditions when the caller's positive logical length is smaller than six.
-/// Outputs each address initialized writable scalar storage.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_unpack_setting(
-    bytes: *const u8,
-    id: *mut u16,
-    value: *mut u32,
-) {
-    if bytes.is_null() || id.is_null() || value.is_null() {
-        return;
-    }
-    let mut b = [0u8; 6];
-    ptr::copy_nonoverlapping(bytes, b.as_mut_ptr(), 6);
-    ptr::write(id, u16::from_be_bytes([b[0], b[1]]));
-    ptr::write(value, u32::from_be_bytes([b[2], b[3], b[4], b[5]]));
-}
-
-/// # Safety
-/// For `available >= 9`, bytes addresses nine initialized bytes. `out` is writable POD.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_decode_frame(
-    bytes: *const u8,
-    available: usize,
+/// The facts of the frame header at the front of `b`; `None` before nine bytes.
+#[must_use]
+pub fn sw_rs_http2_decode_frame(
+    b: &[u8],
     previous_last_id: u32,
     client: u32,
-    out: *mut Http2FrameFacts,
-) -> i32 {
-    if available < 9 || bytes.is_null() || out.is_null() {
-        return 0;
+) -> Option<Http2FrameFacts> {
+    let &[b0, b1, b2, kind, flags, i0, i1, i2, i3, ..] = b else {
+        return None;
+    };
+    let id = u32::from_be_bytes([i0, i1, i2, i3]) & 0x7fff_ffff;
+    Some(Http2FrameFacts {
+        length: u32::from_be_bytes([0, b0, b1, b2]),
+        kind: u32::from(kind),
+        flags: u32::from(flags),
+        stream_id: id,
+        publish_last_id: u32::from(id > previous_last_id),
+        action: frame_action(client, u32::from(kind), u32::from(flags)),
+    })
+}
+
+/// `swoole::http2::get_frame_length` over the buffered bytes: 0 until the nine-byte
+/// frame header is buffered, then the whole frame's length.
+#[must_use]
+pub fn frame_length(buffered: &[u8]) -> isize {
+    match buffered {
+        &[b0, b1, b2, _, _, _, _, _, _, ..] => {
+            isize::try_from(u32::from_be_bytes([0, b0, b1, b2])).map_or(-1, |length| length + 9)
+        }
+        _ => 0,
     }
-    let mut b = [0u8; 9];
-    ptr::copy_nonoverlapping(bytes, b.as_mut_ptr(), 9);
-    let id = u32::from_be_bytes([b[5], b[6], b[7], b[8]]) & 0x7fff_ffff;
-    ptr::write(
-        out,
-        Http2FrameFacts {
-            length: (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]),
-            kind: u32::from(b[3]),
-            flags: u32::from(b[4]),
-            stream_id: id,
-            publish_last_id: u32::from(id > previous_last_id),
-            action: frame_action(client, u32::from(b[3]), u32::from(b[4])),
-        },
-    );
-    1
 }
 
-/// `swoole::PacketLength`.
-#[repr(C)]
-pub struct PacketLength {
-    pub buf: *const u8,
-    pub buf_size: u32,
-    pub header_len: u32,
-}
-
-/// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`: 0 until
-/// the nine-byte frame header is buffered, then the whole frame's length.
-/// # Safety
-/// `pl` is valid and its `buf` addresses `buf_size` initialized bytes.
-#[unsafe(export_name = "_ZN6swoole5http216get_frame_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE")]
-pub unsafe extern "C" fn get_frame_length(
-    _protocol: *const c_void,
-    _conn: *mut c_void,
-    pl: *const PacketLength,
-) -> isize {
-    let pl = &*pl;
-    if pl.buf_size < 9 {
-        return 0;
-    }
-    let mut b = [0u8; 4];
-    ptr::copy_nonoverlapping(pl.buf, b.as_mut_ptr().add(1), 3);
-    isize::try_from(u32::from_be_bytes(b)).map_or(-1, |length| length + 9)
-}
-
-/// # Safety
-/// `out` is writable POD; no native effects happen here.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_setting_plan(
+/// The effects of one received setting; no native effects happen here.
+#[must_use]
+pub fn sw_rs_http2_setting_plan(
     id: u32,
     value: u32,
     old_value: u32,
     deflater_present: u32,
     server: u32,
-    out: *mut Http2SettingPlan,
-) {
-    if out.is_null() {
-        return;
-    }
+) -> Http2SettingPlan {
     let field = match id {
         1 | 3 | 4 | 5 | 6 => (id - 1).cast_signed(),
         _ => -1,
     };
-    ptr::write(
-        out,
-        Http2SettingPlan {
-            field,
-            set_value: u32::from(
-                field >= 0 && (id != 1 && (server != 0 || id != 6) || value != old_value),
-            ),
-            set_window: u32::from(id == 4),
-            change_deflater: u32::from(
-                id == 1 && value != old_value && (server == 0 || deflater_present != 0),
-            ),
-        },
-    );
+    Http2SettingPlan {
+        field,
+        set_value: u32::from(
+            field >= 0 && (id != 1 && (server != 0 || id != 6) || value != old_value),
+        ),
+        set_window: u32::from(id == 4),
+        change_deflater: u32::from(
+            id == 1 && value != old_value && (server == 0 || deflater_present != 0),
+        ),
+    }
 }
 
 /// The largest DATA frame to send under the peer's `max_frame_size`: legacy
@@ -585,35 +468,23 @@ pub fn send_frame_size(remote: u32) -> u32 {
     remote.clamp(1 << 14, (1 << 24) - 1)
 }
 
-/// # Safety
-/// `out` is writable POD.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_chunk(
-    remaining: usize,
-    max_frame: u32,
-    flags: u32,
-    out: *mut Http2ChunkPlan,
-) {
-    if out.is_null() {
-        return;
-    }
+/// The next DATA frame of `remaining` bytes under `max_frame`.
+#[must_use]
+pub fn sw_rs_http2_chunk(remaining: usize, max_frame: u32, flags: u32) -> Http2ChunkPlan {
     let more = remaining > max_frame as usize;
-    ptr::write(
-        out,
-        Http2ChunkPlan {
-            length: if more { max_frame as usize } else { remaining },
-            flags: if more {
-                0
-            } else {
-                u32::from(flags.to_le_bytes()[0])
-            },
+    Http2ChunkPlan {
+        length: if more { max_frame as usize } else { remaining },
+        flags: if more {
+            0
+        } else {
+            u32::from(flags.to_le_bytes()[0])
         },
-    );
+    }
 }
 
 /// 0: send as planned, 1: native warning, 2: native yield, 3: truncate to window.
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_window_action(length: usize, window: u32, may_suspend: u32) -> u32 {
+#[must_use]
+pub fn sw_rs_http2_window_action(length: usize, window: u32, may_suspend: u32) -> u32 {
     if length <= window as usize {
         0
     } else if may_suspend == 0 {
@@ -625,8 +496,8 @@ pub extern "C" fn sw_rs_http2_window_action(length: usize, window: u32, may_susp
     }
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_stream_flags(pipeline: u32, pipeline_read: u32) -> u32 {
+#[must_use]
+pub fn sw_rs_http2_stream_flags(pipeline: u32, pipeline_read: u32) -> u32 {
     (if pipeline != 0 { 2 } else { 0 }) | (if pipeline_read != 0 { 8 } else { 0 })
 }
 
@@ -636,38 +507,28 @@ pub struct Http2InflateStep {
     pub finish: u32,
 }
 
-/// # Safety
-/// `out` is writable POD; copied facts are reobserved after native header effects.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_inflate_step(
+/// One inflate step; copied facts are reobserved after native header effects.
+#[must_use]
+pub fn sw_rs_http2_inflate_step(
     flags: u32,
     remaining: usize,
     client_role: u32,
-    out: *mut Http2InflateStep,
-) {
-    if out.is_null() {
-        return;
-    }
+) -> Http2InflateStep {
     let end_headers = flags & 1 != 0;
-    ptr::write(
-        out,
-        Http2InflateStep {
-            end_headers: u32::from(end_headers),
-            finish: u32::from(
-                end_headers || remaining == 0 && (client_role != 0 || flags & 2 == 0),
-            ),
-        },
-    );
+    Http2InflateStep {
+        end_headers: u32::from(end_headers),
+        finish: u32::from(end_headers || remaining == 0 && (client_role != 0 || flags & 2 == 0)),
+    }
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_headers_flags(empty: u32, end_stream: u32, stream_flags: u32) -> u32 {
+#[must_use]
+pub fn sw_rs_http2_headers_flags(empty: u32, end_stream: u32, stream_flags: u32) -> u32 {
     4 | u32::from(empty != 0 && end_stream != 0 && stream_flags & 2 == 0)
 }
 
 /// Apply a copied stream flag transition. Callers publish into the sole native stream.
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_stream_update(flags: u32, end: u32, receiving: u32) -> u32 {
+#[must_use]
+pub fn sw_rs_http2_stream_update(flags: u32, end: u32, receiving: u32) -> u32 {
     flags
         | if receiving != 0 && end == 0 {
             4
@@ -676,39 +537,30 @@ pub extern "C" fn sw_rs_http2_stream_update(flags: u32, end: u32, receiving: u32
         }
 }
 
-#[no_mangle]
-pub extern "C" fn sw_rs_http2_write_allowed(exists: u32, stream_flags: u32) -> u32 {
+#[must_use]
+pub fn sw_rs_http2_write_allowed(exists: u32, stream_flags: u32) -> u32 {
     u32::from(exists != 0 && stream_flags & 2 != 0 && stream_flags & 1 == 0)
 }
 
-/// # Safety
-/// `out` is writable POD.
-#[no_mangle]
-pub unsafe extern "C" fn sw_rs_http2_response(
+/// Whether a received frame ends the response and makes it ready.
+#[must_use]
+pub fn sw_rs_http2_response(
     kind: u32,
     flags: u32,
     stream_flags: u32,
     pipeline_read: u32,
-    out: *mut Http2ResponsePlan,
-) {
-    if out.is_null() {
-        return;
-    }
+) -> Http2ResponsePlan {
     let end = flags & 1 != 0 || kind == 3 || kind == 7;
     let pipeline = (pipeline_read != 0 || stream_flags & 8 != 0) && stream_flags & 4 != 0;
-    ptr::write(
-        out,
-        Http2ResponsePlan {
-            end: u32::from(end),
-            ready: u32::from(end || pipeline),
-        },
-    );
+    Http2ResponsePlan {
+        end: u32::from(end),
+        ready: u32::from(end || pipeline),
+    }
 }
 
 /// `swoole::http2::get_type(int)`.
 #[must_use]
-#[unsafe(export_name = "_ZN6swoole5http28get_typeEi")]
-pub extern "C" fn get_type(kind: i32) -> *const c_char {
+pub fn get_type(kind: i32) -> &'static CStr {
     match kind {
         0 => c"DATA",
         1 => c"HEADERS",
@@ -722,13 +574,11 @@ pub extern "C" fn get_type(kind: i32) -> *const c_char {
         9 => c"CONTINUATION",
         _ => c"UNKNOWN",
     }
-    .as_ptr()
 }
 
 /// `swoole::http2::get_type_color(int)`: `SW_COLOR_MAGENTA`, `_GREEN`, `_WHITE` or `_RED`.
 #[must_use]
-#[unsafe(export_name = "_ZN6swoole5http214get_type_colorEi")]
-pub extern "C" fn get_type_color(kind: i32) -> i32 {
+pub fn get_type_color(kind: i32) -> i32 {
     match kind {
         0 | 8 => 5,
         1 | 4 | 5 | 9 => 2,
@@ -822,7 +672,7 @@ mod tests {
         // SW_HTTP2_SETTING_FRAME_SIZE + SW_HTTP2_FRAME_HEADER_SIZE
         let mut frame = [0u8; 45 + 9];
         let settings_1 = sw_rs_http2_default_settings();
-        let n = unsafe { pack_setting_frame(frame.as_mut_ptr(), &raw const settings_1, false) };
+        let n = sw_rs_http2_pack_settings(&mut frame, &settings_1, false);
 
         assert!(n > 16);
 
@@ -831,8 +681,7 @@ mod tests {
         for item in frame[9..].chunks(6).take(n.div_ceil(6)) {
             let mut padded = [0u8; 6];
             padded[..item.len()].copy_from_slice(item);
-            let (mut id, mut value) = (0, 0);
-            unsafe { sw_rs_http2_unpack_setting(padded.as_ptr(), &raw mut id, &raw mut value) };
+            let (id, value) = sw_rs_http2_unpack_setting(&padded);
             match id {
                 1 => settings_2.header_table_size = value,
                 2 => settings_2.enable_push = value,
@@ -863,7 +712,7 @@ mod tests {
             c"CONTINUATION",
         ];
         for (kind, name) in (0..).zip(names) {
-            assert_eq!(unsafe { std::ffi::CStr::from_ptr(get_type(kind)) }, name);
+            assert_eq!(get_type(kind), name);
         }
     }
 
@@ -926,22 +775,14 @@ mod tests {
         };
         for server in 0..=1 {
             let mut out = [0xcc; 47];
-            let n = unsafe {
-                sw_rs_http2_pack_settings(out.as_mut_ptr().add(1), 45, &raw const s, server)
-            };
+            let n = sw_rs_http2_pack_settings(&mut out[1..46], &s, server != 0);
             assert_eq!(n, if server == 0 { 45 } else { 39 });
             assert_eq!(out[0], 0xcc);
             assert_eq!(out[n + 1], 0xcc);
-            let mut frame = Http2FrameFacts::default();
-            assert_eq!(
-                unsafe { sw_rs_http2_decode_frame(out.as_ptr().add(1), n, 0, 0, &raw mut frame) },
-                1
-            );
+            let frame = sw_rs_http2_decode_frame(&out[1..=n], 0, 0).unwrap();
             assert_eq!((frame.kind, frame.length), (4, (n - 9) as u32));
             for item in out[10..=n].as_chunks::<6>().0 {
-                let mut id = 0;
-                let mut value = 0;
-                unsafe { sw_rs_http2_unpack_setting(item.as_ptr(), &raw mut id, &raw mut value) };
+                let (id, value) = sw_rs_http2_unpack_setting(item);
                 assert!((1..=6).contains(&id));
                 if id == 1 {
                     assert_eq!(value, s.header_table_size);
@@ -955,21 +796,10 @@ mod tests {
     #[test]
     fn framing_and_short_prefix() {
         let bytes = header(255, 0x00ff_ffff, 0x80, 0xffff_ffff);
-        let length = |buf_size| {
-            let pl = PacketLength {
-                buf: bytes.as_ptr(),
-                buf_size,
-                header_len: 0,
-            };
-            unsafe { get_frame_length(ptr::null(), ptr::null_mut(), &raw const pl) }
-        };
-        assert_eq!(length(8), 0);
-        assert_eq!(length(9), 0x00ff_ffff + 9);
-        let mut f = Http2FrameFacts::default();
-        assert_eq!(
-            unsafe { sw_rs_http2_decode_frame(bytes.as_ptr(), 9, 0, 0, &raw mut f) },
-            1
-        );
+        assert_eq!(frame_length(&bytes[..8]), 0);
+        assert_eq!(frame_length(&bytes), 0x00ff_ffff + 9);
+        assert_eq!(sw_rs_http2_decode_frame(&bytes[..8], 0, 0), None);
+        let f = sw_rs_http2_decode_frame(&bytes, 0, 0).unwrap();
         assert_eq!(f.stream_id, 0x7fff_ffff);
         assert_eq!(f.publish_last_id, 1);
     }
@@ -978,8 +808,7 @@ mod tests {
         for id in 0..=7 {
             for server in 0..=1 {
                 for has_deflater in 0..=1 {
-                    let mut p = Http2SettingPlan::default();
-                    unsafe { sw_rs_http2_setting_plan(id, 2, 1, has_deflater, server, &raw mut p) };
+                    let p = sw_rs_http2_setting_plan(id, 2, 1, has_deflater, server);
                     assert_eq!(
                         p.field,
                         if [1, 3, 4, 5, 6].contains(&id) {
@@ -1007,17 +836,14 @@ mod tests {
 
     #[test]
     fn chunk_window_and_pipeline_bits() {
-        let mut chunk = Http2ChunkPlan::default();
-        unsafe { sw_rs_http2_chunk(20, 16, 1, &raw mut chunk) };
         assert_eq!(
-            chunk,
+            sw_rs_http2_chunk(20, 16, 1),
             Http2ChunkPlan {
                 length: 16,
                 flags: 0
             }
         );
-        unsafe { sw_rs_http2_chunk(16, 16, 257, &raw mut chunk) };
-        assert_eq!(chunk.flags, 1);
+        assert_eq!(sw_rs_http2_chunk(16, 16, 257).flags, 1);
         assert_eq!(sw_rs_http2_window_action(16, 16, 0), 0);
         assert_eq!(sw_rs_http2_window_action(16, 0, 0), 1);
         assert_eq!(sw_rs_http2_window_action(16, 0, 1), 2);
@@ -1026,8 +852,7 @@ mod tests {
             for read in 0..=1 {
                 for kind in 0..=9 {
                     for frame_flags in 0..8 {
-                        let mut p = Http2ResponsePlan::default();
-                        unsafe { sw_rs_http2_response(kind, frame_flags, flags, read, &raw mut p) };
+                        let p = sw_rs_http2_response(kind, frame_flags, flags, read);
                         let end = frame_flags & 1 != 0 || kind == 3 || kind == 7;
                         assert_eq!(p.end, u32::from(end));
                         assert_eq!(
@@ -1133,10 +958,7 @@ mod tests {
         for name in &names {
             let (bytes, n) = folded(name);
             for role in 0..4 {
-                let mut plan = Http2HeaderPlan::default();
-                unsafe {
-                    sw_rs_http2_header_plan(role, bytes.as_ptr(), n, name.len(), 0, &raw mut plan);
-                }
+                let plan = sw_rs_http2_header_plan(role, &bytes[..n], name.len(), 0);
                 assert_eq!(plan.kind, upstream_kind(role, name), "role {role} {name:?}");
             }
         }
@@ -1157,7 +979,7 @@ mod tests {
         ];
         for value in values {
             let (bytes, n) = folded(value);
-            let kind = unsafe { sw_rs_http2_media_kind(bytes.as_ptr(), n) };
+            let kind = sw_rs_http2_media_kind(&bytes[..n]);
             assert_eq!(kind, upstream_media(value), "{value:?}");
         }
     }
@@ -1165,10 +987,7 @@ mod tests {
     #[test]
     fn unknown_frame_types() {
         for kind in [-100, -1, 10, 99, i32::MIN, i32::MAX] {
-            assert_eq!(
-                unsafe { std::ffi::CStr::from_ptr(get_type(kind)) },
-                c"UNKNOWN"
-            );
+            assert_eq!(get_type(kind), c"UNKNOWN");
             assert_eq!(get_type_color(kind), 1, "SW_COLOR_RED");
         }
     }

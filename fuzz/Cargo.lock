@@ -167,6 +167,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-crc32"
+version = "0.1.0"
+
+[[package]]
 name = "swoole-rs-error"
 version = "0.1.0"
 
@@ -285,6 +289,7 @@ dependencies = [
  "libc",
  "memchr",
  "swoole-rs-corebase",
+ "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-locks",
 ]

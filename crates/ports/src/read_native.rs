@@ -298,10 +298,7 @@ fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
             // `http2::send_setting_frame`: the server's default settings.
             let settings = swoole_rs_http2::sw_rs_http2_default_settings();
             let mut frame = [0u8; SETTING_FRAME_SIZE];
-            // SAFETY: a whole frame and initialized settings.
-            let length = unsafe {
-                swoole_rs_http2::pack_setting_frame(frame.as_mut_ptr(), &raw const settings, true)
-            };
+            let length = swoole_rs_http2::sw_rs_http2_pack_settings(&mut frame, &settings, true);
             send(c, frame.get(..length).unwrap_or_default());
             0
         }

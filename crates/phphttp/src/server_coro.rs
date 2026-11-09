@@ -308,6 +308,12 @@ unsafe extern "C" {
     fn create_dir(path: *const c_char, length: usize) -> c_int;
     /// `System::sleep(sec)` (crates/hooks).
     fn swoole_coroutine_sleep(sec: c_int);
+    /// `swoole::http2::get_frame_length` (crates/phphttp2).
+    fn swr_v1_http2_frame_length(
+        protocol: *const c_void,
+        socket: *mut c_void,
+        pl: *mut c_void,
+    ) -> isize;
     /// The HTTP/2 server (crates/phphttp2): a stream's reset, and a
     /// connection's session. `receive` leaves a bailout pending.
     fn swr_v1_phphttp2_server_reset(ctx: *mut c_void, stream_id: u32, code: u32);
@@ -376,10 +382,7 @@ fn request_data(context: *mut Context, buffer: &mut Buffer, length: usize) {
 fn http2_begin(socket: Socket) {
     let settings = swoole_rs_http2::sw_rs_http2_default_settings();
     let mut frame = [0u8; 45];
-    // SAFETY: a whole frame's room and initialised settings.
-    let length = unsafe {
-        swoole_rs_http2::pack_setting_frame(frame.as_mut_ptr(), &raw const settings, true)
-    };
+    let length = swoole_rs_http2::sw_rs_http2_pack_settings(&mut frame, &settings, true);
     let record = record(socket);
     // SAFETY: its network socket and the frame's bytes.
     unsafe { network_send(record.socket.cast(), frame.as_ptr().cast(), length, 0) };
@@ -387,7 +390,7 @@ fn http2_begin(socket: Socket) {
     record.protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
     record.protocol.package_length_offset = 0;
     record.protocol.package_body_offset = 0;
-    record.protocol.get_package_length = swoole_rs_http2::get_frame_length as *mut c_void;
+    record.protocol.get_package_length = swr_v1_http2_frame_length as *mut c_void;
 }
 
 /// `recv_wait`: the socket waits for a request.

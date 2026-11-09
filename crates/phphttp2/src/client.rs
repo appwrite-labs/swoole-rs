@@ -7,14 +7,12 @@ use crate::{
 use libc::{c_char, c_int, c_void};
 use std::{collections::VecDeque, ffi::CStr, mem::MaybeUninit, ptr};
 use swoole_rs_http2::{
-    Http2ChunkPlan, Http2FrameFacts, Http2HeaderPlan, Http2InflateStep, Http2ResponsePlan,
-    Http2SettingPlan, Http2Settings, Http2WindowPlan, send_frame_size, sw_rs_http2_chunk,
-    sw_rs_http2_decode_frame, sw_rs_http2_default_settings, sw_rs_http2_header_plan,
-    sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
-    sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings, sw_rs_http2_queue_action,
-    sw_rs_http2_response, sw_rs_http2_send_complete, sw_rs_http2_setting_plan,
-    sw_rs_http2_stream_flags, sw_rs_http2_stream_update, sw_rs_http2_window_plan,
-    sw_rs_http2_write_allowed,
+    Http2Settings, Http2WindowPlan, send_frame_size, sw_rs_http2_chunk, sw_rs_http2_decode_frame,
+    sw_rs_http2_default_settings, sw_rs_http2_header_plan, sw_rs_http2_headers_flags,
+    sw_rs_http2_inflate_step, sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header,
+    sw_rs_http2_pack_settings, sw_rs_http2_queue_action, sw_rs_http2_response,
+    sw_rs_http2_send_complete, sw_rs_http2_setting_plan, sw_rs_http2_stream_flags,
+    sw_rs_http2_stream_update, sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::Inflate;
 use swoole_rs_phpstubs::http2_client_coro;
@@ -184,18 +182,12 @@ fn error_properties(object: *mut zend_object, code: c_int, message: &[u8]) {
 }
 
 fn frame_header(kind: u32, length: usize, flags: u32, stream: u32) -> [u8; FRAME_HEADER] {
-    let mut out = [0; FRAME_HEADER];
     let length = u32::try_from(length).unwrap_or(u32::MAX);
-    // SAFETY: a nine-byte buffer.
-    unsafe { sw_rs_http2_pack_frame_header(out.as_mut_ptr(), kind, length, flags, stream) };
-    out
+    sw_rs_http2_pack_frame_header(kind, length, flags, stream)
 }
 
 fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2WindowPlan {
-    let mut plan = Http2WindowPlan::default();
-    // SAFETY: a writable plan.
-    unsafe { sw_rs_http2_window_plan(current, amount, initial, u32::from(credit), &raw mut plan) };
-    plan
+    sw_rs_http2_window_plan(current, amount, initial, u32::from(credit))
 }
 
 /// The HPACK header list upstream's `HeaderSet` builds (names lowercased),
@@ -555,10 +547,7 @@ impl Client {
 
     fn send_setting(&mut self) -> bool {
         let mut frame = [0_u8; SETTING_FRAME];
-        // SAFETY: the frame buffer and the client's settings.
-        let length = unsafe {
-            sw_rs_http2_pack_settings(frame.as_mut_ptr(), frame.len(), &raw const self.local, 0)
-        };
+        let length = sw_rs_http2_pack_settings(&mut frame, &self.local, false);
         self.send(frame.get(..length).unwrap_or(&frame))
     }
 
@@ -581,9 +570,7 @@ impl Client {
         }
         while !data.is_empty() {
             let max_frame_size = send_frame_size(self.remote.max_frame_size);
-            let mut chunk = Http2ChunkPlan::default();
-            // SAFETY: a writable plan.
-            unsafe { sw_rs_http2_chunk(data.len(), max_frame_size, flag, &raw mut chunk) };
+            let chunk = sw_rs_http2_chunk(data.len(), max_frame_size, flag);
             let (part, rest) = data.split_at(chunk.length.min(data.len()));
             if !self.send(&frame_header(TYPE_DATA, part.len(), chunk.flags, stream))
                 || !self.send(part)
@@ -855,11 +842,9 @@ impl Client {
     fn parse_frame(&mut self, call: &Call, socket: Socket, pipeline_read: bool) -> Frame {
         // SAFETY: a live socket whose read buffer holds one whole frame.
         let buffer = unsafe { native::swoole_http2_client_coro_read_buffer(socket) }.cast::<u8>();
-        let mut facts = Http2FrameFacts::default();
-        // SAFETY: the frame header and a writable output.
-        unsafe {
-            sw_rs_http2_decode_frame(buffer, FRAME_HEADER, self.last_stream_id, 1, &raw mut facts)
-        };
+        // SAFETY: the buffer holds at least the frame header.
+        let head = unsafe { std::slice::from_raw_parts(buffer, FRAME_HEADER) };
+        let facts = sw_rs_http2_decode_frame(head, self.last_stream_id, 1).unwrap_or_default();
         let length = facts.length as usize;
         // SAFETY: the packet holds the header and `length` payload bytes.
         let payload =
@@ -949,17 +934,12 @@ impl Client {
         let Some(stream) = self.streams.get_mut(&id) else {
             return Frame::Continue;
         };
-        let mut plan = Http2ResponsePlan::default();
-        // SAFETY: a writable plan.
-        unsafe {
-            sw_rs_http2_response(
-                facts.kind,
-                facts.flags,
-                stream.flags,
-                u32::from(pipeline_read),
-                &raw mut plan,
-            );
-        };
+        let plan = sw_rs_http2_response(
+            facts.kind,
+            facts.flags,
+            stream.flags,
+            u32::from(pipeline_read),
+        );
         if plan.ready == 0 {
             return Frame::Continue;
         }
@@ -1009,9 +989,7 @@ impl Client {
             SETTING_MAX_HEADER_LIST_SIZE => self.remote.max_header_list_size,
             _ => 0,
         };
-        let mut plan = Http2SettingPlan::default();
-        // SAFETY: a writable plan.
-        unsafe { sw_rs_http2_setting_plan(u32::from(key), number, old, 0, 0, &raw mut plan) };
+        let plan = sw_rs_http2_setting_plan(u32::from(key), number, old, 0, 0);
         if plan.set_value != 0 {
             let remote = &mut self.remote;
             let field = match plan.field {
@@ -1169,19 +1147,8 @@ impl Client {
                     };
                 }
             }
-            let mut step = Http2InflateStep {
-                end_headers: 0,
-                finish: 0,
-            };
-            // SAFETY: a writable step.
-            unsafe {
-                sw_rs_http2_inflate_step(
-                    u32::try_from(inflate_flags).unwrap_or(0),
-                    input.len(),
-                    1,
-                    &raw mut step,
-                );
-            };
+            let step =
+                sw_rs_http2_inflate_step(u32::try_from(inflate_flags).unwrap_or(0), input.len(), 1);
             if step.end_headers != 0 {
                 // SAFETY: the client's inflater.
                 unsafe { native::swoole_http2_client_coro_inflate_end(self.inflater) };
@@ -1248,16 +1215,12 @@ fn fold(bytes: &[u8]) -> ([u8; 33], usize) {
 
 fn header_kind(role: u32, name: &[u8]) -> u32 {
     let (folded, n) = fold(name);
-    let mut plan = Http2HeaderPlan::default();
-    // SAFETY: the folded bytes and a writable plan.
-    unsafe { sw_rs_http2_header_plan(role, folded.as_ptr(), n, name.len(), 0, &raw mut plan) };
-    plan.kind
+    sw_rs_http2_header_plan(role, folded.get(..n).unwrap_or_default(), name.len(), 0).kind
 }
 
 fn media_kind(value: &[u8]) -> u32 {
     let (folded, n) = fold(value);
-    // SAFETY: the folded bytes.
-    unsafe { sw_rs_http2_media_kind(folded.as_ptr(), n) }
+    sw_rs_http2_media_kind(folded.get(..n).unwrap_or_default())
 }
 
 /// A request body: an array as a query string, else the value as a string;

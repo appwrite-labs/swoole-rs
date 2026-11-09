@@ -90,16 +90,18 @@ struct PacketLength {
     header_len: u32,
 }
 
-/// `swoole::http2::Settings`.
-#[repr(C)]
-struct Http2Settings {
-    header_table_size: u32,
-    enable_push: u32,
-    max_concurrent_streams: u32,
-    init_window_size: u32,
-    max_frame_size: u32,
-    max_header_list_size: u32,
-}
+/// What `http2::init_settings` then `http2::pack_setting_frame(.., false)` write: a
+/// SETTINGS frame header and the six default settings (header table 4096, push off,
+/// unlimited streams, window 65535, frame 16384, unlimited header list).
+const HTTP2_SETTING_FRAME: [u8; 45] = [
+    0, 0, 36, 4, 0, 0, 0, 0, 0, //
+    0, 1, 0, 0, 0x10, 0, //
+    0, 2, 0, 0, 0, 0, //
+    0, 3, 0xff, 0xff, 0xff, 0xff, //
+    0, 4, 0, 0, 0xff, 0xff, //
+    0, 5, 0, 0, 0x40, 0, //
+    0, 6, 0xff, 0xff, 0xff, 0xff,
+];
 
 #[link(name = "swoole")]
 unsafe extern "C" {
@@ -179,13 +181,6 @@ unsafe extern "C" {
     ) -> isize;
     #[link_name = "_ZN6swoole11http_server23get_package_length_sizeEPNS_7network6SocketE"]
     fn http_get_package_length_size(socket: *mut c_void) -> u8;
-    fn sw_rs_http2_default_settings() -> Http2Settings;
-    #[link_name = "_ZN6swoole5http218pack_setting_frameEPcRKNS0_8SettingsEb"]
-    fn http2_pack_setting_frame(
-        buf: *mut c_char,
-        settings: *const Http2Settings,
-        server_side: bool,
-    ) -> usize;
     fn swr_case_port(serv: *mut Server) -> c_int;
     fn swr_case_start(serv: *mut Server) -> c_int;
     fn swr_case_shutdown(serv: *mut Server) -> bool;
@@ -1070,19 +1065,13 @@ fn get_package_length() {
     assert_eq!(length, (SW_WEBSOCKET_HEADER_LEN + TEST_STR.len()) as isize);
 
     // http2
-    let buffer = tg_buffer();
     // SAFETY: the fake socket's Connection.
     unsafe { swr_case_connection_status(conn, 0, 1) };
     // SAFETY: as above.
     let size = unsafe { http_get_package_length_size(fake_sock) };
     assert_eq!(size, SW_HTTP2_FRAME_HEADER_SIZE);
-    // SAFETY: http2::init_settings.
-    let settings_1 = unsafe { sw_rs_http2_default_settings() };
-    // SAFETY: the buffer's storage, far larger than a settings frame.
-    unsafe { (*buffer).length = http2_pack_setting_frame((*buffer).str, &settings_1, false) };
-    // SAFETY: the live buffer.
-    let (str, length) = unsafe { ((*buffer).str, (*buffer).length) };
-    pl.buf = str.cast();
+    let length = HTTP2_SETTING_FRAME.len();
+    pl.buf = HTTP2_SETTING_FRAME.as_ptr();
     pl.buf_size = length as u32;
     assert!(length > 16);
     // SAFETY: the port's protocol, the fake socket and the frame.
