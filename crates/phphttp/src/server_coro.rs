@@ -106,7 +106,7 @@ impl HttpServer {
     fn apply_websocket(&self, table: &Array) {
         let mut bits = self.websocket_settings.get();
         let mut flag = |key: &[u8], bit: u8| {
-            if let Some(found) = table.find(key).filter(|found| !found.is_null()) {
+            if let Some(found) = table.get(key) {
                 if found.truthy() {
                     bits |= bit;
                 } else {
@@ -720,10 +720,10 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         match action.kind {
             SETTING_LOOKUP => {
                 // SAFETY: the action's key bytes.
-                value = table.find(unsafe {
+                value = table.get(unsafe {
                     std::slice::from_raw_parts(action.text.data, action.text.length)
                 });
-                found = u32::from(value.is_some_and(|value| !value.is_null()));
+                found = u32::from(value.is_some());
             }
             SETTING_DONE => break,
             SETTING_WEBSOCKET => server.apply_websocket(table),
