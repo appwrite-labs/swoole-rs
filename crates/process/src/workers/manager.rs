@@ -123,6 +123,10 @@ fn start<H: Host>(h: &mut H) -> i64 {
 /// The manager process: start the task pool, fork the workers, then reap.
 fn main<H: Host>(h: &mut H) {
     h.get(OP_SET_MANAGER_PID);
+    // A SIGTERM while the workers are still forking must stop the manager once
+    // they are up, not kill it outright and orphan the ones already forked.
+    // The children's fork resets their handlers.
+    set_signal_all(h, &[(libc::SIGTERM, HANDLER_OWN)]);
     if h.get(OP_TASK_WORKER_NUM) > 0 && h.signed(OP_START_TASK_POOL) == SW_ERR {
         h.log(LOG_START_TASK_POOL, 0, 0);
         return;
@@ -394,15 +398,20 @@ fn reap<H: Host>(h: &mut H, manager: &Manager) {
 /// handlers; it must not act as the manager (reopening the log would send
 /// SIGWINCH back to itself forever).
 fn signal<H: Host>(h: &mut H, signo: i32) {
+    if signo == libc::SIGTERM {
+        // Before `wait` sets up the manager too: `main` takes it while forking.
+        if h.is(OP_IS_MANAGER) {
+            h.op(OP_SET_RUNNING, 0);
+        }
+        return;
+    }
     let Some(manager) = manager(h) else {
         return;
     };
     if !h.is(OP_IS_MANAGER) {
         return;
     }
-    if signo == libc::SIGTERM {
-        h.op(OP_SET_RUNNING, 0);
-    } else if signo == libc::SIGUSR1 {
+    if signo == libc::SIGUSR1 {
         h.op(OP_SERVER_RELOAD, 1);
     } else if signo == libc::SIGUSR2 {
         h.op(OP_SERVER_RELOAD, 0);
@@ -490,6 +499,7 @@ fn reload<H: Host>(h: &mut H, all: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workers::ops::OP_SIGNAL_SET;
     use crate::workers::script::Script;
 
     fn run_op(h: &mut Script, operation: u32, arg: u64) -> i64 {
@@ -588,6 +598,12 @@ mod tests {
             (h.called(LOG_FORK_EVENT_WORKER), h.called(OP_MANAGER_INIT)),
             (1, 0)
         );
+        // The manager takes SIGTERM before it forks anything.
+        let sigterm = u64::from(libc::SIGTERM.cast_unsigned()) | (HANDLER_OWN << 32);
+        assert_eq!(h.args(OP_SIGNAL_SET), vec![sigterm]);
+        let order = h.effects(&[]);
+        let at = |op| order.iter().position(|&o| o == op);
+        assert!(at(OP_SIGNAL_SET) < at(OP_SPAWN_EVENT_WORKER));
     }
 
     #[test]
@@ -596,7 +612,11 @@ mod tests {
         let address = core::ptr::from_ref(&manager) as u64;
         let mut h = Script::with(&[(OP_MANAGER, address)]);
         run_op(&mut h, RUN_MANAGER_SIGNAL, libc::SIGTERM as u64);
-        assert_eq!(h.called(OP_SET_RUNNING), 0);
+        run_op(&mut h, RUN_MANAGER_SIGNAL, libc::SIGUSR2 as u64);
+        assert_eq!(
+            (h.called(OP_SET_RUNNING), h.called(OP_SERVER_RELOAD)),
+            (0, 0)
+        );
         let mut h = Script::with(&[(OP_MANAGER, address), (OP_IS_MANAGER, 1)]);
         run_op(&mut h, RUN_MANAGER_SIGNAL, libc::SIGTERM as u64);
         run_op(&mut h, RUN_MANAGER_SIGNAL, libc::SIGUSR2 as u64);
@@ -607,8 +627,12 @@ mod tests {
         run_op(&mut h, RUN_MANAGER_SIGNAL, libc::SIGALRM as u64);
         assert_eq!(h.called(LOG_KILL_TIMEOUT), 0);
         let mut h = Script::default();
-        run_op(&mut h, RUN_MANAGER_SIGNAL, libc::SIGTERM as u64);
+        run_op(&mut h, RUN_MANAGER_SIGNAL, libc::SIGUSR2 as u64);
         assert_eq!(h.called(OP_IS_MANAGER), 0);
+        // SIGTERM needs only the manager's pid: it arrives while the workers fork.
+        let mut h = Script::with(&[(OP_IS_MANAGER, 1)]);
+        run_op(&mut h, RUN_MANAGER_SIGNAL, libc::SIGTERM as u64);
+        assert_eq!(h.args(OP_SET_RUNNING), vec![0]);
     }
 
     #[test]
