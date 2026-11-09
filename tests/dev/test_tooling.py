@@ -495,7 +495,7 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('--startup-only', commands['abi'])
         self.assertIn('--sanitize', commands['buffer-posix-iovec'])
         self.assertIn('--sanitize', commands['ports-callback-property'])
-        for family in ['logger', 'hash', 'inline', 'global-logger', 'redirect']:
+        for family in ['logger', 'hash', 'global-logger', 'redirect']:
             command = commands['utilities-' + family + '-originals']
             self.assertIn('--' + family + '-originals', command)
             self.assertTrue(any('selected-export/swoole.so' in arg for arg in command))
@@ -524,11 +524,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('--archive', commands['phpcollections-runtime'])
         self.assertIn('--archive', commands['ports-callback-property'])
         self.assertIn('--sanitize', commands['ports-callback-property'])
-        lowercase = commands['utilities-lowercase-runtime']
-        for flag in ['--source', '--build-manifest', '--archive', '--source-ref']:
-            self.assertIn(flag, lowercase)
-        self.assertEqual(lowercase.count('--engine'), 2)
-        self.assertNotIn('--case', lowercase)
         self.assertNotIn('ports-php', commands)
         self.assertNotIn('ports-callback-php', commands)
         for name in ['ports-configuration']:

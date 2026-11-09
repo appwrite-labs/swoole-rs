@@ -161,29 +161,6 @@ static inline void sw_memset_zero(void *s, size_t n) {
     memset(s, 0, n);
 }
 
-static inline unsigned int swoole_str_istarts_with(const char *pstr, size_t plen, const char *sstr, size_t slen) {
-    return swr_v1_utils_compare(reinterpret_cast<const uint8_t *>(pstr), plen,
-                                reinterpret_cast<const uint8_t *>(sstr), slen, 3);
-}
-
-static inline const char *swoole_strnstr(const char *haystack,
-                                         uint32_t haystack_length,
-                                         const char *needle,
-                                         uint32_t needle_length) {
-    assert(needle_length > 0);
-    return swr_v2_utils_search(haystack, haystack_length, needle, needle_length, 0).pointer;
-}
-
-static inline ssize_t swoole_strnpos(const char *haystack,
-                                     uint32_t haystack_length,
-                                     const char *needle,
-                                     uint32_t needle_length) {
-    assert(needle_length > 0);
-
-    return swr_v2_utils_search(haystack, haystack_length, needle, needle_length, 0).offset;
-}
-
-
 //------------------------------Base--------------------------------
 #ifndef uchar
 typedef unsigned char uchar;

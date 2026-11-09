@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Swoole's include/swoole_util.h, owned here: ON_SCOPE_EXIT, swoole::time and the inline
- * string helpers, whose work is Rust's (swoole_rs_utilities.h). Upstream's file is deleted,
- * so `#include "swoole_util.h"` finds this copy on the Rust prefix's include path. */
+/* Swoole's include/swoole_util.h, owned here: ON_SCOPE_EXIT and swoole::time.
+ * Upstream's file is deleted, so `#include "swoole_util.h"` finds this copy on the Rust prefix's include path. */
 #pragma once
 
 #include "swoole_rs_utilities.h"
@@ -85,37 +84,4 @@ inline ScopeGuard<Fun> operator+(ScopeGuardOnExit, Fun &&fn) {
  */
 #define ON_SCOPE_EXIT                                                                                                  \
     auto __SCOPE_GUARD_CONCATENATE(ext_exitBlock_, __LINE__) = swoole::detail::ScopeGuardOnExit() + [&]()
-
-static inline size_t ltrim(char **str, size_t len) {
-    return swr_v2_utils_ltrim(str, len, static_cast<char>(-1) < 0);
-}
-
-static inline size_t rtrim(char *str, size_t len) {
-    return swr_v2_utils_rtrim(str, len, static_cast<char>(-1) < 0);
-}
-
-static inline size_t rtrim(const char *str, size_t len) {
-    return swr_v1_utils_trim(reinterpret_cast<const uint8_t *>(str), len, 1,
-                              static_cast<char>(-1) < 0);
-}
-
-static inline ssize_t substr_len(const char *str, size_t len, char separator, bool before = false) {
-    return swr_v1_utils_partition(reinterpret_cast<const uint8_t *>(str), len,
-                                  static_cast<uint8_t>(separator), before);
-}
-
-static inline bool starts_with(const char *haystack, size_t l_haystack, const char *needle, size_t l_needle) {
-    return swr_v1_utils_compare(reinterpret_cast<const uint8_t *>(haystack), l_haystack,
-                                reinterpret_cast<const uint8_t *>(needle), l_needle, 4);
-}
-
-static inline bool starts_with(const std::string &str, const std::string &prefix) {
-    return swr_v1_utils_compare(reinterpret_cast<const uint8_t *>(str.data()), str.size(),
-                                reinterpret_cast<const uint8_t *>(prefix.data()), prefix.size(), 4);
-}
-
-static inline bool ends_with(const char *haystack, size_t l_haystack, const char *needle, size_t l_needle) {
-    return swr_v1_utils_compare(reinterpret_cast<const uint8_t *>(haystack), l_haystack,
-                                reinterpret_cast<const uint8_t *>(needle), l_needle, 5);
-}
 }  // namespace swoole
