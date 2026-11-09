@@ -34,8 +34,7 @@ use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
     CLASS_DGRAM, Event, ReactorIov, SocketAddress, SocketRecord, swr_v1_reactor_iov_view,
-    swr_v1_socket_accept_new, swr_v1_socket_bind, swr_v1_socket_get_name, swr_v1_socket_listen,
-    swr_v1_socket_set_timeout, swr_v1_socket_timeout, type_is,
+    swr_v1_socket_accept_new, type_is,
 };
 use swoole_rs_tls::owner_fields;
 use swoole_rs_tls::upstream::{
@@ -172,7 +171,7 @@ pub unsafe extern "C" fn getsockname(this: *const c_void) -> bool {
     // SAFETY: as the caller promises.
     let socket = unsafe { network(this) };
     // SAFETY: its network::Socket record.
-    unsafe { swr_v1_socket_get_name(socket) == 0 }
+    unsafe { (*socket).get_name() == 0 }
 }
 
 /// `Socket::getpeername(sa)`.
@@ -203,12 +202,9 @@ pub unsafe extern "C" fn get_timeout(this: *const c_void, kind: c_int) -> f64 {
     // SAFETY: as the caller promises.
     let socket = unsafe { network(this) };
     // SAFETY: its network::Socket record's timeouts.
-    let timeouts = unsafe { &raw const (*socket).timeouts };
-    // SAFETY: as above.
-    let timeout = unsafe { swr_v1_socket_timeout(timeouts, kind) };
-    debug_assert!(!timeout.is_null(), "timeout type {kind}");
-    // SAFETY: null or one of the record's timeouts.
-    unsafe { timeout.as_ref() }.copied().unwrap_or(-1.0)
+    let timeout = unsafe { (*socket).timeouts.get(kind) };
+    debug_assert!(timeout.is_some(), "timeout type {kind}");
+    timeout.unwrap_or(-1.0)
 }
 
 /// `Socket::set_timeout(timeout, type)`.
@@ -223,9 +219,7 @@ pub unsafe extern "C" fn set_timeout(this: *const c_void, timeout: f64, kind: c_
     // SAFETY: as the caller promises.
     let socket = unsafe { network(this) };
     // SAFETY: its network::Socket record's timeouts.
-    let timeouts = unsafe { &raw mut (*socket).timeouts };
-    // SAFETY: as above.
-    unsafe { swr_v1_socket_set_timeout(timeouts, timeout, kind) };
+    unsafe { (*socket).timeouts.set(timeout, kind) };
 }
 
 /// `Socket::recv_with_buffer(buf, n)`.
@@ -363,31 +357,6 @@ pub unsafe extern "C" fn get_int_option(
     let mut length = INT_LENGTH;
     // SAFETY: as the caller promises.
     unsafe { get_option(this, level, name, value.cast(), &raw mut length) }
-}
-
-/// `Socket::bind(sa, len)`.
-///
-/// # Safety
-/// `this` is a live, open native socket and `address` holds `length` readable bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6Socket4bindEPK8sockaddrj")
-)]
-pub unsafe extern "C" fn bind(
-    this: *mut c_void,
-    address: *const libc::sockaddr,
-    length: libc::socklen_t,
-) -> bool {
-    let socket = record(this);
-    // SAFETY: as the caller promises.
-    let network = unsafe { (*socket).socket };
-    // SAFETY: its network::Socket record; the address as the caller promises.
-    if unsafe { swr_v1_socket_bind(network, address, length) } < 0 {
-        // SAFETY: as the caller promises.
-        unsafe { swr_v1_hook_co_socket_default_err(socket, log::last_error()) };
-        return false;
-    }
-    true
 }
 
 /// What `accept`'s setup steps act on: the listening socket, its wait's timeout and
@@ -573,7 +542,7 @@ pub unsafe extern "C" fn listen(this: *mut c_void, backlog: c_int) -> bool {
     let record = unsafe { &mut *socket };
     record.backlog = backlog;
     // SAFETY: the open socket's network::Socket record.
-    if unsafe { swr_v1_socket_listen(record.socket, backlog) } < 0 {
+    if unsafe { (*record.socket).listen(backlog) } < 0 {
         // SAFETY: as above.
         unsafe { set_err(socket, errno()) };
         return false;
@@ -735,11 +704,9 @@ pub unsafe fn bind_host(
     // SAFETY: as the caller promises.
     let mut bound = unsafe { assign(&mut address, kind, host, length, port) };
     // SAFETY: the network::Socket and the address just assigned.
-    bound = bound
-        && unsafe { swr_v1_socket_bind(network, (&raw const address.addr).cast(), address.len) }
-            >= 0;
+    bound = bound && unsafe { (*network).bind(&address) } >= 0;
     // SAFETY: the live network::Socket.
-    bound = bound && unsafe { swr_v1_socket_get_name(network) } >= 0;
+    bound = bound && unsafe { (*network).get_name() } >= 0;
     if !bound {
         // The last error carries it too, as the Socket calls that set_err(int) do, so the
         // hooked socket_create_listen() leaves it for socket_last_error().
@@ -1622,15 +1589,5 @@ mod tests {
                 &raw mut value,
             )
         });
-    }
-
-    #[test]
-    fn a_failed_bind_takes_errno_without_a_last_error() {
-        install();
-        let mut object = Object::new();
-        let address: libc::sockaddr_in = unsafe { core::mem::zeroed() };
-        let length = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
-        assert!(!unsafe { bind(object.this(), (&raw const address).cast(), length) });
-        assert_eq!(object.0.record.err_code, libc::EBADF);
     }
 }

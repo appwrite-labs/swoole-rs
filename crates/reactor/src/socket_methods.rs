@@ -47,179 +47,103 @@ fn status(ok: bool) -> c_int {
 )]
 const ADDRESS_CAPACITY: libc::socklen_t = size_of::<crate::AddressStorage>() as libc::socklen_t;
 
-/// `Socket::get_name`: getsockname(2) into `info`, which takes the socket's type.
-///
-/// # Safety
-/// `socket` is a live record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_get_name(socket: *mut SocketRecord) -> c_int {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &mut *socket };
-    socket.info.len = ADDRESS_CAPACITY;
-    let address = (&raw mut socket.info.addr).cast::<libc::sockaddr>();
-    // SAFETY: the record's own address storage and its length.
-    if unsafe { libc::getsockname(socket.fd, address, &raw mut socket.info.len) } != 0 {
-        return ERR;
+impl SocketRecord {
+    /// `Socket::get_name`: getsockname(2) into `info`, which takes the socket's type.
+    pub fn get_name(&mut self) -> c_int {
+        self.info.len = ADDRESS_CAPACITY;
+        let address = (&raw mut self.info.addr).cast::<libc::sockaddr>();
+        // SAFETY: the record's own address storage and its length.
+        if unsafe { libc::getsockname(self.fd, address, &raw mut self.info.len) } != 0 {
+            return ERR;
+        }
+        self.info.kind = self.socket_type;
+        OK
     }
-    socket.info.kind = socket.socket_type;
-    OK
-}
 
-/// `Socket::get_peer_name`: getpeername(2) into `address`, typed as the socket.
-///
-/// # Safety
-/// `socket` is a live record and `address` a writable `network::Address`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_get_peer_name(
-    socket: *const SocketRecord,
-    address: *mut SocketAddress,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &*socket };
-    // SAFETY: as the caller promises.
-    let address = unsafe { &mut *address };
-    address.len = ADDRESS_CAPACITY;
-    address.kind = socket.socket_type;
-    let storage = (&raw mut address.addr).cast::<libc::sockaddr>();
-    // SAFETY: the caller's address storage and its length.
-    status(unsafe { libc::getpeername(socket.fd, storage, &raw mut address.len) } == 0)
-}
-
-/// `Socket::bind(sockaddr, len)`: bind(2), marking the socket bound.
-///
-/// # Safety
-/// `socket` is a live record and `address` denotes `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_bind(
-    socket: *mut SocketRecord,
-    address: *const libc::sockaddr,
-    length: libc::socklen_t,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &mut *socket };
-    // SAFETY: the caller lends `length` bytes of sockaddr for this call.
-    if unsafe { libc::bind(socket.fd, address, length) } != 0 {
-        return ERR;
+    /// `Socket::get_peer_name`: getpeername(2) into `address`, typed as the socket.
+    pub fn get_peer_name(&self, address: &mut SocketAddress) -> c_int {
+        address.len = ADDRESS_CAPACITY;
+        address.kind = self.socket_type;
+        let storage = (&raw mut address.addr).cast::<libc::sockaddr>();
+        // SAFETY: the address's own storage and its length.
+        status(unsafe { libc::getpeername(self.fd, storage, &raw mut address.len) } == 0)
     }
-    socket.bound = 1;
-    OK
-}
 
-/// `Socket::listen`: a backlog of 0 or less takes `SW_BACKLOG`; marks the socket
-/// listening.
-///
-/// # Safety
-/// `socket` is a live record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_listen(socket: *mut SocketRecord, backlog: c_int) -> c_int {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &mut *socket };
-    let backlog = if backlog <= 0 { BACKLOG } else { backlog };
-    // SAFETY: listen(2) has no memory preconditions.
-    if unsafe { libc::listen(socket.fd, backlog) } != 0 {
-        return ERR;
+    /// `Socket::bind(address)`: bind(2), marking the socket bound.
+    pub fn bind(&mut self, address: &SocketAddress) -> c_int {
+        let storage = (&raw const address.addr).cast::<libc::sockaddr>();
+        let length = address.len.min(ADDRESS_CAPACITY);
+        // SAFETY: the address's own storage, `length` bytes of it.
+        if unsafe { libc::bind(self.fd, storage, length) } != 0 {
+            return ERR;
+        }
+        self.bound = 1;
+        OK
     }
-    socket.listened = 1;
-    OK
-}
 
-/// `Socket::set_tcp_nopush`: `TCP_CORK`, recorded in the flag; -1 where unsupported.
-///
-/// # Safety
-/// `socket` is a live record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_set_tcp_nopush(
-    socket: *mut SocketRecord,
-    nopush: c_int,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &mut *socket };
-    if crate::swr_v1_socket_tcp_nopush(socket.fd, nopush) < 0 {
-        return ERR;
+    /// `Socket::listen`: a backlog of 0 or less takes `SW_BACKLOG`; marks the socket
+    /// listening.
+    pub fn listen(&mut self, backlog: c_int) -> c_int {
+        let backlog = if backlog <= 0 { BACKLOG } else { backlog };
+        // SAFETY: listen(2) has no memory preconditions.
+        if unsafe { libc::listen(self.fd, backlog) } != 0 {
+            return ERR;
+        }
+        self.listened = 1;
+        OK
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream assigns the int to its flag"
-    )]
-    let flag = nopush as u8;
-    socket.tcp_nopush = flag;
-    OK
-}
 
-/// `Socket::set_tcp_nodelay`.
-///
-/// # Safety
-/// `socket` is a live record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_set_tcp_nodelay(
-    socket: *mut SocketRecord,
-    nodelay: c_int,
-) -> bool {
-    // SAFETY: as the caller promises.
-    unsafe { &mut *socket }.set_tcp_nodelay(nodelay)
-}
-
-/// `Socket::set_fd_option`: [`crate::swr_v1_socket_fd_option`], recording both
-/// arguments (-1 included, as upstream assigns them) in the flags when it succeeds.
-///
-/// # Safety
-/// `socket` is a live record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_set_fd_option(
-    socket: *mut SocketRecord,
-    nonblock: c_int,
-    cloexec: c_int,
-) -> crate::SocketOptionResult {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &mut *socket };
-    let result = crate::swr_v1_socket_fd_option(socket.fd, nonblock, cloexec);
-    if result.ok {
+    /// `Socket::set_tcp_nopush`: `TCP_CORK`, recorded in the flag; -1 where unsupported.
+    pub fn set_tcp_nopush(&mut self, nopush: c_int) -> c_int {
+        if crate::swr_v1_socket_tcp_nopush(self.fd, nopush) < 0 {
+            return ERR;
+        }
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
-            reason = "upstream assigns the ints to its flags"
+            reason = "upstream assigns the int to its flag"
         )]
-        let (nonblock, cloexec) = (nonblock as u8, cloexec as u8);
-        socket.output.nonblock = nonblock;
-        socket.cloexec = cloexec;
+        let flag = nopush as u8;
+        self.tcp_nopush = flag;
+        OK
     }
-    result
-}
 
-/// `_set_timeout`: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO`, then the record's write
-/// or read timeout, when the kernel took it.
-///
-/// # Safety
-/// `socket` is a live record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_set_kernel_timeout(
-    socket: *mut SocketRecord,
-    send: bool,
-    timeout: f64,
-) -> bool {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &mut *socket };
-    if !crate::swr_v1_socket_kernel_timeout(socket.fd, send, timeout) {
-        return false;
+    /// `Socket::set_fd_option`: [`crate::swr_v1_socket_fd_option`], recording both
+    /// arguments (-1 included, as upstream assigns them) in the flags when it succeeds.
+    pub fn set_fd_option(&mut self, nonblock: c_int, cloexec: c_int) -> crate::SocketOptionResult {
+        let result = crate::swr_v1_socket_fd_option(self.fd, nonblock, cloexec);
+        if result.ok {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "upstream assigns the ints to its flags"
+            )]
+            let (nonblock, cloexec) = (nonblock as u8, cloexec as u8);
+            self.output.nonblock = nonblock;
+            self.cloexec = cloexec;
+        }
+        result
     }
-    let slot = if send {
-        &mut socket.timeouts.write
-    } else {
-        &mut socket.timeouts.read
-    };
-    *slot = timeout;
-    true
-}
 
-/// `Socket::has_kernel_nobufs`: whether a send hit `ENOBUFS` since the last call.
-///
-/// # Safety
-/// `socket` is a live record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_has_kernel_nobufs(socket: *mut SocketRecord) -> bool {
-    // SAFETY: as the caller promises.
-    std::mem::take(unsafe { &mut (*socket).kernel_nobufs })
+    /// `_set_timeout`: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO`, then the record's write
+    /// or read timeout, when the kernel took it.
+    pub fn set_kernel_timeout(&mut self, send: bool, timeout: f64) -> bool {
+        if !crate::swr_v1_socket_kernel_timeout(self.fd, send, timeout) {
+            return false;
+        }
+        let slot = if send {
+            &mut self.timeouts.write
+        } else {
+            &mut self.timeouts.read
+        };
+        *slot = timeout;
+        true
+    }
+
+    /// `Socket::has_kernel_nobufs`: whether a send hit `ENOBUFS` since the last call.
+    pub fn has_kernel_nobufs(&mut self) -> bool {
+        std::mem::take(&mut self.kernel_nobufs)
+    }
 }
 
 /// The record's fd, blocking flags and TLS call (when it holds an `SSL`).
@@ -248,8 +172,7 @@ unsafe fn io_of(
 /// # Safety
 /// `socket` is a live record; `buffer` denotes `length` writable bytes; `tls` and
 /// `now` are valid for it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_record_recv(
+pub unsafe fn socket_record_recv(
     socket: *mut SocketRecord,
     buffer: *mut c_void,
     length: usize,
@@ -286,8 +209,7 @@ pub unsafe extern "C" fn swr_v1_socket_record_recv(
 /// # Safety
 /// `socket` is a live record; `buffer` denotes `length` readable bytes; `tls` and
 /// `now` are valid for it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_record_send(
+pub unsafe fn socket_record_send(
     socket: *mut SocketRecord,
     buffer: *const c_void,
     length: usize,
@@ -316,8 +238,7 @@ pub unsafe extern "C" fn swr_v1_socket_record_send(
 /// # Safety
 /// `socket` is a live record; `buffer` denotes `length` writable bytes; `tls` is
 /// valid for it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_record_peek(
+pub unsafe fn socket_record_peek(
     socket: *mut SocketRecord,
     buffer: *mut c_void,
     length: usize,
@@ -426,26 +347,13 @@ mod tests {
         let mut buffer = [0_u8; 8];
         // SAFETY: live local records and buffers; no TLS.
         unsafe {
-            let sent = swr_v1_socket_record_send(
-                &raw mut b,
-                b"hello".as_ptr().cast(),
-                5,
-                0,
-                no_tls,
-                clock,
-            );
+            let sent =
+                socket_record_send(&raw mut b, b"hello".as_ptr().cast(), 5, 0, no_tls, clock);
             assert_eq!(sent, 5);
-            let peeked =
-                swr_v1_socket_record_peek(&raw mut a, buffer.as_mut_ptr().cast(), 8, 0, no_tls);
+            let peeked = socket_record_peek(&raw mut a, buffer.as_mut_ptr().cast(), 8, 0, no_tls);
             assert_eq!(peeked, 5);
-            let read = swr_v1_socket_record_recv(
-                &raw mut a,
-                buffer.as_mut_ptr().cast(),
-                8,
-                0,
-                no_tls,
-                clock,
-            );
+            let read =
+                socket_record_recv(&raw mut a, buffer.as_mut_ptr().cast(), 8, 0, no_tls, clock);
             assert_eq!(read, 5);
         }
         assert_eq!(&buffer[..5], b"hello");
@@ -464,13 +372,13 @@ mod tests {
         assert_eq!(set, 0);
         // SAFETY: live local record and buffer; no TLS.
         let read = unsafe {
-            swr_v1_socket_record_recv(&raw mut a, buffer.as_mut_ptr().cast(), 4, 0, no_tls, clock)
+            socket_record_recv(&raw mut a, buffer.as_mut_ptr().cast(), 4, 0, no_tls, clock)
         };
         assert_eq!(read, -1);
         a.event_hup = 1;
         // SAFETY: as above.
         let read = unsafe {
-            swr_v1_socket_record_recv(&raw mut a, buffer.as_mut_ptr().cast(), 4, 0, no_tls, clock)
+            socket_record_recv(&raw mut a, buffer.as_mut_ptr().cast(), 4, 0, no_tls, clock)
         };
         assert_eq!(read, 0);
         assert_eq!(a.total_recv_bytes, 0);
@@ -495,17 +403,23 @@ mod tests {
         // SAFETY: a live local record and sockaddr_in.
         unsafe {
             assert_eq!(
-                swr_v1_socket_bind(&raw mut socket, (&raw const address).cast(), length),
+                socket.bind(&{
+                    let mut local: SocketAddress = std::mem::zeroed();
+                    std::ptr::copy_nonoverlapping(
+                        (&raw const address).cast::<u8>(),
+                        (&raw mut local.addr).cast::<u8>(),
+                        length as usize,
+                    );
+                    local.len = length;
+                    local
+                }),
                 OK
             );
-            assert_eq!(swr_v1_socket_listen(&raw mut socket, 0), OK);
-            assert_eq!(swr_v1_socket_get_name(&raw mut socket), OK);
-            assert!(swr_v1_socket_set_tcp_nodelay(&raw mut socket, 1));
+            assert_eq!(socket.listen(0), OK);
+            assert_eq!(socket.get_name(), OK);
+            assert!(socket.set_tcp_nodelay(1));
             let mut peer = socket.info;
-            assert_eq!(
-                swr_v1_socket_get_peer_name(&raw const socket, &raw mut peer),
-                ERR
-            );
+            assert_eq!(socket.get_peer_name(&mut peer), ERR);
             assert_eq!(peer.kind, 1);
         }
         assert_eq!(
@@ -515,33 +429,19 @@ mod tests {
         assert_eq!(socket.info.kind, 1);
         assert_eq!(socket.info.len, length);
         socket.kernel_nobufs = true;
-        // SAFETY: a live local record.
-        unsafe {
-            assert!(swr_v1_socket_has_kernel_nobufs(&raw mut socket));
-            assert!(!swr_v1_socket_has_kernel_nobufs(&raw mut socket));
-            assert!(swr_v1_socket_set_fd_option(&raw mut socket, 1, -1).ok);
-            assert!(swr_v1_socket_set_kernel_timeout(&raw mut socket, true, 1.5));
-            assert!(swr_v1_socket_set_kernel_timeout(
-                &raw mut socket,
-                false,
-                0.25
-            ));
-        }
+        assert!(socket.has_kernel_nobufs());
+        assert!(!socket.has_kernel_nobufs());
+        assert!(socket.set_fd_option(1, -1).ok);
+        assert!(socket.set_kernel_timeout(true, 1.5));
+        assert!(socket.set_kernel_timeout(false, 0.25));
         assert_eq!((socket.output.nonblock, socket.cloexec), (1, 255));
         assert_eq!((socket.timeouts.write, socket.timeouts.read), (1.5, 0.25));
         close(&[socket]);
         let mut closed = SocketRecord::with_fd(-1, 0);
-        // SAFETY: a live local record with a bad fd.
-        unsafe {
-            assert_eq!(swr_v1_socket_listen(&raw mut closed, 0), ERR);
-            assert_eq!(swr_v1_socket_get_name(&raw mut closed), ERR);
-            assert!(!swr_v1_socket_set_fd_option(&raw mut closed, 1, 1).ok);
-            assert!(!swr_v1_socket_set_kernel_timeout(
-                &raw mut closed,
-                true,
-                3.0
-            ));
-        }
+        assert_eq!(closed.listen(0), ERR);
+        assert_eq!(closed.get_name(), ERR);
+        assert!(!closed.set_fd_option(1, 1).ok);
+        assert!(!closed.set_kernel_timeout(true, 3.0));
         assert_eq!(
             (closed.listened, closed.output.nonblock, closed.cloexec),
             (0, 0, 0)

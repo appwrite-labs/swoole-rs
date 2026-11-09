@@ -14,10 +14,7 @@ use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{log, swr_v1_clients_gethostbyname};
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
-use swoole_rs_reactor::{
-    SocketRecord, swr_v1_socket_bind, swr_v1_socket_dealloc, swr_v1_socket_get_name,
-    swr_v1_socket_listen,
-};
+use swoole_rs_reactor::{SocketRecord, swr_v1_socket_dealloc};
 #[cfg(not(test))]
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
@@ -227,8 +224,7 @@ pub unsafe extern "C" fn listen(port: *mut c_void) -> c_int {
     let config = unsafe { port_config::of(port) };
     let socket = config.socket.cast::<SocketRecord>();
     // SAFETY: the port's live socket, as the caller guarantees.
-    if !config.listening && unsafe { swr_v1_socket_listen(socket, c_int::from(config.backlog)) } < 0
-    {
+    if !config.listening && unsafe { (*socket).listen(c_int::from(config.backlog)) } < 0 {
         log::sys_warning(
             c"ListenPort::listen",
             format_args!(
@@ -380,10 +376,9 @@ pub unsafe extern "C" fn create_socket(port: *mut c_void) -> c_int {
         );
     }
     // SAFETY: the live record and the address assigned above.
-    let bound =
-        unsafe { swr_v1_socket_bind(socket, (&raw const address.addr).cast(), address.len) };
+    let bound = unsafe { (*socket).bind(&address) };
     // SAFETY: the live record.
-    if bound < 0 || unsafe { swr_v1_socket_get_name(socket) } < 0 {
+    if bound < 0 || unsafe { (*socket).get_name() } < 0 {
         return fail();
     }
     // SAFETY: the live record.

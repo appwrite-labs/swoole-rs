@@ -195,7 +195,7 @@ fn errno() -> c_int {
 /// `nobufs` is writable.
 unsafe fn waits(nobufs: *mut bool) -> bool {
     // SAFETY: the caller lends a writable bool.
-    unsafe { swoole_rs_reactor::swr_v1_socket_catch_error(errno(), nobufs) == WAIT }
+    unsafe { swoole_rs_reactor::catch_error(errno(), &mut *nobufs) == WAIT }
 }
 
 impl Bus {
@@ -842,7 +842,7 @@ pub unsafe extern "C" fn swr_v1_bus_write(
         // SAFETY: the write's live record.
         let nobufs = unsafe { &raw mut (*socket.cast::<SocketRecord>()).kernel_nobufs };
         // SAFETY: `nobufs` is the record's writable field.
-        unsafe { swoole_rs_reactor::swr_v1_socket_catch_pipe_error(errno(), nobufs) == REDUCE_SIZE }
+        unsafe { swoole_rs_reactor::catch_pipe_error(errno(), &mut *nobufs) == REDUCE_SIZE }
     }
     // SAFETY: the caller's contract.
     let bus = unsafe { self::bus(bus) };
@@ -1180,8 +1180,7 @@ mod tests {
     /// `swr_v1_bus_write`'s classifier: `catch_pipe_error(errno) == SW_REDUCE_SIZE`.
     unsafe extern "C" fn pipe_reduce(_: *mut c_void) -> bool {
         let mut nobufs = false;
-        let code =
-            unsafe { swoole_rs_reactor::swr_v1_socket_catch_pipe_error(errno(), &raw mut nobufs) };
+        let code = swoole_rs_reactor::catch_pipe_error(errno(), &mut nobufs);
         code == REDUCE_SIZE
     }
 

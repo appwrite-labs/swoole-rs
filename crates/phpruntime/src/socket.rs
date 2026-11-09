@@ -13,7 +13,7 @@ use swoole_rs_hooks::{
     },
     socket_members, socket_tls,
 };
-use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_timeout};
+use swoole_rs_reactor::SocketRecord;
 use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR,
@@ -364,8 +364,7 @@ impl Socket {
 
     pub(crate) fn set_timeout(&self, seconds: f64, kind: i32) {
         self.with_record((), |record| {
-            // SAFETY: this immediate closure exclusively accesses the live timeout group.
-            unsafe { swr_v1_socket_set_timeout(&raw mut record.timeouts, seconds, kind) };
+            record.timeouts.set(seconds, kind);
         });
     }
 

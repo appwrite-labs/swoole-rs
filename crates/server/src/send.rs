@@ -21,7 +21,7 @@ use crate::records::swr_v1_server_connection;
 use crate::{Host, MODE_PROCESS, SW_ERR, SW_OK, ServerState};
 use std::ffi::c_void;
 use swoole_rs_corebase::microtime;
-use swoole_rs_reactor::{SocketRecord, steady_ms, swr_v1_socket_record_send};
+use swoole_rs_reactor::{SocketRecord, socket_record_send, steady_ms};
 
 /// `swr_v1_server_connection`'s `get_connection_verify` lookup.
 const VERIFIED_TLS: u32 = 3;
@@ -94,9 +94,8 @@ pub(crate) unsafe fn send_now(state: *const ServerState, send: &SendData) -> Opt
     let length = usize::try_from(send.info.len).ok()?;
     let sent = loop {
         // SAFETY: the live socket record; `data` holds `length` bytes.
-        let sent = unsafe {
-            swr_v1_socket_record_send(socket, send.data.cast(), length, 0, no_tls, steady_ms)
-        };
+        let sent =
+            unsafe { socket_record_send(socket, send.data.cast(), length, 0, no_tls, steady_ms) };
         if sent >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             break sent;
         }

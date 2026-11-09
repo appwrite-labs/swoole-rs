@@ -250,7 +250,7 @@ impl Facts for Live<'_> {
     fn socket_name(&mut self, index: u64) {
         let sock = nth(&self.sockets, index);
         // SAFETY: one of the reactor's live sockets.
-        unsafe { swoole_rs_reactor::swr_v1_socket_get_name(sock.cast()) };
+        unsafe { (*sock.cast::<SocketRecord>()).get_name() };
     }
 
     fn commands(&mut self) -> Vec<Command> {

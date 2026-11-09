@@ -191,11 +191,8 @@ void swr_v1_reactor_drain(swr_v1_socket_output *output, swr_v1_buffer *buffer, c
 /* network::Socket's buffer sizes, setsockopt included. */
 bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
- * write_timeout), embedded in this order (Socket static_asserts it). set_timeout
- * writes timeout into each SW_TIMEOUT_* bit of kind unless timeout is 0;
- * swr_v1_socket_timeout is the slot one SW_TIMEOUT_* value names, else NULL. */
+ * write_timeout), embedded in this order (Socket static_asserts it). */
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
-void swr_v1_socket_set_timeout(swr_v1_socket_timeouts *timeouts, double timeout, int kind);
 struct sockaddr;
 ssize_t swr_v1_socket_recvfrom(int fd, void *buffer, size_t length, int flags, struct sockaddr *address, socklen_t *address_length, uint32_t retries);
 int swr_v1_socket_accept(int fd, struct sockaddr *address, socklen_t *address_length, bool nonblock, bool *listener_cloexec);
@@ -287,10 +284,6 @@ typedef struct {
     void (*dispatch)(void);
 } swr_v1_socket_sync_hooks;
 ssize_t swr_v1_socket_sync(const swr_v1_socket_sync_hooks *hooks, int kind, void *buffer, size_t length, int flags, int event, int timeout_ms);
-int swr_v1_socket_catch_error(int error, bool *kernel_nobufs);
-/* catch_write_pipe_error: EMSGSIZE, and ENOBUFS on Linux (setting *kernel_nobufs),
- * reduce the size; anything else is swr_v1_socket_catch_error's. */
-int swr_v1_socket_catch_pipe_error(int error, bool *kernel_nobufs);
 /* network::Socket's swSocketType <-> (domain, type), and the type a host names
  * with how many leading bytes convert_to_type erases. */
 typedef struct { int socket_type; size_t erase; } swr_v1_socket_host_type_plan;

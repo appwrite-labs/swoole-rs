@@ -3,7 +3,7 @@
 //! one `SocketOutput` block. Native code performs the four effects that need its
 //! objects: making the socket nonblocking, the send, creating the `Buffer`, and
 //! registering write interest. It logs and raises from the returned outcome.
-use crate::swr_v1_socket_catch_error;
+use crate::catch_error;
 use std::ffi::{c_int, c_void};
 use swoole_rs_buffer::{
     Buffer, swr_v1_buffer_append, swr_v1_buffer_append_iovec, swr_v1_buffer_stats,
@@ -172,7 +172,7 @@ pub unsafe extern "C" fn swr_v1_reactor_write(
                 }
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 // SAFETY: the socket's own flag.
-                if unsafe { swr_v1_socket_catch_error(errno, kernel_nobufs) } == SW_WAIT {
+                if unsafe { catch_error(errno, &mut *kernel_nobufs) } == SW_WAIT {
                     break;
                 }
                 if errno != libc::EINTR {

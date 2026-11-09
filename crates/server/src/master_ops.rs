@@ -1004,10 +1004,7 @@ pub(crate) unsafe fn answer(
             o.ctx.sock = socket.cast();
             u64::from(!socket.is_null())
         }
-        OP_SET_NODELAY => {
-            // SAFETY: the accepted socket.
-            u64::from(unsafe { swoole_rs_reactor::swr_v1_socket_set_tcp_nodelay(o.sock(), 1) })
-        }
+        OP_SET_NODELAY => u64::from((*o.sock()).set_tcp_nodelay(1)),
         OP_SET_RCVBUF | OP_SET_SNDBUF => {
             let port = o.port();
             let (name, size) = if op == OP_SET_RCVBUF {
@@ -1106,12 +1103,12 @@ pub(crate) unsafe fn answer(
             let id = i64::from(o.conn().reactor_id) + index * i64::from(o.config().reactor_num);
             let pipe = worker_record(o.server(), id).pipe_worker;
             // SAFETY: the worker's live pipe socket.
-            u64::from(unsafe { swoole_rs_reactor::swr_v1_socket_has_kernel_nobufs(pipe.cast()) })
+            u64::from(unsafe { (*pipe.cast::<SocketRecord>()).has_kernel_nobufs() })
         }
         OP_SOCKET_NOBUFS => {
-            let socket = o.conn().socket.cast();
+            let socket = o.conn().socket.cast::<SocketRecord>();
             // SAFETY: the connection's live socket.
-            u64::from(unsafe { swoole_rs_reactor::swr_v1_socket_has_kernel_nobufs(socket) })
+            u64::from(unsafe { (*socket).has_kernel_nobufs() })
         }
         OP_SC_TOUCH_SEND => {
             o.conn().last_send_time = swoole_rs_corebase::microtime();
@@ -2006,8 +2003,7 @@ unsafe fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             conn.ssl = u8::from(!sock.ssl.is_null());
             conn.info = sock.info;
             conn.info.kind = conn.socket_type;
-            // SAFETY: the context's live socket.
-            unsafe { swoole_rs_reactor::swr_v1_socket_get_name(sock) };
+            (*sock).get_name();
             let info = &raw const sock.info;
             // SAFETY: the address getsockname filled.
             let port = unsafe { swoole_rs_clients::address::swr_v1_clients_address_port(info) };

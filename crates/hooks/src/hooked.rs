@@ -20,7 +20,7 @@ use crate::socket_members::{self as members, record};
 use crate::stdio::{Host, coroutine, offloaded, swr_v1_hook_close_fd};
 use libc::{c_int, c_void, msghdr, nfds_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_fd_option};
+use swoole_rs_reactor::SocketRecord;
 
 /// `SW_ERROR_INVALID_PARAMS`.
 const INVALID_PARAMS: c_int = 505;
@@ -355,7 +355,7 @@ pub unsafe extern "C" fn swoole_coroutine_socket_create(fd: c_int) -> c_int {
     // SAFETY: the map's live socket.
     let wrapped = unsafe { network(socket) };
     // SAFETY: its network::Socket.
-    unsafe { swr_v1_socket_set_fd_option(wrapped, 1, -1) };
+    unsafe { (*wrapped).set_fd_option(1, -1) };
     0
 }
 

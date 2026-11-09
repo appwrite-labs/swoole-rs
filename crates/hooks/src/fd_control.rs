@@ -23,10 +23,8 @@ pub struct FdWait {
 
 /// The caller lends the live record exclusively until this helper returns.
 unsafe fn set_timeout(record: *mut SocketRecord, timeout: f64, kind: c_int) {
-    // SAFETY: the caller lends the canonical timeout group.
-    let timeouts = unsafe { &raw mut (*record).timeouts };
-    // SAFETY: the group is live and exclusively accessed for this call.
-    unsafe { swoole_rs_reactor::swr_v1_socket_set_timeout(timeouts, timeout, kind) };
+    // SAFETY: the caller lends the canonical timeout group exclusively.
+    unsafe { (*record).timeouts.set(timeout, kind) };
 }
 
 /// Set the timeout on a looked-up socket, or EINVAL for a missing fd/unknown option.
@@ -110,8 +108,7 @@ pub unsafe extern "C" fn swr_v1_hook_fd_wait(
     } else {
         timeouts.write
     };
-    // SAFETY: the group is live and exclusively borrowed during this call.
-    unsafe { swoole_rs_reactor::swr_v1_socket_set_timeout(timeouts, timeout, ALL) };
+    timeouts.set(timeout, ALL);
     FdWait {
         socket: record,
         timeout: saved,

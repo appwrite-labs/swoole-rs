@@ -175,15 +175,8 @@ struct Socket : swr_v1_socket {
     }
 
     // socket option [user space]
-    void set_timeout(double timeout, int type = SW_TIMEOUT_ALL) {
-        swr_v1_socket_set_timeout(timeouts(), timeout, type);
-    }
     double get_timeout(TimeoutType type) const;
     bool has_timedout() const;
-    bool has_kernel_nobufs() {
-        return swr_v1_socket_has_kernel_nobufs(this);
-    }
-
     bool set_nonblock() {
         return set_fd_option(1, -1);
     }
@@ -233,16 +226,6 @@ struct Socket : swr_v1_socket {
         return sock_fd;
     }
 
-    int get_name() {
-        return swr_v1_socket_get_name(this);
-    }
-    int get_peer_name(Address *sa) const {
-        return swr_v1_socket_get_peer_name(this, sa);
-    }
-    int set_tcp_nopush(int nopush) {
-        return swr_v1_socket_set_tcp_nopush(this, nopush);
-    }
-
     int set_reuse_addr(int enable = 1) const {
         return set_option(SOL_SOCKET, SO_REUSEADDR, enable);
     }
@@ -254,9 +237,6 @@ struct Socket : swr_v1_socket {
         return -1;
     }
 
-    bool set_tcp_nodelay(int nodelay = 1) {
-        return swr_v1_socket_set_tcp_nodelay(this, nodelay);
-    }
     bool check_liveness();
 
     int sendfile_async(const char *filename, off_t offset, size_t length);
@@ -281,18 +261,6 @@ struct Socket : swr_v1_socket {
         return ::writev(fd, iov, iovcnt);
     }
 
-    int bind(const std::string &_host, int port = 0);
-
-    int bind(const Address &addr) {
-        return bind(&addr.addr.ss, addr.len);
-    }
-
-    int bind(const struct sockaddr *sa, socklen_t len) {
-        return swr_v1_socket_bind(this, sa, len);
-    }
-    int listen(int backlog = 0) {
-        return swr_v1_socket_listen(this, backlog);
-    }
 
     void clean() const;
     ssize_t send_sync(const void *_data, size_t _len, int flags = 0);
@@ -434,22 +402,6 @@ struct Socket : swr_v1_socket {
 
     ssize_t sendto(const Address &dst_addr, const void *data, size_t len, int flags = 0) const {
         return ::sendto(fd, data, len, flags, &dst_addr.addr.ss, dst_addr.len);
-    }
-
-    int catch_error(int err) {
-        return swr_v1_socket_catch_error(err, &kernel_nobufs);
-    }
-
-    int catch_write_error(const int err) {
-        return catch_error(err);
-    }
-
-    int catch_write_pipe_error(const int err) {
-        return swr_v1_socket_catch_pipe_error(err, &kernel_nobufs);
-    }
-
-    int catch_read_error(const int err) {
-        return catch_error(err);
     }
 
     static SocketType convert_to_type(int domain, int type) {

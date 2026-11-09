@@ -47,7 +47,7 @@ pub struct OutputResult {
 fn classify(hooks: &OutputHooks) -> c_int {
     let error = Error::last_os_error().raw_os_error().unwrap_or(0);
     // SAFETY: the caller's kernel_nobufs flag.
-    unsafe { crate::swr_v1_socket_catch_error(error, hooks.kernel_nobufs) }
+    unsafe { crate::catch_error(error, &mut *hooks.kernel_nobufs) }
 }
 
 /// `Socket::handle_send`: send what is left of the front data chunk, `length`

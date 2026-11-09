@@ -105,7 +105,7 @@ pub unsafe extern "C" fn swr_v1_socket_sync(
                 let error = errno();
                 let retry = error == libc::EINTR
                 // SAFETY: the caller's kernel_nobufs flag.
-                || unsafe { crate::swr_v1_socket_catch_error(error, hooks.kernel_nobufs) } == WAIT;
+                || unsafe { crate::catch_error(error, &mut *hooks.kernel_nobufs) } == WAIT;
                 if retry {
                     Step::Continue
                 } else {

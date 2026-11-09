@@ -28,9 +28,8 @@ use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::event_api::swoole_event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
 use swoole_rs_reactor::{
-    SocketRecord, swr_v1_socket_bind, swr_v1_socket_buffer_size, swr_v1_socket_catch_error,
-    swr_v1_socket_clean, swr_v1_socket_dealloc, swr_v1_socket_defaults,
-    swr_v1_socket_domain_and_type, swr_v1_socket_get_peer_name, swr_v1_socket_set_timeout,
+    SocketRecord, catch_error, swr_v1_socket_buffer_size, swr_v1_socket_clean,
+    swr_v1_socket_dealloc, swr_v1_socket_defaults, swr_v1_socket_domain_and_type,
 };
 #[cfg(test)]
 use tests::{async_dispatch, ops, swoole_event_write, thread_buffer};
@@ -732,8 +731,7 @@ impl Handle {
     }
 
     fn set_timeout(self, timeout: f64) {
-        // SAFETY: the record's timeouts, live and unborrowed elsewhere.
-        unsafe { swr_v1_socket_set_timeout(&raw mut self.socket().timeouts, timeout, TIMEOUT_ALL) };
+        self.socket().timeouts.set(timeout, TIMEOUT_ALL);
     }
 
     fn timer_clear(self) {
@@ -1117,8 +1115,8 @@ pub unsafe extern "C" fn swr_v1_clients_get_peer_name(
         unsafe { address.write(remote) };
         OK
     } else {
-        // SAFETY: the live socket and caller-supplied writable Address storage.
-        unsafe { swr_v1_socket_get_peer_name(this.socket_ptr(), address) }
+        // SAFETY: the caller supplied writable Address storage.
+        this.socket().get_peer_name(unsafe { &mut *address })
     }
 }
 
@@ -1918,9 +1916,7 @@ pub unsafe extern "C" fn swr_v1_clients_bind(
     else {
         return ERR;
     };
-    // SAFETY: the live socket record and the local address of its length.
-    if unsafe { swr_v1_socket_bind(this.socket_ptr(), &raw const address.addr.ss, address.len) } < 0
-    {
+    if this.socket().bind(&address) < 0 {
         log::set_last_error(errno());
         return ERR;
     }
@@ -2137,8 +2133,7 @@ fn on_read(this: Handle) -> c_int {
     let n = this.recv_once(buf, size);
     if n < 0 {
         let socket = this.socket();
-        // SAFETY: the socket's own flag, set by the classification.
-        return match unsafe { swr_v1_socket_catch_error(errno(), &raw mut socket.kernel_nobufs) } {
+        return match catch_error(errno(), &mut socket.kernel_nobufs) {
             SW_ERROR => {
                 let fd = socket.fd;
                 log::sys_warning(

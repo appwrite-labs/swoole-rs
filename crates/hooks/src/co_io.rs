@@ -515,9 +515,7 @@ unsafe fn timed_out(
     // SAFETY: as the caller promises.
     let socket = unsafe { &*socket };
     // SAFETY: an open record's network::Socket, not otherwise borrowed.
-    let timeouts = &raw mut unsafe { socket.record() }.timeouts;
-    // SAFETY: the record's timeouts.
-    unsafe { swoole_rs_reactor::swr_v1_socket_set_timeout(timeouts, left, kind) };
+    unsafe { socket.record() }.timeouts.set(left, kind);
     false
 }
 

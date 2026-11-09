@@ -20,12 +20,12 @@ use swoole_rs_reactor::socket_upstream::{
 use swoole_rs_reactor::{
     CLASS_STREAM, CLASS_TCP, OutputHooks, ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
     SYNC_SENDFILE, SocketAddress, SocketFileRequest, SocketRecord, SyncHooks,
-    cpp_socket_what_event_want, steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_file_check,
-    swr_v1_socket_file_cork, swr_v1_socket_file_free, swr_v1_socket_file_length,
-    swr_v1_socket_file_new, swr_v1_socket_file_sent, swr_v1_socket_handle_send_owned,
-    swr_v1_socket_iov_owned, swr_v1_socket_record_peek, swr_v1_socket_record_recv,
-    swr_v1_socket_record_send, swr_v1_socket_recvfrom, swr_v1_socket_sendfile_chunk,
-    swr_v1_socket_ssl_sendfile, swr_v1_socket_sync, type_is,
+    cpp_socket_what_event_want, socket_record_peek, socket_record_recv, socket_record_send,
+    steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_file_check, swr_v1_socket_file_cork,
+    swr_v1_socket_file_free, swr_v1_socket_file_length, swr_v1_socket_file_new,
+    swr_v1_socket_file_sent, swr_v1_socket_handle_send_owned, swr_v1_socket_iov_owned,
+    swr_v1_socket_recvfrom, swr_v1_socket_sendfile_chunk, swr_v1_socket_ssl_sendfile,
+    swr_v1_socket_sync, type_is,
 };
 
 // SAFETY: libc's, libssl's and libcrypto's own declarations.
@@ -496,7 +496,7 @@ pub unsafe extern "C" fn socket_recv(
     flags: c_int,
 ) -> isize {
     // SAFETY: as the caller promises; the TLS call and clock are valid for it.
-    unsafe { swr_v1_socket_record_recv(socket, buffer, length, flags, tls_recv, steady_ms) }
+    unsafe { socket_record_recv(socket, buffer, length, flags, tls_recv, steady_ms) }
 }
 
 /// `ssize_t Socket::send(const void *, size_t, int)`.
@@ -514,7 +514,7 @@ pub unsafe extern "C" fn socket_send(
     flags: c_int,
 ) -> isize {
     // SAFETY: as the caller promises; the TLS call and clock are valid for it.
-    unsafe { swr_v1_socket_record_send(socket, buffer, length, flags, tls_send, steady_ms) }
+    unsafe { socket_record_send(socket, buffer, length, flags, tls_send, steady_ms) }
 }
 
 /// `ssize_t Socket::peek(void *, size_t, int) const`.
@@ -532,7 +532,7 @@ pub unsafe extern "C" fn socket_peek(
     flags: c_int,
 ) -> isize {
     // SAFETY: as the caller promises; the TLS call is valid for it.
-    unsafe { swr_v1_socket_record_peek(socket, buffer, length, flags, tls_peek) }
+    unsafe { socket_record_peek(socket, buffer, length, flags, tls_peek) }
 }
 
 /// `bool Socket::check_liveness()`: a nonblocking one-byte peek that neither
@@ -1672,9 +1672,7 @@ unsafe fn bind_host(socket: *mut SocketRecord, host: *const c_char, port: c_int)
         return -1;
     }
     // SAFETY: the live record and the address assigned above.
-    unsafe {
-        swoole_rs_reactor::swr_v1_socket_bind(socket, (&raw const address.addr).cast(), address.len)
-    }
+    unsafe { (*socket).bind(&address) }
 }
 
 /// `Socket *make_server_socket(SocketType, const char *address, int port, int backlog)`:
@@ -1735,7 +1733,7 @@ pub unsafe extern "C-unwind" fn make_server_socket(
     }
     if type_is(kind, CLASS_STREAM) {
         // SAFETY: the new record.
-        if unsafe { swoole_rs_reactor::swr_v1_socket_listen(socket, backlog) } < 0 {
+        if unsafe { (*socket).listen(backlog) } < 0 {
             log::sys_warning(
                 ORIGIN,
                 format_args!("listen({fd}, {host}:{port}, {backlog}) failed"),
@@ -1745,7 +1743,7 @@ pub unsafe extern "C-unwind" fn make_server_socket(
         }
     }
     // SAFETY: the new record.
-    if unsafe { swoole_rs_reactor::swr_v1_socket_get_name(socket) } < 0 {
+    if unsafe { (*socket).get_name() } < 0 {
         log::sys_warning(ORIGIN, format_args!("getsockname({fd}) failed"));
         // SAFETY: the new record, which nothing else holds.
         return unsafe { discard(socket) };
