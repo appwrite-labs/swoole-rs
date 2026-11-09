@@ -21,7 +21,6 @@ from tools.harness import ROOT, write_report
 from tools.build_hybrid import GRADUATED, MODULES, profile_suffix, build_alias
 from tools.build_upstream import require_build_space
 from tools.dev_report import read_json
-from tools.private_copy import copy_private
 
 
 # Exit 0 only when this Python can configure a TLS 1.3-only client context.
@@ -108,11 +107,6 @@ def selected_modules(args):
     return sorted(chosen | set(GRADUATED))
 
 
-def build_variant(args):
-    suffix = ('-halfclose' if getattr(args, 'fix_halfclose', False) else '') + profile_suffix(args)
-    return build_alias('rust', suffix, dev=args.lane != 'integrate')
-
-
 def plan(args, reports):
     modules = selected_modules(args)
     python = sys.executable
@@ -145,11 +139,6 @@ def plan(args, reports):
         return commands
     integrate = args.lane == 'integrate'
     repair = ['--fix-halfclose'] if getattr(args, 'fix_halfclose', False) else []
-    variant = build_variant(args)
-    # The hybrid build is left only for its Zend-free archive and configured tree: the native
-    # gates link and compile against them, and the PHPT runners read its phpize'd tests.
-    # Nothing loads its swoole.so (#2199); #2415 moves the rest.
-    manifest = ROOT / 'target/hybrid' / variant / 'build-manifest.json'
     captured_reference = integrate and (getattr(args, 'php_sockets', False) or bool({'buffer', 'utilities', 'ports', 'phphelpers', 'reactor', 'phpcoroutines'} & set(modules)))
     native_variant = build_alias('upstream', profile_suffix(args))
     reference = (ROOT / 'target/hybrid' / native_variant / 'modules/swoole.so'
@@ -175,14 +164,10 @@ def plan(args, reports):
                *(['--export', native_export] if captured_reference else []),
                *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']),
                *(['--native-build-root', args.native_build_root] if getattr(args, 'native_build_root', None) else []))
-    script('build', 'tools/build_hybrid.py', *([] if integrate else ['--dev']), *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []), *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []),
-           '--jobs', args.jobs,
-           *(['--native-build-root', args.native_build_root] if getattr(args, 'native_build_root', None) else []),
-           *(['--ccache', args.ccache] if getattr(args, 'ccache', None) else ['--no-ccache']))
-    script('cargo-build', 'tools/build_ext.py', *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []),
+    script('cargo-build', 'tools/build_ext.py', '--native', *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []),
            *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []))
-    # The alias holds only symlinks; its src/.. is the build directory.
-    archive = manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a'
+    # The native gates link fixtures against its Zend-free Rust archive and compile against its tree.
+    archive = cargo.parent / 'sdk/lib/libswoole_rs_ffi.a'
     script('abi', 'tests/modules/integration/test_bridge.py', *php_for('sockets'), '--extension', cargo, '--reference', reference,
            *(['--archive', archive] if integrate else ['--startup-only']))
     if integrate:
@@ -285,7 +270,7 @@ def plan(args, reports):
         # SNI resolves its port inside the callback; exercise the production wrapper,
         # not only the protocol-plan and scalar-setting mini gates.
         sni_engines = engines if integrate or args.compare else ['--engine', f'cargo={cargo}']
-        script('ports-sni-originals', 'corpus/upstream/run.py', '--source', manifest.parent / 'src',
+        script('ports-sni-originals', 'corpus/upstream/run.py',
                '--manifest', 'tests/modules/ports/sni-originals.json', *php_for('curl', 'sockets'), *sni_engines,
                '--require-all', '--isolate-cases', *report('ports-sni-originals'))
         if integrate:
@@ -322,7 +307,7 @@ def plan(args, reports):
         # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the hybrid tree's libswoole, and the repo-owned C++
         # witnesses in its fixture.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
-               '--config', manifest.parent / 'src/config.h', '--archive', archive,
+               '--archive', archive,
                '--fixture', ROOT / 'tests/modules/hooks/system/fixture.cc',
                '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
                '--exclude', 'coroutine_system.getaddrinfo=' + NETWORK, '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
@@ -351,7 +336,7 @@ def plan(args, reports):
     if 'reactor' in modules and sys.platform.startswith('linux'):
         # core-tests/src/reactor/base.cpp, ported to Rust over the hybrid tree's libswoole.
         script('reactor-base-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
-               '--config', manifest.parent / 'src/config.h', '--archive', archive,
+               '--archive', archive,
                '--build-root', ROOT / 'target/native-originals/reactor-base', '--jobs', args.jobs,
                '--package', ROOT / 'tests/modules/reactor/base', '--fixture', ROOT / 'tests/modules/reactor/base/fixture.cc',
                *report('reactor-base-rust'))
@@ -359,7 +344,7 @@ def plan(args, reports):
         # core-tests/src/server/http_server.cpp's, protocol/base.cpp's and redis.cpp's and server/mqtt.cpp's server
         # TESTs, ported to Rust over the hybrid tree's libswoole.
         script('http-server-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
-               '--config', manifest.parent / 'src/config.h', '--archive', archive,
+               '--archive', archive,
                '--build-root', ROOT / 'target/native-originals/http-server', '--jobs', args.jobs,
                '--package', ROOT / 'tests/modules/http/server',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
@@ -408,14 +393,14 @@ def plan(args, reports):
         if integrate:
             pytest('timer-bailout', 'tests/modules/timer/test_bailout.py', *php,
                    '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
-            pytest('timer-native', 'tests/modules/timer/test_adapter.py', '--manifest', manifest, *php,
+            pytest('timer-native', 'tests/modules/timer/test_adapter.py', '--build-manifest', built, '--archive', archive, *php,
                    *(['--sanitize'] if sys.platform == 'darwin' else []))
     if 'buffer' in modules:
         pytest('buffer-string-compatibility', 'tests/modules/buffer/string/test_compatibility.py',
                '--archive', archive, '--sanitize')
         if integrate and getattr(args, 'php_sockets', False):
             script('php-sockets-sendfile-original', 'corpus/upstream/run.py',
-                   '--source', manifest.parent / 'src', '--manifest', ROOT / 'tests/modules/buffer/originals.json',
+                   '--manifest', ROOT / 'tests/modules/buffer/originals.json',
                    '--case', 'tests/swoole_server/sendfile_02.phpt', *php_for('curl', 'sockets'),
                    *engines, '--require-all', '--isolate-cases', *report('php-sockets-sendfile-original'))
         pytest('buffer-posix-iovec', 'tests/modules/buffer/test_iovec.py', '--archive', archive, '--sanitize')
@@ -459,7 +444,7 @@ def plan(args, reports):
         script('applications', 'corpus/run.py', *php, *engines, *projects, '--require-all', *report('applications'))
     network = ['--external-network'] if getattr(args, 'external_network', False) else []
     if args.case and not integrate:
-        script('phpt', 'corpus/upstream/run.py', '--source', manifest.parent / 'src', *php, *engines, '--jobs', args.jobs,
+        script('phpt', 'corpus/upstream/run.py', *php, *engines, '--jobs', args.jobs,
                *[arg for case in args.case for arg in ['--case', case]], '--require-all', *network, *report('phpt'))
     elif not integrate and not getattr(args, 'all_modules', False) and set(args.module or ['websocket']) < set(MODULES):
         # The original PHPT families of the chosen modules, gated on upstream like the merge
@@ -479,7 +464,7 @@ def plan(args, reports):
         if 'buffer' in modules:
             for peek in [False, True]:
                 name = 'buffer-benchmark' + ('-consumer' if peek else '')
-                script(name, 'tests/modules/buffer/benchmark.py', '--build-manifest', manifest,
+                script(name, 'tests/modules/buffer/benchmark.py', '--archive', archive,
                        *(['--peek-front'] if peek else []), *report(name))
         if 'websocket' in modules:
             script('websocket-benchmark', 'tests/modules/websocket/benchmark.py', *php, *engines, *report('websocket-benchmark'))
@@ -487,21 +472,10 @@ def plan(args, reports):
 
 
 
-def retain_build_manifest(build, reports):
-    """Keep exact provenance readable after an ephemeral native world disappears."""
-    original = Path(build['build_manifest'])
-    manifest, digest = read_json(original, with_digest=True)
-    retained = reports / 'build-manifest.json'
-    copy_private(original, retained)
-    if read_json(retained, with_digest=True)[1] != digest or read_json(original, with_digest=True)[1] != digest:
-        raise ValueError('Build manifest changed during retention')
-    return dict(original_path=str(original), path=str(retained), sha256=digest,
-                build_mode=manifest.get('build_mode'))
-
 
 # Phases that build artifacts later phases consume, or that later phases need to have
 # passed. Each runs alone, after everything before it and before everything after it.
-BARRIER_PHASES = {'ownership', 'build', 'cargo-build', 'reference-build', 'stdext-reference-build'}
+BARRIER_PHASES = {'ownership', 'cargo-build', 'reference-build', 'stdext-reference-build'}
 
 
 def serial_phase(name):
@@ -693,8 +667,6 @@ def with_prerequisites(planned, phases):
                 grown |= {owner for owner, paths in exports.items() if owner != name
                           and any(argument == path or argument.startswith(path + '/') for path in paths)}
                 reference = '/target/upstream/' in argument or '/target/hybrid/upstream' in argument
-                if 'build' in names and not reference and ('/target/hybrid/' in argument or 'libswoole_rs_ffi' in argument):
-                    grown.add('build')
                 if 'cargo-build' in names and '/target/ext/' in argument:
                     grown.add('cargo-build')
                 grown |= {owner for owner in ('reference-build', 'stdext-reference-build') if owner in names and reference}
@@ -897,13 +869,6 @@ def main():
                     row['infrastructure_error'] = error
             except (OSError, ValueError) as error:
                 row.update(failed=True, outcome_error=str(error))
-        if name == 'build' and result.returncode == 0:
-            variant = build_variant(args)
-            row['build'] = json.loads((ROOT / 'target/hybrid' / variant / 'last-run.json').read_text())
-            try:
-                row['build']['retained_manifest'] = retain_build_manifest(row['build'], reports)
-            except (OSError, ValueError, KeyError) as error:
-                row.update(failed=True, outcome_error='Build provenance retention failed: ' + str(error))
         print(f'  [{name}] {row["seconds"]:.3f}s; exit={result.returncode}; failed={row["failed"]}; {row["log"]}', flush=True)
         return row
 
@@ -972,7 +937,7 @@ def main():
                     report.update(infrastructure_error=error, blocked_phase=name)
                     pending.clear()
                     continue
-                if name.endswith('-unit') or name == 'build':
+                if name.endswith('-unit') or name == 'cargo-build':
                     try:
                         require_build_space(ROOT)
                     except (RuntimeError, ValueError) as error:

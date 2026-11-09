@@ -11,7 +11,7 @@ Rust's lock ABI and `Barrier` (whose methods are Rust) over `native/locks/swoole
 
 ```sh
 python3 tests/modules/locks/gate.py --source target/upstream/src \
-  --archive <hybrid build>/rust-prefix/lib/libswoole_rs_ffi.a --sanitize
+  --archive target/ext/sdk/lib/libswoole_rs_ffi.a --sanitize
 ```
 
 ## Native gate

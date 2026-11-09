@@ -17,7 +17,8 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree, patches_for
+from tools.build_ext import native_tree
+from tools.build_hybrid import patches_for
 from tools.ext_identity import attest, unchanged
 from tools.harness import parse_engines, run_isolated, write_report
 from coherent_sdk import stage
@@ -43,7 +44,7 @@ def body(source, signature):
 
 
 def owned(hybrid, name):
-    """The hybrid build's copy of an upstream header: the patched one, or the owned native/ one
+    """The Cargo build's copy of an upstream header: the patched one, or the owned native/ one
     that replaced it once the patch set deleted upstream's."""
     return hybrid / name if (hybrid / name).is_file() else next(ROOT.glob('native/*/' + Path(name).name))
 
@@ -62,7 +63,7 @@ def main():
     parser.add_argument('--php-extension', action='append', default=[])
     parser.add_argument('--engine', action='append', required=True)
     parser.add_argument('--build-manifest', type=Path, required=True, help="tools/build_ext.py's manifest of the selected engine")
-    parser.add_argument('--archive', type=Path, required=True, help="A hybrid build's archive, whose patched tree supplies the selected SDK headers")
+    parser.add_argument('--archive', type=Path, required=True, help="tools/build_ext.py --native's SDK archive, whose patched tree supplies the selected SDK headers")
     parser.add_argument('--source-ref', required=True)
     parser.add_argument('--output', type=Path, required=True)
     phase = parser.add_mutually_exclusive_group()
@@ -84,9 +85,9 @@ def main():
     report = dict(passed=False, created_utc=datetime.now(timezone.utc).isoformat(), work=str(work),
                   scope=__doc__, fixture=fixture, engines=[], results=[])
     try:
-        # The selected side's sources, headers and config.h are the hybrid build's.
-        hybrid, hybrid_flags = hybrid_tree(args.archive)
-        report['hybrid_tree'] = str(hybrid)
+        # The selected side's sources, headers and config.h are the Cargo build's.
+        hybrid, hybrid_flags = native_tree(args.archive)
+        report['native_tree'] = str(hybrid)
         for name in [fixture + '.cc', fixture + '.php', 'storage_summary.py'] + ['coherent_sdk.py'] + (['child_assertions.h', 'terminal_stdout.py'] if redirect else []):
             path = Path(__file__).with_name(name)
             (work / name).write_bytes(path.read_bytes())
@@ -193,7 +194,7 @@ def main():
                 raise ValueError('GoogleTest library identity unavailable')
         native_identity = next(row for row in report['engines'] if not row['rust_feature_bits'] & 512)
         report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parent, args.source, args.source_ref, ROOT),
-                                  'selected': dict(hybrid_tree=str(hybrid), flags=hybrid_flags,
+                                  'selected': dict(native_tree=str(hybrid), flags=hybrid_flags,
                                                    string_header_sha256=sha(ROOT / 'native/buffer/swoole_string.h'))}
         (work / 'selected').mkdir()
         shutil.copyfile(hybrid / 'config.h', work / 'selected/config.h')

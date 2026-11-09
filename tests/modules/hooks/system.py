@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Upstream's core-tests ported to Rust (by default core-tests/src/coroutine/{system,hook,socket}.cpp,
-tests/modules/hooks/system/; --package names another case package), against the hybrid tree's
-libswoole.so (Linux). Builds the hybrid tree's lib-swoole, with --fixture compiled in, links the
+tests/modules/hooks/system/; --package names another case package), against the patched tree's
+libswoole.so (Linux). Builds the patched tree's lib-swoole, with --fixture compiled in, links the
 case binary to it, and runs each case in its own process group.
 --exclude NAME=REASON reports a case `excluded` with its reason; it never counts as passed."""
 import argparse
@@ -16,7 +16,7 @@ import tarfile
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.build_hybrid import overlay_hybrid_tree  # noqa: E402
+from tools.build_ext import native_tree, overlay_native_tree  # noqa: E402
 from tools.build_upstream import COMMIT as PIN  # noqa: E402
 from tools.harness import ROOT, run_isolated, write_report  # noqa: E402
 
@@ -50,8 +50,7 @@ def stage(source, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True, help='Pinned upstream checkout')
-    parser.add_argument('--config', type=Path, required=True, help="The hybrid build's configured config.h")
-    parser.add_argument('--archive', type=Path, required=True, help='<build>/rust-prefix/lib/libswoole_rs_ffi.a of the hybrid build')
+    parser.add_argument('--archive', type=Path, required=True, help="tools/build_ext.py --native's sdk/lib/libswoole_rs_ffi.a")
     parser.add_argument('--build-root', type=Path, required=True, help='Private writable build directory')
     parser.add_argument('--package', type=Path, default=PACKAGE, help='The case package (Cargo.toml and a --list binary)')
     parser.add_argument('--fixture', type=Path, help="An owned C++ fixture compiled into lib-swoole for the cases")
@@ -61,24 +60,24 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if sys.platform != 'linux':
-        parser.error('the case binary links the Linux hybrid tree')
+        parser.error('the case binary links the Linux patched tree')
     excluded = dict(entry.split('=', 1) for entry in args.exclude)
     report = {'scope': __doc__, 'excluded': excluded, 'results': [], 'passed': False}
     logs = args.output.resolve().with_name(args.output.stem + '-artifacts')
     logs.mkdir(parents=True, exist_ok=True)
     try:
-        tree = args.build_root.resolve() / 'hybrid'
+        tree = args.build_root.resolve() / 'tree'
         with tempfile.TemporaryDirectory(prefix='swr-hooks-system-') as temporary:
             staged = Path(temporary)
             stage(args.source, staged)
-            hybrid_cmake = overlay_hybrid_tree(args.archive, staged)
+            native_cmake = overlay_native_tree(args.archive, staged)
             for path in staged.rglob('*'):
                 if path.is_file():
                     write_changed(tree / path.relative_to(staged), path.read_bytes())
-        write_changed(tree / 'config.h', args.config.read_bytes())
+        write_changed(tree / 'config.h', (native_tree(args.archive)[0] / 'config.h').read_bytes())
         cmake = (tree / 'CMakeLists.txt').read_text()
         fixture = f'target_sources(lib-swoole PRIVATE "{args.fixture.resolve()}")\n' if args.fixture else ''
-        write_changed(tree / 'CMakeLists.txt', f'{cmake}\n{hybrid_cmake}target_link_libraries(lib-swoole "{args.archive.resolve()}" ${{SWOOLE_LINK_LIBRARIES}})\n'
+        write_changed(tree / 'CMakeLists.txt', f'{cmake}\n{native_cmake}target_link_libraries(lib-swoole "{args.archive.resolve()}" ${{SWOOLE_LINK_LIBRARIES}})\n'
                      # Upstream's libswoole defines swoole_init; the archive's member holding it is otherwise unreferenced.
                      f'target_link_options(lib-swoole PRIVATE "LINKER:--undefined=_Z11swoole_initv")\n{fixture}'.encode())
         env = {**os.environ, 'SWOOLE_LIB_DIR': str(tree / 'lib'), 'CARGO_TARGET_DIR': str(args.build_root.resolve() / 'cargo')}

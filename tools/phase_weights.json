@@ -11,7 +11,6 @@
  "buffer-string-compatibility": 17,
  "buffer-typed": 6,
  "buffer-unit": 4,
- "build": 94,
  "clients-http-format": 2,
  "clients-php-async": 2,
  "clients-php-coro": 2,

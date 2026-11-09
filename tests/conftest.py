@@ -8,7 +8,7 @@ def pytest_addoption(parser):
     parser.addoption('--php', default='php')
     parser.addoption('--php-extension', action='append', default=[], help='PHP module loaded before Swoole')
     parser.addoption('--engine', action='append', default=[], help='NAME=/path/to/swoole.so; repeat to compare')
-    parser.addoption('--manifest', help='build-manifest.json of an immutable hybrid build')
+    parser.addoption('--build-manifest', help="tools/build_ext.py's build-manifest.json")
     parser.addoption('--archive', help='Prebuilt Rust static archive; skips the cargo build')
     parser.addoption('--sanitize', action='store_true', help='Build native callers with ASan/UBSan')
     parser.addoption('--rust-asan', action='store_true', help='--archive was compiled with Rust ASan')
