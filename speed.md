@@ -1,20 +1,20 @@
 # Speed vs upstream Swoole
 
-Callgrind instructions per request (lower is better), measured by the merge tier on `9abf3dc` (`benchmarks/callgrind.py`, 1000 requests). Ratio is hybrid ÷ upstream: below 1.00× is faster than upstream. The limit is `benchmarks/callgrind_limits.json`; ✅ beats upstream, ➖ within the limit, ❌ over it.
+Callgrind instructions per request (lower is better), measured by the merge tier on `167ca5d` (`benchmarks/callgrind.py`, 1000 requests). Ratio is hybrid ÷ upstream: below 1.00× is faster than upstream. The limit is `benchmarks/callgrind_limits.json`; ✅ beats upstream, ➖ within the limit, ❌ over it.
 
 | workload | hybrid | upstream | ratio | limit | |
 | --- | ---: | ---: | ---: | ---: | --- |
-| plaintext | 14,112 | 15,203 | 0.9283× | 0.93× | ✅ |
-| echo-1k | 17,016 | 18,163 | 0.9369× | 0.94× | ✅ |
-| json | 22,104 | 23,163 | 0.9543× | 0.96× | ✅ |
-| service-health | 16,713 | 17,795 | 0.9392× | 0.94× | ✅ |
-| websocket | 6,719 | 8,188 | 0.8206× | 0.82× | ✅ |
-| timer | 220,990 | 311,212 | 0.7101× | 0.71× | ✅ |
-| app | 126,458 | 135,956 | 0.9301× | 0.93× | ✅ |
-| http2 | 19,366 | 20,343 | 0.9520× | 0.95× | ✅ |
-| table | 198,453 | 201,678 | 0.9840× | 0.99× | ✅ |
-| channel | 137,060 | 154,565 | 0.8867× | 0.89× | ✅ |
-| task | 31,590 | 33,180 | 0.9521× | 0.96× | ✅ |
-| mysql | 49,806 | 51,072 | 0.9752× | 0.98× | ✅ |
+| plaintext | 13,826 | 15,203 | 0.9094× | 0.93× | ✅ |
+| echo-1k | 16,677 | 18,145 | 0.9191× | 0.94× | ✅ |
+| json | 21,774 | 23,159 | 0.9402× | 0.96× | ✅ |
+| service-health | 16,410 | 17,795 | 0.9222× | 0.94× | ✅ |
+| websocket | 6,576 | 8,188 | 0.8032× | 0.82× | ✅ |
+| timer | 210,797 | 311,732 | 0.6762× | 0.71× | ✅ |
+| app | 125,069 | 135,721 | 0.9215× | 0.93× | ✅ |
+| http2 | 19,269 | 20,341 | 0.9473× | 0.95× | ✅ |
+| table | 197,655 | 201,681 | 0.9800× | 0.99× | ✅ |
+| channel | 136,507 | 154,565 | 0.8832× | 0.89× | ✅ |
+| task | 31,104 | 33,177 | 0.9375× | 0.96× | ✅ |
+| mysql | 49,064 | 51,072 | 0.9607× | 0.98× | ✅ |
 
-Geometric mean 0.9108×. Goal: ≤ 1.00× on every workload ([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)).
+Geometric mean 0.8960×. Goal: ≤ 1.00× on every workload ([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)).
