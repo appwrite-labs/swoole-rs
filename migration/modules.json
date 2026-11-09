@@ -21,7 +21,6 @@
         "crates/oracle/",
         "tools/arginfo.py",
         "native/include/",
-        "native/integration/",
         "migration/patches/integration/",
         "tools/build_hybrid.py",
         "tests/modules/integration/",
@@ -223,6 +222,8 @@
         "crates/odbc-sys/",
         "crates/firebird/",
         "crates/firebird-sys/",
+        "crates/sqlite/",
+        "crates/oci/",
         "crates/curl/",
         "crates/curl-sys/",
         "crates/ssh2/",
@@ -324,7 +325,6 @@
       ],
       "owned_paths": [
         "crates/base64/",
-        "native/base64/",
         "migration/patches/base64/",
         "tests/modules/base64/"
       ],
@@ -680,7 +680,6 @@
         "crates/clients/",
         "crates/cares-sys/",
         "crates/phpclients/",
-        "crates/phptable/",
         "native/clients/",
         "migration/patches/clients/",
         "tests/modules/clients/"
