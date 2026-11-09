@@ -21,7 +21,6 @@
         "crates/oracle/",
         "tools/arginfo.py",
         "native/include/",
-        "native/integration/",
         "migration/patches/integration/",
         "tools/build_hybrid.py",
         "tests/modules/integration/",
@@ -225,6 +224,8 @@
         "crates/odbc-sys/",
         "crates/firebird/",
         "crates/firebird-sys/",
+        "crates/sqlite/",
+        "crates/oci/",
         "crates/curl/",
         "crates/curl-sys/",
         "crates/ssh2/",
@@ -234,7 +235,17 @@
         "tests/modules/hooks/"
       ],
       "phpt_families": [
-        "swoole_runtime"
+        "swoole_runtime",
+        "swoole_curl",
+        "swoole_ftp",
+        "swoole_ssh2",
+        "swoole_iouring",
+        "swoole_feature",
+        "swoole_pdo_firebird",
+        "swoole_pdo_odbc",
+        "swoole_pdo_oracle",
+        "swoole_pdo_pgsql",
+        "swoole_pdo_sqlite"
       ],
       "upstream_patch_targets": [
         "src/coroutine/hook.cc",
@@ -326,7 +337,6 @@
       ],
       "owned_paths": [
         "crates/base64/",
-        "native/base64/",
         "migration/patches/base64/",
         "tests/modules/base64/"
       ],
@@ -682,7 +692,6 @@
         "crates/clients/",
         "crates/cares-sys/",
         "crates/phpclients/",
-        "crates/phptable/",
         "native/clients/",
         "migration/patches/clients/",
         "tests/modules/clients/"
@@ -692,7 +701,8 @@
         "swoole_client_sync",
         "swoole_client_async",
         "swoole_http_client_coro",
-        "swoole_socket_coro"
+        "swoole_socket_coro",
+        "swoole_server_coro"
       ],
       "upstream_patch_targets": [
         "src/network/address.cc",

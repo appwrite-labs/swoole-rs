@@ -1,6 +1,6 @@
 //! Upstream's `core-tests/src/server/http_server.cpp` TESTs that start a server, one Rust
 //! function per TEST with the same inputs and expected values, over the hybrid's
-//! libswoole.so. fixture.cc builds the Servers upstream's helpers built
+//! libswoole.so. http1/case.rs builds the Servers upstream's helpers built
 //! (`test_base_server`, `test_http_server`, `test_ssl_http`); the callbacks, the
 //! clients and every assertion are here. The WebSocket client is cpp-httplib's
 //! (`core-tests/src/_lib/http.cpp`): the same upgrade request, and frames from the
@@ -31,6 +31,8 @@ use std::time::Duration;
 
 mod client;
 mod http1;
+
+use http1::case::*;
 
 type Server = c_void;
 type Receive = extern "C" fn(*mut Server, *const c_void) -> c_int;
@@ -134,45 +136,6 @@ unsafe extern "C" {
         pl: *mut PacketLength,
     ) -> isize;
 
-    fn swr_case_base_server(
-        root: *const c_char,
-        on_receive: Receive,
-        on_close: Event,
-        on_worker_start: Hook,
-    ) -> *mut Server;
-    fn swr_case_http_server(
-        dispatch_mode: c_int,
-        ssl: bool,
-        worker_num: c_int,
-        mode: c_int,
-        root: *const c_char,
-        on_receive: Receive,
-        on_close: Event,
-    ) -> *mut Server;
-    fn swr_case_ssl_server(
-        out: *mut *mut Server,
-        mode: c_int,
-        port: c_int,
-        cert: *const c_char,
-        key: *const c_char,
-        on_start: Hook,
-        on_worker_start: Hook,
-        on_receive: Receive,
-    ) -> c_int;
-    fn swr_case_abort_server(
-        max_sockets: u32,
-        saved: *mut u32,
-        ports: *mut [*mut c_void; 2],
-        on_start: Hook,
-        on_receive: Receive,
-    ) -> *mut Server;
-    fn swr_case_set_max_sockets(value: u32);
-    fn swr_case_length_port(serv: *mut *mut Server) -> *mut c_void;
-    fn swr_case_init_protocol(port: *mut c_void, websocket: bool) -> *const http1::Protocol;
-    fn swr_case_fake_socket(port: *mut c_void, conn: *mut *mut c_void) -> *mut c_void;
-    fn swr_case_connection_status(conn: *mut c_void, websocket_status: u8, http2_stream: u8);
-    fn swr_case_create(serv: *mut Server) -> c_int;
-    fn swr_case_last_error(msg: *mut *const c_char) -> c_int;
     #[link_name = "_ZN6swoole11http_server18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
     fn http_get_package_length(
         protocol: *const http1::Protocol,
@@ -181,42 +144,6 @@ unsafe extern "C" {
     ) -> isize;
     #[link_name = "_ZN6swoole11http_server23get_package_length_sizeEPNS_7network6SocketE"]
     fn http_get_package_length_size(socket: *mut c_void) -> u8;
-    fn swr_case_port(serv: *mut Server) -> c_int;
-    fn swr_case_start(serv: *mut Server) -> c_int;
-    fn swr_case_shutdown(serv: *mut Server) -> bool;
-    fn swr_case_master_pid(serv: *mut Server) -> c_int;
-    fn swr_case_send(
-        serv: *mut Server,
-        session_id: c_long,
-        data: *const c_char,
-        length: u32,
-    ) -> bool;
-    fn swr_case_close(serv: *mut Server, session_id: c_long) -> bool;
-    fn swr_case_sendfile(serv: *mut Server, session_id: c_long, file: *const c_char) -> bool;
-    fn swr_case_tg_buffer() -> *mut CppString;
-    fn swr_case_info(
-        info: *const c_void,
-        reactor_id: *mut c_int,
-        len: *mut u32,
-        ext_flags: *mut u16,
-    ) -> c_long;
-    fn swr_case_data(req: *const c_void) -> *const c_char;
-    fn swr_case_websocket_status(serv: *mut Server, session_id: c_long) -> *mut u8;
-    fn swr_case_close_actively(serv: *mut Server, session_id: c_long) -> bool;
-    fn swr_case_healthy(serv: *mut Server, session_id: c_long) -> bool;
-    fn swr_case_idle_worker_num(serv: *mut Server) -> u32;
-    fn swr_case_worker_num(serv: *mut Server) -> u32;
-    fn swr_case_close_after(serv: *mut Server, session_id: c_long, ms: c_long);
-    fn swr_case_ssl_files(serv: *mut Server, cert: *const c_char, key: *const c_char);
-    fn swr_case_ssl_sni(
-        serv: *mut Server,
-        name: *const c_char,
-        cert: *const c_char,
-        key: *const c_char,
-    );
-    fn swr_case_ssl_protocols(serv: *mut Server, protocols: c_long);
-    fn swr_case_ssl_client_ca(serv: *mut Server, cafile: *const c_char);
-    fn swr_case_ssl_init(serv: *mut Server) -> bool;
 }
 
 // The handshake's `Sec-WebSocket-Accept`, as upstream's `http_context` computes it.
@@ -1001,7 +928,7 @@ fn abort_connection() {
     });
     // SAFETY: the created server.
     unsafe { swr_case_start(serv) };
-    // SAFETY: restores the value the fixture saved.
+    // SAFETY: restores the value the Server builder saved.
     unsafe { swr_case_set_max_sockets(max_sockets) };
     if let Err(panic) = thread.join() {
         resume_unwind(panic);

@@ -426,6 +426,7 @@ dependencies = [
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-reactor",
+ "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
 
@@ -802,6 +803,7 @@ dependencies = [
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-ports",
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
@@ -827,6 +829,7 @@ dependencies = [
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-ports",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-zend",
@@ -837,6 +840,7 @@ name = "swoole-rs-phplocks"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
+ "swoole-rs-hooks",
  "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-phpcoroutines",
@@ -1117,7 +1121,6 @@ dependencies = [
  "libc",
  "openssl-sys",
  "swoole-rs-buffer",
- "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
  "swoole-rs-reactor",

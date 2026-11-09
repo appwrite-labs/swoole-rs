@@ -7,7 +7,7 @@ use crate::{
     signal::clean,
 };
 use std::{
-    ffi::{c_char, c_int, c_void},
+    ffi::{c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -73,14 +73,6 @@ unsafe extern "C" {
     /// `swoole_signal_set(signo, handler, safety)` (crates/reactor).
     #[link_name = "_Z17swoole_signal_setiPFviEb"]
     fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
-    /// `swoole::make_server_socket` (crates/tls).
-    #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
-    fn make_server_socket(
-        kind: c_int,
-        host: *const c_char,
-        port: c_int,
-        backlog: c_int,
-    ) -> *mut c_void;
 }
 
 static POOL: Class = Class::new();
@@ -728,7 +720,7 @@ fn listen(call: &Call) {
             host_ptr.cast(),
             port as c_int,
             backlog as c_int,
-            make_server_socket,
+            swoole_rs_tls::upstream::make_server_socket,
         )
     };
     // SAFETY: the pool's IPC state.

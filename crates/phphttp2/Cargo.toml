@@ -29,6 +29,7 @@ php = [
     "dep:swoole-rs-phpcoroutines",
     "swoole-rs-phpcoroutines/php",
     "dep:swoole-rs-server",
+    "dep:swoole-rs-ports",
     "dep:swoole-rs-phpswoole",
     "swoole-rs-phpswoole/php",
 ]
@@ -49,6 +50,7 @@ swoole-rs-error = { path = "../error", optional = true }
 swoole-rs-framing = { path = "../framing", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
 swoole-rs-server = { path = "../server", optional = true }
+swoole-rs-ports = { path = "../ports", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 
 [lints]

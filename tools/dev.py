@@ -57,9 +57,9 @@ def require_frozen_source(expected):
 
 
 # A change here can affect every module's native build or behaviour.
-SHARED_PATHS = ('crates/ffi/', 'native/include/', 'native/integration/', 'native/halfclose/',
-                'migration/patches/integration/', 'Cargo.toml', 'Cargo.lock',
-                'tools/build_hybrid.py', 'tools/build_upstream.py', 'migration/modules.json')
+SHARED_PATHS = ('crates/ffi/', 'crates/ext/', 'native/include/', 'native/halfclose/',
+                'migration/patches/integration/', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/',
+                'tools/build_hybrid.py', 'tools/build_ext.py', 'tools/build_upstream.py', 'migration/modules.json')
 
 
 def dependents():
@@ -392,7 +392,7 @@ def plan(args, reports):
         script('http-server-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--build-root', ROOT / 'target/native-originals/http-server', '--jobs', args.jobs,
-               '--package', ROOT / 'tests/modules/http/server', '--fixture', ROOT / 'tests/modules/http/server/fixture.cc',
+               '--package', ROOT / 'tests/modules/http/server',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
                *report('http-server-rust'))

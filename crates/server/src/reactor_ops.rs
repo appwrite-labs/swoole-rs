@@ -964,7 +964,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_RESUME_READ,
         OP_WR_TIMER_DELAY,
     };
-    // SAFETY: crates/timer's, native/reactor's and crates/tls's, under their upstream symbols.
+    // SAFETY: crates/timer's and native/reactor's, under their upstream symbols.
     unsafe extern "C-unwind" {
         #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
         fn swoole_timer_delay(node: *mut c_void, delay_ms: c_long);
@@ -974,8 +974,6 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         fn swoole_event_wait() -> c_int;
         #[link_name = "_Z17swoole_event_freev"]
         fn swoole_event_free() -> c_int;
-        #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
-        fn reactor_close(reactor: *mut c_void, socket: *mut SocketRecord) -> c_int;
     }
     Some(match op {
         OP_DTLS_ACCEPT => {
@@ -1067,7 +1065,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             conn.socket = core::ptr::null_mut();
             conn.object = core::ptr::null_mut();
             // SAFETY: the closing socket, which nothing uses afterwards.
-            sign(unsafe { reactor_close(o.ctx.reactor, o.ctx.sock) })
+            sign(unsafe { swoole_rs_tls::reactor_write::reactor_close(o.ctx.reactor, o.ctx.sock) })
         }
         // SAFETY: per the caller.
         op => return unsafe { crate::thread_ops::answer(o.ctx, o.state, op, arg) },

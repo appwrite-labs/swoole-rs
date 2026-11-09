@@ -154,7 +154,7 @@ aliases are never uninstalled.
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
   The coroutine test, `async_job`, `System::sleep` and the last error are Rust
   (`stdio::NATIVE`). `swoole_init` installs their host (`swr_v1_hook_install`): in an
-  io_uring build, `swr_v1_uring_native`, the `HAVE_IOURING_*` opcodes and whether
+  io_uring build, the engine's host (`iouring::HOST`), the `HAVE_IOURING_*` opcodes and whether
   sockets are `UringSocket`s.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;
   outside a coroutine the libc call runs in place; inside one it runs through native
