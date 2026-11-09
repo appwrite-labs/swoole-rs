@@ -88,6 +88,8 @@ jobs:
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          # Only the pinned tests are read here, and those don't change with the build script.
+          restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
       - uses: actions/cache/restore@v4
         with:
