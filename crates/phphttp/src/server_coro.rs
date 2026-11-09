@@ -27,16 +27,15 @@ use swoole_rs_phphelpers::callable;
 use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_zend::{
-    Array, Call, Class, Object, Owned, OwnedArray, Value, bailout, declare_bool, declare_long,
-    declare_property_null, declare_string, handlers, method_table,
+    Array, Call, Class, Object, Owned, OwnedArray, Props, Value, bailout, declare_bool,
+    declare_long, declare_property_null, declare_string, handlers, method_table,
     string::{self, bytes},
     sys::{
         self as z, IS_STRING, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         swr_zend_property_merge, zend_class_entry, zend_long, zend_object, zend_object_handlers,
         zval, zval_ptr_dtor,
     },
-    throw_constructed_twice, throw_exception, type_of, unset_property_deny,
-    value::{self, update_bool, update_long},
+    throw_constructed_twice, throw_exception, type_of, unset_property_deny, value,
 };
 
 static SERVER: Class = Class::new();
@@ -482,15 +481,19 @@ fn server_of(call: &Call) -> *mut HttpServer {
     unsafe { *Holder::data(call.this()) }
 }
 
+/// Writes on a server method's `$this`, under the class.
+fn props(call: &Call) -> Props<'_> {
+    // SAFETY: the methods are non-static, so `$this` is a live server object.
+    unsafe { Props::new(SERVER.entry(), call.this()) }
+}
+
 /// `http_server_coro_set_error`: the socket's error into `errCode`/`errMsg`.
-fn set_error(object: *mut zend_object, socket: Socket) -> zend_long {
+fn set_error(props: Props<'_>, socket: Socket) -> zend_long {
     let (code, message) = socket_error(socket);
-    // SAFETY: a live object of the class.
-    unsafe { update_long(SERVER.entry(), object, c"errCode", zend_long::from(code)) };
-    // SAFETY: as above; the socket's message is NUL-terminated.
+    props.long(c"errCode", zend_long::from(code));
+    // SAFETY: the socket's message is NUL-terminated.
     let message = unsafe { CStr::from_ptr(message) };
-    // SAFETY: as above.
-    unsafe { value::update_string(SERVER.entry(), object, c"errMsg", message) };
+    props.bytes(c"errMsg", message.to_bytes());
     zend_long::from(code)
 }
 
@@ -517,19 +520,8 @@ fn construct(call: &Call) {
             unsafe { throw_constructed_twice(object) };
             return None;
         }
-        // SAFETY: a live object of the class; Zend copies the host.
-        unsafe {
-            z::zend_update_property_stringl(
-                SERVER.entry(),
-                object,
-                c"host".as_ptr(),
-                4,
-                host.as_ptr().cast(),
-                host.len(),
-            );
-        }
-        // SAFETY: as above.
-        unsafe { update_bool(SERVER.entry(), object, c"ssl", ssl) };
+        props(call).bytes(c"host", host);
+        props(call).bool(c"ssl", ssl);
         if host.is_empty() {
             exception(EINVAL, "host is empty");
             return None;
@@ -550,7 +542,7 @@ fn construct(call: &Call) {
         // SAFETY: a live socket and the host's bytes.
         let bound = unsafe { co::bind(socket, host.as_ptr().cast(), host.len(), port as c_int) };
         if !bound {
-            let code = set_error(object, socket);
+            let code = set_error(props(call), socket);
             #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) port")]
             let port = port as i32;
             exception(
@@ -577,16 +569,14 @@ fn construct(call: &Call) {
         }
         // SAFETY: a live socket.
         if !unsafe { co::listen(socket, 0) } {
-            let code = set_error(object, socket);
+            let code = set_error(props(call), socket);
             exception(code, "listen() failed");
             return None;
         }
         let fd = record(socket).sock_fd;
         let (_, bound) = address(socket);
-        // SAFETY: a live object of the class.
-        unsafe { update_long(SERVER.entry(), object, c"fd", zend_long::from(fd)) };
-        // SAFETY: as above.
-        unsafe { update_long(SERVER.entry(), object, c"port", zend_long::from(bound)) };
+        props(call).long(c"fd", zend_long::from(fd));
+        props(call).long(c"port", zend_long::from(bound));
         Some(())
     };
     if run().is_none() {
@@ -691,12 +681,10 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         unsafe { z::swr_zend_property_array(SERVER.entry(), object, c"settings".as_ptr(), 8) };
     // SAFETY: a live socket and the settings array.
     if !unsafe { php_swoole_socket_set_protocol(socket, settings) } {
-        // SAFETY: a live object of the class.
-        unsafe { update_long(SERVER.entry(), object, c"errCode", EINVAL) };
+        props(call).long(c"errCode", EINVAL);
         #[expect(clippy::cast_possible_truncation, reason = "EINVAL")]
         let message = swoole_rs_phpruntime::strerror(EINVAL as c_int);
-        // SAFETY: a live object of the class.
-        unsafe { value::update_string(SERVER.entry(), object, c"errMsg", message) };
+        props(call).bytes(c"errMsg", message.to_bytes());
         server.running.set(false);
         return Ok(Some(false));
     }
@@ -745,7 +733,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         canceled: libc::ECANCELED,
     };
     let mut start = Start {
-        object,
+        props: props(call),
         server,
         socket,
         accept: &raw mut *accept,
@@ -836,7 +824,7 @@ fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>,
 
 /// The `start` frame the accept loop's host callbacks read (`AcceptHost::data`).
 struct Start<'a> {
-    object: *mut zend_object,
+    props: Props<'a>,
     server: &'a HttpServer,
     socket: Socket,
     accept: *mut Accept,
@@ -913,7 +901,7 @@ unsafe extern "C" fn start_sleep(_: *mut c_void) {
 
 unsafe extern "C" fn start_set_error(data: *mut c_void) {
     let start = start_of(data);
-    set_error(start.object, start.socket);
+    set_error(start.props, start.socket);
 }
 
 unsafe extern "C" fn start_fail(data: *mut c_void, warning: swoole_rs_httpbindings::Text) {

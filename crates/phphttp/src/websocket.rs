@@ -25,7 +25,7 @@ use swoole_rs_websocket::{
     message_policy, pack_policy,
 };
 use swoole_rs_zend::{
-    Array, Call, Class, Value, bailout, declare_long, declare_property_null, declare_string,
+    Array, Call, Class, Props, Value, bailout, declare_long, declare_property_null, declare_string,
     handlers, init_object, method_table, register_long_constant,
     string::{self, bytes},
     sys::{
@@ -33,8 +33,8 @@ use swoole_rs_zend::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_http_property_offset,
         swr_zend_instanceof, swr_zend_string_release, swr_zend_ws_property_not_null, swr_zval_copy,
         swr_zval_is_true, swr_zval_str, zend_ce_stringable, zend_class_entry,
-        zend_class_implements, zend_long, zend_object, zend_string, zend_update_property,
-        zend_value, zval, zval_ptr_dtor,
+        zend_class_implements, zend_long, zend_object, zend_string, zend_value, zval,
+        zval_ptr_dtor,
     },
     type_of,
     value::{self, empty_string, get_long, get_string, obj_of},
@@ -757,23 +757,11 @@ fn construct(frame: *mut zval, opcode: zend_long, payload: *mut zval, mut flags:
         if let [high, low, reason @ ..] = data {
             // `(payload[0] << 8) ^ (payload[1] & 0xFF)` over a signed char.
             let code = (i64::from(high.cast_signed()) << 8) ^ i64::from(*low);
-            // SAFETY: a live CloseFrame.
-            unsafe { value::update_long(class, object, c"code", code) };
+            // SAFETY: the CloseFrame just created, under its class.
+            let props = unsafe { Props::new(class, object) };
+            props.long(c"code", code);
             if !reason.is_empty() {
-                let reason = string::copy(reason);
-                let mut reason_zval = zval_of(reason);
-                // SAFETY: as above; the property takes its own reference.
-                unsafe {
-                    zend_update_property(
-                        class,
-                        object,
-                        c"reason".as_ptr(),
-                        6,
-                        &raw mut reason_zval,
-                    );
-                }
-                // SAFETY: the reference made here.
-                unsafe { zval_ptr_dtor(&raw mut reason_zval) };
+                props.bytes(c"reason", reason);
             }
         }
     } else {
