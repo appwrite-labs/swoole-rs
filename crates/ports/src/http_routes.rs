@@ -204,19 +204,21 @@ pub mod exports {
         let Some(decision) = decide_frame(&frame, length, &context) else {
             return -1;
         };
-        policy_warning(conn, decision.error, frame.opcode);
-        let mut dispatch = RecvData {
-            // SAFETY: plain integers.
-            info: unsafe { std::mem::zeroed() },
-            data: data.wrapping_add(decision.offset),
-        };
-        dispatch.info.ext_flags = decision.ext_flags;
+        if decision.error != PolicyError::None {
+            policy_warning(conn, decision.error, frame.opcode);
+        }
         #[expect(
             clippy::cast_possible_truncation,
             reason = "a payload inside a uint32_t-sized frame"
         )]
-        let payload = decision.length as u32;
-        dispatch.info.len = payload;
+        let mut dispatch = RecvData {
+            info: DataHead {
+                len: decision.length as u32,
+                ext_flags: decision.ext_flags,
+                ..DataHead::default()
+            },
+            data: data.wrapping_add(decision.offset),
+        };
         match decision.action {
             Action::Reject => return -1,
             Action::Start => {

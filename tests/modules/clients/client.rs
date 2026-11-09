@@ -146,8 +146,8 @@ unsafe extern "C" {
     fn swoole_client_create(kind: c_int, is_async: bool, error: *mut c_int) -> *mut c_void;
     fn swoole_client_free(cli: *mut c_void);
     fn swoole_client_state(cli: *mut c_void) -> *mut c_void;
-    fn swoole_client_async_listen(
-        cli: *mut c_void,
+    fn swr_v1_clients_listen(
+        state: *mut c_void,
         object: *mut c_void,
         events: u32,
         listener: Listener,
@@ -410,7 +410,7 @@ impl<'a> Client<'a> {
         }
         let object = std::ptr::from_ref(self).cast_mut().cast();
         // SAFETY: the boxed client outlives its callbacks.
-        unsafe { swoole_client_async_listen(self.ptr, object, events, listener) };
+        unsafe { swr_v1_clients_listen(swoole_client_state(self.ptr), object, events, listener) };
     }
 
     fn on_connect(&self, body: impl FnMut(&Client<'a>) + 'a) {

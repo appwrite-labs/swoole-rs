@@ -14,6 +14,13 @@ pub struct Registry {
     sockets: Sockets,
 }
 
+impl Registry {
+    /// How many fds are registered.
+    pub(crate) fn count(&self) -> usize {
+        self.sockets.len()
+    }
+}
+
 /// The table slot for `fd`; none for a negative fd, which is never registered.
 fn slot(fd: c_int) -> Option<usize> {
     usize::try_from(fd).ok()

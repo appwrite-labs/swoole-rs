@@ -2,8 +2,7 @@
 
 Upstream's poll/epoll/kqueue backends are Rust over the reactor state
 (`crates/reactor/src/reactor_state.rs`, `wait_loop.rs`, `change.rs`); the C++
-constructor, destructor and `wait()` in `reactor.cc` pass it the effects over C++
-objects.
+constructor and destructor in `reactor.cc` open and close it.
 
 ## Construction
 
@@ -13,11 +12,9 @@ priority, then runtime-enabled kqueue, then poll. An explicitly requested but
 uncompiled type keeps its original `type_` value while selecting poll. kqueue
 enablement is observed only when Rust asks at the AUTO decision point.
 
-`swr_v1_reactor_init_next` then requests, in order: readiness observation, field
-initialization, create-hook observation/invocation, defer-end/defer-exit/idle
-installation, main-thread observation/signal installation, try-exit
-installation, a fresh trim main-thread observation/installation, and
-default-exit installation. C++ executes each action after Rust returns.
+Once the backend is ready the constructor sets the write functions and timeout,
+calls the create hook, then `swr_v1_reactor_install_builtins` sets the built-in end
+callbacks and exit conditions ([callbacks.md](callbacks.md)).
 
 ## Registration
 
@@ -25,8 +22,8 @@ default-exit installation. C++ executes each action after Rust returns.
 
 ## Wait
 
-`Reactor::wait()` is one Rust call over the reactor state, `swr_v1_reactor_wait`
-(#336, #391, #448). Rust runs upstream's `ReactorEpoll`/`ReactorKqueue`/`ReactorPoll::wait`:
+`Reactor::wait()` is Rust under its upstream symbol (`callbacks.rs`, over
+`wait_loop.rs`; #336, #391, #448). Rust runs upstream's `ReactorEpoll`/`ReactorKqueue`/`ReactorPoll::wait`:
 `before_wait`, begin, the kernel wait over the state's own arrays (zero timeout
 while deferred work is queued), `catch_error`'s EINTR test, result, end and once
 sequencing, decoding each `pollfd`, `epoll_event` or `kevent` entry (idle poll
@@ -36,8 +33,8 @@ each guarded by a fresh `removed` read. kqueue routes socket, signal and unknown
 entries. An uncaught wait failure returns 0 for poll and `SW_ERR` for
 epoll/kqueue. Warnings keep each backend's upstream function name.
 
-C++ passes the begin/end callbacks (which hold `std::function`s) and io_uring's
-EINTR handler as `swr_v1_reactor_wait_ops`. Handlers run from the Rust tables as
+Begin runs the future task, end the end callbacks; with the `iouring` feature an
+EINTR runs io_uring's handler. Handlers run from the Rust tables as
 `handler(reactor, event)`.
 
 The kqueue timeout gives a positive millisecond timeout priority over deferred

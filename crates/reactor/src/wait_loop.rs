@@ -15,16 +15,15 @@ pub const POLL: u32 = 0;
 pub const EPOLL: u32 = 1;
 pub const KQUEUE: u32 = 2;
 
-/// Native effects for one `wait()`. Every function receives `reactor`.
-#[repr(C)]
-pub struct WaitOps {
+/// The effects of one `wait()`. Every function receives `reactor`.
+pub(crate) struct WaitOps {
     /// The native `Reactor`; each handler runs as `handler(reactor, event)`.
-    pub reactor: *mut c_void,
-    pub begin: unsafe extern "C" fn(*mut c_void),
-    pub end: unsafe extern "C" fn(*mut c_void, c_int),
+    pub(crate) reactor: *mut c_void,
+    pub(crate) begin: fn(*mut c_void),
+    pub(crate) end: fn(*mut c_void, bool),
     /// epoll with `io_uring` only: `interrupt` runs the EINTR handler when `interrupted`.
-    pub interrupted: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
-    pub interrupt: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub(crate) interrupted: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    pub(crate) interrupt: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 /// Upstream's `swoole::Event`.
@@ -74,12 +73,9 @@ fn mask(read: bool, write: bool, hangup: bool) -> u32 {
 /// Upstream's `wait()` for the state's backend: 0 when the loop stops (and when poll fails
 /// uncaught), -1 when epoll or kqueue fail uncaught.
 /// # Safety
-/// `owner` is a live state with an open backend and `ops` is live for the call. No reference to
-/// the state crosses a native effect, so effects may change it through its native views.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_wait(owner: *mut ReactorState, ops: *const WaitOps) -> i32 {
-    // SAFETY: per the contract, `ops` is live for this call.
-    let ops = unsafe { &*ops };
+/// `owner` is a live state with an open backend. No reference to the state crosses an
+/// effect, so effects may change it through its native views.
+pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
     let reactor = ops.reactor;
     // SAFETY: the state is live; the backend's arrays stay put until the state closes it.
     let view = unsafe { swr_v1_reactor_state_backend(owner) };
@@ -118,8 +114,7 @@ pub unsafe extern "C" fn swr_v1_reactor_wait(owner: *mut ReactorState, ops: *con
     unsafe { before_wait(owner) };
     // SAFETY: single field reads; effects may change the field between them.
     while unsafe { running.read() } {
-        // SAFETY: the native effect accepts `reactor`.
-        unsafe { (ops.begin)(reactor) };
+        (ops.begin)(reactor);
         let mut entries: c_int = 0;
         // SAFETY: a single field read of the live state; deferred work waits without blocking.
         let deferred = !unsafe { (*fields).defer_tasks }.is_null();
@@ -143,8 +138,7 @@ pub unsafe extern "C" fn swr_v1_reactor_wait(owner: *mut ReactorState, ops: *con
                 }
             }
             core::cmp::Ordering::Equal => {
-                // SAFETY: the native effect accepts `reactor`.
-                unsafe { (ops.end)(reactor, 1) };
+                (ops.end)(reactor, true);
                 // SAFETY: a single field read.
                 if unsafe { once.read() } {
                     break;
@@ -159,8 +153,7 @@ pub unsafe extern "C" fn swr_v1_reactor_wait(owner: *mut ReactorState, ops: *con
                 }
             }
         }
-        // SAFETY: the native effect accepts `reactor`.
-        unsafe { (ops.end)(reactor, 0) };
+        (ops.end)(reactor, false);
         // SAFETY: a single field read.
         if unsafe { once.read() } {
             break;
@@ -512,7 +505,7 @@ mod tests {
         EFFECTS.with(|effects| effects.borrow_mut().push(name));
     }
 
-    unsafe extern "C" fn begin(reactor: *mut c_void) {
+    fn begin(reactor: *mut c_void) {
         effect("begin");
         let probe = unsafe { &mut *reactor.cast::<Probe>() };
         if probe.begin_stops {
@@ -520,8 +513,8 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn end(reactor: *mut c_void, timed_out: c_int) {
-        effect(if timed_out != 0 { "end-timeout" } else { "end" });
+    fn end(reactor: *mut c_void, timed_out: bool) {
+        effect(if timed_out { "end-timeout" } else { "end" });
         let probe = unsafe { &mut *reactor.cast::<Probe>() };
         probe.cycles += 1;
         if probe.cycles == 2 {
@@ -632,10 +625,7 @@ mod tests {
             interrupted: None,
             interrupt: None,
         };
-        assert_eq!(
-            unsafe { swr_v1_reactor_wait(state.owner, &raw const ops) },
-            0
-        );
+        assert_eq!(unsafe { wait(state.owner, &ops) }, 0);
         let removed = socket.removed != 0;
         unsafe {
             assert!((*state.fields).start);
