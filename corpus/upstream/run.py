@@ -147,6 +147,12 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "worker's close event for fd-1 races the master freeing its connections at shutdown; "
         'losing it, onClose never logs `close: fd-1` (upstream 27/30, hybrid 23/30, cargo 21/30 '
         'in the aarch64 dev image; closing the client 200 ms before the kill, 20/20, #2018)',
+        'tests/swoole_server/discard_timeout_packet.phpt':
+        "the client has sent and closed before the server accepts, so the reactor thread "
+        "dispatches the first packet and closes the session on the FIN one epoll pass later; "
+        "the worker, woken by that packet, discards it only if the close came first. Idle, "
+        'upstream 19/19, hybrid 25/31; with a timestamp write around each client step, upstream '
+        '9/10 and hybrid 9/10; with a user process polling exist(), upstream 6/10, hybrid 7/10 (#2097)',
         'tests/swoole_server/kill_user_process_01.phpt':
         "the same 10 ms restart window as kill_user_process_02, checked by `ps` after SIGTERM: "
         'under CI load both engines miss it (shards failed upstream 4/6, hybrid 4/6 over six '

@@ -18,7 +18,7 @@ use swoole_rs_oracle::{
 };
 
 mod network;
-pub use network::{dns_reply, http_chunked, http2_frame, multipart, resp_server};
+pub use network::{dns_reply, http_chunked, http2_frame, http2_hpack, multipart, resp_server};
 use swoole_rs_websocket::{DecodedFrame, swr_v1_ws_decode, swr_v1_ws_frame_length, swr_v1_ws_mask};
 
 const RED_ZONE: usize = 17;
@@ -83,6 +83,10 @@ mod request {
         (r.url_offset, r.url_length) = (s.url_offset, s.url_length);
         (r.request_line_length, r.header_length) = (s.line_length, s.header_length);
         r.content_length = s.content_length;
+        (r.max_length, r.too_large, r.chunk_state) =
+            (s.max_length, s.too_large != 0, s.chunk_state as u8);
+        (r.chunk_length, r.chunk_offset, r.chunk_scan_offset) =
+            (s.chunk_length, s.chunk_offset, s.chunk_scan_offset);
         r.buffer = &raw mut buffer;
         let result = match operation {
             0 => r.get_protocol(),
@@ -100,6 +104,12 @@ mod request {
             url_length: r.url_length,
             line_length: r.request_line_length,
             header_length: r.header_length,
+            max_length: r.max_length,
+            too_large: r.too_large.into(),
+            chunk_state: r.chunk_state.into(),
+            chunk_length: r.chunk_length,
+            chunk_offset: r.chunk_offset,
+            chunk_scan_offset: r.chunk_scan_offset,
         };
         result
     }
@@ -128,7 +138,6 @@ mod request {
                 flags: u32::from(r.known_length)
                     | u32::from(r.keep_alive) << 1
                     | u32::from(r.chunked) << 2
-                    | u32::from(r.nobody_chunked) << 3
                     | u32::from(r.header_parsed) << 4
                     | u32::from(r.excepted) << 5,
                 error: ERRNO.get(),
@@ -444,31 +453,6 @@ fn terminated(data: &[u8]) -> Vec<c_char> {
         .collect()
 }
 
-/// Whether this chunk length is outside the compared domain.
-fn huge_chunk(data: &[u8]) -> bool {
-    let mut at = 0;
-    while at < data.len() {
-        let length = data[at..]
-            .iter()
-            .take_while(|byte| byte.is_ascii_hexdigit())
-            .count();
-        if length == 0 {
-            at += 1;
-            continue;
-        }
-        let digits = &data[at..at + length];
-        let nonzero = digits.iter().position(|&byte| byte != b'0');
-        let sign = at.checked_sub(1).map(|before| data[before]);
-        let prefixed = at >= 3 && matches!(data[at - 1], b'x' | b'X') && data[at - 2] == b'0';
-        let negated = sign == Some(b'-') || prefixed && data[at - 3] == b'-';
-        if nonzero.is_some_and(|first| length - first > 12 || negated) {
-            return true;
-        }
-        at += length;
-    }
-    false
-}
-
 fn frame(
     engine: &Engine,
     operation: u32,
@@ -482,7 +466,8 @@ fn frame(
 }
 
 /// get_protocol, get_header_length or get_chunked_body_length on both engines
-/// from the same offset, header length and request state.
+/// from the same offset, header length and request state; a chunked body under a
+/// package_max_length of half the input or none.
 pub fn http_frame(bytes: &[u8]) {
     let Some((&[control, offset_low, offset_high, header_low, header_high], data)) =
         bytes.split_first_chunk::<5>()
@@ -494,6 +479,11 @@ pub fn http_frame(bytes: &[u8]) {
     let mut state = http_frame::State {
         offset: bound(offset_low, offset_high),
         header_length: bound(header_low, header_high) as u32,
+        max_length: if control & 0x40 != 0 {
+            (data.len() / 2) as u32
+        } else {
+            u32::MAX
+        },
         ..Default::default()
     };
     if control & 0x80 != 0 {
@@ -509,10 +499,6 @@ pub fn http_frame(bytes: &[u8]) {
         };
     }
     let got = frame(&CANDIDATE, operation, data, state);
-    // Outside the compared domain.
-    if operation == 2 && huge_chunk(&data[state.offset..]) {
-        return;
-    }
     let want = frame(&UPSTREAM, operation, data, state);
     // Outside the compared domain the candidate must wait for more data.
     if operation == 0 && want.0 == 0 && want.1.offset > data.len() {
@@ -1090,7 +1076,10 @@ pub fn socks5(bytes: &[u8]) {
 /// matches any run of bytes without a `.`.
 pub fn sni_wildcard(bytes: &[u8]) {
     let mut names = bytes.split(|&b| b == 0);
-    let (subject, cert) = (names.next().unwrap_or_default(), names.next().unwrap_or_default());
+    let (subject, cert) = (
+        names.next().unwrap_or_default(),
+        names.next().unwrap_or_default(),
+    );
     assert_eq!(
         swoole_rs_utilities::sni_wildcard_matches(subject, cert),
         sni_glob(&subject.to_ascii_lowercase(), &cert.to_ascii_lowercase()),
@@ -1106,7 +1095,10 @@ fn sni_glob(subject: &[u8], cert: &[u8]) -> bool {
         return false;
     };
     let (prefix, tail) = (&cert[..star], &cert[star + 1..]);
-    let Some(after) = subject.strip_prefix(prefix).filter(|_| !prefix.contains(&b'.')) else {
+    let Some(after) = subject
+        .strip_prefix(prefix)
+        .filter(|_| !prefix.contains(&b'.'))
+    else {
         return false;
     };
     (0..=after.len())

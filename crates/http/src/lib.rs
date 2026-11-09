@@ -33,7 +33,7 @@ pub use dispatch::{
     swr_v1_http_proxy_auth_enabled, swr_v1_http_transport_route, swr_v1_http_unknown_status,
 };
 mod framing;
-pub use framing::{HttpChunkStep, HttpFrame, swr_v1_http_expect};
+pub use framing::{HttpFrame, swr_v1_http_expect};
 mod headers;
 mod index_page;
 pub use headers::{HttpCookie, HttpHeaderInfo, swr_v1_http_cookie_next};

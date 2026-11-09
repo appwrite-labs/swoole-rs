@@ -1,13 +1,13 @@
 {
-  "plaintext": 1.03,
-  "echo-1k": 1.03,
-  "json": 1.03,
-  "service-health": 1.01,
-  "websocket": 1.15,
-  "timer": 0.83,
-  "app": 1.15,
-  "http2": 1.32,
+  "plaintext": 1.00,
+  "echo-1k": 1.00,
+  "json": 1.00,
+  "service-health": 0.98,
+  "websocket": 0.87,
+  "timer": 0.72,
+  "app": 0.96,
+  "http2": 1.10,
   "table": 1.20,
   "channel": 0.92,
-  "task": 1.56
+  "task": 1.31
 }

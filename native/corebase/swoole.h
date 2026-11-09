@@ -213,7 +213,6 @@ bool swoole_get_env(const char *name, int *value);
 void swoole_init();
 void swoole_exit(int _status);
 pid_t swoole_fork(int flags);
-pid_t swoole_fork_exec(const std::function<void()> &child_fn);
 pid_t swoole_waitpid(pid_t _pid, int *_stat_loc, int _options);
 void swoole_thread_init(bool main_thread = false);
 void swoole_thread_clean(bool main_thread = false);

@@ -187,6 +187,12 @@ pub mod http_frame {
         pub url_length: u32,
         pub line_length: u32,
         pub header_length: u32,
+        pub max_length: u32,
+        pub too_large: u32,
+        pub chunk_state: u32,
+        pub chunk_length: usize,
+        pub chunk_offset: usize,
+        pub chunk_scan_offset: usize,
     }
 
     /// Request framing from one engine: `UPSTREAM` is the pinned http.cc; a candidate
@@ -217,7 +223,7 @@ pub mod http_frame {
     }
 
     /// The request after `parse_header_info`. Flags: `known_length` 1, `keep_alive`
-    /// 2, `chunked` 4, `nobody_chunked` 8, `header_parsed` 16, `excepted` 32. Without
+    /// 2, `chunked` 4, `header_parsed` 16, `excepted` 32. Without
     /// a multipart Content-Type, `boundary_offset` is -1.
     #[repr(C)]
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -855,6 +861,40 @@ pub mod multipart {
             length: usize,
         ) -> isize;
         pub fn multipart_parser_free(parser: *mut c_void);
+    }
+}
+
+/// The bundled nghttp2 HPACK inflater the HTTP/2 server and client decode headers with.
+pub mod nghttp2 {
+    use core::ffi::{c_int, c_void};
+
+    /// `nghttp2_nv`.
+    #[repr(C)]
+    pub struct Nv {
+        pub name: *const u8,
+        pub value: *const u8,
+        pub name_length: usize,
+        pub value_length: usize,
+        pub flags: u8,
+    }
+
+    /// `NGHTTP2_HD_INFLATE_FINAL`.
+    pub const INFLATE_FINAL: c_int = 1;
+    /// `NGHTTP2_HD_INFLATE_EMIT`.
+    pub const INFLATE_EMIT: c_int = 2;
+
+    unsafe extern "C" {
+        pub fn nghttp2_hd_inflate_new(inflater: *mut *mut c_void) -> c_int;
+        pub fn nghttp2_hd_inflate_del(inflater: *mut c_void);
+        pub fn nghttp2_hd_inflate_hd(
+            inflater: *mut c_void,
+            nv: *mut Nv,
+            flags: *mut c_int,
+            input: *const u8,
+            length: usize,
+            in_final: c_int,
+        ) -> isize;
+        pub fn nghttp2_hd_inflate_end_headers(inflater: *mut c_void) -> c_int;
     }
 }
 

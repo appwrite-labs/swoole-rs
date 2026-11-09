@@ -41,7 +41,8 @@ fn number(input: &[u8]) -> (u64, u32) {
 pub struct HttpHeaderInfo {
     pub cursor: usize,
     pub content_length: u64,
-    /// known1,keepalive2,chunked4,nobody8,parsed16. Bits only become set.
+    /// known1,keepalive2,chunked4,transfer-encoding8,parsed16,codings ending in
+    /// chunked32,a coding after chunked64. Bits only become set.
     pub flags: u32,
     /// Bit1=range error seen,bit2=last numeric error had no digits. Native
     /// reproduces libc errno policy after return, before native allocation.
@@ -109,9 +110,26 @@ pub(crate) fn header_info(
                         }
                     }
                     3 => {
-                        if starts(tail(head, at), b"chunked") {
-                            state.flags |= 4;
+                        // The list of codings, up to the line's CR.
+                        let value = input.get(at..end + 2).unwrap_or_default();
+                        let length = memchr::memchr(b'\r', value).unwrap_or(value.len());
+                        state.flags |= 8;
+                        let codings = value.get(..length).unwrap_or_default();
+                        for mut coding in codings.split(|&b| b == b',') {
+                            while let [b' ' | b'\t', rest @ ..] = coding {
+                                coding = rest;
+                            }
+                            while let [rest @ .., b' '] = coding {
+                                coding = rest;
+                            }
+                            if state.flags & 32 != 0 {
+                                state.flags |= 64;
+                            }
+                            if coding.eq_ignore_ascii_case(b"chunked") {
+                                state.flags |= 32;
+                            }
                         }
+                        at += length;
                     }
                     4 => {
                         if starts(tail(head, at), b"multipart/form-data") {
@@ -138,10 +156,15 @@ pub(crate) fn header_info(
         at += 1;
     }
     state.cursor = at;
-    state.flags |= 16;
-    if state.flags & 5 == 5 && state.content_length == 0 {
-        state.flags |= 8;
+    // Transfer-Encoding frames the body only when chunked is its final coding.
+    if state.flags & 8 != 0 {
+        if state.flags & 96 != 32 {
+            state.flags |= 16;
+            return INVALID;
+        }
+        state.flags |= 4;
     }
+    state.flags |= 16;
     0
 }
 #[repr(C)]
@@ -297,7 +320,7 @@ mod tests {
             header_info(input, input.len() - 4, &mut state, &mut span),
             0
         );
-        assert_eq!(state.flags, 29);
+        assert_eq!(state.flags, 61);
     }
     #[test]
     fn only_lines_after_crlf_before_end_count() {

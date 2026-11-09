@@ -1,8 +1,11 @@
 //! Swoole's memory pools and collections: fixed, global and ring pools, the heap,
 //! channel, shared mappings and the shared-memory table.
-#![expect(
-    clippy::disallowed_types,
-    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+#![cfg_attr(
+    test,
+    expect(
+        clippy::disallowed_types,
+        reason = "the tests check against std model collections"
+    )
 )]
 #![expect(
     clippy::missing_safety_doc,

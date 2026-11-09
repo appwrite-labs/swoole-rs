@@ -476,9 +476,10 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_FORK_MANAGER => {
-            let fork = swoole_rs_corebase::swr_v1_core_fork_exec;
-            // SAFETY: the child runs the manager over the live server.
-            signed(unsafe { fork(manager_main, ctx.serv.cast_const()) })
+            let serv = ctx.serv;
+            signed(swoole_rs_corebase::fork_exec(|| {
+                run_manager(serv, RUN_MANAGER_MAIN, 0);
+            }))
         }
         OP_SIGNAL_SET => {
             // SAFETY: Rust's signal handler for the manager.
@@ -548,11 +549,6 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         _ => return None,
     })
-}
-
-/// The manager process `OP_FORK_MANAGER` forks: `Server::start_manager_process`'s child.
-extern "C-unwind" fn manager_main(serv: *const c_void) {
-    run_manager(serv.cast_mut(), RUN_MANAGER_MAIN, 0);
 }
 
 /// `Manager_signal_handler`: the manager's signals over `SwooleG.server`.

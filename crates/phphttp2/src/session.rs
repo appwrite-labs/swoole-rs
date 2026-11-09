@@ -8,6 +8,7 @@ use libc::c_void;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
     rc::Rc,
 };
 use swoole_rs_http2::sw_rs_http2_default_settings;
@@ -26,12 +27,39 @@ pub struct SessionRequest {
 pub type SessionHandler = unsafe extern "C" fn(*mut c_void);
 
 pub(crate) type Session = Rc<SessionState>;
+
+/// Session fds and stream ids are small native counters, never peer-chosen
+/// hash keys: hash them by a multiply instead of `SipHash`.
+#[derive(Default)]
+pub(crate) struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(byte);
+        }
+    }
+
+    fn write_u32(&mut self, id: u32) {
+        self.0 = u64::from(id);
+    }
+
+    fn write_i64(&mut self, fd: i64) {
+        self.0 = fd.cast_unsigned();
+    }
+}
+
+pub(crate) type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<IdHasher>>;
 pub(crate) type Stream = Rc<StreamState>;
 
 /// `http2::Session`.
 pub(crate) struct SessionState {
     fd: i64,
-    streams: RefCell<HashMap<u32, Stream>>,
+    streams: RefCell<IdMap<u32, Stream>>,
     pub(crate) inflater: Cell<*mut c_void>,
     pub(crate) deflater: Cell<*mut c_void>,
     /// `local_settings`, in `swoole::http2::Settings` order; never changed.
@@ -61,7 +89,7 @@ pub(crate) struct StreamState {
 }
 
 thread_local! {
-    static SESSIONS: RefCell<HashMap<i64, Session>> = RefCell::new(HashMap::new());
+    static SESSIONS: RefCell<IdMap<i64, Session>> = RefCell::new(IdMap::default());
 }
 
 fn defaults() -> [u32; 6] {
@@ -92,7 +120,7 @@ impl SessionState {
         let local = defaults();
         Self {
             fd,
-            streams: RefCell::new(HashMap::new()),
+            streams: RefCell::new(IdMap::default()),
             inflater: Cell::new(std::ptr::null_mut()),
             deflater: Cell::new(std::ptr::null_mut()),
             local,

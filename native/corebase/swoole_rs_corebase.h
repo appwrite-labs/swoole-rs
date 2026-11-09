@@ -27,10 +27,8 @@ struct swr_v1_corebase_mkdir_state {
 };
 int32_t swr_v1_corebase_mkdir_next(const uint8_t *input, size_t input_length, uint8_t *output,
                                  size_t capacity, struct swr_v1_corebase_mkdir_state *state);
-/* swoole_fork_exec's fork: the child runs call(function) and exits 0; the parent
- * gets the pid, 0 when fork fails. call may throw. Rust also defines swoole_fork,
- * swoole_clean, swoole_thread_init/_clean and swoole_is_main_thread. */
-pid_t swr_v1_core_fork_exec(void (*call)(const void *function), const void *function);
+/* Rust also defines swoole_fork, swoole_clean, swoole_thread_init/_clean and
+ * swoole_is_main_thread. */
 /* swoole_init's body (crates/corebase/src/lifecycle.rs), which globals.cc's
  * swoole_init calls once it has registered the native effects. */
 void swr_v1_core_swoole_init(void);

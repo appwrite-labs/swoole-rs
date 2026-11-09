@@ -81,7 +81,7 @@ struct Request {
     bool known_length;
     bool keep_alive;
     bool chunked;
-    bool nobody_chunked;
+    uint8_t chunk_state;
 
     uint32_t url_offset_;
     uint32_t url_length_;
@@ -94,6 +94,9 @@ struct Request {
     FormData *form_data_;
     String *buffer_;
     uint64_t (*native_)(uint32_t, void *, const uint8_t *, uint64_t, uint64_t);
+    size_t chunk_length_;
+    size_t chunk_offset_;
+    size_t chunk_scan_offset_;
 
     Request() {
         swr_v3_http_request_init(this);
@@ -110,7 +113,7 @@ struct Request {
 };
 static_assert(offsetof(Request, url_offset_) == 12 && offsetof(Request, content_length_) == 32 &&
                   offsetof(Request, form_data_) == 40 && offsetof(Request, buffer_) == 48 &&
-                  offsetof(Request, native_) == 56 && sizeof(Request) == 64,
+                  offsetof(Request, native_) == 56 && sizeof(Request) == 88,
               "crates/http/src/request.rs mirrors Request");
 
 int get_method(const char *method_str, size_t method_len);

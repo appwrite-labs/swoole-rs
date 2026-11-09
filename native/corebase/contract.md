@@ -63,7 +63,7 @@ string needing an appended slash are undefined upstream; Rust rejects them.
 
 Rust defines `swoole_thread_init`, `swoole_thread_clean`, `swoole_is_main_thread`,
 `swoole_clean` and `swoole_fork` under their C++ symbols, `swoole_init`'s body
-(`swr_v1_core_swoole_init`) and `swoole_fork_exec`'s fork (`swr_v1_core_fork_exec`).
+(`swr_v1_core_swoole_init`) and `swoole_fork_exec` (`fork_exec`, which crates/server's manager calls).
 Each C++ effect (an object's `new`/`delete`, `swoole_init`'s native leaves, the
 timer, event, signal and coroutine leaves) is an entry of the host globals.cc's
 `swoole_init` registers (`swr_v1_core_native_host`) before it runs the body;

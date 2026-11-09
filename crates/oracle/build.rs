@@ -137,6 +137,10 @@ fn http_frame() {
         "void Request::parse_header_info(",
         "int Request::get_protocol(",
         "int Request::get_header_length(",
+        "static bool is_http_token_char(",
+        "static bool is_http_quoted_char(",
+        "static bool is_http_quoted_pair_char(",
+        "static ChunkSizeResult parse_chunk_size(",
         "int Request::get_chunked_body_length(",
         "bool Request::has_expect_header(",
         "std::string Request::get_header(",
@@ -150,6 +154,8 @@ fn http_frame() {
     let enums = [
         slice(&header, "enum swHttpVersion {", "\n};") + "\n};\n",
         slice(&header, "enum swHttpMethod {", "\n};") + "\n};\n",
+        slice(&header, "enum ChunkState {", "\n};") + "\n};\n",
+        slice(&header, "enum ChunkSizeResult {", "\n};") + "\n};\n",
     ];
     fs::write(out("http_frame_enums.inc"), enums.concat()).unwrap();
 }
@@ -695,6 +701,22 @@ fn main() {
         )
         .extra_warnings(false)
         .compile("swoole_oracle_llhttp");
+    // The bundled nghttp2 HPACK coder the HTTP/2 server and client link.
+    cc::Build::new()
+        .files(
+            [
+                "nghttp2_hd.c",
+                "nghttp2_rcbuf.c",
+                "nghttp2_helper.c",
+                "nghttp2_buf.c",
+                "nghttp2_mem.c",
+                "nghttp2_hd_huffman.c",
+                "nghttp2_hd_huffman_data.c",
+            ]
+            .map(|file| format!("upstream/thirdparty/nghttp2/{file}")),
+        )
+        .extra_warnings(false)
+        .compile("swoole_oracle_nghttp2");
     cpp()
         .define("SWR_PROTO_ENGINE", "candidate")
         .define("SWR_PROTO_INC", "\"protocols_candidate.inc\"")
