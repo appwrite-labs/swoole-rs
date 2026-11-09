@@ -312,7 +312,8 @@ def plan(args, reports):
         script('corebase-native', 'tests/modules/corebase/differential.py', '--source', ROOT / 'target/upstream/src',
                '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a', '--sanitize', *includes, *report('corebase-native'))
         if integrate:
-            script('corebase-startup', 'tests/modules/corebase/mkdir_startup.py', *php, *engines, *report('corebase-startup'))
+            script('corebase-startup', 'tests/modules/corebase/mkdir_startup.py', *php, *engines,
+                   '--build-manifest', built, *report('corebase-startup'))
     if 'tls' in modules:
         script('tls-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src',
                '--include-tls', *report('tls-constants'))

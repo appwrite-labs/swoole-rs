@@ -485,6 +485,7 @@ class Lanes(unittest.TestCase):
                      'crc32-consumers-upstream','crc32-consumers-hybrid',
                      'corebase-startup','corebase-record-views']:
             self.assertIn(name,commands)
+        self.assertIn('--build-manifest', commands['corebase-startup'])
         self.assertNotIn('coroutine-native-originals', commands)
         # Upstream PHPTs run in the merge tier's phpt-* jobs, not as per-module phases (#83).
         self.assertNotIn('phpt', commands)
