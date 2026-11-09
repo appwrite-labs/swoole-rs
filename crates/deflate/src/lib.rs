@@ -7,7 +7,9 @@
 use std::ffi::c_int;
 
 pub use swoole_rs_zlib::Allocator;
-use swoole_rs_zlib::{Stream, Z_BUF_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH};
+use swoole_rs_zlib::{
+    CHUNK, Stream, Z_BUF_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
+};
 
 /// `deflateInit2`'s window bits for gzip and zlib (`SW_ZLIB_ENCODING_*`).
 pub const GZIP: c_int = 0x1f;
@@ -50,11 +52,23 @@ pub fn compress(
 ) -> Result<usize, Failure> {
     let mut stream =
         Stream::deflate(level, window_bits, MEM_LEVEL, allocator).map_err(Failure::Init)?;
-    let step = stream.run(&mut &data[..], out, Z_FINISH);
-    if step.status != Z_STREAM_END {
-        return Err(Failure::Deflate(step.status));
+    let (mut data, mut written) = (data, 0);
+    loop {
+        // One Z_FINISH over the whole body, as upstream; a body past zlib's
+        // `uInt` goes in with Z_NO_FLUSH first rather than being cut off.
+        let flush = if data.len() <= CHUNK {
+            Z_FINISH
+        } else {
+            Z_NO_FLUSH
+        };
+        let step = stream.run(&mut data, out.get_mut(written..).unwrap_or_default(), flush);
+        written += step.written;
+        match step.status {
+            Z_STREAM_END => return Ok(written),
+            Z_OK if flush == Z_NO_FLUSH => {}
+            status => return Err(Failure::Deflate(status)),
+        }
     }
-    Ok(step.written)
 }
 
 /// Why [`message`] failed.

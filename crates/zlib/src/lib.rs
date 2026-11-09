@@ -20,6 +20,9 @@ use libz_sys::{
     free_func, inflate, inflateEnd, inflateInit2_, uInt, uLong, z_stream, z_streamp, zlibVersion,
 };
 
+/// The most input or output one [`Stream::run`] hands zlib (its `uInt`).
+pub const CHUNK: usize = uInt::MAX as usize;
+
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
