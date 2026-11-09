@@ -438,8 +438,7 @@ impl Socket {
             socket_ssl_get_peer_cert_chain, swr_v1_socket_ssl_read_x509,
         };
         self.with_record(Vec::new(), |record| {
-            // SAFETY: a live record.
-            let chain = unsafe { socket_ssl_get_peer_cert_chain(record) }.cast::<OPENSSL_STACK>();
+            let chain = socket_ssl_get_peer_cert_chain(record).cast::<OPENSSL_STACK>();
             if chain.is_null() {
                 return Vec::new();
             }

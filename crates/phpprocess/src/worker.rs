@@ -5,7 +5,7 @@ use std::ffi::{c_char, c_int, c_void};
 use swoole_rs_process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
     worker_globals::thread_globals,
-    worker_record::{Worker, WorkerRecord},
+    worker_record::WorkerRecord,
 };
 use swoole_rs_reactor::{
     SocketRecord,
@@ -55,7 +55,7 @@ pub(crate) struct WorkerView {
     pub redirect_stderr: bool,
 }
 
-fn record<'a>(worker: *mut c_void) -> &'a mut WorkerRecord {
+pub(crate) fn record<'a>(worker: *mut c_void) -> &'a mut WorkerRecord {
     // SAFETY: every caller passes a live worker this process owns or copied.
     unsafe { &mut *worker.cast::<WorkerRecord>() }
 }
@@ -96,9 +96,9 @@ pub(crate) fn redirect(worker: *mut c_void) {
 }
 
 pub(crate) fn set_id(worker: *mut c_void, id: u32) {
-    // SAFETY: a live worker.
-    unsafe { Worker::new(worker.cast()).set_id(id) };
-    record(worker).shared = false;
+    let record = record(worker);
+    record.set_id(id);
+    record.shared = false;
 }
 
 /// A `UnixSocket` of `socket_type` for the worker; the master end's fd, or -1.
@@ -152,8 +152,7 @@ pub(crate) fn view(worker: *mut c_void) -> WorkerView {
 pub(crate) fn fork(worker: *mut c_void) -> c_int {
     let pid = swoole_rs_corebase::swoole_fork(0);
     if pid > 0 {
-        // SAFETY: a live worker.
-        unsafe { Worker::new(worker.cast()).set_pid(pid) };
+        record(worker).set_pid(pid);
     }
     if pid >= 0 {
         record(worker).child_process = u8::from(pid == 0);
@@ -163,8 +162,7 @@ pub(crate) fn fork(worker: *mut c_void) -> c_int {
 
 /// In the child: the worker end becomes the pipe and the worker this process's.
 pub(crate) fn child_enter(worker: *mut c_void) {
-    // SAFETY: getpid has no preconditions.
-    let pid = unsafe { libc::getpid() };
+    let pid = swoole_rs_process::os::getpid();
     let process = record(worker);
     process.pipe_current = process.pipe_worker;
     process.set_pid(pid);

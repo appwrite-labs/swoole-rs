@@ -80,7 +80,9 @@ def main():
     run = {**os.environ, 'USE_ZEND_ALLOC': '0', 'PATH': f"{php / 'bin'}{os.pathsep}{os.environ['PATH']}"}
 
     canary = OUT / 'canary.so'
-    subprocess.run(['rustc', '--edition=2024', '--crate-type=cdylib', *rust['RUSTFLAGS'].split(), '-o', canary,
+    # Against the prebuilt, uninstrumented std: the race is in the canary's own code.
+    subprocess.run(['rustc', '--edition=2024', '--crate-type=cdylib', *rust['RUSTFLAGS'].split(),
+                    '-Cunsafe-allow-abi-mismatch=sanitizer', '-o', canary,
                     ROOT / 'tools/tsan_canary.rs'], env={**os.environ, **rust}, check=True)
     subprocess.run([php / 'bin/php', '-n', '-r', ''], env={**run, **sanitized(reports, 'canary'), 'LD_PRELOAD': str(canary)})
     if not any((reports / 'canary').iterdir()):
