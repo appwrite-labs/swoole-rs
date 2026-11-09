@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Build swoole.so with Cargo alone (crates/ext): no phpize, configure or make.
 
-crates/ext's build.rs compiles native/ and the bundled thirdparty C from the patched tree this
-prepares in target/ext/src, then the extension is checked to load and report the pinned version.
+crates/ext's build.rs compiles native/ and the bundled thirdparty C from the unpatched pin it
+checks out in target/ext/src (native/swoole-src owns the files it changes), then the extension
+is checked to load and report the pinned version.
 Prints `Built cargo: <path>` (target/ext/swoole.so) and writes target/ext/build-manifest.json,
 which tools/ext_identity.py checks gates' engines against. `--php-sockets`, `--stdext`, `--fix-halfclose`
 and build_hybrid's `--configure` switches turn on the crates/ext feature of the same build profile.
@@ -26,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.build_hybrid import HOOK_SWITCHES, MODULES, headers_for
 from tools.build_upstream import COMMIT, VERSION
 from tools.harness import ROOT
-from tools.patches import apply
+from tools.patches import clone_pin, git
 
 # crates/ext's features that are swoole-rs-ffi's too: the Zend-free archive's build profile.
 FFI_FEATURES = {'sockets', 'stdext', 'halfclose', 'iouring', 'cares', 'pgsql', 'odbc', 'firebird', 'sqlite', 'oci', 'curl', 'ssh2'}
@@ -60,6 +61,16 @@ def sdk(messages, features, profile, env):
     for header in headers_for(MODULES):
         shutil.copy2(header, root / 'include' / header.name)
     shutil.copy2(out / 'config.h', root / 'include/config.h')
+
+
+def checkout(tree):
+    """The pin, unpatched, in `tree`: kept when it is already there and clean."""
+    if (tree / '.git').exists() and git(tree, 'status', '--porcelain', '--untracked-files=no') == '' \
+            and git(tree, 'rev-parse', 'HEAD').strip() == COMMIT:
+        return
+    shutil.rmtree(tree, ignore_errors=True)
+    clone_pin(tree)
+    git(tree, 'checkout', '-q', COMMIT)
 
 
 def native_flags(archive):
@@ -100,7 +111,7 @@ def main():
     args = parser.parse_args()
     out = ROOT / 'target/ext'
     tree = out / 'src'
-    apply(tree)
+    checkout(tree)
     env = {**os.environ, 'SWOOLE_SRC': str(tree), 'PHP_CONFIG': args.php_config}
     switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd', 'uring-socket': '--enable-uring-socket',
                 'cares': '--enable-cares', 'thread-context': '--enable-thread-context',
