@@ -58,6 +58,7 @@ jobs:
       cares: ${{ steps.paths.outputs.cares }}
       zts: ${{ steps.paths.outputs.zts }}
       threadcontext: ${{ steps.paths.outputs.threadcontext }}
+      h2spec: ${{ steps.paths.outputs.h2spec }}
       asan: ${{ steps.paths.outputs.asan }}
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +82,9 @@ jobs:
           fi
           if echo "$changed" | grep -qE '^(migration/patches/coroutine/|native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
             echo threadcontext=true >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(migration/patches/http2/|crates/(http2|phphttp2)/|tests/modules/http2/h2spec\.|\.github/workflows/h2spec\.yml$)'; then
+            echo h2spec=true >> "$GITHUB_OUTPUT"
           fi
           if echo "$changed" | grep -qE '^(tools/asan\.py|tools/lsan\.supp|\.github/workflows/asan\.yml|\.devcontainer/php\.sh)$'; then
             echo asan=true >> "$GITHUB_OUTPUT"
@@ -190,6 +194,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.threadcontext == 'true'
     uses: ./.github/workflows/threadcontext.yml
+
+  # HTTP/2 conformance (merge tier), when a PR touches HTTP/2 code. Informative.
+  h2spec:
+    needs: changes
+    if: needs.changes.outputs.h2spec == 'true'
+    uses: ./.github/workflows/h2spec.yml
 
   # The sanitizer run (nightly), when a PR touches it. Informative.
   asan:

@@ -305,6 +305,10 @@ jobs:
   threadcontext:
     uses: ./.github/workflows/threadcontext.yml
 
+  # HTTP/2 conformance: h2spec on upstream and the Cargo build.
+  h2spec:
+    uses: ./.github/workflows/h2spec.yml
+
   # The opt-in --fix-halfclose repair (M15) is its own build variant, so its gates run
   # here; full-gates builds without it.
   halfclose:
