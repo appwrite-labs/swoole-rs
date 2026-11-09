@@ -5,12 +5,18 @@
 use crate::constants::SW_MAX_HOOK_TYPE;
 use std::ffi::{c_int, c_void};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// `swHookFunc`.
 pub type HookFn = unsafe extern "C" fn(*mut c_void);
 
 static HOOKS: Mutex<[Vec<HookFn>; SW_MAX_HOOK_TYPE as usize]> =
     Mutex::new([const { Vec::new() }; SW_MAX_HOOK_TYPE as usize]);
+
+/// One bit per hook type whose list is non-empty, so `swoole_isset_hook` (on every
+/// coroutine start and stop, and every HTTP request) is a load, as upstream's
+/// pointer test is, rather than a lock. Written only under the table's lock.
+static SET: AtomicU32 = AtomicU32::new(0);
 
 fn table() -> std::sync::MutexGuard<'static, [Vec<HookFn>; SW_MAX_HOOK_TYPE as usize]> {
     HOOKS
@@ -33,6 +39,7 @@ pub extern "C" fn swoole_add_hook(kind: c_int, func: HookFn, push_back: c_int) {
         } else {
             list.insert(0, func);
         }
+        SET.fetch_or(1_u32 << kind, Ordering::Release);
     });
 }
 
@@ -54,12 +61,17 @@ pub unsafe extern "C" fn swoole_call_hook(kind: c_int, arg: *mut c_void) {
 #[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
 #[must_use]
 pub extern "C" fn swoole_isset_hook(kind: c_int) -> bool {
-    with(kind, |list| !list.is_empty()).unwrap_or(false)
+    u32::try_from(kind)
+        .ok()
+        .and_then(|kind| SET.load(Ordering::Acquire).checked_shr(kind))
+        .is_some_and(|set| set & 1 != 0)
 }
 
 /// `swoole_clean`'s release of every hook list.
 pub fn clear() {
-    table().iter_mut().for_each(Vec::clear);
+    let mut table = table();
+    table.iter_mut().for_each(Vec::clear);
+    SET.store(0, Ordering::Release);
 }
 
 #[cfg(test)]

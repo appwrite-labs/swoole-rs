@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_client.h, owned here: network::Client over the Rust state
- * (crates/clients/src/client.rs) and its C++ members, which native/clients reaches,
- * and the SyncClient wrapper upstream's core-tests build on.
+ * (crates/clients/src/client.rs), and the SyncClient wrapper upstream's core-tests build on.
  * Upstream's file is deleted, so `#include "swoole_client.h"` finds this copy. */
 
 #pragma once
@@ -10,36 +9,19 @@
 #include "swoole_socket.h"
 #include "swoole_reactor.h"
 #include "swoole_protocol.h"
-#include "swoole_proxy.h"
 #include "swoole_rs_clients.h"
 #include "swoole_rs_clients_record.h"
 
 namespace swoole {
 namespace network {
 
-// The state and every operation are Rust's (crates/clients/src/client.rs); these are the
-// members of C++ types it reaches through client.cc's table.
+// The state, every operation, the callbacks, the TLS context and the proxies are Rust's
+// (crates/clients/src/client.rs); these forward to it.
 class Client : public swr_v1_clients_record {
   public:
-    std::unique_ptr<Socks5Proxy> socks5_proxy = nullptr;
-    std::unique_ptr<HttpProxy> http_proxy = nullptr;
-
-    std::unique_ptr<SSLContext, SSLContext::Release> ssl_context = nullptr;
-
-    std::function<void(Client *cli)> onConnect = nullptr;
-    std::function<void(Client *cli)> onError = nullptr;
-    std::function<void(Client *cli, const char *, size_t)> onReceive = nullptr;
-    std::function<void(Client *cli)> onClose = nullptr;
-    std::function<void(Client *cli)> onBufferFull = nullptr;
-    std::function<void(Client *cli)> onBufferEmpty = nullptr;
-    // swoole_client_async_listen's callback, which those above call with `object`.
-    swoole_client_listener listener = nullptr;
-
-    static void init_reactor(Reactor *reactor);
     Client(SocketType _type, bool async);
     ~Client();
 
-    // Last: its construction makes the socket, after every member above.
     swr_v1_clients *const state_;
     // Upstream's fields, as views of the state.
     uint32_t &buffer_high_watermark{*swr_v1_clients_watermark(state_, true)};
@@ -67,13 +49,6 @@ class Client : public swr_v1_clients_record {
         return socket->socket_type;
     }
 
-    std::string get_http_proxy_host_name() const {
-        if (ssl_context && *ssl_context->text(SSLContext::TLS_HOST_NAME)) {
-            return ssl_context->text(SSLContext::TLS_HOST_NAME);
-        }
-        return http_proxy->target_host;
-    }
-
     int connect(const char *_host, int _port, double _timeout = -1, int _sock_flag = 0);
     ssize_t send(const char *_data, size_t _length, int _flags = 0);
     int sendfile(const char *_filename, off_t _offset = 0, size_t _length = 0);
@@ -85,15 +60,12 @@ class Client : public swr_v1_clients_record {
     int get_peer_name(Address *addr) const;
     int shutdown(int _how = SHUT_RDWR);
     int close();
-    bool socks5_handshake(const char *recv_data, size_t length);
     void set_timeout(double timeout, TimeoutType type = SW_TIMEOUT_ALL) const;
     bool has_timedout() const;
-    void set_socks5_proxy(const std::string &host, int port, const std::string &user = "", const std::string &pwd = "");
-    void set_http_proxy(const std::string &host, int port, const std::string &user = "", const std::string &pwd = "");
 
-    int enable_ssl_encrypt();
+    int enable_ssl_encrypt() { return swr_v1_clients_enable_ssl(state_); }
     int ssl_handshake() const;
-    int ssl_verify(int allow_self_signed) const;
+    int ssl_verify(int allow_self_signed) const { return swr_v1_clients_ssl_verify(state_, allow_self_signed); }
 };
 
 class SyncClient {

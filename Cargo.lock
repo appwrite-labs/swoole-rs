@@ -408,10 +408,12 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
+ "swoole-rs-buffer",
  "swoole-rs-cares-sys",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
+ "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-reactor",
  "swoole-rs-websocket",
@@ -870,6 +872,7 @@ dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-locks",
  "swoole-rs-ossupport",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phphelpers",
@@ -974,6 +977,7 @@ dependencies = [
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
+ "swoole-rs-utilities",
  "swoole-rs-websocket",
 ]
 
@@ -982,6 +986,7 @@ name = "swoole-rs-process"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-memory",
  "swoole-rs-ossupport",
@@ -1095,6 +1100,7 @@ dependencies = [
  "libc",
  "memchr",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-locks",
 ]
 

@@ -78,7 +78,7 @@ def main():
         write_changed(tree / 'config.h', args.config.read_bytes())
         cmake = (tree / 'CMakeLists.txt').read_text()
         fixture = f'target_sources(lib-swoole PRIVATE "{args.fixture.resolve()}")\n' if args.fixture else ''
-        write_changed(tree / 'CMakeLists.txt', f'{cmake}\n{hybrid_cmake}target_link_libraries(lib-swoole "{args.archive.resolve()}")\n{fixture}'.encode())
+        write_changed(tree / 'CMakeLists.txt', f'{cmake}\n{hybrid_cmake}target_link_libraries(lib-swoole "{args.archive.resolve()}" ${{SWOOLE_LINK_LIBRARIES}})\n{fixture}'.encode())
         env = {**os.environ, 'SWOOLE_LIB_DIR': str(tree / 'lib'), 'CARGO_TARGET_DIR': str(args.build_root.resolve() / 'cargo')}
         for step, command in [('configure', ['cmake', '-S', str(tree), '-B', str(tree / 'build'), '-Dphp_dir=/usr', '-DCMAKE_BUILD_TYPE=Release',
                                              '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -UNDEBUG', '-DCMAKE_C_FLAGS_RELEASE=-O2 -UNDEBUG']),

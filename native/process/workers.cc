@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // What crates/process's event worker, task worker, reactor process, thread mode and manager
 // operations need from C++ (swoole_rs_workers.h): the calls into Server, Reactor,
-// MessageBus, Pipe and Thread, the thread factory's threads, the task hooks, and the
+// MessageBus, Pipe and Thread, the thread factory's threads, and the
 // Worker and ProcessPool layout checks.
 #include <sys/uio.h>
 #include <sys/mman.h>
@@ -90,17 +90,15 @@ struct WorkersNative<1> {
 };
 using ReactorProcessContext = WorkersNative<1>;
 
-// What a crates/process/src/workers/task_worker.rs operation acts on. crates/server's
-// task_worker_ops.rs reads the fields up to `file`.
+// What a crates/process/src/workers/task_worker.rs operation acts on: crates/server's
+// task_worker_ops.rs.
 template <>
 struct WorkersNative<2> {
     Server *serv;
     ProcessPool *pool;
     Worker *worker;
-    // The task being run, or the one being finished.
     const EventData *task;
     Socket *socket;
-    // Server::finish's result, its packed form and its file.
     const char *data;
     size_t data_len;
     EventData *packed;
@@ -109,185 +107,18 @@ struct WorkersNative<2> {
     swr_v1_server_command_fn handler;
     PacketPtr packet;
 
-    static uint64_t call(void *context, uint32_t op, uint64_t arg);
-
     int64_t run(uint32_t operation, uint64_t arg = 0) {
-        return swr_v1_workers_run(operation, arg, this, call);
+        return swr_v1_workers_run(operation, arg, this, swr_v1_task_worker_call);
     }
 };
 using TaskWorkerContext = WorkersNative<2>;
 
-static int TaskWorker_onPipeReceive(Reactor *reactor, Event *event);
-
-static int TaskWorker_onTask(ProcessPool *pool, Worker *worker, EventData *task) {
-    TaskWorkerContext ctx{static_cast<Server *>(pool->ptr), pool, worker, task};
-    return ctx.run(SWR_WORKERS_RUN_TASK_ON_TASK);
-}
-
-static void TaskWorker_onStart(ProcessPool *pool, Worker *worker) {
-    TaskWorkerContext ctx{static_cast<Server *>(pool->ptr), pool, worker};
-    ctx.run(SWR_WORKERS_RUN_TASK_ON_START);
-}
-
-static void TaskWorker_onStop(ProcessPool *pool, Worker *worker) {
-    TaskWorkerContext ctx{static_cast<Server *>(pool->ptr), pool, worker};
-    ctx.run(SWR_WORKERS_RUN_TASK_ON_STOP);
-}
-
-static int TaskWorker_loop_async(ProcessPool *pool, Worker *worker) {
-    TaskWorkerContext ctx{static_cast<Server *>(pool->ptr), pool, worker};
-    return ctx.run(SWR_WORKERS_RUN_TASK_LOOP_ASYNC);
-}
-
-uint64_t TaskWorkerContext::call(void *context, uint32_t op, uint64_t arg) {
-    auto *ctx = static_cast<TaskWorkerContext *>(context);
-    Server *serv = ctx->serv;
-    ProcessPool *pool = ctx->pool;
-    Worker *worker = ctx->worker;
-    switch (op) {
-    case SWR_WORKERS_OP_POOL_INIT:
-        pool->ptr = serv;
-        pool->onTask = TaskWorker_onTask;
-        pool->onWorkerStart = TaskWorker_onStart;
-        pool->onWorkerStop = TaskWorker_onStop;
-        return 0;
-    case SWR_WORKERS_OP_SET_ASYNC_LOOP:
-        pool->main_loop = TaskWorker_loop_async;
-        return 0;
-
-    case SWR_WORKERS_OP_HAS_COMMAND: {
-        return swr_v1_server_command_handler(serv->state_handle(), serv->get_command_id(ctx->task), &ctx->handler);
-    }
-    case SWR_WORKERS_OP_UNPACK_COMMAND:
-        return Server::task_unpack(const_cast<EventData *>(ctx->task), sw_tg_buffer(), &ctx->packet);
-    case SWR_WORKERS_OP_COMMAND_REPLY: {
-        auto result = detail::command_answer(ctx->handler, serv, ctx->packet.data, ctx->packet.length);
-        SendData task{};
-        task.info.fd = serv->get_task_id(ctx->task);
-        task.info.reactor_id = worker->get_id();
-        task.info.server_fd = -1;
-        task.info.type = SW_SERVER_EVENT_COMMAND_RESPONSE;
-        task.info.len = result.length();
-        task.data = result.c_str();
-        return serv->message_bus.write(serv->get_command_reply_socket(), &task);
-    }
-
-    case SWR_WORKERS_OP_LISTEN_TASK_PIPE: {
-        Socket *socket = serv->get_worker_pipe_worker_in_message_bus(worker);
-        socket->set_nonblock();
-        sw_reactor()->ptr = pool;
-        swoole_event_add(socket, SW_EVENT_READ);
-        swoole_event_set_handler(SW_FD_PIPE, SW_EVENT_READ, TaskWorker_onPipeReceive);
-        return 0;
-    }
-    case SWR_WORKERS_OP_UNLIMIT_BUS_PIPES: {
-        Worker *_worker = serv->get_worker(arg);
-        serv->get_worker_pipe_worker_in_message_bus(_worker)->buffer_size = UINT_MAX;
-        serv->get_worker_pipe_master_in_message_bus(_worker)->buffer_size = UINT_MAX;
-        return 0;
-    }
-    default:
-        return swr_v1_task_worker_call(context, op, arg);
-    }
-}
-static_assert(offsetof(TaskWorkerContext, file) == 72 && SW_SERVER_EVENT_FINISH == 9 && SW_WORKER_IDLE == 2,
+static_assert(sizeof(TaskWorkerContext) == 112 && SW_SERVER_EVENT_FINISH == 9 && SW_WORKER_IDLE == 2,
               "crates/server/src/task_worker_ops.rs layout and constants");
 
 // Server::task_pack, task_unpack and task_dump are Rust's (crates/process/src/task_file.rs).
 static_assert(sizeof(DataHead) == 40 && offsetof(EventData, data) == sizeof(DataHead) && sizeof(String) == 40,
               "crates/process/src/task_file.rs layouts");
-
-// The task calls run in Rust (crates/process/src/task_sync.rs) over these hooks;
-// a PHP bailout inside one (MultiTask's pack/unpack, a signal handler while the
-// pipe waits) returns here first and is raised again.
-static swr_v1_pool_call *task_call(void *arg) {
-    return static_cast<swr_v1_pool_call *>(arg);
-}
-
-static Server *task_server_of(void *arg) {
-    return static_cast<Server *>(task_call(arg)->pool);
-}
-
-static Server::MultiTask *task_mtask(void *arg) {
-    return static_cast<Server::MultiTask *>(task_call(arg)->worker);
-}
-
-static Pipe *task_pipe(void *arg) {
-    return task_server_of(arg)->task_notify_pipe(swoole_get_worker_id());
-}
-
-static const swr_v1_task_hooks task_hooks = {
-    [](void *arg) {
-        auto c = task_call(arg);
-        auto pool = task_server_of(arg)->get_task_worker_pool();
-        auto task = static_cast<EventData *>(c->data);
-        auto dst_worker_id = static_cast<int *>(c->socket);
-        c->result = (c->flags ? pool->dispatch_sync(task, dst_worker_id) : pool->dispatch(task, dst_worker_id)) == SW_OK;
-    },
-    [](void *arg) { task_pipe(arg)->clean(); },
-    [](void *arg) { task_pipe(arg)->set_timeout(*static_cast<double *>(task_call(arg)->data)); },
-    [](void *arg) { task_call(arg)->result = task_pipe(arg)->read(task_call(arg)->data, task_call(arg)->length); },
-    [](void *arg) {
-        void *lock = task_server_of(arg)->get_worker(swoole_get_worker_id())->lock;
-        task_call(arg)->flags ? swr_v1_locks_lock(lock, Lock::MUTEX, LOCK_EX, -1, 0) : swr_v1_locks_unlock(lock, Lock::MUTEX);
-    },
-    [](void *arg) {
-        auto c = task_call(arg);
-        c->result = task_mtask(arg)->pack(c->flags, static_cast<EventData *>(c->data));
-    },
-    [](void *arg) { task_mtask(arg)->unpack(task_call(arg)->flags, static_cast<EventData *>(task_call(arg)->data)); },
-    [](void *arg) { task_mtask(arg)->fail(task_call(arg)->flags); },
-    [](void *arg) {
-        auto c = task_call(arg);
-        auto content = file_get_contents(static_cast<const char *>(c->data));
-        c->data = content ? content->str : nullptr;
-        c->length = content ? content->length : 0;
-        c->socket = content ? new std::shared_ptr<String>(content) : nullptr;
-    },
-    [](void *arg) { delete static_cast<std::shared_ptr<String> *>(task_call(arg)->socket); },
-    [](int kind) {
-        if (kind == SWR_TASK_WARN_PACK) {
-            swoole_warning("task pack failed");
-        } else {
-            swoole_warning("failed to dispatch task");
-        }
-    },
-};
-
-static swr_v1_task_server task_server(Server *serv, EventData *result, Server::MultiTask *mtask = nullptr) {
-    return {&task_hooks,
-            serv,
-            mtask,
-            const_cast<uint32_t *>(&serv->gs->tasking_num),
-            const_cast<int64_t *>(reinterpret_cast<volatile int64_t *>(&serv->gs->task_count)),
-            reinterpret_cast<uint8_t *>(result),
-            sizeof(EventData)};
-}
-
-static_assert(SW_ERROR_TASK_DISPATCH_FAIL == 2002, "crates/process/src/task_sync.rs ERROR_TASK_DISPATCH_FAIL");
-static const swr_v1_task_native task_native = {
-    []() { return SwooleG.task_tmpfile.c_str(); },
-    [](void *string, size_t size) { static_cast<String *>(string)->extend(size); },
-    [](void *serv, void *mtask, bool with_result, swr_v1_task_server *out) -> uint16_t {
-        auto *server = static_cast<Server *>(serv);
-        auto *multi = static_cast<Server::MultiTask *>(mtask);
-        *out = task_server(server, with_result ? server->get_task_result() : nullptr, multi);
-        return multi ? multi->count : 0;
-    },
-};
-[[maybe_unused]] static const bool task_native_set = (swr_v1_process_task_set_native(&task_native), true);
-
-/**
- * receive data from worker process
- */
-static int TaskWorker_onPipeReceive(Reactor *reactor, Event *event) {
-    auto *pool = static_cast<ProcessPool *>(reactor->ptr);
-    EventData task;
-    TaskWorkerContext ctx{static_cast<Server *>(pool->ptr), pool, sw_worker()};
-    ctx.socket = event->socket;
-    ctx.buf = &task;
-    return ctx.run(SWR_WORKERS_RUN_TASK_ON_PIPE);
-}
 
 static const swr_v1_thread_ops thread_ops = {
     []() -> void * {
@@ -452,83 +283,26 @@ uint64_t ThreadContext::call(void *context, uint32_t op, uint64_t arg) {
     }
 }
 
-// What a crates/process/src/workers/manager.rs operation acts on.
+// What a crates/process/src/workers/manager.rs operation acts on: crates/server's
+// manager_ops.rs.
 template <>
 struct WorkersNative<3> {
     Server *serv;
-    // The worker being restarted, or the message being read.
     Worker *worker;
     const EventData *task;
     swr_v1_server_command_fn handler;
-    // Rust (crates/server's manager_ops.rs) reads the fields above and these two.
     int wait_status;
     int wait_error;
     EventData msg;
     WorkerStopMessage stop;
 
-    static uint64_t call(void *context, uint32_t op, uint64_t arg);
-
     int64_t run(uint32_t operation, uint64_t arg = 0) {
-        return swr_v1_workers_run(operation, arg, this, call);
+        return swr_v1_workers_run(operation, arg, this, swr_v1_manager_call);
     }
 };
 using ManagerContext = WorkersNative<3>;
-
-static void Manager_signal_handler(int signo) {
-    ManagerContext ctx{sw_server()};
-    ctx.run(SWR_WORKERS_RUN_MANAGER_SIGNAL, signo);
-}
-
-uint64_t ManagerContext::call(void *context, uint32_t op, uint64_t arg) {
-    auto *ctx = static_cast<ManagerContext *>(context);
-    Server *serv = ctx->serv;
-    switch (op) {
-    case SWR_WORKERS_OP_FORK_MANAGER:
-        return (int64_t) swoole_fork_exec([serv]() {
-            ManagerContext child{serv};
-            child.run(SWR_WORKERS_RUN_MANAGER_MAIN);
-        });
-    case SWR_WORKERS_OP_SIGNAL_SET:
-        swr_workers_signal_set(arg, Manager_signal_handler);
-        return 0;
-    case SWR_WORKERS_OP_MANAGER_BARRIER:
-        serv->gs->manager_barrier.wait();
-        return 0;
-    case SWR_WORKERS_OP_HAS_USER:
-        return !serv->user_.empty();
-    case SWR_WORKERS_OP_SET_ISOLATION:
-        swoole_set_isolation(serv->group_, serv->user_, serv->chroot_);
-        return 0;
-    case SWR_WORKERS_OP_POP_MESSAGE:
-        return (int64_t) serv->get_event_worker_pool()->pop_message(&ctx->msg, sizeof(ctx->msg));
-    case SWR_WORKERS_OP_MESSAGE_TYPE:
-        return ctx->msg.info.type;
-    case SWR_WORKERS_OP_ON_WORKER_MESSAGE:
-        serv->get_event_worker_pool()->onWorkerMessage(serv->get_event_worker_pool(), &ctx->msg);
-        return 0;
-    case SWR_WORKERS_OP_STOP_MESSAGE_WORKER:
-        memcpy(&ctx->stop, ctx->msg.data, sizeof(ctx->stop));
-        return ctx->stop.worker_id;
-    case SWR_WORKERS_OP_DETACH_STOPPED:
-        swr_v1_process_worker_registry_detach(static_cast<swr_v1_process_worker_registry *>(serv->worker_registry),
-                                              ctx->stop.pid);
-        return 0;
-    case SWR_WORKERS_OP_COMMAND_REPLY: {
-        const auto result = detail::command_answer(ctx->handler, serv, ctx->task->data, ctx->task->info.len);
-        SendData task{};
-        task.info.fd = ctx->task->info.fd;
-        task.info.reactor_id = 0;
-        task.info.server_fd = -1;
-        task.info.type = SW_SERVER_EVENT_COMMAND_RESPONSE;
-        task.info.len = result.length();
-        task.data = result.c_str();
-        serv->message_bus.write(serv->get_command_reply_socket(), &task);
-        return 0;
-    }
-    default:
-        return swr_v1_manager_call(context, op, arg);
-    }
-}
+static_assert(offsetof(ManagerContext, msg) == 48 && sizeof(ManagerContext) == 56 + sizeof(EventData),
+              "crates/server/src/manager_ops.rs layout");
 
 // The Server methods of the deleted worker-side files are Rust
 // (crates/process/src/workers/entry.rs); each enters here with its operation, and

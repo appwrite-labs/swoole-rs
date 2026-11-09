@@ -2,21 +2,19 @@
 //! file when it is too large for the pipe; `Server::task_unpack` reads it back
 //! (`File::read_all`: pread from offset 0, retrying EINTR/EAGAIN, stopping at EOF or
 //! another error) and unlinks the file unless the task is only peeked;
-//! `Server::task_dump` prints it. Native lends the file template and grows the
-//! receiving `String` ([`TaskNative`]).
+//! `Server::task_dump` prints it.
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
 
 use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::{
     datahead_dump, log, microtime, swr_v1_core_current_task_id, swr_v1_core_set_current_task_id,
 };
 
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_ossupport::{fd_write_all, swoole_tmpfile};
 
 use crate::process_pool::SW_IPC_MAX_SIZE;
-use crate::task_sync::TaskServer;
 use crate::worker_globals::swr_v1_worker_global_get;
 
 /// What reading a task's temporary file did.
@@ -218,16 +216,6 @@ pub struct EventHead {
     time: f64,
 }
 
-/// `swoole::String`'s fields.
-#[repr(C)]
-pub struct StringRecord {
-    length: usize,
-    size: usize,
-    offset: libc::off_t,
-    str: *mut c_char,
-    allocator: *const c_void,
-}
-
 /// `swoole::PacketPtr`.
 #[repr(C)]
 pub struct PacketPtr {
@@ -235,36 +223,12 @@ pub struct PacketPtr {
     data: *mut c_char,
 }
 
-/// What the task methods borrow from native: `SwooleG.task_tmpfile`,
-/// `String::extend` and the server's task state.
-#[repr(C)]
-pub struct TaskNative {
-    pub tmpfile: unsafe extern "C" fn() -> *const c_char,
-    pub extend: unsafe extern "C" fn(string: *mut StringRecord, size: usize),
-    /// Fills `out` with the server's task state for `mtask` (or null), with this
-    /// worker's result slot when `with_result`; returns `mtask`'s count (0 without one).
-    pub server: unsafe extern "C" fn(
-        serv: *mut c_void,
-        mtask: *mut c_void,
-        with_result: bool,
-        out: *mut TaskServer,
-    ) -> u16,
-}
-
-static NATIVE: AtomicPtr<TaskNative> = AtomicPtr::new(ptr::null_mut());
-
-/// Registers native's table once at load.
-///
-/// # Safety
-/// `native` lives as long as the process.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_task_set_native(native: *const TaskNative) {
-    NATIVE.store(native.cast_mut(), Ordering::Release);
-}
-
-pub(crate) fn native() -> &'static TaskNative {
-    // SAFETY: native registers its static table before any server runs a task.
-    unsafe { &*NATIVE.load(Ordering::Acquire) }
+/// `SwooleG.task_tmpfile`, the template of a task's temporary file, which each
+/// caller copies at once.
+pub(crate) fn task_tmpfile() -> &'static CStr {
+    // SAFETY: the NUL-terminated path, changed only by `swoole_init` and the
+    // `task_tmpdir` setting.
+    unsafe { CStr::from_ptr(swoole_rs_corebase::swr_v1_core_task_tmpfile()) }
 }
 
 /// `SW_SERVER_EVENT_TASK`.
@@ -369,8 +333,7 @@ pub unsafe extern "C" fn task_pack(
     // SAFETY: the caller lends a writable task.
     unsafe { task.write(head) };
     let capacity = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or(0) - size_of::<EventHead>();
-    // SAFETY: native's table returns `SwooleG.task_tmpfile`'s NUL-terminated text.
-    let template = unsafe { (native().tmpfile)() };
+    let template = task_tmpfile().as_ptr();
     // SAFETY: the payload holds `capacity` bytes; `data` lends `length`.
     let packed =
         unsafe { swr_v1_process_task_pack(payload(task), capacity, data.cast(), length, template) };
@@ -404,7 +367,7 @@ pub unsafe extern "C" fn task_pack(
 )]
 pub unsafe extern "C" fn task_unpack(
     task: *mut EventHead,
-    buffer: *mut StringRecord,
+    buffer: *mut CppString,
     packet: *mut PacketPtr,
 ) -> bool {
     // SAFETY: the caller lends a live task.
@@ -425,8 +388,8 @@ pub unsafe extern "C" fn task_unpack(
     let pkg = unsafe { packet_task(task) };
     // SAFETY: the caller lends a live String.
     if unsafe { (*buffer).size } < pkg.length {
-        // SAFETY: as above; `String::extend` reallocates it.
-        unsafe { (native().extend)(buffer, pkg.length) };
+        // SAFETY: as above.
+        unsafe { &mut *buffer }.extend(pkg.length);
     }
     // SAFETY: as above.
     let str = unsafe { (*buffer).str };
@@ -462,7 +425,7 @@ pub unsafe extern "C" fn task_unpack(
     unsafe {
         packet.write(PacketPtr {
             length: pkg.length,
-            data: str,
+            data: str.cast(),
         });
     }
     true
@@ -677,30 +640,6 @@ mod tests {
     mod methods {
         use super::super::*;
 
-        unsafe extern "C" fn tmpfile() -> *const c_char {
-            c"/tmp/swr-task-method-XXXXXX".as_ptr()
-        }
-        unsafe extern "C" fn extend(string: *mut StringRecord, size: usize) {
-            let grown = Box::leak(vec![0 as c_char; size].into_boxed_slice());
-            unsafe {
-                (*string).str = grown.as_mut_ptr();
-                (*string).size = size;
-            }
-        }
-        unsafe extern "C" fn server(
-            _: *mut c_void,
-            _: *mut c_void,
-            _: bool,
-            _: *mut crate::task_sync::TaskServer,
-        ) -> u16 {
-            0
-        }
-        static NATIVE_TABLE: TaskNative = TaskNative {
-            tmpfile,
-            extend,
-            server,
-        };
-
         /// `task_pack` draws from the process-wide task id, so its tests take turns.
         static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -709,20 +648,13 @@ mod tests {
             vec![0; 8192 / 8 + 8]
         }
 
-        fn empty_string() -> StringRecord {
-            StringRecord {
-                length: 0,
-                size: 0,
-                offset: 0,
-                str: ptr::null_mut(),
-                allocator: ptr::null(),
-            }
+        fn empty_string() -> CppString {
+            CppString::EMPTY
         }
 
         #[test]
         fn a_small_task_packs_inline_and_unpacks_in_place() {
             let _turn = TASK_ID.lock();
-            unsafe { swr_v1_process_task_set_native(&raw const NATIVE_TABLE) };
             let mut buf = event();
             let task = buf.as_mut_ptr().cast::<EventHead>();
             swr_v1_core_set_current_task_id(41);
@@ -748,7 +680,7 @@ mod tests {
         #[test]
         fn a_large_task_spills_to_a_file_that_unpacking_reads_and_removes() {
             let _turn = TASK_ID.lock();
-            unsafe { swr_v1_process_task_set_native(&raw const NATIVE_TABLE) };
+            assert!(unsafe { swoole_rs_corebase::swr_v1_core_set_task_tmpdir(c"/tmp".as_ptr()) });
             let data = vec![7u8; 9000];
             let mut buf = event();
             let task = buf.as_mut_ptr().cast::<EventHead>();
@@ -763,7 +695,7 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .to_owned();
-            assert!(path.starts_with("/tmp/swr-task-method-"));
+            assert!(path.starts_with("/tmp/swoole.task."));
             let mut string = empty_string();
             let mut packet = PacketPtr {
                 length: 0,
@@ -774,7 +706,7 @@ mod tests {
                 (string.length, string.size, packet.length),
                 (9000, 9000, 9000)
             );
-            assert_eq!(packet.data, string.str);
+            assert_eq!(packet.data, string.str.cast());
             let read = unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), 9000) };
             assert_eq!(read, data.as_slice());
             assert!(!std::path::Path::new(&path).exists());

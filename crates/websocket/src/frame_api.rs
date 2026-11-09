@@ -9,8 +9,8 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
 
 use crate::{
-    DecodedFrame, INVALID_CONTROL, decode_in_place, swr_v1_ws_control_invalid, swr_v1_ws_encode,
-    swr_v1_ws_encode_close, swr_v1_ws_encoded_size, swr_v1_ws_frame_length, swr_v1_ws_mask,
+    DecodedFrame, INVALID_CONTROL, decode_in_place, frame_length, swr_v1_ws_control_invalid,
+    swr_v1_ws_encode, swr_v1_ws_encode_close, swr_v1_ws_encoded_size, swr_v1_ws_mask,
 };
 
 /// `SW_LOG_WARNING`.
@@ -90,6 +90,7 @@ fn control_warning(origin: &CStr, opcode: u8, fin: u8, length: usize) {
 ///
 /// # Safety
 /// `data` covers `length` writable bytes (null only at length zero).
+#[inline]
 pub unsafe fn decode_frame(
     data: *mut u8,
     length: usize,
@@ -146,8 +147,14 @@ upstream! {
     ) -> isize {
         // SAFETY: as the caller promises.
         let pl = unsafe { &mut *pl };
-        // SAFETY: the packet's readable bytes and its header length field.
-        let length = unsafe { swr_v1_ws_frame_length(pl.buf, pl.buf_size as usize, &raw mut pl.header_len) };
+        if pl.buf_size < 2 {
+            return 0;
+        }
+        // SAFETY: the packet's `buf_size` readable bytes.
+        let (length, header) = frame_length(unsafe { std::slice::from_raw_parts(pl.buf, pl.buf_size as usize) });
+        if let Some(header) = header {
+            pl.header_len = header;
+        }
         #[expect(clippy::cast_possible_truncation, reason = "a frame length fits ssize_t")]
         let length = length as isize;
         length

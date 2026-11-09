@@ -38,63 +38,34 @@ typedef struct {
 } swr_v1_core_allocator;
 #endif
 #undef SWR_CORE_ALLOCATOR_FIELDS
-typedef struct swr_v1_core_config swr_v1_core_config;
-typedef struct {
-  uint32_t max_sockets;
-  double dns_cache_refresh_time;
-  swr_v1_core_allocator std_allocator;
-} swr_v1_core_config_fields;
-typedef struct {
-  swr_v1_core_config *owner;
-  swr_v1_core_config_fields *fields;
-  const swr_v1_core_string *strings[2];
-} swr_v1_core_config_prepared;
-typedef struct {
-  int32_t status;
-  uint32_t index;
-} swr_v1_core_config_copy_result;
 size_t swr_v1_core_format_result(char *, size_t, int formatted, bool zero_query);
-/* swoole_set_task_tmpdir under its lock, with upstream's warnings: 0 success, above 0
- * a warned failure, below 0 the string store's status (RustStringView::check). */
-int32_t swr_v1_core_set_task_tmpdir(swr_v1_core_config *, const uint8_t *, size_t);
-swr_v1_core_config_prepared swr_v1_core_config_new(void);
-void swr_v1_core_config_free(swr_v1_core_config *);
-void swr_v1_core_config_allocator(swr_v1_core_config *);
-bool swr_v1_core_config_max_sockets(swr_v1_core_config *, uint32_t limit);
-swr_v1_core_config_copy_result
-swr_v1_core_config_copy_values(swr_v1_core_config *,
-                               const swr_v1_core_config *);
-swr_v1_core_string_view_t
-swr_v1_core_config_task_path(const swr_v1_core_config *);
+/* swoole_set_task_tmpdir under its lock, with upstream's warnings. */
+bool swr_v1_core_set_task_tmpdir(const char *dir);
+/* SwooleG.task_tmpfile (crates/corebase/src/config_state.rs). */
+const char *swr_v1_core_task_tmpfile(void);
 /* The thread's last error is Rust's (crates/corebase/src/log.rs). */
 int swr_v1_core_last_error(void);
 void swr_v1_core_set_last_error(int);
-/* Native's log macros, registered once: kind 0 swoole_sys_warning (errno = code),
- * 1 swoole_warning, 2 swoole_notice, 3 swoole_error_log(level, code), 4 swoole_info,
- * 5 swoole_sys_error (errno = code); origin is __SW_FUNC__. */
+/* The log macros, registered once (swr_v1_utils_log): kind 0 swoole_sys_warning
+ * (errno = code), 1 swoole_warning, 2 swoole_notice, 3 swoole_error_log(level, code),
+ * 4 swoole_info, 5 swoole_sys_error (errno = code), 6 swoole_error; origin is __SW_FUNC__. */
 typedef void (*swr_v1_core_log_host)(int kind, int level, int code, const char *origin, const char *message);
 void swr_v1_core_set_log_host(swr_v1_core_log_host);
 /* The C++ effects Rust's lifecycles run (crates/corebase/src/native.rs), which
  * native/corebase/globals.cc's swoole_init registers, so the Rust archive links
- * without C++. effect runs one numbered effect (globals.cc lists them). */
+ * without C++. effect runs one numbered effect (globals.cc lists them); logger is
+ * crates/process's swr_v1_process_logger. */
 typedef struct {
     bool (*get_env)(const char *name, int *value);
     uintptr_t (*effect)(int effect, uintptr_t argument);
+    void (*logger)(int op);
 } swr_v1_core_native_host;
 void swr_v1_core_set_native_host(swr_v1_core_native_host);
 #ifdef __cplusplus
 }
 namespace swoole {
-class CoreConfigOwner {
-protected:
-  swr_v1_core_config_prepared config_ = swr_v1_core_config_new();
-  CoreConfigOwner() = default;
-  CoreConfigOwner(const CoreConfigOwner &) = delete;
-  CoreConfigOwner &operator=(const CoreConfigOwner &) = delete;
-  ~CoreConfigOwner() { swr_v1_core_config_free(config_.owner); }
-};
-// Trivial, so `thread_local SwooleTG = {}` is constant-initialized and other
-// translation units reach it without a TLS init wrapper.
+// SwooleTG's layout: Rust holds each thread's (crates/corebase/src/lifecycle.rs,
+// which asserts the same layout).
 struct ThreadGlobal {
   uint16_t id;
   uint8_t type;
@@ -104,9 +75,14 @@ struct ThreadGlobal {
   Timer *timer;
   MessageBus *message_bus;
   AsyncThreads *async_threads;
-  bool signal_blocking_all;
 };
+static_assert(offsetof(ThreadGlobal, main_thread) == 3 &&
+                  offsetof(ThreadGlobal, buffer_stack) == 8 &&
+                  offsetof(ThreadGlobal, async_threads) == 40 &&
+                  sizeof(ThreadGlobal) == 48,
+              "crates/corebase/src/lifecycle.rs's ThreadGlobal");
 static_assert(sizeof(swr_v1_core_allocator) == 4 * sizeof(void *),
               "allocator callback ABI");
 } // namespace swoole
+extern "C" swoole::ThreadGlobal *swr_v1_core_thread_global(void);
 #endif

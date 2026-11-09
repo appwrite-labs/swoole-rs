@@ -2,7 +2,8 @@
 //! rotation, stdout redirection and `put`, behind one lock. Diagnostics go out
 //! through corebase's log host; worker identity, `swoole_redirect_stdout` and
 //! backtraces go through `LoggerHost` (`swr_logger_host`, in crates/process). Both run after
-//! the lock is released, so a diagnostic can log through this logger again.
+//! the lock is released, so a diagnostic can log through this logger again. The log
+//! macros a Rust log runs (`swr_v1_utils_log`) are here too.
 use crate::{
     swr_v1_utils_log_level, swr_v1_utils_log_line, swr_v1_utils_log_micros,
     swr_v1_utils_log_rotation,
@@ -15,6 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_corebase::log;
 
 const SW_LOG_INFO: c_int = 2;
+const SW_LOG_NOTICE: c_int = 3;
+const SW_LOG_ERROR: c_int = 5;
 const SW_LOG_DATE_STRLEN: usize = 128;
 const SW_LOG_BUFFER_SIZE: usize = 16384 + 256;
 const SW_LOG_DEFAULT_DATE_FORMAT: &CStr = c"%F %T";
@@ -44,9 +47,9 @@ unsafe extern "C" {
 #[derive(Clone, Copy)]
 pub struct LoggerHost {
     /// `swoole_redirect_stdout(fd)`.
-    pub redirect: unsafe extern "C" fn(fd: c_int),
-    pub backtrace: unsafe extern "C" fn(),
-    pub identity: unsafe extern "C" fn(identity: *mut LoggerIdentity),
+    pub redirect: extern "C" fn(fd: c_int),
+    pub backtrace: extern "C" fn(),
+    pub identity: extern "C" fn() -> LoggerIdentity,
 }
 
 /// A diagnostic or native effect, run once the lock is released.
@@ -330,10 +333,8 @@ impl Logger {
             Effect::SysWarning(message, code) => {
                 log::sys_warning_errno(code, REDIRECT_ORIGIN, format_args!("{message}"));
             }
-            // SAFETY: native's own effect; the host is live for the logger's life.
-            Effect::Redirect(fd) => unsafe { (self.host.redirect)(fd) },
-            // SAFETY: as above.
-            Effect::Backtrace => unsafe { (self.host.backtrace)() },
+            Effect::Redirect(fd) => (self.host.redirect)(fd),
+            Effect::Backtrace => (self.host.backtrace)(),
         }
     }
 
@@ -352,27 +353,58 @@ impl Logger {
     }
 }
 
+impl Logger {
+    /// `new Logger()` writing to `stdout_stream`.
+    #[must_use]
+    pub fn new(stdout_stream: *mut FILE, host: LoggerHost) -> Self {
+        Self {
+            host,
+            level: AtomicI32::new(SW_LOG_INFO),
+            state: Mutex::new(State {
+                opened: false,
+                redirected: false,
+                backtrace: false,
+                microseconds: false,
+                rotation: 0,
+                stdout_fd: -1,
+                stderr_fd: -1,
+                fp: stdout_stream,
+                stdout: stdout_stream,
+                date_format: SW_LOG_DEFAULT_DATE_FORMAT.into(),
+                file: CString::default(),
+                real_file: CString::default(),
+            }),
+        }
+    }
+
+    /// `Logger::reopen`.
+    pub fn reopen(&self) {
+        self.with(State::reopen);
+    }
+
+    /// `Logger::close`.
+    pub fn close(&self) {
+        self.lock().close();
+    }
+
+    /// `Logger::put`; `content` is readable as upstream's `%.*s` reads it.
+    fn put(&self, level: c_int, content: *const u8, length: usize) {
+        if level < self.level.load(Relaxed) {
+            return;
+        }
+        let mut identity = (self.host.identity)();
+        if identity.worker_pid == 0 {
+            // SAFETY: getpid has no preconditions.
+            identity.worker_pid = unsafe { libc::getpid() };
+        }
+        self.with(|state, effects| state.write(level, content, length, &identity, effects));
+    }
+}
+
 /// `new Logger()` writing to `stdout`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_logger_new(stdout_stream: *mut FILE, host: LoggerHost) -> *mut Logger {
-    Box::into_raw(Box::new(Logger {
-        host,
-        level: AtomicI32::new(SW_LOG_INFO),
-        state: Mutex::new(State {
-            opened: false,
-            redirected: false,
-            backtrace: false,
-            microseconds: false,
-            rotation: 0,
-            stdout_fd: -1,
-            stderr_fd: -1,
-            fp: stdout_stream,
-            stdout: stdout_stream,
-            date_format: SW_LOG_DEFAULT_DATE_FORMAT.into(),
-            file: CString::default(),
-            real_file: CString::default(),
-        }),
-    }))
+    Box::into_raw(Box::new(Logger::new(stdout_stream, host)))
 }
 
 /// # Safety
@@ -406,7 +438,7 @@ pub unsafe extern "C" fn swr_v1_logger_open(logger: *const Logger, file: *const 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_logger_reopen(logger: *const Logger) {
     // SAFETY: per the contract.
-    unsafe { live(logger) }.with(State::reopen);
+    unsafe { live(logger) }.reopen();
 }
 
 /// `Logger::close`.
@@ -415,7 +447,7 @@ pub unsafe extern "C" fn swr_v1_logger_reopen(logger: *const Logger) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_logger_close(logger: *const Logger) {
     // SAFETY: per the contract.
-    unsafe { live(logger) }.lock().close();
+    unsafe { live(logger) }.close();
 }
 
 /// `Logger::set_stream`.
@@ -440,18 +472,7 @@ pub unsafe extern "C" fn swr_v1_logger_put(
     length: usize,
 ) {
     // SAFETY: per the contract.
-    let logger = unsafe { live(logger) };
-    if level < logger.level.load(Relaxed) {
-        return;
-    }
-    let mut identity = LoggerIdentity::default();
-    // SAFETY: a writable record.
-    unsafe { (logger.host.identity)(&raw mut identity) };
-    if identity.worker_pid == 0 {
-        // SAFETY: getpid has no preconditions.
-        identity.worker_pid = unsafe { libc::getpid() };
-    }
-    logger.with(|state, effects| state.write(level, content.cast(), length, &identity, effects));
+    unsafe { live(logger) }.put(level, content.cast(), length);
 }
 
 /// `Logger::get_level`.
@@ -630,6 +651,66 @@ pub unsafe extern "C" fn swoole_set_log_file(file: *const c_char) {
     }
 }
 
+/// The log macros (`swoole_log.h`) for a log Rust emits on behalf of `origin`, of
+/// corebase's `LOG_*` `kind` (crates/corebase/src/log.rs): the last error, the level
+/// check, the line formatted into `sw_error`, the put and, for the errors, the exit.
+/// `swoole_init` registers it as corebase's log host.
+///
+/// # Safety
+/// `origin` and `message` are NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_utils_log(
+    kind: c_int,
+    level: c_int,
+    code: c_int,
+    origin: *const c_char,
+    message: *const c_char,
+) {
+    // SAFETY: per the contract.
+    let origin = unsafe { CStr::from_ptr(origin) }.to_bytes();
+    // SAFETY: as above.
+    let message = unsafe { CStr::from_ptr(message) }.to_bytes();
+    let threshold = swoole_get_log_level();
+    let failed = || {
+        // SAFETY: swoole_strerror returns a NUL-terminated message.
+        let reason = unsafe { CStr::from_ptr(swoole_rs_error::swoole_strerror(code)) };
+        let code = code.to_string();
+        let tail = [b", Error: ", reason.to_bytes(), b"[", code.as_bytes(), b"]"];
+        [origin, b"(): ", message, &tail.concat()].concat()
+    };
+    if matches!(kind, log::LOG_SYS_WARNING | log::LOG_SYS_ERROR) {
+        swoole_rs_corebase::set_errno(code);
+    }
+    if matches!(kind, log::LOG_SYS_WARNING | log::LOG_ERROR) {
+        log::set_last_error(code);
+    }
+    let (level, line) = match kind {
+        log::LOG_SYS_WARNING if SW_LOG_ERROR >= threshold => (LOG_WARNING, failed()),
+        log::LOG_WARNING if LOG_WARNING >= threshold => {
+            (LOG_WARNING, [origin, b"(): ", message].concat())
+        }
+        log::LOG_NOTICE if SW_LOG_NOTICE >= threshold => (SW_LOG_NOTICE, message.to_vec()),
+        log::LOG_INFO if SW_LOG_INFO >= threshold => (SW_LOG_INFO, message.to_vec()),
+        log::LOG_ERROR if level >= threshold && !swoole_rs_error::swoole_is_ignored_error(code) => {
+            let code = code.to_string();
+            (
+                level,
+                [origin, b"() (ERRNO ", code.as_bytes(), b"): ", message].concat(),
+            )
+        }
+        log::LOG_SYS_ERROR => (SW_LOG_ERROR, failed()),
+        log::LOG_FATAL => (SW_LOG_ERROR, [origin, b"(): ", message].concat()),
+        _ => return,
+    };
+    let length = swoole_rs_error::set_last_error_msg(&line);
+    if let Some(logger) = process_logger() {
+        logger.put(level, line.as_ptr(), length);
+    }
+    if matches!(kind, log::LOG_SYS_ERROR | log::LOG_FATAL) {
+        swoole_rs_corebase::swoole_exit(1);
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -654,13 +735,14 @@ pub(crate) mod tests {
         HOST.with(|host| host.borrow_mut().push(entry));
     }
 
-    unsafe extern "C" fn redirect(_: c_int) {}
-    unsafe extern "C" fn backtrace() {}
+    extern "C" fn redirect(_: c_int) {}
+    extern "C" fn backtrace() {}
 
-    unsafe extern "C" fn identity(identity: *mut LoggerIdentity) {
-        unsafe {
-            (*identity).worker_id = 3;
-            (*identity).worker_symbol = c_char::from_ne_bytes(*b"#");
+    extern "C" fn identity() -> LoggerIdentity {
+        LoggerIdentity {
+            worker_id: 3,
+            worker_pid: 0,
+            worker_symbol: c_char::from_ne_bytes(*b"#"),
         }
     }
 
@@ -870,5 +952,28 @@ pub(crate) mod tests {
         expected.sort_unstable();
         assert_eq!(seen, expected, "every record once, whole");
         std::fs::remove_file(file_path).ok();
+    }
+
+    #[test]
+    fn rust_logs_run_the_macros_last_error_and_sw_error() {
+        let last = || unsafe { CStr::from_ptr(swoole_rs_error::swoole_get_last_error_msg()) };
+        // No logger: the level is SW_LOG_NONE, which only a level-6 error_log reaches.
+        let run = |kind, level, code, origin: &CStr| unsafe {
+            swr_v1_utils_log(kind, level, code, origin.as_ptr(), c"x".as_ptr());
+        };
+        run(log::LOG_ERROR, 6, 1015, c"Socket::ssl_verify");
+        assert_eq!(log::last_error(), 1015);
+        assert_eq!(last(), c"Socket::ssl_verify() (ERRNO 1015): x");
+        run(log::LOG_SYS_WARNING, 0, libc::ENOENT, c"f");
+        assert_eq!(
+            log::last_error(),
+            libc::ENOENT,
+            "published, though filtered"
+        );
+        assert_eq!(
+            last(),
+            c"Socket::ssl_verify() (ERRNO 1015): x",
+            "sw_error untouched"
+        );
     }
 }

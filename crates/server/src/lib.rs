@@ -15,9 +15,11 @@
 )]
 use core::ffi::c_void;
 
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub use commands::call_command_handler;
 pub use commands::{
-    CommandFn, CommandInfo, CommandReply, call_command_handler, swr_v1_server_command_at,
-    swr_v1_server_command_handler, swr_v1_server_command_result,
+    CommandFn, CommandInfo, CommandReply, swr_v1_server_command_at, swr_v1_server_command_handler,
+    swr_v1_server_command_result,
 };
 pub use server_methods::{swr_v1_server_add_command, swr_v1_server_command};
 
@@ -94,7 +96,7 @@ pub use config::{ServerConfig, swr_v1_server_config_get, swr_v1_server_config_in
 
 pub use state::{
     ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
-    swr_v1_server_task_pipe, swr_v1_server_text_slot, swr_v1_server_upload_tmp_dir,
+    swr_v1_server_text_slot, swr_v1_server_upload_tmp_dir,
 };
 
 pub use admin::swr_v1_server_tcp_info;

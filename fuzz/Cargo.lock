@@ -158,7 +158,9 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-reactor",
  "swoole-rs-websocket",
@@ -202,6 +204,7 @@ dependencies = [
  "swoole-rs-http2",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
+ "swoole-rs-utilities",
  "swoole-rs-websocket",
 ]
 

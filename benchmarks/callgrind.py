@@ -45,7 +45,45 @@ WORKLOADS = {
     # (#1907); needs Redis on REDIS_HOST:REDIS_PORT, default 127.0.0.1:6379.
     'app': ('benchmarks/app', 'POST', '/users/42/orders', b'{"sku":"A-1","quantity":3,"note":"gift"}',
             b'{"user":42,"sku":"A-1","quantity":3,"total":750,"in_stock":true,"stored":true}'),
+    # Runtime primitives (#1909). method 'H2' sends the request as HTTP/2 with prior knowledge.
+    'http2': ('benchmarks/primitives', 'H2', '/', None, b'ok\n'),
+    'table': ('benchmarks/primitives', 'GET', '/table', None, b'2016\n'),
+    'channel': ('benchmarks/primitives', 'GET', '/channel', None, b'2016\n'),
+    'task': ('corpus/10-task-workers', 'POST', '/', b'[1,2,3]', b'{"sum":6,"count":3,"task_worker":true}'),
 }
+
+
+def h2_frame(kind, flags, stream, payload=b''):
+    return len(payload).to_bytes(3, 'big') + bytes([kind, flags]) + stream.to_bytes(4, 'big') + payload
+
+
+def send_h2(port, path, expected, count):
+    """GET `path` `count` times over one HTTP/2 connection, one stream after another."""
+    with socket.create_connection(('127.0.0.1', port), timeout=60) as sock:
+        reader = sock.makefile('rb')
+        sock.sendall(b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n' + h2_frame(4, 0, 0))
+        # HPACK: :method GET, :scheme http, then :path and :authority as literals of
+        # static-table names, never indexed, so the encoder keeps no state.
+        block = b'\x82\x86\x04' + bytes([len(path)]) + path.encode() + b'\x01\x09localhost'
+        for stream in range(1, 2 * count, 2):
+            sock.sendall(h2_frame(1, 0x5, stream, block))  # END_STREAM | END_HEADERS
+            body, done = b'', False
+            while not done:
+                header = reader.read(9)
+                length, kind, flags = int.from_bytes(header[:3], 'big'), header[3], header[4]
+                payload = reader.read(length)
+                if kind == 4 and not flags & 1:
+                    sock.sendall(h2_frame(4, 1, 0))  # SETTINGS ACK
+                elif kind == 7:
+                    raise RuntimeError(f'GOAWAY: {payload!r}')
+                elif kind == 1 and payload[:1] != b'\x88':  # :status 200, static index 8
+                    raise RuntimeError(f'unexpected HTTP/2 response headers: {payload!r}')
+                elif kind == 0 and length:
+                    body += payload
+                    sock.sendall(h2_frame(8, 0, 0, length.to_bytes(4, 'big')))  # WINDOW_UPDATE
+                done = kind in (0, 1) and flags & 1
+            if body != expected:
+                raise RuntimeError(f'unexpected HTTP/2 body: {body[:80]!r}')
 
 
 def wait_for_port(port, proc, seconds=180):
@@ -73,6 +111,9 @@ def send(port, workload, count):
                     raise RuntimeError(f'unexpected WebSocket frame: {body[:80]!r}')
         finally:
             client.close()
+        return
+    if method == 'H2':
+        send_h2(port, path, expected, count)
         return
     conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
     for _ in range(count):

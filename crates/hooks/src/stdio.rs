@@ -103,7 +103,7 @@ unsafe impl Sync for Host {}
 static HOST: AtomicPtr<Host> = AtomicPtr::new(std::ptr::null_mut());
 
 /// [`NATIVE`] once native registers its [`Host`]: [`offload`] reads it here, so a crate
-/// that links hooks without the runtime (sqlite's and oci's tests) never links it.
+/// that links hooks without the runtime (the PDO drivers' tests) never links it.
 static RUNTIME: OnceLock<&'static Ops> = OnceLock::new();
 
 /// Register native's [`Host`].

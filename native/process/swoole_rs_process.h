@@ -117,17 +117,6 @@ void swr_v1_process_reap_loop(const swr_v1_process_reap_host *host);
 /* ProcessPool's IPC (crates/process/src/pool.rs): the stream connection a task
  * worker replies on. */
 typedef struct swr_v1_process_pool_ipc swr_v1_process_pool_ipc;
-typedef struct {
-    void *pool;
-    void *worker;
-    void *socket;
-    void *data;
-    size_t length;
-    int flags;
-    ptrdiff_t result;
-    int error;
-} swr_v1_pool_call;
-typedef void (*swr_v1_pool_step)(void *call);
 void *swr_v1_process_pool_ipc_connection(const swr_v1_process_pool_ipc *ipc);
 /* ProcessPool's layout (crates/process/src/process_pool.rs), which the process
  * patch static_asserts; crates/server/src/pool_native.rs holds its objects. */
@@ -154,44 +143,6 @@ typedef struct {
 } swr_v1_pool_record;
 /* The reap loop's wait: wait(), or waitpid(-1, WNOHANG) when `nonblock`. */
 int swr_v1_process_reap_wait(void *_ctx, bool nonblock, int *status, int *error);
-/* Server::task and Server::task_sync (crates/process/src/task_sync.rs). Each
- * hook takes a swr_v1_pool_call whose pool is the Server and worker the MultiTask. */
-typedef struct {
-    swr_v1_pool_step dispatch;
-    swr_v1_pool_step pipe_clean;
-    swr_v1_pool_step pipe_timeout;
-    swr_v1_pool_step pipe_read;
-    swr_v1_pool_step lock;
-    swr_v1_pool_step pack;
-    swr_v1_pool_step unpack;
-    swr_v1_pool_step fail;
-    swr_v1_pool_step contents;
-    swr_v1_pool_step release;
-    void (*warn)(int kind);
-} swr_v1_task_hooks;
-typedef struct {
-    const swr_v1_task_hooks *hooks;
-    void *server;
-    void *mtask;
-    uint32_t *tasking_num;
-    int64_t *task_count;
-    uint8_t *result;
-    size_t result_size;
-} swr_v1_task_server;
-/* For the Rust task methods (crates/process/src/task_file.rs, task_sync.rs):
- * SwooleG.task_tmpfile, String::extend and the server's task state for a MultiTask
- * (or null; this worker's result slot when with_result; returns its count). */
-typedef struct {
-    const char *(*tmpfile)(void);
-    void (*extend)(void *string, size_t size);
-    uint16_t (*server)(void *serv, void *mtask, bool with_result, swr_v1_task_server *out);
-} swr_v1_task_native;
-void swr_v1_process_task_set_native(const swr_v1_task_native *native);
-enum { SWR_TASK_WARN_PACK = 1, SWR_TASK_WARN_DISPATCH = 2 };
-#define SWR_TASK_NONE_DISPATCHED 2
-int swr_v1_process_task(const swr_v1_task_server *task_server, uint8_t *task, int *worker_id, bool blocking, bool *ok);
-int swr_v1_process_task_sync(const swr_v1_task_server *task_server, uint8_t *task, int *worker_id, double timeout, bool *ok);
-int swr_v1_process_task_sync_many(const swr_v1_task_server *task_server, uint16_t count, double timeout, const char *path, size_t event_size, int *ok);
 #ifdef __cplusplus
 }
 #endif

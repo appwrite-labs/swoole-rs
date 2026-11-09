@@ -926,8 +926,9 @@ fn stream_log<S>(
 
 /// The stream receive loops (`recv_with_length_protocol`, `recv_with_eof_protocol`
 /// and `recv_split_by_eof`) from upstream and from the candidate (a step loop over
-/// the Rust framing state machine), over the same stream in the same chunks: every
-/// call's result, every packet and the final buffer must match.
+/// the Rust framing state machine), over the same stream in the same chunks. The EOF
+/// loops must match every call's result, every packet and the final buffer; the
+/// length loop, which reads greedily, every packet and whether the stream errors.
 pub fn framing_stream(bytes: &[u8]) {
     let Some((
         &[
@@ -1082,4 +1083,33 @@ pub fn socks5(bytes: &[u8]) {
         String::from_utf8_lossy(&got),
         "socks5 for {bytes:?}"
     );
+}
+
+/// `sni_wildcard_matches` over the two NUL-separated names in `bytes`, against a
+/// glob over the lowercased names: the first `*`, if no `.` comes before it,
+/// matches any run of bytes without a `.`.
+pub fn sni_wildcard(bytes: &[u8]) {
+    let mut names = bytes.split(|&b| b == 0);
+    let (subject, cert) = (names.next().unwrap_or_default(), names.next().unwrap_or_default());
+    assert_eq!(
+        swoole_rs_utilities::sni_wildcard_matches(subject, cert),
+        sni_glob(&subject.to_ascii_lowercase(), &cert.to_ascii_lowercase()),
+        "sni wildcard for {subject:?} and {cert:?}"
+    );
+}
+
+fn sni_glob(subject: &[u8], cert: &[u8]) -> bool {
+    if subject == cert {
+        return true;
+    }
+    let Some(star) = cert.iter().position(|&b| b == b'*') else {
+        return false;
+    };
+    let (prefix, tail) = (&cert[..star], &cert[star + 1..]);
+    let Some(after) = subject.strip_prefix(prefix).filter(|_| !prefix.contains(&b'.')) else {
+        return false;
+    };
+    (0..=after.len())
+        .take_while(|&covered| covered == 0 || after[covered - 1] != b'.')
+        .any(|covered| after[covered..] == *tail)
 }

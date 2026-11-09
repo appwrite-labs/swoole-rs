@@ -39,11 +39,10 @@ unsafe extern "C-unwind" {
 const PRIORITY_TRY_EXIT: c_int = 4;
 const PRIORITY_WORKER_CALLBACK: c_int = 6;
 const SW_FD_PIPE: c_int = 3;
-/// `SW_PIPE_MASTER`, `SW_SERVER_EVENT_SHUTDOWN`, `SW_TASK_WORKER`, `Server::MODE_THREAD`.
+/// `SW_PIPE_MASTER`, `SW_SERVER_EVENT_SHUTDOWN`, `SW_TASK_WORKER`.
 const PIPE_MASTER: c_int = 1;
 const EVENT_SHUTDOWN: u8 = 16;
 const SW_TASK_WORKER: c_int = 4;
-const MODE_THREAD: u8 = 3;
 /// `swr_v1_server_connection`'s `get_connection_verify_no_ssl` and `get_connection_verify`.
 const VERIFIED: u32 = 2;
 const VERIFIED_TLS: u32 = 3;
@@ -97,10 +96,7 @@ impl Context {
     /// `serv->get_worker_pipe_*_in_message_bus(worker)`: in thread mode, the thread
     /// bus's own end of `pipe`.
     fn in_bus(&self, pipe: *mut c_void) -> *mut c_void {
-        match socket(pipe) {
-            Some(sock) if self.config().mode_ == MODE_THREAD => self.bus().pipe_socket(sock),
-            _ => pipe,
-        }
+        crate::objects::in_worker_bus(self.state(), self.config(), pipe)
     }
     /// `reactor->remove_read_event(pipe)` when `pipe` is still in the loop.
     fn unread(&self, pipe: *mut c_void) {

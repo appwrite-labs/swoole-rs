@@ -2,8 +2,8 @@
 
 The client and resolver (`crates/clients`, patches in
 `migration/patches/clients/`). Rust owns `network::Client` state and operations,
-using the reactor's socket record directly. C++ retains Protocol, TLS/proxy
-objects, callbacks and Zend boundaries through the installed native table.
+using the reactor's socket record directly, with its TLS context and proxies.
+C++ retains the DNS lookup and Zend boundaries.
 The persistent client pool is also Rust-owned.
 
 ## Actual-body differentials
@@ -23,10 +23,10 @@ TESTs, one function each with upstream's name, inputs, ports and expected values
 TEST `client.<name>` is the case `client.<name>` (function `<name>`). The case
 binary is the hooks one (`tests/modules/hooks/system`, which includes this file),
 so `hooks-system-rust` builds and runs it over the hybrid's libswoole.so. A
-`Client` is made, given its callbacks and deleted through network_client.cc's
-`swoole_client_*` C calls (the ones crates/phpclients makes); its methods are the
-`swr_v1_clients_*` exports they forward to, and `enable_ssl_encrypt`, `ssl_verify`
-and the `Socket` TLS reads are called under their upstream symbols.
+`Client` is made and deleted through network_client.cc's `swoole_client_*` C calls
+(the ones crates/phpclients makes) and given its callbacks by `swr_v1_clients_listen`;
+its methods, `enable_ssl_encrypt` and `ssl_verify` among them, are the `swr_v1_clients_*`
+exports they forward to, and the `Socket` TLS reads are called under their upstream symbols.
 `set_tls_host_name` assigns a fresh `SSLContext` with the name set.
 `SyncClient` and `AsyncClient` are `Client`'s `created`/`connected` bookkeeping.
 `swoole_timer_after` takes the Rust closure through crates/timer's
@@ -104,4 +104,5 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 - Async gate locale coverage is the C locale only.
 - The pinned `SHUT_RDWR` branch sets only `shutdown_read`; this is preserved.
 - `network::Client` itself (crates/clients/src/client.rs) is covered by its Rust
-  unit tests against a recording double of the C++ half, and by the PHPTs.
+  unit tests against recording doubles of the C++ half and of the socket, reactor
+  and framing symbols it calls, and by the PHPTs.

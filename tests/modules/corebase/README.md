@@ -4,12 +4,10 @@ The corebase overlay deletes `src/core/base.cc` and `src/core/misc.cc` so that h
 size, gcd/lcm, stoi env parsing, itoa/radix/hex, version compare, dirname,
 recursive mkdir), the lifecycles (clean, thread init/clean, fork, task
 tmpdir) and the hooks come from Rust, with `native/corebase/globals.cc` for what
-stable Rust can't express. Rust owns `SwooleG`'s
-scalars and native pointers (`crates/corebase/src/global.rs`), which
-`swoole::Global` exposes as `RustField` views under their upstream names;
-`swoole_init` calls it for their defaults. Native code keeps `SwooleG`'s C++
-objects, TLS, allocation, logging and callback execution. See
-`native/corebase/contract.md`.
+stable Rust can't express. Rust owns `SwooleG` and `SwooleTG` (`crates/corebase/src/
+config_state.rs`, `global.rs`, `lifecycle.rs`); `swoole::Global` and
+`swoole::ThreadGlobal` are their C++ views. Native code keeps the C++ objects,
+allocation, logging and callback execution. See `native/corebase/contract.md`.
 
 On Homebrew macOS add `--include /opt/homebrew/opt/openssl@3/include` to the
 native-TU gates.

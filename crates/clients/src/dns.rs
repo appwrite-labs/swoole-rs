@@ -67,7 +67,7 @@ fn c_len(bytes: &[u8]) -> usize {
 const DNS_PORT: c_int = 53;
 /// `SW_PATH_HOSTS`.
 const HOSTS: &[u8] = b"/etc/hosts";
-/// `SW_DNS_RESOLV_CONF`, which `SwooleG.dns_resolvconf_path` always holds.
+/// `SW_DNS_RESOLV_CONF`, which upstream's `SwooleG.dns_resolvconf_path` always held.
 pub const RESOLV_CONF: &CStr = c"/etc/resolv.conf";
 
 /// The DNS server (an empty host until set or read from `resolv.conf`) and the

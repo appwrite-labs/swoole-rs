@@ -221,6 +221,22 @@ pub extern "C" fn swr_v1_error_buffer() -> *mut c_char {
     LAST_ERROR.with(|buffer| buffer.as_ptr().cast::<c_char>().cast_mut())
 }
 
+/// `sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s", text)`: `text`, truncated to the buffer
+/// and NUL-terminated; returns the length kept.
+#[must_use]
+pub fn set_last_error_msg(text: &[u8]) -> usize {
+    let length = text.len().min(ERROR_MSG_SIZE - 1);
+    LAST_ERROR.with(|buffer| {
+        for (cell, &byte) in buffer.iter().zip(text) {
+            cell.set(c_char::from_ne_bytes([byte]));
+        }
+        if let Some(end) = buffer.get(length) {
+            end.set(0);
+        }
+    });
+    length
+}
+
 /// `const char *swoole_get_last_error_msg()`.
 #[cfg_attr(
     feature = "upstream-symbols",

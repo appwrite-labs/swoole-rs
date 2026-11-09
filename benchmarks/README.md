@@ -28,6 +28,12 @@ coroutines per request doing pooled Redis `SET`/`GET` over hooked streams and a 
 read). It needs Redis on `REDIS_HOST:REDIS_PORT` (default `127.0.0.1:6379`); the job
 runs it as a service.
 
+Four more cover runtime primitives (#1909): `http2` (a GET over HTTP/2 with
+prior knowledge), `table` (64 `Swoole\Table` sets and gets) and `channel` (64
+values through a `Coroutine\Channel` from a second coroutine), all against
+`benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
+`10-task-workers`.
+
 ```sh
 python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --workload echo-1k --limits benchmarks/callgrind_limits.json \
   --engine hybrid=target/hybrid/rust/modules/swoole.so \

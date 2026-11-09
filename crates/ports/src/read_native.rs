@@ -10,7 +10,6 @@ use swoole_rs_corebase::constants::{
     SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET, SW_HTTP_BAD_REQUEST_PACKET,
     SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
-use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_http::HttpRequest;
 use swoole_rs_reactor::reactor_upstream::{prepared, trigger_close_event};
@@ -20,8 +19,8 @@ use swoole_rs_server::static_select::swr_v1_server_static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
 use swoole_rs_tls::upstream::{socket_recv, socket_send};
 
-use crate::framing_recv::{recv_with_eof_protocol, recv_with_length_protocol};
-use crate::http_routes::exports::{RecvData, dispatch_request, dispatch_task};
+use crate::framing_recv::{self, Callbacks, Packages};
+use crate::http_routes::exports::{Frames, RecvData, dispatch_request, dispatch_task};
 use crate::read::{
     ON_READ_HTTP, OP_ACTIVE, OP_BUF_EXTEND, OP_BUF_HEADER_END, OP_BUF_REDUCE, OP_CATCH, OP_CLIENT,
     OP_CLOSE, OP_CLOSE_ERRNO, OP_DISPATCH_REQUEST, OP_DISPATCH_TASK, OP_HTTP2_ENABLED,
@@ -30,8 +29,7 @@ use crate::read::{
     OP_SKIP_RECV, OP_STATIC, OP_UPLOADS, OP_WARN_RECV, OP_WEBSOCKET_ACTIVATE, SEND_BAD_REQUEST,
     SEND_TOO_LARGE, SEND_UNAVAILABLE, Shared, readable,
 };
-
-type Receive = unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *mut CppString) -> c_int;
+use swoole_rs_framing::recv::{MODE_EOF, MODE_LENGTH};
 
 /// `websocket::STATUS_HANDSHAKE` and `STATUS_ACTIVE`.
 const STATUS_HANDSHAKE: u8 = 2;
@@ -50,6 +48,9 @@ struct Read {
     serv: *mut c_void,
     port: *mut PortConfig,
     kind: u32,
+    /// A WebSocket connection on a port with `open_websocket_protocol`: its
+    /// frames go to [`Frames`], past the port protocol's callbacks.
+    frames: bool,
 }
 
 /// `ListenPort::readable_callback_*` of `kind` on the reactor's `event`.
@@ -71,6 +72,9 @@ pub(crate) unsafe fn on_read(
     let fields = unsafe { prepared(reactor) }.fields;
     // SAFETY: its fields, whose `ptr` is its server.
     let serv = unsafe { (*fields).ptr };
+    // SAFETY: as the caller guarantees.
+    let port = unsafe { port_config::of(port) };
+    let open_websocket = port.open_websocket_protocol;
     let mut read = Read {
         shared: Shared {
             buffer: ptr::null_mut(),
@@ -85,14 +89,15 @@ pub(crate) unsafe fn on_read(
         socket,
         conn,
         serv,
-        // SAFETY: as the caller guarantees.
-        port: unsafe { port_config::of(port) },
+        port,
         kind,
+        frames: false,
     };
     if kind == ON_READ_HTTP {
         // SAFETY: the live connection.
         let c = unsafe { &*conn };
         read.shared.websocket = u8::from(c.websocket_status >= STATUS_HANDSHAKE);
+        read.frames = read.shared.websocket != 0 && open_websocket;
         read.shared.upgraded = c.http_upgrade;
         read.shared.http2_stream = c.http2_stream;
         read.shared.static_handler = u8::from(config(&read).enable_static_handler);
@@ -145,12 +150,13 @@ fn send(c: &Read, packet: &[u8]) -> u64 {
     status(unsafe { socket_send(c.socket, packet.as_ptr().cast(), packet.len(), 0) } as i64)
 }
 
-/// One receive through the port's protocol.
-fn receive(c: &Read, how: Receive) -> u64 {
+/// One receive of `mode` through the port's protocol, its packages handled by `K`.
+#[inline(always)]
+fn receive<K: Packages>(c: &Read, mode: u32) -> u64 {
     // SAFETY: the live port.
     let protocol = unsafe { &raw const (*c.port).protocol };
     // SAFETY: the port's protocol, a live socket or connection and the current buffer.
-    status(unsafe { how(protocol, c.socket, c.shared.buffer.cast()) })
+    status(unsafe { framing_recv::receive::<K>(protocol, c.socket, c.shared.buffer.cast(), mode) })
 }
 
 /// The effects every read makes, inlined into each call site, where `op` is a
@@ -192,7 +198,8 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
             }
             u64::from(release)
         }
-        OP_RECV_LENGTH => receive(c, recv_with_length_protocol),
+        OP_RECV_LENGTH if c.frames => receive::<Frames>(c, MODE_LENGTH),
+        OP_RECV_LENGTH => receive::<Callbacks>(c, MODE_LENGTH),
         OP_ACTIVE => {
             // SAFETY: the live connection.
             let active = unsafe { (*c.conn).active };
@@ -268,7 +275,7 @@ fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
             }
             .as_bytes(),
         ),
-        OP_RECV_EOF => receive(c, recv_with_eof_protocol),
+        OP_RECV_EOF => receive::<Callbacks>(c, MODE_EOF),
         OP_RECV_REDIS => {
             // SAFETY: the live port.
             let protocol = unsafe { &raw const (*c.port).protocol };

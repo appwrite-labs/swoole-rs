@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The C++ effects Rust sequences (`lifecycle.rs`): native/corebase/globals.cc's
-//! `swoole_init` registers them (`swr_v1_core_set_native_host`), so the archive
+//! The C++ effects Rust sequences (`lifecycle.rs`): native/corebase/globals.cc
+//! registers them as it loads (`swr_v1_core_set_native_host`), so the archive
 //! keeps no link-time reference to C++ and the native gates link it without them.
 //! They come as one function, not a table: a sanitizer keeps every global alive,
 //! and a table would keep the timer, event and signal code with it.
@@ -17,19 +17,28 @@ pub struct NativeHost {
     pub get_env: unsafe extern "C-unwind" fn(name: *const c_char, value: *mut c_int) -> bool,
     /// Runs one numbered effect; native code promises each is safe to run.
     effect: extern "C-unwind" fn(effect: c_int, argument: usize) -> usize,
+    /// One `LOGGER_*` operation on the process logger (crates/process).
+    logger: extern "C" fn(op: c_int),
 }
+
+/// `new Logger()` on `SwooleG.stdout`, into `SwooleG.logger`.
+pub const LOGGER_NEW: c_int = 0;
+/// `SwooleG.logger->reopen()`, `->close()` and `delete SwooleG.logger`.
+pub const LOGGER_REOPEN: c_int = 1;
+pub const LOGGER_CLOSE: c_int = 2;
+pub const LOGGER_DELETE: c_int = 3;
 
 impl NativeHost {
     fn run(&self, effect: c_int, argument: usize) -> usize {
         (self.effect)(effect, argument)
     }
-    /// This thread's `SwooleTG`.
-    pub(crate) fn thread(&self) -> *mut c_void {
-        ptr::with_exposed_provenance_mut(self.run(0, 0))
-    }
-    /// `SwooleG = {}`.
-    pub(crate) fn reset(&self) {
-        self.run(1, 0);
+    /// `swoole_init`'s native leaves, in upstream's order: `sw_error`, the stdout
+    /// stream and the fatal-error hook, then the logger, then the debug log level,
+    /// the memory pool, the futex-less wait registry, signalfd and the bug report.
+    pub(crate) fn init(&self) {
+        self.run(15, 0);
+        self.logger(LOGGER_NEW);
+        self.run(16, 0);
     }
     /// Allocate (`new String(SW_STACK_BUFFER_SIZE)`) or delete `SwooleTG.buffer_stack`.
     pub(crate) fn buffer(&self, allocate: bool) {
@@ -43,15 +52,8 @@ impl NativeHost {
     pub(crate) fn delete_pool(&self, pool: *mut c_void) {
         self.run(4, pool.expose_provenance());
     }
-    /// `SwooleG.logger->close()`, `->reopen()` and `delete SwooleG.logger`.
-    pub(crate) fn close_logger(&self) {
-        self.run(5, 0);
-    }
-    pub(crate) fn reopen_logger(&self) {
-        self.run(6, 0);
-    }
-    pub(crate) fn delete_logger(&self) {
-        self.run(7, 0);
+    pub(crate) fn logger(&self, op: c_int) {
+        (self.logger)(op);
     }
     pub(crate) fn signal_clear(&self) {
         self.run(8, 0);

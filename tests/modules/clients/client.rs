@@ -4,8 +4,8 @@
 //!
 //! A `Client` is made, listened to and deleted through network_client.cc's C calls
 //! (`swoole_client_*`, swoole_rs_clients.h); its operations are the Rust state's
-//! `swr_v1_clients_*` exports the C++ methods forward to, and the few C++ members
-//! (`enable_ssl_encrypt`, `ssl_verify`, the `Socket` TLS reads) under their symbols.
+//! `swr_v1_clients_*` exports the C++ methods forward to, and the `Socket` TLS reads
+//! are called under their upstream symbols.
 //! `SyncClient` and `AsyncClient` are the `created`/`connected` bookkeeping their
 //! header gives `Client`. The `Server` fixtures are forked std servers bound before
 //! the fork: the cases assert only on the client. [`timer_after`] schedules a
@@ -92,20 +92,6 @@ const _: () = assert!(
     "swr_v1_clients_record's layout moved"
 );
 
-/// `network::Client`: the record, then `std::unique_ptr<Socks5Proxy> socks5_proxy`.
-#[repr(C)]
-struct Native {
-    record: Record,
-    socks5_proxy: *mut ProxyOwner,
-}
-
-/// `ProxyOwner`'s `swr_v1_core_proxy_prepared`, up to its fields.
-#[repr(C)]
-struct ProxyOwner {
-    owner: *mut c_void,
-    fields: *mut ProxyFields,
-}
-
 /// `swr_v1_core_proxy_fields`.
 #[repr(C)]
 struct ProxyFields {
@@ -146,15 +132,18 @@ unsafe extern "C" {
     fn swoole_client_create(kind: c_int, is_async: bool, error: *mut c_int) -> *mut c_void;
     fn swoole_client_free(cli: *mut c_void);
     fn swoole_client_state(cli: *mut c_void) -> *mut c_void;
-    fn swoole_client_async_listen(
-        cli: *mut c_void,
+    fn swr_v1_clients_listen(
+        state: *mut c_void,
         object: *mut c_void,
         events: u32,
         listener: Listener,
     );
-    fn swoole_client_ssl_context(cli: *mut c_void) -> *const c_void;
-    fn swoole_client_proxy(
-        cli: *mut c_void,
+    fn swr_v1_clients_ssl_context(state: *const c_void) -> *const c_void;
+    fn swr_v1_clients_ssl_verify(state: *mut c_void, allow_self_signed: c_int) -> c_int;
+    fn swr_v1_clients_enable_ssl(state: *mut c_void) -> c_int;
+    fn swr_v1_clients_proxy_fields(state: *const c_void, http: bool) -> *mut ProxyFields;
+    fn swr_v1_clients_proxy(
+        state: *mut c_void,
         http: bool,
         host: *const c_char,
         host_length: usize,
@@ -232,10 +221,6 @@ unsafe extern "C" {
         consume: bool,
     ) -> c_int;
 
-    #[link_name = "_ZN6swoole7network6Client18enable_ssl_encryptEv"]
-    fn client_enable_ssl_encrypt(cli: *mut c_void) -> c_int;
-    #[link_name = "_ZNK6swoole7network6Client10ssl_verifyEi"]
-    fn client_ssl_verify(cli: *const c_void, allow_self_signed: c_int) -> c_int;
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
     #[link_name = "_ZNK6swoole7network6Socket24ssl_get_peer_certificateEPNS_6StringE"]
@@ -384,13 +369,13 @@ impl<'a> Client<'a> {
         cli
     }
 
-    fn native(&self) -> &Native {
+    fn record(&self) -> &Record {
         // SAFETY: the live client, whose head is the record.
-        unsafe { &*self.ptr.cast::<Native>() }
+        unsafe { &*self.ptr.cast::<Record>() }
     }
 
     pub(super) fn socket(&self) -> *mut c_void {
-        self.native().record.socket
+        self.record().socket
     }
 
     /// Installs the callbacks set so far, as assigning `onConnect` and the rest does.
@@ -410,7 +395,7 @@ impl<'a> Client<'a> {
         }
         let object = std::ptr::from_ref(self).cast_mut().cast();
         // SAFETY: the boxed client outlives its callbacks.
-        unsafe { swoole_client_async_listen(self.ptr, object, events, listener) };
+        unsafe { swr_v1_clients_listen(swoole_client_state(self.ptr), object, events, listener) };
     }
 
     fn on_connect(&self, body: impl FnMut(&Client<'a>) + 'a) {
@@ -523,7 +508,7 @@ impl<'a> Client<'a> {
 
     pub(super) fn enable_ssl_encrypt(&self) -> c_int {
         // SAFETY: the live client.
-        unsafe { client_enable_ssl_encrypt(self.ptr) }
+        unsafe { swr_v1_clients_enable_ssl(self.state) }
     }
 
     fn ssl_handshake(&self) -> c_int {
@@ -533,7 +518,7 @@ impl<'a> Client<'a> {
 
     fn ssl_verify(&self, allow_self_signed: bool) -> c_int {
         // SAFETY: the live client, with a TLS session.
-        unsafe { client_ssl_verify(self.ptr, c_int::from(allow_self_signed)) }
+        unsafe { swr_v1_clients_ssl_verify(self.state, c_int::from(allow_self_signed)) }
     }
 
     /// `set_tls_host_name(name)`: a fresh `SSLContext`'s view with the name set, assigned
@@ -552,7 +537,7 @@ impl<'a> Client<'a> {
                 0
             );
             assert_eq!(
-                swr_v1_tls_owner_assign(swoole_client_ssl_context(self.ptr), prepared.owner).status,
+                swr_v1_tls_owner_assign(swr_v1_clients_ssl_context(self.state), prepared.owner).status,
                 0
             );
             swr_v1_tls_owner_free(prepared.owner);
@@ -562,8 +547,8 @@ impl<'a> Client<'a> {
     fn set_proxy(&self, http: bool, host: &str, port: c_int, user: &str, password: &str) {
         // SAFETY: each text is readable for its length.
         unsafe {
-            swoole_client_proxy(
-                self.ptr,
+            swr_v1_clients_proxy(
+                self.state,
                 http,
                 host.as_ptr().cast(),
                 host.len(),
@@ -586,9 +571,10 @@ impl<'a> Client<'a> {
 
     /// `client.socks5_proxy`'s `dns_tunnel`, or None without one.
     fn socks5_dns_tunnel(&self) -> Option<&mut u8> {
-        let proxy = self.native().socks5_proxy;
-        // SAFETY: the client's live proxy and its fields.
-        (!proxy.is_null()).then(|| unsafe { &mut (*(*proxy).fields).dns_tunnel })
+        // SAFETY: the live state.
+        let fields = unsafe { swr_v1_clients_proxy_fields(self.state, false) };
+        // SAFETY: the client's live proxy's fields.
+        (!fields.is_null()).then(|| unsafe { &mut (*fields).dns_tunnel })
     }
 
     fn set_watermarks(&self, high: u32, low: u32) {

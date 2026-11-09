@@ -1,10 +1,12 @@
 # Core base helpers
 
 Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. `src/core/base.cc`
-and `src/core/misc.cc` are gone: what stable Rust can't express of them (the
-globals, C++ object lifetimes and the std::string/std::function APIs) is
-`native/corebase/globals.cc`. Other callers are the readers of the `SwooleG` fields Rust owns. No
-public C++ signature changes; `swoole::Global` loses the fields Rust owns.
+and `src/core/misc.cc` are gone: what stable Rust can't express of them (C++ object
+lifetimes, compile-time build strings, the variadic fatal-error hook, the log
+macros and the std::string/std::function and throwing APIs) is
+`native/corebase/globals.cc`. Rust owns `SwooleG` and `SwooleTG`; `swoole::Global`
+and `swoole::ThreadGlobal` are their C++ views. `swoole_get_task_tmpdir` and
+`sw_thread_lock`, which nothing called, are gone.
 
 Rust holds numeric/byte/path comparison and formatting policy. Apart from the
 core state record below it keeps no state, pointers or borrows after return,
@@ -60,14 +62,26 @@ string needing an appended slash are undefined upstream; Rust rejects them.
 ## Lifecycles (`lifecycle.rs`)
 
 Rust defines `swoole_thread_init`, `swoole_thread_clean`, `swoole_is_main_thread`,
-`swoole_clean` and `swoole_fork` under their C++ symbols, and `swoole_fork_exec`'s
-fork (`swr_v1_core_fork_exec`). Each C++ effect (`SwooleG = {}`, an object's
-`new`/`delete`, the timer, event, signal and coroutine leaves) is an entry of the
-host `swoole_init` registers (`swr_v1_core_native_host`); before that the
-sequences do nothing and `swoole_fork` returns -1.
+`swoole_clean` and `swoole_fork` under their C++ symbols, `swoole_init`'s body
+(`swr_v1_core_swoole_init`) and `swoole_fork_exec`'s fork (`swr_v1_core_fork_exec`).
+Each C++ effect (an object's `new`/`delete`, `swoole_init`'s native leaves, the
+timer, event, signal and coroutine leaves) is an entry of the host globals.cc's
+`swoole_init` registers (`swr_v1_core_native_host`) before it runs the body;
+registering only there keeps those leaves out of the gates that never call it.
+The same host carries the process logger's lifecycle (`swr_v1_process_logger`,
+crates/process), and `swoole_init` registers the log macros Rust's logs run
+(`swr_v1_utils_log`, crates/utilities) as the log host: both crates sit above
+corebase, so corebase reaches them only through what native code registers.
+Before that the sequences skip their native effects and `swoole_fork` returns -1.
+
+- Init: the record's defaults (`swr_v1_core_init`, below), `SwooleG = {}`, libc's
+  allocator, the native leaves in upstream's order (`sw_error`, stdout, the
+  fatal-error hook, the logger and its level, the memory pool, the futex-less wait
+  registry, signalfd, the bug report), the main thread, then the task path and
+  the descriptor limit (warning when getrlimit fails).
 
 - Clean releases the hook lists, then: clear signals, clean the thread,
-  close the logger when there is one, delete the logger and memory pool, and
+  close the logger, delete the logger and memory pool, and
   reset Global last.
 - Thread init allocates the stack buffer when absent, blocks signals only for
   non-main threads, then publishes `main_thread`. Thread clean frees the timer,
@@ -77,7 +91,21 @@ sequences do nothing and `swoole_fork` returns -1.
   failure returns `pid_t(0)` without warning or retry; the child callback runs
   before `exit(0)`. A returning fatal handler resumes the sequence.
 
-## Core state (`global.rs`)
+## `SwooleTG` (`lifecycle.rs`)
+
+Each thread's `swoole::ThreadGlobal` is a Rust `thread_local` without a destructor;
+`swoole.h`'s `SwooleTG` is `*swr_v1_core_thread_global()`, so `SwooleTG.field` code
+compiles unchanged. Both sides assert the layout. `swr_v1_core_timer_slot` is
+`&SwooleTG.timer` for crates/timer and crates/server.
+
+## `SwooleG` (`config_state.rs`, `global.rs`)
+
+Rust defines the `SwooleG` symbol: the fields native code reads in place
+(`max_sockets`, `dns_cache_refresh_time`, `std_allocator`) followed by the bytes of
+`swoole::Global`'s empty accessor members. `task_tmpfile` is a `RustPath` view
+over Rust's string slot (`swr_v1_core_task_tmpfile`). `swr_v1_core_set_task_tmpdir` is
+`swoole_set_task_tmpdir` under its lock; the C++ wrapper keeps upstream's throw on
+an empty path. Both sides assert the layout.
 
 Rust owns `SwooleG`'s scalars in one process-wide record of atomics: the init
 guard, `cpu_num`, `dns_tries`, the flags (`running`, `enable_signalfd`,
@@ -91,19 +119,16 @@ logger, server, AIO pipe socket, the fatal-error and backtrace hooks). Each has 
 member names as `swoole::RustField` views over those pairs, so upstream's
 `SwooleG.field` code (other modules' patched lines and the upstream core-tests
 alike) compiles unchanged. A view can't be copied, so passing one through `...`
-fails to compile instead of printing garbage. `SwooleG = {}` leaves the record
-alone; `swr_v1_core_reset` clears it. The allocator, limits and task/resolver
-paths are `config_state.rs`; the containers are C++ objects.
+fails to compile instead of printing garbage. `swr_v1_core_reset` clears the
+record; `swoole_clean` resets `SwooleG`'s fields, paths and name resolvers with it.
 
 `swr_v1_core_init` is `swoole_init`'s guard: false when already initialised,
 otherwise it resets the record and sets running, coroutines on, the page size,
 `SW_MAX_FILE_CONTENT`, `SW_MAX(1, sysconf(...))` CPUs, one DNS try and the
-`srandom(time(nullptr))` seed; `swoole_init` keeps the native effects in
-upstream's order. `swr_v1_core_bug_report_init` writes base.cc's bug-report
+`srandom(time(nullptr))` seed. `swr_v1_core_bug_report_init` writes base.cc's bug-report
 banner, `uname` and compiler lines around the TLS line native code passes.
 `swr_v1_core_max_sockets` is the `RLIMIT_NOFILE` soft limit as `uint32_t`,
-capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept. `swoole_clean` resets
-the record after the native `Global`.
+capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept.
 
 Upstream's own C++ symbols defined in Rust (`export_name`): `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
 `swoole_version_compare`, `swoole_dump_ascii`/`_hex`, `swoole::microtime`,
@@ -125,8 +150,7 @@ xoshiro256** seeded by getentropy), `swoole_system_random` and
 `sw_snprintf`, `sw_vsnprintf` and `sw_printf` are C variadics, so they're a C
 shim in the Rust archive (`crates/corebase/src/format.c`, C linkage).
 
-Still native: the rest of `SwooleG` and TLS, C++ containers/objects, filesystem IO
-and other runtime operations.
+Still native: C++ containers/objects, filesystem IO and other runtime operations.
 
 The lower `swoole::Thread` (`native/corebase/swoole_thread.h`; upstream's header is
 deleted) owns a generated `CoreThread` record: Rust controls

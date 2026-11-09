@@ -2,7 +2,7 @@
 //! Allocation, connection state, PHP and callbacks stay with the native caller.
 use std::mem::MaybeUninit;
 
-use crate::{header, mask, swr_v1_ws_frame_length};
+use crate::{frame_length, header, mask};
 
 const FIN: u8 = 1;
 const RSV1: u8 = 4;
@@ -35,9 +35,9 @@ fn flags(first: u8, second: u8) -> u8 {
 /// untouched. Returns the expected frame length even when its body is incomplete,
 /// or `INVALID_CONTROL` (payload left masked) for a complete compressed control
 /// frame, with the decoded header.
+#[inline]
 pub fn decode_in_place(data: &mut [u8]) -> (i64, DecodedFrame) {
     let length = data.len();
-    let mut header = 0;
     // The native Frame decoder passes header availability through uint32_t.
     // Preserve that conversion even for unusually large borrowed buffers.
     #[expect(
@@ -45,8 +45,8 @@ pub fn decode_in_place(data: &mut [u8]) -> (i64, DecodedFrame) {
         reason = "the native uint32_t header availability"
     )]
     let available = length as u32 as usize;
-    // SAFETY: `available <= length` readable bytes; header is a disjoint local.
-    let total = unsafe { swr_v1_ws_frame_length(data.as_ptr(), available, &raw mut header) };
+    let (total, header) = frame_length(data.get(..available).unwrap_or_default());
+    let header = header.unwrap_or(0);
     let mut frame = DecodedFrame {
         header_length: header as usize,
         ..DecodedFrame::default()
@@ -318,6 +318,7 @@ pub struct Decision {
     pub ext_flags: u16,
 }
 
+#[inline]
 fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
     use Action::{
         Append, ClientClose, Control, Dispatch, Finish, Reject, ServerClose, Start, Unknown,

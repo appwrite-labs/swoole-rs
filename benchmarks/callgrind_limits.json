@@ -5,5 +5,9 @@
   "service-health": 1.01,
   "websocket": 1.15,
   "timer": 0.83,
-  "app": 1.15
+  "app": 1.15,
+  "http2": 1.32,
+  "table": 1.20,
+  "channel": 0.92,
+  "task": 1.56
 }

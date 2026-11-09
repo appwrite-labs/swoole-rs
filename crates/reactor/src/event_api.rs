@@ -2,8 +2,8 @@
 // Compatibility derived from Swoole v6.2.4 src/wrapper/event.cc (Swoole contributors).
 //! event.cc's `swoole_event_*` C API over the thread's `Reactor` (`SwooleTG.reactor`).
 //! With `upstream-symbols` each is defined under its upstream (Itanium) symbol.
-//! `swoole_event_init`, `swoole_event_free` and `swoole_event_defer` construct, delete
-//! and defer into C++ objects, so they are native/reactor/reactor.cc.
+//! `swoole_event_init` and `swoole_event_free` construct and delete the C++ object, so
+//! they are native/reactor/reactor.cc; `swoole_event_defer` is callbacks.rs's.
 use crate::handlers::Handler;
 use crate::reactor_upstream::{prepared, reactor_change, reactor_interest};
 use crate::{ReactorFields, SocketRecord};
@@ -230,12 +230,9 @@ pub unsafe extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
 #[unsafe(export_name = "_Z17swoole_event_waitv")]
 #[must_use]
 pub extern "C-unwind" fn swoole_event_wait() -> c_int {
-    // SAFETY: native/reactor/reactor.cc's Reactor members and swoole_event_free.
+    use crate::callbacks::{reactor_if_exit, reactor_wait};
+    // SAFETY: native/reactor/reactor.cc's.
     unsafe extern "C-unwind" {
-        #[link_name = "_ZN6swoole7Reactor7if_exitEv"]
-        fn reactor_if_exit(reactor: *mut c_void) -> bool;
-        #[link_name = "_ZN6swoole7Reactor4waitEv"]
-        fn reactor_wait(reactor: *mut c_void) -> c_int;
         #[link_name = "_Z17swoole_event_freev"]
         fn swoole_event_free() -> c_int;
     }

@@ -19,6 +19,7 @@ upstream-symbols = []
 workspace = true
 
 [dependencies]
+swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-memory = { path = "../memory" }
 swoole-rs-ossupport = { path = "../ossupport" }

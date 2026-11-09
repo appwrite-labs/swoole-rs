@@ -93,8 +93,7 @@ fn on(call: &Call) {
     }
     let (name, cb) = (call.zval(1), call.zval(2));
     let Some((kind, property)) = lookup(name) else {
-        // SAFETY: a zval is plain data; all-zero bytes are `IS_UNDEF`.
-        let mut retval: zval = unsafe { std::mem::zeroed() };
+        let mut retval = crate::dispatch::undef();
         port_call(call, b"on", &raw mut retval, &[name, cb]);
         // RETURN_BOOL(Z_BVAL_P(&retval))
         // SAFETY: Zend wrote the method's result.

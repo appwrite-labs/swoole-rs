@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
-//! base.cc's thread, clean and fork sequences. Each C++ effect (an object's
-//! `new`/`delete`, `SwooleG = {}`, the timer, event, signal and coroutine leaves)
-//! runs through the host `swoole_init` registers (`native.rs`); before that there
-//! is nothing to set up or tear down.
+//! base.cc's init, thread, clean and fork sequences, and `SwooleTG`. Each C++
+//! effect (an object's `new`/`delete`, the timer, event, signal and coroutine
+//! leaves) runs through the host native/corebase/globals.cc registers
+//! (`native.rs`); without it there is nothing native to set up or tear down.
 use crate::log;
-use crate::native::{self, NativeHost};
+use crate::native;
+use std::cell::UnsafeCell;
 use std::ffi::{c_int, c_void};
+use std::ptr;
 
 /// `SW_FORK_EXEC`, `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
 const FORK_EXEC: c_int = 2;
@@ -16,10 +18,11 @@ const FORK_PRECHECK: c_int = 8;
 const OPERATION_NOT_SUPPORT: c_int = 507;
 const HOOK_AFTER_FORK: c_int = 12;
 
-/// The leading members of `swoole::ThreadGlobal` (`SwooleTG`) these sequences
-/// touch; native/corebase/globals.cc asserts their offsets.
+/// `swoole::ThreadGlobal`, `SwooleTG`: Rust holds each thread's, and native code
+/// reaches it through `swr_v1_core_thread_global` (swoole.h's `SwooleTG`), whose
+/// struct asserts this layout.
 #[repr(C)]
-struct ThreadGlobal {
+pub struct ThreadGlobal {
     id: u16,
     kind: u8,
     main_thread: bool,
@@ -30,86 +33,123 @@ struct ThreadGlobal {
     async_threads: *mut c_void,
 }
 
-/// This thread's `SwooleTG`. Native code changes it only inside host calls, so
-/// a copy read between them is current.
-fn thread(host: &NativeHost) -> *mut ThreadGlobal {
-    host.thread().cast()
+const _: () = assert!(
+    std::mem::offset_of!(ThreadGlobal, main_thread) == 3
+        && std::mem::offset_of!(ThreadGlobal, buffer_stack) == 8
+        && std::mem::offset_of!(ThreadGlobal, async_threads) == 40
+        && size_of::<ThreadGlobal>() == 48,
+    "swoole_rs_corebase_state.h asserts the same `swoole::ThreadGlobal` layout"
+);
+
+thread_local! {
+    static THREAD: UnsafeCell<ThreadGlobal> = const {
+        UnsafeCell::new(ThreadGlobal {
+            id: 0,
+            kind: 0,
+            main_thread: false,
+            buffer_stack: ptr::null_mut(),
+            reactor: ptr::null_mut(),
+            timer: ptr::null_mut(),
+            message_bus: ptr::null_mut(),
+            async_threads: ptr::null_mut(),
+        })
+    };
 }
 
-fn read<T: Copy>(host: &NativeHost, field: impl FnOnce(&ThreadGlobal) -> T) -> T {
-    // SAFETY: this thread's live record; the borrow ends before the next host call.
-    field(unsafe { &*thread(host) })
+/// This thread's `SwooleTG`, live for the thread's life (it has no destructor).
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_core_thread_global() -> *mut ThreadGlobal {
+    THREAD.with(UnsafeCell::get)
 }
 
-/// `SwooleTG.reactor`: null before `swoole_init`, as `SwooleTG` is then.
+/// `&SwooleTG.timer`, for crates/timer and crates/server.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_core_timer_slot() -> *mut *mut c_void {
+    // SAFETY: this thread's live record; only the field's address is taken.
+    unsafe { &raw mut (*swr_v1_core_thread_global()).timer }
+}
+
+fn read<T: Copy>(field: impl FnOnce(&ThreadGlobal) -> T) -> T {
+    // SAFETY: this thread's live record; the borrow ends before any native call.
+    field(unsafe { &*swr_v1_core_thread_global() })
+}
+
+fn write(field: impl FnOnce(&mut ThreadGlobal)) {
+    // SAFETY: as `read`.
+    field(unsafe { &mut *swr_v1_core_thread_global() });
+}
+
+/// `SwooleTG.reactor`.
 #[must_use]
 pub fn thread_reactor() -> *mut c_void {
-    native::host().map_or(std::ptr::null_mut(), |host| {
-        read(host, |thread| thread.reactor)
-    })
+    read(|thread| thread.reactor)
 }
 
-/// `swoole_get_thread_type()`: `SwooleTG.type`, 0 before `swoole_init`.
+/// `swoole_get_thread_type()`: `SwooleTG.type`.
 #[must_use]
 pub fn thread_kind() -> u8 {
-    native::host().map_or(0, |host| read(host, |thread| thread.kind))
+    read(|thread| thread.kind)
 }
 
-/// `swoole_set_thread_type(kind)` then `swoole_set_thread_id(id)`; nothing before `swoole_init`.
+/// `swoole_set_thread_type(kind)` then `swoole_set_thread_id(id)`.
 pub fn set_thread(kind: u8, id: u16) {
-    if let Some(host) = native::host() {
-        let thread = thread(host);
-        // SAFETY: this thread's live record, borrowed for the writes alone.
-        unsafe { (*thread).kind = kind };
-        // SAFETY: as above.
-        unsafe { (*thread).id = id };
-    }
+    write(|thread| {
+        thread.kind = kind;
+        thread.id = id;
+    });
 }
 
-/// `swoole_get_thread_id()`: `SwooleTG.id`, 0 before `swoole_init`.
+/// `swoole_get_thread_id()`: `SwooleTG.id`.
 #[must_use]
 pub fn thread_id() -> u16 {
-    native::host().map_or(0, |host| read(host, |thread| thread.id))
+    read(|thread| thread.id)
 }
 
-/// `SwooleTG.message_bus`: null before `swoole_init`.
+/// `SwooleTG.message_bus`.
 #[must_use]
 pub fn thread_message_bus() -> *mut c_void {
-    native::host().map_or(std::ptr::null_mut(), |host| {
-        read(host, |thread| thread.message_bus)
-    })
+    read(|thread| thread.message_bus)
 }
 
-/// Sets `SwooleTG.message_bus`; nothing before `swoole_init`.
+/// Sets `SwooleTG.message_bus`.
 pub fn set_thread_message_bus(bus: *mut c_void) {
-    if let Some(host) = native::host() {
-        // SAFETY: this thread's live record, borrowed for the write alone.
-        unsafe { (*thread(host)).message_bus = bus };
-    }
+    write(|thread| thread.message_bus = bus);
 }
 
-/// Sets `SwooleTG.reactor`; nothing before `swoole_init`.
+/// Sets `SwooleTG.reactor`.
 pub fn set_thread_reactor(reactor: *mut c_void) {
-    if let Some(host) = native::host() {
-        // SAFETY: this thread's live record, borrowed for the write alone.
-        unsafe { (*thread(host)).reactor = reactor };
-    }
+    write(|thread| thread.reactor = reactor);
 }
 
-/// `SwooleTG.async_threads`: null before `swoole_init`.
+/// `SwooleTG.async_threads`.
 #[must_use]
 pub fn thread_async_threads() -> *mut c_void {
-    native::host().map_or(std::ptr::null_mut(), |host| {
-        read(host, |thread| thread.async_threads)
-    })
+    read(|thread| thread.async_threads)
 }
 
-/// Sets `SwooleTG.async_threads`; nothing before `swoole_init`.
+/// Sets `SwooleTG.async_threads`.
 pub fn set_thread_async_threads(threads: *mut c_void) {
-    if let Some(host) = native::host() {
-        // SAFETY: this thread's live record, borrowed for the write alone.
-        unsafe { (*thread(host)).async_threads = threads };
+    write(|thread| thread.async_threads = threads);
+}
+
+/// `void swoole_init()`'s body: the core record's defaults, `SwooleG`'s
+/// configuration, the native leaves (`NativeHost::init`: streams, logger, memory
+/// pool, signalfd, bug report) and the main thread. Once per process; later calls
+/// do nothing. globals.cc's `swoole_init` registers the host, then calls this:
+/// registering at load would keep every C++ leaf linked in the native gates.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn swr_v1_core_swoole_init() {
+    if !crate::swr_v1_core_init() {
+        return;
     }
+    crate::config_state::reset();
+    crate::swr_v1_core_name_resolver_clear();
+    crate::config_state::init_allocator();
+    if let Some(host) = native::host() {
+        host.init();
+    }
+    swoole_thread_init(true);
+    crate::config_state::init();
 }
 
 /// `void swoole_thread_init(bool main_thread)`.
@@ -118,15 +158,15 @@ pub fn set_thread_async_threads(threads: *mut c_void) {
     unsafe(export_name = "_Z18swoole_thread_initb")
 )]
 pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
-    let Some(host) = native::host() else { return };
-    if read(host, |thread| thread.buffer_stack.is_null()) {
+    if let Some(host) = native::host()
+        && read(|thread| thread.buffer_stack.is_null())
+    {
         host.buffer(true);
     }
     if !main_thread {
         crate::signal_block_all();
     }
-    // SAFETY: this thread's live record, borrowed for the write alone.
-    unsafe { (*thread(host)).main_thread = main_thread };
+    write(|thread| thread.main_thread = main_thread);
 }
 
 /// `void swoole_thread_clean(bool main_thread)`.
@@ -136,13 +176,13 @@ pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
 )]
 pub extern "C-unwind" fn swoole_thread_clean(_main_thread: bool) {
     let Some(host) = native::host() else { return };
-    if read(host, |thread| !thread.timer.is_null()) {
+    if read(|thread| !thread.timer.is_null()) {
         host.timer_free();
     }
-    if read(host, |thread| !thread.reactor.is_null()) {
+    if read(|thread| !thread.reactor.is_null()) {
         host.event_free();
     }
-    if read(host, |thread| !thread.buffer_stack.is_null()) {
+    if read(|thread| !thread.buffer_stack.is_null()) {
         host.buffer(false);
     }
 }
@@ -154,7 +194,7 @@ pub extern "C-unwind" fn swoole_thread_clean(_main_thread: bool) {
 )]
 #[must_use]
 pub extern "C" fn swoole_is_main_thread() -> bool {
-    native::host().is_some_and(|host| read(host, |thread| thread.main_thread))
+    read(|thread| thread.main_thread)
 }
 
 /// `void swoole_clean()`: the hooks, signals and this thread first, then the
@@ -165,15 +205,15 @@ pub extern "C" fn swoole_is_main_thread() -> bool {
 )]
 pub extern "C-unwind" fn swoole_clean() {
     crate::hook::clear();
-    let Some(host) = native::host() else { return };
-    host.signal_clear();
-    swoole_thread_clean(true);
-    if !crate::swr_v1_core_logger().is_null() {
-        host.close_logger();
+    if let Some(host) = native::host() {
+        host.signal_clear();
+        swoole_thread_clean(true);
+        host.logger(native::LOGGER_CLOSE);
+        host.logger(native::LOGGER_DELETE);
+        host.delete_pool(crate::swr_v1_core_memory_pool());
     }
-    host.delete_logger();
-    host.delete_pool(crate::swr_v1_core_memory_pool());
-    host.reset();
+    crate::config_state::reset();
+    crate::swr_v1_core_name_resolver_clear();
     crate::swr_v1_core_reset();
 }
 
@@ -194,7 +234,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
             // SAFETY: the frames a native longjmp skips own nothing.
             unsafe { crate::fatal_error(OPERATION_NOT_SUPPORT, message) };
         }
-        if read(host, |thread| !thread.async_threads.is_null()) {
+        if read(|thread| !thread.async_threads.is_null()) {
             let message = c"can not fork after using async-threads";
             // SAFETY: as above.
             unsafe { crate::fatal_error(OPERATION_NOT_SUPPORT, message) };
@@ -222,12 +262,12 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     if flags & FORK_EXEC == 0 {
         // The parent's shared pages stay with the OS.
         crate::swr_v1_core_set_memory_pool(host.new_pool());
-        host.reopen_logger();
+        host.logger(native::LOGGER_REOPEN);
         if host.event_available() {
             host.event_free();
         }
     } else {
-        host.close_logger();
+        host.logger(native::LOGGER_CLOSE);
     }
     host.signal_clear();
     if crate::swoole_isset_hook(HOOK_AFTER_FORK) {
@@ -260,12 +300,10 @@ pub unsafe extern "C-unwind" fn swr_v1_core_fork_exec(
     }
 }
 
-/// `sw_tg_buffer()`: `SwooleTG.buffer_stack`, null before `swoole_init`.
+/// `sw_tg_buffer()`: `SwooleTG.buffer_stack`.
 #[must_use]
 pub fn thread_buffer() -> *mut c_void {
-    native::host().map_or(std::ptr::null_mut(), |host| {
-        read(host, |thread| thread.buffer_stack)
-    })
+    read(|thread| thread.buffer_stack)
 }
 
 /// The `SwooleTG` members a thread-context coroutine's thread shares with the
@@ -277,36 +315,26 @@ pub struct SharedThread([*mut c_void; 4]);
 // SAFETY: plain pointers, handed to threads that run one at a time.
 unsafe impl Send for SharedThread {}
 
-/// This thread's [`SharedThread`]; null pointers before `swoole_init`.
+/// This thread's [`SharedThread`].
 #[must_use]
 pub fn shared_thread() -> SharedThread {
-    let null = std::ptr::null_mut();
-    SharedThread(native::host().map_or([null; 4], |host| {
-        read(host, |thread| {
-            [
-                thread.buffer_stack,
-                thread.reactor,
-                thread.timer,
-                thread.async_threads,
-            ]
-        })
+    SharedThread(read(|thread| {
+        [
+            thread.buffer_stack,
+            thread.reactor,
+            thread.timer,
+            thread.async_threads,
+        ]
     }))
 }
 
 /// Adopts `shared` in this new thread.
 pub fn adopt_shared_thread(shared: SharedThread) {
-    let Some(host) = native::host() else { return };
-    let thread = self::thread(host);
     let [buffer_stack, reactor, timer, async_threads] = shared.0;
-    // SAFETY: this thread's live record.
-    let current = unsafe { thread.read() };
-    let shared = ThreadGlobal {
-        buffer_stack,
-        reactor,
-        timer,
-        async_threads,
-        ..current
-    };
-    // SAFETY: as above.
-    unsafe { thread.write(shared) };
+    write(|thread| {
+        thread.buffer_stack = buffer_stack;
+        thread.reactor = reactor;
+        thread.timer = timer;
+        thread.async_threads = async_threads;
+    });
 }

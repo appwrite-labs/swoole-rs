@@ -1822,8 +1822,8 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use core::ffi::c_void;
     use swoole_rs_utilities::{process_logger, swr_v1_logger_is_opened, swr_v1_logger_redirect};
     type Resolve = unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_int;
-    // SAFETY: crates/ossupport's, crates/corebase's and crates/clients' bodies and
-    // upstream's `SwooleG`, under their upstream symbols.
+    // SAFETY: crates/ossupport's, crates/corebase's and crates/clients' bodies,
+    // under their upstream symbols.
     unsafe extern "C" {
         #[link_name = "_Z13swoole_daemonii"]
         fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int;
@@ -1840,14 +1840,6 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             port: c_int,
             resolve: Option<Resolve>,
         ) -> c_int;
-        static SwooleG: Global;
-    }
-    /// `swoole::Global`: its only base, `CoreConfigOwner`, starts with the
-    /// `swr_v1_core_config_prepared` whose second word is the scalar fields.
-    #[repr(C)]
-    struct Global {
-        owner: *mut c_void,
-        fields: *const swoole_rs_corebase::CoreConfigFields,
     }
     let serv = o.ctx.serv;
     Some(match op {
@@ -1868,8 +1860,7 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_ST_FINISH => u64::from(crate::factory::finish(o.state, o.ctx.send)),
         // SAFETY: the master, starting its reactor threads.
         OP_LC_START_PROCESS => sign(unsafe { crate::reactor_entry::start_reactor_threads(serv) }),
-        // SAFETY: `SwooleG`'s fields, set by `swoole_init`.
-        OP_MAX_SOCKETS => u64::from(unsafe { (*SwooleG.fields).max_sockets }),
+        OP_MAX_SOCKETS => u64::from(swoole_rs_corebase::max_sockets()),
         OP_MASTER_TIMER => {
             let tick = crate::server_methods::master_timer_tick;
             // SAFETY: a persistent timer of the master's, over the live server.
@@ -2004,8 +1995,7 @@ unsafe fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let slot = |index| o.state.callbacks.slot(index);
     let reopen_logger = || {
         if let Some(logger) = swoole_rs_utilities::process_logger() {
-            // SAFETY: the process's live logger.
-            unsafe { swoole_rs_utilities::swr_v1_logger_reopen(logger) };
+            logger.reopen();
         }
     };
     Some(match op {
@@ -2799,15 +2789,23 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 }
                 let sent = if c.action == TO_TASK_WORKER {
                     let mut dst = c_int::from(process_id);
-                    // SAFETY: the live server and the packed task.
-                    unsafe {
-                        swoole_rs_process::task_sync::task(
-                            serv,
-                            (&raw mut buf).cast(),
-                            &raw mut dst,
-                            false,
-                        )
-                    }
+                    let (gs, pool) = (o.gs(), o.task_pool());
+                    swoole_rs_process::task_sync::count_task(
+                        &gs.tasking_num,
+                        &gs.task_count,
+                        || {
+                            // SAFETY: the live task pool and the packed task.
+                            let sent = unsafe {
+                                swoole_rs_process::methods::dispatch(
+                                    pool,
+                                    (&raw mut buf).cast(),
+                                    &raw mut dst,
+                                )
+                            };
+                            Ok(sent == 0)
+                        },
+                    )
+                    .unwrap_or(false)
                 } else {
                     let pool = core::ptr::from_mut(o.event_pool());
                     // SAFETY: the live event pool and the message.

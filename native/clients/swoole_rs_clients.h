@@ -50,10 +50,10 @@ uint8_t swr_v1_clients_ws_accept_valid(const uint8_t *key, size_t key_len, const
 /* Caller-owned bounded DNS codec buffers; no native execution or retained state. */
 int32_t swr_v1_clients_domain_encode(const uint8_t *, size_t, uint8_t *, size_t);
 uint8_t swr_v1_clients_domain_decode(uint8_t *, size_t, uint8_t signed_char);
-/* network::Client: its state and every operation are Rust's (crates/clients/src/client.rs).
- * The C++ Client holds the state and its members of C++ types, and gives Rust one static
- * table of what it needs of them, swr_v1_clients_native. Most entries take the Client *;
- * those over the record alone are Rust's own, declared after the table. */
+/* network::Client: its state, every operation, its callbacks, reactor handlers, connect
+ * timer, TLS context and proxies are Rust's (crates/clients/src/client.rs). The C++ Client
+ * holds the state and gives Rust one static table of what it still needs of C++,
+ * swr_v1_clients_native, whose entries take the Client *. */
 typedef struct swr_v1_clients swr_v1_clients;
 struct swr_v1_socket;
 enum {
@@ -67,83 +67,12 @@ enum {
     SWR_CLIENTS_ONERROR_CALLED = 7,
     SWR_CLIENTS_OPEN_SSL = 8,
 };
-enum {
-    SWR_CLIENTS_ON_CONNECT, SWR_CLIENTS_ON_ERROR, SWR_CLIENTS_ON_RECEIVE,
-    SWR_CLIENTS_ON_CLOSE, SWR_CLIENTS_ON_BUFFER_FULL, SWR_CLIENTS_ON_BUFFER_EMPTY,
-};
-enum {
-    SWR_CLIENTS_WARN_CALLBACKS = 1, SWR_CLIENTS_WARN_ON_RECEIVE = 2, SWR_CLIENTS_WARN_ON_ERROR = 3,
-    SWR_CLIENTS_WARN_BIND = 5, SWR_CLIENTS_WARN_READ = 6, SWR_CLIENTS_WARN_GETSOCKOPT = 7,
-};
-/* connect: connect_async (SW_READY, SW_WAIT or SW_ERROR), connect_sync, connect(2) (errno kept). */
-enum { SWR_CLIENTS_CONNECT_ASYNC, SWR_CLIENTS_CONNECT_SYNC, SWR_CLIENTS_CONNECT_RAW };
-/* io: SENDTO sends to server_addr, the RECVFROMs read into remote_addr. */
-enum {
-    SWR_CLIENTS_IO_RECV, SWR_CLIENTS_IO_RECV_SYNC, SWR_CLIENTS_IO_SEND_SYNC,
-    SWR_CLIENTS_IO_SENDTO, SWR_CLIENTS_IO_RECVFROM, SWR_CLIENTS_IO_RECVFROM_SYNC,
-};
-enum { SWR_CLIENTS_EVENT_ADD, SWR_CLIENTS_EVENT_SET, SWR_CLIENTS_EVENT_DEL, SWR_CLIENTS_EVENT_ADD_OR_UPDATE };
-/* ssl: HAS_CONTEXT 1/0; PREPARE creates the context unless ready; SESSION is ssl_create and
- * the SNI name; VERIFY_PEER is verify_peer | allow_self_signed << 1; VERIFY is ssl_verify(arg);
- * DTLS makes the context's protocols DTLS, or warns and fails without DTLS support. */
-enum {
-    SWR_CLIENTS_SSL_HAS_CONTEXT = 1, SWR_CLIENTS_SSL_PREPARE = 2, SWR_CLIENTS_SSL_SESSION = 3,
-    SWR_CLIENTS_SSL_CONNECT = 4, SWR_CLIENTS_SSL_VERIFY_PEER = 5, SWR_CLIENTS_SSL_VERIFY = 6,
-    SWR_CLIENTS_SSL_CLOSE = 7, SWR_CLIENTS_SSL_DTLS = 8,
-};
-enum { SWR_CLIENTS_PROXY_SOCKS5, SWR_CLIENTS_PROXY_HTTP };
-/* buffer: the input buffer (INIT creates it), or SHARED, sw_tg_buffer(), for VIEW. */
-enum {
-    SWR_CLIENTS_BUFFER_INIT, SWR_CLIENTS_BUFFER_VIEW, SWR_CLIENTS_BUFFER_GROW,
-    SWR_CLIENTS_BUFFER_CLEAR, SWR_CLIENTS_BUFFER_FREE, SWR_CLIENTS_BUFFER_SHARED,
-};
-typedef struct { char *str; size_t length, size; } swr_v1_clients_buffer_view;
 struct swr_v1_clients_record;
 typedef struct {
-    struct swr_v1_socket *(*make_socket)(int kind, int fd_type, int flags);
-    void (*free_socket)(void *cli, bool deferred);
-    bool (*has)(void *cli, int which);
-    /* false when the callback threw; the client may be gone afterwards. */
-    bool (*call)(void *cli, int which, const char *data, size_t length);
-    void (*warn)(void *cli, int which);
-    void (*kernel_timeout)(struct swr_v1_clients_record *record, double timeout);
-    bool (*assign)(struct swr_v1_clients_record *record, const char *host, int port, bool resolve);
-    int (*connect)(struct swr_v1_clients_record *record, int mode);
-    ssize_t (*io)(void *cli, int op, char *data, size_t length, int flags);
-    /* 0, or -1 with the last error set to errno. */
-    int (*sendfile)(void *cli, const char *file, int64_t offset, size_t length, bool is_async);
-    int (*event)(struct swr_v1_clients_record *record, int op, int events);
-    int (*event_write)(void *cli, const char *data, size_t length);
-    uint32_t (*out_buffer_length)(void *cli);
-    int (*writable)(void *reactor, void *event);
-    int (*socket_error)(struct swr_v1_clients_record *record, int *error);
-    void *(*timer_add)(void *cli, double timeout);
-    void (*timer_del)(void *timer);
     int (*dns_lookup)(void *cli, const char *host, int domain);
-    int (*ssl)(void *cli, int op, int arg);
-    /* -1 when the client has no such proxy. */
-    int (*proxy_state)(void *cli, int proxy);
-    void (*set_proxy_state)(void *cli, int proxy, int state);
-    /* With the proxy set: host and port become its target; returns its host and *port. */
-    const char *(*proxy_route)(void *cli, int proxy, const char *host, int port, int *proxy_port);
-    ssize_t (*socks5_negotiate)(void *cli, const char **data);
-    bool (*socks5_handshake)(void *cli, const char *data, size_t length);
-    size_t (*http_pack)(void *cli, const char **data);
-    /* Of the shared buffer (its length set to length) or the input buffer (grown by length). */
-    bool (*http_handshake)(void *cli, bool shared, size_t length);
-    void (*buffer)(void *cli, int op, size_t length, swr_v1_clients_buffer_view *view);
-    /* Receive through the selected EOF/length protocol; zero once a callback
-     * released the client or threw. */
-    ssize_t (*recv_framed)(void *cli, bool eof);
 } swr_v1_clients_native;
-struct swr_v1_socket *swr_v1_clients_make_socket(int kind, int fd_type, int flags);
-void swr_v1_clients_kernel_timeout(struct swr_v1_clients_record *record, double timeout);
-bool swr_v1_clients_assign(struct swr_v1_clients_record *record, const char *host, int port, bool resolve);
-int swr_v1_clients_connect_socket(struct swr_v1_clients_record *record, int mode);
-int swr_v1_clients_event(struct swr_v1_clients_record *record, int op, int events);
-int swr_v1_clients_socket_error(struct swr_v1_clients_record *record, int *error);
 /* Client::Client: the state, with cli->socket made (null when socket() failed, errno kept). */
-swr_v1_clients *swr_v1_clients_new(void *cli, const swr_v1_clients_native *native, struct swr_v1_clients_record *record, void *on_package, int kind, bool is_async);
+swr_v1_clients *swr_v1_clients_new(void *cli, const swr_v1_clients_native *native, struct swr_v1_clients_record *record, int kind, bool is_async);
 /* Client::~Client, then the state's release. */
 void swr_v1_clients_free(swr_v1_clients *client);
 int swr_v1_clients_get_peer_name(const swr_v1_clients *client, void *address);
@@ -159,19 +88,38 @@ int swr_v1_clients_close(swr_v1_clients *client);
 int swr_v1_clients_shutdown(swr_v1_clients *client, int how);
 int swr_v1_clients_sleep(swr_v1_clients *client);
 int swr_v1_clients_wakeup(swr_v1_clients *client);
-/* After the C++ half made the TLS context: open_ssl, and DTLS for a datagram client. */
+/* enable_ssl_encrypt: a TLS context, open_ssl, and DTLS for a datagram client; -1 when TLS
+ * was already on. */
 int swr_v1_clients_enable_ssl(swr_v1_clients *client);
 int swr_v1_clients_ssl_handshake(swr_v1_clients *client);
+int swr_v1_clients_ssl_verify(swr_v1_clients *client, int allow_self_signed);
+/* The client's SSLContext owner, which crates/tls configures; NULL while TLS is off. */
+const struct swr_v1_tls_owner *swr_v1_clients_ssl_context(const swr_v1_clients *client);
+/* set_http_proxy (http) or set_socks5_proxy. */
+void swr_v1_clients_proxy(swr_v1_clients *client, bool http, const char *host, size_t host_length, int64_t port,
+                          const char *user, size_t user_length, const char *password, size_t password_length);
+/* The proxy's swr_v1_core_proxy_fields, NULL without one. */
+void *swr_v1_clients_proxy_fields(const swr_v1_clients *client, bool http);
 /* Client::bind and Client::sendto; the callback logs, named as the calling method. */
 int swr_v1_clients_bind(swr_v1_clients *client, const char *host, size_t host_length, int port, void (*reuse_failed)(int fd));
 int swr_v1_clients_sendto(swr_v1_clients *client, const char *host, size_t host_length, int port, const char *data, size_t length, void (*not_datagram)(int fd));
-/* The reactor handlers, the connect timer and the DNS completion. */
-int swr_v1_clients_on_read(swr_v1_clients *client);
-int swr_v1_clients_on_dgram_read(swr_v1_clients *client);
-int swr_v1_clients_on_write(swr_v1_clients *client, void *reactor, void *event);
-int swr_v1_clients_on_error(swr_v1_clients *client, void *reactor, void *event);
-void swr_v1_clients_on_timeout(swr_v1_clients *client);
+/* Client::init_reactor: the client sockets' read, write and error handlers. */
+void swr_v1_clients_init_reactor(void *reactor);
+/* The DNS completion. */
 void swr_v1_clients_on_resolved(swr_v1_clients *client, int error, const char *address);
+/* The callbacks: listener(object, event, data, length) for each event in `events`
+ * (1 << SWOOLE_CLIENT_ON_*); `object` becomes the client's. For SWOOLE_CLIENT_ON_ERROR,
+ * `length` is swoole_get_last_error(). */
+enum {
+    SWOOLE_CLIENT_ON_CONNECT = 1,
+    SWOOLE_CLIENT_ON_RECEIVE = 2,
+    SWOOLE_CLIENT_ON_CLOSE = 3,
+    SWOOLE_CLIENT_ON_ERROR = 4,
+    SWOOLE_CLIENT_ON_BUFFER_FULL = 5,
+    SWOOLE_CLIENT_ON_BUFFER_EMPTY = 6,
+};
+typedef void (*swoole_client_listener)(void *object, int event, const char *data, size_t length);
+void swr_v1_clients_listen(swr_v1_clients *client, void *object, uint32_t events, swoole_client_listener listener);
 struct swr_v1_clients_resolv_line { uint32_t kind; size_t offset, length; };
 struct swr_v1_clients_resolv_line swr_v1_clients_resolv_line(const uint8_t *, size_t);
 struct swr_v1_clients_dns_endpoint { uint32_t has_port; size_t host_length, port_offset; };
@@ -198,31 +146,6 @@ void *swoole_client_create(int type, bool async, int *error);
 void swoole_client_free(void *cli);
 /* The client's Rust state (crates/clients' ClientState). */
 void *swoole_client_state(void *cli);
-/* The callbacks in `events` (1 << SWOOLE_CLIENT_ON_*) call `listener` with `object`; for
- * SWOOLE_CLIENT_ON_ERROR, `length` is swoole_get_last_error(). */
-enum {
-    SWOOLE_CLIENT_ON_CONNECT = 1,
-    SWOOLE_CLIENT_ON_RECEIVE = 2,
-    SWOOLE_CLIENT_ON_CLOSE = 3,
-    SWOOLE_CLIENT_ON_ERROR = 4,
-    SWOOLE_CLIENT_ON_BUFFER_FULL = 5,
-    SWOOLE_CLIENT_ON_BUFFER_EMPTY = 6,
-};
-typedef void (*swoole_client_listener)(void *object, int kind, const char *data, size_t length);
-void swoole_client_async_listen(void *cli, void *object, uint32_t events, swoole_client_listener listener);
-bool swoole_client_has_on_error(void *cli);
-/* The client's SSLContext owner, which crates/tls configures; NULL while TLS is off. */
-const struct swr_v1_tls_owner *swoole_client_ssl_context(void *cli);
-/* set_http_proxy (http) or set_socks5_proxy. */
-void swoole_client_proxy(void *cli,
-                         bool http,
-                         const char *host,
-                         size_t host_length,
-                         int64_t port,
-                         const char *user,
-                         size_t user_length,
-                         const char *password,
-                         size_t password_length);
 #ifdef __cplusplus
 }
 #endif

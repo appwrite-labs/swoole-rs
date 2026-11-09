@@ -28,24 +28,3 @@ pub(crate) unsafe fn release<T>(owner: *mut T) {
         drop(unsafe { Box::from_raw(owner) });
     }
 }
-
-/// # Safety
-/// Exclusive live opaque slot, null or pointing to T from the same allocator.
-/// No reference/token may escape operation or cross a Native effect. Admission
-/// precedes this call; true publishes only after the safe operation succeeds.
-pub(crate) unsafe fn publish<T>(
-    slot: &mut *mut T,
-    initialize: impl FnOnce() -> T,
-    operation: impl FnOnce(&mut T) -> Result<(i32, bool), i32>,
-) -> Result<i32, i32> {
-    // SAFETY: the slot holds null or a live, exclusive `T` from this allocator.
-    if let Some(owner) = unsafe { (*slot).as_mut() } {
-        return operation(owner).map(|(result, _)| result);
-    }
-    let mut owner = try_owner(initialize).ok_or(-2)?;
-    let (result, committed) = operation(&mut owner)?;
-    if committed {
-        *slot = Box::into_raw(owner);
-    }
-    Ok(result)
-}

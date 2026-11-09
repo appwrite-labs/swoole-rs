@@ -2,8 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 ext-src/swoole_server.cc (Swoole contributors).
 // What crates/phpserver needs of C++ that stable Rust can't express: the build's #ifdefs
 // (sockets, thread mode, the features set() checks), the C++ objects a Server holds
-// (`new`/`delete Server`, its MessageBus, MultiTask's std::function
-// members), the variadic PHP error reporters and the
+// (`new`/`delete Server`, its MessageBus), the variadic PHP error reporters and the
 // zend_try frames around calls that bail out (start(), addProcess's worker).
 #include "swoole_rs_phphost.h"
 #include "swoole_server.h"
@@ -11,7 +10,6 @@
 #include "swoole_rs_phpserver_server.h"
 #include "swoole_rs_phpserver_settings.h"
 #include "swoole_rs_phpserver_dispatch.h"
-#include "swoole_rs_phpserver_task.h"
 #include "swoole_rs_phpserver_lifecycle.h"
 #include "swoole_rs_phpserver.h"
 #include "swoole_rs_phpprocess.h"
@@ -86,38 +84,6 @@ int64_t settings_get(void *, uint32_t id) {
     }
 }
 
-bool task_dispatch_multi(void *server, zval *ztasks, double timeout, zval *return_value, bool *bailed) {
-    bool done = false;
-    zend_try {
-        Server::MultiTask mt(php_swoole_array_length(ztasks));
-        mt.pack = [ztasks](uint16_t i, EventData *buf) {
-            bool bailed = false;
-            TaskId id = swr_v1_phpserver_task_pack(zend::array_get(ztasks, (zend_ulong) i), buf, &bailed);
-            if (bailed) {
-                zend_bailout();
-            }
-            return id;
-        };
-        mt.unpack = [return_value](uint16_t i, EventData *result) {
-            zval zresult;
-            bool bailed = false;
-            if (swr_v1_phpserver_task_unpack(result, &zresult, &bailed)) {
-                add_index_zval(return_value, i, &zresult);
-            }
-            if (bailed) {
-                zend_bailout();
-            }
-        };
-        mt.fail = [return_value](uint16_t i) { add_index_bool(return_value, i, false); };
-        done = as_server(server)->task_sync(mt, timeout);
-    }
-    zend_catch {
-        *bailed = true;
-    }
-    zend_end_try();
-    return done;
-}
-
 void lifecycle_install(void *server, uint32_t which) {
     Server *serv = as_server(server);
     switch (which) {
@@ -183,7 +149,7 @@ int64_t lifecycle_add_process(void *server, zval *process) {
 }  // namespace
 
 // The layouts and constants crates/phpserver mirrors.
-static_assert(sizeof(EventData) <= SWR_PHPSERVER_EVENT_DATA_SIZE && alignof(EventData) <= SWR_PHPSERVER_EVENT_DATA_ALIGN,
+static_assert(sizeof(EventData) <= 8192 && alignof(EventData) <= 8,
               "the EventData crates/phpserver's task.rs allocates");
 static_assert(offsetof(RecvData, data) == sizeof(DataHead) && offsetof(DgramPacket, socket_addr) == 4 &&
                   offsetof(DgramPacket, length) == 4 + sizeof(network::Address) && sizeof(ExitStatus) == 2 * sizeof(int),
@@ -243,8 +209,6 @@ void php_swoole_server_minit(int module_number) {
     memcpy(&swoole_server_handlers, handlers, sizeof(zend_object_handlers));
     static const swr_v1_phpserver_dispatch_host dispatch = {dispatch_message_bus, dispatch_worker_start};
     swr_v1_phpserver_dispatch_init(&dispatch);
-    static const swr_v1_phpserver_task_host task = {task_dispatch_multi};
-    swr_v1_phpserver_task_init(&task);
     static const swr_v1_phpserver_settings_host settings = {settings_get};
     swr_v1_phpserver_settings_init(&settings);
     static const swr_v1_phpserver_lifecycle_host lifecycle = {
