@@ -197,5 +197,14 @@ jobs:
             phpt.json
             flagged.txt
             recheck/
+      # A shard that crashed, or that GitHub never started (an Actions outage drops jobs
+      # without a trace in the run), leaves no report; a shard with no tests leaves none either.
       - if: needs.phpt.result != 'success'
-        run: echo "A PHPT shard crashed; its tests are missing from the gate" && exit 1
+        env:
+          ENGINES: ${{ inputs.engines }}
+        run: |
+          for engine in $(jq -r '.[]' <<< "$ENGINES"); do for index in 1 2 3 4 5 6; do
+            [ -f "shards/$engine-$index.json" ] || missing="$missing $engine-$index"
+          done; done
+          echo "A PHPT shard didn't succeed (\`phpt\`: ${{ needs.phpt.result }}); reports missing from the gate:${missing:- none}"
+          exit 1
