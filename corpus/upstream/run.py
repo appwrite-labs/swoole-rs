@@ -127,6 +127,10 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'it asserts two concurrent requests to live www.qq.com and www.baidu.com finish within '
         "3.0 s; that's the runner's WAN latency, and upstream misses it too (9.23 s, 3.26 s, "
         '3.17 s in 3 of 20 merge-tier runs; hybrid 6.66 s in 1, #1210)',
+        'tests/swoole_runtime/nonblock.phpt':
+        'it connects to live www.baidu.com:80 with a 1 s timeout, and every engine sometimes '
+        'misses it with the same "Unable to connect" (16 merge-tier runs: upstream 3/32, hybrid '
+        '4/32, cargo 2/15 first runs; hybrid 2/4 then upstream 0/25 in one iouring gate, #2116)',
         'tests/swoole_server/shutdown_in_master.phpt':
         'shutdown() from onStart, before the random 1-4 workers are up, sometimes hangs until '
         'the deadline on both engines (upstream 2/8, hybrid 3/8, #438)',
