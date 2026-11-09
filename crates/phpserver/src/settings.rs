@@ -768,7 +768,7 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
                 return false;
             }
             // SAFETY: a live server, not started.
-            unsafe { server_methods::set_document_root(s.serv, root) };
+            server_methods::set_document_root(unsafe { view::Server::from_raw(s.serv) }, root);
             true
         })?;
         if !fits {

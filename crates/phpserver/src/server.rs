@@ -766,11 +766,9 @@ fn stats(call: &Call) {
         }
     }
     if config.task_worker_num > 0 {
-        // SAFETY: a live server.
-        let idle = unsafe { server_methods::get_idle_task_worker_num(serv.raw()) };
+        let idle = server_methods::get_idle_task_worker_num(serv);
         call.add_assoc_long(c"task_idle_worker_num", i64::from(idle));
-        // SAFETY: a live server.
-        let tasking = unsafe { server_methods::get_tasking_num(serv.raw()) };
+        let tasking = server_methods::get_tasking_num(serv);
         call.add_assoc_long(c"tasking_num", i64::from(tasking));
         call.add_assoc_long(c"task_count", load(&gs.task_count));
     }
@@ -1047,15 +1045,7 @@ fn sendwait(call: &Call) {
         );
         return call.set_bool(false);
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::sendwait's uint32_t length, as upstream"
-    )]
-    let length = data.len() as u32;
-    // SAFETY: a live server and the argument's bytes.
-    call.set_bool(unsafe {
-        server_methods::sendwait(serv.raw(), fd, data.as_ptr().cast(), length)
-    });
+    call.set_bool(server_methods::sendwait(serv, fd, data));
 }
 
 fn exists(call: &Call) {

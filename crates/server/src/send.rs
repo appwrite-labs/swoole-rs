@@ -17,14 +17,11 @@ use crate::ops::{
     OP_SC_SEND, OP_SC_SENDFILE, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE,
     OP_SC_YIELD_ERROR,
 };
-use crate::records::swr_v1_server_connection;
+use crate::records::VERIFIED_TLS;
 use crate::{Host, MODE_PROCESS, SW_ERR, SW_OK, ServerState};
 use std::ffi::c_void;
 use swoole_rs_corebase::microtime;
 use swoole_rs_reactor::{SocketRecord, socket_record_send, steady_ms};
-
-/// `swr_v1_server_connection`'s `get_connection_verify` lookup.
-const VERIFIED_TLS: u32 = 3;
 
 /// `ServerEventType`.
 const SEND_DATA: u64 = 2;
@@ -70,17 +67,8 @@ pub(crate) const DIRECT_SEND: u64 = 1 << 17;
 /// `state` is null or live; `send` lends `info.len` readable bytes at `data`.
 pub(crate) unsafe fn send_now(state: *const ServerState, send: &SendData) -> Option<i64> {
     // SAFETY: as the caller guarantees.
-    if unsafe { state.as_ref() }?
-        .tables_ref()
-        .connection_list
-        .is_null()
-    {
-        return None;
-    }
-    // SAFETY: the state owns initialized tables.
-    let conn = unsafe { swr_v1_server_connection(state, send.info.fd, VERIFIED_TLS) };
-    // SAFETY: a non-null lookup is a live connection record; nothing else runs here.
-    let conn = unsafe { conn.as_mut() }?;
+    let state = unsafe { state.as_ref() }?;
+    let conn = state.connection(send.info.fd, VERIFIED_TLS)?;
     let socket = conn.socket.cast::<SocketRecord>();
     // SAFETY: a live connection's socket record.
     let record = unsafe { socket.as_ref() }?;

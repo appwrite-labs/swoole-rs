@@ -52,6 +52,7 @@ pub mod ops;
 mod pool_native;
 pub mod port_config;
 pub mod reactor_entry;
+mod reactor_handle;
 mod reactor_io;
 mod reactor_ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -85,7 +86,6 @@ pub use static_config::{
 
 pub use records::{
     ConnectionRecord, ServerTables, SessionRecord, swr_v1_server_connection, swr_v1_server_session,
-    swr_v1_server_sessions_retire,
 };
 
 pub use shared::{

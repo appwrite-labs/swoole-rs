@@ -1,0 +1,92 @@
+//! A live `Reactor` handle the server ops act on.
+#![cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(
+        dead_code,
+        reason = "the worker ops that use the rest link upstream symbols"
+    )
+)]
+use core::ffi::{c_int, c_void};
+
+use swoole_rs_reactor::reactor_upstream::{
+    prepared, reactor_change, reactor_interest, reactor_set_handler,
+};
+use swoole_rs_reactor::{Handler, ReactorFields, SocketRecord};
+
+/// `Reactor::change`'s add and del, `Reactor::interest`'s `remove_read_event`.
+const ADD: u32 = 0;
+const DEL: u32 = 2;
+const REMOVE_READ: u32 = 4;
+/// `SW_EVENT_READ`.
+pub(crate) const EVENT_READ: c_int = 1 << 9;
+
+/// A live `Reactor`, used by the thread that runs it.
+#[derive(Clone, Copy)]
+pub(crate) struct Reactor(pub(crate) *mut c_void);
+
+#[expect(
+    clippy::mut_from_ref,
+    reason = "the reactor's fields, which only its own thread touches"
+)]
+impl Reactor {
+    /// # Safety
+    /// `reactor` is a live `Reactor` while the handle is used, on its own thread.
+    pub(crate) unsafe fn of(reactor: *mut c_void) -> Self {
+        Self(reactor)
+    }
+    /// The thread's reactor (`sw_reactor()`), which the worker ops run under.
+    pub(crate) fn thread() -> Self {
+        Self(swoole_rs_corebase::thread_reactor())
+    }
+    pub(crate) fn ptr(self) -> *mut c_void {
+        self.0
+    }
+    pub(crate) fn fields(&self) -> &mut ReactorFields {
+        // SAFETY: a live reactor, which begins with its prepared state.
+        let fields = unsafe { prepared(self.0) }.fields;
+        // SAFETY: as above.
+        unsafe { &mut *fields }
+    }
+    /// `Reactor::change`'s `op` (0 add, 1 set, 2 del) of `sock` with `events`.
+    pub(crate) fn change(self, sock: &mut SocketRecord, op: u32, events: c_int) -> c_int {
+        // SAFETY: a live reactor and socket.
+        unsafe { reactor_change(self.0, sock, op, events) }
+    }
+    /// `Reactor::interest`'s `kind` (2 add read, 3 add write, 4 remove read) of `sock`.
+    pub(crate) fn interest(self, sock: &mut SocketRecord, kind: u32, events: c_int) -> c_int {
+        // SAFETY: a live reactor and socket.
+        unsafe { reactor_interest(self.0, sock, kind, events) }
+    }
+    /// `reactor->add(sock, events)`.
+    pub(crate) fn add(self, sock: &mut SocketRecord, events: c_int) -> c_int {
+        self.change(sock, ADD, events)
+    }
+    /// `reactor->del(sock)`.
+    pub(crate) fn del(self, sock: &mut SocketRecord) -> c_int {
+        self.change(sock, DEL, 0)
+    }
+    /// `reactor->remove_read_event(sock)`.
+    pub(crate) fn unread(self, sock: &mut SocketRecord) {
+        let _ = self.interest(sock, REMOVE_READ, 0);
+    }
+    /// The reactor's own `close` of `sock`, when it has one.
+    pub(crate) fn close(self, sock: *mut SocketRecord) {
+        if let Some(close) = self.fields().close {
+            // SAFETY: the reactor's close on one of its live sockets.
+            unsafe { close(self.0, sock.cast()) };
+        }
+    }
+    pub(crate) fn set_handler(self, fd_type: c_int, event: c_int, handler: Handler) {
+        // SAFETY: a live reactor.
+        unsafe { reactor_set_handler(self.0, fd_type, event, Some(handler)) };
+    }
+    /// `reactor->set_default_error_handler(handler)`.
+    pub(crate) fn set_error_handler(self, handler: Handler) {
+        // SAFETY: a live reactor.
+        let handlers = unsafe { prepared(self.0) }.handlers;
+        // SAFETY: its live handler tables.
+        unsafe {
+            swoole_rs_reactor::swr_v1_reactor_handlers_set_default(handlers, 2, Some(handler));
+        }
+    }
+}

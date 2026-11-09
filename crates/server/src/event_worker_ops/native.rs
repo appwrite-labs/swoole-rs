@@ -45,9 +45,7 @@ const SW_FD_PIPE: c_int = 3;
 const PIPE_MASTER: c_int = 1;
 const EVENT_SHUTDOWN: u8 = 16;
 const SW_TASK_WORKER: c_int = 4;
-/// `swr_v1_server_connection`'s `get_connection_verify_no_ssl` and `get_connection_verify`.
-const VERIFIED: u32 = 2;
-const VERIFIED_TLS: u32 = 3;
+use crate::records::{VERIFIED, VERIFIED_TLS};
 
 /// The context's objects, each live when the op reading it runs.
 #[expect(
@@ -104,11 +102,7 @@ impl Context {
     /// The connection the head's session names, verified (and TLS-ready when `tls`).
     fn session(&self, tls: bool) -> Option<&mut crate::ConnectionRecord> {
         let kind = if tls { VERIFIED_TLS } else { VERIFIED };
-        // SAFETY: the live server's tables.
-        let conn =
-            unsafe { crate::records::swr_v1_server_connection(self.state(), self.info().fd, kind) };
-        // SAFETY: null or a live connection.
-        unsafe { conn.as_mut() }
+        self.state().connection(self.info().fd, kind)
     }
     fn callback(&self, index: u32, data: *mut c_void) {
         if let Some(slot) = self.state().callbacks.slot(index) {

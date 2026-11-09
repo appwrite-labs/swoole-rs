@@ -113,25 +113,112 @@ impl Default for ServerTables {
     }
 }
 
-/// Borrows a session-table slot through the original shared-table modulo rule.
+/// `get_connection(fd)`: the fd's slot, active or not.
+pub(crate) const BY_FD: u32 = 0;
+/// `get_connection_by_session_id(id)`: the session's slot, unverified.
+pub(crate) const BY_SESSION: u32 = 1;
+/// `get_connection_verify_no_ssl(id)`: the session's active slot.
+pub(crate) const VERIFIED: u32 = 2;
+/// `get_connection_verify(id)`: as [`VERIFIED`], and TLS-ready.
+pub(crate) const VERIFIED_TLS: u32 = 3;
+/// `get_connection_for_iterator(fd)`: an open, TLS-ready slot.
+pub(crate) const ITERATED: u32 = 4;
+
+impl crate::ServerState {
+    /// The session-table slot of `id`, by the original shared-table modulo rule,
+    /// or `None` before the table is mapped.
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "a slot of the shared session table, written under the server's own synchronization"
+    )]
+    pub(crate) fn session(&self, id: libc::c_long) -> Option<&mut SessionRecord> {
+        let sessions = self.tables_ref().session_list;
+        let index = usize::try_from(id % 1_048_576).ok()?;
+        if sessions.is_null() {
+            return None;
+        }
+        // SAFETY: the mapped 1,048,576-slot table this state lends; `index` is inside it.
+        unsafe { sessions.wrapping_add(index).as_mut() }
+    }
+
+    /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`, or null.
+    pub(crate) fn connection_ptr(&self, key: libc::c_long, kind: u32) -> *mut ConnectionRecord {
+        self.connection(key, kind)
+            .map_or(core::ptr::null_mut(), core::ptr::from_mut)
+    }
+
+    /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`.
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "a slot of the connection table, written under the server's own synchronization"
+    )]
+    pub(crate) fn connection(&self, key: libc::c_long, kind: u32) -> Option<&mut ConnectionRecord> {
+        let tables = self.tables_ref();
+        let mut session_id = 0;
+        let fd = if matches!(kind, BY_SESSION..=VERIFIED_TLS) {
+            // Session ids are positive; a negative key names no session.
+            let session = self.session(key)?;
+            session_id = session.id;
+            session.fd
+        } else {
+            // Native's parameter is int for fd-based lookups; preserve its low bits.
+            c_int::from_ne_bytes(
+                u32::try_from(key.cast_unsigned() & u64::from(u32::MAX))
+                    .unwrap_or_default()
+                    .to_ne_bytes(),
+            )
+        };
+        if fd.cast_unsigned() > tables.max_connection || tables.connection_list.is_null() {
+            return None;
+        }
+        // SAFETY: the live table of `max_connection + 1` slots; `fd` is inside it.
+        let value = unsafe {
+            &mut *tables
+                .connection_list
+                .wrapping_add(fd.cast_unsigned() as usize)
+        };
+        let found = match kind {
+            BY_FD | BY_SESSION => true,
+            _ if value.active == 0 => false,
+            VERIFIED | VERIFIED_TLS if session_id != key || value.session_id != key => false,
+            ITERATED if value.closed.load(core::sync::atomic::Ordering::Relaxed) != 0 => false,
+            VERIFIED_TLS | ITERATED => value.ssl == 0 || value.ssl_ready != 0,
+            _ => true,
+        };
+        found.then_some(value)
+    }
+
+    /// Retire a dead base-mode worker's sessions, preserving IDs and reserved bits.
+    pub(crate) fn retire_sessions(&self, worker_id: u32) {
+        for id in 0..1_048_576 {
+            if let Some(session) = self.session(id)
+                && session.reactor_bits & 0xff == worker_id
+            {
+                session.fd = 0;
+            }
+        }
+    }
+}
+
+/// [`ServerState::session`] for the C++ test fixtures.
 ///
 /// # Safety
-/// `state` owns initialized live tables and `id` is in the server's session domain.
+/// `state` is a live state.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_session(
     state: *const crate::ServerState,
     id: libc::c_long,
 ) -> *mut SessionRecord {
     // SAFETY: the caller lends a live state.
-    let sessions = unsafe { &*state }.tables_ref().session_list;
-    sessions.wrapping_offset(isize::try_from(id % 1_048_576).unwrap_or_default())
+    unsafe { &*state }
+        .session(id)
+        .map_or(core::ptr::null_mut(), core::ptr::from_mut)
 }
 
-/// Lookup kind: 0 fd, 1 session fd, 2 verified session, 3 verified TLS session, 4 fd iterator.
+/// [`ServerState::connection_ptr`] for the C++ test fixtures.
 ///
 /// # Safety
-/// `state` owns initialized tables. Slot contents, pointer loans and atomic fields
-/// follow the server's native synchronization/lifetime protocol for this call.
+/// `state` is a live state.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_server_connection(
     state: *const crate::ServerState,
@@ -139,79 +226,7 @@ pub unsafe extern "C" fn swr_v1_server_connection(
     kind: u32,
 ) -> *mut ConnectionRecord {
     // SAFETY: the caller lends a live state.
-    let tables = unsafe { &*state }.tables_ref();
-    let mut session_id = 0;
-    let fd = if matches!(kind, 1..=3) {
-        // Session ids are positive; a negative key names no session.
-        let Ok(index) = usize::try_from(key % 1_048_576) else {
-            return core::ptr::null_mut();
-        };
-        let slot = tables.session_list.wrapping_add(index);
-        // SAFETY: the requested session is in the initialized shared table.
-        let session = unsafe { &*slot };
-        session_id = session.id;
-        session.fd
-    } else {
-        // Native's parameter is int for fd-based lookups; preserve its low bits.
-        c_int::from_ne_bytes(
-            u32::try_from(key.cast_unsigned() & u64::from(u32::MAX))
-                .unwrap_or_default()
-                .to_ne_bytes(),
-        )
-    };
-    if fd.cast_unsigned() > tables.max_connection {
-        return core::ptr::null_mut();
-    }
-    let connection = tables
-        .connection_list
-        .wrapping_offset(isize::try_from(fd).unwrap_or_default());
-    if kind == 0 || kind == 1 {
-        return connection;
-    }
-    if connection.is_null() {
-        return connection;
-    }
-    // SAFETY: the native table bounds/session protocol lends this live connection record.
-    let value = unsafe { &*connection };
-    if value.active == 0 {
-        return core::ptr::null_mut();
-    }
-    if matches!(kind, 2 | 3) && (session_id != key || value.session_id != key) {
-        return core::ptr::null_mut();
-    }
-    if kind == 4 && value.closed.load(core::sync::atomic::Ordering::Relaxed) != 0 {
-        return core::ptr::null_mut();
-    }
-    if matches!(kind, 3 | 4) && value.ssl != 0 && value.ssl_ready == 0 {
-        return core::ptr::null_mut();
-    }
-    connection
-}
-
-/// Retire a dead base-mode worker's sessions, preserving IDs and reserved bits.
-/// The table traversal stays entirely in Rust instead of crossing the native
-/// boundary for each slot and worker-ID comparison.
-/// # Safety
-/// `state` loans its mapped complete 1,048,576-slot session table; the native
-/// worker-retirement protocol synchronizes these per-field accesses.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_sessions_retire(
-    state: *const crate::ServerState,
-    worker_id: u32,
-) {
-    // SAFETY: the caller retains the live state, whose table view loans the
-    // complete mapped session table.
-    let sessions = unsafe { &*state }.tables_ref().session_list;
-    for index in 0..1_048_576 {
-        let session = sessions.wrapping_add(index);
-        // SAFETY: this is one initialized slot's native 8-bit reactor-ID field.
-        let reactor = unsafe { (*session).reactor_bits } & 0xff;
-        if reactor == worker_id {
-            // SAFETY: retire exactly this worker's FD while retaining all other
-            // slot fields; no whole-record borrow overlaps native session activity.
-            unsafe { (*session).fd = 0 };
-        }
-    }
+    unsafe { &*state }.connection_ptr(key, kind)
 }
 
 #[cfg(test)]
@@ -231,12 +246,10 @@ mod tests {
             .collect();
         sessions[0].reactor_bits = 0x5a12_3401;
         sessions[1_048_575].reactor_bits = 0x5a12_3401;
-        unsafe {
-            (*(*state).tables()).session_list = sessions.as_mut_ptr();
-            swr_v1_server_sessions_retire(state, 257);
-        }
+        unsafe { (*(*state).tables()).session_list = sessions.as_mut_ptr() };
+        unsafe { &*state }.retire_sessions(257);
         assert!(sessions.iter().all(|slot| slot.fd == 23));
-        unsafe { swr_v1_server_sessions_retire(state, 1) };
+        unsafe { &*state }.retire_sessions(1);
         for (index, slot) in sessions.iter().enumerate() {
             let edge = index == 0 || index == 1_048_575;
             assert_eq!(slot.id, i64::try_from(index).unwrap());

@@ -57,7 +57,6 @@ use swoole_rs_reactor::event_api::{
     swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
     swoole_event_write, swr_v1_event_current,
 };
-use swoole_rs_reactor::reactor_upstream::prepared;
 use swoole_rs_reactor::socket_upstream::socket_wait_event;
 use swoole_rs_reactor::{Event, SocketRecord, swr_v1_socket_accept_new};
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket_new};
@@ -104,8 +103,6 @@ unsafe extern "C-unwind" {
     ) -> *mut c_void;
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
-    #[link_name = "_ZN6swoole7Reactor7if_exitEv"]
-    fn reactor_if_exit(reactor: *mut c_void) -> bool;
     fn swr_v1_event_set_end_callback(id: c_int, callback: unsafe extern "C" fn());
 }
 
@@ -495,22 +492,20 @@ unsafe extern "C" fn worker_exit() {
         // SAFETY: the pool's callback over its worker.
         unsafe { on_worker_exit(pool, worker) };
     }
-    let reactor = swr_v1_event_current();
     // SAFETY: the loop running this end callback.
-    if unsafe { reactor_if_exit(reactor) } {
-        // SAFETY: as above.
-        let fields = unsafe { prepared(reactor) }.fields;
-        // SAFETY: as above.
-        unsafe { (*fields).running = false };
+    let reactor = unsafe { crate::objects::Reactor::of(swr_v1_event_current()) };
+    if reactor.if_exit() {
+        reactor.fields().running = false;
     }
 }
 
 /// The pool of the loop `OP_EVENT_INIT` made: its `ptr`.
 fn reactor_pool(reactor: *mut c_void) -> Pool {
     // SAFETY: the thread's live loop.
-    let fields = unsafe { prepared(reactor) }.fields;
-    // SAFETY: as above.
-    unsafe { (*fields).ptr }.cast()
+    unsafe { crate::objects::Reactor::of(reactor) }
+        .fields()
+        .ptr
+        .cast()
 }
 
 /// `ProcessPool::recv_packet`: the event loop's pipe handler under the stream protocol.
@@ -677,9 +672,9 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
                 return Some(-1);
             }
             // SAFETY: the loop just made.
-            let fields = unsafe { prepared(swr_v1_event_current()) }.fields;
-            // SAFETY: as above.
-            unsafe { (*fields).ptr = pool.cast() };
+            unsafe { crate::objects::Reactor::of(swr_v1_event_current()) }
+                .fields()
+                .ptr = pool.cast();
             0
         }
         OP_WORKER_SHUTDOWN => {

@@ -211,8 +211,7 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_SIGNAL_INIT => unsafe { entry::worker_signal_init(serv) },
         // SAFETY: as above.
         OP_DRAIN_PIPES => unsafe { entry::drain_worker_pipe(serv) },
-        // SAFETY: as above.
-        OP_CLEAR_TIMER => unsafe { crate::server_methods::clear_timer(serv) },
+        OP_CLEAR_TIMER => crate::server_methods::clear_timer(ctx.server()),
         // SAFETY: the context's live server and worker.
         OP_ABORT_WORKER => unsafe { crate::worker_methods::abort_worker(serv, worker) },
         // SAFETY: as above.

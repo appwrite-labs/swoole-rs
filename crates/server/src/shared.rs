@@ -71,18 +71,10 @@ pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCount
 
 /// The counters of the port a session arrived on (`get_port_by_session_id(id)->gs`).
 fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<&PortCounters> {
-    use crate::records::swr_v1_server_connection;
-    if !crate::base_factory::allocated(state) {
-        return None;
-    }
-    // SAFETY: the state owns initialized tables; kind 1 is `get_connection_by_session_id`.
-    let conn = unsafe { swr_v1_server_connection(state, session_id, 1) };
-    // SAFETY: a non-null lookup is a live connection record.
-    let server_fd = unsafe { conn.as_ref() }?.server_fd;
-    // SAFETY: as above; kind 0 is `get_connection(server_fd)`.
-    let listen = unsafe { swr_v1_server_connection(state, server_fd.into(), 0) };
-    // SAFETY: a listening socket's record holds its `ListenPort` as the object.
-    let port = unsafe { listen.as_ref() }?.object;
+    // Kind 1 is `get_connection_by_session_id`, kind 0 `get_connection(server_fd)`.
+    let server_fd = state.connection(session_id, 1)?.server_fd;
+    // A listening socket's record holds its `ListenPort` as the object.
+    let port = state.connection(server_fd.into(), 0)?.object;
     if port.is_null() {
         return None;
     }

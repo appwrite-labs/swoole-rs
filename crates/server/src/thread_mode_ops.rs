@@ -377,8 +377,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: the server's live task pool.
         OP_TASK_START_CHECK => sign(unsafe { start_check(ctx.workers().task_pool) }),
         OP_STORE_LISTEN_SOCKET => {
-            // SAFETY: the live server.
-            unsafe { server_methods::store_listen_socket(serv) };
+            server_methods::store_listen_socket(ctx.server());
             0
         }
         // SAFETY: as above.
