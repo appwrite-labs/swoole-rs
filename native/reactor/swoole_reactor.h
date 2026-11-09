@@ -220,7 +220,6 @@ inline int16_t translate_events_to_poll(int events) {
 
 SW_API int swoole_event_init(int flags);
 SW_API int swoole_event_add(swoole::network::Socket *socket, int events);
-SW_API int swoole_event_set(swoole::network::Socket *socket, int events);
 SW_API int swoole_event_add_or_update(swoole::network::Socket *socket, int event);
 SW_API int swoole_event_del(swoole::network::Socket *socket);
 SW_API void swoole_event_defer(void (*fn)(void *), void *private_data);

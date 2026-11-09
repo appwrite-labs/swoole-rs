@@ -334,7 +334,9 @@ impl Exchange for Wire {
     }
     fn cork(&self) {
         // SAFETY: the connection's live socket.
-        unsafe { swoole_rs_reactor::socket_upstream::socket_cork(self.connection().socket.cast()) };
+        swoole_rs_reactor::socket_upstream::socket_cork(unsafe {
+            &mut *self.connection().socket.cast()
+        });
     }
     fn send(&self, kind: u8, data: &[u8]) {
         let send = crate::base_factory::SendData {

@@ -136,12 +136,6 @@ namespace swoole {
 namespace network {
 // The fields are Rust's record (swoole_rs_socket.h); Rust allocates and frees it.
 struct Socket : swr_v1_socket {
-    static double &default_dns_timeout;
-    static double &default_connect_timeout;
-    static double &default_read_timeout;
-    static double &default_write_timeout;
-    static uint32_t &default_buffer_size;
-
     // SocketRecord::new: zeroed, with the default timeouts. Records Rust frees come from Rust.
     Socket() : swr_v1_socket{} {
         *timeouts() = swr_v1_socket_defaults.timeouts;
@@ -168,7 +162,6 @@ struct Socket : swr_v1_socket {
     }
 
     // socket option [user space]
-    double get_timeout(TimeoutType type) const;
     bool has_timedout() const;
     bool set_nonblock() {
         return set_fd_option(1, -1);
@@ -268,7 +261,6 @@ struct Socket : swr_v1_socket {
     }
 
     int connect_sync(const Address &sa);
-    ReturnCode connect_async(const Address &sa);
 
     int ssl_create(SSLContext *_ssl_context, int _flags);
     int ssl_connect();
@@ -300,7 +292,6 @@ struct Socket : swr_v1_socket {
     }
 
     int wait_event(int timeout_ms, int _events) const;
-    int what_event_want(int default_event) const;
     void free();
 
     static inline bool is_dgram(SocketType type) {

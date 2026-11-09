@@ -233,9 +233,9 @@ pub(crate) unsafe fn php_socket_fd(value: *mut z::zval) -> Option<(c_int, bool)>
 pub(crate) fn socket_make(fd: c_int, object: *mut c_void) -> *mut SocketRecord {
     let socket = swoole_rs_reactor::socket_upstream::make_socket_fd(fd, FD_USER);
     // SAFETY: the record just made, which nothing else holds.
-    unsafe { swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1) };
-    // SAFETY: as above.
-    unsafe { (*socket).object = object };
+    let record = unsafe { &mut *socket };
+    swoole_rs_reactor::socket_upstream::socket_set_fd_option(record, 1, -1);
+    record.object = object;
     socket
 }
 

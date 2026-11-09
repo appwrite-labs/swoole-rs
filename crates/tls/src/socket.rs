@@ -77,31 +77,6 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_clear(tls: *mut SocketTls) {
     unsafe { (*tls).want(false, false) };
 }
 
-const EVENT_READ: c_int = 1 << 9;
-const EVENT_WRITE: c_int = 1 << 10;
-
-/// `Socket::what_event_want`: the event a pending TLS read or write waits for, when
-/// the socket has an SSL, else `default_event`.
-///
-/// # Safety
-/// `tls` is a live socket's TLS state group.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_tls_event(
-    tls: *const SocketTls,
-    ssl: bool,
-    default_event: c_int,
-) -> c_int {
-    // SAFETY: the caller's live state group.
-    let tls = unsafe { *tls };
-    if !ssl || tls.want_read == 0 && tls.want_write == 0 {
-        default_event
-    } else if tls.want_write != 0 {
-        EVENT_WRITE
-    } else {
-        EVENT_READ
-    }
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SslIoResult {
@@ -645,12 +620,6 @@ mod tests {
                 }
             );
             assert_eq!((tls.want_read, tls.want_write), (1, 0));
-            assert_eq!(swr_v1_socket_tls_event(&raw const tls, true, 0), EVENT_READ);
-            assert_eq!(
-                swr_v1_socket_tls_event(&raw const tls, false, 7),
-                7,
-                "no SSL"
-            );
             tls.want_write = 1;
             let sent =
                 swr_v1_socket_ssl_send(&raw mut tls, ssl, buffer.as_ptr().cast(), buffer.len());
@@ -661,11 +630,7 @@ mod tests {
                 "and replaces the flags"
             );
             swr_v1_socket_ssl_clear(&raw mut tls);
-            assert_eq!(
-                swr_v1_socket_tls_event(&raw const tls, true, 7),
-                7,
-                "nothing pending"
-            );
+            assert_eq!((tls.want_read, tls.want_write), (0, 0), "nothing pending");
             SSL_free(ssl);
         }
     }
