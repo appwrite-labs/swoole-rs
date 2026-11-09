@@ -1797,8 +1797,12 @@ fn add_upload(call: &Call, entry: &[(&CStr, Upload<'_>)]) {
     }
     // SAFETY: nothing else borrows `uploadFiles`, and no PHP runs while adding.
     let files = unsafe { props::of(call.this()).array(c"uploadFiles") };
+    // The next-index insert fails once the array's next key would pass
+    // `ZEND_LONG_MAX`; upstream returns false then.
+    let count = |files: &ArrayMut| files.array().map_or(0, Array::count);
+    let before = count(files);
     files.push(file.into_owned());
-    call.set_bool(true);
+    call.set_bool(count(files) > before);
 }
 
 enum Upload<'a> {
