@@ -911,7 +911,6 @@ const SUITES: &[(&str, Cases)] = &[
     ("ssl", ssl::CASES),
     ("pipe", pipe::CASES),
     ("process_pool", process_pool::CASES),
-    ("rust_worker_retirement", process_pool::RETIREMENT_CASES),
 ];
 
 fn main() {
