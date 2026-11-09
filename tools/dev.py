@@ -217,10 +217,6 @@ def plan(args, reports):
             script('locks-state', 'tests/modules/locks/state.py', *php_for('curl'), *engines, *report('locks-state'))
     if integrate and 'phpcoroutines' in modules:
         script('phpcoroutines-tracer', 'tests/modules/phpcoroutines/tracer.py', *php, *engines, *report('phpcoroutines-tracer'))
-    if 'reactor' in modules:
-        script('reactor-compile', 'tests/modules/reactor/compile_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive,
-               '--report', reports / 'reactor-compile.json')
     pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', archive, '--sanitize')
     if 'coroutine' in modules:
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.

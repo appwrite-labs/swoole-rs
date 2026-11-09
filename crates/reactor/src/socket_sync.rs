@@ -72,8 +72,7 @@ pub(crate) fn set_errno(value: c_int) {
 /// # Safety
 /// `hooks` is valid for this call: its functions are callable with its socket, and
 /// `kernel_nobufs` is writable. `buffer` denotes `length` bytes valid for `io`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_sync(
+pub unsafe fn swr_v1_socket_sync(
     hooks: *const SyncHooks,
     kind: c_int,
     buffer: *mut c_void,

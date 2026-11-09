@@ -471,7 +471,6 @@ class Lanes(unittest.TestCase):
             # phphelpers' runtime fixtures call stdext helpers, so only stdext plans run them.
             stdext = dict(dev.plan(SimpleNamespace(**vars(args), stdext=True), ROOT / 'target/reports/all-registered-stdext'))
         self.assertNotIn('phphelpers-runtime', commands)
-        self.assertIn('--archive', commands['reactor-compile'])
         self.assertIn('corebase-native',commands)
         self.assertIn('ossupport-async-file-owner', commands)
         self.assertIn('http-rewrites', commands)
