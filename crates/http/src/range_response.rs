@@ -1,25 +1,43 @@
 //! Range response assembly/commit policy. Native owns containers and date/IO work.
-use crate::proxy::{HttpProxyText, Prefix};
-use crate::{INVALID, OVERFLOW, bytes, c_text};
-use std::{fmt::Write, mem::MaybeUninit, slice};
+use crate::{INVALID, OVERFLOW, c_text};
+use std::fmt::{self, Write};
 
-#[repr(C)]
-pub struct HttpRangeFormat {
-    pub boundary: HttpProxyText,
-    pub mime: HttpProxyText,
-    pub offset: usize,
-    pub length: usize,
-    pub filesize: usize,
-    pub part: u32,
-    pub separator: u32,
+pub(crate) struct HttpRangeFormat<'a> {
+    pub(crate) boundary: &'a [u8],
+    pub(crate) mime: &'a [u8],
+    pub(crate) offset: usize,
+    pub(crate) length: usize,
+    pub(crate) filesize: usize,
+    pub(crate) part: u32,
+    pub(crate) separator: u32,
+}
+
+/// The prefix of a rendering that fits `output`, and the whole rendering's length.
+struct Prefix<'a> {
+    output: &'a mut [u8],
+    length: usize,
+}
+impl Prefix<'_> {
+    fn append(&mut self, input: &[u8]) -> fmt::Result {
+        for (destination, byte) in self.output.iter_mut().skip(self.length).zip(input) {
+            *destination = *byte;
+        }
+        self.length = self.length.checked_add(input.len()).ok_or(fmt::Error)?;
+        Ok(())
+    }
+}
+impl Write for Prefix<'_> {
+    fn write_str(&mut self, input: &str) -> fmt::Result {
+        self.append(input.as_bytes())
+    }
 }
 
 fn render(
-    input: &HttpRangeFormat,
+    input: &HttpRangeFormat<'_>,
     boundary: &[u8],
     mime: &[u8],
     out: &mut Prefix<'_>,
-) -> std::fmt::Result {
+) -> fmt::Result {
     if input.part == 1 {
         out.append(b"\r\n--")?;
         out.append(boundary)?;
@@ -44,7 +62,7 @@ fn render(
 // Count the exact wire representation before touching output, preserving the
 // formatter's transactional overflow boundary without formatting every number
 // twice. The integer count includes zero and the wrapping last-byte index.
-fn rendered_length(input: &HttpRangeFormat, boundary: &[u8], mime: &[u8]) -> Option<usize> {
+fn rendered_length(input: &HttpRangeFormat<'_>, boundary: &[u8], mime: &[u8]) -> Option<usize> {
     let fixed = if input.part == 1 {
         b"\r\n----\r\n".len()
     } else {
@@ -59,47 +77,24 @@ fn rendered_length(input: &HttpRangeFormat, boundary: &[u8], mime: &[u8]) -> Opt
 }
 
 /// Format0=a snprintf-style range header,1=a binary-safe final boundary string.
-/// Capacity0 queries size; otherwise write the available prefix and final NUL.
-/// Return1 requests native EOVERFLOW for a header count beyond libc int;
+/// An empty `output` queries the size; otherwise write the prefix that fits and a
+/// final NUL. Return1 requests native EOVERFLOW for a header count beyond libc int;
 /// preserve the snprintf prefix, but publish the pinned empty C-string/count0.
-/// # Safety
-/// Input/spans are readable/initialized. Output capacity and written are writable,
-/// disjoint from all input/state. No allocation, callback or retained borrow.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_range_format(
-    input: *const HttpRangeFormat,
-    output: *mut u8,
-    capacity: usize,
-    written: *mut usize,
+pub(crate) fn range_format(
+    input: &HttpRangeFormat<'_>,
+    output: &mut [u8],
+    written: &mut usize,
 ) -> i32 {
-    if input.is_null() || written.is_null() || (capacity != 0 && output.is_null()) {
-        return INVALID;
-    }
-    if capacity > isize::MAX as usize {
-        return OVERFLOW;
-    }
-    // SAFETY: `input` is non-null (checked above), aligned and initialized per the caller contract.
-    let input = unsafe { &*input };
     if input.part > 1 {
         return INVALID;
     }
-    // SAFETY: the boundary span names `length` initialized bytes.
-    let boundary = match unsafe { bytes(input.boundary.data, input.boundary.length) } {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    if input.part == 0 && capacity > i32::MAX as usize {
+    if input.part == 0 && output.len() > i32::MAX as usize {
         return OVERFLOW;
     }
     let (boundary, mime) = if input.part == 0 {
-        // SAFETY: the MIME span names `length` initialized bytes.
-        let mime = match unsafe { bytes(input.mime.data, input.mime.length) } {
-            Ok(value) => value,
-            Err(error) => return error,
-        };
-        (c_text(boundary), c_text(mime))
+        (c_text(input.boundary), c_text(input.mime))
     } else {
-        (boundary, &[][..])
+        (input.boundary, &[][..])
     };
     let Some(required) =
         rendered_length(input, boundary, mime).filter(|&length| isize::try_from(length).is_ok())
@@ -107,47 +102,47 @@ pub unsafe extern "C" fn swr_v1_http_range_format(
         return OVERFLOW;
     };
     let libc_overflow = input.part == 0 && required > i32::MAX as usize;
-    let count = if capacity == 0 {
-        if libc_overflow { usize::MAX } else { required }
-    } else {
-        // SAFETY: non-null when `capacity != 0` (checked above), writable, disjoint from inputs.
-        let output_slice =
-            unsafe { slice::from_raw_parts_mut(output.cast::<MaybeUninit<u8>>(), capacity - 1) };
+    let count = if let Some((_, room)) = output.split_last_mut() {
         let mut sink = Prefix {
-            output: output_slice,
+            output: room,
             length: 0,
         };
         if render(input, boundary, mime, &mut sink).is_err() {
             return OVERFLOW;
         }
-        let count = sink.length.min(capacity - 1);
-        // SAFETY: `count <= capacity - 1`, inside the writable output.
-        unsafe { output.wrapping_add(count).write(0) };
+        let count = sink.length.min(output.len() - 1);
+        if let Some(nul) = output.get_mut(count) {
+            *nul = 0;
+        }
         if libc_overflow {
-            // SAFETY: `output` is non-null (checked above), aligned and writable per the caller contract.
-            unsafe { output.write(0) };
+            if let Some(first) = output.first_mut() {
+                *first = 0;
+            }
             0
         } else {
             count
         }
+    } else if libc_overflow {
+        usize::MAX
+    } else {
+        required
     };
-    // SAFETY: `written` is non-null (checked above), aligned and writable per the caller contract.
-    unsafe { written.write(count) };
+    *written = count;
     i32::from(libc_overflow)
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct HttpRangeFinish {
-    pub content_length: usize,
-    pub last_length: usize,
-    pub task_count: usize,
-    pub filesize: usize,
-    pub end_length: usize,
-    pub phase: u32,
-    pub status: i32,
-    pub if_range: u32,
-    pub modified: u32,
+pub(crate) struct HttpRangeFinish {
+    pub(crate) content_length: usize,
+    pub(crate) last_length: usize,
+    pub(crate) task_count: usize,
+    pub(crate) filesize: usize,
+    pub(crate) end_length: usize,
+    pub(crate) phase: u32,
+    pub(crate) status: i32,
+    pub(crate) if_range: u32,
+    pub(crate) modified: u32,
 }
 
 impl HttpRangeFinish {
@@ -214,17 +209,11 @@ impl HttpRangeFinish {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn text(value: &[u8]) -> HttpProxyText {
-        HttpProxyText {
-            data: value.as_ptr(),
-            length: value.len(),
-        }
-    }
     #[test]
     fn binary_end_and_c_string_header_are_different() {
         let mut input = HttpRangeFormat {
-            boundary: text(b"ab\0cd"),
-            mime: text(b"type\0ignored"),
+            boundary: b"ab\0cd",
+            mime: b"type\0ignored",
             offset: 3,
             length: 5,
             filesize: 10,
@@ -233,33 +222,13 @@ mod tests {
         };
         let mut output = [0xa5; 128];
         let mut n = 0;
-        assert_eq!(
-            unsafe {
-                swr_v1_http_range_format(
-                    &raw const input,
-                    output.as_mut_ptr(),
-                    output.len(),
-                    &raw mut n,
-                )
-            },
-            0
-        );
+        assert_eq!(range_format(&input, &mut output, &mut n), 0);
         assert_eq!(
             &output[..n],
             b"\r\n--ab\r\nContent-Type: type\r\nContent-Range: bytes 3-7/10\r\n\r\n"
         );
         input.part = 1;
-        assert_eq!(
-            unsafe {
-                swr_v1_http_range_format(
-                    &raw const input,
-                    output.as_mut_ptr(),
-                    output.len(),
-                    &raw mut n,
-                )
-            },
-            0
-        );
+        assert_eq!(range_format(&input, &mut output, &mut n), 0);
         assert_eq!(&output[..n], b"\r\n--ab\0cd--\r\n");
     }
     #[test]
@@ -270,8 +239,8 @@ mod tests {
                     for part in [0, 1] {
                         for separator in [0, 1] {
                             let input = HttpRangeFormat {
-                                boundary: text(b"boundary"),
-                                mime: text(b"text/plain"),
+                                boundary: b"boundary",
+                                mime: b"text/plain",
                                 offset,
                                 length,
                                 filesize,
@@ -290,29 +259,12 @@ mod tests {
                                 )
                             };
                             let mut written = usize::MAX;
-                            assert_eq!(
-                                unsafe {
-                                    swr_v1_http_range_format(
-                                        &raw const input,
-                                        std::ptr::null_mut(),
-                                        0,
-                                        &raw mut written,
-                                    )
-                                },
-                                0
-                            );
+                            assert_eq!(range_format(&input, &mut [], &mut written), 0);
                             assert_eq!(written, expected.len());
                             for capacity in 1..=expected.len() + 2 {
                                 let mut output = vec![0xa5; capacity + 2];
                                 assert_eq!(
-                                    unsafe {
-                                        swr_v1_http_range_format(
-                                            &raw const input,
-                                            output.as_mut_ptr(),
-                                            capacity,
-                                            &raw mut written,
-                                        )
-                                    },
+                                    range_format(&input, &mut output[..capacity], &mut written),
                                     0
                                 );
                                 let take = expected.len().min(capacity - 1);
@@ -330,8 +282,8 @@ mod tests {
     #[test]
     fn invalid_metadata_preserves_storage_and_state() {
         let input = HttpRangeFormat {
-            boundary: text(b"b"),
-            mime: text(b"m"),
+            boundary: b"b",
+            mime: b"m",
             offset: 0,
             length: 1,
             filesize: 1,
@@ -340,17 +292,7 @@ mod tests {
         };
         let mut storage = [0xa5; 16];
         let mut written = 99;
-        assert_eq!(
-            unsafe {
-                swr_v1_http_range_format(
-                    &raw const input,
-                    storage.as_mut_ptr(),
-                    storage.len(),
-                    &raw mut written,
-                )
-            },
-            INVALID
-        );
+        assert_eq!(range_format(&input, &mut storage, &mut written), INVALID);
         assert_eq!(storage, [0xa5; 16]);
         assert_eq!(written, 99);
         let mut state = HttpRangeFinish {

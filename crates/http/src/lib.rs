@@ -19,7 +19,7 @@ const OVERFLOW: i32 = -2;
 mod conditional;
 pub use conditional::{HttpCalendar, HttpConditional, swr_v3_http_conditional, swr_v3_http_date};
 mod directory;
-pub use directory::HttpDirectory;
+use directory::HttpDirectory;
 mod dispatch;
 pub use dispatch::transport_route;
 mod framing;
@@ -27,7 +27,6 @@ pub use framing::{HttpFrame, swr_v1_http_expect};
 mod headers;
 mod index_page;
 pub use headers::{HttpCookie, HttpHeaderInfo, swr_v1_http_cookie_next};
-pub use index_page::{HttpIndexPage, swr_v1_http_index_page};
 mod maps;
 mod multipart;
 #[cfg(test)]
@@ -42,7 +41,7 @@ pub use proxy::{
 };
 mod range;
 mod range_response;
-pub use range_response::{HttpRangeFinish, HttpRangeFormat, swr_v1_http_range_format};
+use range_response::HttpRangeFinish;
 mod request;
 pub use request::{
     HttpForm, HttpNative, HttpRequest, HttpString, destroy_multipart_parser, init_multipart_parser,
@@ -53,18 +52,18 @@ pub use rewrite::RewriteRules;
 mod static_context;
 pub use static_context::*;
 mod tasks;
-pub use tasks::{HttpStaticTask, HttpTasks};
+pub use tasks::HttpStaticTask;
+use tasks::HttpTasks;
 mod static_meta;
-pub use static_meta::{static_boundary, static_multipart, swr_v1_http_static_boundary};
 mod status_buffer;
 pub use status_buffer::{NATIVE_STATUS_CODES, swr_v2_http_status_message};
 pub mod http_server;
 mod static_headers;
 mod static_path;
 pub use maps::{swr_v1_http_method, swr_v1_http_method_string, swr_v1_http_status};
-pub use range::HttpRangeState;
+use range::HttpRangeState;
 pub use static_headers::{HttpStaticHeaders, swr_v1_http_static_headers};
-pub use static_path::{HttpStaticPath, swr_v1_http_static_location, swr_v1_http_static_path};
+pub use static_path::{HttpStaticPath, swr_v1_http_static_location};
 
 /// # Safety
 /// Nonempty input is readable and initialized for its length; no borrow escapes.
@@ -274,6 +273,18 @@ pub unsafe extern "C" fn swr_v1_http_url_decode(
     }
     // SAFETY: non-null, `length + 1 <= isize::MAX` (checked above), writable initialized bytes.
     let input = unsafe { slice::from_raw_parts_mut(data, length) };
+    let write = url_decode(input);
+    // SAFETY: `write <= length`, and the caller lends `length + 1` writable bytes.
+    unsafe { data.wrapping_add(write).write(0) };
+    // SAFETY: `written` is non-null (checked above), aligned and writable.
+    unsafe {
+        written.write(write);
+    }
+    0
+}
+/// Decode `input` in place, preserving malformed escapes and decoding '+' as space.
+/// Returns the decoded length; the bytes after it are left as they were.
+fn url_decode(input: &mut [u8]) -> usize {
     let (mut read, mut write) = (0, 0);
     while let Some(&byte) = input.get(read) {
         let pair = if byte == b'%' {
@@ -296,13 +307,7 @@ pub unsafe extern "C" fn swr_v1_http_url_decode(
         read += 1;
         write += 1;
     }
-    // SAFETY: `write <= length`, and the caller lends `length + 1` writable bytes.
-    unsafe { data.wrapping_add(write).write(0) };
-    // SAFETY: `written` is non-null (checked above), aligned and writable.
-    unsafe {
-        written.write(write);
-    }
-    0
+    write
 }
 #[repr(C)]
 #[derive(Default)]

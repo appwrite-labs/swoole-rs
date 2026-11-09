@@ -7,31 +7,12 @@ const ALLOCATION: i32 = -3;
 /// The lazy boundary's random length while the boundary is still empty
 /// (`length == 0`), else `None`.
 #[must_use]
-pub fn static_boundary(length: usize) -> Option<usize> {
+pub(crate) fn static_boundary(length: usize) -> Option<usize> {
     (length == 0).then_some(39 - BOUNDARY.len())
-}
-/// `static_boundary` for the oracle's candidate `ensure_boundary`
-/// (`crates/oracle/shim/http_range_context.cc`): the boundary prefix with the
-/// random length written, or NULL for an existing boundary.
-/// # Safety
-/// `random_length` is null or aligned and writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_static_boundary(
-    length: usize,
-    random_length: *mut usize,
-) -> *const u8 {
-    // SAFETY: as the caller guarantees.
-    match (static_boundary(length), unsafe { random_length.as_mut() }) {
-        (Some(count), Some(out)) => {
-            *out = count;
-            BOUNDARY.as_ptr()
-        }
-        _ => std::ptr::null(),
-    }
 }
 /// Whether the response is multipart: more than one task.
 #[must_use]
-pub fn static_multipart(tasks: usize) -> bool {
+pub(crate) fn static_multipart(tasks: usize) -> bool {
     tasks > 1
 }
 /// The binary-safe multipart content type over `boundary`, excluding any NUL.

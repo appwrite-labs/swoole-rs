@@ -2,11 +2,11 @@
 use super::{HttpSpan, INVALID};
 #[repr(C)]
 #[derive(Default)]
-pub struct HttpRangeState {
-    pub cursor: usize,
-    pub total: usize,
-    pub started: u32,
-    pub done: u32,
+pub(crate) struct HttpRangeState {
+    pub(crate) cursor: usize,
+    pub(crate) total: usize,
+    pub(crate) started: u32,
+    pub(crate) done: u32,
 }
 fn decimal(input: &[u8], at: &mut usize) -> Option<usize> {
     let start = *at;
