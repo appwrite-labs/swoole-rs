@@ -543,7 +543,10 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
         [](void *callable) -> void * { return static_cast<zend::Callable *>(callable)->dup(); },
         [](void *call) {
             auto *c = static_cast<swr_v1_runtime_callable_call *>(call);
-            c->result = static_cast<zend::Callable *>(c->callable)->call(c->argc, c->argv, nullptr);
+            auto *callable = static_cast<zend::Callable *>(c->callable);
+            c->result = c->from_loop
+                            ? sw_zend_call_function_ex2(nullptr, callable->ptr(), c->argc, c->argv, c->retval) == SUCCESS
+                            : callable->call(c->argc, c->argv, c->retval);
         },
         [](void *callable) { return static_cast<zend::Callable *>(callable)->ptr(); },
         [](int32_t level, const char *message) { php_swoole_fatal_error(level, "%s", message); },

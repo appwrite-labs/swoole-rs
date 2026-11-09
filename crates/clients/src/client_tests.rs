@@ -414,8 +414,7 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
 }
 
 fn free(client: *mut Client) {
-    // SAFETY: a live state, released once.
-    unsafe { swr_v1_clients_free(client) };
+    super::free(Handle(client));
 }
 
 fn flag(client: *mut Client, name: u32) -> bool {
@@ -424,8 +423,7 @@ fn flag(client: *mut Client, name: u32) -> bool {
 }
 
 fn connect(client: *mut Client, host: &CStr, timeout: f64, flags: c_int) -> c_int {
-    // SAFETY: a live state and a NUL-terminated host.
-    unsafe { swr_v1_clients_connect(client, host.as_ptr(), 80, timeout, flags) }
+    super::connect(Handle(client), host.as_ptr(), 80, timeout, flags)
 }
 
 #[test]
@@ -444,19 +442,37 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
 }
 
 #[test]
+fn a_call_measures_with_the_protocol_and_frees_the_client() {
+    unsafe extern "C" fn twice(
+        _: *const Protocol,
+        _: *mut SocketRecord,
+        packet: *const PacketLength,
+    ) -> isize {
+        // SAFETY: the call's packet.
+        2 * isize::try_from(unsafe { (*packet).buf_size }).unwrap()
+    }
+    let client = client(1, true, false);
+    Handle(client).fields().protocol.get_package_length = (twice as LengthFunc) as *mut c_void;
+    let mut call = Call::new(client, Op::PackageLength);
+    call.buffer = c"abc".as_ptr().cast_mut();
+    call.length = 3;
+    // SAFETY: a live client and three bytes.
+    unsafe { swr_v1_clients_run((&raw mut call).cast()) };
+    assert_eq!(call.result, 6);
+    let mut call = Call::new(client, Op::Free);
+    // SAFETY: the live client, not used afterwards.
+    unsafe { swr_v1_clients_run((&raw mut call).cast()) };
+    assert_eq!(taken(), ["event 2 0", "free"]);
+}
+
+#[test]
 fn async_close_detaches_then_runs_on_close_once() {
     let client = client(1, true, true);
     Handle(client).set(ACTIVE, true);
-    // SAFETY: a live state.
-    assert_eq!(
-        unsafe { swr_v1_clients_close(client) },
-        ERR,
-        "close(-1) fails"
-    );
+    assert_eq!(close(Handle(client)), ERR, "close(-1) fails");
     assert_eq!(taken(), ["event 2 0", "call 3 0"]);
     assert!(flag(client, CLOSED) && !flag(client, ACTIVE));
-    // SAFETY: as above.
-    assert_eq!(unsafe { swr_v1_clients_close(client) }, ERR);
+    assert_eq!(close(Handle(client)), ERR);
     assert_eq!(taken(), Vec::<String>::new());
     free(client);
 }
@@ -466,8 +482,7 @@ fn close_returns_zero_when_on_close_released_the_client() {
     let client = client(1, true, true);
     Handle(client).set(ACTIVE, true);
     mock(|m| m.releases = Some(ON_CLOSE));
-    // SAFETY: a live state.
-    assert_eq!(unsafe { swr_v1_clients_close(client) }, OK);
+    assert_eq!(close(Handle(client)), OK);
     assert_eq!(sock().fd, -1);
     free(client);
 }
@@ -475,8 +490,7 @@ fn close_returns_zero_when_on_close_released_the_client() {
 #[test]
 fn shutdown_records_each_direction_once() {
     let client = client(1, false, false);
-    // SAFETY: a live state.
-    let shutdown = |how| unsafe { swr_v1_clients_shutdown(client, how) };
+    let shutdown = |how| shutdown(Handle(client), how);
     assert_eq!(shutdown(99), ERR);
     assert_eq!(log::last_error(), libc::EINVAL);
     // The fd is -1, so the system call fails.
@@ -606,22 +620,13 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
     sock().output.out_buffer = queue.cast();
     // SAFETY: a live state.
     unsafe { swr_v1_clients_watermark(client, true).write(8) };
-    // SAFETY: a live state and four bytes.
-    assert_eq!(
-        unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) },
-        4
-    );
+    assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), 4);
     assert_eq!(taken(), ["write 4", "call 5 0"]);
     // Already high: no second call.
-    // SAFETY: as above.
-    unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) };
+    send(Handle(client), c"data".as_ptr(), 4, 0);
     assert_eq!(taken(), ["write 4"]);
     log::set_last_error(ERROR_OUTPUT_BUFFER_OVERFLOW);
-    // SAFETY: as above.
-    assert_eq!(
-        unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) },
-        -1
-    );
+    assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), -1);
     free(client);
 }
 
@@ -631,7 +636,6 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     set_proxy(client, false);
     // SAFETY: a live state.
     unsafe { swr_v1_clients_watermark(client, true).write(100) };
-    // SAFETY: as above.
     let result = on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
     assert_eq!(result, 3);
     assert_eq!(taken(), ["event 1 512", "write 3"]);
@@ -644,7 +648,6 @@ fn writable_after_connect_starts_the_socks5_handshake() {
 fn writable_after_a_failed_connect_reports_the_error() {
     let client = client(1, true, true);
     mock(|m| m.socket_error = libc::ECONNREFUSED);
-    // SAFETY: a live state.
     on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
     assert_eq!(log::last_error(), libc::ECONNREFUSED);
     assert_eq!(
@@ -660,15 +663,12 @@ fn writable_after_a_failed_connect_reports_the_error() {
 #[test]
 fn tls_connect_waits_for_the_stream_then_connects() {
     let client = client(1, true, true);
-    // SAFETY: a live state.
-    assert_eq!(unsafe { swr_v1_clients_enable_ssl(client) }, OK);
+    assert_eq!(enable_ssl(Handle(client)), OK);
     taken();
-    // SAFETY: as above.
     on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
     assert_eq!(sock().tls.state, SSL_STATE_WAIT_STREAM);
     taken();
     mock(|m| m.ssl_connect_ready = true);
-    // SAFETY: as above.
     on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
     assert_eq!(taken(), ["ssl session 2", "ssl connect", "call 1 0"]);
     free(client);
@@ -680,7 +680,6 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     Handle(client).set(ACTIVE, true);
     set_proxy(client, true);
     assert_eq!(Handle(client).proxy_state(Proxy::Http), HTTP_PROXY_WAIT);
-    // SAFETY: a live state.
     on_timeout(client.cast());
     assert_eq!(log::last_error(), libc::ETIMEDOUT);
     assert_eq!(
@@ -699,11 +698,9 @@ fn stream_read_delivers_data_and_closes_at_eof() {
     Handle(client).set(ACTIVE, true);
     Handle(client).input_init();
     mock(|m| m.io = vec![5]);
-    // SAFETY: a live state.
     assert_eq!(on_read(Handle(client)), OK);
     assert_eq!(taken(), ["recv 65536", "call 2 5"]);
     mock(|m| m.io = vec![0]);
-    // SAFETY: as above.
     on_read(Handle(client));
     assert_eq!(taken(), ["recv 65536", "event 2 0", "call 3 0"]);
     free(client);
@@ -712,22 +709,13 @@ fn stream_read_delivers_data_and_closes_at_eof() {
 #[test]
 fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
     let client = client(2, false, false);
-    // SAFETY: a live state and four bytes; the record's descriptor is -1, so
-    // sendto(2) fails.
-    assert_eq!(
-        unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) },
-        -1
-    );
+    // The record's descriptor is -1, so sendto(2) fails.
+    assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), -1);
     assert_eq!(errno(), libc::EBADF);
-    // SAFETY: as above.
-    assert_eq!(unsafe { swr_v1_clients_enable_ssl(client) }, OK);
+    assert_eq!(enable_ssl(Handle(client)), OK);
     assert_eq!(sock().chunk_size, SSL_BUFFER_SIZE);
     taken();
-    // SAFETY: as above.
-    assert_eq!(
-        unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) },
-        4
-    );
+    assert_eq!(send(Handle(client), c"data".as_ptr(), 4, 0), 4);
     assert_eq!(taken(), ["send_sync 4"]);
     free(client);
 }
@@ -820,10 +808,8 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
 #[test]
 fn tls_handshake_names_the_host_and_verifies_the_peer() {
     let client = client(1, false, false);
-    // SAFETY: a live state.
-    assert_eq!(unsafe { swr_v1_clients_enable_ssl(client) }, OK);
-    // SAFETY: as above: TLS was already on.
-    assert_eq!(unsafe { swr_v1_clients_enable_ssl(client) }, ERR);
+    assert_eq!(enable_ssl(Handle(client)), OK);
+    assert_eq!(enable_ssl(Handle(client)), ERR);
     let tls = Handle(client).tls();
     let name = c"example.test";
     // SAFETY: the double's live slot and fields.
@@ -837,8 +823,7 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
         (*tls.fields).allow_self_signed = 1;
     }
     mock(|m| m.ssl_connect_ready = true);
-    // SAFETY: a live state.
-    assert_eq!(unsafe { swr_v1_clients_ssl_handshake(client) }, OK);
+    assert_eq!(ssl_handshake(Handle(client)), OK);
     assert_eq!(
         taken(),
         [

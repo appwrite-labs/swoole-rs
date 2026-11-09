@@ -1,7 +1,7 @@
 //! `swoole_client_select()` (and its alias `swoole_select()`): `poll(2)` over
 //! arrays of clients, sockets and streams, which it narrows to the ready ones.
 use crate::{
-    native::{ClientCall, ErrorKind, Op},
+    native::ErrorKind,
     net::{CONNECT_TIMEOUT, bailed, errno, warn, warn_sys},
 };
 use libc::{POLLHUP, POLLIN, POLLOUT, c_int, c_short, nfds_t, pollfd};
@@ -53,10 +53,8 @@ fn length(array: Option<*mut zval>) -> usize {
 
 /// `php_swoole_convert_to_fd`, which may warn.
 fn fd_of(element: *mut zval) -> Option<c_int> {
-    let mut convert = ClientCall::new(ptr::null_mut(), Op::ConvertFd);
-    convert.settings = element;
-    let fd = bailed(convert.run())?;
-    c_int::try_from(fd).ok()
+    // SAFETY: a live array element.
+    bailed(unsafe { swoole_rs_phpruntime::convert_to_fd(element) })
 }
 
 /// The elements of `array` with their keys (string, or integer index).

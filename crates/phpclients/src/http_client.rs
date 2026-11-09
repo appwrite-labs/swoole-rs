@@ -9,8 +9,8 @@ use crate::{
     http_request::{self as request, Compress},
     llhttp::{self, Parser, Settings},
     native::{
-        Socket, swoole_client_coro_is_connected, swoole_rs_php_error, swoole_rs_set_last_error,
-        swoole_socket_coro_address, swoole_socket_coro_check_liveness, swoole_socket_coro_error,
+        Socket, swoole_client_coro_is_connected, swoole_rs_php_error, swoole_socket_coro_address,
+        swoole_socket_coro_check_liveness, swoole_socket_coro_error,
         swoole_socket_coro_getpeername, swoole_socket_coro_getsockname,
         swoole_socket_coro_sendfile, swoole_socket_coro_unconstructed,
     },
@@ -243,8 +243,7 @@ mod props {
 
 /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
 fn set_error_properties(object: *mut zend_object, code: c_int, message: &CStr) {
-    // SAFETY: a plain store into Swoole's thread error.
-    unsafe { swoole_rs_set_last_error(code) };
+    swoole_rs_corebase::log::set_last_error(code);
     props::long(object, c"errCode", i64::from(code));
     props::string(object, c"errMsg", message);
 }
@@ -702,8 +701,7 @@ impl Client {
         let socket = self.socket();
         // SAFETY: a live socket (each native call below too).
         unsafe { native::swoole_http_client_coro_check_bound(socket, EVENT_WRITE) };
-        // SAFETY: as above.
-        unsafe { swoole_rs_set_last_error(0) };
+        swoole_rs_corebase::log::set_last_error(0);
         self.body.clear();
 
         // SAFETY: `$this` declares each property.
@@ -1294,8 +1292,7 @@ impl Client {
     fn push(&mut self, data: *mut zval, opcode: i64, flags: i64, code: i64) -> bool {
         let object = self.object;
         if !self.websocket {
-            // SAFETY: a plain store into Swoole's thread error.
-            unsafe { swoole_rs_set_last_error(HANDSHAKE_FAILED) };
+            swoole_rs_corebase::log::set_last_error(HANDSHAKE_FAILED);
             warn(true, c"websocket handshake failed, cannot push data");
             // SAFETY: a plain read of Swoole's thread error.
             let last = swoole_rs_corebase::log::last_error();
@@ -1325,8 +1322,7 @@ impl Client {
         match result {
             0 => true,
             1 => {
-                // SAFETY: a plain store into Swoole's thread error.
-                unsafe { swoole_rs_set_last_error(PACK_FAILED) };
+                swoole_rs_corebase::log::set_last_error(PACK_FAILED);
                 // SAFETY: a plain read of Swoole's thread error.
                 let last = swoole_rs_corebase::log::last_error();
                 props::long(object, c"errCode", i64::from(last));

@@ -1343,8 +1343,7 @@ pub unsafe extern "C" fn php_swoole_socket_set_error_properties(
     code: i32,
     message: *const c_char,
 ) {
-    // SAFETY: update Swoole's thread-local error before the property effects, as upstream does.
-    unsafe { native::swoole_rs_set_last_error(code) };
+    swoole_rs_corebase::log::set_last_error(code);
     // SAFETY: the SDK supplies an initialized object zval of this class.
     let object = unsafe { value::obj_of(value) };
     // SAFETY: the live object's actual class is the original SDK helper's scope.

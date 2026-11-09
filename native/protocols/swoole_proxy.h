@@ -28,6 +28,10 @@ enum swSocks5State {
     SW_SOCKS5_STATE_READY,
 };
 
+static_assert(SW_SOCKS5_STATE_WAIT == 0 && SW_SOCKS5_STATE_HANDSHAKE == 1 && SW_SOCKS5_STATE_READY == 4 &&
+                  SW_HTTP_PROXY_STATE_WAIT == 0 && SW_HTTP_PROXY_STATE_READY == 2,
+              "the proxy states crates/clients/src/client.rs and crates/hooks/src/connect.rs copy");
+
 namespace swoole {
 static_assert(sizeof(swr_v1_core_proxy_fields) == 20 && offsetof(swr_v1_core_proxy_fields, port) == 8, "proxy scalar ABI");
 class ProxyOwner {

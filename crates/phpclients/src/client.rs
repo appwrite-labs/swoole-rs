@@ -196,8 +196,7 @@ fn report(call: &Call, code: c_int, message: &CStr) {
 
 /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
 fn report_object(object: *mut zend_object, code: c_int, message: &CStr) {
-    // SAFETY: a plain store into Swoole's thread error.
-    unsafe { native::swoole_rs_set_last_error(code) };
+    swoole_rs_corebase::log::set_last_error(code);
     // SAFETY: `$this` is live.
     let ce = unsafe { (*object).ce };
     // SAFETY: `$this` is a live instance of `ce`.

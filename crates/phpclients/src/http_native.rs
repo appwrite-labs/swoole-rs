@@ -409,7 +409,7 @@ pub(crate) unsafe fn swoole_http_client_coro_call(
     // SAFETY: a fresh string the zval owns.
     unsafe { value::set_str(&raw mut args[1], string::copy(data)) };
     // SAFETY: a live callable and arguments.
-    let result = match unsafe { callable_call(callable, &mut args) } {
+    let result = match unsafe { callable_call(callable, &mut args, std::ptr::null_mut(), false) } {
         Ok(true) => 0,
         Ok(false) => 1,
         Err(bailout::Bailout) => 2,

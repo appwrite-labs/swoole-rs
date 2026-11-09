@@ -25,6 +25,8 @@ struct swr_v1_runtime_callable_call {
     void *callable;
     uint32_t argc;
     struct _zval_struct *argv;
+    struct _zval_struct *retval;
+    bool from_loop;
     bool result;
 };
 typedef void (*swr_v1_phpruntime_handler)(struct _zend_execute_data *execute_data, struct _zval_struct *return_value);

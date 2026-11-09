@@ -1,20 +1,24 @@
 //! `Swoole\Client`: registration, the object and every method, over
-//! `network::Client`. The object holds a [`Conn`]: the C++ client plus what
+//! `network::Client`. The object holds a [`Conn`]: crates/clients' client plus what
 //! the PHP layer keeps beside it (the persistent-connection key and count and
 //! the `recv` framing buffer). A `SWOOLE_KEEP` connection outlives its object
 //! in the pool. Each method parses as upstream's ZPP block does; operations
-//! that can run PHP code go through `swoole_client_run` inside `zend_try`.
-use crate::native::{self, Cli, ClientCall, ErrorKind, Op};
+//! that can run PHP code go through `swr_v1_clients_run` inside `zend_try`.
+use crate::native::{self, Cli, ErrorKind, Run};
 use libc::{c_char, c_int, c_void};
 use std::{
     ffi::{CStr, CString},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_clients::{client as state, pool, swr_v1_clients_port};
+use swoole_rs_clients::{
+    client::{self as state, Call as ClientCall, Op},
+    pool, swr_v1_clients_port,
+};
 use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
+use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
-use swoole_rs_phpswoole::{Capability, built_with};
+use swoole_rs_phpswoole::{Capability, built_with, display_errors};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object,
@@ -80,17 +84,15 @@ impl Conn {
     }
 
     pub(crate) fn flag(&self, name: u32) -> bool {
-        // SAFETY: the client's live state.
-        unsafe { state::swr_v1_clients_flag(self.cli, name) }
+        self.cli.get().flag(name)
     }
 
     pub(crate) fn set_flag(&self, name: u32, value: bool) {
-        // SAFETY: the client's live state, not borrowed elsewhere.
-        unsafe { state::swr_v1_clients_set_flag(self.cli, name, value) };
+        self.cli.get().set(name, value);
     }
 
     pub(crate) fn call(&self, op: Op) -> ClientCall {
-        ClientCall::new(self.cli.cast(), op)
+        self.cli.call(op)
     }
 
     /// Run an IO call: a sync client raises no callbacks, so only an async
@@ -105,8 +107,7 @@ impl Conn {
 
     /// `cli->socket`, or null.
     pub(crate) fn socket(&self) -> *mut SocketRecord {
-        // SAFETY: a live client.
-        unsafe { native::client_socket(self.cli) }
+        self.cli.socket()
     }
 
     pub(crate) fn has_socket(&self) -> bool {
@@ -114,13 +115,11 @@ impl Conn {
     }
 
     pub(crate) fn fd(&self) -> c_int {
-        // SAFETY: a live client with a socket.
-        unsafe { (*self.socket()).fd }
+        self.cli.socket_mut().fd
     }
 
     fn socket_type(&self) -> i64 {
-        // SAFETY: as above.
-        i64::from(unsafe { (*self.socket()).socket_type })
+        i64::from(self.cli.socket_mut().socket_type)
     }
 
     pub(crate) fn is_stream(&self) -> bool {
@@ -128,8 +127,7 @@ impl Conn {
     }
 
     pub(crate) fn has_ssl(&self) -> bool {
-        // SAFETY: as above.
-        !unsafe { (*self.socket()).ssl }.is_null()
+        !self.cli.socket_mut().ssl.is_null()
     }
 }
 
@@ -287,15 +285,14 @@ pub(crate) fn socket_type(kind: i64) -> i64 {
 /// `php_swoole_error` and friends (`kind`) at `level`, deferring a bailout.
 pub(crate) fn report(kind: ErrorKind, level: c_int, message: &str) {
     let message = CString::new(message).unwrap_or_default();
-    // SAFETY: C++'s reporter, from a handler.
-    bailout::defer(unsafe {
-        bailout::report_code(
-            native::swoole_client_php_error,
-            kind as c_int,
-            level,
-            &message,
-        )
-    });
+    let kind = match kind {
+        ErrorKind::Error => Report::Swoole,
+        ErrorKind::Fatal => Report::Fatal,
+        // `php_swoole_core_error`.
+        ErrorKind::Core if display_errors() || level == E_ERROR => Report::Docref,
+        ErrorKind::Core => return,
+    };
+    bailout::defer(swoole_rs_phpruntime::report(kind, level, &message));
 }
 
 pub(crate) fn warn(kind: ErrorKind, message: &str) {
@@ -304,34 +301,25 @@ pub(crate) fn warn(kind: ErrorKind, message: &str) {
 
 /// `php_swoole_sys_error(E_WARNING, ...)` of the failure that set `error`.
 pub(crate) fn warn_sys(message: &str, error: c_int) {
+    set_last_error(error);
+    if !display_errors() {
+        return;
+    }
+    let message = format!(
+        "{message}, Error: {}[{error}]",
+        swoole_rs_phpruntime::strerror(error).to_string_lossy()
+    );
     let message = CString::new(message).unwrap_or_default();
-    set_errno(error);
-    // SAFETY: C++'s reporter, from a handler; it reads errno, just set.
-    bailout::defer(unsafe {
-        bailout::report_code(
-            native::swoole_client_php_error,
-            ErrorKind::Sys as c_int,
-            E_WARNING,
-            &message,
-        )
-    });
-}
-
-fn set_errno(error: c_int) {
-    #[cfg(target_os = "linux")]
-    // SAFETY: a pure query for this thread's errno.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(target_os = "linux"))]
-    // SAFETY: as above.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: this thread's errno, live for the thread.
-    unsafe { *slot = error };
+    bailout::defer(swoole_rs_phpruntime::report(
+        Report::Docref,
+        E_WARNING,
+        &message,
+    ));
 }
 
 /// `swoole_set_last_error(code)`.
 pub(crate) fn set_last_error(code: c_int) {
-    // SAFETY: a plain store into Swoole's thread error.
-    unsafe { native::swoole_rs_set_last_error(code) };
+    swoole_rs_corebase::log::set_last_error(code);
 }
 
 pub(crate) fn last_error() -> c_int {
@@ -406,7 +394,7 @@ pub(crate) fn release(object: *mut zend_object, conn: *mut Conn) -> Result<(), B
             };
         }
     }
-    let destroyed = conn.call(Op::Destroy).run().map(drop);
+    let destroyed = native::destroy(conn.cli);
     let data = data(object);
     // SAFETY: the object's own zval.
     if unsafe { type_of(&raw const data.zsocket) } != IS_UNDEF {
@@ -826,9 +814,11 @@ fn sendto(call: &Call) {
     let Some(conn) = conn(call) else {
         return call.set_bool(false);
     };
+    // NUL-terminated for the resolver.
+    let host = [host, &[0]].concat();
     let mut send = conn.call(Op::Sendto);
     send.data = host.as_ptr().cast();
-    send.length = host.len();
+    send.length = host.len() - 1;
     send.a = port;
     send.buffer = data.as_ptr().cast_mut().cast();
     #[expect(clippy::cast_possible_wrap, reason = "a string's length")]
@@ -1086,8 +1076,7 @@ fn recv(call: &Call) {
         return call.set_bool(false);
     };
     let (eof_check, length_check, framing) = {
-        // SAFETY: a live client, whose record nothing else touches meanwhile.
-        let record = unsafe { native::client(conn.cli) };
+        let record = conn.cli.record();
         (
             record.open_eof_check,
             record.open_length_check,
@@ -1176,7 +1165,7 @@ fn getpeername(call: &Call) {
     // SAFETY: plain old data, which the call below writes.
     let mut address: SocketAddress = unsafe { std::mem::zeroed() };
     // SAFETY: a live client; a writable local.
-    if unsafe { state::swr_v1_clients_get_peer_name(conn.cli, &raw mut address) } < 0 {
+    if unsafe { state::swr_v1_clients_get_peer_name(conn.cli.0, &raw mut address) } < 0 {
         let error = errno();
         warn_sys("getpeername() failed", error);
         set_err_code(call.this(), error);
@@ -1206,11 +1195,9 @@ fn get_socket(call: &Call) {
         );
         return call.set_bool(false);
     }
-    let mut socket = long_zval(0);
-    // SAFETY: a live client; `socket` is a writable local.
-    if !unsafe { native::swoole_client_export_socket(conn.cli.cast(), &raw mut socket) } {
+    let Some(mut socket) = native::export_socket(conn.cli) else {
         return call.set_bool(false);
-    }
+    };
     call.set_value(socket);
     // SAFETY: the object keeps a second reference, as upstream's dup does.
     unsafe { swr_zval_try_addref(&raw mut socket) };
@@ -1233,11 +1220,7 @@ fn close(call: &Call) {
         warn(ErrorKind::Error, "client socket is closed");
         return call.set_bool(false);
     }
-    if force
-        || !conn.keep
-        // SAFETY: a live client's socket.
-        || unsafe { (*conn.socket()).catch_error(last_error()) } == CLOSE
-    {
+    if force || !conn.keep || conn.cli.socket_mut().catch_error(last_error()) == CLOSE {
         let Some(result) = bailed(conn.call(Op::Close).run()) else {
             return call.set_bool(false);
         };
