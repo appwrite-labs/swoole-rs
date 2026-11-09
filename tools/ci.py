@@ -352,17 +352,21 @@ def holder(issue):
     return claims[0] if claims else None
 
 
+def labels(issue):
+    return [label['name'] for label in json.loads(gh('api', f'repos/{{owner}}/{{repo}}/issues/{issue}'))['labels']]
+
+
 def relabel(issue, old, new):
-    # Old first: a release that added status:ready before removing status:claimed could, if
-    # delayed, remove the label of a claim made in between.
-    gh('api', '-X', 'DELETE', f"repos/{{owner}}/{{repo}}/issues/{issue}/labels/{old.replace(':', '%3A')}")
-    gh('api', '-X', 'POST', f'repos/{{owner}}/{{repo}}/issues/{issue}/labels', '-f', f'labels[]={new}')
+    # One PUT of the whole set: a remove and an add could leave no status label if the second
+    # failed, or, done add-first, let a delayed remove strip a later claim's label.
+    gh('api', '-X', 'PUT', f'repos/{{owner}}/{{repo}}/issues/{issue}/labels',
+       *(arg for name in [*(n for n in labels(issue) if n != old), new] for arg in ('-f', f'labels[]={name}')))
 
 
 def claim(issue, agent, settle):
-    labels = {label['name'] for label in json.loads(gh('api', f'repos/{{owner}}/{{repo}}/issues/{issue}'))['labels']}
-    if 'status:ready' not in labels:
-        return 2, f"#{issue} is not status:ready ({', '.join(sorted(labels)) or 'no labels'})"
+    current = labels(issue)
+    if 'status:ready' not in current:
+        return 2, f"#{issue} is not status:ready ({', '.join(sorted(current)) or 'no labels'})"
     comment = gh('api', f'repos/{{owner}}/{{repo}}/issues/{issue}/comments', '-f', f'body=claim {agent}', '-q', '.id').strip()
     time.sleep(settle)
     winner = holder(issue)

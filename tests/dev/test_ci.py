@@ -238,8 +238,8 @@ class Ci(unittest.TestCase):
             code, _, _ = self.ci('claim', '5', 'exec-9', runs={}, flags=('--settle', '0'),
                                  issue=issue, comments=comments, rival=rival)
             return code, self.out.strip()
-        relabel = ['api -X DELETE repos/{owner}/{repo}/issues/5/labels/status%3Aready',
-                   'api -X POST repos/{owner}/{repo}/issues/5/labels -f labels[]=status:claimed']
+        relabel = ['api repos/{owner}/{repo}/issues/5',
+                   'api -X PUT repos/{owner}/{repo}/issues/5/labels -f labels[]=p1 -f labels[]=status:claimed']
         released = [{'id': 1, 'body': 'claim exec-1'}, {'id': 2, 'body': 'heartbeat exec-1'},
                     {'id': 3, 'body': 'release exec-1\n'}]
         self.assertEqual(claim(released), (0, '#5 claimed by exec-9'))
@@ -255,12 +255,14 @@ class Ci(unittest.TestCase):
         self.assertFalse(any('/comments' in call for call in self.gh_calls))
 
     def test_release_comments_and_restores_ready(self):
-        code, _, _ = self.ci('release', '5', 'exec-9', runs={}, flags=())
+        code, _, _ = self.ci('release', '5', 'exec-9', runs={}, flags=(),
+                             issue={'labels': [{'name': 'p2'}, {'name': 'status:claimed'}, {'name': 'kind:ci'}]})
         self.assertEqual((code, self.out.strip()), (0, '#5 released by exec-9'))
+        # One PUT swaps the status label, so no failure in between can leave the issue without one.
         self.assertEqual(self.gh_calls, [
             'api repos/{owner}/{repo}/issues/5/comments -f body=release exec-9',
-            'api -X DELETE repos/{owner}/{repo}/issues/5/labels/status%3Aclaimed',
-            'api -X POST repos/{owner}/{repo}/issues/5/labels -f labels[]=status:ready'])
+            'api repos/{owner}/{repo}/issues/5',
+            'api -X PUT repos/{owner}/{repo}/issues/5/labels -f labels[]=p2 -f labels[]=kind:ci -f labels[]=status:ready'])
 
     def test_new_failures_are_gate_failures_main_does_not_share(self):
         history = [{'databaseId': 9, 'conclusion': 'cancelled', 'url': 'u9'},
