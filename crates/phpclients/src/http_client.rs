@@ -2314,7 +2314,6 @@ fn getsockname(call: &Call) {
         socket_error_properties(call.this(), socket.as_ptr());
         return call.set_bool(false);
     }
-    call.set_array();
     let (address, port) = socket.address();
     set_endpoint(call, address, port);
 }
