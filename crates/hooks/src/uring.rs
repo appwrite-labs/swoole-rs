@@ -579,6 +579,7 @@ operations! {
         timeout timeout, |sqe| sys::swr_uring_prep_recvmsg(sqe, fd, message.cast(), flags.cast_unsigned()), std::convert::identity;
     fn sendmsg(fd: c_int, message: *const libc::msghdr, flags: c_int, timeout: f64) -> isize,
         timeout timeout, |sqe| sys::swr_uring_prep_sendmsg(sqe, fd, message.cast(), flags.cast_unsigned()), std::convert::identity;
+    #[expect(clippy::too_many_arguments, reason = "sendto(2)'s six, the timeout and the ring's host")]
     fn sendto(fd: c_int, buf: *const c_void, n: usize, flags: c_int, addr: *const libc::sockaddr, len: libc::socklen_t, timeout: f64) -> isize,
         timeout timeout, |sqe| sys::swr_uring_prep_sendto(sqe, fd, buf, n, flags, addr.cast(), len), std::convert::identity;
     fn readv(fd: c_int, iov: *const libc::iovec, count: c_int, timeout: f64) -> isize,
