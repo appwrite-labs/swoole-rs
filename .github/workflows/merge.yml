@@ -507,6 +507,9 @@ jobs:
         with:
           name: phpt-engines
           path: target/phpt
+      # The runner image enables Xdebug, which aborts coroutine-deep stacks as infinite
+      # loops; the library's own CI runs without it.
+      - run: sudo phpdismod -v ALL -s ALL xdebug
       - run: python3 corpus/library/run.py --prepare
       - working-directory: target/library/src
         run: |
