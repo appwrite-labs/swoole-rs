@@ -56,19 +56,8 @@ typedef struct { int32_t signo; int32_t last_error; } swr_v1_hook_signalled;
 void swr_v1_hook_signal_wake(int signo);
 swr_v1_hook_signalled swr_v1_hook_wait_signal(const int32_t *signals, size_t count, double timeout, const swr_v1_hook_signal_ops *ops);
 typedef struct { int32_t fd; int32_t events; int32_t revents; } swr_v1_hook_poll_fd;
-typedef struct {
-    void *(*add)(int fd, int events, void *task);
-    void (*remove)(void *socket);
-    void *(*timer_add)(double timeout, void *task);
-    void (*timer_del)(void *timer);
-    void (*defer)(void *task);
-    void *(*current)(void);
-    void (*park)(void *co);
-    void (*resume)(void *co);
-} swr_v1_hook_poll_ops;
-void swr_v1_hook_poll_completed(void *task);
-void swr_v1_hook_poll_timeout(void *task);
-bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout, const swr_v1_hook_poll_ops *ops);
+/* System::socket_poll over count distinct fds, storing each one's revents. */
+bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout);
 /* What C++ keeps of the native coroutine socket (SocketImpl: coroutine::Socket, or
  * UringSocket with --enable-uring-socket): new and delete. Its members are Rust. */
 typedef struct swr_v1_hook_socket_ops {
@@ -87,7 +76,6 @@ typedef struct swr_v1_hook_host {
     bool uring_ftruncate;          /* HAVE_IOURING_FTRUNCATE */
     bool uring_futex;              /* HAVE_IOURING_FUTEX */
     void (*set_last_error)(int error);
-    const swr_v1_hook_poll_ops *poll; /* System's, for the hooked poll */
     swr_v1_hook_socket_ops socket;
 } swr_v1_hook_host;
 void swr_v1_hook_set_host(const swr_v1_hook_host *host);

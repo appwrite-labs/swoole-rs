@@ -184,7 +184,6 @@ struct RuntimeOps {
     option: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, bool),
     connect: unsafe extern "C" fn(*mut c_void, *const c_char, usize, c_int, c_int) -> bool,
     peer_chain: *const c_void,
-    poll_set: *const c_void,
     vector: unsafe extern "C" fn(
         *mut c_void,
         c_int,

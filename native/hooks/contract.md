@@ -102,7 +102,10 @@ aliases are never uninstalled.
   (`hook_poll_ready`) coalesces revents (error becomes the requested read/write
   unless error was requested), deletes the timer and defers one completion; the
   completion or the timer removes every socket without closing its fd and resumes.
-  The hooked `poll` counts a repeated fd once, through its first entry.
+  The hooked `poll` counts a repeated fd once, through its first entry. The reactor
+  socket, timer, deferred completion and coroutine operations are Rust too
+  (`poll::NATIVE`); `stream_select`'s rows merge by fd in the order libstdc++'s
+  `unordered_map<int, _>` iterated upstream's map (`socket_poll_rows`).
 - `System::wait_event` and `System::init_reactor` are Rust under their upstream
   symbols (`wait_event.rs`, `reactor_handlers.rs`). `wait_event` masks to read/write
   (none is EINVAL), answers a zero timeout with one `poll(2)` (POLLNVAL is EBADF,
@@ -130,7 +133,7 @@ aliases are never uninstalled.
   `readlink`, `statvfs`, `access`), `sleep`, `usleep`, `getaddrinfo` and
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
   system.cc registers a host table while the library loads (`swr_v1_hook_set_host`): its
-  coroutine test, `async_job` (Rust's), `System::sleep`, the poll table, the socket table and, in an
+  coroutine test, `async_job` (Rust's), `System::sleep`, the socket table and, in an
   io_uring build, `swr_v1_uring_native`.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;
   outside a coroutine the libc call runs in place; inside one it runs through native
