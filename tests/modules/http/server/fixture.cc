@@ -244,7 +244,9 @@ network::Socket *swr_case_fake_socket(ListenPort *port, Connection **out) {
     sock->fd = port->get_fd();
     sock->object = conn;
     sock->socket_type = port->config()->type;
-    sock->get_name();
+    sock->info.len = sizeof(sock->info.addr);
+    getsockname(sock->fd, &sock->info.addr.ss, &sock->info.len);
+    sock->info.type = static_cast<SocketType>(sock->socket_type);
     conn->info = sock->info;
     conn->session_id = 2025;
     return sock;

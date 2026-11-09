@@ -175,7 +175,7 @@ mod tests {
     use super::*;
     use crate::wait_event::{EventWaitOps, swr_v1_hook_wait_event};
     use std::cell::{Cell, RefCell};
-    use swoole_rs_reactor::{swr_v1_socket_dealloc, swr_v1_socket_make};
+    use swoole_rs_reactor::SocketRecord;
 
     const CO: *mut c_void = 0x10 as *mut c_void;
 
@@ -206,13 +206,13 @@ mod tests {
         CO
     }
     unsafe extern "C" fn add(fd: i32, _: i32, waiter: *mut c_void, _: *mut i32) -> *mut c_void {
-        let socket = swr_v1_socket_make(fd, FdType::SW_FD_CO_EVENT as c_int);
+        let socket = SocketRecord::with_fd(fd, FdType::SW_FD_CO_EVENT as c_int).into_raw();
         unsafe { (*socket).object = waiter };
         SOCKET.set(socket);
         socket.cast()
     }
     unsafe extern "C" fn remove(socket: *mut c_void) {
-        unsafe { swr_v1_socket_dealloc(socket.cast()) };
+        unsafe { SocketRecord::free(socket.cast()) };
     }
     /// The reactor fires write, then read, on the waiter's socket.
     unsafe extern "C" fn park(_: *mut c_void, _: f64) -> i32 {

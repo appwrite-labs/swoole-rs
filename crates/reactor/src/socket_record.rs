@@ -6,7 +6,6 @@
 use crate::SocketOutput;
 use crate::socket_timeouts::SocketTimeouts;
 use crate::socket_types::{CLASS_INET4, CLASS_INET6, CLASS_LOCAL, CLASS_TCP, type_is};
-use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::ffi::{c_int, c_void};
 use std::mem::{offset_of, size_of};
 use std::ptr;
@@ -204,11 +203,129 @@ impl SocketRecord {
         true
     }
 
-    fn into_raw(self) -> *mut Self {
-        let socket = swr_v1_socket_alloc();
-        // SAFETY: fresh, suitably aligned storage for one record.
-        unsafe { socket.write(self) };
-        socket
+    /// The record moved to the heap, as `new Socket()`; freed with [`Self::free`].
+    #[must_use]
+    pub fn into_raw(self) -> *mut Self {
+        Box::into_raw(Box::new(self))
+    }
+
+    /// `Socket::operator delete`.
+    ///
+    /// # Safety
+    /// `socket` is null or came from [`Self::into_raw`] (or a call here that returns
+    /// a record) and is not used again.
+    pub unsafe fn free(socket: *mut Self) {
+        if !socket.is_null() {
+            // SAFETY: as the caller promises.
+            drop(unsafe { Box::from_raw(socket) });
+        }
+    }
+
+    /// `socket_free_defer`'s descriptor work: a bound Unix socket's path is unlinked
+    /// (from getsockname(2), as upstream), then the descriptor closed. False when
+    /// close(2) failed, with errno set.
+    pub fn release(&mut self) -> bool {
+        if self.is_local() && self.bound != 0 && self.get_name() == 0 {
+            // SAFETY: the Unix arm of the address getsockname(2) just wrote.
+            let path = unsafe { self.info.addr.un.sun_path };
+            if path[0] != 0 {
+                // SAFETY: a NUL-terminated path in the record's address storage.
+                unsafe { libc::unlink(path.as_ptr()) };
+            }
+        }
+        // SAFETY: close(2) has no memory preconditions.
+        self.fd == -1 || unsafe { libc::close(self.fd) } == 0
+    }
+
+    /// `make_socket(type, fd_type, domain, type, protocol, flags)`: socket(2) through
+    /// `swoole::socket`, then a record of `socket_type` with the nonblocking and
+    /// close-on-exec flags `flags` asked for. Null, with errno set, if socket(2) failed.
+    #[must_use]
+    pub fn open(
+        socket_type: c_int,
+        fd_type: c_int,
+        domain: c_int,
+        kind: c_int,
+        protocol: c_int,
+        flags: c_int,
+    ) -> *mut Self {
+        let fd = crate::swr_v1_socket_open(domain, kind, protocol, flags);
+        if fd < 0 {
+            return ptr::null_mut();
+        }
+        let mut socket = Self::with_fd(fd, fd_type);
+        socket.output.nonblock = u8::from(flags & crate::socket_types::NONBLOCK != 0);
+        socket.cloexec = u8::from(flags & crate::socket_types::CLOEXEC != 0);
+        socket.socket_type = socket_type;
+        socket.into_raw()
+    }
+
+    /// `make_socket(type, fd_type, flags)`: [`Self::open`] with the domain and type
+    /// `socket_type` maps to. For a type with none, null with errno
+    /// `ESOCKTNOSUPPORT` and `unknown` set, so the caller warns.
+    pub fn open_typed(
+        socket_type: c_int,
+        fd_type: c_int,
+        flags: c_int,
+        unknown: &mut bool,
+    ) -> *mut Self {
+        let (mut domain, mut kind) = (0, 0);
+        // SAFETY: two local ints.
+        if !unsafe {
+            crate::swr_v1_socket_domain_and_type(socket_type, &raw mut domain, &raw mut kind)
+        } {
+            *unknown = true;
+            crate::socket_sync::set_errno(libc::ESOCKTNOSUPPORT);
+            return ptr::null_mut();
+        }
+        Self::open(socket_type, fd_type, domain, kind, 0, flags)
+    }
+
+    /// `Socket::dup`: a copy of every field, owning `dup(fd)`.
+    #[must_use]
+    pub fn dup(&self) -> *mut Self {
+        let mut copy = *self;
+        // SAFETY: dup(2) has no memory preconditions.
+        copy.fd = unsafe { libc::dup(copy.fd) };
+        copy.into_raw()
+    }
+
+    /// `Socket::accept`: a connection accepted on this listener, as a new unregistered
+    /// record that inherits its type and nonblocking flag, or null (errno set).
+    /// Without accept4 the listener is marked close-on-exec, as upstream's
+    /// `set_fd_option` call does.
+    pub fn accept(&mut self) -> *mut Self {
+        let mut socket = Self::new();
+        socket.removed = 1;
+        socket.socket_type = self.socket_type;
+        // Upstream passes sizeof(Address), not sizeof(Address::addr).
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "sizeof(network::Address) fits socklen_t"
+        )]
+        let capacity = size_of::<SocketAddress>() as libc::socklen_t;
+        socket.info.len = capacity;
+        let mut listener_cloexec = false;
+        // SAFETY: the new record's address storage, and a local bool.
+        socket.fd = unsafe {
+            crate::swr_v1_socket_accept(
+                self.fd,
+                ptr::addr_of_mut!(socket.info.addr).cast(),
+                &raw mut socket.info.len,
+                self.output.nonblock != 0,
+                &raw mut listener_cloexec,
+            )
+        };
+        if listener_cloexec {
+            self.cloexec = 1;
+        }
+        if socket.fd < 0 {
+            return ptr::null_mut();
+        }
+        socket.info.kind = self.socket_type;
+        socket.output.nonblock = self.output.nonblock;
+        socket.cloexec = 1;
+        socket.into_raw()
     }
 }
 
@@ -216,187 +333,6 @@ impl Default for SocketRecord {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// `Socket::operator new`: storage for one record, uninitialised (the constructor
-/// calls [`swr_v1_socket_init`]). Aborts if allocation fails, as `new` throws.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_alloc() -> *mut SocketRecord {
-    let layout = Layout::new::<SocketRecord>();
-    // SAFETY: the layout has a nonzero size.
-    let storage = unsafe { alloc(layout) };
-    #[expect(
-        clippy::cast_ptr_alignment,
-        reason = "alloc returns storage aligned for the layout it was given"
-    )]
-    let socket = storage.cast::<SocketRecord>();
-    if socket.is_null() {
-        handle_alloc_error(layout);
-    }
-    socket
-}
-
-/// `Socket::operator delete`.
-///
-/// # Safety
-/// `socket` is null or came from [`swr_v1_socket_alloc`] (or one of the calls here
-/// that return a record) and is not used again.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_dealloc(socket: *mut SocketRecord) {
-    if !socket.is_null() {
-        // SAFETY: as the caller promises; the record has no destructor.
-        unsafe { dealloc(socket.cast(), Layout::new::<SocketRecord>()) };
-    }
-}
-
-/// `socket_free_defer`'s descriptor work: a bound Unix socket's path is unlinked
-/// (from getsockname(2), as upstream), then the descriptor closed. False when
-/// close(2) failed, with errno set; native code warns, then deletes the record.
-///
-/// # Safety
-/// `socket` is a live record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_release(socket: *mut SocketRecord) -> bool {
-    // SAFETY: as the caller promises.
-    let record = unsafe { &*socket };
-    if record.is_local() && record.bound != 0
-        // SAFETY: as the caller promises.
-        && unsafe { (*socket).get_name() } == 0
-    {
-        // SAFETY: the record's address, which getsockname(2) just wrote.
-        let path = unsafe { (&raw const (*socket).info.addr.un.sun_path).cast::<libc::c_char>() };
-        // SAFETY: the path's first byte, inside the record.
-        if unsafe { *path } != 0 {
-            // SAFETY: a NUL-terminated path in the record's address storage.
-            unsafe { libc::unlink(path) };
-        }
-    }
-    // SAFETY: as the caller promises.
-    let fd = unsafe { (*socket).fd };
-    // SAFETY: close(2) has no memory preconditions.
-    fd == -1 || unsafe { libc::close(fd) } == 0
-}
-
-/// `Socket()`: the record `new Socket()` value-initialises.
-///
-/// # Safety
-/// `socket` is writable storage for one record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_init(socket: *mut SocketRecord) {
-    // SAFETY: as the caller promises.
-    unsafe { socket.write(SocketRecord::new()) };
-}
-
-/// `make_socket(fd, fd_type)`: a new record that owns `fd`, not yet registered.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_make(fd: c_int, fd_type: c_int) -> *mut SocketRecord {
-    SocketRecord::with_fd(fd, fd_type).into_raw()
-}
-
-/// `make_socket(type, fd_type, domain, type, protocol, flags)`: socket(2) through
-/// `swoole::socket`, then a record of `socket_type` with the nonblocking and
-/// close-on-exec flags `flags` asked for. Null, with errno set, if socket(2) failed.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_make_open(
-    socket_type: c_int,
-    fd_type: c_int,
-    domain: c_int,
-    kind: c_int,
-    protocol: c_int,
-    flags: c_int,
-) -> *mut SocketRecord {
-    let fd = crate::swr_v1_socket_open(domain, kind, protocol, flags);
-    if fd < 0 {
-        return ptr::null_mut();
-    }
-    let mut socket = SocketRecord::with_fd(fd, fd_type);
-    socket.output.nonblock = u8::from(flags & crate::socket_types::NONBLOCK != 0);
-    socket.cloexec = u8::from(flags & crate::socket_types::CLOEXEC != 0);
-    socket.socket_type = socket_type;
-    socket.into_raw()
-}
-
-/// `make_socket(type, fd_type, flags)`: [`swr_v1_socket_make_open`] with the domain
-/// and type `socket_type` maps to. For a type with none, null with errno
-/// `ESOCKTNOSUPPORT` and `*unknown` set, so native code warns.
-///
-/// # Safety
-/// `unknown` points to a writable bool.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_make_typed(
-    socket_type: c_int,
-    fd_type: c_int,
-    flags: c_int,
-    unknown: *mut bool,
-) -> *mut SocketRecord {
-    let (mut domain, mut kind) = (0, 0);
-    // SAFETY: two local ints.
-    if !unsafe { crate::swr_v1_socket_domain_and_type(socket_type, &raw mut domain, &raw mut kind) }
-    {
-        // SAFETY: as the caller promises.
-        unsafe { unknown.write(true) };
-        crate::socket_sync::set_errno(libc::ESOCKTNOSUPPORT);
-        return ptr::null_mut();
-    }
-    swr_v1_socket_make_open(socket_type, fd_type, domain, kind, 0, flags)
-}
-
-/// `Socket::dup`: a copy of every field, owning `dup(fd)`.
-///
-/// # Safety
-/// `socket` is a live record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_dup(socket: *const SocketRecord) -> *mut SocketRecord {
-    // SAFETY: as the caller promises.
-    let mut copy = unsafe { *socket };
-    // SAFETY: dup(2) has no memory preconditions.
-    copy.fd = unsafe { libc::dup(copy.fd) };
-    copy.into_raw()
-}
-
-/// `Socket::accept`: a connection accepted on `listener`, as a new unregistered record
-/// that inherits its type and nonblocking flag, or null (errno set). Without accept4
-/// the listener is marked close-on-exec, as upstream's `set_fd_option` call does.
-///
-/// # Safety
-/// `listener` is a live record no one else is using.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_accept_new(
-    listener: *mut SocketRecord,
-) -> *mut SocketRecord {
-    // SAFETY: as the caller promises.
-    let listener = unsafe { &mut *listener };
-    let mut socket = SocketRecord::new();
-    socket.removed = 1;
-    socket.socket_type = listener.socket_type;
-    // Upstream passes sizeof(Address), not sizeof(Address::addr).
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "sizeof(network::Address) fits socklen_t"
-    )]
-    let capacity = size_of::<SocketAddress>() as libc::socklen_t;
-    socket.info.len = capacity;
-    let mut listener_cloexec = false;
-    // SAFETY: the new record's address storage, and a local bool.
-    socket.fd = unsafe {
-        crate::swr_v1_socket_accept(
-            listener.fd,
-            ptr::addr_of_mut!(socket.info.addr).cast(),
-            &raw mut socket.info.len,
-            listener.output.nonblock != 0,
-            &raw mut listener_cloexec,
-        )
-    };
-    if listener_cloexec {
-        listener.cloexec = 1;
-    }
-    if socket.fd < 0 {
-        return ptr::null_mut();
-    }
-    socket.info.kind = listener.socket_type;
-    socket.output.nonblock = listener.output.nonblock;
-    socket.cloexec = 1;
-    socket.into_raw()
 }
 
 #[cfg(test)]
@@ -412,15 +348,12 @@ mod tests {
         socket.fd = std::os::fd::IntoRawFd::into_raw_fd(listener);
         socket.socket_type = 5;
         socket.bound = 1;
-        // SAFETY: a local record that owns its descriptor.
-        assert!(unsafe { swr_v1_socket_release(&raw mut socket) });
+        assert!(socket.release());
         assert!(!path.exists(), "the path is unlinked");
         socket.fd = -1;
-        // SAFETY: as above; -1 is not closed.
-        assert!(unsafe { swr_v1_socket_release(&raw mut socket) });
+        assert!(socket.release());
         socket.fd = i32::MAX;
-        // SAFETY: as above; a descriptor that is not open fails.
-        assert!(!unsafe { swr_v1_socket_release(&raw mut socket) });
+        assert!(!socket.release());
     }
 
     #[test]
@@ -451,19 +384,18 @@ mod tests {
 
     #[test]
     fn make_owns_the_fd_unregistered() {
-        let socket = swr_v1_socket_make(7, 3);
+        let socket = SocketRecord::with_fd(7, 3).into_raw();
         // SAFETY: the record just made.
         let record = unsafe { &*socket };
         assert_eq!((record.fd, record.fd_type, record.removed), (7, 3, 1));
         // SAFETY: as above, not used again.
-        unsafe { swr_v1_socket_dealloc(socket) };
+        unsafe { SocketRecord::free(socket) };
     }
 
     #[test]
     fn unknown_types_fail_with_esocktnosupport() {
         let mut unknown = false;
-        // SAFETY: a local bool.
-        let socket = unsafe { swr_v1_socket_make_typed(99, 0, 0, &raw mut unknown) };
+        let socket = SocketRecord::open_typed(99, 0, 0, &mut unknown);
         assert!(socket.is_null() && unknown);
         assert_eq!(
             std::io::Error::last_os_error().raw_os_error(),
@@ -474,8 +406,7 @@ mod tests {
     #[test]
     fn typed_sockets_record_their_flags() {
         let mut unknown = false;
-        // SAFETY: a local bool. SW_SOCK_TCP, nonblocking and close-on-exec.
-        let socket = unsafe { swr_v1_socket_make_typed(1, 5, 0b1100, &raw mut unknown) };
+        let socket = SocketRecord::open_typed(1, 5, 0b1100, &mut unknown);
         assert!(!socket.is_null() && !unknown);
         // SAFETY: the record just made.
         let record = unsafe { &*socket };
@@ -487,7 +418,7 @@ mod tests {
         // SAFETY: the socket's own fd.
         unsafe { libc::close(record.fd) };
         // SAFETY: not used again.
-        unsafe { swr_v1_socket_dealloc(socket) };
+        unsafe { SocketRecord::free(socket) };
     }
 
     #[test]
@@ -497,8 +428,7 @@ mod tests {
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let mut original = SocketRecord::with_fd(fds[0], 2);
         original.chunk_size = 42;
-        // SAFETY: a live local record.
-        let copy = unsafe { swr_v1_socket_dup(&raw const original) };
+        let copy = original.dup();
         // SAFETY: the record just made.
         let record = unsafe { &*copy };
         assert_eq!(record.chunk_size, 42);
@@ -508,22 +438,21 @@ mod tests {
             unsafe { libc::close(fd) };
         }
         // SAFETY: not used again.
-        unsafe { swr_v1_socket_dealloc(copy) };
+        unsafe { SocketRecord::free(copy) };
     }
 
     #[test]
     fn accept_fills_a_new_record_from_the_listener() {
         let (mut unknown, flags) = (false, 0b1100);
-        // SAFETY: a local bool; SW_SOCK_UNIX_STREAM.
-        let listener = unsafe { swr_v1_socket_make_typed(5, 1, flags, &raw mut unknown) };
+        let listener = SocketRecord::open_typed(5, 1, flags, &mut unknown);
         // SAFETY: the record just made.
         let record = unsafe { &mut *listener };
         // An unbound, unlistened socket: accept fails, and no record is made.
         // SAFETY: the live listener.
-        assert!(unsafe { swr_v1_socket_accept_new(record) }.is_null());
+        assert!(record.accept().is_null());
         // SAFETY: the listener's own fd.
         unsafe { libc::close(record.fd) };
         // SAFETY: not used again.
-        unsafe { swr_v1_socket_dealloc(listener) };
+        unsafe { SocketRecord::free(listener) };
     }
 }

@@ -1008,7 +1008,7 @@ pub(crate) unsafe fn answer(
             // SAFETY: the accepting event's listening socket.
             let listener = unsafe { (*o.ctx.event.cast::<swoole_rs_reactor::Event>()).socket };
             // SAFETY: a live listening socket record.
-            let socket = unsafe { swoole_rs_reactor::swr_v1_socket_accept_new(listener.cast()) };
+            let socket = unsafe { (*listener.cast::<SocketRecord>()).accept() };
             o.ctx.sock = socket.cast();
             u64::from(!socket.is_null())
         }

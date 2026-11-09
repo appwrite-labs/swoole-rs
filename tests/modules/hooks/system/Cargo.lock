@@ -3,5 +3,136 @@
 version = 4
 
 [[package]]
+name = "itoa"
+version = "1.0.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
+
+[[package]]
+name = "libc"
+version = "0.2.191"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+
+[[package]]
+name = "memchr"
+version = "2.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "swoole-rs-base64"
+version = "0.1.0"
+
+[[package]]
+name = "swoole-rs-buffer"
+version = "0.1.0"
+dependencies = [
+ "itoa",
+ "libc",
+ "memchr",
+ "swoole-rs-base64",
+ "swoole-rs-corebase",
+]
+
+[[package]]
+name = "swoole-rs-corebase"
+version = "0.1.0"
+dependencies = [
+ "itoa",
+ "libc",
+ "swoole-rs-framing",
+]
+
+[[package]]
+name = "swoole-rs-coroutine"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-corebase",
+]
+
+[[package]]
+name = "swoole-rs-crc32"
+version = "0.1.0"
+
+[[package]]
+name = "swoole-rs-error"
+version = "0.1.0"
+
+[[package]]
+name = "swoole-rs-framing"
+version = "0.1.0"
+
+[[package]]
 name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
+dependencies = [
+ "swoole-rs-process",
+ "swoole-rs-reactor",
+]
+
+[[package]]
+name = "swoole-rs-locks"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-error",
+]
+
+[[package]]
+name = "swoole-rs-memory"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-locks",
+ "swoole-rs-utilities",
+]
+
+[[package]]
+name = "swoole-rs-ossupport"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-buffer",
+ "swoole-rs-corebase",
+]
+
+[[package]]
+name = "swoole-rs-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-buffer",
+ "swoole-rs-corebase",
+ "swoole-rs-memory",
+ "swoole-rs-ossupport",
+ "swoole-rs-utilities",
+]
+
+[[package]]
+name = "swoole-rs-reactor"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-buffer",
+ "swoole-rs-corebase",
+ "swoole-rs-coroutine",
+ "swoole-rs-memory",
+ "swoole-rs-ossupport",
+ "swoole-rs-process",
+]
+
+[[package]]
+name = "swoole-rs-utilities"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "memchr",
+ "swoole-rs-corebase",
+ "swoole-rs-crc32",
+ "swoole-rs-error",
+ "swoole-rs-locks",
+]

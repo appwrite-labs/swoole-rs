@@ -21,6 +21,7 @@ use super::{
     AF_INET, AF_INET6, EBADF, EINVAL, ENOENT, ETIMEDOUT, SOCK_DGRAM, SOCK_STREAM, SW_ERR,
     TEST_HTTP_DOMAIN, TEST_STR, c_str, errno, last_error,
 };
+use swoole_rs_reactor::{SocketAddress, SocketRecord};
 
 const TEST_DATA: &[u8] = b"hello swoole, hello world, php is best\0";
 const TEST_DOMAIN_BAIDU: &str = "www.baidu.com";
@@ -203,18 +204,7 @@ unsafe extern "C-unwind" {
     #[link_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE"]
     fn swoole_event_set_handler(fd_type: c_int, event: c_int, handler: Handler);
 
-    fn swr_v1_socket_init(socket: *mut Record);
-    fn swr_v1_socket_dealloc(socket: *mut Record);
-    fn swr_v1_socket_dup(socket: *const Record) -> *mut Record;
-    fn swr_v1_socket_accept_new(listener: *mut Record) -> *mut Record;
-    fn swr_v1_socket_get_name(socket: *mut Record) -> c_int;
-    fn swr_v1_socket_get_peer_name(socket: *const Record, address: *mut Address) -> c_int;
-    fn swr_v1_socket_bind(socket: *mut Record, address: *const c_void, length: u32) -> c_int;
-    fn swr_v1_socket_listen(socket: *mut Record, backlog: c_int) -> c_int;
-    fn swr_v1_socket_set_tcp_nopush(socket: *mut Record, nopush: c_int) -> c_int;
-    fn swr_v1_socket_set_tcp_nodelay(socket: *mut Record, nodelay: c_int) -> bool;
     fn swr_v1_socket_buffer_size(fd: c_int, recv: bool, send: bool, size: u32) -> bool;
-    fn swr_v1_socket_set_timeout(timeouts: *mut f64, timeout: f64, kind: c_int);
     fn swr_v1_socket_recvfrom(
         fd: c_int,
         buf: *mut c_void,
@@ -224,8 +214,6 @@ unsafe extern "C-unwind" {
         length: *mut u32,
         retries: u32,
     ) -> isize;
-    fn swr_v1_socket_catch_error(error: c_int, kernel_nobufs: *mut bool) -> c_int;
-    fn swr_v1_socket_catch_pipe_error(error: c_int, kernel_nobufs: *mut bool) -> c_int;
     fn swr_v1_socket_type(domain: c_int, kind: c_int) -> c_int;
     fn swr_v1_socket_domain_and_type(
         kind: c_int,
@@ -381,6 +369,12 @@ impl Socket {
         unsafe { &mut *self.0 }
     }
 
+    /// The record as the reactor crate's type, whose methods upstream's members are.
+    fn rust(&self) -> &mut SocketRecord {
+        // SAFETY: a live record; `Record` mirrors `SocketRecord`'s layout.
+        unsafe { &mut *self.0.cast::<SocketRecord>() }
+    }
+
     pub(super) fn free(self) {
         // SAFETY: frees the live socket once.
         unsafe { socket_free(self.0) };
@@ -389,7 +383,7 @@ impl Socket {
     /// `delete sock`: operator delete, without closing.
     fn delete(self) {
         // SAFETY: the live record, deallocated once.
-        unsafe { swr_v1_socket_dealloc(self.0) };
+        unsafe { SocketRecord::free(self.0.cast()) };
     }
 
     fn get_fd(&self) -> c_int {
@@ -405,8 +399,7 @@ impl Socket {
     }
 
     fn set_timeout(&self, timeout: f64, kind: c_int) {
-        // SAFETY: the record's timeout group.
-        unsafe { swr_v1_socket_set_timeout(self.record().timeouts.as_mut_ptr(), timeout, kind) };
+        self.rust().timeouts.set(timeout, kind);
     }
 
     fn set_block(&self) -> bool {
@@ -437,13 +430,13 @@ impl Socket {
     }
 
     fn get_name(&self) -> c_int {
-        // SAFETY: a live socket.
-        unsafe { swr_v1_socket_get_name(self.0) }
+        self.rust().get_name()
     }
 
     fn get_peer_name(&self, address: &mut Address) -> c_int {
-        // SAFETY: a live socket and a writable address.
-        unsafe { swr_v1_socket_get_peer_name(self.0, address) }
+        // SAFETY: `Address` mirrors `SocketAddress`'s layout.
+        self.rust()
+            .get_peer_name(unsafe { &mut *(&raw mut *address).cast::<SocketAddress>() })
     }
 
     /// `bind(host, port)`: assigns without resolving, then binds.
@@ -452,23 +445,21 @@ impl Socket {
         if !address.assign(self.record().socket_type, host, port, false) {
             return SW_ERR;
         }
-        // SAFETY: a live socket and the assigned sockaddr.
-        unsafe { swr_v1_socket_bind(self.0, address.addr.as_ptr().cast(), address.len) }
+        // SAFETY: `Address` mirrors `SocketAddress`'s layout.
+        self.rust()
+            .bind(unsafe { &*(&raw const address).cast::<SocketAddress>() })
     }
 
     fn listen(&self, backlog: c_int) -> c_int {
-        // SAFETY: a live socket.
-        unsafe { swr_v1_socket_listen(self.0, backlog) }
+        self.rust().listen(backlog)
     }
 
     fn accept(&self) -> Option<Self> {
-        // SAFETY: a live listener.
-        Self::from(unsafe { swr_v1_socket_accept_new(self.0) })
+        Self::from(self.rust().accept().cast())
     }
 
     fn dup(&self) -> Option<Self> {
-        // SAFETY: a live socket.
-        Self::from(unsafe { swr_v1_socket_dup(self.0) })
+        Self::from(self.rust().dup().cast())
     }
 
     fn recv(&self, buf: &mut [u8], flags: c_int) -> isize {
@@ -588,21 +579,24 @@ impl Socket {
     }
 
     fn catch_write_error(&self, error: c_int) -> c_int {
-        // SAFETY: the record's flag.
-        unsafe { swr_v1_socket_catch_error(error, &mut self.record().kernel_nobufs) }
+        swoole_rs_reactor::catch_error(error, &mut self.record().kernel_nobufs)
     }
 
     fn catch_write_pipe_error(&self, error: c_int) -> c_int {
-        // SAFETY: the record's flag.
-        unsafe { swr_v1_socket_catch_pipe_error(error, &mut self.record().kernel_nobufs) }
+        swoole_rs_reactor::catch_pipe_error(error, &mut self.record().kernel_nobufs)
     }
 }
 
 /// `network::Socket sock{}`: a constructed record on the stack.
 fn stack_socket() -> Box<MaybeUninit<Record>> {
     let mut record = Box::new(MaybeUninit::<Record>::uninit());
-    // SAFETY: a writable record, initialised by the constructor.
-    unsafe { swr_v1_socket_init(record.as_mut_ptr()) };
+    // SAFETY: writable storage for one record; `Record` mirrors `SocketRecord`.
+    unsafe {
+        record
+            .as_mut_ptr()
+            .cast::<SocketRecord>()
+            .write(SocketRecord::new())
+    };
     record
 }
 
@@ -661,8 +655,7 @@ fn fail() {
     assert_eq!(sock.get_peer_name(&mut peer), -1);
     assert_eq!(errno(), EBADF);
 
-    // SAFETY: a live socket.
-    assert_eq!(unsafe { swr_v1_socket_set_tcp_nopush(sock.0, 1) }, -1);
+    assert_eq!(sock.rust().set_tcp_nopush(1), -1);
     assert_eq!(sock.listen(1), -1);
 
     let fd = sock.get_fd();
@@ -675,7 +668,7 @@ fn fail() {
 
     // SAFETY: a live socket.
     unsafe {
-        assert!(!swr_v1_socket_set_tcp_nodelay(sock.0, 1));
+        assert!(!sock.rust().set_tcp_nodelay(1));
         assert!(!socket_cork(sock.0));
         assert!(!socket_uncork(sock.0));
 

@@ -397,9 +397,7 @@ pub extern "C" fn make_socket_typed(
     flags: c_int,
 ) -> *mut SocketRecord {
     let mut unknown = false;
-    // SAFETY: `unknown` is a local.
-    let socket =
-        unsafe { crate::swr_v1_socket_make_typed(socket_type, fd_type, flags, &raw mut unknown) };
+    let socket = SocketRecord::open_typed(socket_type, fd_type, flags, &mut unknown);
     if socket.is_null() {
         let error = errno();
         if unknown {
@@ -427,8 +425,7 @@ pub extern "C" fn make_socket_open(
     protocol: c_int,
     flags: c_int,
 ) -> *mut SocketRecord {
-    let socket =
-        crate::swr_v1_socket_make_open(socket_type, fd_type, domain, kind, protocol, flags);
+    let socket = SocketRecord::open(socket_type, fd_type, domain, kind, protocol, flags);
     if socket.is_null() {
         log::set_last_error(errno());
     }
@@ -442,7 +439,7 @@ pub extern "C" fn make_socket_open(
     unsafe(export_name = "_ZN6swoole11make_socketEi8swFdType")
 )]
 pub extern "C" fn make_socket_fd(fd: c_int, fd_type: c_int) -> *mut SocketRecord {
-    crate::swr_v1_socket_make(fd, fd_type)
+    SocketRecord::with_fd(fd, fd_type).into_raw()
 }
 
 /// `int socket(int domain, int type, int protocol, int flags)`.

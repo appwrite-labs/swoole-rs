@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn owned_queue_commits_offsets_wait_flags_and_detaches_after_effects() {
         unsafe {
-            let socket = crate::swr_v1_socket_make(-1, 6);
+            let socket = crate::SocketRecord::with_fd(-1, 6).into_raw();
             let mut queue = std::ptr::null_mut();
             assert_eq!(
                 swoole_rs_buffer::swr_v1_buffer_typed_create(64, &raw mut queue),
@@ -416,7 +416,7 @@ mod tests {
                 1
             );
             assert_eq!(swoole_rs_buffer::swr_v1_buffer_release(queue), 0);
-            crate::swr_v1_socket_dealloc(socket);
+            crate::SocketRecord::free(socket);
         }
     }
     #[test]

@@ -159,7 +159,7 @@ impl CoSocket {
 
     /// `init_sock`: a nonblocking, close-on-exec socket of the record's type.
     fn open(&mut self, owner: *mut c_void) -> bool {
-        let socket = swoole_rs_reactor::swr_v1_socket_make_open(
+        let socket = SocketRecord::open(
             self.kind,
             FD_CO_SOCKET,
             self.sock_domain,
@@ -186,7 +186,7 @@ impl CoSocket {
 
     /// `init_reactor_socket`: wrap `fd`, which the caller made nonblocking.
     fn adopt(&mut self, fd: c_int, owner: *mut c_void) {
-        let socket = swoole_rs_reactor::swr_v1_socket_make(fd, FD_CO_SOCKET);
+        let socket = SocketRecord::with_fd(fd, FD_CO_SOCKET).into_raw();
         // SAFETY: the record just made.
         let record = unsafe { &mut *socket };
         record.socket_type = self.kind;
@@ -460,7 +460,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_reinit(
     let socket = unsafe { &mut *socket };
     let (mut domain, mut kind) = (0, 0);
     domain_and_type(socket_type, &mut domain, &mut kind);
-    let made = swoole_rs_reactor::swr_v1_socket_make_open(
+    let made = SocketRecord::open(
         socket_type,
         FD_CO_SOCKET,
         domain,
@@ -617,7 +617,7 @@ impl TestSocket {
         let mut storage = Box::new(core::mem::MaybeUninit::<CoSocket>::uninit());
         unsafe { init(storage.as_mut_ptr()) };
         let mut socket = unsafe { Box::from_raw(Box::into_raw(storage).cast::<CoSocket>()) };
-        socket.socket = swoole_rs_reactor::swr_v1_socket_make(-1, FD_CO_SOCKET);
+        socket.socket = SocketRecord::with_fd(-1, FD_CO_SOCKET).into_raw();
         socket.sock_fd = 100;
         Self(socket)
     }
@@ -635,7 +635,7 @@ impl TestSocket {
 impl Drop for TestSocket {
     fn drop(&mut self) {
         unsafe {
-            swoole_rs_reactor::swr_v1_socket_dealloc(self.0.socket);
+            SocketRecord::free(self.0.socket);
             swr_v1_hook_co_socket_fini(self.ptr());
         }
     }
@@ -660,7 +660,7 @@ mod tests {
         if !socket.socket.is_null() {
             unsafe {
                 libc::close((*socket.socket).fd);
-                swoole_rs_reactor::swr_v1_socket_dealloc(socket.socket);
+                SocketRecord::free(socket.socket);
             }
         }
         unsafe { swr_v1_hook_co_socket_fini(&raw mut *socket) };
@@ -801,7 +801,7 @@ mod tests {
         assert_eq!(unsafe { (*socket.socket).info.kind }, 1);
         unsafe {
             libc::close((*old).fd);
-            swoole_rs_reactor::swr_v1_socket_dealloc(old);
+            SocketRecord::free(old);
         }
         release(socket);
     }
@@ -816,7 +816,7 @@ mod tests {
         server.protocol.package_eof_len = 2;
         unsafe { (*server.socket).timeouts.read = 1.5 };
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        let conn = swoole_rs_reactor::swr_v1_socket_make(fd, 0);
+        let conn = SocketRecord::with_fd(fd, 0).into_raw();
         let socket = unsafe { accepted(&raw const *server, conn) };
         let socket = unsafe { Box::from_raw(socket.cast::<CoSocket>()) };
         assert_eq!(

@@ -10,7 +10,7 @@ use std::io::Write;
 use std::ptr::{self, NonNull};
 use swoole_rs_coroutine::{Coroutine, RC_CANCELED, Scheduler};
 use swoole_rs_curl_sys::{CURL, CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
-use swoole_rs_reactor::{SocketRecord, event_api, reactor_upstream::prepared, swr_v1_socket_make};
+use swoole_rs_reactor::{SocketRecord, event_api, reactor_upstream::prepared};
 
 /// Upstream's `PHP_SWOOLE_FD_CO_CURL`: `SW_FD_STREAM_CLIENT + 10`.
 const FD_CO_CURL: c_int = 17 + 10;
@@ -91,7 +91,7 @@ pub(crate) struct ReactorSocket(NonNull<SocketRecord>);
 impl ReactorSocket {
     /// Out of the reactor, carrying no object yet.
     pub(crate) fn new(fd: c_int) -> Self {
-        let record = swr_v1_socket_make(fd, FD_CO_CURL);
+        let record = SocketRecord::with_fd(fd, FD_CO_CURL).into_raw();
         Self(NonNull::new(record).unwrap_or_else(|| std::process::abort()))
     }
 
