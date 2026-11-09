@@ -50,7 +50,12 @@ def main():
     php = OUT / 'php'
     compilers = {**os.environ, 'CC': 'clang', 'CXX': 'clang++', 'CFLAGS': SANITIZE, 'CXXFLAGS': SANITIZE,
                  'LDFLAGS': '-fsanitize=thread'}
-    subprocess.run([ROOT / '.devcontainer/php.sh', php, '--enable-zts'], env=compilers, check=True)
+    # PHP dlopens extensions with RTLD_DEEPBIND unless ASan or MSan is on, and TSan refuses that.
+    # zend_portability.h prefers the RTLD_GROUP branch, which glibc lacks: defining its flags as
+    # 0 leaves a plain dlopen(RTLD_GLOBAL).
+    deepbind = ' -DRTLD_GROUP=0 -DRTLD_WORLD=0 -DRTLD_PARENT=0'
+    subprocess.run([ROOT / '.devcontainer/php.sh', php, '--enable-zts'],
+                   env={**compilers, 'CFLAGS': SANITIZE + deepbind}, check=True)
     host = next(line.split()[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines()
                 if line.startswith('host:'))
     subprocess.run(['rustup', 'component', 'add', 'rust-src'], cwd=ROOT, check=True)
@@ -75,8 +80,8 @@ def main():
     run = {**os.environ, 'USE_ZEND_ALLOC': '0', 'PATH': f"{php / 'bin'}{os.pathsep}{os.environ['PATH']}"}
 
     canary = OUT / 'canary.so'
-    subprocess.run(['rustc', '--edition=2024', '--crate-type=cdylib', '-o', canary, ROOT / 'tools/tsan_canary.rs'],
-                   env={**os.environ, **rust}, check=True)
+    subprocess.run(['rustc', '--edition=2024', '--crate-type=cdylib', *rust['RUSTFLAGS'].split(), '-o', canary,
+                    ROOT / 'tools/tsan_canary.rs'], env={**os.environ, **rust}, check=True)
     subprocess.run([php / 'bin/php', '-n', '-r', ''], env={**run, **sanitized(reports, 'canary'), 'LD_PRELOAD': str(canary)})
     if not any((reports / 'canary').iterdir()):
         print('sanitizer run: the planted race went unreported')
