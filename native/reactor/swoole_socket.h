@@ -289,14 +289,6 @@ struct Socket : swr_v1_socket {
     void ssl_close();
     static const char *ssl_get_error_reason(int *reason);
 
-    ssize_t recvfrom(char *_buf, size_t _len, int flags, Address *sa) const {
-        sa->len = sizeof(sa->addr);
-        return recvfrom(_buf, _len, flags, &sa->addr.ss, &sa->len);
-    }
-
-    ssize_t recvfrom(char *buf, size_t len, int flags, sockaddr *addr, socklen_t *addr_len) const {
-        return swr_v1_socket_recvfrom(fd, buf, len, flags, addr, addr_len, SW_SOCKET_RETRY_COUNT);
-    }
     ssize_t recvfrom_sync(char *_buf, size_t _len, int flags, Address *sa);
     ssize_t recvfrom_sync(char *_buf, size_t _len, int flags, sockaddr *addr, socklen_t *addr_len);
 

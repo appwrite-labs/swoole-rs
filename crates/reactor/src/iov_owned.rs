@@ -237,9 +237,9 @@ pub unsafe extern "C" fn swr_v1_socket_iov_owned(
     socket: *mut std::ffi::c_void,
 ) -> isize {
     // SAFETY: live exclusive owner per the contract.
-    let state = unsafe { &raw mut (*owner).fields.state };
+    let state = unsafe { &mut (*owner).fields.state };
     // SAFETY: the payload and TLS effect contracts are forwarded unchanged.
-    unsafe { crate::socket_rw::swr_v1_socket_iov(fd, write, state, tls, socket) }
+    unsafe { crate::socket_iov(fd, write, state, tls, socket) }
 }
 /// Sum the live original descriptor span with C `size_t` wrapping semantics.
 /// # Safety
