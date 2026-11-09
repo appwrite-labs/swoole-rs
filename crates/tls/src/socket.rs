@@ -69,8 +69,7 @@ impl SocketTls {
 ///
 /// # Safety
 /// `tls` is a live socket's TLS state group.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_clear(tls: *mut SocketTls) {
+pub unsafe fn swr_v1_socket_ssl_clear(tls: *mut SocketTls) {
     // SAFETY: clears this thread's OpenSSL error queue.
     unsafe { ERR_clear_error() };
     // SAFETY: the caller's live state group.

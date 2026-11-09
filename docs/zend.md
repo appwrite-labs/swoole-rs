@@ -6,7 +6,7 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
 ## Crates
 
 - `crates/zend-sys`: bindgen at build time against `php-config --includes`
-  (`$PHP_CONFIG`; `build_hybrid.py` passes `--php-config`), so struct layouts
+  (`$PHP_CONFIG`; `build_ext.py` sets it from `--php-config`), so struct layouts
   follow that PHP's version and ZTS mode. bindgen's layout assertions fail the
   build on a mismatch. `src/shim*.c` are the macros and inline functions bindgen
   can't see that have to stay C ([What stays C](#what-stays-c)); anything else
@@ -195,15 +195,15 @@ A shim that fits none of these is a port waiting to happen: write it in
 ## Stdext
 
 The `stdext` feature of `crates/ffi` (`phpstdext/active`) tracks native
-`SW_STDEXT`; `tools/build_hybrid.py` derives it from the configure options.
+`SW_STDEXT`; `tools/build_ext.py --stdext` turns it on.
 Feature-enabled Rust checks use `--features php,active`.
 
 ## Checks
 
 - `cargo clippy --workspace --all-targets --all-features` and `cargo test
   --workspace --all-features` (the `rust` job installs PHP headers and libclang).
-- The hybrid and the family's PHPTs on Linux:
-  `python3 tools/dev.py docker -- tools/build_hybrid.py --jobs 4`
+- The Cargo build and the family's PHPTs on Linux:
+  `python3 tools/dev.py docker -- tools/build_ext.py`
   and `corpus/upstream/run.py --case ...` against both engines.
 - A callgrind A/B of a tight method loop against upstream, in the PR.
 - Alpine (musl) builds build scripts with `-C target-feature=-crt-static`

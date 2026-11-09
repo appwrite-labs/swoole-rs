@@ -27,7 +27,7 @@ use swoole_rs_phphelpers::callable;
 use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_zend::{
-    Array, Call, Class, Object, Owned, OwnedArray, Props, Value, bailout, declare_bool,
+    Array, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, bailout, declare_bool,
     declare_long, declare_property_null, declare_string, handlers, method_table,
     string::{self, bytes},
     sys::{
@@ -348,8 +348,8 @@ fn request_data(context: *mut Context, buffer: &mut Buffer, length: usize) {
     // SAFETY: the zend string allocator's string, holding `length` bytes
     // and room for the NUL.
     unsafe { string::truncate(string, length) };
-    // SAFETY: the context's empty `zdata` takes the string.
-    unsafe { value::set_str(&raw mut send::state(context).request.zdata, string) };
+    // SAFETY: the string's one reference moves into `zdata`.
+    send::state(context).request.zdata = Owned::string(unsafe { ZString::from_raw(string) });
 }
 
 /// HTTP/2 on the connection: the server's SETTINGS frame, then frames by
@@ -865,7 +865,7 @@ unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i6
     // name; the shim traps what the new coroutine raises.
     let bailed = bailout::trapped(unsafe {
         z::swr_zend_try_facade_coroutine(
-            Some(swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create),
+            Some(swoole_rs_phpcoroutines::create_coroutine),
             &raw mut accept.cache,
             1,
             &raw mut zsocket,

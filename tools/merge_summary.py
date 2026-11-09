@@ -12,7 +12,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.build_hybrid import MODULES
+from tools.check_migration import MODULES
 from tools.harness import ROOT
 
 ALIASES = {'string': 'buffer'}

@@ -24,7 +24,7 @@ class TypedBufferSelection(unittest.TestCase):
 
     def test_the_old_switch_is_gone(self):
         for command in [[sys.executable, 'tools/dev.py', 'integrate', '--module', 'reactor', '--buffer-typed', '--plan'],
-                        [sys.executable, 'tools/build_hybrid.py', '--buffer-typed']]:
+                        [sys.executable, 'tools/build_ext.py', '--buffer-typed']]:
             result=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
             self.assertEqual(result.returncode,2,result.stdout+result.stderr)
             self.assertIn('unrecognized arguments: --buffer-typed',result.stderr)

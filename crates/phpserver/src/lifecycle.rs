@@ -421,20 +421,22 @@ impl ServerObject {
         let Some(old) = taken else {
             return false;
         };
-        if !old.is_null() {
-            // SAFETY: a callable this property owned, out of its slot now.
-            unsafe { swoole_rs_phpruntime::callable_free(old) };
-        }
+        let free = |unowned: *mut c_void| {
+            // SAFETY: a callable no slot holds, or null, which is ignored.
+            unsafe { swoole_rs_phpruntime::callable_free(unowned) };
+        };
+        free(old);
         // SAFETY: a live value.
         let callable = unsafe { swoole_rs_phpruntime::callable_create(callable.as_ptr()) };
         if callable.is_null() {
             return false;
         }
-        self.property(|p| {
-            if let Some(slot) = p.callbacks.get_mut(kind) {
-                *slot = callable;
-            }
-        });
+        // A nested on() (from the old callable's destructor) stored its callable,
+        // and the property, after this one's write: keep that pair, drop ours.
+        free(self.property(|p| match p.callbacks.get_mut(kind) {
+            Some(slot) if slot.is_null() => std::mem::replace(slot, callable),
+            _ => callable,
+        }));
         true
     }
 

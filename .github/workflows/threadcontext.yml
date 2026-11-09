@@ -36,7 +36,7 @@ jobs:
           python3 tools/build_upstream.py --configure=--enable-thread-context
           python3 tools/build_ext.py --configure=--enable-thread-context
           mkdir -p target/phpt
-          cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
+          cp target/upstream-builds/configured/src/modules/swoole.so target/phpt/upstream.so
           cp target/ext/swoole.so target/phpt/cargo.so
           for engine in upstream cargo; do php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep 'thread context'; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json

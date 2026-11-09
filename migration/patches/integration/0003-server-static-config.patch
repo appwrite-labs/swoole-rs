@@ -1,9 +1,0 @@
-diff --git a/src/server/master.cc b/src/server/master.cc
-index 2b7dca8..4edd302 100644
---- a/src/server/master.cc
-+++ b/src/server/master.cc
-@@ -1550,3 +1550,3 @@ int Server::send_to_connection(const SendData *_send) const {
-     if (_send->info.type == SW_SERVER_EVENT_CLOSE) {
--        _socket->out_buffer->alloc(BufferChunk::TYPE_CLOSE, 0);
-+        _socket->out_buffer->typed_close();
-         conn->close_queued = 1;

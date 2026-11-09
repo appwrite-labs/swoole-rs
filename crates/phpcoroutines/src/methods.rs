@@ -24,9 +24,8 @@ use swoole_rs_zend::{
         object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
         swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
         swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_call_method, zend_class_entry,
-        zend_exception_set_previous, zend_fcall_info, zend_fcall_info_cache,
-        zend_fetch_debug_backtrace, zend_object, zend_objects_new, zend_throw_exception_object,
-        zval,
+        zend_exception_set_previous, zend_fetch_debug_backtrace, zend_object, zend_objects_new,
+        zend_throw_exception_object, zval,
     },
 };
 
@@ -60,10 +59,7 @@ swoole_rs_zend::handlers! {
 
 /// `go()`/`Co::create()`: `(callable $func, mixed ...$params)`.
 fn create(call: &Call) {
-    // SAFETY: all-zero is an empty call info, filled by the parser.
-    let mut fci: zend_fcall_info = unsafe { mem::zeroed() };
-    // SAFETY: as above.
-    let mut fcc: zend_fcall_info_cache = unsafe { mem::zeroed() };
+    let (mut fci, mut fcc) = (swoole_rs_zend::EMPTY_FCI, swoole_rs_zend::EMPTY_FCC);
     let parsed = call.arity(1, u32::MAX).and_then(|()| {
         // SAFETY: argument 1 is passed; the outputs are writable locals.
         unsafe { bailout::parse_func(call.zval(1), 1, &raw mut fci, &raw mut fcc) }

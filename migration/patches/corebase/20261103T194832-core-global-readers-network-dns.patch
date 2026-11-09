@@ -1,9 +1,0 @@
-diff --git a/src/network/dns.cc b/src/network/dns.cc
-index 9d40a7c..b2a98e3 100644
---- a/src/network/dns.cc
-+++ b/src/network/dns.cc
-@@ -502,3 +502,3 @@ std::vector<std::string> dns_lookup_impl_with_cares(const char *domain, int fami
-     ctx.ares_opts.timeout = timeout * 1000;
--    ctx.ares_opts.tries = SwooleG.dns_tries;
-+    ctx.ares_opts.tries = swr_v1_core_dns_tries();
-     ctx.ares_opts.sock_state_cb_data = &ctx;
