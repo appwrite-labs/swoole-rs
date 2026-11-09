@@ -314,7 +314,8 @@ pub struct OwnedTlsCopy {
 /// # Safety
 /// Both owners are live, synchronized and distinct (self-assignment is accepted).
 /// Native cache callbacks catch exceptions and do not reenter.
-pub unsafe fn swr_v1_tls_owner_assign(
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_tls_owner_assign(
     destination: *const OwnedTlsContext,
     source: *const OwnedTlsContext,
 ) -> OwnedTlsCopy {
