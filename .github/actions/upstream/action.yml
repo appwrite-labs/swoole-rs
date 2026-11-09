@@ -36,10 +36,11 @@ runs:
           target/upstream-builds/*/src/modules/swoole.so
           target/upstream-builds/*/src/run-tests.php
         key: ${{ steps.key.outputs.key }}
+    # No ccache: no job restores a ccache directory any more, so a cold one only adds overhead.
     - id: build
       shell: bash
       run: |
-        python3 tools/build_upstream.py ${{ inputs.args }} | tee upstream.log
+        python3 tools/build_upstream.py --no-ccache ${{ inputs.args }} | tee upstream.log
         echo "library=$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" >> "$GITHUB_OUTPUT"
     - if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
