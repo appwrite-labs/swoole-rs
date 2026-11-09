@@ -13,7 +13,7 @@ compiled from upstream; open are [dropping upstream from the build](https://gith
 [faster than upstream](https://github.com/appwrite-labs/swoole-rs/issues/1894) and
 [a hardened runtime](https://github.com/appwrite-labs/swoole-rs/issues/1893). The badges come from `tools/badges.py`
 (`.github/workflows/badges.yml`): upstream C++ replaced counts upstream first-party
-lines the all-modules patch set deletes, and the PHPT badge counts tests the hybrid
+lines the all-modules patch set deletes, and the PHPT badge counts tests the Cargo build
 passes in any of a merge-tier run's PHPT jobs, over those that can apply to 64-bit Linux
 (`corpus/upstream/not_applicable.json` lists the rest), naming the commit it measured. The speed badge links to the latest merge-tier callgrind
 results, per workload, against upstream. The unsafe badge counts `unsafe` blocks, fns and impls in

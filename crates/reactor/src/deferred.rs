@@ -260,6 +260,28 @@ mod tests {
         }
     }
 
+    /// Disposes of its data, then defers `record(5)` (disposed as 1005), the way a PHP
+    /// destructor run by a disposer can call `Event::defer`.
+    unsafe extern "C-unwind" fn dispose_and_defer(data: *mut c_void) {
+        TRACE.with_borrow_mut(|trace| trace.push(1000 + data as usize));
+        // SAFETY: the test's reactor, still being dropped.
+        unsafe { defer(FIELDS.get(), record, token(5), Some(disposed)) };
+    }
+
+    /// A task deferred while the reactor's drop disposes of the queue is disposed of too,
+    /// not left in a queue nothing frees.
+    #[test]
+    fn a_task_deferred_while_the_reactor_drops_is_disposed() {
+        let state = crate::reactor_state::tests::state(3, 1);
+        let fields = state.fields;
+        FIELDS.set(fields);
+        unsafe {
+            defer(fields, record, token(1), Some(dispose_and_defer));
+            crate::reactor_state::tests::free(state.owner);
+        }
+        assert_eq!(take(), [1001, 1005]);
+    }
+
     /// Freeing a queue disposes of each unrun task's data instead of calling it.
     #[test]
     fn free_disposes_unrun_tasks() {

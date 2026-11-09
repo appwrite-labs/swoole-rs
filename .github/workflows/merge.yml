@@ -115,8 +115,8 @@ jobs:
               --limit 100 --json id --jq '.[2:][].id' | xargs -r -n1 gh cache delete
           done
 
-  # Every pinned PHPT on upstream, the all-modules hybrid and the extension Cargo builds
-  # alone (crates/ext): any test that passes on upstream must pass on both (corpus/upstream/gate.py).
+  # Every pinned PHPT on upstream and the Cargo build (crates/ext): any test that passes on
+  # upstream must pass on cargo (corpus/upstream/gate.py).
   phpt-build:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
@@ -127,7 +127,7 @@ jobs:
       - id: build
         uses: ./.github/actions/phpt-build
         with:
-          engines: upstream hybrid cargo
+          engines: upstream cargo
 
   # The speed ratchet (docs/migration.md#speed): instructions per request on the Cargo build
   # (fat LTO, as release builds ship) over upstream may not rise more than 1% above
@@ -345,7 +345,7 @@ jobs:
             --case tests/swoole_server/single_thread/user_setting.phpt \
             --case tests/swoole_socket_coro/icmp.phpt \
             --case tests/swoole_socket_coro/setopt/bindtodevice.phpt
-          for engine in upstream hybrid cargo; do
+          for engine in upstream cargo; do
             sudo python3 corpus/upstream/run.py "$@" --engine $engine=target/phpt/$engine.so \
               --output target/phpt/root/$engine.json || [ $? -eq 1 ]
           done
@@ -407,7 +407,7 @@ jobs:
           $compose ps && exit 1
       - run: >
           python3 corpus/library/run.py --engine upstream=target/phpt/upstream.so
-          --engine hybrid=target/phpt/hybrid.so --engine cargo=target/phpt/cargo.so
+          --engine cargo=target/phpt/cargo.so
           | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -448,7 +448,7 @@ jobs:
           path: target/reports/
 
   # musl and PHP 8.5, as on php:8.5-alpine in Appwrite's base image: build the
-  # reference and the all-modules hybrid, then run the corpus and original PHPTs
+  # reference and the Cargo build, then run the corpus and original PHPTs
   # against both. Project 11 needs --fix-halfclose and is covered by the PR tier.
   alpine:
     runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
@@ -468,20 +468,20 @@ jobs:
       - run: .devcontainer/install-alpine.sh && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: python3 tools/build_upstream.py --php-sockets
       - run: cargo fetch --locked
-      - run: python3 tools/build_hybrid.py --php-sockets
+      - run: python3 tools/build_ext.py --php-sockets
       - run: python3 corpus/thirdparty/hyperf.py --prepare
       - run: >
           python3 corpus/run.py $PHP_EXTENSIONS --require-all
           $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
           --engine upstream=target/upstream/src/modules/swoole.so
-          --engine hybrid=target/hybrid/rust-php-sockets/modules/swoole.so
+          --engine cargo=target/ext/swoole.so
           --output target/reports/alpine-corpus.json
-      # gate.py fails only what passes on upstream and not on the hybrid (no re-runs: no bash).
+      # gate.py fails only what passes on upstream and not on cargo (no re-runs: no bash).
       - if: always()
         run: |
           python3 corpus/upstream/run.py $PHP_EXTENSIONS \
             --engine upstream=target/upstream/src/modules/swoole.so \
-            --engine hybrid=target/hybrid/rust-php-sockets/modules/swoole.so \
+            --engine cargo=target/ext/swoole.so \
             --output target/reports/alpine-phpt.json || [ $? -eq 1 ]
           python3 corpus/upstream/gate.py target/reports/alpine-phpt.json --output target/reports/alpine-gate.json >> "$GITHUB_STEP_SUMMARY"
       # What the Ubuntu shards' PHP 8.3 can't show (#1993, #2000): the swoole_ftp PHPTs' PHP 8.4+
@@ -492,16 +492,16 @@ jobs:
         shell: bash
         run: |
           python3 tools/build_hybrid.py --backend upstream --php-sockets --stdext --configure=--enable-swoole-curl
-          python3 tools/build_hybrid.py --php-sockets --stdext --configure=--enable-swoole-curl
+          python3 tools/build_ext.py --php-sockets --stdext --configure=--enable-swoole-curl
           mkdir -p target/php85/engines target/php85/results
           cp -L target/hybrid/upstream-php-sockets-stdext/modules/swoole.so target/php85/engines/upstream.so
-          cp -L target/hybrid/rust-php-sockets-stdext/modules/swoole.so target/php85/engines/hybrid.so
+          cp target/ext/swoole.so target/php85/engines/cargo.so
           python3 corpus/upstream/inventory.py --output target/php85/manifest.json
           set -- --manifest target/php85/manifest.json --timeout 30 $PHP_EXTENSIONS
           php84=$(for t in swoole_coroutine/exit_84 swoole_coroutine/exit_exception_backtrace_84 swoole_curl/native_handle_destructor \
             swoole_curl/reset_private swoole_curl/reset_private_destructor swoole_runtime/unsafe/http_get_last_response_headers; do
             echo --case tests/$t.phpt; done)
-          for engine in upstream hybrid; do
+          for engine in upstream cargo; do
             python3 corpus/upstream/run.py "$@" --module swoole_ftp --module swoole_stdext --engine $engine=target/php85/engines/$engine.so \
               --output target/php85/results/$engine.json || [ $? -eq 1 ]
             # shellcheck disable=SC2086 # one --case per word

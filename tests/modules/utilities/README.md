@@ -44,7 +44,9 @@ Rust storage and there is no bitmap left to test.
 ## Loaded PHP consumers
 
 `storage.py` takes `--source`, `--engine native=DSO --engine selected=DSO`,
-`--build-manifest`, `--archive`, `--source-ref` and at most one profile flag:
+`--build-manifest` (`target/ext/build-manifest.json`, which must name the selected
+DSO), `--archive` (whose hybrid tree supplies the selected SDK headers),
+`--source-ref` and at most one profile flag:
 
 | Profile | Checks |
 | --- | --- |

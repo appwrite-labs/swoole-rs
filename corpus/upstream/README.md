@@ -16,8 +16,9 @@ listeners. The merge tier runs the whole pinned suite (below).
 python3 tools/build_upstream.py
 python3 corpus/upstream/run.py \
   --engine upstream=target/upstream/src/modules/swoole.so --require-all
+python3 tools/build_ext.py
 python3 corpus/upstream/run.py \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so
+  --engine cargo=target/ext/swoole.so
 # Target a migration module:
 python3 corpus/upstream/run.py \
   --engine upstream=target/upstream/src/modules/swoole.so --module timers --require-all
@@ -114,36 +115,36 @@ without modifying the original PHPT assertions or capability probes.
 ## Every PHPT, gated on upstream
 
 The merge tier (`.github/workflows/phpt.yml`, called from `merge.yml`) runs every pinned
-PHPT against the upstream reference, the all-modules hybrid and the Cargo build, all built
+PHPT against the upstream reference and the Cargo build, both built
 with PHP sockets support, in 6 shards per engine. The shards don't run as root, so the five
 tests that skip unless root run again as root in the `phpt-root` job, with their own
 re-runs and gate (`phpt-root.json`). The shards run:
 
 ```sh
 python3 corpus/upstream/inventory.py --shard 3/6 --output manifest.json
-python3 corpus/upstream/run.py --manifest manifest.json --engine hybrid=/absolute/swoole.so --output hybrid-3.json
-python3 corpus/upstream/gate.py upstream-*.json hybrid-*.json --output phpt.json
+python3 corpus/upstream/run.py --manifest manifest.json --engine cargo=/absolute/swoole.so --output cargo-3.json
+python3 corpus/upstream/gate.py upstream-*.json cargo-*.json --output phpt.json
 ```
 
 `inventory.py` lists every `.phpt` at the pin (family = its `tests/` directory)
 and every other file under `tests/` as a support file. `gate.py` fails if any test
-that passes on upstream does not pass on the hybrid, including when its result is
+that passes on upstream does not pass on the Cargo build, including when its result is
 missing, and refuses interrupted shards. Tests failing on both are listed, not
 hidden. Tests of upstream fixes to code that is Rust now and not yet ported
 (`PENDING_PORTS`, each under its open issue) are listed as pending, not gated;
-any of them the hybrid passes is listed so its entry is dropped. It records each result and, for skips, the SKIPIF reason and a category
+any of them cargo passes is listed so its entry is dropped. It records each result and, for skips, the SKIPIF reason and a category
 (service, network, ZTS, stdext, platform, extension, other). Only the runner's
 PASSED counts as passed.
 
 A test the gate flags is re-run 3 times on both engines (in `phpt.yml`'s `gate` job,
 unless more than 20 are flagged). If upstream fails any re-run, the test is listed
-as flaky on upstream and doesn't fail the gate, provided the hybrid passes one of its
+as flaky on upstream and doesn't fail the gate, provided cargo passes one of its
 re-runs or upstream then passes fewer than a third of 9 re-runs (a test both engines
-almost always fail, whose first upstream pass was the outlier). If upstream passes every re-run and the hybrid fails any, it is a regression; when the
-hybrid both passed and failed, upstream first gets up to 24 re-runs in all, and an upstream
+almost always fail, whose first upstream pass was the outlier). If upstream passes every re-run and cargo fails any, it is a regression; when
+cargo both passed and failed, upstream first gets up to 24 re-runs in all, and an upstream
 failure among them makes the test flaky on both engines instead.
 If both pass every re-run, it is listed as passed on re-run and doesn't fail the gate.
-The hybrid never gets retried to green: it must pass every re-run.
+Cargo never gets retried to green: it must pass every re-run.
 
 A re-run whose test passed but whose runner then died with `corrupted double-linked
 list` / `Aborted` (#200: both engines hit it at the same rate) is inconclusive on
@@ -190,16 +191,15 @@ so tests that need them fail or skip on both engines.
 
 ## Attributing a regression
 
-The gate runs every PHPT once against the all-modules hybrid, the only hybrid
-there is. When it reports a test that passes on upstream but not on the hybrid,
-reproduce just that test and bisect the commit range:
+The gate runs every PHPT once against the Cargo build. When it reports a test that
+passes on upstream but not on cargo, reproduce just that test and bisect the commit range:
 
 ```sh
-python3 tools/build_hybrid.py
+python3 tools/build_ext.py
 python3 corpus/upstream/run.py --source target/upstream/src \
   --case tests/swoole_http_server/example.phpt \
   --engine upstream=target/upstream/src/modules/swoole.so \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so
+  --engine cargo=target/ext/swoole.so
 ```
 
 Add `--external-network` for tests that need outside services.

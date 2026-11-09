@@ -820,7 +820,8 @@
         "tests/modules/ports/"
       ],
       "phpt_families": [
-        "swoole_server_port"
+        "swoole_server_port",
+        "swoole_server"
       ],
       "upstream_patch_targets": [
         "src/server/port.cc",

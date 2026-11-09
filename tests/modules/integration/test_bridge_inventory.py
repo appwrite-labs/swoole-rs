@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""The actual selected-export gate must reject missing newer-version ABI exports."""
-import hashlib
+"""The actual ABI export gate must reject missing newer-version ABI exports."""
 import importlib.util
-import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -18,7 +16,7 @@ class SelectedExports(unittest.TestCase):
     def check(self, symbols, conditional=False):
         with tempfile.TemporaryDirectory() as folder:
             build = Path(folder)
-            header = build / 'rust-prefix/include/swoole_rs_http.h'
+            header = build / 'native/http/swoole_rs_http.h'
             header.parent.mkdir(parents=True)
             content = b'''uint32_t swr_v1_http_plan(void);
 void *swr_v2_http_directory_new(void);
@@ -28,10 +26,6 @@ void *swr_v2_http_directory_new(void);
             if conditional:
                 content += b"\n#ifdef __linux__\nvoid swr_v3_linux_backend(void);\n#else\nvoid swr_v3_other_backend(void);\n#endif\n"
             header.write_bytes(content)
-            (build / 'src').mkdir()
-            (build / 'src/config.h').write_text('')
-            (build / 'build-manifest.json').write_text(json.dumps({'inputs': {'modules': ['http'],
-                'headers_sha256': {'native/http/swoole_rs_http.h': hashlib.sha256(content).hexdigest()}}}))
             real_run = bridge.run
             def command(command, **kwargs):
                 if command[0] == 'nm':
@@ -39,8 +33,9 @@ void *swr_v2_http_directory_new(void);
                 if command[0] == 'test-php-config':
                     return SimpleNamespace(stdout='')
                 return real_run(command, **kwargs)
-            with patch.object(bridge, 'ARGS', SimpleNamespace(hybrid=build / 'src/modules/swoole.so',
+            with patch.object(bridge, 'ARGS', SimpleNamespace(extension=build / 'swoole.so', source=build / 'src',
                     php_config='test-php-config'), create=True), \
+                 patch.object(bridge, 'headers_for', return_value=[header]), \
                  patch.object(bridge, 'run', side_effect=command):
                 bridge.BridgeTests('test_selected_abi_exports').test_selected_abi_exports()
 
