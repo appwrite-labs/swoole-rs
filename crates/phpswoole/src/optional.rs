@@ -40,7 +40,7 @@ unsafe extern "C" {
 #[cfg(feature = "sockets")]
 // SAFETY: ext/sockets' class and import, which PHP exports when it has the extension.
 unsafe extern "C" {
-    static socket_ce: *mut zend_class_entry;
+    static socket_ce: *mut swoole_rs_zend::sys::zend_class_entry;
     fn socket_import_file_descriptor(fd: c_int, socket: *mut c_void) -> bool;
 }
 
