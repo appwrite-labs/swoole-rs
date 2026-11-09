@@ -13,7 +13,9 @@ fn set<T: Copy>(fd: c_int, level: c_int, name: c_int, value: T) -> bool {
     unsafe { libc::setsockopt(fd, level, name, (&raw const value).cast::<c_void>(), length) == 0 }
 }
 
-fn set_int(fd: c_int, level: c_int, name: c_int, value: c_int) -> bool {
+/// `setsockopt` of an `int` option, without logging a failure.
+#[must_use]
+pub fn swr_v1_socket_set_int(fd: c_int, level: c_int, name: c_int, value: c_int) -> bool {
     set(fd, level, name, value)
 }
 
@@ -109,7 +111,7 @@ pub extern "C" fn swr_v1_socket_fd_option(
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_socket_tcp_nopush(fd: c_int, nopush: c_int) -> c_int {
     #[cfg(target_os = "linux")]
-    if set_int(fd, libc::IPPROTO_TCP, libc::TCP_CORK, nopush) {
+    if swr_v1_socket_set_int(fd, libc::IPPROTO_TCP, libc::TCP_CORK, nopush) {
         return 0;
     }
     #[cfg(not(target_os = "linux"))]
@@ -120,7 +122,7 @@ pub extern "C" fn swr_v1_socket_tcp_nopush(fd: c_int, nopush: c_int) -> c_int {
 /// `set_tcp_nodelay`'s setsockopt.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_socket_tcp_nodelay(fd: c_int, nodelay: c_int) -> bool {
-    set_int(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY, nodelay)
+    swr_v1_socket_set_int(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY, nodelay)
 }
 
 /// A socket's corking fields, copied in and out of its bitfields.
@@ -211,7 +213,7 @@ pub unsafe extern "C" fn swr_v1_socket_uncork(
 /// `set_buffer_size` does.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_socket_buffer_size(fd: c_int, recv: bool, send: bool, size: u32) -> bool {
-    let set = |name| set_int(fd, libc::SOL_SOCKET, name, size.cast_signed());
+    let set = |name| swr_v1_socket_set_int(fd, libc::SOL_SOCKET, name, size.cast_signed());
     (!send || set(libc::SO_SNDBUF)) && (!recv || set(libc::SO_RCVBUF))
 }
 

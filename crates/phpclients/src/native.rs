@@ -318,14 +318,12 @@ pub(crate) unsafe fn swoole_socket_coro_vector(
     vectors: *mut iovec,
     count: c_int,
     timeout: f64,
-    index: *mut c_int,
-    offset: *mut size_t,
-) -> ssize_t {
+) -> (ssize_t, c_int, size_t) {
     let kind = if op < 2 { TIMEOUT_READ } else { TIMEOUT_WRITE };
     // SAFETY: per the caller.
     let _timeout = unsafe { co::Timeout::set(socket, timeout, kind) };
     // SAFETY: per the caller.
-    unsafe { co::vector(socket, op, vectors, count, index, offset) }
+    unsafe { co::vector(socket, op, vectors, count) }
 }
 pub(crate) unsafe fn swoole_socket_coro_sendfile(
     socket: Socket,

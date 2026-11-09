@@ -802,17 +802,14 @@ fn write_vector(call: &Call, socket: Socket, op: c_int, array: *mut zval, timeou
             iov_len: bytes.len(),
         });
     }
-    let (mut stopped, mut offset) = (0, 0);
     // SAFETY: an open socket; the writes only read the elements' bytes.
-    let written = unsafe {
+    let (written, _, _) = unsafe {
         native::swoole_socket_coro_vector(
             socket,
             op,
             vectors.as_mut_ptr(),
             c_int::try_from(vectors.len()).unwrap_or(c_int::MAX),
             timeout,
-            &raw mut stopped,
-            &raw mut offset,
         )
     };
     if written < 0 {
@@ -879,17 +876,14 @@ fn read_vector(call: &Call, socket: Socket, op: c_int, array: *mut zval, timeout
         });
         total += length;
     }
-    let (mut stopped, mut offset) = (0, 0);
     // SAFETY: an open socket and buffers of the listed lengths.
-    let read = unsafe {
+    let (read, stopped, offset) = unsafe {
         native::swoole_socket_coro_vector(
             socket,
             op,
             vectors.as_mut_ptr(),
             c_int::try_from(vectors.len()).unwrap_or(c_int::MAX),
             timeout,
-            &raw mut stopped,
-            &raw mut offset,
         )
     };
     let read = match usize::try_from(read) {

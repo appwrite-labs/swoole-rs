@@ -264,26 +264,30 @@ impl Socket {
         socket_members::record(self.raw())
     }
 
+    /// The live coroutine record, for copying a field out; callers hold it no
+    /// longer than that read.
+    fn co(&self) -> &CoSocket {
+        // SAFETY: the live native object embeds this actual Rust record, and nothing
+        // writes it during a caller's one-field read.
+        unsafe { &*self.co_ptr() }
+    }
+
     pub(crate) fn fd(&self) -> i32 {
-        // SAFETY: read one scalar from the live coroutine socket, without retaining a record borrow.
-        unsafe { (*self.co_ptr()).sock_fd }
+        self.co().sock_fd
     }
 
     pub(crate) fn domain(&self) -> i32 {
-        // SAFETY: the live native object embeds this actual Rust record.
-        unsafe { (*self.co_ptr()).sock_domain }
+        self.co().sock_domain
     }
 
     pub(crate) fn socket_type(&self) -> i32 {
-        // SAFETY: the live native object embeds this actual Rust record.
-        unsafe { (*self.co_ptr()).sock_type }
+        self.co().sock_type
     }
 
     /// The network record can change during reinitialization; read its pointer on each use.
     /// The closure performs only immediate operations and never suspends or invokes PHP.
     fn with_record<T>(&self, absent: T, f: impl FnOnce(&mut SocketRecord) -> T) -> T {
-        // SAFETY: copy the current network pointer from this live coroutine record.
-        let record = unsafe { (*self.co_ptr()).socket };
+        let record = self.co().socket;
         // SAFETY: no other network record borrow exists during this immediate closure.
         match unsafe { record.as_mut() } {
             Some(record) => f(record),
@@ -297,14 +301,12 @@ impl Socket {
 
     /// `errCode`.
     pub(crate) fn error(&self) -> i32 {
-        // SAFETY: copy the error scalar from this live record.
-        unsafe { (*self.co_ptr()).err_code }
+        self.co().err_code
     }
 
     /// `errMsg`, if set.
     pub(crate) fn message(&self) -> Option<&CStr> {
-        // SAFETY: copy the current borrowed native message pointer; no record borrow escapes.
-        let message = unsafe { (*self.co_ptr()).err_msg };
+        let message = self.co().err_msg;
         // SAFETY: errMsg is null or a NUL-terminated string the socket keeps.
         (!message.is_null()).then(|| unsafe { CStr::from_ptr(message) })
     }
@@ -349,18 +351,8 @@ impl Socket {
     }
 
     pub(crate) fn close(&self) -> Result<bool, Bailout> {
-        let mut call = SocketCall {
-            socket: self.raw(),
-            fd: -1,
-            domain: 0,
-            kind: 0,
-            protocol: 0,
-            family: false,
-            result: false,
-        };
-        // SAFETY: `close` takes a `SocketCall` of this live socket; PHP callbacks may bail out.
-        unsafe { trap(close_body, &mut call) }?;
-        Ok(call.result)
+        // SAFETY: a live socket.
+        unsafe { co::close_trapped(self.raw()) }
     }
 
     /// `setsockopt(level, name, value)`; `logged` through the coroutine
@@ -370,12 +362,8 @@ impl Socket {
             // SAFETY: a live socket; the member is not virtual.
             let _ = unsafe { socket_members::set_int_option(self.raw(), level, name, value) };
         } else {
-            self.with_record((), |record| {
-                let length: socklen_t = c_int::BITS / 8;
-                // SAFETY: setsockopt reads `length` bytes of the `int` `value`.
-                unsafe {
-                    libc::setsockopt(record.fd, level, name, (&raw const value).cast(), length)
-                };
+            self.with_record(false, |record| {
+                swoole_rs_reactor::swr_v1_socket_set_int(record.fd, level, name, value)
             });
         }
     }
@@ -764,7 +752,7 @@ pub mod co {
     }
 
     /// `readv`, `readv_all`, `writev` or `writev_all` (`op` 0 to 3) over
-    /// `count` vectors; where it stopped into `index` and `offset`.
+    /// `count` vectors, with the vector index and byte offset where it stopped.
     /// # Safety
     /// `socket` is live and the vectors are valid for the operation.
     pub unsafe fn vector(
@@ -772,9 +760,7 @@ pub mod co {
         op: c_int,
         vectors: *const iovec,
         count: c_int,
-        index: *mut c_int,
-        offset: *mut usize,
-    ) -> isize {
+    ) -> (isize, c_int, usize) {
         // SAFETY: per the caller, `count` readable vectors.
         let prepared = unsafe { swr_v1_reactor_iov_prepare(vectors, count) };
         if prepared.status != 0 {
@@ -794,13 +780,9 @@ pub mod co {
         let result = unsafe { member(socket, vector) };
         // SAFETY: the live owner.
         let state = unsafe { swr_v1_reactor_iov_view(owner) };
-        // SAFETY: per the caller, writable.
-        unsafe { index.write(state.index) };
-        // SAFETY: as above.
-        unsafe { offset.write(state.offset_bytes) };
         // SAFETY: the owner `prepare` made, released once.
         unsafe { swr_v1_reactor_iov_destroy(owner) };
-        result
+        (result, state.index, state.offset_bytes)
     }
 
     /// `recvfrom(buf, length)`, into the peer address.
