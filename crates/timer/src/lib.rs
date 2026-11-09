@@ -22,6 +22,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
+#[cfg(feature = "upstream-symbols")]
+pub use wrapper::php;
 
 const OK: i32 = 0;
 const EMPTY: i32 = 1;

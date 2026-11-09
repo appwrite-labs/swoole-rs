@@ -32,9 +32,21 @@ pub(crate) type Callback = unsafe extern "C-unwind" fn(timer: *mut c_void, node:
 /// `swoole::TimerDestructor`: `void (*)(TimerNode *)`.
 type Destructor = unsafe extern "C-unwind" fn(node: *mut TimerNode);
 /// A callback of the node's data alone, for `swr_v1_timer_add_plain`'s callers.
-pub(crate) type Plain = unsafe extern "C-unwind" fn(data: *mut c_void);
+pub type Plain = unsafe extern "C-unwind" fn(data: *mut c_void);
 /// `abandon_selection`'s pending Zend bailout.
-type Bailout = unsafe extern "C-unwind" fn();
+pub type Bailout = unsafe extern "C-unwind" fn();
+/// `TimerNode::TYPE_PHP`.
+const TYPE_PHP: i32 = 1;
+
+/// A node's fields, for `Swoole\Timer::info()`.
+#[derive(Debug, Clone, Copy)]
+pub struct Info {
+    pub exec_msec: i64,
+    pub exec_count: u64,
+    pub interval: i64,
+    pub round: u64,
+    pub removed: bool,
+}
 
 /// `swoole::TimerNode`; `native/timer/swoole_timer.h` asserts the offsets. Only
 /// `TimerNode::new` makes one, so `plain` can trail what C++ sees.
@@ -51,6 +63,8 @@ pub(crate) struct TimerNode {
     data: *mut c_void,
     destructor: Option<Destructor>,
     plain: Option<Plain>,
+    /// A `TimerNode::php` node's destructor of its data.
+    plain_drop: Option<Plain>,
 }
 
 impl TimerNode {
@@ -67,6 +81,7 @@ impl TimerNode {
             data,
             destructor: None,
             plain: None,
+            plain_drop: None,
         }
     }
 
@@ -75,6 +90,29 @@ impl TimerNode {
         let mut node = Self::new(Some(call_plain), data);
         node.plain = Some(plain);
         node
+    }
+
+    /// A `TYPE_PHP` node: `callback(data)` on each run, `destructor(data)` once
+    /// it is removed.
+    pub(crate) fn php(callback: Plain, destructor: Plain, data: *mut c_void) -> Self {
+        let mut node = Self::plain(callback, data);
+        node.kind = TYPE_PHP;
+        node.plain_drop = Some(destructor);
+        node
+    }
+
+    pub(crate) fn is_php(&self) -> bool {
+        self.kind == TYPE_PHP
+    }
+
+    pub(crate) fn info(&self) -> Info {
+        Info {
+            exec_msec: self.exec_msec,
+            exec_count: self.exec_count,
+            interval: self.interval,
+            round: self.round,
+            removed: self.removed,
+        }
     }
 }
 
@@ -172,15 +210,39 @@ impl Owner {
         self.next_msec.get()
     }
 
-    pub(crate) fn queue(&self) -> *mut Queue {
-        self.queue
+    /// The live queue, read between its mutations.
+    fn state(&self) -> &Queue {
+        // SAFETY: created with the record and freed only by `destroy`.
+        unsafe { &*self.queue }
     }
 
     pub(crate) fn count(&self) -> usize {
-        let mut stats = TimerStats::default();
-        // SAFETY: the live queue and writable stats.
-        check(unsafe { swr_v1_timer_stats_get(self.queue, &raw mut stats) });
-        stats.count
+        self.state().heap.len()
+    }
+
+    /// `Timer::get_round()`.
+    pub(crate) fn round(&self) -> u64 {
+        self.state().round
+    }
+
+    /// `Timer::get_ids()`, in heap order.
+    pub(crate) fn ids(&self) -> Vec<i64> {
+        self.state().heap.iter().map(|view| view.id).collect()
+    }
+
+    /// `Timer::get(id)`: the node, or null.
+    pub(crate) fn token(&self, id: c_long) -> *mut TimerNode {
+        let state = self.state();
+        state
+            .index(id)
+            .and_then(|index| state.heap.get(index))
+            .map_or(std::ptr::null_mut(), |view| view.token.cast())
+    }
+
+    /// `Timer::get(id)`, borrowed.
+    pub(crate) fn get(&self, id: c_long) -> Option<&TimerNode> {
+        // SAFETY: null or a live TimerNode that `add` made.
+        unsafe { self.token(id).as_ref() }
     }
 
     /// Picks the manual, reactor or system backend. Another backend keeps a
@@ -230,10 +292,17 @@ impl Owner {
     /// bailout. The destructor may longjmp over these frames, which hold
     /// nothing to drop.
     fn release(&self, node: *mut TimerNode) {
-        // SAFETY: a node whose custody Rust just returned.
-        if let Some(destructor) = unsafe { (*node).destructor } {
+        let (destructor, plain_drop, data) = {
+            // SAFETY: a node whose custody Rust just returned.
+            let node = unsafe { &*node };
+            (node.destructor, node.plain_drop, node.data)
+        };
+        if let Some(destructor) = destructor {
             // SAFETY: the node's own destructor.
             unsafe { destructor(node) };
+        } else if let Some(plain_drop) = plain_drop {
+            // SAFETY: the node's destructor of its own data.
+            unsafe { plain_drop(data) };
         }
         // SAFETY: `add` boxed it; the queue no longer holds it.
         drop(unsafe { Box::from_raw(node) });
