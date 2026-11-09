@@ -169,11 +169,25 @@ void *swr_case_mem_pool_alloc(uint32_t size) {
 void swr_case_set_isolation_user(const char *user) {
     swoole_set_isolation("", user, "");
 }
+// `SwooleWG`: crates/process's WorkerGlobalRecord, up to the fields read here.
+struct CaseWorkerGlobal {
+    uint32_t id;
+    uint8_t type;
+    pid_t pid;
+    bool shutdown;
+    bool running;
+    uint32_t max_request;
+    Worker *worker;
+};
+static_assert(offsetof(CaseWorkerGlobal, max_request) == 16, "WorkerGlobalRecord::max_request");
+static_assert(offsetof(CaseWorkerGlobal, worker) == 24, "WorkerGlobalRecord::worker");
+extern "C" CaseWorkerGlobal *swr_v1_worker_globals();
+
 uint32_t swr_case_worker_max_request() {
-    return SwooleWG.max_request;
+    return swr_v1_worker_globals()->max_request;
 }
 Worker *swr_case_current_worker() {
-    return sw_worker();
+    return swr_v1_worker_globals()->worker;
 }
 
 // rust_worker_retirement.abort_and_reset (formerly tests/modules/process/worker_retirement.cc):
