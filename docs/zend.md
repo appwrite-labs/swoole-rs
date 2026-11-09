@@ -135,7 +135,9 @@ on a Rust-raised warning.
 
 `native/corebase/swoole_rs_zend_guard.h` defines native scope outcomes: normal
 return (0), ordinary Zend bailout (1) and pending whole-thread exit (2). Rust
-relays the outcome after dropping its owners. Callbacks invoked below Rust must
+relays the outcome after dropping its owners. Only `Swoole\Thread`, which needs
+ZTS, raises a whole-thread exit, so only ZTS builds keep a record per scope;
+on NTS a scope is a plain `zend_try`. Callbacks invoked below Rust must
 catch C++ exceptions inside the native body, return a typed fault, and rethrow
 only after Rust returns. `native/corebase/swoole_rs_native_effect.h` is the
 invoke/resume provider that MINIT registers once.
