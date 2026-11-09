@@ -13,6 +13,7 @@ mod init;
 pub use swoole_rs_error::*;
 
 pub use swoole_rs_websocket::*;
+pub use swoole_rs_websocket_ffi::*;
 
 pub use swoole_rs_buffer::*;
 
@@ -46,12 +47,6 @@ pub use swoole_rs_phpswoole::*;
 #[cfg(feature = "php")]
 pub use swoole_rs_phpredis::*;
 
-pub use swoole_rs_framing::{
-    mime::{swr_v1_framing_mime_exists, swr_v1_framing_mime_get},
-    swr_v1_framing_default, swr_v1_framing_hton64, swr_v1_framing_recv, swr_v1_framing_unpack,
-    swr_v1_framing_width,
-};
-
 pub use swoole_rs_reactor::*;
 
 pub use swoole_rs_corebase::*;
@@ -77,8 +72,6 @@ pub use swoole_rs_phpthread::*;
 pub use swoole_rs_clients as clients;
 #[cfg(feature = "php")]
 pub use swoole_rs_phpclients::*;
-// The clients patch calls the HTTP inflate stream in crates/inflate.
-pub use swoole_rs_inflate as inflate;
 
 // Keep local Rust type names scoped; C exports retain their no_mangle names.
 pub use swoole_rs_httpbindings as httpbindings;

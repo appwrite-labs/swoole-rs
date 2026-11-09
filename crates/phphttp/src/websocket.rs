@@ -21,8 +21,8 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
-    DecodedFrame, INVALID_CONTROL, encode_close_into, encode_into, swr_v1_ws_control_invalid,
-    swr_v1_ws_encoded_size, swr_v1_ws_message_policy, swr_v1_ws_pack_policy,
+    DecodedFrame, INVALID_CONTROL, control_invalid, encode_close_into, encode_into, encoded_size,
+    message_policy, pack_policy,
 };
 use swoole_rs_zend::{
     Call, Class, bailout, declare_long, declare_property_null, declare_string, handlers,
@@ -587,7 +587,7 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
         );
         return None;
     }
-    let policy = swr_v1_ws_pack_policy(frame.opcode, frame.flags, data.bytes().len());
+    let policy = pack_policy(frame.opcode, frame.flags, data.bytes().len());
     let mut flags = policy.to_le_bytes()[0];
     let compressed = if policy & 0x100 == 0 {
         None
@@ -609,7 +609,7 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
 /// `websocket::message_compress(.., Z_DEFAULT_COMPRESSION)`, warning as it did.
 fn compress(data: &[u8]) -> Option<Vec<u8>> {
     use swoole_rs_deflate::{MessageFailure, message};
-    match message(data, -1, crate::header::zalloc, crate::header::zfree) {
+    match message(data, -1, crate::header::ZEND_ZLIB) {
         Ok(compressed) => Some(compressed),
         Err(MessageFailure::Init(status)) => {
             host::fatal(&format!("deflateInit2() failed, Error: [{status}]"));
@@ -682,7 +682,7 @@ fn header_only_mask(flags: u8) -> bool {
 
 /// `websocket::encode`.
 pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Frame> {
-    if swr_v1_ws_control_invalid(opcode, flags, data.len()) {
+    if control_invalid(opcode, flags, data.len()) {
         warning(
             c"websocket::encode",
             &format!(
@@ -693,7 +693,7 @@ pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Frame> {
         );
         return None;
     }
-    let size = swr_v1_ws_encoded_size(data.len(), flags);
+    let size = encoded_size(data.len(), flags);
     let frame = encoded(size, |out| encode_into(data, opcode, flags, out))?;
     (!header_only_mask(flags)).then_some(frame)
 }
@@ -705,7 +705,7 @@ fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
         warning(func, "the max length of close reason is 125");
         return None;
     }
-    if swr_v1_ws_control_invalid(OPCODE_CLOSE, FLAG_FIN, reason.len() + 2) {
+    if control_invalid(OPCODE_CLOSE, FLAG_FIN, reason.len() + 2) {
         warning(
             func,
             &format!(
@@ -715,7 +715,7 @@ fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
         );
         return None;
     }
-    let size = swr_v1_ws_encoded_size(reason.len() + 2, flags | FLAG_FIN);
+    let size = encoded_size(reason.len() + 2, flags | FLAG_FIN);
     let frame = encoded(size, |out| encode_close_into(code, reason, flags, out))?;
     (!header_only_mask(flags)).then_some(frame)
 }
@@ -1124,7 +1124,7 @@ fn message(
     let mut data = new_zval();
     crate::server::recv_data(server, request, &raw mut data);
     let [opcode, flags] = ext_flags.to_be_bytes();
-    let delivery = swr_v1_ws_message_policy(opcode, settings);
+    let delivery = message_policy(opcode, settings);
     if delivery != 0 {
         if delivery == 2 {
             let payload = string_bytes(&data);

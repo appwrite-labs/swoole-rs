@@ -1,0 +1,14 @@
+diff --git a/config.m4 b/config.m4
+index 7fd972e..9d8a35f 100644
+--- a/config.m4
++++ b/config.m4
+@@ -1322,2 +1322,9 @@ EOF
+         PHP_ADD_LIBRARY_WITH_PATH(swoole_rs_php, [$PHP_SWOOLE_RS/lib], SWOOLE_SHARED_LIBADD)
++        dnl Rust's own (v0-mangled) symbols are internal: hiding them lets --gc-sections drop
++        dnl the code nothing reaches (#2242). get_module, the swr_v1 bridge and upstream's C
++        dnl and C++ names stay exported, as tests/modules/integration/test_bridge.py checks.
++        AS_CASE([$host_os], [linux*], [
++            echo '{ local: _R*; };' > "$abs_builddir/swoole-rs.ver"
++            SWOOLE_SHARED_LIBADD="$SWOOLE_SHARED_LIBADD -Wl,--gc-sections -Wl,--version-script=$abs_builddir/swoole-rs.ver"
++        ])
+         dnl The archive's io_uring engine calls liburing: link it after the archive.
