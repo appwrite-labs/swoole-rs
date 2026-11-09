@@ -70,9 +70,10 @@ defaults to -1. ID 0 means no active node; real IDs start at 1.
   queue returns `CLOSING`. Returns `EMPTY` if the heap is empty, the head
   deadline is after the captured time, or the head was born in the current
   round (which blocks everything behind it, as upstream). Otherwise marks the
-  entry active and returns its view. Equal deadlines have no FIFO guarantee;
-  strict comparisons, left child on ties and swap-last removal reproduce the
-  upstream A/C/B order for three equal timers.
+  entry active and returns its view. Equal deadlines fire in insertion order
+  (the heap ranks by deadline, then ID), so three equal timers run A/B/C.
+  Upstream's heap gives A/C/B there; nothing relies on that, and upstream's own
+  `swoole_coroutine/eval.phpt` expects insertion order.
 - **complete**: requires the exact active ID, otherwise `INVALID` with no change.
   A removed entry, closing queue or one-shot detaches that ID (even if the
   callback moved it off the head) with `RELEASE`. A retained repeat advances
