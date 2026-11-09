@@ -81,8 +81,10 @@ const SERVER_HEADERS: u32 = 2;
 const HEADER_METHOD: u32 = 1;
 const HEADER_PATH: u32 = 2;
 const HEADER_AUTHORITY: u32 = 3;
+const HEADER_CONTENT_TYPE: u32 = 4;
 const HEADER_COOKIE: u32 = 5;
 const HEADER_CONTENT_LENGTH: u32 = 6;
+const HEADER_ACCEPT_ENCODING: u32 = 7;
 const MEDIA_URLENCODED: u32 = 1;
 const MEDIA_MULTIPART: u32 = 2;
 /// `HTTP_HEADER_SERVER`, `_DATE` and `_CONTENT_TYPE`.
@@ -971,11 +973,7 @@ pub(crate) fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -
     let ce = unsafe { (*object).ce };
     // SAFETY: the live object of that class.
     let zheader = unsafe { swr_zend_property_array(ce, object, c"header".as_ptr(), 6) };
-    // SAFETY: a live array.
-    let table = unsafe { value::table(zheader) };
-    // SAFETY: a live table.
-    let present = unsafe { zend_hash_str_find(table, c"content-type".as_ptr(), 12) };
-    if present.is_null() {
+    if find(zheader, c"content-type").is_null() {
         swoole_rs_phphttp::set_header_bytes(ctx, b"content-type", content_type);
     }
     let body = Body {
@@ -1255,8 +1253,11 @@ fn headers_complete(stream: &Stream) -> bool {
         send_status_code(ctx, ENTITY_TOO_LARGE);
         return false;
     }
+    if !stream.negotiates.get() {
+        return true;
+    }
     let headers = zval_of(ctx, Value::Header);
-    if let Some(value) = string_at(headers, b"content-type") {
+    if let Some(value) = string_at(headers, c"content-type") {
         let (folded, length) = fold(value.bytes());
         // SAFETY: the folded prefix.
         let media = unsafe { sw_rs_http2_media_kind(folded.as_ptr(), length) };
@@ -1270,7 +1271,7 @@ fn headers_complete(stream: &Stream) -> bool {
         }
     }
     if get(ctx, Field::EnableCompression) != 0
-        && let Some(value) = string_at(headers, b"accept-encoding")
+        && let Some(value) = string_at(headers, c"accept-encoding")
     {
         // SAFETY: a live context.
         unsafe { swoole_rs_phphttp::http2::compression_method(ctx, value.bytes()) };
@@ -1302,12 +1303,22 @@ fn complete(session: &Session, stream: &Stream) -> c_int {
     SW_OK
 }
 
+/// `zend_hash_str_find` on a live array: the value at `key`, or null.
+fn find(array: *mut zval, key: &CStr) -> *mut zval {
+    // SAFETY: a live array.
+    let table = unsafe { value::table(array) };
+    // SAFETY: a live table and a NUL-terminated key.
+    unsafe { zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) }
+}
+
 /// The string at `key` of an array, if it has one.
-fn string_at(array: *mut zval, key: &[u8]) -> Option<Text> {
-    let (_, value) = entries(array)
-        .into_iter()
-        .find(|&(name, _)| !name.is_null() && key_of(name) == key)?;
-    string_of(value)
+fn string_at(array: *mut zval, key: &CStr) -> Option<Text> {
+    let value = find(array, key);
+    if value.is_null() {
+        None
+    } else {
+        string_of(value)
+    }
 }
 
 fn read_u32(at: *const u8) -> u32 {
@@ -1597,6 +1608,9 @@ fn request_header(
             false
         }
         _ => {
+            if matches!(kind, HEADER_CONTENT_TYPE | HEADER_ACCEPT_ENCODING) {
+                stream.negotiates.set(true);
+            }
             add_string(zheader, name, value);
             true
         }
