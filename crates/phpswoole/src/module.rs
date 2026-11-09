@@ -20,7 +20,7 @@ use swoole_rs_zend::{
     sys::{
         HashTable, swr_zend_compiling_preload, swr_zend_execute_ex_reset,
         swr_zend_execute_ex_restore, swr_zend_fatal_error, swr_zend_function_find,
-        swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
+        swr_zend_leak_check, swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
         swr_zend_runtime_call_handler, swr_zend_sapi_name, swr_zend_signals_uncheck,
         swr_zend_stream_constant_no_close, swr_zend_string_release, swr_zend_temporary_directory,
         swr_zend_try_hook, swr_zend_try_minit, zend_class_entry, zend_execute_data, zend_string,
@@ -432,6 +432,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number:
         Step::Hook(php_swoole_runtime_mshutdown),
         Step::Hook(ops.optional_mshutdown),
         Step::Hook(clean),
+        Step::Hook(swr_zend_leak_check),
     ];
     bailout::raise(run(&steps, module_number));
     SUCCESS

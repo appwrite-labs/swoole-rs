@@ -82,7 +82,7 @@ jobs:
           if echo "$changed" | grep -qE '^(migration/patches/coroutine/|native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
             echo threadcontext=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(tools/asan\.py|\.github/workflows/asan\.yml|\.devcontainer/php\.sh)$'; then
+          if echo "$changed" | grep -qE '^(tools/asan\.py|tools/lsan\.supp|\.github/workflows/asan\.yml|\.devcontainer/php\.sh)$'; then
             echo asan=true >> "$GITHUB_OUTPUT"
           fi
 
