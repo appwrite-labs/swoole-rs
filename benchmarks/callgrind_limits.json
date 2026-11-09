@@ -5,7 +5,7 @@
   "service-health": 0.93,
   "websocket": 0.81,
   "timer": 0.72,
-  "app": 0.93,
+  "app": 0.92,
   "http2": 0.95,
   "table": 0.99,
   "channel": 0.89,
