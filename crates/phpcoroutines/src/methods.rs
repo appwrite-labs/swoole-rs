@@ -17,16 +17,16 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_zend::{
-    Call, Callable, E_ERROR, E_WARNING, add_next_index_long,
+    Call, Callable, E_ERROR, E_WARNING, OwnedArray,
     bailout::{self, Bailout},
-    each_value, init_object, set_object,
+    init_object, set_object,
     sys::{
-        object_properties_init, swr_zend_array_init, swr_zend_coroutine_called_by_destructor,
-        swr_zend_coroutine_locate, swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect,
-        swr_zend_coroutine_set_frame, swr_zend_coroutine_stack_usage, swr_zend_object_addref,
-        swr_zval_get_long, zend_call_method, zend_class_entry, zend_exception_set_previous,
-        zend_fcall_info, zend_fcall_info_cache, zend_fetch_debug_backtrace, zend_object,
-        zend_objects_new, zend_throw_exception_object, zval, zval_ptr_dtor,
+        object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
+        swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
+        swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_call_method, zend_class_entry,
+        zend_exception_set_previous, zend_fcall_info, zend_fcall_info_cache,
+        zend_fetch_debug_backtrace, zend_object, zend_objects_new, zend_throw_exception_object,
+        zval,
     },
 };
 
@@ -239,15 +239,12 @@ fn join(call: &Call) {
     let co = host::current_safe();
     let parsed = call
         .arity(1, 2)
-        .and_then(|()| Ok((call.array(1)?, call.double(2, -1.0)?)));
+        .and_then(|()| Ok((call.array_ref(1)?, call.double(2, -1.0)?)));
     let Ok((cids, timeout)) = parsed else {
         call.set_bool(false);
         return;
     };
-    // SAFETY: an array argument.
-    let table = unsafe { swoole_rs_zend::value::table(cids) };
-    // SAFETY: as above.
-    if unsafe { swoole_rs_zend::value::count(cids) } == 0 {
+    if cids.count() == 0 {
         host::set_last_error(SW_ERROR_INVALID_PARAMS);
         call.set_bool(false);
         return;
@@ -259,28 +256,24 @@ fn join(call: &Call) {
     };
     let own = host::cid(co);
     let mut failed = false;
-    let mut each = |value: *mut zval| {
-        // SAFETY: a live element.
-        let cid = unsafe { swr_zval_get_long(value) };
+    for (_, value) in cids.entries() {
+        let cid = value.long();
         if cid == own {
             host::error_ex(E_WARNING, SW_ERROR_WRONG_OPERATION, c"can not join self");
             failed = true;
-            return false;
+            break;
         }
         let Some(ctx) = context::by_cid(cid) else {
-            return true;
+            continue;
         };
         if !ctx.join().is_null() {
             host::set_last_error(SW_ERROR_WRONG_OPERATION);
             failed = true;
-            return false;
+            break;
         }
         ctx.set_join(&raw mut join);
         join.pending.push(ctx);
-        true
-    };
-    // SAFETY: the array is live and the closure does not modify it.
-    unsafe { each_value(table, &mut each) };
+    }
     if failed || join.pending.is_empty() {
         // Unregister the contexts this call registered.
         join.forget();
@@ -651,14 +644,11 @@ fn print_back_trace(call: &Call) {
 fn list(call: &Call) {
     let mut cids: Vec<c_long> = vec![0; host::count()];
     let count = host::list(&mut cids);
-    // SAFETY: all-zero is IS_UNDEF, then an array.
-    let mut ids: zval = unsafe { mem::zeroed() };
-    // SAFETY: a writable zval.
-    unsafe { swr_zend_array_init(&raw mut ids) };
+    let mut ids = OwnedArray::default();
     for &cid in cids.iter().take(count) {
-        // SAFETY: an array.
-        unsafe { add_next_index_long(&raw mut ids, cid) };
+        ids.push_long(cid);
     }
+    let ids = ids.into_owned();
     drop(cids);
     let iterator = classes::iterator();
     // SAFETY: the return slot, with Swoole's registered iterator class.
@@ -678,12 +668,10 @@ fn list(call: &Call) {
             11,
             ptr::null_mut(),
             1,
-            &raw mut ids,
+            ids.as_ptr(),
             ptr::null_mut(),
         );
     }
-    // SAFETY: the array, which the iterator copied.
-    unsafe { zval_ptr_dtor(&raw mut ids) };
 }
 
 /// `Co::getExecuteTime()` (`SW_CORO_TIME` builds).

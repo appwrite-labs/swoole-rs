@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""The all-modules hybrid under AddressSanitizer and UndefinedBehaviorSanitizer (#1899).
+"""Swoole under AddressSanitizer and UndefinedBehaviorSanitizer (#1899).
 
 PHP, the extension's C/C++ (upstream sources and the native/ shims, which the crates'
 build scripts compile with CC and CFLAGS) and the Rust crates are all instrumented:
 clang's -fsanitize=address,undefined and rustc's -Zsanitizer=address call into one
 runtime, the one clang links into the PHP executable, so every object in the process
-reports through it. dev.py integrate builds it (and the upstream reference beside it) and
-runs every module gate, the application corpus among them; then the PHPT selection runs
-on it. The native gates and the crates' unit tests link the instrumented Rust archive into
+reports through it. dev.py integrate runs every module gate, the application corpus among
+them; then tools/build_ext.py builds the Cargo swoole.so with the same flags and the PHPT
+selection runs on it. The native gates and the crates' unit tests link the instrumented Rust archive into
 executables of their own: target/asan/bin puts `cc` and `c++` first on PATH as clang with
 the sanitizers, so every link takes clang's runtime, and -Zexternal-clangrt stops rustc
 adding its own beside it; the gates that call $CC and $CXX get the same shims. Rust
@@ -35,9 +35,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import build_alias  # noqa: E402
-
 OUT = ROOT / 'target/asan'
 # vptr checks need the C++ UBSan runtime, which a C program like PHP doesn't link.
 SANITIZE = '-fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer'
@@ -85,9 +82,10 @@ def main():
     if subprocess.run([*gates, *phases, '--with-prerequisites', '--jobs', str(args.jobs),
                        '--phase-timeout', '2400'], cwd=ROOT, env=run).returncode:
         failed.append('gates')
-    extension = ROOT / 'target/hybrid' / build_alias('rust') / 'modules/swoole.so'
-    if subprocess.run([sys.executable, 'corpus/upstream/run.py', '--timeout', str(args.timeout), '--php', str(php / 'bin/php'),
-                       '--engine', f'hybrid={extension}', '--output', OUT / 'phpt.json'], cwd=ROOT, env=run).returncode:
+    if subprocess.run([sys.executable, 'tools/build_ext.py', '--php-config', php / 'bin/php-config'], cwd=ROOT, env=run).returncode \
+            or subprocess.run([sys.executable, 'corpus/upstream/run.py', '--timeout', str(args.timeout), '--php', php / 'bin/php',
+                               '--engine', f"cargo={ROOT / 'target/ext/swoole.so'}", '--output', OUT / 'phpt.json'],
+                              cwd=ROOT, env=run).returncode:
         failed.append('phpt')
     if found := len(list(reports.iterdir())):
         failed.append(f'{found} sanitizer reports in {reports}')

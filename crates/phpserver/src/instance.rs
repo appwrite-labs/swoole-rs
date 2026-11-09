@@ -101,28 +101,23 @@ fn port_callback(port: *mut c_void, kind: c_int) -> *mut c_void {
 /// `serv` is a live Server and `port` null or one of its ports.
 #[unsafe(export_name = "_Z32php_swoole_server_isset_callbackPN6swoole6ServerEPNS_10ListenPortEi")]
 pub unsafe extern "C" fn php_swoole_server_isset_callback(
-    serv: *mut c_void,
+    serv: view::Server<'_>,
     port: *mut c_void,
     kind: c_int,
 ) -> bool {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
     let primary = serv.port_at(0);
     !port_callback(port, kind).is_null() || !port_callback(primary, kind).is_null()
 }
 
 /// `php_swoole_server_get_callback`: callback `kind` of the port listening on
 /// `server_fd`, else the primary port's; null without that port.
-/// # Safety
-/// `serv` is a live Server.
+#[must_use]
 #[unsafe(export_name = "_Z30php_swoole_server_get_callbackPN6swoole6ServerEii")]
-pub unsafe extern "C" fn php_swoole_server_get_callback(
-    serv: *mut c_void,
+pub extern "C" fn php_swoole_server_get_callback(
+    serv: view::Server<'_>,
     server_fd: c_int,
     kind: c_int,
 ) -> *mut c_void {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
     let port = serv.port_by_server_fd(server_fd);
     if port.is_null() {
         return ptr::null_mut();
@@ -159,12 +154,10 @@ unsafe fn assign_by_val(zdata: *mut zval, data: *mut u8, length: usize) {
 /// `serv` is the running server, `req` its live `RecvData`, `zdata` writable.
 #[unsafe(export_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE")]
 pub unsafe extern "C" fn php_swoole_get_recv_data(
-    serv: *mut c_void,
+    serv: view::Server<'_>,
     zdata: *mut zval,
     req: *mut c_void,
 ) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: per the caller.
     let req = unsafe { &*req.cast::<RecvData>() };
     let (flags, length) = (req.info.flags, req.info.len as usize);
