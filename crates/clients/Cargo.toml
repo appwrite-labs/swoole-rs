@@ -19,6 +19,7 @@ swoole-rs-base64 = { path = "../base64" }
 swoole-rs-websocket = { path = "../websocket" }
 swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-http = { path = "../http" }
 swoole-rs-coroutine = { path = "../coroutine" }
 libc = "=0.2.191"
 

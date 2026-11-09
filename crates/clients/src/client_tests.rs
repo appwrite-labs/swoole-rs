@@ -6,7 +6,6 @@ use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_append, swr_cpp_buffer_new
 #[derive(Default)]
 struct Mock {
     log: Vec<String>,
-    proxy: [c_int; 2],
     connect: Vec<c_int>,
     io: Vec<isize>,
     ssl_connect_ready: bool,
@@ -20,7 +19,7 @@ struct Mock {
 }
 
 thread_local! {
-    static MOCK: RefCell<Mock> = RefCell::new(Mock { proxy: [-1, -1], ..Mock::default() });
+    static MOCK: RefCell<Mock> = RefCell::new(Mock::default());
 }
 
 fn mock<T>(f: impl FnOnce(&mut Mock) -> T) -> T {
@@ -35,20 +34,66 @@ fn taken() -> Vec<String> {
     mock(|m| std::mem::take(&mut m.log))
 }
 
-extern "C" fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> *mut SocketRecord {
-    log(format!("make {kind} {fd_type} {flags}"));
-    if mock(|m| m.fail_socket) {
-        set_errno(libc::EMFILE);
-        return core::ptr::null_mut();
+/// The socket record operations' recording doubles.
+pub(super) mod ops {
+    use super::*;
+
+    pub(in super::super) fn make_socket(
+        kind: c_int,
+        fd_type: c_int,
+        flags: c_int,
+    ) -> *mut SocketRecord {
+        log(format!("make {kind} {fd_type} {flags}"));
+        if mock(|m| m.fail_socket) {
+            set_errno(libc::EMFILE);
+            return core::ptr::null_mut();
+        }
+        let socket = swoole_rs_reactor::swr_v1_socket_alloc();
+        let mut record = SocketRecord::new();
+        record.socket_type = kind;
+        record.fd = -1;
+        // SAFETY: fresh storage for one record.
+        unsafe { socket.write(record) };
+        mock(|m| m.socket = core::ptr::NonNull::new(socket));
+        socket
     }
-    let socket = swoole_rs_reactor::swr_v1_socket_alloc();
-    let mut record = SocketRecord::new();
-    record.socket_type = kind;
-    record.fd = -1;
-    // SAFETY: fresh storage for one record.
-    unsafe { socket.write(record) };
-    mock(|m| m.socket = core::ptr::NonNull::new(socket));
-    socket
+
+    pub(in super::super) fn kernel_timeout(_: &ClientRecord, timeout: f64) {
+        log(format!("kernel {timeout}"));
+    }
+    pub(in super::super) fn assign(
+        _: &mut ClientRecord,
+        host: *const c_char,
+        port: c_int,
+        resolve: bool,
+    ) -> bool {
+        // SAFETY: the operations pass NUL-terminated hosts.
+        let host = unsafe { CStr::from_ptr(host) }
+            .to_string_lossy()
+            .into_owned();
+        log(format!("assign {host}:{port} {resolve}"));
+        if host == "dns.test" {
+            log::set_last_error(ERROR_BAD_HOST_ADDR);
+            return false;
+        }
+        true
+    }
+    pub(in super::super) fn connect(_: &ClientRecord, mode: c_int) -> c_int {
+        log(format!("connect {mode}"));
+        let ret = mock(|m| m.connect.pop()).unwrap_or(0);
+        if ret < 0 {
+            set_errno(libc::EINPROGRESS);
+        }
+        ret
+    }
+    pub(in super::super) fn event(_: &ClientRecord, op: c_int, events: c_int) -> c_int {
+        log(format!("event {op} {events}"));
+        OK
+    }
+    pub(in super::super) fn socket_error(_: &ClientRecord, error: &mut c_int) -> c_int {
+        *error = mock(|m| m.socket_error);
+        OK
+    }
 }
 
 /// The last socket `make_socket` made.
@@ -209,43 +254,6 @@ extern "C-unwind" fn timer_del(_: *mut c_void) -> bool {
     log("timer del");
     true
 }
-extern "C" fn kernel_timeout(_: *mut ClientRecord, timeout: f64) {
-    log(format!("kernel {timeout}"));
-}
-extern "C" fn assign(
-    _: *mut ClientRecord,
-    host: *const c_char,
-    port: c_int,
-    resolve: bool,
-) -> bool {
-    // SAFETY: the operations pass NUL-terminated hosts.
-    let host = unsafe { CStr::from_ptr(host) }
-        .to_string_lossy()
-        .into_owned();
-    log(format!("assign {host}:{port} {resolve}"));
-    if host == "dns.test" {
-        log::set_last_error(ERROR_BAD_HOST_ADDR);
-        return false;
-    }
-    true
-}
-extern "C" fn connect_socket(_: *mut ClientRecord, mode: c_int) -> c_int {
-    log(format!("connect {mode}"));
-    let ret = mock(|m| m.connect.pop()).unwrap_or(0);
-    if ret < 0 {
-        set_errno(libc::EINPROGRESS);
-    }
-    ret
-}
-extern "C" fn event(_: *mut ClientRecord, op: c_int, events: c_int) -> c_int {
-    log(format!("event {op} {events}"));
-    OK
-}
-extern "C" fn socket_error(_: *mut ClientRecord, error: *mut c_int) -> c_int {
-    // SAFETY: the operation passes a writable int.
-    unsafe { *error = mock(|m| m.socket_error) };
-    OK
-}
 extern "C" fn dns_lookup(_: *mut c_void, host: *const c_char, domain: c_int) -> c_int {
     // SAFETY: a NUL-terminated host.
     let host = unsafe { CStr::from_ptr(host) }
@@ -254,72 +262,134 @@ extern "C" fn dns_lookup(_: *mut c_void, host: *const c_char, domain: c_int) -> 
     log(format!("dns {host} {domain}"));
     OK
 }
-extern "C" fn ssl(_: *mut c_void, op: c_int, arg: c_int) -> c_int {
-    log(format!("ssl {op} {arg}"));
-    if op == SSL_CONNECT && mock(|m| m.ssl_connect_ready) {
+// crates/tls's, crates/protocols' and OpenSSL's, which the hybrid links. A TLS
+// owner is a leaked view of itself.
+#[unsafe(no_mangle)]
+extern "C" fn swr_v1_tls_warning(_: *const c_char, _: *const c_char) {}
+#[unsafe(no_mangle)]
+extern "C" fn swr_v1_tls_owner_new(_: TlsWarn) -> TlsView {
+    let fields = Box::into_raw(Box::new(TlsFields {
+        http: 0,
+        http_v2: 0,
+        prefer_server_ciphers: 0,
+        session_tickets: 0,
+        stapling: 0,
+        stapling_verify: 0,
+        disable_tls_host_name: 0,
+        grease: 0,
+        verify_depth: 0,
+        disable_compress: 0,
+        verify_peer: 0,
+        allow_self_signed: 0,
+        protocols: 0,
+        create_flag: 0,
+        context: core::ptr::null_mut(),
+    }));
+    let slot = std::sync::Arc::into_raw(StringSlot::empty()).cast();
+    let view = Box::into_raw(Box::new(TlsView {
+        owner: core::ptr::null(),
+        fields,
+        strings: [slot; 11],
+    }));
+    // SAFETY: the view just leaked.
+    unsafe { (*view).owner = view.cast() };
+    swr_v1_tls_owner_view(view.cast())
+}
+#[unsafe(no_mangle)]
+extern "C" fn swr_v1_tls_owner_view(owner: *const TlsOwner) -> TlsView {
+    let view = owner.cast::<TlsView>();
+    // SAFETY: an owner the double made.
+    unsafe { core::ptr::read(view) }
+}
+#[unsafe(no_mangle)]
+extern "C" fn swr_v1_tls_owner_free(_: *const TlsOwner) {}
+#[unsafe(export_name = "_ZN6swoole10SSLContext6createEv")]
+extern "C" fn tls_create(owner: *const TlsOwner) -> bool {
+    log("ssl create");
+    // SAFETY: an owner the double made.
+    unsafe {
+        (*swr_v1_tls_owner_view(owner).fields).context = core::ptr::without_provenance_mut(1);
+    };
+    true
+}
+#[unsafe(export_name = "_ZN6swoole7network6Socket10ssl_createEPNS_10SSLContextEi")]
+extern "C" fn ssl_create(_: *mut SocketRecord, _: *const TlsOwner, flags: c_int) -> c_int {
+    log(format!("ssl session {flags}"));
+    OK
+}
+#[unsafe(export_name = "_ZN6swoole7network6Socket11ssl_connectEv")]
+extern "C" fn ssl_connect(_: *mut SocketRecord) -> c_int {
+    log("ssl connect");
+    if mock(|m| m.ssl_connect_ready) {
         sock().tls.state = SSL_STATE_READY;
     }
-    if op == SSL_HAS_CONTEXT { 1 } else { OK }
+    OK
 }
-extern "C" fn proxy_state(_: *mut c_void, proxy: c_int) -> c_int {
-    mock(|m| m.proxy[proxy.unsigned_abs() as usize])
+#[unsafe(export_name = "_ZNK6swoole7network6Socket10ssl_verifyEb")]
+extern "C" fn ssl_verify(_: *const SocketRecord, allow_self_signed: bool) -> bool {
+    log(format!("ssl verify {allow_self_signed}"));
+    true
 }
-extern "C" fn set_proxy_state(_: *mut c_void, proxy: c_int, state: c_int) {
-    log(format!("proxy {proxy} {state}"));
-    mock(|m| m.proxy[proxy.unsigned_abs() as usize] = state);
+#[unsafe(export_name = "_ZNK6swoole7network6Socket14ssl_check_hostEPKc")]
+extern "C" fn ssl_check_host(_: *const SocketRecord, _: *const c_char) -> bool {
+    log("ssl host");
+    true
 }
-extern "C" fn proxy_route(
+#[unsafe(export_name = "_ZN6swoole7network6Socket9ssl_closeEv")]
+extern "C" fn ssl_close(_: *mut SocketRecord) {
+    log("ssl close");
+}
+#[unsafe(export_name = "SSL_ctrl")]
+extern "C" fn ssl_ctrl(
     _: *mut c_void,
-    proxy: c_int,
-    _: *const c_char,
-    port: c_int,
-    out: *mut c_int,
-) -> *const c_char {
-    if mock(|m| m.proxy[proxy.unsigned_abs() as usize]) < 0 {
-        return core::ptr::null();
-    }
-    log(format!("route {proxy} {port}"));
-    // SAFETY: the operation passes a writable int.
-    unsafe { *out = 1080 };
-    c"proxy.test".as_ptr()
+    cmd: c_int,
+    _: libc::c_long,
+    _: *mut c_void,
+) -> libc::c_long {
+    log(format!("ssl ctrl {cmd}"));
+    1
 }
-extern "C" fn socks5_negotiate(_: *mut c_void, data: *mut *const c_char) -> isize {
-    // SAFETY: the operation passes a writable pointer.
-    unsafe { *data = c"\x05".as_ptr() };
+#[unsafe(export_name = "_ZN6swoole11Socks5Proxy5admitEmm")]
+extern "C" fn socks5_admit(user: usize, password: usize) -> c_int {
+    if user != 0 && password != 0 { 2 } else { 1 }
+}
+#[unsafe(export_name = "_ZN6swoole11Socks5Proxy22pack_negotiate_requestEv")]
+extern "C" fn socks5_pack_negotiate(_: *const *mut c_void) -> isize {
     3
 }
-extern "C" fn socks5_handshake(_: *mut c_void, _: *const c_char, length: usize) -> bool {
+/// Any reply makes the proxy ready, with nothing more to send.
+#[unsafe(export_name = "_ZN6swoole11Socks5Proxy14handshake_stepEPKcm")]
+extern "C" fn socks5_handshake_step(
+    proxy: *const *mut c_void,
+    _: *const c_char,
+    length: usize,
+) -> isize {
     log(format!("socks5 {length}"));
-    mock(|m| m.proxy[0] = SOCKS5_READY);
-    true
-}
-extern "C" fn http_pack(_: *mut c_void, data: *mut *const c_char) -> usize {
-    // SAFETY: the operation passes a writable pointer.
-    unsafe { *data = c"CONNECT".as_ptr() };
-    7
-}
-extern "C" fn http_handshake(_: *mut c_void, shared: bool, length: usize) -> bool {
-    log(format!("http {shared} {length}"));
-    true
+    // SAFETY: the client's live SOCKS5 owner.
+    unsafe { (*(*(*proxy).cast::<ProxyState>()).fields.get()).state = 4 };
+    0
 }
 
-static NATIVE: Native = Native {
-    make_socket,
-    kernel_timeout,
-    assign,
-    connect: connect_socket,
-    event,
-    socket_error,
-    dns_lookup,
-    ssl,
-    proxy_state,
-    set_proxy_state,
-    proxy_route,
-    socks5_negotiate,
-    socks5_handshake,
-    http_pack,
-    http_handshake,
-};
+/// Gives the client a proxy at proxy.test:1080.
+fn set_proxy(client: *mut Client, http: bool) {
+    let host = c"proxy.test";
+    // SAFETY: a live state and texts of their lengths.
+    unsafe {
+        swr_v1_clients_proxy(
+            client,
+            http,
+            host.as_ptr(),
+            host.count_bytes(),
+            1080,
+            c"".as_ptr(),
+            0,
+            c"".as_ptr(),
+            0,
+        );
+    }
+}
+
+static NATIVE: Native = Native { dns_lookup };
 
 unsafe fn new_client(kind: c_int, is_async: bool) -> *mut Client {
     let mut record = Box::new(core::mem::MaybeUninit::uninit());
@@ -339,12 +409,7 @@ unsafe fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 /// A client of `kind`, its construction log dropped, listened to for every event
 /// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
-    mock(|m| {
-        *m = Mock {
-            proxy: [-1, -1],
-            ..Mock::default()
-        }
-    });
+    mock(|m| *m = Mock::default());
     log::set_last_error(0);
     // SAFETY: the double stands in for the C++ client.
     let client = unsafe { new_client(kind, is_async) };
@@ -373,12 +438,7 @@ fn connect(client: *mut Client, host: &CStr, timeout: f64, flags: c_int) -> c_in
 
 #[test]
 fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
-    mock(|m| {
-        *m = Mock {
-            proxy: [-1, -1],
-            ..Mock::default()
-        }
-    });
+    mock(|m| *m = Mock::default());
     log::set_last_error(0);
     // SAFETY: the double stands in for the C++ client.
     let client = unsafe { new_client(1, true) };
@@ -516,22 +576,28 @@ fn sync_nonblocking_connect_reports_ready_and_wait() {
 #[test]
 fn sync_connect_through_socks5_routes_and_handshakes() {
     let client = client(1, false, false);
-    mock(|m| m.proxy[0] = SOCKS5_WAIT);
+    set_proxy(client, false);
+    assert_eq!(Handle(client).proxy_state(Proxy::Socks5), SOCKS5_WAIT);
     assert_eq!(connect(client, c"example.test", 3.0, 0), OK);
     assert_eq!(
         taken(),
         [
             "kernel 3",
-            "route 0 80",
             "assign proxy.test:1080 true",
             "connect 1",
             "send_sync 3",
-            "proxy 0 1",
             "recv_sync 64",
             "socks5 64",
         ]
     );
     assert!(flag(client, ACTIVE));
+    assert_eq!(Handle(client).proxy_state(Proxy::Socks5), SOCKS5_READY);
+    let proxy = Handle(client).proxy(Proxy::Socks5).unwrap();
+    // SAFETY: the client's live proxy.
+    unsafe {
+        assert_eq!(CStr::from_ptr(proxy.string(3).data), c"example.test");
+        assert_eq!((*proxy.fields.get()).target_port, 80);
+    }
     assert_eq!(
         Handle(client).get().server_host.borrow().to_bytes(),
         b"proxy.test"
@@ -573,13 +639,14 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
 #[test]
 fn writable_after_connect_starts_the_socks5_handshake() {
     let client = client(1, true, true);
-    mock(|m| m.proxy[0] = SOCKS5_WAIT);
+    set_proxy(client, false);
     // SAFETY: a live state.
     unsafe { swr_v1_clients_watermark(client, true).write(100) };
     // SAFETY: as above.
     let result = on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
     assert_eq!(result, 3);
-    assert_eq!(taken(), ["event 1 512", "proxy 0 1", "write 3"]);
+    assert_eq!(taken(), ["event 1 512", "write 3"]);
+    assert_eq!(Handle(client).proxy_state(Proxy::Socks5), SOCKS5_HANDSHAKE);
     assert!(flag(client, ACTIVE));
     free(client);
 }
@@ -614,10 +681,7 @@ fn tls_connect_waits_for_the_stream_then_connects() {
     mock(|m| m.ssl_connect_ready = true);
     // SAFETY: as above.
     on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
-    assert_eq!(
-        taken(),
-        ["ssl 2 0", "ssl 3 0", "ssl 4 0", "ssl 5 0", "call 1 0"]
-    );
+    assert_eq!(taken(), ["ssl session 2", "ssl connect", "call 1 0"]);
     free(client);
 }
 
@@ -625,7 +689,8 @@ fn tls_connect_waits_for_the_stream_then_connects() {
 fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     let client = client(1, true, true);
     Handle(client).set(ACTIVE, true);
-    mock(|m| m.proxy[1] = HTTP_PROXY_WAIT);
+    set_proxy(client, true);
+    assert_eq!(Handle(client).proxy_state(Proxy::Http), HTTP_PROXY_WAIT);
     // SAFETY: a live state.
     on_timeout(client.cast());
     assert_eq!(log::last_error(), libc::ETIMEDOUT);
@@ -768,6 +833,42 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     assert_eq!(
         on_package(core::ptr::null(), socket, &raw const package),
         ERR
+    );
+    free(client);
+}
+
+#[test]
+fn tls_handshake_names_the_host_and_verifies_the_peer() {
+    let client = client(1, false, false);
+    // SAFETY: a live state.
+    assert_eq!(unsafe { swr_v1_clients_enable_ssl(client) }, OK);
+    // SAFETY: as above: TLS was already on.
+    assert_eq!(unsafe { swr_v1_clients_enable_ssl(client) }, ERR);
+    let tls = Handle(client).tls();
+    let name = c"example.test";
+    // SAFETY: the double's live slot and fields.
+    unsafe {
+        let slot = tls.strings[TLS_HOST_NAME].cast();
+        assert_eq!(
+            swoole_rs_corebase::swr_v1_core_string_set(slot, name.as_ptr(), name.count_bytes()),
+            0
+        );
+        (*tls.fields).verify_peer = 1;
+        (*tls.fields).allow_self_signed = 1;
+    }
+    mock(|m| m.ssl_connect_ready = true);
+    // SAFETY: a live state.
+    assert_eq!(unsafe { swr_v1_clients_ssl_handshake(client) }, OK);
+    assert_eq!(
+        taken(),
+        [
+            "ssl create",
+            "ssl session 2",
+            "ssl ctrl 55",
+            "ssl connect",
+            "ssl verify true",
+            "ssl host"
+        ]
     );
     free(client);
 }
