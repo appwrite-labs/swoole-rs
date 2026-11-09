@@ -18,8 +18,8 @@ case binary to the hybrid tree's libswoole.so; Linux):
 
 The facade's getters are field reads over crates/coroutine's record, its operations
 the `swr_v1_coroutine_*` exports and upstream symbols the header calls.
-`coroutine::run`, `Coroutine::bailout` and `swoole_event_defer` take a
-`std::function`, so tests/modules/hooks/system/fixture.cc wraps them. The
+`coroutine::run` and `Coroutine::bailout` take a `std::function` and
+`swoole_event_defer` has C++ linkage, so tests/modules/hooks/system/fixture.cc wraps them. The
 repo-owned `rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait`
 witness (formerly `lifetime.cpp`) throws from a `CancelFunc` copy, which only C++
 can do; its body is the fixture's, unchanged, and it runs as a case of the same

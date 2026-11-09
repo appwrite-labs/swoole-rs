@@ -54,6 +54,7 @@ pub struct ReactorState {
     pub(crate) backend: Backend,
     pub(crate) backend_fd: c_int,
     pub(crate) backend_limit: c_int,
+    pub(crate) callbacks: crate::callbacks::Callbacks,
 }
 
 pub(crate) enum Backend {
@@ -124,6 +125,7 @@ pub extern "C" fn swr_v1_reactor_state_new() -> ReactorPrepared {
         backend: Backend::None,
         backend_fd: -1,
         backend_limit: 0,
+        callbacks: crate::callbacks::Callbacks::default(),
     }) else {
         return ReactorPrepared {
             owner: ptr::null_mut(),

@@ -1,5 +1,5 @@
 // C entry points for the Rust cases in src/main.rs (upstream's core-tests/src/reactor/base.cpp):
-// the Reactor's constructor, members and std::function slots, the SocketPair classes and the
+// the Reactor's constructor, members and callback slots, the SocketPair classes and the
 // C++-linkage event, hook, signal and timer APIs. Every assertion and callback body is Rust's.
 // Compiled into the hybrid tree's lib-swoole by tests/modules/hooks/system.py.
 #include <stddef.h>
@@ -103,14 +103,19 @@ bool swr_case_reactor_exists_fd(Reactor *r, int fd) {
 size_t swr_case_reactor_event_num(Reactor *r) {
     return r->get_event_num();
 }
+// End callbacks are plain functions; the one case that sets one runs it on its reactor.
+static Reactor *end_reactor;
+static End end_fn;
 void swr_case_reactor_set_end_callback(Reactor *r, int id, End fn) {
-    r->set_end_callback(static_cast<Reactor::EndCallback>(id), [fn](Reactor *reactor) { fn(reactor); });
+    end_reactor = r;
+    end_fn = fn;
+    r->set_end_callback(static_cast<Reactor::EndCallback>(id), [] { end_fn(end_reactor); });
 }
 void swr_case_reactor_erase_end_callback(Reactor *r, int id) {
     r->erase_end_callback(static_cast<Reactor::EndCallback>(id));
 }
 void swr_case_reactor_defer(Reactor *r, Plain fn, void *data) {
-    r->defer([fn](void *d) { fn(d); }, data);
+    r->defer(fn, data);
 }
 // which: 0 future_task, 1 idle_task.
 void swr_case_reactor_set_task(Reactor *r, int which, Plain fn, void *data) {

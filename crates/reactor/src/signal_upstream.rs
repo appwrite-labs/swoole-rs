@@ -58,9 +58,6 @@ unsafe extern "C" {
         event: c_int,
         handler: unsafe extern "C" fn(*mut c_void, *mut Event) -> c_int,
     );
-    #[cfg(target_os = "linux")]
-    #[link_name = "_ZN6swoole7Reactor18erase_end_callbackENS0_11EndCallbackE"]
-    fn reactor_erase_end_callback(reactor: *mut c_void, id: c_int);
 }
 
 // SAFETY: crates/tls's `Socket::free`, the same archive.
@@ -181,9 +178,8 @@ unsafe extern "C" fn report(kind: u8, signo: i32, error: i32) {
 mod descriptor {
     use super::{
         EVENT_READ, EXIT_CONDITION_SIGNALFD, Event, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK,
-        SocketRecord, c_int, c_void, current, ptr, reactor_erase_end_callback, socket_free,
-        swoole_event_add, swoole_event_del, swoole_event_isset_handler, swoole_event_set_handler,
-        swr_v1_event_current, swr_v1_event_set_exit_condition,
+        SocketRecord, c_int, c_void, current, ptr, socket_free, swoole_event_add, swoole_event_del,
+        swoole_event_isset_handler, swoole_event_set_handler, swr_v1_event_set_exit_condition,
     };
     use crate::socket_upstream::make_socket_fd;
     use crate::swr_v1_reactor_deferred_push;
@@ -257,10 +253,11 @@ mod descriptor {
     }
 
     pub(super) unsafe extern "C" fn erase_end() {
-        // SAFETY: no preconditions.
-        let reactor = unsafe { swr_v1_event_current() };
-        // SAFETY: the thread's live loop.
-        unsafe { reactor_erase_end_callback(reactor, PRIORITY_SIGNAL_CALLBACK) };
+        let Some(reactor) = current() else { return };
+        // SAFETY: the thread's live loop, borrowed for this change alone.
+        if let Some(owner) = unsafe { reactor.owner.as_mut() } {
+            crate::swr_v1_reactor_set_end(owner, PRIORITY_SIGNAL_CALLBACK, None);
+        }
     }
 
     pub(super) static OPS_DESCRIPTOR: DescriptorOps = DescriptorOps {

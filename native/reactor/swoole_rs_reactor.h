@@ -63,13 +63,8 @@ swr_v1_reactor_iov_progress_reply swr_v1_reactor_iov_owned_progress(struct iovec
 struct pollfd;
 struct epoll_event;
 struct kevent;
-typedef struct { uint32_t phase; int32_t action; } swr_v1_reactor_builtin_reply;
-swr_v1_reactor_builtin_reply swr_v1_reactor_builtin_step(uint32_t, uint32_t, uint32_t, uint64_t);
-
-typedef struct { uint32_t phase; } swr_v1_reactor_init_state;
 typedef struct { int32_t selected; uint32_t observe_kqueue, factory; } swr_v1_reactor_backend_plan;
 swr_v1_reactor_backend_plan swr_v1_reactor_backend_type(int32_t, uint32_t, uint32_t, uint32_t);
-int32_t swr_v1_reactor_init_next(swr_v1_reactor_init_state *, uint32_t, uint32_t, uint32_t, uint32_t);
 
 typedef struct swr_v1_reactor_deferred swr_v1_reactor_deferred;
 /* Reactor::defer_tasks and destroy_callbacks: FIFO (call, data) queues, created on first push.
@@ -79,18 +74,6 @@ int32_t swr_v1_reactor_deferred_push(swr_v1_reactor_deferred **, void (*call)(vo
 void swr_v1_reactor_deferred_run(swr_v1_reactor_deferred *);
 void swr_v1_reactor_deferred_free(swr_v1_reactor_deferred **);
 
-/* End (0) and exit (1) callbacks by key. Rust keeps views[kind] current: that kind's
-   entries in ascending key order, readable until the next change. Its other fields
-   are Rust's own. */
-typedef struct { int32_t key; uintptr_t token; } swr_v1_reactor_callback_entry;
-typedef struct { const swr_v1_reactor_callback_entry *entries; size_t len; } swr_v1_reactor_callback_view;
-typedef struct swr_v1_reactor_callbacks { swr_v1_reactor_callback_view views[2]; } swr_v1_reactor_callbacks;
-int32_t swr_v1_reactor_callbacks_lookup(const swr_v1_reactor_callbacks *, uint32_t, int32_t, uintptr_t *);
-int32_t swr_v1_reactor_callbacks_erase(swr_v1_reactor_callbacks *, uint32_t, int32_t, uintptr_t *);
-/* The index of the first entry after key: where a walk goes on once a callback changed the entries. */
-size_t swr_v1_reactor_callbacks_after(const swr_v1_reactor_callbacks *, uint32_t, int32_t);
-int32_t swr_v1_reactor_callbacks_ensure(swr_v1_reactor_callbacks **, uint32_t, int32_t, uintptr_t, uintptr_t *);
-int32_t swr_v1_reactor_callbacks_clear_next(swr_v1_reactor_callbacks **, uintptr_t *);
 /* Each backend's whole wait() loop in one call (#336, #391). Rust runs the loop and its readiness
    order; these are the native effects, each passed `context` (prepare/remove also the socket). */
 enum { SWR_REACTOR_POLL, SWR_REACTOR_EPOLL, SWR_REACTOR_KQUEUE };
@@ -149,14 +132,6 @@ bool swr_v1_reactor_handlers_isset(const swr_v1_reactor_handlers *, int fd_type,
 swr_v1_reactor_handler swr_v1_reactor_handlers_get(const swr_v1_reactor_handlers *, uint32_t kind, int fd_type, bool error_only);
 void swr_v1_reactor_handlers_set_default(swr_v1_reactor_handlers *, uint32_t kind, swr_v1_reactor_handler);
 const swr_v1_reactor_handler *swr_v1_reactor_handlers_default(const swr_v1_reactor_handlers *, uint32_t kind);
-/* Reactor::wait()'s native effects (swr_v1_reactor_wait); each receives the reactor. */
-typedef struct {
-    void *reactor;               /* each handler runs as handler(reactor, event) */
-    void (*begin)(void *);
-    void (*end)(void *, int timed_out);
-    int (*interrupted)(void *); /* nullable: epoll io_uring builds only */
-    void (*interrupt)(void *);  /* nullable */
-} swr_v1_reactor_wait_ops;
 typedef struct { size_t size, alignment, fields[6]; } swr_v1_reactor_backend_layout;
 #if defined(__linux__) && !defined(__ANDROID__)
 typedef struct swr_v1_reactor_epoll_events swr_v1_reactor_epoll_events;
@@ -248,12 +223,9 @@ int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_
 /* _ssl_read_x509_file: a certificate as PEM into at most length bytes, warning and
  * returning -1 on failure; frees cert when consume. */
 int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);
-/* Reactor::set_exit_condition of a plain function, for Rust's signal backends
- * (native/reactor/reactor.cc). */
+/* sw_reactor()->set_exit_condition, remove_exit_condition and set_end_callback. */
 void swr_v1_event_set_exit_condition(int id, bool (*condition)(size_t *event_num));
-/* Reactor::remove_exit_condition, for Rust's (crates/phpcoroutines). */
 void swr_v1_event_remove_exit_condition(int id);
-/* Reactor::set_end_callback of a plain function, for the io_uring submit (crates/hooks). */
 void swr_v1_event_set_end_callback(int id, void (*callback)(void));
 /* The swr_v1_reactor_change_log the C++ passes. */
 void swr_v1_reactor_log(const char *origin, int code, const char *message);
@@ -357,8 +329,6 @@ typedef struct {
     swr_v1_reactor_deferred *defer_tasks, *destroy_callbacks;
     swr_v1_reactor_task idle_task, future_task;
 } swr_v1_reactor_fields;
-/* The PRIORITY_DEFER_TASK end callback: detaches defer_tasks, runs and frees it. */
-void swr_v1_reactor_run_defer(swr_v1_reactor_deferred **slot);
 typedef struct {
     swr_v1_reactor_state *owner; swr_v1_reactor_fields *fields;
     swr_v1_reactor_registry *registry; swr_v1_reactor_handlers *handlers;
@@ -369,8 +339,13 @@ void swr_v1_reactor_state_free(swr_v1_reactor_state *);
 int swr_v1_reactor_state_open(swr_v1_reactor_state *, int kind, int count);
 void swr_v1_reactor_state_close_backend(swr_v1_reactor_state *);
 swr_v1_reactor_backend_view swr_v1_reactor_state_backend(swr_v1_reactor_state *);
-/* Reactor::wait() on the state's backend: 0 when it stops (or poll fails), -1 when epoll/kqueue fail. */
-int32_t swr_v1_reactor_wait(swr_v1_reactor_state *, const swr_v1_reactor_wait_ops *);
+/* Reactor's end callbacks (set_end_callback, or erase_end_callback without fn) and exit
+ * conditions (set_exit_condition, or remove_exit_condition without fn: whether one was set),
+ * and the built-ins its constructor sets after the create hook. */
+void swr_v1_reactor_set_end(swr_v1_reactor_state *, int id, void (*callback)(void));
+bool swr_v1_reactor_set_exit(swr_v1_reactor_state *, int id, bool (*condition)(size_t *event_num));
+bool swr_v1_reactor_isset_exit(const swr_v1_reactor_state *, int id);
+void swr_v1_reactor_install_builtins(swr_v1_reactor_state *);
 int swr_v1_reactor_state_descriptor(const swr_v1_reactor_state *);
 int swr_v1_reactor_state_socket(swr_v1_reactor_state *, void *socket, uint32_t op, int events);
 /* Logs message as from origin: code 0 is swoole_sys_warning (errno is the kernel's), else
@@ -384,34 +359,6 @@ int swr_v1_reactor_change(swr_v1_reactor_state *, void *socket, uint32_t op, int
 int swr_v1_reactor_interest(swr_v1_reactor_state *, void *socket, uint32_t kind, int event, swr_v1_reactor_change_log log);
 #ifdef __cplusplus
 }
-static_assert(sizeof(swr_v1_reactor_builtin_reply) == 8, "reactor builtin reply ABI");
-static_assert(sizeof(swr_v1_reactor_init_state) == 4, "reactor init state ABI");
 static_assert(sizeof(swr_v1_reactor_backend_plan) == 12, "reactor backend plan ABI");
-#include <functional>
-namespace swoole {
-class Reactor;
-// The private member keeps Native payload effects outside Rust. Its placement
-// before sockets_ preserves Native member destruction order after Reactor body.
-class ReactorCallbacks {
-    swr_v1_reactor_callbacks *owner_ = nullptr;
-    template<class Function> Function *ensure(uint32_t kind, int32_t key);
-    void clear() noexcept;
-    void copy_from(const ReactorCallbacks &);
-  public:
-    using End = std::function<void(Reactor *)>;
-    using Exit = std::function<bool(Reactor *, size_t &)>;
-    ReactorCallbacks() = default;
-    ReactorCallbacks(const ReactorCallbacks &);
-    ReactorCallbacks &operator=(const ReactorCallbacks &);
-    ~ReactorCallbacks() noexcept;
-    void set_end(int32_t, const End &);
-    void set_exit(int32_t, const Exit &);
-    void erase_end(int32_t);
-    size_t erase_exit(int32_t);
-    bool has_exit(int32_t) const;
-    void execute_end(Reactor *) const;
-    bool if_exit(Reactor *, size_t &) const;
-};
-}
 #endif
 #endif
