@@ -105,12 +105,13 @@ unsafe extern "C" {
 }
 
 /// llhttp's `HPE_INVALID_HEADER_TOKEN`, `HPE_PAUSED`, `HPE_PAUSED_UPGRADE`,
-/// `HPE_USER` and `F_CHUNKED`.
+/// `HPE_USER`, `F_CHUNKED` and `F_TRAILING`.
 const INVALID_HEADER_TOKEN: i32 = 10;
 const PAUSED: c_int = 21;
 const PAUSED_UPGRADE: c_int = 22;
 const USER: c_int = 24;
 const CHUNKED: u16 = 8;
+const TRAILING: u16 = 0x80;
 /// `PARSE_COOKIE` and `PARSE_STRING` (`main/php_variables.h`).
 const PARSE_COOKIE: c_int = 2;
 const PARSE_STRING: c_int = 3;
@@ -538,7 +539,12 @@ unsafe extern "C" fn on_header_field(
     length: usize,
 ) -> c_int {
     // SAFETY: llhttp calls back with the context's parser.
-    header_field(unsafe { state(parser) }, at.cast(), length)
+    let state = unsafe { state(parser) };
+    // A request's trailer fields are ignored.
+    if state.parser.flags & TRAILING != 0 {
+        return 0;
+    }
+    header_field(state, at.cast(), length)
 }
 
 fn header_field(state: &mut State, at: *const u8, length: usize) -> c_int {
@@ -576,6 +582,9 @@ unsafe extern "C" fn on_piece_header_field(
 ) -> c_int {
     // SAFETY: llhttp calls back with the context's parser.
     let state = unsafe { state(parser) };
+    if state.parser.flags & TRAILING != 0 {
+        return 0;
+    }
     if state.parse.header_name_length == 0 {
         let (start, _) = zdata_span(state);
         state.parse.header_name_offset = at.addr().wrapping_sub(start.addr());
@@ -591,6 +600,9 @@ unsafe extern "C" fn on_piece_header_value(
 ) -> c_int {
     // SAFETY: llhttp calls back with the context's parser.
     let state = unsafe { state(parser) };
+    if state.parser.flags & TRAILING != 0 {
+        return 0;
+    }
     state.parse.header_value_length += length;
     let (start, total) = zdata_span(state);
     if at.wrapping_add(length).cast() == start.wrapping_add(total) {
@@ -615,7 +627,11 @@ unsafe extern "C" fn on_header_value(
     length: usize,
 ) -> c_int {
     // SAFETY: llhttp calls back with the context's parser.
-    header_value(unsafe { state(parser) }, at.cast(), length)
+    let state = unsafe { state(parser) };
+    if state.parser.flags & TRAILING != 0 {
+        return 0;
+    }
+    header_value(state, at.cast(), length)
 }
 
 fn set_error_reason(state: &mut State, reason: &CStr) {

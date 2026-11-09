@@ -178,3 +178,27 @@ fn max_request_size() {
     );
     logged();
 }
+
+// http_server.ignore_http1_request_trailers (core-tests/src/server/http_request_trailer.cpp)
+#[test]
+fn ignore_http1_request_trailers() {
+    let request: &[u8] = b"POST / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\
+        Content-Type: text/plain\r\nCookie: initial=yes\r\n\
+        Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\
+        Content-Type: multipart/form-data\r\nCookie: extra=no\r\n\
+        X-Trailer: ignored\r\n\r\n";
+    let mut f = server(request, INPUT_BUFFER_SIZE, 0);
+    serve(&mut f);
+    assert!(f.sent.is_empty(), "200 OK: no error response");
+    assert_eq!(f.dispatched, [request.to_vec()], "the request, trailers too, reaches the handler");
+    // The handler's headers are the head's; the trailer section changes none.
+    let head = &f.dispatched[0][..find(&f.dispatched[0], b"\r\n\r\n").unwrap()];
+    let value = |name: &[u8]| -> Vec<&[u8]> {
+        head.split(|&b| b == b'\n')
+            .filter_map(|line| line.trim_ascii().strip_prefix(name)?.strip_prefix(b": "))
+            .collect()
+    };
+    assert_eq!(value(b"Content-Type"), [b"text/plain"], "ctx.headers[\"Content-Type\"]");
+    assert_eq!(value(b"Cookie"), [b"initial=yes"], "ctx.headers[\"Cookie\"]");
+    assert!(value(b"X-Trailer").is_empty(), "ctx.headers.count(\"X-Trailer\") == 0");
+}

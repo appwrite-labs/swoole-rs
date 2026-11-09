@@ -69,6 +69,11 @@ recorded requests come from `crates/oracle/upstream/core-tests/fuzz/cases`.
 | `parser2` | `parser2` | `req2.bin`, `package_max_length` 64 KiB, `upload_max_filesize` 1 MiB | `form_data.size() == 3`; `200 OK` as above; also that the upload streamed to disk is `test.jpg` |
 | `upload` | `upload` | curl's chunked `-F file=@test.jpg` to `/upload?test=curl`, 2 MiB | `files.size() == 1`, `request_path` `/upload`, `query_string` `test=curl`; the server sends nothing itself |
 | `max_request_size` | `max_request_size` | curl's `-F file=@test.jpg`, 128 KiB | `413 Request Entity Too Large`, the request never dispatched |
+| `ignore_http1_request_trailers` (v6.2.5's `http_request_trailer.cpp`) | `ignore_http1_request_trailers` | its chunked POST with a `Content-Type`/`Cookie`/`X-Trailer` trailer section | `200 OK` as above, the request (trailers too) dispatched whole; `Content-Type` `text/plain`, `Cookie` `initial=yes`, no `X-Trailer` |
+
+The PHP request parser's handling of the same trailers (`crates/phphttp`'s llhttp
+callbacks skip fields under `F_TRAILING`) is checked by the pinned PHPTs
+`swoole_http_server/request_trailer.phpt` and `create_request_trailer.phpt`.
 
 The 11 TESTs that start no server call the helpers, the request-line reader and the
 WebSocket codec directly. Their ports sit beside the Rust each one calls, with the

@@ -17,21 +17,21 @@ use std::{
     ptr,
 };
 use swoole_rs_http2::{
-    Http2ChunkPlan, Http2FrameFacts, Http2HeaderPlan, Http2InflateStep, Http2ReceiveFacts,
-    Http2RespondFacts, Http2SettingPlan, Http2WindowPlan, receive_action as recv, send_frame_size,
-    sw_rs_http2_chunk, sw_rs_http2_content_length_rejected, sw_rs_http2_decode_frame,
+    Http2ChunkPlan, Http2FrameFacts, Http2HeaderPlan, Http2InflateStep, Http2RespondFacts,
+    Http2SettingPlan, Http2WindowPlan, send_frame_size, sw_rs_http2_chunk,
+    sw_rs_http2_content_length_rejected, sw_rs_http2_data_rejected, sw_rs_http2_decode_frame,
     sw_rs_http2_file_complete, sw_rs_http2_header_defaults, sw_rs_http2_header_plan,
     sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
-    sw_rs_http2_pack_frame_header, sw_rs_http2_receive_next, sw_rs_http2_respond_next,
-    sw_rs_http2_response_status, sw_rs_http2_setting_plan, sw_rs_http2_window_action,
-    sw_rs_http2_window_plan,
+    sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next, sw_rs_http2_response_status,
+    sw_rs_http2_setting_plan, sw_rs_http2_window_action, sw_rs_http2_window_plan,
 };
 use swoole_rs_zend::{
     bailout, string,
     sys::{
         IS_ARRAY, IS_NULL, IS_STRING, add_assoc_str_ex, add_assoc_stringl_ex,
-        swr_zend_hash_foreach_key, swr_zend_property_array, swr_zend_property_slot,
-        swr_zend_url_decode, zend_hash_str_find, zend_object, zend_string, zend_ulong, zval,
+        swr_zend_hash_foreach_key, swr_zend_http_add_or_merge, swr_zend_property_array,
+        swr_zend_property_slot, swr_zend_url_decode, swr_zval_copy, swr_zval_stringl,
+        zend_hash_str_del, zend_hash_str_find, zend_object, zend_string, zend_ulong, zval,
         zval_ptr_dtor,
     },
     type_of, value,
@@ -48,9 +48,11 @@ const TYPE_SETTINGS: u32 = 4;
 const TYPE_PING: u32 = 6;
 const TYPE_GOAWAY: u32 = 7;
 const TYPE_WINDOW_UPDATE: u32 = 8;
+const TYPE_CONTINUATION: u32 = 9;
 const FLAG_ACK: u32 = 0x1;
 const FLAG_END_STREAM: u32 = 0x1;
 const FLAG_END_HEADERS: u32 = 0x4;
+const FLAG_PADDED: u32 = 0x8;
 const FLAG_PRIORITY: u32 = 0x20;
 /// `SwRsHttp2FrameAction`.
 const ACTION_SETTINGS: u32 = 0;
@@ -80,10 +82,8 @@ const SERVER_HEADERS: u32 = 2;
 const HEADER_METHOD: u32 = 1;
 const HEADER_PATH: u32 = 2;
 const HEADER_AUTHORITY: u32 = 3;
-const HEADER_CONTENT_TYPE: u32 = 4;
 const HEADER_COOKIE: u32 = 5;
 const HEADER_CONTENT_LENGTH: u32 = 6;
-const HEADER_ACCEPT_ENCODING: u32 = 7;
 const MEDIA_URLENCODED: u32 = 1;
 const MEDIA_MULTIPART: u32 = 2;
 /// `HTTP_HEADER_SERVER`, `_DATE` and `_CONTENT_TYPE`.
@@ -1108,8 +1108,14 @@ fn parse(session: &Session, buf: *const u8) -> c_int {
     // SAFETY: nine readable header bytes and a writable result.
     unsafe { sw_rs_http2_decode_frame(buf, FRAME_HEADER, last_stream_id, 0, &raw mut facts) };
     let stream_id = facts.stream_id;
-    if facts.publish_last_id != 0 {
+    let new_stream = facts.publish_last_id != 0;
+    if facts.kind == TYPE_HEADERS && new_stream {
         session.last_stream_id.set(stream_id);
+    }
+    // A header block continues only in CONTINUATION frames of its own stream.
+    let pending = session.header_stream_id.get();
+    if pending != 0 && (facts.kind != TYPE_CONTINUATION || stream_id != pending) {
+        return SW_ERR;
     }
     if session.shutting_down.get() {
         log(
@@ -1126,19 +1132,13 @@ fn parse(session: &Session, buf: *const u8) -> c_int {
     let flags = facts.flags & 0xff;
     match facts.action {
         ACTION_SETTINGS => return settings(session, payload, length),
-        ACTION_HEADERS => {
-            let Some(stream) = session
-                .stream(stream_id, false)
-                .or_else(|| session.stream(stream_id, true))
-            else {
+        ACTION_HEADERS => return headers(session, stream_id, flags, payload, length, new_stream),
+        _ if facts.kind == TYPE_CONTINUATION => {
+            let stream = session.stream(stream_id, false);
+            let Some(stream) = stream.filter(|_| pending == stream_id) else {
                 return SW_ERR;
             };
-            if parse_header(session, stream.ctx, flags, payload, length) < 0 {
-                return SW_ERR;
-            }
-            if flags & FLAG_END_STREAM != 0 {
-                session.handle(&stream);
-            }
+            return header_block(session, &stream, flags & FLAG_END_HEADERS, payload, length);
         }
         ACTION_DATA => return data(session, stream_id, flags, payload, length),
         ACTION_PING_REPLY => {
@@ -1173,6 +1173,199 @@ fn parse(session: &Session, buf: *const u8) -> c_int {
         _ => {}
     }
     SW_OK
+}
+
+/// A HEADERS frame: a new stream's request headers, or its trailers, which
+/// are decoded (the HPACK table is the connection's) and discarded.
+fn headers(
+    session: &Session,
+    stream_id: u32,
+    flags: u32,
+    payload: *const u8,
+    length: usize,
+    new_stream: bool,
+) -> c_int {
+    let stream = match session.stream(stream_id, false) {
+        Some(stream) => stream,
+        // A completed stream is never recreated from a late trailer block.
+        None if new_stream => match session.stream(stream_id, true) {
+            Some(stream) => stream,
+            None => return SW_ERR,
+        },
+        None => return SW_ERR,
+    };
+    session.header_end_stream.set(flags & FLAG_END_STREAM != 0);
+    let (mut payload, mut length) = (payload, length);
+    if flags & FLAG_PADDED != 0 {
+        if length < 1 {
+            return SW_ERR;
+        }
+        // SAFETY: the payload's first byte.
+        let pad = usize::from(unsafe { *payload });
+        if pad >= length {
+            return SW_ERR;
+        }
+        length -= pad + 1;
+        payload = payload.wrapping_add(1);
+    }
+    header_block(session, &stream, flags, payload, length)
+}
+
+/// One HEADERS or CONTINUATION frame's part of a header block. At the block's
+/// end the request is configured from its headers and, with `END_STREAM`,
+/// dispatched.
+fn header_block(
+    session: &Session,
+    stream: &Stream,
+    flags: u32,
+    payload: *const u8,
+    length: usize,
+) -> c_int {
+    if stream.request_received.get() {
+        return SW_ERR;
+    }
+    let discard = stream.headers_received.get();
+    if parse_header(session, stream.ctx, flags, payload, length, discard) < 0 {
+        return SW_ERR;
+    }
+    if flags & FLAG_END_HEADERS == 0 {
+        session.header_stream_id.set(stream.id);
+        return SW_OK;
+    }
+    session.header_stream_id.set(0);
+    if !discard && !headers_complete(session, stream) {
+        return SW_ERR;
+    }
+    stream.headers_received.set(true);
+    if session.header_end_stream.get() {
+        return complete(session, stream);
+    }
+    SW_OK
+}
+
+/// `std::strtol` consumed the whole Content-Length and it is within the body limit.
+fn content_length_valid(session: &Session, value: *const zval) -> bool {
+    string_of(value).is_some_and(|text| {
+        let (parsed, complete) = strtol(text.bytes());
+        sw_rs_http2_content_length_rejected(u32::from(complete), parsed, session.max_body_size) == 0
+    })
+}
+
+/// `http2_server_on_headers_complete`: the request's Content-Length, body
+/// parser, cookies and compression, from its whole initial header block.
+fn headers_complete(session: &Session, stream: &Stream) -> bool {
+    let ctx = stream.ctx;
+    let headers = zval_of(ctx, Value::Header);
+    let length = find(headers, b"content-length");
+    if !length.is_null() {
+        let valid = if is(length, IS_ARRAY) {
+            let values = entries(length);
+            let valid = values.iter().fold(true, |valid, &(_, value)| {
+                content_length_valid(session, value) && valid
+            });
+            // The header keeps its last value, not the list.
+            if let Some(&(_, last)) = values.last() {
+                // SAFETY: all zeroes is `IS_UNDEF`.
+                let mut kept: zval = unsafe { std::mem::zeroed() };
+                // SAFETY: a live value, referenced again for the slot.
+                unsafe { swr_zval_copy(&raw mut kept, last) };
+                // SAFETY: the list's slot, released and refilled.
+                unsafe { zval_ptr_dtor(length) };
+                // SAFETY: as above.
+                unsafe { length.write(kept) };
+            }
+            valid
+        } else {
+            content_length_valid(session, length)
+        };
+        if !valid {
+            send_status_code(ctx, ENTITY_TOO_LARGE);
+            return false;
+        }
+    }
+    if let Some(value) = string_at(headers, b"content-type") {
+        let (folded, length) = fold(value.bytes());
+        // SAFETY: the folded prefix.
+        let media = unsafe { sw_rs_http2_media_kind(folded.as_ptr(), length) };
+        if media == MEDIA_URLENCODED {
+            set(ctx, Field::Form, 1);
+        } else if media == MEDIA_MULTIPART
+            // SAFETY: a live context and the header value.
+            && !unsafe { swoole_rs_phphttp::http2::multipart_start(ctx, value.bytes()) }
+        {
+            return false;
+        }
+    }
+    let cookie = find(headers, b"cookie");
+    if !cookie.is_null() {
+        let cookies = zval_of(ctx, Value::Cookie);
+        let values = if is(cookie, IS_ARRAY) {
+            entries(cookie)
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect()
+        } else {
+            vec![cookie]
+        };
+        for text in values.into_iter().filter_map(|value| string_of(value)) {
+            // SAFETY: the request's `$cookie`.
+            unsafe { swoole_rs_phphttp::http2::cookie(cookies, text.bytes()) };
+        }
+        // `$cookie` has them; `$header` has no cookie field.
+        // SAFETY: a live array.
+        let table = unsafe { value::table(headers) };
+        // SAFETY: a live table.
+        unsafe { zend_hash_str_del(table, c"cookie".as_ptr(), 6) };
+    }
+    if get(ctx, Field::EnableCompression) != 0
+        && let Some(value) = string_at(headers, b"accept-encoding")
+    {
+        // SAFETY: a live context.
+        unsafe { swoole_rs_phphttp::http2::compression_method(ctx, value.bytes()) };
+    }
+    true
+}
+
+/// `http2_server_complete_request`: parse the buffered body and dispatch the
+/// request, once.
+fn complete(session: &Session, stream: &Stream) -> c_int {
+    if stream.request_received.replace(true) {
+        return SW_ERR;
+    }
+    let ctx = stream.ctx;
+    // SAFETY: a live context.
+    let body = unsafe { swoole_rs_phphttp::http2::data(ctx) };
+    if !body.is_empty() {
+        if get(ctx, Field::ParseBody) != 0 && get(ctx, Field::Form) != 0 {
+            // SAFETY: the live `post` array.
+            unsafe { swoole_rs_phphttp::http2::treat_query(zval_of(ctx, Value::Post), body) };
+        } else if get(ctx, Field::Multipart) != 0
+            // SAFETY: a live context with a multipart parser.
+            && !unsafe { swoole_rs_phphttp::http2::multipart(ctx) }
+        {
+            return SW_ERR;
+        }
+    }
+    session.handle(stream);
+    SW_OK
+}
+
+/// `zend_hash_str_find(Z_ARRVAL_P(array), key)`.
+fn find(array: *mut zval, key: &[u8]) -> *mut zval {
+    // SAFETY: a live array.
+    let table = unsafe { value::table(array) };
+    // SAFETY: a live table.
+    unsafe { zend_hash_str_find(table, key.as_ptr().cast(), key.len()) }
+}
+
+/// The string at `key`, if the array has one.
+fn string_at(array: *mut zval, key: &[u8]) -> Option<Text> {
+    let found = find(array, key);
+    if found.is_null() {
+        None
+    } else {
+        string_of(found)
+    }
 }
 
 fn read_u32(at: *const u8) -> u32 {
@@ -1255,72 +1448,36 @@ fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
 /// A DATA frame: buffer the body, keep the windows open and dispatch the
 /// request at the end of the stream.
 fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, length: usize) -> c_int {
-    let stream = session.stream(stream_id, false);
-    let mut ctx = ptr::null_mut();
-    let mut facts = Http2ReceiveFacts {
-        length,
-        buffered_length: 0,
-        maximum: 0,
-        ended: 0,
-        end_stream: flags & FLAG_END_STREAM,
-        parse_body: 0,
-        form: 0,
-        multipart: 0,
+    let Some(stream) = session.stream(stream_id, false) else {
+        log(
+            LOG_WARNING,
+            STREAM_NOT_FOUND,
+            c"swoole_http2_server_parse",
+            &format!("http2 stream#{stream_id} not found"),
+        );
+        return SW_ERR;
     };
-    let next = |action, ok: bool, facts: &Http2ReceiveFacts| {
-        // SAFETY: initialised facts.
-        unsafe { sw_rs_http2_receive_next(action, u32::from(ok), facts) }
-    };
-    let mut action = next(recv::START, stream.is_some(), &facts);
-    while action != recv::DONE {
-        let mut ok = true;
-        match (action, &stream) {
-            (recv::CONTEXT, Some(stream)) => ctx = stream.ctx,
-            (recv::BUFFER, _) => {
-                // SAFETY: a live context.
-                unsafe { swoole_rs_phphttp::http2::data_start(ctx) };
-                // SAFETY: as above.
-                facts.buffered_length = unsafe { swoole_rs_phphttp::http2::data(ctx) }.len();
-                facts.maximum = session.max_body_size;
-                facts.ended = get(ctx, Field::End);
-            }
-            (recv::RESET, _) => {
-                send_u32_frame(ctx, TYPE_RST_STREAM, 0, FLAG_ACK, 0, 0);
-            }
-            (recv::REMOVE, _) => session.remove(stream_id),
-            // SAFETY: a live context and the frame's payload.
-            (recv::APPEND, _) => unsafe {
-                swoole_rs_phphttp::http2::data_append(ctx, bytes(payload.cast(), length));
-            },
-            (recv::FLOW, Some(stream)) => flow(session, stream, ctx, stream_id, length),
-            (recv::LENGTH, _) => {
-                // SAFETY: a live context.
-                ok = !unsafe { swoole_rs_phphttp::http2::data(ctx) }.is_empty();
-            }
-            (recv::END_BUFFER, _) => {
-                facts.parse_body = get(ctx, Field::ParseBody);
-                facts.form = get(ctx, Field::Form);
-                facts.multipart = get(ctx, Field::Multipart);
-            }
-            (recv::FORM, _) => {
-                // SAFETY: a live context.
-                let body = unsafe { swoole_rs_phphttp::http2::data(ctx) };
-                let post = zval_of(ctx, Value::Post);
-                // SAFETY: the live `post` array.
-                unsafe { swoole_rs_phphttp::http2::treat_query(post, body) };
-            }
-            // SAFETY: a live context with a multipart parser.
-            (recv::MULTIPART, _) => ok = unsafe { swoole_rs_phphttp::http2::multipart(ctx) },
-            (recv::HANDLE, Some(stream)) => session.handle(stream),
-            (recv::WARN, _) => log(
-                LOG_WARNING,
-                STREAM_NOT_FOUND,
-                c"swoole_http2_server_parse",
-                &format!("http2 stream#{stream_id} not found"),
-            ),
-            _ => return SW_ERR,
+    if !stream.headers_received.get() || stream.request_received.get() {
+        return SW_ERR;
+    }
+    let ctx = stream.ctx;
+    if length > 0 {
+        // SAFETY: a live context.
+        unsafe { swoole_rs_phphttp::http2::data_start(ctx) };
+        // SAFETY: as above.
+        let buffered = unsafe { swoole_rs_phphttp::http2::data(ctx) }.len();
+        let ended = get(ctx, Field::End);
+        if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) != 0 {
+            send_u32_frame(ctx, TYPE_RST_STREAM, 0, FLAG_ACK, 0, 0);
+            session.remove(stream_id);
+            return SW_OK;
         }
-        action = next(action, ok, &facts);
+        // SAFETY: a live context and the frame's payload.
+        unsafe { swoole_rs_phphttp::http2::data_append(ctx, bytes(payload.cast(), length)) };
+        flow(session, &stream, ctx, stream_id, length);
+    }
+    if flags & FLAG_END_STREAM != 0 {
+        return complete(session, &stream);
     }
     SW_OK
 }
@@ -1352,6 +1509,7 @@ fn parse_header(
     flags: u32,
     mut input: *const u8,
     mut length: usize,
+    discard: bool,
 ) -> c_int {
     const FUNC: &CStr = c"http2_server_parse_header";
     let mut inflater = session.inflater.get();
@@ -1372,10 +1530,12 @@ fn parse_header(
         session.inflater.set(inflater);
     }
     if flags & FLAG_PRIORITY != 0 {
+        if length < 5 {
+            return SW_ERR;
+        }
         // The stream dependency and weight are ignored.
-        // SAFETY: within the frame.
-        input = unsafe { input.add(5) };
-        length = length.saturating_sub(5);
+        input = input.wrapping_add(5);
+        length -= 5;
     }
     let zheader = zval_of(ctx, Value::Header);
     let zserver = zval_of(ctx, Value::Server);
@@ -1396,6 +1556,7 @@ fn parse_header(
                 length,
                 &raw mut inflate_flags,
                 &raw mut header,
+                flags & FLAG_END_HEADERS != 0,
             )
         };
         let Ok(read) = usize::try_from(read) else {
@@ -1413,15 +1574,14 @@ fn parse_header(
         // SAFETY: nghttp2 consumed `read` bytes of the input.
         input = unsafe { input.add(read) };
         length -= read;
-        if inflate_flags & INFLATE_EMIT != 0 {
+        // Trailers are decoded for the HPACK table but never exposed or acted on.
+        if inflate_flags & INFLATE_EMIT != 0 && !discard {
             // SAFETY: nghttp2's header, live until the next inflate call.
             let name = unsafe { std::slice::from_raw_parts(header.name, header.name_length) };
             // SAFETY: as above.
             let value = unsafe { std::slice::from_raw_parts(header.value, header.value_length) };
-            match request_header(session, ctx, zheader, zserver, name, value) {
-                Some(true) => {}
-                Some(false) => continue,
-                None => return SW_ERR,
+            if !request_header(ctx, zheader, zserver, name, value) {
+                continue;
             }
         }
         let mut step = Http2InflateStep {
@@ -1458,16 +1618,15 @@ fn add_string(array: *mut zval, key: &[u8], value: &[u8]) {
     };
 }
 
-/// One request header. `Some(false)` skips the rest of the step (a cookie),
-/// `None` is an error.
+/// One request header; `false` skips the rest of the step (a Cookie or
+/// Content-Length, which keeps every value until the block is complete).
 fn request_header(
-    session: &Session,
     ctx: *mut c_void,
     zheader: *mut zval,
     zserver: *mut zval,
     name: &[u8],
     value: &[u8],
-) -> Option<bool> {
+) -> bool {
     let kind = header_plan(REQUEST_HEADERS, name, false).kind;
     if name.first() == Some(&b':') {
         match kind {
@@ -1476,46 +1635,25 @@ fn request_header(
             HEADER_AUTHORITY => add_string(zheader, b"host", value),
             _ => {}
         }
-        return Some(true);
+        return true;
     }
-    match kind {
-        HEADER_CONTENT_TYPE => {
-            let (folded, length) = fold(value);
-            // SAFETY: the folded prefix.
-            let media = unsafe { sw_rs_http2_media_kind(folded.as_ptr(), length) };
-            if media == MEDIA_URLENCODED {
-                set(ctx, Field::Form, 1);
-            } else if media == MEDIA_MULTIPART {
-                // SAFETY: a live context and the header value.
-                if !unsafe { swoole_rs_phphttp::http2::multipart_start(ctx, value) } {
-                    return None;
-                }
-            }
+    let key: &[u8] = match kind {
+        HEADER_COOKIE => b"cookie",
+        HEADER_CONTENT_LENGTH => b"content-length",
+        _ => {
+            add_string(zheader, name, value);
+            return true;
         }
-        HEADER_COOKIE => {
-            // SAFETY: the request's `$cookie`.
-            unsafe { swoole_rs_phphttp::http2::cookie(zval_of(ctx, Value::Cookie), value) };
-            return Some(false);
-        }
-        HEADER_CONTENT_LENGTH => {
-            let (parsed, complete) = strtol(value);
-            if sw_rs_http2_content_length_rejected(
-                u32::from(complete),
-                parsed,
-                session.max_body_size,
-            ) != 0
-            {
-                send_status_code(ctx, ENTITY_TOO_LARGE);
-            }
-        }
-        HEADER_ACCEPT_ENCODING if get(ctx, Field::EnableCompression) != 0 => {
-            // SAFETY: a live context.
-            unsafe { swoole_rs_phphttp::http2::compression_method(ctx, value) };
-        }
-        _ => {}
+    };
+    // SAFETY: all zeroes is `IS_UNDEF`.
+    let mut element: zval = unsafe { std::mem::zeroed() };
+    // SAFETY: the header value's bytes, copied.
+    unsafe { swr_zval_stringl(&raw mut element, value.as_ptr().cast(), value.len()) };
+    // SAFETY: a live array taking the new string.
+    unsafe {
+        swr_zend_http_add_or_merge(zheader, key.as_ptr().cast(), key.len(), &raw mut element);
     }
-    add_string(zheader, name, value);
-    Some(true)
+    false
 }
 
 /// `:path`: `request_uri`, `path_info` (decoded), `query_string` and `$get`.
