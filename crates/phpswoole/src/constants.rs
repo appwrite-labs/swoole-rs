@@ -36,6 +36,8 @@ pub(crate) fn flags() -> u32 {
         (built_with(S::Dtls), DTLS),
         (built_with(S::Ssl3), SSL3),
         (built_with(S::IoUring), IOURING),
+        // stdext is a cargo feature here, not a switch: `typed_array`'s alias needs it.
+        (cfg!(feature = "stdext"), crate::table::STDEXT),
         (built_with(S::Thread), THREAD),
     ]
     .into_iter()
