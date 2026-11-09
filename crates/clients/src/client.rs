@@ -1760,9 +1760,9 @@ mod ops {
     /// read one is set.
     pub(super) fn kernel_timeout(record: &ClientRecord, timeout: f64) {
         // SAFETY: a constructed client's live socket.
-        if unsafe { socket_upstream::socket_set_kernel_read_timeout(record.socket, timeout) } {
-            // SAFETY: as above.
-            unsafe { socket_upstream::socket_set_kernel_write_timeout(record.socket, timeout) };
+        let socket = unsafe { &mut *record.socket };
+        if socket_upstream::socket_set_kernel_read_timeout(socket, timeout) {
+            socket_upstream::socket_set_kernel_write_timeout(socket, timeout);
         }
     }
 
@@ -1787,14 +1787,16 @@ mod ops {
 
     /// Connects the socket to `server_addr`, by `mode` (`CONNECT_*`); errno is the call's.
     pub(super) fn connect(record: &ClientRecord, mode: c_int) -> c_int {
-        let address = &raw const record.server_addr;
+        let address = &record.server_addr;
         match mode {
-            // SAFETY: the live socket and the record's address.
-            CONNECT_ASYNC => unsafe {
-                socket_upstream::socket_connect_async(record.socket, address)
-            },
-            // SAFETY: as above.
-            CONNECT_SYNC => unsafe { socket_upstream::socket_connect_sync(record.socket, address) },
+            CONNECT_ASYNC => {
+                // SAFETY: the live socket.
+                socket_upstream::socket_connect_async(unsafe { &mut *record.socket }, address)
+            }
+            CONNECT_SYNC => {
+                // SAFETY: the live socket.
+                socket_upstream::socket_connect_sync(unsafe { &mut *record.socket }, address)
+            }
             _ => {
                 // SAFETY: the live socket.
                 let fd = unsafe { (*record.socket).fd };

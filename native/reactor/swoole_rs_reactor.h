@@ -201,11 +201,8 @@ typedef struct {
     uint8_t want_read;
     uint8_t want_write;
 } swr_v1_socket_tls;
-/* Socket::ssl_clear_error: ERR_clear_error and clear the want flags.
- * Socket::what_event_want: the event a pending TLS read or write waits for when ssl
- * is set, else default_event. */
+/* Socket::ssl_clear_error: ERR_clear_error and clear the want flags. */
 void swr_v1_socket_ssl_clear(swr_v1_socket_tls *tls);
-int swr_v1_socket_tls_event(const swr_v1_socket_tls *tls, bool ssl, int default_event);
 /* _ssl_read_x509_file: a certificate as PEM into at most length bytes, warning and
  * returning -1 on failure; frees cert when consume. */
 int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);

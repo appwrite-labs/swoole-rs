@@ -17,7 +17,7 @@ use swoole_rs_buffer::string::delete_string;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, SocketRecord, cpp_socket_what_event_want, reactor_upstream};
+use swoole_rs_reactor::{Event, SocketRecord, reactor_upstream, what_event_want};
 use swoole_rs_tls::upstream as tls;
 use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
 
@@ -876,7 +876,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CC_WATCH_WRITE => {
             // SAFETY: the context's live socket.
-            let events = unsafe { cpp_socket_what_event_want(o.ctx.sock, SW_EVENT_WRITE) };
+            let events = what_event_want(unsafe { &*o.ctx.sock }, SW_EVENT_WRITE);
             // arg: the socket is out of the reactor
             change(o.ctx.sock, u32::from(arg == 0), events)
         }

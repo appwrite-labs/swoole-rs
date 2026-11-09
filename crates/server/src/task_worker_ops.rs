@@ -481,7 +481,7 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
         OP_WAIT_NOTIFY_WRITABLE => {
             let wait = swoole_rs_reactor::socket_upstream::socket_wait_event;
             // SAFETY: the notify pipe's live master socket.
-            signed(unsafe { wait(master_socket(), -1, SW_EVENT_WRITE) })
+            signed(wait(unsafe { &*master_socket() }, -1, SW_EVENT_WRITE))
         }
         _ => return None,
     })
