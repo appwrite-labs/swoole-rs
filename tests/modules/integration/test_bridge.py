@@ -5,7 +5,6 @@ Build the reference and the Cargo extension (tools/build_ext.py) first, then run
 All compilations write only to a temporary directory.
 """
 import argparse
-import json
 import os
 import re
 from pathlib import Path
@@ -63,16 +62,13 @@ int main(void) {
         source = ARGS.source
         includes = shlex.split(run([ARGS.php_config, '--includes']).stdout)
         directories = sorted({str(header.parent) for header in headers})
-        # stdext's declarations sit under config.h's SW_STDEXT, which only a build with
-        # crates/ext's stdext feature defines; build_ext.py's manifest names its features.
-        manifest = ARGS.extension.parent / 'build-manifest.json'
-        features = json.loads(manifest.read_text())['features'] if manifest.is_file() else []
-        defines = ['-DSW_STDEXT'] if 'stdext' in features else []
+        # Configure-gated declarations (SW_STDEXT, SW_THREAD, SW_USE_CURL, ...) follow the
+        # config.h the build used, which build_ext.py copies into the tree.
         with tempfile.TemporaryDirectory(prefix='swoole-rs-export-inventory-') as directory:
             inventory = Path(directory) / 'headers.cc'
             inventory.write_text(''.join(f'#include "{header}"\n' for header in headers))
             text = run(shlex.split(os.environ.get('CXX', 'c++')) + [
-                '-E', '-P', '-x', 'c++', *defines, *[f'-I{path}' for path in directories], '-I', str(source),
+                '-E', '-P', '-x', 'c++', '-include', str(source / 'config.h'), *[f'-I{path}' for path in directories], '-I', str(source),
                 '-I', str(source / 'include'), '-I', str(source / 'ext-src'),
                 '-I', str(source / 'thirdparty'), *includes, str(inventory)]).stdout
         text = re.sub(r'/\*.*?\*/|//[^\n]*', '', text, flags=re.S)

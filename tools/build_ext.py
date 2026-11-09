@@ -3,13 +3,14 @@
 
 crates/ext's build.rs compiles native/ and the bundled thirdparty C from the patched tree this
 prepares in target/ext/src, then the extension is checked to load and report the pinned version.
-Prints `Built cargo: <path>` (target/ext/swoole.so) and writes target/ext/build-manifest.json,
-which tools/ext_identity.py checks gates' engines against. `--php-sockets`, `--stdext`, `--fix-halfclose`
+Prints `Built cargo: <path>` (target/ext/swoole.so), copies the build's config.h to
+target/ext/src/config.h and writes target/ext/build-manifest.json, which tools/ext_identity.py
+checks gates' engines against. `--php-sockets`, `--stdext`, `--fix-halfclose`
 and build_hybrid's `--configure` switches turn on the crates/ext feature of the same build profile.
 
 `--native` also lays out target/ext/sdk for the native gates, which link fixtures outside PHP:
 lib/ holds the Zend-free libswoole_rs_ffi.a and crates/ext's compiled C and C++ archives,
-include/ the ABI headers, and target/ext/src/config.h is the build's config.h (see native_tree).
+include/ the ABI headers (native_tree reads them with the tree's config.h).
 """
 import argparse
 import hashlib
@@ -41,11 +42,9 @@ def cargo(arguments, env):
     return messages
 
 
-def sdk(tree, messages, features, profile, env):
+def sdk(out, features, profile, env):
     """target/ext/sdk: the Zend-free FFI archive (no Zend references, so fixtures link it into
-    executables), crates/ext's native archives, and the ABI headers; and config.h in the tree."""
-    out = Path(next(m['out_dir'] for m in messages if m['reason'] == 'build-script-executed'
-                    and m['package_id'].split('#')[0].endswith('/ext')))
+    executables), and crates/ext's native archives (from its build script's `out`) and the ABI headers."""
     # `--crate-type staticlib` alone: rustc skips thin LTO whenever an rlib is among the outputs.
     built = cargo(['rustc', '--crate-type', 'staticlib', '--profile', profile, '--no-default-features', '-p', 'swoole-rs-ffi',
                    *(['--features', ','.join(features)] if features else [])], env)
@@ -59,7 +58,6 @@ def sdk(tree, messages, features, profile, env):
         shutil.copy2(path, root / 'lib' / path.name)
     for header in headers_for(MODULES):
         shutil.copy2(header, root / 'include' / header.name)
-    shutil.copy2(out / 'config.h', tree / 'config.h')
 
 
 def native_tree(archive):
@@ -154,8 +152,12 @@ def main():
         if feature in ('odbc', 'oci') and ',' in value:
             env['SWOOLE_ODBC_DIR' if feature == 'odbc' else 'SWOOLE_ORACLE_DIR'] = value.split(',')[1]
     messages = cargo(['build', '--profile', args.profile, '-p', 'swoole-rs-ext', '--features', ','.join(features)], env)
+    # The build's config.h, in the tree it was built from: the ABI gates preprocess against it.
+    built_by = Path(next(m['out_dir'] for m in messages if m['reason'] == 'build-script-executed'
+                         and m['package_id'].split('#')[0].endswith('/ext')))
+    shutil.copy2(built_by / 'config.h', tree / 'config.h')
     if args.native:
-        sdk(tree, messages, [f for f in features if f in FFI_FEATURES], args.profile, env)
+        sdk(built_by, [f for f in features if f in FFI_FEATURES], args.profile, env)
     # CARGO_BUILD_TARGET (coverage.yml) puts the library under target/<triple>/.
     target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'), os.environ.get('CARGO_BUILD_TARGET', ''))
     built = target / ('debug' if args.profile == 'dev' else args.profile) / (
