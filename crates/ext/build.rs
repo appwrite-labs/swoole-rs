@@ -441,6 +441,10 @@ mod php {
             println!("cargo::rustc-link-lib={library}");
         }
         if os == "linux" {
+            // Last on the line: dependency rlibs, linked after this crate's libraries, call
+            // operator new too, and --as-needed drops an earlier -lstdc++. Ubuntu's PHP loads
+            // libstdc++ itself (through ICU), which hides this; Alpine's doesn't.
+            println!("cargo::rustc-cdylib-link-arg=-lstdc++");
             println!("cargo::rustc-link-lib=dl");
         }
     }
