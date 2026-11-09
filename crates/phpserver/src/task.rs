@@ -133,9 +133,7 @@ impl TaskHost for Host {
 
 /// `serv`'s task state; for a call that waits (`sync`), with this worker's
 /// notify pipe, lock and `task_results` slot.
-fn task_state<'a>(serv: *mut c_void, sync: bool) -> Tasks<'a, Host> {
-    // SAFETY: its callers pass their live server.
-    let serv = unsafe { view::Server::from_raw(serv) };
+fn task_state(serv: view::Server<'_>, sync: bool) -> Tasks<'_, Host> {
     let counters = serv.counters();
     let mut host = Host {
         pool: serv.task_pool(),
@@ -244,13 +242,16 @@ thread_local! {
     static PENDING: RefCell<HashMap<usize, Pending>> = RefCell::new(HashMap::new());
 }
 
-fn pending<R>(server: *mut c_void, f: impl FnOnce(&mut Pending) -> R) -> R {
-    PENDING.with_borrow_mut(|all| f(all.entry(server as usize).or_default()))
+fn pending<R>(server: view::Server<'_>, f: impl FnOnce(&mut Pending) -> R) -> R {
+    pending_at(server.raw() as usize, f)
 }
 
-fn facts(server: *mut c_void) -> Facts {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+/// The pending table of the server at `key` (its address).
+fn pending_at<R>(key: usize, f: impl FnOnce(&mut Pending) -> R) -> R {
+    PENDING.with_borrow_mut(|all| f(all.entry(key).or_default()))
+}
+
+fn facts(server: view::Server<'_>) -> Facts {
     let config = server.config();
     let worker_type = crate::server::worker_type();
     Facts {
@@ -399,7 +400,7 @@ fn add_flags(buf: *mut c_void, flags: u32) {
 }
 
 /// `serv->task(buf, dst_worker_id)`.
-fn dispatch(server: *mut c_void, buf: &mut EventData, dst: &mut c_int) -> bool {
+fn dispatch(server: view::Server<'_>, buf: &mut EventData, dst: &mut c_int) -> bool {
     task_state(server, false)
         .task(buf.ptr().cast(), dst, false)
         .unwrap_or_else(|Bailed| {
@@ -433,9 +434,9 @@ fn check(facts: &Facts, dst_worker_id: i64) -> bool {
 }
 
 /// `running(call)` and a worker process, or a warning naming `method`.
-fn worker(call: &Call, method: &CStr) -> Option<(*mut c_void, Facts)> {
+fn worker<'a>(call: &'a Call, method: &CStr) -> Option<(view::Server<'a>, Facts)> {
     let serv = running(call)?;
-    let facts = facts(serv.raw());
+    let facts = facts(serv);
     if !facts.worker {
         let text = message!(
             "{} method can only be used in the worker process",
@@ -445,7 +446,7 @@ fn worker(call: &Call, method: &CStr) -> Option<(*mut c_void, Facts)> {
         call.set_bool(false);
         return None;
     }
-    Some((serv.raw(), facts))
+    Some((serv, facts))
 }
 
 fn task(call: &Call) {
@@ -454,7 +455,7 @@ fn task(call: &Call) {
         return call.set_bool(false);
     };
     let callback = (call.num_args() >= 3).then(|| call.zval(3));
-    let facts = facts(serv.raw());
+    let facts = facts(serv);
     if !check(&facts, dst) {
         return call.set_bool(false);
     }
@@ -474,7 +475,7 @@ fn task(call: &Call) {
         if cb.is_null() {
             return call.set_bool(false);
         }
-        if let Some(old) = pending(serv.raw(), |p| p.callbacks.insert(id, cb)) {
+        if let Some(old) = pending(serv, |p| p.callbacks.insert(id, cb)) {
             // SAFETY: a callable this module created.
             unsafe { swoole_rs_phpruntime::callable_free(old) };
         }
@@ -485,7 +486,7 @@ fn task(call: &Call) {
         reason = "upstream passes (int *) &dst_worker_id"
     )]
     let mut dst = dst as c_int;
-    if dispatch(serv.raw(), &mut buf, &mut dst) {
+    if dispatch(serv, &mut buf, &mut dst) {
         call.set_long(id);
     } else {
         call.set_bool(false);
@@ -778,16 +779,14 @@ fn unpack(req: *mut c_void) -> Result<Option<zval>, Bailout> {
 }
 
 /// `php_swoole_server_onTask`, for a live server and the task it received.
-pub(crate) fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
-    // SAFETY: its callers pass their live server.
-    let server = unsafe { view::Server::from_raw(server) };
+pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_int, Bailout> {
     let counters = server.counters();
     counters.tasking_num.fetch_sub(1, Ordering::SeqCst);
     let zserv = server_zval(server.raw());
     let Some(mut data) = unpack(req)? else {
         return Ok(SW_ERR);
     };
-    let facts = facts(server.raw());
+    let facts = facts(server);
     let info = info(req);
     let mut args = [zserv, undef(), undef(), undef()];
     let argc = if facts.task_object {
@@ -837,8 +836,8 @@ pub(crate) fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Ba
 }
 
 /// `php_swoole_server_onFinish`, for a live server and the result it received.
-pub(crate) fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
-    let zserv = server_zval(server);
+pub(crate) fn on_finish(server: view::Server<'_>, req: *mut c_void) -> Result<c_int, Bailout> {
+    let zserv = server_zval(server.raw());
     let info = info(req);
     let id = info.id;
     let Some(mut data) = unpack(req)? else {
@@ -860,7 +859,7 @@ pub(crate) fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, 
         }
         cb.unwrap_or(ptr::null_mut())
     } else {
-        server_callback(server, ON_FINISH)
+        server_callback(server.raw(), ON_FINISH)
     };
     if cb.is_null() {
         let outcome = event_warning(c"require 'onFinish' callback");
@@ -909,7 +908,7 @@ pub(crate) fn on_finish(server: *mut c_void, req: *mut c_void) -> Result<c_int, 
 
 /// A coroutine task's result: into `taskwait`'s return value, or at its index
 /// in `taskCo`'s array; the waiting coroutine resumes once all arrived.
-fn resume(server: *mut c_void, id: i64, mut data: zval) -> Result<(), Bailout> {
+fn resume(server: view::Server<'_>, id: i64, mut data: zval) -> Result<(), Bailout> {
     let Some(task_co) = pending(server, |p| p.coroutines.get(&id).copied()) else {
         log::error_log(
             SW_LOG_WARNING,
@@ -973,8 +972,11 @@ mod tests {
     fn pending_tasks_are_per_server() {
         let (mut x, mut y) = (0u8, 0u8);
         let (a, b): (*mut c_void, *mut c_void) = ((&raw mut x).cast(), (&raw mut y).cast());
-        pending(a, |p| p.callbacks.insert(7, a));
-        assert_eq!(pending(b, |p| p.callbacks.get(&7).copied()), None);
-        assert_eq!(pending(a, |p| p.callbacks.remove(&7)), Some(a));
+        pending_at(a as usize, |p| p.callbacks.insert(7, a));
+        assert_eq!(
+            pending_at(b as usize, |p| p.callbacks.get(&7).copied()),
+            None
+        );
+        assert_eq!(pending_at(a as usize, |p| p.callbacks.remove(&7)), Some(a));
     }
 }

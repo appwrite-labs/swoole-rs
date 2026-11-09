@@ -53,7 +53,8 @@ def main():
             env['SWOOLE_ODBC_DIR' if feature == 'odbc' else 'SWOOLE_ORACLE_DIR'] = value.split(',')[1]
     subprocess.run(['cargo', 'build', '--locked', '--profile', args.profile, '-p', 'swoole-rs-ext',
                     '--features', ','.join(features)], cwd=ROOT, env=env, check=True)
-    target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'))
+    # CARGO_BUILD_TARGET (coverage.yml) puts the library under target/<triple>/.
+    target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'), os.environ.get('CARGO_BUILD_TARGET', ''))
     built = target / ('debug' if args.profile == 'dev' else args.profile) / (
         'libswoole.dylib' if sys.platform == 'darwin' else 'libswoole.so')
     extension = out / 'swoole.so'

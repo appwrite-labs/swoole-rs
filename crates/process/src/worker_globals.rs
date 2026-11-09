@@ -51,7 +51,12 @@ static GLOBAL: Process = Process(UnsafeCell::new(INIT));
 
 /// Borrows the original native field view for this thread. It has no TLS destructor
 /// and remains available during native thread teardown, as the original POD did.
-pub fn thread_globals() -> *mut WorkerGlobalRecord {
+/// The hybrid tree's process-pool test fixture reads it as `SwooleWG`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "swr_v1_worker_globals")
+)]
+pub extern "C" fn thread_globals() -> *mut WorkerGlobalRecord {
     #[cfg(any(zts, panic = "unwind"))]
     return GLOBAL.with(UnsafeCell::get);
     #[cfg(not(any(zts, panic = "unwind")))]
@@ -187,6 +192,7 @@ mod tests {
         .unwrap();
         assert_eq!(swr_v1_worker_global_get(0), 7);
         assert_eq!(core::mem::size_of::<WorkerGlobalRecord>(), 48);
+        assert_eq!(core::mem::offset_of!(WorkerGlobalRecord, max_request), 16);
         assert_eq!(core::mem::offset_of!(WorkerGlobalRecord, worker), 24);
         assert_eq!(core::mem::offset_of!(WorkerGlobalRecord, exit_time), 40);
     }
