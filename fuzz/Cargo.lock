@@ -191,6 +191,7 @@ dependencies = [
  "swoole-rs-http2",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
+ "swoole-rs-protocols-ffi",
  "swoole-rs-utilities",
  "swoole-rs-websocket",
 ]
@@ -262,10 +263,15 @@ dependencies = [
 [[package]]
 name = "swoole-rs-protocols"
 version = "0.1.0"
+
+[[package]]
+name = "swoole-rs-protocols-ffi"
+version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-protocols",
  "swoole-rs-reactor",
 ]
 

@@ -412,6 +412,8 @@
       ],
       "owned_paths": [
         "crates/protocols/",
+        "crates/protocols-ffi/",
+        "crates/bus/",
         "crates/phpredis/",
         "native/protocols/",
         "migration/patches/protocols/",

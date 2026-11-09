@@ -9,6 +9,17 @@
 //! bail out (longjmp), so `Bus::receive` returns to its caller to allocate a
 //! packet and is called again to resume. Freeing a packet calls its allocator's
 //! `free`, which never bails out.
+#![expect(
+    clippy::disallowed_types,
+    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
+)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::undocumented_unsafe_blocks,
+        clippy::multiple_unsafe_ops_per_block
+    )
+)]
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -16,6 +27,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::{DataHead as BusHead, log};
 use swoole_rs_reactor::SocketRecord;
+
+pub use Bus as MessageBus;
 
 /// `SW_EVENT_DATA_*`.
 const PTR: u8 = 1 << 1;

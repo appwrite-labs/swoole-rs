@@ -68,23 +68,9 @@ pub struct RespSpan {
 /// Render the native PHP handler property key: ASCII lowercase `_handler_`,
 /// stopping at the command's first NUL and truncating to 63 bytes. The native
 /// caller keeps raw command-length validation and Zend registry ownership.
-/// Returns key length, or zero on invalid input; always terminates on success.
-/// # Safety
-/// Input is borrowed/readable. Output covers 64 exclusive writable bytes,
-/// disjoint from input. No pointers are retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_handler_key(
-    data: *const u8,
-    length: usize,
-    output: *mut u8,
-) -> usize {
-    // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
-    let Some(bytes) = (unsafe { crate::input(data, length) }) else {
-        return 0;
-    };
-    if output.is_null() {
-        return 0;
-    }
+/// Returns the key, zero-filled past its length.
+#[must_use]
+pub fn resp_handler_key(bytes: &[u8]) -> ([u8; 64], usize) {
     let mut key = [0u8; 64];
     let prefix = b"_handler_";
     let name = bytes
@@ -97,10 +83,7 @@ pub unsafe extern "C" fn swr_v1_resp_handler_key(
         *slot = byte;
         length += 1;
     }
-    // SAFETY: `output` is non-null (checked above) and covers 64 exclusive writable bytes,
-    // disjoint from the local 64-byte `key`.
-    unsafe { std::ptr::copy_nonoverlapping(key.as_ptr(), output, key.len()) };
-    length
+    (key, length)
 }
 
 /// Borrowed RESP walk state. Native callers may allocate between events; no
@@ -166,7 +149,10 @@ impl RespCursor {
     }
 }
 
-fn scan_range(bytes: &[u8], mut emit: impl FnMut(RespSpan), range: &mut bool) -> Option<usize> {
+/// Walk a whole RESP command, emitting each span but nulls, which the native vector
+/// parser omits: the span count, or `None` when the command is malformed. `range`
+/// is set when a number overflowed a signed long, even if a delimiter then failed.
+pub fn resp_spans(bytes: &[u8], mut emit: impl FnMut(RespSpan), range: &mut bool) -> Option<usize> {
     let mut cursor = RespCursor::default();
     let mut count = 0;
     while let Some(span) = cursor.next(bytes, range).ok()? {
@@ -186,178 +172,36 @@ pub struct RespPhpState {
     pub command_seen: u8,
 }
 
-/// Return one PHP request event: 1 event, 0 end, -1 invalid. Span kinds are
-/// 0 string parameter, 1 integer, 2 null, 3 first string (command). Integers and
-/// nulls preceding the command remain parameters. Range reports native ERANGE
-/// without touching errno. Invalid input leaves state and span unchanged.
-/// # Safety
-/// Input is borrowed/readable; state/span are aligned exclusive writable POD,
-/// initialized with zero state. Range is optional, writable, and disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_php_next(
-    data: *const u8,
-    length: usize,
-    state: *mut RespPhpState,
-    span: *mut RespSpan,
-    range: *mut u8,
-) -> i32 {
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(0) };
-    }
-    if state.is_null() || span.is_null() {
-        return -1;
-    }
-    // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
-    let Some(bytes) = (unsafe { crate::input(data, length) }) else {
-        return -1;
-    };
-    // SAFETY: `state` is non-null (checked above), aligned and initialized per the export's contract.
-    let mut current = unsafe { state.read() };
+/// A RESP command that doesn't parse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Malformed;
+
+/// One PHP request event, or `None` at the end. Span kinds are 0 string parameter,
+/// 1 integer, 2 null, 3 first string (command). Integers and nulls preceding the
+/// command remain parameters. `range` reports native ERANGE without touching errno.
+/// Invalid input leaves `state` unchanged.
+///
+/// # Errors
+/// [`Malformed`] when the command doesn't parse.
+pub fn resp_php_next(
+    bytes: &[u8],
+    state: &mut RespPhpState,
+    range: &mut bool,
+) -> Result<Option<RespSpan>, Malformed> {
+    let mut current = *state;
     if current.command_seen > 1 {
-        return -1;
+        return Err(Malformed);
     }
-    let mut overflow = false;
-    let result = current.cursor.next(bytes, &mut overflow);
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(u8::from(overflow)) };
-    }
-    match result {
-        Ok(Some(mut event)) => {
-            if event.kind == 0 && current.command_seen == 0 {
-                event.kind = 3;
-                current.command_seen = 1;
-            }
-            // SAFETY: `state` is non-null (checked above), aligned, exclusive and writable.
-            unsafe { state.write(current) };
-            // SAFETY: `span` is non-null (checked above), aligned, exclusive and writable.
-            unsafe { span.write(event) };
-            1
+    let event = current.cursor.next(bytes, range).map_err(|()| Malformed)?;
+    let event = event.map(|mut event| {
+        if event.kind == 0 && current.command_seen == 0 {
+            event.kind = 3;
+            current.command_seen = 1;
         }
-        Ok(None) => {
-            // SAFETY: `state` is non-null (checked above), aligned and writable per the export's contract.
-            unsafe { state.write(current) };
-            0
-        }
-        Err(()) => -1,
-    }
-}
-
-/// # Safety
-/// Input is borrowed/readable. Output is aligned, disjoint and writable for
-/// capacity spans; null/zero capacity performs validation and returns count.
-/// Invalid input (-1) or short output (-2) leaves output unchanged.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_parse(
-    data: *const u8,
-    length: usize,
-    output: *mut RespSpan,
-    capacity: usize,
-) -> i64 {
-    // SAFETY: forwards the caller's input and output contract; the range output is omitted.
-    unsafe { swr_v1_resp_parse_range(data, length, output, capacity, std::ptr::null_mut()) }
-}
-
-/// The optional range output reports libc-compatible signed-long overflow,
-/// including numbers whose following delimiter is malformed. Existing errno
-/// belongs to native code; a zero range flag must not clear it.
-/// # Safety
-/// Same buffer contract as parse; range is null or exclusive writable/disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_parse_range(
-    data: *const u8,
-    length: usize,
-    output: *mut RespSpan,
-    capacity: usize,
-    range: *mut u8,
-) -> i64 {
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(0) };
-    }
-    // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
-    let Some(bytes) = (unsafe { crate::input(data, length) }) else {
-        return -1;
-    };
-    let mut overflow = false;
-    let count = scan_range(bytes, |_| {}, &mut overflow);
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(u8::from(overflow)) };
-    }
-    let Some(count) = count else { return -1 };
-    if output.is_null() {
-        return if capacity == 0 {
-            i64::try_from(count).unwrap_or(-1)
-        } else {
-            -2
-        };
-    }
-    if capacity < count || count > isize::MAX as usize / std::mem::size_of::<RespSpan>() {
-        return -2;
-    }
-    let mut index = 0;
-    scan_range(
-        bytes,
-        |span| {
-            // SAFETY: the scan emits exactly `count <= capacity` spans, and `output` is
-            // non-null (checked above) with `capacity` writable slots.
-            unsafe { output.wrapping_add(index).write(span) };
-            index += 1;
-        },
-        &mut overflow,
-    );
-    i64::try_from(count).unwrap_or(-1)
-}
-
-/// Scan once, writing at most capacity spans and returning the full count.
-/// Unlike parse, an error may leave a valid output prefix; callers consume spans
-/// only after success. This supports a small native stack buffer without a size
-/// query, while the original transactional parse ABI remains unchanged.
-/// # Safety
-/// Input/output/range are disjoint borrowed readable/exclusive writable ranges.
-/// Null output requires zero capacity; range is optional.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_scan(
-    data: *const u8,
-    length: usize,
-    output: *mut RespSpan,
-    capacity: usize,
-    range: *mut u8,
-) -> i64 {
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(0) };
-    }
-    if (output.is_null() && capacity != 0)
-        || capacity > isize::MAX as usize / std::mem::size_of::<RespSpan>()
-    {
-        return -1;
-    }
-    // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
-    let Some(bytes) = (unsafe { crate::input(data, length) }) else {
-        return -1;
-    };
-    let mut overflow = false;
-    let mut index = 0;
-    let count = scan_range(
-        bytes,
-        |span| {
-            if index < capacity {
-                // SAFETY: `index < capacity`; `output` is non-null whenever `capacity != 0`
-                // (checked above) and has `capacity` writable slots.
-                unsafe { output.wrapping_add(index).write(span) };
-            }
-            index += 1;
-        },
-        &mut overflow,
-    );
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(u8::from(overflow)) };
-    }
-    count.map_or(-1, |count| i64::try_from(count).unwrap_or(-1))
+        event
+    });
+    *state = current;
+    Ok(event)
 }
 
 pub(crate) fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
@@ -375,23 +219,9 @@ pub(crate) fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
 
 /// kind=0 error,2 status,4 bulk,7 explicit nil,8 integer. Other string overloads
 /// produce no output. Integer formatting ignores the native `ReplyType`.
-/// Output=null/capacity=0 queries exact size; insufficient capacity writes nothing.
-///
-/// # Safety
-/// Input bytes are readable; non-null output is exclusive, disjoint writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_format(
-    kind: u8,
-    data: *const u8,
-    length: usize,
-    integer: i64,
-    output: *mut u8,
-    capacity: usize,
-) -> usize {
-    // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
-    let Some(value) = (unsafe { crate::input(data, length) }) else {
-        return 0;
-    };
+/// No output queries the exact size; one too short is left unwritten, returning 0.
+#[must_use]
+pub fn resp_format(kind: u8, value: &[u8], integer: i64, output: Option<&mut [u8]>) -> usize {
     let mut digits = [0u8; 20];
     let (prefix, body, suffix): (&[u8], &[u8], &[u8]) = match kind {
         0 | 2 => {
@@ -402,7 +232,7 @@ pub unsafe extern "C" fn swr_v1_resp_format(
             };
             (if kind == 0 { b"-" } else { b"+" }, body, b"\r\n")
         }
-        4 if !value.is_empty() => (decimal(length as u64, &mut digits), value, b"\r\n"),
+        4 if !value.is_empty() => (decimal(value.len() as u64, &mut digits), value, b"\r\n"),
         7 => (b"", b"$-1", b"\r\n"),
         8 => (
             if integer < 0 { b":-" } else { b":" },
@@ -424,11 +254,10 @@ pub unsafe extern "C" fn swr_v1_resp_format(
     else {
         return 0;
     };
-    if output.is_null() && capacity == 0 {
+    let Some(output) = output else {
         return size;
-    }
-    // SAFETY: `output` lends `capacity` exclusive writable bytes, disjoint from the inputs.
-    let Some(out) = (unsafe { crate::output(output, capacity, size) }) else {
+    };
+    let Some(out) = output.get_mut(..size) else {
         return 0;
     };
     crate::concat(out, &parts);
@@ -460,13 +289,8 @@ pub fn resp_receive(
 /// 0 unless it is full and below the maximum; the maximum once it is half way;
 /// otherwise double, then `swoole_size_align` (which always adds up to a whole
 /// page, even to an aligned value) and cap.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_resp_extend_size(
-    length: usize,
-    size: usize,
-    maximum: usize,
-    page: usize,
-) -> usize {
+#[must_use]
+pub fn resp_extend_size(length: usize, size: usize, maximum: usize, page: usize) -> usize {
     if length != size || size >= maximum {
         0
     } else if size >= maximum / 2 {
@@ -482,7 +306,9 @@ pub extern "C" fn swr_v1_resp_extend_size(
     }
 }
 
-fn resp_receive_range(
+/// [`resp_receive`], also reporting in `range` a number that overflowed, even when a
+/// later protocol delimiter is malformed.
+pub fn resp_receive_range(
     bytes: &[u8],
     capacity: usize,
     maximum: usize,
@@ -581,91 +407,19 @@ fn resp_receive_range(
     }
 }
 
-/// # Safety
-/// Buffer is borrowed/readable; request and `set_offset` are aligned exclusive
-/// writable values, disjoint from the buffer and one another.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_receive(
-    data: *const u8,
-    length: usize,
-    capacity: usize,
-    maximum: usize,
-    request: *mut RespRequest,
-    set_offset: *mut u8,
-) -> i32 {
-    // SAFETY: forwards the caller's input and output contract; the range output is omitted.
-    unsafe {
-        swr_v1_resp_receive_range(
-            data,
-            length,
-            capacity,
-            maximum,
-            request,
-            set_offset,
-            std::ptr::null_mut(),
-        )
-    }
-}
-/// # Safety
-/// Same contract as receive; range is null or exclusive writable/disjoint.
-/// Reports overflow even when a later protocol delimiter is malformed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_receive_range(
-    data: *const u8,
-    length: usize,
-    capacity: usize,
-    maximum: usize,
-    request: *mut RespRequest,
-    set_offset: *mut u8,
-    range: *mut u8,
-) -> i32 {
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(0) };
-    }
-    if request.is_null() || set_offset.is_null() || length > capacity {
-        return -1;
-    }
-    // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
-    let Some(bytes) = (unsafe { crate::input(data, length) }) else {
-        return -1;
-    };
-    let mut overflow = false;
-    let (action, offset) = resp_receive_range(
-        bytes,
-        capacity,
-        maximum,
-        // SAFETY: `request` is non-null (checked above), aligned, exclusive and writable.
-        unsafe { &mut *request },
-        &mut overflow,
-    );
-    if !range.is_null() {
-        // SAFETY: `range` is non-null (checked above), aligned and writable per the export's contract.
-        unsafe { range.write(u8::from(overflow)) };
-    }
-    // SAFETY: `set_offset` is non-null (checked above), aligned and writable per the export's contract.
-    unsafe { set_offset.write(u8::from(offset)) };
-    action.cast_signed()
-}
-
 #[cfg(test)]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "tests drive the native integer interfaces with literal and loop values"
-)]
 mod tests {
     use super::*;
     #[test]
     fn extend_size_follows_upstream_growth() {
-        assert_eq!(swr_v1_resp_extend_size(10, 64, 1 << 20, 4096), 0);
-        assert_eq!(swr_v1_resp_extend_size(1 << 20, 1 << 20, 1 << 20, 4096), 0);
-        assert_eq!(swr_v1_resp_extend_size(4096, 4096, 1 << 20, 4096), 12288);
+        assert_eq!(resp_extend_size(10, 64, 1 << 20, 4096), 0);
+        assert_eq!(resp_extend_size(1 << 20, 1 << 20, 1 << 20, 4096), 0);
+        assert_eq!(resp_extend_size(4096, 4096, 1 << 20, 4096), 12288);
         // Upstream's growth sequence from 8192 with an 8 MiB maximum.
         let mut size = 8192;
         let mut sizes = vec![size];
         while size < 8 << 20 {
-            size = swr_v1_resp_extend_size(size, size, 8 << 20, 4096);
+            size = resp_extend_size(size, size, 8 << 20, 4096);
             sizes.push(size);
         }
         assert_eq!(
@@ -675,28 +429,19 @@ mod tests {
                 6_287_360, 8_388_608
             ]
         );
-        assert_eq!(swr_v1_resp_extend_size(5000, 5000, 1 << 20, 4096), 12288);
-        assert_eq!(
-            swr_v1_resp_extend_size(600_000, 600_000, 1 << 20, 4096),
-            1 << 20
-        );
-        assert_eq!(
-            swr_v1_resp_extend_size(300_000, 300_000, 500_000, 4096),
-            500_000
-        );
+        assert_eq!(resp_extend_size(5000, 5000, 1 << 20, 4096), 12288);
+        assert_eq!(resp_extend_size(600_000, 600_000, 1 << 20, 4096), 1 << 20);
+        assert_eq!(resp_extend_size(300_000, 300_000, 500_000, 4096), 500_000);
     }
     #[test]
-    fn handler_keys_preserve_nul_truncation_ascii_and_invalid_outputs() {
+    fn handler_keys_preserve_nul_truncation_and_ascii() {
         for input in [
             b"".as_slice(),
             b"EcHo\0ignored",
             &[b'A'; 1024],
             &[255, b'A', 128],
         ] {
-            let mut output = [99; 64];
-            let length = unsafe {
-                swr_v1_resp_handler_key(input.as_ptr(), input.len(), output.as_mut_ptr())
-            };
+            let (output, length) = resp_handler_key(input);
             let expected = [
                 b"_handler_".as_slice(),
                 &input[..input.iter().position(|&b| b == 0).unwrap_or(input.len())],
@@ -710,35 +455,18 @@ mod tests {
             assert_eq!(&output[..length], expected);
             assert!(output[length..].iter().all(|&byte| byte == 0));
         }
-        let mut output = [99; 64];
-        assert_eq!(
-            unsafe { swr_v1_resp_handler_key(std::ptr::null(), 1, output.as_mut_ptr()) },
-            0
-        );
-        assert_eq!(output, [99; 64]);
-        assert_eq!(
-            unsafe { swr_v1_resp_handler_key(std::ptr::null(), 0, std::ptr::null_mut()) },
-            0
-        );
     }
     #[test]
     fn php_cursor_preserves_typed_order_and_transactional_errors() {
         let wire = b"*2\r\n$-1\r\n:9223372036854775808\r\n$4\r\nECHO\r\n$0\r\n\r\n";
         let mut state = RespPhpState::default();
-        let mut event = RespSpan::default();
-        let mut range = 0;
         let mut kinds = Vec::new();
         let mut ranges = Vec::new();
-        while unsafe {
-            swr_v1_resp_php_next(
-                wire.as_ptr(),
-                wire.len(),
-                &raw mut state,
-                &raw mut event,
-                &raw mut range,
-            )
-        } == 1
-        {
+        loop {
+            let mut range = false;
+            let Ok(Some(event)) = resp_php_next(wire, &mut state, &mut range) else {
+                break;
+            };
             kinds.push(event.kind);
             ranges.push(range);
             if event.kind == 1 {
@@ -749,30 +477,18 @@ mod tests {
             }
         }
         assert_eq!(kinds, [2, 1, 3, 0]);
-        assert_eq!(ranges, [0, 1, 0, 0]);
+        assert_eq!(ranges, [false, true, false, false]);
         let malformed = b"$9223372036854775808x\r\n";
         state = RespPhpState::default();
-        event.kind = 99;
-        assert_eq!(
-            unsafe {
-                swr_v1_resp_php_next(
-                    malformed.as_ptr(),
-                    malformed.len(),
-                    &raw mut state,
-                    &raw mut event,
-                    &raw mut range,
-                )
-            },
-            -1
-        );
-        assert_eq!(range, 1);
+        let mut range = false;
+        assert!(resp_php_next(malformed, &mut state, &mut range).is_err());
+        assert!(range);
         assert_eq!(state.cursor.position, 0);
         assert_eq!(state.cursor.state, 0);
         assert_eq!(state.command_seen, 0);
-        assert_eq!(event.kind, 99);
     }
     fn scan(bytes: &[u8], emit: impl FnMut(RespSpan)) -> Option<usize> {
-        scan_range(bytes, emit, &mut false)
+        resp_spans(bytes, emit, &mut false)
     }
     #[test]
     fn number_grammar_matches_strtol_int_conversion() {
@@ -797,73 +513,10 @@ mod tests {
             (":-9223372036854775809x\r\n", true),
             (":00000000000000000000000001\r\n", false),
         ] {
-            let mut range = 99;
-            unsafe {
-                swr_v1_resp_parse_range(
-                    wire.as_ptr(),
-                    wire.len(),
-                    std::ptr::null_mut(),
-                    0,
-                    &raw mut range,
-                );
-            }
-            assert_eq!(range, u8::from(expected), "{wire:?}");
+            let mut range = false;
+            let _ = resp_spans(wire.as_bytes(), |_| {}, &mut range);
+            assert_eq!(range, expected, "{wire:?}");
         }
-    }
-    #[test]
-    fn single_scan_bounds_prefix_and_preserves_transactional_abi() {
-        let wire = b":1\r\n:2\r\n:3\r\n";
-        for capacity in 0..=4 {
-            let mut output = [RespSpan {
-                offset: 99,
-                length: 77,
-                integer: 42,
-                kind: 3,
-            }; 4];
-            let mut range = 99;
-            assert_eq!(
-                unsafe {
-                    swr_v1_resp_scan(
-                        wire.as_ptr(),
-                        wire.len(),
-                        output.as_mut_ptr(),
-                        capacity,
-                        &raw mut range,
-                    )
-                },
-                3
-            );
-            assert_eq!(range, 0);
-            for (index, span) in output.iter().enumerate() {
-                if index < capacity.min(3) {
-                    assert_eq!(span.integer, (index + 1) as i32);
-                } else {
-                    assert_eq!((span.offset, span.kind), (99, 3));
-                }
-            }
-        }
-        let wire = b":1\r\n:99999999999999999999999x\r\n";
-        let mut output = [RespSpan::default(); 2];
-        let mut range = 0;
-        assert_eq!(
-            unsafe {
-                swr_v1_resp_scan(
-                    wire.as_ptr(),
-                    wire.len(),
-                    output.as_mut_ptr(),
-                    2,
-                    &raw mut range,
-                )
-            },
-            -1
-        );
-        assert_eq!((output[0].integer, range), (1, 1));
-        output[0].integer = 42;
-        assert_eq!(
-            unsafe { swr_v1_resp_parse(wire.as_ptr(), wire.len(), output.as_mut_ptr(), 2) },
-            -1
-        );
-        assert_eq!(output[0].integer, 42);
     }
     #[test]
     fn null_empty_binary_and_integer_commands() {
@@ -877,6 +530,18 @@ mod tests {
         assert_eq!(spans[1].length, 0);
         assert_eq!(spans[2].integer, -1);
         assert_eq!(scan(b"$99\r\nx\r\n", |_| {}), None);
+    }
+    #[test]
+    fn format_queries_its_size_and_leaves_a_short_output_alone() {
+        assert_eq!(resp_format(4, b"abc", 0, None), 9);
+        let mut out = [0; 9];
+        assert_eq!(resp_format(4, b"abc", 0, Some(&mut out)), 9);
+        assert_eq!(&out, b"$3\r\nabc\r\n");
+        let mut short = [7; 8];
+        assert_eq!(resp_format(4, b"abc", 0, Some(&mut short)), 0);
+        assert_eq!(short, [7; 8]);
+        assert_eq!(resp_format(8, b"", -42, None), 6);
+        assert_eq!(resp_format(3, b"x", 0, None), 0);
     }
     #[test]
     fn full_request_and_partial_receive_state() {
@@ -909,44 +574,5 @@ mod tests {
             resp_receive(b"*3\r\n\n\r\n", 64, 64, &mut RespRequest::default()),
             (0, true)
         );
-    }
-
-    /// `redis::format`, as `tests/modules/protocols/redis_reply.inc` builds it.
-    fn format(kind: u8, value: &[u8]) -> Vec<u8> {
-        let (data, length) = (value.as_ptr(), value.len());
-        let size = unsafe { swr_v1_resp_format(kind, data, length, 0, std::ptr::null_mut(), 0) };
-        let mut out = vec![0; size];
-        let written = unsafe { swr_v1_resp_format(kind, data, length, 0, out.as_mut_ptr(), size) };
-        assert_eq!(written, size);
-        out
-    }
-
-    /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, format)`: `REPLY_STATUS` (2)
-    /// and `REPLY_ERROR` (0) of an empty value.
-    #[test]
-    fn format_empty_status_and_error() {
-        assert_eq!(format(2, b""), b"+OK\r\n");
-        assert_eq!(format(0, b""), b"-ERR\r\n");
-    }
-
-    /// `TEST(redis, parse)`: `redis::parse(":3\r\n")[0] == "3"`. `redis_reply.inc`'s
-    /// `parse` prints an integer span (kind 1) in decimal.
-    #[test]
-    fn parse_integer_reply() {
-        let wire = b":3\r\n";
-        let mut spans = [RespSpan::default(); 16];
-        let mut range = 0;
-        let count = unsafe {
-            swr_v1_resp_scan(
-                wire.as_ptr(),
-                wire.len(),
-                spans.as_mut_ptr(),
-                16,
-                &raw mut range,
-            )
-        };
-        assert_eq!((count, range), (1, 0));
-        assert_eq!(spans[0].kind, 1);
-        assert_eq!(spans[0].integer.to_string(), "3");
     }
 }

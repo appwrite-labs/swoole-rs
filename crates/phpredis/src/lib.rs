@@ -34,7 +34,7 @@ use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpstubs::redis_server as stubs;
-use swoole_rs_protocols::{RespPhpState, RespSpan, swr_v1_resp_handler_key, swr_v1_resp_php_next};
+use swoole_rs_protocols::{RespPhpState, resp_handler_key, resp_php_next};
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Owned, OwnedArray, bailout, handlers, method_table, php_error,
     sys::{
@@ -159,10 +159,7 @@ pub extern "C" fn php_swoole_redis_server_rshutdown() {
 
 /// `redis_handler_key`: `_handler_` and the command, lowercased.
 fn handler_key(command: &[u8]) -> Vec<u8> {
-    let mut key = [0u8; MAX_COMMAND_SIZE];
-    // SAFETY: `command` is readable; `key` has the 64 bytes the export writes.
-    let length =
-        unsafe { swr_v1_resp_handler_key(command.as_ptr(), command.len(), key.as_mut_ptr()) };
+    let (key, length) = resp_handler_key(command);
     key.get(..length).unwrap_or(&key).to_vec()
 }
 
@@ -301,26 +298,16 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
     let data = zdata.bytes().unwrap_or_default();
     let mut params = OwnedArray::default();
     let mut state = RespPhpState::default();
-    let mut span = RespSpan::default();
-    let mut range = 0u8;
     let mut command: &[u8] = &[];
     let result = loop {
-        // SAFETY: the payload's bytes and local state, span and range.
-        let next = unsafe {
-            swr_v1_resp_php_next(
-                data.as_ptr(),
-                data.len(),
-                &raw mut state,
-                &raw mut span,
-                &raw mut range,
-            )
-        };
-        if range != 0 {
+        let mut range = false;
+        let next = resp_php_next(data, &mut state, &mut range);
+        if range {
             set_errno(libc::ERANGE);
         }
-        if next <= 0 {
-            break next;
-        }
+        let Ok(Some(span)) = next else {
+            break next.map(|_| ());
+        };
         let text = data.get(span.offset..span.offset + span.length);
         let text = text.unwrap_or_default();
         match span.kind {
@@ -330,7 +317,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
             _ => command = text,
         }
     };
-    if result < 0 {
+    if result.is_err() {
         // SAFETY: a live server.
         unsafe { server_close(server, fd, false) };
         return Ok(OK);

@@ -3,7 +3,7 @@
 use core::ffi::{c_int, c_void};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
-use swoole_rs_protocols::{ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespIo, swr_v1_resp_recv};
+use swoole_rs_protocols_ffi::{ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespIo, swr_v1_resp_recv};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_server::ConnectionRecord;
 
@@ -129,7 +129,7 @@ pub(crate) unsafe extern "C" fn recv_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swoole_rs_protocols::SW_ERR;
+    use swoole_rs_protocols_ffi::SW_ERR;
 
     /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, recv_packet_with_partially_filled_buffer)`.
     #[test]

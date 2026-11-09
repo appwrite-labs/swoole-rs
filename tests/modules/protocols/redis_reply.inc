@@ -1,4 +1,4 @@
-// redis::format and redis::parse over Rust's RESP codec (crates/protocols/src/redis.rs).
+// redis::format and redis::parse over Rust's RESP codec (crates/protocols-ffi/src/redis.rs).
 // The build has no callers of them, so they are not built; protocols-native (native.cc)
 // includes this inside its `redis` namespace, over its own `String`.
 static void append_reply(String *buffer, uint8_t kind, const char *data, size_t length, int64_t integer = 0) {

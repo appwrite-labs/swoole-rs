@@ -1,13 +1,12 @@
 //! `swoole::Socks5Proxy`'s methods under their upstream symbols, over the Rust proxy
 //! owner and its packet buffer; the header keeps `create`'s C++ allocation and
 //! `handshake`'s `std::function` send.
-use crate::{
-    socks_transition, swr_v1_socks_auth, swr_v1_socks_config, swr_v1_socks_connect,
-    swr_v1_socks_negotiate, swr_v1_socks_strerror,
-};
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{c_char, c_int};
 use std::ptr;
 use swoole_rs_corebase::{ProxyState, log, net_types::AddressStorage};
+use swoole_rs_protocols::{
+    socks_auth, socks_config, socks_connect, socks_negotiate, socks_strerror, socks_transition,
+};
 
 /// `SW_LOG_NOTICE`.
 const NOTICE: c_int = 3;
@@ -50,6 +49,8 @@ unsafe fn packet(proxy: *const Socks5Proxy, action: u32) -> Packet {
     let fields = unsafe { *owner.fields.get() };
     // SAFETY: SOCKS owners contain an exclusive512-byte packet allocation.
     let buffer = unsafe { owner.buffer() };
+    // SAFETY: as above, lent to this call alone.
+    let buffer = unsafe { std::slice::from_raw_parts_mut(buffer, 512) };
     let mut result = Packet {
         size: -1,
         diagnostic: 0,
@@ -59,33 +60,30 @@ unsafe fn packet(proxy: *const Socks5Proxy, action: u32) -> Packet {
         0 => {
             // SAFETY: the stable username slot is unchanged while packing.
             let user = unsafe { owner.string(1) };
-            // SAFETY: the owner's method field is exclusively lent to negotiation.
-            let method = unsafe { ptr::addr_of_mut!((*owner.fields.get()).method) };
-            // SAFETY: method and packet bytes are disjoint, stable writable slots.
-            result.size =
-                unsafe { swr_v1_socks_negotiate(u8::from(user.length != 0), method, buffer, 512) };
+            if let Some(method) = socks_negotiate(user.length != 0, buffer) {
+                // SAFETY: the owner's method field is exclusively lent to negotiation.
+                unsafe { (*owner.fields.get()).method = method };
+                result.size = 3;
+            }
         }
         1 => {
             // SAFETY: the owner's credentials are stable and disjoint from packet storage.
             let user = unsafe { owner.string(1) };
             // SAFETY: the password slot remains unchanged while packing.
             let password = unsafe { owner.string(2) };
-            // SAFETY: stable credential spans and exclusive512-byte packet output.
-            result.size = unsafe {
-                swr_v1_socks_auth(
-                    user.data.cast(),
-                    user.length,
-                    password.data.cast(),
-                    password.length,
-                    buffer,
-                    512,
-                )
-            };
+            // SAFETY: the stable username span, disjoint from the packet storage.
+            let user = unsafe { crate::input(user.data.cast(), user.length) };
+            // SAFETY: as above, for the password.
+            let password = unsafe { crate::input(password.data.cast(), password.length) };
+            if let (Some(user), Some(password)) = (user, password) {
+                result.size = socks_auth(user, password, buffer);
+            }
         }
         2 => {
             // Preserve the initialized prefix even when literal address validation fails.
-            // SAFETY: the owner exclusively lends at least three packet bytes.
-            unsafe { ptr::copy_nonoverlapping([5u8, 1, 0].as_ptr(), buffer, 3) };
+            if let Some(prefix) = buffer.get_mut(..3) {
+                prefix.copy_from_slice(&[5, 1, 0]);
+            }
             // SAFETY: the target slot stays stable through address parsing and packing.
             let host = unsafe { owner.string(3) };
             // SAFETY: every member of this POD sockaddr union admits zero bytes.
@@ -134,7 +132,9 @@ unsafe fn packet(proxy: *const Socks5Proxy, action: u32) -> Packet {
             )]
             let port = fields.target_port as u16;
             // SAFETY: the selected initialized address is disjoint from the owned packet buffer.
-            result.size = unsafe { swr_v1_socks_connect(kind, bytes, size, port, buffer, 512) };
+            if let Some(address) = unsafe { crate::input(bytes, size) } {
+                result.size = socks_connect(kind, address, port, buffer);
+            }
             if result.size == -2 {
                 result.size = -1;
                 result.diagnostic = 3;
@@ -237,9 +237,7 @@ pub unsafe extern "C" fn handshake_step(
             format_args!("SOCKS username/password authentication failed"),
         ),
         _ => {
-            // SAFETY: strerror returns a static NUL-terminated string.
-            let reason =
-                unsafe { CStr::from_ptr(swr_v1_socks_strerror(i32::from(decision.reply))) };
+            let reason = socks_strerror(i32::from(decision.reply));
             notice(
                 SERVER_ERROR,
                 format_args!("Socks5 server error, reason :{}", reason.to_string_lossy()),
@@ -264,7 +262,7 @@ pub unsafe extern "C" fn handshake_step(
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy8strerrorEi")]
 #[must_use]
 pub extern "C" fn strerror(code: c_int) -> *const c_char {
-    swr_v1_socks_strerror(code)
+    socks_strerror(code).as_ptr()
 }
 
 /// `int Socks5Proxy::admit(size_t, size_t)`: `create`'s credential check, with
@@ -272,7 +270,7 @@ pub extern "C" fn strerror(code: c_int) -> *const c_char {
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy5admitEmm")]
 #[must_use]
 pub extern "C" fn admit(user_length: usize, password_length: usize) -> c_int {
-    let config = swr_v1_socks_config(user_length, password_length);
+    let config = socks_config(user_length, password_length);
     if config == 0 {
         log::error_log(
             NOTICE,
@@ -287,6 +285,7 @@ pub extern "C" fn admit(user_length: usize, password_length: usize) -> c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CStr;
     use swoole_rs_corebase::{
         CoreStringView, swr_v1_core_proxy_configure, swr_v1_core_proxy_new, swr_v1_core_string_set,
     };

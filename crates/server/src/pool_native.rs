@@ -20,6 +20,7 @@ use core::ptr;
 use swoole_rs_process::worker_record::Worker as Record;
 
 use core::sync::atomic::AtomicU64;
+use swoole_rs_bus::{BUS_ALLOCATE, BusRead, MessageBus};
 use swoole_rs_corebase::CoreAllocator;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
@@ -51,7 +52,6 @@ use swoole_rs_process::process_pool::{
 use swoole_rs_process::reload_task::ReloadTask;
 use swoole_rs_process::worker_globals::thread_globals;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
-use swoole_rs_protocols::{BUS_ALLOCATE, BusRead, MessageBus};
 use swoole_rs_reactor::event_api::{
     swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
     swoole_event_write, swr_v1_event_current,
@@ -79,7 +79,7 @@ const CHAN_SHM: c_int = 8;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
-// SAFETY: crates/timer's and crates/protocols' C entries,
+// SAFETY: crates/timer's and crates/bus' C entries,
 // crates/reactor's, and their upstream symbols.
 unsafe extern "C-unwind" {
     #[link_name = "_Z19swoole_timer_selectv"]

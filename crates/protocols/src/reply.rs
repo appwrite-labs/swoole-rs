@@ -96,33 +96,6 @@ pub fn reply_parts(kind: u8, present: bool, number: u64, value: &[u8]) -> Option
     Some(result)
 }
 
-/// # Safety
-/// Data is readable for length bytes; output is aligned/exclusive writable and
-/// disjoint. No pointers are retained. Missing/invalid kind leaves output intact.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_reply_parts(
-    kind: u8,
-    present: u8,
-    number: u64,
-    data: *const u8,
-    length: usize,
-    output: *mut ReplyParts,
-) -> i32 {
-    if output.is_null() {
-        return -1;
-    }
-    // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
-    let Some(value) = (unsafe { crate::input(data, length) }) else {
-        return -1;
-    };
-    let Some(parts) = reply_parts(kind, present != 0, number, value) else {
-        return -1;
-    };
-    // SAFETY: `output` is non-null (checked above), aligned and writable per the export's contract.
-    unsafe { output.write(parts) };
-    0
-}
-
 #[cfg(test)]
 #[expect(
     clippy::cast_sign_loss,
@@ -163,22 +136,5 @@ mod tests {
         assert_eq!(encode(5, true, u64::from(u32::MAX), b""), b"*-1\r\n");
         assert_eq!(encode(6, true, 1 << 31, b""), b"*0\r\n");
         assert_eq!(encode(6, true, (1 << 30) + 1, b""), b"*-2147483646\r\n");
-    }
-    #[test]
-    fn invalid_inputs_do_not_write() {
-        let mut output = ReplyParts {
-            prefix_length: 17,
-            ..ReplyParts::default()
-        };
-        assert_eq!(
-            unsafe { swr_v1_resp_reply_parts(255, 0, 0, std::ptr::null(), 0, &raw mut output) },
-            -1
-        );
-        assert_eq!(output.prefix_length, 17);
-        assert_eq!(
-            unsafe { swr_v1_resp_reply_parts(4, 1, 0, std::ptr::null(), 1, &raw mut output) },
-            -1
-        );
-        assert_eq!(output.prefix_length, 17);
     }
 }
