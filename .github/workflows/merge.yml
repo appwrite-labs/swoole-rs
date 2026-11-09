@@ -483,6 +483,57 @@ jobs:
       - if: needs.phpt.result != 'success'
         run: echo "A PHPT shard crashed; its tests are missing from the gate" && exit 1
 
+  # swoole/library's own PHPUnit suite against the library each engine embeds, with the
+  # services of the library's docker-compose.yml published on localhost, as its
+  # build-swoole workflow runs it (corpus/library/run.py).
+  library:
+    needs: phpt-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+        with:
+          # The engines link unixODBC, libfbclient and the Instant Client.
+          packages: php-mysql php-pgsql php-redis php-mongodb unixodbc libfbclient2 libaio1t64
+          php: ${{ needs.phpt-build.outputs.php }}
+      - uses: ./.github/actions/instantclient
+      - uses: actions/cache/restore@v4
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: phpt-engines
+          path: target/phpt
+      # The runner image enables Xdebug, which aborts coroutine-deep stacks as infinite
+      # loops; the library's own CI runs without it.
+      - run: sudo phpdismod -v ALL -s ALL xdebug
+      - run: python3 corpus/library/run.py --prepare
+      - working-directory: target/library/src
+        run: |
+          echo '127.0.0.1 consul local.httpbin.org mongodb mysql nacos oracle pgsql php-fpm redis' | sudo tee -a /etc/hosts
+          compose="docker compose -f docker-compose.yml -f docker-compose.host.yml"
+          $compose up -d consul httpbin mongodb mysql nacos oracle pgsql php-fpm redis
+          # Every engine meets the same services: wait until the slow ones answer.
+          for _ in $(seq 120); do
+            $compose logs oracle | grep -q 'DATABASE IS READY TO USE' \
+              && $compose exec -T mysql mysqladmin ping -uusername -ppassword --silent \
+              && curl -sf -o /dev/null http://127.0.0.1:8848/nacos/ && exit 0
+            sleep 5
+          done
+          $compose ps && exit 1
+      - run: >
+          python3 corpus/library/run.py --engine upstream=target/phpt/upstream.so
+          --engine hybrid=target/phpt/hybrid.so --engine cargo=target/phpt/cargo.so
+          | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: library
+          path: target/reports/library/
+
   # musl and PHP 8.5, as on php:8.5-alpine in Appwrite's base image: build the
   # reference and the all-modules hybrid, then run the corpus and original PHPTs
   # against both. Project 11 needs --fix-halfclose and is covered by the PR tier.

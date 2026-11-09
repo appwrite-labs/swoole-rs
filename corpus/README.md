@@ -72,6 +72,24 @@ The [upstream selection](upstream/README.md) runs original Swoole PHPTs through
 PHP's official runner, with source checksums and unchanged assertions; the merge
 tier runs every pinned PHPT.
 
+## swoole/library's PHPUnit suite
+
+`library/run.py` runs the unit tests of swoole/library, the PHP code the extension
+embeds, at the commit the pin embeds, against each engine's embedded copy. Start
+the services of the library's `docker-compose.yml` with its
+`docker-compose.host.yml` and map their names to 127.0.0.1, as the merge tier's
+`library` job does, then:
+
+```sh
+python3 corpus/library/run.py --prepare
+python3 corpus/library/run.py --engine upstream=target/upstream/src/modules/swoole.so \
+  --engine hybrid=target/hybrid/rust/modules/swoole.so
+```
+
+A test passing on the first engine and failing on another fails the run.
+`composer.json` is the library's `composer-embedded.json` with PHP pinned to the
+runners' 8.3, so `composer.lock` resolves the same everywhere.
+
 Prepare the Hyperf application before running project 12:
 `python3 corpus/thirdparty/hyperf.py --prepare`. Source and Composer dependency
 identities are pinned; runtime tests do not resolve dependencies. Project 11
