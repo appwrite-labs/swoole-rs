@@ -4,9 +4,6 @@ on:
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 # Explicit bash runs steps with -eo pipefail; the default (`bash -e`) lets a pipe
 # like `gate.py | tee` report success when gate.py fails.
 defaults:
@@ -142,11 +139,6 @@ jobs:
         run: python3 tools/build_upstream.py
       # crates/phpstubs is current, and says what the pin's gen_stub.php headers say.
       - run: python3 tools/arginfo.py --check
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       # With the optional cURL and ssh2 hooks (the merge tier's phpt-build runs their PHPTs).
       - run: python3 tools/build_ext.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2
@@ -154,7 +146,6 @@ jobs:
       - run: |
           cargo build --locked --release -p swoole-rs-ffi --features ssh2
           python3 tests/modules/hooks/ssh2_aliases.py --source target/upstream/src --archive target/release/libswoole_rs_ffi.a --output target/reports/ssh2-aliases.json
-      - run: ccache --show-stats
       # Exercise SNI's deferred port resolution on the production extension before merging.
       - run: >
           python3 corpus/upstream/run.py
@@ -189,24 +180,40 @@ jobs:
     needs: changes
     if: needs.changes.outputs.iouring == 'true'
     uses: ./.github/workflows/iouring.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # The c-ares build variant (merge tier), when a PR touches resolver code. Informative.
   cares:
     needs: changes
     if: needs.changes.outputs.cares == 'true'
     uses: ./.github/workflows/cares.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # The ZTS build variant (merge tier), when a PR touches thread or ZTS code. Informative.
   zts:
     needs: changes
     if: needs.changes.outputs.zts == 'true'
     uses: ./.github/workflows/zts.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # The thread-context build variant (merge tier), when a PR touches the coroutine context. Informative.
   threadcontext:
     needs: changes
     if: needs.changes.outputs.threadcontext == 'true'
     uses: ./.github/workflows/threadcontext.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # HTTP/2 conformance (merge tier), when a PR touches HTTP/2 code. Informative.
   h2spec:
