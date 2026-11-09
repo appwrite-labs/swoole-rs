@@ -22,8 +22,8 @@ use swoole_rs_zend::{
         ZEND_ACC_FAKE_CLOSURE, swr_zend_function_find, swr_zend_runtime_call_handler,
         swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled, swr_zend_runtime_free_arginfo,
         swr_zend_runtime_instanceof, swr_zend_runtime_parent, swr_zend_runtime_set_parent,
-        swr_zend_runtime_unsupported, swr_zend_runtime_version, swr_zend_set_stringl,
-        swr_zend_string_release, swr_zend_try_lookup_class, zend_class_entry, zend_execute_data,
+        swr_zend_runtime_unsupported, swr_zend_runtime_version, swr_zend_string_release,
+        swr_zend_try_lookup_class, swr_zval_stringl, zend_class_entry, zend_execute_data,
         zend_fcall_info, zend_function, zend_internal_arg_info, zend_string, zif_handler, zval,
         zval_ptr_dtor,
     },
@@ -179,7 +179,7 @@ fn library_callable(key: &[u8]) {
     // SAFETY: all-zero is `IS_UNDEF`.
     let mut zname: zval = unsafe { std::mem::zeroed() };
     // SAFETY: a writable zval and the name's bytes, which Zend copies.
-    unsafe { swr_zend_set_stringl(&raw mut zname, name.as_ptr().cast(), name.len()) };
+    unsafe { swr_zval_stringl(&raw mut zname, name.as_ptr().cast(), name.len()) };
     name.clear();
     // SAFETY: a string zval; the callable keeps its own copy.
     let callable = unsafe { crate::callable_create(&raw mut zname) };

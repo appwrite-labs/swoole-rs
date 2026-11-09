@@ -23,10 +23,9 @@ use swoole_rs_server::{port_config, server_methods, view};
 use swoole_rs_zend::{
     Object, object_of, string,
     sys::{
-        swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_empty_string,
-        swr_zval_stringl, zend_string, zval,
+        swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zend_string, zval,
     },
-    value::set_str,
+    value::{empty_string, set_str},
 };
 
 unsafe extern "C" {
@@ -176,7 +175,7 @@ pub unsafe extern "C" fn php_swoole_get_recv_data(
     let (flags, length) = (req.info.flags, req.info.len as usize);
     if length == 0 {
         // SAFETY: per the caller.
-        unsafe { swr_zval_empty_string(zdata) };
+        unsafe { set_str(zdata, empty_string()) };
     } else if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
         // SAFETY: an OBJ_PTR payload is the bus's packet, a zend string.
         unsafe { assign_by_val(zdata, req.data, length) };

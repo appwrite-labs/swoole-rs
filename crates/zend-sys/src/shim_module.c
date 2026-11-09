@@ -1,3 +1,7 @@
+/* Stays C (docs/zend.md, What stays C): bailout (MINIT hooks, ini registration,
+ * phpinfo), globals (CG(compiler_options), SIGG, EG(function_table)) and version
+ * (register_user_shutdown_function in 8.5, ZEND_COMPILE_PRELOAD,
+ * PHP_STREAM_FLAG_NO_CLOSE). */
 #include "shim.h"
 #include "shim_module.h"
 #include <dlfcn.h>

@@ -1,3 +1,7 @@
+/* The coroutine VM switch. Stays C (docs/zend.md, What stays C): globals (the EG,
+ * OG, BG and SG state each coroutine saves and restores), bailout (zend_first_try
+ * around a coroutine, autoloaders, backtraces), version (ZEND_EXIT before PHP
+ * 8.4, ZEND_CHECK_STACK_LIMIT) and private (ZEND_CLOSURE_OBJECT). */
 #include "shim.h"
 #include "shim_coroutine.h"
 

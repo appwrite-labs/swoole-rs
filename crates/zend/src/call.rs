@@ -7,12 +7,11 @@ use crate::{
         _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_BOOL,
         _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, _zend_expected_type_Z_EXPECTED_DOUBLE,
         _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_STRING,
-        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT_EX, IS_TRUE,
+        _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT_EX, IS_TRUE,
         ZPP_ERROR_WRONG_ARG, add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool,
-        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str,
-        swr_zval_empty_array, swr_zval_empty_string, swr_zval_str, zend_execute_data,
-        zend_expected_type, zend_object, zend_string, zend_update_property_long, zend_value,
-        zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
+        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str,
+        zend_execute_data, zend_expected_type, zend_object, zend_string, zend_update_property_long,
+        zend_value, zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
     },
 };
 use std::{ffi::CStr, ptr};
@@ -427,15 +426,18 @@ impl Call {
     /// `RETVAL_EMPTY_STRING`.
     #[inline]
     pub fn set_empty_string(&self) {
-        // SAFETY: the return slot is live.
-        unsafe { swr_zval_empty_string(self.value) };
+        // SAFETY: the interned empty string needs no reference.
+        unsafe { self.set_string(crate::value::empty_string()) };
     }
 
     /// `RETVAL_EMPTY_ARRAY`.
     #[inline]
     pub fn set_empty_array(&self) {
-        // SAFETY: the return slot is live.
-        unsafe { swr_zval_empty_array(self.value) };
+        let empty = zend_value {
+            arr: crate::value::empty_array(),
+        };
+        // SAFETY: the return slot is live; the empty array is immutable.
+        unsafe { crate::value::set(self.value, empty, IS_ARRAY) };
     }
 }
 
