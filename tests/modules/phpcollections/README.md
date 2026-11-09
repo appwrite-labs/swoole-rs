@@ -8,13 +8,12 @@ runs over the memory crate's table.
 
 ```sh
 python3 tests/modules/phpcollections/php_runtime.py \
-  --engine native=/absolute/reference.so --engine selected=/absolute/swoole.so \
-  --build-manifest /absolute/build-manifest.json --archive /absolute/ffi.a \
-  --source-ref EXACT_SOURCE_COMMIT --output target/runtime.json
+  --engine upstream=/absolute/reference.so --engine cargo=target/ext/swoole.so \
+  --build-manifest target/ext/build-manifest.json --output target/runtime.json
 ```
 
-Copies the DSOs, requires the phpcollections feature bit on exactly one engine, attests the
-selected build, then runs `php_collections.php` on both. The `complete` profile
+Copies the DSOs, requires the phpcollections feature bit on exactly one engine, checks the
+selected engine against `tools/build_ext.py`'s manifest, then runs `php_collections.php` on both. The `complete` profile
 requires exactly 324 checks and identical summaries: binary/null/partial writes,
 defined arithmetic, object/resource custody, COW isolation, suspended FIFO
 transfer, aliases/Countable/Iterator, constructor refusal, serialization denial,
@@ -27,16 +26,6 @@ Optional PHP dependencies use repeated `--php-extension NAME`. Registered as
 
 The PHPT gate (merge tier `phpt-*` jobs) runs every pinned Table, Channel and
 `swoole_global` original on upstream and on the all-modules hybrid.
-
-## Benchmark preparation (`prepare_benchmark.py`)
-
-Takes the runtime pair arguments plus `--native-build-manifest FILE`. Optional
-paired `--selected-export FILE` / `--native-export FILE` recompute the observed
-compiler commands and reject unoptimized builds; `--compilation-correction FILE`
-must match exactly one export. It runs seven `benchmark.php` workloads with
-`--check` and `hrtime`/`microtime` disabled (new/existing writes, full/field
-reads, arithmetic, buffered transfer, handoff), makes the prepared files
-read-only and reports remaining eligibility blockers. No measurement mode has run.
 
 ## Unit tests
 

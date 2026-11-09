@@ -19,11 +19,11 @@ class AttestedPair(unittest.TestCase):
     def run_pair(self, bits=None, attestation_error=False, warning=False, mismatch=False, checks=324, profile=None):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)
-            for name in ['native.so','selected.so','build.json','archive.a']:
+            for name in ['native.so','selected.so','build.json']:
                 (root/name).write_bytes(name.encode())
             output=root/'report.json'
             argv=['runner','--engine','native='+str(root/'native.so'),'--engine','selected='+str(root/'selected.so'),
-                  '--source-ref','frozen','--build-manifest',str(root/'build.json'),'--archive',str(root/'archive.a'),'--output',str(output)]
+                  '--build-manifest',str(root/'build.json'),'--output',str(output)]
             if profile: argv += ['--profile', profile]
             fixtures=[]
             def run(command,**kwargs):
@@ -36,13 +36,13 @@ class AttestedPair(unittest.TestCase):
             def attest(*args):
                 if attestation_error:raise ValueError('wrong frozen source')
                 self.assertEqual(args[-1],runtime.BIT)
-                self.assertTrue(Path(args[2]['extension']).is_file())
-                return dict(manifest_sha256=runtime.sha(root/'build.json'),archive_sha256=runtime.sha(root/'archive.a'))
+                self.assertTrue(Path(args[1]['extension']).is_file())
+                return dict(manifest_sha256=runtime.sha(root/'build.json'))
             with patch.object(sys,'argv',argv),patch.object(runtime,'require_build_space'),patch.object(runtime,'run_isolated',side_effect=run),patch.object(runtime,'attest',side_effect=attest) as attested,redirect_stdout(io.StringIO()):
                 status=runtime.main()
             return status,json.loads(output.read_text()),len(fixtures),attested.call_count
 
-    def test_pair_qualifies_only_after_source_archive_attestation(self):
+    def test_pair_qualifies_only_after_build_attestation(self):
         status,report,fixtures,attestations=self.run_pair()
         self.assertEqual((status,fixtures,attestations),(0,2,1))
         self.assertTrue(report['passed'])

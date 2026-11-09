@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.harness import parse_engines, run_isolated, write_report
-from tools.hybrid_identity import attest
+from tools.ext_identity import attest, unchanged
 
 
 def sha(path):
@@ -23,8 +23,6 @@ def main():
     parser.add_argument('--engine', action='append', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--build-manifest', type=Path, required=True)
-    parser.add_argument('--archive', type=Path, required=True)
-    parser.add_argument('--source-ref', required=True)
     args = parser.parse_args()
     fixture = Path(__file__).with_suffix('.php')
     bailout = Path(__file__).with_name('bailout.php')
@@ -37,7 +35,7 @@ def main():
         if {bool(engine['rust_feature_bits'] & 16777216) for engine in report['engines']} != {False, True}:
             raise ValueError('Require actual native and phphelpers-bit16777216 engines')
         selected = next(item for item in report['engines'] if item['rust_feature_bits'] & 16777216)
-        report['source_attestation'] = attest(args.build_manifest, args.archive, selected, args.source_ref, 16777216)
+        report['source_attestation'] = attest(args.build_manifest, selected, 16777216)
         for engine, identity in zip(engines, report['engines']):
             result = run_isolated(engine.command(str(fixture)), timeout=30)
             row = dict(engine=engine.name, exit=result.returncode, stdout=result.stdout,
@@ -87,9 +85,7 @@ def main():
                 report['vm_bailout_results'].append(row)
         if not all(row['passed'] for row in report['vm_bailout_results']):
             raise ValueError('Actual VM/PCRE/JSON bailout witness failed; original outputs retained')
-        receipt = report['source_attestation']
-        if sha(args.build_manifest) != receipt['manifest_sha256'] or sha(args.archive) != receipt['archive_sha256']:
-            raise ValueError('Build receipt/archive changed during the fixture')
+        unchanged(args.build_manifest, report['source_attestation'])
         report['passed'] = True
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'

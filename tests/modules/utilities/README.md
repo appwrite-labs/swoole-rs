@@ -71,7 +71,7 @@ pipe outcome remains a FAIL.
 
 Other consumers:
 
-- `php_logger.py --engine ... [--build-manifest F --archive F --source-ref R]`
+- `php_logger.py --engine ... [--build-manifest target/ext/build-manifest.json]`
   (`utilities-php-logger`): PHP Logger thresholds, rotation/reopen, date
   rejection/recovery, binary NUL, inherited/private file custody, and four forked
   writers with 128 records per file.

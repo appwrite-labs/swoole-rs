@@ -16,7 +16,7 @@ def sha(path):
 
 
 from tools.harness import Engine, parse_engines, run_isolated, write_report
-from tools.hybrid_identity import attest
+from tools.ext_identity import attest, unchanged
 from tools.build_upstream import require_build_space
 
 BIT = 33554432
@@ -28,11 +28,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile', choices=['complete', 'column-bytes'], default='complete',
                         help='Independent named assertion inventory; column-bytes supplements complete')
-    parser.add_argument('--export', type=Path, help='Legacy immutable export; one native/rust engine')
-    parser.add_argument('--source-ref', required=True)
-    parser.add_argument('--engine', action='append', required=True, help='NAME=DSO pair, or native/rust with --export')
-    parser.add_argument('--build-manifest', type=Path)
-    parser.add_argument('--archive', type=Path)
+    parser.add_argument('--engine', action='append', required=True, help='NAME=DSO; a native and a selected engine')
+    parser.add_argument('--build-manifest', type=Path, required=True)
     parser.add_argument('--php', default='php')
     parser.add_argument('--php-extension', action='append', default=[])
     parser.add_argument('--output', type=Path, required=True)
@@ -45,23 +42,7 @@ def main():
     report = dict(passed=False, scope=__doc__, work=str(work), expected_checks=expected_checks,
                   profile=args.profile, engines=[], results=[], metadata_commands=[])
     try:
-        if args.export:
-            if len(args.engine) != 1 or args.engine[0] not in {'native', 'rust'}:
-                raise ValueError('Legacy --export requires exactly one native/rust engine')
-            export = json.loads(args.export.read_text())
-            if export['source_ref'] != args.source_ref:
-                raise ValueError('Immutable source ref differs')
-            name = 'reference.so' if args.engine[0] == 'native' else 'swoole.so'
-            source = args.export.parent / name
-            if sha(source) != export['files'][name]['sha256']:
-                raise ValueError('Immutable extension identity differs')
-            engines = [Engine(args.engine[0], source, args.php, tuple(args.php_extension))]
-            shutil.copy2(args.export, work / 'export.json')
-            report.update(source_ref=args.source_ref)
-        else:
-            if not args.build_manifest or not args.archive:
-                raise ValueError('Pair mode requires --build-manifest and --archive')
-            engines = parse_engines(args.engine, args.php, args.php_extension)
+        engines = parse_engines(args.engine, args.php, args.php_extension)
         copies = []
         for index, engine in enumerate(engines):
             require_build_space(ROOT)
@@ -86,17 +67,9 @@ def main():
                             php_extensions=list(engine.php_extensions))
             report['engines'].append(identity)
         selected = [identity for identity in report['engines'] if identity['rust_feature_bits'] & BIT]
-        if not args.export:
-            if len(selected) != 1 or not any(not identity['rust_feature_bits'] & BIT for identity in report['engines']):
-                raise ValueError('Require actual native and M27-bit33554432 engines')
-        elif args.engine[0] == 'rust' and not selected:
-            raise ValueError('Artifact does not enable M27; refusing stale PHP conversion credit')
-        elif args.engine[0] == 'native' and selected:
-            raise ValueError('Legacy native control unexpectedly enables M27')
-        if selected:
-            if not args.build_manifest or not args.archive:
-                raise ValueError('Selected artifact requires --build-manifest and --archive attestation')
-            report['source_attestation'] = attest(args.build_manifest, args.archive, selected[0], args.source_ref, BIT)
+        if len(selected) != 1 or not any(not identity['rust_feature_bits'] & BIT for identity in report['engines']):
+            raise ValueError('Require actual native and M27-bit33554432 engines')
+        report['source_attestation'] = attest(args.build_manifest, selected[0], BIT)
         for engine, identity in zip(copies, report['engines']):
             result = run_isolated(engine.command(fixture), timeout=30, cwd=work)
             row = dict(engine=engine.name, command=engine.command(fixture), exit=result.returncode,
@@ -114,10 +87,7 @@ def main():
             raise ValueError('Collection runtime failed; all first outputs retained')
         if len({json.dumps(row['summary'], sort_keys=True) for row in report['results']}) != 1:
             raise ValueError('Native/selected collection summaries differ')
-        if selected:
-            receipt = report['source_attestation']
-            if sha(args.build_manifest) != receipt['manifest_sha256'] or sha(args.archive) != receipt['archive_sha256']:
-                raise ValueError('Attested build manifest/archive changed')
+        unchanged(args.build_manifest, report['source_attestation'])
         report['passed'] = True
     except Exception as error:
         report.update(passed=False, error=f'{type(error).__name__}: {error}')
