@@ -23,14 +23,16 @@ use crate::framing_recv::{self, Callbacks, Packages};
 use crate::http_routes::exports::{Frames, RecvData, dispatch_request, dispatch_task};
 use crate::read::{
     ON_READ_HTTP, OP_ACTIVE, OP_BUF_EXTEND, OP_BUF_HEADER_END, OP_BUF_REDUCE, OP_CATCH, OP_CLIENT,
-    OP_CLOSE, OP_CLOSE_ERRNO, OP_DISPATCH_REQUEST, OP_DISPATCH_TASK, OP_HTTP2_ENABLED,
-    OP_HTTP2_START, OP_MAX_LENGTH, OP_RECV, OP_RECV_BUFFER, OP_RECV_EOF, OP_RECV_LENGTH,
-    OP_RECV_REDIS, OP_RELEASE, OP_REQ_DESTROY, OP_REQ_INIT, OP_REQ_MULTIPART_INIT, OP_SEND,
-    OP_SKIP_RECV, OP_STATIC, OP_UPLOADS, OP_WARN_RECV, OP_WEBSOCKET_ACTIVATE, SEND_BAD_REQUEST,
-    SEND_TOO_LARGE, SEND_UNAVAILABLE, Shared, readable,
+    OP_CLOSE, OP_CLOSE_ERRNO, OP_DISPATCH_REQUEST, OP_DISPATCH_TASK, OP_DISPATCH_UPLOAD,
+    OP_HTTP2_ENABLED, OP_HTTP2_START, OP_MAX_LENGTH, OP_RECV, OP_RECV_BUFFER, OP_RECV_EOF,
+    OP_RECV_LENGTH, OP_RECV_REDIS, OP_RELEASE, OP_REQ_DESTROY, OP_REQ_INIT, OP_REQ_MULTIPART_INIT,
+    OP_SEND, OP_SKIP_RECV, OP_STATIC, OP_UPLOADS, OP_WARN_RECV, OP_WEBSOCKET_ACTIVATE,
+    SEND_BAD_REQUEST, SEND_TOO_LARGE, SEND_UNAVAILABLE, Shared, readable,
 };
 use swoole_rs_framing::recv::{MODE_EOF, MODE_LENGTH};
 
+/// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
+const UPLOAD_PREPROCESSED: u16 = 1;
 /// `websocket::STATUS_HANDSHAKE` and `STATUS_ACTIVE`.
 const STATUS_HANDSHAKE: u8 = 2;
 const STATUS_ACTIVE: u8 = 3;
@@ -283,7 +285,7 @@ fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
             // SAFETY: the port's protocol, the live connection and the current buffer.
             status(unsafe { crate::resp_recv::recv_packet(protocol, conn, buffer) })
         }
-        OP_DISPATCH_TASK | OP_DISPATCH_REQUEST => dispatch(c, op, arg),
+        OP_DISPATCH_TASK | OP_DISPATCH_REQUEST | OP_DISPATCH_UPLOAD => dispatch(c, op, arg),
         OP_WEBSOCKET_ACTIVATE => {
             let conn = conn();
             conn.websocket_status = STATUS_ACTIVE;
@@ -334,10 +336,10 @@ fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
             let dir = unsafe { view::upload_tmp_dir(c.serv) };
             let max = config(c).upload_max_filesize;
             // SAFETY: the connection's live request, with a form.
-            unsafe { swoole_rs_http::init_multipart_parser(request, dir.as_bytes(), max) };
+            let ok = unsafe { swoole_rs_http::init_multipart_parser(request, dir.as_bytes(), max) };
             // SAFETY: as above.
             c.shared.buffer = unsafe { (*request).buffer };
-            0
+            u64::from(ok)
         }
         OP_CLIENT => match arg {
             0 => status(conn().session_id),
@@ -354,6 +356,11 @@ fn dispatch(c: &mut Read, op: u32, length: u64) -> u64 {
     let data = RecvData {
         info: DataHead {
             len: u32::try_from(length).unwrap_or(u32::MAX),
+            ext_flags: if op == OP_DISPATCH_UPLOAD {
+                UPLOAD_PREPROCESSED
+            } else {
+                0
+            },
             ..DataHead::default()
         },
         data: buffer(c).str,

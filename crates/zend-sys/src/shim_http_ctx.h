@@ -25,9 +25,10 @@ void swr_zend_http_upload(zval *tmpfiles, const char *file, size_t length);
  * the variables in `str` (an emalloc'd string it frees) into `array`. False
  * when it stopped at PG(max_input_vars), for the caller's warning. */
 bool swr_zend_http_treat_data(int arg, char *str, zval *array);
-/* Unlink the request's uploaded files and forget them in
- * SG(rfc1867_uploaded_files). */
-void swr_zend_http_uploads_release(zval *tmpfiles);
+/* Unlink the uploaded files the request's `tmpfiles` property (at `offset`)
+ * holds now, and forget them in SG(rfc1867_uploaded_files). User code may have
+ * replaced the array, so the property is read here, not a cached copy. */
+void swr_zend_http_uploads_release(zend_object *object, uint32_t offset);
 /* Swoole\Http\Server's RINIT and RSHUTDOWN of SG(rfc1867_uploaded_files),
  * the uploads is_uploaded_file() and move_uploaded_file() know. */
 void swr_zend_http_uploads_rinit(void);

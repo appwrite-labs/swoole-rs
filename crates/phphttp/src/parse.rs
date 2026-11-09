@@ -293,6 +293,11 @@ pub(crate) fn fd_offset() -> u32 {
     OFFSETS[7].load(Relaxed)
 }
 
+/// `Swoole\Http\Request`'s declared `tmpfiles` slot.
+pub(crate) fn tmpfiles_offset() -> u32 {
+    OFFSETS[Property::TmpFiles as usize].load(Relaxed)
+}
+
 pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
     let request = &mut state.request;
     let slot: &mut Slot = match which {
@@ -1286,7 +1291,7 @@ unsafe extern "C" fn on_part_header_value(
             state.parse.tmp_content_type = value_.as_ptr();
             state.parse.tmp_content_type_len = length;
         }
-    } else if name.eq_ignore_ascii_case(b"swoole-upload-file") {
+    } else if name.eq_ignore_ascii_case(b"swoole-upload-file") && state.upload_preprocessed != 0 {
         // When the "SW_HTTP_UPLOAD_FILE" header appears in the request, it indicates that the uploaded file has been
         // saved in a temporary file. The binary content in the message body will be replaced with the temporary
         // filename. However, the Content-Length still reflects the original message size, causing llhttp to believe

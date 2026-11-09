@@ -45,6 +45,9 @@ pub const OP_DISPATCH_TASK: u32 = 11;
 /// `http_server::dispatch_request` of arg bytes from the buffer start; the
 /// connection's request is read afresh afterwards.
 pub const OP_DISPATCH_REQUEST: u32 = 12;
+/// As `OP_DISPATCH_REQUEST`, flagged `SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`: the
+/// reactor rewrote the body, so its `Swoole-Upload-File` headers are its own.
+pub const OP_DISPATCH_UPLOAD: u32 = 14;
 /// `conn->active && !socket->removed`.
 pub const OP_ACTIVE: u32 = 13;
 /// Sets `websocket_status = STATUS_ACTIVE` and `http_upgrade = 1`.
@@ -73,7 +76,8 @@ pub const OP_BUF_HEADER_END: u32 = 39;
 pub const OP_REQ_INIT: u32 = 50;
 /// `port->destroy_http_request(conn)`; no request is current after it.
 pub const OP_REQ_DESTROY: u32 = 51;
-/// `init_multipart_parser(serv)`, then its buffer becomes current.
+/// `init_multipart_parser(serv)`, then its buffer becomes current. Returns whether
+/// it succeeded.
 pub const OP_REQ_MULTIPART_INIT: u32 = 63;
 
 /// The client a log names: arg 0 `conn->session_id`, 1 `port->host.c_str()`, 2 `port->port`.
@@ -416,12 +420,18 @@ fn parse(n: &Native<impl Call>) -> Step {
     if let Some(step) = head(n) {
         return step;
     }
-    if !n.request().tried_to_dispatch
+    // A form here is a multipart upload streamed to disk.
+    let upload = n.request().form.is_some();
+    if upload {
+        if let Some(step) = form(n) {
+            return step;
+        }
+    } else if !n.request().tried_to_dispatch
         && let Some(step) = bodyless(n)
     {
         return step;
     }
-    body(n)
+    body(n, upload)
 }
 
 /// The request line, an HTTP/2 preface, the header block and form setup.
@@ -460,7 +470,11 @@ fn head(n: &Native<impl Call>) -> Option<Step> {
                     > u64::from(request.max_length)
             } {
                 let send_continue = continues(n);
-                n.get(OP_REQ_MULTIPART_INIT);
+                if !n.is(OP_REQ_MULTIPART_INIT) {
+                    // `delete form_data_`: nothing was made for it.
+                    n.request().form = None;
+                    return Some(Step::Reply(SEND_BAD_REQUEST));
+                }
                 if send_continue {
                     n.op(OP_SEND, SEND_CONTINUE);
                 }
@@ -469,9 +483,6 @@ fn head(n: &Native<impl Call>) -> Option<Step> {
                 n.request().form = None;
             }
         }
-    }
-    if n.request().form.is_some() {
-        return form(n);
     }
     None
 }
@@ -554,9 +565,9 @@ fn continues(n: &Native<impl Call>) -> bool {
         && n.request().has_expect_header()
 }
 
-/// A request with a body: wait for all of it, then dispatch; pipelined requests
-/// behind it are parsed next.
-fn body(n: &Native<impl Call>) -> Step {
+/// A request with a body: wait for all of it, then dispatch (an `upload` the
+/// reactor rewrote flagged so); pipelined requests behind it are parsed next.
+fn body(n: &Native<impl Call>, upload: bool) -> Step {
     let max = n.get(OP_MAX_LENGTH);
     let request_length;
     if n.request().chunked {
@@ -605,7 +616,12 @@ fn body(n: &Native<impl Call>) -> Step {
         }
     }
     n.set_offset(request_length);
-    if n.signed(OP_DISPATCH_REQUEST, request_length) < 0 {
+    let dispatch = if upload {
+        OP_DISPATCH_UPLOAD
+    } else {
+        OP_DISPATCH_REQUEST
+    };
+    if n.signed(dispatch, request_length) < 0 {
         return Step::Close;
     }
     if n.is(OP_ACTIVE) {
@@ -809,7 +825,10 @@ mod tests {
                 OP_RECV => self.receive(arg == 1),
                 OP_CATCH => 2,
                 OP_RECV_BUFFER => 1,
-                OP_DISPATCH_TASK | OP_DISPATCH_REQUEST => {
+                OP_DISPATCH_TASK | OP_DISPATCH_REQUEST | OP_DISPATCH_UPLOAD => {
+                    if op == OP_DISPATCH_UPLOAD {
+                        self.effects.push(op);
+                    }
                     self.dispatched.push(self.bytes[..at].to_vec());
                     let url = self.req.url_offset as usize;
                     self.urls
@@ -828,7 +847,7 @@ mod tests {
                 OP_REQ_MULTIPART_INIT => {
                     let upload_max = usize::try_from(self.uploads).unwrap();
                     // The fake's live request, with a form.
-                    unsafe {
+                    let ok = unsafe {
                         swoole_rs_http::init_multipart_parser(
                             &raw mut self.req,
                             b"/tmp",
@@ -836,7 +855,7 @@ mod tests {
                         )
                     };
                     self.shared.buffer = self.req.buffer;
-                    0
+                    flag(ok)
                 }
                 OP_BUF_REDUCE => {
                     self.reduce(at);
@@ -965,6 +984,46 @@ mod tests {
         assert!(
             f.effects.contains(&OP_RELEASE),
             "large buffers released after dispatch"
+        );
+    }
+
+    /// A multipart body over `package_max_length` is rewritten by the reactor and
+    /// dispatched flagged as preprocessed; a client's own `Swoole-Upload-File` part
+    /// header is a bad request.
+    #[test]
+    fn uploads_are_dispatched_preprocessed_and_forged_markers_rejected() {
+        let head = b"POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: 300\r\n\r\n";
+        let part = |extra: &[u8]| {
+            [
+                &b"--b\r\nContent-Disposition: form-data; name=\"a\"\r\n"[..],
+                extra,
+                b"\r\n1\r\n--b--\r\n",
+            ]
+            .concat()
+        };
+        let upload = |body: &[u8]| {
+            let mut f = fake(&[&[&head[..], body].concat()]);
+            (f.bytes, f.max, f.uploads) = (vec![0; 512], 200, 1024);
+            run(ON_READ_HTTP, &mut f);
+            f
+        };
+        let f = upload(&part(b""));
+        assert_eq!(f.dispatched.len(), 1, "dispatched");
+        assert!(
+            f.effects.contains(&OP_DISPATCH_UPLOAD),
+            "flagged preprocessed"
+        );
+        assert!(f.sent.is_empty(), "no error reply");
+
+        let f = upload(&part(b"sWoOlE-uPlOaD-fIlE: /tmp/victim\r\n"));
+        assert!(f.dispatched.is_empty(), "not dispatched");
+        assert_eq!(f.sent, [SEND_BAD_REQUEST], "400");
+
+        let mut f = fake(&[b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd"]);
+        run(ON_READ_HTTP, &mut f);
+        assert!(
+            f.dispatched.len() == 1 && !f.effects.contains(&OP_DISPATCH_UPLOAD),
+            "a plain body is not flagged"
         );
     }
 
