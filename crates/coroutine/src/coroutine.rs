@@ -154,6 +154,7 @@ impl Scheduler {
 
     /// Activation also clears the bailout mark; deactivation sets it (the
     /// caller sets the callback to match) and frees the live map if it is empty.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn set_active(&mut self, active: bool) {
         self.activated = active;
         self.bailout = !active;
