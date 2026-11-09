@@ -250,10 +250,7 @@ fn port_protocol<'a>(server: *mut Server, server_fd: c_int) -> &'a [u8] {
 
 /// A boolean setting's value, when set and not null.
 pub(crate) fn setting(table: &Array, key: &[u8]) -> Option<bool> {
-    table
-        .find(key)
-        .filter(|found| !found.is_null())
-        .map(Value::truthy)
+    table.get(key).map(Value::truthy)
 }
 
 method_table! {
