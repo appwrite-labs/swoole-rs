@@ -51,45 +51,18 @@ struct swr_v1_port_config {
  SWR_PORT_CONFIG_FIELDS(SWR_PORT_FIELD)
 #undef SWR_PORT_FIELD
 };
-extern "C" {
-void swr_v1_ports_set_eof(void *port, const char *eof, size_t length, bool find_from_right);
-/* crates/ports/src/lifecycle_native.rs: a copy of the port's context and its reference; stores
- * `context` under `name`, taking the caller's reference. */
-swoole::SSLContext const *swr_v1_ports_context_dup(const void *port);
-bool swr_v1_ports_sni_add(void *port, const char *name, size_t length, const swoole::SSLContext *context);
-}
 namespace swoole {
 struct ServerPortGS : PortCounters {
  ServerPortGS() { swr_v1_server_port_shared_init(this); }
 };
 /* Upstream's ListenPort, as crates/server allocates it (server_object.rs): a box of the pointer to
- * its Rust-owned settings. The inline members are those tests/modules/http/server/fixture.cc calls. */
+ * its Rust-owned settings. */
 struct ListenPort {
  swr_v1_port_config *const port_config_;
  ListenPort() = delete;
  ListenPort(const ListenPort &) = delete;
  ~ListenPort() = delete;
  swr_v1_port_config *config() const { return port_config_; }
- // The caller's reference, which ssl_add_sni_cert takes.
- const SSLContext *dup_ssl_context() const { return swr_v1_ports_context_dup(this); }
- void init_protocol();
- int get_port() const { return port_config_->port; }
- int get_fd() const { return port_config_->socket ? port_config_->socket->fd : -1; }
- bool ssl_add_sni_cert(const std::string &name, const SSLContext *ctx) {
-  return swr_v1_ports_sni_add(this, name.data(), name.length(), ctx);
- }
- bool ssl_init() const;
- bool set_ssl_key_file(const std::string &file) const { return port_config_->ssl_context->set_key_file(file); }
- bool set_ssl_cert_file(const std::string &file) const { return port_config_->ssl_context->set_cert_file(file); }
- void set_ssl_cafile(const std::string &file) const { port_config_->ssl_context->set_text(SSLContext::CAFILE, file); }
- void set_ssl_verify_peer(bool value) const { port_config_->ssl_context->fields().verify_peer = value; }
- void set_ssl_allow_self_signed(bool value) const { port_config_->ssl_context->fields().allow_self_signed = value; }
- void set_ssl_protocols(long protocols) const {
-  if ((protocols & SW_SSL_DTLS) && network::Socket::is_dgram(port_config_->type)) {
-   protocols ^= SW_SSL_DTLS;
-  }
-  port_config_->ssl_context->fields().protocols = protocols;
- }
 };
 }
 #endif

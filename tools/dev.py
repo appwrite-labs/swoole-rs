@@ -392,7 +392,7 @@ def plan(args, reports):
         script('http-server-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--config', manifest.parent / 'src/config.h', '--archive', manifest.parent / 'src/../rust-prefix/lib/libswoole_rs_ffi.a',
                '--build-root', ROOT / 'target/native-originals/http-server', '--jobs', args.jobs,
-               '--package', ROOT / 'tests/modules/http/server', '--fixture', ROOT / 'tests/modules/http/server/fixture.cc',
+               '--package', ROOT / 'tests/modules/http/server',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
                *report('http-server-rust'))

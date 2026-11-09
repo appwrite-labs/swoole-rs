@@ -89,10 +89,10 @@ same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-webs
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
 phase): a Rust case binary over the hybrid tree's libswoole.so, built and run by
-`tests/modules/hooks/system.py --package tests/modules/http/server --fixture
-tests/modules/http/server/fixture.cc`. `fixture.cc` builds the Servers upstream's
-`test_base_server`, `test_http_server` and `test_ssl_http` built (a C++ constructor,
-`std::string` setters and callback slots); the callbacks, cpp-httplib's WebSocket client
+`tests/modules/hooks/system.py --package tests/modules/http/server`. `server/src/http1/case.rs`
+builds the Servers upstream's `test_base_server`, `test_http_server` and `test_ssl_http`
+built, over the same records as `http1.rs` (below), with each callback slot holding the
+case's function as its closure context; the callbacks, cpp-httplib's WebSocket client
 (the same upgrade request, frames from the hybrid's `websocket::encode`/`mask`/`decode`),
 the curl runs and every assertion are in `server/src/main.rs`, one function per TEST
 under its own name: `websocket_small`, `websocket_medium`, `websocket_big`,
@@ -102,17 +102,17 @@ excluded for the reason they had in the GoogleTest lane (they need Node.js and i
 package). Each curl runs to completion before its log is read, where upstream slept a
 second after starting it.
 
-`abort_connection`'s fixture also sets `SwooleG.max_sockets` (2) before
+`abort_connection`'s Server builder also sets `SwooleG.max_sockets` (2) before
 `set_max_connection(1)` and hands back the old value, which the case restores once the
 server stops; the 16 `SyncClient`s are blocking `TcpStream` connects. In
-`get_package_length` the fixture builds the port, runs `init_protocol` and makes the
+`get_package_length` `case.rs` builds the port, runs `init_protocol` and makes the
 fake connection socket and its `Connection` (session 2025); the case calls the hybrid's
 `http_server::get_package_length(_size)` and `websocket::encode` itself, with upstream's
 frames and expected values; its HTTP/2 frame is the bytes `http2::init_settings` and
 `http2::pack_setting_frame` write, as a constant (crates/http2's tests cover that function).
 
 The HTTP/1 TESTs that start a server are `server/src/http1.rs`, in the same binary and
-phase, and need no fixture: `swr_v1_server_new`/`_delete` (crates/server/src/server_object.rs)
+phase: `swr_v1_server_new`/`_delete` (crates/server/src/server_object.rs)
 make and delete the `Server`, and the cases set its configuration, callback slots,
 tables, port configuration and static-handler sets through the Rust records
 whose pointers head the `Server` and its `ListenPort`s, whose layouts each new server checks against
