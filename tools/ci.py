@@ -8,8 +8,9 @@
   ci.py stuck                auto-merge PRs that conflict with main, failed a required check or
                              whose finished PR-tier run has none (GitHub abandoned its jobs:
                              re-run it), oldest first (exit 2 when there are none)
-  ci.py phpt-baseline        `RUN SHA` of main's latest completed merge-tier run whose upstream
-                             PHPT shards all passed, the PR tier's upstream results (exit 2: none)
+  ci.py phpt-baseline [--variant NAME] [--php VERSION]
+                             `RUN SHA` of main's newest merge-tier run whose upstream PHPT reports
+                             still stand for upstream at HEAD, so it needn't run (exit 2: none)
   ci.py new-failures LOOP... the failed phases in these dev.py loop.json reports that passed, or
                              didn't exist, in main's latest completed merge-tier run (exit 1 if any)
 
@@ -317,17 +318,54 @@ def claimable():
             for issue in sorted(issues, key=lambda issue: (priority(issue), issue['created_at']))]
 
 
-def phpt_baseline():
-    """(run, head sha) of main's newest completed merge-tier run whose `phpt (n, upstream)` shards
-    all succeeded: its phpt-upstream-* reports and phpt-engines' upstream.so stand in for running
-    upstream on every PR."""
-    runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--status', 'completed',
-                         '--limit', '30', '--json', 'databaseId,headSha'))
-    for run in runs:
-        shards = [conclusion for name, conclusion in job_conclusions(run['databaseId']).items()
-                  if re.fullmatch(r'(phpt / )?phpt \(\d+, upstream\)', name)]
-        if shards and all(conclusion == 'success' for conclusion in shards):
-            return run['databaseId'], run['headSha']
+# Upstream's PHPT results move only with what they depend on: the pin and its build, how the tests
+# are listed and run, and the packages around them (and the PHP release: --php). A baseline's
+# upstream report stands in for running upstream only while these paths are as at HEAD.
+UPSTREAM_KEY = ('tools/build_upstream.py', 'tools/harness.py', 'tools/phpt_expectations.py', 'corpus/upstream/run.py',
+                'corpus/upstream/inventory.py', '.devcontainer/install.sh', '.github/actions/install')
+# Per baseline: the artifact holding an upstream report, the report's path in it, the jobs that must
+# all have succeeded, and the paths of its own build and environment. `phpt` is phpt.yml's shards;
+# each variant is one job that runs both engines.
+BASELINES = {
+    'phpt': ('phpt-upstream-1', 'upstream-1.json', r'(phpt / )?phpt \(\d+, upstream\)',
+             ('.github/actions/phpt-build', '.github/actions/phpt-env', '.github/actions/instantclient',
+              '.github/workflows/phpt.yml', 'corpus/upstream/services.yml', 'corpus/upstream/lib-composer.lock')),
+    **{variant: (f'phpt-{variant}', f'target/phpt/{variant}/upstream.json', rf'{variant} / phpt',
+                 (f'.github/workflows/{variant}.yml',)) for variant in ('cares', 'iouring', 'threadcontext')},
+}
+
+
+def unchanged(sha, paths):
+    """Whether `paths` are at sha as at HEAD; a shallow checkout fetches sha first."""
+    if subprocess.run(['git', 'cat-file', '-e', f'{sha}^{{commit}}'], capture_output=True).returncode:
+        subprocess.run(['git', 'fetch', '-q', '--depth', '1', 'origin', sha], check=True)
+    return subprocess.run(['git', 'diff', '--quiet', sha, 'HEAD', '--', *paths]).returncode == 0
+
+
+def phpt_baseline(kind='phpt', php=None):
+    """(run, head sha) of main's newest merge-tier run whose upstream report for `kind` (BASELINES)
+    still stands for upstream at HEAD: the jobs that made it all succeeded, its key paths are
+    unchanged since, and with `php` it ran on that PHP_VERSION. Searched by artifact, not by run:
+    a run that reused another's reports made none, and the last that made them can be days back."""
+    artifact, report, jobs, paths = BASELINES[kind]
+    rows = [json.loads(line) for line in gh('api', f'repos/{{owner}}/{{repo}}/actions/artifacts?name={artifact}&per_page=100',
+                                            '--jq', '.artifacts[] | .workflow_run + {expired}').splitlines()]
+    # Only the merge tier runs on a push to main; a fork's pull request can name its branch main.
+    runs = dict.fromkeys((row['id'], row['head_sha']) for row in rows if not row['expired']
+                         and row['head_branch'] == 'main' and row['head_repository_id'] == row['repository_id'])
+    for run, sha in runs:
+        shards = [conclusion for name, conclusion in job_conclusions(run).items() if re.fullmatch(jobs, name)]
+        if not shards or any(conclusion != 'success' for conclusion in shards):
+            continue
+        if not unchanged(sha, UPSTREAM_KEY + paths):
+            return None
+        if php:
+            with tempfile.TemporaryDirectory() as directory:
+                gh('run', 'download', str(run), '-n', artifact, '-D', directory)
+                engines = json.loads((Path(directory) / report).read_text())['engines']
+            if any(engine.get('php') != php for engine in engines):
+                return None
+        return run, sha
     return None
 
 
@@ -392,12 +430,15 @@ def main(argv=None):
         command.add_argument('--json', action='store_true')
     for name in ['next', 'stuck']:
         commands.add_parser(name).add_argument('--json', action='store_true')
-    commands.add_parser('phpt-baseline')
+    baseline = commands.add_parser('phpt-baseline')
+    baseline.add_argument('--variant', choices=[kind for kind in BASELINES if kind != 'phpt'], default='phpt',
+                          help="a variant workflow's upstream report (default: phpt.yml's shards)")
+    baseline.add_argument('--php', help="the PHP_VERSION the baseline's upstream must have run on")
     commands.add_parser('new-failures').add_argument('loops', nargs='*', type=Path, metavar='LOOP_JSON')
     args = parser.parse_args(argv)
     if args.command == 'phpt-baseline':
         try:
-            baseline = phpt_baseline()
+            baseline = phpt_baseline(args.variant, args.php)
         except subprocess.CalledProcessError as failure:
             sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
         if baseline:
