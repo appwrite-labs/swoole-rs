@@ -441,6 +441,8 @@ mod php {
             println!("cargo::rustc-link-lib={library}");
         }
         if os == "linux" {
+            // Again after every archive: on musl (Alpine) cc's earlier -lstdc++ comes too soon.
+            println!("cargo::rustc-link-lib=stdc++");
             println!("cargo::rustc-link-lib=dl");
         }
     }
