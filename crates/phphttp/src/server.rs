@@ -12,12 +12,13 @@ use crate::{
 };
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     ffi::{CStr, c_char, c_int, c_void},
     ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
 use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_memory::flat::Table;
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::sys::{
     HashTable, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit,
@@ -91,8 +92,8 @@ struct Receive {
     /// The port speaks WebSocket and has `onMessage` (asked only when `http` is false).
     websocket: bool,
     http2: bool,
-    /// The session's addresses may be cached.
-    cache: bool,
+    /// The connection's fd, when the session's addresses may be cached.
+    cache: Option<usize>,
     /// The server's `enable_coroutine`: handlers run in a new coroutine.
     coroutine: bool,
 }
@@ -152,8 +153,9 @@ unsafe extern "C" {
 }
 
 php_local! {
-    /// A keep-alive session's server and remote address, until it closes.
-    static ADDRESSES: RefCell<BTreeMap<i64, [*mut zend_string; 2]>> = RefCell::new(BTreeMap::new());
+    /// A keep-alive session's server and remote address, until it closes,
+    /// by its connection's fd. The session check drops a reused fd's entry.
+    static ADDRESSES: RefCell<Table<(i64, [*mut zend_string; 2])>> = RefCell::new(Table::new());
     /// Requests waiting for the worker's concurrency to drop.
     static QUEUED: RefCell<VecDeque<*mut Context>> = RefCell::new(VecDeque::new());
 }
@@ -198,13 +200,11 @@ fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> *mu
 
 /// `swoole_http_server_populate_ip_and_port`: `$request->server`'s ports and
 /// addresses. `loopback` is 4 or 6 for a loopback peer, otherwise 0. With
-/// `cache`, a session's addresses are made once and kept until the session
-/// closes.
-/// # Safety
-/// `server` and `conn` are the live server and the request's connection;
-/// `table` is the request's `server` array.
+/// `cache`, the connection's fd, a session's addresses are made once and kept
+/// until the session closes. `server` and `conn` are the live server and the
+/// request's connection; `table` is the request's `server` array.
 #[expect(clippy::too_many_arguments, reason = "upstream's request facts")]
-unsafe fn addresses(
+fn addresses(
     server: *mut c_void,
     conn: *mut ConnectionRecord,
     table: *mut HashTable,
@@ -212,7 +212,7 @@ unsafe fn addresses(
     local_port: i64,
     remote_port: i64,
     loopback: c_int,
-    cache: bool,
+    cache: Option<usize>,
 ) {
     add_long(table, Key::ServerPort, local_port);
     add_long(table, Key::RemotePort, remote_port);
@@ -226,21 +226,45 @@ unsafe fn addresses(
         add(table, Key::RemoteAddr, key(name));
         return;
     }
-    let [local, remote] = if cache {
-        let [local, remote] = ADDRESSES.with_borrow_mut(|cached| {
-            *cached
-                .entry(session)
-                .or_insert_with(|| [address(server, conn, true), address(server, conn, false)])
-        });
-        // SAFETY: cached strings, each referenced once more by the array.
-        let local = unsafe { swr_zend_string_copy(local) };
-        // SAFETY: as above.
-        [local, unsafe { swr_zend_string_copy(remote) }]
-    } else {
-        [address(server, conn, true), address(server, conn, false)]
-    };
+    let cached = cache.and_then(|fd| cached(server, conn, fd, session));
+    let [local, remote] =
+        cached.unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]);
     add(table, Key::ServerAddr, local);
     add(table, Key::RemoteAddr, remote);
+}
+
+/// The session's cached addresses, each referenced once more for the caller;
+/// `None` when the cache can't grow.
+fn cached(
+    server: *mut c_void,
+    conn: *mut ConnectionRecord,
+    fd: usize,
+    session: i64,
+) -> Option<[*mut zend_string; 2]> {
+    let [local, remote] = ADDRESSES.with_borrow_mut(|cached| {
+        if let Some(&(owner, addresses)) = cached.get(fd)
+            && owner == session
+        {
+            return Some(addresses);
+        }
+        let addresses = [address(server, conn, true), address(server, conn, false)];
+        match cached.insert(fd, (session, addresses)) {
+            Ok(old) => {
+                if let Some((_, old)) = old {
+                    release(old);
+                }
+                Some(addresses)
+            }
+            Err((_, made)) => {
+                release(made);
+                None
+            }
+        }
+    })?;
+    // SAFETY: cached strings, each referenced once more by the array.
+    let local = unsafe { swr_zend_string_copy(local) };
+    // SAFETY: as above.
+    Some([local, unsafe { swr_zend_string_copy(remote) }])
 }
 
 /// `php_swoole_http_server_onReceive`: route the data to another protocol's
@@ -299,7 +323,7 @@ fn receive(server: *mut c_void, request: *mut c_void, info: &DataHead) -> c_int 
         http,
         websocket,
         http2: conn.http2_stream != 0,
-        cache: false,
+        cache: None,
         coroutine: false,
     };
     let route = route(&facts);
@@ -312,7 +336,9 @@ fn receive(server: *mut c_void, request: *mut c_void, info: &DataHead) -> c_int 
     if unsafe { swr_v1_clients_address_loopback(&raw const conn.info) } {
         facts.loopback = if conn.info.kind == SOCK_TCP6 { 6 } else { 4 };
     }
-    facts.cache = can_cache(server);
+    facts.cache = can_cache(server)
+        .then(|| usize::try_from(conn.fd).ok())
+        .flatten();
     facts.coroutine = enable_coroutine(server);
     let ctx = context::context_new(session);
     // SAFETY: a new context and the live server.
@@ -507,19 +533,16 @@ fn handle(
     let state = state(ctx);
     // SAFETY: the request's `server` array.
     let table = unsafe { value::table(state.request.zserver.ptr) };
-    // SAFETY: the live server and connection and the request's array.
-    unsafe {
-        addresses(
-            server,
-            conn,
-            table,
-            session,
-            facts.local_port,
-            facts.remote_port,
-            facts.loopback,
-            state.keepalive != 0 && facts.cache,
-        );
-    }
+    addresses(
+        server,
+        conn,
+        table,
+        session,
+        facts.local_port,
+        facts.remote_port,
+        facts.loopback,
+        facts.cache.filter(|_| state.keepalive != 0),
+    );
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream's (zend_long) cast"
@@ -565,7 +588,7 @@ struct Http2Connection {
     remote_port: i64,
     loopback: c_int,
     server_fd: c_int,
-    cache: bool,
+    cache: Option<usize>,
     static_handler: bool,
     unavailable: bool,
     coroutine: bool,
@@ -595,7 +618,9 @@ fn http2_connection(
         remote_port,
         loopback,
         server_fd: conn.server_fd,
-        cache: can_cache(server),
+        cache: can_cache(server)
+            .then(|| usize::try_from(conn.fd).ok())
+            .flatten(),
         // SAFETY: the live server.
         static_handler: unsafe { view::config(server) }.enable_static_handler,
         unavailable: counters.concurrency.load(SeqCst) >= counters.max_concurrency,
@@ -658,19 +683,16 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     let state = state(ctx);
     // SAFETY: the request's `server` array.
     let table = unsafe { value::table(state.request.zserver.ptr) };
-    // SAFETY: the live server and connection and the request's array.
-    unsafe {
-        addresses(
-            server,
-            conn,
-            table,
-            fd,
-            facts.local_port,
-            facts.remote_port,
-            facts.loopback,
-            state.keepalive != 0 && facts.cache,
-        );
-    }
+    addresses(
+        server,
+        conn,
+        table,
+        fd,
+        facts.local_port,
+        facts.remote_port,
+        facts.loopback,
+        facts.cache.filter(|_| state.keepalive != 0),
+    );
     request_times(state);
     #[expect(
         clippy::cast_possible_truncation,
@@ -725,7 +747,17 @@ fn release_objects(ctx: *mut Context) {
 pub(crate) unsafe extern "C" fn on_close(server: *mut c_void, info: *mut DataHead) {
     // SAFETY: per the caller.
     let session = unsafe { (*info).fd };
-    if let Some(addresses) = ADDRESSES.with_borrow_mut(|cached| cached.remove(&session)) {
+    // SAFETY: the live server; the session's slot, checked against the cache.
+    if let Some(conn) = unsafe { view::by_session(server, session) }
+        && let Ok(fd) = usize::try_from(conn.fd)
+        && let Some((_, addresses)) = ADDRESSES.with_borrow_mut(|cached| {
+            cached
+                .get(fd)
+                .is_some_and(|&(owner, _)| owner == session)
+                .then(|| cached.remove(fd))
+                .flatten()
+        })
+    {
         release(addresses);
     }
     // SAFETY: per the caller.
@@ -836,8 +868,8 @@ pub extern "C" fn swr_v1_phphttp_server_rinit() {
 pub extern "C" fn swr_v1_phphttp_server_rshutdown() {
     // SAFETY: RSHUTDOWN, on the request's thread.
     unsafe { swr_zend_http_uploads_rshutdown() };
-    for addresses in ADDRESSES.with_borrow_mut(std::mem::take).into_values() {
-        release(addresses);
+    for (_, (_, addresses)) in ADDRESSES.with_borrow_mut(std::mem::take).iter() {
+        release(*addresses);
     }
     while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
         abandon(ctx);
@@ -863,7 +895,7 @@ mod tests {
             http,
             websocket,
             http2,
-            cache: false,
+            cache: None,
             coroutine: false,
         }
     }
