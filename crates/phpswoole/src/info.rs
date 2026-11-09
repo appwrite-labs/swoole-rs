@@ -9,12 +9,10 @@ use swoole_rs_zend::{
     },
 };
 
-/// Native compiler and dependency facts, with no PHP output or row policy.
+/// The headers' and libraries' versions (native/phphelpers/host.c), with no
+/// PHP output or row policy.
 #[repr(C)]
 pub(crate) struct Info {
-    abi: u32,
-    features: u64,
-    version: *const c_char,
     built: *const c_char,
     openssl: *const c_char,
     curl: *const c_char,
@@ -24,6 +22,10 @@ pub(crate) struct Info {
     brotli_encoder: u32,
     brotli_decoder: u32,
 }
+unsafe extern "C" {
+    fn swr_phpswoole_versions(info: *mut Info);
+}
+
 fn contained(bailed: impl Into<i32>) -> Result<(), Bailout> {
     if bailed.into() == 0 {
         Ok(())
@@ -55,10 +57,12 @@ impl Info {
         // SAFETY: both header strings have static lifetime; output bailouts are trapped.
         contained(unsafe { swr_zend_try_info_header(c"Swoole".as_ptr(), c"enabled".as_ptr()) })?;
         row(c"Author", c"Swoole Team <team@swoole.com>".as_ptr())?;
-        row(c"Version", self.version)?;
+        row(c"Version", crate::constants::VERSION.as_ptr())?;
+        let abi = swoole_rs_error::swr_v1_abi_version();
+        let features = swoole_rs_error::swr_v1_feature_bits();
         text(
             c"Rust migration bridge",
-            &format!("ABI {}, features {}", self.abi, self.features),
+            &format!("ABI {abi}, features {features}"),
         )?;
         row(c"Built", self.built)?;
         row(
@@ -117,9 +121,9 @@ impl Info {
         } else {
             Self::enabled(C::Execinfo, C::Execinfo)?;
         }
-        // SAFETY: ssh2's and ftp's MINFO, a C++ body whose bailout the trap's
+        // SAFETY: ssh2's and ftp's MINFO, a native body whose bailout the trap's
         // setjmp catches below every Rust frame; PHP lends its live module entry.
-        unsafe { bailout::trap(crate::ops().optional_minfo, module) }?;
+        unsafe { bailout::trap(crate::optional::client_minfo, module) }?;
         // SAFETY: closes the PHP information table; output bailouts are contained.
         contained(unsafe { swr_zend_try_info_end() })?;
         // SAFETY: the live module entry selects its registered INI entries; guarded below Rust.
@@ -127,14 +131,14 @@ impl Info {
     }
 }
 /// `PHP_MINFO_FUNCTION(swoole)`: the module's complete PHP information table
-/// and INI entries, from C++'s compiler and library facts.
+/// and INI entries, with the headers' and libraries' versions.
 /// # Safety
 /// Zend's MINFO, with the module's live entry.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_minfo(module: *mut zend_module_entry) {
     // SAFETY: a plain C record of pointers, integers and bytes, for which zero is valid.
     let mut info: Info = unsafe { std::mem::zeroed() };
-    // SAFETY: C++ fills it with static strings and its libpq version.
-    unsafe { (crate::ops().info)(&raw mut info) };
+    // SAFETY: host.c fills it with static strings.
+    unsafe { swr_phpswoole_versions(&raw mut info) };
     bailout::raise(info.output(module.cast()));
 }

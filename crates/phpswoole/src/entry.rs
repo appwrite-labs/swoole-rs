@@ -1,8 +1,8 @@
 //! `swoole_module_entry`, which `get_module()` hands Zend, with its
 //! dependencies, and the tail of `SwooleG.fatal_error`.
-use crate::{HostOps, OPS, constants, info, module, ops, optional, table};
+use crate::{constants, info, module, optional, table};
 use std::{
-    ffi::{CStr, c_int, c_long},
+    ffi::{CStr, c_int, c_long, c_void},
     io::Write,
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
@@ -22,6 +22,8 @@ const CO_HAS_BEEN_BOUND: c_int = 10002;
 static ENTRY: AtomicPtr<zend_module_entry> = AtomicPtr::new(ptr::null_mut());
 
 unsafe extern "C" {
+    /// This thread's coroutine scheduler (crates/coroutine).
+    safe fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
     fn swr_v1_phpcoroutines_print_backtrace(
         cid: c_long,
         options: c_long,
@@ -72,29 +74,20 @@ fn deps() -> Vec<zend_module_dep> {
     deps
 }
 
-/// `get_module()`: the module entry, built once, after which every Rust
-/// function may use `ops`.
-/// # Safety
-/// `ops` is C++'s static table.
+/// `get_module()`: the module entry, built once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpswoole_module(ops: *const HostOps) -> *mut zend_module_entry {
+pub extern "C" fn swr_v1_phpswoole_module() -> *mut zend_module_entry {
     let current = ENTRY.load(Ordering::Acquire);
     if !current.is_null() {
         return current;
     }
-    // SAFETY: per the caller.
-    let Some(ops) = (unsafe { ops.as_ref() }) else {
-        return ptr::null_mut();
-    };
-    OPS.get_or_init(|| ops);
     // SAFETY: a plain C record, for which zero is valid; the template fills its header.
     let mut entry: zend_module_entry = unsafe { std::mem::zeroed() };
     // SAFETY: a live record.
     unsafe { swr_zend_module_template(&raw mut entry) };
     entry.deps = Box::leak(deps().into_boxed_slice()).as_ptr();
     entry.name = c"swoole".as_ptr();
-    // SAFETY: C++'s static handler arrays, or null.
-    entry.functions = unsafe { table::functions(ops.stdext, ops.ssh2, ops.ftp) };
+    entry.functions = table::functions();
     entry.module_startup_func = Some(crate::swr_v1_phpswoole_minit);
     entry.module_shutdown_func = Some(module::swr_v1_phpswoole_mshutdown);
     entry.request_startup_func = Some(module::swr_v1_phpswoole_rinit);
@@ -113,10 +106,10 @@ pub unsafe extern "C" fn swr_v1_phpswoole_module(ops: *const HostOps) -> *mut ze
 /// From `swr_zend_fatal_error`, after MINIT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
-    let ops = ops();
     if code == CO_HAS_BEEN_BOUND {
-        // SAFETY: C++'s scheduler.
-        let cid = unsafe { (ops.socket_bound_cid)() };
+        let scheduler = swr_v1_coroutine_scheduler_get().cast::<swoole_rs_coroutine::Scheduler>();
+        // SAFETY: this thread's scheduler, live for the thread.
+        let cid = unsafe { (*scheduler).socket_bound_cid };
         let rule = "-------------------------------------------------------------------";
         // Upstream's fprintf: nothing to do when stderr fails.
         write!(

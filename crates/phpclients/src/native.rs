@@ -32,8 +32,6 @@ pub(crate) struct LengthCallable {
 }
 
 unsafe extern "C" {
-    /// `php_swoole_convert_to_socket`'s Socket over `fd`, into `out`.
-    fn swr_cpp_phpthread_php_socket_create(out: *mut zval, fd: c_int) -> bool;
     /// crates/server's `tcp_info` fields, in upstream's order.
     #[cfg(target_os = "linux")]
     fn swr_v1_server_tcp_info(info: *const c_void, out: *mut Fact, cap: usize) -> usize;
@@ -701,7 +699,7 @@ pub(crate) fn export_socket(cli: Cli) -> Option<zval> {
     }
     let mut socket = swoole_rs_zend::long_zval(0);
     // SAFETY: a writable zval and a descriptor it takes.
-    unsafe { swr_cpp_phpthread_php_socket_create(&raw mut socket, fd) };
+    unsafe { swoole_rs_phpswoole::socket_create(&raw mut socket, fd) };
     Some(socket)
 }
 

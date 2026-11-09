@@ -1,12 +1,15 @@
 //! What configure builds in or leaves out, where upstream's `#ifdef`s ran it:
-//! the coroutine PDO drivers and stdext (the cargo features of the same names,
-//! which the hybrid turns on with their configure switches) and `Swoole\Thread`
-//! (`SW_THREAD`, [`built_with`]). ssh2 and ftp, whose
-//! handlers are bundled C, stay native (`HostOps::optional_client_minit`).
+//! the coroutine PDO drivers, stdext, the bundled ssh2 and ftp clients and
+//! ext/sockets' `Socket` (the cargo features of the same names, which the
+//! hybrid turns on with their configure switches) and `Swoole\Thread`
+//! (`SW_THREAD`, [`built_with`]).
 use crate::module::{PHP_FATAL_ERROR, Step};
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::{Switch, built_with, log::set_last_error};
-use swoole_rs_zend::{E_ERROR, bailout, php_error, sys::zend_class_entry};
+use swoole_rs_zend::{
+    E_ERROR, bailout, php_error,
+    sys::{zend_class_entry, zval},
+};
 
 // SAFETY: crates/phpthread's, crates/phplocks' and crates/phpstdext's
 // phase hooks, linked into every extension; those marked safe have no
@@ -30,6 +33,158 @@ unsafe extern "C" {
 // SAFETY: crates/phpstdext's MINIT, linked with this feature.
 unsafe extern "C" {
     fn swr_v1_phpstdext_minit();
+}
+
+#[cfg(feature = "ssh2")]
+// SAFETY: the bundled ext/ssh2's module hooks (thirdparty/php/ssh2), linked with this feature.
+unsafe extern "C" {
+    fn php_swoole_ssh2_minit(module_number: c_int) -> c_int;
+    fn php_swoole_ssh2_mshutdown() -> c_int;
+    fn php_swoole_ssh2_minfo();
+}
+
+#[cfg(feature = "ftp")]
+// SAFETY: the bundled ext/ftp's module hooks (thirdparty/php84/ftp), linked with this feature.
+unsafe extern "C" {
+    fn zm_startup_ftp(kind: c_int, module_number: c_int) -> c_int;
+    fn zm_info_ftp(module: *mut c_void);
+}
+
+#[cfg(feature = "sockets")]
+// SAFETY: ext/sockets' class and import, which PHP exports when it has the extension.
+unsafe extern "C" {
+    static socket_ce: *mut zend_class_entry;
+    fn socket_import_file_descriptor(fd: c_int, socket: *mut c_void) -> bool;
+}
+
+/// MINIT, after the HTTP/2 client: ssh2's, then ftp's.
+pub(crate) fn client_minit() -> Vec<Step> {
+    Vec::from([
+        #[cfg(feature = "ssh2")]
+        Step::Minit(ssh2_minit),
+        #[cfg(feature = "ftp")]
+        Step::Minit(ftp_minit),
+    ])
+}
+
+#[cfg(feature = "ssh2")]
+unsafe extern "C" fn ssh2_minit(module_number: c_int) {
+    // SAFETY: MINIT, with the module's number; upstream ignores the result too.
+    unsafe { php_swoole_ssh2_minit(module_number) };
+}
+
+#[cfg(feature = "ftp")]
+unsafe extern "C" fn ftp_minit(module_number: c_int) {
+    /// `MODULE_PERSISTENT`.
+    const PERSISTENT: c_int = 1;
+    // SAFETY: as above.
+    unsafe { zm_startup_ftp(PERSISTENT, module_number) };
+}
+
+/// MSHUTDOWN, after the drivers': ssh2's.
+pub(crate) fn client_mshutdown() -> Vec<Step> {
+    Vec::from([
+        #[cfg(feature = "ssh2")]
+        Step::Hook(ssh2_mshutdown),
+    ])
+}
+
+#[cfg(feature = "ssh2")]
+unsafe extern "C" fn ssh2_mshutdown() {
+    // SAFETY: MSHUTDOWN, after its MINIT.
+    unsafe { php_swoole_ssh2_mshutdown() };
+}
+
+/// MINFO's ssh2 and ftp tables, a `zend_try` body.
+/// # Safety
+/// MINFO, with the module's live entry.
+pub(crate) unsafe extern "C" fn client_minfo(module: *mut c_void) {
+    #[cfg(feature = "ssh2")]
+    // SAFETY: per the caller.
+    unsafe {
+        php_swoole_ssh2_minfo();
+    }
+    #[cfg(feature = "ftp")]
+    // SAFETY: per the caller.
+    unsafe {
+        zm_info_ftp(module);
+    }
+    let _ = module;
+}
+
+/// A duplicate of an ext/sockets `Socket`'s descriptor; -1 after throwing
+/// "failed to dup socket fd", -2 after "invalid socket fd", -3 when `value` is
+/// no `Socket` or the build lacks ext/sockets.
+/// # Safety
+/// In a request; `value` is a live object zval.
+pub unsafe fn socket_cast(value: *mut zval) -> c_int {
+    #[cfg(feature = "sockets")]
+    {
+        // SAFETY: an object zval.
+        let object = unsafe { swoole_rs_zend::value::obj_of(value) };
+        // SAFETY: a live object's class.
+        let class = unsafe { (*object).ce };
+        // SAFETY: ext/sockets' class, set at its MINIT.
+        let socket = unsafe { socket_ce };
+        // SAFETY: two live classes.
+        if !unsafe { swoole_rs_zend::sys::swr_zend_instanceof(class, socket) } {
+            return -3;
+        }
+        // SAFETY: a `Socket`, whose `php_socket` starts with its descriptor.
+        let fd = unsafe { *php_socket(value).cast::<c_int>() };
+        let (fd, message, code) = if fd == -1 {
+            (-2, c"invalid socket fd", libc::EBADF)
+        } else {
+            // SAFETY: a descriptor the socket owns.
+            let dup = unsafe { libc::dup(fd) };
+            if dup != -1 {
+                return dup;
+            }
+            let errno = std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or_default();
+            (-1, c"failed to dup socket fd", errno)
+        };
+        // SAFETY: MINIT wrote it and nothing writes it now.
+        let exception = unsafe { crate::swoole_exception_ce };
+        // SAFETY: a request, with a registered class.
+        unsafe { swoole_rs_zend::throw_exception(exception, message, i64::from(code)) };
+        fd
+    }
+    #[cfg(not(feature = "sockets"))]
+    {
+        let _ = value;
+        -3
+    }
+}
+
+/// `Z_SOCKET_P`: ext/sockets' `php_socket` (`int bsd_socket, type, error,
+/// blocking; zval zstream; zend_object std`) ends with the object.
+#[cfg(feature = "sockets")]
+fn php_socket(value: *mut zval) -> *mut c_void {
+    const STD: usize = 4 * size_of::<c_int>() + size_of::<zval>();
+    // SAFETY: per the callers, an object zval.
+    let object = unsafe { swoole_rs_zend::value::obj_of(value) };
+    object.cast::<u8>().wrapping_sub(STD).cast()
+}
+
+/// An ext/sockets `Socket` over `fd`, which it takes, into `out`; false when
+/// it can't import `fd` or the build lacks ext/sockets.
+/// # Safety
+/// `out` is a writable zval.
+pub unsafe fn socket_create(out: *mut zval, fd: c_int) -> bool {
+    #[cfg(feature = "sockets")]
+    {
+        // SAFETY: ext/sockets' class, set at its MINIT; `out` per the caller.
+        unsafe { swoole_rs_zend::sys::object_init_ex(out, socket_ce) };
+        // SAFETY: the new `Socket`, whose `php_socket` precedes its object.
+        unsafe { socket_import_file_descriptor(fd, php_socket(out)) }
+    }
+    #[cfg(not(feature = "sockets"))]
+    {
+        let _ = (out, fd);
+        false
+    }
 }
 
 /// MINIT, after the servers: the drivers, `Swoole\Thread`, then stdext.
@@ -117,6 +272,11 @@ pub(crate) fn main_thread() -> bool {
         // SAFETY: no preconditions.
         unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() }
     }
+}
+
+/// `swr_v1_phpthread_bailout()`: the bailout that ends this PHP thread.
+pub(crate) fn thread_exit() {
+    swr_v1_phpthread_bailout();
 }
 
 /// `php_swoole_thread_bailout()`, outside the main thread of a `SW_THREAD` build.

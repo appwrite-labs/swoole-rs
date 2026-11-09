@@ -21,8 +21,6 @@ void swr_v1_phphelpers_cache_free(struct _zend_fcall_info_cache *);
 int swr_v1_phphelpers_call(struct _zval_struct *, struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *, struct _zval_struct *, bool, void (*)(const char *));
 int swr_v1_phphelpers_call_anyway(struct _zend_fcall_info *, struct _zend_fcall_info_cache *);
 void swr_v1_phphelpers_named_call(const char *, size_t, uint32_t, struct _zval_struct *, struct _zval_struct *);
-void swr_v1_phphelpers_known_init(struct _zend_string ***);
-void swr_v1_phphelpers_known_free(struct _zend_string ***);
 /* The remaining async admission seam borrows native facts only. */
 /* Common Native async admission: initialized phase0; blocking skips context.
  * Native observes context only on request, then invokes fn/async after return.

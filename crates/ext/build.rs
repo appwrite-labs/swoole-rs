@@ -381,7 +381,7 @@ mod php {
         includes.extend(env::var_os("DEP_OPENSSL_INCLUDE").map(PathBuf::from));
         includes.extend(php_includes(&php_config));
         includes.extend(profile.includes);
-        // native/phphelpers reads the Brotli and zstd versions (zstd-sys links libzstd).
+        // native/phphelpers/host.c reads the Brotli and zstd versions (zstd-sys links libzstd).
         includes.extend(pkg_includes("libbrotlienc"));
         includes.extend(pkg_includes("libzstd"));
 
@@ -411,6 +411,9 @@ mod php {
 
         let asm = context_asm(&os, &arch);
         let mut c = base(false);
+        for module in &modules {
+            c.files(sources(module, "c"));
+        }
         c.file(third.join("php/streams/plain_wrapper.c"))
             .files(["api.c", "http.c", "llhttp.c"].map(|f| third.join("llhttp").join(f)))
             .file(third.join("multipart_parser.c"))

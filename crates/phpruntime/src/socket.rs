@@ -1,8 +1,8 @@
-//! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and frees;
-//! what the streams need of Swoole's PHP side is in the runtime's
-//! [`Ops`](crate::Ops), declared in `native/hooks/swoole_rs_phpruntime.h`.
+//! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and
+//! frees, and what the streams need of Swoole's PHP side.
 use libc::{c_char, c_int, c_void, size_t, sockaddr, socklen_t};
 use std::{ffi::CStr, ptr::NonNull};
+use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::{
     co_io::swr_v1_hook_co_socket_set_err,
     co_socket::{CoSocket, swr_v1_hook_co_socket_free, swr_v1_hook_co_socket_make},
@@ -16,12 +16,24 @@ use swoole_rs_hooks::{
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_set_timeout};
 use swoole_rs_tls::upstream::{socket_recv_sync, socket_send_sync, socket_ssl_close};
 use swoole_rs_zend::{
+    E_ERROR,
     bailout::{self, Bailout},
     php_error,
-    sys::zval,
+    sys::{swr_zval_stringl, zval, zval_ptr_dtor},
 };
 
-use crate::ops;
+unsafe extern "C" {
+    /// crates/phphelpers' `zend::function::call(name, argc, argv, retval)`.
+    fn swr_v1_phphelpers_named_call(
+        name: *const c_char,
+        length: usize,
+        argc: u32,
+        argv: *mut zval,
+        retval: *mut zval,
+    );
+    /// crates/phpevents.
+    fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
+}
 
 /// `make`'s and `close`'s arguments and results, for [`trap`].
 struct SocketCall {
@@ -53,16 +65,14 @@ struct SslCall {
     result: bool,
 }
 
-/// `swr_v1_phpruntime_x509_call`.
-#[repr(C)]
+/// [`x509_read`]'s arguments.
 struct X509Call {
     pem: *const c_char,
     length: size_t,
     retval: *mut zval,
 }
 
-/// `swr_v1_phpruntime_fd_call`.
-#[repr(C)]
+/// [`convert_to_fd`]'s argument and result.
 struct FdCall {
     value: *mut zval,
     fd: c_int,
@@ -528,8 +538,31 @@ pub(crate) unsafe fn x509_read(pem: &[u8], retval: *mut zval) -> Result<(), Bail
         length: pem.len(),
         retval,
     };
-    // SAFETY: per the caller; `pem` holds its bytes; `x509_read` takes an `X509Call`.
-    unsafe { trap(ops().x509_read, &mut call) }
+    // SAFETY: per the caller; `pem` holds its bytes; the body takes an `X509Call`.
+    unsafe { trap(x509_read_body, &mut call) }
+}
+
+/// `openssl_x509_read(pem)` over an [`X509Call`], a `bailout::trap` body.
+unsafe extern "C" fn x509_read_body(call: *mut c_void) {
+    // SAFETY: `x509_read` passes a live `X509Call`.
+    let call = unsafe { &mut *call.cast::<X509Call>() };
+    // SAFETY: zero is an undefined zval, which the next line fills.
+    let mut pem: zval = unsafe { std::mem::zeroed() };
+    // SAFETY: the caller's bytes, copied into a new string.
+    unsafe { swr_zval_stringl(&raw mut pem, call.pem, call.length) };
+    let name = c"openssl_x509_read";
+    // SAFETY: one live argument and the caller's writable result.
+    unsafe {
+        swr_v1_phphelpers_named_call(
+            name.as_ptr(),
+            name.count_bytes(),
+            1,
+            &raw mut pem,
+            call.retval,
+        );
+    }
+    // SAFETY: the string this body made.
+    unsafe { zval_ptr_dtor(&raw mut pem) };
 }
 
 /// How a warning is raised.
@@ -547,21 +580,24 @@ pub enum Report {
 /// # Errors
 /// The error handler bailed out.
 pub fn report(kind: Report, level: i32, message: &CStr) -> Result<(), Bailout> {
-    let report = match kind {
-        // SAFETY: called while PHP runs.
-        Report::Docref => return unsafe { php_error(level, message) },
-        Report::Swoole => ops().error,
-        Report::Fatal => ops().fatal_error,
-    };
-    // SAFETY: called while PHP runs; the reporter is C++.
-    unsafe { bailout::report_level(report, level, message) }
+    /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
+    const FATAL: i32 = 503;
+    const NOTICE: i32 = 510;
+    match kind {
+        Report::Docref => {}
+        Report::Fatal => set_last_error(FATAL),
+        Report::Swoole => {
+            set_last_error(NOTICE);
+            if !swoole_rs_phpswoole::display_errors() && level != E_ERROR {
+                return Ok(());
+            }
+        }
+    }
+    // SAFETY: called while PHP runs.
+    unsafe { php_error(level, message) }
 }
 
-/// `php_swoole_check_reactor()`.
-pub fn check_reactor() {
-    // SAFETY: called while PHP runs.
-    unsafe { (ops().check_reactor)() };
-}
+pub use swoole_rs_phpswoole::check_reactor;
 
 /// `swoole_strerror(code)`.
 #[must_use]
@@ -576,7 +612,12 @@ pub fn strerror(code: i32) -> &'static CStr {
 /// The fatal error bailed out.
 pub fn coroutine_check() -> Result<(), Bailout> {
     // SAFETY: called while PHP runs; the body ignores its argument.
-    unsafe { bailout::trap(ops().coroutine_check, std::ptr::null_mut()) }
+    unsafe { bailout::trap(coroutine_check_body, std::ptr::null_mut()) }
+}
+
+/// [`coroutine_check`]'s `bailout::trap` body.
+extern "C" fn coroutine_check_body(_: *mut c_void) {
+    swoole_rs_phpswoole::coroutine_check();
 }
 
 /// `php_swoole_convert_to_fd(value)`: an fd, or negative after a warning.
@@ -586,9 +627,17 @@ pub fn coroutine_check() -> Result<(), Bailout> {
 /// `value` is a live zval.
 pub unsafe fn convert_to_fd(value: *mut zval) -> Result<i32, Bailout> {
     let mut call = FdCall { value, fd: -1 };
-    // SAFETY: per the caller; `convert_to_fd` takes an `FdCall`.
-    unsafe { trap(ops().convert_to_fd, &mut call) }?;
+    // SAFETY: per the caller; the body takes an `FdCall`.
+    unsafe { trap(convert_to_fd_body, &mut call) }?;
     Ok(call.fd)
+}
+
+/// `php_swoole_convert_to_fd` over an [`FdCall`], a `bailout::trap` body.
+unsafe extern "C" fn convert_to_fd_body(call: *mut c_void) {
+    // SAFETY: `convert_to_fd` passes a live `FdCall`.
+    let call = unsafe { &mut *call.cast::<FdCall>() };
+    // SAFETY: the caller's live zval.
+    call.fd = unsafe { php_swoole_convert_to_fd(call.value) };
 }
 
 /// `System::socket_poll` of `(fd, events)` rows merged by fd, in the order

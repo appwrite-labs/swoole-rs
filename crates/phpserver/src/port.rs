@@ -67,11 +67,6 @@ const PROPERTY_BOOL: u32 = 3;
 
 pub(crate) static PORT: Class = Class::new();
 
-unsafe extern "C" {
-    /// native/phphelpers' ext/sockets `Socket` over `fd`, which it takes.
-    fn swr_cpp_phpthread_php_socket_create(out: *mut zval, fd: c_int) -> bool;
-}
-
 /// `getSocket()` of a bound port: a `Socket` over a duplicate of its
 /// descriptor, kept alive by an extra reference as upstream's
 /// `php_swoole_convert_to_socket`; false if `dup` fails. Registered only when
@@ -85,7 +80,7 @@ pub(crate) fn socket(port: *mut c_void, call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: this call's return slot, which takes `fd` whatever the result.
-    unsafe { swr_cpp_phpthread_php_socket_create(call.return_value(), fd) };
+    unsafe { swoole_rs_phpswoole::socket_create(call.return_value(), fd) };
     // SAFETY: an emalloc'd slot for the reference upstream leaks.
     let keep = unsafe { z::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
     // SAFETY: a writable slot and the Socket just made.

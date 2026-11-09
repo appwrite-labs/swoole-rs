@@ -14,4 +14,14 @@ void swr_zend_print_stack_trace(void);
 /* SwooleG.fatal_error: throw Swoole\Error(message, code) and print it as an
  * E_ERROR, then swr_v1_phpswoole_fatal_exit(code). */
 void swr_zend_fatal_error(int code, const char *format, ...);
+/* The module globals (zend_swoole_globals): ZEND_INIT_MODULE_GLOBALS with ctor,
+ * returning what the INI handlers take (the TSRM id under ZTS, else `nts`), and
+ * ZEND_MODULE_GLOBALS_BULK, this thread's. `nts` is crates/phpswoole's storage
+ * outside ZTS; ZTS keeps the TSRM id, swoole_globals_id, here. */
+void *swr_zend_module_globals_init(void *nts, size_t size, void (*ctor)(void *));
+void *swr_zend_module_globals(void *nts);
+/* PHP_VERSION. */
+const char *swr_zend_php_version(void);
+/* EG(exit_status) = status. */
+void swr_zend_set_exit_status(int status);
 #endif

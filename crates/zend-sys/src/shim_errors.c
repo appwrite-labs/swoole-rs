@@ -32,11 +32,6 @@ int swr_zend_try_report(void (*report)(const char *message), const char *message
     SWR_TRAP(report(message));
 }
 
-int swr_zend_try_report_level(void (*report)(int level, const char *message), int level,
-                              const char *message) {
-    SWR_TRAP(report(level, message));
-}
-
 int swr_zend_try_report_code(void (*report)(int code, int flag, const char *message), int code,
                              int flag, const char *message) {
     SWR_TRAP(report(code, flag, message));

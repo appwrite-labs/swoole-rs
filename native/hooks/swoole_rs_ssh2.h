@@ -81,7 +81,7 @@ int swoole_libssh2_sftp_rmdir(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION
 int swoole_libssh2_userauth_publickey_fromfile(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION * session, const char * username, const char * publickey, const char * privatekey, const char * passphrase);
 int swoole_libssh2_userauth_keyboard_interactive(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION * session, const char * username, LIBSSH2_USERAUTH_KBDINT_RESPONSE_FUNC((*response_callback)));
 #ifdef PHP_FUNCTION
-/* What the bundled ext/ssh2 and native/phphelpers/module.cc share: its PHP
+/* What the bundled ext/ssh2 and crates/phpswoole share: its PHP
  * functions, in crates/phpstubs' order, and its module hooks. */
 #define SWR_SSH2_FUNCTIONS(X) \
     X(ssh2_connect) X(ssh2_disconnect) X(ssh2_methods_negotiated) X(ssh2_fingerprint) \

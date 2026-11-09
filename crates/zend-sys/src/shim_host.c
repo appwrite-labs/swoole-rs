@@ -58,3 +58,36 @@ void swr_zend_fatal_error(int code, const char *format, ...) {
     zend_exception_error(exception, E_ERROR);
     swr_v1_phpswoole_fatal_exit(code);
 }
+
+#ifdef ZTS
+ts_rsrc_id swoole_globals_id;
+#endif
+
+void *swr_zend_module_globals_init(void *nts, size_t size, void (*ctor)(void *)) {
+#ifdef ZTS
+    (void) nts;
+    ts_allocate_id(&swoole_globals_id, size, (ts_allocate_ctor) ctor, NULL);
+    return &swoole_globals_id;
+#else
+    (void) size;
+    ctor(nts);
+    return nts;
+#endif
+}
+
+void *swr_zend_module_globals(void *nts) {
+#ifdef ZTS
+    (void) nts;
+    return TSRMG_BULK(swoole_globals_id, void *);
+#else
+    return nts;
+#endif
+}
+
+const char *swr_zend_php_version(void) {
+    return PHP_VERSION;
+}
+
+void swr_zend_set_exit_status(int status) {
+    EG(exit_status) = status;
+}

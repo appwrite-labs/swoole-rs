@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Exercise the real C ABI and PHP module startup (including an incompatible ABI).
+"""Exercise the real C ABI and PHP module startup.
 
 Build reference/hybrid first, then run: python3 tests/modules/integration/test_bridge.py
-All compilations and the incompatible relink write only to a temporary directory.
+All compilations write only to a temporary directory.
 """
 import argparse
 import hashlib
@@ -11,15 +11,12 @@ import os
 import re
 from pathlib import Path
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))
-from tools.private_copy import copy_private
 
 
 def run(command, *, cwd=ROOT, check=True):
@@ -135,70 +132,6 @@ int main(void) {
         self.assertEqual(info.returncode, 0, info.stdout + info.stderr)
         self.assertIn(f'Rust migration bridge => ABI 1, features {ARGS.feature_bits}', info.stdout)
 
-    def require_space(self, temporary):
-        for path in [ROOT, ARGS.archive.parent, temporary]:
-            free = shutil.disk_usage(path).free
-            self.assertGreaterEqual(free, 4294967296, f'Unchanged 4GiB guard: {path}, free={free}')
-
-    def test_php_rejects_incompatible_archive(self):
-        # Ask make for its expanded link recipe without executing any build step.
-        # Existing .lo inputs remain read-only; libtool runs inside our scratch tree.
-        source = ARGS.hybrid.resolve().parents[1]
-        # Treat the extension's first object as new, whichever objects the patch set leaves.
-        first = re.search(r'^shared_objects_swoole = (\S+\.lo)', (source / 'Makefile').read_text(), re.M)
-        self.assertTrue(first, 'No shared_objects_swoole in the extension Makefile')
-        recipe = run(['make', '-n', '-W', first[1], 'swoole.la'], cwd=source).stdout
-        lines = [line for line in recipe.splitlines() if '--mode=link' in line and '-o swoole.la' in line]
-        self.assertEqual(len(lines), 1, 'Expected one expanded libtool link recipe: ' + recipe)
-        command = shlex.split(lines[0])
-        self.assertEqual(command.count('-lswoole_rs_php'), 1, 'Rust archive missing from link recipe')
-        cases = [(999, 0, 'Rust bridge ABI mismatch: expected 1, got 999')]
-        # Hide the real queries once (LTO merges them into objects with other code, so
-        # they cannot be removed as members). Each case gets an independent copy of that real archive.
-        with tempfile.TemporaryDirectory(prefix='swoole-rs-abi-preparation-') as directory:
-            preparation = Path(directory)
-            self.require_space(preparation)
-            php_archive = ARGS.archive.with_name('libswoole_rs_php.a')
-            prepared = preparation / php_archive.name
-            copy_private(php_archive, prepared)
-            run(['objcopy', '--localize-symbol=swr_v1_abi_version', '--localize-symbol=swr_v1_feature_bits',
-                 str(prepared)])
-            command = [str(source / argument) if argument.endswith('.lo') and not Path(argument).is_absolute()
-                       else argument for argument in command]
-            archive_index = command.index('-lswoole_rs_php')
-            output_index, rpath_index = command.index('-o') + 1, command.index('-rpath') + 1
-            stats_indices = [index for index, argument in enumerate(command) if argument.startswith('CCACHE_STATSLOG=')]
-            for abi, bits, message in cases:
-                with self.subTest(abi=abi, feature_bits=bits):
-                    with tempfile.TemporaryDirectory(prefix='swoole-rs-bad-abi-') as directory:
-                        temporary = Path(directory)
-                        self.require_space(temporary)
-                        stub = temporary / 'incompatible.c'
-                        stub.write_text('#include "swoole_rs.h"\n'
-                                        f'uint32_t swr_v1_abi_version(void) {{ return {abi}; }}\n'
-                                        f'uint64_t swr_v1_feature_bits(void) {{ return {bits}; }}\n')
-                        obj, archive = temporary / 'incompatible.o', temporary / 'libswoole_rs_php.a'
-                        run(shlex.split(os.environ.get('CC', 'cc')) + ['-fPIC', '-I', str(ROOT / 'native/include'),
-                            '-c', str(stub), '-o', str(obj)])
-                        # Preserve real module initialization/error paths: incomplete
-                        # function stubs can crash before startup reaches its ABI guard.
-                        copy_private(prepared, archive)
-                        run(['ar', 'rcs', str(archive), str(obj)])
-                        # Absolute .lo paths preserve each libtool object's .libs lookup. Move
-                        # both outputs and libtool's working directory away from the build.
-                        relink = command.copy()
-                        relink[archive_index] = str(archive)
-                        relink[output_index] = str(temporary / 'swoole.la')
-                        relink[rpath_index] = str(temporary)
-                        for index in stats_indices:
-                            relink[index] = 'CCACHE_STATSLOG=' + str(temporary / 'link.ccache.log')
-                        run(relink, cwd=temporary)
-                        extension = temporary / '.libs/swoole.so'
-                        self.assertTrue(extension.is_file(), 'Relink did not produce a temporary PHP extension')
-                        result = self.php(extension, '-r', 'echo "startup-accepted\\n";')
-                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                        self.assertIn(message, result.stdout + result.stderr)
-                        self.assertNotIn('startup-accepted', result.stdout)
 
 
 if __name__ == '__main__':
@@ -210,7 +143,7 @@ if __name__ == '__main__':
     parser.add_argument('--hybrid', type=Path, default=ROOT / 'target/hybrid/rust/modules/swoole.so')
     parser.add_argument('--archive', type=Path, help='Defaults to the selected hybrid build’s copied archive')
     parser.add_argument('--feature-bits', type=int, help='Defaults to the selected hybrid build manifest')
-    parser.add_argument('--startup-only', action='store_true', help='Positive startup/flag gates; full incompatible-archive relinks remain integration-only')
+    parser.add_argument('--startup-only', action='store_true', help='Positive startup/flag gates; the C and C++ consumers remain integration-only')
     ARGS = parser.parse_args()
     build = ARGS.hybrid.resolve().parents[2]
     if ARGS.archive is None:

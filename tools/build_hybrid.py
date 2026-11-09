@@ -35,7 +35,7 @@ BRIDGE_PATCH = 'migration/patches/integration/0001-rust-bridge.patch'
 HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
                   'firebird': '--with-swoole-firebird', 'sqlite': '--enable-swoole-sqlite',
                   'oci': '--with-swoole-oracle', 'curl': '--enable-swoole-curl',
-                  'ssh2': '--with-swoole-ssh2'}
+                  'ssh2': '--with-swoole-ssh2', 'ftp': '--enable-swoole-ftp'}
 # The build's two Rust archives in rust-prefix/lib, by the input that records each: the
 # Zend-free one the native gates link, and the PHP extension's (with LTO unless --dev, #889).
 ARCHIVES = {'libswoole_rs_ffi.a': 'rust_archive_sha256', 'libswoole_rs_php.a': 'rust_php_archive_sha256'}
@@ -293,21 +293,23 @@ def hybrid_link(archive, directory):
 
 
 def native_sources():
-    """Owned C++ (native/<module>/*.cc: what stable Rust can't express), by the path it compiles
-    at in the patched tree, where config.m4's and CMake's src/ globs find it."""
-    return {f'src/swoole_rs_{path.parent.name}_{path.name}': path for path in sorted((ROOT / 'native').glob('*/*.cc'))}
+    """Owned C and C++ (native/<module>/*.c and *.cc: what stable Rust can't express), by the path
+    it compiles at in the patched tree, where config.m4's and CMake's src/ globs find it."""
+    paths = sorted((ROOT / 'native').glob('*/*.c')) + sorted((ROOT / 'native').glob('*/*.cc'))
+    return {f'src/swoole_rs_{path.parent.name}_{path.name}': path for path in paths}
 
 
 def zend_free_native_sources():
     """native_sources() without the extension's own glue, which includes PHP's headers: it belongs
     in swoole.so, not in a Zend-free libswoole such as core-tests and the SDK consumers link."""
-    return {name: path for name, path in native_sources().items() if b'#include "swoole_rs_phphost.h"' not in path.read_bytes()}
+    return {name: path for name, path in native_sources().items()
+            if not any(header in path.read_bytes() for header in (b'#include "swoole_rs_phphost.h"', b'#include "php_swoole.h"'))}
 
 
 def stage_native_sources(source):
     sources = native_sources()
     # An incremental tree still holds the copy of a native file deleted since it was staged.
-    for stale in (source / 'src').glob('swoole_rs_*.cc'):
+    for stale in [*(source / 'src').glob('swoole_rs_*.cc'), *(source / 'src').glob('swoole_rs_*.c')]:
         if f'src/{stale.name}' not in sources:
             stale.unlink()
     for name, path in sources.items():
@@ -477,6 +479,8 @@ def build(args, parser):
     if cares not in {None, '--disable-cares', '--enable-cares=no'}:
         cargo_extra.append('cares')
     if args.backend == 'rust':
+        if getattr(args, 'php_sockets', False):
+            cargo_extra.append('sockets')
         if stdext_enabled(args):
             cargo_extra.append('stdext')
         if getattr(args, 'fix_halfclose', False):

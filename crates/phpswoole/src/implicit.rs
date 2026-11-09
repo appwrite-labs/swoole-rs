@@ -3,13 +3,16 @@
 //! addresses), as `php_swoole.cc` defined it.
 use crate::EXCEPTION;
 use std::ffi::{c_char, c_int, c_void};
+use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_error::ErrorCode::{SW_ERROR_FOR_TEST, SW_ERROR_INVALID_PARAMS};
 use swoole_rs_zend::{
-    Call, Message, handlers,
+    Call, Message,
+    bailout::{self, Bailout},
+    handlers,
     string::bytes,
     sys::{
-        swr_zend_facade_function_table, swr_zend_string_release, swr_zval_facade_refcount,
-        zend_function, zend_hash_str_find,
+        swr_zend_facade_function_table, swr_zend_set_exit_status, swr_zend_string_release,
+        swr_zval_facade_refcount, zend_function, zend_hash_str_find,
     },
     throw_exception, value,
 };
@@ -19,9 +22,21 @@ handlers! {
 }
 
 unsafe extern "C" {
-    /// `EG(exit_status) = status`, then the bailout that ends the request or thread.
-    fn sw_php_exit(status: c_int);
     fn php_printf(format: *const c_char, ...) -> usize;
+}
+
+/// `sw_php_exit(status)`: `EG(exit_status) = status`, then the bailout that
+/// ends the request, or the thread in a `SW_THREAD` build. The frames it
+/// crosses own nothing.
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn sw_php_exit(status: c_int) {
+    // SAFETY: a request's executor globals.
+    unsafe { swr_zend_set_exit_status(status) };
+    if built_with(Switch::Thread) {
+        crate::optional::thread_exit();
+    } else {
+        bailout::raise(Err(Bailout));
+    }
 }
 
 /// `SwooleG.fatal_error`, which exits the process or bails out of a thread.
@@ -53,8 +68,8 @@ fn implicit_fn(call: &Call) {
             let status = status as c_int;
             status
         };
-        // SAFETY: it bails out across this frame, which owns nothing.
-        unsafe { sw_php_exit(status) };
+        // It bails out across this frame, which owns nothing.
+        sw_php_exit(status);
     } else if is(b"abort") {
         std::process::abort();
     } else if is(b"refcount") {

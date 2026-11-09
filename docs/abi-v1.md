@@ -10,9 +10,8 @@ extension, scheduler, worker pool or reactor is introduced.
   (values in [migration modules](migration-modules.md)).
 
 Both are allocation-free, safe on any thread and after fork, and cannot panic
-or throw. Module startup (`native/phphelpers/module.cc`) rejects an incompatible
-ABI version and publishes the `SWOOLE_RS_ABI_VERSION` and
-`SWOOLE_RS_FEATURE_BITS` constants and a phpinfo row.
+or throw. Module startup (crates/phpswoole) publishes them as the
+`SWOOLE_RS_ABI_VERSION` and `SWOOLE_RS_FEATURE_BITS` constants and a phpinfo row.
 
 ## Rules for all module contracts
 

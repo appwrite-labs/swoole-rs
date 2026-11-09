@@ -7,19 +7,15 @@ python3 tests/modules/integration/test_bridge.py
 python3 tests/modules/integration/test_bridge.py --hybrid target/hybrid/rust/modules/swoole.so
 ```
 
-Requires PHP, C/C++ compilers, `ar`, `make`, and the hybrid's existing libtool
-object files. The selected build supplies its own copied static archive and
-expected feature bits from its manifest, so compiling another feature combination
-does not change this test's inputs. Override with `--archive`/`--feature-bits`;
-select extensions with `--reference`/`--hybrid`, and PHP with `--php`.
+Requires PHP and C/C++ compilers. The selected build supplies its own copied
+static archive and expected feature bits from its manifest, so compiling another
+feature combination does not change this test's inputs. Override with
+`--archive`/`--feature-bits`; select extensions with `--reference`/`--hybrid`,
+and PHP with `--php`.
 
-The tests execute C and C++ consumers, check the real reference/hybrid PHP
-markers and PHPinfo, and prove PHP rejects an incompatible bridge ABI. That
-negative test relinks existing hybrid objects against a temporary C archive
-returning ABI 999. Temporary fixtures export all
-required symbols so the loader reaches the actual module startup check on Linux.
-It runs libtool in a temporary directory and loads only the
-temporary extension. It neither rebuilds sources nor replaces published modules.
+The tests execute C and C++ consumers, check the selected ABI exports and the
+real reference/hybrid PHP markers and PHPinfo. They write only to temporary
+directories and neither rebuild sources nor replace published modules.
 No unsupported or missing artifact is reported as a pass.
 `--startup-only` runs only the positive startup and flag checks; the candidate
 lane's `abi` phase uses it, and the integrate lane runs every test.

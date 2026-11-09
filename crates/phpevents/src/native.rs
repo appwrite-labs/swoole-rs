@@ -26,15 +26,14 @@ unsafe extern "C-unwind" {
     // crates/tls's `Socket::free`.
     #[link_name = "_ZN6swoole7network6Socket4freeEv"]
     fn socket_free(socket: *mut SocketRecord);
-    #[link_name = "_Z30php_swoole_is_enable_coroutinev"]
-    fn php_swoole_is_enable_coroutine() -> bool;
-    // crates/coroutine and crates/phptimer.
+    // crates/phpprocess, crates/coroutine and crates/phptimer.
+    safe fn php_swoole_is_enable_coroutine() -> bool;
     fn swoole_coroutine_is_in() -> u8;
     fn swr_v1_phptimer_clear_all() -> u8;
 }
 
 unsafe extern "C" {
-    /// native/phphelpers/module.cc's `SW_ZSTR_KNOWN` table.
+    /// crates/phphelpers' `SW_ZSTR_KNOWN` table.
     static sw_zend_known_strings: *mut *mut z::zend_string;
 }
 
@@ -112,8 +111,7 @@ pub(crate) fn in_coroutine() -> bool {
 
 /// `php_swoole_is_enable_coroutine()`.
 pub(crate) fn enable_coroutine() -> bool {
-    // SAFETY: phphelpers' reader of the server and Swoole globals.
-    unsafe { php_swoole_is_enable_coroutine() }
+    php_swoole_is_enable_coroutine()
 }
 
 pub(crate) fn bailed() -> bool {

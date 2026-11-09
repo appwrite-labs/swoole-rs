@@ -12,8 +12,6 @@ int swr_zend_try_zend_error(int level, const char *message);
 
 /* A C or C++ reporter (Swoole's php_swoole_*error macros live in C++). */
 int swr_zend_try_report(void (*report)(const char *message), const char *message);
-int swr_zend_try_report_level(void (*report)(int level, const char *message), int level,
-                              const char *message);
 int swr_zend_try_report_code(void (*report)(int code, int flag, const char *message), int code,
                              int flag, const char *message);
 int swr_zend_try_report_flag(void (*report)(int level, bool flag, const char *message), int level,
