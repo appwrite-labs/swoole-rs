@@ -137,9 +137,12 @@ def plan(args, reports):
     php = ['--php', args.php]
     for extension in args.php_extension:
         php += ['--php-extension', extension]
+    # Loading an extension PHP has compiled in (tools/asan.py's PHP has curl and sockets) only warns.
+    builtin = set(subprocess.run([args.php, '-n', '-m'], capture_output=True, text=True).stdout.lower().split()
+                  if sys.platform.startswith('linux') and shutil.which(args.php) else [])
     def php_for(*dependencies):
         return php + [argument for extension in dependencies
-                      if sys.platform.startswith('linux') and extension not in args.php_extension
+                      if sys.platform.startswith('linux') and extension not in args.php_extension and extension not in builtin
                       for argument in ['--php-extension', extension]]
     for module in modules:
         add(module + '-unit', 'cargo', 'test', '--locked', '-p', 'swoole-rs-' + module,

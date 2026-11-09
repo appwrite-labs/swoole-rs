@@ -430,18 +430,19 @@ class Lanes(unittest.TestCase):
         self.assertEqual(build_alias('rust', '-halfclose-stdext'), 'rust-halfclose-stdext')
         self.assertEqual(build_alias('upstream', dev=True), 'dev-upstream')
 
-    def test_linux_consumer_hooks_load_curl_without_duplicating_explicit_dependency(self):
-        for explicit in [[], ['curl']]:
+    def test_linux_consumer_hooks_load_curl_once_unless_compiled_in(self):
+        for explicit, compiled_in, expected in [([], '', 1), (['curl'], '', 1), ([], 'Core\ncurl\n', 0)]:
             args = SimpleNamespace(lane='integrate', module=['phpcollections', 'base64', 'phphelpers'], all_modules=False,
                                    php='php', php_extension=explicit, jobs=2, test=None, case=None,
                                    benchmark=False, compare=False, fix_halfclose=False, stdext=True)
-            with patch.object(dev.sys, 'platform', 'linux'):
+            with patch.object(dev.sys, 'platform', 'linux'), patch.object(dev.shutil, 'which', return_value='/php'), \
+                    patch.object(dev.subprocess, 'run', return_value=SimpleNamespace(stdout=compiled_in)):
                 commands = dict(dev.plan(args, ROOT / 'target/reports/collections'))
             for phase in ['phpcollections-runtime',
                           'base64-consumers-upstream', 'base64-consumers-hybrid', 'phphelpers-module']:
                 loaded = [commands[phase][i+1] for i, argument in enumerate(commands[phase])
                           if argument == '--php-extension']
-                self.assertEqual(loaded.count('curl'), 1)
+                self.assertEqual(loaded.count('curl'), expected)
 
     def test_child_php_selection_is_explicit_and_scoped_to_direct_official_runner(self):
         args = SimpleNamespace(lane='integrate', module=None, all_modules=True, php='php', php_extension=[],
