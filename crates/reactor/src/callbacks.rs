@@ -1,362 +1,365 @@
-//! Ordered callback metadata only. Native owns every `std::function` payload and
-//! performs its copy, call and destruction after each Rust function returns.
-//! Native walks each kind's entries through `views`, which every mutation here
-//! keeps current, so a walk makes no call per callback (#680).
-use crate::owner::{publish, release as release_metadata};
-use std::ptr;
+// SPDX-License-Identifier: Apache-2.0
+// Compatibility derived from Swoole v6.2.4 src/reactor/base.cc (Swoole contributors).
+//! The reactor's end callbacks and exit conditions (upstream's `end_callbacks` and
+//! `exit_conditions` maps), its built-in ones, `if_exit`, `execute_end_callbacks` and
+//! `wait`. Each slot is keyed by upstream's `EndCallback` or `ExitCondition` and holds
+//! a plain function or a built-in. A walk re-reads each slot as it reaches it, so a
+//! callback that sets a later key is seen, one it erases is not, and an earlier key it
+//! sets waits for the next walk.
+use crate::reactor_state::ReactorState;
+use crate::reactor_upstream::prepared;
+use std::ffi::{c_int, c_void};
 
-/// `swr_v1_reactor_callback_entry`.
-#[repr(C)]
-pub struct CallbackEntry {
-    pub key: i32,
-    pub token: usize,
+/// An end callback a caller sets (`Reactor::set_end_callback`).
+pub type EndFn = extern "C-unwind" fn();
+/// An exit condition a caller sets: whether the loop may exit, given the event count it
+/// may change for the conditions after it.
+pub type ExitFn = extern "C-unwind" fn(*mut usize) -> bool;
+
+/// `Reactor::PRIORITY_*`: `PRIORITY_IOURING_SUBMIT` (7) is the last.
+const PRIORITY_DEFER_TASK: c_int = 1;
+const PRIORITY_IDLE_TASK: c_int = 2;
+pub(crate) const PRIORITY_SIGNAL_CALLBACK: c_int = 3;
+const PRIORITY_TRY_EXIT: c_int = 4;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const PRIORITY_MALLOC_TRIM: c_int = 5;
+const END_SLOTS: usize = 8;
+/// `Reactor::EXIT_CONDITION_*`: 0 to 9, then `DEFAULT` (999) and `USER_AFTER_DEFAULT`.
+const EXIT_CONDITION_DEFER_TASK: c_int = 1;
+const EXIT_CONDITION_DEFAULT: c_int = 999;
+const EXIT_SLOTS: usize = 12;
+
+#[derive(Clone, Copy)]
+enum End {
+    Call(EndFn),
+    /// Runs `defer_tasks`.
+    Defer,
+    /// Runs `idle_task`.
+    Idle,
+    /// `swoole_signal_dispatch`.
+    Signal,
+    /// Stops the loop once `wait_exit` is set and `if_exit` agrees.
+    TryExit,
+    /// `malloc_trim` at most once a `SW_MALLOC_TRIM_INTERVAL`.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    MallocTrim,
 }
-/// `swr_v1_reactor_callback_view`: one kind's entries, in ascending key order.
-#[repr(C)]
-pub struct CallbackView {
-    pub entries: *const CallbackEntry,
-    pub len: usize,
+
+#[derive(Clone, Copy)]
+enum Exit {
+    Call(ExitFn),
+    /// No task is deferred.
+    Defer,
+    /// No socket is registered.
+    Default,
 }
-/// Native reads `views` (`struct swr_v1_reactor_callbacks`), so they come first.
-#[repr(C)]
-pub struct ReactorCallbacks {
-    views: [CallbackView; 2],
-    entries: [Vec<CallbackEntry>; 2],
+
+#[derive(Default)]
+pub(crate) struct Callbacks {
+    end: [Option<End>; END_SLOTS],
+    exit: [Option<Exit>; EXIT_SLOTS],
 }
-impl ReactorCallbacks {
-    fn new() -> Self {
-        let empty = || CallbackView {
-            entries: ptr::null(),
-            len: 0,
-        };
-        Self {
-            views: [empty(), empty()],
-            entries: [Vec::new(), Vec::new()],
-        }
-    }
-    /// Publish `kind`'s entries after a change to them.
-    fn refresh(&mut self, kind: usize) {
-        if let (Some(view), Some(entries)) = (self.views.get_mut(kind), self.entries.get(kind)) {
-            *view = CallbackView {
-                entries: entries.as_ptr(),
-                len: entries.len(),
-            };
-        }
-    }
-    fn lookup(&self, kind: u32, key: i32) -> Option<usize> {
-        let entries = self.entries.get(kind as usize)?;
-        entries
-            .binary_search_by_key(&key, |entry| entry.key)
-            .ok()
-            .and_then(|index| entries.get(index))
-            .map(|entry| entry.token)
-    }
-    fn insert(&mut self, kind: u32, key: i32, token: usize) -> Result<(i32, usize), i32> {
-        let entries = self.entries.get_mut(kind as usize).ok_or(-1)?;
-        match entries.binary_search_by_key(&key, |entry| entry.key) {
-            Ok(index) => entries.get(index).map(|entry| (0, entry.token)).ok_or(-1),
-            Err(index) => {
-                entries.try_reserve(1).map_err(|_| -2)?;
-                entries.insert(index, CallbackEntry { key, token });
-                self.refresh(kind as usize);
-                Ok((1, token))
-            }
-        }
-    }
-    fn erase(&mut self, kind: usize, key: i32) -> Option<usize> {
-        let entries = self.entries.get_mut(kind)?;
-        let index = entries.binary_search_by_key(&key, |entry| entry.key).ok()?;
-        let token = entries.remove(index).token;
-        self.refresh(kind);
-        Some(token)
-    }
-    fn drain(&mut self, kind: &mut u32, token: &mut usize) -> i32 {
-        *kind = u32::from(!self.entries[1].is_empty());
-        let entry = self.entries.get_mut(*kind as usize).and_then(Vec::pop);
-        self.refresh(*kind as usize);
-        if let Some(entry) = entry {
-            *token = entry.token;
-            1
-        } else {
-            0
-        }
+
+fn end_slot(key: c_int) -> Option<usize> {
+    usize::try_from(key).ok().filter(|&slot| slot < END_SLOTS)
+}
+
+fn exit_slot(key: c_int) -> Option<usize> {
+    match key {
+        0..=9 => usize::try_from(key).ok(),
+        999 => Some(10),
+        1000 => Some(11),
+        _ => None,
     }
 }
 
-///1 found/0 absent/-1 invalid. A null owner is a lazy empty store.
-/// # Safety
-/// Owner is null or live, and output is aligned/exclusive/disjoint. No token is
-/// dereferenced; no reference escapes this call or spans a Native effect.
+impl Callbacks {
+    fn set_end(&mut self, key: c_int, end: Option<End>) {
+        let slot = end_slot(key).and_then(|slot| self.end.get_mut(slot));
+        debug_assert!(slot.is_some(), "end callback {key}");
+        if let Some(slot) = slot {
+            *slot = end;
+        }
+    }
+
+    fn set_exit(&mut self, key: c_int, exit: Option<Exit>) -> bool {
+        let slot = exit_slot(key).and_then(|slot| self.exit.get_mut(slot));
+        debug_assert!(slot.is_some(), "exit condition {key}");
+        slot.and_then(|slot| std::mem::replace(slot, exit))
+            .is_some()
+    }
+
+    fn has_exit(&self, key: c_int) -> bool {
+        exit_slot(key)
+            .and_then(|slot| self.exit.get(slot))
+            .is_some_and(Option::is_some)
+    }
+}
+
+/// Installs the built-ins upstream's constructor sets, after its create hook.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_callbacks_lookup(
-    owner: *const ReactorCallbacks,
-    kind: u32,
-    key: i32,
-    token: *mut usize,
-) -> i32 {
-    // SAFETY: `token` is null or live, aligned and exclusively lent for this call.
-    let Some(token) = (unsafe { token.as_mut() }) else {
-        return -1;
-    };
-    if kind > 1 {
-        return -1;
+pub extern "C" fn swr_v1_reactor_install_builtins(owner: &mut ReactorState) {
+    install_builtins(&mut owner.callbacks);
+}
+
+fn install_builtins(callbacks: &mut Callbacks) {
+    callbacks.set_end(PRIORITY_DEFER_TASK, Some(End::Defer));
+    callbacks.set_exit(EXIT_CONDITION_DEFER_TASK, Some(Exit::Defer));
+    callbacks.set_end(PRIORITY_IDLE_TASK, Some(End::Idle));
+    if swoole_rs_corebase::swoole_is_main_thread() {
+        callbacks.set_end(PRIORITY_SIGNAL_CALLBACK, Some(End::Signal));
     }
-    *token = 0;
-    // SAFETY: `owner` is null or live and aligned for this call.
-    let Some(owner) = (unsafe { owner.as_ref() }) else {
-        return 0;
+    callbacks.set_end(PRIORITY_TRY_EXIT, Some(End::TryExit));
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if swoole_rs_corebase::swoole_is_main_thread() {
+        callbacks.set_end(PRIORITY_MALLOC_TRIM, Some(End::MallocTrim));
+    }
+    callbacks.set_exit(EXIT_CONDITION_DEFAULT, Some(Exit::Default));
+}
+
+/// `Reactor::execute_end_callbacks(timed_out)`.
+///
+/// # Safety
+/// `owner` is live and no reference to it is held: a callback may change it.
+pub(crate) unsafe fn execute_end(owner: *mut ReactorState, timed_out: bool) {
+    // SAFETY: as the caller promises.
+    unsafe { (*owner).fields.timed_out = timed_out };
+    // SAFETY: as above; each borrow ends before a callback runs.
+    let fields = unsafe { &raw mut (*owner).fields };
+    for slot in 0..END_SLOTS {
+        // SAFETY: as above; the copy is read before the callback runs.
+        let Some(end) = (unsafe { (*owner).callbacks.end.get(slot).copied().flatten() }) else {
+            continue;
+        };
+        match end {
+            End::Call(call) => call(),
+            End::Defer => {
+                // SAFETY: the live reactor's queue slot.
+                let slot = unsafe { &raw mut (*fields).defer_tasks };
+                // SAFETY: as above.
+                unsafe { crate::deferred::run_defer(slot) };
+            }
+            // SAFETY: a single field read.
+            End::Idle => run_task(unsafe { (*fields).idle_task }),
+            End::Signal => swoole_rs_process::signal::swoole_signal_dispatch(),
+            End::TryExit => {
+                // SAFETY: a single field read.
+                let wait_exit = unsafe { (*fields).wait_exit };
+                // SAFETY: as the caller promises.
+                if wait_exit && unsafe { if_exit(owner) } {
+                    // SAFETY: a single field write.
+                    unsafe { (*fields).running = false };
+                }
+            }
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            // SAFETY: the live reactor's field, which no reference holds.
+            End::MallocTrim => malloc_trim(unsafe { &mut (*fields).last_malloc_trim_time }),
+        }
+    }
+}
+
+/// `Swoole\Event::cycle`'s idle or future task, when set.
+fn run_task(task: crate::ReactorTask) {
+    if let Some(callback) = task.callback {
+        // SAFETY: the task's callback and the data it was set with.
+        unsafe { callback(task.data) };
+    }
+}
+
+/// `malloc_trim` at most once a `SW_MALLOC_TRIM_INTERVAL`.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn malloc_trim(last: &mut libc::time_t) {
+    use swoole_rs_corebase::constants::{SW_MALLOC_TRIM_INTERVAL, SW_MALLOC_TRIM_PAD};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            libc::time_t::try_from(elapsed.as_secs()).unwrap_or(libc::time_t::MAX)
+        });
+    if *last < now - libc::time_t::from(SW_MALLOC_TRIM_INTERVAL) {
+        // SAFETY: glibc's heap trim, with no preconditions.
+        unsafe { libc::malloc_trim(usize::try_from(SW_MALLOC_TRIM_PAD).unwrap_or(0)) };
+        *last = now;
+    }
+}
+
+/// `Reactor::if_exit()`: each exit condition in key order over the registered socket
+/// count, until one refuses.
+///
+/// # Safety
+/// As [`execute_end`].
+pub(crate) unsafe fn if_exit(owner: *mut ReactorState) -> bool {
+    // SAFETY: as the caller promises; the borrow ends here.
+    let mut event_num = unsafe { (*owner).registry.count() };
+    for slot in 0..EXIT_SLOTS {
+        // SAFETY: as above; the copy is read before the condition runs.
+        let Some(exit) = (unsafe { (*owner).callbacks.exit.get(slot).copied().flatten() }) else {
+            continue;
+        };
+        let accepted = match exit {
+            Exit::Call(call) => call(&raw mut event_num),
+            // SAFETY: a single field read.
+            Exit::Defer => unsafe { (*owner).fields.defer_tasks.is_null() },
+            Exit::Default => event_num == 0,
+        };
+        if !accepted {
+            return false;
+        }
+    }
+    true
+}
+
+/// The thread's reactor state, if it has a reactor.
+fn current() -> Option<&'static mut ReactorState> {
+    let reactor = swoole_rs_corebase::thread_reactor();
+    if reactor.is_null() {
+        return None;
+    }
+    // SAFETY: `SwooleTG.reactor` is live until `swoole_event_free` clears it.
+    let owner = unsafe { prepared(reactor) }.owner;
+    // SAFETY: the live state; each caller's borrow ends before any callback runs.
+    unsafe { owner.as_mut() }
+}
+
+/// `Reactor::set_end_callback(id, callback)`, or `erase_end_callback(id)` without one.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_reactor_set_end(
+    owner: &mut ReactorState,
+    id: c_int,
+    callback: Option<EndFn>,
+) {
+    owner.callbacks.set_end(id, callback.map(End::Call));
+}
+
+/// `Reactor::set_exit_condition(id, condition)`, or `remove_exit_condition(id)` without
+/// one: whether one was set before.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_reactor_set_exit(
+    owner: &mut ReactorState,
+    id: c_int,
+    condition: Option<ExitFn>,
+) -> bool {
+    owner.callbacks.set_exit(id, condition.map(Exit::Call))
+}
+
+/// `Reactor::isset_exit_condition(id)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_reactor_isset_exit(owner: &ReactorState, id: c_int) -> bool {
+    owner.callbacks.has_exit(id)
+}
+
+/// `sw_reactor()->set_end_callback(id, callback)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_event_set_end_callback(id: c_int, callback: EndFn) {
+    if let Some(owner) = current() {
+        swr_v1_reactor_set_end(owner, id, Some(callback));
+    }
+}
+
+/// `sw_reactor()->set_exit_condition(id, condition)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_event_set_exit_condition(id: c_int, condition: ExitFn) {
+    if let Some(owner) = current() {
+        swr_v1_reactor_set_exit(owner, id, Some(condition));
+    }
+}
+
+/// `sw_reactor()->remove_exit_condition(id)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_event_remove_exit_condition(id: c_int) {
+    if let Some(owner) = current() {
+        swr_v1_reactor_set_exit(owner, id, None);
+    }
+}
+
+/// `void swoole_event_defer(void (*)(void *), void *)`: `sw_reactor()->defer`.
+///
+/// # Safety
+/// `call` accepts `data` when the loop runs it.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z18swoole_event_deferPFvPvES_")
+)]
+pub unsafe extern "C" fn swoole_event_defer(call: crate::DeferCall, data: *mut c_void) {
+    if let Some(owner) = current() {
+        // SAFETY: the thread's live reactor; the loop runs `call(data)` as its caller set.
+        unsafe { crate::deferred::defer(&raw mut owner.fields, call, data) };
+    }
+}
+
+/// `bool Reactor::if_exit()`.
+///
+/// # Safety
+/// `reactor` is a live `Reactor`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7Reactor7if_exitEv")
+)]
+pub unsafe extern "C-unwind" fn reactor_if_exit(reactor: *mut c_void) -> bool {
+    // SAFETY: as the caller promises.
+    let owner = unsafe { prepared(reactor) }.owner;
+    // SAFETY: the live reactor's state.
+    unsafe { if_exit(owner) }
+}
+
+/// `int Reactor::wait()`: the loop over the state's backend, the future task before
+/// each kernel wait and the end callbacks after it.
+///
+/// # Safety
+/// `reactor` is a live `Reactor` with an open backend.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7Reactor4waitEv")
+)]
+pub unsafe extern "C-unwind" fn reactor_wait(reactor: *mut c_void) -> c_int {
+    #[cfg(feature = "iouring")]
+    // SAFETY: crates/hooks's, with no preconditions.
+    unsafe extern "C" {
+        fn swr_v1_uring_interrupted(reactor: *mut c_void) -> c_int;
+        fn swr_v1_uring_interrupt(reactor: *mut c_void);
+    }
+    fn begin(reactor: *mut c_void) {
+        // SAFETY: the waiting reactor.
+        let fields = unsafe { prepared(reactor) }.fields;
+        // SAFETY: its fields; a single read.
+        run_task(unsafe { (*fields).future_task });
+    }
+    fn end(reactor: *mut c_void, timed_out: bool) {
+        // SAFETY: the waiting reactor.
+        let owner = unsafe { prepared(reactor) }.owner;
+        // SAFETY: its state, which no reference holds.
+        unsafe { execute_end(owner, timed_out) };
+    }
+    let ops = crate::WaitOps {
+        reactor,
+        begin,
+        end,
+        #[cfg(feature = "iouring")]
+        interrupted: Some(swr_v1_uring_interrupted),
+        #[cfg(feature = "iouring")]
+        interrupt: Some(swr_v1_uring_interrupt),
+        #[cfg(not(feature = "iouring"))]
+        interrupted: None,
+        #[cfg(not(feature = "iouring"))]
+        interrupt: None,
     };
-    if let Some(found) = owner.lookup(kind, key) {
-        *token = found;
-        1
+    // SAFETY: as the caller promises.
+    let owner = unsafe { prepared(reactor) }.owner;
+    // SAFETY: the live reactor's state, with an open backend.
+    if unsafe { crate::wait_loop::wait(owner, &ops) } < 0 {
+        -1
     } else {
         0
-    }
-}
-
-// Only the opaque slot's live-pointer admission remains unsafe. All actual
-// ordered-container operations compose safe methods, never exported C calls.
-unsafe fn insert_metadata(
-    slot: &mut *mut ReactorCallbacks,
-    kind: u32,
-    key: i32,
-    token: usize,
-    actual: &mut usize,
-) -> i32 {
-    // SAFETY: the caller passes its live, exclusive slot, holding null or this owner type.
-    unsafe {
-        publish(slot, ReactorCallbacks::new, |owner| {
-            let (status, value) = owner.insert(kind, key, token)?;
-            *actual = value;
-            Ok((status, status == 1))
-        })
-    }
-    .unwrap_or_else(|status| status)
-}
-
-/// Detach metadata first; Native destroys the returned payload after return.
-/// # Safety
-/// Same live/exclusive owner/output contract as insertion. Native token ownership
-/// transfers only on result1. Rust never drops or calls the token.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_callbacks_erase(
-    owner: *mut ReactorCallbacks,
-    kind: u32,
-    key: i32,
-    token: *mut usize,
-) -> i32 {
-    // SAFETY: `token` is null or live, aligned and exclusively lent for this call.
-    let Some(token) = (unsafe { token.as_mut() }) else {
-        return -1;
-    };
-    if kind > 1 {
-        return -1;
-    }
-    *token = 0;
-    // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-    let Some(owner) = (unsafe { owner.as_mut() }) else {
-        return 0;
-    };
-    owner.erase(kind as usize, key).map_or(0, |found| {
-        *token = found;
-        1
-    })
-}
-
-/// Where a walk goes on after a callback changed `kind`'s entries: the index of
-/// the first entry after `key`, so entries added after it run and erased ones
-/// don't. `usize::MAX` for an invalid kind.
-/// # Safety
-/// Owner is null or live and aligned for this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_callbacks_after(
-    owner: *const ReactorCallbacks,
-    kind: u32,
-    key: i32,
-) -> usize {
-    if kind > 1 {
-        return usize::MAX;
-    }
-    // SAFETY: `owner` is null or live and aligned for this call.
-    unsafe { owner.as_ref() }
-        .and_then(|owner| owner.entries.get(kind as usize))
-        .map_or(0, |entries| {
-            entries.partition_point(|entry| entry.key <= key)
-        })
-}
-
-/// Complete empty-payload publication/retry policy. Candidate allocation and
-/// destruction/copy remain Native effects between calls. 1 existing token,
-/// 2 allocate candidate, 3 committed candidate, 0 discard candidate then retry.
-/// -2 capacity refusal, -1 invalid protocol. A zero candidate requests lookup.
-/// # Safety
-/// The slot/output follow `callbacks_insert`; a nonzero candidate is a fresh live
-/// Native payload token exclusively retained until action3 transfers ownership.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_callbacks_ensure(
-    slot: *mut *mut ReactorCallbacks,
-    kind: u32,
-    key: i32,
-    candidate: usize,
-    token: *mut usize,
-) -> i32 {
-    // SAFETY: `slot` is null or live, aligned and exclusively lent for this call.
-    let slot = unsafe { slot.as_mut() };
-    // SAFETY: `token` is null or live, aligned and exclusively lent for this call.
-    let token = unsafe { token.as_mut() };
-    let (Some(slot), Some(token)) = (slot, token) else {
-        return -1;
-    };
-    if kind > 1 {
-        return -1;
-    }
-    *token = 0;
-    if candidate == 0 {
-        // SAFETY: the slot holds null or this module's live owner, exclusively accessed.
-        match unsafe { (*slot).as_ref() }.and_then(|owner| owner.lookup(kind, key)) {
-            Some(found) => {
-                *token = found;
-                1
-            }
-            None => 2,
-        }
-    } else {
-        // SAFETY: `slot` is the caller's live, exclusive opaque owner slot.
-        match unsafe { insert_metadata(slot, kind, key, candidate, token) } {
-            1 => 3,
-            other => other,
-        }
-    }
-}
-
-/// Detach one payload for Native typed deletion, or release the empty metadata
-/// and publish null. 1 delete end, 2 delete exit, 0 complete, -1 invalid.
-/// # Safety
-/// Slot/output are live/aligned/exclusive/disjoint; each returned Native token
-/// is deleted after return before another call. No custom destruction/reentry
-/// contract is introduced and no Rust reference survives that Native effect.
-#[unsafe(no_mangle)]
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "native int callback and action codes"
-)]
-pub unsafe extern "C" fn swr_v1_reactor_callbacks_clear_next(
-    slot: *mut *mut ReactorCallbacks,
-    token: *mut usize,
-) -> i32 {
-    // SAFETY: `slot` is null or live, aligned and exclusively lent for this call.
-    let Some(slot) = (unsafe { slot.as_mut() }) else {
-        return -1;
-    };
-    // SAFETY: `token` is null or live, aligned and exclusively lent for this call.
-    let Some(token) = (unsafe { token.as_mut() }) else {
-        return -1;
-    };
-    *token = 0;
-    let mut kind = 0;
-    // SAFETY: the slot holds null or this module's live owner, exclusively accessed.
-    let action = unsafe { (*slot).as_mut() }.map_or(0, |owner| owner.drain(&mut kind, token));
-    match action {
-        1 => kind as i32 + 1,
-        0 => {
-            // SAFETY: the drained, live owner is released once; the slot is cleared next.
-            unsafe { release_metadata(*slot) };
-            *slot = ptr::null_mut();
-            0
-        }
-        _ => -1,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    unsafe fn view(owner: *const ReactorCallbacks, kind: usize) -> Vec<(i32, usize)> {
-        let view = unsafe { &(*owner).views[kind] };
-        (0..view.len)
-            .map(|index| {
-                let entry = unsafe { &*view.entries.add(index) };
-                (entry.key, entry.token)
-            })
-            .collect()
-    }
-
-    unsafe fn insert(owner: &mut *mut ReactorCallbacks, kind: u32, key: i32, value: usize) {
-        let mut token = 0;
-        unsafe {
-            assert_eq!(
-                swr_v1_reactor_callbacks_ensure(owner, kind, key, 0, &raw mut token),
-                2
-            );
-            assert_eq!(
-                swr_v1_reactor_callbacks_ensure(owner, kind, key, value, &raw mut token),
-                3
-            );
-            assert_eq!(token, value);
-            assert_eq!(
-                swr_v1_reactor_callbacks_ensure(owner, kind, key, 0, &raw mut token),
-                1
-            );
-            assert_eq!(token, value);
-        }
-    }
-
-    #[test]
-    fn views_follow_insertion_erasure_and_clear() {
-        assert_eq!(std::mem::offset_of!(ReactorCallbacks, views), 0);
-        unsafe {
-            let mut owner = ptr::null_mut();
-            assert_eq!(swr_v1_reactor_callbacks_after(owner, 0, 1), 0);
-            for (kind, key, value) in [(0, 3, 103), (0, 1, 101), (1, 2, 202), (0, 5, 105)] {
-                insert(&mut owner, kind, key, value);
-            }
-            assert_eq!(view(owner, 0), [(1, 101), (3, 103), (5, 105)]);
-            assert_eq!(view(owner, 1), [(2, 202)]);
-            let mut token = 0;
-            assert_eq!(
-                swr_v1_reactor_callbacks_erase(owner, 0, 3, &raw mut token),
-                1
-            );
-            assert_eq!(token, 103);
-            assert_eq!(
-                swr_v1_reactor_callbacks_erase(owner, 0, 3, &raw mut token),
-                0
-            );
-            assert_eq!(view(owner, 0), [(1, 101), (5, 105)]);
-            // A walk that was at key 3 goes on at key 5, and at key 0 at key 1.
-            assert_eq!(swr_v1_reactor_callbacks_after(owner, 0, 3), 1);
-            assert_eq!(swr_v1_reactor_callbacks_after(owner, 0, 0), 0);
-            assert_eq!(swr_v1_reactor_callbacks_after(owner, 0, 5), 2);
-            assert_eq!(swr_v1_reactor_callbacks_after(owner, 2, 5), usize::MAX);
-            let mut released = Vec::new();
-            loop {
-                let action = swr_v1_reactor_callbacks_clear_next(&raw mut owner, &raw mut token);
-                if action == 0 {
-                    break;
-                }
-                if !owner.is_null() {
-                    let kind = usize::from(action == 2);
-                    assert!(
-                        view(owner, kind as usize)
-                            .iter()
-                            .all(|&(_, value)| value != token)
-                    );
-                }
-                released.push((action, token));
-            }
-            assert_eq!(released, [(2, 202), (1, 105), (1, 101)]);
-            assert!(owner.is_null());
-        }
-    }
-
-    type End = Rc<dyn Fn(*mut Reactor)>;
-    type Exit = Rc<dyn Fn(*mut Reactor, &mut usize) -> bool>;
+    use std::cell::{Cell, RefCell};
 
     thread_local! {
         static TRACE: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+        static OWNER: Cell<*mut ReactorState> = const { Cell::new(std::ptr::null_mut()) };
     }
     fn push(value: i32) {
         TRACE.with_borrow_mut(|trace| trace.push(value));
@@ -364,284 +367,189 @@ mod tests {
     fn take() -> Vec<i32> {
         TRACE.with_borrow_mut(std::mem::take)
     }
+    fn callbacks() -> &'static mut Callbacks {
+        // SAFETY: the test's live state, borrowed for one change.
+        unsafe { &mut (*OWNER.get()).callbacks }
+    }
+    fn set_end(key: c_int, call: EndFn) {
+        callbacks().set_end(key, Some(End::Call(call)));
+    }
+    fn set_exit(key: c_int, call: ExitFn) {
+        callbacks().set_exit(key, Some(Exit::Call(call)));
+    }
+    /// A fresh state with no callbacks, as `OWNER`.
+    fn with_state(test: impl FnOnce(*mut ReactorState)) {
+        let state = crate::swr_v1_reactor_state_new();
+        OWNER.set(state.owner);
+        test(state.owner);
+        // SAFETY: the state the test made.
+        unsafe { crate::swr_v1_reactor_state_free(state.owner) };
+        take();
+    }
 
-    /// reactor.cc's `ReactorCallbacks` glue over these exports, on the former callbacks
-    /// gate's Reactor facade (`get_event_num()` is 5). Payloads are boxed
-    /// `Option<End>`/`Option<Exit>`, the empty `std::function` a new entry starts as.
-    struct Reactor {
-        owner: *mut ReactorCallbacks,
-        timed_out: bool,
+    extern "C-unwind" fn end0() {
+        push(0);
     }
-    impl Reactor {
-        fn new() -> Self {
-            Self {
-                owner: ptr::null_mut(),
-                timed_out: false,
-            }
-        }
-        fn ensure<F>(&mut self, kind: u32, key: i32) -> *mut Option<F> {
-            let mut candidate: Option<Box<Option<F>>> = None;
-            loop {
-                let offered = candidate
-                    .as_deref_mut()
-                    .map_or(0, |c| ptr::from_mut(c) as usize);
-                let mut token = 0;
-                match unsafe {
-                    swr_v1_reactor_callbacks_ensure(
-                        &raw mut self.owner,
-                        kind,
-                        key,
-                        offered,
-                        &raw mut token,
-                    )
-                } {
-                    0 => candidate = None,
-                    1 => return token as *mut Option<F>,
-                    2 => candidate = Some(Box::new(None)),
-                    3 => return Box::into_raw(candidate.take().unwrap()),
-                    other => panic!("ensure {other}"),
-                }
-            }
-        }
-        fn set_end_callback(&mut self, key: i32, f: impl Fn(*mut Reactor) + 'static) {
-            unsafe { *self.ensure::<End>(0, key) = Some(Rc::new(f)) };
-        }
-        fn set_exit_condition(
-            &mut self,
-            key: i32,
-            f: impl Fn(*mut Reactor, &mut usize) -> bool + 'static,
-        ) {
-            unsafe { *self.ensure::<Exit>(1, key) = Some(Rc::new(f)) };
-        }
-        fn erase(&mut self, kind: u32, key: i32) -> usize {
-            let mut token = 0;
-            let result =
-                unsafe { swr_v1_reactor_callbacks_erase(self.owner, kind, key, &raw mut token) };
-            if result == 1 {
-                if kind == 0 {
-                    drop(unsafe { Box::from_raw(token as *mut Option<End>) });
-                } else {
-                    drop(unsafe { Box::from_raw(token as *mut Option<Exit>) });
-                }
-            }
-            usize::try_from(result).unwrap()
-        }
-        fn erase_end_callback(&mut self, key: i32) {
-            self.erase(0, key);
-        }
-        fn remove_exit_condition(&mut self, key: i32) -> usize {
-            self.erase(1, key)
-        }
-        fn isset_exit_condition(&self, key: i32) -> bool {
-            let mut token = 0;
-            unsafe { swr_v1_reactor_callbacks_lookup(self.owner, 1, key, &raw mut token) == 1 }
-        }
-        fn execute_end_callbacks(r: *mut Self, timed_out: bool) {
-            unsafe { (*r).timed_out = timed_out };
-            walk(r, 0, |_, token| {
-                let f = unsafe { (*(token as *const Option<End>)).clone().unwrap() };
-                f(r);
-                true
-            });
-        }
-        fn if_exit(r: *mut Self) -> bool {
-            let mut event_num = 5;
-            walk(r, 1, |_, token| {
-                let f = unsafe { (*(token as *const Option<Exit>)).clone().unwrap() };
-                f(r, &mut event_num)
-            })
-        }
-        fn copy(source: *mut Self) -> Self {
-            let mut copied = Self::new();
-            walk(source, 0, |key, token| {
-                let f = unsafe { (*(token as *const Option<End>)).clone() };
-                unsafe { *copied.ensure::<End>(0, key) = f };
-                true
-            });
-            walk(source, 1, |key, token| {
-                let f = unsafe { (*(token as *const Option<Exit>)).clone() };
-                unsafe { *copied.ensure::<Exit>(1, key) = f };
-                true
-            });
-            copied
-        }
-        /// `operator=`: copy, then swap owners; self-assignment does nothing.
-        fn assign(r: *mut Self, source: *mut Self) {
-            if r != source {
-                let mut copied = Self::copy(source);
-                unsafe { std::mem::swap(&mut (*r).owner, &mut copied.owner) };
-            }
-        }
+    extern "C-unwind" fn end1() {
+        push(1);
     }
-    impl Drop for Reactor {
-        fn drop(&mut self) {
-            loop {
-                let mut token = 0;
-                match unsafe {
-                    swr_v1_reactor_callbacks_clear_next(&raw mut self.owner, &raw mut token)
-                } {
-                    0 => return,
-                    1 => drop(unsafe { Box::from_raw(token as *mut Option<End>) }),
-                    2 => drop(unsafe { Box::from_raw(token as *mut Option<Exit>) }),
-                    other => panic!("clear {other}"),
-                }
-            }
-        }
+    extern "C-unwind" fn end2() {
+        push(2);
     }
-    /// reactor.cc's `swr_reactor_callbacks_walk`: entries in key order, re-read after
-    /// each call, stopping at the first false.
-    fn walk(r: *mut Reactor, kind: u32, mut call: impl FnMut(i32, usize) -> bool) -> bool {
-        let mut i = 0;
-        loop {
-            let owner = unsafe { (*r).owner };
-            if owner.is_null() {
-                return true;
-            }
-            let Some(&(key, token)) = unsafe { view(owner, kind as usize) }.get(i) else {
-                return true;
-            };
-            if !call(key, token) {
-                return false;
-            }
-            let owner = unsafe { (*r).owner };
-            let entries = unsafe { view(owner, kind as usize) };
-            i = if entries.get(i).is_some_and(|entry| entry.0 == key) {
-                i + 1
-            } else {
-                unsafe { swr_v1_reactor_callbacks_after(owner, kind, key) }
-            };
-        }
+    extern "C-unwind" fn end3() {
+        push(3);
+    }
+    extern "C-unwind" fn end5() {
+        // SAFETY: the test's live state.
+        assert!(unsafe { (*OWNER.get()).fields.timed_out });
+        push(5);
+    }
+    extern "C-unwind" fn end99() {
+        push(99);
+    }
+    /// Sets a later and an earlier key, and erases a later one.
+    extern "C-unwind" fn end_mutating() {
+        push(1);
+        set_end(2, end2);
+        set_end(0, end0);
+        // SAFETY: the test's live state.
+        callbacks().set_end(3, None);
     }
 
     /// The former callbacks gate: an empty store, end callbacks in key order with
     /// replacement and erasure.
     #[test]
-    fn former_callbacks_gate_end_order() {
-        let mut empty = Reactor::new();
-        let e: *mut Reactor = &raw mut empty;
-        assert!(Reactor::if_exit(e));
-        Reactor::execute_end_callbacks(e, false);
-        assert!(!empty.timed_out);
-        assert!(!empty.isset_exit_condition(1));
-        assert_eq!(empty.remove_exit_condition(1), 0);
-        empty.erase_end_callback(1);
+    fn end_callbacks_run_in_key_order() {
+        with_state(|owner| unsafe {
+            assert!(if_exit(owner));
+            execute_end(owner, false);
+            assert!(!(*owner).fields.timed_out);
+            assert!(!swr_v1_reactor_isset_exit(&*owner, 1));
+            assert!(!callbacks().set_exit(1, None));
+            swr_v1_reactor_set_end(&mut *owner, 1, None);
+            assert_eq!(take(), []);
 
-        let mut reactor = Reactor::new();
-        let r: *mut Reactor = &raw mut reactor;
-        reactor.set_end_callback(5, |p| {
-            assert!(unsafe { (*p).timed_out });
-            push(5);
+            set_end(5, end5);
+            set_end(1, end1);
+            set_end(3, end3);
+            execute_end(owner, true);
+            assert_eq!(take(), [1, 3, 5]);
+            set_end(3, end99);
+            execute_end(owner, true);
+            assert_eq!(take(), [1, 99, 5]);
+            swr_v1_reactor_set_end(&mut *owner, 3, None);
+            swr_v1_reactor_set_end(&mut *owner, 7, None);
+            execute_end(owner, true);
+            assert_eq!(take(), [1, 5]);
         });
-        reactor.set_end_callback(1, |_| push(1));
-        reactor.set_end_callback(3, |_| push(3));
-        Reactor::execute_end_callbacks(r, true);
-        assert_eq!(take(), [1, 3, 5]);
-        reactor.set_end_callback(3, |_| push(99));
-        Reactor::execute_end_callbacks(r, true);
-        assert_eq!(take(), [1, 99, 5]);
-        reactor.erase_end_callback(3);
-        reactor.erase_end_callback(7);
-        Reactor::execute_end_callbacks(r, true);
-        assert_eq!(take(), [1, 5]);
     }
 
     /// The former callbacks gate: an end callback that adds after and before itself
     /// and erases a later one.
     #[test]
-    fn former_callbacks_gate_end_mutation_during_walk() {
-        let mut reactor = Reactor::new();
-        let r: *mut Reactor = &raw mut reactor;
-        reactor.set_end_callback(1, |p| {
-            push(1);
-            let p = unsafe { &mut *p };
-            p.set_end_callback(2, |_| push(2));
-            p.set_end_callback(0, |_| push(0));
-            p.erase_end_callback(3);
+    fn end_callbacks_see_changes_after_their_key() {
+        with_state(|owner| unsafe {
+            set_end(1, end_mutating);
+            set_end(3, end3);
+            set_end(5, end99);
+            execute_end(owner, false);
+            assert_eq!(take(), [1, 2, 99]);
+            assert!(!(*owner).fields.timed_out);
         });
-        reactor.set_end_callback(3, |_| push(3));
-        reactor.set_end_callback(5, |_| push(5));
-        Reactor::execute_end_callbacks(r, false);
-        assert_eq!(take(), [1, 2, 5]);
-        assert!(!reactor.timed_out);
+    }
+
+    extern "C-unwind" fn exit1(n: *mut usize) -> bool {
+        push(1);
+        // SAFETY: the walk's count.
+        unsafe {
+            assert_eq!(*n, 0);
+            *n += 7;
+        }
+        true
+    }
+    extern "C-unwind" fn exit2(n: *mut usize) -> bool {
+        push(2);
+        // SAFETY: the walk's count.
+        assert_eq!(unsafe { *n }, 7);
+        false
+    }
+    extern "C-unwind" fn exit3(n: *mut usize) -> bool {
+        push(3);
+        // SAFETY: the walk's count.
+        assert_eq!(unsafe { *n }, 7);
+        true
+    }
+    extern "C-unwind" fn refuse(_: *mut usize) -> bool {
+        push(3);
+        false
+    }
+    extern "C-unwind" fn exit_mutating(n: *mut usize) -> bool {
+        push(1);
+        set_exit(2, exit3);
+        callbacks().set_exit(3, None);
+        // SAFETY: the walk's count.
+        unsafe { *n += 7 };
+        true
     }
 
     /// The former callbacks gate: exit conditions share the event count, stop at the
     /// first false, and see additions and removals made during the walk.
     #[test]
-    fn former_callbacks_gate_exit_conditions() {
-        let mut reactor = Reactor::new();
-        let r: *mut Reactor = &raw mut reactor;
-        reactor.set_exit_condition(3, |_, n| {
-            push(3);
-            assert_eq!(*n, 12);
-            true
+    fn exit_conditions_share_the_count_and_stop_at_a_refusal() {
+        with_state(|owner| unsafe {
+            set_exit(3, exit3);
+            set_exit(1, exit1);
+            set_exit(2, exit2);
+            assert!(swr_v1_reactor_isset_exit(&*owner, 2));
+            assert!(!if_exit(owner));
+            assert_eq!(take(), [1, 2]);
+            assert!(callbacks().set_exit(2, None));
+            assert!(!callbacks().set_exit(2, None));
+            assert!(!swr_v1_reactor_isset_exit(&*owner, 2));
+            assert!(if_exit(owner));
+            assert_eq!(take(), [1, 3]);
         });
-        reactor.set_exit_condition(1, |_, n| {
-            push(1);
-            assert_eq!(*n, 5);
-            *n += 7;
-            true
+        with_state(|owner| unsafe {
+            set_exit(1, exit_mutating);
+            set_exit(3, refuse);
+            assert!(if_exit(owner));
+            assert_eq!(take(), [1, 3]);
         });
-        reactor.set_exit_condition(2, |_, n| {
-            push(2);
-            assert_eq!(*n, 12);
-            false
-        });
-        assert!(reactor.isset_exit_condition(2));
-        assert!(!Reactor::if_exit(r));
-        assert_eq!(take(), [1, 2]);
-        assert_eq!(reactor.remove_exit_condition(2), 1);
-        assert_eq!(reactor.remove_exit_condition(2), 0);
-        assert!(!reactor.isset_exit_condition(2));
-        assert!(Reactor::if_exit(r));
-        assert_eq!(take(), [1, 3]);
-
-        let mut mutating = Reactor::new();
-        let m: *mut Reactor = &raw mut mutating;
-        mutating.set_exit_condition(1, |p, n| {
-            push(1);
-            let p = unsafe { &mut *p };
-            p.set_exit_condition(2, |_, count| {
-                push(2);
-                assert_eq!(*count, 6);
-                true
-            });
-            p.remove_exit_condition(3);
-            *n += 1;
-            true
-        });
-        mutating.set_exit_condition(3, |_, _| {
-            push(3);
-            false
-        });
-        assert!(Reactor::if_exit(m));
-        assert_eq!(take(), [1, 2]);
     }
 
-    /// The former callbacks gate: a copied reactor's callbacks are its own, and
-    /// assignment (including to itself) copies them back.
+    /// The built-ins: the deferred queue runs at the end and holds the loop open; the
+    /// default condition refuses while sockets are registered; try-exit stops the loop
+    /// only under `wait_exit` once every condition agrees.
     #[test]
-    fn former_callbacks_gate_copy_and_assign() {
-        let mut original = Reactor::new();
-        let o: *mut Reactor = &raw mut original;
-        original.set_end_callback(1, |_| push(1));
-        original.set_exit_condition(1, |_, n| *n == 5);
-        let mut copied = Reactor::copy(o);
-        let c: *mut Reactor = &raw mut copied;
-        assert_eq!(copied.remove_exit_condition(1), 1);
-        assert!(original.isset_exit_condition(1));
-        assert!(!copied.isset_exit_condition(1));
-        copied.set_end_callback(1, |_| push(2));
-        Reactor::execute_end_callbacks(o, false);
-        Reactor::execute_end_callbacks(c, false);
-        assert_eq!(take(), [1, 2]);
-        Reactor::assign(c, o);
-        assert!(copied.isset_exit_condition(1));
-        assert!(Reactor::if_exit(c));
-        Reactor::execute_end_callbacks(c, false);
-        assert_eq!(take(), [1]);
-        Reactor::assign(c, c);
-        Reactor::execute_end_callbacks(c, false);
-        assert_eq!(take(), [1]);
+    fn builtins_defer_idle_and_exit() {
+        unsafe extern "C-unwind" fn record(data: *mut c_void) {
+            push(data as i32);
+        }
+        with_state(|owner| unsafe {
+            install_builtins(callbacks());
+            let fields = &raw mut (*owner).fields;
+            assert!(if_exit(owner));
+            crate::deferred::defer(fields, record, std::ptr::without_provenance_mut(4));
+            assert!(!if_exit(owner));
+            (*fields).idle_task.callback = Some(record);
+            (*fields).idle_task.data = std::ptr::without_provenance_mut(6);
+            (*fields).running = true;
+            execute_end(owner, false);
+            assert_eq!(take(), [4, 6]);
+            assert!((*fields).running);
+            (*fields).wait_exit = true;
+            execute_end(owner, false);
+            assert!(!(*fields).running);
+            (*fields).running = true;
+            let mut socket = crate::SocketRecord::with_fd(3, 0);
+            assert_eq!(
+                crate::swr_v1_reactor_state_socket(owner, &raw mut socket, 0, 512),
+                0
+            );
+            assert!(!if_exit(owner));
+            execute_end(owner, false);
+            assert!((*fields).running);
+            assert_eq!(take(), [6, 6]);
+        });
     }
 }

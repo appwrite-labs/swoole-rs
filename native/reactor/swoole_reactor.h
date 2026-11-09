@@ -115,7 +115,6 @@ class Reactor : private ReactorStateOwner {
     Close &close = state_.fields->close;
 
   private:
-    ReactorCallbacks callbacks_;
     static_assert(SW_MAX_FDTYPE == 32, "the Rust handler tables hold 32 fd types");
 
   public:
@@ -127,16 +126,23 @@ class Reactor : private ReactorStateOwner {
 
     explicit Reactor(int max_event = SW_REACTOR_MAXEVENTS, Type _type = TYPE_AUTO);
     ~Reactor();
+    // if_exit, wait and the end callbacks and exit conditions are Rust's (crates/reactor's
+    // callbacks.rs), keyed as upstream's maps were and holding plain functions.
     bool if_exit();
-    void defer(const Callback &cb, void *data = nullptr);
-    void set_end_callback(EndCallback _id, const std::function<void(Reactor *)> &fn);
-    void erase_end_callback(EndCallback _id);
-    void set_exit_condition(ExitCondition _id, const std::function<bool(Reactor *, size_t &)> &fn);
+    void defer(void (*fn)(void *), void *data = nullptr) {
+        if (swr_v1_reactor_deferred_push(&defer_tasks, fn, data, nullptr) != 0) throw std::bad_alloc();
+    }
+    void set_end_callback(EndCallback _id, void (*fn)(void)) {
+        swr_v1_reactor_set_end(handle(), _id, fn);
+    }
+    void erase_end_callback(EndCallback _id) {
+        swr_v1_reactor_set_end(handle(), _id, nullptr);
+    }
+    void set_exit_condition(ExitCondition _id, bool (*fn)(size_t *event_num)) {
+        swr_v1_reactor_set_exit(handle(), _id, fn);
+    }
     void set_handler(int fd_type, int event, ReactorHandler handler);
     bool isset_handler(int fd_type, int event) const;
-    void add_destroy_callback(const Callback &cb, void *data = nullptr);
-    void execute_begin_callback() const;
-    void execute_end_callbacks(bool _timed_out = false);
     void drain_write_buffer(network::Socket *socket);
 
     bool ready() const {
@@ -148,11 +154,11 @@ class Reactor : private ReactorStateOwner {
     }
 
     size_t remove_exit_condition(const ExitCondition _id) {
-        return callbacks_.erase_exit(_id);
+        return swr_v1_reactor_set_exit(handle(), _id, nullptr);
     }
 
-    bool isset_exit_condition(const ExitCondition _id) {
-        return callbacks_.has_exit(_id);
+    bool isset_exit_condition(const ExitCondition _id) const {
+        return swr_v1_reactor_isset_exit(handle(), _id);
     }
 
     // The interest helpers' decisions are Rust's too (swr_v1_reactor_interest).
@@ -263,7 +269,7 @@ SW_API int swoole_event_add(swoole::network::Socket *socket, int events);
 SW_API int swoole_event_set(swoole::network::Socket *socket, int events);
 SW_API int swoole_event_add_or_update(swoole::network::Socket *socket, int event);
 SW_API int swoole_event_del(swoole::network::Socket *socket);
-SW_API void swoole_event_defer(const swoole::Callback &cb, void *private_data);
+SW_API void swoole_event_defer(void (*fn)(void *), void *private_data);
 SW_API ssize_t swoole_event_write(swoole::network::Socket *socket, const void *data, size_t len);
 SW_API ssize_t swoole_event_writev(swoole::network::Socket *socket, const iovec *iov, size_t iovcnt);
 SW_API swoole::network::Socket *swoole_event_get_socket(int fd);

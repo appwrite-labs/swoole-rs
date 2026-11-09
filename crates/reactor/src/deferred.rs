@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/reactor/base.cc (Swoole contributors).
 //! The reactor's deferred queues (`Reactor::defer_tasks`, `Reactor::destroy_callbacks`):
-//! FIFO `(call, data)` pairs. A C++ `std::function` task enters as its own
-//! trampoline, with a `dispose` that deletes it when the queue is freed unrun.
+//! FIFO `(call, data)` pairs, with a `dispose` that releases a task's data when the
+//! queue is freed unrun.
 use crate::reactor_state::ReactorFields;
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -116,8 +116,7 @@ pub unsafe fn defer(fields: *mut ReactorFields, call: DeferCall, data: *mut c_vo
 ///
 /// # Safety
 /// `slot` is a live reactor's `defer_tasks`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_reactor_run_defer(slot: *mut *mut ReactorDeferred) {
+pub(crate) unsafe fn run_defer(slot: *mut *mut ReactorDeferred) {
     // SAFETY: as the caller promises.
     let mut owner = std::mem::replace(unsafe { &mut *slot }, ptr::null_mut());
     // SAFETY: the detached queue is ours alone.
@@ -174,17 +173,17 @@ mod tests {
             defer(fields, record, token(1));
             defer(fields, record, token(2));
             assert!(!(*fields).defer_tasks.is_null());
-            swr_v1_reactor_run_defer(&raw mut (*fields).defer_tasks);
+            run_defer(&raw mut (*fields).defer_tasks);
             assert_eq!(take(), [1, 2]);
             assert!((*fields).defer_tasks.is_null());
             defer(fields, defer_again, token(3));
-            swr_v1_reactor_run_defer(&raw mut (*fields).defer_tasks);
+            run_defer(&raw mut (*fields).defer_tasks);
             assert_eq!(take(), [3]);
             assert!(!(*fields).defer_tasks.is_null());
-            swr_v1_reactor_run_defer(&raw mut (*fields).defer_tasks);
+            run_defer(&raw mut (*fields).defer_tasks);
             assert_eq!(take(), [4]);
             assert!((*fields).defer_tasks.is_null());
-            swr_v1_reactor_run_defer(&raw mut (*fields).defer_tasks);
+            run_defer(&raw mut (*fields).defer_tasks);
             assert_eq!(take(), []);
             crate::swr_v1_reactor_state_free(state.owner);
         }
