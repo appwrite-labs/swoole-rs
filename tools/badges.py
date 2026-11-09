@@ -121,8 +121,10 @@ def endpoint(label, message, color='blue'):
 
 def speed(result, limits, commit):
     """(speed.json endpoint, speed.md table) from benchmarks/callgrind.py's --output and the limits.
-    Ratios are the Cargo build over upstream instructions per request: below 1 is faster than upstream."""
-    ratios = {name: row['cargo'] / row['upstream'] for name, row in result['instructions_per_request'].items()}
+    Ratios are the Cargo build over upstream instructions per request: below 1 is faster than upstream.
+    A result from before the Cargo build replaced the hybrid (#2414) has a `hybrid` row instead."""
+    measured = {name: row.get('cargo', row.get('hybrid')) for name, row in result['instructions_per_request'].items()}
+    ratios = {name: measured[name] / row['upstream'] for name, row in result['instructions_per_request'].items()}
     mean = 1.0
     for ratio in ratios.values():
         mean *= ratio ** (1 / len(ratios))
@@ -132,7 +134,7 @@ def speed(result, limits, commit):
     faster = sum(ratio <= 1 for ratio in ratios.values())
     badge = endpoint('speed vs upstream', f'{faster}/{len(ratios)} faster · slowest {slowest} {worst:.2f}×', color)
     rows = ''.join(
-        f"| {name} | {row['cargo']:,.0f} | {row['upstream']:,.0f} | {ratios[name]:.4f}× | "
+        f"| {name} | {measured[name]:,.0f} | {row['upstream']:,.0f} | {ratios[name]:.4f}× | "
         f"{limits.get(name, '')}{'×' if name in limits else ''} | {'✅' if ratios[name] <= 1 else '❌' if name in limits and ratios[name] > limits[name] else '➖'} |\n"
         for name, row in result['instructions_per_request'].items())
     table = (f'# Speed vs upstream Swoole\n\nCallgrind instructions per request (lower is better), measured by the '
