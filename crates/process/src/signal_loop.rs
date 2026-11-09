@@ -38,11 +38,6 @@ pub struct DescriptorOps {
 }
 #[cfg(target_os = "linux")]
 static SOCKET: AtomicUsize = AtomicUsize::new(0);
-#[cfg(target_os = "linux")]
-fn descriptor(ops: &Ops) -> &'static DescriptorOps {
-    ops.descriptor
-        .expect("the signalfd backend has descriptor effects")
-}
 fn report(ops: &Ops, kind: u8, signo: i32, error: i32) {
     (ops.report)(kind, signo, error);
 }
@@ -118,7 +113,9 @@ pub fn listener_num() -> u32 {
 }
 #[cfg(target_os = "linux")]
 fn setup(ops: &Ops) -> bool {
-    let descriptor = descriptor(ops);
+    let Some(descriptor) = ops.descriptor else {
+        return false;
+    };
     if crate::signalfd::signalfd_fd() == -1 {
         let created = crate::signalfd::signalfd_create();
         match created.status {
@@ -150,7 +147,9 @@ fn setup(ops: &Ops) -> bool {
 }
 #[cfg(target_os = "linux")]
 fn close(ops: &Ops) {
-    let descriptor = descriptor(ops);
+    let Some(descriptor) = ops.descriptor else {
+        return;
+    };
     if crate::signalfd::signalfd_fd() == -1 {
         return;
     }
@@ -192,6 +191,7 @@ pub fn clear(ops: &Ops) {
 }
 /// The signalfd's read event: runs the handler for the signal read from `fd`.
 #[cfg(target_os = "linux")]
+#[must_use]
 pub fn read(fd: i32, ops: &Ops) -> i32 {
     let received = crate::signalfd::signalfd_receive(fd);
     match received.status {
@@ -208,9 +208,12 @@ pub fn read(fd: i32, ops: &Ops) -> i32 {
 #[cfg(target_os = "linux")]
 pub fn destroyed(ops: &Ops) {
     let socket = SOCKET.load(Relaxed) as *mut c_void;
-    if !socket.is_null() && crate::signalfd::signalfd_owned() {
+    if !socket.is_null()
+        && crate::signalfd::signalfd_owned()
+        && let Some(descriptor) = ops.descriptor
+    {
         // SAFETY: the live wrapper `setup` made, which the reactor holds.
-        unsafe { (descriptor(ops).del)(socket) };
+        unsafe { (descriptor.del)(socket) };
     }
 }
 /// # Safety
