@@ -12,9 +12,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
     ffi::{c_long, c_void},
-    hash::{BuildHasherDefault, Hasher},
     mem, ptr,
     rc::Rc,
 };
@@ -134,36 +132,33 @@ fn exists(call: &Call) {
 }
 
 per_thread! {
-    /// Coroutines suspended by `Co::yield()`, by id (`user_yield_coros`).
-    static YIELDED: RefCell<HashMap<c_long, *mut c_void, BuildHasherDefault<CidHasher>>> =
-        RefCell::new(HashMap::with_hasher(BuildHasherDefault::new()));
+    /// The ids of the coroutines suspended by `Co::yield()`, sorted
+    /// (`user_yield_coros`). Ids rise, so a yield usually appends.
+    static YIELDED: RefCell<Vec<c_long>> = RefCell::new(Vec::new());
 }
 
-/// Coroutine ids hash to themselves, as `std::hash<long>` does.
-#[derive(Default)]
-struct CidHasher(u64);
-
-impl Hasher for CidHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = (self.0 << 8) | u64::from(byte);
+/// Adds `cid` to [`YIELDED`] or takes it out; whether it was there.
+fn set_yielded(cid: c_long, yielded: bool) -> bool {
+    YIELDED.with(|ids| {
+        let mut ids = ids.borrow_mut();
+        match (ids.binary_search(&cid), yielded) {
+            (Ok(at), false) => {
+                ids.remove(at);
+                true
+            }
+            (Err(at), true) => {
+                ids.insert(at, cid);
+                false
+            }
+            (found, _) => found.is_ok(),
         }
-    }
-
-    fn write_i64(&mut self, value: i64) {
-        self.0 = value.cast_unsigned();
-    }
+    })
 }
 
 /// `Co::yield()`/`Co::suspend()`.
 fn yield_(call: &Call) {
     let co = host::current_safe();
-    let cid = host::cid(co);
-    YIELDED.with(|y| y.borrow_mut().insert(cid, co));
+    set_yielded(host::cid(co), true);
     // SAFETY: the running coroutine; this frame owns nothing that needs a drop.
     unsafe { host::yield_cancelable(co, cancel_yield, ptr::null_mut()) };
     if host::is_canceled(co) {
@@ -175,8 +170,7 @@ fn yield_(call: &Call) {
 }
 
 unsafe extern "C-unwind" fn cancel_yield(co: *mut c_void, _: *mut c_void) -> bool {
-    let cid = host::cid(co);
-    YIELDED.with(|y| y.borrow_mut().remove(&cid));
+    set_yielded(host::cid(co), false);
     host::resume(co);
     true
 }
@@ -187,14 +181,15 @@ fn resume(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let Some(co) = YIELDED.with(|y| y.borrow_mut().remove(&cid)) else {
+    let co = host::by_cid(cid);
+    if co.is_null() || !set_yielded(cid, false) {
         host::fatal_error(
             E_WARNING,
             c"can not resume the coroutine which is in IO operation or non-existent",
         );
         call.set_bool(false);
         return;
-    };
+    }
     host::resume(co);
     call.set_bool(true);
 }
