@@ -33,7 +33,7 @@ swoole-rs-framing = { path = "../framing" }
 swoole-rs-locks = { path = "../locks" }
 swoole-rs-memory = { path = "../memory" }
 swoole-rs-http = { path = "../http" }
-swoole-rs-protocols = { path = "../protocols" }
+swoole-rs-bus = { path = "../bus" }
 swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-tls = { path = "../tls" }
 swoole-rs-utilities = { path = "../utilities" }

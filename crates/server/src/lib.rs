@@ -526,7 +526,7 @@ mod mode_tests {
 /// `message_bus` is a live `MessageBus` that only this thread uses meanwhile.
 pub unsafe fn bus_move_packet(message_bus: *mut core::ffi::c_void) -> *mut core::ffi::c_char {
     // SAFETY: as the caller guarantees; a `MessageBus` starts with its Rust bus.
-    let bus = unsafe { *message_bus.cast::<*mut swoole_rs_protocols::MessageBus>() };
+    let bus = unsafe { *message_bus.cast::<*mut swoole_rs_bus::MessageBus>() };
     // SAFETY: that live bus, only this thread's meanwhile.
     unsafe { &mut *bus }.move_packet()
 }

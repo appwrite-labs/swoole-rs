@@ -1,9 +1,9 @@
 //! `swoole::redis::recv_packet`: reads a connection until a whole RESP command is
 //! buffered, then hands it to `onPackage`. [`swr_v1_resp_recv`] is the loop over
 //! borrowed effects; the ports crate runs it over the server's own records.
-use crate::{RespRequest, swr_v1_resp_extend_size, swr_v1_resp_receive_range};
 use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::{log, sw_malloc};
+use swoole_rs_protocols::{RespRequest, resp_extend_size, resp_receive_range};
 
 pub(crate) const SW_OK: c_int = 0;
 pub const SW_ERR: c_int = -1;
@@ -102,29 +102,24 @@ pub unsafe extern "C" fn swr_v1_resp_recv(
         let length = length + received;
         // SAFETY: as above.
         unsafe { (*buffer).length = length };
-        let (mut set_offset, mut range) = (0u8, 0u8);
-        // SAFETY: `length` initialized bytes of a `size`-byte buffer, and the live request.
-        let action = unsafe {
-            swr_v1_resp_receive_range(
-                data,
-                length,
-                size,
-                maximum,
-                request,
-                &raw mut set_offset,
-                &raw mut range,
-            )
-        };
-        if range != 0 {
+        let mut range = false;
+        // SAFETY: `length` initialized bytes of a `size`-byte buffer, read before any effect.
+        let bytes = unsafe { crate::input(data, length) };
+        // SAFETY: the live request, used by nothing else meanwhile.
+        let state = unsafe { &mut *request };
+        let (action, set_offset) = bytes.map_or((0, false), |bytes| {
+            resp_receive_range(bytes, size, maximum, state, &mut range)
+        });
+        if range {
             set_errno(libc::ERANGE);
         }
-        if set_offset != 0 {
+        if set_offset {
             // SAFETY: as above.
             unsafe { (*buffer).offset = i64::try_from(length).unwrap_or(i64::MAX) };
         }
         match action {
             1 => {
-                let grown = swr_v1_resp_extend_size(length, size, maximum, page);
+                let grown = resp_extend_size(length, size, maximum, page);
                 if grown != 0 {
                     // SAFETY: as the caller promises.
                     unsafe { (io.extend)(io.context, grown) };
@@ -163,6 +158,10 @@ pub unsafe extern "C" fn swr_v1_resp_recv(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_types,
+        reason = "a scripted socket's reads; tools/budget.py doesn't count test code"
+    )]
     use super::*;
     use std::collections::VecDeque;
 

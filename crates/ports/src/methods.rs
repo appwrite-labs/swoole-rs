@@ -497,7 +497,7 @@ fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
         reader(readable_callback_http)
     } else if config.open_mqtt_protocol {
         // SAFETY: the port's own protocol, borrowed for the call.
-        unsafe { swoole_rs_protocols::set_protocol(protocol) };
+        unsafe { swoole_rs_protocols_ffi::set_protocol(protocol) };
         protocol.on_package = callback(Callback::DispatchTask);
         reader(readable_callback_length)
     } else if config.open_redis_protocol {
@@ -1156,7 +1156,7 @@ mod tests {
         const MQTT: u8 = 32;
         const REDIS: u8 = 64;
         const UNTYPED: u8 = 128;
-        let mqtt = swoole_rs_protocols::get_package_length as *mut c_void;
+        let mqtt = swoole_rs_protocols_ffi::get_package_length as *mut c_void;
         let address = |c: Option<Callback>| c.map_or(ptr::null_mut(), callback);
         // Settings; reader; package, length and length-size callbacks; length size, offsets.
         #[rustfmt::skip]

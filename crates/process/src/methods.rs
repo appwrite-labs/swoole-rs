@@ -495,7 +495,7 @@ pub unsafe extern "C" fn send_message(
     length: usize,
 ) -> bool {
     use swoole_rs_corebase::DataHead;
-    // SAFETY: crates/protocols' bus write and crates/tls's.
+    // SAFETY: crates/bus' write and crates/tls's.
     unsafe extern "C" {
         fn swr_v1_bus_write(
             bus: *mut c_void,
