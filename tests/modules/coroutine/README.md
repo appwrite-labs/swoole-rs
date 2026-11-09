@@ -37,7 +37,7 @@ python3 tools/cargo_asan.py --package swoole-rs-coroutine --report OUT.json
 
 - `compile_gate.py` compiles `base`, `context` and `thread_context`
   from the pin (original), and those still in the archive's hybrid tree with its
-  switches, plus native/coroutine's shim (patched, `hybrid_tree`; `base.cc` and
+  switches, plus native/coroutine's shim (patched, `native_tree`; `base.cc` and
   `context.cc` are gone).
 - `tools/cargo_asan.py` runs crates/coroutine's unit tests under Rust ASan (the plain
   run is `coroutine-unit`).

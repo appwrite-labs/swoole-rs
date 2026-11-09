@@ -5,7 +5,7 @@ Pin `76c657d88be39b7af6bf85e46bcbac0da7387760`.
 ## Native-facade gates
 
 ```sh
-python3 tests/modules/hooks/compile_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --report OWN/compile.json
+python3 tests/modules/hooks/compile_gate.py --source PINNED_SOURCE --archive target/ext/sdk/lib/libswoole_rs_ffi.a --report OWN/compile.json
 ```
 
 Gates whose bodies moved to Rust became `ported_*` tests in `crates/hooks`.
@@ -22,8 +22,8 @@ checked against the pinned bodies' traces in `ported.txt`:
 | 192-215 (raw receive, availability, timer failure) | `packet::ported::ported_raw_receive_scenarios` |
 
 `compile_gate.py` (`hooks-compile`) compiles all eight original and patched translation units as
-C++14: the pinned ones, then the pin with every file the hybrid build patched
-(`overlay_hybrid_tree`) under that build's `config.h`. io_uring units are
+C++14: the pinned ones, then the pin with every file the patch set patched
+(`overlay_native_tree`) under the Cargo build's `config.h`. io_uring units are
 reported UNSUPPORTED when the config does not enable `SW_USE_IOURING`.
 
 ## Original tests

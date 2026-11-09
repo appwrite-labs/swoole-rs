@@ -6,7 +6,7 @@
 # One crate or one named Rust test; no extension build.
 python3 tools/dev.py edit --test rollback
 
-# Incremental build, ABI/native/PHP gates and the module's PHPT selection.
+# Cargo build, ABI/native/PHP gates and the module's PHPT selection.
 python3 tools/dev.py candidate
 
 # Reproduce one registered PHPT (candidate only).
@@ -24,7 +24,7 @@ python3 tools/dev.py integrate --all-modules   # every module's gates; used by C
 
 - `--plan` prints the commands without running them.
 - `--test` is edit-only; `--case` is candidate-only.
-- Candidate runs only the hybrid; `--compare` also runs upstream. The WebSocket
+- Candidate runs only the Cargo build; `--compare` also runs upstream. The WebSocket
   differential always runs upstream. Candidate gates the chosen modules'
   `phpt_families` (`migration/modules.json`); `--changed-since REF` chooses the
   modules a diff touches.
@@ -41,26 +41,14 @@ hypothesis and expectation to `target/reports/dev/<UTC-time>-<id>/loop.json`.
 For integration subsets, include the phases that produce reports consumed later
 in the same run; the planner refuses missing prerequisites.
 
-## Incremental builds
+## Builds
 
-```sh
-python3 tools/build_hybrid.py --dev
-```
-
-Dev builds live under `target/hybrid/dev/` with aliases like
-`target/hybrid/dev-rust/` and never replace the immutable
-aliases. `build-manifest.json` marks them `development`; `last-run.json` records
-phase timings and whether make/relink/configure ran.
-
-- Unchanged inputs skip make. A changed Rust archive forces a relink.
-- Patched sources are staged from pinned Git objects; only changed files are
-  copied, so unchanged mtimes survive.
-- Changes to central `native/include/` headers, configure inputs, feature flags,
-  toolchain or build-system patches select a new dev tree. Module-local headers
-  are copied in and make rebuilds their consumers.
-- One writer at a time: a concurrent builder fails instead of waiting.
-
-Use immutable (non-`--dev`) builds for comparisons that must be reproduced.
+The `cargo-build` phase runs `tools/build_ext.py --native`: Cargo builds
+`target/ext/swoole.so`, the engine every PHP gate loads, and lays out
+`target/ext/sdk/` (the Zend-free `libswoole_rs_ffi.a`, crates/ext's native C and
+C++ archives and the ABI headers) for the native gates, which link fixtures
+outside PHP. Cargo rebuilds only what changed. Integrate's upstream control is
+`tools/build_hybrid.py --backend upstream` (`reference-build`).
 
 Patches apply in file-name order, and `tools/patches.py export` names a new one
 `<UTC timestamp>-<subject>.patch`, so adding a patch never conflicts with

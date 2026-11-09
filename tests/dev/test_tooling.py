@@ -461,7 +461,7 @@ class Lanes(unittest.TestCase):
                 direct += 1
                 self.assertIn('--require-all', matched[name])
         self.assertGreater(direct, 0)
-        self.assertNotIn('--match-child-php', matched['build'])
+        self.assertNotIn('--match-child-php', matched['cargo-build'])
 
     def test_all_registered_modules_share_one_plan_and_close_gate(self):
         args = SimpleNamespace(lane='integrate', module=None, all_modules=True, php='php', php_extension=[],
@@ -471,7 +471,6 @@ class Lanes(unittest.TestCase):
             # phphelpers' runtime fixtures call stdext helpers, so only stdext plans run them.
             stdext = dict(dev.plan(SimpleNamespace(**vars(args), stdext=True), ROOT / 'target/reports/all-registered-stdext'))
         self.assertNotIn('phphelpers-runtime', commands)
-        self.assertNotIn('--module', commands['build'])
         self.assertIn('--archive', commands['reactor-compile'])
         self.assertIn('corebase-native',commands)
         self.assertIn('ossupport-async-file-owner', commands)
@@ -494,11 +493,13 @@ class Lanes(unittest.TestCase):
         self.assertIn('--export', commands['reference-build'])
         self.assertIn('--reference', commands['abi'])
         self.assertNotIn('--startup-only', commands['abi'])
-        # Nothing loads the hybrid's swoole.so (#2199); the native gates link only its archive and tree.
+        # Nothing uses the hybrid's rust backend (#2199, #2415): the native gates link the Cargo build's SDK.
         self.assertTrue(commands['abi'][commands['abi'].index('--extension') + 1].endswith('target/ext/swoole.so'))
+        self.assertIn('--native', commands['cargo-build'])
         self.assertFalse([name for name, command in commands.items()
-                          if any('target/hybrid/rust' in arg and arg.endswith('swoole.so') for arg in command)])
-        self.assertNotIn('--export', commands['build'])
+                          if any('target/hybrid/rust' in arg for arg in command)])
+        self.assertFalse([name for name, command in commands.items()
+                          if 'tools/build_hybrid.py' in command and 'upstream' not in command])
         self.assertNotIn('core_check', ' '.join(commands['error-native']))
         self.assertIn('--sanitize', commands['buffer-posix-iovec'])
         self.assertIn('--sanitize', commands['ports-callback-property'])
@@ -515,7 +516,7 @@ class Lanes(unittest.TestCase):
             self.assertIn('--source-ref', command)
         self.assertIn('--require-same-api', commands['api-surface'])
         self.assertEqual(commands['api-surface'].count('--engine'), 2)
-        self.assertLess(list(commands).index('build'), list(commands).index('api-surface'))
+        self.assertLess(list(commands).index('cargo-build'), list(commands).index('api-surface'))
         self.assertIn('tests/modules/buffer/string/test_gate.py', commands['string-originals'])
         self.assertIn('column-bytes', commands['phpcollections-column-bytes'])
         self.assertEqual(commands['phpcollections-column-bytes'].count('--engine'), 2)
@@ -558,10 +559,9 @@ class Lanes(unittest.TestCase):
         args.ccache = Path('/explicit/compiler-cache')
         with patch.object(dev.subprocess, 'check_output', return_value='/openssl'):
             cached_commands = dict(dev.plan(args, ROOT / 'target/reports/cached-plan'))
-        self.assertEqual(cached_commands['build'][-2:], ['--ccache', '/explicit/compiler-cache'])
-        command = cached_commands['build']
+        command = cached_commands['reference-build']
+        self.assertEqual(command[command.index('--ccache') + 1], '/explicit/compiler-cache')
         self.assertEqual(command[command.index('--native-build-root') + 1], '/private-ram/hybrid')
-        self.assertNotIn('--dev', command)
         self.assertIn('timer-bailout',commands)
         self.assertFalse(any(name.startswith('halfclose-') for name in commands))
 
@@ -598,13 +598,12 @@ class Lanes(unittest.TestCase):
                                    stdext=stdext)
             commands = dict(dev.plan(args, ROOT / 'target/reports/php-sockets'))
             native = commands['stdext-reference-build' if stdext else 'reference-build']
-            for command in [commands['build'], native]:
+            for command in [commands['cargo-build'], native]:
                 self.assertEqual('--php-sockets' in command, sockets)
             self.assertNotIn('--module', native)
             suffix = ('-php-sockets' if sockets else '') + ('-stdext' if stdext else '')
             self.assertIn('upstream=' + str(ROOT / ('target/hybrid/upstream' + suffix) / 'modules/swoole.so'),
                           commands['api-surface'])
-            self.assertTrue(dev.build_variant(args).endswith(suffix))
             self.assertEqual('php-sockets-sendfile-original' in commands, sockets)
             if sockets:
                 original = commands['php-sockets-sendfile-original']
@@ -617,13 +616,12 @@ class Lanes(unittest.TestCase):
                                php_extension=[], jobs=2, test=None, case=None, benchmark=False,
                                compare=False, fix_halfclose=False, native_build_root='/private-ram/hybrid')
         commands = dict(dev.plan(args, ROOT / 'target/reports/stdext-profiles'))
-        self.assertEqual(dev.build_variant(args), 'rust-stdext')
-        self.assertIn('--stdext', commands['build'])
+        self.assertIn('--stdext', commands['cargo-build'])
         native = commands['stdext-reference-build']
         self.assertEqual(native[native.index('--backend') + 1], 'upstream')
         self.assertIn('--stdext', native)
         self.assertNotIn('--module', native)
-        self.assertLess(list(commands).index('stdext-reference-build'), list(commands).index('build'))
+        self.assertLess(list(commands).index('stdext-reference-build'), list(commands).index('cargo-build'))
         engines = [command for command in commands.values() if any(str(a).startswith('upstream=') for a in command)]
         self.assertTrue(engines)
         # Upstream engines come from the stdext reference build or its export.
@@ -632,34 +630,12 @@ class Lanes(unittest.TestCase):
         for command in engines:
             self.assertTrue(references & set(map(str, command)), command)
 
-    def test_all_module_build_receipt_uses_the_executed_selection(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            variant = 'rust-halfclose'
-            receipt = root / 'target/hybrid' / variant / 'last-run.json'
-            receipt.parent.mkdir(parents=True)
-            manifest = receipt.parent / 'build-manifest.json'
-            manifest.write_text('{"build_mode":"immutable"}')
-            receipt.write_text(json.dumps(dict(identity='all-concrete-modules', build_manifest=str(manifest))))
-            actual_run = subprocess.run
-            def run(command, *args, **kwargs):
-                return SimpleNamespace(returncode=0) if command == ['fixture-build'] else actual_run(command, *args, **kwargs)
-            with patch.object(dev, 'ROOT', root), patch.object(dev, 'plan', return_value=[('build',['fixture-build'])]), \
-                 patch.object(dev, 'require_build_space'), patch.object(dev, 'execute', side_effect=run), \
-                 patch('sys.argv',['dev.py','integrate','--all-modules','--fix-halfclose']):
-                self.assertEqual(dev.main(),0)
-            reports = list(root.glob('target/reports/dev/*/loop.json'))
-            self.assertEqual(len(reports),1)
-            self.assertEqual(json.loads(reports[0].read_text())['phases'][0]['build']['identity'],'all-concrete-modules')
-
     def test_halfclose_repair_is_separate_from_rust_features_and_aliases(self):
         args = SimpleNamespace(lane='integrate', module=['error'], php='php', php_extension=[],
                                jobs=2, test=None, case=None, benchmark=False, compare=False,
                                fix_halfclose=True)
         commands = dict(dev.plan(args, ROOT / 'target/reports/test-repair'))
-        self.assertIn('--fix-halfclose', commands['build'])
-        self.assertNotIn('--module', commands['build'])
-        self.assertIn('/rust-halfclose/', ' '.join(commands['error-native']))
+        self.assertIn('--fix-halfclose', commands['cargo-build'])
         self.assertEqual(commands['error-php'].count('--engine'), 2)
         self.assertEqual(commands['halfclose-prequeue'].count('--engine'), 1)
         self.assertNotIn('--probe-coroutines', commands['halfclose-prequeue'])
@@ -722,10 +698,8 @@ class Lanes(unittest.TestCase):
         args = Namespace(lane='integrate', module=['timer'], php='php', php_extension=[],
                          jobs=4, test=None, case=None, benchmark=False, compare=False)
         commands = dict(dev.plan(args, ROOT / 'target/reports/test-plan'))
-        self.assertNotIn('--dev', commands['build'])
         self.assertNotIn('phpt', commands)  # the merge tier's phpt-* jobs run every PHPT
-        self.assertIn('--manifest', commands['timer-native'])
-        self.assertNotIn('--dev', commands['timer-native'])
+        self.assertIn('--build-manifest', commands['timer-native'])
 
 
 class ChangedModules(unittest.TestCase):
@@ -804,7 +778,7 @@ class FocusedPhases(unittest.TestCase):
                 self.assertEqual(report['phases'][-1]['returncode'], codes[-1])
 
     def test_failed_ownership_or_producer_stops_before_using_old_aliases(self):
-        for phase in ['ownership', 'build', 'reference-build', 'stdext-reference-build']:
+        for phase in ['ownership', 'cargo-build', 'reference-build', 'stdext-reference-build']:
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 planned = [(phase, ['failed-prerequisite']), ('api', ['stale-alias']), ('originals', ['old-engine'])]
