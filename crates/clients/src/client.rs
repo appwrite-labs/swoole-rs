@@ -700,7 +700,7 @@ impl Handle {
         let shared = shared_buffer();
         // SAFETY: the live proxy, the host's bytes and the shared buffer's.
         let length = unsafe {
-            swoole_rs_http::swr_v1_http_proxy_connect(
+            swoole_rs_http_ffi::swr_v1_http_proxy_connect(
                 proxy,
                 host.as_ptr(),
                 host.len(),
@@ -727,7 +727,7 @@ impl Handle {
             buffer.length + length
         };
         // SAFETY: the buffer's first `length` bytes.
-        unsafe { swoole_rs_http::swr_v1_http_proxy_accept(buffer.str.cast(), buffer.length) }
+        unsafe { swoole_rs_http_ffi::swr_v1_http_proxy_accept(buffer.str.cast(), buffer.length) }
     }
 
     fn set_timeout(self, timeout: f64) {
@@ -1272,7 +1272,7 @@ pub unsafe extern "C" fn swr_v1_clients_proxy(
         let owner = swoole_rs_corebase::swr_v1_core_proxy_new(false).owner;
         // SAFETY: the new owner and the caller's texts.
         unsafe {
-            swoole_rs_http::swr_v1_http_proxy_configure(
+            swoole_rs_http_ffi::swr_v1_http_proxy_configure(
                 owner,
                 host,
                 host_length,

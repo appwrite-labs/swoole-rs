@@ -45,7 +45,7 @@ unsafe extern "C" {
     fn websocket_package_length();
     #[link_name = "_ZdlPv"]
     fn operator_delete(storage: *mut c_void);
-    /// crates/http's `get_auth_str` codec, into 512 bytes.
+    /// crates/http-ffi's `get_auth_str` codec, into 512 bytes.
     fn swr_v1_http_proxy_owned_authorization(
         owner: *const c_void,
         output: *mut u8,

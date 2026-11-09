@@ -15,6 +15,8 @@ use std::{ptr, slice};
 use swoole_rs_http::{HttpCookie, HttpSpan, HttpStaticContext, HttpStaticPath, STATUS_CODES};
 
 pub mod http_server;
+mod owned_proxy;
+pub use owned_proxy::*;
 #[cfg(test)]
 mod pin_helpers;
 

@@ -4,7 +4,7 @@
 use crate::static_handler::{Effects, StaticHandler, page_404};
 use core::ffi::c_void;
 use core::ptr;
-use swoole_rs_http::{HttpProxyText, HttpStaticHeaders, HttpStaticTask};
+use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask};
 
 /// What [`select`] asks of a static handler, in upstream `select_static_handler`'s order.
 pub trait Handler {
@@ -104,32 +104,16 @@ const HTTP_HEAD: u8 = 3;
 /// `SW_HTTP_SERVER_SOFTWARE`.
 const SOFTWARE: &[u8] = b"swoole-http-server";
 
-fn text_of(bytes: &[u8]) -> HttpProxyText {
-    HttpProxyText {
-        data: bytes.as_ptr(),
-        length: bytes.len(),
-    }
-}
-
 /// The text up to its first NUL, as a C string reads it.
 fn c_text(text: &[u8]) -> &[u8] {
     text.split(|&byte| byte == 0).next().unwrap_or_default()
 }
 
 /// The response head, cut as upstream's 1024-byte `sw_snprintf` buffer cuts it.
-fn encode(header: &HttpStaticHeaders) -> Vec<u8> {
-    let mut output = [0u8; 1024];
-    let mut written = 0;
-    // SAFETY: the header's spans outlive the call; a local output.
-    unsafe {
-        swoole_rs_http::swr_v1_http_static_headers(
-            header,
-            output.as_mut_ptr(),
-            output.len(),
-            &raw mut written,
-        )
-    };
-    output.get(..written).unwrap_or(&output).to_vec()
+fn encode(header: &HttpStaticHeaders<'_>) -> Vec<u8> {
+    let mut head = swoole_rs_http::static_headers(header).unwrap_or_default();
+    head.truncate(1023);
+    head
 }
 
 fn status_message(status: i32) -> Vec<u8> {
@@ -151,37 +135,37 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
         return false;
     }
     let mut header = HttpStaticHeaders {
-        status: text_of(&[]),
-        date: text_of(&[]),
-        modified: text_of(&[]),
-        content_type: text_of(&[]),
-        software: text_of(SOFTWARE),
-        page: text_of(&[]),
+        status: &[],
+        date: &[],
+        modified: &[],
+        content_type: &[],
+        software: SOFTWARE,
+        page: &[],
         content_length: 0,
         range_offset: 0,
         range_length: 0,
         filesize: 0,
         variant: 0,
-        keep_alive: 0,
+        keep_alive: false,
         range_kind: 0,
     };
     if handler.status() == NOT_FOUND {
         let status = status_message(NOT_FOUND);
         let page = page_404();
-        header.status = text_of(&status);
-        header.page = text_of(&page);
+        header.status = &status;
+        header.page = &page;
         header.content_length = signed(page.len());
         exchange.send(SEND_DATA, &encode(&header));
         return true;
     }
     let date = handler.date();
     let modified = handler.date_last_modified();
-    header.date = text_of(&date);
-    header.modified = text_of(&modified);
+    header.date = &date;
+    header.modified = &modified;
     let since = exchange.header(b"If-Modified-Since");
     if !since.is_empty() && handler.is_modified(&since) {
         header.variant = 1;
-        header.keep_alive = u32::from(exchange.keep_alive());
+        header.keep_alive = exchange.keep_alive();
         exchange.send(SEND_DATA, &encode(&header));
         return true;
     }
@@ -193,7 +177,7 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
     if handler.lists_directory() {
         let body = handler.index_page();
         header.variant = 2;
-        header.keep_alive = u32::from(exchange.keep_alive());
+        header.keep_alive = exchange.keep_alive();
         header.content_length = signed(body.len());
         exchange.send(SEND_DATA, &encode(&header));
         exchange.send(SEND_DATA, &body);
@@ -212,8 +196,8 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
     let status = handler.status();
     let message = status_message(status);
     header.variant = 3;
-    header.status = text_of(&message);
-    header.keep_alive = u32::from(exchange.keep_alive());
+    header.status = &message;
+    header.keep_alive = exchange.keep_alive();
     let head = exchange.head();
     header.content_length = if head {
         0
@@ -225,7 +209,7 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
     } else {
         handler.content_type()
     };
-    header.content_type = text_of(&content_type);
+    header.content_type = &content_type;
     if let [task] = tasks.as_slice() {
         if status == PARTIAL_CONTENT {
             header.range_kind = 1;
