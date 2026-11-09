@@ -191,9 +191,8 @@ fn construct(call: &Call) {
     }
     let argv = if call.num_args() > 1 {
         let argv = Arc::<Array>::default();
-        for n in 2..=call.num_args() {
-            // SAFETY: in a handler, with a passed argument.
-            unsafe { argv.push(call.zval(n)) };
+        for value in (2..=call.num_args()).filter_map(|n| call.value(n)) {
+            argv.push(value);
             if bailout::pending() {
                 return;
             }
