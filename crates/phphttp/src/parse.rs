@@ -286,8 +286,6 @@ pub(crate) fn minit(codecs: u32) {
     }
 }
 
-/// `swoole_http_init_and_read_property`: the array behind a property slot,
-/// creating it on first use. Like upstream, the slot keeps an uncounted copy.
 /// `Swoole\Http\Request`'s declared `fd` slot.
 pub(crate) fn fd_offset() -> u32 {
     OFFSETS[7].load(Relaxed)
@@ -295,9 +293,13 @@ pub(crate) fn fd_offset() -> u32 {
 
 /// `Swoole\Http\Request`'s declared `tmpfiles` slot.
 pub(crate) fn tmpfiles_offset() -> u32 {
-    OFFSETS[Property::TmpFiles as usize].load(Relaxed)
+    OFFSETS
+        .get(Property::TmpFiles as usize)
+        .map_or(0, |offset| offset.load(Relaxed))
 }
 
+/// `swoole_http_init_and_read_property`: the array behind a property slot,
+/// creating it on first use. Like upstream, the slot keeps an uncounted copy.
 pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
     let request = &mut state.request;
     let slot: &mut Slot = match which {
