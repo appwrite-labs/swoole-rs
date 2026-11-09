@@ -12,11 +12,8 @@ use std::{
     ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
-use swoole_rs_ossupport::{
-    QueueRecord, swr_v1_os_msg_queue_free, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push,
-};
+use swoole_rs_ossupport::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
 use swoole_rs_phpstubs::process;
-use swoole_rs_process::worker_record::Worker;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object, add_assoc_long, class_name, declare_property_null,
     each_value, handlers, message, object_of, register_long_constant, set_object,
@@ -136,8 +133,7 @@ pub(crate) fn worker_view(worker: *mut c_void) -> WorkerView {
 
 /// A live worker's queue, or null.
 fn queue_of(worker: *mut c_void) -> *mut QueueRecord {
-    // SAFETY: a live worker.
-    unsafe { Worker::new(worker.cast()).queue() }.cast()
+    worker::record(worker).queue().cast()
 }
 
 fn view(worker: *mut c_void) -> WorkerView {
@@ -154,8 +150,11 @@ unsafe extern "C" fn free(object: *mut zend_object) {
     // SAFETY: Zend frees an object this class created.
     let process = unsafe { data(object) };
     if !process.worker.is_null() {
-        // SAFETY: the object owns its worker and the worker its queue.
-        unsafe { swr_v1_os_msg_queue_free(queue_of(process.worker)) };
+        let queue = queue_of(process.worker);
+        if !queue.is_null() {
+            // SAFETY: the object owns its worker and the worker its boxed queue.
+            drop(unsafe { Box::from_raw(queue) });
+        }
         // SAFETY: as above.
         unsafe { worker::free(process.worker) };
     }
@@ -476,12 +475,10 @@ fn construct(call: &Call) {
                 call.set_bool(false);
                 return;
             }
-            // SAFETY: `$this`.
-            unsafe { update_property_long(entry(), object, c"pipe", i64::from(fd)) };
+            call.update_property_long(Some(&PROCESS), c"pipe", i64::from(fd));
         }
     }
-    // SAFETY: `$this`.
-    unsafe { update_property_long(entry(), object, c"id", i64::from(view(worker).id)) };
+    call.update_property_long(Some(&PROCESS), c"id", i64::from(view(worker).id));
     // SAFETY: `$this`, and the callback argument.
     unsafe { update_property(entry(), object, c"callback", call.zval(1)) };
     #[expect(
@@ -507,13 +504,9 @@ fn wait(call: &Call) {
         return;
     }
     call.set_array();
-    let array = call.return_value();
-    // SAFETY: the array just initialised.
-    unsafe { add_assoc_long(array, c"pid", i64::from(pid)) };
-    // SAFETY: as above.
-    unsafe { add_assoc_long(array, c"code", i64::from(libc::WEXITSTATUS(status))) };
-    // SAFETY: as above.
-    unsafe { add_assoc_long(array, c"signal", i64::from(libc::WTERMSIG(status))) };
+    call.add_assoc_long(c"pid", i64::from(pid));
+    call.add_assoc_long(c"code", i64::from(libc::WEXITSTATUS(status)));
+    call.add_assoc_long(c"signal", i64::from(libc::WTERMSIG(status)));
 }
 
 /// `php_swoole_msgqueue_key_is_valid` for a signed 32-bit `key_t`.
@@ -574,22 +567,17 @@ fn use_queue(call: &Call) {
         queue.set_capacity(capacity);
     }
     let id = queue.id();
-    // SAFETY: a live worker; it owns the queue from here.
-    unsafe { Worker::new(worker.cast()).set_queue(Box::into_raw(Box::new(queue)).cast()) };
+    // The worker owns the queue from here.
+    let record = worker::record(worker);
+    record.set_queue(Box::into_raw(Box::new(queue)).cast());
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "upstream stores the mode in a uint8_t"
     )]
-    // SAFETY: as above.
-    unsafe {
-        Worker::new(worker.cast()).set_msgqueue_mode(mode as u8);
-    }
-    let object = call.this();
-    // SAFETY: `$this`.
-    unsafe { update_property_long(entry(), object, c"msgQueueId", i64::from(id)) };
-    // SAFETY: as above.
-    unsafe { update_property_long(entry(), object, c"msgQueueKey", key) };
+    record.set_msgqueue_mode(mode as u8);
+    call.update_property_long(Some(&PROCESS), c"msgQueueId", i64::from(id));
+    call.update_property_long(Some(&PROCESS), c"msgQueueKey", key);
     call.set_bool(true);
 }
 
@@ -630,10 +618,9 @@ fn free_queue(call: &Call) {
     // SAFETY: the worker's live queue, if any.
     let freed = !queue.is_null() && unsafe { &mut *queue }.destroy();
     if freed {
-        // SAFETY: the worker's queue, freed once and forgotten.
-        unsafe { swr_v1_os_msg_queue_free(queue) };
-        // SAFETY: a live worker.
-        unsafe { Worker::new(worker.cast()).set_queue(ptr::null_mut()) };
+        // SAFETY: the worker's boxed queue, freed once and forgotten.
+        drop(unsafe { Box::from_raw(queue) });
+        worker::record(worker).set_queue(ptr::null_mut());
     }
     call.set_bool(freed);
 }
@@ -648,8 +635,7 @@ fn kill(call: &Call) {
     };
     #[expect(clippy::cast_possible_truncation, reason = "upstream casts to int")]
     let (pid, sig) = (pid as c_int, sig as c_int);
-    // SAFETY: kill has no memory preconditions.
-    if unsafe { libc::kill(pid, sig) } < 0 {
+    if swoole_rs_process::os::kill(pid, sig) < 0 {
         if !(sig == 0 && errno() == libc::ESRCH) {
             sys(E_WARNING, &message!("kill({pid}, {sig}) failed"));
         }
@@ -706,8 +692,7 @@ fn alarm(call: &Call) {
 fn start(call: &Call) {
     let worker = checked(this(call));
     let pid = view(worker).pid;
-    // SAFETY: kill(pid, 0) only probes.
-    if pid != 0 && unsafe { libc::kill(pid, 0) } == 0 {
+    if pid != 0 && swoole_rs_process::os::kill(pid, 0) == 0 {
         fatal(E_WARNING, &message!("process has already been started"));
         call.set_bool(false);
         return;
@@ -878,9 +863,7 @@ fn pop(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: a live worker.
-    let balance =
-        i64::from(unsafe { Worker::new(worker.cast()).msgqueue_mode() }) == MSGQUEUE_BALANCE;
+    let balance = i64::from(worker::record(worker).msgqueue_mode()) == MSGQUEUE_BALANCE;
     let mut message = QueueMessage::new(if balance {
         0
     } else {
@@ -989,8 +972,7 @@ fn exit(call: &Call) {
         return;
     };
     let worker = checked(this(call));
-    // SAFETY: getpid has no preconditions.
-    if unsafe { libc::getpid() } != view(worker).pid {
+    if swoole_rs_process::os::getpid() != view(worker).pid {
         fatal(E_WARNING, &message!("not current process"));
         call.set_bool(false);
         return;

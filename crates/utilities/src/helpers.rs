@@ -8,8 +8,7 @@ use std::ffi::{c_char, c_long};
 /// `swoole::get_timezone`: the local zone's offset from UTC now, in seconds.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_utils_timezone() -> c_long {
-    // SAFETY: time(3) accepts a null output.
-    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    let now = swoole_rs_corebase::time_now();
     // SAFETY: all-zero is a valid `tm`.
     let mut local: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: both pointers are live locals.

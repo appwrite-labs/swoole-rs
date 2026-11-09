@@ -80,6 +80,28 @@ impl WorkerRecord {
     }
 
     /// `SW_WORKER_IDLE`, `SW_WORKER_BUSY`, ...
+    pub fn set_id(&mut self, id: u32) {
+        self.id = id;
+    }
+
+    #[must_use]
+    pub fn queue(&self) -> *mut c_void {
+        self.queue
+    }
+
+    pub fn set_queue(&mut self, queue: *mut c_void) {
+        self.queue = queue;
+    }
+
+    #[must_use]
+    pub fn msgqueue_mode(&self) -> u8 {
+        self.msgqueue_mode
+    }
+
+    pub fn set_msgqueue_mode(&mut self, mode: u8) {
+        self.msgqueue_mode = mode;
+    }
+
     pub fn set_status(&mut self, status: u8) {
         self.status = status;
     }
@@ -112,7 +134,7 @@ pub unsafe fn swr_v1_worker_array_lookup(
 ) -> *mut WorkerRecord {
     // SAFETY: the caller lends the complete initialized canonical array and its PID slots.
     unsafe {
-        crate::worker_registry::swr_v1_process_worker_registry_find_array(
+        crate::worker_registry::find_array(
             workers.cast(),
             count,
             core::mem::size_of::<WorkerRecord>(),

@@ -1,7 +1,8 @@
 //! Coroutine lock state and complete acquisition/release loops.
 use std::{
+    cell::Cell,
     ffi::c_void,
-    ptr,
+    ptr::{self, NonNull},
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
@@ -9,7 +10,6 @@ use swoole_rs_error::ErrorCode;
 
 /// A native leaf outcome; PHP hosts contain bailouts before returning to Rust.
 #[derive(Clone, Copy)]
-#[repr(C)]
 pub struct CoroutineOutcome {
     pub code: i32,
     pub bailed: u8,
@@ -23,248 +23,171 @@ impl CoroutineOutcome {
 
 /// Immutable, process-lived effects supplied once when the lock is constructed.
 /// No native lock state or per-call operation table is retained.
-#[repr(C)]
 pub struct CoroutineHost {
-    pub current: unsafe extern "C" fn() -> *mut c_void,
-    pub cid: unsafe extern "C" fn(*mut c_void) -> i64,
-    pub alloc_shared: unsafe extern "C" fn() -> *mut u32,
-    pub free_shared: unsafe extern "C" fn(*mut u32),
-    pub sleep: Option<unsafe extern "C" fn(f64) -> CoroutineOutcome>,
-    pub wait: Option<unsafe extern "C" fn(*mut u32) -> CoroutineOutcome>,
-    pub wake: Option<unsafe extern "C" fn(*mut u32) -> CoroutineOutcome>,
-    pub warning: unsafe extern "C" fn() -> u8,
+    pub current: fn() -> *mut c_void,
+    pub cid: fn(*mut c_void) -> i64,
+    /// Aligned process-shared storage for one word, or null.
+    pub alloc_shared: fn() -> *mut u32,
+    /// Frees a word `alloc_shared` returned.
+    pub free_shared: unsafe fn(*mut u32),
+    pub sleep: Option<fn(f64) -> CoroutineOutcome>,
+    pub wait: Option<fn(&AtomicU32) -> CoroutineOutcome>,
+    pub wake: Option<fn(&AtomicU32) -> CoroutineOutcome>,
+    pub warning: fn() -> u8,
 }
 
 /// The word is shared across processes when requested; ownership tokens stay process-local.
-/// Only atomic word references span a suspension, never a Rust borrow of this record.
+/// Operations take `&self`, so a suspended acquisition and another coroutine's
+/// unlock can both hold the lock.
 pub struct CoroutineLock {
-    host: *const CoroutineHost,
-    word: *mut AtomicU32,
-    cookie: *mut c_void,
-    cid: i64,
+    host: &'static CoroutineHost,
+    word: NonNull<AtomicU32>,
+    cookie: Cell<*mut c_void>,
+    cid: Cell<i64>,
     shared: bool,
 }
 
 impl Drop for CoroutineLock {
     fn drop(&mut self) {
         if self.shared {
-            // SAFETY: the process-lived host frees the shared word it allocated.
-            let host = unsafe { &*self.host };
-            // SAFETY: this record owns exactly one pool allocation.
-            unsafe { (host.free_shared)(self.word.cast()) };
+            // SAFETY: this record owns exactly one host allocation.
+            unsafe { (self.host.free_shared)(self.word.as_ptr().cast()) };
         } else {
             // SAFETY: the unshared word was allocated by Box in new.
-            drop(unsafe { Box::from_raw(self.word) });
+            drop(unsafe { Box::from_raw(self.word.as_ptr()) });
         }
     }
 }
 
-/// # Safety
-/// The immutable host and its leaf effects outlive every lock and cannot unwind.
-#[must_use]
-pub unsafe fn coroutine_new(shared: bool, host: *const CoroutineHost) -> *mut CoroutineLock {
-    // SAFETY: the caller supplies a process-lived immutable host.
-    let effects = unsafe { &*host };
-    if effects.wait.is_some() != effects.wake.is_some()
-        || (effects.wait.is_none() && effects.sleep.is_none())
-    {
-        std::process::abort();
-    }
-    let word = if shared {
-        // SAFETY: the host allocates aligned process-shared storage for one word.
-        let word = unsafe { (effects.alloc_shared)() }.cast::<AtomicU32>();
-        if word.is_null() {
-            std::process::abort();
-        }
-        // SAFETY: initialize the newly owned allocation before publishing it.
-        unsafe { word.write(AtomicU32::new(0)) };
-        word
-    } else {
-        Box::into_raw(Box::new(AtomicU32::new(0)))
-    };
-    Box::into_raw(Box::new(CoroutineLock {
-        host,
-        word,
-        cookie: ptr::null_mut(),
-        cid: 0,
-        shared,
-    }))
-}
-
-/// # Safety
-/// A uniquely owned lock, no operation is suspended on it; consumes it exactly once.
-pub unsafe fn coroutine_free(lock: *mut CoroutineLock) {
-    // SAFETY: the caller transfers the record and its word back to their allocators.
-    drop(unsafe { Box::from_raw(lock) });
-}
-
-unsafe fn outside(host: &CoroutineHost) -> CoroutineOutcome {
-    // SAFETY: the host contains any PHP warning bailout in its native leaf.
-    let bailed = unsafe { (host.warning)() };
+fn outside(host: &CoroutineHost) -> CoroutineOutcome {
     CoroutineOutcome {
         code: ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32,
-        bailed,
+        bailed: (host.warning)(),
     }
 }
 
 fn last_errno() -> i32 {
-    // SAFETY: the platform's errno address is live in this calling thread.
-    unsafe { *super::errno() }
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// # Safety
-/// The live lock and its atomic word remain allocated across any host suspension.
-/// Its process-local metadata is accessed on one cooperative thread.
-pub unsafe fn coroutine_acquire(lock: *mut CoroutineLock, blocking: bool) -> CoroutineOutcome {
-    // SAFETY: the host is immutable and outlives the lock.
-    let host_ptr = unsafe { (*lock).host };
-    // SAFETY: the immutable host record is process-lived.
-    let host = unsafe { &*host_ptr };
-    // SAFETY: obtain the native current-coroutine identity once, before possible suspension.
-    let current = unsafe { (host.current)() };
-    if current.is_null() {
-        // SAFETY: the host's warning is a contained leaf effect.
-        return unsafe { outside(host) };
-    }
-    // SAFETY: a non-null native coroutine is live while its method executes.
-    let cid = unsafe { (host.cid)(current) };
-    // SAFETY: copied ownership tokens; no Rust record borrow spans a suspension.
-    let held_cookie = unsafe { (*lock).cookie };
-    // SAFETY: the record's initialized integer token is plain data.
-    let held_cid = unsafe { (*lock).cid };
-    if current == held_cookie && cid == held_cid {
-        return CoroutineOutcome::code(0);
-    }
-    // SAFETY: the word outlives this operation; only atomic operations access it.
-    let word_ptr = unsafe { (*lock).word };
-    // SAFETY: the owned atomic word remains live across this operation.
-    let word = unsafe { &*word_ptr };
-    let mut second = SW_FILE_LOCK_DEFAULT_SECOND;
-    loop {
-        if word
-            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+impl CoroutineLock {
+    /// A new unlocked lock; aborts when the host is inconsistent or has no storage.
+    #[must_use]
+    pub fn new(shared: bool, host: &'static CoroutineHost) -> Box<Self> {
+        if host.wait.is_some() != host.wake.is_some()
+            || (host.wait.is_none() && host.sleep.is_none())
         {
-            break;
+            std::process::abort();
         }
-        if !blocking {
-            return CoroutineOutcome::code(libc::EBUSY);
-        }
-        if let Some(wait) = host.wait {
-            // SAFETY: the host borrows one live aligned atomic futex word.
-            let result = unsafe { wait(ptr::from_ref(word).cast_mut().cast()) };
-            if result.bailed != 0 {
-                return result;
-            }
-            if result.code != 0 {
-                return CoroutineOutcome::code(last_errno());
-            }
-        } else {
-            // SAFETY: the host contains any PHP bailout before returning from its sleep.
-            let Some(sleep) = host.sleep else {
+        let word = if shared {
+            let Some(word) = NonNull::new((host.alloc_shared)().cast::<AtomicU32>()) else {
                 std::process::abort();
             };
-            // SAFETY: the configured sleep leaf contains PHP bailouts.
-            let result = unsafe { sleep(second) };
-            if result.bailed != 0 {
-                return result;
+            // SAFETY: the host allocated aligned storage for one word; initialize it
+            // before publishing it.
+            unsafe { word.write(AtomicU32::new(0)) };
+            word
+        } else {
+            NonNull::from(Box::leak(Box::new(AtomicU32::new(0))))
+        };
+        Box::new(Self {
+            host,
+            word,
+            cookie: Cell::new(ptr::null_mut()),
+            cid: Cell::new(0),
+            shared,
+        })
+    }
+
+    fn word(&self) -> &AtomicU32 {
+        // SAFETY: the record owns the initialized word until it drops.
+        unsafe { self.word.as_ref() }
+    }
+
+    /// `CoroutineLock::lock_impl`: blocks (sleeping or on the futex) unless `blocking` is false.
+    pub fn acquire(&self, blocking: bool) -> CoroutineOutcome {
+        let host = self.host;
+        // The current-coroutine identity, once, before possible suspension.
+        let current = (host.current)();
+        if current.is_null() {
+            return outside(host);
+        }
+        let cid = (host.cid)(current);
+        if current == self.cookie.get() && cid == self.cid.get() {
+            return CoroutineOutcome::code(0);
+        }
+        let word = self.word();
+        let mut second = SW_FILE_LOCK_DEFAULT_SECOND;
+        loop {
+            if word
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                break;
             }
-            if result.code != 0 {
-                return CoroutineOutcome::code(ErrorCode::SW_ERROR_CO_CANCELED as i32);
+            if !blocking {
+                return CoroutineOutcome::code(libc::EBUSY);
             }
-            second = super::swr_v1_locks_coroutine_backoff(
-                second,
-                SW_FILE_LOCK_DEFAULT_SECOND,
-                SW_FILE_LOCK_MAX_SECOND,
-            );
+            if let Some(wait) = host.wait {
+                let result = wait(word);
+                if result.bailed != 0 {
+                    return result;
+                }
+                if result.code != 0 {
+                    return CoroutineOutcome::code(last_errno());
+                }
+            } else {
+                let Some(sleep) = host.sleep else {
+                    std::process::abort();
+                };
+                let result = sleep(second);
+                if result.bailed != 0 {
+                    return result;
+                }
+                if result.code != 0 {
+                    return CoroutineOutcome::code(ErrorCode::SW_ERROR_CO_CANCELED as i32);
+                }
+                second = super::swr_v1_locks_coroutine_backoff(
+                    second,
+                    SW_FILE_LOCK_DEFAULT_SECOND,
+                    SW_FILE_LOCK_MAX_SECOND,
+                );
+            }
+        }
+        // The acquired coroutine is live after suspension; refresh its token at
+        // publication, in the same order as the native implementation.
+        self.cid.set((host.cid)(current));
+        self.cookie.set(current);
+        CoroutineOutcome::code(0)
+    }
+
+    /// `CoroutineLock::unlock`.
+    pub fn unlock(&self) -> CoroutineOutcome {
+        let host = self.host;
+        // Query the current coroutine before accessing ownership, as upstream does.
+        if (host.current)().is_null() {
+            return outside(host);
+        }
+        let word = self.word();
+        if word.load(Ordering::Relaxed) == 0 {
+            return CoroutineOutcome::code(0);
+        }
+        word.store(0, Ordering::Relaxed);
+        // Release clears ownership before waking a waiter.
+        self.cid.set(0);
+        self.cookie.set(ptr::null_mut());
+        let Some(wake) = host.wake else {
+            return CoroutineOutcome::code(0);
+        };
+        let result = wake(word);
+        if result.bailed != 0 {
+            result
+        } else if result.code >= 0 {
+            CoroutineOutcome::code(0)
+        } else {
+            CoroutineOutcome::code(last_errno())
         }
     }
-    // SAFETY: the acquired coroutine remains live after suspension; refresh its token
-    // at publication, in the same order as the native implementation.
-    let owner_cid = unsafe { (host.cid)(current) };
-    // SAFETY: acquisition succeeded; publish the owner's process-local token.
-    unsafe { (*lock).cid = owner_cid };
-    // SAFETY: as above; the cookie is opaque and never dereferenced by Rust.
-    unsafe { (*lock).cookie = current };
-    CoroutineOutcome::code(0)
-}
-
-/// # Safety
-/// The live lock remains allocated through the wake leaf; metadata belongs to one cooperative thread.
-pub unsafe fn coroutine_unlock(lock: *mut CoroutineLock) -> CoroutineOutcome {
-    // SAFETY: the host is immutable and process-lived.
-    let host_ptr = unsafe { (*lock).host };
-    // SAFETY: the immutable host record is process-lived.
-    let host = unsafe { &*host_ptr };
-    // SAFETY: query the current coroutine before accessing ownership, as upstream does.
-    if unsafe { (host.current)() }.is_null() {
-        // SAFETY: the host contains any PHP warning bailout.
-        return unsafe { outside(host) };
-    }
-    // SAFETY: the word outlives the operation and is accessed only atomically.
-    let word_ptr = unsafe { (*lock).word };
-    // SAFETY: the owned atomic word remains live across this operation.
-    let word = unsafe { &*word_ptr };
-    if word.load(Ordering::Relaxed) == 0 {
-        return CoroutineOutcome::code(0);
-    }
-    word.store(0, Ordering::Relaxed);
-    // SAFETY: release clears ownership before waking a waiter.
-    unsafe { (*lock).cid = 0 };
-    // SAFETY: the process-local cookie is no longer held.
-    unsafe { (*lock).cookie = ptr::null_mut() };
-    let Some(wake) = host.wake else {
-        return CoroutineOutcome::code(0);
-    };
-    // SAFETY: the host borrows the still-live atomic word; it contains PHP bailouts.
-    let result = unsafe { wake(ptr::from_ref(word).cast_mut().cast()) };
-    if result.bailed != 0 {
-        result
-    } else if result.code >= 0 {
-        CoroutineOutcome::code(0)
-    } else {
-        CoroutineOutcome::code(last_errno())
-    }
-}
-
-/// # Safety
-/// Same constructor contract as `coroutine_new`; the C++ facade lends an immutable static host.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_coroutine_new(
-    shared: u8,
-    host: *const CoroutineHost,
-) -> *mut CoroutineLock {
-    // SAFETY: forwarding the caller's static host and requested allocation family.
-    unsafe { coroutine_new(shared != 0, host) }
-}
-
-/// # Safety
-/// Same unique ownership contract as `coroutine_free`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_coroutine_free(lock: *mut CoroutineLock) {
-    // SAFETY: the caller transfers this live record exactly once.
-    unsafe { coroutine_free(lock) };
-}
-
-/// # Safety
-/// Same live-lock/suspension contract as `coroutine_acquire`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_coroutine_lock(
-    lock: *mut CoroutineLock,
-    operation: i32,
-) -> CoroutineOutcome {
-    // SAFETY: the caller keeps the lock live across its native leaf effects.
-    unsafe { coroutine_acquire(lock, operation & libc::LOCK_NB == 0) }
-}
-
-/// # Safety
-/// Same live-lock contract as `coroutine_unlock`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_coroutine_unlock(
-    lock: *mut CoroutineLock,
-) -> CoroutineOutcome {
-    // SAFETY: the caller lends a live record through the wake effect.
-    unsafe { coroutine_unlock(lock) }
 }
 
 #[cfg(test)]
@@ -276,7 +199,7 @@ mod tests {
     struct State {
         current: usize,
         cid: i64,
-        lock: *mut CoroutineLock,
+        lock: *const CoroutineLock,
         sleeps: Vec<f64>,
         result: i32,
         bailed: u8,
@@ -291,21 +214,21 @@ mod tests {
         // What the other coroutines do while the sleeping one is suspended.
         static ON_SLEEP: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
     }
-    unsafe extern "C" fn current() -> *mut c_void {
+    fn current() -> *mut c_void {
         STATE.with(|state| state.borrow().current as *mut c_void)
     }
-    unsafe extern "C" fn cid(_: *mut c_void) -> i64 {
+    fn cid(_: *mut c_void) -> i64 {
         STATE.with(|state| state.borrow().cid)
     }
-    unsafe extern "C" fn allocate() -> *mut u32 {
+    fn allocate() -> *mut u32 {
         STATE.with(|state| state.borrow_mut().allocated += 1);
         Box::into_raw(Box::new(0))
     }
-    unsafe extern "C" fn release(word: *mut u32) {
+    unsafe fn release(word: *mut u32) {
         STATE.with(|state| state.borrow_mut().freed += 1);
         drop(unsafe { Box::from_raw(word) });
     }
-    unsafe extern "C" fn sleep(second: f64) -> CoroutineOutcome {
+    fn sleep(second: f64) -> CoroutineOutcome {
         let (lock, releases, result, bailed) = STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.sleeps.push(second);
@@ -313,7 +236,7 @@ mod tests {
         });
         // Model the old owner resuming while the contender is suspended.
         if releases {
-            unsafe { coroutine_unlock(lock) };
+            unsafe { &*lock }.unlock();
         }
         if let Some(others) = ON_SLEEP.with(|f| f.borrow_mut().take()) {
             let (current, cid) = STATE.with(|state| (state.borrow().current, state.borrow().cid));
@@ -325,10 +248,10 @@ mod tests {
             bailed,
         }
     }
-    unsafe extern "C" fn wait(_: *mut u32) -> CoroutineOutcome {
-        unsafe { sleep(0.0) }
+    fn wait(_: &AtomicU32) -> CoroutineOutcome {
+        sleep(0.0)
     }
-    unsafe extern "C" fn wake(_: *mut u32) -> CoroutineOutcome {
+    fn wake(_: &AtomicU32) -> CoroutineOutcome {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.wakes += 1;
@@ -338,7 +261,7 @@ mod tests {
             }
         })
     }
-    unsafe extern "C" fn warning() -> u8 {
+    fn warning() -> u8 {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.warnings += 1;
@@ -374,7 +297,7 @@ mod tests {
             }
         });
     }
-    fn contender(lock: *mut CoroutineLock) {
+    fn contender(lock: &CoroutineLock) {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.current = 2;
@@ -389,11 +312,11 @@ mod tests {
             state.cid = cid;
         });
     }
-    fn lock(lock: *mut CoroutineLock, operation: i32) -> i32 {
-        unsafe { swr_v1_locks_coroutine_lock(lock, operation) }.code
+    fn lock(lock: &CoroutineLock, operation: i32) -> i32 {
+        lock.acquire(operation & libc::LOCK_NB == 0).code
     }
-    fn unlock(lock: *mut CoroutineLock) -> i32 {
-        unsafe { swr_v1_locks_coroutine_unlock(lock) }.code
+    fn unlock(lock: &CoroutineLock) -> i32 {
+        lock.unlock().code
     }
 
     // core-tests/src/lock/lock.cpp's coroutine TESTs (the C++ CoroutineLock left the build),
@@ -404,7 +327,7 @@ mod tests {
     fn three_coroutines(operation: i32) {
         reset();
         switch(0, 0);
-        let lock = unsafe { coroutine_new(false, &raw const SLEEP) };
+        let lock: &'static CoroutineLock = Box::leak(CoroutineLock::new(false, &SLEEP));
         assert_eq!(self::lock(lock, operation), OUT_OF_COROUTINE);
         if operation == libc::LOCK_EX {
             assert_eq!(unlock(lock), OUT_OF_COROUTINE);
@@ -431,7 +354,7 @@ mod tests {
         if operation == libc::LOCK_EX {
             assert_eq!(unlock(lock), 0);
         }
-        unsafe { coroutine_free(lock) };
+        drop(unsafe { Box::from_raw(ptr::from_ref(lock).cast_mut()) });
     }
 
     #[test]
@@ -447,7 +370,8 @@ mod tests {
     #[test]
     fn lock_coroutine_lock_cancel() {
         reset();
-        let lock = unsafe { coroutine_new(true, &raw const SLEEP) };
+        let lock = CoroutineLock::new(true, &SLEEP);
+        let lock = &*lock;
         assert_eq!(self::lock(lock, libc::LOCK_EX), 0);
         // The child's wait is cancelled by a timer: the host's sleep fails.
         contender(lock);
@@ -456,38 +380,33 @@ mod tests {
             self::lock(lock, libc::LOCK_EX),
             ErrorCode::SW_ERROR_CO_CANCELED as i32
         );
-        unsafe { coroutine_free(lock) };
     }
 
     #[test]
     fn ownership_reentry_and_recycled_coroutine_identity() {
         reset();
-        unsafe {
-            let lock = coroutine_new(false, &raw const SLEEP);
-            assert_eq!(coroutine_acquire(lock, true).code, 0);
-            assert_eq!(coroutine_acquire(lock, false).code, 0);
-            STATE.with(|state| state.borrow_mut().cid += 1);
-            assert_eq!(coroutine_acquire(lock, false).code, libc::EBUSY);
-            assert_eq!(coroutine_unlock(lock).code, 0);
-            assert_eq!(coroutine_acquire(lock, false).code, 0);
-            assert_eq!(coroutine_unlock(lock).code, 0);
-            assert_eq!(coroutine_unlock(lock).code, 0);
-            coroutine_free(lock);
-        }
+        let lock = CoroutineLock::new(false, &SLEEP);
+        assert_eq!(lock.acquire(true).code, 0);
+        assert_eq!(lock.acquire(false).code, 0);
+        STATE.with(|state| state.borrow_mut().cid += 1);
+        assert_eq!(lock.acquire(false).code, libc::EBUSY);
+        assert_eq!(lock.unlock().code, 0);
+        assert_eq!(lock.acquire(false).code, 0);
+        assert_eq!(lock.unlock().code, 0);
+        assert_eq!(lock.unlock().code, 0);
+        drop(lock);
     }
     #[test]
     fn shared_allocation_and_sleeping_contender_transfer_ownership() {
         reset();
-        unsafe {
-            let lock = coroutine_new(true, &raw const SLEEP);
-            assert_eq!(coroutine_acquire(lock, true).code, 0);
-            contender(lock);
-            assert_eq!(coroutine_acquire(lock, false).code, libc::EBUSY);
-            STATE.with(|state| state.borrow_mut().releases = true);
-            assert_eq!(coroutine_acquire(lock, true).code, 0);
-            assert_eq!(coroutine_acquire(lock, false).code, 0);
-            coroutine_free(lock);
-        }
+        let lock = CoroutineLock::new(true, &SLEEP);
+        assert_eq!(lock.acquire(true).code, 0);
+        contender(&lock);
+        assert_eq!(lock.acquire(false).code, libc::EBUSY);
+        STATE.with(|state| state.borrow_mut().releases = true);
+        assert_eq!(lock.acquire(true).code, 0);
+        assert_eq!(lock.acquire(false).code, 0);
+        drop(lock);
         STATE.with(|state| {
             let state = state.borrow();
             assert_eq!(state.sleeps, [SW_FILE_LOCK_DEFAULT_SECOND]);
@@ -497,48 +416,44 @@ mod tests {
     #[test]
     fn cancellation_and_bailout_do_not_publish_contender() {
         reset();
-        unsafe {
-            let lock = coroutine_new(false, &raw const SLEEP);
-            assert_eq!(coroutine_acquire(lock, true).code, 0);
-            contender(lock);
-            STATE.with(|state| state.borrow_mut().result = -1);
-            assert_eq!(
-                coroutine_acquire(lock, true).code,
-                ErrorCode::SW_ERROR_CO_CANCELED as i32
-            );
-            STATE.with(|state| state.borrow_mut().bailed = 1);
-            assert_eq!(coroutine_acquire(lock, true).bailed, 1);
-            assert_eq!((*lock).cookie as usize, 1);
-            assert_eq!((*lock).cid, 7);
-            coroutine_free(lock);
-        }
+        let lock = CoroutineLock::new(false, &SLEEP);
+        assert_eq!(lock.acquire(true).code, 0);
+        contender(&lock);
+        STATE.with(|state| state.borrow_mut().result = -1);
+        assert_eq!(
+            lock.acquire(true).code,
+            ErrorCode::SW_ERROR_CO_CANCELED as i32
+        );
+        STATE.with(|state| state.borrow_mut().bailed = 1);
+        assert_eq!(lock.acquire(true).bailed, 1);
+        assert_eq!(lock.cookie.get() as usize, 1);
+        assert_eq!(lock.cid.get(), 7);
+        drop(lock);
     }
     #[test]
     fn futex_wait_and_wake_keep_errno_and_contained_bailout() {
         reset();
-        unsafe {
-            let lock = coroutine_new(false, &raw const FUTEX);
-            assert_eq!(coroutine_acquire(lock, true).code, 0);
-            contender(lock);
-            *super::super::errno() = libc::EINTR;
-            STATE.with(|state| state.borrow_mut().result = -1);
-            assert_eq!(coroutine_acquire(lock, true).code, libc::EINTR);
-            STATE.with(|state| {
-                let mut state = state.borrow_mut();
-                state.result = 0;
-                state.releases = true;
-            });
-            assert_eq!(coroutine_acquire(lock, true).code, 0);
-            STATE.with(|state| {
-                let mut state = state.borrow_mut();
-                state.result = -1;
-                state.bailed = 1;
-            });
-            assert_eq!(coroutine_unlock(lock).bailed, 1);
-            assert_eq!((*lock).cookie, ptr::null_mut());
-            assert_eq!((*lock).cid, 0);
-            coroutine_free(lock);
-        }
+        let lock = CoroutineLock::new(false, &FUTEX);
+        assert_eq!(lock.acquire(true).code, 0);
+        contender(&lock);
+        unsafe { *super::super::errno() = libc::EINTR };
+        STATE.with(|state| state.borrow_mut().result = -1);
+        assert_eq!(lock.acquire(true).code, libc::EINTR);
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.result = 0;
+            state.releases = true;
+        });
+        assert_eq!(lock.acquire(true).code, 0);
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.result = -1;
+            state.bailed = 1;
+        });
+        assert_eq!(lock.unlock().bailed, 1);
+        assert_eq!(lock.cookie.get(), ptr::null_mut());
+        assert_eq!(lock.cid.get(), 0);
+        drop(lock);
         STATE.with(|state| assert_eq!(state.borrow().wakes, 2));
     }
     #[test]
@@ -549,14 +464,12 @@ mod tests {
             state.current = 0;
             state.bailed = 1;
         });
-        unsafe {
-            let lock = coroutine_new(false, &raw const SLEEP);
-            for result in [coroutine_acquire(lock, true), coroutine_unlock(lock)] {
-                assert_eq!(result.code, ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32);
-                assert_eq!(result.bailed, 1);
-            }
-            coroutine_free(lock);
+        let lock = CoroutineLock::new(false, &SLEEP);
+        for result in [lock.acquire(true), lock.unlock()] {
+            assert_eq!(result.code, ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32);
+            assert_eq!(result.bailed, 1);
         }
+        drop(lock);
         STATE.with(|state| assert_eq!(state.borrow().warnings, 2));
     }
 }

@@ -101,6 +101,10 @@ docker build -t swoole-rs-dev .devcontainer
 docker run --rm -it -v "$PWD:/work" -w /work swoole-rs-dev bash
 ```
 
+CI jobs run on the runner label in the repository variable `RUNNER`, or
+`ubuntu-24.04` when it is unset. This repo is public, so a self-hosted label must
+not run fork pull requests.
+
 Tooling tests: `tests/dev/run.sh` (parallel; prints only failing files), or `python3 -m unittest discover -b -s tests/dev` (`-b` hides output from passing tests).
 
 ### One command: `dev.py docker`

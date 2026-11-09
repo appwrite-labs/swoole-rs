@@ -83,8 +83,6 @@ unsafe extern "C" {
     /// `Socket::set_fd_option` (crates/reactor).
     #[link_name = "_ZN6swoole7network6Socket13set_fd_optionEii"]
     fn set_fd_option(socket: *mut c_void, nonblock: c_int, cloexec: c_int) -> bool;
-    /// `MessageBus::move_packet` (crates/protocols).
-    fn swr_v1_bus_move_packet(bus: *mut c_void) -> *mut c_char;
 }
 
 static POOL: Class = Class::new();
@@ -159,11 +157,9 @@ fn message_data(pool: Pool, message: *mut c_void, target: *mut zval) {
         let string = string::from_val(data);
         // SAFETY: the bus allocates its packets as zend strings of at least `length` bytes.
         unsafe { string::truncate(string, length) };
-        let bus = record(pool).message_bus.cast::<BusHead>();
-        // SAFETY: an OBJ_PTR message comes from the pool's message bus.
-        let bus = unsafe { (*bus).bus };
-        // SAFETY: the bus; the string is now the caller's.
-        unsafe { swr_v1_bus_move_packet(bus) };
+        // SAFETY: an OBJ_PTR message comes from the pool's live message bus; the
+        // string is now the caller's.
+        unsafe { swoole_rs_server::bus_move_packet(record(pool).message_bus) };
         string
     } else {
         // SAFETY: `length` bytes at `data`.
@@ -339,8 +335,7 @@ fn update_long(object: *mut zend_object, name: &std::ffi::CStr, value: i64) {
 }
 
 fn getpid() -> i64 {
-    // SAFETY: getpid has no preconditions.
-    i64::from(unsafe { libc::getpid() })
+    i64::from(swoole_rs_process::os::getpid())
 }
 
 /// Call a pool callback with `$pool` (and the worker id), as upstream's
@@ -995,8 +990,7 @@ fn get_process(call: &Call) {
         // SAFETY: the running pool's worker `id`.
         let pid = unsafe { Worker::new(view.workers.wrapping_add(id as usize)).pid() };
         if worker_pid(worker) != pid {
-            // SAFETY: the object's worker copy.
-            unsafe { Worker::new(worker.cast()).set_pid(pid) };
+            crate::worker::record(worker).set_pid(pid);
             // SAFETY: a Process object.
             unsafe { update_property_long(process_ce, std, c"pid", i64::from(pid)) };
         }

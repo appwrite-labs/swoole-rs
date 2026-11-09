@@ -80,26 +80,15 @@ fn run(name: &str, rounds: usize) -> u64 {
                     .map(|i| format!("file-{i:04}.txt"))
                     .collect();
                 for _ in 0..rounds {
-                    let owner = http::swr_v2_http_directory_new();
-                    assert!(!owner.is_null());
+                    let mut owner = http::HttpDirectory::default();
                     for name in &names {
-                        assert_eq!(
-                            http::swr_v2_http_directory_scan_append(
-                                owner,
-                                name.as_ptr(),
-                                name.len()
-                            ),
-                            1
-                        );
+                        assert_eq!(owner.scan_append(name.as_bytes()), Ok(()));
                     }
-                    http::swr_v2_http_directory_scan_finish(owner);
-                    assert_eq!(http::swr_v2_http_directory_count(owner), count);
+                    owner.scan_finish();
+                    assert_eq!(owner.len(), count);
                     for name in &names {
-                        sum +=
-                            http::swr_v2_http_directory_contains(owner, name.as_ptr(), name.len())
-                                as u64;
+                        sum += u64::from(owner.contains(name.as_bytes()) == Ok(true));
                     }
-                    http::swr_v2_http_directory_drop(owner);
                 }
             }
             "heap-1" | "heap-128" | "heap-512" => {

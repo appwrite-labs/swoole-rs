@@ -5,7 +5,7 @@
 //! `Server::manager_`) and drives `reaper`'s loop with its own host; native code
 //! keeps the server, its pools, fork and the callbacks.
 use core::cell::{Cell, RefCell};
-use core::ffi::{c_int, c_void};
+use core::ffi::c_int;
 
 use super::event_worker::EVENT_WORKER;
 use super::log::{
@@ -39,7 +39,10 @@ use super::{
     HANDLER_NONE, HANDLER_OWN, Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK,
     set_signal_all,
 };
-use crate::reaper::{RELOAD_KILL_ONE, RELOAD_NONE, RELOAD_SIGNALLED, RELOAD_SKIP, ReapHost};
+use crate::os::kill;
+use crate::reaper::{
+    self, RELOAD_KILL_ONE, RELOAD_NONE, RELOAD_SIGNALLED, RELOAD_SKIP, Reap, Waited,
+};
 use crate::reload_task::{ReloadTask, Warn};
 use crate::worker_registry::{CATEGORY_USER, WorkerRegistry};
 
@@ -229,135 +232,139 @@ fn alarm(seconds: u32) {
     unsafe { libc::alarm(seconds) };
 }
 
-/// The reap loop's host: `reaper` calls back into these with `ctx` pointing to
-/// this, and each asks the native server through the `Host`.
+/// The reap loop's host: each step asks the native server through the `Host`.
 struct Reaping<'a> {
     host: &'a mut dyn Host,
     manager: &'a Manager,
-}
-
-fn reaping<'a>(ctx: *mut c_void) -> &'a mut Reaping<'a> {
-    // SAFETY: every callback gets the `Reaping` that `reap` lent the loop, live
-    // and not otherwise borrowed while the loop runs.
-    unsafe { &mut *ctx.cast::<Reaping<'a>>() }
-}
-
-unsafe extern "C" fn reap_running(ctx: *mut c_void) -> bool {
-    reaping(ctx).host.is(OP_RUNNING)
-}
-
-unsafe extern "C" fn reap_reload_requested(ctx: *mut c_void) -> bool {
-    reaping(ctx).host.is(OP_RELOAD_INIT)
-}
-
-unsafe extern "C" fn reap_reload_task(ctx: *mut c_void) -> *mut ReloadTask {
-    let address = reaping(ctx).host.get(OP_RELOAD_TASK);
-    usize::try_from(address).map_or(core::ptr::null_mut(), |a| a as *mut ReloadTask)
-}
-
-unsafe extern "C" fn reap_wait(
-    ctx: *mut c_void,
-    nonblock: bool,
-    status: *mut c_int,
-    error: *mut c_int,
-) -> c_int {
-    let host = &mut reaping(ctx).host;
-    let pid = pid(host.op(OP_REAP_WAIT, u64::from(nonblock)));
-    // SAFETY: the loop passes pointers to its own locals.
-    unsafe { *status = pid_status(host.get(OP_WAIT_STATUS)) };
-    // SAFETY: as above.
-    unsafe { *error = pid_status(host.get(OP_WAIT_ERROR)) };
-    pid
+    warn: Warn,
 }
 
 fn pid_status(value: u64) -> c_int {
     c_int::try_from(value.cast_signed()).unwrap_or(0)
 }
 
-/// Dispatch signals, take the workers' messages (a stopping worker's asks for its
-/// replacement) and run the timers.
-unsafe extern "C" fn reap_service(ctx: *mut c_void) {
-    let host = &mut *reaping(ctx).host;
-    host.get(OP_SIGNAL_DISPATCH);
-    if host.is(OP_READ_MESSAGE) {
-        while host.signed(OP_POP_MESSAGE) > 0 {
-            if !host.is(OP_RUNNING) {
-                continue;
-            }
-            if host.get(OP_MESSAGE_TYPE) != WORKER_MESSAGE_STOP && host.is(OP_HAS_ON_WORKER_MESSAGE)
-            {
-                host.get(OP_ON_WORKER_MESSAGE);
-                continue;
-            }
-            let worker = host.get(OP_STOP_MESSAGE_WORKER);
-            if worker >= host.get(OP_WORKER_NUM) {
-                host.op(OP_SPAWN_TASK_WORKER, worker);
-            } else {
-                host.op(OP_SPAWN_EVENT_WORKER, worker);
-            }
-            host.get(OP_DETACH_STOPPED);
-        }
-        host.op(OP_SET_READ_MESSAGE, 0);
-    }
-    if host.is(OP_HAS_TIMER) {
-        host.get(OP_TIMER_SELECT);
-    }
-}
-
 /// `swoole::WorkerMessageType::SW_WORKER_MESSAGE_STOP`.
 const WORKER_MESSAGE_STOP: u64 = 1;
 
-unsafe extern "C" fn reap_wait_failed(ctx: *mut c_void) {
-    reaping(ctx).host.log(LOG_WAIT_FAILED, 0, 0);
-}
-
-/// Start a requested reload: of every worker, or of the task workers only.
-unsafe extern "C" fn reap_start_reload(ctx: *mut c_void) -> u32 {
-    let Reaping { host, manager } = reaping(ctx);
-    if manager.reload_all_workers.get() {
-        host.op(OP_SET_RELOAD_INIT, 0);
-        manager.reload_all_workers.set(false);
-        host.log(LOG_RELOADING, 1, 0);
-        host.get(OP_ON_BEFORE_RELOAD);
-        host.get(OP_RELOAD_ADD_EVENT_WORKERS);
-        if host.get(OP_TASK_WORKER_NUM) > 0 {
-            host.get(OP_RELOAD_ADD_TASK_WORKERS);
-        }
-        // With reload_async every worker gets SIGTERM now: it stops reading, asks
-        // the manager for its replacement and exits once its work is done, so
-        // the old and the new worker briefly run side by side.
-        if !host.is(OP_RELOAD_ASYNC) {
-            return RELOAD_KILL_ONE;
-        }
-        host.get(OP_RELOAD_KILL_ALL);
-        RELOAD_SIGNALLED
-    } else if manager.reload_task_workers.get() {
-        host.op(OP_SET_RELOAD_INIT, 0);
-        manager.reload_task_workers.set(false);
-        if host.get(OP_TASK_WORKER_NUM) == 0 {
-            host.log(LOG_NO_TASK_RELOAD, 0, 0);
-            return RELOAD_SKIP;
-        }
-        host.log(LOG_RELOADING, 0, 0);
-        host.get(OP_ON_BEFORE_RELOAD);
-        host.get(OP_RELOAD_ADD_TASK_WORKERS);
-        RELOAD_KILL_ONE
-    } else {
-        RELOAD_NONE
+impl Reap for Reaping<'_> {
+    fn leave_when_stopped(&self) -> bool {
+        false
     }
-}
 
-/// A child exited: restart it in place (not through a signal: `wait` names it).
-unsafe extern "C" fn reap_reap(ctx: *mut c_void, pid: c_int, status: c_int) -> bool {
-    let exited = u64::from(pid.cast_unsigned()) | (u64::from(status.cast_unsigned()) << 32);
-    reaping(ctx).host.op(OP_RESTART_WORKER, exited);
-    true
-}
+    fn skip_no_child(&self) -> bool {
+        true
+    }
 
-unsafe extern "C" fn reap_finish_reload(ctx: *mut c_void) {
-    let host = &mut reaping(ctx).host;
-    host.get(OP_DROP_RELOAD_TASK);
-    host.get(OP_ON_AFTER_RELOAD);
+    fn running(&mut self) -> bool {
+        self.host.is(OP_RUNNING)
+    }
+
+    fn reload_requested(&mut self) -> bool {
+        self.host.is(OP_RELOAD_INIT)
+    }
+
+    fn active_reload(&mut self) -> Option<&mut ReloadTask> {
+        let address = usize::try_from(self.host.get(OP_RELOAD_TASK)).unwrap_or(0);
+        // SAFETY: the server pool's reload, live until `OP_DROP_RELOAD_TASK`; each
+        // use is one step of the loop.
+        unsafe { (address as *mut ReloadTask).as_mut() }
+    }
+
+    fn wait(&mut self, nonblock: bool) -> Waited {
+        let pid = pid(self.host.op(OP_REAP_WAIT, u64::from(nonblock)));
+        Waited {
+            pid,
+            status: pid_status(self.host.get(OP_WAIT_STATUS)),
+            error: pid_status(self.host.get(OP_WAIT_ERROR)),
+        }
+    }
+
+    /// Dispatch signals, take the workers' messages (a stopping worker's asks for
+    /// its replacement) and run the timers.
+    fn service(&mut self) {
+        let host = &mut *self.host;
+        host.get(OP_SIGNAL_DISPATCH);
+        if host.is(OP_READ_MESSAGE) {
+            while host.signed(OP_POP_MESSAGE) > 0 {
+                if !host.is(OP_RUNNING) {
+                    continue;
+                }
+                if host.get(OP_MESSAGE_TYPE) != WORKER_MESSAGE_STOP
+                    && host.is(OP_HAS_ON_WORKER_MESSAGE)
+                {
+                    host.get(OP_ON_WORKER_MESSAGE);
+                    continue;
+                }
+                let worker = host.get(OP_STOP_MESSAGE_WORKER);
+                if worker >= host.get(OP_WORKER_NUM) {
+                    host.op(OP_SPAWN_TASK_WORKER, worker);
+                } else {
+                    host.op(OP_SPAWN_EVENT_WORKER, worker);
+                }
+                host.get(OP_DETACH_STOPPED);
+            }
+            host.op(OP_SET_READ_MESSAGE, 0);
+        }
+        if host.is(OP_HAS_TIMER) {
+            host.get(OP_TIMER_SELECT);
+        }
+    }
+
+    fn wait_failed(&mut self) {
+        self.host.log(LOG_WAIT_FAILED, 0, 0);
+    }
+
+    /// Start a requested reload: of every worker, or of the task workers only.
+    fn start_reload(&mut self) -> u32 {
+        let Reaping { host, manager, .. } = self;
+        if manager.reload_all_workers.get() {
+            host.op(OP_SET_RELOAD_INIT, 0);
+            manager.reload_all_workers.set(false);
+            host.log(LOG_RELOADING, 1, 0);
+            host.get(OP_ON_BEFORE_RELOAD);
+            host.get(OP_RELOAD_ADD_EVENT_WORKERS);
+            if host.get(OP_TASK_WORKER_NUM) > 0 {
+                host.get(OP_RELOAD_ADD_TASK_WORKERS);
+            }
+            // With reload_async every worker gets SIGTERM now: it stops reading, asks
+            // the manager for its replacement and exits once its work is done, so
+            // the old and the new worker briefly run side by side.
+            if !host.is(OP_RELOAD_ASYNC) {
+                return RELOAD_KILL_ONE;
+            }
+            host.get(OP_RELOAD_KILL_ALL);
+            RELOAD_SIGNALLED
+        } else if manager.reload_task_workers.get() {
+            host.op(OP_SET_RELOAD_INIT, 0);
+            manager.reload_task_workers.set(false);
+            if host.get(OP_TASK_WORKER_NUM) == 0 {
+                host.log(LOG_NO_TASK_RELOAD, 0, 0);
+                return RELOAD_SKIP;
+            }
+            host.log(LOG_RELOADING, 0, 0);
+            host.get(OP_ON_BEFORE_RELOAD);
+            host.get(OP_RELOAD_ADD_TASK_WORKERS);
+            RELOAD_KILL_ONE
+        } else {
+            RELOAD_NONE
+        }
+    }
+
+    /// A child exited: restart it in place (not through a signal: `wait` names it).
+    fn reap(&mut self, pid: c_int, status: c_int) -> bool {
+        let exited = u64::from(pid.cast_unsigned()) | (u64::from(status.cast_unsigned()) << 32);
+        self.host.op(OP_RESTART_WORKER, exited);
+        true
+    }
+
+    fn finish_reload(&mut self) {
+        self.host.get(OP_DROP_RELOAD_TASK);
+        self.host.get(OP_ON_AFTER_RELOAD);
+    }
+
+    fn warn(&self) -> Warn {
+        self.warn
+    }
 }
 
 extern "C" fn no_warn(_kind: c_int, _pid: c_int, _worker_id: u32) {}
@@ -375,23 +382,11 @@ fn reload_warn<H: Host>(h: &mut H) -> Warn {
 
 fn reap<H: Host>(h: &mut H, manager: &Manager) {
     let warn = reload_warn(h);
-    let mut reaping = Reaping { host: h, manager };
-    let host = ReapHost {
-        ctx: core::ptr::from_mut(&mut reaping).cast(),
-        leave_when_stopped: false,
-        skip_no_child: true,
-        running: reap_running,
-        reload_requested: reap_reload_requested,
-        reload_task: reap_reload_task,
-        wait: reap_wait,
-        service: reap_service,
-        wait_failed: reap_wait_failed,
-        start_reload: reap_start_reload,
-        reap: reap_reap,
-        finish_reload: reap_finish_reload,
+    reaper::run(&mut Reaping {
+        host: h,
+        manager,
         warn,
-    };
-    host.run();
+    });
 }
 
 /// `Manager::signal_handler`. A newly forked worker briefly inherits these
@@ -435,11 +430,6 @@ fn signal<H: Host>(h: &mut H, signo: i32) {
     }
 }
 
-fn kill(pid: c_int, signo: c_int) -> c_int {
-    // SAFETY: kill only sends a signal.
-    unsafe { libc::kill(pid, signo) }
-}
-
 /// `Server::restart_worker_process`: replace the worker whose process exited.
 fn restart<H: Host>(h: &mut H, exited: u64) -> i64 {
     let pid = exited & 0xffff_ffff;
@@ -478,8 +468,7 @@ fn reload<H: Host>(h: &mut H, all: bool) -> bool {
         h.log(LOG_RELOAD_SINGLE_PROCESS, 0, 0);
         return false;
     }
-    // SAFETY: getpid has no preconditions.
-    if i64::from(unsafe { libc::getpid() }) != manager_pid {
+    if i64::from(crate::os::getpid()) != manager_pid {
         let signo = if all { libc::SIGUSR1 } else { libc::SIGUSR2 };
         return kill(pid(manager_pid.cast_unsigned()), signo) == 0;
     }
@@ -538,30 +527,25 @@ mod tests {
 
     #[test]
     fn shutdown_user_pids_snapshot_the_registry_without_filtering_pid_values() {
-        use crate::worker_registry::{
-            swr_v1_process_worker_registry_detach, swr_v1_process_worker_registry_free,
-            swr_v1_process_worker_registry_new, swr_v1_process_worker_registry_register,
-            swr_v1_process_worker_registry_unregister,
-        };
-        let registry = swr_v1_process_worker_registry_new();
+        let registry = Box::into_raw(Box::<WorkerRegistry>::default());
         let mut worker = 0u8;
         let pointer = core::ptr::from_mut(&mut worker).cast();
         let mut h = Script::with(&[(OP_WORKER_REGISTRY, registry as u64)]);
         unsafe {
             for pid in [10, 0, -7] {
-                swr_v1_process_worker_registry_register(registry, pid, pointer, CATEGORY_USER);
+                (*registry).register(pid, pointer, CATEGORY_USER);
             }
-            swr_v1_process_worker_registry_register(registry, 20, pointer, 1);
+            (*registry).register(20, pointer, 1);
             let mut before = user_worker_pids(&mut h);
             before.sort_unstable();
             assert_eq!(before, [-7, 0, 10]);
-            swr_v1_process_worker_registry_unregister(registry, 10);
-            swr_v1_process_worker_registry_detach(registry, 0);
-            swr_v1_process_worker_registry_register(registry, -7, pointer, 1);
-            swr_v1_process_worker_registry_register(registry, 11, pointer, CATEGORY_USER);
+            (*registry).unregister(10);
+            (*registry).detach(0);
+            (*registry).register(-7, pointer, 1);
+            (*registry).register(11, pointer, CATEGORY_USER);
             assert_eq!(user_worker_pids(&mut h), [11]);
             assert_eq!(before, [-7, 0, 10]);
-            swr_v1_process_worker_registry_free(registry);
+            drop(Box::from_raw(registry));
         }
         assert_eq!(user_worker_pids(&mut Script::default()), [] as [i32; 0]);
     }
@@ -639,7 +623,7 @@ mod tests {
     fn reload_sets_the_managers_request_in_its_own_process() {
         let manager = Manager::default();
         // SAFETY (test): getpid has no preconditions.
-        let me = u64::from(unsafe { libc::getpid() }.cast_unsigned());
+        let me = u64::from(crate::os::getpid().cast_unsigned());
         let mut h = Script::with(&[
             (OP_MANAGER, core::ptr::from_ref(&manager) as u64),
             (OP_MANAGER_PID, me),
@@ -686,15 +670,12 @@ mod tests {
         let mut reaping = Reaping {
             host: &mut h,
             manager: &manager,
+            warn: no_warn,
         };
-        let ctx = core::ptr::from_mut(&mut reaping).cast();
-        // SAFETY (test): ctx is the live Reaping.
-        assert_eq!(unsafe { reap_start_reload(ctx) }, RELOAD_SIGNALLED);
-        // SAFETY (test): as above.
-        assert_eq!(unsafe { reap_start_reload(ctx) }, RELOAD_NONE);
+        assert_eq!(reaping.start_reload(), RELOAD_SIGNALLED);
+        assert_eq!(reaping.start_reload(), RELOAD_NONE);
         manager.reload_task_workers.set(true);
-        // SAFETY (test): as above.
-        assert_eq!(unsafe { reap_start_reload(ctx) }, RELOAD_KILL_ONE);
+        assert_eq!(reaping.start_reload(), RELOAD_KILL_ONE);
         assert_eq!(h.args(LOG_RELOADING), vec![1, 0]);
         assert_eq!(h.called(OP_RELOAD_ADD_TASK_WORKERS), 2);
         assert_eq!(h.called(OP_RELOAD_KILL_ALL), 1);
@@ -711,12 +692,12 @@ mod tests {
         ])
         .queue(OP_POP_MESSAGE, &[1, 1])
         .queue(OP_STOP_MESSAGE_WORKER, &[1, 3]);
-        let mut reaping = Reaping {
+        Reaping {
             host: &mut h,
             manager: &manager,
-        };
-        // SAFETY (test): ctx is the live Reaping.
-        unsafe { reap_service(core::ptr::from_mut(&mut reaping).cast()) };
+            warn: no_warn,
+        }
+        .service();
         assert_eq!(h.args(OP_SPAWN_EVENT_WORKER), vec![1]);
         assert_eq!(h.args(OP_SPAWN_TASK_WORKER), vec![3]);
         assert_eq!(h.called(OP_DETACH_STOPPED), 2);

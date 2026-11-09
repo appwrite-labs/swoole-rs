@@ -271,59 +271,42 @@ pub(crate) unsafe fn path_step(
 
 /// Append an index filename using the pinned logical-length/slash behavior.
 /// Logical length intentionally stays unchanged in the native class.
-/// # Safety
-/// Storage is writable through capacity; byte at `logical_length` is initialized.
-/// Name is readable/initialized and disjoint from storage. No callback occurs.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_static_index_path(
-    output: *mut u8,
-    capacity: usize,
-    logical_length: usize,
-    name: *const u8,
-    name_length: usize,
-) -> i32 {
-    if output.is_null() || logical_length >= capacity {
-        return INVALID;
-    }
-    if capacity > isize::MAX as usize {
-        return OVERFLOW;
-    }
-    // SAFETY: the caller lends `name_length` initialized bytes at `name` (null only when empty).
-    let name = match unsafe { bytes(name, name_length) } {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    // SAFETY: `logical_length < capacity`, and the contract makes that byte initialized.
-    let slash = unsafe { output.wrapping_add(logical_length).read() } != b'/';
-    let Some(end) = logical_length
-        .checked_add(usize::from(slash))
-        .and_then(|n| n.checked_add(name.len()))
-        .filter(|&n| n < capacity)
+pub(crate) fn static_index_path(output: &mut [u8], logical_length: usize, name: &[u8]) -> i32 {
+    let Some(rest) = output
+        .get_mut(logical_length..)
+        .filter(|rest| !rest.is_empty())
     else {
+        return INVALID;
+    };
+    let slash = rest.first() != Some(&b'/');
+    if usize::from(slash) + name.len() >= rest.len() {
         return OVERFLOW;
-    };
-    if slash {
-        // SAFETY: as above; writable.
-        unsafe { output.wrapping_add(logical_length).write(b'/') };
     }
-    // `logical_length + slash + name.len() == end < capacity` writable bytes, disjoint
-    // from `name`.
-    // SAFETY: as above.
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            name.as_ptr(),
-            output.wrapping_add(logical_length + usize::from(slash)),
-            name.len(),
-        );
-    };
-    // SAFETY: as above.
-    unsafe { output.wrapping_add(end).write(0) };
+    let tail = slash
+        .then_some(b'/')
+        .into_iter()
+        .chain(name.iter().copied())
+        .chain([0]);
+    for (slot, byte) in rest.iter_mut().zip(tail) {
+        *slot = byte;
+    }
     0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn index_path_appends_after_one_slash() {
+        let mut out = *b"/a\0\0\0\0\0\0";
+        assert_eq!(static_index_path(&mut out, 2, b"ix"), 0);
+        assert_eq!(&out, b"/a/ix\0\0\0");
+        let mut out = *b"/a/\0\0\0";
+        assert_eq!(static_index_path(&mut out, 2, b"ix"), 0);
+        assert_eq!(&out, b"/aix\0\0");
+        assert_eq!(static_index_path(&mut out, 2, b"ixxx"), OVERFLOW);
+        assert_eq!(static_index_path(&mut out, 6, b""), INVALID);
+    }
     unsafe fn step(
         url: &[u8],
         root: &[u8],

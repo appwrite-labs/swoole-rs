@@ -1,5 +1,6 @@
 use std::ffi::{c_int, c_void};
 use std::ptr;
+use swoole_rs_corebase::sys;
 
 /// Layout invariant: `mem` holds `size + maxlen + 4` bytes (see `StoragePlan`), so a
 /// 4-byte length header plus up to `maxlen` record bytes starting at any cursor below
@@ -311,8 +312,8 @@ unsafe fn close_pipe(record: *mut Record) {
     // SAFETY: the caller's record is live.
     for fd in unsafe { (*record).notify } {
         if fd >= 0 {
-            // SAFETY: the record owns this descriptor.
-            unsafe { libc::close(fd) };
+            // The record owns this descriptor.
+            sys::close(fd);
         }
     }
 }
@@ -360,15 +361,13 @@ pub unsafe extern "C" fn swr_v1_memory_channel_lock(record: *mut Record, lock: b
 pub unsafe extern "C" fn swr_v1_memory_channel_signal(record: *const Record, notify: bool) -> i32 {
     // SAFETY: a live record.
     let [read, write] = unsafe { (*record).notify };
-    let mut value = u64::from(notify);
-    let length = size_of::<u64>();
+    let mut value = u64::from(notify).to_ne_bytes();
+    let length = value.len();
     loop {
         let done = if notify {
-            // SAFETY: `value` lends `length` readable bytes.
-            unsafe { libc::write(write, (&raw const value).cast(), length) }
+            sys::write(write, &value)
         } else {
-            // SAFETY: `value` lends `length` writable bytes.
-            unsafe { libc::read(read, (&raw mut value).cast(), length) }
+            sys::read(read, &mut value)
         };
         if done < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
             continue;

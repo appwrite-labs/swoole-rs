@@ -138,7 +138,7 @@ pub unsafe extern "C" fn swr_v1_socket_sync(
         }
         // SAFETY: the caller's socket.
         let events = unsafe { (hooks.events)(hooks.socket, event) };
-        let waited = crate::swr_v1_socket_wait(
+        let waited = crate::fd_wait(
             hooks.fd,
             events,
             timeout_ms,
