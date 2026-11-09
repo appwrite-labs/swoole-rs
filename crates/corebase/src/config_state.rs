@@ -187,7 +187,7 @@ pub unsafe extern "C" fn swr_v1_core_set_task_tmpdir(dir: *const c_char) -> bool
     let mkdir = c"swoole_mkdir_recursive";
     match result {
         Err(TaskDir::Mkdir(1)) => {
-            let code = crate::host::errno();
+            let code = crate::sys::errno();
             let failed = CStr::from_bytes_until_nul(&scratch).unwrap_or_default();
             let failed = failed.to_string_lossy();
             crate::log::sys_warning_errno(code, mkdir, format_args!("mkdir('{failed}') failed"));

@@ -134,7 +134,7 @@ pub unsafe fn swr_v1_worker_array_lookup(
 ) -> *mut WorkerRecord {
     // SAFETY: the caller lends the complete initialized canonical array and its PID slots.
     unsafe {
-        crate::worker_registry::swr_v1_process_worker_registry_find_array(
+        crate::worker_registry::find_array(
             workers.cast(),
             count,
             core::mem::size_of::<WorkerRecord>(),

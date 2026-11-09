@@ -9,7 +9,6 @@
 #include "swoole_rs_server_shared.h"
 #include "swoole_rs_server_strings.h"
 #include "swoole_rs_server_view.h"
-#include "swoole_rs_corebase_worker_registry_view.h"
 #include "swoole_rs_port_state.h"
 #include "swoole_rs.h"
 

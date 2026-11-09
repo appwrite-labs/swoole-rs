@@ -14,11 +14,7 @@ use swoole_rs_corebase::{
     swr_v1_core_aio_max_wait_time, swr_v1_core_aio_worker_num, swr_v1_core_cpu_num,
     swr_v1_core_set_aio_default_socket, thread_async_threads,
 };
-use swoole_rs_ossupport::{
-    Pool, PoolHooks, swr_v1_os_pool_acquire, swr_v1_os_pool_complete, swr_v1_os_pool_dispatch,
-    swr_v1_os_pool_join, swr_v1_os_pool_queue_size, swr_v1_os_pool_release, swr_v1_os_pool_task_id,
-    swr_v1_os_pool_worker_num,
-};
+use swoole_rs_ossupport::{Pool, PoolHooks, pool_complete};
 use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del, swr_v1_event_current};
 use swoole_rs_reactor::reactor_upstream::prepared;
 use swoole_rs_reactor::{SocketRecord, swr_v1_reactor_deferred_push};
@@ -55,7 +51,7 @@ pub struct Event {
 pub struct AsyncThreads {
     task_num: usize,
     pipe: SocketPair,
-    pool: *const Pool,
+    pool: Option<&'static Pool>,
 }
 
 /// `SwooleTG.async_threads`.
@@ -136,8 +132,7 @@ unsafe extern "C" fn release_callback(event: *mut AsyncEvent) {
     let key = unsafe { (*event).object }.addr();
     // SAFETY: the reactor thread's live handle, which owns the pipe the notice came on.
     let threads = unsafe { &mut *current() };
-    // SAFETY: an acquired, unreleased reference.
-    if !unsafe { swr_v1_os_pool_join(threads.pool, key) } {
+    if !threads.pool.is_some_and(|pool| pool.join(key)) {
         log::warning(
             c"ThreadPool::release_thread",
             format_args!("AIO thread#{key} is missing"),
@@ -202,8 +197,10 @@ unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
     set_thread_async_threads(ptr::null_mut());
     // SAFETY: `create` boxed it; nothing refers to it any more.
     let mut threads = unsafe { Box::from_raw(threads) };
-    // SAFETY: the last reference this thread holds.
-    unsafe { swr_v1_os_pool_release(threads.pool) };
+    // The last reference this thread holds.
+    if let Some(pool) = threads.pool {
+        pool.release();
+    }
     // SAFETY: the live pipe, closed and destroyed once.
     unsafe { close(&raw mut threads.pipe, 0) };
     // SAFETY: as above.
@@ -242,7 +239,7 @@ fn create() -> *mut AsyncThreads {
             master_socket: ptr::null_mut(),
             worker_socket: ptr::null_mut(),
         },
-        pool: ptr::null(),
+        pool: None,
     });
     // SAFETY: writable storage for the pair.
     unsafe { unix_socket_new(&raw mut threads.pipe, false, libc::SOCK_STREAM) };
@@ -270,14 +267,14 @@ fn create() -> *mut AsyncThreads {
     }
     // SAFETY: the thread's live reactor.
     unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_AIO_TASK, pending) };
-    threads.pool = swr_v1_os_pool_acquire(
+    threads.pool = Some(Pool::acquire(
         HOOKS,
         usize::from(swr_v1_core_cpu_num()),
         swr_v1_core_aio_core_worker_num() as usize,
         swr_v1_core_aio_worker_num() as usize,
         swr_v1_core_aio_max_wait_time(),
         swr_v1_core_aio_max_idle_time(),
-    );
+    ));
     swr_v1_core_set_aio_default_socket(write.cast());
     let threads = Box::into_raw(threads);
     set_thread_async_threads(threads.cast());
@@ -311,18 +308,19 @@ pub unsafe extern "C" fn dispatch(request: *const AsyncEvent) -> *mut AsyncEvent
     let event = copy(unsafe { &*request });
     // SAFETY: the fresh copy, not yet shared.
     let fields = unsafe { &mut *event };
-    // SAFETY: an acquired, unreleased reference.
-    fields.task_id = unsafe { swr_v1_os_pool_task_id(threads.pool) };
+    fields.task_id = threads.pool.map_or(0, Pool::task_id);
     fields.timestamp = microtime();
     fields.pipe_socket = threads.pipe.master_socket.cast();
-    // SAFETY: as above; the event stays live until a worker sends it back.
-    unsafe { swr_v1_os_pool_dispatch(threads.pool, event.expose_provenance()) };
+    // The event stays live until a worker sends it back.
+    if let Some(pool) = threads.pool {
+        pool.dispatch(event.expose_provenance());
+    }
     threads.task_num += 1;
     event
 }
 
 /// A completed event on its reactor thread: runs its callback unless canceled.
-extern "C" fn complete(token: usize) {
+fn complete(token: usize) {
     let event = ptr::with_exposed_provenance_mut::<AsyncEvent>(token);
     // SAFETY: the worker sent the event back and no longer touches it.
     let event_ref = unsafe { &*event };
@@ -347,7 +345,7 @@ extern "C" fn complete(token: usize) {
 /// `event` is the reactor's live event for the pipe's read end.
 pub unsafe extern "C" fn callback(_reactor: *mut c_void, event: *mut Event) -> c_int {
     // SAFETY: as the caller promises.
-    if swr_v1_os_pool_complete(unsafe { (*event).fd }, complete) < 0 {
+    if pool_complete(unsafe { (*event).fd }, complete) < 0 {
         log::sys_warning(
             c"AsyncThreads::callback",
             format_args!("read() aio events failed"),
@@ -371,10 +369,10 @@ pub extern "C" fn swr_v1_async_threads_stats(
     }
     // SAFETY: the thread's live handle.
     let threads = unsafe { &*threads };
-    let pool = threads.pool;
     *task_num = i64::try_from(threads.task_num).unwrap_or(i64::MAX);
-    // SAFETY: an acquired, unreleased reference.
-    *worker_num = i64::try_from(unsafe { swr_v1_os_pool_worker_num(pool) }).unwrap_or(i64::MAX);
-    // SAFETY: as above.
-    *queue_size = i64::try_from(unsafe { swr_v1_os_pool_queue_size(pool) }).unwrap_or(i64::MAX);
+    let (workers, queued) = threads
+        .pool
+        .map_or((0, 0), |pool| (pool.worker_num(), pool.queue_size()));
+    *worker_num = i64::try_from(workers).unwrap_or(i64::MAX);
+    *queue_size = i64::try_from(queued).unwrap_or(i64::MAX);
 }

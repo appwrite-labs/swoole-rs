@@ -527,30 +527,25 @@ mod tests {
 
     #[test]
     fn shutdown_user_pids_snapshot_the_registry_without_filtering_pid_values() {
-        use crate::worker_registry::{
-            swr_v1_process_worker_registry_detach, swr_v1_process_worker_registry_free,
-            swr_v1_process_worker_registry_new, swr_v1_process_worker_registry_register,
-            swr_v1_process_worker_registry_unregister,
-        };
-        let registry = swr_v1_process_worker_registry_new();
+        let registry = Box::into_raw(Box::<WorkerRegistry>::default());
         let mut worker = 0u8;
         let pointer = core::ptr::from_mut(&mut worker).cast();
         let mut h = Script::with(&[(OP_WORKER_REGISTRY, registry as u64)]);
         unsafe {
             for pid in [10, 0, -7] {
-                swr_v1_process_worker_registry_register(registry, pid, pointer, CATEGORY_USER);
+                (*registry).register(pid, pointer, CATEGORY_USER);
             }
-            swr_v1_process_worker_registry_register(registry, 20, pointer, 1);
+            (*registry).register(20, pointer, 1);
             let mut before = user_worker_pids(&mut h);
             before.sort_unstable();
             assert_eq!(before, [-7, 0, 10]);
-            swr_v1_process_worker_registry_unregister(registry, 10);
-            swr_v1_process_worker_registry_detach(registry, 0);
-            swr_v1_process_worker_registry_register(registry, -7, pointer, 1);
-            swr_v1_process_worker_registry_register(registry, 11, pointer, CATEGORY_USER);
+            (*registry).unregister(10);
+            (*registry).detach(0);
+            (*registry).register(-7, pointer, 1);
+            (*registry).register(11, pointer, CATEGORY_USER);
             assert_eq!(user_worker_pids(&mut h), [11]);
             assert_eq!(before, [-7, 0, 10]);
-            swr_v1_process_worker_registry_free(registry);
+            drop(Box::from_raw(registry));
         }
         assert_eq!(user_worker_pids(&mut Script::default()), [] as [i32; 0]);
     }
