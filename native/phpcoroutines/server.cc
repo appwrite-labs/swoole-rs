@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 ext-src/swoole_server.cc (Swoole contributors).
 // What crates/phpserver needs of C++ that stable Rust can't express: the build's #ifdefs
-// (sockets, thread mode, the features set() checks), the C++ objects a Server holds
+// (sockets, thread mode), the C++ objects a Server holds
 // (`new`/`delete Server`, its MessageBus), the variadic PHP error reporters and the
 // zend_try frames around calls that bail out (start(), addProcess's worker).
 #include "swoole_rs_phphost.h"
 #include "swoole_server.h"
 #include "thirdparty/llhttp/llhttp.h"
 #include "swoole_rs_phpserver_server.h"
-#include "swoole_rs_phpserver_settings.h"
 #include "swoole_rs_phpserver_dispatch.h"
 #include "swoole_rs_phpserver_lifecycle.h"
 #include "swoole_rs_phpserver.h"
@@ -58,27 +57,6 @@ void dispatch_worker_start(void *server) {
         swr_v1_phpruntime_enable_hook(0);
     }
     serv->get_worker_message_bus()->set_allocator(sw_zend_string_allocator());
-}
-
-int64_t settings_get(void *, uint32_t id) {
-    switch (id) {
-#if defined(__linux__) and defined(HAVE_REUSEPORT)
-    case SWR_PHPSERVER_SET_HAVE_REUSE_PORT: return 1;
-#endif
-#ifdef SW_HAVE_COMPRESSION
-    case SWR_PHPSERVER_SET_HAVE_COMPRESSION: return 1;
-#endif
-#ifdef SW_HAVE_ZLIB
-    case SWR_PHPSERVER_SET_HAVE_ZLIB: return 1;
-#endif
-#ifdef HAVE_MSGQUEUE
-    case SWR_PHPSERVER_SET_HAVE_MSGQUEUE: return 1;
-#endif
-#ifdef SW_THREAD
-    case SWR_PHPSERVER_SET_THREAD: return 1;
-#endif
-    default: return 0;
-    }
 }
 
 void lifecycle_install(void *server, uint32_t which) {
@@ -208,8 +186,6 @@ void php_swoole_server_minit(int module_number) {
     memcpy(&swoole_server_handlers, handlers, sizeof(zend_object_handlers));
     static const swr_v1_phpserver_dispatch_host dispatch = {dispatch_message_bus, dispatch_worker_start};
     swr_v1_phpserver_dispatch_init(&dispatch);
-    static const swr_v1_phpserver_settings_host settings = {settings_get};
-    swr_v1_phpserver_settings_init(&settings);
     static const swr_v1_phpserver_lifecycle_host lifecycle = {
         lifecycle_install, lifecycle_create, lifecycle_start, lifecycle_release, lifecycle_add_process,
     };

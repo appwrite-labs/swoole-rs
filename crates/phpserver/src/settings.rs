@@ -1,12 +1,11 @@
 //! `Swoole\Server::set()`: every option's lookup, conversion, bounds and the
 //! order upstream reads them in, written straight into the Server's Rust
-//! records. C++ answers only the build switches, by id through the host table
-//! (`native/process/swoole_rs_phpserver_settings.h`).
+//! records, including the build switches config.h would define.
 use crate::server::{display_errors, fatal, server, set_last_error};
 use std::{
     ffi::{CStr, CString, c_int, c_void},
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::Ordering,
 };
 use swoole_rs_phphelpers::callable;
 use swoole_rs_server::{server_methods, view};
@@ -88,27 +87,6 @@ mod field {
     pub(super) const PATH_MAX: u32 = 116;
 }
 
-/// `swr_v1_phpserver_settings_host`.
-#[repr(C)]
-pub struct SettingsHost {
-    get: unsafe extern "C" fn(*mut c_void, u32) -> i64,
-}
-
-static HOST: AtomicPtr<SettingsHost> = AtomicPtr::new(ptr::null_mut());
-
-fn host() -> &'static SettingsHost {
-    // SAFETY: MINIT installs C++'s static table before any method runs.
-    unsafe { &*HOST.load(Ordering::Acquire) }
-}
-
-/// MINIT: the table `set()` calls.
-/// # Safety
-/// `table` lives for the process.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_settings_init(table: *const SettingsHost) {
-    HOST.store(table.cast_mut(), Ordering::Release);
-}
-
 /// `serv->reload_async = true` (`on_before_start` with coroutines on).
 pub(crate) fn set_reload_async(serv: *mut c_void) {
     // SAFETY: a live server.
@@ -143,8 +121,14 @@ unsafe fn fact(serv: *mut c_void, id: u32) -> i64 {
             target_os = "android",
             target_os = "freebsd"
         ))),
-        // SAFETY: per the caller.
-        _ => unsafe { (host().get)(serv, id) },
+        // configure's probes, as crates/ext/build.rs lists them per target OS;
+        // `set()` only reads `HAVE_REUSEPORT` on Linux.
+        f::HAVE_REUSE_PORT => i64::from(cfg!(target_os = "linux")),
+        f::HAVE_MSGQUEUE => i64::from(cfg!(any(target_os = "linux", target_os = "macos"))),
+        // config.m4 links zlib into every build.
+        f::HAVE_COMPRESSION | f::HAVE_ZLIB => 1,
+        f::THREAD => i64::from(crate::server::THREAD.load(Ordering::Relaxed)),
+        _ => 0,
     }
 }
 
