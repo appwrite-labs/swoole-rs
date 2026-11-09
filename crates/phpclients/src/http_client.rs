@@ -32,9 +32,8 @@ use swoole_rs_zend::{
         E_WARNING, IS_OBJECT, IS_REFERENCE, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         add_assoc_str_ex, add_assoc_string_ex, add_assoc_zval_ex, add_next_index_stringl,
         php_url_encode, swr_zend_http_build_query, swr_zend_property_merge,
-        swr_zend_sensitive_parameter, swr_zend_url_decode, swr_zval_empty_string,
-        swr_zval_try_addref, zend_class_entry, zend_object, zend_object_handlers, zend_string,
-        zval, zval_ptr_dtor,
+        swr_zend_sensitive_parameter, swr_zend_url_decode, swr_zval_try_addref, zend_class_entry,
+        zend_object, zend_object_handlers, zend_string, zval, zval_ptr_dtor,
     },
     throw_constructed_twice, throw_exception, type_of, unset_property_deny, value,
 };
@@ -379,8 +378,8 @@ pub unsafe extern "C" fn swr_v1_phpclients_parse_set_cookies(
     let plan = swoole_rs_clients::cookie(bytes);
     let mut cookie = MaybeUninit::<zval>::uninit();
     if plan.value_length == 0 {
-        // SAFETY: a writable zval.
-        unsafe { swr_zval_empty_string(cookie.as_mut_ptr()) };
+        // SAFETY: a writable zval; the empty string is interned.
+        unsafe { value::set_str(cookie.as_mut_ptr(), value::empty_string()) };
     } else {
         let text = bytes
             .get(plan.value_offset..plan.value_offset + plan.value_length)
@@ -2307,12 +2306,10 @@ fn get_peer_cert(call: &Call) {
 /// the empty string.
 fn payload(call: &Call, n: u32, string: Option<*mut zend_string>) -> zval {
     let mut payload = MaybeUninit::<zval>::uninit();
-    match string {
-        // SAFETY: a writable zval borrowing the frame's string (no reference).
-        Some(string) => unsafe { value::set_str(payload.as_mut_ptr(), string) },
-        // SAFETY: a writable zval.
-        None => unsafe { swr_zval_empty_string(payload.as_mut_ptr()) },
-    }
+    let string = string.unwrap_or_else(value::empty_string);
+    // SAFETY: a writable zval borrowing the frame's string (no reference), or
+    // the interned empty string.
+    unsafe { value::set_str(payload.as_mut_ptr(), string) };
     let _ = (call, n);
     // SAFETY: initialised above.
     unsafe { payload.assume_init() }

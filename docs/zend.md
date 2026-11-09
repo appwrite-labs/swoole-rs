@@ -9,8 +9,9 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
   (`$PHP_CONFIG`; `build_hybrid.py` passes `--php-config`), so struct layouts
   follow that PHP's version and ZTS mode. bindgen's layout assertions fail the
   build on a mismatch. `src/shim*.c` are the macros and inline functions bindgen
-  can't see; add one there when a macro is version-dependent or touches an
-  anonymous union (`create_object`).
+  can't see that have to stay C ([What stays C](#what-stays-c)); anything else
+  is Rust over the bindgen'd layouts (`zend::value::set`, `empty_string`,
+  `module_loaded`, a `php_stream`'s bitfields).
 - `crates/zend`: the safe layer. `Call` (argument count, `$this`, `long`/`double`
   parsed as `Z_PARAM_LONG`/`Z_PARAM_DOUBLE`, `set_long`/`set_bool`), `Object<T>`
   (`struct { T data; zend_object std; }`: `create`, `data`, `install`, `dtor`),
@@ -153,6 +154,43 @@ ZTS, raises a whole-thread exit, so only ZTS builds keep a record per scope;
 on NTS a scope is a plain `zend_try`. Callbacks invoked below Rust must
 catch C++ exceptions inside the native body, return a typed fault, and rethrow
 only after Rust returns.
+
+## What stays C
+
+The C compiled from `crates/` into `swoole.so` (outside `crates/oracle`) is
+what Rust can't express, or can't express without more `unsafe`. Each file's
+header names its reasons from this list:
+
+- **bailout**: the call can run PHP code (a destructor, `__get`, an
+  autoloader, an error handler) that bails out, and `zend_try`'s `setjmp` must
+  sit in a C frame ([Calling PHP](#calling-php-bailouts)).
+- **globals**: it reads or writes `EG`, `CG`, `PG`, `SG`, `BG`, `FG`, `OG` or
+  `SIGG`. Under ZTS these are TSRM slots reached through a thread-local cache
+  and offsets only the macros know.
+- **allocator**: it allocates or frees through Zend's allocator (`emalloc`,
+  `pemalloc`, `zend_string_*`, `array_init`, `OBJ_RELEASE`, `smart_str`), whose
+  entry points take the caller's file and line in debug builds
+  (`ZEND_FILE_LINE_DC`).
+- **version**: the macro, field or signature differs between the PHP versions
+  CI builds (`PHP_VERSION_ID`, a feature `#ifdef`), or the member sits in an
+  anonymous union whose bindgen name changes (`ce->create_object`,
+  `ce->parent`); the same holds for library versions (`ARES_VERSION`).
+- **variadic**: a C variadic or `va_list` function, which stable Rust can't
+  define (`crates/corebase/src/format.c`, `crates/ffi/src/fatal.c`,
+  `shim_errors.c`, `shim_host.c`).
+- **private**: the layout is private to a source file or library release:
+  `zend_closure` behind `ZEND_CLOSURE_OBJECT`, `zend_execute.c`'s static helpers
+  (`crates/phpstdext/src/stdext.c`), `pdo_dbh_t`, ext/sockets' `php_socket`,
+  liburing's ring (`crates/uring-sys/src/shim.c`).
+- **budget**: a `static inline` over public fields (`Z_TRY_ADDREF_P`,
+  `ZVAL_COPY`, `ZVAL_STR`, `GC_ADDREF`, `Z_OBJPROP_P`, `ZEND_HASH_FOREACH`)
+  whose callers hold raw pointers: a Rust port adds `unsafe` and removes none,
+  which `tools/budget.py` refuses. One moves once its callers hold a `Value`
+  or `Owned`, where it can be a safe method.
+
+A shim that fits none of these is a port waiting to happen: write it in
+`crates/zend` against the bindgen'd layout, as `zend::module_loaded` replaced
+`swr_zend_module_loaded`.
 
 ## Stdext
 

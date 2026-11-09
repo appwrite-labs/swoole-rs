@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): private (pdo_dbh_t, from ext/pdo headers
+ * bindgen does not read), version (REGISTER_PDO_CLASS_CONST_LONG_DEPRECATED_85) and
+ * globals (EG(persistent_list)). */
 #include "shim_pdo.h"
 #include "ext/pdo/php_pdo.h"
 #include "ext/pdo/php_pdo_driver.h"

@@ -1,3 +1,6 @@
+/* Callables kept past a call. Stays C (docs/zend.md, What stays C): allocator
+ * (zval_ptr_dtor, efree, OBJ_RELEASE), private (ZEND_CLOSURE_OBJECT reaches into
+ * zend_closures.c's struct), and swr_zend_zval_release is a body for zend_try. */
 #include "callable.h"
 
 void swr_zend_callable_hold(swr_zend_callable *callable) {

@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/* c-ares's constants and options. Stays C (docs/zend.md, What stays C): version
+ * (the server API and ares_options members depend on ARES_VERSION, and the
+ * status and option values are macros of the installed headers). */
 #include <ares.h>
 #include <ares_version.h>
 #include <arpa/inet.h>

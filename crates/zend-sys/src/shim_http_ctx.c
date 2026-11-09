@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): globals (PG, SG(rfc1867_uploaded_files)),
+ * allocator (estrndup, array_init_size, zend_string_*) and version
+ * (PG(arg_separator) became a zend_string in 8.5). */
 #include "shim_http_ctx.h"
 #include "SAPI.h"
 #include "main/php_variables.h"

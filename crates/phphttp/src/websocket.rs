@@ -38,7 +38,7 @@ use swoole_rs_zend::{
         zend_update_property, zend_value, zval, zval_ptr_dtor,
     },
     type_of,
-    value::{self, get_long, get_string, obj_of},
+    value::{self, empty_string, get_long, get_string, obj_of},
 };
 
 static SERVER: Class = Class::new();
@@ -1024,7 +1024,7 @@ fn ping(call: &Call) {
         call.arity(1, 2).ok()?;
         let fd = call.long(1, 0).ok()?;
         let payload = call.str(2).ok()?;
-        let mut data = zval_of(payload.unwrap_or_else(empty));
+        let mut data = zval_of(payload.unwrap_or_else(empty_string));
         let frame = FrameObject::new(
             &raw mut data,
             i64::from(OPCODE_PING),
@@ -1038,12 +1038,6 @@ fn ping(call: &Call) {
         Some(push_frame(server, fd, packed.bytes()))
     };
     call.set_bool(run().unwrap_or(false));
-}
-
-/// `zend_empty_string`, borrowed.
-fn empty() -> *mut zend_string {
-    // SAFETY: Zend's interned empty string lives for the process.
-    unsafe { swoole_rs_zend::sys::swr_zend_stream_empty_string() }
 }
 
 fn is_established(call: &Call) {
@@ -1331,7 +1325,11 @@ pub(crate) fn response_disconnect(
     code: i64,
     reason: *mut zend_string,
 ) -> bool {
-    let mut data = zval_of(if reason.is_null() { empty() } else { reason });
+    let mut data = zval_of(if reason.is_null() {
+        empty_string()
+    } else {
+        reason
+    });
     let frame = FrameObject::new(
         &raw mut data,
         i64::from(OPCODE_CLOSE),
@@ -1669,7 +1667,7 @@ pub(crate) fn recv(
         }
         if received == 0 {
             // SAFETY: the empty interned string.
-            unsafe { swr_zval_str(return_value, empty()) };
+            unsafe { swr_zval_str(return_value, empty_string()) };
             return;
         }
         if length < 2 {
