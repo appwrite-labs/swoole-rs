@@ -7,8 +7,8 @@ replaced.json  upstream first-party lines (src/, ext-src/, include/; not the emb
                PHP library) that the all-modules patch set deletes, over the pinned total:
                the minimal net diff after applying every patch, so glue a patch adds and a later
                one removes never counts.
-unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/budget.py);
-               the per-crate table goes to the step summary.
+unsafe.json    `unsafe` blocks, fns and impls in non-test crate code (tools/budget.py), and
+               how many crates forbid unsafe_code; the per-crate table goes to the step summary.
 speed.json     callgrind instructions per request, hybrid over upstream, from a merge-tier
                run's callgrind job (--callgrind): how many workloads beat upstream and the
                slowest one. speed.md, beside it, is the per-workload table the badge links to.
@@ -160,7 +160,8 @@ def main():
         if lines:
             print(f'{lines:6} {path}')
     deleted, total = replaced(files)
-    unsafe = budget.counts()['unsafe']
+    counts = budget.counts()
+    unsafe, unforbidden = counts['unsafe'], counts['unforbidden']
     not_applicable = json.loads(NOT_APPLICABLE.read_text())
     if summary := os.environ.get('GITHUB_STEP_SUMMARY'):
         rows = ''.join(f'| {crate} | {n} |\n' for crate, n in sorted(unsafe.items(), key=lambda item: -item[1]))
@@ -170,7 +171,8 @@ def main():
                       f'| PHPT not applicable | reason |\n| --- | --- |\n{excluded}')
     badges = {
         'replaced': endpoint('upstream C++ replaced', f'{100 * deleted / total:.1f}% of {total / 1000:.0f}k lines'),
-        'unsafe': endpoint('unsafe blocks', f'{sum(unsafe.values()):,}'),
+        'unsafe': endpoint('unsafe blocks', f'{sum(unsafe.values()):,} · '
+                           f'{len(unforbidden) - sum(unforbidden.values())}/{len(unforbidden)} crates safe'),
     }
     if args.phpt:
         rows = [row for path in args.phpt for row in json.loads(path.read_text())]

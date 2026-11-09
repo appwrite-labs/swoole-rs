@@ -27,7 +27,9 @@ and give a reason a reviewer can judge. Deny a lint once its count reaches zero.
 The one per-crate exception: each `lib.rs` denies `undocumented_unsafe_blocks` and
 `multiple_unsafe_ops_per_block` under `cfg_attr(not(test), ...)`. Every non-test
 unsafe block states its invariant in a `// SAFETY:` comment and does one operation;
-test code is exempt.
+test code is exempt. A crate with no unsafe left adds `#![forbid(unsafe_code)]` to its
+`lib.rs` (Cargo's `[lints] workspace = true` takes no per-crate additions), and
+`tools/budget.py` fails a PR that removes it.
 
 Benchmarks use optimized builds and run without concurrent build or test load.
 Build, profile and benchmark output goes under the worktree's `target/` (a second

@@ -16,8 +16,8 @@ lines the all-modules patch set deletes, and the PHPT badge counts tests the hyb
 passes in any of a merge-tier run's PHPT jobs, over those that can apply to 64-bit Linux
 (`corpus/upstream/not_applicable.json` lists the rest), naming the commit it measured. The speed badge links to the latest merge-tier callgrind
 results, per workload, against upstream. The unsafe badge counts `unsafe` blocks, fns and impls in
-non-test crate code; `tools/budget.py` (PR tier) fails a PR that raises any
-crate's count above `main`'s, and counts the data layouts in
+non-test crate code and how many crates forbid `unsafe_code`; `tools/budget.py` (PR tier)
+fails a PR that raises any crate's count above `main`'s or drops a crate's `forbid`, and counts the data layouts in
 [Data layout](docs/migration.md#data-layout) the same way.
 
 A gradual C/C++ to Rust migration of the [Swoole](https://github.com/swoole/swoole-src)

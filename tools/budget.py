@@ -6,6 +6,8 @@
   lists    LinkedList and VecDeque
   bools    arrays and Vecs of bool, where a bitset belongs
   caches   statics and types named for a cache: redesign the slow path instead
+  unforbidden  1 unless the crate's lib.rs has `#![forbid(unsafe_code)]`, so a crate
+               the compiler verifies safe stays that way
 
 See docs/migration.md, Data layout.
 
@@ -34,6 +36,7 @@ KINDS = {
     'bools': re.compile(r'Vec<bool>|\[bool;'),
     'caches': re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:static|struct|enum|type)\s+\w*(?i:cache)'),
 }
+FORBID = re.compile(r'^#!\[forbid\([^)]*\bunsafe_code\b', re.M)
 TEST_MOD = re.compile(r'^(\s*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*([;{])')
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 
@@ -75,7 +78,7 @@ def count_file(path, test_files):
 
 def counts(root=ROOT):
     """{kind: {crate: matches}} over crates/*/ non-test Rust sources."""
-    result = {kind: {} for kind in KINDS}
+    result = {kind: {} for kind in [*KINDS, 'unforbidden']}
     for crate in sorted(p for p in (root / 'crates').iterdir() if (p / 'Cargo.toml').exists()):
         files = sorted(p for p in crate.rglob('*.rs')
                        if not {'tests', 'benches', 'target'} & set(p.relative_to(crate).parts[:-1]))
@@ -84,6 +87,7 @@ def counts(root=ROOT):
             per_file[path.resolve()] = count_file(path, test_files)
         for kind in KINDS:
             result[kind][crate.name] = sum(n[kind] for path, n in per_file.items() if path not in test_files)
+        result['unforbidden'][crate.name] = 0 if FORBID.search((crate / 'src/lib.rs').read_text()) else 1
     return result
 
 
