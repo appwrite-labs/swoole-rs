@@ -108,21 +108,47 @@ static void signal_register(int signo, swr_v1_hook_previous_signal *previous) {
     }
 }
 
-static void signal_listen(int signo, swr_v1_hook_previous_signal *previous, bool on) {
-    if (!on) {
-        auto handler = reinterpret_cast<swoole::SignalHandler>(previous->handler);
 #ifdef SW_USE_THREAD_CONTEXT
-        swoole_event_defer([signo, handler](void *) { swoole_signal_set(signo, handler); }, nullptr);
-#else
-        swoole_signal_set(signo, handler);
-#endif
-        return;
+// A deferred signal change: restore `handler`, or register `previous`.
+struct SignalChange {
+    int signo;
+    SignalHandler handler;
+    swr_v1_hook_previous_signal *previous;
+};
+
+static void signal_change(void *data) {
+    std::unique_ptr<SignalChange> change(static_cast<SignalChange *>(data));
+    if (change->previous) {
+        signal_register(change->signo, change->previous);
+    } else {
+        swoole_signal_set(change->signo, change->handler);
     }
-#ifdef SW_USE_THREAD_CONTEXT
-    swoole_event_defer([signo, previous](void *) { signal_register(signo, previous); }, nullptr);
-#else
-    signal_register(signo, previous);
+}
+
+static void signal_change_drop(void *data) {
+    delete static_cast<SignalChange *>(data);
+}
 #endif
+
+static void signal_listen(int signo, swr_v1_hook_previous_signal *previous, bool on) {
+    auto handler = reinterpret_cast<SignalHandler>(previous->handler);
+#ifdef SW_USE_THREAD_CONTEXT
+    auto *change = new SignalChange{signo, handler, on ? previous : nullptr};
+    if (swr_v1_reactor_deferred_push(&sw_reactor()->defer_tasks, signal_change, change, signal_change_drop) != 0) {
+        delete change;
+        throw std::bad_alloc();
+    }
+#else
+    if (on) {
+        signal_register(signo, previous);
+    } else {
+        swoole_signal_set(signo, handler);
+    }
+#endif
+}
+
+static bool signal_listeners_done(size_t *) {
+    return SwooleG.signal_async_listener_num == 0;
 }
 
 static void signal_waiting(bool on) {
@@ -131,9 +157,7 @@ static void signal_waiting(bool on) {
         return;
     }
     if (!sw_reactor()->isset_exit_condition(Reactor::EXIT_CONDITION_CO_SIGNAL_LISTENER)) {
-        sw_reactor()->set_exit_condition(
-            Reactor::EXIT_CONDITION_CO_SIGNAL_LISTENER,
-            [](Reactor *reactor, size_t &event_num) -> bool { return SwooleG.signal_async_listener_num == 0; });
+        swr_v1_event_set_exit_condition(Reactor::EXIT_CONDITION_CO_SIGNAL_LISTENER, signal_listeners_done);
     }
     SwooleG.signal_async_listener_num++;
 }
