@@ -1,12 +1,8 @@
 //! Object and imported-resource custody for Coroutine Socket.
 use super::{Data, SocketObject};
-use crate::{native, socket_options::Protocol};
+use crate::native::{self, Co};
 use std::ptr;
 use swoole_rs_zend::{bailout::Bailout, sys as z, type_of};
-
-fn leaf(bailed: u8) -> Result<(), Bailout> {
-    if bailed == 0 { Ok(()) } else { Err(Bailout) }
-}
 
 fn data(object: *mut z::zend_object) -> *mut Data {
     object.wrapping_byte_sub(SocketObject::OFFSET).cast()
@@ -23,19 +19,21 @@ pub(super) unsafe fn release(object: *mut z::zend_object) -> Result<(), Bailout>
     if socket.is_null() {
         return Ok(());
     }
+    // SAFETY: the object's live core socket.
+    let co = unsafe { Co::new(socket) };
     // SAFETY: the embedded initialized zval outlives the native destructor leaf.
     let stream = unsafe { &raw mut (*state).stream };
     // SAFETY: this embedded slot is an initialized zval.
     if unsafe { type_of(stream) } != z::IS_UNDEF {
-        // SAFETY: the still-owned core socket relinquishes the fd before the stream closes it.
-        unsafe { native::swoole_socket_coro_move_fd(socket) };
+        // The still-owned core socket relinquishes the fd before the stream closes it.
+        co.move_fd();
         // SAFETY: the object owns this stream reference; the leaf contains PHP destructor bailouts.
         if unsafe { z::swr_zend_try_zval_dtor(stream) } != 0 {
             return Err(Bailout);
         }
     }
     // SAFETY: the object's core ownership is transferred exactly once to its native destructor.
-    leaf(unsafe { native::swoole_socket_coro_destroy(socket) })
+    unsafe { native::free_socket(socket) }
 }
 
 /// Free the length callback, then close an imported stream or the owned core socket.
@@ -45,22 +43,20 @@ pub(super) unsafe fn close(object: *mut z::zend_object) -> Result<(), Bailout> {
     let state = data(object);
     // SAFETY: copy the live core pointer before effects can reenter PHP.
     let socket = unsafe { (*state).socket };
-    // SAFETY: the native projection returns the socket's real Protocol record.
-    let protocol = unsafe { native::swoole_socket_coro_protocol(socket) }.cast::<Protocol>();
-    // SAFETY: copy the owned callback pointer without borrowing the protocol across PHP.
-    let callable = unsafe { (*protocol).private_data_1 };
+    // SAFETY: the open core socket of the live object.
+    let socket = unsafe { Co::new(socket) };
+    // Copy the owned callback pointer without borrowing the protocol across PHP.
+    let callable = socket.record().protocol.private_data_1;
     if !callable.is_null() {
-        // SAFETY: the protocol owns this C++ facade; its destructor contains the Rust callable owner.
-        leaf(unsafe { native::swoole_socket_coro_callable_free(callable) })?;
-        // SAFETY: retain upstream's ordering: publish null only after callback destruction returns.
-        unsafe { (*protocol).private_data_1 = ptr::null_mut() };
+        native::callable_free(callable)?;
+        // Upstream's ordering: publish null only after callback destruction returns.
+        socket.record().protocol.private_data_1 = ptr::null_mut();
     }
     // SAFETY: the live object's embedded stream slot stays allocated through the close leaf.
     let stream_value = unsafe { &raw mut (*state).stream };
     // SAFETY: the embedded zval was initialized when this object was created.
     if unsafe { type_of(stream_value) } == z::IS_UNDEF {
-        // SAFETY: the owned socket remains live while its core close runs and contains bailouts.
-        return leaf(unsafe { native::swoole_socket_coro_close_native(socket) });
+        return socket.close_trapped().map(drop);
     }
     // SAFETY: this is the initialized imported stream zval used by the original no-verify lookup.
     let stream = unsafe { z::swr_zend_stream_from_zval(stream_value) };
@@ -82,8 +78,8 @@ pub(super) unsafe fn close(object: *mut z::zend_object) -> Result<(), Bailout> {
             type_info: z::IS_UNDEF,
         }
     };
-    // SAFETY: the imported stream closed the fd; the core socket must no longer own it.
-    unsafe { native::swoole_socket_coro_move_fd(socket) };
+    // The imported stream closed the fd; the core socket must no longer own it.
+    socket.move_fd();
     Ok(())
 }
 
@@ -132,14 +128,14 @@ pub(super) unsafe fn make_object(socket: native::Socket) -> Result<*mut z::zend_
 
 unsafe fn checked_object(socket: native::Socket) -> Result<*mut z::zend_object, Bailout> {
     // SAFETY: a freshly constructed core socket supports the scalar descriptor query.
-    if unsafe { native::swoole_socket_coro_fd(socket) } < 0 {
+    if unsafe { Co::new(socket) }.fd() < 0 {
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         crate::net::warn_sys("new Socket() failed", error);
         if swoole_rs_zend::bailout::pending() {
             return Err(Bailout);
         }
         // SAFETY: no object took ownership of this failed core socket.
-        leaf(unsafe { native::swoole_socket_coro_destroy(socket) })?;
+        unsafe { native::free_socket(socket) }?;
         return Ok(ptr::null_mut());
     }
     // SAFETY: the validated core socket transfers ownership to the new PHP object.
@@ -149,9 +145,7 @@ unsafe fn checked_object(socket: native::Socket) -> Result<*mut z::zend_object, 
 /// # Safety
 /// The native socket kind follows the existing Swoole SDK's constructor contract.
 pub(super) unsafe fn create_kind(kind: i32) -> Result<*mut z::zend_object, Bailout> {
-    let mut socket = ptr::null_mut();
-    // SAFETY: the native constructor writes one uniquely owned core socket and contains bailouts.
-    leaf(unsafe { native::swoole_socket_coro_new_type(kind, &raw mut socket) })?;
+    let socket = native::make(-1, 0, kind, 0, false)?;
     // SAFETY: the returned core socket is uniquely owned and not yet published.
     unsafe { checked_object(socket) }
 }
@@ -159,9 +153,7 @@ pub(super) unsafe fn create_kind(kind: i32) -> Result<*mut z::zend_object, Bailo
 /// # Safety
 /// The caller transfers this descriptor, classified by its native Swoole socket kind.
 pub(crate) unsafe fn from_fd(fd: i32, kind: i32) -> Result<*mut z::zend_object, Bailout> {
-    let mut socket = ptr::null_mut();
-    // SAFETY: the constructor takes this descriptor and writes the owned core socket.
-    leaf(unsafe { native::swoole_socket_coro_new_fd(fd, kind, &raw mut socket) })?;
+    let socket = native::make(fd, 0, kind, 0, false)?;
     // SAFETY: the returned core socket is uniquely owned and not yet published.
     unsafe { checked_object(socket) }
 }
@@ -174,11 +166,7 @@ pub(super) unsafe fn from_fd_family(
     kind: i32,
     protocol: i32,
 ) -> Result<*mut z::zend_object, Bailout> {
-    let mut socket = ptr::null_mut();
-    // SAFETY: the native constructor takes the descriptor and contains any PHP bailout.
-    leaf(unsafe {
-        native::swoole_socket_coro_new_fd_family(fd, domain, kind, protocol, &raw mut socket)
-    })?;
+    let socket = native::make(fd, domain, kind, protocol, true)?;
     // SAFETY: the returned core socket is uniquely owned and not yet published.
     unsafe { checked_object(socket) }
 }
@@ -230,10 +218,12 @@ pub(crate) unsafe fn import_stream(
     unsafe { z::swr_zval_try_addref(held_stream) };
     // SAFETY: copy the live core socket pointer without retaining a data borrow.
     let socket = unsafe { (*state).socket };
-    // SAFETY: the native projection returns the actual Rust network record of this core socket.
-    let record = unsafe { native::swoole_client_coro_socket_record(socket) };
-    // SAFETY: preserve the original one-bit nonblock assignment, rather than normalize other bits.
-    unsafe { (*record).output.nonblock = u8::from(nonblock & 1 != 0) };
+    // SAFETY: the new object's live core socket.
+    let socket = unsafe { Co::new(socket) };
+    // Preserve the original one-bit nonblock assignment, rather than normalize other bits.
+    if let Some(record) = socket.net() {
+        record.output.nonblock = u8::from(nonblock & 1 != 0);
+    }
     Ok(object)
 }
 
@@ -253,23 +243,14 @@ pub(super) unsafe fn construct_core(
     if unsafe { z::swr_zend_try_hook(Some(native::swoole_rs_check_reactor)) } != 0 {
         return Err(Bailout);
     }
-    let mut socket = ptr::null_mut();
-    // SAFETY: the original constructor arguments are narrowed to their declared native types.
-    leaf(unsafe {
-        native::swoole_socket_coro_new_family(
-            domain as i32,
-            kind as i32,
-            protocol as i32,
-            &raw mut socket,
-        )
-    })?;
-    // SAFETY: copy the descriptor before destruction can change errno.
-    if unsafe { native::swoole_socket_coro_fd(socket) } >= 0 {
+    let socket = native::make(-1, domain as i32, kind as i32, protocol as i32, true)?;
+    // SAFETY: the new socket; copy the descriptor before destruction can change errno.
+    if unsafe { Co::new(socket) }.fd() >= 0 {
         return Ok((socket, 0));
     }
     let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     // SAFETY: no object has taken this failed allocation's ownership.
-    leaf(unsafe { native::swoole_socket_coro_destroy(socket) })?;
+    unsafe { native::free_socket(socket) }?;
     Ok((ptr::null_mut(), error))
 }
 

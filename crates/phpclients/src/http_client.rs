@@ -8,12 +8,7 @@ use crate::{
     http_native as native,
     http_request::{self as request, Compress},
     llhttp::{self, Parser, Settings},
-    native::{
-        Socket, swoole_client_coro_is_connected, swoole_rs_php_error, swoole_socket_coro_address,
-        swoole_socket_coro_check_liveness, swoole_socket_coro_error,
-        swoole_socket_coro_getpeername, swoole_socket_coro_getsockname,
-        swoole_socket_coro_sendfile, swoole_socket_coro_unconstructed,
-    },
+    native::{Co, Socket, swoole_rs_php_error, unconstructed},
     socket::socket_of,
 };
 use libc::{c_char, c_int, c_void};
@@ -286,16 +281,8 @@ fn socket_error_properties(object: *mut zend_object, socket: Socket) -> c_int {
 
 /// The socket's `errCode` and `errMsg`.
 fn socket_error<'a>(socket: Socket) -> (c_int, &'a CStr) {
-    let mut message: *const c_char = ptr::null();
-    // SAFETY: a live socket; `message` is a writable local.
-    let code = unsafe { swoole_socket_coro_error(socket, &raw mut message) };
-    let message = if message.is_null() {
-        c""
-    } else {
-        // SAFETY: errMsg is a NUL-terminated string the socket keeps.
-        unsafe { CStr::from_ptr(message) }
-    };
-    (code, message)
+    // SAFETY: every caller passes the client's live socket.
+    unsafe { Co::new(socket) }.error()
 }
 
 /// Fill `rv` as `RETURN_ZVAL(property, 1, 0)` does.
@@ -520,6 +507,13 @@ impl Client {
         unsafe { (*self.conn).socket }
     }
 
+    /// The live socket, while the client has one.
+    fn co(&self) -> Option<Co> {
+        let socket = self.socket();
+        // SAFETY: a socket the conn holds is live until its close hook clears it.
+        (!socket.is_null()).then(|| unsafe { Co::new(socket) })
+    }
+
     fn zsocket(&self) -> *mut zval {
         // SAFETY: as above.
         unsafe { &raw mut (*self.conn).zsocket }
@@ -538,9 +532,7 @@ impl Client {
 
     /// `is_available`: connected, else errCode says no connection.
     fn is_available(&self) -> bool {
-        let socket = self.socket();
-        // SAFETY: a live socket.
-        if socket.is_null() || !unsafe { swoole_client_coro_is_connected(socket) } {
+        if !self.co().is_some_and(Co::is_connected) {
             set_error_properties(self.object, NO_CONNECTION, strerror(NO_CONNECTION));
             return false;
         }
@@ -597,12 +589,11 @@ impl Client {
             // SAFETY: the client's WebSocket state and a live array.
             unsafe { native::swoole_http_client_coro_ws_apply(self.ws, settings) };
         }
-        let socket = self.socket();
-        if !socket.is_null() {
+        if let Some(socket) = self.co() {
             crate::socket_options::apply(socket, settings, crate::socket_options::ALL);
             if !swoole_rs_zend::bailout::pending() {
                 // SAFETY: a live socket.
-                unsafe { native::swoole_http_client_coro_apply(socket) };
+                unsafe { native::swoole_http_client_coro_apply(socket.as_ptr()) };
             }
         }
     }
@@ -678,8 +669,7 @@ impl Client {
 
     fn keep_liveness(&mut self) -> bool {
         let socket = self.socket();
-        // SAFETY: a live socket.
-        if socket.is_null() || !unsafe { swoole_socket_coro_check_liveness(socket) } {
+        if !self.co().is_some_and(Co::check_liveness) {
             if !socket.is_null() {
                 // SAFETY: as above.
                 unsafe { native::swoole_http_client_coro_check_bound(socket, EVENT_RDWR) };
@@ -979,8 +969,9 @@ impl Client {
 
     fn sendfile(&self, path: &[u8], offset: i64, size: i64) -> bool {
         let path = c_bytes(path);
-        // SAFETY: a live socket and a NUL-terminated path.
-        unsafe { swoole_socket_coro_sendfile(self.socket(), path.as_ptr(), offset, size) }
+        // SAFETY: a NUL-terminated path.
+        self.co()
+            .is_some_and(|socket| unsafe { socket.sendfile(path.as_ptr(), offset, size) })
     }
 
     fn send_failed(&mut self) -> bool {
@@ -1093,7 +1084,8 @@ impl Client {
                 return false;
             }
             // SAFETY: as above.
-            if unsafe { crate::native::record(socket) }
+            if unsafe { Co::new(socket) }
+                .net()
                 .is_some_and(|record| record.output.close_wait != 0)
             {
                 break;
@@ -1333,7 +1325,7 @@ impl Client {
         }
         if self.in_callback {
             // SAFETY: a live socket.
-            if let Some(record) = unsafe { crate::native::record(socket) } {
+            if let Some(record) = unsafe { Co::new(socket) }.net() {
                 record.output.close_wait = 1;
             }
             return true;
@@ -1869,7 +1861,7 @@ fn client<'a>(call: &Call) -> &'a mut Client {
     let client = this(call).client;
     if client.is_null() {
         // SAFETY: a fatal error; it does not return.
-        unsafe { swoole_socket_coro_unconstructed() };
+        unsafe { unconstructed() };
     }
     // SAFETY: a constructed client lives as long as its object.
     unsafe { &mut *client }
@@ -2327,18 +2319,16 @@ fn getsockname(call: &Call) {
     if !client.is_available() {
         return call.set_bool(false);
     }
-    let socket = client.socket();
-    // SAFETY: a connected socket.
-    if !unsafe { swoole_socket_coro_getsockname(socket) } {
-        socket_error_properties(call.this(), socket);
+    let Some(socket) = client.co() else {
+        return call.set_bool(false);
+    };
+    if !socket.getsockname() {
+        socket_error_properties(call.this(), socket.as_ptr());
         return call.set_bool(false);
     }
     call.set_array();
-    let mut port = 0;
-    // SAFETY: as above, and a writable local.
-    let address = unsafe { swoole_socket_coro_address(socket, &raw mut port) };
-    // SAFETY: the socket's NUL-terminated address.
-    set_endpoint(call, unsafe { CStr::from_ptr(address) }, port);
+    let (address, port) = socket.address();
+    set_endpoint(call, address, port);
 }
 
 fn set_endpoint(call: &Call, address: &CStr, port: c_int) {
@@ -2354,19 +2344,14 @@ fn getpeername(call: &Call) {
     if !client.is_available() {
         return call.set_bool(false);
     }
-    let socket = client.socket();
-    let mut address = [0 as c_char; 256];
-    let mut port = 0;
-    // SAFETY: a connected socket and writable locals of the sizes given.
-    let found = unsafe {
-        swoole_socket_coro_getpeername(socket, address.as_mut_ptr(), address.len(), &raw mut port)
-    };
-    if !found {
-        socket_error_properties(call.this(), socket);
+    let Some(socket) = client.co() else {
         return call.set_bool(false);
-    }
-    // SAFETY: the hook NUL-terminates what it writes.
-    set_endpoint(call, unsafe { CStr::from_ptr(address.as_ptr()) }, port);
+    };
+    let Some((address, port)) = socket.getpeername() else {
+        socket_error_properties(call.this(), socket.as_ptr());
+        return call.set_bool(false);
+    };
+    set_endpoint(call, &address, port);
 }
 
 /// `getPeerCert(): string|false`.

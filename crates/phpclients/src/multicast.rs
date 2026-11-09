@@ -5,7 +5,7 @@
 //! (0), `FAILURE` (-1) or 1 for an option it leaves to the caller, and
 //! `Err(Stop)` once a warning's handler bailed out.
 use crate::{
-    native::{self, Socket},
+    native::Co,
     socket_options::{Stop, checked, errno, fd, long, string, text},
 };
 use libc::{c_char, c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6, socklen_t};
@@ -69,7 +69,7 @@ unsafe extern "C" {
 /// The socket a helper works on.
 #[derive(Clone, Copy)]
 struct Sock {
-    socket: Socket,
+    socket: Co,
     fd: c_int,
     domain: c_int,
     #[cfg(target_vendor = "apple")]
@@ -77,10 +77,8 @@ struct Sock {
 }
 
 impl Sock {
-    fn of(socket: Socket) -> Self {
-        let mut kind = 0;
-        // SAFETY: an open socket and a writable type.
-        let domain = unsafe { native::swoole_socket_coro_family(socket, &raw mut kind) };
+    fn of(socket: Co) -> Self {
+        let (domain, kind) = socket.family();
         #[cfg(not(target_vendor = "apple"))]
         let _ = kind;
         Self {
@@ -110,9 +108,8 @@ fn warn(message: &[u8]) -> Result<(), Stop> {
 
 /// `PHP_SWOOLE_SOCKET_ERROR`: the socket's error code, and the warning
 /// unless the error only means "try again".
-fn socket_error(socket: Socket, message: &str, error: c_int) -> Result<(), Stop> {
-    // SAFETY: an open socket.
-    unsafe { native::swoole_socket_coro_set_err_code(socket, error) };
+fn socket_error(socket: Co, message: &str, error: c_int) -> Result<(), Stop> {
+    socket.set_err_code(error);
     if error == libc::EAGAIN || error == libc::EWOULDBLOCK || error == libc::EINPROGRESS {
         return Ok(());
     }
@@ -575,7 +572,7 @@ pub(crate) fn interface_index(address: in_addr) -> Result<Option<c_uint>, Stop> 
 
 /// `php_do_setsockopt_ip_mcast`.
 pub(crate) fn set_ip(
-    socket: Socket,
+    socket: Co,
     level: c_int,
     name: c_int,
     value: *mut zval,
@@ -609,7 +606,7 @@ pub(crate) fn set_ip(
 /// `php_do_setsockopt_ipv6_mcast`, then `php_do_setsockopt_ipv6_rfc3542` for
 /// what it leaves.
 pub(crate) fn set_ipv6(
-    socket: Socket,
+    socket: Co,
     level: c_int,
     name: c_int,
     value: *mut zval,
@@ -730,7 +727,7 @@ fn pktinfo(s: Sock, value: *mut zval) -> Result<Option<libc::in6_pktinfo>, Stop>
 /// `["addr" => string, "ifindex" => int]` in `result`.
 #[cfg(not(target_vendor = "apple"))]
 pub(crate) fn get_ipv6(
-    socket: Socket,
+    socket: Co,
     level: c_int,
     name: c_int,
     result: *mut zval,
@@ -771,7 +768,7 @@ pub(crate) fn get_ipv6(
     reason = "the signature of the other platforms'"
 )]
 pub(crate) fn get_ipv6(
-    _socket: Socket,
+    _socket: Co,
     _level: c_int,
     _name: c_int,
     _result: *mut zval,

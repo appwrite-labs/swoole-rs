@@ -211,7 +211,7 @@ fn context_of(object: *mut zend_object) -> Option<*mut c_void> {
     };
     if context.is_null() {
         // SAFETY: C++'s fatal-error report.
-        unsafe { crate::native::swoole_socket_coro_unconstructed() };
+        unsafe { crate::native::unconstructed() };
         return None;
     }
     Some(context)
