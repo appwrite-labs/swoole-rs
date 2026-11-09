@@ -6,7 +6,6 @@ use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 
 use swoole_rs_corebase::DataHead;
-use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_reactor::{SocketRecord, reactor_upstream};
 
 use crate::ops::{
@@ -15,7 +14,7 @@ use crate::ops::{
     RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE, RUN_THREAD_SHUTDOWN,
 };
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
-use crate::records::{ConnectionRecord, swr_v1_server_connection};
+use crate::records::swr_v1_server_connection;
 use crate::{unanswered, view};
 
 /// `swoole::RecvData`.
@@ -310,6 +309,7 @@ pub unsafe extern "C-unwind" fn reactor_thread_main_loop(serv: *mut c_void, reac
 /// # Safety
 /// `proto` is a live server port's protocol, `socket` a live session socket and
 /// `rdata` the frame.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(
@@ -317,27 +317,77 @@ pub unsafe extern "C-unwind" fn reactor_thread_main_loop(serv: *mut c_void, reac
     )
 )]
 pub unsafe extern "C-unwind" fn dispatch_task(
-    proto: *const Protocol,
+    proto: *const swoole_rs_corebase::net_types::Protocol,
     socket: *mut SocketRecord,
     rdata: *const RecvData,
 ) -> c_int {
+    use core::sync::atomic::Ordering::SeqCst;
     // SAFETY: per the caller; a port's protocol keeps its server.
     let serv = unsafe { (*proto).private_data_2 };
-    let mut ctx = ReactorContext::new(serv, ptr::null_mut());
-    ctx.sock = socket;
-    // SAFETY: a session socket's object is its live connection.
-    ctx.conn = unsafe { (*socket).object }.cast::<ConnectionRecord>();
-    // SAFETY: the live connection.
-    let fd = unsafe { (*ctx.conn).fd };
     // SAFETY: per the caller, a live server's.
     let state = unsafe { state(serv) };
-    ctx.port = crate::reactor_ops::port_by_fd(state, fd);
-    ctx.rdata = rdata.cast();
+    // SAFETY: a session socket's object is its live connection.
+    let conn = unsafe { (*socket).object }.cast::<crate::records::ConnectionRecord>();
     // SAFETY: per the caller.
-    let length = u64::from(unsafe { (*rdata).info.len });
-    let dispatch = |h: &mut _| crate::reactor_thread::dispatch_task(h, length);
-    // SAFETY: per the caller.
-    int(unsafe { crate::run_reactor_with(&mut ctx, state, dispatch) })
+    let rdata = unsafe { &*rdata };
+    let len = rdata.info.len;
+    let mut task = {
+        // SAFETY: the live connection, borrowed only for this block.
+        let c = unsafe { &*conn };
+        if len > 0 {
+            c.recv_queued_bytes.fetch_add(len, SeqCst);
+        }
+        crate::base_factory::SendData {
+            info: DataHead {
+                server_fd: crate::base_factory::low16(c.server_fd),
+                reactor_id: c.reactor_id.into(),
+                ext_flags: rdata.info.ext_flags,
+                kind: 0, // SW_SERVER_EVENT_RECV_DATA
+                time: c.last_recv_time,
+                fd: c.fd.into(),
+                len,
+                ..DataHead::default()
+            },
+            data: rdata.data.cast(),
+        }
+    };
+    let mode = u64::from(state.config_ref().mode_);
+    let dispatched = if mode == crate::MODE_PROCESS {
+        crate::factory::dispatch(state, (&raw mut task).cast())
+    } else {
+        let mut ctx = ReactorContext::new(serv, ptr::null_mut());
+        ctx.sock = socket;
+        ctx.conn = conn;
+        let task = &raw mut task;
+        let base = mode == crate::MODE_BASE;
+        let run = |h: &mut _| crate::base_factory::dispatch(h, task, base).map(i64::from);
+        // SAFETY: per the caller; the task outlives the run.
+        unsafe { crate::run_reactor_with(&mut ctx, state, run) == 1 }
+    };
+    // SAFETY: the live connection; the dispatch has returned.
+    let c = unsafe { &*conn };
+    if !dispatched {
+        if len > 0 {
+            c.recv_queued_bytes.fetch_sub(len, SeqCst);
+        }
+        return -1;
+    }
+    if mode == crate::MODE_PROCESS {
+        let thread = thread(state, usize::from(c.reactor_id)).cast::<ThreadRecord>();
+        // SAFETY: the connection's live reactor thread.
+        unsafe { (*thread).dispatch_count += 1 };
+    }
+    if let Some(gs) = crate::shared::server_counters(state) {
+        gs.dispatch_count.fetch_add(1, SeqCst);
+    }
+    let port = crate::reactor_ops::port_by_fd(state, c.fd);
+    // SAFETY: the connection's live port, whose counters live as long as it.
+    let port = unsafe { crate::port_config::of(port) }.gs;
+    // SAFETY: as above.
+    unsafe { &*port.cast::<crate::shared::PortCounters>() }
+        .dispatch_count
+        .fetch_add(1, SeqCst);
+    0
 }
 
 /// `void Server::join_reactor_thread()`.

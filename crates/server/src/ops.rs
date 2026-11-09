@@ -508,16 +508,11 @@ pub const OP_SET_WAITING_TIME: u32 = 320;
 pub const OP_RESUME_TIMER: u32 = 321;
 /// The reactor reads the socket again and the timer is cleared.
 pub const OP_RESUME_READ: u32 = 322;
-/// Fills the receive task from the connection and data and traces it, then queues arg
-/// bytes for the worker (traced) when arg is not 0.
-pub const OP_TASK_INIT: u32 = 323;
 /// `reactor->remove_read_event(socket)`.
 pub const OP_RD_UNREAD: u32 = 324;
 /// `recv_queued_bytes` -= arg.
 pub const OP_QUEUE_SUB: u32 = 325;
 pub const OP_FACTORY_DISPATCH: u32 = 326;
-/// The server and port count a dispatch, and in process mode the connection's reactor thread.
-pub const OP_COUNT_DISPATCH: u32 = 327;
 /// The `Server *` the thread entries take.
 pub const OP_SERVER: u32 = 328;
 /// Tells reactor thread arg to shut down.

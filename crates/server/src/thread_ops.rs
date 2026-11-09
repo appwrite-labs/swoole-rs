@@ -31,9 +31,7 @@ use crate::ops::{
     OP_PACKET_DISPATCH, OP_PACKET_INIT, OP_PC_NOTIFY, OP_REACTOR_BARRIER, OP_RECVFROM, OP_WR_SEND,
     OP_WR_SENDFILE, RUN_CLOSE_REACTOR_CONNECTIONS,
 };
-use crate::ops::{
-    OP_COUNT_DISPATCH, OP_FACTORY_DISPATCH, OP_ON_RECEIVE, OP_RD_PORT_READ, OP_TASK_INIT,
-};
+use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_RECEIVE, OP_RD_PORT_READ};
 use crate::reactor_entry::{self as entry, run, thread};
 use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign};
 use crate::records::ConnectionRecord;
@@ -46,8 +44,6 @@ const SW_WAIT: c_int = 2;
 /// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_SERVER_EVENT_CLOSE`, `SW_SOCK_UDP`,
 /// `Server::CLOSE_ACTIVELY` and `SW_SOCKET_RETRY_COUNT`.
 const EVENT_RECV_DGRAM: u8 = 1;
-/// `SW_SERVER_EVENT_RECV_DATA`.
-const EVENT_RECV_DATA: u8 = 0;
 const EVENT_CLOSE: u8 = 4;
 const SOCK_UDP: c_int = 2;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
@@ -630,66 +626,14 @@ pub(crate) unsafe fn answer(
             }
             result
         }
-        OP_TASK_INIT => {
-            // SAFETY: the frame the dispatch lends.
-            let rdata = unsafe { &*ctx.rdata.cast::<entry::RecvData>() };
-            let conn = conn_ref();
-            ctx.task.info = DataHead {
-                server_fd: low16(conn.server_fd),
-                reactor_id: conn.reactor_id.into(),
-                ext_flags: rdata.info.ext_flags,
-                kind: EVENT_RECV_DATA,
-                time: conn.last_recv_time,
-                fd: conn.fd.into(),
-                len: rdata.info.len,
-                ..DataHead::default()
-            };
-            ctx.task.data = rdata.data.cast();
-            // arg: the bytes to queue for the worker, if any
-            if arg != 0 {
-                let queued = u32::try_from(arg).unwrap_or(u32::MAX);
-                conn.recv_queued_bytes
-                    .fetch_add(queued, core::sync::atomic::Ordering::SeqCst);
-            }
-            (&raw mut ctx.task).expose_provenance() as u64
-        }
         OP_ON_RECEIVE => {
             let slot = state.callbacks.slot(CB_RECEIVE)?;
             // SAFETY: the slot's `int (Server *, RecvData *)` callback over the frame at arg.
             u64::from(unsafe { slot.receive(serv, arg as *mut c_void) } == 0)
         }
         OP_FACTORY_DISPATCH => u64::from(factory::dispatch(state, (&raw mut ctx.task).cast())),
-        OP_COUNT_DISPATCH => {
-            use core::sync::atomic::Ordering::SeqCst;
-            if u64::from(config().mode_) == crate::MODE_PROCESS {
-                let id = usize::from(conn_ref().reactor_id);
-                let thread = thread(state, id).cast::<ThreadRecord>();
-                // SAFETY: the connection's live reactor thread.
-                unsafe { (*thread).dispatch_count += 1 };
-            }
-            if let Some(gs) = crate::shared::server_counters(state) {
-                gs.dispatch_count.fetch_add(1, SeqCst);
-            }
-            // SAFETY: the context's live port, whose counters live as long as it.
-            let port = unsafe { crate::port_config::of(ctx.port) }.gs;
-            // SAFETY: as above.
-            unsafe { &*port.cast::<crate::shared::PortCounters>() }
-                .dispatch_count
-                .fetch_add(1, SeqCst);
-            0
-        }
         _ => return None,
     })
-}
-
-/// C++'s implicit `int` to `uint16_t`.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "C++'s implicit int to uint16_t"
-)]
-fn low16(value: c_int) -> u16 {
-    value as u16
 }
 
 /// The datagram `OP_PACKET_INIT` points the context at.
