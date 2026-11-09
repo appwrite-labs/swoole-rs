@@ -1310,8 +1310,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_STOP_SINGLE_WORKER => {
             o.event_pool().running = false;
             // SAFETY: this thread's worker globals.
-            let worker =
-                unsafe { (*swoole_rs_process::worker_globals::swr_v1_worker_globals()).worker };
+            let worker = unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker };
             // SAFETY: as above; base mode's single worker, which this process runs.
             unsafe { entry::stop_async_worker(serv, worker.cast()) };
             0

@@ -6,7 +6,7 @@
 use std::ffi::{c_int, c_void};
 use swoole_rs_corebase::log;
 use swoole_rs_process::signal::swoole_signal_dispatch;
-use swoole_rs_process::wait::swr_v1_wait_count;
+use swoole_rs_process::wait::wait_count;
 
 // SAFETY: crates/reactor's, crates/coroutine's and crates/timer's.
 unsafe extern "C" {
@@ -23,12 +23,12 @@ fn errno() -> c_int {
 /// The SIGCHLD registry: the coroutine effects crates/process's wait loop asks for.
 #[cfg(not(feature = "iouring"))]
 mod registry {
-    use super::{c_int, c_void, swr_v1_coroutine_current, swr_v1_event_current, swr_v1_wait_count};
+    use super::{c_int, c_void, swr_v1_coroutine_current, swr_v1_event_current, wait_count};
     use crate::signal_upstream::{swoole_signal_clear, swoole_signal_set};
     use crate::{ReactorPrepared, swr_v1_reactor_deferred_push};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use swoole_rs_process::wait::{Coroutines, swr_v1_wait_reap};
+    use swoole_rs_process::wait::{Coroutines, wait_reap};
 
     /// `Reactor::EXIT_CONDITION_WAIT_PID`.
     const EXIT_CONDITION_WAIT_PID: c_int = 2;
@@ -55,11 +55,11 @@ mod registry {
 
     extern "C" fn signal_handler(signo: c_int) {
         // SAFETY: the signal dispatch runs on the loop's thread.
-        unsafe { swr_v1_wait_reap(signo, resume) };
+        unsafe { wait_reap(signo, resume) };
     }
 
     unsafe extern "C" fn no_waiters(_event_num: *mut usize) -> bool {
-        swr_v1_wait_count() == 0
+        wait_count() == 0
     }
 
     unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
@@ -189,13 +189,7 @@ pub unsafe extern "C" fn system_waitpid(
     {
         // SAFETY: as the caller promises; the static table.
         let waited = unsafe {
-            swoole_rs_process::wait::swr_v1_wait_pid(
-                pid,
-                status,
-                options,
-                timeout,
-                &registry::COROUTINES,
-            )
+            swoole_rs_process::wait::wait_pid(pid, status, options, timeout, &registry::COROUTINES)
         };
         if waited.timed_out {
             crate::socket_sync::set_errno(libc::ETIMEDOUT);
@@ -269,7 +263,7 @@ pub unsafe extern "C" fn system_waitpid_safe(
 #[must_use]
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_wait_count() -> usize {
-    swr_v1_wait_count()
+    wait_count()
 }
 
 /// `pid_t swoole_coroutine_wait(int *)`.

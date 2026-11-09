@@ -35,8 +35,7 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::pool::{
     PoolCall, PoolHooks, WARN_ACCEPT, WARN_BAD_PACKET, WARN_MSGRCV, WARN_PIPE, WARN_READ,
-    WARN_SEND, WARN_TASK_FAILED, swr_v1_process_bailout, swr_v1_process_pool_ipc_listener,
-    swr_v1_process_pool_ipc_packet,
+    WARN_SEND, WARN_TASK_FAILED, pool_ipc_packet, raise_bailout, swr_v1_process_pool_ipc_listener,
 };
 use swoole_rs_process::process_pool::{
     CB_BEFORE_RELOAD, CB_MAIN_LOOP, CB_SHUTDOWN, CB_START, CB_WORKER_START, CB_WORKER_STOP,
@@ -46,10 +45,10 @@ use swoole_rs_process::process_pool::{
     OP_NEW_PIPE, OP_NEW_PIPES, OP_ON_AFTER_RELOAD, OP_ON_WORKER_MESSAGE, OP_ON_WORKER_NOT_FOUND,
     OP_PIPE_HANDLER, OP_POP_MESSAGE, OP_PUSH_STOP, OP_RELOAD_TIMER, OP_REMOVE_PIPE,
     OP_REOPEN_LOGGER, OP_SNDBUF, OP_TIMER_INIT, OP_UNLIMIT_PIPES, OP_WORKER_ERROR, OP_WORKER_INIT,
-    OP_WORKER_SHUTDOWN, PoolNative, PoolRecord, RAISE, RUN_MAIN, swr_v1_process_pool_run_op,
+    OP_WORKER_SHUTDOWN, PoolNative, PoolRecord, RAISE, RUN_MAIN, pool_run_op,
 };
 use swoole_rs_process::reload_task::ReloadTask;
-use swoole_rs_process::worker_globals::swr_v1_worker_globals;
+use swoole_rs_process::worker_globals::thread_globals;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_reactor::event_api::{
     swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
@@ -511,7 +510,7 @@ unsafe extern "C" fn recv_packet(reactor: *mut c_void, event: *mut c_void) -> c_
     // SAFETY: the event the loop passes.
     let event = unsafe { &*event.cast::<Event>() };
     // SAFETY: the pool's IPC state.
-    let packet = unsafe { swr_v1_process_pool_ipc_packet(record(pool).ipc.cast()) };
+    let packet = unsafe { pool_ipc_packet(record(pool).ipc.cast()) };
     let size = record(pool).max_packet_size as usize;
     // SAFETY: the packet buffer holds `max_packet_size` bytes.
     let n = unsafe { libc::read(socket(event.socket).fd, packet.cast(), size) };
@@ -545,11 +544,9 @@ unsafe extern "C" fn recv_message(reactor: *mut c_void, event: *mut c_void) -> c
 /// callback's bailout is raised once the export's frames are gone.
 unsafe fn run_main(pool: Pool, worker: Worker, protocol: u64) -> c_int {
     // SAFETY: the live pool and worker the loop runs over.
-    let result = unsafe {
-        swr_v1_process_pool_run_op(&raw const NATIVE.0, pool, worker, RUN_MAIN, protocol)
-    };
+    let result = unsafe { pool_run_op(&raw const NATIVE.0, pool, worker, RUN_MAIN, protocol) };
     if result == RAISE {
-        swr_v1_process_bailout();
+        raise_bailout();
     }
     result as c_int
 }
@@ -660,7 +657,7 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
             swoole_set_worker_id(record.id());
             swoole_set_worker_pid(record.pid());
             // SAFETY: this thread's worker globals.
-            unsafe { (*swr_v1_worker_globals()).worker = worker };
+            unsafe { (*thread_globals()).worker = worker };
             0
         }
         OP_EVENT_INIT => {

@@ -100,7 +100,7 @@ pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) 
         gs.total_send_bytes.fetch_add(len.into(), SeqCst);
     }
     // SAFETY: this thread's worker globals; only the field is read.
-    let worker = unsafe { (*swoole_rs_process::worker_globals::swr_v1_worker_globals()).worker };
+    let worker = unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker };
     if !worker.is_null() {
         // SAFETY: the current worker's record, which this worker loop owns.
         unsafe { Worker::new(worker).add_response_count() };

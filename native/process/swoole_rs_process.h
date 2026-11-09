@@ -7,32 +7,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef struct { uint32_t status; int32_t error; } swr_v1_process_affinity_outcome;
-#if defined(__linux__) || defined(__FreeBSD__)
-swr_v1_process_affinity_outcome swr_v1_process_worker_affinity(uint32_t worker_id, const int32_t *available, int32_t available_len, bool thread);
-#endif
-typedef struct {
-    void *(*current)(void);
-    void (*signal_init)(void);
-    void (*yield_for)(void *co, double timeout);
-    void (*resume)(void *co);
-    bool (*timed_out)(void *co);
-} swr_v1_wait_coroutines;
-typedef struct { int pid; bool timed_out; } swr_v1_waited;
-swr_v1_waited swr_v1_wait_pid(int pid, int *status, int options, double timeout, const swr_v1_wait_coroutines *ops);
-void swr_v1_wait_reap(int signo, void (*resume)(void *co));
-size_t swr_v1_wait_count(void);
-#ifdef __linux__
-typedef struct { uint32_t status; int fd; int32_t error; } swr_v1_signalfd_created;
-typedef struct { uint32_t status; uint32_t signo; uintptr_t handler; int32_t error; } swr_v1_signalfd_received;
-int swr_v1_signalfd_fd(void);
-bool swr_v1_signalfd_owned(void);
-uintptr_t swr_v1_signalfd_set(int signo, uintptr_t handler);
-swr_v1_signalfd_created swr_v1_signalfd_create(void);
-void swr_v1_signalfd_close(void);
-bool swr_v1_signalfd_clear(void);
-swr_v1_signalfd_received swr_v1_signalfd_receive(int fd);
-#endif
 /* Byte-exact mirror of swoole::Worker (swoole_rs_process_pool.h), whose layout
  * Rust owns (crates/process/src/worker_record.rs). A static_assert in the process
  * patch locks sizeof/offsetof of swoole::Worker to this mirror, so a layout drift
@@ -65,36 +39,9 @@ typedef struct swr_v1_worker_record {
     void *pipe_current;
     void *ptr;
 } swr_v1_worker_record;
-void *swr_v1_worker_globals(void);
-void swr_v1_worker_global_max_requests(uint32_t max_request, uint32_t grace, int (*random)(int,int));
-void swr_v1_worker_global_detach(swr_v1_worker_record *worker);
-void swr_v1_worker_global_stopped(void);
 typedef struct swr_v1_process_reload_task swr_v1_process_reload_task;
-/* The manager reap loop (crates/process/src/reaper.rs); start_reload returns one of: */
-#define SWR_RELOAD_NONE 0
-#define SWR_RELOAD_KILL_ONE 1
-#define SWR_RELOAD_SKIP 2
-#define SWR_RELOAD_SIGNALLED 3
-typedef struct {
-    void *ctx;
-    bool leave_when_stopped;
-    bool skip_no_child;
-    bool (*running)(void *ctx);
-    bool (*reload_requested)(void *ctx);
-    swr_v1_process_reload_task *(*reload_task)(void *ctx);
-    int (*wait)(void *ctx, bool nonblock, int *status, int *error);
-    void (*service)(void *ctx);
-    void (*wait_failed)(void *ctx);
-    uint32_t (*start_reload)(void *ctx);
-    bool (*reap)(void *ctx, int pid, int status);
-    void (*finish_reload)(void *ctx);
-    swr_v1_process_reload_warn warn;
-} swr_v1_process_reap_host;
-void swr_v1_process_reap_loop(const swr_v1_process_reap_host *host);
-/* ProcessPool's IPC (crates/process/src/pool.rs): the stream connection a task
- * worker replies on. */
+/* ProcessPool's IPC (crates/process/src/pool.rs). */
 typedef struct swr_v1_process_pool_ipc swr_v1_process_pool_ipc;
-void *swr_v1_process_pool_ipc_connection(const swr_v1_process_pool_ipc *ipc);
 /* ProcessPool's layout (crates/process/src/process_pool.rs), which the process
  * patch static_asserts; crates/server/src/pool_native.rs holds its objects. */
 typedef struct {
@@ -118,8 +65,6 @@ typedef struct {
     uint32_t round_id;
     void *workers, *pipes, *registry, *queue, *ipc, *message_box, *message_bus, *reload_task, *ptr;
 } swr_v1_pool_record;
-/* The reap loop's wait: wait(), or waitpid(-1, WNOHANG) when `nonblock`. */
-int swr_v1_process_reap_wait(void *_ctx, bool nonblock, int *status, int *error);
 #ifdef __cplusplus
 }
 #endif

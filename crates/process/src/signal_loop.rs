@@ -79,7 +79,7 @@ pub unsafe extern "C" fn swr_v1_signal_loop_set(
     let available = unsafe { (ops.available)() };
     #[cfg(target_os = "linux")]
     if caps & 1 != 0 && corebase::swr_v1_core_enable_signalfd() && available {
-        let previous = crate::signalfd::swr_v1_signalfd_set(signo, handler);
+        let previous = crate::signalfd::signalfd_set(signo, handler);
         setup(ops);
         return previous;
     }
@@ -96,21 +96,20 @@ pub unsafe extern "C" fn swr_v1_signal_loop_set(
         // SAFETY: the selected backend's live native kqueue handle is borrowed.
         let kq = unsafe { (ops.native_handle)() };
         // SAFETY: a live kqueue and writable result flag; no Rust borrow spans callbacks.
-        let previous = unsafe {
-            crate::signal_kqueue::swr_v1_signal_kqueue_set(kq, signo, handler, &raw mut failed)
-        };
+        let previous =
+            unsafe { crate::signal_kqueue::signal_kqueue_set(kq, signo, handler, &raw mut failed) };
         if failed {
             report(ops, 9, signo, errno());
         }
         return previous;
     }
-    signal::swr_v1_signal_set(signo, handler, safety, ops.callback, ops.has_reactor)
+    signal::signal_set(signo, handler, safety, ops.callback, ops.has_reactor)
 }
 /// # Safety
 /// The facade lends the static SDK table; lookup itself invokes no handler.
 #[must_use]
 pub unsafe extern "C" fn swr_v1_signal_loop_get(signo: i32, ops: *const Ops) -> usize {
-    let lookup = signal::swr_v1_signal_lookup(signo);
+    let lookup = signal::signal_lookup(signo);
     if lookup.status == 1 {
         // SAFETY: the facade provides a static SDK logging table.
         report(unsafe { native(ops) }, 1, signo, 0);
@@ -122,7 +121,7 @@ pub unsafe extern "C" fn swr_v1_signal_loop_get(signo: i32, ops: *const Ops) -> 
 pub unsafe extern "C" fn swr_v1_signal_loop_callback(signo: i32, ops: *const Ops) {
     // SAFETY: the facade provides its static SDK table.
     let ops = unsafe { native(ops) };
-    let lookup = signal::swr_v1_signal_lookup(signo);
+    let lookup = signal::signal_lookup(signo);
     match lookup.status {
         1 => report(ops, 0, signo, 0),
         2 => report(ops, 2, signo, 0),
@@ -142,8 +141,8 @@ pub extern "C" fn swr_v1_signal_loop_listener_num() -> u32 {
 #[cfg(target_os = "linux")]
 fn setup(ops: &Ops) -> bool {
     let descriptor = descriptor(ops);
-    if crate::signalfd::swr_v1_signalfd_fd() == -1 {
-        let created = crate::signalfd::swr_v1_signalfd_create();
+    if crate::signalfd::signalfd_fd() == -1 {
+        let created = crate::signalfd::signalfd_create();
         match created.status {
             0 => {
                 // SAFETY: the new descriptor is lent to a native wrapper, not transferred to it.
@@ -178,14 +177,14 @@ fn setup(ops: &Ops) -> bool {
 #[cfg(target_os = "linux")]
 fn close(ops: &Ops) {
     let descriptor = descriptor(ops);
-    if crate::signalfd::swr_v1_signalfd_fd() == -1 {
+    if crate::signalfd::signalfd_fd() == -1 {
         return;
     }
     let socket = SOCKET.load(Relaxed) as *mut c_void;
     // SAFETY: detach fd then release only the wrapper, preserving the backend’s descriptor custody.
     unsafe { (descriptor.free)(socket) };
     SOCKET.store(0, Relaxed);
-    crate::signalfd::swr_v1_signalfd_close();
+    crate::signalfd::signalfd_close();
 }
 /// # Safety
 /// The native facade lends its static SDK table on the signal owner's thread.
@@ -197,9 +196,9 @@ pub unsafe extern "C" fn swr_v1_signal_loop_clear(ops: *const Ops) {
     #[cfg(target_os = "linux")]
     if caps & 1 != 0
         && corebase::swr_v1_core_enable_signalfd()
-        && crate::signalfd::swr_v1_signalfd_fd() != -1
+        && crate::signalfd::signalfd_fd() != -1
     {
-        if !crate::signalfd::swr_v1_signalfd_clear() {
+        if !crate::signalfd::signalfd_clear() {
             report(ops, 5, 0, errno());
         }
         close(ops);
@@ -223,10 +222,10 @@ pub unsafe extern "C" fn swr_v1_signal_loop_clear(ops: *const Ops) {
             -1
         };
         // SAFETY: actual kqueue or -1 when unavailable, as the backend contract requires.
-        unsafe { crate::signal_kqueue::swr_v1_signal_kqueue_clear(kq, available) };
+        unsafe { crate::signal_kqueue::signal_kqueue_clear(kq, available) };
         return;
     }
-    signal::swr_v1_signal_clear();
+    signal::signal_clear();
 }
 #[cfg(target_os = "linux")]
 /// # Safety
@@ -237,7 +236,7 @@ pub unsafe extern "C" fn swr_v1_signal_loop_read(fd: i32, ops: *const Ops) -> i3
     let ops = unsafe { native(ops) };
     #[cfg(target_os = "linux")]
     {
-        let received = crate::signalfd::swr_v1_signalfd_receive(fd);
+        let received = crate::signalfd::signalfd_receive(fd);
         match received.status {
             1 => report(ops, 6, 0, received.error),
             2 => report(ops, 7, received.signo.cast_signed(), 0),
@@ -258,7 +257,7 @@ pub unsafe extern "C" fn swr_v1_signal_loop_destroyed(ops: *const Ops) {
     #[cfg(target_os = "linux")]
     {
         let socket = SOCKET.load(Relaxed) as *mut c_void;
-        if !socket.is_null() && crate::signalfd::swr_v1_signalfd_owned() {
+        if !socket.is_null() && crate::signalfd::signalfd_owned() {
             // SAFETY: the native destruction callback lends its static table.
             let ops = unsafe { native(ops) };
             // SAFETY: only this process removes the borrowed wrapper from its reactor.

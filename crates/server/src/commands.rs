@@ -291,7 +291,7 @@ pub(crate) struct SendCommand<'a> {
 /// `swr_v1_server_command_send`: what `OP_ST_CMD_SEND` writes to the target process.
 #[repr(C)]
 pub(crate) struct CommandSend {
-    /// `swr_v1_process_command_route::action`.
+    /// `CommandRoute::action`.
     pub(crate) action: i32,
     pub(crate) process_id: u32,
     pub(crate) command_id: i32,
@@ -317,7 +317,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         .get(send.name)
         .map(|c| (c.id, c.accepted_types));
     // SAFETY: this thread's worker globals; only the field is read.
-    let worker = unsafe { (*swoole_rs_process::worker_globals::swr_v1_worker_globals()).worker };
+    let worker = unsafe { (*swoole_rs_process::worker_globals::thread_globals()).worker };
     let input = CommandInput {
         started,
         found: found.is_some(),

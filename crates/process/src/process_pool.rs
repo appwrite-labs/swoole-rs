@@ -16,9 +16,8 @@ use std::ffi::{c_int, c_void};
 use std::ptr;
 
 use crate::pool::{
-    Bailed, PoolCall, PoolHooks, PoolIpc, PoolLoop, Step, swr_v1_process_pool_ipc_free,
-    swr_v1_process_pool_ipc_listener, swr_v1_process_pool_ipc_new, swr_v1_process_pool_ipc_prepare,
-    swr_v1_process_pool_run,
+    Bailed, PoolCall, PoolHooks, PoolIpc, PoolLoop, Step, pool_ipc_free, pool_ipc_new,
+    pool_ipc_prepare, pool_run, swr_v1_process_pool_ipc_listener,
 };
 use crate::reaper::{RELOAD_KILL_ONE, RELOAD_NONE, ReapHost};
 use crate::reload_task::{ReloadTask, Warn};
@@ -287,7 +286,7 @@ impl PoolHost for Native<'_> {
 
     fn run_loop(&mut self, pool_loop: &PoolLoop, protocol: c_int) -> c_int {
         // SAFETY: the loop describes this live pool, its worker and hooks.
-        unsafe { swr_v1_process_pool_run(pool_loop, protocol) }
+        unsafe { pool_run(pool_loop, protocol) }
     }
 
     fn hooks(&self) -> *const PoolHooks {
@@ -346,7 +345,7 @@ fn effect(op: u32, arg: u64) -> Option<i64> {
         OP_IS_MASTER => i64::from(i64::from(swoole_get_worker_type()) == SW_MASTER.cast_signed()),
         OP_CURRENT_WORKER => {
             // SAFETY: this thread's worker globals.
-            let worker = unsafe { (*crate::worker_globals::swr_v1_worker_globals()).worker };
+            let worker = unsafe { (*crate::worker_globals::thread_globals()).worker };
             worker.expose_provenance().cast_signed() as i64
         }
         OP_SIGNAL_DISPATCH => {
@@ -635,7 +634,7 @@ impl<H: PoolHost> Pool<H> {
             _ => mode = IPC_NONE,
         }
         self.set_registry(swr_v1_process_worker_registry_new());
-        self.set_ipc(swr_v1_process_pool_ipc_new(mode == IPC_SOCKET));
+        self.set_ipc(pool_ipc_new(mode == IPC_SOCKET));
         self.set_ipc_mode(mode);
         self.set_protocol(PROTOCOL_TASK);
         self.set_max_packet_size(packet_limit(self.use_msgqueue() != 0, SW_INPUT_BUFFER_SIZE));
@@ -962,7 +961,7 @@ impl<H: PoolHost> Pool<H> {
             self.on(worker, OP_ADD_PIPE, 0);
             if self.message_bus().is_null() {
                 // SAFETY: the pool's IPC state.
-                unsafe { swr_v1_process_pool_ipc_prepare(self.ipc(), self.max_packet_size()) };
+                unsafe { pool_ipc_prepare(self.ipc(), self.max_packet_size()) };
                 self.op(OP_PIPE_HANDLER, 0);
             } else {
                 self.op(OP_PIPE_HANDLER, 1);
@@ -1007,7 +1006,7 @@ impl<H: PoolHost> Pool<H> {
             }
             // A bailout in the new worker's callbacks leaves at once; these frames own nothing.
             if self.spawn(worker).is_err() {
-                crate::pool::swr_v1_process_bailout();
+                crate::pool::raise_bailout();
             }
             // SAFETY: the pool's registry.
             unsafe { swr_v1_process_worker_registry_detach(self.registry(), pid) };
@@ -1034,7 +1033,7 @@ impl<H: PoolHost> Pool<H> {
         }
         // A bailout in the new worker's callbacks leaves at once; these frames own nothing.
         if self.spawn(worker).is_err() {
-            crate::pool::swr_v1_process_bailout();
+            crate::pool::raise_bailout();
         }
         true
     }
@@ -1049,7 +1048,7 @@ impl<H: PoolHost> Pool<H> {
             running: reap_running::<H>,
             reload_requested: reap_reload_requested::<H>,
             reload_task: reap_reload_task::<H>,
-            wait: swr_v1_process_reap_wait,
+            wait: pool_reap_wait,
             service: reap_service::<H>,
             wait_failed: reap_wait_failed::<H>,
             start_reload: reap_start_reload::<H>,
@@ -1135,7 +1134,7 @@ impl<H: PoolHost> Pool<H> {
         let warning = unsafe { &raw mut (*p).scheduler_warning };
         // SAFETY: the pool's records, counter and flag; the caller's event and out-pointer.
         let sent = unsafe {
-            crate::pool::swr_v1_process_pool_dispatch(
+            crate::pool::pool_dispatch(
                 self.h.hooks(),
                 p.cast(),
                 self.workers(),
@@ -1164,7 +1163,7 @@ impl<H: PoolHost> Pool<H> {
         unsafe { swoole_rs_ossupport::swr_v1_os_msg_queue_free(self.queue().cast()) };
         self.set_queue(ptr::null_mut());
         // SAFETY: the pool's IPC state, freed once; the native close frees its listener.
-        unsafe { swr_v1_process_pool_ipc_free(self.ipc(), self.h.close()) };
+        unsafe { pool_ipc_free(self.ipc(), self.h.close()) };
         self.set_ipc(ptr::null_mut());
         // SAFETY: the pool's registry (or null), freed once.
         unsafe { swr_v1_process_worker_registry_free(self.registry()) };
@@ -1203,8 +1202,7 @@ unsafe extern "C" fn reap_reload_task<H: PoolHost>(ctx: *mut c_void) -> *mut Rel
 ///
 /// # Safety
 /// `status` and `error` are writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_reap_wait(
+pub unsafe extern "C" fn pool_reap_wait(
     _ctx: *mut c_void,
     nonblock: bool,
     status: *mut c_int,
@@ -1348,8 +1346,7 @@ pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
 /// # Safety
 /// `native` is native's table; `pool` a live `ProcessPool`; `worker` null or
 /// one of its workers.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_run_op(
+pub unsafe fn pool_run_op(
     native: *const PoolNative,
     pool: *mut PoolRecord,
     worker: *mut WorkerRecord,
@@ -1632,7 +1629,7 @@ mod tests {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
         pool.set_ipc_mode(IPC_SOCKET);
-        pool.set_ipc(swr_v1_process_pool_ipc_new(true));
+        pool.set_ipc(pool_ipc_new(true));
         assert_eq!(pool.start_check(), SW_ERR);
         assert_eq!(ops(&pool), [LOG_MUST_LISTEN]);
         pool.destroy();
@@ -1752,7 +1749,7 @@ mod tests {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
         record(&mut pool).use_socket = 1;
-        let ipc = swr_v1_process_pool_ipc_new(true);
+        let ipc = pool_ipc_new(true);
         // SAFETY: a live handle and string.
         unsafe { crate::pool::swr_v1_process_pool_ipc_address(ipc, file.as_ptr(), 0) };
         record(&mut pool).ipc = ipc;
@@ -1780,9 +1777,9 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         record(&mut pool).ipc = ptr::null_mut();
         // SAFETY: the handle made above; it has no listener to close.
-        unsafe { swr_v1_process_pool_ipc_free(ipc, close) };
+        unsafe { pool_ipc_free(ipc, close) };
         // A pool whose listener is gone fails.
-        let ipc = swr_v1_process_pool_ipc_new(true);
+        let ipc = pool_ipc_new(true);
         // SAFETY: as above.
         unsafe { crate::pool::swr_v1_process_pool_ipc_address(ipc, file.as_ptr(), 0) };
         record(&mut pool).ipc = ipc;
@@ -1794,7 +1791,7 @@ mod tests {
         }
         record(&mut pool).ipc = ptr::null_mut();
         // SAFETY: as above.
-        unsafe { swr_v1_process_pool_ipc_free(ipc, close) };
+        unsafe { pool_ipc_free(ipc, close) };
     }
 
     #[test]

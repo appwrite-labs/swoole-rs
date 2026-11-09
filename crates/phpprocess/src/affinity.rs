@@ -15,11 +15,7 @@ fn cpu_num() -> usize {
 /// the array is empty, too long or names a CPU out of range.
 /// # Safety
 /// `array` is a live array zval and `set` a writable `cpu_set_t`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpprocess_array_to_cpu_set(
-    array: *const zval,
-    set: *mut c_void,
-) -> bool {
+pub unsafe fn array_to_cpu_set(array: *const zval, set: *mut c_void) -> bool {
     // SAFETY: per the caller.
     let valid = unsafe { array_to_cpu_set(array, set) };
     swoole_rs_zend::bailout::finish();
@@ -27,7 +23,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_array_to_cpu_set(
 }
 
 /// # Safety
-/// As `swr_v1_phpprocess_array_to_cpu_set`.
+/// As `array_to_cpu_set`.
 unsafe fn array_to_cpu_set(array: *const zval, set: *mut c_void) -> bool {
     // SAFETY: per the caller.
     let value = unsafe { (*array).value };
@@ -69,8 +65,7 @@ unsafe fn array_to_cpu_set(array: *const zval, set: *mut c_void) -> bool {
 /// `php_swoole_cpu_set_to_array`.
 /// # Safety
 /// `array` is a writable zval and `set` a valid `cpu_set_t`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpprocess_cpu_set_to_array(array: *mut zval, set: *const c_void) {
+pub unsafe fn cpu_set_to_array(array: *mut zval, set: *const c_void) {
     // SAFETY: per the caller.
     unsafe { swr_zend_array_init(array) };
     // SAFETY: per the caller.
@@ -93,7 +88,7 @@ fn set_affinity(call: &Call) {
     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
     let argument = call.zval(1);
     // SAFETY: the array argument and a local set.
-    if !unsafe { swr_v1_phpprocess_array_to_cpu_set(argument, (&raw mut set).cast()) } {
+    if !unsafe { array_to_cpu_set(argument, (&raw mut set).cast()) } {
         call.set_bool(false);
         return;
     }
@@ -120,7 +115,7 @@ fn get_affinity(call: &Call) {
         return;
     }
     // SAFETY: the return slot and a valid set.
-    unsafe { swr_v1_phpprocess_cpu_set_to_array(call.return_value(), (&raw const set).cast()) };
+    unsafe { cpu_set_to_array(call.return_value(), (&raw const set).cast()) };
 }
 
 swoole_rs_zend::handlers! {
