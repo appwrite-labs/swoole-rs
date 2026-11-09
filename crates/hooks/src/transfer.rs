@@ -175,27 +175,16 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_transfer(
     result
 }
 
-/// The socket's own `recvfrom(buffer, length, addr, addrlen)` (native, virtual).
-pub type RecvFrom = unsafe extern "C" fn(
-    *mut CoSocket,
-    *mut c_void,
-    usize,
-    *mut libc::sockaddr,
-    *mut libc::socklen_t,
-) -> isize;
-
-/// `Socket::recvfrom(buffer, length)`: `call` receives into the `network::Socket`'s
-/// peer address, whose path a local socket's unnamed peer leaves empty.
+/// `Socket::recvfrom(buffer, length)`: `call(addr, addrlen)` receives into the
+/// `network::Socket`'s peer address, whose path a local socket's unnamed peer leaves
+/// empty.
 ///
 /// # Safety
-/// `socket` is a live record, not borrowed elsewhere for the call; `buffer` holds
-/// `length` bytes; `call` transfers on the record.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_recvfrom(
+/// `socket` is a live record, not borrowed elsewhere for the call; `call` transfers on
+/// the record.
+pub(crate) unsafe fn recvfrom_peer(
     socket: *mut CoSocket,
-    buffer: *mut c_void,
-    length: usize,
-    call: RecvFrom,
+    call: impl FnOnce(*mut libc::sockaddr, *mut libc::socklen_t) -> isize,
 ) -> isize {
     // SAFETY: as the caller promises.
     if !unsafe { available(socket, READ) } {
@@ -211,8 +200,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_recvfrom(
     let info = &raw mut network.info;
     let addr = &raw mut network.info.addr;
     let addrlen = &raw mut network.info.len;
-    // SAFETY: the native receive into the record's peer address.
-    let result = unsafe { call(socket, buffer, length, addr.cast(), addrlen) };
+    let result = call(addr.cast(), addrlen);
     // SAFETY: as above; nothing else borrows it now.
     let info = unsafe { &mut *info };
     if result >= 0
@@ -547,7 +535,8 @@ mod tests {
             unsafe { socket.0.record() }.socket_type = socket_type;
             RESULTS.set([result].into());
             let got = unsafe {
-                swr_v1_hook_co_socket_recvfrom(socket.ptr(), core::ptr::null_mut(), 8, peer)
+                let s = socket.ptr();
+                recvfrom_peer(s, |addr, len| peer(s, core::ptr::null_mut(), 8, addr, len))
             };
             assert_eq!(got, result);
             assert_eq!(take(), [format!("recvfrom:true:{size}")]);
@@ -558,7 +547,10 @@ mod tests {
         let mut socket = TestSocket::new();
         socket.0.sock_fd = -1;
         assert_eq!(
-            unsafe { swr_v1_hook_co_socket_recvfrom(socket.ptr(), core::ptr::null_mut(), 8, peer) },
+            unsafe {
+                let s = socket.ptr();
+                recvfrom_peer(s, |addr, len| peer(s, core::ptr::null_mut(), 8, addr, len))
+            },
             -1
         );
         assert!(!take().iter().any(|e| e.starts_with("recvfrom")));

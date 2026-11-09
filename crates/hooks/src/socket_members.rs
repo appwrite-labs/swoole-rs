@@ -1283,6 +1283,23 @@ pub unsafe extern "C" fn recvfrom(
     unsafe { transfer(this, READ, RETRY_INTERRUPTED, buf.cast(), n, call) }
 }
 
+/// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address.
+///
+/// # Safety
+/// `this` is a live native socket and `buf` holds `n` writable bytes.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole9coroutine6Socket8recvfromEPvm")
+)]
+pub unsafe extern "C" fn recvfrom_peer(this: *mut c_void, buf: *mut c_void, n: usize) -> isize {
+    let receive = |addr, addrlen| {
+        // SAFETY: as the caller promises, into the record's peer address.
+        unsafe { recvfrom(this, buf, n, addr, addrlen) }
+    };
+    // SAFETY: the live socket's record.
+    unsafe { crate::transfer::recvfrom_peer(record(this), receive) }
+}
+
 /// `Socket::recvmsg(msg, flags)`.
 ///
 /// # Safety

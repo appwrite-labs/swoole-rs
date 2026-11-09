@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/coroutine/system.cc (Swoole contributors).
 // What crates/hooks can't express of System and coroutine::Socket (upstream's
-// src/coroutine/system.cc is deleted): the host tables whose entries call C++ members,
-// and ~Socket, the vtable's key function. System::sleep, read_file, write_file and
-// coroutine::async are Rust (crates/hooks/src/sleep.rs, file_io.rs, offload.rs).
+// src/coroutine/system.cc is deleted): the host tables whose entries need C++ types,
+// ~Socket (the vtable's key function) and SocketImpl's members the coroutine streams
+// call (swr_v1_runtime_socket). native/hooks/contract.md lists what stays and why.
 #include "swoole_coroutine_system.h"
 #include "swoole_rs_hooks.h"
 #include "swoole_rs_phpruntime.h"
@@ -102,34 +102,6 @@ const bool Socket::host_installed_ = (swr_v1_hook_co_socket_host(&Socket::host_)
 static_assert(SW_FD_CO_SOCKET == 6 && SW_SOCK_RAW == 7 && SW_BUFFER_SIZE_BIG == 65536 &&
                   SW_INPUT_BUFFER_SIZE == 2 * 1024 * 1024,
               "swr_v1_hook_co_socket constants");
-
-// Rust makes the socket and sets its options (crates/hooks/src/co_socket.rs); these
-// are the error and the logs.
-void Socket::created(uint32_t result) {
-    extra_ = extra_owner_.value.owner;
-    if (!(result & SWR_CO_SOCKET_OPENED)) {
-        swoole_set_last_error(errno);
-        return;
-    }
-    if ((result >> 8) & 1) {
-        swoole_sys_warning("fcntl(%d, GETFL) failed", sock_fd);
-    }
-    if ((result >> 8) & 2) {
-        swoole_sys_warning("fcntl(%d, SETFL, opts) failed", sock_fd);
-    }
-    if (result & SWR_CO_SOCKET_NODELAY_FAILED) {
-        swoole_sys_warning(
-            "setsockopt(%d, %d, %d, %u) failed", sock_fd, IPPROTO_TCP, TCP_NODELAY, (unsigned) sizeof(int));
-    }
-}
-
-// The transfers, peek and poll are Rust under their own symbols (socket_members.rs).
-// Rust receives into the network::Socket's peer address (crates/hooks/src/transfer.rs).
-ssize_t Socket::recvfrom(void *_buf, size_t _n) {
-    return swr_v1_hook_co_socket_recvfrom(this, _buf, _n, [](swr_v1_co_socket *s, void *buf, size_t n, sockaddr *addr, socklen_t *len) {
-        return static_cast<Socket *>(s)->recvfrom(buf, n, addr, len);
-    });
-}
 
 /**
  * Warn:
