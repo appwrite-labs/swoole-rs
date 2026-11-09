@@ -107,9 +107,9 @@ second after starting it.
 server stops; the 16 `SyncClient`s are blocking `TcpStream` connects. In
 `get_package_length` the fixture builds the port, runs `init_protocol` and makes the
 fake connection socket and its `Connection` (session 2025); the case calls the hybrid's
-`http_server::get_package_length(_size)`, `websocket::encode`, `sw_rs_http2_default_settings`
-(`http2::init_settings`) and `http2::pack_setting_frame` itself, with upstream's frames
-and expected values.
+`http_server::get_package_length(_size)` and `websocket::encode` itself, with upstream's
+frames and expected values; its HTTP/2 frame is the bytes `http2::init_settings` and
+`http2::pack_setting_frame` write, as a constant (crates/http2's tests cover that function).
 
 The HTTP/1 TESTs that start a server are `server/src/http1.rs`, in the same binary and
 phase, and need no fixture: `swr_v1_server_new`/`_delete` (crates/server/src/server_object.rs)
