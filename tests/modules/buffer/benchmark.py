@@ -173,7 +173,11 @@ def main():
             }
             if engine in builds:
                 symbols = subprocess.check_output(['nm', '-g', str(binary)], text=True)
-                required = ['swr_v1_buffer_' + name for name in ['append', 'appendv', 'pop', 'stats']]
+                # The swoole::Buffer members benchmark.cc calls, which crates/buffer/src/cpp.rs
+                # defines; upstream's Buffer has no typed_front. The iovec append's off_t differs by OS.
+                required = ['_ZN6swoole6BufferC1Ej', '_ZN6swoole6BufferD1Ev', '_ZN6swoole6Buffer6appendEPKcj',
+                            '_ZN6swoole6Buffer6appendEPK5iovecm', '_ZN6swoole6Buffer3popEv', '_ZNK6swoole6Buffer11typed_frontEv',
+                            '_ZNK6swoole6Buffer6lengthEv', '_ZNK6swoole6Buffer5countEv', '_ZNK6swoole6Buffer5emptyEv']
                 if not all(name in symbols for name in required):
                     raise RuntimeError('Prepared native consumer lacks Rust buffer symbols')
                 report['engines'][engine]['artifact'] = {
