@@ -1192,3 +1192,4 @@ mod tests {
         q.end();
     }
 }
+// exercise the PR tier's phpt job
