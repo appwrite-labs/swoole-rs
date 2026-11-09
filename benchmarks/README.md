@@ -67,8 +67,10 @@ for HTTP/2, a WebSocket echo loop) with engines interleaved over several repetit
 and records requests/s, p50/p99 latency and `perf stat` task-clock, cycles,
 instructions, branch and cache misses per request of the server's processes, each as
 a median with its spread. Wall time on shared runners is noise, so `--max-ratio`
-judges only a counter ratio (`--counter`, default cycles). The nightly `bench.yml`
-runs it with results as an artifact; never run it on a loaded machine.
+judges only a counter ratio (`--counter`, default task-clock: GitHub-hosted runners
+expose no hardware counters, so cycles and the rest are recorded only where counted).
+The nightly `bench.yml` runs it with results as an artifact; never run it on a loaded
+machine.
 
 ## Module microbenchmarks
 

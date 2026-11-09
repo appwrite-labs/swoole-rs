@@ -145,7 +145,8 @@ def main():
     parser.add_argument('--warmup', type=int, default=200)
     parser.add_argument('--php', default='php')
     parser.add_argument('--php-extension', action='append', default=[])
-    parser.add_argument('--counter', choices=EVENTS, default='cycles', help='The counter --max-ratio judges')
+    parser.add_argument('--counter', choices=EVENTS, default='task-clock',
+                        help='The counter --max-ratio judges; GitHub-hosted runners count no hardware events')
     parser.add_argument('--max-ratio', type=float, help='Fail if the first/second median --counter per request '
                         'exceeds this for any workload')
     parser.add_argument('--output', type=Path,
