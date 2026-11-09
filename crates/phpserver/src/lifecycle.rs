@@ -18,7 +18,8 @@ use swoole_rs_server::{
     swr_v1_server_command, view,
 };
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, Message, Object, bailout, class_name, message, object_of, php_error,
+    Call, E_ERROR, E_WARNING, Message, Object, Value, bailout, class_name, message, object_of,
+    php_error,
     string::bytes,
     sys::{
         IS_NULL, IS_OBJECT, add_assoc_bool_ex, add_assoc_long_ex, swr_zend_efree,
@@ -166,11 +167,8 @@ fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> 
 }
 
 /// What kind of Server `object` is: the most derived of `KIND_*`, else 0.
-/// # Safety
-/// `object` is a live object.
-unsafe fn kind(object: *mut zend_object) -> c_int {
-    // SAFETY: per the caller.
-    let ce = unsafe { (*object).ce };
+fn kind(object: ServerObject) -> c_int {
+    let ce = object.class();
     // SAFETY: classes registered at MINIT, read-only since.
     let (redis, websocket, http) = unsafe {
         (
@@ -331,86 +329,131 @@ pub(crate) fn process_class() -> *mut zend_class_entry {
     unsafe { swoole_process_ce }
 }
 
-/// The Server object's data.
-/// # Safety
-/// `object` is a live Server object.
-pub(crate) unsafe fn data<'a>(object: *mut zend_object) -> &'a mut ServerData {
-    // SAFETY: per the caller; C++ and Rust allocate Servers as `Object<ServerData>`.
-    unsafe { Object::<ServerData>::data(object) }
-}
+/// A live Server object, which `create` made, for as long as the handle is used:
+/// its `ServerData` and the `Property` `create` boxed. Each method borrows them
+/// only for its own body, and `property`'s closures call nothing that reaches them.
+#[derive(Clone, Copy)]
+pub(crate) struct ServerObject(*mut zend_object);
 
-/// The Server object's property.
-/// # Safety
-/// `object` is a live Server object.
-unsafe fn property<'a>(object: *mut zend_object) -> &'a mut Property {
-    // SAFETY: per the caller.
-    let property = unsafe { data(object) }.property.cast::<Property>();
-    // SAFETY: `create` set it and only `free` clears it.
-    unsafe { &mut *property }
-}
+impl ServerObject {
+    /// # Safety
+    /// `object` is a live Server object for as long as the handle is used.
+    pub(crate) unsafe fn new(object: *mut zend_object) -> Self {
+        Self(object)
+    }
 
-/// The running server's object (`php_swoole_server_zval_ptr`).
-fn instance(server: *mut c_void) -> *mut zend_object {
-    let zserv = crate::dispatch::server_zval(server);
-    // SAFETY: the server's object zval.
-    unsafe { object_of(&raw const zserv) }
+    /// A Server method's `$this`.
+    pub(crate) fn this(call: &Call) -> Self {
+        // SAFETY: the Server class's methods run on its live objects.
+        unsafe { Self::new(call.this()) }
+    }
+
+    /// The running server's object (`php_swoole_server_zval_ptr`).
+    pub(crate) fn of(server: *mut c_void) -> Self {
+        let zserv = crate::dispatch::server_zval(server);
+        // SAFETY: the server's object zval; the object outlives its running server.
+        Self(unsafe { object_of(&raw const zserv) })
+    }
+
+    pub(crate) fn raw(self) -> *mut zend_object {
+        self.0
+    }
+
+    /// The object's class.
+    pub(crate) fn class(self) -> *mut zend_class_entry {
+        // SAFETY: a live object.
+        unsafe { (*self.0).ce }
+    }
+
+    fn data(self) -> *mut ServerData {
+        // SAFETY: a live Server object; C++ and Rust allocate Servers as `Object<ServerData>`.
+        unsafe { Object::<ServerData>::data(self.0) }
+    }
+
+    /// The bound `Server`, or null before `__construct`.
+    pub(crate) fn serv(self) -> *mut c_void {
+        // SAFETY: the live data, read once.
+        unsafe { (*self.data()).serv }
+    }
+
+    fn set_serv(self, serv: *mut c_void) {
+        // SAFETY: the live data, written once.
+        unsafe { (*self.data()).serv = serv };
+    }
+
+    /// `init_arguments` as the object holds it (no reference taken).
+    pub(crate) fn init_arguments(self) -> zval {
+        // SAFETY: the live data, read once.
+        unsafe { (*self.data()).init_arguments }
+    }
+
+    pub(crate) fn set_init_arguments(self, value: zval) {
+        // SAFETY: the live data, written once.
+        unsafe { (*self.data()).init_arguments = value };
+    }
+
+    /// `f` over the property; `f` calls nothing that reaches the object.
+    fn property<R>(self, f: impl FnOnce(&mut Property) -> R) -> R {
+        // SAFETY: the live data, read once.
+        let property = unsafe { (*self.data()).property }.cast::<Property>();
+        // SAFETY: `create` set the property and only `free` clears it; nothing
+        // else borrows it while `f` runs.
+        f(unsafe { &mut *property })
+    }
+
+    /// `get_callback(kind)`: a callable, or null.
+    fn callback(self, kind: usize) -> *mut c_void {
+        self.property(|p| p.callbacks.get(kind).copied())
+            .unwrap_or(ptr::null_mut())
+    }
+
+    /// `on()`'s server-level callback: replace callback `kind` with `callable`;
+    /// false if it is not callable.
+    pub(crate) fn set_callback(self, kind: c_int, callable: &Value) -> bool {
+        let Ok(kind) = usize::try_from(kind) else {
+            return false;
+        };
+        let taken = self.property(|p| {
+            p.callbacks
+                .get_mut(kind)
+                .map(|slot| std::mem::replace(slot, ptr::null_mut()))
+        });
+        let Some(old) = taken else {
+            return false;
+        };
+        if !old.is_null() {
+            // SAFETY: a callable this property owned, out of its slot now.
+            unsafe { swoole_rs_phpruntime::callable_free(old) };
+        }
+        // SAFETY: a live value.
+        let callable = unsafe { swoole_rs_phpruntime::callable_create(callable.as_ptr()) };
+        if callable.is_null() {
+            return false;
+        }
+        self.property(|p| {
+            if let Some(slot) = p.callbacks.get_mut(kind) {
+                *slot = callable;
+            }
+        });
+        true
+    }
+
+    /// The Port object at `index` (`property->ports.at(index)`), or null.
+    pub(crate) fn port_at(self, index: usize) -> *mut zval {
+        self.property(|p| p.ports.get(index).copied())
+            .unwrap_or(ptr::null_mut())
+    }
+
+    /// The user process at `index`, or null.
+    pub(crate) fn user_process(self, index: usize) -> *mut zval {
+        self.property(|p| p.user_processes.get(index).copied())
+            .unwrap_or(ptr::null_mut())
+    }
 }
 
 /// `server_object->get_callback(kind)`: a callable, or null.
 pub(crate) fn callback(server: *mut c_void, kind: c_int) -> *mut c_void {
-    let kind = usize::try_from(kind).unwrap_or(CALLBACKS);
-    // SAFETY: the running server's live object.
-    unsafe { property(instance(server)) }
-        .callbacks
-        .get(kind)
-        .copied()
-        .unwrap_or(ptr::null_mut())
-}
-
-/// `on()`'s server-level callback: replace callback `kind` with `callable`;
-/// false if it is not callable.
-/// # Safety
-/// `object` is a live Server object; `callable` a live argument.
-pub(crate) unsafe fn set_callback(
-    object: *mut zend_object,
-    kind: c_int,
-    callable: *mut zval,
-) -> bool {
-    let Some(slot) = usize::try_from(kind)
-        .ok()
-        // SAFETY: per the caller.
-        .and_then(|kind| unsafe { property(object) }.callbacks.get_mut(kind))
-    else {
-        return false;
-    };
-    if !slot.is_null() {
-        // SAFETY: a callable this property owns.
-        unsafe { swoole_rs_phpruntime::callable_free(*slot) };
-        *slot = ptr::null_mut();
-    }
-    // SAFETY: a live argument.
-    let callable = unsafe { swoole_rs_phpruntime::callable_create(callable) };
-    if callable.is_null() {
-        return false;
-    }
-    *slot = callable;
-    true
-}
-
-/// The Port object at `index` (`property->ports.at(index)`), or null.
-/// # Safety
-/// `object` is a live Server object.
-pub(crate) unsafe fn port_at(object: *mut zend_object, index: usize) -> *mut zval {
-    // SAFETY: per the caller.
-    let ports = &unsafe { property(object) }.ports;
-    ports.get(index).copied().unwrap_or(ptr::null_mut())
-}
-
-/// The user process at `index` of a live Server object, or null.
-pub(crate) fn user_process(object: *mut zend_object, index: usize) -> *mut zval {
-    // SAFETY: a live Server object.
-    let processes = &unsafe { property(object) }.user_processes;
-    processes.get(index).copied().unwrap_or(ptr::null_mut())
+    ServerObject::of(server).callback(usize::try_from(kind).unwrap_or(CALLBACKS))
 }
 
 /// The Server class's `create_object`.
@@ -420,7 +463,7 @@ pub(crate) unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_o
     // SAFETY: per the caller; all-zero `ServerData` is an unbound server.
     let object = unsafe { Object::<ServerData>::create(&SERVER, ce) };
     // SAFETY: the object just created.
-    let data = unsafe { data(object) };
+    let data = unsafe { Object::<ServerData>::data(object) };
     data.property = Box::into_raw(Box::<Property>::default()).cast();
     // ZVAL_NULL(&init_arguments)
     data.init_arguments.u1.type_info = IS_NULL;
@@ -432,7 +475,7 @@ pub(crate) unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_o
 /// Zend frees a Server object.
 pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
     // SAFETY: per the caller.
-    let data = unsafe { data(object) };
+    let data = unsafe { Object::<ServerData>::data(object) };
     // SAFETY: `create` boxed it; nothing else frees it.
     let property = unsafe { Box::from_raw(data.property.cast::<Property>()) };
     data.property = ptr::null_mut();
@@ -480,93 +523,122 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
     bailout::finish();
 }
 
-/// `php_swoole_server_add_port`: a Port object for `port`, kept by the Server
-/// object and appended to `$server->ports`.
-/// # Safety
-/// `object` is a live Server object bound to its server; `port` one of its ports.
-pub(crate) unsafe fn add_port(object: *mut zend_object, port: *mut c_void) -> *mut zval {
-    // SAFETY: per the caller.
-    let serv = unsafe { data(object) }.serv;
-    // SAFETY: a live server and port.
-    let zport = unsafe { crate::port::new_object(serv, port) };
-    // SAFETY: per the caller.
-    unsafe { property(object) }.ports.push(zport);
-    // SAFETY: a live port.
-    let info = unsafe { PortInfo::of(port) };
-    // SAFETY: a new Port object.
-    let port_object = unsafe { object_of(zport) };
-    // SAFETY: as above.
-    let port_ce = unsafe { (*port_object).ce };
-    // SAFETY: the Port class and object, Zend copies the values.
-    unsafe {
-        zend_update_property_stringl(
-            port_ce,
-            port_object,
-            c"host".as_ptr(),
-            4,
-            info.host.data,
-            info.host.length,
-        );
+/// A live object and a class declaring the properties written, for as long as
+/// the handle is used. Zend copies every name and value.
+#[derive(Clone, Copy)]
+struct Props(*mut zend_class_entry, *mut zend_object);
+
+impl Props {
+    /// A live object, under its own class.
+    /// # Safety
+    /// `object` is live for as long as the handle is used.
+    unsafe fn of(object: *mut zend_object) -> Self {
+        // SAFETY: per the caller.
+        Self(unsafe { (*object).ce }, object)
     }
-    for (name, value) in [
-        (c"port", info.port),
-        (c"type", info.kind),
-        (c"sock", info.fd),
-    ] {
+
+    /// A Server object, under the Server class.
+    fn server(object: ServerObject) -> Self {
+        Self(SERVER.entry(), object.raw())
+    }
+
+    /// A Server object, under its own class.
+    fn own(object: ServerObject) -> Self {
+        Self(object.class(), object.raw())
+    }
+
+    fn long(self, name: &CStr, value: i64) {
+        // SAFETY: the handle's live object and class.
+        unsafe {
+            zend_update_property_long(self.0, self.1, name.as_ptr(), name.count_bytes(), value);
+        }
+    }
+
+    fn bool(self, name: &CStr, value: bool) {
         // SAFETY: as above.
         unsafe {
-            zend_update_property_long(
-                port_ce,
-                port_object,
+            zend_update_property_bool(
+                self.0,
+                self.1,
                 name.as_ptr(),
                 name.count_bytes(),
-                value,
+                value.into(),
             );
         }
     }
-    // SAFETY: as above.
-    unsafe { zend_update_property_bool(port_ce, port_object, c"ssl".as_ptr(), 3, info.ssl.into()) };
-    // SAFETY: the live Server object.
-    let ce = unsafe { (*object).ce };
+
+    fn value(self, name: &CStr, value: &mut zval) {
+        // SAFETY: as above, and a live value.
+        unsafe { zend_update_property(self.0, self.1, name.as_ptr(), name.count_bytes(), value) };
+    }
+
+    /// `host`, `port`, `type`, `sock` (with `fd`) and `ssl` from `info`.
+    fn port_info(self, info: &PortInfo, fd: Option<i64>) {
+        // SAFETY: as above; the view's bytes live with its port.
+        unsafe {
+            zend_update_property_stringl(
+                self.0,
+                self.1,
+                c"host".as_ptr(),
+                4,
+                info.host.data,
+                info.host.length,
+            );
+        }
+        self.long(c"port", info.port);
+        self.long(c"type", info.kind);
+        if let Some(fd) = fd {
+            self.long(c"sock", fd);
+        }
+        self.bool(c"ssl", info.ssl);
+    }
+
+    /// A `Connection\Iterator` over `serv` (and `port`, or all of them) in the
+    /// object's `connections` property.
+    fn connections(self, serv: view::Server<'_>, port: *mut c_void) {
+        let mut iterator = crate::dispatch::undef();
+        crate::server::new_iterator(&mut iterator, serv.raw(), port);
+        self.value(c"connections", &mut iterator);
+        // SAFETY: the reference taken above.
+        unsafe { zval_ptr_dtor(&raw mut iterator) };
+    }
+}
+
+/// `php_swoole_server_add_port`: a Port object for `port`, kept by the Server
+/// object and appended to `$server->ports`.
+/// # Safety
+/// `object` is bound to its server, and `port` is one of its ports.
+pub(crate) unsafe fn add_port(object: ServerObject, port: *mut c_void) -> *mut zval {
+    // SAFETY: per the caller, the object's live server.
+    let serv = unsafe { view::Server::from_raw(object.serv()) };
+    // SAFETY: a live server and port.
+    let zport = unsafe { crate::port::new_object(serv.raw(), port) };
+    object.property(|p| p.ports.push(zport));
+    // SAFETY: a new Port object zval.
+    let port_object = unsafe { object_of(zport) };
+    // SAFETY: the Port object, live with the Server object that keeps it.
+    let props = unsafe { Props::of(port_object) };
+    // SAFETY: a live port.
+    let info = unsafe { PortInfo::of(port) };
+    props.port_info(&info, Some(info.fd));
     // SAFETY: the Server object; its class declares `ports`.
-    let zports = unsafe { swr_zend_property_array(ce, object, c"ports".as_ptr(), 5) };
+    let zports =
+        unsafe { swr_zend_property_array(object.class(), object.raw(), c"ports".as_ptr(), 5) };
     // SAFETY: an array.
     let zports = unsafe { table(zports) };
     // SAFETY: `add_next_index_zval`: the array takes the Port's reference;
     // `ports` borrows it.
     unsafe { zend_hash_next_index_insert(zports, zport) };
-    // SAFETY: as above.
-    unsafe { connections(port_ce, port_object, serv, port) };
+    props.connections(serv, port);
     zport
-}
-
-/// A `Connection\Iterator` over `serv` (and `port`, or all of them) in the
-/// `connections` property of `object`.
-/// # Safety
-/// `ce` declares `connections` and `object` is a live instance.
-unsafe fn connections(
-    ce: *mut zend_class_entry,
-    object: *mut zend_object,
-    serv: *mut c_void,
-    port: *mut c_void,
-) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    let mut iterator = crate::dispatch::undef();
-    crate::server::new_iterator(&mut iterator, serv.raw(), port);
-    // SAFETY: per the caller; Zend copies the value.
-    unsafe { zend_update_property(ce, object, c"connections".as_ptr(), 11, &raw mut iterator) };
-    // SAFETY: the reference taken above.
-    unsafe { zval_ptr_dtor(&raw mut iterator) };
 }
 
 /// `server_ctor`: bind `object` to `serv` and describe its primary port.
 fn bind(call: &Call, serv: view::Server<'_>) {
-    let object = call.this();
+    let object = ServerObject::this(call);
     // *php_swoole_server_zval_ptr(serv) = *zserv
     crate::dispatch::set_server_zval(serv.raw(), call.this_zval());
-    // SAFETY: `$this` is a Server.
-    unsafe { data(object) }.serv = serv.raw();
+    object.set_serv(serv.raw());
     let mut index = 0;
     while let port = serv.port_at(index)
         && !port.is_null()
@@ -575,32 +647,11 @@ fn bind(call: &Call, serv: view::Server<'_>) {
         unsafe { add_port(object, port) };
         index += 1;
     }
-    let ce = SERVER.entry();
-    // SAFETY: the Server class and `$this`.
-    unsafe { connections(ce, object, serv.raw(), ptr::null_mut()) };
-    let primary = serv.port_at(0);
-    // SAFETY: as above.
-    let info = unsafe { PortInfo::of(primary) };
-    let mode = number(serv, fact::MODE);
-    // SAFETY: the Server class and `$this`; Zend copies the values.
-    unsafe { zend_update_property_long(ce, object, c"mode".as_ptr(), 4, mode) };
-    // SAFETY: as above.
-    unsafe {
-        zend_update_property_stringl(
-            ce,
-            object,
-            c"host".as_ptr(),
-            4,
-            info.host.data,
-            info.host.length,
-        );
-    }
-    // SAFETY: as above.
-    unsafe { zend_update_property_long(ce, object, c"port".as_ptr(), 4, info.port) };
-    // SAFETY: as above.
-    unsafe { zend_update_property_long(ce, object, c"type".as_ptr(), 4, info.kind) };
-    // SAFETY: as above.
-    unsafe { zend_update_property_bool(ce, object, c"ssl".as_ptr(), 3, info.ssl.into()) };
+    let props = Props::server(object);
+    props.connections(serv, ptr::null_mut());
+    props.long(c"mode", number(serv, fact::MODE));
+    // SAFETY: the primary port.
+    props.port_info(&unsafe { PortInfo::of(serv.port_at(0)) }, None);
 }
 
 /// `zend_throw_exception_ex(swoole_exception_ce, code, message)`.
@@ -612,17 +663,18 @@ fn exception(message: &CStr, code: i64) {
 
 use crate::server::set_last_error;
 
-fn class(object: *mut zend_object) -> String {
+fn class(object: ServerObject) -> String {
     // SAFETY: a live object.
-    unsafe { class_name(object) }.to_string_lossy().into_owned()
+    unsafe { class_name(object.raw()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn construct(call: &Call) {
-    let object = call.this();
-    // SAFETY: `$this` is a Server.
-    if !unsafe { data(object) }.serv.is_null() {
+    let object = ServerObject::this(call);
+    if !object.serv().is_null() {
         // SAFETY: from a handler, with `$this`.
-        unsafe { throw_constructed_twice(object) };
+        unsafe { throw_constructed_twice(object.raw()) };
         return call.set_bool(false);
     }
     if !swoole_rs_phpswoole::globals().cli.get() {
@@ -740,8 +792,7 @@ fn add_process(call: &Call) {
     let copy = unsafe { swoole_rs_zend::sys::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
     // SAFETY: a writable zval and the live argument.
     unsafe { swr_zval_copy(copy, process) };
-    // SAFETY: `$this` is a Server.
-    unsafe { property(call.this()) }.user_processes.push(copy);
+    ServerObject::this(call).property(|p| p.user_processes.push(copy));
     match add_worker(serv, copy) {
         -3 => bailout::defer(Err(bailout::Bailout)),
         -2 => {
@@ -799,8 +850,7 @@ fn add_command(call: &Call) {
         unsafe { swoole_rs_phpruntime::callable_free(callable) };
         return call.set_bool(false);
     }
-    // SAFETY: `$this` is a Server.
-    unsafe { property(call.this()) }.commands.push(callable);
+    ServerObject::this(call).property(|p| p.commands.push(callable));
     call.set_bool(true);
 }
 
@@ -989,14 +1039,12 @@ fn trapped(bailed: bool) -> Result<(), Stop> {
 }
 
 /// `ServerObject::register_callback`.
-fn register_callback(object: *mut zend_object, serv: view::Server<'_>) {
+fn register_callback(object: ServerObject, serv: view::Server<'_>) {
     put(serv, install::CONTROL);
-    // SAFETY: `$this` is a Server.
-    let callbacks = &unsafe { property(object) }.callbacks;
-    if !callbacks[ON_TASK].is_null() {
+    if !object.callback(ON_TASK).is_null() {
         put(serv, install::TASK);
     }
-    if !callbacks[ON_PIPE_MESSAGE].is_null() {
+    if !object.callback(ON_PIPE_MESSAGE).is_null() {
         put(serv, install::PIPE_MESSAGE);
     }
     if fact(serv, fact::SEND_YIELD) && fact(serv, fact::UNSAFE_EVENTS) {
@@ -1067,7 +1115,7 @@ fn has_key(setting: *mut zval, key: &CStr) -> bool {
 
 /// `ServerObject::on_before_start`.
 #[expect(clippy::too_many_lines, reason = "upstream's checks, in its order")]
-fn before_start(object: *mut zend_object, serv: view::Server<'_>) -> Result<(), Stop> {
+fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop> {
     // SAFETY: a live server.
     if unsafe { server_methods::create(serv.raw()) } < 0 {
         // SAFETY: the calling thread's `sw_error`.
@@ -1089,13 +1137,10 @@ fn before_start(object: *mut zend_object, serv: view::Server<'_>) -> Result<(), 
         put(serv, install::CLOSE);
     }
     put(serv, install::ALLOCATORS);
-    // SAFETY: `$this`.
-    let ce = unsafe { (*object).ce };
-    let pid = i64::from(std::process::id());
-    // SAFETY: `$this` and its class.
-    unsafe { zend_update_property_long(ce, object, c"master_pid".as_ptr(), 10, pid) };
-    // SAFETY: as above; `setting` is declared.
-    let setting = unsafe { swr_zend_property_array(ce, object, c"setting".as_ptr(), 7) };
+    let ce = object.class();
+    Props::own(object).long(c"master_pid", i64::from(std::process::id()));
+    // SAFETY: `$this` and its class, which declares `setting`.
+    let setting = unsafe { swr_zend_property_array(ce, object.raw(), c"setting".as_ptr(), 7) };
     // SAFETY: the property's array.
     unsafe { swr_zend_separate_array(setting) };
     for (key, id) in [
@@ -1113,11 +1158,9 @@ fn before_start(object: *mut zend_object, serv: view::Server<'_>) -> Result<(), 
     if has_key(setting, c"admin_server") {
         put(serv, install::ADMIN_COMMANDS);
     }
-    // SAFETY: `$this`.
-    let kind = unsafe { kind(object) };
+    let kind = kind(object);
     let http_server = kind == KIND_HTTP || kind == KIND_WEBSOCKET;
-    // SAFETY: `$this` is a Server.
-    let ports = unsafe { property(object) }.ports.clone();
+    let ports = object.property(|p| p.ports.clone());
     let Some((&first, others)) = ports.split_first() else {
         return Ok(());
     };
@@ -1262,7 +1305,7 @@ fn before_start(object: *mut zend_object, serv: view::Server<'_>) -> Result<(), 
 
 fn start(call: &Call) {
     let serv = server(call);
-    let object = call.this();
+    let object = ServerObject::this(call);
     match crate::thread::worker(object, serv) {
         Some(Ok(())) => return call.set_bool(true),
         Some(Err(bailout)) => return bailout.defer(),
@@ -1335,11 +1378,13 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
         return 0;
     }
     loop {
-        // SAFETY: the running server's live object.
-        let property = unsafe { property(instance(server.raw())) };
-        let waiters = Rc::clone(property.send_waiters.entry(session_id).or_default());
-        property.send_token += 1;
-        let token = property.send_token;
+        let (waiters, token) = ServerObject::of(server.raw()).property(|p| {
+            p.send_token += 1;
+            (
+                Rc::clone(p.send_waiters.entry(session_id).or_default()),
+                p.send_token,
+            )
+        });
         waiters.borrow_mut().push_back((token, co));
         let timeout = server.config().send_timeout;
         // SAFETY: this call's coroutine; `onBufferEmpty` or `onClose` wakes it.
@@ -1366,11 +1411,8 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
 /// (`onBufferEmpty` resumes each, `onClose` cancels each): null when none
 /// wait. Release with `send_waiters_free`.
 pub(crate) fn send_waiters(server: *mut c_void, session_id: i64) -> *mut c_void {
-    // SAFETY: the running server's live object.
-    let property = unsafe { property(instance(server)) };
-    property
-        .send_waiters
-        .remove(&session_id)
+    ServerObject::of(server)
+        .property(|p| p.send_waiters.remove(&session_id))
         .map_or(ptr::null_mut(), |waiters| {
             Box::into_raw(Box::new(waiters)).cast()
         })
