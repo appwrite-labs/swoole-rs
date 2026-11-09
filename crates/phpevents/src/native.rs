@@ -251,7 +251,7 @@ pub(crate) unsafe fn socket_free_record(socket: *mut SocketRecord, detach_fd: bo
 /// `Reactor::defer(call, data)` on this thread's reactor.
 pub(crate) fn defer(call: DeferCall, data: *mut c_void) {
     // SAFETY: the live reactor's fields.
-    unsafe { swoole_rs_reactor::defer(fields(), call, data) };
+    unsafe { swoole_rs_reactor::defer(fields(), call, data, None) };
 }
 
 /// The reactor's future (`before`) or idle task.

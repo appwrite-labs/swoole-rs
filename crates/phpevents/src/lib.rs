@@ -486,6 +486,23 @@ fn cycle(call: &Call) {
     call.set_bool(true);
 }
 
+/// Releases the cycle callables the reactor holds, as `wait` frees it: a loop left
+/// with one set (a callback that exited, or one never cleared) would lose it.
+fn release_cycle_tasks() -> Result<(), Bailout> {
+    let mut result = Ok(());
+    for before in [false, true] {
+        let unset = ReactorTask {
+            callback: None,
+            data: ptr::null_mut(),
+        };
+        let task = std::mem::replace(native::cycle_task(before), unset);
+        if !task.data.is_null() {
+            result = result.and(release(task.data));
+        }
+    }
+    result
+}
+
 /// `isset(mixed $fd, int $events = SWOOLE_EVENT_READ | SWOOLE_EVENT_WRITE): bool`.
 fn isset(call: &Call) {
     if !has_reactor() {
