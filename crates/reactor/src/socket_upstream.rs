@@ -326,11 +326,9 @@ unsafe fn cork_as(socket: *mut SocketRecord, cork: bool) -> bool {
         tcp_nodelay: socket.tcp_nodelay,
     };
     let result = if cork {
-        // SAFETY: `state` is a local.
-        unsafe { crate::swr_v1_socket_cork(socket.fd, &raw mut state) }
+        crate::swr_v1_socket_cork(socket.fd, &mut state)
     } else {
-        // SAFETY: `state` is a local.
-        unsafe { crate::swr_v1_socket_uncork(socket.fd, socket.enable_tcp_nodelay, &raw mut state) }
+        crate::swr_v1_socket_uncork(socket.fd, socket.enable_tcp_nodelay, &mut state)
     };
     socket.tcp_nopush = state.tcp_nopush;
     socket.tcp_nodelay = state.tcp_nodelay;
