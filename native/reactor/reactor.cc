@@ -65,13 +65,17 @@ void swr_v1_event_set_exit_condition(int id, bool (*condition)(size_t *event_num
                                          [condition](Reactor *, size_t &event_num) { return condition(&event_num); });
 }
 
+void swr_v1_event_remove_exit_condition(int id) {
+    SwooleTG.reactor->remove_exit_condition(static_cast<Reactor::ExitCondition>(id));
+}
+
 void swr_v1_event_set_end_callback(int id, void (*callback)(void)) {
     SwooleTG.reactor->set_end_callback(static_cast<Reactor::EndCallback>(id), [callback](Reactor *) { callback(); });
 }
 
 namespace swoole {
 
-static void swr_reactor_run_task(const DeferCallback &task) {
+static void swr_reactor_run_task(const swr_v1_reactor_task &task) {
     auto reply = swr_v1_reactor_builtin_step(2, 0, bool(task.callback), 0);
     switch (reply.action) {
     case 0: return;
@@ -237,8 +241,6 @@ Reactor::Reactor(int max_event, Type _type) {
         case 1: break;  // the backend set ready_ when it opened
         case 2:
             timeout_msec = -1;
-            idle_task = {};
-            future_task = {};
             write = _write;
             writev = _writev;
             close = _close;

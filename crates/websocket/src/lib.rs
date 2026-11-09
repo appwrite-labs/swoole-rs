@@ -7,6 +7,8 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+// The fuzz image's nightly predates `MaybeUninit::write_copy_of_slice` going stable.
+#![cfg_attr(fuzzing, feature(maybe_uninit_write_slice))]
 
 mod codec;
 pub mod frame_api;

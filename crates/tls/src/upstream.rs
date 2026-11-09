@@ -1513,19 +1513,18 @@ pub unsafe extern "C" fn socket_ssl_close(socket: *mut SocketRecord) {
 /// without setting the last error.
 ///
 /// # Safety
-/// `socket` is a live record and `context` a live `SSLContext`, whose first member
-/// is its prepared Rust owner.
+/// `socket` is a live record and `context` a live `SSLContext` (its Rust owner).
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket10ssl_createEPNS_10SSLContextEi")
 )]
 pub unsafe extern "C" fn socket_ssl_create(
     socket: *mut SocketRecord,
-    context: *const c_void,
+    context: *const crate::OwnedTlsContext,
     flags: c_int,
 ) -> c_int {
     // SAFETY: as the caller promises.
-    let fields = unsafe { (*context.cast::<crate::owned::OwnedTlsPrepared>()).fields };
+    let fields = unsafe { crate::swr_v1_tls_owner_view(context) }.fields;
     // SAFETY: the context's live fields.
     let context = unsafe { (*fields).context };
     // SAFETY: as the caller promises.
@@ -1813,29 +1812,8 @@ mod tests {
     #[test]
     fn ssl_create_then_close_frees_the_ssl() {
         unsafe {
-            let context = openssl_sys::SSL_CTX_new(openssl_sys::TLS_method());
-            let mut fields = crate::OwnedTlsFields {
-                http: 0,
-                http_v2: 0,
-                prefer_server_ciphers: 0,
-                session_tickets: 0,
-                stapling: 0,
-                stapling_verify: 0,
-                disable_tls_host_name: 0,
-                grease: 0,
-                verify_depth: 0,
-                disable_compress: 0,
-                verify_peer: 0,
-                allow_self_signed: 0,
-                protocols: 0,
-                create_flag: 0,
-                context,
-            };
-            let prepared = crate::OwnedTlsPrepared {
-                owner: std::ptr::null(),
-                fields: &raw mut fields,
-                strings: [std::ptr::null(); 11],
-            };
+            let owner = crate::swr_v1_tls_owner_new(crate::swr_v1_tls_warning);
+            (*owner.fields).context = openssl_sys::SSL_CTX_new(openssl_sys::TLS_method());
             let mut fds = [0; 2];
             assert_eq!(
                 libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()),
@@ -1844,7 +1822,7 @@ mod tests {
             let mut socket = SocketRecord::with_fd(fds[0], 0);
             socket.tls.state = 2;
             socket.tls.want_read = 1;
-            let created = socket_ssl_create(&raw mut socket, (&raw const prepared).cast(), 2);
+            let created = socket_ssl_create(&raw mut socket, owner.owner, 2);
             assert_eq!(created, 0);
             assert!(!socket.ssl.is_null());
             assert_eq!(
@@ -1857,7 +1835,7 @@ mod tests {
             assert_eq!(data, (&raw mut socket).cast());
             socket_ssl_close(&raw mut socket);
             assert!(socket.ssl.is_null());
-            openssl_sys::SSL_CTX_free(context);
+            crate::swr_v1_tls_owner_free(owner.owner);
             libc::close(fds[0]);
             libc::close(fds[1]);
         }

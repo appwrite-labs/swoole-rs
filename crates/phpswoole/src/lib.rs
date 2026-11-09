@@ -43,10 +43,10 @@ pub use ini::swr_v1_phpswoole_register_ini;
 pub use interfaces::sys_warning;
 pub use memory::sw_zend_string_allocator;
 pub use module::{
-    CALL_USER_SHUTDOWNFUNC_BEGIN, Globals, RSHUTDOWN_END, display_errors, enable_library, globals,
-    php_swoole_parse_to_size, php_swoole_register_shutdown_function, swr_v1_phpswoole_init_globals,
-    swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown,
-    zif_swoole_set_process_name,
+    CALL_USER_SHUTDOWNFUNC_BEGIN, Globals, RSHUTDOWN_BEGIN, RSHUTDOWN_END, display_errors,
+    enable_library, globals, php_swoole_parse_to_size, php_swoole_register_shutdown_function,
+    swr_v1_phpswoole_init_globals, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,
+    swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
 };
 pub use options::{php_swoole_set_global_option, set_global, sw_zval_is_serializable};
 pub use serialize::{php_swoole_serialize, php_swoole_unserialize, serialize, unserialize};

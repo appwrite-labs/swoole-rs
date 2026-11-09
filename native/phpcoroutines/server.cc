@@ -3,7 +3,7 @@
 // What crates/phpserver needs of C++ that stable Rust can't express: the build's #ifdefs
 // (sockets, thread mode, the features set() checks), the C++ objects a Server holds
 // (`new`/`delete Server`, its MessageBus, MultiTask's std::function
-// members, ListenPort's shared_ptr<SSLContext>), the variadic PHP error reporters and the
+// members), the variadic PHP error reporters and the
 // zend_try frames around calls that bail out (start(), addProcess's worker).
 #include "swoole_rs_phphost.h"
 #include "swoole_server.h"
@@ -116,23 +116,6 @@ bool task_dispatch_multi(void *server, zval *ztasks, double timeout, zval *retur
     }
     zend_end_try();
     return done;
-}
-
-const void *port_ssl_owner(void *port) {
-    SSLContext *context = as_port(port)->ssl_context;
-    return context ? context->handle() : nullptr;
-}
-void *port_sni_context(void *port, const void **owner) {
-    auto *context = new std::shared_ptr<SSLContext>(as_port(port)->dup_ssl_context());
-    *owner = (*context)->handle();
-    return context;
-}
-bool port_sni_add(void *port, const char *name, size_t length, void *context) {
-    std::unique_ptr<std::shared_ptr<SSLContext>> held(static_cast<std::shared_ptr<SSLContext> *>(context));
-    return name && as_port(port)->ssl_add_sni_cert(std::string(name, length), *held);
-}
-bool port_ssl_init(void *port) {
-    return as_port(port)->ssl_init();
 }
 
 void lifecycle_install(void *server, uint32_t which) {
@@ -268,8 +251,6 @@ void php_swoole_server_minit(int module_number) {
         lifecycle_install, lifecycle_create, lifecycle_start, lifecycle_release, lifecycle_add_process,
     };
     swr_v1_phpserver_lifecycle_init(&lifecycle);
-    static const swr_v1_phpserver_port_host port = {
-        server_invalid, port_socket, port_ssl_owner, port_sni_context, port_sni_add, port_ssl_init,
-    };
+    static const swr_v1_phpserver_port_host port = {server_invalid, port_socket};
     swoole_server_port_ce = swr_v1_phpserver_port_minit(&port, !thread, sockets);
 }

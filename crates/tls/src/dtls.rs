@@ -432,7 +432,7 @@ fn methods() -> *mut BIO_METHOD {
 /// `owner` is live, its socket a live record, and `context` the session's live `SSLContext`.
 pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     owner: *mut DtlsSession,
-    context: *const c_void,
+    context: *const crate::OwnedTlsContext,
 ) -> bool {
     // SAFETY: as the caller promises.
     let socket = unsafe { socket_of(owner) };

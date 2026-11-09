@@ -1,17 +1,7 @@
 //! Descriptor admission over actual Zend values and SDK stream/socket leaves.
-use super::{Message, ops};
+use super::{Message, native};
 use std::{ffi::CStr, ptr};
-use swoole_rs_zend::{
-    bailout::{self, Bailout},
-    sys as z, type_of, value,
-};
-
-#[repr(C)]
-pub(crate) struct Ops {
-    property_name: unsafe extern "C" fn(u8) -> *mut z::zend_string,
-    socket_class: unsafe extern "C" fn() -> *mut z::zend_class_entry,
-    socket_fd: unsafe extern "C" fn(*mut z::zval, *mut u8) -> i32,
-}
+use swoole_rs_zend::{bailout::Bailout, sys as z, type_of, value};
 
 unsafe extern "C" {
     static mut swoole_socket_coro_ce: *mut z::zend_class_entry;
@@ -20,8 +10,7 @@ unsafe extern "C" {
 }
 
 fn warning(message: &CStr) -> Result<(), Bailout> {
-    // SAFETY: the native PHP reporter runs under a C trap.
-    unsafe { bailout::report(ops().fatal_warning, message) }
+    native::fatal_warning(message)
 }
 
 #[expect(
@@ -85,8 +74,7 @@ pub(super) unsafe fn convert(value: *mut z::zval) -> Result<i32, Bailout> {
                 }
             }
             if let Some(index) = property {
-                // SAFETY: the fixed binding maps fd/sock/pipe to the existing interned SDK names.
-                let name = unsafe { (ops().descriptors.property_name)(index) };
+                let name = native::property_name(index);
                 let mut found = ptr::null_mut();
                 // SAFETY: the shim contains magic-method bailouts; no object borrow spans that call.
                 if unsafe { z::swr_zend_event_property(value, name, &raw mut found) } != 0 {
@@ -99,14 +87,9 @@ pub(super) unsafe fn convert(value: *mut z::zval) -> Result<i32, Bailout> {
                 }
                 return Ok(-1);
             }
-            // SAFETY: the native binding returns null when PHP socket support was not built.
-            let socket_class = unsafe { (ops().descriptors.socket_class)() };
-            // SAFETY: registered class entries; this branch is unreachable for an absent capability.
-            if !socket_class.is_null() && unsafe { z::swr_zend_instanceof(class, socket_class) } {
-                let mut closed = 0;
-                // SAFETY: the actual SDK object layout is read only after the class check.
-                let fd = unsafe { (ops().descriptors.socket_fd)(value, &raw mut closed) };
-                if closed != 0 {
+            // SAFETY: a live object zval.
+            if let Some((fd, closed)) = unsafe { native::php_socket_fd(value) } {
+                if closed {
                     warning(c"contains a closed socket")?;
                     return Ok(-1);
                 }

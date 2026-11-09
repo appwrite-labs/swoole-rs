@@ -96,23 +96,4 @@ void swr_cpp_phpcoroutines_activate(void (*deactivate)(void *)) {
 void swr_cpp_phpcoroutines_defer(void (*fn)(void *), void *data) {
     swoole_event_defer(fn, data);
 }
-
-// Co::set(['exit_condition' => ...]): Rust owns the callable.
-void swr_cpp_phpcoroutines_set_exit_condition(uint8_t set) {
-    if (set) {
-        SwooleG.user_exit_condition = [](Reactor *, size_t &) {
-            uint8_t exit = 0;
-            if (swr_v1_phpcoroutines_can_exit(&exit)) {
-                zend_bailout();
-            }
-            return exit != 0;
-        };
-        if (sw_reactor()) {
-            sw_reactor()->set_exit_condition(Reactor::EXIT_CONDITION_USER_AFTER_DEFAULT, SwooleG.user_exit_condition);
-        }
-    } else if (sw_reactor()) {
-        sw_reactor()->remove_exit_condition(Reactor::EXIT_CONDITION_USER_AFTER_DEFAULT);
-        SwooleG.user_exit_condition = nullptr;
-    }
-}
 }

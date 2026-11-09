@@ -92,11 +92,10 @@ calls PHP code directly where it could bail out:
   calls directly (the Server's on* slots) does the same with `bailout::raise`
   as its last step, from a frame that owns nothing that needs a drop:
 
-```cpp
-static void event_object_free(void *data) {  // native/phpevents/event.cc
-    if (swr_v1_phpevents_free(data)) {       // Rust: true if it trapped a bailout
-        zend_bailout();
-    }
+```rust
+// crates/phpevents: a task the reactor's defer queue runs.
+unsafe extern "C-unwind" fn deferred_free_object(object: *mut c_void) {
+    bailout::raise(unsafe { free_object(object.cast()) }); // Err if it trapped a bailout
 }
 ```
 
