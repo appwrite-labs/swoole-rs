@@ -60,10 +60,6 @@ long swr_v1_coroutine_create(void (*routine)(void *), void *arg);
  * context (PHP's bailout, or the process exits); outside one, later resumes
  * are refused. */
 void swr_v1_coroutine_bail(void (*callback)(void *), void *data);
-/* The build's switches, which crates/coroutine reads: SWR_CTX_* and SWR_CO_TIME
- * (native/coroutine/coroutine.cc). */
-enum { SWR_CO_TIME = 8 };
-extern const uint32_t swr_cpp_coroutine_build;
 long swr_v1_coroutine_run(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
 void swr_v1_coroutine_resume(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);
 void swr_v1_coroutine_yield(swr_v1_coroutine_scheduler *, swr_v1_coroutine *);

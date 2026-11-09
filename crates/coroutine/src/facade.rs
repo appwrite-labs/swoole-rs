@@ -6,8 +6,7 @@
 //! activation, bailout, cancel, the timed and cancelable yield, the
 //! socket-bound error and the `swoole_coroutine_*` functions gdb and C callers
 //! use, under their upstream symbols where Rust or gdb call them by those.
-//! native/coroutine/coroutine.cc keeps only the build's switches, which a Rust
-//! build can't see.
+//! The build's switches are `swoole_rs_corebase::built_with`'s (`build`).
 use crate::context::{
     Context, Native, swr_v1_context_free, swr_v1_context_init, swr_v1_context_swap_in,
     swr_v1_context_swap_out,
@@ -27,7 +26,7 @@ use core::ptr;
 use std::ffi::{CStr, CString};
 use std::io;
 use swoole_rs_corebase::{
-    fatal_error,
+    Switch, built_with, fatal_error,
     log::{self, set_last_error},
     swoole_get_stdout_stream,
 };
@@ -39,19 +38,16 @@ const SW_ERROR_CO_TIMEDOUT: c_int = 10018;
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const SW_DEFAULT_C_STACK_SIZE: usize = 2 * 1024 * 1024;
 const SW_CORO_BAILOUT_EXIT_CODE: i32 = 1;
-/// `SWR_CO_TIME` in the build's switches: `SW_CORO_TIME`.
+/// [`build`]'s `SW_CORO_TIME` bit, beside the context's flags.
 const CORO_TIME: u32 = 8;
 
 /// A C function over its data, `void (*)(void *)`: a coroutine's entry, a
 /// timer's callback or the bailout callback.
 type Routine = unsafe extern "C" fn(*mut c_void);
 
-// SAFETY: native/coroutine/coroutine.cc's constant, and crates/timer's,
-// crates/hooks' and crates/reactor's upstream functions; those marked safe take
-// no pointers and have no preconditions.
+// SAFETY: crates/timer's, crates/hooks' and crates/reactor's upstream
+// functions; those marked safe take no pointers and have no preconditions.
 unsafe extern "C-unwind" {
-    /// The build's switches: `SWR_CTX_*` and `SWR_CO_TIME`.
-    safe static swr_cpp_coroutine_build: u32;
     fn swr_v1_timer_add_plain_sec(
         timeout: f64,
         persistent: bool,
@@ -77,8 +73,19 @@ unsafe extern "C-unwind" {
     safe fn swoole_event_is_available() -> bool;
 }
 
+/// The build's coroutine switches: the context's flags
+/// (`SW_USE_THREAD_CONTEXT`, `SW_CONTEXT_PROTECT_STACK_PAGE`,
+/// `SW_CONTEXT_DETECT_STACK_USAGE`) and [`CORO_TIME`].
 fn build() -> u32 {
-    swr_cpp_coroutine_build
+    [
+        (Switch::ThreadContext, THREAD),
+        (Switch::ContextProtectStackPage, STACK_PROTECT),
+        (Switch::ContextDetectStackUsage, STACK_MARK),
+        (Switch::CoroTime, CORO_TIME),
+    ]
+    .into_iter()
+    .filter(|(switch, _)| built_with(*switch))
+    .fold(0, |flags, (_, bit)| flags | bit)
 }
 
 /// A fresh scheduler: no coroutine, upstream's default stack size, and the
