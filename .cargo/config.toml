@@ -1,2 +1,6 @@
 [target.'cfg(target_os = "macos")']
 rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
+
+# musl targets link the C runtime statically by default, which rules out a cdylib (swoole.so).
+[target.'cfg(target_env = "musl")']
+rustflags = ["-C", "target-feature=-crt-static"]
