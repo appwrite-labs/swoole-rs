@@ -81,19 +81,16 @@ void *swr_v1_hook_co_socket_pop_buffer(swr_v1_co_socket *socket, bool write);
  * members through the ring (crates/hooks/src/uring_socket.rs). */
 void swr_v1_hook_co_socket_uring(swr_v1_co_socket *socket);
 
-/* What the Rust operations need of C++ types (crates/hooks/src/co_io.rs), installed once. */
+/* What the packet gate (tests/modules/hooks) fakes of the Rust operations
+   (crates/hooks/src/co_io.rs); Rust installs the runtime's. */
 typedef struct {
-    /* swoole_timer_add(timeout, false, timer_callback, socket), or null. */
-    void *(*timer_add)(swr_v1_co_socket *, double timeout);
+    /* A timer for the read or the write wait, or null. */
+    void *(*timer_add)(swr_v1_co_socket *, double timeout, bool write);
     void (*timer_del)(void *node);
-    /* Yields co with cancel(event) as its cancel function. */
-    void (*suspend)(swr_v1_co_socket *, void *co, uint32_t event);
-    /* Moves a write's bytes to the write buffer unless they are there or the socket is zero-copy. */
-    void (*buffer)(swr_v1_co_socket *, char **buffer, size_t length);
     /* The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes view. */
     void (*read_buffer)(swr_v1_co_socket *, swr_v1_hook_read_buffer *view, uint32_t action, size_t size);
     ssize_t (*recv)(swr_v1_co_socket *, char *, size_t, bool all);
-    /* The native protocol callback/trace and packet error diagnostics. */
+    /* The protocol's length callback and packet error diagnostics. */
     ssize_t (*package_length)(swr_v1_co_socket *, uint32_t size, uint32_t *header_length);
     void (*packet_fail)(swr_v1_co_socket *, uint32_t kind, ssize_t length);
 } swr_v1_hook_co_socket_host_t;
@@ -119,8 +116,6 @@ long swr_v1_hook_co_socket_bound_cid(const swr_v1_co_socket *socket, uint32_t ev
 void swr_v1_hook_co_socket_check_bound(const swr_v1_co_socket *socket, uint32_t event);
 const char *swr_v1_hook_co_socket_event_str(const swr_v1_co_socket *socket, uint32_t event);
 bool swr_v1_hook_co_socket_timed_out(swr_v1_co_socket *socket, double timeout, double *startup, double now, int kind);
-/* Socket::timer_callback: node, one of the socket's timers, fired. */
-void swr_v1_hook_co_socket_timer_fired(swr_v1_co_socket *socket, void *node);
 /* wait_event for the current coroutine: barrier (when given) stays installed for the wait;
    buffer, when not null, is a write's buffer slot. */
 bool swr_v1_hook_co_socket_wait(swr_v1_co_socket *socket,

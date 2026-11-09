@@ -1,6 +1,7 @@
 //! The coroutine socket's effects: [`NATIVE`] (the last error and its messages, the
-//! coroutine and the reactor) and what stays native (timers, buffers), installed
-//! once ([`Host`], `swr_v1_hook_co_socket_host`). Over them, the record's `set_err`, `check_return_value` and `is_available`, and the
+//! coroutine, the reactor and the write buffer) and [`Host`] (the timers, the read
+//! buffer, `recv` and the packet callbacks, which the packet gate fakes). Over them,
+//! the record's `set_err`, `check_return_value` and `is_available`, and the
 //! per-direction timer (`TimerController`).
 use crate::co_socket::CoSocket;
 use crate::shutdown::{READ, swr_v1_hook_socket_bound_co, swr_v1_hook_socket_event_name};
@@ -13,33 +14,28 @@ pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
 /// `SW_WAIT`.
 const WAIT: c_int = 2;
 
-/// What only C++ can do, or the packet gate (`tests/modules/hooks`) fakes: the timers,
-/// the coroutine yield with its `std::function` cancel, the `String` buffers, the `Protocol` callback, the packet diagnostics and the
-/// `Socket` constructor and destructor. Each takes the record native code handed Rust.
+/// What the packet gate (`tests/modules/hooks`) fakes: the timers, the read
+/// `String`, `recv`, the `Protocol` callback and the packet diagnostics. The
+/// runtime's table is installed when native registers the hooks host; the gate
+/// installs its own (`swr_v1_hook_co_socket_host`). Each takes a live record.
 #[repr(C)]
 pub struct Host {
-    /// `swoole_timer_add(timeout, false, timer_callback, socket)`, or null.
-    pub timer_add: unsafe extern "C" fn(*mut CoSocket, f64) -> *mut c_void,
-    pub timer_del: unsafe extern "C" fn(*mut c_void),
-    /// Yields `co` with `cancel(event)` as its cancel function.
-    pub suspend: unsafe extern "C" fn(*mut CoSocket, *mut c_void, u32),
-    /// Moves a write's `length` bytes at `*buffer` to the write buffer unless they
-    /// are there already or the socket is zero-copy.
-    pub buffer: unsafe extern "C" fn(*mut CoSocket, *mut *mut u8, usize),
+    /// A timer for the read or the `write` wait that calls `timer_fired`, or null.
+    pub timer_add: extern "C" fn(*mut CoSocket, f64, bool) -> *mut c_void,
+    pub timer_del: extern "C" fn(*mut c_void),
     /// The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes the view.
-    pub read_buffer:
-        unsafe extern "C" fn(*mut CoSocket, *mut crate::packet::ReadBuffer, u32, usize),
+    pub read_buffer: extern "C" fn(*mut CoSocket, *mut crate::packet::ReadBuffer, u32, usize),
     /// `Socket::recv/recv_all` (all selects the latter).
-    pub recv: unsafe extern "C" fn(*mut CoSocket, *mut u8, usize, bool) -> isize,
-    /// The native protocol callback and its trace.
-    pub package_length: unsafe extern "C" fn(*mut CoSocket, u32, *mut u32) -> isize,
+    pub recv: extern "C" fn(*mut CoSocket, *mut u8, usize, bool) -> isize,
+    /// The protocol's `get_package_length` over the read buffer's first bytes.
+    pub package_length: extern "C" fn(*mut CoSocket, u32, *mut u32) -> isize,
     /// Packet error diagnostics, with the same kinds as the packet receive.
-    pub packet_fail: unsafe extern "C" fn(*mut CoSocket, u32, isize),
+    pub packet_fail: extern "C" fn(*mut CoSocket, u32, isize),
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(ptr::null_mut());
 
-/// Installs native code's table, which lives for the process.
+/// Installs a table in place of the runtime's: the packet gate's.
 ///
 /// # Safety
 /// `host` is a live table that outlives every socket operation.
@@ -48,10 +44,18 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_host(host: *const Host) {
     HOST.store(host.cast_mut(), Ordering::Release);
 }
 
+/// Installs the runtime's table when native registers the hooks host
+/// (`stdio::swr_v1_hook_set_host`), so the runtime's timer and coroutine symbols
+/// link only then, not into every binary that links hooks.
+#[cfg(not(test))]
+pub(crate) fn install_native() {
+    HOST.store((&raw const native::HOST).cast_mut(), Ordering::Release);
+}
+
 /// The installed table.
 pub(crate) fn host() -> &'static Host {
-    // SAFETY: native code installs a process-lifetime table before any socket
-    // operation runs (a static initialiser in system.cc).
+    // SAFETY: a static table is installed before any socket operation runs: the
+    // runtime's while the library loads (system.cc), else the gate's or the tests'.
     unsafe { &*HOST.load(Ordering::Acquire) }
 }
 
@@ -80,6 +84,11 @@ pub(crate) struct Ops {
     pub ssl_shutdown: fn(*mut CoSocket),
     /// `socket->check_liveness()`, errno set when it fails.
     pub liveness: fn(*mut CoSocket) -> bool,
+    /// Yields `co` until resumed, with `cancel(event)` as its cancel function.
+    pub suspend: fn(*mut CoSocket, *mut c_void, u32),
+    /// Moves a write's `length` bytes at `*buffer` to the write buffer unless they
+    /// are there already or the socket is zero-copy.
+    pub buffer: fn(*mut CoSocket, *mut *mut u8, usize),
 }
 
 /// The runtime's effects: the error slot, the coroutine, the timer and the reactor.
@@ -96,6 +105,8 @@ pub(crate) static NATIVE: Ops = Ops {
     resume: crate::poll::native::resume,
     ssl_shutdown: native::ssl_shutdown,
     liveness: native::liveness,
+    suspend: native::suspend,
+    buffer: native::buffer,
 };
 
 /// The unit tests link no runtime: theirs is the recording fake.
@@ -104,13 +115,202 @@ pub(crate) static NATIVE: Ops = test_host::OPS;
 
 #[cfg(not(test))]
 mod native {
-    use crate::co_socket::CoSocket;
+    use super::Host;
+    use crate::co_socket::{CoSocket, Protocol};
+    use crate::packet::ReadBuffer;
+    use crate::shutdown::{READ, WRITE};
     use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+    use swoole_rs_buffer::string::CppString;
+    use swoole_rs_reactor::SocketRecord;
 
     // SAFETY: crates/coroutine's.
     unsafe extern "C-unwind" {
         #[link_name = "_ZN6swoole9Coroutine24print_socket_bound_errorEiPKcl"]
         fn print_socket_bound_error(fd: c_int, event: *const c_char, cid: c_long);
+        fn swr_v1_coroutine_yield_with_cancel(
+            co: *mut c_void,
+            cancel: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool,
+            data: *mut c_void,
+        );
+    }
+
+    pub(super) static HOST: Host = Host {
+        timer_add,
+        timer_del,
+        read_buffer,
+        recv,
+        package_length,
+        packet_fail,
+    };
+
+    /// A record and a direction in one pointer: the record is aligned, so its low
+    /// bit is free for `write`.
+    fn tag(socket: *mut CoSocket, write: bool) -> *mut c_void {
+        socket.map_addr(|addr| addr | usize::from(write)).cast()
+    }
+
+    fn untag(data: *mut c_void) -> (*mut CoSocket, u32) {
+        let event = if data.addr() & 1 == 0 { READ } else { WRITE };
+        (data.map_addr(|addr| addr & !1).cast(), event)
+    }
+
+    extern "C" fn timer_add(socket: *mut CoSocket, timeout: f64, write: bool) -> *mut c_void {
+        extern "C-unwind" fn fired(data: *mut c_void) {
+            let (socket, event) = untag(data);
+            // SAFETY: the record whose timer fired: its wait deletes the timer before
+            // the record goes.
+            unsafe { super::timer_fired(socket, event) };
+        }
+        crate::poll::native::timer_add_with(timeout, fired, tag(socket, write))
+    }
+
+    extern "C" fn timer_del(node: *mut c_void) {
+        crate::poll::native::timer_del(node);
+    }
+
+    /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
+    pub(super) fn suspend(socket: *mut CoSocket, co: *mut c_void, event: u32) {
+        extern "C-unwind" fn cancel(_: *mut c_void, data: *mut c_void) -> bool {
+            let (socket, event) = untag(data);
+            // SAFETY: the record whose wait the coroutine is suspended in.
+            unsafe { crate::lifecycle::swr_v1_hook_co_socket_cancel(socket, event) }
+        }
+        let data = tag(socket, event != READ);
+        // SAFETY: the current coroutine, waiting on the live record, whose frames own
+        // nothing with a destructor.
+        unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, data) };
+    }
+
+    /// `get_write_buffer()`, cleared and holding the write's bytes.
+    pub(super) fn buffer(socket: *mut CoSocket, at: *mut *mut u8, length: usize) {
+        // SAFETY: the waiting write's live record, not otherwise borrowed.
+        let record = unsafe { &mut *socket };
+        if record.zero_copy || length == 0 {
+            return;
+        }
+        // SAFETY: the write's live buffer slot.
+        let at = unsafe { &mut *at };
+        let string = crate::co_socket::buffer(record, true);
+        if *at != string.str {
+            string.length = 0;
+            string.offset = 0;
+            // SAFETY: the write's `length` bytes, outside the String.
+            unsafe { string.append(*at, length) };
+            *at = string.str;
+        }
+    }
+
+    extern "C" fn read_buffer(
+        socket: *mut CoSocket,
+        view: *mut ReadBuffer,
+        action: u32,
+        size: usize,
+    ) {
+        // SAFETY: the operation's live record, not otherwise borrowed.
+        let string = crate::co_socket::buffer(unsafe { &mut *socket }, false);
+        // SAFETY: the operation's live view.
+        let view = unsafe { &mut *view };
+        if action != 0 {
+            string.length = view.length;
+            string.offset = view.offset;
+            if action == 2 {
+                string.extend(size);
+            } else if action == 3 {
+                string.reduce(size.cast_signed() as i64);
+            }
+        }
+        *view = ReadBuffer {
+            length: string.length,
+            size: string.size,
+            offset: string.offset,
+            str: string.str,
+        };
+    }
+
+    extern "C" fn recv(socket: *mut CoSocket, at: *mut u8, length: usize, all: bool) -> isize {
+        let call = if all {
+            crate::socket_members::recv_all
+        } else {
+            crate::socket_members::recv
+        };
+        // SAFETY: the live record, and `length` free bytes of its read buffer at `at`.
+        unsafe { call(socket.cast(), at.cast(), length) }
+    }
+
+    /// `swoole::PacketLength`.
+    #[repr(C)]
+    struct PacketLength {
+        buf: *const u8,
+        buf_size: u32,
+        header_len: u32,
+    }
+
+    /// `Protocol::get_package_length`.
+    type LengthFunc =
+        unsafe extern "C" fn(*const Protocol, *mut SocketRecord, *mut PacketLength) -> isize;
+
+    extern "C" fn package_length(socket: *mut CoSocket, size: u32, header: *mut u32) -> isize {
+        // SAFETY: the live record, read before the callback runs.
+        let record = unsafe { &*socket };
+        let mut packet = PacketLength {
+            // SAFETY: the read String the packet receive fills.
+            buf: unsafe { (*record.read_buffer.cast::<CppString>()).str },
+            buf_size: size,
+            header_len: 0,
+        };
+        // SAFETY: a length-checking protocol's callback is set.
+        let call = unsafe {
+            core::mem::transmute::<*mut c_void, LengthFunc>(record.protocol.get_package_length)
+        };
+        // SAFETY: the record's protocol and network socket, and `size` bytes at `buf`.
+        let length = unsafe { call(&raw const record.protocol, record.socket, &raw mut packet) };
+        // SAFETY: the caller's header length.
+        unsafe { *header = packet.header_len };
+        length
+    }
+
+    /// `SW_ERROR_PACKAGE_LENGTH_TOO_LARGE`, `SW_ERROR_PACKAGE_LENGTH_NOT_FOUND` and
+    /// `SW_LOG_WARNING`.
+    const TOO_LARGE: c_int = 1201;
+    const NOT_FOUND: c_int = 1202;
+    const LOG_WARNING: c_int = 4;
+
+    extern "C" fn packet_fail(socket: *mut CoSocket, kind: u32, length: isize) {
+        let (error, message) = match kind {
+            0 => (NOT_FOUND, c"get package length failed".as_ptr()),
+            1 => {
+                use swoole_rs_clients::address::{
+                    swr_v1_clients_address_host, swr_v1_clients_address_port,
+                };
+                // SAFETY: the live record.
+                let network = unsafe { (*socket).socket };
+                // SAFETY: its open network socket.
+                let peer = unsafe { &(*network).info };
+                // SAFETY: the peer's live address.
+                let addr = unsafe { swr_v1_clients_address_host(peer) };
+                // SAFETY: NUL-terminated text, unchanged until the next address.
+                let addr = unsafe { CStr::from_ptr(addr) };
+                // SAFETY: the peer's live address.
+                let port = unsafe { swr_v1_clients_address_port(peer) };
+                swoole_rs_corebase::log::error_log(
+                    LOG_WARNING,
+                    TOO_LARGE,
+                    c"Socket::recv_packet_with_length_protocol",
+                    format_args!(
+                        "packet length is too big, remote_addr={}:{port}, length={}",
+                        addr.to_string_lossy(),
+                        length.cast_unsigned()
+                    ),
+                );
+                (TOO_LARGE, swoole_rs_error::swoole_get_last_error_msg())
+            }
+            _ => (
+                TOO_LARGE,
+                c"no package eof, package_max_length exceeded".as_ptr(),
+            ),
+        };
+        // SAFETY: the live record; each message is static or the thread's sw_error.
+        unsafe { super::swr_v1_hook_co_socket_borrowed_err(socket, error, message) };
     }
 
     pub(super) fn cid(co: *mut c_void) -> c_long {
@@ -394,6 +594,7 @@ pub struct Timer {
     slot: *mut *mut c_void,
     timeout: f64,
     enabled: bool,
+    write: bool,
 }
 
 impl Timer {
@@ -406,15 +607,17 @@ impl Timer {
         let state = unsafe { (*socket).state };
         // SAFETY: the record's live state.
         let timers = unsafe { &raw mut (*state).timers };
+        let write = event != READ;
         // The index is 0 or 1, so the slot stays inside the two-entry array.
         let slot = timers
             .cast::<*mut c_void>()
-            .wrapping_add(usize::from(event != READ));
+            .wrapping_add(usize::from(write));
         Self {
             socket,
             slot,
             timeout,
             enabled: false,
+            write,
         }
     }
 
@@ -428,8 +631,7 @@ impl Timer {
         }
         self.enabled = true;
         if self.timeout > 0.0 {
-            // SAFETY: a native timer for the live record.
-            let node = unsafe { (host().timer_add)(self.socket, self.timeout) };
+            let node = (host().timer_add)(self.socket, self.timeout, self.write);
             // SAFETY: as above.
             unsafe { *self.slot = node };
             return !node.is_null();
@@ -447,35 +649,33 @@ impl Timer {
             return;
         }
         if node != SENTINEL {
-            // SAFETY: the native timer this slot holds.
-            unsafe { (host().timer_del)(node) };
+            (host().timer_del)(node);
         }
         // SAFETY: as above.
         unsafe { *self.slot = ptr::null_mut() };
     }
 }
 
-/// `Socket::timer_callback`: the timer `node` fired. The socket's error becomes
-/// `ETIMEDOUT` and the coroutine waiting in the timer's direction resumes; a node
-/// neither slot holds aborts, as upstream does.
+/// `Socket::timer_callback`: the timer for `event`'s direction fired. Its slot
+/// clears, the socket's error becomes `ETIMEDOUT` and the coroutine waiting in that
+/// direction resumes; an empty slot aborts, as upstream's unknown node does.
 ///
 /// # Safety
-/// `socket` is the live record whose timer `node` is.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_timer_fired(
-    socket: *mut CoSocket,
-    node: *mut c_void,
-) {
+/// `socket` is the live record whose timer fired.
+pub(crate) unsafe fn timer_fired(socket: *mut CoSocket, event: u32) {
     // SAFETY: as the caller promises.
     unsafe { set_err(socket, libc::ETIMEDOUT) };
     // SAFETY: as the caller promises.
     let state = unsafe { (*socket).state };
     // SAFETY: the record's live state.
-    let event = unsafe { crate::timers::socket_timeout(state, node) };
-    if event == 0 {
+    let state = unsafe { &mut *state };
+    let [read, write] = &mut state.timers;
+    let slot = if event == READ { read } else { write };
+    if slot.is_null() {
         std::process::abort();
     }
-    // SAFETY: as above.
+    *slot = ptr::null_mut();
+    // SAFETY: the record's live state.
     let co = unsafe { crate::shutdown::swr_v1_hook_socket_co(state, event) };
     (NATIVE.resume)(co);
 }
@@ -588,7 +788,7 @@ pub(crate) mod test_host {
             ON_BOUND.set(Some(hook));
         }
     }
-    unsafe extern "C" fn timer_add(_: *mut CoSocket, timeout: f64) -> *mut c_void {
+    extern "C" fn timer_add(_: *mut CoSocket, timeout: f64, _: bool) -> *mut c_void {
         log(format!("timer:add:{timeout}"));
         if !TIMER_OK.get() {
             return ptr::null_mut();
@@ -596,7 +796,7 @@ pub(crate) mod test_host {
         NODES.set(NODES.get() + 1);
         ptr::dangling_mut::<u32>().cast()
     }
-    unsafe extern "C" fn timer_del(_: *mut c_void) {
+    extern "C" fn timer_del(_: *mut c_void) {
         log("timer:delete");
     }
     fn sleep() {
@@ -606,7 +806,7 @@ pub(crate) mod test_host {
         log(format!("{}:{events}", if add { "add" } else { "set" }));
         REACTOR_OK.get()
     }
-    unsafe extern "C" fn suspend(socket: *mut CoSocket, _: *mut c_void, event: u32) {
+    fn suspend(socket: *mut CoSocket, _: *mut c_void, event: u32) {
         log(format!("yield:{event}"));
         let hook = ON_SUSPEND.take();
         if let Some(mut hook) = hook {
@@ -614,7 +814,7 @@ pub(crate) mod test_host {
             ON_SUSPEND.set(Some(hook));
         }
     }
-    unsafe extern "C" fn buffer(_: *mut CoSocket, _: *mut *mut u8, length: usize) {
+    fn buffer(_: *mut CoSocket, _: *mut *mut u8, length: usize) {
         log(format!("buffer:{length}"));
     }
     fn remove(_: *mut CoSocket, event: u32) {
@@ -633,12 +833,12 @@ pub(crate) mod test_host {
         resume,
         ssl_shutdown,
         liveness,
+        suspend,
+        buffer,
     };
     static HOST_TABLE: Host = Host {
         timer_add,
         timer_del,
-        suspend,
-        buffer,
         read_buffer: crate::packet::tests::read_buffer,
         recv: crate::packet::tests::receive,
         package_length: crate::packet::tests::get_length,
@@ -727,9 +927,9 @@ mod tests {
         let mut ids: [c_long; 2] = [3, 4];
         bind(&socket, 3, &mut ids);
         let node: *mut c_void = ptr::dangling_mut::<u32>().cast();
-        for (slot, cid) in [(1, 4), (0, 3)] {
+        for (slot, event, cid) in [(1, WRITE, 4), (0, READ, 3)] {
             unsafe { (*socket.state()).timers[slot] = node };
-            unsafe { swr_v1_hook_co_socket_timer_fired(socket.ptr(), node) };
+            unsafe { timer_fired(socket.ptr(), event) };
             assert!(unsafe { (*socket.state()).timers[slot] }.is_null());
             assert_eq!(unsafe { (*socket.ptr()).err_code }, libc::ETIMEDOUT);
             assert_eq!(

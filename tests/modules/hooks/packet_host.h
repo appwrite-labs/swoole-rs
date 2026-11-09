@@ -3,7 +3,7 @@
 static Socket *owner(swr_v1_co_socket *s) { return reinterpret_cast<Socket *>(s->resolve_context_); }
 static const swr_v1_hook_co_socket_host_t host = [] {
  swr_v1_hook_co_socket_host_t h{};
- h.timer_add=[](swr_v1_co_socket *,double)->void* {record("timer:start");return timer_ok?reinterpret_cast<void*>(1):nullptr;};
+ h.timer_add=[](swr_v1_co_socket *,double,bool)->void* {record("timer:start");return timer_ok?reinterpret_cast<void*>(1):nullptr;};
  h.timer_del=[](void*){};
  h.read_buffer=[](swr_v1_co_socket *s,swr_v1_hook_read_buffer *view,uint32_t action,size_t size) {
   auto *sock=owner(s);auto *buffer=action==0?sock->get_read_buffer():sock->read_buffer;

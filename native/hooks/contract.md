@@ -22,15 +22,15 @@ or as a local (the bundled ext/ssh2, the hooks fixture) and deletes its own.
 
 ## What stays C++ (`system.cc`)
 
-- `Socket::host_`, for what needs C++ types: the yield with its `std::function`
-  cancel, the read and write `String` buffers, `recv`/`recv_all`, the `Protocol`
-  length callback and the packet diagnostics; and the socket's timers, which
-  `hooks-packet-policy` fakes to fail an allocation as upstream's `TimerController`
-  can. The socket's other effects (last error, `strerror`, the current coroutine and
-  its id, the bound-socket report, the no-buffers sleep, the reactor and the TLS
-  shutdown and liveness probe) are Rust (`co_io::NATIVE`).
 - The hooks host's io_uring pointer and the `HAVE_IOURING_*` and
-  `SW_USE_URING_SOCKET` configure macros.
+  `SW_USE_URING_SOCKET` configure macros. Registering it also installs Rust's
+  socket host (`co_io::Host`: the timers, the read `String`, `recv`/`recv_all`, the
+  `Protocol` length callback and the packet diagnostics), which
+  `hooks-packet-policy` replaces with its fakes through
+  `swr_v1_hook_co_socket_host`. The socket's other effects (the yield with its
+  cancel, the write buffer, last error, `strerror`, the current coroutine and its
+  id, the bound-socket report, the no-buffers sleep, the reactor and the TLS
+  shutdown and liveness probe) are Rust too (`co_io::NATIVE`).
 
 ## Hooks and file locks
 

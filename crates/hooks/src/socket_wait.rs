@@ -4,7 +4,7 @@
 //! that retries a transfer before the waiter wakes, and removing the event after.
 //! `poll` waits the same way under a timer. Native code keeps the yield and the
 //! write buffer ([`Host`](crate::co_io::Host)).
-use crate::co_io::{CLOSE_WAIT_ERROR, NATIVE, Timer, available, host, set_err};
+use crate::co_io::{CLOSE_WAIT_ERROR, NATIVE, Timer, available, set_err};
 use crate::co_socket::CoSocket;
 use crate::shutdown::{READ, SocketState, WRITE, swr_v1_hook_socket_bind, swr_v1_hook_socket_co};
 use crate::vector::Barrier;
@@ -131,12 +131,12 @@ impl Wait {
             return false;
         }
         if event == WRITE && !buffer.is_null() {
-            // SAFETY: the caller's live buffer slot of `length` bytes.
-            unsafe { (host().buffer)(self.0, buffer, length) };
+            // The caller's live buffer slot of `length` bytes.
+            (NATIVE.buffer)(self.0, buffer, length);
         }
         self.bind(event, co);
-        // SAFETY: suspends this coroutine until a callback, timer or cancel resumes it.
-        unsafe { (host().suspend)(self.0, co, event) };
+        // Suspends this coroutine until a callback, timer or cancel resumes it.
+        (NATIVE.suspend)(self.0, co, event);
         self.bind(event, core::ptr::null_mut());
         // Both coroutines may wait for the same event under TLS.
         // SAFETY: a read of the live handle.

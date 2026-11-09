@@ -121,9 +121,7 @@ unsafe extern "C" fn tls_check_failure(socket: *mut c_void) {
 
 unsafe extern "C" fn tls_buffer(socket: *mut c_void, write: bool, size: *mut usize) -> *mut c_char {
     // SAFETY: the live record of the operation.
-    let buffer = unsafe { crate::co_socket::buffer(record(socket), write) }.cast::<CppString>();
-    // SAFETY: the socket's live String.
-    let buffer = unsafe { &*buffer };
+    let buffer = crate::co_socket::buffer(unsafe { &mut *record(socket) }, write);
     // SAFETY: the caller's size slot.
     unsafe { *size = buffer.size };
     buffer.str.cast()

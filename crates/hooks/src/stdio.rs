@@ -114,6 +114,8 @@ static RUNTIME: OnceLock<&'static Ops> = OnceLock::new();
 pub unsafe extern "C" fn swr_v1_hook_set_host(host: *const Host) {
     HOST.store(host.cast_mut(), Ordering::Release);
     RUNTIME.get_or_init(|| &NATIVE);
+    #[cfg(not(test))]
+    crate::co_io::install_native();
 }
 
 pub(crate) fn host() -> Option<&'static Host> {

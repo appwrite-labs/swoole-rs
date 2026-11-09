@@ -340,10 +340,8 @@ impl Live<'_> {
     }
 
     fn buffer(&mut self, write: bool) -> &mut CppString {
-        // SAFETY: the live record's buffer, made on first use.
-        let buffer = unsafe { buffer(self.socket, write) };
-        // SAFETY: a live String nothing else borrows during the call.
-        unsafe { &mut *buffer.cast::<CppString>() }
+        // SAFETY: the live record, nothing else borrowing it during the call.
+        buffer(unsafe { &mut *self.socket }, write)
     }
 }
 

@@ -535,7 +535,7 @@ pub(crate) unsafe fn adopt(server: *mut CoSocket, conn: *mut SocketRecord) -> *m
 )]
 pub unsafe extern "C" fn get_read_buffer(this: *mut c_void) -> *mut c_void {
     // SAFETY: as the caller promises.
-    unsafe { buffer(record(this), false) }
+    core::ptr::from_mut(buffer(unsafe { &mut *record(this) }, false)).cast()
 }
 
 /// `Socket::get_write_buffer()`: the write buffer, made on first use.
@@ -548,7 +548,7 @@ pub unsafe extern "C" fn get_read_buffer(this: *mut c_void) -> *mut c_void {
 )]
 pub unsafe extern "C" fn get_write_buffer(this: *mut c_void) -> *mut c_void {
     // SAFETY: as the caller promises.
-    unsafe { buffer(record(this), true) }
+    core::ptr::from_mut(buffer(unsafe { &mut *record(this) }, true)).cast()
 }
 
 /// `Socket::listen(backlog)`: `SW_BACKLOG` for a non-positive backlog; a listening
