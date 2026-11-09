@@ -172,6 +172,17 @@ builds upstream and the Cargo build against each other release upstream supports
 (8.2, 8.4, 8.5, from source by `.devcontainer/php.sh` with `PHP_SERIES` set)
 and gates every PHPT the same way, in 4 shards per version and without services.
 
+## On a debug PHP
+
+`.github/workflows/debug.yml` (nightly) builds PHP with `--enable-debug`, builds
+upstream and the Cargo swoole.so against it, and runs every pinned PHPT on both in 6
+shards, with the re-runs and gate above (`phpt-debug.json`). A debug PHP prints Zend's
+leak report at request end and aborts on a failed assertion, so either fails the
+test. The summary lists each failure that carries one by engine, upstream's own
+included; only a cargo failure of a test upstream passes fails the gate. Each
+cargo-only report gets a `kind:bug`. There are no services and no external network,
+so tests that need them fail or skip on both engines.
+
 ## Attributing a regression
 
 The gate runs every PHPT once against the all-modules hybrid, the only hybrid
