@@ -14,6 +14,6 @@ Callgrind instructions per request (lower is better), measured by the merge tier
 | http2 | 21,403 | 20,369 | 1.0508× | 1.05× | ❌ |
 | table | 200,354 | 201,729 | 0.9932× | 1.0× | ✅ |
 | channel | 141,130 | 154,639 | 0.9126× | 0.92× | ✅ |
-| task | 34,075 | 33,177 | 1.0270× | 1.05× | ➖ |
+| task | 34,075 | 33,177 | 1.0270× | 1.03× | ➖ |
 
 Geometric mean 0.9497×. Goal: ≤ 1.00× on every workload ([#1894](https://github.com/loks0n/swoole-rs/issues/1894)).
