@@ -21,7 +21,7 @@ use crate::pool::{
     swr_v1_process_pool_run,
 };
 use crate::reaper::{RELOAD_KILL_ONE, RELOAD_NONE, ReapHost};
-use crate::reload_task::{ReloadTask, Warn, swr_v1_process_reload_task_free};
+use crate::reload_task::{ReloadTask, Warn};
 use crate::worker_record::WorkerRecord;
 use crate::worker_registry::{
     WorkerRegistry, swr_v1_process_worker_registry_detach, swr_v1_process_worker_registry_free,
@@ -580,6 +580,15 @@ impl<H: PoolHost> Pool<H> {
         self.workers().wrapping_add(index as usize)
     }
 
+    /// The pool's `worker_num` records.
+    fn worker_records(&self) -> &[WorkerRecord] {
+        if self.workers().is_null() {
+            return &[];
+        }
+        // SAFETY: `create` allocates `worker_num` records, live for the pool's lifetime.
+        unsafe { std::slice::from_raw_parts(self.workers(), self.worker_num() as usize) }
+    }
+
     /// `get_worker_by_pid`: the pool's worker at `pid`, or null.
     fn worker_by_pid(&self, pid: c_int) -> *mut WorkerRecord {
         let registry = self.registry();
@@ -885,8 +894,13 @@ impl<H: PoolHost> Pool<H> {
 
     /// `ProcessPool::drop_reload_task`: free the reload and delete its timer.
     fn drop_reload_task(&mut self) {
-        // SAFETY: the pool's reload (or null), freed once.
-        let timer = unsafe { swr_v1_process_reload_task_free(self.reload_task()) };
+        let task = self.reload_task();
+        let timer = if task.is_null() {
+            ptr::null_mut()
+        } else {
+            // SAFETY: the pool's reload, boxed by `reload` and freed once.
+            unsafe { *Box::from_raw(task) }.free()
+        };
         if !timer.is_null() {
             self.op(OP_TIMER_DEL, timer as u64);
         }
@@ -1226,14 +1240,8 @@ unsafe extern "C" fn reap_start_reload<H: PoolHost>(ctx: *mut c_void) -> u32 {
         return RELOAD_NONE;
     }
     pool.set_reload_init(false);
-    // SAFETY: the reload `reload` started, and the pool's records.
-    unsafe {
-        crate::reload_task::swr_v1_process_reload_task_add_workers(
-            pool.reload_task(),
-            pool.workers(),
-            pool.worker_num() as usize,
-        );
-    }
+    // SAFETY: the reload `reload` started, live until `drop_reload_task`.
+    unsafe { &mut *pool.reload_task() }.add_workers(pool.worker_records());
     RELOAD_KILL_ONE
 }
 

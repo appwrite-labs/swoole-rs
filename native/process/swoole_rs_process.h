@@ -70,18 +70,6 @@ void swr_v1_worker_global_max_requests(uint32_t max_request, uint32_t grace, int
 void swr_v1_worker_global_detach(swr_v1_worker_record *worker);
 void swr_v1_worker_global_stopped(void);
 typedef struct swr_v1_process_reload_task swr_v1_process_reload_task;
-#define SWR_RELOAD_WARN_KILL_ALL_FAILED 1
-#define SWR_RELOAD_WARN_FORCE_KILL 2
-#define SWR_RELOAD_WARN_KILL_ONE_FAILED 3
-typedef void (*swr_v1_process_reload_warn)(int kind, int pid, uint32_t worker_id);
-swr_v1_process_reload_task *swr_v1_process_reload_task_new(void);
-void *swr_v1_process_reload_task_free(swr_v1_process_reload_task *);
-void swr_v1_process_reload_task_set_timer(swr_v1_process_reload_task *, void *timer);
-void swr_v1_process_reload_task_add_workers(swr_v1_process_reload_task *, const swr_v1_worker_record *workers, size_t count);
-bool swr_v1_process_reload_task_remove(swr_v1_process_reload_task *, int pid);
-bool swr_v1_process_reload_task_completed(const swr_v1_process_reload_task *);
-void swr_v1_process_reload_task_kill_all(swr_v1_process_reload_task *, int signo, swr_v1_process_reload_warn warn);
-void swr_v1_process_reload_task_kill_one(swr_v1_process_reload_task *, int signo, swr_v1_process_reload_warn warn);
 /* The manager reap loop (crates/process/src/reaper.rs); start_reload returns one of: */
 #define SWR_RELOAD_NONE 0
 #define SWR_RELOAD_KILL_ONE 1

@@ -48,9 +48,7 @@ use swoole_rs_process::process_pool::{
     OP_REOPEN_LOGGER, OP_SNDBUF, OP_TIMER_INIT, OP_UNLIMIT_PIPES, OP_WORKER_ERROR, OP_WORKER_INIT,
     OP_WORKER_SHUTDOWN, PoolNative, PoolRecord, RAISE, RUN_MAIN, swr_v1_process_pool_run_op,
 };
-use swoole_rs_process::reload_task::{
-    ReloadTask, swr_v1_process_reload_task_kill_all, swr_v1_process_reload_task_set_timer,
-};
+use swoole_rs_process::reload_task::ReloadTask;
 use swoole_rs_process::worker_globals::swr_v1_worker_globals;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_reactor::event_api::{
@@ -468,11 +466,10 @@ fn timer_after(
 }
 
 unsafe extern "C" fn reload_timeout(task: *mut c_void) {
-    let task = task.cast::<ReloadTask>();
     // SAFETY: the pool's live reload task.
-    unsafe { swr_v1_process_reload_task_kill_all(task, libc::SIGKILL, reload_warn) };
-    // SAFETY: as above.
-    unsafe { swr_v1_process_reload_task_set_timer(task, ptr::null_mut()) };
+    let task = unsafe { &mut *task.cast::<ReloadTask>() };
+    task.kill_all(libc::SIGKILL, reload_warn);
+    task.set_timer(ptr::null_mut());
 }
 
 unsafe extern "C" fn kill_timeout(pool: *mut c_void) {
@@ -735,7 +732,7 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
                 task.cast(),
             );
             // SAFETY: the pool's live reload task.
-            unsafe { swr_v1_process_reload_task_set_timer(task, timer) };
+            unsafe { &mut *task }.set_timer(timer);
         }
         OP_TIMER_INIT => {
             // SAFETY: this thread's timer, if any.

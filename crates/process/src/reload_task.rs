@@ -4,7 +4,6 @@
 //! (`ProcessPool::wait`, `Manager::wait`) drive it; the timeout timer stays native
 //! and its node is only stored here.
 
-use crate::worker_record::Worker;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_int, c_void};
 
@@ -71,8 +70,28 @@ impl ReloadTask {
         self.workers.is_empty()
     }
 
+    /// Snapshot `workers` and queue them to restart.
+    pub fn add_workers(&mut self, workers: &[WorkerRecord]) {
+        for worker in workers {
+            self.add(worker.pid(), worker.id());
+        }
+    }
+
+    /// Store (or, with null, clear) the timeout timer node.
+    pub fn set_timer(&mut self, timer: *mut c_void) {
+        self.timer = std::ptr::NonNull::new(timer);
+    }
+
+    /// Free a reload task and return its timeout timer node (null without one) for
+    /// native to delete.
+    #[must_use]
+    pub fn free(self) -> *mut c_void {
+        self.timer
+            .map_or(std::ptr::null_mut(), std::ptr::NonNull::as_ptr)
+    }
+
     /// Signal every worker still in the snapshot, then drop the queue.
-    fn kill_all(&mut self, signo: c_int, warn: Warn) {
+    pub fn kill_all(&mut self, signo: c_int, warn: Warn) {
         for (&pid, &id) in &self.workers {
             match (self.kill)(pid, signo) {
                 Err(error) if already_gone(error) => {}
@@ -102,117 +121,6 @@ impl ReloadTask {
             break;
         }
     }
-}
-
-/// Start a reload. Native frees it with [`swr_v1_process_reload_task_free`].
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_process_reload_task_new() -> *mut ReloadTask {
-    Box::into_raw(Box::<ReloadTask>::default())
-}
-
-/// Free a reload task and return its timeout timer node (null without one) for
-/// native to delete.
-///
-/// # Safety
-/// `task` is null or a live handle from `_new`, not freed before.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_reload_task_free(task: *mut ReloadTask) -> *mut c_void {
-    if task.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: the caller hands back a live handle leaked by `_new`.
-    let task = unsafe { Box::from_raw(task) };
-    task.timer
-        .map_or(std::ptr::null_mut(), std::ptr::NonNull::as_ptr)
-}
-
-/// Store (or, with null, clear) the timeout timer node.
-///
-/// # Safety
-/// `task` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_reload_task_set_timer(
-    task: *mut ReloadTask,
-    timer: *mut c_void,
-) {
-    // SAFETY: the caller lends a live handle.
-    let task = unsafe { &mut *task };
-    task.timer = std::ptr::NonNull::new(timer);
-}
-
-/// Snapshot `count` workers of the array at `workers` and queue them to restart.
-///
-/// # Safety
-/// `task` is a live handle; `workers` points to `count` live worker records.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_reload_task_add_workers(
-    task: *mut ReloadTask,
-    workers: *const WorkerRecord,
-    count: usize,
-) {
-    // SAFETY: the caller lends a live handle.
-    let task = unsafe { &mut *task };
-    for index in 0..count {
-        // SAFETY: `index < count`, inside the caller's array.
-        let worker = unsafe { workers.add(index) };
-        // SAFETY: `worker` is a live record of the caller's array.
-        let worker = unsafe { Worker::new(worker) };
-        let pid = worker.pid();
-        let id = worker.id();
-        task.add(pid, id);
-    }
-}
-
-/// Drop `pid` from the snapshot once it has exited. Returns whether it was there.
-///
-/// # Safety
-/// `task` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_reload_task_remove(
-    task: *mut ReloadTask,
-    pid: c_int,
-) -> bool {
-    // SAFETY: the caller lends a live handle.
-    let task = unsafe { &mut *task };
-    task.remove(pid)
-}
-
-/// Whether every snapshot worker has exited.
-///
-/// # Safety
-/// `task` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_reload_task_completed(task: *const ReloadTask) -> bool {
-    // SAFETY: the caller lends a live handle.
-    unsafe { &*task }.completed()
-}
-
-/// Send `signo` to every snapshot worker and clear the queue.
-///
-/// # Safety
-/// `task` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_reload_task_kill_all(
-    task: *mut ReloadTask,
-    signo: c_int,
-    warn: Warn,
-) {
-    // SAFETY: the caller lends a live handle.
-    unsafe { &mut *task }.kill_all(signo, warn);
-}
-
-/// Send `signo` to the next queued worker that is still running.
-///
-/// # Safety
-/// `task` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_reload_task_kill_one(
-    task: *mut ReloadTask,
-    signo: c_int,
-    warn: Warn,
-) {
-    // SAFETY: the caller lends a live handle.
-    unsafe { &mut *task }.kill_one(signo, warn);
 }
 
 #[cfg(test)]
@@ -326,27 +234,22 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn ffi_snapshot_remove_complete_and_timer() {
-        let mut records: [WorkerRecord; 2] = unsafe { std::mem::zeroed() };
+    fn snapshot_remove_complete_and_timer() {
+        let mut records = [*WorkerRecord::boxed(), *WorkerRecord::boxed()];
         for (index, record) in records.iter_mut().enumerate() {
-            unsafe {
-                Worker::new(record).set_pid(100 + c_int::try_from(index).unwrap());
-                Worker::new(record).set_id(u32::try_from(index).unwrap());
-            }
+            record.set_pid(100 + c_int::try_from(index).unwrap());
+            record.place(std::ptr::null_mut(), u32::try_from(index).unwrap(), 0);
         }
-        let task = swr_v1_process_reload_task_new();
+        let mut task = ReloadTask::default();
         let mut node = 0u8;
         let timer = std::ptr::from_mut(&mut node).cast::<c_void>();
-        unsafe {
-            swr_v1_process_reload_task_add_workers(task, records.as_ptr(), records.len());
-            assert!(!swr_v1_process_reload_task_completed(task));
-            assert!(swr_v1_process_reload_task_remove(task, 100));
-            assert!(!swr_v1_process_reload_task_remove(task, 100));
-            assert!(swr_v1_process_reload_task_remove(task, 101));
-            assert!(swr_v1_process_reload_task_completed(task));
-            swr_v1_process_reload_task_set_timer(task, timer);
-            assert_eq!(swr_v1_process_reload_task_free(task), timer);
-            assert!(swr_v1_process_reload_task_free(std::ptr::null_mut()).is_null());
-        }
+        task.add_workers(&records);
+        assert!(!task.completed());
+        assert!(task.remove(100));
+        assert!(!task.remove(100));
+        assert!(task.remove(101));
+        assert!(task.completed());
+        task.set_timer(timer);
+        assert_eq!(task.free(), timer);
     }
 }
