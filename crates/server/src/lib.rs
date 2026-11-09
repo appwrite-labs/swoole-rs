@@ -297,6 +297,34 @@ pub(crate) unsafe fn run_reactor(
     .unwrap_or(SW_ERR)
 }
 
+/// An op no arm answers: 0, as master.cc's `default:` was.
+pub(crate) unsafe extern "C" fn unanswered(_: *mut c_void, _: u32, _: u64) -> u64 {
+    0
+}
+
+/// `operation` over a reactor-thread context without [`run`]'s match: the reads,
+/// writes and dispatches every message takes, whose detour through `run`'s frame
+/// cost about 120 instructions a message.
+///
+/// # Safety
+/// As [`run_reactor`].
+#[inline(always)]
+pub(crate) unsafe fn run_reactor_with(
+    context: &mut reactor_ops::ReactorContext,
+    state: &ServerState,
+    operation: impl FnOnce(&mut Native<ServerCall>) -> Effect<i64>,
+) -> i64 {
+    let reactor = core::ptr::from_mut(context);
+    operation(&mut Native {
+        context: reactor.cast(),
+        call: unanswered,
+        state,
+        master: core::ptr::null_mut(),
+        reactor,
+    })
+    .unwrap_or(SW_ERR)
+}
+
 /// Runs one operation for a `Server` method (`server_methods`) over its context,
 /// whose records `master_ops` answers. No effect here calls back into C++.
 ///
@@ -308,9 +336,6 @@ pub(crate) unsafe fn run_method(
     arg: u64,
     ctx: *mut server_methods::NativeContext,
 ) -> i64 {
-    unsafe extern "C" fn none(_: *mut c_void, _: u32, _: u64) -> u64 {
-        0
-    }
     // SAFETY: per the caller.
     let serv = unsafe { (*ctx).serv };
     let state = if serv.is_null() {
@@ -322,7 +347,7 @@ pub(crate) unsafe fn run_method(
     run(
         &mut Native {
             context: ctx.cast(),
-            call: none as ServerCall,
+            call: unanswered as ServerCall,
             state,
             master: ctx,
             reactor: core::ptr::null_mut(),
@@ -344,16 +369,11 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
         ops::RUN_NATIVE_OP => h
             .op(u32::try_from(arg).unwrap_or(u32::MAX), 0)?
             .cast_signed(),
-        ops::RUN_RT_READ => conn_io::read(h, arg)?,
-        ops::RUN_RT_WRITE => conn_io::write(h, arg)?,
-        // Every received frame: matched here, not after the fallback chain below.
-        ops::RUN_DISPATCH_TASK => reactor_thread::dispatch_task(h, arg)?,
-        // Every reply, likewise.
+        // Every message sent: matched here, not after the fallback chain below.
         ops::RUN_ST_SEND => i64::from(state::send(
             h,
             core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0)),
         )?),
-        ops::RUN_PEER_CLOSE => conn_io::peer_close(h, arg)?,
         ops::RUN_CLOSE_CONNECTION => conn_io::close_connection(h)?,
         RUN_ACCEPT => connection::accept(h)?,
         RUN_ADD_CONNECTION => i64::from(connection::add_connection(h)?),
