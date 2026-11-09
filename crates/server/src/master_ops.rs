@@ -183,6 +183,11 @@ struct Objects<'a> {
     reason = "native records shared with C++, written under the server's own synchronization as master.cc did"
 )]
 impl Objects<'_> {
+    /// The context's live server.
+    fn server(&self) -> crate::view::Server<'_> {
+        // SAFETY: the method runner lends a context whose server is live.
+        unsafe { crate::view::Server::from_raw(self.ctx.serv) }
+    }
     fn config(&self) -> &mut crate::ServerConfig {
         // SAFETY: a live server's config, written only under its own synchronization.
         unsafe { &mut *self.state.config() }
@@ -220,8 +225,7 @@ impl Objects<'_> {
     }
     /// `serv->get_task_worker_pool()`.
     fn task_pool(&self) -> *mut PoolRecord {
-        // SAFETY: a live server's shared record, which holds the pools.
-        unsafe { crate::view::task_pool(self.ctx.serv) }
+        self.server().task_pool()
     }
     /// `serv->get_event_worker_pool()`, right after the task pool.
     fn event_pool(&self) -> &mut PoolRecord {
@@ -1101,7 +1105,7 @@ pub(crate) unsafe fn answer(
             let pipes = i64::from(o.tables().reactor_pipe_num);
             let index = o.ctx.session_id % pipes;
             let id = i64::from(o.conn().reactor_id) + index * i64::from(o.config().reactor_num);
-            let pipe = worker_record(o.ctx.serv, id).pipe_worker;
+            let pipe = worker_record(o.server(), id).pipe_worker;
             // SAFETY: the worker's live pipe socket.
             u64::from(unsafe { swoole_rs_reactor::swr_v1_socket_has_kernel_nobufs(pipe.cast()) })
         }
@@ -1500,10 +1504,9 @@ unsafe fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The live server's worker `id` (`Server::get_worker`).
-fn worker_record<'a>(serv: *mut core::ffi::c_void, id: impl TryInto<u16>) -> &'a WorkerRecord {
+fn worker_record<'a>(serv: crate::view::Server<'_>, id: impl TryInto<u16>) -> &'a WorkerRecord {
     let id = id.try_into().unwrap_or(u16::MAX);
-    // SAFETY: a live server; every caller passes a worker id it has.
-    let worker = unsafe { crate::view::worker(serv, id) };
+    let worker = serv.worker(id);
     // SAFETY: as above.
     unsafe { &*worker }
 }
@@ -1523,8 +1526,7 @@ fn verify(o: &mut Objects<'_>) -> u64 {
         return 0;
     };
     o.ctx.reactor = swoole_rs_corebase::thread_reactor();
-    // SAFETY: the live server and its connection's listening fd.
-    o.ctx.port = unsafe { crate::view::port_by_server_fd(o.ctx.serv, conn.server_fd) };
+    o.ctx.port = o.server().port_by_server_fd(conn.server_fd);
     o.ctx.sock = conn.socket;
     let config = o.config();
     debug_assert!(
@@ -1597,8 +1599,7 @@ unsafe fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_IDLE => {
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint16_t) id")]
             let id = arg as u16;
-            // SAFETY: the context's live server.
-            let worker = unsafe { crate::view::worker(o.ctx.serv, id) };
+            let worker = o.server().worker(id);
             // SAFETY: null or one of the server's live workers.
             u64::from(!worker.is_null() && unsafe { swr_v1_worker_status(worker) } == WORKER_IDLE)
         }
@@ -1924,8 +1925,8 @@ unsafe fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the context's live `MessageBus`.
             let bus = unsafe { crate::objects::Bus::of(o.ctx.object) };
             // SAFETY: the context's live server; `arg` is one of its worker ids.
-            let worker =
-                unsafe { crate::view::worker(serv, u16::try_from(arg).unwrap_or(u16::MAX)) };
+            let worker = unsafe { crate::view::Server::from_raw(serv) }
+                .worker(u16::try_from(arg).unwrap_or(u16::MAX));
             // SAFETY: one of the server's live workers.
             let worker = unsafe { &*worker };
             // SAFETY: the worker's live pipe sockets.
@@ -2179,7 +2180,7 @@ static FORCED_EXIT_TIME: core::sync::atomic::AtomicI64 = core::sync::atomic::Ato
 unsafe extern "C" fn forced_exit(_: *mut usize) -> bool {
     let serv = FORCED_EXIT_SERVER.load(Relaxed);
     // SAFETY: the server that is shutting down, live until its loop exits.
-    let state = unsafe { crate::view::state_ptr(serv) };
+    let state = unsafe { crate::view::Server::from_raw(serv) }.state_ptr();
     // SAFETY: as above.
     let state = unsafe { &*state };
     let max_wait_time = state.config_ref().max_wait_time;
@@ -2383,7 +2384,7 @@ unsafe fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 data: core::ptr::null(),
             };
             // `serv->get_reactor_pipe_socket(0, 0)`.
-            let pipe = worker_record(serv, 0_u16).pipe_worker;
+            let pipe = worker_record(o.server(), 0_u16).pipe_worker;
             let data = (&raw const send).cast();
             // SAFETY: the worker's live pipe socket and the send's bytes.
             u64::from(unsafe { send_async(pipe, data, size_of::<SendData>()) } > 0)
@@ -2417,7 +2418,7 @@ fn forward(o: &Objects<'_>, send: &SendData) -> u64 {
     let session = unsafe { crate::swr_v1_server_session(o.state, send.info.fd) };
     // SAFETY: the session's live slot.
     let id = unsafe { (*session).reactor_bits } & 0xff;
-    let pipe = worker_record(o.ctx.serv, id).pipe_master;
+    let pipe = worker_record(o.server(), id).pipe_master;
     let bus = worker_bus(o.state);
     let socket = if u64::from(o.config().mode_) == MODE_THREAD {
         // SAFETY: the worker's live pipe socket.
@@ -2568,9 +2569,8 @@ unsafe fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PIPE_TO_WORKER => {
             // SAFETY: the live server and the worker id the caller passes.
-            let worker = unsafe {
-                crate::view::worker(serv, u16::try_from(o.ctx.number).unwrap_or(u16::MAX))
-            };
+            let worker = unsafe { crate::view::Server::from_raw(serv) }
+                .worker(u16::try_from(o.ctx.number).unwrap_or(u16::MAX));
             // SAFETY: a live worker and the message `send_pipe_message` lends.
             let sent = unsafe {
                 swoole_rs_process::workers::entry::send_to_worker_from_worker(
@@ -2805,7 +2805,7 @@ unsafe fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             };
             head(&mut task.info);
             // SAFETY: the live server and one of its workers.
-            let worker = unsafe { crate::view::worker(serv, process_id) };
+            let worker = unsafe { crate::view::Server::from_raw(serv) }.worker(process_id);
             // SAFETY: as above.
             let worker = unsafe { &*worker };
             let pipe = if c.action == TO_REACTOR_THREAD {
@@ -2861,8 +2861,9 @@ pub(crate) fn server_message_bus(state: &ServerState) -> crate::objects::Bus {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[unsafe(export_name = "_ZN6swoole6Server19create_pipe_buffersEv")]
 pub(crate) unsafe extern "C" fn create_pipe_buffers(serv: *mut core::ffi::c_void) -> c_int {
-    // SAFETY: as the caller guarantees.
-    let state = unsafe { crate::view::state_ptr(serv) };
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { crate::view::Server::from_raw(serv) };
+    let state = serv.state_ptr();
     // SAFETY: the live server's state.
     let state = unsafe { &*state };
     let size = state.config_ref().ipc_max_size;
@@ -2896,7 +2897,7 @@ unsafe extern "C" fn accept_command_result(
     // SAFETY: as above.
     let serv = unsafe { (*fields).ptr };
     // SAFETY: the live server.
-    let state = unsafe { crate::view::state_ptr(serv) };
+    let state = unsafe { crate::view::Server::from_raw(serv) }.state_ptr();
     // SAFETY: its live state.
     let state = unsafe { &*state };
     let bus = server_message_bus(state);

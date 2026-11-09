@@ -137,6 +137,14 @@ struct Iterator {
     index: c_int,
 }
 
+impl Iterator {
+    /// The server the iterator walks.
+    fn server(&self) -> view::Server<'_> {
+        // SAFETY: `new_iterator` stored `$this`'s live server, which outlives the iterator.
+        unsafe { view::Server::from_raw(self.serv) }
+    }
+}
+
 type IteratorObject = Object<Iterator>;
 
 /// Upstream's `ServerTaskObject` before its `zend_object`: the server and the
@@ -601,13 +609,16 @@ pub(crate) fn fatal(level: i32, message: &CStr) {
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)`: an `E_ERROR`, which
 /// does not return, for a Server never constructed. The frames own nothing.
-pub(crate) fn server(call: &Call) -> *mut c_void {
+pub(crate) fn server(call: &Call) -> view::Server<'_> {
     // SAFETY: `$this` is a Server, which C++ allocated as a `ServerObject`.
     let serv = unsafe { Object::<ServerData>::data(call.this()) }.serv;
     if serv.is_null() {
         invalid(call.this());
+        // The `E_ERROR` bailed out of this frame.
+        std::process::abort();
     }
-    serv
+    // SAFETY: `$this`'s live server, which it owns for longer than the call.
+    unsafe { view::Server::from_raw(serv) }
 }
 
 /// A new `Connection\Iterator` over `serv` and `port` (null: every port) in `target`.
@@ -624,10 +635,9 @@ pub(crate) fn new_iterator(target: &mut zval, serv: *mut c_void, port: *mut c_vo
 
 /// `server(call)`, or `None` with a warning and `false` returned when the
 /// server is not running.
-pub(crate) fn running(call: &Call) -> Option<*mut c_void> {
+pub(crate) fn running(call: &Call) -> Option<view::Server<'_>> {
     let serv = server(call);
-    // SAFETY: a live server.
-    if unsafe { view::is_started(serv) } {
+    if serv.is_started() {
         return Some(serv);
     }
     fatal(E_WARNING, c"server is not running");
@@ -644,7 +654,7 @@ fn close(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    call.set_bool(unsafe { server_methods::close(serv, fd, reset) });
+    call.set_bool(unsafe { server_methods::close(serv.raw(), fd, reset) });
 }
 
 fn feedback(call: &Call, pause: bool) {
@@ -653,7 +663,7 @@ fn feedback(call: &Call, pause: bool) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    let Some(conn) = (unsafe { view::verified(serv, fd) }) else {
+    let Some(conn) = (unsafe { serv.verified(fd) }) else {
         set_last_error(SW_ERROR_SESSION_NOT_EXIST);
         return call.set_bool(false);
     };
@@ -663,7 +673,9 @@ fn feedback(call: &Call, pause: bool) {
         EVENT_RESUME_RECV
     };
     // SAFETY: a live server and one of its connections.
-    call.set_bool(unsafe { server_methods::feedback(serv, ptr::from_mut(conn).cast(), event) });
+    call.set_bool(unsafe {
+        server_methods::feedback(serv.raw(), ptr::from_mut(conn).cast(), event)
+    });
 }
 
 fn pause(call: &Call) {
@@ -701,24 +713,21 @@ const TASK_IPC_UNIXSOCK: u8 = 1;
 
 fn stats(call: &Call) {
     let Some(serv) = running(call) else { return };
-    // SAFETY: a live server.
-    let config = unsafe { view::config(serv) };
-    // SAFETY: a live server.
-    let gs = unsafe { view::counters(serv) };
+    let config = serv.config();
+    let gs = serv.counters();
     let load = |count: &AtomicU64| count.load(Ordering::Relaxed).cast_signed();
     let values = [
         gs.start_time,
-        // SAFETY: a live server.
-        i64::try_from(unsafe { view::connection_num(serv) }).unwrap_or(i64::MAX),
+        i64::try_from(serv.connection_num()).unwrap_or(i64::MAX),
         load(&gs.abort_count),
         load(&gs.accept_count),
         load(&gs.close_count),
         i64::from(config.worker_num),
         i64::from(config.task_worker_num),
         // SAFETY: a live server.
-        i64::try_from(unsafe { view::user_worker_num(serv) }).unwrap_or(i64::MAX),
+        i64::try_from(serv.user_worker_num()).unwrap_or(i64::MAX),
         // SAFETY: a live server.
-        i64::from(unsafe { server_methods::get_idle_worker_num(serv) }),
+        i64::from(unsafe { server_methods::get_idle_worker_num(serv.raw()) }),
         load(&gs.dispatch_count),
         load(&gs.request_count),
         load(&gs.response_count),
@@ -746,8 +755,7 @@ fn stats(call: &Call) {
         call.add_assoc_long(c"worker_dispatch_count", dispatch);
         call.add_assoc_long(c"worker_concurrency", concurrency);
     }
-    // SAFETY: a live server.
-    let pool = unsafe { view::task_pool(serv) };
+    let pool = serv.task_pool();
     // SAFETY: its live task pool.
     let queue = unsafe { (*pool).queue };
     if config.task_ipc_mode > TASK_IPC_UNIXSOCK && !queue.is_null() {
@@ -760,10 +768,10 @@ fn stats(call: &Call) {
     }
     if config.task_worker_num > 0 {
         // SAFETY: a live server.
-        let idle = unsafe { server_methods::get_idle_task_worker_num(serv) };
+        let idle = unsafe { server_methods::get_idle_task_worker_num(serv.raw()) };
         call.add_assoc_long(c"task_idle_worker_num", i64::from(idle));
         // SAFETY: a live server.
-        let tasking = unsafe { server_methods::get_tasking_num(serv) };
+        let tasking = unsafe { server_methods::get_tasking_num(serv.raw()) };
         call.add_assoc_long(c"tasking_num", i64::from(tasking));
         call.add_assoc_long(c"task_count", load(&gs.task_count));
     }
@@ -781,7 +789,9 @@ fn reload(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    call.set_bool(unsafe { swoole_rs_process::workers::entry::reload(serv, !only_task_workers) });
+    call.set_bool(unsafe {
+        swoole_rs_process::workers::entry::reload(serv.raw(), !only_task_workers)
+    });
 }
 
 /// `microtime()`: the wall clock in seconds.
@@ -796,26 +806,24 @@ fn heartbeat(call: &Call) {
     let Ok(close) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server.
-    if unsafe { view::config(serv) }.heartbeat_check_interval < 1 {
+    if serv.config().heartbeat_check_interval < 1 {
         return call.set_bool(false);
     }
     call.set_array();
     let now = microtime();
     // `foreach_connection`: `max_fd` is read afresh for each fd.
     // SAFETY: a live server.
-    let mut fd = unsafe { view::counters(serv) }.min_fd;
+    let mut fd = serv.counters().min_fd;
     // SAFETY: as above.
-    while fd <= unsafe { view::counters(serv) }.max_fd {
+    while fd <= serv.counters().max_fd {
         // SAFETY: a live server.
-        if let Some(conn) = unsafe { view::iterated(serv, fd) } {
+        if let Some(conn) = unsafe { serv.iterated(fd) } {
             let session_id = conn.session_id;
-            // SAFETY: one of the server's connections.
-            if session_id > 0 && !unsafe { view::healthy(serv, now, conn) } {
+            if session_id > 0 && !serv.healthy(now, conn) {
                 if close {
                     conn.close_force = 1;
                     // SAFETY: a live server.
-                    unsafe { server_methods::close(serv, session_id, false) };
+                    unsafe { server_methods::close(serv.raw(), session_id, false) };
                 }
                 // SAFETY: the return slot holds an array.
                 unsafe { add_next_index_long(call.return_value(), session_id) };
@@ -847,7 +855,7 @@ fn bind(call: &Call) {
     )]
     let uid = uid as u32;
     // SAFETY: a live server.
-    let Some(conn) = (unsafe { view::verified(serv, fd) }) else {
+    let Some(conn) = (unsafe { serv.verified(fd) }) else {
         return call.set_bool(false);
     };
     let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
@@ -871,8 +879,7 @@ fn get_socket(call: &Call) {
         clippy::cast_possible_truncation,
         reason = "get_port((int) port), as upstream"
     )]
-    // SAFETY: a live server.
-    let ls = unsafe { view::port_number(serv, port as c_int) };
+    let ls = serv.port_number(port as c_int);
     match (!ls.is_null()).then_some(ls) {
         Some(ls) => crate::port::socket(ls, call),
         None => call.set_bool(false),
@@ -925,11 +932,10 @@ fn get_client_info(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    let Some(conn) = (unsafe { view::verified(serv, fd) }) else {
+    let Some(conn) = (unsafe { serv.verified(fd) }) else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server.
-    let dispatch_mode = unsafe { view::config(serv) }.dispatch_mode;
+    let dispatch_mode = serv.config().dispatch_mode;
     call.set_array();
     if conn.uid > 0 || dispatch_mode == DISPATCH_UIDMOD {
         call.add_assoc_long(c"uid", i64::from(conn.uid));
@@ -937,8 +943,7 @@ fn get_client_info(call: &Call) {
     if conn.worker_id > 0 || dispatch_mode == DISPATCH_CO_CONN_LB {
         call.add_assoc_long(c"worker_id", i64::from(conn.worker_id));
     }
-    // SAFETY: a live server.
-    let port = unsafe { view::port_by_fd(serv, conn.fd) };
+    let port = serv.port_by_fd(conn.fd);
     // SAFETY: the connection's live port.
     if !port.is_null() && unsafe { view::port_websocket(port) } {
         call.add_assoc_long(c"websocket_status", i64::from(conn.websocket_status));
@@ -952,7 +957,7 @@ fn get_client_info(call: &Call) {
         add_bytes(call, c"ssl_client_cert", cert.str, cert.length);
     }
     // SAFETY: a live server.
-    if let Some(server_socket) = unsafe { view::at(serv, conn.server_fd) } {
+    if let Some(server_socket) = unsafe { serv.at(conn.server_fd) } {
         // SAFETY: the listening socket's address.
         let port = unsafe { swr_v1_clients_address_port(&raw const server_socket.info) };
         call.add_assoc_long(c"server_port", i64::from(port));
@@ -992,13 +997,12 @@ fn get_client_list(call: &Call) {
         fatal(E_WARNING, c"swoole connection list max_find_count=100");
         return call.set_bool(false);
     }
-    // SAFETY: a live server.
-    let counters = unsafe { view::counters(serv) };
+    let counters = serv.counters();
     let start_fd = if start_session_id == 0 {
         counters.min_fd
     } else {
         // SAFETY: as above.
-        match unsafe { view::verified(serv, start_session_id) } {
+        match unsafe { serv.verified(start_session_id) } {
             None => return call.set_bool(false),
             Some(conn) => conn.fd,
         }
@@ -1010,7 +1014,7 @@ fn get_client_list(call: &Call) {
     call.set_array();
     for fd in start_fd + 1..=max_fd {
         // SAFETY: a live server.
-        if let Some(conn) = unsafe { view::iterated(serv, fd) } {
+        if let Some(conn) = unsafe { serv.iterated(fd) } {
             let session_id = conn.session_id;
             if session_id <= 0 {
                 continue;
@@ -1037,8 +1041,7 @@ fn sendwait(call: &Call) {
         no_payload();
         return call.set_bool(false);
     }
-    // SAFETY: a live server.
-    if unsafe { view::config(serv) }.mode_ == MODE_PROCESS || worker_type() == TASK_WORKER {
+    if serv.config().mode_ == MODE_PROCESS || worker_type() == TASK_WORKER {
         fatal(
             E_WARNING,
             c"can only be used with base mode and must be within worker process",
@@ -1051,7 +1054,9 @@ fn sendwait(call: &Call) {
     )]
     let length = data.len() as u32;
     // SAFETY: a live server and the argument's bytes.
-    call.set_bool(unsafe { server_methods::sendwait(serv, fd, data.as_ptr().cast(), length) });
+    call.set_bool(unsafe {
+        server_methods::sendwait(serv.raw(), fd, data.as_ptr().cast(), length)
+    });
 }
 
 fn exists(call: &Call) {
@@ -1060,7 +1065,7 @@ fn exists(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    let conn = unsafe { view::verified(serv, session_id) };
+    let conn = unsafe { serv.verified(session_id) };
     call.set_bool(conn.is_some_and(|conn| !closed(conn) && conn.closing == 0));
 }
 
@@ -1073,7 +1078,7 @@ fn protect(call: &Call) {
         return call.set_bool(false);
     };
     // SAFETY: a live server.
-    match unsafe { view::verified(serv, session_id) } {
+    match unsafe { serv.verified(session_id) } {
         Some(conn) if !closed(conn) => {
             conn.protect = u8::from(value);
             call.set_bool(true);
@@ -1092,7 +1097,7 @@ fn get_worker_id(call: &Call) {
 }
 
 /// The worker `get*` asks about: the argument, or this process's worker.
-fn worker(call: &Call, serv: *mut c_void) -> Option<*mut WorkerRecord> {
+fn worker(call: &Call, serv: view::Server<'_>) -> Option<*mut WorkerRecord> {
     let Ok(worker_id) = call.arity(0, 1).and_then(|()| call.long(1, -1)) else {
         call.set_bool(false);
         return None;
@@ -1108,8 +1113,7 @@ fn worker(call: &Call, serv: *mut c_void) -> Option<*mut WorkerRecord> {
         reason = "get_worker's uint16_t id, as upstream"
     )]
     let worker_id = worker_id as u16;
-    // SAFETY: a live server.
-    let worker = unsafe { view::worker(serv, worker_id) };
+    let worker = serv.worker(worker_id);
     if worker.is_null() {
         call.set_bool(false);
         return None;
@@ -1135,20 +1139,18 @@ fn get_worker_pid(call: &Call) {
 
 fn get_manager_pid(call: &Call) {
     let serv = server(call);
-    // SAFETY: a live server.
-    call.set_long(i64::from(unsafe { view::counters(serv) }.manager_pid));
+    call.set_long(i64::from(serv.counters().manager_pid));
 }
 
 fn get_master_pid(call: &Call) {
     let serv = server(call);
-    // SAFETY: a live server.
-    call.set_long(i64::from(unsafe { view::counters(serv) }.master_pid));
+    call.set_long(i64::from(serv.counters().master_pid));
 }
 
 fn shutdown(call: &Call) {
     let serv = server(call);
     // SAFETY: a live server.
-    call.set_bool(unsafe { server_methods::shutdown(serv) });
+    call.set_bool(unsafe { server_methods::shutdown(serv.raw()) });
 }
 
 fn stop(call: &Call) {
@@ -1162,7 +1164,7 @@ fn stop(call: &Call) {
     )]
     let worker_id = worker_id as c_int;
     // SAFETY: a live server.
-    call.set_bool(unsafe { swoole_rs_process::workers::entry::kill_worker(serv, worker_id) });
+    call.set_bool(unsafe { swoole_rs_process::workers::entry::kill_worker(serv.raw(), worker_id) });
 }
 
 /// `php_swoole_connection_iterator_get_and_check_ptr(ZEND_THIS)`.
@@ -1184,17 +1186,15 @@ fn iterator_construct(_: &Call) {
 fn rewind(call: &Call) {
     let iterator = iterator(call);
     iterator.index = 0;
-    // SAFETY: a live server.
-    iterator.current_fd = unsafe { view::counters(iterator.serv) }.min_fd;
+    iterator.current_fd = iterator.server().counters().min_fd;
 }
 
 fn valid(call: &Call) {
     let iterator = iterator(call);
-    // SAFETY: a live server.
-    let max_fd = unsafe { view::counters(iterator.serv) }.max_fd;
+    let max_fd = iterator.server().counters().max_fd;
     for fd in iterator.current_fd..=max_fd {
         // SAFETY: a live server.
-        let Some(conn) = (unsafe { view::iterated(iterator.serv, fd) }) else {
+        let Some(conn) = (unsafe { iterator.server().iterated(fd) }) else {
             continue;
         };
         let (session_id, server_fd) = (conn.session_id, conn.server_fd);
@@ -1232,10 +1232,10 @@ fn count(call: &Call) {
     let iterator = iterator(call);
     let num = if iterator.port.is_null() {
         // SAFETY: a live server.
-        unsafe { view::connection_num(iterator.serv) }
+        iterator.server().connection_num()
     } else {
         // SAFETY: a live server and one of its ports.
-        unsafe { view::port_connection_num(iterator.serv, iterator.port) }
+        unsafe { iterator.server().port_connection_num(iterator.port) }
     };
     call.set_long(i64::try_from(num).unwrap_or(i64::MAX));
 }

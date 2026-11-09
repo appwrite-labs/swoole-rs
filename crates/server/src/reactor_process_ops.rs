@@ -41,6 +41,14 @@ struct Context {
     now: f64,
 }
 
+impl Context {
+    /// The context's live server.
+    fn server(&self) -> view::Server<'_> {
+        // SAFETY: the method that built the context lent its live server for the call.
+        unsafe { view::Server::from_raw(self.serv) }
+    }
+}
+
 /// `swoole::Event`.
 #[repr(C)]
 struct Event {
@@ -120,8 +128,9 @@ fn pipe(ctx: &Context, op: u32) -> Option<u64> {
 /// # Safety
 /// `serv` is a live `Server`.
 pub(crate) unsafe fn ports<'a>(serv: *mut c_void) -> &'a [*mut c_void] {
-    // SAFETY: per the caller.
-    unsafe { view::state(serv) }.tables_ref().ports()
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    serv.state().tables_ref().ports()
 }
 
 /// `Socket::is_stream(type)`.
@@ -292,11 +301,13 @@ const SW_EVENT_WORKER: c_int = 2;
 /// the event being closed.
 fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
+    // SAFETY: the context's live server.
+    let server = unsafe { view::Server::from_raw(serv) };
     match op {
         OP_CONN_AT => {
             let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
             // SAFETY: the context's live server.
-            let conn = unsafe { view::at(serv, fd) }.map_or(core::ptr::null_mut(), |c| &raw mut *c);
+            let conn = unsafe { server.at(fd) }.map_or(core::ptr::null_mut(), |c| &raw mut *c);
             // SAFETY: null or a live connection whose socket is null or live.
             let valid = unsafe { crate::reactor_ops::valid(conn) };
             ctx.conn = if valid { conn } else { core::ptr::null_mut() };
@@ -306,7 +317,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the context's live event.
             let fd = unsafe { (*ctx.event).fd };
             // SAFETY: the context's live server.
-            let conn = unsafe { view::at(serv, fd) };
+            let conn = unsafe { server.at(fd) };
             let active = conn.as_ref().is_some_and(|c| c.active != 0);
             ctx.conn = conn.map_or(core::ptr::null_mut(), |c| &raw mut *c);
             return Some(u64::from(active));
@@ -347,8 +358,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the context's live server and one of its connections.
             u64::from(unsafe { crate::server_methods::notify(serv, conn, EVENT_CLOSE) })
         }
-        // SAFETY: the context's live server and one of its connections.
-        OP_CONN_HEALTHY => u64::from(unsafe { view::healthy(serv, ctx.now, conn) }),
+        OP_CONN_HEALTHY => u64::from(server.healthy(ctx.now, conn)),
         OP_CONN_SSL_PENDING => {
             let socket = crate::objects::socket(socket.cast())?;
             u64::from(!socket.ssl.is_null() && socket.tls.state != SSL_READY)

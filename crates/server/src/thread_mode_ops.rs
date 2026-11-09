@@ -58,6 +58,14 @@ struct Context {
     worker: *mut WorkerRecord,
 }
 
+impl Context {
+    /// The context's live server.
+    fn server(&self) -> view::Server<'_> {
+        // SAFETY: the method that built the context lent its live server for the call.
+        unsafe { view::Server::from_raw(self.serv) }
+    }
+}
+
 /// `SW_MANAGER`, `SW_EVENT_READ` and `Server::THREAD_WORKER`.
 const SW_MANAGER: c_int = 3;
 const SW_EVENT_READ: c_int = 1 << 9;
@@ -74,20 +82,18 @@ type PoolHook = unsafe extern "C-unwind" fn(*mut PoolRecord, *mut WorkerRecord);
 )]
 impl Context {
     fn state(&self) -> &crate::ServerState {
-        // SAFETY: the context's live server.
-        unsafe { view::state(self.serv) }
+        self.server().state()
     }
     fn config(&self) -> &mut crate::ServerConfig {
         // SAFETY: the context's live server.
-        unsafe { view::config(self.serv) }
+        unsafe { self.server().config_mut() }
     }
     fn tables(&self) -> &mut crate::records::ServerTables {
         // SAFETY: the server's tables, which live as long as it.
         unsafe { &mut *self.state().tables() }
     }
     fn workers(&self) -> ServerWorkers {
-        // SAFETY: the context's live server.
-        unsafe { view::workers(self.serv) }
+        self.server().workers()
     }
     /// `serv->get_all_worker_num()`.
     fn all_worker_num(&self) -> u64 {
@@ -239,7 +245,10 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CREATE_MESSAGE_BUS => {
             // SAFETY: the started server's shared counters.
-            let counter = unsafe { view::counters(serv) }.pipe_packet_msg_id.as_ptr();
+            let counter = unsafe { view::Server::from_raw(serv) }
+                .counters()
+                .pipe_packet_msg_id
+                .as_ptr();
             let bus = pool_native::new_bus(counter.cast());
             // SAFETY: the new bus, used by this thread alone.
             let handle = unsafe { Bus::of(bus) };
@@ -413,7 +422,7 @@ fn worker(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_GET_WORKER => {
             let id = u16::try_from(arg).ok()?;
             // SAFETY: the live server.
-            ctx.worker = unsafe { view::worker(serv, id) };
+            ctx.worker = unsafe { view::Server::from_raw(serv) }.worker(id);
             ctx.worker.addr() as u64
         }
         OP_KILL_WORKER => {

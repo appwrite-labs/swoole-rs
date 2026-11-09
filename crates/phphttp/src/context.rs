@@ -168,8 +168,9 @@ pub extern "C" fn swr_v1_phphttp_context_new() -> *mut Context {
 /// `ctx` is a live context and `server` the live server.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phphttp_context_init(ctx: *mut Context, server: *mut c_void) {
-    // SAFETY: per the caller.
-    let config = unsafe { swoole_rs_server::view::config(server) };
+    // SAFETY: per the caller, `server` is a live `Server` for the call.
+    let server = unsafe { view::Server::from_raw(server) };
+    let config = server.config();
     let state = send::state(ctx);
     state.parse_cookie = u8::from(config.http_parse_cookie);
     state.parse_body = u8::from(config.http_parse_post);
@@ -180,7 +181,13 @@ pub unsafe extern "C" fn swr_v1_phphttp_context_init(ctx: *mut Context, server: 
         state.compression_min_length = config.compression_min_length;
     }
     // SAFETY: per the caller.
-    unsafe { swr_v1_phphttp_context_bind(ctx, server, ptr::null_mut()) };
+    unsafe { swr_v1_phphttp_context_bind(ctx, server.raw(), ptr::null_mut()) };
+}
+
+/// The server a context not bound to a coroutine socket answers through.
+pub(crate) fn server(state: &State) -> view::Server<'_> {
+    // SAFETY: a server-bound context's `private_data` is its live server.
+    unsafe { view::Server::from_raw(state.private_data) }
 }
 
 /// `Context::is_co_socket`: bound to a coroutine socket rather than a server.
@@ -398,8 +405,7 @@ pub(crate) fn upload_tmp_dir(state: &State) -> Cow<'_, CStr> {
     if co_socket(state) || state.private_data.is_null() {
         return Cow::Borrowed(c"/tmp");
     }
-    // SAFETY: the context's live server.
-    Cow::Owned(unsafe { view::upload_tmp_dir(state.private_data) })
+    Cow::Owned(crate::context::server(state).upload_tmp_dir())
 }
 
 /// A directory as `std::string::c_str()` reads it: up to its first NUL.
@@ -419,8 +425,7 @@ pub(crate) fn compression_type(state: &State, kind: Option<&[u8]>) -> bool {
     if co_socket(state) || state.private_data.is_null() {
         return false;
     }
-    // SAFETY: the context's live server.
-    unsafe { view::compression_type(state.private_data, kind) }
+    crate::context::server(state).compression_type(kind)
 }
 
 /// `onBeforeRequest`: a server's request is counted, or queued past
@@ -458,7 +463,7 @@ pub(crate) fn available(ctx: *mut Context) -> bool {
         return !unsafe { php_swoole_socket_is_closed(&raw const state.zsocket) };
     }
     // SAFETY: the server the context is bound to.
-    unsafe { view::by_session(state.private_data, state.fd) }
+    unsafe { crate::context::server(state).by_session(state.fd) }
         .is_some_and(|conn| conn.closed.load(Relaxed) == 0 && conn.peer_closed == 0)
 }
 

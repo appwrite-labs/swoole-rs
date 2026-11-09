@@ -134,11 +134,11 @@ impl TaskHost for Host {
 /// `serv`'s task state; for a call that waits (`sync`), with this worker's
 /// notify pipe, lock and `task_results` slot.
 fn task_state<'a>(serv: *mut c_void, sync: bool) -> Tasks<'a, Host> {
-    // SAFETY: a live server.
-    let counters = unsafe { view::counters(serv) };
+    // SAFETY: its callers pass their live server.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let counters = serv.counters();
     let mut host = Host {
-        // SAFETY: as above.
-        pool: unsafe { view::task_pool(serv) },
+        pool: serv.task_pool(),
         pipe: ptr::null_mut(),
         lock: ptr::null_mut(),
     };
@@ -149,14 +149,11 @@ fn task_state<'a>(serv: *mut c_void, sync: bool) -> Tasks<'a, Host> {
             reason = "upstream's uint16_t worker id"
         )]
         let id = swoole_get_worker_id() as u16;
-        // SAFETY: as above.
-        host.pipe = unsafe { view::task_notify_pipe(serv, id) };
-        // SAFETY: as above.
-        let worker = unsafe { view::worker(serv, id) };
+        host.pipe = serv.task_notify_pipe(id);
+        let worker = serv.worker(id);
         // SAFETY: this worker's live record.
         host.lock = unsafe { (*worker).lock };
-        // SAFETY: as above; `task_results` holds an `EventData` per worker.
-        let results = unsafe { view::config(serv) }.task_results.cast::<u8>();
+        let results = serv.config().task_results.cast::<u8>();
         let size = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or_default();
         result = results.wrapping_add(usize::from(id) * size);
     }
@@ -252,8 +249,9 @@ fn pending<R>(server: *mut c_void, f: impl FnOnce(&mut Pending) -> R) -> R {
 }
 
 fn facts(server: *mut c_void) -> Facts {
-    // SAFETY: a live server.
-    let config = unsafe { swoole_rs_server::view::config(server) };
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    let config = server.config();
     let worker_type = crate::server::worker_type();
     Facts {
         worker: worker_type == crate::server::EVENT_WORKER,
@@ -437,7 +435,7 @@ fn check(facts: &Facts, dst_worker_id: i64) -> bool {
 /// `running(call)` and a worker process, or a warning naming `method`.
 fn worker(call: &Call, method: &CStr) -> Option<(*mut c_void, Facts)> {
     let serv = running(call)?;
-    let facts = facts(serv);
+    let facts = facts(serv.raw());
     if !facts.worker {
         let text = message!(
             "{} method can only be used in the worker process",
@@ -447,7 +445,7 @@ fn worker(call: &Call, method: &CStr) -> Option<(*mut c_void, Facts)> {
         call.set_bool(false);
         return None;
     }
-    Some((serv, facts))
+    Some((serv.raw(), facts))
 }
 
 fn task(call: &Call) {
@@ -456,7 +454,7 @@ fn task(call: &Call) {
         return call.set_bool(false);
     };
     let callback = (call.num_args() >= 3).then(|| call.zval(3));
-    let facts = facts(serv);
+    let facts = facts(serv.raw());
     if !check(&facts, dst) {
         return call.set_bool(false);
     }
@@ -476,7 +474,7 @@ fn task(call: &Call) {
         if cb.is_null() {
             return call.set_bool(false);
         }
-        if let Some(old) = pending(serv, |p| p.callbacks.insert(id, cb)) {
+        if let Some(old) = pending(serv.raw(), |p| p.callbacks.insert(id, cb)) {
             // SAFETY: a callable this module created.
             unsafe { swoole_rs_phpruntime::callable_free(old) };
         }
@@ -487,7 +485,7 @@ fn task(call: &Call) {
         reason = "upstream passes (int *) &dst_worker_id"
     )]
     let mut dst = dst as c_int;
-    if dispatch(serv, &mut buf, &mut dst) {
+    if dispatch(serv.raw(), &mut buf, &mut dst) {
         call.set_long(id);
     } else {
         call.set_bool(false);
@@ -781,14 +779,15 @@ fn unpack(req: *mut c_void) -> Result<Option<zval>, Bailout> {
 
 /// `php_swoole_server_onTask`, for a live server and the task it received.
 pub(crate) fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Bailout> {
-    // SAFETY: a live server.
-    let counters = unsafe { swoole_rs_server::view::counters(server) };
+    // SAFETY: its callers pass their live server.
+    let server = unsafe { view::Server::from_raw(server) };
+    let counters = server.counters();
     counters.tasking_num.fetch_sub(1, Ordering::SeqCst);
-    let zserv = server_zval(server);
+    let zserv = server_zval(server.raw());
     let Some(mut data) = unpack(req)? else {
         return Ok(SW_ERR);
     };
-    let facts = facts(server);
+    let facts = facts(server.raw());
     let info = info(req);
     let mut args = [zserv, undef(), undef(), undef()];
     let argc = if facts.task_object {
@@ -797,7 +796,7 @@ pub(crate) fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Ba
         unsafe { init_object(&raw mut args[1], ce) };
         // SAFETY: an object zval.
         let object = unsafe { object_of(&raw const args[1]) };
-        crate::server::task_bind(object, server, head(req));
+        crate::server::task_bind(object, server.raw(), head(req));
         set_long(ce, object, c"worker_id", info.worker_id);
         set_long(ce, object, c"id", info.id);
         set_value(ce, object, c"data", &raw mut data);
@@ -811,7 +810,7 @@ pub(crate) fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Ba
         4
     };
     let mut retval = undef();
-    let cb = server_callback(server, ON_TASK);
+    let cb = server_callback(server.raw(), ON_TASK);
     let outcome = match invoke(
         cb,
         args.get_mut(..argc).unwrap_or_default(),
@@ -827,7 +826,7 @@ pub(crate) fn on_task(server: *mut c_void, req: *mut c_void) -> Result<c_int, Ba
     let outcome = outcome.and_then(|()| {
         // SAFETY: the callback's result, or undef.
         if unsafe { type_of(&raw const retval) } != IS_NULL {
-            let finished = finish_task(server, &raw mut retval, req);
+            let finished = finish_task(server.raw(), &raw mut retval, req);
             dtor(&mut retval);
             finished?;
         }

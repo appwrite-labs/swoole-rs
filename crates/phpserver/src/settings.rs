@@ -89,8 +89,10 @@ mod field {
 
 /// `serv->reload_async = true` (`on_before_start` with coroutines on).
 pub(crate) fn set_reload_async(serv: *mut c_void) {
-    // SAFETY: a live server.
-    unsafe { view::config(serv) }.reload_async = true;
+    // SAFETY: its callers pass their live server.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    // SAFETY: the server is configured on this thread, with no other reference to the field.
+    unsafe { serv.config_mut() }.reload_async = true;
 }
 
 /// The Server field `id` (`field::*`), read as C++ reads it.
@@ -99,16 +101,14 @@ pub(crate) fn set_reload_async(serv: *mut c_void) {
 /// `serv` is a live server.
 unsafe fn fact(serv: *mut c_void, id: u32) -> i64 {
     use field as f;
-    // SAFETY: per the caller.
-    let config = unsafe { view::config(serv) };
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let config = serv.config();
     match id {
-        // SAFETY: per the caller.
-        f::STARTED => i64::from(unsafe { view::is_started(serv) }),
-        // SAFETY: per the caller.
-        f::WORKER_THREAD => i64::from(unsafe { view::is_worker_thread(serv) }),
+        f::STARTED => i64::from(serv.is_started()),
+        f::WORKER_THREAD => i64::from(serv.is_worker_thread()),
         f::WORKER_MAX_CONCURRENCY => i64::from(config.worker_max_concurrency),
-        // SAFETY: per the caller.
-        f::MAX_CONCURRENCY => i64::from(unsafe { view::counters(serv) }.max_concurrency),
+        f::MAX_CONCURRENCY => i64::from(serv.counters().max_concurrency),
         f::ENABLE_COROUTINE => i64::from(config.enable_coroutine),
         f::DISPATCH_MODE => i64::from(config.dispatch_mode),
         f::TASK_IPC_MODE => i64::from(config.task_ipc_mode),
@@ -143,8 +143,10 @@ unsafe fn fact(serv: *mut c_void, id: u32) -> i64 {
 )]
 unsafe fn apply(serv: *mut c_void, id: u32, v: i64) {
     use field as f;
-    // SAFETY: per the caller.
-    let c = unsafe { view::config(serv) };
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    // SAFETY: the server has not started, per the caller; nothing else holds its config.
+    let c = unsafe { serv.config_mut() };
     let on = v != 0;
     // `0` is unlimited for both concurrency limits.
     let limit = if v as u32 == 0 { u32::MAX } else { v as u32 };
@@ -156,7 +158,7 @@ unsafe fn apply(serv: *mut c_void, id: u32, v: i64) {
         f::MAX_WAIT_TIME => c.max_wait_time = v as u32,
         f::MAX_QUEUED_BYTES => c.max_queued_bytes = v as u32,
         // SAFETY: per the caller; the counters are mapped before set() runs.
-        f::MAX_CONCURRENCY => unsafe { view::counters_mut(serv) }.max_concurrency = limit,
+        f::MAX_CONCURRENCY => unsafe { serv.counters_mut() }.max_concurrency = limit,
         f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency = limit,
         f::ENABLE_COROUTINE => c.enable_coroutine = on,
         f::DISPATCH_MODE => c.dispatch_mode = v as u8,
@@ -173,10 +175,10 @@ unsafe fn apply(serv: *mut c_void, id: u32, v: i64) {
         f::TASK_MAX_REQUEST => c.task_max_request = v as u32,
         f::TASK_MAX_REQUEST_GRACE => c.task_max_request_grace = v as u32,
         // SAFETY: per the caller.
-        f::MAX_CONNECTION => unsafe { server_methods::set_max_connection(serv, v as u32) },
+        f::MAX_CONNECTION => unsafe { server_methods::set_max_connection(serv.raw(), v as u32) },
         f::START_SESSION_ID => {
             // SAFETY: per the caller, as above.
-            let counters = unsafe { view::counters_mut(serv) };
+            let counters = unsafe { serv.counters_mut() };
             counters.session_round = v.min(i64::from(u32::MAX));
         }
         f::HEARTBEAT_CHECK_INTERVAL => c.heartbeat_check_interval = v as u16,
@@ -221,6 +223,12 @@ pub(crate) fn checked() -> Step {
 }
 
 impl Settings {
+    /// The server being configured.
+    pub(crate) fn server(&self) -> view::Server<'_> {
+        // SAFETY: `set()` built these settings over `$this`'s live server.
+        unsafe { view::Server::from_raw(self.serv) }
+    }
+
     /// `php_swoole_array_get_value(vht, key, ztmp)`: present and not null.
     pub(crate) fn get(&self, key: &CStr) -> Option<*mut zval> {
         // SAFETY: an array argument.
@@ -276,13 +284,12 @@ impl Settings {
     /// `serv-><text> = value` (`view::set_text`'s `index`).
     fn text(&self, index: usize, value: &[u8]) {
         // SAFETY: a live server, not started (set() checked).
-        unsafe { view::set_text(self.serv, index, value) };
+        unsafe { self.server().set_text(index, value) };
     }
 
     /// `insert(value)` into static collection `kind` (`view::insert_static_string`).
     fn insert(&self, kind: u32, value: &[u8]) {
-        // SAFETY: a live server.
-        unsafe { view::insert_static_string(self.serv, kind, value) };
+        self.server().insert_static_string(kind, value);
     }
 
     /// A boolean option.
@@ -348,7 +355,7 @@ fn notice(message: &CStr) -> Step {
 fn set(call: &Call) {
     let serv = server(call);
     let s = Settings {
-        serv,
+        serv: serv.raw(),
         vht: ptr::null_mut(),
     };
     if s.fact(field::WORKER_THREAD) != 0 {
@@ -368,7 +375,10 @@ fn set(call: &Call) {
     let Ok(vht) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
-    let s = Settings { serv, vht };
+    let s = Settings {
+        serv: serv.raw(),
+        vht,
+    };
     // Every early exit after an `E_ERROR` or a deferred bailout leaves the
     // handler, whose last step raises it.
     if let Ok(true) = options(&s, call.this()) {
@@ -457,8 +467,8 @@ fn options(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
         // SAFETY: a live setting.
         let v = unsafe { get_double(value) };
         checked()?;
-        // SAFETY: a live server.
-        unsafe { view::config(s.serv) }.send_timeout = v;
+        // SAFETY: the live server being configured; nothing else holds its config.
+        unsafe { s.server().config_mut() }.send_timeout = v;
     }
     s.clamped(c"dispatch_mode", f::DISPATCH_MODE, 0, i64::from(u8::MAX))?;
     match s.get(c"send_yield") {
@@ -688,8 +698,8 @@ fn cpu_affinity_ignore(s: &Settings, value: *mut zval) -> Result<bool, Stop> {
     let available = swoole_rs_corebase::sw_malloc(bytes).cast::<c_int>();
     // SAFETY: a fresh allocation of `bytes`, apart from `cpus`.
     unsafe { ptr::copy_nonoverlapping(cpus.as_ptr(), available, cpus.len()) };
-    // SAFETY: a live server, not started (set() checked).
-    let c = unsafe { view::config(s.serv) };
+    // SAFETY: the live server being configured; nothing else holds its config.
+    let c = unsafe { s.server().config_mut() };
     c.cpu_affinity_available_num = c_int::try_from(cpus.len()).unwrap_or(c_int::MAX);
     // SAFETY: null or the previous `sw_malloc` list, which nothing else holds.
     unsafe { swoole_rs_corebase::sw_free(c.cpu_affinity_available.cast()) };
@@ -730,8 +740,7 @@ fn http(s: &Settings, this: *mut zend_object) -> Result<bool, Stop> {
                 unsafe { crate::instance::php_swoole_create_dir(dir.as_ptr().cast(), dir.len()) }
                     >= 0;
             if created {
-                // SAFETY: the live server.
-                unsafe { view::set_upload_tmp_dir(s.serv, dir) };
+                s.server().set_upload_tmp_dir(dir);
             } else {
                 let shown = dir.split(|&b| b == 0).next().unwrap_or_default();
                 let text = message!(
@@ -867,8 +876,10 @@ fn rewrite_rules(s: &Settings) -> Step {
             // SAFETY: a live key.
             unsafe { bytes(key) }
         };
-        // SAFETY: a live server.
-        unsafe { view::add_rewrite_rule(rules.settings.serv, pattern, replacement) };
+        rules
+            .settings
+            .server()
+            .add_rewrite_rule(pattern, replacement);
         true
     }
     struct Rules<'a> {

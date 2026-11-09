@@ -56,6 +56,14 @@ struct Context {
     fd: c_int,
 }
 
+impl Context {
+    /// The context's live server.
+    fn server(&self) -> view::Server<'_> {
+        // SAFETY: the method that built the context lent its live server for the call.
+        unsafe { view::Server::from_raw(self.serv) }
+    }
+}
+
 const _: () = assert!(
     size_of::<Context>() == 48 && core::mem::offset_of!(Context, fd) == 40,
     "crates/process FactoryContext layout"
@@ -103,29 +111,25 @@ const VERIFIED_TLS: u32 = 3;
 )]
 impl Context {
     fn state(&self) -> &crate::ServerState {
-        // SAFETY: the context's live server.
-        unsafe { view::state(self.serv) }
+        self.server().state()
     }
     fn config(&self) -> &mut crate::ServerConfig {
         // SAFETY: the context's live server.
-        unsafe { view::config(self.serv) }
+        unsafe { self.server().config_mut() }
     }
     fn tables(&self) -> &mut crate::ServerTables {
         // SAFETY: its tables, written by the master before its threads and workers start.
         unsafe { &mut *self.state().tables() }
     }
     fn workers(&self) -> swoole_rs_process::server_workers::ServerWorkers {
-        // SAFETY: the context's live server.
-        unsafe { view::workers(self.serv) }
+        self.server().workers()
     }
     fn task_pool(&self) -> *mut PoolRecord {
-        // SAFETY: the context's live server.
-        unsafe { view::task_pool(self.serv) }
+        self.server().task_pool()
     }
     /// Worker `id` of the server, which every caller passes with a worker id it has.
     fn worker_at(&self, id: u16) -> &mut WorkerRecord {
-        // SAFETY: the context's live server.
-        let worker = unsafe { view::worker(self.serv, id) };
+        let worker = self.server().worker(id);
         // SAFETY: one of its workers.
         unsafe { &mut *worker }
     }
@@ -316,8 +320,8 @@ unsafe fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SEND_CONN_ACTIVE => {
             // SAFETY: the live server.
-            let conn = unsafe { view::at(serv, ctx.fd) };
-            ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
+            let conn = unsafe { ctx.server().at(ctx.fd) }.map(|conn| &raw mut *conn);
+            ctx.conn = conn.unwrap_or(core::ptr::null_mut());
             // SAFETY: null or a slot of the live connection table.
             return Some(u64::from(
                 unsafe { ctx.conn.as_ref() }.is_some_and(|c| c.active != 0),

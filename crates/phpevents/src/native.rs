@@ -88,8 +88,8 @@ pub(crate) fn server_refusal() -> Option<&'static CStr> {
         return None;
     }
     match swoole_rs_process::methods::swoole_get_worker_type() {
-        // SAFETY: the running server.
-        TASK_WORKER if !unsafe { swoole_rs_server::view::config(serv) }.task_enable_coroutine => Some(
+        // SAFETY: `serv` is the live server here.
+        TASK_WORKER if !unsafe { swoole_rs_server::view::Server::from_raw(serv) }.config().task_enable_coroutine => Some(
             c"Unable to use async-io in task processes, please set `task_enable_coroutine` to true",
         ),
         MANAGER => Some(c"Unable to use async-io in manager process"),

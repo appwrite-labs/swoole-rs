@@ -196,11 +196,12 @@ pub unsafe extern "C" fn get_local_addr(
     serv: *mut c_void,
     conn: *const ConnectionRecord,
 ) -> *const c_char {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: per the caller.
     let conn = unsafe { &*conn };
     if conn.socket_type == SW_SOCK_TCP || conn.socket_type == SW_SOCK_TCP6 {
-        // SAFETY: per the caller.
-        let state = unsafe { view::state_ptr(serv) };
+        let state = serv.state_ptr();
         // SAFETY: the server's live state.
         return unsafe {
             text(
@@ -210,8 +211,7 @@ pub unsafe extern "C" fn get_local_addr(
             )
         };
     }
-    // SAFETY: per the caller; a connection's listening socket holds its port.
-    let port = unsafe { view::port_by_server_fd(serv, conn.server_fd) };
+    let port = serv.port_by_server_fd(conn.server_fd);
     // SAFETY: the connection's live port.
     unsafe { view::port(port) }.host().data.cast()
 }

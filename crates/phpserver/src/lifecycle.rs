@@ -235,8 +235,8 @@ fn add_worker(serv: *mut c_void, process: *mut zval) -> i64 {
         }
         let id = swoole_rs_process::methods::swoole_get_worker_id();
         #[expect(clippy::cast_possible_truncation, reason = "get_worker(uint16_t)")]
-        // SAFETY: a live server and this thread's worker.
-        let worker = unsafe { view::worker(serv, id as u16) };
+        // SAFETY: `serv` is the live server here.
+        let worker = unsafe { view::Server::from_raw(serv) }.worker(id as u16);
         // SAFETY: the server's live record of this worker.
         let worker = unsafe { &mut *worker };
         worker.redirect_stdin = false;
@@ -275,35 +275,31 @@ pub(crate) struct Property {
 }
 
 fn fact(serv: *mut c_void, id: u32) -> bool {
-    number(serv, id) != 0
+    // SAFETY: its callers pass their live server.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    number(serv.raw(), id) != 0
 }
 
 /// The Server fact `id`: from its records, or C++ for what only it knows.
 fn number(serv: *mut c_void, id: u32) -> i64 {
-    // SAFETY: a live server.
-    let c = unsafe { view::config(serv) };
+    // SAFETY: its callers pass their live server.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let c = serv.config();
     // `is_hash_dispatch_mode()`: DISPATCH_FDMOD, DISPATCH_IPMOD, DISPATCH_CO_CONN_LB.
     let hash_dispatch = matches!(c.dispatch_mode, 2 | 4 | 8);
     match id {
         fact::MODE => i64::from(c.mode_),
+        fact::WORKER_THREAD => i64::from(serv.is_worker_thread()),
+        fact::STARTED => i64::from(serv.is_started()),
         // SAFETY: a live server.
-        fact::WORKER_THREAD => i64::from(unsafe { view::is_worker_thread(serv) }),
-        // SAFETY: a live server.
-        fact::STARTED => i64::from(unsafe { view::is_started(serv) }),
-        // SAFETY: a live server.
-        fact::SHUTDOWN => i64::from(
-            unsafe { view::counters(serv) }
-                .shutdown
-                .load(Ordering::Relaxed)
-                != 0,
-        ),
+        fact::SHUTDOWN => i64::from(serv.counters().shutdown.load(Ordering::Relaxed) != 0),
         fact::MASTER => i64::from(crate::server::worker_type() == crate::server::MASTER),
         fact::THREAD_MODE => i64::from(i64::from(c.mode_) == MODE_THREAD),
         fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine),
         fact::SEND_YIELD => i64::from(c.send_yield),
         fact::HAS_ON_CLOSE => {
             // SAFETY: a live server.
-            i64::from(unsafe { view::has_callback(serv, swoole_rs_server::callbacks::CB_CLOSE) })
+            i64::from(serv.has_callback(swoole_rs_server::callbacks::CB_CLOSE))
         }
         fact::UNSAFE_EVENTS => i64::from(hash_dispatch || c.enable_unsafe_event),
         fact::HASH_DISPATCH => i64::from(hash_dispatch),
@@ -312,9 +308,9 @@ fn number(serv: *mut c_void, id: u32) -> i64 {
         fact::OUTPUT_BUFFER_SIZE => i64::from(c.output_buffer_size),
         fact::REACTOR => i64::from(!swoole_rs_corebase::thread_reactor().is_null()),
         // SAFETY: a live server.
-        fact::MAX_CONNECTION => i64::from(unsafe { view::max_connection(serv) }),
+        fact::MAX_CONNECTION => i64::from(serv.max_connection()),
         // SAFETY: a live server.
-        fact::CACHE_SESSION_ADDR => i64::from(unsafe { can_cache_session_addr(serv) }),
+        fact::CACHE_SESSION_ADDR => i64::from(unsafe { can_cache_session_addr(serv.raw()) }),
         _ => 0,
     }
 }
@@ -453,9 +449,11 @@ pub unsafe extern "C" fn swr_v1_phpserver_free(object: *mut zend_object) {
     data.property = ptr::null_mut();
     let serv = data.serv;
     if !serv.is_null() {
-        // SAFETY: a live server.
+        // SAFETY: the object's live server.
+        let server = unsafe { view::Server::from_raw(serv) };
+        // SAFETY: freeing the object; nothing else holds the config.
         let dispatch = std::mem::replace(
-            &mut unsafe { view::config(serv) }.private_data_3,
+            &mut unsafe { server.config_mut() }.private_data_3,
             ptr::null_mut(),
         );
         bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
@@ -568,8 +566,10 @@ unsafe fn connections(
     serv: *mut c_void,
     port: *mut c_void,
 ) {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { view::Server::from_raw(serv) };
     let mut iterator = crate::dispatch::undef();
-    crate::server::new_iterator(&mut iterator, serv, port);
+    crate::server::new_iterator(&mut iterator, serv.raw(), port);
     // SAFETY: per the caller; Zend copies the value.
     unsafe { zend_update_property(ce, object, c"connections".as_ptr(), 11, &raw mut iterator) };
     // SAFETY: the reference taken above.
@@ -578,14 +578,15 @@ unsafe fn connections(
 
 /// `server_ctor`: bind `object` to `serv` and describe its primary port.
 fn bind(call: &Call, serv: *mut c_void) {
+    // SAFETY: its callers pass their live server.
+    let serv = unsafe { view::Server::from_raw(serv) };
     let object = call.this();
     // *php_swoole_server_zval_ptr(serv) = *zserv
-    crate::dispatch::set_server_zval(serv, call.this_zval());
+    crate::dispatch::set_server_zval(serv.raw(), call.this_zval());
     // SAFETY: `$this` is a Server.
-    unsafe { data(object) }.serv = serv;
+    unsafe { data(object) }.serv = serv.raw();
     let mut index = 0;
-    // SAFETY: a live server.
-    while let port = unsafe { view::port_at(serv, index) }
+    while let port = serv.port_at(index)
         && !port.is_null()
     {
         // SAFETY: `$this`, bound above, and one of its ports.
@@ -594,13 +595,13 @@ fn bind(call: &Call, serv: *mut c_void) {
     }
     let ce = SERVER.entry();
     // SAFETY: the Server class and `$this`.
-    unsafe { connections(ce, object, serv, ptr::null_mut()) };
-    // SAFETY: a live server; the primary port is the first.
-    let primary = unsafe { view::port_at(serv, 0) };
+    unsafe { connections(ce, object, serv.raw(), ptr::null_mut()) };
+    let primary = serv.port_at(0);
     // SAFETY: as above.
     let info = unsafe { PortInfo::of(primary) };
+    let mode = number(serv.raw(), fact::MODE);
     // SAFETY: the Server class and `$this`; Zend copies the values.
-    unsafe { zend_update_property_long(ce, object, c"mode".as_ptr(), 4, number(serv, fact::MODE)) };
+    unsafe { zend_update_property_long(ce, object, c"mode".as_ptr(), 4, mode) };
     // SAFETY: as above.
     unsafe {
         zend_update_property_stringl(
@@ -691,8 +692,10 @@ fn construct(call: &Call) {
     // SAFETY: a supported mode.
     let serv = unsafe { swr_v1_server_new(c_int::try_from(mode).unwrap_or_default()) };
     if mode == MODE_BASE {
-        // SAFETY: the new server.
-        let config = unsafe { view::config(serv) };
+        // SAFETY: the server just made.
+        let server = unsafe { view::Server::from_raw(serv) };
+        // SAFETY: nothing else holds the new server's config yet.
+        let config = unsafe { server.config_mut() };
         config.reactor_num = 1;
         config.worker_num = 1;
     }
@@ -729,7 +732,7 @@ fn construct(call: &Call) {
 
 fn add_process(call: &Call) {
     let serv = server(call);
-    if !fact(serv, fact::WORKER_THREAD) && fact(serv, fact::STARTED) {
+    if !fact(serv.raw(), fact::WORKER_THREAD) && fact(serv.raw(), fact::STARTED) {
         fatal(E_WARNING, c"server is running, cannot add process");
         return call.set_bool(false);
     }
@@ -748,14 +751,14 @@ fn add_process(call: &Call) {
         fatal(E_ERROR, c"object is not instanceof swoole_process");
         return call.set_bool(false);
     }
-    put(serv, install::USER_WORKER_START);
+    put(serv.raw(), install::USER_WORKER_START);
     // SAFETY: an emalloc'd copy holding its own reference, as upstream.
     let copy = unsafe { swoole_rs_zend::sys::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
     // SAFETY: a writable zval and the live argument.
     unsafe { swr_zval_copy(copy, process) };
     // SAFETY: `$this` is a Server.
     unsafe { property(call.this()) }.user_processes.push(copy);
-    match add_worker(serv, copy) {
+    match add_worker(serv.raw(), copy) {
         -3 => bailout::defer(Err(bailout::Bailout)),
         -2 => {
             set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);
@@ -778,7 +781,7 @@ fn add_process(call: &Call) {
 
 fn add_command(call: &Call) {
     let serv = server(call);
-    if fact(serv, fact::STARTED) {
+    if fact(serv.raw(), fact::STARTED) {
         fatal(E_WARNING, c"server is running, can't add command");
         return call.set_bool(false);
     }
@@ -805,8 +808,9 @@ fn add_command(call: &Call) {
     let types = c_int::from_le_bytes(types.to_le_bytes()[..4].try_into().unwrap_or_default());
     // SAFETY: a live server, the name's bytes and the new callable, which the
     // property keeps for the server's life.
-    if !unsafe { swr_v1_server_add_command(serv, name.as_ptr().cast(), name.len(), types, handler) }
-    {
+    if !unsafe {
+        swr_v1_server_add_command(serv.raw(), name.as_ptr().cast(), name.len(), types, handler)
+    } {
         // SAFETY: the callable created above.
         unsafe { swoole_rs_phpruntime::callable_free(callable) };
         return call.set_bool(false);
@@ -953,7 +957,7 @@ fn command(call: &Call) {
     // outlives the command (its callback runs before the yield below returns).
     let sent = unsafe {
         swr_v1_server_command(
-            serv,
+            serv.raw(),
             process_id,
             process_type,
             name.as_ptr().cast(),
@@ -1273,16 +1277,16 @@ fn before_start(object: *mut zend_object, serv: *mut c_void) -> Result<(), Stop>
 fn start(call: &Call) {
     let serv = server(call);
     let object = call.this();
-    match crate::thread::worker(object, serv) {
+    match crate::thread::worker(object, serv.raw()) {
         Some(Ok(())) => return call.set_bool(true),
         Some(Err(bailout)) => return bailout.defer(),
         None => {}
     }
-    let refusal = if fact(serv, fact::STARTED) {
+    let refusal = if fact(serv.raw(), fact::STARTED) {
         Some("The server is running, unable to execute {}->start()")
-    } else if fact(serv, fact::SHUTDOWN) {
+    } else if fact(serv.raw(), fact::SHUTDOWN) {
         Some("The server have been shutdown, unable to execute {}->start()")
-    } else if fact(serv, fact::REACTOR) {
+    } else if fact(serv.raw(), fact::REACTOR) {
         Some("The event-loop has already been created, unable to start {}")
     } else {
         None
@@ -1292,17 +1296,17 @@ fn start(call: &Call) {
         fatal(E_WARNING, text.as_cstr());
         return call.set_bool(false);
     }
-    if let Err(bailout) = crate::thread::prepare(object, serv) {
+    if let Err(bailout) = crate::thread::prepare(object, serv.raw()) {
         return bailout.defer();
     }
-    register_callback(object, serv);
-    if before_start(object, serv).is_err() {
+    register_callback(object, serv.raw());
+    if before_start(object, serv.raw()).is_err() {
         return;
     }
-    match start_server(serv) {
+    match start_server(serv.raw()) {
         Err(bailout) => return bailout.defer(),
         Ok(..0) => {
-            let error = server_methods::get_startup_error_message(serv);
+            let error = server_methods::get_startup_error_message(serv.raw());
             // SAFETY: the startup error message, NUL-terminated.
             let reason = unsafe { CStr::from_ptr(error) };
             let mut text = Message::new();
@@ -1335,6 +1339,8 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
     data: *const c_char,
     length: usize,
 ) -> c_int {
+    // SAFETY: per the caller, `server` is a live `Server` for the call.
+    let server = unsafe { view::Server::from_raw(server) };
     if swoole_rs_phpruntime::coroutine_check().is_err() {
         return 2;
     }
@@ -1344,13 +1350,12 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
     }
     loop {
         // SAFETY: the running server's live object.
-        let property = unsafe { property(instance(server)) };
+        let property = unsafe { property(instance(server.raw())) };
         let waiters = Rc::clone(property.send_waiters.entry(session_id).or_default());
         property.send_token += 1;
         let token = property.send_token;
         waiters.borrow_mut().push_back((token, co));
-        // SAFETY: a live server.
-        let timeout = unsafe { view::config(server) }.send_timeout;
+        let timeout = server.config().send_timeout;
         // SAFETY: this call's coroutine; `onBufferEmpty` or `onClose` wakes it.
         if !unsafe { swoole_rs_phpcoroutines::suspend_for(co, timeout) } {
             waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
@@ -1362,9 +1367,9 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
         )]
         let narrowed = length as u32;
         // SAFETY: a live server and the caller's bytes.
-        let sent = unsafe { server_methods::send(server, session_id, data.cast(), narrowed) };
+        let sent = unsafe { server_methods::send(server.raw(), session_id, data.cast(), narrowed) };
         let yielded = !sent && swoole_rs_corebase::log::last_error() == SW_ERROR_OUTPUT_SEND_YIELD;
-        if yielded && fact(server, fact::SEND_YIELD) {
+        if yielded && fact(server.raw(), fact::SEND_YIELD) {
             continue;
         }
         return c_int::from(sent);

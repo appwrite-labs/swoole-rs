@@ -60,7 +60,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_COMMAND_REPLY => {
             let (length, message) = ctx.packet;
             let state = ctx.state();
-            let sock = crate::commands::reply_socket(state, ctx.serv)?;
+            let sock = crate::commands::reply_socket(state, ctx.server())?;
             let bus = crate::master_ops::server_message_bus(state);
             // `serv->get_task_id(task)`: the task's fd.
             let (fd, id) = (ctx.task().fd, ctx.worker().id());
@@ -89,8 +89,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_UNLIMIT_BUS_PIPES => {
             let id = u16::try_from(arg).unwrap_or(u16::MAX);
-            // SAFETY: the context's live server.
-            let worker = unsafe { crate::view::worker(ctx.serv, id) };
+            let worker = ctx.server().worker(id);
             // SAFETY: its worker `arg`.
             let worker = unsafe { &*worker };
             for pipe in [worker.pipe_worker, worker.pipe_master] {
@@ -173,8 +172,10 @@ pub(crate) unsafe fn enter(
     bytes: *mut c_void,
     arg: u64,
 ) -> i64 {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { crate::view::Server::from_raw(serv) };
     let mut buf = MaybeUninit::<EventData>::uninit();
-    let mut ctx = Context::over(serv);
+    let mut ctx = Context::over(serv.raw());
     if operation == RUN_FINISH {
         // SAFETY: as the caller guarantees.
         let bytes = unsafe { &*bytes.cast::<Bytes>() };
@@ -182,8 +183,7 @@ pub(crate) unsafe fn enter(
         ctx.buf = buf.as_mut_ptr().cast();
         (ctx.data, ctx.data_len) = (bytes.data.cast(), bytes.length);
     } else {
-        // SAFETY: the live server.
-        ctx.pool = unsafe { crate::view::task_pool(serv) };
+        ctx.pool = serv.task_pool();
     }
     run_with(&mut ctx, operation, arg)
 }

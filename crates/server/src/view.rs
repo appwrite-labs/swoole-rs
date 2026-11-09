@@ -23,313 +23,446 @@ struct Fields {
     config: *mut ServerConfig,
 }
 
-/// # Safety
-/// `serv` is a live `Server`.
-unsafe fn fields<'a>(serv: *mut c_void) -> &'a Fields {
-    // SAFETY: the head of a live Server, per the module comment.
-    unsafe { &*serv.cast::<Fields>() }
+/// A live `Server`, borrowed for `'a`. [`Server::from_raw`] is the one unsafe
+/// step; the reads it then allows are safe, and only the methods that hand out
+/// `&mut` to state other threads share, or take another raw pointer, stay unsafe.
+#[derive(Clone, Copy)]
+pub struct Server<'a> {
+    raw: *mut c_void,
+    fields: &'a Fields,
 }
 
-/// The server's Rust-owned state, as a pointer.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub(crate) unsafe fn state_ptr(serv: *mut c_void) -> *const ServerState {
-    // SAFETY: per the caller.
-    unsafe { fields(serv) }.state
-}
-
-/// The server's Rust-owned state.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub(crate) unsafe fn state<'a>(serv: *mut c_void) -> &'a ServerState {
-    // SAFETY: per the caller.
-    let state = unsafe { fields(serv) }.state;
-    // SAFETY: the state lives as long as the server.
-    unsafe { &*state }
-}
-
-/// `serv->onX = f`: callback slot `index` (`callbacks::CB_*`) now calls `invoke`, a
-/// Rust `extern "C"` fn taking a null `ctx` and then the member's own arguments.
-///
-/// # Safety
-/// `serv` is a live `Server` whose slot no other thread reads meanwhile, and
-/// `invoke` has the slot's signature.
-pub unsafe fn set_callback(serv: *mut c_void, index: u32, invoke: *const c_void) {
-    // SAFETY: per the caller.
-    if let Some(slot) = unsafe { state(serv) }.callbacks.slot(index) {
-        slot.set(invoke);
+impl<'a> Server<'a> {
+    /// The server at `serv`.
+    ///
+    /// # Safety
+    /// `serv` is a live `Server` for `'a`, and the server's own synchronization
+    /// keeps writers of its configuration and counters (such as
+    /// [`Server::config_mut`]) apart from the references the safe readers return.
+    #[must_use]
+    pub unsafe fn from_raw(serv: *mut c_void) -> Self {
+        // SAFETY: the head of a live Server, per the module comment and the caller.
+        let fields = unsafe { &*serv.cast::<Fields>() };
+        Self { raw: serv, fields }
     }
-}
 
-/// `serv->onX != nullptr` of callback slot `index`.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub unsafe fn has_callback(serv: *mut c_void, index: u32) -> bool {
-    // SAFETY: per the caller.
-    unsafe { state(serv) }
-        .callbacks
-        .slot(index)
-        .is_some_and(CallbackSlot::is_set)
-}
-
-/// The server's configuration.
-///
-/// # Safety
-/// `serv` is a live `Server`; native code and other threads write the fields
-/// returned only under the server's own synchronization.
-pub unsafe fn config<'a>(serv: *mut c_void) -> &'a mut ServerConfig {
-    // SAFETY: per the caller.
-    let config = unsafe { fields(serv) }.config;
-    // SAFETY: the config allocation lives as long as the server.
-    unsafe { &mut *config }
-}
-
-/// `&serv->message_bus`, the server's own `MessageBus`.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub unsafe fn message_bus(serv: *mut c_void) -> *mut c_void {
-    // SAFETY: per the caller.
-    unsafe { state(serv) }.tables_ref().message_bus
-}
-
-/// `upload_tmp_dir = dir`.
-///
-/// # Safety
-/// `serv` is a live `Server`, not started.
-pub unsafe fn set_upload_tmp_dir(serv: *mut c_void, dir: &[u8]) {
-    // SAFETY: per the caller.
-    unsafe { state(serv) }.set_upload_tmp_dir(dir);
-}
-
-/// `serv-><text> = value` for text member `index`: 0 `chroot_`, 1 `user_`,
-/// 2 `group_`, 3 `pid_file` (`SWR_SERVER_TEXT_*`).
-///
-/// # Safety
-/// `serv` is a live `Server`, not started.
-pub unsafe fn set_text(serv: *mut c_void, index: usize, value: &[u8]) {
-    // SAFETY: per the caller.
-    let slot = unsafe { state(serv) }.text_slot(index);
-    if slot.is_null() {
-        return;
+    /// `serv` itself, for the native-shaped calls that still take it.
+    #[must_use]
+    pub fn raw(self) -> *mut c_void {
+        self.raw
     }
-    // SAFETY: a live slot, set only while the server is configured.
-    let status = unsafe {
-        swoole_rs_corebase::swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len())
-    };
-    if status < 0 {
-        // C++'s assignment threw `std::bad_alloc`, which nothing catches.
-        std::process::abort();
+
+    /// The server's Rust-owned state, as a pointer.
+    pub(crate) fn state_ptr(self) -> *const ServerState {
+        self.fields.state
     }
-}
 
-/// `insert(value)` into the static collection `kind`: 0 `locations`,
-/// 1 `http_index_files`, 2 `http_compression_types`.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub unsafe fn insert_static_string(serv: *mut c_void, kind: u32, value: &[u8]) {
-    // SAFETY: per the caller.
-    let state = unsafe { fields(serv) }.state;
-    // SAFETY: the live state and a byte span (non-null even when empty).
-    unsafe { crate::swr_v1_server_static_config(state, kind, 4, value.as_ptr(), value.len()) };
-}
+    /// The server's Rust-owned state.
+    pub(crate) fn state(self) -> &'a ServerState {
+        // SAFETY: the state lives as long as the server.
+        unsafe { &*self.fields.state }
+    }
 
-/// `url_rewrite_rules`: add one rule.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub unsafe fn add_rewrite_rule(serv: *mut c_void, pattern: &[u8], replacement: &[u8]) {
-    // SAFETY: per the caller.
-    crate::static_config::add_rewrite_rule(unsafe { state(serv) }, pattern, replacement);
-}
+    /// `serv->onX = f`: callback slot `index` (`callbacks::CB_*`) now calls `invoke`, a
+    /// Rust `extern "C"` fn taking a null `ctx` and then the member's own arguments.
+    ///
+    /// # Safety
+    /// No other thread reads the slot meanwhile, and `invoke` has the slot's signature.
+    pub unsafe fn set_callback(self, index: u32, invoke: *const c_void) {
+        if let Some(slot) = self.state().callbacks.slot(index) {
+            slot.set(invoke);
+        }
+    }
 
-/// The static handler's collection `kind` (0 locations, 1 index files): whether
-/// it is set, and a copy of its values.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-#[must_use]
-pub unsafe fn static_strings(serv: *mut c_void, kind: u32) -> (bool, Vec<Vec<u8>>) {
-    // SAFETY: per the caller.
-    crate::static_config::strings(unsafe { state(serv) }, kind)
-}
+    /// `serv->onX != nullptr` of callback slot `index`.
+    #[must_use]
+    pub fn has_callback(self, index: u32) -> bool {
+        self.state()
+            .callbacks
+            .slot(index)
+            .is_some_and(CallbackSlot::is_set)
+    }
 
-/// `apply_rewrite_rules` on a static context: true when a rule applied.
-///
-/// # Safety
-/// `serv` is a live `Server` and `context` a live context no one else uses meanwhile.
-pub unsafe fn static_rewrite(
-    serv: *mut c_void,
-    context: *mut swoole_rs_http::HttpStaticContext,
-) -> bool {
-    // SAFETY: per the caller.
-    let state = unsafe { state(serv) };
-    // SAFETY: the live state and the caller's context.
-    unsafe { crate::swr_v1_server_static_rewrite(state, context) }
-}
+    /// The server's configuration.
+    #[must_use]
+    pub fn config(self) -> &'a ServerConfig {
+        // SAFETY: the config allocation lives as long as the server, and writers
+        // hold no reference across a read (`config_mut`).
+        unsafe { &*self.fields.config }
+    }
 
-/// `document_root`, copied.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-#[must_use]
-pub unsafe fn document_root(serv: *mut c_void) -> Vec<u8> {
-    // SAFETY: per the caller.
-    unsafe { state(serv) }
-        .text(crate::state::TEXT_DOCUMENT_ROOT)
-        .to_vec()
-}
+    /// The server's configuration, to write.
+    ///
+    /// # Safety
+    /// No other reference to the configuration is live meanwhile, and no other
+    /// thread reads the fields written (the server's own synchronization).
+    #[must_use]
+    pub unsafe fn config_mut(self) -> &'a mut ServerConfig {
+        // SAFETY: per the caller; the allocation lives as long as the server.
+        unsafe { &mut *self.fields.config }
+    }
 
-/// `upload_tmp_dir.c_str()`: the directory up to its first NUL.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-#[must_use]
-pub unsafe fn upload_tmp_dir(serv: *mut c_void) -> CString {
-    // SAFETY: per the caller.
-    let dir = unsafe { state(serv) }.upload_tmp_dir();
-    let dir = dir.split(|&byte| byte == 0).next().unwrap_or_default();
-    CString::new(dir).unwrap_or_default()
-}
+    /// `&serv->message_bus`, the server's own `MessageBus`.
+    #[must_use]
+    pub fn message_bus(self) -> *mut c_void {
+        self.state().tables_ref().message_bus
+    }
 
-/// `http_compression_types` lists `kind`; `None` asks whether it lists any.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-#[must_use]
-pub unsafe fn compression_type(serv: *mut c_void, kind: Option<&[u8]>) -> bool {
-    // SAFETY: per the caller.
-    let state = unsafe { fields(serv) }.state;
-    let op = |operation, data: &[u8]| {
+    /// `upload_tmp_dir = dir`.
+    pub fn set_upload_tmp_dir(self, dir: &[u8]) {
+        self.state().set_upload_tmp_dir(dir);
+    }
+
+    /// `serv-><text> = value` for text member `index`: 0 `chroot_`, 1 `user_`,
+    /// 2 `group_`, 3 `pid_file` (`SWR_SERVER_TEXT_*`).
+    ///
+    /// # Safety
+    /// The server is not started, so no other thread reads the text.
+    pub unsafe fn set_text(self, index: usize, value: &[u8]) {
+        let slot = self.state().text_slot(index);
+        if slot.is_null() {
+            return;
+        }
+        // SAFETY: a live slot, set only while the server is configured.
+        let status = unsafe {
+            swoole_rs_corebase::swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len())
+        };
+        if status < 0 {
+            // C++'s assignment threw `std::bad_alloc`, which nothing catches.
+            std::process::abort();
+        }
+    }
+
+    /// `insert(value)` into the static collection `kind`: 0 `locations`,
+    /// 1 `http_index_files`, 2 `http_compression_types`.
+    pub fn insert_static_string(self, kind: u32, value: &[u8]) {
         // SAFETY: the live state and a byte span (non-null even when empty).
         unsafe {
-            crate::swr_v1_server_static_config(state, 2, operation, data.as_ptr(), data.len())
+            crate::swr_v1_server_static_config(
+                self.state_ptr(),
+                kind,
+                4,
+                value.as_ptr(),
+                value.len(),
+            )
+        };
+    }
+
+    /// `url_rewrite_rules`: add one rule.
+    pub fn add_rewrite_rule(self, pattern: &[u8], replacement: &[u8]) {
+        crate::static_config::add_rewrite_rule(self.state(), pattern, replacement);
+    }
+
+    /// The static handler's collection `kind` (0 locations, 1 index files): whether
+    /// it is set, and a copy of its values.
+    #[must_use]
+    pub fn static_strings(self, kind: u32) -> (bool, Vec<Vec<u8>>) {
+        crate::static_config::strings(self.state(), kind)
+    }
+
+    /// `apply_rewrite_rules` on a static context: true when a rule applied.
+    ///
+    /// # Safety
+    /// `context` is a live context no one else uses meanwhile.
+    pub unsafe fn static_rewrite(self, context: *mut swoole_rs_http::HttpStaticContext) -> bool {
+        // SAFETY: the live state and the caller's context.
+        unsafe { crate::swr_v1_server_static_rewrite(self.state(), context) }
+    }
+
+    /// `document_root`, copied.
+    #[must_use]
+    pub fn document_root(self) -> Vec<u8> {
+        self.state().text(crate::state::TEXT_DOCUMENT_ROOT).to_vec()
+    }
+
+    /// `upload_tmp_dir.c_str()`: the directory up to its first NUL.
+    #[must_use]
+    pub fn upload_tmp_dir(self) -> CString {
+        let dir = self.state().upload_tmp_dir();
+        let dir = dir.split(|&byte| byte == 0).next().unwrap_or_default();
+        CString::new(dir).unwrap_or_default()
+    }
+
+    /// `http_compression_types` lists `kind`; `None` asks whether it lists any.
+    #[must_use]
+    pub fn compression_type(self, kind: Option<&[u8]>) -> bool {
+        let state = self.state_ptr();
+        let op = |operation, data: &[u8]| {
+            // SAFETY: the live state and a byte span (non-null even when empty).
+            unsafe {
+                crate::swr_v1_server_static_config(state, 2, operation, data.as_ptr(), data.len())
+            }
+        };
+        let types = op(1, &[]) != 0;
+        match kind {
+            Some(kind) if types => op(5, kind) != op(0, &[]),
+            _ => types,
         }
-    };
-    let types = op(1, &[]) != 0;
-    match kind {
-        Some(kind) if types => op(5, kind) != op(0, &[]),
-        _ => types,
     }
-}
 
-/// The shared counters (`serv->gs`).
-///
-/// # Safety
-/// As [`config`], once the server has its shared memory.
-pub unsafe fn counters<'a>(serv: *mut c_void) -> &'a ServerCounters {
-    // SAFETY: per the caller.
-    let gs = unsafe { config(serv) }.gs.cast::<ServerCounters>();
-    // SAFETY: `ServerGS` starts with the counters, mapped for the server's life.
-    unsafe { &*gs }
-}
-
-/// The shared counters, for the settings `Server::set()` writes before the
-/// server starts.
-///
-/// # Safety
-/// As [`counters`], with no concurrent reader of the fields written.
-pub unsafe fn counters_mut<'a>(serv: *mut c_void) -> &'a mut ServerCounters {
-    // SAFETY: per the caller.
-    let gs = unsafe { config(serv) }.gs.cast::<ServerCounters>();
-    // SAFETY: `ServerGS` starts with the counters, mapped for the server's life.
-    unsafe { &mut *gs }
-}
-
-/// `Server::is_started()`.
-///
-/// # Safety
-/// As [`counters`].
-pub unsafe fn is_started(serv: *mut c_void) -> bool {
-    // SAFETY: per the caller.
-    unsafe { counters(serv) }.start.load(Ordering::Relaxed) != 0
-}
-
-/// `Server::is_worker_thread()`: thread mode, on a worker thread.
-///
-/// # Safety
-/// As [`config`].
-pub unsafe fn is_worker_thread(serv: *mut c_void) -> bool {
-    /// `Server::MODE_THREAD` and `THREAD_WORKER`.
-    const MODE_THREAD: u8 = 3;
-    const THREAD_WORKER: u8 = 4;
-    // SAFETY: per the caller.
-    unsafe { config(serv) }.mode_ == MODE_THREAD
-        && swoole_rs_corebase::thread_kind() == THREAD_WORKER
-}
-
-/// `Server::get_connection_num()`: the per-worker cells when there are any.
-///
-/// # Safety
-/// As [`counters`].
-pub unsafe fn connection_num(serv: *mut c_void) -> usize {
-    // SAFETY: per the caller.
-    let gs = unsafe { counters(serv) };
-    if gs.connection_nums.is_null() {
-        return gs.connection_num.load(Ordering::Relaxed) as usize;
+    /// The shared counters (`serv->gs`).
+    #[must_use]
+    pub fn counters(self) -> &'a ServerCounters {
+        let gs = self.config().gs.cast::<ServerCounters>();
+        // SAFETY: `swr_v1_server_new` maps `ServerGS`, which starts with the
+        // counters, for the server's life.
+        unsafe { &*gs }
     }
-    // SAFETY: per the caller.
-    let workers = unsafe { config(serv) }.worker_num as usize;
-    (0..workers)
-        .map(|i| {
-            let cell = gs.connection_nums.wrapping_add(i);
-            // SAFETY: one cell per event worker, allocated with the counters.
-            let cell = unsafe { &*cell };
-            cell.load(Ordering::Relaxed) as usize
+
+    /// The shared counters, for the settings `Server::set()` writes before the
+    /// server starts.
+    ///
+    /// # Safety
+    /// No concurrent reader of the fields written, and no other reference to them.
+    #[must_use]
+    pub unsafe fn counters_mut(self) -> &'a mut ServerCounters {
+        let gs = self.config().gs.cast::<ServerCounters>();
+        // SAFETY: as `counters`, with the caller's exclusion.
+        unsafe { &mut *gs }
+    }
+
+    /// `Server::is_started()`.
+    #[must_use]
+    pub fn is_started(self) -> bool {
+        self.counters().start.load(Ordering::Relaxed) != 0
+    }
+
+    /// `Server::is_worker_thread()`: thread mode, on a worker thread.
+    #[must_use]
+    pub fn is_worker_thread(self) -> bool {
+        /// `Server::MODE_THREAD` and `THREAD_WORKER`.
+        const MODE_THREAD: u8 = 3;
+        const THREAD_WORKER: u8 = 4;
+        self.config().mode_ == MODE_THREAD && swoole_rs_corebase::thread_kind() == THREAD_WORKER
+    }
+
+    /// `Server::get_connection_num()`: the per-worker cells when there are any.
+    #[must_use]
+    pub fn connection_num(self) -> usize {
+        let gs = self.counters();
+        if gs.connection_nums.is_null() {
+            return gs.connection_num.load(Ordering::Relaxed) as usize;
+        }
+        let workers = self.config().worker_num as usize;
+        (0..workers)
+            .map(|i| {
+                let cell = gs.connection_nums.wrapping_add(i);
+                // SAFETY: one cell per event worker, allocated with the counters.
+                let cell = unsafe { &*cell };
+                cell.load(Ordering::Relaxed) as usize
+            })
+            .fold(0, usize::wrapping_add)
+    }
+
+    /// `swr_v1_server_connection(state, key, kind)`: a slot of the live
+    /// connection table, or null.
+    fn connection(self, key: c_long, kind: u32) -> *mut ConnectionRecord {
+        // SAFETY: the server's live state and tables.
+        unsafe { crate::swr_v1_server_connection(self.state_ptr(), key, kind) }
+    }
+
+    /// `Server::get_connection_verify(session_id)`.
+    ///
+    /// # Safety
+    /// No other reference to the connection is live; the server's own
+    /// synchronization orders it with other threads.
+    #[must_use]
+    pub unsafe fn verified(self, session_id: i64) -> Option<&'a mut ConnectionRecord> {
+        // SAFETY: null, or a live slot; exclusive per the caller.
+        unsafe { self.connection(session_id, 2).as_mut() }
+    }
+
+    /// `Server::get_connection_by_session_id(session_id)`: the session's slot,
+    /// unverified.
+    ///
+    /// # Safety
+    /// As [`Server::verified`].
+    #[must_use]
+    pub unsafe fn by_session(self, session_id: i64) -> Option<&'a mut ConnectionRecord> {
+        // SAFETY: null, or a live slot; exclusive per the caller.
+        unsafe { self.connection(session_id, 1).as_mut() }
+    }
+
+    /// `Server::get_connection_for_iterator(fd)`.
+    ///
+    /// # Safety
+    /// As [`Server::verified`].
+    #[must_use]
+    pub unsafe fn iterated(self, fd: c_int) -> Option<&'a mut ConnectionRecord> {
+        // SAFETY: null, or a live slot; exclusive per the caller.
+        unsafe { self.connection(c_long::from(fd), 4).as_mut() }
+    }
+
+    /// `Server::get_connection(fd)`.
+    ///
+    /// # Safety
+    /// As [`Server::verified`].
+    #[must_use]
+    pub unsafe fn at(self, fd: c_int) -> Option<&'a mut ConnectionRecord> {
+        // SAFETY: null, or a live slot; exclusive per the caller.
+        unsafe { self.connection(c_long::from(fd), 0).as_mut() }
+    }
+
+    /// `field` of the connection at `key`; `None` for no slot.
+    fn connection_field<T>(
+        self,
+        key: c_long,
+        kind: u32,
+        field: impl FnOnce(&ConnectionRecord) -> T,
+    ) -> Option<T> {
+        // SAFETY: null, or a live slot, read only for this call under the
+        // server's own synchronization.
+        unsafe { self.connection(key, kind).as_ref() }.map(field)
+    }
+
+    /// `ListenPort::get_connection_num()` of one of the server's ports.
+    ///
+    /// # Safety
+    /// `port` is a live `ListenPort`.
+    #[must_use]
+    pub unsafe fn port_connection_num(self, port: *mut c_void) -> usize {
+        // SAFETY: per the caller.
+        let gs = unsafe { self::port(port) }.gs;
+        // SAFETY: the port's mapped counters.
+        let cells = unsafe { &*gs.cast::<PortCounters>() }.connection_nums;
+        let workers = if cells.is_null() {
+            0
+        } else {
+            self.config().worker_num
+        };
+        // SAFETY: the port's live counters, with one cell per event worker.
+        unsafe { crate::swr_v1_server_port_connections(gs, workers) }
+    }
+
+    /// `Server::get_max_connection()`.
+    #[must_use]
+    pub fn max_connection(self) -> u32 {
+        self.state().tables_ref().max_connection
+    }
+
+    /// `serv->get_task_worker_pool()`.
+    #[must_use]
+    pub fn task_pool(self) -> *mut PoolRecord {
+        let gs = self.config().gs.cast::<u8>();
+        gs.wrapping_add(core::mem::offset_of!(crate::shared::ServerShared, pools))
+            .cast()
+    }
+
+    /// `Server::get_user_worker_num()`: the user workers added so far.
+    #[must_use]
+    pub fn user_worker_num(self) -> usize {
+        let registry = self.config().worker_registry;
+        // SAFETY: the server's live registry, configured only by the master.
+        unsafe {
+            swoole_rs_corebase::worker_registry::swr_v1_process_worker_registry_pending_count(
+                registry.cast(),
+            )
+        }
+    }
+
+    /// The server's worker arrays and counts.
+    #[must_use]
+    pub fn workers(self) -> ServerWorkers {
+        let task_pool = self.task_pool();
+        let config = self.config();
+        ServerWorkers {
+            event_pool: task_pool.wrapping_add(1),
+            task_pool,
+            event_workers: config.workers.cast(),
+            user_workers: config.user_workers.cast(),
+            event_count: config.worker_num,
+            task_count: config.task_worker_num,
+            user_count: self.user_worker_num(),
+        }
+    }
+
+    /// `Server::get_worker(id)`: event workers, then task workers, then user
+    /// workers; null past the last.
+    #[must_use]
+    pub fn worker(self, id: u16) -> *mut WorkerRecord {
+        let view = self.workers();
+        // SAFETY: the server's live pools and worker arrays, with their counts.
+        unsafe { swr_v1_process_server_worker(&raw const view, id) }
+    }
+
+    /// `Server::task_notify_pipe(worker_id)`, or null.
+    #[must_use]
+    pub fn task_notify_pipe(self, worker_id: u16) -> *mut SocketPair {
+        self.state().task_pipe(worker_id.into())
+    }
+
+    /// `Server::get_server_socket(fd)`: the listening socket at `fd`, or null.
+    #[must_use]
+    pub fn server_socket(self, fd: c_long) -> *mut c_void {
+        self.connection_field(fd, 0, |conn| conn.socket)
+            .unwrap_or(core::ptr::null_mut())
+    }
+
+    /// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on, or
+    /// null.
+    #[must_use]
+    pub fn port_by_fd(self, fd: c_int) -> *mut c_void {
+        let server_fd = self.connection_field(c_long::from(fd), 0, |conn| conn.server_fd);
+        server_fd.map_or(core::ptr::null_mut(), |server_fd| {
+            self.port_by_server_fd(server_fd)
         })
-        .fold(0, usize::wrapping_add)
-}
+    }
 
-/// `swr_v1_server_connection(state, key, kind)`.
-///
-/// # Safety
-/// As [`config`]; the connection is the server's, under its own synchronization.
-unsafe fn connection<'a>(
-    serv: *mut c_void,
-    key: c_long,
-    kind: u32,
-) -> Option<&'a mut ConnectionRecord> {
-    // SAFETY: per the caller.
-    let state = unsafe { fields(serv) }.state;
-    // SAFETY: the server's live state and tables.
-    let conn = unsafe { crate::swr_v1_server_connection(state, key, kind) };
-    // SAFETY: null, or a slot of the live connection table.
-    unsafe { conn.as_mut() }
-}
+    /// `Server::get_port_by_server_fd(server_fd)`: the `ListenPort` listening on
+    /// `server_fd`, or null.
+    #[must_use]
+    pub fn port_by_server_fd(self, server_fd: c_int) -> *mut c_void {
+        // A listening socket's record holds its port.
+        self.connection_field(c_long::from(server_fd), 0, |conn| conn.object)
+            .unwrap_or(core::ptr::null_mut())
+    }
 
-/// `Server::get_connection_verify(session_id)`.
-///
-/// # Safety
-/// As [`connection`].
-pub unsafe fn verified<'a>(serv: *mut c_void, session_id: i64) -> Option<&'a mut ConnectionRecord> {
-    // SAFETY: per the caller.
-    unsafe { connection(serv, session_id, 2) }
-}
+    /// `Server::is_healthy_connection(now, conn)`: protected, never received, or
+    /// received within its port's heartbeat idle time.
+    #[must_use]
+    pub fn healthy(self, now: f64, conn: &ConnectionRecord) -> bool {
+        if conn.protect != 0 || conn.last_recv_time == 0.0 {
+            return true;
+        }
+        // `get_port_by_session_id`.
+        let Some(fd) = self.connection_field(conn.session_id, 1, |conn| conn.fd) else {
+            return true;
+        };
+        let port = self.port_by_fd(fd);
+        if port.is_null() {
+            return true;
+        }
+        // SAFETY: the connection's live port, which the server owns.
+        let idle = unsafe { self::port(port) }.heartbeat_idle_time;
+        idle == 0 || conn.last_recv_time > now - f64::from(idle)
+    }
 
-/// `Server::get_connection_by_session_id(session_id)`: the session's slot,
-/// unverified.
-///
-/// # Safety
-/// As [`connection`].
-pub unsafe fn by_session<'a>(
-    serv: *mut c_void,
-    session_id: i64,
-) -> Option<&'a mut ConnectionRecord> {
-    // SAFETY: per the caller.
-    unsafe { connection(serv, session_id, 1) }
-}
+    /// `serv->ports[index]`: the `ListenPort`s in listen order, null past the last
+    /// (index 0 is `Server::get_primary_port()`).
+    #[must_use]
+    pub fn port_at(self, index: usize) -> *mut c_void {
+        let ports = self.state().tables_ref().ports();
+        ports.get(index).copied().unwrap_or(core::ptr::null_mut())
+    }
 
-/// `Server::get_connection_for_iterator(fd)`.
-///
-/// # Safety
-/// As [`connection`].
-pub unsafe fn iterated<'a>(serv: *mut c_void, fd: c_int) -> Option<&'a mut ConnectionRecord> {
-    // SAFETY: per the caller.
-    unsafe { connection(serv, c_long::from(fd), 4) }
+    /// `Server::get_port(port)`: the first port listening on `port` (any at 0),
+    /// or null.
+    #[must_use]
+    pub fn port_number(self, port: c_int) -> *mut c_void {
+        self.find_port(|config| port == 0 || config.port == port)
+    }
+
+    /// The first of `serv->ports` whose settings `wanted` accepts, or null.
+    pub fn find_port(self, wanted: impl Fn(&PortConfig) -> bool) -> *mut c_void {
+        self.state()
+            .tables_ref()
+            .ports()
+            .iter()
+            .copied()
+            // SAFETY: the server's own live ports.
+            .find(|&ls| wanted(unsafe { port(ls) }))
+            .unwrap_or(core::ptr::null_mut())
+    }
 }
 
 /// A `ListenPort`'s settings.
@@ -354,120 +487,6 @@ pub unsafe fn port_fd(port: *mut c_void) -> c_int {
     unsafe { socket.as_ref() }.map_or(-1, |socket| socket.fd)
 }
 
-/// `ListenPort::get_connection_num()` of one of `serv`'s ports.
-///
-/// # Safety
-/// As [`port`] and [`counters`].
-pub unsafe fn port_connection_num(serv: *mut c_void, port: *mut c_void) -> usize {
-    // SAFETY: per the caller.
-    let gs = unsafe { self::port(port) }.gs;
-    // SAFETY: the port's mapped counters.
-    let cells = unsafe { &*gs.cast::<PortCounters>() }.connection_nums;
-    let workers = if cells.is_null() {
-        0
-    } else {
-        // SAFETY: per the caller.
-        unsafe { config(serv) }.worker_num
-    };
-    // SAFETY: the port's live counters, with one cell per event worker.
-    unsafe { crate::swr_v1_server_port_connections(gs, workers) }
-}
-
-/// `Server::get_max_connection()`.
-///
-/// # Safety
-/// As [`config`].
-pub unsafe fn max_connection(serv: *mut c_void) -> u32 {
-    // SAFETY: per the caller.
-    unsafe { state(serv) }.tables_ref().max_connection
-}
-
-/// `serv->get_task_worker_pool()`.
-///
-/// # Safety
-/// As [`counters`].
-pub unsafe fn task_pool(serv: *mut c_void) -> *mut PoolRecord {
-    // SAFETY: per the caller.
-    let gs = unsafe { config(serv) }.gs.cast::<u8>();
-    gs.wrapping_add(core::mem::offset_of!(crate::shared::ServerShared, pools))
-        .cast()
-}
-
-/// `Server::get_user_worker_num()`: the user workers added so far.
-///
-/// # Safety
-/// As [`config`].
-pub unsafe fn user_worker_num(serv: *mut c_void) -> usize {
-    // SAFETY: per the caller.
-    let registry = unsafe { config(serv) }.worker_registry;
-    // SAFETY: the server's live registry, configured only by the master.
-    unsafe {
-        swoole_rs_corebase::worker_registry::swr_v1_process_worker_registry_pending_count(
-            registry.cast(),
-        )
-    }
-}
-
-/// The server's worker arrays and counts.
-///
-/// # Safety
-/// As [`counters`].
-pub unsafe fn workers(serv: *mut c_void) -> ServerWorkers {
-    // SAFETY: per the caller.
-    let task_pool = unsafe { task_pool(serv) };
-    // SAFETY: per the caller.
-    let config = unsafe { config(serv) };
-    ServerWorkers {
-        event_pool: task_pool.wrapping_add(1),
-        task_pool,
-        event_workers: config.workers.cast(),
-        user_workers: config.user_workers.cast(),
-        event_count: config.worker_num,
-        task_count: config.task_worker_num,
-        // SAFETY: per the caller.
-        user_count: unsafe { user_worker_num(serv) },
-    }
-}
-
-/// `Server::get_worker(id)`: event workers, then task workers, then user
-/// workers; null past the last.
-///
-/// # Safety
-/// As [`counters`].
-pub unsafe fn worker(serv: *mut c_void, id: u16) -> *mut WorkerRecord {
-    // SAFETY: per the caller.
-    let view = unsafe { workers(serv) };
-    // SAFETY: the server's live pools and worker arrays, with their counts.
-    unsafe { swr_v1_process_server_worker(&raw const view, id) }
-}
-
-/// `Server::task_notify_pipe(worker_id)`, or null.
-///
-/// # Safety
-/// As [`counters`].
-pub unsafe fn task_notify_pipe(serv: *mut c_void, worker_id: u16) -> *mut SocketPair {
-    // SAFETY: per the caller.
-    unsafe { state(serv) }.task_pipe(worker_id.into())
-}
-
-/// `Server::get_connection(fd)`.
-///
-/// # Safety
-/// As [`connection`].
-pub unsafe fn at<'a>(serv: *mut c_void, fd: c_int) -> Option<&'a mut ConnectionRecord> {
-    // SAFETY: per the caller.
-    unsafe { connection(serv, c_long::from(fd), 0) }
-}
-
-/// `Server::get_server_socket(fd)`: the listening socket at `fd`, or null.
-///
-/// # Safety
-/// As [`connection`].
-pub unsafe fn server_socket(serv: *mut c_void, fd: c_long) -> *mut c_void {
-    // SAFETY: per the caller.
-    unsafe { connection(serv, fd, 0) }.map_or(core::ptr::null_mut(), |conn| conn.socket)
-}
-
 /// A `network::Socket`'s fd and `swSocketType`.
 ///
 /// # Safety
@@ -478,97 +497,13 @@ pub unsafe fn socket_fd(socket: *mut c_void) -> (c_int, c_int) {
     (socket.fd, socket.socket_type)
 }
 
-/// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on, or
-/// null.
-///
-/// # Safety
-/// As [`connection`].
-pub unsafe fn port_by_fd(serv: *mut c_void, fd: c_int) -> *mut c_void {
-    // SAFETY: per the caller.
-    let Some(server_fd) = (unsafe { at(serv, fd) }).map(|conn| conn.server_fd) else {
-        return core::ptr::null_mut();
-    };
-    // SAFETY: per the caller.
-    unsafe { port_by_server_fd(serv, server_fd) }
-}
-
-/// `Server::get_port_by_server_fd(server_fd)`: the `ListenPort` listening on
-/// `server_fd`, or null.
-///
-/// # Safety
-/// As [`connection`].
-pub unsafe fn port_by_server_fd(serv: *mut c_void, server_fd: c_int) -> *mut c_void {
-    // SAFETY: per the caller; a listening socket's record holds its port.
-    unsafe { at(serv, server_fd) }.map_or(core::ptr::null_mut(), |listen| listen.object)
-}
-
-/// Whether one of `serv`'s ports speaks WebSocket.
+/// Whether one of the server's ports speaks WebSocket.
 ///
 /// # Safety
 /// `port` is a live `ListenPort`.
 pub unsafe fn port_websocket(port: *mut c_void) -> bool {
     // SAFETY: per the caller.
     unsafe { self::port(port) }.open_websocket_protocol
-}
-
-/// `Server::is_healthy_connection(now, conn)`: protected, never received, or
-/// received within its port's heartbeat idle time.
-///
-/// # Safety
-/// As [`connection`]; `conn` is one of `serv`'s connections.
-pub unsafe fn healthy(serv: *mut c_void, now: f64, conn: &ConnectionRecord) -> bool {
-    if conn.protect != 0 || conn.last_recv_time == 0.0 {
-        return true;
-    }
-    // SAFETY: per the caller (`get_port_by_session_id`).
-    let Some(fd) = (unsafe { connection(serv, conn.session_id, 1) }).map(|conn| conn.fd) else {
-        return true;
-    };
-    // SAFETY: per the caller.
-    let port = unsafe { port_by_fd(serv, fd) };
-    if port.is_null() {
-        return true;
-    }
-    // SAFETY: the connection's live port.
-    let idle = unsafe { self::port(port) }.heartbeat_idle_time;
-    idle == 0 || conn.last_recv_time > now - f64::from(idle)
-}
-
-/// `serv->ports[index]`: the `ListenPort`s in listen order, null past the last
-/// (index 0 is `Server::get_primary_port()`).
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub unsafe fn port_at(serv: *mut c_void, index: usize) -> *mut c_void {
-    // SAFETY: per the caller.
-    let ports = unsafe { state(serv) }.tables_ref().ports();
-    ports.get(index).copied().unwrap_or(core::ptr::null_mut())
-}
-
-/// `Server::get_port(port)`: the first port listening on `port` (any at 0),
-/// or null.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub unsafe fn port_number(serv: *mut c_void, port: c_int) -> *mut c_void {
-    // SAFETY: per the caller.
-    unsafe { find_port(serv, |config| port == 0 || config.port == port) }
-}
-
-/// The first of `serv->ports` whose settings `wanted` accepts, or null.
-///
-/// # Safety
-/// `serv` is a live `Server`.
-pub unsafe fn find_port(serv: *mut c_void, wanted: impl Fn(&PortConfig) -> bool) -> *mut c_void {
-    // SAFETY: per the caller.
-    unsafe { state(serv) }
-        .tables_ref()
-        .ports()
-        .iter()
-        .copied()
-        // SAFETY: as above.
-        .find(|&ls| wanted(unsafe { port(ls) }))
-        .unwrap_or(core::ptr::null_mut())
 }
 
 /// The connection socket's `recv_buffer` (a `swoole::String *`), or null.

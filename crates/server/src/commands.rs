@@ -154,12 +154,13 @@ pub unsafe extern "C-unwind" fn call_command_handler(
     worker_id: u16,
     sock: *mut c_void,
 ) {
+    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+    let serv = unsafe { crate::view::Server::from_raw(serv) };
     // SAFETY: per the caller.
     let bus = unsafe { crate::objects::Bus::of(mb) };
     let request = bus.head();
     let command_id = i32::from(request.server_fd);
-    // SAFETY: per the caller.
-    let state = unsafe { crate::view::state(serv) };
+    let state = serv.state();
     let Some(handler) = handler(state, command_id) else {
         let m = format_args!("Unknown command[command_id={command_id}]");
         let origin = c"Server::call_command_handler";
@@ -171,7 +172,16 @@ pub unsafe extern "C-unwind" fn call_command_handler(
         return;
     };
     // SAFETY: a stored handler, the bus's packet and the caller's pipe.
-    unsafe { answer(handler, serv, message, (bus, sock), request.fd, worker_id) };
+    unsafe {
+        answer(
+            handler,
+            serv.raw(),
+            message,
+            (bus, sock),
+            request.fd,
+            worker_id,
+        )
+    };
 }
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -214,12 +224,11 @@ pub(crate) unsafe fn answer(
 /// command pipe's worker end.
 pub(crate) fn reply_socket<'a>(
     state: &ServerState,
-    serv: *mut c_void,
+    serv: crate::view::Server<'_>,
 ) -> Option<&'a mut SocketRecord> {
     let config = state.config_ref();
     if u64::from(config.mode_) == MODE_BASE {
-        // SAFETY: the live server.
-        let worker = unsafe { crate::view::worker(serv, 0) };
+        let worker = serv.worker(0);
         // SAFETY: its worker 0.
         return crate::objects::socket(unsafe { (*worker).pipe_master });
     }

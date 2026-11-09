@@ -340,8 +340,9 @@ pub mod exports {
         socket: *mut SocketRecord,
         rdata: *const c_void,
     ) -> c_int {
-        // SAFETY: a live server with its shared memory.
-        let counters = unsafe { view::counters(serv) };
+        // SAFETY: per the caller, `serv` is a live `Server` for the call.
+        let serv = unsafe { view::Server::from_raw(serv) };
+        let counters = serv.counters();
         if counters.concurrency.load(Ordering::Relaxed) >= counters.max_concurrency {
             // SAFETY: a live socket and a static packet.
             unsafe {

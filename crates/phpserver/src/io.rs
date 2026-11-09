@@ -22,10 +22,10 @@ use swoole_rs_zend::{
 
 /// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
 pub(crate) fn closed(serv: *mut c_void) -> bool {
-    // SAFETY: a live server.
-    let worker_thread = unsafe { view::is_worker_thread(serv) };
-    // SAFETY: as above.
-    !worker_thread && unsafe { view::is_started(serv) }
+    // SAFETY: its callers pass their live server.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    let worker_thread = serv.is_worker_thread();
+    !worker_thread && serv.is_started()
 }
 
 /// `server_event_map`: lower-case event name, callback type and property.
@@ -81,7 +81,7 @@ fn port_call(call: &Call, method: &[u8], retval: *mut zval, args: &[*mut zval]) 
 
 fn on(call: &Call) {
     let serv = server(call);
-    if closed(serv) {
+    if closed(serv.raw()) {
         fatal(
             E_WARNING,
             c"server is running, unable to register event callback function",
@@ -144,7 +144,7 @@ fn get_callback(call: &Call) {
 
 fn listen(call: &Call) {
     let serv = server(call);
-    if closed(serv) {
+    if closed(serv.raw()) {
         fatal(E_WARNING, c"server is running, cannot add listener");
         return call.set_bool(false);
     }
@@ -159,8 +159,7 @@ fn listen(call: &Call) {
         reason = "(SocketType) type and (int) port, as upstream"
     )]
     let (kind, port) = (kind as c_int, port as c_int);
-    // SAFETY: a live server.
-    let ls = if unsafe { view::is_worker_thread(serv) } {
+    let ls = if serv.is_worker_thread() {
         // `serv->get_port(type, host, port)`, compared as C strings.
         let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
         let listening = |config: &PortConfig| {
@@ -169,11 +168,10 @@ fn listen(call: &Call) {
             let name = unsafe { std::slice::from_raw_parts(name.data.cast::<u8>(), name.length) };
             config.port == port && config.r#type == kind && name == host
         };
-        // SAFETY: a live server.
-        unsafe { view::find_port(serv, listening) }
+        serv.find_port(listening)
     } else {
         // SAFETY: a live server; `Z_PARAM_STRING`'s bytes are NUL-terminated.
-        unsafe { server_methods::add_port(serv, kind, address.as_ptr().cast(), port) }
+        unsafe { server_methods::add_port(serv.raw(), kind, address.as_ptr().cast(), port) }
     };
     if ls.is_null() {
         return call.set_bool(false);
@@ -255,14 +253,12 @@ fn send(call: &Call) {
     if kind == IS_STRING {
         // SAFETY: an IS_STRING zval.
         let path = unsafe { swoole_rs_zend::string_of(zfd) }.unwrap_or_default();
-        // SAFETY: a live server.
-        let config = unsafe { view::config(serv) };
+        let config = serv.config();
         if path.first() == Some(&b'/') && config.have_dgram_sock {
             let socket = if server_socket == -1 {
                 config.dgram_socket
             } else {
-                // SAFETY: a live server.
-                unsafe { view::server_socket(serv, server_socket) }
+                serv.server_socket(server_socket)
             };
             // SAFETY: null or a live socket, and the path's bytes.
             let sent = unsafe { socket_sendto(socket, path, 0, payload) } > 0;
@@ -276,7 +272,7 @@ fn send(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: a live server and string.
-    call.set_bool(unsafe { crate::instance::send(serv, fd, data) });
+    call.set_bool(unsafe { crate::instance::send(serv.raw(), fd, data) });
 }
 
 fn sendto(call: &Call) {
@@ -306,8 +302,7 @@ fn sendto(call: &Call) {
     } else {
         (1, c"UDP listener has to be added before executing sendto")
     };
-    // SAFETY: a live server.
-    let config = unsafe { view::config(serv) };
+    let config = serv.config();
     let socket = match kind {
         1 => config.udp_socket_ipv4,
         2 => config.udp_socket_ipv6,
@@ -320,8 +315,7 @@ fn sendto(call: &Call) {
     let socket = if server_socket < 0 {
         socket
     } else {
-        // SAFETY: a live server.
-        unsafe { view::server_socket(serv, server_socket) }
+        serv.server_socket(server_socket)
     };
     // SAFETY: null or a live socket, the address and the payload.
     call.set_bool(unsafe { socket_sendto(socket, address, port, data) } >= 0);
@@ -359,7 +353,7 @@ fn sendfile(call: &Call) {
     // SAFETY: a live server and the NUL-terminated name.
     call.set_bool(unsafe {
         server_methods::sendfile(
-            serv,
+            serv.raw(),
             fd,
             filename.as_ptr().cast(),
             name_length,
@@ -371,8 +365,7 @@ fn sendfile(call: &Call) {
 
 fn send_message(call: &Call) {
     let Some(serv) = running(call) else { return };
-    // SAFETY: a live server.
-    if !unsafe { view::has_callback(serv, CB_PIPE_MESSAGE) } {
+    if !serv.has_callback(CB_PIPE_MESSAGE) {
         fatal(E_WARNING, c"onPipeMessage is null, can't use sendMessage");
         return call.set_bool(false);
     }
@@ -383,8 +376,7 @@ fn send_message(call: &Call) {
         fatal(E_WARNING, c"can't send messages to self");
         return call.set_bool(false);
     }
-    // SAFETY: a live server.
-    let config = unsafe { view::config(serv) };
+    let config = serv.config();
     let core_worker_num = i64::from(config.worker_num) + i64::from(config.task_worker_num);
     if worker_id < 0 || worker_id >= core_worker_num {
         #[expect(
@@ -409,13 +401,14 @@ fn send_message(call: &Call) {
     )]
     let worker_id = worker_id as u32;
     // SAFETY: a live server and the packed message, an `EventData`.
-    call.set_bool(unsafe { server_methods::send_pipe_message(serv, worker_id, buf.ptr().cast()) });
+    call.set_bool(unsafe {
+        server_methods::send_pipe_message(serv.raw(), worker_id, buf.ptr().cast())
+    });
 }
 
 fn finish(call: &Call) {
     let Some(serv) = running(call) else { return };
-    // SAFETY: a live server.
-    if unsafe { swoole_rs_server::view::config(serv) }.task_enable_coroutine {
+    if serv.config().task_enable_coroutine {
         // An `E_ERROR`: its bailout waits for the handler's last step.
         fatal(
             E_ERROR,
@@ -426,14 +419,14 @@ fn finish(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    finished(call, serv, ptr::null_mut());
+    finished(call, serv.raw(), ptr::null_mut());
 }
 
 fn task_finish(call: &Call) {
     // `$this` is a Task; an `E_ERROR` when it has no server.
     let serv = crate::server::task_server(call.this());
-    // SAFETY: a live server.
-    if !unsafe { swoole_rs_server::view::is_started(serv) } {
+    // SAFETY: `serv` is the live server here.
+    if !unsafe { view::Server::from_raw(serv) }.is_started() {
         fatal(E_WARNING, c"server is not running");
         return call.set_bool(false);
     }

@@ -101,7 +101,7 @@ impl Effects for Native {}
 
 /// A `StaticHandler` for one request URI on one server.
 pub struct StaticHandler<E: Effects = Native> {
-    server: *mut c_void,
+    server: view::Server<'static>,
     context: *mut HttpStaticContext,
     /// The context's modification-time slot.
     mtime: *const i64,
@@ -138,7 +138,9 @@ impl<E: Effects> StaticHandler<E> {
         // SAFETY: the live context, whose slot lives as long as it.
         let mtime = unsafe { swr_v3_http_context_mtime(context) };
         Some(Self {
-            server,
+            // SAFETY: the caller vouches that `server` is live and outlives the handler,
+            // which keeps it private.
+            server: unsafe { view::Server::from_raw(server) },
             context,
             mtime,
             effects,
@@ -146,13 +148,11 @@ impl<E: Effects> StaticHandler<E> {
     }
 
     fn strings(&self, kind: u32) -> (bool, Vec<Vec<u8>>) {
-        // SAFETY: the live server the caller of `new` vouched for.
-        unsafe { view::static_strings(self.server, kind) }
+        self.server.static_strings(kind)
     }
 
     fn autoindex(&self) -> bool {
-        // SAFETY: as above.
-        unsafe { view::config(self.server) }.http_autoindex
+        self.server.config().http_autoindex
     }
 
     fn observe(&self) -> HttpStaticObservation {
@@ -275,8 +275,7 @@ impl<E: Effects> StaticHandler<E> {
     /// The file changed since `date` (an `If-Modified-Since`).
     #[must_use]
     pub fn is_modified(&self, date: &[u8]) -> bool {
-        // SAFETY: the live server.
-        let timezone = &raw const unsafe { view::config(self.server) }.timezone_;
+        let timezone = &raw const self.server.config().timezone_;
         self.conditional(date, 0, timezone)
     }
 
@@ -289,9 +288,8 @@ impl<E: Effects> StaticHandler<E> {
     #[must_use]
     pub fn try_serve(&self) -> bool {
         // SAFETY: the live server and the context, which no one else uses.
-        unsafe { view::static_rewrite(self.server, self.context) };
-        // SAFETY: the live server.
-        let root = unsafe { view::document_root(self.server) };
+        unsafe { self.server.static_rewrite(self.context) };
+        let root = self.server.document_root();
         let root = text_of(&root);
         let (_, locations) = self.strings(LOCATIONS);
         let (index_enabled, index_files) = self.strings(INDEX_FILES);

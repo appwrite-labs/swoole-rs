@@ -58,6 +58,14 @@ struct Context {
     packet: (usize, *const c_char),
 }
 
+impl Context {
+    /// The context's live server.
+    fn server(&self) -> view::Server<'_> {
+        // SAFETY: the method that built the context lent its live server for the call.
+        unsafe { view::Server::from_raw(self.serv) }
+    }
+}
+
 /// The context's objects, each live when the op reading it runs.
 #[expect(
     clippy::mut_from_ref,
@@ -94,12 +102,11 @@ impl Context {
         }
     }
     fn state(&self) -> &crate::ServerState {
-        // SAFETY: the context's live server.
-        unsafe { view::state(self.serv) }
+        self.server().state()
     }
     fn config(&self) -> &mut crate::ServerConfig {
         // SAFETY: the context's live server.
-        unsafe { view::config(self.serv) }
+        unsafe { self.server().config_mut() }
     }
     fn pool(&self) -> &mut PoolRecord {
         // SAFETY: the ops reading it run with the context's live task pool.
@@ -322,7 +329,7 @@ fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_SOURCE_WORKER => {
             // SAFETY: the live server.
-            ctx.worker = unsafe { view::worker(serv, ctx.source()) };
+            ctx.worker = unsafe { view::Server::from_raw(serv) }.worker(ctx.source());
             u64::from(!ctx.worker.is_null())
         }
         LOG_INVALID_SOURCE => {

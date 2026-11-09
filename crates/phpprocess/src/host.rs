@@ -68,17 +68,16 @@ pub(crate) fn server_class() -> *mut zend_class_entry {
 }
 
 /// The running server, unless it is null.
-fn server() -> Option<*mut c_void> {
+fn server() -> Option<view::Server<'static>> {
     let serv = swr_v1_core_server();
-    (!serv.is_null()).then_some(serv)
+    // SAFETY: `sw_server()`, live until the process deletes it at shutdown.
+    (!serv.is_null()).then(|| unsafe { view::Server::from_raw(serv) })
 }
 
 /// Who may construct a Process: 0, or 1 in a started server's master, 2 once
 /// async-io threads exist.
 pub(crate) fn construct_guard() -> c_int {
-    // SAFETY: the running server.
-    if server().is_some_and(|serv| unsafe { view::is_started(serv) })
-        && methods::swoole_get_worker_type() == MASTER
+    if server().is_some_and(view::Server::is_started) && methods::swoole_get_worker_type() == MASTER
     {
         return 1;
     }
@@ -105,18 +104,14 @@ thread_local! {
 /// # Safety
 /// `worker` is a writable `Worker`.
 pub(crate) unsafe fn worker_share(worker: *mut c_void) -> bool {
-    let Some(serv) = server().filter(|&serv| {
-        // SAFETY: the running server.
-        unsafe { view::is_worker_thread(serv) }
-    }) else {
+    let Some(serv) = server().filter(|&serv| serv.is_worker_thread()) else {
         return false;
     };
     let user = methods::swoole_get_worker_type() == USER_WORKER;
     let id = if user {
         methods::swoole_get_worker_id()
     } else {
-        // SAFETY: the running server.
-        let config = unsafe { view::config(serv) };
+        let config = serv.config();
         let id = USER_WORKER_ID.get();
         USER_WORKER_ID.set(id + 1);
         id + config.worker_num + config.task_worker_num
@@ -125,8 +120,7 @@ pub(crate) unsafe fn worker_share(worker: *mut c_void) -> bool {
         clippy::cast_possible_truncation,
         reason = "Server::get_worker takes a uint16_t"
     )]
-    // SAFETY: the running server.
-    let source = unsafe { view::worker(serv, id as u16) };
+    let source = serv.worker(id as u16);
     let process = worker.cast::<WorkerRecord>();
     // SAFETY: two live, distinct worker records.
     unsafe { ptr::copy_nonoverlapping(source, process, 1) };
@@ -145,14 +139,11 @@ pub(crate) unsafe fn worker_share(worker: *mut c_void) -> bool {
 /// once started, else 1.
 pub(crate) fn worker_base() -> u32 {
     let Some(serv) = server() else { return 1 };
-    // SAFETY: the running server.
-    if !unsafe { view::is_started(serv) } {
+    if !serv.is_started() {
         return 1;
     }
-    // SAFETY: as above.
-    let config = unsafe { view::config(serv) };
-    // SAFETY: as above.
-    let users = unsafe { view::user_worker_num(serv) };
+    let config = serv.config();
+    let users = serv.user_worker_num();
     #[expect(
         clippy::cast_possible_truncation,
         reason = "worker counts fit a uint32_t"
@@ -319,9 +310,8 @@ pub(crate) fn signal_set(signo: c_int, handler: Handler, safety: bool) {
 }
 
 /// The running server's `task_enable_coroutine`.
-fn task_coroutine(serv: *mut c_void) -> bool {
-    // SAFETY: the running server.
-    unsafe { view::config(serv) }.task_enable_coroutine
+fn task_coroutine(serv: view::Server<'_>) -> bool {
+    serv.config().task_enable_coroutine
 }
 
 /// `Server::is_sync_process()` of the running server.

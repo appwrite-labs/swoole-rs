@@ -71,6 +71,14 @@ struct Context {
     stop: WorkerStopMessage,
 }
 
+impl Context {
+    /// The context's live server.
+    fn server(&self) -> view::Server<'_> {
+        // SAFETY: the method that built the context lent its live server for the call.
+        unsafe { view::Server::from_raw(self.serv) }
+    }
+}
+
 const _: () = assert!(
     size_of::<EventData>() == swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize,
     "EventData layout"
@@ -105,20 +113,18 @@ impl Context {
         }
     }
     fn state(&self) -> &crate::ServerState {
-        // SAFETY: the context's live server.
-        unsafe { view::state(self.serv) }
+        self.server().state()
     }
     fn config(&self) -> &mut crate::ServerConfig {
         // SAFETY: the context's live server.
-        unsafe { view::config(self.serv) }
+        unsafe { self.server().config_mut() }
     }
     fn counters(&self) -> &mut crate::ServerCounters {
         // SAFETY: the server's shared counters, which only the manager writes meanwhile.
-        unsafe { view::counters_mut(self.serv) }
+        unsafe { self.server().counters_mut() }
     }
     fn workers(&self) -> ServerWorkers {
-        // SAFETY: the context's live server.
-        unsafe { view::workers(self.serv) }
+        self.server().workers()
     }
     /// The server's event worker pool.
     fn pool(&self) -> &mut PoolRecord {
@@ -132,8 +138,7 @@ impl Context {
     /// `serv->get_worker(id)`.
     fn worker_at(&self, id: u64) -> *mut WorkerRecord {
         let id = u16::try_from(id).unwrap_or(u16::MAX);
-        // SAFETY: the context's live server.
-        unsafe { view::worker(self.serv, id) }
+        self.server().worker(id)
     }
     /// The worker `OP_WORKER_BY_PID` found.
     fn worker(&self) -> &WorkerRecord {
@@ -532,7 +537,7 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let task = ctx.task();
             let message = (task.data.as_ptr().cast(), task.info.len as usize);
             let state = ctx.state();
-            let sock = crate::commands::reply_socket(state, ctx.serv)?;
+            let sock = crate::commands::reply_socket(state, ctx.server())?;
             let bus = crate::master_ops::server_message_bus(state);
             // SAFETY: the handler OP_HAS_COMMAND found and the command's message.
             unsafe {
