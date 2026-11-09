@@ -22,14 +22,6 @@ typedef ssize_t (*swr_v1_reactor_write_fn)(void *, void *, const void *, size_t)
 typedef ssize_t (*swr_v1_reactor_writev_fn)(void *, void *, const struct iovec *, size_t);
 typedef int (*swr_v1_reactor_close_fn)(void *, void *);
 #endif
-struct iovec;
-/* Rust-owned IOVector descriptor storage, used by every Rust reactor build. */
-typedef struct { struct iovec *original, *iterator; int32_t status; } swr_v1_reactor_iov_allocation;
-swr_v1_reactor_iov_allocation swr_v1_reactor_iov_owned_new(const struct iovec *, int32_t);
-void swr_v1_reactor_iov_owned_free(struct iovec *);
-size_t swr_v1_reactor_iov_owned_length(const struct iovec *, int32_t);
-typedef struct { size_t offset_bytes, advance, consumed; int32_t remain_count, index, action; } swr_v1_reactor_iov_progress_reply;
-swr_v1_reactor_iov_progress_reply swr_v1_reactor_iov_owned_progress(struct iovec *, intptr_t, int32_t, int32_t, size_t);
 
 struct pollfd;
 struct epoll_event;
@@ -162,7 +154,6 @@ typedef struct {
     int32_t status;
 } swr_v1_reactor_iov_prepared;
 swr_v1_reactor_iov_prepared swr_v1_reactor_iov_prepare(const struct iovec *source, int32_t count);
-swr_v1_reactor_iov *swr_v1_reactor_iov_create(const struct iovec *source, int32_t count, int32_t *status);
 void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
 swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner);
 size_t swr_v1_reactor_iov_length(const swr_v1_reactor_iov *owner);
