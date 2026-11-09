@@ -425,6 +425,11 @@ class Cleanup(unittest.TestCase):
 
 
 class Lanes(unittest.TestCase):
+    def test_help_names_the_docker_wrapper(self):
+        # AGENTS.md sends Linux-only phases through `dev.py docker`; argparse never sees it.
+        result = subprocess.run([sys.executable, ROOT / 'tools/dev.py', '--help'], capture_output=True, text=True)
+        self.assertIn('dev.py docker [-- dev.py arguments | -- SCRIPT.py arguments]', ' '.join(result.stdout.split()))
+
     def test_aliases_name_the_profile(self):
         from tools.build_hybrid import build_alias
         self.assertEqual(build_alias('rust', '-halfclose-stdext'), 'rust-halfclose-stdext')

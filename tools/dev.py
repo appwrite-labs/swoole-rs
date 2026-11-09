@@ -703,7 +703,7 @@ def schedule(commands, dependencies):
 def main():
     if sys.argv[1:2] == ['docker']:
         return docker(sys.argv[2:])
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, epilog=docker.__doc__)
     parser.add_argument('lane', choices=['edit', 'candidate', 'integrate', 'prune'])
     parser.add_argument('--older-than', type=float, default=24, metavar='HOURS',
                         help='prune: delete target/ build output untouched for this long')
