@@ -973,11 +973,7 @@ pub(crate) fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -
     let ce = unsafe { (*object).ce };
     // SAFETY: the live object of that class.
     let zheader = unsafe { swr_zend_property_array(ce, object, c"header".as_ptr(), 6) };
-    // SAFETY: a live array.
-    let table = unsafe { value::table(zheader) };
-    // SAFETY: a live table.
-    let present = unsafe { zend_hash_str_find(table, c"content-type".as_ptr(), 12) };
-    if present.is_null() {
+    if find(zheader, c"content-type").is_null() {
         swoole_rs_phphttp::set_header_bytes(ctx, b"content-type", content_type);
     }
     let body = Body {
@@ -1307,12 +1303,17 @@ fn complete(session: &Session, stream: &Stream) -> c_int {
     SW_OK
 }
 
-/// The string at `key` of an array, if it has one: one hash lookup.
-fn string_at(array: *mut zval, key: &CStr) -> Option<Text> {
+/// `zend_hash_str_find` on a live array: the value at `key`, or null.
+fn find(array: *mut zval, key: &CStr) -> *mut zval {
     // SAFETY: a live array.
     let table = unsafe { value::table(array) };
     // SAFETY: a live table and a NUL-terminated key.
-    let value = unsafe { zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) };
+    unsafe { zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) }
+}
+
+/// The string at `key` of an array, if it has one.
+fn string_at(array: *mut zval, key: &CStr) -> Option<Text> {
+    let value = find(array, key);
     if value.is_null() {
         None
     } else {
