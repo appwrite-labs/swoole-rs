@@ -161,5 +161,6 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
         hook_flags: co::hook_flags,
         set_hook_flags: co::set_hook_flags,
         active_threads: thread::sw_active_thread_count,
+        server_class: swoole_rs_phpserver::server_class_entry,
     }
 };
