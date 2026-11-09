@@ -246,12 +246,12 @@ fn event(
 /// `object` is the live client object `connect()` bound; `data` holds
 /// `length` bytes for `SWOOLE_CLIENT_ON_RECEIVE`.
 unsafe extern "C" fn async_event(
-    object: *mut zend_object,
+    object: *mut c_void,
     kind: c_int,
     data: *const c_char,
     length: usize,
 ) {
-    bailout::raise(event(object, kind, data, length));
+    bailout::raise(event(object.cast(), kind, data, length));
 }
 
 /// `__construct(int $type)`.
@@ -412,7 +412,7 @@ fn connect(call: &Call) {
         }
     }
     // SAFETY: a live client; it raises its events on this object.
-    unsafe { native::swoole_client_async_listen(fresh.cli, object, events, async_event) };
+    unsafe { state::swr_v1_clients_listen(fresh.state(), object.cast(), events, async_event) };
     net::this(call).conn = conn;
     // SAFETY: `zval_addref_p(ZEND_THIS)`: the client holds the object.
     unsafe { (*object).gc.refcount += 1 };
@@ -453,8 +453,7 @@ fn connect(call: &Call) {
     }
     // SAFETY: the object's connection, if an error callback did not free it.
     if let Some(remaining) = unsafe { net::this(call).conn.as_ref() }
-        // SAFETY: a live client.
-        && !unsafe { native::swoole_client_has_on_error(remaining.cli) }
+        && events & bit(ON_ERROR) == 0
         && bailed(net::release(object, ptr::from_ref(remaining).cast_mut())).is_some()
     {
         // SAFETY: the reference taken above.

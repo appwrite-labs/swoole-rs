@@ -16,7 +16,7 @@ use swoole_rs_phpswoole::{Capability, built_with};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
     bailout::{self, Bailout},
-    sys::{zend_object, zend_string, zval},
+    sys::{zend_string, zval},
 };
 
 /// `SW_LOG_WARNING`.
@@ -574,14 +574,6 @@ unsafe extern "C" {
     pub(crate) fn swoole_client_state(cli: Cli) -> *mut c_void;
     /// A Socket over a dup of the client's fd into `zsocket`.
     pub(crate) fn swoole_client_export_socket(cli: Cli, zsocket: *mut zval) -> bool;
-    /// Install the async callbacks in `events`; each calls `listener` with `object`.
-    pub(crate) fn swoole_client_async_listen(
-        cli: Cli,
-        object: *mut zend_object,
-        events: u32,
-        listener: unsafe extern "C" fn(*mut zend_object, c_int, *const c_char, usize),
-    );
-    pub(crate) fn swoole_client_has_on_error(cli: Cli) -> bool;
     /// Run one [`ClientCall`]; a `bailout::trap` body.
     pub(crate) fn swoole_client_run(call: *mut c_void);
     /// The client's `SSLContext` owner; null while TLS is off.
