@@ -6,8 +6,11 @@ build scripts compile with CC and CFLAGS) and the Rust crates are all instrument
 clang's -fsanitize=address,undefined and rustc's -Zsanitizer=address call into one
 runtime, the one clang links into the PHP executable, so every object in the process
 reports through it. dev.py integrate builds it (and the upstream reference beside it) and
-runs every module gate that loads an extension into PHP, the application corpus among
-them; then the PHPT selection runs on it. Any sanitizer report fails the run whatever
+runs every module gate, the application corpus among them; then the PHPT selection runs
+on it. The native gates and the crates' unit tests link the instrumented Rust archive into
+executables of their own: target/asan/bin puts `cc` and `c++` first on PATH as clang with
+the sanitizers, so every link takes clang's runtime, and -Zexternal-clangrt stops rustc
+adding its own beside it. Any sanitizer report fails the run whatever
 the tests say. Reports stay in target/asan/reports/ and are only counted on stdout: a
 report may locate an upstream bug, which goes to the private security repository (AGENTS.md), so a public CI log
 never shows one. Rerun locally to read them. LeakSanitizer runs at the extension's
@@ -41,14 +44,20 @@ def main():
     parser.add_argument('--timeout', type=int, default=120, help='Per PHPT, in seconds')
     args = parser.parse_args()
     php = OUT / 'php'
-    compilers = {**os.environ, 'CC': 'clang', 'CXX': 'clang++'}
+    # One link recipe for every executable the run builds, whatever compiler name it calls.
+    shims = OUT / 'bin'
+    shims.mkdir(parents=True, exist_ok=True)
+    for name, compiler in [('cc', 'clang'), ('c++', 'clang++')]:
+        (shims / name).write_text(f'#!/bin/sh\nexec {compiler} "$@" {SANITIZE}\n')
+        (shims / name).chmod(0o755)
+    compilers = {**os.environ, 'CC': 'clang', 'CXX': 'clang++', 'PATH': f"{shims}{os.pathsep}{os.environ['PATH']}"}
     subprocess.run([ROOT / '.devcontainer/php.sh', php, '--enable-address-sanitizer', '--enable-undefined-sanitizer',
                     '--without-pcre-jit', '--with-pdo-sqlite'],
                    env=compilers, check=True)
     host = next(line.split()[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines()
                 if line.startswith('host:'))
     build = {**compilers, 'CFLAGS': SANITIZE, 'CXXFLAGS': SANITIZE, 'LDFLAGS': SANITIZE, 'RUSTC_BOOTSTRAP': '1',
-             'RUSTFLAGS': '-Zsanitizer=address -Cforce-frame-pointers=yes',
+             'RUSTFLAGS': '-Zsanitizer=address -Zexternal-clangrt=yes -Cforce-frame-pointers=yes',
              # As `cargo --target`: build scripts and proc macros, which rustc loads, stay uninstrumented.
              'CARGO_BUILD_TARGET': host}
     reports = OUT / 'reports'
@@ -56,13 +65,14 @@ def main():
     reports.mkdir(parents=True)
     options = f'log_path={reports}/report:print_stacktrace=1'
     leaks = f':leak_check_at_exit=0:suppressions={ROOT}/tools/lsan.supp:print_suppressions=0'
-    run = {**build, 'PATH': f"{php / 'bin'}{os.pathsep}{os.environ['PATH']}", 'USE_ZEND_ALLOC': '0',
+    run = {**build, 'PATH': f"{php / 'bin'}{os.pathsep}{build['PATH']}", 'USE_ZEND_ALLOC': '0',
            'USE_TRACKED_ALLOC': '1', 'ASAN_OPTIONS': options, 'LSAN_OPTIONS': options + leaks,
            'UBSAN_OPTIONS': options}
     gates = [sys.executable, 'tools/dev.py', 'integrate', '--all-modules', '--php', str(php / 'bin/php')]
-    # The gates that run PHP with the extension; the rest are native or Rust-only and build their own way.
+    # Every gate but the lints and cargo_asan.py's runs, which make an ASan build of their own.
     planned = json.loads(subprocess.check_output([*gates, '--plan'], cwd=ROOT, env=run, text=True))
-    phases = [arg for entry in planned if '--engine' in entry['command'] for arg in ['--phase', entry['phase']]]
+    phases = [arg for entry in planned if entry['phase'] not in {'format', 'clippy', 'ownership'}
+              and not entry['phase'].endswith('-rust-asan') for arg in ['--phase', entry['phase']]]
     failed = []
     if subprocess.run([*gates, *phases, '--with-prerequisites', '--jobs', str(args.jobs),
                        '--phase-timeout', '2400'], cwd=ROOT, env=run).returncode:
