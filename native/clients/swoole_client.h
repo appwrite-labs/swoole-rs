@@ -17,8 +17,8 @@
 namespace swoole {
 namespace network {
 
-// The state and every operation are Rust's (crates/clients/src/client.rs); these are the
-// members of C++ types it reaches through client.cc's table.
+// The state, every operation and the callbacks are Rust's (crates/clients/src/client.rs);
+// these are the members of C++ types it reaches through network_client.cc's table.
 class Client : public swr_v1_clients_record {
   public:
     std::unique_ptr<Socks5Proxy> socks5_proxy = nullptr;
@@ -26,16 +26,6 @@ class Client : public swr_v1_clients_record {
 
     std::unique_ptr<SSLContext, SSLContext::Release> ssl_context = nullptr;
 
-    std::function<void(Client *cli)> onConnect = nullptr;
-    std::function<void(Client *cli)> onError = nullptr;
-    std::function<void(Client *cli, const char *, size_t)> onReceive = nullptr;
-    std::function<void(Client *cli)> onClose = nullptr;
-    std::function<void(Client *cli)> onBufferFull = nullptr;
-    std::function<void(Client *cli)> onBufferEmpty = nullptr;
-    // swoole_client_async_listen's callback, which those above call with `object`.
-    swoole_client_listener listener = nullptr;
-
-    static void init_reactor(Reactor *reactor);
     Client(SocketType _type, bool async);
     ~Client();
 

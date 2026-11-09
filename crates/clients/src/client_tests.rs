@@ -5,7 +5,6 @@ use std::cell::RefCell;
 #[derive(Default)]
 struct Mock {
     log: Vec<String>,
-    has: [bool; 6],
     proxy: [c_int; 2],
     connect: Vec<c_int>,
     io: Vec<isize>,
@@ -51,18 +50,27 @@ extern "C" fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> *mut Soc
 extern "C" fn free_socket(_: *mut c_void, deferred: bool) {
     log(format!("free {deferred}"));
 }
-extern "C" fn has(_: *mut c_void, which: c_int) -> bool {
-    mock(|m| m.has[which.unsigned_abs() as usize])
-}
-extern "C" fn call(_: *mut c_void, which: c_int, _: *const c_char, length: usize) -> bool {
-    log(format!("call {which} {length}"));
-    if mock(|m| m.releases) == Some(which) {
+extern "C" fn listener(_: *mut c_void, event: c_int, _: *const c_char, length: usize) {
+    log(format!("call {event} {length}"));
+    if mock(|m| m.releases) == Some(event) {
         mock(|m| m.socket.as_mut().unwrap().object = core::ptr::null_mut());
     }
-    true
 }
-extern "C" fn warn(_: *mut c_void, which: c_int) {
-    log(format!("warn {which}"));
+// crates/timer's, which the hybrid links.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn swr_v1_timer_add_plain_sec(
+    timeout: f64,
+    _: bool,
+    _: extern "C-unwind" fn(*mut c_void),
+    _: *mut c_void,
+) -> *mut c_void {
+    log(format!("timer {timeout}"));
+    core::ptr::without_provenance_mut(1)
+}
+#[unsafe(export_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE")]
+extern "C-unwind" fn timer_del(_: *mut c_void) -> bool {
+    log("timer del");
+    true
 }
 extern "C" fn kernel_timeout(_: *mut ClientRecord, timeout: f64) {
     log(format!("kernel {timeout}"));
@@ -129,13 +137,6 @@ extern "C" fn socket_error(_: *mut ClientRecord, error: *mut c_int) -> c_int {
     // SAFETY: the operation passes a writable int.
     unsafe { *error = mock(|m| m.socket_error) };
     OK
-}
-extern "C" fn timer_add(_: *mut c_void, timeout: f64) -> *mut c_void {
-    log(format!("timer {timeout}"));
-    core::ptr::without_provenance_mut(1)
-}
-extern "C" fn timer_del(_: *mut c_void) {
-    log("timer del");
 }
 extern "C" fn dns_lookup(_: *mut c_void, host: *const c_char, domain: c_int) -> c_int {
     // SAFETY: a NUL-terminated host.
@@ -213,9 +214,6 @@ extern "C" fn recv_framed(_: *mut c_void, eof: bool) -> isize {
 static NATIVE: Native = Native {
     make_socket,
     free_socket,
-    has,
-    call,
-    warn,
     kernel_timeout,
     assign,
     connect: connect_socket,
@@ -226,8 +224,6 @@ static NATIVE: Native = Native {
     out_buffer_length,
     writable,
     socket_error,
-    timer_add,
-    timer_del,
     dns_lookup,
     ssl,
     proxy_state,
@@ -250,25 +246,28 @@ unsafe fn new_client(kind: c_int, is_async: bool) -> *mut Client {
             core::ptr::without_provenance_mut(8),
             &NATIVE,
             pointer,
-            core::ptr::without_provenance_mut(16),
             kind,
             is_async,
         )
     }
 }
 
-/// A client of `kind`, its construction log dropped; the socket's object is set.
+/// A client of `kind`, its construction log dropped, listened to for every event
+/// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| {
         *m = Mock {
             proxy: [-1, -1],
-            has: [callbacks; 6],
             ..Mock::default()
         }
     });
     log::set_last_error(0);
     // SAFETY: the double stands in for the C++ client.
     let client = unsafe { new_client(kind, is_async) };
+    if callbacks {
+        // SAFETY: a live state.
+        unsafe { swr_v1_clients_listen(client, core::ptr::null_mut(), 0b111_1110, listener) };
+    }
     taken();
     client
 }
@@ -362,7 +361,7 @@ fn shutdown_records_each_direction_once() {
 fn async_connect_needs_every_callback() {
     let client = client(1, true, false);
     assert_eq!(connect(client, c"example.test", 1.0, 0), ERR);
-    assert_eq!(taken(), ["warn 1"]);
+    assert_eq!(taken(), Vec::<String>::new());
     free(client);
 }
 
@@ -423,7 +422,11 @@ fn failed_resolution_closes_and_reports_once() {
     unsafe { swr_v1_clients_on_resolved(client, 1, c"".as_ptr()) };
     assert_eq!(log::last_error(), ERROR_DNSLOOKUP_RESOLVE_FAILED);
     assert!(flag(client, ONERROR_CALLED) && flag(client, CLOSED));
-    assert_eq!(taken(), ["call 1 0"], "removed: no reactor delete");
+    assert_eq!(
+        taken(),
+        [format!("call 4 {ERROR_DNSLOOKUP_RESOLVE_FAILED}")],
+        "removed: no reactor delete; the error is the length"
+    );
     free(client);
 }
 
@@ -476,7 +479,7 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
         unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) },
         4
     );
-    assert_eq!(taken(), ["write 4", "call 4 0"]);
+    assert_eq!(taken(), ["write 4", "call 5 0"]);
     // Already high: no second call.
     // SAFETY: as above.
     unsafe { swr_v1_clients_send(client, c"data".as_ptr(), 4, 0) };
@@ -497,8 +500,7 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     // SAFETY: a live state.
     unsafe { swr_v1_clients_watermark(client, true).write(100) };
     // SAFETY: as above.
-    let result =
-        unsafe { swr_v1_clients_on_write(client, core::ptr::null_mut(), core::ptr::null_mut()) };
+    let result = on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
     assert_eq!(result, 3);
     assert_eq!(taken(), ["event 1 512", "proxy 0 1", "write 3"]);
     assert!(flag(client, ACTIVE));
@@ -510,9 +512,15 @@ fn writable_after_a_failed_connect_reports_the_error() {
     let client = client(1, true, true);
     mock(|m| m.socket_error = libc::ECONNREFUSED);
     // SAFETY: a live state.
-    unsafe { swr_v1_clients_on_write(client, core::ptr::null_mut(), core::ptr::null_mut()) };
+    on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
     assert_eq!(log::last_error(), libc::ECONNREFUSED);
-    assert_eq!(taken(), ["event 2 0", "call 1 0"]);
+    assert_eq!(
+        taken(),
+        [
+            "event 2 0".to_owned(),
+            format!("call 4 {}", libc::ECONNREFUSED)
+        ]
+    );
     free(client);
 }
 
@@ -523,7 +531,7 @@ fn tls_connect_waits_for_the_stream_then_connects() {
     assert_eq!(unsafe { swr_v1_clients_enable_ssl(client) }, OK);
     taken();
     // SAFETY: as above.
-    unsafe { swr_v1_clients_on_write(client, core::ptr::null_mut(), core::ptr::null_mut()) };
+    on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
     assert_eq!(
         mock(|m| m.socket.as_ref().unwrap().tls.state),
         SSL_STATE_WAIT_STREAM
@@ -531,10 +539,10 @@ fn tls_connect_waits_for_the_stream_then_connects() {
     taken();
     mock(|m| m.ssl_connect_ready = true);
     // SAFETY: as above.
-    unsafe { swr_v1_clients_on_write(client, core::ptr::null_mut(), core::ptr::null_mut()) };
+    on_write(Handle(client), core::ptr::null_mut(), core::ptr::null_mut());
     assert_eq!(
         taken(),
-        ["ssl 2 0", "ssl 3 0", "ssl 4 0", "ssl 5 0", "call 0 0"]
+        ["ssl 2 0", "ssl 3 0", "ssl 4 0", "ssl 5 0", "call 1 0"]
     );
     free(client);
 }
@@ -545,9 +553,15 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     Handle(client).set(ACTIVE, true);
     mock(|m| m.proxy[1] = HTTP_PROXY_WAIT);
     // SAFETY: a live state.
-    unsafe { swr_v1_clients_on_timeout(client) };
+    on_timeout(client.cast());
     assert_eq!(log::last_error(), libc::ETIMEDOUT);
-    assert_eq!(taken(), ["event 2 0", "call 1 0"]);
+    assert_eq!(
+        taken(),
+        [
+            "event 2 0".to_owned(),
+            format!("call 4 {}", libc::ETIMEDOUT)
+        ]
+    );
     free(client);
 }
 
@@ -557,11 +571,11 @@ fn stream_read_delivers_data_and_closes_at_eof() {
     Handle(client).set(ACTIVE, true);
     mock(|m| m.io = vec![5]);
     // SAFETY: a live state.
-    assert_eq!(unsafe { swr_v1_clients_on_read(client) }, OK);
+    assert_eq!(on_read(Handle(client)), OK);
     assert_eq!(taken(), ["buffer 1", "io 0 64", "call 2 5"]);
     mock(|m| m.io = vec![0]);
     // SAFETY: as above.
-    unsafe { swr_v1_clients_on_read(client) };
+    on_read(Handle(client));
     assert_eq!(taken(), ["buffer 1", "io 0 64", "event 2 0", "call 3 0"]);
     free(client);
 }
@@ -603,17 +617,14 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         assert_eq!((*fields).protocol.package_length_type, b'N');
         assert_eq!((*fields).protocol.package_length_size, 4);
         assert_eq!((*fields).protocol.package_max_length, 2 * 1024 * 1024);
-        assert_eq!(
-            (*fields).protocol.on_package,
-            core::ptr::without_provenance_mut(16)
-        );
+        assert_eq!((*fields).protocol.on_package, on_package as *mut c_void);
         assert_eq!((*fields).socket, Handle(client).socket_ptr());
         assert!((*fields).object.is_null() && (*fields).buffer.is_null());
         (*fields).open_length_check = true;
-        assert_eq!(swr_v1_clients_on_read(client), OK);
+        assert_eq!(on_read(Handle(client)), OK);
         assert!(taken().contains(&"framed false".to_owned()));
         (*fields).open_eof_check = true;
-        assert_eq!(swr_v1_clients_on_read(client), OK);
+        assert_eq!(on_read(Handle(client)), OK);
         assert!(taken().contains(&"framed true".to_owned()));
     }
     free(client);
@@ -664,4 +675,26 @@ fn failed_socket_leaves_zero_protocol_and_addresses_without_teardown_effects() {
         free(client);
         assert_eq!(taken(), Vec::<String>::new());
     }
+}
+
+#[test]
+fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
+    let client = client(1, true, true);
+    let socket = Handle(client).socket_ptr();
+    let mut package = RecvData {
+        info: swoole_rs_corebase::DataHead::default(),
+        data: c"data".as_ptr(),
+    };
+    package.info.len = 4;
+    assert_eq!(
+        on_package(core::ptr::null(), socket, &raw const package),
+        OK
+    );
+    assert_eq!(taken(), ["call 2 4"]);
+    mock(|m| m.socket.as_mut().unwrap().output.close_wait = 1);
+    assert_eq!(
+        on_package(core::ptr::null(), socket, &raw const package),
+        ERR
+    );
+    free(client);
 }

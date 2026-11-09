@@ -1,20 +1,22 @@
 //! `network::Client` (upstream's `src/network/client.cc`) in Rust: its state and every
-//! operation over it, from construction to close. The C++ `Client` is a facade
-//! that holds this behind `state_` and the members of C++ types (the callbacks,
-//! the proxies and the TLS context); the public POD fields use [`ClientRecord`].
-//! Rust reaches native effects through [`Native`], one static table the C++
-//! side defines once. The socket is the reactor's record, read and written here
-//! directly.
+//! operation over it, from construction to close, with its callbacks (one
+//! listener and its object), its reactor handlers and its connect timer. The C++
+//! `Client` is a facade that holds this behind `state_` and the members of C++
+//! types (the proxies and the TLS context); the public POD fields use
+//! [`ClientRecord`]. Rust reaches native effects through [`Native`], one static
+//! table the C++ side defines once. The socket is the reactor's record, read and
+//! written here directly; its `object` is this state.
 //!
 //! A user callback can destroy the client (and this state with it), so no
 //! reference to the state lives across one: operations work on a raw [`Handle`]
-//! and borrow the state only between effects. A callback that throws a C++
-//! exception returns false; the operation stops there and C++ rethrows.
+//! and borrow the state only between effects. A PHP bailout in a callback
+//! longjmps out, so nothing that needs dropping is held across one.
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
+use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
 use swoole_rs_reactor::{
     SocketRecord, event_api, socket_upstream, swr_v1_socket_bind, swr_v1_socket_buffer_size,
     swr_v1_socket_catch_error, swr_v1_socket_clean, swr_v1_socket_defaults,
@@ -38,21 +40,19 @@ const HIGH_WATERMARK: u32 = 11;
 const DTLS: u32 = 12;
 const STREAM: u32 = 13;
 
-/// The callbacks, for [`Native::has`] and [`Native::call`] (`SWR_CLIENTS_ON_*`).
-pub const ON_CONNECT: c_int = 0;
-pub const ON_ERROR: c_int = 1;
+/// The events a [`Listener`] hears (`SWOOLE_CLIENT_ON_*`): bit `1 << event` of
+/// [`swr_v1_clients_listen`]'s mask is set for each it wants.
+pub const ON_CONNECT: c_int = 1;
 pub const ON_RECEIVE: c_int = 2;
 pub const ON_CLOSE: c_int = 3;
-pub const ON_BUFFER_FULL: c_int = 4;
-pub const ON_BUFFER_EMPTY: c_int = 5;
+pub const ON_ERROR: c_int = 4;
+pub const ON_BUFFER_FULL: c_int = 5;
+pub const ON_BUFFER_EMPTY: c_int = 6;
 
-/// [`Native::warn`]'s warnings (`SWR_CLIENTS_WARN_*`).
-pub const WARN_CALLBACKS: c_int = 1;
-pub const WARN_ON_RECEIVE: c_int = 2;
-pub const WARN_ON_ERROR: c_int = 3;
-pub const WARN_BIND: c_int = 5;
-pub const WARN_READ: c_int = 6;
-pub const WARN_GETSOCKOPT: c_int = 7;
+/// The client's callbacks: `listener(object, event, data, length)`, with the
+/// received bytes for [`ON_RECEIVE`] and the last error as `length` for [`ON_ERROR`].
+pub type Listener =
+    unsafe extern "C" fn(object: *mut c_void, event: c_int, data: *const c_char, length: usize);
 
 /// [`Native::connect`]'s modes (`SWR_CLIENTS_CONNECT_*`): `connect_async` (returns
 /// `SW_READY`, `SW_WAIT` or `SW_ERROR`), `connect_sync`, and `connect(2)`.
@@ -119,6 +119,7 @@ const SSL_BUFFER_SIZE: u32 = 16384;
 const BUFFER_SIZE_UDP: usize = 65536;
 const EVENT_READ: c_int = 1 << 9;
 const EVENT_WRITE: c_int = 1 << 10;
+const EVENT_ERROR: c_int = 1 << 11;
 const TIMEOUT_ALL: c_int = 15;
 const SSL_STATE_READY: u32 = 1;
 const SSL_STATE_WAIT_STREAM: u32 = 2;
@@ -157,18 +158,6 @@ pub struct Native {
         unsafe extern "C" fn(kind: c_int, fd_type: c_int, flags: c_int) -> *mut SocketRecord,
     /// Frees `cli->socket`: `socket->free()` when `deferred`, else `delete socket`.
     pub free_socket: unsafe extern "C" fn(cli: *mut c_void, deferred: bool),
-    /// Whether callback `which` is set.
-    pub has: unsafe extern "C" fn(cli: *mut c_void, which: c_int) -> bool,
-    /// Runs callback `which` (`data` for `ON_RECEIVE`); false when it threw. The
-    /// client may be gone afterwards.
-    pub call: unsafe extern "C" fn(
-        cli: *mut c_void,
-        which: c_int,
-        data: *const c_char,
-        length: usize,
-    ) -> bool,
-    /// Logs warning `which`; the system ones report the current `errno`.
-    pub warn: unsafe extern "C" fn(cli: *mut c_void, which: c_int),
     /// `socket->set_kernel_timeout(timeout)`.
     pub kernel_timeout: unsafe extern "C" fn(record: *mut ClientRecord, timeout: f64),
     /// `server_addr.assign(socket_type, host, port, resolve)`.
@@ -207,9 +196,6 @@ pub struct Native {
     pub writable: unsafe extern "C" fn(reactor: *mut c_void, event: *mut c_void) -> c_int,
     /// `get_option(SOL_SOCKET, SO_ERROR, error)`.
     pub socket_error: unsafe extern "C" fn(record: *mut ClientRecord, error: *mut c_int) -> c_int,
-    /// `swoole_timer_add(timeout, false, Client_onTimeout, cli)`.
-    pub timer_add: unsafe extern "C" fn(cli: *mut c_void, timeout: f64) -> *mut c_void,
-    pub timer_del: unsafe extern "C" fn(timer: *mut c_void),
     /// Dispatches a `GethostbynameRequest` for `host` in `domain` to the async
     /// pool, completing in `swr_v1_clients_on_resolved`.
     pub dns_lookup:
@@ -242,7 +228,7 @@ pub struct Native {
     pub buffer:
         unsafe extern "C" fn(cli: *mut c_void, op: c_int, length: usize, view: *mut BufferView),
     /// Receives through the selected EOF/length protocol; returns zero when a
-    /// callback released the client or threw.
+    /// callback released the client.
     pub recv_framed: unsafe extern "C" fn(cli: *mut c_void, eof: bool) -> isize,
 }
 
@@ -287,6 +273,9 @@ pub struct Client {
     timer: Cell<*mut c_void>,
     high_watermark: Cell<u32>,
     low_watermark: Cell<u32>,
+    listener: Cell<Option<Listener>>,
+    /// `1 << event` for each event the listener hears.
+    events: Cell<u32>,
 }
 
 impl Client {
@@ -342,21 +331,26 @@ impl Handle {
         unsafe { &mut *self.socket_ptr() }
     }
 
-    fn has(self, which: c_int) -> bool {
-        // SAFETY: a native read of the live client.
-        unsafe { (self.native().has)(self.cli(), which) }
+    fn has(self, event: c_int) -> bool {
+        self.get().events.get() & (1 << event) != 0
     }
 
-    /// Runs a user callback: false when it threw. The client may be gone after.
-    fn call(self, which: c_int, data: *const c_char, length: usize) -> bool {
-        let (native, cli) = (self.native(), self.cli());
-        // SAFETY: the live client; nothing of it is borrowed across the call.
-        unsafe { (native.call)(cli, which, data, length) }
-    }
-
-    fn warn(self, which: c_int) {
-        // SAFETY: a log line about the live client.
-        unsafe { (self.native().warn)(self.cli(), which) };
+    /// Runs the user callback for `event`, if the listener hears it. The client
+    /// may be gone afterwards.
+    fn call(self, event: c_int, data: *const c_char, length: usize) {
+        let Some(listener) = self.get().listener.get().filter(|_| self.has(event)) else {
+            return;
+        };
+        let length = if event == ON_ERROR {
+            log::last_error().unsigned_abs() as usize
+        } else {
+            length
+        };
+        // SAFETY: the live client's public record.
+        let object = unsafe { (*self.get().record).object };
+        // SAFETY: the listener and its object; nothing of the client is borrowed
+        // across the call, which may release it.
+        unsafe { listener(object, event, data, length) };
     }
 
     fn event(self, op: c_int, events: c_int) -> c_int {
@@ -432,15 +426,114 @@ impl Handle {
         let timer = self.get().timer.replace(core::ptr::null_mut());
         if !timer.is_null() {
             // SAFETY: a pending timer this client added.
-            unsafe { (self.native().timer_del)(timer) };
+            unsafe { swoole_timer_del(timer) };
         }
     }
 
     /// `execute_onConnect`.
-    fn on_connect(self) -> bool {
+    fn on_connect(self) {
         self.timer_clear();
-        self.call(ON_CONNECT, core::ptr::null(), 0)
+        self.call(ON_CONNECT, core::ptr::null(), 0);
     }
+}
+
+// crates/timer's, under their upstream symbols.
+unsafe extern "C-unwind" {
+    fn swr_v1_timer_add_plain_sec(
+        timeout: f64,
+        persistent: bool,
+        callback: extern "C-unwind" fn(*mut c_void),
+        data: *mut c_void,
+    ) -> *mut c_void;
+    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
+    fn swoole_timer_del(node: *mut c_void) -> bool;
+}
+
+/// `RecvData`: the package `Protocol::recv_with_*` hands `onPackage`.
+#[repr(C)]
+struct RecvData {
+    info: swoole_rs_corebase::DataHead,
+    data: *const c_char,
+}
+
+/// `Client_onPackage`: a framed package for `onReceive`; the receive loop stops
+/// once the callback left the socket waiting to close.
+extern "C" fn on_package(
+    _: *const Protocol,
+    conn: *mut SocketRecord,
+    rdata: *const RecvData,
+) -> c_int {
+    // SAFETY: the receive loop's package, live for the call.
+    let package = unsafe { &*rdata };
+    // SAFETY: the client's socket record, whose free is deferred past the callback.
+    let socket = unsafe { &*conn };
+    Handle(socket.object.cast()).call(ON_RECEIVE, package.data, package.info.len as usize);
+    if socket.output.close_wait != 0 {
+        ERR
+    } else {
+        OK
+    }
+}
+
+/// The client of the reactor event's socket.
+fn event_client(event: *mut c_void) -> Handle {
+    // SAFETY: the reactor's live event.
+    let socket = unsafe { (*event.cast::<swoole_rs_reactor::Event>()).socket };
+    // SAFETY: a client socket's live record, whose object is the client.
+    Handle(unsafe { (*socket.cast::<SocketRecord>()).object }.cast())
+}
+
+extern "C" fn on_stream_read(_: *mut c_void, event: *mut c_void) -> c_int {
+    on_read(event_client(event))
+}
+
+extern "C" fn on_dgram_read(_: *mut c_void, event: *mut c_void) -> c_int {
+    on_datagram(event_client(event))
+}
+
+extern "C" fn on_writable(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    on_write(event_client(event), reactor, event)
+}
+
+extern "C" fn on_failure(reactor: *mut c_void, event: *mut c_void) -> c_int {
+    on_error(event_client(event), reactor, event)
+}
+
+/// `Client::init_reactor`: the client sockets' handlers.
+///
+/// # Safety
+/// `reactor` is the reactor being initialised.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_init_reactor(reactor: *mut c_void) {
+    let handlers: [(c_int, c_int, swoole_rs_reactor::Handler); 4] = [
+        (FD_STREAM_CLIENT, EVENT_READ, on_stream_read),
+        (FD_DGRAM_CLIENT, EVENT_READ, on_dgram_read),
+        (FD_STREAM_CLIENT, EVENT_WRITE, on_writable),
+        (FD_STREAM_CLIENT, EVENT_ERROR, on_failure),
+    ];
+    for (fd_type, event, handler) in handlers {
+        // SAFETY: as the caller promises.
+        unsafe { reactor_set_handler(reactor, fd_type, event, Some(handler)) };
+    }
+}
+
+/// `Client::onConnect` and the rest: `listener(object, event, ...)` for each
+/// event in `events` (`1 << SWOOLE_CLIENT_ON_*`), `object` the record's.
+///
+/// # Safety
+/// `client` is live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_clients_listen(
+    client: *mut Client,
+    object: *mut c_void,
+    events: u32,
+    listener: Listener,
+) {
+    let this = Handle(client);
+    // SAFETY: the live client's public record.
+    unsafe { (*this.get().record).object = object };
+    this.get().listener.set(Some(listener));
+    this.get().events.set(events);
 }
 
 fn errno() -> c_int {
@@ -471,13 +564,12 @@ fn is_dgram(kind: c_int) -> bool {
 ///
 /// # Safety
 /// `cli` is the C++ client being constructed, `record` its writable trivial base,
-/// `on_package` its package callback, and `native` the static table.
+/// and `native` the static table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_new(
     cli: *mut c_void,
     native: &'static Native,
     record: *mut ClientRecord,
-    on_package: *mut c_void,
     kind: c_int,
     is_async: bool,
 ) -> *mut Client {
@@ -509,6 +601,8 @@ pub unsafe extern "C" fn swr_v1_clients_new(
         timer: Cell::new(core::ptr::null_mut()),
         high_watermark: Cell::new(0),
         low_watermark: Cell::new(0),
+        listener: Cell::new(None),
+        events: Cell::new(0),
     });
     client.set(ASYNC, is_async);
     if socket.is_null() {
@@ -523,17 +617,18 @@ pub unsafe extern "C" fn swr_v1_clients_new(
     fields.protocol.package_length_type = b'N';
     fields.protocol.package_length_size = 4;
     fields.protocol.package_max_length = 2 * 1024 * 1024;
-    fields.protocol.on_package = on_package;
+    fields.protocol.on_package = on_package as *mut c_void;
     let mut client = client;
     // SAFETY: the new socket record, which nothing else holds yet.
     let record = unsafe { &mut *socket };
-    record.object = cli;
     record.chunk_size = SEND_BUFFER_SIZE;
     client.set(STREAM, is_stream(record.socket_type));
     let mut kind_out = 0;
     // SAFETY: two writable ints.
     unsafe { swr_v1_socket_domain_and_type(kind, &raw mut client.domain, &raw mut kind_out) };
-    Box::into_raw(client)
+    let client = Box::into_raw(client);
+    record.object = client.cast();
+    client
 }
 
 /// `Client::~Client()`, then the state's release.
@@ -644,9 +739,7 @@ fn close(this: Handle) -> c_int {
         if this.flag(ACTIVE) {
             this.set(ACTIVE, false);
             // onClose may destroy the client: only the saved socket is read after it.
-            if !this.call(ON_CLOSE, core::ptr::null(), 0) {
-                return ERR;
-            }
+            this.call(ON_CLOSE, core::ptr::null(), 0);
         }
     } else {
         this.set(ACTIVE, false);
@@ -746,6 +839,10 @@ pub unsafe extern "C" fn swr_v1_clients_enable_ssl(client: *mut Client) -> c_int
 /// `Client::enable_dtls()`; false (warned) without DTLS support.
 fn enable_dtls(this: Handle) -> bool {
     if this.ssl(SSL_DTLS, 0) != OK {
+        log::warning(
+            c"Client_udp_connect",
+            format_args!("DTLS support require openssl-1.1 or later"),
+        );
         return false;
     }
     let socket = this.socket();
@@ -926,7 +1023,10 @@ fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f6
         .into_iter()
         .all(|which| this.has(which))
     {
-        this.warn(WARN_CALLBACKS);
+        log::warning(
+            c"Client_tcp_connect_async",
+            format_args!("onConnect/onError/onReceive/onClose callback have not set"),
+        );
         return ERR;
     }
     this.set_timeout(timeout);
@@ -957,8 +1057,10 @@ fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f6
             // A finished connect needs no timeout timer; either way the write
             // handler runs the proxy and TLS handshakes.
             if ret < 0 && timeout > 0.0 {
-                // SAFETY: a timer over the live client.
-                let timer = unsafe { (this.native().timer_add)(this.cli(), timeout) };
+                // SAFETY: a timer over the live client, which deletes it first.
+                let timer = unsafe {
+                    swr_v1_timer_add_plain_sec(timeout, false, on_timeout, this.0.cast())
+                };
                 this.get().timer.set(timer);
                 if timer.is_null() {
                     return ERR;
@@ -997,13 +1099,19 @@ fn udp_connect(
         return ERR;
     }
     if is_async && !this.has(ON_RECEIVE) {
-        this.warn(WARN_ON_RECEIVE);
+        log::warning(
+            c"Client_udp_connect",
+            format_args!("`onReceive` callback have not set"),
+        );
         return ERR;
     }
     if this.flag(WAIT_DNS) && is_async {
         // Without onError a failed lookup would go unreported.
         if !this.has(ON_ERROR) {
-            this.warn(WARN_ON_ERROR);
+            log::warning(
+                c"Client_udp_connect",
+                format_args!("`onError` callback have not set"),
+            );
             return ERR;
         }
         return dns_lookup(this);
@@ -1017,7 +1125,6 @@ fn udp_connect(
         this.set_timeout(timeout);
     }
     if this.socket().socket_type == SOCK_UNIX_DGRAM && bind_unix(this) < 0 {
-        this.warn(WARN_BIND);
         return ERR;
     }
     let mut udp_connect = udp_connect;
@@ -1045,9 +1152,7 @@ fn udp_connect(
         if this.event(EVENT_ADD, EVENT_READ) < 0 {
             return ERR;
         }
-        if !this.on_connect() {
-            return ERR;
-        }
+        this.on_connect();
     }
     if this.flag(OPEN_SSL) && ssl_handshake(this) < 0 {
         return ERR;
@@ -1056,7 +1161,7 @@ fn udp_connect(
 }
 
 /// Binds a Unix datagram client to `/tmp/swoole-client.<pid>.<fd>.sock`, its
-/// address kept in the socket's `info` for the unlink on close.
+/// address kept in the socket's `info` for the unlink on close; warns on failure.
 fn bind_unix(this: Handle) -> c_int {
     let socket = this.socket();
     // SAFETY: getpid(2) has no preconditions.
@@ -1075,7 +1180,11 @@ fn bind_unix(this: Handle) -> c_int {
     #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_un)")]
     let length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
     // SAFETY: binds the client's descriptor to its own address storage.
-    unsafe { libc::bind(socket.fd, (&raw const *address).cast(), length) }
+    let ret = unsafe { libc::bind(socket.fd, (&raw const *address).cast(), length) };
+    if ret < 0 {
+        log::sys_warning(c"Client_udp_connect", format_args!("bind({path}) failed"));
+    }
+    ret
 }
 
 /// [`Native::make_socket`]: `make_socket(type, fd_type, flags)`.
@@ -1465,13 +1574,8 @@ fn connect_failed(this: Handle) -> c_int {
 }
 
 /// `Client_onStreamRead`: the proxy and TLS handshakes that finish a connect,
-/// then framed or plain reads.
-///
-/// # Safety
-/// `client` is a live async stream client with its input buffer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_on_read(client: *mut Client) -> c_int {
-    let this = Handle(client);
+/// then framed or plain reads, on a live async stream client with its input buffer.
+fn on_read(this: Handle) -> c_int {
     let view = this.buffer(BUFFER_VIEW, 0);
     // SAFETY: the unused tail of the input buffer.
     let buf = unsafe { view.str.add(view.length) };
@@ -1531,7 +1635,7 @@ pub unsafe extern "C" fn swr_v1_clients_on_read(client: *mut Client) -> c_int {
     };
     if eof || length {
         // SAFETY: native receives using the live protocol and buffer; it returns
-        // zero if a callback destroys the client or throws.
+        // zero if a callback destroys the client.
         let n = unsafe { (this.native().recv_framed)(this.cli(), eof) };
         if n < 0 && !this.flag(CLOSED) {
             close(this);
@@ -1544,7 +1648,11 @@ pub unsafe extern "C" fn swr_v1_clients_on_read(client: *mut Client) -> c_int {
         // SAFETY: the socket's own flag, set by the classification.
         return match unsafe { swr_v1_socket_catch_error(errno(), &raw mut socket.kernel_nobufs) } {
             SW_ERROR => {
-                this.warn(WARN_READ);
+                let fd = socket.fd;
+                log::sys_warning(
+                    c"Client_onStreamRead",
+                    format_args!("Read from socket[{fd}] failed"),
+                );
                 OK
             }
             SW_CLOSE => close(this),
@@ -1558,13 +1666,8 @@ pub unsafe extern "C" fn swr_v1_clients_on_read(client: *mut Client) -> c_int {
     OK
 }
 
-/// `Client_onDgramRead`.
-///
-/// # Safety
-/// `client` is a live async datagram client.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_on_dgram_read(client: *mut Client) -> c_int {
-    let this = Handle(client);
+/// `Client_onDgramRead`, on a live async datagram client.
+fn on_datagram(this: Handle) -> c_int {
     #[expect(
         clippy::large_stack_arrays,
         reason = "upstream's stack buffer: nothing to drop if the callback longjmps"
@@ -1584,17 +1687,9 @@ pub unsafe extern "C" fn swr_v1_clients_on_dgram_read(client: *mut Client) -> c_
     OK
 }
 
-/// `Client_onWrite`: drain queued output, or finish an async connect.
-///
-/// # Safety
-/// `client` is a live async stream client; `reactor` and `event` are the handler's.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_on_write(
-    client: *mut Client,
-    reactor: *mut c_void,
-    event: *mut c_void,
-) -> c_int {
-    let this = Handle(client);
+/// `Client_onWrite`: drain queued output, or finish an async connect, on a live
+/// async stream client; `reactor` and `event` are the handler's.
+fn on_write(this: Handle, reactor: *mut c_void, event: *mut c_void) -> c_int {
     if this.flag(ACTIVE) {
         if this.flag(OPEN_SSL) && this.socket().tls.state == SSL_STATE_WAIT_STREAM {
             if ssl_handshake(this) < 0 {
@@ -1629,7 +1724,8 @@ pub unsafe extern "C" fn swr_v1_clients_on_write(
     let ret = unsafe { (this.native().socket_error)(this.get().record, &raw mut error) };
     log::set_last_error(error);
     if ret < 0 {
-        this.warn(WARN_GETSOCKOPT);
+        let fd = this.socket().fd;
+        log::sys_warning(c"Client_onWrite", format_args!("getsockopt({fd}) failed"));
         return ERR;
     }
     if error != 0 {
@@ -1674,32 +1770,18 @@ fn write_failed(this: Handle) -> c_int {
     OK
 }
 
-/// `Client_onError`.
-///
-/// # Safety
-/// As `swr_v1_clients_on_write`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_on_error(
-    client: *mut Client,
-    reactor: *mut c_void,
-    event: *mut c_void,
-) -> c_int {
-    let this = Handle(client);
+/// `Client_onError`, as [`on_write`].
+fn on_error(this: Handle, reactor: *mut c_void, event: *mut c_void) -> c_int {
     if this.flag(ACTIVE) {
         return close(this);
     }
-    // SAFETY: as the caller promises.
-    unsafe { swr_v1_clients_on_write(client, reactor, event) };
+    on_write(this, reactor, event);
     OK
 }
 
-/// `Client_onTimeout`: the async connect timed out.
-///
-/// # Safety
-/// `client` is a live async client whose connect timer fired.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_on_timeout(client: *mut Client) {
-    let this = Handle(client);
+/// `Client_onTimeout`: the async connect of the client at `data` timed out.
+extern "C-unwind" fn on_timeout(data: *mut c_void) {
+    let this = Handle(data.cast());
     log::set_last_error(libc::ETIMEDOUT);
     this.get().timer.set(core::ptr::null_mut());
     if this.flag(OPEN_SSL) && this.socket().tls.state != SSL_STATE_READY {

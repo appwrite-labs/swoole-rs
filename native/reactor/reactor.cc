@@ -7,7 +7,7 @@
 // builtins.rs, callbacks.rs, deferred.rs, wait_loop.rs); this file runs its effects.
 #include "swoole_reactor.h"
 #include "swoole_rs_wrappers.h"
-#include "swoole_client.h"
+#include "swoole_rs_clients.h"
 #include "swoole_coroutine_system.h"
 #include "swoole_signal.h"
 #include "swoole_api.h"
@@ -39,7 +39,7 @@ int swoole_event_init(int flags) {
         // System::init_reactor registers the coroutine socket's handlers too.
         case SWR_WRAPPER_INIT_SOCKET: break;
         case SWR_WRAPPER_INIT_SYSTEM: swoole::coroutine::System::init_reactor(reactor); break;
-        case SWR_WRAPPER_INIT_CLIENT: swoole::network::Client::init_reactor(reactor); break;
+        case SWR_WRAPPER_INIT_CLIENT: swr_v1_clients_init_reactor(reactor); break;
         default: assert(false); return SW_ERR;
         }
     }

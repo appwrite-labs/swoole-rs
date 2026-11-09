@@ -103,9 +103,12 @@ removed with `swr_v1_core_name_resolver_add`/`_remove`.
 ## Client (`native/clients/network_client.cc`)
 
 `network::Client`'s state (flags, server host and port, connect timer,
-watermarks) and operations are Rust's (`crates/clients/src/client.rs`). The C++ half is
-the `swr_v1_clients_native` table over the members of C++ types, and the
-warnings, emitted from functions named as upstream's so the log lines match.
+watermarks), operations, callbacks and reactor handlers are Rust's
+(`crates/clients/src/client.rs`). The callbacks are one `(listener, object)` pair and an
+event mask (`swr_v1_clients_listen`); a PHP bailout in one longjmps out, so no C++
+exception crosses Rust. The socket's `object` is the Rust state, which the handlers and
+`onPackage` read. Warnings log under upstream's function names so the lines match.
+The C++ half is the `swr_v1_clients_native` table over the members of C++ types.
 It is Zend-free so core-tests' `SyncClient` and the Rust client cases (through its `swoole_client_*` C calls) link it. The last error is corebase's, which Rust sets directly.
 `bind` and `sendto` are whole Rust operations; each method passes a lambda for
 its one warning, which logs under the method's own name.

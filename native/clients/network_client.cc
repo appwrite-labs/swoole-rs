@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
-// network::Client's C++ half (upstream's src/network/client.cc is deleted). The state and
-// every operation are crates/clients/src/client.rs; this keeps what Rust can't express: the
-// class's constructor, destructor and methods over the members of C++ types (std::function
-// callbacks, the SSLContext reference, the proxies, String buffers), the C++
-// exception a callback throws, the one table Rust reaches them through, and the C calls
-// crates/phpclients and the Rust core-tests cases (tests/modules/clients/client.rs) make.
+// network::Client's C++ half (upstream's src/network/client.cc is deleted). The state,
+// every operation, the callbacks, the reactor handlers and the connect timer are
+// crates/clients/src/client.rs; this keeps the class's constructor, destructor and methods
+// over the members of C++ types (the SSLContext reference, the proxies, String buffers),
+// the one table Rust reaches them through, and the C calls crates/phpclients and the Rust
+// core-tests cases (tests/modules/clients/client.rs) make.
 #include "swoole_string.h"
 #include "swoole_socket.h"
-#include "swoole_timer.h"
 #include "swoole_protocol.h"
 #include "swoole_client.h"
 #include "swoole_proxy.h"
 #include "swoole_async.h"
 
-#include <exception>
 #include "swoole_rs_clients.h"
 
 static_assert(SW_FD_STREAM_CLIENT == 17 && SW_FD_DGRAM_CLIENT == 18 && SW_SOCK_NONBLOCK == 4 &&
@@ -32,81 +30,13 @@ static_assert(SW_ERROR_DNSLOOKUP_RESOLVE_FAILED == 711 && SW_ERROR_BAD_HOST_ADDR
 namespace swoole {
 namespace network {
 
-// A callback that throws stops the Rust operation; the exception is rethrown once it returns.
-static thread_local std::exception_ptr client_thrown;
-
-template <typename T>
-static T rethrown(T result) {
-    if (client_thrown) {
-        std::rethrow_exception(std::exchange(client_thrown, nullptr));
-    }
-    return result;
-}
-
 static Client *of(void *cli) {
     return static_cast<Client *>(cli);
-}
-
-// The warnings come from functions named as upstream's, which the log lines name.
-static void Client_tcp_connect_async(const Client *) {
-    swoole_warning("onConnect/onError/onReceive/onClose callback have not set");
-}
-
-static void Client_udp_connect(const Client *cli, int which) {
-    switch (which) {
-    case SWR_CLIENTS_WARN_ON_RECEIVE:
-        swoole_warning("`onReceive` callback have not set");
-        break;
-    case SWR_CLIENTS_WARN_ON_ERROR:
-        swoole_warning("`onError` callback have not set");
-        break;
-    case SWR_CLIENTS_WARN_BIND:
-        swoole_sys_warning("bind(%s) failed", cli->socket->info.addr.un.sun_path);
-        break;
-    default:
-        swoole_warning("DTLS support require openssl-1.1 or later");
-        break;
-    }
-}
-
-static void Client_onStreamRead(const Client *cli) {
-    swoole_sys_warning("Read from socket[%d] failed", cli->socket->fd);
-}
-
-static void Client_onWrite(const Client *cli) {
-    swoole_sys_warning("getsockopt(%d) failed", cli->socket->fd);
-}
-
-static void Client_onTimeout(Timer *, TimerNode *tnode) {
-    swr_v1_clients_on_timeout(static_cast<Client *>(tnode->data)->state_);
-    rethrown(0);
 }
 
 static void Client_onResolveCompleted(AsyncEvent *event) {
     const auto addr = swr_v1_core_string_view(swr_v1_core_resolver_view(event->data).address);
     swr_v1_clients_on_resolved(static_cast<Client *>(event->object)->state_, event->error, addr.data);
-    rethrown(0);
-}
-
-static int Client_onPackage(const Protocol *, Socket *conn, const RecvData *rdata) {
-    auto *cli = static_cast<Client *>(conn->object);
-    try {
-        cli->onReceive(cli, rdata->data, rdata->info.len);
-    } catch (...) {
-        client_thrown = std::current_exception();
-        return SW_ERR;
-    }
-    return conn->close_wait ? SW_ERR : SW_OK;
-}
-
-static const std::function<void(Client *)> &callback(const Client *cli, int which) {
-    switch (which) {
-    case SWR_CLIENTS_ON_CONNECT: return cli->onConnect;
-    case SWR_CLIENTS_ON_ERROR: return cli->onError;
-    case SWR_CLIENTS_ON_CLOSE: return cli->onClose;
-    case SWR_CLIENTS_ON_BUFFER_FULL: return cli->onBufferFull;
-    default: return cli->onBufferEmpty;
-    }
 }
 
 static const swr_v1_clients_native native = {
@@ -116,30 +46,6 @@ static const swr_v1_clients_native native = {
             of(cli)->socket->free();
         } else {
             delete of(cli)->socket;
-        }
-    },
-    [](void *cli, int which) -> bool {
-        return which == SWR_CLIENTS_ON_RECEIVE ? bool(of(cli)->onReceive) : bool(callback(of(cli), which));
-    },
-    [](void *cli, int which, const char *data, size_t length) -> bool {
-        try {
-            if (which == SWR_CLIENTS_ON_RECEIVE) {
-                of(cli)->onReceive(of(cli), data, length);
-            } else {
-                callback(of(cli), which)(of(cli));
-            }
-            return true;
-        } catch (...) {
-            client_thrown = std::current_exception();
-            return false;
-        }
-    },
-    [](void *cli, int which) {
-        switch (which) {
-        case SWR_CLIENTS_WARN_CALLBACKS: Client_tcp_connect_async(of(cli)); break;
-        case SWR_CLIENTS_WARN_READ: Client_onStreamRead(of(cli)); break;
-        case SWR_CLIENTS_WARN_GETSOCKOPT: Client_onWrite(of(cli)); break;
-        default: Client_udp_connect(of(cli), which); break;
         }
     },
     swr_v1_clients_kernel_timeout,
@@ -174,8 +80,6 @@ static const swr_v1_clients_native native = {
         return Reactor::_writable_callback(static_cast<Reactor *>(reactor), static_cast<Event *>(event));
     },
     swr_v1_clients_socket_error,
-    [](void *cli, double timeout) -> void * { return swoole_timer_add(timeout, false, Client_onTimeout, cli); },
-    [](void *timer) { swoole_timer_del(static_cast<TimerNode *>(timer)); },
     [](void *cli, const char *host, int domain) -> int {
         GethostbynameRequest req(host, domain);
         AsyncEvent ev{};
@@ -218,7 +122,6 @@ static const swr_v1_clients_native native = {
             cli->ssl_context->fields().protocols = SW_SSL_DTLS;
             return SW_OK;
 #else
-            Client_udp_connect(cli, -1);
             return SW_ERR;
 #endif
         }
@@ -297,34 +200,11 @@ static const swr_v1_clients_native native = {
         const ssize_t n = eof ? cli->protocol.recv_with_eof_protocol(socket, cli->buffer)
                               : cli->protocol.recv_with_length_protocol(socket, cli->buffer);
         // A callback may delete the client; only its deferred socket remains.
-        return socket->object == nullptr || client_thrown ? 0 : n;
+        return socket->object == nullptr ? 0 : n;
     },
 };
 
-static int Client_onStreamRead(Reactor *, Event *event) {
-    return rethrown(swr_v1_clients_on_read(static_cast<Client *>(event->socket->object)->state_));
-}
-
-static int Client_onDgramRead(Reactor *, Event *event) {
-    return rethrown(swr_v1_clients_on_dgram_read(static_cast<Client *>(event->socket->object)->state_));
-}
-
-static int Client_onWrite(Reactor *reactor, Event *event) {
-    return rethrown(swr_v1_clients_on_write(static_cast<Client *>(event->socket->object)->state_, reactor, event));
-}
-
-static int Client_onError(Reactor *reactor, Event *event) {
-    return rethrown(swr_v1_clients_on_error(static_cast<Client *>(event->socket->object)->state_, reactor, event));
-}
-
-void Client::init_reactor(Reactor *reactor) {
-    reactor->set_handler(SW_FD_STREAM_CLIENT, SW_EVENT_READ, Client_onStreamRead);
-    reactor->set_handler(SW_FD_DGRAM_CLIENT, SW_EVENT_READ, Client_onDgramRead);
-    reactor->set_handler(SW_FD_STREAM_CLIENT, SW_EVENT_WRITE, Client_onWrite);
-    reactor->set_handler(SW_FD_STREAM_CLIENT, SW_EVENT_ERROR, Client_onError);
-}
-
-Client::Client(SocketType _type, bool _async) : state_(swr_v1_clients_new(this, &native, this, reinterpret_cast<void *>(Client_onPackage), _type, _async)) {
+Client::Client(SocketType _type, bool _async) : state_(swr_v1_clients_new(this, &native, this, _type, _async)) {
     if (socket == nullptr) {
         swoole_sys_warning("socket() failed");
         return;
@@ -336,11 +216,11 @@ Client::~Client() {
 }
 
 int Client::connect(const char *_host, int _port, double _timeout, int _sock_flag) {
-    return rethrown(swr_v1_clients_connect(state_, _host, _port, _timeout, _sock_flag));
+    return swr_v1_clients_connect(state_, _host, _port, _timeout, _sock_flag);
 }
 
 ssize_t Client::send(const char *_data, size_t _length, int _flags) {
-    return rethrown(swr_v1_clients_send(state_, _data, _length, _flags));
+    return swr_v1_clients_send(state_, _data, _length, _flags);
 }
 
 int Client::sendfile(const char *_filename, off_t _offset, size_t _length) {
@@ -352,7 +232,7 @@ ssize_t Client::recv(char *_data, size_t _length, int _flags) {
 }
 
 int Client::close() {
-    return rethrown(swr_v1_clients_close(state_));
+    return swr_v1_clients_close(state_);
 }
 
 int Client::shutdown(int _how) {
@@ -406,9 +286,7 @@ int Client::get_peer_name(Address *addr) const {
 }
 
 bool Client::socks5_handshake(const char *recv_data, size_t length) {
-    // Rust's send, not send(): a throw here must not cross the Rust frame that called this.
-    auto send_fn = [this](const char *buf, size_t len) { return swr_v1_clients_send(state_, buf, len, 0); };
-    return socks5_proxy->handshake(recv_data, length, send_fn);
+    return socks5_proxy->handshake(recv_data, length, [this](const char *buf, size_t len) { return send(buf, len); });
 }
 
 int Client::enable_ssl_encrypt() {
@@ -460,40 +338,6 @@ void swoole_client_free(void *cli) {
 
 void *swoole_client_state(void *cli) {
     return static_cast<Client *>(cli)->state_;
-}
-
-static void client_event(Client *cli, int event, const char *data, size_t length) {
-    cli->listener(cli->object, event, data, length);
-}
-
-void swoole_client_async_listen(void *_cli, void *object, uint32_t events, swoole_client_listener listener) {
-    auto *cli = static_cast<Client *>(_cli);
-    cli->object = object;
-    cli->listener = listener;
-    if (events & (1u << SWOOLE_CLIENT_ON_CONNECT)) {
-        cli->onConnect = [](Client *cli) { client_event(cli, SWOOLE_CLIENT_ON_CONNECT, nullptr, 0); };
-    }
-    if (events & (1u << SWOOLE_CLIENT_ON_RECEIVE)) {
-        cli->onReceive = [](Client *cli, const char *data, size_t length) {
-            client_event(cli, SWOOLE_CLIENT_ON_RECEIVE, data, length);
-        };
-    }
-    if (events & (1u << SWOOLE_CLIENT_ON_CLOSE)) {
-        cli->onClose = [](Client *cli) { client_event(cli, SWOOLE_CLIENT_ON_CLOSE, nullptr, 0); };
-    }
-    if (events & (1u << SWOOLE_CLIENT_ON_ERROR)) {
-        cli->onError = [](Client *cli) { client_event(cli, SWOOLE_CLIENT_ON_ERROR, nullptr, swoole_get_last_error()); };
-    }
-    if (events & (1u << SWOOLE_CLIENT_ON_BUFFER_FULL)) {
-        cli->onBufferFull = [](Client *cli) { client_event(cli, SWOOLE_CLIENT_ON_BUFFER_FULL, nullptr, 0); };
-    }
-    if (events & (1u << SWOOLE_CLIENT_ON_BUFFER_EMPTY)) {
-        cli->onBufferEmpty = [](Client *cli) { client_event(cli, SWOOLE_CLIENT_ON_BUFFER_EMPTY, nullptr, 0); };
-    }
-}
-
-bool swoole_client_has_on_error(void *cli) {
-    return static_cast<Client *>(cli)->onError != nullptr;
 }
 
 const swr_v1_tls_owner *swoole_client_ssl_context(void *cli) {

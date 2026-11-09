@@ -79,7 +79,7 @@ impl Conn {
         }
     }
 
-    fn state(&self) -> *mut native::ClientState {
+    pub(crate) fn state(&self) -> *mut native::ClientState {
         // SAFETY: a live client.
         unsafe { native::swoole_client_state(self.cli) }.cast()
     }
