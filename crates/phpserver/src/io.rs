@@ -1,6 +1,7 @@
 //! `Swoole\Server`'s `on`, `getCallback`, `listen`, the send family,
 //! `sendMessage` and `finish` (also `Swoole\Server\Task::finish`), over the
 //! Server's records (crates/server's view) and its Rust methods.
+use crate::lifecycle::Props;
 use crate::server::{fatal, no_payload, running, server};
 use std::{
     ffi::{CStr, c_int, c_void},
@@ -11,12 +12,9 @@ use swoole_rs_clients::address::swr_v1_clients_address_assign;
 use swoole_rs_corebase::{net_types::AddressStorage, swr_v1_clients_gethostbyname};
 use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, bailout, message,
+    Call, E_ERROR, E_WARNING, Value, bailout, message,
     string::bytes,
-    sys::{
-        IS_NULL, IS_STRING, IS_TRUE, swr_zend_string_release, swr_zval_copy, swr_zval_get_string,
-        zend_read_property, zend_update_property, zval,
-    },
+    sys::{IS_NULL, IS_STRING, IS_TRUE, swr_zval_copy, zend_read_property, zval},
     to_long, type_of,
 };
 
@@ -53,14 +51,8 @@ fn event(name: &[u8]) -> Option<(c_int, &'static CStr)> {
 }
 
 /// `zend::String(name)`, looked up as an event.
-fn lookup(name: *mut zval) -> Option<(c_int, &'static CStr)> {
-    // SAFETY: a live argument; an owned reference, released below.
-    let string = unsafe { swr_zval_get_string(name) };
-    // SAFETY: the reference is live until released.
-    let found = event(unsafe { bytes(string) });
-    // SAFETY: releasing the reference taken above.
-    unsafe { swr_zend_string_release(string) };
-    found
+fn lookup(name: &Value) -> Option<(c_int, &'static CStr)> {
+    event(name.string().bytes())
 }
 
 /// Re-raise a bailout C++ trapped, from the handler, which owns nothing.
@@ -89,26 +81,18 @@ fn on(call: &Call) {
         return call.set_bool(false);
     }
     let (name, cb) = (call.zval(1), call.zval(2));
-    let Some((kind, property)) = lookup(name) else {
+    let Some((kind, property)) = call.value(1).and_then(lookup) else {
         let mut retval = crate::dispatch::undef();
         port_call(call, b"on", &raw mut retval, &[name, cb]);
         // RETURN_BOOL(Z_BVAL_P(&retval))
         // SAFETY: Zend wrote the method's result.
         return call.set_bool(unsafe { type_of(&raw const retval) } == IS_TRUE);
     };
-    // SAFETY: `$this` and the callback argument; Zend copies both.
-    unsafe {
-        zend_update_property(
-            crate::server::SERVER.entry(),
-            call.this(),
-            property.as_ptr(),
-            property.count_bytes(),
-            cb,
-        );
-    }
-    let set = call
-        .value(2)
-        .is_some_and(|cb| crate::lifecycle::ServerObject::this(call).set_callback(kind, cb));
+    let object = crate::lifecycle::ServerObject::this(call);
+    let set = call.value(2).is_some_and(|cb| {
+        Props::server(object).set(property, cb);
+        object.set_callback(kind, cb)
+    });
     call.set_bool(set);
 }
 
@@ -117,7 +101,7 @@ fn get_callback(call: &Call) {
         return call.set_bool(false);
     }
     let name = call.zval(1);
-    if let Some((_, property)) = lookup(name) {
+    if let Some((_, property)) = call.value(1).and_then(lookup) {
         let mut rv = std::mem::MaybeUninit::<zval>::uninit();
         // SAFETY: `$this` is live; its own class is the scope (subclasses).
         let scope = unsafe { (*call.this()).ce };
