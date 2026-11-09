@@ -764,6 +764,7 @@ dependencies = [
  "swoole-rs-http2",
  "swoole-rs-httpbindings",
  "swoole-rs-inflate",
+ "swoole-rs-memory",
  "swoole-rs-ossupport",
  "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",
