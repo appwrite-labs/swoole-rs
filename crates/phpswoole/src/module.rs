@@ -65,7 +65,7 @@ const RINIT_BEGIN: c_int = 0;
 pub(crate) const RINIT_END: c_int = 1;
 pub const CALL_USER_SHUTDOWNFUNC_BEGIN: c_int = 2;
 pub const RSHUTDOWN_BEGIN: c_int = 3;
-const RSHUTDOWN_END: c_int = 4;
+pub const RSHUTDOWN_END: c_int = 4;
 /// `SW_SOCKET_BUFFER_SIZE` and `SW_ERROR_PHP_FATAL_ERROR`.
 const SOCKET_BUFFER_SIZE: i64 = 8 * 1024 * 1024;
 pub(crate) const PHP_FATAL_ERROR: i32 = 503;

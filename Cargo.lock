@@ -399,7 +399,12 @@ name = "swoole-rs-curl"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-coroutine",
  "swoole-rs-curl-sys",
+ "swoole-rs-phpswoole",
+ "swoole-rs-reactor",
+ "swoole-rs-zend",
 ]
 
 [[package]]

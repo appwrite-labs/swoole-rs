@@ -5,10 +5,9 @@
 //! curl watches joins the reactor, each timeout becomes a timer, and the
 //! coroutine waiting on the transfer is resumed when either fires.
 //!
-//! The bundled `ext/curl` calls these exports directly (`swoole_rs_curl.h`);
-//! C++ lends the reactor, timer and coroutine operations ([`Ops`]). The Zend
-//! side (`swoole_curl_get_handle`) and the fatal errors of a bound or missing
-//! coroutine stay in C++.
+//! The bundled `ext/curl` calls these exports directly (`swoole_rs_curl.h`).
+//! The reactor, timer and coroutine operations are `host`'s; the tests fake
+//! them. `swoole_curl_get_handle` reads the PHP objects (the `php` feature).
 #![expect(
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
@@ -27,6 +26,7 @@ use std::{
     ffi::{c_int, c_long, c_void},
     ptr,
 };
+use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_curl_sys::{
     CURL, CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURL_POLL_IN, CURL_POLL_INOUT,
     CURL_POLL_OUT, CURL_POLL_REMOVE, CURL_SOCKET_TIMEOUT, CURLE_ABORTED_BY_CALLBACK,
@@ -45,52 +45,11 @@ const WRITE: c_int = 1 << 10;
 /// `SW_OK` and `SW_ERR`.
 const OK: c_int = 0;
 const ERR: c_int = -1;
+/// `SW_ERROR_CO_CANCELED`.
+const CO_CANCELED: c_int = 10017;
 /// What [`swr_v1_curl_multi_exec`] returns when it must wait without a
 /// coroutine to wait in (or one already bound): C++ raises the fatal error.
 pub const EXEC_NEEDS_COROUTINE: CURLcode = -1;
-
-/// `swr_v1_curl_ops`: the reactor, timer and coroutine operations C++ lends.
-#[repr(C)]
-pub struct Ops {
-    /// `swoole_event_is_available()`.
-    event_available: unsafe extern "C" fn() -> bool,
-    /// Install the cURL fd type's reactor handlers unless they are.
-    install_handlers: unsafe extern "C" fn(),
-    /// `new network::Socket` for `fd` of the cURL fd type, out of the
-    /// reactor (`removed`), carrying `object`.
-    socket_new: unsafe extern "C" fn(fd: c_int, object: *mut c_void) -> *mut c_void,
-    /// `socket->events`, and `socket->removed` into `removed`.
-    socket_events: unsafe extern "C" fn(socket: *mut c_void, removed: *mut bool) -> c_int,
-    /// `swoole_event_add`.
-    event_add: unsafe extern "C" fn(socket: *mut c_void, events: c_int) -> c_int,
-    /// `swoole_event_set`.
-    event_set: unsafe extern "C" fn(socket: *mut c_void, events: c_int) -> c_int,
-    /// `swoole_event_del`.
-    event_del: unsafe extern "C" fn(socket: *mut c_void) -> c_int,
-    /// Leave the reactor silently if the socket is in it and an event loop
-    /// runs, then free it without closing the fd (curl owns it).
-    socket_free: unsafe extern "C" fn(socket: *mut c_void),
-    /// `swoole_timer_is_available()`.
-    timer_available: unsafe extern "C" fn() -> bool,
-    /// `swoole_timer_add(ms)`, whose callback is
-    /// `swr_v1_curl_multi_on_timer(multi)`.
-    timer_add: unsafe extern "C" fn(ms: c_long, multi: *mut c_void) -> *mut c_void,
-    /// `swoole_timer_del`.
-    timer_del: unsafe extern "C" fn(timer: *mut c_void),
-    /// `Coroutine::get_current()`.
-    current: unsafe extern "C" fn() -> *mut c_void,
-    /// `co->yield_ex(timeout)`, then whether it was canceled.
-    yield_: unsafe extern "C" fn(co: *mut c_void, timeout: f64) -> bool,
-    /// `co->resume()`.
-    resume: unsafe extern "C" fn(co: *mut c_void),
-    /// `swoole_event_defer`, whose callback is
-    /// `swr_v1_curl_multi_deferred(multi)`.
-    defer: unsafe extern "C" fn(multi: *mut c_void),
-    /// `swoole_set_last_error(SW_ERROR_CO_CANCELED)`.
-    set_canceled: unsafe extern "C" fn(),
-    /// `swoole_warning("CURLMSG default")`, as `Multi::read_info`.
-    warn_message: unsafe extern "C" fn(),
-}
 
 /// `struct swr_v1_curl_handle`: the easy handle's multi while it is in one,
 /// and the multi `curl_exec` runs it in. C++ reads and writes `multi`.
@@ -104,8 +63,8 @@ pub struct Handle {
 /// `swoole::curl::Socket`: one socket curl asked to watch.
 struct Socket {
     multi: *const Multi,
-    /// The reactor's `network::Socket`.
-    socket: *mut c_void,
+    /// The reactor's `network::Socket`, freed when curl removes it.
+    socket: host::ReactorSocket,
     bitmask: Cell<c_int>,
     sockfd: Cell<curl_socket_t>,
     action: Cell<c_int>,
@@ -117,7 +76,6 @@ struct Socket {
 /// one waits, so no borrow is held across either.
 pub struct Multi {
     handle: *mut CURLM,
-    ops: &'static Ops,
     timer: Cell<*mut c_void>,
     /// The coroutine waiting on this multi.
     co: Cell<*mut c_void>,
@@ -188,11 +146,10 @@ impl Multi {
     /// `Multi::Multi`: a multi handle whose socket and timer callbacks reach
     /// this multi, which therefore lives in a box until
     /// [`swr_v1_curl_multi_free`].
-    fn create(ops: &'static Ops) -> *mut Self {
+    fn create() -> *mut Self {
         let multi = Box::into_raw(Box::new(Self {
             // SAFETY: no preconditions.
             handle: unsafe { curl_multi_init() },
-            ops,
             timer: Cell::new(ptr::null_mut()),
             co: Cell::new(ptr::null_mut()),
             running: Cell::new(0),
@@ -218,32 +175,24 @@ impl Multi {
         multi
     }
 
-    fn this(&self) -> *mut c_void {
-        ptr::from_ref(self).cast_mut().cast()
-    }
-
     fn wait_event(&self) -> bool {
         !self.timer.get().is_null() || !self.sockets.borrow().is_empty()
     }
 
     fn add_timer(&self, timeout_ms: c_long) {
         let timer = self.timer.get();
-        // SAFETY: C++'s operations.
-        if !timer.is_null() && unsafe { (self.ops.timer_available)() } {
+        if !timer.is_null() && host::timer_available() {
             // SAFETY: a timer this multi added and still holds.
-            unsafe { (self.ops.timer_del)(timer) };
+            unsafe { host::timer_del(timer) };
         }
-        // SAFETY: C++'s operations; the timer ends before this multi does.
-        self.timer
-            .set(unsafe { (self.ops.timer_add)(timeout_ms, self.this()) });
+        self.timer.set(host::timer_add(timeout_ms, self));
     }
 
     fn del_timer(&self) {
         let timer = self.timer.get();
-        // SAFETY: C++'s operations.
-        if !timer.is_null() && unsafe { (self.ops.timer_available)() } {
+        if !timer.is_null() && host::timer_available() {
             // SAFETY: a timer this multi added and still holds.
-            unsafe { (self.ops.timer_del)(timer) };
+            unsafe { host::timer_del(timer) };
             self.timer.set(ptr::null_mut());
         }
     }
@@ -257,8 +206,7 @@ impl Multi {
 
     /// `Multi::handle_timeout`.
     fn on_timeout(&self, timeout_ms: c_long) -> c_int {
-        // SAFETY: C++'s operations.
-        if !unsafe { (self.ops.event_available)() } {
+        if !host::event_available() {
             return -1;
         }
         if timeout_ms < 0 {
@@ -276,16 +224,15 @@ impl Multi {
 
     /// `Multi::set_event`.
     fn set_event(&self, socket: *mut Socket, sockfd: curl_socket_t, action: c_int) -> c_int {
-        // SAFETY: C++'s operations.
-        if !unsafe { (self.ops.event_available)() } {
+        if !host::event_available() {
             return -1;
         }
-        // SAFETY: as above.
-        unsafe { (self.ops.install_handlers)() };
+        host::install_handlers();
         let socket = if socket.is_null() {
+            let reactor = host::ReactorSocket::new(sockfd);
             let socket = Box::into_raw(Box::new(Socket {
                 multi: self,
-                socket: ptr::null_mut(),
+                socket: reactor,
                 bitmask: Cell::new(0),
                 sockfd: Cell::new(0),
                 action: Cell::new(0),
@@ -293,14 +240,14 @@ impl Multi {
             }));
             // SAFETY: this multi's handle, and a socket curl reports.
             if unsafe { curl_multi_assign(self.handle, sockfd, socket.cast()) } != CURLM_OK {
+                // SAFETY: made above, and never registered.
+                unsafe { reactor.free() };
                 // SAFETY: made above; curl does not hold it.
                 unsafe { free_socket(socket) };
                 return -1;
             }
-            // SAFETY: C++'s operations; the socket carries the box it reports.
-            let reactor = unsafe { (self.ops.socket_new)(sockfd, socket.cast()) };
-            // SAFETY: made above, and nothing else references it yet.
-            unsafe { (*socket).socket = reactor };
+            // The reactor socket carries the box it reports.
+            reactor.set_object(socket.cast());
             self.sockets.borrow_mut().insert(sockfd, socket);
             socket
         } else {
@@ -311,13 +258,10 @@ impl Multi {
         curl_socket.sockfd.set(sockfd);
         curl_socket.action.set(action);
         let events = events(action);
-        // SAFETY: C++'s operations, over this socket's reactor socket.
-        if unsafe { (self.ops.socket_events)(curl_socket.socket, ptr::null_mut()) } == 0 {
-            // SAFETY: as above.
-            unsafe { (self.ops.event_add)(curl_socket.socket, events) }
+        if curl_socket.socket.events() == 0 {
+            curl_socket.socket.add(events)
         } else {
-            // SAFETY: as above.
-            unsafe { (self.ops.event_set)(curl_socket.socket, events) }
+            curl_socket.socket.set(events)
         }
     }
 
@@ -332,8 +276,8 @@ impl Multi {
         self.active.borrow_mut().retain(|&active| active != socket);
         // SAFETY: a socket this multi made and has not freed.
         let reactor = unsafe { (*socket).socket };
-        // SAFETY: C++'s operations, over that socket's reactor socket.
-        unsafe { (self.ops.socket_free)(reactor) };
+        // SAFETY: that socket's reactor socket, which nothing uses afterwards.
+        unsafe { reactor.free() };
         if self.executing.get() {
             // SAFETY: as above.
             unsafe { (*socket).deleted.set(true) };
@@ -345,25 +289,19 @@ impl Multi {
         OK
     }
 
-    fn add_handle(&self, handle: *mut Handle) -> CURLMcode {
-        // SAFETY: the caller's live handle.
-        let cp = unsafe { (*handle).cp };
-        // SAFETY: this multi's handle and a live easy handle.
-        let result = unsafe { curl_multi_add_handle(self.handle, cp) };
+    fn add_handle(&self, handle: &mut Handle) -> CURLMcode {
+        // SAFETY: this multi's handle and the handle's live easy handle.
+        let result = unsafe { curl_multi_add_handle(self.handle, handle.cp) };
         if result == CURLM_OK {
-            // SAFETY: as above.
-            unsafe { (*handle).multi = ptr::from_ref(self).cast_mut() };
+            handle.multi = ptr::from_ref(self).cast_mut();
         }
         result
     }
 
-    fn remove_handle(&self, handle: *mut Handle) -> CURLMcode {
-        // SAFETY: the caller's live handle.
-        let cp = unsafe { (*handle).cp };
-        // SAFETY: this multi's handle and a live easy handle.
-        let result = unsafe { curl_multi_remove_handle(self.handle, cp) };
-        // SAFETY: as above.
-        unsafe { (*handle).multi = ptr::null_mut() };
+    fn remove_handle(&self, handle: &mut Handle) -> CURLMcode {
+        // SAFETY: this multi's handle and the handle's live easy handle.
+        let result = unsafe { curl_multi_remove_handle(self.handle, handle.cp) };
+        handle.multi = ptr::null_mut();
         if result == CURLM_OK {
             // Refresh the running count even if no socket event follows.
             self.timer_callback.set(true);
@@ -378,20 +316,14 @@ impl Multi {
         for socket in sockets {
             // SAFETY: a socket in this multi's map.
             let curl_socket = unsafe { &*socket };
-            let mut removed = false;
-            // SAFETY: C++'s operations, over its reactor socket.
-            unsafe { (self.ops.socket_events)(curl_socket.socket, &raw mut removed) };
-            if removed {
-                // SAFETY: as above.
-                unsafe {
-                    (self.ops.event_add)(curl_socket.socket, events(curl_socket.action.get()))
-                };
+            if curl_socket.socket.removed() {
+                curl_socket.socket.add(events(curl_socket.action.get()));
             }
         }
     }
 
     /// `Multi::exec`: run one easy handle to completion (`curl_exec`).
-    fn exec(&self, handle: *mut Handle) -> CURLcode {
+    fn exec(&self, handle: &mut Handle) -> CURLcode {
         if self.add_handle(handle) != CURLM_OK {
             return CURLE_FAILED_INIT;
         }
@@ -399,18 +331,16 @@ impl Multi {
         loop {
             self.selector_prepare();
             if self.wait_event() {
-                // SAFETY: C++'s operations.
-                let co = unsafe { (self.ops.current)() };
+                let co = host::current();
                 if !self.co.get().is_null() || co.is_null() {
                     return EXEC_NEEDS_COROUTINE;
                 }
                 self.co.set(co);
                 // SAFETY: the running coroutine.
-                canceled = unsafe { (self.ops.yield_)(co, -1.0) };
+                canceled = unsafe { host::yield_(co, -1.0) };
                 self.co.set(ptr::null_mut());
                 if canceled {
-                    // SAFETY: C++'s operations.
-                    unsafe { (self.ops.set_canceled)() };
+                    set_last_error(CO_CANCELED);
                     break;
                 }
             }
@@ -443,8 +373,7 @@ impl Multi {
             if message.msg == CURLMSG_DONE {
                 return message.result();
             }
-            // SAFETY: C++'s operations.
-            unsafe { (self.ops.warn_message)() };
+            log::warning(c"Multi::read_info", format_args!("CURLMSG default"));
         }
     }
 
@@ -576,7 +505,7 @@ impl Multi {
         }
         self.co.set(co);
         // SAFETY: the running coroutine.
-        unsafe { (self.ops.yield_)(co, timeout) };
+        unsafe { host::yield_(co, timeout) };
         self.co.set(ptr::null_mut());
         self.ready()
     }
@@ -593,10 +522,9 @@ impl Multi {
         }
         if self.co.get().is_null() {
             match socket {
-                // SAFETY: C++'s operations, over the socket's reactor socket.
-                Some(socket) => unsafe {
-                    (self.ops.event_del)(socket.socket);
-                },
+                Some(socket) => {
+                    socket.socket.del();
+                }
                 None => self.del_timer(),
             }
             return;
@@ -607,8 +535,8 @@ impl Multi {
         if self.defer_callback.replace(true) {
             return;
         }
-        // SAFETY: C++'s operations; the deferred call reaches this multi.
-        unsafe { (self.ops.defer)(self.this()) };
+        // SAFETY: the loop runs this callback; the multi waits on the deferral.
+        unsafe { host::defer(self) };
     }
 }
 
@@ -642,27 +570,15 @@ unsafe extern "C" fn handle_timeout(
 }
 
 /// # Safety
-/// `multi` came from [`swr_v1_curl_multi_new`] and is not freed.
+/// `multi` came from `swoole_curl_multi_new` and is not freed.
 unsafe fn multi<'a>(multi: *mut Multi) -> &'a Multi {
     // SAFETY: per the caller.
     unsafe { &*multi }
 }
 
-/// `new Multi()` over C++'s operations.
-/// # Safety
-/// `ops` is a static table.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_new(ops: *const Ops) -> *mut Multi {
-    // SAFETY: per the caller.
-    let Some(ops) = (unsafe { ops.as_ref() }) else {
-        return ptr::null_mut();
-    };
-    Multi::create(ops)
-}
-
 /// `delete multi`.
 /// # Safety
-/// `multi` came from [`swr_v1_curl_multi_new`]; nothing uses it afterwards.
+/// `multi` came from `swoole_curl_multi_new`; nothing uses it afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_curl_multi_free(multi: *mut Multi) {
     if multi.is_null() {
@@ -680,122 +596,74 @@ pub unsafe extern "C" fn swr_v1_curl_multi_free(multi: *mut Multi) {
 }
 
 /// `Multi::get_multi_handle`.
-/// # Safety
-/// As [`swr_v1_curl_multi_free`], without freeing.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_handle(multi: *mut Multi) -> *mut CURLM {
-    // SAFETY: per the caller.
-    unsafe { self::multi(multi) }.handle
+pub extern "C" fn swr_v1_curl_multi_handle(multi: &Multi) -> *mut CURLM {
+    multi.handle
 }
 
 /// `Multi::get_running_handles`.
-/// # Safety
-/// As [`swr_v1_curl_multi_handle`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_running(multi: *mut Multi) -> c_int {
-    // SAFETY: per the caller.
-    unsafe { self::multi(multi) }.running.get()
+pub extern "C" fn swr_v1_curl_multi_running(multi: &Multi) -> c_int {
+    multi.running.get()
 }
 
 /// The coroutine waiting on the multi, if any (`Multi::check_bound_co`).
-/// # Safety
-/// As [`swr_v1_curl_multi_handle`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_co(multi: *mut Multi) -> *mut c_void {
-    // SAFETY: per the caller.
-    unsafe { self::multi(multi) }.co.get()
+pub extern "C" fn swr_v1_curl_multi_co(multi: &Multi) -> *mut c_void {
+    multi.co.get()
 }
 
 /// `Multi::add_handle`.
-/// # Safety
-/// As [`swr_v1_curl_multi_handle`]; `handle` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_add_handle(
-    multi: *mut Multi,
-    handle: *mut Handle,
-) -> CURLMcode {
-    // SAFETY: per the caller.
-    unsafe { self::multi(multi) }.add_handle(handle)
+pub extern "C" fn swr_v1_curl_multi_add_handle(multi: &Multi, handle: &mut Handle) -> CURLMcode {
+    multi.add_handle(handle)
 }
 
 /// `Multi::remove_handle`.
-/// # Safety
-/// As [`swr_v1_curl_multi_add_handle`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_remove_handle(
-    multi: *mut Multi,
-    handle: *mut Handle,
-) -> CURLMcode {
-    // SAFETY: per the caller.
-    unsafe { self::multi(multi) }.remove_handle(handle)
+pub extern "C" fn swr_v1_curl_multi_remove_handle(multi: &Multi, handle: &mut Handle) -> CURLMcode {
+    multi.remove_handle(handle)
 }
 
-/// `Multi::perform`, after C++'s `check_bound_co`.
-/// # Safety
-/// As [`swr_v1_curl_multi_handle`].
+/// `Multi::perform`, after `swoole_curl_check_bound_co`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_perform(multi: *mut Multi) -> CURLMcode {
-    // SAFETY: per the caller.
-    unsafe { self::multi(multi) }.perform()
+pub extern "C" fn swr_v1_curl_multi_perform(multi: &Multi) -> CURLMcode {
+    multi.perform()
 }
 
-/// `Multi::select` in the coroutine C++'s `check_bound_co` returned.
+/// `Multi::select` in the coroutine `swoole_curl_check_bound_co` returned.
 /// # Safety
-/// As [`swr_v1_curl_multi_handle`]; `co` is the running coroutine.
+/// `co` is the running coroutine.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_curl_multi_select(
-    multi: *mut Multi,
+    multi: &Multi,
     co: *mut c_void,
     timeout: f64,
 ) -> c_long {
-    // SAFETY: per the caller.
-    unsafe { self::multi(multi) }.select(co, timeout)
+    multi.select(co, timeout)
 }
 
 /// `Multi::exec`; [`EXEC_NEEDS_COROUTINE`] when it must wait outside a
 /// coroutine or while another one waits.
-/// # Safety
-/// As [`swr_v1_curl_multi_add_handle`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_exec(
-    multi: *mut Multi,
-    handle: *mut Handle,
-) -> CURLcode {
-    // SAFETY: per the caller.
-    unsafe { self::multi(multi) }.exec(handle)
-}
-
-/// The multi's timer fired.
-/// # Safety
-/// As [`swr_v1_curl_multi_handle`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_on_timer(multi: *mut Multi) {
-    // SAFETY: per the caller.
-    let this = unsafe { self::multi(multi) };
-    this.timer.set(ptr::null_mut());
-    this.callback(None);
+pub extern "C" fn swr_v1_curl_multi_exec(multi: &Multi, handle: &mut Handle) -> CURLcode {
+    multi.exec(handle)
 }
 
 /// The multi's deferred wake-up: resume its waiting coroutine.
-/// # Safety
-/// As [`swr_v1_curl_multi_handle`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_deferred(multi: *mut Multi) {
-    // SAFETY: per the caller.
-    let this = unsafe { self::multi(multi) };
+fn multi_deferred(this: &Multi) {
     this.defer_callback.set(false);
     let co = this.co.get();
     if !co.is_null() {
         // SAFETY: the coroutine waiting on this multi.
-        unsafe { (this.ops.resume)(co) };
+        unsafe { host::resume(co) };
     }
 }
 
 /// A reactor event (`CURL_CSELECT_*` in `bitmask`) on a cURL socket.
 /// # Safety
 /// `object` is the reactor socket's `object`, which the multi set.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_socket_event(object: *mut c_void, bitmask: c_int) {
+unsafe fn socket_event(object: *mut c_void, bitmask: c_int) {
     // SAFETY: per the caller.
     let socket = unsafe { &*object.cast::<Socket>() };
     socket.bitmask.set(socket.bitmask.get() | bitmask);
@@ -863,5 +731,15 @@ pub unsafe extern "C" fn swoole_curl_easy_reset(cp: *mut CURL) {
     unsafe { curl_easy_setopt(cp, CURLOPT_PRIVATE, handle.cast::<c_void>()) };
 }
 
+#[cfg(not(test))]
+mod host;
+#[cfg(not(test))]
+pub use host::{swoole_curl_check_bound_co, swoole_curl_easy_perform, swoole_curl_multi_new};
+#[cfg(all(feature = "php", not(test)))]
+mod php;
+#[cfg(all(feature = "php", not(test)))]
+pub use php::swoole_curl_get_handle;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+use tests::host;
