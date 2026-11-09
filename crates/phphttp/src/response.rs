@@ -374,14 +374,14 @@ fn set_cookie(call: &Call, encode: bool) {
     let parsed = (|| -> Result<_, Invalid> {
         call.arity(1, 10)?;
         let name = call.passed(1);
-        let value = call.str(2)?;
+        let value = call.zstr(2)?;
         let expires = call.long(3, 0)?;
-        let path = call.str(4)?;
-        let domain = call.str(5)?;
+        let path = call.zstr(4)?;
+        let domain = call.zstr(5)?;
         let secure = call.bool(6, false)?;
         let http_only = call.bool(7, false)?;
-        let same_site = call.str(8)?;
-        let priority = call.str(9)?;
+        let same_site = call.zstr(8)?;
+        let priority = call.zstr(9)?;
         let partitioned = call.bool(10, false)?;
         Ok(name.map(|name| {
             let flags = [secure, http_only, partitioned];
@@ -412,37 +412,25 @@ fn set_cookie(call: &Call, encode: bool) {
     // it before it uses the context, so a bad name warns on any response.
     let cookie = if kind == IS_STRING {
         // A string argument, so `Z_PARAM_STR` reads it as it is.
-        let name = call.str(1).ok().flatten().unwrap_or(ptr::null_mut());
-        // SAFETY: the parsed arguments of this call.
-        unsafe {
-            header_line(
-                encode,
-                [
-                    name,
-                    nullable(value),
-                    nullable(path),
-                    nullable(domain),
-                    nullable(same_site),
-                    nullable(priority),
-                ],
-                expires,
-                (secure, http_only, partitioned),
-            )
-        }
+        let name = call.zstr(1).ok().flatten();
+        header_line(
+            encode,
+            [name, value, path, domain, same_site, priority],
+            expires,
+            (secure, http_only, partitioned),
+        )
     } else {
         // SAFETY: an object argument; a non-Cookie one is reported by httpbindings.
         unsafe { object_header_line(name) }
     };
-    if cookie.is_null() {
+    let Some(cookie) = cookie else {
         return call.set_bool(false);
-    }
+    };
     let Some(ctx) = checked(call) else {
-        // SAFETY: the line this call made and nothing else references.
-        unsafe { z::swr_zend_string_release(cookie) };
         return call.set_bool(false);
     };
     // SAFETY: the cookie property is a live array; it takes over the string.
-    unsafe { push_string(property(ctx, COOKIE), cookie) };
+    unsafe { push_string(property(ctx, COOKIE), cookie.into_raw()) };
     call.set_bool(true);
 }
 
