@@ -31,7 +31,7 @@ def rewrite(dockerfile, variant):
     stage = f'''FROM compile AS swoole
 COPY --from=swoole-rs / /swoole-rs
 RUN \\
-  apk add --no-cache python3 pcre2-dev pkgconf && \\
+  apk add --no-cache python3 pcre2-dev pkgconf clang-dev && \\
   curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none && \\
   export PATH="/root/.cargo/bin:$PATH" && \\
   cd /swoole-rs && \\
