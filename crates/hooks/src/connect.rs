@@ -4,7 +4,7 @@
 //! its proxies' owners and its resolver context, and `ssl_handshake`'s steps and
 //! waits. Native code keeps only the name lookup (`Host::lookup`).
 use crate::co_io::{
-    available, errno, host, set_err, swr_v1_hook_co_socket_borrowed_err,
+    NATIVE, available, errno, set_err, swr_v1_hook_co_socket_borrowed_err,
     swr_v1_hook_co_socket_default_err, swr_v1_hook_co_socket_owned_err,
 };
 use crate::co_socket::{CoSocket, buffer, swr_v1_hook_co_socket_reinit};
@@ -397,8 +397,7 @@ impl Connecting for Live<'_> {
 
     fn set_err_text(&mut self, code: c_int, text: Option<&[u8]>) {
         let Some(text) = text else {
-            // SAFETY: swoole_strerror returns static text for any code.
-            let message = unsafe { (host().strerror)(code) };
+            let message = (NATIVE.strerror)(code);
             // SAFETY: the live record and that text.
             unsafe { swr_v1_hook_co_socket_borrowed_err(self.socket, code, message) };
             return;
@@ -477,7 +476,7 @@ impl Connecting for Live<'_> {
         // SAFETY: the record's network::Socket.
         let timeout = unsafe { (*network).timeouts.dns };
         let mut address = Vec::<u8>::new();
-        let co = (host().current)();
+        let co = (NATIVE.current)();
         // Locked like wait_event.
         // SAFETY: the live record's bound state.
         unsafe { swr_v1_hook_socket_bind(state, RDWR, co) };

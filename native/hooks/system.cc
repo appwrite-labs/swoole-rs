@@ -28,24 +28,16 @@ static_assert(std::is_polymorphic<Socket>::value && !std::is_polymorphic<swr_v1_
                   alignof(swr_v1_co_socket) <= sizeof(void *),
               "coroutine::Socket's layout for crates/hooks/src/socket_members.rs");
 
-// What the Rust operations need from C++ (crates/hooks/src/co_io.rs), installed once.
+// What the Rust operations can't do without C++ types (crates/hooks/src/co_io.rs): the
+// timers (the packet gate fakes them), the yield's std::function cancel, the String
+// buffers, the Protocol callback and new/delete.
 const swr_v1_hook_co_socket_host_t Socket::host_{
-    swoole_set_last_error,
-    swoole_strerror,
-    [] { return static_cast<void *>(Coroutine::get_current_safe()); },
-    [](void *co) { return static_cast<Coroutine *>(co)->get_cid(); },
-    Coroutine::print_socket_bound_error,
     [](swr_v1_co_socket *s, double timeout) -> void * {
         return swoole_timer_add(timeout, false, [](Timer *, TimerNode *tnode) {
             swr_v1_hook_co_socket_timer_fired(static_cast<Socket *>(tnode->data), tnode);
         }, static_cast<Socket *>(s));
     },
     [](void *node) { swoole_timer_del(static_cast<TimerNode *>(node)); },
-    [] { System::sleep(0.01); },
-    [](swr_v1_co_socket *s, uint32_t events, bool add) -> bool {
-        auto *sock = s->socket;
-        return (add ? swoole_event_add(sock, events) : swoole_event_set(sock, events)) == SW_OK;
-    },
     [](swr_v1_co_socket *s, void *co, uint32_t event) {
         auto *sock = static_cast<Socket *>(s);
         Coroutine::CancelFunc cancel_fn = [sock, event](Coroutine *) {
@@ -61,16 +53,6 @@ const swr_v1_hook_co_socket_host_t Socket::host_{
             *buf = sock->write_buffer->str;
         }
     },
-    [](swr_v1_co_socket *s, uint32_t event) {
-        if (event == SW_EVENT_READ) {
-            SwooleTG.reactor->remove_read_event(s->socket);
-        } else {
-            SwooleTG.reactor->remove_write_event(s->socket);
-        }
-    },
-    [](void *co) { static_cast<Coroutine *>(co)->resume(); },
-    [](swr_v1_co_socket *s) { s->socket->ssl_shutdown(); },
-    [](swr_v1_co_socket *s) { return s->socket->check_liveness(); },
     [](swr_v1_co_socket *s, swr_v1_hook_read_buffer *view, uint32_t action, size_t value) {
         auto *sock = static_cast<Socket *>(s);
         String *buffer = action == 0 ? sock->get_read_buffer() : sock->read_buffer;
