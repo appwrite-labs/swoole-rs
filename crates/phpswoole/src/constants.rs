@@ -21,6 +21,28 @@ const SSL3: u32 = 1 << 9;
 pub(crate) const IOURING: u32 = 1 << 10;
 pub(crate) const THREAD: u32 = 1 << 12;
 
+/// The flags of the build's switches; MINIT adds [`SHORTNAME`] from the ini.
+pub(crate) fn flags() -> u32 {
+    use swoole_rs_corebase::{Switch as S, built_with};
+    let compression = [S::Zlib, S::Brotli, S::Zstd].into_iter().any(built_with);
+    [
+        (built_with(S::Debug), DEBUG),
+        (compression, COMPRESSION),
+        (built_with(S::Zlib), ZLIB),
+        (built_with(S::Brotli), BROTLI),
+        (built_with(S::Tls1_1), TLS1_1),
+        (built_with(S::Tls1_2), TLS1_2),
+        (built_with(S::Tls1_3), TLS1_3),
+        (built_with(S::Dtls), DTLS),
+        (built_with(S::Ssl3), SSL3),
+        (built_with(S::IoUring), IOURING),
+        (built_with(S::Thread), THREAD),
+    ]
+    .into_iter()
+    .filter(|(on, _)| *on)
+    .fold(0, |flags, (_, bit)| flags | bit)
+}
+
 /// `SWOOLE_VERSION`.
 pub(crate) const VERSION: &CStr = c"6.2.5";
 

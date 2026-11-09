@@ -12,7 +12,8 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::{
-    swr_v1_core_set_enable_kqueue, swr_v1_core_set_enable_signalfd, swr_v1_core_set_trace_flags,
+    Switch, built_with, swr_v1_core_set_enable_kqueue, swr_v1_core_set_enable_signalfd,
+    swr_v1_core_set_print_backtrace_on_error, swr_v1_core_set_trace_flags,
 };
 use swoole_rs_utilities::{
     Logger, LoggerSetting, process_logger, swoole_set_log_file, swoole_set_log_level,
@@ -27,7 +28,7 @@ use swoole_rs_zend::{
         swr_zval_is_true, zend_array, zend_hash_str_find, zend_ini_parse_quantity, zend_string,
         zval,
     },
-    type_of, value,
+    throw_exception, type_of, value,
 };
 
 /// `swHttp2SettingId`.
@@ -140,6 +141,9 @@ pub unsafe extern "C" fn php_swoole_set_global_option(options: *mut zend_array) 
     bailout::finish();
 }
 
+/// `SW_ERROR_OPERATION_NOT_SUPPORT`.
+const OPERATION_NOT_SUPPORT: i64 = 507;
+
 /// `php_swoole_set_global_option`'s body: false after a size that does not
 /// parse, whose fatal error is deferred.
 pub fn set_global(options: *mut zend_array) -> bool {
@@ -197,8 +201,18 @@ fn apply(options: *mut zend_array) -> Result<(), (*mut zval, *mut zend_string)> 
         unsafe { (*globals()).display_errors = truthy(value) != 0 };
     }
     flag(c"print_backtrace_on_error", &|on| {
-        // SAFETY: C++'s setter (it throws when the build has no stack traces).
-        unsafe { (ops.set_print_backtrace)(u8::from(on)) };
+        if built_with(Switch::Stacktrace) || built_with(Switch::Execinfo) {
+            swr_v1_core_set_print_backtrace_on_error(on);
+            return;
+        }
+        // SAFETY: a handler's exception, of a class MINIT registered.
+        unsafe {
+            throw_exception(
+                crate::ERROR.entry(),
+                c"The `print_backtrace_on_error` option requires `boost stacktrace` or `execinfo.h` to be installed",
+                OPERATION_NOT_SUPPORT,
+            );
+        }
     });
     // [DNS]
     text_option(options, c"dns_server", |server, length| {

@@ -1,7 +1,7 @@
 //! `Swoole\Coroutine\System` (upstream's `swoole_coroutine_system.cc`):
 //! argument parsing, validation and results in Rust. The coroutine-aware
 //! system calls stay the C++ `swoole::coroutine::System`: its static members
-//! by their own symbols, and `swr_v1_system_*` (in `native/hooks/system.cc`)
+//! by their own symbols, and `swr_v1_system_*` (in `crates/hooks/src/resolve.rs`)
 //! where a C++ string or list carries the result.
 use crate::host;
 use std::{

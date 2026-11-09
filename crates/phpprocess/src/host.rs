@@ -11,7 +11,7 @@ use swoole_rs_corebase::{
 };
 use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
 use swoole_rs_phphelpers::{callable, function_call};
-use swoole_rs_phpswoole::{Capability, built_with};
+use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_process::{methods, worker_record::WorkerRecord};
 use swoole_rs_server::view;
 use swoole_rs_zend::{
@@ -287,7 +287,7 @@ pub fn enable_coroutine() -> bool {
 
 /// `tsrm_is_main_thread()`, true without threads.
 pub(crate) fn main_thread() -> bool {
-    !built_with(Capability::Thread) || {
+    !built_with(Switch::Thread) || {
         // SAFETY: no preconditions.
         unsafe { swr_zend_tsrm_is_main_thread() }
     }
@@ -308,7 +308,7 @@ unsafe extern "C-unwind" fn deferred_signal(data: *mut c_void) {
 /// `swoole_signal_set(signo, handler, safety)`, deferred to the event loop
 /// under the thread context.
 pub(crate) fn signal_set(signo: c_int, handler: Handler, safety: bool) {
-    if built_with(Capability::ThreadContext) {
+    if built_with(Switch::ThreadContext) {
         defer(
             deferred_signal,
             Box::into_raw(Box::new((signo, handler, safety))).cast(),
@@ -360,7 +360,7 @@ pub(crate) fn signal_listen() {
 /// Outside thread builds, a process that is not a user worker forgets its
 /// worker type.
 pub(crate) fn reset_worker_type() {
-    if !built_with(Capability::Thread) && methods::swoole_get_worker_type() != USER_WORKER {
+    if !built_with(Switch::Thread) && methods::swoole_get_worker_type() != USER_WORKER {
         methods::swoole_set_worker_type(0);
     }
 }

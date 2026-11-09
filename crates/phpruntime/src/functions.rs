@@ -626,7 +626,7 @@ pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout
         Some(false) => detach_parent(c"Swoole\\Coroutine\\Socket"),
         None => {}
     }
-    if ops.features & flags::NATIVE_CURL != 0 {
+    if crate::features() & flags::NATIVE_CURL != 0 {
         native_curl(&mut requested, installed);
     }
     let curl = CURL.map(|name| (name, None));

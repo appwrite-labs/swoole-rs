@@ -27,5 +27,5 @@ as a plain function (`swr_v1_event_set_exit_condition`).
 `Swoole\Coroutine\System` and `FILE_LOCK` are Rust (`system.rs`), under
 upstream's `php_swoole_coroutine_system_minit`. It calls
 `swoole::coroutine::System`'s static members by their own symbols, and the
-`swr_v1_system_*` functions in `native/hooks/system.cc` where a C++ string or list
+`swr_v1_system_*` functions in `crates/hooks/src/resolve.rs` where a C++ string or list
 holds the result.

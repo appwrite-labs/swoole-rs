@@ -2,8 +2,9 @@
 // Compatibility derived from Swoole v6.2.4 ext-src/php_swoole_cxx.cc, php_swoole.cc and
 // swoole_runtime.cc (Swoole contributors).
 // What crates/phpswoole and crates/phpruntime need of C++ that stable Rust can't express:
-// the module globals and get_module(), and the ops tables whose entries configure's #ifdefs decide (the optional drivers, ssh2, ftp, stdext, Swoole\Thread,
-// the PDO hooks) or that reach C++ objects (the module globals, the DNS settings).
+// the module globals and get_module(), and the ops tables whose entries reach C++ objects (the
+// module globals, the DNS settings), the bundled C clients (ssh2, ftp), stdext's handler table,
+// or the library versions. The build's switches are native/corebase/switches.cc's; Rust reads them.
 #include "swoole_rs_phphost.h"
 #include "swoole_rs_phphelpers.h"
 #include "swoole_rs_phpruntime.h"
@@ -22,14 +23,12 @@ SW_API zend_string **sw_zend_known_strings = nullptr;
 
 // The module host. crates/phpswoole owns the module: its entry, dependencies, MINIT,
 // MSHUTDOWN, RINIT, RSHUTDOWN and MINFO, fatal_error and the backtrace hook. C++ keeps
-// the module globals and lends, as swr_v1_phpswoole_ops, what only configure's #ifdefs
-// or C++ can reach.
+// the module globals and lends, as swr_v1_phpswoole_ops, what only C++ can reach.
 #include "php_swoole_library.h"
 #include "swoole_rs_phpthread.h"
 #include "swoole_rs_locks.h"
 #include "swoole_rs_native_effect.h"
 #include "swoole_rs.h"
-#include "swoole_rs_phpswoole_info.h"
 #include "swoole_server.h"
 BEGIN_EXTERN_C()
 #include "ext/pcre/php_pcre.h"
@@ -49,9 +48,6 @@ END_EXTERN_C()
 #endif
 #ifdef SW_USE_CARES
 #include <ares.h>
-#endif
-#ifdef SW_USE_PGSQL
-extern "C" void swoole_libpq_version(char *buf, size_t len);
 #endif
 #ifdef SW_HAVE_SSH2LIB
 #include "swoole_rs_ssh2.h"
@@ -216,63 +212,9 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
         PHP_MINIT(ftp)(MODULE_PERSISTENT, module_number);
 #endif
     },
-    [](int module_number) {
-#ifdef SW_USE_PGSQL
-        php_swoole_pgsql_minit(module_number);
-#endif
-#ifdef SW_USE_ODBC
-        php_swoole_odbc_minit(module_number);
-#endif
-#ifdef SW_USE_ORACLE
-        php_swoole_oracle_minit(module_number);
-#endif
-#ifdef SW_USE_SQLITE
-        php_swoole_sqlite_minit(module_number);
-#endif
-#ifdef SW_USE_FIREBIRD
-        php_swoole_firebird_minit(module_number);
-#endif
-#ifdef SW_THREAD
-        swr_v1_phpthread_minit();
-        swr_v1_phplocks_thread_atomic_minit();
-        swr_v1_phplocks_thread_lock_minit([](const char *message) { php_swoole_fatal_error(E_ERROR, "%s", message); });
-        swr_v1_phpthread_barrier_minit();
-        swr_v1_phpthread_queue_minit();
-        swr_v1_phpthread_map_minit();
-        swr_v1_phpthread_arraylist_minit();
-#endif
-#ifdef SW_STDEXT
-        swr_v1_phpstdext_minit();
-#endif
-    },
     [] {
-#ifdef SW_USE_PGSQL
-        php_swoole_pgsql_mshutdown();
-#endif
-#ifdef SW_USE_ORACLE
-        php_swoole_oracle_mshutdown();
-#endif
-#ifdef SW_USE_SQLITE
-        php_swoole_sqlite_mshutdown();
-#endif
-#ifdef SW_USE_FIREBIRD
-        php_swoole_firebird_mshutdown();
-#endif
 #ifdef SW_HAVE_SSH2LIB
         php_swoole_ssh2_mshutdown();
-#endif
-    },
-    [] {
-#ifdef SW_USE_ORACLE
-        php_swoole_oracle_rinit();
-#endif
-#ifdef SW_THREAD
-        swr_v1_phpthread_rinit();
-#endif
-    },
-    [] {
-#ifdef SW_THREAD
-        swr_v1_phpthread_rshutdown();
 #endif
     },
     [] { swr_v1_phphelpers_known_free(&sw_zend_known_strings); },
@@ -284,24 +226,9 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
     [](zval *value, const char *str, size_t length, int64_t options, int64_t depth) {
         zend::json_decode(value, str, length, options, depth);
     },
-    [](uint8_t on) {
-#if !defined(HAVE_BOOST_STACKTRACE) && !defined(HAVE_EXECINFO)
-        zend_throw_exception(
-            swoole_error_ce,
-            "The `print_backtrace_on_error` option requires `boost stacktrace` or `execinfo.h` to be installed",
-            SW_ERROR_OPERATION_NOT_SUPPORT);
-#else
-        swr_v1_core_set_print_backtrace_on_error(on);
-#endif
-    },
     [](const char *server, size_t length) { swr_v1_clients_set_dns_server(reinterpret_cast<const uint8_t *>(server), length); },
     [](double seconds) { SwooleG.dns_cache_refresh_time = seconds; },
     [] { return SwooleG.dns_cache_refresh_time; },
-#ifdef SW_THREAD
-    [] { return (uint8_t) tsrm_is_main_thread(); },
-#else
-    [] { return (uint8_t) 1; },
-#endif
     [] { return (uint8_t) (sw_reactor() != nullptr); },
     [] { Coroutine::get_current_safe(); },
     [] { php_swoole_check_reactor(); },
@@ -326,48 +253,7 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
 #endif
         return SUCCESS;
     },
-    [] {
-        uint32_t flags = 0;
-#ifdef SW_DEBUG
-        flags |= SWR_PHPSWOOLE_DEBUG;
-#endif
-#ifdef SW_HAVE_COMPRESSION
-        flags |= SWR_PHPSWOOLE_COMPRESSION;
-#endif
-#ifdef SW_HAVE_ZLIB
-        flags |= SWR_PHPSWOOLE_ZLIB;
-#endif
-#ifdef SW_HAVE_BROTLI
-        flags |= SWR_PHPSWOOLE_BROTLI;
-#endif
-#ifdef TLS1_1_VERSION
-        flags |= SWR_PHPSWOOLE_TLS1_1;
-#endif
-#ifdef TLS1_2_VERSION
-        flags |= SWR_PHPSWOOLE_TLS1_2;
-#endif
-#ifdef TLS1_3_VERSION
-        flags |= SWR_PHPSWOOLE_TLS1_3;
-#endif
-#ifdef SW_SUPPORT_DTLS
-        flags |= SWR_PHPSWOOLE_DTLS;
-#endif
-#ifdef HAVE_SSL3
-        flags |= SWR_PHPSWOOLE_SSL3;
-#endif
-#ifdef SW_USE_IOURING
-        flags |= SWR_PHPSWOOLE_IOURING;
-#endif
-#ifdef SW_STDEXT
-        flags |= SWR_PHPSWOOLE_STDEXT;
-#endif
-#ifdef SW_THREAD
-        flags |= SWR_PHPSWOOLE_THREAD;
-#endif
-        return flags;
-    },
     [](swr_v1_phpswoole_info *info) {
-        info->flags = swr_cpp_phpswoole_info_flags();
         info->abi = swr_v1_abi_version();
         info->features = swr_v1_feature_bits();
         info->version = SWOOLE_VERSION;
@@ -397,19 +283,11 @@ static const swr_v1_phpswoole_ops phpswoole_ops = {
 #else
         info->zstd = "enabled";
 #endif
-#ifdef SW_USE_PGSQL
-        swoole_libpq_version(info->libpq, sizeof(info->libpq));
-#endif
     },
     swoole_stdext_handlers,
     swoole_ssh2_handlers,
     swoole_ftp_handlers,
     [] { return (int64_t) Coroutine::get_socket_bound_cid(); },
-    [] {
-#ifdef SW_THREAD
-        swr_v1_phpthread_bailout();
-#endif
-    },
 };
 
 // The Cargo-built extension (crates/ext) exports get_module() from Rust, which calls this.
@@ -443,21 +321,6 @@ extern "C" uint8_t swr_cpp_phpswoole_info_ftp(void *module) {
 // Swoole\Runtime is Rust (crates/phpruntime); this is what C++ alone reaches for it.
 // PHP's plain-files wrapper and its originals are thirdparty/php/streams/plain_wrapper.c's.
 SW_EXTERN_C_BEGIN
-#ifdef SW_USE_PGSQL
-void swoole_pgsql_set_blocking(bool blocking);
-#endif
-#ifdef SW_USE_ODBC
-void swoole_odbc_set_blocking(bool blocking);
-#endif
-#ifdef SW_USE_ORACLE
-void swoole_oracle_set_blocking(bool blocking);
-#endif
-#ifdef SW_USE_SQLITE
-void swoole_sqlite_set_blocking(bool blocking);
-#endif
-#ifdef SW_USE_FIREBIRD
-void swoole_firebird_set_blocking(bool blocking);
-#endif
 #if defined(HAVE_PUTENV) && defined(SW_THREAD)
 PHP_FUNCTION(swoole_putenv);
 #endif
@@ -467,60 +330,8 @@ PHP_FUNCTION(swoole_exit);
 extern php_stream_wrapper sw_php_plain_files_wrapper;
 SW_EXTERN_C_END
 
-static void runtime_pdo(uint32_t flag, uint8_t blocking) {
-    switch (flag) {
-#ifdef SW_USE_PGSQL
-    case SWR_HOOK_PDO_PGSQL:
-        swoole_pgsql_set_blocking(blocking);
-        break;
-#endif
-#ifdef SW_USE_ODBC
-    case SWR_HOOK_PDO_ODBC:
-        swoole_odbc_set_blocking(blocking);
-        break;
-#endif
-#ifdef SW_USE_ORACLE
-    case SWR_HOOK_PDO_ORACLE:
-        swoole_oracle_set_blocking(blocking);
-        break;
-#endif
-#ifdef SW_USE_SQLITE
-    case SWR_HOOK_PDO_SQLITE:
-        swoole_sqlite_set_blocking(blocking);
-        break;
-#endif
-#ifdef SW_USE_FIREBIRD
-    case SWR_HOOK_PDO_FIREBIRD:
-        swoole_firebird_set_blocking(blocking);
-        break;
-#endif
-    default:
-        break;
-    }
-}
-
 static const swr_v1_phpruntime_ops *runtime_ops() {
     static swr_v1_phpruntime_ops ops = {
-        0
-#ifdef SW_USE_PGSQL
-            | SWR_HOOK_PDO_PGSQL
-#endif
-#ifdef SW_USE_ODBC
-            | SWR_HOOK_PDO_ODBC
-#endif
-#ifdef SW_USE_ORACLE
-            | SWR_HOOK_PDO_ORACLE
-#endif
-#ifdef SW_USE_SQLITE
-            | SWR_HOOK_PDO_SQLITE
-#endif
-#ifdef SW_USE_FIREBIRD
-            | SWR_HOOK_PDO_FIREBIRD
-#endif
-#ifdef SW_USE_CURL
-            | SWR_HOOK_NATIVE_CURL
-#endif
-        ,
         nullptr,
         []() -> uint8_t { return Coroutine::get_current() != nullptr; },
         [](double seconds) -> int32_t { return swoole::coroutine::System::sleep(seconds); },
@@ -529,7 +340,6 @@ static const swr_v1_phpruntime_ops *runtime_ops() {
         []() -> uint8_t { return sw_is_main_thread(); },
         []() -> uint32_t { return sw_active_thread_count(); },
         php_swoole_runtime_stream_ops,
-        runtime_pdo,
         [](int32_t level, const char *message) { php_swoole_fatal_error(level, "%s", message); },
         [](int32_t level, const char *message) { php_swoole_error(level, "%s", message); },
         PHP_FN(swoole_proc_open),

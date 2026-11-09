@@ -62,9 +62,10 @@ wake that was not the timeout.
 operations under their upstream symbols (`yield_ex`, `cancel`, `activate`,
 `deactivate`, `print_list`, `print_socket_bound_error`), the
 `swr_v1_coroutine_{scheduler_get,create,bail}` exports and the `swoole_coroutine_*`
-C API. `native/coroutine/coroutine.cc` keeps only `swr_cpp_coroutine_build`, the
-configure switches (`SWR_CTX_*`, `SWR_CO_TIME`) that only a configured C++ compile
-sees.
+C API. The configure switches it reads (`SW_USE_THREAD_CONTEXT`,
+`SW_CONTEXT_PROTECT_STACK_PAGE`, `SW_CONTEXT_DETECT_STACK_USAGE`, `SW_CORO_TIME`) are
+`swoole_rs_corebase::built_with`'s (native/corebase/switches.cc), so the module has
+no native source left.
 
 ## Context stack
 

@@ -24,11 +24,11 @@ mod entry;
 mod functions;
 mod implicit;
 mod info;
-mod info_inventory;
 mod ini;
 mod interfaces;
 mod memory;
 mod module;
+mod optional;
 mod options;
 mod serialize;
 mod table;
@@ -37,8 +37,7 @@ mod vm;
 pub use asynchronous::php_swoole_set_aio_option;
 pub use entry::{swr_v1_phpswoole_fatal_exit, swr_v1_phpswoole_module};
 pub use functions::mime_type;
-pub use info::{built_with, swr_v1_phpswoole_minfo};
-pub use info_inventory::Capability;
+pub use info::swr_v1_phpswoole_minfo;
 pub use ini::swr_v1_phpswoole_register_ini;
 pub use interfaces::sys_warning;
 pub use memory::sw_zend_string_allocator;
@@ -48,8 +47,10 @@ pub use module::{
     swr_v1_phpswoole_init_globals, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,
     swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
 };
+pub use optional::set_blocking;
 pub use options::{php_swoole_set_global_option, set_global, sw_zval_is_serializable};
 pub use serialize::{php_swoole_serialize, php_swoole_unserialize, serialize, unserialize};
+pub use swoole_rs_corebase::{Switch, built_with};
 
 use std::{
     ffi::{c_char, c_int, c_void},
@@ -79,14 +80,10 @@ pub struct HostOps {
     /// buffer size and DNS cache refresh time, macOS's `pcre.jit`, the known
     /// strings.
     ready: unsafe extern "C" fn(),
-    /// The hooks only C++'s `#ifdef`s decide, where upstream calls them:
-    /// ssh2 and ftp after the clients; the drivers, `Swoole\Thread` and
-    /// stdext before the tracer; and their MSHUTDOWN, RINIT and RSHUTDOWN.
+    /// The bundled C clients configure builds in, ssh2 and ftp: their MINIT,
+    /// after the clients', and ssh2's MSHUTDOWN, after the drivers'.
     optional_client_minit: unsafe extern "C" fn(module_number: c_int),
-    optional_minit: unsafe extern "C" fn(module_number: c_int),
     optional_mshutdown: unsafe extern "C" fn(),
-    optional_rinit: unsafe extern "C" fn(),
-    optional_rshutdown: unsafe extern "C" fn(),
     /// `zend::known_strings_dtor()`.
     known_strings_dtor: unsafe extern "C" fn(),
     /// `swoole_set_task_tmpdir(dir)`.
@@ -108,15 +105,10 @@ pub struct HostOps {
         options: i64,
         depth: i64,
     ),
-    /// `SwooleG.print_backtrace_on_error`, or C++'s exception when the build
-    /// has no stack traces.
-    set_print_backtrace: unsafe extern "C" fn(on: u8),
     set_dns_server: unsafe extern "C" fn(server: *const c_char, length: usize),
     // `swoole_async_set()` and the coroutine DNS cache's remaining native field.
     set_dns_cache_refresh_time: unsafe extern "C" fn(seconds: f64),
     dns_cache_refresh_time: unsafe extern "C" fn() -> f64,
-    /// `SW_MUST_BE_MAIN_THREAD`'s test: always true without `SW_THREAD`.
-    main_thread: unsafe extern "C" fn() -> u8,
     /// `sw_reactor() != nullptr`.
     reactor_created: unsafe extern "C" fn() -> u8,
     /// `Coroutine::get_current_safe()`: a fatal error outside a coroutine.
@@ -135,8 +127,6 @@ pub struct HostOps {
     /// MINIT's start: the bridge ABI check, the native effect provider, the
     /// `SWOOLE_RS_*` constants, the module globals and ini entries. 0 on success.
     begin: unsafe extern "C" fn(kind: c_int, module_number: c_int) -> c_int,
-    /// The `swr_v1_phpswoole_minit` flags the build's `#ifdef`s set.
-    minit_flags: unsafe extern "C" fn() -> u32,
     /// MINFO's compiler and library facts.
     info: unsafe extern "C" fn(info: *mut info::Info),
     /// The stdext, ssh2 and ftp handler arrays (null when the build lacks one).
@@ -145,8 +135,6 @@ pub struct HostOps {
     ftp: *const Option<Handler>,
     /// `Coroutine::get_socket_bound_cid()`.
     socket_bound_cid: unsafe extern "C" fn() -> i64,
-    /// `swr_v1_phpthread_bailout()` (nothing without `SW_THREAD`).
-    thread_bailout: unsafe extern "C" fn(),
 }
 
 // SAFETY: a static table of functions and static arrays, never written.
@@ -203,8 +191,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
     if unsafe { (ops.begin)(kind, module_number) } != 0 {
         return -1;
     }
-    // SAFETY: C++'s constant flags.
-    let mut flags = unsafe { (ops.minit_flags)() };
+    let mut flags = constants::flags();
     // SAFETY: this thread's globals, which the ini entries just set.
     if unsafe { (*module::globals()).use_shortname } {
         flags |= constants::SHORTNAME;

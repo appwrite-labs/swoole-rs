@@ -22,6 +22,19 @@ pub mod native;
 pub mod net_types;
 mod random;
 mod signal_mask;
+pub mod switches;
+pub use switches::Switch;
+
+unsafe extern "C" {
+    /// native/corebase/switches.cc: a bit per [`Switch`] the build has.
+    safe static swr_cpp_switches: u64;
+}
+
+/// Whether configure built C++ with `switch` (its `#if` in [`switches::SWITCHES`]).
+#[must_use]
+pub fn built_with(switch: Switch) -> bool {
+    swr_cpp_switches & (1 << switch as u8) != 0
+}
 pub use signal_mask::{
     signal_block_all, signal_blocking_all, signal_unblock_all, with_signals_blocked,
 };

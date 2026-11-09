@@ -2,9 +2,8 @@
 
 Feature bit 65536 (`hooks`). ABI:
 `swoole_rs_hooks.h`. Upstream's coroutine runtime, hook, socket, system, file-lock
-and io_uring sources have left the build. What Rust can't express of `System` and
-the coroutine Socket is `native/hooks/system.cc`; `coroutine::Socket` and
-`SocketImpl` are `swoole_rs_coroutine_socket.h`; `swoole_socket_hook.h` and
+and io_uring sources have left the build, and so has the module's last native source:
+`coroutine::Socket` and `SocketImpl` are `swoole_rs_coroutine_socket.h`; `swoole_socket_hook.h` and
 `swoole_file_hook.h` keep only what `ftp.c` and `plain_wrapper.c` use.
 
 ## The coroutine socket
@@ -14,16 +13,17 @@ and nothing more: no vtable and no C++ members, which the header asserts. Its st
 proxies, TLS context and destructor callback are the record's `SocketExtra`, which the
 constructors make and `~Socket` (`swr_v1_hook_co_socket_release`) frees. Rust makes the
 sockets it hands out (`swr_v1_hook_co_socket_make`: the coroutine streams, the hooked
-fds, the DNS socket; a `UringSocket` when `SW_USE_URING_SOCKET`, which the hooks host
-reports), the accepted ones (`accept`) and frees them (`swr_v1_hook_co_socket_free`);
+fds, the DNS socket; a `UringSocket` when the build has `SW_USE_URING_SOCKET`), the accepted ones (`accept`) and frees them (`swr_v1_hook_co_socket_free`);
 `connect(host)` with its resolver context and proxies, `set_*_proxy` and the peer's
 certificate chain are Rust as well. C++ still constructs a socket with `new SocketImpl`
 or as a local (the bundled ext/ssh2, the hooks fixture) and deletes its own.
 
-## What stays C++ (`system.cc`)
+## The build's switches
 
-- The hooks host's io_uring pointer and the `HAVE_IOURING_*` and
-  `SW_USE_URING_SOCKET` configure macros. Registering it also installs Rust's
+- The `HAVE_IOURING_*` and `SW_USE_URING_SOCKET` configure macros are
+  `swoole_rs_corebase::built_with` switches (native/corebase/switches.cc), and the
+  io_uring engine is the `iouring` feature's. `swoole_init` calls
+  `swr_v1_hook_install`, which builds the hooks host from them and installs Rust's
   socket host (`co_io::Host`: the timers, the read `String`, `recv`/`recv_all`, the
   `Protocol` length callback and the packet diagnostics). The socket's other effects (the yield with its
   cancel, the write buffer, last error, `strerror`, the current coroutine and its
@@ -153,9 +153,9 @@ aliases are never uninstalled.
   `readlink`, `statvfs`, `access`), `sleep`, `usleep`, `getaddrinfo` and
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
   The coroutine test, `async_job`, `System::sleep` and the last error are Rust
-  (`stdio::NATIVE`). system.cc registers a host table while the library loads
-  (`swr_v1_hook_set_host`): in an io_uring build, `swr_v1_uring_native`, the
-  `HAVE_IOURING_*` opcodes and whether sockets are `UringSocket`s.
+  (`stdio::NATIVE`). `swoole_init` installs their host (`swr_v1_hook_install`): in an
+  io_uring build, `swr_v1_uring_native`, the `HAVE_IOURING_*` opcodes and whether
+  sockets are `UringSocket`s.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;
   outside a coroutine the libc call runs in place; inside one it runs through native
   `async`, which parks the coroutine and restores the worker's errno; a refused

@@ -45,7 +45,7 @@ thread_local! {
 }
 
 /// Installs the runtime's table when native registers the hooks host
-/// (`stdio::swr_v1_hook_set_host`), so the runtime's timer and coroutine symbols
+/// (`stdio::swr_v1_hook_install`), so the runtime's timer and coroutine symbols
 /// link only then, not into every binary that links hooks.
 #[cfg(not(test))]
 pub(crate) fn install_native() {
@@ -55,8 +55,8 @@ pub(crate) fn install_native() {
 /// The installed table.
 #[cfg(not(test))]
 pub(crate) fn host() -> &'static Host {
-    // SAFETY: the runtime's static table is installed while the library loads
-    // (system.cc), before any socket operation runs.
+    // SAFETY: the runtime's static table is installed by swoole_init
+    // (stdio::swr_v1_hook_install), before any socket operation runs.
     unsafe { &*HOST.load(Ordering::Acquire) }
 }
 

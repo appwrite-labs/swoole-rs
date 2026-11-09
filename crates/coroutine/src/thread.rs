@@ -58,7 +58,7 @@ struct Thread {
     handle: Option<JoinHandle<()>>,
 }
 
-/// `SWR_CTX_THREAD`: the context is a thread, not a stack.
+/// `SWR_CTX_THREAD` (`SW_USE_THREAD_CONTEXT`): the context is a thread, not a stack.
 pub const THREAD: u32 = 4;
 
 struct Start(*mut Context, *mut Thread);

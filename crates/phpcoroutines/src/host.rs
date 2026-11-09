@@ -133,7 +133,7 @@ pub(crate) fn flag(bit: u32) -> bool {
         MAIN_THREAD => !cfg!(zts) || unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() },
         // Only SW_CORO_TIME builds give the scheduler a clock.
         CORO_TIME => sched().hooks.clock.is_some(),
-        THREAD => swoole_rs_phpswoole::built_with(swoole_rs_phpswoole::Capability::Thread),
+        THREAD => swoole_rs_phpswoole::built_with(swoole_rs_phpswoole::Switch::Thread),
         _ => false,
     }
 }

@@ -2423,7 +2423,6 @@ unsafe extern "C-unwind" {
     fn swr_case_hints_vectors_and_failure_publication();
     fn swr_case_native_output_append_exception_is_contained();
     fn swr_case_actual_async_numeric_results();
-    fn swr_case_owned_address_cache_exception();
 }
 
 fn protocol_snapshot_and_copy_restore() {
@@ -2454,11 +2453,6 @@ fn native_output_append_exception_is_contained() {
 fn actual_async_numeric_results() {
     // SAFETY: in a coroutine.
     run(|| unsafe { swr_case_actual_async_numeric_results() });
-}
-
-fn owned_address_cache_exception() {
-    // SAFETY: the fixture's case.
-    unsafe { swr_case_owned_address_cache_exception() };
 }
 
 /// `rust_socket_scopes.<name>`: the timeout scope, whose C++ API left the hybrid
@@ -2493,10 +2487,6 @@ pub(super) const DNS_REQUEST_CASES: super::Cases = &[
         native_output_append_exception_is_contained,
     ),
     ("actual_async_numeric_results", actual_async_numeric_results),
-    (
-        "owned_address_cache_exception",
-        owned_address_cache_exception,
-    ),
 ];
 
 /// `coroutine_socket.<name>`, in upstream's order.

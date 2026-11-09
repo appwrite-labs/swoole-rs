@@ -16,6 +16,7 @@
 #include "swoole_coroutine_api.h"
 #include "swoole_rs_corebase.h"
 #include "swoole_rs_utilities.h"
+#include "swoole_rs_hooks.h"
 
 #include <cstdarg>
 
@@ -89,11 +90,19 @@ static uintptr_t effect(int effect, uintptr_t argument) {
     return 0;
 }
 
-// Rust's swoole_init (crates/corebase/src/lifecycle.rs), once the effects are registered. Only
-// here, not as this file loads, so the gates that never call it link without those leaves.
+// crates/hooks' copies of these.
+static_assert(SW_EVENT_READ == 1 << 9 && SW_EVENT_WRITE == 1 << 10, "swr_v1_hook_socket_* event bits");
+static_assert(SW_FD_CO_SOCKET == 6 && SW_SOCK_RAW == 7 && SW_BUFFER_SIZE_BIG == 65536 &&
+                  SW_INPUT_BUFFER_SIZE == 2 * 1024 * 1024,
+              "swr_v1_hook_co_socket constants");
+
+// Rust's swoole_init (crates/corebase/src/lifecycle.rs), once the effects and the hooked
+// functions' host are registered. Only here, not as this file loads, so the gates that never
+// call it link without those leaves.
 void swoole_init() {
     swr_v1_core_set_log_host(swr_v1_utils_log);
     swr_v1_core_set_native_host({swoole_get_env, effect, swr_v1_process_logger});
+    swr_v1_hook_install();
     swr_v1_core_swoole_init();
 }
 

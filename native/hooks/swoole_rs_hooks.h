@@ -43,16 +43,9 @@ swr_v1_hook_event_plan swr_v1_hook_event_waiter(uint32_t received, uint32_t even
 typedef struct { int32_t fd; int32_t events; int32_t revents; } swr_v1_hook_poll_fd;
 /* System::socket_poll over count distinct fds, storing each one's revents. */
 bool swr_v1_hook_socket_poll(swr_v1_hook_poll_fd *fds, size_t count, double timeout);
-/* What the hooked functions (Rust, under upstream's swoole_coroutine_<name>) need
- * of native; registered at load (swr_v1_hook_set_host). */
-typedef struct swr_v1_hook_host {
-    const void *uring;             /* &swr_v1_uring_native with io_uring, else NULL */
-    bool uring_statx;              /* HAVE_IOURING_STATX */
-    bool uring_ftruncate;          /* HAVE_IOURING_FTRUNCATE */
-    bool uring_futex;              /* HAVE_IOURING_FUTEX */
-    bool uring_socket;             /* SW_USE_URING_SOCKET: Rust's sockets are UringSockets */
-} swr_v1_hook_host;
-void swr_v1_hook_set_host(const swr_v1_hook_host *host);
+/* Install what the hooked functions (Rust, under upstream's swoole_coroutine_<name>)
+ * take of the build, and their runtime: swoole_init calls it. */
+void swr_v1_hook_install(void);
 double swr_v1_hook_timeval(double seconds, double micros);
 typedef struct { uint32_t flags; bool conflict; } swr_v1_hook_curl_plan;
 swr_v1_hook_curl_plan swr_v1_hook_curl_flags(uint32_t flags, uint32_t native, uint32_t php);
