@@ -73,10 +73,16 @@ unsafe fn park(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps) -> Result
     // SAFETY: the socket `add` made.
     unsafe { (ops.remove)(socket) };
     if error == 0 {
-        Ok(waiter.revents)
-    } else {
-        Err(error)
+        return Ok(waiter.revents);
     }
+    if waiter.revents != 0 {
+        // An event fired in the loop pass that timed out or cancelled the
+        // wait, and its deferred resume is still queued: take it here, or it
+        // resumes this coroutine wherever it next waits, or after it ends.
+        // SAFETY: as above.
+        unsafe { (ops.park)(co, 0.0) };
+    }
+    Err(error)
 }
 
 /// What `wait_event` returns.
@@ -340,6 +346,30 @@ mod tests {
     }
     unsafe extern "C" fn unused(_: *mut c_void, _: f64) -> i32 {
         unreachable!()
+    }
+    thread_local! {
+        static PARKS: Cell<i32> = const { Cell::new(0) };
+    }
+    /// A read fires, then the timer times the wait out before the deferred
+    /// resume runs; the second park takes that resume.
+    unsafe extern "C" fn fires_then_times_out(co: *mut c_void, timeout: f64) -> i32 {
+        PARKS.set(PARKS.get() + 1);
+        if PARKS.get() == 2 {
+            assert_eq!(timeout, 0.0);
+            return 0;
+        }
+        assert_eq!(unsafe { event_ready(WAITER.get(), READ) }, co);
+        libc::ETIMEDOUT
+    }
+
+    #[test]
+    fn a_timeout_after_an_event_takes_its_queued_resume() {
+        assert_eq!(
+            wait(7, READ, 1.0, fires_then_times_out),
+            failed(0, libc::ETIMEDOUT)
+        );
+        assert_eq!(PARKS.get(), 2);
+        assert_eq!(ADDED.get(), 0);
     }
 
     fn wait(

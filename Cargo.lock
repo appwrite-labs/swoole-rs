@@ -674,6 +674,7 @@ dependencies = [
  "libc",
  "pq-sys",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-zend",
 ]
