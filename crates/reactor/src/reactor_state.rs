@@ -98,23 +98,23 @@ pub(crate) enum Backend {
 impl Drop for ReactorState {
     fn drop(&mut self) {
         self.close_backend();
-        let mut running = std::mem::take(&mut self.running_defer);
-        // A disposer can defer again (a PHP destructor calling `Event::defer`), so the
-        // queues are detached before they are freed, until they stay empty.
-        loop {
-            let fields = &mut self.fields;
-            let queues = [
-                std::mem::replace(&mut fields.destroy_callbacks, ptr::null_mut()),
-                std::mem::replace(&mut fields.defer_tasks, ptr::null_mut()),
-            ];
-            if queues.iter().chain(&running).all(|queue| queue.is_null()) {
-                break;
-            }
-            for mut queue in running.drain(..).chain(queues) {
-                // SAFETY: detached queues of this state's, which nothing runs now.
-                unsafe { crate::deferred::deferred_free(&mut queue) };
-            }
-        }
+    }
+}
+
+impl ReactorState {
+    /// Takes the queues [`swr_v1_reactor_delete`] still has to free out of the state.
+    fn detach_queues(&mut self) -> Vec<*mut crate::ReactorDeferred> {
+        let mut queues = std::mem::take(&mut self.running_defer);
+        queues.push(std::mem::replace(
+            &mut self.fields.destroy_callbacks,
+            ptr::null_mut(),
+        ));
+        queues.push(std::mem::replace(
+            &mut self.fields.defer_tasks,
+            ptr::null_mut(),
+        ));
+        queues.retain(|queue| !queue.is_null());
+        queues
     }
 }
 #[repr(C)]
@@ -362,6 +362,20 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
         // SAFETY: hooks receive the live `Reactor`.
         unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_ON_REACTOR_DESTROY, reactor) };
     }
+    // A disposer can defer again through the reactor's head (a PHP destructor calling
+    // `Event::defer`), so the queues are detached and freed until they stay empty, and
+    // no reference to the state (a `Drop`'s `&mut self` included) is live meanwhile.
+    loop {
+        // SAFETY: the live state; the borrow ends before any disposer runs.
+        let queues = unsafe { (*state).detach_queues() };
+        if queues.is_empty() {
+            break;
+        }
+        for mut queue in queues {
+            // SAFETY: a detached queue of this state's, which nothing runs now.
+            unsafe { crate::deferred::deferred_free(&mut queue) };
+        }
+    }
     // SAFETY: as the caller promises: `ReactorState::open`'s allocation, used no more.
     drop(unsafe { Box::from_raw(state) });
 }
@@ -586,7 +600,7 @@ pub(crate) mod tests {
         ReactorState::open(kind, count).head
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
-        drop(unsafe { Box::from_raw(owner) });
+        unsafe { swr_v1_reactor_delete(owner.cast()) };
     }
     #[test]
     fn owner_keeps_stable_public_slots_and_socket_registry() {

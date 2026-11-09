@@ -16,7 +16,7 @@ use std::{
     ptr,
 };
 use swoole_rs_corebase::{log::set_last_error, thread_reactor};
-use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phphelpers::function_call;
 use swoole_rs_phpstubs::timer;
 use swoole_rs_timer::php;
@@ -150,7 +150,7 @@ unsafe fn call(data: *mut c_void) -> Result<(), Bailout> {
             argv,
             ptr::null_mut(),
             swoole_rs_phpprocess::enable_coroutine(),
-            swr_v1_phpcoroutines_create,
+            create_coroutine,
             swr_zend_callable_warning,
         )
     }?;

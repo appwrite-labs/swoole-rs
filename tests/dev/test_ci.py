@@ -54,14 +54,27 @@ elif args[0] == 'api' and '/check-runs' in args[1]:
         print(json.dumps(check))
 elif args[0] == 'api' and '-X' in args:
     pass
+elif args[:3] == ['api', '-i', 'user']:
+    print('HTTP/2.0 200 OK')
+    if 'scopes' in data:
+        print('X-Oauth-Scopes: ' + data['scopes'])
+    print()
+    print('{}')
 elif args[0] == 'api' and '/compare/' in args[1]:
     print(data.get('compare', 'ahead'))
 elif args[0] == 'api' and '/actions/jobs/' in args[1]:
     print(data['job_logs'][args[1].split('/')[-2]])
+elif args[0] == 'api' and '/actions/artifacts?' in args[1]:
+    for row in data.get('artifacts', []):
+        print(json.dumps({'expired': False, 'head_branch': 'main', 'repository_id': 1, 'head_repository_id': 1, **row}))
 elif args[0] == 'api':
     print('c' * 40)
 elif args[:2] == ['run', 'list'] and '--commit' not in args:
     print(json.dumps(data.get('history', [])))
+elif args[:2] == ['run', 'download'] and '-n' in args:
+    report = Path(args[args.index('-D') + 1]) / data['report']
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(json.dumps({'engines': [{'name': 'upstream', 'php': data['php'][args[2]]}]}))
 elif args[:2] == ['run', 'download']:
     rows = data.get('phases', {}).get(args[2])
     if rows is None:
@@ -95,7 +108,7 @@ elif args[:2] == ['run', 'view']:
 
 
 class Ci(unittest.TestCase):
-    def ci(self, *args, runs, flags=('--poll', '0', '--json'), **extra):
+    def ci(self, *args, runs, flags=('--poll', '0', '--json'), cwd=None, **extra):
         with tempfile.TemporaryDirectory() as temp:
             gh = Path(temp) / 'gh'
             gh.write_text(FAKE_GH)
@@ -105,7 +118,7 @@ class Ci(unittest.TestCase):
             env = {**os.environ, 'PATH': temp + os.pathsep + os.environ['PATH'],
                    'FAKE_STATE': str(state), 'FAKE_GH_LOG': str(log)}
             result = subprocess.run([sys.executable, ROOT / 'tools/ci.py', *args, *flags],
-                                    env=env, capture_output=True, text=True)
+                                    env=env, capture_output=True, text=True, cwd=cwd)
             self.gh_calls = log.read_text().splitlines() if log.exists() else []
         self.out = result.stdout
         return result.returncode, json.loads(result.stdout) if result.stdout.startswith(('{', '[')) else {}, result.stderr
@@ -182,6 +195,14 @@ class Ci(unittest.TestCase):
         code, result, _ = self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases,
                                   jobs=jobs, failed_log=failed_log, search={'a/one.phpt': [12], 'b/two.phpt': [12, 13]})
         self.assertEqual(result['issues'], {result['new_failures'][0]: [12, 13]})
+        # Only the first five tests are searched, and the line says so: an issue may name a later one.
+        failed_log = '\n'.join(gate + line for line in [
+            '<details><summary>7 regressions: pass on upstream, fail on a re-run here</summary>',
+            *[f'- `tests/t/{n}.phpt`' for n in range(7)]])
+        self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases, flags=('--poll', '0'),
+                jobs=jobs, failed_log=failed_log, search={})
+        self.assertIn('.phpt) (no open issue; searched 5 of 7 tests)', self.out)
+        self.assertEqual(sum('search/issues' in call for call in self.gh_calls), 5)
 
     def test_full_gates_shards_speak_through_their_phases_and_unseen_jobs_are_new(self):
         history = [{'databaseId': 7, 'conclusion': 'failure', 'url': 'u7'}, {'databaseId': 4, 'conclusion': 'success', 'url': 'u4'}]
@@ -199,7 +220,7 @@ class Ci(unittest.TestCase):
 
     def test_next_orders_claimable_issues_by_priority_then_age(self):
         def issue(number, created, *labels, blocked_by=0, **extra):
-            return {'number': number, 'title': f't{number}', 'created_at': created,
+            return {'number': number, 'title': extra.pop('title', f't{number}'), 'created_at': created,
                     'labels': [{'name': name} for name in ('status:ready', *labels)],
                     'issue_dependencies_summary': {'blocked_by': blocked_by}, **extra}
         issues = [issue(1, '2026-10-01T00:00:00Z', 'p2'), issue(2, '2026-10-05T00:00:00Z', 'p1'),
@@ -214,6 +235,15 @@ class Ci(unittest.TestCase):
                       '--jq .[]', self.gh_calls)
         code, result, _ = self.ci('next', runs={}, flags=('--json',), issues=[])
         self.assertEqual((code, result), (2, []))
+        # A classic token without workflow scope can't do the issues whose title says they need it.
+        issues = [issue(1, '2026-10-01T00:00:00Z', 'p1', title='pr.yml: x (needs workflow scope)'),
+                  issue(2, '2026-10-02T00:00:00Z', 'p1', title='fuzz: y (needs a token with workflow scope)'),
+                  issue(3, '2026-10-03T00:00:00Z', 'p1')]
+        for scopes, expected in [('gist, repo', [3]), ('repo, workflow', [1, 2, 3]), (None, [1, 2, 3])]:
+            code, result, err = self.ci('next', runs={}, flags=('--json',), issues=issues,
+                                        **({'scopes': scopes} if scopes else {}))
+            self.assertEqual([row['number'] for row in result], expected, scopes)
+            self.assertEqual('hiding 2 issues that need a workflow-scoped token: #1, #2' in err, expected == [3])
 
     def test_stuck_lists_auto_merge_prs_that_conflict_or_failed_a_required_check(self):
         def pull(number, created, auto=True):
@@ -256,15 +286,52 @@ class Ci(unittest.TestCase):
         code, _, _ = self.ci('new-failures', runs={}, flags=())
         self.assertEqual(code, 1)
 
-    def test_phpt_baseline_is_the_newest_run_whose_upstream_shards_passed(self):
-        history = [{'databaseId': 9, 'headSha': 's9'}, {'databaseId': 8, 'headSha': 's8'}, {'databaseId': 7, 'headSha': 's7'}]
-        jobs = {'9': [['phpt / phpt (1, upstream)', 'success'], ['phpt / phpt (2, upstream)', 'cancelled']],
-                '8': [['phpt / phpt (1, upstream)', 'success'], ['phpt / phpt (1, cargo)', 'failure'], ['phpt / gate', 'failure']],
-                '7': [['phpt (1, upstream)', 'success']]}
-        code, _, _ = self.ci('phpt-baseline', runs={}, flags=(), history=history, jobs=jobs)
-        self.assertEqual((code, self.out), (0, '8 s8\n'))
-        code, _, _ = self.ci('phpt-baseline', runs={}, flags=(), history=history[:1], jobs=jobs)
-        self.assertEqual((code, self.out), (2, ''))
+    def test_phpt_baseline_is_the_newest_run_whose_upstream_shards_passed_while_its_key_holds(self):
+        with tempfile.TemporaryDirectory() as repo:
+            def git(*args):
+                return subprocess.run(['git', '-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def commit(path, text):
+                (Path(repo) / path).parent.mkdir(parents=True, exist_ok=True)
+                (Path(repo) / path).write_text(text)
+                git('add', '-A')
+                git('commit', '-qm', path)
+                return git('rev-parse', 'HEAD')
+            git('init', '-q')
+            old = commit('tools/build_upstream.py', 'pin 1')
+            base = commit('README.md', 'unrelated')
+            # A fork's branch named main, a shard still running, a shard an outage dropped: none of
+            # them stands. A failed cargo shard doesn't matter.
+            artifacts = [{'id': 11, 'head_sha': base, 'head_repository_id': 2}, {'id': 10, 'head_sha': base},
+                         {'id': 9, 'head_sha': base}, {'id': 8, 'head_sha': base}, {'id': 8, 'head_sha': base},
+                         {'id': 7, 'head_sha': old}]
+            shards = [[f'phpt / phpt ({index}, upstream)', 'success'] for index in range(1, 7)]
+            jobs = {'11': shards, '10': shards[:5] + [['phpt / phpt (6, upstream)', '']], '9': shards[1:],
+                    '8': shards + [['phpt / phpt (1, cargo)', 'failure'], ['phpt / gate', 'failure']], '7': shards}
+            php = {'8': '8.3.6'}
+            state = {'runs': {}, 'flags': (), 'cwd': repo, 'artifacts': artifacts, 'jobs': jobs, 'php': php,
+                     'report': 'upstream-1.json'}
+            code, _, _ = self.ci('phpt-baseline', **state)
+            self.assertEqual((code, self.out), (0, f'8 {base}\n'))
+            self.assertEqual(sum(call.startswith('run view 8 ') for call in self.gh_calls), 1)
+            code, _, _ = self.ci('phpt-baseline', '--php', '8.3.6', **state)
+            self.assertEqual((code, self.out), (0, f'8 {base}\n'))
+            # Another PHP release, or a changed key path since the baseline: upstream runs again.
+            code, _, _ = self.ci('phpt-baseline', '--php', '8.3.7', **state)
+            self.assertEqual((code, self.out), (2, ''))
+            commit('tools/build_upstream.py', 'pin 2')
+            code, _, _ = self.ci('phpt-baseline', **state)
+            self.assertEqual((code, self.out), (2, ''))
+            # A variant's own workflow is part of its key, and its one job makes its report.
+            variant = {**state, 'jobs': {'8': [['cares / phpt', 'success']]}, 'report': 'target/phpt/cares/upstream.json'}
+            git('checkout', '-q', base)
+            code, _, _ = self.ci('phpt-baseline', '--variant', 'cares', '--php', '8.3.6', **variant)
+            self.assertEqual((code, self.out), (0, f'8 {base}\n'))
+            self.assertIn('run download 8 -n phpt-cares', ' '.join(self.gh_calls))
+            commit('.github/workflows/cares.yml', 'families')
+            code, _, _ = self.ci('phpt-baseline', '--variant', 'cares', **variant)
+            self.assertEqual((code, self.out), (2, ''))
 
     def test_transient_gh_failures_are_retried(self):
         code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'run list': 2, 'api': 1})

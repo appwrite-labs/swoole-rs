@@ -79,8 +79,7 @@ impl Context {
         vm: unsafe { mem::zeroed() },
         // SAFETY: as above.
         call: unsafe { mem::zeroed() },
-        // SAFETY: all-zero bytes are a valid zval (IS_UNDEF).
-        return_value: unsafe { mem::zeroed() },
+        return_value: swoole_rs_zend::UNDEF,
         co: ptr::null_mut(),
         fiber: ptr::null_mut(),
         fiber_init_notified: false,

@@ -243,13 +243,21 @@ fn start(call: &Call) {
     call.set_bool(true);
 }
 
-/// `php_swoole_set_coroutine_option`.
+/// `zval_get_long`, or `None` once a user error handler's bailout is pending:
+/// upstream's bailout left that option, and every later one, unapplied.
+fn long(value: &swoole_rs_zend::Value) -> Option<i64> {
+    let long = value.long();
+    (!bailout::pending()).then_some(long)
+}
+
+/// `php_swoole_set_coroutine_option`. It stops at a deferred bailout, where
+/// upstream's ended the call, so a caller checks [`bailout::pending`] after it.
 pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
     if let Some(value) = options
         .get(b"max_coro_num")
         .or_else(|| options.get(b"max_coroutine"))
     {
-        let max = value.long();
+        let Some(max) = long(value) else { return };
         let max = if max <= 0 {
             runtime::DEFAULT_MAX_NUM
         } else {
@@ -261,12 +269,13 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
         runtime::set_deadlock_check(value.truthy());
     }
     if let Some(value) = options.get(b"hook_flags") {
+        let Some(flags) = long(value) else { return };
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "upstream passes zend_long as uint32_t"
         )]
-        set_hook_flags(value.long() as u32);
+        set_hook_flags(flags as u32);
     }
     if let Some(value) = options.get(b"enable_preemptive_scheduler") {
         runtime::set_preemptive(value.truthy());
@@ -337,11 +346,16 @@ fn set(call: &Call) {
     };
     swoole_rs_phpswoole::php_swoole_set_global_option(array);
     set_coroutine_option(array);
+    if bailout::pending() {
+        return;
+    }
     if let Some(value) = array.get(b"dns_cache_expire") {
-        host::set_dns_cache_expire(value.long());
+        let Some(expire) = long(value) else { return };
+        host::set_dns_cache_expire(expire);
     }
     if let Some(value) = array.get(b"dns_cache_capacity") {
-        host::set_dns_cache_capacity(value.long());
+        let Some(capacity) = long(value) else { return };
+        host::set_dns_cache_capacity(capacity);
     }
     if let Some(condition) = array.find(b"exit_condition") {
         bailout::raise(set_exit_condition(condition.as_ptr()));

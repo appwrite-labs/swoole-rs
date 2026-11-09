@@ -33,14 +33,14 @@ jobs:
         # Gates compare against accepted patch states at older commits (git show <sha>:...).
         with:
           fetch-depth: 0
-      # Saved from main under a key the PR tier's hybrid and gates jobs restore.
+      # Saved from main under a key the PR tier's ext and gates jobs restore.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
       # rust-cache restores all of target/: git checkouts without a usable .git, and
       # native-core builds whose receipt outlives its binary or library. Those trees come
       # from their own caches, a fresh clone or a ccache-backed rebuild instead.
-      - run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
+      - run: rm -rf target/upstream target/thirdparty target/native-core
       - uses: ./.github/actions/install
       # Caches are saved as soon as they are built, so a failing gate later does not discard
       # them; PR branches can only restore caches saved on main.
@@ -91,7 +91,6 @@ jobs:
             !target/reports/**/*.a
             !target/reports/**/*.o
             target/upstream/build.log
-            target/hybrid/*/build-manifest.json
 
   # Every merge-tier run saves a ccache of about 500 MB under its own sha, and the repo's
   # caches share 10 GB; jobs restore the newest, so keep two and delete the rest. A prune
@@ -208,7 +207,7 @@ jobs:
           restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       - run: |
-          python3 tools/build_hybrid.py --backend upstream --stdext | tee upstream.log
+          python3 tools/build_upstream.py --stdext | tee upstream.log
           python3 tools/build_ext.py --stdext
           mkdir -p target/phpt
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
@@ -330,6 +329,8 @@ jobs:
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          # Only the pinned tests are read here, and those don't change with the build script.
+          restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
         with:
@@ -383,6 +384,8 @@ jobs:
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          # Only the pinned tests are read here, and those don't change with the build script.
+          restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
         with:
@@ -473,14 +476,14 @@ jobs:
       - run: >
           python3 corpus/run.py $PHP_EXTENSIONS --require-all
           $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
-          --engine upstream=target/upstream/src/modules/swoole.so
+          --engine upstream=target/upstream-builds/php-sockets/src/modules/swoole.so
           --engine cargo=target/ext/swoole.so
           --output target/reports/alpine-corpus.json
       # gate.py fails only what passes on upstream and not on cargo (no re-runs: no bash).
       - if: always()
         run: |
           python3 corpus/upstream/run.py $PHP_EXTENSIONS \
-            --engine upstream=target/upstream/src/modules/swoole.so \
+            --engine upstream=target/upstream-builds/php-sockets/src/modules/swoole.so \
             --engine cargo=target/ext/swoole.so \
             --output target/reports/alpine-phpt.json || [ $? -eq 1 ]
           python3 corpus/upstream/gate.py target/reports/alpine-phpt.json --output target/reports/alpine-gate.json >> "$GITHUB_STEP_SUMMARY"
@@ -491,10 +494,10 @@ jobs:
       - if: always()
         shell: bash
         run: |
-          python3 tools/build_hybrid.py --backend upstream --php-sockets --stdext --configure=--enable-swoole-curl
+          python3 tools/build_upstream.py --php-sockets --stdext --configure=--enable-swoole-curl
           python3 tools/build_ext.py --php-sockets --stdext --configure=--enable-swoole-curl
           mkdir -p target/php85/engines target/php85/results
-          cp -L target/hybrid/upstream-php-sockets-stdext/modules/swoole.so target/php85/engines/upstream.so
+          cp target/upstream-builds/php-sockets-stdext/src/modules/swoole.so target/php85/engines/upstream.so
           cp target/ext/swoole.so target/php85/engines/cargo.so
           python3 corpus/upstream/inventory.py --output target/php85/manifest.json
           set -- --manifest target/php85/manifest.json --timeout 30 $PHP_EXTENSIONS

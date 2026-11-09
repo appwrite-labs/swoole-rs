@@ -19,7 +19,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.build_ext import native_flags  # noqa: E402
-from tools.build_hybrid import zend_free_native_sources  # noqa: E402
+from tools.build_ext import zend_free_native_sources  # noqa: E402
 from tools.build_upstream import COMMIT as PIN  # noqa: E402
 from tools.harness import ROOT, run_isolated, write_report  # noqa: E402
 

@@ -1,8 +1,8 @@
 """Compare error_handler_bailout.php's output and exit code on two engines.
 
-    python3 tests/modules/zend/run.py <upstream swoole.so> <hybrid swoole.so> [php]
+    python3 tests/modules/zend/run.py <upstream swoole.so> <Cargo-built swoole.so> [php]
     python3 tools/dev.py docker -- tests/modules/zend/run.py target/upstream/src/modules/swoole.so \
-        target/hybrid/dev-rust-.../modules/swoole.so
+        target/ext/swoole.so
 """
 import subprocess
 import sys
