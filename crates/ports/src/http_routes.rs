@@ -106,16 +106,14 @@ pub mod exports {
     /// crates/phphttp's coroutine server, which link it by this name.
     ///
     /// # Safety
-    /// `pl` is a live packet length over `buf_size` readable bytes.
+    /// `pl.buf` holds `pl.buf_size` readable bytes.
     #[unsafe(export_name = "swr_v1_http2_frame_length")]
     pub unsafe extern "C" fn http2_length(
         _proto: *const c_void,
         _socket: *mut SocketRecord,
-        pl: *mut PacketLength,
+        pl: &PacketLength,
     ) -> isize {
         // SAFETY: as the caller promises.
-        let pl = unsafe { &*pl };
-        // SAFETY: the packet's `buf_size` readable bytes.
         let buffered = unsafe { std::slice::from_raw_parts(pl.buf, pl.buf_size as usize) };
         swoole_rs_http2::frame_length(buffered)
     }
@@ -230,6 +228,10 @@ pub mod exports {
             },
             data: data.wrapping_add(decision.offset),
         };
+        let dispatch_task = |dispatch: &RecvData| {
+            // SAFETY: upstream's arguments, with this frame's payload or whole message.
+            unsafe { dispatch_task(proto, socket, (&raw const *dispatch).cast()) }
+        };
         match decision.action {
             Action::Reject => return -1,
             Action::Start => {
@@ -252,8 +254,7 @@ pub mod exports {
                     let whole = buffer.length as u32;
                     dispatch.info.len = whole;
                     dispatch.data = buffer.str;
-                    // SAFETY: upstream's arguments, with the whole message.
-                    unsafe { dispatch_task(proto, socket, (&raw const dispatch).cast()) };
+                    dispatch_task(&dispatch);
                     // SAFETY: `new String`'s, not used again.
                     unsafe { delete_string(fragment) };
                     conn.websocket_buffer = std::ptr::null_mut();
@@ -263,12 +264,10 @@ pub mod exports {
                 if decision.action == Action::Control && decision.length == 0 {
                     dispatch.data = std::ptr::null();
                 }
-                // SAFETY: upstream's arguments, with the frame's payload.
-                unsafe { dispatch_task(proto, socket, (&raw const dispatch).cast()) };
+                dispatch_task(&dispatch);
             }
             Action::ClientClose => {
-                // SAFETY: as above.
-                unsafe { dispatch_task(proto, socket, (&raw const dispatch).cast()) };
+                dispatch_task(&dispatch);
                 let mut reply = [0u8; CLOSE_REPLY_MAX];
                 // SAFETY: the close payload and a disjoint local output.
                 let size = unsafe {
@@ -372,20 +371,19 @@ pub mod exports {
     pub unsafe extern "C" fn get_package_length(
         proto: *const c_void,
         socket: *mut SocketRecord,
-        pl: *mut c_void,
+        pl: &mut PacketLength,
     ) -> isize {
         // SAFETY: as the caller guarantees.
         let conn = unsafe { connection(socket) };
-        route(
-            conn,
+        match route(conn, || Some(true), || Some(false), None) {
             // SAFETY: upstream's arguments, forwarded.
-            || unsafe {
-                swoole_rs_websocket::frame_api::get_package_length(proto, socket.cast(), pl.cast())
+            Some(true) => unsafe {
+                swoole_rs_websocket::frame_api::get_package_length(proto, socket.cast(), pl)
             },
             // SAFETY: as above.
-            || unsafe { http2_length(proto, socket, pl.cast()) },
-            -1,
-        )
+            Some(false) => unsafe { http2_length(proto, socket, pl) },
+            None => -1,
+        }
     }
 
     /// `uint8_t get_package_length_size(Socket *)`.
