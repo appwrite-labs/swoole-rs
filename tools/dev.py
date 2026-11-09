@@ -77,10 +77,10 @@ def dependents():
     return found
 
 
-def changed_modules(base):
-    """Modules whose owned paths the diff from BASE touches, and the modules owning a package
-    that depends on a changed crate: their gates call its exports, so they catch one removed or
-    renamed (#2236). Shared build inputs select every module."""
+def changed_modules(base, consumers=True):
+    """Modules whose owned paths the diff from BASE touches, and (with CONSUMERS) the modules
+    owning a package that depends on a changed crate: their gates call its exports, so they
+    catch one removed or renamed (#2236). Shared build inputs select every module."""
     names = {module_id: name for name, (module_id, _) in MODULES.items()}
     owners = [(path, names.get(module['id'])) for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
               for path in module['owned_paths']]
@@ -91,7 +91,7 @@ def changed_modules(base):
         if not owner(path) and path.startswith(SHARED_PATHS):
             return sorted(MODULES)
         selected |= {owner(path)} | {owner(package) for crate, packages in users.items()
-                                     if path.startswith(crate) for package in packages}
+                                     if consumers and path.startswith(crate) for package in packages}
     return sorted(selected - {None})
 
 
@@ -486,7 +486,9 @@ def plan(args, reports):
     elif not integrate and not getattr(args, 'all_modules', False) and set(args.module or ['websocket']) < set(MODULES):
         # The original PHPT families of the chosen modules, gated on upstream like the merge
         # tier's phpt jobs, which run every family (and so cover a change to all modules).
-        ids = {MODULES[module][0] for module in args.module or ['websocket']}
+        # Only the modules a change touches: a consumer's families can't change outcome
+        # without its own code changing, and every family together overruns the phase cap.
+        ids = {MODULES[module][0] for module in getattr(args, 'phpt_module', None) or args.module or ['websocket']}
         families = sorted({family for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
                            if module['id'] in ids for family in module.get('phpt_families', [])})
         if families:
@@ -817,6 +819,7 @@ def main():
         return 0
     if args.changed_since:
         args.module = changed_modules(args.changed_since)
+        args.phpt_module = changed_modules(args.changed_since, consumers=False)
         if not args.module:
             print('No module touched since ' + args.changed_since)
             return 0
