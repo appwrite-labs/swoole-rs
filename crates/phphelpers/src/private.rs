@@ -465,26 +465,43 @@ pub unsafe fn named_call(name: &[u8], args: &mut [zval]) -> Result<(), bailout::
     }
 }
 
-/// [`function_call`] for C++: 1 when the call succeeded, 0 when it failed,
-/// -1 when it bailed out, which the caller re-raises.
+/// `bool zend::function::call(zend_fcall_info_cache *, uint32_t, zval *, zval *, bool)`:
+/// [`function_call`] in a coroutine through crates/phpcoroutines, warning as
+/// `sw_callable_warning`, with a bailout re-raised.
 /// # Safety
-/// The native caller lends a live cache, arguments and return slot and native coroutine/warning leaves.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_function_call(
+/// As [`function_call`], from a frame that owns nothing that needs a drop.
+#[cfg(not(test))]
+#[unsafe(export_name = "_ZN4zend8function4callEP22_zend_fcall_info_cachejP12_zval_structS4_b")]
+unsafe extern "C" fn zend_function_call(
     cache: *mut zend_fcall_info_cache,
     argc: u32,
     argv: *mut zval,
     retval: *mut zval,
     coroutine: bool,
-    create: Create,
-    report: unsafe extern "C" fn(*const c_char),
-) -> c_int {
-    // SAFETY: forward the native caller's initialized call data and contained native leaves.
-    let result = unsafe { function_call(cache, argc, argv, retval, coroutine, create, report) };
-    let called = c_int::from(matches!(result, Ok(true)));
-    if bailout::relay_to_c(result.map(drop)) {
-        -1
-    } else {
-        called
+) -> bool {
+    // SAFETY: crates/phpcoroutines' coroutine leaf.
+    unsafe extern "C" {
+        fn swr_v1_phpcoroutines_create(
+            fcc: *mut zend_fcall_info_cache,
+            argc: u32,
+            argv: *mut zval,
+            callable: *mut zval,
+            bailout: *mut u8,
+        ) -> c_long;
     }
+    // SAFETY: per the caller.
+    let result = unsafe {
+        function_call(
+            cache,
+            argc,
+            argv,
+            retval,
+            coroutine,
+            swr_v1_phpcoroutines_create,
+            sys::swr_zend_callable_warning,
+        )
+    };
+    let called = matches!(result, Ok(true));
+    bailout::raise(result.map(drop));
+    called
 }

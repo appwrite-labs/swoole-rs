@@ -29,10 +29,6 @@ struct _zval_struct *swr_v1_phphelpers_property(struct _zend_class_entry *, stru
 void swr_v1_phphelpers_cache_free(struct _zend_fcall_info_cache *);
 int swr_v1_phphelpers_call(struct _zval_struct *, struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *, struct _zval_struct *, bool, void (*)(const char *));
 int swr_v1_phphelpers_call_anyway(struct _zend_fcall_info *, struct _zend_fcall_info_cache *);
-/* 1 called, 0 failed, -1 bailed out (the caller re-raises). The leaf is swr_v1_phpcoroutines_create. */
-int swr_v1_phphelpers_function_call(struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *, struct _zval_struct *, bool,
-    long (*)(struct _zend_fcall_info_cache *, uint32_t, struct _zval_struct *, struct _zval_struct *, uint8_t *),
-    void (*)(const char *));
 void swr_v1_phphelpers_named_call(const char *, size_t, uint32_t, struct _zval_struct *, struct _zval_struct *);
 void swr_v1_phphelpers_known_init(struct _zend_string ***);
 void swr_v1_phphelpers_known_free(struct _zend_string ***);

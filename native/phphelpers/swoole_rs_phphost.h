@@ -272,12 +272,8 @@ class Callable {
 };
 
 namespace function {
-// Event callbacks go through this so exceptions are handled.
+// Event callbacks go through this so exceptions are handled; crates/phphelpers.
 bool call(zend_fcall_info_cache *fci_cache, uint32_t argc, zval *argv, zval *retval, const bool enable_coroutine);
-// call() without re-raising: 1 called, 0 failed, -1 bailed out (the caller re-raises).
-static inline int call_trapped(zend_fcall_info_cache *cache, uint32_t argc, zval *argv, zval *retval, bool coroutine) {
-    return swr_v1_phphelpers_function_call(cache, argc, argv, retval, coroutine, swr_v1_phpcoroutines_create, sw_callable_warning);
-}
 }  // namespace function
 
 struct Function {
