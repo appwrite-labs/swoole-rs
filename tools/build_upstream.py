@@ -148,6 +148,13 @@ def tree(stdext=False, php_sockets=False, configure=()):
     return ROOT / 'target/upstream-builds' / name / 'src'
 
 
+def runner(source, pin):
+    """PHPT runs read the pin's tests with phpize's run-tests.php (corpus/upstream/run.py --source),
+    which only a build in the pin itself leaves there; a profile's build lends it its own."""
+    if source != pin and not (pin / 'run-tests.php').is_file():
+        shutil.copy2(source / 'run-tests.php', pin / 'run-tests.php')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     add_build_arguments(parser)
@@ -171,6 +178,7 @@ def main():
               # build_extension inherits the toolchain from the environment.
               'env': {name: os.environ.get(name) for name in ('CC', 'CXX', 'CFLAGS', 'CPPFLAGS', 'CXXFLAGS', 'LDFLAGS')}}
     if library.is_file() and record_path.is_file() and json.loads(record_path.read_text()) == record:
+        runner(source, pin)
         print(f'Cached upstream: {library}')
         return 0
     record_path.unlink(missing_ok=True)
@@ -181,6 +189,7 @@ def main():
         subprocess.run(['git', '-C', str(source), 'checkout', '-q', '--detach', COMMIT], check=True)
     build_extension(source, source.parent / 'build.log', args)
     record_path.write_text(json.dumps(record, indent=1) + '\n')
+    runner(source, pin)
     print(f'Built upstream: {library}')
     return 0
 
