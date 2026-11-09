@@ -23,7 +23,7 @@ def main():
         text=sides.original('src/protocol/http.cc')
         start=text.index('static const char *method_strings[]');end=text.index('};',start)+2
         extracted=tree/'native.cc'
-        extracted.write_text('#include "swoole_http.h"\nnamespace upstream_locale {\n'+text[start:end]+'\n'+body(text,'int get_method(')+'\n'+body(text,'bool parse_multipart_boundary(')+'\nunsigned strcaseeq(const char *a,size_t n,const char *b,size_t m){return swoole_strcaseeq(a,n,b,m);}\n}\n')
+        extracted.write_text('#include "swoole_http.h"\nnamespace upstream_locale {\n'+text[start:end]+'\n'+body(text,'int get_method(')+'\n'+body(text,'bool parse_multipart_boundary(')+'\nunsigned strcaseeq(const char *a,size_t n,const char *b,size_t m){return swoole_strcaseeq(a,n,b,m);}\nunsigned istarts_with(const char *a,size_t n,const char *b,size_t m){return swoole_str_istarts_with(a,n,b,m);}\n}\n')
         binary=tree/'gate'
         if not sides.build(binary,[('upstream',extracted),('candidate',local/'locale_gate.cc')],args.archive.resolve(),report,gc_sections=True):write_report(args.output,report);return 1
         result=run_isolated([str(binary)],timeout=60);report['run']={'returncode':result.returncode,'stdout':result.stdout,'stderr':result.stderr}

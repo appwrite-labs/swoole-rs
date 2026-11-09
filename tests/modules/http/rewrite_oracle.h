@@ -10,7 +10,6 @@
 // The pinned add_rewrite_rule/apply_rewrite_rules, extracted into upstream_rewrite, over a
 // handler that publishes into native strings.
 namespace upstream_rewrite {
-using swoole::starts_with;
 namespace http_server {
 struct RewriteRule{std::string pattern,replacement;bool is_regex=false;};
 struct StaticHandler {std::string url,original;unsigned publications=0;explicit StaticHandler(const std::string &value):url(value),original(value){}const std::string &get_request_url()const{return url;}void set_request_url(const std::string &value){++publications;url=value;} };
