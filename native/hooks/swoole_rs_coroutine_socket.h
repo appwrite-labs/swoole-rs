@@ -219,9 +219,6 @@ class Socket : public swr_v1_co_socket {
         return swr_v1_hook_co_socket_wait(this, event, barrier, barrier_state, (char **) _buf, _n);
     }
 
-    static const swr_v1_hook_co_socket_host_t host_;
-    static const bool host_installed_;
-
     bool is_available(const EventType event) {
         return swr_v1_hook_co_socket_available(this, event);
     }

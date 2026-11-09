@@ -12,7 +12,7 @@ use crate::socket_extra::SocketExtra;
 use core::ffi::{c_char, c_int, c_void};
 use core::mem::{offset_of, size_of};
 use core::ptr;
-use swoole_rs_buffer::string::{delete_string, new_sized_string};
+use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_reactor::{SocketAddress, SocketRecord};
 use swoole_rs_tls::upstream::{socket_free, socket_ssl_close};
 
@@ -360,12 +360,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_free(socket: *mut c_void) {
 }
 
 /// `get_read_buffer()` / `get_write_buffer()`: the buffer, made on first use.
-///
-/// # Safety
-/// `socket` is a live record.
-pub unsafe fn buffer(socket: *mut CoSocket, write: bool) -> *mut c_void {
-    // SAFETY: as the caller promises.
-    let record = unsafe { &mut *socket };
+pub fn buffer(record: &mut CoSocket, write: bool) -> &mut CppString {
     let allocator = record.buffer_allocator.cast();
     let slot = if write {
         &mut record.write_buffer
@@ -376,7 +371,8 @@ pub unsafe fn buffer(socket: *mut CoSocket, write: bool) -> *mut c_void {
         // SAFETY: the socket's allocator is null or live.
         *slot = unsafe { new_sized_string(BUFFER_SIZE_BIG, allocator) }.cast();
     }
-    *slot
+    // SAFETY: the record's live String, borrowed with the record.
+    unsafe { &mut *slot.cast::<CppString>() }
 }
 
 /// The public constructors, which initialise the record first:

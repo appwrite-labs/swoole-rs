@@ -1,28 +1,6 @@
-//! The coroutine socket's timers and timeouts: which of the read and write timer
-//! slots (in [`SocketState`]) a firing timer belongs to, `TimeoutSetter`'s
-//! save/set/restore of the selected timeouts.
-use crate::shutdown::SocketState;
+//! The coroutine socket's timeouts: `TimeoutSetter`'s save/set/restore of the
+//! selected timeouts.
 use core::ffi::{c_int, c_void};
-
-const EVENT_READ: u32 = 1 << 9;
-const EVENT_WRITE: u32 = 1 << 10;
-
-/// A timer fired: clears the slot holding `node` and returns its direction
-/// (`SW_EVENT_READ` first), or 0 when neither slot holds it.
-///
-/// # Safety
-/// `state` is a live handle.
-pub(crate) unsafe fn socket_timeout(state: *mut SocketState, node: *mut c_void) -> u32 {
-    // SAFETY: the caller's live state.
-    let timers = unsafe { &mut (*state).timers };
-    for (timer, event) in timers.iter_mut().zip([EVENT_READ, EVENT_WRITE]) {
-        if *timer == node {
-            *timer = core::ptr::null_mut();
-            return event;
-        }
-    }
-    0
-}
 
 /// `SW_TIMEOUT_DNS`, `_CONNECT`, `_READ` and `_WRITE`, in `timeout_type_list`'s order.
 const TIMEOUT_TYPES: [c_int; 4] = [1, 2, 4, 8];
@@ -89,28 +67,7 @@ pub unsafe extern "C" fn swr_v1_hook_timeouts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shutdown::{swr_v1_hook_socket_state_free, swr_v1_hook_socket_state_new};
     use std::cell::RefCell;
-
-    #[test]
-    fn timer_slots() {
-        let state = swr_v1_hook_socket_state_new();
-        let mut node = 0u8;
-        let node: *mut c_void = (&raw mut node).cast();
-        // SAFETY: a live state.
-        unsafe {
-            let read = &raw mut (*state).timers[0];
-            let write = &raw mut (*state).timers[1];
-            assert_eq!(socket_timeout(state, node), 0, "an unknown node");
-            *write = node;
-            assert_eq!(socket_timeout(state, node), EVENT_WRITE);
-            assert!((*write).is_null());
-            *read = node;
-            assert_eq!(socket_timeout(state, node), EVENT_READ);
-            assert!((*read).is_null());
-            swr_v1_hook_socket_state_free(state);
-        }
-    }
 
     thread_local! {
         static TIMEOUTS: RefCell<[f64; 4]> = const { RefCell::new([1.0, 2.0, 3.0, 4.0]) };

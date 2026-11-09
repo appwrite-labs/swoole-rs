@@ -39,25 +39,19 @@ impl Packet {
         self.set_offset(0);
     }
     fn sync(&mut self, action: u32, size: usize) {
-        // SAFETY: this operation exclusively owns its live record and String view.
-        unsafe {
-            (crate::co_io::host().read_buffer)(self.socket, &raw mut self.view, action, size);
-        };
+        (crate::co_io::host().read_buffer)(self.socket, &raw mut self.view, action, size);
     }
     fn receive(&mut self, at: usize, length: usize, all: bool) -> isize {
         self.sync(1, 0);
-        // SAFETY: the native receive borrows the requested free space in the buffer.
-        unsafe {
-            (crate::co_io::host().recv)(self.socket, self.view.str.wrapping_add(at), length, all)
-        }
+        // The receive borrows the requested free space in the buffer.
+        (crate::co_io::host().recv)(self.socket, self.view.str.wrapping_add(at), length, all)
     }
     fn recv(&mut self, at: usize, length: usize) -> isize {
         self.receive(at, length, false)
     }
     fn fail(&mut self, kind: u32, length: isize) {
         self.sync(1, 0);
-        // SAFETY: a diagnostic on the live record.
-        unsafe { (crate::co_io::host().packet_fail)(self.socket, kind, length) };
+        (crate::co_io::host().packet_fail)(self.socket, kind, length);
     }
     fn timed_out(&self) -> bool {
         // SAFETY: the live record, read without retaining a borrow across callbacks.
@@ -96,14 +90,12 @@ impl Packet {
                 clippy::cast_possible_truncation,
                 reason = "upstream's (uint32_t) read_buffer->length"
             )]
-            // SAFETY: native code reads the initialized prefix and writes header length.
-            let packet = unsafe {
-                (crate::co_io::host().package_length)(
-                    self.socket,
-                    buffer.length as u32,
-                    &raw mut header,
-                )
-            };
+            // It reads the initialized prefix and writes the header length.
+            let packet = (crate::co_io::host().package_length)(
+                self.socket,
+                buffer.length as u32,
+                &raw mut header,
+            );
             if packet < 0 {
                 self.fail(0, packet);
                 return 0;
@@ -369,7 +361,7 @@ pub(crate) mod tests {
         socket
     }
 
-    pub(crate) unsafe extern "C" fn read_buffer(
+    pub(crate) extern "C" fn read_buffer(
         socket: *mut crate::co_socket::CoSocket,
         view: *mut ReadBuffer,
         action: u32,
@@ -395,7 +387,7 @@ pub(crate) mod tests {
         }
         unsafe { *view = fake.buffer };
     }
-    pub(crate) unsafe extern "C" fn receive(
+    pub(crate) extern "C" fn receive(
         socket: *mut crate::co_socket::CoSocket,
         at: *mut u8,
         size: usize,
@@ -408,7 +400,7 @@ pub(crate) mod tests {
             unsafe { recv(ctx, at, size) }
         }
     }
-    pub(crate) unsafe extern "C" fn get_length(
+    pub(crate) extern "C" fn get_length(
         socket: *mut crate::co_socket::CoSocket,
         size: u32,
         header: *mut u32,
@@ -417,7 +409,7 @@ pub(crate) mod tests {
         let at = unsafe { fake(ctx) }.buffer.str;
         unsafe { package_length(ctx, at, size, header) }
     }
-    pub(crate) unsafe extern "C" fn failure(
+    pub(crate) extern "C" fn failure(
         socket: *mut crate::co_socket::CoSocket,
         kind: u32,
         length: isize,
