@@ -1,5 +1,9 @@
 {
   "tests/swoole_event/kqueue.phpt": "darwin only (skip_if_not_darwin)",
+  "tests/swoole_http_client_coro/host.phpt": "runs only against an httpbin off port 80, but config.php fixes HTTPBIN_SERVER_PORT at 80 on CI (GITHUB_ACTIONS)",
+  "tests/swoole_library/database/mysqli.phpt": "the pin has no library/ directory; swoole/library's examples/ (another path) load its tests/bootstrap.php, which redefines HTTPBIN_SERVER_HOST after config.php",
+  "tests/swoole_library/database/pdo.phpt": "the pin has no library/ directory; swoole/library's examples/ (another path) load its tests/bootstrap.php, which redefines HTTPBIN_SERVER_HOST after config.php",
+  "tests/swoole_library/database/redis.phpt": "the pin has no library/ directory; swoole/library's examples/ (another path) load its tests/bootstrap.php, which redefines HTTPBIN_SERVER_HOST after config.php",
   "tests/swoole_pdo_oracle/bug60994.phpt": "SKIPIF compares the PHP_VERSION string with 80100, which is true on every PHP 8 release",
   "tests/swoole_pdo_oracle/oci_success_with_info.phpt": "SKIPIF compares the PHP_VERSION string with 80100, which is true on every PHP 8 release",
   "tests/swoole_pdo_oracle/pdo_oci_stream_1.phpt": "SKIPIF compares the PHP_VERSION string with 80100, which is true on every PHP 8 release",
