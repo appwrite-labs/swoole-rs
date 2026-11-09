@@ -1039,7 +1039,7 @@ pub(crate) mod testing {
     thread_local! {
         static ENGINE: std::cell::Cell<*mut Uring> = const { std::cell::Cell::new(ptr::null_mut()) };
     }
-    unsafe extern "C" fn current() -> *mut c_void {
+    extern "C" fn current() -> *mut c_void {
         ptr::dangling_mut()
     }
     unsafe extern "C" fn instance() -> *mut Uring {
