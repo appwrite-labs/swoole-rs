@@ -245,17 +245,17 @@ jobs:
       - run: cargo fetch --locked
       - run: |
           python3 tools/build_hybrid.py --backend upstream --stdext | tee upstream.log
-          python3 tools/build_hybrid.py --stdext | tee hybrid.log
+          python3 tools/build_ext.py --stdext
           mkdir -p target/phpt
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
-          cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so
+          cp target/ext/swoole.so target/phpt/cargo.so
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
       - id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       # Re-run flagged tests as phpt-gate does: method.phpt's rand assertion fails ~10% (#368).
       - run: |
           mkdir -p target/phpt/stdext
-          for engine in upstream hybrid; do
+          for engine in upstream cargo; do
             python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --module swoole_stdext --timeout 30 \
               ${{ steps.extensions.outputs.args }} --engine $engine=target/phpt/$engine.so \
               --output target/phpt/stdext/$engine.json || [ $? -eq 1 ]
