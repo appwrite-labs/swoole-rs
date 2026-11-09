@@ -259,13 +259,14 @@ class Ci(unittest.TestCase):
             git('init', '-q')
             old = commit('tools/build_upstream.py', 'pin 1')
             base = commit('README.md', 'unrelated')
-            # A fork's branch named main, an in-progress run, a cancelled shard: none of them stands.
-            artifacts = [{'id': 10, 'head_sha': base, 'head_repository_id': 2}, {'id': 9, 'head_sha': base},
-                         {'id': 8, 'head_sha': base}, {'id': 8, 'head_sha': base}, {'id': 7, 'head_sha': old}]
-            jobs = {'10': [['phpt / phpt (1, upstream)', 'success']],
-                    '9': [['phpt / phpt (1, upstream)', 'success'], ['phpt / phpt (2, upstream)', '']],
-                    '8': [['phpt / phpt (1, upstream)', 'success'], ['phpt / phpt (1, cargo)', 'failure'], ['phpt / gate', 'failure']],
-                    '7': [['phpt / phpt (1, upstream)', 'success']]}
+            # A fork's branch named main, a shard still running, a shard an outage dropped: none of
+            # them stands. A failed cargo shard doesn't matter.
+            artifacts = [{'id': 11, 'head_sha': base, 'head_repository_id': 2}, {'id': 10, 'head_sha': base},
+                         {'id': 9, 'head_sha': base}, {'id': 8, 'head_sha': base}, {'id': 8, 'head_sha': base},
+                         {'id': 7, 'head_sha': old}]
+            shards = [[f'phpt / phpt ({index}, upstream)', 'success'] for index in range(1, 7)]
+            jobs = {'11': shards, '10': shards[:5] + [['phpt / phpt (6, upstream)', '']], '9': shards[1:],
+                    '8': shards + [['phpt / phpt (1, cargo)', 'failure'], ['phpt / gate', 'failure']], '7': shards}
             php = {'8': '8.3.6'}
             state = {'runs': {}, 'flags': (), 'cwd': repo, 'artifacts': artifacts, 'jobs': jobs, 'php': php,
                      'report': 'upstream-1.json'}

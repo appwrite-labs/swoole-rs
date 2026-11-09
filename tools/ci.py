@@ -323,14 +323,15 @@ def claimable():
 # upstream report stands in for running upstream only while these paths are as at HEAD.
 UPSTREAM_KEY = ('tools/build_upstream.py', 'tools/harness.py', 'tools/phpt_expectations.py', 'corpus/upstream/run.py',
                 'corpus/upstream/inventory.py', '.devcontainer/install.sh', '.github/actions/install')
-# Per baseline: the artifact holding an upstream report, the report's path in it, the jobs that must
-# all have succeeded, and the paths of its own build and environment. `phpt` is phpt.yml's shards;
-# each variant is one job that runs both engines.
+# Per baseline: the artifact holding an upstream report, the report's path in it, the jobs that made
+# the reports (all must exist, an outage can drop one, and have succeeded) and the paths of its own
+# build and environment. `phpt` is the merge tier's six phpt.yml shards, whose upstream.so phpt-build
+# builds with build_hybrid.py; each variant is one job that runs both engines.
 BASELINES = {
-    'phpt': ('phpt-upstream-1', 'upstream-1.json', r'(phpt / )?phpt \(\d+, upstream\)',
-             ('.github/actions/phpt-build', '.github/actions/phpt-env', '.github/actions/instantclient',
+    'phpt': ('phpt-upstream-1', 'upstream-1.json', r'(phpt / )?phpt \(\d+, upstream\)', 6,
+             ('tools/build_hybrid.py', '.github/actions/phpt-build', '.github/actions/phpt-env', '.github/actions/instantclient',
               '.github/workflows/phpt.yml', 'corpus/upstream/services.yml', 'corpus/upstream/lib-composer.lock')),
-    **{variant: (f'phpt-{variant}', f'target/phpt/{variant}/upstream.json', rf'{variant} / phpt',
+    **{variant: (f'phpt-{variant}', f'target/phpt/{variant}/upstream.json', rf'{variant} / phpt', 1,
                  (f'.github/workflows/{variant}.yml',)) for variant in ('cares', 'iouring', 'threadcontext')},
 }
 
@@ -347,7 +348,7 @@ def phpt_baseline(kind='phpt', php=None):
     still stands for upstream at HEAD: the jobs that made it all succeeded, its key paths are
     unchanged since, and with `php` it ran on that PHP_VERSION. Searched by artifact, not by run:
     a run that reused another's reports made none, and the last that made them can be days back."""
-    artifact, report, jobs, paths = BASELINES[kind]
+    artifact, report, jobs, count, paths = BASELINES[kind]
     rows = [json.loads(line) for line in gh('api', f'repos/{{owner}}/{{repo}}/actions/artifacts?name={artifact}&per_page=100',
                                             '--jq', '.artifacts[] | .workflow_run + {expired}').splitlines()]
     # Only the merge tier runs on a push to main; a fork's pull request can name its branch main.
@@ -355,8 +356,9 @@ def phpt_baseline(kind='phpt', php=None):
                          and row['head_branch'] == 'main' and row['head_repository_id'] == row['repository_id'])
     for run, sha in runs:
         shards = [conclusion for name, conclusion in job_conclusions(run).items() if re.fullmatch(jobs, name)]
-        if not shards or any(conclusion != 'success' for conclusion in shards):
+        if shards.count('success') != count:
             continue
+        # Runs further back are older: a key or PHP release that changed since stays changed.
         if not unchanged(sha, UPSTREAM_KEY + paths):
             return None
         if php:
