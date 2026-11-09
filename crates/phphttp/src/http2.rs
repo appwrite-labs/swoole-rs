@@ -1,7 +1,7 @@
 //! What the HTTP/2 server (crates/phphttp2) reads and does to its streams'
 //! contexts.
 use crate::{
-    context::{self, swr_v1_phphttp_context_free},
+    context::{self, free},
     header,
     host::Context,
     parse::{self, CAPABILITIES},
@@ -236,7 +236,7 @@ pub unsafe fn release_stream(ctx: *mut Context) {
     state.stream_id = 0;
     state.end = 1;
     // SAFETY: per the caller.
-    unsafe { swr_v1_phphttp_context_free(ctx) };
+    unsafe { free(ctx) };
 }
 
 /// The static handler answers the request: no server hook counts it.
@@ -254,7 +254,7 @@ pub unsafe fn unhook(ctx: *mut Context) {
 /// `ctx` is a live context nothing else references, released once.
 pub unsafe fn release_default(ctx: *mut Context) {
     // SAFETY: per the caller.
-    unsafe { swr_v1_phphttp_context_free(ctx) };
+    unsafe { free(ctx) };
 }
 
 /// `swoole_http_parse_cookie`: a `cookie` header's pairs into the request's
@@ -271,9 +271,9 @@ pub unsafe fn cookie(array: *mut zval, value: &[u8]) {
 /// `server` is the live server.
 #[must_use]
 pub unsafe fn server_context(server: *mut std::ffi::c_void, fd: i64) -> *mut Context {
-    let ctx = context::swr_v1_phphttp_context_new();
+    let ctx = context::alloc();
     // SAFETY: a new context and the live server.
-    unsafe { context::swr_v1_phphttp_context_init(ctx, server) };
+    unsafe { context::init(ctx, server) };
     let state = send::state(ctx);
     state.fd = fd;
     state.http2 = 1;
@@ -290,7 +290,7 @@ pub unsafe fn server_context(server: *mut std::ffi::c_void, fd: i64) -> *mut Con
 pub unsafe fn stream_context(default_ctx: *mut Context, fd: i64, stream_id: u32) -> *mut Context {
     let ctx = context::context_new(fd);
     // SAFETY: two live contexts.
-    unsafe { context::swr_v1_phphttp_context_copy(ctx, default_ctx) };
+    unsafe { context::copy_settings(ctx, default_ctx) };
     let state = send::state(ctx);
     state.http2 = 1;
     state.stream_id = stream_id;
@@ -327,7 +327,7 @@ pub unsafe fn multipart_start(ctx: *mut Context, content_type: &[u8]) -> bool {
     let (mut boundary, mut length) = (std::ptr::null_mut(), 0);
     // SAFETY: a live context, the value's bytes and local outputs.
     let found = unsafe {
-        parse::swr_v1_phphttp_multipart_boundary(
+        parse::multipart_boundary_of(
             ctx.cast(),
             content_type.as_ptr().cast(),
             content_type.len(),
@@ -337,7 +337,7 @@ pub unsafe fn multipart_start(ctx: *mut Context, content_type: &[u8]) -> bool {
         )
     };
     // SAFETY: the boundary inside the value.
-    if !found || !unsafe { parse::swr_v1_phphttp_multipart_init(ctx.cast(), boundary, length) } {
+    if !found || !unsafe { parse::init_multipart(ctx.cast(), boundary, length) } {
         return false;
     }
     send::state(ctx).parser.data = ctx.cast();

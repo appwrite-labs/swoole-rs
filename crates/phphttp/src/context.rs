@@ -34,20 +34,15 @@ pub(crate) type Holder = Object<*mut Context>;
 /// # Safety
 /// `object` is a live `Swoole\Http\Request` or `Swoole\Http\Response`.
 #[must_use]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_context(object: *const zend_object) -> *mut Context {
+pub(crate) unsafe fn context_of(object: *const zend_object) -> *mut Context {
     // SAFETY: per the caller; only the pointer is copied out.
     unsafe { *Holder::data(object.cast_mut()) }
 }
 
 /// Point an object of either class at `context`.
 /// # Safety
-/// As `swr_v1_phphttp_context`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_set_context(
-    object: *mut zend_object,
-    context: *mut Context,
-) {
+/// As `context_of`.
+pub(crate) unsafe fn set_context(object: *mut zend_object, context: *mut Context) {
     // SAFETY: per the caller.
     unsafe { *Holder::data(object) = context };
 }
@@ -55,7 +50,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_set_context(
 /// The method's `$this` context.
 pub(crate) fn this(call: &swoole_rs_zend::Call) -> *mut Context {
     // SAFETY: the classes' methods are non-static, so `$this` is one of ours.
-    unsafe { swr_v1_phphttp_context(call.this()) }
+    unsafe { context_of(call.this()) }
 }
 
 /// `SW_SET_CLASS_NOT_SERIALIZABLE`, clone and unset denied, custom object.
@@ -100,7 +95,7 @@ fn object(slot: &mut Slot, ce: *mut zend_class_entry, ctx: *mut Context, offset:
     // SAFETY: the object just created.
     let std = unsafe { obj_of(slot.ptr) };
     // SAFETY: one of our objects.
-    unsafe { swr_v1_phphttp_set_context(std, ctx) };
+    unsafe { set_context(std, ctx) };
     // SAFETY: the declared property's slot, `OBJ_PROP(std, offset)`.
     let property = unsafe { std.byte_add(offset as usize) }.cast::<zval>();
     // SAFETY: a fresh object's property, holding nothing to release.
@@ -119,7 +114,7 @@ fn object(slot: &mut Slot, ce: *mut zend_class_entry, ctx: *mut Context, offset:
     unsafe(export_name = "_Z23swoole_http_context_newl")
 )]
 pub(crate) extern "C" fn context_new(fd: i64) -> *mut Context {
-    let ctx = swr_v1_phphttp_context_new();
+    let ctx = alloc();
     let state = send::state(ctx);
     object(
         &mut state.request.zobject,
@@ -148,17 +143,16 @@ unsafe extern "C" {
 }
 
 /// `new Context()`: a value-initialised context, which
-/// `swr_v1_phphttp_context_free` releases.
+/// `free` releases.
 #[must_use]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphttp_context_new() -> *mut Context {
+pub(crate) fn alloc() -> *mut Context {
     // Not `Box::new_zeroed`: glibc's `calloc` skips the thread cache and cost
     // 500 instructions a request where `malloc` and a memset cost about 100
     // (#2129). `black_box` keeps LLVM from folding them back into `calloc`.
     let state = std::hint::black_box(Box::into_raw(Box::<State>::new_uninit()));
     // SAFETY: a fresh, writable `State`; all zeroes is a valid one (null
     // pointers, `None`s and `IS_UNDEF` zvals, as C++'s value-initialisation
-    // left it), which `swr_v1_phphttp_context_free` drops as a `Box<State>`.
+    // left it), which `free` drops as a `Box<State>`.
     unsafe { state.write_bytes(0, 1) };
     state.cast()
 }
@@ -166,8 +160,7 @@ pub extern "C" fn swr_v1_phphttp_context_new() -> *mut Context {
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
 /// # Safety
 /// `ctx` is a live context and `server` the live server.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_context_init(ctx: *mut Context, server: *mut c_void) {
+pub(crate) unsafe fn init(ctx: *mut Context, server: *mut c_void) {
     // SAFETY: per the caller, `server` is a live `Server` for the call.
     let server = unsafe { view::Server::from_raw(server) };
     let config = server.config();
@@ -181,7 +174,7 @@ pub unsafe extern "C" fn swr_v1_phphttp_context_init(ctx: *mut Context, server: 
         state.compression_min_length = config.compression_min_length;
     }
     // SAFETY: per the caller.
-    unsafe { swr_v1_phphttp_context_bind(ctx, server.raw(), ptr::null_mut()) };
+    unsafe { bind(ctx, server.raw(), ptr::null_mut()) };
 }
 
 /// The server a context not bound to a coroutine socket answers through.
@@ -308,38 +301,13 @@ pub(crate) fn close(ctx: *mut Context) -> bool {
     }
 }
 
-/// `ctx->send(ctx, data, length)` for C++.
-/// # Safety
-/// `ctx` is a live, bound context and `data` holds `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_send(
-    ctx: *mut Context,
-    data: *const c_char,
-    length: usize,
-) -> bool {
-    send_raw(ctx, data, length)
-}
-
-/// `ctx->close(ctx)` for C++.
-/// # Safety
-/// `ctx` is a live, bound context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_close(ctx: *mut Context) -> bool {
-    close(ctx)
-}
-
 /// `Context::bind(Server *)`, or `bind(zval *)` when `server` is null: the
 /// context sends through the server, or holds the socket object and sends
 /// through its coroutine socket.
 /// # Safety
 /// `ctx` is a live context; `server` is the live server or `socket` a live
 /// `Swoole\Coroutine\Socket`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_context_bind(
-    ctx: *mut Context,
-    server: *mut c_void,
-    socket: *mut zval,
-) {
+pub(crate) unsafe fn bind(ctx: *mut Context, server: *mut c_void, socket: *mut zval) {
     let state = send::state(ctx);
     if server.is_null() {
         // SAFETY: per the caller; the context takes a reference.
@@ -375,8 +343,7 @@ unsafe fn set_null(target: *mut zval) {
 /// settings, transport and hooks.
 /// # Safety
 /// `ctx` and `from` are live contexts.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_context_copy(ctx: *mut Context, from: *const Context) {
+pub(crate) unsafe fn copy_settings(ctx: *mut Context, from: *const Context) {
     // SAFETY: a live context, read only.
     let from = unsafe { &*from.cast::<State>() };
     let state = send::state(ctx);
@@ -471,8 +438,7 @@ pub(crate) fn available(ctx: *mut Context) -> bool {
 /// stream holds it.
 /// # Safety
 /// `ctx` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_context_free(ctx: *mut Context) {
+pub(crate) unsafe fn free(ctx: *mut Context) {
     let state = send::state(ctx);
     if !state.request.zobject.ptr.is_null()
         || !state.response.zobject.ptr.is_null()
@@ -496,13 +462,13 @@ pub unsafe extern "C" fn swr_v1_phphttp_context_free(ctx: *mut Context) {
         unsafe { swr_zend_efree(state.response.reason.cast()) };
     }
     // SAFETY: a live context.
-    unsafe { parse::swr_v1_phphttp_parse_free(ctx) };
+    unsafe { parse::parse_free(ctx) };
     let state = send::state(ctx);
     if co_socket(state) {
         // SAFETY: the context's reference to its socket.
         unsafe { zval_ptr_dtor(&raw mut state.zsocket) };
     }
-    // SAFETY: `swr_v1_phphttp_context_new`'s, which nothing references any more.
+    // SAFETY: `alloc`'s, which nothing references any more.
     drop(unsafe { Box::from_raw(ctx.cast::<State>()) });
 }
 
