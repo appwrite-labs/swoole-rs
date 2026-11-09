@@ -1,6 +1,8 @@
 //! `TEST(ringbuffer, thread)` in its own test binary: cargo runs test binaries one at
 //! a time, as upstream's runner runs its tests, so the crate's other threaded tests
-//! can't starve the writer's 100 retries of 10us (under `ASan` they did, #1734).
+//! can't starve the writer (under `ASan` they did, #1734). The writer retries a full
+//! ring until a deadline rather than upstream's 100 tries of 10us: under load a
+//! reader can fall more than a millisecond behind (#2037).
 use std::{mem, ptr};
 use swoole_rs_memory::{
     members::{
@@ -62,13 +64,11 @@ fn ringbuffer_thread() {
         std::thread::sleep(std::time::Duration::from_secs(1));
         for i in 0..WRITE_N {
             let size = 10000 + unsafe { libc::rand() }.unsigned_abs() % PACKET_LEN;
-            let mut data = ptr::null_mut();
-            for _ in 0..100 {
-                data = unsafe { swr_v1_memory_ring_buffer_alloc(ring, size) };
-                if !data.is_null() {
-                    break;
-                }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut data = unsafe { swr_v1_memory_ring_buffer_alloc(ring, size) };
+            while data.is_null() && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_micros(10));
+                data = unsafe { swr_v1_memory_ring_buffer_alloc(ring, size) };
             }
             assert!(!data.is_null(), "alloc failed. index={i}, break");
             let pkg = Pkg {
