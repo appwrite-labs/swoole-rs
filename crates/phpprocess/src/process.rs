@@ -83,6 +83,12 @@ pub(crate) fn entry() -> *mut zend_class_entry {
     PROCESS.entry()
 }
 
+/// `Swoole\Process`.
+#[must_use]
+pub fn process_class() -> &'static Class {
+    &PROCESS
+}
+
 /// The data of a Process object.
 /// # Safety
 /// `object` is a live Process (or subclass) object.

@@ -66,6 +66,39 @@ impl Callable {
         Ok(Some(Rc::from(unsafe { Box::from_raw(handle) })))
     }
 
+    /// `sw_callable_create` of the argument `name` (unnamed when `None`): none
+    /// for a missing or null value when `allow_null`, else `exception` thrown;
+    /// none, after a warning, when it is not callable.
+    /// # Errors
+    /// A native PHP leaf bailed out.
+    pub fn argument(
+        value: Option<&swoole_rs_zend::Value>,
+        name: Option<&CStr>,
+        allow_null: bool,
+        exception: &swoole_rs_zend::Class,
+    ) -> Result<Option<Rc<Self>>, bailout::Bailout> {
+        let value = value.map_or(ptr::null_mut(), swoole_rs_zend::Value::as_ptr);
+        if value.is_null() && name.is_none() {
+            return Ok(None);
+        }
+        // SAFETY: null (with a name) or a live candidate, a NUL-terminated name,
+        // a registered class or null, and Swoole's C warning leaf.
+        let handle = unsafe {
+            factory(
+                value,
+                name.map_or(ptr::null(), CStr::as_ptr),
+                allow_null,
+                exception.entry(),
+                sys::swr_zend_callable_warning,
+            )
+        }?;
+        if handle.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: `factory` gave up this Box.
+        Ok(Some(Rc::from(unsafe { Box::from_raw(handle) })))
+    }
+
     /// The resolved cache, for a call: Zend reads it (an unresolved call
     /// resolves into a local cache), so a shared owner may lend it.
     #[must_use]

@@ -160,6 +160,16 @@ pub fn fd_connect(fd: c_int, address: &SocketAddress) -> SocketIoResult {
 /// with the pending error (or getsockopt's own errno).
 #[must_use]
 pub fn fd_pending_error(fd: c_int) -> SocketIoResult {
+    match socket_error(fd) {
+        Ok(0) => READY,
+        Ok(error) | Err(error) => failed(error),
+    }
+}
+
+/// `getsockopt(fd, SOL_SOCKET, SO_ERROR)`: the pending error.
+/// # Errors
+/// getsockopt's own errno.
+pub fn socket_error(fd: c_int) -> Result<c_int, c_int> {
     let mut pending: c_int = 0;
     // Upstream passes sizeof(len), which equals sizeof(int).
     #[expect(
@@ -177,13 +187,18 @@ pub fn fd_pending_error(fd: c_int) -> SocketIoResult {
             &raw mut length,
         )
     };
-    if read < 0 {
-        return failed(errno());
-    }
-    if pending != 0 {
-        return failed(pending);
-    }
-    READY
+    if read < 0 { Err(errno()) } else { Ok(pending) }
+}
+
+/// libc's `strerror(code)`.
+#[must_use]
+pub fn errno_message(code: c_int) -> String {
+    // SAFETY: strerror returns a NUL-terminated message for any code.
+    let message = unsafe { libc::strerror(code) };
+    // SAFETY: as above; it is copied before another call can reuse it.
+    unsafe { std::ffi::CStr::from_ptr(message) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// `check_sendfile_parameters`: fstat(2) the open `file_fd` and resolve the range

@@ -127,6 +127,31 @@ pub extern "C" fn swr_v1_phpswoole_module() -> *mut std::ffi::c_void {
     swoole_rs_phpswoole::module_entry(&FAMILIES).cast()
 }
 
+/// `php_swoole_reactor_init()`: 0, or -1 after an error (crates/phpevents).
+#[cfg(feature = "php")]
+#[unsafe(no_mangle)]
+pub extern "C" fn php_swoole_reactor_init() -> i32 {
+    swoole_rs_phpevents::reactor_init()
+}
+
+/// `php_swoole_convert_to_fd(value)` (crates/phpevents).
+/// # Safety
+/// The caller lends a live initialized descriptor candidate.
+#[cfg(feature = "php")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn php_swoole_convert_to_fd(value: *mut swoole_rs_zend::sys::zval) -> i32 {
+    // SAFETY: as the caller promises.
+    let value = unsafe { swoole_rs_zend::Value::from_ptr(value) };
+    swoole_rs_phpevents::convert_to_fd(value)
+}
+
+/// `Swoole\Event::wait()`'s native lifecycle effect (crates/phpevents).
+#[cfg(feature = "php")]
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_phpevents_wait() {
+    swoole_rs_phpevents::wait_and_raise();
+}
+
 #[cfg(feature = "php")]
 static FAMILIES: swoole_rs_phpswoole::Families = {
     use swoole_rs_phpclients as clients;
@@ -146,6 +171,7 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
             swoole_rs_phplocks::coroutine_lock_minit,
             swoole_rs_phplocks::thread_locks_minit,
         ],
+        event_minit: swoole_rs_phpevents::minit,
         timer_minit: swoole_rs_phptimer::minit,
         timer_rshutdown: swoole_rs_phptimer::rshutdown,
         redis_minit: swoole_rs_phpredis::redis_minit,
@@ -186,8 +212,8 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
         socket_settings: clients::socket_settings,
         name_resolver_add: clients::php_swoole_name_resolver_add,
         name_resolver_remove: clients::swoole_name_resolver_php_remove,
-        socket_class: clients::socket_class,
-        client_class: clients::client_class,
+        socket_class: clients::socket,
+        client_class: clients::client,
         http: swoole_rs_phpswoole::Http {
             minit: [
                 http::request_minit,

@@ -218,6 +218,159 @@ pub unsafe extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
     unsafe { crate::swr_v1_reactor_registry_get(registry, fd) }
 }
 
+/// A field of the thread's `Reactor`, written; `None` without one.
+fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
+    let reactor = current();
+    if reactor.is_null() {
+        return None;
+    }
+    // SAFETY: `SwooleTG.reactor` is live until `swoole_event_free` clears it.
+    let fields = unsafe { prepared(reactor) }.fields;
+    // SAFETY: a live reactor's fields, borrowed for the write alone; the loop
+    // reads them through its raw pointer, never across this call.
+    Some(write(unsafe { &mut *fields }))
+}
+
+/// `sw_reactor()->running = running`, when there is a reactor.
+pub fn swoole_event_set_running(running: bool) {
+    field_mut(|fields| fields.running = running);
+}
+
+/// `sw_reactor()->once = once`, when there is a reactor.
+pub fn swoole_event_set_once(once: bool) {
+    field_mut(|fields| fields.once = once);
+}
+
+/// `sw_reactor()->bailout`: false without a reactor.
+#[must_use]
+pub fn swoole_event_bailed_out() -> bool {
+    field(|fields| fields.bailout).unwrap_or(false)
+}
+
+/// `sw_reactor()->if_exit()`: true without a reactor. Exit conditions may run PHP.
+#[must_use]
+pub fn swoole_event_if_exit() -> bool {
+    let reactor = current();
+    // SAFETY: the thread's live reactor.
+    reactor.is_null() || unsafe { crate::callbacks::reactor_if_exit(reactor) }
+}
+
+/// `sw_reactor()->wait()`: -1 without a reactor. Handlers may run PHP.
+#[must_use]
+pub fn swoole_event_run() -> c_int {
+    let reactor = current();
+    if reactor.is_null() {
+        return -1;
+    }
+    // SAFETY: the thread's live reactor, whose backend `swoole_event_init` opened.
+    unsafe { crate::callbacks::reactor_wait(reactor) }
+}
+
+/// A reactor handler over the fd of the event it is called with.
+pub trait FdHandler {
+    fn handle(fd: c_int) -> c_int;
+}
+
+/// # Safety
+/// The reactor calls it with a live `Event`.
+unsafe extern "C" fn fd_handler<H: FdHandler>(_reactor: *mut c_void, event: *mut c_void) -> c_int {
+    // SAFETY: as above.
+    let fd = unsafe { (*event.cast::<crate::Event>()).fd };
+    H::handle(fd)
+}
+
+/// `swoole_event_set_handler(fd_type, event, H)`, when there is a reactor.
+pub fn swoole_event_set_fd_handler<H: FdHandler>(fd_type: c_int, event: c_int) {
+    if !current().is_null() {
+        // SAFETY: the thread's live reactor.
+        unsafe { swoole_event_set_handler(fd_type, event, Some(fd_handler::<H>)) };
+    }
+}
+
+/// `swoole_event_isset_handler(fd_type, event)`: false without a reactor.
+#[must_use]
+pub fn swoole_event_has_handler(fd_type: c_int, event: c_int) -> bool {
+    // SAFETY: the thread's live reactor.
+    !current().is_null() && unsafe { swoole_event_isset_handler(fd_type, event) }
+}
+
+/// A reactor cycle task: `Reactor::future_task` or `idle_task`.
+pub trait CycleTask {
+    fn run();
+}
+
+extern "C-unwind" fn cycle_task<T: CycleTask>(_: *mut c_void) {
+    T::run();
+}
+
+/// Set (`run`) or clear the thread reactor's future (`before`) or idle task, when
+/// there is a reactor.
+pub fn swoole_event_cycle<T: CycleTask>(before: bool, run: bool) {
+    field_mut(|fields| {
+        let task = if before {
+            &mut fields.future_task
+        } else {
+            &mut fields.idle_task
+        };
+        *task = crate::ReactorTask {
+            callback: run.then_some(cycle_task::<T> as crate::DeferCall),
+            data: std::ptr::null_mut(),
+        };
+    });
+}
+
+/// Whether the thread reactor's future (`before`) or idle task is set.
+#[must_use]
+pub fn swoole_event_cycle_isset(before: bool) -> bool {
+    field(|fields| {
+        if before {
+            fields.future_task.callback.is_some()
+        } else {
+            fields.idle_task.callback.is_some()
+        }
+    })
+    .unwrap_or(false)
+}
+
+/// A value the reactor hands back once: to [`Deferred::run`] after the current
+/// pass, or to [`Deferred::dispose`] if the reactor is freed first.
+pub trait Deferred: Sized + 'static {
+    fn run(self);
+    fn dispose(self);
+}
+
+/// # Safety
+/// `data` is `swoole_event_defer_value`'s box, handed back once.
+unsafe extern "C-unwind" fn deferred_run<T: Deferred>(data: *mut c_void) {
+    // SAFETY: as above; the box is freed before `run`, which may bail out.
+    let value = *unsafe { Box::from_raw(data.cast::<T>()) };
+    T::run(value);
+}
+
+/// # Safety
+/// As [`deferred_run`].
+unsafe extern "C-unwind" fn deferred_dispose<T: Deferred>(data: *mut c_void) {
+    // SAFETY: as above.
+    let value = *unsafe { Box::from_raw(data.cast::<T>()) };
+    T::dispose(value);
+}
+
+/// `sw_reactor()->defer(...)` of `value`, which comes back without a reactor.
+/// # Errors
+/// There is no reactor.
+pub fn swoole_event_defer_value<T: Deferred>(value: T) -> Result<(), T> {
+    let reactor = current();
+    if reactor.is_null() {
+        return Err(value);
+    }
+    // SAFETY: `SwooleTG.reactor` is live until `swoole_event_free` clears it.
+    let fields = unsafe { prepared(reactor) }.fields;
+    let data = Box::into_raw(Box::new(value)).cast();
+    // SAFETY: the live reactor's fields; the queue hands `data` back once.
+    unsafe { crate::defer(fields, deferred_run::<T>, data, Some(deferred_dispose::<T>)) };
+    Ok(())
+}
+
 /// `int swoole_event_wait()`: run the loop unless it may already exit, then free it.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[unsafe(export_name = "_Z17swoole_event_waitv")]
