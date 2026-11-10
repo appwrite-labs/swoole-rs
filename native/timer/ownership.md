@@ -16,9 +16,9 @@ destructor's close/complete/end/drain. It holds the queue in a `RefCell` that no
 borrow holds across a callback or destructor, so a bailout never skips a release. It allocates and frees every
 `TimerNode`, whose callback and destructor are plain C function pointers;
 `swr_v1_timer_add_plain` adds one whose callback is a function of its data alone,
-for Rust callers. With a reactor it hooks `Reactor::timeout_msec`, the
-timer-priority end callback, the exit condition and a destroy callback that frees
-this thread's timer. `native/timer/swoole_timer.h` is the C++ view: `TimerNode`,
+for Rust callers, which call it by path. With a reactor it hooks
+`Reactor::timeout_msec`, the timer-priority end callback, the exit condition and a
+destroy callback that frees this thread's timer. `native/timer/swoole_timer.h` is the C++ view: `TimerNode`,
 and a `Timer` class with no data members whose methods call
 `swr_v1_timer_owner_*`. `crates/timer/src/wrapper.rs` is the `swoole_timer_*` API
 over it, with `SwooleTG.timer` through `swr_v1_core_timer_slot`.
