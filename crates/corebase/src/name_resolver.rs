@@ -134,8 +134,7 @@ pub unsafe extern "C" fn swr_v1_core_name_resolver_remove(
 }
 
 /// `SwooleG = {}`'s effect on the list.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_name_resolver_clear() {
+pub(crate) fn swr_v1_core_name_resolver_clear() {
     resolvers().clear();
 }
 
@@ -147,8 +146,7 @@ pub extern "C" fn swr_v1_core_name_resolver_clear() {
 ///
 /// # Safety
 /// `name` holds `length` bytes and `assign` writes `out`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_name_resolver_resolve(
+pub unsafe fn swr_v1_core_name_resolver_resolve(
     name: *const c_char,
     length: usize,
     context: &mut NameResolverContext,
