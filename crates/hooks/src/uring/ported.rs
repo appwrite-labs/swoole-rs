@@ -22,8 +22,8 @@ const TEST_HTTP_EXPECT: &str = "Location: https://www.gov.cn/";
 const TEST_JPG_SIZE: usize = 218_787;
 const SW_NUM_MILLION: i64 = 1_000_000;
 
-/// GoogleTest ran these one at a time: they share paths under /tmp, and
-/// `wait` collects any child of the process.
+// GoogleTest ran these one at a time: they share paths under /tmp, and `wait`
+// collects any child of the process.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn serial() -> MutexGuard<'static, ()> {
