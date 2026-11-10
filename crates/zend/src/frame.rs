@@ -12,7 +12,7 @@ impl Call {
     /// As [`Call::long`].
     #[inline]
     pub fn long_or_null(&self, n: u32) -> Result<Option<i64>, Invalid> {
-        if n > self.num_args() || self.arg_value(n).is_null() {
+        if self.value(n).is_none_or(crate::Value::is_null) {
             return Ok(None);
         }
         self.long(n, 0).map(Some)
@@ -24,16 +24,17 @@ impl Call {
     #[inline]
     pub fn func(&self, n: u32) -> Result<(), Invalid> {
         let (mut fci, mut fcc) = (MaybeUninit::uninit(), MaybeUninit::uninit());
-        // SAFETY: `n` is a passed argument, as for Zend's macro; Zend fills
-        // the scratch callable, which nothing reads.
-        unsafe { bailout::parse_func(self.zval(n), n, fci.as_mut_ptr(), fcc.as_mut_ptr()) }
+        let arg = self.arg_value(n).as_ptr();
+        // SAFETY: passed argument `n`; Zend fills the scratch callable, which
+        // nothing reads.
+        unsafe { bailout::parse_func(arg, n, fci.as_mut_ptr(), fcc.as_mut_ptr()) }
     }
 
     /// `Z_PARAM_ZVAL_EX(dest, 1, 0)`: argument `n`, `None` when null or not passed.
     #[must_use]
     #[inline]
     pub fn zval_or_null(&self, n: u32) -> Option<*mut zval> {
-        if n > self.num_args() || self.arg_value(n).is_null() {
+        if self.value(n).is_none_or(crate::Value::is_null) {
             return None;
         }
         Some(self.zval(n))
@@ -44,7 +45,7 @@ impl Call {
     /// The argument is not an array; Zend has thrown.
     #[inline]
     pub fn array_table(&self, n: u32) -> Result<Option<*mut zend_array>, Invalid> {
-        if n > self.num_args() {
+        if !self.passed_arg(n) {
             return Ok(None);
         }
         self.array_ref(n).map(|array| Some(array.as_ptr()))

@@ -42,8 +42,6 @@
 #include <sys/mman.h>
 #endif
 
-#include "thirdparty/php/streams/php_streams_int.h"
-
 #include "swoole_rs_phpruntime.h"
 #include "swoole_file_hook.h"
 
@@ -225,7 +223,7 @@ static int do_fstat(php_stdio_stream_data *d, int force) {
 }
 
 static php_stream *_sw_php_stream_fopen_from_fd_int(int fd, const char *mode, const char *persistent_id STREAMS_DC) {
-    php_stdio_stream_data *self = (php_stdio_stream_data *) pemalloc_rel_orig(sizeof(*self), persistent_id);
+    php_stdio_stream_data *self = (php_stdio_stream_data *) pemalloc(sizeof(*self), persistent_id);
     memset(self, 0, sizeof(*self));
     self->file = NULL;
     self->is_seekable = 1;
