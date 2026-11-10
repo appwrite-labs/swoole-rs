@@ -19,7 +19,7 @@ use swoole_rs_reactor::socket_upstream::{
     make_socket_typed, signal_dispatch, socket_cork, socket_set_fd_option, socket_uncork,
 };
 use swoole_rs_reactor::{
-    CLASS_STREAM, CLASS_TCP, OutputHooks, ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
+    CLASS_STREAM, CLASS_TCP, OutputEffects, ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
     SYNC_SENDFILE, SocketAddress, SocketFileRequest, SocketRecord, SyncEffects, fd_recvfrom,
     handle_send_owned, sendfile_chunk, socket_record_peek, socket_record_recv, socket_record_send,
     ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to,
@@ -1084,48 +1084,37 @@ pub(crate) unsafe fn out_queue(socket: *mut SocketRecord) -> *mut swoole_rs_buff
     unsafe { *buffer.cast::<*mut swoole_rs_buffer::Buffer>() }
 }
 
-unsafe extern "C" fn output_send(socket: *mut c_void, data: *const c_void, length: usize) -> isize {
-    // SAFETY: the output hooks lend their live record and the queue's bytes.
-    unsafe { socket_send(socket.cast(), data, length, 0) }
-}
+/// The queued output's effects on a socket. Only [`socket_handle_send`] and
+/// [`socket_handle_sendfile`], whose callers promise a live record, build one.
+struct Output(*mut SocketRecord);
 
-unsafe extern "C" fn output_cork(socket: *mut c_void) -> bool {
-    // SAFETY: the output hooks lend their live record.
-    socket_cork(unsafe { &mut *socket.cast() })
-}
-
-unsafe extern "C" fn output_uncork(socket: *mut c_void) {
-    // SAFETY: the output hooks lend their live record.
-    socket_uncork(unsafe { &mut *socket.cast() });
-}
-
-unsafe extern "C" fn output_sent(socket: *mut c_void) {
-    // SAFETY: the output hooks lend their live record.
-    let record = unsafe { &mut *socket.cast::<SocketRecord>() };
-    if !record.output.send_timer.is_null() {
-        record.last_sent_time = steady_ms();
+impl OutputEffects for Output {
+    fn send(&self, data: &[u8]) -> isize {
+        // SAFETY: the live record and the queue's bytes.
+        unsafe { socket_send(self.0, data.as_ptr().cast(), data.len(), 0) }
     }
-}
 
-/// The queued output's effects on `socket`.
-///
-/// # Safety
-/// `socket` is a live record while the hooks are used.
-unsafe fn output_hooks(socket: *mut SocketRecord) -> OutputHooks {
-    let kernel_nobufs = socket
-        .cast::<u8>()
-        .wrapping_add(std::mem::offset_of!(SocketRecord, kernel_nobufs))
-        .cast();
-    // SAFETY: each effect takes the live record, and `kernel_nobufs` is its flag.
-    unsafe {
-        OutputHooks::new(
-            socket.cast(),
-            kernel_nobufs,
-            output_send,
-            output_cork,
-            output_uncork,
-            output_sent,
-        )
+    fn cork(&self) -> bool {
+        // SAFETY: the live record, which no other borrow holds during the effect.
+        socket_cork(unsafe { &mut *self.0 })
+    }
+
+    fn uncork(&self) {
+        // SAFETY: as above.
+        socket_uncork(unsafe { &mut *self.0 });
+    }
+
+    fn sent(&self) {
+        // SAFETY: as above.
+        let record = unsafe { &mut *self.0 };
+        if !record.output.send_timer.is_null() {
+            record.last_sent_time = steady_ms();
+        }
+    }
+
+    fn catch_error(&self, error: c_int) -> c_int {
+        // SAFETY: as above.
+        swoole_rs_reactor::catch_error(error, unsafe { &mut (*self.0).kernel_nobufs })
     }
 }
 
@@ -1134,8 +1123,7 @@ unsafe fn output_hooks(socket: *mut SocketRecord) -> OutputHooks {
 /// # Safety
 /// `socket` is a live record with a nonempty output buffer.
 pub unsafe fn socket_handle_send(socket: *mut SocketRecord) -> c_int {
-    // SAFETY: as the caller promises.
-    let hooks = unsafe { output_hooks(socket) };
+    let hooks = Output(socket);
     // SAFETY: as the caller promises.
     let queue = unsafe { out_queue(socket) };
     // SAFETY: the live record, its queue and the hooks over them.
@@ -1166,8 +1154,7 @@ const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 /// # Safety
 /// `socket` is a live record whose output buffer's front is a sendfile request.
 pub unsafe fn socket_handle_sendfile(socket: *mut SocketRecord) -> c_int {
-    // SAFETY: as the caller promises.
-    let hooks = unsafe { output_hooks(socket) };
+    let hooks = Output(socket);
     // SAFETY: as the caller promises.
     let queue = unsafe { out_queue(socket) };
     let mut front = swoole_rs_buffer::TypedFront::default();
