@@ -225,6 +225,18 @@ fn recv(c: &mut TcpStream, buf: &mut [u8]) -> isize {
     c.read(buf).map_or(-1, |n| n as isize)
 }
 
+/// A `MSG_WAITALL` recv: until `buf` is full or the peer closes.
+fn recv_all(c: &mut TcpStream, buf: &mut [u8]) -> usize {
+    let mut length = 0;
+    while length < buf.len() {
+        match c.read(&mut buf[length..]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => length += n,
+        }
+    }
+    length
+}
+
 fn reply() -> Vec<u8> {
     [b"Server: ", PACKET].concat()
 }
@@ -324,18 +336,19 @@ unsafe extern "C" fn sendwait_receive(
     SW_OK
 }
 
-/// The client of `sendwait`, `system` and `forward_message`: one packet, one read, which
-/// must be the reply, then SIGTERM to this process.
+/// The client of `sendwait`, `system` and `forward_message`: one packet, then the reply
+/// (upstream's one read, read until it is whole), then SIGTERM to this process.
 fn packet_client(port: impl FnOnce() -> u16 + Send + 'static) {
     thread_client(move || {
         lock();
         let mut c = TcpStream::connect((TEST_HOST, port())).unwrap();
         c.write_all(PACKET).unwrap();
-        let mut buf = [0; 1024];
-        let n = recv(&mut c, &mut buf);
+        let expected = reply();
+        let mut buf = vec![0; expected.len()];
+        let n = recv_all(&mut c, &mut buf);
         drop(c);
         // Upstream discards the reply; a client that got none must not pass.
-        assert_eq!(&buf[..usize::try_from(n).unwrap_or(0)], &reply()[..]);
+        assert_eq!(&buf[..n], &expected[..]);
         kill_self();
     });
 }
