@@ -6,7 +6,8 @@ use crate::ops::{
     LOG_BASE_ALLOC_CONNECTIONS, LOG_BASE_ALLOC_NUMS, LOG_BASE_ALLOC_PORT_NUMS, OP_ACCEPT_EVENT,
     OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_CONNECTIONS, OP_ALLOC_PORT_CONNECTION_NUMS, OP_BASE_PASS,
     OP_BASE_REACTORS, OP_CLOSE_SOCKET, OP_FORWARD, OP_HAS_ON_CLOSE, OP_NEW_BASE_FACTORY,
-    OP_ON_CLOSE, OP_ON_RECEIVE, OP_OUT_EMPTY, OP_PORT_COUNT, OP_QUEUE_CLOSE, OP_SEND_HERE,
+    OP_ON_CLOSE, OP_ON_PACKET, OP_ON_RECEIVE, OP_OUT_EMPTY, OP_PORT_COUNT, OP_QUEUE_CLOSE,
+    OP_SEND_HERE,
 };
 use crate::records::{ConnectionRecord, VERIFIED_TLS};
 use crate::{Host, SW_OK};
@@ -205,7 +206,8 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
     if task.info.len > 0 {
         recv.info.flags = DATA_PTR;
     }
-    if h.op(OP_ON_RECEIVE, address(&raw const recv))? != 0 {
+    let callback = if dgram { OP_ON_PACKET } else { OP_ON_RECEIVE };
+    if h.op(callback, address(&raw const recv))? != 0 {
         worker.add_request_count();
         if let Some(gs) = crate::shared::server_counters(h.state()?) {
             gs.request_count.fetch_add(1, Ordering::SeqCst);
@@ -566,9 +568,9 @@ mod tests {
 
         // A datagram has no connection to check or update.
         let mut packet = send(9, RECV_DGRAM, 5);
-        let mut s = t.script(&[(OP_ON_RECEIVE, 1)]);
+        let mut s = t.script(&[(OP_ON_PACKET, 1)]);
         assert!(dispatch(&mut s, &raw mut packet, true).unwrap());
-        assert_eq!((s.called(OP_ON_RECEIVE), s.called(OP_BASE_PASS)), (1, 0));
+        assert_eq!((s.called(OP_ON_PACKET), s.called(OP_BASE_PASS)), (1, 0));
         assert_eq!(packet.info.fd, 9, "unconverted");
 
         // A request limit, or a factory dispatch, takes the bus.

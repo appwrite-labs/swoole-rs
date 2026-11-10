@@ -29,10 +29,10 @@ use crate::ops::{
 };
 use crate::ops::{
     OP_CC_COUNT, OP_CC_HTTP_DESTROY, OP_CLOSE_FORWARD, OP_DESTROY_CALLBACK, OP_FORCE_CLOSE,
-    OP_PACKET_DISPATCH, OP_PACKET_INIT, OP_PC_NOTIFY, OP_REACTOR_BARRIER, OP_RECVFROM, OP_WR_SEND,
+    OP_PACKET_INIT, OP_PACKET_TASK, OP_PC_NOTIFY, OP_REACTOR_BARRIER, OP_RECVFROM, OP_WR_SEND,
     OP_WR_SENDFILE, RUN_CLOSE_REACTOR_CONNECTIONS,
 };
-use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_RECEIVE, OP_RD_PORT_READ};
+use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE, OP_RD_PORT_READ};
 use crate::reactor_entry::{self as entry, run, thread};
 use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign};
 use crate::records::ConnectionRecord;
@@ -199,7 +199,7 @@ pub(crate) unsafe fn answer(
             let n = unsafe { swoole_rs_reactor::fd_recvfrom(fd, data, room, 0, storage, len) };
             sign(i64::try_from(n).unwrap_or(-1))
         }
-        OP_PACKET_DISPATCH => {
+        OP_PACKET_TASK => {
             let pkt = packet(ctx);
             ctx.task.info.fd = if pkt.socket_type == SOCK_UDP {
                 // SAFETY: a UDP datagram's peer is an inet4 address.
@@ -221,17 +221,7 @@ pub(crate) unsafe fn answer(
             let len = size_of::<DgramPacket>() as u64 + arg;
             ctx.task.info.len = u32::try_from(len).unwrap_or(u32::MAX);
             ctx.task.data = ctx.pkt.cast();
-            let task = &raw mut ctx.task;
-            if u64::from(state.config_ref().mode_) != crate::MODE_BASE {
-                return Some(u64::from(factory::dispatch(state, task.cast())));
-            }
-            // Base mode hands the datagram to this process's worker directly, as a
-            // connection's data is (`reactor_entry`), rather than through the factory.
-            let mut base = ReactorContext::new(serv, ptr::null_mut());
-            base.sock = ctx.sock;
-            let run = |h: &mut _| crate::base_factory::dispatch(h, task, true).map(i64::from);
-            // SAFETY: the live server and its state; the task outlives the run.
-            u64::from(unsafe { crate::run_reactor_with(&mut base, state, run) } == 1)
+            (&raw mut ctx.task).expose_provenance() as u64
         }
         OP_DESTROY_CALLBACK => {
             let queue = &raw mut handle.fields().destroy_callbacks;
@@ -606,12 +596,13 @@ pub(crate) unsafe fn answer(
             }
             result
         }
-        OP_ON_RECEIVE => {
-            // SAFETY: the `RecvData` the dispatch lends at arg.
-            let dgram = unsafe { (*(arg as *const DataHead)).kind } == EVENT_RECV_DGRAM;
-            let slot = state
-                .callbacks
-                .slot(if dgram { CB_PACKET } else { CB_RECEIVE })?;
+        OP_ON_RECEIVE | OP_ON_PACKET => {
+            let callback = if op == OP_ON_PACKET {
+                CB_PACKET
+            } else {
+                CB_RECEIVE
+            };
+            let slot = state.callbacks.slot(callback)?;
             // SAFETY: the slot's `int (Server *, RecvData *)` callback over the frame at arg.
             u64::from(unsafe { slot.receive(serv, arg as *mut c_void) } == 0)
         }
