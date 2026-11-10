@@ -92,10 +92,7 @@ pub(super) unsafe fn update_long(
     name: &std::ffi::CStr,
     number: i64,
 ) -> Result<(), Bailout> {
-    // SAFETY: all-zero is an initialized undefined zval.
-    let mut value: z::zval = unsafe { std::mem::zeroed() };
-    // SAFETY: this writable local receives a scalar, without any allocation.
-    unsafe { swoole_rs_zend::value::set_long(&raw mut value, number) };
+    let mut value = swoole_rs_zend::long_zval(number);
     // SAFETY: the initialized scalar and borrowed name remain live through the trapped update.
     if unsafe {
         z::swr_zend_try_facade_update(
@@ -250,20 +247,18 @@ pub(super) unsafe fn error_properties(
 ) -> Result<(), Bailout> {
     // SAFETY: the supplied live scope and object own this property.
     unsafe { update_long(scope, object, c"errCode", i64::from(code)) }?;
-    // SAFETY: all-zero is a valid undefined temporary before string allocation.
-    let mut value: z::zval = unsafe { std::mem::zeroed() };
+    // Released on drop; it holds a string, whose release runs no PHP.
+    let value = swoole_rs_zend::Owned::default();
     // SAFETY: copy the borrowed diagnostic bytes into a new owned Zend string inside the C trap.
     if unsafe {
-        z::swr_zend_try_facade_value_string(&raw mut value, message.as_ptr(), message.count_bytes())
+        z::swr_zend_try_facade_value_string(value.as_ptr(), message.as_ptr(), message.count_bytes())
     } != 0
     {
         return Err(Bailout);
     }
     // SAFETY: the owned string and literal property name remain live through a trapped update.
     let bailed = unsafe {
-        z::swr_zend_try_facade_update(scope, object, c"errMsg".as_ptr(), 6, &raw mut value)
+        z::swr_zend_try_facade_update(scope, object, c"errMsg".as_ptr(), 6, value.as_ptr())
     };
-    // SAFETY: this local always holds a string; releasing it cannot run PHP destructors.
-    unsafe { z::zval_ptr_dtor(&raw mut value) };
     if bailed == 0 { Ok(()) } else { Err(Bailout) }
 }

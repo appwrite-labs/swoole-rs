@@ -835,7 +835,8 @@ fn recvfrom(call: &Call) {
     if bytes <= 0 {
         return set_received(call, buffer, bytes);
     }
-    call.assign(1, address(socket).into_owned());
+    // SAFETY: nothing borrows argument 1.
+    unsafe { call.assign(1, address(socket).into_owned()) };
     call.set_zstring(buffer.into_zstring());
 }
 

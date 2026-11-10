@@ -30,10 +30,10 @@ impl Callable {
         let this = Self(raw);
         // SAFETY: as above.
         let callable = unsafe { &mut *raw };
-        // SAFETY: argument `n` is passed (the caller checked the arity).
-        let parsed = unsafe {
-            bailout::parse_func(call.arg(n), n, &raw mut callable.fci, &raw mut callable.fcc)
-        };
+        let arg = call.arg_value(n).as_ptr();
+        // SAFETY: passed argument `n`; Zend fills the callable.
+        let parsed =
+            unsafe { bailout::parse_func(arg, n, &raw mut callable.fci, &raw mut callable.fcc) };
         if let Err(invalid) = parsed {
             this.discard();
             return Err(invalid);

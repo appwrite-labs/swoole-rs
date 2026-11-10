@@ -351,7 +351,7 @@ fn set_cookie(call: &Call, encode: bool) {
     // Zend parses in order and stops at the first bad argument.
     let parsed = (|| -> Result<_, Invalid> {
         call.arity(1, 10)?;
-        let name = call.passed(1);
+        let name = call.value(1);
         let value = call.zstr(2)?;
         let expires = call.long(3, 0)?;
         let path = call.zstr(4)?;
@@ -380,8 +380,7 @@ fn set_cookie(call: &Call, encode: bool) {
     else {
         return call.set_bool(false);
     };
-    // SAFETY: a passed argument is a live zval.
-    let kind = unsafe { type_of(name) };
+    let kind = name.kind();
     if kind != IS_STRING && kind != IS_OBJECT {
         host::notice("The first argument must be a string or an cookie object");
         return call.set_bool(false);
@@ -399,7 +398,7 @@ fn set_cookie(call: &Call, encode: bool) {
         )
     } else {
         // SAFETY: an object argument; a non-Cookie one is reported by httpbindings.
-        unsafe { object_header_line(name) }
+        unsafe { object_header_line(name.as_ptr()) }
     };
     let Some(cookie) = cookie else {
         return call.set_bool(false);
@@ -804,8 +803,9 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     // SAFETY: the context's own zval and this registered class.
     unsafe { init_object(&raw mut slot.value, ce) };
     slot.ptr = &raw mut slot.value;
-    // The return slot takes the reference; the context borrows it.
-    call.set_value(slot.value);
+    // SAFETY: the object just made. The return slot takes the reference; the
+    // context borrows it.
+    unsafe { call.set_value(slot.value) };
     let Some(std) = slot.object() else { return };
     // SAFETY: a `Swoole\Http\Response`.
     unsafe { context::set_context(std, ctx) };
