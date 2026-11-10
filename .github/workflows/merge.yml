@@ -550,37 +550,15 @@ jobs:
           name: phpt-alpine
           path: target/reports/phpt-alpine.json
 
-  # What this run failed, judged from inside it (tools/ci.py new-failures --needs): its jobs'
-  # results and its phases artifacts, with no API call, so no rate limit can fail it. On main
-  # it saves that as the baseline. In the merge queue it is the required check (main's ruleset
-  # names it, as it does the PR tier's): a group lands unless it fails a phase or a job that
-  # the newest baseline didn't fail.
+  # The check main's ruleset requires, here in the merge queue as in the PR tier: every job
+  # passed or was skipped. A queue run tests a group on top of main before it lands, so main
+  # fails only what the queue doesn't run (callgrind) or what passes one run and fails the next.
   required:
     if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.ref == 'refs/heads/main') }}
     needs: [full-gates, phpt-build, callgrind, phpt-stdext, iouring, cares, zts, threadcontext, h2spec, halfclose, phpt, phpt-root, library, autobahn, alpine]
     runs-on: gcrunner=${{ github.run_id }}/runner=small
-    timeout-minutes: 10
-    env:
-      NEEDS: ${{ toJSON(needs) }}
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: phases*
-          path: phases
-      - if: github.event_name != 'merge_group'
-        run: python3 tools/ci.py new-failures --needs "$NEEDS" --phases phases --save baseline/failures.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - if: github.event_name != 'merge_group'
-        uses: actions/cache/save@v4
-        with:
-          path: baseline
-          key: merge-baseline-${{ github.run_id }}
-      # The newest baseline main saved: the key itself never matches, its prefix does.
-      - if: github.event_name == 'merge_group'
-        uses: actions/cache/restore@v4
-        with:
-          path: baseline
-          key: merge-baseline-${{ github.run_id }}
-          restore-keys: merge-baseline-
-      - if: github.event_name == 'merge_group'
-        run: python3 tools/ci.py new-failures --needs "$NEEDS" --phases phases --baseline baseline/failures.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'map_values(.result) | debug | all(. == "success" or . == "skipped")' <<< "$NEEDS"

@@ -165,8 +165,7 @@ means updating the ruleset in the same PR. `ext` (the Cargo-built
 swoole.so with every module, extension load and corpus, a few minutes cached) runs only when a PR
 touches `native/`, the build tools, `crates/phpstubs/`, `.github/` or `.devcontainer/`, and
 is skipped, which counts as passing, otherwise. `gates` runs the modules a PR
-touches and those depending on a touched crate, and fails only on a phase that didn't fail in
-main's latest completed merge-tier run (`ci.py new-failures`). `phpt` runs the touched
+touches and those depending on a touched crate. `phpt` runs the touched
 modules' PHPT families on the Cargo build in parallel shards, gated on upstream's results from
 main's latest merge-tier run (`ci.py phpt-baseline`). Breakage they miss is caught by
 the merge queue. Keep them cached and audit
@@ -174,10 +173,10 @@ them regularly for waste and duplicate steps; slow or flaky CI is a ticket.
 
 The merge queue takes a PR whose PR tier passed and runs the merge tier on it together
 with the PRs queued ahead, on top of `main`, before any of them lands. That run's own
-`required` job (`ci.py new-failures --needs`) fails on a phase or job that didn't fail in
-`main`'s latest completed merge-tier run, and GitHub then drops the PR from the queue and
-turns its auto-merge off. `ci.py stuck` lists it with that run: fix what it broke, or
-re-run a job that died on its runner, and run `gh pr merge --auto --squash <pr>` again.
+`required` job passes, like the PR tier's, when every job passed or was skipped. When it
+fails, GitHub drops the PR from the queue and turns its auto-merge off. `ci.py stuck` lists
+it with that run: fix what it broke and run `gh pr merge --auto --squash <pr>` again, or
+only that when a job died on its runner.
 A PR lands about a merge-tier run after it's queued.
 
 On `main` the merge tier runs one at a time, latest wins: while a run is in progress, each
@@ -188,11 +187,11 @@ old: at most one run (about 15-30 minutes) behind `main`. Every job has a
 
 ### Red main
 
-`main` is often red, and that's tolerable; never stop other work because of it.
-What must not slip through is a **new** failure: a phase that passed in the
-previous completed merge-tier run, or one that didn't exist then. The merge queue
-stops most of them, but a flaky phase can pass in the queue and fail on `main`. Before you
-claim, glance at `python3 tools/ci.py status`: it lists them as `new failures`.
+The queue tests every group on top of `main` before it lands, so `main`'s own run fails
+only what the queue doesn't run (`callgrind`) or a phase that passes one run and fails the
+next. Never stop other work because of it. What must not slip through is a **new** failure:
+a phase that passed in the previous completed merge-tier run, or one that didn't exist
+then. Before you claim, glance at `python3 tools/ci.py status`: it lists them as `new failures`.
 
 For each new failure, search open issues for the phase name (`ci.py status` lists
 the open issues that mention it). If none mentions it, file a `p0` `kind:bug`
@@ -200,4 +199,5 @@ issue with the run link, the phase and its log path, and the commit range since
 the previous run (group phases of one module into one issue). Then carry on with
 your own ticket.
 `p0` sorts first, so the next free executor picks it up. Failures that already
-have an issue keep that issue's priority.
+have an issue keep that issue's priority. A phase that fails in the queue whatever the PR
+blocks every merge until it's fixed: fix it before anything else.
