@@ -1,6 +1,7 @@
 //! Upstream's `core-tests/src/coroutine/system.cpp` (hook.cpp in hook.rs, socket.cpp in socket.rs,
 //! network/client.cpp in tests/modules/clients/client.rs, network/dns.cpp in dns.rs,
-//! network/address.cpp in address.rs, network/socket.cpp in network_socket.rs, os/timer.cpp
+//! network/address.cpp in address.rs, network/socket.cpp in network_socket.rs,
+//! coroutine/gethostbyname.cpp in gethostbyname.rs, coroutine/accept.cpp in hook.rs, os/timer.cpp
 //! in timer.rs, coroutine/async.cpp in co_async.rs, os/pipe.cpp in pipe.rs,
 //! os/process_pool.cpp in process_pool.rs and protocol/ssl.cpp in ssl.rs), one
 //! Rust function per TEST with the same inputs and expected values, over the
@@ -31,6 +32,7 @@ mod address;
 #[path = "../../../clients/client.rs"]
 mod client;
 mod dns;
+mod gethostbyname;
 // Upstream's core-tests/src/coroutine/base.cpp and file.cpp: coroutine tests, built here
 // for the same reason.
 #[path = "../../../coroutine/base.rs"]
@@ -905,6 +907,7 @@ const SUITES: &[(&str, Cases)] = &[
     ("rust_socket_scopes", socket::SCOPE_CASES),
     ("client", client::CASES),
     ("dns", dns::CASES),
+    ("coroutine_gethostbyname", gethostbyname::CASES),
     ("address", address::CASES),
     ("coroutine_base", base::CASES),
     ("coroutine_async_file", base::ASYNC_FILE_CASES),
