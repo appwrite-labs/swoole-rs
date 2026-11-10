@@ -137,6 +137,21 @@ in the same binary and phase, over the same records. Upstream's client thread wa
 mutex its `onWorkerStart` unlocks; here `onWorkerStart` starts it, and its `SyncClient` is
 a blocking `TcpStream`.
 
+`core-tests/src/server/server.cpp`'s task-worker TESTs are `server/src/http1/task.rs`, suite
+`server`, in the same binary and phase, one function per TEST under its own name with the
+same Servers, inputs and expected values: `task_worker`, `task_worker2`, `task_worker_3`,
+`task_base`, `task_process`, `task_ipc_stream`, `task_worker3`, `task_worker4`,
+`task_sync_multi_task`, `task_sync`, `task_ipc_queue_1` .. `task_ipc_queue_5` and
+`no_idle_task_worker`. `Server::task` and both `task_sync`s are crates/server's `tasks`
+(the task pool, notify pipe, lock and result slot that `Swoole\Server`'s task methods use)
+over crates/process's `Tasks`; the other methods are the crates' functions under their
+upstream symbols, and the inline ones (`send_pipe_message(id, data, len)`,
+`get_task_result`, `get_worker_pid`) keep their bodies. `test::counter_*` is a shared
+mapping the forked processes inherit, as core-tests' memory-pool counters are, and an
+expectation in a callback records its failure there, so here one in a forked worker fails
+the case too. `no_idle_task_worker`'s client waits on a shared flag its `onWorkerStart`
+sets, where upstream's waited on a process-shared mutex it unlocked.
+
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
 covered by the PHPTs.

@@ -26,6 +26,7 @@ use crate::client::{Client, USER_AGENT};
 
 pub(super) mod case;
 pub(super) mod server;
+pub(super) mod task;
 
 const TEST_HOST: &str = "127.0.0.1";
 const MODE_BASE: c_int = 1;
