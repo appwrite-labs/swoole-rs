@@ -196,6 +196,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no libc time")]
     fn lifecycle_limit_and_detached_copy_preserve_private_record_fields() {
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
         unsafe {

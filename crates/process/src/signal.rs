@@ -376,6 +376,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn registers_dispatches_and_clears() {
         let _state = crate::signal_state_lock();
         let handler = record as *const () as usize;
@@ -411,6 +412,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strsignal")]
     fn signal_text_appends_the_number_without_a_colon() {
         let text = |name: &[u8], signo| {
             let mut buf = [0xff; 64];

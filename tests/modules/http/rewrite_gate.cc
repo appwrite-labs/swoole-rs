@@ -25,11 +25,15 @@ static void compare(const std::string &url,const Rules &rules){
 // the same bytes; every mismatch is listed. No atom starts with a digit, `=` or `!`, so none
 // forms a backreference or lookahead, which the Rust dialect leaves out.
 static void regex_sweep(){
- static const char *const atoms[]={"a","b","/","\x80","\xff",".","\\d","\\w","\\s","\\W","\\b","\\B","\\x80","\\xff","\\u00e9","\\cJ","\\0","\\/","\\.","[ab]","[^a]","[a-\\xff]","[\\x7f-\\x80]","[\\x80-\\xff]","[\\d-]","[[:alpha:]]","[]","[^]","^","$","(",")","(?:","|","*","+","?","*?","+?","??","{2}","{0,1}","{1,}","{0}","{","}","]","[","-",",","\\"};
+ static const char *const atoms[]={"a","b","/","\x80","\xff",".","\\d","\\w","\\s","\\W","\\b","\\B","\\x80","\\xff","\\u00e9","\\cJ","\\0","\\/","\\.","[ab]","[^a]","[a-\\xff]","[\\x7f-\\x80]","[\\x80-\\xff]","[\\d-]","[[:alpha:]]","[]","[^]","^","$","(",")","(?:","|","*","+","?","*?","+?","??","{2}","{0,1}","{1,}","{0}","{","}","]","[","-",",","\\",
+  // Escapes and class syntax at their edges: short or bad hex, `\c` before a non-letter,
+  // control escapes, `\b` and `\B` in a class, collating and equivalence classes, unknown
+  // and unclosed names, and counted repeats left open or reversed.
+  "\\x4g","\\u12","\\c1","\\c","\\n","\\t","\\v","\\f","\\r","\\S","\\D","\\e","\\$","\\^","\\*","\\(","\\|","[\\b]","[\\B]","[\\s\\S]","[[.a.]]","[[=a=]]","[[:foo:]]","[[:","[:a:]","(?","{1","{,2}","{2,1}"};
  static const char *const bytes[]={"a","b","/","\x80","\xff","1"," ","\n","_"};
  static const char *const formats[]={"X","$&","[$1]","<$2>","$`","$'","","$$"};
  std::mt19937 rng(7349);unsigned failures=0;
- for(unsigned i=0;i<10000;++i){
+ for(unsigned i=0;i<15000;++i){
   std::string pattern,url;for(unsigned n=1+rng()%7;n--;)pattern+=atoms[rng()%std::size(atoms)];
   for(unsigned n=rng()%9;n--;)url+=bytes[rng()%std::size(bytes)];
   try{compare(url,{{"~"+pattern+"~",formats[rng()%std::size(formats)]}});}
@@ -47,8 +51,11 @@ int main(){try{
   // A non-empty match after an empty one, escapes as libstdc++ reads them, and the state limit.
   {{"~a*?~","X"}},{{"~|a~","X"}},{{"~\\B|^b~","X"}},{{"~\\x41\\u0142\\cJ\\q\\A\\01~","<$&>"}},{{"~[[:DIGIT:]]+~","#"}},{{"~a(?:){100000}~","b"}},{{"~a(?:a{0}){100000}~","b"}},{{"~a(?:){4294967295}~","b"}},
   // Ranges whose ends straddle 0x7f/0x80, which libstdc++ compares as char.
-  {{"~[a-\\xff]~","<$&>"}},{{"~[\\xff-a]~","<$&>"}},{{"~[\\x7f-\\x80]~","<$&>"}} };
- std::vector<std::string> urls={"","/","/a","/a/b","/ab","/aa",std::string("/a\0tail",7),std::string(4096,'a'),"baaac","/view/post/3","/view/post/x","/article/settings.html","a b\r\nc","/a/a/a","abcd","/a1b22c333/_x","abab",std::string("ABJqA\0" "1",7),std::string("\xff\0" "a\x80\x7f",5)};
+  {{"~[a-\\xff]~","<$&>"}},{{"~[\\xff-a]~","<$&>"}},{{"~[\\x7f-\\x80]~","<$&>"}},
+  // Collating elements by POSIX name, equivalence classes, and either before a dash.
+  {{"~[[.circumflex.][.left-curly-bracket.][.vertical-line.][.backslash.][.IS4.][.alert.]]~","<$&>"}},{{"~[[.1.]]~","X"}},{{"~[[.a.]]~","X"}},{{"~[[=A=]]~","<$&>"}},
+  {{"~[[.hyphen.]-[.period.]]~","<$&>"}},{{"~[[.hyphen.]-/]~","<$&>"}},{{"~[[=a=]-z]~","<$&>"}},{{"~[[.a.]-z]~","<$&>"}},{{"~[[:alpha:]-z]~","<$&>"}} };
+ std::vector<std::string> urls={"","/","/a","/a/b","/ab","/aa",std::string("/a\0tail",7),std::string(4096,'a'),"baaac","/view/post/3","/view/post/x","/article/settings.html","a b\r\nc","/a/a/a","abcd","/a1b22c333/_x","abab",std::string("ABJqA\0" "1",7),std::string("\xff\0" "a\x80\x7f",5),"^{|\\\x1c\x07" "aAz-./"};
  for(auto &url:urls)for(auto &r:rules)compare(url,r);
  {std::mt19937 rng(34129);for(unsigned i=0;i<2048;++i){std::string url;for(unsigned n=rng()%80;n--;)url.push_back(static_cast<char>(rng()%256));Rules r;for(unsigned n=rng()%8;n--;){std::string prefix=url.substr(0,url.empty()?0:rng()%(url.size()+1)),replacement;for(unsigned m=rng()%80;m--;)replacement.push_back(static_cast<char>(rng()%256));if(rng()%2)prefix="mismatch"+prefix;r.emplace_back(prefix,replacement);}compare(url,r);}}
  regex_sweep();

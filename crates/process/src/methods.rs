@@ -108,15 +108,15 @@ unsafe fn run<R: Narrow>(pool: *mut PoolRecord, worker: *mut WorkerRecord, op: u
     R::narrow(result)
 }
 
-/// Each `ProcessPool` method that is one `RUN_*` operation: its symbol, Rust
-/// name, parameters, return type, and the operation's worker and argument.
+/// Each `ProcessPool` method that is one `RUN_*` operation: its symbol if something links
+/// it by name, Rust name, parameters, return type, and the operation's worker and argument.
 macro_rules! run_methods {
-    ($($symbol:literal fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $op:ident($worker:expr, $arg:expr);)*) => {$(
-        #[doc = concat!("`", $symbol, "`.")]
+    ($($($symbol:literal)? fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $op:ident($worker:expr, $arg:expr);)*) => {$(
+        #[doc = concat!("`ProcessPool::", stringify!($name), "`.")]
         ///
         /// # Safety
         /// `pool` is a live `ProcessPool`; a `worker` is one of its workers.
-        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
+        $(#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))])?
         pub unsafe extern "C" fn $name(pool: *mut PoolRecord, $($p: $t),*) -> $r {
             // SAFETY: as the caller guarantees.
             unsafe { run(pool, $worker, $op, $arg) }
@@ -125,19 +125,15 @@ macro_rules! run_methods {
 }
 
 run_methods! {
-    "_ZN6swoole11ProcessPool18create_message_boxEm"
     fn create_message_box(size: usize) -> c_int = RUN_CREATE_MESSAGE_BOX(ptr::null_mut(), size as u64);
     "_ZN6swoole11ProcessPool18create_message_busEv"
     fn create_message_bus() -> c_int = RUN_CREATE_MESSAGE_BUS(ptr::null_mut(), 0);
     "_ZN6swoole11ProcessPool12set_protocolENS_12ProtocolTypeE"
     fn set_protocol(protocol: c_int) -> () = RUN_SET_PROTOCOL(ptr::null_mut(), i64::from(protocol).cast_unsigned());
-    "_ZN6swoole11ProcessPool11start_checkEv"
     fn start_check() -> c_int = RUN_START_CHECK(ptr::null_mut(), 0);
     "_ZN6swoole11ProcessPool5startEv"
     fn start() -> c_int = RUN_START(ptr::null_mut(), 0);
-    "_ZNK6swoole11ProcessPool12push_messageEPKNS_9EventDataE"
     fn push_event(event: *const c_void) -> c_int = RUN_PUSH_MESSAGE(ptr::null_mut(), event.addr() as u64);
-    "_ZN6swoole11ProcessPool16drop_reload_taskEv"
     fn drop_reload_task() -> () = RUN_DROP_RELOAD_TASK(ptr::null_mut(), 0);
     "_ZN6swoole11ProcessPool6reloadEv"
     fn reload() -> bool = RUN_RELOAD(ptr::null_mut(), 0);
@@ -145,19 +141,13 @@ run_methods! {
     fn stop(worker: *mut WorkerRecord) -> () = RUN_STOP(worker, 0);
     "_ZN6swoole11ProcessPool13reopen_loggerEv"
     fn reopen_logger() -> () = RUN_REOPEN_LOGGER(ptr::null_mut(), 0);
-    "_ZN6swoole11ProcessPool6signalEiPNS_6WorkerE"
     fn signal(signo: c_int, worker: *mut WorkerRecord) -> () = RUN_SIGNAL(worker, i64::from(signo).cast_unsigned());
-    "_ZN6swoole11ProcessPool16kill_all_workersEi"
     fn kill_all_workers(signo: c_int) -> () = RUN_KILL_ALL(ptr::null_mut(), i64::from(signo).cast_unsigned());
     "_ZN6swoole11ProcessPool8shutdownEv"
     fn shutdown() -> bool = RUN_SHUTDOWN(ptr::null_mut(), 0);
-    "_ZN6swoole11ProcessPool5spawnEPNS_6WorkerE"
     fn spawn(worker: *mut WorkerRecord) -> c_int = RUN_SPAWN(worker, 0);
-    "_ZN6swoole11ProcessPool15set_max_requestEjj"
     fn set_max_request(max: u32, grace: u32) -> () = RUN_SET_MAX_REQUEST(ptr::null_mut(), u64::from(max) | (u64::from(grace) << 32));
-    "_ZN6swoole11ProcessPool8set_typeEi"
     fn set_type(kind: c_int) -> () = RUN_SET_TYPE(ptr::null_mut(), u64::from(kind.cast_unsigned() & 0xff));
-    "_ZN6swoole11ProcessPool12set_start_idEi"
     fn set_start_id(id: c_int) -> () = RUN_SET_START_ID(ptr::null_mut(), u64::from(id.cast_unsigned() & 0xffff));
     "_ZN6swoole11ProcessPool6detachEv"
     fn detach() -> bool = RUN_DETACH(ptr::null_mut(), 0);
@@ -889,6 +879,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
     fn pop_message_takes_the_oldest_message_from_the_box() {
         use swoole_rs_memory::channel::{
             swr_v1_memory_channel_bytes, swr_v1_memory_channel_in, swr_v1_memory_channel_init,

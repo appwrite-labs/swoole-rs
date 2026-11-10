@@ -325,6 +325,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
     fn send_recv_and_peek_count_bytes_and_stamp_timers() {
         let [mut a, mut b] = pair();
         let timer = std::ptr::NonNull::<c_void>::dangling().as_ptr();

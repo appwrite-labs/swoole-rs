@@ -234,12 +234,19 @@ pub(crate) fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
 /// One worker's loop over its pool.
 struct Worker<'a> {
     hooks: &'a PoolHooks,
-    ipc: &'a mut PoolIpc,
+    /// Borrowed per use: the worker's callbacks reach the same handle, as
+    /// `swr_v1_process_pool_ipc_respond` does.
+    ipc: *mut PoolIpc,
     pool: *mut c_void,
     worker: *mut c_void,
 }
 
 impl Worker<'_> {
+    const fn ipc(&mut self) -> &mut PoolIpc {
+        // SAFETY: `pool_run`'s live handle, borrowed until the next callback at most.
+        unsafe { &mut *self.ipc }
+    }
+
     fn call(&self) -> PoolCall {
         PoolCall::new(self.pool, self.worker)
     }
@@ -332,14 +339,14 @@ impl Worker<'_> {
     }
 
     fn connection(&mut self) -> Option<&mut Stream> {
-        self.ipc
+        self.ipc()
             .stream
             .as_mut()
             .filter(|stream| !stream.connection.is_null())
     }
 
     fn set_connection(&mut self, socket: *mut c_void) {
-        if let Some(stream) = self.ipc.stream.as_mut() {
+        if let Some(stream) = self.ipc().stream.as_mut() {
             stream.connection = socket;
         }
     }
@@ -458,7 +465,7 @@ impl Worker<'_> {
     /// `SW_PROTOCOL_STREAM`: raw messages, length-prefixed over the stream socket.
     fn run_stream(&mut self, mode: Mode, max_packet_size: u32) -> Result<(), Bailed> {
         // A zeroed buffer: the `QueueNode` mtype is 0.
-        let packet = self.ipc.prepare(max_packet_size);
+        let packet = self.ipc().prepare(max_packet_size);
 
         while self.running() {
             let (data, n) = match mode {
@@ -469,7 +476,7 @@ impl Worker<'_> {
                         break;
                     }
                     self.warn(TRACE_POP, 0, call.result as i64, 0);
-                    if let Some(mtype) = self.ipc.packet.first_mut() {
+                    if let Some(mtype) = self.ipc().packet.first_mut() {
                         *mtype = 0;
                     }
                     (packet.wrapping_add(MTYPE), call.result)
@@ -537,7 +544,7 @@ impl Worker<'_> {
                         self.send(socket, &head)?;
                         self.send(socket, &response)?;
                     }
-                    if let Some(stream) = self.ipc.stream.as_mut() {
+                    if let Some(stream) = self.ipc().stream.as_mut() {
                         // Keep the buffer's capacity, as `String::clear` does.
                         let mut response = response;
                         response.clear();
@@ -919,8 +926,7 @@ pub unsafe fn pool_run(pool_loop: *const PoolLoop, protocol: c_int) -> c_int {
     let mut worker = Worker {
         // SAFETY: the caller's hooks and state, for this call.
         hooks: unsafe { &*pool_loop.hooks },
-        // SAFETY: as above.
-        ipc: unsafe { &mut *pool_loop.ipc },
+        ipc: pool_loop.ipc,
         pool: pool_loop.pool,
         worker: pool_loop.worker,
     };

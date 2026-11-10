@@ -729,6 +729,7 @@ mod table_tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn the_manager_owns_a_thread_per_slot_and_joins_only_started_ones() {
         let manager = ThreadManager::new(3);
         assert!(Arc::ptr_eq(manager.thread(0), manager.thread(0)));

@@ -228,6 +228,7 @@ mod tests {
     unsafe extern "C" fn handler(_: c_int) {}
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigemptyset")]
     fn registers_reads_and_clears() {
         let _state = crate::signal_state_lock();
         let handler = handler as *const () as usize;

@@ -41,8 +41,8 @@ fn direction(event: c_int) -> Option<u32> {
 }
 
 /// The thread's `Reactor` while `swoole_event_is_available()`, else null.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_event_reactor() -> *mut c_void {
+#[must_use]
+pub fn swr_v1_event_reactor() -> *mut c_void {
     if swoole_event_is_available() {
         current()
     } else {
@@ -51,8 +51,8 @@ pub extern "C" fn swr_v1_event_reactor() -> *mut c_void {
 }
 
 /// The thread's `Reactor`, available or not (`sw_reactor()`).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_event_current() -> *mut c_void {
+#[must_use]
+pub fn swr_v1_event_current() -> *mut c_void {
     current()
 }
 
