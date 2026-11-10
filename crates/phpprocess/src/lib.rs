@@ -27,7 +27,7 @@ mod worker;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use affinity::*;
-pub use host::{enable_coroutine, timer_uses_reactor};
+pub use host::{enable_coroutine, sync_server, timer_uses_reactor};
 pub use pool::*;
 pub use process::*;
 pub use signal::{
