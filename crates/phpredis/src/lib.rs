@@ -221,8 +221,13 @@ fn receive(
     };
     let args = [Owned::long(fd), params.into_owned()];
     let retval = Owned::default();
-    let called = swoole_rs_phpcoroutines::call_handler(&callable, &args, &retval, coroutine)?;
-    if !called {
+    let called = swoole_rs_phpcoroutines::call_handler(&callable, &args, &retval, coroutine);
+    // A handler that replaced itself goes now; its destructor's bailout is this call's.
+    drop(callable);
+    if bailout::pending() {
+        return Err(bailout::Bailout);
+    }
+    if !called? {
         let mut message = b"Swoole\\Redis\\Server->onRequest with command '".to_vec();
         message.extend_from_slice(until_nul(command));
         message.extend_from_slice(b"' handler error");
