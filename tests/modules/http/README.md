@@ -158,7 +158,9 @@ the `Address::assign` body (`swr_v1_clients_address_assign`).
 The TESTs that reload, kill and restart a started Server's workers are
 `server/src/http1/lifecycle.rs`. Upstream's lambdas are `extern "C"` callbacks in the Rust
 slots, and what they captured is a static. `test::counter_*` is a shared anonymous mapping,
-made before the server forks, as core-tests' main makes it from `sw_mem_pool()`. Upstream's
+made before the server forks, as core-tests' main makes it from `sw_mem_pool()`. One more
+slot in it counts failed expectations, so one in a forked worker fails the case too,
+where gtest's parent never saw it. Upstream's
 reload, kill and restart methods are crates/process's `workers::entry` functions, and `add_worker`
 is crates/server's.
 

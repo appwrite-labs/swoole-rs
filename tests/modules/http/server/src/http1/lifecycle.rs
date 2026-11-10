@@ -23,6 +23,8 @@ const SIGUSR2: c_int = 12;
 const PROT_READ_WRITE: c_int = 3;
 const MAP_SHARED_ANONYMOUS: c_int = 0x21;
 const TEST_COUNTER_NUM: usize = 32;
+/// The shared slot after the counters: expectations that failed in any process.
+const FAILURES: usize = TEST_COUNTER_NUM;
 const SW_PIPE_MASTER: c_int = 1;
 const SW_PIPE_NONBLOCK: c_int = 2;
 const SW_SERVER_EVENT_SHUTDOWN: u8 = 16;
@@ -69,7 +71,7 @@ fn counters() -> &'static [AtomicI32] {
         let mapped = unsafe {
             mmap(
                 ptr::null_mut(),
-                size_of::<AtomicI32>() * TEST_COUNTER_NUM,
+                size_of::<AtomicI32>() * (TEST_COUNTER_NUM + 1),
                 PROT_READ_WRITE,
                 MAP_SHARED_ANONYMOUS,
                 -1,
@@ -80,8 +82,8 @@ fn counters() -> &'static [AtomicI32] {
         counters = mapped.cast();
         COUNTERS.store(counters, Ordering::SeqCst);
     }
-    // SAFETY: the mapping holds TEST_COUNTER_NUM zeroed counters, never unmapped.
-    unsafe { std::slice::from_raw_parts(counters, TEST_COUNTER_NUM) }
+    // SAFETY: the mapping holds the zeroed counters and FAILURES, never unmapped.
+    unsafe { std::slice::from_raw_parts(counters, TEST_COUNTER_NUM + 1) }
 }
 
 fn counter_init() {
@@ -103,16 +105,26 @@ fn counter_set(index: usize, value: i32) {
     counters()[index].store(value, Ordering::SeqCst);
 }
 
+/// `EXPECT_*` in a callback, which may run in a forked worker: also counted in the
+/// shared FAILURES slot, so the case fails on it once the server stops, where gtest's
+/// parent never saw a worker's.
+fn expect(held: bool, what: &str) {
+    super::expect(held, what);
+    if !held {
+        counters()[FAILURES].fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 /// `ASSERT_*` in a callback: as [`expect`], and the callback returns when it failed.
 fn check(held: bool, what: &str) -> bool {
     expect(held, what);
     held
 }
 
-/// Fails the case on an expectation a callback in this process recorded.
+/// Fails the case on an expectation a callback recorded, in this process or a worker.
 fn assert_no_failure() {
     assert!(
-        !FAILED.load(Ordering::SeqCst),
+        !FAILED.load(Ordering::SeqCst) && counters()[FAILURES].load(Ordering::SeqCst) == 0,
         "a server-side expectation failed"
     );
 }
@@ -225,6 +237,7 @@ fn create_task_worker_fail() {
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(serv.create(), SW_ERR);
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
+    assert_no_failure();
     serv.delete();
 }
 
@@ -310,6 +323,7 @@ fn reload_no_task_worker() {
     assert_eq!(serv.start(), SW_OK);
 
     assert_eq!(counter_get(1), 2); // onWorkerStart
+    assert_no_failure();
     serv.delete();
 }
 
@@ -397,6 +411,7 @@ fn reload_all_workers() {
     assert_eq!(serv.start(), 0);
     assert_eq!(counter_get(10), 2); // onBeforeReload called
     assert_eq!(counter_get(11), 2); // onAfterReload called
+    assert_no_failure();
     serv.delete();
 }
 
@@ -408,6 +423,7 @@ fn reload_all_workers2() {
     assert_eq!(serv.start(), 0);
     assert_eq!(counter_get(10), 2); // onBeforeReload called
     assert_eq!(counter_get(11), 2); // onAfterReload called
+    assert_no_failure();
     serv.delete();
 }
 
@@ -437,6 +453,7 @@ unsafe extern "C" fn kill_user_workers_start(
 
 /// `TEST(server, kill_user_workers)`.
 fn kill_user_workers() {
+    counters();
     let serv = Server::new(MODE_BASE);
     serv.config().worker_num = 1;
     serv.config().task_worker_num = 2;
@@ -460,6 +477,7 @@ fn kill_user_workers() {
     assert_eq!(serv.start(), 0);
     delete_worker(worker1);
     delete_worker(worker2);
+    assert_no_failure();
     serv.delete();
 }
 
@@ -516,6 +534,7 @@ fn force_kill_all_workers() {
 
     delete_worker(worker1);
     delete_worker(worker2);
+    assert_no_failure();
     serv.delete();
 }
 
@@ -546,6 +565,7 @@ unsafe extern "C" fn kill_user_workers1_start(
 
 /// `TEST(server, kill_user_workers1)`.
 fn kill_user_workers1() {
+    counters();
     let serv = Server::new(MODE_PROCESS);
     serv.config().worker_num = 1;
     serv.config().task_worker_num = 2;
@@ -568,6 +588,7 @@ fn kill_user_workers1() {
     serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
 
     assert_eq!(serv.start(), 0);
+    assert_no_failure();
     serv.delete();
 }
 
@@ -603,6 +624,7 @@ fn restart_worker_process() {
     wait_all_child_processes();
 
     assert_eq!(counter_get(1), 1);
+    assert_no_failure();
     serv.delete();
 }
 
@@ -742,6 +764,7 @@ fn test_reload_from_worker_error(task_only: bool) {
     assert_eq!(counter_get(27), 1);
     assert_eq!(counter_get(0), if task_only { 2 } else { 3 });
     assert_eq!(counter_get(1), 2);
+    assert_no_failure();
     serv.delete();
 }
 
