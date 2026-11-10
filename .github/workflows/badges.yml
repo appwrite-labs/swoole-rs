@@ -22,7 +22,7 @@ defaults:
     shell: bash
 jobs:
   badges:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
