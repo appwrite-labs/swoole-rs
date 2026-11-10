@@ -15,10 +15,13 @@ inputs:
 runs:
   using: composite
   steps:
-    # Started first, so the images pull and the databases open while the packages install.
+    # Started first and in the background, so the images pull and the databases open while
+    # the packages install. The `up --wait` below waits for this one to exit first.
     - if: inputs.services != 'job' && inputs.services != ''
       shell: bash
-      run: docker compose -f corpus/upstream/services.yml up -d ${{ inputs.services }}
+      run: |
+        nohup docker compose -f corpus/upstream/services.yml up -d ${{ inputs.services }} > "$RUNNER_TEMP/services.log" 2>&1 &
+        echo $! > "$RUNNER_TEMP/services.pid"
     - uses: ./.github/actions/install
       with:
         # nghttp2-client and -server: the HTTP/2 tests' skip_if_no_nghttp and nghttpd checks.
@@ -66,7 +69,10 @@ runs:
         sudo systemctl restart ssh
     - if: inputs.services != 'job' && inputs.services != ''
       shell: bash
-      run: docker compose -f corpus/upstream/services.yml up -d --wait ${{ inputs.services }}
+      run: |
+        tail --pid="$(cat "$RUNNER_TEMP/services.pid")" -f /dev/null
+        cat "$RUNNER_TEMP/services.log"
+        docker compose -f corpus/upstream/services.yml up -d --wait ${{ inputs.services }}
     # Upstream's test tables, which its tests/init --mysql loads from tests/test.sql.
     - if: inputs.services == 'job' || contains(format(' {0} ', inputs.services), ' mysql ')
       shell: bash
