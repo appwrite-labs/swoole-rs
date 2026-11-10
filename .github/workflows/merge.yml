@@ -539,19 +539,37 @@ jobs:
           name: phpt-alpine
           path: target/reports/phpt-alpine.json
 
-  # The merge queue's required check (main's ruleset names it, as it does the PR tier's): a
-  # group lands unless it fails a phase or a job that main's latest completed merge-tier run
-  # didn't fail (tools/ci.py new-failures --run). Only the queue reads it.
+  # What this run failed, judged from inside it (tools/ci.py new-failures --needs): its jobs'
+  # results and its phases artifacts, with no API call, so no rate limit can fail it. On main
+  # it saves that as the baseline. In the merge queue it is the required check (main's ruleset
+  # names it, as it does the PR tier's): a group lands unless it fails a phase or a job that
+  # the newest baseline didn't fail.
   required:
-    if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.ref == 'refs/heads/main') }}
     needs: [full-gates, phpt-build, callgrind, phpt-stdext, iouring, cares, zts, threadcontext, h2spec, halfclose, phpt, phpt-root, library, autobahn, alpine]
     runs-on: gcrunner=${{ github.run_id }}/runner=small
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      actions: read
+    timeout-minutes: 10
+    env:
+      NEEDS: ${{ toJSON(needs) }}
     steps:
       - uses: actions/checkout@v4
-      - env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 tools/ci.py new-failures --run ${{ github.run_id }} | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: phases*
+          path: phases
+      - if: github.event_name != 'merge_group'
+        run: python3 tools/ci.py new-failures --needs "$NEEDS" --phases phases --save baseline/failures.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - if: github.event_name != 'merge_group'
+        uses: actions/cache/save@v4
+        with:
+          path: baseline
+          key: merge-baseline-${{ github.run_id }}
+      # The newest baseline main saved: the key itself never matches, its prefix does.
+      - if: github.event_name == 'merge_group'
+        uses: actions/cache/restore@v4
+        with:
+          path: baseline
+          key: merge-baseline-${{ github.run_id }}
+          restore-keys: merge-baseline-
+      - if: github.event_name == 'merge_group'
+        run: python3 tools/ci.py new-failures --needs "$NEEDS" --phases phases --baseline baseline/failures.json | tee -a "$GITHUB_STEP_SUMMARY"
