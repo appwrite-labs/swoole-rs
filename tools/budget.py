@@ -19,7 +19,8 @@ See docs/migration.md, Data layout.
 There is no baseline file: every PR that removes an item would edit it, so
 parallel PRs conflicted on it. A crate new since REF counts from zero once the
 workspace total rises, so code may move into a new crate but not arrive with one; a
-new crate with no unsafe counted must forbid `unsafe_code`.
+new crate with no unsafe, counted or in an extern block or attribute, must forbid
+`unsafe_code`.
 
 Test code is not counted: a `#[cfg(test)]` inline module, a file a `#[cfg(test)] mod`
 loads, and anything under a tests/ or benches/ directory.
@@ -40,6 +41,8 @@ KINDS = {
     'bools': re.compile(r'Vec<bool>|\[bool;'),
     'caches': re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:static|struct|enum|type)\s+\w*(?i:cache)'),
 }
+# What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
+UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')
 FORBID = re.compile(r'^#!\[forbid\([^)]*\bunsafe_code\b', re.M)
 TEST_MOD = re.compile(r'^(\s*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*([;{])')
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
@@ -150,7 +153,9 @@ def main():
                 rises.pop('zend', None)
         if kind == 'unforbidden':
             rises |= {c: (1, 0) for c, n in crates.items()
-                      if n and c not in base[kind] and not current['unsafe'][c]}
+                      if n and c not in base[kind] and not current['unsafe'][c]
+                      and not any(UNCOUNTED.search(p.read_text(errors='replace'))
+                                  for p in (ROOT / 'crates' / c).rglob('*.rs'))}
         else:
             rises |= arrivals(crates, base[kind])
         failed = failed or bool(rises)
