@@ -1,5 +1,5 @@
 // Two translation units: LOCKS_REFERENCE builds the pinned bodies against the pinned header,
-// the other the driver against the hybrid tree's header, whose Barrier methods and lock ABI
+// the other the driver against the Cargo build SDK's header, whose Barrier methods and lock ABI
 // are the archive's Rust.
 #ifdef LOCKS_REFERENCE
 #include "reference.h"

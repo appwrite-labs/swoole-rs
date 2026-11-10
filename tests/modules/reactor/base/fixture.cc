@@ -1,7 +1,7 @@
 // C entry points for the Rust cases in src/main.rs (upstream's core-tests/src/reactor/base.cpp):
 // the Reactor's members and callback slots, the SocketPair classes and the
 // C++-linkage event, hook, signal and timer APIs. Every assertion and callback body is Rust's.
-// Compiled into the hybrid tree's lib-swoole by tests/modules/hooks/system.py.
+// Compiled into system.py's lib-swoole by tests/modules/hooks/system.py.
 #include <stddef.h>
 
 #include "swoole_api.h"
