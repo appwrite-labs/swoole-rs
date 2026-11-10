@@ -295,17 +295,9 @@ pub unsafe fn stream_context(default_ctx: *mut Context, fd: i64, stream_id: u32)
     state.http2 = 1;
     state.stream_id = stream_id;
     state.keepalive = 1;
-    // SAFETY: the request's live object.
-    let request = unsafe { swoole_rs_zend::value::obj_of(state.request.zobject.ptr) };
-    // SAFETY: a live request object, whose class declares `streamId`.
-    unsafe {
-        swoole_rs_zend::value::update_long(
-            crate::request::entry(),
-            request,
-            c"streamId",
-            i64::from(stream_id),
-        );
-    };
+    if let Some(request) = state.request.zobject.props() {
+        request.long(c"streamId", i64::from(stream_id));
+    }
     ctx
 }
 

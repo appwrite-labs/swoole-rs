@@ -332,6 +332,16 @@ class Ci(unittest.TestCase):
             commit('.github/workflows/cares.yml', 'families')
             code, _, _ = self.ci('phpt-baseline', '--variant', 'cares', **variant)
             self.assertEqual((code, self.out), (2, ''))
+            # ZTS's report comes from its own artifact, and the thread-safe PHP it runs on
+            # (.devcontainer/php.sh) is part of its key.
+            zts = {**state, 'jobs': {'8': [['zts / phpt', 'success']]}, 'report': 'target/phpt/zts/upstream.json'}
+            git('checkout', '-q', base)
+            code, _, _ = self.ci('phpt-baseline', '--variant', 'zts', '--php', '8.3.6', **zts)
+            self.assertEqual((code, self.out), (0, f'8 {base}\n'))
+            self.assertIn('run download 8 -n phpt-zts', ' '.join(self.gh_calls))
+            commit('.devcontainer/php.sh', 'another PHP')
+            code, _, _ = self.ci('phpt-baseline', '--variant', 'zts', **zts)
+            self.assertEqual((code, self.out), (2, ''))
 
     def test_transient_gh_failures_are_retried(self):
         code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'run list': 2, 'api': 1})
