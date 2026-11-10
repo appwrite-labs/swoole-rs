@@ -6,6 +6,21 @@ Contract: [native/ports/contract.md](../../../native/ports/contract.md).
 unit-tested with `cargo test -p swoole-rs-ports`. `Swoole\Server\Port` is
 `crates/phpserver`; `set()`'s options are `port_settings.rs`, unit-tested there.
 
+`core-tests/src/server/port.cpp`'s TESTs are `crates/ports/src/methods.rs` tests, same
+inputs and expected values (`cargo test -p swoole-rs-ports --all-features server_port`):
+
+| Upstream TEST | Rust test |
+| --- | --- |
+| `server_port.import` | `methods::tests::server_port_import` (Linux: macOS answers `SO_ACCEPTCONN` with `ENOPROTOOPT`) |
+| `server_port.create` | `methods::tests::server_port_create` |
+| `server_port.dgram` | `methods::tests::server_port_dgram` |
+
+The `Server` is the tests' head over a `ServerConfig` with `enable_reuse_port`, and
+`add_port` is the `create_socket` it calls. `swoole_get_last_error()` is set by the log
+host (crates/utilities' in production), so the tests install `read.rs`'s test host, which
+sets it the same way. `cert_file` is written into its slot, as upstream assigns the string,
+without the setter's file check.
+
 ## Running checks
 
 `tools/dev.py` registers most of these as `ports-*` phases. Placeholders:

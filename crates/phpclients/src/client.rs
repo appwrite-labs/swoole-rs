@@ -16,7 +16,8 @@ use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_zend::{
     Call, Class, Object, Owned, OwnedArray, Props, Value, declare_bool, declare_long,
-    declare_string, set_object, string,
+    declare_string, set_object,
+    string::{self, ZBuf},
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, get_active_class_name,
         get_active_function_name, zend_class_entry, zend_object, zend_object_handlers, zend_string,
@@ -278,6 +279,9 @@ unsafe fn create_socket(object: *mut zend_object, kind: i64) -> Option<Co> {
     let socket_kind = socket_type(kind) as i32;
     let created = crate::socket::create_socket(socket_kind);
     if created.is_null() {
+        if swoole_rs_zend::bailout::pending() {
+            return None;
+        }
         let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         report_object(object, code, error_message(code));
         return None;
@@ -525,15 +529,12 @@ fn recvfrom(call: &Call) {
     let Some(socket) = datagram_socket(call) else {
         return call.set_bool(false);
     };
-    let buffer = string::alloc(length);
-    // SAFETY: a buffer of `length` bytes; a zero timeout leaves the socket's own.
-    let received = unsafe { socket.recvfrom(string::val(buffer).cast(), length, 0.0) };
-    let Ok(used) = usize::try_from(received) else {
-        // SAFETY: the buffer was never shared.
-        unsafe { string::free(buffer) };
+    let mut buffer = ZBuf::with_capacity(length);
+    // A zero timeout leaves the socket's own.
+    if socket.recvfrom(&mut buffer, 0.0) < 0 {
         report_socket(call, socket);
         return call.set_bool(false);
-    };
+    }
     let (peer, peer_port) = socket.address();
     // SAFETY: the dereferenced by-reference argument: release it, then make it
     // the peer's address.
@@ -546,10 +547,7 @@ fn recvfrom(call: &Call) {
         // SAFETY: as above.
         unsafe { value::set_long(port, i64::from(peer_port)) };
     }
-    // SAFETY: an unshared buffer string `used` bytes of which were filled.
-    unsafe { string::truncate(buffer, used) };
-    // SAFETY: the return value takes the buffer's only reference.
-    unsafe { call.set_string(buffer) };
+    call.set_zstring(buffer.into_zstring());
 }
 
 /// `sendfile(string $filename, int $offset = 0, int $length = 0): bool`.
@@ -592,42 +590,27 @@ fn recv(call: &Call) {
     let Some((socket, _hold)) = connected(call) else {
         return;
     };
-    let mut result: *mut zend_string = ptr::null_mut();
-    let received = if socket.packet_mode() {
-        let mut received = socket.recv_packet(timeout, false);
-        if received > 0 {
-            let packet = socket.pop_packet();
-            if packet.is_null() {
-                received = -1;
-            } else {
-                result = string::from_val(packet.cast());
-            }
+    let (received, result) = if socket.packet_mode() {
+        let received = socket.recv_packet(timeout, false);
+        match usize::try_from(received) {
+            Ok(length @ 1..) => socket
+                .pop_packet(length)
+                .map_or((-1, None), |packet| (received, Some(packet))),
+            _ => (received, None),
         }
-        received
     } else {
         let length = usize::try_from(BUFFER_SIZE).unwrap_or(0) - size_of::<zend_string>();
-        result = string::alloc(length);
-        // SAFETY: a buffer of `length` bytes.
-        let received =
-            unsafe { socket.transfer(Transfer::Recv, string::val(result).cast(), length, timeout) };
-        if received <= 0 {
-            // SAFETY: the buffer was never shared.
-            unsafe { string::free(result) };
-        }
-        received
+        let mut buffer = ZBuf::with_capacity(length);
+        let received = socket.receive(Transfer::Recv, &mut buffer, timeout);
+        (received, (received > 0).then(|| buffer.into_zstring()))
     };
-    match usize::try_from(received) {
-        Err(_) => {
+    match result {
+        _ if received < 0 => {
             report_socket(call, socket);
             call.set_bool(false);
         }
-        Ok(0) => call.set_empty_string(),
-        Ok(used) => {
-            // SAFETY: an unshared string at least `used` bytes long.
-            unsafe { string::truncate(result, used) };
-            // SAFETY: the return value takes its only reference.
-            unsafe { call.set_string(result) };
-        }
+        Some(result) => call.set_zstring(result),
+        None => call.set_empty_string(),
     }
 }
 
@@ -640,20 +623,12 @@ fn peek(call: &Call) {
         return;
     };
     let length = usize::try_from(length).unwrap_or(0);
-    let buffer = string::alloc(length);
-    // SAFETY: a buffer of `length` bytes.
-    let peeked =
-        unsafe { socket.transfer(Transfer::Peek, string::val(buffer).cast(), length, 0.0) };
-    let Ok(used) = usize::try_from(peeked) else {
+    let mut buffer = ZBuf::with_capacity(length);
+    if socket.receive(Transfer::Peek, &mut buffer, 0.0) < 0 {
         report_socket(call, socket);
-        // SAFETY: the buffer was never shared.
-        unsafe { string::free(buffer) };
         return call.set_bool(false);
-    };
-    // SAFETY: an unshared buffer string `used` bytes of which were filled.
-    unsafe { string::truncate(buffer, used) };
-    // SAFETY: the return value takes the buffer's only reference.
-    unsafe { call.set_string(buffer) };
+    }
+    call.set_zstring(buffer.into_zstring());
 }
 
 /// `isConnected(): bool`.
@@ -753,12 +728,10 @@ fn peer_cert(call: &Call) {
         report_code(call, libc::EISCONN);
         return call.set_bool(false);
     }
-    let cert = socket.peer_cert();
-    if cert.is_null() {
-        return call.set_bool(false);
+    match socket.peer_cert() {
+        Some(cert) => call.set_zstring(cert),
+        None => call.set_bool(false),
     }
-    // SAFETY: the return value takes the new string's only reference.
-    unsafe { call.set_string(cert) };
 }
 
 /// `verifyPeerCert(bool $allow_self_signed = false): bool`; the socket is

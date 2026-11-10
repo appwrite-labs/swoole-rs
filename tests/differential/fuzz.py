@@ -162,8 +162,13 @@ class Gen:
 
     def system(self, out):
         path = "__FILE__ . '.data'"
+        # A coroutine wait or waitPid installs a SIGCHLD reaper, which races exec's own
+        # waitpid for its child, so upstream's exec after one can return either. The
+        # exec is still picked, so the rest of the program is unchanged.
+        waited = False
         for _ in range(self.rng.randint(2, 8)):
             op = self.pick('sleep', 'usleep', 'write', 'read', 'read-missing', 'wait', 'waitPid', 'gethostbyname', 'exec')
+            waited = waited or op in ('wait', 'waitPid')
             if op == 'sleep':
                 out.append(f"s('sys.sleep', fn() => Swoole\\Coroutine\\System::sleep({self.sleep()}));")
             elif op == 'usleep':
@@ -184,7 +189,9 @@ class Gen:
                 out.append(f"s('sys.gethostbyname', fn() => Swoole\\Coroutine\\System::gethostbyname({self.pick("'localhost'", "'127.0.0.1'", "''", "'::1'")}, "
                            f"{self.pick('AF_INET', 'AF_INET6', '0', '-1')}, 1));")
             else:
-                out.append(f"s('sys.exec', fn() => Swoole\\Coroutine\\System::exec({self.pick("'echo hi'", "'exit 3'", "''", "'printf \"a\\\\0b\"'")}));")
+                command = self.pick("'echo hi'", "'exit 3'", "''", "'printf \"a\\\\0b\"'")
+                if not waited:
+                    out.append(f"s('sys.exec', fn() => Swoole\\Coroutine\\System::exec({command}));")
         out.append(f"@unlink({path});")
 
     def http(self, out):
@@ -360,7 +367,10 @@ def check(engines, path, lines, alone=False):
         return ('timeout' if first[0]['status'] == 'timeout' else 'same'), first
     with contextlib.nullcontext() if alone else ALONE.exclusive():
         second, same = compare(engines, path)
-    return ('divergent' if not same and first[0] == second[0] else 'flaky'), second
+    if not same and first[0] == second[0]:
+        return 'divergent', second
+    # The outcomes that differed: the first run's when the rerun agreed.
+    return 'flaky', second if not same else first
 
 
 def minimise(engines, path, lines):

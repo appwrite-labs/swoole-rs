@@ -231,7 +231,6 @@ struct Worker {
     ptr: *mut c_void,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     static swr_case_process_layout: [usize; 6];
     fn swr_case_mem_pool_alloc(size: u32) -> *mut c_void;
@@ -349,7 +348,6 @@ unsafe extern "C" {
     fn __libc_current_sigrtmin() -> c_int;
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     #[link_name = "_Z20swoole_random_stringPcm"]
     fn swoole_random_string(buf: *mut c_char, size: usize);

@@ -21,7 +21,6 @@ const PASSPHRASE: usize = 6;
 /// `offsetof(swr_v1_tls_owner_fields, context)`.
 const CONTEXT: usize = 24;
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     #[link_name = "_Z18swoole_ssl_destroyv"]
     fn swoole_ssl_destroy();
@@ -32,7 +31,6 @@ unsafe extern "C" {
     fn swr_v1_tls_owner_free(owner: *const c_void);
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     #[link_name = "_Z15swoole_ssl_initv"]
     fn swoole_ssl_init();

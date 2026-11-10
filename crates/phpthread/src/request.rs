@@ -116,7 +116,7 @@ pub(crate) unsafe fn socket_create(
 ) {
     // SAFETY: a descriptor the item owns.
     let duplicate = unsafe { libc::dup(fd) };
-    if duplicate >= 0 && create(out, duplicate) {
+    if (duplicate >= 0 && create(out, duplicate)) || swoole_rs_zend::bailout::pending() {
         return;
     }
     let errno = errno();

@@ -559,6 +559,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-hooks-system-tests"
+version = "0.0.0"
+dependencies = [
+ "swoole-rs-ffi",
+]
+
+[[package]]
 name = "swoole-rs-http"
 version = "0.1.0"
 dependencies = [
@@ -580,6 +587,13 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
+]
+
+[[package]]
+name = "swoole-rs-http-server-tests"
+version = "0.0.0"
+dependencies = [
+ "swoole-rs-ffi",
 ]
 
 [[package]]
@@ -1033,6 +1047,13 @@ dependencies = [
  "swoole-rs-memory",
  "swoole-rs-ossupport",
  "swoole-rs-process",
+]
+
+[[package]]
+name = "swoole-rs-reactor-base-tests"
+version = "0.0.0"
+dependencies = [
+ "swoole-rs-ffi",
 ]
 
 [[package]]

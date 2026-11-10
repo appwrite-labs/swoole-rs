@@ -156,6 +156,15 @@ def runner(source, pin):
         shutil.copy2(source / 'run-tests.php', pin / 'run-tests.php')
 
 
+def clone(pin, url='https://github.com/swoole/swoole-src.git'):
+    """Clone beside the pin and rename into place: a killed clone leaves only `src.partial`,
+    which the next run replaces, never a half-checked-out pin."""
+    partial = pin.with_name(pin.name + '.partial')
+    shutil.rmtree(partial, ignore_errors=True)
+    subprocess.run(['git', 'clone', '--depth', '1', '--branch', VERSION, url, str(partial)], check=True)
+    partial.rename(pin)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     add_build_arguments(parser)
@@ -164,8 +173,7 @@ def main():
     pin = ROOT / 'target/upstream/src'
     pin.parent.mkdir(parents=True, exist_ok=True)
     if not pin.exists():
-        subprocess.run(['git', 'clone', '--depth', '1', '--branch', VERSION,
-                        'https://github.com/swoole/swoole-src.git', str(pin)], check=True)
+        clone(pin)
     actual = subprocess.check_output(['git', '-C', str(pin), 'rev-parse', 'HEAD'], text=True).strip()
     if actual != COMMIT:
         raise RuntimeError(f'Upstream checkout is {actual}; expected {COMMIT}. Refusing to alter it.')

@@ -16,8 +16,8 @@ fn offsets() -> impl Iterator<Item = usize> {
 }
 
 /// A `size`-byte stack, or null when out of memory.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_context_stack_alloc(size: usize, flags: u32) -> *mut c_void {
+#[must_use]
+pub fn swr_v1_context_stack_alloc(size: usize, flags: u32) -> *mut c_void {
     let stack = if flags & STACK_PROTECT == 0 {
         // SAFETY: malloc has no preconditions.
         unsafe { libc::malloc(size) }
@@ -70,8 +70,7 @@ pub extern "C" fn swr_v1_context_stack_alloc(size: usize, flags: u32) -> *mut c_
 /// # Safety
 /// `stack` came from [`swr_v1_context_stack_alloc`] with the same `size` and
 /// `flags`, and is freed once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_context_stack_free(stack: *mut c_void, size: usize, flags: u32) {
+pub unsafe fn swr_v1_context_stack_free(stack: *mut c_void, size: usize, flags: u32) {
     if flags & STACK_PROTECT == 0 {
         // SAFETY: a live malloc allocation, freed once.
         unsafe { libc::free(stack) };
@@ -97,8 +96,8 @@ unsafe fn mark(stack: *mut u8, size: usize) {
 /// `stack` names `size` native-owned bytes without concurrent mutation. Each
 /// sampled marker span is initialized, normally by `swr_v1_context_stack_alloc` before
 /// native stack execution. No other stack bytes are read; no borrow is retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_context_stack_usage(stack: *const u8, size: usize) -> usize {
+#[must_use]
+pub unsafe fn swr_v1_context_stack_usage(stack: *const u8, size: usize) -> usize {
     // SAFETY: forwards the caller's `size` stack bytes with initialized marker spans.
     unsafe { usage(stack, size) }
 }

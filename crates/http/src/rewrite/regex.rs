@@ -48,12 +48,13 @@ impl Set {
     fn space() -> Self {
         Self::default().byte(b' ').range(b'\t', b'\r')
     }
-    /// `[:name:]`: libstdc++'s `regex_traits::lookup_classname` in the C locale.
+    /// `[:name:]`: libstdc++'s `regex_traits::lookup_classname` in the C locale, which
+    /// lowercases the name first.
     fn named(name: &[u8]) -> Option<Self> {
         let alpha = Self::default().range(b'A', b'Z').range(b'a', b'z');
         let alnum = alpha.union(Self::digit());
         let graph = Self::default().range(b'!', b'~');
-        Some(match name {
+        Some(match name.to_ascii_lowercase().as_slice() {
             b"alnum" => alnum,
             b"alpha" => alpha,
             b"blank" => Self::default().byte(b' ').byte(b'\t'),
@@ -81,14 +82,12 @@ enum Look {
 }
 
 impl Look {
-    fn holds(self, hay: &[u8], at: usize) -> bool {
-        let word = |i: Option<usize>| {
-            i.and_then(|i| hay.get(i))
-                .is_some_and(|&byte| Set::word().has(byte))
-        };
-        let boundary = word(at.checked_sub(1)) != word(Some(at));
+    /// Whether the assertion holds at `at`, where `hay` starts at `begin`.
+    fn holds(self, hay: &[u8], begin: usize, at: usize) -> bool {
+        let word = |i: usize| i >= begin && hay.get(i).is_some_and(|&byte| Set::word().has(byte));
+        let boundary = at.checked_sub(1).is_some_and(word) != word(at);
         match self {
-            Self::Start => at == 0,
+            Self::Start => at == begin,
             Self::End => at == hay.len(),
             Self::Boundary => boundary,
             Self::NotBoundary => !boundary,
@@ -167,7 +166,7 @@ impl Parser<'_> {
             b'$' => return Some(Node::Look(Look::End)),
             b'\\' if self.eat(b'b') => return Some(Node::Look(Look::Boundary)),
             b'\\' if self.eat(b'B') => return Some(Node::Look(Look::NotBoundary)),
-            b'\\' => Node::Set(self.escape(false)?),
+            b'\\' => Node::Set(self.escape()?),
             b'.' => Node::Set(Set::default().byte(b'\n').byte(b'\r').not()),
             b'[' => Node::Set(self.class()?),
             b'(' => self.group()?,
@@ -234,9 +233,11 @@ impl Parser<'_> {
         self.rest = rest;
         std::str::from_utf8(number).ok()?.parse().ok()
     }
-    /// The escape after a `\`: a class escape, a control or a literal punctuator.
-    /// `\1`-`\9` would be backreferences, which are not supported.
-    fn escape(&mut self, in_class: bool) -> Option<Set> {
+    /// The escape after a `\`, as libstdc++'s `_M_eat_escape_ecma` reads it: a class
+    /// escape, a control, or else the byte itself. `\1`-`\9` would be backreferences,
+    /// which are not supported. Outside a class `term` has read `\b` and `\B` already;
+    /// inside one, `\b` is a backspace and `\B` an error.
+    fn escape(&mut self) -> Option<Set> {
         let set = |byte| Some(Set::default().byte(byte));
         match self.next()? {
             b'd' => Some(Set::digit()),
@@ -245,18 +246,16 @@ impl Parser<'_> {
             b'W' => Some(Set::word().not()),
             b's' => Some(Set::space()),
             b'S' => Some(Set::space().not()),
-            b'b' if in_class => set(8),
+            b'0' => set(0),
+            b'b' => set(8),
             b't' => set(b'\t'),
             b'n' => set(b'\n'),
             b'v' => set(0x0b),
             b'f' => set(0x0c),
             b'r' => set(b'\r'),
-            b'0' if !self.rest.first().is_some_and(u8::is_ascii_digit) => set(0),
-            b'c' => match self.next()? {
-                letter if letter.is_ascii_alphabetic() => set(letter % 32),
-                _ => None,
-            },
-            // `\xHH`, and `\uHHHH` while it fits a byte.
+            // libstdc++ reads `\cX` as `X`.
+            b'c' => set(self.next()?),
+            // `\xHH`, and the low byte of `\uHHHH`, which is all libstdc++ keeps of it.
             escape @ (b'x' | b'u') => {
                 let digits = if escape == b'x' { 2 } else { 4 };
                 let hex = self.rest.get(..digits)?;
@@ -264,12 +263,10 @@ impl Parser<'_> {
                 if !hex.iter().all(u8::is_ascii_hexdigit) {
                     return None;
                 }
-                set(
-                    u8::try_from(u32::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?)
-                        .ok()?,
-                )
+                let low = std::str::from_utf8(hex.get(digits - 2..)?).ok()?;
+                set(u8::from_str_radix(low, 16).ok()?)
             }
-            byte if byte.is_ascii_alphanumeric() => None,
+            b'1'..=b'9' | b'B' => None,
             byte => set(byte),
         }
     }
@@ -309,7 +306,7 @@ impl Parser<'_> {
         if byte != b'\\' {
             return Some((Set::default().byte(byte), Some(byte)));
         }
-        let set = self.escape(true)?;
+        let set = self.escape()?;
         let mut members = (0..=255u8).filter(|&b| set.has(b));
         let byte = match (members.next(), members.next()) {
             (Some(byte), None) => Some(byte),
@@ -382,6 +379,7 @@ impl Regex {
     }
 
     fn emit(&mut self, node: &Node) -> Option<()> {
+        let before = self.program.len();
         match node {
             Node::Set(set) => {
                 self.push(Inst::Set(*set))?;
@@ -433,13 +431,7 @@ impl Regex {
                     None => (min.saturating_sub(1), u32::from(*min == 0)),
                 };
                 for _ in 0..copies {
-                    let before = self.program.len();
                     self.emit(node)?;
-                    // A body with no states, such as `(?:)`, repeats to nothing: stop
-                    // rather than count to a `{4294967295}` the state limit never sees.
-                    if self.program.len() == before {
-                        break;
-                    }
                 }
                 let mut splits = Vec::new();
                 for _ in 0..optional {
@@ -460,19 +452,39 @@ impl Regex {
                 }
             }
         }
+        // Every node adds a state, as each of libstdc++'s does, so one with no instructions,
+        // such as `(?:)` or `a{0}`, still counts toward the limit: `(?:){100000}` is over it.
+        if self.program.len() == before {
+            self.push(Inst::Jmp(before + 1))?;
+        }
         Some(())
     }
 
-    /// The leftmost-first match in `hay` at or after `start` (only at `start` when
-    /// `anchored`). Assertions see all of `hay`.
-    pub(super) fn search(&self, hay: &[u8], start: usize, anchored: bool) -> Option<Captures> {
+    /// The leftmost-first match in `hay` at or after `start`. An `anchored` search is
+    /// libstdc++'s `match_continuous | match_not_null`: the first non-empty match at
+    /// `start`, in priority order. `^` and `\b` see `hay` from `begin`: 0, or `start`
+    /// without `match_prev_avail`.
+    pub(super) fn search(
+        &self,
+        hay: &[u8],
+        begin: usize,
+        start: usize,
+        anchored: bool,
+    ) -> Option<Captures> {
         // The position each instruction was last added at, so each is added once per byte.
         let mut seen = vec![usize::MAX; self.program.len()];
         let (mut current, mut next) = (Vec::new(), Vec::new());
         let mut found = None;
         for at in start..=hay.len() {
             if found.is_none() && (!anchored || at == start) {
-                self.follow(&mut current, &mut seen, 0, vec![None; self.slots], hay, at);
+                self.follow(
+                    &mut current,
+                    &mut seen,
+                    0,
+                    vec![None; self.slots],
+                    (hay, begin),
+                    at,
+                );
             }
             if current.is_empty() && (found.is_some() || anchored) {
                 break;
@@ -480,10 +492,10 @@ impl Regex {
             for (pc, slots) in current.drain(..) {
                 match self.program.get(pc) {
                     Some(Inst::Set(set)) if hay.get(at).is_some_and(|&byte| set.has(byte)) => {
-                        self.follow(&mut next, &mut seen, pc + 1, slots, hay, at + 1);
+                        self.follow(&mut next, &mut seen, pc + 1, slots, (hay, begin), at + 1);
                     }
                     // Threads after this one have lower priority.
-                    Some(Inst::Match) => {
+                    Some(Inst::Match) if !anchored || at > start => {
                         found = Some(Captures(slots));
                         break;
                     }
@@ -502,7 +514,7 @@ impl Regex {
         seen: &mut [usize],
         pc: usize,
         slots: Slots,
-        hay: &[u8],
+        (hay, begin): (&[u8], usize),
         at: usize,
     ) {
         let mut stack = vec![(pc, slots)];
@@ -526,7 +538,7 @@ impl Regex {
                     stack.push((pc + 1, slots));
                 }
                 Inst::Look(look) => {
-                    if look.holds(hay, at) {
+                    if look.holds(hay, begin, at) {
                         stack.push((pc + 1, slots));
                     }
                 }

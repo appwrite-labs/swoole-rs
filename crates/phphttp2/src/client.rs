@@ -406,7 +406,9 @@ impl Client {
             self.host = unsafe { ZString::from_raw(converted) }.bytes().to_vec();
         }
         if object.is_null() {
-            self.update_error(error, strerror(error).to_bytes());
+            if !swoole_rs_zend::bailout::pending() {
+                self.update_error(error, strerror(error).to_bytes());
+            }
             return false;
         }
         // SAFETY: the conn takes the new object's reference.
