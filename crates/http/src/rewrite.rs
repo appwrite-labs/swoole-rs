@@ -254,6 +254,11 @@ mod tests {
             None,
             "over the state limit"
         );
+        // A body with no states repeats to nothing, however large the count.
+        assert_eq!(
+            rewrite("~a(?:){4294967295}((?:){4294967295}){9}~", b"ba"),
+            Some(b"b<a>".to_vec())
+        );
     }
 
     #[test]
