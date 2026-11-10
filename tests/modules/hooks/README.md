@@ -235,3 +235,20 @@ this fixture's `rust_worker_retirement.abort_and_reset`) is crates/server's
 | `process_pool.worker` | `process_pool.worker` |
 | `process_pool.add_worker` | `process_pool.add_worker` |
 | `process_pool.reload_from_child_exit_callback` | `process_pool.reload_from_child_exit_callback` |
+
+`core-tests/src/coroutine/async.cpp` is Rust in `system/src/co_async.rs`, run by
+`hooks-system-rust`. `coroutine::async(handler, event, timeout)` and `async(fn)` are
+crates/hooks's `swr_v1_hook_async` and `swr_v1_hook_async_job` over `COROUTINE_ASYNC`,
+the operations the hooked functions use, and the package calls them through its
+`swoole-rs-hooks` dependency. `coroutine_async.gethostbyname` resolves www.baidu.com, so
+it is excluded as external network. It checks upstream's
+`(\d{1,3}).(\d{1,3}).(\d{1,3}).(\d{1,3})` match as an IPv4 parse, which accepts
+inet_ntop's output exactly when that output is a dotted quad.
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `coroutine_async.usleep` | `coroutine_async.usleep` |
+| `coroutine_async.gethostbyname` | `coroutine_async.gethostbyname` (excluded: external network) |
+| `coroutine_async.error` | `coroutine_async.error` |
+| `coroutine_async.cancel` | `coroutine_async.cancel` |
+| `coroutine_async.timeout` | `coroutine_async.timeout` |
