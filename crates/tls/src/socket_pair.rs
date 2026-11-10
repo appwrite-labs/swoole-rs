@@ -144,16 +144,6 @@ pub unsafe extern "C" fn unix_socket_new_base(
     unsafe { unix_socket_new(this, blocking, protocol) }
 }
 
-/// The two ends, master first.
-///
-/// # Safety
-/// `this` is a live pair.
-unsafe fn ends(this: *const SocketPair) -> [*mut SocketRecord; 2] {
-    // SAFETY: as the caller promises.
-    let pair = unsafe { &*this };
-    [pair.master_socket, pair.worker_socket]
-}
-
 /// `bool UnixSocket::set_buffer_size(size_t) const`: the master's kernel buffers, then
 /// the worker's; false at the first that fails.
 ///
@@ -171,11 +161,14 @@ pub unsafe extern "C" fn unix_socket_set_buffer_size(this: *const SocketPair, si
     )]
     let size = size as u32;
     // SAFETY: as the caller promises.
-    unsafe { ends(this) }.into_iter().all(|socket| {
-        // SAFETY: as the caller promises.
-        let fd = unsafe { (*socket).fd };
-        swr_v1_socket_buffer_size(fd, true, true, size)
-    })
+    let pair = unsafe { &*this };
+    [pair.master_socket, pair.worker_socket]
+        .into_iter()
+        .all(|socket| {
+            // SAFETY: as the caller promises.
+            let fd = unsafe { (*socket).fd };
+            swr_v1_socket_buffer_size(fd, true, true, size)
+        })
 }
 
 /// `void SocketPair::set_timeout(double)`: the pair's, then each end's every timeout.
@@ -188,9 +181,9 @@ pub unsafe extern "C" fn unix_socket_set_buffer_size(this: *const SocketPair, si
 )]
 pub unsafe extern "C" fn set_timeout(this: *mut SocketPair, timeout: f64) {
     // SAFETY: as the caller promises.
-    unsafe { (*this).timeout = timeout };
-    // SAFETY: as the caller promises.
-    for socket in unsafe { ends(this) } {
+    let pair = unsafe { &mut *this };
+    pair.timeout = timeout;
+    for socket in [pair.master_socket, pair.worker_socket] {
         // SAFETY: as the caller promises, the end's live timeout group.
         unsafe { (*socket).timeouts.set(timeout, TIMEOUT_ALL) };
     }
@@ -206,13 +199,12 @@ pub unsafe extern "C" fn set_timeout(this: *mut SocketPair, timeout: f64) {
 )]
 pub unsafe extern "C" fn set_blocking(this: *mut SocketPair, blocking: bool) {
     // SAFETY: as the caller promises.
-    let [master, worker] = unsafe { ends(this) };
-    for socket in [worker, master] {
+    let pair = unsafe { &mut *this };
+    for socket in [pair.worker_socket, pair.master_socket] {
         // SAFETY: as the caller promises.
         socket_set_fd_option(unsafe { &mut *socket }, c_int::from(!blocking), -1);
     }
-    // SAFETY: as the caller promises.
-    unsafe { (*this).blocking = blocking };
+    pair.blocking = blocking;
 }
 
 /// `ssize_t SocketPair::read(void *, size_t) const`: from the worker end, waiting for

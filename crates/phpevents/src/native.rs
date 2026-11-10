@@ -116,7 +116,7 @@ pub(crate) fn system_error(code: c_int, level: i32, message: &CStr) -> Result<()
     let mut full = Message::new();
     full.push(message.to_bytes());
     full.push(b", Error: ");
-    full.push(swoole_rs_reactor::errno_message(code).as_bytes());
+    full.push(crate::errno_message(code).as_bytes());
     full.push(format!("[{code}]").as_bytes());
     report(level, full.as_cstr())
 }

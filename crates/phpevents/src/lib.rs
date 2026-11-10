@@ -18,7 +18,7 @@ mod native;
 
 use native::has_reactor;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     ffi::{CStr, c_int},
     mem::ManuallyDrop,
@@ -45,6 +45,9 @@ struct EventObject {
 
 /// A user fd's socket and, until a failed callback detaches it, its object.
 struct Registered {
+    /// Which `add` made it: the fd may be deleted and added again while a
+    /// handler runs PHP.
+    id: u64,
     socket: EventSocket,
     object: Option<EventObject>,
 }
@@ -80,6 +83,8 @@ thread_local! {
     /// registered is leaked, as upstream's, not released once PHP is gone.
     static SOCKETS: RefCell<ManuallyDrop<HashMap<i32, Registered>>> =
         RefCell::new(ManuallyDrop::new(HashMap::new()));
+    /// The last `Registered::id` handed out.
+    static ADDED: Cell<u64> = const { Cell::new(0) };
     /// The callables the reactor's cycle tasks run; never dropped, as above.
     static CYCLE: RefCell<ManuallyDrop<Cycles>> = const {
         RefCell::new(ManuallyDrop::new(Cycles { idle: None, future: None }))
@@ -156,7 +161,7 @@ fn events_of(events: i64) -> c_int {
 /// The callable argument `value`, deferring a bailout.
 fn callable(value: Option<&Value>, name: Option<&CStr>, allow_null: bool) -> Option<Rc<Callable>> {
     let exception = swoole_rs_phpswoole::exception();
-    Callable::argument(value, name, allow_null, exception).unwrap_or_else(|error| {
+    Callable::argument(value, name, allow_null, Some(exception)).unwrap_or_else(|error| {
         error.defer();
         None
     })
@@ -250,7 +255,10 @@ fn add(call: &Call) {
         writable,
     });
     // Dropped outside the borrow: a destructor may call back in.
-    drop(SOCKETS.with_borrow_mut(|sockets| sockets.insert(fd, Registered { socket, object })));
+    let id = ADDED.get() + 1;
+    ADDED.set(id);
+    let registered = Registered { id, socket, object };
+    drop(SOCKETS.with_borrow_mut(|sockets| sockets.insert(fd, registered)));
     call.set_long(fd.into());
 }
 
@@ -601,7 +609,7 @@ impl FdHandler for Error {
 /// The user fd type's read, write and error handlers, unless they are set.
 fn install_handlers() {
     let read = EventType::SW_EVENT_READ as c_int;
-    if event_api::swoole_event_has_handler(FD_USER, read) {
+    if event_api::swoole_event_isset_handler(FD_USER, read) {
         return;
     }
     event_api::swoole_event_set_fd_handler::<Readable>(FD_USER, read);
@@ -609,19 +617,34 @@ fn install_handlers() {
     event_api::swoole_event_set_fd_handler::<Error>(FD_USER, EventType::SW_EVENT_ERROR as c_int);
 }
 
+/// The errno's description, as libc's `strerror`.
+pub(crate) fn errno_message(code: c_int) -> String {
+    let text = std::io::Error::from_raw_os_error(code).to_string();
+    match text.strip_suffix(&format!(" (os error {code})")) {
+        Some(description) => description.to_owned(),
+        None => text,
+    }
+}
+
+/// `apply` to `fd`'s registration `id`, unless PHP has since deleted or replaced it.
+fn registration<T>(fd: i32, id: u64, apply: impl FnOnce(&mut Registered) -> T) -> Option<T> {
+    SOCKETS.with_borrow_mut(|sockets| sockets.get_mut(&fd).filter(|r| r.id == id).map(apply))
+}
+
 /// The read (`write` false) or write handler of a user fd: run its callback;
 /// on failure warn, detach and delete the fd.
 fn ready(fd: i32, write: bool) -> Result<c_int, Bailout> {
     let found = SOCKETS.with_borrow(|sockets| {
-        let object = sockets.get(&fd)?.object.as_ref()?;
+        let registered = sockets.get(&fd)?;
+        let object = registered.object.as_ref()?;
         let callable = if write {
             &object.writable
         } else {
             &object.readable
         };
-        Some((callable.clone()?, object.zsocket.copy()))
+        Some((registered.id, callable.clone()?, object.zsocket.copy()))
     });
-    let Some((callable, zsocket)) = found else {
+    let Some((id, callable, zsocket)) = found else {
         return Ok(0);
     };
     let called = invoke(&callable, Some(&zsocket));
@@ -639,12 +662,11 @@ fn ready(fd: i32, write: bool) -> Result<c_int, Bailout> {
         .as_cstr(),
     );
     // The detached object, freed once the loop is out of it.
-    let object =
-        SOCKETS.with_borrow_mut(|sockets| sockets.get_mut(&fd).and_then(|r| r.object.take()));
+    let object = registration(fd, id, |r| r.object.take()).flatten();
     if let Some(object) = object {
         later(object);
     }
-    SOCKETS.with_borrow(|sockets| sockets.get(&fd).map(|r| r.socket.del()));
+    registration(fd, id, |r| r.socket.del());
     if bailout::relay_to_c(Ok(())) {
         Err(Bailout)
     } else {
@@ -655,8 +677,8 @@ fn ready(fd: i32, write: bool) -> Result<c_int, Bailout> {
 /// The error handler: dispatch to the read or write handler unless the socket
 /// reported an error; then warn, free the fd's object and delete it.
 fn error_event(fd: i32) -> Result<c_int, Bailout> {
-    let Some(events) = SOCKETS.with_borrow(|sockets| sockets.get(&fd).map(|r| r.socket.events()))
-    else {
+    let found = SOCKETS.with_borrow(|sockets| sockets.get(&fd).map(|r| (r.id, r.socket.events())));
+    let Some((id, events)) = found else {
         return Ok(0);
     };
     if events & EventType::SW_EVENT_ERROR as i32 == 0 {
@@ -665,7 +687,7 @@ fn error_event(fd: i32) -> Result<c_int, Bailout> {
     match swoole_rs_reactor::socket_error(fd) {
         Ok(0) => {}
         Ok(error) => {
-            let description = swoole_rs_reactor::errno_message(error);
+            let description = errno_message(error);
             let message =
                 message!("swoole_event->onError[1]: socket error. Error: {description} [{error}]");
             native::fatal_warning(message.as_cstr())?;
@@ -675,9 +697,9 @@ fn error_event(fd: i32) -> Result<c_int, Bailout> {
             native::system_error(code, E_WARNING, message.as_cstr())?;
         }
     }
-    drop(SOCKETS.with_borrow_mut(|sockets| sockets.get_mut(&fd).and_then(|r| r.object.take())));
+    drop(registration(fd, id, |r| r.object.take()));
     bailout::outcome(())?;
-    SOCKETS.with_borrow(|sockets| sockets.get(&fd).map(|r| r.socket.del()));
+    registration(fd, id, |r| r.socket.del());
     Ok(0)
 }
 

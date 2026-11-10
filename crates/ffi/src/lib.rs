@@ -134,14 +134,11 @@ pub extern "C" fn php_swoole_reactor_init() -> i32 {
     swoole_rs_phpevents::reactor_init()
 }
 
-/// `php_swoole_convert_to_fd(value)` (crates/phpevents).
-/// # Safety
-/// The caller lends a live initialized descriptor candidate.
+/// `php_swoole_convert_to_fd(value)` (crates/phpevents): C lends the zval
+/// as a `Value`, which wraps it transparently.
 #[cfg(feature = "php")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_convert_to_fd(value: *mut swoole_rs_zend::sys::zval) -> i32 {
-    // SAFETY: as the caller promises.
-    let value = unsafe { swoole_rs_zend::Value::from_ptr(value) };
+pub extern "C" fn php_swoole_convert_to_fd(value: Option<&swoole_rs_zend::Value>) -> i32 {
     swoole_rs_phpevents::convert_to_fd(value)
 }
 

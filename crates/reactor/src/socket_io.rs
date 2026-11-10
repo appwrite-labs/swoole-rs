@@ -190,17 +190,6 @@ pub fn socket_error(fd: c_int) -> Result<c_int, c_int> {
     if read < 0 { Err(errno()) } else { Ok(pending) }
 }
 
-/// libc's `strerror(code)`.
-#[must_use]
-pub fn errno_message(code: c_int) -> String {
-    // SAFETY: strerror returns a NUL-terminated message for any code.
-    let message = unsafe { libc::strerror(code) };
-    // SAFETY: as above; it is copied before another call can reuse it.
-    unsafe { std::ffi::CStr::from_ptr(message) }
-        .to_string_lossy()
-        .into_owned()
-}
-
 /// `check_sendfile_parameters`: fstat(2) the open `file_fd` and resolve the range
 /// `[begin, *end)` to send, where a zero `length` means to the end of the file.
 /// Returns 0 with `*end` set, 1 when fstat failed (errno set), 2 for an empty

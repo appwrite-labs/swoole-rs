@@ -628,8 +628,7 @@ fn worker_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> Option<i64> {
         }
         OP_PIPE_HANDLER => {
             let handler = if arg == 0 { recv_packet } else { recv_message };
-            // SAFETY: this thread's live loop.
-            unsafe { swoole_event_set_handler(FD_PIPE, EVENT_READ, Some(handler)) };
+            swoole_event_set_handler(FD_PIPE, EVENT_READ, Some(handler));
             0
         }
         _ => return None,

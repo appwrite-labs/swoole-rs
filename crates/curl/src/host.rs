@@ -46,8 +46,7 @@ pub(crate) fn event_available() -> bool {
 
 /// Install the cURL fd type's reactor handlers unless they are.
 pub(crate) fn install_handlers() {
-    // SAFETY: called while the event loop is available.
-    if unsafe { event_api::swoole_event_isset_handler(FD_CO_CURL, EVENT_READ) } {
+    if event_api::swoole_event_isset_handler(FD_CO_CURL, EVENT_READ) {
         return;
     }
     for (event, handler) in [
@@ -58,8 +57,7 @@ pub(crate) fn install_handlers() {
         (EVENT_WRITE, on_event::<CURL_CSELECT_OUT>),
         (EVENT_ERROR, on_event::<CURL_CSELECT_ERR>),
     ] {
-        // SAFETY: as above.
-        unsafe { event_api::swoole_event_set_handler(FD_CO_CURL, event, Some(handler)) };
+        event_api::swoole_event_set_handler(FD_CO_CURL, event, Some(handler));
     }
 }
 

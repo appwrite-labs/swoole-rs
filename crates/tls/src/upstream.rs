@@ -1211,11 +1211,10 @@ pub unsafe fn socket_sendfile_async(
         return -1;
     };
     let request = Box::into_raw(request);
-    // SAFETY: as the caller promises.
-    if unsafe { (*socket).output.out_buffer }.is_null() {
-        let buffer = swoole_rs_buffer::cpp::new_buffer(65536);
-        // SAFETY: as the caller promises.
-        unsafe { (*socket).output.out_buffer = buffer.cast() };
+    // SAFETY: as the caller promises, borrowed for this check alone.
+    let output = unsafe { &mut (*socket).output };
+    if output.out_buffer.is_null() {
+        output.out_buffer = swoole_rs_buffer::cpp::new_buffer(65536).cast();
     }
     let dispose = Some(SocketFileRequest::dispose as unsafe extern "C" fn(*mut c_void));
     // SAFETY: the socket's output buffer exists now.
@@ -1243,16 +1242,12 @@ pub unsafe extern "C-unwind" fn socket_send_async(
     data: *const c_void,
     length: usize,
 ) -> isize {
-    let Some((reactor, prepared)) = swoole_rs_reactor::socket_upstream::event_reactor() else {
+    if swoole_rs_reactor::socket_upstream::event_reactor().is_none() {
         // SAFETY: as the caller promises.
         return unsafe { socket_send_sync(socket, data, length, 0) };
-    };
-    // SAFETY: `swoole_event_write`: the live reactor's `write`, set at construction.
-    let Some(write) = (unsafe { (*prepared.fields).write }) else {
-        return -1;
-    };
-    // SAFETY: as the caller promises, on the thread's reactor.
-    unsafe { write(reactor, socket, data, length) }
+    }
+    // SAFETY: as the caller promises, on the thread's available reactor.
+    unsafe { swoole_rs_reactor::event_api::swoole_event_write(socket, data, length) }
 }
 
 /// `bool Socket::ssl_shutdown()`.
@@ -1445,10 +1440,9 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
 /// when it is invalid.
 ///
 /// # Safety
-/// `socket` is a live record and `host` NUL-terminated.
-unsafe fn bind_host(socket: *mut SocketRecord, host: *const c_char, port: c_int) -> c_int {
-    // SAFETY: as the caller promises.
-    let kind = unsafe { (*socket).socket_type };
+/// `host` is NUL-terminated.
+unsafe fn bind_host(socket: &mut SocketRecord, host: *const c_char, port: c_int) -> c_int {
+    let kind = socket.socket_type;
     // SAFETY: an all-zero address is a valid, empty one.
     let mut address: SocketAddress = unsafe { std::mem::zeroed() };
     // SAFETY: as the caller promises.
@@ -1473,8 +1467,7 @@ unsafe fn bind_host(socket: *mut SocketRecord, host: *const c_char, port: c_int)
         log::set_last_error(error);
         return -1;
     }
-    // SAFETY: the live record and the address assigned above.
-    unsafe { (*socket).bind(&address) }
+    socket.bind(&address)
 }
 
 /// `Socket *make_server_socket(SocketType, const char *address, int port, int backlog)`:
@@ -1499,8 +1492,10 @@ pub unsafe extern "C-unwind" fn make_server_socket(
         log::sys_warning(ORIGIN, format_args!("socket() failed"));
         return socket;
     }
-    // SAFETY: the new record.
-    let fd = unsafe { (*socket).fd };
+    // SAFETY: the new record, which only this function holds; `discard` frees it
+    // after its last use.
+    let record = unsafe { &mut *socket };
+    let fd = record.fd;
     // Only TCP sockets need to rebind addresses held by TIME_WAIT. Enabling reuse for
     // datagram sockets can allow duplicate binds.
     if type_is(kind, CLASS_TCP) {
@@ -1524,8 +1519,8 @@ pub unsafe extern "C-unwind" fn make_server_socket(
     }
     // SAFETY: as the caller promises.
     let host = unsafe { CStr::from_ptr(address) }.to_string_lossy();
-    // SAFETY: the new record and the caller's address.
-    if unsafe { bind_host(socket, address, port) } < 0 {
+    // SAFETY: the caller's address.
+    if unsafe { bind_host(record, address, port) } < 0 {
         log::sys_warning(
             ORIGIN,
             format_args!("bind({fd}, {host}:{port}, {backlog}) failed"),
@@ -1533,19 +1528,15 @@ pub unsafe extern "C-unwind" fn make_server_socket(
         // SAFETY: the new record, which nothing else holds.
         return unsafe { discard(socket) };
     }
-    if type_is(kind, CLASS_STREAM) {
-        // SAFETY: the new record.
-        if unsafe { (*socket).listen(backlog) } < 0 {
-            log::sys_warning(
-                ORIGIN,
-                format_args!("listen({fd}, {host}:{port}, {backlog}) failed"),
-            );
-            // SAFETY: the new record, which nothing else holds.
-            return unsafe { discard(socket) };
-        }
+    if type_is(kind, CLASS_STREAM) && record.listen(backlog) < 0 {
+        log::sys_warning(
+            ORIGIN,
+            format_args!("listen({fd}, {host}:{port}, {backlog}) failed"),
+        );
+        // SAFETY: the new record, which nothing else holds.
+        return unsafe { discard(socket) };
     }
-    // SAFETY: the new record.
-    if unsafe { (*socket).get_name() } < 0 {
+    if record.get_name() < 0 {
         log::sys_warning(ORIGIN, format_args!("getsockname({fd}) failed"));
         // SAFETY: the new record, which nothing else holds.
         return unsafe { discard(socket) };

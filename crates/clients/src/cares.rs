@@ -157,10 +157,8 @@ unsafe extern "C-unwind" fn cleanup(_: *mut c_void) {
 fn install() {
     let read = EventType::SW_EVENT_READ as i32;
     let write = EventType::SW_EVENT_WRITE as i32;
-    // SAFETY: the thread's live reactor.
-    unsafe { event_api::swoole_event_set_handler(FD, read, Some(readable)) };
-    // SAFETY: as above.
-    unsafe { event_api::swoole_event_set_handler(FD, write, Some(writable)) };
+    event_api::swoole_event_set_handler(FD, read, Some(readable));
+    event_api::swoole_event_set_handler(FD, write, Some(writable));
     // SAFETY: the live reactor's destroy queue; the call keeps no data.
     let queue = unsafe { &raw mut (*reactor_fields()).destroy_callbacks };
     // SAFETY: as above.
@@ -320,8 +318,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     let (server, port) = crate::dns::server();
     let (server, port) = (server.as_ptr().cast::<c_char>(), port as u16);
     let domain = domain.as_ptr();
-    // SAFETY: the thread's live reactor; the probe invokes no user code.
-    if !unsafe { event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) } {
+    if !event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) {
         // SAFETY: the handler absence identifies the first query in this reactor lifetime.
         unsafe { sdk::ares_library_init(metadata().library_all) };
         install();

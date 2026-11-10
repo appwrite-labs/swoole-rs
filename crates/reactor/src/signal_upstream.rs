@@ -41,16 +41,6 @@ unsafe extern "C" {
     #[cfg(target_os = "linux")]
     #[link_name = "_Z16swoole_event_delPN6swoole7network6SocketE"]
     fn swoole_event_del(socket: *mut SocketRecord) -> c_int;
-    #[cfg(target_os = "linux")]
-    #[link_name = "_Z26swoole_event_isset_handlerii"]
-    fn swoole_event_isset_handler(fd_type: c_int, event: c_int) -> bool;
-    #[cfg(target_os = "linux")]
-    #[link_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE"]
-    fn swoole_event_set_handler(
-        fd_type: c_int,
-        event: c_int,
-        handler: unsafe extern "C" fn(*mut c_void, *mut Event) -> c_int,
-    );
 }
 
 // SAFETY: crates/tls's `Socket::free`, the same archive.
@@ -58,13 +48,6 @@ unsafe extern "C" {
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7network6Socket4freeEv"]
     fn socket_free(socket: *mut SocketRecord);
-}
-
-/// `swoole::Event`'s leading descriptor.
-#[cfg(target_os = "linux")]
-#[repr(C)]
-struct Event {
-    fd: c_int,
 }
 
 /// The fields of the thread's event loop, available or not (`sw_reactor()`).
@@ -170,10 +153,10 @@ fn report(kind: u8, signo: i32, error: i32) {
 #[cfg(target_os = "linux")]
 mod descriptor {
     use super::{
-        EVENT_READ, EXIT_CONDITION_SIGNALFD, Event, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK,
+        EVENT_READ, EXIT_CONDITION_SIGNALFD, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK,
         SocketRecord, c_int, c_void, current, ptr, socket_free, swoole_event_add, swoole_event_del,
-        swoole_event_isset_handler, swoole_event_set_handler,
     };
+    use crate::event_api::{FdHandler, swoole_event_isset_handler, swoole_event_set_fd_handler};
     use crate::socket_upstream::make_socket_fd;
     use crate::swr_v1_reactor_deferred_push;
     use swoole_rs_process::signal_loop::DescriptorOps;
@@ -215,14 +198,16 @@ mod descriptor {
     }
 
     pub(super) fn installed() -> bool {
-        // SAFETY: the thread's available loop.
-        unsafe { swoole_event_isset_handler(FD_SIGNAL, EVENT_READ) }
+        swoole_event_isset_handler(FD_SIGNAL, EVENT_READ)
     }
 
-    unsafe extern "C" fn read(_reactor: *mut c_void, event: *mut Event) -> c_int {
-        // SAFETY: the reactor lends the live event.
-        let fd = unsafe { (*event).fd };
-        swoole_rs_process::signal_loop::read(fd, &OPS)
+    /// The signalfd's read handler.
+    struct Read;
+
+    impl FdHandler for Read {
+        fn handle(fd: c_int) -> c_int {
+            swoole_rs_process::signal_loop::read(fd, &OPS)
+        }
     }
 
     unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
@@ -236,8 +221,7 @@ mod descriptor {
 
     /// The read handler, the exit condition and the destroy callback.
     pub(super) fn install() {
-        // SAFETY: the thread's available loop.
-        unsafe { swoole_event_set_handler(FD_SIGNAL, EVENT_READ, read) };
+        swoole_event_set_fd_handler::<Read>(FD_SIGNAL, EVENT_READ);
         crate::swr_v1_event_set_exit_condition(EXIT_CONDITION_SIGNALFD, exit_condition);
         let Some(reactor) = current() else { return };
         // SAFETY: the loop's live fields.

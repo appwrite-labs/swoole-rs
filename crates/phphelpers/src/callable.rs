@@ -49,25 +49,12 @@ impl Callable {
     /// # Errors
     /// A native PHP leaf bailed out.
     pub fn new(value: &swoole_rs_zend::Value) -> Result<Option<Rc<Self>>, bailout::Bailout> {
-        // SAFETY: a live candidate, and Swoole's C warning leaf.
-        let handle = unsafe {
-            factory(
-                value.as_ptr(),
-                ptr::null(),
-                true,
-                ptr::null_mut(),
-                sys::swr_zend_callable_warning,
-            )
-        }?;
-        if handle.is_null() {
-            return Ok(None);
-        }
-        // SAFETY: `factory` gave up this Box.
-        Ok(Some(Rc::from(unsafe { Box::from_raw(handle) })))
+        Self::argument(Some(value), None, true, None)
     }
 
     /// `sw_callable_create` of the argument `name` (unnamed when `None`): none
-    /// for a missing or null value when `allow_null`, else `exception` thrown;
+    /// for a missing or null value when `allow_null`, else `exception` (or Zend's
+    /// default) thrown;
     /// none, after a warning, when it is not callable.
     /// # Errors
     /// A native PHP leaf bailed out.
@@ -75,7 +62,7 @@ impl Callable {
         value: Option<&swoole_rs_zend::Value>,
         name: Option<&CStr>,
         allow_null: bool,
-        exception: &swoole_rs_zend::Class,
+        exception: Option<&swoole_rs_zend::Class>,
     ) -> Result<Option<Rc<Self>>, bailout::Bailout> {
         let value = value.map_or(ptr::null_mut(), swoole_rs_zend::Value::as_ptr);
         if value.is_null() && name.is_none() {
@@ -88,7 +75,7 @@ impl Callable {
                 value,
                 name.map_or(ptr::null(), CStr::as_ptr),
                 allow_null,
-                exception.entry(),
+                exception.map_or(ptr::null_mut(), swoole_rs_zend::Class::entry),
                 sys::swr_zend_callable_warning,
             )
         }?;
