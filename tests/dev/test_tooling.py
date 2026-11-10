@@ -567,7 +567,7 @@ class ChangedModules(unittest.TestCase):
             return dev.changed_modules('origin/main')
 
     def test_owned_paths_select_their_module_and_shared_inputs_select_all(self):
-        self.assertEqual(self.changed('crates/phptimer/src/lib.rs', 'tests/modules/base64/README.md', 'docs/x.md'),
+        self.assertEqual(self.changed('tests/modules/timer/README.md', 'tests/modules/base64/README.md', 'docs/x.md'),
                          ['base64', 'timer'])
         self.assertEqual(self.changed('.github/workflows/pr.yml', 'tests/dev/test_tooling.py'), [])
         self.assertEqual(self.changed('crates/ffi/src/lib.rs'), sorted(dev.MODULES))
