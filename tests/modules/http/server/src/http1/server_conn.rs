@@ -51,8 +51,6 @@ impl EventData {
     }
 }
 
-unsafe extern "C-unwind" {}
-
 unsafe extern "C" {
     fn mmap(
         addr: *mut c_void,
@@ -1193,11 +1191,6 @@ struct Session {
     reactor_id: u32,
 }
 
-unsafe extern "C-unwind" {
-    #[link_name = "_Z35swoole_set_print_backtrace_on_errorb"]
-    fn swoole_set_print_backtrace_on_error(enable: bool);
-}
-
 unsafe extern "C" {
     fn free(ptr: *mut c_void);
     fn __errno_location() -> *mut c_int;
@@ -1281,8 +1274,7 @@ fn test_heartbeat_check(mode: c_int, single_thread: bool) {
     serv.config().heartbeat_check_interval = 1;
     serv.config().single_thread = single_thread;
 
-    // SAFETY: sets a global flag.
-    unsafe { swoole_set_print_backtrace_on_error(true) };
+    swoole_rs_corebase::swoole_set_print_backtrace_on_error(true);
 
     counter_init();
 
