@@ -78,6 +78,14 @@ skips. Their records started 5% above an arm64 Linux run (0.97 and 0.90).
 `Swoole\Thread` and io_uring file reads need a ZTS PHP and the
 `--enable-swoole-thread` / `--enable-iouring` builds of both engines, which this
 job doesn't make.
+Five send larger or concurrent traffic to `benchmarks/traffic` (#2652), a server
+of its own so its static handler's per-request file check stays out of the other
+workloads: `http2-concurrent` (16 HTTP/2 streams at once, each posting 4000 bytes
+that come back), `websocket-64k` (one 64 KiB frame echoed), `websocket-fragmented`
+(a 4 KiB message sent as four fragments, echoed as one frame), `upload` (a
+multipart POST with a 64 KiB file) and `static` (a 16 KiB file from
+`enable_static_handler`). Their records started 5% above an arm64 Linux run
+(1.26, 0.57, 0.73, 1.00 and 1.05).
 
 `mysql` runs a prepared `SELECT` per request through hooked PDO mysql against
 `benchmarks/mysql`, on one connection per worker. It needs MySQL on `MYSQL_HOST`
