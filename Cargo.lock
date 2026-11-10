@@ -597,7 +597,9 @@ version = "0.0.0"
 dependencies = [
  "swoole-rs-ffi",
  "swoole-rs-ports",
+ "swoole-rs-process",
  "swoole-rs-server",
+ "swoole-rs-utilities",
 ]
 
 [[package]]

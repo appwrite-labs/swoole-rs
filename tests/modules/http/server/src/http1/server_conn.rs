@@ -51,14 +51,7 @@ impl EventData {
     }
 }
 
-unsafe extern "C-unwind" {
-    #[link_name = "_Z19swoole_set_log_filePKc"]
-    fn swoole_set_log_file(file: *const c_char);
-    #[link_name = "_Z20swoole_get_worker_idv"]
-    fn swoole_get_worker_id() -> u32;
-    #[link_name = "_ZN6swoole6Server9task_packEPNS_9EventDataEPKvm"]
-    fn task_pack(task: *mut EventData, data: *const c_void, length: usize) -> bool;
-}
+unsafe extern "C-unwind" {}
 
 unsafe extern "C" {
     fn mmap(
@@ -178,15 +171,16 @@ fn micro_sleep(usec: u32) {
     unsafe { usleep(usec) };
 }
 
+// The crates' functions these cases call by path: under LTO, a symbol that only an `extern`
+// block names, and no C++ uses, can be dropped from the binary.
 fn worker_id() -> u32 {
-    // SAFETY: reads this worker's id.
-    unsafe { swoole_get_worker_id() }
+    swoole_rs_process::methods::swoole_get_worker_id()
 }
 
 fn set_log_file(file: &str) {
     let file = CString::new(file).unwrap();
     // SAFETY: a terminated path.
-    unsafe { swoole_set_log_file(file.as_ptr()) };
+    unsafe { swoole_rs_utilities::swoole_set_log_file(file.as_ptr()) };
 }
 
 fn set_log_level(level: c_int) {
@@ -272,8 +266,14 @@ fn send_pipe_message(serv: Server, worker_id: u32, msg: &mut EventData) -> bool 
 
 /// `Server::task_pack(msg, data, length)`.
 fn pack(msg: &mut EventData, data: &[u8]) -> bool {
-    // SAFETY: a writable `EventData`; `data` readable for its length.
-    unsafe { task_pack(msg, data.as_ptr().cast(), data.len()) }
+    // SAFETY: a writable `EventData`, headed by its `DataHead`; `data` readable for its length.
+    unsafe {
+        swoole_rs_process::task_file::task_pack(
+            (&raw mut msg.info).cast(),
+            data.as_ptr().cast(),
+            data.len(),
+        )
+    }
 }
 
 /// What the case's `onStart` thread runs.
