@@ -107,6 +107,10 @@ libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in
 `artifacts/<target>/`; replay it with `cargo +nightly fuzz run <target> <file>`.
 On Linux, build with `CC=clang CXX=clang++` so the C++ ASan matches rustc's.
+On macOS, ld64 keeps the crates' unreached references to upstream symbols, so link with
+`RUSTFLAGS=-Clink-arg=-Wl,-undefined,dynamic_lookup`, and run with
+`ASAN_OPTIONS=detect_container_overflow=0`: libFuzzer's own corpus reading otherwise
+trips a container-overflow false positive against the system libc++.
 
 ## Adding a target
 
