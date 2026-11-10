@@ -2,6 +2,7 @@
 //! their upstream symbols.
 #![forbid(unsafe_code)]
 mod files;
+pub mod hpack;
 pub use files::*;
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicU32, Ordering};

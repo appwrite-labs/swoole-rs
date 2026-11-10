@@ -129,8 +129,7 @@ fn new_lock(kind: i32) -> *mut c_void {
     let Ok(size) = u32::try_from(size) else {
         std::process::abort();
     };
-    // SAFETY: the global pool lives from swoole_init, before MINIT.
-    let storage = unsafe { pool::alloc(size) };
+    let storage = pool::alloc(size);
     // SAFETY: `size` fresh bytes, aligned to `MAX_ALIGN`, shared across forks.
     if storage.is_null() || unsafe { swr_v1_locks_init(storage, kind, 1) } != 0 {
         std::process::abort();

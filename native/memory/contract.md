@@ -1,8 +1,7 @@
 # Memory and collection ABI
 
-Module-local ABI v1. `swoole_rs_memory.h` declares the GlobalMemory functions C++
-calls; the rest are Rust functions its crates call by path. Supported
-hosts are 64-bit macOS and Linux.
+Module-local ABI v1: Rust functions its crates call by path, and the `sw_shm_*`
+upstream symbols below. Supported hosts are 64-bit macOS and Linux.
 
 ## General rules
 
@@ -86,15 +85,15 @@ min(old_total-8, new_total-8) payload bytes.
 ## Upstream members
 
 `crates/memory/src/members.rs` holds upstream's memory members. With
-`upstream-symbols`, `GlobalMemory`'s out-of-line members and `sw_shm_malloc`,
-`sw_shm_calloc`, `sw_shm_free` and `sw_shm_protect` are under their upstream C++
-symbols. `native/memory/swoole_memory.h` (upstream's is deleted) keeps `GlobalMemory`'s constructor (it throws on the
-`swr_v1_memory_global_memory_new` status: -1 `Exception(SW_ERROR_INVALID_PARAMS)`,
--2 `std::bad_alloc`) and its inline members, for core-tests. It has no vtable: its one
-member is the `impl` slot, and `SwooleG.memory_pool` is Rust's (`members::pool::new`,
-`swoole_init`'s; `delete`, `swoole_clean`'s).
-`FixedPool` and `sw_shm_realloc` have no C++ caller left; their members
-stay Rust-only for upstream's GoogleTests, ported to `tests/modules/memory/`.
+`upstream-symbols`, `sw_shm_malloc`, `sw_shm_calloc`, `sw_shm_free` and
+`sw_shm_protect` are under their upstream C++ symbols. Upstream's `swoole_memory.h`
+is deleted and no C++ is left over `GlobalMemory`: `members::GlobalMemory` is a Rust
+owner whose constructor returns upstream's throws as errors (-1
+`Exception(SW_ERROR_INVALID_PARAMS)`, -2 `std::bad_alloc`).
+`SwooleG.memory_pool` is the `GlobalMemory` in `members::pool` (`init`,
+`swoole_init`'s; `delete`, `swoole_clean`'s), whose `alloc` aborts where upstream's
+throws. `FixedPool`, `GlobalMemory` and `sw_shm_realloc` have no C++ caller left; their
+members stay Rust-only for upstream's GoogleTests, ported to `tests/modules/memory/`.
 `swr_table_make` allocates through `members::pool::alloc`; the pool's `free` is
 a no-op, so nothing calls it. These run allocators, mmap and logs with a Rust frame active.
 
@@ -103,7 +102,7 @@ a no-op, so nothing calls it. These run allocators, mmap and logs with a Rust fr
 Rust owns `swoole::Table` (crates/memory/src/table.rs), and `Swoole\Table`
 (crates/phpcollections) is its only user; no C++ view is left. Two blocks stay
 shared across `fork()` as upstream's are: the header (`size_of::<Table>()` bytes from
-`sw_mem_pool()`, holding sizes, counters and the pool and iterator mutexes) and, at
+`members::pool::alloc`, holding sizes, counters and the pool and iterator mutexes) and, at
 create, the arena (`arena_size()` bytes from `sw_shm_malloc`). `Table::destroy`
 frees the rest and returns the arena for the caller to free with the header.
 

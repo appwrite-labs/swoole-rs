@@ -568,6 +568,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
+ "swoole-rs-memory",
  "swoole-rs-process",
  "swoole-rs-reactor",
 ]
@@ -614,6 +615,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-http2"
 version = "0.1.0"
+dependencies = [
+ "swoole-rs-oracle",
+]
 
 [[package]]
 name = "swoole-rs-httpbindings"
