@@ -244,7 +244,8 @@ the records Rust owns, which `process_pool` checks against the fixture's `sizeof
 offsets. The pool callbacks are `extern "C"` functions, as upstream's are captureless
 lambdas; a failed assertion in one aborts the process it runs in (the master or a
 worker), as GoogleTest's does only in the master. core-tests' counters are
-`sw_mem_pool()` memory, so workers' increments reach the master. `tcp_raw` calls the
+`sw_mem_pool()` memory (crates/memory's `members::pool::alloc`, by path), so workers'
+increments reach the master. `tcp_raw` calls the
 raw-bytes `swr_v1_process_pool_ipc_send_sync` and `_listener`, as core-tests' adapted
 copy did; `msgqueue_2` discards its child's status, as `spawn_exec_and_wait`'s caller
 does. `SyncClient` becomes `std::net::TcpStream` and `UnixStream`. The Server

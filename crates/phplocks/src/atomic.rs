@@ -40,8 +40,7 @@ unsafe extern "C" fn create<W: Kind>(ce: *mut zend_class_entry) -> *mut zend_obj
     // a null pointer is valid zeroed data.
     let std = unsafe { Atomic::<W>::create(W::class(), ce) };
     #[expect(clippy::cast_possible_truncation, reason = "a word is 4 or 8 bytes")]
-    // SAFETY: the global pool lives from swoole_init, before MINIT.
-    let word = unsafe { pool::alloc(size_of::<W>() as u32) };
+    let word = pool::alloc(size_of::<W>() as u32);
     if word.is_null() {
         let exception = swoole_rs_phpswoole::exception_class();
         // SAFETY: in a handler, with Swoole's exception class.

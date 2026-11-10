@@ -403,7 +403,7 @@
         "include/swoole_heap.h",
         "include/swoole_channel.h"
       ],
-      "abi_contract": "native/memory/swoole_rs_memory.h"
+      "abi_contract": "native/memory/contract.md"
     },
     {
       "id": "M13",
