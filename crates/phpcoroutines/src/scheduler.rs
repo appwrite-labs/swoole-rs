@@ -30,12 +30,6 @@ per_thread! {
     static EXIT_CONDITION: Cell<*mut kept::Callable> = Cell::new(ptr::null_mut());
 }
 
-unsafe extern "C" {
-    /// Unlinks the first PHP name resolver (of `resolver`'s object, any when null); its
-    /// zval, or null.
-    fn swoole_name_resolver_php_remove(resolver: *mut zval) -> *mut zval;
-}
-
 /// One `add()` or `parallel()`: its kept callable and how many coroutines run it.
 struct Task {
     callable: *mut c_void,
@@ -429,9 +423,13 @@ pub extern "C" fn php_swoole_coroutine_scheduler_rshutdown() {
 }
 
 fn rshutdown() -> Result<(), Bailout> {
+    let Some(families) = swoole_rs_phpswoole::families() else {
+        return Ok(());
+    };
     loop {
-        // SAFETY: C++'s resolver list; every PHP resolver matches.
-        let resolver = unsafe { swoole_name_resolver_php_remove(ptr::null_mut()) };
+        // SAFETY: the resolver list; every PHP resolver matches null. Each
+        // match is unlinked and returned (crates/phpclients).
+        let resolver = unsafe { (families.name_resolver_remove)(ptr::null_mut()) };
         if resolver.is_null() {
             break;
         }

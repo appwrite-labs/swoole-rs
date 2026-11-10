@@ -31,16 +31,6 @@ struct SocketCall {
 
 type Body = unsafe extern "C" fn(*mut c_void);
 
-unsafe extern "C" {
-    /// crates/phpclients' settings over a coroutine socket; `which` 2 applies
-    /// the SSL ones (`php_swoole_socket_set_ssl`). Raises a bailout it caught.
-    fn swr_v1_phpclients_socket_settings(
-        socket: *mut c_void,
-        settings: *const zval,
-        which: c_int,
-    ) -> bool;
-}
-
 /// [`set_ssl_body`]'s call.
 struct SslCall {
     socket: *mut c_void,
@@ -476,8 +466,12 @@ impl Socket {
 unsafe extern "C" fn set_ssl_body(call: *mut c_void) {
     // SAFETY: `Socket::set_ssl` passes a live `SslCall`.
     let call = unsafe { &mut *call.cast::<SslCall>() };
-    // SAFETY: a live socket and settings array, per `Socket::set_ssl`.
-    call.result = unsafe { swr_v1_phpclients_socket_settings(call.socket, call.settings, 2) };
+    let Some(families) = swoole_rs_phpswoole::families() else {
+        return;
+    };
+    // SAFETY: a live socket and settings array, per `Socket::set_ssl`; crates/phpclients'
+    // settings apply the SSL ones (2).
+    call.result = unsafe { (families.socket_settings)(call.socket, call.settings, 2) };
 }
 
 /// `openssl_x509_read(pem)` into `retval`, which the caller then owns.

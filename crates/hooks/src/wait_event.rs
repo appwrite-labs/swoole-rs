@@ -174,7 +174,6 @@ pub(crate) mod native {
 
     // SAFETY: crates/coroutine's.
     unsafe extern "C" {
-        pub(crate) safe fn swr_v1_coroutine_current() -> *mut c_void;
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
         pub(crate) fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
     }
@@ -184,7 +183,7 @@ pub(crate) mod native {
 
     /// `Coroutine::get_current_safe()`.
     pub(crate) extern "C" fn current() -> *mut c_void {
-        let co = swr_v1_coroutine_current();
+        let co = swoole_rs_coroutine::current().cast::<c_void>();
         if co.is_null() {
             // SAFETY: Swoole's fatal error hook; this frame owns nothing.
             unsafe {

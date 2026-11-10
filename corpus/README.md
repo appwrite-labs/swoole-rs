@@ -66,6 +66,21 @@ per-project outcomes, reasons, and durations. Each server runs in its own proces
 group, data directory, and port. Cleanup terminates the full group, including
 upstream workers. The restart test explicitly reuses only its database directory.
 
+## Syscalls
+
+`syscalls.py` (the `syscalls` phase on Linux, in the integrate lane and when the reactor
+changes) runs projects 1–10 under `strace -f` on both engines, twice each, and compares
+what the calls carry: socket options, socket and accept flags, `fcntl` and `ioctl` modes,
+epoll registrations, send and receive flags, clone flags, signal dispositions, and each
+result's errno. Fds, addresses, ports, lengths and buffers are dropped. A signature every
+run of one engine made and no run of the other did is a difference; one only some runs
+make is timing, reported as unstable and not gated. Each difference needs a
+`syscalls.json` entry (`engine`, `signature` and optional `project` patterns, `reason`),
+or a `kind:bug` issue that the entry's reason names. A call both engines make, more than
+twice a run and a quarter more often on one, is listed as a count difference (extra or
+fewer calls per request); timing moves counts too, so those aren't gated.
+`target/reports/syscalls.json` holds every difference and each engine's call counts.
+
 ## Original Swoole PHPT tests
 
 The [upstream selection](upstream/README.md) runs original Swoole PHPTs through

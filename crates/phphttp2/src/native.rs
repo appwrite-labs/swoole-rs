@@ -97,12 +97,6 @@ unsafe extern "C" {
     ) -> ssize_t;
     fn nghttp2_hd_inflate_end_headers(inflater: *mut c_void) -> c_int;
     fn nghttp2_strerror(code: c_int) -> *const c_char;
-    /// crates/phpclients' Coroutine\Socket settings.
-    fn swr_v1_phpclients_socket_settings(
-        socket: *mut c_void,
-        settings: *const zval,
-        which: c_int,
-    ) -> bool;
 }
 
 /// `php_swoole_create_socket(convert_to_type(host))`: the socket object, its
@@ -174,7 +168,7 @@ pub(crate) unsafe fn swoole_http2_client_coro_apply(socket: Socket, settings: *c
     // SAFETY: a live zval.
     if unsafe { swoole_rs_zend::type_of(settings) } == swoole_rs_zend::sys::IS_ARRAY {
         // SAFETY: a live socket and array; 0 applies every setting.
-        unsafe { swr_v1_phpclients_socket_settings(socket, settings, 0) };
+        unsafe { swoole_rs_phpclients::socket_settings(socket, settings, 0) };
     }
 }
 

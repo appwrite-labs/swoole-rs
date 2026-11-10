@@ -493,4 +493,95 @@ mod tests {
         assert_eq!(*lock(&COMPLETED), [7, 9], "in pipe order");
         assert_eq!(super::complete(-1, complete), -1, "read failure");
     }
+
+    const NSIG: c_int = if cfg!(target_os = "linux") { 65 } else { 32 };
+    static UNBLOCKED: AtomicBool = AtomicBool::new(false);
+    static OBSERVED: AtomicUsize = AtomicUsize::new(0);
+    static RAN: AtomicUsize = AtomicUsize::new(0);
+
+    fn mask() -> libc::sigset_t {
+        let mut mask = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &raw mut mask) },
+            0
+        );
+        mask
+    }
+    /// The worker's inherited mask, before `swoole_thread_init` (native's `thread_init`)
+    /// blocks signals itself.
+    extern "C" fn observe() {
+        let mask = mask();
+        for signo in [libc::SIGCHLD, libc::SIGUSR1, libc::SIGTERM] {
+            if unsafe { libc::sigismember(&raw const mask, signo) } != 1 {
+                UNBLOCKED.store(true, Ordering::SeqCst);
+            }
+        }
+        OBSERVED.fetch_add(1, Ordering::SeqCst);
+    }
+    extern "C" fn ran(_event: usize) {
+        RAN.fetch_add(1, Ordering::SeqCst);
+    }
+    extern "C" fn kept(_key: usize) {}
+
+    /// core-tests/src/os/async.cpp `TEST(async, thread_starts_with_signals_blocked)`, each
+    /// case in a new thread rather than a forked child (the mask and the flag are per
+    /// thread), over a pool of its own, as the child's process had. The `thread_init` hook
+    /// observes the worker's mask where upstream's `std_allocator.malloc` hook did.
+    #[test]
+    fn thread_starts_with_signals_blocked() {
+        for already_blocked in [false, true] {
+            std::thread::spawn(move || unsafe {
+                let mut expected = std::mem::zeroed();
+                libc::sigemptyset(&raw mut expected);
+                libc::sigaddset(&raw mut expected, libc::SIGUSR1);
+                assert_eq!(
+                    libc::pthread_sigmask(
+                        libc::SIG_SETMASK,
+                        &raw const expected,
+                        std::ptr::null_mut()
+                    ),
+                    0
+                );
+                if already_blocked {
+                    swoole_rs_corebase::signal_block_all();
+                }
+                let expected = mask();
+                UNBLOCKED.store(false, Ordering::SeqCst);
+                OBSERVED.store(0, Ordering::SeqCst);
+                let hooks = PoolHooks {
+                    thread_init: observe,
+                    retire: kept,
+                    execute: ran,
+                    ..HOOKS
+                };
+                // aio_core_worker_num = 1, aio_worker_num = 2.
+                let pool: &'static Pool =
+                    Box::leak(Box::new(Pool::new(config(1, 1, 2, 0.0, 0.0), hooks)));
+                let before = RAN.load(Ordering::SeqCst);
+                pool.start();
+                pool.dispatch(0);
+                until(|| RAN.load(Ordering::SeqCst) > before);
+                pool.shutdown();
+
+                let context = format!("already_blocked={already_blocked}");
+                assert!(!UNBLOCKED.load(Ordering::SeqCst), "{context}");
+                assert!(OBSERVED.load(Ordering::SeqCst) > 0, "{context}");
+                assert_eq!(
+                    swoole_rs_corebase::signal_blocking_all(),
+                    already_blocked,
+                    "{context}"
+                );
+                let actual = mask();
+                for signo in 1..NSIG {
+                    assert_eq!(
+                        libc::sigismember(&raw const expected, signo),
+                        libc::sigismember(&raw const actual, signo),
+                        "{context}"
+                    );
+                }
+            })
+            .join()
+            .unwrap();
+        }
+    }
 }
