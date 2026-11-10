@@ -27,8 +27,11 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
   borrowed forms too (`zstr`, `zstr_or_null`, `array_ref`, `bool_or_null`). A
   family crate reads values through these with no `unsafe` of its own
   (`crates/phpredis/src/format.rs`, `crates/phpswoole/src/options.rs`); a raw
-  pointer becomes a `&Value`, `&Array` or `&ZStr` once, at the boundary. Add
-  wrappers as callers need them.
+  pointer becomes a `&Value`, `&Array` or `&ZStr` once, at the boundary. A
+  family's MINIT is `minit!(name => body)`, whose `body(&Minit)` registers
+  constants, classes and function aliases safely; a callable that a C owner
+  such as a timer holds runs through `Callable::callbacks::<impl Holder>()`.
+  `crates/phptimer` uses no `unsafe` at all. Add wrappers as callers need them.
 - One `crates/php<family>` crate per family (`crates/phplocks`). It calls the
   mechanism crate directly (Rust calls Rust).
 

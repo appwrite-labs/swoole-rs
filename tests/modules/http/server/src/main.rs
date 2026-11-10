@@ -7,6 +7,8 @@
 //!
 //! protocol.rs (tests/modules/framing) adds `core-tests/src/protocol/base.cpp`'s server TESTs,
 //! server.rs (tests/modules/protocols) `protocol/redis.cpp`'s and `server/mqtt.cpp`'s.
+//! http1/server.rs has `server/buffer.cpp`'s TEST, http1/server_ssl.rs `server/server.cpp`'s
+//! TLS TESTs.
 //!
 //! `main --list` prints the cases; `main NAME` runs one, in this process, as
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`), from the tree
@@ -1062,6 +1064,7 @@ const SUITES: &[(&str, Cases)] = &[
     ("http_server", http1::CASES),
     ("http_server", CASES),
     ("server", http1::server::CASES),
+    ("server", http1::server_ssl::CASES),
     ("server", http1::server_config::CASES),
     ("protocol", protocol::CASES),
     ("redis", protocols::REDIS),

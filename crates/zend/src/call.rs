@@ -8,11 +8,12 @@ use crate::{
         _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, _zend_expected_type_Z_EXPECTED_DOUBLE,
         _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_RESOURCE,
         _zend_expected_type_Z_EXPECTED_STRING, _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE,
-        IS_LONG, IS_NULL, IS_OBJECT_EX, IS_RESOURCE, IS_TRUE, ZPP_ERROR_WRONG_ARG,
-        add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool, swr_zend_try_parse_double,
-        swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str, zend_argument_type_error,
-        zend_argument_value_error, zend_execute_data, zend_expected_type, zend_object, zend_string,
-        zend_value, zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
+        IS_LONG, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED, IS_OBJECT_EX, IS_RESOURCE, IS_TRUE,
+        ZPP_ERROR_WRONG_ARG, add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool,
+        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str,
+        zend_argument_type_error, zend_argument_value_error, zend_execute_data, zend_expected_type,
+        zend_object, zend_string, zend_value, zend_wrong_parameter_error,
+        zend_wrong_parameters_count_error, zval,
     },
 };
 use std::{ffi::CStr, ptr};
@@ -97,6 +98,17 @@ impl Call {
         let this = unsafe { (*self.frame).This };
         // SAFETY: a non-static method's `This` holds its object.
         unsafe { this.value.obj }
+    }
+
+    /// `GC_FLAGS(Z_OBJ_P(ZEND_THIS)) & IS_OBJ_DESTRUCTOR_CALLED`: Zend is running
+    /// `$this`'s destructor (`SW_PREVENT_USER_DESTRUCT`), not user code.
+    #[must_use]
+    #[inline]
+    pub fn destructor_called(&self) -> bool {
+        // SAFETY: a method's live `$this`.
+        let header = unsafe { (*self.this()).gc.u };
+        // SAFETY: a refcounted header always sets `type_info`.
+        unsafe { header.type_info & IS_OBJ_DESTRUCTOR_CALLED != 0 }
     }
 
     /// `ZVAL_COPY(&value, ZEND_THIS)`: `$this` with a reference of its own,

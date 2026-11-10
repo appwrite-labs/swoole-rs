@@ -252,9 +252,9 @@ impl Run {
 }
 
 /// OpenSSL's servername callback, as `ListenPort::ssl_server_sni_callback`.
-unsafe extern "C" fn sni_callback(ssl: *mut SSL, al: *mut c_int, arg: *mut c_void) -> c_int {
+unsafe extern "C" fn sni_callback(ssl: *mut SSL, _al: *mut c_int, _arg: *mut c_void) -> c_int {
     // SAFETY: OpenSSL's live handshake.
-    unsafe { crate::methods::ssl_server_sni_callback(ssl.cast(), al, arg) }
+    unsafe { crate::methods::ssl_server_sni_callback(ssl.cast()) }
 }
 
 /// `getsockopt(fd, SOL_SOCKET, option)` into `value`: 0 or -1.

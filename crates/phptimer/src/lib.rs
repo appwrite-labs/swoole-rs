@@ -3,37 +3,18 @@
 //! timers. A timer's callback and destructor run the callable here and raise a
 //! bailout once the timer's selection is abandoned.
 #![cfg(feature = "php")]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 
-use std::{
-    ffi::{CStr, c_int, c_void},
-    ptr,
-};
+use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::{log::set_last_error, thread_reactor};
-use swoole_rs_phpcoroutines::create_coroutine;
-use swoole_rs_phphelpers::function_call;
 use swoole_rs_phpstubs::timer;
 use swoole_rs_timer::php;
 use swoole_rs_zend::{
-    Call, Callable, Class, E_WARNING,
+    Call, Callable, Class, E_WARNING, Holder, Minit, OwnedArray,
     bailout::{self, Bailout},
-    php_error, register_double_constant, register_long_constant,
-    sys::{
-        add_next_index_long, object_init_ex, swr_zend_array_init, swr_zend_callable,
-        swr_zend_callable_warning, zend_call_method, zend_class_entry, zval, zval_ptr_dtor,
-    },
+    report,
 };
 use swoole_rs_zend::{method_table, sys as z};
-
-unsafe extern "C" {
-    static spl_ce_ArrayIterator: *mut zend_class_entry;
-}
 
 /// `SW_TIMER_MIN_MS`, `SW_TIMER_MAX_MS` (`LONG_MAX`) and their seconds.
 const MIN_MS: i64 = 1;
@@ -70,51 +51,30 @@ method_table! {
     ];
 }
 
-/// MINIT: `Swoole\Timer` (not instantiable), `Swoole\Timer\Iterator` (an
-/// `ArrayIterator`), the `swoole_timer_*` functions and the `SWOOLE_TIMER_*`
-/// constants.
-#[unsafe(no_mangle)]
-pub extern "C" fn php_swoole_timer_minit(module_number: c_int) {
-    bailout::raise(minit(module_number));
-}
+swoole_rs_zend::minit!(minit => register);
 
-fn minit(module_number: c_int) -> Result<(), Bailout> {
-    // SAFETY: MINIT, with a static table.
-    unsafe { TIMER.register_static(c"Swoole\\Timer", METHODS.as_ptr()) };
-    // SAFETY: SPL registered ArrayIterator at its MINIT, before Swoole's.
-    let array_iterator = unsafe { spl_ce_ArrayIterator };
-    // SAFETY: MINIT, with a registered parent.
-    unsafe {
-        ITERATOR.register_child(
-            c"Swoole\\Timer\\Iterator",
-            ptr::null(),
-            array_iterator,
-            |_, _| {},
-        );
-    }
-    // SAFETY: MINIT, after registration, with the class's own table.
-    unsafe { TIMER.function_aliases(METHODS.as_ptr(), &ALIASES) }?;
-    // SAFETY: MINIT, with the module's number.
-    unsafe { register_long_constant(c"SWOOLE_TIMER_MIN_MS", MIN_MS, module_number) };
-    // SAFETY: as above.
-    unsafe { register_double_constant(c"SWOOLE_TIMER_MIN_SEC", 0.001, module_number) };
-    // SAFETY: as above.
-    unsafe { register_long_constant(c"SWOOLE_TIMER_MAX_MS", MAX_MS, module_number) };
+/// MINIT: `Swoole\Timer` (not instantiable) and the `swoole_timer_*` functions,
+/// `Swoole\Timer\Iterator` (an `ArrayIterator`) and the `SWOOLE_TIMER_*` constants.
+fn register(minit: &Minit) -> Result<(), Bailout> {
+    minit.register_static(&TIMER, c"Swoole\\Timer", &METHODS.0, &ALIASES)?;
+    let parent = minit.array_iterator();
+    minit.register_child(&ITERATOR, c"Swoole\\Timer\\Iterator", &[], parent);
+    minit.long_constant(c"SWOOLE_TIMER_MIN_MS", MIN_MS);
+    minit.double_constant(c"SWOOLE_TIMER_MIN_SEC", 0.001);
+    minit.long_constant(c"SWOOLE_TIMER_MAX_MS", MAX_MS);
     #[expect(
         clippy::cast_precision_loss,
         reason = "upstream's ((double) LONG_MAX / 1000)"
     )]
     let max_sec = MAX_MS as f64 / 1000.0;
-    // SAFETY: as above.
-    unsafe { register_double_constant(c"SWOOLE_TIMER_MAX_SEC", max_sec, module_number) };
+    minit.double_constant(c"SWOOLE_TIMER_MAX_SEC", max_sec);
     Ok(())
 }
 
 /// `php_swoole_fatal_error(E_WARNING, "%s", message)`.
 fn fatal_warning(message: &CStr) {
     set_last_error(PHP_FATAL_ERROR);
-    // SAFETY: from a handler.
-    bailout::defer(unsafe { php_error(E_WARNING, message) });
+    bailout::defer(report(E_WARNING, message));
 }
 
 /// `php_swoole_error(E_WARNING, "%s", message)`.
@@ -123,71 +83,44 @@ fn warning(message: &CStr) -> Result<(), Bailout> {
     if !swoole_rs_phpswoole::display_errors() {
         return Ok(());
     }
-    // SAFETY: from a timer callback Zend's loop runs.
-    unsafe { php_error(E_WARNING, message) }
+    report(E_WARNING, message)
 }
 
-/// `zend::Function::call(nullptr, php_swoole_is_enable_coroutine())` of a
-/// timer's callable, warning when it fails.
-/// # Safety
-/// `data` is a live timer's callable, from `add`.
-unsafe fn call(data: *mut c_void) -> Result<(), Bailout> {
-    let (cache, argc, argv) = {
-        // SAFETY: per the caller; the borrow ends before PHP runs.
-        let callable = unsafe { &mut *data.cast::<swr_zend_callable>() };
-        (
-            &raw mut callable.fcc,
-            callable.fci.param_count,
-            callable.fci.params,
-        )
-    };
-    // SAFETY: a kept callable's cache and arguments; the leaves are
-    // phpcoroutines' and C's.
-    let called = unsafe {
-        function_call(
-            cache,
-            argc,
-            argv,
-            ptr::null_mut(),
-            swoole_rs_phpprocess::enable_coroutine(),
-            create_coroutine,
-            swr_zend_callable_warning,
-        )
-    }?;
-    if !called {
-        warning(c"Swoole\\Timer->onTimeout handler error")?;
+/// A PHP timer's callable, which the timer holds as its data.
+struct Timer;
+
+impl Holder for Timer {
+    /// The timer's callback: `zend::Function::call(nullptr,
+    /// php_swoole_is_enable_coroutine())`, warning when it fails. A bailout
+    /// abandons the timer's selection, keeping shutdown-visible metadata until
+    /// native owner teardown, and is raised from here, which owns nothing.
+    fn run(callable: &Callable) {
+        let called =
+            swoole_rs_phpcoroutines::call_kept(callable, swoole_rs_phpprocess::enable_coroutine())
+                .and_then(|called| {
+                    if called {
+                        Ok(())
+                    } else {
+                        warning(c"Swoole\\Timer->onTimeout handler error")
+                    }
+                });
+        if called.is_err() {
+            php::abandon(None);
+        }
+        bailout::raise(called);
     }
-    Ok(())
-}
 
-/// A PHP timer's callback. A bailout abandons the timer's selection, keeping
-/// shutdown-visible metadata until native owner teardown, and is raised from
-/// here, which owns nothing.
-/// # Safety
-/// `data` is a live timer's callable, from `add`.
-unsafe extern "C-unwind" fn run(data: *mut c_void) {
-    // SAFETY: per the caller.
-    let called = unsafe { call(data) };
-    if called.is_err() {
-        php::abandon(None);
-    }
-    bailout::raise(called);
-}
-
-/// A PHP timer's destructor: release and free the callable. A bailout is
-/// raised once the timer has deleted the node, or at once without a timer.
-/// # Safety
-/// `data` is a removed timer's callable, from `add`, not used again.
-unsafe extern "C-unwind" fn free(data: *mut c_void) {
-    // SAFETY: per the caller.
-    let released = unsafe { Callable::from_raw(data) }.release();
-    if let Err(error) = released {
-        error.defer();
-        if php::available() {
-            // Return through the timer's release so the node is deleted first.
-            php::abandon(Some(finish));
-        } else {
-            bailout::finish();
+    /// The timer's destructor: release and free the callable. A bailout is
+    /// raised once the timer has deleted the node, or at once without a timer.
+    fn free(callable: Callable) {
+        if let Err(error) = callable.release() {
+            error.defer();
+            if php::available() {
+                // Return through the timer's release so the node is deleted first.
+                php::abandon(Some(finish));
+            } else {
+                bailout::finish();
+            }
         }
     }
 }
@@ -217,6 +150,7 @@ fn add(call: &Call, persistent: bool) {
         swoole_rs_phpswoole::check_reactor();
     }
     // The timer keeps the callable as its data until `free`.
+    let (run, free) = Callable::callbacks::<Timer>();
     let Some(id) = php::add_php(ms, persistent, run, free, callable.as_raw()) else {
         fatal_warning(c"add timer failed");
         callable.discard();
@@ -297,41 +231,14 @@ fn php_ids() -> Vec<i64> {
 
 /// `list(): Swoole\Timer\Iterator` over the PHP timers' ids.
 fn list(call: &Call) {
-    // SAFETY: all-zero bytes are a valid (undefined) zval.
-    let mut ids: zval = unsafe { std::mem::zeroed() };
-    // SAFETY: a writable zval.
-    unsafe { swr_zend_array_init(&raw mut ids) };
+    let mut ids = OwnedArray::default();
     for id in php_ids() {
-        // SAFETY: an array.
-        unsafe { add_next_index_long(&raw mut ids, id) };
+        ids.push_long(id);
     }
-    let ce = ITERATOR.entry();
-    let value = call.return_value();
-    // SAFETY: the return slot and a registered class.
-    unsafe { object_init_ex(value, ce) };
-    // SAFETY: the return slot is live.
-    let made = unsafe { *value };
-    // SAFETY: `object_init_ex` made an object.
-    let object = unsafe { made.value.obj };
-    // SAFETY: a registered class; its constructor slot lives as long.
-    let constructor = unsafe { &raw mut (*ce).constructor };
-    // SAFETY: ArrayIterator's constructor, called as upstream does, with
-    // the id array; it only copies the array.
-    unsafe {
-        zend_call_method(
-            object,
-            ce,
-            constructor,
-            c"__construct".as_ptr(),
-            c"__construct".count_bytes(),
-            ptr::null_mut(),
-            1,
-            &raw mut ids,
-            ptr::null_mut(),
-        );
+    match ITERATOR.instantiate(&[&ids]) {
+        Ok(iterator) => call.set_owned(iterator),
+        Err(bailed) => bailed.defer(),
     }
-    // SAFETY: our reference to the array.
-    unsafe { zval_ptr_dtor(&raw mut ids) };
 }
 
 fn clear(call: &Call) {
@@ -344,30 +251,29 @@ fn clear(call: &Call) {
 }
 
 fn clear_all(call: &Call) {
-    call.set_bool(swr_v1_phptimer_clear_all() != 0);
+    call.set_bool(clear_all_timers());
 }
 
-/// `php_swoole_timer_clear_all()`: remove every PHP timer, newest first; 0 if
-/// there is no timer. A destructor can clear other timers, so each id is looked
-/// up again. The ids sit on the system heap, which a request at its memory
-/// limit still has; a destructor's bailout leaks them, as upstream's vector.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phptimer_clear_all() -> u8 {
+/// `php_swoole_timer_clear_all()`: remove every PHP timer, newest first; false
+/// if there is no timer. A destructor can clear other timers, so each id is
+/// looked up again. The ids sit on the system heap, which a request at its
+/// memory limit still has; a destructor's bailout leaks them, as upstream's vector.
+#[must_use]
+pub fn clear_all_timers() -> bool {
     if !php::available() {
-        return 0;
+        return false;
     }
     let ids = std::mem::ManuallyDrop::new(php::ids());
     for &id in ids.iter().rev() {
         let _cleared = php::clear(id);
     }
     drop(std::mem::ManuallyDrop::into_inner(ids));
-    1
+    true
 }
 
 /// RSHUTDOWN: remove every PHP timer.
-#[unsafe(no_mangle)]
-pub extern "C" fn php_swoole_timer_rshutdown() {
-    swr_v1_phptimer_clear_all();
+pub extern "C" fn rshutdown() {
+    let _cleared = clear_all_timers();
 }
 
 swoole_rs_zend::handlers! {

@@ -1,9 +1,7 @@
-//! The `Server` methods over its worker arrays that were `src/server/master.cc`'s,
-//! defined under their upstream (Itanium) symbols when the hybrid links this crate
-//! (`upstream-symbols`). Each reads the Rust-owned configuration straight from the
-//! `Server` pointer ([`crate::view`]).
+//! The `Server` methods over its worker arrays that were `src/server/master.cc`'s.
+//! Each reads the Rust-owned configuration straight from the `Server` ([`crate::view`]).
 
-use core::ffi::{c_int, c_void};
+use core::ffi::c_int;
 use swoole_rs_process::worker_record::Worker;
 
 use swoole_rs_corebase::{log, worker_registry};
@@ -46,13 +44,7 @@ pub(crate) fn workers_start(serv: view::Server<'_>) {
 ///
 /// # Safety
 /// `serv` is a live `Server` and `worker` a live `Worker` that outlives it.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server10add_workerEPNS_6WorkerE")
-)]
-pub unsafe extern "C" fn add_worker(serv: *mut c_void, worker: *mut WorkerRecord) -> c_int {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
+pub unsafe fn add_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) -> c_int {
     let config = serv.config();
     if !config.factory_.is_null() {
         let m = format_args!("must add worker before server is created");
@@ -140,11 +132,7 @@ const MUTEX: i32 = 3;
 ///
 /// # Safety
 /// `serv` is a live `Server` and `worker` one of its workers.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server13create_workerEPNS_6WorkerE")
-)]
-pub unsafe extern "C" fn create_worker(serv: *mut c_void, worker: *mut WorkerRecord) {
+pub unsafe fn create_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) {
     let size = u32::try_from(swoole_rs_locks::swr_v1_locks_size(MUTEX)).unwrap_or(u32::MAX);
     // SAFETY: the server's global memory pool is live.
     let lock = unsafe { swoole_rs_memory::members::pool::alloc(size) };
@@ -158,7 +146,7 @@ pub unsafe extern "C" fn create_worker(serv: *mut c_void, worker: *mut WorkerRec
     worker.lock = lock;
     if !worker.pipe_object.is_null() {
         // SAFETY: per the caller; the worker's live pipe.
-        unsafe { crate::server_methods::store_pipe_fd(serv, worker.pipe_object) };
+        unsafe { crate::server_methods::store_pipe_fd(serv.raw(), worker.pipe_object) };
     }
 }
 
@@ -166,13 +154,7 @@ pub unsafe extern "C" fn create_worker(serv: *mut c_void, worker: *mut WorkerRec
 ///
 /// # Safety
 /// `worker` is a worker [`create_worker`] set up, whose lock nobody holds.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server14destroy_workerEPNS_6WorkerE")
-)]
-pub unsafe extern "C" fn destroy_worker(_serv: *mut c_void, worker: *mut WorkerRecord) {
-    // SAFETY: per the caller.
-    let worker = unsafe { &mut *worker };
+pub unsafe fn destroy_worker(worker: &mut WorkerRecord) {
     let lock = core::mem::replace(&mut worker.lock, core::ptr::null_mut());
     if lock.is_null() {
         return;
@@ -194,7 +176,7 @@ pub unsafe fn create_event_workers(serv: view::Server<'_>) -> bool {
         let id = u16::try_from(id & 0xffff).unwrap_or_default();
         let worker = serv.worker(id);
         // SAFETY: one of the server's event workers.
-        unsafe { create_worker(serv.raw(), worker) };
+        unsafe { create_worker(serv, worker) };
     }
     true
 }
@@ -235,7 +217,7 @@ pub unsafe fn create_user_workers(serv: view::Server<'_>) -> bool {
         // SAFETY: its slot in the fresh shared array of `count` records.
         unsafe { copies.wrapping_add(index).write(record) };
         // SAFETY: per the caller.
-        unsafe { create_worker(serv.raw(), worker) };
+        unsafe { create_worker(serv, worker) };
         // SAFETY: the caller's live worker.
         unsafe { Worker::new(worker).set_kind(SW_USER_WORKER) };
     }
@@ -246,6 +228,7 @@ pub unsafe fn create_user_workers(serv: view::Server<'_>) -> bool {
 mod tests {
     use super::*;
     use crate::records::SessionRecord;
+    use core::ffi::c_void;
     use core::sync::atomic::Ordering::SeqCst;
 
     /// The repo-owned Server witness, formerly `tests/modules/process/worker_retirement.cc` and
