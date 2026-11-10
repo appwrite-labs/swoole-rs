@@ -159,6 +159,8 @@ fn new_server(mode: c_int) -> Server {
     if mode == MODE_THREAD {
         // DIAGNOSTIC (#2636, removed before merge): where each thread waits after 45 s.
         std::thread::spawn(|| {
+            // The master's SIGTERM must not land here, where its action is the default.
+            block_all_signals();
             std::thread::sleep(Duration::from_secs(45));
             let counters: Vec<_> = (0..TEST_COUNTER_NUM).map(counter_get).collect();
             eprintln!("watchdog: counters {counters:?}");

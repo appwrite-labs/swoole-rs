@@ -193,11 +193,9 @@ Not yet run:
 - `clean_worker_1` (base mode) drives core-tests' `AsyncClient` from `onStart`'s timer in
   the master's reactor, and nothing here ports that client yet.
 - `thread`, `task_thread`, `reload_thread`, `reload_thread_2` and `reload_thread_3` are
-  `#ifdef SW_THREAD` upstream. `clean_worker_2`, `kill_worker_3` and `kill_worker_6` use
-  `MODE_THREAD`. The package links the NTS Cargo build's libswoole, where thread mode isn't
-  built: its `config.h` has no `SW_THREAD`, `SW_THREAD_LOCAL` globals are process-wide, and
-  `THREAD_SUPPORTED` stays false, so `create()` refuses `MODE_THREAD`. No lane builds the
-  case packages over ZTS.
+  `#ifdef SW_THREAD` upstream, and `clean_worker_2`, `kill_worker_3` and `kill_worker_6` use
+  `MODE_THREAD`. None is ported yet. The binary is a `SW_THREAD` build (see the MODE_THREAD
+  TESTs below), so they can be.
 
 `core-tests/src/server/server.cpp`'s task-worker TESTs are `server/src/http1/task.rs`, suite
 `server`, in the same binary and phase, one function per TEST under its own name with the
@@ -213,9 +211,7 @@ mapping the forked processes inherit, as core-tests' memory-pool counters are, a
 expectation in a callback records its failure there, so here one in a forked worker fails
 the case too. `no_idle_task_worker`'s client waits on a shared flag its `onWorkerStart`
 sets, where upstream's waited on a process-shared mutex it unlocked. `task_ipc_queue_5`
-runs in thread mode, which needs `SW_THREAD`: upstream's CMake defines it for core-tests
-under `enable_thread`, and the extension's MINIT sets crates/server's `THREAD_SUPPORTED`
-for a ZTS PHP. This binary has no MINIT, so the case sets it.
+runs in thread mode (see the MODE_THREAD TESTs below).
 
 `core-tests/src/server/server.cpp`'s TLS TESTs that start a server are
 `server/src/http1/server_ssl.rs`, in the same binary and phase, one function per TEST
@@ -238,9 +234,6 @@ starts no server and is a crates/ports unit test (tests/modules/ports/README.md)
   entries and the subject's one-line form; its validity and public-key lines, which the
   `organizationName: swoole` search can't match, are left out.
 - `dtls2` reaps its forked client, which must exit 0.
-- `ssl_client_cert_3` is excluded: `MODE_THREAD` needs thread support (`SW_THREAD`, a ZTS
-  build), and this binary is NTS, so `create()` fails with "Thread support is not enabled"
-  (#2633).
 
 `core-tests/src/server/server.cpp`'s connection and configuration TESTs (#2536) are
 `server/src/http1/server_config.rs`, in the same binary, phase and records, under the
@@ -265,12 +258,13 @@ crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md)
 | `abort_worker`, `reactor_thread_pipe_writable`, `send_timeout` | same names | `get_session(i)` reads the shared session list; `move_packet()` is `swoole_rs_server::bus_move_packet`; `conn->socket->recv_timer` is the socket record's, at the offset swoole_rs_socket.h asserts |
 | `heartbeat_check_1` .. `heartbeat_check_4`, `close_1` .. `close_8`, `eof_check` | same names | the `AsyncClient` is a blocking client in a thread of the process whose reactor upstream's ran in, with the same callbacks in order (`connected`, `on_connect` or `on_error`, `on_receive` per read, `on_close`); its `flags` are shared counters, since the server's callbacks may run in a worker |
 
-The MODE_THREAD TESTs (`max_request_2`, `heartbeat_check_3`, `close_3`, `close_7`) need
-upstream's `enable_thread` build (`SW_THREAD`). The crates have thread mode when the
-extension's MINIT sets `swoole_rs_server::THREAD_SUPPORTED`, as it does under ZTS, so these
-cases set it. They still fail over the crates (`max_request_2` counts fewer than 8 worker
-starts; the other three time out waiting for the server), so `http-server-rust` excludes
-all four until #2636 fixes thread mode; an exclusion never counts as passed.
+The MODE_THREAD TESTs (`max_request_2`, `heartbeat_check_3`, `close_3`, `close_7`,
+`task_ipc_queue_5`, `ssl_client_cert_3`) need upstream's `enable_thread` build (`SW_THREAD`),
+which core-tests always use. This binary is one too: it turns on crates/process's `thread`
+feature, so each thread has its own `SwooleWG` (worker id, type and pid), as
+`SW_THREAD_LOCAL` gives upstream. Its `main` sets `swoole_rs_server::THREAD_SUPPORTED`, as
+the extension's MINIT does under ZTS. Without the feature, the master and worker threads
+shared one record and overwrote each other's worker type (#2636).
 
 `server_conn.rs` keeps core-tests' shared counters (`test::counter_*`) and the
 process-shared `Mutex(true)` its clients wait on in anonymous shared memory mapped
