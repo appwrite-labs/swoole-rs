@@ -36,8 +36,8 @@ bundled ext/ssh2 uses: `new SocketImpl`, `connect(host)` (`swr_v1_hook_co_socket
 - hook.cc's socket functions (`swoole_coroutine_socket`, `send`, `recv`,
   `sendmsg`, `recvmsg`, `connect`, `accept`, `poll`, `poll_fake`, `close`, `read`,
   `write`, `socket_create`, `socket_unwrap`, `socket_exists`, the timeouts and
-  `socket_wait_event`, and `swoole_coroutine_get_socket_object[_ex]` under their C++
-  symbols) are Rust. The hooked fds' socket map is Rust's too: fd to a lent
+  `socket_wait_event`, under their C++ symbols) are Rust, and
+  `swoole_coroutine_get_socket_object[_ex]` are plain Rust functions (no C caller left). The hooked fds' socket map is Rust's too: fd to a lent
   `SocketImpl *`, no reference count; hooked `close` removes it only after
   `Socket::close()` succeeds. The hooks make and delete those sockets in Rust and call the Rust members
   directly, and those pick the ring for a `UringSocket`. A C++ exception or a
@@ -139,13 +139,13 @@ aliases are never uninstalled.
   whole read or write (`File::read_all`, `write_all`, `read_content` semantics),
   fsync and unlock on the async pool, into a `Vec`, logging each warning on the pool
   thread as upstream named it (`System::read_file`, `File::read_all`, ...).
-  `write_file` keeps its upstream symbol; C reads through `swr_v1_system_read_file`.
+  `write_file` keeps its upstream symbol; `read_file` is a plain Rust function.
 - `System::wait_signal` is Rust (`wait_signal.rs`): the listener table, the
   EBUSY/EINVAL checks, registering through the signal table (deferred to the loop's
   thread while thread contexts are active), the reactor exit condition and
   `signal_async_listener_num`, the park, the wake-up handler `hook_signal_wake`
   (clears the slot, records the signal, resumes) and the unregistering after it.
-  C reads it through `swr_v1_system_wait_signal`.
+  It is the plain Rust `system_wait_signal`.
 - The hooked stdio, directory and file-system functions (`fopen`, `fdopen`,
   `freopen`, `fread`, `fwrite`, `fgets`, `fputs`, `feof`, `fflush`, `fclose`,
   `opendir`, `readdir`, `closedir`, `open`, `fstat`, `stat`, `lstat`, `unlink`,

@@ -71,8 +71,7 @@ mod native {
     use libc::c_int;
 
     pub(super) fn in_coroutine() -> bool {
-        !swoole_rs_corebase::thread_reactor().is_null()
-            && !crate::wait_event::native::swr_v1_coroutine_current().is_null()
+        !swoole_rs_corebase::thread_reactor().is_null() && !swoole_rs_coroutine::current().is_null()
     }
 
     pub(super) fn sleep(seconds: f64) -> c_int {

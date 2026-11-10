@@ -8,7 +8,7 @@ use crate::{EXEC_NEEDS_COROUTINE, Multi, swr_v1_curl_get_handle};
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
 use std::ptr::{self, NonNull};
-use swoole_rs_coroutine::{Coroutine, RC_CANCELED, Scheduler};
+use swoole_rs_coroutine::{Coroutine, RC_CANCELED, scheduler};
 use swoole_rs_curl_sys::{CURL, CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
 use swoole_rs_reactor::{SocketRecord, event_api, reactor_upstream::prepared};
 
@@ -25,7 +25,6 @@ const CO_HAS_BEEN_BOUND: c_int = 10002;
 // SAFETY: native/timer/timer.cc's,
 // crates/coroutine's and crates/timer's upstream functions.
 unsafe extern "C-unwind" {
-    fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
     fn swr_v1_timer_add_plain(
         msec: c_long,
         persistent: bool,
@@ -38,11 +37,6 @@ unsafe extern "C-unwind" {
     fn swoole_timer_is_available() -> bool;
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
-}
-
-fn scheduler() -> *mut Scheduler {
-    // SAFETY: the address of this thread's scheduler.
-    unsafe { swr_v1_coroutine_scheduler_get() }.cast()
 }
 
 /// The reactor's handler for the cURL fd type: `BITMASK` happened on the
