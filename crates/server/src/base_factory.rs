@@ -29,6 +29,7 @@ pub(crate) const SEND_DATA: u8 = 2;
 const SEND_FILE: u8 = 3;
 const CLOSE_FORWARD: u8 = 7;
 const RECV_DATA: u8 = 0;
+const RECV_DGRAM: u8 = 1;
 /// `SW_EVENT_DATA_PTR`: `MessageBus::pass`'s flags for a payload it points at.
 const DATA_PTR: u8 = 1 << 1;
 /// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
@@ -158,14 +159,16 @@ pub(crate) fn dispatch<H: Host>(
     Ok(true)
 }
 
-/// `worker_accept_event` of a base-mode `RECV_DATA` without the message bus. When this
-/// worker has no request limit and the session's verified connection is open, Rust
-/// does what the event's `EVENT_BEGIN`, `RECV_CONN`, `DO_TASK` and `EVENT_END` did and
-/// only `onReceive` is native: it gets the bytes `MessageBus::pass` and `get_packet`
-/// would have handed it, under `SW_EVENT_DATA_PTR`, and nothing reads the bus after
-/// them in base mode. False leaves the event to `OP_BASE_PASS`, untouched.
+/// `worker_accept_event` of a base-mode `RECV_DATA` or `RECV_DGRAM` without the message
+/// bus. When this worker has no request limit (and, for data, the session's verified
+/// connection is open), Rust does what the event's `EVENT_BEGIN`, `RECV_CONN`, `DO_TASK`
+/// and `EVENT_END` did and only `onReceive` or `onPacket` is native: it gets the bytes
+/// `MessageBus::pass` and `get_packet` would have handed it, under `SW_EVENT_DATA_PTR`,
+/// and nothing reads the bus after them in base mode. False leaves the event to
+/// `OP_BASE_PASS`, untouched.
 fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
-    if task.info.kind != RECV_DATA {
+    let dgram = task.info.kind == RECV_DGRAM;
+    if task.info.kind != RECV_DATA && !dgram {
         return Ok(false);
     }
     // SAFETY: this thread's worker globals; only the fields are read.
@@ -174,21 +177,27 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
     if worker.is_null() || max_request != 0 {
         return Ok(false);
     }
-    let conn = connection(h, task.info.fd, VERIFIED_TLS)?;
+    let conn = if dgram {
+        core::ptr::null_mut()
+    } else {
+        connection(h, task.info.fd, VERIFIED_TLS)?
+    };
     // SAFETY: a non-null lookup is a connection record.
-    if conn.is_null() || unsafe { record(conn) }.closed.load(Ordering::Relaxed) != 0 {
+    if !dgram && (conn.is_null() || unsafe { record(conn) }.closed.load(Ordering::Relaxed) != 0) {
         return Ok(false);
     }
     // SAFETY: the current worker's record, which this worker loop owns.
     let worker = unsafe { Worker::new(worker) };
     worker.set_status(WORKER_BUSY);
-    // SAFETY: as above.
-    let c = unsafe { record(conn) };
-    if task.info.len > 0 {
-        c.recv_queued_bytes
-            .fetch_sub(task.info.len, Ordering::SeqCst);
+    if !dgram {
+        // SAFETY: as above.
+        let c = unsafe { record(conn) };
+        if task.info.len > 0 {
+            c.recv_queued_bytes
+                .fetch_sub(task.info.len, Ordering::SeqCst);
+        }
+        c.last_dispatch_time = task.info.time;
     }
-    c.last_dispatch_time = task.info.time;
     let mut recv = SendData {
         info: task.info,
         data: task.data,
@@ -554,6 +563,13 @@ mod tests {
         let c = t.conn();
         assert_eq!(c.recv_queued_bytes.load(Ordering::Relaxed), 0, "unqueued");
         assert!((c.last_dispatch_time - 1.5).abs() < f64::EPSILON);
+
+        // A datagram has no connection to check or update.
+        let mut packet = send(9, RECV_DGRAM, 5);
+        let mut s = t.script(&[(OP_ON_RECEIVE, 1)]);
+        assert!(dispatch(&mut s, &raw mut packet, true).unwrap());
+        assert_eq!((s.called(OP_ON_RECEIVE), s.called(OP_BASE_PASS)), (1, 0));
+        assert_eq!(packet.info.fd, 9, "unconverted");
 
         // A request limit, or a factory dispatch, takes the bus.
         // SAFETY: as above.

@@ -14,7 +14,7 @@ use swoole_rs_reactor::{SocketRecord, reactor_upstream};
 use swoole_rs_timer::swr_v1_timer_add_plain;
 
 use crate::base_factory::SendData;
-use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE, CB_RECEIVE};
+use crate::callbacks::{CB_FINISH, CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE};
 use crate::ops::{
     EVENT_SHUTDOWN, OP_CLOSE, OP_COMMAND_REQUEST, OP_COMMAND_RESPONSE, OP_CONN_HEALTHY,
     OP_DGRAM_BUFFER, OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER, OP_INCOMING, OP_ON_FINISH,
@@ -221,7 +221,17 @@ pub(crate) unsafe fn answer(
             let len = size_of::<DgramPacket>() as u64 + arg;
             ctx.task.info.len = u32::try_from(len).unwrap_or(u32::MAX);
             ctx.task.data = ctx.pkt.cast();
-            u64::from(factory::dispatch(state, (&raw mut ctx.task).cast()))
+            let task = &raw mut ctx.task;
+            if u64::from(state.config_ref().mode_) != crate::MODE_BASE {
+                return Some(u64::from(factory::dispatch(state, task.cast())));
+            }
+            // Base mode hands the datagram to this process's worker directly, as a
+            // connection's data is (`reactor_entry`), rather than through the factory.
+            let mut base = ReactorContext::new(serv, ptr::null_mut());
+            base.sock = ctx.sock;
+            let run = |h: &mut _| crate::base_factory::dispatch(h, task, true).map(i64::from);
+            // SAFETY: the live server and its state; the task outlives the run.
+            u64::from(unsafe { crate::run_reactor_with(&mut base, state, run) } == 1)
         }
         OP_DESTROY_CALLBACK => {
             let queue = &raw mut handle.fields().destroy_callbacks;
@@ -597,7 +607,11 @@ pub(crate) unsafe fn answer(
             result
         }
         OP_ON_RECEIVE => {
-            let slot = state.callbacks.slot(CB_RECEIVE)?;
+            // SAFETY: the `RecvData` the dispatch lends at arg.
+            let dgram = unsafe { (*(arg as *const DataHead)).kind } == EVENT_RECV_DGRAM;
+            let slot = state
+                .callbacks
+                .slot(if dgram { CB_PACKET } else { CB_RECEIVE })?;
             // SAFETY: the slot's `int (Server *, RecvData *)` callback over the frame at arg.
             u64::from(unsafe { slot.receive(serv, arg as *mut c_void) } == 0)
         }
