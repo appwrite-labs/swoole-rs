@@ -11,8 +11,8 @@ use crate::{
         IS_DOUBLE, IS_FALSE, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR,
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_assoc_bool_ex, add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex,
-        add_next_index_long, add_next_index_null, add_next_index_stringl,
-        swr_zend_array_add_or_merge, swr_zend_array_init, swr_zend_array_is_list,
+        add_next_index_long, add_next_index_null, add_next_index_stringl, php_format_date,
+        php_url_encode, swr_zend_array_add_or_merge, swr_zend_array_init, swr_zend_array_is_list,
         swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_object_properties,
         swr_zend_separate_array, swr_zend_string_release, swr_zend_try_get_double,
         swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_update,
@@ -554,6 +554,21 @@ impl ZString {
         ZStr::bytes(self)
     }
 
+    /// `php_url_encode`: `bytes` as `urlencode()` encodes them.
+    #[must_use]
+    pub fn url_encode(bytes: &[u8]) -> Self {
+        // SAFETY: Zend reads the bytes and returns a new string.
+        Self(unsafe { php_url_encode(bytes.as_ptr().cast(), bytes.len()) })
+    }
+
+    /// `php_format_date`: `timestamp` as `date()` (`local`) or `gmdate()`
+    /// formats it.
+    #[must_use]
+    pub fn format_date(format: &CStr, timestamp: zend_long, local: bool) -> Self {
+        // SAFETY: Zend reads the format and returns a new string.
+        Self(unsafe { php_format_date(format.as_ptr(), format.count_bytes(), timestamp, local) })
+    }
+
     /// Take over a reference the caller owns.
     /// # Safety
     /// `string` is a live string carrying a reference the caller gives up.
@@ -568,6 +583,14 @@ impl ZString {
     #[inline]
     pub fn into_raw(self) -> *mut zend_string {
         std::mem::ManuallyDrop::new(self).0
+    }
+}
+
+impl Clone for ZString {
+    /// `zend_string_copy`.
+    #[inline]
+    fn clone(&self) -> Self {
+        ZStr::to_owned(self)
     }
 }
 
