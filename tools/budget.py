@@ -137,6 +137,16 @@ def arrivals(current, base):
     return {c: (n, 0) for c, n in current.items() if c not in base and n}
 
 
+def must_forbid(current, base, root=ROOT):
+    """{crate: (1, 0)} for crates new since the base that hold no unsafe, counted or
+    UNCOUNTED, and don't forbid it."""
+    return {c: (1, 0) for c, n in current['unforbidden'].items()
+            if n and c not in base and not current['unsafe'][c]
+            and not any(UNCOUNTED.search(line.split('//', 1)[0])
+                        for p in (root / 'crates' / c).rglob('*.rs')
+                        for line in p.read_text(errors='replace').splitlines())}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--base', help='Commit to compare against (default: merge base with origin/main)')
@@ -152,11 +162,7 @@ def main():
             if sum(crates.values()) < sum(base[kind].values()):
                 rises.pop('zend', None)
         if kind == 'unforbidden':
-            rises |= {c: (1, 0) for c, n in crates.items()
-                      if n and c not in base[kind] and not current['unsafe'][c]
-                      and not any(UNCOUNTED.search(line.split('//', 1)[0])
-                                  for p in (ROOT / 'crates' / c).rglob('*.rs')
-                                  for line in p.read_text(errors='replace').splitlines())}
+            rises |= must_forbid(current, base[kind])
         else:
             rises |= arrivals(crates, base[kind])
         failed = failed or bool(rises)

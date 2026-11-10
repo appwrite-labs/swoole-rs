@@ -91,6 +91,20 @@ class Budget(unittest.TestCase):
         self.assertEqual(budget.arrivals({'http': 10, 'brotli': 6, 'safe': 0}, base), {'brotli': (6, 0)})
         self.assertEqual(budget.arrivals({'http': 4, 'locale': 6}, base), {}, 'http moved 6 to locale')
 
+    def test_a_new_crate_with_no_unsafe_must_forbid_it(self):
+        sources = {'old': '', 'plain': '', 'comment': '// #[unsafe(no_mangle)], unsafe extern "C"\n',
+                   'forbids': '#![forbid(unsafe_code)]\n', 'block': 'fn a() { unsafe {} }\n',
+                   'export': '#[unsafe(no_mangle)]\nextern "C" fn a() {}\n',
+                   'import': 'unsafe extern "C" { safe fn a(); }\n'}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for crate, source in sources.items():
+                (root / 'crates' / crate / 'src').mkdir(parents=True)
+                (root / 'crates' / crate / 'Cargo.toml').write_text('')
+                (root / 'crates' / crate / 'src/lib.rs').write_text(source)
+            self.assertEqual(budget.must_forbid(budget.counts(root), {'old': 1}, root),
+                             {'plain': (1, 0), 'comment': (1, 0)})
+
 
 if __name__ == '__main__':
     unittest.main()
