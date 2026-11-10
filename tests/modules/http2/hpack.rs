@@ -376,6 +376,43 @@ fn steps() {
     );
 }
 
+/// The client's loop (`sw_rs_http2_inflate_step` in the client role) stops once
+/// a final block's input is consumed, even on a field, before any `done` step:
+/// unless it then ends the block, the next block's opening table size update
+/// is refused, as nghttp2 refuses it.
+#[test]
+fn client_block_then_table_size_update() {
+    let client_block = |decoder: &mut Decoder, block: &[u8], end: bool| {
+        let mut input = block;
+        loop {
+            let step = decoder.decode(input, true)?;
+            input = &input[step.read..];
+            let plan = swoole_rs_http2::sw_rs_http2_inflate_step(step.flags(), input.len(), 1);
+            if plan.end_headers != 0 || plan.finish != 0 {
+                if end {
+                    decoder.end_headers();
+                }
+                return Ok(());
+            }
+        }
+    };
+    let (first, second) = (hex("82"), hex("3fe1018286"));
+    let mut decoder = Decoder::default();
+    client_block(&mut decoder, &first, false).unwrap();
+    assert_eq!(
+        client_block(&mut decoder, &second, false),
+        Err(Error),
+        "still in block"
+    );
+    let mut decoder = Decoder::default();
+    client_block(&mut decoder, &first, true).unwrap();
+    assert_eq!(
+        client_block(&mut decoder, &second, true),
+        Ok(()),
+        "a new block"
+    );
+}
+
 /// A small deterministic generator.
 struct Random(u64);
 

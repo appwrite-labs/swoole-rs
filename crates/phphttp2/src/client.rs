@@ -1011,11 +1011,11 @@ impl Client {
                 }
             }
             let step = sw_rs_http2_inflate_step(flags, input.len(), 1);
-            if step.end_headers != 0 {
+            // The input is always the whole block, so a finished step ends it, even
+            // on a field before a final step (where upstream leaves nghttp2 in the
+            // block and refuses the next block's table size update).
+            if step.end_headers != 0 || step.finish != 0 {
                 decoder.end_headers();
-                return;
-            }
-            if step.finish != 0 {
                 return;
             }
         }
