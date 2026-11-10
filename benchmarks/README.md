@@ -34,6 +34,12 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 `benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
 `10-task-workers`.
 
+Three measure `Swoole\Server` without HTTP (#2650), each echoing 1 KiB on one
+connection: `tcp-length` (length-prefixed frames, `07-tcp-framing`), `tcp-eof`
+(`open_eof_split` on `\r\n`) and `udp` (a datagram listener), both against
+`benchmarks/framing`. Their records started 5% above an arm64 Linux run
+(0.97, 0.52 and 1.04); the ratchet lowers them once two merge runs beat them.
+
 `mysql` runs a prepared `SELECT` per request through hooked PDO mysql against
 `benchmarks/mysql`, on one connection per worker. It needs MySQL on `MYSQL_HOST`
 (default `127.0.0.1`, root/root, database `test`) and `--php-extension mysqlnd
