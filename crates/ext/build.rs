@@ -369,9 +369,11 @@ mod php {
             .collect();
         modules.sort();
         includes.extend(modules.iter().cloned());
-        // Each owned root ahead of the pin's, so an include reaches the owned copy.
-        includes.extend([owned.clone(), tree.clone(), tree.join("ext-src")]);
-        includes.extend([owned.join("thirdparty"), third.clone()]);
+        includes.extend([owned.clone(), owned.join("thirdparty")]);
+        // The pin's headers, which only the profile's PHP-derived thirdparty sources read (#2660).
+        if !profile.c.is_empty() || !profile.cxx.is_empty() {
+            includes.extend([tree.clone(), tree.join("ext-src"), third.clone()]);
+        }
         includes.extend(env::var_os("DEP_OPENSSL_INCLUDE").map(PathBuf::from));
         includes.extend(php_includes(&php_config));
         includes.extend(profile.includes);
