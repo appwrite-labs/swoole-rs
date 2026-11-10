@@ -44,10 +44,12 @@ no longer built (#1881).
 `http_parser.cpp` and `multipart_parser.cpp` tested only the bundled third-party
 parsers, so they left the lane (#1756) and with them `include/swoole_llhttp.h`.
 Their ports, with the same inputs, callbacks and expected values and one Rust test per
-TEST under the TEST's own name, drive crates/oracle's unmodified copy of
-`thirdparty/llhttp` (`cargo test -p swoole-rs-oracle --test http_parser`) and
-crates/http's Rust multipart parser, which replaced `thirdparty/multipart_parser.c`
-(#2658; `cargo test -p swoole-rs-http --test multipart_parser`).
+TEST under the TEST's own name, drive crates/http's Rust parsers, which replaced
+`thirdparty/llhttp` and `thirdparty/multipart_parser.c` (#2658; `cargo test -p
+swoole-rs-http --test http_parser --test multipart_parser`).
+`llhttp_differential.rs` runs generated, cut and paused inputs through both the
+Rust llhttp and crates/oracle's unmodified C llhttp 9.3 and requires every result,
+error position, reason, field and callback to match (`CASES` and `SEED` widen it).
 
 | Upstream file | Rust test file | TESTs |
 | --- | --- | --- |
