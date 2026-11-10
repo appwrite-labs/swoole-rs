@@ -24,7 +24,7 @@
   "websocket-64k": 0.62,
   "websocket-fragmented": 0.78,
   "upload": 1.05,
-  "static": 1.03,
+  "static": 1.00,
   "https": 1.04,
   "wss": 1.04,
   "atomic": 1.02,
