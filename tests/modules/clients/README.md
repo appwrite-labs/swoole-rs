@@ -21,7 +21,8 @@ name codec, the DNS address text and the socket DNS lookup
 TESTs, one function each with upstream's name, inputs, ports and expected values:
 TEST `client.<name>` is the case `client.<name>` (function `<name>`). The case
 binary is the hooks one (`tests/modules/hooks/system`, which includes this file),
-so `hooks-system-rust` builds and runs it over the hybrid's libswoole.so. A
+so `hooks-system-rust` builds and runs it over system.py's libswoole.so (native/'s
+sources and the Cargo build's Rust archive). A
 `Client` is crates/clients' state: made by `swr_v1_clients_new` and given its
 callbacks by `swr_v1_clients_listen`; its methods, `enable_ssl_encrypt`, `ssl_verify`
 and its deletion among them, are `swr_v1_clients_run` calls or other
