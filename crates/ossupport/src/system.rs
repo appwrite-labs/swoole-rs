@@ -474,27 +474,33 @@ mod tests {
     }
 
     /// Upstream's `os.set_isolation`: unknown names and a missing chroot only warn. It runs
-    /// in a child, so that on a host where a name resolves or the directory exists the
-    /// credentials and root it changes are never the test process's.
+    /// in this test binary re-run for it alone, so that on a host where a name resolves or
+    /// the directory exists the credentials and root it changes are never the test
+    /// process's. A fork of the multithreaded harness can block on a lock another test
+    /// thread held at the fork.
     #[test]
     fn os_set_isolation() {
-        let pid = unsafe { libc::fork() };
-        assert!(pid >= 0, "fork(2)");
-        if pid == 0 {
+        const CHILD: &str = "SWR_OS_SET_ISOLATION_CHILD";
+        if std::env::var_os(CHILD).is_some() {
             unsafe {
                 swr_v1_os_set_isolation(
                     c"not-exists-group".as_ptr(),
                     c"not-exists-user".as_ptr(),
                     c"/tmp/not-exists-dir".as_ptr(),
                 );
-                libc::_exit(0);
             }
+            return;
         }
-        let mut status = 0;
-        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "system::tests::os_set_isolation"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
         assert!(
-            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
-            "{status}"
+            child.status.success() && stdout.contains("1 passed"),
+            "{}\n{stdout}",
+            child.status
         );
     }
 }
