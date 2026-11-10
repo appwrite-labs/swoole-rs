@@ -181,7 +181,7 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
 /// # Safety
 /// `index` is below the count the kernel wait reported.
 unsafe fn entry(ops: &Loop<'_>, index: usize) {
-    match ops.backend {
+    let (socket, fd, mask) = match ops.backend {
         POLL => {
             let pollfd = ops.events.cast::<libc::pollfd>().wrapping_add(index);
             // SAFETY: the caller checked `index` against poll's entry count.
@@ -197,11 +197,7 @@ unsafe fn entry(ops: &Loop<'_>, index: usize) {
             );
             let socket = ops.sockets.wrapping_add(index);
             // SAFETY: poll's sockets array has an entry for each pollfd entry.
-            let socket = unsafe { socket.read() };
-            // SAFETY: a registered socket, live while its handlers run.
-            if let Some(socket) = unsafe { Socket::from_ptr(socket.cast()) } {
-                ready(ops, socket, pollfd.fd, mask);
-            }
+            (unsafe { socket.read() }, pollfd.fd, mask)
         }
         #[cfg(target_os = "linux")]
         EPOLL => {
@@ -218,11 +214,7 @@ unsafe fn entry(ops: &Loop<'_>, index: usize) {
                 clippy::cast_possible_truncation,
                 reason = "the token is a pointer stored in u64"
             )]
-            let socket = event.u64 as usize as *mut c_void;
-            // SAFETY: the token is a registered socket, live while its handlers run.
-            if let Some(socket) = unsafe { Socket::from_ptr(socket.cast()) } {
-                ready(ops, socket, -1, mask);
-            }
+            (event.u64 as usize as *mut c_void, -1, mask)
         }
         #[cfg(any(
             target_os = "macos",
@@ -235,9 +227,14 @@ unsafe fn entry(ops: &Loop<'_>, index: usize) {
             let event = ops.events.cast::<libc::kevent>().wrapping_add(index);
             // SAFETY: the caller checked `index` against the kernel's ready count.
             let event = unsafe { event.read() };
-            kqueue(ops, event.udata.cast(), c_int::from(event.filter));
+            return kqueue(ops, event.udata.cast(), c_int::from(event.filter));
         }
-        _ => {}
+        _ => return,
+    };
+    // SAFETY: a registered socket (poll's array entry or epoll's token), live while its
+    // handlers run.
+    if let Some(socket) = unsafe { Socket::from_ptr(socket.cast()) } {
+        ready(ops, socket, fd, mask);
     }
 }
 
