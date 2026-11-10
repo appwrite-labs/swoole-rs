@@ -17,14 +17,16 @@ install() {
     apt-get $APT install -yq --no-install-recommends \
         php-dev libclang-dev php-sqlite3 php-curl php-xml php-mbstring python3 python3-pytest composer \
         libpcre2-dev libssl-dev libc-ares-dev zlib1g-dev pkg-config cmake g++ make autoconf git \
-        ca-certificates curl libgtest-dev libnghttp2-dev libpq-dev libcurl4-openssl-dev libssh2-1-dev libbrotli-dev libzstd-dev unixodbc-dev libsqlite3-dev libffi-dev locales procps "$@"
+        ca-certificates curl libgtest-dev libnghttp2-dev libpq-dev libcurl4-openssl-dev libssh2-1-dev libbrotli-dev libzstd-dev unixodbc-dev libsqlite3-dev libffi-dev locales procps strace "$@"
 }
 # Cached indexes (refreshed weekly by the cache key) are enough when every package
 # is cached too; if one isn't and the mirror has moved on, refresh and retry once.
+# A refresh can fail on one repository mid-sync while the others are fine, so only
+# the install decides: as the last command of each branch, its failure stops sh.
 if [ -n "$APT_CACHE" ] && ls "$APT_CACHE"/lists/*_Packages >/dev/null 2>&1; then
-    install "$@" || { apt-get $APT update -q && install "$@"; }
+    install "$@" || { apt-get $APT update -q || :; install "$@"; }
 else
-    apt-get $APT update -q
+    apt-get $APT update -q || :
     install "$@"
 fi
 [ -z "$APT_CACHE" ] || chmod -R a+rX "$APT_CACHE"

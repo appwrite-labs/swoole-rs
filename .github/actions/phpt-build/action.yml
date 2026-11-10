@@ -14,6 +14,12 @@ outputs:
 runs:
   using: composite
   steps:
+    - id: install
+      uses: ./.github/actions/install
+      with:
+        # php-mysql: build_ext.py loads mysqlnd to check the cargo engine loads.
+        packages: firebird-dev libaio1t64 php-mysql
+        php: latest
     # Main's release build: the dependencies. Build trees must start clean.
     - uses: Swatinem/rust-cache@v2
       with:
@@ -21,12 +27,6 @@ runs:
         save-if: false
     - shell: bash
       run: rm -rf target/ext target/upstream target/thirdparty target/native-core
-    - id: install
-      uses: ./.github/actions/install
-      with:
-        # php-mysql: build_ext.py loads mysqlnd to check the cargo engine loads.
-        packages: firebird-dev libaio1t64 php-mysql
-        php: latest
     - uses: ./.github/actions/instantclient
     # The service hooks, as upstream's CI configures them; the cargo build turns on the same features.
     - id: services

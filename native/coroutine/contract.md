@@ -58,10 +58,13 @@ symbol) refuses a coroutine that is not suspended with one, then calls it.
 `swr_v1_timer_add_plain_sec` (crates/timer, a C callback and data) and deletes it after a
 wake that was not the timeout.
 
-`src/coroutine/base.cc` is gone. `crates/coroutine/src/facade.rs` defines its
-operations under their upstream symbols (`yield_ex`, `cancel`, `activate`,
-`deactivate`, `print_list`, `print_socket_bound_error`), the
-`swr_v1_coroutine_{scheduler_get,create,bail}` exports and the `swoole_coroutine_*`
+`src/coroutine/base.cc` is gone. `crates/coroutine/src/scheduler.rs` keeps the
+scheduler, `swr_v1_coroutine_{scheduler_get,bail}` and the operations Rust calls by
+path (`current`, `resume`, `yield_with_cancel`), which need no timer or event loop,
+so they build in every configuration. `crates/coroutine/src/facade.rs`, which only
+the extension builds (`upstream-symbols`), defines the rest under their upstream
+symbols (`yield_ex`, `cancel`, `activate`, `deactivate`, `print_list`,
+`print_socket_bound_error`), `swr_v1_coroutine_create` and the `swoole_coroutine_*`
 C API. The configure switches it reads (`SW_USE_THREAD_CONTEXT`,
 `SW_CONTEXT_PROTECT_STACK_PAGE`, `SW_CONTEXT_DETECT_STACK_USAGE`, `SW_CORO_TIME`) are
 `swoole_rs_corebase::built_with`'s (native/corebase/switches.cc), so the module has

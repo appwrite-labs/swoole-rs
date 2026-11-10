@@ -43,7 +43,7 @@ pub use interfaces::sys_warning;
 pub use memory::sw_zend_string_allocator;
 pub use module::{
     CALL_USER_SHUTDOWNFUNC_BEGIN, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs,
-    RSHUTDOWN_BEGIN, RSHUTDOWN_END, display_errors, enable_library, families, globals,
+    RSHUTDOWN_BEGIN, RSHUTDOWN_END, codecs, display_errors, enable_library, families, globals,
     load_library, php_swoole_register_shutdown_function, swr_v1_phpswoole_mshutdown,
     swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
 };
@@ -101,6 +101,12 @@ pub static mut swoole_error_ce: *mut zend_class_entry = ptr::null_mut();
 #[must_use]
 pub fn exception_class() -> *mut zend_class_entry {
     EXCEPTION.entry()
+}
+
+/// `Swoole\Exception`, to throw.
+#[must_use]
+pub fn exception() -> &'static Class {
+    &EXCEPTION
 }
 
 /// `PHP_MINIT_FUNCTION(swoole)`: the module globals and ini entries, the

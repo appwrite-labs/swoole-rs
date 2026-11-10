@@ -1,14 +1,11 @@
 //! The string and array predicates, `swoole_parse_str`, and the PCRE and JSON
-//! functions, whose library calls are src/stdext.c's.
-use std::{
-    ffi::{c_char, c_void},
-    ptr,
-};
+//! functions, whose PCRE calls are src/stdext.c's and JSON call zend-sys's.
+use std::{ffi::c_void, ptr};
 use swoole_rs_zend::{
     Call, handlers,
     sys::{
-        swr_zend_array_init, swr_zend_emalloc, swr_zend_treat_string, zend_array_count, zend_long,
-        zend_string, zval,
+        swr_zend_array_init, swr_zend_emalloc, swr_zend_treat_string, swr_zend_try_json_decode_ex,
+        zend_array_count, zend_long, zend_string, zval,
     },
     value::table,
 };
@@ -26,13 +23,6 @@ unsafe extern "C" {
         flags_passed: bool,
         flags: i64,
         offset: i64,
-    ) -> u8;
-    fn swr_phpstdext_json_decode(
-        value: *mut zval,
-        text: *const c_char,
-        length: usize,
-        options: i64,
-        depth: i64,
     ) -> u8;
 }
 
@@ -203,7 +193,7 @@ fn json_decode(call: &Call, assoc: bool) {
     };
     // SAFETY: the argument's bytes live for the call; the return slot.
     let bailed = unsafe {
-        swr_phpstdext_json_decode(
+        swr_zend_try_json_decode_ex(
             call.return_value(),
             text.as_ptr().cast(),
             text.len(),
@@ -211,5 +201,5 @@ fn json_decode(call: &Call, assoc: bool) {
             depth,
         )
     };
-    swoole_rs_zend::bailout::defer(swoole_rs_zend::bailout::trapped(i32::from(bailed)));
+    swoole_rs_zend::bailout::defer(swoole_rs_zend::bailout::trapped(bailed));
 }

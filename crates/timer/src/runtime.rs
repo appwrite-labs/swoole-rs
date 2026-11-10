@@ -116,24 +116,12 @@ pub fn swr_v1_timer_rearm_after_add(current: i64, delay: i64) -> i64 {
     }
 }
 
-/// # Safety
-/// Deadline is aligned/writable; failure leaves it unchanged. No pointers retained.
-pub unsafe fn swr_v1_timer_delay_deadline(
-    now: i64,
-    previous: i64,
-    delay: i64,
-    deadline: *mut i64,
-) -> i32 {
+/// `Timer::delay`'s new deadline, `delay` after `now` (or after `previous` without a
+/// clock), unless it overflows or falls before zero.
+#[must_use]
+pub fn swr_v1_timer_delay_deadline(now: i64, previous: i64, delay: i64) -> Option<i64> {
     let base = if now < 0 { previous } else { now };
-    let Some(value) = base.checked_add(delay).filter(|value| *value >= 0) else {
-        return 0;
-    };
-    if deadline.is_null() {
-        return 0;
-    }
-    // SAFETY: non-null (checked above), aligned, writable output.
-    unsafe { deadline.write(value) };
-    1
+    base.checked_add(delay).filter(|value| *value >= 0)
 }
 
 #[cfg(test)]
@@ -234,23 +222,11 @@ mod tests {
     }
 
     #[test]
-    fn delay_checks_limits_before_writing_and_keeps_native_clock_fallback() {
-        let mut result = 77;
-        unsafe {
-            assert_eq!(swr_v1_timer_delay_deadline(-1, 20, -5, &raw mut result), 1);
-            assert_eq!(result, 15);
-            for (now, old, delay) in [(i64::MAX, 0, 1), (-1, i64::MIN, -1), (0, 0, -1)] {
-                result = 77;
-                assert_eq!(
-                    swr_v1_timer_delay_deadline(now, old, delay, &raw mut result),
-                    0
-                );
-                assert_eq!(result, 77);
-            }
-            assert_eq!(
-                swr_v1_timer_delay_deadline(10, 0, 5, std::ptr::null_mut()),
-                0
-            );
+    fn delay_checks_limits_and_keeps_native_clock_fallback() {
+        assert_eq!(swr_v1_timer_delay_deadline(-1, 20, -5), Some(15));
+        for (now, old, delay) in [(i64::MAX, 0, 1), (-1, i64::MIN, -1), (0, 0, -1)] {
+            assert_eq!(swr_v1_timer_delay_deadline(now, old, delay), None);
         }
+        assert_eq!(swr_v1_timer_delay_deadline(10, 0, 5), Some(15));
     }
 }

@@ -14,7 +14,7 @@ defaults:
 
 jobs:
   asan:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/asan/php
-          key: php-asan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/asan.py') }}
+          key: php-asan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/asan.py') }}-${{ github.workspace }}
       - run: cargo fetch --locked
       - run: python3 corpus/thirdparty/hyperf.py --prepare
       - run: python3 tools/asan.py

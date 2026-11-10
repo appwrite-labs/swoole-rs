@@ -2,11 +2,21 @@ name: Merge
 on:
   push:
     branches: [main]
+  # Weekly, and on a dispatch, upstream's PHPT shards run even when nothing they depend on
+  # changed, so drift that no commit explains still gets caught (phpt-build's baseline).
+  schedule:
+    - cron: '17 5 * * 0'
   workflow_dispatch:
+  # main's merge queue: each group of queued PRs is tested on top of main before it lands,
+  # and the `required` job below decides whether it does.
+  merge_group:
 # Latest wins: one run at a time; GitHub keeps only the newest push pending, so the
 # next run always covers main's head. Never cancel-in-progress, or no run finishes.
+# A scheduled or dispatched run has a group of its own: pending in the pushes' group, the
+# next push would replace it and the weekly upstream run would rarely happen. So does a
+# merge-queue run: the queue tests its groups side by side.
 concurrency:
-  group: merge-${{ github.ref }}
+  group: merge-${{ github.event_name == 'push' && github.ref || github.run_id }}
 # Explicit bash runs steps with -eo pipefail; the default (`bash -e`) lets a pipe
 # like `gate.py | tee` report success when gate.py fails.
 defaults:
@@ -19,7 +29,7 @@ jobs:
   # balanced by weight left one near 20 minutes (#318). Each slice runs the builds (the Cargo
   # extension and the upstream reference); the rest is split by tools/phase_weights.json (dev.py --shard).
   full-gates:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -30,15 +40,17 @@ jobs:
         # Gates compare against accepted patch states at older commits (git show <sha>:...).
         with:
           fetch-depth: 0
-      # Saved from main under a key the PR tier's ext and gates jobs restore.
+      - id: install
+        uses: ./.github/actions/install
+      # Saved from main under a key the PR tier's ext and gates jobs restore. A merge-queue
+      # run's cache would be scoped to its own branch, which nothing reads again.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # rust-cache restores all of target/, with git checkouts that lack a usable .git.
       # Those trees come from their own caches or a fresh clone instead.
       - run: rm -rf target/upstream target/upstream-builds target/thirdparty
-      - id: install
-        uses: ./.github/actions/install
       # Caches are saved as soon as they are built, so a failing gate later does not discard
       # them; PR branches can only restore caches saved on main.
       - id: upstream
@@ -94,18 +106,32 @@ jobs:
             target/upstream/build.log
 
   # Every pinned PHPT on upstream and the Cargo build (crates/ext): any test that passes on
-  # upstream must pass on cargo (corpus/upstream/gate.py).
+  # upstream must pass on cargo (corpus/upstream/gate.py). While nothing upstream's results
+  # depend on (the pin, the runner, the environment, the PHP release) has changed since the
+  # last run whose upstream shards passed, its reports stand in and those shards don't run
+  # (tools/ci.py phpt-baseline). upstream.so is still built: phpt-root, library and autobahn run it.
   phpt-build:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
     outputs:
       php: ${{ steps.build.outputs.php }}
+      baseline: ${{ steps.baseline.outputs.run }}
     steps:
       - uses: actions/checkout@v4
       - id: build
         uses: ./.github/actions/phpt-build
         with:
           engines: upstream cargo
+      - id: baseline
+        if: github.event_name == 'push' || github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline --php "$(php -r 'echo PHP_VERSION;')" || true)"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
 
   # The speed ratchet (docs/migration.md#speed): instructions per request on the Cargo build
   # (fat LTO, as release builds ship) over upstream may not rise more than 1% above
@@ -120,8 +146,13 @@ jobs:
   # app is benchmarks/app, an application-shaped request with a Redis pool (#1907).
   # http2, table and channel are benchmarks/primitives; task is a taskwait round trip (#1909).
   # mysql is benchmarks/mysql, a prepared SELECT through hooked PDO mysql (#2066).
+  # http-client, client and socket are benchmarks/clients' outbound coroutine clients (#2647).
+  # gzip and websocket-deflate are benchmarks/compression (#2649).
+  # tcp-length, tcp-eof and udp are Swoole\Server without HTTP (#2650).
+  # https and wss are benchmarks/tls (#2648).
+  # atomic is benchmarks/primitives; process-mode is SWOOLE_PROCESS with two workers (#2654).
   callgrind:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 40
     services:
       mysql:
@@ -153,6 +184,11 @@ jobs:
           --workload plaintext --workload echo-1k --workload json --workload service-health
           --workload websocket --workload timer --workload app
           --workload http2 --workload table --workload channel --workload task --workload mysql
+          --workload http-client --workload client --workload socket
+          --workload gzip --workload websocket-deflate
+          --workload tcp-length --workload tcp-eof --workload udp
+          --workload https --workload wss
+          --workload atomic --workload process-mode
           --php-extension pdo --php-extension pdo_sqlite --php-extension mysqlnd --php-extension pdo_mysql
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
@@ -168,7 +204,7 @@ jobs:
   # swoole_stdext needs the experimental --stdext build, which changes PHP itself
   # (typed arrays, methods on scalars), so it gets its own engines and its own gate.
   phpt-stdext:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -209,7 +245,7 @@ jobs:
         run: >
           python3 tools/dev.py integrate --module phphelpers --stdext
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
-          --phase build --phase stdext-reference-build --phase phphelpers-runtime
+          --phase cargo-build --phase stdext-reference-build --phase phphelpers-runtime
       # tools/ci.py reads phases* artifacts for new and fixed phases.
       - uses: actions/upload-artifact@v4
         if: always()
@@ -249,7 +285,7 @@ jobs:
   # The opt-in --fix-halfclose repair (M15) is its own build variant, so its gates run
   # here; full-gates builds without it.
   halfclose:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -277,6 +313,8 @@ jobs:
       actions: read
     with:
       php: ${{ needs.phpt-build.outputs.php }}
+      engines: ${{ needs.phpt-build.outputs.baseline && '["cargo"]' || '["upstream", "cargo"]' }}
+      baseline: ${{ needs.phpt-build.outputs.baseline }}
 
   # The PHPTs that skip unless run as root (SO_BINDTODEVICE, raw ICMP, a server dropping to
   # www-data, a chroot), as root on every engine, with their own re-runs and gate (#1998).
@@ -284,7 +322,7 @@ jobs:
   # its chroot and unreachable resolver need nothing the runner lacks (it passes as root).
   phpt-root:
     needs: phpt-build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -339,7 +377,7 @@ jobs:
   # build-swoole workflow runs it (corpus/library/run.py).
   library:
     needs: phpt-build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -392,7 +430,7 @@ jobs:
   # upstream. conformance.yml runs all 517 cases nightly.
   autobahn:
     needs: phpt-build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -423,7 +461,7 @@ jobs:
   # reference and the Cargo build, then run the corpus and original PHPTs
   # against both. Project 11 needs --fix-halfclose and is covered by the PR tier.
   alpine:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     container: php:8.5-alpine
     # The image has no bash, so this job can't use the workflow's bash default.
@@ -494,3 +532,20 @@ jobs:
         with:
           name: phpt-alpine
           path: target/reports/phpt-alpine.json
+
+  # The merge queue's required check (main's ruleset names it, as it does the PR tier's): a
+  # group lands unless it fails a phase or a job that main's latest completed merge-tier run
+  # didn't fail (tools/ci.py new-failures --run). Only the queue reads it.
+  required:
+    if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+    needs: [full-gates, phpt-build, callgrind, phpt-stdext, iouring, cares, zts, threadcontext, h2spec, halfclose, phpt, phpt-root, library, autobahn, alpine]
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci.py new-failures --run ${{ github.run_id }} | tee -a "$GITHUB_STEP_SUMMARY"

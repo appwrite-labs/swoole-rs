@@ -5,19 +5,20 @@ Frozen queue ABI: `docs/timer-abi-v1.md`.
 ## Queue and timer
 
 `crates/timer/src/lib.rs` is the only timer heap/index and scheduling state
-machine. Its frozen exports own IDs, deadline ordering, update/repair,
+machine. Its `Timer` methods, and the frozen exports over them, own IDs, deadline ordering, update/repair,
 captured dispatch time, selection rounds, active-ID completion, missed-repeat
 coalescing, cancellation, closing/draining and allocation-failure rollback.
 
 `crates/timer/src/owner.rs` is `swoole::Timer`: a Rust-owned record (backend,
 reactor, clock base, armed wakeup, abandoned-selection marker) and its
 operations, `init`/`reinit`, `add`, `remove`, `update`, `delay`, `select` and the
-destructor's close/complete/end/drain/release. It allocates and frees every
+destructor's close/complete/end/drain. It holds the queue in a `RefCell` that no
+borrow holds across a callback or destructor, so a bailout never skips a release. It allocates and frees every
 `TimerNode`, whose callback and destructor are plain C function pointers;
 `swr_v1_timer_add_plain` adds one whose callback is a function of its data alone,
-for Rust callers. With a reactor it hooks `Reactor::timeout_msec`, the
-timer-priority end callback, the exit condition and a destroy callback that frees
-this thread's timer. `native/timer/swoole_timer.h` is the C++ view: `TimerNode`,
+for Rust callers, which call it by path. With a reactor it hooks
+`Reactor::timeout_msec`, the timer-priority end callback, the exit condition and a
+destroy callback that frees this thread's timer. `native/timer/swoole_timer.h` is the C++ view: `TimerNode`,
 and a `Timer` class with no data members whose methods call
 `swr_v1_timer_owner_*`. `crates/timer/src/wrapper.rs` is the `swoole_timer_*` API
 over it, with `SwooleTG.timer` through `swr_v1_core_timer_slot`.
@@ -46,7 +47,7 @@ Stateless helpers in `crates/timer/src/runtime.rs`, called from Rust only (`owne
 | `swr_v1_timer_system_set` (`setitimer`, positive interval or disarm) | `Timer::init`'s system-timer `set`/`close` |
 | `swr_v1_timer_relative_msec` | `Timer::get_relative_msec` |
 | `swr_v1_timer_rearm_after_add` | `Timer::add`; Native set still precedes the cached timeout write |
-| `swr_v1_timer_delay_deadline` | `Timer::delay`, before the queue update; no output write on rejection |
+| `swr_v1_timer_delay_deadline` | `Timer::delay`, before the queue update; `None` on rejection |
 
 `timer_uses_reactor` in `crates/phpprocess/src/host.rs`: user workers and
 coroutine-enabled task workers use the reactor; other server roles and a

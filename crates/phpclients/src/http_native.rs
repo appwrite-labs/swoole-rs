@@ -1,42 +1,59 @@
 //! What `Coroutine\Http\Client` needs from the coroutine socket (methods on
 //! the typed [`Co`] handle: its proxy, buffers and timeouts), files and
-//! callables. WebSocket framing is crates/phphttp's, linked by symbol; the
-//! name resolver's context is still C++.
+//! callables. WebSocket framing is crates/phphttp's, which registers it here
+//! ([`WebSocket`]); the name resolver's context is still C++.
 use crate::native::{Co, Socket};
 use libc::{c_char, c_int, c_void, mode_t, off_t, size_t, ssize_t};
-use std::ffi::CStr;
+use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, swr_string_drop};
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_phpruntime::{callable_call, callable_free, co};
 use swoole_rs_zend::{
-    bailout, set_object, string,
+    Array, Call, Value, bailout, set_object, string,
     sys::{zend_object, zval, zval_ptr_dtor},
     value,
 };
 
-unsafe extern "C" {
-    /// WebSocket settings and continuation buffer (crates/phphttp).
-    pub(crate) fn swoole_http_client_coro_ws_new() -> *mut c_void;
-    pub(crate) fn swoole_http_client_coro_ws_free(ws: *mut c_void);
-    pub(crate) fn swoole_http_client_coro_ws_apply(ws: *mut c_void, settings: *const zval);
-    pub(crate) fn swoole_http_client_coro_ws_compression(ws: *mut c_void) -> bool;
-    /// Pack a frame and send it: 0, 1 if packing failed, 2 if sending did.
-    pub(crate) fn swoole_http_client_coro_ws_push(
-        socket: Socket,
-        ws: *mut c_void,
-        data: *mut zval,
+/// `Coroutine\Http\Client`'s WebSocket state: its `WebSocketSettings` and
+/// the message it is assembling. Framing is crates/phphttp's, which depends
+/// on this crate, so it registers the state's constructor at MINIT
+/// ([`register_websocket`]).
+pub trait WebSocket {
+    /// `WebSocket::apply_setting(settings, vht, false)`.
+    fn apply(&mut self, settings: &Array);
+    /// Whether the client offers `permessage-deflate`.
+    fn compression(&self) -> bool;
+    /// Pack a frame of `data` and send it on `socket`: 0, 1 if packing failed
+    /// (a bailout may be pending, for the handler to raise), 2 if sending did.
+    fn push(
+        &self,
+        socket: Co,
+        data: &Value,
         opcode: i64,
         flags: c_int,
         code: i64,
         compress: bool,
     ) -> c_int;
-    pub(crate) fn swoole_http_client_coro_ws_recv(
-        socket: Socket,
-        ws: *mut c_void,
-        return_value: *mut zval,
-        timeout: f64,
-    );
+    /// `websocket::recv_frame` on `socket` into the call's return slot; a
+    /// bailout it defers is the handler's to raise.
+    fn recv(&mut self, socket: Co, call: &Call, timeout: f64);
+}
 
+static WEBSOCKET: OnceLock<fn() -> Box<dyn WebSocket>> = OnceLock::new();
+
+/// crates/phphttp's [`WebSocket`] constructor, registered at MINIT; the first
+/// registration stands.
+pub fn register_websocket(new: fn() -> Box<dyn WebSocket>) {
+    WEBSOCKET.get_or_init(|| new);
+}
+
+/// A new client's WebSocket state (`WebSocketSettings`' defaults), once
+/// crates/phphttp has registered it.
+pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
+    WEBSOCKET.get().map(|new| new())
+}
+
+unsafe extern "C" {
     #[link_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv"]
     fn get_read_buffer(socket: Socket) -> *mut CppString;
     #[link_name = "_ZN6swoole9coroutine6Socket16get_write_bufferEv"]

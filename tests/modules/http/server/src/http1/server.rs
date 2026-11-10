@@ -1,5 +1,5 @@
 //! Upstream's `core-tests/src/server/buffer.cpp`, one Rust function per TEST with the same
-//! inputs and expected values, over the hybrid's libswoole.so (crates/server).
+//! inputs and expected values, over crates/server.
 
 use super::*;
 use std::io::{Read, Write};

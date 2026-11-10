@@ -5,7 +5,6 @@ use swoole_rs_protocols::reply_parts;
 use swoole_rs_zend::{
     Call, Key, Value,
     sys::{IS_ARRAY, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, zend_long},
-    throw_exception,
 };
 
 /// `swoole::redis::ReplyType`.
@@ -38,8 +37,7 @@ fn append(buffer: &mut Vec<u8>, kind: u8, present: bool, number: u64, data: &[u8
 }
 
 fn throw(message: &CStr) {
-    // SAFETY: Swoole's exception class, registered at MINIT.
-    unsafe { throw_exception(crate::exception(), message, INVALID_PARAMS) };
+    swoole_rs_phpswoole::exception().throw(message, INVALID_PARAMS);
 }
 
 /// `redis_response_format`: false after it threw.

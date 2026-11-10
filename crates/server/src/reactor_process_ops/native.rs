@@ -114,8 +114,7 @@ fn timer() -> *mut c_void {
 pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_POOL_CREATE => create_pool(ctx),
-        // SAFETY: the context's live server.
-        OP_CREATE_PIPE_BUFFERS => sign(unsafe { crate::master_ops::create_pipe_buffers(ctx.serv) }),
+        OP_CREATE_PIPE_BUFFERS => sign(crate::master_ops::create_pipe_buffers(ctx.server())),
         OP_RUN_SINGLE_WORKER => {
             let pool = ctx.server().workers().event_pool;
             // SAFETY: its live event pool, which has a worker.
@@ -223,9 +222,9 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_ADD_HEARTBEAT_TIMER => {
             let msec = c_long::from(ctx.config().heartbeat_check_interval) * 1000;
             let reactor = ctx.reactor_handle().ptr();
-            let add = crate::pool_native::swr_v1_timer_add_plain;
-            // SAFETY: a persistent timer over the live reactor.
-            let node = unsafe { add(msec, true, on_timeout, reactor) };
+            // SAFETY: `on_timeout` takes the reactor, which outlives its timers.
+            let node =
+                unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, on_timeout, reactor) };
             ctx.config().heartbeat_timer = node;
             u64::from(!node.is_null())
         }
@@ -350,6 +349,6 @@ extern "C" fn on_close(reactor: *mut c_void, event: *mut c_void) -> c_int {
 }
 
 /// `ReactorProcess_onTimeout`: the heartbeat check.
-extern "C" fn on_timeout(reactor: *mut c_void) {
+extern "C-unwind" fn on_timeout(reactor: *mut c_void) {
     run(reactor, core::ptr::null_mut(), RUN_REACTOR_PROCESS_TIMEOUT);
 }

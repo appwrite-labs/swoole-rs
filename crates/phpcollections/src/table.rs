@@ -17,15 +17,14 @@ use swoole_rs_memory::{
 };
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
-    Call, Class, Message, Object, bailout, php_error,
+    Call, Class, Message, Object, Owned, bailout, php_error,
     sys::{
-        _zval_struct__bindgen_ty_1, E_ERROR, E_WARNING, HashPosition, IS_DOUBLE, IS_NULL,
-        ZEND_ACC_NOT_SERIALIZABLE, add_assoc_double_ex, add_assoc_long_ex, add_assoc_stringl_ex,
-        swr_zend_array_init, swr_zend_string_init, swr_zend_string_release, zend_ce_countable,
-        zend_ce_iterator, zend_class_entry, zend_class_implements, zend_hash_get_current_data_ex,
-        zend_hash_get_current_key_ex, zend_hash_internal_pointer_reset_ex,
-        zend_hash_move_forward_ex, zend_hash_str_find, zend_object, zend_object_handlers,
-        zend_string, zend_string_hash_func, zend_value, zval,
+        E_ERROR, E_WARNING, HashPosition, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, add_assoc_double_ex,
+        add_assoc_long_ex, add_assoc_stringl_ex, swr_zend_array_init, swr_zend_string_init,
+        swr_zend_string_release, zend_ce_countable, zend_ce_iterator, zend_class_entry,
+        zend_class_implements, zend_hash_get_current_data_ex, zend_hash_get_current_key_ex,
+        zend_hash_internal_pointer_reset_ex, zend_hash_move_forward_ex, zend_hash_str_find,
+        zend_object, zend_object_handlers, zend_string, zend_string_hash_func, zval,
     },
     throw_constructed_twice, throw_exception, unset_property_deny,
 };
@@ -548,13 +547,7 @@ fn update(call: &Call, subtract: bool) {
 }
 
 fn set_double(call: &Call, value: f64) {
-    // SAFETY: all-zero bytes are a valid zval.
-    let mut zv: zval = unsafe { std::mem::zeroed() };
-    zv.value = zend_value { dval: value };
-    zv.u1 = _zval_struct__bindgen_ty_1 {
-        type_info: IS_DOUBLE,
-    };
-    call.set_value(zv);
+    call.set_owned(Owned::double(value));
 }
 
 fn incr(call: &Call) {

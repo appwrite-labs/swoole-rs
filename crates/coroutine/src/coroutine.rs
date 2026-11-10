@@ -3,7 +3,7 @@
 //! resume code, task, cancel function, the origin tree, timing and the live map
 //! (`live.rs`), with whole run/resume/yield/close/bailout operations.
 //!
-//! The extension keeps the scheduler per thread (facade.rs) and each
+//! The extension keeps the scheduler per thread (scheduler.rs) and each
 //! [`Coroutine`] at the start of its `swoole::Coroutine` record; C++ reads fields
 //! inline, and every write goes through these functions. The operations call the
 //! swap callbacks and the [`Hooks`]: the context switch, the release of an ended

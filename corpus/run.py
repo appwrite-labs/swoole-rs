@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.harness import ROOT, parse_engines, request, server, write_report, run_isolated
@@ -106,13 +107,20 @@ def coroutines(engine, entry):
 
 
 class WebSocket:
-    def __init__(self, port):
+    def __init__(self, port, deflate=False, tls=None):
+        """`deflate` negotiates permessage-deflate without context takeover, as Swoole offers it:
+        each message is compressed on its own. `tls` is an ssl.SSLContext to connect with (wss)."""
         self.socket = socket.create_connection(('127.0.0.1', port), timeout=5)
+        if tls:
+            self.socket = tls.wrap_socket(self.socket, server_hostname='127.0.0.1')
+        self.deflate = deflate
         try:
             key = base64.b64encode(os.urandom(16)).decode()
+            extension = ('Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; '
+                         'server_no_context_takeover\r\n' if deflate else '')
             self.socket.sendall((f'GET /chat HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n'
                                  f'Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n'
-                                 f'Sec-WebSocket-Key: {key}\r\n\r\n').encode())
+                                 f'{extension}Sec-WebSocket-Key: {key}\r\n\r\n').encode())
             response = bytearray()
             while not response.endswith(b'\r\n\r\n'):
                 response.extend(self.read(1))
@@ -123,6 +131,8 @@ class WebSocket:
             headers = {key.lower(): value.strip() for key, value in (line.split(':', 1) for line in lines[1:] if ':' in line)}
             accept = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
             expect(headers['sec-websocket-accept'], accept)
+            if deflate:
+                expect(headers.get('sec-websocket-extensions', '').split(';')[0], 'permessage-deflate')
         except BaseException:
             self.socket.close()
             raise
@@ -138,14 +148,21 @@ class WebSocket:
 
     def send(self, payload, opcode=1):
         mask = os.urandom(4)
-        if len(payload) >= 126:
-            raise ValueError('test sender only supports small frames')
+        first = 0x80 | opcode
+        if self.deflate:
+            compressor = zlib.compressobj(wbits=-15)
+            payload = (compressor.compress(payload) + compressor.flush(zlib.Z_SYNC_FLUSH))[:-4]
+            first |= 0x40  # RSV1: compressed
+        if len(payload) >= 65536:
+            raise ValueError('test sender only supports frames under 64 KiB')
+        length = bytes([0x80 | len(payload)]) if len(payload) < 126 else b'\xfe' + struct.pack('!H', len(payload))
         masked = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
-        self.socket.sendall(bytes([0x80 | opcode, 0x80 | len(payload)]) + mask + masked)
+        self.socket.sendall(bytes([first]) + length + mask + masked)
 
     def receive(self):
         first, second = self.read(2)
-        expect(first, 0x81)
+        compressed = self.deflate and first & 0x40
+        expect(first & ~0x40 if compressed else first, 0x81)
         expect(second & 0x80, 0)
         length = second & 0x7f
         if length == 126:
@@ -154,7 +171,8 @@ class WebSocket:
             length = struct.unpack('!Q', self.read(8))[0]
         if length > 1024 * 1024:
             raise AssertionError('oversized test frame')
-        return self.read(length)
+        payload = self.read(length)
+        return zlib.decompressobj(wbits=-15).decompress(payload + b'\x00\x00\xff\xff') if compressed else payload
 
     def close(self):
         self.socket.close()

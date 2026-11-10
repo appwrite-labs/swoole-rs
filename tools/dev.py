@@ -169,6 +169,7 @@ def plan(args, reports):
         script('api-fuzz', 'tests/differential/fuzz.py', *php, '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}',
                '--seed', '0', '--programs', '500', '--jobs', args.jobs, '--cases', ROOT / 'tests/differential/cases',
                *report('api-fuzz'))
+        script('zend-bailout', 'tests/modules/zend/run.py', *php_for('curl', 'sockets'), *engines, *report('zend-bailout'))
     if integrate and {'base64', 'crc32'} & set(modules):
         reference_identity = reports / 'reference-identity.json'
         script('reference-identity', 'tools/extension_identity.py', '--source', ROOT / 'target/upstream/src',
@@ -284,7 +285,7 @@ def plan(args, reports):
                '--include-tls', *report('tls-constants'))
     if 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file,async}.cpp, network/{client,dns,address,socket}.cpp,
-        # os/{timer,pipe,process_pool}.cpp and protocol/ssl.cpp, ported to Rust over the Cargo build's libswoole, and the repo-owned C++
+        # os/{timer,pipe,process_pool,wait,async}.cpp, os.daemon and protocol/ssl.cpp, ported to Rust over the Cargo build's libswoole, and the repo-owned C++
         # witnesses in its fixture.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive,
@@ -333,6 +334,10 @@ def plan(args, reports):
                '--package', ROOT / 'tests/modules/http/server',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
+               *[arg for name in ['max_request_2', 'heartbeat_check_3', 'close_3', 'close_7']
+                 for arg in ['--exclude', f'server.{name}=MODE_THREAD fails over the crates (#2636)']],
+               '--exclude', 'server.ssl_client_cert_3=MODE_THREAD needs thread support (SW_THREAD, a ZTS build); this '
+                            "NTS binary's create() fails with SW_ERROR_OPERATION_NOT_SUPPORT",
                *report('http-server-rust'))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',
@@ -420,6 +425,11 @@ def plan(args, reports):
             arg for project in json.loads((ROOT / 'corpus/manifest.json').read_text())
             if project['id'] != '11-buffer-lifecycle' for arg in ['--project', project['id']]]
         script('applications', 'corpus/run.py', *php, *engines, *projects, '--require-all', *report('applications'))
+    if sys.platform.startswith('linux') and (integrate or 'reactor' in modules):
+        # The applications under strace: the socket options, flags and epoll registrations
+        # PHP can't see. Seconds, so the candidate lane runs it for the reactor's sockets too.
+        script('syscalls', 'corpus/syscalls.py', *php, '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}',
+               *report('syscalls'))
     network = ['--external-network'] if getattr(args, 'external_network', False) else []
     if args.case and not integrate:
         script('phpt', 'corpus/upstream/run.py', *php, *engines, '--jobs', args.jobs,

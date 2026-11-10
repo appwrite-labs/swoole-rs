@@ -176,20 +176,16 @@ pub(crate) unsafe fn convert_to_fd(value: *mut zval) -> c_int {
     unsafe { php_swoole_convert_to_fd(value) }
 }
 
-/// Raise a bailout now, as C++'s `zend_try`-less callers did.
-fn resume<T>(result: Result<T, Bailout>) -> Option<T> {
-    match result {
-        Ok(value) => Some(value),
-        Err(error) => {
-            bailout::raise(Err(error));
-            None
-        }
-    }
+/// The value, or `None` with the bailout deferred: the caller stops on
+/// `bailout::pending()`, and its handler or export's last step raises it.
+fn deferred<T>(result: Result<T, Bailout>) -> Option<T> {
+    result.map_err(Bailout::defer).ok()
 }
 
-/// `sw_callable_create(value)`: a callable, or null after a warning.
+/// `sw_callable_create(value)`: a callable, or null after a warning or with a
+/// bailout pending.
 /// # Safety
-/// `value` is a live zval; the frames a bailout jumps over own nothing.
+/// `value` is a live zval.
 pub(crate) unsafe fn callable_create(value: *mut zval) -> *mut c_void {
     // SAFETY: per the caller; the reporter is C.
     let created = unsafe {
@@ -201,20 +197,23 @@ pub(crate) unsafe fn callable_create(value: *mut zval) -> *mut c_void {
             swr_zend_callable_warning,
         )
     };
-    resume(created).map_or(ptr::null_mut(), <*mut callable::Callable>::cast)
+    deferred(created).map_or(ptr::null_mut(), <*mut callable::Callable>::cast)
 }
 
-/// `sw_callable_free(callable)`.
+/// `sw_callable_free(callable)`, which is gone even when its destructor leaves
+/// a bailout pending.
 /// # Safety
-/// `callable` is one [`callable_create`] made, freed once.
+/// `callable` is one [`callable_create`] made, freed once and no longer held.
 pub(crate) unsafe fn callable_free(callable: *mut c_void) {
     // SAFETY: per the caller.
-    resume(unsafe { callable::release(callable.cast()) });
+    bailout::defer(unsafe { callable::release(callable.cast()) });
 }
 
+/// The deferred `sw_callable_free`, the outermost Rust frame of its call.
 unsafe extern "C-unwind" fn deferred_free(callable: *mut c_void) {
     // SAFETY: the callable `callable_defer_free` handed over.
     unsafe { callable_free(callable) };
+    bailout::finish();
 }
 
 /// `swoole_event_defer(sw_callable_free, callable)`.
@@ -234,11 +233,10 @@ fn defer(call: swoole_rs_reactor::DeferCall, data: *mut c_void) {
     unsafe { swoole_rs_reactor::defer(fields, call, data, None) };
 }
 
-/// `zend::function::call(callable->ptr(), argc, argv, nullptr, coroutine)`: a
-/// bailout is raised from here.
+/// `zend::function::call(callable->ptr(), argc, argv, nullptr, coroutine)`:
+/// false with a bailout pending is one the caller stops on.
 /// # Safety
-/// `callable` is live and `argv` holds `argc` zvals; the frames a bailout
-/// jumps over own nothing.
+/// `callable` is live and `argv` holds `argc` zvals.
 pub(crate) unsafe fn callable_call(
     callable: *mut c_void,
     argc: u32,
@@ -259,7 +257,7 @@ pub(crate) unsafe fn callable_call(
             swr_zend_callable_warning,
         )
     };
-    resume(called).unwrap_or(false)
+    deferred(called).unwrap_or(false)
 }
 
 /// `php_swoole_is_enable_coroutine()`: the running server's

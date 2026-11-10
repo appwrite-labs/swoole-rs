@@ -9,6 +9,7 @@ use crate::co_socket::Co;
 use crate::offload::{AsyncEvent, AsyncOps, Handler, swr_v1_hook_async};
 use crate::wait_event::native::{coroutine_yield_ex, current};
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+use std::ffi::CString;
 use swoole_rs_clients::dns::DnsSocket;
 use swoole_rs_clients::resolver::{self, Request};
 use swoole_rs_corebase::{
@@ -23,14 +24,7 @@ type Put = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
 const TIMEOUT_ALL: c_int = 15;
 
 // SAFETY: crates/coroutine's.
-unsafe extern "C-unwind" {
-    fn swr_v1_coroutine_native_resume(co: *mut c_void);
-}
-
-// SAFETY: crates/coroutine's.
 unsafe extern "C" {
-    fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
-    fn swr_v1_coroutine_yield(scheduler: *mut c_void, co: *mut c_void);
     fn swoole_coroutine_is_in() -> u8;
     /// `async::dispatch` (`async_threads.rs`, in the extension archive).
     #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
@@ -39,16 +33,16 @@ unsafe extern "C" {
 
 /// `co->yield()`.
 pub(crate) unsafe extern "C" fn park(co: *mut c_void) {
-    // SAFETY: this thread's scheduler.
-    let scheduler = unsafe { swr_v1_coroutine_scheduler_get() };
-    // SAFETY: `co` is the running coroutine, as the caller promises.
-    unsafe { swr_v1_coroutine_yield(scheduler, co) };
+    let scheduler = swoole_rs_coroutine::scheduler();
+    // SAFETY: this thread's scheduler; `co` is the running coroutine, as the caller
+    // promises.
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_yield(scheduler, co.cast()) };
 }
 
 /// `co->resume()`.
 pub(crate) unsafe extern "C" fn resume(co: *mut c_void) {
     // SAFETY: a coroutine parked in `coroutine::async`.
-    unsafe { swr_v1_coroutine_native_resume(co) };
+    unsafe { swoole_rs_coroutine::resume(co) };
 }
 
 /// `async::dispatch`.
@@ -312,11 +306,30 @@ impl Drop for DnsUdp {
     }
 }
 
-/// `coroutine::dns_lookup(domain, family, timeout)`: each address of `domain` through
-/// `push(list, ..)`, NUL-terminated; a failure is the last error.
+/// `coroutine::dns_lookup(domain, family, timeout)`, in a coroutine: each address of
+/// `domain` (up to its first NUL, as C reads it), up to its own first NUL; none on a
+/// failure, which is the last error.
+#[must_use]
+pub fn dns_lookup(domain: &[u8], family: c_int, timeout: f64) -> Vec<CString> {
+    // Only IPv4 and IPv6.
+    let family = if family == libc::AF_INET6 {
+        libc::AF_INET6
+    } else {
+        libc::AF_INET
+    };
+    let name = resolver::c_name(domain);
+    let addresses = swoole_rs_clients::cares_lookup(&name, family, timeout)
+        .unwrap_or_else(|| swoole_rs_clients::dns::lookup(&name, family, || DnsUdp::open(timeout)));
+    addresses
+        .iter()
+        .map(|address| resolver::c_name(address))
+        .collect()
+}
+
+/// [`dns_lookup`] for the hooks system cases: each address through `push(list, ..)`.
 ///
 /// # Safety
-/// `domain` is NUL-terminated; `push` accepts `list`; in a coroutine.
+/// `domain` is NUL-terminated; `push` accepts `list`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_dns_lookup(
     domain: *const c_char,
@@ -325,18 +338,9 @@ pub unsafe extern "C" fn swr_v1_hook_dns_lookup(
     push: unsafe extern "C" fn(*mut c_void, *const c_char),
     list: *mut c_void,
 ) {
-    // Only IPv4 and IPv6.
-    let family = if family == libc::AF_INET6 {
-        libc::AF_INET6
-    } else {
-        libc::AF_INET
-    };
     // SAFETY: as the caller promises.
     let name = unsafe { CStr::from_ptr(domain) };
-    let addresses = swoole_rs_clients::cares_lookup(name, family, timeout)
-        .unwrap_or_else(|| swoole_rs_clients::dns::lookup(name, family, || DnsUdp::open(timeout)));
-    for address in addresses {
-        let address = resolver::c_name(&address);
+    for address in dns_lookup(name.to_bytes(), family, timeout) {
         // SAFETY: a NUL-terminated address `push` copies.
         unsafe { push(list, address.as_ptr()) };
     }

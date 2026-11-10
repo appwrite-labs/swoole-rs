@@ -5,7 +5,7 @@
 //! coroutine socket, files and callables are reached through
 //! `crate::http_native`, as is WebSocket framing, which stays C++.
 use crate::{
-    http_native::{self as native, TIMEOUT_READ},
+    http_native::{self as native, TIMEOUT_READ, WebSocket},
     http_request::{self as request, Compress},
     llhttp::{self, Parser, Settings},
     native::{Co, Socket, swoole_rs_php_error, unconstructed},
@@ -26,7 +26,7 @@ use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Class, Object, Owned, OwnedArray, Value, ZStr, ZString, bailout,
+    Array, ArrayMut, Call, Class, Object, Owned, OwnedArray, Props, Value, ZStr, ZString, bailout,
     declare_bool, declare_long, declare_string, register_long_constant,
     sys::{
         E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, php_url_encode,
@@ -114,7 +114,7 @@ struct Client {
     body_decompression: bool,
     websocket: bool,
     accept_websocket_compression: bool,
-    ws: *mut c_void,
+    ws: Option<Box<dyn WebSocket>>,
     write_func: *mut c_void,
     path: Vec<u8>,
     basic_auth: Vec<u8>,
@@ -195,13 +195,13 @@ fn ce() -> *mut zend_class_entry {
 
 /// Property access on a client object.
 mod props {
-    use super::{CStr, Value, ce, zend_object};
+    use super::{CStr, Call, Value, ce, zend_object};
     use swoole_rs_zend::{Props, sys::swr_zend_property_not_null};
 
-    /// Writes on `object`, under the client class.
-    pub(super) fn of<'a>(object: *mut zend_object) -> Props<'a> {
-        // SAFETY: a live client object, which declares every name written.
-        unsafe { Props::new(ce(), object) }
+    /// Writes on `$this`, a client method's object, under the client class.
+    pub(super) fn this(call: &Call) -> Props<'_> {
+        // SAFETY: `$this` is live for the call; the class declares every name written.
+        unsafe { Props::new(ce(), call.this()) }
     }
 
     /// `sw_zend_read_property_not_null_ex`: the property unless it is null.
@@ -214,25 +214,19 @@ mod props {
         // SAFETY: null or a live property.
         unsafe { Value::from_ptr(found) }
     }
-
-    /// `zval_get_long` of a declared property.
-    pub(super) fn get_long(object: *mut zend_object, name: &CStr) -> i64 {
-        // SAFETY: a live client object, which declares `name`.
-        unsafe { swoole_rs_zend::property(object, name) }.long()
-    }
 }
 
 /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
-fn set_error_properties(object: *mut zend_object, code: c_int, message: &CStr) {
+fn set_error_properties(props: Props, code: c_int, message: &CStr) {
     swoole_rs_corebase::log::set_last_error(code);
-    props::of(object).long(c"errCode", i64::from(code));
-    props::of(object).bytes(c"errMsg", message.to_bytes());
+    props.long(c"errCode", i64::from(code));
+    props.bytes(c"errMsg", message.to_bytes());
 }
 
 /// `php_swoole_socket_set_error_properties(zobject, socket)`.
-fn socket_error_properties(object: *mut zend_object, socket: Co) -> c_int {
+fn socket_error_properties(props: Props, socket: Co) -> c_int {
     let (code, message) = socket.error();
-    set_error_properties(object, code, message);
+    set_error_properties(props, code, message);
     code
 }
 
@@ -262,8 +256,8 @@ pub(crate) unsafe fn socket_closed(conn: *mut c_void, written: *mut c_void) {
     // SAFETY: the buffer the conn held, freed once.
     unsafe { native::swoole_http_client_coro_buffer_free(saved) };
     conn.socket = ptr::null_mut();
-    props::of(conn.object).bool(c"connected", false);
-    props::of(conn.object).null(c"socket");
+    conn.props().bool(c"connected", false);
+    conn.props().null(c"socket");
     drop(std::mem::take(&mut conn.zsocket));
 }
 
@@ -286,7 +280,27 @@ pub fn parse_set_cookies(bytes: &[u8], cookies: &mut ArrayMut, set_cookie_header
     set_cookie_headers.push_bytes(bytes);
 }
 
+impl Conn {
+    /// Writes on the client object, which owns the client and so this conn.
+    fn props(&self) -> Props<'_> {
+        // SAFETY: the object outlives its client's conn; the class declares every name written.
+        unsafe { Props::new(ce(), self.object) }
+    }
+}
+
 impl Client {
+    /// Writes on the client object, which owns this client.
+    fn props(&self) -> Props<'_> {
+        // SAFETY: the object outlives its client; the class declares every name written.
+        unsafe { Props::new(ce(), self.object) }
+    }
+
+    /// `zval_get_long` of a declared property of the client object.
+    fn get_long(&self, name: &CStr) -> i64 {
+        // SAFETY: as `props`, and the class declares `name`.
+        unsafe { swoole_rs_zend::property(self.object, name) }.long()
+    }
+
     fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Box<Self> {
         let use_default_port = port == 0;
         let port = if use_default_port {
@@ -325,7 +339,7 @@ impl Client {
             websocket: false,
             accept_websocket_compression: false,
             // SAFETY: a fresh C++ allocation the client frees.
-            ws: unsafe { native::swoole_http_client_coro_ws_new() },
+            ws: native::websocket(),
             write_func: ptr::null_mut(),
             path: Vec::new(),
             basic_auth: Vec::new(),
@@ -371,9 +385,9 @@ impl Client {
     }
 
     fn set_error(&self, code: c_int, message: &CStr, status: i64) {
-        props::of(self.object).long(c"errCode", i64::from(code));
-        props::of(self.object).bytes(c"errMsg", message.to_bytes());
-        props::of(self.object).long(c"statusCode", status);
+        self.props().long(c"errCode", i64::from(code));
+        self.props().bytes(c"errMsg", message.to_bytes());
+        self.props().long(c"statusCode", status);
     }
 
     fn set_socket_error(&self, socket: Co, status: i64) {
@@ -384,7 +398,7 @@ impl Client {
     /// `is_available`: connected, else errCode says no connection.
     fn is_available(&self) -> bool {
         if !self.co().is_some_and(Co::is_connected) {
-            set_error_properties(self.object, NO_CONNECTION, strerror(NO_CONNECTION));
+            set_error_properties(self.props(), NO_CONNECTION, strerror(NO_CONNECTION));
             return false;
         }
         true
@@ -440,16 +454,28 @@ impl Client {
                 self.body_decompression = truthy(found);
             }
             if let Some(found) = get(b"write_func") {
-                // SAFETY: the callable the client owns, if any.
-                unsafe { native::swoole_http_client_coro_callable_free(self.write_func) };
+                let old = std::mem::replace(&mut self.write_func, ptr::null_mut());
+                // SAFETY: the callable the client owned, if any, which it no longer holds.
+                unsafe { native::swoole_http_client_coro_callable_free(old) };
+                if bailout::pending() {
+                    return;
+                }
                 // SAFETY: a live zval.
-                self.write_func = unsafe { swoole_rs_phpruntime::callable_create(found.as_ptr()) };
+                let created = unsafe { swoole_rs_phpruntime::callable_create(found.as_ptr()) };
+                // The old callable's destructor may have set a write_func: this one replaces it.
+                let nested = std::mem::replace(&mut self.write_func, created);
+                // SAFETY: the nested call's callable, if any, which the client no longer holds.
+                unsafe { native::swoole_http_client_coro_callable_free(nested) };
+                if bailout::pending() {
+                    return;
+                }
             }
-            // SAFETY: the client's WebSocket state and a live array.
-            unsafe { native::swoole_http_client_coro_ws_apply(self.ws, settings.as_ptr()) };
+            if let Some(ws) = self.ws.as_mut() {
+                ws.apply(array);
+            }
         }
         if let Some(socket) = self.co() {
-            crate::socket_options::apply(socket, settings.as_ptr(), crate::socket_options::ALL);
+            crate::socket_options::apply(socket, array, crate::socket_options::ALL);
             if !swoole_rs_zend::bailout::pending() {
                 socket.skip_proxy_handshake();
             }
@@ -513,8 +539,8 @@ impl Client {
             self.close(true);
             return false;
         }
-        props::of(self.object).value(c"socket", self.zsocket());
-        props::of(self.object).bool(c"connected", true);
+        self.props().value(c"socket", self.zsocket());
+        self.props().bool(c"connected", true);
         true
     }
 
@@ -544,18 +570,18 @@ impl Client {
     fn send_request(&mut self) -> bool {
         let object = self.object;
         if self.path.is_empty() {
-            set_error_properties(object, INVALID_PARAMS, strerror(INVALID_PARAMS));
+            set_error_properties(self.props(), INVALID_PARAMS, strerror(INVALID_PARAMS));
             return false;
         }
-        props::of(object).null(c"headers");
-        props::of(object).null(c"set_cookie_headers");
-        props::of(object).bytes(c"body", b"");
+        self.props().null(c"headers");
+        self.props().null(c"set_cookie_headers");
+        self.props().bytes(c"body", b"");
         if !self.keep_liveness() {
             return false;
         }
-        props::of(object).long(c"errCode", 0);
-        props::of(object).bytes(c"errMsg", b"");
-        props::of(object).long(c"statusCode", 0);
+        self.props().long(c"errCode", 0);
+        self.props().bytes(c"errMsg", b"");
+        self.props().long(c"statusCode", 0);
         let Some(socket) = self.co() else {
             return false;
         };
@@ -581,7 +607,7 @@ impl Client {
             .map(Value::string);
         if let Some(download) = download {
             self.download_name = Some(download.string());
-            self.download_offset = props::get_long(object, c"downloadOffset");
+            self.download_offset = self.get_long(c"downloadOffset");
         }
 
         let mut out = Vec::with_capacity(256);
@@ -939,13 +965,13 @@ impl Client {
         }
         drop(controller);
         if !success {
-            let code = socket_error_properties(self.object, socket);
+            let code = socket_error_properties(self.props(), socket);
             let status = if code == libc::ETIMEDOUT {
                 REQUEST_TIMEOUT
             } else {
                 SERVER_RESET
             };
-            props::of(self.object).long(c"statusCode", status);
+            self.props().long(c"statusCode", status);
             self.close(true);
             return false;
         }
@@ -1004,11 +1030,11 @@ impl Client {
         let Some(socket) = self.co() else {
             return call.set_bool(false);
         };
+        let Some(ws) = self.ws.as_mut() else {
+            return call.set_bool(false);
+        };
+        ws.recv(socket, call, timeout);
         let value = call.return_value();
-        // SAFETY: a live socket, the client's WebSocket state and the return slot.
-        unsafe {
-            native::swoole_http_client_coro_ws_recv(socket.as_ptr(), self.ws, value, timeout);
-        }
         if bailout::pending() {
             return;
         }
@@ -1022,8 +1048,8 @@ impl Client {
             return;
         }
         if kind == swoole_rs_zend::sys::IS_FALSE {
-            let code = socket_error_properties(self.object, socket);
-            props::of(self.object).long(c"statusCode", SERVER_RESET);
+            let code = socket_error_properties(self.props(), socket);
+            self.props().long(c"statusCode", SERVER_RESET);
             if code != libc::ETIMEDOUT {
                 self.close(true);
             }
@@ -1036,13 +1062,13 @@ impl Client {
 
     fn upgrade(&mut self, path: &[u8]) -> bool {
         self.defer = false;
-        props::of(self.object).bytes(c"requestMethod", b"GET");
+        self.props().bytes(c"requestMethod", b"GET");
         let token = request::token::<WEBSOCKET_KEY>();
         let mut key = vec![0_u8; WEBSOCKET_KEY.div_ceil(3) * 4 + 1];
         let written = swoole_rs_base64::encode(&token, &mut key);
         // SAFETY: nothing else borrows `requestHeaders`, and no PHP runs while
         // adding.
-        let headers = unsafe { props::of(self.object).array(c"requestHeaders") };
+        let headers = unsafe { self.props().array(c"requestHeaders") };
         headers.insert_bytes(b"Connection", Some(b"Upgrade"));
         headers.insert_bytes(b"Upgrade", Some(b"websocket"));
         headers.insert_bytes(b"Sec-WebSocket-Version", Some(b"13"));
@@ -1051,8 +1077,7 @@ impl Client {
             Some(key.get(..written).unwrap_or(&key)),
         );
         // SAFETY: the client's WebSocket state.
-        if features() & 1 != 0 && unsafe { native::swoole_http_client_coro_ws_compression(self.ws) }
-        {
+        if features() & 1 != 0 && self.ws.as_ref().is_some_and(|ws| ws.compression()) {
             headers.insert_bytes(
                 b"Sec-Websocket-Extensions",
                 Some(DEFLATE_EXTENSION.to_bytes()),
@@ -1075,33 +1100,31 @@ impl Client {
     }
 
     fn push(&mut self, data: &Value, opcode: i64, flags: i64, code: i64) -> bool {
-        let object = self.object;
         if !self.websocket {
             swoole_rs_corebase::log::set_last_error(HANDSHAKE_FAILED);
             warn(true, c"websocket handshake failed, cannot push data");
             // SAFETY: a plain read of Swoole's thread error.
             let last = swoole_rs_corebase::log::last_error();
-            props::of(object).long(c"errCode", i64::from(last));
-            props::of(object).bytes(c"errMsg", b"websocket handshake failed, cannot push data");
-            props::of(object).long(c"statusCode", CONNECT_FAILED);
+            self.props().long(c"errCode", i64::from(last));
+            self.props()
+                .bytes(c"errMsg", b"websocket handshake failed, cannot push data");
+            self.props().long(c"statusCode", CONNECT_FAILED);
             return false;
         }
         let Some(socket) = self.co() else {
             return false;
         };
         let flags = c_int::from(flags.to_le_bytes()[0]);
-        // SAFETY: a live socket, WebSocket state and data zval.
-        let result = unsafe {
-            native::swoole_http_client_coro_ws_push(
-                socket.as_ptr(),
-                self.ws,
-                data.as_ptr(),
+        let result = self.ws.as_ref().map_or(1, |ws| {
+            ws.push(
+                socket,
+                data,
                 opcode,
                 flags,
                 code,
                 self.accept_websocket_compression,
             )
-        };
+        });
         match result {
             0 => true,
             1 if bailout::pending() => false,
@@ -1109,13 +1132,14 @@ impl Client {
                 swoole_rs_corebase::log::set_last_error(PACK_FAILED);
                 // SAFETY: a plain read of Swoole's thread error.
                 let last = swoole_rs_corebase::log::last_error();
-                props::of(object).long(c"errCode", i64::from(last));
-                props::of(object).bytes(c"errMsg", b"websocket frame pack failed");
+                self.props().long(c"errCode", i64::from(last));
+                self.props()
+                    .bytes(c"errMsg", b"websocket frame pack failed");
                 false
             }
             _ => {
-                socket_error_properties(object, socket);
-                props::of(object).long(c"statusCode", SERVER_RESET);
+                socket_error_properties(self.props(), socket);
+                self.props().long(c"statusCode", SERVER_RESET);
                 self.close(true);
                 false
             }
@@ -1130,15 +1154,15 @@ impl Client {
         self.compression_error = false;
         self.decoder = None;
         if self.has_upload_files {
-            props::of(self.object).null(c"uploadFiles");
+            self.props().null(c"uploadFiles");
         }
         // The close can yield, and another coroutine's fatal error can free
         // the client meanwhile, so the client lets go of the file first.
         if let Some(fd) = self.download_file.take() {
             self.download_name = None;
             self.download_offset = 0;
-            props::of(self.object).null(c"downloadFile");
-            props::of(self.object).long(c"downloadOffset", 0);
+            self.props().null(c"downloadFile");
+            self.props().long(c"downloadOffset", 0);
             native::swoole_http_client_coro_file_close(fd);
         }
     }
@@ -1155,9 +1179,9 @@ impl Client {
             }
             return true;
         }
-        props::of(self.object).bool(c"connected", false);
+        self.props().bool(c"connected", false);
         if !socket.close() {
-            socket_error_properties(self.object, socket);
+            socket_error_properties(self.props(), socket);
             return false;
         }
         if should_be_reset {
@@ -1213,7 +1237,7 @@ impl Client {
 
     fn add_header(&self, key: &[u8], data: &[u8]) {
         // SAFETY: nothing else borrows `headers`, and no PHP runs while merging.
-        let headers = unsafe { props::of(self.object).array(c"headers") };
+        let headers = unsafe { self.props().array(c"headers") };
         headers.merge(key, Owned::from(ZString::new(data)));
     }
 }
@@ -1226,13 +1250,13 @@ enum Decoder {
 }
 
 impl Drop for Client {
+    /// Runs to the end even when a destructor the callable's release runs
+    /// bails out; that bailout stays pending for the `free` handler to raise.
     fn drop(&mut self) {
         self.close(true);
         // SAFETY: the C++ objects the client owns, freed once (null is ignored
         // by each, as `delete` is).
         unsafe { native::swoole_http_client_coro_callable_free(self.write_func) };
-        // SAFETY: as above.
-        unsafe { native::swoole_http_client_coro_ws_free(self.ws) };
         if let Some(fd) = self.download_file.take() {
             native::swoole_http_client_coro_file_close(fd);
         }
@@ -1365,8 +1389,7 @@ unsafe extern "C" fn on_header_value(
         }
     } else if features() & 1 != 0
         && client.websocket
-        // SAFETY: the client's WebSocket state.
-        && unsafe { native::swoole_http_client_coro_ws_compression(client.ws) }
+        && client.ws.as_ref().is_some_and(|ws| ws.compression())
         && name == b"sec-websocket-extensions"
     {
         if request::contains_ignore_case(data, b"permessage-deflate") {
@@ -1374,9 +1397,9 @@ unsafe extern "C" fn on_header_value(
         }
     } else if name == b"set-cookie" {
         // SAFETY: two properties nothing else borrows; no PHP runs while parsing.
-        let cookies = unsafe { props::of(client.object).array(c"cookies") };
+        let cookies = unsafe { client.props().array(c"cookies") };
         // SAFETY: as above.
-        let headers = unsafe { props::of(client.object).array(c"set_cookie_headers") };
+        let headers = unsafe { client.props().array(c"set_cookie_headers") };
         parse_set_cookies(data, cookies, headers);
     } else if features() != 0 && name == b"content-encoding" {
         if let Some(method) = request::content_encoding(data, features()) {
@@ -1469,9 +1492,11 @@ unsafe extern "C" fn on_message_complete(parser: *mut Parser) -> c_int {
         client.parser.upgrade = 0;
         return llhttp::PAUSED;
     }
-    props::of(client.object).long(c"statusCode", i64::from(client.parser.status_code));
+    client
+        .props()
+        .long(c"statusCode", i64::from(client.parser.status_code));
     if client.download_file.is_none() {
-        props::of(client.object).bytes(c"body", &client.body);
+        client.props().bytes(c"body", &client.body);
     } else {
         client.download_name = None;
     }
@@ -1493,6 +1518,7 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     }
     // SAFETY: as above.
     unsafe { ClientObject::dtor(std) };
+    bailout::finish();
 }
 
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
@@ -1543,14 +1569,11 @@ method_table! {
 /// # Safety
 /// Called once, at MINIT of module `module`, with upstream's static method
 /// table and Swoole's exception class.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_http_client_minit(
-    exception: *mut zend_class_entry,
-    shortname: bool,
-    module: c_int,
-    features: u32,
-) {
-    // SAFETY: the native MINIT entry lends these original startup arguments.
+pub unsafe extern "C" fn http_client_minit(module: c_int) {
+    let exception = swoole_rs_phpswoole::exception_class();
+    let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
+    let features = swoole_rs_phpswoole::codecs();
+    // SAFETY: MINIT of `module`, once.
     let result =
         unsafe { init_phpclients_http_client_minit(exception, shortname, module, features) };
     match result {
@@ -1680,9 +1703,9 @@ fn construct(call: &Call) {
         unsafe { throw_constructed_twice(object) };
         return call.set_bool(false);
     }
-    props::of(object).bytes(c"host", host);
-    props::of(object).long(c"port", port);
-    props::of(object).bool(c"ssl", ssl);
+    props::this(call).bytes(c"host", host);
+    props::this(call).long(c"port", port);
+    props::this(call).bool(c"ssl", ssl);
     if host.is_empty() {
         // SAFETY: from a handler, with the registered exception class.
         unsafe { throw_exception(EXCEPTION.entry(), c"host is empty", i64::from(libc::EINVAL)) };
@@ -1729,7 +1752,7 @@ fn set_method(call: &Call) {
     let Ok(method) = call.arity(1, 1).and_then(|()| call.string(1, b"")) else {
         return call.set_bool(false);
     };
-    props::of(call.this()).bytes(c"requestMethod", method);
+    props::this(call).bytes(c"requestMethod", method);
     call.set_bool(true);
 }
 
@@ -1742,7 +1765,7 @@ fn set_array_property(call: &Call, name: &CStr) {
     // SAFETY: an array argument the frame owns.
     unsafe { swoole_rs_zend::sys::swr_zend_separate_array(array) };
     if let Some(array) = call.value(1) {
-        props::of(call.this()).value(name, array);
+        props::this(call).value(name, array);
     }
     call.set_bool(true);
 }
@@ -1772,7 +1795,7 @@ fn set_data(call: &Call) {
     let Some(data) = call.arity(1, 1).ok().and(call.value(1)) else {
         return call.set_bool(false);
     };
-    props::of(call.this()).value(c"requestBody", data);
+    props::this(call).value(c"requestBody", data);
     call.set_bool(true);
 }
 
@@ -1786,7 +1809,7 @@ fn add_upload(call: &Call, entry: &[(&CStr, Upload<'_>)]) {
         }
     }
     // SAFETY: nothing else borrows `uploadFiles`, and no PHP runs while adding.
-    let files = unsafe { props::of(call.this()).array(c"uploadFiles") };
+    let files = unsafe { props::this(call).array(c"uploadFiles") };
     // The next-index insert fails once the array's next key would pass
     // `ZEND_LONG_MAX`; upstream returns false then.
     let count = |files: &ArrayMut| files.array().map_or(0, Array::count);
@@ -1970,7 +1993,7 @@ fn get(call: &Call) -> bool {
     let Some(path) = path_arg(call) else {
         return false;
     };
-    props::of(call.this()).bytes(c"requestMethod", b"GET");
+    props::this(call).bytes(c"requestMethod", b"GET");
     let result = client.exec(path);
     finish(client, call, result)
 }
@@ -1982,9 +2005,9 @@ fn post(call: &Call) -> bool {
         call.set_bool(false);
         return false;
     };
-    props::of(call.this()).bytes(c"requestMethod", b"POST");
+    props::this(call).bytes(c"requestMethod", b"POST");
     if let Some(data) = call.value(2) {
-        props::of(call.this()).value(c"requestBody", data);
+        props::this(call).value(c"requestBody", data);
     }
     let result = client.exec(path);
     finish(client, call, result)
@@ -2001,9 +2024,9 @@ fn download(call: &Call) -> bool {
         return false;
     };
     if let Some(file) = call.value(2) {
-        props::of(call.this()).value(c"downloadFile", file);
+        props::this(call).value(c"downloadFile", file);
     }
-    props::of(call.this()).long(c"downloadOffset", offset);
+    props::this(call).long(c"downloadOffset", offset);
     let result = client.exec(path);
     finish(client, call, result)
 }
@@ -2064,8 +2087,8 @@ fn close(call: &Call) {
     let client = client(call);
     let Some(_hold) = hold(client.zsocket()) else {
         // A failed request already closed its socket; keep its error.
-        if props::get_long(call.this(), c"errCode") == 0 {
-            set_error_properties(call.this(), NO_CONNECTION, strerror(NO_CONNECTION));
+        if client.get_long(c"errCode") == 0 {
+            set_error_properties(client.props(), NO_CONNECTION, strerror(NO_CONNECTION));
         }
         return call.set_bool(false);
     };
@@ -2121,7 +2144,7 @@ fn getsockname(call: &Call) {
         return call.set_bool(false);
     };
     if !socket.getsockname() {
-        socket_error_properties(call.this(), socket);
+        socket_error_properties(client.props(), socket);
         return call.set_bool(false);
     }
     let (address, port) = socket.address();
@@ -2145,7 +2168,7 @@ fn getpeername(call: &Call) {
         return call.set_bool(false);
     };
     let Some((address, port)) = socket.getpeername() else {
-        socket_error_properties(call.this(), socket);
+        socket_error_properties(client.props(), socket);
         return call.set_bool(false);
     };
     set_endpoint(call, &address, port);
@@ -2162,7 +2185,7 @@ fn get_peer_cert(call: &Call) {
     };
     let cert = socket.peer_cert_pem();
     if cert.is_empty() {
-        socket_error_properties(call.this(), socket);
+        socket_error_properties(client.props(), socket);
         return call.set_bool(false);
     }
     call.set_bytes(&cert);

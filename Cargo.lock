@@ -397,6 +397,7 @@ dependencies = [
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
@@ -437,6 +438,7 @@ dependencies = [
  "swoole-rs-curl-sys",
  "swoole-rs-phpswoole",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-zend",
 ]
@@ -554,6 +556,7 @@ dependencies = [
  "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-ssh2-sys",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-uring-sys",
 ]
@@ -562,8 +565,11 @@ dependencies = [
 name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 dependencies = [
+ "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
+ "swoole-rs-process",
+ "swoole-rs-reactor",
 ]
 
 [[package]]
@@ -594,9 +600,15 @@ dependencies = [
 name = "swoole-rs-http-server-tests"
 version = "0.0.0"
 dependencies = [
+ "swoole-rs-buffer",
+ "swoole-rs-corebase",
  "swoole-rs-ffi",
+ "swoole-rs-locks",
  "swoole-rs-ports",
+ "swoole-rs-process",
  "swoole-rs-server",
+ "swoole-rs-tls",
+ "swoole-rs-utilities",
 ]
 
 [[package]]
@@ -690,6 +702,7 @@ dependencies = [
  "libc",
  "pq-sys",
  "swoole-rs-corebase",
+ "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-zend",
@@ -743,6 +756,7 @@ dependencies = [
  "swoole-rs-phpswoole",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-timer",
  "swoole-rs-zend",
 ]
 
@@ -756,6 +770,7 @@ dependencies = [
  "swoole-rs-phphelpers",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-phptimer",
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
@@ -942,6 +957,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-firebird",
  "swoole-rs-framing",
+ "swoole-rs-hooks",
  "swoole-rs-http2",
  "swoole-rs-memory",
  "swoole-rs-oci",
@@ -981,7 +997,6 @@ version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-phpcoroutines",
- "swoole-rs-phphelpers",
  "swoole-rs-phpprocess",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
@@ -1080,6 +1095,7 @@ dependencies = [
  "swoole-rs-ossupport",
  "swoole-rs-process",
  "swoole-rs-reactor",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-utilities",
 ]

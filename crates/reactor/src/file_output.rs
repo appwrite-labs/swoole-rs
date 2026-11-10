@@ -1,6 +1,6 @@
 //! Sendfile requests: the file, its path and the range still to send, owned by
 //! `Socket::sendfile_sync` or by the output queue entry `sendfile_async` pushes.
-use crate::{OutputHooks, OutputResult};
+use crate::{OutputEffects, OutputResult};
 use libc::{c_int, off_t};
 use std::ffi::{CStr, c_void};
 use swoole_rs_ossupport::FileRecord;
@@ -95,7 +95,7 @@ impl SocketFileRequest {
     }
 
     /// `Socket::handle_sendfile` before its send: [`crate::sendfile_cork`].
-    pub fn cork(&mut self, hooks: &OutputHooks) {
+    pub fn cork(&mut self, hooks: &impl OutputEffects) {
         let SocketFileFields { begin, end, .. } = self.fields;
         crate::sendfile_cork(
             hooks,
@@ -107,7 +107,12 @@ impl SocketFileRequest {
     }
 
     /// `Socket::handle_sendfile` after its send: [`crate::sendfile_sent`].
-    pub fn sent(&mut self, hooks: &OutputHooks, sent: isize, requested: usize) -> OutputResult {
+    pub fn sent(
+        &mut self,
+        hooks: &impl OutputEffects,
+        sent: isize,
+        requested: usize,
+    ) -> OutputResult {
         let SocketFileFields { begin, end, .. } = self.fields;
         crate::sendfile_sent(hooks, sent, requested, &mut self.fields.corked, begin, end)
     }
