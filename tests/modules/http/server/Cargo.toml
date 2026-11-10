@@ -16,4 +16,6 @@ test = false
 [dependencies]
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
 swoole-rs-ports = { path = "../../../../crates/ports" }
+swoole-rs-process = { path = "../../../../crates/process" }
 swoole-rs-server = { path = "../../../../crates/server" }
+swoole-rs-utilities = { path = "../../../../crates/utilities" }
