@@ -7,7 +7,7 @@ use crate::{
     signal::clean,
 };
 use std::{
-    ffi::{c_char, c_int, c_void},
+    ffi::{c_int, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -22,6 +22,7 @@ use swoole_rs_process::{
     worker_globals::thread_globals,
     worker_record,
 };
+use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object, class_name, handlers, long_zval, message, object_of,
     string,
@@ -72,19 +73,6 @@ unsafe extern "C" {
     /// `swoole_signal_set(signo, handler, safety)` (crates/reactor).
     #[link_name = "_Z17swoole_signal_setiPFviEb"]
     fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
-    /// `swoole::make_server_socket` (crates/tls).
-    #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
-    fn make_server_socket(
-        kind: c_int,
-        host: *const c_char,
-        port: c_int,
-        backlog: c_int,
-    ) -> *mut c_void;
-    /// `Socket::set_fd_option` (crates/reactor).
-    #[link_name = "_ZN6swoole7network6Socket13set_fd_optionEii"]
-    fn set_fd_option(socket: *mut c_void, nonblock: c_int, cloexec: c_int) -> bool;
-    /// `MessageBus::move_packet` (crates/protocols).
-    fn swr_v1_bus_move_packet(bus: *mut c_void) -> *mut c_char;
 }
 
 static POOL: Class = Class::new();
@@ -159,11 +147,9 @@ fn message_data(pool: Pool, message: *mut c_void, target: *mut zval) {
         let string = string::from_val(data);
         // SAFETY: the bus allocates its packets as zend strings of at least `length` bytes.
         unsafe { string::truncate(string, length) };
-        let bus = record(pool).message_bus.cast::<BusHead>();
-        // SAFETY: an OBJ_PTR message comes from the pool's message bus.
-        let bus = unsafe { (*bus).bus };
-        // SAFETY: the bus; the string is now the caller's.
-        unsafe { swr_v1_bus_move_packet(bus) };
+        // SAFETY: an OBJ_PTR message comes from the pool's live message bus; the
+        // string is now the caller's.
+        unsafe { swoole_rs_server::bus_move_packet(record(pool).message_bus) };
         string
     } else {
         // SAFETY: `length` bytes at `data`.
@@ -613,13 +599,23 @@ fn set(call: &Call) {
     let pool = record(checked(this));
     swoole_rs_phpswoole::php_swoole_set_global_option(options);
     swoole_rs_phpcoroutines::set_coroutine_option(options);
+    // Each setter stops at a conversion's bailout, which upstream's ended the
+    // call at; the handler raises it.
+    if swoole_rs_zend::bailout::pending() {
+        return;
+    }
     swoole_rs_phpswoole::php_swoole_set_aio_option(options);
+    if swoole_rs_zend::bailout::pending() {
+        return;
+    }
     if let Some(value) = options.get(b"max_package_size") {
         let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);
         pool.max_packet_size = packet_limit(pool.use_msgqueue != 0, max_package_size(size));
     }
     if let Some(value) = options.get(b"max_wait_time") {
-        let seconds = value.long();
+        let Some(seconds) = value.applied_long() else {
+            return;
+        };
         pool.max_wait_time = u32::try_from(seconds.clamp(0, u32::MAX.into())).unwrap_or(u32::MAX);
     }
     if let Some(value) = options.get(b"enable_coroutine") {
@@ -734,14 +730,14 @@ fn listen(call: &Call) {
             host_ptr.cast(),
             port as c_int,
             backlog as c_int,
-            make_server_socket,
+            swoole_rs_tls::upstream::make_server_socket,
         )
     };
     // SAFETY: the pool's IPC state.
     let socket = unsafe { swr_v1_process_pool_ipc_listener(record(pool).ipc) };
     if !socket.is_null() {
-        // SAFETY: the pool's live listener.
-        unsafe { set_fd_option(socket, 0, 1) };
+        // SAFETY: the pool's live listener record, which nothing else borrows here.
+        socket_set_fd_option(unsafe { &mut *socket.cast() }, 0, 1);
     }
     call.set_bool(listened >= 0);
 }

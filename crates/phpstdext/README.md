@@ -3,7 +3,7 @@
 Swoole's experimental stdext (`--enable-swoole-stdext`, native `SW_STDEXT`):
 typed arrays and methods on arrays, strings and streams. The crate is live with
 the `php` and `active` features; `crates/ffi`'s `stdext` feature turns on
-`active`, and `tools/build_hybrid.py` sets it from the configure options.
+`active`, and `tools/build_ext.py --stdext` turns it on.
 
 ## The C remainder
 

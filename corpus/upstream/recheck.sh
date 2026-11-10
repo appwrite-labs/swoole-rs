@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Re-run the PHPT gate's flagged tests up to three times per engine, upstream first. Upstream
-# stops at a test's first failed re-run; the hybrid then re-runs every flagged test until its
+# stops at a test's first failed re-run; cargo then re-runs every flagged test until its
 # verdict is settled (a pass, and also a failure unless upstream failed), once only when its
 # first failure timed out, up to nine times when upstream failed one (gate.py --print-pending).
 # An inconclusive re-run (the #200 runner abort) is replaced, up to twice the budget in all.
-# A test the hybrid both passed and failed then gets more upstream re-runs (up to 24 in all),
-# so a test racy on both engines isn't counted as a hybrid regression; so does one whose
+# A test cargo both passed and failed then gets more upstream re-runs (up to 24 in all),
+# so a test racy on both engines isn't counted as a cargo regression; so does one whose
 # re-runs both engines failed (up to 9).
 #   recheck.sh RESULTS_DIR ENGINES_DIR RECHECK_DIR [run.py arguments...]
 # ENGINES_DIR holds upstream.so and each other engine as <engine>.so; RECHECK_DIR receives <engine>-<attempt>.json.

@@ -11,7 +11,7 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_http::HttpRequest;
+use swoole_rs_http_ffi::HttpRequest;
 use swoole_rs_reactor::reactor_upstream::{prepared, trigger_close_event};
 use swoole_rs_reactor::{Event, SocketRecord};
 use swoole_rs_server::port_config::{self, PortConfig};
@@ -220,7 +220,7 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
             // SAFETY: the live connection.
             let conn = unsafe { &mut *c.conn };
             if conn.object.is_null() {
-                conn.object = swoole_rs_http::swr_v1_http_request_new().cast();
+                conn.object = swoole_rs_http_ffi::request_new().cast();
             }
             let request = conn.object.cast::<HttpRequest>();
             // SAFETY: the connection's live request.
@@ -234,7 +234,7 @@ unsafe fn call(context: *mut c_void, op: u32, arg: u64) -> u64 {
         }
         OP_REQ_DESTROY => {
             // SAFETY: the live connection, whose request is null or Rust's.
-            unsafe { crate::methods::destroy_http_request(ptr::null_mut(), c.conn) };
+            crate::methods::destroy_http_request(c.conn);
             c.shared.request = ptr::null_mut();
             0
         }
@@ -337,7 +337,8 @@ fn rare(c: &mut Read, op: u32, arg: u64) -> u64 {
             let dir = server(c).upload_tmp_dir();
             let max = config(c).upload_max_filesize;
             // SAFETY: the connection's live request, with a form.
-            let ok = unsafe { swoole_rs_http::init_multipart_parser(request, dir.as_bytes(), max) };
+            let ok =
+                unsafe { swoole_rs_http_ffi::init_multipart_parser(request, dir.as_bytes(), max) };
             // SAFETY: as above.
             c.shared.buffer = unsafe { (*request).buffer };
             u64::from(ok)

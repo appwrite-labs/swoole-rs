@@ -1,5 +1,5 @@
 """Shared helpers for the HTTP differential gates: body extraction, the two compile sides
-(pin and hybrid tree), the optional ASan HTTP archive and the run/report step."""
+(pin, and the Cargo build SDK's headers), the optional ASan HTTP archive and the run/report step."""
 import io
 import json
 import os
@@ -10,7 +10,7 @@ import sys
 import tarfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.harness import ROOT, run_isolated, write_report
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 from tools.build_upstream import COMMIT as PIN
 def body(source, signature):
     """The definition starting at signature. Braces count only in the first branch of
@@ -62,8 +62,8 @@ def openssl(option):
 
 class Sides:
     """A gate's two sides. The upstream side sees only the pin: its include/ and `paths`,
-    extracted under tree/pin. The candidate side is the hybrid build the archive came from:
-    its fully patched tree and flags. Both also see the gate's oracles and the files it
+    extracted under tree/pin. The candidate side is the SDK the archive came from: its
+    headers and switches (native_flags). Both also see the gate's oracles and the files it
     generates under tree. Drivers compile with the candidate's flags."""
 
     def __init__(self, source, archive, tree, *paths, sanitize=True):
@@ -74,12 +74,12 @@ class Sides:
             for member in members:
                 if member.isfile():
                     path = self.pin/member.name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(members.extractfile(member).read())
-        self.hybrid, hybrid = hybrid_tree(archive)
+        hybrid = native_flags(archive)
         # Rust ABI headers: declarations only, the same for both sides.
-        self.abi = Path(next(flag for flag in hybrid if flag.endswith('rust-prefix/include'))[2:])
+        self.abi = Path(hybrid[-1][2:])
         common = ['-std=c++17', *self.sanitize, '-I'+str(Path(__file__).resolve().parent), '-I'+str(tree), *openssl('--cflags')]
         self.flags = {'upstream': ['-I'+str(self.pin/'include'), '-I'+str(self.pin), '-I'+str(self.abi), *common],
-                      'candidate': [*hybrid, '-I'+str(self.hybrid), *common]}
+                      'candidate': [*hybrid, *common]}
 
     def original(self, path):
         return (self.pin/path).read_text()

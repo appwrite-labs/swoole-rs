@@ -19,8 +19,6 @@ pub(crate) struct Info {
     cares: *const c_char,
     zlib: *const c_char,
     zstd: *const c_char,
-    brotli_encoder: u32,
-    brotli_decoder: u32,
 }
 unsafe extern "C" {
     fn swr_phpswoole_versions(info: *mut Info);
@@ -101,10 +99,7 @@ impl Info {
             row(c"zlib", self.zlib)?;
         }
         if built_with(C::Brotli) {
-            text(
-                c"brotli",
-                &format!("E{}/D{}", self.brotli_encoder, self.brotli_decoder),
-            )?;
+            text(c"brotli", &swoole_rs_brotli::versions())?;
         }
         if built_with(C::Zstd) {
             row(c"zstd", self.zstd)?;

@@ -1,44 +1,31 @@
-//! Conditional-date policy; libc calendar objects remain in the native facade.
+//! Conditional-date policy over a [`Calendar`].
 use crate::{INVALID, OVERFLOW};
-use std::ffi::{CStr, c_char};
+use std::ffi::CStr;
+use swoole_rs_locale as locale;
+pub use swoole_rs_locale::Tm;
 static FORMATS: [&CStr; 4] = [
     c"%a, %d %b %Y %T GMT",
     c"%a, %d %b %Y %T UTC",
     c"%A, %d-%b-%y %T GMT",
     c"%a %b %e %T %Y",
 ];
-#[repr(C)]
 #[derive(Default)]
-pub struct HttpConditional {
-    pub phase: u32,
-    pub kind: u32,
-    pub valid: u32,
-    pub length: usize,
-    pub timezone: i64,
-    pub file_mtime: i64,
-    pub value: i64,
-    pub parsed_time: i64,
-}
-/// Native strptime format, immutable for process lifetime. Unknown index is null.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_http_date_format(index: u32) -> *const c_char {
-    FORMATS
-        .get(index as usize)
-        .map_or(std::ptr::null(), |format| format.as_ptr())
+struct HttpConditional {
+    phase: u32,
+    kind: u32,
+    valid: u32,
+    length: usize,
+    timezone: i64,
+    file_mtime: i64,
+    value: i64,
+    parsed_time: i64,
 }
 /// Kind0=If-Modified-Since; kind1=If-Range mismatch. Returns native actions:
 /// 0=false,1..4=strptime format0..3,5=gmtime(file),6=mktime(parsed),
 /// 7=mktime(file GMT),8=true. Native stores result validity/value before resume.
-/// # Safety
-/// State is writable/aligned and retained unchanged except native result fields.
+/// State is retained unchanged except native result fields.
 /// Native calendar objects survive between calls; Rust borrows none of them.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_conditional(state: *mut HttpConditional) -> i32 {
-    if state.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `state` is non-null (checked above), aligned and exclusive per the caller contract.
-    let state = unsafe { &mut *state };
+fn conditional_step(state: &mut HttpConditional) -> i32 {
     if state.kind > 1 {
         return INVALID;
     }
@@ -114,194 +101,123 @@ pub unsafe extern "C" fn swr_v1_http_conditional(state: *mut HttpConditional) ->
         _ => INVALID,
     }
 }
-/// Optional calendar primitives for callers with an existing native calendar provider.
-/// Production uses the same platform libc directly when this pointer is null.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HttpCalendar {
-    pub tm_size: usize,
-    pub tm_align: usize,
-    pub parse: unsafe extern "C" fn(*const c_char, *const c_char, *mut core::ffi::c_void) -> bool,
-    pub to_time: unsafe extern "C" fn(*mut core::ffi::c_void) -> i64,
-    pub to_gmt: unsafe extern "C" fn(i64) -> *mut core::ffi::c_void,
-}
-
-unsafe extern "C" fn calendar_parse(
-    date: *const c_char,
-    format: *const c_char,
-    parsed: *mut core::ffi::c_void,
-) -> bool {
-    // SAFETY: the calendar protocol lends terminated input and one initialized libc tm.
-    !unsafe { libc::strptime(date, format, parsed.cast()) }.is_null()
-}
-unsafe extern "C" fn calendar_time(parsed: *mut core::ffi::c_void) -> i64 {
-    // SAFETY: the calendar protocol lends one initialized libc tm for normalization.
-    unsafe { libc::mktime(parsed.cast()) }
-}
-unsafe extern "C" fn calendar_gmt(value: i64) -> *mut core::ffi::c_void {
-    // SAFETY: value is a live time_t and the returned platform static view is used before another GMT call.
-    unsafe { libc::gmtime(&raw const value) }.cast()
-}
-
-/// Execute the owned conditional policy and calendar operations. Empty/oversized
-/// dates finish before either metadata slot is read, preserving lazy observation.
-/// # Safety
-/// Nonempty `date` names `length` bytes followed by a NUL; empty input may be null. Metadata slots are live whenever
-/// requested by the policy. A non-null calendar is immutable for this call, uses
-/// the matching libc tm layout and its callbacks do not unwind or bail out.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v3_http_conditional(
-    date: *const c_char,
-    length: usize,
-    kind: u32,
-    file_mtime: *const i64,
-    timezone: *const libc::c_long,
-    calendar: *const HttpCalendar,
-) -> i32 {
-    let calendar = if calendar.is_null() {
-        HttpCalendar {
-            tm_size: core::mem::size_of::<libc::tm>(),
-            tm_align: core::mem::align_of::<libc::tm>(),
-            parse: calendar_parse,
-            to_time: calendar_time,
-            to_gmt: calendar_gmt,
-        }
-    } else {
-        // SAFETY: the caller lends an immutable initialized calendar descriptor.
-        unsafe { *calendar }
-    };
-    if calendar.tm_size != core::mem::size_of::<libc::tm>()
-        || calendar.tm_align != core::mem::align_of::<libc::tm>()
-    {
-        return INVALID;
+/// The calendar a conditional request's dates are parsed and compared in: libc's by
+/// default, or one that records its calls (the static handler's tests).
+pub trait Calendar {
+    /// `strptime(date, format, tm)`: whether `date` parsed.
+    fn parse(&self, date: &CStr, format: &CStr, tm: &mut Tm) -> bool {
+        locale::strptime(date, format, tm)
     }
+    /// `mktime(tm)`.
+    fn to_time(&self, tm: &mut Tm) -> i64 {
+        locale::mktime(tm)
+    }
+    /// `gmtime(&time)`, copied.
+    fn to_gmt(&self, time: i64) -> Option<Tm> {
+        locale::gmtime(time)
+    }
+}
+
+/// Upstream's `is_modified` (kind 0: `If-Modified-Since`, with the server's
+/// `timezone`) and `is_modified_range` (kind 1: an `If-Range` date other than the
+/// file's) of `date` against the file's modification time `mtime`. The date is read
+/// as a C string. Empty and oversized dates finish before any calendar call.
+pub fn conditional(
+    date: &[u8],
+    kind: u32,
+    mtime: i64,
+    timezone: i64,
+    calendar: &impl Calendar,
+) -> bool {
+    let text = [date, b"\0"].concat();
+    let Ok(text) = CStr::from_bytes_until_nul(&text) else {
+        return false;
+    };
     let mut state = HttpConditional {
         kind,
-        length,
+        length: date.len(),
         ..HttpConditional::default()
     };
-    // SAFETY: zero initializes every numeric and pointer field of libc tm, as native tm{} did.
-    let mut parsed: libc::tm = unsafe { core::mem::zeroed() };
-    let mut file = core::ptr::null_mut();
+    let mut parsed = locale::zeroed();
+    let mut file = None;
     loop {
-        // SAFETY: state is uniquely lent for this pure policy step.
-        let action = unsafe { swr_v1_http_conditional(&raw mut state) };
+        let action = conditional_step(&mut state);
         match action {
             1..=4 => {
-                // SAFETY: the caller lends terminated date bytes; parsed is this call's initialized calendar storage.
-                state.valid = u32::from(unsafe {
-                    (calendar.parse)(
-                        date,
-                        swr_v1_http_date_format((action - 1).cast_unsigned()),
-                        core::ptr::from_mut(&mut parsed).cast(),
-                    )
-                });
+                let format = FORMATS
+                    .get((action - 1).cast_unsigned() as usize)
+                    .copied()
+                    .unwrap_or_default();
+                state.valid = u32::from(calendar.parse(text, format, &mut parsed));
             }
             5 => {
-                if file_mtime.is_null() {
-                    return INVALID;
-                }
-                // SAFETY: the policy now requests the caller's live mtime slot.
-                let value = unsafe { *file_mtime };
-                // SAFETY: the supplied calendar consumes this scalar and retains its own GMT storage.
-                file = unsafe { (calendar.to_gmt)(value) };
-                state.valid = u32::from(!file.is_null());
+                file = calendar.to_gmt(mtime);
+                state.valid = u32::from(file.is_some());
             }
             6 => {
-                // SAFETY: parsed is this call's initialized and previously parsed tm storage.
-                state.value =
-                    unsafe { (calendar.to_time)(core::ptr::from_mut(&mut parsed).cast()) };
+                state.value = calendar.to_time(&mut parsed);
                 if kind == 0 {
-                    if file_mtime.is_null() || timezone.is_null() {
-                        return INVALID;
-                    }
-                    // SAFETY: the policy requests this live timezone slot only after parsing.
-                    state.timezone = unsafe { *timezone };
-                    // SAFETY: the caller lends the live mtime slot for this observation.
-                    state.file_mtime = unsafe { *file_mtime };
+                    state.timezone = timezone;
+                    state.file_mtime = mtime;
                 }
             }
             7 => {
-                // SAFETY: a successful GMT observation precedes this policy action.
-                state.value = unsafe { (calendar.to_time)(file) };
+                if let Some(file) = file.as_mut() {
+                    state.value = calendar.to_time(file);
+                }
             }
-            _ => return i32::from(action == 8),
+            _ => return action == 8,
         }
     }
 }
 
-/// Format a stored modification time, or current time when the slot is null.
-/// # Safety
-/// A non-null slot lends one initialized i64. Output lends capacity writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v3_http_date(
-    file_mtime: *const i64,
-    output: *mut u8,
-    capacity: usize,
-) -> usize {
-    if output.is_null() || capacity == 0 {
-        return 0;
-    }
-    let time = if file_mtime.is_null() {
-        // SAFETY: a null out pointer requests only the current scalar time.
-        unsafe { libc::time(core::ptr::null_mut()) }
-    } else {
-        // SAFETY: the caller lends this initialized time slot.
-        unsafe { *file_mtime }
+/// `get_date()` (now, when `mtime` is None) or `get_date_last_modified()`: the time
+/// as an HTTP date, empty when it has no calendar date.
+#[must_use]
+pub fn http_date(mtime: Option<i64>) -> Vec<u8> {
+    let time = mtime.unwrap_or_else(locale::now);
+    let Some(tm) = locale::gmtime(time) else {
+        return Vec::new();
     };
-    // SAFETY: time is a live time_t; its borrowed static calendar view is used immediately.
-    let tm = unsafe { libc::gmtime(&raw const time) };
-    if tm.is_null() {
-        return 0;
-    }
-    // SAFETY: output is writable through capacity; format is terminated and tm is a live calendar view.
-    unsafe {
-        libc::strftime(
-            output.cast(),
-            capacity,
-            c"%a, %d %b %Y %H:%M:%S %Z".as_ptr(),
-            tm,
-        )
-    }
+    let mut value = [0u8; 64];
+    let length = locale::strftime(&mut value, c"%a, %d %b %Y %H:%M:%S %Z", &tm);
+    value.get(..length).unwrap_or_default().to_vec()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A calendar no call may reach.
+    struct Unreachable;
+    impl Calendar for Unreachable {
+        fn parse(&self, _: &CStr, _: &CStr, _: &mut Tm) -> bool {
+            panic!("parse")
+        }
+        fn to_time(&self, _: &mut Tm) -> i64 {
+            panic!("to_time")
+        }
+        fn to_gmt(&self, _: i64) -> Option<Tm> {
+            panic!("to_gmt")
+        }
+    }
     #[test]
     fn owned_calendar_keeps_empty_and_oversized_date_metadata_lazy() {
         for kind in [0, 1] {
-            assert_eq!(
-                unsafe {
-                    swr_v3_http_conditional(
-                        core::ptr::null(),
-                        0,
-                        kind,
-                        core::ptr::null(),
-                        core::ptr::null(),
-                        core::ptr::null(),
-                    )
-                },
-                0
-            );
+            assert!(!conditional(b"", kind, 0, 0, &Unreachable));
         }
-        let mut date = [b'x'; 65];
-        date[64] = 0;
-        assert_eq!(
-            unsafe {
-                swr_v3_http_conditional(
-                    date.as_ptr().cast(),
-                    64,
-                    0,
-                    core::ptr::null(),
-                    core::ptr::null(),
-                    core::ptr::null(),
-                )
-            },
-            0
-        );
+        assert!(!conditional(&[b'x'; 64], 0, 0, 0, &Unreachable));
     }
-
+    #[test]
+    fn http_dates_format_gmt() {
+        // gmtime's zone is GMT in glibc and UTC in macOS's libc.
+        let epoch = http_date(Some(0));
+        assert!(
+            epoch.starts_with(b"Thu, 01 Jan 1970 00:00:00 "),
+            "{epoch:?}"
+        );
+        assert_eq!(epoch.len(), 29);
+        assert_eq!(http_date(None).len(), 29);
+    }
     #[test]
     fn range_parse_failure_still_requests_gmtime_and_since_does_not() {
         for kind in [0, 1] {
@@ -311,12 +227,12 @@ mod tests {
                 ..Default::default()
             };
             for action in 1..=4 {
-                assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, action);
+                assert_eq!(conditional_step(&mut state), action);
             }
             if kind == 1 {
-                assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, 5);
+                assert_eq!(conditional_step(&mut state), 5);
             }
-            assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, 0);
+            assert_eq!(conditional_step(&mut state), 0);
         }
     }
     #[test]
@@ -328,7 +244,7 @@ mod tests {
             timezone: 1,
             ..Default::default()
         };
-        assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, OVERFLOW);
+        assert_eq!(conditional_step(&mut state), OVERFLOW);
         state = HttpConditional {
             kind: 0,
             phase: 6,
@@ -337,13 +253,13 @@ mod tests {
             file_mtime: 99,
             ..Default::default()
         };
-        assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, 8);
+        assert_eq!(conditional_step(&mut state), 8);
         state = HttpConditional {
             kind: 0,
             length: 64,
             ..Default::default()
         };
-        assert_eq!(unsafe { swr_v1_http_conditional(&raw mut state) }, 0);
-        assert!(swr_v1_http_date_format(4).is_null());
+        assert_eq!(conditional_step(&mut state), 0);
+        assert!(FORMATS.get(4).is_none());
     }
 }

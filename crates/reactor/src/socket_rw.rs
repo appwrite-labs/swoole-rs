@@ -183,16 +183,15 @@ impl IovState {
     /// # Safety
     /// `iterator` names `remain_count` writable initialized iovecs.
     pub(crate) unsafe fn update(&mut self, n: isize) {
-        // SAFETY: the caller's live iterator and counters.
-        let reply = unsafe {
-            crate::swr_v1_reactor_iov_owned_progress(
-                self.iterator,
-                n,
-                self.remain_count,
-                self.index,
-                self.offset_bytes,
-            )
-        };
+        // SAFETY: as the caller promises.
+        let iterator = unsafe { crate::iov_owned::span(self.iterator, self.remain_count) };
+        let reply = crate::iov_owned::owned_progress(
+            iterator,
+            n,
+            self.remain_count,
+            self.index,
+            self.offset_bytes,
+        );
         if reply.action == 0 {
             return;
         }
@@ -214,18 +213,15 @@ impl IovState {
 /// retried on EINTR.
 ///
 /// # Safety
-/// `state` is writable and names a live `IOVector`'s iovecs, whose buffers are
-/// valid for the direction; `tls`, when given, is valid for `socket`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_iov(
+/// `state` names a live `IOVector`'s iovecs, whose buffers are valid for the
+/// direction; `tls`, when given, is valid for `socket`.
+pub unsafe fn socket_iov(
     fd: c_int,
     write: bool,
-    state: *mut IovState,
+    state: &mut IovState,
     tls: Option<TlsIo>,
     socket: *mut c_void,
 ) -> isize {
-    // SAFETY: the caller lends its cursor copy for this call.
-    let state = unsafe { &mut *state };
     loop {
         let result = if let Some(io) = tls {
             let mut total: isize = 0;
@@ -261,7 +257,6 @@ pub unsafe extern "C" fn swr_v1_socket_iov(
 
 /// `Socket::ssl_sendfile`'s outcome: what it returns, and which warning native code
 /// writes (1 `write() failed`, 2 `pread() failed`).
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SslSendfileResult {
     pub value: isize,
@@ -273,15 +268,15 @@ pub struct SslSendfileResult {
 /// A failed send warns when `catch_error` says it is an error.
 ///
 /// # Safety
-/// `offset` and `kernel_nobufs` are writable; `send` is valid for `socket`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_sendfile(
+/// `offset` is writable and `send` is valid for `socket`, which `send` may
+/// access while `offset` is lent.
+pub unsafe fn ssl_sendfile(
     file_fd: c_int,
     offset: *mut libc::off_t,
     size: usize,
     send: TlsIo,
     socket: *mut c_void,
-    kernel_nobufs: *mut bool,
+    kernel_nobufs: &mut bool,
 ) -> SslSendfileResult {
     const CHUNK: usize = 65536;
     let mut buffer = vec![0_u8; CHUNK];
@@ -296,8 +291,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_sendfile(
     let sent = unsafe { send(socket, buffer.as_mut_ptr().cast(), n.cast_unsigned()) };
     if sent < 0 {
         let error = Error::last_os_error().raw_os_error().unwrap_or(0);
-        // SAFETY: the caller's kernel_nobufs flag.
-        let failed = unsafe { crate::catch_error(error, &mut *kernel_nobufs) } == 4;
+        let failed = catch_error(error, kernel_nobufs) == ERROR;
         return SslSendfileResult {
             value: sent,
             warn: c_int::from(failed),
@@ -460,8 +454,7 @@ mod tests {
             offset_bytes: 0,
         };
         // SAFETY: `state` names the two local iovecs.
-        let sent =
-            unsafe { swr_v1_socket_iov(a, true, &raw mut state, None, std::ptr::null_mut()) };
+        let sent = unsafe { socket_iov(a, true, &mut state, None, std::ptr::null_mut()) };
         assert_eq!((sent, state.remain_count), (7, 0));
 
         let mut into = [0_u8; 5];
@@ -483,8 +476,7 @@ mod tests {
             offset_bytes: 0,
         };
         // SAFETY: as above, writable.
-        let read =
-            unsafe { swr_v1_socket_iov(b, false, &raw mut state, None, std::ptr::null_mut()) };
+        let read = unsafe { socket_iov(b, false, &mut state, None, std::ptr::null_mut()) };
         assert_eq!(read, 7);
         assert_eq!((&into, &tail[..2]), (b"abcde", &b"fg"[..]));
         assert_eq!(
@@ -514,10 +506,10 @@ mod tests {
         };
         // SAFETY: the counter stands in for the socket; the iovecs are local.
         let read = unsafe {
-            swr_v1_socket_iov(
+            socket_iov(
                 -1,
                 false,
-                &raw mut state,
+                &mut state,
                 Some(tls_in_pieces),
                 (&raw mut left).cast(),
             )
@@ -549,13 +541,13 @@ mod tests {
         let mut nobufs = false;
         // SAFETY: local offset and flag; the callback ignores its socket.
         let result = unsafe {
-            swr_v1_socket_ssl_sendfile(
+            ssl_sendfile(
                 file.as_raw_fd(),
                 &raw mut offset,
                 6,
                 sends_three,
                 std::ptr::null_mut(),
-                &raw mut nobufs,
+                &mut nobufs,
             )
         };
         assert_eq!(
@@ -565,13 +557,13 @@ mod tests {
         offset = 10;
         // SAFETY: as above; nothing is left to read.
         let result = unsafe {
-            swr_v1_socket_ssl_sendfile(
+            ssl_sendfile(
                 file.as_raw_fd(),
                 &raw mut offset,
                 6,
                 sends_three,
                 std::ptr::null_mut(),
-                &raw mut nobufs,
+                &mut nobufs,
             )
         };
         assert_eq!(result, SslSendfileResult { value: -1, warn: 2 });

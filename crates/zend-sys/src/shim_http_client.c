@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): globals (EG(uninitialized_zval)), allocator
+ * (array_init, smart_str, zval_get_string), version (php_url_encode_hash_ex's
+ * signature before 8.3, zend_is_true's return type) and budget (OBJ_PROP, Z_*_P). */
 #include "shim_http_client.h"
 #include "ext/standard/php_array.h"
 #include "ext/standard/php_http.h"
@@ -35,12 +38,13 @@ zval *swr_zend_property_array(zend_class_entry *ce, zend_object *object, const c
             array_init(property);
         }
     }
+    /* Callers add to it in place: a shared or immutable array is copied first. */
+    SEPARATE_ARRAY(property);
     return property;
 }
 
 void swr_zend_property_merge(zend_class_entry *ce, zend_object *object, const char *name, size_t length, zval *settings) {
     zval *property = swr_zend_property_array(ce, object, name, length);
-    SEPARATE_ARRAY(property);
     php_array_merge(Z_ARRVAL_P(property), Z_ARRVAL_P(settings));
 }
 
@@ -67,10 +71,6 @@ void swr_zend_array_add_or_merge(zval *array, const char *key, size_t length, zv
     } else {
         zend_hash_str_update(table, key, length, &list);
     }
-}
-
-double swr_zval_get_double(const zval *value) {
-    return zval_get_double(value);
 }
 
 bool swr_zval_is_true(const zval *value) {

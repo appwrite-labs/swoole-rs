@@ -51,8 +51,8 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     message, register_long_constant,
     sys::{
-        swr_zend_callable_warning, swr_zend_module_loaded, swr_zend_runtime_find_class,
-        swr_zend_stream_factory, swr_zend_stream_factory_set, zend_class_entry, zend_execute_data,
+        swr_zend_callable_warning, swr_zend_runtime_find_class, swr_zend_stream_factory,
+        swr_zend_stream_factory_set, zend_class_entry, zend_execute_data,
         zend_register_class_alias_ex, zif_handler, zval,
     },
 };
@@ -92,14 +92,15 @@ pub mod flags {
     }
 }
 
-// SAFETY: crates/phpcoroutines' hook flags, crates/coroutine's check,
-// crates/phpthread's count, linked into every extension; none has
+// SAFETY: crates/coroutine's check, linked into every extension, with no
 // preconditions.
 unsafe extern "C" {
-    safe fn swr_v1_phpcoroutines_set_hook_option(flags: u32);
-    safe fn swr_v1_phpcoroutines_hook_flags() -> u32;
     safe fn swoole_coroutine_is_in() -> u8;
-    safe fn sw_active_thread_count() -> usize;
+}
+
+/// `PHPCoroutine::get_hook_flags()` (crates/phpcoroutines').
+fn hook_flags() -> u32 {
+    swoole_rs_phpswoole::families().map_or(0, |families| (families.hook_flags)())
 }
 
 static RUNTIME: Class = Class::new();
@@ -349,7 +350,7 @@ swoole_rs_zend::handlers! {
 
 /// `Runtime::getHookFlags()`.
 fn get_hook_flags(call: &Call) {
-    call.set_long(i64::from(swr_v1_phpcoroutines_hook_flags()));
+    call.set_long(i64::from(hook_flags()));
 }
 
 /// `Runtime::enableCoroutine()`.
@@ -387,7 +388,9 @@ fn set_hook_flags(call: &Call, min: u32) -> Result<(), Bailout> {
         reason = "upstream passes the zend_long as uint32_t"
     )]
     let requested = requested as u32;
-    swr_v1_phpcoroutines_set_hook_option(requested);
+    if let Some(families) = swoole_rs_phpswoole::families() {
+        (families.set_hook_flags)(requested);
+    }
     call.set_bool(enable_hook(requested)?);
     Ok(())
 }
@@ -412,11 +415,9 @@ pub extern "C" fn php_coroutine_disable_hook() -> bool {
 /// # Errors
 /// A hook's setup bailed out.
 pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
-    let threads = if built_with(Switch::Thread) {
-        sw_active_thread_count()
-    } else {
-        1
-    };
+    let threads = swoole_rs_phpswoole::families()
+        .filter(|_| built_with(Switch::Thread))
+        .map_or(1, |families| (families.active_threads)());
     if !main_thread() || threads > 1 {
         log_warning(
             c"PHPCoroutine::enable_hook(): The runtime hook can only set on the main thread and no child threads have been created",
@@ -425,8 +426,7 @@ pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     }
     call_hook(BEFORE_ENABLE_HOOK, &mut requested);
     let mut unavailable = 0;
-    // SAFETY: a name and its length.
-    if !unsafe { swr_zend_module_loaded(c"sockets".as_ptr(), 7) } {
+    if !swoole_rs_zend::module_loaded(c"sockets") {
         unavailable |= flags::SOCKETS;
     }
     if !swoole_rs_phpswoole::enable_library() {

@@ -25,7 +25,7 @@ class Ratchet(unittest.TestCase):
 
     def test_ratchet_lowers_to_what_every_result_beats_rounded_up(self):
         def result(**ratios):
-            return {'instructions_per_request': {w: {'hybrid': r * 1000, 'upstream': 1000} for w, r in ratios.items()}}
+            return {'instructions_per_request': {w: {'cargo': r * 1000, 'upstream': 1000} for w, r in ratios.items()}}
         results = [result(plaintext=0.951, json=0.99, timer=0.70), result(plaintext=0.962, json=1.0, websocket=0.5)]
         limits = {'plaintext': 1.00, 'json': 1.00, 'timer': 0.72, 'websocket': 0.87}
         # json beats nothing once rounded up; timer and websocket lack a result in one run.

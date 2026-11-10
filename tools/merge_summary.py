@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Markdown summary of a dev.py loop: phases per module and hybrid cases per group.
+"""Markdown summary of a dev.py loop: phases per module and Cargo-engine cases per group.
 
 Unsupported and skipped cases get their own columns; only `passed` counts as passed.
 """
@@ -12,7 +12,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.build_hybrid import MODULES
+from tools.check_migration import MODULES
 from tools.harness import ROOT
 
 ALIASES = {'string': 'buffer'}
@@ -58,7 +58,7 @@ def summarize(loop):
 def markdown(phases, cases):
     lines = ['### Phases by module', '', '| Module | Passed | Failed |', '| --- | --- | --- |']
     lines += [f'| {module} | {phases[module]["passed"]} | {phases[module]["failed"]} |' for module in sorted(phases)]
-    lines += ['', '### Hybrid cases by group (original PHPT selection group, or corpus)', '',
+    lines += ['', '### Cargo cases by group (original PHPT selection group, or corpus)', '',
               '| Group | ' + ' | '.join(s.capitalize() for s in STATUSES) + ' |', '| --- ' * (1 + len(STATUSES)) + '|']
     lines += [f'| {group} | ' + ' | '.join(str(cases[group][s]) for s in STATUSES) + ' |' for group in sorted(cases)]
     return '\n'.join(lines) + '\n\nUpstream is the control and is not counted.\n'

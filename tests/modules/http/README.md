@@ -12,10 +12,10 @@ cargo build --locked -p swoole-rs-ffi --release
 
 ## Native differential gates
 
-Each gate compiles pinned (v6.2.5) bodies against the hybrid build `--archive`
+Each gate compiles pinned (v6.2.5) bodies against the Cargo build SDK `--archive`
 comes from and compares outcomes. The two sides compile apart (`Sides` in
 `gate.py`): upstream fragments against the pin's headers only, the rest against
-the hybrid build's patched tree (`hybrid_tree`). Native code runs under ASan/UBSan;
+the SDK's headers and switches (`native_flags`). Native code runs under ASan/UBSan;
 the Rust archive is uninstrumented unless `--rust-sanitize` is used (Linux;
 links a private ASan HTTP archive instead, precompiled std stays uninstrumented).
 All take `--source PINNED_GIT --archive HYBRID_ARCHIVE --output REPORT`; gates
@@ -33,7 +33,7 @@ compares `C0`/`E0` with ASCII rules where libc in `en_US.ISO8859-1` treats them
 as equal. Unavailable locales are reported as unsupported.
 
 `gate.py` holds the helpers these share (`body`, `Sides`, `run`). The status, method,
-URL and boundary helpers are Rust behind thin facades, so the crate's
+URL and boundary helpers are Rust behind thin facades, so crates/http-ffi's
 `pin_helpers` tests compare them with v6.2.4's bodies instead.
 
 ### Ported GoogleTests
@@ -77,22 +77,22 @@ callbacks skip fields under `F_TRAILING`) is checked by the pinned PHPTs
 
 The 11 TESTs that start no server call the helpers, the request-line reader and the
 WebSocket codec directly. Their ports sit beside the Rust each one calls, with the
-same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-websocket --lib`.
+same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-http-ffi -p swoole-rs-websocket-ffi --lib`.
 
 | Upstream TEST | Rust test |
 | --- | --- |
-| `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `crates/http/src/http_server.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
-| `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
-| `has_expect_header`, `get_protocol`, `all_method` | `crates/http/src/request.rs`: same names |
-| `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
-| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http/src/request.rs`: same names, over the bundled multipart parser (#1938) |
+| `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `crates/http-ffi/src/http_server.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
+| `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http-ffi/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
+| `has_expect_header`, `get_protocol`, `all_method` | `crates/http-ffi/src/request.rs`: same names |
+| `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket-ffi/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
+| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http-ffi/src/request.rs`: same names, over the bundled multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
-phase): a Rust case binary over the hybrid tree's libswoole.so, built and run by
-`tests/modules/hooks/system.py --package tests/modules/http/server --fixture
-tests/modules/http/server/fixture.cc`. `fixture.cc` builds the Servers upstream's
-`test_base_server`, `test_http_server` and `test_ssl_http` built (a C++ constructor,
-`std::string` setters and callback slots); the callbacks, cpp-httplib's WebSocket client
+phase): a Rust case binary over the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources), built and run by
+`tests/modules/hooks/system.py --package tests/modules/http/server`. `server/src/http1/case.rs`
+builds the Servers upstream's `test_base_server`, `test_http_server` and `test_ssl_http`
+built, over the same records as `http1.rs` (below), with each callback slot holding the
+case's function as its closure context; the callbacks, cpp-httplib's WebSocket client
 (the same upgrade request, frames from the hybrid's `websocket::encode`/`mask`/`decode`),
 the curl runs and every assertion are in `server/src/main.rs`, one function per TEST
 under its own name: `websocket_small`, `websocket_medium`, `websocket_big`,
@@ -102,17 +102,17 @@ excluded for the reason they had in the GoogleTest lane (they need Node.js and i
 package). Each curl runs to completion before its log is read, where upstream slept a
 second after starting it.
 
-`abort_connection`'s fixture also sets `SwooleG.max_sockets` (2) before
+`abort_connection`'s Server builder also sets `SwooleG.max_sockets` (2) before
 `set_max_connection(1)` and hands back the old value, which the case restores once the
 server stops; the 16 `SyncClient`s are blocking `TcpStream` connects. In
-`get_package_length` the fixture builds the port, runs `init_protocol` and makes the
+`get_package_length` `case.rs` builds the port, runs `init_protocol` and makes the
 fake connection socket and its `Connection` (session 2025); the case calls the hybrid's
 `http_server::get_package_length(_size)` and `websocket::encode` itself, with upstream's
 frames and expected values; its HTTP/2 frame is the bytes `http2::init_settings` and
 `http2::pack_setting_frame` write, as a constant (crates/http2's tests cover that function).
 
 The HTTP/1 TESTs that start a server are `server/src/http1.rs`, in the same binary and
-phase, and need no fixture: `swr_v1_server_new`/`_delete` (crates/server/src/server_object.rs)
+phase: `swr_v1_server_new`/`_delete` (crates/server/src/server_object.rs)
 make and delete the `Server`, and the cases set its configuration, callback slots,
 tables, port configuration and static-handler sets through the Rust records
 whose pointers head the `Server` and its `ListenPort`s, whose layouts each new server checks against
@@ -131,11 +131,71 @@ unseen, as gtest's did.
 | `test_http_server` (forked, or base mode for `chunked`) | `heartbeat`, `overflow`, `process`, `process1`, `redundant_callback`, `pause`, `bad_request`, `chunked`, `max_queued_bytes`, `dispatch_func_return_error_worker_id`, `http_range`, `http_range2` |
 | none | `fail` |
 
+`core-tests/src/server/buffer.cpp`'s one TEST, `server.send_buffer` (crates/server's send
+buffer: a 16 MiB response to one packet, then a close), is `server/src/http1/server.rs`
+in the same binary and phase, over the same records. Upstream's client thread waits on a
+mutex its `onWorkerStart` unlocks; here `onWorkerStart` starts it, and its `SyncClient` is
+a blocking `TcpStream`.
+
+`core-tests/src/server/server.cpp`'s TLS TESTs that start a server are
+`server/src/http1/server_ssl.rs`, in the same binary and phase, one function per TEST
+under its own name: `ssl`, `ssl_error`, `ssl_write`, `dtls`, `dtls2`, `ssl_client_cert_1`
+(base mode), `ssl_client_cert_2` (process) and `ssl_client_cert_3` (thread), with upstream's
+modes, certificates, packets and expected values. `server.ssl_matches_wildcard_name`
+starts no server and is a crates/ports unit test (tests/modules/ports/README.md).
+
+- `SyncClient` is crates/clients' `network::Client` through its `swr_v1_clients_*` exports,
+  with `SyncClient`'s `connected`/`created` bookkeeping; `get_client()->set_ssl_cert_file`
+  writes the client's `SSLContext` slot as the setter does.
+- The `Mutex(true)` the client thread waits on and `onWorkerStart` unlocks is a socket
+  pair, and `test::counter_*`'s counter is `sw_shm_malloc` memory, as upstream's is: in
+  process mode the worker is another process. `EXPECT`s are recorded in that memory too,
+  so unlike the cases above a process-mode worker's failure fails the case.
+- An `ASSERT` in the client thread fails the case and signals the master down, where
+  upstream's returned from the thread and left the server running.
+- `ssl_write`'s 4 MiB of random bytes (`append_random_bytes`) are read from `/dev/urandom`.
+- `ssl_client_cert`'s `test::dump_cert_info` prints the certificate's subject and issuer
+  entries and the subject's one-line form; its validity and public-key lines, which the
+  `organizationName: swoole` search can't match, are left out.
+- `dtls2` reaps its forked client, which must exit 0.
+- `ssl_client_cert_3` is excluded: `MODE_THREAD` needs thread support (`SW_THREAD`, a ZTS
+  build), and this binary is NTS, so `create()` fails with "Thread support is not enabled"
+  (#2633).
+
+`core-tests/src/server/server.cpp`'s connection and configuration TESTs (#2536) are
+`server/src/http1/server_config.rs`, in the same binary, phase and records, under the
+`server` suite with upstream's names. `server.protocols` needs only its port, so it is
+crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md).
+
+| Upstream TEST | Rust case | Notes |
+| --- | --- | --- |
+| `max_connection`, `min_connection`, `worker_num` | same names | `SwooleG.max_sockets` is read and set through the `SwooleG` symbol, whose first member it is |
+| `reactor_num_base`, `reactor_num_large`, `reactor_num_large2`, `reactor_num_zero` | same names | `SW_CPU_NUM` is `swr_v1_core_cpu_num()`, which `swoole_init` sets |
+| `startup_error` | same name | its `new` Server leaks, as upstream's |
+| `protocols` | crates/ports `methods::tests::server_protocols` | |
+
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
 covered by the PHPTs.
 
 ## PHP checks
+
+`test_smuggling.py` (`http-smuggling`) sends HTTP/1 framing ambiguities to a whole
+`Swoole\Http\Server` (`smuggling.php`) on each engine, one byte stream per fresh
+connection: conflicting and malformed `Content-Length`, `Transfer-Encoding` variants,
+CL.TE/TE.CL/TE.TE desyncs, bare `\n` and `\r`, chunk-size, extension and trailer
+edge cases, oversized and malformed headers and request lines, and requests
+pipelined behind an error. Every response's status line, `Connection` header and
+body (the handler echoes the method, URI, headers and body it received) and whether
+the server closed the connection must equal the first engine's:
+
+```sh
+python3 -m pytest tests/modules/http/test_smuggling.py \
+  --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so
+```
+
+A connection is read until the server closes it or sends nothing for a second; the
+cases run 32 at a time, so the phase takes about five seconds.
 
 The merge tier's `api-surface` phase (`tools/capability_inventory.py
 --require-same-api`) compares every Swoole class's reflected metadata,

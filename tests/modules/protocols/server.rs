@@ -1,16 +1,17 @@
 //! Upstream's `core-tests/src/protocol/redis.cpp` (`redis.get`, `redis.server`) and
 //! `core-tests/src/server/mqtt.cpp` (`mqtt.echo`) TESTs, one function per TEST with the
 //! same inputs and expected values. Built into the http server case binary
-//! (tests/modules/http/server), whose fixture.cc builds the Servers. The redis client is
+//! (tests/modules/http/server), whose http1/case.rs builds the Servers. The redis client is
 //! a blocking `TcpStream` speaking RESP with core-tests' `RedisClient` (hiredis) reply
 //! rules; upstream's runs in a coroutine, here in the worker's case thread. The file's
-//! other TESTs are unit tests: `format` and `parse` in crates/protocols/src/redis.rs,
+//! other TESTs are unit tests: `format` and `parse` in crates/protocols-ffi/src/redis.rs,
 //! `recv_packet_with_partially_filled_buffer` in crates/ports/src/resp_recv.rs.
 
 use super::protocol::random_bytes;
 use super::{
-    Event, Hook, Receive, SIGTERM, Server, TEST_LOG_FILE, base_worker_start, exec_js_script, info,
-    kill, primary_port, request, send, signal_block_all, swr_case_close, swr_case_master_pid,
+    SIGTERM, Server, TEST_LOG_FILE, base_worker_start, exec_js_script, info, kill, primary_port,
+    request, send, signal_block_all, swr_case_close, swr_case_master_pid, swr_case_mqtt_server,
+    swr_case_redis_server, swr_case_tick,
 };
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_long, c_void};
@@ -20,23 +21,6 @@ use std::sync::Mutex;
 
 const REDIS_TEST_KEY: &str = "key-swoole";
 const REDIS_TEST_VALUE: &str = "value-swoole";
-
-#[link(name = "swoole")]
-unsafe extern "C" {
-    fn swr_case_redis_server(on_worker_start: Hook, on_receive: Receive) -> *mut Server;
-    fn swr_case_mqtt_server(
-        on_worker_start: Hook,
-        on_connect: Event,
-        on_close: Event,
-        on_receive: Receive,
-    ) -> *mut Server;
-    fn swr_case_tick(
-        serv: *mut Server,
-        ms: c_long,
-        tick: extern "C" fn(*mut Server, c_long) -> bool,
-        session_id: c_long,
-    );
-}
 
 unsafe extern "C" {
     fn time(out: *mut i64) -> i64;
@@ -204,7 +188,7 @@ extern "C" fn redis_receive(serv: *mut Server, req: *const c_void) -> c_int {
 /// `TEST(redis, server)`.
 fn server() {
     *REDIS_DATA.lock().unwrap() = None;
-    // SAFETY: the fixture's callbacks have the slots' signatures.
+    // SAFETY: the builder's callbacks have the slots' signatures.
     let serv = unsafe { swr_case_redis_server(base_worker_start, redis_receive) };
     super::protocol::serve(serv, |serv| {
         signal_block_all();
@@ -389,7 +373,7 @@ extern "C" fn mqtt_tick(serv: *mut Server, session_id: c_long) -> bool {
 extern "C" fn mqtt_connect(serv: *mut Server, head: *const c_void) {
     let (session_id, _, _, _) = info(head);
     sessions(|s| s.insert(session_id, MqttSession::default()));
-    // SAFETY: the running server and a callback of the fixture's signature.
+    // SAFETY: the running server and a callback of the builder's signature.
     unsafe { swr_case_tick(serv, 100, mqtt_tick, session_id) };
 }
 
@@ -414,7 +398,7 @@ extern "C" fn mqtt_receive(serv: *mut Server, req: *const c_void) -> c_int {
 /// `TEST(mqtt, echo)`: core-tests/js/mqtt.js subscribes, then logs ten publishes.
 fn echo() {
     *SESSIONS.lock().unwrap() = None;
-    // SAFETY: the fixture's callbacks have the slots' signatures.
+    // SAFETY: the builder's callbacks have the slots' signatures.
     let serv =
         unsafe { swr_case_mqtt_server(base_worker_start, mqtt_connect, mqtt_close, mqtt_receive) };
     super::protocol::serve(serv, |serv| {

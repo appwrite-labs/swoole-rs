@@ -85,12 +85,13 @@ pub struct ServerConfig {
 
 impl Drop for ServerConfig {
     fn drop(&mut self) {
-        // SAFETY: ServerState constructed this registry; native configuration views
-        // only borrow its handle and have ended before the owning config is freed.
-        unsafe {
-            swoole_rs_corebase::worker_registry::swr_v1_process_worker_registry_free(
-                self.worker_registry.cast(),
-            );
+        let registry = self
+            .worker_registry
+            .cast::<swoole_rs_corebase::worker_registry::WorkerRegistry>();
+        if !registry.is_null() {
+            // SAFETY: ServerState boxed this registry; native configuration views
+            // only borrow its handle and have ended before the owning config is freed.
+            drop(unsafe { Box::from_raw(registry) });
         }
     }
 }

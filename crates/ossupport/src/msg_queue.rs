@@ -203,38 +203,16 @@ impl Drop for QueueRecord {
     }
 }
 
-/// `new MsgQueue(key)`, or null (after msgget's warning) when it isn't ready.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_msg_queue_new(key: libc::key_t) -> *mut QueueRecord {
-    let queue = QueueRecord::new(key, true, 0);
-    if queue.ready() {
-        Box::into_raw(Box::new(queue))
-    } else {
-        std::ptr::null_mut()
+impl QueueRecord {
+    /// `new MsgQueue(key)`, or `None` (after msgget's warning) when it isn't ready.
+    #[must_use]
+    pub fn open(key: libc::key_t) -> Option<Box<Self>> {
+        let queue = Self::new(key, true, 0);
+        queue.ready().then(|| Box::new(queue))
     }
 }
 
-/// `delete queue`; null is a no-op.
-/// # Safety
-/// `queue` is null or from `swr_v1_os_msg_queue_new`, freed once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_queue_free(queue: *mut QueueRecord) {
-    if !queue.is_null() {
-        // SAFETY: as the caller promises.
-        drop(unsafe { Box::from_raw(queue) });
-    }
-}
-
-/// `queue->get_id()`.
-/// # Safety
-/// `queue` is live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_queue_id(queue: *const QueueRecord) -> c_int {
-    // SAFETY: as the caller promises.
-    unsafe { (*queue).id }
-}
-
-/// `queue->push(node, length)`.
+/// `queue->push(node, length)`, which the hooks system tests link by name.
 /// # Safety
 /// `queue` is live; `node` as [`QueueRecord::push`] requires.
 #[unsafe(no_mangle)]
@@ -252,8 +230,7 @@ pub unsafe extern "C" fn swr_v1_os_msg_queue_push(
 /// `queue->pop(node, size)`.
 /// # Safety
 /// `queue` is live; `node` as [`QueueRecord::pop`] requires.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_queue_pop(
+pub unsafe fn swr_v1_os_msg_queue_pop(
     queue: *const QueueRecord,
     node: *mut c_void,
     size: usize,

@@ -11,7 +11,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 from tools.build_upstream import COMMIT
 from tools.harness import run_isolated
 
@@ -26,7 +26,7 @@ def main():
     def pinned(name):
         return subprocess.check_output(['git', '-C', str(args.source), 'show', COMMIT + ':' + name])
     try:
-        selected, flags = hybrid_tree(args.archive)
+        flags = native_flags(args.archive)
         original = pinned('core-tests/src/os/file.cpp').decode()
         start = original.index('TEST(file, open_twice)'); opening = original.index('{', start)
         end, depth = opening + 1, 1

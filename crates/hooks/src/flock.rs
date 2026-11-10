@@ -3,9 +3,9 @@
 //! them, backing off from `SW_FILE_LOCK_DEFAULT_SECOND` to `SW_FILE_LOCK_MAX_SECOND`;
 //! unlocking, `LOCK_NB` and calls outside a coroutine go straight to flock.
 use crate::stdio::NATIVE;
-use crate::swr_v1_hook_backoff;
 use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
 use swoole_rs_corebase::set_errno;
+use swoole_rs_reactor::backoff;
 
 fn flock(fd: i32, operation: i32) -> i32 {
     // SAFETY: flock has no memory preconditions.
@@ -39,7 +39,7 @@ fn coroutine_flock(
         if sleep(delay) != 0 {
             return Ok(-1);
         }
-        delay = swr_v1_hook_backoff(delay, SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND);
+        delay = backoff(delay, SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND);
     }
 }
 

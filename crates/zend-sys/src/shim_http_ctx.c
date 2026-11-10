@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): globals (PG, SG(rfc1867_uploaded_files)),
+ * allocator (estrndup, array_init_size, zend_string_*) and version
+ * (PG(arg_separator) became a zend_string in 8.5). */
 #include "shim_http_ctx.h"
 #include "SAPI.h"
 #include "main/php_variables.h"
@@ -15,31 +18,6 @@ zval *swr_zend_http_property_array(zend_object *object, uint32_t offset, uint32_
     zval *property = OBJ_PROP(object, offset);
     array_init_size(property, size);
     return property;
-}
-
-void swr_zend_http_add_or_merge(zval *array, const char *key, size_t length, zval *element) {
-    zend_ulong index;
-    HashTable *ht = Z_ARRVAL_P(array);
-    int numeric = ZEND_HANDLE_NUMERIC_STR(key, length, index);
-    zval *added = numeric ? zend_hash_index_add(ht, index, element) : zend_hash_str_add(ht, key, length, element);
-    if (added) {
-        return;
-    }
-    zval *current = numeric ? zend_hash_index_find(ht, index) : zend_hash_str_find(ht, key, length);
-    if (Z_TYPE_P(current) == IS_ARRAY) {
-        add_next_index_zval(current, element);
-    } else {
-        zval list;
-        array_init_size(&list, 2);
-        Z_ADDREF_P(current);
-        add_next_index_zval(&list, current);
-        add_next_index_zval(&list, element);
-        if (numeric) {
-            zend_hash_index_update(ht, index, &list);
-        } else {
-            zend_hash_str_update(ht, key, length, &list);
-        }
-    }
 }
 
 char *swr_zend_http_estrndup(const char *text, size_t length) {

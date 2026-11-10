@@ -40,7 +40,7 @@ namespace reference {
 #include "reference.inc"
 #pragma GCC diagnostic pop
 }
-// Rust's export under upstream's symbol (crates/protocols/src/mqtt.rs).
+// Rust's export under upstream's symbol (crates/protocols-ffi/src/mqtt.rs).
 namespace swoole {
 struct Protocol;
 struct PacketLength;
@@ -62,7 +62,7 @@ ssize_t get_package_length(const Protocol *, network::Socket *, PacketLength *pl
 }
 namespace redis {
 #include "redis_reply.inc"
-// Rust's receive loop (crates/protocols/src/resp_recv.rs) over this model's socket,
+// Rust's receive loop (crates/protocols-ffi/src/resp_recv.rs) over this model's socket,
 // with the effects production's export performs on the real one.
 int recv_packet(Protocol *protocol, Connection *conn, String *buffer) {
     struct Io { Protocol *protocol; Connection *conn; String *buffer; } io{protocol, conn, buffer};

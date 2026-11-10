@@ -4,12 +4,13 @@
 //! `Socket` methods over them, errno, the last error and logs included.
 use openssl_sys::{
     BIO_ctrl, BIO_free_all, BIO_new, BIO_read, BIO_s_mem, ERR_clear_error, ERR_get_error,
-    ERR_reason_error_string, PEM_write_bio_X509, SSL, SSL_CTX, SSL_ERROR_SSL, SSL_ERROR_SYSCALL,
-    SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE, SSL_ERROR_ZERO_RETURN, SSL_RECEIVED_SHUTDOWN,
-    SSL_SENT_SHUTDOWN, SSL_accept, SSL_connect, SSL_get_error, SSL_get_shutdown,
-    SSL_get_verify_result, SSL_new, SSL_read, SSL_set_accept_state, SSL_set_connect_state,
-    SSL_set_ex_data, SSL_set_shutdown, SSL_shutdown, SSL_write, X509,
-    X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, X509_check_host, X509_free,
+    ERR_reason_error_string, PEM_write_bio_X509, SSL, SSL_CTRL_MODE, SSL_CTX, SSL_ERROR_SSL,
+    SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE, SSL_ERROR_ZERO_RETURN,
+    SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, SSL_RECEIVED_SHUTDOWN, SSL_SENT_SHUTDOWN, SSL_accept,
+    SSL_connect, SSL_ctrl, SSL_get_error, SSL_get_shutdown, SSL_get_verify_result, SSL_new,
+    SSL_read, SSL_set_accept_state, SSL_set_connect_state, SSL_set_ex_data, SSL_set_shutdown,
+    SSL_shutdown, SSL_write, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK,
+    X509_check_host, X509_free,
 };
 
 // SAFETY: libssl/libcrypto's own declarations; openssl-sys binds neither.
@@ -69,37 +70,11 @@ impl SocketTls {
 ///
 /// # Safety
 /// `tls` is a live socket's TLS state group.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_clear(tls: *mut SocketTls) {
+pub unsafe fn swr_v1_socket_ssl_clear(tls: *mut SocketTls) {
     // SAFETY: clears this thread's OpenSSL error queue.
     unsafe { ERR_clear_error() };
     // SAFETY: the caller's live state group.
     unsafe { (*tls).want(false, false) };
-}
-
-const EVENT_READ: c_int = 1 << 9;
-const EVENT_WRITE: c_int = 1 << 10;
-
-/// `Socket::what_event_want`: the event a pending TLS read or write waits for, when
-/// the socket has an SSL, else `default_event`.
-///
-/// # Safety
-/// `tls` is a live socket's TLS state group.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_tls_event(
-    tls: *const SocketTls,
-    ssl: bool,
-    default_event: c_int,
-) -> c_int {
-    // SAFETY: the caller's live state group.
-    let tls = unsafe { *tls };
-    if !ssl || tls.want_read == 0 && tls.want_write == 0 {
-        default_event
-    } else if tls.want_write != 0 {
-        EVENT_WRITE
-    } else {
-        EVENT_READ
-    }
 }
 
 #[repr(C)]
@@ -149,8 +124,7 @@ fn classify(tls: &mut SocketTls, ssl: *const SSL, n: c_int, write: bool) -> SslI
 /// # Safety
 /// `tls` is the live state group of the socket owning `ssl`, a live SSL, and
 /// `buffer` denotes `length` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_recv(
+pub unsafe fn swr_v1_socket_ssl_recv(
     tls: *mut SocketTls,
     ssl: *mut SSL,
     buffer: *mut c_void,
@@ -175,8 +149,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_recv(
 /// # Safety
 /// `tls` is the live state group of the socket owning `ssl`, a live SSL, and
 /// `buffer` denotes `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_send(
+pub unsafe fn swr_v1_socket_ssl_send(
     tls: *mut SocketTls,
     ssl: *mut SSL,
     buffer: *const c_void,
@@ -225,8 +198,7 @@ impl SslHandshakeResult {
 ///
 /// # Safety
 /// `tls` is the live state group of the socket owning `ssl`, a live SSL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_accept(
+pub unsafe fn swr_v1_socket_ssl_accept(
     tls: *mut SocketTls,
     ssl: *mut SSL,
     dtls: bool,
@@ -276,11 +248,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_accept(
 ///
 /// # Safety
 /// `tls` is the live state group of the socket owning `ssl`, a live SSL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_connect(
-    tls: *mut SocketTls,
-    ssl: *mut SSL,
-) -> SslHandshakeResult {
+pub unsafe fn swr_v1_socket_ssl_connect(tls: *mut SocketTls, ssl: *mut SSL) -> SslHandshakeResult {
     // SAFETY: the caller's live state group.
     let tls = unsafe { &mut *tls };
     tls.want(false, false);
@@ -325,8 +293,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_connect(
 ///
 /// # Safety
 /// `cert` is null or an owned X509 reference, and `name` denotes `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_check_host(
+pub unsafe fn swr_v1_socket_ssl_check_host(
     cert: *mut X509,
     name: *const c_char,
     length: usize,
@@ -346,11 +313,8 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_check_host(
 ///
 /// # Safety
 /// `ssl` is a live SSL owned by the caller.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_verify(
-    ssl: *const SSL,
-    allow_self_signed: bool,
-) -> c_long {
+#[must_use]
+pub unsafe fn swr_v1_socket_ssl_verify(ssl: *const SSL, allow_self_signed: bool) -> c_long {
     // SAFETY: the caller's live SSL.
     let result = unsafe { SSL_get_verify_result(ssl) };
     if allow_self_signed && result == c_long::from(X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT) {
@@ -366,8 +330,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_verify(
 /// # Safety
 /// `cert` is a live X509 (owned by the caller when `consume`), and `buffer` denotes
 /// `length` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_pem(
+pub unsafe fn swr_v1_socket_ssl_pem(
     cert: *mut X509,
     buffer: *mut c_char,
     length: usize,
@@ -418,8 +381,7 @@ pub fn error_reason(error: std::os::raw::c_ulong) -> c_int {
 ///
 /// # Safety
 /// `reason` is null or writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_error_reason(reason: *mut c_int) -> *const c_char {
+pub unsafe fn swr_v1_socket_ssl_error_reason(reason: *mut c_int) -> *const c_char {
     // SAFETY: this thread's OpenSSL error queue.
     let error = unsafe { ERR_get_error() };
     // SAFETY: `reason` is null or writable.
@@ -431,8 +393,8 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_error_reason(reason: *mut c_int) -> *
 }
 
 /// `Socket::ssl_catch_error`'s reason: the oldest queued error's reason code, left queued.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_ssl_peek_reason() -> c_int {
+#[must_use]
+pub fn swr_v1_socket_ssl_peek_reason() -> c_int {
     // SAFETY: this thread's OpenSSL error queue, read without popping.
     error_reason(unsafe { ERR_peek_error() })
 }
@@ -537,8 +499,7 @@ unsafe fn shutdown(
 /// # Safety
 /// `tls` is the live state group of the socket owning `ssl`, a live SSL, and
 /// `closed` is that socket's `ssl_closed_`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_shutdown(
+pub unsafe fn swr_v1_socket_ssl_shutdown(
     tls: *mut SocketTls,
     ssl: *mut SSL,
     closed: *mut u8,
@@ -555,7 +516,9 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_shutdown(
 
 /// `Socket::ssl_create`: a new SSL from `context` on `fd`, in connect state for
 /// `SW_SSL_CLIENT` or accept state for `SW_SSL_SERVER`, carrying `socket` as its
-/// ex data at `index`, after clearing the want flags. `*ssl` is set once made and
+/// ex data at `index`, after clearing the want flags. It accepts a write retried from
+/// another buffer: `Socket::ssl_sendfile` reads each try into a new one, where
+/// upstream's stack buffer happens to keep its address. `*ssl` is set once made and
 /// the state cleared on success. Returns 0, or 1 when `SSL_new`
 /// failed, 2 when `SSL_set_fd` failed (`*error` holds the peeked error) and 3 when
 /// `SSL_set_ex_data` failed; native code warns.
@@ -563,8 +526,11 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_shutdown(
 /// # Safety
 /// `tls` is the socket's live state group, `context` a live `SSL_CTX`; `ssl` and
 /// `error` are writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_new(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Socket::ssl_create's inputs plus its two out-parameters"
+)]
+pub unsafe fn swr_v1_socket_ssl_new(
     tls: *mut SocketTls,
     context: *mut SSL_CTX,
     fd: c_int,
@@ -586,6 +552,15 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_new(
     if made.is_null() {
         return 1;
     }
+    // SAFETY: the new SSL; `SSL_set_mode` is this `SSL_ctrl`.
+    unsafe {
+        SSL_ctrl(
+            made,
+            SSL_CTRL_MODE,
+            SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER,
+            std::ptr::null_mut(),
+        )
+    };
     // SAFETY: the new SSL and the caller's descriptor.
     if unsafe { SSL_set_fd(made, fd) } == 0 {
         // SAFETY: the queue holds SSL_set_fd's error.
@@ -645,12 +620,6 @@ mod tests {
                 }
             );
             assert_eq!((tls.want_read, tls.want_write), (1, 0));
-            assert_eq!(swr_v1_socket_tls_event(&raw const tls, true, 0), EVENT_READ);
-            assert_eq!(
-                swr_v1_socket_tls_event(&raw const tls, false, 7),
-                7,
-                "no SSL"
-            );
             tls.want_write = 1;
             let sent =
                 swr_v1_socket_ssl_send(&raw mut tls, ssl, buffer.as_ptr().cast(), buffer.len());
@@ -661,11 +630,7 @@ mod tests {
                 "and replaces the flags"
             );
             swr_v1_socket_ssl_clear(&raw mut tls);
-            assert_eq!(
-                swr_v1_socket_tls_event(&raw const tls, true, 7),
-                7,
-                "nothing pending"
-            );
+            assert_eq!((tls.want_read, tls.want_write), (0, 0), "nothing pending");
             SSL_free(ssl);
         }
     }
@@ -899,9 +864,9 @@ mod tests {
     }
 }
 
-/// `Socket::ssl_shutdown` and `ssl_close` over real TLS 1.2 peers (memory BIO pairs and
-/// a nonblocking socketpair), with `SSL_shutdown`/`SSL_get_error` observed and, for five
-/// negative results, injected. The repaired (`--fix-halfclose`) cases were the
+/// `Socket::ssl_shutdown` and `ssl_close`, and a retried write, over real TLS 1.2 peers
+/// (memory BIO pairs and a nonblocking socketpair), with `SSL_shutdown`/`SSL_get_error`
+/// observed and, for five negative results, injected. The repaired (`--fix-halfclose`) cases were the
 /// halfclose-tls-native gate's, which this replaces.
 #[cfg(test)]
 mod shutdown_tests {
@@ -1059,9 +1024,9 @@ mod shutdown_tests {
                 }
                 SSL_CTX_set_verify(client_ctx, SSL_VERIFY_NONE, None);
                 certificate(server_ctx);
-                let (server, client) = (SSL_new(server_ctx), SSL_new(client_ctx));
+                let client = SSL_new(client_ctx);
                 let mut fds = [-1; 2];
-                if native_socket {
+                let server = if native_socket {
                     assert_eq!(
                         libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()),
                         0
@@ -1069,15 +1034,31 @@ mod shutdown_tests {
                     for fd in fds {
                         assert_eq!(libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK), 0);
                     }
-                    SSL_set_fd(server, fds[0]);
                     SSL_set_fd(client, fds[1]);
+                    // The server end as `Socket::ssl_create` makes it.
+                    let (mut tls, mut server, mut error) =
+                        (SocketTls::default(), ptr::null_mut(), 0);
+                    let made = swr_v1_socket_ssl_new(
+                        &raw mut tls,
+                        server_ctx,
+                        fds[0],
+                        SERVER,
+                        0,
+                        ptr::null_mut(),
+                        &raw mut server,
+                        &raw mut error,
+                    );
+                    assert_eq!(made, 0);
+                    server
                 } else {
+                    let server = SSL_new(server_ctx);
                     let (mut left, mut right) = (ptr::null_mut(), ptr::null_mut());
                     assert_eq!(BIO_new_bio_pair(&raw mut left, 0, &raw mut right, 0), 1);
                     SSL_set_bio(server, left, left);
                     SSL_set_bio(client, right, right);
-                }
-                SSL_set_accept_state(server);
+                    SSL_set_accept_state(server);
+                    server
+                };
                 SSL_set_connect_state(client);
                 for _ in 0..1000 {
                     if SSL_in_init(server) == 0 && SSL_in_init(client) == 0 {
@@ -1134,6 +1115,64 @@ mod shutdown_tests {
                 }
             }
         }
+    }
+
+    /// `Socket::ssl_sendfile` reads each try of a chunk into a new buffer, so a write
+    /// retried after `WANT_WRITE` comes from another address with the same bytes. The
+    /// socket's SSL takes it; without `SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER` OpenSSL fails
+    /// it as a bad write retry and the server drops the rest of the file (#2584).
+    #[test]
+    fn a_write_retried_from_another_buffer_completes() {
+        let pair = Pair::new(true);
+        let small: c_int = 4096;
+        unsafe {
+            let size = libc::socklen_t::try_from(std::mem::size_of::<c_int>()).unwrap();
+            let option = (&raw const small).cast();
+            libc::setsockopt(pair.fds[0], libc::SOL_SOCKET, libc::SO_SNDBUF, option, size);
+            libc::setsockopt(pair.fds[1], libc::SOL_SOCKET, libc::SO_RCVBUF, option, size);
+        }
+        let data: Vec<u8> = (0..=u8::MAX).cycle().take(65536).collect();
+        let mut tls = SocketTls::default();
+        // Every try's buffer stays live, so each retry is from a new address.
+        let mut tries: Vec<Vec<u8>> = Vec::new();
+        let mut received = Vec::new();
+        let mut chunk = [0_u8; 16384];
+        let mut drain = |received: &mut Vec<u8>| unsafe {
+            loop {
+                let n = SSL_read(pair.client, chunk.as_mut_ptr().cast(), 16384);
+                if n <= 0 {
+                    break;
+                }
+                received.extend_from_slice(&chunk[..usize::try_from(n).unwrap()]);
+            }
+        };
+        loop {
+            assert!(tries.len() < 1000, "the write never completed");
+            tries.push(data.clone());
+            let buffer = tries.last().unwrap();
+            let sent = unsafe {
+                swr_v1_socket_ssl_send(
+                    &raw mut tls,
+                    pair.server,
+                    buffer.as_ptr().cast(),
+                    buffer.len(),
+                )
+            };
+            if sent.value == 65536 {
+                break;
+            }
+            assert_eq!(
+                (sent.value, sent.error, tls.want_write),
+                (-1, libc::EAGAIN, 1),
+                "try {} waits to write",
+                tries.len()
+            );
+            drain(&mut received);
+        }
+        assert!(tries.len() > 1, "the first write waited");
+        drain(&mut received);
+        assert_eq!(received.len(), data.len());
+        assert!(received == data, "the bytes arrive once, in order");
     }
 
     #[test]

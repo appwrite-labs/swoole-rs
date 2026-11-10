@@ -1,5 +1,5 @@
 //! Bounded equivalents of Swoole's permissive first-party HTTP framing.
-use super::{HttpSpan, INVALID, bytes, maps::METHODS};
+use super::{HttpSpan, INVALID, maps::METHODS};
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct HttpFrame {
@@ -15,7 +15,9 @@ pub struct HttpFrame {
     pub known_length: u32,
 }
 impl HttpFrame {
-    pub(crate) fn parse(&mut self, input: &[u8], operation: u32) -> i32 {
+    /// Operation 0 reads the request line (or an HTTP/2 preface), 1 finds the header
+    /// block's end: 0 on success.
+    pub fn parse(&mut self, input: &[u8], operation: u32) -> i32 {
         match operation {
             0 => request_line(input, self),
             1 => header_end(input, self),
@@ -133,16 +135,11 @@ fn header_end(input: &[u8], frame: &mut HttpFrame) -> i32 {
     frame.offset = frame.offset.max(input.len().saturating_sub(3));
     INVALID
 }
-/// Preserve the native Expect scanner's exact skip/matching behavior.
-/// # Safety
-/// Input is readable. No references, callbacks or allocation escape.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_expect(data: *const u8, length: usize) -> i32 {
-    // SAFETY: the caller lends `length` initialized bytes at `data` (null only when empty).
-    let input = match unsafe { bytes(data, length) } {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
+/// Upstream's `has_expect_header`: an `Expect: 100-continue` header, found with the
+/// native scanner's exact skip/matching behavior.
+#[must_use]
+pub fn expect(input: &[u8]) -> bool {
+    let length = input.len();
     // The native byte loop, jumping between CRs: with a body attached (echo-64k) the
     // scan runs over the whole request, so per-byte cost dominates (#338).
     let mut at = 0;
@@ -151,15 +148,17 @@ pub unsafe extern "C" fn swr_v1_http_expect(data: *const u8, length: usize) -> i
         if length - at > 9 {
             at += 2;
             if starts(tail(input, at), b"Expect: ") {
-                return i32::from(starts(tail(input, at + 8), b"100-continue"));
+                return starts(tail(input, at + 8), b"100-continue");
             }
             at += 1;
         }
         at += 1;
     }
-    0
+    false
 }
-pub(crate) fn header_value(
+/// The value of header `name` among the lines of `input[start..end]`, into `output`:
+/// 1 when found, 0 when not, `INVALID` for bad bounds.
+pub fn header_value(
     input: &[u8],
     start: usize,
     end: usize,
@@ -232,10 +231,6 @@ mod tests {
         }
         0
     }
-    fn expect(input: &[u8]) -> i32 {
-        // SAFETY: a live slice.
-        unsafe { swr_v1_http_expect(input.as_ptr(), input.len()) }
-    }
     #[test]
     fn expect_scan_matches_the_native_loop() {
         // Every string over the bytes the loop branches on, up to six long.
@@ -263,13 +258,13 @@ mod tests {
         }
         for input in &inputs {
             assert_eq!(
-                expect(input),
+                i32::from(expect(input)),
                 expect_reference(input),
                 "{:?}",
                 String::from_utf8_lossy(input)
             );
         }
-        assert_eq!(expect(b"GET / HTTP/1.1\r\nExpect: 100-continue\r\n\r\n"), 1);
+        assert!(expect(b"GET / HTTP/1.1\r\nExpect: 100-continue\r\n\r\n"));
     }
     #[test]
     fn request_line_retains_permissive_prefix_matching_and_partial_mutations() {

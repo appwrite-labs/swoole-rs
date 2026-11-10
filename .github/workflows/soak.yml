@@ -1,5 +1,5 @@
 name: Soak
-# Hours-long load on the all-modules hybrid (tests/soak/soak.py): fails on a crash, a
+# Hours-long load on the Cargo build (tests/soak/soak.py): fails on a crash, a
 # worker error, a failed request, or RSS, fd or Zend memory growth after warm-up beyond
 # the thresholds plus what the pinned upstream grew under the same load just before.
 # The leak self-test first proves the growth check catches a per-request leak. Nightly
@@ -14,16 +14,13 @@ on:
         default: '60'
   pull_request:
     paths: [tests/soak/**, .github/workflows/soak.yml]
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 defaults:
   run:
     shell: bash
 
 jobs:
   soak:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 180
     services:
       mysql:
@@ -48,25 +45,19 @@ jobs:
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - if: hashFiles('target/upstream/src/modules/swoole.so') == ''
         run: python3 tools/build_upstream.py
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
-      - run: python3 tools/build_hybrid.py | tee hybrid.log
+      - run: python3 tools/build_ext.py --profile release-lto
       - run: |
-          echo "hybrid=$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" >> "$GITHUB_ENV"
           echo "args=--php-extension mysqlnd --php-extension pdo --php-extension pdo_mysql --redis 127.0.0.1 --mysql 127.0.0.1" >> "$GITHUB_ENV"
           echo "minutes=${{ github.event_name == 'pull_request' && '5' || inputs.minutes || '60' }}" >> "$GITHUB_ENV"
-      - run: python3 tests/soak/soak.py $args --engine hybrid=$hybrid --leak --duration 120 --output target/soak/leak.json
+      - run: python3 tests/soak/soak.py $args --engine cargo=target/ext/swoole.so --leak --duration 120 --output target/soak/leak.json
       # The control's own verdict doesn't matter; only its growth does.
       - run: >
           python3 tests/soak/soak.py $args --engine upstream=target/upstream/src/modules/swoole.so
           --duration $((minutes * 60)) --output target/soak/upstream.json || test -f target/soak/upstream.json
       - run: >
-          python3 tests/soak/soak.py $args --engine hybrid=$hybrid --control target/soak/upstream.json
-          --duration $((minutes * 60)) --output target/soak/hybrid.json
+          python3 tests/soak/soak.py $args --engine cargo=target/ext/swoole.so --control target/soak/upstream.json
+          --duration $((minutes * 60)) --output target/soak/cargo.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

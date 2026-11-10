@@ -1,11 +1,17 @@
-# Upstream's core-tests/src/reactor/base.cpp TESTs as Rust, linked against the hybrid tree's
-# libswoole.so (SWOOLE_LIB_DIR) with fixture.cc compiled in. Not a workspace member: it needs that
-# Linux build, which tests/modules/hooks/system.py makes. build.rs links it; Cargo.lock pins the
-# (empty) dependency set for --locked.
+# Upstream's core-tests/src/reactor/base.cpp TESTs as Rust, with fixture.cc, linked with
+# the crates (swoole-rs-ffi) and the C and C++ tests/modules/hooks/system.py builds, which builds
+# and runs it (Linux); `cargo test` leaves it out.
 [package]
 name = "swoole-rs-reactor-base-tests"
 version = "0.0.0"
 edition = "2024"
 publish = false
+build = "../../hooks/system/build.rs"
 
-[workspace]
+[[bin]]
+name = "swoole-rs-reactor-base-tests"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+swoole-rs-ffi = { path = "../../../../crates/ffi" }

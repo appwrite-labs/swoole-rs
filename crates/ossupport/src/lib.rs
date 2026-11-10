@@ -24,13 +24,11 @@ mod file_record;
 ))]
 pub use file::swr_v1_os_sendfile;
 pub use file::{
-    FileIo, FileSize, Sendfile, swoole_sendfile, swr_v1_os_file_close, swr_v1_os_file_open,
-    swr_v1_os_file_read_all, swr_v1_os_file_size, swr_v1_os_file_write_all,
-    swr_v1_os_sendfile_copy, swr_v1_os_tmpfile,
+    FileIo, FileSize, Sendfile, file_close, file_open, file_size, read_all, swoole_sendfile,
+    swr_v1_os_sendfile_copy, write_all,
 };
 pub use file_api::*;
 pub use file_record::*;
-pub use swoole_rs_corebase::swr_v1_os_random_bytes;
 mod system;
 #[cfg(feature = "upstream-symbols")]
 pub use system::swoole_daemon;
@@ -42,16 +40,9 @@ pub use system::{
     swr_v1_os_thread_native_id, swr_v1_os_thread_set_name,
 };
 mod msg_queue;
-pub use msg_queue::{
-    QueueRecord, swr_v1_os_msg_queue_free, swr_v1_os_msg_queue_id, swr_v1_os_msg_queue_new,
-    swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push,
-};
+pub use msg_queue::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
 mod pool;
-pub use pool::{
-    Pool, PoolHooks, swr_v1_os_pool_acquire, swr_v1_os_pool_complete, swr_v1_os_pool_dispatch,
-    swr_v1_os_pool_join, swr_v1_os_pool_notify_one, swr_v1_os_pool_queue_size,
-    swr_v1_os_pool_release, swr_v1_os_pool_task_id, swr_v1_os_pool_worker_num,
-};
+pub use pool::{Pool, PoolHooks, complete as pool_complete};
 
 #[cfg(test)]
 mod isolated_process {

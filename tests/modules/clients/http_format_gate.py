@@ -10,7 +10,7 @@ from pathlib import Path
 import gate
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 def pinned_defines(config):
  defines_list=[];lines=config.splitlines()
  for i,line in enumerate(lines):
@@ -25,7 +25,7 @@ def main():
  if a.rust_sanitized and not a.sanitize:p.error('--rust-sanitized requires --sanitize')
  out=a.output.parent/(a.output.stem+'-artifacts');out.mkdir(parents=True,exist_ok=True);gate.LOG=out/'commands';gate.LOG.mkdir(exist_ok=True)
  # Native side from the pin, Rust side against the hybrid build's fully patched tree.
- hybrid_source,hybrid_flags=hybrid_tree(a.archive)
+ hybrid_flags=native_flags(a.archive)
  pinned=lambda path:gate.run(['git','-C',a.source,'show',f'{gate.PIN}:{path}'])
  printf=gate.body(pinned('src/core/base.cc'),'size_t sw_snprintf(char *buf, size_t size, const char *format, ...) {')
  template=Path(__file__).with_name('http_format_witness.cpp').read_text();native_text,rust_text=template.split('// ENTRY')
@@ -36,5 +36,5 @@ def main():
  exe=out/'http_format';flags=['-std=c++17','-O1',*(['-fsanitize=address,undefined','-fno-omit-frame-pointer'] if a.sanitize else [])]
  gate.run(['c++',*flags,'-c',native,'-o',out/'native_http_format.o'])
  gate.run(['c++',*flags,*hybrid_flags,rust,out/'native_http_format.o',a.archive,'-Wl,--gc-sections','-lpthread','-ldl','-lm','-o',exe]);result=json.loads(gate.run([exe]))
- report=dict(passed=True,results=result,scope=__doc__,pin=gate.PIN,hybrid_tree=str(hybrid_source),native_sanitized=a.sanitize,rust_sanitized=a.rust_sanitized);a.output.write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report))
+ report=dict(passed=True,results=result,scope=__doc__,pin=gate.PIN,native_sanitized=a.sanitize,rust_sanitized=a.rust_sanitized);a.output.write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report))
 if __name__=='__main__':main()

@@ -19,6 +19,8 @@ php = [
     "swoole-rs-phpstubs/php",
     "dep:swoole-rs-phphttp",
     "swoole-rs-phphttp/php",
+    "dep:swoole-rs-phpclients",
+    "swoole-rs-phpclients/php",
     "dep:swoole-rs-phpruntime",
     "swoole-rs-phpruntime/php",
     "dep:swoole-rs-reactor",
@@ -28,7 +30,11 @@ php = [
     "dep:swoole-rs-framing",
     "dep:swoole-rs-phpcoroutines",
     "swoole-rs-phpcoroutines/php",
+    "dep:swoole-rs-phpserver",
+    "swoole-rs-phpserver/php",
+    "swoole-rs-phpserver/server",
     "dep:swoole-rs-server",
+    "dep:swoole-rs-ports",
     "dep:swoole-rs-phpswoole",
     "swoole-rs-phpswoole/php",
 ]
@@ -48,8 +54,11 @@ swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-error = { path = "../error", optional = true }
 swoole-rs-framing = { path = "../framing", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
+swoole-rs-phpserver = { path = "../phpserver", optional = true }
 swoole-rs-server = { path = "../server", optional = true }
+swoole-rs-ports = { path = "../ports", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
+swoole-rs-phpclients = { path = "../phpclients", optional = true }
 
 [lints]
 workspace = true

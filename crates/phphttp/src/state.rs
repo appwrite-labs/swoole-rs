@@ -6,7 +6,10 @@ use std::{
     ffi::{CString, c_char, c_int, c_void},
     rc::Rc,
 };
-use swoole_rs_zend::sys::zval;
+use swoole_rs_zend::{
+    ArrayMut, Owned, Props, Value,
+    sys::{swr_zend_http_property_array, zend_object, zval},
+};
 
 /// `llhttp_t` (`thirdparty/llhttp/llhttp.h`, `llhttp__internal_s`).
 #[repr(C)]
@@ -41,6 +44,51 @@ pub(crate) struct Slot {
     pub(crate) value: zval,
 }
 
+impl Slot {
+    /// The slot's zval; None before the context sets it.
+    pub(crate) fn get(&self) -> Option<&Value> {
+        // SAFETY: a set slot points at its own `value`, which the context
+        // (or, for an array, the object's property) keeps live.
+        unsafe { Value::from_ptr(self.ptr) }
+    }
+
+    /// The object a set object slot holds.
+    pub(crate) fn object(&self) -> Option<*mut zend_object> {
+        self.get()?.object()
+    }
+
+    /// The array a set array slot holds, to add to.
+    pub(crate) fn array_mut(&mut self) -> Option<&mut ArrayMut> {
+        self.get()?.array()?;
+        // SAFETY: as `get`, an array zval, borrowed mutably with the slot.
+        Some(unsafe { ArrayMut::from_ptr(self.ptr) })
+    }
+
+    /// `swoole_http_init_and_read_property`: the array in `object`'s declared
+    /// property slot at `offset`, made on first use. Like upstream, the slot
+    /// keeps an uncounted copy, which the property keeps alive.
+    pub(crate) fn init_array(&mut self, object: &Self, offset: u32, size: u32) -> *mut zval {
+        if self.ptr.is_null()
+            && let Some(object) = object.object()
+        {
+            // SAFETY: a declared property slot of the context's live object.
+            let array = unsafe { swr_zend_http_property_array(object, offset, size) };
+            // SAFETY: the array zval just initialised.
+            self.value = unsafe { *array };
+            self.ptr = &raw mut self.value;
+        }
+        self.ptr
+    }
+
+    /// Property writes on the slot's object, under its own class; None
+    /// before the context sets the slot.
+    pub(crate) fn props(&self) -> Option<Props<'_>> {
+        let object = self.object()?;
+        // SAFETY: the context's reference keeps the object live while the slot is borrowed.
+        Some(unsafe { Props::new(std::ptr::null_mut(), object) }.own())
+    }
+}
+
 /// `swoole::http::Request`.
 #[repr(C)]
 pub(crate) struct Request {
@@ -50,7 +98,8 @@ pub(crate) struct Request {
     pub(crate) ext: *const c_char,
     pub(crate) ext_len: u32,
     pub(crate) post_form_urlencoded: u8,
-    pub(crate) zdata: zval,
+    /// The request's bytes, a string once any arrive.
+    pub(crate) zdata: Owned,
     pub(crate) body_at: *const c_char,
     pub(crate) body_length: usize,
     /// An HTTP/2 request's body, as its DATA frames arrive.
@@ -86,7 +135,7 @@ pub(crate) struct Parse {
     pub(crate) form_data_name: Option<Box<[u8]>>,
     pub(crate) input_name: Option<Box<[u8]>>,
     /// The current upload's `$_FILES` entry (`IS_UNDEF` when there is none).
-    pub(crate) multipart_header: zval,
+    pub(crate) multipart_header: Owned,
     #[expect(
         clippy::box_collection,
         reason = "all zeroes must be valid: a null Box is None"
@@ -134,7 +183,7 @@ pub(crate) struct State {
     pub(crate) detached: u8,
     pub(crate) http2: u8,
     /// The coroutine socket; `IS_NULL` once bound to a server.
-    pub(crate) zsocket: zval,
+    pub(crate) zsocket: Owned,
     /// The HTTP/2 stream, 0 once it is released.
     pub(crate) stream_id: u32,
     /// The `Server` or the coroutine `Socket`.

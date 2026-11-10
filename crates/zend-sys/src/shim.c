@@ -1,3 +1,8 @@
+/* Core shims. Stays C (docs/zend.md, What stays C): bailout (swr_zend_try and
+ * swr_zend_try_call own the setjmp), allocator (zend_object_alloc, the emalloc
+ * family, zend_string_*), version (INIT_CLASS_ENTRY_EX, ce->create_object in an
+ * anonymous union, zend_parse_arg_func's signature) and budget (Z_TRY_ADDREF_P,
+ * Z_TRY_DELREF_P, ZVAL_STR). */
 #include "shim.h"
 
 void *swr_zend_object_alloc(size_t size, zend_class_entry *ce) {

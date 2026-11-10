@@ -7,15 +7,14 @@ use swoole_rs_zend::{
     Call, E_WARNING,
     bailout::Bailout,
     sys::{
-        _zend_new_array, swr_zend_hash_foreach_key, swr_zend_runtime_select_args,
-        swr_zend_stream_buffered_bytes, swr_zend_stream_from_zval, swr_zend_stream_set_array,
-        swr_zend_string_copy, swr_zend_string_release, swr_zval_try_addref,
-        zend_argument_value_error, zend_array, zend_array_destroy, zend_hash_clean,
-        zend_hash_index_update, zend_hash_update, zend_long, zend_string, zend_ulong, zval,
-        zval_add_ref, zval_ptr_dtor,
+        _zend_new_array, IS_ARRAY_EX, swr_zend_hash_foreach_key, swr_zend_runtime_select_args,
+        swr_zend_stream_from_zval, swr_zend_string_copy, swr_zend_string_release,
+        swr_zval_try_addref, zend_argument_value_error, zend_array, zend_array_destroy,
+        zend_hash_clean, zend_hash_index_update, zend_hash_update, zend_long, zend_string,
+        zend_ulong, zend_value, zval, zval_add_ref, zval_ptr_dtor,
     },
     type_of,
-    value::table,
+    value::{set, table},
 };
 
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE`, `SW_EVENT_ERROR`.
@@ -145,8 +144,11 @@ fn emulate_read(array: *mut zval) -> i64 {
     for (index, key, value) in entries(old) {
         // SAFETY: a live element.
         let stream = unsafe { swr_zend_stream_from_zval(value) };
-        // SAFETY: a live stream.
-        if stream.is_null() || unsafe { swr_zend_stream_buffered_bytes(stream) } <= 0 {
+        // SAFETY: null or a live stream.
+        let Some(stream) = (unsafe { stream.as_ref() }) else {
+            continue;
+        };
+        if stream.writepos - stream.readpos <= 0 {
             continue;
         }
         let slot = if key.is_null() {
@@ -164,7 +166,7 @@ fn emulate_read(array: *mut zval) -> i64 {
         // SAFETY: the old table goes; the array holds the new one.
         unsafe { zend_array_destroy(old) };
         // SAFETY: as above.
-        unsafe { swr_zend_stream_set_array(array, ready) };
+        unsafe { set(array, zend_value { arr: ready }, IS_ARRAY_EX) };
     } else {
         // SAFETY: unused.
         unsafe { zend_array_destroy(ready) };

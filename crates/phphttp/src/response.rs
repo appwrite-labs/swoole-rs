@@ -10,23 +10,22 @@ use crate::{
     send, websocket,
 };
 use std::{
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     mem::MaybeUninit,
     ptr,
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
+use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, Invalid, declare_long, declare_property_null, handlers, init_object, push_string,
-    set_key,
+    Call, Class, Invalid, Owned, Props, Value, ZStr, ZString, declare_long, declare_property_null,
+    handlers, init_object, push_string, set_key,
     sys::{
-        IS_ARRAY, IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long,
-        zend_object, zend_string,
+        IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_object,
+        zend_string,
     },
     type_of,
-    value::{self, obj_of},
-    value_of,
 };
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
@@ -58,21 +57,7 @@ unsafe extern "C" fn free(std: *mut zend_object) {
 unsafe extern "C" {
     /// `sw_reactor()`.
     fn swr_v1_event_reactor() -> *mut c_void;
-    /// The HTTP/2 server's (crates/phphttp2).
-    fn swr_v1_phphttp2_server_goaway(
-        ctx: *mut Context,
-        code: i64,
-        data: *const c_char,
-        length: usize,
-    ) -> bool;
-    static swoole_server_ce: *mut zend_class_entry;
-    static swoole_socket_coro_ce: *mut zend_class_entry;
-    fn swr_v1_phpclients_socket_pointer(value: *const z::zval) -> *mut c_void;
 }
-
-/// `Swoole\Http\Response`, as C++ reads it; MINIT writes it.
-#[unsafe(no_mangle)]
-pub static mut swoole_http_response_ce: *mut zend_class_entry = ptr::null_mut();
 
 /// The response object is going: finish what the handler left unanswered
 /// (500 when no status was set) and release the context. True if user code
@@ -134,8 +119,8 @@ method_table! {
 /// 1 zlib, 8 `SW_HAVE_COMPRESSION`).
 /// # Safety
 /// Called once, at MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_response_minit(codecs: u32) {
+pub unsafe fn response_minit(args: &MinitArgs) {
+    let codecs = args.codecs | u32::from(args.compression) << 3;
     // SAFETY: MINIT, with a static table.
     unsafe {
         RESPONSE.register(
@@ -155,8 +140,6 @@ pub unsafe extern "C" fn swr_v1_phphttp_response_minit(codecs: u32) {
     }
     crate::header::minit(ce);
     context::response_minit(ce);
-    // SAFETY: MINIT, before any thread reads it.
-    unsafe { swoole_http_response_ce = ce };
     crate::parse::minit(codecs);
 }
 
@@ -285,15 +268,9 @@ fn end(call: &Call) {
 }
 
 /// `stat(2)` of a file name, as `php_swoole_sys_error` reports its failure.
-fn stat(file: *mut zend_string) -> Result<libc::stat, ()> {
+fn stat(file: &ZStr) -> Result<libc::stat, ()> {
     let mut stat = MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: a zend_string's bytes are NUL-terminated.
-    let path = unsafe {
-        CStr::from_ptr(
-            file.wrapping_byte_add(std::mem::offset_of!(zend_string, val))
-                .cast(),
-        )
-    };
+    let path = file.c_str();
     // SAFETY: a NUL-terminated path and a writable buffer.
     if unsafe { libc::stat(path.as_ptr(), stat.as_mut_ptr()) } == 0 {
         // SAFETY: stat succeeded, so it filled the buffer.
@@ -322,12 +299,11 @@ fn send_file(call: &Call) {
         }
         let parsed = call
             .arity(1, 3)
-            .and_then(|()| Ok((call.str(1)?, call.long(2, 0)?, call.long(3, 0)?)));
+            .and_then(|()| Ok((call.zstr(1)?, call.long(2, 0)?, call.long(3, 0)?)));
         let (Some(file), offset, requested) = parsed.ok()? else {
             return None;
         };
-        // SAFETY: a parsed string argument lives for the call.
-        let name = unsafe { bytes(file) };
+        let name = file.bytes();
         if name.is_empty() {
             host::notice("file name is empty");
             return None;
@@ -361,7 +337,7 @@ fn send_file(call: &Call) {
             _ => return None,
         }
         let length = usize::try_from(length).unwrap_or_default();
-        Some(after(ctx).and_then(|()| send::send_file(ctx, file, offset, length)))
+        Some(after(ctx).and_then(|()| send::send_file(ctx, file.as_ptr(), offset, length)))
     };
     match run() {
         Some(result) => sent(call, &result),
@@ -375,14 +351,14 @@ fn set_cookie(call: &Call, encode: bool) {
     let parsed = (|| -> Result<_, Invalid> {
         call.arity(1, 10)?;
         let name = call.passed(1);
-        let value = call.str(2)?;
+        let value = call.zstr(2)?;
         let expires = call.long(3, 0)?;
-        let path = call.str(4)?;
-        let domain = call.str(5)?;
+        let path = call.zstr(4)?;
+        let domain = call.zstr(5)?;
         let secure = call.bool(6, false)?;
         let http_only = call.bool(7, false)?;
-        let same_site = call.str(8)?;
-        let priority = call.str(9)?;
+        let same_site = call.zstr(8)?;
+        let priority = call.zstr(9)?;
         let partitioned = call.bool(10, false)?;
         Ok(name.map(|name| {
             let flags = [secure, http_only, partitioned];
@@ -409,40 +385,29 @@ fn set_cookie(call: &Call, encode: bool) {
         host::notice("The first argument must be a string or an cookie object");
         return call.set_bool(false);
     }
-    let Some(ctx) = checked(call) else {
-        return call.set_bool(false);
-    };
-    // The Set-Cookie line (crates/httpbindings), or null after a warning.
+    // The Set-Cookie line (crates/httpbindings), or null after a warning. Upstream builds
+    // it before it uses the context, so a bad name warns on any response.
     let cookie = if kind == IS_STRING {
-        // SAFETY: a passed argument is a live zval.
-        let name = unsafe { value_of(name) };
-        // SAFETY: a string argument holds `str_`.
-        let name = unsafe { name.str_ };
-        // SAFETY: the parsed arguments of this call.
-        unsafe {
-            header_line(
-                encode,
-                [
-                    name,
-                    nullable(value),
-                    nullable(path),
-                    nullable(domain),
-                    nullable(same_site),
-                    nullable(priority),
-                ],
-                expires,
-                (secure, http_only, partitioned),
-            )
-        }
+        // A string argument, so `Z_PARAM_STR` reads it as it is.
+        let name = call.zstr(1).ok().flatten();
+        header_line(
+            encode,
+            [name, value, path, domain, same_site, priority],
+            expires,
+            (secure, http_only, partitioned),
+        )
     } else {
         // SAFETY: an object argument; a non-Cookie one is reported by httpbindings.
         unsafe { object_header_line(name) }
     };
-    if cookie.is_null() {
+    let Some(cookie) = cookie else {
         return call.set_bool(false);
-    }
+    };
+    let Some(ctx) = checked(call) else {
+        return call.set_bool(false);
+    };
     // SAFETY: the cookie property is a live array; it takes over the string.
-    unsafe { push_string(property(ctx, COOKIE), cookie) };
+    unsafe { push_string(property(ctx, COOKIE), cookie.into_raw()) };
     call.set_bool(true);
 }
 
@@ -538,7 +503,7 @@ fn ping(call: &Call) {
         if ctx.is_null() {
             return None;
         }
-        let data = call.arity(0, 1).and_then(|()| call.str(1)).ok()?;
+        let data = call.arity(0, 1).and_then(|()| call.zstr(1)).ok()?;
         let flags = host::flags(ctx);
         if flags & (HTTP2 | WEBSOCKET) == 0 {
             host::fatal("only supports websocket or http2 client");
@@ -551,8 +516,7 @@ fn ping(call: &Call) {
             }
             return Some(());
         }
-        // SAFETY: the optional payload, live for the call.
-        let payload = data.map_or(&[][..], |data| unsafe { bytes(data) });
+        let payload = data.map_or(&[][..], ZStr::bytes);
         let Some(frame) = websocket::encode(payload, websocket::OPCODE_PING, websocket::FLAG_FIN)
         else {
             host::set_last_error(WEBSOCKET_PACK_FAILED);
@@ -576,15 +540,15 @@ fn goaway(call: &Call) {
             .and_then(|()| Ok((call.long(1, 0)?, call.str_or_null(2)?)));
         let (code, debug) = parsed.ok()?;
         let debug = nullable(debug);
-        let (data, length) = if debug.is_null() {
-            (ptr::null(), 0)
+        let debug = if debug.is_null() {
+            &[][..]
         } else {
             // SAFETY: a live string argument.
-            let debug = unsafe { bytes(debug) };
-            (debug.as_ptr().cast(), debug.len())
+            unsafe { bytes(debug) }
         };
-        // SAFETY: a live HTTP/2 context and the debug data's span.
-        call.set_bool(unsafe { swr_v1_phphttp2_server_goaway(ctx, code, data, length) });
+        let server = crate::http2::server();
+        let ctx = crate::http2::Ctx::of(ctx);
+        call.set_bool(server.is_some_and(|server| (server.goaway)(ctx, code, debug)));
         Some(())
     };
     or_false(call, run());
@@ -679,7 +643,7 @@ fn create_response(call: &Call) {
     let run = || -> Option<()> {
         let parsed = call
             .arity(1, 2)
-            .and_then(|()| Ok((call.passed(1), call.long(2, -1)?)));
+            .and_then(|()| Ok((call.value(1), call.long(2, -1)?)));
         let (Some(object), fd) = parsed.ok()? else {
             return None;
         };
@@ -723,12 +687,10 @@ pub(crate) fn set_header(ctx: *mut Context, key: &[u8], value: *mut z::zval, for
 
 /// `Context::set_header(key, value, false)` of a string value. A warning's
 /// bailout waits for the caller's last step.
-pub fn set_header_bytes(ctx: *mut Context, key: &[u8], value: &[u8]) -> bool {
-    let mut value = websocket::zval_of(swoole_rs_zend::string::copy(value));
-    let set = set_header(ctx, key, &raw mut value, false);
-    // SAFETY: this frame's reference; the header array holds its own.
-    unsafe { z::zval_ptr_dtor(&raw mut value) };
-    set
+pub(crate) fn set_header_bytes(ctx: *mut Context, key: &[u8], value: &[u8]) {
+    // This frame's reference; the header array takes its own.
+    let value = Owned::string(ZString::new(value));
+    set_header(ctx, key, value.as_ptr(), false);
 }
 
 /// `php_swoole_fatal_error(E_WARNING, ...)`, then `RETURN_FALSE`.
@@ -737,62 +699,46 @@ fn refuse(call: &Call, message: &str) {
     call.set_bool(false);
 }
 
-/// A found slot holding an object.
-fn is_object(slot: *mut z::zval) -> bool {
-    // SAFETY: a found slot is a live zval.
-    unsafe { type_of(slot) == IS_OBJECT }
-}
-
-fn instance_of(object: *mut z::zval, ce: *mut zend_class_entry) -> bool {
-    // SAFETY: a live object zval.
-    let object = unsafe { obj_of(object) };
-    // SAFETY: a live object.
-    let class = unsafe { (*object).ce };
+/// An object of `ce` or a subclass.
+fn instance_of(object: &Value, ce: *mut zend_class_entry) -> bool {
     // SAFETY: a live class and a registered one.
-    unsafe { z::swr_zend_instanceof(class, ce) }
+    object
+        .class()
+        .is_some_and(|class| unsafe { z::swr_zend_instanceof(class, ce) })
 }
 
 /// `Response::create($server|$socket|[$server|$socket, $request]|$fd, $fd)`:
 /// a response on a server connection or a coroutine socket, sharing the
 /// request's context when one is given.
-fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
-    let mut request = ptr::null_mut();
+fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
+    let mut paired = false;
     let mut ctx: *mut Context = ptr::null_mut();
     let mut server: *mut c_void = ptr::null_mut();
     let mut socket = ptr::null_mut();
-    // SAFETY: the argument, live for the call.
-    let kind = unsafe { type_of(object) };
-    if kind == IS_ARRAY {
-        // SAFETY: an array zval.
-        let table = unsafe { value::table(object) };
-        // SAFETY: a live table.
-        request = unsafe { z::zend_hash_index_find(table, 1) };
-        if request.is_null()
-            || !is_object(request)
-            || !instance_of(request, crate::request::entry())
-        {
+    if let Some(pair) = object.array() {
+        let Some(request) = pair
+            .index(1)
+            .filter(|found| instance_of(found, crate::request::entry()))
+            .and_then(Value::object)
+        else {
             return refuse(call, "parameter $1.second must be instanceof Http\\Request");
-        }
-        // SAFETY: as above.
-        object = unsafe { z::zend_hash_index_find(table, 0) };
-        // SAFETY: as above.
-        if object.is_null() || unsafe { type_of(object) } != IS_OBJECT {
+        };
+        let Some(first) = pair.index(0).filter(|first| first.object().is_some()) else {
             return refuse(
                 call,
                 "parameter $1 must be instanceof Server or Coroutine\\Socket",
             );
-        }
-        // SAFETY: as above.
-        let request = unsafe { obj_of(request) };
+        };
+        object = first;
+        paired = true;
         // SAFETY: a `Swoole\Http\Request`.
         ctx = unsafe { context::context_of(request) };
     }
-    // SAFETY: as above.
-    if unsafe { type_of(object) } == IS_OBJECT {
-        // SAFETY: the classes MINIT registered.
-        let (server_ce, socket_ce) = unsafe { (swoole_server_ce, swoole_socket_coro_ce) };
+    if object.object().is_some() {
+        let server_ce = swoole_rs_phpserver::server_class_entry();
+        let socket_ce = swoole_rs_phpclients::socket_class();
         if instance_of(object, server_ce) {
-            let Some(checked) = websocket::server_of(object) else {
+            let Some(checked) = websocket::server_of(object.as_ptr()) else {
                 return;
             };
             server = checked;
@@ -803,10 +749,10 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
                 );
             }
         } else if instance_of(object, socket_ce) {
-            socket = object;
+            socket = object.as_ptr();
             // SAFETY: a `Swoole\Coroutine\Socket`.
             fd = zend_long::from(websocket::sock_fd(unsafe {
-                swr_v1_phpclients_socket_pointer(object)
+                swoole_rs_phpclients::get_socket(socket)
             }));
         } else {
             return refuse(
@@ -815,8 +761,7 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
             );
         }
     } else {
-        // SAFETY: the argument.
-        fd = unsafe { z::swr_zval_get_long(object) };
+        fd = object.long();
         server = swoole_rs_corebase::swr_v1_core_server();
     }
     if !server.is_null() && !websocket::started(server) {
@@ -850,30 +795,27 @@ fn respond_on(call: &Call, mut object: *mut z::zval, mut fd: zend_long) {
     };
     // SAFETY: a live context, and the server or the socket.
     unsafe { context::bind(ctx, server, socket) };
-    let response = call.return_value();
     let ce = RESPONSE.entry();
-    // SAFETY: the return slot and this registered class.
-    unsafe { init_object(response, ce) };
-    // SAFETY: the object just created.
-    let std = unsafe { obj_of(response) };
-    // SAFETY: a `Swoole\Http\Response`.
-    unsafe { context::set_context(std, ctx) };
     let state = send::state(ctx);
     state.fd = fd;
-    // SAFETY: the object zval just created.
-    state.response.zobject.value = unsafe { *response };
-    state.response.zobject.ptr = &raw mut state.response.zobject.value;
-    // SAFETY: a live Response, which declares `fd`.
-    unsafe { value::update_long(ce, std, c"fd", fd) };
-    if !socket.is_null() {
-        // SAFETY: as above; the property takes its own reference.
-        unsafe { z::zend_update_property(ce, std, c"socket".as_ptr(), 6, socket) };
+    let slot = &mut state.response.zobject;
+    // SAFETY: the context's own zval and this registered class.
+    unsafe { init_object(&raw mut slot.value, ce) };
+    slot.ptr = &raw mut slot.value;
+    // The return slot takes the reference; the context borrows it.
+    call.set_value(slot.value);
+    let Some(std) = slot.object() else { return };
+    // SAFETY: a `Swoole\Http\Response`.
+    unsafe { context::set_context(std, ctx) };
+    // SAFETY: the Response just created, under its class.
+    let props = unsafe { Props::new(ce, std) };
+    props.long(c"fd", fd);
+    // SAFETY: null or the caller's live socket; the property takes its own reference.
+    if let Some(socket) = unsafe { Value::from_ptr(socket) } {
+        props.value(c"socket", socket);
     }
-    if !request.is_null() {
-        // SAFETY: the request object, which declares `fd`.
-        let request = unsafe { obj_of(send::state(ctx).request.zobject.ptr) };
-        // SAFETY: as above.
-        unsafe { value::update_long(crate::request::entry(), request, c"fd", fd) };
+    if paired && let Some(request) = send::state(ctx).request.zobject.props() {
+        request.long(c"fd", fd);
     }
 }
 

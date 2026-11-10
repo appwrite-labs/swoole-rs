@@ -224,8 +224,7 @@ extern "C" fn slot_password(
 }
 /// # Safety
 /// owner is live/exclusive, and its logger does not throw.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
+pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
     // SAFETY: snapshot raw views without retaining a record reference across OpenSSL/log callbacks.
     let mut config = unsafe { configuration(owner) };
     // SAFETY: the live Arc owns interior-mutable slots; no exclusive borrow survives callbacks.
@@ -377,8 +376,7 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
 /// 0 success, 1 unsupported DTLS, 2 context creation failure.
 /// # Safety
 /// owner and socket are live/exclusive; native TLS initialization has succeeded.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_socket_context(
+pub unsafe fn swr_v1_tls_owner_socket_context(
     owner: *const OwnedTlsContext,
     socket: *mut swoole_rs_reactor::SocketRecord,
     http2: bool,
@@ -421,8 +419,7 @@ pub struct OwnedTlsSessionResult {
 /// # Safety
 /// All pointers are live/exclusive, hostname is stable, and TLS is initialized.
 /// grease, when supplied by `BoringSSL`, is a nonthrowing SSL configuration leaf.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_socket_session(
+pub unsafe fn swr_v1_tls_owner_socket_session(
     owner: *const OwnedTlsContext,
     socket: *mut swoole_rs_reactor::SocketRecord,
     hostname: *const StringSlot,
@@ -469,15 +466,6 @@ pub unsafe extern "C" fn swr_v1_tls_owner_socket_session(
         // SAFETY: the optional native leaf accepts the live session and does not reenter.
         unsafe { grease(ssl, fields.grease != 0) };
     }
-    // SAFETY: the session is live; OpenSSL exposes its set-mode macro as SSL_ctrl.
-    unsafe {
-        openssl_sys::SSL_ctrl(
-            ssl,
-            openssl_sys::SSL_CTRL_MODE,
-            openssl_sys::SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER,
-            ptr::null_mut(),
-        )
-    };
     // SAFETY: the owner keeps the explicit hostname slot alive throughout configuration.
     let explicit =
         unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner_ref.strings[8])) };

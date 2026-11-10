@@ -1,3 +1,7 @@
+/* Stays C (docs/zend.md, What stays C): variadic (SwooleG.fatal_error), version
+ * (STANDARD_MODULE_HEADER_EX, refresh_memory_manager, the execution timers,
+ * PHP_VERSION), globals (the TSRM module globals, EG(exit_status)) and allocator
+ * (the backtrace's string and array). */
 #include "shim_host.h"
 #include <stdarg.h>
 #include <stdio.h>

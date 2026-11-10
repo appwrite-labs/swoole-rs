@@ -6,18 +6,7 @@ publish = false
 
 [lib]
 name = "swoole_rs_protocols"
-crate-type = ["rlib", "staticlib"]
-
-[features]
-# The bus's socket writes and frees over the tls crate's upstream socket.
-upstream-symbols = ["dep:swoole-rs-tls"]
+crate-type = ["rlib"]
 
 [lints]
 workspace = true
-
-[dependencies]
-libc = "=0.2.191"
-swoole-rs-corebase = { path = "../corebase" }
-swoole-rs-clients = { path = "../clients" }
-swoole-rs-reactor = { path = "../reactor" }
-swoole-rs-tls = { path = "../tls", optional = true }

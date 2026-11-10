@@ -45,9 +45,9 @@ const MUTEX: i32 = 3;
 /// The host's hash of a key (`swoole_hash_php`, or Zend's for `Swoole\Table`).
 pub type Hash = unsafe extern "C" fn(key: *const c_char, length: usize) -> u64;
 /// Logs one whole warning line, as `swoole_warning` does.
-pub type Warning = unsafe extern "C" fn(message: *const c_char, length: usize);
+pub type Warning = fn(message: &[u8]);
 /// `swoole_set_last_error`.
-pub type Error = unsafe extern "C" fn(code: c_int);
+pub type Error = fn(code: c_int);
 
 /// A row header, then `item_size` bytes of column data.
 #[repr(C)]
@@ -180,8 +180,7 @@ impl Live {
             }
             std::thread::yield_now();
         }
-        // SAFETY: getpid has no preconditions.
-        let pid = unsafe { libc::getpid() };
+        let pid = swoole_rs_corebase::sys::getpid();
         self.owner().store(pid, Ordering::Relaxed);
     }
 
@@ -354,8 +353,7 @@ fn c_str(bytes: &[u8]) -> &[u8] {
 }
 
 fn warn(warning: Warning, message: &[u8]) {
-    // SAFETY: the host logs `message.len()` bytes.
-    unsafe { warning(message.as_ptr().cast(), message.len()) };
+    warning(message);
 }
 
 /// `check_key_length`: keys are cut to 63 bytes.
@@ -849,8 +847,7 @@ impl Table {
                 self.conflict_count.fetch_add(1, Ordering::Relaxed);
                 self.conflict_max_level.fetch_max(level, Ordering::Relaxed);
                 let Some(fresh) = self.alloc_row() else {
-                    // SAFETY: the host's last-error setter.
-                    unsafe { (self.error)(SW_ERROR_MALLOC_FAIL) };
+                    (self.error)(SW_ERROR_MALLOC_FAIL);
                     return ptr::null_mut();
                 };
                 self.claim(fresh, key);

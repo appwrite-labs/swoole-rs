@@ -15,8 +15,8 @@ void swr_zend_hash_foreach_kv(const HashTable *table,
 
 /* SW_HASHTABLE_FOREACH_START2's step, without ZVAL_DEREF: the element at or after
  * `*position` (null past the end), with its string key in `*key` (null for an int
- * key); `*position` moves past it. Start at 0. */
-zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key);
+ * key, which goes in `*index`); `*position` moves past it. Start at 0. */
+zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key, zend_ulong *index);
 
 /* _zend_handle_numeric_str: whether a string key is a canonical integer. */
 bool swr_zend_handle_numeric_str(const char *key, size_t length, zend_ulong *index);
@@ -39,8 +39,6 @@ php_stream *swr_zend_stream_open(const char *path, const char *mode);
 int swr_zend_stream_select_fd(php_stream *stream, int *fd);
 /* php_stream_cast(stream, PHP_STREAM_AS_FD, &fd, 0) == SUCCESS. */
 bool swr_zend_stream_fd(php_stream *stream, int *fd);
-/* stream->flags |= PHP_STREAM_FLAG_NO_CLOSE. */
-void swr_zend_stream_no_close(php_stream *stream);
 /* Register `stream` as the case-sensitive constant `name` (STDIN and friends). */
 void swr_zend_register_stream_constant(const char *name, php_stream *stream);
 

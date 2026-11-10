@@ -7,11 +7,11 @@ Thread Lock, Atomic/Long and Thread Atomic/Long are Rust classes (`crates/phploc
 ownership, timeout, ordering, fork, coroutine and platform contracts.
 
 `overlay.py` reads the pinned sources for the gates' reference side; the hybrid side is
-Rust's lock ABI and `Barrier` (whose methods are Rust) over `native/locks/swoole_lock.h`. Edit `migration/patches/locks/` with `tools/patches.py`.
+Rust's lock ABI and `Barrier` (whose methods are Rust) over `native/locks/swoole_lock.h`.
 
 ```sh
 python3 tests/modules/locks/gate.py --source target/upstream/src \
-  --archive <hybrid build>/rust-prefix/lib/libswoole_rs_ffi.a --sanitize
+  --archive target/ext/sdk/lib/libswoole_rs_ffi.a --sanitize
 ```
 
 ## Native gate
@@ -38,9 +38,6 @@ python3 tests/modules/locks/gate.py --source target/upstream/src \
   integer wrap, CAS, lock behaviour, coroutine mutual exclusion, owner reentrancy,
   nonblocking contention, cancellation, constructor/clone/serialization rules; under ZTS
   also real threads sharing 32/64-bit atomics. Observations must match.
-- `threads.py --engine ... --php-extension sockets`: real ZTS threads with a
-  barrier, 20,000 increments per Thread Atomic width and 2,000 mutex-protected
-  updates. Requires ZTS engines; also used by `tests/modules/integration/zts.py`.
 - `constructor.py --source S --archive A --output R [--sanitize] [--rust-asan]` (`locks-constructor`):
   Rust's init for every kind with faults injected at the native pthread init/attribute/
   pshared boundaries; checks nothing is allocated, attribute cleanup and

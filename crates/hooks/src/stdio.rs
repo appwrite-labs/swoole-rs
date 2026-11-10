@@ -71,8 +71,7 @@ mod native {
     use libc::c_int;
 
     pub(super) fn in_coroutine() -> bool {
-        !swoole_rs_corebase::thread_reactor().is_null()
-            && !crate::wait_event::native::swr_v1_coroutine_current().is_null()
+        !swoole_rs_corebase::thread_reactor().is_null() && !swoole_rs_coroutine::current().is_null()
     }
 
     pub(super) fn sleep(seconds: f64) -> c_int {
@@ -85,8 +84,10 @@ mod native {
 /// configure's `io_uring` switches. Native's `swoole_init` installs it
 /// ([`swr_v1_hook_install`]) before any hook can run.
 pub struct Host {
-    /// `swr_v1_uring_native` with `io_uring`, else null: then the file calls go to the ring.
-    pub uring: *const c_void,
+    /// The `io_uring` engine's host, when the build has one: then the file calls go
+    /// to the ring.
+    #[cfg(feature = "iouring")]
+    pub uring: Option<&'static crate::uring::Host>,
     /// `HAVE_IOURING_STATX`: `fstat`, `stat` and `lstat` go to the ring too.
     pub uring_statx: bool,
     /// `HAVE_IOURING_FTRUNCATE`: so does `ftruncate`.
@@ -97,11 +98,6 @@ pub struct Host {
     pub uring_socket: bool,
 }
 
-// SAFETY: written once, then read-only; `uring` points to a static table.
-unsafe impl Sync for Host {}
-// SAFETY: as above.
-unsafe impl Send for Host {}
-
 static HOST: AtomicPtr<Host> = AtomicPtr::new(std::ptr::null_mut());
 
 /// [`NATIVE`] once native installs the [`Host`]: [`offload`] reads it here, so a crate
@@ -110,21 +106,23 @@ static RUNTIME: OnceLock<&'static Ops> = OnceLock::new();
 
 /// Install the build's [`Host`] and the runtime: native's `swoole_init` calls it.
 #[cfg(not(test))]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hook_install() {
+pub fn swr_v1_hook_install() {
     use swoole_rs_corebase::{Switch, built_with};
     static BUILT: OnceLock<Host> = OnceLock::new();
     #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
-    let uring = (&raw const crate::iouring::HOST).cast();
-    #[cfg(not(all(feature = "iouring", feature = "upstream-symbols")))]
-    let uring = std::ptr::null();
+    let uring = Some(&crate::iouring::HOST);
+    #[cfg(all(feature = "iouring", not(feature = "upstream-symbols")))]
+    let uring = None;
     set_host(BUILT.get_or_init(|| Host {
+        #[cfg(feature = "iouring")]
         uring,
         uring_statx: built_with(Switch::IouringStatx),
         uring_ftruncate: built_with(Switch::IouringFtruncate),
         uring_futex: built_with(Switch::IouringFutex),
         uring_socket: built_with(Switch::UringSocket),
     }));
+    #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
+    swoole_rs_reactor::register_uring(&crate::iouring::REACTOR);
     crate::co_io::install_native();
 }
 
@@ -154,9 +152,9 @@ pub fn offload() -> Option<Offload> {
 
 /// The ring's host inside a coroutine when `io_uring` takes this call (`gate`).
 #[cfg(feature = "iouring")]
-fn ring(gate: fn(&Host) -> bool) -> Option<*const crate::uring::Host> {
-    let host = host().filter(|host| !host.uring.is_null() && gate(host))?;
-    (NATIVE.in_coroutine)().then_some(host.uring.cast())
+fn ring(gate: fn(&Host) -> bool) -> Option<&'static crate::uring::Host> {
+    let uring = host().filter(|host| gate(host))?.uring?;
+    (NATIVE.in_coroutine)().then_some(uring)
 }
 
 macro_rules! hooked {
@@ -172,7 +170,7 @@ macro_rules! hooked {
             $(
                 #[cfg(feature = "iouring")]
                 if let Some(ring) = ring($gate) {
-                    // SAFETY: the caller's arguments are valid for the call; `ring` is the ring's host.
+                    // SAFETY: the caller's arguments are valid for the call.
                     return unsafe { crate::uring::$ring(ring, $($ring_arg),*) };
                 }
             )?
@@ -212,28 +210,28 @@ hooked! {
     swoole_coroutine_readdir(dirp: *mut DIR) -> *mut dirent, refused std::ptr::null_mut() => libc::readdir(dirp);
     swoole_coroutine_closedir(dirp: *mut DIR) -> c_int, refused -1 => libc::closedir(dirp);
     swoole_coroutine_open(pathname: *const c_char, flags: c_int, mode: mode_t) -> c_int, refused -1,
-        ring |_| true => swr_v1_uring_open_file(pathname, flags, mode) => libc::open(pathname, flags, c_uint::from(mode));
+        ring |_| true => open_file(pathname, flags, mode) => libc::open(pathname, flags, c_uint::from(mode));
     swoole_coroutine_fstat(fd: c_int, statbuf: *mut stat) -> c_int, refused -1,
-        ring |host| host.uring_statx => swr_v1_uring_fstat(fd, statbuf) => libc::fstat(fd, statbuf);
+        ring |host| host.uring_statx => fstat(fd, statbuf) => libc::fstat(fd, statbuf);
     swoole_coroutine_stat(path: *const c_char, statbuf: *mut stat) -> c_int, refused -1,
-        ring |host| host.uring_statx => swr_v1_uring_stat(path, statbuf) => libc::stat(path, statbuf);
+        ring |host| host.uring_statx => stat(path, statbuf) => libc::stat(path, statbuf);
     // Upstream's io_uring lstat is its stat.
     swoole_coroutine_lstat(path: *const c_char, statbuf: *mut stat) -> c_int, refused -1,
-        ring |host| host.uring_statx => swr_v1_uring_stat(path, statbuf) => libc::lstat(path, statbuf);
+        ring |host| host.uring_statx => stat(path, statbuf) => libc::lstat(path, statbuf);
     swoole_coroutine_unlink(pathname: *const c_char) -> c_int, refused -1,
-        ring |_| true => swr_v1_uring_unlink(pathname) => libc::unlink(pathname);
+        ring |_| true => unlink(pathname) => libc::unlink(pathname);
     swoole_coroutine_mkdir(pathname: *const c_char, mode: mode_t) -> c_int, refused -1,
-        ring |_| true => swr_v1_uring_mkdir(pathname, mode) => libc::mkdir(pathname, mode);
+        ring |_| true => mkdir(pathname, mode) => libc::mkdir(pathname, mode);
     swoole_coroutine_rmdir(pathname: *const c_char) -> c_int, refused -1,
-        ring |_| true => swr_v1_uring_rmdir(pathname) => libc::rmdir(pathname);
+        ring |_| true => rmdir(pathname) => libc::rmdir(pathname);
     swoole_coroutine_rename(oldpath: *const c_char, newpath: *const c_char) -> c_int, refused -1,
-        ring |_| true => swr_v1_uring_rename(oldpath, newpath) => libc::rename(oldpath, newpath);
+        ring |_| true => rename(oldpath, newpath) => libc::rename(oldpath, newpath);
     swoole_coroutine_fsync(fd: c_int) -> c_int, refused -1,
-        ring |_| true => swr_v1_uring_fsync(fd) => libc::fsync(fd);
+        ring |_| true => fsync(fd) => libc::fsync(fd);
     swoole_coroutine_fdatasync(fd: c_int) -> c_int, refused -1,
-        ring |_| true => swr_v1_uring_fdatasync(fd) => datasync(fd);
+        ring |_| true => fdatasync(fd) => datasync(fd);
     swoole_coroutine_ftruncate(fd: c_int, length: off_t) -> c_int, refused -1,
-        ring |host| host.uring_ftruncate => swr_v1_uring_ftruncate(fd, length) => libc::ftruncate(fd, length);
+        ring |host| host.uring_ftruncate => ftruncate(fd, length) => libc::ftruncate(fd, length);
     swoole_coroutine_lseek(fd: c_int, offset: off_t, whence: c_int) -> off_t, refused -1 => libc::lseek(fd, offset, whence);
     swoole_coroutine_readlink(pathname: *const c_char, buf: *mut c_char, len: size_t) -> ssize_t, refused -1 => libc::readlink(pathname, buf, len);
     swoole_coroutine_statvfs(path: *const c_char, buf: *mut statvfs) -> c_int, refused -1 => libc::statvfs(path, buf);
@@ -377,7 +375,8 @@ pub(crate) mod tests {
         set_last_error,
     };
     static TEST_HOST: Host = Host {
-        uring: std::ptr::null(),
+        #[cfg(feature = "iouring")]
+        uring: None,
         uring_statx: false,
         uring_ftruncate: false,
         uring_futex: false,

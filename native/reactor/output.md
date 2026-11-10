@@ -14,9 +14,8 @@ and the sendfile requests in `file_output.rs`:
   sends a chunk (returning EINTR to the reactor when the halfclose repair, M15,
   is built), classifies the result, records the send time, then uncorks and pops
   once the request is done.
-- `sendfile_async` (`swr_v1_socket_sendfile_async`) checks the request
-  (`swr_v1_socket_file_checked`), makes the output `Buffer` if there is none and
-  queues the request, which the queue frees with `swr_v1_socket_file_dispose`.
+- `sendfile_async` checks the request, makes the output `Buffer` if there is
+  none and queues the request, which the queue drops when it pops or drains it.
 
 Server sends, `BaseFactory::end` and the reactor thread's pipe writes use the same
 typed Rust queue (`swoole_rs_buffer`).
@@ -24,7 +23,8 @@ typed Rust queue (`swoole_rs_buffer`).
 ## Writable callback
 
 `Reactor::_writable_callback` and `drain_write_buffer` are `swr_v1_reactor_flush` and
-`swr_v1_reactor_drain` (`crates/reactor/src/flush.rs`), over C++ effects in `FlushOps`.
+`swr_v1_reactor_drain` (`crates/reactor/src/flush.rs`), over the `FlushEffects` trait
+that `crates/tls/src/reactor_write.rs`'s `Flush` implements.
 
 - DATA (0), SENDFILE (1) or CLOSE (2) pick the send; other kinds fall back to
   DATA. The front kind is read only when the original loop would.

@@ -26,7 +26,6 @@ use crate::view;
 
 // SAFETY: crates/timer's bodies.
 unsafe extern "C-unwind" {
-    fn swr_v1_core_timer_slot() -> *mut *mut c_void;
     fn swr_v1_timer_owner_reactor(timer: *const c_void) -> *mut c_void;
     fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
 }
@@ -108,17 +107,14 @@ pub(super) fn port_config<'a>(port: *mut c_void) -> &'a crate::port_config::Port
 /// This thread's timer, or null.
 fn timer() -> *mut c_void {
     // SAFETY: this thread's timer slot.
-    let slot = unsafe { swr_v1_core_timer_slot() };
-    // SAFETY: as above.
-    unsafe { *slot }
+    unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() }
 }
 
 /// The ops on native objects.
 pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_POOL_CREATE => create_pool(ctx),
-        // SAFETY: the context's live server.
-        OP_CREATE_PIPE_BUFFERS => sign(unsafe { crate::master_ops::create_pipe_buffers(ctx.serv) }),
+        OP_CREATE_PIPE_BUFFERS => sign(crate::master_ops::create_pipe_buffers(ctx.server())),
         OP_RUN_SINGLE_WORKER => {
             let pool = ctx.server().workers().event_pool;
             // SAFETY: its live event pool, which has a worker.

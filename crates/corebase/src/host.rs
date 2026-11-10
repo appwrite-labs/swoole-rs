@@ -20,31 +20,7 @@ unsafe extern "C" {
     fn backtrace_symbols(frames: *const *mut c_void, size: c_int) -> *mut *mut c_char;
 }
 
-pub(crate) fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-/// Sets this thread's errno.
-pub fn set_errno(value: c_int) {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__errno_location() };
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__error() };
-    // SAFETY: `slot` is this thread's errno.
-    unsafe { slot.write(value) };
-}
-
-fn close(fd: c_int) {
-    // SAFETY: close(2) has no memory preconditions.
-    unsafe { libc::close(fd) };
-}
-
-fn dup2(from: c_int, to: c_int) -> c_int {
-    // SAFETY: dup2(2) has no memory preconditions.
-    unsafe { libc::dup2(from, to) }
-}
+use crate::sys::{close, dup2, errno, set_errno};
 
 /// `int swoole_shell_exec(const char *command, pid_t *pid, bool get_error_stream)`:
 /// run `command` under `/bin/sh -c` with its stdout (and stderr when
@@ -181,18 +157,14 @@ pub unsafe extern "C" fn swoole_dump_bin(data: *const u8, kind: c_char, size: us
         return;
     }
     let [format] = kind.to_ne_bytes();
-    for index in 0..size / width {
-        let mut value = -1_i64;
-        // SAFETY: value `index` lies inside the caller's `size` readable bytes, and
-        // `value` is a live local.
-        unsafe {
-            swoole_rs_framing::swr_v1_framing_unpack(
-                format,
-                data.wrapping_add(index * width),
-                width,
-                &raw mut value,
-            )
-        };
+    let bytes = if data.is_null() || size < width {
+        &[][..]
+    } else {
+        // SAFETY: the caller's `size` readable bytes.
+        unsafe { core::slice::from_raw_parts(data, size) }
+    };
+    for field in bytes.chunks_exact(width) {
+        let value = swoole_rs_framing::unpack(format, field).unwrap_or(-1);
         // SAFETY: `%ld,` takes one long.
         unsafe { printf(c"%ld,".as_ptr(), value as c_long) };
     }
@@ -249,12 +221,11 @@ pub extern "C" fn swoole_print_backtrace() {
 pub extern "C" fn microtime() -> f64 {
     // One clock_gettime, as libstdc++'s system_clock::now(); std's SystemTime adds
     // a checked subtraction on every request (#853).
-    let mut now = libc::timespec {
+    // CLOCK_REALTIME cannot fail.
+    let now = crate::sys::clock_gettime(libc::CLOCK_REALTIME).unwrap_or(libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
-    };
-    // SAFETY: `now` is a writable timespec; CLOCK_REALTIME cannot fail.
-    unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut now) };
+    });
     #[expect(
         clippy::cast_precision_loss,
         clippy::useless_conversion,
@@ -468,16 +439,14 @@ pub extern "C" fn swoole_system_random(min: c_int, max: c_int) -> c_int {
     assert!(max > min, "swoole_system_random: max > min");
     let mut fd = DEV_RANDOM.load(Ordering::Relaxed);
     if fd == -1 {
-        // SAFETY: a NUL-terminated path.
-        fd = unsafe { libc::open(c"/dev/urandom".as_ptr(), libc::O_RDONLY) };
+        fd = crate::sys::open(c"/dev/urandom", libc::O_RDONLY, 0);
         DEV_RANDOM.store(fd, Ordering::Relaxed);
         if fd < 0 {
             return swoole_rand(min, max);
         }
     }
     let mut value = [0u8; 4];
-    // SAFETY: `value` is four writable bytes.
-    let read = unsafe { libc::read(fd, value.as_mut_ptr().cast(), 4) };
+    let read = crate::sys::read(fd, &mut value);
     if read < 4 {
         crate::log::sys_warning(
             c"swoole_system_random",
@@ -531,13 +500,13 @@ pub extern "C" fn swoole_redirect_stdout(new_fd: c_int) {
 )]
 pub unsafe extern "C" fn swoole_redirect_stdout_file(file: *const c_char) {
     // SAFETY: a NUL-terminated path, as the caller promises.
-    let fd = unsafe { libc::open(file, libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT, 0o644) };
+    let file = unsafe { CStr::from_ptr(file) };
+    let fd = crate::sys::open(file, libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT, 0o644);
     if fd >= 0 {
         swoole_redirect_stdout(fd);
         close(fd);
     } else {
-        // SAFETY: as above.
-        let file = unsafe { CStr::from_ptr(file) }.to_string_lossy();
+        let file = file.to_string_lossy();
         crate::log::sys_warning(
             c"swoole_redirect_stdout",
             format_args!("open('{file}') failed"),
@@ -655,17 +624,6 @@ mod tests {
             }
         }
     }
-    #[test]
-    fn hex2dec_parses_in_the_targets_char_mode() {
-        let (mut parsed, mut expected_parsed) = (0, 0);
-        // SAFETY: NUL-terminated literals and live locals.
-        let value = unsafe { swoole_hex2dec(c"FFtail".as_ptr(), &raw mut parsed) };
-        // SAFETY: as above.
-        let expected =
-            unsafe { crate::swr_v1_corebase_hex(c"FFtail".as_ptr(), &raw mut expected_parsed) };
-        assert_eq!((value, parsed), (expected, expected_parsed));
-    }
-
     #[test]
     fn dump_bin_skips_types_without_a_size() {
         // SAFETY: zero bytes are read for an unsized type.

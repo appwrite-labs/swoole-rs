@@ -12,14 +12,15 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_http2::sw_rs_http2_default_settings;
+use swoole_rs_phphttp::http2::Ctx;
 use swoole_rs_zend::bailout;
 
 /// What a session's handler gets: the stream's context, the session's
 /// default context and the data it was created with.
 #[repr(C)]
 pub struct SessionRequest {
-    pub ctx: *mut c_void,
-    pub default_ctx: *mut c_void,
+    pub ctx: Ctx,
+    pub default_ctx: Ctx,
     pub data: *mut c_void,
 }
 
@@ -77,14 +78,14 @@ pub(crate) struct SessionState {
     pub(crate) shutting_down: Cell<bool>,
     pub(crate) is_coro: bool,
     /// The connection's context: frames that belong to no stream go out on it.
-    pub(crate) default_ctx: *mut c_void,
+    pub(crate) default_ctx: Ctx,
     handle: SessionHandler,
     data: *mut c_void,
 }
 
 /// `http2::Stream`.
 pub(crate) struct StreamState {
-    pub(crate) ctx: *mut c_void,
+    pub(crate) ctx: Ctx,
     pub(crate) id: u32,
     pub(crate) remote_window_size: Cell<u32>,
     pub(crate) local_window_size: Cell<u32>,
@@ -123,7 +124,7 @@ const INIT_WINDOW_SIZE: usize = 3;
 impl SessionState {
     fn new(
         fd: i64,
-        default_ctx: *mut c_void,
+        default_ctx: Ctx,
         max_body_size: u32,
         is_coro: bool,
         handle: SessionHandler,
@@ -158,9 +159,8 @@ impl SessionState {
     }
 
     /// The session a stream's context belongs to.
-    pub(crate) fn of(ctx: *mut c_void) -> Option<Session> {
-        // SAFETY: a live context.
-        Self::find(unsafe { swoole_rs_phphttp::http2::fd(ctx) })
+    pub(crate) fn of(ctx: Ctx) -> Option<Session> {
+        Self::find(ctx.fd())
     }
 
     pub(crate) fn local(&self, field: usize) -> u32 {
@@ -172,18 +172,7 @@ impl SessionState {
         if !create {
             return self.streams.borrow().get(&id).cloned();
         }
-        // SAFETY: the session's live default context.
-        let ctx =
-            unsafe { swoole_rs_phphttp::http2::stream_context(self.default_ctx, self.fd, id) };
-        if ctx.is_null() {
-            crate::server::log(
-                SW_LOG_WARNING,
-                SW_ERROR_HTTP2_STREAM_NO_HEADER,
-                c"create_stream",
-                &format!("http2 create stream#{id} context error"),
-            );
-            return None;
-        }
+        let ctx = self.default_ctx.stream_context(self.fd, id);
         let stream = Rc::new(StreamState {
             ctx,
             id,
@@ -233,7 +222,7 @@ impl Drop for SessionState {
         if !self.is_coro {
             // SAFETY: the server's settings context, made for this session
             // alone (a coroutine server's is its connection's).
-            unsafe { swoole_rs_phphttp::http2::release_default(self.default_ctx) };
+            unsafe { self.default_ctx.release_default() };
         }
     }
 }
@@ -258,23 +247,18 @@ impl StreamState {
 impl Drop for StreamState {
     fn drop(&mut self) {
         // SAFETY: the stream's own context, released once.
-        unsafe { swoole_rs_phphttp::http2::release_stream(self.ctx) };
+        unsafe { self.ctx.release_stream() };
     }
 }
-
-/// `SW_LOG_WARNING` and `SW_ERROR_HTTP2_STREAM_NO_HEADER`.
-const SW_LOG_WARNING: libc::c_int = 4;
-const SW_ERROR_HTTP2_STREAM_NO_HEADER: libc::c_int = 3002;
 
 /// A session for connection `fd` (`swoole_http2_server_session_new`), unless
 /// it has one. `handle` gets each finished request with `data`.
 /// # Safety
 /// `default_ctx` is a live context that outlives the session; `handle` may be
 /// called with a `SessionRequest`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_session_new(
+pub(crate) unsafe fn session_new(
     fd: i64,
-    default_ctx: *mut c_void,
+    default_ctx: Ctx,
     max_body_size: u32,
     is_coro: bool,
     handle: SessionHandler,
@@ -296,8 +280,7 @@ pub unsafe extern "C" fn swr_v1_phphttp2_session_new(
 
 /// `swoole_http2_server_session_free`: forget connection `fd`'s session,
 /// removing its streams; each is released once nothing holds it.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphttp2_session_free(fd: i64) {
+pub(crate) fn session_free(fd: i64) {
     let Some(session) = SESSIONS.with_borrow(|sessions| sessions.get(&fd).cloned()) else {
         return;
     };

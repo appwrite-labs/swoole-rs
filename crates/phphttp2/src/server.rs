@@ -25,14 +25,12 @@ use swoole_rs_http2::{
     sw_rs_http2_setting_plan, sw_rs_http2_window_action, sw_rs_http2_window_plan,
 };
 use swoole_rs_zend::{
-    bailout, string,
+    Array, Owned, Value as Zval, ZString, bailout, string,
     sys::{
-        IS_ARRAY, IS_NULL, IS_STRING, add_assoc_str_ex, add_assoc_stringl_ex,
-        swr_zend_hash_foreach_key, swr_zend_property_array, swr_zend_property_slot,
-        swr_zend_url_decode, zend_hash_str_find, zend_object, zend_string, zend_ulong, zval,
-        zval_ptr_dtor,
+        add_assoc_str_ex, add_assoc_stringl_ex, swr_zend_property_array, swr_zend_url_decode,
+        zend_object, zval,
     },
-    type_of, value,
+    value,
 };
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
@@ -112,33 +110,26 @@ const SW_ERR: c_int = -1;
 
 use swoole_rs_phphttp::http2::Field;
 
-pub(crate) use swoole_rs_phphttp::http2::Value;
+pub(crate) use swoole_rs_phphttp::http2::{Ctx, Value};
 
-// --- hosts, one safe call each ---
-
-pub(crate) fn get(ctx: *mut c_void, field: Field) -> u32 {
-    // SAFETY: a live context.
-    unsafe { swoole_rs_phphttp::http2::get(ctx, field) }
+pub(crate) fn get(ctx: Ctx, field: Field) -> u32 {
+    ctx.get(field)
 }
 
-pub(crate) fn set(ctx: *mut c_void, field: Field, value: u32) {
-    // SAFETY: a live context.
-    unsafe { swoole_rs_phphttp::http2::set(ctx, field, value) };
+pub(crate) fn set(ctx: Ctx, field: Field, value: u32) {
+    ctx.set(field, value);
 }
 
-fn send(ctx: *mut c_void, data: &[u8]) -> bool {
-    // SAFETY: a live, bound context.
-    unsafe { swoole_rs_phphttp::http2::send(ctx, data) }
+fn send(ctx: Ctx, data: &[u8]) -> bool {
+    ctx.send(data)
 }
 
-fn close(ctx: *mut c_void) {
-    // SAFETY: a live, bound context.
-    unsafe { swoole_rs_phphttp::http2::close(ctx) };
+fn close(ctx: Ctx) {
+    ctx.close();
 }
 
-pub(crate) fn zval_of(ctx: *mut c_void, which: Value) -> *mut zval {
-    // SAFETY: a live context with its objects.
-    unsafe { swoole_rs_phphttp::http2::value(ctx, which) }
+pub(crate) fn zval_of(ctx: Ctx, which: Value) -> *mut zval {
+    ctx.value(which)
 }
 
 /// `swoole_warning` (`error` 0) or `swoole_error_log(level, error)` as `func`.
@@ -185,7 +176,7 @@ fn frame_header(kind: u32, length: usize, flags: u32, stream_id: u32) -> [u8; FR
 }
 
 /// The session and stream of a response's context.
-pub(crate) fn of(ctx: *mut c_void) -> Option<(Session, Stream)> {
+pub(crate) fn of(ctx: Ctx) -> Option<(Session, Stream)> {
     let session = SessionState::of(ctx)?;
     let stream = session.stream(get(ctx, Field::StreamId), false)?;
     Some((session, stream))
@@ -231,7 +222,7 @@ fn deflater(session: &SessionState, func: &CStr) -> Option<*mut c_void> {
 // --- small frames ---
 
 fn send_u32_frame(
-    ctx: *mut c_void,
+    ctx: Ctx,
     kind: u32,
     length: usize,
     flags: u32,
@@ -244,38 +235,24 @@ fn send_u32_frame(
     send(ctx, &frame)
 }
 
-fn window_update(ctx: *mut c_void, stream_id: u32, size: u32) {
+fn window_update(ctx: Ctx, stream_id: u32, size: u32) {
     send_u32_frame(ctx, TYPE_WINDOW_UPDATE, 4, 0, stream_id, size);
 }
 
 /// `Stream::reset`.
-/// # Safety
-/// `ctx` is the stream's live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_reset(ctx: *mut c_void, stream_id: u32, code: u32) {
+pub(crate) fn reset(ctx: Ctx, stream_id: u32, code: u32) {
     send_u32_frame(ctx, TYPE_RST_STREAM, 4, 0, stream_id, code);
 }
 
 /// `swoole_http2_server_ping`.
-/// # Safety
-/// `ctx` is a live HTTP/2 context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_ping(ctx: *mut c_void) -> bool {
+fn ping(ctx: Ctx) -> bool {
     let mut frame = [0; FRAME_HEADER + PING_PAYLOAD];
     frame[..FRAME_HEADER].copy_from_slice(&frame_header(TYPE_PING, PING_PAYLOAD, 0, 0));
     send(ctx, &frame)
 }
 
 /// `swoole_http2_server_goaway`.
-/// # Safety
-/// `ctx` is a live HTTP/2 context; `data` covers `length` bytes (null at 0).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_goaway(
-    ctx: *mut c_void,
-    code: i64,
-    data: *const c_char,
-    length: usize,
-) -> bool {
+fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
     let Some(session) = SessionState::of(ctx) else {
         return false;
     };
@@ -286,11 +263,16 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_goaway(
         reason = "upstream's uint8_t flags and uint32_t code"
     )]
     let (flags, code) = (u32::from(code as u8), code as u32);
-    let mut frame = Vec::with_capacity(FRAME_HEADER + GOAWAY_SIZE + length);
-    frame.extend_from_slice(&frame_header(TYPE_GOAWAY, GOAWAY_SIZE + length, flags, 0));
+    let mut frame = Vec::with_capacity(FRAME_HEADER + GOAWAY_SIZE + data.len());
+    frame.extend_from_slice(&frame_header(
+        TYPE_GOAWAY,
+        GOAWAY_SIZE + data.len(),
+        flags,
+        0,
+    ));
     frame.extend_from_slice(&last_stream_id.to_be_bytes());
     frame.extend_from_slice(&code.to_be_bytes());
-    frame.extend_from_slice(bytes(data, length));
+    frame.extend_from_slice(data);
     let sent = send(ctx, &frame);
     session.shutting_down.set(true);
     sent
@@ -436,10 +418,10 @@ impl Drop for Headers {
 }
 
 /// A response property (`sw_zend_read_property_ex`).
-fn property(ctx: *mut c_void, name: &CStr) -> *mut zval {
-    let response = zval_of(ctx, Value::Response);
-    // SAFETY: the live Response object and its declared property.
-    unsafe { swr_zend_property_slot(object(response), name.as_ptr(), name.count_bytes()) }
+fn property<'a>(ctx: Ctx, name: &CStr) -> &'a Zval {
+    let response = object(zval_of(ctx, Value::Response));
+    // SAFETY: the live Response object, which declares `name`, for the context.
+    unsafe { swoole_rs_zend::property(response, name) }
 }
 
 fn object(value: *mut zval) -> *mut zend_object {
@@ -447,73 +429,14 @@ fn object(value: *mut zval) -> *mut zend_object {
     unsafe { value::obj_of(value) }
 }
 
-fn is(value: *const zval, kind: u32) -> bool {
-    // SAFETY: a live zval.
-    !value.is_null() && unsafe { type_of(value) } == kind
-}
-
 /// `php_swoole_array_length_safe`.
-fn length_safe(array: *const zval) -> usize {
-    if is(array, IS_ARRAY) {
-        // SAFETY: a live array.
-        unsafe { value::count(array) as usize }
-    } else {
-        0
-    }
-}
-
-/// The entries of an array in order, with their string keys (null for an
-/// integer key), borrowed from the array.
-fn entries(array: *const zval) -> Vec<(*mut zend_string, *mut zval)> {
-    unsafe extern "C" fn each(
-        _: zend_ulong,
-        key: *mut zend_string,
-        value: *mut zval,
-        out: *mut c_void,
-    ) -> bool {
-        // SAFETY: the vector `entries` lends.
-        unsafe { (*out.cast::<Vec<(*mut zend_string, *mut zval)>>()).push((key, value)) };
-        true
-    }
-    let mut out = Vec::with_capacity(length_safe(array));
-    // SAFETY: a live array.
-    let table = unsafe { value::table(array) };
-    // SAFETY: a live table; `each` only collects.
-    unsafe { swr_zend_hash_foreach_key(table, Some(each), (&raw mut out).cast()) };
-    out
-}
-
-/// A string key's bytes.
-fn key_of<'a>(key: *mut zend_string) -> &'a [u8] {
-    // SAFETY: a live key of a live array.
-    unsafe { string::bytes(key) }
-}
-
-/// A reference `zval_get_string` returned, released on drop.
-struct Text(*mut zend_string);
-
-impl Text {
-    fn bytes(&self) -> &[u8] {
-        // SAFETY: a live string this holds a reference to.
-        unsafe { string::bytes(self.0) }
-    }
-}
-
-impl Drop for Text {
-    fn drop(&mut self) {
-        // SAFETY: the reference `string_of` took.
-        unsafe { swoole_rs_zend::sys::swr_zend_string_release(self.0) };
-    }
+fn length_safe(value: &Zval) -> usize {
+    value.array().map_or(0, |array| array.count() as usize)
 }
 
 /// `zval_get_string`, `None` once a bailout is pending.
-fn string_of(value: *const zval) -> Option<Text> {
-    // SAFETY: a live zval; the result owns a new reference.
-    let string = unsafe { value::get_string(value) };
-    if string.is_null() {
-        return None;
-    }
-    let text = Text(string);
+fn string_of(value: &Zval) -> Option<ZString> {
+    let text = value.string();
     (!bailout::pending()).then_some(text)
 }
 
@@ -547,7 +470,7 @@ fn has_crlf(value: &[u8]) -> bool {
 
 /// `http2_server_build_trailer`, as an unsealed frame (an empty block
 /// without a trailer): `None` on an error.
-fn build_trailer(ctx: *mut c_void, session: &Session) -> Option<Headers> {
+fn build_trailer(ctx: Ctx, session: &Session) -> Option<Headers> {
     let trailer = property(ctx, c"trailer");
     let size = length_safe(trailer);
     let mut headers = Headers::new(size);
@@ -555,12 +478,12 @@ fn build_trailer(ctx: *mut c_void, session: &Session) -> Option<Headers> {
         headers.buffers.frame.resize(FRAME_HEADER, 0);
         return Some(headers);
     }
-    for (key, value) in entries(trailer) {
-        if key.is_null() || is(value, IS_NULL) {
+    for (key, value) in trailer.array().into_iter().flat_map(Array::entries) {
+        let Some(key) = key.filter(|_| !value.is_null()) else {
             continue;
-        }
+        };
         let value = string_of(value)?;
-        headers.add_folded(key_of(key), value.bytes());
+        headers.add_folded(key, value.bytes());
     }
     headers.deflate(session, c"http2_server_build_trailer")
 }
@@ -574,7 +497,7 @@ struct Body {
 }
 
 /// `http2_server_build_header`.
-fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Option<Headers> {
+fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Headers> {
     let zheader = property(ctx, c"header");
     let zcookie = property(ctx, c"cookie");
     let mut headers = Headers::new(32 + length_safe(zheader) + length_safe(zcookie));
@@ -589,12 +512,12 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
     headers.add(b":status", decimal(&mut [0; 20], i64::from(status as i32)));
 
     let mut header_flags = 0;
-    if is(zheader, IS_ARRAY) {
+    if let Some(zheader) = zheader.array() {
         let can_capture =
             get(ctx, Field::AcceptCompression) != 0 && get(ctx, Field::CompressionTypes) != 0;
         let mut content_type = None;
-        let mut add = |headers: &mut Headers, key: &[u8], value: *mut zval| -> Option<()> {
-            if is(value, IS_NULL) {
+        let mut add = |headers: &mut Headers, key: &[u8], value: &Zval| -> Option<()> {
+            if value.is_null() {
                 return Some(());
             }
             let owned = string_of(value)?;
@@ -613,13 +536,12 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
             headers.add_folded(key, text);
             Some(())
         };
-        for (key, value) in entries(zheader) {
-            if key.is_null() || is(value, IS_NULL) {
+        for (key, value) in zheader.entries() {
+            let Some(key) = key.filter(|_| !value.is_null()) else {
                 continue;
-            }
-            let key = key_of(key);
-            if is(value, IS_ARRAY) {
-                for (_, item) in entries(value) {
+            };
+            if let Some(items) = value.array() {
+                for (_, item) in items.entries() {
                     add(&mut headers, key, item)?;
                 }
             } else {
@@ -627,9 +549,11 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
             }
         }
         if can_capture {
-            let kind = content_type.as_ref().map_or(&b"text/html"[..], Text::bytes);
+            let kind = content_type
+                .as_ref()
+                .map_or(&b"text/html"[..], ZString::bytes);
             // SAFETY: a live context.
-            let accept = unsafe { swoole_rs_phphttp::http2::compressible(ctx, kind) };
+            let accept = ctx.compressible(kind);
             set(ctx, Field::AcceptCompression, u32::from(accept));
         }
     }
@@ -647,21 +571,15 @@ fn build_header(ctx: *mut c_void, session: &Session, body: Option<Body>) -> Opti
     if missing & MISSING_CONTENT_TYPE != 0 {
         headers.add(b"content-type", b"text/html");
     }
-    if is(zcookie, IS_ARRAY) {
-        for (_, value) in entries(zcookie) {
-            if is(value, IS_STRING) {
-                // SAFETY: a live string zval.
-                let cookie = unsafe { value::str_of(value) };
-                // SAFETY: its live string.
-                headers.add(b"set-cookie", unsafe { string::bytes(cookie) });
-            }
+    for (_, value) in zcookie.array().into_iter().flat_map(Array::entries) {
+        if let Some(cookie) = value.bytes() {
+            headers.add(b"set-cookie", cookie);
         }
     }
     if let Some(body) = body {
         let mut content_length = body.length;
         // SAFETY: a live context; the body is only read when compression is accepted.
-        let compressed =
-            unsafe { swoole_rs_phphttp::http2::compress(ctx, bytes(body.data, body.length)) };
+        let compressed = unsafe { ctx.compress(bytes(body.data, body.length)) };
         if let Some((encoding, compressed)) = compressed {
             content_length = compressed.len();
             headers.add(b"content-encoding", encoding.to_bytes());
@@ -726,7 +644,7 @@ fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
 
 /// `Stream::send_header`.
 fn send_header(
-    ctx: *mut c_void,
+    ctx: Ctx,
     session: &Session,
     stream: &Stream,
     body: Option<Body>,
@@ -754,7 +672,7 @@ fn send_header(
 
 /// `Stream::send_body`: DATA frames within the peer's flow-control window.
 pub(crate) fn send_body(
-    ctx: *mut c_void,
+    ctx: Ctx,
     session: &Session,
     stream: &Stream,
     data: &[u8],
@@ -830,7 +748,7 @@ pub(crate) fn send_body(
 }
 
 /// `Stream::send_trailer`: HEADERS with `END_STREAM`, even an empty block.
-fn send_trailer(ctx: *mut c_void, session: &Session, stream_id: u32) -> bool {
+fn send_trailer(ctx: Ctx, session: &Session, stream_id: u32) -> bool {
     let Some(mut headers) = build_trailer(ctx, session) else {
         return false;
     };
@@ -841,13 +759,13 @@ fn send_trailer(ctx: *mut c_void, session: &Session, stream_id: u32) -> bool {
 }
 
 /// Whether the response has a trailer.
-fn has_trailer(ctx: *mut c_void) -> bool {
+fn has_trailer(ctx: Ctx) -> bool {
     length_safe(property(ctx, c"trailer")) > 0
 }
 
 /// `http2_server_respond`: the header, the body and the trailer, then the
 /// stream is done.
-pub(crate) fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
+pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
     let Some((session, stream)) = of(ctx) else {
         return false;
     };
@@ -882,7 +800,7 @@ pub(crate) fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
                 set(ctx, Field::End, 1);
                 if get(ctx, Field::ContentCompressed) != 0 {
                     // SAFETY: a live context, which holds the compressed body.
-                    body = unsafe { swoole_rs_phphttp::http2::compressed(ctx) }.to_vec();
+                    body = unsafe { ctx.compressed() }.to_vec();
                     compressed = true;
                 }
                 facts.chunked = get(ctx, Field::SendChunked);
@@ -925,33 +843,8 @@ pub(crate) fn respond(ctx: *mut c_void, data: &[u8]) -> bool {
     }
 }
 
-/// `http2_server_respond`: `length` body bytes (null at 0). Like the
-/// response's other operations (crates/phphttp), it leaves a bailout pending
-/// for its Rust caller.
-/// # Safety
-/// `ctx` is a live HTTP/2 stream context and `data` covers `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_respond(
-    ctx: *mut c_void,
-    data: *const c_char,
-    length: usize,
-) -> bool {
-    respond(ctx, bytes(data, length))
-}
-
 /// `swoole_http2_server_write`: a chunk, the header first.
-/// # Safety
-/// As `swr_v1_phphttp2_server_respond`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_write(
-    ctx: *mut c_void,
-    data: *const c_char,
-    length: usize,
-) -> bool {
-    write(ctx, bytes(data, length))
-}
-
-fn write(ctx: *mut c_void, chunk: &[u8]) -> bool {
+fn write(ctx: Ctx, chunk: &[u8]) -> bool {
     if chunk.is_empty() {
         report(NO_PAYLOAD, false, b"the data sent must not be empty");
         return false;
@@ -966,7 +859,7 @@ fn write(ctx: *mut c_void, chunk: &[u8]) -> bool {
     send_body(ctx, &session, &stream, chunk, false)
 }
 
-pub(crate) fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -> c_int {
+pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> c_int {
     let Some((session, stream)) = of(ctx) else {
         return -1;
     };
@@ -978,8 +871,10 @@ pub(crate) fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -
     let ce = unsafe { (*object).ce };
     // SAFETY: the live object of that class.
     let zheader = unsafe { swr_zend_property_array(ce, object, c"header".as_ptr(), 6) };
-    if find(zheader, c"content-type").is_null() {
-        swoole_rs_phphttp::set_header_bytes(ctx, b"content-type", content_type);
+    // SAFETY: the property's live array.
+    let zheader = unsafe { Zval::from_ptr(zheader) }.and_then(Zval::array);
+    if zheader.is_none_or(|zheader| zheader.find(b"content-type").is_none()) {
+        ctx.set_header(b"content-type", content_type);
     }
     let body = Body {
         data: ptr::null(),
@@ -994,7 +889,7 @@ pub(crate) fn begin_file(ctx: *mut c_void, content_type: &[u8], length: usize) -
 }
 
 /// The trailer, then the stream is done: false after an error.
-pub(crate) fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) -> bool {
+pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
     let Some(session) = SessionState::of(ctx) else {
         return false;
     };
@@ -1023,35 +918,25 @@ pub(crate) fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) -> bool 
 
 // --- receiving ---
 
-unsafe extern "C" {
-    #[link_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE"]
-    fn php_swoole_get_recv_data(server: *mut c_void, zdata: *mut zval, request: *mut c_void);
-}
-
 /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
 /// connection, whose session (and settings context) the first data makes.
 /// # Safety
 /// `server` is the live server, `conn` the session's connection and `request`
 /// its `RecvData`.
-#[unsafe(export_name = "_Z29swoole_http2_server_onReceivePN6swoole6ServerEPNS_10ConnectionEPNS_8RecvDataE")]
-pub unsafe extern "C" fn swoole_http2_server_on_receive(
-    server: *mut c_void,
-    conn: *mut c_void,
-    request: *mut c_void,
-) -> c_int {
+unsafe fn on_receive(server: *mut c_void, conn: *mut c_void, request: *mut c_void) -> c_int {
     // SAFETY: a `RecvData` begins with its `DataHead`.
     let session_id = unsafe { (*request.cast::<swoole_rs_corebase::DataHead>()).fd };
     let session = SessionState::find(session_id).or_else(|| {
         // SAFETY: the live server.
-        let default_ctx = unsafe { swoole_rs_phphttp::http2::server_context(server, session_id) };
+        let default_ctx = unsafe { Ctx::server_context(server, session_id) };
         // SAFETY: the live server and the session's connection.
         let max_body_size =
             unsafe { swoole_rs_server::server_methods::package_max_length(server, conn) };
         // SAFETY: the session's own settings context and the server's request handler.
         unsafe {
-            crate::session::swr_v1_phphttp2_session_new(
+            crate::session::session_new(
                 session_id,
-                default_ctx.cast(),
+                default_ctx,
                 max_body_size,
                 false,
                 swoole_rs_phphttp::http2_request_handler,
@@ -1060,26 +945,21 @@ pub unsafe extern "C" fn swoole_http2_server_on_receive(
         };
         SessionState::find(session_id)
     });
-    // SAFETY: all zeroes is `IS_UNDEF`.
-    let mut zdata: zval = unsafe { std::mem::zeroed() };
+    let zdata = Owned::default();
     // SAFETY: the live server and its request; the data is a new string.
-    unsafe { php_swoole_get_recv_data(server, &raw mut zdata, request) };
-    // SAFETY: a string zval.
-    let data = unsafe { value::str_of(&raw mut zdata) };
-    // SAFETY: its live string.
-    let data = unsafe { string::bytes(data) };
+    unsafe { swoole_rs_phpserver::php_swoole_get_recv_data(server, zdata.as_ptr(), request) };
+    let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
     let result = session.map_or(SW_ERR, |session| parse(&session, data.as_ptr()));
+    // Released before a deferred bailout can jump past it.
+    drop(zdata);
     bailout::finish();
-    // SAFETY: the data's own reference.
-    unsafe { zval_ptr_dtor(&raw mut zdata) };
     result
 }
 
 /// `php_swoole_http2_server_onClose`: the connection's session goes.
-#[unsafe(export_name = "_Z31php_swoole_http2_server_onClosePN6swoole6ServerEl")]
-pub extern "C" fn php_swoole_http2_server_on_close(_server: *mut c_void, session_id: i64) {
-    crate::session::swr_v1_phphttp2_session_free(session_id);
+pub fn server_on_close(session_id: i64) {
+    crate::session::session_free(session_id);
 }
 
 /// `swoole_http2_server_parse` for the coroutine server's connection loop: one
@@ -1087,10 +967,24 @@ pub extern "C" fn php_swoole_http2_server_on_close(_server: *mut c_void, session
 /// caller's `finish`.
 /// # Safety
 /// `buf` holds a whole frame.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_session_receive(fd: i64, buf: *const c_char) -> c_int {
-    SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, buf.cast()))
+unsafe fn session_receive(fd: i64, buf: *const u8) -> c_int {
+    SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, buf))
 }
+
+/// The entry points crates/phphttp's HTTP/1 code calls.
+pub(crate) static HOOKS: swoole_rs_phphttp::http2::Server = swoole_rs_phphttp::http2::Server {
+    on_receive,
+    static_file: crate::files::static_file,
+    respond,
+    write,
+    ping,
+    send_file: crate::files::send_file,
+    goaway,
+    reset,
+    session_new: crate::session::session_new,
+    session_receive,
+    session_free: crate::session::session_free,
+};
 
 fn parse(session: &Session, buf: *const u8) -> c_int {
     let last_stream_id = session.last_stream_id.get();
@@ -1249,24 +1143,23 @@ fn headers_complete(stream: &Stream) -> bool {
     if !stream.negotiates.get() {
         return true;
     }
-    let headers = zval_of(ctx, Value::Header);
-    if let Some(value) = string_at(headers, c"content-type") {
+    if let Some(value) = header(ctx, b"content-type") {
         let (folded, length) = fold(value.bytes());
         let media = sw_rs_http2_media_kind(folded.get(..length).unwrap_or_default());
         if media == MEDIA_URLENCODED {
             set(ctx, Field::Form, 1);
         } else if media == MEDIA_MULTIPART
             // SAFETY: a live context and the header value.
-            && !unsafe { swoole_rs_phphttp::http2::multipart_start(ctx, value.bytes()) }
+            && !ctx.multipart_start(value.bytes())
         {
             return false;
         }
     }
     if get(ctx, Field::EnableCompression) != 0
-        && let Some(value) = string_at(headers, c"accept-encoding")
+        && let Some(value) = header(ctx, b"accept-encoding")
     {
         // SAFETY: a live context.
-        unsafe { swoole_rs_phphttp::http2::compression_method(ctx, value.bytes()) };
+        ctx.compression_method(value.bytes());
     }
     true
 }
@@ -1279,14 +1172,14 @@ fn complete(session: &Session, stream: &Stream) -> c_int {
     }
     let ctx = stream.ctx;
     // SAFETY: a live context.
-    let body = unsafe { swoole_rs_phphttp::http2::data(ctx) };
+    let body = unsafe { ctx.data() };
     if !body.is_empty() {
         if get(ctx, Field::ParseBody) != 0 && get(ctx, Field::Form) != 0 {
             // SAFETY: the live `post` array.
-            unsafe { swoole_rs_phphttp::http2::treat_query(zval_of(ctx, Value::Post), body) };
+            ctx.treat_query(Value::Post, body);
         } else if get(ctx, Field::Multipart) != 0
             // SAFETY: a live context with a multipart parser.
-            && !unsafe { swoole_rs_phphttp::http2::multipart(ctx) }
+            && !ctx.multipart()
         {
             return SW_ERR;
         }
@@ -1295,22 +1188,11 @@ fn complete(session: &Session, stream: &Stream) -> c_int {
     SW_OK
 }
 
-/// `zend_hash_str_find` on a live array: the value at `key`, or null.
-fn find(array: *mut zval, key: &CStr) -> *mut zval {
-    // SAFETY: a live array.
-    let table = unsafe { value::table(array) };
-    // SAFETY: a live table and a NUL-terminated key.
-    unsafe { zend_hash_str_find(table, key.as_ptr(), key.count_bytes()) }
-}
-
-/// The string at `key` of an array, if it has one.
-fn string_at(array: *mut zval, key: &CStr) -> Option<Text> {
-    let value = find(array, key);
-    if value.is_null() {
-        None
-    } else {
-        string_of(value)
-    }
+/// The request header `key` as a string, if it has one.
+fn header(ctx: Ctx, key: &[u8]) -> Option<ZString> {
+    // SAFETY: the context's live header array.
+    let headers = unsafe { Zval::from_ptr(zval_of(ctx, Value::Header)) }?;
+    string_of(headers.array()?.find(key)?)
 }
 
 fn read_u32(at: *const u8) -> u32 {
@@ -1394,9 +1276,9 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
     let ctx = stream.ctx;
     if length > 0 {
         // SAFETY: a live context.
-        unsafe { swoole_rs_phphttp::http2::data_start(ctx) };
+        ctx.data_start();
         // SAFETY: as above.
-        let buffered = unsafe { swoole_rs_phphttp::http2::data(ctx) }.len();
+        let buffered = unsafe { ctx.data() }.len();
         let ended = get(ctx, Field::End);
         if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) != 0 {
             send_u32_frame(ctx, TYPE_RST_STREAM, 0, FLAG_ACK, 0, 0);
@@ -1404,7 +1286,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
             return SW_OK;
         }
         // SAFETY: a live context and the frame's payload.
-        unsafe { swoole_rs_phphttp::http2::data_append(ctx, bytes(payload.cast(), length)) };
+        ctx.data_append(bytes(payload.cast(), length));
         flow(session, &stream, ctx, stream_id, length);
     }
     if flags & FLAG_END_STREAM != 0 {
@@ -1415,7 +1297,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
 
 /// Flow control: debit both receive windows, and reopen each once a quarter
 /// remains.
-fn flow(session: &Session, stream: &Stream, ctx: *mut c_void, stream_id: u32, length: usize) {
+fn flow(session: &Session, stream: &Stream, ctx: Ctx, stream_id: u32, length: usize) {
     let initial = session.local(INIT_WINDOW_SIZE);
     let connection = window(session.local_window_size.get(), length, initial, false);
     session.local_window_size.set(connection.value);
@@ -1567,7 +1449,7 @@ fn request_header(
     match kind {
         HEADER_COOKIE => {
             // SAFETY: the request's `$cookie`.
-            unsafe { swoole_rs_phphttp::http2::cookie(zval_of(ctx, Value::Cookie), value) };
+            ctx.cookie(value);
             false
         }
         HEADER_CONTENT_LENGTH => {
@@ -1589,20 +1471,20 @@ fn request_header(
 }
 
 /// `:path`: `request_uri`, `path_info` (decoded), `query_string` and `$get`.
-fn path(ctx: *mut c_void, zserver: *mut zval, value: &[u8]) {
+fn path(ctx: Ctx, zserver: *mut zval, value: &[u8]) {
     let question = value.iter().position(|&byte| byte == b'?');
     let path = match question.and_then(|question| value.split_at_checked(question)) {
         Some((path, query)) => {
             let query = query.get(1..).unwrap_or_default();
             add_string(zserver, b"query_string", query);
             // SAFETY: the request's `$get`.
-            unsafe { swoole_rs_phphttp::http2::treat_query(zval_of(ctx, Value::Get), query) };
+            ctx.treat_query(Value::Get, query);
             path
         }
         None => value,
     };
     // SAFETY: a live context without a path.
-    unsafe { swoole_rs_phphttp::http2::set_path(ctx, value) };
+    ctx.set_path(value);
     // SAFETY: a live array taking the new string.
     unsafe { add_assoc_str_ex(zserver, c"request_uri".as_ptr(), 11, string::copy(path)) };
     let decoded = string::copy(path);
@@ -1646,7 +1528,7 @@ fn strtol(value: &[u8]) -> (i64, bool) {
 }
 
 /// `http2_server_send_status_code`: a header-only response.
-fn send_status_code(ctx: *mut c_void, status: u32) {
+fn send_status_code(ctx: Ctx, status: u32) {
     if let Some((session, stream)) = of(ctx) {
         set(ctx, Field::Status, status);
         send_header(ctx, &session, &stream, None, true);

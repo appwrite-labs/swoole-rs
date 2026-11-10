@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,9 +16,9 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
+from tools.ext_identity import attest, unchanged
 from tools.harness import parse_engines, run_isolated, write_report
-from tools.hybrid_identity import attest
 from coherent_sdk import stage
 from storage_summary import compare
 
@@ -42,12 +41,6 @@ def body(source, signature):
     return source[start:end]
 
 
-def owned(hybrid, name):
-    """The hybrid build's copy of an upstream header: the patched one, or the owned native/ one
-    that replaced it once the patch set deleted upstream's."""
-    return hybrid / name if (hybrid / name).is_file() else next(ROOT.glob('native/*/' + Path(name).name))
-
-
 def public(*prefixes, count=None):
     """A placeholder for the lines of an engine's own swoole.h that start with prefixes,
     filled in per engine when the originals config is written."""
@@ -61,9 +54,8 @@ def main():
     parser.add_argument('--php-config', default='php-config')
     parser.add_argument('--php-extension', action='append', default=[])
     parser.add_argument('--engine', action='append', required=True)
-    parser.add_argument('--build-manifest', type=Path, required=True)
-    parser.add_argument('--archive', type=Path, required=True)
-    parser.add_argument('--source-ref', required=True)
+    parser.add_argument('--build-manifest', type=Path, required=True, help="tools/build_ext.py's manifest of the selected engine")
+    parser.add_argument('--archive', type=Path, required=True, help="tools/build_ext.py --native's SDK archive, whose patched tree supplies the selected SDK headers")
     parser.add_argument('--output', type=Path, required=True)
     phase = parser.add_mutually_exclusive_group()
     phase.add_argument('--backtrace', action='store_true', help='Run normal enabled/filter/reset backtrace behavior instead of storage/concurrent reopen')
@@ -84,9 +76,8 @@ def main():
     report = dict(passed=False, created_utc=datetime.now(timezone.utc).isoformat(), work=str(work),
                   scope=__doc__, fixture=fixture, engines=[], results=[])
     try:
-        # The selected side's sources, headers and config.h are the hybrid build's.
-        hybrid, hybrid_flags = hybrid_tree(args.archive)
-        report['hybrid_tree'] = str(hybrid)
+        # The selected side's sources, headers and config.h are the Cargo build's.
+        hybrid_flags = native_flags(args.archive)
         for name in [fixture + '.cc', fixture + '.php', 'storage_summary.py'] + ['coherent_sdk.py'] + (['child_assertions.h', 'terminal_stdout.py'] if redirect else []):
             path = Path(__file__).with_name(name)
             (work / name).write_bytes(path.read_bytes())
@@ -119,7 +110,7 @@ def main():
                 names = ['level', 'date_format_long_string', 'date_with_microseconds', 'ignore_error']
                 excerpt = ('\n'.join(body(original.decode(), 'TEST(log, ' + name + ')') for name in names)).encode()
                 expected = ['log.' + name for name in names]
-                config = '#include "swoole_file.h"\n#if __has_include("swoole_process_pool.h")\n#include "swoole_process_pool.h"\n#else\n#include "swoole_server.h"\n#endif\n#include <regex>\n#define M14_PRIVATE_LOG_FILE 1\n'
+                config = '#include "swoole_file.h"\n#if __has_include("swoole_process_pool.h")\n#include "swoole_process_pool.h"\n#else\n#include "swoole_rs_process_pool.h"\n#endif\n#include <regex>\n#define M14_PRIVATE_LOG_FILE 1\n'
                 config += original[original.index(b'const char *file ='):original.index(b'TEST(log, level)')].decode()
                 config += '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
                 report['limits'] = 'Four unchanged global Logger originals through real GoogleTest and coherent frozen native/selected SDKs. Ordinary String construction/read consumers only. Unsafe date_format scanf, hardcoded open_fail, spawn adapters and full39/performance unqualified.'
@@ -130,7 +121,7 @@ def main():
                 main_source = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/src/main.cpp'], text=True)
                 (work / 'pinned-main.cpp').write_text(main_source)
                 helpers = '\n'.join(body(main_source, signature) for signature in ['pid_t spawn_exec(', 'int spawn_exec_and_wait('])
-                config = '#include "swoole_file.h"\n#if __has_include("swoole_process_pool.h")\n#include "swoole_process_pool.h"\n#else\n#include "swoole_server.h"\n#endif\n#include <system_error>\n#define M14_PRIVATE_LOG_FILE 1\n#define M14_CHILD_ASSERTIONS 1\n#include "child_assertions.h"\n'
+                config = '#include "swoole_file.h"\n#if __has_include("swoole_process_pool.h")\n#include "swoole_process_pool.h"\n#else\n#include "swoole_rs_process_pool.h"\n#endif\n#include <system_error>\n#define M14_PRIVATE_LOG_FILE 1\n#define M14_CHILD_ASSERTIONS 1\n#include "child_assertions.h"\n'
                 config += original[original.index(b'const char *file ='):original.index(b'TEST(log, level)')].decode()
                 if args.redirect_originals:
                     original_inputs = subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':core-tests/include/test_core.h'], text=True)
@@ -142,7 +133,7 @@ def main():
                 config += '#define M14_GTEST_FILTER ' + json.dumps('--gtest_filter=' + ':'.join(expected)) + '\n'
             # Each engine's config takes its declarations from its own swoole.h.
             headers = {'native': subprocess.check_output(['git', '-C', str(args.source), 'show', PIN + ':include/swoole.h'], text=True),
-                       'selected': owned(hybrid, 'include/swoole.h').read_text()}
+                       'selected': (ROOT / 'native/corebase/swoole.h').read_text()}
             for name, text in headers.items():
                 def declared(match):
                     prefixes, count = json.loads(match.group(1))
@@ -163,10 +154,8 @@ def main():
         if {bool(row['rust_feature_bits'] & 512) for row in report['engines']} != {False, True}:
             raise ValueError('Require native and selected utilities engines')
         selected = next(row for row in report['engines'] if row['rust_feature_bits'] & 512)
-        report['source_attestation'] = attest(args.build_manifest, args.archive, selected, args.source_ref, 512)
-        manifest = json.loads(args.build_manifest.read_text())
-        # Every helper gets its own engine's headers: the pinned SDK, or the hybrid build's.
-        logger_layout = any('include/swoole_log.h' in row.get('upstream_paths', []) for row in manifest['inputs']['patches'])
+        report['source_attestation'] = attest(args.build_manifest, selected, 512)
+        # Every helper gets its own engine's headers: the pinned SDK, or the Cargo build's.
         version = subprocess.check_output([args.php_config, '--version'], text=True).strip()
         if any(row['php'] != version for row in report['engines']):
             raise ValueError('PHP SDK differs from loaded runtime version')
@@ -191,12 +180,10 @@ def main():
             if not report['google_test']['libraries']:
                 raise ValueError('GoogleTest library identity unavailable')
         native_identity = next(row for row in report['engines'] if not row['rust_feature_bits'] & 512)
-        report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parent, args.source, args.source_ref, ROOT),
-                                  'selected': dict(hybrid_tree=str(hybrid), flags=hybrid_flags,
+        report['coherent_sdk'] = {'native': stage(work / 'native', Path(native_identity['extension']).parents[1], args.source, PIN),
+                                  'selected': dict(flags=hybrid_flags,
                                                    string_header_sha256=sha(ROOT / 'native/buffer/swoole_string.h'))}
-        (work / 'selected').mkdir()
-        shutil.copyfile(hybrid / 'config.h', work / 'selected/config.h')
-        sdk_headers = {'native': ['-I' + str(work / 'native/include')], 'selected': ['-I' + str(work / 'selected'), *hybrid_flags]}
+        sdk_headers = {'native': ['-I' + str(work / 'native/include')], 'selected': hybrid_flags}
         openssl = shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'openssl'], text=True))
         if coherent and report['coherent_sdk']['native']['string_header_sha256'] == report['coherent_sdk']['selected']['string_header_sha256']:
             raise ValueError('Selected SDK lacks actual String overlay')
@@ -236,7 +223,7 @@ def main():
         symbols = run_isolated(['nm', '-u', str(inline_helper)], timeout=15)
         report['selected_inline_imports'] = dict(exit=symbols.returncode, stdout=symbols.stdout, stderr=symbols.stderr)
         required = ['_ZN6swoole6StringD1Ev'] if coherent else []
-        if logger_layout and args.backtrace:
+        if args.backtrace:
             required += ['swr_v1_logger_set']
         if symbols.returncode or any(name not in symbols.stdout for name in required):
             raise ValueError('Selected inline helper lacks required Rust utility imports')
@@ -295,12 +282,11 @@ def main():
                                                                 child_failure_hidden_by_original_exit=True, rejected_by_journal=rejected)
                         if not rejected:
                             raise ValueError('Child assertion negative control did not expose original zero-exit blindness')
-        if not all(row['passed'] for row in report['results']):
-            raise ValueError('Logger storage fixture failed; all engine outputs retained')
+        if failed := [row for row in report['results'] if not row['passed']]:
+            raise ValueError('Logger storage fixture failed; all engine outputs retained: ' + '; '.join(
+                f"{row['engine']} exit {row['exit']}, stderr {row['stderr'][-400:]!r}" for row in failed))
         compare(report['results'])
-        receipt = report['source_attestation']
-        if sha(args.build_manifest) != receipt['manifest_sha256'] or sha(args.archive) != receipt['archive_sha256']:
-            raise ValueError('Selected production inputs changed')
+        unchanged(args.build_manifest, report['source_attestation'])
         report['passed'] = True
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'

@@ -19,6 +19,8 @@ use core::mem::MaybeUninit;
 use core::ptr;
 use swoole_rs_process::worker_record::Worker as Record;
 
+use core::sync::atomic::AtomicU64;
+use swoole_rs_bus::{BUS_ALLOCATE, BusRead, MessageBus};
 use swoole_rs_corebase::CoreAllocator;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
@@ -74,12 +76,10 @@ const SW_WORKER: c_int = 2;
 const WORKER_MESSAGE_STOP: u8 = 1;
 const CHAN_LOCK: c_int = 2;
 const CHAN_SHM: c_int = 8;
-/// `SWR_BUS_ALLOCATE`.
-const BUS_ALLOCATE: u8 = 1;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
-// SAFETY: crates/timer's and crates/protocols' C entries,
+// SAFETY: crates/timer's and crates/bus' C entries,
 // crates/reactor's, and their upstream symbols.
 unsafe extern "C-unwind" {
     #[link_name = "_Z19swoole_timer_selectv"]
@@ -90,7 +90,6 @@ unsafe extern "C-unwind" {
     fn swoole_timer_is_available() -> bool;
     #[link_name = "_Z19swoole_timer_createb"]
     fn swoole_timer_create(manually_trigger: bool) -> *mut c_void;
-    fn swr_v1_core_timer_slot() -> *mut *mut c_void;
     fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
     pub(crate) fn swr_v1_timer_add_plain(
         msec: c_long,
@@ -103,51 +102,11 @@ unsafe extern "C-unwind" {
     fn swr_v1_event_set_end_callback(id: c_int, callback: unsafe extern "C" fn());
 }
 
-// SAFETY: crates/protocols' bus, linked into the same archive.
-unsafe extern "C" {
-    pub(crate) fn swr_v1_bus_create(buffer_size: usize) -> *mut c_void;
-    pub(crate) fn swr_v1_bus_free(bus: *mut c_void);
-    pub(crate) fn swr_v1_bus_set_buffer_size(bus: *mut c_void, size: usize);
-    pub(crate) fn swr_v1_bus_buffer_size(bus: *mut c_void) -> usize;
-    pub(crate) fn swr_v1_bus_set_buffer(bus: *mut c_void, buffer: *mut c_void);
-    pub(crate) fn swr_v1_bus_buffer(bus: *mut c_void) -> *mut DataHead;
-    pub(crate) fn swr_v1_bus_packet(bus: *mut c_void) -> BusPacket;
-    pub(crate) fn swr_v1_bus_pop(bus: *mut c_void);
-    fn swr_v1_bus_read(
-        bus: *mut c_void,
-        fd: c_int,
-        dgram: bool,
-        nobufs: *mut bool,
-        state: *mut BusRead,
-    ) -> isize;
-    fn swr_v1_bus_adopt(bus: *mut c_void, data: *mut c_void, size: usize, allocator: *const c_void);
-    fn swr_v1_bus_count_ids(bus: *mut c_void, counter: *mut c_void);
-}
-
-/// `swoole::PacketPtr`.
-#[repr(C)]
-pub(crate) struct BusPacket {
-    pub(crate) length: usize,
-    pub(crate) data: *const c_char,
-}
-
-/// `swr_bus_read`.
-#[repr(C)]
-struct BusRead {
-    received: isize,
-    size: usize,
-    data: *mut c_void,
-    allocator: *const c_void,
-    chunks: u16,
-    resume: bool,
-    event: u8,
-}
-
 /// A pool's message bus: the Rust bus, then the allocator its packets and buffer
 /// come from. crates/process and crates/phpprocess read both through `message_bus`.
 #[repr(C)]
 struct PoolBus {
-    bus: *mut c_void,
+    bus: *mut MessageBus,
     allocator: *const CoreAllocator,
 }
 
@@ -239,7 +198,7 @@ fn bus_read(pool: Pool, sock: *mut c_void) -> isize {
 /// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`) over the bus and its
 /// default allocator: allocates each packet block the bus asks for.
 pub(crate) fn read_bus(
-    bus: *mut c_void,
+    bus: &mut MessageBus,
     allocator: *const CoreAllocator,
     sock: &mut SocketRecord,
     dgram: bool,
@@ -254,16 +213,8 @@ pub(crate) fn read_bus(
         event: 0,
     };
     loop {
-        // SAFETY: a live bus, its pipe's descriptor and flag, and a writable state.
-        let n = unsafe {
-            swr_v1_bus_read(
-                bus,
-                sock.fd,
-                dgram,
-                &raw mut sock.kernel_nobufs,
-                &raw mut state,
-            )
-        };
+        // SAFETY: a bus whose buffer is set, and its pipe's descriptor and flag.
+        let n = unsafe { bus.receive(sock.fd, dgram, &mut sock.kernel_nobufs, &mut state) };
         if state.event != BUS_ALLOCATE {
             return n;
         }
@@ -286,7 +237,7 @@ pub(crate) fn read_bus(
             std::process::abort();
         }
         // SAFETY: the block just allocated, from `allocator`.
-        unsafe { swr_v1_bus_adopt(bus, data, state.size, ptr::from_ref(allocator).cast()) };
+        unsafe { bus.adopt(data, state.size, ptr::from_ref(allocator).cast()) };
     }
 }
 
@@ -321,15 +272,13 @@ fn new_message_bus(pool: Pool) -> i64 {
 /// `new MessageBus()` numbering its messages from `counter`, which outlives it;
 /// [`free_bus`] frees it.
 pub(crate) fn new_bus(counter: *mut c_void) -> *mut c_void {
+    let mut bus = MessageBus::create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize);
+    // SAFETY: the caller's live, aligned counter, which outlives the bus.
+    bus.count_ids(unsafe { &*counter.cast::<AtomicU64>() });
     let bus = PoolBus {
-        // SAFETY: no preconditions.
-        bus: unsafe {
-            swr_v1_bus_create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize)
-        },
+        bus: Box::into_raw(bus),
         allocator: &raw const STD_ALLOCATOR,
     };
-    // SAFETY: the new bus numbers its messages from the caller's counter.
-    unsafe { swr_v1_bus_count_ids(bus.bus, counter) };
     Box::into_raw(Box::new(bus)).cast()
 }
 
@@ -349,8 +298,8 @@ fn free_message_bus(pool: Pool) {
 pub(crate) unsafe fn free_bus(bus: *mut c_void) {
     // SAFETY: as the caller guarantees.
     let bus = unsafe { Box::from_raw(bus.cast::<PoolBus>()) };
-    // SAFETY: the bus, not used again.
-    unsafe { swr_v1_bus_free(bus.bus) };
+    // SAFETY: the bus `new_bus` boxed, not used again.
+    drop(unsafe { Box::from_raw(bus.bus) });
 }
 
 // ---------------------------------------------------------------- pipes and box
@@ -734,10 +683,8 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         OP_TIMER_INIT => {
             // SAFETY: this thread's timer, if any.
             if unsafe { swoole_timer_is_available() } {
-                // SAFETY: as above.
-                let slot = unsafe { swr_v1_core_timer_slot() };
                 // SAFETY: this thread's timer slot, holding its live timer.
-                let timer = unsafe { *slot };
+                let timer = unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() };
                 // SAFETY: as above.
                 unsafe { swr_v1_timer_owner_reinit(timer, true) };
             } else {
@@ -960,13 +907,8 @@ unsafe extern "C" fn pipe_wait(arg: *mut c_void) {
         // SAFETY: this thread's timer, if any.
         let next = unsafe { swoole_timer_get_next_msec() };
         // SAFETY: the worker's pipe.
-        let ready = unsafe {
-            socket_wait_event(
-                worker_of(c.worker.cast()).pipe_worker.cast(),
-                next as c_int,
-                EVENT_READ,
-            )
-        };
+        let pipe = unsafe { &*worker_of(c.worker.cast()).pipe_worker.cast() };
+        let ready = socket_wait_event(pipe, next as c_int, EVENT_READ);
         ready as isize
     });
 }
@@ -1045,9 +987,11 @@ unsafe extern "C" fn warn(pool: *mut c_void, worker: *mut c_void, kind: c_int, a
     let origin = loop_origin(pool);
     match kind {
         WARN_MSGRCV => {
-            // SAFETY: the pool's queue.
-            let queue =
-                unsafe { swoole_rs_ossupport::swr_v1_os_msg_queue_id(record(pool).queue.cast()) };
+            let queue = record(pool)
+                .queue
+                .cast::<swoole_rs_ossupport::QueueRecord>();
+            // SAFETY: the pool's live queue.
+            let queue = unsafe { &*queue }.id();
             log::sys_warning(origin, format_args!("[Worker#{id}] msgrcv({queue}) failed"));
         }
         WARN_ACCEPT => {

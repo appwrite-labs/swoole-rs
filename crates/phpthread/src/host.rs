@@ -10,9 +10,9 @@ use swoole_rs_error::ErrorCode::{
     SW_ERROR_PHP_FATAL_ERROR, SW_ERROR_PHP_RUNTIME_NOTICE, SW_ERROR_WRONG_OPERATION,
 };
 use swoole_rs_zend::{
-    E_ERROR,
+    E_ERROR, Value,
     bailout::{self, Bailout},
-    sys::{swr_zend_instanceof, zend_class_entry, zend_object, zend_string, zval},
+    sys::{swr_zend_instanceof, zend_class_entry, zend_string, zval},
 };
 
 /// `swoole_exception_ce`.
@@ -43,15 +43,11 @@ pub(crate) unsafe fn unserialize(data: &[u8], out: *mut zval) {
 }
 
 /// `sw_zval_is_co_socket`.
-/// # Safety
-/// `object` is a live object zval.
-pub(crate) unsafe fn is_co_socket(object: *mut zval) -> bool {
-    // SAFETY: per the caller.
-    let std: *mut zend_object = unsafe { swoole_rs_zend::value::obj_of(object) };
-    // SAFETY: written once by MINIT.
-    let socket = unsafe { swoole_rs_phpclients::swoole_socket_coro_ce };
-    // SAFETY: a live object.
-    let ce = unsafe { (*std).ce };
+pub(crate) fn is_co_socket(object: &Value) -> bool {
+    let socket = swoole_rs_phpclients::socket_class();
+    let Some(ce) = object.class() else {
+        return false;
+    };
     // SAFETY: a live object's class and a registered one.
     !socket.is_null() && unsafe { swr_zend_instanceof(ce, socket) }
 }
@@ -62,7 +58,7 @@ pub(crate) unsafe fn is_co_socket(object: *mut zval) -> bool {
 /// `object` is a live Coroutine\Socket zval.
 pub(crate) unsafe fn co_socket_cast(object: *mut zval) -> (c_int, c_int) {
     // SAFETY: per the caller.
-    let socket = unsafe { swoole_rs_phpclients::php_swoole_get_socket(object) };
+    let socket = unsafe { swoole_rs_phpclients::get_socket(object) };
     if socket.is_null() {
         return (-1, 0);
     }
@@ -84,7 +80,7 @@ pub(crate) unsafe fn co_socket_cast(object: *mut zval) -> (c_int, c_int) {
 /// In a request; `out` is writable.
 pub(crate) unsafe fn co_socket_create(out: *mut zval, fd: c_int, kind: c_int) -> bool {
     // SAFETY: per the caller.
-    let object = unsafe { swoole_rs_phpclients::php_swoole_create_socket_from_fd(fd, kind) };
+    let object = unsafe { swoole_rs_phpclients::create_from_fd(fd, kind) };
     if object.is_null() {
         return false;
     }
@@ -99,11 +95,8 @@ pub(crate) unsafe fn co_socket_create(out: *mut zval, fd: c_int, kind: c_int) ->
 /// A duplicate of an ext/sockets Socket's descriptor: -1 after throwing
 /// "failed to dup socket fd", -2 after "invalid socket fd", -3 when `object`
 /// is no Socket (or Swoole was built without ext/sockets).
-/// # Safety
-/// `object` is a live object zval.
-pub(crate) unsafe fn php_socket_cast(object: *mut zval) -> c_int {
-    // SAFETY: per the caller.
-    unsafe { swoole_rs_zend::Value::from_ptr(object) }.map_or(-3, swoole_rs_phpswoole::socket_cast)
+pub(crate) fn php_socket_cast(object: &Value) -> c_int {
+    swoole_rs_phpswoole::socket_cast(object)
 }
 
 /// An ext/sockets Socket over `fd`, which it takes; false on failure.

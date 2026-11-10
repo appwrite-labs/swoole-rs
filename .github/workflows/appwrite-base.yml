@@ -1,6 +1,6 @@
 name: Appwrite base
 # appwrite/docker-base with only its Swoole stage replaced (tools/appwrite_base.py):
-# `hybrid` is the all-modules hybrid, `upstream` stock Swoole at the same pin as the
+# `cargo` is the Cargo-built swoole.so (tools/build_ext.py), `upstream` stock Swoole at the same pin as the
 # control, so the two images differ only in swoole.so.
 on:
   workflow_dispatch:
@@ -12,12 +12,12 @@ permissions:
   packages: write
 jobs:
   image:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        variant: [hybrid, upstream]
+        variant: [cargo, upstream]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4

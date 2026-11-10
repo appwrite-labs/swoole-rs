@@ -37,7 +37,7 @@ if (Thread::getInfo()['is_main_thread']) {
         throw new RuntimeException('failed operation changed shared state');
     }
     if (function_exists('swr_guard_counts')) {
-        $count = in_array($mode, ['nested', 'coroutine', 'cancel', 'cancel-throw', 'serialize', 'unserialize', 'shared-set', 'shared-queue'], true) ? 2 : 1;
+        $count = in_array($mode, ['nested', 'coroutine', 'cancel', 'cancel-throw', 'serialize', 'unserialize', 'values', 'shared-set', 'shared-queue'], true) ? 2 : 1;
         if (swr_guard_counts() !== [$count, $count, $count, $count * 4096, $count * 4096 * 42, $mode === 'fatal' ? 1 : 0, $normal || in_array($mode, ['fatal', 'exit'], true) ? 0 : $count]) {
             throw new RuntimeException('Rust owner cleanup or native outcome provenance changed');
         }
@@ -89,6 +89,10 @@ if ($mode === 'exception') {
 } elseif ($mode === 'unserialize') {
     $map = new Thread\Map(['object' => new ExitSerialization()]);
     guarded(fn() => $map['object']);
+} elseif ($mode === 'values') {
+    // The first item's escape ends the copy: the second is never unserialized.
+    $map = new Thread\Map(['first' => new ExitSerialization(), 'second' => new ExitSerialization()]);
+    guarded(fn() => $map->values());
 } elseif ($mode === 'shared-set') {
     guarded(function () use ($map) { $map['kept'] = new ExitSerialization(); });
 } elseif ($mode === 'shared-queue') {

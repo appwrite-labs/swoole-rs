@@ -37,17 +37,16 @@ pub struct WritePayload {
     pub length: usize,
 }
 
-/// Native effects. Each receives `context`; `send` preserves the kernel's errno.
-#[repr(C)]
-pub struct WriteOps {
-    pub context: *mut c_void,
+/// The write's effects (`crates/tls`'s `reactor_write.rs`); `send` preserves the
+/// kernel's errno.
+pub trait WriteEffects {
     /// `socket->set_fd_option(1, -1)`, which also sets `nonblock`.
-    pub set_nonblock: unsafe extern "C" fn(*mut c_void),
-    pub send: unsafe extern "C" fn(*mut c_void) -> isize,
+    fn set_nonblock(&self);
+    fn send(&self) -> isize;
     /// `socket->out_buffer = new Buffer(chunk_size)`; its Rust handle.
-    pub create_buffer: unsafe extern "C" fn(*mut c_void) -> *mut Buffer,
+    fn create_buffer(&self) -> *mut Buffer;
     /// `add_write_event` unless the socket already wants writes.
-    pub watch_writable: unsafe extern "C" fn(*mut c_void),
+    fn watch_writable(&self);
 }
 
 /// `value` is the result when `outcome` is 0. Otherwise native code reports and
@@ -110,30 +109,25 @@ unsafe fn empty(buffer: *mut Buffer) -> Result<bool, i32> {
 ///
 /// # Safety
 /// `output` is the socket's embedded block and `kernel_nobufs` its flag; `buffer` is
-/// its `out_buffer`'s Rust handle or null; `payload` and `ops` are valid for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_write(
+/// its `out_buffer`'s Rust handle or null; `payload` is valid for the call.
+pub unsafe fn swr_v1_reactor_write(
     output: *mut SocketOutput,
     kernel_nobufs: *mut bool,
     buffer: *mut Buffer,
     default_buffer_size: u32,
     payload: *const WritePayload,
-    ops: *const WriteOps,
+    ops: &impl WriteEffects,
 ) -> WriteResult {
     // SAFETY: as the caller promises.
     let output = unsafe { &mut *output };
     // SAFETY: as above.
     let payload = unsafe { &*payload };
-    // SAFETY: as above.
-    let ops = unsafe { &*ops };
-    let context = ops.context;
     let length = payload.length;
     if output.buffer_size == 0 {
         output.buffer_size = default_buffer_size;
     }
     if output.nonblock == 0 {
-        // SAFETY: the native effect accepts `context`.
-        unsafe { (ops.set_nonblock)(context) };
+        ops.set_nonblock();
     }
     // Upstream compares `(uint32_t) _len`.
     #[expect(
@@ -162,8 +156,7 @@ pub unsafe extern "C" fn swr_v1_reactor_write(
     } else {
         if output.ssl_send == 0 {
             loop {
-                // SAFETY: the native effect accepts `context`.
-                sent = unsafe { (ops.send)(context) };
+                sent = ops.send();
                 if sent > 0 {
                     if usize::try_from(sent).is_ok_and(|sent| sent == length) {
                         return done(sent);
@@ -181,11 +174,9 @@ pub unsafe extern "C" fn swr_v1_reactor_write(
             }
         }
         if output.out_buffer.is_null() {
-            // SAFETY: the native effect accepts `context`.
-            buffer = unsafe { (ops.create_buffer)(context) };
+            buffer = ops.create_buffer();
         }
-        // SAFETY: as above.
-        unsafe { (ops.watch_writable)(context) };
+        ops.watch_writable();
     }
     let offset = sent.max(0).unsigned_abs();
     let status = if payload.iov.is_null() {
@@ -218,27 +209,30 @@ mod tests {
     }
     thread_local! { static NATIVE: RefCell<Native> = RefCell::default(); }
 
-    unsafe extern "C" fn set_nonblock(_: *mut c_void) {
-        NATIVE.with_borrow_mut(|n| n.trace.push("nonblock"));
-    }
-    unsafe extern "C" fn send(_: *mut c_void) -> isize {
-        let (sent, errno) = NATIVE.with_borrow_mut(|n| {
-            n.trace.push("send");
-            (n.sends.remove(0), n.errno)
-        });
-        if sent < 0 {
-            unsafe { *libc_errno() = errno };
+    struct Ops;
+    impl WriteEffects for Ops {
+        fn set_nonblock(&self) {
+            NATIVE.with_borrow_mut(|n| n.trace.push("nonblock"));
         }
-        sent
-    }
-    unsafe extern "C" fn create_buffer(_: *mut c_void) -> *mut Buffer {
-        NATIVE.with_borrow_mut(|n| {
-            n.trace.push("create");
-            n.buffer
-        })
-    }
-    unsafe extern "C" fn watch_writable(_: *mut c_void) {
-        NATIVE.with_borrow_mut(|n| n.trace.push("watch"));
+        fn send(&self) -> isize {
+            let (sent, errno) = NATIVE.with_borrow_mut(|n| {
+                n.trace.push("send");
+                (n.sends.remove(0), n.errno)
+            });
+            if sent < 0 {
+                unsafe { *libc_errno() = errno };
+            }
+            sent
+        }
+        fn create_buffer(&self) -> *mut Buffer {
+            NATIVE.with_borrow_mut(|n| {
+                n.trace.push("create");
+                n.buffer
+            })
+        }
+        fn watch_writable(&self) {
+            NATIVE.with_borrow_mut(|n| n.trace.push("watch"));
+        }
     }
     #[cfg(target_os = "linux")]
     unsafe fn libc_errno() -> *mut c_int {
@@ -266,13 +260,6 @@ mod tests {
                 ..Native::default()
             }
         });
-        let ops = WriteOps {
-            context: std::ptr::null_mut(),
-            set_nonblock,
-            send,
-            create_buffer,
-            watch_writable,
-        };
         let payload = WritePayload {
             data: data.as_ptr(),
             iov: std::ptr::null(),
@@ -287,7 +274,7 @@ mod tests {
                 buffer,
                 64,
                 &raw const payload,
-                &raw const ops,
+                &Ops,
             )
         };
         let target = if buffer.is_null() { fresh } else { buffer };

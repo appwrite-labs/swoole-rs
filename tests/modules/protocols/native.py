@@ -49,7 +49,7 @@ def main():
         constants = '\n'.join(line for line in socks_header.splitlines() if line.startswith('#define SW_SOCKS5'))
         socks_types = socks_header[socks_header.index('enum swSocks5State'):socks_header.index('namespace swoole {')]
         # The candidate is production's Socks5Proxy: the hybrid header over Rust's exports
-        # under upstream's symbols (crates/protocols/src/owned_proxy.rs).
+        # under upstream's symbols (crates/protocols-ffi/src/owned_proxy.rs).
         socks_types += ('using Socks5Proxy = ::swoole::Socks5Proxy;\n' if owned else
                         socks_header[socks_header.index('struct Socks5Proxy {'):socks_header.index('}  // namespace swoole')])
         redis_header = headers['include/swoole_redis.h']

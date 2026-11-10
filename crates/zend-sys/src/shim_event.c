@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): globals (EG(flags), CG(class_table)),
+ * version (EG_FLAGS_*), bailout (__get) and private (ext/sockets' php_socket,
+ * present only when PHP has it). */
 #include "shim.h"
 #include "shim_event.h"
 /* php_sockets.h is empty unless HAVE_SOCKETS is set, which a distro PHP built with

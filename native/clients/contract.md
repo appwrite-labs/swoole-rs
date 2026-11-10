@@ -49,7 +49,8 @@ uncaught `bad_alloc` does.
   normalized in bounded stack storage before `std::net` parsing.
 - IPv4 loopback is exactly `127.0.0.1`, not `/8`.
 - `Address::assign(type, host, port, resolve)` is one Rust call,
-  `clients_address_assign`: port check, then the sockaddr union and length for
+  `clients_address_assign` (crates/corebase's `net_address::assign`, which crates/tls
+  binds with): port check, then the sockaddr union and length for
   IPv4/IPv6/raw (literal, else native `gethostbyname` through a function pointer
   when resolving) or Unix (length limit, `strlcpy` copy); it returns the
   `SW_ERROR_*` code native sets as the last error. Native sets `type` first.
@@ -113,7 +114,7 @@ crates/tls's, crates/reactor's and crates/ports' definitions by their upstream s
 (those crates sit above this one), and the input buffer is a Rust-owned `String`.
 The TLS context is crates/tls's owner and the proxies are corebase's `ProxyState`s,
 held by the state. The TLS session calls, `SSLContext::create` and the SOCKS5 codec
-(crates/protocols) are called by their upstream symbols too; the HTTP proxy's are
+(crates/protocols-ffi) are called by their upstream symbols too; the HTTP proxy's are
 crates/http's, called directly. The DNS lookup dispatches a resolver request to
 crates/hooks' `async::dispatch` by its upstream symbol, with crates/clients'
 resolver as the pool handler. No C++ remains. The last error is corebase's, which

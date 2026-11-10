@@ -3,7 +3,7 @@
  * swoole_socket.h: C++ exceptions, std::string and std::vector. Everything they
  * call is Rust. */
 #pragma once
-#include "swoole_rs_socket_queue.h"
+#include "swoole_rs_reactor.h"
 #include <algorithm>
 
 namespace swoole {
@@ -47,7 +47,7 @@ inline std::vector<std::string> Socket::ssl_get_peer_cert_chain(int limit) const
 }  // namespace swoole
 
 /* Constants the Rust socket code mirrors. */
-static_assert(SW_SENDFILE_CHUNK_SIZE == 65536, "swr_v1_socket_sendfile_chunk's chunk");
+static_assert(SW_SENDFILE_CHUNK_SIZE == 65536, "crates/reactor/src/socket_io.rs");
 static_assert(SW_SOCK_NONBLOCK == 1 << 2 && SW_SOCK_CLOEXEC == 1 << 3 && SW_ERROR_SOCKET_POLL_TIMEOUT == 6002,
               "crates/reactor/src/socket_upstream.rs");
 static_assert(SW_ERROR_SSL_BAD_CLIENT == 1015 && SW_ERROR_SSL_RESET == 1017 && SW_REDUCE_SIZE == 7,

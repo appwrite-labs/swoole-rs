@@ -16,8 +16,8 @@ use swoole_rs_corebase::{
     CoreStringView, NameResolverContext, ProxyFields, ProxyState, StringSlot, log,
     swr_v1_core_string_set, swr_v1_core_string_view,
 };
-use swoole_rs_http::{swr_v1_http_proxy_accept, swr_v1_http_proxy_connect};
-use swoole_rs_protocols::{Socks5Proxy, handshake_step, pack_negotiate_request};
+use swoole_rs_http_ffi::{swr_v1_http_proxy_accept, swr_v1_http_proxy_connect};
+use swoole_rs_protocols_ffi::{Socks5Proxy, handshake_step, pack_negotiate_request};
 use swoole_rs_reactor::{CLASS_INET4, CLASS_INET6, type_is};
 use swoole_rs_tls::owner_tls_host_name;
 use swoole_rs_tls::upstream::socket_free;
@@ -609,7 +609,7 @@ impl Co {
             let owner = swoole_rs_corebase::swr_v1_core_proxy_new(false).owner;
             // SAFETY: the new owner and the texts.
             unsafe {
-                swoole_rs_http::swr_v1_http_proxy_configure(
+                swoole_rs_http_ffi::swr_v1_http_proxy_configure(
                     owner,
                     host.as_ptr().cast(),
                     host.len(),
@@ -622,7 +622,7 @@ impl Co {
             }
             owner
         } else {
-            match swoole_rs_protocols::admit(user.len(), password.len()) {
+            match swoole_rs_protocols_ffi::admit(user.len(), password.len()) {
                 0 => null_mut(),
                 config => {
                     let owner = swoole_rs_corebase::swr_v1_core_proxy_new(true).owner;
@@ -772,13 +772,8 @@ impl TlsOps {
 
 /// `Socket::ssl_handshake`, up to marking the socket handshaked, which native
 /// code does when this returns true.
-///
-/// # Safety
-/// `ops` is live for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_ssl_handshake(ops: *const TlsOps) -> bool {
-    // SAFETY: the caller passes a live table (see above).
-    let ops = unsafe { &*ops };
+#[must_use]
+pub fn ssl_handshake(ops: &TlsOps) -> bool {
     if ops.handshaked {
         ops.set_err(WRONG_OPERATION);
         return false;
@@ -1158,8 +1153,7 @@ mod tests {
             wait,
             verify,
         };
-        // SAFETY: a local table.
-        let ok = unsafe { swr_v1_hook_ssl_handshake(&raw const ops) };
+        let ok = ssl_handshake(&ops);
         (ok, LOG.with(|log| log.borrow().clone()))
     }
 
@@ -1225,8 +1219,7 @@ mod tests {
             wait,
             verify,
         };
-        // SAFETY: a local table.
-        assert!(!unsafe { swr_v1_hook_ssl_handshake(&raw const ops) });
+        assert!(!ssl_handshake(&ops));
         assert_eq!(LOG.with(|log| log.borrow().clone()), ["err 509"]);
     }
 

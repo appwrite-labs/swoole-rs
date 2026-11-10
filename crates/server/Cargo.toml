@@ -15,7 +15,7 @@ workspace = true
 [features]
 # Define the upstream C++ symbols of the methods `crates/server/src/server_methods.rs` holds;
 # only the hybrid's archive, whose upstream sources no longer define them, turns it on.
-upstream-symbols = []
+upstream-symbols = ["swoole-rs-tls/upstream-symbols"]
 # `--fix-halfclose` (M15, native/halfclose): drain queued output before close and keep a
 # synchronous worker's response after a clean FIN.
 halfclose = []
@@ -33,6 +33,8 @@ swoole-rs-framing = { path = "../framing" }
 swoole-rs-locks = { path = "../locks" }
 swoole-rs-memory = { path = "../memory" }
 swoole-rs-http = { path = "../http" }
+swoole-rs-http-ffi = { path = "../http-ffi" }
+swoole-rs-bus = { path = "../bus" }
 swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-tls = { path = "../tls" }
 swoole-rs-utilities = { path = "../utilities" }

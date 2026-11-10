@@ -6,9 +6,12 @@ struct Slot {
     view: TimerView,
     position: usize,
 }
+/// `rank` is the deadline alone, and every sift stops on a tie, as upstream's
+/// `swoole::Heap` does, so equal deadlines fire in upstream's order: A, C, B for
+/// three timers added in that order.
 #[derive(Clone, Copy)]
 struct Key {
-    deadline: i64,
+    rank: i64,
     slot: usize,
 }
 #[derive(Default)]
@@ -69,39 +72,50 @@ impl Heap {
         let index = self.order.len();
         self.order.push(Key {
             slot,
-            deadline: view.deadline,
+            rank: view.deadline,
         });
         self.sift_up(index);
         slot
     }
     pub(super) fn swap_remove(&mut self, index: usize) -> Option<TimerView> {
-        let key = (index < self.order.len()).then(|| self.order.swap_remove(index))?;
+        // Upstream's Heap::remove: the last entry takes the hole and sifts from there.
+        let removed = (index < self.order.len()).then(|| self.order.swap_remove(index))?;
         self.repair(index);
-        let entry = self.slots.get_mut(key.slot)?;
+        let entry = self.slots.get_mut(removed.slot)?;
         entry.position = self.free;
-        self.free = key.slot + 1;
+        self.free = removed.slot + 1;
         Some(entry.view)
     }
     fn repair(&mut self, index: usize) {
         let index = self.sift_up(index);
         self.sift_down(index);
     }
-    // The ordering key at `index`, with the deadline read from its slot's view.
+    // The ordering key at `index`, with the rank read from its slot's view.
     fn key(&self, index: usize) -> Option<Key> {
         let slot = self.slot(index)?;
-        let deadline = self.slots.get(slot)?.view.deadline;
-        Some(Key { deadline, slot })
+        let view = self.slots.get(slot)?.view;
+        Some(Key {
+            rank: view.deadline,
+            slot,
+        })
     }
-    fn place(&mut self, index: usize, slot: usize) {
-        if let Some(key) = self.order.get_mut(index)
-            && let Some(entry) = self.slots.get_mut(slot)
+    // Stores `key` at `index`; its rank is its slot's current one.
+    fn put(&mut self, index: usize, key: Key) {
+        if let Some(entry) = self.order.get_mut(index)
+            && let Some(slot) = self.slots.get_mut(key.slot)
         {
-            *key = Key {
-                slot,
-                deadline: entry.view.deadline,
-            };
-            entry.position = index;
+            *entry = key;
+            slot.position = index;
         }
+    }
+    // The lower-ranked child of `index` and its key, if it has one.
+    fn smaller_child(&self, index: usize) -> Option<(usize, Key)> {
+        let left = index.checked_mul(2)?.checked_add(1)?;
+        let below_left = *self.order.get(left)?;
+        Some(match self.order.get(left + 1) {
+            Some(&right) if right.rank < below_left.rank => (left + 1, right),
+            _ => (left, below_left),
+        })
     }
     fn sift_up(&mut self, mut index: usize) -> usize {
         let Some(key) = self.key(index) else {
@@ -109,31 +123,24 @@ impl Heap {
         };
         while let Some(parent) = index.checked_sub(1).map(|i| i / 2)
             && let Some(&above) = self.order.get(parent)
-            && key.deadline < above.deadline
+            && key.rank < above.rank
         {
-            self.place(index, above.slot);
+            self.put(index, above);
             index = parent;
         }
-        self.place(index, key.slot);
+        self.put(index, key);
         index
     }
     fn sift_down(&mut self, mut index: usize) {
         let Some(key) = self.key(index) else {
             return;
         };
-        while let Some(left) = index.checked_mul(2).and_then(|i| i.checked_add(1))
-            && let Some(&below_left) = self.order.get(left)
+        while let Some((child, below)) = self.smaller_child(index)
+            && below.rank < key.rank
         {
-            let (child, below) = match self.order.get(left + 1) {
-                Some(&right) if right.deadline < below_left.deadline => (left + 1, right),
-                _ => (left, below_left),
-            };
-            if key.deadline <= below.deadline {
-                break;
-            }
-            self.place(index, below.slot);
+            self.put(index, below);
             index = child;
         }
-        self.place(index, key.slot);
+        self.put(index, key);
     }
 }

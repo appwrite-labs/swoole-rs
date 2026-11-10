@@ -1,26 +1,36 @@
 //! The HTTP/1 TESTs that start a server (`get` .. `http_range2`, and `fail`), one Rust
 //! function per TEST with the same inputs and expected values.
 //!
-//! Unlike main.rs's cases these need no fixture: the `Server` is made and deleted by
+//! The `Server` is made and deleted by
 //! `swr_v1_server_new`/`swr_v1_server_delete` (crates/server/src/server_object.rs), and
 //! its configuration, callback slots, tables and static-handler sets are the Rust records
 //! whose pointers head the object (native/include/swoole_rs_server_state.h), as the
 //! `swr_v1_port_config *` heads a `ListenPort` (swoole_rs_port_state.h). Each new server
 //! checks this file's copies of those layouts with `swr_v1_server_record_layout`. The methods the
-//! cases call are Rust under their upstream symbols. The fixtures read the request line
+//! cases call are crates/server's `server_methods`. The fixtures read the request line
 //! and headers where upstream's ran llhttp; the client is core-tests' httplib
 //! (client.rs). An assertion in a server callback cannot unwind through the server's
 //! frames, so it records the failure, which the case asserts on once the server stops.
+//!
+//! server.rs holds `core-tests/src/server/buffer.cpp`'s TEST, and server_config.rs
+//! `server/server.cpp`'s connection and configuration TESTs, over the same records.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::mem::offset_of;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use swoole_rs_server::{ConnectionRecord, server_methods, view};
 
 use crate::client::{Client, USER_AGENT};
+
+pub(super) mod case;
+pub(super) mod server;
+pub(super) mod server_config;
+pub(super) mod server_ssl;
 
 const TEST_HOST: &str = "127.0.0.1";
 const MODE_BASE: c_int = 1;
@@ -393,7 +403,16 @@ struct RecvData {
     data: *const c_char,
 }
 
-/// The head of `Connection`, through `close_actively`.
+/// `network::Address` (Linux): the storage, its length and its `swSocketType`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Address {
+    addr: [u32; 28],
+    len: u32,
+    kind: c_int,
+}
+
+/// `Connection`.
 #[repr(C)]
 struct Connection {
     active: u8,
@@ -409,9 +428,86 @@ struct Connection {
     http2_stream: u8,
     websocket_compression: u8,
     close_actively: u8,
+    close_queued: u8,
+    closing: u8,
+    close_reset: u8,
+    peer_closed: u8,
+    protect: u8,
+    close_notify: u8,
+    close_force: u8,
+    reactor_id: u8,
+    close_errno: u16,
+    recv_queued_bytes: u32,
+    send_queued_bytes: u32,
+    waiting_time: u16,
+    local_port: u16,
+    local_addr_index: u16,
+    timer: Native,
+    info: Address,
+    object: Native,
+    socket: Native,
+    connect_time: f64,
+    last_recv_time: f64,
+    last_send_time: f64,
+    last_dispatch_time: f64,
+    uid: u32,
+    websocket_status: u8,
+    websocket_buffer: Native,
+    ssl_client_cert: Native,
+    ssl_client_cert_pid: c_int,
+    lock: u32,
+    closed: u32,
+    server_fd: c_int,
 }
 
-/// The pointers that head a `Server` (native/process/swoole_server.h).
+/// The offsets `detail::check_server_layouts` checks for record 3, in its order.
+const CONNECTION_OFFSETS: &[usize] = &[
+    offset_of!(Connection, active),
+    offset_of!(Connection, socket_type),
+    offset_of!(Connection, fd),
+    offset_of!(Connection, worker_id),
+    offset_of!(Connection, session_id),
+    offset_of!(Connection, ssl),
+    offset_of!(Connection, ssl_ready),
+    offset_of!(Connection, overflow),
+    offset_of!(Connection, high_watermark),
+    offset_of!(Connection, http_upgrade),
+    offset_of!(Connection, http2_stream),
+    offset_of!(Connection, websocket_compression),
+    offset_of!(Connection, close_actively),
+    offset_of!(Connection, close_queued),
+    offset_of!(Connection, closing),
+    offset_of!(Connection, close_reset),
+    offset_of!(Connection, peer_closed),
+    offset_of!(Connection, protect),
+    offset_of!(Connection, close_notify),
+    offset_of!(Connection, close_force),
+    offset_of!(Connection, reactor_id),
+    offset_of!(Connection, close_errno),
+    offset_of!(Connection, recv_queued_bytes),
+    offset_of!(Connection, send_queued_bytes),
+    offset_of!(Connection, waiting_time),
+    offset_of!(Connection, local_port),
+    offset_of!(Connection, local_addr_index),
+    offset_of!(Connection, timer),
+    offset_of!(Connection, info),
+    offset_of!(Connection, object),
+    offset_of!(Connection, socket),
+    offset_of!(Connection, connect_time),
+    offset_of!(Connection, last_recv_time),
+    offset_of!(Connection, last_send_time),
+    offset_of!(Connection, last_dispatch_time),
+    offset_of!(Connection, uid),
+    offset_of!(Connection, websocket_status),
+    offset_of!(Connection, websocket_buffer),
+    offset_of!(Connection, ssl_client_cert),
+    offset_of!(Connection, ssl_client_cert_pid),
+    offset_of!(Connection, lock),
+    offset_of!(Connection, closed),
+    offset_of!(Connection, server_fd),
+];
+
+/// The pointers that head a `Server` (crates/server/src/view.rs).
 #[repr(C)]
 struct Head {
     state: *mut c_void,
@@ -420,7 +516,6 @@ struct Head {
     callbacks: *mut Callback,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     #[link_name = "_Z20swoole_set_log_leveli"]
     pub(super) fn swoole_set_log_level(level: c_int);
@@ -447,28 +542,6 @@ unsafe extern "C-unwind" {
     fn swr_v1_server_connection(state: *const c_void, key: c_long, kind: u32) -> *mut Connection;
 
     fn swr_v1_server_set_document_root(serv: *mut c_void, path: *const u8, length: usize) -> bool;
-    #[link_name = "_ZN6swoole6Server8add_portE12swSocketTypePKci"]
-    fn server_add_port(
-        serv: *mut c_void,
-        kind: c_int,
-        host: *const c_char,
-        port: c_int,
-    ) -> *mut c_void;
-    #[link_name = "_ZN6swoole6Server6createEv"]
-    fn server_create(serv: *mut c_void) -> c_int;
-    #[link_name = "_ZN6swoole6Server5startEv"]
-    fn server_start(serv: *mut c_void) -> c_int;
-    #[link_name = "_ZNK6swoole6Server4sendElPKvj"]
-    fn server_send(serv: *mut c_void, session: c_long, data: *const c_void, length: u32) -> bool;
-    #[link_name = "_ZNK6swoole6Server8sendfileElPKcjlm"]
-    fn server_sendfile(
-        serv: *mut c_void,
-        session: c_long,
-        file: *const c_char,
-        length: u32,
-        offset: c_long,
-        size: usize,
-    ) -> bool;
 }
 
 unsafe extern "C" {
@@ -479,16 +552,9 @@ unsafe extern "C" {
     fn strftime(out: *mut c_char, size: usize, format: *const c_char, tm: *const c_void) -> usize;
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     fn swr_v1_server_text_slot(state: *const c_void, index: usize) -> *const c_void;
     fn swr_v1_core_string_set(slot: *const c_void, bytes: *const c_char, length: usize) -> c_int;
-    #[link_name = "_ZNK6swoole6Server19get_idle_worker_numEv"]
-    fn server_get_idle_worker_num(serv: *mut c_void) -> u32;
-    #[link_name = "_ZNK6swoole6Server21is_healthy_connectionEdPKNS_10ConnectionE"]
-    fn server_is_healthy_connection(serv: *mut c_void, now: f64, conn: *const Connection) -> bool;
-    #[link_name = "_ZN6swoole6Server8feedbackEPNS_10ConnectionENS_15ServerEventTypeE"]
-    fn server_feedback(serv: *mut c_void, conn: *mut Connection, event: c_int) -> bool;
     #[link_name = "_ZN6swoole9microtimeEv"]
     fn microtime() -> f64;
     #[link_name = "_Z20swoole_set_worker_idj"]
@@ -527,6 +593,12 @@ impl Port {
     fn set_package_max_length(self, max_length: u32) {
         self.config().protocol.package_max_length = max_length;
     }
+
+    /// The crates' view of this port's settings.
+    pub(super) fn settings(self) -> &'static mut swoole_rs_server::port_config::PortConfig {
+        // SAFETY: a live port, whose settings the cases set from one thread.
+        unsafe { swoole_rs_server::port_config::of(self.0) }
+    }
 }
 
 fn check_layout(kind: u32, size: usize, alignment: usize, offsets: &[usize]) {
@@ -550,6 +622,12 @@ impl Server {
             size_of::<ServerTables>(),
             align_of::<ServerTables>(),
             TABLES_OFFSETS,
+        );
+        check_layout(
+            3,
+            size_of::<Connection>(),
+            align_of::<Connection>(),
+            CONNECTION_OFFSETS,
         );
         check_layout(
             4,
@@ -589,9 +667,14 @@ impl Server {
 
     /// `serv.onX = fn`, for a slot that holds no closure to drop.
     fn set_callback(self, slot: usize, invoke: *const c_void) {
+        self.set_closure(slot, invoke, std::ptr::null_mut());
+    }
+
+    /// `serv.onX = [ctx](...) {...}`: `invoke(ctx, ...)`, with nothing to drop.
+    fn set_closure(self, slot: usize, invoke: *const c_void, ctx: *mut c_void) {
         *self.slot(slot) = Callback {
             invoke,
-            ctx: std::ptr::null_mut(),
+            ctx,
             drop: None,
         };
     }
@@ -635,8 +718,7 @@ impl Server {
 
     fn add_port(self, kind: c_int, host: &str, port: c_int) -> Option<Port> {
         let host = CString::new(host).unwrap();
-        // SAFETY: a NUL-terminated host.
-        let port = unsafe { server_add_port(self.0, kind, host.as_ptr(), port) };
+        let port = server_methods::add_port(self.view(), kind, &host, port);
         (!port.is_null()).then_some(Port(port))
     }
 
@@ -656,40 +738,20 @@ impl Server {
     }
 
     fn create(self) -> c_int {
-        // SAFETY: a configured server.
-        unsafe { server_create(self.0) }
+        server_methods::create(self.view())
     }
 
     fn start(self) -> c_int {
-        // SAFETY: a created server.
-        unsafe { server_start(self.0) }
+        server_methods::start(self.view())
     }
 
     fn send(self, session: c_long, data: &[u8]) -> bool {
-        // SAFETY: `data` is readable for its length.
-        unsafe {
-            server_send(
-                self.0,
-                session,
-                data.as_ptr().cast(),
-                u32::try_from(data.len()).unwrap(),
-            )
-        }
+        assert!(u32::try_from(data.len()).is_ok());
+        server_methods::send(self.view(), session, data)
     }
 
     fn sendfile(self, session: c_long, file: &str) -> bool {
-        let path = CString::new(file).unwrap();
-        // SAFETY: a NUL-terminated path.
-        unsafe {
-            server_sendfile(
-                self.0,
-                session,
-                path.as_ptr(),
-                u32::try_from(file.len()).unwrap(),
-                0,
-                0,
-            )
-        }
+        server_methods::sendfile(self.view(), session, file.as_bytes(), 0, 0)
     }
 
     fn get_connection_by_session_id(self, session: c_long) -> &'static mut Connection {
@@ -698,18 +760,26 @@ impl Server {
     }
 
     fn get_idle_worker_num(self) -> u32 {
-        // SAFETY: a running server.
-        unsafe { server_get_idle_worker_num(self.0) }
+        server_methods::get_idle_worker_num(self.view())
     }
 
     fn is_healthy_connection(self, now: f64, conn: &Connection) -> bool {
-        // SAFETY: a live connection.
-        unsafe { server_is_healthy_connection(self.0, now, conn) }
+        // SAFETY: the crate's record, whose layout `check_layout` matched this one's.
+        self.view().healthy(now, unsafe {
+            &*ptr::from_ref(conn).cast::<ConnectionRecord>()
+        })
     }
 
     fn feedback(self, conn: &mut Connection, event: c_int) -> bool {
-        // SAFETY: a live connection.
-        unsafe { server_feedback(self.0, conn, event) }
+        // SAFETY: as above.
+        let record = unsafe { &mut *ptr::from_mut(conn).cast::<ConnectionRecord>() };
+        server_methods::feedback(self.view(), record, event)
+    }
+
+    /// The crates' view of this server.
+    fn view(self) -> view::Server<'static> {
+        // SAFETY: the cases' Servers live until the case ends.
+        unsafe { view::Server::from_raw(self.0) }
     }
 }
 

@@ -42,7 +42,7 @@ python3 tests/modules/error/php.py --source PINNED_REFERENCE --engine upstream=C
 
 `differential.py` compiles the complete pinned `error.cc` (from Git objects)
 against the archive's Rust error facade, with that build's headers (`HYBRID_ARCHIVE` is
-`<build>/rust-prefix/lib/libswoole_rs_ffi.a`);
+`target/ext/sdk/lib/libswoole_rs_ffi.a`, from `tools/build_ext.py --native`);
 only dependency declarations and external buffer storage are stubbed. It checks
 all 130 messages, 10414 numeric inputs, the original state assertions, the
 throw's abort (in a child), the per-thread last-error buffer, concurrent lookups and reads, 20000 state operations, duplicates,
@@ -66,8 +66,8 @@ differ across platforms.
 
 `--sanitize` instruments C++ only, not the Rust archive.
 
-`error-native` (`tools/core_check.py --module error`, which runs
-`differential.py` on the build's archive) and `error-php` run these.
+`error-native` (`differential.py` on the hybrid build's archive) and `error-php`
+run these.
 
 ## Benchmarks
 

@@ -4,13 +4,13 @@ import json
 import pytest
 
 from native import LINK, build_and_run
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 from tools.harness import ROOT
 
 
 @pytest.mark.parametrize('standard', ['c++14', 'c++17', 'c++20'])
 def test_typed(tmp_path, archive, pytestconfig, standard):
-    _, flags = hybrid_tree(archive)
+    flags = native_flags(archive)
     command = ['c++', '-std=' + standard, '-O1', '-g', *flags,
                ROOT / 'tests/modules/buffer/typed.cc', archive, '-lpthread', *LINK[1:]]
     if pytestconfig.getoption('sanitize'):

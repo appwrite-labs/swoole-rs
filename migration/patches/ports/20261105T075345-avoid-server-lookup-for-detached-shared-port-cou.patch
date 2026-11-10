@@ -1,9 +1,0 @@
-diff --git a/src/server/port.cc b/src/server/port.cc
-index ed8475f..4ad018b 100644
---- a/src/server/port.cc
-+++ b/src/server/port.cc
-@@ -691,3 +691,3 @@ const char *ListenPort::get_protocols() const {
- size_t ListenPort::get_connection_num() const {
--    return swr_v1_server_port_connections(gs, sw_server()->worker_num);
-+    return swr_v1_server_port_connections(gs, gs->connection_nums ? sw_server()->worker_num : 0);
- }

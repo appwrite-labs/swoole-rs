@@ -11,22 +11,6 @@ extern "C" {
 /* Success matches the representable decimal portion of std::stoi; native code
  * retains its exception path and publishes output only after success. */
 uint8_t swr_v1_corebase_parse_stoi(const char *input, int32_t *output);
-/* Valid NUL-terminated input, disjoint writable parsed output. Original host
- * ctype input requirements apply. These direct libc parsers preserve original errno effects/order. */
-/* Frozen target-default mode; native compiler char mode must match Rust. */
-unsigned long swr_v1_corebase_hex(const char *input, size_t *parsed);
-/* Actual native callers supply their compiler plain-char mode. */
-unsigned long swr_v1_corebase_hex_mode(const char *input, size_t *parsed, uint8_t native_char_signed);
-/* Stack-owned state; zero initialize once, keep state/output unchanged between
- * steps. No pointer retained; native IO occurs after return. Stop on !=1.
- * Return 0 done, 1 NUL-cut prefix ready, 2 path too long, 3 invalid arguments.
- * Input/output/state are disjoint; capacity <= PTRDIFF_MAX. */
-struct swr_v1_corebase_mkdir_state {
-    size_t length;
-    size_t next;
-};
-int32_t swr_v1_corebase_mkdir_next(const uint8_t *input, size_t input_length, uint8_t *output,
-                                 size_t capacity, struct swr_v1_corebase_mkdir_state *state);
 /* Rust also defines swoole_fork, swoole_clean, swoole_thread_init/_clean and
  * swoole_is_main_thread. */
 /* swoole_init's body (crates/corebase/src/lifecycle.rs), which crates/ffi's
@@ -46,80 +30,27 @@ void swr_v1_core_swoole_init(void);
  * of these names are swoole::RustField views over the accessor pairs below.
  * Pointers (memory pool, stdout FILE *, Logger *, Server *, the AIO pipe
  * Socket *, the fatal-error and backtrace hooks) are native objects Rust only
- * holds. swr_v1_core_init returns false when already initialised; otherwise it
- * resets the record and sets running, enable_coroutine, the page size, the
- * file-content cap, the CPU count, DNS tries and the random() seed.
- * swr_v1_core_max_sockets: RLIMIT_NOFILE's soft limit as uint32_t, capped at
- * limit; -1 (errno kept) when getrlimit fails. */
-bool swr_v1_core_init(void);
-void swr_v1_core_reset(void);
-int64_t swr_v1_core_max_sockets(uint32_t limit);
-bool swr_v1_core_initialized(void);
+ * holds. */
 uint16_t swr_v1_core_cpu_num(void);
-int swr_v1_core_dns_tries(void);
 bool swr_v1_core_running(void);
 void swr_v1_core_set_running(bool value);
 bool swr_v1_core_enable_signalfd(void);
 void swr_v1_core_set_enable_signalfd(bool value);
-bool swr_v1_core_enable_kqueue(void);
-void swr_v1_core_set_enable_kqueue(bool value);
 bool swr_v1_core_enable_coroutine(void);
 void swr_v1_core_set_enable_coroutine(bool value);
-bool swr_v1_core_print_backtrace_on_error(void);
-void swr_v1_core_set_print_backtrace_on_error(bool value);
-bool swr_v1_core_wait_signal(void);
-void swr_v1_core_set_wait_signal(bool value);
-bool swr_v1_core_dns_lookup_random(void);
-void swr_v1_core_set_dns_lookup_random(bool value);
-long swr_v1_core_current_task_id(void);
-void swr_v1_core_set_current_task_id(long value);
-int swr_v1_core_signal_fd(void);
-void swr_v1_core_set_signal_fd(int value);
-bool swr_v1_core_signal_alarm(void);
-void swr_v1_core_set_signal_alarm(bool value);
 uint32_t swr_v1_core_signal_listener_num(void);
 void swr_v1_core_set_signal_listener_num(uint32_t value);
 uint32_t swr_v1_core_signal_async_listener_num(void);
 void swr_v1_core_set_signal_async_listener_num(uint32_t value);
 long swr_v1_core_trace_flags(void);
-void swr_v1_core_set_trace_flags(long value);
 uint32_t swr_v1_core_pagesize(void);
 void swr_v1_core_set_pagesize(uint32_t value);
-uint32_t swr_v1_core_max_file_content(void);
-void swr_v1_core_set_max_file_content(uint32_t value);
-uint32_t swr_v1_core_aio_core_worker_num(void);
-void swr_v1_core_set_aio_core_worker_num(uint32_t value);
-uint32_t swr_v1_core_aio_worker_num(void);
-void swr_v1_core_set_aio_worker_num(uint32_t value);
-uint32_t swr_v1_core_iouring_entries(void);
-void swr_v1_core_set_iouring_entries(uint32_t value);
-uint32_t swr_v1_core_iouring_workers(void);
-void swr_v1_core_set_iouring_workers(uint32_t value);
-uint32_t swr_v1_core_iouring_flag(void);
-void swr_v1_core_set_iouring_flag(uint32_t value);
-double swr_v1_core_aio_max_wait_time(void);
-void swr_v1_core_set_aio_max_wait_time(double value);
-double swr_v1_core_aio_max_idle_time(void);
-void swr_v1_core_set_aio_max_idle_time(double value);
 void *swr_v1_core_memory_pool(void);
-void swr_v1_core_set_memory_pool(void *value);
 void *swr_v1_core_stdout(void);
-void swr_v1_core_set_stdout(void *value);
 void *swr_v1_core_logger(void);
-void swr_v1_core_set_logger(void *value);
 void *swr_v1_core_server(void);
 void swr_v1_core_set_server(void *value);
-void *swr_v1_core_aio_default_socket(void);
-void swr_v1_core_set_aio_default_socket(void *value);
 void *swr_v1_core_fatal_error(void);
-void swr_v1_core_set_fatal_error(void *value);
-void *swr_v1_core_print_backtrace(void);
-void swr_v1_core_set_print_backtrace(void *value);
-/* SwooleG.bug_report_message: c_str() valid until it next changes; append
- * text; init writes base.cc's banner, uname, compiler (null: none) and TLS
- * lines. Strings are NUL-terminated. */
-const char *swr_v1_core_bug_report_message(void);
-void swr_v1_core_bug_report_append(const char *text);
 /* crates/corebase/src/format.c: vfprintf to SwooleG.stdout_. No compiled source
  * calls it; core-tests/src/_lib/ssl.cpp does. */
 int sw_printf(const char *format, ...) __attribute__((format(printf, 1, 2)));
@@ -150,12 +81,6 @@ static_assert(sizeof(NameResolver::Context) == 40 && offsetof(NameResolver::Cont
                   offsetof(NameResolver::Context, dtor) == 32,
               "crates/corebase/src/name_resolver.rs mirrors NameResolver::Context");
 }  // namespace swoole
-extern "C" {
-/* Asks each listed resolver; true when one answered (through assign) or ended the lookup. */
-bool swr_v1_core_name_resolver_resolve(const char *name, size_t length, swoole::NameResolver::Context *context,
-                                       void *out, void (*assign)(void *out, const char *text, size_t length));
-void swr_v1_core_name_resolver_clear(void);
-}
 /* Upstream's error and log API under its C++ symbols: Rust's (crates/error,
  * crates/utilities, crates/corebase). */
 const char *swoole_strerror(int code);

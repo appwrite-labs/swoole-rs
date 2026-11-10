@@ -1,7 +1,7 @@
 //! A thread-mode Server (`SW_THREAD`): the settings its worker threads share,
 //! the PHP thread each worker runs in, and `start()` inside that thread, which
 //! runs the worker's body.
-use crate::lifecycle::{MODE_THREAD, data};
+use crate::lifecycle::{MODE_THREAD, ServerObject};
 use std::{
     cell::Cell,
     ffi::{CStr, c_char, c_int, c_void},
@@ -19,8 +19,8 @@ use swoole_rs_zend::{
     sys::{
         IS_ARRAY_EX, IS_NULL, IS_STRING, swr_zend_property_slot, swr_zend_string_persistent,
         swr_zend_string_release, swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread,
-        zend_array_dup, zend_fcall_info, zend_hash_apply, zend_object, zend_string, zend_value,
-        zval, zval_ptr_dtor,
+        zend_array_dup, zend_fcall_info, zend_hash_apply, zend_string, zend_value, zval,
+        zval_ptr_dtor,
     },
     type_of,
     value::{str_of, table, update_string},
@@ -73,25 +73,21 @@ pub(crate) fn admit(existing: &mut Option<view::Server<'static>>) -> c_int {
 /// `start()` on a worker thread: the settings the master serialized, this
 /// thread's coroutine options, then the worker's body. `None`: not a worker
 /// thread.
-pub(crate) fn worker(
-    object: *mut zend_object,
-    serv: view::Server<'_>,
-) -> Option<Result<(), Bailout>> {
+pub(crate) fn worker(object: ServerObject, serv: view::Server<'_>) -> Option<Result<(), Bailout>> {
     if !serv.is_worker_thread() {
         return None;
     }
     Some(run_worker(object, serv))
 }
 
-fn run_worker(object: *mut zend_object, serv: view::Server<'_>) -> Result<(), Bailout> {
+fn run_worker(object: ServerObject, serv: view::Server<'_>) -> Result<(), Bailout> {
     let mut zserv = crate::dispatch::undef();
     // SAFETY: a borrowed view of the live object (`ZVAL_OBJ`, no reference).
-    unsafe { swoole_rs_zend::set_object(&raw mut zserv, object) };
-    // SAFETY: a live object.
-    let ce = unsafe { (*object).ce };
+    unsafe { swoole_rs_zend::set_object(&raw mut zserv, object.raw()) };
     // SAFETY: the Server object and its class, which declares `setting`.
-    let setting =
-        unsafe { swoole_rs_phphelpers::array_property_of(ce, &raw mut zserv, c"setting") }?;
+    let setting = unsafe {
+        swoole_rs_phphelpers::array_property_of(object.class(), &raw mut zserv, c"setting")
+    }?;
     // SAFETY: the property's array, replaced below.
     unsafe { zval_ptr_dtor(setting) };
     let undef = crate::dispatch::undef();
@@ -108,6 +104,10 @@ fn run_worker(object: *mut zend_object, serv: view::Server<'_>) -> Result<(), Ba
     if let Some(options) = unsafe { Value::from_ptr(setting) }.and_then(Value::array) {
         swoole_rs_phpcoroutines::set_coroutine_option(options);
     }
+    // A conversion's bailout ends the start here, as upstream's did.
+    if bailout::pending() {
+        return Err(Bailout);
+    }
     match MAIN.get() {
         // SAFETY: the body the ThreadFactory handed this thread, which is C++.
         Some((run, context)) => unsafe { bailout::trap(run, context) },
@@ -118,12 +118,12 @@ fn run_worker(object: *mut zend_object, serv: view::Server<'_>) -> Result<(), Ba
 /// `start()` in thread mode, before the server starts: the bootstrap script,
 /// the `init_arguments` result, and the thread starter; the runtime hooks are
 /// enabled before any thread is created.
-pub(crate) fn prepare(object: *mut zend_object, serv: view::Server<'_>) -> Result<(), Bailout> {
+pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<(), Bailout> {
     if !thread_mode(serv) {
         return Ok(());
     }
     // SAFETY: the Server object, which declares `bootstrap`.
-    let slot = unsafe { swr_zend_property_slot(object, c"bootstrap".as_ptr(), 9) };
+    let slot = unsafe { swr_zend_property_slot(object.raw(), c"bootstrap".as_ptr(), 9) };
     if string_of(slot).is_empty() {
         let (mut path, mut argc): (*const c_char, c_int) = (ptr::null(), 0);
         // SAFETY: two writable out-parameters.
@@ -131,10 +131,8 @@ pub(crate) fn prepare(object: *mut zend_object, serv: view::Server<'_>) -> Resul
         if !path.is_null() {
             // SAFETY: the request's NUL-terminated script.
             let path = unsafe { CStr::from_ptr(path) };
-            // SAFETY: a live object.
-            let ce = unsafe { (*object).ce };
             // SAFETY: the object and its class.
-            unsafe { update_string(ce, object, c"bootstrap", path) };
+            unsafe { update_string(object.class(), object.raw(), c"bootstrap", path) };
         }
     }
     let script = string_of(slot);
@@ -151,7 +149,7 @@ pub(crate) fn prepare(object: *mut zend_object, serv: view::Server<'_>) -> Resul
     let start = Box::into_raw(Box::new(Start { bootstrap, argv }));
     release_start(START.swap(start, Ordering::AcqRel));
     set_worker_thread_start(Some(start_thread));
-    let flags = swoole_rs_phpcoroutines::swr_v1_phpcoroutines_hook_flags();
+    let flags = swoole_rs_phpcoroutines::hook_flags();
     if flags > 0 {
         swoole_rs_phpruntime::enable_hook(flags)?;
     }
@@ -171,16 +169,14 @@ fn string_of<'a>(slot: *mut zval) -> &'a [u8] {
 }
 
 /// `init_arguments()`'s array, copied for the threads.
-fn init_arguments(object: *mut zend_object) -> Result<Option<Arguments>, Bailout> {
-    // SAFETY: `$this` is a Server object.
-    let callable = unsafe { data(object) }.init_arguments;
+fn init_arguments(object: ServerObject) -> Result<Option<Arguments>, Bailout> {
+    let callable = object.init_arguments();
     // SAFETY: a live zval.
     if unsafe { type_of(&raw const callable) } == IS_NULL {
         return Ok(None);
     }
     let mut result = crate::dispatch::undef();
-    // SAFETY: all-zero is an empty call (no object, no arguments).
-    let mut fci: zend_fcall_info = unsafe { std::mem::zeroed() };
+    let mut fci = swoole_rs_zend::EMPTY_FCI;
     fci.size = size_of::<zend_fcall_info>();
     fci.function_name = callable;
     fci.retval = &raw mut result;

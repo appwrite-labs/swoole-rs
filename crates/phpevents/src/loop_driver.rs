@@ -58,7 +58,9 @@ pub(super) fn wait() -> Result<(), Bailout> {
         // SAFETY: restore the exact prior shutdown bit after a normally completed wait.
         unsafe { z::swr_zend_event_restore_shutdown(shutdown) };
     }
-    native::free()
+    let released = super::release_cycle_tasks();
+    let freed = native::free();
+    released.and(freed)
 }
 
 pub(super) fn exit() -> Result<(), Bailout> {

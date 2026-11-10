@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::sys::{self, errno};
 
 const SW_LOG_INFO: c_int = 2;
 const SW_LOG_NOTICE: c_int = 3;
@@ -91,10 +92,6 @@ pub struct Logger {
     state: Mutex<State>,
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
 fn now() -> (libc::time_t, i64) {
     let since = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -151,14 +148,11 @@ impl State {
             real_file(self.rotation, &file)
         };
         self.file = file;
-        // SAFETY: a NUL-terminated path.
-        let fd = unsafe {
-            libc::open(
-                self.real_file.as_ptr(),
-                libc::O_APPEND | libc::O_RDWR | libc::O_CREAT,
-                0o666,
-            )
-        };
+        let fd = sys::open(
+            &self.real_file,
+            libc::O_APPEND | libc::O_RDWR | libc::O_CREAT,
+            0o666,
+        );
         if fd < 0 {
             effects.push(Effect::OpenFailed(
                 errno(),
@@ -195,14 +189,12 @@ impl State {
             effects.push(Effect::Warning("has been redirected"));
             return false;
         }
-        // SAFETY: dup has no memory preconditions.
-        self.stdout_fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
+        self.stdout_fd = sys::dup(libc::STDOUT_FILENO);
         if self.stdout_fd < 0 {
             effects.push(Effect::SysWarning("dup(STDOUT_FILENO) failed", errno()));
             return false;
         }
-        // SAFETY: as above.
-        self.stderr_fd = unsafe { libc::dup(libc::STDERR_FILENO) };
+        self.stderr_fd = sys::dup(libc::STDERR_FILENO);
         if self.stderr_fd < 0 {
             effects.push(Effect::SysWarning("dup(STDERR_FILENO) failed", errno()));
             return false;
@@ -218,18 +210,15 @@ impl State {
             effects.push(Effect::Warning("no redirected"));
             return false;
         }
-        // SAFETY: dup2 has no memory preconditions.
-        if unsafe { libc::dup2(self.stdout_fd, libc::STDOUT_FILENO) } < 0 {
+        if sys::dup2(self.stdout_fd, libc::STDOUT_FILENO) < 0 {
             effects.push(Effect::SysWarning("dup2(STDOUT_FILENO) failed", errno()));
         }
-        // SAFETY: as above.
-        if unsafe { libc::dup2(self.stderr_fd, libc::STDERR_FILENO) } < 0 {
+        if sys::dup2(self.stderr_fd, libc::STDERR_FILENO) < 0 {
             effects.push(Effect::SysWarning("dup2(STDERR_FILENO) failed", errno()));
         }
-        // SAFETY: the descriptors `redirect` duplicated, closed once.
-        unsafe { libc::close(self.stdout_fd) };
-        // SAFETY: as above.
-        unsafe { libc::close(self.stderr_fd) };
+        // The descriptors `redirect` duplicated, closed once.
+        sys::close(self.stdout_fd);
+        sys::close(self.stderr_fd);
         self.stdout_fd = -1;
         self.stderr_fd = -1;
         self.redirected = false;
@@ -394,8 +383,7 @@ impl Logger {
         }
         let mut identity = (self.host.identity)();
         if identity.worker_pid == 0 {
-            // SAFETY: getpid has no preconditions.
-            identity.worker_pid = unsafe { libc::getpid() };
+            identity.worker_pid = swoole_rs_corebase::sys::getpid();
         }
         self.with(|state, effects| state.write(level, content, length, &identity, effects));
     }
@@ -658,7 +646,6 @@ pub unsafe extern "C" fn swoole_set_log_file(file: *const c_char) {
 ///
 /// # Safety
 /// `origin` and `message` are NUL-terminated.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_utils_log(
     kind: c_int,
     level: c_int,

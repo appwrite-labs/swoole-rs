@@ -60,8 +60,7 @@ fn update(fd: c_int, get: c_int, set: c_int, bit: c_int, on: bool) -> (bool, u32
     (true, warnings)
 }
 
-/// What a descriptor option call did, for native logging.
-#[repr(C)]
+/// What a descriptor option call did, for the caller's logging.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SocketOptionResult {
     pub ok: bool,
@@ -71,12 +70,8 @@ pub struct SocketOptionResult {
 }
 
 /// `_fcntl_set_option`: -1 leaves a flag alone, 0 clears it, anything else sets it.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_fd_option(
-    fd: c_int,
-    nonblock: c_int,
-    cloexec: c_int,
-) -> SocketOptionResult {
+#[must_use]
+pub fn swr_v1_socket_fd_option(fd: c_int, nonblock: c_int, cloexec: c_int) -> SocketOptionResult {
     let mut warnings = 0;
     if nonblock >= 0 {
         let (ok, warned) = update(
@@ -108,8 +103,8 @@ pub extern "C" fn swr_v1_socket_fd_option(
 }
 
 /// `set_tcp_nopush`: `TCP_CORK` where the platform has it, else -1.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_tcp_nopush(fd: c_int, nopush: c_int) -> c_int {
+#[must_use]
+pub fn swr_v1_socket_tcp_nopush(fd: c_int, nopush: c_int) -> c_int {
     #[cfg(target_os = "linux")]
     if swr_v1_socket_set_int(fd, libc::IPPROTO_TCP, libc::TCP_CORK, nopush) {
         return 0;
@@ -120,13 +115,12 @@ pub extern "C" fn swr_v1_socket_tcp_nopush(fd: c_int, nopush: c_int) -> c_int {
 }
 
 /// `set_tcp_nodelay`'s setsockopt.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_tcp_nodelay(fd: c_int, nodelay: c_int) -> bool {
+#[must_use]
+pub fn swr_v1_socket_tcp_nodelay(fd: c_int, nodelay: c_int) -> bool {
     swr_v1_socket_set_int(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY, nodelay)
 }
 
 /// A socket's corking fields, copied in and out of its bitfields.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CorkState {
     pub tcp_nopush: u8,
@@ -136,16 +130,7 @@ pub struct CorkState {
 const HAS_CORK: bool = cfg!(target_os = "linux");
 
 /// `Socket::cork`: set `TCP_CORK` and turn `TCP_NODELAY` off while corked.
-///
-/// # Safety
-/// `state` points to an exclusive `CorkState`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_cork(
-    fd: c_int,
-    state: *mut CorkState,
-) -> SocketOptionResult {
-    // SAFETY: the caller lends an exclusive CorkState.
-    let state = unsafe { &mut *state };
+pub fn swr_v1_socket_cork(fd: c_int, state: &mut CorkState) -> SocketOptionResult {
     if state.tcp_nopush != 0 {
         return SocketOptionResult::default();
     }
@@ -171,17 +156,11 @@ pub unsafe extern "C" fn swr_v1_socket_cork(
 
 /// `Socket::uncork`: clear `TCP_CORK` and restore `TCP_NODELAY` when the socket
 /// enables it.
-///
-/// # Safety
-/// `state` points to an exclusive `CorkState`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_uncork(
+pub fn swr_v1_socket_uncork(
     fd: c_int,
     enable_tcp_nodelay: bool,
-    state: *mut CorkState,
+    state: &mut CorkState,
 ) -> SocketOptionResult {
-    // SAFETY: the caller lends an exclusive CorkState.
-    let state = unsafe { &mut *state };
     if state.tcp_nopush == 0 {
         return SocketOptionResult::default();
     }
@@ -311,8 +290,7 @@ mod tests {
             tcp_nopush: 0,
             tcp_nodelay: 1,
         };
-        // SAFETY: `state` is a local.
-        let corked = unsafe { swr_v1_socket_cork(fd, &raw mut state) };
+        let corked = swr_v1_socket_cork(fd, &mut state);
         assert_eq!(
             corked,
             SocketOptionResult {
@@ -327,8 +305,7 @@ mod tests {
                 tcp_nodelay: 0
             }
         );
-        // SAFETY: as above.
-        let uncorked = unsafe { swr_v1_socket_uncork(fd, true, &raw mut state) };
+        let uncorked = swr_v1_socket_uncork(fd, true, &mut state);
         assert_eq!(uncorked.ok, HAS_CORK, "uncork only undoes a real cork");
         close(fd);
     }

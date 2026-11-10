@@ -1,14 +1,21 @@
 //! Objects that embed their `zend_object` after Rust data, as Swoole's C++
 //! structs do (`struct { T data; zend_object std; }`).
 use crate::{
-    Class,
+    ArrayMut, Class, Value,
     sys::{
         _zval_struct__bindgen_ty_1, IS_OBJECT_EX, object_init_ex, object_properties_init,
-        swr_zend_class_set_create_object, swr_zend_object_alloc, zend_class_entry, zend_object,
-        zend_object_handlers, zend_object_std_dtor, zend_object_std_init, zend_value, zval,
+        swr_zend_class_set_create_object, swr_zend_object_alloc, swr_zend_property_array,
+        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
+        zend_object_std_init, zend_update_property, zend_update_property_bool,
+        zend_update_property_long, zend_update_property_null, zend_update_property_stringl,
+        zend_value, zval,
     },
 };
-use std::{ffi::c_int, mem::offset_of};
+use std::{
+    ffi::{CStr, c_char, c_int},
+    marker::PhantomData,
+    mem::offset_of,
+};
 
 /// `data` followed by the object Zend sees; `std` must stay last, since Zend
 /// allocates the class's property slots after it.
@@ -94,6 +101,15 @@ impl<T> Object<T> {
         handlers.offset = c_int::try_from(Self::OFFSET).unwrap_or(c_int::MAX);
     }
 
+    /// Where the data of the object around `std` sits, for callers that keep
+    /// no reference to it across PHP code (cells, or raw field access).
+    #[must_use]
+    #[inline]
+    pub fn data_ptr(std: *mut zend_object) -> *mut T {
+        // `data` leads the `repr(C)` struct, `OFFSET` bytes before `std`.
+        std.wrapping_byte_sub(Self::OFFSET).cast()
+    }
+
     /// The data of the object around `std` (`fetch_object(std)->data`).
     /// # Safety
     /// `std` is the `std` of a live `Object<T>`, and no other reference to its
@@ -117,6 +133,104 @@ impl<T> Object<T> {
     pub unsafe fn dtor(std: *mut zend_object) {
         // SAFETY: per the caller.
         unsafe { zend_object_std_dtor(std) };
+    }
+}
+
+/// Property writes on a live object, under a class that sees them (Zend's
+/// `scope`). Zend copies every name and value.
+#[derive(Clone, Copy)]
+pub struct Props<'a>(
+    *mut zend_class_entry,
+    *mut zend_object,
+    PhantomData<&'a zend_object>,
+);
+
+impl Props<'_> {
+    /// # Safety
+    /// `object` is live for `'a`, and `scope` is null or a registered class.
+    #[must_use]
+    #[inline]
+    pub unsafe fn new(scope: *mut zend_class_entry, object: *mut zend_object) -> Self {
+        Self(scope, object, PhantomData)
+    }
+
+    /// The same object, under its own class (`Z_OBJCE_P`).
+    #[must_use]
+    #[inline]
+    pub fn own(self) -> Self {
+        // SAFETY: a live object.
+        Self(unsafe { (*self.1).ce }, self.1, PhantomData)
+    }
+
+    /// Scope, object and the name as the `zend_update_property_*` take them.
+    fn at(
+        self,
+        name: &CStr,
+    ) -> (
+        *mut zend_class_entry,
+        *mut zend_object,
+        *const c_char,
+        usize,
+    ) {
+        (self.0, self.1, name.as_ptr(), name.count_bytes())
+    }
+
+    /// `zend_update_property_long`.
+    #[inline]
+    pub fn long(self, name: &CStr, value: zend_long) {
+        let (scope, object, name, length) = self.at(name);
+        // SAFETY: a live object and a registered class or null.
+        unsafe { zend_update_property_long(scope, object, name, length, value) };
+    }
+
+    /// `zend_update_property_bool`.
+    #[inline]
+    pub fn bool(self, name: &CStr, value: bool) {
+        let (scope, object, name, length) = self.at(name);
+        // SAFETY: as above.
+        unsafe { zend_update_property_bool(scope, object, name, length, value.into()) };
+    }
+
+    /// `zend_update_property_stringl`.
+    #[inline]
+    pub fn bytes(self, name: &CStr, value: &[u8]) {
+        let (scope, object, name, length) = self.at(name);
+        let (data, size) = (value.as_ptr().cast(), value.len());
+        // SAFETY: as above.
+        unsafe { zend_update_property_stringl(scope, object, name, length, data, size) };
+    }
+
+    /// `zend_update_property_null`.
+    #[inline]
+    pub fn null(self, name: &CStr) {
+        let (scope, object, name, length) = self.at(name);
+        // SAFETY: as above.
+        unsafe { zend_update_property_null(scope, object, name, length) };
+    }
+
+    /// `zend_update_property`: the property takes a copy of `value`.
+    #[inline]
+    pub fn value(self, name: &CStr, value: &Value) {
+        let (scope, object, name, length) = self.at(name);
+        // SAFETY: as above, and a live value.
+        unsafe { zend_update_property(scope, object, name, length, value.as_ptr()) };
+    }
+}
+
+impl<'a> Props<'a> {
+    /// The array property `name`, made an empty array first unless it is one
+    /// (`swr_zend_property_array`), to add to.
+    /// # Safety
+    /// Nothing else borrows the property, and no PHP code runs, while the
+    /// result is borrowed.
+    #[must_use]
+    #[inline]
+    pub unsafe fn array(self, name: &CStr) -> &'a mut ArrayMut {
+        let (scope, object, name, length) = self.at(name);
+        // SAFETY: a live object and a registered class or null.
+        let array = unsafe { swr_zend_property_array(scope, object, name, length) };
+        // SAFETY: an array property of a live object; per the caller.
+        unsafe { ArrayMut::from_ptr(array) }
     }
 }
 

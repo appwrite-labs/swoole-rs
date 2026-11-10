@@ -1,12 +1,12 @@
 //! `System::exec(command, get_error_stream, buffer, status)`: run `command` under
-//! `/bin/sh -c` and read its output into `buffer` in this coroutine, as upstream's
-//! coroutine socket over the pipe did, then reap the child.
+//! `/bin/sh -c` and read its output into `buffer` through a coroutine socket over the
+//! pipe, as upstream does, then reap the child.
 use core::ffi::{CStr, c_char, c_int};
 use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::constants::SocketType;
 
-// SAFETY: crates/coroutine's and crates/reactor's (upstream symbols).
+// SAFETY: crates/reactor's (upstream symbols).
 unsafe extern "C" {
-    safe fn swr_v1_coroutine_current() -> *mut core::ffi::c_void;
     #[link_name = "_ZN6swoole9coroutine6System12waitpid_safeEiPii"]
     fn system_waitpid_safe(pid: libc::pid_t, status: *mut c_int, options: c_int) -> libc::pid_t;
 }
@@ -14,9 +14,12 @@ unsafe extern "C" {
 /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
 const OUT_OF_COROUTINE: c_int = 10001;
 
-/// Reads `command`'s output onto `buffer`, doubling it whenever it fills. Each wait
-/// for output is bounded by the default socket read timeout, and a read error, a
-/// timeout or a cancel ends the output. True when the child was reaped.
+/// Reads `command`'s output onto `buffer`, doubling it whenever it fills, until the
+/// pipe's end, a read error, the socket's read timeout or a cancel. True when the
+/// child was reaped. The socket's readable event resumes this coroutine at once, as
+/// upstream's does, so the reap runs before the same loop pass dispatches the child's
+/// SIGCHLD. A deferred resume let the SIGCHLD handler that a coroutine `waitPid`
+/// installs reap the child first, and exec then failed.
 ///
 /// # Safety
 /// In a coroutine (outside one it raises upstream's fatal error, which does not
@@ -27,7 +30,7 @@ pub unsafe fn exec(
     buffer: &mut CppString,
     status: &mut c_int,
 ) -> bool {
-    if swr_v1_coroutine_current().is_null() {
+    if swoole_rs_coroutine::current().is_null() {
         // SAFETY: Swoole's fatal error hook; this frame owns nothing.
         unsafe {
             swoole_rs_corebase::fatal_error(
@@ -47,38 +50,28 @@ pub unsafe fn exec(
         );
         return false;
     }
-    // SAFETY: fcntl(2) on the pipe this function owns.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    // SAFETY: as above.
-    unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-    // SAFETY: a plain read of the defaults every new socket copies.
-    let timeout = unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.read };
+    // `SocketImpl socket(fd, SW_SOCK_UNIX_STREAM)`, which takes the pipe.
+    let socket = crate::co_socket::make(fd, 0, SocketType::SW_SOCK_UNIX_STREAM as c_int, 0, false);
     loop {
-        let spare = buffer.size - buffer.length;
-        // SAFETY: the buffer has `spare` writable bytes past its length.
-        let read = unsafe { libc::read(fd, buffer.str.wrapping_add(buffer.length).cast(), spare) };
-        if read > 0 {
-            buffer.length += read.unsigned_abs();
-            if buffer.length == buffer.size {
-                buffer.extend(buffer.size.wrapping_mul(2));
-            }
-            continue;
-        }
-        let waited = match std::io::Error::last_os_error().raw_os_error() {
-            _ if read == 0 => break,
-            Some(libc::EINTR) => continue,
-            // SAFETY: waits on a descriptor this function owns.
-            Some(libc::EAGAIN) => unsafe {
-                crate::wait_event::system_wait_event(fd, crate::wait_event::READ, timeout)
-            },
-            _ => break,
+        // SAFETY: the buffer has `size - length` writable bytes past its length.
+        let spare = unsafe {
+            core::slice::from_raw_parts_mut(
+                buffer.str.wrapping_add(buffer.length).cast::<u8>(),
+                buffer.size - buffer.length,
+            )
         };
-        if waited < 0 {
+        let read = socket.read(spare);
+        if read <= 0 {
             break;
         }
+        buffer.length += read.unsigned_abs();
+        if buffer.length == buffer.size {
+            buffer.extend(buffer.size.wrapping_mul(2));
+        }
     }
-    // SAFETY: the pipe is this function's.
-    unsafe { libc::close(fd) };
+    socket.close();
+    // SAFETY: the socket `make` made, which nothing uses afterwards.
+    unsafe { crate::co_socket::swr_v1_hook_co_socket_free(socket.this()) };
     // SAFETY: `status` is writable.
     unsafe { system_waitpid_safe(pid, status, 0) == pid }
 }

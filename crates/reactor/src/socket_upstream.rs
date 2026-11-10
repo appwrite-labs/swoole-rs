@@ -30,86 +30,27 @@ pub fn signal_dispatch() -> Option<unsafe extern "C" fn()> {
     Some(swoole_rs_process::signal::swoole_signal_dispatch)
 }
 
-/// A static member of reference type (`static double &Socket::default_dns_timeout`),
-/// which native code reads as a pointer to the referenced object.
-#[repr(transparent)]
-pub struct NativeRef<T>(*mut T);
-
-// SAFETY: native code reads and assigns the referenced defaults as upstream does
-// its plain statics; the pointer itself never changes.
-unsafe impl<T> Sync for NativeRef<T> {}
-
-/// `Socket::default_dns_timeout`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket19default_dns_timeoutE")
-)]
-pub static DEFAULT_DNS_TIMEOUT: NativeRef<f64> =
-    // SAFETY: the field's address; nothing is read or written here.
-    NativeRef(unsafe { &raw mut crate::swr_v1_socket_defaults.timeouts.dns });
-/// `Socket::default_connect_timeout`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket23default_connect_timeoutE")
-)]
-pub static DEFAULT_CONNECT_TIMEOUT: NativeRef<f64> =
-    // SAFETY: the field's address; nothing is read or written here.
-    NativeRef(unsafe { &raw mut crate::swr_v1_socket_defaults.timeouts.connect });
-/// `Socket::default_read_timeout`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket20default_read_timeoutE")
-)]
-pub static DEFAULT_READ_TIMEOUT: NativeRef<f64> =
-    // SAFETY: the field's address; nothing is read or written here.
-    NativeRef(unsafe { &raw mut crate::swr_v1_socket_defaults.timeouts.read });
-/// `Socket::default_write_timeout`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket21default_write_timeoutE")
-)]
-pub static DEFAULT_WRITE_TIMEOUT: NativeRef<f64> =
-    // SAFETY: the field's address; nothing is read or written here.
-    NativeRef(unsafe { &raw mut crate::swr_v1_socket_defaults.timeouts.write });
-/// `Socket::default_buffer_size`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket19default_buffer_sizeE")
-)]
-pub static DEFAULT_BUFFER_SIZE: NativeRef<u32> =
-    // SAFETY: the field's address; nothing is read or written here.
-    NativeRef(unsafe { &raw mut crate::swr_v1_socket_defaults.buffer_size });
-
 /// `void Socket::clean() const`.
-///
-/// # Safety
-/// `socket` is a live record.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7network6Socket5cleanEv")
 )]
-pub unsafe extern "C" fn socket_clean(socket: *const SocketRecord) {
-    // SAFETY: as the caller promises.
-    crate::swr_v1_socket_clean(unsafe { (*socket).fd });
+pub extern "C" fn socket_clean(socket: &SocketRecord) {
+    crate::fd_clean(socket.fd);
 }
 
 /// `int Socket::wait_event(int timeout_ms, int events) const`.
-///
-/// # Safety
-/// `socket` is a live record.
 #[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7network6Socket10wait_eventEii")
 )]
-pub unsafe extern "C" fn socket_wait_event(
-    socket: *const SocketRecord,
+pub extern "C" fn socket_wait_event(
+    socket: &SocketRecord,
     timeout_ms: c_int,
     events: c_int,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &*socket };
-    let result = crate::swr_v1_socket_wait(
+    let result = crate::fd_wait(
         socket.fd,
         crate::swr_v1_reactor_poll_events_to(events),
         timeout_ms,
@@ -132,26 +73,9 @@ pub unsafe extern "C" fn socket_wait_event(
 }
 
 /// `swReturnCode Socket::connect_async(const Address &sa)`.
-///
-/// # Safety
-/// `socket` is a live record and `address` a live `network::Address`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket13connect_asyncERKNS0_7AddressE")
-)]
-pub unsafe extern "C" fn socket_connect_async(
-    socket: *mut SocketRecord,
-    address: *const SocketAddress,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    unsafe { socket_set_fd_option(socket, 1, -1) };
-    // SAFETY: as the caller promises.
-    let fd = unsafe { (*socket).fd };
-    // SAFETY: as the caller promises.
-    let address = unsafe { &*address };
-    // SAFETY: the address's storage holds `len` bytes of sockaddr.
-    let result =
-        unsafe { crate::swr_v1_socket_connect(fd, (&raw const address.addr).cast(), address.len) };
+pub fn socket_connect_async(socket: &mut SocketRecord, address: &SocketAddress) -> c_int {
+    socket_set_fd_option(socket, 1, -1);
+    let result = crate::fd_connect(socket.fd, address);
     match result.status {
         0 => READY,
         status => {
@@ -163,25 +87,17 @@ pub unsafe extern "C" fn socket_connect_async(
 }
 
 /// `int Socket::connect_sync(const Address &sa)`.
-///
-/// # Safety
-/// `socket` is a live record and `address` a live `network::Address`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket12connect_syncERKNS0_7AddressE")
 )]
-pub unsafe extern "C" fn socket_connect_sync(
-    socket: *mut SocketRecord,
-    address: *const SocketAddress,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    match unsafe { socket_connect_async(socket, address) } {
+pub extern "C" fn socket_connect_sync(socket: &mut SocketRecord, address: &SocketAddress) -> c_int {
+    match socket_connect_async(socket, address) {
         WAIT => {}
         READY => return OK,
         _ => return ERR,
     }
-    // SAFETY: as the caller promises.
-    let timeout = unsafe { (*socket).timeouts.connect };
+    let timeout = socket.timeouts.connect;
     // Upstream's `timeout > 0 ? sec2msec(timeout) : timeout` is a double.
     #[expect(
         clippy::cast_possible_truncation,
@@ -192,19 +108,16 @@ pub unsafe extern "C" fn socket_connect_sync(
     } else {
         timeout as c_int
     };
-    // SAFETY: as the caller promises.
-    if unsafe { socket_wait_event(socket, timeout_ms, EVENT_WRITE) } < 0 {
+    if socket_wait_event(socket, timeout_ms, EVENT_WRITE) < 0 {
         log::set_last_error(libc::ETIMEDOUT);
         return ERR;
     }
-    // SAFETY: as the caller promises.
-    let pending = crate::swr_v1_socket_pending_error(unsafe { (*socket).fd });
+    let pending = crate::fd_pending_error(socket.fd);
     if pending.status != 0 {
         log::set_last_error(pending.error);
         return ERR;
     }
-    // SAFETY: as the caller promises.
-    unsafe { socket_set_fd_option(socket, 0, -1) };
+    socket_set_fd_option(socket, 0, -1);
     OK
 }
 
@@ -219,39 +132,19 @@ pub extern "C" fn socket_has_timedout(_socket: *const SocketRecord) -> bool {
     error == libc::EAGAIN || error == libc::ETIMEDOUT || log::last_error() == POLL_TIMEOUT
 }
 
-/// `double Socket::get_timeout(TimeoutType type) const`: -1 for a type that is not
-/// exactly one timeout, where upstream asserts.
-///
-/// # Safety
-/// `socket` is a live record.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7network6Socket11get_timeoutE13swTimeoutType")
-)]
-pub unsafe extern "C" fn socket_get_timeout(socket: *const SocketRecord, kind: c_int) -> f64 {
-    // SAFETY: as the caller promises.
-    unsafe { (*socket).timeouts.get(kind) }.unwrap_or(-1.0)
-}
-
 /// `bool Socket::set_fd_option(int nonblock, int cloexec)`, warning as
 /// `_fcntl_set_option`.
-///
-/// # Safety
-/// `socket` is a live record.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket13set_fd_optionEii")
 )]
-pub unsafe extern "C" fn socket_set_fd_option(
-    socket: *mut SocketRecord,
+pub extern "C" fn socket_set_fd_option(
+    socket: &mut SocketRecord,
     nonblock: c_int,
     cloexec: c_int,
 ) -> bool {
-    // SAFETY: as the caller promises.
-    let result = unsafe { (*socket).set_fd_option(nonblock, cloexec) };
-    // SAFETY: as the caller promises.
-    let fd = unsafe { (*socket).fd };
+    let result = socket.set_fd_option(nonblock, cloexec);
+    let fd = socket.fd;
     for (bit, call) in [
         (1, "GETFL"),
         (2, "SETFL, opts"),
@@ -269,12 +162,8 @@ pub unsafe extern "C" fn socket_set_fd_option(
 }
 
 /// `_set_timeout` and the timeout it records: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO`.
-///
-/// # Safety
-/// `socket` is a live record.
-unsafe fn set_kernel_timeout(socket: *mut SocketRecord, send: bool, timeout: f64) -> bool {
-    // SAFETY: as the caller promises.
-    if unsafe { (*socket).set_kernel_timeout(send, timeout) } {
+fn set_kernel_timeout(socket: &mut SocketRecord, send: bool, timeout: f64) -> bool {
+    if socket.set_kernel_timeout(send, timeout) {
         return true;
     }
     let which = if send { "SEND" } else { "RECV" };
@@ -286,54 +175,33 @@ unsafe fn set_kernel_timeout(socket: *mut SocketRecord, send: bool, timeout: f64
 }
 
 /// `bool Socket::set_kernel_read_timeout(double)`: upstream sets `SO_SNDTIMEO`.
-///
-/// # Safety
-/// `socket` is a live record.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket23set_kernel_read_timeoutEd")
 )]
-pub unsafe extern "C" fn socket_set_kernel_read_timeout(
-    socket: *mut SocketRecord,
-    timeout: f64,
-) -> bool {
-    // SAFETY: as the caller promises.
-    unsafe { set_kernel_timeout(socket, true, timeout) }
+pub extern "C" fn socket_set_kernel_read_timeout(socket: &mut SocketRecord, timeout: f64) -> bool {
+    set_kernel_timeout(socket, true, timeout)
 }
 
 /// `bool Socket::set_kernel_write_timeout(double)`: upstream sets `SO_RCVTIMEO`.
-///
-/// # Safety
-/// `socket` is a live record.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket24set_kernel_write_timeoutEd")
 )]
-pub unsafe extern "C" fn socket_set_kernel_write_timeout(
-    socket: *mut SocketRecord,
-    timeout: f64,
-) -> bool {
-    // SAFETY: as the caller promises.
-    unsafe { set_kernel_timeout(socket, false, timeout) }
+pub extern "C" fn socket_set_kernel_write_timeout(socket: &mut SocketRecord, timeout: f64) -> bool {
+    set_kernel_timeout(socket, false, timeout)
 }
 
 /// `cork` or `uncork`: the TCP flags in and out of the record, and the warnings.
-///
-/// # Safety
-/// `socket` is a live record.
-unsafe fn cork_as(socket: *mut SocketRecord, cork: bool) -> bool {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &mut *socket };
+fn cork_as(socket: &mut SocketRecord, cork: bool) -> bool {
     let mut state = crate::CorkState {
         tcp_nopush: socket.tcp_nopush,
         tcp_nodelay: socket.tcp_nodelay,
     };
     let result = if cork {
-        // SAFETY: `state` is a local.
-        unsafe { crate::swr_v1_socket_cork(socket.fd, &raw mut state) }
+        crate::swr_v1_socket_cork(socket.fd, &mut state)
     } else {
-        // SAFETY: `state` is a local.
-        unsafe { crate::swr_v1_socket_uncork(socket.fd, socket.enable_tcp_nodelay, &raw mut state) }
+        crate::swr_v1_socket_uncork(socket.fd, socket.enable_tcp_nodelay, &mut state)
     };
     socket.tcp_nopush = state.tcp_nopush;
     socket.tcp_nodelay = state.tcp_nodelay;
@@ -359,29 +227,21 @@ unsafe fn cork_as(socket: *mut SocketRecord, cork: bool) -> bool {
 }
 
 /// `bool Socket::cork()`.
-///
-/// # Safety
-/// `socket` is a live record.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket4corkEv")
 )]
-pub unsafe extern "C" fn socket_cork(socket: *mut SocketRecord) -> bool {
-    // SAFETY: as the caller promises.
-    unsafe { cork_as(socket, true) }
+pub extern "C" fn socket_cork(socket: &mut SocketRecord) -> bool {
+    cork_as(socket, true)
 }
 
 /// `bool Socket::uncork()`.
-///
-/// # Safety
-/// `socket` is a live record.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket6uncorkEv")
 )]
-pub unsafe extern "C" fn socket_uncork(socket: *mut SocketRecord) -> bool {
-    // SAFETY: as the caller promises.
-    unsafe { cork_as(socket, false) }
+pub extern "C" fn socket_uncork(socket: &mut SocketRecord) -> bool {
+    cork_as(socket, false)
 }
 
 /// `Socket *make_socket(SocketType, FdType, int flags)`: null with the last error
@@ -442,22 +302,11 @@ pub extern "C" fn make_socket_fd(fd: c_int, fd_type: c_int) -> *mut SocketRecord
     SocketRecord::with_fd(fd, fd_type).into_raw()
 }
 
-/// `int socket(int domain, int type, int protocol, int flags)`.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6socketEiiii")
-)]
-pub extern "C" fn socket(domain: c_int, kind: c_int, protocol: c_int, flags: c_int) -> c_int {
-    crate::swr_v1_socket_open(domain, kind, protocol, flags)
-}
-
 /// `Reactor::change`'s log: `code` 0 is `swoole_sys_warning`, else
 /// `swoole_error_log(SW_LOG_WARNING, code, ...)`, as from `origin`; then the backtrace.
 ///
 /// # Safety
 /// Both strings are NUL-terminated.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_reactor_log(
     origin: *const c_char,
     code: c_int,
@@ -492,21 +341,11 @@ mod tests {
     use std::ptr;
 
     #[test]
-    fn get_timeout_reads_one_timeout() {
-        let mut socket = SocketRecord::new();
-        socket.timeouts.read = 2.5;
-        unsafe {
-            assert_eq!(socket_get_timeout(&raw const socket, 1 << 2), 2.5);
-            assert_eq!(socket_get_timeout(&raw const socket, 3), -1.0);
-        }
-    }
-
-    #[test]
     fn wait_event_times_out_with_the_poll_error() {
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let socket = SocketRecord::with_fd(fds[0], 0);
-        assert_eq!(unsafe { socket_wait_event(&raw const socket, 0, 0) }, ERR);
+        assert_eq!(socket_wait_event(&socket, 0, 0), ERR);
         assert_eq!(log::last_error(), POLL_TIMEOUT);
         assert!(socket_has_timedout(ptr::null()));
         unsafe {
@@ -523,7 +362,7 @@ mod tests {
 }
 
 /// Upstream's `network::Socket` members over the record, under their own symbols for
-/// the hybrid tree's core-tests port (tests/modules/hooks/system), which links them.
+/// the core-tests port (tests/modules/hooks/system), which links them.
 #[cfg(feature = "upstream-symbols")]
 mod members {
     use crate::{SocketAddress, SocketRecord};

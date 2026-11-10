@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/wrapper/event.cc (Swoole contributors).
 //! event.cc's `swoole_event_*` C API over the thread's `Reactor` (`SwooleTG.reactor`).
-//! With `upstream-symbols` each is defined under its upstream (Itanium) symbol.
+//! With `upstream-symbols` those C++ or a test crate calls are defined under their
+//! upstream (Itanium) symbols.
 //! `swoole_event_init` and `swoole_event_free` are `reactor_state.rs`'s, with the
 //! `Reactor`'s constructor and destructor; `swoole_event_defer` is callbacks.rs's.
 use crate::handlers::Handler;
@@ -66,12 +67,8 @@ pub extern "C" fn swoole_event_is_available() -> bool {
 }
 
 /// `bool swoole_event_is_running()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z23swoole_event_is_runningv")
-)]
 #[must_use]
-pub extern "C" fn swoole_event_is_running() -> bool {
+pub fn swoole_event_is_running() -> bool {
     field(|fields| fields.running).unwrap_or(false)
 }
 
@@ -92,11 +89,7 @@ pub unsafe extern "C" fn swoole_event_add(socket: *mut SocketRecord, events: c_i
 ///
 /// # Safety
 /// As `Reactor::set`, with a live `SwooleTG.reactor`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z16swoole_event_setPN6swoole7network6SocketEi")
-)]
-pub unsafe extern "C" fn swoole_event_set(socket: *mut SocketRecord, events: c_int) -> c_int {
+pub unsafe fn swoole_event_set(socket: *mut SocketRecord, events: c_int) -> c_int {
     // SAFETY: as the caller promises.
     unsafe { reactor_change(current(), socket, 1, events) }
 }

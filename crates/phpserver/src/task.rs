@@ -5,7 +5,8 @@
 //! `task_coroutine_map`), and the task encoding (a string, or PHP's serialize
 //! with `SW_TASK_SERIALIZE`), packed, sent and waited for by crates/process's
 //! `Server` methods over this worker's task pool, notify pipe and lock ([`Host`]).
-use crate::dispatch::{handler_error, invoke, server_callback, server_zval, set_last_error, undef};
+use crate::dispatch::{handler_error, invoke, set_last_error, undef, zserv};
+use crate::lifecycle::Props;
 use crate::server::{DATA, TASK, fatal, running};
 use std::{
     cell::RefCell,
@@ -27,15 +28,14 @@ use swoole_rs_process::{
 use swoole_rs_server::view;
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
-    Call, E_WARNING,
+    Array, Call, E_WARNING, Value,
     bailout::Bailout,
-    each_value, init_object, long_zval, message, object_of, php_error,
+    long_zval, message, php_error,
     string::bytes,
     sys::{
-        IS_ARRAY, IS_NULL, add_index_bool, swr_zend_serialize, swr_zend_string_release,
-        swr_zend_unserialize, swr_zval_is_true, swr_zval_stringl, zend_class_entry,
-        zend_hash_index_find, zend_hash_index_update, zend_object, zend_update_property,
-        zend_update_property_double, zend_update_property_long, zval, zval_ptr_dtor,
+        IS_NULL, add_index_bool, swr_zend_serialize, swr_zend_string_release, swr_zend_unserialize,
+        swr_zval_is_true, swr_zval_stringl, zend_hash_index_find, zend_hash_index_update, zval,
+        zval_ptr_dtor,
     },
     type_of,
     value::{array_init, count, table},
@@ -575,14 +575,15 @@ fn task_wait_multi(call: &Call) {
     let tasks = call.zval(1);
     // SAFETY: the return slot.
     unsafe { array_init(call.return_value()) };
-    if length(tasks) >= MAX_CONCURRENT_TASK {
+    let n_task = length(call.value(1));
+    if n_task >= MAX_CONCURRENT_TASK {
         fatal(E_WARNING, c"too many concurrent tasks");
         return call.set_bool(false);
     }
     let mut multi = Multi {
         tasks,
         out: call.return_value(),
-        count: u16::try_from(length(tasks)).unwrap_or_default(),
+        count: u16::try_from(n_task).unwrap_or_default(),
     };
     let done = task_state(serv, true)
         .task_sync_many(&mut multi, timeout)
@@ -598,13 +599,8 @@ fn task_wait_multi(call: &Call) {
 }
 
 /// `php_swoole_array_length`, as 0 for what is not an array.
-fn length(array: *mut zval) -> u32 {
-    // SAFETY: a live argument.
-    if unsafe { type_of(array) } != IS_ARRAY {
-        return 0;
-    }
-    // SAFETY: an array.
-    unsafe { count(array) }
+fn length(array: Option<&Value>) -> u32 {
+    array.and_then(Value::array).map_or(0, Array::count)
 }
 
 fn task_co_method(call: &Call) {
@@ -619,8 +615,8 @@ fn task_co(call: &Call, fill_false: bool) {
     let (Ok(()), Ok(timeout)) = (call.arity(1, 2), call.double(2, TASKWAIT_TIMEOUT)) else {
         return call.set_bool(false);
     };
-    let tasks = call.zval(1);
-    let mut n_task = length(tasks);
+    let tasks = call.value(1).and_then(Value::array);
+    let mut n_task = tasks.map_or(0, Array::count);
     if n_task >= MAX_CONCURRENT_TASK {
         fatal(E_WARNING, c"too many concurrent tasks");
         return call.set_bool(false);
@@ -643,37 +639,30 @@ fn task_co(call: &Call, fill_false: bool) {
         fill_false,
     };
     let mut list = Vec::with_capacity(n_task as usize);
-    if n_task > 0 {
-        // SAFETY: an array argument.
-        let tasks = unsafe { table(tasks) };
-        let each = |ztask: *mut zval| {
-            let index = list.len() as u64;
-            let mut buf = EventData::new();
-            let mut id = pack(ztask, &mut buf);
-            let mut dispatched = false;
-            if id < 0 {
-                fatal(E_WARNING, c"failed to pack task");
+    for (_, ztask) in tasks.into_iter().flat_map(Array::entries) {
+        let index = list.len() as u64;
+        let mut buf = EventData::new();
+        let mut id = pack(ztask.as_ptr(), &mut buf);
+        let mut dispatched = false;
+        if id < 0 {
+            fatal(E_WARNING, c"failed to pack task");
+        } else {
+            flag(&mut buf, NONBLOCK | COROUTINE);
+            let mut dst: c_int = -1;
+            if dispatch(serv, &mut buf, &mut dst) {
+                dispatched = true;
             } else {
-                flag(&mut buf, NONBLOCK | COROUTINE);
-                let mut dst: c_int = -1;
-                if dispatch(serv, &mut buf, &mut dst) {
-                    dispatched = true;
-                } else {
-                    id = -1;
-                }
+                id = -1;
             }
-            if dispatched {
-                pending(serv, |p| p.coroutines.insert(id, &raw mut task_co));
-            } else {
-                // SAFETY: the result array.
-                unsafe { add_index_bool(result, index, false) };
-                n_task -= 1;
-            }
-            list.push(id);
-            true
-        };
-        // SAFETY: a live array, not modified by the loop.
-        unsafe { each_value(tasks, each) };
+        }
+        if dispatched {
+            pending(serv, |p| p.coroutines.insert(id, &raw mut task_co));
+        } else {
+            // SAFETY: the result array.
+            unsafe { add_index_bool(result, index, false) };
+            n_task -= 1;
+        }
+        list.push(id);
     }
     if n_task == 0 {
         set_last_error(SW_ERROR_TASK_DISPATCH_FAIL);
@@ -757,21 +746,6 @@ fn event_warning(text: &CStr) -> Result<(), Bailout> {
     unsafe { php_error(E_WARNING, text) }
 }
 
-fn set_long(ce: *mut zend_class_entry, object: *mut zend_object, name: &CStr, value: i64) {
-    // SAFETY: a live object of `ce`; Zend copies the name.
-    unsafe { zend_update_property_long(ce, object, name.as_ptr(), name.count_bytes(), value) };
-}
-
-fn set_double(ce: *mut zend_class_entry, object: *mut zend_object, name: &CStr, value: f64) {
-    // SAFETY: as above.
-    unsafe { zend_update_property_double(ce, object, name.as_ptr(), name.count_bytes(), value) };
-}
-
-fn set_value(ce: *mut zend_class_entry, object: *mut zend_object, name: &CStr, value: *mut zval) {
-    // SAFETY: as above; the property takes its own reference.
-    unsafe { zend_update_property(ce, object, name.as_ptr(), name.count_bytes(), value) };
-}
-
 /// Unpack `req` into a value, or `None` (`Err` for a trapped bailout).
 fn unpack(req: *mut c_void) -> Result<Option<zval>, Bailout> {
     let mut data = undef();
@@ -782,7 +756,7 @@ fn unpack(req: *mut c_void) -> Result<Option<zval>, Bailout> {
 pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_int, Bailout> {
     let counters = server.counters();
     counters.tasking_num.fetch_sub(1, Ordering::SeqCst);
-    let zserv = server_zval(server.raw());
+    let zserv = zserv();
     let Some(mut data) = unpack(req)? else {
         return Ok(SW_ERR);
     };
@@ -790,17 +764,13 @@ pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_in
     let info = info(req);
     let mut args = [zserv, undef(), undef(), undef()];
     let argc = if facts.task_object {
-        let ce = TASK.entry();
-        // SAFETY: a writable zval and the registered Task class.
-        unsafe { init_object(&raw mut args[1], ce) };
-        // SAFETY: an object zval.
-        let object = unsafe { object_of(&raw const args[1]) };
-        crate::server::task_bind(object, server.raw(), head(req));
-        set_long(ce, object, c"worker_id", info.worker_id);
-        set_long(ce, object, c"id", info.id);
-        set_value(ce, object, c"data", &raw mut data);
-        set_double(ce, object, c"dispatch_time", info.time);
-        set_long(ce, object, c"flags", info.flags);
+        let props = Props::init(&mut args[1], &TASK);
+        crate::server::task_bind(props.object(), server.raw(), head(req));
+        props.long(c"worker_id", info.worker_id);
+        props.long(c"id", info.id);
+        props.value(c"data", &mut data);
+        props.double(c"dispatch_time", info.time);
+        props.long(c"flags", info.flags);
         2
     } else {
         args[1] = long_zval(info.id);
@@ -809,7 +779,7 @@ pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_in
         4
     };
     let mut retval = undef();
-    let cb = server_callback(server.raw(), ON_TASK);
+    let cb = crate::lifecycle::callback(ON_TASK);
     let outcome = match invoke(
         cb,
         args.get_mut(..argc).unwrap_or_default(),
@@ -837,7 +807,7 @@ pub(crate) fn on_task(server: view::Server<'_>, req: *mut c_void) -> Result<c_in
 
 /// `php_swoole_server_onFinish`, for a live server and the result it received.
 pub(crate) fn on_finish(server: view::Server<'_>, req: *mut c_void) -> Result<c_int, Bailout> {
-    let zserv = server_zval(server.raw());
+    let zserv = zserv();
     let info = info(req);
     let id = info.id;
     let Some(mut data) = unpack(req)? else {
@@ -859,7 +829,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, req: *mut c_void) -> Result<c_
         }
         cb.unwrap_or(ptr::null_mut())
     } else {
-        server_callback(server.raw(), ON_FINISH)
+        crate::lifecycle::callback(ON_FINISH)
     };
     if cb.is_null() {
         let outcome = event_warning(c"require 'onFinish' callback");
@@ -869,15 +839,11 @@ pub(crate) fn on_finish(server: view::Server<'_>, req: *mut c_void) -> Result<c_
     let facts = facts(server);
     let mut args = [zserv, undef(), undef()];
     let argc = if facts.event_object {
-        let ce = DATA[TASK_RESULT].entry();
-        // SAFETY: a writable zval and the registered TaskResult class.
-        unsafe { init_object(&raw mut args[1], ce) };
-        // SAFETY: an object zval.
-        let object = unsafe { object_of(&raw const args[1]) };
-        set_long(ce, object, c"task_id", id);
-        set_long(ce, object, c"task_worker_id", info.worker_id);
-        set_double(ce, object, c"dispatch_time", info.time);
-        set_value(ce, object, c"data", &raw mut data);
+        let props = Props::init(&mut args[1], &DATA[TASK_RESULT]);
+        props.long(c"task_id", id);
+        props.long(c"task_worker_id", info.worker_id);
+        props.double(c"dispatch_time", info.time);
+        props.value(c"data", &mut data);
         2
     } else {
         args[1] = long_zval(id);

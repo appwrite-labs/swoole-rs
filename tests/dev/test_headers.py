@@ -44,6 +44,11 @@ class Headers(unittest.TestCase):
         generated = GENERATED.replace('intptr_t swr_v1_read(uint8_t *out, uintptr_t length);', '')
         self.assertEqual(run(HEADER, generated), ['native/demo.h: swr_v1_read is not exported by any crate'])
 
+    def test_a_later_abi_version_is_checked_too(self):
+        generated = GENERATED + 'void *swr_v2_open(const uint8_t *data, uintptr_t length);\n'
+        self.assertEqual(run(HEADER + 'void *swr_v2_open(const uint8_t *data);\n', generated),
+                         ['native/demo.h: swr_v2_open takes 1 parameters; crates/demo takes 2'])
+
     def test_a_macro_generated_export_is_only_named(self):
         generated = GENERATED.replace('intptr_t swr_v1_read(uint8_t *out, uintptr_t length);', '')
         self.assertEqual(run(HEADER, generated, ['export!(swr_v1_read, u8);']), [])

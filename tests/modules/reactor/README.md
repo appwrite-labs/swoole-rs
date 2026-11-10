@@ -6,7 +6,7 @@
 (`reactor-native-originals`) is gone.
 
 `reactor/base.cpp`'s 26 TESTs are Rust (`base/`, the merge tier's `reactor-base-rust`
-phase): a case binary over the hybrid tree's libswoole.so, built and run by
+phase): a case binary over the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources), built and run by
 `tests/modules/hooks/system.py --package tests/modules/reactor/base --fixture
 tests/modules/reactor/base/fixture.cc`. `fixture.cc` gives C entry points to what needs
 C++ (the `Reactor` constructor, members and `std::function` slots, `Pipe` and
@@ -19,9 +19,7 @@ its own name (`write` is `write_case`): `create`, `create_failure`, `set_handler
 `set_fd`, `error_event`, `error`, `drain_write_buffer`, `handle_fail`. Each case runs
 in its own process, so the hook-table save and restore upstream wraps around
 `create_failure` and `hook` has nothing to do. A failed EXPECT is printed and fails the
-case at exit, as GoogleTest's nonfatal assertions do. `reactor-compile` runs
-`compile_gate.py --source S --archive A --report R`: the original and hybrid
-backend translation units compile as C++14.
+case at exit, as GoogleTest's nonfatal assertions do.
 
 `network/stream.cpp`'s TESTs are Rust tests of `network::Stream`, which is Rust
 (`crates/process/src/stream.rs`: `cargo test -p swoole-rs-process stream::`). A

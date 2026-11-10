@@ -9,16 +9,8 @@
 //! take these paths for it.
 use crate::co_io::{available, check, owned_err, set_err};
 use crate::co_socket::Co;
-use crate::uring::{
-    Host, swr_v1_uring_accept, swr_v1_uring_connect, swr_v1_uring_poll, swr_v1_uring_read,
-    swr_v1_uring_readv, swr_v1_uring_recv, swr_v1_uring_recvfrom, swr_v1_uring_recvmsg,
-    swr_v1_uring_send, swr_v1_uring_sendfile, swr_v1_uring_sendmsg, swr_v1_uring_sendto,
-    swr_v1_uring_write, swr_v1_uring_writev,
-};
-use crate::uring_tls::{
-    Tls, TlsHost, swr_v1_uring_tls_once, swr_v1_uring_tls_perform, swr_v1_uring_tls_recv,
-    swr_v1_uring_tls_send, swr_v1_uring_tls_sendfile,
-};
+use crate::uring::{self, Host};
+use crate::uring_tls::{Tls, TlsHost};
 use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 use openssl_sys as ssl;
 use std::sync::OnceLock;
@@ -138,12 +130,12 @@ static TLS_HOST: OnceLock<TlsHost> = OnceLock::new();
 /// The ring's view of `socket` when it is a `UringSocket`, else none.
 pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
     let (uring, [rbio, wbio]) = socket.with_extra(|extra| (extra.uring, extra.bio))?;
-    if uring.is_null() || socket.socket().is_null() {
+    let uring = uring?;
+    if socket.socket().is_null() {
         return None;
     }
     let host = TLS_HOST.get_or_init(|| TlsHost {
-        // SAFETY: the native ring host, a static table.
-        uring: unsafe { &*uring.cast::<Host>() },
+        uring,
         set_err: tls_set_err,
         check_failure: tls_check_failure,
         buffer: tls_buffer,
@@ -185,9 +177,8 @@ fn errno() -> c_int {
 }
 
 impl UringSocketOps {
-    fn host(&self) -> *const Host {
-        // SAFETY: the native static TLS host table.
-        unsafe { (*self.tls.host).uring }
+    fn host(&self) -> &'static Host {
+        self.tls.host.uring
     }
 
     fn ssl(&self) -> bool {
@@ -204,9 +195,7 @@ impl UringSocketOps {
 
     /// `call` with the current coroutine bound to `event`.
     fn bound<T>(&self, event: u32, call: impl FnOnce() -> T) -> T {
-        // SAFETY: the native static host table.
-        let current = unsafe { (*self.host()).current };
-        let co = current();
+        let co = (self.host().current)();
         self.socket.with_state(|state| state.bind(event, co));
         let result = call();
         self.socket
@@ -258,29 +247,29 @@ impl UringSocketOps {
         let (fd, rt, wt) = (tls.fd, tls.read_timeout, tls.write_timeout);
         match op {
             // SAFETY: the caller's buffer (each arm alike).
-            READ => unsafe { swr_v1_uring_read(host, fd, buf, n, rt) },
+            READ => unsafe { uring::read(host, fd, buf, n, rt) },
             // SAFETY: as above.
-            WRITE => unsafe { swr_v1_uring_write(host, fd, buf, n, wt) },
+            WRITE => unsafe { uring::write(host, fd, buf, n, wt) },
             // SAFETY: as above.
-            RECV if self.ssl() => unsafe { swr_v1_uring_tls_recv(tls, buf, n) },
+            RECV if self.ssl() => unsafe { tls.recv(buf, n) },
             // SAFETY: as above.
-            RECV => unsafe { swr_v1_uring_recv(host, fd, buf, n, 0, rt) },
+            RECV => unsafe { uring::recv(host, fd, buf, n, 0, rt) },
             // SAFETY: as above.
-            SEND if self.ssl() => unsafe { swr_v1_uring_tls_send(tls, buf, n) },
+            SEND if self.ssl() => unsafe { tls.send(buf, n) },
             // SAFETY: as above.
-            SEND => unsafe { swr_v1_uring_send(host, fd, buf, n, 0, wt) },
+            SEND => unsafe { uring::send(host, fd, buf, n, 0, wt) },
             // SAFETY: as above.
-            RECVMSG => unsafe { swr_v1_uring_recvmsg(host, fd, extra.cast(), flags, rt) },
+            RECVMSG => unsafe { uring::recvmsg(host, fd, extra.cast(), flags, rt) },
             // SAFETY: as above.
-            SENDMSG => unsafe { swr_v1_uring_sendmsg(host, fd, extra.cast(), flags, wt) },
+            SENDMSG => unsafe { uring::sendmsg(host, fd, extra.cast(), flags, wt) },
             SENDTO => {
                 // SAFETY: the caller's address length.
                 let length = unsafe { *extra_length };
                 // SAFETY: the caller's buffer and address.
-                unsafe { swr_v1_uring_sendto(host, fd, buf, n, 0, extra.cast(), length, wt) }
+                unsafe { uring::sendto(host, fd, buf, n, 0, extra.cast(), length, wt) }
             }
             // SAFETY: as above.
-            _ => unsafe { swr_v1_uring_recvfrom(host, fd, buf, n, extra.cast(), extra_length, rt) },
+            _ => unsafe { uring::recvfrom(host, fd, buf, n, extra.cast(), extra_length, rt) },
         }
     }
 
@@ -293,10 +282,10 @@ impl UringSocketOps {
             let iov = unsafe { *iov };
             let result = if write {
                 // SAFETY: the iovec's buffer.
-                unsafe { swr_v1_uring_tls_send(self.tls, iov.iov_base, iov.iov_len) }
+                unsafe { self.tls.send(iov.iov_base, iov.iov_len) }
             } else {
                 // SAFETY: the iovec's buffer.
-                unsafe { swr_v1_uring_tls_recv(self.tls, iov.iov_base, iov.iov_len) }
+                unsafe { self.tls.recv(iov.iov_base, iov.iov_len) }
             };
             total += result.max(0);
             vector.update(result);
@@ -321,10 +310,10 @@ impl UringSocketOps {
                     let (iov, count) = vector.current();
                     if write {
                         // SAFETY: the vector's remaining iovecs.
-                        unsafe { swr_v1_uring_writev(host, fd, iov, count, self.tls.write_timeout) }
+                        unsafe { uring::writev(host, fd, iov, count, self.tls.write_timeout) }
                     } else {
                         // SAFETY: the vector's remaining iovecs.
-                        unsafe { swr_v1_uring_readv(host, fd, iov, count, self.tls.read_timeout) }
+                        unsafe { uring::readv(host, fd, iov, count, self.tls.read_timeout) }
                     }
                 };
                 vector.update(result);
@@ -401,8 +390,7 @@ pub(crate) unsafe fn swr_v1_hook_uring_io_all(
     transfer_result(result, total)
 }
 
-/// `swr_v1_hook_transfer_result`: -1 when it failed before moving anything, else
-/// the bytes moved.
+/// -1 when it failed before moving anything, else the bytes moved.
 fn transfer_result(result: isize, total: usize) -> isize {
     if result < 0 && total == 0 {
         -1
@@ -455,7 +443,7 @@ pub(crate) unsafe fn swr_v1_hook_uring_accept(
     let flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
     // SAFETY: the caller's address buffer.
     let fd = ops.bound(EVENT_READ, || unsafe {
-        swr_v1_uring_accept(host, tls.fd, addr, length, flags, tls.read_timeout)
+        uring::accept(host, tls.fd, addr, length, flags, tls.read_timeout)
     });
     if fd < 0 {
         (ops.set_err)(ops.socket, errno());
@@ -478,7 +466,7 @@ pub(crate) unsafe fn swr_v1_hook_uring_connect(
     let (host, fd) = (ops.host(), ops.tls.fd);
     // SAFETY: the caller's address.
     let result = ops.bound(EVENT_RDWR, || unsafe {
-        swr_v1_uring_connect(host, fd, addr, length, ops.connect_timeout)
+        uring::connect(host, fd, addr, length, ops.connect_timeout)
     });
     if result < 0 {
         return false;
@@ -517,7 +505,7 @@ pub(crate) fn swr_v1_hook_uring_poll(
         timeout
     } as c_int;
     // SAFETY: the host table and one local pollfd.
-    let rc = unsafe { swr_v1_uring_poll(ops.host(), &raw mut fd, milliseconds) };
+    let rc = unsafe { uring::poll(ops.host(), &raw mut fd, milliseconds) };
     if rc != 1 {
         let error = if rc == 0 { libc::ETIMEDOUT } else { errno() };
         (ops.set_err)(ops.socket, error);
@@ -579,7 +567,7 @@ pub(crate) unsafe fn sendfile(
             // upstream splices through a pipe.
             // SAFETY: the open socket and file, and the local offset.
             return unsafe {
-                swr_v1_uring_sendfile(
+                uring::sendfile(
                     ops.host(),
                     ops.tls.fd,
                     file,
@@ -591,15 +579,16 @@ pub(crate) unsafe fn sendfile(
             };
         }
         // SAFETY: the live TLS view, the open file and the local offset.
-        let result = unsafe {
-            swr_v1_uring_tls_sendfile(ops.tls, file, &raw mut offset, end, catch_write_error)
+        let (total, warn) = unsafe {
+            ops.tls
+                .sendfile(file, &raw mut offset, end, catch_write_error)
         };
-        match result.warn {
+        match warn {
             1 => log::sys_warning(c"UringSocket::ssl_sendfile", format_args!("pread() failed")),
             2 => log::sys_warning(c"UringSocket::ssl_sendfile", format_args!("write() failed")),
             _ => {}
         }
-        result.total.cast_signed()
+        total.cast_signed()
     });
     sent == end.cast_signed()
 }
@@ -635,7 +624,7 @@ unsafe extern "C" fn want(context: *mut c_void) -> c_int {
 pub(crate) unsafe fn once(ops: &UringSocketOps, buf: *mut c_void, n: usize, write: bool) -> isize {
     let io = if write { network_send } else { network_recv };
     // SAFETY: as the caller promises; the callbacks take the view's record.
-    unsafe { swr_v1_uring_tls_once(ops.tls, buf, n, io, want) }
+    unsafe { ops.tls.once(buf, n, io, want) }
 }
 
 /// `UringSocket::poll(event, timeout)`, in a coroutine.
@@ -700,12 +689,7 @@ pub(crate) unsafe fn tls_step(socket: Co) -> c_int {
     } else {
         c"ssl_connect"
     };
-    // SAFETY: the live TLS view.
-    if unsafe { swr_v1_uring_tls_perform(ops.tls, rc, function.as_ptr()) } {
-        0
-    } else {
-        -1
-    }
+    if ops.tls.perform(rc, function) { 0 } else { -1 }
 }
 
 #[cfg(test)]
@@ -765,7 +749,7 @@ mod tests {
         UringSocketOps {
             socket,
             tls: Tls {
-                host: &raw const TLS_HOST,
+                host: &TLS_HOST,
                 socket: core::ptr::null_mut(),
                 ssl: core::ptr::null_mut(),
                 rbio: core::ptr::null_mut(),

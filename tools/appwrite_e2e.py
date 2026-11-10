@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Compare Appwrite e2e JUnit reports: hybrid against stock (upstream) Swoole.
+"""Compare Appwrite e2e JUnit reports: the Cargo build against stock (upstream) Swoole.
 
 Reads DIR/junit-<variant>-<service>/junit.xml as appwrite-e2e.yml uploads them.
 Paratest's merged report keeps complete top-level totals but drops some per-worker
-testcases, so services are gated on totals: a service regresses when its hybrid
+testcases, so services are gated on totals: a service regresses when its cargo
 report is missing, ran a different number of tests, or has more failures and
 errors than upstream's. Failing testcase names that the report kept are listed.
 Prints a Markdown summary.
@@ -35,16 +35,16 @@ def load(directory):
 
 
 def compare(reports):
-    """(rows, regressions, upstream failures): rows are (service, upstream, hybrid)."""
+    """(rows, regressions, upstream failures): rows are (service, upstream, cargo)."""
     rows, regressions, flaky = [], [], []
-    hybrid = reports.get('hybrid', {})
+    cargo = reports.get('cargo', {})
     for service, stock in sorted(reports.get('upstream', {}).items()):
-        ours = hybrid.get(service)
+        ours = cargo.get(service)
         rows.append((service, stock, ours))
         if stock[1]:
             flaky.append(f'{service}: {stock[1]} failing on upstream' + ''.join(f'\n  - {t}' for t in stock[3]))
         if ours is None:
-            regressions.append(f'{service}: no hybrid report')
+            regressions.append(f'{service}: no cargo report')
         elif ours[0] != stock[0] or ours[1] > stock[1]:
             new = [t for t in ours[3] if t not in stock[3]]
             regressions.append(f'{service}: {ours[0]} tests, {ours[1]} failing (upstream {stock[0]}, {stock[1]})'
@@ -57,7 +57,7 @@ def main():
     parser.add_argument('directory', type=Path)
     args = parser.parse_args()
     rows, regressions, flaky = compare(load(args.directory))
-    print('| service | upstream tests / failing / skipped | hybrid tests / failing / skipped |\n| --- | --- | --- |')
+    print('| service | upstream tests / failing / skipped | cargo tests / failing / skipped |\n| --- | --- | --- |')
     for service, stock, ours in rows:
         print(f"| {service} | {' / '.join(map(str, stock[:3]))} | {' / '.join(map(str, ours[:3])) if ours else 'missing'} |")
     for title, items in [('Regressions', regressions), ('Failing on upstream (not gated)', flaky)]:

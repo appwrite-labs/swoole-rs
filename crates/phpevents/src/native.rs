@@ -5,7 +5,7 @@
 use std::ffi::{CStr, c_int, c_void};
 use swoole_rs_corebase::constants::{EventType, FdType};
 use swoole_rs_reactor::{
-    DeferCall, ReactorFields, ReactorPrepared, ReactorTask, SocketRecord, event_api,
+    DeferCall, DeferDispose, ReactorFields, ReactorPrepared, ReactorTask, SocketRecord, event_api,
 };
 use swoole_rs_zend::{
     E_ERROR, E_WARNING, Message,
@@ -23,13 +23,9 @@ unsafe extern "C-unwind" {
     fn reactor_if_exit(reactor: *mut c_void) -> bool;
     #[link_name = "_ZN6swoole7Reactor4waitEv"]
     fn reactor_wait(reactor: *mut c_void) -> c_int;
-    // crates/tls's `Socket::free`.
-    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free(socket: *mut SocketRecord);
-    // crates/phpprocess, crates/coroutine and crates/phptimer.
+    // crates/phpprocess and crates/coroutine.
     safe fn php_swoole_is_enable_coroutine() -> bool;
     fn swoole_coroutine_is_in() -> u8;
-    fn swr_v1_phptimer_clear_all() -> u8;
 }
 
 unsafe extern "C" {
@@ -173,9 +169,9 @@ unsafe extern "C" fn free_body(_: *mut c_void) {
     unsafe { swoole_event_free() };
 }
 
+/// Destructors may run PHP, under the caller's trap.
 unsafe extern "C" fn timers_body(_: *mut c_void) {
-    // SAFETY: no preconditions; destructors may run PHP, under the caller's trap.
-    unsafe { swr_v1_phptimer_clear_all() };
+    let _cleared = swoole_rs_phptimer::clear_all_timers();
 }
 
 /// `sw_reactor()->if_exit()`, under a trap.
@@ -233,9 +229,9 @@ pub(crate) unsafe fn php_socket_fd(value: *mut z::zval) -> Option<(c_int, bool)>
 pub(crate) fn socket_make(fd: c_int, object: *mut c_void) -> *mut SocketRecord {
     let socket = swoole_rs_reactor::socket_upstream::make_socket_fd(fd, FD_USER);
     // SAFETY: the record just made, which nothing else holds.
-    unsafe { swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1) };
-    // SAFETY: as above.
-    unsafe { (*socket).object = object };
+    let record = unsafe { &mut *socket };
+    swoole_rs_reactor::socket_upstream::socket_set_fd_option(record, 1, -1);
+    record.object = object;
     socket
 }
 
@@ -248,13 +244,14 @@ pub(crate) unsafe fn socket_free_record(socket: *mut SocketRecord, detach_fd: bo
         unsafe { (*socket).fd = -1 };
     }
     // SAFETY: per the caller.
-    unsafe { socket_free(socket) };
+    unsafe { swoole_rs_tls::upstream::socket_free(socket) };
 }
 
-/// `Reactor::defer(call, data)` on this thread's reactor.
-pub(crate) fn defer(call: DeferCall, data: *mut c_void) {
+/// `Reactor::defer(call, data)` on this thread's reactor; `dispose(data)` if the
+/// reactor is freed before the call runs.
+pub(crate) fn defer(call: DeferCall, data: *mut c_void, dispose: DeferDispose) {
     // SAFETY: the live reactor's fields.
-    unsafe { swoole_rs_reactor::defer(fields(), call, data) };
+    unsafe { swoole_rs_reactor::defer(fields(), call, data, Some(dispose)) };
 }
 
 /// The reactor's future (`before`) or idle task.

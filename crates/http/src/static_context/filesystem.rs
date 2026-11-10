@@ -1,248 +1,192 @@
-//! Static filesystem operations. Production uses libc directly; the immutable
-//! optional provider admits the original scripted filesystem probes unchanged.
-use super::{
-    HttpContextServeObservation, HttpProxyText, HttpStaticContext, HttpStaticObservation, INVALID,
-    swr_v2_http_context_observed, swr_v2_http_context_scan, swr_v2_http_context_serve,
-};
-use core::ffi::{CStr, c_char, c_void};
+//! The static handler's effects, and `try_serve` and `get_dir_files` over them.
+use super::serve::Event;
+use super::{BOUNDARY_SIZE, HttpStaticContext, HttpStaticObservation, INVALID};
+use crate::static_path::{DIRECTORY, FILE, LINK};
+use std::ffi::OsStr;
+use std::fs;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::MetadataExt;
 
-/// All functions are synchronous, do not unwind, and retain no supplied pointer.
-/// Directory entries remain valid until the next read or close.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HttpStaticIo {
-    pub stat: unsafe extern "C" fn(*const c_char, *mut HttpStaticObservation) -> bool,
-    pub canonical: unsafe extern "C" fn(*const c_char, *mut c_char) -> *mut c_char,
-    pub open: unsafe extern "C" fn(*const c_char) -> *mut c_void,
-    pub read: unsafe extern "C" fn(*mut c_void) -> *const c_char,
-    pub close: unsafe extern "C" fn(*mut c_void),
-}
-unsafe extern "C" fn stat(path: *const c_char, output: *mut HttpStaticObservation) -> bool {
-    // SAFETY: zero is a valid initial stat buffer, filled by lstat on success.
-    let mut value: libc::stat = unsafe { core::mem::zeroed() };
-    // SAFETY: path is terminated and value is writable for libc.
-    if unsafe { libc::lstat(path, &raw mut value) } != 0 {
-        return false;
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "Preserve native off_t to size_t conversion, including negative and narrow-target values"
-    )]
-    let filesize = value.st_size as usize;
-    let facts = HttpStaticObservation {
-        filesize,
-        mtime: value.st_mtime,
-        kind: if value.st_mode & libc::S_IFMT == libc::S_IFDIR {
-            16
-        } else if value.st_mode & libc::S_IFMT == libc::S_IFREG {
-            32
-        } else if value.st_mode & libc::S_IFMT == libc::S_IFLNK {
-            8
-        } else {
-            0
-        },
-        ..HttpStaticObservation::default()
-    };
-    // SAFETY: caller provides aligned writable observation.
-    unsafe { output.write(facts) };
-    true
-}
-unsafe extern "C" fn canonical(path: *const c_char, output: *mut c_char) -> *mut c_char {
-    // SAFETY: path is terminated; output holds PATH_MAX bytes.
-    unsafe { libc::realpath(path, output) }
-}
-unsafe extern "C" fn open(path: *const c_char) -> *mut c_void {
-    // SAFETY: path is terminated and retained only during this call.
-    unsafe { libc::opendir(path).cast() }
-}
-unsafe extern "C" fn read(directory: *mut c_void) -> *const c_char {
-    // SAFETY: directory is an open live DIR returned by opendir.
-    let entry = unsafe { libc::readdir(directory.cast()) };
-    if entry.is_null() {
-        core::ptr::null()
-    } else {
-        // SAFETY: readdir returned an initialized entry valid until the next call.
-        unsafe { (*entry).d_name.as_ptr() }
-    }
-}
-unsafe extern "C" fn close(directory: *mut c_void) {
-    // SAFETY: unique open directory handle, closed once.
-    unsafe { libc::closedir(directory.cast()) };
-}
-const NATIVE: HttpStaticIo = HttpStaticIo {
-    stat,
-    canonical,
-    open,
-    read,
-    close,
-};
+/// `PATH_MAX`: the longest path upstream's handler copies before an effect.
+const PATH_MAX: usize = libc::PATH_MAX as usize;
 
-/// Copy a path before calling a provider: callbacks never run with an owner borrow.
-unsafe fn filename(owner: *const HttpStaticContext) -> Option<[c_char; libc::PATH_MAX as usize]> {
-    // SAFETY: caller provides a null or live context for this short immutable access.
-    let owner = unsafe { owner.as_ref() }?;
-    let path = owner.text(super::FILENAME)?;
-    let mut output = [0; libc::PATH_MAX as usize];
-    if path.len() >= output.len() {
-        return None;
-    }
-    for (to, from) in output.iter_mut().zip(path) {
-        *to = c_char::from_ne_bytes([*from]);
-    }
-    Some(output)
-}
-unsafe fn provider(io: *const HttpStaticIo) -> HttpStaticIo {
-    // SAFETY: table is null or initialized and live; it is copied before any callback.
-    unsafe { io.as_ref() }.copied().unwrap_or(NATIVE)
-}
-/// Stat the current owned filename, publishing facts only on success.
-/// # Safety
-/// Owner is null or uniquely lent. Provider is null or immutable and follows `HttpStaticIo`'s contract.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v3_http_context_stat(
-    owner: *mut HttpStaticContext,
-    io: *const HttpStaticIo,
-) -> i32 {
-    // SAFETY: context is live for copying its filename.
-    let Some(path) = (unsafe { filename(owner) }) else {
-        return INVALID;
-    };
-    // SAFETY: provider follows the caller's contract.
-    let io = unsafe { provider(io) };
-    let mut facts = HttpStaticObservation::default();
-    // SAFETY: independent terminated path and writable facts; no owner borrow spans this effect.
-    if !unsafe { (io.stat)(path.as_ptr(), &raw mut facts) } {
-        return 0;
-    }
-    // SAFETY: live unique owner and independent initialized observation.
-    let result = unsafe { swr_v2_http_context_observed(owner, 0, &raw const facts) };
-    if result < 0 { result } else { 1 }
-}
-/// Complete filesystem path actions, leaving configuration and MIME effects to native callers.
-/// # Safety
-/// Same contracts as `context_serve` and `HttpStaticIo`; providers do not unwind or retain spans.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v3_http_context_serve(
-    owner: *mut HttpStaticContext,
-    root: *const HttpProxyText,
-    observation: *const HttpContextServeObservation,
-    io: *const HttpStaticIo,
-) -> i32 {
-    // SAFETY: live independent descriptors and unique context, as required by the caller.
-    let mut action = unsafe { swr_v2_http_context_serve(owner, root, observation) };
-    // SAFETY: the immutable provider is copied before effects.
-    let provider = unsafe { provider(io) };
-    loop {
-        let mut observed = HttpContextServeObservation {
-            event: 0,
-            observed: 0,
-            has_locations: 0,
-            has_index: 0,
-            autoindex: 0,
-            value: HttpProxyText {
-                data: core::ptr::null(),
-                length: 0,
+/// What a static handler asks of the world, in the pinned handler's order. The
+/// filesystem defaults to the process's own through `std::fs`.
+pub trait StaticEffects {
+    /// `lstat(path)`: the size, modification time and kind (link8, directory16,
+    /// file32) of `path`, or None.
+    fn stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
+        let meta = fs::symlink_metadata(OsStr::from_bytes(path)).ok()?;
+        let kind = meta.file_type();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Preserve native off_t to size_t conversion on narrow targets"
+        )]
+        let filesize = meta.size() as usize;
+        Some(HttpStaticObservation {
+            filesize,
+            mtime: meta.mtime(),
+            kind: if kind.is_dir() {
+                DIRECTORY
+            } else if kind.is_file() {
+                FILE
+            } else if kind.is_symlink() {
+                LINK
+            } else {
+                0
             },
-        };
-        let mut absolute = [0; libc::PATH_MAX as usize];
-        match action {
-            4 => {
-                observed.event = 2;
-                // SAFETY: same unique context and immutable provider; effects finish before publication.
-                let result = unsafe { swr_v3_http_context_stat(owner, io) };
-                if result < 0 {
-                    return result;
-                }
-                observed.observed = result.cast_unsigned();
-            }
-            5 => {
-                // SAFETY: filename is copied before provider invocation.
-                let Some(path) = (unsafe { filename(owner) }) else {
-                    return INVALID;
-                };
-                // SAFETY: terminated path and PATH_MAX writable output, with no owner borrow.
-                let result = unsafe { (provider.canonical)(path.as_ptr(), absolute.as_mut_ptr()) };
-                observed.event = 3;
-                if !result.is_null() {
-                    observed.observed = 1;
-                    // SAFETY: successful canonical returns a terminated string valid through this resume.
-                    let bytes = unsafe { CStr::from_ptr(result) }.to_bytes();
-                    observed.value = HttpProxyText {
-                        data: bytes.as_ptr(),
-                        length: bytes.len(),
-                    };
-                }
-            }
-            _ => return action,
-        }
-        // SAFETY: temporary canonical backing remains live until serve has copied it.
-        action = unsafe { swr_v2_http_context_serve(owner, root, &raw const observed) };
+            ..HttpStaticObservation::default()
+        })
     }
+    /// `realpath(path)`, or None.
+    fn canonical(&self, path: &[u8]) -> Option<Vec<u8>> {
+        let path = fs::canonicalize(OsStr::from_bytes(path)).ok()?;
+        Some(path.into_os_string().into_vec())
+    }
+    /// `opendir`, `readdir` to the end and `closedir`: every name in the directory,
+    /// `.` and `..` included, or None when it cannot be opened.
+    fn list(&self, path: &[u8]) -> Option<Vec<Vec<u8>>> {
+        let entries = fs::read_dir(OsStr::from_bytes(path)).ok()?;
+        let names = entries
+            .map_while(Result::ok)
+            .map(|entry| entry.file_name().into_vec());
+        Some(
+            [b".".to_vec(), b"..".to_vec()]
+                .into_iter()
+                .chain(names)
+                .collect(),
+        )
+    }
+    /// `mime_type::get(filename)`.
+    fn mime(&self, filename: &[u8]) -> Vec<u8>;
+    /// `mime_type::exists(filename)`.
+    fn mime_exists(&self, filename: &[u8]) -> bool;
+    /// `swoole_random_string(out, count)`: `count` (below `BOUNDARY_SIZE`) random
+    /// characters and a NUL.
+    fn random(&self, out: &mut [u8; BOUNDARY_SIZE], count: usize);
+    /// `is_modified_range(if_range)`: the `If-Range` date differs from the file's
+    /// modification time `mtime`.
+    fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool;
+    /// A range part's header overflowed libc's int: `errno = EOVERFLOW`.
+    fn overflow(&self);
 }
-/// Collect directory entries into this context with a scoped directory handle.
-/// # Safety
-/// Unique live owner; immutable synchronous provider follows `HttpStaticIo`'s contract.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v3_http_context_directory(
-    owner: *mut HttpStaticContext,
-    io: *const HttpStaticIo,
-) -> i32 {
-    // SAFETY: provider is copied before callbacks.
-    let io = unsafe { provider(io) };
-    let mut directory = core::ptr::null_mut();
-    // SAFETY: unique context with an empty initial observation.
-    let mut action = unsafe { swr_v2_http_context_scan(owner, 0, core::ptr::null(), 0) };
-    loop {
-        let (event, data, length) = match action {
-            2 => {
-                // SAFETY: copy completes before the open effect.
-                let Some(path) = (unsafe { filename(owner) }) else {
-                    return INVALID;
-                };
-                // SAFETY: terminated independent path, no owner borrow.
-                directory = unsafe { (io.open)(path.as_ptr()) };
-                (
-                    if directory.is_null() { 2 } else { 1 },
-                    core::ptr::null(),
-                    0,
-                )
-            }
-            3 => {
-                // SAFETY: scan requests reads only after a successful open.
-                let entry = unsafe { (io.read)(directory) };
-                if entry.is_null() {
-                    (4, core::ptr::null(), 0)
-                } else {
-                    // SAFETY: read returns a terminated name valid until the next read/close.
-                    let bytes = unsafe { CStr::from_ptr(entry) }.to_bytes();
-                    (3, bytes.as_ptr(), bytes.len())
-                }
-            }
-            4 => {
-                // SAFETY: scan has finished reads; directory is live and closed exactly once.
-                unsafe { (io.close)(directory) };
-                directory = core::ptr::null_mut();
-                (5, core::ptr::null(), 0)
-            }
-            _ => {
-                if !directory.is_null() {
-                    // SAFETY: error cleanup closes the sole remaining live handle.
-                    unsafe { (io.close)(directory) };
-                }
-                return action;
-            }
+
+impl HttpStaticContext {
+    /// The filename an effect is asked about, when upstream's `PATH_MAX` copy holds it.
+    fn effect_path(&self) -> Option<&[u8]> {
+        Some(self.filename()).filter(|path| path.len() < PATH_MAX)
+    }
+    /// `lstat` the filename, admitting the facts on success: 1, else 0, or negative.
+    pub fn stat(&mut self, effects: &impl StaticEffects) -> i32 {
+        let Some(path) = self.effect_path() else {
+            return INVALID;
         };
-        // SAFETY: independent entry bytes remain valid until this admission finishes.
-        action = unsafe { swr_v2_http_context_scan(owner, event, data, length) };
+        let Some(facts) = effects.stat(path) else {
+            return 0;
+        };
+        self.observed(&facts);
+        1
+    }
+    /// Upstream's `try_serve`: whether the URL names a file under `root` to serve,
+    /// within one of `locations` when there are any.
+    pub fn try_serve(
+        &mut self,
+        root: &[u8],
+        locations: &[Vec<u8>],
+        has_index: bool,
+        autoindex: bool,
+        effects: &impl StaticEffects,
+    ) -> bool {
+        let begin = Event::Begin {
+            has_locations: !locations.is_empty(),
+            has_index,
+            autoindex,
+        };
+        let mut action = self.serve_step(root, &begin);
+        loop {
+            action = match action {
+                0 => return false,
+                1 => return true,
+                2 => {
+                    for location in locations {
+                        if self.location(location).is_err() {
+                            break;
+                        }
+                    }
+                    self.serve_step(root, &Event::Locations)
+                }
+                4 => {
+                    let result = self.stat(effects);
+                    if result < 0 {
+                        return false;
+                    }
+                    self.serve_step(root, &Event::Stat(result == 1))
+                }
+                5 => {
+                    let Some(path) = self.effect_path() else {
+                        return false;
+                    };
+                    let canonical = effects.canonical(path);
+                    self.serve_step(root, &Event::Canonical(canonical.as_deref()))
+                }
+                6 => {
+                    let filename = self.filename();
+                    let exists = effects.mime_exists(filename);
+                    self.serve_step(root, &Event::Mime(exists))
+                }
+                _ => return false,
+            };
+        }
+    }
+    /// Upstream's `get_dir_files`: list the directory once. True when listed (or
+    /// already listed).
+    pub fn get_dir_files(&mut self, effects: &impl StaticEffects) -> bool {
+        self.directory(effects) == 1
+    }
+    /// `get_dir_files`: 1 when listed (or already listed), 0 when not a directory or
+    /// it cannot be opened, else negative.
+    pub(super) fn directory(&mut self, effects: &impl StaticEffects) -> i32 {
+        if !self.directory.is_empty() {
+            return 1;
+        }
+        if self.facts.file_ready == 0 || self.facts.kind & DIRECTORY == 0 {
+            return 0;
+        }
+        let Some(path) = self.effect_path() else {
+            return INVALID;
+        };
+        let Some(names) = effects.list(path) else {
+            return 0;
+        };
+        for name in &names {
+            if let Err(error) = self.directory.scan_append(name) {
+                return error;
+            }
+        }
+        self.directory.scan_finish();
+        1
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::FILENAME;
     use super::*;
-    use crate::static_context::{swr_v2_http_context_drop, swr_v2_http_context_new};
-    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+
+    struct Native;
+    impl StaticEffects for Native {
+        fn mime(&self, _: &[u8]) -> Vec<u8> {
+            Vec::new()
+        }
+        fn mime_exists(&self, _: &[u8]) -> bool {
+            false
+        }
+        fn random(&self, _: &mut [u8; BOUNDARY_SIZE], _: usize) {}
+        fn modified_range(&self, _: &[u8], _: i64) -> bool {
+            false
+        }
+        fn overflow(&self) {}
+    }
 
     #[test]
     fn production_filesystem_keeps_lstat_symlinks_directory_cache_and_failed_stat_facts() {
@@ -251,64 +195,39 @@ mod tests {
             .join(format!("http-static-fs-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("index.html"), b"payload").unwrap();
-        symlink("index.html", root.join("link")).unwrap();
-        let owner =
-            unsafe { swr_v2_http_context_new(core::ptr::null(), 0, libc::PATH_MAX as usize) };
-        assert!(!owner.is_null());
-        let set = |path: &std::path::Path| {
-            let bytes = path.as_os_str().as_bytes();
-            assert_eq!(
-                unsafe { (*owner).publish(super::super::FILENAME, bytes) },
-                0
-            );
+        std::os::unix::fs::symlink("index.html", root.join("link")).unwrap();
+        let mut owner = HttpStaticContext::new(b"", PATH_MAX).unwrap();
+        let set = |owner: &mut HttpStaticContext, path: &std::path::Path| {
+            assert_eq!(owner.publish(FILENAME, path.as_os_str().as_bytes()), 0);
         };
-        set(&root.join("index.html"));
+        set(&mut owner, &root.join("index.html"));
+        assert_eq!(owner.stat(&Native), 1);
+        assert_eq!(owner.facts.filesize, 7);
+        assert_eq!(owner.facts.kind, FILE);
+        let mtime = owner.facts.mtime;
+        set(&mut owner, &root.join("absent"));
+        assert_eq!(owner.stat(&Native), 0);
+        assert_eq!(owner.facts.mtime, mtime);
+        set(&mut owner, &root.join("link"));
+        assert_eq!(owner.stat(&Native), 1);
+        assert_eq!(owner.facts.kind, LINK);
         assert_eq!(
-            unsafe { swr_v3_http_context_stat(owner, core::ptr::null()) },
-            1
-        );
-        assert_eq!(unsafe { (*owner).facts.filesize }, 7);
-        assert_eq!(unsafe { (*owner).facts.kind }, crate::static_path::FILE);
-        let mtime = unsafe { (*owner).facts.mtime };
-        set(&root.join("absent"));
-        assert_eq!(
-            unsafe { swr_v3_http_context_stat(owner, core::ptr::null()) },
-            0
-        );
-        assert_eq!(unsafe { (*owner).facts.mtime }, mtime);
-        set(&root.join("link"));
-        assert_eq!(
-            unsafe { swr_v3_http_context_stat(owner, core::ptr::null()) },
-            1
-        );
-        assert_eq!(unsafe { (*owner).facts.kind }, crate::static_path::LINK);
-        let path = unsafe { filename(owner) }.unwrap();
-        let mut absolute = [0; libc::PATH_MAX as usize];
-        assert!(!unsafe { canonical(path.as_ptr(), absolute.as_mut_ptr()) }.is_null());
-        assert_eq!(
-            unsafe { CStr::from_ptr(absolute.as_ptr()) }.to_bytes(),
+            Native.canonical(owner.effect_path().unwrap()).unwrap(),
             std::fs::canonicalize(root.join("index.html"))
                 .unwrap()
                 .as_os_str()
                 .as_bytes()
         );
-        set(&root);
-        assert_eq!(
-            unsafe { swr_v3_http_context_stat(owner, core::ptr::null()) },
-            1
-        );
-        assert_eq!(
-            unsafe { swr_v3_http_context_directory(owner, core::ptr::null()) },
-            1
-        );
-        assert!(unsafe { (*owner).directory.contains(b"index.html") }.unwrap());
-        assert!(unsafe { (*owner).directory.contains(b"link") }.unwrap());
+        set(&mut owner, &root);
+        assert_eq!(owner.stat(&Native), 1);
+        assert_eq!(owner.directory(&Native), 1);
+        for name in [b".".as_slice(), b"..", b"index.html", b"link"] {
+            assert!(owner.directory.contains(name).unwrap());
+        }
+        assert_eq!(owner.directory.len(), 4);
         std::fs::remove_dir_all(&root).unwrap();
         // Existing nonempty cache avoids reopening even after removal.
-        assert_eq!(
-            unsafe { swr_v3_http_context_directory(owner, core::ptr::null()) },
-            1
-        );
-        unsafe { swr_v2_http_context_drop(owner) };
+        assert_eq!(owner.directory(&Native), 1);
+        assert_eq!(Native.list(root.as_os_str().as_bytes()), None);
     }
 }

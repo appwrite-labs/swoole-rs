@@ -2,7 +2,8 @@
 """Per-crate counts in non-test code that may not rise above the base commit's:
 
   unsafe   `unsafe` blocks, fns and impls (crates/zend, the safe layer callers move
-           onto, may rise while the workspace total falls)
+           onto, may rise while the workspace total falls, and an `X-ffi` crate, the C ABI
+           over crate X, by as much as X falls while the total doesn't rise)
   maps     std hash and B-tree maps and sets, where a flat table belongs
   lists    LinkedList and VecDeque
   bools    arrays and Vecs of bool, where a bitset belongs
@@ -45,7 +46,7 @@ PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 def count_file(path, test_files):
     """{kind: matches} in `path` outside #[cfg(test)] modules; adds files those modules load to `test_files`."""
     count = dict.fromkeys(KINDS, 0)
-    skip_until, pending, pending_path = None, False, None
+    skip_until, pending, pending_path, depth = None, False, None, 0
     for line in path.read_text(errors='replace').splitlines():
         if skip_until is not None:
             if line.rstrip() == skip_until:
@@ -54,7 +55,7 @@ def count_file(path, test_files):
         if pending:
             if match := PATH_ATTR.search(line):
                 pending_path = match.group(1)
-            if match := TEST_MOD.match(line):
+            if depth == 0 and (match := TEST_MOD.match(line)):
                 pending = False
                 if match.group(3) == '{':
                     skip_until = match.group(1) + '}'
@@ -65,11 +66,13 @@ def count_file(path, test_files):
                     test_files.add((base / name).resolve())
                     test_files.add((base / match.group(2) / 'mod.rs').resolve())
                 continue
-            if line.strip().startswith('#['):
+            # Another attribute, which may span lines, before the module.
+            if depth or line.strip().startswith('#['):
+                depth += line.count('[') - line.count(']')
                 continue
             pending = False  # #[cfg(test)] on an item that is not a module: counted
         if line.strip() == '#[cfg(test)]':
-            pending, pending_path = True, None
+            pending, pending_path, depth = True, None, 0
             continue
         code = line.split('//', 1)[0]
         for kind, pattern in KINDS.items():
@@ -109,6 +112,18 @@ def above(current, base):
     return {c: (n, base[c]) for c, n in current.items() if c in base and n > base[c]}
 
 
+def boundary_moves(rises, current, base):
+    """`rises` without each `X-ffi` crate whose rise crate X's fall covers: unsafe that
+    moved from X to the C ABI over it. Only while the workspace total doesn't rise, so a
+    fall into a new crate, which isn't checked, can't cover the rise as well."""
+    def covered(crate, n, was):
+        safe = crate.removesuffix('-ffi')
+        return safe != crate and n - was <= base.get(safe, 0) - current.get(safe, 0)
+    if sum(current.values()) > sum(base.values()):
+        return rises
+    return {c: (n, was) for c, (n, was) in rises.items() if not covered(c, n, was)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--base', help='Commit to compare against (default: merge base with origin/main)')
@@ -119,8 +134,10 @@ def main():
     failed = False
     for kind, crates in current.items():
         rises = above(crates, base[kind])
-        if kind == 'unsafe' and sum(crates.values()) < sum(base[kind].values()):
-            rises.pop('zend', None)
+        if kind == 'unsafe':
+            rises = boundary_moves(rises, crates, base[kind])
+            if sum(crates.values()) < sum(base[kind].values()):
+                rises.pop('zend', None)
         failed = failed or bool(rises)
         for crate, (n, was) in sorted(rises.items()):
             print(f'{crate}: {n} {kind}, up from {was} at {base_ref[:12]}', file=sys.stderr)

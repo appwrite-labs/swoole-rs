@@ -3,30 +3,17 @@
 //! ext/sockets' `Socket` (the cargo features of the same names, which the
 //! hybrid turns on with their configure switches) and `Swoole\Thread`
 //! (`SW_THREAD`, [`built_with`]).
-use crate::module::{PHP_FATAL_ERROR, Step};
+use crate::module::{Families, PHP_FATAL_ERROR, Step, families};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::{Switch, built_with, log::set_last_error};
-use swoole_rs_zend::{
-    E_ERROR, Value, bailout, php_error,
-    sys::{zend_class_entry, zval},
-};
+use swoole_rs_zend::{E_ERROR, Value, bailout, php_error, sys::zval};
 
-// SAFETY: crates/phpthread's, crates/phplocks' and crates/phpstdext's
-// phase hooks, linked into every extension; those marked safe have no
-// preconditions.
+// SAFETY: crates/phplocks' thread locks and atomics, linked into every extension.
 unsafe extern "C" {
-    fn swr_v1_phpthread_minit();
-    fn swr_v1_phpthread_rinit();
-    safe fn swr_v1_phpthread_rshutdown();
-    safe fn swr_v1_phpthread_bailout();
     fn swr_v1_phplocks_thread_atomic_minit();
     fn swr_v1_phplocks_thread_lock_minit(
         unconstructed: Option<unsafe extern "C" fn(*const c_char)>,
     );
-    fn swr_v1_phpthread_barrier_minit() -> *mut zend_class_entry;
-    fn swr_v1_phpthread_queue_minit() -> *mut zend_class_entry;
-    fn swr_v1_phpthread_map_minit() -> *mut zend_class_entry;
-    fn swr_v1_phpthread_arraylist_minit() -> *mut zend_class_entry;
 }
 
 #[cfg(feature = "stdext")]
@@ -53,7 +40,7 @@ unsafe extern "C" {
 #[cfg(feature = "sockets")]
 // SAFETY: ext/sockets' class and import, which PHP exports when it has the extension.
 unsafe extern "C" {
-    static socket_ce: *mut zend_class_entry;
+    static socket_ce: *mut swoole_rs_zend::sys::zend_class_entry;
     fn socket_import_file_descriptor(fd: c_int, socket: *mut c_void) -> bool;
 }
 
@@ -221,18 +208,18 @@ pub(crate) fn mshutdown() -> Vec<Step> {
 }
 
 /// RINIT: Oracle's shared environment, then the main thread's script.
-pub(crate) fn rinit() -> Vec<Step> {
+pub(crate) fn rinit(families: &Families) -> Vec<Step> {
     let drivers: Vec<Step> = Vec::from([
         #[cfg(feature = "oci")]
         Step::Hook(swoole_rs_oci::php_swoole_oracle_rinit),
     ]);
-    let switched = [(Switch::Thread, Step::Hook(swr_v1_phpthread_rinit))];
+    let switched = [(Switch::Thread, Step::Hook(families.thread_rinit))];
     drivers.into_iter().chain(built(switched)).collect()
 }
 
 /// RSHUTDOWN: the thread's arguments.
-pub(crate) fn rshutdown() -> Vec<Step> {
-    built([(Switch::Thread, Step::Hook(swr_v1_phpthread_rshutdown))]).collect()
+pub(crate) fn rshutdown(families: &Families) -> Vec<Step> {
+    built([(Switch::Thread, Step::Hook(families.thread_rshutdown))]).collect()
 }
 
 /// The steps whose switch the build has.
@@ -271,15 +258,17 @@ pub(crate) fn main_thread() -> bool {
     }
 }
 
-/// `swr_v1_phpthread_bailout()`: the bailout that ends this PHP thread.
+/// `php_swoole_thread_bailout()`: the bailout that ends this PHP thread.
 pub(crate) fn thread_exit() {
-    swr_v1_phpthread_bailout();
+    if let Some(families) = families() {
+        (families.thread_bailout)();
+    }
 }
 
 /// `php_swoole_thread_bailout()`, outside the main thread of a `SW_THREAD` build.
 pub(crate) fn thread_bailout() {
     if !main_thread() {
-        swr_v1_phpthread_bailout();
+        thread_exit();
     }
 }
 
@@ -292,20 +281,19 @@ extern "C" fn odbc_minit(module_number: std::ffi::c_int) {
 /// `Swoole\Thread` and its locks, atomics, barrier and containers, in
 /// upstream's order, inside one `zend_try` as upstream's MINIT.
 extern "C" fn thread_minit() {
+    let Some(families) = families() else {
+        return;
+    };
     // SAFETY: MINIT, before any PHP thread starts (as for each below).
-    unsafe { swr_v1_phpthread_minit() };
+    unsafe { (families.thread_minit)() };
     // SAFETY: as above.
     unsafe { swr_v1_phplocks_thread_atomic_minit() };
     // SAFETY: as above, with a reporter that lives for the process.
     unsafe { swr_v1_phplocks_thread_lock_minit(Some(unconstructed)) };
-    // SAFETY: as above.
-    unsafe { swr_v1_phpthread_barrier_minit() };
-    // SAFETY: as above.
-    unsafe { swr_v1_phpthread_queue_minit() };
-    // SAFETY: as above.
-    unsafe { swr_v1_phpthread_map_minit() };
-    // SAFETY: as above.
-    unsafe { swr_v1_phpthread_arraylist_minit() };
+    for minit in families.thread_classes_minit {
+        // SAFETY: as above.
+        unsafe { minit() };
+    }
 }
 
 /// `php_swoole_fatal_error(E_ERROR, "%s", message)` for `Thread\Lock`, which

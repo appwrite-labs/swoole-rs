@@ -212,12 +212,10 @@ fn effect(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: as above.
         OP_DRAIN_PIPES => unsafe { entry::drain_worker_pipe(serv) },
         OP_CLEAR_TIMER => crate::server_methods::clear_timer(ctx.server()),
-        // SAFETY: the context's live server and worker.
-        OP_ABORT_WORKER => unsafe { crate::worker_methods::abort_worker(serv, worker) },
-        // SAFETY: as above.
-        OP_RESET_WORKER_COUNTER => unsafe {
-            crate::worker_methods::reset_worker_counter(serv, worker);
-        },
+        OP_ABORT_WORKER => crate::worker_methods::abort_worker(ctx.server(), ctx.worker().into()),
+        OP_RESET_WORKER_COUNTER => {
+            crate::worker_methods::reset_worker_counter(ctx.server(), ctx.worker().into());
+        }
         // SAFETY: the context's live worker.
         OP_DETACH_WORKER => unsafe { worker_global_detach(worker) },
         OP_WORKER_ENTER => {

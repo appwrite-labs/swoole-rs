@@ -6,11 +6,12 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
 ## Crates
 
 - `crates/zend-sys`: bindgen at build time against `php-config --includes`
-  (`$PHP_CONFIG`; `build_hybrid.py` passes `--php-config`), so struct layouts
+  (`$PHP_CONFIG`; `build_ext.py` sets it from `--php-config`), so struct layouts
   follow that PHP's version and ZTS mode. bindgen's layout assertions fail the
   build on a mismatch. `src/shim*.c` are the macros and inline functions bindgen
-  can't see; add one there when a macro is version-dependent or touches an
-  anonymous union (`create_object`).
+  can't see that have to stay C ([What stays C](#what-stays-c)); anything else
+  is Rust over the bindgen'd layouts (`zend::value::set`, `empty_string`,
+  `module_loaded`, a `php_stream`'s bitfields).
 - `crates/zend`: the safe layer. `Call` (argument count, `$this`, `long`/`double`
   parsed as `Z_PARAM_LONG`/`Z_PARAM_DOUBLE`, `set_long`/`set_bool`), `Object<T>`
   (`struct { T data; zend_object std; }`: `create`, `data`, `install`, `dtor`),
@@ -26,15 +27,18 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
   borrowed forms too (`zstr`, `zstr_or_null`, `array_ref`, `bool_or_null`). A
   family crate reads values through these with no `unsafe` of its own
   (`crates/phpredis/src/format.rs`, `crates/phpswoole/src/options.rs`); a raw
-  pointer becomes a `&Value`, `&Array` or `&ZStr` once, at the boundary. Add
-  wrappers as callers need them.
+  pointer becomes a `&Value`, `&Array` or `&ZStr` once, at the boundary. A
+  family's MINIT is `minit!(name => body)`, whose `body(&Minit)` registers
+  constants, classes and function aliases safely; a callable that a C owner
+  such as a timer holds runs through `Callable::callbacks::<impl Holder>()`.
+  `crates/phptimer` uses no `unsafe` at all. Add wrappers as callers need them.
 - One `crates/php<family>` crate per family (`crates/phplocks`). It calls the
   mechanism crate directly (Rust calls Rust).
 
 All three sit behind a `php` feature and are empty without it, so the
 workspace builds without PHP. `crates/ffi`'s `php` feature turns on each
-family crate's `php`. The hybrid build makes two archives: `libswoole_rs_php.a`
-with `php` for the extension (thin LTO outside `--dev`), and the Zend-free
+family crate's `php`. `crates/ext` builds `swoole.so` with `php` on (fat LTO under the benchmarks'
+`--profile release-lto`); `tools/build_ext.py --native` also builds the Zend-free
 `libswoole_rs_ffi.a` without it, which the native gates link into executables.
 
 ## Methods
@@ -69,7 +73,7 @@ return value. Errors are Zend's own (`zend_wrong_parameters_count_error`,
 `crates/phpstubs` is every upstream stub's arginfo as Rust statics, one module
 per `ext-src/stubs/*.stub.php`, named as gen_stub names them
 (`phpstubs::atomic::arginfo_class_Swoole_Atomic_add`). `tools/arginfo.py`
-generates it from the pin's stubs; `--check` (the PR tier's `hybrid` job) fails
+generates it from the pin's stubs; `--check` (the PR tier's `ext` job) fails
 if it is stale or if the same model, rendered as gen_stub's C, differs by a
 byte from the pin's `*_arginfo.h`. The builders in `zend::arginfo` are one
 `const fn` per Zend macro over the headers' own type bits, so the arrays are
@@ -154,18 +158,55 @@ on NTS a scope is a plain `zend_try`. Callbacks invoked below Rust must
 catch C++ exceptions inside the native body, return a typed fault, and rethrow
 only after Rust returns.
 
+## What stays C
+
+The C compiled from `crates/` into `swoole.so` (outside `crates/oracle`) is
+what Rust can't express, or can't express without more `unsafe`. Each file's
+header names its reasons from this list:
+
+- **bailout**: the call can run PHP code (a destructor, `__get`, an
+  autoloader, an error handler) that bails out, and `zend_try`'s `setjmp` must
+  sit in a C frame ([Calling PHP](#calling-php-bailouts)).
+- **globals**: it reads or writes `EG`, `CG`, `PG`, `SG`, `BG`, `FG`, `OG` or
+  `SIGG`. Under ZTS these are TSRM slots reached through a thread-local cache
+  and offsets only the macros know.
+- **allocator**: it allocates or frees through Zend's allocator (`emalloc`,
+  `pemalloc`, `zend_string_*`, `array_init`, `OBJ_RELEASE`, `smart_str`), whose
+  entry points take the caller's file and line in debug builds
+  (`ZEND_FILE_LINE_DC`).
+- **version**: the macro, field or signature differs between the PHP versions
+  CI builds (`PHP_VERSION_ID`, a feature `#ifdef`), or the member sits in an
+  anonymous union whose bindgen name changes (`ce->create_object`,
+  `ce->parent`); the same holds for library versions (`ARES_VERSION`).
+- **variadic**: a C variadic or `va_list` function, which stable Rust can't
+  define (`crates/corebase/src/format.c`, `crates/ffi/src/fatal.c`,
+  `shim_errors.c`, `shim_host.c`).
+- **private**: the layout is private to a source file or library release:
+  `zend_closure` behind `ZEND_CLOSURE_OBJECT`, `zend_execute.c`'s static helpers
+  (`crates/phpstdext/src/stdext.c`), `pdo_dbh_t`, ext/sockets' `php_socket`,
+  liburing's ring (`crates/uring-sys/src/shim.c`).
+- **budget**: a `static inline` over public fields (`Z_TRY_ADDREF_P`,
+  `ZVAL_COPY`, `ZVAL_STR`, `GC_ADDREF`, `Z_OBJPROP_P`, `ZEND_HASH_FOREACH`)
+  whose callers hold raw pointers: a Rust port adds `unsafe` and removes none,
+  which `tools/budget.py` refuses. One moves once its callers hold a `Value`
+  or `Owned`, where it can be a safe method.
+
+A shim that fits none of these is a port waiting to happen: write it in
+`crates/zend` against the bindgen'd layout, as `zend::module_loaded` replaced
+`swr_zend_module_loaded`.
+
 ## Stdext
 
 The `stdext` feature of `crates/ffi` (`phpstdext/active`) tracks native
-`SW_STDEXT`; `tools/build_hybrid.py` derives it from the configure options.
+`SW_STDEXT`; `tools/build_ext.py --stdext` turns it on.
 Feature-enabled Rust checks use `--features php,active`.
 
 ## Checks
 
 - `cargo clippy --workspace --all-targets --all-features` and `cargo test
   --workspace --all-features` (the `rust` job installs PHP headers and libclang).
-- The hybrid and the family's PHPTs on Linux:
-  `python3 tools/dev.py docker -- tools/build_hybrid.py --jobs 4`
+- The Cargo build and the family's PHPTs on Linux:
+  `python3 tools/dev.py docker -- tools/build_ext.py`
   and `corpus/upstream/run.py --case ...` against both engines.
 - A callgrind A/B of a tight method loop against upstream, in the PR.
 - Alpine (musl) builds build scripts with `-C target-feature=-crt-static`

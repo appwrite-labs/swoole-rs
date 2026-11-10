@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): globals (PG, SG and EG of a ZTS request),
+ * version (ZTS-only TSRM calls, refresh_memory_manager), bailout (a thread's
+ * request, stream casts), allocator and budget (hash iteration, numeric strings). */
 #include "shim.h"
 #include "shim_thread.h"
 #include "SAPI.h"
@@ -21,11 +24,10 @@ void swr_zend_hash_foreach_kv(const HashTable *table,
     ZEND_HASH_FOREACH_END();
 }
 
-zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key) {
+zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key, zend_ulong *index) {
     zval *value = zend_hash_get_current_data_ex((HashTable *) table, position);
     if (!value) return NULL;
-    zend_ulong index;
-    if (zend_hash_get_current_key_ex((HashTable *) table, key, &index, position) != HASH_KEY_IS_STRING) *key = NULL;
+    if (zend_hash_get_current_key_ex((HashTable *) table, key, index, position) != HASH_KEY_IS_STRING) *key = NULL;
     zend_hash_move_forward_ex((HashTable *) table, position);
     return value;
 }
@@ -71,10 +73,6 @@ int swr_zend_stream_select_fd(php_stream *stream, int *fd) {
 
 bool swr_zend_stream_fd(php_stream *stream, int *fd) {
     return php_stream_cast(stream, PHP_STREAM_AS_FD, (void **) fd, 0) == SUCCESS;
-}
-
-void swr_zend_stream_no_close(php_stream *stream) {
-    stream->flags |= PHP_STREAM_FLAG_NO_CLOSE;
 }
 
 void swr_zend_register_stream_constant(const char *name, php_stream *stream) {

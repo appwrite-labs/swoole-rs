@@ -8,7 +8,7 @@ import sys
 import overlay
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated,write_report
 
@@ -23,12 +23,12 @@ def main():
     compare=native[native.index('static inline unsigned int swoole_strcaseeq('):];compare=compare[:compare.index('\n}')+2]
     reference=enum+'\n'+catalog+'\n'+compare+'\n';(folder/'reference.inc').write_text(reference)
     # The pinned reference against the hybrid build's Rust ABI.
-    hybrid_source,hybrid_flags=hybrid_tree(a.archive)
+    hybrid_flags=native_flags(a.archive)
     cmd=['c++','-std=c++17','-O1','-UNDEBUG',*hybrid_flags,'-I'+str(folder),str(Path(__file__).with_suffix('.cc')),str(a.archive.resolve()),'-lpthread','-o',str(folder/'gate')]
     # The archive members this pulls in reference the rest of the extension; drop the unused sections.
     cmd+=['-Wl,--gc-sections','-ldl','-lm'] if sys.platform=='linux' else ['-Wl,-dead_strip']
     if a.sanitize:cmd+=['-fsanitize=address,undefined','-fno-sanitize-recover=all','-g']
-    report={'scope':__doc__,'pin':overlay.PIN,'hybrid_tree':str(hybrid_source),'compile':cmd,'passed':False,'native_instrumented':a.sanitize,'rust_instrumented':a.rust_asan}
+    report={'scope':__doc__,'pin':overlay.PIN,'compile':cmd,'passed':False,'native_instrumented':a.sanitize,'rust_instrumented':a.rust_asan}
     require_build_space(ROOT);r=run_isolated(cmd,timeout=90);report.update(compile_exit=r.returncode,compile_stderr=r.stderr)
     if not r.returncode:
         r=run_isolated([str(folder/'gate')],timeout=45);report.update(exit=r.returncode,stdout=r.stdout,stderr=r.stderr,passed=r.returncode==0)

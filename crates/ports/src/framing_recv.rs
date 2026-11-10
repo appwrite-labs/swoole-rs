@@ -2,30 +2,30 @@
 // Compatibility derived from Swoole v6.2.4 src/protocol/base.cc (Swoole contributors).
 //! `Protocol::recv_with_length_protocol`, `recv_with_eof_protocol` and
 //! `recv_split_by_eof`: [`swoole_rs_framing::recv::recv`] with each effect on the socket,
-//! the buffer and the protocol's callbacks; and `default_length_func`,
-//! `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`, under their upstream
-//! symbols. Logs name the upstream function that wrote them.
+//! the buffer and the protocol's callbacks; `default_length_func`, under its upstream
+//! symbol; and `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`. Logs name the
+//! upstream function that wrote them.
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
+use swoole_rs_clients::client::Framing;
 use swoole_rs_corebase::constants::FdType::SW_FD_SESSION;
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_framing::recv::{Effects, recv};
+use swoole_rs_framing::recv::{self, Buffer, Effects, recv};
 use swoole_rs_framing::recv::{
     FLAG_DYNAMIC, FLAG_PAUSED, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, MODE_EOF, MODE_LENGTH,
-    MODE_SPLIT, OP_CLEAR_SKIP, OP_DISPATCH, OP_EXTEND, OP_GET_LENGTH, OP_LOG_MALFORMED,
-    OP_LOG_NO_LENGTH, OP_LOG_TOO_LARGE, OP_PAGE, OP_RECV, OP_REDUCE, OP_RESET, OP_SPLIT,
-    OP_SSL_PENDING, RECV_CLOSE, RECV_DONE,
+    OP_CLEAR_SKIP, OP_DISPATCH, OP_EXTEND, OP_GET_LENGTH, OP_LOG_MALFORMED, OP_LOG_NO_LENGTH,
+    OP_LOG_TOO_LARGE, OP_PAGE, OP_RECV, OP_REDUCE, OP_RESET, OP_SPLIT, OP_SSL_PENDING, RECV_CLOSE,
+    RECV_DONE,
 };
-use swoole_rs_framing::{swr_v1_framing_default, swr_v1_framing_hton64};
-use swoole_rs_framing::{swr_v1_framing_unpack, swr_v1_framing_width};
+use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack};
 use swoole_rs_reactor::{SocketRecord, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
-use swoole_rs_websocket::frame_api::PacketLength;
+use swoole_rs_websocket_ffi::frame_api::PacketLength;
 
 /// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
 const LOG_WARNING: c_int = 4;
@@ -57,6 +57,17 @@ pub(crate) struct Recv {
     pub(crate) protocol: *const Protocol,
     pub(crate) socket: *mut SocketRecord,
     buffer: *mut CppString,
+}
+
+impl Recv {
+    fn protocol(&self) -> &Protocol {
+        // SAFETY: the receive's live protocol.
+        unsafe { &*self.protocol }
+    }
+    fn string(&self) -> &CppString {
+        // SAFETY: the receive's live buffer, changed only inside an effect.
+        unsafe { &*self.buffer }
+    }
 }
 
 /// How a length receive measures and hands on each package.
@@ -192,6 +203,37 @@ impl<K: Packages> Effects for With<K> {
         }
         result
     }
+    #[inline(always)]
+    fn buffer(&self) -> Buffer {
+        let b = self.0.string();
+        Buffer {
+            length: b.length,
+            size: b.size,
+            offset: b.offset,
+        }
+    }
+    #[inline(always)]
+    fn set_buffer(&mut self, length: usize, offset: i64) {
+        // SAFETY: the receive's live buffer; no other reference to it is live.
+        let b = unsafe { &mut *self.0.buffer };
+        b.length = length;
+        b.offset = offset;
+    }
+    #[inline(always)]
+    fn data(&self) -> &[u8] {
+        self.0.string().view()
+    }
+    #[inline(always)]
+    fn protocol(&self) -> recv::Protocol {
+        let p = self.0.protocol();
+        recv::Protocol {
+            split_by_eof: p.split_by_eof,
+            package_eof: p.package_eof,
+            package_eof_len: p.package_eof_len,
+            package_length_offset: p.package_length_offset,
+            package_max_length: p.package_max_length,
+        }
+    }
 }
 
 /// Each call site's op is a constant, so the match folds: every frame's receive,
@@ -200,8 +242,7 @@ impl<K: Packages> Effects for With<K> {
 fn effect<K: Packages>(r: &Recv, op: u32, arg: u64, flags: u32) -> i64 {
     // SAFETY: the receive's live buffer; no other reference to it is live.
     let b = unsafe { &mut *r.buffer };
-    // SAFETY: the receive's live protocol.
-    let p = unsafe { &*r.protocol };
+    let p = r.protocol();
     // SAFETY: the receive's live socket; no other reference to it is live.
     let s = unsafe { &mut *r.socket };
     s.recv_wait = u8::from(flags & FLAG_WAIT != 0);
@@ -216,12 +257,7 @@ fn effect<K: Packages>(r: &Recv, op: u32, arg: u64, flags: u32) -> i64 {
             }
             rare(r, b, p, s, op, arg)
         }
-        OP_GET_LENGTH => {
-            // SAFETY: the buffer's `length` initialized bytes.
-            K::length(r, p, unsafe {
-                core::slice::from_raw_parts(b.str, b.length)
-            })
-        }
+        OP_GET_LENGTH => K::length(r, p, b.view()),
         OP_DISPATCH => i64::from(K::dispatch(r, b, arg)),
         _ => rare(r, b, p, s, op, arg),
     }
@@ -343,10 +379,6 @@ pub(crate) unsafe fn receive<K: Packages>(
     buffer: *mut CppString,
     mode: u32,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let p = unsafe { &*protocol };
-    // SAFETY: as the caller promises.
-    let s = unsafe { &*socket };
     let mut r = With::<K>(
         Recv {
             mode,
@@ -356,6 +388,9 @@ pub(crate) unsafe fn receive<K: Packages>(
         },
         PhantomData,
     );
+    let p = r.0.protocol();
+    // SAFETY: as the caller promises.
+    let s = unsafe { &*socket };
     let (mut head, mut flags) = (0, socket_flags(s));
     if let Some(fixed) = K::HEAD {
         head = fixed;
@@ -370,78 +405,37 @@ pub(crate) unsafe fn receive<K: Packages>(
         flags |= (if s.skip_recv != 0 { FLAG_SKIP } else { 0 })
             | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
     }
-    // SAFETY: the live protocol and buffer, changed only inside the effects.
-    let status = unsafe {
-        recv(
-            protocol.cast(),
-            buffer.cast(),
-            mode,
-            head,
-            &mut flags,
-            &mut r,
-        )
-    };
+    let status = recv(mode, head, &mut flags, &mut r);
     // SAFETY: the live socket; the receive has returned.
     unsafe { (*socket).recv_wait = u8::from(flags & FLAG_WAIT != 0) };
     status
 }
 
-/// `int Protocol::recv_split_by_eof(Socket *, String *) const`.
-///
-/// # Safety
-/// As [`receive`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZNK6swoole8Protocol17recv_split_by_eofEPNS_7network6SocketEPNS_6StringE"
-    )
-)]
-pub unsafe extern "C" fn recv_split_by_eof(
-    protocol: *const Protocol,
-    socket: *mut SocketRecord,
-    buffer: *mut CppString,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    unsafe { receive::<Callbacks>(protocol, socket, buffer, MODE_SPLIT) }
-}
-
 /// `int Protocol::recv_with_length_protocol(Socket *, String *) const`.
-///
-/// # Safety
-/// As [`receive`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZNK6swoole8Protocol25recv_with_length_protocolEPNS_7network6SocketEPNS_6StringE"
-    )
-)]
-pub unsafe extern "C" fn recv_with_length_protocol(
+fn recv_with_length_protocol(
     protocol: *const Protocol,
     socket: *mut SocketRecord,
     buffer: *mut CppString,
 ) -> c_int {
-    // SAFETY: as the caller promises.
+    // SAFETY: the live protocol, socket and input buffer `Framing::new` asks for.
     unsafe { receive::<Callbacks>(protocol, socket, buffer, MODE_LENGTH) }
 }
 
 /// `int Protocol::recv_with_eof_protocol(Socket *, String *) const`.
-///
-/// # Safety
-/// As [`receive`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZNK6swoole8Protocol22recv_with_eof_protocolEPNS_7network6SocketEPNS_6StringE"
-    )
-)]
-pub unsafe extern "C" fn recv_with_eof_protocol(
+fn recv_with_eof_protocol(
     protocol: *const Protocol,
     socket: *mut SocketRecord,
     buffer: *mut CppString,
 ) -> c_int {
-    // SAFETY: as the caller promises.
+    // SAFETY: the live protocol, socket and input buffer `Framing::new` asks for.
     unsafe { receive::<Callbacks>(protocol, socket, buffer, MODE_EOF) }
 }
+
+/// The framed receives a client's reads use, which `swoole_init` registers
+/// (`swoole_rs_clients::client::set_framing`).
+// SAFETY: both receive a client's live protocol, socket and input buffer.
+pub const FRAMING: Framing =
+    unsafe { Framing::new(recv_with_length_protocol, recv_with_eof_protocol) };
 
 /// `static ssize_t Protocol::default_length_func(const Protocol *, Socket *, PacketLength *)`.
 ///
@@ -472,32 +466,32 @@ pub unsafe extern "C" fn default_length_func(
         // SAFETY: upstream's call over the live socket.
         unsafe { size(socket) }
     };
-    let mut value = 0;
-    // SAFETY: the packet's bytes and a writable result.
-    let result = unsafe {
-        swr_v1_framing_default(
-            p.package_length_type,
-            pl.buf,
-            pl.buf_size as usize,
-            u32::from(p.package_length_offset),
-            u32::from(size),
-            u32::from(p.package_body_offset),
-            &raw mut value,
-        )
+    let bytes = if pl.buf.is_null() || pl.buf_size == 0 {
+        &[][..]
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { core::slice::from_raw_parts(pl.buf, pl.buf_size as usize) }
     };
-    if result == -2 {
-        invalid_format(p.package_length_type);
-    }
-    match result {
-        0 => {
-            pl.header_len = u32::try_from(value).unwrap_or(u32::MAX);
+    match default_length(
+        p.package_length_type,
+        bytes,
+        u32::from(p.package_length_offset),
+        u32::from(size),
+        u32::from(p.package_body_offset),
+    ) {
+        DefaultLength::Need(need) => {
+            pl.header_len = u32::try_from(need).unwrap_or(u32::MAX);
             0
         }
-        1 => {
+        DefaultLength::Total(total) => {
             pl.header_len = u32::from(p.package_length_size);
-            isize::try_from(value).unwrap_or(SW_ERR)
+            isize::try_from(total).unwrap_or(SW_ERR)
         }
-        _ => SW_ERR,
+        DefaultLength::Format => {
+            invalid_format(p.package_length_type);
+            SW_ERR
+        }
+        DefaultLength::Invalid => SW_ERR,
     }
 }
 
@@ -510,58 +504,30 @@ fn invalid_format(format: u8) {
     );
 }
 
-/// `int64_t swoole_unpack(char, const void *)`: -1 (logged) for an unknown format.
-///
-/// # Safety
-/// `data` holds the format's width of readable bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z13swoole_unpackcPKv")
-)]
+/// `int64_t swoole_unpack(char, const void *)` over `data`'s first bytes: -1 for too few
+/// and -1 (logged) for an unknown format.
 #[must_use]
-pub unsafe extern "C" fn swoole_unpack(format: u8, data: *const c_void) -> i64 {
-    let mut value = -1;
-    // SAFETY: as the caller promises.
-    let result = unsafe {
-        swr_v1_framing_unpack(
-            format,
-            data.cast(),
-            swr_v1_framing_width(format),
-            &raw mut value,
-        )
-    };
-    if result == -1 {
-        invalid_format(format);
+pub fn swoole_unpack(format: u8, data: &[u8]) -> i64 {
+    match unpack(format, data) {
+        Ok(value) => value,
+        Err(UnpackError::Format) => {
+            invalid_format(format);
+            -1
+        }
+        Err(UnpackError::Short) => -1,
     }
-    value
 }
 
 /// `uint64_t swoole_hton64(uint64_t)`.
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_os = "macos"),
-    unsafe(export_name = "_Z13swoole_hton64y")
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_os = "macos")),
-    unsafe(export_name = "_Z13swoole_hton64m")
-)]
 #[must_use]
-pub extern "C" fn swoole_hton64(value: u64) -> u64 {
-    swr_v1_framing_hton64(value)
+pub const fn swoole_hton64(value: u64) -> u64 {
+    value.to_be()
 }
 
 /// `uint64_t swoole_ntoh64(uint64_t)`.
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_os = "macos"),
-    unsafe(export_name = "_Z13swoole_ntoh64y")
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_os = "macos")),
-    unsafe(export_name = "_Z13swoole_ntoh64m")
-)]
 #[must_use]
-pub extern "C" fn swoole_ntoh64(value: u64) -> u64 {
-    swr_v1_framing_hton64(value)
+pub const fn swoole_ntoh64(value: u64) -> u64 {
+    value.to_be()
 }
 
 #[cfg(test)]
@@ -617,13 +583,11 @@ mod tests {
         protocol.package_length_size = 2;
         protocol.package_body_offset = 2;
         protocol.get_package_length = default_length_func as *mut c_void;
-        let status = unsafe {
-            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer)
-        };
+        let status =
+            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);
-        let status = unsafe {
-            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer)
-        };
+        let status =
+            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| {
             assert_eq!(
@@ -633,9 +597,8 @@ mod tests {
         });
         unsafe { libc::close(peer) };
         // The peer's close ends the next receive.
-        let status = unsafe {
-            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer)
-        };
+        let status =
+            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, -1);
         buffer.dispose();
         unsafe { libc::close(socket.fd) };
@@ -648,9 +611,7 @@ mod tests {
         protocol.package_eof_len = 2;
         protocol.split_by_eof = true;
         buffer.extend(64);
-        let status = unsafe {
-            recv_with_eof_protocol(&raw const protocol, &raw mut socket, &raw mut buffer)
-        };
+        let status = recv_with_eof_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| assert_eq!(*p, [b"ab\r\n".to_vec(), b"cd\r\n".to_vec()]));
         assert_eq!(buffer.length, 1);
@@ -662,11 +623,6 @@ mod tests {
     // core-tests/src/protocol/base.cpp's protocol.swap_byte_order, protocol.unpack and
     // protocol.hton64, with the same inputs and expected values. upstream's
     // swoole_swap_endian{16,32,64} are the integers' `swap_bytes`.
-
-    fn unpack(format: u8, buffer: &[u8]) -> i64 {
-        // SAFETY: every buffer here holds 8 readable bytes, the widest format.
-        unsafe { swoole_unpack(format, buffer.as_ptr().cast()) }
-    }
 
     /// `createBinaryData`: the value's native bytes at the front of an 8-byte buffer.
     fn data(bytes: &[u8]) -> [u8; 8] {
@@ -706,39 +662,51 @@ mod tests {
     #[expect(clippy::cognitive_complexity, reason = "one upstream TEST, kept whole")]
     fn unpack_formats() {
         // 8-bit
-        assert_eq!(unpack(b'c', &data(&(-42i8).to_ne_bytes())), -42);
-        assert_eq!(unpack(b'C', &data(&200u8.to_ne_bytes())), 200);
-        assert_eq!(unpack(b'c', &data(&i8::MIN.to_ne_bytes())), i8::MIN.into());
-        assert_eq!(unpack(b'c', &data(&i8::MAX.to_ne_bytes())), i8::MAX.into());
-        assert_eq!(unpack(b'C', &data(&u8::MAX.to_ne_bytes())), u8::MAX.into());
+        assert_eq!(swoole_unpack(b'c', &data(&(-42i8).to_ne_bytes())), -42);
+        assert_eq!(swoole_unpack(b'C', &data(&200u8.to_ne_bytes())), 200);
+        assert_eq!(
+            swoole_unpack(b'c', &data(&i8::MIN.to_ne_bytes())),
+            i8::MIN.into()
+        );
+        assert_eq!(
+            swoole_unpack(b'c', &data(&i8::MAX.to_ne_bytes())),
+            i8::MAX.into()
+        );
+        assert_eq!(
+            swoole_unpack(b'C', &data(&u8::MAX.to_ne_bytes())),
+            u8::MAX.into()
+        );
 
         // 16-bit
-        assert_eq!(unpack(b's', &data(&(-12345i16).to_ne_bytes())), -12345);
-        assert_eq!(unpack(b'S', &data(&54321u16.to_ne_bytes())), 54321);
+        assert_eq!(
+            swoole_unpack(b's', &data(&(-12345i16).to_ne_bytes())),
+            -12345
+        );
+        assert_eq!(swoole_unpack(b'S', &data(&54321u16.to_ne_bytes())), 54321);
         let n_val = 0x1234u16;
         let n_be = n_val.rotate_left(8);
-        assert_eq!(unpack(b'n', &data(&n_be.to_ne_bytes())), 0x1234);
-        assert_eq!(unpack(b'v', &data(&0x1234u16.to_ne_bytes())), 0x1234);
+        assert_eq!(swoole_unpack(b'n', &data(&n_be.to_ne_bytes())), 0x1234);
+        assert_eq!(swoole_unpack(b'v', &data(&0x1234u16.to_ne_bytes())), 0x1234);
         assert_eq!(
-            unpack(b's', &data(&i16::MIN.to_ne_bytes())),
+            swoole_unpack(b's', &data(&i16::MIN.to_ne_bytes())),
             i16::MIN.into()
         );
         assert_eq!(
-            unpack(b's', &data(&i16::MAX.to_ne_bytes())),
+            swoole_unpack(b's', &data(&i16::MAX.to_ne_bytes())),
             i16::MAX.into()
         );
         assert_eq!(
-            unpack(b'S', &data(&u16::MAX.to_ne_bytes())),
+            swoole_unpack(b'S', &data(&u16::MAX.to_ne_bytes())),
             u16::MAX.into()
         );
 
         // 32-bit
         assert_eq!(
-            unpack(b'l', &data(&(-123_456_789i32).to_ne_bytes())),
+            swoole_unpack(b'l', &data(&(-123_456_789i32).to_ne_bytes())),
             -123_456_789
         );
         assert_eq!(
-            unpack(b'L', &data(&3_000_000_000u32.to_ne_bytes())),
+            swoole_unpack(b'L', &data(&3_000_000_000u32.to_ne_bytes())),
             3_000_000_000
         );
         let n_val = 0x1234_5678u32;
@@ -746,99 +714,111 @@ mod tests {
             | ((n_val & 0xFF00) << 8)
             | ((n_val & 0x00FF_0000) >> 8)
             | ((n_val & 0xFF00_0000) >> 24);
-        assert_eq!(unpack(b'N', &data(&n_be.to_ne_bytes())), 0x1234_5678);
+        assert_eq!(swoole_unpack(b'N', &data(&n_be.to_ne_bytes())), 0x1234_5678);
         assert_eq!(
-            unpack(b'V', &data(&0x1234_5678u32.to_ne_bytes())),
+            swoole_unpack(b'V', &data(&0x1234_5678u32.to_ne_bytes())),
             0x1234_5678
         );
         assert_eq!(
-            unpack(b'l', &data(&i32::MIN.to_ne_bytes())),
+            swoole_unpack(b'l', &data(&i32::MIN.to_ne_bytes())),
             i32::MIN.into()
         );
         assert_eq!(
-            unpack(b'l', &data(&i32::MAX.to_ne_bytes())),
+            swoole_unpack(b'l', &data(&i32::MAX.to_ne_bytes())),
             i32::MAX.into()
         );
         assert_eq!(
-            unpack(b'L', &data(&u32::MAX.to_ne_bytes())),
+            swoole_unpack(b'L', &data(&u32::MAX.to_ne_bytes())),
             u32::MAX.into()
         );
 
         // 64-bit
         assert_eq!(
-            unpack(b'q', &data(&(-1_234_567_890_123_456_789i64).to_ne_bytes())),
+            swoole_unpack(b'q', &data(&(-1_234_567_890_123_456_789i64).to_ne_bytes())),
             -1_234_567_890_123_456_789
         );
         assert_eq!(
-            unpack(b'Q', &data(&10_234_567_890_123_456_789u64.to_ne_bytes())),
+            swoole_unpack(b'Q', &data(&10_234_567_890_123_456_789u64.to_ne_bytes())),
             10_234_567_890_123_456_789u64 as i64
         );
         let j_be = 0x1234_5678_9ABC_DEF0u64.swap_bytes();
         assert_eq!(
-            unpack(b'J', &data(&j_be.to_ne_bytes())),
+            swoole_unpack(b'J', &data(&j_be.to_ne_bytes())),
             0x1234_5678_9ABC_DEF0
         );
         assert_eq!(
-            unpack(b'P', &data(&0x1234_5678_9ABC_DEF0u64.to_ne_bytes())),
+            swoole_unpack(b'P', &data(&0x1234_5678_9ABC_DEF0u64.to_ne_bytes())),
             0x1234_5678_9ABC_DEF0
         );
-        assert_eq!(unpack(b'q', &data(&i64::MIN.to_ne_bytes())), i64::MIN);
-        assert_eq!(unpack(b'q', &data(&i64::MAX.to_ne_bytes())), i64::MAX);
         assert_eq!(
-            unpack(b'Q', &data(&u64::MAX.to_ne_bytes())),
+            swoole_unpack(b'q', &data(&i64::MIN.to_ne_bytes())),
+            i64::MIN
+        );
+        assert_eq!(
+            swoole_unpack(b'q', &data(&i64::MAX.to_ne_bytes())),
+            i64::MAX
+        );
+        assert_eq!(
+            swoole_unpack(b'Q', &data(&u64::MAX.to_ne_bytes())),
             u64::MAX as i64
         );
 
         // Machine-dependent int
         assert_eq!(
-            unpack(b'i', &data(&(-987_654_321i32).to_ne_bytes())),
+            swoole_unpack(b'i', &data(&(-987_654_321i32).to_ne_bytes())),
             -987_654_321
         );
         assert_eq!(
-            unpack(b'I', &data(&3_000_000_000u32.to_ne_bytes())),
+            swoole_unpack(b'I', &data(&3_000_000_000u32.to_ne_bytes())),
             3_000_000_000
         );
         assert_eq!(
-            unpack(b'i', &data(&i32::MIN.to_ne_bytes())),
+            swoole_unpack(b'i', &data(&i32::MIN.to_ne_bytes())),
             i32::MIN.into()
         );
         assert_eq!(
-            unpack(b'i', &data(&i32::MAX.to_ne_bytes())),
+            swoole_unpack(b'i', &data(&i32::MAX.to_ne_bytes())),
             i32::MAX.into()
         );
         assert_eq!(
-            unpack(b'I', &data(&u32::MAX.to_ne_bytes())),
+            swoole_unpack(b'I', &data(&u32::MAX.to_ne_bytes())),
             u32::MAX.into()
         );
 
         // Invalid format specifiers
         let zero = [0u8; 8];
-        assert_eq!(unpack(b'x', &zero), -1);
-        assert_eq!(unpack(b'?', &zero), -1);
-        assert_eq!(unpack(b'Z', &zero), -1);
+        assert_eq!(swoole_unpack(b'x', &zero), -1);
+        assert_eq!(swoole_unpack(b'?', &zero), -1);
+        assert_eq!(swoole_unpack(b'Z', &zero), -1);
 
         // Endianness
-        assert_eq!(unpack(b'n', &data(&[0x12, 0x34])), 0x1234);
-        assert_eq!(unpack(b'v', &data(&[0x34, 0x12])), 0x1234);
-        assert_eq!(unpack(b'N', &data(&[0x12, 0x34, 0x56, 0x78])), 0x1234_5678);
-        assert_eq!(unpack(b'V', &data(&[0x78, 0x56, 0x34, 0x12])), 0x1234_5678);
+        assert_eq!(swoole_unpack(b'n', &data(&[0x12, 0x34])), 0x1234);
+        assert_eq!(swoole_unpack(b'v', &data(&[0x34, 0x12])), 0x1234);
+        assert_eq!(
+            swoole_unpack(b'N', &data(&[0x12, 0x34, 0x56, 0x78])),
+            0x1234_5678
+        );
+        assert_eq!(
+            swoole_unpack(b'V', &data(&[0x78, 0x56, 0x34, 0x12])),
+            0x1234_5678
+        );
         let be = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
-        assert_eq!(unpack(b'J', &be), 0x1234_5678_9ABC_DEF0);
+        assert_eq!(swoole_unpack(b'J', &be), 0x1234_5678_9ABC_DEF0);
         let le = [0xF0, 0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12];
-        assert_eq!(unpack(b'P', &le), 0x1234_5678_9ABC_DEF0);
+        assert_eq!(swoole_unpack(b'P', &le), 0x1234_5678_9ABC_DEF0);
 
         // htons, htonl and swoole_hton64 into n, N and J
         assert_eq!(
-            unpack(b'n', &data(&0x1234u16.to_be().to_ne_bytes())),
+            swoole_unpack(b'n', &data(&0x1234u16.to_be().to_ne_bytes())),
             0x1234
         );
         assert_eq!(
-            unpack(b'N', &data(&0x1234_5678u32.to_be().to_ne_bytes())),
+            swoole_unpack(b'N', &data(&0x1234_5678u32.to_be().to_ne_bytes())),
             0x1234_5678
         );
         let be64 = swoole_hton64(0x1234_5678_9ABC_DEF0);
         assert_eq!(
-            unpack(b'J', &data(&be64.to_ne_bytes())),
+            swoole_unpack(b'J', &data(&be64.to_ne_bytes())),
             0x1234_5678_9ABC_DEF0
         );
     }

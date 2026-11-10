@@ -1,4 +1,5 @@
-"""The PHPT gate shards every test once, classifies skips and fails only on upstream passes the hybrid loses."""
+"""The PHPT gate shards every test once, classifies skips and fails only on upstream passes cargo loses."""
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -24,7 +25,7 @@ class PhptGate(unittest.TestCase):
         self.assertTrue(verdict_failed({'test': 'tests/other.phpt', 'status': 'excluded'}, True))
         report = [{'test': case['path'], 'family': 'swoole_thread', 'engine': engine,
                    'status': 'excluded', 'reason': named_exclusion(case, metadata)}
-                  for engine in ['upstream', 'hybrid']]
+                  for engine in ['upstream', 'cargo']]
         summary = markdown(report)
         self.assertIn('0 passed, 0 failed, 0 skipped, 1 excluded', summary)
         self.assertIn('named originals excluded (not passed)', summary)
@@ -35,9 +36,9 @@ class PhptGate(unittest.TestCase):
         from corpus.upstream.gate import PENDING
         failing, passing = sorted(PENDING)[:2]
         report = [{'test': test, 'family': 'f', 'engine': engine, 'status': status}
-                  for test, hybrid in [(failing, 'failed'), (passing, 'passed'), ('tests/other.phpt', 'failed')]
-                  for engine, status in [('upstream', 'passed'), ('hybrid', hybrid)]]
-        self.assertEqual(compare(report)[0], ['tests/other.phpt (hybrid: failed)'])
+                  for test, cargo in [(failing, 'failed'), (passing, 'passed'), ('tests/other.phpt', 'failed')]
+                  for engine, status in [('upstream', 'passed'), ('cargo', cargo)]]
+        self.assertEqual(compare(report)[0], ['tests/other.phpt (cargo: failed)'])
         summary = markdown(report)
         self.assertIn(f'1 pending a port (not gated)</summary>\n\n- `{failing} (#{PENDING[failing]}): failed`', summary)
         self.assertIn(f'1 pending a port but passing here: drop them from PENDING_PORTS</summary>\n\n- `{passing}`', summary)
@@ -75,6 +76,17 @@ class PhptGate(unittest.TestCase):
         self.assertEqual([len(tests) for tests in shards], [4, 4])
         self.assertEqual(sorted(t for tests in shards for t in tests), sorted(p for p in paths if p.endswith('.phpt') and '/b/' not in p))
 
+    def test_the_shard_matrix_grows_with_the_tests_selected(self):
+        from corpus.upstream import inventory
+        paths = [f'tests/{family}/{n}.phpt' for family, count in [('small', 3), ('server', 221), ('big', 2000)]
+                 for n in range(count)]
+        for modules, matrix in [(['none'], [1]), (['small'], [1]), (['server'], [1, 2]),
+                                (['small', 'server'], [1, 2]), ([], [1, 2, 3, 4, 5, 6])]:
+            with mock.patch.object(inventory, 'blobs', return_value=paths), mock.patch('sys.stdout', new=io.StringIO()) as out, \
+                 mock.patch('sys.argv', ['inventory.py', '--plan', *(f'--module={module}' for module in modules)]):
+                self.assertEqual(inventory.main(), 0)
+            self.assertEqual(json.loads(out.getvalue()), matrix, modules)
+
     def test_skips_are_classified_and_only_passed_counts(self):
         detail = 'SKIP x [tests/x.phpt] reason: \x1b[33mmysql server not available\x1b[0m\n'
         self.assertEqual(skip_reason(detail), 'mysql server not available')
@@ -97,90 +109,90 @@ class PhptGate(unittest.TestCase):
         self.assertIn('1 passed, 1 failed, 1 skipped', markdown(results))
         self.assertIn('| a | 1 | 0 | 1 |', markdown(results))
 
-    def test_only_upstream_passes_gate_the_hybrid(self):
+    def test_only_upstream_passes_gate_cargo(self):
         def row(test, engine, status):
             return {'test': test, 'family': 'a', 'engine': engine, 'status': status, 'category': 'other'}
-        results = [row('kept', 'upstream', 'passed'), row('kept', 'hybrid', 'passed'),
-                   row('lost', 'upstream', 'passed'), row('lost', 'hybrid', 'failed'),
+        results = [row('kept', 'upstream', 'passed'), row('kept', 'cargo', 'passed'),
+                   row('lost', 'upstream', 'passed'), row('lost', 'cargo', 'failed'),
                    row('absent', 'upstream', 'passed'),
-                   row('both', 'upstream', 'failed'), row('both', 'hybrid', 'failed'),
-                   row('fixed', 'upstream', 'failed'), row('fixed', 'hybrid', 'passed'),
-                   row('skip', 'upstream', 'skipped'), row('skip', 'hybrid', 'failed')]
-        self.assertEqual(compare(results), (['absent (hybrid: missing)', 'lost (hybrid: failed)'], ['both']))
+                   row('both', 'upstream', 'failed'), row('both', 'cargo', 'failed'),
+                   row('fixed', 'upstream', 'failed'), row('fixed', 'cargo', 'passed'),
+                   row('skip', 'upstream', 'skipped'), row('skip', 'cargo', 'failed')]
+        self.assertEqual(compare(results), (['absent (cargo: missing)', 'lost (cargo: failed)'], ['both']))
         self.assertEqual(compare([row('only', 'upstream', 'failed')]), ([], []))
         self.assertIn('2 passing on upstream but not here', markdown(results))
 
     def test_reruns_separate_regressions_from_flakes(self):
         def row(test, engine, status):
             return {'test': test, 'family': 'a', 'engine': engine, 'status': status, 'category': 'other'}
-        results = [row(t, 'upstream', 'passed') for t in ['real', 'upstream-flake', 'hybrid-blip', 'unrun', 'kept']]
-        results += [row(t, 'hybrid', 'failed') for t in ['real', 'upstream-flake', 'hybrid-blip', 'unrun']]
-        results += [row('kept', 'hybrid', 'passed')]
-        self.assertEqual(flagged(results), ['hybrid-blip', 'real', 'unrun', 'upstream-flake'])
-        rechecked = [row('real', 'upstream', 'passed')] * 3 + [row('real', 'hybrid', 'passed'), row('real', 'hybrid', 'failed')]
-        rechecked += [row('upstream-flake', 'upstream', 'failed'), row('upstream-flake', 'hybrid', 'failed'),
-                      row('upstream-flake', 'hybrid', 'passed')]
-        rechecked += [row('hybrid-blip', 'upstream', 'passed'), row('hybrid-blip', 'hybrid', 'passed')]
+        results = [row(t, 'upstream', 'passed') for t in ['real', 'upstream-flake', 'cargo-blip', 'unrun', 'kept']]
+        results += [row(t, 'cargo', 'failed') for t in ['real', 'upstream-flake', 'cargo-blip', 'unrun']]
+        results += [row('kept', 'cargo', 'passed')]
+        self.assertEqual(flagged(results), ['cargo-blip', 'real', 'unrun', 'upstream-flake'])
+        rechecked = [row('real', 'upstream', 'passed')] * 3 + [row('real', 'cargo', 'passed'), row('real', 'cargo', 'failed')]
+        rechecked += [row('upstream-flake', 'upstream', 'failed'), row('upstream-flake', 'cargo', 'failed'),
+                      row('upstream-flake', 'cargo', 'passed')]
+        rechecked += [row('cargo-blip', 'upstream', 'passed'), row('cargo-blip', 'cargo', 'passed')]
         # 'unrun' has no re-runs, so it stays a regression.
         self.assertEqual(recheck(flagged(results), rechecked),
-                         (['real', 'unrun'], ['upstream-flake'], ['hybrid-blip'], []))
+                         (['real', 'unrun'], ['upstream-flake'], ['cargo-blip'], []))
         summary = markdown(results, rechecked)
         self.assertIn('2 regressions: pass on upstream, fail on a re-run here', summary)
         self.assertIn('1 flaky on upstream', summary)
         self.assertIn('1 passed on re-run on both engines', summary)
-        # The badge counts a hybrid pass on an ungated re-run; a regression's passing re-run doesn't count.
+        # The badge counts a cargo pass on an ungated re-run; a regression's passing re-run doesn't count.
         mark_reruns(results, rechecked)
-        self.assertEqual(sorted(r['test'] for r in results if r.get('rerun') == 'passed'), ['hybrid-blip', 'upstream-flake'])
+        self.assertEqual(sorted(r['test'] for r in results if r.get('rerun') == 'passed'), ['cargo-blip', 'upstream-flake'])
 
-    def test_upstream_flakes_still_gate_a_hybrid_that_always_fails(self):
+    def test_upstream_flakes_still_gate_cargo_that_always_fails(self):
         def row(test, engine, status):
             return {'test': test, 'family': 'a', 'engine': engine, 'status': status, 'category': 'other'}
         rechecked = [row('broken', 'upstream', 'passed'), row('broken', 'upstream', 'failed')]
-        rechecked += [row('broken', 'hybrid', 'failed')] * 3
-        rechecked += [row('flaky', 'upstream', 'failed'), row('flaky', 'hybrid', 'failed'), row('flaky', 'hybrid', 'passed')]
+        rechecked += [row('broken', 'cargo', 'failed')] * 3
+        rechecked += [row('flaky', 'upstream', 'failed'), row('flaky', 'cargo', 'failed'), row('flaky', 'cargo', 'passed')]
         rechecked += [row('unrun', 'upstream', 'failed')]
-        # Upstream failing a re-run no longer excuses a hybrid that never passes.
+        # Upstream failing a re-run no longer excuses cargo that never passes.
         self.assertEqual(recheck(['broken', 'flaky', 'unrun'], rechecked), (['broken', 'unrun'], ['flaky'], [], []))
         summary = markdown([row(t, 'upstream', 'passed') for t in ['broken', 'flaky']] +
-                           [row(t, 'hybrid', 'failed') for t in ['broken', 'flaky']], rechecked)
+                           [row(t, 'cargo', 'failed') for t in ['broken', 'flaky']], rechecked)
         self.assertIn('1 regressions', summary)
-        self.assertIn('- `flaky`: hybrid failed, passed; upstream failed', summary)
+        self.assertIn('- `flaky`: cargo failed, passed; upstream failed', summary)
 
     def test_reruns_stop_once_settled_and_a_timeout_gets_one(self):
         def row(test, engine, status, timed_out=False):
             return {'test': test, 'family': 'a', 'engine': engine, 'status': status, 'category': 'other',
                     'timed_out': timed_out}
         tests = ['flaky-passed', 'flaky-failing', 'steady-failed', 'steady-passing', 'slow']
-        rechecked = [row('flaky-passed', 'upstream', 'failed'), row('flaky-passed', 'hybrid', 'passed'),
-                     row('flaky-failing', 'upstream', 'failed'), row('flaky-failing', 'hybrid', 'failed'),
-                     row('steady-failed', 'upstream', 'passed'), row('steady-failed', 'hybrid', 'failed'),
-                     row('steady-passing', 'upstream', 'passed'), row('steady-passing', 'hybrid', 'passed'),
-                     row('slow', 'upstream', 'failed'), row('slow', 'hybrid', 'failed', True)]
-        results = [row('slow', 'hybrid', 'failed', True)]
-        # Upstream stops at its first failure; the hybrid until its verdict is settled.
+        rechecked = [row('flaky-passed', 'upstream', 'failed'), row('flaky-passed', 'cargo', 'passed'),
+                     row('flaky-failing', 'upstream', 'failed'), row('flaky-failing', 'cargo', 'failed'),
+                     row('steady-failed', 'upstream', 'passed'), row('steady-failed', 'cargo', 'failed'),
+                     row('steady-passing', 'upstream', 'passed'), row('steady-passing', 'cargo', 'passed'),
+                     row('slow', 'upstream', 'failed'), row('slow', 'cargo', 'failed', True)]
+        results = [row('slow', 'cargo', 'failed', True)]
+        # Upstream stops at its first failure; cargo until its verdict is settled.
         self.assertEqual(pending(tests, rechecked, 'upstream'), ['steady-failed', 'steady-passing'])
-        self.assertEqual(pending(tests, rechecked, 'hybrid', results), ['flaky-failing', 'steady-failed', 'steady-passing'])
-        # Once upstream failed, a test racy on both engines gets nine hybrid re-runs to pass one.
-        self.assertEqual(pending(['flaky-failing'], rechecked + [row('flaky-failing', 'hybrid', 'failed')] * 2,
-                                 'hybrid', results), ['flaky-failing'])
-        self.assertEqual(pending(['flaky-failing'], rechecked + [row('flaky-failing', 'hybrid', 'failed')] * 8,
-                                 'hybrid', results), [])
-        # One failed re-run doesn't settle a hybrid on a clean upstream; a pass then does (#862),
+        self.assertEqual(pending(tests, rechecked, 'cargo', results), ['flaky-failing', 'steady-failed', 'steady-passing'])
+        # Once upstream failed, a test racy on both engines gets nine cargo re-runs to pass one.
+        self.assertEqual(pending(['flaky-failing'], rechecked + [row('flaky-failing', 'cargo', 'failed')] * 2,
+                                 'cargo', results), ['flaky-failing'])
+        self.assertEqual(pending(['flaky-failing'], rechecked + [row('flaky-failing', 'cargo', 'failed')] * 8,
+                                 'cargo', results), [])
+        # One failed re-run doesn't settle cargo on a clean upstream; a pass then does (#862),
         # and three failures spend the budget.
-        self.assertEqual(pending(['steady-failed'], rechecked + [row('steady-failed', 'hybrid', 'passed')], 'hybrid'), [])
-        self.assertEqual(pending(['steady-failed'], rechecked + [row('steady-failed', 'hybrid', 'failed')] * 2, 'hybrid'), [])
-        # A first hybrid failure that timed out gets one re-run; timing out again is a regression.
+        self.assertEqual(pending(['steady-failed'], rechecked + [row('steady-failed', 'cargo', 'passed')], 'cargo'), [])
+        self.assertEqual(pending(['steady-failed'], rechecked + [row('steady-failed', 'cargo', 'failed')] * 2, 'cargo'), [])
+        # A first cargo failure that timed out gets one re-run; timing out again is a regression.
         self.assertEqual(recheck(['slow'], rechecked), (['slow'], [], [], []))
-        self.assertEqual(pending(['slow'], [row('slow', 'upstream', 'failed')], 'hybrid', results), ['slow'])
+        self.assertEqual(pending(['slow'], [row('slow', 'upstream', 'failed')], 'cargo', results), ['slow'])
 
-    def test_a_mixed_hybrid_gets_more_upstream_reruns(self):
+    def test_mixed_cargo_gets_more_upstream_reruns(self):
         def row(test, engine, status):
             return {'test': test, 'family': 'a', 'engine': engine, 'status': status, 'category': 'other'}
         tests = ['mixed', 'broken', 'clean']
         rechecked = [row(t, 'upstream', 'passed') for t in tests for _ in range(3)]
-        rechecked += [row('mixed', 'hybrid', 'passed'), row('mixed', 'hybrid', 'failed')]
-        rechecked += [row('broken', 'hybrid', 'failed')] * 3 + [row('clean', 'hybrid', 'passed')] * 3
-        # Only the hybrid that both passed and failed earns upstream re-runs past three.
+        rechecked += [row('mixed', 'cargo', 'passed'), row('mixed', 'cargo', 'failed')]
+        rechecked += [row('broken', 'cargo', 'failed')] * 3 + [row('clean', 'cargo', 'passed')] * 3
+        # Only cargo both passing and failing earns upstream re-runs past three.
         self.assertEqual(pending(tests, rechecked, 'upstream'), [])
         self.assertEqual(pending(tests, rechecked, 'upstream-extended'), ['mixed'])
         self.assertEqual(recheck(['mixed'], rechecked), (['mixed'], [], [], []))
@@ -193,15 +205,12 @@ class PhptGate(unittest.TestCase):
         solid.append(row('mixed', 'upstream', 'passed'))
         self.assertEqual(pending(['mixed'], solid, 'upstream-extended'), [])
         self.assertEqual(recheck(['mixed'], solid), (['mixed'], [], [], []))
-        # Any engine earns them, not only the hybrid: the cargo engine is gated the same way.
-        cargo = [{**r, 'engine': 'cargo'} if r['engine'] == 'hybrid' else r for r in rechecked]
-        self.assertEqual(pending(tests, cargo, 'upstream-extended'), ['mixed'])
 
     def test_a_test_both_engines_almost_always_fail_needs_an_upstream_pass_to_gate(self):
         def row(test, engine, status):
             return {'test': test, 'family': 'a', 'engine': engine, 'status': status, 'category': 'other'}
-        # Upstream passed the first run, then failed a re-run; the hybrid failed all nine (#998).
-        rechecked = [row('rare', 'upstream', 'failed')] + [row('rare', 'hybrid', 'failed')] * 9
+        # Upstream passed the first run, then failed a re-run; cargo failed all nine (#998).
+        rechecked = [row('rare', 'upstream', 'failed')] + [row('rare', 'cargo', 'failed')] * 9
         self.assertEqual(pending(['rare'], rechecked, 'upstream-extended'), ['rare'])
         self.assertEqual(recheck(['rare'], rechecked), (['rare'], [], [], []))
         # Upstream keeps re-running to nine in all, past a pass.
@@ -211,7 +220,7 @@ class PhptGate(unittest.TestCase):
         passed = rechecked + [row('rare', 'upstream', 'failed'), row('rare', 'upstream', 'passed')]
         self.assertEqual(pending(['rare'], passed, 'upstream-extended'), ['rare'])
         self.assertEqual(recheck(['rare'], passed), (['rare'], [], [], []))
-        # Two upstream passes in nine against none of the hybrid's is a race on both (#1948);
+        # Two upstream passes in nine against none of cargo's is a race on both (#1948);
         # three is a third, and gates it.
         racy = passed + [row('rare', 'upstream', 'failed')] * 5 + [row('rare', 'upstream', 'passed')]
         self.assertEqual(pending(['rare'], racy, 'upstream-extended'), [])
@@ -238,20 +247,42 @@ class PhptGate(unittest.TestCase):
             return {'test': test, 'family': 'a', 'engine': engine, 'status': 'failed' if status == 'aborted' else status,
                     'category': 'other', 'inconclusive': status == 'aborted'}
         rechecked = [row(t, 'upstream', 'passed') for t in ['replaced', 'regressed', 'never'] for _ in range(3)]
-        rechecked += [row('replaced', 'hybrid', 'aborted'), row('replaced', 'hybrid', 'passed'),
-                      row('replaced', 'hybrid', 'passed'), row('replaced', 'hybrid', 'passed')]
-        rechecked += [row('regressed', 'hybrid', 'aborted'), row('regressed', 'hybrid', 'failed')]
-        rechecked += [row('never', 'hybrid', 'aborted')] * 6
-        rechecked += [row('upstream-only', 'upstream', 'aborted')] * 6 + [row('upstream-only', 'hybrid', 'passed')] * 3
+        rechecked += [row('replaced', 'cargo', 'aborted'), row('replaced', 'cargo', 'passed'),
+                      row('replaced', 'cargo', 'passed'), row('replaced', 'cargo', 'passed')]
+        rechecked += [row('regressed', 'cargo', 'aborted'), row('regressed', 'cargo', 'failed')]
+        rechecked += [row('never', 'cargo', 'aborted')] * 6
+        rechecked += [row('upstream-only', 'upstream', 'aborted')] * 6 + [row('upstream-only', 'cargo', 'passed')] * 3
         tests = ['never', 'regressed', 'replaced', 'upstream-only']
         self.assertEqual(recheck(tests, rechecked), (['regressed'], [], ['replaced'], ['never', 'upstream-only']))
         # An inconclusive re-run gets one more in its place, up to twice the budget in all.
-        self.assertEqual(pending(['replaced'], rechecked[:3] + [row('replaced', 'hybrid', 'aborted')], 'hybrid'), ['replaced'])
-        self.assertEqual(pending(['never'], rechecked, 'hybrid'), [])
+        self.assertEqual(pending(['replaced'], rechecked[:3] + [row('replaced', 'cargo', 'aborted')], 'cargo'), ['replaced'])
+        self.assertEqual(pending(['never'], rechecked, 'cargo'), [])
         self.assertEqual(pending(['x'], [row('x', 'upstream', 'aborted')] * 2 + [row('x', 'upstream', 'passed')], 'upstream'), ['x'])
         self.assertEqual(pending(['upstream-only'], rechecked, 'upstream'), [])
-        summary = markdown([row(t, 'upstream', 'passed') for t in tests] + [row(t, 'hybrid', 'failed') for t in tests], rechecked)
+        summary = markdown([row(t, 'upstream', 'passed') for t in tests] + [row(t, 'cargo', 'failed') for t in tests], rechecked)
         self.assertIn('2 inconclusive: every re-run on an engine ended in the runner abort', summary)
+
+    def test_debug_php_reports_are_listed_per_engine_and_gated_as_failures(self):
+        leak = ("004+ [Mon Nov  9 03:12:44 2026]  Script:  '/t/tests/x.php'\n"
+                '005+ Zend/zend_string.h(176) :  Freed 0x7f0 (32 bytes), script=/t/tests/x.php\n'
+                '006+ === Total 1 memory leaks detected ===\n')
+        assertion = "002+ php: Zend/zend_hash.c:1075: _zend_hash_index_add: Assertion `(ht)->nTableMask' failed.\n"
+        with tempfile.TemporaryDirectory() as temp:
+            report = Path(temp) / 'shard.json'
+            report.write_text(json.dumps({'results': [
+                {'test': 'tests/x.phpt', 'module': 'x', 'engine': 'upstream', 'status': 'passed', 'upstream_status': 'PASSED'},
+                {'test': 'tests/x.phpt', 'module': 'x', 'engine': 'cargo', 'status': 'failed', 'upstream_status': 'FAILED', 'detail': leak},
+                {'test': 'tests/y.phpt', 'module': 'y', 'engine': 'upstream', 'status': 'failed', 'upstream_status': 'FAILED', 'detail': leak},
+                {'test': 'tests/y.phpt', 'module': 'y', 'engine': 'cargo', 'status': 'failed', 'upstream_status': 'FAILED', 'detail': assertion},
+                {'test': 'tests/z.phpt', 'module': 'z', 'engine': 'cargo', 'status': 'failed', 'upstream_status': 'FAILED',
+                 'detail': '001+ ** ERROR: process timed out **'}]}))
+            results = list(rows([report]))
+        self.assertEqual([r.get('report') for r in results], [None, 'leak', 'leak', 'assertion', None])
+        self.assertEqual(compare(results)[0], ['tests/x.phpt (cargo: failed)'])
+        summary = markdown(results)
+        self.assertIn('3 leak or assertion reports', summary)
+        self.assertIn('- `tests/y.phpt (upstream: leak)`', summary)
+        self.assertNotIn('leak or assertion', markdown(results[:1]))
 
     def test_incomplete_shards_are_refused(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -1,10 +1,61 @@
 //! Rust-owned `ListenPort` settings and native socket/statistic loans.
-use core::ffi::{c_int, c_void};
+use core::ffi::{CStr, c_int, c_void};
+use std::sync::OnceLock;
 
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_corebase::{CoreStringView, StringSlot, swr_v1_core_string_view};
-use swoole_rs_tls::{OwnedTlsContext, SslVersion, swr_v1_tls_owner_view};
+use swoole_rs_reactor::SocketRecord;
+use swoole_rs_tls::{DtlsSession, OwnedTlsContext, SslVersion, swr_v1_tls_owner_view};
+
+use crate::records::ConnectionRecord;
+
+/// The `ListenPort` methods crates/ports defines and the server calls. Ports
+/// depends on this crate, so `swoole_init` (crates/ffi) registers them with
+/// [`set_methods`]. A `port` is one of the server's live `ListenPort`s
+/// (`server_object::port_new`), passed as `PollOps` passes its sockets (crates/hooks).
+pub struct PortMethods {
+    pub ssl_context_init: fn(port: *mut c_void) -> bool,
+    /// `ssl_create(sock)`, of a socket the port accepted.
+    pub ssl_create: fn(port: *mut c_void, sock: *mut c_void) -> bool,
+    /// `import(fd)`, of an inherited descriptor.
+    pub import: fn(port: *mut c_void, fd: c_int) -> bool,
+    pub close: fn(port: *mut c_void),
+    pub listen: fn(port: *mut c_void) -> c_int,
+    pub create_socket: fn(port: *mut c_void) -> c_int,
+    pub close_socket: fn(port: *mut c_void),
+    pub get_protocols: fn(&PortConfig) -> &'static CStr,
+    pub init_protocol: fn(port: *mut c_void),
+    /// `destroy_http_request(conn)`, of a live connection.
+    pub destroy_http_request: fn(conn: *mut ConnectionRecord),
+    /// Releases the port's context and its TLS state, as `ListenPort`'s destructor.
+    pub tls_free: fn(&mut PortConfig),
+    /// `create_dtls_session(sock)` on a DTLS port; null if it fails to initialize.
+    pub dtls_create: fn(port: *mut c_void, sock: *mut SocketRecord) -> *mut DtlsSession,
+    /// The DTLS session on an fd; null if none.
+    pub dtls_session: fn(&mut PortConfig, c_int) -> *mut DtlsSession,
+    /// Frees the DTLS session on an fd, if any.
+    pub dtls_free: fn(&mut PortConfig, c_int),
+}
+
+static METHODS: OnceLock<PortMethods> = OnceLock::new();
+
+/// Registers crates/ports' methods; later registrations are ignored. Only the
+/// server calls them, so no safe caller elsewhere can pass them a bad pointer.
+///
+/// # Safety
+/// Each method is sound for any live port, socket or connection of the server,
+/// which is all the server passes them.
+pub unsafe fn set_methods(methods: PortMethods) {
+    METHODS.get_or_init(|| methods);
+}
+
+/// The registered methods. A port exists only after `swoole_init`, which
+/// registers them, so their absence aborts.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) fn methods() -> &'static PortMethods {
+    METHODS.get().unwrap_or_else(|| std::process::abort())
+}
 #[repr(C)]
 pub struct PortConfig {
     pub object_id: u16,
@@ -118,8 +169,8 @@ fn default_protocol() -> Protocol {
 }
 
 /// Allocates settings before the native port acquires any resources.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig {
+#[must_use]
+pub fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig {
     Box::into_raw(PortConfig::boxed(buffer_size))
 }
 
@@ -183,8 +234,7 @@ impl PortConfig {
 
 /// # Safety
 /// `config` is a unique live allocation from `config_new`; no views remain.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_port_config_free(config: *mut PortConfig) {
+pub unsafe fn swr_v1_port_config_free(config: *mut PortConfig) {
     if !config.is_null() {
         // SAFETY: the native base releases its unique allocation after all derived members.
         drop(unsafe { Box::from_raw(config) });

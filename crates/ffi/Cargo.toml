@@ -19,7 +19,7 @@ php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswo
 # --enable-cares, --enable-swoole-stdext, --enable-swoole-pgsql, --with-swoole-odbc,
 # --with-swoole-firebird, --enable-swoole-sqlite, --with-swoole-oracle, --enable-swoole-curl,
 # --with-swoole-ssh2, --enable-swoole-ftp, --enable-sockets).
-iouring = ["swoole-rs-hooks/iouring", "swoole-rs-reactor/iouring", "swoole-rs-phplocks/iouring", "swoole-rs-phpcoroutines/iouring"]
+iouring = ["swoole-rs-hooks/iouring", "swoole-rs-phplocks/iouring", "swoole-rs-phpcoroutines/iouring"]
 cares = ["swoole-rs-clients/cares"]
 stdext = ["swoole-rs-phpstdext/active", "swoole-rs-phpswoole?/stdext"]
 # --fix-halfclose (M15, native/halfclose): the queued-close drain, synchronous prequeue and TLS repairs.
@@ -35,20 +35,22 @@ ftp = ["swoole-rs-phpswoole?/ftp"]
 sockets = ["swoole-rs-phpswoole?/sockets"]
 
 [dependencies]
-swoole-rs-websocket = { path = "../websocket", features = ["upstream-symbols"] }
+swoole-rs-websocket = { path = "../websocket" }
+swoole-rs-websocket-ffi = { path = "../websocket-ffi", features = ["upstream-symbols"] }
 swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
 swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error", features = ["upstream-symbols"] }
-swoole-rs-protocols = { path = "../protocols", features = ["upstream-symbols"] }
+swoole-rs-bus = { path = "../bus", features = ["upstream-symbols"] }
+swoole-rs-protocols-ffi = { path = "../protocols-ffi" }
 swoole-rs-memory = { path = "../memory", features = ["upstream-symbols"] }
-swoole-rs-http = { path = "../http", features = ["upstream-symbols"] }
+swoole-rs-http = { path = "../http" }
+swoole-rs-http-ffi = { path = "../http-ffi", features = ["upstream-symbols"] }
 swoole-rs-utilities = { path = "../utilities", features = ["upstream-symbols"] }
 swoole-rs-locks = { path = "../locks" }
 swoole-rs-phplocks = { path = "../phplocks" }
 swoole-rs-phptimer = { path = "../phptimer", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpredis = { path = "../phpredis", optional = true }
-swoole-rs-framing = { path = "../framing" }
 swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
 swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
@@ -62,7 +64,6 @@ swoole-rs-phpprocess = { path = "../phpprocess" }
 swoole-rs-phpthread = { path = "../phpthread" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-phpclients = { path = "../phpclients" }
-swoole-rs-inflate = { path = "../inflate" }
 swoole-rs-httpbindings = { path = "../httpbindings" }
 swoole-rs-phphttp = { path = "../phphttp" }
 swoole-rs-http2 = { path = "../http2" }

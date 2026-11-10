@@ -192,7 +192,9 @@ impl CppString {
         source.offset = 0;
     }
 
-    fn view(&self) -> &[u8] {
+    /// The `length` bytes at `str`.
+    #[must_use]
+    pub fn view(&self) -> &[u8] {
         // SAFETY: `str` holds `length` bytes.
         unsafe { bytes(self.str, self.length) }
     }
@@ -316,6 +318,20 @@ impl CppString {
         }
     }
 
+    /// The allocated bytes after the content, for a read to fill before `grow`.
+    pub fn spare(&mut self) -> &mut [u8] {
+        if self.str.is_null() {
+            return &mut [];
+        }
+        // SAFETY: `str` holds `size >= length` bytes, borrowed with `self`.
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.str.wrapping_add(self.length),
+                self.size - self.length,
+            )
+        }
+    }
+
     pub fn release(&mut self) -> *mut u8 {
         let data = self.str;
         self.str = ptr::null_mut();
@@ -355,19 +371,21 @@ impl CppString {
         if new_size > self.size {
             self.reserve(page_aligned(new_size.wrapping_mul(2)));
         }
-        let at = self.str.wrapping_add(self.length);
-        // SAFETY: the buffer holds `length` free bytes at `at`.
-        let mut n = unsafe { swoole_rs_corebase::swr_v1_os_random_bytes(at.cast(), length) };
+        let Some(raw) = self.spare().get_mut(..length) else {
+            return false;
+        };
+        let mut n = swoole_rs_corebase::random_bytes(raw);
         if n != length {
             return false;
         }
         if base64 {
             let mut out = vec![0u8; encoded];
-            // SAFETY: `at` holds the `length` random bytes just written.
-            let raw = unsafe { std::slice::from_raw_parts(at, length) };
             n = swoole_rs_base64::encode(raw, &mut out);
-            // SAFETY: the buffer's free space holds the encoding.
-            unsafe { ptr::copy_nonoverlapping(out.as_ptr(), at, n) };
+            // The buffer's free space holds the encoding.
+            let Some(at) = self.spare().get_mut(..n) else {
+                return false;
+            };
+            at.copy_from_slice(out.get(..n).unwrap_or_default());
         }
         self.length = self.length.wrapping_add(n);
         true

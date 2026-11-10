@@ -6,16 +6,15 @@ use crate::{array::Array, barrier, classes, host, queue::Queue, request};
 use std::{cmp::Ordering, ffi::c_int, ptr, sync::Arc};
 use swoole_rs_phplocks::{self as phplocks, Resource, Shareable};
 use swoole_rs_zend::{
-    bailout,
+    Call, Value as ZValue, bailout,
     string::bytes,
     sys::{
         _zval_struct__bindgen_ty_1, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT,
-        IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF, swr_zend_array_is_list,
-        swr_zend_is_numeric_string, swr_zend_smart_strcmp, swr_zend_string_init,
-        swr_zend_string_release, swr_zval_stringl, zend_binary_strcmp, zend_double_to_str,
-        zend_throw_error, zend_value, zval,
+        IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF, swr_zend_is_numeric_string,
+        swr_zend_smart_strcmp, swr_zend_string_init, swr_zend_string_release, swr_zval_stringl,
+        zend_binary_strcmp, zend_double_to_str, zend_throw_error, zend_value, zval,
     },
-    throw_exception, type_of, value_of,
+    throw_exception,
 };
 
 // Upstream's item types beyond Zend's (php_swoole_thread.h).
@@ -94,32 +93,20 @@ impl Item {
         }
     }
 
-    /// `new ArrayItem(zvalue)` (`ArrayItem::store`).
-    /// # Safety
-    /// In a request, with a live zval.
-    pub(crate) unsafe fn store(value: *mut zval) -> Self {
-        // SAFETY: per the caller.
-        let kind = unsafe { type_of(value) };
-        // SAFETY: per the caller.
-        let payload = unsafe { value_of(value) };
+    /// `new ArrayItem(zvalue)` (`ArrayItem::store`), in the value's request.
+    pub(crate) fn store(value: &ZValue) -> Self {
+        let kind = value.kind();
         match kind {
-            // SAFETY: per the caller.
-            IS_LONG => Self::long(unsafe { swoole_rs_zend::value::get_long(value) }),
-            // SAFETY: per the caller.
-            IS_DOUBLE => Self::double(unsafe { swoole_rs_zend::value::get_double(value) }),
-            IS_STRING => {
-                // SAFETY: a string zval.
-                let string = unsafe { payload.str_ };
-                Self {
-                    kind,
-                    // SAFETY: a live string.
-                    value: Value::Str(unsafe { bytes(string) }.into()),
-                }
-            }
+            IS_LONG => Self::long(value.long()),
+            IS_DOUBLE => Self::double(value.double()),
+            IS_STRING => Self {
+                kind,
+                value: Value::Str(value.bytes().unwrap_or_default().into()),
+            },
             IS_TRUE | IS_FALSE | IS_NULL => bare(kind),
             IS_RESOURCE => {
                 // SAFETY: a live resource zval.
-                let fd = unsafe { request::stream_cast(value) };
+                let fd = unsafe { request::stream_cast(value.as_ptr()) };
                 if fd == -1 {
                     socket_error(c"failed to convert to socket fd");
                 }
@@ -128,31 +115,28 @@ impl Item {
                     value: Value::Socket { fd, kind: 0 },
                 }
             }
-            IS_ARRAY => {
-                // SAFETY: an array zval holds a live table.
-                let table = unsafe { payload.arr };
-                // SAFETY: as above.
-                let list = unsafe { swr_zend_array_is_list(table) };
-                Self {
-                    kind: if list { IS_ARRAYLIST } else { IS_MAP },
-                    // SAFETY: as above.
-                    value: Value::Array(unsafe { Array::from(table) }),
-                }
-            }
-            // SAFETY: a live object zval.
-            IS_OBJECT => unsafe { Self::store_object(value) },
-            // SAFETY: per the caller.
-            _ => unsafe { Self::serialize(value) },
+            IS_ARRAY => match value.array() {
+                Some(table) => Self {
+                    kind: if table.is_list() {
+                        IS_ARRAYLIST
+                    } else {
+                        IS_MAP
+                    },
+                    value: Value::Array(Array::from(table)),
+                },
+                None => bare(IS_UNDEF),
+            },
+            IS_OBJECT => Self::store_object(value),
+            _ => Self::serialize(value),
         }
     }
 
     /// The `IS_OBJECT` branch: sockets, containers and thread resources by
     /// reference, anything else serialized.
-    unsafe fn store_object(value: *mut zval) -> Self {
-        // SAFETY: a live object zval.
-        if unsafe { host::is_co_socket(value) } {
+    fn store_object(object: &ZValue) -> Self {
+        if host::is_co_socket(object) {
             // SAFETY: a coroutine socket object.
-            let (fd, kind) = unsafe { host::co_socket_cast(value) };
+            let (fd, kind) = unsafe { host::co_socket_cast(object.as_ptr()) };
             if fd == -1 {
                 socket_error(c"failed to convert to socket fd");
             }
@@ -161,8 +145,7 @@ impl Item {
                 value: Value::Socket { fd, kind },
             };
         }
-        // SAFETY: a live object zval.
-        match unsafe { host::php_socket_cast(value) } {
+        match host::php_socket_cast(object) {
             -3 => {}
             // upstream breaks out before setting the type.
             -2 => return bare(IS_OBJECT),
@@ -173,8 +156,7 @@ impl Item {
                 };
             }
         }
-        // SAFETY: a live object zval.
-        let std = unsafe { swoole_rs_zend::value::obj_of(value) };
+        let std = object.object().unwrap_or(ptr::null_mut());
         // SAFETY: a live object.
         if let Some((class, resource)) = unsafe { phplocks::shared(std) } {
             let kind = match class {
@@ -187,22 +169,16 @@ impl Item {
                 value: Value::Resource(resource),
             };
         }
-        // SAFETY: a live object zval.
-        if let Some(shared) = unsafe { classes::shared(value) } {
+        if let Some(shared) = classes::shared(object).or_else(|| barrier::shared(object)) {
             return shared;
         }
-        // SAFETY: a live object zval.
-        if let Some(shared) = unsafe { barrier::shared(value) } {
-            return shared;
-        }
-        // SAFETY: a live zval.
-        unsafe { Self::serialize(value) }
+        Self::serialize(object)
     }
 
     /// The default branch: `php_swoole_serialize`, or undef if it failed.
-    unsafe fn serialize(value: *mut zval) -> Self {
+    fn serialize(value: &ZValue) -> Self {
         // SAFETY: a live zval; a bailout of `__serialize` is deferred.
-        let serialized = unsafe { host::serialize(value) };
+        let serialized = unsafe { host::serialize(value.as_ptr()) };
         if serialized.is_null() {
             return bare(IS_UNDEF);
         }
@@ -217,10 +193,14 @@ impl Item {
     }
 
     /// `ArrayItem::fetch`: whether it wrote `out` (upstream leaves it untouched
-    /// for null, booleans aside, and undef).
+    /// for null, booleans aside, and undef). Nothing runs once a bailout is
+    /// pending: upstream never ran past it.
     /// # Safety
     /// In a request; `out` is writable and holds nothing.
     pub(crate) unsafe fn fetch(&self, out: *mut zval) -> bool {
+        if bailout::pending() {
+            return false;
+        }
         match &self.value {
             Value::Long(value) => set(out, IS_LONG, zend_value { lval: *value }),
             Value::Double(value) => set(out, IS_DOUBLE, zend_value { dval: *value }),
@@ -284,28 +264,15 @@ impl Item {
     }
 
     /// `ArrayItem::equals`.
-    /// # Safety
-    /// `search` is a live zval.
-    pub(crate) unsafe fn equals(&self, search: *const zval) -> bool {
-        // SAFETY: per the caller.
-        if unsafe { type_of(search) } != self.kind {
+    pub(crate) fn equals(&self, search: &ZValue) -> bool {
+        if search.kind() != self.kind {
             return false;
         }
-        // SAFETY: per the caller.
-        let payload = unsafe { value_of(search) };
         match &self.value {
-            // SAFETY: an int zval.
-            Value::Long(value) => (unsafe { payload.lval }) == *value,
-            #[expect(clippy::float_cmp, reason = "upstream compares with ==")]
-            // SAFETY: a float zval.
-            Value::Double(value) => (unsafe { payload.dval }) == *value,
+            Value::Long(value) => search.as_long() == Some(*value),
+            Value::Double(value) => search.as_double() == Some(*value),
             Value::Bare(_) => matches!(self.kind, IS_TRUE | IS_FALSE | IS_NULL),
-            Value::Str(text) => {
-                // SAFETY: a string zval.
-                let string = unsafe { payload.str_ };
-                // SAFETY: a live string.
-                **text == *unsafe { bytes(string) }
-            }
+            Value::Str(text) => search.bytes() == Some(&**text),
             _ => false,
         }
     }
@@ -348,54 +315,44 @@ impl Item {
     }
 
     /// `incr_update`: add to a float or, as upstream's union does, to the int
-    /// view of anything else; the type never changes.
-    /// # Safety
-    /// `delta` is a live zval.
-    pub(crate) unsafe fn add(&mut self, delta: *const zval, out: *mut zval) {
+    /// view of anything else; the type never changes. The sum goes to the
+    /// return slot of `call`, a Thread method call.
+    pub(crate) fn add(&mut self, delta: &ZValue, call: &Call) {
         match &mut self.value {
             Value::Double(value) => {
-                // SAFETY: per the caller.
-                let delta = unsafe { swoole_rs_zend::value::get_double(delta) };
+                let delta = delta.double();
                 if bailout::pending() {
                     return;
                 }
                 *value += delta;
-                set(out, IS_DOUBLE, zend_value { dval: *value });
+                set(call.return_value(), IS_DOUBLE, zend_value { dval: *value });
             }
             Value::Long(value) | Value::Bare(value) => {
-                // SAFETY: per the caller.
-                let delta = unsafe { swoole_rs_zend::value::get_long(delta) };
+                let delta = delta.long();
                 if bailout::pending() {
                     return;
                 }
                 *value = value.wrapping_add(delta);
-                set(out, IS_LONG, zend_value { lval: *value });
+                set(call.return_value(), IS_LONG, zend_value { lval: *value });
             }
             // Upstream adds to a pointer here; leave the value alone.
-            _ => {
-                // SAFETY: per the caller.
-                let sum = unsafe { swoole_rs_zend::value::get_long(delta) };
-                set(out, IS_LONG, zend_value { lval: sum });
-            }
+            _ => set(
+                call.return_value(),
+                IS_LONG,
+                zend_value { lval: delta.long() },
+            ),
         }
     }
 
-    /// `incr_create`: a float or int item from `delta`, which is also the result.
-    /// # Safety
-    /// `delta` is a live zval.
-    pub(crate) unsafe fn counter(delta: *const zval, out: *mut zval) -> Self {
-        // SAFETY: per the caller.
-        let item = if unsafe { type_of(delta) } == IS_DOUBLE {
-            // SAFETY: per the caller.
-            let payload = unsafe { value_of(delta) };
-            // SAFETY: a float zval.
-            Self::double(unsafe { payload.dval })
-        } else {
-            // SAFETY: per the caller.
-            Self::long(unsafe { swoole_rs_zend::value::get_long(delta) })
+    /// `incr_create`: a float or int item from `delta`, which is also the
+    /// result in the return slot of `call`.
+    pub(crate) fn counter(delta: &ZValue, call: &Call) -> Self {
+        let item = match delta.as_double() {
+            Some(value) => Self::double(value),
+            None => Self::long(delta.long()),
         };
-        // SAFETY: `out` is writable; an int or float.
-        unsafe { item.fetch(out) };
+        // SAFETY: the call's return slot, which holds nothing yet; an int or float.
+        unsafe { item.fetch(call.return_value()) };
         item
     }
 

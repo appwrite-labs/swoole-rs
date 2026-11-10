@@ -40,11 +40,8 @@ fn yielded(coroutine_sleep: CoroutineSleep, seconds: f64) -> bool {
 
 /// `sleep(seconds)`: in a coroutine, 0 or `seconds` if cancelled; otherwise what
 /// sleep(3) returns.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hooks_sleep(
-    seconds: i64,
-    coroutine_sleep: Option<CoroutineSleep>,
-) -> SleepOutcome {
+#[must_use]
+pub fn swr_v1_hooks_sleep(seconds: i64, coroutine_sleep: Option<CoroutineSleep>) -> SleepOutcome {
     if seconds < 0 {
         return argument(1);
     }
@@ -71,8 +68,8 @@ pub extern "C" fn swr_v1_hooks_sleep(
 }
 
 /// `usleep(microseconds)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hooks_usleep(
+#[must_use]
+pub fn swr_v1_hooks_usleep(
     microseconds: i64,
     coroutine_sleep: Option<CoroutineSleep>,
 ) -> SleepOutcome {
@@ -97,8 +94,8 @@ pub extern "C" fn swr_v1_hooks_usleep(
 }
 
 /// `time_nanosleep(seconds, nanoseconds)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hooks_nanosleep(
+#[must_use]
+pub fn swr_v1_hooks_nanosleep(
     seconds: i64,
     nanoseconds: i64,
     coroutine_sleep: Option<CoroutineSleep>,
@@ -148,8 +145,8 @@ pub extern "C" fn swr_v1_hooks_nanosleep(
 }
 
 /// `time_sleep_until(timestamp)`: `top` is the largest timestamp upstream accepts.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_hooks_sleep_until(
+#[must_use]
+pub fn swr_v1_hooks_sleep_until(
     timestamp: f64,
     top: f64,
     coroutine_sleep: Option<CoroutineSleep>,
@@ -194,8 +191,7 @@ pub extern "C" fn swr_v1_hooks_sleep_until(
 pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
     #[cfg(feature = "iouring")]
     {
-        // SAFETY: the engine's host, in a coroutine as the caller promises.
-        unsafe { crate::uring::swr_v1_uring_sleep(&raw const crate::iouring::HOST, sec) }
+        crate::uring::sleep(&crate::iouring::HOST, sec)
     }
     #[cfg(not(feature = "iouring"))]
     {
@@ -204,8 +200,7 @@ pub unsafe extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
         const CANCELED: i32 = 10017;
         let co = current();
         // SAFETY: `co` is the running coroutine.
-        let resumed =
-            unsafe { coroutine_yield_ex(co, crate::swr_v1_hook_sleep_timeout(sec, 0.001)) };
+        let resumed = unsafe { coroutine_yield_ex(co, crate::sleep_timeout(sec, 0.001)) };
         if !resumed && swoole_rs_corebase::log::last_error() == CANCELED {
             -1
         } else {

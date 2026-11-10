@@ -14,10 +14,12 @@ swoole-rs-base64 = { path = "../crates/base64" }
 swoole-rs-clients = { path = "../crates/clients" }
 swoole-rs-framing = { path = "../crates/framing" }
 swoole-rs-http = { path = "../crates/http" }
+swoole-rs-http-ffi = { path = "../crates/http-ffi" }
 swoole-rs-http2 = { path = "../crates/http2" }
 libc = "=0.2.191"
 swoole-rs-oracle = { path = "../crates/oracle" }
 swoole-rs-protocols = { path = "../crates/protocols" }
+swoole-rs-protocols-ffi = { path = "../crates/protocols-ffi" }
 swoole-rs-utilities = { path = "../crates/utilities" }
 swoole-rs-websocket = { path = "../crates/websocket" }
 
@@ -220,6 +222,13 @@ bench = false
 [[bin]]
 name = "http2_hpack"
 path = "fuzz_targets/http2_hpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_rewrite"
+path = "fuzz_targets/http_rewrite.rs"
 test = false
 doc = false
 bench = false

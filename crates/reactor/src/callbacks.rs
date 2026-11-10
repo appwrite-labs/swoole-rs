@@ -128,12 +128,8 @@ pub(crate) unsafe fn execute_end(owner: *mut ReactorState, timed_out: bool) {
         };
         match end {
             End::Call(call) => call(),
-            End::Defer => {
-                // SAFETY: the live reactor's queue slot.
-                let slot = unsafe { &raw mut (*fields).defer_tasks };
-                // SAFETY: as above.
-                unsafe { crate::deferred::run_defer(slot) };
-            }
+            // SAFETY: as the caller promises.
+            End::Defer => unsafe { crate::deferred::run_defer(owner) },
             // SAFETY: a single field read.
             End::Idle => run_task(unsafe { (*fields).idle_task }),
             End::Signal => swoole_rs_process::signal::swoole_signal_dispatch(),
@@ -275,7 +271,7 @@ pub extern "C" fn swr_v1_event_remove_exit_condition(id: c_int) {
 pub unsafe extern "C" fn swoole_event_defer(call: crate::DeferCall, data: *mut c_void) {
     if let Some(owner) = current() {
         // SAFETY: the thread's live reactor; the loop runs `call(data)` as its caller set.
-        unsafe { crate::deferred::defer(&raw mut owner.fields, call, data) };
+        unsafe { crate::deferred::defer(&raw mut owner.fields, call, data, None) };
     }
 }
 
@@ -304,12 +300,6 @@ pub unsafe extern "C-unwind" fn reactor_if_exit(reactor: *mut c_void) -> bool {
     unsafe(export_name = "_ZN6swoole7Reactor4waitEv")
 )]
 pub unsafe extern "C-unwind" fn reactor_wait(reactor: *mut c_void) -> c_int {
-    #[cfg(feature = "iouring")]
-    // SAFETY: crates/hooks's, with no preconditions.
-    unsafe extern "C" {
-        fn swr_v1_uring_interrupted(reactor: *mut c_void) -> c_int;
-        fn swr_v1_uring_interrupt(reactor: *mut c_void);
-    }
     fn begin(reactor: *mut c_void) {
         // SAFETY: the waiting reactor.
         let fields = unsafe { prepared(reactor) }.fields;
@@ -326,14 +316,6 @@ pub unsafe extern "C-unwind" fn reactor_wait(reactor: *mut c_void) -> c_int {
         reactor,
         begin,
         end,
-        #[cfg(feature = "iouring")]
-        interrupted: Some(swr_v1_uring_interrupted),
-        #[cfg(feature = "iouring")]
-        interrupt: Some(swr_v1_uring_interrupt),
-        #[cfg(not(feature = "iouring"))]
-        interrupted: None,
-        #[cfg(not(feature = "iouring"))]
-        interrupt: None,
     };
     // SAFETY: as the caller promises.
     let owner = unsafe { prepared(reactor) }.owner;
@@ -522,7 +504,7 @@ mod tests {
             install_builtins(callbacks());
             let fields = &raw mut (*owner).fields;
             assert!(if_exit(owner));
-            crate::deferred::defer(fields, record, std::ptr::without_provenance_mut(4));
+            crate::deferred::defer(fields, record, std::ptr::without_provenance_mut(4), None);
             assert!(!if_exit(owner));
             (*fields).idle_task.callback = Some(record);
             (*fields).idle_task.data = std::ptr::without_provenance_mut(6);

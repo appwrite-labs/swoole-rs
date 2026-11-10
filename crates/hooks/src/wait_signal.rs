@@ -102,25 +102,6 @@ pub fn system_wait_signal(signals: &[c_long], timeout: f64) -> c_int {
     signalled.signo
 }
 
-/// [`system_wait_signal`] over `signals[..count]`, for C (the hooks-system-rust cases).
-///
-/// # Safety
-/// `signals` holds `count` numbers.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_system_wait_signal(
-    signals: *const c_long,
-    count: usize,
-    timeout: f64,
-) -> c_int {
-    let signals = if count == 0 {
-        &[][..]
-    } else {
-        // SAFETY: the caller passes `count` numbers at `signals`.
-        unsafe { std::slice::from_raw_parts(signals, count) }
-    };
-    system_wait_signal(signals, timeout)
-}
-
 /// Waits for any of `signals` for up to `timeout` seconds.
 fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Signalled {
     let co = (ops.current)();
@@ -256,7 +237,7 @@ mod native {
         unsafe { Box::from_raw(change.cast::<Change>()) }.apply();
     }
 
-    unsafe extern "C" fn dispose(change: *mut c_void) {
+    unsafe extern "C-unwind" fn dispose(change: *mut c_void) {
         // SAFETY: the box `listen` deferred, never run.
         drop(unsafe { Box::from_raw(change.cast::<Change>()) });
     }

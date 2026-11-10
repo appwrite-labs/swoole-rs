@@ -454,8 +454,7 @@ def rust_files(source):
         '//!\n'
         '//! Without the `php` feature the crate is empty.\n'
         '#![cfg(feature = "php")]\n'
-        '#![cfg_attr(\n    not(test),\n    deny(\n        clippy::undocumented_unsafe_blocks,\n'
-        '        clippy::multiple_unsafe_ops_per_block\n    )\n)]\n\n'
+        '#![forbid(unsafe_code)]\n\n'
         + ''.join(f'pub mod {module_name(path)};\n' for path in stubs))
     return {name: rustfmt(text) for name, text in files.items()}
 

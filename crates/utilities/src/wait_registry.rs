@@ -3,6 +3,13 @@
 //! The atomic wait/wakeup pair for builds without futex: a registry in shared
 //! memory, allocated before any worker forks, keyed by the atomic's address so
 //! every descendant process sees the same waiters.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    expect(
+        dead_code,
+        reason = "Linux waits on futex; swoole_init adopts the registry there unused"
+    )
+)]
 
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
@@ -165,8 +172,8 @@ impl Registry {
 }
 
 /// Bytes `sw_atomic_wait_init` allocates from the shared memory pool.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_wait_registry_size() -> usize {
+#[must_use]
+pub fn swr_v1_utils_wait_registry_size() -> usize {
     size_of::<Registry>()
 }
 
@@ -174,8 +181,7 @@ pub extern "C" fn swr_v1_utils_wait_registry_size() -> usize {
 /// # Safety
 /// `memory` is null or writable for [`swr_v1_utils_wait_registry_size`] bytes,
 /// shared with every process that waits, and lives as long as they do.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_wait_registry_init(memory: *mut c_void) -> bool {
+pub unsafe fn swr_v1_utils_wait_registry_init(memory: *mut c_void) -> bool {
     if memory.is_null() || !memory.cast::<Registry>().is_aligned() {
         return false;
     }
@@ -199,44 +205,33 @@ fn with<T>(
     run(registry, unsafe { AtomicU32::from_ptr(word) })
 }
 
+/// -1 with a nonzero error recorded as the last error.
+#[cfg(not(target_os = "linux"))]
+fn failed(code: c_int) -> c_int {
+    if code != 0 {
+        swoole_rs_corebase::log::set_last_error(code);
+    }
+    -1
+}
+
 /// `sw_atomic_futex_wait` without futex: take the word's token (1 -> 0),
 /// polling every millisecond until a wakeup or `timeout` (seconds, <= 0 for
-/// none). Returns 0 or -1; `error` receives the errno to record, or 0.
+/// none). Returns 0, or -1 with the error recorded as the last error.
 /// # Safety
-/// `word` is a live u32 accessed only atomically; `error` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_registry_wait(
-    word: *mut u32,
-    timeout: f64,
-    error: *mut c_int,
-) -> c_int {
-    let (result, code) = match with(word, |registry, word| registry.wait(word, timeout)) {
-        Ok(()) => (0, 0),
-        Err(code) => (-1, code),
-    };
-    // SAFETY: the caller lends a writable `error`.
-    unsafe { error.write(code) };
-    result
+/// `word` is a live u32 accessed only atomically.
+#[cfg(not(target_os = "linux"))]
+pub(crate) unsafe fn registry_wait(word: *mut u32, timeout: f64) -> c_int {
+    with(word, |registry, word| registry.wait(word, timeout)).map_or_else(failed, |()| 0)
 }
 
 /// `sw_atomic_futex_wakeup` without futex: publish the token (0 -> 1) and
 /// notify up to `n` registered waiters. Returns the number notified, or -1
-/// with `error` set; `error` is 0 otherwise.
+/// with the error recorded as the last error.
 /// # Safety
-/// As [`swr_v1_utils_registry_wait`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_registry_wakeup(
-    word: *mut u32,
-    n: c_int,
-    error: *mut c_int,
-) -> c_int {
-    let (result, code) = match with(word, |registry, word| registry.wakeup(word, n)) {
-        Ok(notified) => (notified, 0),
-        Err(code) => (-1, code),
-    };
-    // SAFETY: the caller lends a writable `error`.
-    unsafe { error.write(code) };
-    result
+/// As [`registry_wait`].
+#[cfg(not(target_os = "linux"))]
+pub(crate) unsafe fn registry_wakeup(word: *mut u32, n: c_int) -> c_int {
+    with(word, |registry, word| registry.wakeup(word, n)).unwrap_or_else(failed)
 }
 
 #[cfg(test)]
@@ -253,15 +248,17 @@ mod tests {
     }
 
     fn wait(word: &AtomicU32, timeout: f64) -> (c_int, c_int) {
-        let mut error = -1;
-        let result = unsafe { swr_v1_utils_registry_wait(word.as_ptr(), timeout, &raw mut error) };
-        (result, error)
+        match with(word.as_ptr(), |registry, word| registry.wait(word, timeout)) {
+            Ok(()) => (0, 0),
+            Err(code) => (-1, code),
+        }
     }
 
     fn wakeup(word: &AtomicU32, n: c_int) -> (c_int, c_int) {
-        let mut error = -1;
-        let result = unsafe { swr_v1_utils_registry_wakeup(word.as_ptr(), n, &raw mut error) };
-        (result, error)
+        match with(word.as_ptr(), |registry, word| registry.wakeup(word, n)) {
+            Ok(notified) => (notified, 0),
+            Err(code) => (-1, code),
+        }
     }
 
     #[test]

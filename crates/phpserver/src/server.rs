@@ -58,11 +58,13 @@ pub(crate) fn invalid(object: *mut zend_object) {
     };
 }
 
-/// `Swoole\Server`, as C++ and the other crates read it; MINIT writes it.
-#[unsafe(no_mangle)]
-pub static mut swoole_server_ce: *mut zend_class_entry = ptr::null_mut();
-
 pub(crate) static SERVER: Class = Class::new();
+
+/// `swoole_server_ce`: `Swoole\Server`, registered at MINIT.
+#[must_use]
+pub fn server_class_entry() -> *mut zend_class_entry {
+    SERVER.entry()
+}
 pub(crate) static TASK: Class = Class::new();
 /// `Event`, `Packet`, `PipeMessage`, `StatusInfo` and `TaskResult`.
 pub(crate) static DATA: [Class; 5] = [
@@ -84,7 +86,7 @@ pub(crate) struct ServerData {
 }
 
 /// `SW_THREAD`, as MINIT was told.
-pub(crate) use swoole_rs_server::thread_mode_ops::SUPPORTED as THREAD;
+pub(crate) use swoole_rs_server::THREAD_SUPPORTED as THREAD;
 
 thread_local! {
     /// Each thread's `ServerPortProperty` per port `object_id` (`SW_THREAD`):
@@ -430,7 +432,6 @@ unsafe extern "C" {
 /// `Swoole\Server\Port`.
 /// # Safety
 /// Zend's MINIT, once.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
     use swoole_rs_corebase::{Switch, built_with};
     let (thread, sockets) = (built_with(Switch::Thread), built_with(Switch::Sockets));
@@ -511,8 +512,6 @@ pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
         // SAFETY: MINIT of `module`.
         unsafe { register_long_constant(name, value, module) };
     }
-    // SAFETY: MINIT, once; nothing reads the class entry yet.
-    unsafe { swoole_server_ce = server };
     crate::port::minit(!thread, sockets);
 }
 
@@ -648,8 +647,7 @@ fn close(call: &Call) {
     let Ok((fd, reset)) = parsed else {
         return call.set_bool(false);
     };
-    // SAFETY: a live server.
-    call.set_bool(unsafe { server_methods::close(serv.raw(), fd, reset) });
+    call.set_bool(server_methods::close(serv, fd, reset));
 }
 
 fn feedback(call: &Call, pause: bool) {
@@ -666,10 +664,7 @@ fn feedback(call: &Call, pause: bool) {
     } else {
         EVENT_RESUME_RECV
     };
-    // SAFETY: a live server and one of its connections.
-    call.set_bool(unsafe {
-        server_methods::feedback(serv.raw(), ptr::from_mut(conn).cast(), event)
-    });
+    call.set_bool(server_methods::feedback(serv, conn, event));
 }
 
 fn pause(call: &Call) {
@@ -720,8 +715,7 @@ fn stats(call: &Call) {
         i64::from(config.task_worker_num),
         // SAFETY: a live server.
         i64::try_from(serv.user_worker_num()).unwrap_or(i64::MAX),
-        // SAFETY: a live server.
-        i64::from(unsafe { server_methods::get_idle_worker_num(serv.raw()) }),
+        i64::from(server_methods::get_idle_worker_num(serv)),
         load(&gs.dispatch_count),
         load(&gs.request_count),
         load(&gs.response_count),
@@ -812,8 +806,7 @@ fn heartbeat(call: &Call) {
             if session_id > 0 && !serv.healthy(now, conn) {
                 if close {
                     conn.close_force = 1;
-                    // SAFETY: a live server.
-                    unsafe { server_methods::close(serv.raw(), session_id, false) };
+                    server_methods::close(serv, session_id, false);
                 }
                 // SAFETY: the return slot holds an array.
                 unsafe { add_next_index_long(call.return_value(), session_id) };
@@ -1121,8 +1114,7 @@ fn get_master_pid(call: &Call) {
 
 fn shutdown(call: &Call) {
     let serv = server(call);
-    // SAFETY: a live server.
-    call.set_bool(unsafe { server_methods::shutdown(serv.raw()) });
+    call.set_bool(server_methods::shutdown(serv));
 }
 
 fn stop(call: &Call) {
@@ -1214,11 +1206,11 @@ fn count(call: &Call) {
 /// `offsetExists`/`offsetGet`: `Swoole\Server`'s own method, called on the
 /// server object as PHP would.
 fn delegate(call: &Call, method: &[u8]) {
-    let serv = iterator(call).serv;
+    iterator(call);
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    let zserv = crate::dispatch::server_zval(serv);
+    let zserv = crate::dispatch::zserv();
     let mut retval = crate::dispatch::undef();
     // SAFETY: the server's object zval.
     let object = unsafe { swoole_rs_zend::object_of(&raw const zserv) };

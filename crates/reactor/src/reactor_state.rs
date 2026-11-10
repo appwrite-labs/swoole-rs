@@ -4,8 +4,9 @@
 //! The `Reactor` object: its public fields and backend resources share one Rust
 //! lifetime, from its constructor and `swoole_event_init` to its destructor and
 //! `swoole_event_free`. The C++ class is methods over this state (`swoole_reactor.h`).
-use crate::{SocketRecord, handlers::Handlers, registry::Registry};
+use crate::{PollSnapshot, SocketRecord, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
+use std::mem::MaybeUninit;
 use std::ptr;
 
 pub type ReactorWrite =
@@ -63,6 +64,9 @@ pub struct ReactorState {
     pub(crate) backend_fd: c_int,
     pub(crate) backend_limit: c_int,
     pub(crate) callbacks: crate::callbacks::Callbacks,
+    /// The `defer_tasks` queues the defer end callback detached and is running, innermost
+    /// last: one a task bailed out of stays here for the drop to free.
+    pub(crate) running_defer: Vec<*mut crate::ReactorDeferred>,
 }
 // swoole_rs_reactor.h asserts the same layout for swr_v1_reactor_head.
 const _: () = assert!(
@@ -75,11 +79,13 @@ const _: () = assert!(
     "swr_v1_reactor_head's layout"
 );
 
+/// The backend's output arrays, allocated once, so the wait loop's pointers to them
+/// stay valid until the backend closes.
 pub(crate) enum Backend {
     None,
-    Poll(*mut crate::PollSnapshot),
+    Poll(PollSnapshot),
     #[cfg(target_os = "linux")]
-    Epoll(*mut crate::EpollEvents),
+    Epoll(Vec<MaybeUninit<libc::epoll_event>>),
     #[cfg(any(
         target_os = "macos",
         target_os = "freebsd",
@@ -87,19 +93,28 @@ pub(crate) enum Backend {
         target_os = "netbsd",
         target_os = "dragonfly"
     ))]
-    Kqueue(*mut crate::KqueueEvents, c_int),
+    Kqueue(Vec<MaybeUninit<libc::kevent>>, c_int),
 }
 impl Drop for ReactorState {
     fn drop(&mut self) {
         self.close_backend();
-        let fields = &mut self.fields;
-        for slot in [
-            &raw mut fields.destroy_callbacks,
-            &raw mut fields.defer_tasks,
-        ] {
-            // SAFETY: the queue slots are this state's own, and nothing runs them now.
-            unsafe { crate::swr_v1_reactor_deferred_free(slot) };
-        }
+    }
+}
+
+impl ReactorState {
+    /// Takes the queues [`swr_v1_reactor_delete`] still has to free out of the state.
+    fn detach_queues(&mut self) -> Vec<*mut crate::ReactorDeferred> {
+        let mut queues = std::mem::take(&mut self.running_defer);
+        queues.push(std::mem::replace(
+            &mut self.fields.destroy_callbacks,
+            ptr::null_mut(),
+        ));
+        queues.push(std::mem::replace(
+            &mut self.fields.defer_tasks,
+            ptr::null_mut(),
+        ));
+        queues.retain(|queue| !queue.is_null());
+        queues
     }
 }
 #[repr(C)]
@@ -188,6 +203,7 @@ impl ReactorState {
             backend_fd: -1,
             backend_limit: 0,
             callbacks: crate::callbacks::Callbacks::default(),
+            running_defer: Vec::new(),
         }));
         if !owner.open_backend(opened, count) {
             let (origin, call) = if opened == 1 {
@@ -233,7 +249,7 @@ impl ReactorState {
         };
         self.backend = match kind {
             #[cfg(target_os = "linux")]
-            1 => Backend::Epoll(allocated(crate::swr_v1_reactor_epoll_new(length))),
+            1 => Backend::Epoll(output(length)),
             #[cfg(any(
                 target_os = "macos",
                 target_os = "freebsd",
@@ -241,8 +257,8 @@ impl ReactorState {
                 target_os = "netbsd",
                 target_os = "dragonfly"
             ))]
-            2 => Backend::Kqueue(allocated(crate::swr_v1_reactor_kqueue_new(length)), count),
-            _ => Backend::Poll(allocated(crate::swr_v1_reactor_poll_new(length))),
+            2 => Backend::Kqueue(output(length), count),
+            _ => Backend::Poll(PollSnapshot::new(length)),
         };
         self.backend_limit = count;
         self.fields.native_handle = self.backend_fd;
@@ -252,12 +268,15 @@ impl ReactorState {
     }
 }
 
-/// A backend array, aborting as upstream's `bad_alloc` when it could not be allocated.
-fn allocated<T>(array: *mut T) -> *mut T {
-    if array.is_null() {
+/// `count` records for the kernel to fill, aborting as upstream's `bad_alloc` when
+/// they could not be allocated.
+fn output<T>(count: usize) -> Vec<MaybeUninit<T>> {
+    let mut entries = Vec::new();
+    if entries.try_reserve_exact(count).is_err() {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<T>());
     }
-    array
+    entries.resize_with(count, MaybeUninit::uninit);
+    entries
 }
 
 /// `SW_GLOBAL_HOOK_ON_REACTOR_CREATE` and `SW_GLOBAL_HOOK_ON_REACTOR_DESTROY`.
@@ -335,13 +354,27 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
     let fields = unsafe { &mut (*state).fields };
     fields.destroyed = true;
     let queue = fields.destroy_callbacks;
-    // SAFETY: the state's own queue, which only its drop frees.
-    unsafe { crate::swr_v1_reactor_deferred_run(queue) };
+    // SAFETY: the state's own queue, which only the drain below frees.
+    unsafe { crate::deferred::deferred_run(queue) };
     // SAFETY: the live state, which no reference holds; the callbacks have returned.
     unsafe { (*state).close_backend() };
     if swoole_rs_corebase::swoole_isset_hook(HOOK_ON_REACTOR_DESTROY) {
         // SAFETY: hooks receive the live `Reactor`.
         unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_ON_REACTOR_DESTROY, reactor) };
+    }
+    // A disposer can defer again through the reactor's head (a PHP destructor calling
+    // `Event::defer`), so the queues are detached and freed until they stay empty, and
+    // no reference to the state (a `Drop`'s `&mut self` included) is live meanwhile.
+    loop {
+        // SAFETY: the live state; the borrow ends before any disposer runs.
+        let queues = unsafe { (*state).detach_queues() };
+        if queues.is_empty() {
+            break;
+        }
+        for mut queue in queues {
+            // SAFETY: a detached queue of this state's, which nothing runs now.
+            unsafe { crate::deferred::deferred_free(&mut queue) };
+        }
     }
     // SAFETY: as the caller promises: `ReactorState::open`'s allocation, used no more.
     drop(unsafe { Box::from_raw(state) });
@@ -399,25 +432,21 @@ pub struct ReactorBackendView {
 }
 impl ReactorState {
     /// The backend's arrays, which stay owned until the state is freed.
-    pub(crate) fn backend_view(&self) -> ReactorBackendView {
-        let backend = &self.backend;
+    pub(crate) fn backend_view(&mut self) -> ReactorBackendView {
         let mut view = ReactorBackendView {
             events: ptr::null_mut(),
             sockets: ptr::null_mut(),
             backend: 0,
         };
-        match *backend {
+        match &mut self.backend {
             Backend::None => (),
-            Backend::Poll(array) => {
-                // SAFETY: this state's live snapshot.
-                view.events = unsafe { crate::swr_v1_reactor_poll_data(array) }.cast();
-                // SAFETY: the same snapshot owns the socket array.
-                view.sockets = unsafe { crate::swr_v1_reactor_poll_sockets(array) };
+            Backend::Poll(snapshot) => {
+                view.events = snapshot.entries().cast();
+                view.sockets = snapshot.sockets();
             }
             #[cfg(target_os = "linux")]
             Backend::Epoll(array) => {
-                // SAFETY: the live epoll output array.
-                view.events = unsafe { crate::swr_v1_reactor_epoll_data(array) }.cast();
+                view.events = array.as_mut_ptr().cast();
                 view.backend = 1;
             }
             #[cfg(any(
@@ -428,8 +457,7 @@ impl ReactorState {
                 target_os = "dragonfly"
             ))]
             Backend::Kqueue(array, _) => {
-                // SAFETY: the live kevent output array.
-                view.events = unsafe { crate::swr_v1_reactor_kqueue_data(array) }.cast();
+                view.events = array.as_mut_ptr().cast();
                 view.backend = 2;
             }
         }
@@ -448,20 +476,16 @@ pub(crate) unsafe fn kernel_wait(
 ) -> c_int {
     // SAFETY: the kernel operation exclusively borrows state, without native callbacks.
     let owner = unsafe { &mut *owner };
-    match owner.backend {
+    match &mut owner.backend {
         Backend::None => -1,
-        Backend::Poll(array) => {
-            // SAFETY: state's live snapshot and registry.
-            let count =
-                unsafe { crate::swr_v1_reactor_poll_fill(array, &raw const owner.registry) };
+        Backend::Poll(snapshot) => {
+            let count = snapshot.fill(&owner.registry);
             // SAFETY: the caller lends an entry-count slot.
             unsafe { entries.write(count) };
-            // SAFETY: the array has capacity for the bounded registry snapshot.
-            let data = unsafe { crate::swr_v1_reactor_poll_data(array) };
             // SAFETY: poll initializes revents in the first count valid records.
             unsafe {
                 libc::poll(
-                    data,
+                    snapshot.entries(),
                     libc::nfds_t::from(count.unsigned_abs()),
                     if deferred {
                         0
@@ -473,13 +497,12 @@ pub(crate) unsafe fn kernel_wait(
         }
         #[cfg(target_os = "linux")]
         Backend::Epoll(array) => {
-            // SAFETY: the live array has max_event_num writable records.
-            let data = unsafe { crate::swr_v1_reactor_epoll_data(array) };
-            // SAFETY: a valid owned epoll fd and its writable output array.
+            // SAFETY: a valid owned epoll fd and its writable output array of
+            // max_event_num records.
             unsafe {
                 libc::epoll_wait(
                     owner.backend_fd,
-                    data,
+                    array.as_mut_ptr().cast(),
                     c_int::try_from(owner.fields.max_event_num).unwrap_or(c_int::MAX),
                     if deferred {
                         0
@@ -497,29 +520,20 @@ pub(crate) unsafe fn kernel_wait(
             target_os = "dragonfly"
         ))]
         Backend::Kqueue(array, count) => {
-            let timeout = crate::swr_v1_reactor_kqueue_timeout(
+            let timeout = crate::kqueue_timeout(
                 owner.fields.timeout_msec,
-                u32::from(owner.fields.timeout_msec <= 0 && deferred),
+                owner.fields.timeout_msec <= 0 && deferred,
             );
-            let time = libc::timespec {
-                tv_sec: timeout.seconds,
-                tv_nsec: timeout.nanoseconds,
-            };
-            // SAFETY: the live array has max_event_num writable records.
-            let data = unsafe { crate::swr_v1_reactor_kqueue_data(array) };
-            // SAFETY: valid owned kqueue, output array and optional stack timeout.
+            // SAFETY: valid owned kqueue, output array of `count` records and optional
+            // stack timeout.
             unsafe {
                 libc::kevent(
                     owner.backend_fd,
                     ptr::null(),
                     0,
-                    data,
-                    count,
-                    if timeout.finite != 0 {
-                        &raw const time
-                    } else {
-                        ptr::null()
-                    },
+                    array.as_mut_ptr().cast(),
+                    *count,
+                    timeout.as_ref().map_or(ptr::null(), ptr::from_ref),
                 )
             }
         }
@@ -544,15 +558,9 @@ impl ReactorState {
     pub(crate) fn record(&mut self, socket: &mut SocketRecord, op: u32, events: c_int) -> c_int {
         match op {
             0 => {
-                // SAFETY: the registry is exclusively lent; the token stays live while registered.
-                let result = unsafe {
-                    crate::swr_v1_reactor_registry_put(
-                        &raw mut self.registry,
-                        socket.fd,
-                        ptr::from_mut(socket).cast(),
-                        events,
-                    )
-                };
+                let result = self
+                    .registry
+                    .put(socket.fd, ptr::from_mut(socket).cast(), events);
                 if result != 0 {
                     return result;
                 }
@@ -561,16 +569,12 @@ impl ReactorState {
             }
             1 => {
                 socket.events = events;
-                // SAFETY: the registry is exclusively lent.
-                unsafe {
-                    crate::swr_v1_reactor_registry_set(&raw mut self.registry, socket.fd, events);
-                };
+                self.registry.set(socket.fd, events);
             }
             _ => {
                 socket.events = 0;
                 socket.removed = 1;
-                // SAFETY: the registry is exclusively lent.
-                unsafe { crate::swr_v1_reactor_registry_remove(&raw mut self.registry, socket.fd) };
+                self.registry.remove(socket.fd);
             }
         }
         0
@@ -582,30 +586,8 @@ impl ReactorState {
             unsafe { libc::close(self.backend_fd) };
             self.backend_fd = -1;
         }
-        let backend = std::mem::replace(&mut self.backend, Backend::None);
-        match backend {
-            Backend::None => (),
-            Backend::Poll(array) => {
-                // SAFETY: detached uniquely owned snapshot; all views have ended.
-                unsafe { crate::swr_v1_reactor_poll_free(array) };
-            }
-            #[cfg(target_os = "linux")]
-            Backend::Epoll(array) => {
-                // SAFETY: detached uniquely owned output array; all views have ended.
-                unsafe { crate::swr_v1_reactor_epoll_free(array) };
-            }
-            #[cfg(any(
-                target_os = "macos",
-                target_os = "freebsd",
-                target_os = "openbsd",
-                target_os = "netbsd",
-                target_os = "dragonfly"
-            ))]
-            Backend::Kqueue(array, _) => {
-                // SAFETY: detached uniquely owned output array; all views have ended.
-                unsafe { crate::swr_v1_reactor_kqueue_free(array) };
-            }
-        }
+        // The wait loop no longer holds pointers to the arrays.
+        self.backend = Backend::None;
     }
 }
 
@@ -618,7 +600,7 @@ pub(crate) mod tests {
         ReactorState::open(kind, count).head
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
-        drop(unsafe { Box::from_raw(owner) });
+        unsafe { swr_v1_reactor_delete(owner.cast()) };
     }
     #[test]
     fn owner_keeps_stable_public_slots_and_socket_registry() {

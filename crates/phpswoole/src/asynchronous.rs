@@ -59,14 +59,6 @@ fn truthy(value: &Value) -> bool {
     value.truthy()
 }
 
-fn long(value: &Value) -> i64 {
-    value.long()
-}
-
-fn double(value: &Value) -> f64 {
-    value.double()
-}
-
 /// `SW_MAX(low, SW_MIN(v, UINT32_MAX))`.
 fn bounded(value: i64, low: u32) -> u32 {
     u32::try_from(value.clamp(i64::from(low), i64::from(u32::MAX))).unwrap_or(u32::MAX)
@@ -80,34 +72,34 @@ pub(crate) extern "C" fn rshutdown() {
 /// `php_swoole_set_aio_option(options)`, after MINIT: the AIO pool's sizes and
 /// timeouts, and `io_uring`'s when the build has it.
 pub fn php_swoole_set_aio_option(options: &Array) {
-    if let Some(value) = get(options, c"aio_core_worker_num") {
-        swr_v1_core_set_aio_core_worker_num(bounded(long(value), 1));
+    if let Some(value) = get(options, c"aio_core_worker_num").and_then(Value::applied_long) {
+        swr_v1_core_set_aio_core_worker_num(bounded(value, 1));
     }
-    if let Some(value) = get(options, c"aio_worker_num") {
-        swr_v1_core_set_aio_worker_num(bounded(long(value), 1));
+    if let Some(value) = get(options, c"aio_worker_num").and_then(Value::applied_long) {
+        swr_v1_core_set_aio_worker_num(bounded(value, 1));
     }
-    if let Some(value) = get(options, c"aio_max_wait_time") {
-        swr_v1_core_set_aio_max_wait_time(double(value));
+    if let Some(value) = get(options, c"aio_max_wait_time").and_then(Value::applied_double) {
+        swr_v1_core_set_aio_max_wait_time(value);
     }
-    if let Some(value) = get(options, c"aio_max_idle_time") {
-        swr_v1_core_set_aio_max_idle_time(double(value));
+    if let Some(value) = get(options, c"aio_max_idle_time").and_then(Value::applied_double) {
+        swr_v1_core_set_aio_max_idle_time(value);
     }
     if crate::FLAGS.load(Ordering::Relaxed) & IOURING == 0 {
         return;
     }
-    if let Some(value) = get(options, c"iouring_entries") {
-        swr_v1_core_set_iouring_entries(bounded(long(value), 0));
+    if let Some(value) = get(options, c"iouring_entries").and_then(Value::applied_long) {
+        swr_v1_core_set_iouring_entries(bounded(value, 0));
     }
-    if let Some(value) = get(options, c"iouring_workers") {
-        swr_v1_core_set_iouring_workers(bounded(long(value), 0));
+    if let Some(value) = get(options, c"iouring_workers").and_then(Value::applied_long) {
+        swr_v1_core_set_iouring_workers(bounded(value, 0));
     }
-    if let Some(value) = get(options, c"iouring_flag") {
+    if let Some(value) = get(options, c"iouring_flag").and_then(Value::applied_long) {
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "the native setter assigned the PHP int64_t to uint32_t"
         )]
-        let flag = long(value) as u32;
+        let flag = value as u32;
         swr_v1_core_set_iouring_flag(flag);
     }
 }
@@ -150,14 +142,17 @@ fn async_set(call: &Call) {
     if let Some(value) = get(options, c"wait_signal") {
         swr_v1_core_set_wait_signal(truthy(value));
     }
-    if let Some(value) = get(options, c"dns_cache_refresh_time") {
-        DNS_REFRESH_SECONDS.store(double(value).to_bits(), Ordering::Relaxed);
+    if let Some(value) = get(options, c"dns_cache_refresh_time").and_then(Value::applied_double) {
+        DNS_REFRESH_SECONDS.store(value.to_bits(), Ordering::Relaxed);
     }
-    if let Some(value) = get(options, c"thread_num").or_else(|| get(options, c"min_thread_num")) {
-        swr_v1_core_set_aio_core_worker_num(bounded(long(value), 1));
+    if let Some(value) = get(options, c"thread_num")
+        .or_else(|| get(options, c"min_thread_num"))
+        .and_then(Value::applied_long)
+    {
+        swr_v1_core_set_aio_core_worker_num(bounded(value, 1));
     }
-    if let Some(value) = get(options, c"max_thread_num") {
-        swr_v1_core_set_aio_worker_num(bounded(long(value), 1));
+    if let Some(value) = get(options, c"max_thread_num").and_then(Value::applied_long) {
+        swr_v1_core_set_aio_worker_num(bounded(value, 1));
     }
     if let Some(value) = get(options, c"dns_lookup_random") {
         swr_v1_core_set_dns_lookup_random(truthy(value));
@@ -165,7 +160,10 @@ fn async_set(call: &Call) {
     if let Some(value) = get(options, c"enable_coroutine") {
         swr_v1_core_set_enable_coroutine(truthy(value));
     }
-    call.set_bool(true);
+    // A conversion's bailout (which `get` stops at) is the handler's to raise.
+    if !bailout::pending() {
+        call.set_bool(true);
+    }
 }
 
 /// The lookup's answers, as C++ pushes them.

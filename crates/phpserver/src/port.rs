@@ -16,13 +16,12 @@ use swoole_rs_ports::{
 };
 use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Object, bailout, message,
-    string::bytes,
+    Call, Class, E_WARNING, Object, Value, ZString, bailout, message,
     sys::{
-        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        swr_zend_string_release, swr_zval_copy, swr_zval_get_string, zend_class_entry,
-        zend_declare_property_bool, zend_declare_property_long, zend_declare_property_null,
-        zend_object, zend_object_handlers, zend_read_property, zend_update_property, zval,
+        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy,
+        zend_class_entry, zend_declare_property_bool, zend_declare_property_long,
+        zend_declare_property_null, zend_object, zend_object_handlers, zend_read_property,
+        zend_update_property, zval,
     },
     throw_error, type_of, unset_property_deny,
 };
@@ -60,7 +59,7 @@ pub struct PortData {
 
 type Port = Object<PortData>;
 
-/// `swr_ports_property_kind` (`native/ports/swoole_rs_ports.h`).
+/// The kinds `swoole_rs_ports::swr_v1_ports_class_property` returns.
 const PROPERTY_END: u32 = 0;
 const PROPERTY_LONG: u32 = 2;
 const PROPERTY_BOOL: u32 = 3;
@@ -147,26 +146,32 @@ pub(crate) unsafe fn deref(object: *mut zend_object) {
     let data = unsafe { Port::data(object) };
     if !data.property.serv.is_null() {
         for slot in &mut data.property.callbacks {
-            free_callable(slot);
+            free_callable(take(slot));
         }
         data.property.serv = ptr::null_mut();
     }
     if !data.port.is_null() {
         // SAFETY: a bound port, which outlives this call.
-        free_callable(
+        free_callable(take(
             &mut unsafe { port_config::of(data.port) }
                 .protocol
                 .private_data_1,
-        );
+        ));
         data.port = ptr::null_mut();
     }
 }
 
-fn free_callable(slot: &mut *mut c_void) {
-    if !slot.is_null() {
-        // SAFETY: a callable C++ created for this port.
-        unsafe { swoole_rs_phpruntime::callable_free(*slot) };
-        *slot = ptr::null_mut();
+/// A slot's callable, which leaves it null.
+fn take(slot: &mut *mut c_void) -> *mut c_void {
+    std::mem::replace(slot, ptr::null_mut())
+}
+
+/// Free a callable already out of its slot: a destructor this runs may reach
+/// the slot again.
+fn free_callable(callable: *mut c_void) {
+    if !callable.is_null() {
+        // SAFETY: a callable created for this port, owned by no slot now.
+        unsafe { swoole_rs_phpruntime::callable_free(callable) };
     }
 }
 
@@ -297,16 +302,26 @@ fn on(call: &Call) {
             cb,
         );
     }
-    let Some(slot) = property.callbacks.get_mut(index) else {
+    // The property write, the release and the create can each run PHP that
+    // calls on() again, so no borrow of the slot lives across them.
+    let Some(old) = data(call).property.callbacks.get_mut(index).map(take) else {
         return call.set_bool(false);
     };
-    free_callable(slot);
+    free_callable(old);
     // SAFETY: the callback argument.
     let callable = unsafe { swoole_rs_phpruntime::callable_create(cb) };
     if callable.is_null() {
         return call.set_bool(false);
     }
-    *slot = callable;
+    if let Some(slot) = data(call).property.callbacks.get_mut(index) {
+        // A nested on() stored its callable, and the property, after this one's
+        // write: keep that pair and drop ours.
+        free_callable(if slot.is_null() {
+            std::mem::replace(slot, callable)
+        } else {
+            callable
+        });
+    }
     crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event.index));
     call.set_bool(true);
 }
@@ -315,14 +330,10 @@ fn get_callback(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    // SAFETY: `zend::String(name)`: an owned reference, released below.
-    let name = unsafe { swr_zval_get_string(call.zval(1)) };
-    // SAFETY: the reference is live until released.
-    let name_bytes = unsafe { bytes(name) };
+    let name = call.value(1).map(Value::string);
+    let name = name.as_ref().map_or(&[][..], ZString::bytes);
     // SAFETY: the name's bytes.
-    let property = unsafe { swr_v1_ports_callback_property(name_bytes.as_ptr(), name_bytes.len()) };
-    // SAFETY: releasing the reference taken above.
-    unsafe { swr_zend_string_release(name) };
+    let property = unsafe { swr_v1_ports_callback_property(name.as_ptr(), name.len()) };
     if !property.data.is_null() {
         let mut rv = MaybeUninit::<zval>::uninit();
         // SAFETY: `$this`, the catalog's property name and a writable scratch zval.

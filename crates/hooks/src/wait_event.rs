@@ -2,7 +2,7 @@
 //! writable. A zero timeout is one `poll(2)` here; otherwise the coroutine parks on
 //! the reactor as an `EventWaiter`, whose reactor socket and coroutine `EventWaitOps`
 //! drive (the reactor's and the coroutine's under `System::wait_event`, fakes in tests).
-use crate::{swr_v1_hook_event_waiter, swr_v1_hook_wait_revents};
+use crate::{event_waiter, wait_revents};
 use core::ffi::c_void;
 use swoole_rs_corebase::constants::FdType;
 
@@ -45,7 +45,7 @@ struct Waiter {
 pub(crate) unsafe fn event_ready(waiter: *mut c_void, event: i32) -> *mut c_void {
     // SAFETY: the waiter lives in its parked frame, and only this thread touches it.
     let waiter = unsafe { &mut *waiter.cast::<Waiter>() };
-    let plan = swr_v1_hook_event_waiter(waiter.revents, event.cast_unsigned());
+    let plan = event_waiter(waiter.revents, event.cast_unsigned());
     waiter.revents = plan.revents;
     if plan.wake {
         waiter.co
@@ -174,7 +174,6 @@ pub(crate) mod native {
 
     // SAFETY: crates/coroutine's.
     unsafe extern "C" {
-        pub(crate) safe fn swr_v1_coroutine_current() -> *mut c_void;
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
         pub(crate) fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
     }
@@ -184,7 +183,7 @@ pub(crate) mod native {
 
     /// `Coroutine::get_current_safe()`.
     pub(crate) extern "C" fn current() -> *mut c_void {
-        let co = swr_v1_coroutine_current();
+        let co = swoole_rs_coroutine::current().cast::<c_void>();
         if co.is_null() {
             // SAFETY: Swoole's fatal error hook; this frame owns nothing.
             unsafe {
@@ -293,7 +292,7 @@ pub unsafe extern "C" fn swr_v1_hook_wait_event(
         Err(error) => return failed(0, error),
     };
     let read_write = (READ | WRITE).cast_unsigned();
-    let result = swr_v1_hook_wait_revents(
+    let result = wait_revents(
         events.cast_unsigned(),
         fired,
         read_write,

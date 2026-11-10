@@ -231,7 +231,6 @@ struct Worker {
     ptr: *mut c_void,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     static swr_case_process_layout: [usize; 6];
     fn swr_case_mem_pool_alloc(size: u32) -> *mut c_void;
@@ -349,7 +348,6 @@ unsafe extern "C" {
     fn __libc_current_sigrtmin() -> c_int;
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     #[link_name = "_Z20swoole_random_stringPcm"]
     fn swoole_random_string(buf: *mut c_char, size: usize);
@@ -1912,15 +1910,3 @@ pub(super) const CASES: super::Cases = &[
         reload_from_child_exit_callback,
     ),
 ];
-
-unsafe extern "C" {
-    fn swr_case_worker_retirement();
-}
-
-fn abort_and_reset() {
-    // SAFETY: the fixture's witness; it exits the process on a failed check.
-    unsafe { swr_case_worker_retirement() };
-}
-
-/// The repo-owned Server witness (formerly tests/modules/process/worker_retirement.cc).
-pub(super) const RETIREMENT_CASES: super::Cases = &[("abort_and_reset", abort_and_reset)];

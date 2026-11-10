@@ -16,27 +16,25 @@ use std::{
     ptr,
     rc::Rc,
 };
-use swoole_rs_hooks::{address::swr_v1_hooks_parse_address, swr_v1_hook_timeval};
+use swoole_rs_hooks::address::swr_v1_hooks_parse_address;
 use swoole_rs_zend::{
     Call, E_WARNING, Message,
     bailout::Bailout,
     message, string,
     sys::{
-        IS_ARRAY, IS_NULL, add_assoc_bool_ex, add_assoc_long_ex, add_assoc_string_ex,
-        add_assoc_zval_ex, add_next_index_resource, php_stream, php_stream_context, php_stream_ops,
-        php_stream_statbuf, php_stream_xport_crypto_param, php_stream_xport_param, sockaddr,
-        swr_zend_array_init, swr_zend_efree, swr_zend_is_true, swr_zend_stream_avoid_blocking,
+        IS_ARRAY, IS_NULL, PHP_STREAM_FLAG_AVOID_BLOCKING, add_assoc_bool_ex, add_assoc_long_ex,
+        add_assoc_string_ex, add_assoc_zval_ex, add_next_index_resource, php_stream,
+        php_stream_context, php_stream_ops, php_stream_statbuf, php_stream_xport_crypto_param,
+        php_stream_xport_param, sockaddr, swr_zend_array_init, swr_zend_efree, swr_zend_is_true,
         swr_zend_stream_buffered, swr_zend_stream_context, swr_zend_stream_context_options,
-        swr_zend_stream_crypto_op, swr_zend_stream_default_timeout, swr_zend_stream_empty_string,
-        swr_zend_stream_eof, swr_zend_stream_expose, swr_zend_stream_option,
-        swr_zend_stream_progress, swr_zend_stream_set_eof, swr_zend_stream_set_option,
-        swr_zend_stream_share_context, swr_zend_stream_timeval, swr_zend_stream_vm_active,
-        swr_zend_stream_xport_flags, swr_zend_stream_xport_op, swr_zval_try_addref, timeval,
+        swr_zend_stream_default_timeout, swr_zend_stream_expose, swr_zend_stream_option,
+        swr_zend_stream_progress, swr_zend_stream_set_option, swr_zend_stream_share_context,
+        swr_zend_stream_timeval, swr_zend_stream_vm_active, swr_zval_try_addref, timeval,
         zend_array, zend_hash_next_index_insert, zend_hash_str_find, zend_string, zval,
         zval_ptr_dtor,
     },
     type_of,
-    value::table,
+    value::{empty_string, table},
 };
 
 unsafe extern "C" {
@@ -80,16 +78,18 @@ mod option {
 
 /// `STREAM_XPORT_OP_*`.
 mod xport {
-    pub(super) const BIND: i32 = 0;
-    pub(super) const CONNECT: i32 = 1;
-    pub(super) const LISTEN: i32 = 2;
-    pub(super) const ACCEPT: i32 = 3;
-    pub(super) const CONNECT_ASYNC: i32 = 4;
-    pub(super) const GET_NAME: i32 = 5;
-    pub(super) const GET_PEER_NAME: i32 = 6;
-    pub(super) const RECV: i32 = 7;
-    pub(super) const SEND: i32 = 8;
-    pub(super) const SHUTDOWN: i32 = 9;
+    pub(super) use swoole_rs_zend::sys::{
+        _php_stream_xport_param_STREAM_XPORT_OP_ACCEPT as ACCEPT,
+        _php_stream_xport_param_STREAM_XPORT_OP_BIND as BIND,
+        _php_stream_xport_param_STREAM_XPORT_OP_CONNECT as CONNECT,
+        _php_stream_xport_param_STREAM_XPORT_OP_CONNECT_ASYNC as CONNECT_ASYNC,
+        _php_stream_xport_param_STREAM_XPORT_OP_GET_NAME as GET_NAME,
+        _php_stream_xport_param_STREAM_XPORT_OP_GET_PEER_NAME as GET_PEER_NAME,
+        _php_stream_xport_param_STREAM_XPORT_OP_LISTEN as LISTEN,
+        _php_stream_xport_param_STREAM_XPORT_OP_RECV as RECV,
+        _php_stream_xport_param_STREAM_XPORT_OP_SEND as SEND,
+        _php_stream_xport_param_STREAM_XPORT_OP_SHUTDOWN as SHUTDOWN,
+    };
 }
 
 /// `STREAM_OOB`, `STREAM_PEEK`.
@@ -164,7 +164,7 @@ fn net(stream: *mut php_stream) -> *mut NetStream {
     unsafe { (*stream).abstract_ }.cast()
 }
 
-/// `php_stream_alloc_rel(ops, abstract, persistent_id, "r+")` of `socket`;
+/// `php_stream_alloc(ops, abstract, persistent_id, "r+")` of `socket`;
 /// null (the socket freed) if it fails.
 fn alloc(
     ops: *const php_stream_ops,
@@ -211,7 +211,7 @@ fn progress(stream: *mut php_stream, bytes: isize) -> Result<(), Bailout> {
 
 fn set_eof(stream: *mut php_stream) {
     // SAFETY: a live stream.
-    unsafe { swr_zend_stream_set_eof(stream) };
+    unsafe { (*stream).set_eof(1) };
 }
 
 /// The seconds of a `timeval`, as Swoole's `set_timeout(timeval *)`.
@@ -219,7 +219,7 @@ pub(crate) fn seconds(time: *const timeval) -> f64 {
     let (mut seconds, mut micros) = (0.0, 0.0);
     // SAFETY: Zend lends a live timeval.
     unsafe { swr_zend_stream_timeval(time, &raw mut seconds, &raw mut micros) };
-    swr_v1_hook_timeval(seconds, micros)
+    swoole_rs_hooks::timeval(seconds, micros)
 }
 
 /// A context option of the stream, if set.
@@ -520,7 +520,7 @@ fn set_option(
         option::CRYPTO_API => {
             let param = ptrparam.cast::<php_stream_xport_crypto_param>();
             // SAFETY: Zend lends the crypto parameter.
-            match unsafe { swr_zend_stream_crypto_op(param) } {
+            match unsafe { (*param).op } {
                 // SAFETY: as above.
                 0 => unsafe { (*param).outputs.returncode = 0 },
                 1 => {
@@ -583,7 +583,7 @@ fn meta_data(stream: *mut php_stream, socket: &Socket, data: *mut zval) {
     }
     add_bool(data, c"timed_out", socket.error() == libc::ETIMEDOUT);
     // SAFETY: a live stream.
-    add_bool(data, c"eof", unsafe { swr_zend_stream_eof(stream) });
+    add_bool(data, c"eof", unsafe { (*stream).eof() } != 0);
     add_bool(data, c"blocked", true);
 }
 
@@ -612,14 +612,10 @@ fn xport_api(
     param: *mut php_stream_xport_param,
 ) -> Result<(), Bailout> {
     // SAFETY: Zend lends the transport parameter for the call.
-    let op = unsafe { swr_zend_stream_xport_op(param) };
-    // SAFETY: as above.
-    let flags = unsafe { swr_zend_stream_xport_flags(param) };
-    // SAFETY: as above.
     let p = unsafe { &mut *param };
-    let want_addr = flags & 1 != 0;
-    let want_textaddr = flags & 2 != 0;
-    let want_errortext = flags & 4 != 0;
+    let want_addr = p.want_addr() != 0;
+    let want_textaddr = p.want_textaddr() != 0;
+    let want_errortext = p.want_errortext() != 0;
     let textaddr = if want_textaddr {
         &raw mut p.outputs.textaddr
     } else {
@@ -631,7 +627,7 @@ fn xport_api(
         (ptr::null_mut(), ptr::null_mut())
     };
     let error_text = want_errortext.then_some(&raw mut p.outputs.error_text);
-    match op {
+    match p.op {
         xport::LISTEN => {
             p.outputs.returncode = if socket.listen(p.inputs.backlog) {
                 0
@@ -725,7 +721,7 @@ fn xport_api(
         xport::SHUTDOWN => {
             let how = [libc::SHUT_RD, libc::SHUT_WR, libc::SHUT_RDWR];
             let how = how
-                .get((flags >> 3) as usize)
+                .get(p.how() as usize)
                 .copied()
                 .unwrap_or(libc::SHUT_RDWR);
             p.outputs.returncode = socket.shutdown(how).into();
@@ -934,10 +930,8 @@ fn recvfrom(
         };
     } else {
         if !textaddr.is_null() {
-            // SAFETY: the interned empty string.
-            let empty = unsafe { swr_zend_stream_empty_string() };
-            // SAFETY: Zend's output slot.
-            unsafe { *textaddr = empty };
+            // SAFETY: Zend's output slot; the empty string is interned.
+            unsafe { *textaddr = empty_string() };
         }
         if !addr.is_null() {
             // SAFETY: Zend's output slot.
@@ -1251,7 +1245,7 @@ fn stream_from_socket(
     let stream = alloc(socket_ops(), socket, ptr::null())?;
     if !stream.is_null() {
         // SAFETY: the stream just made.
-        unsafe { swr_zend_stream_avoid_blocking(stream) };
+        unsafe { (*stream).flags |= PHP_STREAM_FLAG_AVOID_BLOCKING };
     }
     Ok(stream)
 }

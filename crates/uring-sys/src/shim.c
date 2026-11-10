@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/* liburing's static inline functions. Stays C (docs/zend.md, What stays C):
+ * private (the ring internals get_sqe and cq_advance touch change between
+ * liburing releases) and budget (each prep_* fills an SQE through a raw pointer). */
 #include "shim.h"
 
 struct io_uring_sqe *swr_uring_get_sqe(struct io_uring *ring) {
@@ -31,10 +34,6 @@ void swr_uring_prep_cancel(struct io_uring_sqe *sqe, void *user_data, int flags)
 
 void swr_uring_prep_open(struct io_uring_sqe *sqe, const char *path, int flags, mode_t mode) {
     io_uring_prep_open(sqe, path, flags, mode);
-}
-
-void swr_uring_prep_socket(struct io_uring_sqe *sqe, int domain, int type, int protocol, unsigned flags) {
-    io_uring_prep_socket(sqe, domain, type, protocol, flags);
 }
 
 void swr_uring_prep_connect(struct io_uring_sqe *sqe, int fd, const struct sockaddr *addr, socklen_t addrlen) {
@@ -83,10 +82,6 @@ void swr_uring_prep_write(struct io_uring_sqe *sqe, int fd, const void *buf, uns
 
 void swr_uring_prep_splice(struct io_uring_sqe *sqe, int fd_in, int64_t off_in, int fd_out, int64_t off_out, unsigned nbytes, unsigned splice_flags) {
     io_uring_prep_splice(sqe, fd_in, off_in, fd_out, off_out, nbytes, splice_flags);
-}
-
-void swr_uring_prep_shutdown(struct io_uring_sqe *sqe, int fd, int how) {
-    io_uring_prep_shutdown(sqe, fd, how);
 }
 
 void swr_uring_prep_close(struct io_uring_sqe *sqe, int fd) {

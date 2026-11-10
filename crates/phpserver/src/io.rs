@@ -1,6 +1,7 @@
 //! `Swoole\Server`'s `on`, `getCallback`, `listen`, the send family,
 //! `sendMessage` and `finish` (also `Swoole\Server\Task::finish`), over the
 //! Server's records (crates/server's view) and its Rust methods.
+use crate::lifecycle::Props;
 use crate::server::{fatal, no_payload, running, server};
 use std::{
     ffi::{CStr, c_int, c_void},
@@ -11,12 +12,9 @@ use swoole_rs_clients::address::swr_v1_clients_address_assign;
 use swoole_rs_corebase::{net_types::AddressStorage, swr_v1_clients_gethostbyname};
 use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, bailout, message,
+    Call, E_ERROR, E_WARNING, Value, bailout, message,
     string::bytes,
-    sys::{
-        IS_NULL, IS_STRING, IS_TRUE, swr_zend_string_release, swr_zval_copy, swr_zval_get_string,
-        zend_read_property, zend_update_property, zval,
-    },
+    sys::{IS_NULL, IS_STRING, IS_TRUE, swr_zval_copy, zend_read_property, zval},
     to_long, type_of,
 };
 
@@ -52,15 +50,10 @@ fn event(name: &[u8]) -> Option<(c_int, &'static CStr)> {
         .map(|&(_, kind, property)| (kind, property))
 }
 
-/// `zend::String(name)`, looked up as an event.
-fn lookup(name: *mut zval) -> Option<(c_int, &'static CStr)> {
-    // SAFETY: a live argument; an owned reference, released below.
-    let string = unsafe { swr_zval_get_string(name) };
-    // SAFETY: the reference is live until released.
-    let found = event(unsafe { bytes(string) });
-    // SAFETY: releasing the reference taken above.
-    unsafe { swr_zend_string_release(string) };
-    found
+/// `zend::String(name)`, looked up as an event. A conversion that leaves a bailout
+/// pending finds none; upstream's ended the call there, so callers check for it.
+fn lookup(name: &Value) -> Option<(c_int, &'static CStr)> {
+    event(name.string().bytes())
 }
 
 /// Re-raise a bailout C++ trapped, from the handler, which owns nothing.
@@ -68,8 +61,7 @@ fn lookup(name: *mut zval) -> Option<(c_int, &'static CStr)> {
 /// port object, as `sw_zend_call_method_with_*_params` calls it; a bailout is
 /// raised from the handler, which owns nothing.
 fn port_call(call: &Call, method: &[u8], retval: *mut zval, args: &[*mut zval]) {
-    // SAFETY: `$this` is a Server object.
-    let port = unsafe { crate::lifecycle::port_at(call.this(), 0) };
+    let port = crate::lifecycle::ServerObject::this(call).port_at(0);
     // SAFETY: the primary port's object zval.
     let object = unsafe { swoole_rs_zend::object_of(port) };
     // SAFETY: a live Port object, its class, the result slot and the arguments.
@@ -90,25 +82,22 @@ fn on(call: &Call) {
         return call.set_bool(false);
     }
     let (name, cb) = (call.zval(1), call.zval(2));
-    let Some((kind, property)) = lookup(name) else {
+    let Some((kind, property)) = call.value(1).and_then(lookup) else {
+        if bailout::pending() {
+            return;
+        }
         let mut retval = crate::dispatch::undef();
         port_call(call, b"on", &raw mut retval, &[name, cb]);
         // RETURN_BOOL(Z_BVAL_P(&retval))
         // SAFETY: Zend wrote the method's result.
         return call.set_bool(unsafe { type_of(&raw const retval) } == IS_TRUE);
     };
-    // SAFETY: `$this` and the callback argument; Zend copies both.
-    unsafe {
-        zend_update_property(
-            crate::server::SERVER.entry(),
-            call.this(),
-            property.as_ptr(),
-            property.count_bytes(),
-            cb,
-        );
-    }
-    // SAFETY: `$this` and the callback argument.
-    call.set_bool(unsafe { crate::lifecycle::set_callback(call.this(), kind, cb) });
+    let object = crate::lifecycle::ServerObject::this(call);
+    let set = call.value(2).is_some_and(|cb| {
+        Props::server(object).set(property, cb);
+        object.set_callback(kind, cb)
+    });
+    call.set_bool(set);
 }
 
 fn get_callback(call: &Call) {
@@ -116,7 +105,7 @@ fn get_callback(call: &Call) {
         return call.set_bool(false);
     }
     let name = call.zval(1);
-    if let Some((_, property)) = lookup(name) {
+    if let Some((_, property)) = call.value(1).and_then(lookup) {
         let mut rv = std::mem::MaybeUninit::<zval>::uninit();
         // SAFETY: `$this` is live; its own class is the scope (subclasses).
         let scope = unsafe { (*call.this()).ce };
@@ -136,6 +125,9 @@ fn get_callback(call: &Call) {
             // SAFETY: `RETURN_ZVAL(property, 1, 0)`.
             return unsafe { swr_zval_copy(call.return_value(), value) };
         }
+    }
+    if bailout::pending() {
+        return;
     }
     port_call(call, b"getcallback", call.return_value(), &[name]);
 }
@@ -168,14 +160,16 @@ fn listen(call: &Call) {
         };
         serv.find_port(listening)
     } else {
-        // SAFETY: a live server; `Z_PARAM_STRING`'s bytes are NUL-terminated.
-        unsafe { server_methods::add_port(serv.raw(), kind, address.as_ptr().cast(), port) }
+        // SAFETY: `Z_PARAM_STRING`'s bytes are NUL-terminated.
+        let host = unsafe { CStr::from_ptr(address.as_ptr().cast()) };
+        server_methods::add_port(serv, kind, host, port)
     };
     if ls.is_null() {
         return call.set_bool(false);
     }
     // SAFETY: `$this` is bound to `serv`, and `ls` is one of its ports.
-    let zport = unsafe { crate::lifecycle::add_port(call.this(), ls) };
+    let zport =
+        unsafe { crate::lifecycle::add_port(crate::lifecycle::ServerObject::this(call), ls) };
     // SAFETY: `RETVAL_ZVAL(port_object, 1, 0)`.
     unsafe { swr_zval_copy(call.return_value(), zport) };
 }
@@ -345,20 +339,10 @@ fn sendfile(call: &Call) {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "Server::sendfile's uint32_t name length and size_t size, as upstream's conversions"
+        reason = "Server::sendfile's size_t size, as upstream's conversion"
     )]
-    let (name_length, size) = (filename.len() as u32, length as usize);
-    // SAFETY: a live server and the NUL-terminated name.
-    call.set_bool(unsafe {
-        server_methods::sendfile(
-            serv.raw(),
-            fd,
-            filename.as_ptr().cast(),
-            name_length,
-            offset,
-            size,
-        )
-    });
+    let size = length as usize;
+    call.set_bool(server_methods::sendfile(serv, fd, filename, offset, size));
 }
 
 fn send_message(call: &Call) {

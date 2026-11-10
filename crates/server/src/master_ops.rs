@@ -73,6 +73,8 @@ use crate::ops::{
     OP_SC_ENSURE_BUFFER, OP_SC_OUT_FULL, OP_SC_OUT_HIGH, OP_SC_QUEUE_CLOSE,
 };
 use crate::port_config::PortConfig;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+use crate::port_config::methods;
 use crate::records::{ConnectionRecord, SessionRecord};
 use crate::send;
 use crate::server_methods::NativeContext;
@@ -110,12 +112,12 @@ const EVENT_CLOSE: u8 = 4;
 const SESSION_SIZE: usize = size_of::<SessionRecord>();
 const ATOMIC_SIZE: usize = 4;
 const SENDFILE_TASK_SIZE: usize = 16;
-// native/process/swoole_server.h asserts the native sizes of the arrays allocated here.
+// The native sizes of the arrays allocated here.
 const _: () = assert!(
     SESSION_SIZE == 16 && size_of::<PortCounters>() == 80,
     "server.cc sizeof(Session), sizeof(ServerPortGS)"
 );
-/// `SW_BUFFER_MIN_SIZE`, which `swoole_server.h` asserts.
+/// `SW_BUFFER_MIN_SIZE`.
 const BUFFER_MIN_SIZE: u32 = 65536;
 
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
@@ -1331,7 +1333,9 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let at = usize::try_from(arg).unwrap_or(usize::MAX);
             let worker = o.config().workers.cast::<WorkerRecord>().wrapping_add(at);
             // SAFETY: an event worker of the server's array, which shutdown indexes.
-            unsafe { crate::worker_methods::destroy_worker(serv, worker) };
+            let worker = unsafe { &mut *worker };
+            // SAFETY: a worker `create_worker` set up; shutdown holds no lock of it.
+            unsafe { crate::worker_methods::destroy_worker(worker) };
             0
         }
         OP_DESTROY_FACTORY if arg == MODE_BASE => destroy_base_factory(o),
@@ -1626,7 +1630,6 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         fn swoole_event_wait() -> c_int;
         #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
         fn swoole_timer_del(node: *mut c_void) -> bool;
-        fn swr_v1_core_timer_slot() -> *mut *mut c_void;
         fn swr_v1_timer_owner_reactor(timer: *const c_void) -> *mut c_void;
         fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
         #[link_name = "_Z27swoole_clear_last_error_msgv"]
@@ -1636,18 +1639,10 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         #[link_name = "_Z19swoole_signal_clearv"]
         fn swoole_signal_clear();
     }
-    // SAFETY: crates/ports'.
-    unsafe extern "C" {
-        /// `ListenPort::ssl_create`.
-        #[link_name = "_ZN6swoole10ListenPort10ssl_createEPNS_7network6SocketE"]
-        fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool;
-    }
     // `SwooleTG.timer`.
     let timer = || {
         // SAFETY: the address of this thread's slot.
-        let slot = unsafe { swr_v1_core_timer_slot() };
-        // SAFETY: as above.
-        unsafe { *slot }
+        unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() }
     };
     Some(match op {
         OP_LC_CLEAR_ERROR => {
@@ -1709,8 +1704,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { swoole_rs_tls::upstream::socket_free(o.ctx.sock.cast()) };
             0
         }
-        // SAFETY: the context's live port and the socket it accepted.
-        OP_SSL_CREATE => u64::from(unsafe { ssl_create(o.ctx.port, o.ctx.sock) }),
+        OP_SSL_CREATE => u64::from((methods().ssl_create)(o.ctx.port, o.ctx.sock)),
         OP_COMMAND_HANDLER => {
             let handler: swoole_rs_reactor::Handler = accept_command_result;
             o.reactor().set_handler(SW_FD_PIPE, SW_EVENT_READ, handler);
@@ -1881,14 +1875,12 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     #[expect(clippy::cast_possible_truncation, reason = "1000.0")]
     const ACCEPT_RETRY_MSEC: libc::c_long =
         (swoole_rs_corebase::constants::SW_ACCEPT_RETRY_TIME * 1000.0) as libc::c_long;
-    // SAFETY: native/reactor's and crates/ports', under their upstream symbols.
+    // SAFETY: native/reactor's.
     unsafe extern "C" {
         fn swr_v1_event_set_exit_condition(
             id: c_int,
             condition: unsafe extern "C" fn(*mut usize) -> bool,
         );
-        #[link_name = "_ZN6swoole10ListenPort5closeEv"]
-        fn port_close(port: *mut c_void);
     }
     let serv = o.ctx.serv;
     let slot = |index| o.state.callbacks.slot(index);
@@ -2037,8 +2029,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PORT_CLOSE => {
             let &port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
-            // SAFETY: one of the server's live ports.
-            unsafe { port_close(port) };
+            (methods().close)(port);
             0
         }
         OP_DISPATCH_FUNC => {
@@ -2098,24 +2089,6 @@ unsafe extern "C" fn forced_exit(_: *mut usize) -> bool {
     true
 }
 
-// SAFETY: crates/protocols' bus, linked into the same archive.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-unsafe extern "C" {
-    fn swr_v1_bus_pass(
-        bus: *mut core::ffi::c_void,
-        info: *const swoole_rs_corebase::DataHead,
-        data: *const c_char,
-    );
-    fn swr_v1_bus_buffer(bus: *mut core::ffi::c_void) -> *mut swoole_rs_corebase::DataHead;
-    fn swr_v1_bus_write(
-        bus: *mut core::ffi::c_void,
-        socket: *mut core::ffi::c_void,
-        head: *mut swoole_rs_corebase::DataHead,
-        data: *const u8,
-    ) -> bool;
-    fn swr_v1_bus_pipe_socket(bus: *mut core::ffi::c_void, fd: c_int) -> *mut SocketRecord;
-}
-
 /// `serv->get_worker_message_bus()`: this thread's in thread mode, else the
 /// server's.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -2130,13 +2103,6 @@ pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus {
     unsafe { crate::objects::Bus::of(bus) }
 }
 
-/// `serv->get_worker_message_bus()`'s Rust bus: this thread's in thread mode,
-/// else the server's. A `MessageBus` starts with its Rust bus.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-fn worker_bus(state: &ServerState) -> *mut core::ffi::c_void {
-    worker_message_bus(state).raw()
-}
-
 /// `OP_BASE_PASS`: the worker message bus takes `send`, then `worker_accept_event`
 /// of it.
 ///
@@ -2144,11 +2110,9 @@ fn worker_bus(state: &ServerState) -> *mut core::ffi::c_void {
 /// `serv` is a live server and `state` its own.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) unsafe fn base_pass(serv: *mut core::ffi::c_void, state: &ServerState, send: &SendData) {
-    let bus = worker_bus(state);
-    // SAFETY: the live bus and the send it copies.
-    unsafe { swr_v1_bus_pass(bus, &raw const send.info, send.data) };
-    // SAFETY: the live bus.
-    let event = unsafe { swr_v1_bus_buffer(bus) };
+    let bus = worker_message_bus(state);
+    bus.rust().pass(&send.info, send.data);
+    let event = bus.buffer();
     // SAFETY: the live server and the bus's buffer, which now holds the event.
     unsafe { entry::worker_accept_event(serv, event.cast()) };
 }
@@ -2172,25 +2136,9 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     };
     use core::ffi::c_void;
     use swoole_rs_corebase::DataHead;
-    // SAFETY: crates/tls', under their upstream symbols.
-    unsafe extern "C-unwind" {
-        #[cfg_attr(
-            target_os = "macos",
-            link_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKcxm"
-        )]
-        #[cfg_attr(
-            not(target_os = "macos"),
-            link_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKclm"
-        )]
-        fn sendfile_async(
-            socket: *mut c_void,
-            filename: *const c_char,
-            offset: libc::off_t,
-            length: usize,
-        ) -> c_int;
-        #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
-        fn send_async(socket: *mut c_void, data: *const c_void, length: usize) -> isize;
-    }
+    use swoole_rs_tls::upstream::{
+        socket_send_async as send_async, socket_sendfile_async as sendfile_async,
+    };
     /// `SW_SERVER_EVENT_SEND_FILE`, `_BUFFER_FULL`, `_INCOMING` and `_SHUTDOWN_SIGNAL`.
     const EVENT_SEND_FILE: u8 = 3;
     const EVENT_BUFFER_FULL: c_int = 13;
@@ -2265,7 +2213,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let SendfileTask { offset, length } = unsafe { task.read() };
             let name = task.wrapping_add(1).cast::<c_char>();
             // SAFETY: the connection's live socket and the task's name.
-            sign(unsafe { sendfile_async(o.conn().socket, name, offset, length) })
+            sign(unsafe { sendfile_async(o.conn().socket.cast(), name, offset, length) })
         }
         OP_SEND_SHUTDOWN => {
             // A worker may run as a user that cannot signal the master.
@@ -2280,7 +2228,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let pipe = worker_record(o.server(), 0_u16).pipe_worker;
             let data = (&raw const send).cast();
             // SAFETY: the worker's live pipe socket and the send's bytes.
-            u64::from(unsafe { send_async(pipe, data, size_of::<SendData>()) } > 0)
+            u64::from(unsafe { send_async(pipe.cast(), data, size_of::<SendData>()) } > 0)
         }
         OP_SENDFILE_FINISH => {
             let task = o.ctx.buffer.cast::<SendfileTask>();
@@ -2311,18 +2259,17 @@ fn forward(o: &Objects<'_>, send: &SendData) -> u64 {
     };
     let id = session.reactor_bits & 0xff;
     let pipe = worker_record(o.server(), id).pipe_master;
-    let bus = worker_bus(o.state);
+    let bus = worker_message_bus(o.state);
     let socket = if u64::from(o.config().mode_) == MODE_THREAD {
         // SAFETY: the worker's live pipe socket.
         let fd = unsafe { (*pipe.cast::<SocketRecord>()).fd };
-        // SAFETY: the live bus.
-        unsafe { swr_v1_bus_pipe_socket(bus, fd) }.cast()
+        bus.pipe_fd(fd)
     } else {
         pipe
     };
-    let (info, data) = ((&raw const send.info).cast_mut(), send.data.cast());
-    // SAFETY: the live bus, a live pipe socket and the send it writes.
-    u64::from(unsafe { swr_v1_bus_write(bus, socket, info, data) })
+    let mut info = send.info;
+    // SAFETY: a live pipe socket and the send it writes.
+    u64::from(unsafe { bus.rust().send(socket.cast(), &mut info, send.data.cast()) })
 }
 
 /// `serv->factory_->finish(send)`.
@@ -2499,22 +2446,11 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_SOCKET, OP_REACTOR_BARRIER, OP_RELEASE_PIPE_BUFFERS, OP_SC_IDLE_TIMER,
         OP_ST_CMD_SEND, OP_ST_PIPE_COMMAND_NEW,
     };
-    use core::ffi::c_void;
     use swoole_rs_process::command::{TO_MANAGER, TO_REACTOR_THREAD, TO_TASK_WORKER};
     /// `SW_SOCK_SSL`.
     const SOCK_SSL: c_int = 1 << 9;
     use crate::server_object::{barrier, port_delete, port_new};
-    // SAFETY: crates/ports' and crates/reactor's, under their upstream symbols.
-    unsafe extern "C-unwind" {
-        #[link_name = "_ZN6swoole10ListenPort16ssl_context_initEv"]
-        fn ssl_context_init(port: *mut c_void) -> bool;
-        #[link_name = "_ZN6swoole10ListenPort13create_socketEv"]
-        fn create_socket(port: *mut c_void) -> c_int;
-        #[link_name = "_ZN6swoole10ListenPort6importEi"]
-        fn import(port: *mut c_void, fd: c_int) -> bool;
-        #[link_name = "_ZN6swoole7network6Socket13set_fd_optionEii"]
-        fn set_fd_option(socket: *mut c_void, nonblock: c_int, cloexec: c_int) -> bool;
-    }
+    use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
     let serv = o.ctx.serv;
     Some(match op {
         // `swoole_timer_add(sec2msec(port->max_idle_time), true, get_timeout_callback(...))`
@@ -2576,14 +2512,12 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             if arg != 0 {
                 port.r#type = o.ctx.socket_type & !SOCK_SSL;
                 port.ssl = 1;
-                // SAFETY: the new port.
-                unsafe { ssl_context_init(ls) };
+                (methods().ssl_context_init)(ls);
             }
             0
         }
         OP_PORT_SOCKET => {
-            // SAFETY: the new port.
-            if unsafe { create_socket(o.ctx.port) } < 0 {
+            if (methods().create_socket)(o.ctx.port) < 0 {
                 log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
                 // SAFETY: the new port, deleted once.
                 unsafe { port_delete(o.ctx.port) };
@@ -2596,15 +2530,15 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let ls = port_new(serv);
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let fd = arg as c_int;
-            // SAFETY: the new port and an inherited descriptor.
-            if !unsafe { import(ls, fd) } {
+            if !(methods().import)(ls, fd) {
                 // SAFETY: the new port, deleted once.
                 unsafe { port_delete(ls) };
                 return Some(0);
             }
             o.ctx.port = ls;
-            // SAFETY: the socket `import` made: O_NONBLOCK and O_CLOEXEC.
-            unsafe { set_fd_option(o.port().socket, 1, 1) };
+            // SAFETY: the record `import` made, which nothing else borrows here: O_NONBLOCK
+            // and O_CLOEXEC.
+            socket_set_fd_option(unsafe { &mut *o.port().socket.cast() }, 1, 1);
             1
         }
         OP_ST_CMD_SEND => {
@@ -2693,14 +2627,11 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             } else {
                 worker.pipe_master
             };
-            // SAFETY: the server's live bus, a worker pipe and the message.
+            let bus = server_message_bus(o.state);
+            // SAFETY: a worker pipe and the message.
             u64::from(unsafe {
-                swr_v1_bus_write(
-                    server_message_bus(o.state).raw(),
-                    pipe,
-                    &raw mut task.info,
-                    task.data.cast(),
-                )
+                bus.rust()
+                    .send(pipe.cast(), &mut task.info, task.data.cast())
             })
         }
         OP_ST_PIPE_COMMAND_NEW => {
@@ -2735,14 +2666,8 @@ pub(crate) fn server_message_bus(state: &ServerState) -> crate::objects::Bus {
 }
 
 /// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.
-///
-/// # Safety
-/// `serv` is a live `Server`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-#[unsafe(export_name = "_ZN6swoole6Server19create_pipe_buffersEv")]
-pub(crate) unsafe extern "C" fn create_pipe_buffers(serv: *mut core::ffi::c_void) -> c_int {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { crate::view::Server::from_raw(serv) };
+pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> c_int {
     let state = serv.state();
     let size = state.config_ref().ipc_max_size;
     if server_message_bus(state).alloc_buffer(size as usize) {

@@ -195,9 +195,7 @@ impl Change<'_> {
     fn poll(&self, state: &ReactorState) -> bool {
         let (socket, id, events) = (self.socket, self.id, self.events);
         let (fd, fd_type) = (socket.fd, socket.fd_type);
-        // SAFETY: the state's live registry.
-        let exists =
-            !unsafe { crate::swr_v1_reactor_registry_get(&raw const state.registry, fd) }.is_null();
+        let exists = !state.registry.get(fd).is_null();
         let (origin, code, message) = match self.op {
             ADD if exists => (
                 c"ReactorPoll::add",
@@ -206,21 +204,14 @@ impl Change<'_> {
                     "[Reactor#{id}] failed to add events[fd={fd}, fd_type={fd_type}, events={events}], the socket#{fd} is already exists"
                 ),
             ),
-            // SAFETY: the state's live registry.
-            ADD if usize::try_from(state.backend_limit).ok()
-                == Some(unsafe {
-                    crate::swr_v1_reactor_registry_count(&raw const state.registry)
-                }) =>
-            {
-                (
-                    c"ReactorPoll::add",
-                    SW_ERROR_EVENT_ADD_FAILED,
-                    format!(
-                        "too many sockets, the max events is {}",
-                        state.backend_limit
-                    ),
-                )
-            }
+            ADD if usize::try_from(state.backend_limit).ok() == Some(state.registry.count()) => (
+                c"ReactorPoll::add",
+                SW_ERROR_EVENT_ADD_FAILED,
+                format!(
+                    "too many sockets, the max events is {}",
+                    state.backend_limit
+                ),
+            ),
             SET if !exists => (
                 c"ReactorPoll::set",
                 SW_ERROR_SOCKET_NOT_EXISTS,

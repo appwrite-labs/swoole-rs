@@ -6,17 +6,13 @@ use crate::{
     send,
     state::State,
 };
-use std::{ffi::c_void, sync::atomic::Ordering::Relaxed};
+use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_httpbindings::{Text, swr_v1_httpbindings_request_option};
 use swoole_rs_phpstubs::http_request;
+use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Class, declare_long, declare_property_null, handlers, init_object, string,
-    sys::{
-        IS_STRING, ZEND_ACC_PUBLIC, swr_zend_hash_foreach_kv, swr_zend_string_release,
-        swr_zval_is_true, zend_class_entry, zend_object, zend_string, zend_ulong, zval,
-    },
-    type_of,
-    value::{self, get_long, get_string, obj_of},
+    Call, Class, Key, Value, declare_long, declare_property_null, handlers, init_object,
+    sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -65,8 +61,7 @@ method_table! {
 /// MINIT: register the class as `php_swoole_http_request_minit` did.
 /// # Safety
 /// Called once, at MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp_request_minit() -> *mut zend_class_entry {
+pub unsafe fn request_minit(_: &MinitArgs) {
     // SAFETY: MINIT, with a static table.
     unsafe {
         REQUEST.register(
@@ -94,7 +89,6 @@ pub unsafe extern "C" fn swr_v1_phphttp_request_minit() -> *mut zend_class_entry
         // SAFETY: as above.
         unsafe { declare_property_null(ce, name, swoole_rs_zend::sys::ZEND_ACC_PUBLIC) };
     }
-    ce
 }
 
 /// `http_request_get_and_check_context`.
@@ -122,12 +116,9 @@ fn get_data(call: &Call) {
         host::fatal("unable to get data from HTTP2 request");
         return call.set_bool(false);
     }
-    // SAFETY: a live context; only the field's address is taken.
-    let data = unsafe { &raw mut (*ctx.cast::<State>()).request.zdata };
-    // SAFETY: the context's request data is a live zval.
-    if unsafe { type_of(data) } == IS_STRING {
-        // SAFETY: as above.
-        return unsafe { call.set_copy(data) };
+    let data = &send::state(ctx).request.zdata;
+    if data.str().is_some() {
+        return call.set_owned(data.copy());
     }
     call.set_empty_string();
 }
@@ -137,22 +128,27 @@ const BEST_SPEED: i8 = 1;
 
 /// `Request::create(array $options = [])`: a request parsed by hand.
 fn create_request(call: &Call) {
-    let Ok(options) = call.arity(0, 1).and_then(|()| call.array_opt(1)) else {
+    let options = call.arity(0, 1).and_then(|()| {
+        (call.num_args() >= 1)
+            .then(|| call.array_ref(1))
+            .transpose()
+    });
+    let Ok(options) = options else {
         return call.set_bool(false);
     };
     let ctx = context::alloc();
     parse::init_request_parser(ctx);
-    let object = call.return_value();
-    // SAFETY: the return slot and the registered class.
-    unsafe { init_object(object, entry()) };
     let state = send::state(ctx);
-    // SAFETY: the object just made; the context borrows it, as upstream's does.
-    state.request.zobject.value = unsafe { *object };
-    state.request.zobject.ptr = &raw mut state.request.zobject.value;
-    // SAFETY: the object just made.
-    let std = unsafe { obj_of(object) };
-    // SAFETY: one of our objects.
-    unsafe { context::set_context(std, ctx) };
+    let slot = &mut state.request.zobject;
+    // SAFETY: the context's own zval and the registered class.
+    unsafe { init_object(&raw mut slot.value, entry()) };
+    slot.ptr = &raw mut slot.value;
+    // The return slot takes the reference; the context borrows it, as upstream's does.
+    call.set_value(slot.value);
+    if let Some(std) = slot.object() {
+        // SAFETY: one of our objects.
+        unsafe { context::set_context(std, ctx) };
+    }
     state.parse_cookie = 1;
     state.parse_body = 1;
     state.parse_files = 1;
@@ -162,27 +158,18 @@ fn create_request(call: &Call) {
         state.compression_level = BEST_SPEED;
     }
     if let Some(options) = options {
-        // SAFETY: an array argument of this call.
-        let table = unsafe { value::table(options) };
-        // SAFETY: a live array; `option` takes the context.
-        unsafe { swr_zend_hash_foreach_kv(table, Some(option), ctx.cast()) };
+        options.for_each(|key, value| {
+            if let Key::Name(name) = key {
+                option(send::state(ctx), name, value);
+            }
+        });
     }
     parse::property(send::state(ctx), Property::Server);
     parse::property(send::state(ctx), Property::Header);
 }
 
 /// One of `Request::create`'s options (a bailout in a conversion is deferred).
-unsafe extern "C" fn option(
-    key: *mut zend_string,
-    _: zend_ulong,
-    zvalue: *mut zval,
-    context: *mut c_void,
-) {
-    if key.is_null() {
-        return;
-    }
-    // SAFETY: the array's string key.
-    let name = unsafe { string::bytes(key) };
+fn option(state: &mut State, name: &[u8], value: &Value) {
     let capabilities = CAPABILITIES.load(Relaxed);
     let wanted = u32::from(capabilities & 8 != 0) | u32::from(capabilities & 1 != 0) << 1;
     let text = Text {
@@ -191,37 +178,22 @@ unsafe extern "C" fn option(
     };
     // SAFETY: the key's bytes, borrowed for the call.
     let option = unsafe { swr_v1_httpbindings_request_option(text, wanted) };
-    let state = send::state(context);
-    // SAFETY: the array's live value.
-    let truth = || u8::from(unsafe { swr_zval_is_true(zvalue) });
+    let truth = || u8::from(value.truthy());
     match option {
         1 => state.parse_cookie = truth(),
         2 => state.parse_body = truth(),
         3 => state.parse_files = truth(),
         4 => state.enable_compression = truth(),
         5 => {
-            // SAFETY: as above.
-            let level = unsafe { get_long(zvalue) };
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "upstream's int8_t compression_level"
             )]
-            let level = level as i8;
-            send::state(context).compression_level = level;
+            let level = value.long() as i8;
+            state.compression_level = level;
         }
         6 => state.websocket_compression = truth(),
-        7 => {
-            // SAFETY: as above.
-            let dir = unsafe { get_string(zvalue) };
-            if dir.is_null() {
-                return;
-            }
-            // SAFETY: the converted string.
-            let bytes = unsafe { string::bytes(dir) };
-            send::state(context).upload_tmp_dir = Some(crate::context::directory(bytes));
-            // SAFETY: the reference `get_string` returned.
-            unsafe { swr_zend_string_release(dir) };
-        }
+        7 => state.upload_tmp_dir = Some(crate::context::directory(value.string().bytes())),
         _ => {}
     }
 }
@@ -245,14 +217,15 @@ fn parse(call: &Call) {
 fn get_method(call: &Call) {
     let Some(ctx) = checked(call) else { return };
     if host::flags(ctx) & HTTP2 != 0 {
-        // SAFETY: a live context; its `server` array is live while the request is.
-        let server = unsafe { (*ctx.cast::<State>()).request.zserver.ptr };
-        let method = parse::find(server, b"request_method");
-        if method.is_null() {
-            return call.set_null();
-        }
-        // SAFETY: a live zval from that array.
-        return unsafe { call.set_copy(method) };
+        // SAFETY: the context's `server` array, live while the request is.
+        let server = unsafe { Value::from_ptr(send::state(ctx).request.zserver.ptr) };
+        let method = server
+            .and_then(Value::array)
+            .and_then(|server| server.find(b"request_method"));
+        return match method {
+            Some(method) => call.set_owned(method.copy()),
+            None => call.set_null(),
+        };
     }
     call.set_bytes(method_name(ctx.cast()).to_bytes());
 }

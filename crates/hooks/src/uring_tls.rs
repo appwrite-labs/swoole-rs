@@ -5,12 +5,12 @@
 //! native socket through [`TlsHost`], in upstream's order (`set_err`, then
 //! `check_return_value(-1)` where upstream calls it).
 
-use std::ffi::{c_char, c_int, c_ulong, c_void};
+use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 use swoole_rs_corebase::set_errno;
 
 use openssl_sys as ssl;
 
-use crate::uring::{Host, swr_v1_uring_recv, swr_v1_uring_send};
+use crate::uring::{self, Host};
 
 unsafe extern "C" {
     fn BIO_ctrl_pending(bio: *mut ssl::BIO) -> usize;
@@ -40,9 +40,8 @@ pub struct TlsHost {
 
 /// One TLS operation's view of a `UringSocket`.
 #[derive(Clone, Copy)]
-#[repr(C)]
 pub struct Tls {
-    pub host: *const TlsHost,
+    pub host: &'static TlsHost,
     pub socket: *mut c_void,
     pub ssl: *mut ssl::SSL,
     pub rbio: *mut ssl::BIO,
@@ -61,9 +60,8 @@ fn len(size: usize) -> c_int {
 }
 
 impl Tls {
-    fn host(&self) -> &TlsHost {
-        // SAFETY: the native caller passes its static host table.
-        unsafe { &*self.host }
+    fn host(&self) -> &'static TlsHost {
+        self.host
     }
 
     fn set_err(&self, code: c_int) {
@@ -89,7 +87,7 @@ impl Tls {
     }
 
     /// Upstream's `ssl_bio_write`: send everything OpenSSL queued.
-    fn bio_write(&self) -> bool {
+    pub(crate) fn bio_write(&self) -> bool {
         let (buf, size) = self.buffer(true);
         while self.pending() != 0 {
             // SAFETY: `buf` holds `size` bytes.
@@ -104,7 +102,7 @@ impl Tls {
                 let rest = buf.wrapping_add(written);
                 // SAFETY: the first `nread` bytes of `buf` are filled.
                 let n = unsafe {
-                    swr_v1_uring_send(
+                    uring::send(
                         self.host().uring,
                         self.fd,
                         rest.cast(),
@@ -128,12 +126,12 @@ impl Tls {
     }
 
     /// Upstream's `ssl_bio_read`: feed OpenSSL one receive.
-    fn bio_read(&self) -> bool {
+    pub(crate) fn bio_read(&self) -> bool {
         let (buf, size) = self.buffer(false);
         loop {
             // SAFETY: `buf` holds `size` bytes.
             let rv = unsafe {
-                swr_v1_uring_recv(
+                uring::recv(
                     self.host().uring,
                     self.fd,
                     buf.cast(),
@@ -161,7 +159,7 @@ impl Tls {
     }
 
     /// Upstream's `ssl_bio_prepare`.
-    fn prepare(&self) -> bool {
+    pub(crate) fn prepare(&self) -> bool {
         if self.pending() > 0 && !self.bio_write() {
             self.check_failure();
             return false;
@@ -169,8 +167,9 @@ impl Tls {
         true
     }
 
-    /// Upstream's `ssl_bio_perform`: move bytes for what OpenSSL waits on.
-    fn perform(&self, rc: c_int, function: *const c_char) -> bool {
+    /// Upstream's `ssl_bio_perform` for `rc` from the OpenSSL call named
+    /// `function`: move bytes for what OpenSSL waits on.
+    pub(crate) fn perform(&self, rc: c_int, function: &CStr) -> bool {
         if !self.prepare() {
             return false;
         }
@@ -191,7 +190,7 @@ impl Tls {
                     self.set_err(self.host().bad_protocol);
                 } else {
                     // SAFETY: the native callback logs and sets the error.
-                    unsafe { (self.host().ssl_error)(self.socket, function, error, code) };
+                    unsafe { (self.host().ssl_error)(self.socket, function.as_ptr(), error, code) };
                 }
                 return false;
             }
@@ -203,7 +202,7 @@ impl Tls {
     }
 
     /// Upstream's `ssl_recv` / `ssl_send` loop around `SSL_read` / `SSL_write`.
-    fn transfer(&self, function: &std::ffi::CStr, mut io: impl FnMut() -> c_int) -> isize {
+    fn transfer(&self, function: &CStr, mut io: impl FnMut() -> c_int) -> isize {
         loop {
             let n = io();
             if !self.prepare() {
@@ -212,75 +211,88 @@ impl Tls {
             if n > 0 {
                 return isize::try_from(n).unwrap_or(-1);
             }
-            if !self.perform(n, function.as_ptr()) {
+            if !self.perform(n, function) {
                 return -1;
             }
         }
     }
-}
 
-/// `ssl_bio_write`.
-///
-/// # Safety
-/// `tls` describes a live socket, its session and BIOs.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_uring_tls_write(tls: Tls) -> bool {
-    tls.bio_write()
-}
+    /// `ssl_recv`: decrypted bytes into `buf`, or -1.
+    ///
+    /// # Safety
+    /// `buf` holds `n` bytes.
+    pub(crate) unsafe fn recv(&self, buf: *mut c_void, n: usize) -> isize {
+        // SAFETY: `buf` holds `n` bytes.
+        self.transfer(c"ssl_recv", || unsafe {
+            ssl::SSL_read(self.ssl, buf, len(n))
+        })
+    }
 
-/// `ssl_bio_read`.
-///
-/// # Safety
-/// As [`swr_v1_uring_tls_write`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_uring_tls_read(tls: Tls) -> bool {
-    tls.bio_read()
-}
+    /// `ssl_send`: bytes of `buf` encrypted and sent, or -1.
+    ///
+    /// # Safety
+    /// `buf` holds `n` bytes.
+    pub(crate) unsafe fn send(&self, buf: *const c_void, n: usize) -> isize {
+        // SAFETY: `buf` holds `n` bytes.
+        self.transfer(c"ssl_send", || unsafe {
+            ssl::SSL_write(self.ssl, buf, len(n))
+        })
+    }
 
-/// `ssl_bio_prepare`.
-///
-/// # Safety
-/// As [`swr_v1_uring_tls_write`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_uring_tls_prepare(tls: Tls) -> bool {
-    tls.prepare()
-}
+    /// `send_once` / `recv_once`: `io` is the network socket's `send` or `recv` of
+    /// `buf`; without a TLS session it runs once.
+    ///
+    /// # Safety
+    /// `buf` holds `n` bytes and the callbacks take `self.socket`.
+    pub(crate) unsafe fn once(
+        &self,
+        buf: *mut c_void,
+        n: usize,
+        io: unsafe extern "C" fn(socket: *mut c_void, buf: *mut c_void, n: usize) -> isize,
+        want: unsafe extern "C" fn(socket: *mut c_void) -> c_int,
+    ) -> isize {
+        // SAFETY: the caller's live socket and buffer.
+        let attempt = || unsafe { io(self.socket, buf, n) };
+        if self.ssl.is_null() {
+            return attempt();
+        }
+        once(
+            attempt,
+            // SAFETY: the caller's live socket.
+            || unsafe { want(self.socket) },
+            || self.prepare(),
+            || self.bio_read(),
+            || self.bio_write(),
+        )
+    }
 
-/// `ssl_bio_perform` for `rc` from the OpenSSL call named `function`.
-///
-/// # Safety
-/// As [`swr_v1_uring_tls_write`]; `function` is a C string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_uring_tls_perform(
-    tls: Tls,
-    rc: c_int,
-    function: *const c_char,
-) -> bool {
-    tls.perform(rc, function)
-}
-
-/// `ssl_recv`: decrypted bytes into `buf`, or -1.
-///
-/// # Safety
-/// As [`swr_v1_uring_tls_write`]; `buf` holds `n` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_uring_tls_recv(tls: Tls, buf: *mut c_void, n: usize) -> isize {
-    // SAFETY: `buf` holds `n` bytes.
-    tls.transfer(c"ssl_recv", || unsafe {
-        ssl::SSL_read(tls.ssl, buf, len(n))
-    })
-}
-
-/// `ssl_send`: bytes of `buf` encrypted and sent, or -1.
-///
-/// # Safety
-/// As [`swr_v1_uring_tls_write`]; `buf` holds `n` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_uring_tls_send(tls: Tls, buf: *const c_void, n: usize) -> isize {
-    // SAFETY: `buf` holds `n` bytes.
-    tls.transfer(c"ssl_send", || unsafe {
-        ssl::SSL_write(tls.ssl, buf, len(n))
-    })
+    /// `UringSocket::ssl_sendfile`: `size` bytes of `file` from `*offset`,
+    /// encrypted ([`crate::sendfile::tls_sendfile`]); the bytes sent and the
+    /// warning to log (`crate::sendfile::TLS_WARN_*`, or 0). `classify` is the
+    /// socket's `catch_write_error(errno)`.
+    ///
+    /// # Safety
+    /// `file` is open and `offset` writable.
+    pub(crate) unsafe fn sendfile(
+        &self,
+        file: c_int,
+        offset: *mut libc::off_t,
+        size: usize,
+        classify: unsafe extern "C" fn(socket: *mut c_void, error: c_int) -> c_int,
+    ) -> (usize, c_int) {
+        // SAFETY: the caller's offset.
+        let offset = unsafe { &mut *offset };
+        crate::sendfile::tls_sendfile(
+            size,
+            offset,
+            // SAFETY: `buf` is writable for its length.
+            |buf, at| unsafe { libc::pread(file, buf.as_mut_ptr().cast(), buf.len(), at) },
+            // SAFETY: the operation's live TLS state, and the bytes read.
+            |data| unsafe { self.send(data.as_ptr().cast(), data.len()) },
+            // SAFETY: the live socket's classifier.
+            || unsafe { classify(self.socket, errno()) },
+        )
+    }
 }
 
 /// `UringSocket::send_once` / `recv_once`'s retry: one `io` attempt, then the
@@ -311,72 +323,6 @@ fn once(
             return n;
         }
     }
-}
-
-/// `send_once` / `recv_once`: `io` is the network socket's `send` or `recv` of
-/// `buf`; without a TLS session it runs once.
-///
-/// # Safety
-/// As [`swr_v1_uring_tls_write`]; `buf` holds `n` bytes and the callbacks take
-/// `tls.socket`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_uring_tls_once(
-    tls: Tls,
-    buf: *mut c_void,
-    n: usize,
-    io: unsafe extern "C" fn(socket: *mut c_void, buf: *mut c_void, n: usize) -> isize,
-    want: unsafe extern "C" fn(socket: *mut c_void) -> c_int,
-) -> isize {
-    // SAFETY: the caller's live socket and buffer.
-    let attempt = || unsafe { io(tls.socket, buf, n) };
-    if tls.ssl.is_null() {
-        return attempt();
-    }
-    once(
-        attempt,
-        // SAFETY: the caller's live socket.
-        || unsafe { want(tls.socket) },
-        || tls.prepare(),
-        || tls.bio_read(),
-        || tls.bio_write(),
-    )
-}
-
-/// `UringSocket::ssl_sendfile`'s outcome: bytes sent and the warning to log
-/// (`crate::sendfile::TLS_WARN_*`, or 0).
-#[repr(C)]
-pub struct TlsSendfile {
-    pub total: usize,
-    pub warn: c_int,
-}
-
-/// `UringSocket::ssl_sendfile`: `size` bytes of `file` from `*offset`, encrypted
-/// ([`crate::sendfile::tls_sendfile`]). `classify` is the socket's
-/// `catch_write_error(errno)`.
-///
-/// # Safety
-/// As [`swr_v1_uring_tls_write`]; `file` is open and `offset` writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_uring_tls_sendfile(
-    tls: Tls,
-    file: c_int,
-    offset: *mut libc::off_t,
-    size: usize,
-    classify: unsafe extern "C" fn(socket: *mut c_void, error: c_int) -> c_int,
-) -> TlsSendfile {
-    // SAFETY: the caller's offset.
-    let offset = unsafe { &mut *offset };
-    let (total, warn) = crate::sendfile::tls_sendfile(
-        size,
-        offset,
-        // SAFETY: `buf` is writable for its length.
-        |buf, at| unsafe { libc::pread(file, buf.as_mut_ptr().cast(), buf.len(), at) },
-        // SAFETY: the operation's live TLS state, and the bytes read.
-        |data| unsafe { swr_v1_uring_tls_send(tls, data.as_ptr().cast(), data.len()) },
-        // SAFETY: the live socket's classifier.
-        || unsafe { classify(tls.socket, errno()) },
-    );
-    TlsSendfile { total, warn }
 }
 
 #[cfg(test)]
@@ -425,7 +371,7 @@ mod tests {
 
     fn tls(fd: c_int, rbio: *mut ssl::BIO, wbio: *mut ssl::BIO) -> Tls {
         Tls {
-            host: &raw const TLS_HOST,
+            host: &TLS_HOST,
             socket: std::ptr::null_mut(),
             ssl: std::ptr::null_mut(),
             rbio,
@@ -494,10 +440,7 @@ mod tests {
                 100,
                 "queued"
             );
-            assert!(
-                swr_v1_uring_tls_prepare(tls(fds[0], rbio, wbio)),
-                "prepare sends"
-            );
+            assert!(tls(fds[0], rbio, wbio).prepare(), "prepare sends");
             let mut received = [0_u8; 128];
             assert_eq!(
                 libc::read(fds[1], received.as_mut_ptr().cast(), 128),
@@ -510,7 +453,7 @@ mod tests {
                 3,
                 "peer writes"
             );
-            assert!(swr_v1_uring_tls_read(tls(fds[0], rbio, wbio)), "read");
+            assert!(tls(fds[0], rbio, wbio).bio_read(), "read");
             let mut out = [0_u8; 8];
             assert_eq!(
                 ssl::BIO_read(rbio, out.as_mut_ptr().cast(), 8),
@@ -519,7 +462,7 @@ mod tests {
             );
             // The peer closing is a TLS reset.
             libc::close(fds[1]);
-            assert!(!swr_v1_uring_tls_read(tls(fds[0], rbio, wbio)), "closed");
+            assert!(!tls(fds[0], rbio, wbio).bio_read(), "closed");
             assert_eq!(
                 ERRORS.with(|errors| errors.borrow().clone()),
                 vec![1009],
@@ -600,10 +543,7 @@ mod tests {
                 if rc == 1 {
                     break;
                 }
-                assert!(
-                    swr_v1_uring_tls_perform(tls, rc, c"ssl_connect".as_ptr()),
-                    "connect"
-                );
+                assert!(tls.perform(rc, c"ssl_connect"), "connect");
             }
             assert_eq!(
                 ERRORS.with(|errors| errors.borrow().clone()),
@@ -611,13 +551,13 @@ mod tests {
                 "errCode 0"
             );
 
-            assert_eq!(swr_v1_uring_tls_send(tls, b"ping".as_ptr().cast(), 4), 4);
+            assert_eq!(tls.send(b"ping".as_ptr().cast(), 4), 4);
 
             let mut buf = [0_u8; 16];
-            assert_eq!(swr_v1_uring_tls_recv(tls, buf.as_mut_ptr().cast(), 16), 2);
+            assert_eq!(tls.recv(buf.as_mut_ptr().cast(), 16), 2);
 
             // the next read sees the close_notify
-            assert!(swr_v1_uring_tls_recv(tls, buf.as_mut_ptr().cast(), 16) <= 0);
+            assert!(tls.recv(buf.as_mut_ptr().cast(), 16) <= 0);
             assert_eq!(
                 ERRORS.with(|errors| errors.borrow().clone()),
                 [TLS_HOST.reset, -1],

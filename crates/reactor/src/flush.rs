@@ -1,8 +1,8 @@
 //! The reactor's writable handler and drain (upstream `Reactor::_writable_callback` and
 //! `drain_write_buffer`) over the socket's write-path block and its output queue.
-//! Native code performs the effects that need its objects.
+//! `crates/tls`'s `reactor_write.rs` supplies the effects.
 use crate::write::SocketOutput;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 use swoole_rs_buffer::{Buffer, swr_v1_buffer_stats};
 
 const SW_OK: c_int = 0;
@@ -11,23 +11,21 @@ const SW_ERR: c_int = -1;
 const SENDFILE: c_int = 1;
 const CLOSE: c_int = 2;
 
-/// Native effects. Each receives `context`.
-#[repr(C)]
-pub struct FlushOps {
-    pub context: *mut c_void,
+/// The flush's effects (`crates/tls`'s `reactor_write.rs`).
+pub trait FlushEffects {
     /// The front entry's kind (`typed_front().kind` or `front()->type`).
-    pub front_kind: unsafe extern "C" fn(*mut c_void) -> c_int,
-    pub handle_send: unsafe extern "C" fn(*mut c_void) -> c_int,
-    pub handle_sendfile: unsafe extern "C" fn(*mut c_void) -> c_int,
+    fn front_kind(&self) -> c_int;
+    fn handle_send(&self) -> c_int;
+    fn handle_sendfile(&self) -> c_int;
     /// `reactor->close(reactor, socket)` and `reactor->trigger_close_event(event)`.
-    pub close: unsafe extern "C" fn(*mut c_void) -> c_int,
-    pub trigger_close: unsafe extern "C" fn(*mut c_void) -> c_int,
+    fn close(&self) -> c_int;
+    fn trigger_close(&self) -> c_int;
     /// `swoole_timer_del(socket->send_timer)`.
-    pub delete_timer: unsafe extern "C" fn(*mut c_void),
-    pub remove_write_event: unsafe extern "C" fn(*mut c_void),
+    fn delete_timer(&self);
+    fn remove_write_event(&self);
     /// drain only: `socket->wait_event(write timeout, SW_EVENT_WRITE)`, and `socket->removed`.
-    pub wait_writable: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
-    pub removed: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+    fn wait_writable(&self) -> c_int;
+    fn removed(&self) -> bool;
 }
 
 /// `Buffer::empty`: null, no entries, or a handle that can't be read.
@@ -48,50 +46,39 @@ unsafe fn empty(buffer: *mut Buffer) -> bool {
 ///
 /// # Safety
 /// `output` is the socket's embedded block; `buffer` is its `out_buffer`'s Rust handle
-/// or null; `ops` is valid for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_flush(
+/// or null. Both stay live across the effects, which may change them.
+pub unsafe fn swr_v1_reactor_flush(
     output: *mut SocketOutput,
     buffer: *mut Buffer,
-    ops: *const FlushOps,
+    ops: &impl FlushEffects,
 ) -> c_int {
     // SAFETY: as the caller promises.
-    let ops = unsafe { &*ops };
-    let context = ops.context;
-    // SAFETY: as above.
     while !unsafe { empty(buffer) } {
-        // SAFETY: the native effects accept `context`.
-        let result = match unsafe { (ops.front_kind)(context) } {
-            // SAFETY: as above.
-            CLOSE => return unsafe { (ops.close)(context) },
-            // SAFETY: as above.
-            SENDFILE => unsafe { (ops.handle_sendfile)(context) },
-            // SAFETY: as above.
-            _ => unsafe { (ops.handle_send)(context) },
+        let result = match ops.front_kind() {
+            CLOSE => return ops.close(),
+            SENDFILE => ops.handle_sendfile(),
+            _ => ops.handle_send(),
         };
         if result < 0 {
-            // SAFETY: the socket's block, read fresh after each native effect.
+            // SAFETY: the socket's block, read fresh after each effect.
             let output = unsafe { &*output };
             if output.close_wait != 0 {
-                // SAFETY: as above.
-                return unsafe { (ops.trigger_close)(context) };
+                return ops.trigger_close();
             }
             if output.send_wait != 0 {
                 return SW_OK;
             }
         }
     }
-    // SAFETY: as above.
+    // SAFETY: as above; no reference to the block spans the effect.
     if !unsafe { (*output).send_timer }.is_null() {
-        // SAFETY: as above.
-        unsafe { (ops.delete_timer)(context) };
+        ops.delete_timer();
         // SAFETY: as above.
         unsafe { (*output).send_timer = std::ptr::null_mut() };
     }
     // SAFETY: as above.
     if unsafe { empty(buffer) } {
-        // SAFETY: as above.
-        unsafe { (ops.remove_write_event)(context) };
+        ops.remove_write_event();
     }
     SW_OK
 }
@@ -100,29 +87,21 @@ pub unsafe extern "C" fn swr_v1_reactor_flush(
 /// the wait fails, or the socket starts closing or leaves the reactor.
 ///
 /// # Safety
-/// As for [`swr_v1_reactor_flush`]; `ops.wait_writable` and `ops.removed` are set.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_drain(
+/// As for [`swr_v1_reactor_flush`].
+pub unsafe fn swr_v1_reactor_drain(
     output: *mut SocketOutput,
     buffer: *mut Buffer,
-    ops: *const FlushOps,
+    ops: &impl FlushEffects,
 ) {
     // SAFETY: as the caller promises.
-    let ops_ref = unsafe { &*ops };
-    let (Some(wait_writable), Some(removed)) = (ops_ref.wait_writable, ops_ref.removed) else {
-        return;
-    };
-    let context = ops_ref.context;
-    // SAFETY: as above.
     while !unsafe { empty(buffer) } {
-        // SAFETY: the native effect accepts `context`.
-        if unsafe { wait_writable(context) } == SW_ERR {
+        if ops.wait_writable() == SW_ERR {
             break;
         }
         // SAFETY: as the caller promises.
         unsafe { swr_v1_reactor_flush(output, buffer, ops) };
         // SAFETY: the socket's block, read fresh after the flush.
-        if unsafe { (*output).close_wait } != 0 || unsafe { removed(context) } {
+        if unsafe { (*output).close_wait } != 0 || ops.removed() {
             break;
         }
     }
@@ -132,6 +111,7 @@ pub unsafe extern "C" fn swr_v1_reactor_drain(
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::ffi::c_void;
     use swoole_rs_buffer::{
         TypedDetached, swr_v1_buffer_append, swr_v1_buffer_release, swr_v1_buffer_typed_create,
         swr_v1_buffer_typed_pop,
@@ -151,52 +131,46 @@ mod tests {
     fn record(name: &'static str) {
         NATIVE.with_borrow_mut(|n| n.trace.push(name));
     }
-    unsafe extern "C" fn front_kind(_: *mut c_void) -> c_int {
-        NATIVE.with_borrow_mut(|n| n.kinds.remove(0))
-    }
-    unsafe extern "C" fn handle_send(_: *mut c_void) -> c_int {
-        record("send");
-        let (result, buffer, close_wait, output) = NATIVE
-            .with_borrow_mut(|n| (n.sends.remove(0), n.buffer, n.close_wait_on_fail, n.output));
-        if result >= 0 {
-            let mut detached = TypedDetached::default();
-            unsafe { swr_v1_buffer_typed_pop(buffer as *mut Buffer, &raw mut detached) };
-        } else if close_wait {
-            unsafe { (*(output as *mut SocketOutput)).close_wait = 1 };
+    struct Ops;
+    impl FlushEffects for Ops {
+        fn front_kind(&self) -> c_int {
+            NATIVE.with_borrow_mut(|n| n.kinds.remove(0))
         }
-        result
-    }
-    unsafe extern "C" fn handle_sendfile(_: *mut c_void) -> c_int {
-        record("sendfile");
-        -1
-    }
-    unsafe extern "C" fn close(_: *mut c_void) -> c_int {
-        record("close");
-        7
-    }
-    unsafe extern "C" fn trigger_close(_: *mut c_void) -> c_int {
-        record("trigger_close");
-        8
-    }
-    unsafe extern "C" fn delete_timer(_: *mut c_void) {
-        record("delete_timer");
-    }
-    unsafe extern "C" fn remove_write_event(_: *mut c_void) {
-        record("remove_write_event");
-    }
-
-    fn ops() -> FlushOps {
-        FlushOps {
-            context: std::ptr::null_mut(),
-            front_kind,
-            handle_send,
-            handle_sendfile,
-            close,
-            trigger_close,
-            delete_timer,
-            remove_write_event,
-            wait_writable: None,
-            removed: None,
+        fn handle_send(&self) -> c_int {
+            record("send");
+            let (result, buffer, close_wait, output) = NATIVE
+                .with_borrow_mut(|n| (n.sends.remove(0), n.buffer, n.close_wait_on_fail, n.output));
+            if result >= 0 {
+                let mut detached = TypedDetached::default();
+                unsafe { swr_v1_buffer_typed_pop(buffer as *mut Buffer, &raw mut detached) };
+            } else if close_wait {
+                unsafe { (*(output as *mut SocketOutput)).close_wait = 1 };
+            }
+            result
+        }
+        fn handle_sendfile(&self) -> c_int {
+            record("sendfile");
+            -1
+        }
+        fn close(&self) -> c_int {
+            record("close");
+            7
+        }
+        fn trigger_close(&self) -> c_int {
+            record("trigger_close");
+            8
+        }
+        fn delete_timer(&self) {
+            record("delete_timer");
+        }
+        fn remove_write_event(&self) {
+            record("remove_write_event");
+        }
+        fn wait_writable(&self) -> c_int {
+            unreachable!("a flush never waits")
+        }
+        fn removed(&self) -> bool {
+            unreachable!("a flush never asks")
         }
     }
 
@@ -238,8 +212,7 @@ mod tests {
                 ..Native::default()
             }
         });
-        let ops = ops();
-        let result = unsafe { swr_v1_reactor_flush(output, buffer, &raw const ops) };
+        let result = unsafe { swr_v1_reactor_flush(output, buffer, &Ops) };
         unsafe { swr_v1_buffer_release(buffer) };
         (
             result,
@@ -299,6 +272,7 @@ mod tests {
         use super::super::*;
         use std::cell::RefCell;
         use std::collections::VecDeque;
+        use std::ffi::c_void;
         use swoole_rs_buffer::{
             TypedDetached, swr_v1_buffer_append, swr_v1_buffer_release, swr_v1_buffer_typed_create,
             swr_v1_buffer_typed_pop,
@@ -327,43 +301,46 @@ mod tests {
                 0
             );
         }
-        unsafe extern "C" fn front_kind(_: *mut c_void) -> c_int {
-            FACADE.with_borrow(|f| f.kinds[0])
-        }
-        unsafe extern "C" fn handle_send(_: *mut c_void) -> c_int {
-            effect("data");
-            pop();
-            SW_OK
-        }
-        unsafe extern "C" fn handle_sendfile(_: *mut c_void) -> c_int {
-            effect("sendfile");
-            pop();
-            SW_OK
-        }
-        unsafe extern "C" fn close(_: *mut c_void) -> c_int {
-            effect("close");
-            FACADE.with_borrow_mut(|f| f.removed = true);
-            while !FACADE.with_borrow(|f| f.kinds.is_empty()) {
-                pop();
+        struct Ops;
+        impl FlushEffects for Ops {
+            fn front_kind(&self) -> c_int {
+                FACADE.with_borrow(|f| f.kinds[0])
             }
-            SW_OK
-        }
-        unsafe extern "C" fn trigger_close(_: *mut c_void) -> c_int {
-            effect("trigger-close");
-            SW_OK
-        }
-        unsafe extern "C" fn delete_timer(_: *mut c_void) {
-            effect("timer");
-        }
-        unsafe extern "C" fn remove_write_event(_: *mut c_void) {
-            effect("remove-write");
-        }
-        unsafe extern "C" fn wait_writable(_: *mut c_void) -> c_int {
-            effect("wait");
-            SW_OK
-        }
-        unsafe extern "C" fn removed(_: *mut c_void) -> bool {
-            FACADE.with_borrow(|f| f.removed)
+            fn handle_send(&self) -> c_int {
+                effect("data");
+                pop();
+                SW_OK
+            }
+            fn handle_sendfile(&self) -> c_int {
+                effect("sendfile");
+                pop();
+                SW_OK
+            }
+            fn close(&self) -> c_int {
+                effect("close");
+                FACADE.with_borrow_mut(|f| f.removed = true);
+                while !FACADE.with_borrow(|f| f.kinds.is_empty()) {
+                    pop();
+                }
+                SW_OK
+            }
+            fn trigger_close(&self) -> c_int {
+                effect("trigger-close");
+                SW_OK
+            }
+            fn delete_timer(&self) {
+                effect("timer");
+            }
+            fn remove_write_event(&self) {
+                effect("remove-write");
+            }
+            fn wait_writable(&self) -> c_int {
+                effect("wait");
+                SW_OK
+            }
+            fn removed(&self) -> bool {
+                FACADE.with_borrow(|f| f.removed)
+            }
         }
 
         fn run(kinds: &[c_int], timer: bool, drain: bool) -> Vec<String> {
@@ -392,26 +369,11 @@ mod tests {
                 ssl_send: 0,
                 send_wait: 0,
             };
-            let ops = FlushOps {
-                context: std::ptr::null_mut(),
-                front_kind,
-                handle_send,
-                handle_sendfile,
-                close,
-                trigger_close,
-                delete_timer,
-                remove_write_event,
-                wait_writable: Some(wait_writable),
-                removed: Some(removed),
-            };
             unsafe {
                 if drain {
-                    swr_v1_reactor_drain(&raw mut output, buffer, &raw const ops);
+                    swr_v1_reactor_drain(&raw mut output, buffer, &Ops);
                 } else {
-                    assert_eq!(
-                        swr_v1_reactor_flush(&raw mut output, buffer, &raw const ops),
-                        SW_OK
-                    );
+                    assert_eq!(swr_v1_reactor_flush(&raw mut output, buffer, &Ops), SW_OK);
                 }
                 swr_v1_buffer_release(buffer);
             }

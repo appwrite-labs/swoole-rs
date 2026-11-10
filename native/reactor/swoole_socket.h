@@ -136,12 +136,6 @@ namespace swoole {
 namespace network {
 // The fields are Rust's record (swoole_rs_socket.h); Rust allocates and frees it.
 struct Socket : swr_v1_socket {
-    static double &default_dns_timeout;
-    static double &default_connect_timeout;
-    static double &default_read_timeout;
-    static double &default_write_timeout;
-    static uint32_t &default_buffer_size;
-
     // SocketRecord::new: zeroed, with the default timeouts. Records Rust frees come from Rust.
     Socket() : swr_v1_socket{} {
         *timeouts() = swr_v1_socket_defaults.timeouts;
@@ -168,7 +162,6 @@ struct Socket : swr_v1_socket {
     }
 
     // socket option [user space]
-    double get_timeout(TimeoutType type) const;
     bool has_timedout() const;
     bool set_nonblock() {
         return set_fd_option(1, -1);
@@ -232,7 +225,6 @@ struct Socket : swr_v1_socket {
 
     bool check_liveness();
 
-    int sendfile_async(const char *filename, off_t offset, size_t length);
     int sendfile_sync(const char *filename, off_t offset, size_t length);
     ssize_t sendfile(const File &fp, off_t *offset, size_t length);
 
@@ -248,7 +240,6 @@ struct Socket : swr_v1_socket {
 
 
     void clean() const;
-    ssize_t send_sync(const void *_data, size_t _len, int flags = 0);
     ssize_t send_async(const void *_data, size_t _len);
     ssize_t recv_sync(void *_data, size_t _len, int flags = 0);
     ssize_t writev_sync(const iovec *iov, size_t iovcnt);
@@ -268,10 +259,7 @@ struct Socket : swr_v1_socket {
     }
 
     int connect_sync(const Address &sa);
-    ReturnCode connect_async(const Address &sa);
 
-    int ssl_create(SSLContext *_ssl_context, int _flags);
-    int ssl_connect();
     ReturnCode ssl_accept();
     ssize_t ssl_recv(void *_buf, size_t _n);
     ssize_t ssl_send(const void *_buf, size_t _n);
@@ -284,19 +272,9 @@ struct Socket : swr_v1_socket {
     int ssl_get_peer_certificate(char *buf, size_t n) const;
     bool ssl_get_peer_certificate(String *buf) const;
     bool ssl_verify(bool allow_self_signed) const;
-    bool ssl_check_host(const char *tls_host_name) const;
     bool ssl_shutdown();
-    void ssl_close();
     static const char *ssl_get_error_reason(int *reason);
 
-    ssize_t recvfrom(char *_buf, size_t _len, int flags, Address *sa) const {
-        sa->len = sizeof(sa->addr);
-        return recvfrom(_buf, _len, flags, &sa->addr.ss, &sa->len);
-    }
-
-    ssize_t recvfrom(char *buf, size_t len, int flags, sockaddr *addr, socklen_t *addr_len) const {
-        return swr_v1_socket_recvfrom(fd, buf, len, flags, addr, addr_len, SW_SOCKET_RETRY_COUNT);
-    }
     ssize_t recvfrom_sync(char *_buf, size_t _len, int flags, Address *sa);
     ssize_t recvfrom_sync(char *_buf, size_t _len, int flags, sockaddr *addr, socklen_t *addr_len);
 
@@ -308,7 +286,6 @@ struct Socket : swr_v1_socket {
     }
 
     int wait_event(int timeout_ms, int _events) const;
-    int what_event_want(int default_event) const;
     void free();
 
     static inline bool is_dgram(SocketType type) {

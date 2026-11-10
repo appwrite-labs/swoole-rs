@@ -10,7 +10,7 @@ module host. Each item stays C for a reason Rust can't remove:
   object keeps it. The Cargo-built engine exports it from crates/ext instead.
 - **`swr_phpswoole_versions()`**. MINFO's version rows are header macros
   (`OPENSSL_VERSION_TEXT`, `ZLIB_VERSION`, `ZSTD_VERSION_STRING`, `__DATE__`) or
-  calls into libraries only C links (curl, c-ares, brotli). The macros exist only
+  calls into libraries only C links (curl, c-ares). The macros exist only
   where a C compiler reads the build's headers.
 - **`swr_phpswoole_pcre_jit_off()`**. `PCRE_G(jit)` is ext/pcre's module global,
   whose layout and TSRM accessor change with PHP's build. Its guard

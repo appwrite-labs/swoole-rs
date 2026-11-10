@@ -4,13 +4,13 @@
 use crate::parse::CAPABILITIES;
 use crate::state::State;
 use crate::{host, send};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::Write;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
-use swoole_rs_http::swr_v2_http_status_message;
+use swoole_rs_deflate::{Allocator, DEFLATE, Failure, GZIP, bound, compress as deflate};
 use swoole_rs_httpbindings::{
     response_header, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level,
     swr_v1_httpbindings_encoding,
@@ -19,13 +19,10 @@ use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
 use swoole_rs_zend::sys::php_format_date;
 use swoole_rs_zend::sys::{
-    HashPosition, IS_ARRAY, IS_NULL, IS_STRING, swr_zend_efree, swr_zend_emalloc,
-    swr_zend_http_get_string, swr_zend_http_property_offset, swr_zend_string_release,
-    zend_class_entry, zend_hash_get_current_data_ex, zend_hash_get_current_key_ex,
-    zend_hash_internal_pointer_reset_ex, zend_hash_move_forward_ex, zend_long_to_str, zend_object,
-    zend_string, zval,
+    swr_zend_efree, swr_zend_emalloc, swr_zend_http_get_string, swr_zend_http_property_offset,
+    swr_zend_string_release, zend_class_entry, zend_string, zval,
 };
-use swoole_rs_zend::{bailout, string, type_of, value};
+use swoole_rs_zend::{Array, Key, Value, ZStr, ZString, bailout, string};
 
 /// `swHttpHeaderFlag`.
 const SERVER: i32 = 2;
@@ -49,9 +46,6 @@ const METHOD_BR: i32 = 3;
 const METHOD_ZSTD: i32 = 4;
 /// `sw_tg_buffer()`'s size, which bounds one trailer line.
 const TRAILER_LINE: usize = 65536;
-/// `HASH_KEY_IS_STRING`, `HASH_KEY_IS_LONG`.
-const KEY_STRING: i64 = 1;
-const KEY_LONG: i64 = 2;
 
 /// `Swoole\Http\Response`'s `header`, `cookie` and `trailer` slots.
 static OFFSETS: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
@@ -91,27 +85,22 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
         host::COOKIE => &mut response.zcookie,
         _ => &mut response.ztrailer,
     };
-    if slot.ptr.is_null() {
-        // SAFETY: the response's live object zval.
-        let object: *mut zend_object = unsafe { value::obj_of(response.zobject.ptr) };
-        let index = usize::try_from(which).unwrap_or(2).min(2);
-        let offset = OFFSETS.get(index).map_or(0, |offset| offset.load(Relaxed));
-        // SAFETY: a declared property slot of that object.
-        let array = unsafe { swoole_rs_zend::sys::swr_zend_http_property_array(object, offset, 8) };
-        // SAFETY: the array zval just initialised.
-        slot.value = unsafe { *array };
-        slot.ptr = &raw mut slot.value;
-    }
-    slot.ptr
+    let index = usize::try_from(which).unwrap_or(2).min(2);
+    let offset = OFFSETS.get(index).map_or(0, |offset| offset.load(Relaxed));
+    slot.init_array(&response.zobject, offset, 8)
 }
 
-/// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`.
-fn property(state: &State, which: usize) -> *mut zval {
-    // SAFETY: the response's live object zval.
-    let object: *mut zend_object = unsafe { value::obj_of(state.response.zobject.ptr) };
+/// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
+/// is an array.
+/// # Safety
+/// The array is the response object's, which nothing frees while it is borrowed.
+unsafe fn property<'a>(state: &State, which: usize) -> Option<&'a Array> {
+    let object = state.response.zobject.object()?;
     let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
     // OBJ_PROP: a declared slot of that object.
-    object.cast::<u8>().wrapping_add(offset).cast()
+    let slot = object.wrapping_byte_add(offset).cast::<zval>();
+    // SAFETY: a declared property slot, live as the caller promises.
+    unsafe { Value::from_ptr(slot) }.and_then(Value::array)
 }
 
 /// `swr_zend_http_string`: `zval_get_string`'s argument and result.
@@ -121,61 +110,64 @@ struct Arg {
     result: *mut zend_string,
 }
 
-/// `zend::String(value)`: a string zval's own string (the caller does not
-/// release it) or `zval_get_string`, run in `zend_try` because it may call
-/// `__toString` (released by the caller).
-fn to_string(value_: *mut zval) -> Result<(*mut zend_string, bool), bailout::Bailout> {
-    // SAFETY: a live zval.
-    if unsafe { type_of(value_) } == IS_STRING {
-        // SAFETY: a string zval.
-        return Ok((unsafe { value::str_of(value_) }, false));
+/// `zend::String(value)`: a string zval's own string, or `zval_get_string`'s new one.
+enum Text<'a> {
+    Borrowed(&'a ZStr),
+    Owned(ZString),
+}
+
+impl std::ops::Deref for Text<'_> {
+    type Target = ZStr;
+
+    fn deref(&self) -> &ZStr {
+        match self {
+            Self::Borrowed(text) => text,
+            Self::Owned(text) => text,
+        }
+    }
+}
+
+impl Text<'_> {
+    /// A reference of its own (`zval_get_string`'s result keeps the one it has).
+    fn into_owned(self) -> ZString {
+        match self {
+            Self::Borrowed(text) => text.to_owned(),
+            Self::Owned(text) => text,
+        }
+    }
+}
+
+/// `zend::String(value)`, with `zval_get_string` run in `zend_try` because it may call
+/// `__toString`.
+fn to_string(value_: &Value) -> Result<Text<'_>, bailout::Bailout> {
+    if let Some(text) = value_.str() {
+        return Ok(Text::Borrowed(text));
     }
     let mut arg = Arg {
-        value: value_,
+        value: value_.as_ptr(),
         result: ptr::null_mut(),
     };
     // SAFETY: a C body over a live zval and a writable result.
     unsafe { bailout::trap(swr_zend_http_get_string, (&raw mut arg).cast())? };
-    Ok((arg.result, true))
+    // SAFETY: `zval_get_string`'s new reference, which the `ZString` takes.
+    Ok(Text::Owned(unsafe { ZString::from_raw(arg.result) }))
 }
 
-fn release(string_: *mut zend_string, owned: bool) {
-    if owned {
-        // SAFETY: a reference `to_string` took.
-        unsafe { swr_zend_string_release(string_) };
-    }
-}
-
-/// Each element of a live array (`ZEND_HASH_FOREACH_KEY_VAL`): `Some(key)`
-/// for a string key, `None` with the index for an integer key. Stops at
-/// the first `Err`.
-fn each<E>(
-    array: *mut zval,
-    mut body: impl FnMut(Result<*mut zend_string, i64>, *mut zval) -> Result<(), E>,
+/// Each element of an array (`ZEND_HASH_FOREACH_KEY_VAL`): `Ok(key)` for a string
+/// key, `Err(index)` for an integer key. Stops at the first `Err`.
+fn each<'a, E>(
+    array: &'a Array,
+    mut body: impl FnMut(Result<&'a [u8], i64>, &'a Value) -> Result<(), E>,
 ) -> Result<(), E> {
-    // SAFETY: a live array zval.
-    let table = unsafe { value::table(array) };
-    let mut position: HashPosition = 0;
-    // SAFETY: a live table and a writable position.
-    unsafe { zend_hash_internal_pointer_reset_ex(table, &raw mut position) };
-    loop {
-        let mut name: *mut zend_string = ptr::null_mut();
-        let mut index = 0;
-        // SAFETY: as above.
-        let kind = unsafe {
-            zend_hash_get_current_key_ex(table, &raw mut name, &raw mut index, &raw mut position)
+    let mut entries = array.entries();
+    while let Some((key, data)) = entries.next_keyed() {
+        let key = match key {
+            Key::Name(name) => Ok(name),
+            Key::Index(index) => Err(i64::from_ne_bytes(index.to_ne_bytes())),
         };
-        let key = match i64::from(kind) {
-            KEY_STRING => Ok(name),
-            KEY_LONG => Err(i64::from_ne_bytes(index.to_ne_bytes())),
-            _ => return Ok(()),
-        };
-        // SAFETY: as above.
-        let data = unsafe { zend_hash_get_current_data_ex(table, &raw mut position) };
         body(key, data)?;
-        // SAFETY: as above.
-        unsafe { zend_hash_move_forward_ex(table, &raw mut position) };
     }
+    Ok(())
 }
 
 php_local! {
@@ -204,8 +196,7 @@ pub(crate) fn date() -> *mut zend_string {
 }
 
 /// `php_swoole_http_response_rshutdown`: drop the cached date.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phphttp_response_rshutdown() {
+pub extern "C" fn response_rshutdown() {
     let (_, date) = DATE_CACHE.replace((0, ptr::null_mut()));
     if !date.is_null() {
         // SAFETY: the cache's reference.
@@ -233,35 +224,32 @@ pub(crate) fn has_crlf(bytes: &[u8]) -> bool {
 fn add_custom_header(
     out: &mut Vec<u8>,
     key: &[u8],
-    value_: *mut zval,
+    value_: &Value,
 ) -> Result<(), bailout::Bailout> {
-    // SAFETY: a live zval.
-    if unsafe { type_of(value_) } == IS_NULL {
+    if value_.is_null() {
         return Ok(());
     }
-    let (text, owned) = to_string(value_)?;
-    // SAFETY: a live string.
-    let bytes = unsafe { string::bytes(text) };
-    let trimmed = bytes
+    let text = to_string(value_)?;
+    let length = text.bytes().len();
+    let trimmed = text
+        .bytes()
         .iter()
         .rposition(|byte| !byte.is_ascii_whitespace_c())
         .map_or(0, |last| last + 1);
-    if trimmed != bytes.len() {
-        let val = string::val(text);
-        // SAFETY: the string holds `bytes.len()` bytes; `swoole::rtrim` zeroes the trimmed ones.
-        unsafe { ptr::write_bytes(val.wrapping_add(trimmed), 0, bytes.len() - trimmed) };
+    if trimmed != length {
+        let val = string::val(text.as_ptr());
+        // SAFETY: the string holds `length` bytes; `swoole::rtrim` zeroes the trimmed ones.
+        unsafe { ptr::write_bytes(val.wrapping_add(trimmed), 0, length - trimmed) };
         // SAFETY: as above: `ZSTR_LEN(str) = swoole::rtrim(...)`.
-        unsafe { (*text).len = trimmed };
+        unsafe { (*text.as_ptr()).len = trimmed };
     }
-    // SAFETY: as above.
-    let bytes = unsafe { string::bytes(text) };
+    let bytes = text.bytes();
     if !has_crlf(bytes) {
         out.extend_from_slice(key);
         out.extend_from_slice(b": ");
         out.extend_from_slice(bytes);
         out.extend_from_slice(b"\r\n");
     }
-    release(text, owned);
     Ok(())
 }
 
@@ -284,18 +272,15 @@ fn log_conflict(message: &str) {
     );
 }
 
-/// The header's key and the header flag it sets (0 for a custom header).
-fn header_key(key: Result<*mut zend_string, i64>) -> (*mut zend_string, bool, i32) {
-    let (key, owned) = match key {
-        // SAFETY: a key of a live array, borrowed.
-        Ok(name) => (name, false),
-        // SAFETY: Zend formats the integer as a new string.
-        Err(index) => (unsafe { zend_long_to_str(index) }, true),
-    };
-    // SAFETY: a live string.
-    let bytes = unsafe { string::bytes(key) };
-    let flag = response_header(bytes);
-    (key, owned, flag)
+/// The header's key and the header flag it sets (0 for a custom header); an integer
+/// key as Zend formats it.
+fn header_key(key: Result<&[u8], i64>) -> (Cow<'_, [u8]>, i32) {
+    let key = key.map_or_else(
+        |index| Cow::Owned(index.to_string().into_bytes()),
+        Cow::Borrowed,
+    );
+    let flag = response_header(&key);
+    (key, flag)
 }
 
 fn build(
@@ -308,9 +293,7 @@ fn build(
     // http status line
     out.extend_from_slice(b"HTTP/1.1 ");
     if state.response.reason.is_null() {
-        // SAFETY: the http module's static status texts.
-        let status = unsafe { CStr::from_ptr(swr_v2_http_status_message(state.response.status)) };
-        out.extend_from_slice(status.to_bytes());
+        out.extend_from_slice(&swoole_rs_http::status_message(state.response.status));
     } else {
         write!(out, "{}", state.response.status).unwrap_or_default();
         out.push(b' ');
@@ -321,86 +304,62 @@ fn build(
 
     // http headers
     let mut flags = 0;
-    let header = property(state, 0);
-    // SAFETY: a declared property slot.
-    if unsafe { type_of(header) } == IS_ARRAY {
+    // SAFETY: the response object outlives the send.
+    if let Some(header) = unsafe { property(state, 0) } {
         // Asked once, like upstream's `compression_types` test.
         let typed = compression && crate::context::compression_type(state, None);
-        let mut content_type: Option<(*mut zend_string, bool)> = None;
+        let mut content_type: Option<ZString> = None;
         let walked = each(header, |key, value_| {
-            let (key, owned_key, flag) = header_key(key);
-            let result = (|| {
-                if flag > 0 {
-                    if compression {
-                        if flag == CONTENT_TYPE && state.accept_compression != 0 && typed {
-                            if let Some((old, owned)) = content_type.take() {
-                                release(old, owned);
-                            }
-                            let (text, owned) = to_string(value_)?;
-                            if !owned {
-                                // SAFETY: a live string; `zval_get_string` would add this reference.
-                                unsafe { swoole_rs_zend::sys::swr_zend_string_copy(text) };
-                            }
-                            content_type = Some((text, true));
-                        }
-                        // SAFETY: a live zval.
-                        if flag == CONTENT_ENCODING && unsafe { type_of(value_) } == IS_STRING {
-                            state.accept_compression = 0;
-                        }
-                        // https://github.com/swoole/swoole-src/issues/4857
-                        // https://github.com/swoole/swoole-src/issues/5026
-                        if flag == CONTENT_LENGTH && state.accept_compression != 0 {
-                            log_conflict(
-                                "The client has set 'Accept-Encoding', 'Content-Length' will be ignored",
-                            );
-                            return Ok(());
-                        }
+            let (key, flag) = header_key(key);
+            if flag > 0 {
+                if compression {
+                    if flag == CONTENT_TYPE && state.accept_compression != 0 && typed {
+                        content_type = Some(to_string(value_)?.into_owned());
                     }
-                    if flag == CONTENT_LENGTH && state.send_chunked != 0 {
+                    if flag == CONTENT_ENCODING && value_.str().is_some() {
+                        state.accept_compression = 0;
+                    }
+                    // https://github.com/swoole/swoole-src/issues/4857
+                    // https://github.com/swoole/swoole-src/issues/5026
+                    if flag == CONTENT_LENGTH && state.accept_compression != 0 {
                         log_conflict(
-                            "You have set 'Transfer-Encoding', 'Content-Length' will be ignored",
+                            "The client has set 'Accept-Encoding', 'Content-Length' will be ignored",
                         );
                         return Ok(());
                     }
-                    flags |= flag;
-                    // SAFETY: a live zval.
-                    if unsafe { swoole_rs_zend::string_of(value_) }.is_some_and(<[u8]>::is_empty) {
-                        return Ok(());
-                    }
                 }
-                // SAFETY: a live string key.
-                let name = unsafe { string::bytes(key) };
-                // SAFETY: a live zval.
-                if unsafe { type_of(value_) } == IS_ARRAY {
-                    each(value_, |_, item| add_custom_header(out, name, item))
-                } else {
-                    add_custom_header(out, name, value_)
+                if flag == CONTENT_LENGTH && state.send_chunked != 0 {
+                    log_conflict(
+                        "You have set 'Transfer-Encoding', 'Content-Length' will be ignored",
+                    );
+                    return Ok(());
                 }
-            })();
-            release(key, owned_key);
-            result
+                flags |= flag;
+                if value_.bytes().is_some_and(<[u8]>::is_empty) {
+                    return Ok(());
+                }
+            }
+            if let Some(items) = value_.array() {
+                each(items, |_, item| add_custom_header(out, &key, item))
+            } else {
+                add_custom_header(out, &key, value_)
+            }
         });
         if walked.is_ok() && compression && state.accept_compression != 0 && typed {
-            let kind = content_type.map_or(&b"text/html"[..], |(text, _)| {
-                // SAFETY: a string this function holds.
-                unsafe { string::bytes(text) }
-            });
+            let kind = content_type
+                .as_ref()
+                .map_or(&b"text/html"[..], |text| text.bytes());
             state.accept_compression =
                 u8::from(crate::context::compression_type(state, Some(kind)));
-        }
-        if let Some((text, owned)) = content_type {
-            release(text, owned);
         }
         walked?;
     }
 
     // http cookies
-    let cookie = property(state, 1);
-    // SAFETY: a declared property slot.
-    if unsafe { type_of(cookie) } == IS_ARRAY {
+    // SAFETY: as above.
+    if let Some(cookie) = unsafe { property(state, 1) } {
         each::<()>(cookie, |_, value_| {
-            // SAFETY: a live zval.
-            if let Some(line) = unsafe { swoole_rs_zend::string_of(value_) }
+            if let Some(line) = value_.bytes()
                 && !has_crlf(line)
             {
                 out.extend_from_slice(b"Set-Cookie: ");
@@ -491,21 +450,15 @@ pub(crate) fn trailer<R>(
     f: impl FnOnce(&[u8]) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        let trailer = property(send::state(ctx), 2);
-        // SAFETY: a declared property slot.
-        let built: Result<(), bailout::Bailout> = if unsafe { type_of(trailer) } == IS_ARRAY {
+        // SAFETY: the response object outlives the send.
+        if let Some(trailer) = unsafe { property(send::state(ctx), 2) } {
             each(trailer, |key, value_| {
-                // SAFETY: a live zval.
-                let Ok(key) = key else { return Ok(()) };
-                // SAFETY: as above.
-                if unsafe { type_of(value_) } == IS_NULL {
+                let Ok(name) = key else { return Ok(()) };
+                if value_.is_null() {
                     return Ok(());
                 }
-                let (text, owned) = to_string(value_)?;
-                // SAFETY: a live key and string.
-                let name = unsafe { string::bytes(key) };
-                // SAFETY: as above.
-                let value_ = unsafe { string::bytes(text) };
+                let text = to_string(value_)?;
+                let value_ = text.bytes();
                 let mut line = Vec::with_capacity(name.len() + value_.len() + 4);
                 // `%.*s` stops at a NUL, and sw_snprintf at its buffer.
                 line.extend_from_slice(name.split(|&b| b == 0).next().unwrap_or_default());
@@ -514,19 +467,15 @@ pub(crate) fn trailer<R>(
                 line.extend_from_slice(b"\r\n");
                 line.truncate(TRAILER_LINE - 1);
                 out.extend_from_slice(&line);
-                release(text, owned);
                 Ok(())
-            })
-        } else {
-            Ok(())
-        };
-        built?;
+            })?;
+        }
         out.extend_from_slice(b"\r\n");
         Ok(f(out))
     })
 }
 
-pub(crate) unsafe extern "C" fn zalloc(_: *mut c_void, items: u32, size: u32) -> *mut c_void {
+extern "C" fn zalloc(_: *mut c_void, items: u32, size: u32) -> *mut c_void {
     // `safe_emalloc(items, size, 0)`; an overflow fails the allocation.
     let Some(bytes) = (items as usize).checked_mul(size as usize) else {
         return ptr::null_mut();
@@ -535,10 +484,15 @@ pub(crate) unsafe extern "C" fn zalloc(_: *mut c_void, items: u32, size: u32) ->
     unsafe { swr_zend_emalloc(bytes) }
 }
 
-pub(crate) unsafe extern "C" fn zfree(_: *mut c_void, address: *mut c_void) {
+unsafe extern "C" fn zfree(_: *mut c_void, address: *mut c_void) {
     // SAFETY: memory `zalloc` returned.
     unsafe { swr_zend_efree(address) };
 }
+
+/// zlib allocating from PHP's request allocator, as upstream's `php_zlib_alloc`.
+// SAFETY: `zalloc` returns null or `items * size` bytes of emalloc'd memory,
+// which `zfree` efrees.
+pub(crate) const ZEND_ZLIB: Allocator = unsafe { Allocator::new(zalloc, zfree) };
 
 fn compress_warning(message: &str) {
     host::log(0, 0, c"Context::compress", message);
@@ -606,7 +560,7 @@ fn zlib(state: &mut State, input: &[u8], method: i32, level: i32) -> Result<Vec<
     // zlib's clamp lands in -1..=9, which fits int8_t.
     state.compression_level = i8::try_from(level).unwrap_or(-1);
     let mut out = vec![0; bound(input.len())];
-    match deflate(input, &mut out, window_bits, level, zalloc, zfree) {
+    match deflate(input, &mut out, window_bits, level, ZEND_ZLIB) {
         Ok(compressed) => {
             out.truncate(compressed);
             Ok(out)

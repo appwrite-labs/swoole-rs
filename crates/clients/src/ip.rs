@@ -1,63 +1,18 @@
 //! Numeric address grammar over borrowed initialized bytes. Native sockaddr
 //! layouts, publication and resolver/errno effects stay outside Rust.
 use std::net::{Ipv4Addr, Ipv6Addr};
+use swoole_rs_corebase::net_address::{ipv4, ipv6};
 #[repr(C)]
 pub struct ClientsIp {
     pub bytes: [u8; 16],
     pub length: u32,
 }
-fn ipv4(text: &str, allow_zeroes: bool) -> Option<Ipv4Addr> {
-    let mut octets = [0u8; 4];
-    let mut parts = text.split('.');
-    for octet in &mut octets {
-        let part = parts.next()?;
-        if part.is_empty() || (!allow_zeroes && part.len() > 1 && part.starts_with('0')) {
-            return None;
-        }
-        let mut value = 0u16;
-        for byte in part.bytes() {
-            if !byte.is_ascii_digit() {
-                return None;
-            }
-            value = value.checked_mul(10)?.checked_add(u16::from(byte - b'0'))?;
-            if value > 255 {
-                return None;
-            }
-        }
-        *octet = u8::try_from(value).ok()?;
-    }
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(Ipv4Addr::from(octets))
-}
-fn ipv6(text: &str, allow_zeroes: bool) -> Option<Ipv6Addr> {
-    if !text.contains('.') {
-        return text.parse().ok();
-    }
-    let colon = text.rfind(':')?;
-    let [a, b, c, d] = ipv4(text.get(colon + 1..)?, allow_zeroes)?.octets();
-    // Replace the dotted tail with two hex groups in bounded caller-local
-    // storage. This preserves native Apple decimal-leading-zero grammar without
-    // introducing an allocation effect into numeric parsing.
-    let mut normalized = [0u8; 128];
-    let normalized = crate::format_into(
-        &mut normalized,
-        format_args!(
-            "{}{:x}:{:x}",
-            text.get(..=colon)?,
-            u16::from_be_bytes([a, b]),
-            u16::from_be_bytes([c, d])
-        ),
-    )?;
-    std::str::from_utf8(normalized).ok()?.parse().ok()
-}
 /// # Safety
 /// Input denotes `length` initialized readable bytes, or null for length0. Native
 /// `std::string` callers pass their full bytes; parsing stops at the first NUL to
 /// preserve their original `c_str/inet_pton` boundary. No pointer is retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ip(
+#[must_use]
+pub unsafe fn swr_v1_clients_ip(
     version: u8,
     data: *const u8,
     length: usize,
@@ -95,8 +50,8 @@ pub unsafe extern "C" fn swr_v1_clients_ip(
 /// # Safety
 /// Address denotes exactly4 (version4) or16 (version6) initialized bytes. No
 /// pointer is retained. Original IPv4 policy recognizes only127.0.0.1, not /8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_loopback(version: u8, address: *const u8) -> u8 {
+#[must_use]
+pub unsafe fn swr_v1_clients_loopback(version: u8, address: *const u8) -> u8 {
     let length = match version {
         4 => 4,
         6 => 16,
@@ -122,8 +77,8 @@ pub struct ClientsIpText {
 /// # Safety
 /// Input denotes4 (version4) or16 (version6) initialized address bytes. No pointer
 /// is retained. DNS IPv6 output deliberately keeps all eight four-digit groups.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_ip_text(version: u8, address: *const u8) -> ClientsIpText {
+#[must_use]
+pub unsafe fn swr_v1_clients_ip_text(version: u8, address: *const u8) -> ClientsIpText {
     let mut output = ClientsIpText {
         bytes: [0; 40],
         length: 0,

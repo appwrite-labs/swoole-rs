@@ -1,15 +1,24 @@
 name: PHPT environment
 description: >-
-  What upstream's PHPTs expect beside the services, for the phpt shards and the
-  gate's re-runs alike: client packages, service host names, the ODBC DSN,
+  What upstream's PHPTs expect, for the phpt shards and the gate's re-runs alike:
+  the services they reach, client packages, service host names, the ODBC DSN,
   upstream's test tables and its composer test libraries, plus both engines.
 inputs:
   php:
     description: The PHP package version the engines were built against
     required: true
+  services:
+    description: >-
+      The services (corpus/upstream/services.yml) to start, space separated, as
+      corpus/upstream/services.py prints them; `job` when the job declares them itself
+    default: job
 runs:
   using: composite
   steps:
+    # Started first, so the images pull and the databases open while the packages install.
+    - if: inputs.services != 'job' && inputs.services != ''
+      shell: bash
+      run: docker compose -f corpus/upstream/services.yml up -d ${{ inputs.services }}
     - uses: ./.github/actions/install
       with:
         # nghttp2-client and -server: the HTTP/2 tests' skip_if_no_nghttp and nghttpd checks.
@@ -41,6 +50,8 @@ runs:
       with:
         path: target/upstream
         key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+        # Only the pinned tests are read here, and those don't change with the build script.
+        restore-keys: upstream-${{ runner.os }}-
         fail-on-cache-miss: true
     # The ssh2 tests' account on localhost (ssh2_test.inc's defaults), password and key
     # logins, as upstream's tests/init creates it.
@@ -53,8 +64,12 @@ runs:
         sudo install -m 600 -o $user -g $user target/upstream/src/tests/swoole_ssh2/testkey_ed25519.pub /home/$user/.ssh/authorized_keys
         echo 'PasswordAuthentication yes' | sudo tee /etc/ssh/sshd_config.d/00-swoole-ssh2-test.conf
         sudo systemctl restart ssh
+    - if: inputs.services != 'job' && inputs.services != ''
+      shell: bash
+      run: docker compose -f corpus/upstream/services.yml up -d --wait ${{ inputs.services }}
     # Upstream's test tables, which its tests/init --mysql loads from tests/test.sql.
-    - shell: bash
+    - if: inputs.services == 'job' || contains(format(' {0} ', inputs.services), ' mysql ')
+      shell: bash
       run: >
         php -r '$m = new mysqli("mysql", "root", "root", "test");
         $m->multi_query(file_get_contents("target/upstream/src/tests/test.sql")) or exit($m->error . "\n");

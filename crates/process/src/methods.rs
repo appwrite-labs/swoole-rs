@@ -24,10 +24,6 @@ use crate::worker_globals::{
     swr_v1_worker_global_get, swr_v1_worker_global_set, worker_global_max_requests,
 };
 use crate::worker_record::{WorkerRecord, swr_v1_worker_exceeded_max_requests};
-use crate::worker_registry::{
-    swr_v1_process_worker_registry_insert, swr_v1_process_worker_registry_lookup,
-    swr_v1_process_worker_registry_unregister,
-};
 
 /// crates/server's table, which every method below lends its export
 /// (`crates/server/src/pool_native.rs`); null in tests, which drive the exports
@@ -268,7 +264,7 @@ pub unsafe extern "C" fn add_worker(pool: *const PoolRecord, worker: *mut Worker
     // SAFETY: the caller lends a live worker.
     let pid = unsafe { Worker::new(worker).pid() };
     // SAFETY: a created pool's registry is live.
-    unsafe { swr_v1_process_worker_registry_insert(registry, pid, worker.cast(), 0) };
+    unsafe { (*registry).insert(pid, worker.cast(), 0) };
 }
 
 /// `ProcessPool::del_worker(worker)`: whether the worker's pid was registered.
@@ -286,7 +282,7 @@ pub unsafe extern "C" fn del_worker(pool: *const PoolRecord, worker: *const Work
     // SAFETY: the caller lends a live worker.
     let pid = unsafe { Worker::new(worker).pid() };
     // SAFETY: a created pool's registry is live.
-    unsafe { swr_v1_process_worker_registry_unregister(registry, pid) }
+    unsafe { (*registry).unregister(pid) }
 }
 
 /// `ProcessPool::get_worker_by_pid(pid)`: null before `create` or for an unknown pid.
@@ -308,7 +304,7 @@ pub unsafe extern "C" fn get_worker_by_pid(
         return ptr::null_mut();
     }
     // SAFETY: a non-null registry is live.
-    unsafe { swr_v1_process_worker_registry_lookup(registry, pid) }.cast()
+    unsafe { (*registry).lookup(pid) }.cast()
 }
 
 /// `ProcessPool::is_worker_running(worker)`.
@@ -367,17 +363,17 @@ pub unsafe extern "C" fn send_pipe_message(
     unsafe { swr_v1_process_worker_send(hooks, pool, pipe, queue, id, data, length, flags) }
 }
 
-/// `make_server_socket(type, host, port, backlog)`.
-pub type MakeServerSocket = unsafe extern "C" fn(
+/// `make_server_socket(type, host, port, backlog)`: a native socket, or null.
+pub type MakeServerSocket<T> = unsafe extern "C-unwind" fn(
     kind: c_int,
     host: *const c_char,
     port: c_int,
     backlog: c_int,
-) -> *mut c_void;
+) -> *mut T;
 
 #[cfg(feature = "upstream-symbols")]
 // SAFETY: crates/tls defines it under its upstream symbol.
-unsafe extern "C" {
+unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
     fn make_server_socket(
         kind: c_int,
@@ -427,13 +423,13 @@ pub unsafe extern "C" fn listen_tcp(
 /// `pool` is a created `ProcessPool`; `host` a NUL-terminated string; `make`
 /// returns a native socket or null.
 #[must_use]
-pub unsafe fn listen(
+pub unsafe fn listen<T>(
     pool: *const PoolRecord,
     kind: c_int,
     host: *const c_char,
     port: c_int,
     backlog: c_int,
-    make: MakeServerSocket,
+    make: MakeServerSocket<T>,
 ) -> c_int {
     /// `SW_IPC_SOCKET`.
     const IPC_SOCKET: u8 = 3;
@@ -457,7 +453,7 @@ pub unsafe fn listen(
         return -1;
     }
     // SAFETY: as above; the pool now owns the listener.
-    unsafe { swr_v1_process_pool_ipc_set_listener(pool.ipc, socket) };
+    unsafe { swr_v1_process_pool_ipc_set_listener(pool.ipc, socket.cast()) };
     0
 }
 
@@ -499,7 +495,7 @@ pub unsafe extern "C" fn send_message(
     length: usize,
 ) -> bool {
     use swoole_rs_corebase::DataHead;
-    // SAFETY: crates/protocols' bus write and crates/tls's.
+    // SAFETY: crates/bus' write and crates/tls's.
     unsafe extern "C" {
         fn swr_v1_bus_write(
             bus: *mut c_void,
@@ -867,7 +863,12 @@ pub(crate) mod tests {
 
     static LISTENER: u8 = 0;
 
-    unsafe extern "C" fn make(kind: c_int, _: *const c_char, port: c_int, _: c_int) -> *mut c_void {
+    unsafe extern "C-unwind" fn make(
+        kind: c_int,
+        _: *const c_char,
+        port: c_int,
+        _: c_int,
+    ) -> *mut c_void {
         if kind == 1 && port == 9501 {
             (&raw const LISTENER).cast_mut().cast()
         } else {

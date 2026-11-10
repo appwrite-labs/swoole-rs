@@ -7,7 +7,7 @@
 use core::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_http::{HttpRequest as Request, HttpString as Buffer};
+use swoole_rs_http_ffi::{HttpRequest as Request, HttpString as Buffer};
 
 /// One native fact or effect on the connection in `context`.
 pub type PortsCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> u64;
@@ -511,7 +511,7 @@ fn form(n: &Native<impl Call>) -> Option<Step> {
     let (request, buffer) = (n.shared().request, n.shared().buffer);
     // SAFETY: the connection's live request, with a form, and the current buffer; the
     // parser's callbacks are the only other users of either during the call.
-    if !unsafe { swoole_rs_http::parse_multipart_data(request, buffer) } {
+    if !unsafe { swoole_rs_http_ffi::parse_multipart_data(request, buffer) } {
         return Some(Step::Reply(SEND_BAD_REQUEST));
     }
     let request = n.request();
@@ -525,7 +525,7 @@ fn form(n: &Native<impl Call>) -> Option<Step> {
         return Some(Step::Done);
     }
     // SAFETY: the connection's live request, which nothing else uses during the call.
-    unsafe { swoole_rs_http::destroy_multipart_parser(n.shared().request) };
+    unsafe { swoole_rs_http_ffi::destroy_multipart_parser(n.shared().request) };
     n.use_request_buffer();
     None
 }
@@ -639,7 +639,7 @@ fn body(n: &Native<impl Call>, upload: bool) -> Step {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::VecDeque;
 
@@ -678,13 +678,12 @@ mod tests {
         let length = usize::try_from(n).unwrap();
         let file = a.cast::<libc::FILE>();
         match op {
-            // `new String(n)` or `new String(b, n)`.
+            // `new String(n)` or `new String(b, n)`, which has room for a NUL after the copy.
             0 => {
-                let bytes = if b.is_null() {
-                    Vec::with_capacity(length)
-                } else {
-                    unsafe { core::slice::from_raw_parts(b, length) }.to_vec()
-                };
+                let mut bytes = Vec::with_capacity(length + usize::from(!b.is_null()));
+                if !b.is_null() {
+                    bytes.extend_from_slice(unsafe { core::slice::from_raw_parts(b, length) });
+                }
                 let mut text = Box::new(Text {
                     head: Buffer {
                         length: bytes.len(),
@@ -848,7 +847,7 @@ mod tests {
                     let upload_max = usize::try_from(self.uploads).unwrap();
                     // The fake's live request, with a form.
                     let ok = unsafe {
-                        swoole_rs_http::init_multipart_parser(
+                        swoole_rs_http_ffi::init_multipart_parser(
                             &raw mut self.req,
                             b"/tmp",
                             upload_max,
@@ -900,13 +899,18 @@ mod tests {
         };
     }
 
-    unsafe extern "C" fn record(
-        _: c_int,
+    /// The crate's test log host; methods.rs's tests install it too.
+    pub(crate) unsafe extern "C" fn record(
+        kind: c_int,
         level: c_int,
         code: c_int,
         origin: *const c_char,
         message: *const c_char,
     ) {
+        // As crates/utilities' host, the production one, does.
+        if matches!(kind, log::LOG_SYS_WARNING | log::LOG_ERROR) {
+            log::set_last_error(code);
+        }
         // The log host is process-wide and other tests' threads log through it too, so this
         // only records; `logged` checks the origin on the thread that ran the case.
         let text = |p| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();

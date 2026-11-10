@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_proxy.h, owned here: HttpProxy and Socks5Proxy as views of
- * the Rust records (crates/protocols/src/owned_proxy.rs). Upstream's file is deleted,
+ * the Rust records (crates/protocols-ffi/src/owned_proxy.rs). Upstream's file is deleted,
  * so `#include "swoole_proxy.h"` finds this copy. */
 
 #pragma once
@@ -86,7 +86,7 @@ struct Socks5Proxy : private ProxyOwner {
     int &socket_type = prepared_.fields->socket_type;
     char (&buf)[512] = *reinterpret_cast<char (*)[512]>(prepared_.buffer);
 
-    // Rust under these symbols (crates/protocols/src/owned_proxy.rs).
+    // Rust under these symbols (crates/protocols-ffi/src/owned_proxy.rs).
     ssize_t pack_negotiate_request();
     ssize_t pack_auth_request();
     ssize_t pack_connect_request();

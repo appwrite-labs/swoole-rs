@@ -16,8 +16,9 @@ listeners. The merge tier runs the whole pinned suite (below).
 python3 tools/build_upstream.py
 python3 corpus/upstream/run.py \
   --engine upstream=target/upstream/src/modules/swoole.so --require-all
+python3 tools/build_ext.py
 python3 corpus/upstream/run.py \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so
+  --engine cargo=target/ext/swoole.so
 # Target a migration module:
 python3 corpus/upstream/run.py \
   --engine upstream=target/upstream/src/modules/swoole.so --module timers --require-all
@@ -114,36 +115,38 @@ without modifying the original PHPT assertions or capability probes.
 ## Every PHPT, gated on upstream
 
 The merge tier (`.github/workflows/phpt.yml`, called from `merge.yml`) runs every pinned
-PHPT against the upstream reference, the all-modules hybrid and the Cargo build, all built
+PHPT against the upstream reference and the Cargo build, both built
 with PHP sockets support, in 6 shards per engine. The shards don't run as root, so the five
 tests that skip unless root run again as root in the `phpt-root` job, with their own
 re-runs and gate (`phpt-root.json`). The shards run:
 
 ```sh
 python3 corpus/upstream/inventory.py --shard 3/6 --output manifest.json
-python3 corpus/upstream/run.py --manifest manifest.json --engine hybrid=/absolute/swoole.so --output hybrid-3.json
-python3 corpus/upstream/gate.py upstream-*.json hybrid-*.json --output phpt.json
+python3 corpus/upstream/run.py --manifest manifest.json --engine cargo=/absolute/swoole.so --output cargo-3.json
+python3 corpus/upstream/gate.py upstream-*.json cargo-*.json --output phpt.json
 ```
 
 `inventory.py` lists every `.phpt` at the pin (family = its `tests/` directory)
-and every other file under `tests/` as a support file. `gate.py` fails if any test
-that passes on upstream does not pass on the hybrid, including when its result is
+and every other file under `tests/` as a support file. `--plan` prints the shard
+matrix for the families selected, one shard per 150 tests up to 6, as a JSON list of
+indexes (`--module swoole_server`: `[1, 2]`). `gate.py` fails if any test
+that passes on upstream does not pass on the Cargo build, including when its result is
 missing, and refuses interrupted shards. Tests failing on both are listed, not
 hidden. Tests of upstream fixes to code that is Rust now and not yet ported
 (`PENDING_PORTS`, each under its open issue) are listed as pending, not gated;
-any of them the hybrid passes is listed so its entry is dropped. It records each result and, for skips, the SKIPIF reason and a category
+any of them cargo passes is listed so its entry is dropped. It records each result and, for skips, the SKIPIF reason and a category
 (service, network, ZTS, stdext, platform, extension, other). Only the runner's
 PASSED counts as passed.
 
 A test the gate flags is re-run 3 times on both engines (in `phpt.yml`'s `gate` job,
 unless more than 20 are flagged). If upstream fails any re-run, the test is listed
-as flaky on upstream and doesn't fail the gate, provided the hybrid passes one of its
+as flaky on upstream and doesn't fail the gate, provided cargo passes one of its
 re-runs or upstream then passes fewer than a third of 9 re-runs (a test both engines
-almost always fail, whose first upstream pass was the outlier). If upstream passes every re-run and the hybrid fails any, it is a regression; when the
-hybrid both passed and failed, upstream first gets up to 24 re-runs in all, and an upstream
+almost always fail, whose first upstream pass was the outlier). If upstream passes every re-run and cargo fails any, it is a regression; when
+cargo both passed and failed, upstream first gets up to 24 re-runs in all, and an upstream
 failure among them makes the test flaky on both engines instead.
 If both pass every re-run, it is listed as passed on re-run and doesn't fail the gate.
-The hybrid never gets retried to green: it must pass every re-run.
+Cargo never gets retried to green: it must pass every re-run.
 
 A re-run whose test passed but whose runner then died with `corrupted double-linked
 list` / `Aborted` (#200: both engines hit it at the same rate) is inconclusive on
@@ -156,8 +159,17 @@ touches (each module in `migration/modules.json` lists its `phpt_families`; ever
 for a change to shared build inputs) through the same `phpt.yml`, on the Cargo build alone,
 6 shards with the services. Upstream doesn't change between PRs, so the gate takes upstream's
 reports and `upstream.so` from main's latest merge-tier run whose upstream shards passed
-(`tools/ci.py phpt-baseline`), cut to those families. A PR that changes
-`tools/build_upstream.py` or `corpus/upstream/` runs upstream too.
+(`tools/ci.py phpt-baseline`), cut to those families. That baseline holds only while
+what upstream's results depend on is unchanged since its commit: the pin and its build,
+the runner, the services and packages (`UPSTREAM_KEY` and `BASELINES` in `tools/ci.py`).
+A PR that changes one of those, or anything under `corpus/upstream/` (pr.yml's own
+check), runs upstream too. `--variant` finds the c-ares, io_uring and thread-context
+workflows' upstream reports the same way, and `--php` also requires the PHP release.
+
+`services.yml` holds those services, and `services.py` prints the ones some families reach
+(every one for a family it doesn't list); `.github/actions/phpt-env` starts what its
+`services` input names. Locally, with the names in `/etc/hosts` as phpt-env writes them:
+`docker compose -f corpus/upstream/services.yml up -d --wait $(python3 corpus/upstream/services.py swoole_runtime)`.
 
 To run some families on both engines locally, `families.sh` re-runs and gates them the same
 way (`dev.py candidate` does it for the modules it selects):
@@ -167,18 +179,33 @@ corpus/upstream/families.sh target/reports/phpt target/upstream/src/modules/swoo
   target/ext/swoole.so --module swoole_timer
 ```
 
+Those run on Ubuntu's PHP 8.3. Every night `.github/workflows/php-versions.yml`
+builds upstream and the Cargo build against each other release upstream supports
+(8.2, 8.4, 8.5, from source by `.devcontainer/php.sh` with `PHP_SERIES` set)
+and gates every PHPT the same way, in 4 shards per version and without services.
+
+## On a debug PHP
+
+`.github/workflows/debug.yml` (nightly) builds PHP with `--enable-debug`, builds
+upstream and the Cargo swoole.so against it, and runs every pinned PHPT on both in 6
+shards, with the re-runs and gate above (`phpt-debug.json`). A debug PHP prints Zend's
+leak report at request end and aborts on a failed assertion, so either fails the
+test. The summary lists each failure that carries one by engine, upstream's own
+included; only a cargo failure of a test upstream passes fails the gate. Each
+cargo-only report gets a `kind:bug`. There are no services and no external network,
+so tests that need them fail or skip on both engines.
+
 ## Attributing a regression
 
-The gate runs every PHPT once against the all-modules hybrid, the only hybrid
-there is. When it reports a test that passes on upstream but not on the hybrid,
-reproduce just that test and bisect the commit range:
+The gate runs every PHPT once against the Cargo build. When it reports a test that
+passes on upstream but not on cargo, reproduce just that test and bisect the commit range:
 
 ```sh
-python3 tools/build_hybrid.py
+python3 tools/build_ext.py
 python3 corpus/upstream/run.py --source target/upstream/src \
   --case tests/swoole_http_server/example.phpt \
   --engine upstream=target/upstream/src/modules/swoole.so \
-  --engine hybrid=target/hybrid/rust/modules/swoole.so
+  --engine cargo=target/ext/swoole.so
 ```
 
 Add `--external-network` for tests that need outside services.

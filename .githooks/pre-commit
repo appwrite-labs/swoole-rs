@@ -7,7 +7,6 @@ unset $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p')
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -q -- -D warnings
 python3 tools/check_migration.py > /dev/null
-git diff --cached --quiet -- migration/patches || python3 tools/patches.py check > /dev/null
 git diff --cached --quiet -- native crates || tools/headers.sh --check
 git diff --cached --quiet -- crates || python3 tools/budget.py > /dev/null
 # Zend families add shims in parallel; a helper defined twice only fails at link

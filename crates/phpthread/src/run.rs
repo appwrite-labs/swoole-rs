@@ -34,8 +34,7 @@ static THREADS: AtomicUsize = AtomicUsize::new(1);
 
 thread_local! {
     /// The thread's arguments (`Thread::getArguments()`), undef if none.
-    // SAFETY: an all-zero zval is undef.
-    static ARGV: UnsafeCell<zval> = const { UnsafeCell::new(unsafe { std::mem::zeroed() }) };
+    static ARGV: UnsafeCell<zval> = const { UnsafeCell::new(swoole_rs_zend::UNDEF) };
     /// The jump buffer of the thread's `zend_first_try` while its script runs.
     static BAILOUT: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
 }
@@ -48,9 +47,9 @@ struct Start {
     argv: Option<Arguments>,
 }
 
-/// `sw_active_thread_count()`, declared `extern "C"` in `php_swoole_private.h`.
-#[unsafe(no_mangle)]
-pub extern "C" fn sw_active_thread_count() -> usize {
+/// `sw_active_thread_count()`: the PHP threads running.
+#[must_use]
+pub fn sw_active_thread_count() -> usize {
     THREADS.load(Ordering::SeqCst)
 }
 
@@ -110,8 +109,7 @@ unsafe extern "C" fn prologue(start: *mut c_void) {
     // SAFETY: `run`'s `Start`.
     let start = unsafe { &mut *start.cast::<Start>() };
     if !start.argv_serialized.is_null() {
-        // SAFETY: an all-zero zval is undef.
-        let mut global_argv: zval = unsafe { std::mem::zeroed() };
+        let mut global_argv = swoole_rs_zend::UNDEF;
         // SAFETY: the main request's string, live until its RSHUTDOWN.
         let data = unsafe { string::bytes(start.argv_serialized) };
         // SAFETY: in the request; a bailout is deferred.
@@ -154,8 +152,7 @@ unsafe extern "C" fn epilogue(_start: *mut c_void) {
 /// Upstream's `php_swoole_thread_bailout()`: `exit()` in a thread unwinds to the nearest
 /// native scope that contains it, else out of the coroutine, else out of the
 /// thread's script.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpthread_bailout() {
+pub extern "C" fn thread_bailout() {
     // SAFETY: no preconditions.
     unsafe { swr_zend_guard_mark() };
     // SAFETY: as above.
@@ -186,10 +183,9 @@ extern "C" fn guard_context() -> *mut c_void {
 /// with its constants, then `Swoole\Thread\Error`.
 /// # Safety
 /// MINIT, before any PHP thread starts.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_minit() {
+pub unsafe fn thread_minit() {
     // SAFETY: MINIT, before any thread reads them.
-    unsafe { swr_zend_guard_register(Some(guard_context), Some(swr_v1_phpthread_bailout)) };
+    unsafe { swr_zend_guard_register(Some(guard_context), Some(thread_bailout)) };
     // SAFETY: MINIT.
     let ce = unsafe { thread::register() };
     // `std::thread::hardware_concurrency()`.
@@ -226,8 +222,7 @@ pub unsafe extern "C" fn swr_v1_phpthread_minit() {
 /// RINIT: the main thread keeps its script path and `$argv` for new threads.
 /// # Safety
 /// RINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpthread_rinit() {
+pub unsafe extern "C" fn thread_rinit() {
     // SAFETY: no preconditions.
     if unsafe { swr_zend_tsrm_is_main_thread() } {
         // SAFETY: the main thread's RINIT.
@@ -238,8 +233,7 @@ pub unsafe extern "C" fn swr_v1_phpthread_rinit() {
 
 /// RSHUTDOWN: drop the thread's arguments; the main thread exits the process
 /// while other threads run, else releases what RINIT kept.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpthread_rshutdown() {
+pub extern "C" fn thread_rshutdown() {
     ARGV.with(|argv| {
         let argv = argv.get();
         // SAFETY: this thread's slot, undef or a value it owns.

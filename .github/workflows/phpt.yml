@@ -2,7 +2,7 @@ name: PHPT
 # Upstream's pinned PHPTs, sharded six ways per engine, and the gate: any test that passes on
 # upstream must pass on every other engine (corpus/upstream/gate.py). The caller builds the
 # phpt-engines artifact first (.github/actions/phpt-build). The merge tier runs every family
-# on upstream, the hybrid and the Cargo build. The PR tier runs the families of the modules
+# on upstream and the Cargo build. The PR tier runs the families of the modules
 # a PR touches on the Cargo build alone, and gates it on the upstream reports and upstream.so
 # of main's latest merge-tier run (BASELINE): upstream doesn't change between PRs.
 on:
@@ -14,7 +14,7 @@ on:
         type: string
       engines:
         description: JSON list of the engines phpt-engines holds and the shards run
-        default: '["upstream", "hybrid", "cargo"]'
+        default: '["upstream", "cargo"]'
         type: string
       families:
         description: The families (tests/<family>/) to run, space separated; empty runs all
@@ -30,7 +30,7 @@ defaults:
 
 jobs:
   phpt:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -136,7 +136,7 @@ jobs:
   gate:
     needs: phpt
     if: always()
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     permissions:
       contents: read
@@ -162,7 +162,7 @@ jobs:
             jq --argjson f "$families" '.results |= map(select(($f | length) == 0 or (.module | IN($f[]))))' \
               "$report" > "shards/$(basename "$report")"
           done
-      # Tests that pass on upstream but not on the hybrid get 3 re-runs per engine, unless
+      # Tests that pass on upstream but not on the Cargo build get 3 re-runs per engine, unless
       # more than 20 are flagged: that is a broad breakage, not flakiness.
       - id: flagged
         run: |
@@ -189,6 +189,20 @@ jobs:
           set -- shards/*.json
           if [ -d recheck ]; then set -- "$@" --recheck recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt.json | tee -a "$GITHUB_STEP_SUMMARY"
+      # A shard that crashed, or that GitHub never started (an Actions outage drops jobs
+      # without a trace in the run), leaves no report; a shard with no tests leaves none either.
+      # A gate over some of the shards measured part of the corpus, so its phpt.json is
+      # dropped before the upload: the PHPT badge would read it as the whole.
+      - if: always() && needs.phpt.result != 'success'
+        env:
+          ENGINES: ${{ inputs.engines }}
+        run: |
+          for engine in $(jq -r '.[]' <<< "$ENGINES"); do for index in 1 2 3 4 5 6; do
+            [ -f "shards/$engine-$index.json" ] || missing="$missing $engine-$index"
+          done; done
+          rm -f phpt.json
+          echo "A PHPT shard didn't succeed (\`phpt\`: ${{ needs.phpt.result }}); reports missing from the gate:${missing:- none}"
+          exit 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -197,5 +211,3 @@ jobs:
             phpt.json
             flagged.txt
             recheck/
-      - if: needs.phpt.result != 'success'
-        run: echo "A PHPT shard crashed; its tests are missing from the gate" && exit 1

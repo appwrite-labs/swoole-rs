@@ -1,4 +1,4 @@
-"""The merge-tier summary counts phases per module and hybrid cases per group, never folding unsupported into passed."""
+"""The merge-tier summary counts phases per module and Cargo-engine cases per group, never folding unsupported into passed."""
 import json
 from pathlib import Path
 import tempfile
@@ -15,17 +15,17 @@ class MergeSummary(unittest.TestCase):
                 {'phase': 'buffer-model', 'returncode': 0}, {'phase': 'string-copy', 'returncode': 1},
                 {'phase': 'format', 'returncode': 0}]}))
             (Path(temp) / 'phpt-originals.json').write_text(json.dumps({'results': [
-                {'engine': 'hybrid', 'module': 'timers', 'status': 'passed'},
-                {'engine': 'hybrid', 'module': 'timers', 'status': 'unsupported'},
-                {'engine': 'hybrid', 'module': 'timers', 'status': 'xfail'},
+                {'engine': 'cargo', 'module': 'timers', 'status': 'passed'},
+                {'engine': 'cargo', 'module': 'timers', 'status': 'unsupported'},
+                {'engine': 'cargo', 'module': 'timers', 'status': 'xfail'},
                 {'engine': 'upstream', 'module': 'timers', 'status': 'failed'}]}))
             (Path(temp) / 'applications.json').write_text(json.dumps({'results': [
-                {'engine': 'hybrid', 'project': '01-hello', 'status': 'passed'}]}))
+                {'engine': 'cargo', 'project': '01-hello', 'status': 'passed'}]}))
             (Path(temp) / 'timer-originals.xml').write_text(
-                '<testsuites><testsuite><testcase name="test_original[after-hybrid]"/>'
-                '<testcase name="test_original[stats-hybrid]"><failure/></testcase>'
+                '<testsuites><testsuite><testcase name="test_original[after-cargo]"/>'
+                '<testcase name="test_original[stats-cargo]"><failure/></testcase>'
                 '<testcase name="test_original[stats-upstream]"><failure/></testcase>'
-                '<testcase name="test_original[bug-hybrid]"><skipped/></testcase></testsuite></testsuites>')
+                '<testcase name="test_original[bug-cargo]"><skipped/></testcase></testsuite></testsuites>')
             phases, cases = summarize(loop)
         self.assertEqual(phases['buffer'], {'passed': 1, 'failed': 1})
         self.assertEqual(phases['shared'], {'passed': 1})

@@ -8,7 +8,7 @@ import tempfile
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
 from tools.harness import run_isolated,write_report
-from tools.build_hybrid import hybrid_link,hybrid_tree
+from tools.build_ext import native_link
 
 
 def main():
@@ -16,12 +16,11 @@ def main():
     parser.add_argument('--archive',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
-    source,_=hybrid_tree(args.archive)
-    prefix=source.parent/'rust-prefix/include'
+    prefix=args.archive.resolve().parents[1]/'include'
     report={'scope':__doc__,'passed':False}
     with tempfile.TemporaryDirectory(prefix='swr-server-config-') as directory:
         executable=Path(directory)/'owners'
-        command=['c++','-std=c++14','-O1','-UNDEBUG','-I'+str(prefix),str(Path(__file__).with_suffix('.cc')),*hybrid_link(args.archive,directory),'-o',str(executable)]
+        command=['c++','-std=c++14','-O1','-UNDEBUG','-I'+str(prefix),str(Path(__file__).with_suffix('.cc')),*native_link(args.archive),'-o',str(executable)]
         result=run_isolated(command,timeout=60)
         report['compile']={'command':command,'exit_code':result.returncode,'stderr':result.stderr}
         if result.returncode==0:

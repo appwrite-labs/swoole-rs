@@ -351,8 +351,7 @@ impl ServerState {
 ///
 /// # Safety
 /// `state` is live and `length` writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_upload_tmp_dir(
+pub unsafe fn swr_v1_server_upload_tmp_dir(
     state: *const ServerState,
     length: *mut usize,
 ) -> *const u8 {
@@ -406,14 +405,7 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
             if !file.is_empty() {
                 let file = c_path(file);
                 let pid = std::process::id().cast_signed().to_string();
-                // SAFETY: a terminated path and the pid's bytes.
-                unsafe {
-                    swoole_rs_ossupport::swr_v1_os_file_put_contents(
-                        file.as_ptr(),
-                        pid.as_ptr().cast(),
-                        pid.len(),
-                    )
-                };
+                swoole_rs_ossupport::file_put_contents(&file, pid.as_bytes());
             }
         }
         OP_LC_UNLINK_PID => {
@@ -434,8 +426,10 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
     let config = crate::config::ServerConfig {
-        worker_registry: swoole_rs_corebase::worker_registry::swr_v1_process_worker_registry_new()
-            .cast(),
+        worker_registry: Box::into_raw(
+            Box::<swoole_rs_corebase::worker_registry::WorkerRegistry>::default(),
+        )
+        .cast(),
         ..crate::config::ServerConfig::default()
     };
     let tables = crate::records::ServerTables::default();

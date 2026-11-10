@@ -5,6 +5,8 @@ stdout and stderr. A control that times out or fails fails every comparison;
 no candidate is ever promoted to control. No original PHPT is changed.
 """
 import functools
+import os
+import re
 from pathlib import Path
 
 import pytest
@@ -14,10 +16,20 @@ from tools.harness import run_isolated
 HERE = Path(__file__).parent
 
 
+# The OOM fixtures' limit is the engine's own memory_get_usage(true) plus 1 MiB: whole
+# chunks under Zend MM, but exact bytes under USE_TRACKED_ALLOC (tools/asan.py), where two
+# engines' startup allocations differ by a few bytes. Only that run masks the limit.
+EXACT_USAGE = os.environ.get('USE_TRACKED_ALLOC') == '1'
+
+
+def mask(output):
+    return re.sub(r'Allowed memory size of \d+', 'Allowed memory size of N', output) if EXACT_USAGE else output
+
+
 @functools.cache
 def observe(command):
     result = run_isolated(list(command), timeout=5)
-    return result.returncode, result.stdout, result.stderr
+    return result.returncode, mask(result.stdout), mask(result.stderr)
 
 
 def compare(engine, control, *arguments):

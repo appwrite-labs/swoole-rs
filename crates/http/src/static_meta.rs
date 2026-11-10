@@ -1,90 +1,37 @@
 //! Inline static handler policy; native owns strings, RNG and MIME references.
-use crate::proxy::HttpProxyText;
-use crate::{INVALID, OVERFLOW, bytes, c_text};
-use std::{mem::MaybeUninit, slice};
+use crate::c_text;
 pub(crate) const BOUNDARY: &[u8] = b"SwooleBoundary\0";
 const CONTENT_TYPE: &[u8] = b"multipart/byteranges; boundary=\0";
+const ALLOCATION: i32 = -3;
 
-/// Return the lazy boundary initializer, or NULL for an existing boundary.
-/// # Safety
-/// `random_length` is aligned/writable; the returned string has static lifetime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_static_boundary(
-    length: usize,
-    random_length: *mut usize,
-) -> *const u8 {
-    if length != 0 || random_length.is_null() {
-        return std::ptr::null();
-    }
-    // SAFETY: `random_length` is non-null (checked above), aligned and writable per the caller contract.
-    unsafe { random_length.write(39 - BOUNDARY.len()) };
-    BOUNDARY.as_ptr()
+/// The lazy boundary's random length while the boundary is still empty
+/// (`length == 0`), else `None`.
+#[must_use]
+pub(crate) fn static_boundary(length: usize) -> Option<usize> {
+    (length == 0).then_some(39 - BOUNDARY.len())
 }
-/// Multipart prefix for multiple tasks, otherwise NULL (native MIME reference).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_http_static_content_prefix(tasks: usize) -> *const u8 {
-    if tasks > 1 {
-        CONTENT_TYPE.as_ptr()
-    } else {
-        std::ptr::null()
-    }
+/// Whether the response is multipart: more than one task.
+#[must_use]
+pub(crate) fn static_multipart(tasks: usize) -> bool {
+    tasks > 1
 }
-/// Query/write the binary-safe multipart content type, excluding any NUL.
-/// # Safety
-/// Input spans are initialized. Output and written are writable and disjoint
-/// from inputs. Native string allocation completes before this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_static_content_type(
-    boundary: *const HttpProxyText,
-    output: *mut u8,
-    capacity: usize,
-    written: *mut usize,
-) -> i32 {
-    if boundary.is_null() || written.is_null() || (capacity != 0 && output.is_null()) {
-        return INVALID;
-    }
-    // SAFETY: `boundary` is non-null (checked above), aligned and initialized per the caller contract.
-    let boundary = unsafe { &*boundary };
-    // SAFETY: the boundary span names `length` initialized bytes (null only when empty).
-    let boundary = match unsafe { bytes(boundary.data, boundary.length) } {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
+/// The binary-safe multipart content type over `boundary`, excluding any NUL.
+pub(crate) fn static_content_type(boundary: &[u8]) -> Result<Vec<u8>, i32> {
     let prefix = c_text(CONTENT_TYPE);
-    let Some(length) = prefix
-        .len()
-        .checked_add(boundary.len())
-        .filter(|&n| isize::try_from(n).is_ok())
-    else {
-        return OVERFLOW;
-    };
-    if capacity != 0 {
-        if capacity < length || capacity > isize::MAX as usize {
-            return OVERFLOW;
-        }
-        // SAFETY: non-null (checked above); `length <= capacity <= isize::MAX` writable bytes.
-        let output = unsafe { slice::from_raw_parts_mut(output.cast::<MaybeUninit<u8>>(), length) };
-        for (slot, &byte) in output.iter_mut().zip(prefix.iter().chain(boundary)) {
-            slot.write(byte);
-        }
-    }
-    // SAFETY: `written` is non-null (checked above), aligned and writable per the caller contract.
-    unsafe { written.write(length) };
-    0
+    let mut value = Vec::new();
+    value
+        .try_reserve_exact(prefix.len() + boundary.len())
+        .map_err(|_| ALLOCATION)?;
+    value.extend_from_slice(prefix);
+    value.extend_from_slice(boundary);
+    Ok(value)
 }
-/// Publish404 only for the terminal location match; no native callback occurs.
-/// # Safety
-/// status is aligned, initialized and exclusively writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_static_catch(last: u32, status: *mut i32) -> i32 {
-    if status.is_null() {
-        return INVALID;
-    }
+/// Publish 404 only for the terminal location match; no native callback occurs.
+pub(crate) fn static_catch(last: u32, status: &mut i32) -> i32 {
     if last == 0 {
         return 0;
     }
-    // SAFETY: `status` is non-null (checked above), aligned and writable per the caller contract.
-    unsafe { status.write(404) };
+    *status = 404;
     1
 }
 
@@ -92,38 +39,19 @@ pub unsafe extern "C" fn swr_v1_http_static_catch(last: u32, status: *mut i32) -
 mod tests {
     use super::*;
     #[test]
-    fn binary_content_and_rejected_small_buffer_do_not_publish_partial_results() {
-        let boundary = HttpProxyText {
-            data: b"a\0b".as_ptr(),
-            length: 3,
-        };
-        let mut output = [0xa5; 64];
-        let mut written = 99;
+    fn binary_content_type_keeps_the_whole_boundary() {
         assert_eq!(
-            unsafe {
-                swr_v1_http_static_content_type(
-                    &raw const boundary,
-                    output.as_mut_ptr(),
-                    1,
-                    &raw mut written,
-                )
-            },
-            OVERFLOW
+            static_content_type(b"a\0b").unwrap(),
+            b"multipart/byteranges; boundary=a\0b"
         );
-        assert_eq!(output, [0xa5; 64]);
-        assert_eq!(written, 99);
-        assert_eq!(
-            unsafe {
-                swr_v1_http_static_content_type(
-                    &raw const boundary,
-                    output.as_mut_ptr(),
-                    output.len(),
-                    &raw mut written,
-                )
-            },
-            0
-        );
-        assert_eq!(&output[..written], b"multipart/byteranges; boundary=a\0b");
-        assert_eq!(output[written], 0xa5);
+        assert_eq!(static_boundary(0), Some(24));
+        assert_eq!(static_boundary(1), None);
+        assert!(!static_multipart(1));
+        assert!(static_multipart(2));
+        let mut status = 200;
+        assert_eq!(static_catch(0, &mut status), 0);
+        assert_eq!(status, 200);
+        assert_eq!(static_catch(1, &mut status), 1);
+        assert_eq!(status, 404);
     }
 }

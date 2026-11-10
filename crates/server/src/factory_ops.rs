@@ -5,10 +5,6 @@ use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicI64, Ordering};
 use swoole_rs_process::worker_record::Worker;
 
-use swoole_rs_corebase::worker_registry::{
-    swr_v1_process_worker_registry_register as register,
-    swr_v1_process_worker_registry_unregister as unregister,
-};
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_process::methods::{
     ExitStatus, kill_all_workers, swoole_get_worker_id, swoole_get_worker_type,
@@ -72,17 +68,6 @@ const _: () = assert!(
 unsafe extern "C-unwind" {
     #[link_name = "_Z14swoole_waitpidiPii"]
     fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-}
-
-// SAFETY: crates/protocols' bus, linked into the same archive.
-unsafe extern "C" {
-    fn swr_v1_bus_write(
-        bus: *mut c_void,
-        socket: *mut c_void,
-        head: *mut DataHead,
-        data: *const u8,
-    ) -> bool;
-    fn swr_v1_bus_pipe_socket(bus: *mut c_void, fd: c_int) -> *mut SocketRecord;
 }
 
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
@@ -210,10 +195,7 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CREATE_WORKER_PIPE => u64::from(state.push_worker_pipe(ctx.worker_at(worker_id(arg)))),
-        OP_CREATE_PIPE_BUFFERS => {
-            // SAFETY: the live server.
-            signed(unsafe { crate::master_ops::create_pipe_buffers(serv) })
-        }
+        OP_CREATE_PIPE_BUFFERS => signed(crate::master_ops::create_pipe_buffers(ctx.server())),
         OP_WRITE_TO_WORKER => {
             // This reactor thread's bus, and its copy of the worker's pipe.
             let thread = tables
@@ -221,16 +203,15 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
                 .cast::<ThreadRecord>()
                 .wrapping_add(usize::from(swoole_rs_corebase::thread_id()));
             // SAFETY: this reactor thread's live record.
-            let bus = unsafe { (*thread).bus };
+            let bus = unsafe { &*thread }.message_bus();
             // The worker the factory scheduled.
             let pipe = ctx.worker_at(worker_id(arg)).pipe_master;
             // SAFETY: the worker's live pipe socket.
             let fd = unsafe { (*pipe.cast::<SocketRecord>()).fd };
-            // SAFETY: the live bus.
-            let socket = unsafe { swr_v1_bus_pipe_socket(bus, fd) };
+            let socket = bus.pipe_fd(fd);
             let (mut info, data) = send();
-            // SAFETY: the live bus and pipe, and the data sent.
-            u64::from(unsafe { swr_v1_bus_write(bus, socket.cast(), &raw mut info, data.cast()) })
+            // SAFETY: the live pipe, and the data sent.
+            u64::from(unsafe { bus.rust().send(socket.cast(), &mut info, data.cast()) })
         }
         OP_WRITE_TO_REACTOR => {
             let (mut info, data) = send();
@@ -242,9 +223,9 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let id = i64::from(info.reactor_id) + (info.fd % pipes) * i64::from(config.reactor_num);
             // The worker serving that reactor's pipe.
             let pipe = ctx.worker_at(worker_id(id.cast_unsigned())).pipe_worker;
-            let bus = crate::master_ops::server_message_bus(state).raw();
-            // SAFETY: the live bus and pipe, and the data sent.
-            u64::from(unsafe { swr_v1_bus_write(bus, pipe, &raw mut info, data.cast()) })
+            let bus = crate::master_ops::server_message_bus(state);
+            // SAFETY: the live pipe, and the data sent.
+            u64::from(unsafe { bus.rust().send(pipe.cast(), &mut info, data.cast()) })
         }
         OP_FINISH_CLOSE => u64::from(crate::factory::finish(state, ctx.send.cast())),
         _ => return None,
@@ -415,7 +396,10 @@ fn low32(value: u64) -> u32 {
 /// Forking, registering and running event and user workers.
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (serv, worker) = (ctx.serv, ctx.worker);
-    let registry = ctx.config().worker_registry.cast();
+    let registry = ctx
+        .config()
+        .worker_registry
+        .cast::<swoole_rs_corebase::worker_registry::WorkerRegistry>();
     // The pid or worker type in the argument, as native's `int` conversion keeps it.
     let int = c_int::from_ne_bytes(low32(arg).to_ne_bytes());
     let pid = int;
@@ -431,7 +415,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the context's live worker.
             unsafe { Worker::new(worker) }.set_pid(pid);
             // SAFETY: the server's live registry.
-            unsafe { register(registry, pid, worker.cast(), REGISTRY_EVENT) };
+            unsafe { (*registry).register(pid, worker.cast(), REGISTRY_EVENT) };
         }
         OP_REGISTER_USER_WORKER => {
             // worker: local memory; user_workers: shared memory
@@ -443,11 +427,11 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the worker's shared copy.
             unsafe { Worker::new(shared).set_pid(pid) };
             // SAFETY: the server's live registry.
-            unsafe { register(registry, pid, worker.cast(), REGISTRY_USER) };
+            unsafe { (*registry).register(pid, worker.cast(), REGISTRY_USER) };
         }
         OP_FORGET_USER_WORKER => {
             // SAFETY: the server's registry.
-            let _present = unsafe { unregister(registry, pid) };
+            let _present = unsafe { (*registry).unregister(pid) };
         }
         OP_ENTER_CHILD => {
             let own = std::process::id().cast_signed();

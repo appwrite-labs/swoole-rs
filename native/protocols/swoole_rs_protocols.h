@@ -38,20 +38,6 @@ int64_t swr_v1_resp_parse_range(const uint8_t *, size_t, swr_resp_span *, size_t
  * Unlike parse, output may be partially written on error. */
 int64_t swr_v1_resp_scan(const uint8_t *, size_t, swr_resp_span *, size_t capacity, uint8_t *range);
 size_t swr_v1_resp_format(uint8_t kind, const uint8_t *, size_t, int64_t integer, uint8_t *, size_t);
-/* PHP reply wire fragments. Native conversions/allocations run outside Rust.
- * Prefix is complete header/inline bytes; body borrows the input's bounded
- * prefix; suffix_length is 0 or2 for CRLF. Kinds match PHP0/1/2/3/4/5/6,
- * plus8 string-map-key and9 unsigned-map-key. number carries integer bits/count.
- * present only controls status/error defaults. Output untouched on error. */
-typedef struct {
-    uint8_t prefix[32];
-    uint32_t prefix_length;
-    size_t body_length;
-    uint32_t suffix_length;
-} swr_resp_reply_parts;
-int32_t swr_v1_resp_reply_parts(uint8_t kind, uint8_t present, uint64_t number,
-                               const uint8_t *, size_t, swr_resp_reply_parts *);
-
 typedef struct {
     uint8_t state;
     int32_t lines_total, lines_received, bytes_total, bytes_received, offset;
@@ -62,7 +48,7 @@ int32_t swr_v1_resp_receive_range(const uint8_t *, size_t length, size_t capacit
                                 swr_resp_request *, uint8_t *set_offset, uint8_t *range);
 /* After receive action 1: new buffer size, or 0 to keep reading without growth. */
 size_t swr_v1_resp_extend_size(size_t length, size_t size, size_t maximum, size_t page);
-/* redis::recv_packet's loop (crates/protocols/src/resp_recv.rs) over the caller's
+/* redis::recv_packet's loop (crates/protocols-ffi/src/resp_recv.rs) over the caller's
  * effects. buffer is a swoole::String's head; *request is null or from sw_malloc.
  * recv: bytes received, -1 to close (SW_ERR), -2 to stop (SW_OK).
  * dispatch: onPackage of the first length bytes: <0 failed, 1 socket removed, else 0. */
@@ -73,46 +59,8 @@ typedef struct {
     int (*dispatch)(void *context, size_t length);
 } swr_resp_io;
 int swr_v1_resp_recv(const swr_resp_io *, void *buffer, swr_resp_request **request, uint32_t maximum, size_t page);
-/* MessageBus (crates/protocols/src/bus.rs). The bus owns its packets; the
- * caller allocates them (the allocator may bail out) and the receive buffer. */
+/* MessageBus (crates/bus), for crates/process' send_message. */
 typedef struct swr_bus swr_bus;
-typedef struct { size_t length; char *data; } swr_bus_packet;
-enum { SWR_BUS_ALLOCATE = 1, SWR_BUS_CLOSED, SWR_BUS_ABNORMAL, SWR_BUS_READV_CLOSED };
-typedef struct {
-    ssize_t received;
-    size_t size;            /* SWR_BUS_ALLOCATE: bytes to allocate */
-    void *data;             /* SWR_BUS_ALLOCATE: block to realloc, or NULL */
-    const void *allocator;  /* SWR_BUS_ALLOCATE with data: its allocator */
-    uint16_t chunks;
-    bool resume;
-    uint8_t event;
-} swr_bus_read;
-swr_bus *swr_v1_bus_create(size_t buffer_size);
-void swr_v1_bus_free(swr_bus *);
-void swr_v1_bus_set_buffer_size(swr_bus *, size_t);
-size_t swr_v1_bus_buffer_size(swr_bus *);
-void swr_v1_bus_set_always_chunked(swr_bus *);
-void swr_v1_bus_set_buffer(swr_bus *, void *buffer);
-void *swr_v1_bus_buffer(swr_bus *);
-size_t swr_v1_bus_count(swr_bus *);
-void swr_v1_bus_clear(swr_bus *);
-size_t swr_v1_bus_memory_size(swr_bus *);
-void swr_v1_bus_pass(swr_bus *, const void *info, const char *data);
-swr_bus_packet swr_v1_bus_packet(swr_bus *);
-char *swr_v1_bus_move_packet(swr_bus *);
-void swr_v1_bus_pop(swr_bus *);
-/* On SWR_BUS_ALLOCATE: allocate state->size bytes, adopt them, call again.
- * The other events are logged before it returns. */
-ssize_t swr_v1_bus_read(swr_bus *, int fd, bool dgram, bool *nobufs, swr_bus_read *state);
-void swr_v1_bus_adopt(swr_bus *, void *data, size_t size, const void *allocator);
-/* next(context) numbers each message swr_v1_bus_write sends. */
-/* Each message swr_v1_bus_write sends takes the next value of counter, an atomic int64_t. */
-void swr_v1_bus_count_ids(swr_bus *, void *counter);
-/* socket is a swoole::network::Socket. */
-bool swr_v1_bus_write(swr_bus *, void *socket, void *head, const char *data);
-/* The bus's own records of its pipes, freed (not closed) with it. */
-void swr_v1_bus_init_pipe_socket(swr_bus *, int fd);
-void *swr_v1_bus_pipe_socket(swr_bus *, int fd);
 #ifdef __cplusplus
 }
 #endif

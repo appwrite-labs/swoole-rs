@@ -1,9 +1,8 @@
 //! `swoole::SSLContext`'s OpenSSL side: library initialization and the `ex_data`
 //! indexes, the error text, creating and configuring the `SSL_CTX`, and its
-//! callbacks (password, ALPN, verify, DTLS cookies). Native code keeps the
-//! configuration fields (other modules read and write them), the info callback
-//! (it touches `network::Socket` bitfields) and the logger, which Rust reaches
-//! through the configuration's `warn` callback. Requires OpenSSL 3.
+//! callbacks (password, ALPN, verify, DTLS cookies). The configuration lives in the
+//! owner (`owned.rs`), the info callback in `info.rs`; warnings go through the
+//! configuration's `warn` callback. Requires OpenSSL 3.
 use openssl_sys::{
     BIO, BIO_ctrl, DTLS_method, ERR_clear_error, ERR_get_error, ERR_reason_error_string, EVP_MD,
     EVP_PKEY, EVP_PKEY_free, EVP_sha1, OPENSSL_NPN_NEGOTIATED, OPENSSL_init_ssl, SSL,
@@ -13,13 +12,13 @@ use openssl_sys::{
     SSL_CTX_set_client_CA_list, SSL_CTX_set_cookie_generate_cb, SSL_CTX_set_cookie_verify_cb,
     SSL_CTX_set_default_verify_paths, SSL_CTX_set_mode, SSL_CTX_set_options,
     SSL_CTX_set_read_ahead, SSL_CTX_set_session_cache_mode, SSL_CTX_set_session_id_context,
-    SSL_CTX_set_verify, SSL_CTX_set_verify_depth, SSL_CTX_set0_tmp_dh_pkey,
-    SSL_CTX_use_PrivateKey_file, SSL_CTX_use_certificate_chain_file, SSL_CTX_use_certificate_file,
-    SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS,
-    SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION,
-    SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2,
-    SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
-    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_load_client_CA_file,
+    SSL_CTX_set_verify, SSL_CTX_set_verify_depth, SSL_CTX_use_PrivateKey_file,
+    SSL_CTX_use_certificate_chain_file, SSL_CTX_use_certificate_file, SSL_FILETYPE_PEM,
+    SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE,
+    SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3,
+    SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3,
+    SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE,
+    SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_load_client_CA_file,
     SSL_select_next_proto, TLS_method, X509_STORE_CTX,
 };
 use std::cell::RefCell;
@@ -29,8 +28,11 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::log;
 
-// SAFETY: libssl/libcrypto's own declarations; openssl-sys binds none of them.
+// SAFETY: libssl/libcrypto's own declarations; openssl-sys binds none of them, or
+// (`SSL_CTX_set0_tmp_dh_pkey`) only over OpenSSL 3 headers, which the fuzz image,
+// building crates/clients' parsers against OpenSSL 1.1, lacks.
 unsafe extern "C" {
+    fn SSL_CTX_set0_tmp_dh_pkey(ctx: *mut SSL_CTX, key: *mut EVP_PKEY) -> c_int;
     fn BIO_free(bio: *mut BIO) -> c_int;
     fn BIO_new_file(filename: *const c_char, mode: *const c_char) -> *mut BIO;
     fn PEM_read_bio_Parameters(bio: *mut BIO, out: *mut *mut EVP_PKEY) -> *mut EVP_PKEY;
@@ -738,8 +740,7 @@ pub extern "C" fn swr_v1_tls_error() -> *const c_char {
 ///
 /// # Safety
 /// `config` is a live view whose strings are NUL-terminated and outlive the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_context_create(config: *mut TlsConfig) -> *mut SSL_CTX {
+pub unsafe fn swr_v1_tls_context_create(config: *mut TlsConfig) -> *mut SSL_CTX {
     // SAFETY: forwards the caller's live configuration view.
     unsafe { create_context(config, None) }
 }

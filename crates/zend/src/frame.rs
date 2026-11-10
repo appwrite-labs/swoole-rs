@@ -1,9 +1,10 @@
 //! More of the call frame: optional ints, callables, nullable zvals, `$this` as a
 //! zval and string returns (crates/phpprocess).
 use crate::{
-    Call, Invalid,
-    sys::{swr_zend_parse_arg_func, swr_zend_set_stringl, zend_array, zend_execute_data, zval},
+    Call, Invalid, bailout,
+    sys::{swr_zval_stringl, zend_array, zend_execute_data, zval},
 };
+use std::mem::MaybeUninit;
 
 impl Call {
     /// `Z_PARAM_LONG_OR_NULL` of argument `n`: `None` when null or not passed.
@@ -22,12 +23,10 @@ impl Call {
     /// It is not; Zend has thrown.
     #[inline]
     pub fn func(&self, n: u32) -> Result<(), Invalid> {
-        // SAFETY: `n` is a passed argument, as for Zend's macro.
-        if unsafe { swr_zend_parse_arg_func(self.zval(n), n) } {
-            Ok(())
-        } else {
-            Err(Invalid)
-        }
+        let (mut fci, mut fcc) = (MaybeUninit::uninit(), MaybeUninit::uninit());
+        // SAFETY: `n` is a passed argument, as for Zend's macro; Zend fills
+        // the scratch callable, which nothing reads.
+        unsafe { bailout::parse_func(self.zval(n), n, fci.as_mut_ptr(), fcc.as_mut_ptr()) }
     }
 
     /// `Z_PARAM_ZVAL_EX(dest, 1, 0)`: argument `n`, `None` when null or not passed.
@@ -63,6 +62,6 @@ impl Call {
     /// `RETVAL_STRINGL`: a copy of `bytes`.
     pub fn set_bytes(&self, bytes: &[u8]) {
         // SAFETY: the return slot is live; Zend copies the bytes.
-        unsafe { swr_zend_set_stringl(self.return_value(), bytes.as_ptr().cast(), bytes.len()) };
+        unsafe { swr_zval_stringl(self.return_value(), bytes.as_ptr().cast(), bytes.len()) };
     }
 }

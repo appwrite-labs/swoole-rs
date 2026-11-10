@@ -12,7 +12,7 @@ php = ["dep:swoole-rs-locks", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:s
        "dep:swoole-rs-memory", "dep:swoole-rs-corebase", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php",
        "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php"]
 # Coroutine\Lock waits on io_uring futexes (upstream's HAVE_IOURING_FUTEX); crates/ffi's iouring.
-iouring = []
+iouring = ["dep:swoole-rs-hooks", "swoole-rs-hooks/iouring", "swoole-rs-hooks/upstream-symbols"]
 
 [dependencies]
 swoole-rs-locks = { path = "../locks", optional = true }
@@ -22,6 +22,7 @@ swoole-rs-memory = { path = "../memory", optional = true }
 swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
+swoole-rs-hooks = { path = "../hooks", optional = true }
 
 [lints]
 workspace = true

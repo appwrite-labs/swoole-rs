@@ -31,16 +31,16 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
 use swoole_rs_corebase::log::set_last_error;
-use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpstubs::redis_server as stubs;
-use swoole_rs_protocols::{RespPhpState, RespSpan, swr_v1_resp_handler_key, swr_v1_resp_php_next};
+use swoole_rs_protocols::{RespPhpState, resp_handler_key, resp_php_next};
+use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Owned, OwnedArray, bailout, handlers, method_table, php_error,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_callable_warning,
         swr_zend_try_facade_update, swr_zval_copy, zend_class_entry, zend_long, zend_read_property,
-        zval,
     },
 };
 
@@ -73,18 +73,6 @@ const PHP_RUNTIME_NOTICE: c_int = 510;
 type Server = c_void;
 type RecvData = c_void;
 
-unsafe extern "C" {
-    /// `php_swoole_get_recv_data` (crates/phpserver).
-    #[link_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE"]
-    fn recv_data(server: *mut Server, data: *mut zval, request: *mut RecvData);
-    /// `Server::send` (crates/server).
-    #[link_name = "_ZNK6swoole6Server4sendElPKvj"]
-    fn server_send(server: *mut Server, fd: zend_long, data: *const c_void, length: u32) -> bool;
-    /// `Server::close` (crates/server).
-    #[link_name = "_ZNK6swoole6Server5closeElb"]
-    fn server_close(server: *mut Server, fd: zend_long, reset: bool) -> bool;
-}
-
 thread_local! {
     /// `redis_handlers`: each command key's callable.
     static HANDLERS: RefCell<HashMap<Vec<u8>, *mut callable::Callable>> =
@@ -110,8 +98,6 @@ handlers! {
 pub static mut swoole_redis_server_ce: *mut zend_class_entry = ptr::null_mut();
 
 unsafe extern "C" {
-    /// `Swoole\Server`, registered before this class.
-    static swoole_server_ce: *mut zend_class_entry;
     /// `Swoole\Exception` (crates/phpswoole).
     static swoole_exception_ce: *mut zend_class_entry;
 }
@@ -122,8 +108,7 @@ unsafe extern "C" {
 /// Called once, at MINIT, after `Swoole\Server` is registered.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_redis_server_minit(_module_number: c_int) {
-    // SAFETY: MINIT registered the parent; nothing writes it now.
-    let server = unsafe { swoole_server_ce };
+    let server = swoole_rs_phpserver::server_class_entry();
     // SAFETY: as above.
     EXCEPTION.store(unsafe { swoole_exception_ce }, Relaxed);
     // SAFETY: MINIT, with a static table and the registered parent.
@@ -159,10 +144,7 @@ pub extern "C" fn php_swoole_redis_server_rshutdown() {
 
 /// `redis_handler_key`: `_handler_` and the command, lowercased.
 fn handler_key(command: &[u8]) -> Vec<u8> {
-    let mut key = [0u8; MAX_COMMAND_SIZE];
-    // SAFETY: `command` is readable; `key` has the 64 bytes the export writes.
-    let length =
-        unsafe { swr_v1_resp_handler_key(command.as_ptr(), command.len(), key.as_mut_ptr()) };
+    let (key, length) = resp_handler_key(command);
     key.get(..length).unwrap_or(&key).to_vec()
 }
 
@@ -278,49 +260,28 @@ pub unsafe extern "C" fn swr_v1_phpredis_receive(
     receive(server, request).unwrap_or(BAILED)
 }
 
-/// `serv->send(fd, reply, reply.length())`: the length narrowed to `uint32_t`, as C++ did.
-/// # Safety
-/// `server` is the live server.
-unsafe fn send(server: *mut Server, fd: zend_long, reply: &[u8]) -> bool {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::send takes a uint32_t length, as upstream's implicit conversion"
-    )]
-    let length = reply.len() as u32;
-    // SAFETY: per the caller; `length` bytes at `reply`.
-    unsafe { server_send(server, fd, reply.as_ptr().cast(), length) }
-}
-
 fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout::Bailout> {
+    // SAFETY: the live server the receive callback passes.
+    let serv = unsafe { view::Server::from_raw(server) };
     // SAFETY: the live request, which starts with its `DataHead` and its `fd`.
     let fd = unsafe { *request.cast::<zend_long>() };
     let zdata = Owned::default();
     // SAFETY: a live server and request; `zdata` takes the payload string.
-    unsafe { recv_data(server, zdata.as_ptr(), request) };
+    unsafe { swoole_rs_phpserver::php_swoole_get_recv_data(server, zdata.as_ptr(), request) };
     // `php_swoole_get_recv_data` leaves a string.
     let data = zdata.bytes().unwrap_or_default();
     let mut params = OwnedArray::default();
     let mut state = RespPhpState::default();
-    let mut span = RespSpan::default();
-    let mut range = 0u8;
     let mut command: &[u8] = &[];
     let result = loop {
-        // SAFETY: the payload's bytes and local state, span and range.
-        let next = unsafe {
-            swr_v1_resp_php_next(
-                data.as_ptr(),
-                data.len(),
-                &raw mut state,
-                &raw mut span,
-                &raw mut range,
-            )
-        };
-        if range != 0 {
+        let mut range = false;
+        let next = resp_php_next(data, &mut state, &mut range);
+        if range {
             set_errno(libc::ERANGE);
         }
-        if next <= 0 {
-            break next;
-        }
+        let Ok(Some(span)) = next else {
+            break next.map(|_| ());
+        };
         let text = data.get(span.offset..span.offset + span.length);
         let text = text.unwrap_or_default();
         match span.kind {
@@ -330,9 +291,8 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
             _ => command = text,
         }
     };
-    if result < 0 {
-        // SAFETY: a live server.
-        unsafe { server_close(server, fd, false) };
+    if result.is_err() {
+        server_methods::close(serv, fd, false);
         return Ok(OK);
     }
     if command.len() >= MAX_COMMAND_SIZE {
@@ -341,8 +301,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         message.extend_from_slice(until_nul(head));
         message.extend_from_slice(format!("...](length={}) is too long", command.len()).as_bytes());
         report(false, E_WARNING, &message)?;
-        // SAFETY: a live server.
-        unsafe { server_close(server, fd, false) };
+        server_methods::close(serv, fd, false);
         return Ok(OK);
     }
     let key = handler_key(command);
@@ -350,8 +309,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         let mut reply = b"-ERR unknown command '".to_vec();
         reply.extend_from_slice(until_nul(command));
         reply.extend_from_slice(b"'\r\n");
-        // SAFETY: a live server and the reply's bytes.
-        let sent = unsafe { send(server, fd, &reply) };
+        let sent = server_methods::send(serv, fd, &reply);
         return Ok(if sent { OK } else { ERR });
     };
     let args = [Owned::long(fd), params.into_owned()];
@@ -369,7 +327,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
             args.as_ptr().cast_mut().cast(),
             retval.as_ptr(),
             coroutine,
-            swr_v1_phpcoroutines_create,
+            create_coroutine,
             swr_zend_callable_warning,
         )
     }?;
@@ -380,8 +338,7 @@ fn receive(server: *mut Server, request: *mut RecvData) -> Result<c_int, bailout
         report(false, E_WARNING, &message)?;
     }
     if let Some(reply) = retval.bytes() {
-        // SAFETY: a live server and the reply's bytes.
-        unsafe { send(server, fd, reply) };
+        server_methods::send(serv, fd, reply);
     }
     Ok(OK)
 }

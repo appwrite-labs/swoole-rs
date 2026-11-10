@@ -1,23 +1,36 @@
 name: WebSocket RFC conformance
+# All 517 cases of the Autobahn suite (tests/modules/websocket/autobahn.py) on upstream and
+# the extension Cargo builds alone: a case may not do worse on cargo than on upstream.
+# Nightly; the merge tier runs the default profile, and so does a PR that changes the driver.
 on:
+  schedule:
+    - cron: '23 4 * * *'
   workflow_dispatch:
-    inputs:
-      full_suite:
-        description: Include long performance and compression stress cases
-        type: boolean
-        default: false
+  pull_request:
+    paths: [tests/modules/websocket/autobahn.*, .github/workflows/conformance.yml]
+defaults:
+  run:
+    shell: bash
 jobs:
   autobahn:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 45
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y php-dev libssl-dev libpcre2-dev libbrotli-dev libzstd-dev pkg-config
-      - run: python3 tools/build_upstream.py
-      - run: python3 tools/build_hybrid.py
-      - run: docker pull crossbario/autobahn-testsuite@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074
-      - run: python3 tests/modules/websocket/autobahn.py ${{ inputs.full_suite && '--full' || '' }} --engine upstream=target/upstream/src/modules/swoole.so --engine hybrid=target/hybrid/rust/modules/swoole.so --output target/reports/autobahn.json
+      - uses: ./.github/actions/install
+      - id: upstream
+        uses: actions/cache/restore@v4
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+      - if: steps.upstream.outputs.cache-hit != 'true'
+        run: python3 tools/build_upstream.py
+      - run: cargo fetch --locked
+      - run: python3 tools/build_ext.py
+      - run: >
+          python3 tests/modules/websocket/autobahn.py ${{ github.event_name != 'pull_request' && '--full --timeout 4200' || '' }}
+          --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so
+          --output target/reports/autobahn.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

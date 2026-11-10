@@ -7,7 +7,9 @@
 use crate::native::{self, Cli, ErrorKind, Run};
 use libc::{c_char, c_int, c_void};
 use std::{
+    cell::Cell,
     ffi::{CStr, CString},
+    marker::PhantomData,
     ptr,
     sync::{
         Mutex, MutexGuard, PoisonError,
@@ -25,16 +27,16 @@ use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Object,
+    Call, Class, E_ERROR, E_WARNING, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
-    declare_bool, declare_long, long_zval, register_long_constant, string,
+    declare_bool, declare_long, register_long_constant,
+    string::ZBuf,
     sys::{
-        IS_ARRAY, IS_NULL, IS_STRING, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
-        get_active_class_name, get_active_function_name, swr_zend_property_not_null,
-        swr_zend_property_slot, swr_zval_try_addref, zend_class_entry, zend_object,
-        zend_object_handlers, zend_string, zend_type_error, zval, zval_ptr_dtor,
+        IS_ARRAY, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, get_active_class_name,
+        get_active_function_name, zend_class_entry, zend_object, zend_object_handlers,
+        zend_type_error, zval,
     },
-    throw_error, throw_exception, type_of, unset_property_deny, update_property, value,
+    throw_error, throw_exception, unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -42,7 +44,7 @@ use swoole_rs_zend::{method_table, sys as z};
 const FLAG_ASYNC: i64 = 1 << 10;
 const FLAG_SYNC: i64 = 1 << 11;
 const FLAG_KEEP: i64 = 1 << 12;
-const SOCK_SSL: i64 = 1 << 9;
+pub(crate) const SOCK_SSL: i64 = 1 << 9;
 /// `SW_SOCK_*`.
 pub(crate) const SOCK_TCP: i64 = 1;
 pub(crate) const SOCK_TCP6: i64 = 3;
@@ -141,12 +143,72 @@ impl Conn {
 
 /// `ClientObject` without its `zend_object`; `Swoole\Async\Client` shares it.
 #[repr(C)]
+///
+/// Cells, so PHP code a method runs can re-enter the same object's methods
+/// while it holds the data: nothing borrows it mutably.
 pub(crate) struct Data {
-    pub(crate) conn: *mut Conn,
-    /// `getSocket()`'s socket (`IS_UNDEF`: none).
-    zsocket: zval,
+    pub(crate) conn: Cell<*mut Conn>,
+    /// `getSocket()`'s socket (`IS_UNDEF`: none); zeroed bytes are `IS_UNDEF`.
+    zsocket: Cell<Owned>,
     /// The async callbacks (callables, by [`crate::async_net`] slot).
-    pub(crate) callbacks: *mut [*mut c_void; 7],
+    pub(crate) callbacks: Cell<*mut [*mut c_void; 7]>,
+}
+
+impl Data {
+    /// A new reference to `getSocket()`'s socket, if it has one.
+    fn zsocket(&self) -> Option<Owned> {
+        let held = self.zsocket.take();
+        let copy = (held.kind() != IS_UNDEF).then(|| held.copy());
+        self.zsocket.set(held);
+        copy
+    }
+}
+
+/// A `Swoole\Client` (or `Swoole\Async\Client`, which shares its layout)
+/// object, live for `'a`.
+#[derive(Clone, Copy)]
+pub(crate) struct Obj<'a>(*mut zend_object, PhantomData<&'a zend_object>);
+
+impl<'a> Obj<'a> {
+    /// # Safety
+    /// `object` is a live client or async client object for `'a`.
+    pub(crate) unsafe fn new(object: *mut zend_object) -> Self {
+        Self(object, PhantomData)
+    }
+
+    /// `$this` of a client method.
+    pub(crate) fn this(call: &'a Call) -> Self {
+        // SAFETY: client methods are non-static, so `$this` is a client object
+        // (or an async one), live for the call.
+        unsafe { Self::new(call.this()) }
+    }
+
+    pub(crate) fn as_ptr(self) -> *mut zend_object {
+        self.0
+    }
+
+    pub(crate) fn data(self) -> &'a Data {
+        // SAFETY: a live client object's data, only ever shared (its fields are cells).
+        unsafe { &*ClientObject::data_ptr(self.0) }
+    }
+
+    /// Property writes, under the object's own class.
+    pub(crate) fn props(self) -> Props<'a> {
+        // SAFETY: a live client object; the client class declares every name written.
+        unsafe { Props::new(CLIENT.entry(), self.0) }.own()
+    }
+
+    /// `ZSTR_VAL(Z_OBJCE_P(object)->name)`.
+    pub(crate) fn class_name(self) -> &'a CStr {
+        // SAFETY: a live object; its class outlives it.
+        unsafe { swoole_rs_zend::class_name(self.0) }
+    }
+
+    /// The declared property `name`.
+    fn property(self, name: &CStr) -> &'a Value {
+        // SAFETY: a live client object; the client class declares `name`.
+        unsafe { swoole_rs_zend::property(self.0, name) }
+    }
 }
 
 pub(crate) type ClientObject = Object<Data>;
@@ -174,8 +236,9 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 
 unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees a client object.
-    if !unsafe { ClientObject::data(std) }.callbacks.is_null() {
-        bailout::defer(crate::async_net::free_callbacks(std));
+    let object = unsafe { Obj::new(std) };
+    if !object.data().callbacks.get().is_null() {
+        bailout::defer(crate::async_net::free_callbacks(object));
     }
     // SAFETY: as above.
     unsafe { ClientObject::dtor(std) };
@@ -211,14 +274,15 @@ method_table! {
     ];
 }
 
-/// `Swoole\Client`, as C++ reads it (`php_swoole_client_check`); MINIT writes it.
-#[unsafe(no_mangle)]
-pub static mut swoole_client_ce: *mut zend_class_entry = ptr::null_mut();
+/// `swoole_client_ce`: `Swoole\Client`'s class entry, null before MINIT.
+#[must_use]
+pub fn client_class() -> *mut zend_class_entry {
+    CLIENT.entry()
+}
 
 /// `php_swoole_client_minit`.
 /// # Safety
 /// Called once, at MINIT, after `Swoole\Exception` is registered.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_client_minit(module: c_int) {
     let exception = swoole_rs_phpswoole::exception_class();
     let methods = if built_with(Switch::Sockets) {
@@ -273,25 +337,16 @@ pub unsafe extern "C" fn php_swoole_client_minit(module: c_int) {
         unsafe { register_long_constant(name, value, module) };
     }
     EXCEPTION_PARENT.store(exception, Ordering::Release);
-    // SAFETY: MINIT, before any reader.
-    unsafe { swoole_client_ce = ce };
 }
 
-pub(crate) fn data<'a>(object: *mut zend_object) -> &'a mut Data {
-    // SAFETY: client methods are non-static, so `$this` is a client object (or
-    // an async one, which shares the layout), and no other reference to its
-    // data is live during the call.
-    unsafe { ClientObject::data(object) }
-}
-
-pub(crate) fn this<'a>(call: &Call) -> &'a mut Data {
-    data(call.this())
+pub(crate) fn this(call: &Call) -> &Data {
+    Obj::this(call).data()
 }
 
 /// The object's connection.
 pub(crate) fn conn<'a>(call: &Call) -> Option<&'a mut Conn> {
     // SAFETY: the object owns its connection while it holds it.
-    unsafe { this(call).conn.as_mut() }
+    unsafe { this(call).conn.get().as_mut() }
 }
 
 /// `php_swoole_client_get_type`: the socket type without the client flags.
@@ -344,11 +399,8 @@ pub(crate) fn last_error() -> c_int {
 }
 
 /// `errCode = code`.
-pub(crate) fn set_err_code(object: *mut zend_object, code: c_int) {
-    // SAFETY: a live client object.
-    let ce = unsafe { (*object).ce };
-    // SAFETY: as above.
-    unsafe { value::update_long(ce, object, c"errCode", i64::from(code)) };
+pub(crate) fn set_err_code(object: Obj, code: c_int) {
+    object.props().long(c"errCode", i64::from(code));
 }
 
 pub(crate) fn errno() -> c_int {
@@ -385,7 +437,7 @@ pub(crate) fn bailed<T>(result: Result<T, Bailout>) -> Option<T> {
 
 /// `php_swoole_client_free`: release the connection's timer, length callable,
 /// pool entry and client, then the exported socket.
-pub(crate) fn release(object: *mut zend_object, conn: *mut Conn) -> Result<(), Bailout> {
+pub(crate) fn release(object: Obj, conn: *mut Conn) -> Result<(), Bailout> {
     // SAFETY: the connection the object held or the pool gave back, released once.
     let conn = unsafe { Box::from_raw(conn) };
     if conn.keep
@@ -394,21 +446,17 @@ pub(crate) fn release(object: *mut zend_object, conn: *mut Conn) -> Result<(), B
         pool.remove_empty(&conn.key);
     }
     let destroyed = native::destroy(conn.cli);
-    let data = data(object);
-    // SAFETY: the object's own zval.
-    if unsafe { type_of(&raw const data.zsocket) } != IS_UNDEF {
-        // SAFETY: the reference the object took in getSocket().
-        unsafe { zval_ptr_dtor(&raw mut data.zsocket) };
-        data.zsocket.u1.type_info = IS_UNDEF;
-    }
-    data.conn = ptr::null_mut();
+    let data = object.data();
+    // The reference the object took in getSocket().
+    drop(data.zsocket.take());
+    data.conn.set(ptr::null_mut());
     destroyed
 }
 
 /// `php_swoole_client_get_cli_safe`: the connected client; else errCode and a
 /// warning say it is not connected.
 pub(crate) fn connected<'a>(call: &Call) -> Option<&'a mut Conn> {
-    let object = call.this();
+    let object = Obj::this(call);
     if let Some(conn) = conn(call)
         && conn.has_socket()
     {
@@ -474,11 +522,9 @@ pub(crate) fn check_type(kind: i64) -> bool {
 }
 
 /// The object's `type` property, or None after upstream's fatal error.
-pub(crate) fn type_property(object: *mut zend_object, async_message: bool) -> Option<i64> {
-    // SAFETY: a live object with a declared `type` property.
-    let ztype = unsafe { swr_zend_property_slot(object, c"type".as_ptr(), 4) };
-    // SAFETY: Zend's property slot.
-    if ztype.is_null() || unsafe { type_of(ztype) } == IS_NULL {
+pub(crate) fn type_property(object: Obj, async_message: bool) -> Option<i64> {
+    let ztype = object.property(c"type");
+    if ztype.is_null() {
         let message = if async_message {
             "failed to get client type"
         } else {
@@ -487,20 +533,17 @@ pub(crate) fn type_property(object: *mut zend_object, async_message: bool) -> Op
         report(ErrorKind::Fatal, E_ERROR, message);
         return None;
     }
-    // SAFETY: `Z_LVAL_P`, as upstream reads it.
-    Some(unsafe { value::long_of(ztype) })
+    Some(ztype.long())
 }
 
 /// The `setting` property when it is an array.
-pub(crate) fn settings(object: *mut zend_object) -> Option<*mut zval> {
-    // SAFETY: a live object with a declared `setting` property.
-    let zset = unsafe { swr_zend_property_slot(object, c"setting".as_ptr(), 7) };
-    // SAFETY: Zend's property slot.
-    (!zset.is_null() && unsafe { type_of(zset) } == IS_ARRAY).then_some(zset)
+pub(crate) fn settings(object: Obj) -> Option<*mut zval> {
+    let zset = object.property(c"setting");
+    (zset.kind() == IS_ARRAY).then(|| zset.as_ptr())
 }
 
 /// `php_swoole_client_new`: a pooled or new connection for `host:port`.
-fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut Conn> {
+fn connection(object: Obj, host: &[u8], port: i64) -> Option<*mut Conn> {
     let kind = type_property(object, false)?;
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
     let int_port = port as i32;
@@ -509,15 +552,7 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
         set_last_error(INVALID_PARAMS);
         return None;
     }
-    // SAFETY: a live object with a declared `id` property.
-    let zid = unsafe { swr_zend_property_not_null(object, c"id".as_ptr(), 2) };
-    // SAFETY: a live property zval when not null.
-    let id = (!zid.is_null() && unsafe { type_of(zid) } == IS_STRING).then(|| {
-        // SAFETY: a string zval.
-        let id = unsafe { value::str_of(zid) };
-        // SAFETY: a live string the property holds.
-        unsafe { string::bytes(id) }
-    });
+    let id = object.property(c"id").str().map(ZStr::bytes);
     let key = match id {
         Some(id) if !id.is_empty() => id.to_vec(),
         _ => {
@@ -536,12 +571,9 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
             let pooled = unsafe { &mut *conn };
             if pooled.alive() {
                 pooled.reuse_count += 1;
-                // SAFETY: a live client object.
-                let ce = unsafe { (*object).ce };
-                // SAFETY: as above.
-                unsafe {
-                    value::update_long(ce, object, c"reuseCount", i64::from(pooled.reuse_count));
-                };
+                object
+                    .props()
+                    .long(c"reuseCount", i64::from(pooled.reuse_count));
             } else {
                 bailed(pooled.call(Op::Close).run())?;
                 bailed(release(object, conn))?;
@@ -565,10 +597,7 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
     }
     // SAFETY: the connection just taken or made.
     let connection = unsafe { &mut *conn };
-    // SAFETY: a live client object.
-    let ce = unsafe { (*object).ce };
-    // SAFETY: as above.
-    unsafe { value::update_long(ce, object, c"sock", i64::from(connection.fd())) };
+    object.props().long(c"sock", i64::from(connection.fd()));
     if kind & FLAG_KEEP != 0 {
         connection.keep = true;
     }
@@ -603,31 +632,17 @@ fn construct(call: &Call) {
     if !check_type(kind) {
         return call.set_bool(false);
     }
-    let object = call.this();
-    // SAFETY: `$this` is a live instance of the registered class.
-    unsafe { value::update_long(CLIENT.entry(), object, c"type", kind) };
+    let props = Obj::this(call).props();
+    props.long(c"type", kind);
     if let Some(id) = id {
-        let id = string::copy(id);
-        let mut zid = long_zval(0);
-        // SAFETY: a fresh string; the zval takes its reference.
-        unsafe { value::set_str(&raw mut zid, id) };
-        // SAFETY: `$this` is live; Zend copies the value.
-        unsafe { update_property(CLIENT.entry(), object, c"id", &raw mut zid) };
-        // SAFETY: our reference.
-        unsafe { zval_ptr_dtor(&raw mut zid) };
+        props.bytes(c"id", id);
     }
     call.set_bool(true);
 }
 
-/// `IS_OBJ_DESTRUCTOR_CALLED`.
-const DESTRUCTOR_CALLED: u32 = 1 << 8;
-
 /// `SW_PREVENT_USER_DESTRUCT`: false (returning null) when user code called it.
 pub(crate) fn destructing(call: &Call) -> bool {
-    // SAFETY: a method's live `$this`.
-    let info = unsafe { (*call.this()).gc.u };
-    // SAFETY: a refcounted header always sets `type_info`.
-    if unsafe { info.type_info } & DESTRUCTOR_CALLED == 0 {
+    if !call.destructor_called() {
         call.set_null();
         return false;
     }
@@ -636,7 +651,7 @@ pub(crate) fn destructing(call: &Call) -> bool {
 
 /// `__destruct()`: close a held connection through `Swoole\Client::close`.
 fn destruct(call: &Call) {
-    if !destructing(call) || this(call).conn.is_null() {
+    if !destructing(call) || this(call).conn.get().is_null() {
         return;
     }
     // SAFETY: a live client object; `Swoole\Client::close` with no arguments.
@@ -650,11 +665,10 @@ fn set(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    let settings = call.zval(1);
-    // SAFETY: a passed argument.
-    if unsafe { type_of(settings) } != IS_ARRAY {
+    let Some(settings) = call.value(1).filter(|settings| settings.array().is_some()) else {
         return call.set_bool(false);
-    }
+    };
+    let settings = settings.as_ptr();
     // SAFETY: `$this` is live; `settings` is a live array.
     unsafe {
         z::swr_zend_property_merge(
@@ -685,8 +699,8 @@ fn connect(call: &Call) {
         warn(ErrorKind::Fatal, "The host is empty");
         return call.set_bool(false);
     }
-    let object = call.this();
-    if !this(call).conn.is_null() {
+    let object = Obj::this(call);
+    if !this(call).conn.get().is_null() {
         warn(
             ErrorKind::Fatal,
             "connection to the server has already been established",
@@ -696,12 +710,11 @@ fn connect(call: &Call) {
     let Some(conn) = connection(object, host, port) else {
         return call.set_bool(false);
     };
-    this(call).conn = conn;
+    this(call).conn.set(conn);
     // SAFETY: the object's connection.
     let conn = unsafe { &mut *conn };
     if conn.keep && conn.flag(state::ACTIVE) {
-        // SAFETY: `$this` is a live client.
-        unsafe { value::update_bool(CLIENT.entry(), object, c"reuse", true) };
+        object.props().bool(c"reuse", true);
         return call.set_bool(true);
     } else if conn.flag(state::ACTIVE) {
         warn(
@@ -779,7 +792,7 @@ fn send(call: &Call) {
         let error = errno();
         let message = format!("failed to send({}) {} bytes", conn.fd(), data.len());
         warn_sys(&message, error);
-        set_err_code(call.this(), last_error());
+        set_err_code(Obj::this(call), last_error());
         return call.set_bool(false);
     }
     call.set_long(sent);
@@ -797,14 +810,14 @@ fn sendto(call: &Call) {
         warn(ErrorKind::Error, "data to send is empty");
         return call.set_bool(false);
     }
-    let object = call.this();
-    if this(call).conn.is_null() {
+    let object = Obj::this(call);
+    if this(call).conn.get().is_null() {
         let Some(conn) = connection(object, host, port) else {
             return call.set_bool(false);
         };
         // SAFETY: the connection just made.
         unsafe { &*conn }.set_flag(state::ACTIVE, true);
-        this(call).conn = conn;
+        this(call).conn.set(conn);
     }
     let Some(conn) = conn(call) else {
         return call.set_bool(false);
@@ -860,7 +873,7 @@ fn sendfile(call: &Call) {
         let error = last_error();
         let message = format!("sendfile() failed. Error: {} [{error}]", strerror(error));
         warn(ErrorKind::Fatal, &message);
-        set_err_code(call.this(), last_error());
+        set_err_code(Obj::this(call), last_error());
         return call.set_bool(false);
     }
     call.set_bool(true);
@@ -875,10 +888,17 @@ fn receive(conn: &Conn, buffer: *mut u8, length: usize, flags: i64) -> Result<i6
     conn.run(&mut recv)
 }
 
+/// [`receive`] of at most `length` bytes into `buffer`'s room.
+fn receive_into(conn: &Conn, buffer: &mut ZBuf, length: usize, flags: i64) -> Result<i64, Bailout> {
+    let (at, room) = native::room(buffer);
+    let read = receive(conn, at.cast(), room.min(length), flags)?;
+    Ok(native::filled(buffer, read))
+}
+
 /// `recv()` failed (`error`): warn, errCode and false.
 fn recv_failed(call: &Call, error: c_int) {
     warn_sys("recv() failed", error);
-    set_err_code(call.this(), last_error());
+    set_err_code(Obj::this(call), last_error());
     call.set_bool(false);
 }
 
@@ -923,7 +943,7 @@ fn recv_eof(call: &Call, conn: &mut Conn, framing: &Protocol) {
         find = false;
         if let Some(at) = position(&conn.buffer, eof) {
             let end = at + eof.len();
-            let package = string::copy(conn.buffer.get(..end).unwrap_or_default());
+            let package = ZString::new(conn.buffer.get(..end).unwrap_or_default());
             if conn.buffer.len() > end {
                 conn.buffer.drain(..end);
                 conn.buffer_size = BUFFER_SIZE_BIG;
@@ -931,8 +951,7 @@ fn recv_eof(call: &Call, conn: &mut Conn, framing: &Protocol) {
                 conn.buffer.clear();
                 conn.buffer_size = 0;
             }
-            // SAFETY: a fresh string whose reference the return slot takes.
-            return unsafe { call.set_string(package) };
+            return call.set_zstring(package);
         }
         if conn.buffer.len() == max {
             warn(ErrorKind::Error, "no package eof");
@@ -961,7 +980,7 @@ fn recv_length(
     conn: &mut Conn,
     framing: &Protocol,
     mut length: i64,
-) -> Option<(*mut zend_string, i64)> {
+) -> Option<(ZBuf, i64)> {
     if conn.buffer_size == 0 {
         conn.buffer_size = BUFFER_SIZE_STD;
     }
@@ -1004,9 +1023,7 @@ fn recv_length(
         return None;
     } else if length == header_length {
         conn.buffer.resize(header.max(buffered), 0);
-        let package = string::copy(conn.buffer.get(..header).unwrap_or_default());
-        // SAFETY: a fresh string whose reference the return slot takes.
-        unsafe { call.set_string(package) };
+        call.set_zstring(ZString::new(conn.buffer.get(..header).unwrap_or_default()));
         return None;
     } else if length > i64::from(framing.package_max_length) {
         #[expect(
@@ -1017,33 +1034,21 @@ fn recv_length(
         call.set_empty_string();
         return None;
     } else if length == have {
-        // SAFETY: a fresh string whose reference the return slot takes.
-        unsafe { call.set_string(string::copy(&conn.buffer)) };
+        call.set_zstring(ZString::new(&conn.buffer));
         return None;
     } else if length < have {
         let end = usize::try_from(length).unwrap_or(0);
-        let package = conn.buffer.get(..end).unwrap_or_default();
-        // SAFETY: a fresh string whose reference the return slot takes.
-        unsafe { call.set_string(string::copy(package)) };
+        call.set_zstring(ZString::new(conn.buffer.get(..end).unwrap_or_default()));
         conn.buffer.drain(..end);
         return None;
     }
     let total = usize::try_from(length).unwrap_or(0);
-    let package = string::alloc(total.max(header));
-    let target = string::val(package);
-    // SAFETY: `package` has room for the buffered bytes (fewer than `length`).
-    unsafe { ptr::copy_nonoverlapping(conn.buffer.as_ptr(), target, buffered) };
+    let mut package = ZBuf::with_capacity(total.max(header));
+    package.extend_from_slice(&conn.buffer);
     set_last_error(0);
     let rest = total.saturating_sub(buffered);
-    let read = receive(
-        conn,
-        target.wrapping_add(header),
-        rest,
-        i64::from(libc::MSG_WAITALL),
-    );
+    let read = receive_into(conn, &mut package, rest, i64::from(libc::MSG_WAITALL));
     let Some(mut read) = bailed(read) else {
-        // SAFETY: our unshared string.
-        unsafe { string::free(package) };
         call.set_bool(false);
         return None;
     };
@@ -1091,28 +1096,21 @@ fn recv(call: &Call) {
         }
         // A negative size reads nothing.
         let size = usize::try_from(length).unwrap_or(0);
-        let package = string::alloc(size);
+        let mut package = ZBuf::with_capacity(size);
         set_last_error(0);
-        let Some(read) = bailed(receive(conn, string::val(package), size, flags)) else {
-            // SAFETY: our unshared string.
-            unsafe { string::free(package) };
+        let Some(read) = bailed(receive_into(conn, &mut package, size, flags)) else {
             return call.set_bool(false);
         };
         (package, read)
     };
     if read <= 0 {
         let error = errno();
-        // SAFETY: our unshared string.
-        unsafe { string::free(package) };
         if read < 0 {
             return recv_failed(call, error);
         }
         return call.set_empty_string();
     }
-    // SAFETY: our string holds at least `read` bytes.
-    unsafe { string::truncate(package, usize::try_from(read).unwrap_or(0)) };
-    // SAFETY: the return slot takes our reference.
-    unsafe { call.set_string(package) };
+    call.set_zstring(package.into_zstring());
 }
 
 /// `isConnected(): bool`.
@@ -1136,7 +1134,7 @@ fn getsockname(call: &Call) {
     if unsafe { (*socket).get_name() } < 0 {
         let error = errno();
         warn_sys("getsockname() failed", error);
-        set_err_code(call.this(), error);
+        set_err_code(Obj::this(call), error);
         return call.set_bool(false);
     }
     // SAFETY: as above, its address just read.
@@ -1146,10 +1144,10 @@ fn getsockname(call: &Call) {
 
 /// `['port' => $port, 'host' => $host]`.
 fn address_array(call: &Call, port: c_int, host: &CStr) {
-    call.set_array();
-    call.add_assoc_long(c"port", i64::from(port));
-    // SAFETY: the return slot is an array.
-    unsafe { value::add_string(call.return_value(), c"host", host) };
+    let mut array = OwnedArray::default();
+    array.insert_long(b"port", i64::from(port));
+    array.insert_bytes(b"host", Some(host.to_bytes()));
+    call.set_owned(array.into_owned());
 }
 
 /// `getpeername(): array|false`.
@@ -1163,7 +1161,7 @@ fn getpeername(call: &Call) {
     if unsafe { state::swr_v1_clients_get_peer_name(conn.cli.0, &raw mut address) } < 0 {
         let error = errno();
         warn_sys("getpeername() failed", error);
-        set_err_code(call.this(), error);
+        set_err_code(Obj::this(call), error);
         return call.set_bool(false);
     }
     let (host, port) = native::address(&address);
@@ -1172,13 +1170,9 @@ fn getpeername(call: &Call) {
 
 /// `getSocket()`: the client's socket as an ext/sockets `Socket`.
 fn get_socket(call: &Call) {
-    let data = this(call);
-    // SAFETY: the object's own zval.
-    if unsafe { type_of(&raw const data.zsocket) } != IS_UNDEF {
-        let mut socket = data.zsocket;
-        // SAFETY: `RETURN_ZVAL(zsocket, 1, 0)`: a new reference for the return.
-        unsafe { swr_zval_try_addref(&raw mut socket) };
-        return call.set_value(socket);
+    if let Some(zsocket) = this(call).zsocket() {
+        // `RETURN_ZVAL(zsocket, 1, 0)`: a new reference for the return.
+        return call.set_owned(zsocket);
     }
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
@@ -1190,13 +1184,12 @@ fn get_socket(call: &Call) {
         );
         return call.set_bool(false);
     }
-    let Some(mut socket) = native::export_socket(conn.cli) else {
+    let Some(socket) = native::export_socket(conn.cli) else {
         return call.set_bool(false);
     };
-    call.set_value(socket);
-    // SAFETY: the object keeps a second reference, as upstream's dup does.
-    unsafe { swr_zval_try_addref(&raw mut socket) };
-    this(call).zsocket = socket;
+    // The object keeps a second reference, as upstream's dup does.
+    call.set_owned(socket.copy());
+    this(call).zsocket.set(socket);
 }
 
 /// `close(bool $force = false): bool`.
@@ -1204,8 +1197,8 @@ fn close(call: &Call) {
     let Ok(force) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return call.set_bool(false);
     };
-    let object = call.this();
-    let conn_ptr = this(call).conn;
+    let object = Obj::this(call);
+    let conn_ptr = this(call).conn.get();
     // SAFETY: the object's connection, if any.
     let Some(conn) = (unsafe { conn_ptr.as_mut() }).filter(|conn| conn.has_socket()) else {
         warn(ErrorKind::Fatal, "client is not connected to the server");
@@ -1239,7 +1232,7 @@ fn close(call: &Call) {
     if !matches!(pushed, Some(Ok(()))) {
         std::process::abort();
     }
-    this(call).conn = ptr::null_mut();
+    this(call).conn.set(ptr::null_mut());
     call.set_bool(true);
 }
 
@@ -1253,7 +1246,7 @@ pub(crate) fn enable_ssl(call: &Call, conn: &mut Conn) -> bool {
         warn(ErrorKind::Fatal, "SSL has been enabled");
         return false;
     }
-    if let Some(zset) = settings(call.this()) {
+    if let Some(zset) = settings(Obj::this(call)) {
         crate::settings::apply_ssl(conn.cli, zset);
     }
     bailed(conn.call(Op::EnableSsl).run()).is_some_and(|result| result == 0)
@@ -1297,12 +1290,10 @@ fn get_peer_cert(call: &Call) {
         return call.set_bool(false);
     }
     // SAFETY: a live client with TLS.
-    let cert = unsafe { native::peer_cert(conn.socket()) };
-    if cert.is_null() {
-        return call.set_bool(false);
+    match unsafe { native::peer_cert(conn.socket()) } {
+        Some(cert) => call.set_zstring(cert),
+        None => call.set_bool(false),
     }
-    // SAFETY: a fresh string whose reference the return slot takes.
-    unsafe { call.set_string(cert) };
 }
 
 /// `verifyPeerCert(bool $allow_self_signed = false): bool`.

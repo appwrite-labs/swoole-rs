@@ -30,21 +30,6 @@ pub(crate) struct Stats {
 type Co = *mut c_void;
 
 unsafe extern "C" {
-    // crates/coroutine's facade.
-    safe fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
-    fn swr_v1_coroutine_create(
-        routine: unsafe extern "C" fn(*mut c_void),
-        arg: *mut c_void,
-    ) -> c_long;
-    fn swr_v1_coroutine_bail(
-        callback: Option<unsafe extern "C" fn(*mut c_void)>,
-        data: *mut c_void,
-    );
-    fn swr_v1_coroutine_yield_with_cancel(
-        co: Co,
-        cancel: unsafe extern "C-unwind" fn(Co, *mut c_void) -> bool,
-        data: *mut c_void,
-    );
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
     // crates/reactor.
@@ -75,17 +60,11 @@ unsafe extern "C" {
     ) -> *mut c_void;
     #[link_name = "_Z30swoole_signal_get_listener_numv"]
     fn swoole_signal_get_listener_num() -> u32;
-    // crates/phpevents, crates/phpclients, crates/phphelpers and PHP.
+    // crates/phpevents, crates/phpclients and PHP.
     fn sw_php_exit(status: c_int);
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
     fn swr_v1_phpevents_wait();
-    fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool;
-    fn swr_v1_phphelpers_call_anyway(
-        fci: *mut swoole_rs_zend::sys::zend_fcall_info,
-        fcc: *mut swoole_rs_zend::sys::zend_fcall_info_cache,
-    ) -> c_int;
-    fn swr_v1_phphelpers_cache_free(fcc: *mut swoole_rs_zend::sys::zend_fcall_info_cache);
 }
 
 /// The globals, server state and build switches [`flag`] reads.
@@ -199,21 +178,20 @@ pub(crate) fn fatal_error(level: c_int, message: &CStr) {
 /// [`fatal_error`], returning its bailout.
 pub(crate) fn try_fatal_error(level: c_int, message: &CStr) -> Result<(), bailout::Bailout> {
     set_last_error(SW_ERROR_PHP_FATAL_ERROR);
-    // SAFETY: a warning or error, printed through "%s".
-    unsafe { swoole_rs_zend::php_error(level, message) }
+    swoole_rs_zend::report(level, message)
 }
 
-/// `php_swoole_error_ex(level, code, "%s", message)`.
+/// `php_swoole_error_ex(level, code, "%s", message)`. A bailout of the
+/// error's handler is deferred for the caller's handler to raise.
 pub(crate) fn error_ex(level: c_int, code: c_int, message: &CStr) {
     set_last_error(code);
     if swoole_rs_phpswoole::display_errors() || level == E_ERROR {
-        // SAFETY: as in `fatal_error`.
-        bailout::raise(unsafe { swoole_rs_zend::php_error(level, message) });
+        bailout::defer(swoole_rs_zend::report(level, message));
     }
 }
 
 fn scheduler() -> *mut Scheduler {
-    swr_v1_coroutine_scheduler_get().cast()
+    swoole_rs_coroutine::scheduler()
 }
 
 /// This thread's scheduler, borrowed for one read.
@@ -363,30 +341,17 @@ pub(crate) fn stats(stats: &mut Stats) {
 /// The `io_uring` engine's counts, once the thread has one.
 #[cfg(feature = "iouring")]
 fn iouring_stats(stats: &mut Stats) {
-    // SAFETY: crates/hooks's engine, read with no other access.
-    unsafe extern "C" {
-        fn swr_v1_uring_current() -> *mut c_void;
-        fn swr_v1_uring_task_num(uring: *const c_void) -> u32;
-        fn swr_v1_uring_waiting_num(uring: *const c_void) -> usize;
-        fn swr_v1_uring_sq_usage_percent(uring: *const c_void) -> f32;
-    }
-    // SAFETY: no preconditions.
-    let uring = unsafe { swr_v1_uring_current() };
-    if uring.is_null() {
+    let Some((tasks, waiting, percent)) = swoole_rs_hooks::iouring::stats() else {
         return;
-    }
+    };
     stats.iouring = 1;
-    // SAFETY: the thread's live engine.
-    stats.iouring_task_num = i64::from(unsafe { swr_v1_uring_task_num(uring) });
+    stats.iouring_task_num = i64::from(tasks);
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream stores the float percentage in an integer"
     )]
-    // SAFETY: as above.
-    let percent = unsafe { swr_v1_uring_sq_usage_percent(uring) } as i64;
+    let percent = percent as i64;
     stats.iouring_sq_usage_percent = percent;
-    // SAFETY: as above.
-    let waiting = unsafe { swr_v1_uring_waiting_num(uring) };
     stats.iouring_waiting_task_num = i64::try_from(waiting).unwrap_or(i64::MAX);
 }
 
@@ -403,7 +368,7 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
     }
     let mut args = (count, sleep);
     // SAFETY: the coroutine runs at once and reads `args` before it yields.
-    unsafe { swr_v1_coroutine_create(sleeper, (&raw mut args).cast()) };
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(sleeper, (&raw mut args).cast()) };
 }
 
 pub(crate) fn set_task(co: Co, task: *mut c_void) {
@@ -459,7 +424,7 @@ pub unsafe fn yield_cancelable(
     data: *mut c_void,
 ) {
     // SAFETY: as the caller promises.
-    unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, data) };
+    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, data) };
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
@@ -551,7 +516,7 @@ pub(crate) fn is_end(co: Co) -> bool {
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
 pub(crate) fn create(args: *mut c_void) -> c_long {
     // SAFETY: the coroutine's entry, with the creator's live arguments.
-    unsafe { swr_v1_coroutine_create(main, args) }
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(main, args) }
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside
@@ -567,7 +532,7 @@ unsafe extern "C" fn main(args: *mut c_void) {
     unsafe { crate::context::close(ctx) };
     if caught != 0 {
         // SAFETY: the main context runs `bail_out`; this frame owns nothing.
-        unsafe { swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
+        unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
     }
 }
 
@@ -599,7 +564,7 @@ unsafe extern "C" fn defers(context: *mut c_void) {
         // SAFETY: as above.
         let fcc = unsafe { &raw mut (*task).fcc };
         // SAFETY: as above.
-        if unsafe { swr_v1_phphelpers_call_anyway(fci, fcc) } != 0 {
+        if unsafe { swoole_rs_phphelpers::swr_v1_phphelpers_call_anyway(fci, fcc) } != 0 {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
         }
         // SAFETY: the executor's pending exception, if any.
@@ -607,7 +572,7 @@ unsafe extern "C" fn defers(context: *mut c_void) {
             bailout::raise(Err(bailout::Bailout));
         }
         // SAFETY: the callable's cache, then its emalloc'd holder.
-        unsafe { swr_v1_phphelpers_cache_free(fcc) };
+        unsafe { swoole_rs_phphelpers::swr_v1_phphelpers_cache_free(fcc) };
         // SAFETY: as above.
         unsafe { swoole_rs_zend::sys::swr_zend_efree(task.cast()) };
     }
@@ -768,18 +733,18 @@ pub(crate) fn event_wait() {
 }
 
 /// `Coroutine::set_stack_size(php_swoole_parse_to_size(size))`.
-pub(crate) fn set_stack_size(size: *mut zval) {
-    // SAFETY: a live zval.
-    let size = unsafe { swoole_rs_zend::Value::from_ptr(size) }
-        .map_or(0, swoole_rs_phpswoole::php_swoole_parse_to_size);
+pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
+    let size = swoole_rs_phpswoole::php_swoole_parse_to_size(size);
     let size = usize::try_from(size.cast_unsigned()).unwrap_or(usize::MAX);
     // SAFETY: this thread's scheduler.
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_set_stack_size(scheduler(), size) };
 }
 
 pub(crate) fn add_name_resolver(resolver: *mut zval) {
-    // SAFETY: a live zval.
-    unsafe { php_swoole_name_resolver_add(resolver) };
+    if let Some(families) = swoole_rs_phpswoole::families() {
+        // SAFETY: a live zval.
+        unsafe { (families.name_resolver_add)(resolver) };
+    }
 }
 
 pub(crate) fn set_dns_cache_expire(expire: c_long) {

@@ -41,7 +41,8 @@ def test_kernel(pytestconfig, tmp_path):
 
     if archive is None:
         run(['cargo', 'build', '-p', 'swoole-rs-timer', '--release', '--locked'], timeout=180)
-        archive = ROOT / os.environ.get('CARGO_TARGET_DIR', 'target') / 'release/libswoole_rs_timer.a'
+        archive = (ROOT / os.environ.get('CARGO_TARGET_DIR', 'target') / os.environ.get('CARGO_BUILD_TARGET', '')
+                   / 'release/libswoole_rs_timer.a')
     archive = Path(archive).resolve(strict=True)
     if rust_asan:
         assert '__asan_report_' in subprocess.run(['nm', '-u', str(archive)], capture_output=True, text=True).stdout, \

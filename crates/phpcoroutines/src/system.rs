@@ -13,7 +13,7 @@ use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_zend::{
     Call, Class, E_WARNING,
-    sys::{IS_ARRAY, zend_array, zend_value_error, zval},
+    sys::{IS_ARRAY, zend_value_error, zval},
     type_of, value,
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -91,11 +91,10 @@ method_table! {
     ];
 }
 
-/// MINIT (upstream's symbol): `Swoole\Coroutine\System` (`Co\System`), not
+/// MINIT: `Swoole\Coroutine\System` (`Co\System`), not
 /// instantiable, and the `FILE_LOCK` constant.
 /// # Safety
 /// Called once, at MINIT, with the extension's module number.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_coroutine_system_minit(module_number: c_int) {
     // SAFETY: MINIT, with a static table.
     unsafe { SYSTEM.register_static(c"Swoole\\Coroutine\\System", METHODS.as_ptr()) };
@@ -394,8 +393,7 @@ fn exec(call: &Call) {
     let command = unsafe { CStr::from_ptr(command.as_ptr().cast()) };
     // SAFETY: in a method call, which raises the fatal error outside a coroutine.
     let done = unsafe { exec_into(command, errors, output, &mut status) };
-    // SAFETY: all-zero is IS_UNDEF.
-    let mut output_value: zval = unsafe { mem::zeroed() };
+    let mut output_value = swoole_rs_zend::UNDEF;
     if done {
         // SAFETY: the String's bytes, copied into an empty slot.
         unsafe {
@@ -506,22 +504,13 @@ fn wait_signal(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let given = call.zval(1);
     let mut signals = Vec::new();
-    // SAFETY: a passed argument.
-    if unsafe { type_of(given) } == IS_ARRAY {
-        // SAFETY: an array argument.
-        let table: *const zend_array = unsafe { value::table(given) };
-        let mut each = |item: *mut zval| {
-            // SAFETY: a live element.
-            signals.push(unsafe { value::get_long(item) });
-            true
-        };
-        // SAFETY: the array is live and the closure does not modify it.
-        unsafe { swoole_rs_zend::each_value(table, &mut each) };
-    } else {
-        // SAFETY: a passed argument.
-        signals.push(unsafe { value::get_long(given) });
+    if let Some(given) = call.value(1) {
+        if let Some(array) = given.array() {
+            signals.extend(array.entries().map(|(_, item)| item.long()));
+        } else {
+            signals.push(given.long());
+        }
     }
     if swoole_rs_zend::bailout::pending() {
         return;

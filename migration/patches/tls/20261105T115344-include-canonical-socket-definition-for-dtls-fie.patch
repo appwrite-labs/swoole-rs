@@ -1,8 +1,0 @@
-diff --git a/include/swoole_dtls.h b/include/swoole_dtls.h
-index 12feca5..81e8aa3 100644
---- a/include/swoole_dtls.h
-+++ b/include/swoole_dtls.h
-@@ -19,2 +19,3 @@
- #include "swoole_ssl.h"
-+#include "swoole_socket.h"
- 

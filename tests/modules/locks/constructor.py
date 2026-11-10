@@ -9,7 +9,7 @@ import subprocess
 import overlay
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 from tools.build_upstream import require_build_space
 from tools.harness import run_isolated,write_report
 
@@ -20,13 +20,13 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--archive',type=Path,required=True,help='Rust archive of the hybrid build under test');p.add_argument('--output',type=Path,required=True);p.add_argument('--sanitize',action='store_true');p.add_argument('--rust-asan',action='store_true');a=p.parse_args();overlay.SOURCE=a.source
     if a.rust_asan and (not a.sanitize or '__asan_report_' not in subprocess.check_output(['nm','-u',str(a.archive)],text=True,stderr=subprocess.DEVNULL)):p.error('Rust ASan requires instrumented archive imports and native sanitizer flag')
     folder=a.output.resolve().with_suffix('');folder.mkdir(parents=True,exist_ok=True)
-    hybrid_source,hybrid_flags=hybrid_tree(a.archive)
+    hybrid_flags=native_flags(a.archive)
     witness=str(Path(__file__).resolve().with_suffix('.cc'))
     common=['c++','-std=c++17','-O1','-UNDEBUG']
     if a.sanitize:common+=['-fsanitize=address,undefined','-fno-sanitize-recover=all']
     command=[*common,*hybrid_flags,witness,str(a.archive.resolve()),'-lpthread','-ldl','-lm','-o',str(folder/'constructor')]
     if sys.platform=='linux':command+=['-lrt','-lutil']
-    report={'scope':__doc__,'pin':overlay.PIN,'hybrid_tree':str(hybrid_source),'compile':[command],'passed':False,'rust_instrumented':a.rust_asan,'native_instrumented':a.sanitize}
+    report={'scope':__doc__,'pin':overlay.PIN,'compile':[command],'passed':False,'rust_instrumented':a.rust_asan,'native_instrumented':a.sanitize}
     require_build_space(ROOT);r=run_isolated(command,timeout=90)
     report.update(compile_exit=r.returncode,compile_stderr=r.stderr)
     if not r.returncode:

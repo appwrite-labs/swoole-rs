@@ -104,7 +104,7 @@ pub unsafe extern "C" fn reactor_set_handler(
     // SAFETY: as the caller promises.
     let handlers = unsafe { prepared(reactor) }.handlers;
     // SAFETY: the reactor's live handler tables.
-    let set = unsafe { crate::swr_v1_reactor_handlers_set(handlers, fd_type, event, handler) };
+    let set = unsafe { &mut *handlers }.set(fd_type, event, handler);
     debug_assert!(set, "Reactor::set_handler: no table for event {event}");
 }
 
@@ -125,5 +125,5 @@ pub unsafe extern "C" fn reactor_isset_handler(
     // SAFETY: as the caller promises.
     let handlers = unsafe { prepared(reactor) }.handlers;
     // SAFETY: the reactor's live handler tables.
-    unsafe { crate::swr_v1_reactor_handlers_isset(handlers, fd_type, event) }
+    unsafe { &*handlers }.isset(fd_type, event)
 }

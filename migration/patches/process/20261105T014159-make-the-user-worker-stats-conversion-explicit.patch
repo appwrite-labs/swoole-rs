@@ -1,9 +1,0 @@
-diff --git a/ext-src/swoole_server.cc b/ext-src/swoole_server.cc
-index 1a84032..0de9eda 100644
---- a/ext-src/swoole_server.cc
-+++ b/ext-src/swoole_server.cc
-@@ -302,3 +302,3 @@ void server_stats(void *server, int64_t *values) {
-         serv->gs->start_time, (int64_t) serv->get_connection_num(), serv->gs->abort_count, serv->gs->accept_count,
--        serv->gs->close_count, serv->worker_num, serv->task_worker_num, serv->get_user_worker_num(),
-+        serv->gs->close_count, serv->worker_num, serv->task_worker_num, (int64_t) serv->get_user_worker_num(),
-         serv->get_idle_worker_num(), serv->gs->dispatch_count, serv->gs->request_count, serv->gs->response_count,

@@ -22,6 +22,7 @@ pub extern "C" fn swr_v1_os_is_root_user() -> bool {
 /// then stdin/stdout/stderr onto `/dev/null` unless `noclose`. Logs the failed step.
 #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
 fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
+    use swoole_rs_corebase::sys;
     // SAFETY: a static C string.
     if !nochdir && unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
         log::sys_warning(c"swoole_daemon", format_args!("chdir() failed"));
@@ -30,19 +31,17 @@ fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
     if noclose {
         return true;
     }
-    // SAFETY: a static C string.
-    let fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
+    let fd = sys::open(c"/dev/null", libc::O_RDWR, 0);
     if fd < 0 {
         log::sys_warning(c"swoole_daemon", format_args!("open() failed"));
         return false;
     }
-    // SAFETY: dup2 onto the standard descriptors, as upstream.
-    let redirected = (0..3).all(|target| unsafe { libc::dup2(fd, target) } >= 0);
+    // dup2 onto the standard descriptors, as upstream.
+    let redirected = (0..3).all(|target| sys::dup2(fd, target) >= 0);
     if !redirected {
         log::sys_warning(c"swoole_daemon", format_args!("dup2() failed"));
     }
-    // SAFETY: the descriptor opened above.
-    unsafe { libc::close(fd) };
+    sys::close(fd);
     redirected
 }
 
@@ -239,9 +238,8 @@ pub unsafe extern "C" fn swoole_get_cpu_affinity(set: *mut CpuSet) -> c_int {
     }
     #[cfg(not(target_os = "freebsd"))]
     {
-        // SAFETY: getpid has no preconditions. Upstream pins the process's main
-        // thread (tid == pid), not the calling thread.
-        let pid = unsafe { libc::getpid() };
+        // Upstream pins the process's main thread (tid == pid), not the calling thread.
+        let pid = swoole_rs_corebase::sys::getpid();
         // SAFETY: `set` is a writable `cpu_set_t` per the contract.
         unsafe { libc::sched_getaffinity(pid, size_of::<CpuSet>(), set) }
     }
@@ -371,7 +369,7 @@ pub unsafe extern "C" fn swoole_thread_get_name(buf: *mut c_char, len: usize) ->
 )]
 pub unsafe extern "C" fn swoole_random_bytes(buf: *mut c_char, size: usize) -> usize {
     // SAFETY: as the caller promises.
-    unsafe { swoole_rs_corebase::swr_v1_os_random_bytes(buf.cast(), size) }
+    swoole_rs_corebase::random_bytes(unsafe { std::slice::from_raw_parts_mut(buf.cast(), size) })
 }
 
 #[cfg(test)]
@@ -425,5 +423,84 @@ mod tests {
         })
         .join()
         .unwrap_or_else(|_| unreachable!());
+    }
+
+    /// Upstream's `os.thread_name`. Linux, as core-tests: its 15-byte name limit is
+    /// what makes the second name fail.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn os_thread_name() {
+        std::thread::spawn(|| {
+            let mut new_name = [0 as c_char; 512];
+            let thread_name = c"sw-core-tests";
+            assert!(unsafe { swoole_thread_set_name(thread_name.as_ptr()) });
+            assert!(unsafe { swoole_thread_get_name(new_name.as_mut_ptr(), new_name.len()) });
+            assert_eq!(thread_name, unsafe { CStr::from_ptr(new_name.as_ptr()) });
+            assert!(!unsafe {
+                swoole_thread_set_name(c"swoole-core-tests-max-size-is-16".as_ptr())
+            });
+            assert_eq!(log::last_error(), libc::ERANGE);
+        })
+        .join()
+        .unwrap_or_else(|_| panic!("the thread's assertions failed"));
+    }
+
+    /// Upstream's `os.cpu_affinity`. `swoole_set_cpu_affinity` left the build (Rust pins
+    /// workers in crates/process `affinity.rs`), so the set is its body,
+    /// `sched_setaffinity(getpid())`; the gets are Rust's `swoole_get_cpu_affinity`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn os_cpu_affinity() {
+        let set = |set: &libc::cpu_set_t| unsafe {
+            libc::sched_setaffinity(libc::getpid(), size_of::<libc::cpu_set_t>(), set)
+        };
+        let mut affinity: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { swoole_get_cpu_affinity(&raw mut affinity) }, 0);
+        let ori_affinity = affinity;
+
+        unsafe { libc::CPU_ZERO(&mut affinity) };
+        unsafe { libc::CPU_SET(1, &mut affinity) };
+
+        assert_eq!(set(&affinity), 0);
+        assert_eq!(unsafe { swoole_get_cpu_affinity(&raw mut affinity) }, 0);
+
+        // SW_CPU_NUM, as swoole_init sets it.
+        let cpu_n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }.max(1);
+        for i in 0..usize::try_from(cpu_n).unwrap() {
+            assert_eq!(unsafe { libc::CPU_ISSET(i, &affinity) }, i == 1, "cpu {i}");
+        }
+
+        assert_eq!(set(&ori_affinity), 0);
+    }
+
+    /// Upstream's `os.set_isolation`: unknown names and a missing chroot only warn. It runs
+    /// in this test binary re-run for it alone, so that on a host where a name resolves or
+    /// the directory exists the credentials and root it changes are never the test
+    /// process's. A fork of the multithreaded harness can block on a lock another test
+    /// thread held at the fork.
+    #[test]
+    fn os_set_isolation() {
+        const CHILD: &str = "SWR_OS_SET_ISOLATION_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            unsafe {
+                swr_v1_os_set_isolation(
+                    c"not-exists-group".as_ptr(),
+                    c"not-exists-user".as_ptr(),
+                    c"/tmp/not-exists-dir".as_ptr(),
+                );
+            }
+            return;
+        }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "system::tests::os_set_isolation"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && stdout.contains("1 passed"),
+            "{}\n{stdout}",
+            child.status
+        );
     }
 }

@@ -9,7 +9,7 @@ use std::{
 use swoole_rs_corebase::{
     swr_v1_core_server, swr_v1_core_signal_listener_num, thread_async_threads,
 };
-use swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create;
+use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phphelpers::{callable, function_call};
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_process::{methods, worker_record::WorkerRecord};
@@ -26,7 +26,6 @@ use swoole_rs_zend::{
 type Handler = usize;
 
 unsafe extern "C" {
-    static swoole_server_ce: *mut zend_class_entry;
     fn php_swoole_reactor_init() -> c_int;
     fn swr_v1_phpevents_wait();
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
@@ -35,8 +34,6 @@ unsafe extern "C" {
         id: c_int,
         condition: unsafe extern "C" fn(*mut usize) -> bool,
     );
-    #[link_name = "_Z21php_swoole_dup_socketi12swSocketType"]
-    fn php_swoole_dup_socket(fd: c_int, kind: c_int) -> *mut zend_object;
     #[link_name = "_Z17swoole_signal_setiPFviEb"]
     fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
 }
@@ -60,8 +57,8 @@ pub(crate) fn exception() -> *mut zend_class_entry {
 
 /// `swoole_server_ce`, registered after Process.
 pub(crate) fn server_class() -> *mut zend_class_entry {
-    // SAFETY: read after MINIT.
-    unsafe { swoole_server_ce }
+    swoole_rs_phpswoole::families()
+        .map_or(std::ptr::null_mut(), |families| (families.server_class)())
 }
 
 /// The running server, unless it is null.
@@ -168,8 +165,7 @@ pub(crate) fn dup_socket(fd: c_int, stream: bool) -> *mut zend_object {
     } else {
         SOCK_UNIX_DGRAM
     };
-    // SAFETY: phpclients' constructor, from a PHP call.
-    unsafe { php_swoole_dup_socket(fd, kind) }
+    swoole_rs_phpclients::dup(fd, kind)
 }
 
 /// `php_swoole_convert_to_fd(value)`.
@@ -235,7 +231,7 @@ fn defer(call: swoole_rs_reactor::DeferCall, data: *mut c_void) {
     // SAFETY: the live loop, which begins with its prepared state.
     let fields = unsafe { (*reactor).fields };
     // SAFETY: the loop's live fields.
-    unsafe { swoole_rs_reactor::defer(fields, call, data) };
+    unsafe { swoole_rs_reactor::defer(fields, call, data, None) };
 }
 
 /// `zend::function::call(callable->ptr(), argc, argv, nullptr, coroutine)`: a
@@ -259,7 +255,7 @@ pub(crate) unsafe fn callable_call(
             argv,
             ptr::null_mut(),
             coroutine,
-            swr_v1_phpcoroutines_create,
+            create_coroutine,
             swr_zend_callable_warning,
         )
     };

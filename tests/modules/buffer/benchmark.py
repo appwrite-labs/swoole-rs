@@ -32,25 +32,10 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def selected_build(path):
-    manifest = json.loads(path.read_text())
-    if manifest['inputs']['upstream_commit'] != PIN or 'buffer' not in manifest['inputs']['modules']:
-        raise ValueError('Build must enable buffer against the pinned upstream commit')
-    source = Path(manifest['extension']).parent.parent.resolve(strict=True)
-    if sha(Path(manifest['extension'])) != manifest['extension_sha256']:
-        raise ValueError('Selected extension checksum differs from its manifest')
-    head = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
-    diff = subprocess.check_output(['git', '-C', str(source), 'diff', '--binary', 'HEAD'], text=True).strip()
-    if head != PIN or hashlib.sha256(diff.encode()).hexdigest() != manifest['source_diff_sha256']:
-        raise ValueError('Selected immutable source differs from its recorded build')
-    prefix = Path(next(value.partition('=')[2] for value in manifest['configure'] if value.startswith('--with-swoole-rs=')))
-    archive = (prefix / 'lib/libswoole_rs_ffi.a').resolve(strict=True)
-    if sha(archive) != manifest['inputs']['rust_archive_sha256']:
-        raise ValueError('Archive checksum differs from its manifest')
-    header = prefix / 'include/swoole_rs_buffer.h'
-    if sha(header) != manifest['inputs']['headers_sha256']['native/include/swoole_rs_buffer.h']:
-        raise ValueError('Selected ABI header checksum differs from its manifest')
-    return manifest, source, prefix, archive
+def selected_build(archive):
+    """An SDK archive (tools/build_ext.py --native) and its headers."""
+    archive = Path(archive).resolve(strict=True)
+    return archive.parents[1] / 'include', archive
 
 
 def measure(report, binaries, args):
@@ -88,8 +73,8 @@ def measure(report, binaries, args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, default=ROOT / 'target/upstream/src')
-    parser.add_argument('--build-manifest', type=Path, default=ROOT / 'target/hybrid/rust/build-manifest.json')
-    parser.add_argument('--previous-build-manifest', type=Path, help='Compare a previous immutable hybrid in the same trial series')
+    parser.add_argument('--archive', type=Path, default=ROOT / 'target/ext/sdk/lib/libswoole_rs_ffi.a')
+    parser.add_argument('--previous-archive', type=Path, help='Compare a previous SDK archive in the same trial series')
     parser.add_argument('--iterations', type=int, default=50000)
     parser.add_argument('--repeat', type=int, default=5)
     parser.add_argument('--peek-front', action='store_true', help='Read each DATA front before pop, exercising native consumer cache hits')
@@ -121,10 +106,10 @@ def main():
         args.prepare_dir = args.prepare_dir.resolve()
         args.prepare_dir.mkdir(parents=True, exist_ok=True)
         args.compile_only = True
-    builds = {'hybrid': selected_build(args.build_manifest)}
-    if args.previous_build_manifest:
-        builds['previous'] = selected_build(args.previous_build_manifest)
-    _, _, _, archive = builds['hybrid']
+    builds = {'hybrid': selected_build(args.archive)}
+    if args.previous_archive:
+        builds['previous'] = selected_build(args.previous_archive)
+    _, archive = builds['hybrid']
     compiler = shlex.split(os.environ.get('CXX', 'c++'))
     local = Path(__file__).resolve().parent
     report = {
@@ -133,7 +118,7 @@ def main():
         'compiler': subprocess.check_output(compiler + ['--version'], text=True).strip(),
         'archive': str(archive),
         'iterations': args.iterations, 'repeat': args.repeat, 'warmup_cycles': 100, 'peek_front': args.peek_front,
-        'scope': 'Native allocation/copy/chunk-pop microbenchmark from checksum-validated immutable build sources, not PHP server throughput. Correctness preflight and postflight outside timing. Offset zero avoids known upstream offset defects. C++ -O3 without sanitizers; manifest-selected optimized Rust archive.',
+        'scope': 'Native allocation/copy/chunk-pop microbenchmark from the pinned sources and the Cargo build SDK, not PHP server throughput. Correctness preflight and postflight outside timing. Offset zero avoids known upstream offset defects. C++ -O3 without sanitizers; the SDK optimized Rust archive.',
         'engines': {}, 'trials': [], 'comparisons': [],
     }
     context = contextlib.nullcontext(str(args.prepare_dir)) if args.prepare_dir else tempfile.TemporaryDirectory(prefix='swr-buffer-benchmark-')
@@ -150,14 +135,13 @@ def main():
                             destination = tree / member.name
                             destination.parent.mkdir(parents=True, exist_ok=True)
                             destination.write_bytes(bundle.extractfile(member).read())
-                source, include = tree, ROOT / 'native/include'
+                headers = ['-I' + str(tree / 'include'), '-I' + str(ROOT / 'native/include')]
             else:
-                selected, source, prefix, archive = builds[engine]
-                include = prefix / 'include'
+                include, archive = builds[engine]
+                headers = ['-I' + str(include)]
             binary = tree / 'benchmark'
             command = compiler + ['-std=c++17', '-O3', '-DNDEBUG', '-ffunction-sections', '-fdata-sections',
-                                  '-I' + str(source / 'include'), '-I' + str(include),
-                                  *([str(source / 'src/core/buffer.cc')] if engine == 'upstream' else []), str(local / 'benchmark.cc')]
+                                  *headers, *([str(tree / 'src/core/buffer.cc')] if engine == 'upstream' else []), str(local / 'benchmark.cc')]
             if engine in builds:
                 command += ['-DSWOOLE_RS_BUFFER', str(archive), '-lm']
                 if sys.platform == 'linux':
@@ -173,14 +157,14 @@ def main():
             }
             if engine in builds:
                 symbols = subprocess.check_output(['nm', '-g', str(binary)], text=True)
-                required = ['swr_v1_buffer_' + name for name in ['append', 'appendv', 'pop', 'stats']]
+                # The swoole::Buffer members benchmark.cc calls, which crates/buffer/src/cpp.rs
+                # defines; upstream's Buffer has no typed_front. The iovec append's off_t differs by OS.
+                required = ['_ZN6swoole6BufferC1Ej', '_ZN6swoole6BufferD1Ev', '_ZN6swoole6Buffer6appendEPKcj',
+                            '_ZN6swoole6Buffer6appendEPK5iovecm', '_ZN6swoole6Buffer3popEv', '_ZNK6swoole6Buffer11typed_frontEv',
+                            '_ZNK6swoole6Buffer6lengthEv', '_ZNK6swoole6Buffer5countEv', '_ZNK6swoole6Buffer5emptyEv']
                 if not all(name in symbols for name in required):
                     raise RuntimeError('Prepared native consumer lacks Rust buffer symbols')
-                report['engines'][engine]['artifact'] = {
-                    'extension': selected['extension'], 'archive': str(archive),
-                    'migrated_feature_bits': selected['migrated_feature_bits'],
-                    'fix_halfclose': selected['inputs'].get('fix_halfclose', False),
-                }
+                report['engines'][engine]['artifact'] = {'archive': str(archive), 'archive_sha256': sha(archive)}
             binaries[engine] = binary
         if len({sha(binary) for binary in binaries.values()}) != len(binaries):
             raise RuntimeError('Prepared engines unexpectedly have identical binary identities')

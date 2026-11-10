@@ -1,9 +1,10 @@
 //! File descriptor, flags and path ownership. Native keeps only a `std::string`
 //! view for its reference-returning API; guarded view updates never unwind into Rust.
-use crate::file::{FileIo, swr_v1_os_file_open, swr_v1_os_file_read_all, swr_v1_os_file_write_all};
+use crate::file::{FileIo, file_close, file_open, read_all, write_all};
 use libc::{c_char, c_int, c_void, off_t};
 use std::ffi::CStr;
 use std::{ptr, slice};
+use swoole_rs_corebase::sys;
 
 pub struct FileRecord {
     fd: c_int,
@@ -35,8 +36,7 @@ impl FileRecord {
     #[must_use]
     pub fn open_readonly(path: &CStr) -> Option<Self> {
         let path_bytes = path_copy(path.to_bytes())?;
-        // SAFETY: CStr supplies the terminated path; no previous descriptor is owned.
-        let fd = unsafe { swr_v1_os_file_open(-1, path.as_ptr(), libc::O_RDONLY, 0) };
+        let fd = file_open(-1, path, libc::O_RDONLY, 0);
         let file = Self {
             fd,
             flags: 0,
@@ -65,12 +65,24 @@ impl FileRecord {
     pub fn path(&self) -> &[u8] {
         &self.path
     }
+
+    /// `File::write_all`, appending when opened with `O_APPEND`.
+    #[must_use]
+    pub fn write_all(&self, data: &[u8]) -> FileIo {
+        write_all(self.fd, self.flags & libc::O_APPEND != 0, data)
+    }
+
+    /// `File::read_all` from offset zero.
+    #[must_use]
+    pub fn read_all(&self, buf: &mut [u8]) -> FileIo {
+        read_all(self.fd, buf)
+    }
 }
 impl Drop for FileRecord {
     fn drop(&mut self) {
         if self.fd >= 0 {
-            // SAFETY: this record owns the descriptor until close/release.
-            unsafe { libc::close(self.fd) };
+            // This record owns the descriptor until close/release.
+            sys::close(self.fd);
         }
     }
 }
@@ -149,7 +161,7 @@ pub unsafe extern "C" fn swr_v1_os_file_record_fd(owner: *mut FileRecord, releas
 pub unsafe extern "C" fn swr_v1_os_file_record_close(owner: *mut FileRecord) -> bool {
     // SAFETY: forwards the live exclusive owner, releasing its descriptor first.
     let fd = unsafe { swr_v1_os_file_record_fd(owner, true) };
-    crate::swr_v1_os_file_close(fd)
+    file_close(fd)
 }
 /// Open closes the old descriptor, assigns the native path view, then commits flags.
 /// -2 is allocation refusal; a native path exception is retained by `update`.
@@ -168,8 +180,8 @@ pub unsafe extern "C" fn swr_v1_os_file_record_open(
 ) -> c_int {
     // SAFETY: live record, read before the descriptor-changing syscall.
     let previous = unsafe { (*owner).fd };
-    // SAFETY: NUL-terminated path and ownership transferred from the old descriptor.
-    let fd = unsafe { swr_v1_os_file_open(previous, path, flags, mode) };
+    // SAFETY: a NUL-terminated path, as the caller promises.
+    let fd = file_open(previous, unsafe { CStr::from_ptr(path) }, flags, mode);
     // SAFETY: caller lends exclusive access to the record.
     unsafe { (*owner).fd = fd };
     // SAFETY: the complete caller-owned path bytes are readable.
@@ -243,33 +255,6 @@ pub unsafe extern "C" fn swr_v1_os_file_record_io(
         // SAFETY: caller supplies the readable span and offset.
         3 => unsafe { libc::pwrite(fd, buffer.cast_const(), length, offset) },
         _ => -1,
-    }
-}
-/// Full positioned read/write loop, retaining the append-mode choice.
-/// # Safety
-/// Live owner and a span valid for the requested direction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_record_all(
-    owner: *const FileRecord,
-    write: bool,
-    buffer: *mut c_void,
-    length: usize,
-) -> FileIo {
-    // SAFETY: live immutable owner, copied before IO.
-    let owner = unsafe { &*owner };
-    if write {
-        // SAFETY: forwards the caller's readable span.
-        unsafe {
-            swr_v1_os_file_write_all(
-                owner.fd,
-                owner.flags & libc::O_APPEND != 0,
-                buffer.cast_const(),
-                length,
-            )
-        }
-    } else {
-        // SAFETY: forwards the caller's writable span.
-        unsafe { swr_v1_os_file_read_all(owner.fd, buffer, length) }
     }
 }
 /// fsync, truncate, seek/set, seek/current and flock control operations.
@@ -346,12 +331,7 @@ mod tests {
             assert_eq!(swr_v1_os_file_record_control(owner, 3, 0), 15);
             let mut received = [0; 15];
             assert_eq!(
-                swr_v1_os_file_record_all(
-                    owner,
-                    false,
-                    received.as_mut_ptr().cast(),
-                    received.len()
-                ),
+                (*owner).read_all(&mut received),
                 FileIo {
                     done: 15,
                     failed: false
@@ -407,10 +387,7 @@ mod tests {
             );
             assert_eq!((*owner).path, path.as_bytes());
             assert_eq!((*owner).flags, libc::O_RDWR | libc::O_APPEND);
-            assert_eq!(
-                swr_v1_os_file_record_all(owner, true, b"ab".as_ptr().cast_mut().cast(), 2).done,
-                2
-            );
+            assert_eq!((*owner).write_all(b"ab").done, 2);
             assert_eq!(swr_v1_os_file_record_control(owner, 3, 0), 2);
             swr_v1_os_file_record_free(owner);
             libc::unlink(path.as_ptr());

@@ -1,5 +1,18 @@
 //! Reading zvals and filling arrays.
+use std::ffi::c_char;
+
 use crate::sys::{add_assoc_null_ex, add_assoc_stringl_ex, zend_value, zval};
+
+/// A key for Zend's `add_assoc_*_ex`, which reads its first byte even when the length is 0
+/// (`ZEND_HANDLE_NUMERIC_STR`): an empty slice's dangling pointer becomes `""`.
+#[must_use]
+pub fn key_ptr(key: &[u8]) -> *const c_char {
+    if key.is_empty() {
+        c"".as_ptr()
+    } else {
+        key.as_ptr().cast()
+    }
+}
 
 /// `Z_STR_P`, `Z_LVAL_P`, ...: the value union, read by its type's field.
 /// # Safety
@@ -28,15 +41,9 @@ pub unsafe fn set_key(array: *mut zval, key: &[u8], value: Option<&[u8]>) {
     match value {
         // SAFETY: per the caller; Zend copies key and value.
         Some(v) => unsafe {
-            add_assoc_stringl_ex(
-                array,
-                key.as_ptr().cast(),
-                key.len(),
-                v.as_ptr().cast(),
-                v.len(),
-            );
+            add_assoc_stringl_ex(array, key_ptr(key), key.len(), v.as_ptr().cast(), v.len());
         },
         // SAFETY: per the caller; Zend copies the key.
-        None => unsafe { add_assoc_null_ex(array, key.as_ptr().cast(), key.len()) },
+        None => unsafe { add_assoc_null_ex(array, key_ptr(key), key.len()) },
     }
 }

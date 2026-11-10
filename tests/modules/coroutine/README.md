@@ -9,7 +9,7 @@ Rust FFI static archive. Most gates refuse an existing `--report` path.
 `core-tests/src/coroutine/base.cpp` and `coroutine/file.cpp` no longer build. Their
 TESTs are Rust functions in `base.rs`, one per TEST with the same inputs and expected
 values, run by `hooks-system-rust` (tests/modules/hooks/system.py, which links the
-case binary to the hybrid tree's libswoole.so; Linux):
+case binary with the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources); Linux):
 
 | Upstream TEST | Rust case |
 | --- | --- |
@@ -30,15 +30,9 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 ## Source-body and ABI gates
 
 ```
-python3 tests/modules/coroutine/compile_gate.py --source PINNED_TREE --archive ARCHIVE [--timing] [--stack-usage] \
-  [--backend asm|thread] [--standard c++14|c++17] --report OUT.json
 python3 tools/cargo_asan.py --package swoole-rs-coroutine --report OUT.json
 ```
 
-- `compile_gate.py` compiles `base`, `context` and `thread_context`
-  from the pin (original), and those still in the archive's hybrid tree with its
-  switches, plus native/coroutine's shim (patched, `hybrid_tree`; `base.cc` and
-  `context.cc` are gone).
 - `tools/cargo_asan.py` runs crates/coroutine's unit tests under Rust ASan (the plain
   run is `coroutine-unit`).
 - The scheduler, coroutine state, the live map, stacks and the context switch (crates/coroutine)

@@ -7,8 +7,9 @@
 use crate::{Switch, optional};
 use std::{
     cell::Cell,
-    ffi::{CStr, CString, c_int, c_void},
+    ffi::{CStr, c_int, c_long, c_void},
     ptr,
+    sync::OnceLock,
 };
 use swoole_rs_corebase::{
     log::set_last_error, swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace,
@@ -115,8 +116,127 @@ pub fn enable_library() -> bool {
     globals().enable_library.get()
 }
 
-type Minit = unsafe extern "C" fn(c_int);
-type Hook = unsafe extern "C" fn();
+/// A family's MINIT hook, with the module's number (C ABI: it runs inside `zend_try`).
+pub type Minit = unsafe extern "C" fn(c_int);
+/// Any other phase hook, likewise.
+pub type Hook = unsafe extern "C" fn();
+/// An HTTP MINIT step, called once at MINIT with what it reads of Swoole's.
+pub type HttpMinit = unsafe fn(&MinitArgs);
+
+/// What the HTTP MINIT steps read of Swoole's own: the module, its exception
+/// class, `swoole.use_shortname`, the codecs (1 zlib, 2 brotli, 4 zstd) and
+/// the build's compression, zlib and thread switches.
+pub struct MinitArgs {
+    pub module: c_int,
+    pub exception: *mut zend_class_entry,
+    pub shortname: bool,
+    pub codecs: u32,
+    pub compression: bool,
+    pub zlib: bool,
+    pub thread: bool,
+}
+
+/// The hooks of the crates above this one in the dependency graph
+/// (crates/phpcoroutines, phpthread, phpserver and phpclients), which it runs where
+/// upstream's phases did, and which crates/phpruntime and phpprocess, between
+/// them, read too. crates/ffi, which links them all, registers them with
+/// [`crate::module_entry`] when Zend asks for the module entry, before any phase.
+pub struct Families {
+    /// `php_swoole_coroutine_minit`, `_system_minit` and `_scheduler_minit`.
+    pub coroutine_minit: [Minit; 3],
+    /// `php_swoole_server_minit`.
+    pub server_minit: Minit,
+    /// `php_swoole_timer_minit` and `php_swoole_timer_rshutdown`.
+    pub timer_minit: Minit,
+    pub timer_rshutdown: Hook,
+    /// `php_swoole_tracer_minit(threshold, blocking, profile, leaks)`, at MINIT, once.
+    pub tracer_minit: unsafe fn(i64, bool, bool, bool),
+    /// `Swoole\Thread`'s MINIT, then (after the thread locks') its barrier's,
+    /// queue's, map's and list's, each at MINIT before any PHP thread starts.
+    pub thread_minit: unsafe fn(),
+    pub thread_classes_minit: [unsafe fn(); 4],
+    /// RINIT's coroutine, thread and tracer steps.
+    pub coroutine_rinit: Hook,
+    pub thread_rinit: Hook,
+    pub tracer_rinit: Hook,
+    /// RSHUTDOWN's server, coroutine and scheduler, thread and tracer steps.
+    pub server_rshutdown: Hook,
+    pub coroutine_rshutdown: [Hook; 2],
+    pub thread_rshutdown: Hook,
+    pub tracer_rshutdown: Hook,
+    /// `php_swoole_thread_bailout()`: the bailout that ends this PHP thread.
+    pub thread_bailout: extern "C" fn(),
+    /// `sw_php_print_backtrace(cid)`.
+    /// # Errors
+    /// Its output bailed out.
+    pub print_backtrace: fn(c_long) -> Result<(), Bailout>,
+    /// `PHPCoroutine::get_hook_flags()` and `set_hook_flags(flags)` (which
+    /// records them in the coroutine options too), for `Swoole\Runtime`.
+    pub hook_flags: fn() -> u32,
+    pub set_hook_flags: fn(u32),
+    /// `sw_active_thread_count()`: the PHP threads running.
+    pub active_threads: fn() -> usize,
+    /// `swoole_server_ce`, for `Swoole\Process` (crates/phpprocess).
+    pub server_class: fn() -> *mut zend_class_entry,
+    /// crates/phpclients' MINITs, in order: `php_swoole_socket_coro_minit`,
+    /// `_client_minit`, `_client_async_minit`, `_client_coro_minit` and
+    /// `_http_client_coro_minit`.
+    pub client_minit: [Minit; 5],
+    /// `php_swoole_name_resolver_minit`.
+    pub name_resolver_minit: Minit,
+    /// `php_swoole_socket_set(socket, settings)` over a coroutine socket, for
+    /// crates/phpruntime; `which` 2 applies only the SSL ones
+    /// (`php_swoole_socket_set_ssl`). Raises a bailout it caught.
+    pub socket_settings: unsafe extern "C" fn(*mut c_void, *const zval, c_int) -> bool,
+    /// `php_swoole_name_resolver_add(resolver)` and
+    /// `swoole_name_resolver_php_remove(resolver)`, for crates/phpcoroutines.
+    pub name_resolver_add: unsafe fn(*mut zval) -> bool,
+    pub name_resolver_remove: unsafe fn(*mut zval) -> *mut zval,
+    /// `swoole_socket_coro_ce` and `swoole_client_ce`, for `Swoole\Event`
+    /// (crates/phpevents).
+    pub socket_class: fn() -> *mut zend_class_entry,
+    pub client_class: fn() -> *mut zend_class_entry,
+    /// crates/phphttp's and phphttp2's.
+    pub http: Http,
+}
+
+/// crates/phphttp's and phphttp2's phase steps, and the server events and
+/// classes crates/phpserver reads.
+pub struct Http {
+    /// The MINIT steps, in order: `Swoole\Http\Request`, `Response`,
+    /// `Cookie`, `Server` (after `Swoole\Server`), `Coroutine\Http\Server` and
+    /// `WebSocket\Server` (with `Frame` and `CloseFrame`), then crates/phphttp2's
+    /// `Coroutine\Http2\Client` (with `Http2\Request` and `Response`), which
+    /// runs with the clients.
+    pub minit: [HttpMinit; 7],
+    pub server_rinit: Hook,
+    pub server_rshutdown: Hook,
+    pub response_rshutdown: Hook,
+    /// `php_swoole_http_server_onReceive` and `onClose` of the live server,
+    /// with the event's `RecvData` or `DataHead`.
+    pub on_receive: unsafe fn(*mut c_void, *mut c_void) -> c_int,
+    pub on_close: unsafe fn(*mut c_void, *mut c_void),
+    /// `php_swoole_http2_server_onClose`: the session of a closed connection goes.
+    pub http2_on_close: fn(i64),
+    /// `swoole_http_server_can_cache_session_addr` of the live server.
+    pub can_cache_session_addr: unsafe fn(*mut c_void) -> bool,
+    /// `Swoole\Http\Server` and `Swoole\WebSocket\Server`, after MINIT.
+    pub server_class: fn() -> *mut zend_class_entry,
+    pub websocket_class: fn() -> *mut zend_class_entry,
+}
+
+static FAMILIES: OnceLock<&'static Families> = OnceLock::new();
+
+/// Keep `families` for the phases; the first registration stands.
+pub(crate) fn register(families: &'static Families) {
+    FAMILIES.get_or_init(|| families);
+}
+
+/// The registered families: always some once Zend holds the module entry.
+#[must_use]
+pub fn families() -> Option<&'static Families> {
+    FAMILIES.get().copied()
+}
 
 unsafe extern "C" {
     fn php_swoole_event_minit(module_number: c_int);
@@ -125,79 +245,15 @@ unsafe extern "C" {
     fn php_swoole_process_minit(module_number: c_int);
     fn php_swoole_process_pool_minit(module_number: c_int);
     fn php_swoole_table_minit(module_number: c_int);
-    fn php_swoole_timer_minit(module_number: c_int);
-    fn php_swoole_coroutine_minit(module_number: c_int);
-    fn php_swoole_coroutine_system_minit(module_number: c_int);
-    fn php_swoole_coroutine_scheduler_minit(module_number: c_int);
     fn php_swoole_coroutine_lock_minit(module_number: c_int);
     fn php_swoole_channel_coro_minit(module_number: c_int);
     fn php_swoole_runtime_minit(module_number: c_int);
-    /// crates/phpclients' `Coroutine\Socket`.
-    fn swr_v1_phpclients_socket_minit(
-        exception: *mut zend_class_entry,
-        shortname: bool,
-        module: c_int,
-    );
-    fn php_swoole_client_minit(module_number: c_int);
-    fn php_swoole_client_async_minit(module_number: c_int);
-    /// crates/phpclients' `Coroutine\Client`.
-    fn swr_v1_phpclients_client_minit(shortname: bool, client_class: *mut *mut zend_class_entry);
-    /// crates/phpclients' `Coroutine\Http\Client`.
-    fn swr_v1_phpclients_http_client_minit(
-        exception: *mut zend_class_entry,
-        shortname: bool,
-        module: c_int,
-        features: u32,
-    );
-    /// crates/phphttp2's `Coroutine\Http2\Client`, `Http2\Request` and `Http2\Response`.
-    fn swr_v1_phphttp2_client_minit(
-        exception: *mut zend_class_entry,
-        shortname: bool,
-        module: c_int,
-    );
-    fn php_swoole_server_minit(module_number: c_int);
-    /// crates/phphttp's `Swoole\Http\Request`.
-    fn swr_v1_phphttp_request_minit() -> *mut zend_class_entry;
-    /// crates/phphttp's `Swoole\Http\Response`, and the codecs its parser knows.
-    fn swr_v1_phphttp_response_minit(codecs: u32);
-    fn swr_v1_phphttp_response_rshutdown();
-    fn php_swoole_http_cookie_minit(module_number: c_int);
-    /// crates/phphttp's `Swoole\Http\Server`, and its request state.
-    fn swr_v1_phphttp_server_minit();
-    fn swr_v1_phphttp_server_rinit();
-    fn swr_v1_phphttp_server_rshutdown();
-    /// crates/phphttp's `Swoole\Coroutine\Http\Server`.
-    fn swr_v1_phphttp_server_coro_minit(
-        exception: *mut zend_class_entry,
-        short_name: bool,
-        compression: bool,
-    ) -> *mut zend_class_entry;
-    /// crates/phphttp's `Swoole\WebSocket\Server`, `Frame` and `CloseFrame`.
-    fn swr_v1_phphttp_websocket_minit(module_number: c_int, serializable: bool, zlib: bool);
     fn php_swoole_redis_server_minit(module_number: c_int);
-    fn php_swoole_name_resolver_minit(module_number: c_int);
-    /// crates/phpcoroutines' tracer, with its INI switches.
-    fn swr_v1_phpcoroutines_tracer_minit(
-        blocking_threshold: i64,
-        blocking_detection: bool,
-        profile: bool,
-        leak_detection: bool,
-    );
-
     fn php_swoole_runtime_mshutdown();
-
-    fn php_swoole_coroutine_rinit();
     fn php_swoole_runtime_rinit();
-    fn swr_v1_phpcoroutines_tracer_rinit();
-
-    fn php_swoole_server_rshutdown();
     fn php_swoole_redis_server_rshutdown();
-    fn php_swoole_coroutine_rshutdown();
-    fn php_swoole_coroutine_scheduler_rshutdown();
-    fn php_swoole_timer_rshutdown();
     fn php_swoole_runtime_rshutdown();
     fn php_swoole_process_rshutdown();
-    fn swr_v1_phpcoroutines_tracer_rshutdown();
 }
 
 /// One step of a phase: a family's MINIT hook, or any other hook.
@@ -230,6 +286,9 @@ fn run(steps: &[Step], module_number: c_int) -> Result<(), Bailout> {
 /// is deferred for `swr_v1_phpswoole_minit` to raise.
 pub(crate) fn startup(module_number: c_int) {
     use Step::{Hook as H, Minit as M};
+    let Some(families) = families() else {
+        return;
+    };
     let mut steps = vec![
         H(core_startup),
         M(php_swoole_event_minit),
@@ -239,35 +298,31 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_process_minit),
         M(php_swoole_process_pool_minit),
         M(php_swoole_table_minit),
-        M(php_swoole_timer_minit),
-        // coroutine
-        M(php_swoole_coroutine_minit),
-        M(php_swoole_coroutine_system_minit),
-        M(php_swoole_coroutine_scheduler_minit),
+        M(families.timer_minit),
+    ];
+    // coroutine
+    steps.extend(families.coroutine_minit.map(M));
+    steps.extend([
         M(php_swoole_coroutine_lock_minit),
         M(php_swoole_channel_coro_minit),
         M(php_swoole_runtime_minit),
-        // client
-        M(socket_coro_minit),
-        M(php_swoole_client_minit),
-        M(php_swoole_client_async_minit),
-        M(client_coro_minit),
-        M(http_client_coro_minit),
-        M(http2_client_coro_minit),
-    ];
+    ]);
+    // client
+    steps.extend(families.client_minit.map(M));
+    steps.extend([M(http_minit::<6>)]);
     // The bundled C clients, ssh2 and ftp.
     steps.extend(optional::client_minit());
     steps.extend([
         // server
-        M(php_swoole_server_minit),
-        M(http_request_minit),
-        M(http_response_minit),
-        M(php_swoole_http_cookie_minit),
-        M(http_server_minit),
-        M(http_server_coro_minit),
-        M(websocket_server_minit),
+        M(families.server_minit),
+        M(http_minit::<0>),
+        M(http_minit::<1>),
+        M(http_minit::<2>),
+        M(http_minit::<3>),
+        M(http_minit::<4>),
+        M(http_minit::<5>),
         M(php_swoole_redis_server_minit),
-        M(php_swoole_name_resolver_minit),
+        M(families.name_resolver_minit),
     ]);
     steps.extend(optional::minit());
     steps.extend([M(tracer_minit), H(php_hooks), H(ready)]);
@@ -280,96 +335,42 @@ extern "C" fn tracer_minit(_module_number: c_int) {
     let g = globals();
     let (blocking, profile) = (g.blocking_detection.get(), g.profile.get());
     let (threshold, leaks) = (g.blocking_threshold.get(), g.leak_detection.get());
-    // SAFETY: Rust's MINIT, once.
-    unsafe { swr_v1_phpcoroutines_tracer_minit(threshold, blocking, profile, leaks) };
+    if let Some(families) = families() {
+        // SAFETY: Rust's MINIT, once.
+        unsafe { (families.tracer_minit)(threshold, blocking, profile, leaks) };
+    }
     if blocking || profile {
         g.enable_fiber_mock.set(true);
     }
 }
 
-/// `php_swoole_http_request_minit`.
-extern "C" fn http_request_minit(_module_number: c_int) {
-    // SAFETY: Rust's MINIT, once.
-    unsafe { swr_v1_phphttp_request_minit() };
-}
-
-/// `php_swoole_socket_coro_minit`.
-extern "C" fn socket_coro_minit(module_number: c_int) {
-    let exception = crate::EXCEPTION.entry();
-    let shortname = globals().use_shortname.get();
-    // SAFETY: Rust's MINIT, once.
-    unsafe { swr_v1_phpclients_socket_minit(exception, shortname, module_number) };
+/// [`Http::minit`]'s step `N`.
+extern "C" fn http_minit<const N: usize>(module: c_int) {
+    let Some(&minit) = families().and_then(|families| families.http.minit.get(N)) else {
+        return;
+    };
+    let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
+    let args = MinitArgs {
+        module,
+        exception: crate::EXCEPTION.entry(),
+        shortname: globals().use_shortname.get(),
+        codecs: codecs(),
+        compression: flags & crate::constants::COMPRESSION != 0,
+        zlib: flags & crate::constants::ZLIB != 0,
+        thread: flags & crate::constants::THREAD != 0,
+    };
+    // SAFETY: Rust's MINIT, which runs each step once, in order.
+    unsafe { minit(&args) };
 }
 
 /// The codecs the build has: 1 zlib, 2 brotli, 4 zstd.
-fn codecs() -> u32 {
+#[must_use]
+pub fn codecs() -> u32 {
     [Switch::Zlib, Switch::Brotli, Switch::Zstd]
         .iter()
         .enumerate()
         .filter(|(_, capability)| crate::built_with(**capability))
         .fold(0, |features, (bit, _)| features | 1 << bit)
-}
-
-/// `php_swoole_http_response_minit`: the codecs and `SW_HAVE_COMPRESSION`.
-extern "C" fn http_response_minit(_module_number: c_int) {
-    let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
-    let codecs = codecs() | u32::from(flags & crate::constants::COMPRESSION != 0) << 3;
-    // SAFETY: Rust's MINIT, once, after the request class's.
-    unsafe { swr_v1_phphttp_response_minit(codecs) };
-}
-
-/// `php_swoole_websocket_server_minit`: serializable with `SW_THREAD`.
-extern "C" fn websocket_server_minit(module_number: c_int) {
-    use crate::constants::{THREAD, ZLIB};
-    let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
-    let (serializable, zlib) = (flags & THREAD != 0, flags & ZLIB != 0);
-    // SAFETY: Rust's MINIT, once, after `Swoole\Http\Server`'s.
-    unsafe { swr_v1_phphttp_websocket_minit(module_number, serializable, zlib) };
-}
-
-/// `php_swoole_http_server_minit`.
-extern "C" fn http_server_minit(_module_number: c_int) {
-    // SAFETY: Rust's MINIT, once, after `Swoole\Server`'s.
-    unsafe { swr_v1_phphttp_server_minit() };
-}
-
-/// `php_swoole_http_server_coro_minit`.
-extern "C" fn http_server_coro_minit(_module_number: c_int) {
-    let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
-    let exception = crate::EXCEPTION.entry();
-    let shortname = globals().use_shortname.get();
-    // SAFETY: Rust's MINIT, once.
-    unsafe {
-        swr_v1_phphttp_server_coro_minit(
-            exception,
-            shortname,
-            flags & crate::constants::COMPRESSION != 0,
-        )
-    };
-}
-
-/// `php_swoole_client_coro_minit`.
-extern "C" fn client_coro_minit(_module_number: c_int) {
-    let shortname = globals().use_shortname.get();
-    let mut class = ptr::null_mut();
-    // SAFETY: Rust's MINIT, once, with a writable slot.
-    unsafe { swr_v1_phpclients_client_minit(shortname, &raw mut class) };
-}
-
-/// `php_swoole_http_client_coro_minit`: the compression the build has.
-extern "C" fn http_client_coro_minit(module_number: c_int) {
-    let exception = crate::EXCEPTION.entry();
-    let shortname = globals().use_shortname.get();
-    // SAFETY: Rust's MINIT, once.
-    unsafe { swr_v1_phpclients_http_client_minit(exception, shortname, module_number, codecs()) };
-}
-
-/// `php_swoole_http2_client_coro_minit`.
-extern "C" fn http2_client_coro_minit(module_number: c_int) {
-    let exception = crate::EXCEPTION.entry();
-    let shortname = globals().use_shortname.get();
-    // SAFETY: Rust's MINIT, once.
-    unsafe { swr_v1_phphttp2_client_minit(exception, shortname, module_number) };
 }
 
 /// MINIT's end: Swoole's fatal errors become `Swoole\Error`s and its
@@ -398,10 +399,8 @@ extern "C" fn core_startup() {
     // SAFETY: no preconditions.
     let version = unsafe { swr_zend_php_version() };
     // SAFETY: PHP_VERSION, a static string.
-    let version = unsafe { CStr::from_ptr(version) }.to_string_lossy();
-    let line = CString::new(format!("PHP_VERSION : {version}\n")).unwrap_or_default();
-    // SAFETY: a NUL-terminated line, which the report copies.
-    unsafe { swoole_rs_corebase::swr_v1_core_bug_report_append(line.as_ptr()) };
+    let version = unsafe { CStr::from_ptr(version) }.to_bytes();
+    swoole_rs_corebase::bug_report_append(&[b"PHP_VERSION : ", version, b"\n"].concat());
 }
 
 /// MINIT's end: the ini's socket buffer size, macOS's `pcre.jit` and the known
@@ -480,7 +479,6 @@ extern "C" fn event_free() {
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's MSHUTDOWN.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number: c_int) -> c_int {
     let mut steps = vec![
         Step::Hook(swoole_rs_phphelpers::known_free),
@@ -501,7 +499,6 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number:
 /// `PHP_RINIT_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's RINIT.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_int) -> c_int {
     let globals = globals();
     if !globals.cli.get() {
@@ -530,13 +527,16 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
     }
     // SAFETY: RINIT.
     unsafe { swr_zend_signals_uncheck() };
+    let Some(families) = families() else {
+        return SUCCESS;
+    };
     let mut steps = vec![
-        Step::Hook(swr_v1_phphttp_server_rinit),
-        Step::Hook(php_swoole_coroutine_rinit),
+        Step::Hook(families.http.server_rinit),
+        Step::Hook(families.coroutine_rinit),
         Step::Hook(php_swoole_runtime_rinit),
     ];
-    steps.extend(optional::rinit());
-    steps.push(Step::Hook(swr_v1_phpcoroutines_tracer_rinit));
+    steps.extend(optional::rinit(families));
+    steps.push(Step::Hook(families.tracer_rinit));
     if let Err(bailed) = run(&steps, module_number) {
         bailout::raise(Err(bailed));
         return SUCCESS;
@@ -548,28 +548,30 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
 /// `PHP_RSHUTDOWN_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's RSHUTDOWN.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number: c_int) -> c_int {
     let globals = globals();
     if !globals.cli.get() {
         return SUCCESS;
     }
     globals.req_status.set(RSHUTDOWN_BEGIN);
+    let Some(families) = families() else {
+        return SUCCESS;
+    };
     let mut steps = vec![
-        Step::Hook(php_swoole_server_rshutdown),
-        Step::Hook(swr_v1_phphttp_server_rshutdown),
-        Step::Hook(swr_v1_phphttp_response_rshutdown),
+        Step::Hook(families.server_rshutdown),
+        Step::Hook(families.http.server_rshutdown),
+        Step::Hook(families.http.response_rshutdown),
         Step::Hook(crate::asynchronous::rshutdown),
         Step::Hook(php_swoole_redis_server_rshutdown),
-        Step::Hook(php_swoole_coroutine_rshutdown),
-        Step::Hook(php_swoole_coroutine_scheduler_rshutdown),
-        Step::Hook(php_swoole_timer_rshutdown),
+        Step::Hook(families.coroutine_rshutdown[0]),
+        Step::Hook(families.coroutine_rshutdown[1]),
+        Step::Hook(families.timer_rshutdown),
         Step::Hook(php_swoole_runtime_rshutdown),
         Step::Hook(php_swoole_process_rshutdown),
     ];
-    steps.extend(optional::rshutdown());
+    steps.extend(optional::rshutdown(families));
     steps.extend([
-        Step::Hook(swr_v1_phpcoroutines_tracer_rshutdown),
+        Step::Hook(families.tracer_rshutdown),
         Step::Hook(event_free),
     ]);
     if let Err(bailed) = run(&steps, module_number) {

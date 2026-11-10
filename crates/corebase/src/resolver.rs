@@ -111,40 +111,16 @@ pub struct Resolved {
     pub count: c_int,
 }
 
+/// Internal resolver permits a contained native diagnostic failure. The sentinel
+/// remains internal and is never published as the request's libc error.
+pub(crate) const DIAGNOSTIC_FAILED: c_int = c_int::MIN;
 /// `network::getaddrinfo`: resolves `host` (and `service`, null for none) into at
 /// most `capacity` socket addresses; `unknown` reports an entry of another family,
-/// which keeps its zeroed slot.
+/// which keeps its zeroed slot, and false from it stops the walk.
 ///
 /// # Safety
 /// `host` and a non-null `service` are NUL-terminated; `results` holds `capacity`
 /// zeroed entries.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_getaddrinfo(
-    host: *const c_char,
-    service: *const c_char,
-    family: c_int,
-    socktype: c_int,
-    protocol: c_int,
-    results: *mut libc::sockaddr_in6,
-    capacity: usize,
-    unknown: unsafe extern "C" fn(c_int),
-) -> Resolved {
-    let diagnostic = |kind| {
-        // SAFETY: this ABI's caller promises a nonthrowing diagnostic callback.
-        unsafe { unknown(kind) };
-        true
-    };
-    // SAFETY: the original ABI's strings/output bounds are passed unchanged.
-    unsafe {
-        resolve_addresses(
-            host, service, family, socktype, protocol, results, capacity, diagnostic,
-        )
-    }
-}
-
-/// Internal resolver permits a contained native diagnostic failure. The sentinel
-/// remains internal and is never published as the request's libc error.
-pub(crate) const DIAGNOSTIC_FAILED: c_int = c_int::MIN;
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors the existing libc resolver boundary"
@@ -205,5 +181,46 @@ pub(crate) unsafe fn resolve_addresses(
             0
         },
         count: c_int::try_from(count).unwrap_or(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_addresses_through_libc() {
+        let mut results: [libc::sockaddr_in6; 16] = unsafe { std::mem::zeroed() };
+        let found = unsafe {
+            resolve_addresses(
+                c"127.0.0.1".as_ptr(),
+                c"80".as_ptr(),
+                libc::AF_INET,
+                libc::SOCK_STREAM,
+                0,
+                results.as_mut_ptr(),
+                16,
+                |_| true,
+            )
+        };
+        assert_eq!(found, Resolved { error: 0, count: 1 });
+        let v4 = unsafe { &*results.as_ptr().cast::<libc::sockaddr_in>() };
+        assert_eq!(
+            (u16::from_be(v4.sin_port), v4.sin_addr.s_addr.to_ne_bytes()),
+            (80, [127, 0, 0, 1])
+        );
+        let failed = unsafe {
+            resolve_addresses(
+                c"127.0.0.1".as_ptr(),
+                c"no-such-service-swr".as_ptr(),
+                libc::AF_INET,
+                0,
+                0,
+                results.as_mut_ptr(),
+                16,
+                |_| true,
+            )
+        };
+        assert_ne!(failed.error, 0);
     }
 }

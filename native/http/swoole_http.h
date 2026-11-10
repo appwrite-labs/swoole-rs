@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 // http_server::Request and the HTTP helpers: what the compiled core-tests still use. crates/http and crates/ports define the functions under their
-// upstream symbols; crates/http/src/request.rs owns Request's state.
+// upstream symbols; crates/http-ffi/src/request.rs owns Request's state.
 #pragma once
 
 #include "swoole_protocol.h"
@@ -56,14 +56,6 @@ struct FormData;
 }  // namespace http_server
 }  // namespace swoole
 
-// crates/http/src/request.rs.
-extern "C" {
-void swr_v3_http_request_init(swoole::http_server::Request *);
-int32_t swr_v1_http_request_protocol(swoole::http_server::Request *);
-uint32_t swr_v1_http_request_expect(const swoole::http_server::Request *);
-void swr_v1_http_request_multipart_destroy(swoole::http_server::Request *);
-}
-
 namespace swoole {
 namespace http_server {
 // crates/http/src/request.rs mirrors this layout; one-byte flags, not bit-fields.
@@ -97,19 +89,6 @@ struct Request {
     size_t chunk_length_;
     size_t chunk_offset_;
     size_t chunk_scan_offset_;
-
-    Request() {
-        swr_v3_http_request_init(this);
-    }
-    ~Request() {
-        swr_v1_http_request_multipart_destroy(this);
-    }
-    int get_protocol() {
-        return swr_v1_http_request_protocol(this);
-    }
-    bool has_expect_header() const {
-        return swr_v1_http_request_expect(this);
-    }
 };
 static_assert(offsetof(Request, url_offset_) == 12 && offsetof(Request, content_length_) == 32 &&
                   offsetof(Request, form_data_) == 40 && offsetof(Request, buffer_) == 48 &&

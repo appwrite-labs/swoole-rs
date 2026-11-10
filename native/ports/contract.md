@@ -17,10 +17,9 @@ distinctions and the priority EOF > length > HTTP > MQTT > Redis are preserved,
 including for contradictory flags.
 
 `ListenPort::protocol` and `onRead` live in the Rust-owned port settings
-(`PortConfig`). `init_protocol`,
-`set_length_protocol` and `set_stream_protocol` are Rust symbols
-(`crates/ports/src/methods.rs`), and so is the body of the inline
-`set_eof_protocol` (`swr_v1_ports_set_eof(port, bytes, length, find_from_right)`).
+(`PortConfig`). `init_protocol`, `set_length_protocol`, `set_stream_protocol` and the
+inline `set_eof_protocol` are Rust functions over a port's `PortConfig`
+(`crates/ports/src/methods.rs`), with no native symbol.
 `swr_v1_port_config_new` gives the constructor's protocol defaults.
 
 ## Event catalog and callbacks
@@ -38,8 +37,13 @@ One immutable 12-event catalog.
 
 ## Sockets: `ListenPort::create_socket`, `listen` and `close_socket`
 
-All three are Rust (`crates/ports/src/methods.rs`) under their upstream symbols, over the
-Rust-owned settings and socket record. Options are those the platform defines:
+All three are Rust (`crates/ports/src/methods.rs`), over the Rust-owned settings and
+socket record. Only the server calls them, through the table `swoole_init` registers
+(`swoole_rs_ports::register_methods`, `swoole_rs_server::port_config::PortMethods`), with
+`get_protocols`, `init_protocol`, `destroy_http_request`, `ssl_context_init`,
+`ssl_create`, `import`, `close` and the DTLS session lookups: ports depends on the
+server, so the server can't name them. `init_protocol` keeps its upstream symbol for
+tests/modules/http/server/src/http1/case.rs. Options are those the platform defines:
 `TCP_DEFER_ACCEPT`, `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` and
 `TCP_USER_TIMEOUT` on Linux, `TCP_FASTOPEN` and `SO_KEEPALIVE` on both supported
 hosts (`SO_ACCEPTFILTER` is BSD-only). `host` is a Rust string slot in the
@@ -67,7 +71,8 @@ both. SNI contexts are matched in insertion order; upstream iterated an
 option's lookup, conversion, bound and order, written into the Rust-owned
 `PortConfig` and, on an SSL port, the context's Rust TLS owner. An over-long
 `package_eof` is rejected rather than copied. `set()` calls `dup_ssl_context`
-(`swr_v1_ports_context_dup`), `ssl_add_sni_cert` and `ssl_init` in crates/ports directly.
+(`lifecycle_native::context_dup`), `ssl_add_sni_cert` (`sni_add`) and `ssl_init` in
+crates/ports directly.
 
 ## Class properties: `swr_v1_ports_class_property(index)`
 

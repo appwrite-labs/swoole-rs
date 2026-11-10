@@ -5,7 +5,7 @@
 use crate::settings::{Settings, Step, Stop, checked};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
-use swoole_rs_ports::lifecycle_native::{swr_v1_ports_context_dup, swr_v1_ports_sni_add};
+use swoole_rs_ports::lifecycle_native::{context_dup, sni_add};
 use swoole_rs_server::port_config::PortConfig;
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_zend::{
@@ -13,7 +13,6 @@ use swoole_rs_zend::{
     string::bytes,
     sys::{IS_ARRAY, swr_zend_hash_foreach_key, zend_string, zend_ulong, zval},
     type_of,
-    value::{get_double, table},
 };
 
 /// `SW_TIMER_MIN_SEC`.
@@ -369,8 +368,7 @@ impl Source for Zend<'_> {
         let Some(value) = self.settings.get(key) else {
             return Ok(None);
         };
-        // SAFETY: a live setting.
-        let value = unsafe { get_double(value) };
+        let value = value.double();
         checked().map(|()| Some(value))
     }
 
@@ -391,7 +389,7 @@ impl Source for Zend<'_> {
             return Ok(None);
         };
         // SAFETY: a live setting; its bailouts stay deferred.
-        let callable = unsafe { swoole_rs_phpruntime::callable_create(value) };
+        let callable = unsafe { swoole_rs_phpruntime::callable_create(value.as_ptr()) };
         if checked().is_err() {
             if !callable.is_null() {
                 self.release(callable);
@@ -430,16 +428,14 @@ impl Source for Zend<'_> {
         let Some(certs) = self.settings.get(c"ssl_sni_certs") else {
             return Ok(());
         };
-        // SAFETY: a live setting.
-        if unsafe { type_of(certs) } != IS_ARRAY {
+        let Some(certs) = certs.array() else {
             let message = c"ssl_sni_certs requires an array mapping host names to cert paths";
             return Err(self.fatal(E_WARNING, message));
-        }
+        };
         let mut entries: Vec<(*mut zend_string, *mut zval)> = Vec::new();
-        // SAFETY: a live array, which nothing modifies while set() runs.
-        let certs = unsafe { table(certs) };
-        // SAFETY: as above; `each` only records the entries.
-        unsafe { swr_zend_hash_foreach_key(certs, Some(each), (&raw mut entries).cast()) };
+        // SAFETY: a live array, which nothing modifies while set() runs; `each`
+        // only records the entries.
+        unsafe { swr_zend_hash_foreach_key(certs.as_ptr(), Some(each), (&raw mut entries).cast()) };
         for (key, value) in entries {
             if key.is_null() {
                 let message = c"ssl_sni_certs array requires string host name keys";
@@ -450,7 +446,7 @@ impl Source for Zend<'_> {
                 return Err(self.fatal(E_WARNING, c"invalid SNI_cert setting"));
             }
             // SAFETY: an SSL port; the copy's reference goes to `sni_add` below or is released.
-            let context = unsafe { swr_v1_ports_context_dup(self.port) };
+            let context = unsafe { context_dup(self.port) };
             let item = Self {
                 settings: Settings {
                     serv: self.settings.serv,
@@ -466,9 +462,7 @@ impl Source for Zend<'_> {
             // SAFETY: a live key.
             let name = unsafe { bytes(key) };
             // SAFETY: a live port and name, and the copy's reference, handed over once.
-            let added = unsafe {
-                swr_v1_ports_sni_add(self.port, name.as_ptr().cast(), name.len(), context)
-            };
+            let added = unsafe { sni_add(self.port, name, context) };
             if !added {
                 return Err(self.fatal(E_ERROR, c"ssl_add_sni_cert() failed"));
             }

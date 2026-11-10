@@ -16,7 +16,8 @@ for test in \
     tests/modules/integration/test_bridge_inventory.py \
     tests/modules/phpcollections/test_runtime.py \
     tests/modules/phphelpers/test_runtime.py \
-    tests/modules/utilities/test_storage_summary.py
+    tests/modules/utilities/test_storage_summary.py \
+    tests/modules/websocket/test_autobahn_verdict.py
 do
     name=$(echo "$test" | tr / _)
     (cd "${test%/*}" && python3 -m unittest -b -q "$(basename "$test" .py)") > "$logs/$name.log" 2>&1 &

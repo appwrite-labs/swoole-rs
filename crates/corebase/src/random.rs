@@ -2,7 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
 //! `swoole_random_string`: alphanumerics drawn one at a time with `swoole_rand(0, 61)`.
 use crate::host::swoole_rand;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_int};
 use std::slice;
 
 /// Upstream's `characters` table.
@@ -43,18 +43,13 @@ pub unsafe extern "C" fn swoole_random_string(buf: *mut c_char, len: usize) {
 
 /// `swoole_random_bytes`: fills `buf` from the system CSPRNG, retrying
 /// interrupted calls; returns how many bytes it filled.
-/// # Safety
-/// `buf` points to `size` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_random_bytes(buf: *mut c_void, size: usize) -> usize {
+pub fn random_bytes(buf: &mut [u8]) -> usize {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let mut done = 0;
-        while done < size {
-            // SAFETY: `done < size`, so the range stays inside the caller's buffer.
-            let at = unsafe { buf.byte_add(done) };
-            // SAFETY: `at` has `size - done` writable bytes.
-            let n = unsafe { libc::getrandom(at, size - done, 0) };
+        while let Some(rest) = buf.get_mut(done..).filter(|rest| !rest.is_empty()) {
+            // SAFETY: `rest` is writable for its length.
+            let n = unsafe { libc::getrandom(rest.as_mut_ptr().cast(), rest.len(), 0) };
             if n == -1 {
                 if matches!(
                     std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
@@ -70,9 +65,9 @@ pub unsafe extern "C" fn swr_v1_os_random_bytes(buf: *mut c_void, size: usize) -
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
-        // SAFETY: `buf` has `size` writable bytes.
-        unsafe { libc::arc4random_buf(buf, size) };
-        size
+        // SAFETY: `buf` is writable for its length.
+        unsafe { libc::arc4random_buf(buf.as_mut_ptr().cast(), buf.len()) };
+        buf.len()
     }
 }
 
@@ -83,17 +78,9 @@ mod tests {
     #[test]
     fn random_bytes_fill_the_buffer() {
         let mut buf = [0_u8; 64];
-        assert_eq!(
-            unsafe { swr_v1_os_random_bytes(buf.as_mut_ptr().cast(), 64) },
-            64,
-            "all requested bytes"
-        );
+        assert_eq!(random_bytes(&mut buf), 64, "all requested bytes");
         assert!(buf.iter().any(|&b| b != 0), "not left zeroed");
-        assert_eq!(
-            unsafe { swr_v1_os_random_bytes(buf.as_mut_ptr().cast(), 0) },
-            0,
-            "empty request"
-        );
+        assert_eq!(random_bytes(&mut []), 0, "empty request");
     }
 
     /// Upstream's `characters` table, spelled out independently of `CHARACTERS`.

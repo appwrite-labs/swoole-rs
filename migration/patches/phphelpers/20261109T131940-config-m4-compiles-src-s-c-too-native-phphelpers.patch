@@ -1,9 +1,0 @@
-diff --git a/config.m4 b/config.m4
-index 15aacc0..9c31d8e 100644
---- a/config.m4
-+++ b/config.m4
-@@ -1346,3 +1346,3 @@ EOF
-     ext_src_files=$(cd $swoole_source_dir && find ext-src/ -name *.cc)
--    lib_src_files=$(cd $swoole_source_dir && find src/ -name *.cc)
-+    lib_src_files=$(cd $swoole_source_dir && find src/ -name "*.cc" -o -name "*.c")
- 

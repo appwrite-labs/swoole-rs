@@ -6,7 +6,7 @@
 # One crate or one named Rust test; no extension build.
 python3 tools/dev.py edit --test rollback
 
-# Incremental build, ABI/native/PHP gates and the module's PHPT selection.
+# Cargo build, ABI/native/PHP gates and the module's PHPT selection.
 python3 tools/dev.py candidate
 
 # Reproduce one registered PHPT (candidate only).
@@ -24,16 +24,15 @@ python3 tools/dev.py integrate --all-modules   # every module's gates; used by C
 
 - `--plan` prints the commands without running them.
 - `--test` is edit-only; `--case` is candidate-only.
-- Candidate runs only the hybrid; `--compare` also runs upstream. The WebSocket
+- Candidate runs only the Cargo build; `--compare` also runs upstream. The WebSocket
   differential always runs upstream. Candidate gates the chosen modules'
   `phpt_families` (`migration/modules.json`); `--changed-since REF` chooses the
   modules a diff touches.
 - `--benchmark` runs benchmarks after the correctness phases (and implies
   `--compare`); skipped if any phase failed. Stop other builds first.
 - `--php-extension NAME` passes dynamic PHP modules through to runners.
-- `--ccache PATH`, `--fix-halfclose`, `--match-child-php` and the optional
-  switches from [hybrid build](hybrid-build.md) are forwarded to the builder or
-  runners.
+- `--fix-halfclose`, `--match-child-php` and the build profile switches
+  (`--stdext`, `--php-sockets`) are forwarded to the builder or runners.
 
 Edit and candidate stop at the first failure; integrate runs every phase and
 fails if any failed. Each run writes logs, exit codes, phase durations,
@@ -41,38 +40,20 @@ hypothesis and expectation to `target/reports/dev/<UTC-time>-<id>/loop.json`.
 For integration subsets, include the phases that produce reports consumed later
 in the same run; the planner refuses missing prerequisites.
 
-## Incremental builds
+## Builds
 
-```sh
-python3 tools/build_hybrid.py --dev
-```
-
-Dev builds live under `target/hybrid/dev/` with aliases like
-`target/hybrid/dev-rust/` and never replace the immutable
-aliases. `build-manifest.json` marks them `development`; `last-run.json` records
-phase timings and whether make/relink/configure ran.
-
-- Unchanged inputs skip make. A changed Rust archive forces a relink.
-- Patched sources are staged from pinned Git objects; only changed files are
-  copied, so unchanged mtimes survive.
-- Changes to central `native/include/` headers, configure inputs, feature flags,
-  toolchain or build-system patches select a new dev tree. Module-local headers
-  are copied in and make rebuilds their consumers.
-- One writer at a time: a concurrent builder fails instead of waiting.
-
-Use immutable (non-`--dev`) builds for comparisons that must be reproduced.
-
-Patches apply in file-name order, and `tools/patches.py export` names a new one
-`<UTC timestamp>-<subject>.patch`, so adding a patch never conflicts with
-another branch; see [hybrid build](hybrid-build.md#editing-patches).
+The `cargo-build` phase runs `tools/build_ext.py --native`: Cargo builds
+`target/ext/swoole.so`, the engine every PHP gate loads, and lays out
+`target/ext/sdk/` (the Zend-free `libswoole_rs_ffi.a`, crates/ext's native C and
+C++ archives and the ABI headers) for the native gates, which link fixtures
+outside PHP. Cargo rebuilds only what changed. Integrate's upstream control is
+the unpatched pin built by `tools/build_upstream.py` (`reference-build`).
 
 ## Caches
 
-Plain ccache and cargo, with their usual settings (`CCACHE_DIR`, `CCACHE_MAXSIZE`,
-`CARGO_HOME`). The extension builders and C/C++ test harnesses compile through
-`ccache` when it is installed; `--no-ccache` disables it for a build.
-`native/phphelpers/host.c` always misses because it embeds `__DATE__`/`__TIME__`. CI keeps
-the cache in `.ccache`.
+Cargo caches the extension build. `tools/build_upstream.py` and the C/C++ test
+harnesses compile through `ccache` when it is installed on the host (the dev image
+has none); `build_upstream.py --no-ccache` disables it for the oracle.
 
 ## PHPT runner
 
@@ -101,9 +82,10 @@ docker build -t swoole-rs-dev .devcontainer
 docker run --rm -it -v "$PWD:/work" -w /work swoole-rs-dev bash
 ```
 
-CI jobs run on the runner label in the repository variable `RUNNER`, or
-`ubuntu-24.04` when it is unset. This repo is public, so a self-hosted label must
-not run fork pull requests.
+CI jobs run on gcrunner, appwrite-labs' ephemeral GCE runners: each job names a
+preset from `.github/gcrunner.yml` (`runs-on: gcrunner=${{ github.run_id }}/runner=standard`).
+This repo is public, so a fork's pull request runs only once a maintainer approves it
+(the repository's `all_external_contributors` approval policy); read the diff first.
 
 Tooling tests: `tests/dev/run.sh` (parallel; prints only failing files), or `python3 -m unittest discover -b -s tests/dev` (`-b` hides output from passing tests).
 
@@ -147,7 +129,7 @@ GitHub work. Nothing is installed by hand. In a fresh environment:
 
 ```sh
 export GH_TOKEN=<token with repo scope>   # the cloud host usually injects this
-git clone https://github.com/loks0n/swoole-rs && cd swoole-rs
+git clone https://github.com/appwrite-labs/swoole-rs && cd swoole-rs
 git config core.hooksPath .githooks        # pre-commit/pre-push checks
 ```
 

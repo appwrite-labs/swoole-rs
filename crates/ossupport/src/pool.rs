@@ -184,7 +184,9 @@ impl Pool {
         }
     }
 
-    fn dispatch(&'static self, event: usize) {
+    /// Queues an event token, grows the pool if needed and wakes one worker.
+    /// The token stays valid until a worker hands it to `execute`.
+    pub fn dispatch(&'static self, event: usize) {
         {
             let mut state = lock(&self.state);
             state.queue.push_back((event, Instant::now()));
@@ -234,7 +236,7 @@ impl Pool {
     }
 
     /// Joins a retired worker; false if it is not (or no longer) registered.
-    fn join(&self, key: usize) -> bool {
+    pub fn join(&self, key: usize) -> bool {
         let thread = lock(&self.threads).remove(&key);
         thread.is_some_and(|thread| thread.join().is_ok())
     }
@@ -246,123 +248,71 @@ static SHARED: OnceLock<Pool> = OnceLock::new();
 /// lock is upstream's `async_thread_lock`.
 static REFS: Mutex<usize> = Mutex::new(0);
 
-/// Takes a reference to the shared pool, creating it with this configuration and
-/// these hooks on first use and starting it if it is not running.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_pool_acquire(
-    hooks: PoolHooks,
-    cpu: usize,
-    core: usize,
-    workers: usize,
-    wait: f64,
-    idle: f64,
-) -> *const Pool {
-    let mut refs = lock(&REFS);
-    let pool = SHARED.get_or_init(|| Pool::new(config(cpu, core, workers, wait, idle), hooks));
-    if !lock(&pool.state).running {
-        pool.start();
-    }
-    *refs += 1;
-    pool
-}
-
-/// Drops a reference; the last one shuts the pool down and joins every worker.
-/// # Safety
-/// `pool` came from `swr_v1_os_pool_acquire` and is released exactly once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_pool_release(pool: *const Pool) {
-    let mut refs = lock(&REFS);
-    *refs = refs.saturating_sub(1);
-    if *refs == 0 {
-        // SAFETY: null or the shared pool per the contract.
-        if let Some(pool) = unsafe { borrow(pool) } {
-            pool.shutdown();
+impl Pool {
+    /// Takes a reference to the shared pool, creating it with this configuration
+    /// and these hooks on first use and starting it if it is not running.
+    pub fn acquire(
+        hooks: PoolHooks,
+        cpu: usize,
+        core: usize,
+        workers: usize,
+        wait: f64,
+        idle: f64,
+    ) -> &'static Self {
+        let mut refs = lock(&REFS);
+        let pool = SHARED.get_or_init(|| Self::new(config(cpu, core, workers, wait, idle), hooks));
+        if !lock(&pool.state).running {
+            pool.start();
         }
+        *refs += 1;
+        pool
+    }
+
+    /// Drops a reference `acquire` took; the last one shuts the pool down and
+    /// joins every worker.
+    pub fn release(&self) {
+        let mut refs = lock(&REFS);
+        *refs = refs.saturating_sub(1);
+        if *refs == 0 {
+            self.shutdown();
+        }
+    }
+
+    /// The next task id; ids restart at zero whenever the pool starts.
+    pub fn task_id(&self) -> usize {
+        self.task_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn worker_num(&self) -> usize {
+        lock(&self.threads).len()
+    }
+
+    #[must_use]
+    pub fn queue_size(&self) -> usize {
+        lock(&self.state).queue.len()
+    }
+
+    pub fn notify_one(&self) {
+        self.ready.notify_one();
     }
 }
 
 /// `AsyncThreads::callback`: reads up to `SW_AIO_EVENT_NUM` (128) completed event
 /// tokens from the pipe and hands each to `complete`. Returns how many, or -1 if
 /// the read failed (errno intact for native's warning).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_pool_complete(
-    fd: c_int,
-    complete: extern "C" fn(event: usize),
-) -> isize {
-    let mut events = [0_usize; 128];
-    // SAFETY: `events` is writable for its whole size.
-    let n = unsafe { libc::read(fd, events.as_mut_ptr().cast(), size_of_val(&events)) };
+pub fn complete(fd: c_int, mut complete: impl FnMut(usize)) -> isize {
+    const TOKEN: usize = size_of::<usize>();
+    let mut events = [0_u8; 128 * TOKEN];
+    let n = swoole_rs_corebase::sys::read(fd, &mut events);
     if n < 0 {
         return -1;
     }
-    let count = n.unsigned_abs() / size_of::<usize>();
-    for &event in events.iter().take(count) {
-        complete(event);
+    let count = n.unsigned_abs() / TOKEN;
+    for token in events.as_chunks::<TOKEN>().0.iter().take(count) {
+        complete(usize::from_ne_bytes(*token));
     }
     count.cast_signed()
-}
-
-/// # Safety
-/// `pool` is null or a pointer `swr_v1_os_pool_acquire` returned.
-unsafe fn borrow(pool: *const Pool) -> Option<&'static Pool> {
-    // SAFETY: null or the address of `SHARED`'s value, which is never dropped.
-    unsafe { pool.as_ref() }
-}
-
-/// The next task id; ids restart at zero whenever the pool starts.
-/// # Safety
-/// `pool` is an acquired, unreleased reference.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_pool_task_id(pool: *const Pool) -> usize {
-    // SAFETY: an acquired, unreleased reference per the contract.
-    unsafe { borrow(pool) }.map_or(0, |pool| pool.task_id.fetch_add(1, Ordering::Relaxed))
-}
-
-/// Queues an event token, grows the pool if needed and wakes one worker.
-/// # Safety
-/// `pool` is an acquired, unreleased reference; `event` stays valid until a
-/// worker hands it to `execute`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_pool_dispatch(pool: *const Pool, event: usize) {
-    // SAFETY: an acquired, unreleased reference per the contract.
-    if let Some(pool) = unsafe { borrow(pool) } {
-        pool.dispatch(event);
-    }
-}
-
-/// Joins idle worker `key` after its retirement notice reached the main thread.
-/// # Safety
-/// `pool` is an acquired, unreleased reference.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_pool_join(pool: *const Pool, key: usize) -> bool {
-    // SAFETY: an acquired, unreleased reference per the contract.
-    unsafe { borrow(pool) }.is_some_and(|pool| pool.join(key))
-}
-
-/// # Safety
-/// `pool` is null or an acquired, unreleased reference.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_pool_worker_num(pool: *const Pool) -> usize {
-    // SAFETY: null or an acquired, unreleased reference per the contract.
-    unsafe { borrow(pool) }.map_or(0, |pool| lock(&pool.threads).len())
-}
-
-/// # Safety
-/// `pool` is null or an acquired, unreleased reference.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_pool_queue_size(pool: *const Pool) -> usize {
-    // SAFETY: null or an acquired, unreleased reference per the contract.
-    unsafe { borrow(pool) }.map_or(0, |pool| lock(&pool.state).queue.len())
-}
-
-/// # Safety
-/// `pool` is null or an acquired, unreleased reference.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_pool_notify_one(pool: *const Pool) {
-    // SAFETY: null or an acquired, unreleased reference per the contract.
-    if let Some(pool) = unsafe { borrow(pool) } {
-        pool.ready.notify_one();
-    }
 }
 
 #[cfg(test)]
@@ -471,73 +421,53 @@ mod tests {
     #[test]
     fn grows_to_the_cap_retires_idle_workers_and_restarts() {
         // One core worker, at most four; idle 0.5s truncates to an immediate retirement.
-        let pool = swr_v1_os_pool_acquire(HOOKS, 2, 1, 4, 0.0, 0.5);
-        unsafe {
-            assert_eq!(
-                swr_v1_os_pool_worker_num(pool),
-                1,
-                "core workers start eagerly"
-            );
-            assert_eq!(swr_v1_os_pool_task_id(pool), 0, "task ids start at zero");
-            for event in 0..40 {
-                swr_v1_os_pool_dispatch(pool, event);
-                PEAK.fetch_max(swr_v1_os_pool_worker_num(pool), Ordering::SeqCst);
-            }
-            assert_eq!(
-                PEAK.load(Ordering::SeqCst),
-                4,
-                "a backlog grows the pool to its cap"
-            );
-            until(|| EXECUTED.load(Ordering::SeqCst) == 40);
-            // The main thread joins each worker whose retirement notice arrives.
-            until(|| {
-                for key in std::mem::take(&mut *lock(&RETIRED)) {
-                    assert!(
-                        swr_v1_os_pool_join(pool, key),
-                        "a retired worker is registered"
-                    );
-                }
-                swr_v1_os_pool_worker_num(pool) == 1
-            });
-            assert!(
-                !swr_v1_os_pool_join(pool, usize::MAX),
-                "unknown workers are reported"
-            );
-            assert_eq!(swr_v1_os_pool_queue_size(pool), 0, "the queue drains");
-
-            // A second reference keeps the pool alive; the last one shuts it down.
-            let second = swr_v1_os_pool_acquire(HOOKS, 0, 0, 0, 0.0, 0.0);
-            swr_v1_os_pool_release(pool);
-            assert_eq!(
-                swr_v1_os_pool_worker_num(second),
-                1,
-                "another reference keeps it running"
-            );
-            swr_v1_os_pool_release(second);
-            assert!(
-                SHARED
-                    .get()
-                    .is_some_and(|pool| lock(&pool.threads).is_empty()),
-                "shutdown joins every worker"
-            );
-
-            // Reacquiring restarts the same pool, with its original configuration.
-            SLOW.store(false, Ordering::SeqCst);
-            let pool = swr_v1_os_pool_acquire(HOOKS, 0, 0, 0, 0.0, 0.0);
-            assert_eq!(swr_v1_os_pool_task_id(pool), 0, "task ids restart");
-            assert_eq!(
-                swr_v1_os_pool_worker_num(pool),
-                1,
-                "the original core size is kept"
-            );
-            swr_v1_os_pool_dispatch(pool, 99);
-            until(|| EXECUTED.load(Ordering::SeqCst) == 41);
-            swr_v1_os_pool_release(pool);
+        let pool = Pool::acquire(HOOKS, 2, 1, 4, 0.0, 0.5);
+        assert_eq!(pool.worker_num(), 1, "core workers start eagerly");
+        assert_eq!(pool.task_id(), 0, "task ids start at zero");
+        for event in 0..40 {
+            pool.dispatch(event);
+            PEAK.fetch_max(pool.worker_num(), Ordering::SeqCst);
         }
+        assert_eq!(
+            PEAK.load(Ordering::SeqCst),
+            4,
+            "a backlog grows the pool to its cap"
+        );
+        until(|| EXECUTED.load(Ordering::SeqCst) == 40);
+        // The main thread joins each worker whose retirement notice arrives.
+        until(|| {
+            for key in std::mem::take(&mut *lock(&RETIRED)) {
+                assert!(pool.join(key), "a retired worker is registered");
+            }
+            pool.worker_num() == 1
+        });
+        assert!(!pool.join(usize::MAX), "unknown workers are reported");
+        assert_eq!(pool.queue_size(), 0, "the queue drains");
+
+        // A second reference keeps the pool alive; the last one shuts it down.
+        let second = Pool::acquire(HOOKS, 0, 0, 0, 0.0, 0.0);
+        pool.release();
+        assert_eq!(second.worker_num(), 1, "another reference keeps it running");
+        second.release();
+        assert!(
+            SHARED
+                .get()
+                .is_some_and(|pool| lock(&pool.threads).is_empty()),
+            "shutdown joins every worker"
+        );
+
+        // Reacquiring restarts the same pool, with its original configuration.
+        SLOW.store(false, Ordering::SeqCst);
+        let pool = Pool::acquire(HOOKS, 0, 0, 0, 0.0, 0.0);
+        assert_eq!(pool.task_id(), 0, "task ids restart");
+        assert_eq!(pool.worker_num(), 1, "the original core size is kept");
+        pool.dispatch(99);
+        until(|| EXECUTED.load(Ordering::SeqCst) == 41);
+        pool.release();
     }
 
     static COMPLETED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-    extern "C" fn complete(event: usize) {
+    fn complete(event: usize) {
         lock(&COMPLETED).push(event);
     }
 
@@ -556,28 +486,102 @@ mod tests {
             .write_all(&bytes)
             .unwrap_or_else(|e| unreachable!("{e}"));
         assert_eq!(
-            swr_v1_os_pool_complete(reader.as_raw_fd(), complete),
+            super::complete(reader.as_raw_fd(), complete),
             2,
             "two tokens"
         );
         assert_eq!(*lock(&COMPLETED), [7, 9], "in pipe order");
-        assert_eq!(swr_v1_os_pool_complete(-1, complete), -1, "read failure");
+        assert_eq!(super::complete(-1, complete), -1, "read failure");
     }
 
+    const NSIG: c_int = if cfg!(target_os = "linux") { 65 } else { 32 };
+    static UNBLOCKED: AtomicBool = AtomicBool::new(false);
+    static OBSERVED: AtomicUsize = AtomicUsize::new(0);
+    static RAN: AtomicUsize = AtomicUsize::new(0);
+
+    fn mask() -> libc::sigset_t {
+        let mut mask = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &raw mut mask) },
+            0
+        );
+        mask
+    }
+    /// The worker's inherited mask, before `swoole_thread_init` (native's `thread_init`)
+    /// blocks signals itself.
+    extern "C" fn observe() {
+        let mask = mask();
+        for signo in [libc::SIGCHLD, libc::SIGUSR1, libc::SIGTERM] {
+            if unsafe { libc::sigismember(&raw const mask, signo) } != 1 {
+                UNBLOCKED.store(true, Ordering::SeqCst);
+            }
+        }
+        OBSERVED.fetch_add(1, Ordering::SeqCst);
+    }
+    extern "C" fn ran(_event: usize) {
+        RAN.fetch_add(1, Ordering::SeqCst);
+    }
+    extern "C" fn kept(_key: usize) {}
+
+    /// core-tests/src/os/async.cpp `TEST(async, thread_starts_with_signals_blocked)`, each
+    /// case in a new thread rather than a forked child (the mask and the flag are per
+    /// thread), over a pool of its own, as the child's process had. The `thread_init` hook
+    /// observes the worker's mask where upstream's `std_allocator.malloc` hook did.
     #[test]
-    fn null_references_are_inert() {
-        unsafe {
-            assert_eq!(
-                swr_v1_os_pool_worker_num(std::ptr::null()),
-                0,
-                "no pool, no workers"
-            );
-            assert_eq!(
-                swr_v1_os_pool_queue_size(std::ptr::null()),
-                0,
-                "no pool, no queue"
-            );
-            swr_v1_os_pool_notify_one(std::ptr::null());
+    fn thread_starts_with_signals_blocked() {
+        for already_blocked in [false, true] {
+            std::thread::spawn(move || unsafe {
+                let mut expected = std::mem::zeroed();
+                libc::sigemptyset(&raw mut expected);
+                libc::sigaddset(&raw mut expected, libc::SIGUSR1);
+                assert_eq!(
+                    libc::pthread_sigmask(
+                        libc::SIG_SETMASK,
+                        &raw const expected,
+                        std::ptr::null_mut()
+                    ),
+                    0
+                );
+                if already_blocked {
+                    swoole_rs_corebase::signal_block_all();
+                }
+                let expected = mask();
+                UNBLOCKED.store(false, Ordering::SeqCst);
+                OBSERVED.store(0, Ordering::SeqCst);
+                let hooks = PoolHooks {
+                    thread_init: observe,
+                    retire: kept,
+                    execute: ran,
+                    ..HOOKS
+                };
+                // aio_core_worker_num = 1, aio_worker_num = 2.
+                let pool: &'static Pool =
+                    Box::leak(Box::new(Pool::new(config(1, 1, 2, 0.0, 0.0), hooks)));
+                let before = RAN.load(Ordering::SeqCst);
+                pool.start();
+                pool.dispatch(0);
+                until(|| RAN.load(Ordering::SeqCst) > before);
+                pool.shutdown();
+
+                let context = format!("already_blocked={already_blocked}");
+                assert!(!UNBLOCKED.load(Ordering::SeqCst), "{context}");
+                assert!(OBSERVED.load(Ordering::SeqCst) > 0, "{context}");
+                assert_eq!(
+                    swoole_rs_corebase::signal_blocking_all(),
+                    already_blocked,
+                    "{context}"
+                );
+                let actual = mask();
+                for signo in 1..NSIG {
+                    assert_eq!(
+                        libc::sigismember(&raw const expected, signo),
+                        libc::sigismember(&raw const actual, signo),
+                        "{context}"
+                    );
+                }
+            })
+            .join()
+            .unwrap();
         }
     }
 }

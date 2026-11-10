@@ -1,8 +1,10 @@
 # Packet protocols and proxy codecs
 
 `crates/protocols` implements MQTT framing, SOCKS5 wire/state/configuration
-policy, RESP command/receive/reply policy and MessageBus chunking/fairness/
-membership. The C contract is `native/protocols/swoole_rs_protocols.h`.
+policy and RESP command/receive/reply policy over borrowed slices, and forbids
+`unsafe`. `crates/protocols-ffi` is the C contract over it
+(`native/protocols/swoole_rs_protocols.h`) and the upstream-symbol `mqtt` and
+`Socks5Proxy` entries. `crates/bus` is MessageBus chunking/fairness/membership.
 
 ## Boundaries and compatibility
 
@@ -37,7 +39,7 @@ callback that can bail out runs beneath a Rust frame.
   wins over the fairness threshold. The read returns to native code to allocate a
   packet (the allocator may be Zend's, which can bail out) and to log; it calls
   the packet allocator's `free`, and the write calls native `send`, neither of
-  which bails out. `cargo test -p swoole-rs-protocols` round-trips packets over
+  which bails out. `cargo test -p swoole-rs-bus` round-trips packets over
   real socketpairs, upstream's `message_bus` TESTs among them (see below).
 
 Undefined legacy overreads/overflows are not replayed: empty MQTT asks for more,
@@ -49,8 +51,8 @@ SET/MAP is excluded because the original throws then dereferences invalid memory
 ## Rust and native differential
 
 ```sh
-cargo test --manifest-path crates/protocols/Cargo.toml --target-dir target/protocols
-cargo clippy --manifest-path crates/protocols/Cargo.toml --all-targets -- -D warnings
+cargo test -p swoole-rs-protocols -p swoole-rs-protocols-ffi -p swoole-rs-bus
+cargo clippy -p swoole-rs-protocols -p swoole-rs-protocols-ffi -p swoole-rs-bus --all-targets -- -D warnings
 python3 tests/modules/protocols/native.py --source /pinned/reference \
   --archive /actual/prefix/lib/libswoole_rs_ffi.a --sanitize
 ```
@@ -108,15 +110,15 @@ expected values:
 | --- | --- |
 | `redis.get` | `redis.get` in `server.rs` |
 | `redis.server` | `redis.server` in `server.rs` |
-| `redis.format` | `format_empty_status_and_error` in `crates/protocols/src/redis.rs` |
-| `redis.parse` | `parse_integer_reply` in `crates/protocols/src/redis.rs` |
+| `redis.format` | `format_empty_status_and_error` in `crates/protocols-ffi/src/redis.rs` |
+| `redis.parse` | `parse_integer_reply` in `crates/protocols-ffi/src/redis.rs` |
 | `redis.recv_packet_with_partially_filled_buffer` | `recv_packet_with_partially_filled_buffer` in `crates/ports/src/resp_recv.rs` |
-| `message_bus.read` | `message_bus_read` in `crates/protocols/src/bus.rs` |
-| `message_bus.read_with_buffer` | `message_bus_read_with_buffer` in `crates/protocols/src/bus.rs` (Linux) |
+| `message_bus.read` | `message_bus_read` in `crates/bus/src/lib.rs` |
+| `message_bus.read_with_buffer` | `message_bus_read_with_buffer` in `crates/bus/src/lib.rs` (Linux) |
 | `mqtt.echo` | `mqtt.echo` in `server.rs` |
 
 `server.rs` is built into the http server case binary (`tests/modules/http/server`,
-the merge tier's `http-server-rust` phase), whose `fixture.cc` builds the redis and
-mqtt Servers. That phase excludes `redis.get`, which needs a Redis server on
+the merge tier's `http-server-rust` phase), whose `src/http1/case.rs` builds the
+redis and mqtt Servers. That phase excludes `redis.get`, which needs a Redis server on
 127.0.0.1:6379, and `mqtt.echo`, which needs Node with the mqtt and pino packages
 (`core-tests/js/mqtt.js`).

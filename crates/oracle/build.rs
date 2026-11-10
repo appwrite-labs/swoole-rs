@@ -1,70 +1,16 @@
-// upstream/ holds unmodified files from Swoole v6.2.5 (76c657d8); see src/lib.rs.
+// upstream/ holds unmodified files from Swoole v6.2.5 (76c657d8); see src/lib.rs. candidate/
+// holds four of them as the hybrid shipped them before Rust replaced each file outright:
+// their bodies call Rust, so each oracle runs Rust against upstream through the same C++.
 #![expect(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing,
     reason = "a build script reports failure by panicking"
 )]
 use std::{env, fs, path::PathBuf};
 
 fn out(name: &str) -> PathBuf {
     PathBuf::from(env::var("OUT_DIR").unwrap()).join(name)
-}
-
-/// The part of a multi-file overlay patch that changes `path`.
-fn section<'a>(patch: &'a str, path: &str) -> &'a str {
-    let start = patch.find(&format!("\n+++ b/{path}\n")).expect(path) + 1;
-    let end = patch[start..]
-        .find("\ndiff --git ")
-        .map_or(patch.len(), |end| start + end + 1);
-    &patch[start..end]
-}
-
-/// An overlay patch applied to the text of its one vendored original, hunk by
-/// hunk, checking every context and removed line.
-fn apply(original: &str, patch: &str) -> String {
-    assert_eq!(
-        patch
-            .lines()
-            .filter(|line| line.starts_with("+++ "))
-            .count(),
-        1,
-        "one file per patch"
-    );
-    let lines: Vec<&str> = original.lines().collect();
-    let (mut output, mut cursor) = (Vec::new(), 0);
-    let mut hunks = patch
-        .lines()
-        .skip_while(|line| !line.starts_with("@@ "))
-        .peekable();
-    while let Some(header) = hunks.next() {
-        let old = header.split(' ').nth(1).unwrap().trim_start_matches('-');
-        let (start, length) = old.split_once(',').unwrap_or((old, "1"));
-        let (start, length): (usize, usize) = (start.parse().unwrap(), length.parse().unwrap());
-        let at = if length == 0 { start } else { start - 1 };
-        let mut body = Vec::new();
-        while let Some(line) = hunks.next_if(|line| !line.starts_with("@@ ")) {
-            if !line.starts_with('\\') {
-                body.push(if line.is_empty() { " " } else { line });
-            }
-        }
-        let old_side: Vec<&str> = body
-            .iter()
-            .filter(|l| !l.starts_with('+'))
-            .map(|l| &l[1..])
-            .collect();
-        assert_eq!(
-            old_side,
-            lines[at..at + length],
-            "patch context matches original at {header}"
-        );
-        output.extend_from_slice(&lines[cursor..at]);
-        output.extend(body.iter().filter(|l| !l.starts_with('-')).map(|l| &l[1..]));
-        cursor = at + length;
-    }
-    output.extend_from_slice(&lines[cursor..]);
-    output.iter().flat_map(|line| [*line, "\n"]).collect()
 }
 
 /// The text of `text` from `start` up to (not including) `end`, unchanged.
@@ -160,46 +106,16 @@ fn http_frame() {
     fs::write(out("http_frame_enums.inc"), enums.concat()).unwrap();
 }
 
-/// `StaticHandler::parse_range` from the pinned `static_handler.cc` (upstream, for
-/// `shim/http_range.cc`) and, with the http static-ranges patch applied, the Rust
-/// static context's `parse_range` with `ensure_boundary` and `resume_range_header`
-/// (candidate, for `shim/http_range_context.cc`), copied unchanged.
+/// `StaticHandler::parse_range` from the pinned `static_handler.cc`, copied unchanged
+/// for `shim/http_range.cc`.
 fn http_range() {
-    let patch = "../../migration/patches/http/0002-static-ranges.patch";
-    println!("cargo:rerun-if-changed={patch}");
     let upstream = fs::read_to_string("upstream/src/server/static_handler.cc")
         .expect("vendored static_handler.cc");
-    let candidate = apply(
-        &upstream,
-        &fs::read_to_string(patch).expect("static-ranges patch"),
-    );
-    let engines = [
-        (
-            "upstream",
-            &upstream,
-            &["void StaticHandler::parse_range("][..],
-        ),
-        (
-            "candidate",
-            &candidate,
-            &[
-                "static int32_t resume_range_header(",
-                "uint32_t StaticHandler::ensure_boundary(",
-                "void StaticHandler::parse_range(",
-            ][..],
-        ),
-    ];
-    for (name, text, signatures) in engines {
-        let parts: Vec<String> = signatures
-            .iter()
-            .map(|signature| definition(text, signature))
-            .collect();
-        fs::write(
-            out(&format!("http_range_{name}.inc")),
-            parts.join("\n") + "\n",
-        )
-        .unwrap();
-    }
+    fs::write(
+        out("http_range_upstream.inc"),
+        definition(&upstream, "void StaticHandler::parse_range(") + "\n",
+    )
+    .unwrap();
 }
 
 /// `Server::select_static_handler` from the pinned `static_handler.cc` and
@@ -265,23 +181,12 @@ fn http_static_context() {
 }
 
 /// MQTT's length decoder and RESP's parse from the pinned mqtt.cc and redis.cc
-/// (upstream) and from them with the protocols overlay patch applied (candidate,
-/// calling Rust), copied unchanged for shim/protocols.cc, with redis's states.
+/// (upstream) and from candidate/'s (calling Rust), copied unchanged for
+/// shim/protocols.cc, with redis's states.
 fn protocols() {
-    let patch = "../../migration/patches/protocols/0001-rust-packet-protocols.patch";
-    println!("cargo:rerun-if-changed={patch}");
-    let patch = fs::read_to_string(patch).expect("protocols patch");
-    let mqtt = fs::read_to_string("upstream/src/protocol/mqtt.cc").expect("vendored mqtt.cc");
-    let redis = fs::read_to_string("upstream/src/protocol/redis.cc").expect("vendored redis.cc");
-    let sources = [
-        ("upstream", mqtt.clone(), redis.clone()),
-        (
-            "candidate",
-            apply(&mqtt, section(&patch, "src/protocol/mqtt.cc")),
-            apply(&redis, section(&patch, "src/protocol/redis.cc")),
-        ),
-    ];
-    for (name, mqtt, redis) in sources {
+    for name in ["upstream", "candidate"] {
+        let mqtt = fs::read_to_string(format!("{name}/src/protocol/mqtt.cc")).expect("mqtt.cc");
+        let redis = fs::read_to_string(format!("{name}/src/protocol/redis.cc")).expect("redis.cc");
         let mut parts = Vec::new();
         if mqtt.contains("#define SW_MQTT_RECV_LEN_AGAIN") {
             parts.push(slice(&mqtt, "#define SW_MQTT_RECV_LEN_AGAIN", "\n") + "\n");
@@ -473,18 +378,13 @@ fn cpp() -> cc::Build {
     build
 }
 
-/// The stream receive loops from the pinned base.cc (upstream) and from it with
-/// the framing overlay patch applied (candidate, the Rust receive with its
-/// native effects), with String's split and reduce from the pinned string.cc, copied
+/// The stream receive loops from the pinned base.cc (upstream) and candidate/'s
+/// (the Rust receive with its native effects), with String's split and reduce from the pinned string.cc, copied
 /// unchanged for `shim/framing_stream.cc`.
 fn framing_stream() {
-    let patch = "../../migration/patches/framing/0001-base.patch";
-    println!("cargo:rerun-if-changed={patch}");
     let upstream = fs::read_to_string("upstream/src/protocol/base.cc").expect("vendored base.cc");
-    let candidate = apply(
-        &upstream,
-        &fs::read_to_string(patch).expect("framing patch"),
-    );
+    let candidate =
+        fs::read_to_string("candidate/src/protocol/base.cc").expect("candidate base.cc");
     let methods = [
         "int Protocol::recv_split_by_eof(",
         "int Protocol::recv_with_length_protocol(",
@@ -515,18 +415,11 @@ fn framing_stream() {
 }
 
 /// `redis::recv_packet` and its `Request` from the pinned redis.cc (upstream) and
-/// from it with the protocols overlay patch applied (candidate, calling Rust),
-/// copied unchanged for `shim/resp_stream.cc`.
+/// from candidate/'s (calling Rust), copied unchanged for `shim/resp_stream.cc`.
 fn resp_stream() {
-    let patch = "../../migration/patches/protocols/0001-rust-packet-protocols.patch";
     let redis = fs::read_to_string("upstream/src/protocol/redis.cc").expect("vendored redis.cc");
-    let candidate = apply(
-        &redis,
-        section(
-            &fs::read_to_string(patch).expect("protocols patch"),
-            "src/protocol/redis.cc",
-        ),
-    );
+    let candidate =
+        fs::read_to_string("candidate/src/protocol/redis.cc").expect("candidate redis.cc");
     for (name, text) in [("upstream", &redis), ("candidate", &candidate)] {
         let request = if text.contains("struct Request {") {
             slice(text, "struct Request {", "\n};") + "\n};"
@@ -546,23 +439,12 @@ fn resp_stream() {
     }
 }
 
-/// socks5.cc as pinned (upstream) and with the protocols overlay patch applied
-/// (candidate, calling Rust), each with `swoole` renamed to its engine, compiled
-/// with `shim/socks5.cc` over the facade in `shim/socks5`.
+/// socks5.cc as pinned (upstream) and candidate/'s (calling Rust), each with
+/// `swoole` renamed to its engine, compiled with `shim/socks5.cc` over the facade
+/// in `shim/socks5`.
 fn socks5() {
-    let socks5 = fs::read_to_string("upstream/src/protocol/socks5.cc").expect("vendored socks5.cc");
-    let patch =
-        fs::read_to_string("../../migration/patches/protocols/0001-rust-packet-protocols.patch")
-            .expect("protocols patch");
-    fs::write(
-        out("socks5_candidate.cc"),
-        apply(&socks5, section(&patch, "src/protocol/socks5.cc")),
-    )
-    .unwrap();
-    for (engine, source) in [
-        ("upstream", PathBuf::from("upstream/src/protocol/socks5.cc")),
-        ("candidate", out("socks5_candidate.cc")),
-    ] {
+    for engine in ["upstream", "candidate"] {
+        let source = format!("{engine}/src/protocol/socks5.cc");
         cpp()
             // Its own namespace: other shims define different swoole classes per engine.
             .define("swoole", format!("socks5_{engine}").as_str())
@@ -578,6 +460,7 @@ fn socks5() {
 
 fn main() {
     println!("cargo:rerun-if-changed=upstream");
+    println!("cargo:rerun-if-changed=candidate");
     println!("cargo:rerun-if-changed=shim");
 
     // The original code: base64 under `oracle::`, crc32 renamed, so both can sit
@@ -619,11 +502,6 @@ fn main() {
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/http_range.cc")
         .compile("swoole_upstream_http_range");
-    cpp()
-        .include("../../native/http")
-        .include(env::var("OUT_DIR").unwrap())
-        .file("shim/http_range_context.cc")
-        .compile("swoole_candidate_http_range");
     cpp()
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/http_static_select.cc")
@@ -669,7 +547,6 @@ fn main() {
             )
             .flag_if_supported("-Wno-unused-parameter")
             .flag_if_supported("-Wno-unused-label")
-            .include("../../native/framing")
             .include(env::var("OUT_DIR").unwrap())
             .file("shim/framing_stream.cc")
             .compile(&format!("swoole_{engine}_framing_stream"));

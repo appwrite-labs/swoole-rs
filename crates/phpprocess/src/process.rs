@@ -12,19 +12,16 @@ use std::{
     ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
-use swoole_rs_ossupport::{
-    QueueRecord, swr_v1_os_msg_queue_free, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push,
-};
+use swoole_rs_ossupport::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Object, add_assoc_long, class_name, declare_property_null,
     each_value, handlers, message, object_of, register_long_constant, set_object,
     sys::{
         _zend_bailout, IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, swr_zend_emalloc,
-        swr_zend_is_true, swr_zend_module_loaded, swr_zend_object_addref, swr_zend_object_release,
-        swr_zend_string_alloc, swr_zend_string_free, zend_class_entry, zend_get_executed_filename,
-        zend_hash_str_find, zend_object, zend_object_handlers, zend_read_property, zend_string,
-        zval,
+        swr_zend_is_true, swr_zend_object_addref, swr_zend_object_release, swr_zend_string_alloc,
+        swr_zend_string_free, zend_class_entry, zend_get_executed_filename, zend_hash_str_find,
+        zend_object, zend_object_handlers, zend_read_property, zend_string, zval,
     },
     throw_constructed_twice, throw_error, throw_exception, type_of, unset_property_deny,
     update_property, update_property_long,
@@ -152,8 +149,11 @@ unsafe extern "C" fn free(object: *mut zend_object) {
     // SAFETY: Zend frees an object this class created.
     let process = unsafe { data(object) };
     if !process.worker.is_null() {
-        // SAFETY: the object owns its worker and the worker its queue.
-        unsafe { swr_v1_os_msg_queue_free(queue_of(process.worker)) };
+        let queue = queue_of(process.worker);
+        if !queue.is_null() {
+            // SAFETY: the object owns its worker and the worker its boxed queue.
+            drop(unsafe { Box::from_raw(queue) });
+        }
         // SAFETY: as above.
         unsafe { worker::free(process.worker) };
     }
@@ -235,8 +235,7 @@ pub unsafe extern "C" fn php_swoole_process_minit(module: c_int) {
     }
     // SAFETY: as above.
     unsafe { declare_property_null(entry(), c"callback", ZEND_ACC_PRIVATE) };
-    // SAFETY: MINIT; the module registry is populated.
-    if !unsafe { swr_zend_module_loaded(c"pcntl".as_ptr(), 5) } {
+    if !swoole_rs_zend::module_loaded(c"pcntl") {
         for (name, value) in signal_constants() {
             // SAFETY: MINIT of `module`.
             unsafe { register_long_constant(name, value, module) };
@@ -617,8 +616,8 @@ fn free_queue(call: &Call) {
     // SAFETY: the worker's live queue, if any.
     let freed = !queue.is_null() && unsafe { &mut *queue }.destroy();
     if freed {
-        // SAFETY: the worker's queue, freed once and forgotten.
-        unsafe { swr_v1_os_msg_queue_free(queue) };
+        // SAFETY: the worker's boxed queue, freed once and forgotten.
+        drop(unsafe { Box::from_raw(queue) });
         worker::record(worker).set_queue(ptr::null_mut());
     }
     call.set_bool(freed);

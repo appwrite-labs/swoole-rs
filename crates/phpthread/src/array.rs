@@ -9,14 +9,13 @@ use std::{
     sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 use swoole_rs_zend::{
-    bailout,
-    string::bytes,
+    Array as ZArray, Call, Key as ZKey, Value as ZValue, bailout,
     sys::{
-        IS_DOUBLE, IS_LONG, IS_NULL, swr_zend_array_init, swr_zend_hash_foreach_kv,
-        swr_zval_stringl, zend_array, zend_hash_index_add, zend_hash_next_index_insert_new,
-        zend_hash_str_add, zend_sort, zend_string, zend_ulong, zend_value, zval,
+        IS_DOUBLE, IS_LONG, IS_NULL, swr_zend_array_init, swr_zval_stringl, zend_hash_index_add,
+        zend_hash_next_index_insert_new, zend_hash_str_add, zend_sort, zend_ulong, zend_value,
+        zval,
     },
-    type_of, value,
+    value,
 };
 
 #[derive(Debug, Default)]
@@ -34,47 +33,30 @@ impl Array {
     }
 
     /// `ZendArray::from`: every element of a PHP array, references followed.
-    /// # Safety
-    /// In a request, with a live table.
-    pub(crate) unsafe fn from(source: *const zend_array) -> Arc<Self> {
-        unsafe extern "C" fn each(
-            key: *mut zend_string,
-            index: zend_ulong,
-            value: *mut zval,
-            context: *mut c_void,
-        ) {
-            // SAFETY: the table `from` passed, live for the loop.
-            let table = unsafe { &mut *context.cast::<Table<Item>>() };
+    pub(crate) fn from(source: &ZArray) -> Arc<Self> {
+        let mut table = Table::default();
+        source.for_each(|key, value| {
             if bailout::pending() {
                 return;
             }
-            let key = if key.is_null() {
+            let key = match key {
                 #[expect(clippy::cast_possible_wrap, reason = "Zend's int keys are zend_long")]
-                Key::Int(index as i64)
-            } else {
-                // SAFETY: a live key.
-                Key::Str(unsafe { bytes(key) }.into())
+                ZKey::Index(index) => Key::Int(index as i64),
+                ZKey::Name(name) => Key::Str(name.into()),
             };
-            // SAFETY: a live element.
-            let item = unsafe { Item::store(value) };
+            let item = Item::store(value);
             if !bailout::pending() {
                 table.add(key, item);
             }
-        }
-        let mut table = Table::default();
-        // SAFETY: per the caller; `table` outlives the loop.
-        unsafe { swr_zend_hash_foreach_kv(source, Some(each), (&raw mut table).cast()) };
+        });
         Arc::new(Self {
             table: RwLock::new(table),
         })
     }
 
     /// `append` (upstream's unlocked builder for thread arguments).
-    /// # Safety
-    /// In a request, with a live zval.
-    pub(crate) unsafe fn push(&self, value: *mut zval) {
-        // SAFETY: per the caller.
-        let item = unsafe { Item::store(value) };
+    pub(crate) fn push(&self, value: &ZValue) {
+        let item = Item::store(value);
         if bailout::pending() {
             return;
         }
@@ -110,11 +92,8 @@ impl Array {
     }
 
     /// `offsetSet`: the item is made before the lock is taken.
-    /// # Safety
-    /// In a request, with a live zval.
-    pub(crate) unsafe fn set(&self, key: Key, value: *mut zval) {
-        // SAFETY: per the caller.
-        let item = unsafe { Item::store(value) };
+    pub(crate) fn set(&self, key: Key, value: &ZValue) {
+        let item = Item::store(value);
         if bailout::pending() {
             return;
         }
@@ -122,15 +101,12 @@ impl Array {
     }
 
     /// `strkey_add` / `intkey_add`: false if the key exists.
-    /// # Safety
-    /// As `set`.
-    pub(crate) unsafe fn add(&self, key: Key, value: *mut zval) -> bool {
+    pub(crate) fn add(&self, key: Key, value: &ZValue) -> bool {
         let mut table = self.write();
         if table.contains(&key) {
             return false;
         }
-        // SAFETY: per the caller.
-        let item = unsafe { Item::store(value) };
+        let item = Item::store(value);
         if bailout::pending() {
             return false;
         }
@@ -138,15 +114,12 @@ impl Array {
     }
 
     /// `strkey_update` / `intkey_update`: false unless the key exists.
-    /// # Safety
-    /// As `set`.
-    pub(crate) unsafe fn update(&self, key: Key, value: *mut zval) -> bool {
+    pub(crate) fn update(&self, key: Key, value: &ZValue) -> bool {
         let mut table = self.write();
         if !table.contains(&key) {
             return false;
         }
-        // SAFETY: per the caller.
-        let item = unsafe { Item::store(value) };
+        let item = Item::store(value);
         if bailout::pending() {
             return false;
         }
@@ -154,25 +127,21 @@ impl Array {
         true
     }
 
-    /// `strkey_incr` / `intkey_incr`. An absent int key stores `delta` itself,
-    /// as upstream does; an absent string key stores the counter.
-    /// # Safety
-    /// In a request; `delta` is live and `out` the return slot.
-    pub(crate) unsafe fn incr(&self, key: Key, delta: *mut zval, out: *mut zval) {
+    /// `strkey_incr` / `intkey_incr`, the result in the return slot of `call`. An
+    /// absent int key stores `delta` itself, as upstream does; an absent string
+    /// key stores the counter.
+    pub(crate) fn incr(&self, key: Key, delta: &ZValue, call: &Call) {
         let mut table = self.write();
         if let Some(item) = table.get_mut(&key) {
-            // SAFETY: per the caller.
-            unsafe { item.add(delta, out) };
+            item.add(delta, call);
             return;
         }
-        // SAFETY: per the caller.
-        let counter = unsafe { Item::counter(delta, out) };
+        let counter = Item::counter(delta, call);
         if bailout::pending() {
             return;
         }
         let item = match key {
-            // SAFETY: per the caller.
-            Key::Int(_) => unsafe { Item::store(delta) },
+            Key::Int(_) => Item::store(delta),
             Key::Str(_) => counter,
         };
         if !bailout::pending() {
@@ -200,11 +169,8 @@ impl Array {
     }
 
     /// `index_offsetSet`: -1 or the count appends; past the count fails.
-    /// # Safety
-    /// As `set`.
-    pub(crate) unsafe fn index_set(&self, index: i64, value: *mut zval) -> bool {
-        // SAFETY: per the caller.
-        let item = unsafe { Item::store(value) };
+    pub(crate) fn index_set(&self, index: i64, value: &ZValue) -> bool {
+        let item = Item::store(value);
         if bailout::pending() {
             return false;
         }
@@ -224,28 +190,23 @@ impl Array {
     }
 
     /// `index_incr`: like `index_offsetSet`, adding to the existing value.
-    /// # Safety
-    /// As `incr`.
-    pub(crate) unsafe fn index_incr(&self, index: i64, delta: *mut zval, out: *mut zval) -> bool {
+    pub(crate) fn index_incr(&self, index: i64, delta: &ZValue, call: &Call) -> bool {
         let mut table = self.write();
         let count = length(&table);
         if index > count {
             return false;
         }
         if index == -1 || index == count {
-            // SAFETY: per the caller.
-            let item = unsafe { Item::counter(delta, out) };
+            let item = Item::counter(delta, call);
             if bailout::pending() {
                 return false;
             }
             table.push(item);
         } else if let Some(item) = table.get_mut(&Key::Int(index)) {
-            // SAFETY: per the caller.
-            unsafe { item.add(delta, out) };
+            item.add(delta, call);
         } else {
             // Upstream dereferences a missing item here (a negative index).
-            // SAFETY: per the caller.
-            let item = unsafe { Item::counter(delta, out) };
+            let item = Item::counter(delta, call);
             if bailout::pending() {
                 return false;
             }
@@ -329,13 +290,10 @@ impl Array {
 
     /// `find`: the key of the first item equal to `search`, or nothing.
     /// # Safety
-    /// `search` is live; `out` is the return slot.
-    pub(crate) unsafe fn find(&self, search: *const zval, out: *mut zval) {
+    /// `out` is the return slot.
+    pub(crate) unsafe fn find(&self, search: &ZValue, out: *mut zval) {
         let table = self.read();
-        // SAFETY: per the caller.
-        let found = table
-            .iter()
-            .find(|(_, item)| unsafe { item.equals(search) });
+        let found = table.iter().find(|(_, item)| item.equals(search));
         match found {
             Some((Key::Int(index), _)) => set(out, IS_LONG, zend_value { lval: *index }),
             // SAFETY: per the caller; Zend copies the bytes.
@@ -387,40 +345,24 @@ fn length(table: &Table<Item>) -> i64 {
 }
 
 fn zval_null() -> zval {
-    // SAFETY: a zval is plain data; all-zero bytes are IS_UNDEF.
-    let mut value: zval = unsafe { std::mem::zeroed() };
+    let mut value = swoole_rs_zend::UNDEF;
     set(&raw mut value, IS_NULL, zend_value { lval: 0 });
     value
 }
 
-/// `zval_get_long`, or -1 for null (`ZVAL_IS_NULL(zkey) ? -1 : swoole_rs_zend::value::get_long(zkey)`).
-/// # Safety
-/// `key` is a live zval.
-pub(crate) unsafe fn list_index(key: *const zval) -> i64 {
-    // SAFETY: per the caller.
-    if unsafe { type_of(key) } == IS_NULL {
-        -1
-    } else {
-        // SAFETY: per the caller.
-        unsafe { swoole_rs_zend::value::get_long(key) }
-    }
+/// `zval_get_long`, or -1 for null (`ZVAL_IS_NULL(zkey) ? -1 : zval_get_long(zkey)`).
+pub(crate) fn list_index(key: &ZValue) -> i64 {
+    if key.is_null() { -1 } else { key.long() }
 }
 
 /// `INIT_DECR_VALUE`: `delta` negated as a float, or as an int.
-/// # Safety
-/// `delta` is a live zval.
-pub(crate) unsafe fn negate(delta: *const zval) -> zval {
-    // SAFETY: per the caller; a copy of the zval's bits, as upstream's `*v`.
-    let mut value = unsafe { *delta };
-    // SAFETY: per the caller.
-    if unsafe { type_of(delta) } == IS_DOUBLE {
-        // SAFETY: a float zval.
-        let negated = -unsafe { value.value.dval };
-        set(&raw mut value, IS_DOUBLE, zend_value { dval: negated });
+pub(crate) fn negate(delta: &ZValue) -> zval {
+    let mut value = zval_null();
+    if let Some(double) = delta.as_double() {
+        set(&raw mut value, IS_DOUBLE, zend_value { dval: -double });
     } else {
-        // SAFETY: per the caller.
-        let negated = unsafe { swoole_rs_zend::value::get_long(delta) }.wrapping_neg();
-        set(&raw mut value, IS_LONG, zend_value { lval: negated });
+        let lval = delta.long().wrapping_neg();
+        set(&raw mut value, IS_LONG, zend_value { lval });
     }
     value
 }
@@ -435,9 +377,8 @@ impl Arguments {
     /// `ZendArray::from(array)`.
     /// # Errors
     /// A bailout PHP code raised while copying, pending for the caller to raise.
-    pub fn copy(array: &swoole_rs_zend::Array) -> Result<Self, bailout::Bailout> {
-        // SAFETY: a live table, in its request.
-        let shared = unsafe { Array::from(array.as_ptr()) };
+    pub fn copy(array: &ZArray) -> Result<Self, bailout::Bailout> {
+        let shared = Array::from(array);
         if bailout::pending() {
             return Err(bailout::Bailout);
         }

@@ -18,7 +18,7 @@ use swoole_rs_zend::{
         swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_coroutine_set_autoload,
         swr_zend_error_reporting, swr_zend_exit_status, swr_zval_try_addref, zend_ce_exception,
         zend_class_entry, zend_execute_data, zend_read_property, zend_string, zend_throw_exception,
-        zend_update_property, zend_update_property_long, zend_update_property_str, zval,
+        zend_update_property, zend_update_property_long, zend_update_property_str,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -113,7 +113,6 @@ unsafe extern "C" {
 /// `php_swoole_coroutine_minit`.
 /// # Safety
 /// Called once, at MINIT, after `Swoole\Exception` and SPL's classes.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_coroutine_minit(module_number: i32) {
     let exception = swoole_rs_phpswoole::exception_class();
     // SAFETY: SPL registers its classes before any extension's MINIT.
@@ -245,13 +244,11 @@ unsafe fn init_phpcoroutines_minit(
 }
 
 /// `php_swoole_coroutine_rinit`.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_coroutine_rinit() {
     context::init_main();
 }
 
 /// `php_swoole_coroutine_rshutdown`: a bailout in deactivation is raised.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_coroutine_rshutdown() {
     AUTOLOADING.with(|a| a.borrow_mut().clear());
     if runtime::shutdown() {
@@ -287,8 +284,7 @@ fn throw_exit(
 unsafe extern "C" fn exit_handler(execute_data: *mut zend_execute_data) -> c_int {
     let flags = exit_flags();
     if flags != 0 {
-        // SAFETY: all-zero is IS_UNDEF, then the status.
-        let mut status: zval = unsafe { mem::zeroed() };
+        let mut status = swoole_rs_zend::UNDEF;
         // SAFETY: the exit opcode's frame.
         unsafe { swr_zend_exit_status(execute_data, &raw mut status) };
         let object = throw_exit(c"swoole exit".as_ptr(), flags);
@@ -350,8 +346,8 @@ fn exit(call: &Call) {
 /// `SW_RETURN_PROPERTY(name)` of `$this`.
 fn property(call: &Call, name: &CStr) {
     let this = call.this();
-    // SAFETY: all-zero is IS_UNDEF, the read's scratch slot.
-    let mut scratch: zval = unsafe { mem::zeroed() };
+    // The read's scratch slot.
+    let mut scratch = swoole_rs_zend::UNDEF;
     // SAFETY: a live object.
     let scope = unsafe { (*this).ce };
     // SAFETY: as above, read in its own class's scope.
@@ -384,17 +380,13 @@ fn get_status(call: &Call) {
 unsafe extern "C" fn begin_silence(_: *mut zend_execute_data) -> c_int {
     // SAFETY: Zend's executor globals.
     let reporting = unsafe { swr_zend_error_reporting() };
-    // SAFETY: the running context.
-    let task = unsafe { context::at(context::current()) };
-    task.vm.in_silence = true;
-    task.vm.ori_error_reporting = reporting;
+    context::current().set_silence(Some(reporting));
     DISPATCH
 }
 
 /// `coro_end_silence_handler`.
 unsafe extern "C" fn end_silence(_: *mut zend_execute_data) -> c_int {
-    // SAFETY: the running context.
-    unsafe { context::at(context::current()) }.vm.in_silence = false;
+    context::current().set_silence(None);
     DISPATCH
 }
 

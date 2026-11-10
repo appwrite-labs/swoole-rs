@@ -8,6 +8,7 @@ try {
  Swoole\Coroutine\run(static function()use($mode,$proxy,$host,$port,$temp,&$summary):void{
   $client=new Swoole\Coroutine\Http\Client($proxy?'origin.example':'127.0.0.1',$proxy?8087:$port);$weak=WeakReference::create($client);$settings=['timeout'=>3,'keep_alive'=>false,'http_compression'=>false];
   if($proxy)$settings+=['http_proxy_host'=>'127.0.0.1','http_proxy_port'=>$port,'http_proxy_user'=>'user','http_proxy_password'=>'pass'];check($client->set($settings),'settings');check($client->setHeaders(['Host'=>$host,'X-Fixture'=>'rust-migration']),'headers');check($client->setBasicAuth('u','p')===null,'native void basic auth setter');check($client->setCookies(['token'=>'a b','binary'=>"A\0B"]),'cookies');
+  if($mode==='multipart-memory'){$client->uploadFiles=[PHP_INT_MAX=>[]];check($client->addData('x','full')===false,'no next upload index');$client->uploadFiles=null;}
   if($mode==='multipart-memory')check($client->addData("P\0AYLOAD",'upload','application/octet-stream','memory.bin'),'memory upload');
   if($mode==='multipart-file')check($client->addFile($temp,'upload','application/octet-stream','file.bin',1,9),'file upload');
   $body=match($mode){'raw'=>"body\0raw",'form'=>['bin'=>"A\0B",'space'=>'a b','zero'=>'0'],'multipart-memory','multipart-file'=>['tag'=>"value\0tail"],default=>null};

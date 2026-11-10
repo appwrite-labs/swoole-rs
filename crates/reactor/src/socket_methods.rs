@@ -251,23 +251,12 @@ pub unsafe fn socket_record_peek(
     unsafe { crate::socket_peek(fd, buffer, length, flags, tls) }
 }
 
-/// Native `Socket::what_event_want`, directly over the authoritative record.
-/// # Safety
-/// `socket` is the live zero-offset Rust socket record borrowed by its C++ facade.
+/// `Socket::what_event_want`: the event a pending TLS read or write waits for, else
+/// `default`.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7network6Socket15what_event_wantEi")
-)]
-pub unsafe extern "C" fn cpp_socket_what_event_want(
-    socket: *const SocketRecord,
-    default: c_int,
-) -> c_int {
-    // SAFETY: the caller lends a live record; copy before any external operation.
-    let ssl = unsafe { (*socket).ssl };
-    // SAFETY: the caller lends a live record.
-    let tls = unsafe { (*socket).tls };
-    if !ssl.is_null() && (tls.want_read != 0 || tls.want_write != 0) {
+pub fn what_event_want(socket: &SocketRecord, default: c_int) -> c_int {
+    let tls = socket.tls;
+    if !socket.ssl.is_null() && (tls.want_read != 0 || tls.want_write != 0) {
         use swoole_rs_corebase::constants::EventType::{SW_EVENT_READ, SW_EVENT_WRITE};
         if tls.want_write != 0 {
             SW_EVENT_WRITE as c_int
@@ -304,10 +293,7 @@ mod tests {
                         } else {
                             default
                         };
-                        assert_eq!(
-                            unsafe { cpp_socket_what_event_want(&raw const socket, default) },
-                            expected
-                        );
+                        assert_eq!(what_event_want(&socket, default), expected);
                     }
                 }
             }

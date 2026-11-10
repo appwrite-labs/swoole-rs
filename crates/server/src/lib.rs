@@ -93,6 +93,11 @@ pub use shared::{
 
 pub use config::ServerConfig;
 
+/// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says. Outside
+/// `thread_mode_ops`, which needs `upstream-symbols`, since crates/phpserver sets and reads it.
+pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 pub use state::{
     ServerState, swr_v1_server_startup_error, swr_v1_server_state_free, swr_v1_server_state_new,
     swr_v1_server_text_slot, swr_v1_server_upload_tmp_dir,
@@ -518,4 +523,15 @@ mod mode_tests {
         // SAFETY: created above and not used again.
         unsafe { crate::swr_v1_server_state_free(state) };
     }
+}
+
+/// `message_bus->move_packet()`: the current packet's block, now the caller's.
+///
+/// # Safety
+/// `message_bus` is a live `MessageBus` that only this thread uses meanwhile.
+pub unsafe fn bus_move_packet(message_bus: *mut core::ffi::c_void) -> *mut core::ffi::c_char {
+    // SAFETY: as the caller guarantees; a `MessageBus` starts with its Rust bus.
+    let bus = unsafe { *message_bus.cast::<*mut swoole_rs_bus::MessageBus>() };
+    // SAFETY: that live bus, only this thread's meanwhile.
+    unsafe { &mut *bus }.move_packet()
 }

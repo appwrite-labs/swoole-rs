@@ -6,34 +6,16 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::{CoreAllocator, DataHead};
 use swoole_rs_reactor::SocketRecord;
 
-use crate::pool_native::{
-    BusPacket, read_bus, swr_v1_bus_buffer, swr_v1_bus_buffer_size, swr_v1_bus_packet,
-    swr_v1_bus_pop, swr_v1_bus_set_buffer, swr_v1_bus_set_buffer_size,
-};
+use swoole_rs_bus::{BusPacket, MessageBus};
 
-// SAFETY: crates/protocols' bus, linked into the same archive.
-unsafe extern "C" {
-    fn swr_v1_bus_count(bus: *mut c_void) -> usize;
-    fn swr_v1_bus_clear(bus: *mut c_void);
-    fn swr_v1_bus_set_always_chunked(bus: *mut c_void);
-    fn swr_v1_bus_init_pipe_socket(bus: *mut c_void, fd: c_int);
-    fn swr_v1_bus_pipe_socket(bus: *mut c_void, fd: c_int) -> *mut SocketRecord;
-    fn swr_v1_bus_write(
-        bus: *mut c_void,
-        socket: *mut c_void,
-        head: *mut DataHead,
-        data: *const u8,
-    ) -> bool;
-}
+use crate::pool_native::read_bus;
 
-// SAFETY: crates/reactor's and crates/tls' bodies, under their upstream symbols.
+// SAFETY: crates/reactor's bodies, under their upstream symbols.
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7Reactor7if_exitEv"]
     fn reactor_if_exit(reactor: *mut c_void) -> bool;
     #[link_name = "_ZN6swoole7Reactor4waitEv"]
     fn reactor_wait(reactor: *mut c_void) -> c_int;
-    #[link_name = "_ZN6swoole7Reactor18drain_write_bufferEPNS_7network6SocketE"]
-    fn drain_write_buffer(reactor: *mut c_void, socket: *mut c_void);
 }
 
 /// A live socket, or `None` for null.
@@ -59,8 +41,7 @@ pub(crate) fn in_worker_bus(
 
 /// `sock->set_nonblock()`.
 pub(crate) fn set_nonblock(sock: &mut SocketRecord) {
-    // SAFETY: a live socket.
-    let _ = unsafe { swoole_rs_reactor::socket_upstream::socket_set_fd_option(sock, 1, -1) };
+    let _ = swoole_rs_reactor::socket_upstream::socket_set_fd_option(sock, 1, -1);
 }
 
 /// A `MessageBus`: its Rust bus and the allocator of its packets.
@@ -91,9 +72,14 @@ impl Bus {
     pub(crate) unsafe fn from_parts(bus: *mut c_void, allocator: *const CoreAllocator) -> Self {
         Self { bus, allocator }
     }
-    /// The Rust bus.
-    pub(crate) fn raw(self) -> *mut c_void {
-        self.bus
+    /// The Rust bus, used by this thread alone while the handle is.
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "the handle's maker lends the bus to this thread"
+    )]
+    pub(crate) fn rust(&self) -> &mut MessageBus {
+        // SAFETY: `of`'s and `from_parts`' contract: a live bus only this thread uses.
+        unsafe { &mut *self.bus.cast::<MessageBus>() }
     }
     /// The allocator of its packets.
     pub(crate) fn allocator(self) -> *const CoreAllocator {
@@ -101,8 +87,7 @@ impl Bus {
     }
     /// The bus's buffer, which starts with the head of its message.
     pub(crate) fn buffer(self) -> *mut DataHead {
-        // SAFETY: a live bus.
-        unsafe { swr_v1_bus_buffer(self.bus) }
+        self.rust().buffer()
     }
     pub(crate) fn head(self) -> DataHead {
         // SAFETY: the live bus's buffer.
@@ -110,55 +95,49 @@ impl Bus {
     }
     /// The whole packet the bus holds.
     pub(crate) fn packet(self) -> BusPacket {
-        // SAFETY: a live bus.
-        unsafe { swr_v1_bus_packet(self.bus) }
+        self.rust().packet()
     }
     pub(crate) fn pop(self) {
-        // SAFETY: a live bus.
-        unsafe { swr_v1_bus_pop(self.bus) };
+        self.rust().pop();
     }
     pub(crate) fn is_empty(self) -> bool {
-        // SAFETY: a live bus.
-        unsafe { swr_v1_bus_count(self.bus) == 0 }
+        self.rust().count() == 0
     }
     pub(crate) fn clear(self) {
-        // SAFETY: a live bus.
-        unsafe { swr_v1_bus_clear(self.bus) };
+        self.rust().clear();
     }
     /// `MessageBus::read(sock)`.
     pub(crate) fn read(self, sock: &mut SocketRecord) -> isize {
-        read_bus(self.bus, self.allocator, sock, false)
+        read_bus(self.rust(), self.allocator, sock, false)
     }
     /// `MessageBus::write(sock, {head, data})`, `head.len` set to the data's length:
     /// whether the whole message went.
     pub(crate) fn write(self, sock: &mut SocketRecord, head: &mut DataHead, data: &[u8]) -> bool {
         head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
-        // SAFETY: a live bus and socket, and `head.len` readable bytes.
-        unsafe { swr_v1_bus_write(self.bus, (&raw mut *sock).cast(), head, data.as_ptr()) }
+        // SAFETY: a live socket, and `head.len` readable bytes.
+        unsafe { self.rust().send(sock, head, data.as_ptr()) }
     }
     /// `MessageBus::set_always_chunked_transfer()`.
     pub(crate) fn set_always_chunked(self) {
-        // SAFETY: a live bus.
-        unsafe { swr_v1_bus_set_always_chunked(self.bus) };
+        self.rust().set_always_chunked();
     }
     /// `MessageBus::init_pipe_socket(sock)`.
     pub(crate) fn init_pipe_socket(self, fd: c_int) {
-        // SAFETY: a live bus.
-        unsafe { swr_v1_bus_init_pipe_socket(self.bus, fd) };
+        self.rust().init_pipe_socket(fd);
     }
     /// `MessageBus::alloc_buffer()`, after `set_buffer_size(size)`: whether the
     /// allocator gave the bus its buffer.
     pub(crate) fn alloc_buffer(self, size: usize) -> bool {
-        // SAFETY: a live bus.
-        unsafe { swr_v1_bus_set_buffer_size(self.bus, size) };
-        // SAFETY: as above.
-        let size = unsafe { swr_v1_bus_buffer_size(self.bus) };
+        let bus = self.rust();
+        bus.set_buffer_size(size);
         // SAFETY: the bus's allocator outlives it.
         let malloc = unsafe { (*self.allocator).malloc };
         // SAFETY: the allocator's malloc.
-        let buffer = malloc.map_or(core::ptr::null_mut(), |malloc| unsafe { malloc(size) });
-        // SAFETY: the bus takes the fresh buffer.
-        unsafe { swr_v1_bus_set_buffer(self.bus, buffer) };
+        let buffer = malloc.map_or(core::ptr::null_mut(), |malloc| unsafe {
+            malloc(bus.buffer_size())
+        });
+        // SAFETY: the bus takes the fresh buffer of its size.
+        unsafe { bus.set_buffer(buffer) };
         !buffer.is_null()
     }
     /// `MessageBus::free_buffer()`.
@@ -169,8 +148,8 @@ impl Bus {
             // SAFETY: the bus's buffer, from this allocator, unused afterwards.
             unsafe { free(buffer.cast()) };
         }
-        // SAFETY: a live bus.
-        unsafe { swr_v1_bus_set_buffer(self.bus, core::ptr::null_mut()) };
+        // SAFETY: null forgets the buffer.
+        unsafe { self.rust().set_buffer(core::ptr::null_mut()) };
     }
     /// `get_pipe_socket(sock)`: this bus's own end of the pipe `sock`.
     pub(crate) fn pipe_socket(self, sock: &SocketRecord) -> *mut c_void {
@@ -178,8 +157,7 @@ impl Bus {
     }
     /// This bus's own end of the pipe `fd`.
     pub(crate) fn pipe_fd(self, fd: c_int) -> *mut c_void {
-        // SAFETY: a live bus.
-        unsafe { swr_v1_bus_pipe_socket(self.bus, fd) }.cast()
+        self.rust().pipe_socket(fd).cast()
     }
 }
 
@@ -189,7 +167,7 @@ impl Reactor {
     /// `reactor->drain_write_buffer(sock)`.
     pub(crate) fn drain(self, sock: &mut SocketRecord) {
         // SAFETY: as above.
-        unsafe { drain_write_buffer(self.0, (&raw mut *sock).cast()) };
+        unsafe { swoole_rs_tls::reactor_write::reactor_drain_write_buffer(self.0, sock) };
     }
     pub(crate) fn if_exit(self) -> bool {
         // SAFETY: a live reactor.

@@ -1,6 +1,6 @@
 //! `Swoole\\Coroutine\\Lock`: PHP object ownership over the Rust coroutine lock.
 use std::ffi::{c_int, c_void};
-use swoole_rs_locks::coroutine::{self, CoroutineHost, CoroutineLock, CoroutineOutcome};
+use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock, CoroutineOutcome};
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::coroutine_lock;
 use swoole_rs_zend::{
@@ -46,20 +46,20 @@ mod host {
     const fn done(code: c_int) -> CoroutineOutcome {
         CoroutineOutcome { code, bailed: 0 }
     }
-    pub(super) extern "C" fn current() -> *mut c_void {
+    pub(super) fn current() -> *mut c_void {
         swoole_rs_phpcoroutines::current()
     }
-    pub(super) extern "C" fn cid(co: *mut c_void) -> i64 {
+    pub(super) fn cid(co: *mut c_void) -> i64 {
         swoole_rs_phpcoroutines::cid(co)
     }
-    pub(super) extern "C" fn alloc_shared() -> *mut u32 {
+    pub(super) fn alloc_shared() -> *mut u32 {
         // SAFETY: SwooleG.memory_pool lives from swoole_init, before MINIT.
         unsafe { pool::alloc(4) }.cast()
     }
     /// The global pool frees nothing.
-    pub(super) unsafe extern "C" fn free_shared(_word: *mut u32) {}
+    pub(super) unsafe fn free_shared(_word: *mut u32) {}
     #[cfg(not(feature = "iouring"))]
-    pub(super) extern "C" fn sleep(seconds: f64) -> CoroutineOutcome {
+    pub(super) fn sleep(seconds: f64) -> CoroutineOutcome {
         // SAFETY: crates/hooks's (upstream symbol).
         unsafe extern "C" {
             #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
@@ -68,27 +68,17 @@ mod host {
         // SAFETY: the lock sleeps only inside a coroutine.
         done(unsafe { system_sleep(seconds) })
     }
-    // SAFETY: crates/hooks's engine and its static host.
-    #[cfg(feature = "iouring")]
-    unsafe extern "C" {
-        #[link_name = "swr_v1_uring_native"]
-        static IOURING_HOST: c_void;
-        fn swr_v1_uring_futex_wait(host: *const c_void, futex: *mut u32) -> c_int;
-        fn swr_v1_uring_futex_wakeup(host: *const c_void, futex: *mut u32) -> c_int;
-    }
     /// `Iouring::futex_wait`.
     #[cfg(feature = "iouring")]
-    pub(super) unsafe extern "C" fn wait(word: *mut u32) -> CoroutineOutcome {
-        // SAFETY: the lock's live word, in a coroutine.
-        done(unsafe { swr_v1_uring_futex_wait(&raw const IOURING_HOST, word) })
+    pub(super) fn wait(word: &std::sync::atomic::AtomicU32) -> CoroutineOutcome {
+        done(swoole_rs_hooks::iouring::futex_wait(word))
     }
     /// `Iouring::futex_wakeup`.
     #[cfg(feature = "iouring")]
-    pub(super) unsafe extern "C" fn wake(word: *mut u32) -> CoroutineOutcome {
-        // SAFETY: as in `wait`.
-        done(unsafe { swr_v1_uring_futex_wakeup(&raw const IOURING_HOST, word) })
+    pub(super) fn wake(word: &std::sync::atomic::AtomicU32) -> CoroutineOutcome {
+        done(swoole_rs_hooks::iouring::futex_wakeup(word))
     }
-    pub(super) extern "C" fn warning() -> u8 {
+    pub(super) fn warning() -> u8 {
         swoole_rs_corebase::log::warning(
             c"swoole::CoroutineLock::lock_impl",
             format_args!("The coroutine lock can only be used in a coroutine environment"),
@@ -111,7 +101,7 @@ unsafe extern "C" fn free(object: *mut zend_object) {
     let held = unsafe { Object::<Held>::data(object) };
     if !held.owner.is_null() {
         // SAFETY: the object uniquely owns its Rust lock; no method remains suspended at final release.
-        unsafe { coroutine::coroutine_free(held.owner) };
+        drop(unsafe { Box::from_raw(held.owner) });
     }
     // SAFETY: the owner has been freed and Zend now destroys its properties.
     unsafe { Object::<Held>::dtor(object) };
@@ -121,14 +111,17 @@ fn owner(call: &Call) -> *mut CoroutineLock {
     // so no mutable Held borrow spans scheduler suspension or PHP reentry.
     unsafe { Object::<Held>::data(call.this()) }.owner
 }
-fn constructed(call: &Call) -> Option<*mut CoroutineLock> {
-    let lock = owner(call);
-    if lock.is_null() {
+/// The constructed lock. Operations take `&CoroutineLock`, so the borrow may
+/// span suspension while another coroutine unlocks.
+fn constructed(call: &Call) -> Option<&CoroutineLock> {
+    // SAFETY: null, or the lock the constructor stored; Zend holds $this, and so
+    // the lock, throughout the method, including cooperative suspension.
+    let lock = unsafe { owner(call).as_ref() };
+    if lock.is_none() {
         // SAFETY: Swoole's fatal error hook; the handler's frames own nothing.
         unsafe { swoole_rs_corebase::fatal_error(WRONG_OPERATION, c"must call constructor first") };
-        return None;
     }
-    Some(lock)
+    lock
 }
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
     entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
@@ -164,8 +157,7 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: the host is a static whose leaves cannot unwind.
-    let lock = unsafe { coroutine::coroutine_new(shared, &raw const HOST) };
+    let lock = Box::into_raw(CoroutineLock::new(shared, &HOST));
     // SAFETY: the constructor owns this object's currently empty Held slot.
     unsafe { Object::<Held>::data(call.this()) }.owner = lock;
     call.set_bool(true);
@@ -190,17 +182,13 @@ fn lock(call: &Call) {
     };
     // LOCK_NB is 4 on both supported platforms; checking the zend_long avoids truncation.
     let blocking = operation & 4 == 0;
-    // SAFETY: Zend holds $this throughout the method, including cooperative suspension.
-    check(call, unsafe {
-        coroutine::coroutine_acquire(owner, blocking)
-    });
+    check(call, owner.acquire(blocking));
 }
 fn unlock(call: &Call) {
     let Some(owner) = constructed(call) else {
         return;
     };
-    // SAFETY: Zend holds $this throughout the operation and its native wake leaf.
-    check(call, unsafe { coroutine::coroutine_unlock(owner) });
+    check(call, owner.unlock());
 }
 swoole_rs_zend::handlers! {
     zim_swoole_coroutine_lock___construct => construct;

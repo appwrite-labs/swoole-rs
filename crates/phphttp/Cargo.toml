@@ -10,7 +10,7 @@ description = "PHP Swoole\\Http classes over the zend crates and the httpbinding
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-httpbindings", "dep:swoole-rs-http", "dep:swoole-rs-deflate", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-inflate", "dep:swoole-rs-websocket", "dep:swoole-rs-corebase", "dep:swoole-rs-ossupport", "dep:swoole-rs-server", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-buffer", "dep:swoole-rs-process", "dep:swoole-rs-http2", "dep:swoole-rs-clients", "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php", "dep:swoole-rs-reactor", "dep:swoole-rs-memory"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-httpbindings", "dep:swoole-rs-http", "dep:swoole-rs-deflate", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-inflate", "dep:swoole-rs-websocket", "dep:swoole-rs-corebase", "dep:swoole-rs-ossupport", "dep:swoole-rs-server", "dep:swoole-rs-ports", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-buffer", "dep:swoole-rs-process", "dep:swoole-rs-http2", "dep:swoole-rs-clients", "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/php", "swoole-rs-phpserver/server", "dep:swoole-rs-reactor", "dep:swoole-rs-memory", "dep:swoole-rs-tls"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
@@ -27,6 +27,8 @@ swoole-rs-ossupport = { path = "../ossupport", optional = true }
 swoole-rs-process = { path = "../process", optional = true }
 swoole-rs-reactor = { path = "../reactor", optional = true }
 swoole-rs-server = { path = "../server", optional = true }
+swoole-rs-ports = { path = "../ports", optional = true }
+swoole-rs-tls = { path = "../tls", optional = true }
 swoole-rs-websocket = { path = "../websocket", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
@@ -35,6 +37,7 @@ swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpclients = { path = "../phpclients", optional = true }
 swoole-rs-phphelpers = { path = "../phphelpers", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
+swoole-rs-phpserver = { path = "../phpserver", optional = true }
 
 [lints]
 workspace = true

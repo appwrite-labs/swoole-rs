@@ -15,9 +15,9 @@ def junit(tests, failing=(), kept=()):
 
 
 class CompareTest(unittest.TestCase):
-    def compare(self, upstream, hybrid):
+    def compare(self, upstream, cargo):
         directory = Path(tempfile.mkdtemp())
-        for variant, services in [('upstream', upstream), ('hybrid', hybrid)]:
+        for variant, services in [('upstream', upstream), ('cargo', cargo)]:
             for service, xml in services.items():
                 path = directory / f'junit-{variant}-{service}' / 'junit.xml'
                 path.parent.mkdir()
@@ -36,7 +36,7 @@ class CompareTest(unittest.TestCase):
             {'Account': junit(10, failing=['b'], kept=['a', 'b']), 'Teams': junit(9)})
         self.assertEqual(regressions, ['Account: 10 tests, 1 failing (upstream 10, 0)\n  - T::b',
                                        'Teams: 9 tests, 0 failing (upstream 10, 0)',
-                                       'Users: no hybrid report'])
+                                       'Users: no cargo report'])
 
     def test_upstream_failures_are_listed_not_gated(self):
         _, regressions, flaky = self.compare({'Account': junit(10, failing=['a'], kept=['a'])},

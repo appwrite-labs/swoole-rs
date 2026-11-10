@@ -5,20 +5,19 @@ use crate::{host, runtime};
 use std::{
     cell::Cell,
     collections::VecDeque,
-    ffi::{CStr, c_int, c_long, c_void},
+    ffi::{c_int, c_void},
     mem, ptr,
 };
 use swoole_rs_phphelpers::callable as kept;
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::{
-    Call, Callable, Class, E_ERROR, E_WARNING, Object,
+    Call, Callable, Class, E_ERROR, E_WARNING, Object, OwnedArray,
     bailout::{self, Bailout},
     class_name, message,
     sys::{
-        IS_ARRAY, IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
-        swr_zend_array_init, swr_zend_callable, swr_zval_get_long, swr_zval_is_true, zend_array,
-        zend_array_destroy, zend_array_dup, zend_class_entry, zend_hash_merge, zend_hash_str_find,
-        zend_object, zend_object_handlers, zval, zval_add_ref, zval_ptr_dtor,
+        IS_ARRAY_EX, IS_FALSE, IS_NULL, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE,
+        swr_zend_callable, zend_array, zend_array_destroy, zend_array_dup, zend_class_entry,
+        zend_hash_merge, zend_object, zend_object_handlers, zval, zval_add_ref,
     },
     type_of, unset_property_deny, value,
 };
@@ -29,12 +28,6 @@ per_thread! {
     static OPTIONS: Cell<*mut zend_array> = Cell::new(ptr::null_mut());
     /// `exit_condition_fci_cache`: `Co::set()`'s `exit_condition` callable.
     static EXIT_CONDITION: Cell<*mut kept::Callable> = Cell::new(ptr::null_mut());
-}
-
-unsafe extern "C" {
-    /// Unlinks the first PHP name resolver (of `resolver`'s object, any when null); its
-    /// zval, or null.
-    fn swoole_name_resolver_php_remove(resolver: *mut zval) -> *mut zval;
 }
 
 /// One `add()` or `parallel()`: its kept callable and how many coroutines run it.
@@ -68,7 +61,6 @@ method_table! {
 /// serializable, clone and unset denied.
 /// # Safety
 /// Called once, at MINIT.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_coroutine_scheduler_minit(_module_number: c_int) {
     // SAFETY: the native MINIT entry lends these original startup arguments.
     let result = unsafe { init_phpcoroutines_scheduler_minit() };
@@ -245,29 +237,16 @@ fn start(call: &Call) {
     call.set_bool(true);
 }
 
-/// `php_swoole_array_get_value`: the non-null value at `key`.
-fn get(options: *mut zend_array, key: &CStr) -> Option<*mut zval> {
-    // SAFETY: a live array and a NUL-terminated key.
-    let found = unsafe { zend_hash_str_find(options, key.as_ptr(), key.count_bytes()) };
-    // SAFETY: null or a live element.
-    (!found.is_null() && unsafe { swoole_rs_zend::type_of(found) } != IS_NULL).then_some(found)
-}
-
-fn long(value: *mut zval) -> c_long {
-    // SAFETY: a live zval.
-    unsafe { swr_zval_get_long(value) }
-}
-
-fn truthy(value: *mut zval) -> bool {
-    // SAFETY: a live zval.
-    unsafe { swr_zval_is_true(value) }
-}
-
-/// `php_swoole_set_coroutine_option`.
+/// `php_swoole_set_coroutine_option`. It stops at a deferred bailout, where
+/// upstream's ended the call, so a caller checks [`bailout::pending`] after it.
 pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
-    let options = options.as_ptr();
-    if let Some(value) = get(options, c"max_coro_num").or_else(|| get(options, c"max_coroutine")) {
-        let max = long(value);
+    if let Some(value) = options
+        .get(b"max_coro_num")
+        .or_else(|| options.get(b"max_coroutine"))
+    {
+        let Some(max) = value.applied_long() else {
+            return;
+        };
         let max = if max <= 0 {
             runtime::DEFAULT_MAX_NUM
         } else {
@@ -275,38 +254,39 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
         };
         runtime::set_max_num(max.cast_unsigned());
     }
-    if let Some(value) = get(options, c"enable_deadlock_check") {
-        runtime::set_deadlock_check(truthy(value));
+    if let Some(value) = options.get(b"enable_deadlock_check") {
+        runtime::set_deadlock_check(value.truthy());
     }
-    if let Some(value) = get(options, c"hook_flags") {
+    if let Some(value) = options.get(b"hook_flags") {
+        let Some(flags) = value.applied_long() else {
+            return;
+        };
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "upstream passes zend_long as uint32_t"
         )]
-        set_hook_flags(long(value) as u32);
+        set_hook_flags(flags as u32);
     }
-    if let Some(value) = get(options, c"enable_preemptive_scheduler") {
-        runtime::set_preemptive(truthy(value));
+    if let Some(value) = options.get(b"enable_preemptive_scheduler") {
+        runtime::set_preemptive(value.truthy());
     }
-    if let Some(value) = get(options, c"c_stack_size").or_else(|| get(options, c"stack_size")) {
+    if let Some(value) = options
+        .get(b"c_stack_size")
+        .or_else(|| options.get(b"stack_size"))
+    {
         host::set_stack_size(value);
     }
-    if let Some(value) = get(options, c"name_resolver") {
-        // SAFETY: a live zval.
-        if unsafe { swoole_rs_zend::type_of(value) } == IS_ARRAY {
-            // SAFETY: an array argument.
-            let table = unsafe { value::table(value) };
-            let add = |resolver: *mut zval| {
-                host::add_name_resolver(resolver);
-                true
-            };
-            // SAFETY: the array is live and the closure does not modify it.
-            unsafe { swoole_rs_zend::each_value(table, add) };
+    if let Some(value) = options.get(b"name_resolver") {
+        if let Some(resolvers) = value.array() {
+            for (_, resolver) in resolvers.entries() {
+                host::add_name_resolver(resolver.as_ptr());
+            }
         } else {
             host::fatal_error(E_WARNING, c"name_resolver must be an array");
         }
     }
+    let options = options.as_ptr();
     let current = OPTIONS.with(Cell::get);
     if current.is_null() {
         // SAFETY: a live array.
@@ -318,31 +298,20 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
 }
 
 /// `PHPCoroutine::set_hook_flags`: the flags, recorded in the options too.
-pub(crate) fn set_hook_flags(flags: u32) {
-    // SAFETY: all-zero is IS_UNDEF, then an array.
-    let mut array: zval = unsafe { mem::zeroed() };
-    // SAFETY: a writable zval.
-    unsafe { swr_zend_array_init(&raw mut array) };
-    // SAFETY: an array.
-    unsafe { swoole_rs_zend::add_assoc_long(&raw mut array, c"hook_flags", i64::from(flags)) };
-    // SAFETY: as above.
-    let table = unsafe { value::table(&raw const array) };
+pub fn set_hook_flags(flags: u32) {
+    let mut array = OwnedArray::default();
+    array.insert_long(b"hook_flags", i64::from(flags));
+    let array = array.into_owned();
     let current = OPTIONS.with(Cell::get);
     if current.is_null() {
-        OPTIONS.with(|o| o.set(table));
-    } else {
-        // SAFETY: two live arrays.
-        unsafe { zend_hash_merge(current, table, None, true) };
-        // SAFETY: our array, merged.
-        unsafe { zval_ptr_dtor(&raw mut array) };
+        let array = array.into_zval();
+        // SAFETY: an array zval, whose table the options now own.
+        OPTIONS.with(|o| o.set(unsafe { value::table(&raw const array) }));
+    } else if let Some(table) = array.array() {
+        // SAFETY: two live arrays; ours is released after the merge.
+        unsafe { zend_hash_merge(current, table.as_ptr(), None, true) };
     }
-    runtime::set_hook_flags(flags);
-}
-
-/// `PHPCoroutine::set_hook_flags` for C++.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_set_hook_option(flags: u32) {
-    set_hook_flags(flags);
+    runtime::store_hook_flags(flags);
 }
 
 /// Free the options, at RSHUTDOWN.
@@ -362,17 +331,23 @@ fn set(call: &Call) {
     };
     swoole_rs_phpswoole::php_swoole_set_global_option(array);
     set_coroutine_option(array);
-    let options = array.as_ptr();
-    if let Some(value) = get(options, c"dns_cache_expire") {
-        host::set_dns_cache_expire(long(value));
+    if bailout::pending() {
+        return;
     }
-    if let Some(value) = get(options, c"dns_cache_capacity") {
-        host::set_dns_cache_capacity(long(value));
+    if let Some(value) = array.get(b"dns_cache_expire") {
+        let Some(expire) = value.applied_long() else {
+            return;
+        };
+        host::set_dns_cache_expire(expire);
     }
-    // SAFETY: a live array and key.
-    let condition = unsafe { zend_hash_str_find(options, c"exit_condition".as_ptr(), 14) };
-    if !condition.is_null() {
-        bailout::raise(set_exit_condition(condition));
+    if let Some(value) = array.get(b"dns_cache_capacity") {
+        let Some(capacity) = value.applied_long() else {
+            return;
+        };
+        host::set_dns_cache_capacity(capacity);
+    }
+    if let Some(condition) = array.find(b"exit_condition") {
+        bailout::raise(set_exit_condition(condition.as_ptr()));
     }
 }
 
@@ -425,8 +400,7 @@ fn can_exit() -> Result<bool, Bailout> {
     if handle.is_null() {
         return Ok(true);
     }
-    // SAFETY: all-zero is a zval; it is made null.
-    let mut retval: zval = unsafe { mem::zeroed() };
+    let mut retval = swoole_rs_zend::UNDEF;
     retval.u1.type_info = IS_NULL;
     // SAFETY: the kept callable, no arguments and a result slot, which (as
     // upstream's) is not released.
@@ -444,15 +418,18 @@ fn can_exit() -> Result<bool, Bailout> {
 }
 
 /// RSHUTDOWN: drop the PHP name resolvers and the exit condition.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_coroutine_scheduler_rshutdown() {
     bailout::raise(rshutdown());
 }
 
 fn rshutdown() -> Result<(), Bailout> {
+    let Some(families) = swoole_rs_phpswoole::families() else {
+        return Ok(());
+    };
     loop {
-        // SAFETY: C++'s resolver list; every PHP resolver matches.
-        let resolver = unsafe { swoole_name_resolver_php_remove(ptr::null_mut()) };
+        // SAFETY: the resolver list; every PHP resolver matches null. Each
+        // match is unlinked and returned (crates/phpclients).
+        let resolver = unsafe { (families.name_resolver_remove)(ptr::null_mut()) };
         if resolver.is_null() {
             break;
         }

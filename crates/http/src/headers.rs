@@ -48,7 +48,9 @@ pub struct HttpHeaderInfo {
     /// reproduces libc errno policy after return, before native allocation.
     pub number_errors: u32,
 }
-pub(crate) fn header_info(
+/// `parse_header_info` over the header block ending at `end`, from `state.cursor`:
+/// negative when malformed, 0 once done, 1 with a multipart boundary in `multipart`.
+pub fn header_info(
     input: &[u8],
     end: usize,
     state: &mut HttpHeaderInfo,
@@ -176,61 +178,48 @@ pub struct HttpCookie {
     pub value_length: usize,
     pub has_value: u32,
 }
-unsafe fn get(data: *const u8, at: usize, capacity: usize) -> Result<u8, i32> {
-    if at >= capacity {
-        return Err(INVALID);
-    }
-    // SAFETY: `at < capacity`; callers read only bytes up to the initialized NUL.
-    Ok(unsafe { data.wrapping_add(at).read() })
+/// The byte at `at`, which must lie before the buffer's end.
+fn get(data: &[u8], at: usize) -> Result<u8, i32> {
+    data.get(at).copied().ok_or(INVALID)
 }
-unsafe fn cookie(
-    data: *mut u8,
-    capacity: usize,
-    cursor: &mut usize,
-) -> Result<Option<HttpCookie>, i32> {
-    // Every `get` below reads an index that `get` itself bounds by `capacity`, scanning no
-    // further than the initialized NUL reachable from the cursor; each write lands on an
-    // index `get` has just read.
+/// Tokenize the next cookie of `data` from `cursor`, as legacy `strtok_r`: the
+/// delimiter after it and its '=' become NULs. Reads stop at the NUL that ends the
+/// cookies; None there.
+///
+/// # Errors
+/// `INVALID` when the buffer ends before that NUL.
+pub fn cookie_next(data: &mut [u8], cursor: &mut usize) -> Result<Option<HttpCookie>, i32> {
     loop {
-        // SAFETY: as above.
-        while unsafe { get(data, *cursor, capacity)? } == b';' {
+        while get(data, *cursor)? == b';' {
             *cursor += 1;
         }
-        // SAFETY: as above.
-        if unsafe { get(data, *cursor, capacity)? } == 0 {
+        if get(data, *cursor)? == 0 {
             return Ok(None);
         }
         let mut key = *cursor;
         let mut end = key;
-        // SAFETY: as above.
-        while !matches!(unsafe { get(data, end, capacity)? }, b';' | 0) {
+        while !matches!(get(data, end)?, b';' | 0) {
             end += 1;
         }
         *cursor = end;
-        // SAFETY: as above.
-        if unsafe { get(data, end, capacity)? } == b';' {
-            // SAFETY: as above; `end` was just read as a delimiter.
-            unsafe { data.wrapping_add(end).write(0) };
+        if let Some(delimiter @ b';') = data.get_mut(end) {
+            *delimiter = 0;
             *cursor += 1;
         }
-        let mut equal = None;
-        for at in key..end {
-            // SAFETY: as above.
-            if unsafe { get(data, at, capacity)? } == b'=' {
-                equal = Some(at);
-                break;
-            }
-        }
-        // SAFETY: as above.
-        while key < end && space(unsafe { get(data, key, capacity)? }) {
+        let equal = data
+            .get(key..end)
+            .and_then(|token| token.iter().position(|&byte| byte == b'='))
+            .map(|at| key + at);
+        while key < end && space(get(data, key)?) {
             key += 1;
         }
         if key == end || equal == Some(key) {
             continue;
         }
         let (key_length, value_offset, value_length) = if let Some(equal) = equal {
-            // SAFETY: as above; `equal` was read as '='.
-            unsafe { data.wrapping_add(equal).write(0) };
+            if let Some(byte) = data.get_mut(equal) {
+                *byte = 0;
+            }
             (equal - key, equal + 1, end - equal - 1)
         } else {
             (end - key, 0, 0)
@@ -242,46 +231,6 @@ unsafe fn cookie(
             value_length,
             has_value: u32::from(equal.is_some()),
         }));
-    }
-}
-/// Tokenize one cookie, then native invokes its callback after Rust returns.
-/// Buffer capacity may contain uninitialized suffix bytes: reads stop at its
-/// initialized NUL terminator. Delimiter/'=' mutations match legacy `strtok_r`.
-/// # Safety
-/// Buffer is writable through capacity<=`isize::MAX`, initialized through a NUL
-/// reachable from cursor; cursor/output are valid/aligned/disjoint. Callback may
-/// mutate the native buffer between calls, but never retains a Rust reference.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_cookie_next(
-    data: *mut u8,
-    capacity: usize,
-    cursor: *mut usize,
-    output: *mut HttpCookie,
-) -> i32 {
-    if output.is_null() || cursor.is_null() {
-        return INVALID;
-    }
-    // SAFETY: `output` is non-null (checked above), aligned and writable.
-    unsafe {
-        output.write(HttpCookie::default());
-    }
-    if data.is_null() || capacity > isize::MAX as usize {
-        return INVALID;
-    }
-    // SAFETY: `cursor` is non-null (checked above), aligned and disjoint from `data`.
-    let cursor = unsafe { &mut *cursor };
-    // SAFETY: `data` is non-null, writable through `capacity <= isize::MAX` and initialized
-    // through a NUL reachable from the cursor.
-    match unsafe { cookie(data, capacity, cursor) } {
-        Ok(Some(value)) => {
-            // SAFETY: `output` is non-null (checked above), aligned and writable.
-            unsafe {
-                output.write(value);
-            }
-            1
-        }
-        Ok(None) => 0,
-        Err(status) => status,
     }
 }
 #[cfg(test)]
@@ -359,21 +308,8 @@ mod tests {
     fn cookie_tokens_keep_leading_trim_trailing_spaces_and_value_bytes() {
         let mut data = b";; a =x=y; =bad;novalue;\tlast=\0".to_vec();
         let mut cursor = 0;
-        let mut out = HttpCookie::default();
         let mut result = Vec::new();
-        loop {
-            let status = unsafe {
-                swr_v1_http_cookie_next(
-                    data.as_mut_ptr(),
-                    data.len(),
-                    &raw mut cursor,
-                    &raw mut out,
-                )
-            };
-            if status == 0 {
-                break;
-            }
-            assert_eq!(status, 1);
+        while let Some(out) = cookie_next(&mut data, &mut cursor).unwrap() {
             result.push((
                 data[out.key_offset..out.key_offset + out.key_length].to_vec(),
                 if out.has_value != 0 {
@@ -391,96 +327,5 @@ mod tests {
                 (b"last".to_vec(), vec![])
             ]
         );
-    }
-    /// The pinned `parse_cookie`'s records and in-place scratch bytes for `input`,
-    /// stopping after the first record when `first_only`.
-    fn pinned_cookies(input: &[u8], first_only: bool) -> (Vec<u8>, Vec<u8>) {
-        let (mut records, mut scratch) = (vec![0; 8 * input.len() + 16], vec![0; input.len() + 1]);
-        let size = unsafe {
-            swoole_rs_oracle::http::cookies(
-                input.as_ptr(),
-                input.len(),
-                records.as_mut_ptr(),
-                first_only,
-                scratch.as_mut_ptr(),
-            )
-        };
-        records.truncate(size);
-        (records, scratch)
-    }
-    /// `swr_v1_http_cookie_next` over a NUL-terminated copy of `input`, recorded as
-    /// `pinned_cookies` records them, and the copy afterwards.
-    fn rust_cookies(input: &[u8], first_only: bool) -> (Vec<u8>, Vec<u8>, usize) {
-        let mut buffer = [input, &[0]].concat();
-        let (mut cursor, mut records, mut count) = (0, Vec::new(), 0);
-        loop {
-            let mut cookie = HttpCookie::default();
-            let status = unsafe {
-                swr_v1_http_cookie_next(
-                    buffer.as_mut_ptr(),
-                    buffer.len(),
-                    &raw mut cursor,
-                    &raw mut cookie,
-                )
-            };
-            assert!(status >= 0, "status {status}");
-            if status == 0 {
-                break;
-            }
-            for (offset, length) in [
-                (cookie.key_offset, cookie.key_length),
-                (cookie.value_offset, cookie.value_length),
-            ] {
-                records.extend_from_slice(&u32::try_from(length).unwrap().to_ne_bytes());
-                records.extend_from_slice(&buffer[offset..offset + length]);
-            }
-            count += 1;
-            if first_only {
-                break;
-            }
-        }
-        (records, buffer, count)
-    }
-    /// The cases of the former `tests/modules/http/cookie_flow_gate.cc`: the same callback sequence and
-    /// scratch bytes as the pinned `parse_cookie`, and one callback when it stops.
-    #[test]
-    fn ported_cookie_flow_gate() {
-        let mut inputs: Vec<String> = [
-            "first=one",
-            "first=one; second=two; last=three",
-            "first=one; flag; empty=; last=three",
-            "name=plain; path=/ordinary; domain=example.test",
-        ]
-        .map(String::from)
-        .to_vec();
-        for count in 1..=16u8 {
-            for width in 1..=8 {
-                let fields: Vec<String> = (0..count)
-                    .map(|i| {
-                        format!(
-                            "field{i}={}",
-                            char::from(b'a' + i).to_string().repeat(width)
-                        )
-                    })
-                    .collect();
-                inputs.push(fields.join("; "));
-            }
-        }
-        let mut cases = 0;
-        for input in &inputs {
-            for stop in [false, true] {
-                let (records, scratch, count) = rust_cookies(input.as_bytes(), stop);
-                assert_eq!(
-                    (records, scratch),
-                    pinned_cookies(input.as_bytes(), stop),
-                    "{input:?} stop={stop}"
-                );
-                if stop {
-                    assert_eq!(count, 1, "{input:?} stops after one callback");
-                }
-                cases += 1;
-            }
-        }
-        assert_eq!(cases, 264);
     }
 }

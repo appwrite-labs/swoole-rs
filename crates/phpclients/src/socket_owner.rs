@@ -142,9 +142,8 @@ unsafe fn checked_object(socket: native::Socket) -> Result<*mut z::zend_object, 
     unsafe { make_object(socket) }
 }
 
-/// # Safety
-/// The native socket kind follows the existing Swoole SDK's constructor contract.
-pub(super) unsafe fn create_kind(kind: i32) -> Result<*mut z::zend_object, Bailout> {
+/// A new socket object of a native Swoole socket kind.
+pub(super) fn create_kind(kind: i32) -> Result<*mut z::zend_object, Bailout> {
     let socket = native::make(-1, 0, kind, 0, false)?;
     // SAFETY: the returned core socket is uniquely owned and not yet published.
     unsafe { checked_object(socket) }
@@ -158,22 +157,8 @@ pub(crate) unsafe fn from_fd(fd: i32, kind: i32) -> Result<*mut z::zend_object, 
     unsafe { checked_object(socket) }
 }
 
-/// # Safety
-/// The caller transfers the descriptor with the same domain/type/protocol contract as the native SDK.
-pub(super) unsafe fn from_fd_family(
-    fd: i32,
-    domain: i32,
-    kind: i32,
-    protocol: i32,
-) -> Result<*mut z::zend_object, Bailout> {
-    let socket = native::make(fd, domain, kind, protocol, true)?;
-    // SAFETY: the returned core socket is uniquely owned and not yet published.
-    unsafe { checked_object(socket) }
-}
-
-/// # Safety
-/// The source descriptor remains borrowed; a successful dup transfers its independent descriptor.
-pub(super) unsafe fn duplicate(fd: i32, kind: i32) -> Result<*mut z::zend_object, Bailout> {
+/// An object over a duplicate of `fd`, which stays borrowed.
+pub(super) fn duplicate(fd: i32, kind: i32) -> Result<*mut z::zend_object, Bailout> {
     // SAFETY: the existing native reactor hook runs entirely below the C bailout trap.
     if unsafe { z::swr_zend_try_hook(Some(native::swoole_rs_check_reactor)) } != 0 {
         return Err(Bailout);

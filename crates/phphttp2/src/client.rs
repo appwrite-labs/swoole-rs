@@ -5,7 +5,7 @@ use crate::{
     session::IdMap,
 };
 use libc::{c_char, c_int, c_void};
-use std::{collections::VecDeque, ffi::CStr, mem::MaybeUninit, ptr};
+use std::{collections::VecDeque, ffi::CStr, marker::PhantomData, ptr};
 use swoole_rs_http2::{
     Http2Settings, Http2WindowPlan, send_frame_size, sw_rs_http2_chunk, sw_rs_http2_decode_frame,
     sw_rs_http2_default_settings, sw_rs_http2_header_plan, sw_rs_http2_headers_flags,
@@ -17,16 +17,14 @@ use swoole_rs_http2::{
 use swoole_rs_inflate::Inflate;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
-    Call, Class, Object, Value, ZString, declare_bool, declare_long, declare_string,
-    register_long_constant, set_object, string,
+    ArrayMut, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, declare_bool,
+    declare_long, declare_string, register_long_constant, string,
     sys::{
-        _zval_struct__bindgen_ty_1, IS_NULL, IS_OBJECT, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
-        add_assoc_long_ex, add_assoc_stringl_ex, add_assoc_zval_ex, object_init_ex,
-        swr_zend_http_build_query, swr_zend_instanceof, swr_zend_property_merge,
-        swr_zval_try_addref, zend_class_entry, zend_object, zend_object_handlers,
-        zend_wrong_parameter_class_error, zval, zval_ptr_dtor,
+        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, add_assoc_stringl_ex,
+        swr_zend_http_build_query, swr_zend_instanceof, swr_zend_property_merge, zend_class_entry,
+        zend_object, zend_object_handlers, zend_wrong_parameter_class_error, zval,
     },
-    throw_constructed_twice, throw_exception, type_of, unset_property_deny, value,
+    throw_constructed_twice, throw_exception, unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -105,23 +103,46 @@ type PlainObject = Object<()>;
 struct Conn {
     object: *mut zend_object,
     socket: Socket,
-    zsocket: zval,
+    zsocket: Owned,
     closed: bool,
+}
+
+impl Conn {
+    fn props(&self) -> Props<'_> {
+        // SAFETY: the client object outlives its client and conn.
+        unsafe { Props::new(ce(), self.object) }
+    }
 }
 
 struct Stream {
     flags: u32,
     buffer: Vec<u8>,
     gzip: Option<Inflate>,
-    response: zval,
+    response: Response,
     remote_window: u32,
     local_window: u32,
 }
 
-impl Drop for Stream {
-    fn drop(&mut self) {
-        // SAFETY: the stream's own response reference.
-        unsafe { zval_ptr_dtor(&raw mut self.response) };
+/// A stream's `Swoole\Http2\Response`, which this owns.
+struct Response {
+    zval: Owned,
+    object: *mut zend_object,
+}
+
+impl Response {
+    fn new(id: u32) -> Self {
+        // SAFETY: the response class is registered.
+        let zval = unsafe { Owned::new_object(RESPONSE.entry()) };
+        let object = zval.object().unwrap_or_else(ptr::null_mut);
+        let response = Self { zval, object };
+        response.props().long(c"streamId", i64::from(id));
+        response
+    }
+
+    /// Writes under the response class.
+    fn props(&self) -> Props<'_> {
+        // SAFETY: the object `zval` holds, live while borrowed.
+        unsafe { Props::new(RESPONSE.entry(), self.object) }
     }
 }
 
@@ -160,33 +181,6 @@ fn strerror<'a>(code: c_int) -> &'a CStr {
 
 fn ce() -> *mut zend_class_entry {
     CLIENT.entry()
-}
-
-fn set_long(object: *mut zend_object, ce: *mut zend_class_entry, name: &CStr, number: i64) {
-    // SAFETY: a live object of `ce`, which declares `name`.
-    unsafe { value::update_long(ce, object, name, number) };
-}
-
-fn set_bytes(object: *mut zend_object, ce: *mut zend_class_entry, name: &CStr, data: &[u8]) {
-    // SAFETY: as above; Zend copies the bytes.
-    unsafe {
-        z::zend_update_property_stringl(
-            ce,
-            object,
-            name.as_ptr(),
-            name.count_bytes(),
-            data.as_ptr().cast(),
-            data.len(),
-        );
-    }
-}
-
-/// `php_swoole_socket_set_error_properties(zobject, code, message)`.
-fn error_properties(object: *mut zend_object, code: c_int, message: &[u8]) {
-    // SAFETY: a plain store into Swoole's thread error.
-    unsafe { native::swoole_http2_client_coro_last_error(code) };
-    set_long(object, ce(), c"errCode", i64::from(code));
-    set_bytes(object, ce(), c"errMsg", message);
 }
 
 fn frame_header(kind: u32, length: usize, flags: u32, stream: u32) -> [u8; FRAME_HEADER] {
@@ -265,35 +259,22 @@ type Streams<T = Stream> = IdMap<u32, T>;
 /// # Safety
 /// `conn` is the live `Conn` the client registered.
 pub(crate) unsafe fn socket_dtor(conn: *mut c_void) {
-    let conn = conn.cast::<Conn>();
-    // SAFETY: per the caller; no `&mut` to the conn is live across the hook.
-    unsafe { (*conn).socket = ptr::null_mut() };
-    // SAFETY: as above.
-    unsafe { (*conn).closed = true };
-    // SAFETY: as above.
-    let object = unsafe { (*conn).object };
-    // SAFETY: a live client object.
-    unsafe { value::update_bool(ce(), object, c"connected", false) };
-    // SAFETY: as above.
-    unsafe { z::zend_update_property_null(ce(), object, c"socket".as_ptr(), 6) };
-    // SAFETY: as above.
-    let zsocket = unsafe { &raw mut (*conn).zsocket };
-    // SAFETY: the conn's reference to the socket object.
-    unsafe { zval_ptr_dtor(zsocket) };
-    // SAFETY: as above.
-    unsafe { (*zsocket).u1 = _zval_struct__bindgen_ty_1 { type_info: IS_NULL } };
+    // SAFETY: per the caller; no other `&mut` to the conn is live across the hook.
+    let conn = unsafe { &mut *conn.cast::<Conn>() };
+    conn.socket = ptr::null_mut();
+    conn.closed = true;
+    conn.props().bool(c"connected", false);
+    conn.props().null(c"socket");
+    // Emptied before the socket object's reference goes.
+    drop(std::mem::take(&mut conn.zsocket));
 }
 
 impl Client {
     fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Box<Self> {
-        let mut zsocket = MaybeUninit::<zval>::zeroed();
-        // SAFETY: zeroed storage, typed null.
-        unsafe { (*zsocket.as_mut_ptr()).u1 = _zval_struct__bindgen_ty_1 { type_info: IS_NULL } };
         let conn = Box::into_raw(Box::new(Conn {
             object,
             socket: ptr::null_mut(),
-            // SAFETY: initialised above.
-            zsocket: unsafe { zsocket.assume_init() },
+            zsocket: Owned::default(),
             closed: false,
         }));
         let local = sw_rs_http2_default_settings();
@@ -323,15 +304,30 @@ impl Client {
         unsafe { (*self.conn).socket }
     }
 
-    fn zsocket(&self) -> *mut zval {
+    fn conn(&mut self) -> &mut Conn {
+        // SAFETY: as above; the close hook does not run while this is borrowed.
+        unsafe { &mut *self.conn }
+    }
+
+    fn zsocket(&self) -> &Value {
         // SAFETY: as above.
-        unsafe { &raw mut (*self.conn).zsocket }
+        unsafe { &(*self.conn).zsocket }
+    }
+
+    /// `SW_CLIENT_PRESERVE_SOCKET`: a reference to the socket object for the call.
+    fn hold_socket(&self) -> Owned {
+        self.zsocket().copy()
+    }
+
+    /// Writes under the client class.
+    fn props(&self) -> Props<'_> {
+        // SAFETY: the client object outlives its client.
+        unsafe { Props::new(ce(), self.object) }
     }
 
     /// `socket_dtor`'s release of what hung off the closed socket.
     fn reap(&mut self) {
-        // SAFETY: as above.
-        if !std::mem::take(unsafe { &mut (*self.conn).closed }) {
+        if !std::mem::take(&mut self.conn().closed) {
             return;
         }
         self.queue.clear();
@@ -342,8 +338,12 @@ impl Client {
         self.deflater = ptr::null_mut();
     }
 
+    /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
     fn update_error(&self, code: c_int, message: &[u8]) {
-        error_properties(self.object, code, message);
+        // SAFETY: a plain store into Swoole's thread error.
+        unsafe { native::swoole_http2_client_coro_last_error(code) };
+        self.props().long(c"errCode", i64::from(code));
+        self.props().bytes(c"errMsg", message);
     }
 
     /// `io_error`: the socket's errCode and errMsg.
@@ -406,13 +406,14 @@ impl Client {
             self.host = unsafe { ZString::from_raw(converted) }.bytes().to_vec();
         }
         if object.is_null() {
-            self.update_error(error, strerror(error).to_bytes());
+            if !swoole_rs_zend::bailout::pending() {
+                self.update_error(error, strerror(error).to_bytes());
+            }
             return false;
         }
         // SAFETY: the conn takes the new object's reference.
-        unsafe { set_object(self.zsocket(), object) };
-        // SAFETY: the conn lives as long as the client.
-        unsafe { (*self.conn).socket = socket };
+        self.conn().zsocket = unsafe { Owned::object(object) };
+        self.conn().socket = socket;
         // SAFETY: a live socket and the client's conn.
         unsafe { native::swoole_http2_client_coro_setup(socket, self.conn.cast()) };
         // SAFETY: a live socket.
@@ -455,14 +456,8 @@ impl Client {
             self.close();
             return false;
         }
-        // SAFETY: a live client object.
-        let object_ce = unsafe { (*self.object).ce };
-        // SAFETY: as above.
-        unsafe {
-            swoole_rs_zend::update_property(object_ce, self.object, c"socket", self.zsocket());
-        };
-        // SAFETY: as above.
-        unsafe { value::update_bool(ce(), self.object, c"connected", true) };
+        self.props().own().value(c"socket", self.zsocket());
+        self.props().bool(c"connected", true);
         true
     }
 
@@ -481,10 +476,7 @@ impl Client {
             self.update_error(libc::EBADF, strerror(libc::EBADF).to_bytes());
             return false;
         }
-        // SAFETY: a live client object.
-        let object_ce = unsafe { (*self.object).ce };
-        // SAFETY: as above.
-        unsafe { value::update_bool(object_ce, self.object, c"connected", false) };
+        self.props().own().bool(c"connected", false);
         // SAFETY: a live socket; its members are not read after a close.
         if !unsafe { native::swoole_http2_client_coro_close(socket) } {
             self.io_error(socket);
@@ -608,10 +600,8 @@ impl Client {
 
     /// `build_header`: a HEADERS frame whose first nine bytes are left for
     /// its header, then the request's HPACK block; None after the error.
-    fn build_header(&mut self, request: *mut zend_object) -> Option<Vec<u8>> {
-        // SAFETY: a live request object, which declares each property and
-        // keeps them while building.
-        let property = |name| unsafe { swoole_rs_zend::property(request, name) };
+    fn build_header(&mut self, request: Request<'_>) -> Option<Vec<u8>> {
+        let property = |name| request.property(name);
         let text = |name| property(name).bytes().filter(|text| !text.is_empty());
         let (method, path) = (text(c"method"), text(c"path"));
         let (headers, cookies) = (property(c"headers"), property(c"cookies"));
@@ -697,12 +687,12 @@ impl Client {
     }
 
     /// `send_request`: the new stream's id, or 0.
-    fn send_request(&mut self, request: *mut zend_object) -> u32 {
-        // SAFETY: a live request object, which declares each property.
-        let headers =
-            unsafe { z::swr_zend_property_array(REQUEST.entry(), request, c"headers".as_ptr(), 7) };
-        // SAFETY: as above.
-        let property = |name| unsafe { swoole_rs_zend::property(request, name) };
+    fn send_request(&mut self, request: Request<'_>) -> u32 {
+        // SAFETY: a live request object, which declares `headers`.
+        let headers = unsafe {
+            z::swr_zend_property_array(REQUEST.entry(), request.0, c"headers".as_ptr(), 7)
+        };
+        let property = |name| request.property(name);
         let data = property(c"data");
         let pipeline = property(c"pipeline").truthy();
         let use_pipeline_read = property(c"usePipelineRead").truthy();
@@ -756,25 +746,13 @@ impl Client {
     }
 
     fn create_stream(&mut self, id: u32, flags: u32) {
-        let mut response = MaybeUninit::<zval>::uninit();
-        // SAFETY: a writable zval; the response class is registered.
-        unsafe { object_init_ex(response.as_mut_ptr(), RESPONSE.entry()) };
-        // SAFETY: initialised above.
-        let response = unsafe { response.assume_init() };
-        // SAFETY: an object zval.
-        set_long(
-            unsafe { value::obj_of(&raw const response) },
-            RESPONSE.entry(),
-            c"streamId",
-            i64::from(id),
-        );
         self.streams.insert(
             id,
             Stream {
                 flags,
                 buffer: Vec::new(),
                 gzip: None,
-                response,
+                response: Response::new(id),
                 remote_window: self.remote.init_window_size,
                 local_window: self.local.init_window_size,
             },
@@ -890,14 +868,10 @@ impl Client {
                 let server_last = read_u32(payload);
                 let code = read_u32(payload.get(4..).unwrap_or_default());
                 let debug = payload.get(GOAWAY_SIZE..).unwrap_or_default();
-                set_long(self.object, ce(), c"errCode", i64::from(code));
-                set_bytes(self.object, ce(), c"errMsg", debug);
-                set_long(
-                    self.object,
-                    ce(),
-                    c"serverLastStreamId",
-                    i64::from(server_last),
-                );
+                let props = self.props();
+                props.long(c"errCode", i64::from(code));
+                props.bytes(c"errMsg", debug);
+                props.long(c"serverLastStreamId", i64::from(server_last));
                 self.close();
                 return Frame::Fail;
             }
@@ -932,41 +906,26 @@ impl Client {
             return Frame::Continue;
         }
         let end = plan.end != 0;
-        // SAFETY: the stream's response object.
-        let response = unsafe { value::obj_of(&raw const stream.response) };
+        let response = stream.response.props();
         if facts.kind == TYPE_RST_STREAM {
-            // SAFETY: a live response object.
-            let response_ce = unsafe { (*response).ce };
-            set_long(response, response_ce, c"statusCode", SERVER_RESET);
+            response.own().long(c"statusCode", SERVER_RESET);
             // A reset deletes its stream above, so upstream's stream_error is 0 here.
-            set_long(response, response_ce, c"errCode", 0);
+            response.own().long(c"errCode", 0);
         }
         if !stream.buffer.is_empty() {
-            set_bytes(response, RESPONSE.entry(), c"data", &stream.buffer);
+            response.bytes(c"data", &stream.buffer);
             stream.buffer.clear();
         }
-        if !end {
-            // SAFETY: a live response object.
-            unsafe { value::update_bool(RESPONSE.entry(), response, c"pipeline", true) };
-        }
-        call.set_value(stream.response);
+        // The return value takes the stream's response; a pipeline stream
+        // goes on with a fresh one.
         if end {
-            // The return value takes the stream's reference.
-            stream.response.u1 = _zval_struct__bindgen_ty_1 { type_info: IS_NULL };
-            self.streams.remove(&id);
+            if let Some(stream) = self.streams.remove(&id) {
+                call.set_owned(stream.response.zval);
+            }
         } else {
-            // SAFETY: the return value shares the response.
-            unsafe { swr_zval_try_addref(call.return_value()) };
-            // SAFETY: as above, then the stream's own reference is released.
-            unsafe { zval_ptr_dtor(&raw mut stream.response) };
-            let mut fresh = MaybeUninit::<zval>::uninit();
-            // SAFETY: a writable zval; the response class is registered.
-            unsafe { object_init_ex(fresh.as_mut_ptr(), RESPONSE.entry()) };
-            // SAFETY: initialised above.
-            stream.response = unsafe { fresh.assume_init() };
-            // SAFETY: an object zval.
-            let fresh = unsafe { value::obj_of(&raw const stream.response) };
-            set_long(fresh, RESPONSE.entry(), c"streamId", i64::from(id));
+            response.bool(c"pipeline", true);
+            let done = std::mem::replace(&mut stream.response, Response::new(id));
+            call.set_owned(done.zval);
         }
         Frame::Ready
     }
@@ -1054,8 +1013,7 @@ impl Client {
         let Some(stream) = self.streams.get_mut(&id) else {
             return;
         };
-        // SAFETY: the stream's response object.
-        let response = unsafe { value::obj_of(&raw const stream.response) };
+        let response = stream.response.object;
         let property = |name: &CStr| {
             // SAFETY: a live response object, which declares `name`.
             unsafe {
@@ -1108,10 +1066,14 @@ impl Client {
                 let text = unsafe { std::slice::from_raw_parts(header.value, header.value_length) };
                 let kind = header_kind(RESPONSE_HEADERS, name);
                 if name.first() == Some(&b':') {
-                    if kind == HEADER_STATUS {
-                        // SAFETY: a live response object.
-                        let response_ce = unsafe { (*response).ce };
-                        set_long(response, response_ce, c"statusCode", atol(text));
+                    if kind == HEADER_STATUS
+                        && let Some(stream) = self.streams.get(&id)
+                    {
+                        stream
+                            .response
+                            .props()
+                            .own()
+                            .long(c"statusCode", atol(text));
                     }
                 } else {
                     let Some(stream) = self.streams.get_mut(&id) else {
@@ -1120,15 +1082,12 @@ impl Client {
                     if kind == HEADER_CONTENT_ENCODING && media_kind(text) == MEDIA_GZIP {
                         stream.gzip = Some(Inflate::gzip_only());
                     } else if kind == HEADER_SET_COOKIE {
-                        // SAFETY: the value's bytes and two live array properties.
-                        unsafe {
-                            native::swoole_http2_client_coro_set_cookies(
-                                header.value.cast(),
-                                header.value_length,
-                                cookies,
-                                set_cookie_headers,
-                            );
-                        }
+                        // SAFETY: a live array property nothing else borrows
+                        // while parsing.
+                        let cookies = unsafe { ArrayMut::from_ptr(cookies) };
+                        // SAFETY: as above.
+                        let headers = unsafe { ArrayMut::from_ptr(set_cookie_headers) };
+                        swoole_rs_phpclients::parse_set_cookies(text, cookies, headers);
                     }
                     // SAFETY: a live array property; Zend copies both.
                     unsafe {
@@ -1164,10 +1123,9 @@ impl Drop for Client {
         self.reap();
         self.streams.clear();
         // SAFETY: the conn the client allocated; the socket is closed or gone.
-        let conn = unsafe { Box::from_raw(self.conn) };
-        let mut zsocket = conn.zsocket;
-        // SAFETY: the conn's reference to its socket object, if any.
-        unsafe { zval_ptr_dtor(&raw mut zsocket) };
+        let mut conn = unsafe { Box::from_raw(self.conn) };
+        // Emptied first, as the close hook does, in case releasing it runs the hook.
+        drop(std::mem::take(&mut conn.zsocket));
         if !self.inflater.is_null() || !self.deflater.is_null() {
             // SAFETY: codecs still held (the socket closed without its hook).
             unsafe { native::swoole_http2_client_coro_hpack_free(self.inflater, self.deflater) };
@@ -1322,12 +1280,10 @@ method_table! {
 /// # Safety
 /// Called once, at MINIT of module `module`, with upstream's static method
 /// table and Swoole's exception class.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_client_minit(
-    exception: *mut zend_class_entry,
-    shortname: bool,
-    module: c_int,
-) {
+pub unsafe fn client_minit(args: &swoole_rs_phpswoole::MinitArgs) {
+    let (exception, shortname, module) = (args.exception, args.shortname, args.module);
+    // phphttp2's one MINIT entry also hands its server to phphttp.
+    swoole_rs_phphttp::http2::register(&crate::server::HOOKS);
     // SAFETY: the native MINIT entry lends these original startup arguments.
     let result = unsafe { init_phphttp2_client_minit(exception, shortname, module) };
     match result {
@@ -1466,36 +1422,6 @@ fn client<'a>(call: &Call) -> &'a mut Client {
     client
 }
 
-/// A reference to an object for the call (`SW_CLIENT_PRESERVE_SOCKET`).
-struct Hold(*mut zend_object);
-
-impl Hold {
-    fn object(object: *mut zend_object) -> Self {
-        // SAFETY: a live object; the hold releases this reference.
-        unsafe { (*object).gc.refcount += 1 };
-        Self(object)
-    }
-
-    fn new(zsocket: *const zval) -> Option<Self> {
-        // SAFETY: a live zval.
-        if unsafe { type_of(zsocket) } != IS_OBJECT {
-            return None;
-        }
-        // SAFETY: an object zval.
-        Some(Self::object(unsafe { value::obj_of(zsocket) }))
-    }
-}
-
-impl Drop for Hold {
-    fn drop(&mut self) {
-        let mut held = MaybeUninit::<zval>::zeroed();
-        // SAFETY: the held object, whose reference this zval takes over.
-        unsafe { set_object(held.as_mut_ptr(), self.0) };
-        // SAFETY: releases the reference the hold took.
-        unsafe { zval_ptr_dtor(held.as_mut_ptr()) };
-    }
-}
-
 /// `__construct(string $host, int $port = 80, bool $ssl = false)`.
 fn construct(call: &Call) {
     let parsed = call.arity(1, 3).and_then(|()| {
@@ -1519,11 +1445,12 @@ fn construct(call: &Call) {
         unsafe { throw_exception(EXCEPTION.entry(), c"host is empty", INVALID_PARAMS) };
         return call.set_bool(false);
     }
-    this(call).client = Box::into_raw(Client::new(object, host, port, ssl));
-    set_bytes(object, ce(), c"host", host);
-    set_long(object, ce(), c"port", port);
-    // SAFETY: a live client object.
-    unsafe { value::update_bool(ce(), object, c"ssl", ssl) };
+    let client = Client::new(object, host, port, ssl);
+    let props = client.props();
+    props.bytes(c"host", host);
+    props.long(c"port", port);
+    props.bool(c"ssl", ssl);
+    this(call).client = Box::into_raw(client);
 }
 
 fn destruct(_call: &Call) {}
@@ -1551,29 +1478,35 @@ fn connect(call: &Call) {
 
 fn close(call: &Call) {
     let client = client(call);
-    let _hold = Hold::new(client.zsocket());
+    let _hold = client.hold_socket();
     let result = client.close();
     call.set_bool(result);
 }
 
+/// A `Swoole\Http2\Request` argument, live for the call.
+#[derive(Clone, Copy)]
+struct Request<'a>(*mut zend_object, PhantomData<&'a Call>);
+
+impl<'a> Request<'a> {
+    fn property(self, name: &CStr) -> &'a Value {
+        // SAFETY: a live request object, which declares every name read.
+        unsafe { swoole_rs_zend::property(self.0, name) }
+    }
+}
+
 /// `Z_PARAM_OBJECT_OF_CLASS(.., Swoole\Http2\Request)` of the first argument.
-fn request_arg(call: &Call) -> Option<*mut zend_object> {
-    let arg = call.zval(1);
+fn request_arg(call: &Call) -> Option<Request<'_>> {
+    let arg = call.value(1)?;
     let ce = REQUEST.entry();
-    // SAFETY: a passed argument.
-    if unsafe { type_of(arg) } == IS_OBJECT {
-        // SAFETY: an object zval.
-        let object = unsafe { value::obj_of(arg) };
-        // SAFETY: a live object.
-        let class = unsafe { (*object).ce };
+    if let (Some(object), Some(class)) = (arg.object(), arg.class())
         // SAFETY: two registered classes.
-        if class == ce || unsafe { swr_zend_instanceof(class, ce) } {
-            return Some(object);
-        }
+        && (class == ce || unsafe { swr_zend_instanceof(class, ce) })
+    {
+        return Some(Request(object, PhantomData));
     }
     // SAFETY: from a handler, as Zend's macro reports it; the name is the
     // class's NUL-terminated name.
-    unsafe { zend_wrong_parameter_class_error(1, class_name_of(ce), arg) };
+    unsafe { zend_wrong_parameter_class_error(1, class_name_of(ce), arg.as_ptr()) };
     None
 }
 
@@ -1592,7 +1525,7 @@ fn send(call: &Call) {
     let Some(request) = call.arity(1, 1).ok().and_then(|()| request_arg(call)) else {
         return call.set_bool(false);
     };
-    let _hold = Hold::new(client.zsocket());
+    let _hold = client.hold_socket();
     match client.send_request(request) {
         0 => call.set_bool(false),
         id => call.set_long(i64::from(id)),
@@ -1606,7 +1539,7 @@ fn receive(call: &Call, pipeline_read: bool) {
         return call.set_bool(false);
     };
     // Upstream preserves `$this` here, not the socket.
-    let _hold = Hold::object(call.this());
+    let _hold = call.this_owned();
     client.recv(call, timeout, pipeline_read);
 }
 
@@ -1630,7 +1563,7 @@ fn write(call: &Call) {
     let Ok((id, end)) = parsed else {
         return call.set_bool(false);
     };
-    let _hold = Hold::new(client.zsocket());
+    let _hold = client.hold_socket();
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -1661,7 +1594,7 @@ fn goaway(call: &Call) {
     let Ok((code, debug)) = parsed else {
         return call.set_bool(false);
     };
-    let _hold = Hold::new(client.zsocket());
+    let _hold = client.hold_socket();
     let result = client.send_goaway(code, debug);
     call.set_bool(result);
 }
@@ -1685,19 +1618,18 @@ fn is_stream_exist(call: &Call) {
     call.set_bool(exists);
 }
 
-fn settings_array(target: *mut zval, settings: &Http2Settings) {
-    // SAFETY: a writable zval.
-    unsafe { value::array_init(target) };
+fn settings_array(settings: &Http2Settings) -> Owned {
+    let mut array = OwnedArray::default();
     for (name, number) in [
-        (c"header_table_size", settings.header_table_size),
-        (c"init_window_size", settings.init_window_size),
-        (c"max_concurrent_streams", settings.max_concurrent_streams),
-        (c"max_frame_size", settings.max_frame_size),
-        (c"max_header_list_size", settings.max_header_list_size),
+        (&b"header_table_size"[..], settings.header_table_size),
+        (b"init_window_size", settings.init_window_size),
+        (b"max_concurrent_streams", settings.max_concurrent_streams),
+        (b"max_frame_size", settings.max_frame_size),
+        (b"max_header_list_size", settings.max_header_list_size),
     ] {
-        // SAFETY: a live array.
-        unsafe { add_assoc_long_ex(target, name.as_ptr(), name.count_bytes(), i64::from(number)) };
+        array.insert_long(name, i64::from(number));
     }
+    array.into_owned()
 }
 
 /// `stats(string $key = ''): array|int`.
@@ -1711,33 +1643,20 @@ fn stats(call: &Call) {
         match key {
             b"current_stream_id" => call.set_long(i64::from(client.stream_id)),
             b"last_stream_id" => call.set_long(i64::from(client.last_stream_id)),
-            b"local_settings" => settings_array(call.return_value(), &client.local),
-            b"remote_settings" => settings_array(call.return_value(), &client.remote),
+            b"local_settings" => call.set_owned(settings_array(&client.local)),
+            b"remote_settings" => call.set_owned(settings_array(&client.remote)),
             b"active_stream_num" => call.set_long(active),
             _ => {}
         }
         return;
     }
-    call.set_array();
-    call.add_assoc_long(c"current_stream_id", i64::from(client.stream_id));
-    call.add_assoc_long(c"last_stream_id", i64::from(client.last_stream_id));
-    for (name, settings) in [
-        (c"local_settings", client.local),
-        (c"remote_settings", client.remote),
-    ] {
-        let mut array = MaybeUninit::<zval>::uninit();
-        settings_array(array.as_mut_ptr(), &settings);
-        // SAFETY: the return array takes the settings array.
-        unsafe {
-            add_assoc_zval_ex(
-                call.return_value(),
-                name.as_ptr(),
-                name.count_bytes(),
-                array.as_mut_ptr(),
-            );
-        }
-    }
-    call.add_assoc_long(c"active_stream_num", active);
+    let mut array = OwnedArray::default();
+    array.insert_long(b"current_stream_id", i64::from(client.stream_id));
+    array.insert_long(b"last_stream_id", i64::from(client.last_stream_id));
+    array.insert(b"local_settings", settings_array(&client.local));
+    array.insert(b"remote_settings", settings_array(&client.remote));
+    array.insert_long(b"active_stream_num", active);
+    call.set_owned(array.into_owned());
 }
 
 swoole_rs_zend::handlers! {

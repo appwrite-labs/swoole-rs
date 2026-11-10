@@ -30,6 +30,5 @@ mod server;
 mod session;
 
 pub use client::*;
-pub use files::*;
 pub use server::*;
 pub use session::*;

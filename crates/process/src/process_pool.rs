@@ -23,12 +23,7 @@ use crate::pool::{
 use crate::reaper::{self, RELOAD_KILL_ONE, RELOAD_NONE, Reap, Waited, wait_child};
 use crate::reload_task::{ReloadTask, Warn};
 use crate::worker_record::WorkerRecord;
-use crate::worker_registry::{
-    WorkerRegistry, swr_v1_process_worker_registry_detach, swr_v1_process_worker_registry_free,
-    swr_v1_process_worker_registry_lookup, swr_v1_process_worker_registry_new,
-    swr_v1_process_worker_registry_reap_detached, swr_v1_process_worker_registry_register,
-    swr_v1_process_worker_registry_unregister,
-};
+use crate::worker_registry::WorkerRegistry;
 
 /// `swoole::ProcessPool`'s fields, in order. Rust owns this layout; the patch's
 /// `static_assert`s lock the C++ struct to `swr_v1_pool_record`, its C mirror.
@@ -593,7 +588,7 @@ impl<H: PoolHost> Pool<H> {
             return ptr::null_mut();
         }
         // SAFETY: the pool's registry.
-        unsafe { swr_v1_process_worker_registry_lookup(registry, pid) }.cast()
+        unsafe { (*registry).lookup(pid) }.cast()
     }
 
     /// `ProcessPool::create`.
@@ -614,11 +609,10 @@ impl<H: PoolHost> Pool<H> {
             IPC_MSGQUEUE => {
                 self.set_use_msgqueue(1);
                 self.set_msgqueue_key(key);
-                let queue = swoole_rs_ossupport::swr_v1_os_msg_queue_new(key);
-                if queue.is_null() {
+                let Some(queue) = swoole_rs_ossupport::QueueRecord::open(key) else {
                     return SW_ERR;
-                }
-                self.set_queue(queue.cast());
+                };
+                self.set_queue(Box::into_raw(queue).cast());
             }
             IPC_UNIXSOCK => {
                 self.op(OP_NEW_PIPES, 0);
@@ -631,7 +625,7 @@ impl<H: PoolHost> Pool<H> {
             IPC_SOCKET => self.set_use_socket(1),
             _ => mode = IPC_NONE,
         }
-        self.set_registry(swr_v1_process_worker_registry_new());
+        self.set_registry(Box::into_raw(Box::<WorkerRegistry>::default()));
         self.set_ipc(pool_ipc_new(mode == IPC_SOCKET));
         self.set_ipc_mode(mode);
         self.set_protocol(PROTOCOL_TASK);
@@ -759,7 +753,7 @@ impl<H: PoolHost> Pool<H> {
         let worker = unsafe { Worker::new(worker) };
         let old = worker.pid();
         // SAFETY: the pool's registry, which `create` made.
-        unsafe { swr_v1_process_worker_registry_unregister(self.registry(), old) };
+        unsafe { (*self.registry()).unregister(old) };
         let pid = self.on(worker.raw(), OP_FORK, 0);
         if pid == 0 {
             self.child(worker.raw())?;
@@ -769,7 +763,7 @@ impl<H: PoolHost> Pool<H> {
         worker.set_pid(pid);
         let record = worker.raw().cast();
         // SAFETY: as above.
-        unsafe { swr_v1_process_worker_registry_register(self.registry(), pid, record, 0) };
+        unsafe { (*self.registry()).register(pid, record, 0) };
         Ok(pid.into())
     }
 
@@ -1005,7 +999,7 @@ impl<H: PoolHost> Pool<H> {
                 crate::pool::raise_bailout();
             }
             // SAFETY: the pool's registry.
-            unsafe { swr_v1_process_worker_registry_detach(self.registry(), pid) };
+            unsafe { (*self.registry()).detach(pid) };
         }
         self.set_read_message(false);
     }
@@ -1018,8 +1012,7 @@ impl<H: PoolHost> Pool<H> {
             if !self.on_worker_not_found().is_null() {
                 self.op(OP_ON_WORKER_NOT_FOUND, exited(pid, status));
             // SAFETY: the pool's registry.
-            } else if !unsafe { swr_v1_process_worker_registry_reap_detached(self.registry(), pid) }
-            {
+            } else if !unsafe { (*self.registry()).reap_detached(pid) } {
                 self.op(LOG_UNKNOWN_CHILD, u64::from(pid.cast_unsigned()));
             }
             return false;
@@ -1140,14 +1133,19 @@ impl<H: PoolHost> Pool<H> {
             self.op(OP_FREE_PIPES, 0);
             self.set_pipes(ptr::null_mut());
         }
-        // SAFETY: the pool's queue (or null), freed once.
-        unsafe { swoole_rs_ossupport::swr_v1_os_msg_queue_free(self.queue().cast()) };
+        let queue = self.queue().cast::<swoole_rs_ossupport::QueueRecord>();
+        if !queue.is_null() {
+            // SAFETY: the pool's boxed queue, freed once.
+            drop(unsafe { Box::from_raw(queue) });
+        }
         self.set_queue(ptr::null_mut());
         // SAFETY: the pool's IPC state, freed once; the native close frees its listener.
         unsafe { pool_ipc_free(self.ipc(), self.h.close()) };
         self.set_ipc(ptr::null_mut());
-        // SAFETY: the pool's registry (or null), freed once.
-        unsafe { swr_v1_process_worker_registry_free(self.registry()) };
+        if !self.registry().is_null() {
+            // SAFETY: the pool's boxed registry, freed once.
+            drop(unsafe { Box::from_raw(self.registry()) });
+        }
         self.set_registry(ptr::null_mut());
         if !self.message_box().is_null() {
             self.op(OP_FREE_MESSAGE_BOX, 0);
@@ -1616,7 +1614,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(OP_FORK, 4321);
         let mut pool = fixture.pool(script);
-        pool.set_registry(swr_v1_process_worker_registry_new());
+        pool.set_registry(Box::into_raw(Box::<WorkerRegistry>::default()));
         let worker = pool.worker(0);
         assert_eq!(pool.spawn(worker).ok(), Some(4321));
         assert_eq!(pool.worker_by_pid(4321), worker);
@@ -1775,7 +1773,7 @@ mod tests {
     fn an_unknown_child_is_reported() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
-        pool.set_registry(swr_v1_process_worker_registry_new());
+        pool.set_registry(Box::into_raw(Box::<WorkerRegistry>::default()));
         assert!(!pool.reap(99, 0));
         assert_eq!(pool.h.log, [(LOG_UNKNOWN_CHILD, 99)]);
         pool.destroy();

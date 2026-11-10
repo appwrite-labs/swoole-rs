@@ -9,7 +9,7 @@ import tempfile
 
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 from tools.harness import run_isolated,write_report
 from importlib.util import spec_from_file_location,module_from_spec
 spec=spec_from_file_location('locks_overlay',Path(__file__).with_name('overlay.py'));overlay=module_from_spec(spec);spec.loader.exec_module(overlay)
@@ -23,8 +23,8 @@ def main():
         if '__asan_report_' not in symbols:p.error('Archive lacks Rust ASan report imports')
     pin=overlay.PIN;original=overlay.original
     # Reference side from the pin; the hybrid side is native/locks/swoole_lock.h over the archive.
-    hybrid_source,hybrid_flags=hybrid_tree(a.archive)
-    report={'upstream_commit':pin,'hybrid_tree':str(hybrid_source),'rust_asan_declared':a.rust_asan,'scope':'Actual pinned pthread bodies vs real Rust overlay facades; thread/fork/RW/timeout/barrier/atomic/futex witnesses. C++ sanitizer; Rust instructions instrumented only when rust_asan_declared=true; prebuilt Rust stdlib and OS code excluded. Coroutine lifecycle, PHP/ZTS and optimized performance are separate gates.','passed':False}
+    hybrid_flags=native_flags(a.archive)
+    report={'upstream_commit':pin,'rust_asan_declared':a.rust_asan,'scope':'Actual pinned pthread bodies vs real Rust overlay facades; thread/fork/RW/timeout/barrier/atomic/futex witnesses. C++ sanitizer; Rust instructions instrumented only when rust_asan_declared=true; prebuilt Rust stdlib and OS code excluded. Coroutine lifecycle, PHP/ZTS and optimized performance are separate gates.','passed':False}
     support='''#pragma once
 #include <cstdint>
 #include <cerrno>

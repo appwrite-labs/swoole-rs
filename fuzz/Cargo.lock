@@ -3,15 +3,6 @@
 version = 4
 
 [[package]]
-name = "aho-corasick"
-version = "1.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -91,27 +82,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "openssl-sys"
+version = "0.9.117"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
 name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
-
-[[package]]
-name = "regex-automata"
-version = "0.4.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-syntax"
-version = "0.8.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "shlex"
@@ -144,8 +136,9 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
- "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-reactor",
+ "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
 
@@ -188,9 +181,11 @@ dependencies = [
  "swoole-rs-clients",
  "swoole-rs-framing",
  "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-http2",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
+ "swoole-rs-protocols-ffi",
  "swoole-rs-utilities",
  "swoole-rs-websocket",
 ]
@@ -201,16 +196,31 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "memchr",
- "regex-automata",
  "swoole-rs-base64",
+ "swoole-rs-locale",
+]
+
+[[package]]
+name = "swoole-rs-http-ffi"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-http",
  "swoole-rs-ossupport",
 ]
 
 [[package]]
 name = "swoole-rs-http2"
 version = "0.1.0"
+
+[[package]]
+name = "swoole-rs-locale"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "swoole-rs-locks"
@@ -262,10 +272,15 @@ dependencies = [
 [[package]]
 name = "swoole-rs-protocols"
 version = "0.1.0"
+
+[[package]]
+name = "swoole-rs-protocols-ffi"
+version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-protocols",
  "swoole-rs-reactor",
 ]
 
@@ -280,6 +295,18 @@ dependencies = [
  "swoole-rs-memory",
  "swoole-rs-ossupport",
  "swoole-rs-process",
+]
+
+[[package]]
+name = "swoole-rs-tls"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "openssl-sys",
+ "swoole-rs-buffer",
+ "swoole-rs-corebase",
+ "swoole-rs-ossupport",
+ "swoole-rs-reactor",
 ]
 
 [[package]]
@@ -298,8 +325,11 @@ dependencies = [
 name = "swoole-rs-websocket"
 version = "0.1.0"
 dependencies = [
- "libc",
  "swoole-rs-base64",
- "swoole-rs-buffer",
- "swoole-rs-corebase",
 ]
+
+[[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"

@@ -1,0 +1,38 @@
+# Runner shapes for gcrunner (appwrite-labs' GCE runners). A job selects one with
+# `runs-on: gcrunner=${{ github.run_id }}/runner=<name>`. Spot unless a preset says
+# otherwise; every preset stays in the EU zones.
+
+runners:
+  # The PHPT shards, gates and test lanes: the shape of GitHub's ubuntu-24.04 runner,
+  # whose timings the fixed-timeout tests were written against.
+  standard:
+    family: c3d
+    cpu: 4
+    ram: 16
+    disk: 80gb
+    zone: europe-west4-a+europe-west1-b+europe-west3-a+europe-north1-a
+
+  # Cargo builds and the jobs that build swoole.so or an image.
+  build:
+    family: c3d
+    cpu: 8
+    ram: 32
+    disk: 100gb
+    zone: europe-west4-a+europe-west1-b+europe-west3-a+europe-north1-a
+
+  # Benchmarks and the soak: on demand, so a preemption doesn't lose a long run.
+  steady:
+    family: c3d
+    cpu: 4
+    ram: 16
+    disk: 80gb
+    zone: europe-west4-a+europe-west1-b+europe-west3-a+europe-north1-a
+    spot: false
+
+  # Jobs that only read GitHub's API or aggregate other jobs' results.
+  small:
+    family: n2d
+    cpu: 2
+    ram: 8
+    disk: 80gb
+    zone: europe-west4-a+europe-west1-b+europe-west3-a+europe-north1-a

@@ -2,10 +2,10 @@ name: PHPT engines
 description: >-
   Build the engines upstream's PHPTs run on, with the database, cURL and ssh2 hooks as
   upstream's own CI builds them (scripts/docker-compile.sh), into the phpt-engines artifact:
-  upstream.so, hybrid.so (the all-modules hybrid) and cargo.so (crates/ext alone).
+  upstream.so and cargo.so (crates/ext).
 inputs:
   engines:
-    description: The engines to build, space separated (upstream hybrid cargo)
+    description: The engines to build, space separated (upstream cargo)
     required: true
 outputs:
   php:
@@ -20,7 +20,7 @@ runs:
         shared-key: release
         save-if: false
     - shell: bash
-      run: rm -rf target/ext target/hybrid target/upstream target/thirdparty target/native-core
+      run: rm -rf target/ext target/upstream target/thirdparty target/native-core
     - id: install
       uses: ./.github/actions/install
       with:
@@ -28,42 +28,32 @@ runs:
         packages: firebird-dev libaio1t64 php-mysql
         php: latest
     - uses: ./.github/actions/instantclient
-    - id: upstream
-      uses: actions/cache@v4
-      with:
-        path: target/upstream
-        key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
-    - if: steps.upstream.outputs.cache-hit != 'true'
+    # The service hooks, as upstream's CI configures them; the cargo build turns on the same features.
+    - id: services
       shell: bash
-      run: python3 tools/build_upstream.py
-    - uses: actions/cache/restore@v4
+      run: |
+        services="--php-sockets --configure=--enable-swoole-pgsql --configure=--enable-mysqlnd --configure=--with-swoole-odbc=unixODBC,/usr --configure=--with-swoole-firebird"
+        services="$services --configure=--enable-swoole-sqlite --configure=--with-swoole-oracle=instantclient,/usr/local/instantclient"
+        echo "args=$services --configure=--enable-swoole-curl --configure=--with-swoole-ssh2" >> "$GITHUB_OUTPUT"
+    # Only for the upstream engine: build_ext.py clones the pin itself.
+    - id: upstream
+      if: contains(inputs.engines, 'upstream')
+      uses: ./.github/actions/upstream
       with:
-        path: .ccache
-        key: ccache-${{ runner.os }}-${{ github.sha }}
-        restore-keys: ccache-${{ runner.os }}-
+        args: ${{ steps.services.outputs.args }}
+        php: ${{ steps.install.outputs.php }}
     - shell: bash
       env:
         ENGINES: ${{ inputs.engines }}
+        UPSTREAM: ${{ steps.upstream.outputs.library }}
       run: |
-        cargo fetch --locked
-        services="--configure=--enable-swoole-pgsql --configure=--enable-mysqlnd --configure=--with-swoole-odbc=unixODBC,/usr --configure=--with-swoole-firebird"
-        services="$services --configure=--enable-swoole-sqlite --configure=--with-swoole-oracle=instantclient,/usr/local/instantclient"
-        services="$services --configure=--enable-swoole-curl --configure=--with-swoole-ssh2"
         mkdir -p target/phpt
-        for engine in $ENGINES; do
-          case $engine in
-            upstream)
-              python3 tools/build_hybrid.py --backend upstream --php-sockets $services | tee upstream.log
-              cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so ;;
-            hybrid)
-              python3 tools/build_hybrid.py --php-sockets $services | tee hybrid.log
-              cp -L "$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)" target/phpt/hybrid.so ;;
-            cargo)
-              python3 tools/build_ext.py --php-sockets $services
-              cp target/ext/swoole.so target/phpt/cargo.so ;;
-            *) echo "Unknown engine $engine" && exit 1 ;;
-          esac
-        done
+        if [ -n "$UPSTREAM" ]; then cp -L "$UPSTREAM" target/phpt/upstream.so; fi
+        if [[ " $ENGINES " == *" cargo "* ]]; then
+          cargo fetch --locked
+          python3 tools/build_ext.py ${{ steps.services.outputs.args }}
+          cp target/ext/swoole.so target/phpt/cargo.so
+        fi
     - uses: actions/upload-artifact@v4
       with:
         name: phpt-engines

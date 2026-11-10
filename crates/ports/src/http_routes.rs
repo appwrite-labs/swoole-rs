@@ -27,10 +27,7 @@ fn route<T>(
     http2: impl FnOnce() -> T,
     error: T,
 ) -> T {
-    match swoole_rs_http::swr_v1_http_transport_route(
-        conn.websocket_status.into(),
-        conn.http2_stream.into(),
-    ) {
+    match swoole_rs_http::transport_route(conn.websocket_status.into(), conn.http2_stream.into()) {
         1 => websocket(),
         2 => http2(),
         _ => {
@@ -82,8 +79,9 @@ pub mod exports {
     use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_server::{ConnectionRecord, view};
-    use swoole_rs_websocket::frame_api::{PacketLength, decode_frame};
-    use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, swr_v1_ws_encode};
+    use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame};
+    use swoole_rs_websocket_ffi::frame_api::{PacketLength, decode_frame};
+    use swoole_rs_websocket_ffi::swr_v1_ws_encode;
 
     use super::{WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
     use crate::framing_recv::{Packages, Recv};
@@ -103,11 +101,10 @@ pub mod exports {
 
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
     /// the length callback of an HTTP/2 port, and of crates/phphttp2's client and
-    /// crates/phphttp's coroutine server, which link it by this name.
+    /// crates/phphttp's coroutine server.
     ///
     /// # Safety
     /// `pl.buf` holds `pl.buf_size` readable bytes.
-    #[unsafe(export_name = "swr_v1_http2_frame_length")]
     pub unsafe extern "C" fn http2_length(
         _proto: *const c_void,
         _socket: *mut SocketRecord,
@@ -363,12 +360,6 @@ pub mod exports {
     ///
     /// # Safety
     /// Upstream's: the port's protocol, a connection socket and its packet length.
-    #[cfg_attr(
-        feature = "upstream-symbols",
-        unsafe(
-            export_name = "_ZN6swoole11http_server18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"
-        )
-    )]
     pub unsafe extern "C" fn get_package_length(
         proto: *const c_void,
         socket: *mut SocketRecord,
@@ -379,7 +370,7 @@ pub mod exports {
         match route(conn, || Some(true), || Some(false), None) {
             // SAFETY: upstream's arguments, forwarded.
             Some(true) => unsafe {
-                swoole_rs_websocket::frame_api::get_package_length(proto, socket.cast(), pl)
+                swoole_rs_websocket_ffi::frame_api::get_package_length(proto, socket.cast(), pl)
             },
             // SAFETY: as above.
             Some(false) => unsafe { http2_length(proto, socket, pl) },
@@ -391,12 +382,6 @@ pub mod exports {
     ///
     /// # Safety
     /// `socket` is a connection socket.
-    #[cfg_attr(
-        feature = "upstream-symbols",
-        unsafe(
-            export_name = "_ZN6swoole11http_server23get_package_length_sizeEPNS_7network6SocketE"
-        )
-    )]
     pub unsafe extern "C" fn get_package_length_size(socket: *mut SocketRecord) -> u8 {
         // SAFETY: as the caller guarantees.
         length_size(unsafe { connection(socket) })

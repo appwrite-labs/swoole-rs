@@ -4,9 +4,9 @@ Gates for the Rust `swoole::Buffer` queue (`crates/buffer`) and `swoole::String`
 (`crates/buffer/src/string.rs`, gates in [string/](string/)).
 Native runners compile the upstream side from pinned upstream
 `76c657d88be39b7af6bf85e46bcbac0da7387760`, extracted into a disposable tree, and
-the Rust side from the patched tree and headers of the hybrid build the supplied
-Rust archive comes from (`tools.build_hybrid.hybrid_tree`); the String gates link that
-build's own native objects with the archive (`hybrid_link`). They never rebuild the
+the Rust side from the headers and switches of the Cargo build whose SDK the supplied
+Rust archive belongs to (`tools.build_ext.native_flags`); the String gates link that
+build's native archives with the Rust archive (`native_link`). They never rebuild the
 archive. The `test_*.py` gates run under pytest (`python3 -m pytest tests/modules/buffer/<file>`) with the
 shared options in `tests/conftest.py` and read sources from `target/upstream/src`. `--sanitize` adds C++ ASan/UBSan; the Rust archive is not instrumented.
 

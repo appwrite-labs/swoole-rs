@@ -3,9 +3,7 @@
 Complexity is the devil, and simplicity is human. Before starting, consider what
 can be deleted. Aim for a net negative LoC delta where the task permits it.
 
-Never edit target/upstream/src. It is the pinned reference. Hybrid changes belong
-in migration/patches/<module>/ and are edited with `tools/patches.py`; a new
-commit exports as a timestamped patch file, so parallel PRs never renumber.
+Never edit target/upstream/src. It is the pinned reference.
 
 Preserve upstream test assertions and expected outputs. Never mark unsupported,
 SKIP or XFAIL as passed, or weaken capability probes to hide behavior failures.
@@ -162,15 +160,10 @@ Three tiers: the pre-commit hook (~5s warm), the PR tier (`pr.yml`, under 3 minu
 warm) and the merge tier (`merge.yml`, on `main`). `main`'s ruleset requires a
 pull request and the PR tier's `required` check, which passes when every job it
 `needs` passed or was skipped; add a blocking job there, and renaming `required`
-means updating the ruleset in the same PR. `hybrid` (the all-modules
-build, the only one there is, extension load and corpus, a few minutes cached) runs only when a PR
-touches patches, `native/`, the build tools, `crates/phpstubs/`, `.github/` or `.devcontainer/`, and
-is skipped, which counts as passing, otherwise. Checks run against `main` as of
-the PR's last push, and a PR merged meanwhile can make this one's patches stop
-applying, so `tooling` applies the all-modules patch set to the pin
-(`tools/patches.py check`, seconds; run it before pushing a patch change) and
-`hybrid` re-runs that check over `main`'s head as its last step. A merged PR's
-patches can still stop compiling; the merge tier catches that. `gates` runs the modules a PR
+means updating the ruleset in the same PR. `ext` (the Cargo-built
+swoole.so with every module, extension load and corpus, a few minutes cached) runs only when a PR
+touches `native/`, the build tools, `crates/phpstubs/`, `.github/` or `.devcontainer/`, and
+is skipped, which counts as passing, otherwise. `gates` runs the modules a PR
 touches and those depending on a touched crate, and fails only on a phase that didn't fail in
 main's latest completed merge-tier run (`ci.py new-failures`). `phpt` runs the touched
 modules' PHPT families on the Cargo build in parallel shards, gated on upstream's results from
@@ -191,9 +184,10 @@ What must not slip through is a **new** failure: a phase that passed in the
 previous completed merge-tier run, or one that didn't exist then. Before you
 claim, glance at `python3 tools/ci.py status`: it lists them as `new failures`.
 
-For each new failure, search open issues for the phase name. If none mentions
-it, file a `p0` `kind:bug` issue with the run link, the phase and its log path,
-and the commit range since the previous run (group phases of one module into one
-issue). Then carry on with your own ticket.
+For each new failure, search open issues for the phase name (`ci.py status` lists
+the open issues that mention it). If none mentions it, file a `p0` `kind:bug`
+issue with the run link, the phase and its log path, and the commit range since
+the previous run (group phases of one module into one issue). Then carry on with
+your own ticket.
 `p0` sorts first, so the next free executor picks it up. Failures that already
 have an issue keep that issue's priority.

@@ -3,7 +3,7 @@
 use core::ffi::{c_int, c_void};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
-use swoole_rs_protocols::{ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespIo, swr_v1_resp_recv};
+use swoole_rs_protocols_ffi::{ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespIo, swr_v1_resp_recv};
 use swoole_rs_reactor::SocketRecord;
 use swoole_rs_server::ConnectionRecord;
 
@@ -80,19 +80,12 @@ unsafe extern "C" fn connection_dispatch(context: *mut c_void, length: usize) ->
     c_int::from(unsafe { (*c.socket).removed } != 0)
 }
 
-/// `int redis::recv_packet(Protocol *, Connection *, String *)`. Only upstream's
-/// core-tests (protocol/redis.cpp) call it by its upstream symbol.
+/// `int redis::recv_packet(Protocol *, Connection *, String *)`.
 ///
 /// # Safety
 /// `protocol`, `conn` and its socket, and `buffer` are live; `conn->object` is
 /// null or this receive's request.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole5redis11recv_packetEPNS_8ProtocolEPNS_10ConnectionEPNS_6StringE"
-    )
-)]
-pub(crate) unsafe extern "C" fn recv_packet(
+pub(crate) unsafe fn recv_packet(
     protocol: *const Protocol,
     conn: *mut c_void,
     buffer: *mut CppString,
@@ -129,7 +122,7 @@ pub(crate) unsafe extern "C" fn recv_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swoole_rs_protocols::SW_ERR;
+    use swoole_rs_protocols_ffi::SW_ERR;
 
     /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, recv_packet_with_partially_filled_buffer)`.
     #[test]

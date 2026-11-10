@@ -19,9 +19,12 @@ mod host;
 mod lifecycle;
 pub mod log;
 pub mod native;
+pub mod net_address;
 pub mod net_types;
 mod random;
 mod signal_mask;
+pub mod sys;
+pub use sys::set_errno;
 pub mod switches;
 pub use switches::Switch;
 
@@ -43,7 +46,7 @@ pub mod worker_registry;
 pub use global::*;
 pub use hook::{swoole_add_hook, swoole_call_hook, swoole_isset_hook};
 pub use host::{
-    DataHead, datahead_dump, microtime, set_errno, sw_calloc, sw_free, sw_malloc, sw_realloc,
+    DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, sw_realloc,
     swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_hex2dec,
     swoole_print_backtrace, swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any,
     swoole_random_int, swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec,
@@ -56,7 +59,7 @@ pub use lifecycle::{
     swoole_thread_init, swr_v1_core_swoole_init, swr_v1_core_thread_global, swr_v1_core_timer_slot,
     thread_async_threads, thread_id, thread_kind, thread_message_bus, thread_reactor,
 };
-pub use random::{swoole_random_string, swr_v1_os_random_bytes};
+pub use random::{random_bytes, swoole_random_string};
 pub use thread::*;
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};
@@ -115,13 +118,13 @@ pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
     if input.is_null() || output.is_null() {
         return 0;
     }
-    let saved = host::errno();
-    host::set_errno(0);
+    let saved = sys::errno();
+    sys::set_errno(0);
     let mut end = ptr::null_mut();
     // SAFETY: `input` is a non-null, NUL-terminated string; `end` is a live local.
     let value = unsafe { strtol(input, &raw mut end, 10) };
-    let range = host::errno() == libc::ERANGE;
-    host::set_errno(saved);
+    let range = sys::errno() == libc::ERANGE;
+    sys::set_errno(saved);
     if end.cast_const() == input || range {
         return 0;
     }
@@ -234,6 +237,37 @@ pub extern "C" fn swoole_dec2hex(value: c_ulong, base: c_int) -> *mut c_char {
     unsafe { strndup(digits, buffer.len() - first - 1) }
 }
 
+/// format.c's printf family under its public names, which swoole.h's inline logging
+/// calls from native extensions. A C definition would stay hidden in the Cargo-built
+/// swoole.so, as a cdylib exports only Rust's symbols, so each is a naked tail jump to
+/// the C body, which keeps its variadic arguments in place.
+macro_rules! format_exports {
+    ($($export:ident => $definition:ident),* $(,)?) => {
+        #[cfg(feature = "upstream-symbols")]
+        unsafe extern "C" {
+            $(fn $definition();)*
+        }
+        $(
+            #[doc = concat!("`", stringify!($export), "`, exported.")]
+            #[cfg(feature = "upstream-symbols")]
+            #[unsafe(naked)]
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $export() {
+                #[cfg(target_arch = "x86_64")]
+                core::arch::naked_asm!("jmp {}@PLT", sym $definition);
+                #[cfg(target_arch = "aarch64")]
+                core::arch::naked_asm!("b {}", sym $definition);
+            }
+        )*
+    };
+}
+
+format_exports! {
+    sw_vsnprintf => swr_c_sw_vsnprintf,
+    sw_snprintf => swr_c_sw_snprintf,
+    sw_printf => swr_c_sw_printf,
+}
+
 /// `SW_LOG_ERROR` and `SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT`.
 #[cfg(feature = "upstream-symbols")]
 const LOG_ERROR: c_int = 5;
@@ -332,22 +366,11 @@ pub unsafe fn radix(mut value: c_ulong, radix: u32, output: *mut u8, capacity: u
     }
 }
 
-/// Target-default char mode retained for the frozen two-argument ABI.
-/// # Safety
-/// Same input/output requirements as `swr_v1_corebase_hex_mode`; native char mode
-/// must match this Rust target's default `c_char`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_hex(input: *const c_char, parsed: *mut usize) -> c_ulong {
-    // SAFETY: forwards the caller's own input and output contract unchanged.
-    unsafe { swr_v1_corebase_hex_mode(input, parsed, u8::from(c_char::MIN != 0)) }
-}
-
 /// Preserve native prefix, locale, signed-char and `size_t` wrap semantics.
 /// # Safety
 /// Input is a valid NUL-terminated C string; parsed is writable and disjoint.
 /// Bytes passed to toupper must satisfy the original host's ctype precondition.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_hex_mode(
+pub unsafe fn swr_v1_corebase_hex_mode(
     input: *const c_char,
     parsed: *mut usize,
     native_char_signed: u8,
@@ -451,8 +474,7 @@ pub struct MkdirState {
 /// bytes, disjoint from input and initialized state. State starts zeroed, then
 /// stays unmodified between calls; output stays unchanged by native IO. Stop on
 /// any result other than1. All pointers remain valid during each call only.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_mkdir_next(
+pub unsafe fn swr_v1_corebase_mkdir_next(
     input: *const u8,
     input_length: usize,
     output: *mut u8,
@@ -517,8 +539,7 @@ pub unsafe extern "C" fn swr_v1_corebase_mkdir_next(
 /// 2 path bound exceeded. No allocation or native callback occurs here.
 /// # Safety
 /// input lends length bytes; scratch lends capacity writable bytes and is disjoint.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_mkdir_complete(
+pub unsafe fn swr_v1_corebase_mkdir_complete(
     input: *const u8,
     length: usize,
     scratch: *mut u8,
@@ -651,11 +672,11 @@ mod tests {
         let mut parsed = 0;
         unsafe {
             assert_eq!(
-                swr_v1_corebase_hex(c"FFtail".as_ptr(), &raw mut parsed),
+                swoole_hex2dec(c"FFtail".as_ptr(), &raw mut parsed),
                 16_833_333
             );
             assert_eq!(parsed, 6);
-            assert_eq!(swr_v1_corebase_hex(c"0x".as_ptr(), &raw mut parsed), 0);
+            assert_eq!(swoole_hex2dec(c"0x".as_ptr(), &raw mut parsed), 0);
             assert_eq!(parsed, 2);
         }
     }

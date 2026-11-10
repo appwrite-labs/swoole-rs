@@ -5,7 +5,6 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
 use swoole_rs_buffer as buffer;
-use swoole_rs_http as http;
 use swoole_rs_memory as memory;
 use swoole_rs_timer as timer;
 
@@ -72,35 +71,6 @@ fn run(name: &str, rounds: usize) -> u64 {
                     }
                 }
                 assert_eq!(buffer::swr_v1_buffer_release(owner), 0);
-            }
-            "directory-17" | "directory-1024" => {
-                let count = if name == "directory-17" { 17 } else { 1024 };
-                let names: Vec<_> = (0..count)
-                    .rev()
-                    .map(|i| format!("file-{i:04}.txt"))
-                    .collect();
-                for _ in 0..rounds {
-                    let owner = http::swr_v2_http_directory_new();
-                    assert!(!owner.is_null());
-                    for name in &names {
-                        assert_eq!(
-                            http::swr_v2_http_directory_scan_append(
-                                owner,
-                                name.as_ptr(),
-                                name.len()
-                            ),
-                            1
-                        );
-                    }
-                    http::swr_v2_http_directory_scan_finish(owner);
-                    assert_eq!(http::swr_v2_http_directory_count(owner), count);
-                    for name in &names {
-                        sum +=
-                            http::swr_v2_http_directory_contains(owner, name.as_ptr(), name.len())
-                                as u64;
-                    }
-                    http::swr_v2_http_directory_drop(owner);
-                }
             }
             "heap-1" | "heap-128" | "heap-512" => {
                 let n = if name == "heap-1" {

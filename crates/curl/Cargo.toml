@@ -17,6 +17,7 @@ swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-coroutine = { path = "../coroutine" }
 swoole-rs-curl-sys = { path = "../curl-sys" }
 swoole-rs-reactor = { path = "../reactor" }
+swoole-rs-tls = { path = "../tls" }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
 

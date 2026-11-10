@@ -4,13 +4,11 @@
 //! `swoole_http_request.cc` did. llhttp and the multipart parser stay the
 //! bundled C (third-party); what Swoole itself owns goes through `host`.
 use crate::host;
-use crate::server::new_zval;
 use crate::state::{Slot, State};
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
+use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::log;
-use swoole_rs_http::{HttpSpan, swr_v1_http_boundary};
 use swoole_rs_httpbindings::{
     RequestHeader, Text, Trimmed, UrlParts, request_header, request_key,
     swr_v1_httpbindings_body_prefix, swr_v1_httpbindings_compression,
@@ -19,14 +17,11 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_server::view;
 use swoole_rs_zend::sys::{
-    IS_DOUBLE, IS_LONG, add_assoc_long_ex, add_assoc_stringl_ex, swr_zend_array_init,
-    swr_zend_http_add_or_merge, swr_zend_http_estrndup, swr_zend_http_intern,
-    swr_zend_http_max_input_vars, swr_zend_http_property_array, swr_zend_http_property_offset,
-    swr_zend_http_treat_data, swr_zend_http_upload, swr_zval_str, swr_zval_stringl,
-    zend_class_entry, zend_hash_add_new, zend_hash_str_find, zend_hash_update, zend_object,
-    zend_string, zend_value, zval, zval_ptr_dtor,
+    swr_zend_http_estrndup, swr_zend_http_intern, swr_zend_http_max_input_vars,
+    swr_zend_http_property_offset, swr_zend_http_treat_data, swr_zend_http_upload,
+    zend_class_entry, zend_string, zval,
 };
-use swoole_rs_zend::{string, type_of, value};
+use swoole_rs_zend::{Owned, OwnedArray, Value, ZStr, ZString, string};
 
 /// The bundled `multipart_parser` (`thirdparty/multipart_parser.h`), up to
 /// the fields its callbacks use.
@@ -249,9 +244,11 @@ static KEYS: [AtomicPtr<zend_string>; 25] = [const { AtomicPtr::new(ptr::null_mu
 static OFFSETS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
 pub(crate) static CAPABILITIES: AtomicU32 = AtomicU32::new(0);
 
-pub(crate) fn key(key: Key) -> *mut zend_string {
-    KEYS.get(key as usize)
-        .map_or(ptr::null_mut(), |key| key.load(Relaxed))
+/// The interned key, None before MINIT.
+pub(crate) fn key(key: Key) -> Option<&'static ZStr> {
+    let key = KEYS.get(key as usize)?.load(Relaxed);
+    // SAFETY: null, or a string MINIT interned permanently.
+    unsafe { ZStr::from_ptr(key) }
 }
 
 /// The request's array properties, read (and created) on first use.
@@ -312,40 +309,32 @@ pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
         Property::Server => &mut request.zserver,
         Property::Header => &mut request.zheader,
     };
-    if slot.ptr.is_null() {
-        // SAFETY: the request's live object zval.
-        let object: *mut zend_object = unsafe { value::obj_of(request.zobject.ptr) };
-        let offset = OFFSETS
-            .get(which as usize)
-            .map_or(0, |offset| offset.load(Relaxed));
-        // SAFETY: a declared property slot of that object.
-        let size = if matches!(which, Property::Server) {
-            HT_MIN_SIZE << 1
-        } else {
-            HT_MIN_SIZE
-        };
-        // SAFETY: as above.
-        let array = unsafe { swr_zend_http_property_array(object, offset, size) };
-        // SAFETY: as above; the array zval just initialised.
-        slot.value = unsafe { *array };
-        slot.ptr = &raw mut slot.value;
-    }
-    slot.ptr
+    let offset = OFFSETS
+        .get(which as usize)
+        .map_or(0, |offset| offset.load(Relaxed));
+    let size = if matches!(which, Property::Server) {
+        HT_MIN_SIZE << 1
+    } else {
+        HT_MIN_SIZE
+    };
+    slot.init_array(&request.zobject, offset, size)
 }
 
 /// `http_server_add_server_array`: `$request->server[key] = value`.
-fn add_server(state: &State, key_: Key, value_: &mut zval) {
-    // SAFETY: the request's `server` array, created with the request.
-    let table = unsafe { value::table(state.request.zserver.ptr) };
-    // SAFETY: a live table, an interned key and a value it takes over.
-    unsafe { zend_hash_add_new(table, key(key_), value_) };
+pub(crate) fn add_server(state: &mut State, key_: Key, value_: Owned) {
+    if let Some(server) = state.request.zserver.array_mut()
+        && let Some(key) = key(key_)
+    {
+        server.add_new(key, value_);
+    }
 }
 
-fn stringl(bytes: *const u8, length: usize) -> zval {
-    let mut target = new_zval();
+/// A new string of the `length` bytes at `bytes`.
+fn stringl(bytes: *const u8, length: usize) -> Owned {
     // SAFETY: `bytes` spans `length` readable bytes, per every caller.
-    unsafe { swr_zval_stringl(&raw mut target, bytes.cast(), length) };
-    target
+    Owned::string(ZString::new(unsafe {
+        std::slice::from_raw_parts(bytes, length)
+    }))
 }
 
 fn estrndup(bytes: *const u8, length: usize) -> *mut c_char {
@@ -450,36 +439,11 @@ pub(crate) unsafe fn parse_request(
 /// `Request::parse()`: append to `request.zdata` and parse what was appended.
 pub(crate) fn parse_piece(state: *mut State, data: &[u8]) -> usize {
     // SAFETY: a live context.
-    let zdata = unsafe { &raw mut (*state).request.zdata };
-    // SAFETY: the request's data zval.
-    if unsafe { type_of(zdata) } == swoole_rs_zend::sys::IS_STRING {
-        // SAFETY: a string zval.
-        let old = unsafe { value::str_of(zdata) };
-        // SAFETY: as above.
-        let old_bytes = unsafe { string::bytes(old) };
-        let joined = string::alloc(old_bytes.len() + data.len());
-        let target = string::val(joined);
-        // SAFETY: a fresh string with room for both.
-        unsafe { ptr::copy_nonoverlapping(old_bytes.as_ptr(), target, old_bytes.len()) };
-        // SAFETY: as above.
-        unsafe {
-            ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                target.wrapping_add(old_bytes.len()),
-                data.len(),
-            );
-        };
-        // SAFETY: as above.
-        unsafe { string::truncate(joined, old_bytes.len() + data.len()) };
-        // SAFETY: `zval_dtor` of the string the zval held.
-        unsafe { zval_ptr_dtor(zdata) };
-        // SAFETY: the zval was just released.
-        unsafe { swr_zval_str(zdata, joined) };
-    } else {
-        // SAFETY: an empty zval and the argument's bytes.
-        unsafe { swr_zval_stringl(zdata, data.as_ptr().cast(), data.len()) };
-    }
-    let (start, length) = zdata_span(state);
+    let zdata = unsafe { &mut (*state).request.zdata };
+    let joined = [zdata.bytes().unwrap_or_default(), data].concat();
+    *zdata = Owned::string(ZString::new(&joined));
+    // SAFETY: as above.
+    let (start, length) = zdata_span(unsafe { &*state });
     execute(
         state,
         &PIECES,
@@ -489,13 +453,8 @@ pub(crate) fn parse_piece(state: *mut State, data: &[u8]) -> usize {
 }
 
 /// `request.zdata`'s bytes.
-fn zdata_span(state: *const State) -> (*const u8, usize) {
-    // SAFETY: a live context whose data zval holds a string.
-    let zdata = unsafe { &raw const (*state).request.zdata };
-    // SAFETY: as above.
-    let string = unsafe { value::str_of(zdata) };
-    // SAFETY: as above.
-    let bytes = unsafe { string::bytes(string) };
+fn zdata_span(state: &State) -> (*const u8, usize) {
+    let bytes = state.request.zdata.bytes().unwrap_or_default();
     (bytes.as_ptr(), bytes.len())
 }
 
@@ -525,8 +484,7 @@ fn url(state: &mut State, at: *const u8, length: usize) -> c_int {
         return 0;
     }
     let query = at.wrapping_add(parts.query_offset);
-    let mut tmp = stringl(query, parts.query_length);
-    add_server(state, Key::QueryString, &mut tmp);
+    add_server(state, Key::QueryString, stringl(query, parts.query_length));
     let get = property(state, Property::Get);
     treat_data(PARSE_STRING, query, parts.query_length, get);
     0
@@ -743,20 +701,15 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
         RequestHeader::Compression => compression_method(state, at, length),
         RequestHeader::Append => {}
     }
-    let mut tmp = stringl(at, length);
+    let value_ = stringl(at, length);
     // The request's `header` array, created with the request.
-    let header = state.request.zheader.ptr;
-    if let Some(&known) = request_key(name).and_then(|index| HEADER_KEYS.get(index)) {
-        // SAFETY: a live array zval.
-        let table = unsafe { value::table(header) };
-        // SAFETY: a live table, an interned key and a value it takes over.
-        unsafe { zend_hash_update(table, key(known), &raw mut tmp) };
-    } else {
-        let lower = name.to_ascii_lowercase();
-        // SAFETY: a live array zval and a value it takes over.
-        unsafe {
-            swr_zend_http_add_or_merge(header, lower.as_ptr().cast(), lower.len(), &raw mut tmp);
-        };
+    let Some(header) = state.request.zheader.array_mut() else {
+        return 0;
+    };
+    let known = request_key(name).and_then(|index| HEADER_KEYS.get(index));
+    match known.and_then(|&known| key(known)) {
+        Some(known) => header.update(known, value_),
+        None => header.merge(&name.to_ascii_lowercase(), value_),
     }
     0
 }
@@ -788,21 +741,17 @@ unsafe extern "C" fn on_headers_complete(parser: *mut crate::state::Llhttp) -> c
     request.ext_len = ext_len;
 
     let method = method_name(state);
-    let mut tmp = stringl(method.as_ptr().cast(), method.count_bytes());
-    add_server(state, Key::RequestMethod, &mut tmp);
-    let mut tmp = stringl(path.as_ptr(), path.len());
-    add_server(state, Key::RequestUri, &mut tmp);
+    let method = Owned::string(ZString::new(method.to_bytes()));
+    add_server(state, Key::RequestMethod, method);
+    add_server(state, Key::RequestUri, Owned::string(ZString::new(path)));
 
     // path_info should be decoded
-    let decoded = string::copy(path);
+    let decoded = ZString::new(path);
     // SAFETY: a fresh string of `path.len()` bytes, decoded in place.
-    let decoded_len = unsafe { php_url_decode(string::val(decoded).cast(), path.len()) };
-    // SAFETY: the decoded bytes fit the string.
-    unsafe { (*decoded).len = decoded_len };
-    let mut tmp = new_zval();
-    // SAFETY: the zval takes over the fresh string.
-    unsafe { swr_zval_str(&raw mut tmp, decoded) };
-    add_server(state, Key::PathInfo, &mut tmp);
+    let decoded_len = unsafe { php_url_decode(string::val(decoded.as_ptr()).cast(), path.len()) };
+    // SAFETY: the decoded bytes fit the string, which nothing else holds.
+    unsafe { (*decoded.as_ptr()).len = decoded_len };
+    add_server(state, Key::PathInfo, Owned::string(decoded));
     request_times(state);
     let protocol = if state.request.version == 101 {
         Key::Http11
@@ -820,25 +769,22 @@ unsafe extern "C" fn on_headers_complete(parser: *mut crate::state::Llhttp) -> c
 
 /// Swoole's `microtime()`.
 /// `$request->server`'s `request_time` and `request_time_float`.
-pub(crate) fn request_times(state: &State) {
+pub(crate) fn request_times(state: &mut State) {
     // SAFETY: `time(NULL)`.
     let now = unsafe { libc::time(ptr::null_mut()) };
-    let mut tmp = new_zval();
-    // SAFETY: an empty zval.
-    unsafe { value::set_long(&raw mut tmp, now) };
-    add_server(state, Key::RequestTime, &mut tmp);
-    let mut tmp = new_zval();
-    tmp.value = zend_value { dval: microtime() };
-    tmp.u1.type_info = IS_DOUBLE;
-    add_server(state, Key::RequestTimeFloat, &mut tmp);
+    add_server(state, Key::RequestTime, Owned::long(now));
+    add_server(state, Key::RequestTimeFloat, Owned::double(microtime()));
 }
 
 /// `$request->server['server_protocol']`, an interned protocol name.
-pub(crate) fn add_protocol(state: &State, protocol: Key) {
-    let mut tmp = new_zval();
-    // SAFETY: an interned string, which ZVAL_STR does not count.
-    unsafe { swr_zval_str(&raw mut tmp, key(protocol)) };
-    add_server(state, Key::ServerProtocol, &mut tmp);
+pub(crate) fn add_protocol(state: &mut State, protocol: Key) {
+    if let Some(protocol) = key(protocol) {
+        add_server(
+            state,
+            Key::ServerProtocol,
+            Owned::string(protocol.to_owned()),
+        );
+    }
 }
 
 fn microtime() -> f64 {
@@ -975,18 +921,19 @@ fn multipart_boundary(
     length: usize,
     offset: usize,
 ) -> Option<(*const u8, usize)> {
-    let mut span = HttpSpan {
-        offset: 0,
-        length: 0,
+    let input = if length == 0 {
+        &[][..]
+    } else {
+        // SAFETY: the header value's span.
+        unsafe { core::slice::from_raw_parts(at, length) }
     };
-    // SAFETY: the header value's span and a writable result.
-    if unsafe { swr_v1_http_boundary(at, length, offset, &raw mut span) } != 1 {
+    let Ok(Some(span)) = swoole_rs_http::boundary(input, offset) else {
         let message = format!("boundary of multipart/form-data not found, fd:{}", state.fd);
         host::log(0, 0, c"Context::get_multipart_boundary", message);
         /* make it same with protocol error */
         state.parser.error = INVALID_HEADER_TOKEN;
         return None;
-    }
+    };
     Some((at.wrapping_add(span.offset), span.length))
 }
 
@@ -1101,45 +1048,9 @@ unsafe extern "C" fn on_part_header_field(
     header_field(unsafe { part_state(parser) }, at.cast(), length)
 }
 
-/// `zend_hash_str_find(Z_ARRVAL_P(array), key)`.
-pub(crate) fn find(array: *mut zval, key: &[u8]) -> *mut zval {
-    // SAFETY: a live array zval.
-    let table = unsafe { value::table(array) };
-    // SAFETY: a live table.
-    unsafe { zend_hash_str_find(table, key.as_ptr().cast(), key.len()) }
-}
-
-/// `Z_TYPE_P(zv) == IS_LONG ? Z_LVAL_P(zv) : None`.
-fn long(found: *mut zval) -> Option<i64> {
-    // SAFETY: a live zval.
-    (!found.is_null() && unsafe { type_of(found) } == IS_LONG).then(|| {
-        // SAFETY: an int zval.
-        unsafe { value::long_of(found) }
-    })
-}
-
-fn add_long(array: *mut zval, key: &CStr, value_: i64) {
-    // SAFETY: a live array zval.
-    unsafe { add_assoc_long_ex(array, key.as_ptr(), key.count_bytes(), value_) };
-}
-
-fn add_bytes(array: *mut zval, key: &CStr, bytes: &[u8]) {
-    // SAFETY: a live array zval; Zend copies the bytes.
-    unsafe {
-        add_assoc_stringl_ex(
-            array,
-            key.as_ptr(),
-            key.count_bytes(),
-            bytes.as_ptr().cast(),
-            bytes.len(),
-        );
-    };
-}
-
 /// A string zval's bytes up to its first NUL (`%s`, `strlen`), and its length.
-fn string_value<'a>(found: *mut zval) -> Option<(&'a [u8], usize)> {
-    // SAFETY: a live zval from a live array.
-    let bytes = unsafe { swoole_rs_zend::string_of(found) }?;
+fn string_value(found: &Value) -> Option<(&[u8], usize)> {
+    let bytes = found.bytes()?;
     let text = bytes.split(|&byte| byte == 0).next().unwrap_or_default();
     Some((text, bytes.len()))
 }
@@ -1212,16 +1123,16 @@ unsafe extern "C" fn on_part_header_value(
             host::log(0, 0, func, message);
             return 0;
         };
-        let mut fields = new_zval();
-        // SAFETY: an empty zval.
-        unsafe { swr_zend_array_init(&raw mut fields) };
+        // Released on every return, which upstream's early ones leak.
+        let fields = OwnedArray::default().into_owned();
         parse_cookie(
-            &raw mut fields,
+            fields.as_ptr(),
             value_.as_ptr().wrapping_add(offset),
             length - offset,
         );
+        let field = |key: &[u8]| fields.array().and_then(|fields| fields.find(key));
 
-        let Some((form_name, form_name_len)) = string_value(find(&raw mut fields, b"name")) else {
+        let Some((form_name, form_name_len)) = field(b"name").and_then(string_value) else {
             return 0;
         };
         if form_name_len >= FORM_KEYLEN {
@@ -1232,11 +1143,7 @@ unsafe extern "C" fn on_part_header_value(
             return -1;
         }
         let form_name = trimmed(form_name, form_name_len);
-        let filename = find(&raw mut fields, b"filename");
-        if filename.is_null() {
-            // POST form data
-            state.parse.form_data_name = Some(c_copy(&form_name));
-        } else {
+        if let Some(filename) = field(b"filename") {
             // upload file
             let (filename, filename_len) = string_value(filename).unwrap_or((&[], 0));
             if filename_len >= FORM_KEYLEN {
@@ -1247,11 +1154,9 @@ unsafe extern "C" fn on_part_header_value(
                 return -1;
             }
             state.parse.input_name = Some(c_copy(&form_name));
-            let mut header = new_zval();
-            // SAFETY: an empty zval.
-            unsafe { swr_zend_array_init(&raw mut header) };
+            let mut header = OwnedArray::default();
             if state.parse.tmp_content_type.is_null() {
-                add_bytes(&raw mut header, c"type", b"");
+                header.insert_bytes(b"type", Some(b""));
             } else {
                 // SAFETY: a span of the parser's input, still live.
                 let content_type = unsafe {
@@ -1260,31 +1165,30 @@ unsafe extern "C" fn on_part_header_value(
                         state.parse.tmp_content_type_len,
                     )
                 };
-                add_bytes(&raw mut header, c"type", content_type);
+                header.insert_bytes(b"type", Some(content_type));
                 state.parse.tmp_content_type = ptr::null();
             }
-            add_bytes(&raw mut header, c"tmp_name", b"");
-            add_long(&raw mut header, c"size", 0);
+            header.insert_bytes(b"tmp_name", Some(b""));
+            header.insert_long(b"size", 0);
             let filename = trimmed(filename, filename_len);
-            add_bytes(&raw mut header, c"name", &filename);
-            add_long(
-                &raw mut header,
-                c"error",
+            header.insert_bytes(b"name", Some(&filename));
+            header.insert_long(
+                b"error",
                 if filename.is_empty() {
                     UPLOAD_NO_FILE
                 } else {
                     UPLOAD_OK
                 },
             );
-            state.parse.multipart_header = header;
+            state.parse.multipart_header = header.into_owned();
+        } else {
+            // POST form data
+            state.parse.form_data_name = Some(c_copy(&form_name));
         }
-        // SAFETY: the array this function made.
-        unsafe { zval_ptr_dtor(&raw mut fields) };
     } else if name.eq_ignore_ascii_case(b"content-type") {
-        if has_header(state) {
-            let header = &raw mut state.parse.multipart_header;
-            if long(find(header, b"error")) == Some(UPLOAD_OK) {
-                add_bytes(header, c"type", value_);
+        if state.parse.multipart_header.array().is_some() {
+            if upload_error(state).and_then(Value::as_long) == Some(UPLOAD_OK) {
+                upload_bytes(state, b"type", value_);
             }
         } else {
             state.parse.tmp_content_type = value_.as_ptr();
@@ -1297,10 +1201,9 @@ unsafe extern "C" fn on_part_header_value(
         // there is still data to be received. As a result, llhttp fails to trigger the message callback. Therefore, we
         // need to set `ctx->completed = 1` to indicate that the message processing is complete.
         state.completed = 1;
-        let header = &raw mut state.parse.multipart_header;
-        add_bytes(header, c"tmp_name", value_);
-        add_long(header, c"error", UPLOAD_FILE_READY);
-        add_long(header, c"size", path_size(value_));
+        upload_bytes(state, b"tmp_name", value_);
+        upload_long(state, b"error", UPLOAD_FILE_READY);
+        upload_long(state, b"size", path_size(value_));
         let tmpfiles = property(state, Property::TmpFiles);
         // SAFETY: the request's `tmpfiles` array and the path's bytes.
         unsafe { swr_zend_http_upload(tmpfiles, value_.as_ptr().cast(), value_.len()) };
@@ -1308,9 +1211,23 @@ unsafe extern "C" fn on_part_header_value(
     0
 }
 
-fn has_header(state: &State) -> bool {
-    // SAFETY: an initialised (possibly undef) zval.
-    (unsafe { type_of(&raw const state.parse.multipart_header) }) != 0
+/// The current upload's `error`, when it has one.
+fn upload_error(state: &State) -> Option<&Value> {
+    state.parse.multipart_header.array()?.find(b"error")
+}
+
+/// `add_assoc_long` to the current upload's `$_FILES` entry.
+fn upload_long(state: &mut State, key: &[u8], value: i64) {
+    if let Some(header) = state.parse.multipart_header.array_mut() {
+        header.insert_long(key, value);
+    }
+}
+
+/// `add_assoc_stringl` to the current upload's `$_FILES` entry.
+fn upload_bytes(state: &mut State, key: &[u8], value: &[u8]) {
+    if let Some(header) = state.parse.multipart_header.array_mut() {
+        header.insert_bytes(key, Some(value));
+    }
 }
 
 /// `swoole::file_get_size(path)`.
@@ -1365,11 +1282,7 @@ unsafe extern "C" fn on_part_data(
     // SAFETY: an open stream and the parser's span.
     let written = unsafe { libc::fwrite(at.cast(), 1, length, fp) };
     if written != length {
-        add_long(
-            &raw mut state.parse.multipart_header,
-            c"error",
-            UPLOAD_CANT_WRITE,
-        );
+        upload_long(state, b"error", UPLOAD_CANT_WRITE);
         // SAFETY: the stream, closed once.
         unsafe { libc::fclose(fp) };
         // SAFETY: the live multipart parser.
@@ -1390,9 +1303,7 @@ unsafe extern "C" fn on_part_headers_complete(parser: *mut Multipart) -> c_int {
     if state.parse.input_name.is_none() {
         return 0;
     }
-    let header = &raw mut state.parse.multipart_header;
-    let error = find(header, b"error");
-    if error.is_null() || long(error).is_some_and(|code| code != UPLOAD_OK) {
+    if upload_error(state).is_none_or(|code| code.as_long().is_some_and(|code| code != UPLOAD_OK)) {
         return 0;
     }
     let mut path = crate::context::upload_tmp_dir(state).to_bytes().to_vec();
@@ -1403,13 +1314,13 @@ unsafe extern "C" fn on_part_headers_complete(parser: *mut Multipart) -> c_int {
     let fd = unsafe { swoole_rs_ossupport::swoole_tmpfile(path.as_mut_ptr().cast()) };
     path.pop();
     if fd < 0 {
-        add_long(header, c"error", UPLOAD_NO_TMP_DIR);
+        upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
         return 0;
     }
     // SAFETY: a descriptor this function owns.
     let fp = unsafe { libc::fdopen(fd, c"wb+".as_ptr()) };
     if fp.is_null() {
-        add_long(header, c"error", UPLOAD_NO_TMP_DIR);
+        upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
         let mut message = b"fopen(".to_vec();
         message.extend_from_slice(&path);
         message.push(b')');
@@ -1419,7 +1330,7 @@ unsafe extern "C" fn on_part_headers_complete(parser: *mut Multipart) -> c_int {
     }
     // SAFETY: the live multipart parser.
     unsafe { (*parser).fp = fp };
-    add_bytes(header, c"tmp_name", &path);
+    upload_bytes(state, b"tmp_name", &path);
     let tmpfiles = property(state, Property::TmpFiles);
     // SAFETY: the request's `tmpfiles` array and the path's bytes.
     unsafe { swr_zend_http_upload(tmpfiles, path.as_ptr().cast(), path.len()) };
@@ -1447,27 +1358,26 @@ unsafe extern "C" fn on_part_data_end(parser: *mut Multipart) -> c_int {
     let Some(input_name) = state.parse.input_name.take() else {
         return 0;
     };
-    let header = &raw mut state.parse.multipart_header;
     // SAFETY: the live multipart parser.
     let fp = unsafe { (*parser).fp };
     if !fp.is_null() {
-        add_long(header, c"size", file_size(fp));
+        upload_long(state, b"size", file_size(fp));
         // SAFETY: the stream, closed once.
         unsafe { libc::fclose(fp) };
         // SAFETY: the live multipart parser.
         unsafe { (*parser).fp = ptr::null_mut() };
     }
-    let error = find(header, b"error");
-    if error.is_null() {
+    let Some(code) = upload_error(state).map(Value::long) else {
         state.parse.input_name = Some(input_name);
         return 0;
-    }
-    // SAFETY: a live zval.
-    if unsafe { swoole_rs_zend::to_long(error) } == UPLOAD_FILE_READY {
-        add_long(header, c"error", UPLOAD_OK);
+    };
+    if code == UPLOAD_FILE_READY {
+        upload_long(state, b"error", UPLOAD_OK);
     }
     let files = property(state, Property::Files);
-    let header = &raw mut state.parse.multipart_header;
+    // The array moves into `$request->files`; like upstream, only the holder
+    // goes, not the array it registered.
+    let header = ManuallyDrop::new(std::mem::take(&mut state.parse.multipart_header));
     // `input_name` holds its NUL; C sees it up to the first one.
     let text = input_name
         .split(|&byte| byte == 0)
@@ -1483,46 +1393,42 @@ unsafe extern "C" fn on_part_data_end(parser: *mut Multipart) -> c_int {
                 meta.extend_from_slice(input_path);
                 meta.truncate(META - 1);
                 meta.push(0);
-                let entry = find(header, field.as_bytes());
+                let entry = header
+                    .array()
+                    .and_then(|header| header.find(field.as_bytes()));
+                let entry = entry.map_or(ptr::null_mut(), Value::as_ptr);
                 // SAFETY: a NUL-terminated name, a value from the upload's array and `$request->files`.
                 unsafe { php_register_variable_ex(meta.as_ptr().cast(), entry, files) };
             }
         }
         _ => {
             // SAFETY: a NUL-terminated name, the upload's array and `$request->files`.
-            unsafe { php_register_variable_ex(input_name.as_ptr().cast(), header, files) };
+            unsafe { php_register_variable_ex(input_name.as_ptr().cast(), header.as_ptr(), files) };
         }
     }
-    // Upstream frees the zval holder, not the array it registered.
-    state.parse.multipart_header = new_zval();
     0
 }
 
 /// `getContent()`: the body received so far.
 pub(crate) fn body(state: *mut State) -> Option<&'static [u8]> {
-    // SAFETY: a live context.
-    let state_ref = unsafe { &*state };
-    if state_ref.request.body_length > 0 {
-        let (start, total) = zdata_span(state);
-        let length = state_ref.request.body_length;
-        // SAFETY: the body ends the request's data.
-        return Some(unsafe {
-            std::slice::from_raw_parts(start.wrapping_add(total - length), length)
-        });
+    // SAFETY: a live context, which owns its data and buffers while the
+    // request object lives.
+    let state: &'static State = unsafe { &*state };
+    let length = state.request.body_length;
+    if length > 0 {
+        let data = state.request.zdata.bytes()?;
+        return data.get(data.len().checked_sub(length)?..);
     }
-    if let Some(chunked) = state_ref
+    if let Some(chunked) = state
         .parse
         .chunked_body
-        .as_ref()
+        .as_deref()
         .filter(|body| !body.is_empty())
     {
-        // SAFETY: the context owns the buffer while the request object lives.
-        return Some(unsafe { std::slice::from_raw_parts(chunked.as_ptr(), chunked.len()) });
+        return Some(chunked);
     }
-    // SAFETY: a live context, which owns the buffer while the request object lives.
-    let data = unsafe { (*state).request.h2_data.as_ref() }?;
-    // SAFETY: as above.
-    (!data.is_empty()).then(|| unsafe { std::slice::from_raw_parts(data.as_ptr(), data.len()) })
+    let data = state.request.h2_data.as_deref()?;
+    (!data.is_empty()).then_some(data.as_slice())
 }
 
 /// `llhttp_method_name(parser.method)`.

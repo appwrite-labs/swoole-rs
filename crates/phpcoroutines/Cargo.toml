@@ -10,10 +10,10 @@ description = "PHP coroutines: each coroutine's PHP context and VM swap, activat
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
 php = ["dep:libc", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php",
        "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php",
-       "dep:swoole-rs-coroutine", "dep:swoole-rs-corebase", "dep:swoole-rs-hooks", "dep:swoole-rs-buffer",
+       "dep:swoole-rs-coroutine", "swoole-rs-coroutine/upstream-symbols", "dep:swoole-rs-corebase", "dep:swoole-rs-hooks", "dep:swoole-rs-buffer",
        "dep:swoole-rs-reactor", "dep:swoole-rs-server"]
 # Co::stats() reports the io_uring engine (upstream's SW_USE_IOURING); crates/ffi's iouring.
-iouring = []
+iouring = ["swoole-rs-hooks?/iouring", "swoole-rs-hooks?/upstream-symbols"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }

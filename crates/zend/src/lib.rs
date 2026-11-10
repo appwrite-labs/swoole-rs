@@ -23,33 +23,38 @@ mod error;
 mod frame;
 mod function;
 mod helpers;
+mod minit;
 mod object;
 pub mod registration;
 pub mod string;
 pub mod value;
 mod zval;
 
-pub use access::{set_key, string_of, value_of};
+pub use access::{key_ptr, set_key, string_of, value_of};
 pub use call::{Call, Invalid, type_of};
-pub use callable::Callable;
+pub use callable::{Callable, Callback, Holder};
 pub use class::{
     Class, class_name, declare_bool, declare_long, declare_string, register_double_constant,
     register_long_constant, unset_property_deny,
 };
 pub use error::{
-    E_ERROR, E_WARNING, Message, php_error, throw_constructed_twice, throw_error, throw_exception,
-    zend_error,
+    E_ERROR, E_WARNING, Message, php_error, report, throw_constructed_twice, throw_error,
+    throw_exception, zend_error,
 };
 pub use function::create_object_deny;
-pub use helpers::{declare_property_null, each_value, long_zval, property, update_property};
-pub use object::{Object, init_object, set_object};
+pub use helpers::{
+    EMPTY_FCC, EMPTY_FCI, declare_property_null, each_value, long_zval, module_loaded, property,
+    update_property,
+};
+pub use minit::{Minit, Parent};
+pub use object::{Object, Props, init_object, set_object};
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;
 pub use value::{
     add_long as add_assoc_long, get_long as to_long, obj_of as object_of, push_str as push_string,
     update_long as update_property_long,
 };
-pub use zval::{Array, Entries, Key, Owned, OwnedArray, Value, ZStr, ZString};
+pub use zval::{Array, ArrayMut, Entries, Key, Owned, OwnedArray, UNDEF, Value, ZStr, ZString};
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for
 /// methods, `zif_<function>` for functions) so upstream's tables name them

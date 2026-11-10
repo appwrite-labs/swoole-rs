@@ -1,10 +1,9 @@
 # Clients and resolver migration
 
-The client and resolver (`crates/clients`, patches in
-`migration/patches/clients/`). Rust owns `network::Client` state and operations,
+The client and resolver (`crates/clients`). Rust owns `network::Client` state and operations,
 using the reactor's socket record directly, with its TLS context and proxies.
-C++ retains the DNS lookup and Zend boundaries.
-The persistent client pool is also Rust-owned.
+The DNS lookup (`dns.rs`, `cares.rs`), the persistent client pool and the PHP
+classes (`crates/phpclients`) are Rust too; no C++ remains (native/clients/contract.md).
 
 ## Actual-body differentials
 
@@ -22,7 +21,8 @@ name codec, the DNS address text and the socket DNS lookup
 TESTs, one function each with upstream's name, inputs, ports and expected values:
 TEST `client.<name>` is the case `client.<name>` (function `<name>`). The case
 binary is the hooks one (`tests/modules/hooks/system`, which includes this file),
-so `hooks-system-rust` builds and runs it over the hybrid's libswoole.so. A
+so `hooks-system-rust` builds and runs it over
+the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources). A
 `Client` is crates/clients' state: made by `swr_v1_clients_new` and given its
 callbacks by `swr_v1_clients_listen`; its methods, `enable_ssl_encrypt`, `ssl_verify`
 and its deletion among them, are `swr_v1_clients_run` calls or other
@@ -68,7 +68,9 @@ remain separate below.
 `php_<family>.py` runs `php_<family>.php` against native and selected engines
 using private peers on ephemeral ports. Families: `lifecycle`, `http`, `dns`,
 `pool`, `pool_fork`, `resolver`, `http_connection`, `http_format`, `coro`,
-`async`, `coro_io`.
+`async`, `coro_io`. `socket_custody.py` (`clients-php-socket-custody`) runs
+`socket_custody.php` the same way: imported socket and stream ownership, binary I/O,
+the factory fallback and hooked pair release.
 
 ```sh
 python3 tests/modules/clients/php_http.py --build-manifest BUILD_MANIFEST \

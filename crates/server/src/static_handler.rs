@@ -4,40 +4,18 @@
 //! ranges. The state is crates/http's static context; this drives it with
 //! the server's configuration.
 use crate::view;
+use core::cell::RefCell;
 use core::ffi::c_void;
-use core::ptr;
 use swoole_rs_http::{
-    HttpCalendar, HttpContextPageBuffer, HttpContextRangeObservation, HttpContextServeObservation,
-    HttpIndexPage, HttpProxyText, HttpStaticContext, HttpStaticIo, HttpStaticObservation,
-    HttpStaticTask, swr_v1_http_static_boundary, swr_v1_http_static_content_prefix,
-    swr_v2_http_context_boundary, swr_v2_http_context_drop, swr_v2_http_context_format,
-    swr_v2_http_context_index, swr_v2_http_context_new, swr_v2_http_context_observe,
-    swr_v2_http_context_page_emit, swr_v2_http_context_page_step, swr_v2_http_context_path,
-    swr_v2_http_context_range_begin, swr_v2_http_context_range_resume,
-    swr_v2_http_context_range_step, swr_v2_http_context_tasks, swr_v2_http_context_text,
-    swr_v3_http_conditional, swr_v3_http_context_directory, swr_v3_http_context_mtime,
-    swr_v3_http_context_serve, swr_v3_http_context_stat, swr_v3_http_date,
+    BOUNDARY_SIZE, Calendar, HttpStaticContext, HttpStaticTask, StaticEffects, http_date,
 };
 
-/// `SWR_HTTP_CONTEXT_*`: the context's texts.
-const INDEX: u32 = 3;
-const FILENAME: u32 = 4;
-const BOUNDARY: u32 = 5;
-const CONTENT: u32 = 6;
-const END: u32 = 7;
-/// `SWR_HTTP_PATH_*`: `try_serve`'s actions and the path's kind bits.
-const PATH_SKIP: i32 = 0;
-const PATH_SERVE: i32 = 1;
-const PATH_LOCATIONS: i32 = 2;
-const PATH_MIME: i32 = 6;
+/// The path kinds' directory bit (`crates/http/src/static_path.rs`).
 const PATH_IS_DIRECTORY: u32 = 16;
-const PATH_FILE: u32 = 32;
 /// The static collections (`ServerStrings` kinds).
 const LOCATIONS: u32 = 0;
 const INDEX_FILES: u32 = 1;
-/// `SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE`.
-const BOUNDARY_SIZE: usize = 39;
-/// `PATH_MAX`, the context's filename capacity and the index page's first size.
+/// `PATH_MAX`, the context's filename capacity.
 const PATH_MAX: usize = libc::PATH_MAX as usize;
 /// `SW_HTTP_PAGE_CSS` and `SW_HTTP_POWER_BY`.
 const CSS: &[u8] = b"<style> body { padding: 0.5em; line-height: 2; } h1 { font-size: 1.5em; \
@@ -58,25 +36,13 @@ pub fn page_404() -> Vec<u8> {
     .concat()
 }
 
-fn text_of(bytes: &[u8]) -> HttpProxyText {
-    HttpProxyText {
-        data: bytes.as_ptr(),
-        length: bytes.len(),
-    }
-}
+/// Production's effects: the process's filesystem, the MIME table, random
+/// characters and libc's calendar.
+pub trait Effects: StaticEffects + Calendar {}
 
-/// What a handler asks of the world. [`Native`]'s: the filesystem, the MIME
-/// table, random characters and libc's calendar.
-pub trait Effects {
-    /// The filesystem; null is libc's.
-    fn io(&self) -> *const HttpStaticIo {
-        ptr::null()
-    }
-    /// The calendar; null is libc's.
-    fn calendar(&self) -> *const HttpCalendar {
-        ptr::null()
-    }
-    /// `mime_type::get`.
+/// Production's effects.
+pub struct Native;
+impl StaticEffects for Native {
     fn mime(&self, filename: &[u8]) -> Vec<u8> {
         let kind = swoole_rs_framing::mime::get(filename);
         // SAFETY: the table's NUL-terminated type, copied before it can change.
@@ -84,35 +50,29 @@ pub trait Effects {
             .to_bytes()
             .to_vec()
     }
-    /// `mime_type::exists`.
     fn mime_exists(&self, filename: &[u8]) -> bool {
         swoole_rs_framing::mime::exists(filename)
     }
-    /// `swoole_random_string`: `count` (below `BOUNDARY_SIZE`) characters and a NUL.
     fn random(&self, out: &mut [u8; BOUNDARY_SIZE], count: usize) {
         // SAFETY: `count` characters and a NUL fit.
         unsafe { swoole_rs_corebase::swoole_random_string(out.as_mut_ptr().cast(), count) };
     }
+    fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
+        swoole_rs_http::conditional(if_range, 1, mtime, 0, self)
+    }
+    fn overflow(&self) {
+        errno::set(libc::EOVERFLOW);
+    }
 }
-
-/// Production's effects.
-pub struct Native;
+impl Calendar for Native {}
 impl Effects for Native {}
 
 /// A `StaticHandler` for one request URI on one server.
 pub struct StaticHandler<E: Effects = Native> {
     server: view::Server<'static>,
-    context: *mut HttpStaticContext,
-    /// The context's modification-time slot.
-    mtime: *const i64,
+    /// Borrowed for one call at a time; no effect calls back into the handler.
+    context: RefCell<HttpStaticContext>,
     effects: E,
-}
-
-impl<E: Effects> Drop for StaticHandler<E> {
-    fn drop(&mut self) {
-        // SAFETY: the context `new` made, dropped once.
-        unsafe { swr_v2_http_context_drop(self.context) };
-    }
 }
 
 impl StaticHandler {
@@ -130,19 +90,11 @@ impl<E: Effects> StaticHandler<E> {
     /// `server` is a live `Server` that outlives the handler.
     #[must_use]
     pub unsafe fn with_effects(server: *mut c_void, url: &[u8], effects: E) -> Option<Self> {
-        // SAFETY: the URL's bytes, copied by the context.
-        let context = unsafe { swr_v2_http_context_new(url.as_ptr(), url.len(), PATH_MAX) };
-        if context.is_null() {
-            return None;
-        }
-        // SAFETY: the live context, whose slot lives as long as it.
-        let mtime = unsafe { swr_v3_http_context_mtime(context) };
         Some(Self {
+            context: RefCell::new(HttpStaticContext::new(url, PATH_MAX)?),
             // SAFETY: the caller vouches that `server` is live and outlives the handler,
             // which keeps it private.
             server: unsafe { view::Server::from_raw(server) },
-            context,
-            mtime,
             effects,
         })
     }
@@ -155,65 +107,37 @@ impl<E: Effects> StaticHandler<E> {
         self.server.config().http_autoindex
     }
 
-    fn observe(&self) -> HttpStaticObservation {
-        let mut value = HttpStaticObservation::default();
-        // SAFETY: the live context and a local output.
-        unsafe { swr_v2_http_context_observe(self.context, &raw mut value) };
-        value
-    }
-
-    fn text(&self, kind: u32) -> Vec<u8> {
-        let mut length = 0;
-        // SAFETY: the live context; a zero capacity asks for the length.
-        unsafe {
-            swr_v2_http_context_text(self.context, kind, ptr::null_mut(), 0, &raw mut length)
-        };
-        let mut value = vec![0; length];
-        if length != 0 {
-            // SAFETY: `length` writable bytes.
-            unsafe {
-                swr_v2_http_context_text(
-                    self.context,
-                    kind,
-                    value.as_mut_ptr(),
-                    length,
-                    &raw mut length,
-                );
-            };
-        }
-        value
-    }
-
     #[must_use]
     pub fn status(&self) -> i32 {
-        self.observe().status
+        self.context.borrow().observe().status
     }
 
     #[must_use]
     pub fn filesize(&self) -> usize {
-        self.observe().filesize
+        self.context.borrow().observe().filesize
     }
 
     #[must_use]
     pub fn content_length(&self) -> usize {
-        self.observe().content_length
+        self.context.borrow().observe().content_length
     }
 
     #[must_use]
     pub fn filename(&self) -> Vec<u8> {
-        self.text(FILENAME)
+        self.context.borrow().filename().to_vec()
     }
 
     #[must_use]
     pub fn end_part(&self) -> Vec<u8> {
-        self.text(END)
+        self.context.borrow().end_part().to_vec()
     }
 
     /// No index file was found, `http_autoindex` is on and the path is a directory.
     #[must_use]
     pub fn lists_directory(&self) -> bool {
-        let value = self.observe();
-        self.text(INDEX).is_empty()
+        let context = self.context.borrow();
+        let value = context.observe();
+        context.index_file().is_empty()
             && self.autoindex()
             && value.file_ready != 0
             && value.kind & PATH_IS_DIRECTORY != 0
@@ -224,130 +148,36 @@ impl<E: Effects> StaticHandler<E> {
         self.effects.mime(&self.filename())
     }
 
-    fn ensure_boundary(&self) -> u32 {
-        let mut count = 0;
-        // SAFETY: a local output.
-        if !unsafe { swr_v1_http_static_boundary(self.text(BOUNDARY).len(), &raw mut count) }
-            .is_null()
-        {
-            let mut random = [0u8; BOUNDARY_SIZE];
-            let count = count.min(BOUNDARY_SIZE - 1);
-            self.effects.random(&mut random, count);
-            // SAFETY: the live context and `count` initialized bytes.
-            unsafe { swr_v2_http_context_boundary(self.context, random.as_ptr(), count) };
-        }
-        1
-    }
-
     /// `get_date()`: now, as an HTTP date.
     #[must_use]
     pub fn date() -> Vec<u8> {
-        let mut value = [0u8; 64];
-        // SAFETY: a null mtime asks for now; a local output.
-        let length = unsafe { swr_v3_http_date(ptr::null(), value.as_mut_ptr(), value.len()) };
-        value.get(..length).unwrap_or(&value).to_vec()
+        http_date(None)
     }
 
     #[must_use]
     pub fn date_last_modified(&self) -> Vec<u8> {
-        let mut value = [0u8; 64];
-        // SAFETY: the context's mtime slot and a local output.
-        let length = unsafe { swr_v3_http_date(self.mtime, value.as_mut_ptr(), value.len()) };
-        value.get(..length).unwrap_or(&value).to_vec()
-    }
-
-    fn conditional(&self, date: &[u8], kind: u32, timezone: *const libc::c_long) -> bool {
-        // strptime reads the date up to a NUL, as upstream's `c_str()`.
-        let text = [date, b"\0"].concat();
-        // SAFETY: the date's bytes and its NUL, the context's mtime slot and the timezone (or null).
-        unsafe {
-            swr_v3_http_conditional(
-                text.as_ptr().cast(),
-                date.len(),
-                kind,
-                self.mtime,
-                timezone,
-                self.effects.calendar(),
-            ) == 1
-        }
+        http_date(Some(self.context.borrow().mtime()))
     }
 
     /// The file changed since `date` (an `If-Modified-Since`).
     #[must_use]
     pub fn is_modified(&self, date: &[u8]) -> bool {
-        let timezone = &raw const self.server.config().timezone_;
-        self.conditional(date, 0, timezone)
-    }
-
-    fn serve_step(&self, root: &HttpProxyText, observation: &HttpContextServeObservation) -> i32 {
-        // SAFETY: the live context and local descriptors.
-        unsafe { swr_v3_http_context_serve(self.context, root, observation, self.effects.io()) }
+        let timezone = self.server.config().timezone_;
+        let mtime = self.context.borrow().mtime();
+        swoole_rs_http::conditional(date, 0, mtime, timezone, &self.effects)
     }
 
     /// Whether the static handler answers the request.
     #[must_use]
     pub fn try_serve(&self) -> bool {
-        // SAFETY: the live server and the context, which no one else uses.
-        unsafe { self.server.static_rewrite(self.context) };
+        let mut context = self.context.borrow_mut();
+        self.server.static_rewrite(&mut context);
         let root = self.server.document_root();
-        let root = text_of(&root);
         let (_, locations) = self.strings(LOCATIONS);
         let (index_enabled, index_files) = self.strings(INDEX_FILES);
-        let mut observation = HttpContextServeObservation {
-            event: 0,
-            observed: 0,
-            has_locations: u32::from(!locations.is_empty()),
-            has_index: u32::from(index_enabled && !index_files.is_empty()),
-            autoindex: u32::from(self.autoindex()),
-            value: text_of(&[]),
-        };
-        let mut action = self.serve_step(&root, &observation);
-        observation.has_locations = 0;
-        observation.has_index = 0;
-        observation.autoindex = 0;
-        loop {
-            match action {
-                PATH_SKIP => return false,
-                PATH_SERVE => return true,
-                PATH_LOCATIONS => {
-                    for location in &locations {
-                        // SAFETY: the live context and the location's bytes.
-                        unsafe {
-                            swr_v2_http_context_path(
-                                self.context,
-                                1,
-                                location.as_ptr(),
-                                location.len(),
-                                0,
-                            )
-                        };
-                    }
-                    observation.event = 1;
-                    observation.observed = 0;
-                }
-                PATH_MIME => {
-                    observation.event = 4;
-                    observation.observed = u32::from(self.effects.mime_exists(&self.filename()));
-                }
-                _ => return false,
-            }
-            action = self.serve_step(&root, &observation);
-        }
-    }
-
-    fn scan_directory(&self) -> bool {
-        // SAFETY: the live context.
-        unsafe { swr_v3_http_context_directory(self.context, self.effects.io()) == 1 }
-    }
-
-    fn set_filename(&self) -> bool {
-        // SAFETY: the live context.
-        if unsafe { swr_v2_http_context_path(self.context, 2, ptr::null(), 0, 0) } != 0 {
-            return false;
-        }
-        // SAFETY: as above.
-        let stat = unsafe { swr_v3_http_context_stat(self.context, self.effects.io()) } == 1;
-        stat && self.observe().kind & PATH_FILE != 0
+        let has_index = index_enabled && !index_files.is_empty();
+        let autoindex = self.autoindex();
+        context.try_serve(&root, &locations, has_index, autoindex, &self.effects)
     }
 
     /// With `http_index_files`, the directory's first index file becomes the
@@ -355,171 +185,38 @@ impl<E: Effects> StaticHandler<E> {
     #[must_use]
     pub fn try_serve_index_file(&self) -> bool {
         let (enabled, files) = self.strings(INDEX_FILES);
-        let cursor = core::cell::Cell::new(0);
-        let step = |event: u32, value: usize, name: &[u8]| {
-            // SAFETY: the live context, the name's bytes and a local cursor.
-            unsafe {
-                swr_v2_http_context_index(
-                    self.context,
-                    event,
-                    value,
-                    name.as_ptr(),
-                    name.len(),
-                    cursor.as_ptr(),
-                )
-            }
-        };
-        let mut action = step(0, if enabled { files.len() } else { 0 }, &[]);
-        loop {
-            action = match action {
-                0 => return false,
-                1 => return true,
-                2 => {
-                    if self.scan_directory() {
-                        step(1, files.len(), &[])
-                    } else {
-                        step(6, 0, &[])
-                    }
-                }
-                3 => {
-                    let name = files.get(cursor.get()).cloned().unwrap_or_default();
-                    step(2, 0, &name)
-                }
-                4 => step(4, usize::from(self.set_filename()), &[]),
-                5 => step(3, usize::from(self.autoindex()), &[]),
-                _ => return false,
-            };
-        }
+        let files = if enabled { files } else { Vec::new() };
+        let autoindex = self.autoindex();
+        self.context
+            .borrow_mut()
+            .try_serve_index_file(&files, autoindex, &self.effects)
     }
 
     /// The directory's listing page.
     #[must_use]
     pub fn index_page(&self) -> Vec<u8> {
-        self.scan_directory();
-        let mut buffer = vec![0u8; PATH_MAX];
-        let mut length = 0;
-        let mut entry = 0;
-        // SAFETY: the live context and a local cursor.
-        let mut part = unsafe { swr_v2_http_context_page_step(self.context, 1, &raw mut entry) };
-        while part > 0 {
-            #[expect(clippy::cast_sign_loss, reason = "positive")]
-            let input = HttpIndexPage {
-                path: text_of(&[]),
-                entry: text_of(&[]),
-                css: text_of(CSS),
-                powered: text_of(POWER_BY),
-                part: (part - 1) as u32,
-            };
-            loop {
-                let mut result = HttpContextPageBuffer {
-                    required: 0,
-                    length: 0,
-                };
-                // SAFETY: the live context, the page's texts and the buffer's
-                // `buffer.len()` writable bytes, `length` of them written.
-                let action = unsafe {
-                    swr_v2_http_context_page_emit(
-                        self.context,
-                        entry,
-                        &raw const input,
-                        buffer.as_mut_ptr(),
-                        length,
-                        buffer.len(),
-                        &raw mut result,
-                    )
-                };
-                match action {
-                    1 | 2 => buffer.resize(result.required.max(buffer.len()), 0),
-                    3 => {
-                        length = result.length;
-                        break;
-                    }
-                    _ => break,
-                }
-            }
-            // SAFETY: as above.
-            part = unsafe { swr_v2_http_context_page_step(self.context, 0, &raw mut entry) };
-        }
-        buffer.truncate(length);
-        buffer
-    }
-
-    fn range_resume(&self, observed: &HttpContextRangeObservation) -> i32 {
-        // SAFETY: the live context and a local observation.
-        unsafe { swr_v2_http_context_range_resume(self.context, observed) }
+        self.context
+            .borrow_mut()
+            .index_page(CSS, POWER_BY, &self.effects)
     }
 
     /// The `Range` and `If-Range` headers into the response's status and tasks.
     pub fn parse_range(&self, range: Option<&[u8]>, if_range: Option<&[u8]>) {
-        let range = range.unwrap_or_default();
-        // SAFETY: the live context.
-        if unsafe {
-            swr_v2_http_context_range_begin(
-                self.context,
-                range.len(),
-                u32::from(if_range.is_some()),
-            )
-        } < 0
-        {
-            return;
-        }
-        loop {
-            // SAFETY: the live context and the header's bytes.
-            let action = unsafe {
-                swr_v2_http_context_range_step(self.context, range.as_ptr(), range.len())
-            };
-            let mut observed = HttpContextRangeObservation {
-                mime: text_of(&[]),
-                boundary_ready: 0,
-                modified: 0,
-            };
-            match action {
-                1 => {
-                    observed.boundary_ready = self.ensure_boundary();
-                    let mime = self.mimetype();
-                    observed.mime = text_of(&mime);
-                    if self.range_resume(&observed) == 1 {
-                        errno::set(libc::EOVERFLOW);
-                    }
-                }
-                2 => {
-                    observed.boundary_ready = self.ensure_boundary();
-                    self.range_resume(&observed);
-                }
-                3 => {
-                    observed.modified =
-                        u32::from(self.conditional(if_range.unwrap_or_default(), 1, ptr::null()));
-                    self.range_resume(&observed);
-                }
-                _ => return,
-            }
-        }
+        self.context
+            .borrow_mut()
+            .parse_range(range, if_range, &self.effects);
     }
 
     /// The response's byte ranges.
     #[must_use]
     pub fn tasks(&self) -> Vec<HttpStaticTask> {
-        let count = self.observe().task_count;
-        let mut tasks = vec![HttpStaticTask::default(); count];
-        let mut written = 0;
-        // SAFETY: the live context and `count` writable tasks.
-        unsafe {
-            swr_v2_http_context_tasks(self.context, tasks.as_mut_ptr(), count, &raw mut written);
-        };
-        tasks.truncate(written);
-        tasks
+        self.context.borrow().tasks().to_vec()
     }
 
     /// The response's `Content-Type`: multipart with several ranges, else the file's.
     #[must_use]
     pub fn content_type(&self) -> Vec<u8> {
-        if swr_v1_http_static_content_prefix(self.observe().task_count).is_null() {
-            return self.mimetype();
-        }
-        self.ensure_boundary();
-        // SAFETY: the live context.
-        unsafe { swr_v2_http_context_format(self.context, 0) };
-        self.text(CONTENT)
+        self.context.borrow_mut().content_type(&self.effects)
     }
 }
 

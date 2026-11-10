@@ -4,7 +4,7 @@
 //! `ThreadContext::call` did.
 use core::ffi::{c_int, c_void};
 use core::ptr::{null, null_mut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use swoole_rs_corebase::{sw_calloc, sw_free};
@@ -41,14 +41,12 @@ use crate::callbacks::{
     CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP, CB_USER_WORKER_START,
 };
 use crate::objects::{Bus, Reactor};
+use crate::port_config::methods;
 use crate::reactor_ops::sign;
-use crate::reactor_process_ops::{port_listen, ports};
+use crate::reactor_process_ops::ports;
 use crate::records::ConnectionRecord;
 use crate::worker_methods::{create_event_workers, create_user_workers};
 use crate::{factory, pool_native, server_methods, view};
-
-/// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says.
-pub static SUPPORTED: AtomicBool = AtomicBool::new(false);
 
 /// What an operation runs over.
 #[derive(Clone, Copy)]
@@ -175,7 +173,7 @@ fn threads(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let slot = arg & u64::from(u32::MAX);
     Some(match op {
         OP_THREAD_MANAGER => (&raw const *ctx.manager()).addr() as u64,
-        OP_THREAD_SUPPORTED => u64::from(SUPPORTED.load(Ordering::Relaxed)),
+        OP_THREAD_SUPPORTED => u64::from(crate::THREAD_SUPPORTED.load(Ordering::Relaxed)),
         LOG_CALLOC_CONNECTIONS => {
             let max = ctx.tables().max_connection as usize;
             #[expect(
@@ -383,8 +381,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: as above.
         OP_PORT_COUNT => unsafe { ports(serv) }.len() as u64,
         OP_PORT_DGRAM => u64::from(matches!(port()?.1.r#type, 2 | 4 | 6)),
-        // SAFETY: one of the server's live ports.
-        OP_PORT_LISTEN => sign(unsafe { port_listen(port()?.0) }),
+        OP_PORT_LISTEN => sign((methods().listen)(port()?.0)),
         OP_PORT_ADD => {
             let socket = port()?.1.socket.cast::<SocketRecord>();
             // SAFETY: the port's live socket.

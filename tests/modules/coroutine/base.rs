@@ -2,7 +2,7 @@
 //! `coroutine/file.cpp` (`coroutine_async_file`), one function per TEST with the same
 //! inputs and expected values.
 //! Built into the hooks case binary (tests/modules/hooks/system), which links
-//! libswoole.so.
+//! the crates.
 //!
 //! A `swoole::Coroutine` is crates/coroutine's record (`swr_v1_coroutine`, then its
 //! `swr_v1_context`; swoole_rs_coroutine.h): its getters are field reads here, its
@@ -17,6 +17,7 @@ use super::hook::{
     ST_SIZE, Stat, swoole_coroutine_fstat, swoole_coroutine_fsync, swoole_coroutine_ftruncate,
     swoole_coroutine_lseek, swoole_coroutine_usleep,
 };
+use super::os::{AsyncEvent, async_dispatch, count_handle};
 use super::{
     _exit, coroutine_cancel, fork, last_error, swoole_coroutine_close, swoole_coroutine_create,
     swoole_coroutine_get, swoole_coroutine_get_id, swoole_coroutine_open, swoole_coroutine_read,
@@ -25,7 +26,7 @@ use super::{
 use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::AtomicI32;
 
 const SW_ERROR_CO_CANNOT_CANCEL: c_int = 10015;
 const SW_FORK_PRECHECK: c_int = 8;
@@ -75,22 +76,6 @@ struct Scheduler {
     peak_num: u64,
 }
 
-/// `swoole::AsyncEvent`.
-#[repr(C)]
-struct AsyncEvent {
-    task_id: usize,
-    canceled: u8,
-    error: c_int,
-    data: *mut c_void,
-    retval: isize,
-    pipe_socket: *mut c_void,
-    timestamp: f64,
-    object: *mut c_void,
-    handler: Option<extern "C" fn(*mut AsyncEvent)>,
-    callback: Option<extern "C" fn(*mut AsyncEvent)>,
-}
-
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
     fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
@@ -113,8 +98,6 @@ unsafe extern "C-unwind" {
     fn swoole_coroutine_iterator_each() -> *mut Co;
     #[link_name = "_Z11swoole_forki"]
     fn swoole_fork(flags: c_int) -> c_int;
-    #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
-    fn async_dispatch(event: *const AsyncEvent) -> *mut AsyncEvent;
 
     // system/fixture.cc.
     fn swr_case_event_defer(fn_: Callback, data: *mut c_void);
@@ -317,7 +300,9 @@ unsafe extern "C" fn call(data: *mut c_void) {
 fn bailout(body: Option<&dyn Fn()>) {
     match body {
         // SAFETY: `body` outlives the call, or the process ends first.
-        Some(body) => unsafe { swr_v1_coroutine_bail(Some(call), (&raw const body).cast_mut().cast()) },
+        Some(body) => unsafe {
+            swr_v1_coroutine_bail(Some(call), (&raw const body).cast_mut().cast())
+        },
         // SAFETY: no callback.
         None => unsafe { swr_v1_coroutine_bail(None, std::ptr::null_mut()) },
     }
@@ -670,16 +655,19 @@ fn bailout_() {
         let exit = Cell::new(false);
         let end = Cell::new(false);
         let bailed = Cell::new(false);
+        // Outside the coroutine, as upstream's std::function copy is: the coroutine
+        // ends, and its stack is freed, before the loop runs the deferred call.
+        let deferred = || {
+            bailed.set(true);
+            bailout(None);
+            end.set(true);
+        };
+        let deferred: &dyn Fn() = &deferred;
+        let data = (&raw const deferred).cast_mut().cast();
         co_run(|| {
-            let deferred = || {
-                bailed.set(true);
-                bailout(None);
-                end.set(true);
-            };
-            let deferred: &dyn Fn() = &deferred;
             // SAFETY: the loop runs the deferred call before `co_run` returns, while
             // `deferred` is live.
-            unsafe { swr_case_event_defer(Some(call), (&raw const deferred).cast_mut().cast()) };
+            unsafe { swr_case_event_defer(Some(call), data) };
             exit.set(true);
         });
 
@@ -687,11 +675,6 @@ fn bailout_() {
         assert!(end.get());
     });
     assert_eq!(wexitstatus(status), 0);
-}
-
-extern "C" fn count_handle(event: *mut AsyncEvent) {
-    // SAFETY: the event's object is the case's counter.
-    unsafe { (*(*event).object.cast::<AtomicI32>()).fetch_add(1, Ordering::SeqCst) };
 }
 
 extern "C" fn ignore(_: *mut AsyncEvent) {}
@@ -708,18 +691,11 @@ fn undefined_behavior() {
 
     let status = spawn_exec_and_wait(|| {
         let handle_count = AtomicI32::new(0);
-        let event = AsyncEvent {
-            task_id: 0,
-            canceled: 0,
-            error: 0,
-            data: std::ptr::null_mut(),
-            retval: 0,
-            pipe_socket: std::ptr::null_mut(),
-            timestamp: 0.0,
-            object: (&raw const handle_count).cast_mut().cast(),
-            handler: Some(count_handle),
-            callback: Some(ignore),
-        };
+        let event = AsyncEvent::new(
+            (&raw const handle_count).cast_mut().cast(),
+            Some(count_handle),
+            Some(ignore),
+        );
 
         // SAFETY: the event loop, then a pool task over the live counter.
         unsafe { swoole_event_init(0) };
@@ -838,7 +814,6 @@ fn async_file() {
         }
     });
 }
-
 
 /// `coroutine_base.<name>`, in upstream's order.
 pub(super) const CASES: super::Cases = &[

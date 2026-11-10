@@ -25,6 +25,7 @@ use swoole_rs_reactor::SocketRecord;
 
 use crate::ConnectionRecord;
 use crate::callbacks::CB_START;
+use crate::port_config::methods;
 use crate::reactor_ops::sign;
 use crate::view;
 
@@ -63,15 +64,8 @@ const TASK_IPC_UNIXSOCK: u8 = 1;
 const EVENT_CLOSE: c_int = 4;
 const SSL_READY: u32 = 1;
 
-// SAFETY: crates/ports', native/reactor's and crates/process's bodies, under
-// their upstream symbols.
+// SAFETY: crates/process's body, under its upstream symbol.
 unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole10ListenPort6listenEv"]
-    pub(crate) fn port_listen(port: *mut c_void) -> c_int;
-    #[link_name = "_ZN6swoole10ListenPort13create_socketEv"]
-    fn port_create_socket(port: *mut c_void) -> c_int;
-    #[link_name = "_ZN6swoole10ListenPort12close_socketEv"]
-    fn port_close_socket(port: *mut c_void);
     #[link_name = "_ZN6swoole11ProcessPool7destroyEv"]
     fn pool_destroy(pool: *mut c_void);
 }
@@ -166,8 +160,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_CLOSE_SOCKET => {
             let port = port()?;
             if reuse_port(config) {
-                // SAFETY: one of the server's live ports.
-                unsafe { port_close_socket(port) };
+                (methods().close_socket)(port);
             }
             0
         }
@@ -176,11 +169,9 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             if !reuse_port(config) {
                 return Some(0);
             }
-            // SAFETY: as above.
-            sign(unsafe { port_create_socket(port) })
+            sign((methods().create_socket)(port))
         }
-        // SAFETY: as above.
-        OP_PORT_LISTEN => sign(unsafe { port_listen(port()?) }),
+        OP_PORT_LISTEN => sign((methods().listen)(port()?)),
         OP_INIT_IPC_MAX_SIZE => {
             config.ipc_max_size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
             0
@@ -341,8 +332,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let socket = conn.socket.cast::<SocketRecord>();
     Some(match op {
         OP_CLOSE_SESSION => {
-            // SAFETY: the context's live server.
-            unsafe { crate::server_methods::close(serv, conn.session_id, true) };
+            crate::server_methods::close(server, conn.session_id, true);
             0
         }
         OP_CONN_CLOSE_QUEUED => u64::from(conn.close_queued),

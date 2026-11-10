@@ -1,5 +1,5 @@
 name: Sanitizers
-# The all-modules hybrid under ASan and UBSan, with every module gate and crate unit test
+# The Cargo-built swoole.so under ASan and UBSan, with every module gate and crate unit test
 # (the application corpus among them) and the PHPT selection (tools/asan.py). Nightly, and from the PR tier when a PR touches this run. Any
 # sanitizer report fails the run; rerun tools/asan.py locally to read it and file it as a
 # p0 kind:bug, or privately if upstream code is at fault. Reports are never uploaded here.
@@ -8,16 +8,13 @@ on:
     - cron: '17 3 * * *'
   workflow_dispatch:
   workflow_call:
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 defaults:
   run:
     shell: bash
 
 jobs:
   asan:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -36,20 +33,9 @@ jobs:
         with:
           path: target/asan/php
           key: php-asan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/asan.py') }}
-      # Sanitized objects never hit the shared ccache (other flags), so this run keeps its own.
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-asan-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-asan-${{ runner.os }}-
       - run: cargo fetch --locked
       - run: python3 corpus/thirdparty/hyperf.py --prepare
       - run: python3 tools/asan.py
-      - if: always() && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: .ccache
-          key: ccache-asan-${{ runner.os }}-${{ github.sha }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

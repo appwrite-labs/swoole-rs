@@ -8,7 +8,7 @@ import sys
 import overlay
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 from tools.harness import run_isolated,write_report
 
 
@@ -66,7 +66,7 @@ def main():
     if a.sanitize:common+=['-fsanitize=address,undefined','-fno-sanitize-recover=all','-g']
     witness=str(Path(__file__).with_suffix('.cc'))
     original=[*common,'-c','-DPORTS_SIDE=original','-I'+str(folder/'original'),witness,'-o',str(folder/'original.o')]
-    command=[*common,'-DPORTS_SIDE=selected','-DPORTS_DRIVER','-I'+str(folder/'selected'),*hybrid_tree(a.archive)[1],witness,str(folder/'original.o'),str(a.archive.resolve()),'-lpthread',*(['-Wl,--gc-sections','-ldl','-lm'] if sys.platform=='linux' else []),'-o',str(folder/'gate')]
+    command=[*common,'-DPORTS_SIDE=selected','-DPORTS_DRIVER','-I'+str(folder/'selected'),*native_flags(a.archive),witness,str(folder/'original.o'),str(a.archive.resolve()),'-lpthread',*(['-Wl,--gc-sections','-ldl','-lm'] if sys.platform=='linux' else []),'-o',str(folder/'gate')]
     r=run_isolated(original,timeout=90)
     if not r.returncode:r=run_isolated(command,timeout=90)
     report['compile']={'commands':[original,command],'exit':r.returncode,'stdout':r.stdout,'stderr':r.stderr}

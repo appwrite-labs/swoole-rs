@@ -11,7 +11,7 @@ use core::cell::RefCell;
 use core::ffi::{CStr, c_char, c_long, c_void};
 use core::ptr;
 use std::ffi::CString;
-use swoole_rs_http::{HttpCalendar, HttpStaticIo, HttpStaticObservation};
+use swoole_rs_http::{BOUNDARY_SIZE, Calendar, HttpStaticObservation, StaticEffects, Tm};
 use swoole_rs_oracle::http_static_context as oracle;
 
 #[test]
@@ -115,109 +115,52 @@ fn os_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// `SWR_HTTP_PATH_*` kinds.
+/// The path kinds (`crates/http/src/static_path.rs`).
 const LINK: u32 = 8;
 const DIRECTORY: u32 = 16;
 const FILE: u32 = 32;
 
-unsafe extern "C" fn stat(path: *const c_char, out: *mut HttpStaticObservation) -> bool {
-    // SAFETY: a NUL-terminated path.
-    let path = unsafe { CStr::from_ptr(path) }.to_bytes();
-    note(&[b"stat:", path]);
-    let value = SCRIPT.with_borrow(|script| HttpStaticObservation {
-        filesize: script.file_size,
-        mtime: script.file_time,
-        kind: if script.link == path {
-            LINK
-        } else if script.directory == path {
-            DIRECTORY
-        } else {
-            FILE
-        },
-        ..HttpStaticObservation::default()
-    });
-    // SAFETY: a writable observation.
-    unsafe { out.write(value) };
-    true
-}
-
-unsafe extern "C" fn canonical(input: *const c_char, output: *mut c_char) -> *mut c_char {
-    // SAFETY: a NUL-terminated path.
-    let input = unsafe { CStr::from_ptr(input) }.to_bytes();
-    note(&[b"canonical:", input]);
-    let resolved = SCRIPT.with_borrow(|script| {
-        if script.canonical.is_empty() {
-            input.to_vec()
-        } else {
-            script.canonical.clone()
-        }
-    });
-    let resolved = c(&resolved);
-    let resolved = resolved.as_bytes_with_nul();
-    // SAFETY: the output holds PATH_MAX bytes.
-    unsafe { ptr::copy_nonoverlapping(resolved.as_ptr(), output.cast(), resolved.len()) };
-    output
-}
-
-struct Dir {
-    next: usize,
-    entry: CString,
-}
-
-unsafe extern "C" fn open(path: *const c_char) -> *mut c_void {
-    // SAFETY: a NUL-terminated path.
-    note(&[b"open:", unsafe { CStr::from_ptr(path) }.to_bytes()]);
-    Box::into_raw(Box::new(Dir {
-        next: 0,
-        entry: CString::default(),
-    }))
-    .cast()
-}
-
-unsafe extern "C" fn read(dir: *mut c_void) -> *const c_char {
-    // SAFETY: a `Dir` from `open`, not yet closed.
-    let dir = unsafe { &mut *dir.cast::<Dir>() };
-    let Some(name) = SCRIPT.with_borrow(|script| script.names.get(dir.next).cloned()) else {
-        note(&[b"end"]);
-        return ptr::null();
-    };
-    dir.next += 1;
-    note(&[b"read:", &name]);
-    dir.entry = c(&name);
-    dir.entry.as_ptr()
-}
-
-unsafe extern "C" fn close(dir: *mut c_void) {
-    note(&[b"close"]);
-    // SAFETY: a `Dir` from `open`, closed once.
-    drop(unsafe { Box::from_raw(dir.cast::<Dir>()) });
-}
-
-static IO: HttpStaticIo = HttpStaticIo {
-    stat,
-    canonical,
-    open,
-    read,
-    close,
-};
-
-static CALENDAR: HttpCalendar = HttpCalendar {
-    tm_size: size_of::<libc::tm>(),
-    tm_align: align_of::<libc::tm>(),
-    parse: oracle::swr_oracle_calendar_parse,
-    to_time: oracle::swr_oracle_calendar_time,
-    to_gmt: oracle::swr_oracle_calendar_gmt,
-};
-
 /// The candidate's effects: the script, traced as the oracle traces its own.
 struct Scripted;
 
-impl Effects for Scripted {
-    fn io(&self) -> *const HttpStaticIo {
-        &raw const IO
+impl StaticEffects for Scripted {
+    fn stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
+        note(&[b"stat:", path]);
+        Some(SCRIPT.with_borrow(|script| HttpStaticObservation {
+            filesize: script.file_size,
+            mtime: script.file_time,
+            kind: if script.link == path {
+                LINK
+            } else if script.directory == path {
+                DIRECTORY
+            } else {
+                FILE
+            },
+            ..HttpStaticObservation::default()
+        }))
     }
-    fn calendar(&self) -> *const HttpCalendar {
-        &raw const CALENDAR
+    fn canonical(&self, path: &[u8]) -> Option<Vec<u8>> {
+        note(&[b"canonical:", path]);
+        let resolved = SCRIPT.with_borrow(|script| {
+            if script.canonical.is_empty() {
+                path.to_vec()
+            } else {
+                script.canonical.clone()
+            }
+        });
+        // realpath's C string.
+        Some(c_text(&resolved).to_vec())
+    }
+    fn list(&self, path: &[u8]) -> Option<Vec<Vec<u8>>> {
+        note(&[b"open:", path]);
+        let names = SCRIPT.with_borrow(|script| script.names.clone());
+        for name in &names {
+            note(&[b"read:", name]);
+        }
+        note(&[b"end"]);
+        note(&[b"close"]);
+        // readdir's C strings.
+        Some(names.iter().map(|name| c_text(name).to_vec()).collect())
     }
     fn mime(&self, filename: &[u8]) -> Vec<u8> {
         note(&[b"mime:", filename]);
@@ -227,12 +170,42 @@ impl Effects for Scripted {
         note(&[b"mime-exists:", filename]);
         true
     }
-    fn random(&self, out: &mut [u8; super::BOUNDARY_SIZE], count: usize) {
+    fn random(&self, out: &mut [u8; BOUNDARY_SIZE], count: usize) {
         note(&[b"random:", count.to_string().as_bytes()]);
         out[..count].fill(b'x');
         out[count] = 0;
     }
+    fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
+        swoole_rs_http::conditional(if_range, 1, mtime, 0, self)
+    }
+    fn overflow(&self) {
+        errno::set(libc::EOVERFLOW);
+    }
 }
+
+/// libc's calendar, recorded by the oracle as it records its own.
+impl Calendar for Scripted {
+    fn parse(&self, date: &CStr, format: &CStr, tm: &mut Tm) -> bool {
+        // SAFETY: two C strings and an exclusive tm.
+        unsafe {
+            oracle::swr_oracle_calendar_parse(
+                date.as_ptr(),
+                format.as_ptr(),
+                ptr::from_mut(tm).cast(),
+            )
+        }
+    }
+    fn to_time(&self, tm: &mut Tm) -> i64 {
+        // SAFETY: an exclusive, initialized tm.
+        unsafe { oracle::swr_oracle_calendar_time(ptr::from_mut(tm).cast()) }
+    }
+    fn to_gmt(&self, time: i64) -> Option<Tm> {
+        // SAFETY: null or libc's static tm, copied before another calendar call.
+        unsafe { oracle::swr_oracle_calendar_gmt(time).cast::<Tm>().as_ref() }.copied()
+    }
+}
+
+impl Effects for Scripted {}
 
 /// A rewrite rule: pattern, replacement and whether it is a regex.
 type Rule = (&'static [u8], &'static [u8], bool);
@@ -720,12 +693,18 @@ fn former_context_gate_directories() {
                     );
                     assert_eq!(
                         old.get_dir_files(),
-                        selected.scan_directory(),
+                        selected
+                            .context
+                            .borrow_mut()
+                            .get_dir_files(&selected.effects),
                         "directory context scan"
                     );
                     assert_eq!(
                         old.get_dir_files(),
-                        selected.scan_directory(),
+                        selected
+                            .context
+                            .borrow_mut()
+                            .get_dir_files(&selected.effects),
                         "directory context cache"
                     );
                     // SAFETY: freed below.

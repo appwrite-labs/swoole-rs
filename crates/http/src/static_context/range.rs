@@ -1,10 +1,9 @@
-//! Complete selected range orchestration. Native executes requested MIME/RNG/
-//! calendar effects after return; Rust retains only owned values and scalar cursors.
-use super::{HttpStaticContext, swr_v2_http_context_format};
-use crate::{
-    HttpProxyText, HttpRangeFinish, HttpRangeFormat, HttpRangeState, HttpSpan, INVALID, OVERFLOW,
-    bytes,
-};
+//! Upstream `StaticHandler::parse_range`, the lazy boundary and the content type: the
+//! range parser and the response's accounting, stepped between the caller's effects.
+use super::{BOUNDARY_SIZE, HttpStaticContext, StaticEffects};
+use crate::range_response::HttpRangeFormat;
+use crate::static_meta::{static_boundary, static_multipart};
+use crate::{HttpRangeFinish, HttpRangeState, HttpSpan, INVALID, OVERFLOW};
 
 #[derive(Default, Clone, Copy)]
 enum Stage {
@@ -29,383 +28,318 @@ pub(super) struct HttpContextRange {
     length: usize,
     if_range: u32,
 }
-#[repr(C)]
-pub struct HttpContextRangeObservation {
-    pub mime: HttpProxyText,
-    pub boundary_ready: u32,
-    pub modified: u32,
+/// What the last effect observed: the part's MIME type, the boundary, the date.
+#[derive(Default)]
+struct Observation<'a> {
+    mime: &'a [u8],
+    boundary_ready: u32,
+    modified: u32,
 }
-fn finishing(owner: &mut HttpStaticContext) {
-    owner.range.finish = HttpRangeFinish {
-        content_length: owner.facts.content_length,
-        last_length: owner.range.last_length,
-        task_count: owner.tasks.count(),
-        filesize: owner.facts.filesize,
-        status: owner.facts.status,
-        if_range: owner.range.if_range,
-        ..HttpRangeFinish::default()
-    };
-    owner.range.stage = Stage::Finish;
-}
-fn full_task(owner: &mut HttpStaticContext) -> i32 {
-    let mut ignored = 0;
-    // SAFETY: a null format is allowed; `ignored` is a writable local.
-    let result = unsafe {
-        owner.tasks.prepare(
-            0,
-            owner.range.last_length,
-            std::ptr::null(),
-            &raw mut ignored,
-        )
-    };
-    if result < 0 {
-        return result;
-    }
-    owner.tasks.push()
-}
-/// Begin one method invocation; previous committed tasks persist, scratch resets.
-/// # Safety
-/// Unique live context. Length is the initialized Native C-prefix span re-observed
-/// by each step, never a pointer retained in Rust. Native effects start after return.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_range_begin(
-    owner: *mut HttpStaticContext,
-    length: usize,
-    if_range: u32,
-) -> i32 {
-    // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-    let Some(owner) = (unsafe { owner.as_mut() }) else {
-        return INVALID;
-    };
-    if length > isize::MAX as usize {
-        return OVERFLOW;
-    }
-    owner.range = HttpContextRange {
-        length,
-        if_range,
-        ..HttpContextRange::default()
-    };
-    owner.tasks.begin();
-    if length != 0 {
-        owner.facts.content_length = 0;
-        owner.range.stage = Stage::Parsing;
-    } else {
-        finishing(owner);
-    }
-    0
-}
-/// Resume all pure parsing/accounting/commit work until Native work is needed:
-/// done0, header MIME/RNG1, final-boundary RNG2, If-Range date3. Negative results
-/// stop the invocation; Native throws only after Rust returns. Header accounting/
-/// push waits for the call after Native has applied the returned errno effect.
-/// # Safety
-/// Unique live context; Native range bytes are initialized/disjoint and unchanged
-/// for the invocation, with the same length as begin. No input pointer is retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_range_step(
-    owner: *mut HttpStaticContext,
-    text: *const u8,
-    length: usize,
-) -> i32 {
-    // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-    let Some(owner) = (unsafe { owner.as_mut() }) else {
-        return INVALID;
-    };
-    if length != owner.range.length {
-        return INVALID;
-    }
-    // Validate the current Native span even when this call will only finish.
-    // SAFETY: the caller lends `length` initialized bytes at `text` (null only when empty).
-    let input = match unsafe { bytes(text, length) } {
-        Ok(input) => input,
-        Err(error) => return error,
-    };
-    loop {
-        match owner.range.stage {
-            Stage::Parsing => {
-                let result =
-                    owner
-                        .range
-                        .cursor
-                        .step(input, owner.facts.filesize, &mut owner.range.part);
-                if result < 0 {
-                    owner.facts.status = 416;
-                    owner.range.stage = Stage::Done;
-                    return 0;
-                }
-                match result {
-                    0 => finishing(owner),
-                    2 => {
-                        owner.range.last_length = owner.facts.filesize;
-                        owner.facts.content_length = owner.facts.filesize;
-                        let result = full_task(owner);
-                        owner.range.stage = Stage::Done;
-                        return result;
+impl HttpStaticContext {
+    /// Upstream's `parse_range(range, if_range)`: the `Range` and `If-Range` headers
+    /// (absent as None) into the response's status, content length and tasks.
+    pub fn parse_range(
+        &mut self,
+        range: Option<&[u8]>,
+        if_range: Option<&[u8]>,
+        effects: &impl StaticEffects,
+    ) {
+        let range = range.unwrap_or_default();
+        if self.range_begin(range.len(), u32::from(if_range.is_some())) < 0 {
+            return;
+        }
+        loop {
+            let observed = match self.range_step(range) {
+                1 => {
+                    // The pinned compiler's argument order: the boundary, then the MIME type.
+                    let boundary_ready = self.ensure_boundary(effects);
+                    let mime = effects.mime(self.filename());
+                    let observed = Observation {
+                        mime: &mime,
+                        boundary_ready,
+                        modified: 0,
+                    };
+                    if self.range_resume(&observed) == 1 {
+                        effects.overflow();
                     }
-                    _ => {
-                        owner.range.last_length = owner.range.part.length;
-                        owner.range.stage = Stage::Header;
-                        return 1;
-                    }
+                    continue;
                 }
-            }
-            Stage::CommitHeader => {
-                owner.facts.content_length = owner
-                    .facts
-                    .content_length
-                    .wrapping_add(owner.range.written)
-                    .wrapping_add(owner.range.last_length);
-                let result = owner.tasks.push();
-                if result < 0 {
-                    owner.range.stage = Stage::Done;
-                    return result;
-                }
-                owner.range.stage = Stage::Parsing;
-            }
-            Stage::Finish => {
-                let action = owner.range.finish.step();
-                owner.facts.content_length = owner.range.finish.content_length;
-                owner.facts.status = owner.range.finish.status;
-                match action {
-                    0 => {
-                        owner.range.stage = Stage::Done;
+                2 => Observation {
+                    boundary_ready: self.ensure_boundary(effects),
+                    ..Observation::default()
+                },
+                3 => Observation {
+                    modified: u32::from(
+                        effects.modified_range(if_range.unwrap_or_default(), self.facts.mtime),
+                    ),
+                    ..Observation::default()
+                },
+                _ => return,
+            };
+            self.range_resume(&observed);
+        }
+    }
+    /// Upstream's `ensure_boundary`: the boundary, made from random characters
+    /// the first time.
+    fn ensure_boundary(&mut self, effects: &impl StaticEffects) -> u32 {
+        if let Some(count) = static_boundary(self.boundary.len()) {
+            let mut random = [0u8; BOUNDARY_SIZE];
+            let count = count.min(BOUNDARY_SIZE - 1);
+            effects.random(&mut random, count);
+            self.set_boundary(random.get(..count).unwrap_or_default());
+        }
+        1
+    }
+    /// The response's `Content-Type`: multipart with several ranges, else the file's.
+    pub fn content_type(&mut self, effects: &impl StaticEffects) -> Vec<u8> {
+        if !static_multipart(self.tasks.count()) {
+            return effects.mime(self.filename());
+        }
+        self.ensure_boundary(effects);
+        self.format_content();
+        self.content.clone()
+    }
+    /// Begin one invocation; previous committed tasks persist, scratch resets.
+    fn range_begin(&mut self, length: usize, if_range: u32) -> i32 {
+        if length > isize::MAX as usize {
+            return OVERFLOW;
+        }
+        self.range = HttpContextRange {
+            length,
+            if_range,
+            ..HttpContextRange::default()
+        };
+        self.tasks.begin();
+        if length != 0 {
+            self.facts.content_length = 0;
+            self.range.stage = Stage::Parsing;
+        } else {
+            self.finishing();
+        }
+        0
+    }
+    fn finishing(&mut self) {
+        self.range.finish = HttpRangeFinish {
+            content_length: self.facts.content_length,
+            last_length: self.range.last_length,
+            task_count: self.tasks.count(),
+            filesize: self.facts.filesize,
+            status: self.facts.status,
+            if_range: self.range.if_range,
+            ..HttpRangeFinish::default()
+        };
+        self.range.stage = Stage::Finish;
+    }
+    fn full_task(&mut self) -> i32 {
+        self.tasks.prepare_full(0, self.range.last_length);
+        self.tasks.push()
+    }
+    /// Resume the parsing, accounting and commit work until an effect is needed:
+    /// done0, header MIME/RNG1, final-boundary RNG2, If-Range date3. Negative
+    /// results stop the invocation. Header accounting and push wait for the call
+    /// after the caller has applied the returned errno effect.
+    fn range_step(&mut self, input: &[u8]) -> i32 {
+        if input.len() != self.range.length {
+            return INVALID;
+        }
+        loop {
+            match self.range.stage {
+                Stage::Parsing => {
+                    let result =
+                        self.range
+                            .cursor
+                            .step(input, self.facts.filesize, &mut self.range.part);
+                    if result < 0 {
+                        self.facts.status = 416;
+                        self.range.stage = Stage::Done;
                         return 0;
                     }
-                    1 => {
-                        owner.range.last_length = owner.range.finish.filesize;
-                        let result = full_task(owner);
-                        if result < 0 {
-                            owner.range.stage = Stage::Done;
+                    match result {
+                        0 => self.finishing(),
+                        2 => {
+                            self.range.last_length = self.facts.filesize;
+                            self.facts.content_length = self.facts.filesize;
+                            let result = self.full_task();
+                            self.range.stage = Stage::Done;
                             return result;
                         }
+                        _ => {
+                            self.range.last_length = self.range.part.length;
+                            self.range.stage = Stage::Header;
+                            return 1;
+                        }
                     }
-                    2 => {
-                        owner.range.stage = Stage::End;
-                        return 2;
-                    }
-                    3 => {
-                        owner.range.stage = Stage::Date;
-                        return 3;
-                    }
-                    4 => {
-                        owner.tasks.clear();
-                    }
-                    _ => return INVALID,
                 }
+                Stage::CommitHeader => {
+                    self.facts.content_length = self
+                        .facts
+                        .content_length
+                        .wrapping_add(self.range.written)
+                        .wrapping_add(self.range.last_length);
+                    let result = self.tasks.push();
+                    if result < 0 {
+                        self.range.stage = Stage::Done;
+                        return result;
+                    }
+                    self.range.stage = Stage::Parsing;
+                }
+                Stage::Finish => {
+                    let action = self.range.finish.step();
+                    self.facts.content_length = self.range.finish.content_length;
+                    self.facts.status = self.range.finish.status;
+                    match action {
+                        0 => {
+                            self.range.stage = Stage::Done;
+                            return 0;
+                        }
+                        1 => {
+                            self.range.last_length = self.range.finish.filesize;
+                            let result = self.full_task();
+                            if result < 0 {
+                                self.range.stage = Stage::Done;
+                                return result;
+                            }
+                        }
+                        2 => {
+                            self.range.stage = Stage::End;
+                            return 2;
+                        }
+                        3 => {
+                            self.range.stage = Stage::Date;
+                            return 3;
+                        }
+                        4 => self.tasks.clear(),
+                        _ => return INVALID,
+                    }
+                }
+                Stage::Done => return 0,
+                _ => return INVALID,
             }
-            Stage::Done => return 0,
-            _ => return INVALID,
         }
     }
-}
-/// Admit a completed Native effect; no Native object is retained. Header returns1
-/// only for the existing EOVERFLOW signal; Native applies errno before next step.
-/// # Safety
-/// Unique live context and initialized observation/mime span disjoint from owner.
-/// Native RNG/MIME/calendar effects have finished before this call starts.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v2_http_context_range_resume(
-    owner: *mut HttpStaticContext,
-    observed: *const HttpContextRangeObservation,
-) -> i32 {
-    // SAFETY: `owner` is null or live, aligned and exclusively lent for this call.
-    let owner = unsafe { owner.as_mut() };
-    // SAFETY: `observed` is null or live and aligned for this call.
-    let observed = unsafe { observed.as_ref() };
-    let (Some(owner), Some(observed)) = (owner, observed) else {
-        return INVALID;
-    };
-    match owner.range.stage {
-        Stage::Header => {
-            if observed.boundary_ready == 0 {
-                return INVALID;
+    /// Admit a completed effect. A header returns 1 only for the EOVERFLOW signal,
+    /// which the caller applies before the next step.
+    fn range_resume(&mut self, observed: &Observation<'_>) -> i32 {
+        match self.range.stage {
+            Stage::Header => {
+                if observed.boundary_ready == 0 {
+                    return INVALID;
+                }
+                let format = HttpRangeFormat {
+                    boundary: &self.boundary,
+                    mime: observed.mime,
+                    offset: self.range.part.offset,
+                    length: self.range.part.length,
+                    filesize: self.facts.filesize,
+                    part: 0,
+                    separator: u32::from(self.tasks.count() != 0),
+                };
+                let result = self.tasks.prepare_range(
+                    i64::try_from(self.range.part.offset).unwrap_or(i64::MAX),
+                    self.range.part.length,
+                    &format,
+                    &mut self.range.written,
+                );
+                if result >= 0 {
+                    self.range.stage = Stage::CommitHeader;
+                }
+                result
             }
-            let format = HttpRangeFormat {
-                boundary: HttpProxyText {
-                    data: owner.boundary.as_ptr(),
-                    length: owner.boundary.len(),
-                },
-                mime: HttpProxyText {
-                    data: observed.mime.data,
-                    length: observed.mime.length,
-                },
-                offset: owner.range.part.offset,
-                length: owner.range.part.length,
-                filesize: owner.facts.filesize,
-                part: 0,
-                separator: u32::from(owner.tasks.count() != 0),
-            };
-            // SAFETY: `format` is a local with spans into this owner; the output is an owner field.
-            let result = unsafe {
-                owner.tasks.prepare(
-                    i64::try_from(owner.range.part.offset).unwrap_or(i64::MAX),
-                    owner.range.part.length,
-                    &raw const format,
-                    &raw mut owner.range.written,
-                )
-            };
-            if result >= 0 {
-                owner.range.stage = Stage::CommitHeader;
+            Stage::End => {
+                if observed.boundary_ready == 0 {
+                    return INVALID;
+                }
+                let result = self.format_end();
+                if result < 0 {
+                    return result;
+                }
+                self.range.finish.end_length = self.end.len();
+                self.range.stage = Stage::Finish;
+                0
             }
-            result
+            Stage::Date => {
+                self.range.finish.modified = observed.modified;
+                self.range.stage = Stage::Finish;
+                0
+            }
+            _ => INVALID,
         }
-        Stage::End => {
-            if observed.boundary_ready == 0 {
-                return INVALID;
-            }
-            // SAFETY: `owner` is this live, exclusive context.
-            let result = unsafe { swr_v2_http_context_format(owner, 1) };
-            if result < 0 {
-                return result;
-            }
-            owner.range.finish.end_length = owner.end.len();
-            owner.range.stage = Stage::Finish;
-            0
-        }
-        Stage::Date => {
-            owner.range.finish.modified = observed.modified;
-            owner.range.stage = Stage::Finish;
-            0
-        }
-        _ => INVALID,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::static_context::{
-        HttpStaticObservation, swr_v2_http_context_drop, swr_v2_http_context_new,
-        swr_v2_http_context_observed, swr_v2_http_context_publish,
-    };
-    use crate::{
-        HttpStaticTask, swr_v2_http_tasks_copy, swr_v2_http_tasks_count, swr_v2_http_tasks_snapshot,
-    };
-    fn owner() -> *mut HttpStaticContext {
-        let owner = unsafe { swr_v2_http_context_new(b"/file".as_ptr(), 5, 128) };
-        assert!(!owner.is_null());
-        let file = HttpStaticObservation {
+    use crate::{HttpStaticObservation, HttpStaticTask};
+
+    struct Fixed {
+        modified: bool,
+    }
+    impl StaticEffects for Fixed {
+        fn mime(&self, _: &[u8]) -> Vec<u8> {
+            b"text/plain".to_vec()
+        }
+        fn mime_exists(&self, _: &[u8]) -> bool {
+            true
+        }
+        fn random(&self, out: &mut [u8; BOUNDARY_SIZE], count: usize) {
+            out[..count].fill(b'r');
+        }
+        fn modified_range(&self, _: &[u8], _: i64) -> bool {
+            self.modified
+        }
+        fn overflow(&self) {}
+    }
+    fn owner() -> HttpStaticContext {
+        let mut owner = HttpStaticContext::new(b"/file", 128).unwrap();
+        owner.observed(&HttpStaticObservation {
             filesize: 10,
             mtime: 1_700_000_000,
             kind: 32,
             ..HttpStaticObservation::default()
-        };
-        assert_eq!(
-            unsafe { swr_v2_http_context_observed(owner, 0, &raw const file) },
-            0
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_publish(owner, 5, b"boundary".as_ptr(), 8) },
-            0
-        );
+        });
+        assert_eq!(owner.publish(super::super::BOUNDARY, b"boundary"), 0);
         owner
     }
-    fn observed(modified: u32) -> HttpContextRangeObservation {
-        HttpContextRangeObservation {
-            mime: HttpProxyText {
-                data: b"text/plain".as_ptr(),
-                length: 10,
-            },
+    fn observed(modified: u32) -> Observation<'static> {
+        Observation {
+            mime: b"text/plain",
             boundary_ready: 1,
             modified,
         }
     }
-    fn complete(owner: *mut HttpStaticContext, text: &[u8], modified: u32) {
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_begin(owner, text.len(), 1) },
-            0
-        );
-        loop {
-            match unsafe { swr_v2_http_context_range_step(owner, text.as_ptr(), text.len()) } {
-                0 => break,
-                1..=3 => assert_eq!(
-                    unsafe { swr_v2_http_context_range_resume(owner, &observed(modified)) },
-                    0
-                ),
-                action => panic!("unexpected range action {action}"),
-            }
-        }
+    fn complete(owner: &mut HttpStaticContext, text: &[u8], modified: bool) {
+        owner.parse_range(Some(text), Some(b""), &Fixed { modified });
     }
     #[test]
     fn ordinary_empty_file_has_one_initialized_zero_length_task() {
-        let owner = owner();
-        unsafe { (*owner).facts.filesize = 0 };
-        complete(owner, b"bytes=0-", 0);
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            1
-        );
-        assert_eq!(unsafe { (*owner).facts.content_length }, 0);
-        assert_eq!(unsafe { (*owner).facts.status }, 200);
-        let mut task = HttpStaticTask::default();
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_copy(&raw const (*owner).tasks, 0, &raw mut task) },
-            0
-        );
-        assert_eq!(task, HttpStaticTask::default());
-        unsafe { swr_v2_http_context_drop(owner) };
+        let mut owner = owner();
+        owner.facts.filesize = 0;
+        complete(&mut owner, b"bytes=0-", false);
+        assert_eq!(owner.tasks.count(), 1);
+        assert_eq!(owner.facts.content_length, 0);
+        assert_eq!(owner.facts.status, 200);
+        assert_eq!(owner.tasks(), [HttpStaticTask::default()]);
     }
     #[test]
     fn header_accounting_waits_for_native_errno_boundary_then_commits() {
-        let owner = owner();
+        let mut owner = owner();
         let text = b"bytes=1-3,5-6";
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_begin(owner, text.len(), 0) },
-            0
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_step(owner, text.as_ptr(), text.len()) },
-            1
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_resume(owner, &observed(0)) },
-            0
-        );
-        assert_eq!(unsafe { (*owner).facts.content_length }, 0);
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            0
-        );
-        // Native applies any errno effect before this next call can commit.
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_step(owner, text.as_ptr(), text.len()) },
-            1
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            1
-        );
-        assert!(unsafe { (*owner).facts.content_length } > 3);
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_resume(owner, &observed(0)) },
-            0
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_step(owner, text.as_ptr(), text.len()) },
-            2
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_resume(owner, &observed(0)) },
-            0
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_step(owner, text.as_ptr(), text.len()) },
-            0
-        );
-        assert_eq!(unsafe { (*owner).facts.status }, 206);
-        let mut tasks = [HttpStaticTask::default(); 2];
-        let mut written = 0;
-        assert_eq!(
-            unsafe {
-                swr_v2_http_tasks_snapshot(
-                    &raw const (*owner).tasks,
-                    tasks.as_mut_ptr(),
-                    2,
-                    &raw mut written,
-                )
-            },
-            0
-        );
+        assert_eq!(owner.range_begin(text.len(), 0), 0);
+        assert_eq!(owner.range_step(text), 1);
+        assert_eq!(owner.range_resume(&observed(0)), 0);
+        assert_eq!(owner.facts.content_length, 0);
+        assert_eq!(owner.tasks.count(), 0);
+        // The caller applies any errno effect before this next call can commit.
+        assert_eq!(owner.range_step(text), 1);
+        assert_eq!(owner.tasks.count(), 1);
+        assert!(owner.facts.content_length > 3);
+        assert_eq!(owner.range_resume(&observed(0)), 0);
+        assert_eq!(owner.range_step(text), 2);
+        assert_eq!(owner.range_resume(&observed(0)), 0);
+        assert_eq!(owner.range_step(text), 0);
+        assert_eq!(owner.facts.status, 206);
+        let tasks: [HttpStaticTask; 2] = owner.tasks().try_into().unwrap();
         assert_eq!(
             (
                 tasks[0].offset,
@@ -415,53 +349,44 @@ mod tests {
             ),
             (1, 3, 5, 2)
         );
-        assert_eq!(unsafe { &(*owner).end }, b"\r\n--boundary--\r\n");
-        unsafe { swr_v2_http_context_drop(owner) };
+        assert_eq!(owner.end, b"\r\n--boundary--\r\n");
         assert!(tasks[0].part_header.starts_with(b"--boundary"));
     }
     #[test]
     fn date_replacement_and_repeated_empty_parse_preserve_existing_records() {
-        let owner = owner();
-        complete(owner, b"bytes=1-3,5-6", 1);
-        assert_eq!(unsafe { (*owner).facts.status }, 200);
-        assert_eq!(unsafe { (*owner).facts.content_length }, 10);
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            1
-        );
-        complete(owner, b"", 0);
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            2
-        );
-        assert_eq!(unsafe { (*owner).facts.content_length }, 10);
-        assert_eq!(unsafe { (*owner).facts.status }, 200);
-        unsafe { swr_v2_http_context_drop(owner) };
+        let mut owner = owner();
+        complete(&mut owner, b"bytes=1-3,5-6", true);
+        assert_eq!(owner.facts.status, 200);
+        assert_eq!(owner.facts.content_length, 10);
+        assert_eq!(owner.tasks.count(), 1);
+        complete(&mut owner, b"", false);
+        assert_eq!(owner.tasks.count(), 2);
+        assert_eq!(owner.facts.content_length, 10);
+        assert_eq!(owner.facts.status, 200);
     }
     #[test]
-    fn wrong_stage_and_changed_span_metadata_do_not_consume_native_effects() {
-        let owner = owner();
+    fn wrong_stage_and_changed_span_metadata_do_not_consume_effects() {
+        let mut owner = owner();
         let text = b"bytes=0-0";
+        assert_eq!(owner.range_resume(&observed(0)), INVALID);
+        assert_eq!(owner.range_begin(text.len(), 0), 0);
+        assert_eq!(owner.range_step(&text[..text.len() - 1]), INVALID);
+        assert_eq!(owner.tasks.count(), 0);
+        assert_eq!(owner.range_step(text), 1);
+    }
+    #[test]
+    fn content_type_is_multipart_over_the_lazy_boundary_for_several_ranges() {
+        let mut owner = HttpStaticContext::new(b"/file", 128).unwrap();
+        owner.observed(&HttpStaticObservation {
+            filesize: 10,
+            ..HttpStaticObservation::default()
+        });
+        let effects = Fixed { modified: false };
+        assert_eq!(owner.content_type(&effects), b"text/plain");
+        owner.parse_range(Some(b"bytes=0-1,3-4"), None, &effects);
         assert_eq!(
-            unsafe { swr_v2_http_context_range_resume(owner, &observed(0)) },
-            INVALID
+            owner.content_type(&effects),
+            b"multipart/byteranges; boundary=SwooleBoundaryrrrrrrrrrrrrrrrrrrrrrrrr"
         );
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_begin(owner, text.len(), 0) },
-            0
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_step(owner, text.as_ptr(), text.len() - 1) },
-            INVALID
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_tasks_count(&raw const (*owner).tasks) },
-            0
-        );
-        assert_eq!(
-            unsafe { swr_v2_http_context_range_step(owner, text.as_ptr(), text.len()) },
-            1
-        );
-        unsafe { swr_v2_http_context_drop(owner) };
     }
 }

@@ -1,16 +1,17 @@
-//! `swoole_module_entry`, which `get_module()` hands Zend, with its
+//! `swoole_module_entry`, which `get_module()` hands Zend (through crates/ffi's
+//! `swr_v1_phpswoole_module`, with the families above this crate), with its
 //! dependencies, and the tail of `SwooleG.fatal_error`.
 use crate::{constants, info, module, optional, table};
 use std::{
-    ffi::{CStr, c_int, c_long, c_void},
+    ffi::{CStr, c_int},
     io::Write,
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_corebase::{Switch as C, built_with};
 use swoole_rs_zend::{
-    bailout::{self, Bailout},
-    sys::{swr_zend_module_template, zend_module_dep, zend_module_entry, zval},
+    bailout,
+    sys::{swr_zend_module_template, zend_module_dep, zend_module_entry},
 };
 
 /// `MODULE_DEP_REQUIRED` and `MODULE_DEP_CONFLICTS`.
@@ -20,17 +21,6 @@ const CONFLICTS: u8 = 2;
 const CO_HAS_BEEN_BOUND: c_int = 10002;
 
 static ENTRY: AtomicPtr<zend_module_entry> = AtomicPtr::new(ptr::null_mut());
-
-unsafe extern "C" {
-    /// This thread's coroutine scheduler (crates/coroutine).
-    safe fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
-    fn swr_v1_phpcoroutines_print_backtrace(
-        cid: c_long,
-        options: c_long,
-        limit: c_long,
-        return_value: *mut zval,
-    ) -> u8;
-}
 
 fn dep(name: &'static CStr, kind: u8) -> zend_module_dep {
     zend_module_dep {
@@ -74,9 +64,9 @@ fn deps() -> Vec<zend_module_dep> {
     deps
 }
 
-/// `get_module()`: the module entry, built once.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpswoole_module() -> *mut zend_module_entry {
+/// `get_module()`: the module entry, built once, whose phases run `families`.
+pub fn module_entry(families: &'static module::Families) -> *mut zend_module_entry {
+    module::register(families);
     let current = ENTRY.load(Ordering::Acquire);
     if !current.is_null() {
         return current;
@@ -107,7 +97,7 @@ pub extern "C" fn swr_v1_phpswoole_module() -> *mut zend_module_entry {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
     if code == CO_HAS_BEEN_BOUND {
-        let scheduler = swr_v1_coroutine_scheduler_get().cast::<swoole_rs_coroutine::Scheduler>();
+        let scheduler = swoole_rs_coroutine::scheduler();
         // SAFETY: this thread's scheduler, live for the thread.
         let cid = unsafe { (*scheduler).socket_bound_cid };
         let rule = "-------------------------------------------------------------------";
@@ -117,11 +107,11 @@ pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
             "\n [Coroutine-{cid}] Stack trace:\n {rule}\n"
         )
         .ok();
-        // SAFETY: the coroutine's backtrace, printed; a bailout is trapped.
-        if unsafe { swr_v1_phpcoroutines_print_backtrace(cid as c_long, 0, 0, ptr::null_mut()) }
-            != 0
+        // The coroutine's backtrace, printed; a bailout is trapped.
+        if let Some(families) = module::families()
+            && let Err(bailed) = (families.print_backtrace)(cid)
         {
-            bailout::raise(Err(Bailout));
+            bailout::raise(Err(bailed));
             return;
         }
     }

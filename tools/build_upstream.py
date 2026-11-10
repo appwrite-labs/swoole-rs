@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Build a pinned upstream reference locally. Never run `make install`."""
+"""Build the pinned upstream swoole.so with phpize, configure and make. Never run `make install`.
+
+The default profile builds in the pinned checkout (target/upstream/src); --stdext, --php-sockets and
+--configure build a copy of the pin (see tree()). Prints `Built upstream: <swoole.so>`, or
+`Cached upstream: <swoole.so>` when that profile's last build had the same configuration."""
 import argparse
-import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -135,23 +139,76 @@ def build_extension(source, log_path, args, extra=(), *, incremental=False, timi
     return configure
 
 
+def tree(stdext=False, php_sockets=False, configure=()):
+    """Where a profile builds: the pinned checkout itself by default, else a copy of the pin per
+    profile (target/upstream-builds/php-sockets-stdext/src and so on), so profiles never rebuild each other."""
+    if not (stdext or php_sockets or configure):
+        return ROOT / 'target/upstream/src'
+    name = '-'.join(name for name, on in [('php-sockets', php_sockets), ('stdext', stdext)] if on) or 'configured'
+    return ROOT / 'target/upstream-builds' / name / 'src'
+
+
+def runner(source, pin):
+    """PHPT runs read the pin's tests with phpize's run-tests.php (corpus/upstream/run.py --source),
+    which only a build in the pin itself leaves there; a profile's build lends it its own, since
+    the runner comes from the PHP (phpize) that profile was built with."""
+    if source != pin:
+        shutil.copy2(source / 'run-tests.php', pin / 'run-tests.php')
+
+
+def clone(pin, url='https://github.com/swoole/swoole-src.git'):
+    """Clone beside the pin and rename into place: a killed clone leaves only `src.partial`,
+    which the next run replaces, never a half-checked-out pin."""
+    partial = pin.with_name(pin.name + '.partial')
+    shutil.rmtree(partial, ignore_errors=True)
+    subprocess.run(['git', 'clone', '--depth', '1', '--branch', VERSION, url, str(partial)], check=True)
+    partial.rename(pin)
+
+
+def prepare_pin(pin, url='https://github.com/swoole/swoole-src.git'):
+    """The pin's checkout at `pin`, cloned unless there is one. A tree there without its own
+    .git is no checkout (a CI cache can restore build outputs alone): git would answer for the
+    enclosing repository, so it goes and the pin is cloned."""
+    if pin.exists() and not (pin / '.git').exists():
+        shutil.rmtree(pin)
+    if not pin.exists():
+        clone(pin, url)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     add_build_arguments(parser)
     args = parser.parse_args()
     require_build_space(ROOT)
-    source = ROOT / 'target/upstream/src'
-    source.parent.mkdir(parents=True, exist_ok=True)
-    if not source.exists():
-        subprocess.run(['git', 'clone', '--depth', '1', '--branch', VERSION,
-                        'https://github.com/swoole/swoole-src.git', str(source)], check=True)
-    actual = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+    pin = ROOT / 'target/upstream/src'
+    pin.parent.mkdir(parents=True, exist_ok=True)
+    prepare_pin(pin)
+    actual = subprocess.check_output(['git', '-C', str(pin), 'rev-parse', 'HEAD'], text=True).strip()
     if actual != COMMIT:
         raise RuntimeError(f'Upstream checkout is {actual}; expected {COMMIT}. Refusing to alter it.')
-    if subprocess.run(['git', '-C', str(source), 'diff', '--quiet', 'HEAD', '--']).returncode:
+    if subprocess.run(['git', '-C', str(pin), 'diff', '--quiet', 'HEAD', '--']).returncode:
         raise RuntimeError('Upstream has tracked source changes; refusing to build a modified reference.')
+    source = tree(args.stdext, args.php_sockets, args.configure)
+    library, record_path = source / 'modules/swoole.so', source.parent / 'build.json'
+    # The pin never changes, so a build stays current while its configuration does.
+    record = {'commit': COMMIT, 'configure': extension_configuration(args)[0], 'platform': [sys.platform, os.uname().machine],
+              'php': subprocess.check_output([args.php_config, '--version'], text=True).strip(),
+              # build_extension inherits the toolchain from the environment.
+              'env': {name: os.environ.get(name) for name in ('CC', 'CXX', 'CFLAGS', 'CPPFLAGS', 'CXXFLAGS', 'LDFLAGS')}}
+    if library.is_file() and record_path.is_file() and json.loads(record_path.read_text()) == record:
+        runner(source, pin)
+        print(f'Cached upstream: {library}')
+        return 0
+    record_path.unlink(missing_ok=True)
+    if source != pin:
+        shutil.rmtree(source.parent, ignore_errors=True)
+        source.parent.mkdir(parents=True)
+        subprocess.run(['git', 'clone', '-q', '--shared', '--no-checkout', str(pin), str(source)], check=True)
+        subprocess.run(['git', '-C', str(source), 'checkout', '-q', '--detach', COMMIT], check=True)
     build_extension(source, source.parent / 'build.log', args)
-    print(f'Upstream {VERSION} ({COMMIT}) built: {source / "modules/swoole.so"}')
+    record_path.write_text(json.dumps(record, indent=1) + '\n')
+    runner(source, pin)
+    print(f'Built upstream: {library}')
     return 0
 
 

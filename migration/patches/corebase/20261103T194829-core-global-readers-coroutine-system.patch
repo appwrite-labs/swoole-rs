@@ -1,9 +1,0 @@
-diff --git a/src/coroutine/system.cc b/src/coroutine/system.cc
-index e6ef9c2..dad5609 100644
---- a/src/coroutine/system.cc
-+++ b/src/coroutine/system.cc
-@@ -178,3 +178,3 @@ std::string System::gethostbyname(const std::string &hostname, int domain, doubl
-     if (!result_list.empty()) {
--        if (SwooleG.dns_lookup_random) {
-+        if (swr_v1_core_dns_lookup_random()) {
-             result = result_list[swoole_rand() % result_list.size()];

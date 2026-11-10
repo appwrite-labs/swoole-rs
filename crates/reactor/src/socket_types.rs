@@ -141,13 +141,8 @@ pub(crate) const CLOEXEC: c_int = 1 << 3;
 /// `swoole::socket`: socket(2) with `SW_SOCK_NONBLOCK`/`SW_SOCK_CLOEXEC` applied,
 /// atomically where the platform has `SOCK_NONBLOCK`/`SOCK_CLOEXEC`, else by fcntl.
 /// As upstream, a failed fcntl closes the socket but still returns its number.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_open(
-    domain: c_int,
-    kind: c_int,
-    protocol: c_int,
-    flags: c_int,
-) -> c_int {
+#[must_use]
+pub fn swr_v1_socket_open(domain: c_int, kind: c_int, protocol: c_int, flags: c_int) -> c_int {
     let (nonblock, cloexec) = (flags & NONBLOCK != 0, flags & CLOEXEC != 0);
     #[cfg(target_os = "linux")]
     {

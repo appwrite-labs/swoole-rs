@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Pinned external RFC conformance; never contributes to compatibility pass counts."""
+"""Pinned external RFC conformance; never contributes to compatibility pass counts.
+
+The first engine is the control: the run fails when a case does worse on another engine than
+on it, in either field (OK, then NON-STRICT, then INFORMATIONAL, then anything else), or when
+the suite's results are missing or incomplete. Strict passes are counted, not required.
+"""
 import argparse
 import ast
 from collections import Counter
@@ -16,6 +21,15 @@ from tools.harness import ROOT, parse_engines, server, write_report
 
 IMAGE = 'crossbario/autobahn-testsuite@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074'
 PROFILE = ['1.*', '2.*', '3.*', '4.*', '5.*', '6.*', '7.*', '10.*', '12.1.1', '13.1.1']
+RANK = {'OK': 3, 'NON-STRICT': 2, 'INFORMATIONAL': 1}
+
+
+def regressions(control, engine):
+    """Cases (by id) whose behavior or behaviorClose ranks lower on `engine` than on `control`."""
+    def rank(cases, case, field):
+        return RANK.get(cases.get(case, {}).get(field), 0)
+    return [case for case in sorted(control)
+            if any(rank(engine, case, field) < rank(control, case, field) for field in ('behavior', 'behaviorClose'))]
 
 
 def main():
@@ -50,6 +64,7 @@ def main():
         config = {'outdir': '/reports', 'servers': servers, 'cases': report['cases'],
                   'exclude-cases': [], 'exclude-agent-cases': {}}
         (artifacts / 'config.json').write_text(json.dumps(config, indent=2))
+        subprocess.run(['docker', 'pull', '-q', IMAGE], check=True, stdout=subprocess.DEVNULL)
         report['image_identity'] = subprocess.check_output(
             ['docker', 'image', 'inspect', IMAGE, '--format', '{{.Id}}'], text=True).strip()
         command = ['docker', 'run', '--rm', '--name', name, '--platform', 'linux/amd64',
@@ -87,18 +102,14 @@ def main():
                     'behavior_counts': dict(Counter(row['behavior'] for row in cases.values())),
                     'close_counts': dict(Counter(row['behaviorClose'] for row in cases.values())),
                     'strict_passed': sum(row['behavior'] == 'OK' and row['behaviorClose'] == 'OK' for row in cases.values())})
-            if len(report['engines']) == 2:
-                left, right = [data.get(engine['name'], {}) for engine in report['engines']]
-                ids = set(left) | set(right)
-                report['compatibility_differences'] = [case for case in sorted(ids)
-                    if (left.get(case, {}).get('behavior'), left.get(case, {}).get('behaviorClose')) !=
-                       (right.get(case, {}).get('behavior'), right.get(case, {}).get('behaviorClose'))]
+            control, *others = [engine['name'] for engine in report['engines']]
+            report['regressions'] = {name: regressions(data.get(control, {}), data.get(name, {})) for name in others}
         else:
             report['error'] = report.get('error', 'Autobahn produced no master index')
         write_report(args.output, report)
     print(json.dumps(report, indent=2))
     return int(bool(report.get('error')) or report['exit_code'] != 0 or not report['results'] or
-               any(row['total'] == 0 or row['strict_passed'] != row['total'] for row in report['results']))
+               any(row['total'] == 0 for row in report['results']) or any(report.get('regressions', {}).values()))
 
 
 if __name__ == '__main__':

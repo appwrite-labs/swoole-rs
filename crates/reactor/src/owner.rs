@@ -18,13 +18,3 @@ pub(crate) fn try_owner<T>(initialize: impl FnOnce() -> T) -> Option<Box<T>> {
     // SAFETY: initialized by the `write` just above.
     Some(unsafe { owner.assume_init() })
 }
-
-/// # Safety
-/// Null or live exclusively-owned global-allocation metadata, detached from all
-/// Native consumers. T owns only Rust metadata; no Native payload is dropped.
-pub(crate) unsafe fn release<T>(owner: *mut T) {
-    if !owner.is_null() {
-        // SAFETY: a live, exclusively owned `Box` allocation, released once.
-        drop(unsafe { Box::from_raw(owner) });
-    }
-}

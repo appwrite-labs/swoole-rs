@@ -16,12 +16,8 @@ use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_reactor::{Registry, SocketRecord, reactor_upstream};
 use swoole_rs_tls::socket_pair::SocketPair;
 
-// SAFETY: crates/ports' `ListenPort::get_protocols`, crates/protocols' bus and
-// crates/timer's queue, linked into the same archive.
+// SAFETY: crates/timer's queue, linked into the same archive.
 unsafe extern "C" {
-    #[link_name = "_ZNK6swoole10ListenPort13get_protocolsEv"]
-    fn get_protocols(port: *mut c_void) -> *const c_char;
-    fn swr_v1_bus_memory_size(bus: *mut c_void) -> usize;
     fn swr_v1_timer_owner_queue(timer: *const c_void) -> *const c_void;
     fn swr_v1_timer_stats_get(queue: *const c_void, out: *mut [u64; 5]) -> i32;
 }
@@ -350,13 +346,12 @@ impl Facts for Live<'_> {
         let config = self.config;
         let is_thread = swoole_rs_corebase::thread_kind() == THREAD_REACTOR;
         let bus = if is_thread {
-            self.thread_record().bus
+            self.thread_record().message_bus()
         } else {
-            // SAFETY: the server's live `MessageBus`, whose first word is its bus.
-            unsafe { *self.tables.message_bus.cast::<*mut c_void>() }
+            // SAFETY: the server's live `MessageBus`.
+            unsafe { crate::objects::Bus::of(self.tables.message_bus) }
         };
-        // SAFETY: a live bus.
-        let bus_size = unsafe { swr_v1_bus_memory_size(bus) };
+        let bus_size = bus.rust().memory_size();
         let user_workers = self.serv.user_worker_num();
         let workers = u64::from(config.worker_num) + u64::from(config.task_worker_num);
         let workers = workers + user_workers as u64;
@@ -407,10 +402,7 @@ impl Facts for Live<'_> {
                 let host = config.host();
                 // SAFETY: the host's bytes, which the port keeps.
                 let host = unsafe { core::slice::from_raw_parts(host.data.cast(), host.length) };
-                // SAFETY: as above.
-                let protocols = unsafe { get_protocols(listener) };
-                // SAFETY: a static name.
-                let protocols = unsafe { CStr::from_ptr(protocols) };
+                let protocols = (crate::port_config::methods().get_protocols)(config);
                 // SAFETY: as above.
                 let connections = unsafe { serv.port_connection_num(listener) };
                 Port {

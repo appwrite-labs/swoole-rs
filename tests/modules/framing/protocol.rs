@@ -1,14 +1,15 @@
 //! Upstream's `core-tests/src/protocol/base.cpp` TESTs that start a server, one function
 //! per TEST with the same inputs and expected values. Built into the http server case
-//! binary (tests/modules/http/server), whose fixture.cc builds the Server with its port's
+//! binary (tests/modules/http/server), whose http1/case.rs builds the Server with its port's
 //! framing (`swr_case_protocol_server`). The client is a blocking `TcpStream`, as
 //! upstream's synchronous `network::Client`. The file's other TESTs are unit tests in
-//! crates/ports (`swap_byte_order`, `unpack`, `hton64`) and crates/protocols (`socks5_*`).
+//! crates/ports (`swap_byte_order`, `unpack`, `hton64`) and crates/protocols-ffi (`socks5_*`).
 
 use super::http1::{SW_LOG_WARNING, swoole_set_log_level};
 use super::{
-    BODY, CHILD, CppString, Receive, SW_OK, Server, base_worker_start, primary_port, request, send,
-    signal_block_all, string, string_append_random_bytes, swr_case_shutdown, swr_case_start, value,
+    BODY, CHILD, CppString, SW_OK, Server, base_worker_start, primary_port, request, send,
+    signal_block_all, string, string_append_random_bytes, swr_case_protocol_server,
+    swr_case_shutdown, swr_case_start, value,
 };
 use std::ffi::c_int;
 use std::io::{Read, Write};
@@ -27,7 +28,6 @@ const STREAM: c_int = 0;
 const LENGTH_L4: c_int = 1;
 const EOF_CRLF: c_int = 2;
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     #[link_name = "_ZN6swoole6StringD1Ev"]
     fn string_drop(this: *mut CppString);
@@ -35,11 +35,6 @@ unsafe extern "C" {
     fn swoole_rand(min: c_int, max: c_int) -> c_int;
     #[link_name = "_Z17swoole_random_intv"]
     fn swoole_random_int() -> u64;
-    fn swr_case_protocol_server(
-        framing: c_int,
-        on_worker_start: extern "C" fn(*mut Server),
-        on_receive: Receive,
-    ) -> *mut Server;
 }
 
 static PKGS: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
@@ -103,7 +98,7 @@ extern "C" fn package_receive(serv: *mut Server, req: *const std::ffi::c_void) -
 /// chunks of at most 64KiB.
 fn test_protocol(framing: c_int) {
     RECV_COUNT.store(0, Ordering::Relaxed);
-    // SAFETY: the fixture's callbacks have the slots' signatures.
+    // SAFETY: the builder's callbacks have the slots' signatures.
     let serv = unsafe { swr_case_protocol_server(framing, base_worker_start, package_receive) };
     serve(serv, |serv| {
         signal_block_all();
@@ -145,7 +140,7 @@ fn length() {
 }
 
 fn length_2() {
-    // SAFETY: the fixture's callbacks have the slots' signatures.
+    // SAFETY: the builder's callbacks have the slots' signatures.
     let serv = unsafe { swr_case_protocol_server(STREAM, base_worker_start, ok_receive) };
     serve(serv, |serv| {
         signal_block_all();
@@ -187,7 +182,7 @@ fn length_2() {
 }
 
 fn length_3() {
-    // SAFETY: the fixture's callbacks have the slots' signatures.
+    // SAFETY: the builder's callbacks have the slots' signatures.
     let serv = unsafe { swr_case_protocol_server(LENGTH_L4, base_worker_start, ok_receive) };
     serve(serv, |serv| {
         signal_block_all();

@@ -134,11 +134,6 @@ mod native {
     unsafe extern "C-unwind" {
         #[link_name = "_ZN6swoole9Coroutine24print_socket_bound_errorEiPKcl"]
         fn print_socket_bound_error(fd: c_int, event: *const c_char, cid: c_long);
-        fn swr_v1_coroutine_yield_with_cancel(
-            co: *mut c_void,
-            cancel: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool,
-            data: *mut c_void,
-        );
     }
 
     pub(super) static HOST: Host = Host {
@@ -190,7 +185,7 @@ mod native {
         let data = tag(socket, event != READ);
         // SAFETY: the current coroutine, waiting on the live record, whose frames own
         // nothing with a destructor.
-        unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, data) };
+        unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, data) };
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.
@@ -436,7 +431,8 @@ pub(crate) fn check_bound(socket: Co, event: u32) {
 }
 
 /// `get_event_str(event)`.
-pub(crate) fn event_str(socket: Co, event: u32) -> &'static CStr {
+#[must_use]
+pub fn event_str(socket: Co, event: u32) -> &'static CStr {
     match socket.with_state(|state| state.event_name(event)) {
         0 => c"reading",
         1 => c"writing",
@@ -1033,7 +1029,7 @@ mod tests {
         for seconds in [-1i64, 0, 1, 9_007_199_254_740_993] {
             for micros in [-1i64, 0, 1, 999_999, 1_000_000, i64::from(i32::MAX)] {
                 let expected = seconds as f64 + micros as f64 / 1000.0 / 1000.0;
-                let got = crate::swr_v1_hook_timeval(seconds as f64, micros as f64);
+                let got = crate::timeval(seconds as f64, micros as f64);
                 assert_eq!(got.to_bits(), expected.to_bits(), "{seconds} {micros}");
             }
         }

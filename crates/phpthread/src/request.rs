@@ -15,9 +15,9 @@ use swoole_rs_zend::{
     bailout::Bailout,
     object_of,
     sys::{
-        IS_RESOURCE_EX, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, object_init_ex,
-        swr_zend_register_stream_constant, swr_zend_stream_close, swr_zend_stream_expose,
-        swr_zend_stream_fd, swr_zend_stream_from_zval, swr_zend_stream_no_close,
+        IS_RESOURCE_EX, PHP_STREAM_FLAG_NO_CLOSE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
+        object_init_ex, swr_zend_register_stream_constant, swr_zend_stream_close,
+        swr_zend_stream_expose, swr_zend_stream_fd, swr_zend_stream_from_zval,
         swr_zend_stream_open, swr_zend_stream_select_fd, swr_zend_string_release,
         swr_zend_thread_main_request, zend_string, zend_value, zval,
     },
@@ -116,7 +116,7 @@ pub(crate) unsafe fn socket_create(
 ) {
     // SAFETY: a descriptor the item owns.
     let duplicate = unsafe { libc::dup(fd) };
-    if duplicate >= 0 && create(out, duplicate) {
+    if (duplicate >= 0 && create(out, duplicate)) || swoole_rs_zend::bailout::pending() {
         return;
     }
     let errno = errno();
@@ -160,7 +160,7 @@ pub(crate) unsafe fn stdio_open() {
     let mut casted = true;
     for (stream, fd) in streams.iter().zip(&mut fds) {
         // SAFETY: a stream opened above.
-        unsafe { swr_zend_stream_no_close(*stream) };
+        unsafe { (**stream).flags |= PHP_STREAM_FLAG_NO_CLOSE };
         // SAFETY: as above.
         casted &= unsafe { swr_zend_stream_fd(*stream, fd) };
     }

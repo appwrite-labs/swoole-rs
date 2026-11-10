@@ -19,57 +19,36 @@ pub struct ReactorIovFields {
     pub count: i32,
     pub state: IovState,
 }
-#[repr(C)]
-pub struct ReactorIovAllocation {
-    pub original: *mut libc::iovec,
-    pub iterator: *mut libc::iovec,
-    ///0 ready, -1 invalid Native array bound, -2 allocation/capacity refusal.
-    pub status: i32,
-}
 fn allocation_layout(count: usize) -> Option<(Layout, usize)> {
     let descriptors = Layout::array::<libc::iovec>(count.checked_mul(2)?).ok()?;
     let (layout, offset) = Layout::new::<ReactorIov>().extend(descriptors).ok()?;
     Some((layout.pad_to_align(), offset))
 }
-fn descriptor_offset() -> usize {
-    std::mem::size_of::<ReactorIov>().next_multiple_of(std::mem::align_of::<libc::iovec>())
-}
-/// Construct both actual descriptor spans, not a Native mirror. Payload bytes
-/// are neither read nor owned. Native throws only after this function returns.
+/// Construct both descriptor spans. Payload bytes are neither read nor owned.
+/// Refused with -1 for a negative count, -2 when it can't allocate.
 /// # Safety
-/// For count>0, source names count initialized, readable target C iovec objects.
-/// Source objects/payloads remain Native-owned and disjoint from the new owner.
-#[unsafe(no_mangle)]
+/// For count>0, source names count initialized, readable iovecs, which stay the
+/// caller's and are disjoint from the new owner.
 #[expect(
     clippy::cast_ptr_alignment,
     reason = "the header sits at the start of allocation_layout's aligned block"
 )]
-pub unsafe extern "C" fn swr_v1_reactor_iov_owned_new(
-    source: *const libc::iovec,
-    count: i32,
-) -> ReactorIovAllocation {
-    let refused = |status| ReactorIovAllocation {
-        original: ptr::null_mut(),
-        iterator: ptr::null_mut(),
-        status,
-    };
+unsafe fn owned_new(source: *const libc::iovec, count: i32) -> Result<*mut ReactorIov, i32> {
     if count < 0 {
-        return refused(-1);
+        return Err(-1);
     }
     // The pinned Native expression count+count has no defined signed-overflow
     // behavior. This explicit refusal does not establish parity in that domain.
     if count > i32::MAX / 2 {
-        return refused(-2);
+        return Err(-2);
     }
     let signed_count = count;
     let count = count.unsigned_abs() as usize;
-    let Some((layout, offset)) = allocation_layout(count) else {
-        return refused(-2);
-    };
+    let (layout, offset) = allocation_layout(count).ok_or(-2)?;
     // SAFETY: `allocation_layout` returns a non-zero-sized layout; null is handled below.
     let allocation = unsafe { alloc(layout) };
     if allocation.is_null() {
-        return refused(-2);
+        return Err(-2);
     }
     // `layout` holds the header, then two arrays of `count` iovecs starting at `offset`,
     // each suitably aligned.
@@ -98,98 +77,51 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_owned_new(
         // SAFETY: as above, for the second array.
         unsafe { ptr::copy_nonoverlapping(source, iterator, count) };
     }
-    ReactorIovAllocation {
-        original,
-        iterator,
-        status: 0,
-    }
-}
-/// Release only descriptor storage and allocation-local metadata. No payload,
-/// Native callback, destructor or public counter is consulted.
-/// # Safety
-/// original is null or the unmodified base returned by `owned_new`, exclusively owned and
-/// released exactly once. Foreign/replaced/shallow-copied owners are unsupported.
-#[unsafe(no_mangle)]
-#[expect(
-    clippy::cast_ptr_alignment,
-    reason = "the header sits at the start of allocation_layout's aligned block"
-)]
-pub unsafe extern "C" fn swr_v1_reactor_iov_owned_free(original: *mut libc::iovec) {
-    if original.is_null() {
-        return;
-    }
-    // `original` is the unmodified base from `owned_new`, so the allocation (and its header)
-    // starts `descriptor_offset()` bytes before it.
-    let allocation = original.cast::<u8>().wrapping_sub(descriptor_offset());
-    // SAFETY: as above; the header was written at allocation time.
-    let header = unsafe { allocation.cast::<ReactorIov>().read() };
-    // SAFETY: allocated with `header.layout`; exclusively owned and released once.
-    unsafe { dealloc(allocation, header.layout) };
-}
-
-/// Construct an opaque cursor in the descriptor allocation; no extra allocation.
-/// # Safety
-/// `source` lends `count` initialized iovecs and `status` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_iov_create(
-    source: *const libc::iovec,
-    count: i32,
-    status: *mut i32,
-) -> *mut ReactorIov {
-    // SAFETY: the caller lends the initialized descriptor span.
-    let result = unsafe { swr_v1_reactor_iov_owned_new(source, count) };
-    // SAFETY: writable output per the contract.
-    unsafe { status.write(result.status) };
-    if result.status != 0 {
-        return ptr::null_mut();
-    }
-    result
-        .original
-        .cast::<u8>()
-        .wrapping_sub(descriptor_offset())
-        .cast()
+    Ok(allocation.cast())
 }
 
 /// Release an opaque cursor and both spans; payload bytes stay borrowed.
 /// # Safety
-/// `owner` is the unique live cursor returned by create, or null.
+/// `owner` is the unique live cursor returned by prepare, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_reactor_iov_destroy(owner: *mut ReactorIov) {
     if !owner.is_null() {
-        // SAFETY: live owner whose original allocation base is unchanged.
-        let original = unsafe { (*owner).fields.original };
-        // SAFETY: the unique descriptor allocation is released once.
-        unsafe { swr_v1_reactor_iov_owned_free(original) };
+        // SAFETY: the live owner's header, written at allocation.
+        let layout = unsafe { (*owner).layout };
+        // SAFETY: allocated with `layout`; exclusively owned and released once.
+        unsafe { dealloc(owner.cast(), layout) };
     }
 }
 
-/// Allocate and expose stable public field slots for the native constructor.
+/// An opaque cursor in one allocation with its descriptors, and its field slots.
 #[repr(C)]
 pub struct ReactorIovPrepared {
     pub owner: *mut ReactorIov,
     pub fields: *mut ReactorIovFields,
+    /// 0 ready, -1 a negative count, -2 an allocation refusal.
     pub status: i32,
 }
 /// # Safety
-/// Source obeys create's descriptor-span contract. Public slots remain valid until destroy.
+/// `source` lends `count` initialized iovecs. The slots remain valid until destroy.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_reactor_iov_prepare(
     source: *const libc::iovec,
     count: i32,
 ) -> ReactorIovPrepared {
-    let mut status = 0;
-    // SAFETY: forwards the source span; status is a writable local.
-    let owner = unsafe { swr_v1_reactor_iov_create(source, count, &raw mut status) };
-    let fields = if owner.is_null() {
-        ptr::null_mut()
-    } else {
-        // SAFETY: the freshly allocated owner contains these stable slots.
-        unsafe { &raw mut (*owner).fields }
-    };
-    ReactorIovPrepared {
-        owner,
-        fields,
-        status,
+    // SAFETY: as the caller promises.
+    match unsafe { owned_new(source, count) } {
+        Ok(owner) => ReactorIovPrepared {
+            owner,
+            fields: owner
+                .wrapping_byte_add(std::mem::offset_of!(ReactorIov, fields))
+                .cast(),
+            status: 0,
+        },
+        Err(status) => ReactorIovPrepared {
+            owner: ptr::null_mut(),
+            fields: ptr::null_mut(),
+            status,
+        },
     }
 }
 
@@ -208,9 +140,9 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_view(owner: *const ReactorIov) -> Io
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_reactor_iov_length(owner: *const ReactorIov) -> usize {
     // SAFETY: live immutable owner per the contract.
-    let owner = unsafe { &*owner };
-    // SAFETY: creation copied this original span, which stays live until destroy.
-    unsafe { swr_v1_reactor_iov_owned_length(owner.fields.original, owner.fields.count) }
+    let fields = unsafe { &(*owner).fields };
+    // SAFETY: creation copied `count` (never negative) descriptors to `original`, live until destroy.
+    owned_length(unsafe { span(fields.original, fields.count) })
 }
 
 /// Advance owned descriptors and counters together.
@@ -228,8 +160,7 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_advance(owner: *mut ReactorIov, n: i
 /// # Safety
 /// `owner` is live/exclusive; each payload is valid for the direction and the
 /// optional nonthrowing TLS effect is valid for `socket`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_iov_owned(
+pub unsafe fn swr_v1_socket_iov_owned(
     fd: i32,
     write: bool,
     owner: *mut ReactorIov,
@@ -237,53 +168,49 @@ pub unsafe extern "C" fn swr_v1_socket_iov_owned(
     socket: *mut std::ffi::c_void,
 ) -> isize {
     // SAFETY: live exclusive owner per the contract.
-    let state = unsafe { &raw mut (*owner).fields.state };
+    let state = unsafe { &mut (*owner).fields.state };
     // SAFETY: the payload and TLS effect contracts are forwarded unchanged.
-    unsafe { crate::socket_rw::swr_v1_socket_iov(fd, write, state, tls, socket) }
+    unsafe { crate::socket_iov(fd, write, state, tls, socket) }
 }
-/// Sum the live original descriptor span with C `size_t` wrapping semantics.
+/// The `count` descriptors at `base`, none when `count` isn't positive.
+///
 /// # Safety
-/// For positive count, original names count readable initialized C iovec objects.
-/// No payload is dereferenced and no borrow survives this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_iov_owned_length(
-    original: *const libc::iovec,
-    count: i32,
-) -> usize {
-    (0..count).fold(0usize, |total, i| {
-        // SAFETY: `i < count`, and `original` names `count` readable initialized iovecs.
-        total.wrapping_add(unsafe { (*original.wrapping_add(i.unsigned_abs() as usize)).iov_len })
-    })
+/// For positive `count`, `base` names `count` initialized iovecs, which nothing
+/// else uses while the span lives.
+pub(crate) unsafe fn span<'a>(base: *mut libc::iovec, count: i32) -> &'a mut [libc::iovec] {
+    match usize::try_from(count) {
+        // SAFETY: as the caller promises.
+        Ok(count) if count > 0 => unsafe { std::slice::from_raw_parts_mut(base, count) },
+        _ => &mut [],
+    }
 }
-/// Compute the existing progress policy and mutate the actual owned iterator
-/// descriptor before returning new public cursor facts. The final completion
-/// path never touches the iterator payload, matching the original behavior.
-/// # Safety
-/// For positive n/remaining, iterator names remaining writable initialized
-/// descriptors with the same live C payload-pointer domain as the Native API.
-/// Public counter/sum values are in the original defined integer domain.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_iov_owned_progress(
-    iterator: *mut libc::iovec,
+
+/// Sum the descriptors' lengths with C `size_t` wrapping semantics.
+pub(crate) fn owned_length(descriptors: &[libc::iovec]) -> usize {
+    descriptors
+        .iter()
+        .fold(0usize, |total, iov| total.wrapping_add(iov.iov_len))
+}
+
+/// Compute the progress policy over the `remaining` descriptors at `iterator` and
+/// move the one it stops inside. The final completion path never touches them.
+pub(crate) fn owned_progress(
+    iterator: &mut [libc::iovec],
     n: isize,
     remaining: i32,
     index: i32,
     offset: usize,
 ) -> ReactorIovProgress {
     let reply = progress(
-        (0..remaining).map(|i| {
-            // SAFETY: `i < remaining`, and `iterator` names `remaining` initialized iovecs.
-            unsafe { (*iterator.wrapping_add(i.unsigned_abs() as usize)).iov_len }
-        }),
+        iterator.iter().map(|iov| iov.iov_len),
         n,
         remaining,
         index,
         offset,
     );
-    if reply.action == 1 {
-        // SAFETY: `progress` returns `advance < remaining`; the iterator entries are
-        // writable and nothing else borrows them during this call.
-        let current = unsafe { &mut *iterator.wrapping_add(reply.advance) };
+    if reply.action == 1
+        && let Some(current) = iterator.get_mut(reply.advance)
+    {
         current.iov_base = current
             .iov_base
             .cast::<u8>()
@@ -314,11 +241,9 @@ mod tests {
                 })
                 .collect();
             unsafe {
-                let mut status = 9;
-                let owner =
-                    swr_v1_reactor_iov_create(source.as_ptr(), count as i32, &raw mut status);
-                assert_eq!(status, 0);
-                assert!(!owner.is_null());
+                let owner = owned_new(source.as_ptr(), count as i32);
+                assert!(owner.is_ok_and(|owner| !owner.is_null()));
+                let owner = owner.unwrap();
                 let initial = swr_v1_reactor_iov_view(owner);
                 assert_eq!(initial.remain_count, count as i32);
                 assert_eq!(initial.index, 0);
@@ -349,33 +274,24 @@ mod tests {
                 })
                 .collect();
             unsafe {
-                let owner = swr_v1_reactor_iov_owned_new(source.as_ptr(), count as i32);
-                assert_eq!(owner.status, 0);
-                assert_eq!(owner.original.add(count), owner.iterator);
-                assert_eq!(
-                    owner.original as usize % std::mem::align_of::<libc::iovec>(),
-                    0
-                );
-                assert_eq!(
-                    swr_v1_reactor_iov_owned_length(owner.original, count as i32),
-                    count
-                );
+                let owner = owned_new(source.as_ptr(), count as i32).unwrap();
+                let (original, iterator) =
+                    ((*owner).fields.original, (*owner).fields.state.iterator);
+                assert_eq!(original.add(count), iterator);
+                assert_eq!(original as usize % std::mem::align_of::<libc::iovec>(), 0);
+                assert_eq!(owned_length(span(original, count as i32)), count);
                 for (i, expected) in source.iter().enumerate() {
-                    for span in [owner.original, owner.iterator] {
+                    for span in [original, iterator] {
                         assert_eq!((*span.add(i)).iov_base, expected.iov_base);
                         assert_eq!((*span.add(i)).iov_len, expected.iov_len);
                     }
                 }
-                let reply =
-                    swr_v1_reactor_iov_owned_progress(owner.iterator, 1, count as i32, 0, 0);
+                let reply = owned_progress(span(iterator, count as i32), 1, count as i32, 0, 0);
                 assert_eq!(reply.remain_count, count as i32 - 1);
                 assert_eq!(reply.index, 1);
                 assert_eq!(reply.action, if count == 1 { 2 } else { 1 });
-                assert_eq!(
-                    swr_v1_reactor_iov_owned_length(owner.original, count as i32),
-                    count
-                );
-                swr_v1_reactor_iov_owned_free(owner.original);
+                assert_eq!(owned_length(span(original, count as i32)), count);
+                swr_v1_reactor_iov_destroy(owner);
             }
         }
         // Normal positive partial consumption mutates only the iterator span;
@@ -386,17 +302,17 @@ mod tests {
             iov_len: 7,
         };
         unsafe {
-            let owner = swr_v1_reactor_iov_owned_new(&raw const source, 1);
-            assert_eq!(owner.status, 0);
-            let partial = swr_v1_reactor_iov_owned_progress(owner.iterator, 2, 1, 0, 0);
+            let owner = owned_new(&raw const source, 1).unwrap();
+            let (original, iterator) = ((*owner).fields.original, (*owner).fields.state.iterator);
+            let partial = owned_progress(span(iterator, 1), 2, 1, 0, 0);
             assert_eq!(
                 (partial.action, partial.offset_bytes, partial.remain_count),
                 (1, 2, 1)
             );
-            assert_eq!((*owner.iterator).iov_base, bytes.as_mut_ptr().add(2).cast());
-            assert_eq!((*owner.iterator).iov_len, 5);
-            assert_eq!(swr_v1_reactor_iov_owned_length(owner.original, 1), 7);
-            let final_piece = swr_v1_reactor_iov_owned_progress(owner.iterator, 5, 1, 0, 2);
+            assert_eq!((*iterator).iov_base, bytes.as_mut_ptr().add(2).cast());
+            assert_eq!((*iterator).iov_len, 5);
+            assert_eq!(owned_length(span(original, 1)), 7);
+            let final_piece = owned_progress(span(iterator, 1), 5, 1, 0, 2);
             assert_eq!(
                 (
                     final_piece.action,
@@ -405,15 +321,16 @@ mod tests {
                 ),
                 (2, 1, 0)
             );
-            assert_eq!((*owner.iterator).iov_len, 5);
-            assert_eq!((*owner.iterator).iov_base, bytes.as_mut_ptr().add(2).cast());
-            swr_v1_reactor_iov_owned_free(owner.original);
+            assert_eq!((*iterator).iov_len, 5);
+            assert_eq!((*iterator).iov_base, bytes.as_mut_ptr().add(2).cast());
+            swr_v1_reactor_iov_destroy(owner);
         }
     }
 
     /// Upstream's `IOVector` as the hybrid's C++ facade drives these exports
     /// (socket.cc: the constructor, destructor and `update_iterator`).
     struct IoVector {
+        owner: *mut ReactorIov,
         iov: *mut libc::iovec,
         iterator: *mut libc::iovec,
         count: i32,
@@ -424,11 +341,12 @@ mod tests {
     impl IoVector {
         fn new(input: &[libc::iovec]) -> Self {
             let count = input.len() as i32;
-            let allocation = unsafe { swr_v1_reactor_iov_owned_new(input.as_ptr(), count) };
-            assert_eq!(allocation.status, 0);
+            let owner = unsafe { owned_new(input.as_ptr(), count) }.unwrap();
+            let fields = unsafe { &(*owner).fields };
             Self {
-                iov: allocation.original,
-                iterator: allocation.iterator,
+                owner,
+                iov: fields.original,
+                iterator: fields.state.iterator,
                 count,
                 remain_count: count,
                 index: 0,
@@ -437,8 +355,8 @@ mod tests {
         }
         fn update_iterator(&mut self, n: isize) {
             let reply = unsafe {
-                swr_v1_reactor_iov_owned_progress(
-                    self.iterator,
+                owned_progress(
+                    span(self.iterator, self.remain_count),
                     n,
                     self.remain_count,
                     self.index,
@@ -457,7 +375,7 @@ mod tests {
             }
         }
         fn length(&self) -> usize {
-            unsafe { swr_v1_reactor_iov_owned_length(self.iov, self.count) }
+            unsafe { owned_length(span(self.iov, self.count)) }
         }
         fn original(&self, i: usize) -> libc::iovec {
             unsafe { *self.iov.add(i) }
@@ -473,7 +391,7 @@ mod tests {
     }
     impl Drop for IoVector {
         fn drop(&mut self) {
-            unsafe { swr_v1_reactor_iov_owned_free(self.iov) };
+            unsafe { swr_v1_reactor_iov_destroy(self.owner) };
         }
     }
     fn same(a: libc::iovec, b: libc::iovec) -> bool {

@@ -17,8 +17,8 @@ use core::ffi::c_long;
 
 #[cfg(unix)]
 mod context;
-#[cfg(all(unix, feature = "upstream-symbols"))]
-mod reactor_write;
+#[cfg(unix)]
+pub mod reactor_write;
 #[cfg(unix)]
 mod socket;
 #[cfg(unix)]

@@ -1,5 +1,5 @@
 name: Bench
-# Wall-clock throughput, latency and perf counters, hybrid vs upstream (benchmarks/wall.py,
+# Wall-clock throughput, latency and perf counters, Cargo build vs upstream (benchmarks/wall.py,
 # #1906), and the servers' memory (benchmarks/memory.py). Runner timings are noisy, so only CPU time (task-clock) per request, as a ratio,
 # fails the job; hosted runners expose no PMU, so cycles and the other hardware counters
 # are recorded only where counted. The rest is the spread-annotated report in the artifact.
@@ -11,16 +11,13 @@ on:
   workflow_dispatch:
   pull_request:
     paths: [benchmarks/wall.py, benchmarks/memory.py, .github/workflows/bench.yml]
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 defaults:
   run:
     shell: bash
 
 jobs:
   wall:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -36,24 +33,19 @@ jobs:
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - if: hashFiles('target/upstream/src/modules/swoole.so') == ''
         run: python3 tools/build_upstream.py
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
-      - run: python3 tools/build_hybrid.py | tee hybrid.log
+      - run: python3 tools/build_ext.py --profile release-lto
       - run: >
           python3 benchmarks/wall.py --max-ratio 1.25
           --workload plaintext --workload json --workload http2 --workload websocket
-          --engine hybrid=$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)
+          --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/wall/wall.json | tee -a "$GITHUB_STEP_SUMMARY"
       - if: always()
         run: >
           python3 benchmarks/memory.py --requests 2000
           --workload plaintext --workload http2 --workload websocket --workload task
-          --engine hybrid=$(sed -n 's/^\(Built\|Cached\) rust: //p' hybrid.log)
+          --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/memory/memory.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4

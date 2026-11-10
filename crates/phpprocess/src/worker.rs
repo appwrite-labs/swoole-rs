@@ -236,20 +236,18 @@ pub(crate) unsafe fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
 /// # Safety
 /// The worker has a pipe.
 pub(crate) unsafe fn pipe_timeout(worker: *mut c_void, seconds: f64) -> bool {
-    let socket = pipe(worker);
-    // SAFETY: as the caller promises, the live socket's timeouts.
-    unsafe { (*socket).timeouts.set(seconds, TIMEOUT_ALL) };
-    // SAFETY: as the caller promises.
-    let read = unsafe { socket_set_kernel_read_timeout(socket, seconds) };
-    // SAFETY: as above.
-    read && unsafe { socket_set_kernel_write_timeout(socket, seconds) }
+    // SAFETY: as the caller promises, the live socket.
+    let socket = unsafe { &mut *pipe(worker) };
+    socket.timeouts.set(seconds, TIMEOUT_ALL);
+    socket_set_kernel_read_timeout(socket, seconds)
+        && socket_set_kernel_write_timeout(socket, seconds)
 }
 
 /// # Safety
 /// The worker has a pipe.
 pub(crate) unsafe fn pipe_blocking(worker: *mut c_void, blocking: bool) -> bool {
     // SAFETY: as the caller promises.
-    unsafe { socket_set_fd_option(pipe(worker), c_int::from(!blocking), -1) }
+    socket_set_fd_option(unsafe { &mut *pipe(worker) }, c_int::from(!blocking), -1)
 }
 
 /// `daemon(pipes:)`: `dup2(from, to)`, warning on failure.

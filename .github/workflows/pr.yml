@@ -4,9 +4,6 @@ on:
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 # Explicit bash runs steps with -eo pipefail; the default (`bash -e`) lets a pipe
 # like `gate.py | tee` report success when gate.py fails.
 defaults:
@@ -15,12 +12,12 @@ defaults:
 
 jobs:
   rust:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       # PHP headers and libclang: zend-sys binds them under the `php` feature,
-      # which --all-features turns on (every module crate, as in the hybrid).
+      # which --all-features turns on (every module crate, as in crates/ext).
       - uses: ./.github/actions/install
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
@@ -34,7 +31,7 @@ jobs:
       - run: cargo machete
 
   tooling:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 10
     steps:
       # Two commits: the PR's merge commit and, as HEAD^1, main, which tools/budget.py compares against.
@@ -42,22 +39,21 @@ jobs:
         with:
           fetch-depth: 2
       - run: python3 tools/check_migration.py
-      # The all-modules patch set applies to the pin (seconds), so a conflict fails a required check.
-      - run: python3 tools/patches.py check
       # No crate's unsafe or slow-layout count may rise above main's.
       - run: python3 tools/budget.py --base HEAD^1
       - run: tests/dev/run.sh
 
-  # Whether this PR touches what the hybrid build compiles or installs with.
+  # Whether this PR touches what the extension build compiles or installs with.
   changes:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     timeout-minutes: 5
     outputs:
-      hybrid: ${{ steps.paths.outputs.hybrid }}
+      ext: ${{ steps.paths.outputs.ext }}
       iouring: ${{ steps.paths.outputs.iouring }}
       cares: ${{ steps.paths.outputs.cares }}
       zts: ${{ steps.paths.outputs.zts }}
       threadcontext: ${{ steps.paths.outputs.threadcontext }}
+      h2spec: ${{ steps.paths.outputs.h2spec }}
       asan: ${{ steps.paths.outputs.asan }}
       tsan: ${{ steps.paths.outputs.tsan }}
       families: ${{ steps.phpt.outputs.families }}
@@ -93,20 +89,23 @@ jobs:
         run: |
           changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           echo "$changed"
-          if echo "$changed" | grep -qE '^(migration/patches/|native/|tools/(build_(hybrid|upstream|ext)|arginfo)\.py$|crates/(phpstubs|ext)/|\.github/|\.devcontainer/)'; then
-            echo hybrid=true >> "$GITHUB_OUTPUT"
+          if echo "$changed" | grep -qE '^(native/|tools/(build_(upstream|ext)|arginfo)\.py$|crates/(phpstubs|ext)/|\.github/|\.devcontainer/)'; then
+            echo ext=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/hooks/|native/hooks/|crates/(hooks|uring[^/]*)/|\.github/workflows/iouring\.yml$|\.devcontainer/install\.sh$)'; then
+          if echo "$changed" | grep -qE '^(native/hooks/|crates/(hooks|uring[^/]*)/|\.github/workflows/iouring\.yml$|\.devcontainer/install\.sh$)'; then
             echo iouring=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/(clients|corebase)/|crates/(clients|corebase|cares-sys)/|\.github/workflows/cares\.yml$)'; then
+          if echo "$changed" | grep -qE '^(crates/(clients|corebase|cares-sys)/|\.github/workflows/cares\.yml$)'; then
             echo cares=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/(locks/|[^/]+/[^/]*thread)|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php)\.sh$)'; then
+          if echo "$changed" | grep -qE '^(crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php)\.sh$)'; then
             echo zts=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(migration/patches/coroutine/|native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
+          if echo "$changed" | grep -qE '^(native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
             echo threadcontext=true >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(crates/(http2|phphttp2)/|tests/modules/http2/h2spec\.|\.github/workflows/h2spec\.yml$)'; then
+            echo h2spec=true >> "$GITHUB_OUTPUT"
           fi
           if echo "$changed" | grep -qE '^(tools/asan\.py|tools/lsan\.supp|\.github/workflows/asan\.yml|\.devcontainer/php\.sh)$'; then
             echo asan=true >> "$GITHUB_OUTPUT"
@@ -115,25 +114,25 @@ jobs:
             echo tsan=true >> "$GITHUB_OUTPUT"
           fi
 
-  # The all-modules hybrid with the halfclose repair, so no module's native code
-  # merges without being compiled into the extension next to the others. Required
-  # (main's ruleset); a PR that touches none of `changes`' paths skips it, which
-  # GitHub counts as passing.
-  hybrid:
+  # The Cargo-built swoole.so with every module, the halfclose repair and the cURL and
+  # ssh2 hooks, so no module's native code merges without being compiled into the
+  # extension next to the others. Blocking (via `required`); a PR that touches none of
+  # `changes`' paths skips it, which counts as passing.
+  ext:
     needs: changes
-    if: needs.changes.outputs.hybrid == 'true'
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    if: needs.changes.outputs.ext == 'true'
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Restores main's release build; hybrid build trees must start clean.
+      # Restores main's release build; the upstream tree must start clean.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
           save-if: false
-      - run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
+      - run: rm -rf target/ext target/upstream target/thirdparty target/native-core
       - uses: ./.github/actions/install
       - id: upstream
         uses: actions/cache/restore@v4
@@ -144,27 +143,19 @@ jobs:
         run: python3 tools/build_upstream.py
       # crates/phpstubs is current, and says what the pin's gen_stub.php headers say.
       - run: python3 tools/arginfo.py --check
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       # With the optional cURL and ssh2 hooks (the merge tier's phpt-build runs their PHPTs).
-      - run: python3 tools/build_hybrid.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2
-      # The extension built by Cargo alone (crates/ext, #1921), run side by side below.
-      - run: python3 tools/build_ext.py
+      - run: python3 tools/build_ext.py --fix-halfclose --configure=--enable-swoole-curl --configure=--with-swoole-ssh2
       # Compare SDK alias defaults independently of remote SSH service availability.
       - run: |
           cargo build --locked --release -p swoole-rs-ffi --features ssh2
           python3 tests/modules/hooks/ssh2_aliases.py --source target/upstream/src --archive target/release/libswoole_rs_ffi.a --output target/reports/ssh2-aliases.json
-      - run: ccache --show-stats
       # Exercise SNI's deferred port resolution on the production extension before merging.
       - run: >
           python3 corpus/upstream/run.py
           --manifest tests/modules/ports/sni-originals.json
           --php-extension curl --php-extension sockets --require-all --isolate-cases
-          --engine hybrid=target/hybrid/rust-halfclose/modules/swoole.so
+          --engine cargo=target/ext/swoole.so
           --output target/reports/ports-sni-originals.json
       # 12-hyperf needs composer; it runs in the merge tier.
       - run: >
@@ -173,7 +164,6 @@ jobs:
           --project 01-hello --project 02-router --project 03-notes --project 04-job-service
           --project 05-coroutines --project 06-websocket --project 07-tcp-framing
           --project 08-timers --project 09-shared-table --project 10-task-workers
-          --engine hybrid=target/hybrid/rust-halfclose/modules/swoole.so
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/reports/corpus.json
@@ -181,15 +171,8 @@ jobs:
       # The native cURL hook links ext/curl, so it loads first.
       - run: >
           python3 corpus/run.py --php-extension curl --project 11-buffer-lifecycle
-          --engine hybrid=target/hybrid/rust-halfclose/modules/swoole.so
           --engine cargo=target/ext/swoole.so
           --output target/reports/corpus-halfclose.json
-      # This run built main as of its push. Auto-merge follows the last required check
-      # (usually this one) within seconds, so re-apply the patch set over main as it is now.
-      - run: |
-          git fetch -q origin main
-          git -c user.name=ci -c user.email=ci@localhost merge -q --no-edit FETCH_HEAD
-          python3 tools/patches.py check
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -201,24 +184,46 @@ jobs:
     needs: changes
     if: needs.changes.outputs.iouring == 'true'
     uses: ./.github/workflows/iouring.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # The c-ares build variant (merge tier), when a PR touches resolver code. Informative.
   cares:
     needs: changes
     if: needs.changes.outputs.cares == 'true'
     uses: ./.github/workflows/cares.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # The ZTS build variant (merge tier), when a PR touches thread or ZTS code. Informative.
   zts:
     needs: changes
     if: needs.changes.outputs.zts == 'true'
     uses: ./.github/workflows/zts.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
 
   # The thread-context build variant (merge tier), when a PR touches the coroutine context. Informative.
   threadcontext:
     needs: changes
     if: needs.changes.outputs.threadcontext == 'true'
     uses: ./.github/workflows/threadcontext.yml
+    # Reads main's merge-tier runs for upstream's report (corpus/upstream/baseline.sh).
+    permissions:
+      contents: read
+      actions: read
+
+  # HTTP/2 conformance (merge tier), when a PR touches HTTP/2 code. Informative.
+  h2spec:
+    needs: changes
+    if: needs.changes.outputs.h2spec == 'true'
+    uses: ./.github/workflows/h2spec.yml
 
   # The sanitizer run (nightly), when a PR touches it. Informative.
   asan:
@@ -237,7 +242,7 @@ jobs:
   # a phase that didn't fail in main's latest completed merge-tier run: red main
   # doesn't block a PR, a new failure does. The PHPT families run in the phpt job.
   gates:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     permissions:
       contents: read
@@ -254,7 +259,7 @@ jobs:
           shared-key: release
           save-if: false
       - if: steps.touched.outputs.modules != ''
-        run: rm -rf target/hybrid target/upstream target/thirdparty target/native-core
+        run: rm -rf target/upstream target/thirdparty target/native-core
       - if: steps.touched.outputs.modules != ''
         uses: ./.github/actions/install
       - if: steps.touched.outputs.modules != ''
@@ -265,12 +270,6 @@ jobs:
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - if: steps.touched.outputs.modules != '' && steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
-      - if: steps.touched.outputs.modules != ''
-        uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - if: steps.touched.outputs.modules != ''
         run: cargo fetch --locked
       - if: steps.touched.outputs.modules != ''
@@ -294,7 +293,7 @@ jobs:
   phpt-build:
     needs: changes
     if: needs.changes.outputs.families != ''
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     outputs:
       php: ${{ steps.build.outputs.php }}
@@ -323,8 +322,8 @@ jobs:
   # name those jobs directly. cares, asan and tsan stay informative.
   required:
     if: always()
-    needs: [rust, tooling, changes, hybrid, gates, phpt-build, phpt, iouring, zts, threadcontext]
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    needs: [rust, tooling, changes, ext, gates, phpt-build, phpt, iouring, zts, threadcontext]
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     timeout-minutes: 5
     steps:
       - env:

@@ -5,42 +5,40 @@ name: c-ares
 # Called by the merge tier, and by the PR tier when a PR touches resolver code.
 on:
   workflow_call:
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 defaults:
   run:
     shell: bash
 
 jobs:
   phpt:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/install
-      # Restored only: the pinned reference is rebuilt with c-ares below, never saved.
-      - uses: actions/cache/restore@v4
+      - id: install
+        uses: ./.github/actions/install
+      - id: upstream
+        uses: ./.github/actions/upstream
         with:
-          path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
+          args: --configure=--enable-cares
+          php: ${{ steps.install.outputs.php }}
       - run: cargo fetch --locked
       - run: cargo clippy --locked -p swoole-rs-clients --features cares --all-targets -- -D warnings
       - run: cargo test --locked -p swoole-rs-clients --features cares completion_
       # The control is the pinned reference itself, unpatched.
       - run: |
-          python3 tools/build_upstream.py --configure=--enable-cares
           python3 tools/build_ext.py --configure=--enable-cares
           mkdir -p target/phpt
-          cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
+          cp ${{ steps.upstream.outputs.library }} target/phpt/upstream.so
           cp target/ext/swoole.so target/phpt/cargo.so
           for engine in upstream cargo; do php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -i 'c-ares'; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
+      # On a PR, upstream's report comes from main's latest run of this job while nothing it
+      # depends on has changed since (tools/ci.py phpt-baseline); the merge tier runs both engines.
+      - if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: corpus/upstream/baseline.sh cares
       - id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       - run: |
@@ -61,6 +59,7 @@ jobs:
           families="--module swoole_coroutine --module swoole_coroutine_system --module swoole_client_coro --module swoole_http_client_coro --module swoole_socket_coro"
           mkdir -p target/phpt/cares
           for engine in upstream cargo; do
+            [ ! -f target/phpt/cares/$engine.json ] || continue  # the baseline's
             python3 corpus/upstream/run.py --manifest target/phpt/manifest.json $families --timeout 30 \
               ${{ steps.extensions.outputs.args }} --engine $engine=target/phpt/$engine.so \
               --output target/phpt/cares/$engine.json || [ $? -eq 1 ]

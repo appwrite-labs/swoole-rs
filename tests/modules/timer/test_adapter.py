@@ -1,6 +1,6 @@
-"""Drive the hybrid extension's own timer from a native probe; unchanged baseline probe goldens.
+"""Drive the Cargo-built extension's own timer from a native probe; unchanged baseline probe goldens.
 
-The probe compiles against the immutable --manifest build's headers and takes the
+The probe compiles against the --archive SDK's tree (tools/build_ext.py --native) and takes the
 Timer, the swoole_timer_* wrappers and the Rust queue from the loaded extension,
 so it tests the code that ships wherever that code lives. --sanitize instruments
 the probe only; the extension, Rust and PHP are not. Each scenario is an isolated
@@ -11,12 +11,12 @@ import json
 import os
 from pathlib import Path
 import shlex
-import shutil
 import subprocess
 import sys
 
 import pytest
 
+from tools.build_ext import native_flags
 from tools.build_upstream import COMMIT as PIN
 from tools.harness import run_isolated
 
@@ -67,9 +67,9 @@ def verify(name, observations):
 
 @pytest.fixture(scope='module')
 def probe(pytestconfig, tmp_path_factory):
-    """Verify the immutable build, then compile the probe library against its sources."""
-    if not pytestconfig.getoption('manifest'):
-        pytest.skip('needs --manifest')
+    """Verify the Cargo build, then compile the probe library against its tree."""
+    if not pytestconfig.getoption('build_manifest') or not pytestconfig.getoption('archive'):
+        pytest.skip('needs --build-manifest and --archive')
     assert sys.platform == 'darwin' or sys.platform.startswith('linux'), 'Native adapter probe supports macOS and Linux only'
     php = pytestconfig.getoption('php')
     linux = sys.platform.startswith('linux')
@@ -77,35 +77,17 @@ def probe(pytestconfig, tmp_path_factory):
     builtin_ffi = subprocess.check_output([php, '-n', '-r', 'echo extension_loaded("FFI") ? "yes" : "no";'], text=True, timeout=10).strip() == 'yes'
     if linux and not builtin_ffi and not any(Path(value).stem.lower() == 'ffi' for value in php_extensions):
         php_extensions.insert(0, 'ffi')
-    manifest = json.loads(Path(pytestconfig.getoption('manifest')).resolve(strict=True).read_text())
-    assert manifest['build_mode'] == 'immutable', 'immutable build required'
-    assert manifest['inputs']['upstream_commit'] == PIN and 'timer' in manifest['inputs']['modules'], 'wrong selected source'
-    extension = Path(manifest['extension']).resolve(strict=True)
-    source = extension.parents[1]
-    prefix = extension.parents[2] / 'rust-prefix'
-    archive = prefix / 'lib/libswoole_rs_ffi.a'
+    path = Path(pytestconfig.getoption('build_manifest')).resolve(strict=True)
+    manifest = json.loads(path.read_text())
+    assert manifest['upstream_commit'] == PIN, 'wrong selected source'
+    extension = path.parent / 'swoole.so'
     assert sha(extension) == manifest['extension_sha256'], 'extension checksum mismatch'
-    assert sha(archive) == manifest['inputs']['rust_archive_sha256'], 'archive checksum mismatch'
-    actual_pin = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
-    diff = subprocess.check_output(['git', 'diff', '--binary', 'HEAD'], cwd=source, text=True).strip()
-    assert actual_pin == PIN and hashlib.sha256(diff.encode()).hexdigest() == manifest['source_diff_sha256'], 'source diff/pin mismatch'
-    for name, checksum in manifest['inputs']['headers_sha256'].items():
-        assert sha(prefix / 'include' / Path(name).name) == checksum, f'ABI header mismatch: {name}'
+    flags = native_flags(pytestconfig.getoption('archive'))
     tree = tmp_path_factory.mktemp('timer-adapter')
-    for name in subprocess.check_output(['git', 'ls-files', 'include'], cwd=source, text=True).splitlines():
-        if (source / name).is_file():
-            (tree / name).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source / name, tree / name)
     library = tree / ('probe.so' if linux else 'probe.dylib')
     compiler = shlex.split(os.environ.get('CXX', 'c++'))
     linker_flags = ['-shared', '-fPIC', '-Wl,-Bsymbolic'] if linux else ['-dynamiclib', '-undefined', 'dynamic_lookup']
-    selected_defines = ['-DSWOOLE_RS_' + module.upper() + '=1' for module in manifest['inputs']['modules']]
-    command = compiler + ['-std=c++17', '-O1', '-g', *linker_flags, *selected_defines,
-                          '-I' + str(tree / 'include'), '-I' + str(prefix / 'include')]
-    command += shlex.split(manifest['inputs']['effective_cppflags'])
-    for option in manifest['configure']:
-        if option.startswith('--with-openssl-dir='):
-            command += ['-I' + option.split('=', 1)[1] + '/include']
+    command = compiler + ['-std=c++17', '-O1', '-g', *linker_flags, *flags]
     command += [str(Path(__file__).with_name('probe.cc')), '-lc', '-lm']
     if linux:
         command += ['-ldl', '-lpthread', '-lrt', '-lutil']

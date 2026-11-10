@@ -111,13 +111,11 @@ pub(super) fn thread_buffer() -> *mut c_void {
     SHARED.with(|shared| shared.cast())
 }
 
-// crates/tls's, crates/reactor's and crates/ports' symbols, which the hybrid links.
-#[unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")]
-extern "C-unwind" fn socket_free(_: *mut SocketRecord) {
+// crates/tls's socket operations.
+pub(super) unsafe fn socket_free(_: *mut SocketRecord) {
     log("free");
 }
-#[unsafe(export_name = "_ZN6swoole7network6Socket4recvEPvmi")]
-extern "C-unwind" fn socket_recv(
+pub(super) unsafe fn socket_recv(
     _: *mut SocketRecord,
     _: *mut c_void,
     length: usize,
@@ -125,8 +123,7 @@ extern "C-unwind" fn socket_recv(
 ) -> isize {
     io("recv", length)
 }
-#[unsafe(export_name = "_ZN6swoole7network6Socket9recv_syncEPvmi")]
-extern "C-unwind" fn socket_recv_sync(
+pub(super) unsafe fn socket_recv_sync(
     _: *mut SocketRecord,
     _: *mut c_void,
     length: usize,
@@ -134,8 +131,7 @@ extern "C-unwind" fn socket_recv_sync(
 ) -> isize {
     io("recv_sync", length)
 }
-#[unsafe(export_name = "_ZN6swoole7network6Socket9send_syncEPKvmi")]
-extern "C-unwind" fn socket_send_sync(
+pub(super) unsafe fn socket_send_sync(
     _: *mut SocketRecord,
     _: *const c_void,
     length: usize,
@@ -143,25 +139,16 @@ extern "C-unwind" fn socket_send_sync(
 ) -> isize {
     io("send_sync", length)
 }
-#[unsafe(export_name = "_ZN6swoole7network6Socket13recvfrom_syncEPcmiPNS0_7AddressE")]
-extern "C-unwind" fn socket_recvfrom_sync(
+pub(super) unsafe fn socket_recvfrom_sync_address(
     _: *mut SocketRecord,
-    _: *mut c_char,
+    _: *mut c_void,
     length: usize,
     _: c_int,
     _: *mut SocketAddress,
 ) -> isize {
     io("recvfrom_sync", length)
 }
-#[cfg_attr(
-    target_os = "macos",
-    unsafe(export_name = "_ZN6swoole7network6Socket13sendfile_syncEPKcxm")
-)]
-#[cfg_attr(
-    not(target_os = "macos"),
-    unsafe(export_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm")
-)]
-extern "C-unwind" fn sendfile_sync(
+pub(super) unsafe fn socket_sendfile_sync(
     _: *mut SocketRecord,
     _: *const c_char,
     _: i64,
@@ -170,15 +157,7 @@ extern "C-unwind" fn sendfile_sync(
     log("sendfile false");
     OK
 }
-#[cfg_attr(
-    target_os = "macos",
-    unsafe(export_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKcxm")
-)]
-#[cfg_attr(
-    not(target_os = "macos"),
-    unsafe(export_name = "_ZN6swoole7network6Socket14sendfile_asyncEPKclm")
-)]
-extern "C-unwind" fn sendfile_async(
+pub(super) unsafe fn socket_sendfile_async(
     _: *mut SocketRecord,
     _: *const c_char,
     _: i64,
@@ -200,29 +179,22 @@ pub(super) unsafe extern "C-unwind" fn swoole_event_write(
         OK as isize
     }
 }
-#[unsafe(export_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE")]
-extern "C-unwind" fn writable(_: *mut c_void, _: *mut c_void) -> c_int {
+/// crates/tls's `Reactor::_writable_callback`.
+pub(super) unsafe fn writable_callback(_: *mut c_void, _: *mut c_void) -> c_int {
     log("writable");
     OK
 }
-#[unsafe(export_name = "_ZNK6swoole8Protocol25recv_with_length_protocolEPNS_7network6SocketEPNS_6StringE")]
-extern "C-unwind" fn recv_with_length(
-    _: *const Protocol,
-    _: *mut SocketRecord,
-    _: *mut CppString,
-) -> c_int {
-    log("framed false");
-    0
-}
-#[unsafe(export_name = "_ZNK6swoole8Protocol22recv_with_eof_protocolEPNS_7network6SocketEPNS_6StringE")]
-extern "C-unwind" fn recv_with_eof(
-    _: *const Protocol,
-    _: *mut SocketRecord,
-    _: *mut CppString,
-) -> c_int {
-    log("framed true");
-    0
-}
+/// The framed receives, as crates/ports registers them.
+const FRAMING: Framing = Framing {
+    length: |_, _, _| {
+        log("framed false");
+        0
+    },
+    eof: |_, _, _| {
+        log("framed true");
+        0
+    },
+};
 
 /// A socket IO double: logs, then returns the queued result or the whole length.
 fn io(name: &str, length: usize) -> isize {
@@ -266,83 +238,39 @@ pub(super) unsafe extern "C" fn async_dispatch(event: *const c_void) -> *mut c_v
     log(format!("dns {} {family}", String::from_utf8_lossy(name)));
     core::ptr::without_provenance_mut(8)
 }
-// crates/tls's, crates/protocols' and OpenSSL's, which the hybrid links. A TLS
-// owner is a leaked view of itself.
-#[unsafe(no_mangle)]
-extern "C" fn swr_v1_tls_warning(_: *const c_char, _: *const c_char) {}
-#[unsafe(no_mangle)]
-extern "C" fn swr_v1_tls_owner_new(_: TlsWarn) -> TlsView {
-    let fields = Box::into_raw(Box::new(TlsFields {
-        http: 0,
-        http_v2: 0,
-        prefer_server_ciphers: 0,
-        session_tickets: 0,
-        stapling: 0,
-        stapling_verify: 0,
-        disable_tls_host_name: 0,
-        grease: 0,
-        verify_depth: 0,
-        disable_compress: 0,
-        verify_peer: 0,
-        allow_self_signed: 0,
-        protocols: 0,
-        create_flag: 0,
-        context: core::ptr::null_mut(),
-    }));
-    let slot = std::sync::Arc::into_raw(StringSlot::empty()).cast();
-    let view = Box::into_raw(Box::new(TlsView {
-        owner: core::ptr::null(),
-        fields,
-        strings: [slot; 11],
-    }));
-    // SAFETY: the view just leaked.
-    unsafe { (*view).owner = view.cast() };
-    swr_v1_tls_owner_view(view.cast())
-}
-#[unsafe(no_mangle)]
-extern "C" fn swr_v1_tls_owner_view(owner: *const TlsOwner) -> TlsView {
-    let view = owner.cast::<TlsView>();
-    // SAFETY: an owner the double made.
-    unsafe { core::ptr::read(view) }
-}
-#[unsafe(no_mangle)]
-extern "C" fn swr_v1_tls_owner_free(_: *const TlsOwner) {}
-#[unsafe(export_name = "_ZN6swoole10SSLContext6createEv")]
-extern "C" fn tls_create(owner: *const TlsOwner) -> bool {
+// crates/tls's TLS operations, over its own context.
+pub(super) unsafe fn ssl_context_create(owner: *const OwnedTlsContext) -> bool {
     log("ssl create");
-    // SAFETY: an owner the double made.
-    unsafe {
-        (*swr_v1_tls_owner_view(owner).fields).context = core::ptr::without_provenance_mut(1);
-    };
-    true
+    // SAFETY: the client's live owner.
+    unsafe { swoole_rs_tls::ssl_context_create(owner) }
 }
-#[unsafe(export_name = "_ZN6swoole7network6Socket10ssl_createEPNS_10SSLContextEi")]
-extern "C" fn ssl_create(_: *mut SocketRecord, _: *const TlsOwner, flags: c_int) -> c_int {
+pub(super) unsafe fn socket_ssl_create(
+    _: *mut SocketRecord,
+    _: *const OwnedTlsContext,
+    flags: c_int,
+) -> c_int {
     log(format!("ssl session {flags}"));
     OK
 }
-#[unsafe(export_name = "_ZN6swoole7network6Socket11ssl_connectEv")]
-extern "C" fn ssl_connect(_: *mut SocketRecord) -> c_int {
+pub(super) unsafe fn socket_ssl_connect(_: *mut SocketRecord) -> c_int {
     log("ssl connect");
     if mock(|m| m.ssl_connect_ready) {
         sock().tls.state = SSL_STATE_READY;
     }
     OK
 }
-#[unsafe(export_name = "_ZNK6swoole7network6Socket10ssl_verifyEb")]
-extern "C" fn ssl_verify(_: *const SocketRecord, allow_self_signed: bool) -> bool {
+pub(super) unsafe fn socket_ssl_verify(_: *const SocketRecord, allow_self_signed: bool) -> bool {
     log(format!("ssl verify {allow_self_signed}"));
     true
 }
-#[unsafe(export_name = "_ZNK6swoole7network6Socket14ssl_check_hostEPKc")]
-extern "C" fn ssl_check_host(_: *const SocketRecord, _: *const c_char) -> bool {
+pub(super) unsafe fn socket_ssl_check_host(_: *const SocketRecord, _: *const c_char) -> bool {
     log("ssl host");
     true
 }
-#[unsafe(export_name = "_ZN6swoole7network6Socket9ssl_closeEv")]
-extern "C" fn ssl_close(_: *mut SocketRecord) {
+pub(super) unsafe fn socket_ssl_close(_: *mut SocketRecord) {
     log("ssl close");
 }
+// crates/protocols-ffi's and OpenSSL's, which the hybrid links.
 #[unsafe(export_name = "SSL_ctrl")]
 extern "C" fn ssl_ctrl(
     _: *mut c_void,
@@ -401,6 +329,7 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 /// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| *m = Mock::default());
+    set_framing(FRAMING);
     log::set_last_error(0);
     let client = new_client(kind, is_async);
     if callbacks {

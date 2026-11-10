@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Memory of a server's processes (master, manager, workers), hybrid vs upstream.
+"""Memory of a server's processes (master, manager, workers), Cargo build vs upstream.
 
 For each workload, every engine's server starts in turn, serves --warmup checked requests,
 and then has every process's /proc/<pid>/smaps_rollup read at three points:

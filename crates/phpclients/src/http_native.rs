@@ -1,8 +1,8 @@
-//! What `Coroutine\Http\Client` needs from the coroutine socket, its buffers
-//! and timeouts, files and callables, over `swoole_rs_phpruntime::co` and the
-//! socket's record. WebSocket framing is crates/phphttp's, linked by symbol;
-//! the name resolver's context is still C++.
-use crate::native::Socket;
+//! What `Coroutine\Http\Client` needs from the coroutine socket (methods on
+//! the typed [`Co`] handle: its proxy, buffers and timeouts), files and
+//! callables. WebSocket framing is crates/phphttp's, linked by symbol; the
+//! name resolver's context is still C++.
+use crate::native::{Co, Socket};
 use libc::{c_char, c_int, c_void, mode_t, off_t, size_t, ssize_t};
 use std::ffi::CStr;
 use swoole_rs_buffer::string::{CppString, swr_string_drop};
@@ -10,7 +10,7 @@ use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_phpruntime::{callable_call, callable_free, co};
 use swoole_rs_zend::{
     bailout, set_object, string,
-    sys::{zend_object, zend_string, zval, zval_ptr_dtor},
+    sys::{zend_object, zval, zval_ptr_dtor},
     value,
 };
 
@@ -45,7 +45,7 @@ unsafe extern "C" {
     fn websocket_package_length();
     #[link_name = "_ZdlPv"]
     fn operator_delete(storage: *mut c_void);
-    /// crates/http's `get_auth_str` codec, into 512 bytes.
+    /// crates/http-ffi's `get_auth_str` codec, into 512 bytes.
     fn swr_v1_http_proxy_owned_authorization(
         owner: *const c_void,
         output: *mut u8,
@@ -60,45 +60,20 @@ unsafe extern "C" {
 
 /// `SW_TIMEOUT_CONNECT` and `SW_TIMEOUT_READ`.
 const TIMEOUT_CONNECT: c_int = 1 << 1;
-const TIMEOUT_READ: c_int = 1 << 2;
+pub(crate) const TIMEOUT_READ: c_int = 1 << 2;
 /// `SW_WEBSOCKET_HEADER_LEN`.
 const WEBSOCKET_HEADER_LEN: u8 = 2;
 
-/// `php_swoole_check_reactor()`, then a `Coroutine\Socket` of `kind`; null
-/// with `errno` in `error`.
-pub(crate) unsafe fn swoole_http_client_coro_create_socket(
-    kind: i64,
-    error: *mut c_int,
-) -> *mut zend_object {
+/// `php_swoole_check_reactor()`, then a `Coroutine\Socket` of `kind`, or
+/// `errno`.
+pub(crate) fn swoole_http_client_coro_create_socket(kind: i64) -> Result<*mut zend_object, c_int> {
     swoole_rs_phpruntime::check_reactor();
     #[expect(clippy::cast_possible_truncation, reason = "a swSocketType")]
-    // SAFETY: PHP is running.
-    let object = unsafe { crate::socket::php_swoole_create_socket(kind as i32) };
+    let object = crate::socket::create_socket(kind as i32);
     if object.is_null() {
-        // SAFETY: the caller's slot.
-        unsafe { *error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0) };
+        return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }
-    object
-}
-
-/// The HTTP proxy's state, unless TLS tunnels through it.
-fn plain_proxy<'a>(socket: Socket) -> Option<&'a ProxyState> {
-    // SAFETY: the caller's live socket.
-    let proxy = unsafe { co::http_proxy(socket) }.cast::<ProxyState>();
-    // SAFETY: as above.
-    if proxy.is_null() || unsafe { co::ssl_enabled(socket) } {
-        return None;
-    }
-    // SAFETY: the socket owns its proxy state.
-    Some(unsafe { &*proxy })
-}
-
-/// After the settings: no proxy handshake for plain HTTP proxying.
-pub(crate) unsafe fn swoole_http_client_coro_apply(socket: Socket) {
-    if let Some(proxy) = plain_proxy(socket) {
-        // SAFETY: the socket's proxy fields, not otherwise borrowed.
-        unsafe { (*proxy.fields.get()).dont_handshake = 1 };
-    }
+    Ok(object)
 }
 
 /// The close hook: hands the popped write buffer to the client's conn.
@@ -107,130 +82,7 @@ unsafe extern "C" fn socket_dtor(conn: *mut c_void, socket: *mut c_void) {
     let record = unsafe { co::record(socket) };
     let written = std::mem::replace(&mut record.write_buffer, std::ptr::null_mut());
     // SAFETY: the conn the client registered, and the buffer it takes over.
-    unsafe { crate::http_client::swr_v1_phpclients_http_client_socket_dtor(conn, written) };
-}
-
-/// Connect timeout (0: the default), resolve context, the close hook and the
-/// zend string allocator.
-pub(crate) unsafe fn swoole_http_client_coro_configure(
-    socket: Socket,
-    timeout: f64,
-    resolve: *mut c_void,
-    conn: *mut c_void,
-) {
-    let timeout = if timeout == 0.0 {
-        // SAFETY: the reactor's defaults, written only by settings.
-        unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.connect }
-    } else {
-        timeout
-    };
-    // SAFETY: the caller's live socket.
-    unsafe { co::set_timeout(socket, timeout, TIMEOUT_CONNECT) };
-    // SAFETY: as above.
-    let record = unsafe { co::record(socket) };
-    record.resolve_context = resolve;
-    record.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
-    // SAFETY: the conn outlives the socket.
-    unsafe { co::close_hook(socket, socket_dtor, conn) };
-}
-
-pub(crate) unsafe fn swoole_http_client_coro_connect(
-    socket: Socket,
-    host: *const c_char,
-    length: size_t,
-    port: c_int,
-) -> bool {
-    // SAFETY: the caller's live socket and host bytes.
-    unsafe { co::connect(socket, host, length, port, 0) }
-}
-
-/// `check_bound_co(event)`: a fatal error if another coroutine holds it.
-#[expect(clippy::cast_sign_loss, reason = "an event bit")]
-pub(crate) unsafe fn swoole_http_client_coro_check_bound(socket: Socket, event: c_int) {
-    // SAFETY: the caller's live socket.
-    unsafe { co::check_bound(socket, event as u32) };
-}
-
-/// 0 without a plain HTTP proxy, 1 with one, 2 with one that authenticates.
-pub(crate) unsafe fn swoole_http_client_coro_proxy(socket: Socket) -> c_int {
-    plain_proxy(socket).map_or(0, |proxy| {
-        // SAFETY: the proxy's password slot, unchanged meanwhile.
-        if unsafe { proxy.string(2) }.length == 0 {
-            1
-        } else {
-            2
-        }
-    })
-}
-
-/// `"Basic " + http_proxy->get_auth_str()`.
-pub(crate) unsafe fn swoole_http_client_coro_proxy_auth(socket: Socket) -> *mut zend_string {
-    // SAFETY: the caller's live socket, which has a proxy.
-    let proxy = unsafe { co::http_proxy(socket) }.cast::<ProxyState>();
-    let mut encoded = [0u8; 512];
-    let mut length = 0;
-    // SAFETY: the live proxy, 512 writable bytes and a length slot.
-    let result = unsafe {
-        swr_v1_http_proxy_owned_authorization(proxy.cast(), encoded.as_mut_ptr(), &raw mut length)
-    };
-    let mut value = b"Basic ".to_vec();
-    if result >= 0 {
-        // `std::string(encode_buf)`: up to the first NUL.
-        let encoded = encoded.get(..length).unwrap_or(&encoded);
-        value.extend_from_slice(encoded.split(|&byte| byte == 0).next().unwrap_or_default());
-    }
-    string::copy(&value)
-}
-
-/// The write buffer becomes `data`, then `send_all` of it: whether all went.
-pub(crate) unsafe fn swoole_http_client_coro_send(
-    socket: Socket,
-    data: *const c_char,
-    length: size_t,
-) -> bool {
-    // SAFETY: the caller's live socket.
-    let buffer = unsafe { get_write_buffer(socket) };
-    // SAFETY: its write buffer.
-    let buffer = unsafe { &mut *buffer };
-    buffer.length = 0;
-    buffer.offset = 0;
-    // SAFETY: the caller's `length` bytes.
-    unsafe { buffer.append(data.cast(), length) };
-    let (data, length) = (buffer.str, buffer.length);
-    // SAFETY: the buffer's bytes, which the send only reads.
-    unsafe { co::send_all(socket, data.cast(), length) }.cast_unsigned() == length
-}
-
-/// `send_all(data)`: whether all went.
-pub(crate) unsafe fn swoole_http_client_coro_send_raw(
-    socket: Socket,
-    data: *const c_char,
-    length: size_t,
-) -> bool {
-    // SAFETY: the caller's live socket and bytes.
-    unsafe { co::send_all(socket, data, length) }.cast_unsigned() == length
-}
-
-/// The socket's write buffer, or with no socket `saved` (a popped one).
-pub(crate) unsafe fn swoole_http_client_coro_written(
-    socket: Socket,
-    saved: *mut c_void,
-    length: *mut size_t,
-) -> *const c_char {
-    let buffer = if socket.is_null() {
-        saved.cast::<CppString>()
-    } else {
-        // SAFETY: the caller's live socket.
-        unsafe { get_write_buffer(socket) }
-    };
-    if buffer.is_null() {
-        return std::ptr::null();
-    }
-    // SAFETY: a live buffer.
-    let buffer = unsafe { &*buffer };
-    // SAFETY: the caller's slot.
-    unsafe { *length = buffer.length };
-    buffer.str.cast()
+    unsafe { crate::http_client::socket_closed(conn, written) };
 }
 
 /// `delete buffer`.
@@ -244,80 +96,174 @@ pub(crate) unsafe fn swoole_http_client_coro_buffer_free(buffer: *mut c_void) {
     unsafe { operator_delete(buffer) };
 }
 
-fn read_buffer<'a>(socket: Socket) -> &'a mut CppString {
-    // SAFETY: every caller passes a live socket.
-    let buffer = unsafe { get_read_buffer(socket) };
-    // SAFETY: its read buffer.
-    unsafe { &mut *buffer }
-}
-
-/// The read buffer's storage, length and size.
-pub(crate) unsafe fn swoole_http_client_coro_read_buffer(
-    socket: Socket,
-    length: *mut size_t,
-    size: *mut size_t,
-) -> *mut c_char {
-    let buffer = read_buffer(socket);
-    // SAFETY: the caller's slots.
-    unsafe { *length = buffer.length };
-    // SAFETY: as above.
-    unsafe { *size = buffer.size };
-    buffer.str.cast()
-}
-
-pub(crate) unsafe fn swoole_http_client_coro_read_buffer_set(socket: Socket, length: size_t) {
-    let buffer = read_buffer(socket);
-    buffer.length = length;
-    buffer.offset = 0;
-}
-
-/// Keep the read buffer's bytes past `offset` (`reduce`).
-#[expect(clippy::cast_possible_wrap, reason = "a buffer offset")]
-pub(crate) unsafe fn swoole_http_client_coro_read_buffer_keep(
-    socket: Socket,
-    length: size_t,
-    offset: size_t,
-) {
-    let buffer = read_buffer(socket);
-    buffer.length = length;
-    buffer.offset = offset as i64;
-    buffer.reduce(offset as i64);
-}
-
-/// A read `TimeoutController` (0: the default read timeout).
-pub(crate) unsafe fn swoole_http_client_coro_timeout(socket: Socket, timeout: f64) -> *mut c_void {
-    let timeout = if timeout == 0.0 {
-        // SAFETY: the reactor's defaults, written only by settings.
-        unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.read }
-    } else {
-        timeout
-    };
-    // SAFETY: the caller's live socket, which outlives the controller.
-    let controller = unsafe { co::Timeout::set(socket, timeout, TIMEOUT_READ) };
-    Box::into_raw(Box::new(controller)).cast()
-}
-
-pub(crate) unsafe fn swoole_http_client_coro_timed_out(controller: *mut c_void) -> bool {
-    // SAFETY: a controller `swoole_http_client_coro_timeout` made.
-    unsafe { &mut *controller.cast::<co::Timeout>() }.timed_out(TIMEOUT_READ)
-}
-
-pub(crate) unsafe fn swoole_http_client_coro_timeout_end(controller: *mut c_void) {
-    // SAFETY: as above, ended once.
-    drop(unsafe { Box::from_raw(controller.cast::<co::Timeout>()) });
-}
-
 /// The socket frames WebSocket packets from now on.
 /// # Safety
 /// `socket` is a live coroutine socket.
 pub unsafe fn websocket_protocol(socket: Socket) {
-    // SAFETY: the caller's live socket.
-    let record = unsafe { co::record(socket) };
-    record.open_length_check = true;
-    record.protocol.package_length_size = WEBSOCKET_HEADER_LEN;
-    record.protocol.package_length_offset = 0;
-    record.protocol.package_body_offset = 0;
-    record.protocol.get_package_length = websocket_package_length as *mut c_void;
+    // SAFETY: per the caller.
+    unsafe { Co::new(socket) }.websocket_protocol();
+}
+
+/// What the HTTP client asks of its socket.
+impl Co {
+    /// The HTTP proxy's state, unless TLS tunnels through it.
+    fn plain_proxy<'a>(self) -> Option<&'a ProxyState> {
+        if !self.ssl_context().is_null() {
+            return None;
+        }
+        // SAFETY: a live socket.
+        let proxy = unsafe { co::http_proxy(self.as_ptr()) }.cast::<ProxyState>();
+        // SAFETY: the socket owns its proxy state, if any.
+        unsafe { proxy.as_ref() }
+    }
+
+    /// After the settings: no proxy handshake for plain HTTP proxying.
+    pub(crate) fn skip_proxy_handshake(self) {
+        if let Some(proxy) = self.plain_proxy() {
+            // SAFETY: the socket's proxy fields, not otherwise borrowed.
+            unsafe { (*proxy.fields.get()).dont_handshake = 1 };
+        }
+    }
+
+    /// Whether requests go through a plain HTTP proxy.
+    pub(crate) fn proxied(self) -> bool {
+        self.plain_proxy().is_some()
+    }
+
+    /// `"Basic " + http_proxy->get_auth_str()`, when a plain HTTP proxy has a
+    /// password.
+    pub(crate) fn proxy_authorization(self) -> Option<Vec<u8>> {
+        let proxy = self.plain_proxy()?;
+        // SAFETY: the proxy's password slot, unchanged meanwhile.
+        if unsafe { proxy.string(2) }.length == 0 {
+            return None;
+        }
+        let mut encoded = [0u8; 512];
+        let mut length = 0;
+        // SAFETY: the live proxy, 512 writable bytes and a length slot.
+        let result = unsafe {
+            swr_v1_http_proxy_owned_authorization(
+                std::ptr::from_ref(proxy).cast(),
+                encoded.as_mut_ptr(),
+                &raw mut length,
+            )
+        };
+        let mut value = b"Basic ".to_vec();
+        if result >= 0 {
+            // `std::string(encode_buf)`: up to the first NUL.
+            let encoded = encoded.get(..length).unwrap_or(&encoded);
+            value.extend_from_slice(encoded.split(|&byte| byte == 0).next().unwrap_or_default());
+        }
+        Some(value)
+    }
+
+    /// Connect timeout (0: the default), resolve context, the close hook and
+    /// the zend string allocator.
+    /// # Safety
+    /// `resolve` and `conn` outlive the socket.
+    pub(crate) unsafe fn configure_http(
+        self,
+        timeout: f64,
+        resolve: *mut c_void,
+        conn: *mut c_void,
+    ) {
+        let timeout = if timeout == 0.0 {
+            // SAFETY: the reactor's defaults, written only by settings.
+            unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.connect }
+        } else {
+            timeout
+        };
+        self.set_timeout(timeout, TIMEOUT_CONNECT);
+        let record = self.record();
+        record.resolve_context = resolve;
+        record.buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
+        // SAFETY: per the caller, the conn outlives the socket.
+        unsafe { self.close_hook(socket_dtor, conn) };
+    }
+
+    /// `connect(host, port)` under the timeout `configure_http` set.
+    pub(crate) fn connect_http(self, host: &[u8], port: c_int) -> bool {
+        // SAFETY: a live socket and the host's bytes.
+        unsafe { co::connect(self.as_ptr(), host.as_ptr().cast(), host.len(), port, 0) }
+    }
+
+    /// `check_bound_co(event)`: a fatal error if another coroutine holds it.
+    #[expect(clippy::cast_sign_loss, reason = "an event bit")]
+    pub(crate) fn check_bound(self, event: c_int) {
+        // SAFETY: a live socket.
+        unsafe { co::check_bound(self.as_ptr(), event as u32) };
+    }
+
+    /// The write buffer becomes `data`, then `send_all` of it: whether all went.
+    pub(crate) fn send_buffered(self, data: &[u8]) -> bool {
+        let buffer = self.write_buffer();
+        buffer.length = 0;
+        buffer.offset = 0;
+        // SAFETY: the caller's bytes.
+        unsafe { buffer.append(data.as_ptr(), data.len()) };
+        let (data, length) = (buffer.str, buffer.length);
+        // SAFETY: the buffer's bytes, which the send only reads.
+        unsafe { co::send_all(self.as_ptr(), data.cast(), length) }.cast_unsigned() == length
+    }
+
+    /// `send_all(data)`: whether all went.
+    pub(crate) fn send_all(self, data: &[u8]) -> bool {
+        // SAFETY: a live socket and the caller's bytes.
+        unsafe { co::send_all(self.as_ptr(), data.as_ptr().cast(), data.len()) }.cast_unsigned()
+            == data.len()
+    }
+
+    /// `get_write_buffer()`, made on first use.
+    pub(crate) fn write_buffer<'a>(self) -> &'a mut CppString {
+        // SAFETY: a live socket.
+        let buffer = unsafe { get_write_buffer(self.as_ptr()) };
+        // SAFETY: its write buffer, which lives as long.
+        unsafe { &mut *buffer }
+    }
+
+    /// `get_read_buffer()`, made on first use.
+    pub(crate) fn input<'a>(self) -> &'a mut CppString {
+        // SAFETY: a live socket.
+        let buffer = unsafe { get_read_buffer(self.as_ptr()) };
+        // SAFETY: its read buffer, which lives as long.
+        unsafe { &mut *buffer }
+    }
+
+    /// `recv` into the read buffer's room past its length.
+    pub(crate) fn recv_input(self) -> isize {
+        let buffer = self.input();
+        let at = buffer.str.wrapping_add(buffer.length);
+        let room = buffer.size - buffer.length;
+        // SAFETY: a live socket and the buffer's `room` writable bytes at `at`.
+        unsafe { co::recv(self.as_ptr(), at.cast(), room) }
+    }
+
+    /// A read `TimeoutController` (0: the default read timeout).
+    pub(crate) fn read_timeout(self, timeout: f64) -> co::Timeout {
+        let timeout = if timeout == 0.0 {
+            // SAFETY: the reactor's defaults, written only by settings.
+            unsafe { swoole_rs_reactor::swr_v1_socket_defaults.timeouts.read }
+        } else {
+            timeout
+        };
+        self.timeout(timeout, TIMEOUT_READ)
+    }
+
+    /// The socket frames WebSocket packets from now on.
+    pub(crate) fn websocket_protocol(self) {
+        let record = self.record();
+        record.open_length_check = true;
+        record.protocol.package_length_size = WEBSOCKET_HEADER_LEN;
+        record.protocol.package_length_offset = 0;
+        record.protocol.package_body_offset = 0;
+        record.protocol.get_package_length = websocket_package_length as *mut c_void;
+    }
+
+    /// `ssl_get_peer_cert()`: empty, with the socket's error set, without one.
+    pub(crate) fn peer_cert_pem(self) -> Vec<u8> {
+        // SAFETY: a live socket.
+        unsafe { co::peer_cert(self.as_ptr()) }
+    }
 }
 
 /// An `AsyncFile` for a download, truncated or positioned: its descriptor,
@@ -397,16 +343,6 @@ pub(crate) unsafe fn swoole_http_client_coro_call(
     // SAFETY: the string argument's reference.
     unsafe { zval_ptr_dtor(&raw mut args[1]) };
     result
-}
-
-pub(crate) unsafe fn swoole_http_client_coro_peer_cert(socket: Socket) -> *mut zend_string {
-    // SAFETY: the caller's live socket.
-    let cert = unsafe { co::peer_cert(socket) };
-    if cert.is_empty() {
-        std::ptr::null_mut()
-    } else {
-        string::copy(&cert)
-    }
 }
 
 /// `mime_type::get(path)`.

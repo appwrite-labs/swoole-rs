@@ -1,5 +1,5 @@
 //! The `Server` and `ListenPort` objects, which Rust allocates and frees and C++
-//! only views (`native/process/swoole_server.h`, `native/include/swoole_rs_port_state.h`).
+//! only views (`native/include/swoole_rs_server_view.h`, `native/include/swoole_rs_port_state.h`).
 //! A `Server *` is a [`ServerObject`]; a `ListenPort *` is a box of the pointer to
 //! the port's settings. The Rust ports of core-tests' server cases
 //! (tests/modules/http/server/src/http1.rs) make and delete theirs here too.
@@ -11,11 +11,6 @@ use crate::shared::ServerShared;
 use crate::{ServerConfig, ServerState, ServerTables, view};
 use swoole_rs_corebase::log;
 use swoole_rs_locks::Barrier;
-
-// SAFETY: crates/ports' body, linked into the same archive.
-unsafe extern "C" {
-    fn swr_v1_ports_tls_free(config: *mut c_void);
-}
 
 /// A `Server`: the head C++ and `view` read, then the reactor threads' barrier.
 #[repr(C)]
@@ -40,7 +35,7 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     let config = unsafe { &mut *fresh.config() };
     config.init_defaults(
         u32::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
-        swoole_rs_utilities::swr_v1_utils_timezone(),
+        swoole_rs_utilities::timezone(),
         (&raw const crate::pool_native::STD_ALLOCATOR).cast(),
     );
     // SAFETY: as above, its tables.
@@ -98,8 +93,7 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
             .load(core::sync::atomic::Ordering::Relaxed)
             == 0
     {
-        // SAFETY: as the caller guarantees.
-        unsafe { crate::server_methods::destroy(serv.raw()) };
+        crate::server_methods::destroy(serv);
     }
     let ports = (0..).map(|index| serv.port_at(index));
     for port in ports.take_while(|port| !port.is_null()) {
@@ -139,10 +133,9 @@ pub(crate) fn port_new(serv: *mut c_void) -> *mut c_void {
 pub(crate) unsafe fn port_delete(port: *mut c_void) {
     // SAFETY: as the caller guarantees.
     let config = *unsafe { Box::from_raw(port.cast::<*mut PortConfig>()) };
-    // SAFETY: the port's settings, which nothing else uses now.
-    unsafe { swr_v1_ports_tls_free(config.cast()) };
-    // SAFETY: as above; freed once.
-    unsafe { crate::port_config::swr_v1_port_config_free(config) };
+    // SAFETY: the port's settings, `PortConfig::boxed`'s, which nothing else uses now.
+    let mut config = unsafe { Box::from_raw(config) };
+    (crate::port_config::methods().tls_free)(&mut config);
 }
 
 /// The reactor threads' barrier, or the manager's, which is shared.

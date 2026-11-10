@@ -16,7 +16,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[3]
 import sys
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 from tools.build_upstream import COMMIT as PIN
 
 
@@ -76,9 +76,7 @@ def main():
         cases = re.findall(r'case (SW_ERROR_\w+):', original)
         names = list(dict.fromkeys(re.findall(r'\bSW_ERROR_\w+\b', header)))
         assert len(cases) == 130 and len(cases) == len(set(cases))
-        hybrid, hybrid_flags = hybrid_tree(args.archive)
-        report['hybrid_tree'] = str(hybrid)
-        assert not (hybrid / 'src/core/error.cc').exists(), 'error.cc is Rust'
+        hybrid_flags = native_flags(args.archive)
         # The scratch source is deliberately outside every worktree, never the reference.
         with tempfile.TemporaryDirectory(prefix='swoole-error-') as temporary:
             work = Path(temporary)

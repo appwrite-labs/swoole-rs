@@ -4,10 +4,6 @@ Pin `76c657d88be39b7af6bf85e46bcbac0da7387760`.
 
 ## Native-facade gates
 
-```sh
-python3 tests/modules/hooks/compile_gate.py --source PINNED_SOURCE --archive BUILD/rust-prefix/lib/libswoole_rs_ffi.a --report OWN/compile.json
-```
-
 Gates whose bodies moved to Rust became `ported_*` tests in `crates/hooks`.
 The packet gate (`hooks-packet-policy`) ran the pinned `Socket::recv_packet`,
 `recv_packet_with_length_protocol` and `recv_packet_with_eof_protocol` and the
@@ -21,23 +17,18 @@ checked against the pinned bodies' traces in `ported.txt`:
 | 96-191, 228-239 (EOF protocol, raw when EOF is off) | `packet::ported::ported_eof_protocol_scenarios` |
 | 192-215 (raw receive, availability, timer failure) | `packet::ported::ported_raw_receive_scenarios` |
 
-`compile_gate.py` (`hooks-compile`) compiles all eight original and patched translation units as
-C++14: the pinned ones, then the pin with every file the hybrid build patched
-(`overlay_hybrid_tree`) under that build's `config.h`. io_uring units are
-reported UNSUPPORTED when the config does not enable `SW_USE_IOURING`.
-
 ## Original tests
 
 `core-tests/src/coroutine/system.cpp` is Rust: `system/` holds its 20 TESTs, one
 function each (`coroutine_system.<name>`, upstream's names, inputs and expected
-values), linked against the hybrid tree's `libswoole.so`.
-`hooks-system-rust` (`system.py`, Linux, integrate lane) builds that library from
-the hybrid tree and runs each case in its own process,
+values), linked with the crates and the static `libswoole.a` that
+`hooks-system-rust` (`system.py`, Linux) builds from the pin's thirdparty and
+native/'s Zend-free sources. It runs each case in its own process,
 excluding `getaddrinfo` (external DNS and network) and `getaddrinfo_timeout` (a
 lookup that misses the resolver cache), as the GoogleTest run did. Where
-upstream's `System` signature carries C++ library types the cases call what the
-hybrid exports for C instead: `swr_v1_system_read_file`, `_getaddrinfo` and
-`_wait_signal`, and `swr_v1_hook_socket_poll`.
+upstream's `System` signature carries C++ library types the cases call the hooks
+crate's Rust functions instead (`file_io::read_file`, `wait_signal::system_wait_signal`,
+`poll::socket_poll`), or `swr_v1_system_getaddrinfo`.
 
 `core-tests/src/coroutine/hook.cpp` is Rust too: `system/src/hook.rs` holds its 26
 TESTs, one function each (`coroutine_hook.<name>`, upstream's names, inputs and
@@ -48,22 +39,32 @@ libc (`File`, `String`, `create_socket_pair`, `file_get_contents`,
 and `exists` reads the socket's `sock_fd` through the hybrid's record layout.
 Before each case the binary writes `TEST_TMP_FILE` as core-tests' run did and
 removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
-`sendmsg_and_recvmsg` stays excluded (below).
+`statvfs` reads `/proc` where upstream reads `/tmp`: the free counts of the filesystem
+`/tmp` sits on change whenever anything on the host writes to it between the two calls.
+`sendmsg_and_recvmsg` stays excluded (below). `core-tests/src/coroutine/accept.cpp`'s one
+TEST, `coroutine_hook.accept`, is `hook.rs`'s `accept`, in the same suite and phase.
+
+`core-tests/src/coroutine/gethostbyname.cpp` is `system/src/gethostbyname.rs`
+(`coroutine_gethostbyname.<name>`, upstream's names, inputs and expected values):
+`System::gethostbyname` is `swr_v1_system_gethostbyname` and the DNS cache calls
+(`set_dns_cache_capacity`, `_expire`, `clear_dns_cache`, `get_dns_cache_hit_ratio`) are
+crates/hooks' `dns_cache.rs` under their upstream symbols. `resolve_cache`,
+`resolve_cache_inet4_and_inet6` and `dns_expire` look up public names (www.baidu.com,
+ipv6.sjtu.edu.cn, www.gov.cn), so `hooks-system-rust` excludes them as it does `dns.lookup1`
+(external DNS and network). `impl_async` has no case: `gethostbyname_impl_with_async` returns a
+`std::string` and the hybrid exports no symbol for it (it is crates/hooks `resolve.rs`'s
+`gethostbyname_with_async`, which `System::gethostbyname` runs on a cache miss without c-ares).
 
 `core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
 TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports
 and expected values), run by `hooks-system-rust`. A `Socket` is the hooks crate's
-`Co`, reached by symbol through exports kept for this package alone
-(crates/hooks/src/socket_symbols.rs, under `upstream-symbols`): made and deleted
-through `swr_v1_hook_co_socket_make` and `_free`, its members called under their
-upstream symbols (the vectored ones over an `IOVector` owner
-`swr_v1_reactor_iov_prepare` makes, as crates/phpruntime does) and the rest through
-`swr_v1_hook_co_socket_*`, and its fields
+`Co`, whose methods the cases call: made by `co_socket::make` and deleted by
+`swr_v1_hook_co_socket_free`, the vectored members over an `IOVector` owner
+`swr_v1_reactor_iov_prepare` makes (as crates/phpruntime does), and its fields
 through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and the
 `set_ssl_*` setters write the `SSLContext` owner (`swr_v1_tls_owner_new`,
 `_set_path` and its string slots and fields); `TimeoutSetter` and
-`TimeoutController` are `swr_v1_hook_timeout_scope` and
-`swr_v1_hook_co_socket_timed_out` (the `rust_socket_scopes.selected_timeout_restore_and_copy`
+`TimeoutController` are the crate's `TimeoutScope` and its `timed_out` (the `rust_socket_scopes.selected_timeout_restore_and_copy`
 witness, whose `TimeoutSetter` left the hybrid header, is a Rust case there too); `pop_read_buffer`/`pop_write_buffer`
 take the record's buffer fields. The `Server` fixture `recv_success` and
 `recv_fail` fork is a std echo (or close-on-receive) server: those cases assert only
@@ -90,7 +91,7 @@ same assertions: the record's fields and value copies, and the per-thread scratc
 `get_addr` and `verify_ip` share.
 The repo-owned C++ witnesses of copies and `std::bad_alloc` containment, which only
 C++ can throw, are the same binary's cases with bodies in `system/fixture.cc`
-(compiled into the hybrid's lib-swoole with `--fixture`), unchanged but for plain
+(compiled into system.py's lib-swoole with `--fixture`), unchanged but for plain
 assertion macros in place of GoogleTest's: the five `rust_dns_request.*` cases
 (formerly `dns_request_owner.cpp`). `rust_socket_scopes.protocol_snapshot_and_copy_restore`
 and `.error_text_publication` (formerly `socket_scopes.cpp`) witnessed the C++
@@ -154,6 +155,46 @@ is `ssl_close_notify` in `crates/hooks/src/uring_tls.rs`, with the same exchange
 assertions over the ring's TLS transport; both sessions use an anonymous TLS 1.2 cipher
 in place of the pin's `tests/include/ssl_certs`, which the crate's tests cannot read.
 
+`core-tests/src/coroutine/iouring.cpp` is `crates/hooks/src/uring/ported.rs`, one test per
+TEST (upstream's names, inputs and expected values), run by `cargo test --all-features`
+(the `rust` lane, Linux). They call the engine (`crate::uring`) over its test host, which
+drives the ring where a coroutine would suspend. A second coroutine becomes a thread
+with its own ring, and the cases take turns as GoogleTest's did, since they share /tmp
+paths and `wait` collects any child. `Iouring::open` and `close` are `open_file` and
+`close_fd`. `System::sleep` is `uring::sleep`, as it is with io_uring.
+`sleep(tv_sec, tv_nsec)` is `sleep_timespec`, which `sleep(seconds)` converts to.
+Three calls have left the build, and only core-tests called them at the pin.
+`Iouring::socket` is gone, so the cases make their sockets with socket(2).
+`Iouring::wait(stat_loc, timeout)` is gone too; the cases call its body,
+`waitpid(-1, stat_loc, 0, timeout)`. `list_all_opcode` is the third. Upstream's `bind`
+and `listen` were already bind(2) and listen(2). `sendfile` sends a file of the pin's
+`examples/test.jpg` size (218787 bytes), which the crate's tests cannot read. It reads
+once the send has returned: the single read upstream asserts on needs the whole file
+to be in the socket's buffer. `wait_timeout` reaps its killed child, because `wait_success`
+may run after it.
+
+| Upstream TEST | Rust test (`uring::ported::`) or reason |
+| --- | --- |
+| `iouring.create` | `create` |
+| `iouring.list_all_opcode` | none: `list_all_opcode` is not in the build (only core-tests called it) |
+| `iouring.open_and_close` | `open_and_close` |
+| `iouring.mkdir_and_rmdir` | `mkdir_and_rmdir` |
+| `iouring.write_and_read` | `write_and_read` |
+| `iouring.rename` | `rename` |
+| `iouring.fstat_and_stat` | `fstat_and_stat` |
+| `iouring.fsync_and_fdatasync` | `fsync_and_fdatasync` |
+| `iouring.ftruncate` | `ftruncate` |
+| `iouring.connect` | `connect` (ignored: external DNS and network, www.gov.cn) |
+| `iouring.send_recv` | `send_recv` (ignored: external DNS and network, www.gov.cn) |
+| `iouring.sendfile` | `sendfile` |
+| `iouring.accept` | `accept` |
+| `iouring.sleep` | `sleep` |
+| `iouring.wait_success` | `wait_success` |
+| `iouring.wait_timeout` | `wait_timeout` |
+| `iouring.waitpid` | `waitpid` |
+| `iouring.poll` | `poll`, except `poll(fds, 2, 1000)` failing with `SW_ERROR_INVALID_PARAMS`: the engine's `poll` takes one pollfd, and the hooked `poll` (like upstream's hook) sends only `nfds == 1` to it |
+| `iouring.accept_timeout` | `accept_timeout` |
+
 Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the all-modules hybrid. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Known failures
@@ -207,9 +248,9 @@ worker), as GoogleTest's does only in the master. core-tests' counters are
 raw-bytes `swr_v1_process_pool_ipc_send_sync` and `_listener`, as core-tests' adapted
 copy did; `msgqueue_2` discards its child's status, as `spawn_exec_and_wait`'s caller
 does. `SyncClient` becomes `std::net::TcpStream` and `UnixStream`. The Server
-worker-retirement witness (formerly `tests/modules/process/worker_retirement.cc`, built
-in C++14 and C++17 against both engines) is a fixture function now, run once as
-`rust_worker_retirement.abort_and_reset` on the hybrid.
+worker-retirement witness (formerly `tests/modules/process/worker_retirement.cc`, then
+this fixture's `rust_worker_retirement.abort_and_reset`) is crates/server's
+`worker_methods::tests::abort_and_reset`.
 
 | Upstream TEST | Rust case |
 | --- | --- |
@@ -242,3 +283,88 @@ in C++14 and C++17 against both engines) is a fixture function now, run once as
 | `process_pool.worker` | `process_pool.worker` |
 | `process_pool.add_worker` | `process_pool.add_worker` |
 | `process_pool.reload_from_child_exit_callback` | `process_pool.reload_from_child_exit_callback` |
+
+`core-tests/src/coroutine/async.cpp` is Rust in `system/src/co_async.rs`, run by
+`hooks-system-rust`. `coroutine::async(handler, event, timeout)` and `async(fn)` are
+crates/hooks's `swr_v1_hook_async` and `swr_v1_hook_async_job` over `COROUTINE_ASYNC`,
+the operations the hooked functions use, and the package calls them through its
+`swoole-rs-hooks` dependency. `coroutine_async.gethostbyname` resolves www.baidu.com, so
+it is excluded as external network. It checks upstream's
+`(\d{1,3}).(\d{1,3}).(\d{1,3}).(\d{1,3})` match as an IPv4 parse, which accepts
+inet_ntop's output exactly when that output is a dotted quad.
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `coroutine_async.usleep` | `coroutine_async.usleep` |
+| `coroutine_async.gethostbyname` | `coroutine_async.gethostbyname` (excluded: external network) |
+| `coroutine_async.error` | `coroutine_async.error` |
+| `coroutine_async.cancel` | `coroutine_async.cancel` |
+| `coroutine_async.timeout` | `coroutine_async.timeout` |
+
+`core-tests/src/coroutine/http_server.cpp`'s two TESTs have no Rust case. Their
+assertions are status 200 and the bodies of core-tests' own coroutine httplib server
+(`core-tests/include/httplib_server.h`, test-library code), as an httplib client thread
+sees them, so a port would test a Rust rewrite of that server and nothing in the
+build. The Swoole operations the server runs on already have cases:
+`coroutine_socket.bind_success`, `listen`, `accept`, `recv_success`,
+`write_and_read` and `cancel` (`SW_EVENT_READ`, which the server's `stop()` cancels its
+accept with), `coroutine_system.getaddrinfo`, and `coroutine_base.create`.
+
+| Upstream TEST | Rust case or reason |
+| --- | --- |
+| `coroutine_http_server.get` | none: it asserts the test library's httplib server, whose Swoole operations are the cases above |
+| `coroutine_http_server.post` | none: as `get` |
+
+`core-tests/src/os/wait.cpp`, `os/async.cpp` and `os/os.cpp`'s `os.daemon` are Rust in
+`system/src/os.rs`, run by `hooks-system-rust`. The wait cases call
+`swoole_coroutine_waitpid`, `swoole_coroutine_wait` and `System::waitpid_safe`; their
+children `_exit(0)` where upstream's `exit(0)`, so a forked child skips the parent's
+exit handlers. The async cases call `async::dispatch` and read `sw_async_threads()`'s
+counts through `swr_v1_async_threads_stats`. They set `SwooleG`'s `aio_*` fields through
+crates/corebase's setters, by path. `async.misc`'s `sw_async_threads()->notify_one()` has
+no exported counterpart. It wakes a worker with nothing queued, so nothing in the TEST
+observes it, and the case leaves it out. `os.daemon` discards its child's status, as
+upstream's does, so the child's assertions don't decide the case: its
+`isatty(STDIN_FILENO)` needs a terminal on stdin. `async.thread_starts_with_signals_blocked`
+is crates/ossupport's `pool::tests::thread_starts_with_signals_blocked`. It uses a new
+thread per case rather than a forked child and a pool of its own. Its `thread_init` hook
+observes the worker's mask before `swoole_thread_init` blocks signals itself, as
+upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate through
+`SwooleG.std_allocator`).
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `os_wait.waitpid_before_child_exit` | `os_wait.waitpid_before_child_exit` |
+| `os_wait.waitpid_after_child_exit` | `os_wait.waitpid_after_child_exit` |
+| `os_wait.wait_before_child_exit` | `os_wait.wait_before_child_exit` |
+| `os_wait.wait_after_child_exit` | `os_wait.wait_after_child_exit` |
+| `os_wait.waitpid_safe` | `os_wait.waitpid_safe` |
+| `async.dispatch` | `async.dispatch` |
+| `async.schedule` | `async.schedule` |
+| `async.misc` | `async.misc` |
+| `async.thread_starts_with_signals_blocked` | `pool::tests::thread_starts_with_signals_blocked` (crates/ossupport) |
+| `os.daemon` | `os.daemon` |
+
+`core-tests/src/os/signal.cpp` is Rust in `system/src/signal.rs`, run by
+`hooks-system-rust`. The cases call crates/reactor's `signal_upstream` (`swoole_signal_set`,
+`_callback`, `_get_handler`, `_get_listener_num`, `_clear`) and crates/process's `signal`
+(the sigaction form of `swoole_signal_set`, `_dispatch`, `_isset`, `_block_all`,
+`_unblock_all`, `_to_str`) and `signalfd::swoole_signalfd_init` by path. Each case runs in
+its own process, as the rest of the package does, so no handler outlives its case.
+`block` and `unblock` fork through `spawn_exec`, whose child `_exit(0)`s where upstream's
+`exit(0)`s; the SIGIO handler still `exit(255)`s. `signalfd` is `#ifdef HAVE_SIGNALFD`
+upstream and Linux-only here. `os_signal.restore_previous_mask` is crates/corebase's
+`signal_mask::tests::restore_previous_mask`, in a new thread rather than a forked child: the
+mask and the flag are per thread.
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `os_signal.signalfd` | `os_signal.signalfd` |
+| `os_signal.block` | `os_signal.block` |
+| `os_signal.unblock` | `os_signal.unblock` |
+| `os_signal.restore_previous_mask` | `signal_mask::tests::restore_previous_mask` (crates/corebase) |
+| `os_signal.signal_to_str` | `os_signal.signal_to_str` |
+| `os_signal.set` | `os_signal.set` |
+| `os_signal.dispatch` | `os_signal.dispatch` |
+| `os_signal.nested` | `os_signal.nested` |
+| `os_signal.error` | `os_signal.error` |

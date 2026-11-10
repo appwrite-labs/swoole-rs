@@ -11,13 +11,5 @@ crate-type = ["rlib"]
 [lints]
 workspace = true
 
-[features]
-# Define websocket.cc's functions under their C++ symbols. Only crates/ffi, whose builds
-# apply the patch that deletes src/protocol/websocket.cc, turns it on.
-upstream-symbols = []
-
 [dependencies]
-libc = "=0.2.191"
-swoole-rs-buffer = { path = "../buffer" }
-swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-base64 = { path = "../base64" }

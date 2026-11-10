@@ -4,18 +4,17 @@
 //! Rust-owned record over this crate's queue, and its nodes.
 //! `native/timer/swoole_timer.h` is its C++ view.
 use crate::{
-    BUSY, CLOSING, DEFERRED, EMPTY, OK, RELEASE, RELEASE_OVERFLOW, Timer as Queue, TimerStats,
-    TimerView, absolute_msec, swr_v1_timer_backend, swr_v1_timer_begin, swr_v1_timer_close,
-    swr_v1_timer_complete, swr_v1_timer_create, swr_v1_timer_delay_deadline, swr_v1_timer_drain,
-    swr_v1_timer_end, swr_v1_timer_get, swr_v1_timer_next, swr_v1_timer_rearm_after_add,
-    swr_v1_timer_relative_msec, swr_v1_timer_release, swr_v1_timer_remove, swr_v1_timer_stats_get,
-    swr_v1_timer_system_set, swr_v1_timer_update,
+    BUSY, CLOSING, DEFERRED, EMPTY, OK, RELEASE, RELEASE_OVERFLOW, Timer as Queue, TimerView,
+    absolute_msec, swr_v1_timer_backend, swr_v1_timer_delay_deadline, swr_v1_timer_rearm_after_add,
+    swr_v1_timer_relative_msec, swr_v1_timer_system_set,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_int, c_long, c_void};
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 use swoole_rs_reactor::reactor_upstream::prepared;
-use swoole_rs_reactor::swr_v1_reactor_deferred_push;
+use swoole_rs_reactor::{
+    swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition, swr_v1_reactor_deferred_push,
+};
 
 /// `SW_LOG_WARNING` and `SW_ERROR_INVALID_PARAMS`.
 const LOG_WARNING: c_int = 4;
@@ -126,13 +125,8 @@ unsafe extern "C-unwind" fn call_plain(_timer: *mut c_void, node: *mut TimerNode
     }
 }
 
-// SAFETY: crates/reactor's and Swoole's signal API.
+// SAFETY: Swoole's signal API.
 unsafe extern "C-unwind" {
-    fn swr_v1_event_set_end_callback(id: c_int, callback: extern "C-unwind" fn());
-    fn swr_v1_event_set_exit_condition(
-        id: c_int,
-        condition: unsafe extern "C-unwind" fn(*mut usize) -> bool,
-    );
     #[link_name = "_Z17swoole_signal_setiPFviEb"]
     fn swoole_signal_set(signo: c_int, handler: extern "C" fn(c_int), safety: bool) -> usize;
 }
@@ -167,11 +161,11 @@ fn apply(view: &TimerView) -> *mut TimerNode {
     node
 }
 
-/// `swoole::Timer`. Callbacks re-enter it, so every mutable field is a `Cell`.
-#[repr(C)]
+/// `swoole::Timer`. Callbacks re-enter it, so every mutable field is a `Cell`, and the
+/// queue a `RefCell` that no borrow holds across a callback or destructor.
 pub(crate) struct Owner {
     reactor: Cell<*mut c_void>,
-    queue: *mut Queue,
+    queue: RefCell<Queue>,
     owner_pid: libc::pid_t,
     backend: Cell<u32>,
     abandoned: Cell<bool>,
@@ -183,14 +177,10 @@ pub(crate) struct Owner {
 impl Owner {
     /// `new Timer(manually_trigger)`.
     pub(crate) fn create(manually_trigger: bool) -> *mut Owner {
-        let mut queue = std::ptr::null_mut();
-        // SAFETY: a writable handle.
-        check(unsafe { swr_v1_timer_create(&raw mut queue) });
         let timer = Box::into_raw(Box::new(Owner {
             reactor: Cell::new(std::ptr::null_mut()),
-            queue,
-            // SAFETY: getpid has no preconditions.
-            owner_pid: unsafe { libc::getpid() },
+            queue: RefCell::default(),
+            owner_pid: std::process::id().cast_signed(),
             backend: Cell::new(MANUAL),
             abandoned: Cell::new(false),
             pending_bailout: Cell::new(None),
@@ -210,33 +200,28 @@ impl Owner {
         self.next_msec.get()
     }
 
-    /// The live queue, read between its mutations.
-    fn state(&self) -> &Queue {
-        // SAFETY: created with the record and freed only by `destroy`.
-        unsafe { &*self.queue }
-    }
-
     pub(crate) fn count(&self) -> usize {
-        self.state().heap.len()
+        self.queue.borrow().heap.len()
     }
 
     /// `Timer::get_round()`.
     pub(crate) fn round(&self) -> u64 {
-        self.state().round
+        self.queue.borrow().round
     }
 
     /// `Timer::get_ids()`, in heap order.
     pub(crate) fn ids(&self) -> Vec<i64> {
-        self.state().heap.iter().map(|view| view.id).collect()
+        self.queue
+            .borrow()
+            .heap
+            .iter()
+            .map(|view| view.id)
+            .collect()
     }
 
     /// `Timer::get(id)`: the node, or null.
     pub(crate) fn token(&self, id: c_long) -> *mut TimerNode {
-        let state = self.state();
-        state
-            .index(id)
-            .and_then(|index| state.heap.get(index))
-            .map_or(std::ptr::null_mut(), |view| view.token.cast())
+        self.queue.borrow().token(id).cast()
     }
 
     /// `Timer::get(id)`, borrowed.
@@ -318,18 +303,11 @@ impl Owner {
             return std::ptr::null_mut();
         }
         let node = Box::into_raw(Box::new(node));
-        let mut view = TimerView::default();
-        // SAFETY: the live queue, a fresh token and a writable view.
-        let status = unsafe {
-            crate::swr_v1_timer_add(
-                self.queue,
-                self.relative_msec(),
-                msec,
-                u32::from(persistent),
-                node.cast(),
-                &raw mut view,
-            )
-        };
+        let now = self.relative_msec();
+        let (status, view) = self
+            .queue
+            .borrow_mut()
+            .add(now, msec, persistent, node.cast());
         if status != OK {
             warning(
                 c"add",
@@ -350,9 +328,8 @@ impl Owner {
 
     /// Whether `id` was removed.
     pub(crate) fn remove(&self, id: c_long) -> bool {
-        let mut view = TimerView::default();
-        // SAFETY: the live queue and a writable view.
-        match unsafe { swr_v1_timer_remove(self.queue, id, &raw mut view) } {
+        let (status, view) = self.queue.borrow_mut().remove(id);
+        match status {
             DEFERRED => {
                 apply(&view);
                 true
@@ -367,43 +344,34 @@ impl Owner {
 
     /// Refreshes a node's deadline from its caller-mutated `exec_msec`.
     fn update(&self, node: &TimerNode) {
-        let mut view = TimerView::default();
-        // SAFETY: the live queue and a writable view.
-        if unsafe { swr_v1_timer_update(self.queue, node.id, node.exec_msec, &raw mut view) } == OK
-            // SAFETY: as above.
-            || unsafe { swr_v1_timer_get(self.queue, node.id, &raw mut view) } == OK
-        {
+        let (status, view) = {
+            let mut queue = self.queue.borrow_mut();
+            match queue.update(node.id, node.exec_msec) {
+                (OK, view) => (OK, view),
+                _ => queue.get(node.id),
+            }
+        };
+        if status == OK {
             apply(&view);
         }
     }
 
     /// Moves a node's deadline to `delay_ms` from now.
     pub(crate) fn delay(&self, node: &TimerNode, delay_ms: c_long) {
-        let mut deadline = 0;
-        // SAFETY: a writable deadline.
-        if unsafe {
-            swr_v1_timer_delay_deadline(
-                self.relative_msec(),
-                node.exec_msec,
-                delay_ms,
-                &raw mut deadline,
-            )
-        } == 0
-        {
+        let Some(deadline) =
+            swr_v1_timer_delay_deadline(self.relative_msec(), node.exec_msec, delay_ms)
+        else {
             return;
-        }
-        let mut view = TimerView::default();
-        // SAFETY: the live queue and a writable view.
-        if unsafe { swr_v1_timer_update(self.queue, node.id, deadline, &raw mut view) } == OK {
+        };
+        let (status, view) = self.queue.borrow_mut().update(node.id, deadline);
+        if status == OK {
             apply(&view);
         }
     }
 
     /// Completes the active node.
     fn complete(&self, id: i64) {
-        let mut view = TimerView::default();
-        // SAFETY: the live queue and a writable view.
-        let status = unsafe { swr_v1_timer_complete(self.queue, id, &raw mut view) };
+        let (status, view) = self.queue.borrow_mut().complete(id);
         match status {
             OK => {
                 apply(&view);
@@ -420,9 +388,8 @@ impl Owner {
 
     /// Ends the selection and arms the next wakeup; false if Rust refused.
     fn end(&self) -> bool {
-        let mut delay = -1;
-        // SAFETY: the live queue and a writable delay.
-        if unsafe { swr_v1_timer_end(self.queue, &raw mut delay) } != OK {
+        let (status, delay) = self.queue.borrow_mut().end();
+        if status != OK {
             return false;
         }
         self.next_msec.set(delay);
@@ -434,16 +401,14 @@ impl Owner {
     /// frames, which hold nothing to drop; a C++ exception aborts at the first
     /// Rust frame (`panic = "abort"`), as an uncaught one would.
     pub(crate) fn select(&self) {
-        // SAFETY: the live queue.
-        let begin = unsafe { swr_v1_timer_begin(self.queue, self.relative_msec()) };
+        let now = self.relative_msec();
+        let begin = self.queue.borrow_mut().begin(now);
         if begin == BUSY || begin == CLOSING {
             return;
         }
         check(begin);
         loop {
-            let mut view = TimerView::default();
-            // SAFETY: the live queue and a writable view.
-            let status = unsafe { swr_v1_timer_next(self.queue, &raw mut view) };
+            let (status, view) = self.queue.borrow_mut().select_next();
             if status == EMPTY || status == CLOSING {
                 break;
             }
@@ -474,43 +439,38 @@ impl Owner {
     /// Zend bailout will never resume an active selection, so it is closed here;
     /// same-process deletion during a live callback aborts.
     pub(crate) fn destroy(&self) {
-        check(
-            // SAFETY: the live queue.
-            unsafe { swr_v1_timer_close(self.queue) },
-        );
+        self.queue.borrow_mut().close();
         self.set(-1);
-        let mut view = TimerView::default();
-        // SAFETY: getpid has no preconditions.
-        if self.abandoned.get() || unsafe { libc::getpid() } != self.owner_pid {
-            let mut stats = TimerStats::default();
-            // SAFETY: the live queue and writable stats.
-            check(unsafe { swr_v1_timer_stats_get(self.queue, &raw mut stats) });
-            if stats.active_id != 0
-                // SAFETY: the live queue and a writable view.
-                && unsafe { swr_v1_timer_complete(self.queue, stats.active_id, &raw mut view) }
-                    != RELEASE
-            {
-                std::process::abort();
-            }
-            if stats.selecting != 0 {
-                let mut delay = 0;
-                // SAFETY: the live queue and a writable delay.
-                check(unsafe { swr_v1_timer_end(self.queue, &raw mut delay) });
-            }
-            if stats.active_id != 0 {
+        if self.abandoned.get() || std::process::id().cast_signed() != self.owner_pid {
+            let (active, view) = {
+                let mut queue = self.queue.borrow_mut();
+                let stats = queue.stats();
+                let (status, view) = if stats.active_id == 0 {
+                    (RELEASE, TimerView::default())
+                } else {
+                    queue.complete(stats.active_id)
+                };
+                if status != RELEASE {
+                    std::process::abort();
+                }
+                if stats.selecting != 0 {
+                    check(queue.end().0);
+                }
+                (stats.active_id != 0, view)
+            };
+            if active {
                 self.release(apply(&view));
             }
         }
         let status = loop {
-            // SAFETY: the live queue and a writable view.
-            let status = unsafe { swr_v1_timer_drain(self.queue, &raw mut view) };
+            let (status, view) = self.queue.borrow_mut().drain();
             if status != RELEASE {
                 break status;
             }
             self.release(apply(&view));
         };
-        // SAFETY: the drained queue, released once.
-        if status != EMPTY || unsafe { swr_v1_timer_release(self.queue) } != OK {
+        // The record's drop frees the drained queue.
+        if status != EMPTY || !self.queue.borrow().idle() {
             std::process::abort();
         }
     }
@@ -519,11 +479,9 @@ impl Owner {
 /// Hooks this thread's timer to `reactor`, the thread's: select after each loop
 /// round, keep the loop while a timer is pending, and free the timer with it.
 fn attach(reactor: *mut c_void) {
+    swr_v1_event_set_end_callback(PRIORITY_TIMER, crate::wrapper::swoole_timer_select);
+    swr_v1_event_set_exit_condition(EXIT_CONDITION_TIMER, idle);
     // SAFETY: the thread's live reactor.
-    unsafe { swr_v1_event_set_end_callback(PRIORITY_TIMER, crate::wrapper::swoole_timer_select) };
-    // SAFETY: as above.
-    unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_TIMER, idle) };
-    // SAFETY: as above.
     let fields = unsafe { prepared(reactor) }.fields;
     // SAFETY: its live fields.
     let queue = unsafe { &raw mut (*fields).destroy_callbacks };
@@ -587,7 +545,7 @@ pub(crate) unsafe extern "C-unwind" fn swr_v1_timer_owner_free(timer: *mut Owner
 #[unsafe(no_mangle)]
 unsafe extern "C" fn swr_v1_timer_owner_queue(timer: *const Owner) -> *mut Queue {
     // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.queue
+    unsafe { owner(timer) }.queue.as_ptr()
 }
 
 /// `Timer::get_reactor()`.

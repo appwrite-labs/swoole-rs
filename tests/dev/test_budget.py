@@ -23,6 +23,14 @@ mod tests {
 #[cfg(test)]
 #[path = "loaded_tests.rs"]
 mod loaded;
+#[cfg(test)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "a multi-line attribute [between] cfg(test) and the module"
+)]
+mod spanned {
+    fn t() { unsafe { skipped() } }
+}
 use std::collections::{HashMap, VecDeque};
 static DATE_CACHE: u8 = 0;
 pub(crate) struct Cached;
@@ -61,6 +69,22 @@ class Budget(unittest.TestCase):
     def test_only_a_rise_over_the_base_fails(self):
         rises = budget.above({'a': 3, 'b': 1, 'c': 2, 'new': 1}, {'a': 2, 'b': 2, 'c': 2})
         self.assertEqual(rises, {'a': (3, 2)}, 'a crate new since the base is not checked')
+
+    def test_an_ffi_crate_may_rise_by_what_its_crate_moved_to_it(self):
+        base = {'http': 10, 'http-ffi': 5, 'other': 1, 'orphan-ffi': 1}
+        current = {'http': 4, 'http-ffi': 11, 'other': 0, 'orphan-ffi': 2}  # the total holds at 17
+        rises = budget.above(current, base)
+        self.assertEqual(budget.boundary_moves(rises, current, base), {'orphan-ffi': (2, 1)},
+                         'http fell by 6, so http-ffi may rise by 6; orphan has no crate')
+        current['http-ffi'] = 12
+        self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base),
+                         {'http-ffi': (12, 5), 'orphan-ffi': (2, 1)}, 'a rise past the fall fails')
+
+    def test_a_fall_into_a_new_crate_does_not_also_cover_an_ffi_rise(self):
+        # http's 6 moved to locale, which is new and so unchecked; http-ffi's 6 are new unsafe.
+        base = {'http': 10, 'http-ffi': 5}
+        current = {'http': 4, 'http-ffi': 11, 'locale': 6}
+        self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base), {'http-ffi': (11, 5)})
 
 
 if __name__ == '__main__':

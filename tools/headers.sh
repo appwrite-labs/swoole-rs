@@ -1,7 +1,7 @@
 #!/bin/sh
 # Regenerate native/include/swoole_rs_<crate>.h for every crate with a cbindgen.toml.
 # --check leaves files alone and fails, with a diff, if any committed header is stale,
-# or if a hand-written swr_v1_* prototype under native/ disagrees with cbindgen
+# or if a hand-written swr_v<N>_* prototype under native/ disagrees with cbindgen
 # (tools/headers.py).
 set -e
 cd "$(dirname "$0")/.."

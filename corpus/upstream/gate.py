@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge sharded run.py reports and gate the hybrid on upstream.
+"""Merge sharded run.py reports and gate cargo on upstream.
 
 Every PHPT that passes on upstream must pass on every other engine; anything else
 exits 1. Tests failing on upstream too are reported, not hidden. Only the official
@@ -7,22 +7,25 @@ runner's PASSED counts as passed. Prints a Markdown summary; --output writes eve
 row as JSON, marking `rerun: passed` on an engine's row when the engine passed a re-run
 of a test the re-runs don't gate.
 
-A flagged test may be re-run (--recheck: up to 3 re-runs per engine, or one hybrid
-re-run when the hybrid's first failure timed out). If upstream fails a re-run, the test
-is flaky on upstream if the hybrid passes one of its re-runs (up to 9 then), or if
+A flagged test may be re-run (--recheck: up to 3 re-runs per engine, or one cargo
+re-run when cargo's first failure timed out). If upstream fails a re-run, the test
+is flaky on upstream if cargo passes one of its re-runs (up to 9 then), or if
 upstream then passes fewer than a third of 9 re-runs (a test both engines almost always
-fail, #998, #1948: 2 passes in 9 against the hybrid's 0 is no evidence of a regression);
-otherwise it is a regression. If upstream passes every re-run, any failed hybrid re-run is a regression
-and passing them all is a pass on re-run. The hybrid re-runs until it has both passed and
-failed, so one failed re-run of a test racy on both engines doesn't decide it. A hybrid that both passed and failed its
-re-runs gets more upstream re-runs (up to 24 in all) before that verdict: a test racy
+fail, #998, #1948: 2 passes in 9 against cargo's 0 is no evidence of a regression);
+otherwise it is a regression. If upstream passes every re-run, any failed cargo re-run is a regression
+and passing them all is a pass on re-run. Cargo re-runs until it has both passed and
+failed, so one failed re-run of a test racy on both engines doesn't decide it. When cargo both passed and failed its
+re-runs, upstream gets more re-runs (up to 24 in all) before that verdict: a test racy
 on both engines then shows an upstream failure too. Only regressions fail the gate, and
-a flagged test without hybrid re-runs stays one.
+a flagged test without cargo re-runs stays one.
 
 A re-run whose test passed but whose runner then aborted with the heap-corruption
 signature both engines hit at the same rate (#200, #406) is inconclusive: it is left out
 of the verdict and re-run once more. A test whose re-runs on an engine are all
 inconclusive fails the gate, labelled inconclusive.
+
+On a debug PHP (debug.yml) a failure may carry Zend's leak report or a failed assertion;
+the summary lists those per engine, upstream's own too, and gates them as any failure.
 """
 import argparse
 from collections import Counter, defaultdict
@@ -45,16 +48,18 @@ ANSI = re.compile(r'\x1b\[[0-9;]*m')
 TIMED_OUT = re.compile(r'process timed out|exceeded its isolated group deadline')
 # The official runner's own abort after a passing test (#200).
 ABORTED = re.compile(r'corrupted double-linked list[\s\S]*Aborted')
+# A debug PHP's report at request end, and a failed ZEND_ASSERT, in the test's output.
+REPORTS = [('leak', re.compile(r'memory leaks? detected')), ('assertion', re.compile(r'Assertion .* failed'))]
 RERUNS = 3
-# Upstream re-runs for a test the hybrid failed every re-run of after upstream failed
-# one (#998, #1948), and for a test the hybrid both passed and failed on re-run (#1285: an
+# Upstream re-runs for a test cargo failed every re-run of after upstream failed
+# one (#998, #1948), and for a test cargo both passed and failed on re-run (#1285: an
 # upstream race failing 5-10% of runs shows in 24 runs far more often than in 9).
 EXTENDED_RERUNS = 9
 MIXED_RERUNS = 24
 STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 # Pinned tests of upstream fixes to code that is Rust now, by the open issue porting them
 # (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
-# failing on them, and lists those the hybrid already passes so their entries go.
+# failing on them, and lists those cargo already passes so their entries go.
 PENDING_PORTS = {}
 PENDING = {f'tests/{test}': issue for issue, tests in PENDING_PORTS.items() for test in tests}
 
@@ -87,6 +92,7 @@ def rows(reports):
                 # WARNED failed its first attempt: that failure counts, whatever the runner did next.
                 entry['inconclusive'] = (row.get('upstream_status') == 'PASSED'
                                          and bool(ABORTED.search(row.get('detail') or '')))
+                entry['report'] = next((name for name, pattern in REPORTS if pattern.search(row.get('detail') or '')), None)
             yield entry
 
 
@@ -132,7 +138,7 @@ def recheck(tests, rechecked):
         upstream = conclusive(runs[test].get('upstream', []))
         others = [status for engine, statuses in runs[test].items() if engine != 'upstream' for status in conclusive(statuses)]
         if any(status != 'passed' for status in upstream):
-            # Upstream is noisy; a hybrid pass shows the hybrid isn't simply broken, and so does
+            # Upstream is noisy; a cargo pass shows cargo isn't simply broken, and so does
             # upstream failing most of its extended re-runs: the first run's pass was the outlier.
             outlier = others and len(upstream) >= EXTENDED_RERUNS and 3 * upstream.count('passed') < len(upstream)
             (flaky if 'passed' in others or outlier else regressions).append(test)
@@ -145,14 +151,14 @@ def recheck(tests, rechecked):
 
 def pending(tests, rechecked, engine='upstream', results=()):
     """Flagged tests still worth re-running on `engine`. Upstream stops at its first failed
-    re-run; `upstream-extended` continues upstream, to 24 re-runs for a test the hybrid
+    re-run; `upstream-extended` continues upstream, to 24 re-runs for a test cargo
     both passed and failed, or to 9 for one it failed every re-run of after upstream
     failed one. Another engine stops once its verdict is settled (a pass after an upstream
     failure, otherwise both a pass and a failure, which earns those upstream re-runs) or its
     budget is spent: one re-run if its first failure timed out, nine once upstream failed a
-    re-run (a test racy on both engines may fail several hybrid re-runs before one passes),
+    re-run (a test racy on both engines may fail several cargo re-runs before one passes),
     else three. A failure alone
-    doesn't settle it: a test racy on both engines (#862) fails a hybrid re-run as often as
+    doesn't settle it: a test racy on both engines (#862) fails a cargo re-run as often as
     the first run. Inconclusive re-runs don't use the budget, but each engine stops
     after twice its budget in all."""
     runs = reruns(rechecked)
@@ -184,7 +190,7 @@ def pending(tests, rechecked, engine='upstream', results=()):
 
 def flaky_listing(tests, rechecked):
     runs = reruns(rechecked)
-    lines = [f'<details><summary>{len(tests)} flaky on upstream (failed an upstream re-run; hybrid passed one, or upstream passed under a third of 9; not gated)</summary>', '']
+    lines = [f'<details><summary>{len(tests)} flaky on upstream (failed an upstream re-run; cargo passed one, or upstream passed under a third of 9; not gated)</summary>', '']
     for test in tests:
         lines.append(f'- `{test}`: ' + '; '.join(f'{engine} {", ".join(statuses)}' for engine, statuses in sorted(runs[test].items())))
     return lines + ['', '</details>', '']
@@ -218,11 +224,11 @@ def markdown(results, rechecked=None):
     if exclusions:
         lines += listing('named originals excluded (not passed)', exclusions)
     regressions, both = compare(results)
-    hybrid = {row['test']: row['status'] for row in results if row['engine'] != 'upstream' and row['test'] in PENDING}
-    lines += listing('pending a port (not gated)', [f'{test} (#{PENDING[test]}): {hybrid[test]}' for test in sorted(hybrid)
-                                                    if hybrid[test] != 'passed'])
+    cargo = {row['test']: row['status'] for row in results if row['engine'] != 'upstream' and row['test'] in PENDING}
+    lines += listing('pending a port (not gated)', [f'{test} (#{PENDING[test]}): {cargo[test]}' for test in sorted(cargo)
+                                                    if cargo[test] != 'passed'])
     lines += listing('pending a port but passing here: drop them from PENDING_PORTS',
-                     [test for test in sorted(hybrid) if hybrid[test] == 'passed'])
+                     [test for test in sorted(cargo) if cargo[test] == 'passed'])
     if len(engines) > 1 and rechecked is not None:
         confirmed, flaky, recovered, inconclusive = recheck(flagged(results), rechecked)
         lines += listing('regressions: pass on upstream, fail on a re-run here', confirmed)
@@ -233,6 +239,9 @@ def markdown(results, rechecked=None):
     elif len(engines) > 1:
         lines += listing('passing on upstream but not here (regressions)', regressions)
         lines += listing('failing on upstream too', both)
+    reported = [f'{row["test"]} ({row["engine"]}: {row["report"]})' for row in results if row.get('report')]
+    if reported:
+        lines += listing('leak or assertion reports (gated like any failure)', reported)
     lines += ['| Family | ' + ' | '.join(f'{e} {s}' for e in engines for s in STATUSES) + ' |',
               '| --- |' + ' --- |' * (len(engines) * len(STATUSES))]
     lines += [f'| {family} | ' + ' | '.join(str(c[e, s]) for e in engines for s in STATUSES) + ' |'

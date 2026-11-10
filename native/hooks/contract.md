@@ -36,8 +36,8 @@ bundled ext/ssh2 uses: `new SocketImpl`, `connect(host)` (`swr_v1_hook_co_socket
 - hook.cc's socket functions (`swoole_coroutine_socket`, `send`, `recv`,
   `sendmsg`, `recvmsg`, `connect`, `accept`, `poll`, `poll_fake`, `close`, `read`,
   `write`, `socket_create`, `socket_unwrap`, `socket_exists`, the timeouts and
-  `socket_wait_event`, and `swoole_coroutine_get_socket_object[_ex]` under their C++
-  symbols) are Rust. The hooked fds' socket map is Rust's too: fd to a lent
+  `socket_wait_event`, under their C++ symbols) are Rust, and
+  `swoole_coroutine_get_socket_object[_ex]` are plain Rust functions (no C caller left). The hooked fds' socket map is Rust's too: fd to a lent
   `SocketImpl *`, no reference count; hooked `close` removes it only after
   `Socket::close()` succeeds. The hooks make and delete those sockets in Rust and call the Rust members
   directly, and those pick the ring for a `UringSocket`. A C++ exception or a
@@ -48,7 +48,6 @@ bundled ext/ssh2 uses: `new SocketImpl`, `connect(host)` (`swr_v1_hook_co_socket
   `LOCK_EX`/`LOCK_SH` retry `flock(op | LOCK_NB)` only on -1/EWOULDBLOCK,
   sleeping through `System::sleep` with the `wait_for` backoff, and fail when that
   sleep is cancelled; anything else fails with EINVAL as errno and the last error.
-- `hook_file_result` rejects open fd 0 and does not reset close's fd.
 - `wait_for` uses a copied caller-local delay/phase/result plan selecting the
   next callback, sleep, success or canceled return. Backoff: capped doubling with
   reset.
@@ -140,13 +139,13 @@ aliases are never uninstalled.
   whole read or write (`File::read_all`, `write_all`, `read_content` semantics),
   fsync and unlock on the async pool, into a `Vec`, logging each warning on the pool
   thread as upstream named it (`System::read_file`, `File::read_all`, ...).
-  `write_file` keeps its upstream symbol; C reads through `swr_v1_system_read_file`.
+  `write_file` keeps its upstream symbol; `read_file` is a plain Rust function.
 - `System::wait_signal` is Rust (`wait_signal.rs`): the listener table, the
   EBUSY/EINVAL checks, registering through the signal table (deferred to the loop's
   thread while thread contexts are active), the reactor exit condition and
   `signal_async_listener_num`, the park, the wake-up handler `hook_signal_wake`
   (clears the slot, records the signal, resumes) and the unregistering after it.
-  C reads it through `swr_v1_system_wait_signal`.
+  It is the plain Rust `system_wait_signal`.
 - The hooked stdio, directory and file-system functions (`fopen`, `fdopen`,
   `freopen`, `fread`, `fwrite`, `fgets`, `fputs`, `feof`, `fflush`, `fclose`,
   `opendir`, `readdir`, `closedir`, `open`, `fstat`, `stat`, `lstat`, `unlink`,
@@ -155,7 +154,7 @@ aliases are never uninstalled.
   `gethostbyname` are Rust, exported under upstream's `swoole_coroutine_<name>`.
   The coroutine test, `async_job`, `System::sleep` and the last error are Rust
   (`stdio::NATIVE`). `swoole_init` installs their host (`swr_v1_hook_install`): in an
-  io_uring build, `swr_v1_uring_native`, the `HAVE_IOURING_*` opcodes and whether
+  io_uring build, the engine's host (`iouring::HOST`), the `HAVE_IOURING_*` opcodes and whether
   sockets are `UringSocket`s.
   Inside a coroutine an io_uring build sends the call to the ring where upstream did;
   outside a coroutine the libc call runs in place; inside one it runs through native

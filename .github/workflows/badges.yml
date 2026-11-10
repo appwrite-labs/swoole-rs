@@ -22,7 +22,7 @@ defaults:
     shell: bash
 jobs:
   badges:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
@@ -30,16 +30,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-      - run: |
-          pin=$(python3 -c 'from tools.build_upstream import COMMIT; print(COMMIT)')
-          git init -q target/pin
-          git -C target/pin fetch -q --depth 1 https://github.com/swoole/swoole-src "$pin"
-          git -C target/pin checkout -q FETCH_HEAD
-      # The newest completed merge-tier run on main with a gate result (cancelled runs and
-      # runs whose PHPT gate failed upload no phpt.json), and its build variants' gates.
+      # The newest finished merge-tier run on main with a gate result (a gate missing a shard
+      # uploads no phpt.json), and its build variants' gates. Latest-wins cancels most runs,
+      # so they are skipped before the limit, or 20 of them hide every finished run.
       - id: gate
         run: |
-          for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 20 --json databaseId -q '.[].databaseId'); do
+          for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId'); do
             if gh run download "$run" -n phpt -D gate/phpt 2>/dev/null && [ -f gate/phpt/phpt.json ]; then
               for variant in zts stdext iouring cares threadcontext alpine root; do
                 gh run download "$run" -n "phpt-$variant" -D "gate/$variant" 2>/dev/null || echo "::warning::run $run has no phpt-$variant gate"
@@ -54,7 +50,7 @@ jobs:
       # cg/ is the newest, for the badge, and cg-previous/ the one before it.
       - id: callgrind
         run: |
-          for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 40 --json databaseId -q '.[].databaseId'); do
+          for run in $(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,conclusion -q '.[] | select(.conclusion != "cancelled") | .databaseId'); do
             dir=cg
             [ -f cg/callgrind.json ] && dir=cg-previous
             if ! gh run download "$run" -n callgrind -D "$dir" 2>/dev/null || [ ! -f "$dir/callgrind.json" ]; then
@@ -92,7 +88,7 @@ jobs:
           done
       - run: git clone -q --depth 1 --branch badges "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" out || git init -q -b badges out
       - run: >
-          python3 tools/badges.py --source target/pin --output out
+          python3 tools/badges.py --output out
           ${{ steps.gate.outputs.commit && format('--phpt gate/*/phpt*.json --commit {0}', steps.gate.outputs.commit) || '' }}
           ${{ steps.callgrind.outputs.commit && format('--callgrind cg/callgrind.json --callgrind-commit {0}', steps.callgrind.outputs.commit) || '' }}
           ${{ hashFiles('coverage/summary.json') != '' && '--coverage coverage' || '' }}

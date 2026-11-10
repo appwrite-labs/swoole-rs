@@ -30,8 +30,7 @@ class PhaseReports(unittest.TestCase):
         result=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
         phases=[row['phase'] for row in json.loads(result.stdout)]
-        # The report it reads, then the upstream reference build behind both (not the
-        # hybrid build: target/hybrid/upstream is the reference's), in plan order.
+        # The report it reads, then the upstream reference build behind both, in plan order.
         self.assertIn('reference-identity',phases)
         self.assertNotIn('build',phases)
         self.assertLess(phases.index('reference-build'),phases.index('base64-consumers-upstream'))

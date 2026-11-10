@@ -9,7 +9,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 from tools.harness import run_isolated
 
 SOURCE = r'''
@@ -55,15 +55,15 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    source, flags = hybrid_tree(args.archive)
-    report = dict(passed=False, scope=__doc__, hybrid_tree=str(source), commands=[])
+    flags = native_flags(args.archive)
+    report = dict(passed=False, scope=__doc__, commands=[])
     with tempfile.TemporaryDirectory(dir=args.output.parent, prefix='core-records-') as directory:
         tree = Path(directory)
         cpp = tree / 'probe.cc'
         cpp.write_text(SOURCE)
         binary = tree / 'probe'
         command = ['c++', '-std=c++14', '-O1', '-g', '-Wall', '-Wextra', '-Werror', *flags,
-                   '-DHAVE_CONFIG_H', '-I' + str(source), str(cpp), str(args.archive.resolve()),
+                   '-DHAVE_CONFIG_H', str(cpp), str(args.archive.resolve()),
                    '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-pthread', '-o', str(binary)]
         if sys.platform.startswith('linux'):
             command += ['-ldl', '-lm']

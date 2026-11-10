@@ -370,7 +370,7 @@ fn set(call: &Call) {
         }
         if !slot.is_null() {
             // The replaced callable: the reactor may still be in it.
-            native::defer(deferred_release, *slot);
+            native::defer(deferred_release, *slot, release_unrun);
         }
         *slot = new;
     }
@@ -418,7 +418,11 @@ fn del(call: &Call) {
         return;
     };
     // Its object, freed once the loop is out of it.
-    native::defer(deferred_free_object, object_of(socket).cast());
+    native::defer(
+        deferred_free_object,
+        object_of(socket).cast(),
+        free_unrun_object,
+    );
     // SAFETY: a registered socket.
     let deleted = unsafe { event_api::swoole_event_del(socket) };
     SOCKETS.with_borrow_mut(|sockets| sockets.remove(&fd));
@@ -442,7 +446,7 @@ fn defer(call: &Call) {
         return;
     }
     // The reactor runs and then frees it.
-    native::defer(run_deferred, callback);
+    native::defer(run_deferred, callback, release_unrun);
     call.set_bool(true);
 }
 
@@ -464,14 +468,14 @@ fn cycle(call: &Call) {
             return;
         }
         // The task's callable, released after the loop is out of it.
-        native::defer(deferred_release, task.data);
+        native::defer(deferred_release, task.data, release_unrun);
         *native::cycle_task(before) = ReactorTask {
             callback: None,
             data: ptr::null_mut(),
         };
     } else {
         if !task.data.is_null() {
-            native::defer(deferred_release, task.data);
+            native::defer(deferred_release, task.data, release_unrun);
         }
         let callback = callable(zcallback, None, false);
         if bailout::pending() {
@@ -484,6 +488,23 @@ fn cycle(call: &Call) {
         };
     }
     call.set_bool(true);
+}
+
+/// Releases the cycle callables the reactor holds, as `wait` frees it: a loop left
+/// with one set (a callback that exited, or one never cleared) would lose it.
+fn release_cycle_tasks() -> Result<(), Bailout> {
+    let mut result = Ok(());
+    for before in [false, true] {
+        let unset = ReactorTask {
+            callback: None,
+            data: ptr::null_mut(),
+        };
+        let task = std::mem::replace(native::cycle_task(before), unset);
+        if !task.data.is_null() {
+            result = result.and(release(task.data));
+        }
+    }
+    result
 }
 
 /// `isset(mixed $fd, int $events = SWOOLE_EVENT_READ | SWOOLE_EVENT_WRITE): bool`.
@@ -530,7 +551,7 @@ fn invoke(callable: *mut c_void, argv: *mut zval, argc: u32) -> Result<bool, Bai
             argv,
             ptr::null_mut(),
             native::enable_coroutine(),
-            swoole_rs_phpcoroutines::swr_v1_phpcoroutines_create,
+            swoole_rs_phpcoroutines::create_coroutine,
             swr_zend_callable_warning,
         )
     };
@@ -596,7 +617,7 @@ unsafe fn ready(socket: *mut SocketRecord, write: bool) -> Result<c_int, Bailout
     // SAFETY: per the caller.
     unsafe { (*socket).object = ptr::null_mut() };
     // The detached object, freed once the loop is out of it.
-    native::defer(deferred_free_object, object.cast());
+    native::defer(deferred_free_object, object.cast(), free_unrun_object);
     // SAFETY: per the caller.
     unsafe { event_api::swoole_event_del(socket) };
     if bailout::relay_to_c(Ok(())) {
@@ -624,29 +645,44 @@ unsafe fn free_object(object: *mut EventObject) -> Result<(), Bailout> {
 }
 
 /// The deferred `event_object_free`.
-unsafe extern "C-unwind" fn deferred_free_object(object: *mut c_void) {
+extern "C-unwind" fn deferred_free_object(object: *mut c_void) {
     // SAFETY: the object `del` or a failed callback scheduled, freed once.
     bailout::raise(unsafe { free_object(object.cast()) });
 }
 
 /// The deferred release of a replaced callable.
-unsafe extern "C-unwind" fn deferred_release(callable: *mut c_void) {
+extern "C-unwind" fn deferred_release(callable: *mut c_void) {
     bailout::raise(release(callable));
 }
 
-/// `event_defer_callback`: run and free a deferred callable.
-unsafe extern "C-unwind" fn run_deferred(callable: *mut c_void) {
+/// The reactor was freed before a deferred release ran: release now, and leave a
+/// bailout to the handler that freed it rather than jump out of the reactor's drop.
+extern "C-unwind" fn release_unrun(callable: *mut c_void) {
+    bailout::defer(release(callable));
+}
+
+/// As [`release_unrun`], for a deferred `event_object_free`.
+extern "C-unwind" fn free_unrun_object(object: *mut c_void) {
+    // SAFETY: the object `del` or a failed callback scheduled, which never ran.
+    bailout::defer(unsafe { free_object(object.cast()) });
+}
+
+/// `event_defer_callback`: run and free a deferred callable, which is freed even when
+/// the callback bails out.
+extern "C-unwind" fn run_deferred(callable: *mut c_void) {
     let result = invoke(callable, ptr::null_mut(), 0).and_then(|ok| {
-        if !ok {
-            native::warning(c"Swoole\\Event::defer callback handler error")?;
+        if ok {
+            Ok(())
+        } else {
+            native::warning(c"Swoole\\Event::defer callback handler error")
         }
-        release(callable)
     });
-    bailout::raise(result);
+    let released = release(callable);
+    bailout::raise(result.and(released));
 }
 
 /// `event_cycle_callback`: run the cycle callable.
-unsafe extern "C-unwind" fn run_cycle(callable: *mut c_void) {
+extern "C-unwind" fn run_cycle(callable: *mut c_void) {
     let result = invoke(callable, ptr::null_mut(), 0).and_then(|ok| {
         if ok {
             Ok(())

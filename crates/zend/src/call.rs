@@ -6,13 +6,14 @@ use crate::{
     sys::{
         _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_BOOL,
         _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, _zend_expected_type_Z_EXPECTED_DOUBLE,
-        _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_STRING,
-        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT_EX, IS_TRUE,
+        _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_RESOURCE,
+        _zend_expected_type_Z_EXPECTED_STRING, _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE,
+        IS_LONG, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED, IS_OBJECT_EX, IS_RESOURCE, IS_TRUE,
         ZPP_ERROR_WRONG_ARG, add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool,
-        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str,
-        swr_zval_empty_array, swr_zval_empty_string, swr_zval_str, zend_execute_data,
-        zend_expected_type, zend_object, zend_string, zend_update_property_long, zend_value,
-        zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
+        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str,
+        zend_argument_type_error, zend_argument_value_error, zend_execute_data, zend_expected_type,
+        zend_object, zend_string, zend_update_property_long, zend_value,
+        zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval, zval_ptr_dtor,
     },
 };
 use std::{ffi::CStr, ptr};
@@ -97,6 +98,31 @@ impl Call {
         let this = unsafe { (*self.frame).This };
         // SAFETY: a non-static method's `This` holds its object.
         unsafe { this.value.obj }
+    }
+
+    /// `GC_FLAGS(Z_OBJ_P(ZEND_THIS)) & IS_OBJ_DESTRUCTOR_CALLED`: Zend is running
+    /// `$this`'s destructor (`SW_PREVENT_USER_DESTRUCT`), not user code.
+    #[must_use]
+    #[inline]
+    pub fn destructor_called(&self) -> bool {
+        // SAFETY: a method's live `$this`.
+        let header = unsafe { (*self.this()).gc.u };
+        // SAFETY: a refcounted header always sets `type_info`.
+        unsafe { header.type_info & IS_OBJ_DESTRUCTOR_CALLED != 0 }
+    }
+
+    /// `ZVAL_COPY(&value, ZEND_THIS)`: `$this` with a reference of its own,
+    /// or None without one (a static method).
+    #[must_use]
+    pub fn this_owned(&self) -> Option<crate::Owned> {
+        // SAFETY: a live frame.
+        let this = unsafe { &raw const (*self.frame).This };
+        // SAFETY: `This` is a zval whose type says whether it holds an object.
+        let this = unsafe { crate::Value::from_ptr(this) }?.object()?;
+        // SAFETY: the frame's live `$this`.
+        unsafe { (*this).gc.refcount += 1 };
+        // SAFETY: as above, carrying the reference added.
+        Some(unsafe { crate::Owned::object(this) })
     }
 
     /// `ZEND_CALL_ARG(execute_data, n)`, 1-based; `n` is at most `num_args()`.
@@ -282,12 +308,49 @@ impl Call {
             .ok_or_else(|| Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_ARRAY))
     }
 
+    /// `Z_PARAM_RESOURCE` of argument `n` (1-based), which must be passed.
+    /// # Errors
+    /// The argument is not a resource; Zend has thrown.
+    #[inline]
+    pub fn resource(&self, n: u32) -> Result<&Value, Invalid> {
+        let arg = self.arg_value(n);
+        if arg.kind() == IS_RESOURCE {
+            return Ok(arg);
+        }
+        Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_RESOURCE))
+    }
+
+    /// `zend_argument_type_error(n, "%s", message)`: a `TypeError` naming argument `n`.
+    #[inline]
+    pub fn argument_type_error(&self, n: u32, message: &CStr) {
+        // SAFETY: from a handler; "%s" takes the message.
+        unsafe { zend_argument_type_error(n, c"%s".as_ptr(), message.as_ptr()) };
+    }
+
+    /// `zend_argument_value_error(n, "%s", message)`: a `ValueError` naming argument `n`.
+    #[inline]
+    pub fn argument_value_error(&self, n: u32, message: &CStr) {
+        // SAFETY: from a handler; "%s" takes the message.
+        unsafe { zend_argument_value_error(n, c"%s".as_ptr(), message.as_ptr()) };
+    }
+
     /// `Z_PARAM_ZVAL_EX(.., 0, 1)` of argument `n` (1-based), which must be
     /// passed: a reference yields the value it refers to.
     #[must_use]
     #[inline]
     pub fn zval_deref(&self, n: u32) -> *mut zval {
         self.arg_value(n).dereferenced().as_ptr()
+    }
+
+    /// Make by-reference argument `n` (1-based), which must be passed, hold
+    /// `value`: `zval_ptr_dtor` of what it referred to, then `ZVAL_COPY_VALUE`.
+    #[inline]
+    pub fn assign(&self, n: u32, value: crate::Owned) {
+        let slot = self.zval_deref(n);
+        // SAFETY: a passed argument's live value, released here.
+        unsafe { zval_ptr_dtor(slot) };
+        // SAFETY: as above; the slot takes over the value.
+        unsafe { slot.write(value.into_zval()) };
     }
 
     /// `ZEND_PARSE_PARAMETERS_END`'s report of a wrong argument.
@@ -427,15 +490,18 @@ impl Call {
     /// `RETVAL_EMPTY_STRING`.
     #[inline]
     pub fn set_empty_string(&self) {
-        // SAFETY: the return slot is live.
-        unsafe { swr_zval_empty_string(self.value) };
+        // SAFETY: the interned empty string needs no reference.
+        unsafe { self.set_string(crate::value::empty_string()) };
     }
 
     /// `RETVAL_EMPTY_ARRAY`.
     #[inline]
     pub fn set_empty_array(&self) {
-        // SAFETY: the return slot is live.
-        unsafe { swr_zval_empty_array(self.value) };
+        let empty = zend_value {
+            arr: crate::value::empty_array(),
+        };
+        // SAFETY: the return slot is live; the empty array is immutable.
+        unsafe { crate::value::set(self.value, empty, IS_ARRAY) };
     }
 }
 

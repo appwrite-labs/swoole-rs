@@ -1,40 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/coroutine/iouring.cc (Swoole contributors).
 //! `Iouring`: the thread's engine ([`crate::uring`]) on its reactor, and the host
-//! table the engine calls back through ([`HOST`], `swr_v1_uring_native` to native).
+//! table the engine calls back through ([`HOST`]).
 //! The instance is created on the first request, registers the ring fd, the exit
 //! condition and the end-of-loop submit, and is freed with the reactor.
-use crate::uring::{
-    Config, Host, Uring, swr_v1_uring_cancel, swr_v1_uring_close, swr_v1_uring_fd,
-    swr_v1_uring_open, swr_v1_uring_submit, swr_v1_uring_task_num, swr_v1_uring_waiting_num,
-    swr_v1_uring_wakeup,
-};
+use crate::uring::{self, Config, Host, Uring};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
+use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::constants::FdType;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::event_api::{
     swoole_event_is_available, swoole_event_is_running, swr_v1_event_current,
 };
 use swoole_rs_reactor::reactor_upstream::{prepared, reactor_change};
-use swoole_rs_reactor::{SocketRecord, swr_v1_reactor_deferred_push};
+use swoole_rs_reactor::{SocketRecord, UringOps, swr_v1_reactor_deferred_push};
 
 /// `SW_EVENT_READ`, `Reactor::EXIT_CONDITION_IOURING` and `Reactor::PRIORITY_IOURING_SUBMIT`
 const EVENT_READ: c_int = 1 << 9;
 const EXIT_CONDITION_IOURING: c_int = 9;
 const PRIORITY_IOURING_SUBMIT: c_int = 7;
 
-// SAFETY: crates/coroutine's and crates/reactor's.
-unsafe extern "C-unwind" {
-    fn swr_v1_coroutine_native_resume(co: *mut c_void);
-    fn swr_v1_coroutine_yield_with_cancel(
-        co: *mut c_void,
-        cancel: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool,
-        data: *mut c_void,
-    );
-}
-// SAFETY: as above.
+// SAFETY: crates/reactor's.
 unsafe extern "C" {
     fn swr_v1_event_set_exit_condition(
         id: c_int,
@@ -58,8 +46,7 @@ thread_local! {
 
 /// The engine's callbacks into the coroutine scheduler, the thread's instance and
 /// the log.
-#[unsafe(export_name = "swr_v1_uring_native")]
-pub static HOST: Host = Host {
+pub(crate) static HOST: Host = Host {
     current: crate::wait_event::native::current,
     instance,
     suspend,
@@ -90,15 +77,15 @@ unsafe extern "C" fn instance() -> *mut Uring {
 unsafe extern "C" fn suspend(co: *mut c_void, event: *mut c_void) {
     unsafe extern "C-unwind" fn cancel(_co: *mut c_void, event: *mut c_void) -> bool {
         // SAFETY: the event stays suspended in its operation while its coroutine is.
-        unsafe { swr_v1_uring_cancel(&raw const HOST, event) }
+        unsafe { uring::cancel(&HOST, event) }
     }
     // SAFETY: the current coroutine, suspended in `event`'s operation.
-    unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, event) };
+    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, event) };
 }
 
 unsafe extern "C" fn resume(co: *mut c_void) {
     // SAFETY: a coroutine suspended in a request.
-    unsafe { swr_v1_coroutine_native_resume(co) };
+    unsafe { swoole_rs_coroutine::resume(co) };
 }
 
 unsafe extern "C" fn event_running() -> bool {
@@ -127,8 +114,7 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
         probe_futex: host.is_some_and(|host| host.uring_futex),
         probe_ftruncate: host.is_some_and(|host| host.uring_ftruncate),
     };
-    // SAFETY: HOST is static.
-    let opened = unsafe { swr_v1_uring_open(config, &raw const HOST) };
+    let opened = uring::open(config, &HOST);
     let iouring = Box::into_raw(Box::new(Iouring {
         engine: opened.uring,
         socket: ptr::null_mut(),
@@ -182,7 +168,7 @@ fn create(reactor: *mut c_void) -> *mut Iouring {
         _ => {}
     }
     // SAFETY: the engine opened.
-    let fd = unsafe { swr_v1_uring_fd(opened.uring) };
+    let fd = unsafe { &*opened.uring }.fd();
     let socket = SocketRecord::with_fd(fd, FdType::SW_FD_IOURING as c_int).into_raw();
     // SAFETY: the new record.
     unsafe { (*socket).object = iouring.cast() };
@@ -216,9 +202,8 @@ unsafe extern "C" fn idle(event_num: *mut usize) -> bool {
     // SAFETY: null or the thread's live instance.
     if let Some(iouring) = unsafe { iouring.as_ref() }
         // SAFETY: the instance's engine, live or null.
-        && unsafe { swr_v1_uring_task_num(iouring.engine) } == 0
-        // SAFETY: as above.
-        && unsafe { swr_v1_uring_waiting_num(iouring.engine) } == 0
+        && unsafe { iouring.engine.as_ref() }
+            .is_none_or(|engine| engine.task_num() == 0 && engine.waiting_num() == 0)
     {
         // SAFETY: the reactor passes its live count.
         unsafe { *event_num -= 1 };
@@ -228,10 +213,9 @@ unsafe extern "C" fn idle(event_num: *mut usize) -> bool {
 
 /// The end-of-loop callback: submit what the loop queued.
 unsafe extern "C" fn submit() {
-    let engine = swr_v1_uring_current();
-    if !engine.is_null() {
-        // SAFETY: the thread's live engine.
-        unsafe { swr_v1_uring_submit(engine) };
+    // SAFETY: null or the thread's live engine, from the event loop.
+    if let Some(engine) = unsafe { current().as_mut() } {
+        engine.submit_queued();
     }
 }
 
@@ -254,7 +238,7 @@ unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
     // SAFETY: as above; nothing uses it afterwards.
     unsafe { swoole_rs_tls::upstream::socket_free(socket) };
     // SAFETY: the engine, with nothing in flight as the loop has ended.
-    unsafe { swr_v1_uring_close(iouring.engine) };
+    unsafe { uring::close(iouring.engine) };
 }
 
 /// `Iouring::callback`: the ring fd is readable; `object` is its record's.
@@ -265,33 +249,88 @@ pub(crate) unsafe fn ready(object: *mut c_void) -> c_int {
     // SAFETY: as the caller promises.
     let engine = unsafe { (*object.cast::<Iouring>()).engine };
     // SAFETY: the instance's live engine, from the event loop.
-    if unsafe { swr_v1_uring_wakeup(engine) } {
+    if unsafe { uring::wakeup(engine) } {
         0
     } else {
         -1
     }
 }
 
+/// The engine's operations crates/reactor calls; it sits below this crate, so
+/// `swoole_init` registers them (`stdio::swr_v1_hook_install`).
+#[cfg_attr(
+    test,
+    expect(
+        dead_code,
+        reason = "swr_v1_hook_install registers it, and test builds leave that out"
+    )
+)]
+pub(crate) static REACTOR: UringOps = UringOps {
+    interrupted,
+    interrupt,
+    waitpid,
+};
+
 /// The epoll wait was interrupted (EINTR) on a thread with an instance.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_uring_interrupted(_reactor: *mut c_void) -> c_int {
+fn interrupted() -> bool {
     let eintr = std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR);
-    c_int::from(eintr && !swr_v1_uring_current().is_null())
+    eintr && !current().is_null()
 }
 
 /// `reactor->iouring_interrupt_handler`: harvest the completions.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_uring_interrupt(_reactor: *mut c_void) {
-    let engine = swr_v1_uring_current();
+fn interrupt() {
+    let engine = current();
     if !engine.is_null() {
         // SAFETY: the thread's live engine, from the event loop.
-        unsafe { swr_v1_uring_wakeup(engine) };
+        unsafe { uring::wakeup(engine) };
     }
 }
 
+/// `Iouring::waitpid`.
+///
+/// # Safety
+/// `status` is valid.
+unsafe fn waitpid(
+    pid: libc::pid_t,
+    status: *mut c_int,
+    options: c_int,
+    timeout: f64,
+) -> libc::pid_t {
+    // SAFETY: the caller's contract.
+    unsafe { uring::waitpid(&HOST, pid, status, options, timeout) }
+}
+
 /// The thread's engine, or null before the first request (`SwooleTG.iouring`).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_uring_current() -> *mut Uring {
+fn current() -> *mut Uring {
     // SAFETY: null or the thread's live instance.
     unsafe { INSTANCE.get().as_ref() }.map_or(ptr::null_mut(), |iouring| iouring.engine)
+}
+
+/// `Co::stats()`'s `io_uring` counts once the thread has an engine: requests in
+/// flight, requests waiting for room in the ring, and the submission queue's use
+/// in percent.
+#[must_use]
+pub fn stats() -> Option<(u32, usize, f32)> {
+    // SAFETY: null or the thread's live engine, read with no other access.
+    unsafe { current().as_ref() }.map(|engine| {
+        (
+            engine.task_num(),
+            engine.waiting_num(),
+            engine.sq_usage_percent(),
+        )
+    })
+}
+
+/// `Iouring::futex_wait` on `word`, in a coroutine.
+#[must_use]
+pub fn futex_wait(word: &AtomicU32) -> c_int {
+    // SAFETY: the word outlives the request, which completes before this returns.
+    unsafe { uring::futex_wait(&HOST, word.as_ptr()) }
+}
+
+/// `Iouring::futex_wakeup` on `word`, in a coroutine.
+#[must_use]
+pub fn futex_wakeup(word: &AtomicU32) -> c_int {
+    // SAFETY: as in `futex_wait`.
+    unsafe { uring::futex_wakeup(&HOST, word.as_ptr()) }
 }

@@ -17,7 +17,7 @@ use swoole_rs_buffer::string::delete_string;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, SocketRecord, cpp_socket_what_event_want, reactor_upstream};
+use swoole_rs_reactor::{Event, SocketRecord, reactor_upstream, what_event_want};
 use swoole_rs_tls::upstream as tls;
 use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
 
@@ -707,8 +707,7 @@ impl ThreadRecord {
                 dispatch_count: 0,
                 pipe_command: core::ptr::null_mut(),
                 heartbeat_timer: core::ptr::null_mut(),
-                // SAFETY: no preconditions.
-                bus: unsafe { crate::pool_native::swr_v1_bus_create(size) },
+                bus: Box::into_raw(swoole_rs_bus::MessageBus::create(size)).cast(),
                 allocator,
             })
             .collect();
@@ -724,8 +723,8 @@ impl ThreadRecord {
         // SAFETY: as the caller guarantees.
         let threads = unsafe { Box::from_raw(threads) };
         for thread in &threads {
-            // SAFETY: the thread's own bus, freed once.
-            unsafe { crate::pool_native::swr_v1_bus_free(thread.bus) };
+            // SAFETY: the thread's own bus, `new_array` boxed, freed once.
+            drop(unsafe { Box::from_raw(thread.bus.cast::<swoole_rs_bus::MessageBus>()) });
         }
     }
 }
@@ -877,7 +876,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CC_WATCH_WRITE => {
             // SAFETY: the context's live socket.
-            let events = unsafe { cpp_socket_what_event_want(o.ctx.sock, SW_EVENT_WRITE) };
+            let events = what_event_want(unsafe { &*o.ctx.sock }, SW_EVENT_WRITE);
             // arg: the socket is out of the reactor
             change(o.ctx.sock, u32::from(arg == 0), events)
         }
@@ -965,7 +964,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_RESUME_READ,
         OP_WR_TIMER_DELAY,
     };
-    // SAFETY: crates/timer's, native/reactor's and crates/tls's, under their upstream symbols.
+    // SAFETY: crates/timer's and native/reactor's, under their upstream symbols.
     unsafe extern "C-unwind" {
         #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
         fn swoole_timer_delay(node: *mut c_void, delay_ms: c_long);
@@ -975,11 +974,6 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         fn swoole_event_wait() -> c_int;
         #[link_name = "_Z17swoole_event_freev"]
         fn swoole_event_free() -> c_int;
-        #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
-        fn reactor_close(reactor: *mut c_void, socket: *mut SocketRecord) -> c_int;
-        /// crates/ports' `ListenPort::init_protocol`.
-        #[link_name = "_ZN6swoole10ListenPort13init_protocolEv"]
-        fn init_protocol(port: *mut c_void);
     }
     Some(match op {
         OP_DTLS_ACCEPT => {
@@ -1031,8 +1025,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 reactor.set_handler(fd_type, event, handler);
             }
             for &port in o.tables().ports() {
-                // SAFETY: one of the server's live ports.
-                unsafe { init_protocol(port) };
+                (crate::port_config::methods().init_protocol)(port);
             }
             0
         }
@@ -1072,7 +1065,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             conn.socket = core::ptr::null_mut();
             conn.object = core::ptr::null_mut();
             // SAFETY: the closing socket, which nothing uses afterwards.
-            sign(unsafe { reactor_close(o.ctx.reactor, o.ctx.sock) })
+            sign(unsafe { swoole_rs_tls::reactor_write::reactor_close(o.ctx.reactor, o.ctx.sock) })
         }
         // SAFETY: per the caller.
         op => return unsafe { crate::thread_ops::answer(o.ctx, o.state, op, arg) },

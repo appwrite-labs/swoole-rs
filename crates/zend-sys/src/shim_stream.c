@@ -1,22 +1,14 @@
 #include "shim.h"
-/* Swoole's coroutine socket streams (crates/phpruntime). */
+/* Swoole's coroutine socket streams (crates/phpruntime). Stays C (docs/zend.md,
+ * What stays C): bailout (notifiers, frees and factories run PHP), globals
+ * (FG(default_socket_timeout), EG(active)), version (has_buffered_data from 8.3,
+ * the STREAMS_DC debug ABI, timeval's field widths) and allocator
+ * (php_stream_alloc: on a debug PHP its _rel form needs the caller's STREAMS_DC). */
 #include "shim_stream.h"
 #include "ext/standard/file.h"
 
-php_stream *swr_zend_stream_alloc(const php_stream_ops *ops, void *abstract, const char *persistent_id) {
-    return php_stream_alloc_rel(ops, abstract, persistent_id, "r+");
-}
-
 void swr_zend_stream_close(php_stream *stream) {
     php_stream_close(stream);
-}
-
-bool swr_zend_stream_eof(const php_stream *stream) {
-    return stream->eof;
-}
-
-void swr_zend_stream_set_eof(php_stream *stream) {
-    stream->eof = 1;
 }
 
 bool swr_zend_stream_buffered(const php_stream *stream) {
@@ -26,10 +18,6 @@ bool swr_zend_stream_buffered(const php_stream *stream) {
     (void) stream;
     return false;
 #endif
-}
-
-void swr_zend_stream_avoid_blocking(php_stream *stream) {
-    stream->flags |= PHP_STREAM_FLAG_AVOID_BLOCKING;
 }
 
 int swr_zend_stream_progress(php_stream *stream, size_t bytes) {
@@ -88,32 +76,8 @@ php_stream *swr_zend_stream_from_zval(zval *value) {
     return stream;
 }
 
-zend_off_t swr_zend_stream_buffered_bytes(const php_stream *stream) {
-    return stream->writepos - stream->readpos;
-}
-
-void swr_zend_stream_set_array(zval *value, zend_array *array) {
-    ZVAL_ARR(value, array);
-}
-
 zend_long swr_zend_stream_default_timeout(void) {
     return FG(default_socket_timeout);
-}
-
-zend_string *swr_zend_stream_empty_string(void) {
-    return ZSTR_EMPTY_ALLOC();
-}
-
-int swr_zend_stream_xport_op(const php_stream_xport_param *param) {
-    return param->op;
-}
-
-unsigned swr_zend_stream_xport_flags(const php_stream_xport_param *param) {
-    return param->want_addr | param->want_textaddr << 1 | param->want_errortext << 2 | param->how << 3;
-}
-
-int swr_zend_stream_crypto_op(const php_stream_xport_crypto_param *param) {
-    return param->op;
 }
 
 int swr_zend_try_stream_free(php_stream *stream, int flags) {
@@ -155,7 +119,7 @@ php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const ch
 
 int swr_zend_try_stream_alloc(const php_stream_ops *ops, void *abstract, const char *persistent, php_stream **stream) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *stream = php_stream_alloc_rel(ops, abstract, persistent, "r+"); }
+    SWR_ZEND_TRY { *stream = php_stream_alloc(ops, abstract, persistent, "r+"); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

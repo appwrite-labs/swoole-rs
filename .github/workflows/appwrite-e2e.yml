@@ -1,7 +1,7 @@
 name: Appwrite e2e
 # Appwrite's e2e service suites on Appwrite images built from the two base images of
-# appwrite-base.yml (stock Swoole and the all-modules hybrid), at one Appwrite commit.
-# A test that passes on stock and fails on the hybrid fails the run; tests that fail
+# appwrite-base.yml (stock Swoole and the Cargo build), at one Appwrite commit.
+# A test that passes on stock and fails on the Cargo build fails the run; tests that fail
 # on stock are listed, not gated (tools/appwrite_e2e.py).
 on:
   workflow_dispatch:
@@ -26,12 +26,12 @@ jobs:
 
   appwrite:
     needs: base
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        variant: [hybrid, upstream]
+        variant: [cargo, upstream]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,7 +60,7 @@ jobs:
 
   services:
     if: inputs.suite != 'bench'
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     outputs:
       services: ${{ steps.list.outputs.services }}
     steps:
@@ -72,12 +72,12 @@ jobs:
   e2e:
     name: e2e / ${{ matrix.service.name }} / ${{ matrix.variant }}
     needs: [appwrite, services]
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        variant: [hybrid, upstream]
+        variant: [cargo, upstream]
         service: ${{ fromJSON(needs.services.outputs.services) }}
     env:
       COMPOSE_FILE: docker-compose.yml:docker-compose.override.yml
@@ -167,7 +167,7 @@ jobs:
   # Endpoint load on both images, alternating variants on one runner over three trials (#88).
   bench:
     needs: appwrite
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 40
     env:
       COMPOSE_FILE: docker-compose.yml:docker-compose.override.yml
@@ -197,7 +197,7 @@ jobs:
       - name: Pull images
         working-directory: appwrite
         run: |
-          for variant in hybrid upstream; do
+          for variant in cargo upstream; do
             docker pull --quiet ghcr.io/${{ github.repository }}/appwrite-e2e:${{ github.sha }}-$variant
           done
           docker compose pull --quiet --ignore-buildable
@@ -205,7 +205,7 @@ jobs:
         working-directory: appwrite
         run: |
           for trial in 1 2 3; do
-            for variant in hybrid upstream; do
+            for variant in cargo upstream; do
               docker tag ghcr.io/${{ github.repository }}/appwrite-e2e:${{ github.sha }}-$variant appwrite-dev
               docker compose up -d --quiet-pull --wait
               timeout 120 sh -c 'until curl -sf http://localhost/v1/health/version >/dev/null; do sleep 1; done'
@@ -225,7 +225,7 @@ jobs:
   compare:
     needs: e2e
     if: always() && contains(fromJSON('["success", "failure"]'), needs.e2e.result)
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

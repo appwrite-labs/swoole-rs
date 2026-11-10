@@ -7,16 +7,13 @@ name: ZTS
 # Called by the merge tier, and by the PR tier when a PR touches thread or ZTS code.
 on:
   workflow_call:
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
 defaults:
   run:
     shell: bash
 
 jobs:
   phpt:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -28,41 +25,31 @@ jobs:
           save-if: false
       - run: rm -rf target/ext target/upstream target/thirdparty target/native-core
       - uses: ./.github/actions/install
-      # Restored only: the pinned reference is rebuilt for ZTS below, never saved.
-      - uses: actions/cache/restore@v4
-        with:
-          path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - uses: actions/cache@v4
         with:
           path: target/php-zts
           key: php-zts-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
       - run: .devcontainer/php.sh target/php-zts --enable-zts
-      # ZTS objects never hit the shared ccache (other flags), so this job keeps its own,
-      # saved on main only, like every cache (#1521).
-      - uses: actions/cache/restore@v4
+      - id: upstream
+        uses: ./.github/actions/upstream
         with:
-          path: .ccache
-          key: ccache-zts-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            ccache-zts-${{ runner.os }}-
-            ccache-${{ runner.os }}-
+          args: --php-config ${{ github.workspace }}/target/php-zts/bin/php-config --phpize ${{ github.workspace }}/target/php-zts/bin/phpize --configure=--enable-swoole-thread
+          php: ${{ hashFiles('.devcontainer/php.sh') }}
       - run: cargo fetch --locked
       # The control is the pinned reference itself, unpatched.
       - run: |
-          php="--php-config $PWD/target/php-zts/bin/php-config --configure=--enable-swoole-thread"
-          python3 tools/build_upstream.py $php --phpize $PWD/target/php-zts/bin/phpize
-          python3 tools/build_ext.py $php
+          python3 tools/build_ext.py --php-config $PWD/target/php-zts/bin/php-config --configure=--enable-swoole-thread
           mkdir -p target/phpt
-          cp -L target/upstream/src/modules/swoole.so target/phpt/upstream.so
+          cp ${{ steps.upstream.outputs.library }} target/phpt/upstream.so
           cp target/ext/swoole.so target/phpt/cargo.so
           for engine in upstream cargo; do target/php-zts/bin/php -n -d extension=$PWD/target/phpt/$engine.so --ri swoole | grep -E '^thread '; done
           python3 corpus/upstream/inventory.py --output target/phpt/manifest.json
-      - if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: .ccache
-          key: ccache-zts-${{ runner.os }}-${{ github.sha }}
+      # On a PR, upstream's report comes from main's latest run of this job while nothing it
+      # depends on has changed since (tools/ci.py phpt-baseline); the merge tier runs both engines.
+      - if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: corpus/upstream/baseline.sh zts target/php-zts/bin/php
       - name: Composed whole-thread escape scopes
         run: |
           python3 tests/modules/phphelpers/exit_guard.py --php "$PWD/target/php-zts/bin/php" \
@@ -74,6 +61,7 @@ jobs:
           options="--manifest target/phpt/manifest.json --timeout 30 --php $PWD/target/php-zts/bin/php"
           mkdir -p target/phpt/zts
           for engine in upstream cargo; do
+            [ ! -f target/phpt/zts/$engine.json ] || continue  # the baseline's
             python3 corpus/upstream/run.py $options $families --engine $engine=target/phpt/$engine.so \
               --output target/phpt/zts/$engine.json || [ $? -eq 1 ]
           done

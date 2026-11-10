@@ -23,9 +23,9 @@ swoole-rs-clients = { path = "../clients" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-coroutine = { path = "../coroutine" }
 swoole-rs-error = { path = "../error" }
-swoole-rs-http = { path = "../http" }
+swoole-rs-http-ffi = { path = "../http-ffi" }
 swoole-rs-ossupport = { path = "../ossupport" }
-swoole-rs-protocols = { path = "../protocols" }
+swoole-rs-protocols-ffi = { path = "../protocols-ffi" }
 swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-tls = { path = "../tls" }
 openssl-sys = { version = "=0.9.117", optional = true }

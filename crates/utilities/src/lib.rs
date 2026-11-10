@@ -9,17 +9,14 @@
 mod frontdoor;
 pub use frontdoor::*;
 mod helpers;
-pub use helpers::{swr_v1_utils_strlchr, swr_v1_utils_timezone};
+pub use helpers::{swr_v1_utils_strlchr, timezone};
 mod logger;
 mod sni;
 pub use sni::sni_wildcard_matches;
 pub mod misc;
 mod wait_registry;
 pub use logger::*;
-pub use wait_registry::{
-    swr_v1_utils_registry_wait, swr_v1_utils_registry_wakeup, swr_v1_utils_wait_registry_init,
-    swr_v1_utils_wait_registry_size,
-};
+pub use wait_registry::{swr_v1_utils_wait_registry_init, swr_v1_utils_wait_registry_size};
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU32, Ordering};

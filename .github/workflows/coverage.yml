@@ -13,8 +13,6 @@ on:
   pull_request:
     paths: [tools/coverage.py, .github/workflows/coverage.yml]
 env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 500M
   LLVM_PROFILE_FILE: ${{ github.workspace }}/target/coverage/profraw/%4m.profraw
 concurrency:
   group: coverage-${{ github.ref }}
@@ -25,7 +23,7 @@ defaults:
 
 jobs:
   build:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 40
     outputs:
       php: ${{ steps.install.outputs.php }}
@@ -44,11 +42,6 @@ jobs:
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
       - if: steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
-      - uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
       - run: cargo fetch --locked
       # The services phpt-build's cargo engine has. As `cargo --target`, the build target
       # keeps build scripts and proc macros uninstrumented.
@@ -68,7 +61,7 @@ jobs:
 
   phpt:
     needs: build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -162,7 +155,7 @@ jobs:
   # PHPUnit suite, set up as the merge tier's library job sets it up.
   apps:
     needs: build
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -175,6 +168,8 @@ jobs:
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          # Only the pinned tests are read here, and those don't change with the build script.
+          restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
         with:
@@ -209,7 +204,7 @@ jobs:
   report:
     needs: [build, phpt, apps]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

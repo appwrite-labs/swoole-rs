@@ -8,7 +8,7 @@ use crate::{EXEC_NEEDS_COROUTINE, Multi, swr_v1_curl_get_handle};
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
 use std::ptr::{self, NonNull};
-use swoole_rs_coroutine::{Coroutine, RC_CANCELED, Scheduler};
+use swoole_rs_coroutine::{Coroutine, RC_CANCELED, scheduler};
 use swoole_rs_curl_sys::{CURL, CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
 use swoole_rs_reactor::{SocketRecord, event_api, reactor_upstream::prepared};
 
@@ -23,9 +23,8 @@ const CO_OUT_OF_COROUTINE: c_int = 10001;
 const CO_HAS_BEEN_BOUND: c_int = 10002;
 
 // SAFETY: native/timer/timer.cc's,
-// crates/coroutine's, crates/timer's and crates/tls's upstream functions.
+// crates/coroutine's and crates/timer's upstream functions.
 unsafe extern "C-unwind" {
-    fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
     fn swr_v1_timer_add_plain(
         msec: c_long,
         persistent: bool,
@@ -38,13 +37,6 @@ unsafe extern "C-unwind" {
     fn swoole_timer_is_available() -> bool;
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free_record(socket: *mut SocketRecord);
-}
-
-fn scheduler() -> *mut Scheduler {
-    // SAFETY: the address of this thread's scheduler.
-    unsafe { swr_v1_coroutine_scheduler_get() }.cast()
 }
 
 /// The reactor's handler for the cURL fd type: `BITMASK` happened on the
@@ -145,7 +137,7 @@ impl ReactorSocket {
         // SAFETY: as above.
         unsafe { (*self.record()).fd = -1 };
         // SAFETY: per the caller; with fd -1 it closes nothing.
-        unsafe { socket_free_record(self.record()) };
+        unsafe { swoole_rs_tls::upstream::socket_free(self.record()) };
     }
 }
 
@@ -217,7 +209,7 @@ pub(crate) unsafe fn defer(multi: *const Multi) {
     // SAFETY: per the caller, `SwooleTG.reactor` is live.
     let fields = unsafe { prepared(swoole_rs_corebase::thread_reactor()) }.fields;
     // SAFETY: the live reactor's fields.
-    unsafe { swoole_rs_reactor::defer(fields, deferred, multi.cast_mut().cast()) };
+    unsafe { swoole_rs_reactor::defer(fields, deferred, multi.cast_mut().cast(), None) };
 }
 
 /// `swoole_curl_multi_new`: a multi for `curl_multi_init`.

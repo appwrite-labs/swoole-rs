@@ -375,13 +375,12 @@ fn effect(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             }
         }
         OP_REAP_DETACHED => {
-            let reap = registry::swr_v1_process_worker_registry_reap_detached;
             // SAFETY: the server's live registry.
-            return Some(u64::from(unsafe { reap(registry, pid_of(arg)) }));
+            return Some(u64::from(unsafe { (*registry).reap_detached(pid_of(arg)) }));
         }
         OP_UNREGISTER_PID => {
             // SAFETY: the server's live registry.
-            unsafe { registry::swr_v1_process_worker_registry_unregister(registry, pid_of(arg)) };
+            unsafe { (*registry).unregister(pid_of(arg)) };
         }
         OP_HAS_COMMAND => {
             let id = i32::from(ctx.task().info.server_fd);
@@ -424,9 +423,8 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let pid = match op {
         OP_SPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker_at(arg).cast()),
         OP_SPAWN_USER_WORKER => {
-            let pending = registry::swr_v1_process_worker_registry_pending_data;
             // SAFETY: the server's live registry.
-            let pending = unsafe { pending(ctx.registry()) };
+            let pending = unsafe { (*ctx.registry()).pending().as_ptr() };
             // The manager spawns the pending workers by index, below their count.
             let slot = pending.wrapping_add(index(arg));
             // SAFETY: as above.
@@ -434,8 +432,7 @@ fn child(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             spawn(RUN_SPAWN_USER_WORKER, worker)
         }
         OP_WORKER_BY_PID => {
-            // SAFETY: the context's live server.
-            ctx.worker = unsafe { worker_methods::get_worker_by_pid(serv, pid_of(arg)) };
+            ctx.worker = worker_methods::get_worker_by_pid(ctx.server(), pid_of(arg));
             return Some(u64::from(!ctx.worker.is_null()));
         }
         OP_CHECK_EXIT_STATUS => {
@@ -525,9 +522,8 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(ctx.stop.worker_id)
         }
         OP_DETACH_STOPPED => {
-            let detach = registry::swr_v1_process_worker_registry_detach;
             // SAFETY: the server's live registry.
-            unsafe { detach(ctx.registry(), ctx.stop.pid) };
+            unsafe { (*ctx.registry()).detach(ctx.stop.pid) };
             0
         }
         OP_COMMAND_REPLY => {

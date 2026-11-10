@@ -1,12 +1,12 @@
 //! What the Server's other bindings ask of its PHP object: the running server's
 //! object zval, a Server object's `Server`, its ports' callbacks and a
-//! request's payload (were ext-src/swoole_server.cc's `php_swoole_server_*`).
-//! They keep their upstream symbols for crates/phphttp and crates/phpredis.
+//! request's payload (were ext-src/swoole_server.cc's `php_swoole_server_*`),
+//! for crates/phphttp, crates/phphttp2 and crates/phpredis too.
 use crate::port::PortProperty;
 use crate::server::{ServerData, THREAD};
 use std::{
     cell::UnsafeCell,
-    ffi::{CStr, c_char, c_int, c_long, c_void},
+    ffi::{CStr, CString, c_int, c_long, c_void},
     mem::MaybeUninit,
     ptr,
     sync::atomic::Ordering,
@@ -21,17 +21,14 @@ use swoole_rs_process::{
 };
 use swoole_rs_server::{port_config, server_methods, view};
 use swoole_rs_zend::{
-    Object, object_of, string,
+    Object, bailout, object_of, string,
     sys::{
-        swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_empty_string,
-        swr_zval_stringl, zend_string, zval,
+        swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zend_string, zval,
     },
-    value::set_str,
+    value::{empty_string, set_str},
 };
 
 unsafe extern "C" {
-    /// `MessageBus::move_packet` (crates/protocols).
-    fn swr_v1_bus_move_packet(bus: *mut c_void) -> *mut c_char;
     /// `String::pop` (crates/buffer).
     #[link_name = "_ZN6swoole6String3popEm"]
     fn string_pop(string: *mut c_void, init_size: usize) -> *mut u8;
@@ -61,8 +58,8 @@ thread_local! {
 }
 
 /// `php_swoole_server_zval_ptr`: the running server's object zval (`IS_UNDEF` until bound).
-#[unsafe(export_name = "_Z26php_swoole_server_zval_ptrPN6swoole6ServerE")]
-pub extern "C" fn php_swoole_server_zval_ptr(_serv: *mut c_void) -> *mut zval {
+#[must_use]
+pub fn php_swoole_server_zval_ptr() -> *mut zval {
     if THREAD.load(Ordering::Relaxed) {
         THREAD_INSTANCE.with(|slot| slot.0.get().cast())
     } else {
@@ -73,8 +70,7 @@ pub extern "C" fn php_swoole_server_zval_ptr(_serv: *mut c_void) -> *mut zval {
 /// `php_swoole_server_get_ptr`: the `Server` of a Server object, or null.
 /// # Safety
 /// `zobject` is a live Server object zval.
-#[unsafe(export_name = "_Z25php_swoole_server_get_ptrP12_zval_struct")]
-pub unsafe extern "C" fn php_swoole_server_get_ptr(zobject: *mut zval) -> *mut c_void {
+pub unsafe fn php_swoole_server_get_ptr(zobject: *mut zval) -> *mut c_void {
     // SAFETY: per the caller.
     let object = unsafe { object_of(zobject) };
     // SAFETY: C++ and Rust allocate Servers as `Object<ServerData>`.
@@ -102,30 +98,23 @@ fn port_callback(port: *mut c_void, kind: c_int) -> *mut c_void {
 /// `php_swoole_server_isset_callback`: the port, or the primary port, has callback `kind`.
 /// # Safety
 /// `serv` is a live Server and `port` null or one of its ports.
-#[unsafe(export_name = "_Z32php_swoole_server_isset_callbackPN6swoole6ServerEPNS_10ListenPortEi")]
-pub unsafe extern "C" fn php_swoole_server_isset_callback(
-    serv: *mut c_void,
+pub unsafe fn php_swoole_server_isset_callback(
+    serv: view::Server<'_>,
     port: *mut c_void,
     kind: c_int,
 ) -> bool {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
     let primary = serv.port_at(0);
     !port_callback(port, kind).is_null() || !port_callback(primary, kind).is_null()
 }
 
 /// `php_swoole_server_get_callback`: callback `kind` of the port listening on
 /// `server_fd`, else the primary port's; null without that port.
-/// # Safety
-/// `serv` is a live Server.
-#[unsafe(export_name = "_Z30php_swoole_server_get_callbackPN6swoole6ServerEii")]
-pub unsafe extern "C" fn php_swoole_server_get_callback(
-    serv: *mut c_void,
+#[must_use]
+pub fn php_swoole_server_get_callback(
+    serv: view::Server<'_>,
     server_fd: c_int,
     kind: c_int,
 ) -> *mut c_void {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
     let port = serv.port_by_server_fd(server_fd);
     if port.is_null() {
         return ptr::null_mut();
@@ -139,11 +128,8 @@ pub unsafe extern "C" fn php_swoole_server_get_callback(
 
 /// `serv->get_worker_message_bus()->move_packet()`.
 fn move_packet(serv: view::Server<'_>) {
-    let bus = crate::dispatch::message_bus(serv);
-    // SAFETY: a `MessageBus` starts with its `swr_bus *`.
-    let bus = unsafe { *bus.cast::<*mut c_void>() };
     // SAFETY: the worker's live bus; the packet is now the caller's.
-    unsafe { swr_v1_bus_move_packet(bus) };
+    unsafe { swoole_rs_server::bus_move_packet(crate::dispatch::message_bus(serv)) };
 }
 
 /// `zend::assign_zend_string_by_val`: the zend string whose bytes start at
@@ -163,20 +149,15 @@ unsafe fn assign_by_val(zdata: *mut zval, data: *mut u8, length: usize) {
 /// message bus's packet or the connection's receive buffer when it holds them.
 /// # Safety
 /// `serv` is the running server, `req` its live `RecvData`, `zdata` writable.
-#[unsafe(export_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE")]
-pub unsafe extern "C" fn php_swoole_get_recv_data(
-    serv: *mut c_void,
-    zdata: *mut zval,
-    req: *mut c_void,
-) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
+pub unsafe fn php_swoole_get_recv_data(serv: *mut c_void, zdata: *mut zval, req: *mut c_void) {
+    // SAFETY: per the caller.
     let serv = unsafe { view::Server::from_raw(serv) };
     // SAFETY: per the caller.
     let req = unsafe { &*req.cast::<RecvData>() };
     let (flags, length) = (req.info.flags, req.info.len as usize);
     if length == 0 {
         // SAFETY: per the caller.
-        unsafe { swr_zval_empty_string(zdata) };
+        unsafe { set_str(zdata, empty_string()) };
     } else if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
         // SAFETY: an OBJ_PTR payload is the bus's packet, a zend string.
         unsafe { assign_by_val(zdata, req.data, length) };
@@ -199,22 +180,16 @@ pub unsafe extern "C" fn php_swoole_get_recv_data(
     }
 }
 
-/// `php_swoole_create_dir`: 0 if `path` exists or was made with its parents, else -1.
-/// # Safety
-/// `path` is NUL-terminated after `length` bytes.
-#[unsafe(export_name = "_Z21php_swoole_create_dirPKcm")]
+/// `php_swoole_create_dir`: whether `path`, up to its first NUL as C reads it,
+/// exists or was made with its parents.
 #[must_use]
-pub unsafe extern "C" fn php_swoole_create_dir(path: *const c_char, _length: usize) -> c_int {
-    // SAFETY: per the caller.
-    if unsafe { libc::access(path, libc::F_OK) } == 0 {
-        return 0;
-    }
-    // SAFETY: per the caller.
-    if unsafe { swr_zend_mkdir_recursive(path) } {
-        0
-    } else {
-        -1
-    }
+pub fn php_swoole_create_dir(path: &[u8]) -> bool {
+    let path = path.split(|&b| b == 0).next().unwrap_or_default();
+    let path = CString::new(path).unwrap_or_default();
+    // SAFETY: a NUL-terminated path.
+    let exists = unsafe { libc::access(path.as_ptr(), libc::F_OK) } == 0;
+    // SAFETY: as above.
+    exists || unsafe { swr_zend_mkdir_recursive(path.as_ptr()) }
 }
 
 /// `php_swoole_server_check_kernel_nobufs`: in a coroutine, pause 10 ms after a
@@ -234,18 +209,16 @@ fn check_kernel_nobufs(serv: view::Server<'_>, session_id: c_long) {
 pub(crate) unsafe fn send(serv: view::Server<'_>, fd: c_long, data: *mut zend_string) -> bool {
     // SAFETY: per the caller.
     let bytes = unsafe { string::bytes(data) };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::send takes a uint32_t length, as upstream's ZSTR_LEN narrowing"
-    )]
-    let length = bytes.len() as u32;
-    // SAFETY: per the caller; `length` bytes.
-    let sent = unsafe { server_methods::send(serv.raw(), fd, bytes.as_ptr().cast(), length) };
+    let sent = server_methods::send(serv, fd, bytes);
     if !sent
         && swoole_rs_corebase::log::last_error() == crate::lifecycle::SW_ERROR_OUTPUT_SEND_YIELD
     {
-        // SAFETY: per the caller.
-        return unsafe { crate::dispatch::php_swoole_server_send_yield(serv.raw(), fd, data) };
+        return crate::lifecycle::php_swoole_server_send_yield(serv, fd, bytes).unwrap_or_else(
+            |bailed| {
+                bailout::raise(Err(bailed));
+                false
+            },
+        );
     }
     check_kernel_nobufs(serv, fd);
     sent
@@ -259,7 +232,6 @@ const SW_ERROR_SERVER_WORKER_TERMINATED: c_int = 9003;
 
 /// `php_swoole_server_rshutdown`: a worker whose request ended (`exit()`,
 /// `die()` or a fatal error) drains its pipe, shuts down and logs why.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_server_rshutdown() {
     let serv = swoole_rs_corebase::swr_v1_core_server();
     let globals = worker_globals::thread_globals();

@@ -1,8 +1,11 @@
 # Timer queue ABI v1
 
 Declarations: `native/include/swoole_rs_timer.h` (15 exports). Feature value 4.
-Callers: `swoole::Timer` (`crates/timer/src/owner.rs`, see
-[ownership.md](../native/timer/ownership.md)) and `tests/modules/timer/kernel.cc`.
+Except `create`, `release` and `ids`, each export wraps a `Timer` method: the
+same name, but `select_next` for `next` and `stats` for `stats_get`. Callers:
+`tests/modules/timer/kernel.cc` and `native/timer/swoole_timer.h`'s reads;
+`swoole::Timer` (`crates/timer/src/owner.rs`, see
+[ownership.md](../native/timer/ownership.md)) calls the methods.
 
 ## Ownership
 
@@ -70,9 +73,10 @@ defaults to -1. ID 0 means no active node; real IDs start at 1.
   queue returns `CLOSING`. Returns `EMPTY` if the heap is empty, the head
   deadline is after the captured time, or the head was born in the current
   round (which blocks everything behind it, as upstream). Otherwise marks the
-  entry active and returns its view. Equal deadlines have no FIFO guarantee;
-  strict comparisons, left child on ties and swap-last removal reproduce the
-  upstream A/C/B order for three equal timers.
+  entry active and returns its view. Equal deadlines fire in upstream's order:
+  the heap ranks by deadline alone and sifts as `swoole::Heap` does, stopping on
+  a tie, so three equal timers run A/C/B. Insertion order (A/B/C) woke
+  coroutines in orders upstream never produces (api-fuzz, #2382; #2409).
 - **complete**: requires the exact active ID, otherwise `INVALID` with no change.
   A removed entry, closing queue or one-shot detaches that ID (even if the
   callback moved it off the head) with `RELEASE`. A retained repeat advances

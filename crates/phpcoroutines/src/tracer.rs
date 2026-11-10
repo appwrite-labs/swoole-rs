@@ -19,13 +19,13 @@ use std::{
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Call, bailout, handlers,
+    Call, Owned, OwnedArray, Value, ZString, bailout, handlers,
     string::bytes,
     sys::{
         self as z, swr_zend_json_encode, swr_zend_mm_observe, swr_zend_mm_observer,
         swr_zend_mm_unobserve, swr_zend_number_format, swr_zend_string_release,
-        swr_zend_tracer_lineno, swr_zend_try_write, swr_zval_try_addref, zend_execute_data,
-        zend_long, zend_observer_fcall_handlers, zend_string, zval,
+        swr_zend_tracer_lineno, swr_zend_try_write, zend_execute_data, zend_long,
+        zend_observer_fcall_handlers, zend_string, zval,
     },
     value,
 };
@@ -88,7 +88,8 @@ struct Leaks {
     points: HashMap<usize, Point, Hasher>,
     /// Live allocations per site.
     counters: HashMap<Vec<u8>, u32, Hasher>,
-    /// The first backtrace of each site that reached the threshold.
+    /// The first backtrace of each site that reached the threshold, released at
+    /// RSHUTDOWN (a plain zval, so `Leaks` has no drop glue that needs PHP).
     backtraces: HashMap<Vec<u8>, zval, Hasher>,
     rounds: usize,
     threshold: zend_long,
@@ -107,8 +108,8 @@ struct Profile {
     /// Each coroutine's open calls.
     stacks: HashMap<c_long, Vec<Prof>, Hasher>,
     root_path: Vec<u8>,
-    /// The trace events: a PHP array while profiling.
-    events: zval,
+    /// The trace events, while profiling.
+    events: Option<OwnedArray>,
 }
 
 per_thread! {
@@ -123,14 +124,8 @@ per_thread! {
         profiling: false,
         stacks: HashMap::with_hasher(BuildHasherDefault::new()),
         root_path: Vec::new(),
-        events: undef(),
+        events: None,
     });
-}
-
-/// An undefined zval (`IS_UNDEF`).
-const fn undef() -> zval {
-    // SAFETY: an all-zero zval is IS_UNDEF.
-    unsafe { mem::zeroed() }
 }
 
 /// `swoole_thread_get_native_id()`.
@@ -185,24 +180,21 @@ fn format_bytes(size: u64) -> String {
 }
 
 /// `zend_fetch_debug_backtrace(.., 0, options, 0)`.
-fn backtrace(options: i32) -> zval {
-    // SAFETY: an all-zero zval is IS_UNDEF, which Zend overwrites.
-    let mut trace: zval = unsafe { mem::zeroed() };
-    // SAFETY: a writable zval; Zend walks its own frames.
-    unsafe { z::zend_fetch_debug_backtrace(&raw mut trace, 0, options, 0) };
+fn backtrace(options: i32) -> Owned {
+    let trace = Owned::default();
+    // SAFETY: an undefined zval this owns; Zend walks its own frames.
+    unsafe { z::zend_fetch_debug_backtrace(trace.as_ptr(), 0, options, 0) };
     trace
 }
 
-/// `zend_trace_to_string(Z_ARRVAL_P(trace), false)`: a request string.
-/// # Safety
-/// `trace` is a live backtrace array.
-unsafe fn trace_to_string(trace: *const zval) -> *mut zend_string {
-    // SAFETY: per the caller, an array zval holds `arr`.
-    let value = unsafe { (*trace).value };
-    // SAFETY: as above.
-    let array = unsafe { value.arr };
+/// `zend_trace_to_string(Z_ARRVAL_P(trace), false)`: a request string, or
+/// `None` when `trace` is not an array.
+fn trace_to_string(trace: &Value) -> Option<ZString> {
+    let array = trace.array()?;
     // SAFETY: a live array.
-    unsafe { z::zend_trace_to_string(array, false) }
+    let text = unsafe { z::zend_trace_to_string(array.as_ptr(), false) };
+    // SAFETY: the new reference Zend returned.
+    Some(unsafe { ZString::from_raw(text) })
 }
 
 // --- leak detection ---------------------------------------------------------
@@ -230,7 +222,7 @@ impl Leaks {
     fn save_backtrace(&mut self, at: Option<Vec<u8>>) {
         if let Some(at) = at {
             let trace = backtrace(BACKTRACE_IGNORE_ARGS);
-            self.backtraces.insert(at, trace);
+            self.backtraces.insert(at, trace.into_zval());
         }
     }
 
@@ -365,15 +357,12 @@ fn report(threshold: zend_long) -> Result<(), bailout::Bailout> {
                 .borrow()
                 .backtraces
                 .get(&at)
-                // SAFETY: a kept backtrace array.
-                .map(|trace| unsafe { trace_to_string(trace) })
+                // SAFETY: a kept backtrace, live until RSHUTDOWN.
+                .and_then(|trace| unsafe { Value::from_ptr(trace) })
+                .and_then(trace_to_string)
         });
         if let Some(trace) = trace {
-            // SAFETY: a live string.
-            let written = write(unsafe { bytes(trace) });
-            // SAFETY: the reference trace_to_string returned.
-            unsafe { swr_zend_string_release(trace) };
-            written?;
+            write(trace.bytes())?;
         }
         LEAKS.with(|leaks| leaks.borrow_mut().points.retain(|_, point| point.at != at));
         write(b"\n")?;
@@ -409,22 +398,8 @@ fn profiling() -> bool {
 }
 
 /// `profiling_begin`: open a call of a user function.
-/// # Safety
-/// `frame` is the live frame of a user function.
-unsafe fn profiling_begin(frame: *mut zend_execute_data) {
-    // SAFETY: per the caller.
-    let func = unsafe { (*frame).func };
-    // SAFETY: a user function's common header.
-    let common = unsafe { &*func };
-    // SAFETY: as above.
-    let common = unsafe { &common.common };
-    let mut name = Vec::new();
-    if !common.scope.is_null() {
-        // SAFETY: a live class entry and its name.
-        name.extend_from_slice(c_bytes(unsafe { (*common.scope).name }));
-        name.extend_from_slice(b"::");
-    }
-    name.extend_from_slice(c_bytes(common.function_name));
+fn profiling_begin(func: Func<'_>) {
+    let name = func.name();
     let began_at = now_us();
     let cid = coroutine_id();
     PROFILE.with(|profile| {
@@ -444,7 +419,11 @@ unsafe fn profiling_begin(frame: *mut zend_execute_data) {
 /// `ZSTR_VAL` up to its first NUL, as `%s` and `std::string(const char *)` read it.
 fn c_bytes<'a>(string: *const zend_string) -> &'a [u8] {
     // SAFETY: a live string.
-    let all = unsafe { bytes(string) };
+    until_nul(unsafe { bytes(string) })
+}
+
+/// `all` up to its first NUL.
+fn until_nul(all: &[u8]) -> &[u8] {
     all.split(|&b| b == 0).next().unwrap_or(all)
 }
 
@@ -463,55 +442,27 @@ fn profiling_end() {
             name.extend_from_slice(&prof.file_pos);
             name.push(b')');
         }
-        // SAFETY: an all-zero zval is IS_UNDEF, which array_init overwrites.
-        let mut event: zval = unsafe { mem::zeroed() };
-        let event_ptr = &raw mut event;
-        // SAFETY: a writable zval.
-        unsafe { value::array_init(event_ptr) };
-        add_bytes(event_ptr, c"name", &name);
-        add_bytes(event_ptr, c"ph", b"X");
-        add_bytes(event_ptr, c"cat", b"FEE");
+        let mut event = OwnedArray::default();
+        event.insert_bytes(b"name", Some(&name));
+        event.insert_bytes(b"ph", Some(b"X".as_slice()));
+        event.insert_bytes(b"cat", Some(b"FEE".as_slice()));
         #[expect(clippy::cast_precision_loss, reason = "upstream's double")]
-        add_double(event_ptr, c"ts", prof.began_at as f64);
+        event.insert_double(b"ts", prof.began_at as f64);
         #[expect(clippy::cast_precision_loss, reason = "upstream's double")]
-        add_double(event_ptr, c"dur", (ended_at - prof.began_at) as f64);
-        // SAFETY: a live array.
-        unsafe { value::add_long(event_ptr, c"pid", native_thread_id()) };
-        // SAFETY: a live array.
-        unsafe { value::add_long(event_ptr, c"tid", cid) };
-        // SAFETY: the events array is live while profiling.
-        let events = unsafe { profile.events.value.arr };
-        // SAFETY: a live array; it takes the event.
-        unsafe { z::zend_hash_next_index_insert(events, event_ptr) };
+        event.insert_double(b"dur", (ended_at - prof.began_at) as f64);
+        event.insert_long(b"pid", native_thread_id());
+        event.insert_long(b"tid", cid);
+        if let Some(events) = profile.events.as_mut() {
+            events.push(event.into_owned());
+        }
     });
-}
-
-fn add_bytes(array: *mut zval, key: &CStr, text: &[u8]) {
-    // SAFETY: a live array; Zend copies the key and the bytes.
-    unsafe {
-        z::add_assoc_stringl_ex(
-            array,
-            key.as_ptr(),
-            key.count_bytes(),
-            text.as_ptr().cast(),
-            text.len(),
-        );
-    }
-}
-
-fn add_double(array: *mut zval, key: &CStr, number: f64) {
-    // SAFETY: a live array; Zend copies the key.
-    unsafe { z::add_assoc_double_ex(array, key.as_ptr(), key.count_bytes(), number) };
 }
 
 /// `profiling_clear`.
 fn profiling_clear() {
     PROFILE.with(|profile| {
         let mut profile = profile.borrow_mut();
-        // SAFETY: the events array or UNDEF/NULL, which it ignores.
-        unsafe { z::zval_ptr_dtor(&raw mut profile.events) };
-        // SAFETY: an all-zero zval is IS_UNDEF; upstream's ZVAL_NULL reads the same.
-        profile.events = unsafe { mem::zeroed() };
+        profile.events = None;
         profile.stacks.clear();
         profile.profiling = false;
     });
@@ -524,8 +475,7 @@ fn prof_begin(call: &Call) {
     }
     PROFILE.with(|profile| {
         let mut profile = profile.borrow_mut();
-        // SAFETY: a writable zval holding nothing (cleared after each profile).
-        unsafe { value::array_init(&raw mut profile.events) };
+        profile.events = Some(OwnedArray::default());
         profile.profiling = true;
     });
     let Ok(options) = call.arity(0, 1).and_then(|()| call.array_opt(1)) else {
@@ -556,41 +506,20 @@ fn prof_begin(call: &Call) {
     call.set_bool(true);
 }
 
-/// `zend::array_set(array, key, value)`: the array takes a new reference.
-/// # Safety
-/// `array` is a live array zval and `value` a live zval.
-unsafe fn array_set(array: *mut zval, key: &CStr, value: *mut zval) {
-    // SAFETY: per the caller.
-    unsafe { swr_zval_try_addref(value) };
-    // SAFETY: per the caller; Zend copies the key.
-    unsafe { z::add_assoc_zval_ex(array, key.as_ptr(), key.count_bytes(), value) };
-}
-
 /// The profile as viztracer's JSON, or `None` when it cannot be encoded.
-fn trace_json() -> Option<*mut zend_string> {
+fn trace_json() -> Option<ZString> {
     PROFILE.with(|profile| {
-        let mut profile = profile.borrow_mut();
-        // SAFETY: all-zero zvals are IS_UNDEF, which array_init overwrites.
-        let (mut json, mut metadata) = (undef(), undef());
-        let (json_ptr, metadata_ptr) = (&raw mut json, &raw mut metadata);
-        // SAFETY: a writable zval.
-        unsafe { value::array_init(json_ptr) };
-        // SAFETY: live arrays.
-        unsafe { array_set(json_ptr, c"traceEvents", &raw mut profile.events) };
-        // SAFETY: a writable zval.
-        unsafe { value::array_init(metadata_ptr) };
-        add_bytes(metadata_ptr, c"version", b"0.17.1");
-        // SAFETY: a live array; Zend copies the key.
-        unsafe { z::add_assoc_bool_ex(metadata_ptr, c"overflow".as_ptr(), 8, false) };
-        // SAFETY: live arrays.
-        unsafe { array_set(json_ptr, c"viztracer_metadata", metadata_ptr) };
+        let profile = profile.borrow();
+        let mut json = OwnedArray::default();
+        json.insert_value(b"traceEvents", profile.events.as_ref()?);
+        let mut metadata = OwnedArray::default();
+        metadata.insert_bytes(b"version", Some(b"0.17.1".as_slice()));
+        metadata.insert_bool(b"overflow", false);
+        json.insert_value(b"viztracer_metadata", &metadata);
         // SAFETY: a live array of strings and numbers: no user code runs.
-        let encoded = unsafe { swr_zend_json_encode(json_ptr) };
-        // SAFETY: our references.
-        unsafe { z::zval_ptr_dtor(metadata_ptr) };
-        // SAFETY: as above; the events keep their own reference.
-        unsafe { z::zval_ptr_dtor(json_ptr) };
-        NonNull::new(encoded).map(NonNull::as_ptr)
+        let encoded = NonNull::new(unsafe { swr_zend_json_encode(json.as_ptr()) })?;
+        // SAFETY: the encoder's new string.
+        Some(unsafe { ZString::from_raw(encoded.as_ptr()) })
     })
 }
 
@@ -599,7 +528,7 @@ fn prof_end(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Ok(Some(file)) = call.arity(1, 1).and_then(|()| call.str(1)) else {
+    let Ok(Some(file)) = call.arity(1, 1).and_then(|()| call.zstr(1)) else {
         call.set_bool(false);
         return;
     };
@@ -607,12 +536,9 @@ fn prof_end(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(c_bytes(file));
-    // SAFETY: a live string.
-    let written = std::fs::write(path, unsafe { bytes(json) });
-    // SAFETY: the encoder's string.
-    unsafe { swr_zend_string_release(json) };
-    if written.is_err() {
+    let path =
+        <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(until_nul(file.bytes()));
+    if std::fs::write(path, json.bytes()).is_err() {
         call.set_bool(false);
         return;
     }
@@ -628,24 +554,66 @@ struct Span {
     switch_count: usize,
 }
 
-/// `&execute_data->func->internal_function.reserved[SPAN_SLOT]`.
-/// # Safety
-/// `frame` is the live frame of an internal function.
-unsafe fn span_slot(frame: *mut zend_execute_data) -> *mut *mut c_void {
-    // SAFETY: per the caller.
-    let func = unsafe { (*frame).func };
-    // SAFETY: an internal function's header.
-    let internal = unsafe { &raw mut (*func).internal_function };
-    // SAFETY: as above.
-    unsafe { &raw mut (*internal).reserved[SPAN_SLOT] }
+/// The function a live frame calls, which Zend keeps alive for the call.
+#[derive(Clone, Copy)]
+struct Func<'a> {
+    common: &'a z::_zend_function__bindgen_ty_1,
+    /// `internal_function.reserved[SPAN_SLOT]` of an internal function, else null.
+    span: *mut *mut c_void,
 }
 
-/// `blocking_detection_begin`.
-/// # Safety
-/// As [`span_slot`].
-unsafe fn blocking_begin(frame: *mut zend_execute_data) {
-    let task = context::current_task();
-    if task.is_null() {
+impl Func<'_> {
+    /// The function `frame` calls, unless it has none or no name.
+    /// # Safety
+    /// `frame` is a live frame, for the lifetime the result is used.
+    unsafe fn of(frame: *mut zend_execute_data) -> Option<Self> {
+        // SAFETY: per the caller.
+        let func = unsafe { (*frame).func };
+        if func.is_null() {
+            return None;
+        }
+        // `zend_function` is a union, so each member starts at its address.
+        let common = func.cast::<z::_zend_function__bindgen_ty_1>();
+        // SAFETY: a live function; every one starts with its common header.
+        let common = unsafe { &*common };
+        let span = if common.type_ == INTERNAL_FUNCTION {
+            let internal = func.cast::<z::zend_internal_function>();
+            // SAFETY: an internal function; only the address is taken.
+            unsafe { &raw mut (*internal).reserved[SPAN_SLOT] }
+        } else {
+            ptr::null_mut()
+        };
+        (!common.function_name.is_null()).then_some(Self { common, span })
+    }
+
+    fn internal(self) -> bool {
+        self.common.type_ == INTERNAL_FUNCTION
+    }
+
+    /// `Class::function`, or the bare function name.
+    fn name(self) -> Vec<u8> {
+        let mut name = Vec::new();
+        if !self.common.scope.is_null() {
+            // SAFETY: the function's live class entry.
+            name.extend_from_slice(c_bytes(unsafe { (*self.common.scope).name }));
+            name.extend_from_slice(b"::");
+        }
+        name.extend_from_slice(c_bytes(self.common.function_name));
+        name
+    }
+
+    fn profiles(self) -> bool {
+        profile() && profiling() && !self.internal()
+    }
+
+    fn detects_blocking(self) -> bool {
+        blocking_detection() && self.internal()
+    }
+}
+
+/// `blocking_detection_begin`, of an internal function.
+fn blocking_begin(func: Func<'_>) {
+    if context::current_task().is_none() || func.span.is_null() {
         return;
     }
     let began_at = now_us();
@@ -654,22 +622,19 @@ unsafe fn blocking_begin(frame: *mut zend_execute_data) {
         began_at,
         switch_count,
     }));
-    // SAFETY: per the caller.
-    let slot = unsafe { span_slot(frame) };
-    // SAFETY: as above.
-    unsafe { *slot = span.cast() };
+    // SAFETY: the internal function's reserved slot.
+    unsafe { *func.span = span.cast() };
 }
 
-/// `blocking_detection_end`: report the call when it ran longer than the
-/// threshold without switching coroutines.
-/// # Safety
-/// As [`span_slot`].
-unsafe fn blocking_end(frame: *mut zend_execute_data) {
+/// `blocking_detection_end`: report the internal function's call when it ran
+/// longer than the threshold without switching coroutines.
+fn blocking_end(func: Func<'_>) {
     let switches = context::watch_switches(false);
-    // SAFETY: per the caller.
-    let slot = unsafe { span_slot(frame) };
-    // SAFETY: as above.
-    let span = unsafe { mem::replace(&mut *slot, ptr::null_mut()) };
+    if func.span.is_null() {
+        return;
+    }
+    // SAFETY: the internal function's reserved slot.
+    let span = unsafe { mem::replace(&mut *func.span, ptr::null_mut()) };
     if span.is_null() {
         return;
     }
@@ -682,92 +647,51 @@ unsafe fn blocking_end(frame: *mut zend_execute_data) {
     }
     // SAFETY: Zend's number formatting.
     let duration = unsafe { swr_zend_number_format(duration) };
-    let mut trace = backtrace(0);
-    // SAFETY: a backtrace array.
-    let trace_text = unsafe { trace_to_string(&raw const trace) };
-    // SAFETY: our backtrace.
-    unsafe { z::zval_ptr_dtor(&raw mut trace) };
-    // SAFETY: per the caller.
-    let func = unsafe { (*frame).func };
-    // SAFETY: an internal function's header.
-    let common = unsafe { &*func };
-    // SAFETY: as above.
-    let common = unsafe { &common.common };
+    let trace_text = trace_to_string(&backtrace(0));
     let mut message = format!(
         " >>> [Detected blocking I/O in Coroutine#{}, internal function `",
         runtime::get_cid()
     )
     .into_bytes();
-    if !common.scope.is_null() {
-        // SAFETY: a live class entry and its name.
-        message.extend_from_slice(c_bytes(unsafe { (*common.scope).name }));
-        message.extend_from_slice(b"::");
-    }
-    message.extend_from_slice(c_bytes(common.function_name));
+    message.extend_from_slice(&func.name());
     message.extend_from_slice(b"()` blocked for ");
     message.extend_from_slice(c_bytes(duration));
     message.extend_from_slice(b" us]\n");
-    message.extend_from_slice(c_bytes(trace_text));
+    if let Some(text) = &trace_text {
+        message.extend_from_slice(until_nul(text.bytes()));
+    }
     message.push(0);
     // SAFETY: a NUL-terminated message.
     unsafe { sw_printf(c"%s".as_ptr(), message.as_ptr()) };
-    // SAFETY: our references.
+    // SAFETY: our reference.
     unsafe { swr_zend_string_release(duration) };
-    // SAFETY: as above.
-    unsafe { swr_zend_string_release(trace_text) };
 }
 
 // --- observer ---------------------------------------------------------------
 
-/// Whether the function is an internal one.
-/// # Safety
-/// `frame` is a live frame with a function.
-unsafe fn internal(frame: *mut zend_execute_data) -> bool {
-    // SAFETY: per the caller.
-    let func = unsafe { (*frame).func };
-    // SAFETY: as above.
-    let func = unsafe { &*func };
-    // SAFETY: every function starts with its type.
-    let kind = unsafe { func.type_ };
-    kind == INTERNAL_FUNCTION
-}
-
-/// # Safety
-/// `frame` is a live frame with a function.
-unsafe fn profiles(frame: *mut zend_execute_data) -> bool {
-    // SAFETY: per the caller.
-    profile() && profiling() && !unsafe { internal(frame) }
-}
-
-/// # Safety
-/// `frame` is a live frame with a function.
-unsafe fn detects_blocking(frame: *mut zend_execute_data) -> bool {
-    // SAFETY: per the caller.
-    blocking_detection() && unsafe { internal(frame) }
-}
-
 unsafe extern "C" fn observer_begin(frame: *mut zend_execute_data) {
     // SAFETY: Zend observes a live frame.
-    if unsafe { profiles(frame) } {
-        // SAFETY: a user function's frame.
-        unsafe { profiling_begin(frame) };
+    let Some(func) = (unsafe { Func::of(frame) }) else {
+        return;
+    };
+    if func.profiles() {
+        profiling_begin(func);
     }
-    // SAFETY: as above.
-    if unsafe { detects_blocking(frame) } {
-        // SAFETY: an internal function's frame.
-        unsafe { blocking_begin(frame) };
+    if func.detects_blocking() {
+        blocking_begin(func);
     }
 }
 
 unsafe extern "C" fn observer_end(frame: *mut zend_execute_data, _: *mut zval) {
     // SAFETY: Zend observes a live frame.
-    if unsafe { profiles(frame) } {
+    let Some(func) = (unsafe { Func::of(frame) }) else {
+        return;
+    };
+    if func.profiles() {
         profiling_end();
     }
-    // SAFETY: as above.
-    if unsafe { detects_blocking(frame) } {
-        // SAFETY: an internal function's frame.
-        unsafe { blocking_end(frame) };
+    if func.detects_blocking() {
+        blocking_end(func);
     }
 }
 
@@ -775,29 +699,16 @@ unsafe extern "C" fn observer_end(frame: *mut zend_execute_data, _: *mut zval) {
 /// profiling covers it (a user function) or blocking detection does (an
 /// internal one).
 unsafe extern "C" fn observer(frame: *mut zend_execute_data) -> zend_observer_fcall_handlers {
-    let none = zend_observer_fcall_handlers {
-        begin: None,
-        end: None,
-    };
     // SAFETY: Zend passes a live frame.
-    let func = unsafe { (*frame).func };
-    // SAFETY: a function's common header, when there is one.
-    if func.is_null() {
-        return none;
-    }
-    // SAFETY: a live function.
-    let func = unsafe { &*func };
-    // SAFETY: every function starts with its common header.
-    if unsafe { func.common.function_name }.is_null() {
-        return none;
-    }
-    // SAFETY: a live frame with a function.
-    if !unsafe { profiles(frame) } && !unsafe { detects_blocking(frame) } {
-        return none;
-    }
-    zend_observer_fcall_handlers {
-        begin: Some(observer_begin),
-        end: Some(observer_end),
+    match unsafe { Func::of(frame) } {
+        Some(func) if func.profiles() || func.detects_blocking() => zend_observer_fcall_handlers {
+            begin: Some(observer_begin),
+            end: Some(observer_end),
+        },
+        _ => zend_observer_fcall_handlers {
+            begin: None,
+            end: None,
+        },
     }
 }
 
@@ -805,8 +716,7 @@ unsafe extern "C" fn observer(frame: *mut zend_execute_data) -> zend_observer_fc
 /// profiling or blocking detection is on.
 /// # Safety
 /// At MINIT, once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_tracer_minit(
+pub unsafe fn tracer_minit(
     blocking_threshold: zend_long,
     blocking_detection: bool,
     profile: bool,
@@ -825,16 +735,14 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_tracer_minit(
 }
 
 /// `php_swoole_tracer_rinit`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_tracer_rinit() {
+pub extern "C" fn tracer_rinit() {
     if leak_detection() {
         hook();
     }
 }
 
 /// `php_swoole_tracer_rshutdown`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_tracer_rshutdown() {
+pub extern "C" fn tracer_rshutdown() {
     if leak_detection() {
         unhook();
     }

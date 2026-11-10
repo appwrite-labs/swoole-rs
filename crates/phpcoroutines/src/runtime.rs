@@ -122,7 +122,7 @@ pub(crate) fn create(
     };
     let ctx = context::current();
     // SAFETY: the running context.
-    unsafe { swoole_rs_zend::sys::swr_zend_coroutine_save(context::vm(ctx)) };
+    unsafe { swoole_rs_zend::sys::swr_zend_coroutine_save(ctx.vm()) };
     let cid = host::create((&raw mut args).cast());
     bailout::trapped(0)?;
     Ok(cid)
@@ -223,11 +223,7 @@ pub(crate) fn shutdown() -> bool {
 /// then run the interrupt function Zend had.
 unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
     let task = context::current();
-    let (co, enabled, last) = {
-        // SAFETY: a live context.
-        let this = unsafe { context::at(task) };
-        (this.co, this.enable_scheduler, this.last_msec)
-    };
+    let (co, enabled, last) = (task.co(), task.enable_scheduler(), task.last_msec());
     if !co.is_null()
         && interrupt_running()
         && enabled
@@ -308,12 +304,13 @@ fn interrupt_stop() {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpcoroutines_hook_flags() -> u32 {
+/// `PHPCoroutine::get_hook_flags()`.
+#[must_use]
+pub fn hook_flags() -> u32 {
     CONFIG.with(|c| c.hook_flags.get())
 }
 
-pub(crate) fn set_hook_flags(flags: u32) {
+pub(crate) fn store_hook_flags(flags: u32) {
     CONFIG.with(|c| c.hook_flags.set(flags));
 }
 
@@ -329,11 +326,11 @@ pub(crate) fn set_preemptive(enable: bool) {
     CONFIG.with(|c| c.preemptive.set(enable));
 }
 
-/// `PHPCoroutine::create` for C++ callers.
+/// `PHPCoroutine::create`, the coroutine leaf the callers of
+/// `swoole_rs_phphelpers::function_call` and the zend-sys shims pass (C ABI).
 /// # Safety
 /// As `zend_call_function`'s callable; `bailout` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_create(
+pub unsafe extern "C" fn create_coroutine(
     fcc: *mut zend_fcall_info_cache,
     argc: u32,
     argv: *mut zval,
@@ -344,4 +341,57 @@ pub unsafe extern "C" fn swr_v1_phpcoroutines_create(
     // SAFETY: per the caller.
     unsafe { bailout.write(u8::from(created.is_err())) };
     created.unwrap_or(ERR_INVALID)
+}
+
+/// `zend::function::call(&fcc, argc, argv, nullptr, coroutine)` of a kept
+/// callable with its bound arguments: whether it ran, warning as
+/// `sw_callable_warning` when it could not.
+/// # Errors
+/// PHP bailed out.
+pub fn call_kept(callable: &swoole_rs_zend::Callable, coroutine: bool) -> Result<bool, Bailout> {
+    let (cache, argc, argv) = callable.parts();
+    // SAFETY: a kept callable's cache and arguments, which its owner keeps
+    // live through the call; the leaves are this crate's and C's.
+    unsafe {
+        swoole_rs_phphelpers::function_call(
+            cache,
+            argc,
+            argv,
+            ptr::null_mut(),
+            coroutine,
+            create_coroutine,
+            swoole_rs_zend::sys::swr_zend_callable_warning,
+        )
+    }
+}
+
+/// `bool zend::function::call(zend_fcall_info_cache *, uint32_t, zval *, zval *, bool)`
+/// (the bundled curl's `zend::Function::call`): `function_call` in a
+/// coroutine, warning as `sw_callable_warning`, with a bailout re-raised.
+/// # Safety
+/// As `function_call`, from a frame that owns nothing that needs a drop.
+#[cfg(not(test))]
+#[unsafe(export_name = "_ZN4zend8function4callEP22_zend_fcall_info_cachejP12_zval_structS4_b")]
+unsafe extern "C" fn zend_function_call(
+    cache: *mut zend_fcall_info_cache,
+    argc: u32,
+    argv: *mut zval,
+    retval: *mut zval,
+    coroutine: bool,
+) -> bool {
+    // SAFETY: per the caller.
+    let result = unsafe {
+        swoole_rs_phphelpers::function_call(
+            cache,
+            argc,
+            argv,
+            retval,
+            coroutine,
+            create_coroutine,
+            swoole_rs_zend::sys::swr_zend_callable_warning,
+        )
+    };
+    let called = matches!(result, Ok(true));
+    bailout::raise(result.map(drop));
+    called
 }

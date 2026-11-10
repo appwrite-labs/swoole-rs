@@ -8,7 +8,7 @@ import sys
 import tempfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 from tools.harness import run_isolated
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--archive', type=Path, required=True)
@@ -17,7 +17,7 @@ a = p.parse_args()
 a.output.parent.mkdir(parents=True, exist_ok=True)
 report = dict(passed=False, scope=__doc__, commands=[], native_sanitizers=True, rust_instrumented=False)
 try:
-    source, flags = hybrid_tree(a.archive)
+    flags = native_flags(a.archive)
     with tempfile.TemporaryDirectory(prefix='resolver-guard-', dir=a.output.parent) as temporary:
         binary = Path(temporary) / 'guard'
         command = ['c++', '-std=c++14', '-O2', '-g', '-Wall', '-Wextra', '-Werror',

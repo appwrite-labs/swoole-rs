@@ -15,14 +15,13 @@ on:
       - crates/framing/**
       - crates/http2/**
       - crates/httpbindings/**
-      - crates/wrappers/**
 concurrency:
   group: miri-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   miri:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
     env:
       TOOLCHAIN: nightly-2026-10-24
@@ -33,4 +32,4 @@ jobs:
       - run: >
           cargo +$TOOLCHAIN miri test --locked --lib
           -p swoole-rs-base64 -p swoole-rs-crc32 -p swoole-rs-error -p swoole-rs-framing
-          -p swoole-rs-http2 -p swoole-rs-httpbindings -p swoole-rs-wrappers
+          -p swoole-rs-http2 -p swoole-rs-httpbindings

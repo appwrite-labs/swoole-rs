@@ -1,9 +1,0 @@
-diff --git a/ext-src/swoole_event.cc b/ext-src/swoole_event.cc
-index 2271cbb..b40ac24 100644
---- a/ext-src/swoole_event.cc
-+++ b/ext-src/swoole_event.cc
-@@ -109,3 +109,3 @@ static const swr_v1_phpevents_ops event_ops = {
- #ifdef SW_LOG_TRACE_OPEN
--            if (SW_LOG_TRACE >= swoole_get_log_level() && (SW_TRACE_PHP & SwooleG.trace_flags)) {
-+            if (SW_LOG_TRACE >= swoole_get_log_level() && (SW_TRACE_PHP & swr_v1_core_trace_flags())) {
-                 size_t length = sw_snprintf(sw_error, SW_ERROR_MSG_SIZE,

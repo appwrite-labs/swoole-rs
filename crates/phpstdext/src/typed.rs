@@ -366,8 +366,7 @@ unsafe fn definition_of(info: *mut TypeInfo) -> *mut zend_string {
 /// `ht`; if not, Zend has thrown.
 /// # Safety
 /// `ht` is a live typed array; `key` and `value` are live zvals.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpstdext_check(
+pub unsafe fn swr_v1_phpstdext_check(
     ht: *mut HashTable,
     key: *const zval,
     value: *const zval,
@@ -527,18 +526,8 @@ unsafe fn check_array(info: *mut TypeInfo, element: *mut HashTable) -> bool {
 }
 
 /// `copy_array_type_info`: after `SEPARATE_ARRAY(container)` made a copy of
-/// the typed array `source`, give the copy `source`'s definition.
-/// # Safety
-/// `container` holds the fresh unshared copy; `source` is a live typed array.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpstdext_copy_type(container: *mut zval, source: *mut HashTable) {
-    // SAFETY: the caller supplies the fresh separated array and still-live source.
-    let result = unsafe { copy_type(container, source) };
-    swoole_rs_zend::bailout::defer(result);
-    swoole_rs_zend::bailout::finish();
-}
-
-/// Copy the actual COW type information without resuming a contained bailout.
+/// the typed array `source`, give the copy `source`'s definition, without
+/// resuming a contained bailout.
 /// # Safety
 /// `container` holds the fresh separated array and `source` remains live.
 pub(crate) unsafe fn copy_type(
@@ -576,8 +565,7 @@ pub(crate) unsafe fn copy_type(
 /// arithmetic int or float values. If not, Zend has thrown.
 /// # Safety
 /// `ht` is a live typed array.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpstdext_operation(ht: *mut HashTable, concat: bool) -> bool {
+pub unsafe fn swr_v1_phpstdext_operation(ht: *mut HashTable, concat: bool) -> bool {
     // SAFETY: per the caller.
     let value = u32::from(unsafe { (*info_of(ht)).this.value });
     let (allowed, message) = if concat {
@@ -598,7 +586,6 @@ pub unsafe extern "C" fn swr_v1_phpstdext_operation(ht: *mut HashTable, concat: 
 /// The `UNSET_DIM` user opcode handler: a typed list keeps its keys.
 /// # Safety
 /// Zend's user opcode handler contract.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpstdext_unset(frame: *mut zend_execute_data) -> c_int {
     // SAFETY: a live frame.
     let opline = unsafe { (*frame).opline };
@@ -632,7 +619,6 @@ pub unsafe extern "C" fn swr_v1_phpstdext_unset(frame: *mut zend_execute_data) -
 /// typed array.
 /// # Safety
 /// Zend's user opcode handler contract.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpstdext_foreach_begin(frame: *mut zend_execute_data) -> c_int {
     // SAFETY: a live frame.
     let opline = unsafe { (*frame).opline };

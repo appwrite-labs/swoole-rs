@@ -4,21 +4,22 @@
 //! The context and the resolver list are crates/corebase's (`NameResolverContext`,
 //! `swr_v1_core_name_resolver_*`), shared with the coroutine socket's lookup.
 use crate::socket::warn;
+pub use native::swoole_name_resolver_php_remove;
 use std::{
     ffi::{c_char, c_int, c_void},
     mem, ptr,
 };
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
-    Call, Class, Object, bailout, method_table, string,
+    Call, Class, Object, Value, ZString, bailout, method_table,
     sys::{
-        IS_ARRAY, IS_OBJECT, IS_STRING, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
-        swr_zend_efree, swr_zend_emalloc, swr_zend_runtime_instanceof, swr_zend_string_init,
+        IS_OBJECT, IS_STRING, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, swr_zend_efree,
+        swr_zend_emalloc, swr_zend_runtime_instanceof, swr_zend_string_init,
         swr_zend_string_release, swr_zend_try_zval_dtor, swr_zend_zval_release, swr_zval_str,
-        swr_zval_try_addref, zend_class_entry, zend_hash_str_find, zend_lookup_class, zend_object,
+        swr_zval_try_addref, zend_class_entry, zend_lookup_class, zend_object,
         zend_object_handlers, zval,
     },
-    type_of, unset_property_deny, value,
+    unset_property_deny, value,
 };
 
 /// `AF_INET`, `__construct`'s default family.
@@ -147,10 +148,7 @@ mod native {
     /// its kept zval, or null if there was none.
     /// # Safety
     /// `resolver` is null or a live object zval.
-    #[unsafe(no_mangle)]
-    pub(crate) unsafe extern "C" fn swoole_name_resolver_php_remove(
-        resolver: *mut zval,
-    ) -> *mut zval {
+    pub unsafe fn swoole_name_resolver_php_remove(resolver: *mut zval) -> *mut zval {
         // SAFETY: `php_same` reads only the kept zvals and `resolver`.
         unsafe { swoole_rs_corebase::swr_v1_core_name_resolver_remove(php_same, resolver.cast()) }
             .cast()
@@ -226,7 +224,6 @@ method_table! {
 /// MINIT: register `Swoole\NameResolver\Context`.
 /// # Safety
 /// Called once, at MINIT.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_name_resolver_minit(_module_number: c_int) {
     // SAFETY: MINIT, with a static table.
     unsafe {
@@ -294,8 +291,7 @@ fn lookup(call: &Call) {
             (&raw mut run).cast(),
         )
     } {
-        // SAFETY: the return slot takes the new string.
-        Ok(()) => unsafe { call.set_string(string::copy(&result)) },
+        Ok(()) => call.set_zstring(ZString::new(&result)),
         Err(bailout) => bailout.defer(),
     }
 }
@@ -320,8 +316,7 @@ fn add(call: &Call) {
 /// `Swoole\NameResolver`, holding a reference to it.
 /// # Safety
 /// `resolver` is a live object zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool {
+pub unsafe fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool {
     // SAFETY: a request-allocated name, released below.
     let name =
         unsafe { swr_zend_string_init(RESOLVER_CLASS.as_ptr().cast(), RESOLVER_CLASS.len()) };
@@ -499,8 +494,9 @@ unsafe fn resolve(
         called?;
         // SAFETY: `zname`'s string; strings run no destructors.
         unsafe { swr_zend_string_release(copy) };
-        // SAFETY: the call's result.
-        match unsafe { type_of(&raw const retval) } {
+        // SAFETY: the call's result, which `retval` holds.
+        let found = unsafe { Value::from_ptr(&raw const retval) };
+        match found.map_or(IS_UNDEF, Value::kind) {
             IS_OBJECT => {
                 // SAFETY: Zend's request allocator (`ecalloc`), which the
                 // context's destructor frees.
@@ -522,10 +518,9 @@ unsafe fn resolve(
                     ptr::null_mut(),
                     true,
                 );
-                // SAFETY: a string zval.
-                let text = unsafe { value::str_of(&raw const retval) };
-                // SAFETY: a live string.
-                return Ok(Some(unsafe { string::bytes(text) }.to_vec()));
+                return Ok(Some(
+                    found.and_then(Value::bytes).unwrap_or_default().to_vec(),
+                ));
             }
             _ => {
                 // SAFETY: a live context.
@@ -541,37 +536,22 @@ unsafe fn resolve(
     retval = undef();
     // SAFETY: the cluster object.
     unsafe { call_method(cluster, b"pop", &mut retval, ptr::null_mut()) }?;
-    // SAFETY: the call's result.
-    if unsafe { type_of(&raw const retval) } != IS_ARRAY {
+    // SAFETY: the call's result, which `retval` holds until released below.
+    let Some(node) = unsafe { Value::from_ptr(&raw const retval) }.and_then(Value::array) else {
         return Ok(None);
-    }
-    // SAFETY: an array zval.
-    let table = unsafe { value::table(&raw const retval) };
-    // SAFETY: a live array.
-    let host = unsafe { zend_hash_str_find(table, c"host".as_ptr(), 4) };
-    // SAFETY: a live element.
-    if host.is_null() || unsafe { type_of(host) } != IS_STRING {
+    };
+    let Some(host) = node.find(b"host").and_then(Value::bytes) else {
         return Ok(None);
-    }
-    // SAFETY: a string zval.
-    let host = unsafe { value::str_of(host) };
-    // SAFETY: a live string.
-    let mut result = unsafe { string::bytes(host) }.to_vec();
+    };
+    let mut result = host.to_vec();
     // The PHP calls may have re-run `__construct`: read `with_port` now, as upstream.
     // SAFETY: a live context.
     native::swoole_name_resolver_context_get(unsafe { &*context.cast() }, &mut with_port);
     if with_port {
         result.push(b':');
-        // SAFETY: a live array.
-        let port = unsafe { zend_hash_str_find(table, c"port".as_ptr(), 4) };
-        if port.is_null() {
+        let Some(port) = node.find(b"port").and_then(Value::applied_long) else {
             return Ok(None);
-        }
-        // SAFETY: a live element.
-        let port = unsafe { value::get_long(port) };
-        if bailout::pending() {
-            return Ok(None);
-        }
+        };
         result.extend_from_slice(port.to_string().as_bytes());
     }
     // SAFETY: our reference to the popped node; releasing it may run PHP.

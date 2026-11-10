@@ -1,5 +1,7 @@
 [workspace]
-members = ["crates/*"]
+# The case packages are upstream's server and coroutine core-tests as Rust: they link the
+# crates and the C++ tests/modules/hooks/system.py builds, so only that script builds them.
+members = ["crates/*", "tests/modules/hooks/system", "tests/modules/reactor/base", "tests/modules/http/server"]
 resolver = "3"
 
 # A Rust panic must never unwind into PHP; tests still unwind.
@@ -9,14 +11,15 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
-# The PHP extension's archive (tools/build_hybrid.py, immutable builds): calls
-# between module crates inline across crates (#889). Thin and fat LTO measured
-# within 1% of each other on every callgrind workload; thin keeps parallel
-# codegen. The native gates link the Zend-free release archive instead, whose
-# objects they can pull one at a time.
+# The PHP extension (crates/ext, tools/build_ext.py): calls
+# between module crates inline across crates (#889). Fat LTO in one codegen unit
+# is 8% less code than thin (resident in every server process) and 0.5-2% fewer
+# instructions per request (#2242). The native gates link the Zend-free release
+# archive instead, whose objects they can pull one at a time.
 [profile.release-lto]
 inherits = "release"
-lto = "thin"
+lto = "fat"
+codegen-units = 1
 
 # Lint levels live here only; see AGENTS.md "Rust lints".
 [workspace.lints.rust]

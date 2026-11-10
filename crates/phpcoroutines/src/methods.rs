@@ -3,7 +3,7 @@
 //! in another coroutine may longjmp across them on the main stack.
 use crate::{
     classes,
-    context::{self, Context, INVALID},
+    context::{self, Ctx, INVALID},
     host::{
         self, SW_ERROR_CO_CANCELED, SW_ERROR_CO_NOT_EXISTS, SW_ERROR_INVALID_PARAMS,
         SW_ERROR_WRONG_OPERATION,
@@ -17,16 +17,15 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_zend::{
-    Call, Callable, E_ERROR, E_WARNING, add_next_index_long,
+    Call, Callable, E_ERROR, E_WARNING, OwnedArray,
     bailout::{self, Bailout},
-    each_value, init_object, set_object,
+    init_object, set_object,
     sys::{
-        object_properties_init, swr_zend_array_init, swr_zend_coroutine_called_by_destructor,
-        swr_zend_coroutine_locate, swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect,
-        swr_zend_coroutine_set_frame, swr_zend_coroutine_stack_usage, swr_zend_object_addref,
-        swr_zval_get_long, zend_call_method, zend_class_entry, zend_exception_set_previous,
-        zend_fcall_info, zend_fcall_info_cache, zend_fetch_debug_backtrace, zend_object,
-        zend_objects_new, zend_throw_exception_object, zval, zval_ptr_dtor,
+        object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
+        swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
+        swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_call_method, zend_class_entry,
+        zend_exception_set_previous, zend_fetch_debug_backtrace, zend_object, zend_objects_new,
+        zend_throw_exception_object, zval,
     },
 };
 
@@ -60,10 +59,7 @@ swoole_rs_zend::handlers! {
 
 /// `go()`/`Co::create()`: `(callable $func, mixed ...$params)`.
 fn create(call: &Call) {
-    // SAFETY: all-zero is an empty call info, filled by the parser.
-    let mut fci: zend_fcall_info = unsafe { mem::zeroed() };
-    // SAFETY: as above.
-    let mut fcc: zend_fcall_info_cache = unsafe { mem::zeroed() };
+    let (mut fci, mut fcc) = (swoole_rs_zend::EMPTY_FCI, swoole_rs_zend::EMPTY_FCC);
     let parsed = call.arity(1, u32::MAX).and_then(|()| {
         // SAFETY: argument 1 is passed; the outputs are writable locals.
         unsafe { bailout::parse_func(call.zval(1), 1, &raw mut fci, &raw mut fcc) }
@@ -196,7 +192,7 @@ fn resume(call: &Call) {
 
 /// A `Co::join()` in progress: the contexts it still waits for.
 pub(crate) struct Join {
-    pending: Vec<*mut Context>,
+    pending: Vec<Ctx>,
     co: *mut c_void,
     canceled: Rc<Cell<bool>>,
 }
@@ -204,7 +200,7 @@ pub(crate) struct Join {
 impl Join {
     /// A joined coroutine closed: once none are left, resume the joiner from
     /// the event loop (unless it gave up first).
-    pub(crate) fn closed(join: *mut Self, ctx: *mut Context) {
+    pub(crate) fn closed(join: *mut Self, ctx: Ctx) {
         // SAFETY: a join stays live while it is set on a context.
         let this = unsafe { &mut *join };
         this.pending.retain(|&pending| pending != ctx);
@@ -217,9 +213,9 @@ impl Join {
 
     /// Stop waiting for the contexts registered so far.
     fn forget(&self) {
-        for &ctx in &self.pending {
-            // SAFETY: a context still waited for is live.
-            unsafe { context::at(ctx) }.join = ptr::null_mut();
+        // A context still waited for is live.
+        for ctx in &self.pending {
+            ctx.set_join(ptr::null_mut());
         }
     }
 }
@@ -239,15 +235,12 @@ fn join(call: &Call) {
     let co = host::current_safe();
     let parsed = call
         .arity(1, 2)
-        .and_then(|()| Ok((call.array(1)?, call.double(2, -1.0)?)));
+        .and_then(|()| Ok((call.array_ref(1)?, call.double(2, -1.0)?)));
     let Ok((cids, timeout)) = parsed else {
         call.set_bool(false);
         return;
     };
-    // SAFETY: an array argument.
-    let table = unsafe { swoole_rs_zend::value::table(cids) };
-    // SAFETY: as above.
-    if unsafe { swoole_rs_zend::value::count(cids) } == 0 {
+    if cids.count() == 0 {
         host::set_last_error(SW_ERROR_INVALID_PARAMS);
         call.set_bool(false);
         return;
@@ -259,31 +252,24 @@ fn join(call: &Call) {
     };
     let own = host::cid(co);
     let mut failed = false;
-    let mut each = |value: *mut zval| {
-        // SAFETY: a live element.
-        let cid = unsafe { swr_zval_get_long(value) };
+    for (_, value) in cids.entries() {
+        let cid = value.long();
         if cid == own {
             host::error_ex(E_WARNING, SW_ERROR_WRONG_OPERATION, c"can not join self");
             failed = true;
-            return false;
+            break;
         }
-        let ctx = context::by_cid(cid);
-        if ctx.is_null() {
-            return true;
-        }
-        // SAFETY: a live context.
-        let this = unsafe { context::at(ctx) };
-        if !this.join.is_null() {
+        let Some(ctx) = context::by_cid(cid) else {
+            continue;
+        };
+        if !ctx.join().is_null() {
             host::set_last_error(SW_ERROR_WRONG_OPERATION);
             failed = true;
-            return false;
+            break;
         }
-        this.join = &raw mut join;
+        ctx.set_join(&raw mut join);
         join.pending.push(ctx);
-        true
-    };
-    // SAFETY: the array is live and the closure does not modify it.
-    unsafe { each_value(table, &mut each) };
+    }
     if failed || join.pending.is_empty() {
         // Unregister the contexts this call registered.
         join.forget();
@@ -315,19 +301,13 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         }
         return host::cancel(co);
     }
-    let task = context::by_cid(cid);
-    // SAFETY: null or a live context.
-    let co = unsafe { task.as_ref() }.map_or(ptr::null_mut(), |task| task.co);
-    if co.is_null() {
+    let Some(task) = context::by_cid(cid).filter(|task| !task.co().is_null()) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         return false;
-    }
-    let is_current = co == host::current();
-    let (pending, class) = {
-        // SAFETY: a live context.
-        let vm = &unsafe { context::at(task) }.vm;
-        (vm.exception, vm.exception_class)
     };
+    let co = task.co();
+    let is_current = co == host::current();
+    let (pending, class) = task.exception();
     if !is_current && !pending.is_null() && class == ce {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         return false;
@@ -341,35 +321,27 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         // caller when it returns.
         // SAFETY: a new exception, in the running frame.
         unsafe { swr_zend_coroutine_locate(exception) };
-        // SAFETY: all-zero is IS_UNDEF, then set to the exception.
-        let mut thrown: zval = unsafe { mem::zeroed() };
+        let mut thrown = swoole_rs_zend::UNDEF;
         // SAFETY: the zval takes over the new object's reference.
         unsafe { set_object(&raw mut thrown, exception) };
         // SAFETY: Zend takes the exception.
         unsafe { zend_throw_exception_object(&raw mut thrown) };
         return true;
     }
-    {
-        // SAFETY: a suspended coroutine's context.
-        let vm = &mut unsafe { context::at(task) }.vm;
-        vm.exception_class = ce;
-        vm.exception = exception;
-    }
+    task.set_exception(exception, ce);
     if !pending.is_null() {
         // SAFETY: two live exceptions.
         unsafe { zend_exception_set_previous(exception, pending) };
     }
-    // SAFETY: as above.
-    let frame = unsafe { context::at(task) }.vm.execute_data;
     // SAFETY: the suspended coroutine's frame, restored below.
-    let backup = unsafe { swr_zend_coroutine_set_frame(frame) };
+    let backup = unsafe { swr_zend_coroutine_set_frame(task.execute_data()) };
     // SAFETY: the exception, located in that frame.
     unsafe { swr_zend_coroutine_locate(exception) };
     // SAFETY: restores the running frame.
     unsafe { swr_zend_coroutine_set_frame(backup) };
     if pending.is_null() {
         // SAFETY: the suspended coroutine's VM state.
-        unsafe { swr_zend_coroutine_redirect(context::vm(task)) };
+        unsafe { swr_zend_coroutine_redirect(task.vm()) };
     }
     // Even an irrevocable wait ends: the exception terminates the coroutine.
     host::cancel(co);
@@ -400,7 +372,10 @@ fn set_time_limit(call: &Call) {
         return;
     }
     let cid = host::cid(co);
-    let ctx = context::current_task();
+    let Some(ctx) = context::current_task() else {
+        call.set_bool(false);
+        return;
+    };
     // Coroutine ids are positive.
     let data = ptr::without_provenance_mut(usize::try_from(cid).unwrap_or_default());
     // SAFETY: time_limit takes the id as its data.
@@ -409,8 +384,8 @@ fn set_time_limit(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: the running coroutine's context.
-    let old = mem::replace(&mut unsafe { context::at(ctx) }.timer_limit, timer);
+    let old = ctx.timer_limit();
+    ctx.set_timer_limit(timer);
     if !old.is_null() {
         // SAFETY: the coroutine's armed timer.
         unsafe { host::timer_del(old) };
@@ -420,10 +395,9 @@ fn set_time_limit(call: &Call) {
 
 unsafe extern "C" fn time_limit(cid: *mut c_void) {
     let cid = c_long::try_from(cid.addr()).unwrap_or_default();
-    let ctx = context::by_cid(cid);
-    if !ctx.is_null() {
-        // SAFETY: a live context; its timer has fired.
-        unsafe { context::at(ctx) }.timer_limit = ptr::null_mut();
+    if let Some(ctx) = context::by_cid(cid) {
+        // Its timer has fired.
+        ctx.set_timer_limit(ptr::null_mut());
         throw_exception(cid, true, classes::timeout());
     }
 }
@@ -477,12 +451,11 @@ fn get_pcid(call: &Call) {
         return;
     };
     let ctx = if cid == 0 {
-        context::current()
+        Some(context::current())
     } else {
         context::by_cid(cid)
     };
-    // SAFETY: null or a live context.
-    let pcid = unsafe { ctx.as_ref() }.map_or(0, |ctx| ctx.pcid);
+    let pcid = ctx.map_or(0, Ctx::pcid);
     if pcid == 0 {
         call.set_bool(false);
     } else {
@@ -499,15 +472,14 @@ fn get_context(call: &Call) {
     let ctx = if cid == 0 {
         context::current_task()
     } else {
-        host::task_by_cid(cid).cast::<Context>()
+        context::task(cid)
     };
-    if ctx.is_null() {
+    let Some(ctx) = ctx else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         call.set_null();
         return;
-    }
-    // SAFETY: a live context.
-    let object = unsafe { context::at(ctx) }.context;
+    };
+    let object = ctx.context();
     if object.addr() == INVALID {
         // A context destroyed with its coroutine (swoole-src#2991).
         host::fatal_error(E_WARNING, c"The context of coroutine has been destroyed");
@@ -519,8 +491,8 @@ fn get_context(call: &Call) {
         unsafe { init_object(call.return_value(), classes::context_class()) };
         // SAFETY: the new object.
         let object = unsafe { swoole_rs_zend::value::obj_of(call.return_value()) };
-        // SAFETY: a live context takes the object's first reference.
-        unsafe { context::at(ctx) }.context = object;
+        // The context takes the object's first reference.
+        ctx.set_context(object);
         object
     } else {
         object
@@ -553,16 +525,13 @@ fn get_stack_usage(call: &Call) {
     };
     let current = runtime::get_cid();
     let cid = if cid == 0 { current } else { cid };
-    let ctx = context::by_cid(cid);
-    if ctx.is_null() {
+    let Some(ctx) = context::by_cid(cid) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         call.set_bool(false);
         return;
-    }
-    // SAFETY: a live context.
-    let stack = unsafe { context::at(ctx) }.vm.vm_stack;
+    };
     // SAFETY: a VM stack chain (or the running one).
-    let usage = unsafe { swr_zend_coroutine_stack_usage(stack, cid == current) };
+    let usage = unsafe { swr_zend_coroutine_stack_usage(ctx.vm_stack(), cid == current) };
     call.set_long(i64::try_from(usage).unwrap_or(i64::MAX));
 }
 
@@ -585,16 +554,13 @@ fn get_back_trace(call: &Call) {
         unsafe { zend_fetch_debug_backtrace(call.return_value(), 0, options, limit) };
         return;
     }
-    let ctx = context::by_cid(cid);
-    if ctx.is_null() {
+    let Some(ctx) = context::by_cid(cid) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         call.set_bool(false);
         return;
-    }
-    // SAFETY: a live context.
-    let frame = unsafe { context::at(ctx) }.vm.execute_data;
+    };
     // SAFETY: the coroutine's frame, restored below.
-    let backup = unsafe { swr_zend_coroutine_set_frame(frame) };
+    let backup = unsafe { swr_zend_coroutine_set_frame(ctx.execute_data()) };
     // SAFETY: the return slot.
     unsafe { zend_fetch_debug_backtrace(call.return_value(), 0, options, limit) };
     // SAFETY: restores the running frame.
@@ -622,8 +588,7 @@ fn print_backtrace(
         // SAFETY: output handlers run inside the shim's zend_try.
         return trapped(unsafe { swr_zend_coroutine_print_trace(1, options, limit) });
     }
-    let ctx = context::by_cid(cid);
-    if ctx.is_null() {
+    let Some(ctx) = context::by_cid(cid) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         if !return_value.is_null() {
             // SAFETY: the caller's return slot.
@@ -631,11 +596,9 @@ fn print_backtrace(
             slot.u1.type_info = swoole_rs_zend::sys::IS_FALSE;
         }
         return Ok(());
-    }
-    // SAFETY: a live context.
-    let frame = unsafe { context::at(ctx) }.vm.execute_data;
+    };
     // SAFETY: the coroutine's frame, restored below unless output bailed.
-    let backup = unsafe { swr_zend_coroutine_set_frame(frame) };
+    let backup = unsafe { swr_zend_coroutine_set_frame(ctx.execute_data()) };
     // SAFETY: as above.
     trapped(unsafe { swr_zend_coroutine_print_trace(0, options, limit) })?;
     // SAFETY: restores the running frame.
@@ -648,17 +611,11 @@ fn trapped(bailed: std::ffi::c_int) -> Result<(), Bailout> {
     if bailed == 0 { Ok(()) } else { Err(Bailout) }
 }
 
-/// `sw_php_print_backtrace` for C++: 1 if output bailed out.
-/// # Safety
-/// `return_value` is null or a writable zval.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpcoroutines_print_backtrace(
-    cid: c_long,
-    options: c_long,
-    limit: c_long,
-    return_value: *mut zval,
-) -> u8 {
-    u8::from(print_backtrace(cid, options, limit, return_value).is_err())
+/// `sw_php_print_backtrace(cid)`, printed (crates/phpswoole's fatal error).
+/// # Errors
+/// The output bailed out.
+pub fn print_coroutine_backtrace(cid: c_long) -> Result<(), Bailout> {
+    print_backtrace(cid, 0, 0, ptr::null_mut())
 }
 
 /// `Co::printBackTrace(int $cid = 0, int $options = 0, int $limit = 0)`.
@@ -676,14 +633,11 @@ fn print_back_trace(call: &Call) {
 fn list(call: &Call) {
     let mut cids: Vec<c_long> = vec![0; host::count()];
     let count = host::list(&mut cids);
-    // SAFETY: all-zero is IS_UNDEF, then an array.
-    let mut ids: zval = unsafe { mem::zeroed() };
-    // SAFETY: a writable zval.
-    unsafe { swr_zend_array_init(&raw mut ids) };
+    let mut ids = OwnedArray::default();
     for &cid in cids.iter().take(count) {
-        // SAFETY: an array.
-        unsafe { add_next_index_long(&raw mut ids, cid) };
+        ids.push_long(cid);
     }
+    let ids = ids.into_owned();
     drop(cids);
     let iterator = classes::iterator();
     // SAFETY: the return slot, with Swoole's registered iterator class.
@@ -703,12 +657,10 @@ fn list(call: &Call) {
             11,
             ptr::null_mut(),
             1,
-            &raw mut ids,
+            ids.as_ptr(),
             ptr::null_mut(),
         );
     }
-    // SAFETY: the array, which the iterator copied.
-    unsafe { zval_ptr_dtor(&raw mut ids) };
 }
 
 /// `Co::getExecuteTime()` (`SW_CORO_TIME` builds).
@@ -732,15 +684,12 @@ fn disable_scheduler(call: &Call) {
 }
 
 fn set_scheduler(enable: bool) -> bool {
-    let ctx = context::current_task();
-    if ctx.is_null() {
+    let Some(ctx) = context::current_task() else {
+        return false;
+    };
+    if ctx.enable_scheduler() == enable {
         return false;
     }
-    // SAFETY: the running coroutine's context.
-    let this = unsafe { context::at(ctx) };
-    if this.enable_scheduler == enable {
-        return false;
-    }
-    this.enable_scheduler = enable;
+    ctx.set_enable_scheduler(enable);
     true
 }

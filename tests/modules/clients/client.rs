@@ -1,6 +1,6 @@
 //! Upstream's `core-tests/src/network/client.cpp`, one function per TEST with the same
 //! inputs and expected values, over the hybrid's `network::Client`. Built into the
-//! hooks case binary (tests/modules/hooks/system), which links libswoole.so.
+//! hooks case binary (tests/modules/hooks/system), which links the crates.
 //!
 //! A `Client` is crates/clients' state, made, listened to, operated on and deleted
 //! through its `swr_v1_clients_*` exports (the operations as `swr_v1_clients_run`
@@ -159,7 +159,6 @@ unsafe extern "C" {
     fn OPENSSL_sk_value(stack: *const c_void, index: c_int) -> *mut c_void;
 }
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
     fn swr_v1_clients_run(call: *mut Call);
@@ -546,7 +545,8 @@ impl<'a> Client<'a> {
                 0
             );
             assert_eq!(
-                swr_v1_tls_owner_assign(swr_v1_clients_ssl_context(self.state), prepared.owner).status,
+                swr_v1_tls_owner_assign(swr_v1_clients_ssl_context(self.state), prepared.owner)
+                    .status,
                 0
             );
             swr_v1_tls_owner_free(prepared.owner);

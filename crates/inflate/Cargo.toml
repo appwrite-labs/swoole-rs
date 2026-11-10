@@ -10,12 +10,9 @@ name = "swoole_rs_inflate"
 crate-type = ["rlib"]
 
 [dependencies]
-# System zlib (the same libz the PHP build links), per #439's -sys decision.
-libz-sys = { version = "1.1.20", default-features = false, features = ["libc"] }
-# Safe Brotli (pure Rust) and zstd (over the system libzstd that config.m4's
-# --enable-zstd links) APIs: raw FFI to libbrotli and libzstd would add unsafe
-# blocks the unsafe budget does not allow.
-brotli = { version = "=8.0.4", default-features = false, features = ["std"] }
+swoole-rs-brotli = { path = "../brotli" }
+swoole-rs-zlib = { path = "../zlib" }
+# A safe zstd API over the system libzstd that config.m4's --enable-zstd links.
 zstd = { version = "=0.14.3", default-features = false, features = ["pkg-config"] }
 
 [lints]

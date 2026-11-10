@@ -1,7 +1,6 @@
 //! The reactor's handler tables (upstream `Reactor::read_handler`, `write_handler`,
 //! `error_handler` and the two defaults): which native `ReactorHandler` runs for an
 //! fd type's read, write or error readiness.
-use crate::owner::{release, try_owner};
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
@@ -41,6 +40,19 @@ fn table(events: c_int) -> Option<usize> {
 }
 
 impl Handlers {
+    /// `Reactor::set_handler`: false when `events` names no table (upstream asserts) or
+    /// `fd_type` is out of range.
+    pub(crate) fn set(&mut self, fd_type: c_int, events: c_int, handler: Option<Handler>) -> bool {
+        self.slot(fd_type, events)
+            .map(|slot| *slot = handler)
+            .is_some()
+    }
+
+    /// `Reactor::isset_handler`.
+    pub(crate) fn isset(&self, fd_type: c_int, events: c_int) -> bool {
+        table(events).is_some_and(|kind| self.registered(kind, fd_type).is_some())
+    }
+
     fn slot(&mut self, fd_type: c_int, events: c_int) -> Option<&mut Option<Handler>> {
         let table = table(events)?;
         self.tables
@@ -72,59 +84,6 @@ impl Handlers {
             .or_else(|| self.get(READ, fd_type))
             .or_else(|| self.get(WRITE, fd_type))
     }
-}
-
-/// Empty tables, or null if allocation fails.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_handlers_new() -> *mut Handlers {
-    try_owner(|| Handlers {
-        tables: [[None; FD_TYPES]; 3],
-        defaults: [None; 2],
-    })
-    .map_or(ptr::null_mut(), Box::into_raw)
-}
-
-/// # Safety
-/// `handlers` is null or a live table from `new`, not used again.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_handlers_free(handlers: *mut Handlers) {
-    // SAFETY: as the caller promises.
-    unsafe { release(handlers) };
-}
-
-/// `Reactor::set_handler`: false when `events` names no table (upstream asserts) or
-/// `fd_type` is out of range.
-///
-/// # Safety
-/// `handlers` is live and exclusively lent for this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_handlers_set(
-    handlers: *mut Handlers,
-    fd_type: c_int,
-    events: c_int,
-    handler: Option<Handler>,
-) -> bool {
-    // SAFETY: as the caller promises.
-    let handlers = unsafe { &mut *handlers };
-    handlers
-        .slot(fd_type, events)
-        .map(|slot| *slot = handler)
-        .is_some()
-}
-
-/// `Reactor::isset_handler`.
-///
-/// # Safety
-/// `handlers` is live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_handlers_isset(
-    handlers: *const Handlers,
-    fd_type: c_int,
-    events: c_int,
-) -> bool {
-    // SAFETY: as the caller promises.
-    let handlers = unsafe { &*handlers };
-    table(events).is_some_and(|kind| handlers.registered(kind, fd_type).is_some())
 }
 
 /// `Reactor::get_handler` (`kind` 0 read, 1 write, 2 error) and, for `error_only`
@@ -207,25 +166,16 @@ mod tests {
 
     #[test]
     fn upstream_lookup_order() {
-        let h = swr_v1_reactor_handlers_new();
+        let mut handlers = Handlers::default();
+        let h = &raw mut handlers;
         unsafe {
             // A mask below SW_EVENT_DEAULT is a read registration, as upstream.
-            assert!(swr_v1_reactor_handlers_set(h, 5, 0, Some(one)));
-            assert!(swr_v1_reactor_handlers_isset(h, 5, SW_EVENT_READ));
-            assert!(!swr_v1_reactor_handlers_isset(h, 5, SW_EVENT_WRITE));
-            assert!(!swr_v1_reactor_handlers_set(
-                h,
-                5,
-                SW_EVENT_DEAULT,
-                Some(two)
-            ));
-            assert!(!swr_v1_reactor_handlers_set(
-                h,
-                32,
-                SW_EVENT_READ,
-                Some(two)
-            ));
-            assert!(!swr_v1_reactor_handlers_isset(h, 5, SW_EVENT_DEAULT));
+            assert!((*h).set(5, 0, Some(one)));
+            assert!((*h).isset(5, SW_EVENT_READ));
+            assert!(!(*h).isset(5, SW_EVENT_WRITE));
+            assert!(!(*h).set(5, SW_EVENT_DEAULT, Some(two)));
+            assert!(!(*h).set(32, SW_EVENT_READ, Some(two)));
+            assert!(!(*h).isset(5, SW_EVENT_DEAULT));
 
             // Write and error fall back to the defaults; error dispatch then to read.
             assert_eq!(call(swr_v1_reactor_handlers_get(h, 1, 5, true)), 0);
@@ -237,18 +187,12 @@ mod tests {
             assert_eq!(call(swr_v1_reactor_handlers_get(h, 2, 5, false)), 3);
             assert_eq!(call(*swr_v1_reactor_handlers_default(h, 2)), 3);
             assert!(swr_v1_reactor_handlers_default(h, 3).is_null());
-            assert!(swr_v1_reactor_handlers_set(
-                h,
-                5,
-                SW_EVENT_WRITE | SW_EVENT_ERROR,
-                Some(one)
-            ));
+            assert!((*h).set(5, SW_EVENT_WRITE | SW_EVENT_ERROR, Some(one)));
             assert_eq!(call(swr_v1_reactor_handlers_get(h, 1, 5, true)), 1);
             // Error-only types: no read handler, the error default still applies.
             assert_eq!(call(swr_v1_reactor_handlers_get(h, 0, 6, true)), 0);
             assert_eq!(call(swr_v1_reactor_handlers_get(h, 2, 6, false)), 3);
             assert_eq!(call(swr_v1_reactor_handlers_get(h, 0, -1, true)), 0);
-            swr_v1_reactor_handlers_free(h);
         }
     }
 }

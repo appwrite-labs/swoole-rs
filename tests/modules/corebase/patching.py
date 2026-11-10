@@ -8,7 +8,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.build_hybrid import hybrid_tree
+from tools.build_ext import native_flags
 
 CALLS = ('parse_stoi',)
 # Upstream functions Rust defines under their own C++ symbols; the hybrid tree has no body.
@@ -29,14 +29,13 @@ def check_git_environment():
 def hybrid_corebase(archive):
     """base.cc's hybrid translation unit, which has no body: what is left of base.cc is
     swoole.h's inline swoole_get_env, which the driver calls. With it, the flags the
-    archive's hybrid build compiled C++ with (its patched headers, Rust headers and
-    config.h) and a receipt. The functions it calls are in the archive."""
-    source, flags = hybrid_tree(archive)
+    archive's build compiled C++ with (native/'s headers and config.h) and a receipt.
+    The functions it calls are in the archive."""
+    flags = native_flags(archive)
     header = (ROOT / 'native/corebase/swoole.h').read_bytes()
     if any(('swr_v1_corebase_' + name + '(').encode() not in header for name in CALLS):
         raise ValueError('Required corebase caller absent')
-    return b'#include "swoole.h"\n', [*flags, '-DHAVE_CONFIG_H', '-I' + str(source)], {
-        'hybrid_tree': str(source), 'required_callers': list(CALLS)}
+    return b'#include "swoole.h"\n', [*flags, '-DHAVE_CONFIG_H'], {'required_callers': list(CALLS)}
 
 
 def prove_calls(binary, names, selected, run, prefix):

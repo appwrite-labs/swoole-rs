@@ -6,12 +6,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[2]
 # Runs are scripted per commit in FAKE_RUNS: {sha: [conclusion, ...]}, one entry
 # consumed per `run list`.
 FAKE_GH = '''#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, urllib.parse
 from pathlib import Path
 args = sys.argv[1:]
 state = Path(os.environ['FAKE_STATE'])
@@ -21,12 +22,17 @@ with open(os.environ['FAKE_GH_LOG'], 'a') as log:
 def save():
     state.write_text(json.dumps(data))
 call = ' '.join(args)
-for prefix, count in data.get('flaky', {}).items():
-    if call.startswith(prefix) and count > 0:
-        data['flaky'][prefix] = count - 1
-        save()
-        sys.stderr.write('HTTP 502: Bad Gateway\\n')
-        sys.exit(1)
+if call.startswith('api rate_limit --jq .resources.'):
+    import time
+    print(int(time.time()) + data.get('reset_in', 3600))
+    sys.exit(0)
+for kind, error in [('flaky', 'HTTP 502: Bad Gateway'), ('limited', 'API rate limit exceeded for user ID 1. (HTTP 403)')]:
+    for prefix, count in data.get(kind, {}).items():
+        if call.startswith(prefix) and count > 0:
+            data[kind][prefix] = count - 1
+            save()
+            sys.stderr.write(error + '\\n')
+            sys.exit(1)
 deleted = [branch for branch in data.get('deleted', []) if call.startswith('api repos/{owner}/{repo}/commits/' + branch)]
 if deleted:
     sys.stderr.write(f'gh: No commit found for SHA: {deleted[0]} (HTTP 422)\\n')
@@ -43,19 +49,38 @@ elif args[0] == 'api' and '/pulls/' in args[1]:
     pull = queue.pop(0) if len(queue) > 1 else queue[0]
     save()
     print(json.dumps({'html_url': 'p', 'merged': False, 'merge_commit_sha': None, **pull}))
+elif args[0] == 'api' and args[1].startswith('search/issues?q='):
+    if data.get('search') is None:
+        sys.stderr.write('HTTP 403: API rate limit exceeded\\n')
+        sys.exit(1)
+    term = urllib.parse.unquote(args[1].split('=', 1)[1]).split('"')[1]
+    print(json.dumps(data['search'].get(term, [])))
 elif args[0] == 'api' and '/check-runs' in args[1]:
     for check in data.get('checks', {}).get(args[1].split('/')[-2], []):
         print(json.dumps(check))
 elif args[0] == 'api' and '-X' in args:
     pass
+elif args[:3] == ['api', '-i', 'user']:
+    print('HTTP/2.0 200 OK')
+    if 'scopes' in data:
+        print('X-Oauth-Scopes: ' + data['scopes'])
+    print()
+    print('{}')
 elif args[0] == 'api' and '/compare/' in args[1]:
     print(data.get('compare', 'ahead'))
 elif args[0] == 'api' and '/actions/jobs/' in args[1]:
     print(data['job_logs'][args[1].split('/')[-2]])
+elif args[0] == 'api' and '/actions/artifacts?' in args[1]:
+    for row in data.get('artifacts', []):
+        print(json.dumps({'expired': False, 'head_branch': 'main', 'repository_id': 1, 'head_repository_id': 1, **row}))
 elif args[0] == 'api':
     print('c' * 40)
 elif args[:2] == ['run', 'list'] and '--commit' not in args:
     print(json.dumps(data.get('history', [])))
+elif args[:2] == ['run', 'download'] and '-n' in args:
+    report = Path(args[args.index('-D') + 1]) / data['report']
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(json.dumps({'engines': [{'name': 'upstream', 'php': data['php'][args[2]]}]}))
 elif args[:2] == ['run', 'download']:
     rows = data.get('phases', {}).get(args[2])
     if rows is None:
@@ -89,7 +114,7 @@ elif args[:2] == ['run', 'view']:
 
 
 class Ci(unittest.TestCase):
-    def ci(self, *args, runs, flags=('--poll', '0', '--json'), **extra):
+    def ci(self, *args, runs, flags=('--poll', '0', '--json'), cwd=None, **extra):
         with tempfile.TemporaryDirectory() as temp:
             gh = Path(temp) / 'gh'
             gh.write_text(FAKE_GH)
@@ -99,7 +124,7 @@ class Ci(unittest.TestCase):
             env = {**os.environ, 'PATH': temp + os.pathsep + os.environ['PATH'],
                    'FAKE_STATE': str(state), 'FAKE_GH_LOG': str(log)}
             result = subprocess.run([sys.executable, ROOT / 'tools/ci.py', *args, *flags],
-                                    env=env, capture_output=True, text=True)
+                                    env=env, capture_output=True, text=True, cwd=cwd)
             self.gh_calls = log.read_text().splitlines() if log.exists() else []
         self.out = result.stdout
         return result.returncode, json.loads(result.stdout) if result.stdout.startswith(('{', '[')) else {}, result.stderr
@@ -131,6 +156,15 @@ class Ci(unittest.TestCase):
         self.assertEqual((result['previous_run'], result['new_failures'], result['fixed']),
                          ('u4', ['http-native', 'ports-added'], ['timer-model']))
         self.assertEqual(result['logs'], {'rust': ['2026-10-25T21:00:01Z error: boom']})
+        # Each new failure names the open issues that mention it, so Red main's p0 is filed once.
+        self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases, flags=('--poll', '0'),
+                search={'http-native': [40, 41]})
+        self.assertIn('new failures: http-native (open: #40, #41), ports-added (no open issue); fixed: timer-model',
+                      self.out)
+        self.assertIn('search/issues?q=%22ports-added%22%20is:issue%20is:open%20repo:{owner}/{repo} '
+                      '--jq [.items[].number]', ' '.join(self.gh_calls))
+        self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases, flags=('--poll', '0'))
+        self.assertIn('http-native (issue search failed), ports-added (issue search failed)', self.out)
 
     def test_shard_artifacts_are_merged(self):
         history = [{'databaseId': 7, 'conclusion': 'failure', 'url': 'u7'}, {'databaseId': 4, 'conclusion': 'failure', 'url': 'u4'}]
@@ -163,6 +197,18 @@ class Ci(unittest.TestCase):
                                   jobs=jobs, failed_log=failed_log)
         # full-gates and tooling were already failing; the PHPT gate passed in run 4.
         self.assertEqual(result['new_failures'], ['phpt / gate job (tests/a/one.phpt, tests/b/two.phpt)'])
+        # A gate failure's issues are those naming its regressed tests.
+        code, result, _ = self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases,
+                                  jobs=jobs, failed_log=failed_log, search={'a/one.phpt': [12], 'b/two.phpt': [12, 13]})
+        self.assertEqual(result['issues'], {result['new_failures'][0]: [12, 13]})
+        # Only the first five tests are searched, and the line says so: an issue may name a later one.
+        failed_log = '\n'.join(gate + line for line in [
+            '<details><summary>7 regressions: pass on upstream, fail on a re-run here</summary>',
+            *[f'- `tests/t/{n}.phpt`' for n in range(7)]])
+        self.ci('status', runs={'c' * 40: ['failure']}, history=history, phases=phases, flags=('--poll', '0'),
+                jobs=jobs, failed_log=failed_log, search={})
+        self.assertIn('.phpt) (no open issue; searched 5 of 7 tests)', self.out)
+        self.assertEqual(sum('search/issues' in call for call in self.gh_calls), 5)
 
     def test_full_gates_shards_speak_through_their_phases_and_unseen_jobs_are_new(self):
         history = [{'databaseId': 7, 'conclusion': 'failure', 'url': 'u7'}, {'databaseId': 4, 'conclusion': 'success', 'url': 'u4'}]
@@ -180,7 +226,7 @@ class Ci(unittest.TestCase):
 
     def test_next_orders_claimable_issues_by_priority_then_age(self):
         def issue(number, created, *labels, blocked_by=0, **extra):
-            return {'number': number, 'title': f't{number}', 'created_at': created,
+            return {'number': number, 'title': extra.pop('title', f't{number}'), 'created_at': created,
                     'labels': [{'name': name} for name in ('status:ready', *labels)],
                     'issue_dependencies_summary': {'blocked_by': blocked_by}, **extra}
         issues = [issue(1, '2026-10-01T00:00:00Z', 'p2'), issue(2, '2026-10-05T00:00:00Z', 'p1'),
@@ -195,22 +241,34 @@ class Ci(unittest.TestCase):
                       '--jq .[]', self.gh_calls)
         code, result, _ = self.ci('next', runs={}, flags=('--json',), issues=[])
         self.assertEqual((code, result), (2, []))
+        # A classic token without workflow scope can't do the issues whose title says they need it.
+        issues = [issue(1, '2026-10-01T00:00:00Z', 'p1', title='pr.yml: x (needs workflow scope)'),
+                  issue(2, '2026-10-02T00:00:00Z', 'p1', title='fuzz: y (needs a token with workflow scope)'),
+                  issue(3, '2026-10-03T00:00:00Z', 'p1')]
+        for scopes, expected in [('gist, repo', [3]), ('repo, workflow', [1, 2, 3]), (None, [1, 2, 3])]:
+            code, result, err = self.ci('next', runs={}, flags=('--json',), issues=issues,
+                                        **({'scopes': scopes} if scopes else {}))
+            self.assertEqual([row['number'] for row in result], expected, scopes)
+            self.assertEqual('hiding 2 issues that need a workflow-scoped token: #1, #2' in err, expected == [3])
 
     def test_stuck_lists_auto_merge_prs_that_conflict_or_failed_a_required_check(self):
         def pull(number, created, auto=True):
             return {'number': number, 'title': f't{number}', 'created_at': created,
                     'auto_merge': {'merge_method': 'squash'} if auto else None, 'head': {'sha': f'sha{number}'}}
         open_pulls = [pull(1, '2026-11-03T00:00:00Z'), pull(2, '2026-11-01T00:00:00Z'), pull(3, '2026-11-02T00:00:00Z'),
-                      pull(4, '2026-10-01T00:00:00Z', auto=False), pull(5, '2026-10-02T00:00:00Z')]
+                      pull(4, '2026-10-01T00:00:00Z', auto=False), pull(5, '2026-10-02T00:00:00Z'),
+                      pull(6, '2026-11-04T00:00:00Z'), pull(7, '2026-11-05T00:00:00Z')]
         pulls = {str(n): [{'mergeable_state': state}] for n, state in
-                 [(1, 'dirty'), (2, 'blocked'), (3, 'clean'), (4, 'dirty'), (5, 'blocked')]}
+                 [(1, 'dirty'), (2, 'blocked'), (3, 'clean'), (4, 'dirty'), (5, 'blocked'), (6, 'blocked'), (7, 'blocked')]}
         checks = {'sha1': [], 'sha2': [{'name': 'required', 'conclusion': 'failure'}, {'name': 'rust', 'conclusion': 'failure'}],
                   'sha3': [{'name': 'required', 'conclusion': 'success'}, {'name': 'asan / asan', 'conclusion': 'failure'}],
-                  'sha5': [{'name': 'required', 'conclusion': None}]}
-        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=open_pulls, pulls=pulls, checks=checks)
+                  'sha5': [{'name': 'required', 'conclusion': None}], 'sha6': [{'name': 'gates', 'conclusion': 'success'}]}
+        # 6's PR-tier run finished without creating `required` (GitHub abandoned its jobs); 7's is still starting.
+        runs = {'sha6': ['failure'], 'sha7': ['running']}
+        code, result, _ = self.ci('stuck', runs=runs, flags=('--json',), open_pulls=open_pulls, pulls=pulls, checks=checks)
         # 3 only fails an informative check, 4 has no auto-merge and 5 is still running.
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
-                         (0, [(2, ['required']), (1, ['conflicts'])]))
+                         (0, [(2, ['required']), (1, ['conflicts']), (6, ['no required check'])]))
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[])
         self.assertEqual((code, result), (2, []))
 
@@ -234,20 +292,93 @@ class Ci(unittest.TestCase):
         code, _, _ = self.ci('new-failures', runs={}, flags=())
         self.assertEqual(code, 1)
 
-    def test_phpt_baseline_is_the_newest_run_whose_upstream_shards_passed(self):
-        history = [{'databaseId': 9, 'headSha': 's9'}, {'databaseId': 8, 'headSha': 's8'}, {'databaseId': 7, 'headSha': 's7'}]
-        jobs = {'9': [['phpt / phpt (1, upstream)', 'success'], ['phpt / phpt (2, upstream)', 'cancelled']],
-                '8': [['phpt / phpt (1, upstream)', 'success'], ['phpt / phpt (1, cargo)', 'failure'], ['phpt / gate', 'failure']],
-                '7': [['phpt (1, upstream)', 'success']]}
-        code, _, _ = self.ci('phpt-baseline', runs={}, flags=(), history=history, jobs=jobs)
-        self.assertEqual((code, self.out), (0, '8 s8\n'))
-        code, _, _ = self.ci('phpt-baseline', runs={}, flags=(), history=history[:1], jobs=jobs)
-        self.assertEqual((code, self.out), (2, ''))
+    def test_phpt_baseline_is_the_newest_run_whose_upstream_shards_passed_while_its_key_holds(self):
+        with tempfile.TemporaryDirectory() as repo:
+            def git(*args):
+                return subprocess.run(['git', '-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def commit(path, text):
+                (Path(repo) / path).parent.mkdir(parents=True, exist_ok=True)
+                (Path(repo) / path).write_text(text)
+                git('add', '-A')
+                git('commit', '-qm', path)
+                return git('rev-parse', 'HEAD')
+            git('init', '-q')
+            old = commit('tools/build_upstream.py', 'pin 1')
+            base = commit('README.md', 'unrelated')
+            # A fork's branch named main, a shard still running, a shard an outage dropped: none of
+            # them stands. A failed cargo shard doesn't matter.
+            artifacts = [{'id': 11, 'head_sha': base, 'head_repository_id': 2}, {'id': 10, 'head_sha': base},
+                         {'id': 9, 'head_sha': base}, {'id': 8, 'head_sha': base}, {'id': 8, 'head_sha': base},
+                         {'id': 7, 'head_sha': old}]
+            shards = [[f'phpt / phpt ({index}, upstream)', 'success'] for index in range(1, 7)]
+            jobs = {'11': shards, '10': shards[:5] + [['phpt / phpt (6, upstream)', '']], '9': shards[1:],
+                    '8': shards + [['phpt / phpt (1, cargo)', 'failure'], ['phpt / gate', 'failure']], '7': shards}
+            php = {'8': '8.3.6'}
+            state = {'runs': {}, 'flags': (), 'cwd': repo, 'artifacts': artifacts, 'jobs': jobs, 'php': php,
+                     'report': 'upstream-1.json'}
+            code, _, _ = self.ci('phpt-baseline', **state)
+            self.assertEqual((code, self.out), (0, f'8 {base}\n'))
+            self.assertEqual(sum(call.startswith('run view 8 ') for call in self.gh_calls), 1)
+            code, _, _ = self.ci('phpt-baseline', '--php', '8.3.6', **state)
+            self.assertEqual((code, self.out), (0, f'8 {base}\n'))
+            # Another PHP release, or a changed key path since the baseline: upstream runs again.
+            code, _, _ = self.ci('phpt-baseline', '--php', '8.3.7', **state)
+            self.assertEqual((code, self.out), (2, ''))
+            for path, text in [('.github/actions/upstream/action.yml', 'builds upstream'), ('tools/build_upstream.py', 'pin 2')]:
+                git('checkout', '-q', base)
+                commit(path, text)
+                code, _, _ = self.ci('phpt-baseline', **state)
+                self.assertEqual((code, self.out), (2, ''), path)
+            # A variant's own workflow is part of its key, and its one job makes its report.
+            variant = {**state, 'jobs': {'8': [['cares / phpt', 'success']]}, 'report': 'target/phpt/cares/upstream.json'}
+            git('checkout', '-q', base)
+            code, _, _ = self.ci('phpt-baseline', '--variant', 'cares', '--php', '8.3.6', **variant)
+            self.assertEqual((code, self.out), (0, f'8 {base}\n'))
+            self.assertIn('run download 8 -n phpt-cares', ' '.join(self.gh_calls))
+            commit('.github/workflows/cares.yml', 'families')
+            code, _, _ = self.ci('phpt-baseline', '--variant', 'cares', **variant)
+            self.assertEqual((code, self.out), (2, ''))
+            # ZTS's report comes from its own artifact, and the thread-safe PHP it runs on
+            # (.devcontainer/php.sh) is part of its key.
+            zts = {**state, 'jobs': {'8': [['zts / phpt', 'success']]}, 'report': 'target/phpt/zts/upstream.json'}
+            git('checkout', '-q', base)
+            code, _, _ = self.ci('phpt-baseline', '--variant', 'zts', '--php', '8.3.6', **zts)
+            self.assertEqual((code, self.out), (0, f'8 {base}\n'))
+            self.assertIn('run download 8 -n phpt-zts', ' '.join(self.gh_calls))
+            commit('.devcontainer/php.sh', 'another PHP')
+            code, _, _ = self.ci('phpt-baseline', '--variant', 'zts', **zts)
+            self.assertEqual((code, self.out), (2, ''))
 
     def test_transient_gh_failures_are_retried(self):
         code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'run list': 2, 'api': 1})
         self.assertEqual((code, result['state']), (0, 'passed'))
         self.assertEqual(stderr.count('HTTP 502: Bad Gateway; retrying'), 3)
+
+    def test_an_exhausted_rate_limit_is_waited_out_within_the_deadline_and_named_beyond_it(self):
+        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, limited={'run list': 1}, reset_in=0)
+        self.assertEqual((code, result['state']), (0, 'passed'))
+        self.assertIn('API rate limit exceeded; waiting until', stderr)
+        # `next` has no deadline: it stops at once and says when the limit resets.
+        code, _, stderr = self.ci('next', runs={}, flags=(), limited={'api': 1})
+        self.assertEqual(code, 1)
+        self.assertRegex(stderr, r'API rate limit exceeded .*; it resets at \d\d:\d\d:\d\d')
+        self.assertIn('api rate_limit --jq .resources.core.reset', self.gh_calls)
+
+    def test_a_search_call_waits_on_the_search_limit(self):
+        sys.path.insert(0, str(ROOT))
+        from tools import ci
+        with tempfile.TemporaryDirectory() as temp:
+            gh = Path(temp) / 'gh'
+            gh.write_text(FAKE_GH)
+            gh.chmod(0o755)
+            state, log = Path(temp) / 'state.json', Path(temp) / 'gh.log'
+            state.write_text(json.dumps({'runs': {}, 'limited': {'api search/issues': 1}, 'reset_in': 0, 'search': {}}))
+            env = {'PATH': temp + os.pathsep + os.environ['PATH'], 'FAKE_STATE': str(state), 'FAKE_GH_LOG': str(log)}
+            with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(ci, 'RETRY_DEADLINE', float('inf')):
+                ci.gh('api', 'search/issues?q=%22x%22')
+            self.assertIn('api rate_limit --jq .resources.search.reset', log.read_text().splitlines())
 
     def test_a_deleted_branch_resolves_through_its_pull_request(self):
         code, result, _ = self.ci('wait', '--workflow', 'pr.yml', '--commit', 'socket-timeout',

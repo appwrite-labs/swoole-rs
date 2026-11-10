@@ -179,16 +179,6 @@ class Reactor : public swr_v1_reactor_head {
         return static_cast<network::Socket *>(swr_v1_reactor_registry_get(state_.registry, fd));
     }
 
-    void foreach_socket(const std::function<void(int, network::Socket *)> &callback) const {
-        auto visit = [](void *context, int fd, void *socket) {
-            (*static_cast<const std::function<void(int, network::Socket *)> *>(context))(
-                fd, static_cast<network::Socket *>(socket));
-        };
-        if (swr_v1_reactor_registry_foreach(state_.registry, const_cast<void *>(static_cast<const void *>(&callback)), visit) < 0) {
-            throw std::bad_alloc();
-        }
-    }
-
     ReactorHandler get_handler(const FdType fd_type, const EventType event) const {
         if (event != SW_EVENT_READ && event != SW_EVENT_WRITE && event != SW_EVENT_ERROR) {
             abort();
@@ -226,14 +216,10 @@ class Reactor : public swr_v1_reactor_head {
 inline int16_t translate_events_to_poll(int events) {
     return swr_v1_reactor_poll_events_to(events);
 }
-inline int translate_events_from_poll(int16_t events) {
-    return swr_v1_reactor_poll_events_from(events);
-}
 }  // namespace swoole
 
 SW_API int swoole_event_init(int flags);
 SW_API int swoole_event_add(swoole::network::Socket *socket, int events);
-SW_API int swoole_event_set(swoole::network::Socket *socket, int events);
 SW_API int swoole_event_add_or_update(swoole::network::Socket *socket, int event);
 SW_API int swoole_event_del(swoole::network::Socket *socket);
 SW_API void swoole_event_defer(void (*fn)(void *), void *private_data);

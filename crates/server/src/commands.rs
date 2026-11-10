@@ -114,8 +114,7 @@ pub(crate) fn handler(state: &ServerState, id: i32) -> Option<CommandFn> {
 /// # Safety
 /// `state` is live, `serv` its server, and `message` holds `length` bytes. The
 /// callback may resume a coroutine: this frame owns nothing that needs a drop then.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_command_result(
+pub unsafe fn swr_v1_server_command_result(
     state: *const ServerState,
     serv: *mut c_void,
     request_id: i64,
@@ -160,7 +159,7 @@ pub(crate) unsafe fn call_command_handler(
         return error(SW_LOG_ERROR, E::SW_ERROR_SERVER_INVALID_COMMAND, origin, m);
     };
     let packet = bus.packet();
-    let message = (packet.data.cast(), packet.length);
+    let message = (packet.data.cast_const().cast(), packet.length);
     let Some(sock) = crate::objects::socket(sock) else {
         return;
     };

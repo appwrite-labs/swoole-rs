@@ -1,3 +1,5 @@
+/* Stays C (docs/zend.md, What stays C): bailout (truthiness, callable resolution
+ * and exceptions run user code) and budget (zval_refcount_p). */
 #include "shim.h"
 #include "shim_facade.h"
 int swr_zend_try_facade_truth(zval *value, bool *result) {

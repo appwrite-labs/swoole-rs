@@ -1,8 +1,0 @@
-diff --git a/include/swoole.h b/include/swoole.h
-index 6c2e96c..1cf72dd 100644
---- a/include/swoole.h
-+++ b/include/swoole.h
-@@ -735,2 +735,3 @@ struct Global {
-     SW_RUST_FIELD(bool, signal_alarm);
-+    SW_RUST_FIELD(bool, signal_dispatch);
-     SW_RUST_FIELD(uint32_t, signal_listener_num);

@@ -134,7 +134,7 @@ pub unsafe fn swr_v1_worker_array_lookup(
 ) -> *mut WorkerRecord {
     // SAFETY: the caller lends the complete initialized canonical array and its PID slots.
     unsafe {
-        crate::worker_registry::swr_v1_process_worker_registry_find_array(
+        crate::worker_registry::find_array(
             workers.cast(),
             count,
             core::mem::size_of::<WorkerRecord>(),
@@ -152,6 +152,16 @@ pub unsafe fn swr_v1_worker_array_lookup(
 pub struct Worker<'a> {
     raw: *mut WorkerRecord,
     life: core::marker::PhantomData<&'a WorkerRecord>,
+}
+
+impl<'a> From<&'a mut WorkerRecord> for Worker<'a> {
+    /// The record a unique borrow keeps live for `'a`.
+    fn from(record: &'a mut WorkerRecord) -> Self {
+        Self {
+            raw: record,
+            life: core::marker::PhantomData,
+        }
+    }
 }
 
 macro_rules! field {

@@ -7,7 +7,7 @@
 //! owner, and its TLS state (`PortConfig::tls`) what upstream's `ListenPort` kept
 //! in C++ containers: the SNI contexts (`sni_contexts`) and the DTLS sessions
 //! (`dtls_sessions`), each with a reference to its context.
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{c_int, c_void};
 use core::ptr;
 use std::collections::HashMap;
 
@@ -80,13 +80,7 @@ fn sni_count(config: &PortConfig) -> usize {
 }
 
 /// Releases the port's context and its TLS state with the SNI contexts.
-///
-/// # Safety
-/// `config` is a live port record that nothing else uses.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_tls_free(config: *mut PortConfig) {
-    // SAFETY: as the caller guarantees.
-    let config = unsafe { &mut *config };
+pub(crate) fn tls_free(config: &mut PortConfig) {
     // SAFETY: the port's reference (or null), released once.
     unsafe { swr_v1_tls_owner_free(core::mem::replace(&mut config.ssl_context, ptr::null())) };
     if config.tls.is_null() {
@@ -106,8 +100,7 @@ pub unsafe extern "C" fn swr_v1_ports_tls_free(config: *mut PortConfig) {
 ///
 /// # Safety
 /// `port` is a live `ListenPort` with a context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_context_dup(port: *const c_void) -> *const OwnedTlsContext {
+pub unsafe fn context_dup(port: *const c_void) -> *const OwnedTlsContext {
     // SAFETY: as the caller guarantees; only read.
     let source = unsafe { port_config::of(port.cast_mut()) }.ssl_context;
     let copy = swr_v1_tls_owner_new(swr_v1_tls_warning).owner;
@@ -123,17 +116,10 @@ pub unsafe extern "C" fn swr_v1_ports_context_dup(port: *const c_void) -> *const
 /// caller's reference to `context`.
 ///
 /// # Safety
-/// `port` is a live `ListenPort`, `name` covers `length` bytes, and `context` is
-/// a live owner the caller holds a reference to.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_sni_add(
-    port: *mut c_void,
-    name: *const c_char,
-    length: usize,
-    context: *const OwnedTlsContext,
-) -> bool {
-    // SAFETY: as the caller guarantees.
-    let mut key = unsafe { core::slice::from_raw_parts(name.cast::<u8>(), length) }.to_vec();
+/// `port` is a live `ListenPort`, and `context` a live owner the caller holds a
+/// reference to.
+pub unsafe fn sni_add(port: *mut c_void, name: &[u8], context: *const OwnedTlsContext) -> bool {
+    let mut key = name.to_vec();
     key.push(0);
     let mut run = Run::new(port);
     run.target = context;
@@ -148,27 +134,15 @@ pub unsafe extern "C" fn swr_v1_ports_sni_add(
 }
 
 /// The DTLS session on `fd`; null if none.
-///
-/// # Safety
-/// `config` is a live port record that nothing else uses meanwhile.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_dtls_session(
-    config: *mut PortConfig,
-    fd: c_int,
-) -> *mut DtlsSession {
-    // SAFETY: as the caller guarantees.
-    let dtls = &state(unsafe { &mut *config }).dtls;
+pub(crate) fn dtls_session(config: &mut PortConfig, fd: c_int) -> *mut DtlsSession {
+    let dtls = &state(config).dtls;
     dtls.get(&fd).map_or(ptr::null_mut(), |entry| entry.0)
 }
 
 /// `delete` of the DTLS session on `fd`, removed from the port; nothing if none.
-///
-/// # Safety
-/// As [`swr_v1_ports_dtls_session`]; nothing uses the session afterwards.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_dtls_free(config: *mut PortConfig, fd: c_int) {
-    // SAFETY: as the caller guarantees.
-    let dtls = &mut state(unsafe { &mut *config }).dtls;
+/// Nothing uses the session afterwards.
+pub(crate) fn dtls_free(config: &mut PortConfig, fd: c_int) {
+    let dtls = &mut state(config).dtls;
     if let Some((session, context)) = dtls.remove(&fd) {
         // SAFETY: the session and reference the port owned, released once.
         unsafe { swr_v1_tls_dtls_free(session) };
@@ -179,15 +153,8 @@ pub unsafe extern "C" fn swr_v1_ports_dtls_free(config: *mut PortConfig, fd: c_i
 
 /// `ListenPort::create_dtls_session(sock)`: a session over the port's context,
 /// stored under the socket's fd; null when it fails to initialize.
-///
-/// # Safety
-/// `port` is a live DTLS `ListenPort` and `sock` a live socket.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_dtls_create(
-    port: *mut c_void,
-    sock: *mut SocketRecord,
-) -> *mut DtlsSession {
-    // SAFETY: as the caller guarantees.
+pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut DtlsSession {
+    // SAFETY: a live DTLS port of the server, which `PortMethods` takes.
     let config = unsafe { port_config::of(port) };
     let context = config.ssl_context;
     let state = state(config);
@@ -200,7 +167,7 @@ pub unsafe extern "C" fn swr_v1_ports_dtls_create(
     }
     // SAFETY: the port's live context.
     let shared = unsafe { swr_v1_tls_owner_clone(context) };
-    // SAFETY: as the caller guarantees.
+    // SAFETY: the live socket `PortMethods` takes.
     let fd = unsafe { (*sock).fd };
     state.dtls.insert(fd, (session, shared));
     session
@@ -285,9 +252,9 @@ impl Run {
 }
 
 /// OpenSSL's servername callback, as `ListenPort::ssl_server_sni_callback`.
-unsafe extern "C" fn sni_callback(ssl: *mut SSL, al: *mut c_int, arg: *mut c_void) -> c_int {
+unsafe extern "C" fn sni_callback(ssl: *mut SSL, _al: *mut c_int, _arg: *mut c_void) -> c_int {
     // SAFETY: OpenSSL's live handshake.
-    unsafe { crate::methods::ssl_server_sni_callback(ssl.cast(), al, arg) }
+    unsafe { crate::methods::ssl_server_sni_callback(ssl.cast()) }
 }
 
 /// `getsockopt(fd, SOL_SOCKET, option)` into `value`: 0 or -1.

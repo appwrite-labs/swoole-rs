@@ -1,3 +1,5 @@
+/* The native scope registry. Stays C (docs/zend.md, What stays C): bailout (the
+ * guard macros around zend_try call it) and globals (ZEND_TLS, EG(bailout)). */
 #include "shim.h"
 
 /* Registration is published once in MINIT, before starting any PHP threads. */

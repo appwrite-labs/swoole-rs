@@ -1,3 +1,6 @@
+/* Stays C (docs/zend.md, What stays C): globals (EG(current_execute_data),
+ * EG(exception)), version (the allocator hooks' debug signature from 8.4,
+ * number_format before 8.3), bailout (ZEND_WRITE) and allocator (smart_str). */
 #include "shim.h"
 #include "shim_tracer.h"
 #include "ext/standard/php_math.h"

@@ -12,21 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alloc-no-stdlib"
-version = "2.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
-
-[[package]]
-name = "alloc-stdlib"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e76a019e91224d279006ff972f1e984179a6e9feb050adba6ce8274aef23195"
-dependencies = [
- "alloc-no-stdlib",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -54,27 +39,6 @@ name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
-
-[[package]]
-name = "brotli"
-version = "8.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cc91aac060a7a1e25823bdccbfb6af1875b88f17c6daac97894eed8207166b3"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
- "brotli-decompressor",
-]
-
-[[package]]
-name = "brotli-decompressor"
-version = "5.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a32acac15fe1967bc3986b2a6347dffc965602354ea6f450ad07e8bfd253583"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
-]
 
 [[package]]
 name = "cc"
@@ -383,6 +347,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-brotli"
+version = "0.1.0"
+dependencies = [
+ "pkg-config",
+]
+
+[[package]]
 name = "swoole-rs-buffer"
 version = "0.1.0"
 dependencies = [
@@ -391,6 +362,16 @@ dependencies = [
  "memchr",
  "swoole-rs-base64",
  "swoole-rs-corebase",
+]
+
+[[package]]
+name = "swoole-rs-bus"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "swoole-rs-corebase",
+ "swoole-rs-reactor",
+ "swoole-rs-tls",
 ]
 
 [[package]]
@@ -413,9 +394,10 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
- "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-reactor",
+ "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
 
@@ -455,6 +437,7 @@ dependencies = [
  "swoole-rs-curl-sys",
  "swoole-rs-phpswoole",
  "swoole-rs-reactor",
+ "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 
@@ -466,8 +449,8 @@ version = "0.1.0"
 name = "swoole-rs-deflate"
 version = "0.1.0"
 dependencies = [
- "libz-sys",
  "swoole-rs-inflate",
+ "swoole-rs-zlib",
 ]
 
 [[package]]
@@ -489,18 +472,18 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "swoole-rs-buffer",
+ "swoole-rs-bus",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-curl",
  "swoole-rs-error",
  "swoole-rs-firebird",
- "swoole-rs-framing",
  "swoole-rs-hooks",
  "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-http2",
  "swoole-rs-httpbindings",
- "swoole-rs-inflate",
  "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-oci",
@@ -525,7 +508,7 @@ dependencies = [
  "swoole-rs-phptimer",
  "swoole-rs-ports",
  "swoole-rs-process",
- "swoole-rs-protocols",
+ "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-sqlite",
@@ -534,6 +517,7 @@ dependencies = [
  "swoole-rs-tls",
  "swoole-rs-utilities",
  "swoole-rs-websocket",
+ "swoole-rs-websocket-ffi",
 ]
 
 [[package]]
@@ -564,14 +548,25 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
- "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
- "swoole-rs-protocols",
+ "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-ssh2-sys",
  "swoole-rs-tls",
  "swoole-rs-uring-sys",
+]
+
+[[package]]
+name = "swoole-rs-hooks-system-tests"
+version = "0.0.0"
+dependencies = [
+ "swoole-rs-corebase",
+ "swoole-rs-ffi",
+ "swoole-rs-hooks",
+ "swoole-rs-process",
+ "swoole-rs-reactor",
 ]
 
 [[package]]
@@ -580,12 +575,31 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "memchr",
- "regex-automata",
+ "swoole-rs-base64",
+ "swoole-rs-locale",
+ "swoole-rs-oracle",
+]
+
+[[package]]
+name = "swoole-rs-http-ffi"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "swoole-rs-base64",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
+]
+
+[[package]]
+name = "swoole-rs-http-server-tests"
+version = "0.0.0"
+dependencies = [
+ "swoole-rs-ffi",
+ "swoole-rs-ports",
+ "swoole-rs-server",
 ]
 
 [[package]]
@@ -600,9 +614,16 @@ version = "0.1.0"
 name = "swoole-rs-inflate"
 version = "0.1.0"
 dependencies = [
- "brotli",
- "libz-sys",
+ "swoole-rs-brotli",
+ "swoole-rs-zlib",
  "zstd",
+]
+
+[[package]]
+name = "swoole-rs-locale"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -672,6 +693,7 @@ dependencies = [
  "libc",
  "pq-sys",
  "swoole-rs-corebase",
+ "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-zend",
@@ -687,6 +709,7 @@ dependencies = [
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-http",
  "swoole-rs-inflate",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
@@ -737,9 +760,11 @@ dependencies = [
  "swoole-rs-phphelpers",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-phptimer",
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 
@@ -769,11 +794,14 @@ dependencies = [
  "swoole-rs-phpcoroutines",
  "swoole-rs-phphelpers",
  "swoole-rs-phpruntime",
+ "swoole-rs-phpserver",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-ports",
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
+ "swoole-rs-tls",
  "swoole-rs-websocket",
  "swoole-rs-zend",
 ]
@@ -790,11 +818,14 @@ dependencies = [
  "swoole-rs-hooks",
  "swoole-rs-http2",
  "swoole-rs-inflate",
+ "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phphttp",
  "swoole-rs-phpruntime",
+ "swoole-rs-phpserver",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
+ "swoole-rs-ports",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-zend",
@@ -805,6 +836,7 @@ name = "swoole-rs-phplocks"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
+ "swoole-rs-hooks",
  "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-phpcoroutines",
@@ -820,6 +852,7 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
+ "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phphelpers",
  "swoole-rs-phpstubs",
@@ -843,6 +876,7 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-protocols",
+ "swoole-rs-server",
  "swoole-rs-zend",
 ]
 
@@ -907,6 +941,7 @@ name = "swoole-rs-phpswoole"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-brotli",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
@@ -951,7 +986,6 @@ version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-phpcoroutines",
- "swoole-rs-phphelpers",
  "swoole-rs-phpprocess",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
@@ -971,14 +1005,16 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-http2",
  "swoole-rs-oracle",
- "swoole-rs-protocols",
+ "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
  "swoole-rs-utilities",
  "swoole-rs-websocket",
+ "swoole-rs-websocket-ffi",
 ]
 
 [[package]]
@@ -996,12 +1032,16 @@ dependencies = [
 [[package]]
 name = "swoole-rs-protocols"
 version = "0.1.0"
+
+[[package]]
+name = "swoole-rs-protocols-ffi"
+version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-protocols",
  "swoole-rs-reactor",
- "swoole-rs-tls",
 ]
 
 [[package]]
@@ -1018,17 +1058,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "swoole-rs-reactor-base-tests"
+version = "0.0.0"
+dependencies = [
+ "swoole-rs-ffi",
+]
+
+[[package]]
 name = "swoole-rs-server"
 version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-buffer",
+ "swoole-rs-bus",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-http",
+ "swoole-rs-http-ffi",
  "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-oracle",
@@ -1079,7 +1128,6 @@ dependencies = [
  "libc",
  "openssl-sys",
  "swoole-rs-buffer",
- "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ossupport",
  "swoole-rs-reactor",
@@ -1110,10 +1158,17 @@ dependencies = [
 name = "swoole-rs-websocket"
 version = "0.1.0"
 dependencies = [
- "libc",
  "swoole-rs-base64",
+]
+
+[[package]]
+name = "swoole-rs-websocket-ffi"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-websocket",
 ]
 
 [[package]]
@@ -1129,6 +1184,13 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "cc",
+]
+
+[[package]]
+name = "swoole-rs-zlib"
+version = "0.1.0"
+dependencies = [
+ "libz-sys",
 ]
 
 [[package]]

@@ -1,15 +1,14 @@
-// What the Rust cases in src/ can't express, compiled into the hybrid tree's lib-swoole by
+// What the Rust cases in src/ can't express, compiled into system.py's lib-swoole by
 // tests/modules/hooks/system.py (--fixture): swoole_event_defer and the timer, which have C++
 // linkage, and the repo-owned witnesses that check C++ copies and std::bad_alloc containment,
 // which only C++ can throw (formerly tests/modules/hooks/dns_request_owner.cpp, unchanged
-// but for these macros in place of GoogleTest's), and the
-// Server worker-retirement witness (formerly tests/modules/process/worker_retirement.cc).
+// but for these macros in place of GoogleTest's).
 #include "swoole_coroutine.h"
 #include "swoole_coroutine_system.h"
 #include "swoole_rs_coroutine_socket.h"
 #include "swoole_async.h"
 #include "swoole_timer.h"
-#include "swoole_server.h"
+#include "swoole_rs_process_pool.h"
 
 #include <arpa/inet.h>
 #include <cstdio>
@@ -188,60 +187,6 @@ uint32_t swr_case_worker_max_request() {
 }
 Worker *swr_case_current_worker() {
     return swr_v1_worker_globals()->worker;
-}
-
-// rust_worker_retirement.abort_and_reset (formerly tests/modules/process/worker_retirement.cc):
-// first-match PID lookup, the session bitfields abort_worker clears (including the last slot
-// and the reserved bits) and the worker/shared concurrency reset, over a real Server.
-void swr_case_worker_retirement() {
-    detail::check_server_layouts();
-    Server &server = *swr_v1_server_new(Server::MODE_BASE);
-    server.config()->worker_num = 2;
-    ASSERT_TRUE(server.add_port(SW_SOCK_TCP, "127.0.0.1", 0));
-    ASSERT_EQ(server.create(), SW_OK);
-    server.get_event_worker_pool()->workers = server.config()->workers;
-    auto *worker = &server.config()->workers[0];
-    auto *other = &server.config()->workers[1];
-    worker->pid = other->pid = 79;
-    ASSERT_EQ(server.get_worker_by_pid(79), worker);
-    worker->pid = 80;
-    ASSERT_EQ(server.get_worker_by_pid(79), other);
-    other->pid = -7;
-    ASSERT_EQ(server.get_worker_by_pid(-7), other);
-    ASSERT_EQ(server.get_worker_by_pid(79), nullptr);
-
-    worker->id = 1;
-    worker->concurrency = 3;
-    worker->request_count = 7;
-    worker->response_count = 8;
-    worker->dispatch_count = 9;
-    server.config()->gs->concurrency = 7;
-    const size_t last = SW_SESSION_LIST_SIZE - 1;
-    for (size_t index = 0; index < SW_SESSION_LIST_SIZE; ++index) {
-        auto *slot = server.get_session(index);
-        slot->id = index + 41;
-        slot->fd = 23;
-        slot->reactor_id = 2;
-        slot->reserve_ = 0x5a1234;
-    }
-    server.get_session(0)->reactor_id = 1;
-    server.get_session(last)->reactor_id = 1;
-    server.abort_worker(worker);
-    ASSERT_TRUE(worker->concurrency == 0 && server.config()->gs->concurrency == 4);
-    ASSERT_TRUE(worker->request_count == 0 && worker->response_count == 0 && worker->dispatch_count == 0);
-    for (size_t index = 0; index < SW_SESSION_LIST_SIZE; ++index) {
-        const auto *slot = server.get_session(index);
-        ASSERT_TRUE(slot->id == static_cast<SessionId>(index + 41));
-        ASSERT_TRUE(slot->reserve_ == 0x5a1234);
-        ASSERT_TRUE(slot->reactor_id == (index == 0 || index == last ? 1 : 2));
-        ASSERT_TRUE(slot->fd == (index == 0 || index == last ? 0 : 23));
-    }
-    worker->concurrency = 9;
-    server.config()->gs->concurrency = 3;
-    server.reset_worker_counter(worker);
-    ASSERT_TRUE(worker->concurrency == 0 && server.config()->gs->concurrency == 0);
-    server.destroy();
-    swr_v1_server_delete(&server);
 }
 
 // rust_dns_request.numeric_host_owner_and_independent_copies.
