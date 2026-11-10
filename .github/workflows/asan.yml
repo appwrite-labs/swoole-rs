@@ -44,3 +44,4 @@ jobs:
             target/asan/*.json
             target/reports/dev/*/loop.json
             target/reports/dev/*/reference-build.log
+            target/upstream/build.log
