@@ -228,7 +228,7 @@ fn get_method(call: &Call) {
             None => call.set_null(),
         };
     }
-    call.set_bytes(method_name(ctx.cast()).to_bytes());
+    call.set_bytes(method_name(ctx.cast()).as_bytes());
 }
 
 fn is_completed(call: &Call) {
