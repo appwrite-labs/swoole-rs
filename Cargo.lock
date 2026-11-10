@@ -565,6 +565,8 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
+ "swoole-rs-process",
+ "swoole-rs-reactor",
 ]
 
 [[package]]

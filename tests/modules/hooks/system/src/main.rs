@@ -4,7 +4,7 @@
 //! coroutine/gethostbyname.cpp in gethostbyname.rs, coroutine/accept.cpp in hook.rs, os/timer.cpp
 //! in timer.rs, coroutine/async.cpp in co_async.rs, os/pipe.cpp in pipe.rs,
 //! os/process_pool.cpp in process_pool.rs, os/wait.cpp, os/async.cpp and os/os.cpp's
-//! os.daemon in os.rs and protocol/ssl.cpp in ssl.rs), one
+//! os.daemon in os.rs, os/signal.cpp in signal.rs and protocol/ssl.cpp in ssl.rs), one
 //! Rust function per TEST with the same inputs and expected values, over the
 //! crates: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
@@ -46,6 +46,7 @@ mod network_socket;
 mod os;
 mod pipe;
 mod process_pool;
+mod signal;
 mod socket;
 mod ssl;
 mod timer;
@@ -901,6 +902,7 @@ const SUITES: &[(&str, Cases)] = &[
     ("os_wait", os::WAIT_CASES),
     ("async", os::ASYNC_CASES),
     ("os", os::OS_CASES),
+    ("os_signal", signal::CASES),
 ];
 
 fn main() {
