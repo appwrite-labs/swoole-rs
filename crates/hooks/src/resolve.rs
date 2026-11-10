@@ -160,19 +160,22 @@ pub unsafe fn name_resolver_lookup(
 /// `swoole_name_resolver_lookup_call`.
 #[repr(C)]
 pub struct LookupCall {
-    name: *const c_char,
-    length: usize,
-    context: *mut NameResolverContext,
-    out: *mut c_void,
-    assign: Put,
+    pub name: *const c_char,
+    pub length: usize,
+    pub context: *mut NameResolverContext,
+    pub out: *mut c_void,
+    pub assign: Put,
 }
 
 /// `swoole_name_resolver_lookup` over a [`LookupCall`]: a `bailout::trap` body.
 ///
 /// # Safety
-/// The call's fields are live, as [`name_resolver_lookup`] requires.
+/// `call` is a live [`LookupCall`] whose fields are live, as [`name_resolver_lookup`]
+/// requires.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_name_resolver_lookup_run(call: &LookupCall) {
+pub unsafe extern "C" fn swoole_name_resolver_lookup_run(call: *mut c_void) {
+    // SAFETY: as the caller promises.
+    let call = unsafe { &*call.cast::<LookupCall>() };
     // SAFETY: as the caller promises.
     let context = unsafe { &mut *call.context };
     // SAFETY: as the caller promises.

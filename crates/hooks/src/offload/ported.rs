@@ -144,7 +144,7 @@ unsafe extern "C" fn park(_: *mut c_void) {
     record("yield".into());
     complete_worker();
 }
-unsafe extern "C-unwind" fn park_for(_: *mut c_void, seconds: f64) -> bool {
+unsafe extern "C-unwind" fn park_for(_: *mut swoole_rs_coroutine::Coroutine, seconds: f64) -> bool {
     record(format!("yield-ex:{}", seconds.to_bits()));
     let ok = knobs().yield_ok;
     if ok {
@@ -241,7 +241,7 @@ fn sleep(seconds: f64) -> c_int {
     let co = current();
     let seconds = sleep_timeout(seconds, 0.001);
     // SAFETY: fake.
-    unsafe { park_for(co, seconds) };
+    unsafe { park_for(co.cast(), seconds) };
     if is_canceled() { -1 } else { 0 }
 }
 

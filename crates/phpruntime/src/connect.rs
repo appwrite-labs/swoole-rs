@@ -14,9 +14,9 @@ use swoole_rs_zend::{
     sys::{timeval, zend_string},
 };
 
+use swoole_rs_hooks::hooked::{swoole_coroutine_close, swoole_coroutine_socket};
+
 unsafe extern "C" {
-    fn swoole_coroutine_socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
-    fn swoole_coroutine_close(fd: c_int) -> c_int;
     fn inet_pton(family: c_int, source: *const c_char, destination: *mut libc::c_void) -> c_int;
 }
 
@@ -134,8 +134,8 @@ fn connect(host: &CStr, port: u16, options: &Options) -> Result<c_int, Bailout> 
         report(Report::Fatal, E_WARNING, message.as_cstr())?;
     }
     drop(socket);
-    // SAFETY: the fd this call opened.
-    unsafe { swoole_coroutine_close(fd) };
+    // The fd this call opened.
+    swoole_coroutine_close(fd);
     Ok(-1)
 }
 

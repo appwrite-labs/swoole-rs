@@ -29,13 +29,9 @@ pub(crate) struct Stats {
 /// A `swoole::Coroutine`, which starts with its `swoole_rs_coroutine::Coroutine`.
 type Co = *mut c_void;
 
-unsafe extern "C" {
-    // crates/hooks/src/async_threads.rs.
-    fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
-    // crates/hooks.
-    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-    fn system_sleep(seconds: f64) -> c_int;
+use swoole_rs_hooks::sleep::system_sleep;
 
+unsafe extern "C" {
     // crates/phpevents, crates/phpclients and PHP.
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
@@ -296,14 +292,11 @@ pub(crate) fn stats(stats: &mut Stats) {
     }
     #[cfg(feature = "iouring")]
     iouring_stats(stats);
-    // SAFETY: plain out-parameters.
-    unsafe {
-        swr_v1_async_threads_stats(
-            &mut stats.aio_task_num,
-            &mut stats.aio_worker_num,
-            &mut stats.aio_queue_size,
-        );
-    };
+    swoole_rs_hooks::async_threads::swr_v1_async_threads_stats(
+        &mut stats.aio_task_num,
+        &mut stats.aio_worker_num,
+        &mut stats.aio_queue_size,
+    );
     // crates/reactor counts this thread's listeners.
     stats.signal_listener_num =
         i64::from(swoole_rs_reactor::signal_upstream::swoole_signal_get_listener_num());
@@ -339,7 +332,7 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
         let (count, sleep) = unsafe { *args.cast::<(c_long, f64)>() };
         for _ in 0..count {
             // SAFETY: in a coroutine.
-            unsafe { system_sleep(sleep) };
+            _ = unsafe { system_sleep(sleep) };
         }
     }
     let mut args = (count, sleep);

@@ -69,7 +69,7 @@ pub struct AsyncOps {
     /// `co->yield()`.
     pub park: unsafe extern "C" fn(*mut c_void),
     /// `co->yield_ex(timeout)`: false on timeout or cancellation.
-    pub park_for: unsafe extern "C-unwind" fn(*mut c_void, f64) -> bool,
+    pub park_for: unsafe extern "C-unwind" fn(*mut swoole_rs_coroutine::Coroutine, f64) -> bool,
     /// `co->resume()`.
     pub resume: unsafe extern "C" fn(*mut c_void),
     /// `swoole_get_last_error()`.
@@ -138,7 +138,7 @@ pub unsafe fn swr_v1_hook_async(
         return false;
     }
     // SAFETY: parks this coroutine until `completed`, a timeout or a cancel.
-    if unsafe { (ops.park_for)(co, timeout) } {
+    if unsafe { (ops.park_for)(co.cast(), timeout) } {
         // SAFETY: the pool's copy lives until `completed` returns, which resumed us.
         let done = unsafe { &*dispatched };
         event.canceled = done.canceled;
@@ -239,11 +239,11 @@ mod tests {
             }
         }
     }
-    unsafe extern "C-unwind" fn park_for(co: *mut c_void, _: f64) -> bool {
+    unsafe extern "C-unwind" fn park_for(co: *mut swoole_rs_coroutine::Coroutine, _: f64) -> bool {
         if TIME_OUT.get() {
             return false;
         }
-        unsafe { park(co) };
+        unsafe { park(co.cast()) };
         true
     }
     unsafe extern "C" fn resume(_: *mut c_void) {

@@ -173,16 +173,7 @@ pub(crate) mod native {
     use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_del};
 
     /// crates/coroutine's `Coroutine::yield_ex(timeout)`.
-    ///
-    /// # Safety
-    /// `co` is the running coroutine.
-    pub(crate) unsafe extern "C-unwind" fn coroutine_yield_ex(
-        co: *mut c_void,
-        timeout: f64,
-    ) -> bool {
-        // SAFETY: as the caller promises.
-        unsafe { swoole_rs_coroutine::yield_ex(co.cast(), timeout) }
-    }
+    pub(crate) use swoole_rs_coroutine::yield_ex as coroutine_yield_ex;
 
     /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
     const OUT_OF_COROUTINE: c_int = 10001;
@@ -235,7 +226,7 @@ pub(crate) mod native {
 
     pub(super) unsafe extern "C" fn park(co: *mut c_void, timeout: f64) -> i32 {
         // SAFETY: the current coroutine.
-        if unsafe { coroutine_yield_ex(co, timeout) } {
+        if unsafe { coroutine_yield_ex(co.cast(), timeout) } {
             0
         } else {
             log::last_error()

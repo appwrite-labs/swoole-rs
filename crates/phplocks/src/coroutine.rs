@@ -59,13 +59,8 @@ mod host {
     pub(super) unsafe fn free_shared(_word: *mut u32) {}
     #[cfg(not(feature = "iouring"))]
     pub(super) fn sleep(seconds: f64) -> CoroutineOutcome {
-        // SAFETY: crates/hooks's (upstream symbol).
-        unsafe extern "C" {
-            #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-            fn system_sleep(seconds: f64) -> c_int;
-        }
         // SAFETY: the lock sleeps only inside a coroutine.
-        done(unsafe { system_sleep(seconds) })
+        done(unsafe { swoole_rs_hooks::sleep::system_sleep(seconds) })
     }
     /// `Iouring::futex_wait`.
     #[cfg(feature = "iouring")]

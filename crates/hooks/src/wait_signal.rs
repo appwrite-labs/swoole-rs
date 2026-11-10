@@ -192,7 +192,7 @@ mod native {
 
     pub(super) fn yield_for(co: *mut c_void, timeout: f64) -> bool {
         // SAFETY: the current coroutine, parking for a wait.
-        unsafe { crate::wait_event::native::coroutine_yield_ex(co, timeout) }
+        unsafe { crate::wait_event::native::coroutine_yield_ex(co.cast(), timeout) }
     }
 
     /// A signal change: register `previous` (non-null), or put `handler` back.

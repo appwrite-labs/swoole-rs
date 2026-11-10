@@ -15,11 +15,8 @@ swoole_rs_zend::handlers! {
     zif_swoole_time_sleep_until => time_sleep_until;
 }
 
-unsafe extern "C" {
-    /// `System::sleep(seconds)` (crates/hooks).
-    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-    fn coroutine_sleep(seconds: f64) -> i32;
-}
+// `System::sleep(seconds)` (crates/hooks).
+use swoole_rs_hooks::sleep::system_sleep as coroutine_sleep;
 
 /// Statuses of a `SleepOutcome`.
 const INVALID: i32 = 1;
