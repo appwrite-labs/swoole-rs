@@ -1,5 +1,5 @@
 # Upstream's core-tests/src/server/http_server.cpp TESTs that start a server, as Rust, linked
-# against the hybrid tree's libswoole.so (SWOOLE_LIB_DIR). Not a
+# against system.py's libswoole.so (SWOOLE_LIB_DIR): native/'s sources and the Cargo build's Rust archive. Not a
 # workspace member: it needs that Linux build, which tests/modules/hooks/system.py makes. build.rs
 # links it; Cargo.lock pins the (empty) dependency set for --locked.
 [package]

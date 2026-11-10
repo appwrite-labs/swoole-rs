@@ -83,7 +83,7 @@ same assertions: the record's fields and value copies, and the per-thread scratc
 `get_addr` and `verify_ip` share.
 The repo-owned C++ witnesses of copies and `std::bad_alloc` containment, which only
 C++ can throw, are the same binary's cases with bodies in `system/fixture.cc`
-(compiled into the hybrid's lib-swoole with `--fixture`), unchanged but for plain
+(compiled into system.py's lib-swoole with `--fixture`), unchanged but for plain
 assertion macros in place of GoogleTest's: the five `rust_dns_request.*` cases
 (formerly `dns_request_owner.cpp`). `rust_socket_scopes.protocol_snapshot_and_copy_restore`
 and `.error_text_publication` (formerly `socket_scopes.cpp`) witnessed the C++
