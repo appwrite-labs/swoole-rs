@@ -338,7 +338,8 @@ fn set_worker(
 }
 
 /// `php_swoole_process_start`: in the child, run the callback, then bail out
-/// as `exit` would. -1 when the callback or the event loop cannot start.
+/// as `exit` would. -1 when the callback or the event loop cannot start; a
+/// bailout pending on the way is raised here, as the closing one is.
 /// # Safety
 /// `worker` is the live worker of the Process object `object`.
 #[unsafe(no_mangle)]
@@ -352,6 +353,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
     // SAFETY: a live zval.
     let callable = unsafe { host::callable_create(callback) };
     if callable.is_null() {
+        swoole_rs_zend::bailout::finish();
         return -1;
     }
     worker::child_enter(worker);
@@ -375,13 +377,16 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
     }
     // SAFETY: as above.
     let coroutine = unsafe { data(std) }.enable_coroutine;
-    if coroutine && host::reactor_init() < 0 {
+    if swoole_rs_zend::bailout::pending() || (coroutine && host::reactor_init() < 0) {
         // SAFETY: the callable made above.
         unsafe { host::callable_free(callable) };
+        swoole_rs_zend::bailout::finish();
         return -1;
     }
     // SAFETY: the callable, with `$this` as its one argument.
-    if !unsafe { host::callable_call(callable, 1, object, coroutine) } {
+    let called = unsafe { host::callable_call(callable, 1, object, coroutine) };
+    let bailed = swoole_rs_zend::bailout::pending();
+    if !called && !bailed {
         // SAFETY: a live object.
         let name = unsafe { class_name(std) };
         notice(
@@ -389,7 +394,7 @@ pub unsafe extern "C" fn swr_v1_phpprocess_start(worker: *mut c_void, object: *m
             &message!("{}->onStart handler error", name.to_string_lossy()),
         );
     }
-    if coroutine {
+    if coroutine && !bailed {
         host::event_wait();
     }
     // SAFETY: the callable made above.

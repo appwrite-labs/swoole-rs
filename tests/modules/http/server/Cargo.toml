@@ -14,9 +14,12 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
+swoole-rs-buffer = { path = "../../../../crates/buffer" }
 swoole-rs-corebase = { path = "../../../../crates/corebase" }
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
+swoole-rs-locks = { path = "../../../../crates/locks" }
 swoole-rs-ports = { path = "../../../../crates/ports" }
 swoole-rs-process = { path = "../../../../crates/process" }
 swoole-rs-server = { path = "../../../../crates/server" }
+swoole-rs-tls = { path = "../../../../crates/tls" }
 swoole-rs-utilities = { path = "../../../../crates/utilities" }
