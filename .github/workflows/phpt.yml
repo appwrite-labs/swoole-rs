@@ -129,10 +129,10 @@ jobs:
           FAMILIES: ${{ inputs.families }}
         run: |
           if [ "${{ steps.baseline.outputs.cache-hit }}" != true ]; then
-            gh run download ${{ inputs.baseline }} -p 'phpt-upstream-*' -D baseline
+            tools/download.sh ${{ inputs.baseline }} baseline -p 'phpt-upstream-*'
             mkdir -p baseline-cache && cp baseline/*/*.json baseline-cache/
             if [ "${{ github.ref }}" = refs/heads/main ]; then
-              gh run download ${{ inputs.baseline }} -n phpt-engines -D baseline-engines
+              tools/download.sh ${{ inputs.baseline }} baseline-engines -n phpt-engines
               cp baseline-engines/upstream.so baseline-cache/upstream.so
             fi
           fi
@@ -170,7 +170,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ ! -f baseline-cache/upstream.so ]; then
-            gh run download ${{ inputs.baseline }} -n phpt-engines -D baseline-engines
+            tools/download.sh ${{ inputs.baseline }} baseline-engines -n phpt-engines
             cp baseline-engines/upstream.so baseline-cache/upstream.so
           fi
           cp baseline-cache/upstream.so target/phpt/upstream.so
