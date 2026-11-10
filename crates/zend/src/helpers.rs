@@ -3,7 +3,7 @@
 use crate::{
     Value,
     sys::{
-        module_registry, swr_zend_hash_foreach, swr_zend_property_slot, zend_array,
+        module_registry, php_time, swr_zend_hash_foreach, swr_zend_property_slot, zend_array,
         zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_hash_str_find, zend_object,
         zval,
     },
@@ -26,6 +26,13 @@ pub fn module_loaded(name: &CStr) -> bool {
     // SAFETY: the registry lives for the process and is filled before any
     // extension code runs; Zend reads `name` only.
     !unsafe { zend_hash_str_find(registry, name.as_ptr(), name.count_bytes()) }.is_null()
+}
+
+/// `php_time`: PHP's clock, in seconds.
+#[must_use]
+pub fn time() -> i64 {
+    // SAFETY: reads the clock.
+    unsafe { php_time() }
 }
 
 /// `ZEND_HASH_FOREACH_VAL`: `each` returns false to stop early.

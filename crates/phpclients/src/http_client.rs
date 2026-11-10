@@ -26,9 +26,9 @@ use swoole_rs_zend::{
     Array, ArrayMut, Call, Class, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
     sys::{
-        E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, php_url_encode,
-        swr_zend_http_build_query, swr_zend_property_merge, swr_zend_sensitive_parameter,
-        zend_class_entry, zend_object, zend_object_handlers, zval,
+        E_WARNING, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, swr_zend_http_build_query,
+        swr_zend_property_merge, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
+        zend_object_handlers, zval,
     },
     unset_property_deny,
 };
@@ -735,11 +735,7 @@ impl Client {
                 }
                 out.extend_from_slice(key);
                 out.push(b'=');
-                // SAFETY: the value's bytes; Zend returns a new string.
-                let encoded =
-                    unsafe { php_url_encode(text.bytes().as_ptr().cast(), text.bytes().len()) };
-                // SAFETY: the reference php_url_encode returned.
-                out.extend_from_slice(unsafe { ZString::from_raw(encoded) }.bytes());
+                out.extend_from_slice(ZString::url_encode(text.bytes()).bytes());
                 if index < count {
                     out.extend_from_slice(b"; ");
                 }
