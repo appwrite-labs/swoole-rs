@@ -17,7 +17,10 @@ See docs/migration.md, Data layout.
                            merge base with origin/main; the PR tier passes HEAD^1)
 
 There is no baseline file: every PR that removes an item would edit it, so
-parallel PRs conflicted on it. A crate new since REF is not checked.
+parallel PRs conflicted on it. A crate new since REF counts from zero once the
+workspace total rises, so code may move into a new crate but not arrive with one; a
+new crate with no unsafe, counted or in an extern block or attribute, must forbid
+`unsafe_code`.
 
 Test code is not counted: a `#[cfg(test)]` inline module, a file a `#[cfg(test)] mod`
 loads, and anything under a tests/ or benches/ directory.
@@ -38,6 +41,8 @@ KINDS = {
     'bools': re.compile(r'Vec<bool>|\[bool;'),
     'caches': re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:static|struct|enum|type)\s+\w*(?i:cache)'),
 }
+# What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
+UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')
 FORBID = re.compile(r'^#!\[forbid\([^)]*\bunsafe_code\b', re.M)
 TEST_MOD = re.compile(r'^(\s*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*([;{])')
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
@@ -115,13 +120,31 @@ def above(current, base):
 def boundary_moves(rises, current, base):
     """`rises` without each `X-ffi` crate whose rise crate X's fall covers: unsafe that
     moved from X to the C ABI over it. Only while the workspace total doesn't rise, so a
-    fall into a new crate, which isn't checked, can't cover the rise as well."""
+    fall into a new crate can't cover the rise as well."""
     def covered(crate, n, was):
         safe = crate.removesuffix('-ffi')
         return safe != crate and n - was <= base.get(safe, 0) - current.get(safe, 0)
     if sum(current.values()) > sum(base.values()):
         return rises
     return {c: (n, was) for c, (n, was) in rises.items() if not covered(c, n, was)}
+
+
+def arrivals(current, base):
+    """{crate: (current, 0)} for crates new since the base, when the workspace total
+    rose: what a new crate holds must have left the crates that were there."""
+    if sum(current.values()) <= sum(base.values()):
+        return {}
+    return {c: (n, 0) for c, n in current.items() if c not in base and n}
+
+
+def must_forbid(current, base, root=ROOT):
+    """{crate: (1, 0)} for crates new since the base that hold no unsafe, counted or
+    UNCOUNTED, and don't forbid it."""
+    return {c: (1, 0) for c, n in current['unforbidden'].items()
+            if n and c not in base and not current['unsafe'][c]
+            and not any(UNCOUNTED.search(line.split('//', 1)[0])
+                        for p in (root / 'crates' / c).rglob('*.rs')
+                        for line in p.read_text(errors='replace').splitlines())}
 
 
 def main():
@@ -138,6 +161,10 @@ def main():
             rises = boundary_moves(rises, crates, base[kind])
             if sum(crates.values()) < sum(base[kind].values()):
                 rises.pop('zend', None)
+        if kind == 'unforbidden':
+            rises |= must_forbid(current, base[kind])
+        else:
+            rises |= arrivals(crates, base[kind])
         failed = failed or bool(rises)
         for crate, (n, was) in sorted(rises.items()):
             print(f'{crate}: {n} {kind}, up from {was} at {base_ref[:12]}', file=sys.stderr)

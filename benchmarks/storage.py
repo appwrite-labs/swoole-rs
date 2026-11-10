@@ -10,8 +10,7 @@ import statistics
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKLOADS = {'buffer-1k': 4000, 'buffer-16k': 4000, 'buffer-cold-1k': 4000,
-             'heap-128': 2000, 'heap-512': 2000, 'heap-1': 200000, 'timer-512': 2000,
+WORKLOADS = {'buffer-1k': 4000, 'buffer-16k': 4000, 'buffer-cold-1k': 4000, 'timer-512': 2000,
              'timer-4096': 250, 'timer-churn-512': 2000}
 
 
@@ -38,7 +37,7 @@ def main():
         project = build / label
         project.mkdir(parents=True, exist_ok=True)
         dependencies = '\n'.join(f'swoole-rs-{name} = {{ path = {json.dumps(str(source / "crates" / name))} }}'
-                                 for name in ['buffer', 'memory', 'timer'])
+                                 for name in ['buffer', 'timer'])
         (project / 'Cargo.toml').write_text('[package]\nname="storage-bench"\nversion="0.0.0"\nedition="2024"\n'
             '[workspace]\n[dependencies]\n' + dependencies + '\n[[bin]]\nname="storage-bench"\npath=' +
             json.dumps(str(ROOT / 'benchmarks/storage.rs')) + '\n[profile.release]\nopt-level=3\npanic="abort"\n')

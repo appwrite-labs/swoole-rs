@@ -104,6 +104,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn a_thread_is_joinable_until_joined_and_keeps_its_exit_status() {
         let thread = Arc::new(Thread::default());
         assert!(!thread.joinable());
@@ -131,6 +132,7 @@ mod tests {
     /// case in a new thread rather than a forked child: the mask and the flag are per
     /// thread.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigaddset")]
     fn start_with_signals_blocked() {
         use crate::signal_mask::tests::{current, only, same};
         for already_blocked in [false, true] {
