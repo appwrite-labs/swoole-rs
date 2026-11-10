@@ -12,11 +12,11 @@ use swoole_rs_corebase::log::{last_error as swoole_last_error, set_last_error};
 use swoole_rs_framing::mime;
 use swoole_rs_zend::{
     Array, Call, E_WARNING, Invalid, OwnedArray, ZStr, handlers, php_error,
-    sys::{zend_array, zend_hash_func, zval},
+    sys::{swr_zend_try_json_decode_ex, zend_array, zend_hash_func, zval},
 };
 
 unsafe extern "C" {
-    /// PHP's `unserialize()`, as `zend::unserialize` calls it.
+    /// PHP's `unserialize()`, as Swoole's `zend::unserialize` called it.
     fn php_unserialize_with_options(
         value: *mut zval,
         buf: *const c_char,
@@ -24,17 +24,6 @@ unsafe extern "C" {
         options: *mut zend_array,
         function: *const c_char,
     );
-    /// `zend::json_decode` (`thirdparty/php/standard/var_decoder.cc`); `zend_long`
-    /// is `int64_t`, which mangles as each platform spells it.
-    #[cfg_attr(
-        target_os = "macos",
-        link_name = "_ZN4zend11json_decodeEP12_zval_structPKcmxx"
-    )]
-    #[cfg_attr(
-        not(target_os = "macos"),
-        link_name = "_ZN4zend11json_decodeEP12_zval_structPKcmll"
-    )]
-    fn json_decode(value: *mut zval, text: *const c_char, length: usize, options: i64, depth: i64);
 }
 
 handlers! {
@@ -377,16 +366,17 @@ fn substr_json_decode(call: &Call) {
                 Some(false) => options & !JSON_OBJECT_AS_ARRAY,
                 None => options,
             };
-            // SAFETY: C++'s decoder over the argument's live bytes.
-            unsafe {
-                json_decode(
+            // SAFETY: PHP's decoder over the argument's live bytes, into the return slot.
+            let bailed = unsafe {
+                swr_zend_try_json_decode_ex(
                     call.return_value(),
                     text.as_ptr().wrapping_add(offset).cast(),
                     length,
                     options,
                     depth,
-                );
-            }
+                )
+            };
+            swoole_rs_zend::bailout::defer(swoole_rs_zend::bailout::trapped(bailed));
             return;
         }
         Window::Empty => c"Non-empty string required",

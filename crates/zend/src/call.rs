@@ -8,12 +8,11 @@ use crate::{
         _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, _zend_expected_type_Z_EXPECTED_DOUBLE,
         _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_RESOURCE,
         _zend_expected_type_Z_EXPECTED_STRING, _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE,
-        IS_LONG, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED, IS_OBJECT_EX, IS_RESOURCE, IS_TRUE,
-        ZPP_ERROR_WRONG_ARG, add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool,
-        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str,
-        zend_argument_type_error, zend_argument_value_error, zend_execute_data, zend_expected_type,
-        zend_object, zend_string, zend_update_property_long, zend_value,
-        zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval, zval_ptr_dtor,
+        IS_LONG, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED, IS_RESOURCE, IS_TRUE, ZPP_ERROR_WRONG_ARG,
+        swr_zend_array_init, swr_zend_try_parse_bool, swr_zend_try_parse_double,
+        swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str, zend_argument_type_error,
+        zend_argument_value_error, zend_execute_data, zend_expected_type, zend_object, zend_string,
+        zend_value, zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
     },
 };
 use std::{ffi::CStr, ptr};
@@ -115,27 +114,44 @@ impl Call {
     /// or None without one (a static method).
     #[must_use]
     pub fn this_owned(&self) -> Option<crate::Owned> {
-        // SAFETY: a live frame.
-        let this = unsafe { &raw const (*self.frame).This };
-        // SAFETY: `This` is a zval whose type says whether it holds an object.
-        let this = unsafe { crate::Value::from_ptr(this) }?.object()?;
+        let this = self.this_object()?;
         // SAFETY: the frame's live `$this`.
         unsafe { (*this).gc.refcount += 1 };
         // SAFETY: as above, carrying the reference added.
         Some(unsafe { crate::Owned::object(this) })
     }
 
-    /// `ZEND_CALL_ARG(execute_data, n)`, 1-based; `n` is at most `num_args()`.
+    /// `Z_OBJ_P(ZEND_THIS)`, or None without an object (a static method).
+    fn this_object(&self) -> Option<*mut zend_object> {
+        // SAFETY: a live frame.
+        let this = unsafe { &raw const (*self.frame).This };
+        // SAFETY: `This` is a zval whose type says whether it holds an object.
+        unsafe { Value::from_ptr(this) }?.object()
+    }
+
+    /// `ZEND_CALL_ARG(execute_data, n)`'s address, 1-based; a slot only when
+    /// [`Call::passed_arg`].
     #[inline]
     pub(crate) fn arg(&self, n: u32) -> *mut zval {
         self.frame
             .cast::<zval>()
-            .wrapping_add(FRAME_SLOT + n as usize - 1)
+            .wrapping_add(FRAME_SLOT + (n as usize).wrapping_sub(1))
     }
 
-    /// [`Call::arg`], borrowed for the call.
+    /// Whether argument `n` (1-based) was passed: `1..=num_args()`. Argument 0
+    /// would be the frame's own last bytes, and one past the count is not
+    /// part of the frame.
+    #[inline]
+    pub(crate) fn passed_arg(&self, n: u32) -> bool {
+        n.wrapping_sub(1) < self.num_args()
+    }
+
+    /// Passed argument `n`, borrowed for the call.
+    /// # Panics
+    /// Argument `n` was not passed (the caller's arity check allows it).
     #[inline]
     pub(crate) fn arg_value(&self, n: u32) -> &Value {
+        assert!(self.passed_arg(n), "argument {n} was not passed");
         // SAFETY: a passed argument lives for the call.
         unsafe { &*self.arg(n).cast::<Value>() }
     }
@@ -160,7 +176,7 @@ impl Call {
     /// The argument is not an int under the caller's typing mode; Zend has thrown.
     #[inline]
     pub fn long(&self, n: u32, default: i64) -> Result<i64, Invalid> {
-        if n > self.num_args() {
+        if !self.passed_arg(n) {
             return Ok(default);
         }
         let arg = self.arg_value(n);
@@ -180,7 +196,7 @@ impl Call {
     /// The argument is not a bool under the caller's typing mode; Zend has thrown.
     #[inline]
     pub fn bool(&self, n: u32, default: bool) -> Result<bool, Invalid> {
-        if n > self.num_args() {
+        if !self.passed_arg(n) {
             return Ok(default);
         }
         self.parse_bool(n, false)
@@ -194,7 +210,7 @@ impl Call {
     /// has thrown.
     #[inline]
     pub fn bool_or_null(&self, n: u32) -> Result<Option<bool>, Invalid> {
-        if n > self.num_args() {
+        if !self.passed_arg(n) {
             return Ok(None);
         }
         self.parse_bool(n, true)
@@ -237,7 +253,7 @@ impl Call {
     /// As [`Call::str`].
     #[inline]
     pub fn zstr(&self, n: u32) -> Result<Option<&ZStr>, Invalid> {
-        if n > self.num_args() {
+        if !self.passed_arg(n) {
             return Ok(None);
         }
         self.parse_str(n, _zend_expected_type_Z_EXPECTED_STRING)
@@ -267,7 +283,7 @@ impl Call {
     /// The argument is not a float under the caller's typing mode; Zend has thrown.
     #[inline]
     pub fn double(&self, n: u32, default: f64) -> Result<f64, Invalid> {
-        if n > self.num_args() {
+        if !self.passed_arg(n) {
             return Ok(default);
         }
         let arg = self.arg_value(n);
@@ -344,13 +360,17 @@ impl Call {
 
     /// Make by-reference argument `n` (1-based), which must be passed, hold
     /// `value`: `zval_ptr_dtor` of what it referred to, then `ZVAL_COPY_VALUE`.
+    /// # Safety
+    /// Nothing borrowed from argument `n` ([`Call::value`], [`Call::zstr`],
+    /// [`Call::array_ref`], ...) is used afterwards: what it held is released.
     #[inline]
-    pub fn assign(&self, n: u32, value: crate::Owned) {
-        let slot = self.zval_deref(n);
-        // SAFETY: a passed argument's live value, released here.
-        unsafe { zval_ptr_dtor(slot) };
+    pub unsafe fn assign(&self, n: u32, value: crate::Owned) {
+        let slot = self.arg_value(n).dereferenced();
+        // SAFETY: a passed argument's live value, released here; per the
+        // caller, nothing borrows it any more.
+        unsafe { slot.release() };
         // SAFETY: as above; the slot takes over the value.
-        unsafe { slot.write(value.into_zval()) };
+        unsafe { slot.as_ptr().write(value.into_zval()) };
     }
 
     /// `ZEND_PARSE_PARAMETERS_END`'s report of a wrong argument.
@@ -392,7 +412,7 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn zval(&self, n: u32) -> *mut zval {
-        if n > self.num_args() {
+        if !self.passed_arg(n) {
             return ptr::null_mut();
         }
         self.arg(n)
@@ -414,16 +434,21 @@ impl Call {
     }
 
     /// `RETVAL_ZVAL(value, 0, 0)`: the return slot takes over `value`.
+    /// # Safety
+    /// `value` is a valid zval carrying the reference the slot takes, as
+    /// [`crate::Owned::into_zval`] gives one up.
     #[inline]
-    pub fn set_value(&self, value: zval) {
-        // SAFETY: the return slot is live for the handler.
+    pub unsafe fn set_value(&self, value: zval) {
+        // SAFETY: the return slot is live for the handler; `value` per the caller.
         unsafe { *self.value = value };
     }
 
     /// `RETVAL_ZVAL(value, 0, 0)` of a value this owns.
     #[inline]
     pub fn set_owned(&self, value: crate::Owned) {
-        self.set_value(value.into_zval());
+        // SAFETY: the return slot is live for the handler, and takes the
+        // value `Owned` gives up.
+        unsafe { *self.value = value.into_zval() };
     }
 
     /// `RETVAL_STR(string)`: the return slot takes over the reference.
@@ -442,14 +467,12 @@ impl Call {
         unsafe { self.set_string(string.into_raw()) };
     }
 
-    /// `RETURN_ZVAL(ZEND_THIS, 1, 0)`: return `$this` with a new reference.
+    /// `RETURN_ZVAL(ZEND_THIS, 1, 0)`: return `$this` with a new reference
+    /// (nothing in a static method).
     pub fn set_this(&self) {
-        let this = self.this();
-        // SAFETY: a method's live `$this`.
-        unsafe { (*this).gc.refcount += 1 };
-        // SAFETY: the return slot is live for the handler.
-        unsafe { (*self.value).value = zend_value { obj: this } };
-        self.set(IS_OBJECT_EX);
+        if let Some(this) = self.this_owned() {
+            self.set_owned(this);
+        }
     }
 
     /// `array_init(return_value)`.
@@ -458,21 +481,74 @@ impl Call {
         unsafe { swr_zend_array_init(self.value) };
     }
 
-    /// `add_assoc_long_ex(return_value, key, value)`, after `set_array`.
+    /// `add_assoc_long_ex(return_value, key, value)`, after `set_array`
+    /// (nothing unless the return slot holds an array).
     pub fn add_assoc_long(&self, key: &CStr, value: i64) {
-        // SAFETY: the return slot holds an array; Zend copies the key.
-        unsafe { add_assoc_long_ex(self.value, key.as_ptr(), key.count_bytes(), value) };
+        // SAFETY: the return slot is live for the handler, and nothing else
+        // borrows it; `Owned` is a transparent zval, and is not dropped here.
+        let slot = unsafe { &mut *self.value.cast::<crate::Owned>() };
+        if let Some(array) = slot.array_mut() {
+            array.insert_long(key.to_bytes(), value);
+        }
     }
 
     /// `zend_update_property_long(scope, Z_OBJ_P(ZEND_THIS), name, value)`;
     /// `scope` is the class whose view of the property to update (NULL if none).
+    /// A static method has no `$this` to update.
     pub fn update_property_long(&self, scope: Option<&Class>, name: &CStr, value: i64) {
+        let Some(this) = self.this_object() else {
+            return;
+        };
         let scope = scope.map_or(ptr::null_mut(), Class::entry);
-        // SAFETY: a method's live `$this`; a registered class or null; Zend
-        // copies the name.
-        unsafe {
-            zend_update_property_long(scope, self.this(), name.as_ptr(), name.count_bytes(), value);
-        }
+        // SAFETY: a method's live `$this`; a registered class or null.
+        unsafe { crate::Props::new(scope, this) }.long(name, value);
+    }
+
+    /// `zend_update_property(scope, Z_OBJ_P(ZEND_THIS), name, value)`: the
+    /// property takes a copy. A dynamic property's deprecation runs the user
+    /// error handler, so this traps its bailout.
+    /// # Errors
+    /// The error handler bailed out.
+    pub fn update_property(
+        &self,
+        scope: Option<&Class>,
+        name: &[u8],
+        value: &Value,
+    ) -> Result<(), crate::bailout::Bailout> {
+        let scope = scope.map_or(ptr::null_mut(), Class::entry);
+        // SAFETY: a method's live `$this`, a registered class or null and a
+        // live value; Zend copies the name and the value.
+        let bailed = unsafe {
+            crate::sys::swr_zend_try_facade_update(
+                scope,
+                self.this(),
+                name.as_ptr().cast(),
+                name.len(),
+                value.as_ptr(),
+            )
+        };
+        crate::bailout::trapped(bailed)
+    }
+
+    /// `RETURN_ZVAL(zend_read_property(scope, Z_OBJ_P(ZEND_THIS), name, 1, &rv), 1, 0)`:
+    /// a copy of the property, read silently.
+    pub fn set_property(&self, scope: Option<&Class>, name: &[u8]) {
+        let scope = scope.map_or(ptr::null_mut(), Class::entry);
+        let rv = crate::Owned::default();
+        // SAFETY: a method's live `$this`, a registered class or null, and a
+        // slot for a computed value, which outlives the copy below.
+        let property = unsafe {
+            crate::sys::zend_read_property(
+                scope,
+                self.this(),
+                name.as_ptr().cast(),
+                name.len(),
+                true,
+                rv.as_ptr(),
+            )
+        };
+        // SAFETY: the property's live value, copied with a reference.
+        unsafe { crate::sys::swr_zval_copy(self.value, property) };
     }
 
     /// `RETVAL_BOOL`.

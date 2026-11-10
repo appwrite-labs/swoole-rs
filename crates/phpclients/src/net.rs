@@ -242,6 +242,7 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     }
     // SAFETY: as above.
     unsafe { ClientObject::dtor(std) };
+    bailout::finish();
 }
 
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {

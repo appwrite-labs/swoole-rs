@@ -28,6 +28,7 @@ swoole-rs-ossupport = { path = "../ossupport" }
 swoole-rs-protocols-ffi = { path = "../protocols-ffi" }
 swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-tls = { path = "../tls" }
+swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 openssl-sys = { version = "=0.9.117", optional = true }
 swoole-rs-uring-sys = { path = "../uring-sys", optional = true }
 swoole-rs-ssh2-sys = { path = "../ssh2-sys", optional = true }

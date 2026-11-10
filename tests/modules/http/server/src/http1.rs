@@ -12,8 +12,9 @@
 //! (client.rs). An assertion in a server callback cannot unwind through the server's
 //! frames, so it records the failure, which the case asserts on once the server stops.
 //!
-//! server.rs holds `core-tests/src/server/buffer.cpp`'s TEST, and server_config.rs
-//! `server/server.cpp`'s connection and configuration TESTs, over the same records.
+//! server.rs holds `core-tests/src/server/buffer.cpp`'s TEST, and server_config.rs and
+//! server_conn.rs `server/server.cpp`'s connection and configuration TESTs, over the same
+//! records.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::mem::offset_of;
@@ -34,6 +35,7 @@ pub(super) mod lifecycle;
 pub(super) mod schedule;
 pub(super) mod server;
 pub(super) mod server_config;
+pub(super) mod server_conn;
 pub(super) mod server_ssl;
 pub(super) mod task;
 

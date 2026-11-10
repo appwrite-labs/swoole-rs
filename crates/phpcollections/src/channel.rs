@@ -63,7 +63,7 @@ unsafe fn wake(wait: *mut c_void, timeout: bool) {
     unsafe { co::wake(parked, false) };
 }
 
-unsafe extern "C" fn on_timeout(wait: *mut c_void) {
+unsafe extern "C-unwind" fn on_timeout(wait: *mut c_void) {
     // SAFETY: the wait deletes its timer before it ends.
     unsafe { wake(wait, true) };
 }
@@ -352,7 +352,9 @@ fn pop(call: &Call) {
         return;
     }
     // SAFETY: a value `push` queued.
-    call.set_value(unsafe { data.read() });
+    let value = unsafe { data.read() };
+    // SAFETY: that value, whose reference the return slot takes.
+    unsafe { call.set_value(value) };
     // SAFETY: as above; the zval moved out.
     unsafe { swr_zend_efree(data.cast()) };
     set_error(call, ERROR_OK);

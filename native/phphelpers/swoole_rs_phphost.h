@@ -6,7 +6,6 @@
 
 #include "php_swoole.h"
 #include "swoole_rs_phphelpers.h"
-#include "php_swoole_api.h"
 #include "swoole.h"
 #include "swoole_api.h"
 #include "swoole_coroutine_api.h"
@@ -213,9 +212,6 @@ struct Function {
         return function::call(&fci_cache, fci.param_count, fci.params, retval, enable_coroutine);
     }
 };
-
-void unserialize(zval *return_value, const char *buf, size_t buf_len, HashTable *options);
-void json_decode(zval *return_value, const char *str, size_t str_len, zend_long options, zend_long zend_long);
 
 // Returns a reference.
 static inline zval *array_get(zval *arg, zend_ulong index) {

@@ -2,7 +2,7 @@
 //! `Swoole\Connection\Iterator`; lifecycle.rs owns the Server objects.
 use std::{
     cell::RefCell,
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_char, c_int, c_long, c_void},
     ptr,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -59,6 +59,35 @@ pub(crate) fn invalid(object: *mut zend_object) {
 }
 
 pub(crate) static SERVER: Class = Class::new();
+/// `Swoole\Redis\Server`, which crates/phpredis registers at MINIT.
+pub static REDIS_SERVER: Class = Class::new();
+
+/// `Swoole\Server`, for a class that extends it.
+#[must_use]
+pub fn server_class_ref() -> &'static Class {
+    &SERVER
+}
+
+/// crates/phpredis' `onReceive` of a Redis port: the server, the request's
+/// session, its payload and whether handlers run in a coroutine; `SW_OK` or
+/// `SW_ERR`, or the handler's bailout.
+pub type RedisReceive = fn(
+    view::Server<'_>,
+    c_long,
+    &swoole_rs_zend::Owned,
+    bool,
+) -> Result<c_int, swoole_rs_zend::bailout::Bailout>;
+
+static REDIS_RECEIVE: std::sync::OnceLock<RedisReceive> = std::sync::OnceLock::new();
+
+/// Install crates/phpredis' `onReceive`, at MINIT; the first stands.
+pub fn set_redis_receive(receive: RedisReceive) {
+    REDIS_RECEIVE.get_or_init(|| receive);
+}
+
+pub(crate) fn redis_receive() -> Option<RedisReceive> {
+    REDIS_RECEIVE.get().copied()
+}
 
 /// `swoole_server_ce`: `Swoole\Server`, registered at MINIT.
 #[must_use]
@@ -1211,7 +1240,7 @@ fn delegate(call: &Call, method: &[u8]) {
         return call.set_bool(false);
     }
     let zserv = crate::dispatch::zserv();
-    let mut retval = crate::dispatch::undef();
+    let retval = swoole_rs_zend::Owned::default();
     // SAFETY: the server's object zval.
     let object = unsafe { swoole_rs_zend::object_of(&raw const zserv) };
     // SAFETY: the server's live object, its class, a writable result and the argument.
@@ -1220,22 +1249,21 @@ fn delegate(call: &Call, method: &[u8]) {
             object,
             SERVER.entry(),
             method,
-            &raw mut retval,
+            retval.as_ptr(),
             &[call.zval(1)],
         )
     };
     if let Err(bailout) = called {
+        // Released first: the bailout jumps over this frame.
+        drop(retval);
         return swoole_rs_zend::bailout::raise(Err(bailout));
     }
     if method == b"exists" {
         // RETVAL_BOOL(Z_BVAL_P(&retval)): only `true` is true.
-        // SAFETY: Zend wrote the method's result.
-        call.set_bool(
-            unsafe { swoole_rs_zend::type_of(&raw const retval) } == swoole_rs_zend::sys::IS_TRUE,
-        );
+        call.set_bool(retval.kind() == swoole_rs_zend::sys::IS_TRUE);
     } else {
         // RETVAL_ZVAL(&retval, 0, 0): the return slot takes the result.
-        call.set_value(retval);
+        call.set_owned(retval);
     }
 }
 

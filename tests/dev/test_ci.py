@@ -58,6 +58,8 @@ elif args[0] == 'api' and args[1].startswith('search/issues?q='):
 elif args[0] == 'api' and '/check-runs' in args[1]:
     for check in data.get('checks', {}).get(args[1].split('/')[-2], []):
         print(json.dumps(check))
+elif args[:2] == ['api', 'graphql']:
+    print(json.dumps(data.get('queue', [])))
 elif args[0] == 'api' and '-X' in args:
     pass
 elif args[:3] == ['api', '-i', 'user']:
@@ -271,6 +273,40 @@ class Ci(unittest.TestCase):
                          (0, [(2, ['required']), (1, ['conflicts']), (6, ['no required check'])]))
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[])
         self.assertEqual((code, result), (2, []))
+
+    def test_stuck_lists_prs_the_merge_queue_dropped_with_their_group_run(self):
+        def pull(number, created, events, queued=False, auto=None):
+            return {'number': number, 'title': f't{number}', 'createdAt': created, 'isDraft': False, 'isInMergeQueue': queued,
+                    'autoMergeRequest': auto, 'timelineItems': {'nodes': events}}
+        removed = [{'__typename': 'RemovedFromMergeQueueEvent', 'reason': 'failed status checks'}]
+        queue = [pull(8, '2026-10-15T00:00:00Z', removed), pull(9, '2026-10-16T00:00:00Z', [{'__typename': 'AddedToMergeQueueEvent'}], queued=True),
+                 pull(10, '2026-10-17T00:00:00Z', []), pull(11, '2026-10-18T00:00:00Z', removed, auto={'enabledAt': 'x'}),
+                 pull(12, '2026-10-19T00:00:00Z', [{'__typename': 'RemovedFromMergeQueueEvent', 'reason': None}])]
+        history = [{'headBranch': 'gh-readonly-queue/main/pr-8-abc', 'url': 'u8'}, {'headBranch': 'main', 'url': 'm'}]
+        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), open_pulls=[], queue=queue, history=history)
+        # 9 is queued, 10 never was, and 11 was queued again: its auto-merge waits on a new PR-tier run.
+        self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
+                         (0, [(8, ['left the merge queue: failed status checks', 'u8']),
+                              (12, ['left the merge queue: no reason given'])]))
+
+    def test_a_merge_queue_run_may_fail_only_what_main_already_fails(self):
+        history = [{'databaseId': 9, 'conclusion': 'cancelled', 'url': 'u9'}, {'databaseId': 4, 'conclusion': 'failure', 'url': 'u4'}]
+        # Shard 1 reports a known failure and a regression, shard 2 passes and shard 3 died before its gates.
+        phases = {'7': [[['old', False], ['timer-model', False]], [['build', True]]], '4': [['old', False], ['timer-model', True]]}
+        jobs = {'7': [['full-gates (1)', 'failure'], ['full-gates (2)', 'success'], ['full-gates (3)', 'failure'],
+                      ['callgrind', 'failure'], ['phpt / gate', 'failure'], ['alpine', 'cancelled'], ['required', None]],
+                '4': [['full-gates (1)', 'failure'], ['callgrind', 'failure'], ['phpt / gate', 'success'], ['alpine', 'success']]}
+        code, _, _ = self.ci('new-failures', '--run', '7', runs={}, flags=(), history=history, phases=phases, jobs=jobs)
+        self.assertEqual(code, 1)
+        # callgrind fails on main too, and the run's own unfinished `required` job isn't judged.
+        self.assertIn('Against u4: new failures: timer-model, alpine job, full-gates (3) job (no phases), phpt / gate job', self.out)
+        # A finished run's log is never read: the run is still in progress.
+        self.assertFalse(any('--log-failed' in call or 'search/issues' in call for call in self.gh_calls))
+        phases['7'] = [['old', False]]
+        jobs['7'] = [['full-gates (1)', 'failure'], ['callgrind', 'failure'], ['required', None]]
+        code, _, _ = self.ci('new-failures', '--run', '7', runs={}, flags=(), history=history, phases=phases, jobs=jobs)
+        self.assertEqual(code, 0)
+        self.assertIn('no new failures', self.out)
 
     def test_new_failures_are_gate_failures_main_does_not_share(self):
         history = [{'databaseId': 9, 'conclusion': 'cancelled', 'url': 'u9'},

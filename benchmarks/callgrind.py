@@ -11,7 +11,9 @@ allowed to drift by NOISE (docs/migration.md, Speed). --ratchet lowers those rec
 two consecutive merge-tier results both beat (.github/workflows/badges.yml files the issue).
 """
 import argparse
+import gzip
 import http.client
+import http.server
 import json
 import math
 import os
@@ -19,9 +21,12 @@ from pathlib import Path
 import shutil
 import signal
 import socket
+import socketserver
+import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -30,8 +35,23 @@ from corpus.run import WebSocket
 
 NOISE = 1.01  # counts for the same binaries drift well under 1% between runs
 PAYLOAD = bytes(range(256)) * 256
+# Compressible JSON text, about 4 KiB and 1 KiB.
+DOCUMENT = json.dumps([{'id': i, 'event': 'order.created', 'status': 'paid', 'total': i * 25}
+                       for i in range(64)], separators=(',', ':')).encode()
+MESSAGE = DOCUMENT[:1024]
+FRAME = (1024).to_bytes(4, 'big') + PAYLOAD[:1024]
 # (application directory, method, path, body, expected response body). method 'WS' opens a
-# WebSocket to the app and echoes `body` frame by frame instead of sending HTTP.
+# WebSocket to the app and echoes `body` frame by frame instead of sending HTTP; 'WSZ' does
+# so with permessage-deflate. 'GZ' is a POST sent with Accept-Encoding: gzip whose response
+# must come back gzip-encoded. 'TCP' and 'UDP' send `body` as raw bytes on one connection
+# (one socket) and read `expected` back. 'TLS' is a GET over HTTPS on one connection and
+# 'WSS' the WebSocket echo over TLS. The pin's test certificate is self-signed, so the client doesn't
+# verify it.
+# 'H2C' posts `body` on 16 HTTP/2 streams at once per request; 'WSF' sends `body` as a WebSocket
+# message in four fragments; 'UP' posts `body` as a multipart file upload.
+H2BODY = PAYLOAD[:4000]
+STATIC = (Path(__file__).parent / 'traffic/static.txt').read_bytes()
+BOUNDARY = 'swoole-rs-benchmark'
 WORKLOADS = {
     'plaintext': ('corpus/01-hello', 'GET', '/', None, b'Hello, Swoole!\n'),
     'json': ('corpus/02-router', 'GET', '/inspect?q=benchmark', None,
@@ -55,27 +75,95 @@ WORKLOADS = {
     # A prepared SELECT through hooked PDO mysql (#2066); needs MySQL on MYSQL_HOST (root/root,
     # database test) and --php-extension mysqlnd --php-extension pdo --php-extension pdo_mysql.
     'mysql': ('benchmarks/mysql', 'GET', '/?id=42', None, b'{"id":42,"name":"benchmark"}'),
+    # Outbound coroutine clients (#2647), against the peers below.
+    'http-client': ('benchmarks/clients', 'GET', '/http', None, b'ok\n'),
+    'client': ('benchmarks/clients', 'GET', '/client', None, b'ok\n'),
+    'socket': ('benchmarks/clients', 'GET', '/socket', None, b'ok\n'),
+    # Compression (#2649): a gzip-encoded HTTP response and a permessage-deflate echo.
+    'gzip': ('benchmarks/compression', 'GZ', '/gzip', DOCUMENT, DOCUMENT),
+    'websocket-deflate': ('benchmarks/compression', 'WSZ', '/chat', MESSAGE, MESSAGE),
+    # Swoole\Server without HTTP (#2650): length-prefixed and end-marker framing, and UDP.
+    'tcp-length': ('corpus/07-tcp-framing', 'TCP', None, FRAME, FRAME),
+    'tcp-eof': ('benchmarks/framing', 'TCP', None, PAYLOAD[:1024] + b'\r\n', PAYLOAD[:1024] + b'\r\n'),
+    'udp': ('benchmarks/framing', 'UDP', None, PAYLOAD[:1024], PAYLOAD[:1024]),
+    # TLS (#2648): the record layer on a kept-alive connection, and wss.
+    'https': ('benchmarks/tls', 'TLS', '/', None, b'ok\n'),
+    'wss': ('benchmarks/tls', 'WSS', '/chat', b'ping', b'ping'),
+    # Swoole\Atomic and Swoole\Lock, and plaintext dispatched through SWOOLE_PROCESS's master (#2654).
+    'atomic': ('benchmarks/primitives', 'GET', '/atomic', None, b'2016\n'),
+    'process-mode': ('benchmarks/process', 'GET', '/', None, b'Hello, Swoole!\n'),
+    # Larger and concurrent traffic (#2652), against benchmarks/traffic.
+    'http2-concurrent': ('benchmarks/traffic', 'H2C', '/echo', H2BODY, H2BODY),
+    'websocket-64k': ('benchmarks/traffic', 'WS', '/', PAYLOAD, PAYLOAD),
+    'websocket-fragmented': ('benchmarks/traffic', 'WSF', '/', PAYLOAD[:4096], PAYLOAD[:4096]),
+    'upload': ('benchmarks/traffic', 'UP', '/upload', PAYLOAD, b'65536\n'),
+    'static': ('benchmarks/traffic', 'GET', '/static.txt', None, STATIC),
 }
+TLS = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+TLS.check_hostname, TLS.verify_mode = False, ssl.CERT_NONE
+
+
+class Pong(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Length', '4')
+        self.end_headers()
+        self.wfile.write(b'pong')
+
+    def log_message(self, *args):
+        pass
+
+
+class Echo(socketserver.BaseRequestHandler):
+    def handle(self):
+        while data := self.request.recv(65536):
+            self.request.sendall(data)
+
+
+def peers():
+    """Environment naming the peers benchmarks/clients calls: an HTTP server and a TCP echo,
+    served from threads of this process so callgrind counts only the client side."""
+    if not hasattr(peers, 'env'):
+        servers = [http.server.ThreadingHTTPServer(('127.0.0.1', 0), Pong),
+                   socketserver.ThreadingTCPServer(('127.0.0.1', 0), Echo)]
+        for server in servers:
+            server.daemon_threads = True
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        peers.env = {'PEER_HTTP_PORT': str(servers[0].server_address[1]),
+                     'PEER_ECHO_PORT': str(servers[1].server_address[1])}
+    return peers.env
 
 
 def h2_frame(kind, flags, stream, payload=b''):
     return len(payload).to_bytes(3, 'big') + bytes([kind, flags]) + stream.to_bytes(4, 'big') + payload
 
 
-def send_h2(port, path, expected, count):
-    """GET `path` `count` times over one HTTP/2 connection, one stream after another."""
+def send_h2(port, path, expected, count, body=None, streams=1):
+    """`count` rounds over one HTTP/2 connection, each opening `streams` streams at once: a GET of
+    `path`, or a POST of `body` when there is one, and reading every stream's response."""
     with socket.create_connection(('127.0.0.1', port), timeout=60) as sock:
         reader = sock.makefile('rb')
         sock.sendall(b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n' + h2_frame(4, 0, 0))
-        # HPACK: :method GET, :scheme http, then :path and :authority as literals of
+        # HPACK: :method GET (or POST), :scheme http, then :path and :authority as literals of
         # static-table names, never indexed, so the encoder keeps no state.
-        block = b'\x82\x86\x04' + bytes([len(path)]) + path.encode() + b'\x01\x09localhost'
-        for stream in range(1, 2 * count, 2):
-            sock.sendall(h2_frame(1, 0x5, stream, block))  # END_STREAM | END_HEADERS
-            body, done = b'', False
-            while not done:
+        block = (b'\x83' if body else b'\x82') + b'\x86\x04' + bytes([len(path)]) + path.encode() + b'\x01\x09localhost'
+        stream = 1
+        for _ in range(count):
+            bodies = {}
+            for _ in range(streams):
+                if body:
+                    sock.sendall(h2_frame(1, 0x4, stream, block) + h2_frame(0, 0x1, stream, body))  # END_HEADERS; END_STREAM
+                else:
+                    sock.sendall(h2_frame(1, 0x5, stream, block))  # END_STREAM | END_HEADERS
+                bodies[stream] = b''
+                stream += 2
+            open_streams = set(bodies)
+            while open_streams:
                 header = reader.read(9)
                 length, kind, flags = int.from_bytes(header[:3], 'big'), header[3], header[4]
+                sid = int.from_bytes(header[5:9], 'big') & 0x7fffffff
                 payload = reader.read(length)
                 if kind == 4 and not flags & 1:
                     sock.sendall(h2_frame(4, 1, 0))  # SETTINGS ACK
@@ -84,11 +172,13 @@ def send_h2(port, path, expected, count):
                 elif kind == 1 and payload[:1] != b'\x88':  # :status 200, static index 8
                     raise RuntimeError(f'unexpected HTTP/2 response headers: {payload!r}')
                 elif kind == 0 and length:
-                    body += payload
+                    bodies[sid] += payload
                     sock.sendall(h2_frame(8, 0, 0, length.to_bytes(4, 'big')))  # WINDOW_UPDATE
-                done = kind in (0, 1) and flags & 1
-            if body != expected:
-                raise RuntimeError(f'unexpected HTTP/2 body: {body[:80]!r}')
+                if kind in (0, 1) and flags & 1:
+                    open_streams.discard(sid)
+            for received in bodies.values():
+                if received != expected:
+                    raise RuntimeError(f'unexpected HTTP/2 body: {received[:80]!r}')
 
 
 def wait_for_port(port, proc, seconds=180):
@@ -106,25 +196,60 @@ def wait_for_port(port, proc, seconds=180):
 
 def send(port, workload, count):
     _, method, path, payload, expected = workload
-    if method == 'WS':
-        client = WebSocket(port)
+    if method in ('WS', 'WSF', 'WSZ', 'WSS'):
+        client = WebSocket(port, deflate=method == 'WSZ', tls=TLS if method == 'WSS' else None)
         try:
             for _ in range(count):
-                client.send(payload)
+                if method == 'WSF':
+                    quarter = len(payload) // 4
+                    for i in range(4):
+                        client.send(payload[i * quarter:(i + 1) * quarter], opcode=0 if i else 1, fin=i == 3)
+                else:
+                    client.send(payload)
                 body = client.receive()
                 if body != expected:
                     raise RuntimeError(f'unexpected WebSocket frame: {body[:80]!r}')
         finally:
             client.close()
         return
-    if method == 'H2':
-        send_h2(port, path, expected, count)
+    if method in ('H2', 'H2C'):
+        send_h2(port, path, expected, count, *((payload, 16) if method == 'H2C' else ()))
         return
-    conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
+    if method in ('TCP', 'UDP'):
+        if method == 'TCP':
+            sock = socket.create_connection(('127.0.0.1', port), timeout=60)
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(60)
+            sock.connect(('127.0.0.1', port))
+        with sock:
+            for _ in range(count):
+                sock.sendall(payload)
+                body = sock.recv(65536)
+                while method == 'TCP' and len(body) < len(expected) and (chunk := sock.recv(65536)):
+                    body += chunk
+                if body != expected:
+                    raise RuntimeError(f'unexpected {method} reply: {body[:80]!r}')
+        return
+    if method == 'TLS':
+        conn = http.client.HTTPSConnection('127.0.0.1', port, timeout=60, context=TLS)
+    else:
+        conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
     for _ in range(count):
-        conn.request(method, path, payload)
+        if method == 'GZ':
+            conn.request('POST', path, payload, {'Accept-Encoding': 'gzip'})
+        elif method == 'UP':
+            form = (f'--{BOUNDARY}\r\nContent-Disposition: form-data; name="file"; filename="upload.bin"\r\n'
+                    f'Content-Type: application/octet-stream\r\n\r\n').encode() + payload + f'\r\n--{BOUNDARY}--\r\n'.encode()
+            conn.request('POST', path, form, {'Content-Type': f'multipart/form-data; boundary={BOUNDARY}'})
+        else:
+            conn.request('GET' if method == 'TLS' else method, path, payload)
         response = conn.getresponse()
         body = response.read()
+        if method == 'GZ':
+            if response.getheader('Content-Encoding') != 'gzip':
+                raise RuntimeError(f'response not gzip-encoded: {response.getheaders()!r}')
+            body = gzip.decompress(body)
         if response.status not in (200, 201) or body != expected:
             raise RuntimeError(f'unexpected response {response.status}: {body[:80]!r}')
     conn.close()
@@ -138,7 +263,7 @@ def instructions(engine, workload, requests, warmup, profiles=None):
         command = ['valgrind', '--tool=callgrind', '--trace-children=yes', '--instr-atstart=no',
                    f'--callgrind-out-file={out}/cg.%p',
                    *engine.command(ROOT / workload[0] / 'server.php')]
-        proc = subprocess.Popen(command, env={**os.environ, 'TEST_PORT': str(port), 'TEST_DATA': data},
+        proc = subprocess.Popen(command, env={**os.environ, **peers(), 'TEST_PORT': str(port), 'TEST_DATA': data},
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         try:
             wait_for_port(port, proc)

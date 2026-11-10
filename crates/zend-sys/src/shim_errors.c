@@ -69,3 +69,11 @@ int swr_zend_try_get_string(zval *value, zend_string **out) {
     *out = ZSTR_EMPTY_ALLOC();
     SWR_TRAP(*out = zval_get_string(value));
 }
+
+int swr_zend_try_ptr_dtor(zval *value) {
+    SWR_TRAP(zval_ptr_dtor(value));
+}
+
+int swr_zend_try_hash_update(HashTable *table, zend_string *key, zval *value) {
+    SWR_TRAP(zend_hash_update(table, key, value));
+}

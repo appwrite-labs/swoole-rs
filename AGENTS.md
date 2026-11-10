@@ -63,16 +63,16 @@ migration moves fastest when a PR moves a group of state together with the
 operations over it and deletes their upstream bodies, and it only ever moves into
 Rust.
 
-1. If `python3 tools/ci.py stuck` lists a PR (conflicting, or a required check
-   failed), fix the oldest one first, whoever opened it. Otherwise claim the first
+1. If `python3 tools/ci.py stuck` lists a PR (conflicting, a required check
+   failed, or the merge queue dropped it), fix the oldest one first, whoever opened it. Otherwise claim the first
    issue `python3 tools/ci.py next` prints (see Tickets).
 2. Branch from `main` and commit; `git config core.hooksPath .githooks` enables
    the quick pre-commit checks.
 3. Push, open a PR whose body says `Closes #n` and what you checked, run
    `gh pr merge --auto --squash <pr>`, and go straight on to the next issue in
-   the same turn. Opening the PR ends your part: auto-merge lands it, and the
-   merge tier, *Red main* and `ci.py stuck` catch anything it breaks, so don't
-   wait for either. File follow-ups as `status:ready` sub-issues of the same goal as you find them.
+   the same turn. Opening the PR ends your part: once its PR tier passes, auto-merge
+   puts it in `main`'s merge queue, which lands it unless it breaks the merge tier, and
+   `ci.py stuck` lists a PR the queue drops, so don't wait for either. File follow-ups as `status:ready` sub-issues of the same goal as you find them.
 
 Nobody needs to approve your next step, so keep the loop going on your own. Under
 `/loop`, schedule each wakeup for 60 seconds, whatever the wakeup tool suggests:
@@ -149,7 +149,7 @@ compare-and-swap):
 ## CI CLI
 
 `tools/ci.py` (`wait`, `status`, `next`, `stuck`; see `--help`) is the only way agents watch
-CI; GitHub's auto-merge does the merging. It needs a checkout, `gh` and Python, so it works in every session.
+CI; GitHub's auto-merge and merge queue do the merging. It needs a checkout, `gh` and Python, so it works in every session.
 The pre-commit and pre-push hooks remind you of the next command. Agents
 improve it: add a subcommand when an agent would otherwise improvise (polling,
 ad-hoc scripts, `gh run watch`).
@@ -157,8 +157,8 @@ ad-hoc scripts, `gh run watch`).
 ## CI
 
 Three tiers: the pre-commit hook (~5s warm), the PR tier (`pr.yml`, under 3 minutes
-warm) and the merge tier (`merge.yml`, on `main`). `main`'s ruleset requires a
-pull request and the PR tier's `required` check, which passes when every job it
+warm) and the merge tier (`merge.yml`, in `main`'s merge queue and again on `main`).
+`main`'s ruleset requires a pull request, the PR tier's `required` check and the merge queue, which passes when every job it
 `needs` passed or was skipped; add a blocking job there, and renaming `required`
 means updating the ruleset in the same PR. `ext` (the Cargo-built
 swoole.so with every module, extension load and corpus, a few minutes cached) runs only when a PR
@@ -168,10 +168,18 @@ touches and those depending on a touched crate, and fails only on a phase that d
 main's latest completed merge-tier run (`ci.py new-failures`). `phpt` runs the touched
 modules' PHPT families on the Cargo build in parallel shards, gated on upstream's results from
 main's latest merge-tier run (`ci.py phpt-baseline`). Breakage they miss is caught by
-the merge tier and the red-main rule. Keep them cached and audit
+the merge queue. Keep them cached and audit
 them regularly for waste and duplicate steps; slow or flaky CI is a ticket.
 
-The merge tier runs one at a time, latest wins: while a run is in progress, each
+The merge queue takes a PR whose PR tier passed and runs the merge tier on it together
+with the PRs queued ahead, on top of `main`, before any of them lands. That run's own
+`required` job (`ci.py new-failures --run`) fails on a phase or job that didn't fail in
+`main`'s latest completed merge-tier run, and GitHub then drops the PR from the queue and
+turns its auto-merge off. `ci.py stuck` lists it with that run: fix what it broke, or
+re-run a job that died on its runner, and run `gh pr merge --auto --squash <pr>` again.
+A PR lands about a merge-tier run after it's queued.
+
+On `main` the merge tier runs one at a time, latest wins: while a run is in progress, each
 push to `main` replaces the pending run, so the next run covers `main`'s head.
 Its result therefore describes the commit it names, which may be several merges
 old: at most one run (about 15-30 minutes) behind `main`. Every job has a
@@ -181,7 +189,8 @@ old: at most one run (about 15-30 minutes) behind `main`. Every job has a
 
 `main` is often red, and that's tolerable; never stop other work because of it.
 What must not slip through is a **new** failure: a phase that passed in the
-previous completed merge-tier run, or one that didn't exist then. Before you
+previous completed merge-tier run, or one that didn't exist then. The merge queue
+stops most of them, but a flaky phase can pass in the queue and fail on `main`. Before you
 claim, glance at `python3 tools/ci.py status`: it lists them as `new failures`.
 
 For each new failure, search open issues for the phase name (`ci.py status` lists

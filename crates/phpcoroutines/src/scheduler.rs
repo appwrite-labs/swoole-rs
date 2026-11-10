@@ -118,6 +118,7 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     }
     // SAFETY: as above.
     unsafe { SchedulerObject::dtor(std) };
+    bailout::finish();
 }
 
 swoole_rs_zend::handlers! {

@@ -55,6 +55,7 @@ jobs:
       threadcontext: ${{ steps.paths.outputs.threadcontext }}
       h2spec: ${{ steps.paths.outputs.h2spec }}
       asan: ${{ steps.paths.outputs.asan }}
+      tsan: ${{ steps.paths.outputs.tsan }}
       families: ${{ steps.phpt.outputs.families }}
       engines: ${{ steps.phpt.outputs.engines }}
       baseline: ${{ steps.phpt.outputs.baseline }}
@@ -66,19 +67,26 @@ jobs:
         with:
           fetch-depth: 0
       # The PHPT families of the modules this PR touches (every family for shared build
-      # inputs), and main's merge-tier run whose upstream results gate them. Upstream runs
-      # here too when this PR changes how upstream or its PHPTs are built or run.
+      # inputs), and main's merge-tier run whose upstream results gate them. Every family
+      # and upstream run here when this PR changes what upstream's results depend on
+      # (tools/ci.py BASELINES).
       - id: phpt
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           families=$(python3 -c "
+          import subprocess
+          from tools.ci import BASELINES, UPSTREAM_KEY
           from tools.dev import MODULES, changed_modules, phpt_families
-          modules = changed_modules('origin/${{ github.base_ref }}', consumers=False)
-          print('all' if modules == sorted(MODULES) else ' '.join(phpt_families(modules)))")
+          base = 'origin/${{ github.base_ref }}'
+          modules = changed_modules(base, consumers=False)
+          # A PR that changes how the PHPTs are built or run (what a baseline depends on) runs them all.
+          runner = subprocess.check_output(['git', 'diff', '--name-only', base + '...HEAD', '--',
+                                            'corpus/upstream/', *UPSTREAM_KEY, *BASELINES['phpt'][4]], text=True)
+          print('all' if runner or modules == sorted(MODULES) else ' '.join(phpt_families(modules)))")
           echo "families=$families" >> "$GITHUB_OUTPUT"
-          read -r run sha <<< "$(python3 tools/ci.py phpt-baseline || true)"
-          if [ -n "$run" ] && git diff --quiet "$sha" HEAD -- tools/build_upstream.py corpus/upstream/; then
+          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline || true)"
+          if [ -n "$run" ]; then
             echo "baseline=$run" >> "$GITHUB_OUTPUT"
             echo 'engines=["cargo"]' >> "$GITHUB_OUTPUT"
           else
@@ -108,6 +116,9 @@ jobs:
           fi
           if echo "$changed" | grep -qE '^(tools/asan\.py|tools/lsan\.supp|\.github/workflows/asan\.yml|\.devcontainer/php\.sh)$'; then
             echo asan=true >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(tools/(tsan\.py|tsan\.supp|tsan_canary\.rs)|\.github/workflows/tsan\.yml|\.devcontainer/php\.sh)$'; then
+            echo tsan=true >> "$GITHUB_OUTPUT"
           fi
 
   # The Cargo-built swoole.so with every module, the halfclose repair and the cURL and
@@ -227,6 +238,12 @@ jobs:
     if: needs.changes.outputs.asan == 'true'
     uses: ./.github/workflows/asan.yml
 
+  # The ThreadSanitizer run (nightly), when a PR touches it. Informative.
+  tsan:
+    needs: changes
+    if: needs.changes.outputs.tsan == 'true'
+    uses: ./.github/workflows/tsan.yml
+
   # Candidate-lane gates of the modules this PR touches, and of those whose packages
   # depend on a touched crate (every module for shared build inputs). It fails only on
   # a phase that didn't fail in main's latest completed merge-tier run: red main
@@ -309,7 +326,7 @@ jobs:
 
   # The one check main's ruleset requires: every blocking job passed or was skipped.
   # A skipped reusable-workflow caller reports no check at all, so the ruleset can't
-  # name those jobs directly. cares and asan stay informative.
+  # name those jobs directly. cares, asan and tsan stay informative.
   required:
     if: always()
     needs: [rust, tooling, changes, ext, gates, phpt-build, phpt, iouring, zts, threadcontext]
