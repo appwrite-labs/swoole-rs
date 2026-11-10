@@ -18,8 +18,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* coroutine::dns_lookup: each address of domain pushed onto list, in order. */
-void swr_v1_hook_dns_lookup(const char *domain, int family, double timeout, void (*push)(void *list, const char *address), void *list);
 /* The coroutine Socket's connection state, Rust-owned behind an opaque handle (#439) in its record. */
 typedef struct swr_v1_hook_socket_state swr_v1_hook_socket_state;
 #ifdef __cplusplus
