@@ -557,22 +557,21 @@ fn url_ws(c: u8) -> bool {
 }
 
 fn token(c: u8) -> bool {
-    TOKENS.get(usize::from(c)).copied().unwrap_or_default()
+    c < 128 && TOKENS >> c & 1 == 1
 }
 
-/// `token`'s bytes, as a table: a header name tests every byte.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a byte indexes the 256-entry table"
-)]
-const TOKENS: [bool; 256] = {
-    let mut table = [false; 256];
+/// `token`'s bytes, one bit each: a header name tests every byte.
+const TOKENS: u128 = {
+    let mut set = 0;
     let mut c = 0;
-    while c < 256 {
-        table[c] = matches!(c, 0x21 | 0x23..=0x27 | 0x2a | 0x2b | 0x2d | 0x2e | 0x30..=0x39 | 0x41..=0x5a | 0x5e..=0x7a | 0x7c | 0x7e);
+    while c < 128 {
+        if matches!(c, 0x21 | 0x23..=0x27 | 0x2a | 0x2b | 0x2d | 0x2e | 0x30..=0x39 | 0x41..=0x5a | 0x5e..=0x7a | 0x7c | 0x7e)
+        {
+            set |= 1 << c;
+        }
         c += 1;
     }
-    table
+    set
 };
 
 fn value_char(c: u8) -> bool {
