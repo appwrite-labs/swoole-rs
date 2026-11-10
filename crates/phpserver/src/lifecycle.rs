@@ -521,7 +521,8 @@ fn delete(serv: *mut c_void) {
     unsafe { swr_v1_server_delete(serv) };
 }
 
-/// The servers [`free`] leaves to [`php_swoole_server_mshutdown`].
+/// The servers [`free`] leaves to [`php_swoole_server_mshutdown`], and those a
+/// failed `__construct` never bound: upstream keeps them, as `SwooleG.server` too.
 fn orphans() -> std::sync::MutexGuard<'static, Vec<usize>> {
     static ORPHANS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
     ORPHANS
@@ -782,6 +783,7 @@ fn construct(call: &Call) {
         if server_methods::add_systemd_socket(server) <= 0 {
             // SAFETY: from a handler.
             unsafe { throw_error(c"failed to add systemd socket") };
+            orphans().push(serv as usize);
             return call.set_bool(false);
         }
     } else if {
@@ -804,6 +806,7 @@ fn construct(call: &Call) {
         text.push(reason.to_bytes());
         text.push(format!("[{code}]").as_bytes());
         exception(text.as_cstr(), code.into());
+        orphans().push(serv as usize);
         return call.set_bool(false);
     }
     bind(call, server);
