@@ -10,7 +10,7 @@
 //! Each `// assert(...)` comment is the upstream assertion the `assert!` under it
 //! carries.
 
-use crate::fixed::{self, DebugCursor, Fixed, Layout, Slice};
+use crate::fixed::{self, DebugCursor, Fixed, Layout};
 use crate::global::{self, Global};
 use crate::table::Table;
 use std::ffi::{c_int, c_void};
@@ -103,12 +103,9 @@ impl FixedPool {
         );
         // The same address, from the arena: nothing is read through the caller's pointer.
         let slice = memory.wrapping_add(data.addr() - memory.addr());
-        // SAFETY: inside the arena, since the 48-byte header precedes `memory` and
-        // `slice` lies past it (asserted above): the byte `lock` would be at.
-        let lock = unsafe { slice.wrapping_sub(mem::size_of::<Slice>()).read() };
-        // assert(slice->lock == 1);
-        assert_eq!(lock, 1, "an allocated slice");
-        // SAFETY: a constructed pool; `free` checks the range and stride itself.
+        // SAFETY: a constructed pool; `free` checks the stride before it reads a
+        // slice header, then upstream's `slice->lock == 1`, so a pointer into a
+        // slice's (maybe uninitialized) data is refused unread.
         let freed = unsafe { fixed::free(self.0.as_ptr(), slice.cast()) };
         assert!(freed, "a live slice of this pool");
     }
@@ -470,7 +467,9 @@ pub mod pool {
     use super::GlobalMemory;
     use std::ffi::c_void;
     use std::ptr;
+    use std::slice;
     use std::sync::atomic::Ordering::SeqCst;
+    use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
 
     static POOL: GlobalMemory = GlobalMemory::empty();
 
@@ -523,6 +522,29 @@ pub mod pool {
     pub fn memory_size() -> usize {
         POOL.memory_size()
     }
+
+    /// An atomic that is valid zeroed and needs no more than the pool's alignment.
+    pub trait Word: sealed::Sealed {}
+    impl Word for AtomicU32 {}
+    impl Word for AtomicI64 {}
+    impl Word for AtomicU64 {}
+    mod sealed {
+        pub trait Sealed {}
+        impl Sealed for std::sync::atomic::AtomicU32 {}
+        impl Sealed for std::sync::atomic::AtomicI64 {}
+        impl Sealed for std::sync::atomic::AtomicU64 {}
+    }
+
+    /// `count` zero words from [`alloc`], as long as PHP runs: `Swoole\Atomic`'s
+    /// and `Swoole\Lock`'s.
+    #[must_use]
+    pub fn words<W: Word>(count: usize) -> Option<&'static [W]> {
+        let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
+        let block = alloc(size).cast::<W>();
+        // SAFETY: null, or `count` zeroed (so valid) words, 8-aligned (enough
+        // for each `Word`), which the pool gives no one else.
+        (!block.is_null()).then(|| unsafe { slice::from_raw_parts(block, count) })
+    }
 }
 
 fn table_error(code: c_int) {
@@ -540,11 +562,8 @@ fn table_warning(message: &[u8]) {
 
 /// `Table::make(rows_size, conflict_proportion)`: the header comes from the global
 /// memory pool, so forked workers share it.
-///
-/// # Safety
-/// `swoole_init` made the global pool.
 #[must_use]
-pub unsafe fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
+pub fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
     #[expect(clippy::cast_possible_truncation, reason = "a sub-page header")]
     let table = pool::alloc(mem::size_of::<Table>() as u32).cast::<Table>();
     if table.is_null() {

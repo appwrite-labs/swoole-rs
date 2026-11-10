@@ -4,6 +4,7 @@
 //! (Itanium) symbols with `upstream-symbols`; the corebase patch deletes the C++.
 use crate::{swr_v1_utils_hash, swr_v1_utils_spinlock};
 use std::ffi::{c_char, c_int};
+use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::constants::SW_SPINLOCK_LOOP_N;
 use swoole_rs_corebase::swr_v1_core_cpu_num;
 
@@ -39,7 +40,8 @@ pub unsafe extern "C" fn sw_atomic_futex_wait(atomic: *mut u32, timeout: f64) ->
     #[cfg(not(target_os = "linux"))]
     {
         // SAFETY: as the caller promises.
-        unsafe { crate::wait_registry::registry_wait(atomic, timeout) }
+        unsafe { crate::wait_registry::atomic(atomic) }
+            .map_or_else(|e| e, |word| futex_wait(word, timeout))
     }
 }
 
@@ -60,7 +62,32 @@ pub unsafe extern "C" fn sw_atomic_futex_wakeup(atomic: *mut u32, n: c_int) -> c
     #[cfg(not(target_os = "linux"))]
     {
         // SAFETY: as the caller promises.
-        unsafe { crate::wait_registry::registry_wakeup(atomic, n) }
+        unsafe { crate::wait_registry::atomic(atomic) }
+            .map_or_else(|e| e, |word| futex_wakeup(word, n))
+    }
+}
+
+/// [`sw_atomic_futex_wait`] on a word.
+pub fn futex_wait(word: &AtomicU32, timeout: f64) -> c_int {
+    #[cfg(target_os = "linux")]
+    {
+        swoole_rs_locks::wait(word, timeout)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        crate::wait_registry::registry_wait(word, timeout)
+    }
+}
+
+/// [`sw_atomic_futex_wakeup`] on a word.
+pub fn futex_wakeup(word: &AtomicU32, n: c_int) -> c_int {
+    #[cfg(target_os = "linux")]
+    {
+        swoole_rs_locks::wakeup(word, n)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        crate::wait_registry::registry_wakeup(word, n)
     }
 }
 

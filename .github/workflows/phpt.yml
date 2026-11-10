@@ -107,7 +107,9 @@ jobs:
           path: phpt-engines
       - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
         continue-on-error: true
-        run: mkdir baseline-cache && cp shards/upstream-*.json phpt-engines/upstream.so baseline-cache/
+        run: |
+          mkdir baseline-cache && cp shards/upstream-*.json phpt-engines/upstream.so baseline-cache/
+          echo '{"run": "${{ github.run_id }}", "sha": "${{ github.sha }}"}' > baseline-cache/meta.json
       - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
         continue-on-error: true
         uses: actions/cache/save@v4

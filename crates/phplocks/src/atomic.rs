@@ -1,67 +1,60 @@
 //! `Swoole\Atomic` and `Swoole\Atomic\Long`: a word in Swoole's global memory
 //! pool, so processes forked after construction share it.
-use crate::word::{self, Word, methods};
-use std::ffi::c_int;
+use crate::word::{self, Holder};
+use std::sync::atomic::{AtomicI64, AtomicU32};
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::atomic;
-use swoole_rs_zend::{
-    Call, Class, Object, method_table,
-    sys::{ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
-    throw_exception, unset_property_deny,
-};
+use swoole_rs_zend::{Call, Custom, CustomClass, Minit, method_table, sys::ZEND_ACC_PUBLIC};
 
 /// `SW_ERROR_MALLOC_FAIL`.
 const MALLOC_FAIL: i64 = 501;
 
-static ATOMIC: Class = Class::new();
-static LONG: Class = Class::new();
+static ATOMIC: CustomClass<Atomic> = CustomClass::new();
+static LONG: CustomClass<Long> = CustomClass::new();
 
-/// `struct AtomicObject { sw_atomic_t *ptr; zend_object std; }` and its Long twin.
-type Atomic<W> = Object<*mut W>;
+/// `struct AtomicObject { sw_atomic_t *ptr; zend_object std; }`.
+pub(crate) struct Atomic(Option<&'static AtomicU32>);
+/// `struct AtomicLongObject { sw_atomic_long_t *ptr; zend_object std; }`.
+pub(crate) struct Long(Option<&'static AtomicI64>);
 
-trait Kind: Word {
-    fn class() -> &'static Class;
+/// The pool's word, or Swoole's exception when it has none.
+fn alloc<W>(word: Option<&'static W>) -> Option<&'static W> {
+    if word.is_none() {
+        swoole_rs_phpswoole::exception().throw(c"global memory allocation failure", MALLOC_FAIL);
+    }
+    word
 }
 
-impl Kind for u32 {
-    fn class() -> &'static Class {
+impl Custom for Atomic {
+    fn class() -> &'static CustomClass<Self> {
         &ATOMIC
     }
+    fn new() -> Self {
+        Self(alloc(pool::words(1).and_then(<[_]>::first)))
+    }
 }
 
-impl Kind for i64 {
-    fn class() -> &'static Class {
+impl Custom for Long {
+    fn class() -> &'static CustomClass<Self> {
         &LONG
     }
-}
-
-unsafe extern "C" fn create<W: Kind>(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass of it;
-    // a null pointer is valid zeroed data.
-    let std = unsafe { Atomic::<W>::create(W::class(), ce) };
-    #[expect(clippy::cast_possible_truncation, reason = "a word is 4 or 8 bytes")]
-    let word = pool::alloc(size_of::<W>() as u32);
-    if word.is_null() {
-        let exception = swoole_rs_phpswoole::exception_class();
-        // SAFETY: in a handler, with Swoole's exception class.
-        unsafe {
-            throw_exception(exception, c"global memory allocation failure", MALLOC_FAIL);
-        }
+    fn new() -> Self {
+        Self(alloc(pool::words(1).and_then(<[_]>::first)))
     }
-    // SAFETY: `std` is the object just created.
-    unsafe { *Atomic::<W>::data(std) = word.cast() };
-    std
 }
 
-unsafe extern "C" fn free<W: Kind>(std: *mut zend_object) {
-    // The word stays: the global pool frees nothing.
-    // SAFETY: Zend frees an object this class created.
-    unsafe { Atomic::<W>::dtor(std) };
+impl Holder for Atomic {
+    type Word = AtomicU32;
+    fn word(&self) -> Option<&AtomicU32> {
+        self.0
+    }
 }
 
-fn this_word<W>(call: &Call) -> *mut W {
-    // SAFETY: Atomic methods are non-static, so `$this` is one of our objects.
-    unsafe { *Atomic::<W>::data(call.this()) }
+impl Holder for Long {
+    type Word = AtomicI64;
+    fn word(&self) -> Option<&AtomicI64> {
+        self.0
+    }
 }
 
 method_table! {
@@ -88,59 +81,44 @@ method_table! {
     ];
 }
 
+swoole_rs_zend::minit!(atomic_minit => register);
+
 /// `php_swoole_atomic_minit`: register both classes.
-/// # Safety
-/// Called once, at MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_atomic_minit(_module_number: c_int) {
-    // SAFETY: MINIT, with static tables.
-    unsafe { ATOMIC.register(c"Swoole\\Atomic", ATOMIC_METHODS.as_ptr(), configure::<u32>) };
-    // SAFETY: as above.
-    unsafe {
-        LONG.register(
-            c"Swoole\\Atomic\\Long",
-            LONG_METHODS.as_ptr(),
-            configure::<i64>,
-        );
-    }
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "minit! raises the bailout a MINIT body returns"
+)]
+fn register(minit: &Minit) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+    minit.register_object::<Atomic>(c"Swoole\\Atomic", &ATOMIC_METHODS.0, 0);
+    minit.register_object::<Long>(c"Swoole\\Atomic\\Long", &LONG_METHODS.0, 0);
+    Ok(())
 }
 
-/// `SW_SET_CLASS_NOT_SERIALIZABLE`, clone and unset denied, custom object.
-fn configure<W: Kind>(
-    entry: &mut zend_class_entry,
-    handlers: &mut swoole_rs_zend::sys::zend_object_handlers,
-) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    Atomic::<W>::install(entry, handlers, create::<W>, free::<W>);
-}
-
-fn construct(call: &Call, word: *mut u32) {
-    word::construct(call, word);
+fn construct(call: &Call) {
+    word::construct::<Atomic>(call);
 }
 
 /// `Atomic\Long::__construct` returns true.
-fn construct_long(call: &Call, word: *mut i64) {
-    if word::construct(call, word) {
+fn construct_long(call: &Call) {
+    if word::construct::<Long>(call) {
         call.set_bool(true);
     }
 }
 
-methods! {
-    this_word;
-    zim_swoole_atomic___construct: u32 => construct;
-    zim_swoole_atomic_add: u32 => word::add;
-    zim_swoole_atomic_sub: u32 => word::sub;
-    zim_swoole_atomic_get: u32 => word::get;
-    zim_swoole_atomic_set: u32 => word::set;
-    zim_swoole_atomic_cmpset: u32 => word::cmpset;
-    zim_swoole_atomic_wait: u32 => word::wait;
-    zim_swoole_atomic_wakeup: u32 => word::wakeup;
-    zim_swoole_atomic_long___construct: i64 => construct_long;
-    zim_swoole_atomic_long_add: i64 => word::add;
-    zim_swoole_atomic_long_sub: i64 => word::sub;
-    zim_swoole_atomic_long_get: i64 => word::get;
-    zim_swoole_atomic_long_set: i64 => word::set;
-    zim_swoole_atomic_long_cmpset: i64 => word::cmpset;
+swoole_rs_zend::handlers! {
+    leaf:
+    zim_swoole_atomic___construct => construct;
+    zim_swoole_atomic_add => word::add::<Atomic>;
+    zim_swoole_atomic_sub => word::sub::<Atomic>;
+    zim_swoole_atomic_get => word::get::<Atomic>;
+    zim_swoole_atomic_set => word::set::<Atomic>;
+    zim_swoole_atomic_cmpset => word::cmpset::<Atomic>;
+    zim_swoole_atomic_wait => word::wait::<Atomic>;
+    zim_swoole_atomic_wakeup => word::wakeup::<Atomic>;
+    zim_swoole_atomic_long___construct => construct_long;
+    zim_swoole_atomic_long_add => word::add::<Long>;
+    zim_swoole_atomic_long_sub => word::sub::<Long>;
+    zim_swoole_atomic_long_get => word::get::<Long>;
+    zim_swoole_atomic_long_set => word::set::<Long>;
+    zim_swoole_atomic_long_cmpset => word::cmpset::<Long>;
 }

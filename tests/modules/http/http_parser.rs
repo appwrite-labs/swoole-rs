@@ -1,96 +1,15 @@
-//! Upstream's `core-tests/src/server/http_parser.cpp`, one Rust test per TEST: the
-//! bundled llhttp (crates/oracle's copy of `thirdparty/llhttp`) driven through
-//! `swoole_llhttp_parser_init`/`_execute`, with the same inputs, callbacks and
-//! expected values.
-use std::ffi::{CStr, c_char, c_int, c_void};
-use swoole_rs_oracle as _;
+//! Upstream's `core-tests/src/server/http_parser.cpp`, one Rust test per TEST: crates/http's
+//! llhttp, driven as `swoole_llhttp_parser_init`/`_execute` drove the bundled C, with the
+//! same inputs, callbacks and expected values.
+use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 
-/// `llhttp_t`.
-#[repr(C)]
-struct Parser {
-    index: i32,
-    span_pos0: *mut c_void,
-    span_cb0: *mut c_void,
-    error: i32,
-    reason: *const c_char,
-    error_pos: *const c_char,
-    data: *mut c_void,
-    current: *mut c_void,
-    content_length: u64,
-    kind: u8,
-    method: u8,
-    http_major: u8,
-    http_minor: u8,
-    header_state: u8,
-    lenient_flags: u16,
-    upgrade: u8,
-    finish: u8,
-    flags: u16,
-    status_code: u16,
-    initial_message_completed: u8,
-    settings: *const c_void,
-}
-
-type DataCallback = unsafe extern "C" fn(*mut Parser, *const c_char, usize) -> c_int;
-type Callback = unsafe extern "C" fn(*mut Parser) -> c_int;
-
-/// `llhttp_settings_t`.
-#[repr(C)]
-struct Settings {
-    on_message_begin: Callback,
-    on_protocol: DataCallback,
-    on_url: DataCallback,
-    on_status: DataCallback,
-    on_method: DataCallback,
-    on_version: DataCallback,
-    on_header_field: DataCallback,
-    on_header_value: DataCallback,
-    on_chunk_extension_name: DataCallback,
-    on_chunk_extension_value: DataCallback,
-    on_headers_complete: Callback,
-    on_body: DataCallback,
-    on_message_complete: Callback,
-    on_protocol_complete: Callback,
-    on_url_complete: Callback,
-    on_status_complete: Callback,
-    on_method_complete: Callback,
-    on_version_complete: Callback,
-    on_header_field_complete: Callback,
-    on_header_value_complete: Callback,
-    on_chunk_extension_name_complete: Callback,
-    on_chunk_extension_value_complete: Callback,
-    on_chunk_header: Callback,
-    on_chunk_complete: Callback,
-    on_reset: Callback,
-}
-
-unsafe extern "C" {
-    fn llhttp_init(parser: *mut Parser, kind: c_int, settings: *const Settings);
-    fn llhttp_execute(parser: *mut Parser, data: *const c_char, length: usize) -> c_int;
-    fn llhttp_resume(parser: *mut Parser);
-    fn llhttp_resume_after_upgrade(parser: *mut Parser);
-    fn llhttp_get_error_pos(parser: *const Parser) -> *const c_char;
-    fn llhttp_get_errno(parser: *const Parser) -> c_int;
-    fn llhttp_get_error_reason(parser: *const Parser) -> *const c_char;
-    fn llhttp_get_http_major(parser: *mut Parser) -> u8;
-    fn llhttp_get_http_minor(parser: *mut Parser) -> u8;
-    fn llhttp_get_method(parser: *mut Parser) -> u8;
-    fn llhttp_get_status_code(parser: *mut Parser) -> c_int;
-    fn llhttp_get_upgrade(parser: *mut Parser) -> u8;
-    fn llhttp_should_keep_alive(parser: *const Parser) -> c_int;
-    fn llhttp_reset(parser: *mut Parser);
-    fn llhttp_method_name(method: c_int) -> *const c_char;
-}
-
-const HTTP_REQUEST: c_int = 1;
-const HTTP_RESPONSE: c_int = 2;
-const HPE_OK: c_int = 0;
-const HPE_PAUSED: c_int = 21;
-const HPE_PAUSED_UPGRADE: c_int = 22;
-const HPE_PAUSED_H2_UPGRADE: c_int = 23;
+const HTTP_REQUEST: u8 = llhttp::REQUEST;
+const HTTP_RESPONSE: u8 = llhttp::RESPONSE;
+const HPE_OK: i32 = llhttp::HPE_OK;
+const HPE_PAUSED_H2_UPGRADE: i32 = llhttp::HPE_PAUSED_H2_UPGRADE;
 const HTTP_GET: u8 = 1;
-const HTTP_PRI: u8 = 34;
-const HTTP_STATUS_OK: c_int = 200;
+const HTTP_PRI: u8 = llhttp::PRI;
+const HTTP_STATUS_OK: u16 = 200;
 
 /// The test's `HttpContext`: the fields its callbacks write.
 #[derive(Default)]
@@ -101,129 +20,76 @@ struct HttpContext {
     query_string: String,
 }
 
-unsafe fn context<'a>(parser: *mut Parser) -> &'a mut HttpContext {
-    unsafe { &mut *(*parser).data.cast::<HttpContext>() }
+fn text(data: &[u8]) -> String {
+    String::from_utf8_lossy(data).into_owned()
 }
 
-unsafe fn text(at: *const c_char, length: usize) -> String {
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(at.cast::<u8>(), length) })
-        .into_owned()
-}
-
-unsafe extern "C" fn on_url(parser: *mut Parser, at: *const c_char, length: usize) -> c_int {
-    unsafe { context(parser).query_string = text(at, length) };
-    0
-}
-
-unsafe extern "C" fn on_header_field(
-    parser: *mut Parser,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    unsafe { context(parser).header_fields.push(text(at, length)) };
-    0
-}
-
-unsafe extern "C" fn on_header_value(
-    parser: *mut Parser,
-    at: *const c_char,
-    length: usize,
-) -> c_int {
-    unsafe { context(parser).header_values.push(text(at, length)) };
-    0
-}
-
-unsafe extern "C" fn on_message_complete(parser: *mut Parser) -> c_int {
-    unsafe { context(parser).completed = 1 };
-    0
-}
-
-unsafe extern "C" fn data_cb(_: *mut Parser, _: *const c_char, _: usize) -> c_int {
-    0
-}
-
-unsafe extern "C" fn cb(_: *mut Parser) -> c_int {
-    0
-}
-
-/// `http_parser_settings`.
-static SETTINGS: Settings = Settings {
-    on_message_begin: cb,
-    on_protocol: data_cb,
-    on_url,
-    on_status: data_cb,
-    on_method: data_cb,
-    on_version: data_cb,
-    on_header_field,
-    on_header_value,
-    on_chunk_extension_name: data_cb,
-    on_chunk_extension_value: data_cb,
-    on_headers_complete: cb,
-    on_body: data_cb,
-    on_message_complete,
-    on_protocol_complete: cb,
-    on_url_complete: cb,
-    on_status_complete: cb,
-    on_method_complete: cb,
-    on_version_complete: cb,
-    on_header_field_complete: cb,
-    on_header_value_complete: cb,
-    on_chunk_extension_name_complete: cb,
-    on_chunk_extension_value_complete: cb,
-    on_chunk_header: cb,
-    on_chunk_complete: cb,
-    on_reset: cb,
-};
-
-/// A parser and its context (`swoole_http_parser_create`), freed on drop
-/// (`swoole_http_destroy_context`).
+/// A parser and its context (`swoole_http_parser_create`), with
+/// `http_parser_settings`' callbacks.
 struct Http {
-    parser: Box<Parser>,
-    ctx: Box<HttpContext>,
+    parser: Parser,
+    ctx: HttpContext,
+}
+
+impl Callbacks for Http {
+    fn parser(&mut self) -> &mut Parser {
+        &mut self.parser
+    }
+
+    fn on_url(&mut self, data: &[u8]) -> i32 {
+        self.ctx.query_string = text(data);
+        0
+    }
+
+    fn on_header_field(&mut self, data: &[u8]) -> i32 {
+        self.ctx.header_fields.push(text(data));
+        0
+    }
+
+    fn on_header_value(&mut self, data: &[u8]) -> i32 {
+        self.ctx.header_values.push(text(data));
+        0
+    }
+
+    fn on_message_complete(&mut self) -> i32 {
+        self.ctx.completed = 1;
+        0
+    }
 }
 
 impl Http {
-    fn new(kind: c_int) -> Self {
-        let mut http = Http {
-            parser: Box::new(unsafe { std::mem::zeroed() }),
-            ctx: Box::default(),
-        };
-        unsafe { llhttp_init(&raw mut *http.parser, kind, std::ptr::null()) };
-        http.parser.data = (&raw mut *http.ctx).cast();
-        http
-    }
-
-    fn p(&mut self) -> *mut Parser {
-        &raw mut *self.parser
+    fn new(kind: u8) -> Self {
+        Http {
+            parser: Parser::new(kind),
+            ctx: HttpContext::default(),
+        }
     }
 
     /// `swoole_llhttp_parser_execute(parser, &http_parser_settings, data, length)`.
     fn execute(&mut self, data: &[u8]) -> usize {
-        let parser = self.p();
-        self.parser.settings = (&raw const SETTINGS).cast();
-        let result = unsafe { llhttp_execute(parser, data.as_ptr().cast(), data.len()) };
+        let result = llhttp::execute(self, data);
         if result == HPE_OK {
             return data.len();
         }
-        let parsed = unsafe { llhttp_get_error_pos(parser) }.addr() - data.as_ptr().addr();
+        let parsed = self.parser.error_pos();
         match result {
-            HPE_PAUSED => unsafe { llhttp_resume(parser) },
-            HPE_PAUSED_UPGRADE => unsafe { llhttp_resume_after_upgrade(parser) },
+            llhttp::HPE_PAUSED => self.parser.resume(),
+            llhttp::HPE_PAUSED_UPGRADE => self.parser.resume_after_upgrade(),
             _ => {}
         }
         parsed
     }
 
-    fn errno(&mut self) -> c_int {
-        unsafe { llhttp_get_errno(self.p()) }
+    fn errno(&self) -> i32 {
+        self.parser.error
     }
 
-    fn reason(&mut self) -> &[u8] {
-        unsafe { CStr::from_ptr(llhttp_get_error_reason(self.p())) }.to_bytes()
+    fn reason(&self) -> &[u8] {
+        self.parser.reason().as_bytes()
     }
 
     fn reset(&mut self) {
-        unsafe { llhttp_reset(self.p()) };
+        self.parser.reset();
     }
 }
 
@@ -241,11 +107,7 @@ fn get_request() {
     assert_eq!(length, GET_REQUEST.len(), "whole request parsed");
     assert_eq!(http.errno(), HPE_OK, "no error");
     assert_eq!(http.ctx.completed, 1, "message complete");
-    assert_eq!(
-        unsafe { llhttp_should_keep_alive(http.p()) },
-        1,
-        "keep-alive"
-    );
+    assert_eq!(i32::from(http.parser.should_keep_alive()), 1, "keep-alive");
 }
 
 #[test]
@@ -255,8 +117,8 @@ fn version() {
     assert_eq!(http.execute(http11), http11.len(), "whole request parsed");
     assert_eq!(http.errno(), HPE_OK, "no error");
     assert_eq!(http.ctx.completed, 1, "message complete");
-    assert_eq!(unsafe { llhttp_get_http_major(http.p()) }, 1, "major");
-    assert_eq!(unsafe { llhttp_get_http_minor(http.p()) }, 1, "minor");
+    assert_eq!(http.parser.http_major, 1, "major");
+    assert_eq!(http.parser.http_minor, 1, "minor");
 }
 
 #[test]
@@ -281,9 +143,8 @@ fn method() {
         incomplete.len(),
         "whole request parsed"
     );
-    assert_eq!(unsafe { llhttp_get_method(http.p()) }, HTTP_GET, "method");
-    let name = unsafe { CStr::from_ptr(llhttp_method_name(HTTP_GET.into())) };
-    assert_eq!(name.to_bytes(), b"GET", "method name");
+    assert_eq!(http.parser.method, HTTP_GET, "method");
+    assert_eq!(llhttp::method_name(HTTP_GET), "GET", "method name");
 }
 
 #[test]
@@ -302,7 +163,7 @@ Origin: http://example.com\r\n\r\n";
         "whole request parsed"
     );
     assert_eq!(http.errno(), HPE_OK, "no error");
-    assert_eq!(unsafe { llhttp_get_upgrade(http.p()) }, 1, "upgrade");
+    assert_eq!(http.parser.upgrade, 1, "upgrade");
     assert_eq!(http.ctx.completed, 1, "message complete");
 }
 
@@ -312,7 +173,7 @@ fn http2() {
     let http2 = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
     assert_eq!(http.execute(http2), http2.len(), "whole preface parsed");
     assert_eq!(http.errno(), HPE_PAUSED_H2_UPGRADE, "paused for h2");
-    assert_eq!(unsafe { llhttp_get_method(http.p()) }, HTTP_PRI, "method");
+    assert_eq!(http.parser.method, HTTP_PRI, "method");
 }
 
 #[test]
@@ -373,13 +234,9 @@ Connection: close\r\n\
         "whole response parsed"
     );
     assert_eq!(http.errno(), HPE_OK, "no error");
-    assert_eq!(
-        unsafe { llhttp_get_status_code(http.p()) },
-        HTTP_STATUS_OK,
-        "status"
-    );
-    assert_eq!(unsafe { llhttp_get_http_major(http.p()) }, 1, "major");
-    assert_eq!(unsafe { llhttp_get_http_minor(http.p()) }, 1, "minor");
+    assert_eq!(http.parser.status_code, HTTP_STATUS_OK, "status");
+    assert_eq!(http.parser.http_major, 1, "major");
+    assert_eq!(http.parser.http_minor, 1, "minor");
     assert_eq!(http.ctx.completed, 1, "message complete");
     assert_eq!(
         http.ctx.header_fields[..5],
@@ -500,7 +357,7 @@ const RESPONSE_ERRORS: &[(&[u8], &str)] = &[
     (b"HTTP/1.1 200 OK\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5;ilovew3=\"abc\";somuchlove=\"def; ghi\r\nhello\r\n6;blahblah;blah\r\n world\r\n0\r\n", "Invalid character in chunk extensions quoted value"),
 ];
 
-fn error_cases(kind: c_int, cases: &[(&[u8], &str)]) {
+fn error_cases(kind: u8, cases: &[(&[u8], &str)]) {
     let mut http = Http::new(kind);
     for (i, (protocol, message)) in cases.iter().enumerate() {
         http.execute(protocol);
@@ -655,7 +512,7 @@ const RESPONSE_SUCCESS: &[&[u8]] = &[
     b"HTTP/1.1 200 OK\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5;ilovew3=\"I love; extensions\";somuchlove=\"aretheseparametersfor\";blah;foo=bar\r\nhello\r\n6;blahblah;blah\r\n world\r\n0\r\n",
 ];
 
-fn success_cases(kind: c_int, cases: &[&[u8]]) {
+fn success_cases(kind: u8, cases: &[&[u8]]) {
     let mut http = Http::new(kind);
     for (i, protocol) in cases.iter().enumerate() {
         http.execute(protocol);

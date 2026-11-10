@@ -14,7 +14,7 @@ use swoole_rs_reactor::{SocketRecord, reactor_upstream};
 use swoole_rs_timer::swr_v1_timer_add_plain;
 
 use crate::base_factory::SendData;
-use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE, CB_RECEIVE};
+use crate::callbacks::{CB_FINISH, CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE};
 use crate::ops::{
     EVENT_SHUTDOWN, OP_CLOSE, OP_COMMAND_REQUEST, OP_COMMAND_RESPONSE, OP_CONN_HEALTHY,
     OP_DGRAM_BUFFER, OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER, OP_INCOMING, OP_ON_FINISH,
@@ -29,10 +29,10 @@ use crate::ops::{
 };
 use crate::ops::{
     OP_CC_COUNT, OP_CC_HTTP_DESTROY, OP_CLOSE_FORWARD, OP_DESTROY_CALLBACK, OP_FORCE_CLOSE,
-    OP_PACKET_DISPATCH, OP_PACKET_INIT, OP_PC_NOTIFY, OP_REACTOR_BARRIER, OP_RECVFROM, OP_WR_SEND,
+    OP_PACKET_INIT, OP_PACKET_TASK, OP_PC_NOTIFY, OP_REACTOR_BARRIER, OP_RECVFROM, OP_WR_SEND,
     OP_WR_SENDFILE, RUN_CLOSE_REACTOR_CONNECTIONS,
 };
-use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_RECEIVE, OP_RD_PORT_READ};
+use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE, OP_RD_PORT_READ};
 use crate::reactor_entry::{self as entry, run, thread};
 use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign};
 use crate::records::ConnectionRecord;
@@ -194,7 +194,7 @@ pub(crate) unsafe fn answer(
             let n = unsafe { swoole_rs_reactor::fd_recvfrom(fd, data, room, 0, storage, len) };
             sign(i64::try_from(n).unwrap_or(-1))
         }
-        OP_PACKET_DISPATCH => {
+        OP_PACKET_TASK => {
             let pkt = packet(ctx);
             ctx.task.info.fd = if pkt.socket_type == SOCK_UDP {
                 // SAFETY: a UDP datagram's peer is an inet4 address.
@@ -220,7 +220,7 @@ pub(crate) unsafe fn answer(
             let len = size_of::<DgramPacket>() as u64 + arg;
             ctx.task.info.len = u32::try_from(len).unwrap_or(u32::MAX);
             ctx.task.data = ctx.pkt.cast();
-            u64::from(factory::dispatch(state, (&raw mut ctx.task).cast()))
+            (&raw mut ctx.task).expose_provenance() as u64
         }
         OP_DESTROY_CALLBACK => {
             let queue = &raw mut handle.fields().destroy_callbacks;
@@ -595,8 +595,13 @@ pub(crate) unsafe fn answer(
             }
             result
         }
-        OP_ON_RECEIVE => {
-            let slot = state.callbacks.slot(CB_RECEIVE)?;
+        OP_ON_RECEIVE | OP_ON_PACKET => {
+            let callback = if op == OP_ON_PACKET {
+                CB_PACKET
+            } else {
+                CB_RECEIVE
+            };
+            let slot = state.callbacks.slot(callback)?;
             // SAFETY: the slot's `int (Server *, RecvData *)` callback over the frame at arg.
             u64::from(unsafe { slot.receive(serv, arg as *mut c_void) } == 0)
         }

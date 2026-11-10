@@ -217,8 +217,8 @@ pub(super) unsafe fn swr_v1_timer_add_plain_sec(
     log(format!("timer {timeout}"));
     core::ptr::without_provenance_mut(1)
 }
-#[unsafe(export_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE")]
-extern "C-unwind" fn timer_del(_: *mut c_void) -> bool {
+/// crates/timer's `swoole_timer_del`: logs, deletes nothing.
+pub(super) unsafe fn swoole_timer_del(_: *mut c_void) -> bool {
     log("timer del");
     true
 }

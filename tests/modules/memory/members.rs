@@ -54,6 +54,15 @@ fn a_fixed_pool_hands_out_each_slice_once() {
 }
 
 #[test]
+#[should_panic(expected = "a live slice of this pool")]
+fn a_fixed_pool_refuses_a_pointer_inside_a_slice() {
+    let mut pool = FixedPool::new(2, 64, false).unwrap();
+    let slice = pool.alloc().cast::<u8>();
+    // Inside the slice's data, which nothing has written: no lock byte is read there.
+    pool.free(slice.wrapping_add(48).cast());
+}
+
+#[test]
 fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
     swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
     let pool = GlobalMemory::new(4096, false).unwrap();

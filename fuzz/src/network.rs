@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::ffi::{c_char, c_int};
 use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, query};
+use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_http::multipart_parser::MultipartParser;
 use swoole_rs_http_ffi::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
 use swoole_rs_http2::{
@@ -186,81 +187,75 @@ pub fn multipart(bytes: &[u8]) {
     }
 }
 
-/// `llhttp_t`'s storage: its fields need fewer than 128 bytes, eight-byte aligned.
-#[repr(C, align(8))]
-struct Llhttp([u8; 128]);
-
-unsafe extern "C" {
-    fn llhttp_settings_init(settings: *mut [usize; 25]);
-    fn llhttp_init(parser: *mut Llhttp, kind: c_int, settings: *const [usize; 25]);
-    fn llhttp_execute(parser: *mut Llhttp, data: *const c_char, length: usize) -> c_int;
+/// Body bytes the parser delivered; each span must lie inside its chunk.
+struct Chunked {
+    parser: Parser,
+    body: usize,
 }
 
-/// `HPE_OK`; `llhttp_settings_t.on_body`.
-const HPE_OK: c_int = 0;
-const ON_BODY: usize = 11;
+impl Callbacks for Chunked {
+    fn parser(&mut self) -> &mut Parser {
+        &mut self.parser
+    }
 
-thread_local! {
-    /// Body bytes llhttp delivered.
-    static BODY: Cell<usize> = const { Cell::new(0) };
-}
-
-unsafe extern "C" fn on_body(_: *mut Llhttp, at: *const c_char, length: usize) -> c_int {
-    in_chunk(at, length);
-    BODY.set(BODY.get() + length);
-    0
+    fn on_body(&mut self, data: &[u8]) -> c_int {
+        in_chunk(data.as_ptr().cast(), data.len());
+        self.body += data.len();
+        0
+    }
 }
 
 /// A request (or, on an odd first byte, a response) head with chunked transfer
-/// coding and any body, handed to the bundled llhttp the server and client parse with
+/// coding and any body, handed to crates/http's llhttp the server and client parse with
 /// in fuzzer-chosen chunks: every body span lies inside its chunk and the body never
 /// exceeds what was received.
 pub fn http_chunked(bytes: &[u8]) {
     let Some((&[kind, step], body)) = bytes.split_first_chunk::<2>() else {
         return;
     };
-    let (kind, head): (c_int, &[u8]) = if kind & 1 == 0 {
+    let (kind, head): (u8, &[u8]) = if kind & 1 == 0 {
         (
-            1,
+            llhttp::REQUEST,
             b"POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n",
         )
     } else {
-        (2, b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+        (
+            llhttp::RESPONSE,
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+        )
     };
-    let mut settings = [0usize; 25];
-    // SAFETY: `settings` is `llhttp_settings_t`-sized: 25 callback pointers.
-    unsafe { llhttp_settings_init(&mut settings) };
-    settings[ON_BODY] = on_body as *const () as usize;
-    let mut parser = Llhttp([0; 128]);
-    // SAFETY: `parser` covers `llhttp_t`; the settings outlive it.
-    unsafe { llhttp_init(&mut parser, kind, &settings) };
-    BODY.set(0);
+    let mut parser = Chunked {
+        parser: Parser::new(kind),
+        body: 0,
+    };
     let input = [head, body].concat();
     for chunk in input.chunks(usize::from(step).max(1)) {
         let start = chunk.as_ptr() as usize;
         CHUNK.set((start, start + chunk.len()));
-        // SAFETY: `chunk` holds its length in bytes; `parser` is initialized.
-        if unsafe { llhttp_execute(&mut parser, chunk.as_ptr().cast(), chunk.len()) } != HPE_OK {
+        if llhttp::execute(&mut parser, chunk) != llhttp::HPE_OK {
             break;
         }
     }
     assert!(
-        BODY.get() <= body.len(),
+        parser.body <= body.len(),
         "body {} of {}",
-        BODY.get(),
+        parser.body,
         body.len()
     );
 }
 
-/// Any bytes as HEADERS frame payloads of one connection (a fuzzer-chosen frame size,
-/// server or client role), each decoded by the bundled nghttp2 inflater through the
-/// step loop the hybrid runs (`sw_rs_http2_inflate_step`): every call consumes at most
-/// what is left, every emitted name and value is readable and NUL-terminated, and the
-/// loop ends within one step per input byte.
+/// Any bytes as HEADERS or CONTINUATION payloads of one connection (a fuzzer-chosen
+/// frame size, server or client role, final or not), each decoded by
+/// `swoole_rs_http2::hpack` and by the nghttp2 inflater upstream bundles, through
+/// the step loop the HTTP/2 server and client run (`sw_rs_http2_inflate_step`):
+/// both consume the same bytes, decode the same fields and fail on the same step,
+/// and the loop ends within one step per input byte.
 pub fn http2_hpack(bytes: &[u8]) {
     let Some((&[role, size], blocks)) = bytes.split_first_chunk::<2>() else {
         return;
     };
+    let last = role & 2 == 0;
+    let mut decoder = swoole_rs_http2::hpack::Decoder::default();
     let mut inflater = std::ptr::null_mut();
     // SAFETY: `inflater` is a writable pointer.
     assert_eq!(unsafe { nghttp2::nghttp2_hd_inflate_new(&mut inflater) }, 0);
@@ -286,26 +281,35 @@ pub fn http2_hpack(bytes: &[u8]) {
                     &mut flags,
                     input.as_ptr(),
                     input.len(),
-                    1,
+                    c_int::from(last),
                 )
             };
+            let rust = decoder.decode(input, last);
             // A decoding error ends the connection.
             let Ok(read) = usize::try_from(read) else {
+                assert!(rust.is_err(), "nghttp2 failed on {input:?}");
                 break 'blocks;
             };
-            input = input.get(read..).expect("inflate read past its input");
-            if flags & nghttp2::INFLATE_EMIT != 0 {
-                for (text, length) in [(nv.name, nv.name_length), (nv.value, nv.value_length)] {
-                    // SAFETY: nghttp2's NUL-terminated copy, live until the next call.
-                    let text = unsafe { std::slice::from_raw_parts(text, length + 1) };
-                    assert_eq!(text.last(), Some(&0), "unterminated header {text:?}");
-                }
-            }
+            let rust = rust.expect("hpack failed where nghttp2 decoded");
+            assert_eq!(rust.read, read, "bytes read from {input:?}");
             #[expect(clippy::cast_sign_loss, reason = "nghttp2's flag bits")]
-            let step = sw_rs_http2_inflate_step(flags as u32, input.len(), u32::from(role & 1));
-            if step.end_headers != 0 {
+            let flags = flags as u32;
+            assert_eq!(rust.flags(), flags, "flags over {input:?}");
+            if let Some((name, value)) = rust.header {
+                // SAFETY: nghttp2's field, live until the next call.
+                let expected = unsafe { std::slice::from_raw_parts(nv.name, nv.name_length) };
+                assert_eq!(name, expected, "name from {input:?}");
+                // SAFETY: as above.
+                let expected = unsafe { std::slice::from_raw_parts(nv.value, nv.value_length) };
+                assert_eq!(value, expected, "value from {input:?}");
+            }
+            input = input.get(read..).expect("inflate read past its input");
+            let step = sw_rs_http2_inflate_step(flags, input.len(), u32::from(role & 1));
+            // The client ends its (always final) block on any finished step too.
+            if step.end_headers != 0 || step.finish != 0 && role & 1 != 0 && last {
                 // SAFETY: a live inflater.
                 unsafe { nghttp2::nghttp2_hd_inflate_end_headers(inflater) };
+                decoder.end_headers();
                 break;
             }
             if step.finish != 0 {

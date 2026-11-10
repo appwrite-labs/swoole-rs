@@ -17,7 +17,7 @@ firebird = ["dep:swoole-rs-firebird", "swoole-rs-firebird/php"]
 sqlite = ["dep:swoole-rs-sqlite", "swoole-rs-sqlite/php"]
 oci = ["dep:swoole-rs-oci", "swoole-rs-oci/php"]
 # stdext's MINIT (crates/ffi's stdext, with --enable-swoole-stdext).
-stdext = []
+stdext = ["dep:swoole-rs-phpstdext", "swoole-rs-phpstdext/php", "swoole-rs-phpstdext/active"]
 # The bundled C clients configure builds in (--with-swoole-ssh2, --enable-swoole-ftp):
 # their handlers, MINIT, MSHUTDOWN and MINFO.
 ssh2 = []
@@ -47,6 +47,7 @@ swoole-rs-odbc = { path = "../odbc", optional = true }
 swoole-rs-firebird = { path = "../firebird", optional = true }
 swoole-rs-sqlite = { path = "../sqlite", optional = true }
 swoole-rs-oci = { path = "../oci", optional = true }
+swoole-rs-phpstdext = { path = "../phpstdext", optional = true }
 
 [lints]
 workspace = true

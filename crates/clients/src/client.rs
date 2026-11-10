@@ -656,7 +656,7 @@ impl Handle {
         let timer = self.get().timer.replace(core::ptr::null_mut());
         if !timer.is_null() {
             // SAFETY: a pending timer this client added.
-            unsafe { swoole_timer_del(timer) };
+            unsafe { swoole_timer_del(timer.cast()) };
         }
     }
 
@@ -669,15 +669,9 @@ impl Handle {
 
 // The unit tests log timers instead.
 #[cfg(not(test))]
-use swoole_rs_timer::swr_v1_timer_add_plain_sec;
+use swoole_rs_timer::{swoole_timer_del, swr_v1_timer_add_plain_sec};
 #[cfg(test)]
-use tests::swr_v1_timer_add_plain_sec;
-
-// crates/timer's, under its upstream symbol.
-unsafe extern "C-unwind" {
-    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(node: *mut c_void) -> bool;
-}
+use tests::{swoole_timer_del, swr_v1_timer_add_plain_sec};
 
 /// `RecvData`: the package `Protocol::recv_with_*` hands `onPackage`.
 #[repr(C)]

@@ -102,6 +102,14 @@ WORKLOADS = {
     'websocket-fragmented': ('benchmarks/traffic', 'WSF', '/', PAYLOAD[:4096], PAYLOAD[:4096]),
     'upload': ('benchmarks/traffic', 'UP', '/upload', PAYLOAD, b'65536\n'),
     'static': ('benchmarks/traffic', 'GET', '/static.txt', None, STATIC),
+    # Database and network hooks (#2653), against benchmarks/hooks on the build with
+    # --enable-swoole-pgsql, --enable-swoole-sqlite, --enable-swoole-curl and --enable-cares.
+    # pgsql needs PostgreSQL on PGSQL_HOST (root/root, database test) and --php-extension
+    # pdo_pgsql, sqlite --php-extension pdo_sqlite, curl --php-extension curl.
+    'pgsql': ('benchmarks/hooks', 'GET', '/pgsql', None, b'ok\n'),
+    'sqlite': ('benchmarks/hooks', 'GET', '/sqlite', None, b'ok\n'),
+    'curl': ('benchmarks/hooks', 'GET', '/curl', None, b'ok\n'),
+    'dns': ('benchmarks/hooks', 'GET', '/dns', None, b'ok\n'),
 }
 TLS = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 TLS.check_hostname, TLS.verify_mode = False, ssl.CERT_NONE
@@ -121,22 +129,41 @@ class Pong(http.server.BaseHTTPRequestHandler):
 
 
 class Echo(socketserver.BaseRequestHandler):
+    # The reply waits 2 ms, so the client's recv() always finds nothing and waits on the
+    # reactor once. Whether a prompt reply beat recv() was timing, and swung client and socket
+    # between 0.86 and 1.05 from one merge run to the next.
     def handle(self):
         while data := self.request.recv(65536):
+            time.sleep(0.002)
             self.request.sendall(data)
 
 
+class Resolver(socketserver.BaseRequestHandler):
+    """Answers every DNS query with one A record, 127.0.0.1."""
+    def handle(self):
+        query, sock = self.request
+        end = 12
+        while query[end]:
+            end += query[end] + 1
+        # The query's ID; QR, RD and RA, no error; one question (the query's: its name, root
+        # label, type and class) and one answer: the question's name, A, IN, TTL 60, 127.0.0.1.
+        sock.sendto(query[:2] + bytes.fromhex('8180 0001 0001 0000 0000') + query[12:end + 5]
+                    + bytes.fromhex('c00c 0001 0001 0000003c 0004 7f000001'), self.client_address)
+
+
 def peers():
-    """Environment naming the peers benchmarks/clients calls: an HTTP server and a TCP echo,
-    served from threads of this process so callgrind counts only the client side."""
+    """Environment naming the peers benchmarks/clients and benchmarks/hooks call: an HTTP server,
+    a TCP echo and a DNS resolver, served from threads of this process so callgrind counts only
+    the client side."""
     if not hasattr(peers, 'env'):
         servers = [http.server.ThreadingHTTPServer(('127.0.0.1', 0), Pong),
-                   socketserver.ThreadingTCPServer(('127.0.0.1', 0), Echo)]
+                   socketserver.ThreadingTCPServer(('127.0.0.1', 0), Echo),
+                   socketserver.ThreadingUDPServer(('127.0.0.1', 0), Resolver)]
         for server in servers:
             server.daemon_threads = True
             threading.Thread(target=server.serve_forever, daemon=True).start()
-        peers.env = {'PEER_HTTP_PORT': str(servers[0].server_address[1]),
-                     'PEER_ECHO_PORT': str(servers[1].server_address[1])}
+        peers.env = {f'PEER_{name}_PORT': str(server.server_address[1])
+                     for name, server in zip(('HTTP', 'ECHO', 'DNS'), servers)}
     return peers.env
 
 
@@ -342,6 +369,8 @@ def main():
     parser.add_argument('--output', type=Path, default=run / 'callgrind.json')
     parser.add_argument('--profiles', type=Path, nargs='?', const=run / 'profiles',
                         help='Keep the callgrind profiles in DIR/<workload>/<engine>/ (default under target/callgrind/)')
+    parser.add_argument('--append', action='store_true',
+                        help='Add these workloads to an existing --output, as a second pair of engines (a build variant) does')
     parser.add_argument('--max-ratio', type=float, help='Fail if first/second exceeds this for any workload')
     parser.add_argument('--limits', type=Path, help='JSON {workload: recorded first/second ratio}; '
                         'fail if one is exceeded by more than noise (overrides --max-ratio per workload)')
@@ -364,7 +393,8 @@ def main():
     if (args.max_ratio or args.limits) and len(engines) != 2:
         parser.error('--max-ratio and --limits need exactly two engines')
     recorded = json.loads(args.limits.read_text()) if args.limits else {}
-    results, failed = {}, False
+    results = json.loads(args.output.read_text())['instructions_per_request'] if args.append else {}
+    failed = False
     for workload in args.workload or ['plaintext']:
         counts = results[workload] = {}
         profiles = args.profiles / workload if args.profiles else None

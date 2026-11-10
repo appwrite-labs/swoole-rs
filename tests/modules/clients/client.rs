@@ -244,6 +244,7 @@ unsafe extern "C" {
     fn getpid() -> c_int;
     fn usleep(usec: u32) -> c_int;
     fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
+    fn listen(fd: c_int, backlog: c_int) -> c_int;
 }
 
 const SIG_IGN: usize = 1;
@@ -1177,7 +1178,8 @@ fn async_connect_timeout() {
     let ac = Client::wrapped(SW_SOCK_TCP, true);
     listen_greeter(&ac, &flags, Some(ETIMEDOUT));
 
-    assert!(ac.sync_connect("192.168.1.199", 19999, 0.2));
+    let (_peer, port) = unanswering_peer();
+    assert!(ac.sync_connect(TEST_HOST, port, 0.2));
     event_wait();
 
     assert!(flags.error.get());
@@ -1215,9 +1217,33 @@ fn async_udp6() {
     test_async_client_dgram("::1", get_random_port(), SW_SOCK_UDP6);
 }
 
+/// A local peer that never answers a SYN, in place of the address upstream assumes
+/// drops it (19.168.0.99, 192.168.1.199): a network that rejects the route answers
+/// ENETUNREACH instead. A listener whose accept queue is full: the kernel drops each
+/// further SYN, so a connect to it times out. Hold the result until the connect is done.
+fn unanswering_peer() -> ((std::net::TcpListener, Vec<std::net::TcpStream>), c_int) {
+    use std::os::fd::AsRawFd;
+    let listener = std::net::TcpListener::bind((TEST_HOST, 0)).expect("bind");
+    // SAFETY: listen(2) again on a listening socket only shrinks its backlog.
+    assert_eq!(unsafe { listen(listener.as_raw_fd(), 0) }, 0);
+    let address = listener.local_addr().unwrap();
+    let mut held = Vec::new();
+    loop {
+        match std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(200))
+        {
+            Ok(stream) => held.push(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => break,
+            Err(error) => panic!("filling the accept queue: {error}"),
+        }
+        assert!(held.len() < 16, "the accept queue never filled");
+    }
+    ((listener, held), c_int::from(address.port()))
+}
+
 fn connect_timeout() {
     let cli = Client::new(SW_SOCK_TCP, false).unwrap();
-    assert_eq!(cli.connect("19.168.0.99", get_random_port(), 0.2, 0), -1);
+    let (_peer, port) = unanswering_peer();
+    assert_eq!(cli.connect(TEST_HOST, port, 0.2, 0), -1);
     assert_eq!(last_error(), ETIMEDOUT);
 }
 
