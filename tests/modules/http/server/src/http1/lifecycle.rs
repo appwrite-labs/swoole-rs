@@ -881,8 +881,7 @@ unsafe extern "C" fn kill_on_worker_start(
         let dst = Server(serv).view().worker(1);
         // SAFETY: worker 1 of the running server; the event's head.
         let sent = unsafe {
-            entry::send_to_worker_from_worker(
-                serv,
+            swoole_rs_process::methods::send_pipe_message(
                 dst,
                 (&raw const ev).cast(),
                 size_of::<DataHead>(),
