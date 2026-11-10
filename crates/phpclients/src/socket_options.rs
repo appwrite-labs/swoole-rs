@@ -219,7 +219,7 @@ pub(crate) fn apply(socket: Co, settings: *const zval, which: c_int) -> bool {
     applied.unwrap_or(false)
 }
 
-/// [`apply`] for C++ callers, which raise no bailout of their own.
+/// [`apply`] for callers that raise no bailout of their own: it raises one.
 /// # Safety
 /// `socket` is a live coroutine socket and `settings` a live array zval.
 pub unsafe extern "C" fn socket_settings(
@@ -233,22 +233,9 @@ pub unsafe extern "C" fn socket_settings(
     applied
 }
 
-/// `php_swoole_socket_set(socket, settings)`.
-/// # Safety
-/// As [`socket_settings`].
-#[unsafe(export_name = "_Z21php_swoole_socket_setPN6swoole9coroutine6SocketEPK12_zval_struct")]
-pub unsafe extern "C" fn php_swoole_socket_set(
-    socket: native::Socket,
-    settings: *const zval,
-) -> bool {
-    // SAFETY: per the caller.
-    unsafe { socket_settings(socket, settings, ALL) }
-}
-
 /// `php_swoole_socket_set_protocol(socket, settings)`.
 /// # Safety
 /// As [`socket_settings`].
-#[unsafe(export_name = "_Z30php_swoole_socket_set_protocolPN6swoole9coroutine6SocketEPK12_zval_struct")]
 pub unsafe extern "C" fn php_swoole_socket_set_protocol(
     socket: native::Socket,
     settings: *const zval,
