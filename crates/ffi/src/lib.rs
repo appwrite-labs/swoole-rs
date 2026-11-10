@@ -146,6 +146,10 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
             swoole_rs_phplocks::coroutine_lock_minit,
             swoole_rs_phplocks::thread_locks_minit,
         ],
+        collections_minit: [
+            swoole_rs_phpcollections::table_minit,
+            swoole_rs_phpcollections::channel_minit,
+        ],
         timer_minit: swoole_rs_phptimer::minit,
         timer_rshutdown: swoole_rs_phptimer::rshutdown,
         redis_minit: swoole_rs_phpredis::redis_minit,

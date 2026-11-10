@@ -4,9 +4,10 @@ use crate::{
     Class,
     bailout::Bailout,
     sys::{
-        CONST_PERSISTENT, ZEND_ACC_NOT_SERIALIZABLE, zend_ce_error, zend_ce_exception,
-        zend_class_entry, zend_function_entry, zend_long, zend_object_handlers,
-        zend_register_bool_constant, zend_register_string_constant,
+        CONST_PERSISTENT, ZEND_ACC_NOT_SERIALIZABLE, zend_ce_countable, zend_ce_error,
+        zend_ce_exception, zend_ce_iterator, zend_class_entry, zend_class_implements,
+        zend_function_entry, zend_long, zend_object_handlers, zend_register_bool_constant,
+        zend_register_string_constant,
     },
 };
 use std::{
@@ -260,6 +261,28 @@ impl Minit {
     pub fn array_object(&self) -> Parent {
         // SAFETY: SPL registers it at its MINIT, before any extension that depends on it.
         Parent(unsafe { spl_ce_ArrayObject })
+    }
+
+    /// Zend's `Iterator`.
+    #[must_use]
+    pub fn iterator(&self) -> Parent {
+        // SAFETY: Zend registers its interfaces before any extension's MINIT.
+        Parent(unsafe { zend_ce_iterator })
+    }
+
+    /// Zend's `Countable`.
+    #[must_use]
+    pub fn countable(&self) -> Parent {
+        // SAFETY: as above.
+        Parent(unsafe { zend_ce_countable })
+    }
+
+    /// `zend_class_implements(class, 1, interface)`.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn implements(&self, class: &Class, interface: Parent) {
+        // SAFETY: MINIT, a registered class and a registered interface.
+        unsafe { zend_class_implements(registered(class), 1, interface.0) };
     }
 
     /// SPL's `ArrayIterator`.

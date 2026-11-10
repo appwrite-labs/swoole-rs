@@ -57,6 +57,18 @@ check_collection($table->get('first', null), ['n'=>11,'f'=>1.25,'s'=>"a\0b"], 'n
 check_collection($table->set('first', ['s'=>new CollectionString]), true, 'native string conversion');
 check_collection(CollectionString::$conversions, 1, 'single native conversion effect');
 check_collection($table->get('first','s'), "converted\0value", 'converted binary string');
+final class CollectionCreator {
+    public function __construct(private Swoole\Table $table) {}
+    public function __toString(): string {
+        check_collection($this->table->create(), true, 'create while column parses its name');
+        return 'late';
+    }
+}
+$reentrant = new Swoole\Table(8);
+$reentrant->column('n', Swoole\Table::TYPE_INT);
+check_collection(collection_warning(
+    fn() => $reentrant->column(new CollectionCreator($reentrant), Swoole\Table::TYPE_INT),
+    'Swoole\\Table::column(): unable to add column after table has been created'), false, 'column after its name created the table');
 check_collection(collection_warning(
     fn() => $table->incr('string-error', 's'),
     "Swoole\\Table::incr(): can't execute 'incr' on a string type column"), false, 'string increment rejected');
@@ -328,4 +340,25 @@ Swoole\Coroutine\run(function (): void {
     check_collection($original, ['nested'=>['n'=>23]], 'resumed consumer mutation preserves sender array');
     check_collection($channel->stats(), ['consumer_num'=>0,'producer_num'=>0,'queue_num'=>0], 'custody waits drained');
 });
-echo json_encode(['checks' => $checks, 'scope' => 'bounded table/channel behavior, expected warnings and ordinary custody; no complete reentry/GC/configuration claim']), "\n";
+// Last, as a bailout ends the request: a conversion that bails out mid-set()
+// writes neither its column nor any later one. The shutdown function reads the
+// row (upstream leaves its bucket locked, so the forced unlock's log is muted).
+$bailing = new Swoole\Table(8);
+$bailing->column('a', Swoole\Table::TYPE_STRING, 8);
+$bailing->column('b', Swoole\Table::TYPE_INT);
+$bailing->column('c', Swoole\Table::TYPE_INT);
+$bailing->create();
+check_collection($bailing->set('k', ['a'=>'old', 'b'=>1, 'c'=>2]), true, 'row before a bailing conversion');
+final class CollectionBailout {
+    public function __toString(): string { trigger_error('collection bailout', E_USER_ERROR); }
+}
+ini_set('display_errors', '0');
+swoole_async_set(['log_level' => SWOOLE_LOG_NONE]);
+register_shutdown_function(static function () use ($bailing): void {
+    global $checks;
+    check_collection(error_get_last()['message'] ?? null, 'collection bailout', 'conversion bailed out');
+    check_collection($bailing->get('k'), ['a'=>'old', 'b'=>3, 'c'=>2], 'bailing and later columns unwritten');
+    echo json_encode(['checks' => $checks, 'scope' => 'bounded table/channel behavior, expected warnings, ordinary custody and one bailing conversion; no complete reentry/GC/configuration claim']), "\n";
+    exit(0);
+});
+$bailing->set('k', ['b'=>3, 'a'=>new CollectionBailout, 'c'=>4]);
