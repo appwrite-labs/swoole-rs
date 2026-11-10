@@ -455,7 +455,7 @@ fn map_set(call: &Call) {
 fn map_step(call: &Call, decrement: bool) {
     if let Some((map, key)) = map_call(call, 1, 2) {
         delta(call, decrement, |delta| {
-            map.incr(key, delta, call.return_value());
+            map.incr(key, delta, call);
         });
     }
 }
@@ -610,7 +610,7 @@ fn list_step(call: &Call, decrement: bool) {
         return;
     };
     delta(call, decrement, |delta| {
-        if !list.index_incr(list_index(key), delta, call.return_value()) {
+        if !list.index_incr(list_index(key), delta, call) {
             out_of_range();
         }
     });

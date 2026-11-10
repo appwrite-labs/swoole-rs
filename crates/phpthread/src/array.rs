@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 use swoole_rs_zend::{
-    Array as ZArray, Key as ZKey, Value as ZValue, bailout,
+    Array as ZArray, Call, Key as ZKey, Value as ZValue, bailout,
     sys::{
         IS_DOUBLE, IS_LONG, IS_NULL, swr_zend_array_init, swr_zval_stringl, zend_hash_index_add,
         zend_hash_next_index_insert_new, zend_hash_str_add, zend_sort, zend_ulong, zend_value,
@@ -127,16 +127,16 @@ impl Array {
         true
     }
 
-    /// `strkey_incr` / `intkey_incr`, the result in the return slot `out`. An
+    /// `strkey_incr` / `intkey_incr`, the result in the return slot of `call`. An
     /// absent int key stores `delta` itself, as upstream does; an absent string
     /// key stores the counter.
-    pub(crate) fn incr(&self, key: Key, delta: &ZValue, out: *mut zval) {
+    pub(crate) fn incr(&self, key: Key, delta: &ZValue, call: &Call) {
         let mut table = self.write();
         if let Some(item) = table.get_mut(&key) {
-            item.add(delta, out);
+            item.add(delta, call);
             return;
         }
-        let counter = Item::counter(delta, out);
+        let counter = Item::counter(delta, call);
         if bailout::pending() {
             return;
         }
@@ -190,23 +190,23 @@ impl Array {
     }
 
     /// `index_incr`: like `index_offsetSet`, adding to the existing value.
-    pub(crate) fn index_incr(&self, index: i64, delta: &ZValue, out: *mut zval) -> bool {
+    pub(crate) fn index_incr(&self, index: i64, delta: &ZValue, call: &Call) -> bool {
         let mut table = self.write();
         let count = length(&table);
         if index > count {
             return false;
         }
         if index == -1 || index == count {
-            let item = Item::counter(delta, out);
+            let item = Item::counter(delta, call);
             if bailout::pending() {
                 return false;
             }
             table.push(item);
         } else if let Some(item) = table.get_mut(&Key::Int(index)) {
-            item.add(delta, out);
+            item.add(delta, call);
         } else {
             // Upstream dereferences a missing item here (a negative index).
-            let item = Item::counter(delta, out);
+            let item = Item::counter(delta, call);
             if bailout::pending() {
                 return false;
             }

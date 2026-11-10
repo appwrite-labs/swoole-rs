@@ -8,6 +8,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
     ffi::{CStr, c_char, c_int, c_void},
+    marker::PhantomData,
     ptr,
     rc::Rc,
     sync::atomic::Ordering,
@@ -526,41 +527,48 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
 }
 
 /// A live object and a class declaring the properties written, for as long as
-/// the handle is used. Zend copies every name and value.
+/// the handle is used; one [`Props::init`] makes borrows the zval holding it.
+/// Zend copies every name and value.
 #[derive(Clone, Copy)]
-pub(crate) struct Props(*mut zend_class_entry, *mut zend_object);
+pub(crate) struct Props<'a>(
+    *mut zend_class_entry,
+    *mut zend_object,
+    PhantomData<&'a zval>,
+);
 
-impl Props {
+impl Props<'static> {
     /// A live object, under its own class.
     /// # Safety
     /// `object` is live for as long as the handle is used.
     pub(crate) unsafe fn of(object: *mut zend_object) -> Self {
         // SAFETY: per the caller.
-        Self(unsafe { (*object).ce }, object)
-    }
-
-    /// `object_init_ex(target, class)`: a new object in `target`, under its class,
-    /// live while `target` holds it.
-    pub(crate) fn init(target: &mut zval, class: &Class) -> Self {
-        let ce = class.entry();
-        // SAFETY: a writable zval and a registered data class.
-        unsafe { init_object(target, ce) };
-        // SAFETY: the object zval just made.
-        Self(ce, unsafe { object_of(target) })
-    }
-
-    pub(crate) fn object(self) -> *mut zend_object {
-        self.1
+        Self(unsafe { (*object).ce }, object, PhantomData)
     }
 
     /// A Server object, under the Server class.
     pub(crate) fn server(object: ServerObject) -> Self {
-        Self(SERVER.entry(), object.raw())
+        Self(SERVER.entry(), object.raw(), PhantomData)
     }
 
     /// A Server object, under its own class.
     fn own(object: ServerObject) -> Self {
-        Self(object.class(), object.raw())
+        Self(object.class(), object.raw(), PhantomData)
+    }
+}
+
+impl<'a> Props<'a> {
+    /// `object_init_ex(target, class)`: a new object in `target`, under its class;
+    /// the handle borrows `target`, so it can't outlive the object.
+    pub(crate) fn init(target: &'a mut zval, class: &Class) -> Self {
+        let ce = class.entry();
+        // SAFETY: a writable zval and a registered data class.
+        unsafe { init_object(target, ce) };
+        // SAFETY: the object zval just made.
+        Self(ce, unsafe { object_of(target) }, PhantomData)
+    }
+
+    pub(crate) fn object(self) -> *mut zend_object {
+        self.1
     }
 
     pub(crate) fn long(self, name: &CStr, value: i64) {
