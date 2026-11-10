@@ -96,9 +96,7 @@ class ExitStatus {
 struct ProcessPool;
 struct Worker;
 
-#define SWR_PROCESS_NATIVE_VIEW_CONTEXT
 #include "swoole_rs_process_views.h"
-#undef SWR_PROCESS_NATIVE_VIEW_CONTEXT
 
 struct Worker {
     SWR_WORKER_RECORD_FIELDS

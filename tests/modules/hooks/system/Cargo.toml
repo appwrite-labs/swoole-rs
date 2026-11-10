@@ -15,3 +15,4 @@ test = false
 
 [dependencies]
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
+swoole-rs-hooks = { path = "../../../../crates/hooks" }

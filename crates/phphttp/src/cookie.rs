@@ -7,6 +7,7 @@ use swoole_rs_httpbindings::{
     FORMAT_DATE, FREE_DATE, FREE_ENCODED, READ_AGE, Text, WARN, swr_v1_httpbindings_cookie,
 };
 use swoole_rs_phpstubs::http_cookie;
+use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
     Call, Class, Object, Owned, OwnedArray, ZStr, ZString,
     sys::{
@@ -239,8 +240,7 @@ method_table! {
 /// `php_swoole_http_cookie_minit`: register the class.
 /// # Safety
 /// Called once, at MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_http_cookie_minit(_module_number: c_int) {
+pub unsafe fn php_swoole_http_cookie_minit(_: &MinitArgs) {
     // SAFETY: MINIT, with a static table.
     unsafe { COOKIE.register(c"Swoole\\Http\\Cookie", METHODS.as_ptr(), configure) };
 }
