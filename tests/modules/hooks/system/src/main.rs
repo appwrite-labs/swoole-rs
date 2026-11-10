@@ -916,10 +916,10 @@ const SUITES: &[(&str, Cases)] = &[
     ("ssl", ssl::CASES),
     ("pipe", pipe::CASES),
     ("process_pool", process_pool::CASES),
+    ("coroutine_async", co_async::CASES),
     ("os_wait", os::WAIT_CASES),
     ("async", os::ASYNC_CASES),
     ("os", os::OS_CASES),
-    ("coroutine_async", co_async::CASES),
 ];
 
 fn main() {
