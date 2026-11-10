@@ -24,6 +24,8 @@
   "websocket-fragmented": 0.78,
   "upload": 1.05,
   "static": 1.10,
+  "https": 1.04,
+  "wss": 1.04,
   "atomic": 1.02,
   "process-mode": 0.95
 }
