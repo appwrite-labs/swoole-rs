@@ -1209,18 +1209,6 @@ fn rand_between(min: u32, max: u32) -> u32 {
     min + u32::from_ne_bytes(bytes.try_into().unwrap()) % (max - min + 1)
 }
 
-/// A `MSG_WAITALL` recv: until `buf` is full or the peer closes.
-fn recv_all(c: &mut TcpStream, buf: &mut [u8]) -> usize {
-    let mut length = 0;
-    while length < buf.len() {
-        match c.read(&mut buf[length..]) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => length += n,
-        }
-    }
-    length
-}
-
 // `flags[...]`, the AsyncClient TESTs' `std::unordered_map<std::string, bool>`, as shared
 // counters: the server's callbacks may run in a worker.
 const CONNECTED: usize = 8;
