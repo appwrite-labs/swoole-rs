@@ -12,7 +12,9 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_int, c_long, c_void};
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 use swoole_rs_reactor::reactor_upstream::prepared;
-use swoole_rs_reactor::swr_v1_reactor_deferred_push;
+use swoole_rs_reactor::{
+    swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition, swr_v1_reactor_deferred_push,
+};
 
 /// `SW_LOG_WARNING` and `SW_ERROR_INVALID_PARAMS`.
 const LOG_WARNING: c_int = 4;
@@ -123,13 +125,8 @@ unsafe extern "C-unwind" fn call_plain(_timer: *mut c_void, node: *mut TimerNode
     }
 }
 
-// SAFETY: crates/reactor's and Swoole's signal API.
+// SAFETY: Swoole's signal API.
 unsafe extern "C-unwind" {
-    fn swr_v1_event_set_end_callback(id: c_int, callback: extern "C-unwind" fn());
-    fn swr_v1_event_set_exit_condition(
-        id: c_int,
-        condition: unsafe extern "C-unwind" fn(*mut usize) -> bool,
-    );
     #[link_name = "_Z17swoole_signal_setiPFviEb"]
     fn swoole_signal_set(signo: c_int, handler: extern "C" fn(c_int), safety: bool) -> usize;
 }
@@ -482,11 +479,9 @@ impl Owner {
 /// Hooks this thread's timer to `reactor`, the thread's: select after each loop
 /// round, keep the loop while a timer is pending, and free the timer with it.
 fn attach(reactor: *mut c_void) {
+    swr_v1_event_set_end_callback(PRIORITY_TIMER, crate::wrapper::swoole_timer_select);
+    swr_v1_event_set_exit_condition(EXIT_CONDITION_TIMER, idle);
     // SAFETY: the thread's live reactor.
-    unsafe { swr_v1_event_set_end_callback(PRIORITY_TIMER, crate::wrapper::swoole_timer_select) };
-    // SAFETY: as above.
-    unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_TIMER, idle) };
-    // SAFETY: as above.
     let fields = unsafe { prepared(reactor) }.fields;
     // SAFETY: its live fields.
     let queue = unsafe { &raw mut (*fields).destroy_callbacks };
