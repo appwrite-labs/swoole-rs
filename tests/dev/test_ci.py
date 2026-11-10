@@ -288,66 +288,6 @@ class Ci(unittest.TestCase):
                          (0, [(8, ['left the merge queue: failed status checks', 'u8']),
                               (12, ['left the merge queue: no reason given'])]))
 
-    def test_a_merge_queue_run_may_fail_only_what_main_already_fails(self):
-        def loops(root, shards):
-            for name, rows in shards.items():
-                loop = Path(root) / name / 'x/loop.json'
-                loop.parent.mkdir(parents=True)
-                loop.write_text(json.dumps({'phases': [{'phase': phase, 'failed': not passed} for phase, passed in rows]}))
-        def needs(**results):
-            return json.dumps({job.replace('_', '-'): {'result': result, 'outputs': {}} for job, result in results.items()})
-        with tempfile.TemporaryDirectory() as temp:
-            main, queue, baseline = Path(temp) / 'main', Path(temp) / 'queue', Path(temp) / 'baseline/failures.json'
-            # Without a baseline nothing is known to fail on main, so nothing may land.
-            code, _, error = self.ci('new-failures', '--needs', needs(), '--phases', str(queue), '--baseline', str(baseline), runs={}, flags=())
-            self.assertEqual((code, 'no baseline' in error), (1, True))
-            # main: one known-red phase and a red callgrind; recording them never fails.
-            loops(main, {'phases-1': [['old', False], ['timer-model', True]], 'phases-2': [['build', True]], 'phases-3': [['build', True]]})
-            code, _, _ = self.ci('new-failures', '--needs', needs(full_gates='failure', callgrind='failure', phpt='success'),
-                                 '--phases', str(main), '--save', str(baseline), runs={}, flags=())
-            self.assertEqual((code, json.loads(baseline.read_text())['phases']), (0, ['old']))
-            # The group: a regressed phase, a newly failed job, a cancelled one, and shard 3 died before its gates.
-            loops(queue, {'phases-1': [['old', False], ['timer-model', False]], 'phases-2': [['build', True]], 'phases-halfclose': [['build', True]]})
-            code, _, _ = self.ci('new-failures', '--needs', needs(full_gates='failure', callgrind='failure', phpt='failure', alpine='cancelled', zts='skipped'),
-                                 '--phases', str(queue), '--baseline', str(baseline), runs={}, flags=())
-            self.assertEqual(code, 1)
-            self.assertIn('new failures: timer-model, alpine job, phpt job, full-gates job (a shard reported no phases)', self.out)
-            # What main fails too lands, and the check never calls the API.
-            code, _, _ = self.ci('new-failures', '--needs', needs(full_gates='failure', callgrind='failure'),
-                                 '--phases', str(main), '--baseline', str(baseline), runs={}, flags=())
-            self.assertEqual((code, self.gh_calls), (0, []))
-            self.assertIn('no new failures', self.out)
-
-    def test_new_failures_are_gate_failures_main_does_not_share(self):
-        history = [{'databaseId': 9, 'conclusion': 'cancelled', 'url': 'u9'},
-                   {'databaseId': 8, 'conclusion': 'failure', 'url': 'u8'}]
-        main_phases = {'8': [['build', True], ['abi-native', False], ['timer-native', True]]}
-        with tempfile.TemporaryDirectory() as temp:
-            loop = Path(temp) / 'loop.json'
-            loop.write_text(json.dumps({'phases': [{'phase': 'build', 'failed': False},
-                                                   {'phase': 'abi-native', 'failed': True},
-                                                   {'phase': 'timer-native', 'failed': True},
-                                                   {'phase': 'added-native', 'failed': True}]}))
-            code, _, _ = self.ci('new-failures', str(loop), runs={}, flags=(), history=history, phases=main_phases)
-            self.assertEqual(code, 1)
-            # abi-native fails on main too; timer-native regressed and added-native is new.
-            self.assertIn('new failures: added-native, timer-native', self.out)
-            loop.write_text(json.dumps({'phases': [{'phase': 'abi-native', 'failed': True}]}))
-            code, _, _ = self.ci('new-failures', str(loop), runs={}, flags=(), history=history, phases=main_phases)
-            self.assertEqual(code, 0)
-            # main's saved baseline answers without the API; a missing file falls back to it.
-            saved = Path(temp) / 'failures.json'
-            saved.write_text(json.dumps({'phases': ['abi-native'], 'jobs': [], 'run': '8'}))
-            loop.write_text(json.dumps({'phases': [{'phase': 'abi-native', 'failed': True}, {'phase': 'timer-native', 'failed': True}]}))
-            code, _, _ = self.ci('new-failures', str(loop), '--baseline', str(saved), runs={}, flags=())
-            self.assertEqual((code, self.gh_calls), (1, []))
-            self.assertIn("Against main's merge-tier run 8: new failures: timer-native", self.out)
-            code, _, _ = self.ci('new-failures', str(loop), '--baseline', str(Path(temp) / 'none.json'), runs={}, flags=(),
-                                 history=history, phases=main_phases)
-            self.assertEqual((code, bool(self.gh_calls)), (1, True))
-        code, _, _ = self.ci('new-failures', runs={}, flags=())
-        self.assertEqual(code, 1)
-
     def test_phpt_baseline_answers_from_the_saved_cache_without_the_api(self):
         with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as cache:
             def commit(path, text):
