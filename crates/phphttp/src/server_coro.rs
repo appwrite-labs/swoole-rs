@@ -28,8 +28,7 @@ use swoole_rs_phpruntime::co::{self, Socket};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_zend::{
     Array, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, bailout, declare_bool,
-    declare_long, declare_property_null, declare_string, handlers, method_table,
-    string::{self, bytes},
+    declare_long, declare_property_null, declare_string, handlers, method_table, string,
     sys::{
         self as z, IS_STRING, ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC,
         swr_zend_property_merge, zend_class_entry, zend_long, zend_object, zend_object_handlers,
@@ -601,30 +600,22 @@ const ACCEPT_RETRY_TIME: c_int = 1;
 /// `start`'s `onAccept`: the callable and its cache, which outlive the
 /// accept loop.
 struct Accept {
-    callback: zval,
+    callback: Owned,
     cache: z::zend_fcall_info_cache,
-}
-
-impl Drop for Accept {
-    fn drop(&mut self) {
-        // SAFETY: the callable's name, released once.
-        unsafe { zval_ptr_dtor(&raw mut self.callback) };
-    }
 }
 
 /// `sw_zend_is_callable_at_frame("onAccept")` on `$this` at `start`'s frame;
 /// an `E_CORE_ERROR` when it is not.
 fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout> {
-    // SAFETY: plain data, filled below.
+    // SAFETY: plain data (an undefined name), filled below.
     let mut accept: Box<Accept> = Box::new(unsafe { std::mem::zeroed() });
-    // SAFETY: an empty slot takes a new string.
-    unsafe { value::set_str(&raw mut accept.callback, string::copy(b"onAccept")) };
+    accept.callback = Owned::string(ZString::new(b"onAccept"));
     let mut callable = false;
     // SAFETY: the name, `$this`, this method's frame and local outputs; the
     // shim traps what Zend raises.
     bailout::trapped(unsafe {
         z::swr_zend_try_facade_callable_frame(
-            &raw mut accept.callback,
+            accept.callback.as_ptr(),
             call.this(),
             call.frame(),
             0,
@@ -639,12 +630,11 @@ fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout>
     let mut name = ptr::null_mut();
     // SAFETY: as above; the name is a new string.
     bailout::trapped(unsafe {
-        z::swr_zend_try_facade_callable_name(&raw mut accept.callback, call.this(), &raw mut name)
+        z::swr_zend_try_facade_callable_name(accept.callback.as_ptr(), call.this(), &raw mut name)
     })?;
-    // SAFETY: a live string.
-    let text = String::from_utf8_lossy(nul_terminated(unsafe { bytes(name) })).into_owned();
-    // SAFETY: the name, released once.
-    unsafe { z::swr_zend_string_release(name) };
+    // SAFETY: the new string's reference.
+    let name = unsafe { ZString::from_raw(name) };
+    let text = String::from_utf8_lossy(nul_terminated(name.bytes())).into_owned();
     host::set_last_error(host::PHP_FATAL_ERROR);
     let message = CString::new(format!("function '{text}' is not callable")).unwrap_or_default();
     // SAFETY: a fatal error from a method.
@@ -869,7 +859,7 @@ unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i6
             &raw mut accept.cache,
             1,
             zsocket.as_ptr(),
-            &raw mut accept.callback,
+            accept.callback.as_ptr(),
             &raw mut cid,
         )
     })
