@@ -9,7 +9,7 @@
 //! the case fails on it once the server stops, from whichever process it failed in.
 //! `SyncClient` is a blocking `TcpStream`: `send` writes it all, `recv` is one read.
 
-use super::case::{TimerNode, swoole_timer_after};
+use super::case::{TimerNode, swoole_timer_after, swoole_timer_del};
 use super::*;
 use crate::{TEST_LOG_FILE, TEST_STR};
 use std::io::{Read, Write};
@@ -1136,6 +1136,898 @@ fn max_queued_bytes() {
     serv.delete();
 }
 
+// The `Server::Command` process types.
+const COMMAND_MASTER: c_int = 1 << 1;
+const COMMAND_REACTOR_THREAD: c_int = 1 << 2;
+const COMMAND_EVENT_WORKER: c_int = 1 << 3;
+const COMMAND_TASK_WORKER: c_int = 1 << 4;
+const COMMAND_MANAGER: c_int = 1 << 5;
+const COMMAND_ALL_PROCESS: c_int = COMMAND_MASTER
+    | COMMAND_REACTOR_THREAD
+    | COMMAND_EVENT_WORKER
+    | COMMAND_TASK_WORKER
+    | COMMAND_MANAGER;
+const CB_TASK: usize = 4;
+const CB_MANAGER_START: usize = 10;
+const CB_WORKER_STOP: usize = 17;
+const SW_EVENT_DATA_CHUNK: u8 = 1 << 2;
+const SW_EVENT_DATA_BEGIN: u8 = 1 << 3;
+const SW_EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
+const SW_SESSION_LIST_SIZE: usize = 1 << 20;
+/// `offsetof(swr_v1_socket, recv_timer)` (native/reactor/swoole_rs_socket.h asserts it).
+const SOCKET_RECV_TIMER: usize = 152;
+const SIGKILL: c_int = 9;
+const EAGAIN: c_int = 11;
+
+/// `Session` (native/include/swoole_rs_server_records.h).
+#[repr(C)]
+struct Session {
+    id: c_long,
+    fd: c_int,
+    reactor_id: u32,
+}
+
+unsafe extern "C-unwind" {
+    #[link_name = "_Z35swoole_set_print_backtrace_on_errorb"]
+    fn swoole_set_print_backtrace_on_error(enable: bool);
+}
+
+unsafe extern "C" {
+    fn free(ptr: *mut c_void);
+    fn __errno_location() -> *mut c_int;
+}
+
+/// `swoole_rand(min, max)`.
+fn rand_between(min: u32, max: u32) -> u32 {
+    let bytes = random_bytes(4);
+    min + u32::from_ne_bytes(bytes.try_into().unwrap()) % (max - min + 1)
+}
+
+/// A `MSG_WAITALL` recv: until `buf` is full or the peer closes.
+fn recv_all(c: &mut TcpStream, buf: &mut [u8]) -> usize {
+    let mut length = 0;
+    while length < buf.len() {
+        match c.read(&mut buf[length..]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => length += n,
+        }
+    }
+    length
+}
+
+// `flags[...]`, the AsyncClient TESTs' `std::unordered_map<std::string, bool>`, as shared
+// counters: the server's callbacks may run in a worker.
+const CONNECTED: usize = 8;
+const ON_CONNECT: usize = 9;
+const ON_CLOSE: usize = 10;
+const ON_ERROR: usize = 11;
+const ON_RECEIVE: usize = 12;
+const SERVER_ON_CONNECT: usize = 13;
+const SERVER_ON_RECEIVE: usize = 14;
+const SERVER_ON_CLOSE: usize = 15;
+const RECV_COUNT: usize = 16;
+
+fn set_flag(index: usize) {
+    shared().counters[index].store(1, Ordering::SeqCst);
+}
+
+fn flag(index: usize) -> bool {
+    counter_get(index) != 0
+}
+
+/// `AsyncClient ac(SW_SOCK_TCP)` and its callbacks, in a thread of the process whose
+/// reactor upstream's ran in: `connected` once `connect` returns, then `on_connect` (which
+/// `on_connect` follows) or `on_error`; `on_receive` for each read, which ends the client
+/// when it returns false; `on_close` once the peer or the client closes.
+fn async_client(
+    serv: Server,
+    on_connect: impl FnOnce(&mut TcpStream),
+    mut on_receive: impl FnMut(&mut TcpStream, &[u8]) -> bool,
+) {
+    let port = serv.get_primary_port().port();
+    let connect = TcpStream::connect((TEST_HOST, port));
+    set_flag(CONNECTED);
+    let Ok(mut c) = connect else {
+        set_flag(ON_ERROR);
+        return;
+    };
+    set_flag(ON_CONNECT);
+    on_connect(&mut c);
+    let mut buf = vec![0; 65536];
+    loop {
+        match c.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                set_flag(ON_RECEIVE);
+                if !on_receive(&mut c, &buf[..n]) {
+                    break;
+                }
+            }
+            Err(_) => {
+                set_flag(ON_ERROR);
+                return;
+            }
+        }
+    }
+    drop(c);
+    set_flag(ON_CLOSE);
+}
+
+/// `test_heartbeat_check`'s client: it sends nothing, the heartbeat closes it, and its
+/// `on_close` shuts the server down.
+fn heartbeat_client(serv: Server) {
+    async_client(serv, |_| {}, |_, _| true);
+    shutdown(serv);
+}
+
+/// `test_heartbeat_check(mode, single_thread)`.
+fn test_heartbeat_check(mode: c_int, single_thread: bool) {
+    let serv = Server::new(mode);
+    serv.config().worker_num = 1;
+    serv.config().heartbeat_check_interval = 1;
+    serv.config().single_thread = single_thread;
+
+    // SAFETY: sets a global flag.
+    unsafe { swoole_set_print_backtrace_on_error(true) };
+
+    counter_init();
+
+    assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
+
+    assert_eq!(serv.create(), SW_OK);
+
+    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    set_start_client(serv, heartbeat_client);
+
+    serv.start();
+    join_client();
+
+    assert!(flag(CONNECTED));
+    assert!(flag(ON_CONNECT));
+    assert!(!flag(ON_ERROR));
+    assert!(!flag(ON_RECEIVE));
+    assert!(flag(ON_CLOSE));
+    serv.delete();
+}
+
+/// `TEST(server, heartbeat_check_1)`.
+fn heartbeat_check_1() {
+    test_heartbeat_check(MODE_BASE, false);
+}
+
+/// `TEST(server, heartbeat_check_2)`.
+fn heartbeat_check_2() {
+    test_heartbeat_check(MODE_PROCESS, false);
+}
+
+/// `TEST(server, heartbeat_check_3)`.
+fn heartbeat_check_3() {
+    test_heartbeat_check(MODE_THREAD, false);
+}
+
+/// `TEST(server, heartbeat_check_4)`.
+fn heartbeat_check_4() {
+    test_heartbeat_check(MODE_PROCESS, false);
+}
+
+/// `test_close`'s `close_in_client`, which its callbacks capture.
+static CLOSE_IN_CLIENT: AtomicBool = AtomicBool::new(false);
+
+fn close_in_client() -> bool {
+    CLOSE_IN_CLIENT.load(Ordering::SeqCst)
+}
+
+unsafe extern "C" fn close_on_connect(_: *mut c_void, _: *mut c_void, _: *mut DataHead) {
+    set_flag(SERVER_ON_CONNECT);
+}
+
+unsafe extern "C" fn close_on_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let serv = Server(serv);
+    let (session, data) = request(req);
+    serv.send(session, data);
+    if !close_in_client() {
+        close(serv, session);
+    }
+    set_flag(SERVER_ON_RECEIVE);
+    SW_OK
+}
+
+unsafe extern "C" fn close_on_close(_: *mut c_void, _: *mut c_void, ev: *mut DataHead) {
+    if !close_in_client() {
+        // SAFETY: the event the server passes.
+        check(unsafe { (*ev).reactor_id } < 0, "ev->reactor_id < 0");
+    }
+    set_flag(SERVER_ON_CLOSE);
+}
+
+unsafe extern "C" fn close_on_worker_stop(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+    check(flag(SERVER_ON_CONNECT), "flags[\"server_on_connect\"]");
+    check(flag(SERVER_ON_RECEIVE), "flags[\"server_on_receive\"]");
+    check(flag(SERVER_ON_CLOSE), "flags[\"server_on_close\"]");
+}
+
+/// `test_close`'s client: TEST_STR once connected; on the echo it shuts down and closes
+/// when the case closes in the client, else the server closes it; 50 ms after its close,
+/// the server shuts down.
+fn close_client(serv: Server) {
+    async_client(
+        serv,
+        |c| {
+            let _ = c.write_all(TEST_STR.as_bytes());
+        },
+        |c, _| {
+            if close_in_client() {
+                // A client of its own port in this process sees no close until it shuts down.
+                let _ = c.shutdown(std::net::Shutdown::Both);
+                return false;
+            }
+            true
+        },
+    );
+    if flag(ON_CLOSE) {
+        sleep(0.05);
+    }
+    shutdown(serv);
+}
+
+/// `test_close(mode, close_in_client, single_thread)`.
+fn test_close(mode: c_int, close_in_client: bool, single_thread: bool) {
+    let serv = Server::new(mode);
+    serv.config().worker_num = 1;
+    serv.config().single_thread = single_thread;
+    CLOSE_IN_CLIENT.store(close_in_client, Ordering::SeqCst);
+
+    counter_init();
+
+    assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
+
+    assert_eq!(serv.create(), SW_OK);
+
+    serv.set_callback(CB_CONNECT, close_on_connect as *const c_void);
+    serv.set_callback(CB_RECEIVE, close_on_receive as *const c_void);
+    serv.set_callback(CB_CLOSE, close_on_close as *const c_void);
+    serv.set_callback(CB_WORKER_STOP, close_on_worker_stop as *const c_void);
+    set_start_client(serv, close_client);
+
+    assert_eq!(serv.start(), SW_OK);
+    join_client();
+
+    assert!(flag(CONNECTED));
+    assert!(flag(ON_CONNECT));
+    assert!(!flag(ON_ERROR));
+    assert!(flag(ON_RECEIVE));
+    assert!(flag(ON_CLOSE));
+    checks_held();
+    serv.delete();
+}
+
+/// `TEST(server, close_1)`.
+fn close_1() {
+    test_close(MODE_PROCESS, false, false);
+}
+
+/// `TEST(server, close_2)`.
+fn close_2() {
+    test_close(MODE_BASE, false, false);
+}
+
+/// `TEST(server, close_3)`.
+fn close_3() {
+    test_close(MODE_THREAD, false, false);
+}
+
+/// `TEST(server, close_4)`.
+fn close_4() {
+    test_close(MODE_PROCESS, false, true);
+}
+
+/// `TEST(server, close_5)`.
+fn close_5() {
+    test_close(MODE_PROCESS, true, false);
+}
+
+/// `TEST(server, close_6)`.
+fn close_6() {
+    test_close(MODE_BASE, true, false);
+}
+
+/// `TEST(server, close_7)`.
+fn close_7() {
+    test_close(MODE_THREAD, true, false);
+}
+
+/// `TEST(server, close_8)`.
+fn close_8() {
+    test_close(MODE_PROCESS, true, true);
+}
+
+/// `eof_check`'s client, started in `onWorkerStart`: after each `OK`, one, two, then three
+/// lines; after the fourth it closes, and its `on_close` shuts the server down.
+fn eof_check_client(serv: Server) {
+    let mut count = 0;
+    async_client(
+        serv,
+        |_| {},
+        |c, data| {
+            assert_eq!(data, b"OK");
+            count += 1;
+            match count {
+                1 => c.write_all(b"hello world\r\n").unwrap(),
+                2 => c.write_all(b"hello world\r\nhello world\r\n").unwrap(),
+                3 => c
+                    .write_all(b"hello world\r\nhello world\r\nhello world\r\n")
+                    .unwrap(),
+                _ => return false,
+            }
+            true
+        },
+    );
+    shutdown(serv);
+}
+
+unsafe extern "C" fn eof_check_worker_start(_: *mut c_void, serv: *mut c_void, _: *mut c_void) {
+    let serv = Server(serv);
+    // SAFETY: getpid(2).
+    client_thread(|| unsafe { getpid() }, move || eof_check_client(serv));
+}
+
+unsafe extern "C" fn eof_check_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let (session, _) = request(req);
+    Server(serv).send(session, b"OK");
+    counter_incr(RECV_COUNT, 1);
+    SW_OK
+}
+
+unsafe extern "C" fn eof_check_connect(_: *mut c_void, serv: *mut c_void, ev: *mut DataHead) {
+    // SAFETY: the event the server passes.
+    Server(serv).send(unsafe { (*ev).fd }, b"OK");
+}
+
+/// `TEST(server, eof_check)`.
+fn eof_check() {
+    let serv = Server::new(MODE_BASE);
+    serv.config().worker_num = 1;
+
+    let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
+    let port = port.expect("port");
+    // `port->is_stream()`: SW_SOCK_TCP, SW_SOCK_TCP6 or SW_SOCK_UNIX_STREAM.
+    assert!(matches!(port.config().type_, 1 | 3 | 5));
+
+    // `port->set_eof_protocol("\r\n", true)`.
+    let config = port.config();
+    config.open_eof_check = true;
+    config.protocol.split_by_eof = false;
+    config.protocol.package_eof_len = 2;
+    config.protocol.package_eof[..2].copy_from_slice(b"\r\n");
+    assert_eq!(serv.create(), SW_OK);
+
+    counter_init();
+
+    serv.set_callback(CB_WORKER_START, eof_check_worker_start as *const c_void);
+    serv.set_callback(CB_RECEIVE, eof_check_receive as *const c_void);
+    serv.set_callback(CB_CONNECT, eof_check_connect as *const c_void);
+
+    serv.start();
+    join_client();
+
+    assert!(flag(CONNECTED));
+    assert!(flag(ON_CONNECT));
+    assert!(!flag(ON_ERROR));
+    assert!(flag(ON_RECEIVE));
+    assert!(flag(ON_CLOSE));
+    assert_eq!(counter_get(RECV_COUNT), 3);
+    serv.delete();
+}
+
+/// `test_command`'s `add_command("test", ALL_PROCESS, ...)` handler.
+unsafe extern "C" fn command_handler(
+    _: *mut c_void,
+    _: *mut c_void,
+    message: *const c_char,
+    length: usize,
+    reply: swoole_rs_server::CommandReply,
+    out: *mut c_void,
+) {
+    // SAFETY: the request's message.
+    let msg = unsafe { std::slice::from_raw_parts(message.cast::<u8>(), length) };
+    let result = [b"json result, ", msg].concat();
+    // SAFETY: the reply writer and its output, for this call.
+    unsafe { reply(out, result.as_ptr().cast(), result.len()) };
+}
+
+/// `test_command`'s mode, for `serv->is_base_mode()`.
+static COMMAND_BASE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// `serv->command(1, process_type, "test", msg, fn)`.
+fn command(serv: Server, process_type: c_int, msg: &str) {
+    let name = "test";
+    let callback = swoole_rs_server::CommandFn {
+        invoke: command_callback as *const c_void,
+        ctx: ptr::null_mut(),
+    };
+    // SAFETY: the live server; the name and message for the call; a context-free callback.
+    let sent = unsafe {
+        swoole_rs_server::swr_v1_server_command(
+            serv.0,
+            1,
+            process_type,
+            name.as_ptr().cast(),
+            name.len(),
+            msg.as_ptr().cast(),
+            msg.len(),
+            callback,
+        )
+    };
+    check(sent, "serv->command(...)");
+}
+
+/// `test_command`'s `fn`: each reply sends the next command, then the server shuts down.
+unsafe extern "C" fn command_callback(
+    _: *mut c_void,
+    serv: *mut c_void,
+    message: *const c_char,
+    length: usize,
+) {
+    let serv = Server(serv);
+    // SAFETY: the reply's message.
+    let msg = unsafe { std::slice::from_raw_parts(message.cast::<u8>(), length) };
+    micro_sleep(50000);
+    match msg {
+        b"json result, hello world [0]" if COMMAND_BASE_MODE.load(Ordering::SeqCst) => {
+            command(serv, COMMAND_EVENT_WORKER, "hello world [2]");
+        }
+        b"json result, hello world [0]" => {
+            command(serv, COMMAND_REACTOR_THREAD, "hello world [1]");
+        }
+        b"json result, hello world [1]" => command(serv, COMMAND_EVENT_WORKER, "hello world [2]"),
+        b"json result, hello world [2]" => command(serv, COMMAND_TASK_WORKER, "hello world [3]"),
+        b"json result, hello world [3]" => command(serv, COMMAND_MANAGER, "hello world [4]"),
+        b"json result, hello world [4]" => timer_after(50, move || {
+            shutdown(serv);
+        }),
+        _ => check(false, "ASSERT_TRUE(0)"),
+    }
+}
+
+unsafe extern "C" fn command_start(_: *mut c_void, serv: *mut c_void) {
+    command(Server(serv), COMMAND_MASTER, "hello world [0]");
+}
+
+unsafe extern "C" fn ignore_worker_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {}
+
+/// `test_command(mode)`.
+fn test_command(mode: c_int) {
+    let serv = Server::new(mode);
+    serv.config().worker_num = 4;
+    serv.config().task_worker_num = 4;
+    serv.config().reactor_num = 2;
+    COMMAND_BASE_MODE.store(mode == MODE_BASE, Ordering::SeqCst);
+    set_log_warning();
+
+    if serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_none() {
+        eprintln!("listen failed, [error={}]", last_error());
+        std::process::exit(2);
+    }
+
+    assert_eq!(serv.create(), SW_OK);
+
+    let name = "test";
+    let handler = swoole_rs_server::CommandFn {
+        invoke: command_handler as *const c_void,
+        ctx: ptr::null_mut(),
+    };
+    // SAFETY: the live server; the name for the call; a context-free handler.
+    unsafe {
+        swoole_rs_server::swr_v1_server_add_command(
+            serv.0,
+            name.as_ptr().cast(),
+            name.len(),
+            COMMAND_ALL_PROCESS,
+            handler,
+        )
+    };
+
+    serv.set_callback(CB_START, command_start as *const c_void);
+    serv.set_callback(CB_WORKER_START, ignore_worker_start as *const c_void);
+    serv.set_callback(CB_TASK, return_ok as *const c_void);
+    serv.set_callback(CB_RECEIVE, reply_receive as *const c_void);
+
+    assert_eq!(serv.start(), 0);
+    checks_held();
+    serv.delete();
+}
+
+/// `TEST(server, command_1)`.
+fn command_1() {
+    test_command(MODE_PROCESS);
+}
+
+/// `TEST(server, command_2)`.
+fn command_2() {
+    test_command(MODE_BASE);
+}
+
+/// `abnormal_pipeline_data`'s `msg_id`.
+static MSG_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `abnormal_pipeline_data`'s `send_fn`: a chunk of 1000 to 8000 random bytes, straight
+/// into worker 0's pipe.
+fn abnormal_send(serv: Server, flags: u8, msg_id: u64) {
+    // SAFETY: `server->get_worker_pipe_master(0)`: worker 0's pipe to the master, whose
+    // first member is its fd.
+    let fd = unsafe { *(*serv.view().worker(0)).pipe_master.cast::<c_int>() };
+    let len = rand_between(1000, 8000) as usize;
+    let mut ev = EventData::new();
+    ev.info.msg_id = msg_id;
+    ev.info.flags = flags;
+    ev.info.len = len as u32;
+    ev.data[..len].copy_from_slice(&random_bytes(len));
+
+    // `sock->send_sync(&ev, sizeof(ev.info) + len)`: one datagram, retried while the pipe is full.
+    loop {
+        // SAFETY: the head and `len` bytes of the event.
+        let n = unsafe { crate::write(fd, (&raw const *ev).cast(), size_of::<DataHead>() + len) };
+        // SAFETY: this thread's errno.
+        if n >= 0 || unsafe { *__errno_location() } != EAGAIN {
+            break;
+        }
+        micro_sleep(1000);
+    }
+}
+
+unsafe extern "C" fn abnormal_worker_start(_: *mut c_void, serv: *mut c_void, _: *mut c_void) {
+    if worker_id() == 1 {
+        let serv = Server(serv);
+        let msg_id = MSG_ID.load(Ordering::SeqCst);
+        abnormal_send(serv, SW_EVENT_DATA_CHUNK | SW_EVENT_DATA_BEGIN, msg_id);
+        abnormal_send(serv, SW_EVENT_DATA_CHUNK, msg_id + 9999);
+
+        micro_sleep(100_000);
+        shutdown(serv);
+    }
+}
+
+/// `TEST(server, abnormal_pipeline_data)`.
+fn abnormal_pipeline_data() {
+    let server = Server::new(MODE_PROCESS);
+    server.config().worker_num = 2;
+    server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
+
+    let msg_id = u64::from(rand_between(1, i32::MAX as u32));
+    MSG_ID.store(msg_id, Ordering::SeqCst);
+    set_log_file(TEST_LOG_FILE);
+
+    server.create();
+
+    server.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    server.set_callback(CB_WORKER_START, abnormal_worker_start as *const c_void);
+
+    server.start();
+
+    let cont = read_text(TEST_LOG_FILE).unwrap_or_default();
+    assert!(cont.contains(&format!("abnormal pipeline data, msg_id={}", msg_id + 9999)));
+
+    let _ = std::fs::remove_file(TEST_LOG_FILE);
+}
+
+unsafe extern "C" fn shutdown_after_manager_start(_: *mut c_void, serv: *mut c_void) {
+    let serv = Server(serv);
+    timer_after(50, move || {
+        shutdown(serv);
+    });
+}
+
+/// `TEST(server, base_event_worker_pool_cleanup)`. The pool's `map_` (pid to worker) is
+/// its `registry` in crates/process.
+fn base_event_worker_pool_cleanup() {
+    let server = Server::new(MODE_BASE);
+    server.config().worker_num = 2;
+    assert!(server.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
+    assert_eq!(server.create(), SW_OK);
+
+    server.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    server.set_callback(
+        CB_MANAGER_START,
+        shutdown_after_manager_start as *const c_void,
+    );
+
+    assert_eq!(server.start(), SW_OK);
+    // SAFETY: `server.get_event_worker_pool()`, in the server's shared memory.
+    let pool = unsafe { &*server.view().workers().event_pool };
+    assert!(pool.pipes.is_null());
+    assert!(pool.registry.is_null());
+    assert!(pool.message_box.is_null());
+    server.delete();
+}
+
+/// `abort_worker`'s `onConnect`: the worker holding session 1 kills itself 100 ms later.
+unsafe extern "C" fn abort_worker_connect(_: *mut c_void, _: *mut c_void, ev: *mut DataHead) {
+    // SAFETY: the event the server passes.
+    if unsafe { (*ev).fd } == 1 {
+        timer_after(100, || {
+            // SAFETY: this process.
+            unsafe { kill(getpid(), SIGKILL) };
+        });
+    }
+}
+
+/// `abort_worker`'s `onReceive`: only the live session is left in the session list.
+unsafe extern "C" fn abort_worker_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let serv = Server(serv);
+    // SAFETY: the shared session list, SW_SESSION_LIST_SIZE of them.
+    let sessions = unsafe {
+        std::slice::from_raw_parts(
+            (*serv.head().tables).session_list.cast::<Session>(),
+            SW_SESSION_LIST_SIZE,
+        )
+    };
+    let count = sessions.iter().filter(|s| s.fd != 0 && s.id != 0).count();
+    check(count == 1, "count == 1");
+    let (session, _) = request(req);
+    serv.send(session, if count == 1 { b"OK" } else { b"ERR" });
+    0
+}
+
+unsafe extern "C" fn abort_worker_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+    if worker_id() == 0 {
+        unlock();
+    }
+}
+
+/// `TEST(server, abort_worker)`. The `new` Server leaks, as upstream's.
+fn abort_worker() {
+    let server = Server::new(MODE_BASE);
+    server.config().worker_num = 2;
+
+    server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
+    assert_eq!(server.create(), 0);
+
+    new_lock();
+
+    thread_client(move || {
+        lock();
+        let port = server.get_primary_port().port();
+
+        let mut c1 = TcpStream::connect((TEST_HOST, port)).unwrap();
+
+        let mut buf = [0; 1024];
+        let rn = recv_all(&mut c1, &mut buf);
+        assert_eq!(rn, 0);
+
+        drop(c1);
+
+        let mut c2 = TcpStream::connect((TEST_HOST, port)).unwrap();
+        c2.write_all(b"info").unwrap();
+        let n = recv(&mut c2, &mut buf);
+        drop(c2);
+
+        assert_eq!(&buf[..usize::try_from(n).unwrap_or(0)], b"OK");
+
+        shutdown(server);
+    });
+
+    server.set_callback(CB_CONNECT, abort_worker_connect as *const c_void);
+    server.set_callback(CB_RECEIVE, abort_worker_receive as *const c_void);
+    server.set_callback(CB_WORKER_START, abort_worker_start as *const c_void);
+
+    assert_eq!(server.start(), 0);
+    join_client();
+    checks_held();
+}
+
+/// `reactor_thread_pipe_writable`'s 4 MiB packet.
+static RDATA_4M: OnceLock<Vec<u8>> = OnceLock::new();
+
+unsafe extern "C" fn pipe_writable_worker_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+    unlock();
+    micro_sleep(300_000);
+}
+
+unsafe extern "C" fn pipe_writable_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let serv = Server(serv);
+    let rdata = RDATA_4M.get().unwrap();
+    let len = (rdata.len() as u32).to_be_bytes();
+    // SAFETY: the request the server passes.
+    let flags = unsafe { (*req).info.flags };
+    check(
+        flags & SW_EVENT_DATA_OBJ_PTR != 0,
+        "req->info.flags & SW_EVENT_DATA_OBJ_PTR",
+    );
+    let (session, data) = request(req);
+    check(
+        serv.send(session, &len),
+        "serv->send(fd, &len, sizeof(len))",
+    );
+    check(
+        serv.send(session, rdata),
+        "serv->send(fd, rdata.str, rdata.length)",
+    );
+    check(data.get(4..) == Some(&rdata[..]), "req->data + 4 == rdata");
+
+    // `serv->get_worker_message_bus()->move_packet()`: the packet's block, now ours to free.
+    // SAFETY: this worker's message bus, in its callback.
+    let data = unsafe { swoole_rs_server::bus_move_packet((*serv.head().tables).message_bus) };
+    check(!data.is_null(), "data != nullptr");
+    // SAFETY: `sw_free(data)`: the block, from the libc allocator.
+    unsafe { free(data.cast()) };
+
+    SW_OK
+}
+
+/// `TEST(server, reactor_thread_pipe_writable)`.
+fn reactor_thread_pipe_writable() {
+    let serv = Server::new(MODE_PROCESS);
+    serv.config().worker_num = 1;
+
+    RDATA_4M.set(random_bytes(4 * 1024 * 1024)).unwrap();
+
+    set_log_warning();
+
+    let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
+    let port = port.expect("port");
+    let config = port.config();
+    config.open_length_check = true;
+    config.protocol.package_max_length = 8 * 1024 * 1024;
+    // `network::Stream::set_protocol(&port->protocol)`: a 4-byte big-endian length, then
+    // the body (`init_protocol` gives a length check its default length function).
+    config.protocol.package_length_type = b'N';
+    config.protocol.package_length_size = 4;
+    config.protocol.package_body_offset = 4;
+    config.protocol.package_length_offset = 0;
+
+    new_lock();
+
+    assert_eq!(serv.create(), SW_OK);
+
+    thread_client(move || {
+        lock();
+
+        let rdata = RDATA_4M.get().unwrap();
+        let mut c = TcpStream::connect((TEST_HOST, serv.get_primary_port().port())).unwrap();
+
+        c.write_all(&(rdata.len() as u32).to_be_bytes()).unwrap();
+        c.write_all(rdata).unwrap();
+
+        let mut rbuf = vec![0; rdata.len() + 1024];
+
+        let mut pkt_len = [0; 4];
+        let rn = recv(&mut c, &mut pkt_len);
+        assert_eq!(rn, 4);
+
+        let length = u32::from_be_bytes(pkt_len) as usize;
+        let rn = recv_all(&mut c, &mut rbuf[..length]);
+        assert_eq!(rn, rdata.len());
+
+        drop(c);
+
+        assert_eq!(&rbuf[..rdata.len()], &rdata[..]);
+
+        shutdown(serv);
+    });
+
+    serv.set_callback(CB_WORKER_START, pipe_writable_worker_start as *const c_void);
+    serv.set_callback(CB_RECEIVE, pipe_writable_receive as *const c_void);
+
+    serv.start();
+    join_client();
+    checks_held();
+    serv.delete();
+}
+
+/// `send_timeout`'s client: 1024 bytes, then two seconds before reading the rest.
+fn send_timeout_client(serv: Server) {
+    lock();
+
+    let mut c = TcpStream::connect((TEST_HOST, serv.get_primary_port().port())).unwrap();
+    c.write_all(PACKET).unwrap();
+
+    let mut rbuf = vec![0; 3 * 1024 * 1024];
+
+    let rn = recv(&mut c, &mut rbuf[..1024]);
+    assert_eq!(rn, 1024);
+    let mut length = 1024;
+
+    sleep(2.0);
+
+    loop {
+        let rn = recv(&mut c, &mut rbuf[length..]);
+        if rn <= 0 {
+            break;
+        }
+        length += rn as usize;
+    }
+
+    assert_eq!(&rbuf[..length], &WBUF.get().unwrap()[..length]);
+    drop(c);
+
+    kill_pid(serv.get_master_pid());
+}
+
+unsafe extern "C" fn send_timeout_receive(
+    _: *mut c_void,
+    serv: *mut c_void,
+    req: *mut RecvData,
+) -> c_int {
+    let serv = Server(serv);
+    let (sid, _) = request(req);
+    let conn = serv.get_connection_by_session_id(sid);
+
+    // SAFETY: the connection's live socket, whose `recv_timer` is at SOCKET_RECV_TIMER.
+    let recv_timer = unsafe {
+        &mut *conn
+            .socket
+            .cast::<u8>()
+            .add(SOCKET_RECV_TIMER)
+            .cast::<*mut TimerNode>()
+    };
+    if !recv_timer.is_null() {
+        // SAFETY: the socket's live timer.
+        unsafe { swoole_timer_del(*recv_timer) };
+    }
+    *recv_timer = ptr::null_mut();
+    // SAFETY: the socket's first member is its fd.
+    set_buffer_size(unsafe { *conn.socket.cast::<c_int>() }, 65536);
+
+    check(
+        serv.send(sid, WBUF.get().unwrap()),
+        "serv->send(sid, wbuf.str, wbuf.length)",
+    );
+
+    counter_incr(0, 1);
+
+    SW_OK
+}
+
+/// `TEST(server, send_timeout)`.
+fn send_timeout() {
+    let serv = Server::new(MODE_BASE);
+    serv.config().worker_num = 1;
+    set_log_warning();
+
+    counter_init();
+
+    new_lock();
+
+    let Some(port) = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0) else {
+        eprintln!("listen failed, [error={}]", last_error());
+        std::process::exit(2);
+    };
+
+    port.config().max_idle_time = 1.0;
+
+    WBUF.set(random_bytes(2 * 1024 * 1024)).unwrap();
+
+    assert_eq!(serv.create(), SW_OK);
+
+    set_start_client(serv, send_timeout_client);
+    serv.set_callback(CB_WORKER_START, overflow_worker_start as *const c_void);
+    serv.set_callback(CB_RECEIVE, send_timeout_receive as *const c_void);
+
+    assert_eq!(serv.start(), 0);
+
+    join_client();
+    assert_eq!(counter_get(0), 1);
+    assert_eq!(counter_get(3), 1);
+    checks_held();
+    serv.delete();
+}
+
 pub const CASES: &[(&str, fn())] = &[
     ("sendwait", sendwait),
     ("system", system),
@@ -1155,4 +2047,27 @@ pub const CASES: &[(&str, fn())] = &[
     ("discard_data", discard_data),
     ("pause_and_resume", pause_and_resume),
     ("max_queued_bytes", max_queued_bytes),
+    ("command_1", command_1),
+    ("command_2", command_2),
+    ("abnormal_pipeline_data", abnormal_pipeline_data),
+    (
+        "base_event_worker_pool_cleanup",
+        base_event_worker_pool_cleanup,
+    ),
+    ("abort_worker", abort_worker),
+    ("reactor_thread_pipe_writable", reactor_thread_pipe_writable),
+    ("heartbeat_check_1", heartbeat_check_1),
+    ("heartbeat_check_2", heartbeat_check_2),
+    ("heartbeat_check_3", heartbeat_check_3),
+    ("heartbeat_check_4", heartbeat_check_4),
+    ("close_1", close_1),
+    ("close_2", close_2),
+    ("close_3", close_3),
+    ("close_4", close_4),
+    ("close_5", close_5),
+    ("close_6", close_6),
+    ("close_7", close_7),
+    ("close_8", close_8),
+    ("eof_check", eof_check),
+    ("send_timeout", send_timeout),
 ];
