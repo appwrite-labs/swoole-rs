@@ -322,13 +322,20 @@ mod php {
     }
 
     pub(super) fn build() {
+        // `cargo clippy --all-features` turns on every hook, whose libraries CI's plain
+        // jobs lack: only tools/build_ext.py, which names the PHP, builds the native code.
+        let Ok(php_config) = env::var("PHP_CONFIG") else {
+            println!(
+                "cargo::warning=PHP_CONFIG is unset: swoole.so links no native objects and will not load (tools/build_ext.py sets it)"
+            );
+            return;
+        };
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let native = root.join("native");
         let out = PathBuf::from(env::var("OUT_DIR").expect("ext: OUT_DIR"));
         let os = env::var("CARGO_CFG_TARGET_OS").expect("ext: target OS");
         let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("ext: target arch");
         let platform = if os == "macos" { MACOS } else { LINUX };
-        let php_config = env::var("PHP_CONFIG").unwrap_or_else(|_| "php-config".into());
         let owned = native.join("swoole-src");
         let vendored = owned.join("thirdparty");
         let profile = profile(&vendored, php_version_id(&php_config));
