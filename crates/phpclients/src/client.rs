@@ -13,8 +13,8 @@ use std::{ffi::CStr, ptr};
 use swoole_rs_error::swr_v1_error_strerror;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_zend::{
-    Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, declare_bool, declare_long,
-    declare_string, set_object,
+    Array, Call, Class, Object, Owned, OwnedArray, Props, Value, ZString, declare_bool,
+    declare_long, declare_string, set_object,
     string::ZBuf,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object,
@@ -207,11 +207,11 @@ fn report_socket(call: &Call, socket: Co) {
 }
 
 /// The client's `setting` property, if it is an array.
-fn setting(call: &Call) -> Option<&Value> {
+fn setting(call: &Call) -> Option<&Array> {
     // SAFETY: `$this` is a live client; the class declares `setting`.
     let slot = unsafe { z::swr_zend_property_slot(call.this(), c"setting".as_ptr(), 7) };
     // SAFETY: null or the live property, which the call does not replace.
-    unsafe { Value::from_ptr(slot) }.filter(|settings| settings.array().is_some())
+    unsafe { Value::from_ptr(slot) }.and_then(Value::array)
 }
 
 /// `zval_get_long` of the client's `type` property.
@@ -326,7 +326,7 @@ fn socket_for_connect(call: &Call, port: i64) -> Option<Co> {
     let socket = unsafe { create_socket(object, kind) }?;
     data.socket = socket.as_ptr();
     if let Some(settings) = setting(call) {
-        crate::socket_options::apply(socket, settings.as_ptr(), crate::socket_options::ALL);
+        crate::socket_options::apply(socket, settings, crate::socket_options::ALL);
     }
     Some(socket)
 }
@@ -384,7 +384,7 @@ fn set(call: &Call) {
     };
     call.set_bool(crate::socket_options::apply(
         socket,
-        settings,
+        array,
         crate::socket_options::ALL,
     ));
 }
@@ -654,9 +654,9 @@ fn enable_ssl(call: &Call) {
         report_code(call, libc::EISCONN);
         return call.set_bool(false);
     }
-    let settings = setting(call).filter(|settings| settings.array().is_some_and(|a| a.count() > 0));
+    let settings = setting(call).filter(|settings| settings.count() > 0);
     if let Some(settings) = settings {
-        crate::socket_options::apply(socket, settings.as_ptr(), crate::socket_options::SSL);
+        crate::socket_options::apply(socket, settings, crate::socket_options::SSL);
     }
     if !socket.ssl_handshake() {
         report_socket(call, socket);

@@ -942,7 +942,7 @@ fn set_protocol(call: &Call) {
     }
     call.set_bool(crate::socket_options::apply(
         socket,
-        call.zval(1),
+        settings,
         crate::socket_options::PROTOCOL,
     ));
 }

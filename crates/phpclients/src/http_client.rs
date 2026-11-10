@@ -449,7 +449,7 @@ impl Client {
             unsafe { native::swoole_http_client_coro_ws_apply(self.ws, settings.as_ptr()) };
         }
         if let Some(socket) = self.co() {
-            crate::socket_options::apply(socket, settings.as_ptr(), crate::socket_options::ALL);
+            crate::socket_options::apply(socket, array, crate::socket_options::ALL);
             if !swoole_rs_zend::bailout::pending() {
                 socket.skip_proxy_handshake();
             }
