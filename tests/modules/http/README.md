@@ -191,6 +191,31 @@ crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md)
 | `reactor_num_base`, `reactor_num_large`, `reactor_num_large2`, `reactor_num_zero` | same names | `SW_CPU_NUM` is `swr_v1_core_cpu_num()`, which `swoole_init` sets |
 | `startup_error` | same name | its `new` Server leaks, as upstream's |
 | `protocols` | crates/ports `methods::tests::server_protocols` | |
+| `sendwait`, `forward_message`, `pause_and_resume`, `max_queued_bytes` | same names (`server_conn.rs`) | the client thread starts before `serv.start()`, as upstream's |
+| `system` | same name | its listening socket takes a port the kernel picks, where upstream's took `get_random_port()` |
+| `no_idle_worker`, `overflow_1` .. `overflow_4`, `max_request_1`, `max_request_2`, `watermark`, `discard_data` | same names | the client thread starts in `onStart`, as upstream's |
+| `udp_packet` | same name | the server socket `sendto` answers on is `req->info.server_fd`, which `get_server_socket` looks up; the forked client's assertions fail the case |
+| `pipe_message`, `reopen_log` | same names | |
+| `reopen_log2` | same name | `signal_handler_reopen_logger` has no entry of its own in the crates; `master_signal_handler(SIGWINCH)` runs its body |
+| `command_1`, `command_2` | same names | `add_command` and `command` are crates/server's `swr_v1_server_add_command` and `swr_v1_server_command` |
+| `abnormal_pipeline_data` | same name | `send_fn` writes its datagram to worker 0's `pipe_master` (from `view::Server::worker(0)`), retrying while the pipe is full, as `send_sync` does |
+| `base_event_worker_pool_cleanup` | same name | the pool's `map_` (pid to worker) is its `registry` in crates/process |
+| `abort_worker`, `reactor_thread_pipe_writable`, `send_timeout` | same names | `get_session(i)` reads the shared session list; `move_packet()` is `swoole_rs_server::bus_move_packet`; `conn->socket->recv_timer` is the socket record's, at the offset swoole_rs_socket.h asserts |
+| `heartbeat_check_1` .. `heartbeat_check_4`, `close_1` .. `close_8`, `eof_check` | same names | the `AsyncClient` is a blocking client in a thread of the process whose reactor upstream's ran in, with the same callbacks in order (`connected`, `on_connect` or `on_error`, `on_receive` per read, `on_close`); its `flags` are shared counters, since the server's callbacks may run in a worker |
+
+The MODE_THREAD TESTs (`max_request_2`, `heartbeat_check_3`, `close_3`, `close_7`) need
+upstream's `enable_thread` build (`SW_THREAD`). The crates have thread mode when the
+extension's MINIT sets `swoole_rs_server::THREAD_SUPPORTED`, as it does under ZTS, so these
+cases set it. They still fail over the crates (`max_request_2` counts fewer than 8 worker
+starts; the other three time out waiting for the server), so `http-server-rust` excludes
+all four until #2636 fixes thread mode; an exclusion never counts as passed.
+
+`server_conn.rs` keeps core-tests' shared counters (`test::counter_*`) and the
+process-shared `Mutex(true)` its clients wait on in anonymous shared memory mapped
+before the server forks; the mutex is a flag a worker sets and the client takes. An
+expectation in a server callback is recorded there too, so the case fails on it once
+the server stops, from whichever process it failed in (gtest's went unseen in a forked
+worker). `SyncClient` is a blocking `TcpStream`: `send` writes it all, `recv` is one read.
 
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
