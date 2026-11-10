@@ -184,9 +184,19 @@ impl MultipartParser {
     /// Header fields and values must each arrive whole within one call.
     pub fn execute(&mut self, parts: &mut impl Parts, buf: &[u8]) -> isize {
         let mut mark = 0;
-        for (i, &c) in buf.iter().enumerate() {
+        let mut i = 0;
+        while let Some(&c) = buf.get(i) {
             if let Step::Return(result) = self.step(parts, buf, i, c, &mut mark) {
                 return result;
+            }
+            i += 1;
+            // Part data changes nothing until a CR or the last byte, so go straight there.
+            if self.state == State::PartData {
+                let rest = buf.get(i..).unwrap_or_default();
+                i += rest
+                    .iter()
+                    .position(|&c| c == CR)
+                    .unwrap_or_else(|| rest.len().saturating_sub(1));
             }
         }
         isize::try_from(buf.len()).unwrap_or(isize::MAX)

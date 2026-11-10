@@ -114,7 +114,32 @@ const CONNECTION: [&str; 3] = ["close", "keep-alive", "upgrade"];
 const CONNECTION_STATES: [u8; 3] = [6, 5, 7];
 
 /// The rest of the HTTP/2 preface after `PRI * HTTP/2.0`.
-const PREFACE: &str = "\r\n\r\nSM\r\n\r\n";
+const PREFACE: [&str; 1] = ["\r\n\r\nSM\r\n\r\n"];
+const CHUNKED: [&str; 1] = ["chunked"];
+
+/// By byte, the words (as bits) that start with it.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a byte indexes 256 entries; slice::get_mut isn't const yet"
+)]
+const fn starts(words: &[&str]) -> [u64; 256] {
+    let mut starts = [0; 256];
+    let (mut rest, mut bit) = (words, 1);
+    while let [word, tail @ ..] = rest {
+        if let Some(&first) = word.as_bytes().first() {
+            starts[first as usize] |= bit;
+        }
+        (rest, bit) = (tail, bit << 1);
+    }
+    starts
+}
+
+const METHOD_STARTS: [u64; 256] = starts(&METHODS);
+const PROTOCOL_STARTS: [u64; 256] = starts(&PROTOCOLS);
+const HEADER_STARTS: [u64; 256] = starts(&HEADERS);
+const CONNECTION_STARTS: [u64; 256] = starts(&CONNECTION);
+const CHUNKED_STARTS: [u64; 256] = starts(&CHUNKED);
+const PREFACE_STARTS: [u64; 256] = starts(&PREFACE);
 
 /// The callbacks: each returns 0 to go on, `HPE_PAUSED` to pause, or an error.
 pub trait Callbacks {
@@ -233,6 +258,24 @@ enum State {
     Dead,
 }
 
+impl State {
+    /// Whether the state goes on without input: the steps between bytes.
+    fn takes_no_byte(self) -> bool {
+        matches!(
+            self,
+            Self::FieldComplete
+                | Self::HeadersComplete
+                | Self::AfterHeadersComplete
+                | Self::MessageComplete
+                | Self::UpgradeCheck
+                | Self::PauseUpgrade
+                | Self::AfterMessageComplete
+                | Self::Fail
+                | Self::Dead
+        )
+    }
+}
+
 /// The span being collected for a callback.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
@@ -265,9 +308,12 @@ pub struct Parser {
     error_pos: usize,
     header_state: u8,
     state: State,
-    /// Bytes of the word being matched, and which word.
+    /// Bytes of the word being matched, and which word (the one that ends here,
+    /// if any, else the first that goes on).
     index: u8,
     word: u8,
+    /// The words that still match, by bit.
+    candidates: u64,
     span: Span,
     span_start: usize,
     pending: (i32, Option<&'static &'static str>),
@@ -469,22 +515,29 @@ enum Word {
     Whole(u8),
 }
 
-/// Match `c` against `words`, after the parser's `index` bytes of word `word`.
-fn next_word(words: &[&str], parser: &mut Parser, c: u8) -> Word {
+/// Match `c` against `words` (at most 64, with `starts` their first bytes), after
+/// the parser's `index` bytes: only the words still in `candidates` can go on, so no
+/// prefix is compared again.
+fn next_word(words: &[&str], starts: &[u64; 256], parser: &mut Parser, c: u8) -> Word {
     let index = usize::from(parser.index);
-    let current = words
-        .get(usize::from(parser.word))
-        .copied()
-        .unwrap_or_default();
-    let prefix = current.as_bytes().get(..index).unwrap_or_default();
-    let (mut whole, mut longer) = (None, None);
-    for (i, word) in words.iter().enumerate() {
-        let word = word.as_bytes();
-        if word.starts_with(prefix) && word.get(index) == Some(&c) {
+    let mut candidates = if index == 0 {
+        starts.get(usize::from(c)).copied().unwrap_or_default()
+    } else {
+        parser.candidates
+    };
+    let (mut whole, mut longer, mut next) = (None, None, 0);
+    while candidates != 0 {
+        let i = candidates.trailing_zeros() as usize;
+        candidates &= candidates - 1;
+        let Some(word) = words.get(i).map(|word| word.as_bytes()) else {
+            break;
+        };
+        if word.get(index) == Some(&c) {
             if word.len() == index + 1 {
                 whole = Some(i);
             } else {
                 longer.get_or_insert(i);
+                next |= 1 << i;
             }
         }
     }
@@ -496,6 +549,7 @@ fn next_word(words: &[&str], parser: &mut Parser, c: u8) -> Word {
         }
         (whole, Some(longer)) => {
             parser.word = byte(whole.unwrap_or(longer));
+            parser.candidates = next;
             parser.index += 1;
             Word::Partial
         }
@@ -503,16 +557,89 @@ fn next_word(words: &[&str], parser: &mut Parser, c: u8) -> Word {
     }
 }
 
+/// Which of `words` `name` is, if any (ignoring case if `fold`, for words of
+/// lower-case letters and `-` and a name without CR): what the byte-by-byte match
+/// finds for a word that a byte no word takes follows.
+fn whole_word(words: &[&str], starts: &[u64; 256], name: &[u8], fold: bool) -> Option<u8> {
+    let first = if fold {
+        lower(*name.first()?)
+    } else {
+        *name.first()?
+    };
+    let mut candidates = starts.get(usize::from(first)).copied().unwrap_or_default();
+    while candidates != 0 {
+        let i = candidates.trailing_zeros() as usize;
+        candidates &= candidates - 1;
+        let word = words.get(i)?.as_bytes();
+        // `n | 0x20` is a lower-case letter only from that letter or its capital, and `-` only from `-` or CR.
+        let same = if fold {
+            word.len() == name.len() && word.iter().zip(name).all(|(&w, &n)| w == n | 0x20)
+        } else {
+            word == name
+        };
+        if same {
+            return u8::try_from(i).ok();
+        }
+    }
+    None
+}
+
 fn url_ws(c: u8) -> bool {
     matches!(c, 9 | 12)
 }
 
-fn token(c: u8) -> bool {
-    matches!(c, 0x21 | 0x23..=0x27 | 0x2a | 0x2b | 0x2d | 0x2e | b'0'..=b'9' | b'A'..=b'Z' | 0x5e..=0x7a | 0x7c | 0x7e)
+fn path_char(c: u8) -> bool {
+    is(PATH, c)
 }
 
+fn graphic(c: u8) -> bool {
+    matches!(c, 0x21..=0x7e)
+}
+
+/// A query goes on to a fragment at `#`.
+fn query_char(c: u8) -> bool {
+    graphic(c) && c != b'#'
+}
+
+fn token(c: u8) -> bool {
+    is(TOKEN, c)
+}
+
+const TOKEN: u8 = 1;
+const VALUE: u8 = 2;
+const PATH: u8 = 4;
+
+/// Whether `c` is in `class`: one lookup where the per-byte loops would test ranges.
+fn is(class: u8, c: u8) -> bool {
+    CLASSES.get(usize::from(c)).copied().unwrap_or_default() & class != 0
+}
+
+/// By byte, its classes.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "256 entries by byte; slice::get_mut isn't const yet"
+)]
+const CLASSES: [u8; 256] = {
+    let mut classes = [0; 256];
+    let mut c = 0;
+    while c < 256 {
+        if matches!(c, 0x21 | 0x23..=0x27 | 0x2a | 0x2b | 0x2d | 0x2e | 0x30..=0x39 | 0x41..=0x5a | 0x5e..=0x7a | 0x7c | 0x7e)
+        {
+            classes[c] |= TOKEN;
+        }
+        if c == 9 || c >= 0x20 && c != 0x7f {
+            classes[c] |= VALUE;
+        }
+        if matches!(c, 0x21 | 0x22 | 0x24..=0x3e | 0x40..=0x7e) {
+            classes[c] |= PATH;
+        }
+        c += 1;
+    }
+    classes
+};
+
 fn value_char(c: u8) -> bool {
-    c == 9 || c >= 0x20 && c != 0x7f
+    is(VALUE, c)
 }
 
 fn list_char(c: u8) -> bool {
@@ -573,6 +700,18 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     fn eat(&mut self, next: State) -> Next {
         self.p += 1;
         Ok(next)
+    }
+
+    /// Consume this byte and the run after it that `accept` takes, staying in
+    /// `state`: llhttp's per-byte loop for a state that only eats, in one scan.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a state's step, which other steps' errors share"
+    )]
+    fn skip(&mut self, state: State, accept: impl Fn(u8) -> bool) -> Next {
+        let rest = self.data.get(self.p + 1..).unwrap_or_default();
+        self.p += 1 + rest.iter().position(|&c| !accept(c)).unwrap_or(rest.len());
+        Ok(state)
     }
 
     /// Stop with `error`, resuming at `resume` if it is a pause.
@@ -638,47 +777,20 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         self.close(eat, State::Fail)
     }
 
+    /// The state lives here until the input runs out; every step that stops
+    /// (`stop`, `close`) stores the state to resume at itself.
     fn run(&mut self) -> Result<(), i32> {
+        let mut state = self.parser().state;
         loop {
-            let state = self.parser().state;
-            let next = match state {
-                State::FieldComplete => self.field_complete()?,
-                State::HeadersComplete => self.headers_complete()?,
-                State::AfterHeadersComplete => self.after_headers_complete()?,
-                State::MessageComplete => self.message_complete()?,
-                State::UpgradeCheck => {
-                    if self.parser().upgrade == 1 {
-                        State::PauseUpgrade
-                    } else {
-                        State::AfterMessageComplete
-                    }
-                }
-                State::PauseUpgrade => self.stop(
-                    HPE_PAUSED_UPGRADE,
-                    &"Pause on CONNECT/Upgrade",
-                    State::AfterMessageComplete,
-                )?,
-                State::AfterMessageComplete => self.after_message_complete(),
-                State::Fail => {
-                    let (error, reason) = self.parser().pending;
-                    self.fail(error, reason.unwrap_or(&""))?
-                }
-                State::Dead => return Err(self.parser().error),
-                State::Body | State::ChunkData => {
-                    if self.p == self.data.len() {
-                        return Ok(());
-                    }
-                    self.open_body();
-                    self.consume(state)?
-                }
-                _ => {
-                    let Some(&c) = self.data.get(self.p) else {
-                        return Ok(());
-                    };
-                    self.step(state, c)?
+            let c = match self.data.get(self.p) {
+                Some(&c) => c,
+                None if state.takes_no_byte() => 0,
+                None => {
+                    self.parser().state = state;
+                    return Ok(());
                 }
             };
-            self.parser().state = next;
+            state = self.step(state, c)?;
         }
     }
 
@@ -821,10 +933,22 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         }
     }
 
-    /// The method's next byte.
+    /// The method's next byte, or the whole method when it is here.
     fn method(&mut self, c: u8) -> Next {
+        if self.parser().index == 0 {
+            let rest = self.data.get(self.p..).unwrap_or_default();
+            let head = rest.get(..16).unwrap_or(rest);
+            if let Some(end) = head.iter().position(|&c| c == b' ') {
+                let name = head.get(..end).unwrap_or_default();
+                if let Some(method) = whole_word(&METHODS, &METHOD_STARTS, name, false) {
+                    self.parser().method = method;
+                    self.p += end;
+                    return Ok(State::ReqFirstSpace);
+                }
+            }
+        }
         let parser = self.parser();
-        match next_word(&METHODS, parser, c) {
+        match next_word(&METHODS, &METHOD_STARTS, parser, c) {
             Word::Whole(method) => {
                 parser.method = method;
                 self.eat(State::ReqFirstSpace)
@@ -845,17 +969,35 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
 
     /// The protocol's next byte, and on a request its method's check.
     fn protocol(&mut self, c: u8) -> Next {
-        let parser = self.parser();
-        let protocol = match next_word(&PROTOCOLS, parser, c) {
-            Word::Whole(protocol) => protocol,
-            Word::Partial => return self.eat(State::Protocol),
-            Word::Mismatch => {
-                parser.index = 0;
-                return self.fail(8, &"Expected HTTP/, RTSP/ or ICE/");
+        let rest = self.data.get(self.p..).unwrap_or_default();
+        let head = rest.get(..5).unwrap_or(rest);
+        let whole = head
+            .iter()
+            .position(|&c| c == b'/')
+            .filter(|_| self.parser().index == 0)
+            .and_then(|end| {
+                let name = head.get(..end)?;
+                Some((end, whole_word(&PROTOCOLS, &PROTOCOL_STARTS, name, false)?))
+            });
+        let protocol = if let Some((end, protocol)) = whole {
+            self.p += end;
+            protocol
+        } else {
+            let parser = self.parser();
+            match next_word(&PROTOCOLS, &PROTOCOL_STARTS, parser, c) {
+                Word::Whole(protocol) => {
+                    self.p += 1;
+                    protocol
+                }
+                Word::Partial => return self.eat(State::Protocol),
+                Word::Mismatch => {
+                    parser.index = 0;
+                    return self.fail(8, &"Expected HTTP/, RTSP/ or ICE/");
+                }
             }
         };
+        let parser = self.parser();
         let (kind, method) = (parser.kind, parser.method);
-        self.p += 1;
         if kind != REQUEST {
             return Ok(State::AfterProtocol);
         }
@@ -869,10 +1011,25 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         }
     }
 
-    /// A tracked header name's next byte, or the general token rules.
+    /// A tracked header name's next byte, or the general token rules; the whole
+    /// name at once when it is here up to its colon.
     fn header_field(&mut self, c: u8) -> Next {
+        if self.parser().index == 0 {
+            let rest = self.data.get(self.p..).unwrap_or_default();
+            let end = rest.iter().position(|&c| !token(c)).unwrap_or(rest.len());
+            if rest.get(end) == Some(&b':') {
+                let name = rest.get(..end).unwrap_or_default();
+                let parser = self.parser();
+                parser.header_state = whole_word(&HEADERS, &HEADER_STARTS, name, true)
+                    .and_then(|header| HEADER_STATES.get(usize::from(header)).copied())
+                    .unwrap_or_default();
+                self.p += end;
+                self.close(true, State::FieldComplete)?;
+                return self.field_complete();
+            }
+        }
         let parser = self.parser();
-        match next_word(&HEADERS, parser, lower(c)) {
+        match next_word(&HEADERS, &HEADER_STARTS, parser, lower(c)) {
             Word::Whole(header) => {
                 parser.header_state = HEADER_STATES
                     .get(usize::from(header))
@@ -889,9 +1046,25 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         }
     }
 
+    /// A `Connection` token's next byte, or the whole token when its end is here.
     fn connection(&mut self, c: u8) -> Next {
+        if self.parser().index == 0 {
+            let rest = self.data.get(self.p..).unwrap_or_default();
+            let end = rest
+                .iter()
+                .position(|&c| matches!(c, 10 | 13 | b' ' | b','));
+            let name = end.and_then(|end| rest.get(..end)).unwrap_or_default();
+            if let Some(token) = whole_word(&CONNECTION, &CONNECTION_STARTS, name, true) {
+                self.parser().header_state = CONNECTION_STATES
+                    .get(usize::from(token))
+                    .copied()
+                    .unwrap_or_default();
+                self.p += name.len();
+                return Ok(State::ConnectionWs);
+            }
+        }
         let parser = self.parser();
-        match next_word(&CONNECTION, parser, lower(c)) {
+        match next_word(&CONNECTION, &CONNECTION_STARTS, parser, lower(c)) {
             Word::Whole(token) => {
                 parser.header_state = CONNECTION_STATES
                     .get(usize::from(token))
@@ -909,7 +1082,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
 
     fn te_chunked(&mut self, c: u8) -> Next {
         let parser = self.parser();
-        match next_word(&["chunked"], parser, lower(c)) {
+        match next_word(&CHUNKED, &CHUNKED_STARTS, parser, lower(c)) {
             Word::Whole(_) => self.eat(State::TeChunkedLast),
             Word::Partial => self.eat(State::TeChunked),
             Word::Mismatch => {
@@ -921,7 +1094,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
 
     fn pri_upgrade(&mut self, c: u8) -> Next {
         let parser = self.parser();
-        match next_word(&[PREFACE], parser, c) {
+        match next_word(&PREFACE, &PREFACE_STARTS, parser, c) {
             Word::Whole(_) => self.eat_fail(HPE_PAUSED_H2_UPGRADE, &"Pause on PRI/Upgrade"),
             Word::Partial => self.eat(State::PriUpgrade),
             Word::Mismatch => {
@@ -1048,7 +1221,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             },
             S::UrlPath => match c {
                 9 | 12 => self.eat_fail(7, &"Invalid characters in url"),
-                0x21 | 0x22 | 0x24..=0x3e | 0x40..=0x7e => self.eat(S::UrlPath),
+                _ if path_char(c) => self.skip(S::UrlPath, path_char),
                 _ => Ok(S::UrlQueryOrFragment),
             },
             S::UrlQueryOrFragment | S::UrlQuery | S::UrlFragment => match c {
@@ -1058,8 +1231,8 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 b' ' => self.close(false, S::UrlSkipToHttp),
                 b'#' if state != S::UrlFragment => self.eat(S::UrlFragment),
                 b'?' if state == S::UrlQueryOrFragment => self.eat(S::UrlQuery),
-                0x21..=0x7e if state == S::UrlQuery => self.eat(S::UrlQuery),
-                0x21..=0x7e if state == S::UrlFragment => self.eat(S::UrlFragment),
+                0x21..=0x7e if state == S::UrlQuery => self.skip(S::UrlQuery, query_char),
+                0x21..=0x7e if state == S::UrlFragment => self.skip(S::UrlFragment, graphic),
                 _ if state == S::UrlQuery => self.fail(7, &"Invalid char in url query"),
                 _ if state == S::UrlFragment => self.fail(7, &"Invalid char in url fragment start"),
                 _ => self.fail(7, &"Invalid char in url path"),
@@ -1206,7 +1379,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 }
             },
             S::HeaderFieldGeneral => match c {
-                _ if token(c) => self.eat(S::HeaderFieldGeneral),
+                _ if token(c) => self.skip(S::HeaderFieldGeneral, token),
                 b':' => self.close(true, S::FieldComplete),
                 _ => self.fail(10, &"Invalid header token"),
             },
@@ -1235,9 +1408,20 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             }
             S::HeaderValue => {
                 if value_char(c) {
-                    return self.eat(S::HeaderValue);
+                    self.skip(S::HeaderValue, value_char)?;
                 }
-                Ok(S::ValueOtherwise)
+                // The usual end: CR LF and the next line's first byte, all here, as
+                // `ValueOtherwise`, `ValueAlmostDone` and `ValueLws` take them.
+                match self.data.get(self.p..).unwrap_or_default() {
+                    [] => Ok(S::HeaderValue),
+                    [b'\r', b'\n', next, ..] if !matches!(next, 9 | b' ') => {
+                        self.close(true, S::ValueAlmostDone)?;
+                        self.p += 1;
+                        self.parser().header_flags();
+                        Ok(S::HeaderFieldStart)
+                    }
+                    _ => Ok(S::ValueOtherwise),
+                }
             }
             S::ValueOtherwise => match c {
                 10 => self.close_fail(false, 25, &"Missing expected CR after header value"),
@@ -1425,7 +1609,34 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                 self.parser().content_length = 0;
                 self.eat(S::ChunkSizeDigit)
             }
-            _ => self.fail(1, &"Unreachable state"),
+            S::FieldComplete => self.field_complete(),
+            S::HeadersComplete => self.headers_complete(),
+            S::AfterHeadersComplete => self.after_headers_complete(),
+            S::MessageComplete => self.message_complete(),
+            S::UpgradeCheck => Ok(if self.parser().upgrade == 1 {
+                S::PauseUpgrade
+            } else {
+                S::AfterMessageComplete
+            }),
+            S::PauseUpgrade => self.stop(
+                HPE_PAUSED_UPGRADE,
+                &"Pause on CONNECT/Upgrade",
+                S::AfterMessageComplete,
+            ),
+            S::AfterMessageComplete => Ok(self.after_message_complete()),
+            S::Fail => {
+                let (error, reason) = self.parser().pending;
+                self.fail(error, reason.unwrap_or(&""))
+            }
+            S::Dead => {
+                let parser = self.parser();
+                parser.state = S::Dead;
+                Err(parser.error)
+            }
+            S::Body | S::ChunkData => {
+                self.open_body();
+                self.consume(state)
+            }
         }
     }
 }
