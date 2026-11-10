@@ -810,9 +810,18 @@ fn max_request_client(serv: Server) {
     shutdown(serv);
 }
 
+/// `Server(mode)`. The MODE_THREAD TESTs need upstream's `enable_thread` build (`SW_THREAD`);
+/// the crates have thread mode when the extension's MINIT says so, which the case does here.
+fn new_server(mode: c_int) -> Server {
+    if mode == MODE_THREAD {
+        swoole_rs_server::THREAD_SUPPORTED.store(true, Ordering::Relaxed);
+    }
+    Server::new(mode)
+}
+
 /// `test_max_request(mode)`.
 fn test_max_request(mode: c_int) {
-    let serv = Server::new(mode);
+    let serv = new_server(mode);
     serv.config().worker_num = 2;
     serv.config().max_request = 128;
 
