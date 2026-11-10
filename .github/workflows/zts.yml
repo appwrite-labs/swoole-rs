@@ -28,7 +28,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/php-zts
-          key: php-zts-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}
+          key: php-zts-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
       - run: .devcontainer/php.sh target/php-zts --enable-zts
       - id: upstream
         uses: ./.github/actions/upstream
