@@ -249,7 +249,8 @@ fn add(call: &Call) {
         readable,
         writable,
     });
-    SOCKETS.with_borrow_mut(|sockets| sockets.insert(fd, Registered { socket, object }));
+    // Dropped outside the borrow: a destructor may call back in.
+    drop(SOCKETS.with_borrow_mut(|sockets| sockets.insert(fd, Registered { socket, object })));
     call.set_long(fd.into());
 }
 
@@ -330,7 +331,7 @@ fn set(call: &Call) {
     // The replaced callables, which the reactor may still be in.
     let (has, replaced) = SOCKETS.with_borrow_mut(|sockets| {
         let Some(object) = sockets.get_mut(&fd).and_then(|r| r.object.as_mut()) else {
-            return ((false, false), [None, None]);
+            return ((false, false), [readable, writable]);
         };
         let replace = |new: Option<Rc<Callable>>, slot: &mut Option<Rc<Callable>>| {
             new.and_then(|new| slot.replace(new))
