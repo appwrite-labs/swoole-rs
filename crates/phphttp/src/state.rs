@@ -6,7 +6,7 @@ use std::{
     ffi::{CString, c_char, c_int, c_void},
     rc::Rc,
 };
-use swoole_rs_zend::{Owned, sys::zval};
+use swoole_rs_zend::{Owned, Props, Value, sys::zval};
 
 /// `llhttp_t` (`thirdparty/llhttp/llhttp.h`, `llhttp__internal_s`).
 #[repr(C)]
@@ -39,6 +39,17 @@ pub(crate) struct Llhttp {
 pub(crate) struct Slot {
     pub(crate) ptr: *mut zval,
     pub(crate) value: zval,
+}
+
+impl Slot {
+    /// Property writes on the slot's object, under its own class; None
+    /// before the context sets the slot.
+    pub(crate) fn props(&self) -> Option<Props<'_>> {
+        // SAFETY: a set slot points at its own `value`, a live object zval.
+        let object = unsafe { Value::from_ptr(self.ptr) }?.object()?;
+        // SAFETY: the context's reference keeps the object live while the slot is borrowed.
+        Some(unsafe { Props::new(std::ptr::null_mut(), object) }.own())
+    }
 }
 
 /// `swoole::http::Request`.

@@ -25,7 +25,7 @@ use swoole_rs_zend::{
         zend_string,
     },
     type_of,
-    value::{self, obj_of},
+    value::obj_of,
 };
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
@@ -832,11 +832,8 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     if let Some(socket) = unsafe { Value::from_ptr(socket) } {
         props.value(c"socket", socket);
     }
-    if paired {
-        // SAFETY: the request object, which declares `fd`.
-        let request = unsafe { obj_of(send::state(ctx).request.zobject.ptr) };
-        // SAFETY: as above.
-        unsafe { value::update_long(crate::request::entry(), request, c"fd", fd) };
+    if paired && let Some(request) = send::state(ctx).request.zobject.props() {
+        request.long(c"fd", fd);
     }
 }
 

@@ -13,7 +13,8 @@ Requires PHP and C/C++ compilers. Select extensions with `--reference` and
 every module's. The C and C++ consumers link a Zend-free `--archive`.
 
 The tests execute C and C++ consumers, check the ABI exports every module's
-headers declare and the real reference/Cargo PHP markers and PHPinfo. They
+headers declare under the build's `config.h` (which `build_ext.py` writes beside
+`swoole.so`), and check the real reference/Cargo PHP markers and PHPinfo. They
 write only to temporary directories and neither rebuild sources nor replace
 published modules.
 No unsupported or missing artifact is reported as a pass.
