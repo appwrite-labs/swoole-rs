@@ -35,10 +35,12 @@ PAYLOAD = bytes(range(256)) * 256
 DOCUMENT = json.dumps([{'id': i, 'event': 'order.created', 'status': 'paid', 'total': i * 25}
                        for i in range(64)], separators=(',', ':')).encode()
 MESSAGE = DOCUMENT[:1024]
+FRAME = (1024).to_bytes(4, 'big') + PAYLOAD[:1024]
 # (application directory, method, path, body, expected response body). method 'WS' opens a
 # WebSocket to the app and echoes `body` frame by frame instead of sending HTTP; 'WSZ' does
 # so with permessage-deflate. 'GZ' is a POST sent with Accept-Encoding: gzip whose response
-# must come back gzip-encoded.
+# must come back gzip-encoded. 'TCP' and 'UDP' send `body` as raw bytes on one connection
+# (one socket) and read `expected` back.
 WORKLOADS = {
     'plaintext': ('corpus/01-hello', 'GET', '/', None, b'Hello, Swoole!\n'),
     'json': ('corpus/02-router', 'GET', '/inspect?q=benchmark', None,
@@ -65,6 +67,10 @@ WORKLOADS = {
     # Compression (#2649): a gzip-encoded HTTP response and a permessage-deflate echo.
     'gzip': ('benchmarks/compression', 'GZ', '/gzip', DOCUMENT, DOCUMENT),
     'websocket-deflate': ('benchmarks/compression', 'WSZ', '/chat', MESSAGE, MESSAGE),
+    # Swoole\Server without HTTP (#2650): length-prefixed and end-marker framing, and UDP.
+    'tcp-length': ('corpus/07-tcp-framing', 'TCP', None, FRAME, FRAME),
+    'tcp-eof': ('benchmarks/framing', 'TCP', None, PAYLOAD[:1024] + b'\r\n', PAYLOAD[:1024] + b'\r\n'),
+    'udp': ('benchmarks/framing', 'UDP', None, PAYLOAD[:1024], PAYLOAD[:1024]),
 }
 
 
@@ -129,6 +135,22 @@ def send(port, workload, count):
         return
     if method == 'H2':
         send_h2(port, path, expected, count)
+        return
+    if method in ('TCP', 'UDP'):
+        if method == 'TCP':
+            sock = socket.create_connection(('127.0.0.1', port), timeout=60)
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(60)
+            sock.connect(('127.0.0.1', port))
+        with sock:
+            for _ in range(count):
+                sock.sendall(payload)
+                body = sock.recv(65536)
+                while method == 'TCP' and len(body) < len(expected) and (chunk := sock.recv(65536)):
+                    body += chunk
+                if body != expected:
+                    raise RuntimeError(f'unexpected {method} reply: {body[:80]!r}')
         return
     conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
     for _ in range(count):

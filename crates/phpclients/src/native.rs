@@ -29,13 +29,6 @@ const LOG_WARNING: c_int = 4;
 /// A `SocketImpl *`.
 pub(crate) type Socket = *mut libc::c_void;
 
-/// `package_length_func`'s arguments.
-#[repr(C)]
-pub(crate) struct LengthCallable {
-    pub(crate) socket: Co,
-    pub(crate) value: *mut zval,
-}
-
 unsafe extern "C" {
     /// crates/server's `tcp_info` fields, in upstream's order.
     #[cfg(target_os = "linux")]
@@ -109,11 +102,6 @@ pub(crate) fn make(
 pub(crate) unsafe fn free_socket(socket: Socket) -> Result<(), Bailout> {
     // SAFETY: per the caller.
     unsafe { co::free(socket) }
-}
-
-unsafe extern "C" fn free_callable(callable: *mut c_void) {
-    // SAFETY: a `zend_try` body over a callable `callable_create` made.
-    unsafe { swoole_rs_phpruntime::callable_free(callable) };
 }
 
 /// Whether the build has an optional SSL option: the host name (0) or grease
@@ -609,23 +597,24 @@ impl Co {
     }
 }
 
-/// `package_length_func` from a [`LengthCallable`]: a callable replaces any
-/// earlier one. A `zend_try` body.
-pub(crate) unsafe extern "C" fn swoole_socket_coro_length_callable(call: *mut c_void) {
-    // SAFETY: the caller's arguments.
-    let args = unsafe { &*call.cast::<LengthCallable>() };
-    // SAFETY: inside the caller's `zend_try`, owning nothing.
-    let callable = unsafe { swoole_rs_phpruntime::callable_create(args.value) };
+/// `package_length_func`: the callable `value` makes replaces any earlier
+/// one, which is freed once the socket no longer holds it. Nothing more is set
+/// once a bailout is pending.
+pub(crate) fn length_callable(socket: Co, value: *mut zval) {
+    let Ok(callable) = self::callable(value) else {
+        return;
+    };
     if callable.is_null() {
         return;
     }
-    let protocol = &mut args.socket.record().protocol;
+    let protocol = &mut socket.record().protocol;
     protocol.get_package_length = php_swoole_length_func as *mut c_void;
-    if !protocol.private_data_1.is_null() {
-        // SAFETY: as above; the earlier callable.
-        unsafe { swoole_rs_phpruntime::callable_free(protocol.private_data_1) };
+    let old = std::mem::replace(&mut protocol.private_data_1, callable);
+    if !old.is_null() && callable_free(old).is_err() {
+        return;
     }
-    protocol.private_data_1 = callable;
+    // The destructor may have reached the socket: borrow its record again.
+    let protocol = &mut socket.record().protocol;
     protocol.package_length_size = 0;
     protocol.package_length_type = 0;
     protocol.package_length_offset = IPC_BUFFER_SIZE;
@@ -737,30 +726,21 @@ impl Run for Call {
     }
 }
 
-/// `sw_callable_create(*slot)` into the slot: a `zend_try` body.
-unsafe extern "C" fn callable_create(slot: *mut c_void) {
-    // SAFETY: the caller's slot, holding a live zval.
-    let slot = unsafe { &mut *slot.cast::<*mut c_void>() };
-    // SAFETY: inside the caller's `zend_try`, owning nothing.
-    *slot = unsafe { swoole_rs_phpruntime::callable_create(slot.cast()) };
-}
-
 /// `sw_callable_create(value)`: the callable, or null after a warning.
 /// # Errors
-/// The warning's handler bailed out.
+/// The warning's handler bailed out; the bailout stays pending.
 pub(crate) fn callable(value: *mut zval) -> Result<*mut c_void, Bailout> {
-    let mut slot = value.cast::<c_void>();
-    // SAFETY: a body over the slot, which holds a live zval.
-    unsafe { bailout::trap(callable_create, (&raw mut slot).cast()) }?;
-    Ok(slot)
+    // SAFETY: a live zval.
+    bailout::outcome(unsafe { swoole_rs_phpruntime::callable_create(value) })
 }
 
-/// `sw_callable_free(callable)`.
+/// `sw_callable_free(callable)`: it is gone either way.
 /// # Errors
-/// A destructor bailed out.
+/// A destructor bailed out; the bailout stays pending.
 pub(crate) fn callable_free(callable: *mut c_void) -> Result<(), Bailout> {
-    // SAFETY: a `zend_try` body over a callable `callable` made, freed once.
-    unsafe { bailout::trap(free_callable, callable) }
+    // SAFETY: a callable `callable` made, freed once and held by no slot.
+    unsafe { swoole_rs_phpruntime::callable_free(callable) };
+    bailout::outcome(())
 }
 
 /// `sw_zend_call_function_ex2(nullptr, callable->ptr(), argv, retval)`: whether

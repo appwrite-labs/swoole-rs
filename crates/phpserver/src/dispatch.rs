@@ -29,8 +29,7 @@ use swoole_rs_zend::{
     class_name, long_zval, message, object_of, php_error, string,
     sys::{
         IS_NULL, ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
-        swr_zend_stack_unlimit, zend_fcall_info_cache, zend_update_property_long, zval,
-        zval_ptr_dtor,
+        swr_zend_stack_unlimit, zend_fcall_info_cache, zval, zval_ptr_dtor,
     },
     type_of,
     value::{get_long, set_str},
@@ -189,14 +188,6 @@ fn facts(server: view::Server<'_>) -> Facts {
         enable_library: swoole_rs_phpswoole::enable_library(),
         task_worker,
     }
-}
-
-/// `Server::is_enable_coroutine()`.
-/// # Safety
-/// `server` is a live `Server`.
-pub unsafe fn is_enable_coroutine(server: *mut c_void) -> bool {
-    // SAFETY: per the caller, `server` is a live `Server` for the call.
-    coroutine_enabled(unsafe { view::Server::from_raw(server) })
 }
 
 fn coroutine_enabled(server: view::Server<'_>) -> bool {
@@ -601,8 +592,6 @@ const UDP6: c_int = 4;
 const UNIX_DGRAM: c_int = 6;
 /// `websocket::STATUS_ACTIVE`.
 const WEBSOCKET_ACTIVE: u8 = 3;
-/// `SWR_PHPREDIS_BAILED`.
-const REDIS_BAILED: c_int = -2;
 
 /// `RecvData`: the event's head, then its payload.
 #[repr(C)]
@@ -629,7 +618,6 @@ struct ExitStatus {
 type Ctx = *mut c_void;
 
 unsafe extern "C" {
-    fn swr_v1_phpredis_receive(server: *mut c_void, request: *mut c_void) -> c_int;
     fn swr_v1_phpprocess_start(worker: *mut c_void, object: *mut zval) -> c_int;
 }
 
@@ -703,10 +691,13 @@ extern "C" fn on_worker_error_slot(
 
 /// A task event's result, or its bailout raised.
 fn task_result(outcome: Result<c_int, Bailout>) -> c_int {
-    outcome.unwrap_or_else(|bailed| {
-        bailout::raise(Err(bailed));
+    let result = outcome.unwrap_or_else(|bailed| {
+        bailed.defer();
         SW_OK
-    })
+    });
+    // A callable's release can leave one pending behind an `Ok`.
+    bailout::finish();
+    result
 }
 
 extern "C" fn on_task(_: Ctx, server: view::Server<'_>, req: *mut c_void) -> c_int {
@@ -800,10 +791,15 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: *mut c
     if port.is_null() || !unsafe { view::port(port) }.open_redis_protocol {
         return receive(server, request);
     }
-    // SAFETY: as above; the handler runs inside zend_try.
-    let result = unsafe { swr_v1_phpredis_receive(server.raw(), request) };
-    relay(result == REDIS_BAILED);
-    result
+    let Some(redis) = crate::server::redis_receive() else {
+        return receive(server, request);
+    };
+    let data = swoole_rs_zend::Owned::default();
+    // SAFETY: the live server and its received request; `data` takes the payload.
+    unsafe { php_swoole_get_recv_data(server.raw(), data.as_ptr(), request) };
+    let result = redis(server, fd, &data, coroutine_enabled(server));
+    relay(result.is_err());
+    result.unwrap_or(SW_ERR)
 }
 
 extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: *mut c_void) -> c_int {
@@ -992,8 +988,8 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: *mu
     // SAFETY: the process object.
     let object = unsafe { object_of(process) };
     let ce = crate::lifecycle::process_class();
-    // SAFETY: a live `Swoole\Process` object; Zend copies the name.
-    unsafe { zend_update_property_long(ce, object, c"id".as_ptr(), 2, id) };
+    // SAFETY: a live `Swoole\Process` object.
+    unsafe { swoole_rs_zend::Props::new(ce, object) }.long(c"id", id);
     let gs = server.counters();
     let props = Props::server(server_object);
     props.long(c"master_pid", i64::from(gs.master_pid));
