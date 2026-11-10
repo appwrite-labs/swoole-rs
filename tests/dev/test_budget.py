@@ -86,6 +86,11 @@ class Budget(unittest.TestCase):
         current = {'http': 4, 'http-ffi': 11, 'locale': 6}
         self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base), {'http-ffi': (11, 5)})
 
+    def test_a_new_crate_counts_from_zero_once_the_total_rises(self):
+        base = {'http': 10}
+        self.assertEqual(budget.arrivals({'http': 10, 'brotli': 6, 'safe': 0}, base), {'brotli': (6, 0)})
+        self.assertEqual(budget.arrivals({'http': 4, 'locale': 6}, base), {}, 'http moved 6 to locale')
+
 
 if __name__ == '__main__':
     unittest.main()
