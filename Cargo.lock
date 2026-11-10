@@ -564,7 +564,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "memchr",
- "regex-automata",
  "swoole-rs-base64",
  "swoole-rs-locale",
  "swoole-rs-oracle",
