@@ -427,7 +427,7 @@ pub unsafe fn yield_cancelable(
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
 pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
-    swoole_rs_coroutine::resumed(wait(co, timeout))
+    swoole_rs_coroutine::yield_resumed(wait(co, timeout))
 }
 
 /// [`yield_ex`] without its last error: the resume code (`RC_TIMEDOUT`,
@@ -435,7 +435,7 @@ pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
 pub(crate) fn wait(co: Co, timeout: f64) -> i32 {
     // SAFETY: callers pass the running coroutine, and their frames own nothing
     // that needs a drop (as for `yield_`).
-    unsafe { swoole_rs_coroutine::wait(co, timeout) }
+    unsafe { swoole_rs_coroutine::yield_timed(co, timeout) }
 }
 
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.

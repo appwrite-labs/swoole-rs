@@ -57,6 +57,18 @@ check_collection($table->get('first', null), ['n'=>11,'f'=>1.25,'s'=>"a\0b"], 'n
 check_collection($table->set('first', ['s'=>new CollectionString]), true, 'native string conversion');
 check_collection(CollectionString::$conversions, 1, 'single native conversion effect');
 check_collection($table->get('first','s'), "converted\0value", 'converted binary string');
+final class CollectionCreator {
+    public function __construct(private Swoole\Table $table) {}
+    public function __toString(): string {
+        check_collection($this->table->create(), true, 'create while column parses its name');
+        return 'late';
+    }
+}
+$reentrant = new Swoole\Table(8);
+$reentrant->column('n', Swoole\Table::TYPE_INT);
+check_collection(collection_warning(
+    fn() => $reentrant->column(new CollectionCreator($reentrant), Swoole\Table::TYPE_INT),
+    'Swoole\\Table::column(): unable to add column after table has been created'), false, 'column after its name created the table');
 check_collection(collection_warning(
     fn() => $table->incr('string-error', 's'),
     "Swoole\\Table::incr(): can't execute 'incr' on a string type column"), false, 'string increment rejected');

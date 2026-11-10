@@ -217,13 +217,13 @@ unsafe extern "C-unwind" fn resume_canceled(co: *mut c_void, _: *mut c_void) -> 
 #[unsafe(export_name = "_ZN6swoole9Coroutine8yield_exEd")]
 unsafe extern "C-unwind" fn yield_ex(co: *mut Coroutine, timeout: f64) -> bool {
     // SAFETY: as the caller promises.
-    resumed(unsafe { wait(co.cast(), timeout) })
+    yield_resumed(unsafe { yield_timed(co.cast(), timeout) })
 }
 
-/// `yield_ex`'s result for a [`wait`]'s code: false, with the last error,
+/// `yield_ex`'s result for a [`yield_timed`]'s code: false, with the last error,
 /// when it timed out or was canceled.
 #[must_use]
-pub fn resumed(code: i32) -> bool {
+pub fn yield_resumed(code: i32) -> bool {
     match code {
         RC_TIMEDOUT => set_last_error(SW_ERROR_CO_TIMEDOUT),
         RC_CANCELED => set_last_error(SW_ERROR_CO_CANCELED),
@@ -238,7 +238,7 @@ pub fn resumed(code: i32) -> bool {
 /// # Safety
 /// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
 #[must_use]
-pub unsafe fn wait(co: *mut c_void, timeout: f64) -> i32 {
+pub unsafe fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
     let timer = if timeout > 0.0 {
         // SAFETY: the timer fires only while `co` waits below, or is deleted first.
         unsafe { swr_v1_timer_add_plain_sec(timeout, false, timed_out, co) }

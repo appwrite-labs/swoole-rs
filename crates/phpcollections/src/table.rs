@@ -225,9 +225,10 @@ fn construct(call: &Call) {
 
 /// `column(string $name, int $type, int $size = 0): bool`.
 fn column(call: &Call) {
-    let Some(table) = constructed(call) else {
+    // No handle across the parse: a `__toString` it calls may create the table.
+    if constructed(call).is_none() {
         return;
-    };
+    }
     let parsed = call
         .arity(2, 3)
         .and_then(|()| Ok((call.string(1, b"")?, call.long(2, 0)?, call.long(3, 0)?)));
@@ -247,7 +248,7 @@ fn column(call: &Call) {
         // SW_MEM_ALIGNED_SIZE: to `sizeof(unsigned long)`.
         size = (size + 7) & !7;
     }
-    if table.ready() {
+    if table_of(call).is_some_and(|table| table.ready()) {
         fatal(
             E_WARNING,
             c"unable to add column after table has been created",
@@ -255,7 +256,6 @@ fn column(call: &Call) {
         call.set_bool(false);
         return;
     }
-    drop(table);
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -299,19 +299,22 @@ fn destroy(call: &Call) {
 }
 
 /// `table_set_field_value`: store `value` into a row's column; a new row
-/// clears a column its array leaves out or sets to null.
-fn store(row: &Locked, column: &Column, value: Option<&Value>, initialize: bool) {
+/// clears a column its array leaves out or sets to null. None, with nothing
+/// written, once the conversion bailed out: upstream's longjmp skipped the
+/// write and every later column.
+fn store(row: &Locked, column: &Column, value: Option<&Value>, initialize: bool) -> Option<()> {
     let Some(value) = value.filter(|value| !(initialize && value.is_null())) else {
         row.clear(column);
-        return;
+        return Some(());
     };
     match column.kind {
         // Copied, cut to the column with a warning.
-        TYPE_STRING => row.set_bytes(column, value.string().bytes()),
-        TYPE_FLOAT => row.set_number(column, value.double().to_bits()),
+        TYPE_STRING => row.set_bytes(column, value.applied_string()?.bytes()),
+        TYPE_FLOAT => row.set_number(column, value.applied_double()?.to_bits()),
         #[expect(clippy::cast_sign_loss, reason = "the long's 8 bytes")]
-        _ => row.set_number(column, value.long() as u64),
+        _ => row.set_number(column, value.applied_long()? as u64),
     }
+    Some(())
 }
 
 /// `set(string $key, array $value): bool`.
@@ -338,19 +341,20 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if row.is_new() {
-        for column in table.columns() {
-            store(&row, column, array.find(column.name()), true);
-        }
+    let stored = if row.is_new() {
+        table
+            .columns()
+            .try_for_each(|column| store(&row, column, array.find(column.name()), true))
     } else {
-        for (name, value) in array.entries() {
-            if let Some(column) = name.and_then(|name| table.column(name)) {
-                store(&row, column, Some(value), false);
+        array.entries().try_for_each(|(name, value)| {
+            match name.and_then(|name| table.column(name)) {
+                Some(column) => store(&row, column, Some(value), false),
+                None => Some(()),
             }
-        }
-    }
+        })
+    };
     drop(row);
-    call.set_bool(true);
+    call.set_bool(stored.is_some());
 }
 
 /// `incr()`/`decr()`: `(string $key, string $column, mixed $incrby = 1)`.
@@ -392,7 +396,9 @@ fn update(call: &Call, subtract: bool) {
             call.set_bool(false);
         }
         TYPE_FLOAT => {
-            let by = by.map_or(1.0, Value::double);
+            let Some(by) = by.map_or(Some(1.0), Value::applied_double) else {
+                return;
+            };
             let current = f64::from_bits(row.number(column));
             let value = if subtract { current - by } else { current + by };
             row.set_number(column, value.to_bits());
@@ -400,7 +406,9 @@ fn update(call: &Call, subtract: bool) {
             set_double(call, value);
         }
         _ => {
-            let by = by.map_or(1, Value::long);
+            let Some(by) = by.map_or(Some(1), Value::applied_long) else {
+                return;
+            };
             #[expect(clippy::cast_possible_wrap, reason = "the column's 8 bytes as a long")]
             let current = row.number(column) as i64;
             let value = if subtract {
