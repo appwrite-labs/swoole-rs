@@ -394,6 +394,7 @@ mod tests {
     /// A SIGTERM sent to a new child before it drops the parent's handlers reaches
     /// it once it has, instead of going to the parent's handler, which ignores it.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no signal")]
     fn fork_holds_signals_until_the_child_resets_handlers() {
         host();
         std::thread::spawn(|| {
@@ -417,6 +418,7 @@ mod tests {
 
     /// The child keeps what the parent blocked, less what its reset unblocked.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigaddset")]
     fn fork_child_keeps_the_mask_its_reset_leaves() {
         host();
         std::thread::spawn(|| {

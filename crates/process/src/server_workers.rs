@@ -151,6 +151,8 @@ mod tests {
     fn pid_lookup_preserves_event_order_and_task_then_user_precedence() {
         use crate::worker_registry::*;
         let mut events = [worker(), worker()];
+        // Every view of `events` comes from this pointer: a borrow of the array would end it.
+        let workers = events.as_mut_ptr();
         let mut task = worker();
         let mut user = worker();
         let mut event_pool = pool();
@@ -161,7 +163,7 @@ mod tests {
         let view = ServerWorkers {
             event_pool: &raw mut event_pool,
             task_pool: &raw mut task_pool,
-            event_workers: events.as_mut_ptr(),
+            event_workers: workers,
             user_workers: &raw mut user,
             event_count: 2,
             task_count: 1,
@@ -169,24 +171,24 @@ mod tests {
         };
         // Event pool workers remain null before publication: PID lookup has
         // always scanned the Server array directly, including direct PID writes.
-        unsafe { Worker::new(&raw mut events[0]).set_pid(-7) };
-        unsafe { Worker::new(&raw mut events[1]).set_pid(-7) };
+        unsafe { Worker::new(workers).set_pid(-7) };
+        unsafe { Worker::new(workers.add(1)).set_pid(-7) };
         unsafe {
             (*tasks).register(-7, (&raw mut task).cast(), 1);
             (*registry).register(-7, (&raw mut user).cast(), CATEGORY_USER);
             assert_eq!(
                 swr_v1_process_server_worker_by_pid(&raw const view, registry, -7),
-                &raw mut events[0]
+                workers
             );
-            Worker::new(&raw mut events[0]).set_pid(5);
+            Worker::new(workers).set_pid(5);
             assert_eq!(
                 swr_v1_process_server_worker_by_pid(&raw const view, registry, -7),
-                &raw mut events[1]
+                workers.add(1)
             );
-            Worker::new(&raw mut events[1]).set_pid(0);
+            Worker::new(workers.add(1)).set_pid(0);
             assert_eq!(
                 swr_v1_process_server_worker_by_pid(&raw const view, registry, 0),
-                &raw mut events[1]
+                workers.add(1)
             );
             assert_eq!(
                 swr_v1_process_server_worker_by_pid(&raw const view, registry, -7),
@@ -208,6 +210,9 @@ mod tests {
         let mut events = [worker(), worker()];
         let mut tasks = [worker()];
         let mut users = [worker(), worker(), worker()];
+        // One pointer per array: each `as_mut_ptr` borrow would end the ones before.
+        let (events_ptr, tasks_ptr, users_ptr) =
+            (events.as_mut_ptr(), tasks.as_mut_ptr(), users.as_mut_ptr());
         let mut pending = [worker(), worker()];
         let pending_ptrs = [
             &raw mut pending[0],
@@ -216,13 +221,13 @@ mod tests {
         ];
         let mut event_pool = pool();
         let mut task_pool = pool();
-        task_pool.workers = tasks.as_mut_ptr();
+        task_pool.workers = tasks_ptr;
         event_pool.reload_count = 91;
         let view = ServerWorkers {
             event_pool: &raw mut event_pool,
             task_pool: &raw mut task_pool,
-            event_workers: events.as_mut_ptr(),
-            user_workers: users.as_mut_ptr(),
+            event_workers: events_ptr,
+            user_workers: users_ptr,
             event_count: 2,
             task_count: 1,
             user_count: 3,
@@ -235,7 +240,7 @@ mod tests {
                 pending_ptrs.as_ptr(),
             );
         }
-        assert_eq!(event_pool.workers, events.as_mut_ptr());
+        assert_eq!(event_pool.workers, events_ptr);
         assert_eq!(event_pool.ptr, (&raw mut server).cast());
         assert_eq!(
             (
@@ -252,12 +257,12 @@ mod tests {
         );
         assert_eq!(unsafe { Worker::new(&raw const pending[1]).id() }, 4);
         let expected = [
-            events.as_mut_ptr(),
-            events.as_mut_ptr().wrapping_add(1),
-            tasks.as_mut_ptr(),
-            users.as_mut_ptr(),
-            users.as_mut_ptr().wrapping_add(1),
-            users.as_mut_ptr().wrapping_add(2),
+            events_ptr,
+            events_ptr.wrapping_add(1),
+            tasks_ptr,
+            users_ptr,
+            users_ptr.wrapping_add(1),
+            users_ptr.wrapping_add(2),
         ];
         for (id, expected) in expected.into_iter().enumerate() {
             let found = unsafe {

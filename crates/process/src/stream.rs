@@ -245,6 +245,7 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't shut down a socketpair")]
     fn recv_sync_rejects_truncated_packet() {
         let mut buffer = [0u8; 2048];
 
@@ -264,6 +265,7 @@ mod tests {
     /// The server replies as upstream's test server does: `"Server: " + body`, framed, then a
     /// zero-length frame. Upstream's serves it with a length-checked `Server` port.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no network sockets")]
     fn send() {
         let buf: Vec<u8> = (0..65536u32)
             .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)

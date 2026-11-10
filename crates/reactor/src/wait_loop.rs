@@ -128,8 +128,8 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
         handlers,
         event: &raw mut event,
     };
-    // SAFETY: no native effect is active.
-    unsafe { before_wait(owner) };
+    // SAFETY: no native effect is active, so nothing else borrows the fields.
+    before_wait(unsafe { &mut (*owner).fields });
     // SAFETY: single field reads; effects may change the field between them.
     while unsafe { running.read() } {
         (ops.begin)(reactor);
@@ -483,7 +483,7 @@ fn oneshot(ops: &Loop<'_>, socket: *mut c_void, live: impl Fn() -> bool) {
             let state = unsafe { &mut *ops.owner };
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
             // SAFETY: a registered socket, distinct from the state.
-            state.record(unsafe { &mut *socket }, 2, 0);
+            state.record(unsafe { &mut *socket }, socket, 2, 0);
         } else {
             // SAFETY: as above; poll and kqueue run `Reactor::del`.
             unsafe {
@@ -546,6 +546,7 @@ mod tests {
     /// The pinned loops' before/begin/wait/dispatch/end frame, `once`, `running` and the
     /// deferred zero timeout, over the actual kernel wait of poll and the native backend.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll_create")]
     fn whole_wait_runs_upstreams_frame_on_each_backend() {
         #[cfg(target_os = "linux")]
         let native_kind = 1;
@@ -586,7 +587,10 @@ mod tests {
         let mut socket = SocketRecord::with_fd(fds[0], 5);
         let token: *mut c_void = (&raw mut socket).cast();
         unsafe {
-            assert_eq!((*state.owner).record(&mut socket, 0, events), 0);
+            assert_eq!(
+                crate::reactor_state::tests::record(state.owner, &raw mut socket, 0, events),
+                0
+            );
             assert!((*state.handlers).set(5, 512, Some(read)));
             let descriptor = (*state.owner).backend_fd;
             #[cfg(target_os = "linux")]
