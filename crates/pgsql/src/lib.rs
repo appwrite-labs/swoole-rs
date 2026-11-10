@@ -138,11 +138,6 @@ fn has_io_error(conn: Conn) -> bool {
     IO_ERRORS.with_borrow(|errors| errors.iter().any(|(c, _, _)| *c == conn))
 }
 
-// SAFETY: crates/coroutine's.
-unsafe extern "C" {
-    safe fn swr_v1_coroutine_current() -> *mut c_void;
-}
-
 /// `swoole_pgsql_set_blocking`: the runtime hook flag.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_pgsql_set_blocking(blocking: bool) {
@@ -412,7 +407,7 @@ pub unsafe extern "C" fn swoole_pgsql_connectdb(conninfo: *const c_char) -> *mut
     if conn.0.is_null() || conn.socket() < 0 {
         return conn.0;
     }
-    conn.set_nonblocking(!blocking() && !swr_v1_coroutine_current().is_null());
+    conn.set_nonblocking(!blocking() && !swoole_rs_coroutine::current().is_null());
     wait_connect(conn, Conn::connect_poll);
     conn.0
 }

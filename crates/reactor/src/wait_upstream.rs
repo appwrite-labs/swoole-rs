@@ -8,10 +8,9 @@ use swoole_rs_corebase::log;
 use swoole_rs_process::signal::swoole_signal_dispatch;
 use swoole_rs_process::wait::wait_count;
 
-// SAFETY: crates/reactor's, crates/coroutine's and crates/timer's.
+// SAFETY: crates/reactor's and crates/timer's.
 unsafe extern "C" {
     fn swr_v1_event_current() -> *mut c_void;
-    fn swr_v1_coroutine_current() -> *mut c_void;
     #[link_name = "_Z19swoole_timer_selectv"]
     fn swoole_timer_select();
 }
@@ -23,7 +22,7 @@ fn errno() -> c_int {
 /// The SIGCHLD registry: the coroutine effects crates/process's wait loop asks for.
 #[cfg(not(feature = "iouring"))]
 mod registry {
-    use super::{c_int, c_void, swr_v1_coroutine_current, swr_v1_event_current, wait_count};
+    use super::{c_int, c_void, swr_v1_event_current, wait_count};
     use crate::signal_upstream::{swoole_signal_clear, swoole_signal_set};
     use crate::{ReactorPrepared, swr_v1_reactor_deferred_push};
     use std::ptr;
@@ -39,8 +38,6 @@ mod registry {
             id: c_int,
             condition: unsafe extern "C" fn(*mut usize) -> bool,
         );
-        fn swr_v1_coroutine_native_resume(co: *mut c_void);
-        fn swr_v1_coroutine_timed_out(co: *mut c_void) -> bool;
         #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
         fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
     }
@@ -50,7 +47,7 @@ mod registry {
 
     unsafe extern "C" fn resume(co: *mut c_void) {
         // SAFETY: the registry hands back a coroutine it holds suspended.
-        unsafe { swr_v1_coroutine_native_resume(co) };
+        unsafe { swoole_rs_coroutine::resume(co) };
     }
 
     extern "C" fn signal_handler(signo: c_int) {
@@ -116,8 +113,7 @@ mod registry {
         if unsafe { swr_v1_event_current() }.is_null() {
             return ptr::null_mut();
         }
-        // SAFETY: no preconditions.
-        unsafe { swr_v1_coroutine_current() }
+        swoole_rs_coroutine::current().cast()
     }
 
     unsafe extern "C" fn yield_for(co: *mut c_void, timeout: f64) {
@@ -126,8 +122,9 @@ mod registry {
     }
 
     unsafe extern "C" fn timed_out(co: *mut c_void) -> bool {
-        // SAFETY: the coroutine that just resumed.
-        unsafe { swr_v1_coroutine_timed_out(co) }
+        // SAFETY: the coroutine that just resumed, live.
+        let code = unsafe { (*co.cast::<swoole_rs_coroutine::Coroutine>()).resume_code };
+        code == swoole_rs_coroutine::RC_TIMEDOUT
     }
 
     pub(super) static COROUTINES: Coroutines = Coroutines {
@@ -217,9 +214,8 @@ pub unsafe extern "C" fn system_waitpid_safe(
     options: c_int,
 ) -> libc::pid_t {
     // SAFETY: no preconditions.
-    let outside = unsafe { swr_v1_event_current() }.is_null()
-        // SAFETY: no preconditions.
-        || unsafe { swr_v1_coroutine_current() }.is_null();
+    let outside =
+        unsafe { swr_v1_event_current() }.is_null() || swoole_rs_coroutine::current().is_null();
     if outside || options & libc::WNOHANG != 0 {
         // SAFETY: as the caller promises.
         return unsafe { libc::waitpid(pid, status, options) };

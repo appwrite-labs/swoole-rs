@@ -26,9 +26,9 @@ values), linked with the crates and the static `libswoole.a` that
 native/'s Zend-free sources. It runs each case in its own process,
 excluding `getaddrinfo` (external DNS and network) and `getaddrinfo_timeout` (a
 lookup that misses the resolver cache), as the GoogleTest run did. Where
-upstream's `System` signature carries C++ library types the cases call what the
-hybrid exports for C instead: `swr_v1_system_read_file`, `_getaddrinfo` and
-`_wait_signal`, and `swr_v1_hook_socket_poll`.
+upstream's `System` signature carries C++ library types the cases call the hooks
+crate's Rust functions instead (`file_io::read_file`, `wait_signal::system_wait_signal`,
+`poll::socket_poll`), or `swr_v1_system_getaddrinfo`.
 
 `core-tests/src/coroutine/hook.cpp` is Rust too: `system/src/hook.rs` holds its 26
 TESTs, one function each (`coroutine_hook.<name>`, upstream's names, inputs and

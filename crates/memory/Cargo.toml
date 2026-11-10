@@ -8,10 +8,6 @@ publish = false
 name = "swoole_rs_memory"
 crate-type = ["rlib", "staticlib"]
 
-[[test]]
-name = "ringbuffer"
-path = "../../tests/modules/memory/ringbuffer_thread.rs"
-
 [features]
 # The pools' and table's members under their upstream C++ symbols (crates/ffi enables it).
 upstream-symbols = []

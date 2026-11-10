@@ -125,22 +125,22 @@ method_table! {
     ];
 }
 
-/// `Swoole\Coroutine\Socket`'s class entry, set at MINIT.
-#[unsafe(no_mangle)]
-pub static mut swoole_socket_coro_ce: *mut zend_class_entry = ptr::null_mut();
+/// `swoole_socket_coro_ce`: `Swoole\Coroutine\Socket`'s class entry, null
+/// before MINIT.
+#[must_use]
+pub fn socket_class() -> *mut zend_class_entry {
+    SOCKET.entry()
+}
 
 /// MINIT, as `php_swoole_socket_coro_minit` did: both classes, their short
 /// names when `shortname`, the properties (with the `ext/sockets` bridge ones
 /// when the build has it), and the socket constants unless `ext/sockets` is
 /// loaded (the `AI_*` ones that configure found).
 /// # Safety
-/// Called once, at MINIT of module `module`, with Swoole's exception class.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpclients_socket_minit(
-    exception: *mut zend_class_entry,
-    shortname: bool,
-    module: c_int,
-) {
+/// Called once, at MINIT of module `module`, after `Swoole\Exception`.
+pub unsafe extern "C" fn socket_minit(module: c_int) {
+    let exception = swoole_rs_phpswoole::exception_class();
+    let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
     let sockets = built_with(Switch::Sockets);
     // SAFETY: the native MINIT entry lends these original startup arguments.
     let result = unsafe { init_phpclients_socket_minit(exception, shortname, sockets, module) };
@@ -206,9 +206,6 @@ unsafe fn init_phpclients_socket_minit(
         unsafe { register_long_constant(name, i64::from(*value), module) };
     }
     crate::net::EXCEPTION_PARENT.store(exception, std::sync::atomic::Ordering::Release);
-    // SAFETY: MINIT, once; nothing reads the class entry yet.
-    unsafe { swoole_socket_coro_ce = ce };
-
     Ok(())
 }
 
@@ -945,7 +942,7 @@ fn set_protocol(call: &Call) {
     }
     call.set_bool(crate::socket_options::apply(
         socket,
-        call.zval(1),
+        settings,
         crate::socket_options::PROTOCOL,
     ));
 }

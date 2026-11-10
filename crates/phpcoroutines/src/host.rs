@@ -30,21 +30,6 @@ pub(crate) struct Stats {
 type Co = *mut c_void;
 
 unsafe extern "C" {
-    // crates/coroutine's facade.
-    safe fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
-    fn swr_v1_coroutine_create(
-        routine: unsafe extern "C" fn(*mut c_void),
-        arg: *mut c_void,
-    ) -> c_long;
-    fn swr_v1_coroutine_bail(
-        callback: Option<unsafe extern "C" fn(*mut c_void)>,
-        data: *mut c_void,
-    );
-    fn swr_v1_coroutine_yield_with_cancel(
-        co: Co,
-        cancel: unsafe extern "C-unwind" fn(Co, *mut c_void) -> bool,
-        data: *mut c_void,
-    );
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
     // crates/reactor.
@@ -80,7 +65,6 @@ unsafe extern "C" {
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
     fn swr_v1_phpevents_wait();
-    fn php_swoole_name_resolver_add(resolver: *mut zval) -> bool;
 }
 
 /// The globals, server state and build switches [`flag`] reads.
@@ -207,7 +191,7 @@ pub(crate) fn error_ex(level: c_int, code: c_int, message: &CStr) {
 }
 
 fn scheduler() -> *mut Scheduler {
-    swr_v1_coroutine_scheduler_get().cast()
+    swoole_rs_coroutine::scheduler()
 }
 
 /// This thread's scheduler, borrowed for one read.
@@ -384,7 +368,7 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
     }
     let mut args = (count, sleep);
     // SAFETY: the coroutine runs at once and reads `args` before it yields.
-    unsafe { swr_v1_coroutine_create(sleeper, (&raw mut args).cast()) };
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(sleeper, (&raw mut args).cast()) };
 }
 
 pub(crate) fn set_task(co: Co, task: *mut c_void) {
@@ -440,7 +424,7 @@ pub unsafe fn yield_cancelable(
     data: *mut c_void,
 ) {
     // SAFETY: as the caller promises.
-    unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, data) };
+    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, data) };
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
@@ -532,7 +516,7 @@ pub(crate) fn is_end(co: Co) -> bool {
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
 pub(crate) fn create(args: *mut c_void) -> c_long {
     // SAFETY: the coroutine's entry, with the creator's live arguments.
-    unsafe { swr_v1_coroutine_create(main, args) }
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(main, args) }
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside
@@ -548,7 +532,7 @@ unsafe extern "C" fn main(args: *mut c_void) {
     unsafe { crate::context::close(ctx) };
     if caught != 0 {
         // SAFETY: the main context runs `bail_out`; this frame owns nothing.
-        unsafe { swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
+        unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
     }
 }
 
@@ -757,8 +741,10 @@ pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
 }
 
 pub(crate) fn add_name_resolver(resolver: *mut zval) {
-    // SAFETY: a live zval.
-    unsafe { php_swoole_name_resolver_add(resolver) };
+    if let Some(families) = swoole_rs_phpswoole::families() {
+        // SAFETY: a live zval.
+        unsafe { (families.name_resolver_add)(resolver) };
+    }
 }
 
 pub(crate) fn set_dns_cache_expire(expire: c_long) {
