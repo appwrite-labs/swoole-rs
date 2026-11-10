@@ -25,6 +25,8 @@ const MAP_SHARED_ANONYMOUS: c_int = 0x21;
 const TEST_COUNTER_NUM: usize = 32;
 /// The shared slot after the counters: expectations that failed in any process.
 const FAILURES: usize = TEST_COUNTER_NUM;
+/// The shared slot `lock_wait` and `unlock` use.
+const STARTED: usize = TEST_COUNTER_NUM + 1;
 const SW_PIPE_MASTER: c_int = 1;
 const SW_PIPE_NONBLOCK: c_int = 2;
 const SW_SERVER_EVENT_SHUTDOWN: u8 = 16;
@@ -71,7 +73,7 @@ fn counters() -> &'static [AtomicI32] {
         let mapped = unsafe {
             mmap(
                 ptr::null_mut(),
-                size_of::<AtomicI32>() * (TEST_COUNTER_NUM + 1),
+                size_of::<AtomicI32>() * (TEST_COUNTER_NUM + 2),
                 PROT_READ_WRITE,
                 MAP_SHARED_ANONYMOUS,
                 -1,
@@ -82,8 +84,8 @@ fn counters() -> &'static [AtomicI32] {
         counters = mapped.cast();
         COUNTERS.store(counters, Ordering::SeqCst);
     }
-    // SAFETY: the mapping holds the zeroed counters and FAILURES, never unmapped.
-    unsafe { std::slice::from_raw_parts(counters, TEST_COUNTER_NUM + 1) }
+    // SAFETY: the mapping holds the zeroed counters, FAILURES and STARTED, never unmapped.
+    unsafe { std::slice::from_raw_parts(counters, TEST_COUNTER_NUM + 2) }
 }
 
 fn counter_init() {
@@ -780,18 +782,17 @@ fn reload_tasks_from_worker_error() {
 
 /// `swoole::Mutex lock(true); lock.lock()`: the client thread waits on it, and `onStart`
 /// unlocks it, both in the master.
-static STARTED: (Mutex<bool>, std::sync::Condvar) = (Mutex::new(false), std::sync::Condvar::new());
-
+/// The process-shared `Mutex lock(true)`: in `MODE_BASE`, `onStart` and
+/// `onWorkerStart` run in forked processes, so the flag lives in the shared counters,
+/// which the case maps before its server starts.
 fn lock_wait() {
-    let mut started = STARTED.0.lock().unwrap();
-    while !*started {
-        started = STARTED.1.wait(started).unwrap();
+    while counters()[STARTED].load(Ordering::SeqCst) == 0 {
+        sleep(0.001);
     }
 }
 
 fn unlock() {
-    *STARTED.0.lock().unwrap() = true;
-    STARTED.1.notify_all();
+    counters()[STARTED].store(1, Ordering::SeqCst);
 }
 
 /// `sw_worker()`: this thread's worker, or null.
@@ -1261,7 +1262,8 @@ fn test_base() {
 
         send_packet(port);
 
-        kill_self();
+        // http1.rs's `kill(getpid(), SIGTERM)`, not this module's `TEST(server, kill_self)`.
+        super::kill_self();
     });
 
     serv.set_callback(CB_WORKER_START, base_worker_start as *const c_void);
