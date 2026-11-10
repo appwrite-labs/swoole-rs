@@ -20,7 +20,7 @@ use swoole_rs_reactor::socket_upstream::{
 };
 use swoole_rs_reactor::{
     CLASS_STREAM, CLASS_TCP, OutputEffects, ReactorIov, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
-    SYNC_SENDFILE, SocketAddress, SocketFileRequest, SocketRecord, SyncHooks, fd_recvfrom,
+    SYNC_SENDFILE, SocketAddress, SocketFileRequest, SocketRecord, SyncEffects, fd_recvfrom,
     handle_send_owned, sendfile_chunk, socket_record_peek, socket_record_recv, socket_record_send,
     ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to,
     swr_v1_socket_iov_owned, swr_v1_socket_sync, type_is, what_event_want,
@@ -509,10 +509,14 @@ pub extern "C" fn socket_check_liveness(socket: &mut SocketRecord) -> bool {
     !(peeked == 0 || (peeked < 0 && socket.catch_error(errno()) == CLOSE))
 }
 
-/// One blocking call: the socket and its I/O's operands.
+/// One blocking call: the socket and its I/O's operands. Only [`sync`], whose caller
+/// promises a live record and valid operands, builds one.
 struct Call {
     socket: *mut SocketRecord,
     io: Io,
+    fd: c_int,
+    dont_restart: bool,
+    dispatch: Option<unsafe extern "C" fn()>,
 }
 
 /// The I/O a blocking call repeats, with the operands beyond the loop's buffer.
@@ -528,73 +532,92 @@ enum Io {
     Sendfile(*mut SocketFileRequest),
 }
 
-unsafe extern "C" fn sync_prepare(call: *mut c_void) {
-    // SAFETY: `sync` lends its live call.
-    let socket = unsafe { (*call.cast::<Call>()).socket };
-    // SAFETY: the call's live record.
-    let record = unsafe { &mut *socket };
-    let (nonblock, ssl, tls) = (record.output.nonblock, record.ssl, tls(record));
-    if nonblock == 0 {
-        socket_set_fd_option(record, 1, -1);
+impl SyncEffects for Call {
+    fn fd(&self) -> c_int {
+        self.fd
     }
-    if !ssl.is_null() {
-        // SAFETY: the record's TLS group.
-        unsafe { swr_v1_socket_ssl_clear(tls) };
+
+    fn dont_restart(&self) -> bool {
+        self.dont_restart
     }
-}
 
-unsafe extern "C" fn sync_events(call: *mut c_void, event: c_int) -> i16 {
-    // SAFETY: `sync` lends its live call.
-    let socket = unsafe { (*call.cast::<Call>()).socket };
-    // SAFETY: the call's live record.
-    swr_v1_reactor_poll_events_to(what_event_want(unsafe { &*socket }, event))
-}
+    fn dispatch(&self) -> Option<unsafe extern "C" fn()> {
+        self.dispatch
+    }
 
-unsafe extern "C" fn sync_io(
-    call: *mut c_void,
-    buffer: *mut c_void,
-    length: usize,
-    flags: c_int,
-) -> isize {
-    // SAFETY: `sync` lends its live call.
-    let Call { socket, io } = unsafe { &*call.cast::<Call>() };
-    // SAFETY: the call's live record.
-    let fd = unsafe { (**socket).fd };
-    match *io {
-        // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
-        Io::Send => unsafe { socket_send(*socket, buffer, length, flags) },
-        // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
-        Io::Recv => unsafe { socket_recv(*socket, buffer, length, flags) },
-        // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
-        Io::Read => unsafe { libc::read(fd, buffer, length) },
-        // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
-        Io::Write => unsafe { libc::write(fd, buffer, length) },
-        Io::SendTo(address) => {
-            // SAFETY: the caller's live `network::Address`.
-            let size = unsafe { (*address).len };
-            // SAFETY: the loop's buffer, and the address's storage is its first member.
-            unsafe { libc::sendto(fd, buffer, length, flags, address.cast(), size) }
+    fn prepare(&self) {
+        // SAFETY: the call's live record, which no other borrow holds during the effect.
+        let record = unsafe { &mut *self.socket };
+        let (nonblock, ssl, tls) = (record.output.nonblock, record.ssl, tls(record));
+        if nonblock == 0 {
+            socket_set_fd_option(record, 1, -1);
         }
-        Io::RecvFrom(address, size) => {
+        if !ssl.is_null() {
+            // SAFETY: the record's TLS group.
+            unsafe { swr_v1_socket_ssl_clear(tls) };
+        }
+    }
+
+    fn events(&self, event: c_int) -> i16 {
+        // SAFETY: the call's live record.
+        swr_v1_reactor_poll_events_to(what_event_want(unsafe { &*self.socket }, event))
+    }
+
+    unsafe fn io(&self, buffer: *mut c_void, length: usize, flags: c_int) -> isize {
+        let socket = self.socket;
+        // SAFETY: the call's live record, read on each call: a signal handler the wait
+        // dispatches may have changed its descriptor.
+        let fd = unsafe { (*socket).fd };
+        match self.io {
             // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
-            unsafe { fd_recvfrom(fd, buffer, length, flags, address, size) }
-        }
-        Io::Sendfile(request) => {
-            // SAFETY: the call's live request.
-            let request = unsafe { &mut *request };
-            // SAFETY: the call's live record.
-            unsafe { send_chunk(*socket, request) }.0
-        }
-        Io::Writev(vectors, count) => {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_possible_wrap,
-                reason = "writev takes an int count, as upstream passes it"
-            )]
-            let count = count as c_int;
+            Io::Send => unsafe { socket_send(socket, buffer, length, flags) },
             // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
-            unsafe { libc::writev(fd, vectors, count) }
+            Io::Recv => unsafe { socket_recv(socket, buffer, length, flags) },
+            // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
+            Io::Read => unsafe { libc::read(fd, buffer, length) },
+            // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
+            Io::Write => unsafe { libc::write(fd, buffer, length) },
+            Io::SendTo(address) => {
+                // SAFETY: the caller's live `network::Address`.
+                let size = unsafe { (*address).len };
+                // SAFETY: the loop's buffer, and the address's storage is its first member.
+                unsafe { libc::sendto(fd, buffer, length, flags, address.cast(), size) }
+            }
+            Io::RecvFrom(address, size) => {
+                // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
+                unsafe { fd_recvfrom(fd, buffer, length, flags, address, size) }
+            }
+            Io::Sendfile(request) => {
+                // SAFETY: the call's live request.
+                let request = unsafe { &mut *request };
+                // SAFETY: the call's live record.
+                unsafe { send_chunk(socket, request) }.0
+            }
+            Io::Writev(vectors, count) => {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_possible_wrap,
+                    reason = "writev takes an int count, as upstream passes it"
+                )]
+                let count = count as c_int;
+                // SAFETY: the loop's buffer of `length` bytes, valid for this I/O.
+                unsafe { libc::writev(fd, vectors, count) }
+            }
         }
+    }
+
+    fn catch_error(&self, error: c_int) -> c_int {
+        // SAFETY: as for `prepare`.
+        swoole_rs_reactor::catch_error(error, unsafe { &mut (*self.socket).kernel_nobufs })
+    }
+
+    fn take_nobufs(&self) -> bool {
+        // SAFETY: as for `prepare`; `has_kernel_nobufs` reads and clears the flag.
+        std::mem::replace(unsafe { &mut (*self.socket).kernel_nobufs }, false)
+    }
+
+    fn set_last_error(&self, error: c_int) {
+        log::swr_v1_core_set_last_error(error);
     }
 }
 
@@ -613,23 +636,18 @@ unsafe fn sync(
     flags: c_int,
     write: bool,
 ) -> isize {
-    let call = Call { socket, io };
-    // SAFETY: as the caller promises.
-    let record = unsafe { &mut *socket };
+    // SAFETY: as the caller promises; the borrow ends before the loop.
+    let record = unsafe { &*socket };
     let timeout = if write {
         record.timeouts.write
     } else {
         record.timeouts.read
     };
-    let hooks = SyncHooks {
-        socket: (&raw const call).cast_mut().cast(),
+    let call = Call {
+        socket,
+        io,
         fd: record.fd,
         dont_restart: record.dont_restart != 0,
-        kernel_nobufs: &raw mut record.kernel_nobufs,
-        prepare: sync_prepare,
-        events: sync_events,
-        io: sync_io,
-        set_last_error: log::swr_v1_core_set_last_error,
         dispatch: signal_dispatch(),
     };
     let event = if write { EVENT_WRITE } else { EVENT_READ };
@@ -639,18 +657,8 @@ unsafe fn sync(
     )]
     let timeout_ms = (timeout * 1000.0) as c_long as c_int;
     let buffer = buffer.cast_mut();
-    // SAFETY: the hooks are valid for this call, as is the caller's buffer.
-    unsafe {
-        swr_v1_socket_sync(
-            &raw const hooks,
-            kind,
-            buffer,
-            length,
-            flags,
-            event,
-            timeout_ms,
-        )
-    }
+    // SAFETY: the caller's buffer, valid for the call's I/O.
+    unsafe { swr_v1_socket_sync(&call, kind, buffer, length, flags, event, timeout_ms) }
 }
 
 /// `ssize_t Socket::send_sync(const void *, size_t, int)`.
