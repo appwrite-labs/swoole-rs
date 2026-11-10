@@ -343,6 +343,28 @@ pub unsafe extern "C" fn create_coroutine(
     created.unwrap_or(ERR_INVALID)
 }
 
+/// `zend::function::call(&fcc, argc, argv, nullptr, coroutine)` of a kept
+/// callable with its bound arguments: whether it ran, warning as
+/// `sw_callable_warning` when it could not.
+/// # Errors
+/// PHP bailed out.
+pub fn call_kept(callable: &swoole_rs_zend::Callable, coroutine: bool) -> Result<bool, Bailout> {
+    let (cache, argc, argv) = callable.parts();
+    // SAFETY: a kept callable's cache and arguments, which its owner keeps
+    // live through the call; the leaves are this crate's and C's.
+    unsafe {
+        swoole_rs_phphelpers::function_call(
+            cache,
+            argc,
+            argv,
+            ptr::null_mut(),
+            coroutine,
+            create_coroutine,
+            swoole_rs_zend::sys::swr_zend_callable_warning,
+        )
+    }
+}
+
 /// `bool zend::function::call(zend_fcall_info_cache *, uint32_t, zval *, zval *, bool)`
 /// (the bundled curl's `zend::Function::call`): `function_call` in a
 /// coroutine, warning as `sw_callable_warning`, with a bailout re-raised.
