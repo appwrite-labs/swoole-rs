@@ -23,15 +23,12 @@ unsafe extern "C-unwind" {
     fn reactor_if_exit(reactor: *mut c_void) -> bool;
     #[link_name = "_ZN6swoole7Reactor4waitEv"]
     fn reactor_wait(reactor: *mut c_void) -> c_int;
-    // crates/phpprocess and crates/coroutine.
-    safe fn php_swoole_is_enable_coroutine() -> bool;
+    // crates/coroutine.
     fn swoole_coroutine_is_in() -> u8;
 }
 
-unsafe extern "C" {
-    /// crates/phphelpers' `SW_ZSTR_KNOWN` table.
-    static sw_zend_known_strings: *mut *mut z::zend_string;
-}
+// crates/phphelpers' `SW_ZSTR_KNOWN` table.
+use swoole_rs_phphelpers::sw_zend_known_strings;
 
 /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const PHP_FATAL_ERROR: c_int = 503;
@@ -101,11 +98,6 @@ pub(crate) fn fatal_error() -> bool {
 pub(crate) fn in_coroutine() -> bool {
     // SAFETY: no preconditions.
     unsafe { swoole_coroutine_is_in() != 0 }
-}
-
-/// `php_swoole_is_enable_coroutine()`.
-pub(crate) fn enable_coroutine() -> bool {
-    php_swoole_is_enable_coroutine()
 }
 
 pub(crate) fn bailed() -> bool {

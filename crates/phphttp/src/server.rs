@@ -14,7 +14,7 @@ use crate::{
 use std::{
     cell::RefCell,
     collections::VecDeque,
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     mem::ManuallyDrop,
     ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
@@ -112,19 +112,10 @@ const MODE_PROCESS: u8 = 2;
 /// `Server::DISPATCH_FDMOD`.
 const DISPATCH_FDMOD: u8 = 2;
 
-// Elsewhere: the connection's addresses and its peer's port and loopback
-// check (crates/clients).
-unsafe extern "C" {
-    fn swr_v1_clients_address_host(
-        address: *const swoole_rs_corebase::net_types::SocketAddress,
-    ) -> *const c_char;
-    fn swr_v1_clients_address_port(
-        address: *const swoole_rs_corebase::net_types::SocketAddress,
-    ) -> c_int;
-    fn swr_v1_clients_address_loopback(
-        address: *const swoole_rs_corebase::net_types::SocketAddress,
-    ) -> bool;
-}
+// The connection's addresses and its peer's port and loopback check.
+use swoole_rs_clients::address::{
+    swr_v1_clients_address_host, swr_v1_clients_address_loopback, swr_v1_clients_address_port,
+};
 
 /// A keep-alive session's server and remote address, until it closes, by its
 /// connection's fd. The session check drops a reused fd's entry. RSHUTDOWN

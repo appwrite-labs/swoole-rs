@@ -172,14 +172,9 @@ fn is_null(value: *mut zval) -> bool {
     kind & 0xff == IS_NULL
 }
 
-unsafe extern "C" {
-    static mut swoole_exception_ce: *mut z::zend_class_entry;
-}
-
 fn callable(zfn: *mut zval, name: Option<&CStr>, allow_null: bool) -> *mut c_void {
     let name = name.map_or(ptr::null(), CStr::as_ptr);
-    // SAFETY: the registered exception class is immutable during this request.
-    let exception = unsafe { swoole_exception_ce };
+    let exception = swoole_rs_phpswoole::exception_class();
     // SAFETY: the live candidate, static diagnostic name and C reporter remain
     // valid through the contained SDK resolution.
     match unsafe { callable::factory(zfn, name, allow_null, exception, swr_zend_callable_warning) }
@@ -550,7 +545,7 @@ fn invoke(callable: *mut c_void, argv: *mut zval, argc: u32) -> Result<bool, Bai
             argc,
             argv,
             ptr::null_mut(),
-            native::enable_coroutine(),
+            swoole_rs_phpprocess::enable_coroutine(),
             swoole_rs_phpcoroutines::create_coroutine,
             swr_zend_callable_warning,
         )

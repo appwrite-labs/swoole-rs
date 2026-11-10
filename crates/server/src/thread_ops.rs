@@ -3,7 +3,7 @@
 //! it, its timers and the server methods it calls. Each is a Rust call: the bus
 //! is crates/bus', the methods are this crate's and crates/process' and
 //! crates/ports', reached under their upstream symbols.
-use core::ffi::{c_char, c_int, c_long, c_void};
+use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 
 use swoole_rs_buffer::string::CppString;
@@ -65,11 +65,6 @@ unsafe extern "C-unwind" {
     fn call_worker_stop_callback(serv: *mut c_void, worker: *mut WorkerRecord);
     #[link_name = "_ZN6swoole6Server17stop_async_workerEPNS_6WorkerE"]
     fn stop_async_worker(serv: *mut c_void, worker: *mut WorkerRecord);
-}
-
-// SAFETY: crates/clients' `Address::get_addr`.
-unsafe extern "C" {
-    fn swr_v1_clients_address_host(address: *const SocketAddress) -> *const c_char;
 }
 
 /// The context's thread.
@@ -207,7 +202,11 @@ pub(crate) unsafe fn answer(
                 c_long::from(ip.cast_signed())
             } else {
                 // SAFETY: the packet's live address.
-                let host = unsafe { swr_v1_clients_address_host(&raw const pkt.socket_addr) };
+                let host = unsafe {
+                    swoole_rs_clients::address::swr_v1_clients_address_host(
+                        &raw const pkt.socket_addr,
+                    )
+                };
                 let length = pkt.socket_addr.len as usize;
                 if host.is_null() || length == 0 {
                     0
