@@ -124,14 +124,16 @@ def run(engine, workload, connections, seconds, warmup):
 
 
 def summary(rows):
-    """Median and relative spread ((max - min) / median) of each measure across repetitions."""
+    """Median and relative spread ((max - min) / median) of each measure across the repetitions
+    that counted it; one lost perf sample doesn't drop a counter, a PMU that counts nothing does."""
     measures = {key: [row[key] for row in rows] for key in ('requests_per_second', 'p50_ms', 'p99_ms')}
     measures |= {event: [row['per_request'].get(event) for row in rows] for event in EVENTS}
     result = {}
     for key, values in measures.items():
-        if None not in values:
+        if values := [value for value in values if value is not None]:
             median = statistics.median(values)
-            result[key] = {'median': median, 'spread': (max(values) - min(values)) / median if median else 0}
+            result[key] = {'median': median, 'spread': (max(values) - min(values)) / median if median else 0,
+                           'samples': len(values)}
     return result
 
 
@@ -163,8 +165,10 @@ def main():
                 rows[engine.name].append(run(engine, workload, args.connections, args.seconds, args.warmup))
         results[workload] = {name: {'runs': runs, 'summary': summary(runs)} for name, runs in rows.items()}
         for name, result in results[workload].items():
-            print(f'{name:10} {workload:15} ' + '  '.join(f'{key} {value["median"]:.4g} ±{value["spread"]:.0%}'
-                                                          for key, value in result['summary'].items()), flush=True)
+            print(f'{name:10} {workload:15} ' + '  '.join(
+                f'{key} {value["median"]:.4g} ±{value["spread"]:.0%}'
+                + (f' ({value["samples"]}/{args.repetitions} counted)' if value['samples'] < args.repetitions else '')
+                for key, value in result['summary'].items()), flush=True)
         if len(engines) == 2:
             first, second = (results[workload][engine.name]['summary'].get(args.counter) for engine in engines)
             if not first or not second:
