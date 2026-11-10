@@ -72,12 +72,6 @@ unsafe extern "C" {
     fn swoole_event_wait() -> c_int;
     /// `sw_async_threads()`'s `get_task_num()`, `get_worker_num()` and `get_queue_size()`.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
-    /// `SwooleG.aio_core_worker_num`, `aio_worker_num`, `aio_max_wait_time` and
-    /// `aio_max_idle_time`.
-    fn swr_v1_core_set_aio_core_worker_num(value: u32);
-    fn swr_v1_core_set_aio_worker_num(value: u32);
-    fn swr_v1_core_set_aio_max_wait_time_bits(value: u64);
-    fn swr_v1_core_set_aio_max_idle_time_bits(value: u64);
     fn usleep(usec: u32) -> c_int;
     fn getsid(pid: c_int) -> c_int;
     fn isatty(fd: c_int) -> c_int;
@@ -256,13 +250,11 @@ fn schedule() {
         Some(count_callback),
     );
 
-    // SAFETY: SwooleG's settings, before the pool exists.
-    unsafe {
-        swr_v1_core_set_aio_core_worker_num(4);
-        swr_v1_core_set_aio_worker_num(128);
-        swr_v1_core_set_aio_max_wait_time_bits(0.05_f64.to_bits());
-        swr_v1_core_set_aio_max_idle_time_bits(0.5_f64.to_bits());
-    }
+    // SwooleG's settings, before the pool exists.
+    swoole_rs_corebase::swr_v1_core_set_aio_core_worker_num(4);
+    swoole_rs_corebase::swr_v1_core_set_aio_worker_num(128);
+    swoole_rs_corebase::swr_v1_core_set_aio_max_wait_time_bits(0.05_f64.to_bits());
+    swoole_rs_corebase::swr_v1_core_set_aio_max_idle_time_bits(0.5_f64.to_bits());
 
     let count = Cell::new(n);
     let event = &event;
