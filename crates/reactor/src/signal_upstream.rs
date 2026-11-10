@@ -11,6 +11,8 @@ use crate::SocketRecord;
 use crate::socket_sync::set_errno;
 use std::ffi::c_int;
 #[cfg(target_os = "linux")]
+use std::ffi::c_void;
+#[cfg(target_os = "linux")]
 use std::ptr;
 use swoole_rs_corebase::log;
 use swoole_rs_process::signal::swoole_signal_to_str;
@@ -33,7 +35,6 @@ type SignalHandler = unsafe extern "C" fn(c_int);
 
 // SAFETY: crates/reactor's.
 unsafe extern "C" {
-    #[cfg(target_os = "linux")]
     #[cfg(target_os = "linux")]
     #[link_name = "_Z16swoole_event_addPN6swoole7network6SocketEi"]
     fn swoole_event_add(socket: *mut SocketRecord, events: c_int) -> c_int;
