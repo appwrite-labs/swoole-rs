@@ -597,9 +597,15 @@ dependencies = [
 name = "swoole-rs-http-server-tests"
 version = "0.0.0"
 dependencies = [
+ "swoole-rs-buffer",
+ "swoole-rs-corebase",
  "swoole-rs-ffi",
+ "swoole-rs-locks",
  "swoole-rs-ports",
+ "swoole-rs-process",
  "swoole-rs-server",
+ "swoole-rs-tls",
+ "swoole-rs-utilities",
 ]
 
 [[package]]
