@@ -1,6 +1,7 @@
 """benchmarks/callgrind.py's ratchet: a recorded ratio may drift by noise, no more."""
 from pathlib import Path
 import json
+import socket
 import sys
 import unittest
 
@@ -31,6 +32,18 @@ class Ratchet(unittest.TestCase):
         # json beats nothing once rounded up; timer and websocket lack a result in one run.
         self.assertEqual(callgrind.ratchet(results, limits), {'plaintext': 0.97})
         self.assertEqual(callgrind.lowest(0.94), 0.94)
+
+    def test_resolver_answers_the_question_and_drops_the_edns_record(self):
+        port = int(callgrind.peers()['PEER_DNS_PORT'])
+        question = b'\x09callgrind\x04test\x00\x00\x01\x00\x01'
+        edns = b'\x00\x00\x29\x04\xd0\x00\x00\x00\x00\x00\x00'
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(5)
+            sock.sendto(b'\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x01' + question + edns, ('127.0.0.1', port))
+            reply = sock.recv(512)
+        self.assertEqual(reply[:12], b'\x12\x34\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00')
+        self.assertEqual(reply[12:12 + len(question)], question)
+        self.assertEqual(reply[-4:], bytes([127, 0, 0, 1]))
 
     def test_every_merge_tier_workload_is_recorded(self):
         limits = json.loads((ROOT / 'benchmarks/callgrind_limits.json').read_text())

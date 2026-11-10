@@ -93,6 +93,20 @@ multipart POST with a 64 KiB file) and `static` (a 16 KiB file from
 --php-extension pdo --php-extension pdo_mysql`. Its record started at a
 provisional 1.10; the ratchet lowers it once two merge runs beat it.
 
+Four measure database and network hooks against `benchmarks/hooks` (#2653), one
+round trip per request: `pgsql` and `sqlite` run a prepared `SELECT` through
+hooked PDO (PostgreSQL on `PGSQL_HOST`, default `127.0.0.1`, root/root, database
+`test`; SQLite in a file under the server's data directory), `curl` is a GET to
+the HTTP peer with `SWOOLE_HOOK_NATIVE_CURL`, and `dns` a
+`Coroutine\System::dnsLookup` through c-ares, with the DNS cache off, that a
+resolver `callgrind.py` serves answers. They need both engines built with
+`--configure=--enable-swoole-pgsql --configure=--enable-swoole-sqlite
+--configure=--enable-swoole-curl --configure=--enable-cares` and
+`--php-extension pdo_pgsql --php-extension curl`. Building the main pair that way
+would shift every other workload's record, so they run on a second pair, and
+`--append` adds their results to the main pair's `--output`, which stays the one
+result the ratchet reads.
+
 ```sh
 python3 tools/build_ext.py --profile release-lto
 python3 benchmarks/callgrind.py --requests 1000 --workload plaintext --workload echo-1k --limits benchmarks/callgrind_limits.json \
