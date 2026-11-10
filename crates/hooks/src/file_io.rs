@@ -3,7 +3,7 @@
 //! lambda over a `File` did. Each warning is logged on the pool thread with the
 //! failing call's errno.
 use crate::stdio::{Offload, offloaded};
-use libc::{c_char, c_int, c_void};
+use libc::{c_char, c_int};
 use std::ffi::CStr;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
@@ -210,27 +210,6 @@ pub unsafe extern "C" fn system_write_file(
     // SAFETY: the caller's `length` bytes.
     let data = unsafe { std::slice::from_raw_parts(buf, length) };
     write_file(file, data, lock, flags)
-}
-
-/// `System::read_file` for C callers (upstream returns a `shared_ptr<String>`): the
-/// content goes to `put(out, data, length)`; false when there is none.
-///
-/// # Safety
-/// `file` is a C string; `put(out, ..)` is callable; in a coroutine.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_system_read_file(
-    file: *const c_char,
-    lock: bool,
-    put: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
-    out: *mut c_void,
-) -> bool {
-    // SAFETY: the caller's C string.
-    let Some(content) = read_file(unsafe { CStr::from_ptr(file) }, lock) else {
-        return false;
-    };
-    // SAFETY: the caller's sink, given the content's bytes.
-    unsafe { put(out, content.as_ptr().cast(), content.len()) };
-    true
 }
 
 fn read_with(file: &CStr, lock: bool, warn: Warn, offload: Option<Offload>) -> Option<Vec<u8>> {

@@ -5,7 +5,7 @@ use crate::{
     sys::{
         module_registry, swr_zend_hash_foreach, swr_zend_property_slot, zend_array,
         zend_class_entry, zend_declare_property_null, zend_fcall_info, zend_fcall_info_cache,
-        zend_hash_str_find, zend_object, zend_update_property, zval,
+        zend_hash_str_find, zend_object, zval,
     },
 };
 use std::ffi::{CStr, c_int, c_void};
@@ -68,7 +68,11 @@ pub unsafe fn update_property(
     value: *mut zval,
 ) {
     // SAFETY: per the caller.
-    unsafe { zend_update_property(scope, object, name.as_ptr(), name.count_bytes(), value) };
+    let props = unsafe { crate::Props::new(scope, object) };
+    // SAFETY: a live value, per the caller.
+    if let Some(value) = unsafe { Value::from_ptr(value) } {
+        props.value(name, value);
+    }
 }
 
 /// `zend_declare_property_null(class, name, access)`, at MINIT; `access` is a

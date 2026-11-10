@@ -91,6 +91,7 @@
  "reference-build": 17,
  "reference-identity": 1,
  "string-originals": 14,
+ "syscalls": 3,
  "timer-bailout": 6,
  "timer-fork-active": 1,
  "timer-kernel": 4,

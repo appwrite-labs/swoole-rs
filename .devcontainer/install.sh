@@ -17,7 +17,7 @@ install() {
     apt-get $APT install -yq --no-install-recommends \
         php-dev libclang-dev php-sqlite3 php-curl php-xml php-mbstring python3 python3-pytest composer \
         libpcre2-dev libssl-dev libc-ares-dev zlib1g-dev pkg-config cmake g++ make autoconf git \
-        ca-certificates curl libgtest-dev libnghttp2-dev libpq-dev libcurl4-openssl-dev libssh2-1-dev libbrotli-dev libzstd-dev unixodbc-dev libsqlite3-dev libffi-dev locales procps "$@"
+        ca-certificates curl libgtest-dev libnghttp2-dev libpq-dev libcurl4-openssl-dev libssh2-1-dev libbrotli-dev libzstd-dev unixodbc-dev libsqlite3-dev libffi-dev locales procps strace "$@"
 }
 # Cached indexes (refreshed weekly by the cache key) are enough when every package
 # is cached too; if one isn't and the mirror has moved on, refresh and retry once.

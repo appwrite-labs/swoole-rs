@@ -6,12 +6,13 @@ use crate::{
     sys::{
         _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_BOOL,
         _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, _zend_expected_type_Z_EXPECTED_DOUBLE,
-        _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_STRING,
-        _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT_EX, IS_TRUE,
-        ZPP_ERROR_WRONG_ARG, add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool,
-        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str,
-        zend_execute_data, zend_expected_type, zend_object, zend_string, zend_value,
-        zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
+        _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_RESOURCE,
+        _zend_expected_type_Z_EXPECTED_STRING, _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE,
+        IS_LONG, IS_NULL, IS_OBJECT_EX, IS_RESOURCE, IS_TRUE, ZPP_ERROR_WRONG_ARG,
+        add_assoc_long_ex, swr_zend_array_init, swr_zend_try_parse_bool, swr_zend_try_parse_double,
+        swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str, zend_argument_type_error,
+        zend_argument_value_error, zend_execute_data, zend_expected_type, zend_object, zend_string,
+        zend_value, zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
     },
 };
 use std::{ffi::CStr, ptr};
@@ -295,6 +296,32 @@ impl Call {
             .ok_or_else(|| Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_ARRAY))
     }
 
+    /// `Z_PARAM_RESOURCE` of argument `n` (1-based), which must be passed.
+    /// # Errors
+    /// The argument is not a resource; Zend has thrown.
+    #[inline]
+    pub fn resource(&self, n: u32) -> Result<&Value, Invalid> {
+        let arg = self.arg_value(n);
+        if arg.kind() == IS_RESOURCE {
+            return Ok(arg);
+        }
+        Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_RESOURCE))
+    }
+
+    /// `zend_argument_type_error(n, "%s", message)`: a `TypeError` naming argument `n`.
+    #[inline]
+    pub fn argument_type_error(&self, n: u32, message: &CStr) {
+        // SAFETY: from a handler; "%s" takes the message.
+        unsafe { zend_argument_type_error(n, c"%s".as_ptr(), message.as_ptr()) };
+    }
+
+    /// `zend_argument_value_error(n, "%s", message)`: a `ValueError` naming argument `n`.
+    #[inline]
+    pub fn argument_value_error(&self, n: u32, message: &CStr) {
+        // SAFETY: from a handler; "%s" takes the message.
+        unsafe { zend_argument_value_error(n, c"%s".as_ptr(), message.as_ptr()) };
+    }
+
     /// `Z_PARAM_ZVAL_EX(.., 0, 1)` of argument `n` (1-based), which must be
     /// passed: a reference yields the value it refers to.
     #[must_use]
@@ -307,11 +334,11 @@ impl Call {
     /// `value`: `zval_ptr_dtor` of what it referred to, then `ZVAL_COPY_VALUE`.
     #[inline]
     pub fn assign(&self, n: u32, value: crate::Owned) {
-        let slot = self.zval_deref(n);
+        let slot = self.arg_value(n).dereferenced();
         // SAFETY: a passed argument's live value, released here.
-        unsafe { crate::zval::release(slot) };
+        unsafe { slot.release() };
         // SAFETY: as above; the slot takes over the value.
-        unsafe { slot.write(value.into_zval()) };
+        unsafe { slot.as_ptr().write(value.into_zval()) };
     }
 
     /// `ZEND_PARSE_PARAMETERS_END`'s report of a wrong argument.

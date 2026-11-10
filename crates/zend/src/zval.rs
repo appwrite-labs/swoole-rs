@@ -8,16 +8,16 @@ use crate::{
     string::bytes,
     sys::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
-        IS_ARRAY_EX, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_OBJECT_EX, IS_PTR,
-        IS_REFERENCE, IS_REFERENCE_EX, IS_STRING, IS_TRUE, IS_UNDEF, add_assoc_bool_ex,
-        add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex, add_next_index_long,
-        add_next_index_null, add_next_index_stringl, swr_zend_array_add_or_merge,
-        swr_zend_array_init, swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next,
+        IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR, IS_REFERENCE, IS_STRING, IS_TRUE,
+        IS_UNDEF, add_assoc_bool_ex, add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex,
+        add_next_index_long, add_next_index_null, add_next_index_stringl,
+        swr_zend_array_add_or_merge, swr_zend_array_init, swr_zend_array_is_list,
+        swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_object_properties,
         swr_zend_separate_array, swr_zend_string_copy, swr_zend_string_release,
         swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
-        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zval_is_true, swr_zval_str,
-        swr_zval_try_addref, zend_array_count, zend_class_entry, zend_hash_add_new,
-        zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
+        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zend_zval_value_name,
+        swr_zval_is_true, swr_zval_str, swr_zval_try_addref, zend_array_count, zend_class_entry,
+        zend_hash_add_new, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
         zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
         zend_value, zval, zval_ptr_dtor,
     },
@@ -222,6 +222,30 @@ impl Value {
     #[inline]
     pub fn bytes(&self) -> Option<&[u8]> {
         self.str().map(ZStr::bytes)
+    }
+
+    /// `Z_OBJPROP_P` of an object: its property table, which Zend builds if
+    /// need be and the object keeps.
+    #[must_use]
+    #[inline]
+    pub fn properties(&self) -> Option<&Array> {
+        if self.kind() != IS_OBJECT {
+            return None;
+        }
+        // SAFETY: a live object zval.
+        let table = unsafe { swr_zend_object_properties(self.as_ptr()) };
+        // SAFETY: the object's table, which the zval keeps while borrowed.
+        unsafe { Array::from_ptr(table) }
+    }
+
+    /// `zend_zval_value_name`: the type, or the object's class, a type error names.
+    #[must_use]
+    #[inline]
+    pub fn value_name(&self) -> &CStr {
+        // SAFETY: a live zval.
+        let name = unsafe { swr_zend_zval_value_name(self.as_ptr()) };
+        // SAFETY: a static type name, or the name of a class, which outlives its objects.
+        unsafe { CStr::from_ptr(name) }
     }
 
     /// `Z_ARRVAL_P` of an array.
@@ -853,27 +877,27 @@ impl Drop for Owned {
     #[inline]
     fn drop(&mut self) {
         // SAFETY: the zval this owns, destroyed once.
-        unsafe { release(self.as_ptr()) };
+        unsafe { self.0.release() };
     }
 }
 
-/// `zval_ptr_dtor`. A counted object, or an array or reference that may hold one,
-/// can run PHP code there (`__destruct` on the last reference, or the cycle
-/// collector a possible root starts), so it is released inside `zend_try` and a
-/// bailout is deferred; anything else (an immutable array too) runs none.
-/// # Safety
-/// `value` is a live zval the caller gives up.
-#[inline]
-pub(crate) unsafe fn release(value: *mut zval) {
-    // SAFETY: a live zval.
-    let zv = unsafe { *value };
-    // SAFETY: every zval sets `u1.type_info`.
-    let info = unsafe { zv.u1.type_info };
-    if matches!(info, IS_OBJECT_EX | IS_ARRAY_EX | IS_REFERENCE_EX) {
-        // SAFETY: as the caller promises.
-        bailout::defer(bailout::trapped(unsafe { swr_zend_try_ptr_dtor(value) }));
-    } else {
-        // SAFETY: as the caller promises.
-        unsafe { zval_ptr_dtor(value) };
+impl Value {
+    /// `zval_ptr_dtor`. An object, or an array or reference that may hold one, can
+    /// run PHP code there (`__destruct` on the last reference, or the cycle
+    /// collector a possible root starts), so it is released inside `zend_try` and
+    /// a bailout is deferred; anything else runs none.
+    /// # Safety
+    /// The caller gives the value up.
+    #[inline]
+    pub(crate) unsafe fn release(&self) {
+        if matches!(self.kind(), IS_OBJECT | IS_ARRAY | IS_REFERENCE) {
+            // SAFETY: a live value, as the caller promises.
+            bailout::defer(bailout::trapped(unsafe {
+                swr_zend_try_ptr_dtor(self.as_ptr())
+            }));
+        } else {
+            // SAFETY: as above.
+            unsafe { zval_ptr_dtor(self.as_ptr()) };
+        }
     }
 }
