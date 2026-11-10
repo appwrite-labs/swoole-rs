@@ -20,3 +20,7 @@ swoole-rs-oracle = { path = "../oracle" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "multipart_parser"
+path = "../../tests/modules/http/multipart_parser.rs"

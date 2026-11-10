@@ -83,7 +83,7 @@ reads untrusted bytes against the wire format or against invariants of its outpu
 `sw_rs_http2_unpack_setting` against the RFC 9113 frame header and SETTINGS layout.
 `clients_dns_reply` hands `swoole_rs_clients::dns::query` any reply (optionally echoing the
 query's id): it succeeds exactly when it pushes an address, and each is IP text.
-`http_multipart` feeds the bundled `thirdparty/multipart_parser.c` a boundary and body
+`http_multipart` feeds crates/http's multipart parser a boundary and body
 in chunks, and runs `swr_v1_http_multipart_filename` on each part's headers.
 `http_chunked` feeds the bundled llhttp a chunked request or response in chunks: body
 spans stay inside their chunk and never exceed the input. `http2_hpack` splits its
