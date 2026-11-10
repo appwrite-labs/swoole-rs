@@ -95,8 +95,14 @@ mod php {
         env::var_os(format!("CARGO_FEATURE_{}", name.to_uppercase())).is_some()
     }
 
+    /// A library's headers. Its directory goes on the link line too: Homebrew's
+    /// (libssh2's) is off the linker's default path.
     fn pkg_includes(module: &str) -> Vec<PathBuf> {
-        include_flags(Command::new("pkg-config").args(["--cflags", module])).unwrap_or_default()
+        let pkg = |arg| path_flags(Command::new("pkg-config").args([arg, module]));
+        for dir in pkg("--libs-only-L").unwrap_or_default() {
+            println!("cargo::rustc-link-search=native={}", dir.display());
+        }
+        pkg("--cflags").unwrap_or_default()
     }
 
     /// config.m4's `SW_PHP_VERSION_ID`: 84 for PHP 8.4.x.
@@ -270,13 +276,13 @@ mod php {
         p
     }
 
-    /// The `-I` directories a command prints.
-    fn include_flags(command: &mut Command) -> Option<Vec<PathBuf>> {
+    /// The `-I` or `-L` directories a command prints.
+    fn path_flags(command: &mut Command) -> Option<Vec<PathBuf>> {
         let output = command.output().ok().filter(|o| o.status.success())?;
         Some(
             String::from_utf8_lossy(&output.stdout)
                 .split_whitespace()
-                .filter_map(|flag| flag.strip_prefix("-I"))
+                .filter_map(|flag| flag.strip_prefix("-I").or_else(|| flag.strip_prefix("-L")))
                 .map(PathBuf::from)
                 .collect(),
         )
@@ -284,10 +290,10 @@ mod php {
 
     /// PHP's headers, and PCRE2's, which ext/pcre's include (as `build_upstream.py` adds them).
     fn php_includes(php_config: &str) -> Vec<PathBuf> {
-        let mut includes = include_flags(Command::new(php_config).arg("--includes"))
+        let mut includes = path_flags(Command::new(php_config).arg("--includes"))
             .expect("ext: php-config --includes ($PHP_CONFIG) failed");
         includes.extend(
-            include_flags(Command::new("pkg-config").args(["--cflags", "libpcre2-8"]))
+            path_flags(Command::new("pkg-config").args(["--cflags", "libpcre2-8"]))
                 .unwrap_or_default(),
         );
         includes
