@@ -28,6 +28,7 @@ jobs:
       PHP_SERIES: ${{ matrix.php }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
       # Main's release build: the dependencies; zend-sys and the crates above it rebuild
       # against this PHP (PHP_CONFIG). Build trees must start clean.
       - uses: Swatinem/rust-cache@v2
@@ -35,7 +36,6 @@ jobs:
           shared-key: release
           save-if: false
       - run: rm -rf target/ext target/upstream target/thirdparty
-      - uses: ./.github/actions/install
       # Restored only: the pinned reference is rebuilt for this PHP below, never saved.
       - uses: actions/cache/restore@v4
         with:

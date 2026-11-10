@@ -1298,7 +1298,7 @@ mod tests {
         assert_eq!(get_protocols(config), c"redis");
         config.open_redis_protocol = false;
 
-        unsafe { clear_protocol(at) };
+        clear_protocol(config);
         assert!(!config.open_eof_check);
         assert!(!config.open_length_check);
         assert!(!config.open_http_protocol);
