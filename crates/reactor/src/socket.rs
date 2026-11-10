@@ -19,23 +19,24 @@ thread_local! {
     static BORROWED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Clears [`BORROWED`] when the closure returns or unwinds.
-struct Borrow;
-
-impl Borrow {
-    fn take() -> Self {
+/// `body`'s result with [`BORROWED`] set, which it clears when `body` returns or unwinds.
+/// One thread-local lookup a call: in the extension, each is a `__tls_get_addr` (#2808).
+fn borrowed<R>(body: impl FnOnce() -> R) -> R {
+    /// Clears the flag on return or unwind.
+    struct Clear<'a>(&'a Cell<bool>);
+    impl Drop for Clear<'_> {
+        fn drop(&mut self) {
+            self.0.set(false);
+        }
+    }
+    BORROWED.with(|flag| {
         assert!(
-            !BORROWED.replace(true),
+            !flag.replace(true),
             "a socket's read or edit runs inside another's"
         );
-        Self
-    }
-}
-
-impl Drop for Borrow {
-    fn drop(&mut self) {
-        BORROWED.set(false);
-    }
+        let _clear = Clear(flag);
+        body()
+    })
 }
 
 impl Socket<'_> {
@@ -62,20 +63,18 @@ impl Socket<'_> {
     /// # Panics
     /// Inside another socket's `read` or `edit` closure.
     pub fn read<R>(self, read: impl FnOnce(&SocketRecord) -> R) -> R {
-        let _borrow = Borrow::take();
         // SAFETY: live for the handle's lifetime (from_ptr), and no other Rust reference to it exists:
         // handles form one only here and in `edit`, which cannot nest.
-        read(unsafe { self.record.as_ref() })
+        borrowed(|| read(unsafe { self.record.as_ref() }))
     }
 
     /// `edit`'s result over the record, which it may change.
     /// # Panics
     /// Inside another socket's `read` or `edit` closure.
     pub fn edit<R>(self, edit: impl FnOnce(&mut SocketRecord) -> R) -> R {
-        let _borrow = Borrow::take();
         let mut record = self.record;
         // SAFETY: as in `read`; this is the only reference while `edit` runs.
-        edit(unsafe { record.as_mut() })
+        borrowed(|| edit(unsafe { record.as_mut() }))
     }
 
     /// `fd`.

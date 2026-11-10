@@ -46,6 +46,19 @@ CASES = {
         Swoole\Event::wait();
         echo json_encode($out), "\n";
     ''', '[1,2]\n'),
+    # The nested pass must not free the cycle task its callback just cleared.
+    'cycle_clear_dispatch': (r'''
+        $out = [];
+        Swoole\Event::cycle(function() use (&$out) {
+            Swoole\Event::cycle(null);
+            $out[] = 'cleared';
+            Swoole\Event::dispatch();
+            $out[] = 'after';
+        });
+        Swoole\Event::defer(function() use (&$out) { $out[] = 'deferred'; });
+        Swoole\Event::wait();
+        echo json_encode($out), "\n";
+    ''', '["deferred","cleared","after"]\n'),
     'descriptors': (r'''
         $warnings = [];
         set_error_handler(function($level, $message) use (&$warnings) {
