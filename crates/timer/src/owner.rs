@@ -125,12 +125,6 @@ unsafe extern "C-unwind" fn call_plain(_timer: *mut c_void, node: *mut TimerNode
     }
 }
 
-// SAFETY: Swoole's signal API.
-unsafe extern "C-unwind" {
-    #[link_name = "_Z17swoole_signal_setiPFviEb"]
-    fn swoole_signal_set(signo: c_int, handler: extern "C" fn(c_int), safety: bool) -> usize;
-}
-
 /// A queue status that only a broken invariant returns (upstream threw).
 fn check(status: i32) {
     if status != OK {
@@ -241,8 +235,11 @@ impl Owner {
             self.reactor.set(reactor);
             attach(reactor);
         } else if backend != MANUAL {
-            // SAFETY: a plain signal handler.
-            unsafe { swoole_signal_set(libc::SIGALRM, alarm, false) };
+            let alarm = alarm as *const () as usize;
+            // SAFETY: a plain signal handler, which nothing unloads.
+            _ = unsafe {
+                swoole_rs_reactor::signal_upstream::swoole_signal_set(libc::SIGALRM, alarm, false)
+            };
         }
     }
 

@@ -32,9 +32,7 @@ pub(crate) type Co = *mut c_void;
 unsafe extern "C" {
     // crates/hooks/src/async_threads.rs.
     fn swr_v1_async_threads_stats(task_num: &mut i64, worker_num: &mut i64, queue_size: &mut i64);
-    // crates/reactor.
-    // crates/coroutine, crates/reactor,
-    // crates/process and crates/hooks.
+    // crates/coroutine, crates/process and crates/hooks.
     #[link_name = "_ZN6swoole9Coroutine6cancelEv"]
     fn coroutine_cancel(co: Co) -> bool;
     #[link_name = "_ZN6swoole9Coroutine8activateEv"]
@@ -43,8 +41,7 @@ unsafe extern "C" {
     fn coroutine_deactivate();
     #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
     fn system_sleep(seconds: f64) -> c_int;
-    #[link_name = "_Z30swoole_signal_get_listener_numv"]
-    fn swoole_signal_get_listener_num() -> u32;
+
     // crates/phpevents, crates/phpclients and PHP.
     fn php_write(buf: *const c_void, size: usize) -> usize;
     fn php_swoole_reactor_init() -> i32;
@@ -324,8 +321,9 @@ pub(crate) fn stats(stats: &mut Stats) {
             &mut stats.aio_queue_size,
         );
     };
-    // SAFETY: crates/reactor counts this thread's listeners.
-    stats.signal_listener_num = i64::from(unsafe { swoole_signal_get_listener_num() });
+    // crates/reactor counts this thread's listeners.
+    stats.signal_listener_num =
+        i64::from(swoole_rs_reactor::signal_upstream::swoole_signal_get_listener_num());
     let s = sched();
     stats.c_stack_size = i64::try_from(s.stack_size).unwrap_or(i64::MAX);
     stats.coroutine_num = i64::try_from(count()).unwrap_or(i64::MAX);

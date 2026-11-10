@@ -11,11 +11,7 @@ use std::{
 };
 use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Value, bailout, long_zval, message};
 
-// SAFETY: crates/reactor's `swoole_signal_get_handler`, under its upstream symbol.
-unsafe extern "C" {
-    #[link_name = "_Z25swoole_signal_get_handleri"]
-    fn swoole_signal_get_handler(signo: c_int) -> usize;
-}
+use swoole_rs_reactor::signal_upstream::swoole_signal_get_handler;
 
 /// `SwooleG.signal_listener_num += delta`.
 fn listeners(delta: i32) {
@@ -92,8 +88,7 @@ pub(crate) fn signal(call: &Call) {
     };
     #[expect(clippy::cast_possible_truncation, reason = "0 <= signo < 128")]
     let number = signo as c_int;
-    // SAFETY: a valid signal number.
-    let current = unsafe { swoole_signal_get_handler(number) };
+    let current = swoole_signal_get_handler(number);
     let ours = on_signal as *const () as usize;
     if current != 0 && current != ours && current != IGNORE {
         fatal(

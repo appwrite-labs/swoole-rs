@@ -1647,20 +1647,10 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     };
     /// `SW_FD_PIPE`.
     const SW_FD_PIPE: c_int = 3;
-    // SAFETY: native/reactor's, src/core/error.cc's and crates/reactor's, under
-    // their upstream symbols.
-    unsafe extern "C-unwind" {
-        #[link_name = "_Z17swoole_event_freev"]
-        fn swoole_event_free() -> c_int;
-        #[link_name = "_Z17swoole_event_waitv"]
-        fn swoole_event_wait() -> c_int;
-        #[link_name = "_Z27swoole_clear_last_error_msgv"]
-        fn swoole_clear_last_error_msg();
-        #[link_name = "_Z17swoole_signal_setiPFviEb"]
-        fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
-        #[link_name = "_Z19swoole_signal_clearv"]
-        fn swoole_signal_clear();
-    }
+    use swoole_rs_error::swoole_clear_last_error_msg;
+    use swoole_rs_reactor::event_api::swoole_event_wait;
+    use swoole_rs_reactor::signal_upstream::{swoole_signal_clear, swoole_signal_set};
+    use swoole_rs_reactor::swoole_event_free;
     // `SwooleTG.timer`.
     let timer = || {
         // SAFETY: the address of this thread's slot.
@@ -1669,17 +1659,14 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_LC_CLEAR_ERROR => {
             log::set_last_error(0);
-            // SAFETY: this thread's error message.
-            unsafe { swoole_clear_last_error_msg() };
+            swoole_clear_last_error_msg();
             0
         }
         OP_EVENT_FREE => {
-            // SAFETY: this thread's event loop.
-            unsafe { swoole_event_free() };
+            swoole_event_free();
             0
         }
-        // SAFETY: as above.
-        OP_EVENT_WAIT => sign(unsafe { swoole_event_wait() }),
+        OP_EVENT_WAIT => sign(swoole_event_wait()),
         OP_TIMER_DETACHED => {
             let timer = timer();
             // SAFETY: this thread's live timer.
@@ -1712,12 +1699,12 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let signo = arg as c_int;
             // SAFETY: a handler nothing unloads, or none.
-            unsafe { swoole_signal_set(signo, handler, false) };
+            _ = unsafe { swoole_signal_set(signo, handler, false) };
             0
         }
         OP_MARK_SHUTDOWN => {
-            // SAFETY: the master, which owns the signal handlers.
-            unsafe { swoole_signal_clear() };
+            // The master, which owns the signal handlers.
+            swoole_signal_clear();
             o.gs().start.store(0, SeqCst);
             o.gs().shutdown.store(1, SeqCst);
             0

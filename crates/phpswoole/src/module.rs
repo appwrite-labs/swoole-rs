@@ -462,21 +462,15 @@ unsafe extern "C" fn init_globals(globals: *mut c_void) {
     }
 }
 
-unsafe extern "C" {
-    /// `int swoole_event_free()`.
-    #[link_name = "_Z17swoole_event_freev"]
-    fn swoole_event_free() -> c_int;
-}
-
 /// MSHUTDOWN's `swoole_clean()`.
 extern "C" fn clean() {
     swoole_rs_corebase::swoole_clean();
 }
 
-/// RSHUTDOWN's `swoole_event_free()`.
+/// RSHUTDOWN's `swoole_event_free()`: the request's end, on the thread that owns the
+/// event loop.
 extern "C" fn event_free() {
-    // SAFETY: the request's end, on the thread that owns the event loop.
-    unsafe { swoole_event_free() };
+    swoole_rs_reactor::swoole_event_free();
 }
 
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.

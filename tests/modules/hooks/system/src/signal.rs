@@ -61,8 +61,8 @@ fn set_safe(signo: c_int, handler: Option<SignalHandler>, safety: bool) -> usize
 }
 
 fn clear() {
-    // SAFETY: on the main thread, which owns the handlers.
-    unsafe { swoole_signal_clear() };
+    // On the main thread, which owns the handlers.
+    swoole_signal_clear();
 }
 
 fn callback(signo: c_int) {

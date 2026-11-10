@@ -8,7 +8,7 @@ use swoole_rs_process::{
     worker_record::WorkerRecord,
 };
 use swoole_rs_reactor::{
-    Socket, SocketRecord,
+    Socket, event_api,
     socket_upstream::{
         socket_set_fd_option, socket_set_kernel_read_timeout, socket_set_kernel_write_timeout,
     },
@@ -23,19 +23,12 @@ const CLOSE_READ: i64 = 3;
 const CLOSE_WRITE: i64 = 4;
 const TIMEOUT_ALL: c_int = 15;
 
-// SAFETY: the C++ runtime's allocator, and crates/reactor's functions, under
-// their upstream symbols.
+// SAFETY: the C++ runtime's allocator.
 unsafe extern "C" {
     #[link_name = "_Znwm"]
     fn operator_new(size: usize) -> *mut c_void;
     #[link_name = "_ZdlPv"]
     fn operator_delete(storage: *mut c_void);
-    #[link_name = "_Z25swoole_event_is_availablev"]
-    pub(crate) fn swoole_event_is_available() -> bool;
-    #[link_name = "_Z17swoole_event_freev"]
-    pub(crate) fn swoole_event_free() -> c_int;
-    #[link_name = "_Z18swoole_event_writePN6swoole7network6SocketEPKvm"]
-    fn swoole_event_write(socket: *mut SocketRecord, data: *const c_void, length: usize) -> isize;
 }
 
 /// What the methods read of a `Worker`.
@@ -194,10 +187,9 @@ pub(crate) unsafe fn pipe_write(
     let Some(socket) = pipe(worker) else {
         return -1;
     };
-    // SAFETY: the event loop's state.
-    if !blocking && unsafe { swoole_event_is_available() } {
+    if !blocking && event_api::swoole_event_is_available() {
         // SAFETY: as the caller promises.
-        return unsafe { swoole_event_write(socket.as_ptr(), data.cast(), length) };
+        return unsafe { event_api::swoole_event_write(socket.as_ptr(), data.cast(), length) };
     }
     // SAFETY: as the caller promises.
     unsafe { socket_send_sync(socket.as_ptr(), data.cast(), length, 0) }

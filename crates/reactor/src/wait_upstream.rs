@@ -56,8 +56,8 @@ mod registry {
 
     unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
         SIGNAL_READY.store(false, Ordering::Relaxed);
-        // SAFETY: the loop's thread, which owns the handlers.
-        unsafe { swoole_signal_clear() };
+        // The loop's thread, which owns the handlers.
+        swoole_signal_clear();
     }
 
     fn register() {

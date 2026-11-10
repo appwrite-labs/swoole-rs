@@ -982,10 +982,9 @@ fn exit(call: &Call) {
         );
         1
     };
-    // SAFETY: the event loop's teardown.
-    if unsafe { worker::swoole_event_is_available() } {
-        // SAFETY: as above.
-        unsafe { worker::swoole_event_free() };
+    // The event loop's teardown.
+    if swoole_rs_reactor::event_api::swoole_event_is_available() {
+        swoole_rs_reactor::swoole_event_free();
     }
     #[expect(clippy::cast_possible_truncation, reason = "0..=255")]
     // SAFETY: exits the process, as upstream does.

@@ -29,8 +29,6 @@ unsafe extern "C" {
     fn php_swoole_reactor_init() -> c_int;
     fn swr_v1_phpevents_wait();
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
-    #[link_name = "_Z17swoole_signal_setiPFviEb"]
-    fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
 }
 
 /// `SW_MASTER`, `SW_TASK_WORKER`, `SW_MANAGER` and `SW_USER_WORKER`.
@@ -281,7 +279,7 @@ pub(crate) fn main_thread() -> bool {
 /// `swoole_signal_set(signo, handler, safety)`.
 fn set_signal(signo: c_int, handler: Handler, safety: bool) {
     // SAFETY: a signal number and a handler or none.
-    unsafe { swoole_signal_set(signo, handler, safety) };
+    _ = unsafe { swoole_rs_reactor::signal_upstream::swoole_signal_set(signo, handler, safety) };
 }
 
 unsafe extern "C-unwind" fn deferred_signal(data: *mut c_void) {

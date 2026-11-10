@@ -972,16 +972,9 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_RESUME_READ,
         OP_WR_TIMER_DELAY,
     };
+    use swoole_rs_reactor::event_api::swoole_event_wait;
+    use swoole_rs_reactor::{swoole_event_free, swoole_event_init};
     use swoole_rs_timer::swoole_timer_delay;
-    // SAFETY: native/reactor's, under their upstream symbols.
-    unsafe extern "C-unwind" {
-        #[link_name = "_Z17swoole_event_initi"]
-        fn swoole_event_init(flags: c_int) -> c_int;
-        #[link_name = "_Z17swoole_event_waitv"]
-        fn swoole_event_wait() -> c_int;
-        #[link_name = "_Z17swoole_event_freev"]
-        fn swoole_event_free() -> c_int;
-    }
     Some(match op {
         OP_DTLS_ACCEPT => {
             let (serv, reactor) = (o.ctx.serv, o.ctx.reactor);
@@ -1054,16 +1047,13 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             sign(unsafe { crate::server_methods::start_master_thread(serv, reactor) })
         }
         OP_EVENT_INIT => {
-            // SAFETY: this thread's event loop.
-            let ret = unsafe { swoole_event_init(0) };
+            let ret = swoole_event_init(0);
             o.ctx.reactor = swoole_rs_corebase::thread_reactor();
             sign(ret)
         }
-        // SAFETY: this thread's event loop.
-        OP_EVENT_WAIT => sign(unsafe { swoole_event_wait() }),
+        OP_EVENT_WAIT => sign(swoole_event_wait()),
         OP_EVENT_FREE => {
-            // SAFETY: as above.
-            unsafe { swoole_event_free() };
+            swoole_event_free();
             0
         }
         OP_CC_FINISH => {
