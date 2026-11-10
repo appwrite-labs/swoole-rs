@@ -113,7 +113,6 @@ struct Tick {
     session_id: c_long,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole10ListenPort19set_stream_protocolEv"]
     fn port_set_stream_protocol(port: *mut c_void);

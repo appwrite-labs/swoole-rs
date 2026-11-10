@@ -21,9 +21,9 @@ checked against the pinned bodies' traces in `ported.txt`:
 
 `core-tests/src/coroutine/system.cpp` is Rust: `system/` holds its 20 TESTs, one
 function each (`coroutine_system.<name>`, upstream's names, inputs and expected
-values), linked against a `libswoole.so` that
-`hooks-system-rust` (`system.py`, Linux) builds from native/'s Zend-free sources
-and the Cargo build's Rust archive. It runs each case in its own process,
+values), linked with the crates and the static `libswoole.a` that
+`hooks-system-rust` (`system.py`, Linux) builds from the pin's thirdparty and
+native/'s Zend-free sources. It runs each case in its own process,
 excluding `getaddrinfo` (external DNS and network) and `getaddrinfo_timeout` (a
 lookup that misses the resolver cache), as the GoogleTest run did. Where
 upstream's `System` signature carries C++ library types the cases call what the

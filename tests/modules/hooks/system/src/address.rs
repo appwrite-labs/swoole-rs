@@ -45,7 +45,6 @@ struct UrlPlan {
     port: c_int,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     fn swr_v1_clients_address_assign(
         address: *mut c_void,
@@ -66,7 +65,6 @@ unsafe extern "C-unwind" {
     fn swr_v1_core_set_last_error(code: c_int);
 }
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     fn swr_v1_clients_gethostbyname(flags: c_int, name: *const c_char, addr: *mut c_char) -> c_int;
     fn swr_v1_clients_address_port(address: *const c_void) -> c_int;

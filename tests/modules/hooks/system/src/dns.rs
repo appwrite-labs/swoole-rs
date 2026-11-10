@@ -91,7 +91,6 @@ struct StringView {
 }
 
 // As crates/clients' C declarations (and ../../../clients/client.rs) have them.
-#[link(name = "swoole")]
 unsafe extern "C" {
     fn swr_v1_clients_dns_server(
         context: *mut c_void,
@@ -100,7 +99,6 @@ unsafe extern "C" {
     fn swr_v1_clients_load_resolv_conf(path: *const c_char) -> c_int;
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     fn swr_v1_hook_dns_lookup(
         domain: *const c_char,
@@ -169,8 +167,12 @@ pub(super) fn verify_ip(family: c_int, ip: &str) -> bool {
 
 unsafe extern "C" fn push_address(list: *mut c_void, address: *const c_char) {
     // SAFETY: `list` is the caller's Vec; `address` is NUL-terminated.
-    unsafe { &mut *list.cast::<Vec<String>>() }
-        .push(unsafe { CStr::from_ptr(address) }.to_str().unwrap().to_owned());
+    unsafe { &mut *list.cast::<Vec<String>>() }.push(
+        unsafe { CStr::from_ptr(address) }
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    );
 }
 
 unsafe extern "C" fn put_text(out: *mut c_void, text: *const u8, length: usize) {
@@ -184,7 +186,13 @@ fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {
     let mut list = Vec::<String>::new();
     // SAFETY: a NUL-terminated domain, in a coroutine; `push_address` fills `list`.
     unsafe {
-        swr_v1_hook_dns_lookup(domain.as_ptr(), family, timeout, push_address, (&raw mut list).cast())
+        swr_v1_hook_dns_lookup(
+            domain.as_ptr(),
+            family,
+            timeout,
+            push_address,
+            (&raw mut list).cast(),
+        )
     };
     list
 }
@@ -192,7 +200,8 @@ fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {
 /// `get_ip_by_hosts`: its lines split by the classic locale's spaces, as
 /// `std::istringstream` reads them.
 fn hosts(domain: &CStr) -> String {
-    let spaces: [u8; 256] = std::array::from_fn(|c| u8::from(b" \t\n\x0b\x0c\r".contains(&(c as u8))));
+    let spaces: [u8; 256] =
+        std::array::from_fn(|c| u8::from(b" \t\n\x0b\x0c\r".contains(&(c as u8))));
     let mut address = String::new();
     let domain = domain.to_bytes();
     // SAFETY: the domain's bytes, 256 spaces and `put_text` into `address`.

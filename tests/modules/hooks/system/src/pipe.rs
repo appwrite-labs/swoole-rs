@@ -16,7 +16,6 @@ struct SocketPair {
     worker_socket: *mut c_void,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     #[link_name = "_ZN6swoole10UnixSocketC1Ebi"]
     fn unix_socket_new(this: *mut SocketPair, blocking: bool, protocol: c_int);

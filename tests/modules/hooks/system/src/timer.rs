@@ -25,7 +25,6 @@ pub(super) struct TimerNode {
 /// `swoole::TimerCallback`.
 type Callback = unsafe extern "C" fn(*mut c_void, *mut TimerNode);
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     #[link_name = "_Z16swoole_timer_addlbPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
     fn swoole_timer_add(
@@ -66,7 +65,6 @@ unsafe extern "C" {
     fn swr_v1_core_signal_alarm() -> bool;
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     fn swr_v1_core_set_last_error(code: c_int);
 }
