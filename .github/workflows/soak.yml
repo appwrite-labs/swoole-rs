@@ -20,7 +20,7 @@ defaults:
 
 jobs:
   soak:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 180
     services:
       mysql:

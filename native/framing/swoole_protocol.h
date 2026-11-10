@@ -2,7 +2,7 @@
 /* Swoole's include/swoole_protocol.h, owned here. The structs keep upstream's layout:
  * crates/framing, crates/ports, crates/server and crates/phpclients read them in place.
  * Every function is Rust under its upstream symbol (crates/ports/src/framing_recv.rs,
- * crates/corebase); only what C++ and the still-compiled core-tests call is declared. */
+ * crates/corebase); only what C++ calls is declared. */
 #pragma once
 
 #include "swoole_socket.h"
@@ -48,10 +48,6 @@ struct Protocol {
     static ssize_t default_length_func(const Protocol *protocol, network::Socket *socket, PacketLength *pl);
 };
 }  // namespace swoole
-
-int64_t swoole_unpack(char type, const void *data);
-uint64_t swoole_hton64(uint64_t value);
-uint64_t swoole_ntoh64(uint64_t value);
 
 char *swoole_dec2hex(ulong_t value, int base);
 ulong_t swoole_hex2dec(const char *hex, size_t *parsed_bytes);

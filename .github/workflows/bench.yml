@@ -17,7 +17,7 @@ defaults:
 
 jobs:
   wall:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

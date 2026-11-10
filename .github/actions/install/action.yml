@@ -37,7 +37,7 @@ runs:
     # apt moves down its mirror list on errors, not on slow downloads, so drop Azure.
     - shell: bash
       run: |
-        sudo sed -i /azure/d /etc/apt/apt-mirrors.txt
+        [ ! -f /etc/apt/apt-mirrors.txt ] || sudo sed -i /azure/d /etc/apt/apt-mirrors.txt
         APT_CACHE="$PWD/.apt-cache" .devcontainer/install.sh ${{ inputs.packages }}
     - if: github.ref == 'refs/heads/main' && steps.apt.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
