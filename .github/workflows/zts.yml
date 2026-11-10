@@ -2,8 +2,9 @@ name: ZTS
 # Upstream and the Cargo-built swoole.so built against a thread-safe PHP with
 # --enable-swoole-thread, then the PHPTs upstream's own thread CI runs (swoole_thread,
 # scripts/run-tests.sh with SWOOLE_THREAD) plus the atomic and lock families, whose
-# Thread\Atomic and Thread\Lock only exist in this build. Any test that passes on
-# upstream must pass on the Cargo build. zend-sys binds the ZTS headers (PHP_CONFIG).
+# Thread\Atomic and Thread\Lock only exist in this build, and the collection facade
+# fixtures (tests/modules/phpcollections). Any test that passes on upstream must pass on
+# the Cargo build. zend-sys binds the ZTS headers (PHP_CONFIG).
 # Called by the merge tier, and by the PR tier when a PR touches thread or ZTS code.
 on:
   workflow_call:
@@ -56,6 +57,15 @@ jobs:
             --php-config "$PWD/target/php-zts/bin/php-config" \
             --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so \
             --build-manifest target/ext/build-manifest.json --output target/phpt/guard.json
+      - name: Collection facades under ZTS
+        run: |
+          for profile in complete column-bytes; do
+            python3 tests/modules/phpcollections/php_runtime.py --profile $profile \
+              --php "$PWD/target/php-zts/bin/php" \
+              --engine cargo=target/phpt/cargo.so --engine upstream=target/phpt/upstream.so \
+              --build-manifest target/ext/build-manifest.json \
+              --output target/phpt/collections-$profile.json
+          done
       - run: |
           families="--module swoole_thread --module swoole_atomic --module swoole_lock"
           options="--manifest target/phpt/manifest.json --timeout 30 --php $PWD/target/php-zts/bin/php"
@@ -84,5 +94,6 @@ jobs:
             target/phpt/zts/
             target/phpt/recheck/
             target/phpt/guard.json
+            target/phpt/collections-*.json
             target/phpt/server-exit-companion.json
             target/phpt/server-exit-*/
