@@ -1085,10 +1085,10 @@ fn on_accept(call: &Call) {
 fn add_peer(context: *mut Context, peer: &Peer) {
     let state = send::state(context);
     // The array takes a reference of its own to each of the loop's strings.
-    let remote_addr = Owned::string(peer.remote_addr.to_owned());
+    let remote_addr = Owned::string(peer.remote_addr.clone());
     add_server(state, Key::RemoteAddr, remote_addr);
     add_server(state, Key::RemotePort, Owned::long(peer.remote_port.into()));
-    let server_addr = Owned::string(peer.server_addr.to_owned());
+    let server_addr = Owned::string(peer.server_addr.clone());
     add_server(state, Key::ServerAddr, server_addr);
     add_server(state, Key::ServerPort, Owned::long(peer.server_port.into()));
 }
