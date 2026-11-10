@@ -286,11 +286,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 /// # Safety
 /// `own` is a signal handler nothing unloads.
 pub(crate) unsafe extern "C" fn swr_workers_signal_set(arg: u64, own: unsafe extern "C" fn(c_int)) {
-    // SAFETY: crates/reactor's body, under its upstream symbol.
-    unsafe extern "C-unwind" {
-        #[link_name = "_Z17swoole_signal_setiPFviEb"]
-        fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
-    }
+    use swoole_rs_reactor::signal_upstream::swoole_signal_set;
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the low word holds the signal number"
@@ -308,7 +304,7 @@ pub(crate) unsafe extern "C" fn swr_workers_signal_set(arg: u64, own: unsafe ext
         _ => own as usize,
     };
     // SAFETY: a valid signal number and a handler per the caller.
-    let _previous = unsafe { swoole_signal_set(signo, handler, false) };
+    _ = unsafe { swoole_signal_set(signo, handler, false) };
 }
 
 /// `Worker_global_hook`: the worker start/stop and server shutdown hooks.

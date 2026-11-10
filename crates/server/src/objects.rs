@@ -9,14 +9,7 @@ use swoole_rs_reactor::SocketRecord;
 use swoole_rs_bus::{BusPacket, MessageBus};
 
 use crate::pool_native::read_bus;
-
-// SAFETY: crates/reactor's bodies, under their upstream symbols.
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole7Reactor7if_exitEv"]
-    fn reactor_if_exit(reactor: *mut c_void) -> bool;
-    #[link_name = "_ZN6swoole7Reactor4waitEv"]
-    fn reactor_wait(reactor: *mut c_void) -> c_int;
-}
+use swoole_rs_reactor::{reactor_if_exit, reactor_wait};
 
 /// A live socket, or `None` for null.
 pub(crate) fn socket<'a>(socket: *mut c_void) -> Option<&'a mut SocketRecord> {

@@ -121,9 +121,9 @@ impl Host for Native {
 fn effect(op: u32) -> Option<u64> {
     use core::ffi::c_int;
     use swoole_rs_corebase::log::{last_error, set_last_error};
-    // SAFETY: crates/reactor's, crates/timer's, src/core/error.cc's
-    // and crates/ossupport's functions, under their upstream symbols. Declarations,
-    // since crates/reactor (and through it crates/timer) depends on this crate.
+    // SAFETY: crates/reactor's and crates/timer's functions, under their upstream
+    // symbols. Declarations, since crates/reactor (and through it crates/timer)
+    // depends on this crate.
     unsafe extern "C-unwind" {
         #[link_name = "_Z17swoole_event_initi"]
         fn swoole_event_init(flags: c_int) -> c_int;
@@ -143,10 +143,7 @@ fn effect(op: u32) -> Option<u64> {
         fn swoole_timer_select();
         #[link_name = "_Z26swoole_timer_get_next_msecv"]
         fn swoole_timer_get_next_msec() -> i64;
-        #[link_name = "_Z27swoole_clear_last_error_msgv"]
-        fn swoole_clear_last_error_msg();
-        #[link_name = "_Z31swoole_set_process_death_signali"]
-        fn swoole_set_process_death_signal(signal: c_int);
+
     }
     /// `SW_ERROR_OPERATION_NOT_SUPPORT`, `SW_ERROR_OUTPUT_SEND_YIELD`, `SW_ERROR_SOCKET_POLL_TIMEOUT`.
     const NOT_SUPPORT: c_int = 507;
@@ -195,8 +192,7 @@ fn effect(op: u32) -> Option<u64> {
         // SAFETY: a plain syscall.
         ops::OP_ROOT_USER => u64::from(unsafe { libc::geteuid() } == 0),
         ops::OP_DEATH_SIGNAL => {
-            // SAFETY: a syscall wrapper.
-            unsafe { swoole_set_process_death_signal(libc::SIGTERM) };
+            swoole_rs_ossupport::swr_v1_os_set_process_death_signal(libc::SIGTERM);
             0
         }
         // SAFETY: this thread's worker globals.
@@ -209,8 +205,7 @@ fn effect(op: u32) -> Option<u64> {
         }
         ops::OP_CLEAR_LAST_ERROR => {
             set_last_error(0);
-            // SAFETY: this thread's error message.
-            unsafe { swoole_clear_last_error_msg() };
+            swoole_rs_error::swoole_clear_last_error_msg();
             0
         }
         ops::OP_SET_SEND_YIELD => {

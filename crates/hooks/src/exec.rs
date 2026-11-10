@@ -4,12 +4,7 @@
 use core::ffi::{CStr, c_char, c_int};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::constants::SocketType;
-
-// SAFETY: crates/reactor's (upstream symbols).
-unsafe extern "C" {
-    #[link_name = "_ZN6swoole9coroutine6System12waitpid_safeEiPii"]
-    fn system_waitpid_safe(pid: libc::pid_t, status: *mut c_int, options: c_int) -> libc::pid_t;
-}
+use swoole_rs_reactor::wait_upstream::system_waitpid_safe;
 
 /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
 const OUT_OF_COROUTINE: c_int = 10001;

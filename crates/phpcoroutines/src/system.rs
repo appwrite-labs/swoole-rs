@@ -12,6 +12,7 @@ use swoole_rs_buffer::string;
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
+use swoole_rs_reactor::wait_upstream::{system_wait, system_waitpid};
 use swoole_rs_zend::{
     Call, Class, E_WARNING,
     sys::{IS_ARRAY, zend_value_error, zval},
@@ -27,15 +28,7 @@ unsafe extern "C" {
     fn system_sleep(seconds: f64) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System10wait_eventEiid"]
     fn system_wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int;
-    #[link_name = "_ZN6swoole9coroutine6System4waitEPid"]
-    fn system_wait(status: *mut c_int, timeout: f64) -> libc::pid_t;
-    #[link_name = "_ZN6swoole9coroutine6System7waitpidEiPiid"]
-    fn system_waitpid(
-        pid: libc::pid_t,
-        status: *mut c_int,
-        options: c_int,
-        timeout: f64,
-    ) -> libc::pid_t;
+
     fn swr_v1_system_gethostbyname(
         host: *const c_char,
         length: usize,

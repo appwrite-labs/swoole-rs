@@ -69,11 +69,8 @@ struct BusHead {
     allocator: *const c_void,
 }
 
-unsafe extern "C" {
-    /// `swoole_signal_set(signo, handler, safety)` (crates/reactor).
-    #[link_name = "_Z17swoole_signal_setiPFviEb"]
-    fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize;
-}
+// `swoole_signal_set(signo, handler, safety)` (crates/reactor).
+use swoole_rs_reactor::signal_upstream::swoole_signal_set;
 
 static POOL: Class = Class::new();
 /// `current_pool` and `current_worker`.
@@ -417,7 +414,7 @@ fn worker_signals(term: bool) {
     for signo in signals.into_iter().flatten() {
         if !swoole_signal_isset(signo) {
             // SAFETY: a valid signal and handler.
-            unsafe { swoole_signal_set(signo, on_signal as *const () as usize, false) };
+            _ = unsafe { swoole_signal_set(signo, on_signal as *const () as usize, false) };
         }
     }
 }
@@ -835,8 +832,7 @@ fn start(call: &Call) {
         return;
     }
     // The reactor must be cleaned up before registering signals.
-    // SAFETY: the event loop's teardown.
-    unsafe { crate::worker::swoole_event_free() };
+    swoole_rs_reactor::swoole_event_free();
     let signals = pool_signals();
     let mut previous = [0usize; 6];
     for (signo, old) in signals.iter().zip(previous.iter_mut()) {
@@ -898,7 +894,7 @@ fn start(call: &Call) {
     for (signo, old) in signals.iter().zip(previous) {
         if *signo != 0 {
             // SAFETY: restores the handler `start()` replaced.
-            unsafe { swoole_signal_set(*signo, old, false) };
+            _ = unsafe { swoole_signal_set(*signo, old, false) };
         }
     }
 }

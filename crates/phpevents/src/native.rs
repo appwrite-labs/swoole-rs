@@ -6,6 +6,7 @@ use std::ffi::{CStr, c_int, c_void};
 use swoole_rs_corebase::constants::{EventType, FdType};
 use swoole_rs_reactor::{
     DeferCall, DeferDispose, ReactorFields, ReactorPrepared, ReactorTask, SocketRecord, event_api,
+    reactor_if_exit, reactor_wait, swoole_event_init,
 };
 use swoole_rs_zend::{
     E_ERROR, E_WARNING, Message,
@@ -15,14 +16,6 @@ use swoole_rs_zend::{
 };
 
 unsafe extern "C-unwind" {
-    #[link_name = "_Z17swoole_event_initi"]
-    fn swoole_event_init(flags: c_int) -> c_int;
-    #[link_name = "_Z17swoole_event_freev"]
-    fn swoole_event_free() -> c_int;
-    #[link_name = "_ZN6swoole7Reactor7if_exitEv"]
-    fn reactor_if_exit(reactor: *mut c_void) -> bool;
-    #[link_name = "_ZN6swoole7Reactor4waitEv"]
-    fn reactor_wait(reactor: *mut c_void) -> c_int;
     // crates/coroutine.
     fn swoole_coroutine_is_in() -> u8;
 }
@@ -116,8 +109,8 @@ pub(crate) fn set_once(once: bool) {
 /// waits and `Co::set`'s exit condition: whether it made the reactor.
 pub(crate) fn create() -> bool {
     let flags = swoole_rs_corebase::constants::EventInitFlag::SW_EVENTLOOP_WAIT_EXIT as c_int;
-    // SAFETY: this thread has no reactor.
-    if unsafe { swoole_event_init(flags) } < 0 {
+    // This thread has no reactor.
+    if swoole_event_init(flags) < 0 {
         return false;
     }
     swoole_rs_phpswoole::php_swoole_register_shutdown_function(c"swoole_event_rshutdown");
@@ -157,8 +150,8 @@ unsafe extern "C" fn wait_body(status: *mut c_void) {
 }
 
 unsafe extern "C" fn free_body(_: *mut c_void) {
-    // SAFETY: deletes the thread's reactor, which nothing here borrows.
-    unsafe { swoole_event_free() };
+    // Deletes the thread's reactor, which nothing here borrows.
+    swoole_rs_reactor::swoole_event_free();
 }
 
 /// Destructors may run PHP, under the caller's trap.
