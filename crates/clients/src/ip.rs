@@ -94,3 +94,23 @@ pub fn swr_v1_clients_ip_text(version: u8, address: &[u8]) -> ClientsIpText {
     output.bytes = text;
     output
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{swr_v1_clients_ip, swr_v1_clients_ip_text, swr_v1_clients_loopback};
+
+    #[test]
+    fn short_address_slices_are_not_addresses() {
+        let loopback6 = std::net::Ipv6Addr::LOCALHOST.octets();
+        for (version, full) in [(4, &[127, 0, 0, 1][..]), (6, &loopback6[..])] {
+            assert_eq!(swr_v1_clients_loopback(version, full), 1);
+            assert_ne!(swr_v1_clients_ip_text(version, full).length, 0);
+            for short in [&[][..], &full[..full.len() - 1]] {
+                assert_eq!(swr_v1_clients_loopback(version, short), 0);
+                assert_eq!(swr_v1_clients_ip_text(version, short).length, 0);
+            }
+        }
+        assert_eq!(swr_v1_clients_ip(4, b"", 0).length, 0);
+        assert_eq!(swr_v1_clients_ip(6, b"", 0).length, 0);
+    }
+}
