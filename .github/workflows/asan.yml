@@ -43,3 +43,4 @@ jobs:
           path: |
             target/asan/*.json
             target/reports/dev/*/loop.json
+            target/reports/dev/*/reference-build.log
