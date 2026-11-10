@@ -10,5 +10,8 @@
   "table": 0.98,
   "channel": 0.89,
   "task": 0.94,
-  "mysql": 0.97
+  "mysql": 0.97,
+  "http-client": 0.97,
+  "client": 0.96,
+  "socket": 0.99
 }

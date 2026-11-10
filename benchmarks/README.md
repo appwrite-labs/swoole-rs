@@ -34,6 +34,14 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 `benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
 `10-task-workers`.
 
+Three measure outbound coroutine clients against `benchmarks/clients` (#2647),
+each on a connection the worker keeps: `http-client` (a `Coroutine\Http\Client`
+GET), `client` and `socket` (a 1 KiB send/recv through `Coroutine\Client` and
+`Coroutine\Socket`). `callgrind.py` serves their peers, an HTTP server and a TCP
+echo, from threads of its own, so callgrind counts only the client side. Their records started 5% above an
+arm64 Linux run (0.92, 0.91 and 0.94); the ratchet lowers them once two merge runs
+beat them.
+
 `mysql` runs a prepared `SELECT` per request through hooked PDO mysql against
 `benchmarks/mysql`, on one connection per worker. It needs MySQL on `MYSQL_HOST`
 (default `127.0.0.1`, root/root, database `test`) and `--php-extension mysqlnd
