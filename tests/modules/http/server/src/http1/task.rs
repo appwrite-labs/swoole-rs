@@ -112,13 +112,8 @@ struct TaskPool {
 
 impl TaskHost for TaskPool {
     fn dispatch(&mut self, task: *mut u8, worker_id: &mut c_int, blocking: bool) -> bool {
-        let dispatch = if blocking {
-            pool::dispatch_sync
-        } else {
-            pool::dispatch
-        };
         // SAFETY: the live task pool and a packed task.
-        unsafe { dispatch(self.pool, task, worker_id) == SW_OK }
+        unsafe { pool::dispatch(self.pool, task, worker_id, blocking) == SW_OK }
     }
 
     fn pipe_clean(&mut self) {
@@ -340,7 +335,7 @@ impl TaskServer for Server {
 
     fn dispatch(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> c_int {
         // SAFETY: the created server's task pool and a writable EventData.
-        unsafe { pool::dispatch(self.task_pool(), buf.head().cast(), dst_worker_id) }
+        unsafe { pool::dispatch(self.task_pool(), buf.head().cast(), dst_worker_id, false) }
     }
 
     fn get_tasking_num(self) -> c_int {
@@ -384,8 +379,7 @@ impl TaskServer for Server {
     fn send_to_worker_from_worker(self, id: u16, ev: &EventData, flags: c_int) -> isize {
         // SAFETY: one of the server's workers, and the event's bytes.
         unsafe {
-            entry::send_to_worker_from_worker(
-                self.0,
+            pool::send_pipe_message(
                 self.get_worker(id),
                 ptr::from_ref(ev).cast(),
                 ev.size(),

@@ -2396,8 +2396,7 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 .worker(u16::try_from(o.ctx.number).unwrap_or(u16::MAX));
             // SAFETY: a live worker and the message `send_pipe_message` lends.
             let sent = unsafe {
-                swoole_rs_process::workers::entry::send_to_worker_from_worker(
-                    serv,
+                swoole_rs_process::methods::send_pipe_message(
                     worker,
                     o.ctx.object.cast(),
                     o.ctx.length as usize,
@@ -2586,6 +2585,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                                     pool,
                                     (&raw mut buf).cast(),
                                     &raw mut dst,
+                                    false,
                                 )
                             };
                             Ok(sent == 0)

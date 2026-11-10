@@ -266,8 +266,7 @@ pub fn signal_lookup(signo: c_int) -> Lookup {
 
 /// `bool swoole_signal_isset(int)`: a handler is registered and active.
 #[must_use]
-#[unsafe(export_name = "_Z19swoole_signal_isseti")]
-pub extern "C" fn swoole_signal_isset(signo: c_int) -> bool {
+pub fn swoole_signal_isset(signo: c_int) -> bool {
     slot(signo).is_some_and(|slot| slot.handler.load(Relaxed) != 0 && slot.activated.load(Relaxed))
 }
 
@@ -300,16 +299,14 @@ pub extern "C" fn swoole_signal_block_all() -> bool {
 }
 
 /// `void swoole_signal_unblock_all()`: [`swoole_rs_corebase::signal_unblock_all`].
-#[unsafe(export_name = "_Z25swoole_signal_unblock_allv")]
-pub extern "C" fn swoole_signal_unblock_all() {
+pub fn swoole_signal_unblock_all() {
     swoole_rs_corebase::signal_unblock_all();
 }
 
 /// `char *swoole_signal_to_str(int)`: `strsignal`'s text in a static 64-byte
 /// buffer, with `": <signo>"` appended when the text has no colon. It may run in a
 /// signal frame (an unregistered signal's warning), so it does not allocate.
-#[unsafe(export_name = "_Z20swoole_signal_to_stri")]
-pub extern "C" fn swoole_signal_to_str(signo: c_int) -> *mut c_char {
+pub fn swoole_signal_to_str(signo: c_int) -> *mut c_char {
     struct Buffer(std::cell::UnsafeCell<[u8; 64]>);
     // SAFETY: upstream's function-static buffer, shared as upstream shares it.
     unsafe impl Sync for Buffer {}
