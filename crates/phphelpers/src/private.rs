@@ -68,8 +68,7 @@ unsafe fn array_property(
     name: *const c_char,
     length: usize,
 ) -> *mut zval {
-    // SAFETY: a zeroed slot is a valid undefined zval.
-    let mut value: zval = unsafe { std::mem::zeroed() };
+    let mut value = swoole_rs_zend::UNDEF;
     // SAFETY: construct a request array in an initialized writable slot.
     if bailed(unsafe { sys::swr_zend_try_facade_array_init(&raw mut value) }) {
         return ptr::null_mut();
@@ -123,8 +122,7 @@ unsafe fn property(
 ) -> *mut zval {
     // SAFETY: the source holds a live object.
     let object = unsafe { swoole_rs_zend::value::obj_of(value) };
-    // SAFETY: initialize Zend's scratch return slot.
-    let mut temporary: zval = unsafe { std::mem::zeroed() };
+    let mut temporary = swoole_rs_zend::UNDEF;
     // SAFETY: caller guarantees an object-owned declared property result.
     let mut property = unsafe { read(scope, object, name, length, silent, &raw mut temporary) };
     if !bailout::pending() {
@@ -215,10 +213,8 @@ unsafe fn direct_call(
     retval: *mut zval,
     report: unsafe extern "C" fn(*const c_char),
 ) -> c_int {
-    // SAFETY: zero is an undefined optional function name and empty fcall info.
-    let mut call: zend_fcall_info = unsafe { std::mem::zeroed() };
-    // SAFETY: the temporary return slot starts undefined.
-    let mut temporary: zval = unsafe { std::mem::zeroed() };
+    let mut call = swoole_rs_zend::EMPTY_FCI;
+    let mut temporary = swoole_rs_zend::UNDEF;
     // SAFETY: a non-null cache is initialized by the caller.
     let uncached = cache.is_null() || unsafe { (*cache).function_handler }.is_null();
     if uncached {
@@ -283,8 +279,7 @@ pub unsafe fn swr_v1_phphelpers_call_anyway(
     frame: *mut zend_fcall_info,
     cache: *mut zend_fcall_info_cache,
 ) -> c_int {
-    // SAFETY: zero is an initialized undefined return slot.
-    let mut temporary: zval = unsafe { std::mem::zeroed() };
+    let mut temporary = swoole_rs_zend::UNDEF;
     // SAFETY: the frame is initialized and exclusively configured before invocation.
     if unsafe { (*frame).retval }.is_null() {
         // SAFETY: the temporary remains live through the call and destruction below.
@@ -370,8 +365,7 @@ pub unsafe fn function_call(
 /// # Safety
 /// A borrowed binary function-name span, argument slots and writable owned return value.
 unsafe fn named(name: *const c_char, length: usize, argc: u32, argv: *mut zval, retval: *mut zval) {
-    // SAFETY: zero initializes the function-name slot before its string allocation.
-    let mut function: zval = unsafe { std::mem::zeroed() };
+    let mut function = swoole_rs_zend::UNDEF;
     // SAFETY: Zend copies the complete binary function name into its request string.
     bailed(unsafe { sys::swr_zend_try_facade_value_string(&raw mut function, name, length) });
     if bailout::pending() {
@@ -423,8 +417,7 @@ pub unsafe fn swr_v1_phphelpers_named_call(
 pub unsafe fn named_call(name: &[u8], args: &mut [zval]) -> Result<(), bailout::Bailout> {
     #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
     let argc = args.len() as u32;
-    // SAFETY: zero is an undefined return slot.
-    let mut retval: zval = unsafe { std::mem::zeroed() };
+    let mut retval = swoole_rs_zend::UNDEF;
     // SAFETY: the name's bytes, live arguments and a writable result.
     unsafe {
         named(

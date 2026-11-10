@@ -365,6 +365,34 @@ pub fn call_kept(callable: &swoole_rs_zend::Callable, coroutine: bool) -> Result
     }
 }
 
+/// `zend::function::call(&cache, args, retval, coroutine)` of a
+/// `sw_callable_create` handler: whether it ran, warning as
+/// `sw_callable_warning` when it could not.
+/// # Errors
+/// PHP bailed out.
+pub fn call_handler(
+    handler: &swoole_rs_phphelpers::callable::Callable,
+    args: &[swoole_rs_zend::Owned],
+    retval: &swoole_rs_zend::Owned,
+    coroutine: bool,
+) -> Result<bool, Bailout> {
+    let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
+    // SAFETY: the handler's resolved cache, which its owner keeps live through
+    // the call, live arguments and a return slot; the leaves are this crate's
+    // and C's.
+    unsafe {
+        swoole_rs_phphelpers::function_call(
+            handler.cache_ptr(),
+            argc,
+            args.as_ptr().cast_mut().cast(),
+            retval.as_ptr(),
+            coroutine,
+            create_coroutine,
+            swoole_rs_zend::sys::swr_zend_callable_warning,
+        )
+    }
+}
+
 /// `bool zend::function::call(zend_fcall_info_cache *, uint32_t, zval *, zval *, bool)`
 /// (the bundled curl's `zend::Function::call`): `function_call` in a
 /// coroutine, warning as `sw_callable_warning`, with a bailout re-raised.

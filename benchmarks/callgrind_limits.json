@@ -10,5 +10,8 @@
   "table": 0.98,
   "channel": 0.89,
   "task": 0.94,
-  "mysql": 0.97
+  "mysql": 0.97,
+  "tcp-length": 1.02,
+  "tcp-eof": 0.57,
+  "udp": 1.09
 }

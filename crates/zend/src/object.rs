@@ -1,14 +1,13 @@
 //! Objects that embed their `zend_object` after Rust data, as Swoole's C++
 //! structs do (`struct { T data; zend_object std; }`).
 use crate::{
-    ArrayMut, Class, Value,
+    ArrayMut, Class, Owned, Value, ZString, bailout,
     sys::{
-        _zval_struct__bindgen_ty_1, IS_OBJECT_EX, object_init_ex, object_properties_init,
-        swr_zend_class_set_create_object, swr_zend_object_alloc, swr_zend_property_array,
-        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
-        zend_object_std_init, zend_update_property, zend_update_property_bool,
-        zend_update_property_long, zend_update_property_null, zend_update_property_stringl,
-        zend_value, zval,
+        _zval_struct__bindgen_ty_1, IS_OBJECT, IS_OBJECT_EX, object_init_ex,
+        object_properties_init, swr_zend_class_set_create_object, swr_zend_object_alloc,
+        swr_zend_property_array, swr_zend_try_facade_update, zend_class_entry, zend_long,
+        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
+        zend_update_property, zend_value, zval,
     },
 };
 use std::{
@@ -162,58 +161,58 @@ impl Props<'_> {
         Self(unsafe { (*self.1).ce }, self.1, PhantomData)
     }
 
-    /// Scope, object and the name as the `zend_update_property_*` take them.
-    fn at(
-        self,
-        name: &CStr,
-    ) -> (
-        *mut zend_class_entry,
-        *mut zend_object,
-        *const c_char,
-        usize,
-    ) {
-        (self.0, self.1, name.as_ptr(), name.count_bytes())
-    }
-
     /// `zend_update_property_long`.
     #[inline]
     pub fn long(self, name: &CStr, value: zend_long) {
-        let (scope, object, name, length) = self.at(name);
-        // SAFETY: a live object and a registered class or null.
-        unsafe { zend_update_property_long(scope, object, name, length, value) };
+        self.value(name, &Owned::long(value));
     }
 
     /// `zend_update_property_bool`.
     #[inline]
     pub fn bool(self, name: &CStr, value: bool) {
-        let (scope, object, name, length) = self.at(name);
-        // SAFETY: as above.
-        unsafe { zend_update_property_bool(scope, object, name, length, value.into()) };
+        self.value(name, &Owned::bool(value));
     }
 
     /// `zend_update_property_stringl`.
     #[inline]
     pub fn bytes(self, name: &CStr, value: &[u8]) {
-        let (scope, object, name, length) = self.at(name);
-        let (data, size) = (value.as_ptr().cast(), value.len());
-        // SAFETY: as above.
-        unsafe { zend_update_property_stringl(scope, object, name, length, data, size) };
+        self.value(name, &Owned::string(ZString::new(value)));
     }
 
     /// `zend_update_property_null`.
     #[inline]
     pub fn null(self, name: &CStr) {
-        let (scope, object, name, length) = self.at(name);
-        // SAFETY: as above.
-        unsafe { zend_update_property_null(scope, object, name, length) };
+        self.value(name, &Owned::null());
     }
 
-    /// `zend_update_property`: the property takes a copy of `value`.
+    /// `zend_update_property`: the property takes a copy of `value`. On a user
+    /// class the write can run PHP code (a subclass's `__set` or property hook),
+    /// as can an object converted for a typed property (`__toString`), so those
+    /// writes run inside `zend_try` and a bailout is deferred. An internal
+    /// class's object takes a scalar or string without running any. Nothing is
+    /// written while a bailout is pending: upstream never ran past it.
     #[inline]
     pub fn value(self, name: &CStr, value: &Value) {
-        let (scope, object, name, length) = self.at(name);
-        // SAFETY: as above, and a live value.
-        unsafe { zend_update_property(scope, object, name, length, value.as_ptr()) };
+        /// `ZEND_INTERNAL_CLASS` (`zend_compile.h`).
+        const INTERNAL: c_char = 1;
+        if bailout::pending() {
+            return;
+        }
+        let (scope, object, name, length) = (self.0, self.1, name.as_ptr(), name.count_bytes());
+        // SAFETY: a live object.
+        let class = unsafe { (*object).ce };
+        // SAFETY: its class, which outlives it.
+        let internal = unsafe { (*class).type_ } == INTERNAL;
+        if internal && value.kind() != IS_OBJECT {
+            // SAFETY: a live object, a registered class or null, and a live value
+            // Zend copies.
+            unsafe { zend_update_property(scope, object, name, length, value.as_ptr()) };
+            return;
+        }
+        // SAFETY: as above.
+        bailout::defer(bailout::trapped(unsafe {
+            swr_zend_try_facade_update(scope, object, name, length, value.as_ptr())
+        }));
     }
 }
 
@@ -226,9 +225,9 @@ impl<'a> Props<'a> {
     #[must_use]
     #[inline]
     pub unsafe fn array(self, name: &CStr) -> &'a mut ArrayMut {
-        let (scope, object, name, length) = self.at(name);
         // SAFETY: a live object and a registered class or null.
-        let array = unsafe { swr_zend_property_array(scope, object, name, length) };
+        let array =
+            unsafe { swr_zend_property_array(self.0, self.1, name.as_ptr(), name.count_bytes()) };
         // SAFETY: an array property of a live object; per the caller.
         unsafe { ArrayMut::from_ptr(array) }
     }
