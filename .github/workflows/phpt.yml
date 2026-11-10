@@ -1,5 +1,5 @@
 name: PHPT
-# Upstream's pinned PHPTs, sharded six ways per engine, and the gate: any test that passes on
+# Upstream's pinned PHPTs, sharded per engine (SHARDS), and the gate: any test that passes on
 # upstream must pass on every other engine (corpus/upstream/gate.py). The caller builds the
 # phpt-engines artifact first (.github/actions/phpt-build). The merge tier runs every family
 # on upstream and the Cargo build. The PR tier runs the families of the modules
@@ -24,6 +24,12 @@ on:
         description: A merge-tier run whose upstream reports and upstream.so the gate uses
         default: ''
         type: string
+      shards:
+        description: >-
+          JSON list of the shard indexes to run, 1 to its length: six for the whole corpus, or
+          what corpus/upstream/inventory.py --plan sizes to the families
+        default: '[1, 2, 3, 4, 5, 6]'
+        type: string
 defaults:
   run:
     shell: bash
@@ -35,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        index: [1, 2, 3, 4, 5, 6]
+        index: ${{ fromJSON(inputs.shards) }}
         engine: ${{ fromJSON(inputs.engines) }}
     steps:
       - uses: actions/checkout@v4
@@ -51,10 +57,11 @@ jobs:
       - id: manifest
         env:
           FAMILIES: ${{ inputs.families }}
+          SHARDS: ${{ inputs.shards }}
         run: |
           modules=()
           for family in $FAMILIES; do modules+=(--module "$family"); done
-          python3 corpus/upstream/inventory.py --shard ${{ matrix.index }}/6 "${modules[@]}" --output target/phpt/manifest.json
+          python3 corpus/upstream/inventory.py --shard "${{ matrix.index }}/$(jq length <<< "$SHARDS")" "${modules[@]}" --output target/phpt/manifest.json
           echo "tests=$(jq '.tests | length' target/phpt/manifest.json)" >> "$GITHUB_OUTPUT"
       # php -n loads nothing; load every extension the distribution enables, in its order.
       - id: extensions
@@ -139,8 +146,9 @@ jobs:
       - if: always() && needs.phpt.result != 'success'
         env:
           ENGINES: ${{ inputs.engines }}
+          SHARDS: ${{ inputs.shards }}
         run: |
-          for engine in $(jq -r '.[]' <<< "$ENGINES"); do for index in 1 2 3 4 5 6; do
+          for engine in $(jq -r '.[]' <<< "$ENGINES"); do for index in $(jq -r '.[]' <<< "$SHARDS"); do
             [ -f "shards/$engine-$index.json" ] || missing="$missing $engine-$index"
           done; done
           rm -f phpt.json
