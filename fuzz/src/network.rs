@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::ffi::{c_char, c_int};
 use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, query};
+use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_http::multipart_parser::MultipartParser;
 use swoole_rs_http_ffi::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
 use swoole_rs_http2::{
@@ -186,68 +187,59 @@ pub fn multipart(bytes: &[u8]) {
     }
 }
 
-/// `llhttp_t`'s storage: its fields need fewer than 128 bytes, eight-byte aligned.
-#[repr(C, align(8))]
-struct Llhttp([u8; 128]);
-
-unsafe extern "C" {
-    fn llhttp_settings_init(settings: *mut [usize; 25]);
-    fn llhttp_init(parser: *mut Llhttp, kind: c_int, settings: *const [usize; 25]);
-    fn llhttp_execute(parser: *mut Llhttp, data: *const c_char, length: usize) -> c_int;
+/// Body bytes the parser delivered; each span must lie inside its chunk.
+struct Chunked {
+    parser: Parser,
+    body: usize,
 }
 
-/// `HPE_OK`; `llhttp_settings_t.on_body`.
-const HPE_OK: c_int = 0;
-const ON_BODY: usize = 11;
+impl Callbacks for Chunked {
+    fn parser(&mut self) -> &mut Parser {
+        &mut self.parser
+    }
 
-thread_local! {
-    /// Body bytes llhttp delivered.
-    static BODY: Cell<usize> = const { Cell::new(0) };
-}
-
-unsafe extern "C" fn on_body(_: *mut Llhttp, at: *const c_char, length: usize) -> c_int {
-    in_chunk(at, length);
-    BODY.set(BODY.get() + length);
-    0
+    fn on_body(&mut self, data: &[u8]) -> c_int {
+        in_chunk(data.as_ptr().cast(), data.len());
+        self.body += data.len();
+        0
+    }
 }
 
 /// A request (or, on an odd first byte, a response) head with chunked transfer
-/// coding and any body, handed to the bundled llhttp the server and client parse with
+/// coding and any body, handed to crates/http's llhttp the server and client parse with
 /// in fuzzer-chosen chunks: every body span lies inside its chunk and the body never
 /// exceeds what was received.
 pub fn http_chunked(bytes: &[u8]) {
     let Some((&[kind, step], body)) = bytes.split_first_chunk::<2>() else {
         return;
     };
-    let (kind, head): (c_int, &[u8]) = if kind & 1 == 0 {
+    let (kind, head): (u8, &[u8]) = if kind & 1 == 0 {
         (
-            1,
+            llhttp::REQUEST,
             b"POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n",
         )
     } else {
-        (2, b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+        (
+            llhttp::RESPONSE,
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+        )
     };
-    let mut settings = [0usize; 25];
-    // SAFETY: `settings` is `llhttp_settings_t`-sized: 25 callback pointers.
-    unsafe { llhttp_settings_init(&mut settings) };
-    settings[ON_BODY] = on_body as *const () as usize;
-    let mut parser = Llhttp([0; 128]);
-    // SAFETY: `parser` covers `llhttp_t`; the settings outlive it.
-    unsafe { llhttp_init(&mut parser, kind, &settings) };
-    BODY.set(0);
+    let mut parser = Chunked {
+        parser: Parser::new(kind),
+        body: 0,
+    };
     let input = [head, body].concat();
     for chunk in input.chunks(usize::from(step).max(1)) {
         let start = chunk.as_ptr() as usize;
         CHUNK.set((start, start + chunk.len()));
-        // SAFETY: `chunk` holds its length in bytes; `parser` is initialized.
-        if unsafe { llhttp_execute(&mut parser, chunk.as_ptr().cast(), chunk.len()) } != HPE_OK {
+        if llhttp::execute(&mut parser, chunk) != llhttp::HPE_OK {
             break;
         }
     }
     assert!(
-        BODY.get() <= body.len(),
+        parser.body <= body.len(),
         "body {} of {}",
-        BODY.get(),
+        parser.body,
         body.len()
     );
 }

@@ -27,6 +27,7 @@ pub use headers::{HttpCookie, HttpHeaderInfo, cookie_next, header_info};
 mod maps;
 mod multipart;
 pub use multipart::{multipart_disposition, multipart_filename, multipart_result};
+pub mod llhttp;
 pub mod multipart_parser;
 mod proxy;
 pub use proxy::{

@@ -85,7 +85,7 @@ reads untrusted bytes against the wire format or against invariants of its outpu
 query's id): it succeeds exactly when it pushes an address, and each is IP text.
 `http_multipart` feeds crates/http's multipart parser a boundary and body
 in chunks, and runs `swr_v1_http_multipart_filename` on each part's headers.
-`http_chunked` feeds the bundled llhttp a chunked request or response in chunks: body
+`http_chunked` feeds crates/http's llhttp a chunked request or response in chunks: body
 spans stay inside their chunk and never exceed the input. `http2_hpack` splits its
 input into HEADERS payloads of one connection and decodes each with the bundled
 nghttp2 inflater (`upstream/thirdparty/nghttp2`) through the step loop the HTTP/2

@@ -410,7 +410,6 @@ mod php {
             c.files(sources(module, "c"));
         }
         c.file(own(third.join("php/streams/plain_wrapper.c")))
-            .files(["api.c", "http.c", "llhttp.c"].map(|f| third.join("llhttp").join(f)))
             .files(
                 [
                     "nghttp2_hd.c",
