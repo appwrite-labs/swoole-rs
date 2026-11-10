@@ -154,7 +154,7 @@ pub(crate) unsafe fn deref(object: *mut zend_object) {
     }
     if !data.port.is_null() {
         // SAFETY: a bound port, which outlives this call.
-        free_callable(take(
+        free_callable(take_shared(
             &mut unsafe { port_config::of(data.port) }
                 .protocol
                 .private_data_1,
@@ -166,6 +166,16 @@ pub(crate) unsafe fn deref(object: *mut zend_object) {
 /// A slot's callable, which leaves it null.
 fn take(slot: &mut *mut c_void) -> *mut c_void {
     std::mem::replace(slot, ptr::null_mut())
+}
+
+/// A slot on the native server, which every thread's object reaches when it is
+/// freed: an empty one is only read, as upstream's `if (slot)` does, so the threads
+/// don't race on it.
+pub(crate) fn take_shared(slot: &mut *mut c_void) -> *mut c_void {
+    if slot.is_null() {
+        return ptr::null_mut();
+    }
+    take(slot)
 }
 
 /// Free a callable already out of its slot: a destructor this runs may reach
