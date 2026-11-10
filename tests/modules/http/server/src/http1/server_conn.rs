@@ -16,7 +16,6 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 
 const PACKET: &[u8] = b"hello world\n";
-const MODE_THREAD: c_int = 3;
 const SW_SOCK_UDP: c_int = 2;
 const SW_LOG_DEBUG: c_int = 0;
 const SW_LOG_TRACE: c_int = 1;
