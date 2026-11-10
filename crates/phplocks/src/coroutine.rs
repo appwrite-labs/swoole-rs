@@ -97,7 +97,11 @@ impl Custom for Held {
 fn constructed(call: &Call) -> Option<&CoroutineLock> {
     let lock = call.custom::<Held>()?.0.get();
     if lock.is_none() {
-        swoole_rs_phpswoole::swoole_fatal_error(WRONG_OPERATION, c"must call constructor first");
+        let message = c"must call constructor first";
+        bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+            WRONG_OPERATION,
+            message,
+        ));
     }
     lock.map(|lock| &**lock)
 }

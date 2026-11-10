@@ -237,12 +237,14 @@ pub fn current_safe() -> Co {
     co
 }
 
-/// `System::sleep(seconds)` of the running coroutine: 0, or -1 once canceled.
-/// Outside a coroutine it raises upstream's fatal error, which does not return,
-/// so the caller's frames must own nothing that needs a drop.
+/// `System::sleep(seconds)` of the running coroutine: 0, or -1 once canceled,
+/// and -1 outside a coroutine, where upstream's raises a fatal error.
 #[must_use]
 pub fn sleep(seconds: f64) -> c_int {
-    // SAFETY: C++ sleeps the running coroutine, or raises that error.
+    if current().is_null() {
+        return -1;
+    }
+    // SAFETY: C++ sleeps the running coroutine, which returns here.
     unsafe { system_sleep(seconds) }
 }
 

@@ -10,7 +10,10 @@ use swoole_rs_locks::{Lock, swr_v1_locks_size};
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::lock;
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, Minit, bailout::Bailout, method_table, sys::ZEND_ACC_PUBLIC,
+    Call, Custom, CustomClass, Minit,
+    bailout::{self, Bailout},
+    method_table,
+    sys::ZEND_ACC_PUBLIC,
 };
 
 /// `swoole::Lock::Type`.
@@ -52,7 +55,11 @@ impl Custom for Held {
 fn constructed(call: &Call) -> Option<&Lock> {
     let lock = call.custom::<Held>()?.0.get();
     if lock.is_none() {
-        swoole_rs_phpswoole::swoole_fatal_error(WRONG_OPERATION, c"must call constructor first");
+        let message = c"must call constructor first";
+        bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+            WRONG_OPERATION,
+            message,
+        ));
     }
     lock
 }

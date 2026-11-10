@@ -22,6 +22,8 @@ use swoole_rs_zend::{method_table, sys as z};
 type Put = unsafe extern "C" fn(out: *mut c_void, data: *const c_char, length: usize);
 
 unsafe extern "C" {
+    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
+    fn system_sleep(seconds: f64) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System10wait_eventEiid"]
     fn system_wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System4waitEPid"]
@@ -167,7 +169,8 @@ fn sleep(call: &Call) {
         call.set_bool(false);
         return;
     }
-    call.set_bool(host::sleep(seconds) == 0);
+    // SAFETY: C++ sleeps the running coroutine.
+    call.set_bool(unsafe { system_sleep(seconds) } == 0);
 }
 
 /// `zend_value_error(message)`, then false.
