@@ -134,11 +134,6 @@ mod native {
     unsafe extern "C-unwind" {
         #[link_name = "_ZN6swoole9Coroutine24print_socket_bound_errorEiPKcl"]
         fn print_socket_bound_error(fd: c_int, event: *const c_char, cid: c_long);
-        fn swr_v1_coroutine_yield_with_cancel(
-            co: *mut c_void,
-            cancel: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> bool,
-            data: *mut c_void,
-        );
     }
 
     pub(super) static HOST: Host = Host {
@@ -190,7 +185,7 @@ mod native {
         let data = tag(socket, event != READ);
         // SAFETY: the current coroutine, waiting on the live record, whose frames own
         // nothing with a destructor.
-        unsafe { swr_v1_coroutine_yield_with_cancel(co, cancel, data) };
+        unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel, data) };
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.
