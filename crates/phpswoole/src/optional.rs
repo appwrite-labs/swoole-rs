@@ -8,7 +8,8 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::{Switch, built_with, log::set_last_error};
 use swoole_rs_zend::{E_ERROR, Value, bailout, php_error, sys::zval};
 
-// SAFETY: crates/phplocks' thread locks and atomics, linked into every extension.
+// SAFETY: crates/phplocks' thread locks and atomics, linked into every extension;
+// declared, since crates/phplocks depends on this crate.
 unsafe extern "C" {
     fn swr_v1_phplocks_thread_atomic_minit();
     fn swr_v1_phplocks_thread_lock_minit(

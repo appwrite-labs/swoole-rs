@@ -25,6 +25,7 @@ use swoole_rs_zend::{
 /// A `swSignalHandler`: a function's address, `SIG_IGN` or 0 (none).
 type Handler = usize;
 
+// crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
 unsafe extern "C" {
     fn php_swoole_reactor_init() -> c_int;
     fn swr_v1_phpevents_wait();
