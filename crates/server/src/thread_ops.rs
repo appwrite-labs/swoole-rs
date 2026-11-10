@@ -11,6 +11,7 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_reactor::{SocketRecord, reactor_upstream};
+use swoole_rs_timer::swr_v1_timer_add_plain;
 
 use crate::base_factory::SendData;
 use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE, CB_RECEIVE};
@@ -97,17 +98,6 @@ fn worker<'a>(serv: view::Server<'_>, id: impl TryInto<u16>) -> &'a mut WorkerRe
     let worker = serv.worker(id);
     // SAFETY: as above.
     unsafe { &mut *worker }
-}
-
-/// `swoole_timer_add(msec, persistent, callback, data)`.
-fn timer_add(
-    msec: c_long,
-    persistent: bool,
-    callback: unsafe extern "C" fn(*mut c_void),
-    data: *mut c_void,
-) -> *mut c_void {
-    // SAFETY: a timer of this thread's.
-    unsafe { crate::pool_native::swr_v1_timer_add_plain(msec, persistent, callback, data) }
 }
 
 /// `socket->send_sync(&head, sizeof(head))` of a bare event.
@@ -344,7 +334,8 @@ pub(crate) unsafe fn answer(
         OP_HEARTBEAT_ENTRY => heartbeat_main as *const () as u64,
         OP_HEARTBEAT_TIMER | OP_RT_HEARTBEAT_TIMER => {
             let msec = c_long::from(config().heartbeat_check_interval) * 1000;
-            let timer = timer_add(msec, true, heartbeat_check, reactor);
+            // SAFETY: `heartbeat_check` takes the reactor, which outlives its timers.
+            let timer = unsafe { swr_v1_timer_add_plain(msec, true, heartbeat_check, reactor) };
             if op == OP_HEARTBEAT_TIMER {
                 config().heartbeat_timer = timer;
             } else {
@@ -354,7 +345,11 @@ pub(crate) unsafe fn answer(
         }
         OP_RESUME_TIMER => {
             let msec = c_long::from(conn_ref().waiting_time);
-            let timer = timer_add(msec, false, resume_data_receiving, ctx.sock.cast());
+            // SAFETY: `resume_data_receiving` takes the connection's socket, which
+            // deletes the timer before it goes.
+            let timer = unsafe {
+                swr_v1_timer_add_plain(msec, false, resume_data_receiving, ctx.sock.cast())
+            };
             conn_ref().timer = timer;
             u64::from(!timer.is_null())
         }
@@ -663,7 +658,7 @@ unsafe extern "C" fn heartbeat_main(serv: *mut c_void, _: u64) {
 }
 
 /// `Server::heartbeat_check`: the heartbeat timer of `reactor`.
-unsafe extern "C" fn heartbeat_check(reactor: *mut c_void) {
+unsafe extern "C-unwind" fn heartbeat_check(reactor: *mut c_void) {
     // SAFETY: the timer's live reactor, on its own thread.
     let handle = unsafe { crate::reactor_handle::Reactor::of(reactor) };
     let fields = handle.fields();
@@ -675,7 +670,7 @@ unsafe extern "C" fn heartbeat_check(reactor: *mut c_void) {
 }
 
 /// `ReactorThread_resume_data_receiving`: the timer of a paused session socket.
-unsafe extern "C" fn resume_data_receiving(sock: *mut c_void) {
+unsafe extern "C-unwind" fn resume_data_receiving(sock: *mut c_void) {
     let sock = sock.cast::<SocketRecord>();
     // SAFETY: the timer's live session socket, whose object is its connection.
     let conn = unsafe { (*sock).object }.cast::<ConnectionRecord>();

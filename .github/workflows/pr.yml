@@ -68,7 +68,8 @@ jobs:
           fetch-depth: 0
       # The PHPT families of the modules this PR touches (every family for shared build
       # inputs), and main's merge-tier run whose upstream results gate them. Every family
-      # and upstream run here when this PR changes how upstream or its PHPTs are built or run.
+      # and upstream run here when this PR changes what upstream's results depend on
+      # (tools/ci.py BASELINES).
       - id: phpt
         env:
           GH_TOKEN: ${{ github.token }}
@@ -84,8 +85,8 @@ jobs:
                                             'corpus/upstream/', *UPSTREAM_KEY, *BASELINES['phpt'][4]], text=True)
           print('all' if runner or modules == sorted(MODULES) else ' '.join(phpt_families(modules)))")
           echo "families=$families" >> "$GITHUB_OUTPUT"
-          read -r run sha <<< "$(python3 tools/ci.py phpt-baseline || true)"
-          if [ -n "$run" ] && git diff --quiet "$sha" HEAD -- tools/build_upstream.py corpus/upstream/; then
+          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline || true)"
+          if [ -n "$run" ]; then
             echo "baseline=$run" >> "$GITHUB_OUTPUT"
             echo 'engines=["cargo"]' >> "$GITHUB_OUTPUT"
           else

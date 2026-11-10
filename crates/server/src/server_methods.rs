@@ -283,7 +283,7 @@ pub unsafe extern "C-unwind" fn connection_incoming(
 /// # Safety
 /// `serv` is a live `Server`, on the thread that armed the timer.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) unsafe extern "C" fn enable_accept(serv: *mut c_void) {
+pub(crate) unsafe extern "C-unwind" fn enable_accept(serv: *mut c_void) {
     // SAFETY: as the caller guarantees.
     unsafe {
         run(
@@ -497,7 +497,7 @@ pub unsafe extern "C" fn swr_v1_server_set_document_root(
 /// # Safety
 /// `serv` is a live `Server`, in its master.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) unsafe extern "C" fn master_timer_tick(serv: *mut c_void) {
+pub(crate) unsafe extern "C-unwind" fn master_timer_tick(serv: *mut c_void) {
     // SAFETY: as the caller guarantees.
     unsafe {
         run(
@@ -515,7 +515,7 @@ pub(crate) unsafe extern "C" fn master_timer_tick(serv: *mut c_void) {
 /// # Safety
 /// `conn` is a live connection of `SwooleG.server`, on this thread's reactor.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) unsafe extern "C" fn idle_timeout_tick(conn: *mut c_void) {
+pub(crate) unsafe extern "C-unwind" fn idle_timeout_tick(conn: *mut c_void) {
     let serv = swoole_rs_corebase::swr_v1_core_server();
     let mut ctx = NativeContext::new(serv);
     // SAFETY: as the caller guarantees.

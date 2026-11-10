@@ -1768,9 +1768,8 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_MAX_SOCKETS => u64::from(swoole_rs_corebase::max_sockets()),
         OP_MASTER_TIMER => {
             let tick = crate::server_methods::master_timer_tick;
-            // SAFETY: a persistent timer of the master's, over the live server.
-            let node =
-                unsafe { crate::pool_native::swr_v1_timer_add_plain(1000, true, tick, serv) };
+            // SAFETY: `tick` takes the server, which outlives the master's timer.
+            let node = unsafe { swoole_rs_timer::swr_v1_timer_add_plain(1000, true, tick, serv) };
             o.config().master_timer = node;
             u64::from(!node.is_null())
         }
@@ -1961,9 +1960,9 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ACCEPT_TIMER => {
             let retry = crate::server_methods::enable_accept;
-            // SAFETY: a one-shot timer of this thread's over the live server.
+            // SAFETY: `retry` takes the server, which outlives this one-shot timer.
             let timer = unsafe {
-                crate::pool_native::swr_v1_timer_add_plain(ACCEPT_RETRY_MSEC, false, retry, serv)
+                swoole_rs_timer::swr_v1_timer_add_plain(ACCEPT_RETRY_MSEC, false, retry, serv)
             };
             o.tables().enable_accept_timer = timer;
             u64::from(!timer.is_null())
@@ -2467,9 +2466,10 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let tick = crate::server_methods::idle_timeout_tick;
             #[expect(clippy::cast_possible_truncation, reason = "sec2msec's (long) cast")]
             let msec = (idle * 1000.0) as libc::c_long;
-            // SAFETY: a persistent timer over the live connection, deleted before it goes.
+            // SAFETY: `tick` takes the live connection, which deletes the timer
+            // before it goes.
             let node =
-                unsafe { crate::pool_native::swr_v1_timer_add_plain(msec, true, tick, o.ctx.conn) };
+                unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, tick, o.ctx.conn) };
             if op == OP_ADD_RECV_TIMER {
                 sock.timeouts.read = idle;
                 sock.recv_timer = node;
