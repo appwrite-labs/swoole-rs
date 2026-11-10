@@ -129,12 +129,24 @@ jobs:
           if [ "${{ steps.baseline.outputs.cache-hit }}" != true ]; then
             gh run download ${{ inputs.baseline }} -p 'phpt-upstream-*' -D baseline
             mkdir -p baseline-cache && cp baseline/*/*.json baseline-cache/
+            if [ "${{ github.ref }}" = refs/heads/main ]; then
+              gh run download ${{ inputs.baseline }} -n phpt-engines -D baseline-engines
+              cp baseline-engines/upstream.so baseline-cache/upstream.so
+            fi
           fi
           families=$(printf '%s\n' $FAMILIES | jq -R . | jq -sc 'map(select(. != ""))')
           for report in baseline-cache/upstream-*.json; do
             jq --argjson f "$families" '.results |= map(select(($f | length) == 0 or (.module | IN($f[]))))' \
               "$report" > "shards/$(basename "$report")"
           done
+      # A main run that reuses a baseline saved before its cache existed (or whose save failed)
+      # saves it on that baseline's key, so PR gates stop missing until the baseline changes.
+      - if: github.ref == 'refs/heads/main' && inputs.baseline != '' && steps.baseline.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: baseline-cache
+          key: phpt-baseline-${{ inputs.baseline }}
       # Tests that pass on upstream but not on the Cargo build get 3 re-runs per engine, unless
       # more than 20 are flagged: that is a broad breakage, not flakiness.
       - id: flagged
