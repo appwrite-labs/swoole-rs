@@ -1,0 +1,18 @@
+[package]
+name = "swoole-rs-brotli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Safe calls into the system libbrotli that swoole.so links, as upstream does"
+links = "brotli"
+
+[lib]
+name = "swoole_rs_brotli"
+crate-type = ["rlib"]
+
+[build-dependencies]
+pkg-config = "=0.3.34"
+
+[lints]
+workspace = true
