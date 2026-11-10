@@ -53,8 +53,7 @@ mod host {
         swoole_rs_phpcoroutines::cid(co)
     }
     pub(super) fn alloc_shared() -> *mut u32 {
-        // SAFETY: SwooleG.memory_pool lives from swoole_init, before MINIT.
-        unsafe { pool::alloc(4) }.cast()
+        pool::alloc(4).cast()
     }
     /// The global pool frees nothing.
     pub(super) unsafe fn free_shared(_word: *mut u32) {}

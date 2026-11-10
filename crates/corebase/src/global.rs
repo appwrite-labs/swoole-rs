@@ -99,8 +99,6 @@ record! {
         swr_v1_core_aio_max_wait_time_bits, swr_v1_core_set_aio_max_wait_time_bits;
     aio_max_idle_time: AtomicU64, u64 = 0,
         swr_v1_core_aio_max_idle_time_bits, swr_v1_core_set_aio_max_idle_time_bits;
-    memory_pool: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
-        #[unsafe(no_mangle)] swr_v1_core_memory_pool, swr_v1_core_set_memory_pool;
     stdout: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
         #[unsafe(no_mangle)] swr_v1_core_stdout, swr_v1_core_set_stdout;
     logger: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
@@ -376,11 +374,11 @@ mod tests {
     fn record_lifecycle() {
         swr_v1_core_reset();
         let pool = ptr::from_mut(&mut 7_u8).cast::<c_void>();
-        swr_v1_core_set_memory_pool(pool);
+        swr_v1_core_set_stdout(pool);
         assert!(swr_v1_core_init());
         assert!(swr_v1_core_initialized());
         // Initialisation starts from a reset record.
-        assert!(swr_v1_core_memory_pool().is_null());
+        assert!(swr_v1_core_stdout().is_null());
         assert!(swr_v1_core_cpu_num() >= 1);
         assert_eq!(swr_v1_core_dns_tries(), 1);
         assert!(swr_v1_core_running() && swr_v1_core_enable_coroutine());
@@ -389,7 +387,6 @@ mod tests {
         assert_eq!(swr_v1_core_max_file_content(), 64 * 1024 * 1024);
         swr_v1_core_set_wait_signal(true);
         swr_v1_core_set_dns_lookup_random(true);
-        swr_v1_core_set_memory_pool(pool);
         swr_v1_core_set_stdout(pool);
         swr_v1_core_set_logger(pool);
         swr_v1_core_set_signal_fd(-1);
@@ -399,7 +396,6 @@ mod tests {
         swoole_set_trace_flags(0x7fff_ffff);
         assert!(!swr_v1_core_init(), "a second init is a no-op");
         assert!(swr_v1_core_wait_signal() && swr_v1_core_dns_lookup_random());
-        assert_eq!(swr_v1_core_memory_pool(), pool);
         assert_eq!(swr_v1_core_stdout(), pool);
         assert_eq!(swr_v1_core_logger(), pool);
         assert_eq!(swr_v1_core_signal_fd(), -1);
@@ -424,7 +420,7 @@ mod tests {
         assert!(!swr_v1_core_initialized());
         assert_eq!(swr_v1_core_cpu_num(), 0);
         assert!(!swr_v1_core_running() && !swr_v1_core_wait_signal());
-        assert!(swr_v1_core_memory_pool().is_null() && swr_v1_core_logger().is_null());
+        assert!(swr_v1_core_stdout().is_null() && swr_v1_core_logger().is_null());
         assert_eq!(swr_v1_core_signal_fd(), 0);
         assert_eq!(swr_v1_core_aio_max_wait_time().to_bits(), 0);
         // SAFETY: the empty message is a static NUL-terminated string.

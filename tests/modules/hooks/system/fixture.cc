@@ -151,8 +151,8 @@ bool swr_case_timer_remove(long id) {
 }
 
 // os/process_pool.cpp (process_pool.rs): the record sizes its mirrors check, and what its
-// TESTs reach that isn't an exported symbol: sw_mem_pool(), the inline swoole_set_isolation,
-// SwooleWG and sw_worker().
+// TESTs reach that isn't an exported symbol: the inline swoole_set_isolation, SwooleWG and
+// sw_worker().
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Winvalid-offsetof"
 extern const size_t swr_case_process_layout[] = {sizeof(ProcessPool),
@@ -162,9 +162,6 @@ extern const size_t swr_case_process_layout[] = {sizeof(ProcessPool),
                                                  offsetof(Worker, start_time),
                                                  sizeof(EventData)};
 #pragma GCC diagnostic pop
-void *swr_case_mem_pool_alloc(uint32_t size) {
-    return sw_mem_pool()->alloc(size);
-}
 void swr_case_set_isolation_user(const char *user) {
     swoole_set_isolation("", user, "");
 }
