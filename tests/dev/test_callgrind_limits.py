@@ -57,6 +57,19 @@ class Ratchet(unittest.TestCase):
             self.assertEqual(callgrind.main(), 1)
         annotate.assert_called_once_with('error', 'callgrind plaintext', 'ratio 1.1000 over limit 1.0500')
 
+    def test_append_keeps_the_first_pairs_results(self):
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / 'r.json'
+            output.write_text(json.dumps({'instructions_per_request': {'plaintext': {'cargo': 9, 'upstream': 10}}}))
+            with mock.patch.object(callgrind, 'instructions', return_value=100), \
+                    mock.patch('sys.argv', ['callgrind.py', '--engine', 'cargo=/x', '--engine', 'upstream=/y',
+                                            '--workload', 'dns', '--append', '--output', str(output)]):
+                self.assertEqual(callgrind.main(), 0)
+            self.assertEqual(json.loads(output.read_text())['instructions_per_request'],
+                             {'plaintext': {'cargo': 9, 'upstream': 10}, 'dns': {'cargo': 100, 'upstream': 100}})
+
     def test_every_merge_tier_workload_is_recorded(self):
         limits = json.loads((ROOT / 'benchmarks/callgrind_limits.json').read_text())
         workflow = (ROOT / '.github/workflows/merge.yml').read_text()

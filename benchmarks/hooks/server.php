@@ -15,7 +15,7 @@ swoole_async_set(['dns_server' => '127.0.0.1:' . getenv('PEER_DNS_PORT'), 'dns_c
 function database(string $dsn, ?string $user = null, ?string $password = null): PDO {
     $pdo = new PDO($dsn, $user, $password, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     $pdo->exec('CREATE TABLE IF NOT EXISTS bench_users (id INT PRIMARY KEY, name VARCHAR(32) NOT NULL)');
-    $pdo->exec('DELETE FROM bench_users');
+    $pdo->exec('DELETE FROM bench_users WHERE id = 42');
     $pdo->exec("INSERT INTO bench_users VALUES (42, 'benchmark')");
     return $pdo;
 }
