@@ -81,6 +81,8 @@ pub struct ThreadManager {
     reloading: AtomicBool,
     reload_all: AtomicBool,
     reload: Mutex<Option<Reload>>,
+    /// Set by `Server::shutdown()` before it signals the master thread.
+    stopping: AtomicBool,
     threads: Box<[Arc<Thread>]>,
 }
 
@@ -112,6 +114,14 @@ impl ThreadManager {
                 std::process::abort();
             }
         }
+    }
+
+    /// The server is shutting down: a worker that exits from now on stays stopped.
+    /// Upstream respawns it until the master thread handles its `SIGTERM`, and a
+    /// respawned worker blocked for good (a user process in `Queue::pop(-1)`) then
+    /// stalls the shutdown's join forever.
+    pub fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
     }
 
     fn push(&self, wake: Wake) {
@@ -228,7 +238,9 @@ fn wait<H: Host>(h: &mut H) {
                 continue;
             }
             Some(Wake::Exit) => break,
-            Some(Wake::Exited(worker)) => restart(h, worker),
+            Some(Wake::Exited(worker)) => {
+                restart(h, worker, !manager.stopping.load(Ordering::Acquire));
+            }
             None => {}
         }
         if h.is(OP_HAS_TIMER) {
@@ -240,14 +252,17 @@ fn wait<H: Host>(h: &mut H) {
     }
 }
 
-/// Rejoin an exited worker thread, report an abnormal exit, and respawn it.
-fn restart<H: Host>(h: &mut H, worker: u64) {
+/// Rejoin an exited worker thread, report an abnormal exit, and respawn it if `respawn`.
+fn restart<H: Host>(h: &mut H, worker: u64, respawn: bool) {
     h.op(OP_SELECT_WORKER, worker);
     let id = h.get(OP_WORKER_ID);
     if h.get(OP_THREAD_EXIT_STATUS) != 0 {
         h.get(OP_CALL_WORKER_ERROR);
     }
     h.op(OP_JOIN_THREAD, id);
+    if !respawn {
+        return;
+    }
     match h.get(OP_WORKER_TYPE) {
         kind @ (EVENT_WORKER | TASK_WORKER | USER_WORKER) => {
             h.op(OP_SPAWN_THREAD, thread_arg(id, kind))
@@ -644,6 +659,22 @@ mod tests {
         assert_eq!(h.args(OP_JOIN_THREAD), vec![3]);
         assert_eq!(h.args(OP_SPAWN_THREAD), vec![thread_arg(3, TASK_WORKER)]);
         assert_eq!(h.called(OP_TIMER_SELECT), 1);
+    }
+
+    #[test]
+    fn once_the_server_is_stopping_an_exited_worker_is_joined_but_not_respawned() {
+        let manager = ThreadManager::default();
+        manager.stop();
+        manager.push(Wake::Exited(0x1000));
+        manager.push(Wake::Exit);
+        let mut h = Script::with(&[
+            (OP_THREAD_MANAGER, handle(&manager)),
+            (OP_WORKER_ID, 3),
+            (OP_WORKER_TYPE, USER_WORKER),
+        ]);
+        run_op(&mut h, RUN_THREAD_MANAGER_WAIT, 0);
+        assert_eq!(h.args(OP_JOIN_THREAD), vec![3]);
+        assert_eq!(h.called(OP_SPAWN_THREAD), 0);
     }
 
     #[test]

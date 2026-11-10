@@ -7,7 +7,8 @@ use crate::ops::{
     OP_SEND_SHUTDOWN, OP_SET_MINFD, OP_SET_RUNNING, OP_SIGNAL_ACTIVE, OP_SIGNAL_FD,
     OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SIGNAL_READ_MESSAGE, OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN,
     OP_SIGRTMIN, OP_SINGLE_THREAD, OP_STOP_SINGLE_WORKER, OP_STOP_WORKER_THREADS,
-    OP_THREAD0_SHUTDOWN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WRONG_OPERATION,
+    OP_THREAD_STOPPING, OP_THREAD0_SHUTDOWN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
+    OP_WRONG_OPERATION,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD};
 
@@ -30,6 +31,11 @@ pub(crate) fn shutdown<H: Host>(h: &mut H) -> crate::Effect<bool> {
     }
     if mode == MODE_PROCESS {
         return h.is(OP_SEND_SHUTDOWN);
+    }
+    // A worker thread that exits from now on must not be respawned: one blocked
+    // for good would stall the master's join.
+    if mode == MODE_THREAD {
+        h.get(OP_THREAD_STOPPING)?;
     }
     let manager = h.signed(OP_MANAGER_PID)?;
     let pid = if mode == MODE_BASE && manager != 0 {
@@ -230,6 +236,23 @@ mod tests {
         ]);
         assert!(shutdown(&mut s).unwrap(), "master thread stops itself");
         assert_eq!(s.called(OP_REACTOR_WAIT_EXIT), 1, "stopped");
+
+        let mut s = Script::with(&[
+            (OP_IS_STARTED, 1),
+            (OP_MODE, MODE_THREAD),
+            (OP_MASTER_PID, 7),
+        ]);
+        assert!(
+            shutdown(&mut s).unwrap(),
+            "a worker thread signals the master"
+        );
+        let order: Vec<u32> = s.log.iter().map(|(op, _)| *op).collect();
+        let stopping = order.iter().position(|op| *op == OP_THREAD_STOPPING);
+        assert!(
+            stopping < order.iter().position(|op| *op == OP_KILL_TERM),
+            "respawns stop before the signal"
+        );
+        assert!(stopping.is_some(), "the manager is told");
     }
 
     #[test]

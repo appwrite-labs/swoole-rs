@@ -896,6 +896,8 @@ pub const OP_LC_UNLINK_PID: u32 = 1211;
 pub const OP_LC_START_BASE: u32 = 1212;
 pub const OP_LC_START_PROCESS: u32 = 1213;
 pub const OP_LC_START_THREAD: u32 = 1214;
+/// Thread mode: the manager stops respawning workers that exit (`ThreadManager::stop`).
+pub const OP_THREAD_STOPPING: u32 = 1215;
 
 #[cfg(test)]
 mod tests {

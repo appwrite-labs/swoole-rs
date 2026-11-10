@@ -111,12 +111,29 @@ pub(crate) fn shutdown(state: &ServerState) -> bool {
         (factory, MODE_PROCESS) => {
             process(factory, RUN_PROCESS_FACTORY_SHUTDOWN, ptr::null_mut(), 0)
         }
-        (factory, MODE_THREAD) => {
-            // SAFETY: the server's live thread factory.
-            unsafe { manager(factory) }.join_all();
+        (_, MODE_THREAD) => {
+            if let Some(manager) = thread_manager(state) {
+                manager.join_all();
+            }
             true
         }
         _ => true,
+    }
+}
+
+/// Thread mode's manager, once the server's thread factory exists.
+fn thread_manager(state: &ServerState) -> Option<&ThreadManager> {
+    match of(state) {
+        // SAFETY: the server's live thread factory.
+        (factory, MODE_THREAD) if !factory.is_null() => Some(unsafe { manager(factory) }),
+        _ => None,
+    }
+}
+
+/// `Server::shutdown()` in thread mode: workers that exit from now on stay stopped.
+pub(crate) fn stop_respawning(state: &ServerState) {
+    if let Some(manager) = thread_manager(state) {
+        manager.stop();
     }
 }
 

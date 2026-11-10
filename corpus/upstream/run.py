@@ -177,6 +177,20 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "second worker's \"worker start\" lands after \"begin\" (or after \"done\") whenever that "
         'thread starts later than the push and pop: the same diffs on both engines (ZTS, aarch64 '
         'dev image: upstream 13/29, hybrid 14/28; hybrid 3 of 13 merge-tier runs, #2137)',
+        'tests/swoole_thread/server/reset_concurrency.phpt':
+        "each of the four worker threads runs `echo 'WORKER STOP', PHP_EOL`, two writes to the "
+        'shared stdout, so the lines interleave ("WORKER STOPWORKER STOP") on both engines (zts '
+        'merge tier first runs: upstream 143/187, cargo 110/186; dev image upstream 9/15, cargo '
+        '12/15, #2739)',
+        'tests/swoole_thread/thread_status.phpt':
+        "it asserts a new thread isAlive() 10 µs after `new Thread`; whether the OS has run the "
+        'thread far enough to mark itself alive by then is the scheduler\'s call, on both engines '
+        '(zts merge tier first runs: upstream 6/187, cargo 6/186; dev image upstream 2/15, cargo '
+        '2/15, #2739)',
+        'tests/swoole_thread/yield.phpt':
+        "it asserts a detached thread isAlive() 10 µs after Thread::yield(), which doesn't make "
+        'the scheduler run it first (zts merge tier first runs: upstream 2/187, cargo 7/186; dev '
+        'image upstream 1/15, cargo 0/15, #2739)',
         'tests/swoole_runtime/file_lock/async_file.phpt':
         "both coroutines open the file on the AIO pool, and whichever open completes first locks "
         "first; when the second's LOCK_SH wins, it holds it for 2 s and the first's < 1 s assert "
