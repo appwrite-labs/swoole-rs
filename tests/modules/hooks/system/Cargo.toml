@@ -14,5 +14,6 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
+swoole-rs-corebase = { path = "../../../../crates/corebase" }
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
 swoole-rs-hooks = { path = "../../../../crates/hooks" }

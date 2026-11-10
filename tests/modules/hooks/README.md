@@ -274,3 +274,33 @@ accept with), `coroutine_system.getaddrinfo`, and `coroutine_base.create`.
 | --- | --- |
 | `coroutine_http_server.get` | none: it asserts the test library's httplib server, whose Swoole operations are the cases above |
 | `coroutine_http_server.post` | none: as `get` |
+
+`core-tests/src/os/wait.cpp`, `os/async.cpp` and `os/os.cpp`'s `os.daemon` are Rust in
+`system/src/os.rs`, run by `hooks-system-rust`. The wait cases call
+`swoole_coroutine_waitpid`, `swoole_coroutine_wait` and `System::waitpid_safe`; their
+children `_exit(0)` where upstream's `exit(0)`, so a forked child skips the parent's
+exit handlers. The async cases call `async::dispatch` and read `sw_async_threads()`'s
+counts through `swr_v1_async_threads_stats`. They set `SwooleG`'s `aio_*` fields through
+crates/corebase's setters, by path. `async.misc`'s `sw_async_threads()->notify_one()` has
+no exported counterpart. It wakes a worker with nothing queued, so nothing in the TEST
+observes it, and the case leaves it out. `os.daemon` discards its child's status, as
+upstream's does, so the child's assertions don't decide the case: its
+`isatty(STDIN_FILENO)` needs a terminal on stdin. `async.thread_starts_with_signals_blocked`
+is crates/ossupport's `pool::tests::thread_starts_with_signals_blocked`. It uses a new
+thread per case rather than a forked child and a pool of its own. Its `thread_init` hook
+observes the worker's mask before `swoole_thread_init` blocks signals itself, as
+upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate through
+`SwooleG.std_allocator`).
+
+| Upstream TEST | Rust case |
+| --- | --- |
+| `os_wait.waitpid_before_child_exit` | `os_wait.waitpid_before_child_exit` |
+| `os_wait.waitpid_after_child_exit` | `os_wait.waitpid_after_child_exit` |
+| `os_wait.wait_before_child_exit` | `os_wait.wait_before_child_exit` |
+| `os_wait.wait_after_child_exit` | `os_wait.wait_after_child_exit` |
+| `os_wait.waitpid_safe` | `os_wait.waitpid_safe` |
+| `async.dispatch` | `async.dispatch` |
+| `async.schedule` | `async.schedule` |
+| `async.misc` | `async.misc` |
+| `async.thread_starts_with_signals_blocked` | `pool::tests::thread_starts_with_signals_blocked` (crates/ossupport) |
+| `os.daemon` | `os.daemon` |
