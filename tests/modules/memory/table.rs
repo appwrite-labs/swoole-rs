@@ -879,6 +879,7 @@ fn table_lock_race() {
 /// the iterator's copy, and another table's column reading as empty rather
 /// than past the row.
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn guards_read_and_write_locked_rows() {
     let table = three_columns(64, 0.2);
     let t = table.get();
