@@ -111,9 +111,9 @@ impl Conn {
 
     /// `cli->socket->check_liveness()` of a client that has a socket.
     fn alive(&self) -> bool {
-        self.cli.net().is_some_and(|net| {
-            net.edit(|record| swoole_rs_tls::upstream::socket_check_liveness(record))
-        })
+        self.cli
+            .net()
+            .is_some_and(swoole_rs_tls::upstream::check_liveness)
     }
 
     pub(crate) fn fd(&self) -> c_int {

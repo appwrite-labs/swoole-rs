@@ -512,16 +512,33 @@ pub unsafe extern "C" fn socket_peek(
 
 /// `bool Socket::check_liveness()`: a nonblocking one-byte peek that neither
 /// ends the stream nor fails with an error that closes it.
+/// # Safety
+/// `socket` is null or a live socket on this thread.
+#[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket14check_livenessEv")
 )]
-pub extern "C" fn socket_check_liveness(socket: &mut SocketRecord) -> bool {
+pub unsafe extern "C" fn socket_check_liveness(socket: *mut SocketRecord) -> bool {
+    // SAFETY: as the caller promises: `this`, a live socket.
+    unsafe { Socket::from_ptr(socket) }.is_some_and(check_liveness)
+}
+
+/// [`socket_check_liveness`] over a socket's handle.
+pub fn check_liveness(socket: Socket<'_>) -> bool {
     let mut byte = 0u8;
     set_errno(0);
-    // SAFETY: the live record and a one-byte buffer.
-    let peeked = unsafe { socket_peek(socket, (&raw mut byte).cast(), 1, libc::MSG_DONTWAIT) };
-    !(peeked == 0 || (peeked < 0 && socket.catch_error(errno()) == CLOSE))
+    // SAFETY: a one-byte buffer, and the TLS peek valid for the socket.
+    let peeked = unsafe {
+        socket_record_peek(
+            socket,
+            (&raw mut byte).cast(),
+            1,
+            libc::MSG_DONTWAIT,
+            tls_peek,
+        )
+    };
+    !(peeked == 0 || (peeked < 0 && socket.edit(|record| record.catch_error(errno())) == CLOSE))
 }
 
 /// One blocking call: the socket and its I/O's operands. Only [`sync`], whose caller
@@ -1792,7 +1809,7 @@ mod tests {
         let mut right = SocketRecord::with_fd(fds[1], 0);
         let sent = unsafe { socket_send_sync(&raw mut left, b"ping".as_ptr().cast(), 4, 0) };
         assert_eq!(sent, 4);
-        assert!(socket_check_liveness(&mut right));
+        assert!(unsafe { socket_check_liveness(&raw mut right) });
         let mut buffer = [0u8; 4];
         let received = unsafe {
             socket_recv_sync(
@@ -1806,7 +1823,7 @@ mod tests {
         assert_eq!(right.total_recv_bytes, 4);
         assert_ne!(right.output.nonblock, 0);
         unsafe { libc::close(fds[0]) };
-        assert!(!socket_check_liveness(&mut right));
+        assert!(!unsafe { socket_check_liveness(&raw mut right) });
         unsafe { libc::close(fds[1]) };
     }
 }

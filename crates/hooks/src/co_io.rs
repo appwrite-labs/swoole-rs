@@ -368,7 +368,7 @@ mod native {
 
     pub(super) fn liveness(socket: Co) -> bool {
         socket
-            .net(|network| swoole_rs_tls::upstream::socket_check_liveness(network))
+            .with_network(swoole_rs_tls::upstream::check_liveness)
             .unwrap_or(false)
     }
 }
