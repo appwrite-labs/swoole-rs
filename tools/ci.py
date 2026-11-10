@@ -68,7 +68,8 @@ def gh(*args):
         # Every agent shares one account's hourly API limit (and every job the Actions token's):
         # wait for the reset when the deadline allows, else say when it comes.
         if 'API rate limit exceeded' in result.stderr:
-            reset = subprocess.run(['gh', 'api', 'rate_limit', '--jq', '.resources.core.reset'],
+            bucket = 'search' if len(args) > 1 and args[1].startswith('search/') else 'core'  # their own limits
+            reset = subprocess.run(['gh', 'api', 'rate_limit', '--jq', f'.resources.{bucket}.reset'],
                                    capture_output=True, text=True).stdout.strip()
             wait = int(reset) - time.time() + 1 if reset.isdigit() else None
             at = f'{datetime.fromtimestamp(int(reset)):%H:%M:%S}' if wait is not None else 'an unknown time'
