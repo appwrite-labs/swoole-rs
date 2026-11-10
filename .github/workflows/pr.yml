@@ -287,23 +287,9 @@ jobs:
       - if: steps.touched.outputs.modules != ''
         run: cargo fetch --locked
       - if: steps.touched.outputs.modules != ''
-        id: candidate
-        continue-on-error: true
         run: >
           python3 tools/dev.py candidate --changed-since origin/${{ github.base_ref }} --skip-phase phpt
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
-      # What main's newest merge-tier run failed, saved by its `required` job: the key itself
-      # never matches, its prefix does. The API is the fallback when no baseline is cached.
-      - if: steps.candidate.outcome == 'failure'
-        uses: actions/cache/restore@v4
-        with:
-          path: baseline
-          key: merge-baseline-${{ github.run_id }}
-          restore-keys: merge-baseline-
-      - if: steps.candidate.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 tools/ci.py new-failures target/reports/dev/*/loop.json --baseline baseline/failures.json
       - uses: actions/upload-artifact@v4
         if: always() && steps.touched.outputs.modules != ''
         with:
