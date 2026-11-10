@@ -60,6 +60,16 @@ connection: `tcp-length` (length-prefixed frames, `07-tcp-framing`), `tcp-eof`
 `benchmarks/framing`. Their records started 5% above an arm64 Linux run
 (0.97, 0.52 and 1.04); the ratchet lowers them once two merge runs beat them.
 
+Two measure TLS against `benchmarks/tls` (#2648), which serves the pin's test
+certificate (`tests/include/ssl_certs/server.crt`, RSA 4096) so it needs
+`target/upstream/src`: `https` (GETs on one kept-alive connection: the record
+layer) and `wss` (the WebSocket echo over TLS). Their records started 5% above an
+arm64 Linux run (0.99 and 0.99); the ratchet lowers them once two merge runs beat
+them. A full handshake per request is not measured: OpenSSL's RSA signature is
+about 56 million instructions of it on both engines, so the ratio reads 1.0000
+whatever Swoole does, and the run takes minutes. `connect` covers the
+per-connection cost Swoole itself adds.
+
 `atomic` (#2654) adds 64 values to a `Swoole\Atomic`, each under a `Swoole\Lock`
 mutex, against `benchmarks/primitives`, and `process-mode` is `plaintext` against
 `benchmarks/process`: `SWOOLE_PROCESS` with two workers, so the master's reactor

@@ -20,6 +20,8 @@
   "tcp-length": 1.02,
   "tcp-eof": 0.57,
   "udp": 1.09,
+  "https": 1.04,
+  "wss": 1.04,
   "atomic": 1.02,
   "process-mode": 0.95
 }

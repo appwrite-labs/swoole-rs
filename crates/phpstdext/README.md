@@ -23,5 +23,5 @@ It stays C because Rust cannot reach these bodies:
   PHP code (warnings, destructors, autoloaders) traps the bailout and returns 1;
   the Rust handler re-raises it once its frame owns nothing.
 - PCRE's cache entry and `php_pcre_match_impl` (its argument list changed in
-  PHP 8.4) and JSON's `php_json_decode_ex` with the checks Swoole's C++
-  `zend::json_decode` made first.
+  PHP 8.4). JSON decoding is zend-sys's `swr_zend_try_json_decode_ex`, which
+  crates/phpswoole shares.

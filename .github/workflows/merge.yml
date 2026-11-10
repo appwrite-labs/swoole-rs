@@ -2,11 +2,17 @@ name: Merge
 on:
   push:
     branches: [main]
+  # Weekly, and on a dispatch, upstream's PHPT shards run even when nothing they depend on
+  # changed, so drift that no commit explains still gets caught (phpt-build's baseline).
+  schedule:
+    - cron: '17 5 * * 0'
   workflow_dispatch:
 # Latest wins: one run at a time; GitHub keeps only the newest push pending, so the
 # next run always covers main's head. Never cancel-in-progress, or no run finishes.
+# A scheduled or dispatched run has a group of its own: pending in the pushes' group, the
+# next push would replace it and the weekly upstream run would rarely happen.
 concurrency:
-  group: merge-${{ github.ref }}
+  group: merge-${{ github.event_name == 'push' && github.ref || github.run_id }}
 # Explicit bash runs steps with -eo pipefail; the default (`bash -e`) lets a pipe
 # like `gate.py | tee` report success when gate.py fails.
 defaults:
@@ -94,18 +100,32 @@ jobs:
             target/upstream/build.log
 
   # Every pinned PHPT on upstream and the Cargo build (crates/ext): any test that passes on
-  # upstream must pass on cargo (corpus/upstream/gate.py).
+  # upstream must pass on cargo (corpus/upstream/gate.py). While nothing upstream's results
+  # depend on (the pin, the runner, the environment, the PHP release) has changed since the
+  # last run whose upstream shards passed, its reports stand in and those shards don't run
+  # (tools/ci.py phpt-baseline). upstream.so is still built: phpt-root, library and autobahn run it.
   phpt-build:
     runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
     outputs:
       php: ${{ steps.build.outputs.php }}
+      baseline: ${{ steps.baseline.outputs.run }}
     steps:
       - uses: actions/checkout@v4
       - id: build
         uses: ./.github/actions/phpt-build
         with:
           engines: upstream cargo
+      - id: baseline
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline --php "$(php -r 'echo PHP_VERSION;')" || true)"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
 
   # The speed ratchet (docs/migration.md#speed): instructions per request on the Cargo build
   # (fat LTO, as release builds ship) over upstream may not rise more than 1% above
@@ -124,6 +144,7 @@ jobs:
   # gzip and websocket-deflate are benchmarks/compression (#2649).
   # tcp-length, tcp-eof and udp are Swoole\Server without HTTP (#2650).
   # connect is plaintext on a new connection per request (#2651).
+  # https and wss are benchmarks/tls (#2648).
   # atomic is benchmarks/primitives; process-mode is SWOOLE_PROCESS with two workers (#2654).
   callgrind:
     runs-on: gcrunner=${{ github.run_id }}/runner=steady
@@ -162,6 +183,7 @@ jobs:
           --workload gzip --workload websocket-deflate
           --workload tcp-length --workload tcp-eof --workload udp
           --workload connect
+          --workload https --workload wss
           --workload atomic --workload process-mode
           --php-extension pdo --php-extension pdo_sqlite --php-extension mysqlnd --php-extension pdo_mysql
           --engine cargo=target/ext/swoole.so
@@ -287,6 +309,8 @@ jobs:
       actions: read
     with:
       php: ${{ needs.phpt-build.outputs.php }}
+      engines: ${{ needs.phpt-build.outputs.baseline && '["cargo"]' || '["upstream", "cargo"]' }}
+      baseline: ${{ needs.phpt-build.outputs.baseline }}
 
   # The PHPTs that skip unless run as root (SO_BINDTODEVICE, raw ICMP, a server dropping to
   # www-data, a chroot), as root on every engine, with their own re-runs and gate (#1998).
