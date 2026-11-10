@@ -614,7 +614,8 @@ const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE
 struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
 
 /// `Server::sendfile(session_id, file, l_file, offset, length)`, `l_file` being the name's
-/// length narrowed to `uint32_t`, as upstream's callers do.
+/// length narrowed to `uint32_t`, as upstream's callers do. The task copies the name up to
+/// its first NUL (`swoole_strlcpy`), so it goes over a terminated copy.
 #[expect(
     clippy::must_use_candidate,
     reason = "callers ignore the result where upstream's do"
@@ -631,12 +632,15 @@ pub fn sendfile(
         reason = "Server::sendfile's uint32_t name length, as upstream's callers narrow it"
     )]
     let l_file = file.len() as u32;
+    let mut name = Vec::with_capacity(file.len() + 1);
+    name.extend_from_slice(file);
+    name.push(0);
     let mut buffer = SendfileBuffer([0; IPC_BUFFER_SIZE]);
     // `SendfileTask::length` follows its `off_t offset` (server.cc asserts it).
     buffer.0[8..16].copy_from_slice(&length.to_ne_bytes());
     let mut ctx = NativeContext::new(serv.raw());
     ctx.session_id = session_id;
-    ctx.data = file.as_ptr().cast();
+    ctx.data = name.as_ptr().cast();
     ctx.length = l_file;
     ctx.buffer = buffer.0.as_mut_ptr().cast();
     ctx.offset = offset;
@@ -841,6 +845,8 @@ mod tests {
     static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
     /// The worker or flags and the `DataHead` of each native op that takes one.
     static HEADS: Mutex<Vec<(c_int, DataHead)>> = Mutex::new(Vec::new());
+    /// The name the last sendfile lent, read as the task's `swoole_strlcpy` reads it.
+    static SENDFILE_NAME: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
     pub(super) unsafe fn fake(op: u32, arg: u64, ctx: *mut NativeContext) -> i64 {
         // SAFETY: the methods pass their own live context.
@@ -857,6 +863,13 @@ mod tests {
                 ctx.number,
                 ctx.host.addr(),
             ));
+        if op == RUN_SENDFILE {
+            // SAFETY: sendfile lends a terminated name.
+            let name = unsafe { core::ffi::CStr::from_ptr(ctx.data.cast()) };
+            *SENDFILE_NAME
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = name.to_bytes().to_vec();
+        }
         let task_length = if ctx.buffer.is_null() {
             0
         } else {
@@ -1006,7 +1019,17 @@ mod tests {
             assert_eq!(sent().1, 9, "sendwait passes the session");
             assert!(!has_kernel_nobufs_error(server(), 11), "nobufs result");
             assert_eq!(sent().1, 11, "nobufs passes the session");
-            assert!(!sendfile(server(), 12, b"f", 3, 99), "sendfile result");
+            assert!(
+                !sendfile(server(), 12, &b"fx"[..1], 3, 99),
+                "sendfile result"
+            );
+            assert_eq!(
+                *SENDFILE_NAME
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                b"f",
+                "the name ends at its length, not past it"
+            );
             let (op, arg, _, _, _, length, session, offset, task_length) = sent();
             assert!(
                 op == RUN_SENDFILE && arg == 12 && length == 1 && session == 12,
