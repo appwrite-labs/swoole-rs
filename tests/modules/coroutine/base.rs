@@ -2,7 +2,7 @@
 //! `coroutine/file.cpp` (`coroutine_async_file`), one function per TEST with the same
 //! inputs and expected values.
 //! Built into the hooks case binary (tests/modules/hooks/system), which links
-//! libswoole.so.
+//! the crates.
 //!
 //! A `swoole::Coroutine` is crates/coroutine's record (`swr_v1_coroutine`, then its
 //! `swr_v1_context`; swoole_rs_coroutine.h): its getters are field reads here, its
@@ -90,7 +90,6 @@ struct AsyncEvent {
     callback: Option<extern "C" fn(*mut AsyncEvent)>,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
     fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
@@ -317,7 +316,9 @@ unsafe extern "C" fn call(data: *mut c_void) {
 fn bailout(body: Option<&dyn Fn()>) {
     match body {
         // SAFETY: `body` outlives the call, or the process ends first.
-        Some(body) => unsafe { swr_v1_coroutine_bail(Some(call), (&raw const body).cast_mut().cast()) },
+        Some(body) => unsafe {
+            swr_v1_coroutine_bail(Some(call), (&raw const body).cast_mut().cast())
+        },
         // SAFETY: no callback.
         None => unsafe { swr_v1_coroutine_bail(None, std::ptr::null_mut()) },
     }
@@ -670,16 +671,19 @@ fn bailout_() {
         let exit = Cell::new(false);
         let end = Cell::new(false);
         let bailed = Cell::new(false);
+        // Outside the coroutine, as upstream's std::function copy is: the coroutine
+        // ends, and its stack is freed, before the loop runs the deferred call.
+        let deferred = || {
+            bailed.set(true);
+            bailout(None);
+            end.set(true);
+        };
+        let deferred: &dyn Fn() = &deferred;
+        let data = (&raw const deferred).cast_mut().cast();
         co_run(|| {
-            let deferred = || {
-                bailed.set(true);
-                bailout(None);
-                end.set(true);
-            };
-            let deferred: &dyn Fn() = &deferred;
             // SAFETY: the loop runs the deferred call before `co_run` returns, while
             // `deferred` is live.
-            unsafe { swr_case_event_defer(Some(call), (&raw const deferred).cast_mut().cast()) };
+            unsafe { swr_case_event_defer(Some(call), data) };
             exit.set(true);
         });
 
@@ -838,7 +842,6 @@ fn async_file() {
         }
     });
 }
-
 
 /// `coroutine_base.<name>`, in upstream's order.
 pub(super) const CASES: super::Cases = &[

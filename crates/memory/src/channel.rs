@@ -98,8 +98,7 @@ unsafe fn copy_record(input: *const u8, output: *mut u8, length: usize) {
         unsafe { ptr::copy_nonoverlapping(input, output, 1) };
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_in(
+pub unsafe fn swr_v1_memory_channel_in(
     channel: *mut Channel,
     input: *const c_void,
     length: i32,
@@ -150,8 +149,7 @@ pub unsafe extern "C" fn swr_v1_memory_channel_in(
     c.bytes = bytes;
     0
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_out(
+pub unsafe fn swr_v1_memory_channel_out(
     channel: *mut Channel,
     output: *mut c_void,
     capacity: i32,
@@ -221,8 +219,8 @@ pub struct Record {
 /// Bytes `Channel::make` allocates for a channel of `size` bytes and `maxlen`-byte
 /// records: the record plus `size + maxlen + 4` of storage. 0 for an invalid or
 /// unrepresentable configuration.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_memory_channel_bytes(size: usize, maxlen: usize) -> usize {
+#[must_use]
+pub fn swr_v1_memory_channel_bytes(size: usize, maxlen: usize) -> usize {
     if size < maxlen || i32::try_from(maxlen).is_err() {
         return 0;
     }
@@ -240,8 +238,7 @@ pub extern "C" fn swr_v1_memory_channel_bytes(size: usize, maxlen: usize) -> usi
 /// # Safety
 /// `record` is exclusively lent, aligned, and `swr_v1_memory_channel_bytes(size, maxlen)`
 /// bytes long.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_init(
+pub unsafe fn swr_v1_memory_channel_init(
     record: *mut Record,
     size: usize,
     maxlen: usize,
@@ -321,8 +318,7 @@ unsafe fn close_pipe(record: *mut Record) {
 /// `Channel::destroy` before native frees the memory: the mutex and the pipe.
 /// # Safety
 /// `record` came from `swr_v1_memory_channel_init` and has no other user.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_close(record: *mut Record) {
+pub unsafe fn swr_v1_memory_channel_close(record: *mut Record) {
     // SAFETY: a live record.
     let flags = unsafe { (*record).queue.flags };
     if flags & LOCK != 0 {
@@ -340,8 +336,7 @@ pub unsafe extern "C" fn swr_v1_memory_channel_close(record: *mut Record) {
 /// Lock (`true`) or unlock the channel's mutex.
 /// # Safety
 /// `record` is live with `SW_CHAN_LOCK`; an unlock follows this thread's lock.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_lock(record: *mut Record, lock: bool) {
+pub unsafe fn swr_v1_memory_channel_lock(record: *mut Record, lock: bool) {
     // SAFETY: a live record with an initialized mutex.
     let mutex = unsafe { &raw mut (*record).lock };
     if lock {
@@ -357,8 +352,8 @@ pub unsafe extern "C" fn swr_v1_memory_channel_lock(record: *mut Record, lock: b
 /// blocking): 0 done, -1 failed with errno intact.
 /// # Safety
 /// `record` is live with `SW_CHAN_NOTIFY`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_signal(record: *const Record, notify: bool) -> i32 {
+#[must_use]
+pub unsafe fn swr_v1_memory_channel_signal(record: *const Record, notify: bool) -> i32 {
     // SAFETY: a live record.
     let [read, write] = unsafe { (*record).notify };
     let mut value = u64::from(notify).to_ne_bytes();
@@ -384,8 +379,7 @@ pub unsafe extern "C" fn swr_v1_memory_channel_signal(record: *const Record, not
 /// `Channel::print`, through C stdio like upstream (which labels the tags swapped).
 /// # Safety
 /// `record` is live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_print(record: *const Record) {
+pub unsafe fn swr_v1_memory_channel_print(record: *const Record) {
     // SAFETY: a live record.
     let c = unsafe { &(*record).queue };
     // SAFETY: the format's conversions match the arguments.
@@ -416,8 +410,8 @@ pub struct CapacityState {
     head_tag: u8,
     tail_tag: u8,
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_memory_channel_full(state: *const CapacityState) -> i32 {
+#[must_use]
+pub unsafe fn swr_v1_memory_channel_full(state: *const CapacityState) -> i32 {
     if state.is_null() {
         return -1;
     }

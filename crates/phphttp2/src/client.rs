@@ -406,7 +406,9 @@ impl Client {
             self.host = unsafe { ZString::from_raw(converted) }.bytes().to_vec();
         }
         if object.is_null() {
-            self.update_error(error, strerror(error).to_bytes());
+            if !swoole_rs_zend::bailout::pending() {
+                self.update_error(error, strerror(error).to_bytes());
+            }
             return false;
         }
         // SAFETY: the conn takes the new object's reference.
@@ -1284,6 +1286,8 @@ pub unsafe extern "C" fn swr_v1_phphttp2_client_minit(
     shortname: bool,
     module: c_int,
 ) {
+    // phphttp2's one MINIT entry also hands its server to phphttp.
+    swoole_rs_phphttp::http2::register(&crate::server::HOOKS);
     // SAFETY: the native MINIT entry lends these original startup arguments.
     let result = unsafe { init_phphttp2_client_minit(exception, shortname, module) };
     match result {

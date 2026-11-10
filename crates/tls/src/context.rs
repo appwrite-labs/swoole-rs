@@ -740,8 +740,7 @@ pub extern "C" fn swr_v1_tls_error() -> *const c_char {
 ///
 /// # Safety
 /// `config` is a live view whose strings are NUL-terminated and outlive the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_context_create(config: *mut TlsConfig) -> *mut SSL_CTX {
+pub unsafe fn swr_v1_tls_context_create(config: *mut TlsConfig) -> *mut SSL_CTX {
     // SAFETY: forwards the caller's live configuration view.
     unsafe { create_context(config, None) }
 }

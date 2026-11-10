@@ -351,8 +351,7 @@ impl ServerState {
 ///
 /// # Safety
 /// `state` is live and `length` writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_upload_tmp_dir(
+pub unsafe fn swr_v1_server_upload_tmp_dir(
     state: *const ServerState,
     length: *mut usize,
 ) -> *const u8 {

@@ -10,7 +10,7 @@ use crate::{
     send, websocket,
 };
 use std::{
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     mem::MaybeUninit,
     ptr,
     sync::atomic::Ordering::Relaxed,
@@ -25,7 +25,6 @@ use swoole_rs_zend::{
         zend_string,
     },
     type_of,
-    value::obj_of,
 };
 use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
@@ -57,18 +56,7 @@ unsafe extern "C" fn free(std: *mut zend_object) {
 unsafe extern "C" {
     /// `sw_reactor()`.
     fn swr_v1_event_reactor() -> *mut c_void;
-    /// The HTTP/2 server's (crates/phphttp2).
-    fn swr_v1_phphttp2_server_goaway(
-        ctx: *mut Context,
-        code: i64,
-        data: *const c_char,
-        length: usize,
-    ) -> bool;
 }
-
-/// `Swoole\Http\Response`, as C++ reads it; MINIT writes it.
-#[unsafe(no_mangle)]
-pub static mut swoole_http_response_ce: *mut zend_class_entry = ptr::null_mut();
 
 /// The response object is going: finish what the handler left unanswered
 /// (500 when no status was set) and release the context. True if user code
@@ -151,8 +139,6 @@ pub unsafe extern "C" fn swr_v1_phphttp_response_minit(codecs: u32) {
     }
     crate::header::minit(ce);
     context::response_minit(ce);
-    // SAFETY: MINIT, before any thread reads it.
-    unsafe { swoole_http_response_ce = ce };
     crate::parse::minit(codecs);
 }
 
@@ -553,15 +539,15 @@ fn goaway(call: &Call) {
             .and_then(|()| Ok((call.long(1, 0)?, call.str_or_null(2)?)));
         let (code, debug) = parsed.ok()?;
         let debug = nullable(debug);
-        let (data, length) = if debug.is_null() {
-            (ptr::null(), 0)
+        let debug = if debug.is_null() {
+            &[][..]
         } else {
             // SAFETY: a live string argument.
-            let debug = unsafe { bytes(debug) };
-            (debug.as_ptr().cast(), debug.len())
+            unsafe { bytes(debug) }
         };
-        // SAFETY: a live HTTP/2 context and the debug data's span.
-        call.set_bool(unsafe { swr_v1_phphttp2_server_goaway(ctx, code, data, length) });
+        let server = crate::http2::server();
+        let ctx = crate::http2::Ctx::of(ctx);
+        call.set_bool(server.is_some_and(|server| (server.goaway)(ctx, code, debug)));
         Some(())
     };
     or_false(call, run());
@@ -808,19 +794,18 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     };
     // SAFETY: a live context, and the server or the socket.
     unsafe { context::bind(ctx, server, socket) };
-    let response = call.return_value();
     let ce = RESPONSE.entry();
-    // SAFETY: the return slot and this registered class.
-    unsafe { init_object(response, ce) };
-    // SAFETY: the object just created.
-    let std = unsafe { obj_of(response) };
-    // SAFETY: a `Swoole\Http\Response`.
-    unsafe { context::set_context(std, ctx) };
     let state = send::state(ctx);
     state.fd = fd;
-    // SAFETY: the object zval just created.
-    state.response.zobject.value = unsafe { *response };
-    state.response.zobject.ptr = &raw mut state.response.zobject.value;
+    let slot = &mut state.response.zobject;
+    // SAFETY: the context's own zval and this registered class.
+    unsafe { init_object(&raw mut slot.value, ce) };
+    slot.ptr = &raw mut slot.value;
+    // The return slot takes the reference; the context borrows it.
+    call.set_value(slot.value);
+    let Some(std) = slot.object() else { return };
+    // SAFETY: a `Swoole\Http\Response`.
+    unsafe { context::set_context(std, ctx) };
     // SAFETY: the Response just created, under its class.
     let props = unsafe { Props::new(ce, std) };
     props.long(c"fd", fd);

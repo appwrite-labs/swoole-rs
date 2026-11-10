@@ -1,6 +1,7 @@
 # Memory and collection ABI
 
-Module-local ABI v1, declared callback-free in `swoole_rs_memory.h`. Supported
+Module-local ABI v1. `swoole_rs_memory.h` declares the GlobalMemory functions C++
+calls; the rest are Rust functions its crates call by path. Supported
 hosts are 64-bit macOS and Linux.
 
 ## General rules
@@ -59,7 +60,7 @@ upstream's `HeapNode` fields and 1-based position.
 
 ## Core channel
 
-`swr_v1_memory_channel` is the whole record of upstream's `swoole::Channel` (the
+`channel::Record` is the whole record of upstream's `swoole::Channel` (the
 server's message box is its one user): the queue state, a
 process-shared mutex and the notification pipe (read end first). The owner allocates `channel_bytes(size,maxlen)` bytes (the record
 plus the ring and its maxlen+4 overflow space) from the heap or, for

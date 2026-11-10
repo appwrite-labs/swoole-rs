@@ -6,8 +6,8 @@
 use crate::host;
 use crate::state::{Slot, State};
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
+use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::log;
 use swoole_rs_httpbindings::{
     RequestHeader, Text, Trimmed, UrlParts, request_header, request_key,
@@ -17,12 +17,11 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_server::view;
 use swoole_rs_zend::sys::{
-    swr_zend_http_add_or_merge, swr_zend_http_estrndup, swr_zend_http_intern,
-    swr_zend_http_max_input_vars, swr_zend_http_property_array, swr_zend_http_property_offset,
-    swr_zend_http_treat_data, swr_zend_http_upload, zend_class_entry, zend_hash_add_new,
-    zend_hash_str_find, zend_hash_update, zend_object, zend_string, zval,
+    swr_zend_http_estrndup, swr_zend_http_intern, swr_zend_http_max_input_vars,
+    swr_zend_http_property_offset, swr_zend_http_treat_data, swr_zend_http_upload,
+    zend_class_entry, zend_string, zval,
 };
-use swoole_rs_zend::{Owned, OwnedArray, Value, ZString, string, value};
+use swoole_rs_zend::{Owned, OwnedArray, Value, ZStr, ZString, string};
 
 /// The bundled `multipart_parser` (`thirdparty/multipart_parser.h`), up to
 /// the fields its callbacks use.
@@ -245,9 +244,11 @@ static KEYS: [AtomicPtr<zend_string>; 25] = [const { AtomicPtr::new(ptr::null_mu
 static OFFSETS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
 pub(crate) static CAPABILITIES: AtomicU32 = AtomicU32::new(0);
 
-pub(crate) fn key(key: Key) -> *mut zend_string {
-    KEYS.get(key as usize)
-        .map_or(ptr::null_mut(), |key| key.load(Relaxed))
+/// The interned key, None before MINIT.
+pub(crate) fn key(key: Key) -> Option<&'static ZStr> {
+    let key = KEYS.get(key as usize)?.load(Relaxed);
+    // SAFETY: null, or a string MINIT interned permanently.
+    unsafe { ZStr::from_ptr(key) }
 }
 
 /// The request's array properties, read (and created) on first use.
@@ -308,34 +309,24 @@ pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
         Property::Server => &mut request.zserver,
         Property::Header => &mut request.zheader,
     };
-    if slot.ptr.is_null() {
-        // SAFETY: the request's live object zval.
-        let object: *mut zend_object = unsafe { value::obj_of(request.zobject.ptr) };
-        let offset = OFFSETS
-            .get(which as usize)
-            .map_or(0, |offset| offset.load(Relaxed));
-        // SAFETY: a declared property slot of that object.
-        let size = if matches!(which, Property::Server) {
-            HT_MIN_SIZE << 1
-        } else {
-            HT_MIN_SIZE
-        };
-        // SAFETY: as above.
-        let array = unsafe { swr_zend_http_property_array(object, offset, size) };
-        // SAFETY: as above; the array zval just initialised.
-        slot.value = unsafe { *array };
-        slot.ptr = &raw mut slot.value;
-    }
-    slot.ptr
+    let offset = OFFSETS
+        .get(which as usize)
+        .map_or(0, |offset| offset.load(Relaxed));
+    let size = if matches!(which, Property::Server) {
+        HT_MIN_SIZE << 1
+    } else {
+        HT_MIN_SIZE
+    };
+    slot.init_array(&request.zobject, offset, size)
 }
 
 /// `http_server_add_server_array`: `$request->server[key] = value`.
-fn add_server(state: &State, key_: Key, value_: Owned) {
-    let mut value_ = value_.into_zval();
-    // SAFETY: the request's `server` array, created with the request.
-    let table = unsafe { value::table(state.request.zserver.ptr) };
-    // SAFETY: a live table, an interned key and a value it takes over.
-    unsafe { zend_hash_add_new(table, key(key_), &raw mut value_) };
+pub(crate) fn add_server(state: &mut State, key_: Key, value_: Owned) {
+    if let Some(server) = state.request.zserver.array_mut()
+        && let Some(key) = key(key_)
+    {
+        server.add_new(key, value_);
+    }
 }
 
 /// A new string of the `length` bytes at `bytes`.
@@ -710,20 +701,15 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
         RequestHeader::Compression => compression_method(state, at, length),
         RequestHeader::Append => {}
     }
-    let mut tmp = stringl(at, length).into_zval();
+    let value_ = stringl(at, length);
     // The request's `header` array, created with the request.
-    let header = state.request.zheader.ptr;
-    if let Some(&known) = request_key(name).and_then(|index| HEADER_KEYS.get(index)) {
-        // SAFETY: a live array zval.
-        let table = unsafe { value::table(header) };
-        // SAFETY: a live table, an interned key and a value it takes over.
-        unsafe { zend_hash_update(table, key(known), &raw mut tmp) };
-    } else {
-        let lower = name.to_ascii_lowercase();
-        // SAFETY: a live array zval and a value it takes over.
-        unsafe {
-            swr_zend_http_add_or_merge(header, lower.as_ptr().cast(), lower.len(), &raw mut tmp);
-        };
+    let Some(header) = state.request.zheader.array_mut() else {
+        return 0;
+    };
+    let known = request_key(name).and_then(|index| HEADER_KEYS.get(index));
+    match known.and_then(|&known| key(known)) {
+        Some(known) => header.update(known, value_),
+        None => header.merge(&name.to_ascii_lowercase(), value_),
     }
     0
 }
@@ -783,7 +769,7 @@ unsafe extern "C" fn on_headers_complete(parser: *mut crate::state::Llhttp) -> c
 
 /// Swoole's `microtime()`.
 /// `$request->server`'s `request_time` and `request_time_float`.
-pub(crate) fn request_times(state: &State) {
+pub(crate) fn request_times(state: &mut State) {
     // SAFETY: `time(NULL)`.
     let now = unsafe { libc::time(ptr::null_mut()) };
     add_server(state, Key::RequestTime, Owned::long(now));
@@ -791,10 +777,14 @@ pub(crate) fn request_times(state: &State) {
 }
 
 /// `$request->server['server_protocol']`, an interned protocol name.
-pub(crate) fn add_protocol(state: &State, protocol: Key) {
-    // SAFETY: an interned string, whose reference release ignores.
-    let protocol = unsafe { ZString::from_raw(key(protocol)) };
-    add_server(state, Key::ServerProtocol, Owned::string(protocol));
+pub(crate) fn add_protocol(state: &mut State, protocol: Key) {
+    if let Some(protocol) = key(protocol) {
+        add_server(
+            state,
+            Key::ServerProtocol,
+            Owned::string(protocol.to_owned()),
+        );
+    }
 }
 
 fn microtime() -> f64 {
@@ -1056,14 +1046,6 @@ unsafe extern "C" fn on_part_header_field(
 ) -> c_int {
     // SAFETY: the multipart parser calls back with the context's parser.
     header_field(unsafe { part_state(parser) }, at.cast(), length)
-}
-
-/// `zend_hash_str_find(Z_ARRVAL_P(array), key)`.
-pub(crate) fn find(array: *mut zval, key: &[u8]) -> *mut zval {
-    // SAFETY: a live array zval.
-    let table = unsafe { value::table(array) };
-    // SAFETY: a live table.
-    unsafe { zend_hash_str_find(table, key.as_ptr().cast(), key.len()) }
 }
 
 /// A string zval's bytes up to its first NUL (`%s`, `strlen`), and its length.
@@ -1395,8 +1377,7 @@ unsafe extern "C" fn on_part_data_end(parser: *mut Multipart) -> c_int {
     let files = property(state, Property::Files);
     // The array moves into `$request->files`; like upstream, only the holder
     // goes, not the array it registered.
-    let mut header = std::mem::take(&mut state.parse.multipart_header).into_zval();
-    let header = &raw mut header;
+    let header = ManuallyDrop::new(std::mem::take(&mut state.parse.multipart_header));
     // `input_name` holds its NUL; C sees it up to the first one.
     let text = input_name
         .split(|&byte| byte == 0)
@@ -1412,14 +1393,17 @@ unsafe extern "C" fn on_part_data_end(parser: *mut Multipart) -> c_int {
                 meta.extend_from_slice(input_path);
                 meta.truncate(META - 1);
                 meta.push(0);
-                let entry = find(header, field.as_bytes());
+                let entry = header
+                    .array()
+                    .and_then(|header| header.find(field.as_bytes()));
+                let entry = entry.map_or(ptr::null_mut(), Value::as_ptr);
                 // SAFETY: a NUL-terminated name, a value from the upload's array and `$request->files`.
                 unsafe { php_register_variable_ex(meta.as_ptr().cast(), entry, files) };
             }
         }
         _ => {
             // SAFETY: a NUL-terminated name, the upload's array and `$request->files`.
-            unsafe { php_register_variable_ex(input_name.as_ptr().cast(), header, files) };
+            unsafe { php_register_variable_ex(input_name.as_ptr().cast(), header.as_ptr(), files) };
         }
     }
     0

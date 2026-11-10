@@ -240,33 +240,19 @@ fn window_update(ctx: Ctx, stream_id: u32, size: u32) {
 }
 
 /// `Stream::reset`.
-/// # Safety
-/// `ctx` is the stream's live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_reset(ctx: Ctx, stream_id: u32, code: u32) {
+pub(crate) fn reset(ctx: Ctx, stream_id: u32, code: u32) {
     send_u32_frame(ctx, TYPE_RST_STREAM, 4, 0, stream_id, code);
 }
 
 /// `swoole_http2_server_ping`.
-/// # Safety
-/// `ctx` is a live HTTP/2 context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_ping(ctx: Ctx) -> bool {
+fn ping(ctx: Ctx) -> bool {
     let mut frame = [0; FRAME_HEADER + PING_PAYLOAD];
     frame[..FRAME_HEADER].copy_from_slice(&frame_header(TYPE_PING, PING_PAYLOAD, 0, 0));
     send(ctx, &frame)
 }
 
 /// `swoole_http2_server_goaway`.
-/// # Safety
-/// `ctx` is a live HTTP/2 context; `data` covers `length` bytes (null at 0).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_goaway(
-    ctx: Ctx,
-    code: i64,
-    data: *const c_char,
-    length: usize,
-) -> bool {
+fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
     let Some(session) = SessionState::of(ctx) else {
         return false;
     };
@@ -277,11 +263,16 @@ pub unsafe extern "C" fn swr_v1_phphttp2_server_goaway(
         reason = "upstream's uint8_t flags and uint32_t code"
     )]
     let (flags, code) = (u32::from(code as u8), code as u32);
-    let mut frame = Vec::with_capacity(FRAME_HEADER + GOAWAY_SIZE + length);
-    frame.extend_from_slice(&frame_header(TYPE_GOAWAY, GOAWAY_SIZE + length, flags, 0));
+    let mut frame = Vec::with_capacity(FRAME_HEADER + GOAWAY_SIZE + data.len());
+    frame.extend_from_slice(&frame_header(
+        TYPE_GOAWAY,
+        GOAWAY_SIZE + data.len(),
+        flags,
+        0,
+    ));
     frame.extend_from_slice(&last_stream_id.to_be_bytes());
     frame.extend_from_slice(&code.to_be_bytes());
-    frame.extend_from_slice(bytes(data, length));
+    frame.extend_from_slice(data);
     let sent = send(ctx, &frame);
     session.shutting_down.set(true);
     sent
@@ -852,32 +843,7 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
     }
 }
 
-/// `http2_server_respond`: `length` body bytes (null at 0). Like the
-/// response's other operations (crates/phphttp), it leaves a bailout pending
-/// for its Rust caller.
-/// # Safety
-/// `ctx` is a live HTTP/2 stream context and `data` covers `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_respond(
-    ctx: Ctx,
-    data: *const c_char,
-    length: usize,
-) -> bool {
-    respond(ctx, bytes(data, length))
-}
-
 /// `swoole_http2_server_write`: a chunk, the header first.
-/// # Safety
-/// As `swr_v1_phphttp2_server_respond`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_server_write(
-    ctx: Ctx,
-    data: *const c_char,
-    length: usize,
-) -> bool {
-    write(ctx, bytes(data, length))
-}
-
 fn write(ctx: Ctx, chunk: &[u8]) -> bool {
     if chunk.is_empty() {
         report(NO_PAYLOAD, false, b"the data sent must not be empty");
@@ -957,12 +923,7 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
 /// # Safety
 /// `server` is the live server, `conn` the session's connection and `request`
 /// its `RecvData`.
-#[unsafe(export_name = "_Z29swoole_http2_server_onReceivePN6swoole6ServerEPNS_10ConnectionEPNS_8RecvDataE")]
-pub unsafe extern "C" fn swoole_http2_server_on_receive(
-    server: *mut c_void,
-    conn: *mut c_void,
-    request: *mut c_void,
-) -> c_int {
+unsafe fn on_receive(server: *mut c_void, conn: *mut c_void, request: *mut c_void) -> c_int {
     // SAFETY: a `RecvData` begins with its `DataHead`.
     let session_id = unsafe { (*request.cast::<swoole_rs_corebase::DataHead>()).fd };
     let session = SessionState::find(session_id).or_else(|| {
@@ -973,7 +934,7 @@ pub unsafe extern "C" fn swoole_http2_server_on_receive(
             unsafe { swoole_rs_server::server_methods::package_max_length(server, conn) };
         // SAFETY: the session's own settings context and the server's request handler.
         unsafe {
-            crate::session::swr_v1_phphttp2_session_new(
+            crate::session::session_new(
                 session_id,
                 default_ctx,
                 max_body_size,
@@ -999,7 +960,7 @@ pub unsafe extern "C" fn swoole_http2_server_on_receive(
 /// `php_swoole_http2_server_onClose`: the connection's session goes.
 #[unsafe(export_name = "_Z31php_swoole_http2_server_onClosePN6swoole6ServerEl")]
 pub extern "C" fn php_swoole_http2_server_on_close(_server: *mut c_void, session_id: i64) {
-    crate::session::swr_v1_phphttp2_session_free(session_id);
+    crate::session::session_free(session_id);
 }
 
 /// `swoole_http2_server_parse` for the coroutine server's connection loop: one
@@ -1007,10 +968,24 @@ pub extern "C" fn php_swoole_http2_server_on_close(_server: *mut c_void, session
 /// caller's `finish`.
 /// # Safety
 /// `buf` holds a whole frame.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphttp2_session_receive(fd: i64, buf: *const c_char) -> c_int {
-    SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, buf.cast()))
+unsafe fn session_receive(fd: i64, buf: *const u8) -> c_int {
+    SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, buf))
 }
+
+/// The entry points crates/phphttp's HTTP/1 code calls.
+pub(crate) static HOOKS: swoole_rs_phphttp::http2::Server = swoole_rs_phphttp::http2::Server {
+    on_receive,
+    static_file: crate::files::static_file,
+    respond,
+    write,
+    ping,
+    send_file: crate::files::send_file,
+    goaway,
+    reset,
+    session_new: crate::session::session_new,
+    session_receive,
+    session_free: crate::session::session_free,
+};
 
 fn parse(session: &Session, buf: *const u8) -> c_int {
     let last_stream_id = session.last_stream_id.get();

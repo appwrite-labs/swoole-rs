@@ -7,7 +7,7 @@
 use crate::{Switch, optional};
 use std::{
     cell::Cell,
-    ffi::{CStr, CString, c_int, c_long, c_void},
+    ffi::{CStr, c_int, c_long, c_void},
     ptr,
     sync::OnceLock,
 };
@@ -413,10 +413,8 @@ extern "C" fn core_startup() {
     // SAFETY: no preconditions.
     let version = unsafe { swr_zend_php_version() };
     // SAFETY: PHP_VERSION, a static string.
-    let version = unsafe { CStr::from_ptr(version) }.to_string_lossy();
-    let line = CString::new(format!("PHP_VERSION : {version}\n")).unwrap_or_default();
-    // SAFETY: a NUL-terminated line, which the report copies.
-    unsafe { swoole_rs_corebase::swr_v1_core_bug_report_append(line.as_ptr()) };
+    let version = unsafe { CStr::from_ptr(version) }.to_bytes();
+    swoole_rs_corebase::bug_report_append(&[b"PHP_VERSION : ", version, b"\n"].concat());
 }
 
 /// MINIT's end: the ini's socket buffer size, macOS's `pcre.jit` and the known
@@ -495,7 +493,6 @@ extern "C" fn event_free() {
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's MSHUTDOWN.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number: c_int) -> c_int {
     let mut steps = vec![
         Step::Hook(swoole_rs_phphelpers::known_free),
@@ -516,7 +513,6 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number:
 /// `PHP_RINIT_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's RINIT.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_int) -> c_int {
     let globals = globals();
     if !globals.cli.get() {
@@ -566,7 +562,6 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
 /// `PHP_RSHUTDOWN_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's RSHUTDOWN.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number: c_int) -> c_int {
     let globals = globals();
     if !globals.cli.get() {

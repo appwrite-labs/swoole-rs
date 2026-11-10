@@ -226,7 +226,6 @@ struct IovPrepared {
     status: c_int,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C" {
     fn swr_v1_hook_co_socket_make(
         fd: c_int,
@@ -521,7 +520,9 @@ impl Sock {
     fn connect(&self, host: &str, port: c_int, flags: c_int) -> bool {
         let _ = flags;
         // SAFETY: the live socket and `host`'s bytes.
-        unsafe { swr_v1_hook_co_socket_connect_host(self.rec(), host.as_ptr().cast(), host.len(), port) }
+        unsafe {
+            swr_v1_hook_co_socket_connect_host(self.rec(), host.as_ptr().cast(), host.len(), port)
+        }
     }
 
     fn bind(&self, address: &str, port: c_int) -> bool {
@@ -2412,14 +2413,12 @@ fn selected_timeout_restore_and_copy() {
 
 // The repo-owned witnesses of C++ copies and std::bad_alloc containment, whose bodies are
 // ../fixture.cc's (formerly tests/modules/hooks/socket_scopes.cpp and dns_request_owner.cpp).
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     fn swr_case_numeric_host_owner_and_independent_copies();
     fn swr_case_hints_vectors_and_failure_publication();
     fn swr_case_native_output_append_exception_is_contained();
     fn swr_case_actual_async_numeric_results();
 }
-
 
 fn numeric_host_owner_and_independent_copies() {
     // SAFETY: the fixture's case.
@@ -2444,12 +2443,10 @@ fn actual_async_numeric_results() {
 /// `rust_socket_scopes.<name>`: the timeout scope, whose C++ API left the hybrid
 /// header. The protocol scope and error text witnesses are crates/hooks unit tests
 /// (`socket_scope::tests`, `co_io::tests::error_text_publication`).
-pub(super) const SCOPE_CASES: super::Cases = &[
-    (
-        "selected_timeout_restore_and_copy",
-        selected_timeout_restore_and_copy,
-    ),
-];
+pub(super) const SCOPE_CASES: super::Cases = &[(
+    "selected_timeout_restore_and_copy",
+    selected_timeout_restore_and_copy,
+)];
 
 /// `rust_dns_request.<name>`, the C++ witnesses.
 pub(super) const DNS_REQUEST_CASES: super::Cases = &[

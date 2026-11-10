@@ -1628,7 +1628,6 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         fn swoole_event_wait() -> c_int;
         #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
         fn swoole_timer_del(node: *mut c_void) -> bool;
-        fn swr_v1_core_timer_slot() -> *mut *mut c_void;
         fn swr_v1_timer_owner_reactor(timer: *const c_void) -> *mut c_void;
         fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
         #[link_name = "_Z27swoole_clear_last_error_msgv"]
@@ -1641,9 +1640,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     // `SwooleTG.timer`.
     let timer = || {
         // SAFETY: the address of this thread's slot.
-        let slot = unsafe { swr_v1_core_timer_slot() };
-        // SAFETY: as above.
-        unsafe { *slot }
+        unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() }
     };
     Some(match op {
         OP_LC_CLEAR_ERROR => {

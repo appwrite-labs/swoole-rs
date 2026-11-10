@@ -63,8 +63,8 @@ pub extern "C" fn swr_v1_core_thread_global() -> *mut ThreadGlobal {
 }
 
 /// `&SwooleTG.timer`, for crates/timer and crates/server.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_timer_slot() -> *mut *mut c_void {
+#[must_use]
+pub fn swr_v1_core_timer_slot() -> *mut *mut c_void {
     // SAFETY: this thread's live record; only the field's address is taken.
     unsafe { &raw mut (*swr_v1_core_thread_global()).timer }
 }

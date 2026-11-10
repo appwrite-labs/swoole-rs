@@ -84,7 +84,7 @@ def main():
                                             passed=result.returncode == 0 and result.stdout == 'cpp-probe: ok\n' and not result.stderr)
         write_report(output, report)
         modes = ['return', 'exception', 'custom', 'exit', 'nested', 'coroutine', 'error',
-                 'destructor', 'serialize', 'unserialize', 'shared-set', 'shared-queue', 'fatal', 'cancel', 'cancel-throw']
+                 'destructor', 'serialize', 'unserialize', 'values', 'shared-set', 'shared-queue', 'fatal', 'cancel', 'cancel-throw']
         for mode in modes:
             expected = json.dumps([mode, 0 if mode in ['return', 'exception'] else 255 if mode == 'fatal' else 235,
                                    int(mode in ['return', 'exception'])], separators=(',', ':')) + '\n'

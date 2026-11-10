@@ -79,8 +79,8 @@ fn plan(name: &[u8]) -> AddressPlan {
 /// # Safety
 /// `name` denotes `length` initialized bytes, or is null for length 0. No pointer
 /// is retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hooks_parse_address(name: *const u8, length: usize) -> AddressPlan {
+#[must_use]
+pub unsafe fn swr_v1_hooks_parse_address(name: *const u8, length: usize) -> AddressPlan {
     if length == 0 || name.is_null() || length > isize::MAX as usize {
         return plan(&[]);
     }

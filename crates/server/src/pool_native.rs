@@ -90,7 +90,6 @@ unsafe extern "C-unwind" {
     fn swoole_timer_is_available() -> bool;
     #[link_name = "_Z19swoole_timer_createb"]
     fn swoole_timer_create(manually_trigger: bool) -> *mut c_void;
-    fn swr_v1_core_timer_slot() -> *mut *mut c_void;
     fn swr_v1_timer_owner_reinit(timer: *mut c_void, manually_trigger: bool);
     pub(crate) fn swr_v1_timer_add_plain(
         msec: c_long,
@@ -684,10 +683,8 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         OP_TIMER_INIT => {
             // SAFETY: this thread's timer, if any.
             if unsafe { swoole_timer_is_available() } {
-                // SAFETY: as above.
-                let slot = unsafe { swr_v1_core_timer_slot() };
                 // SAFETY: this thread's timer slot, holding its live timer.
-                let timer = unsafe { *slot };
+                let timer = unsafe { *swoole_rs_corebase::swr_v1_core_timer_slot() };
                 // SAFETY: as above.
                 unsafe { swr_v1_timer_owner_reinit(timer, true) };
             } else {

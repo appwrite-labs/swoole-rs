@@ -8,8 +8,8 @@ use crate::{
     send,
 };
 use std::{
-    ffi::{CStr, c_void},
-    sync::atomic::Ordering::Relaxed,
+    ffi::{CStr, c_int, c_void},
+    sync::{OnceLock, atomic::Ordering::Relaxed},
 };
 use swoole_rs_zend::sys::{swr_zend_http_estrndup, swr_zend_treat_string, zend_string, zval};
 
@@ -51,6 +51,55 @@ pub enum Value {
     Cookie,
 }
 
+/// The HTTP/2 server's entry points that this crate's HTTP/1 code calls.
+/// crates/phphttp2 depends on this crate, so it registers them at MINIT. A
+/// bailout in one waits for the caller.
+pub struct Server {
+    /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
+    /// connection.
+    /// # Safety
+    /// The live server, the session's connection (or null) and its `RecvData`.
+    pub on_receive: unsafe fn(*mut c_void, *mut c_void, *mut c_void) -> c_int,
+    /// The static file handler for the live server: true once it answered.
+    pub static_file: fn(*mut c_void, Ctx) -> bool,
+    /// `Response::end`: the stream's last frames.
+    pub respond: fn(Ctx, &[u8]) -> bool,
+    /// `Response::write`: a DATA frame.
+    pub write: fn(Ctx, &[u8]) -> bool,
+    /// `Response::ping`.
+    pub ping: fn(Ctx) -> bool,
+    /// `Response::sendfile` of a path, from `offset` for `length` bytes.
+    pub send_file: fn(Ctx, &[u8], i64, usize) -> bool,
+    /// `Response::goaway` with its code and debug data.
+    pub goaway: fn(Ctx, i64, &[u8]) -> bool,
+    /// `RST_STREAM` with the stream id and error code.
+    pub reset: fn(Ctx, u32, u32),
+    /// A coroutine connection's session (fd, default context, max body size,
+    /// coroutine, handler and its data).
+    /// # Safety
+    /// The context outlives the session; the handler may be called with a
+    /// `SessionRequest` and the data.
+    pub session_new: unsafe fn(i64, Ctx, u32, bool, unsafe extern "C" fn(*mut c_void), *mut c_void),
+    /// One whole frame for the session of an fd; `SW_ERR` on failure.
+    /// # Safety
+    /// The frame's bytes, as long as its header says.
+    pub session_receive: unsafe fn(i64, *const u8) -> c_int,
+    /// The session of an fd goes.
+    pub session_free: fn(i64),
+}
+
+static SERVER: OnceLock<&'static Server> = OnceLock::new();
+
+/// crates/phphttp2's MINIT: its entry points, kept for the process.
+pub fn register(server: &'static Server) {
+    SERVER.get_or_init(|| server);
+}
+
+/// The registered HTTP/2 server; None before its MINIT.
+pub(crate) fn server() -> Option<&'static Server> {
+    SERVER.get().copied()
+}
+
 /// The response's `Date` value, cached per second.
 #[must_use]
 pub fn date() -> *mut zend_string {
@@ -66,6 +115,11 @@ fn compression() -> bool {
 }
 
 impl Ctx {
+    /// The handle of one of this crate's live HTTP/2 contexts.
+    pub(crate) fn of(ctx: *mut Context) -> Self {
+        Self(ctx)
+    }
+
     /// `Context::set_header(key, value, false)` of a string value.
     pub fn set_header(self, key: &[u8], value: &[u8]) {
         crate::response::set_header_bytes(self.0, key, value);
