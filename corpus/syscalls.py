@@ -2,7 +2,7 @@
 """Run the corpus applications on two engines under strace and diff the syscalls they make.
 
 PHP-level assertions can't see socket options, non-blocking flags, epoll registrations or
-signal dispositions. Each project runs under `strace -f -ff` on both engines, RUNS times
+signal dispositions. Each project's PHP runs under `strace -f -ff` on both engines, RUNS times
 each. Every traced call becomes a signature: its name, the arguments that carry behaviour
 (levels, options, flags, events; never fds, addresses, ports, lengths or buffers) and its
 result (ok or the errno). A difference is a signature every run of one engine made and no
@@ -13,6 +13,7 @@ Linux only: strace is.
 import argparse
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -140,12 +141,29 @@ class Traced(Engine):
                 '-o', str(self.trace), '--', *super().command(*args)]
 
 
+# A driver project starts PHP itself, so its runner is called here with the traced engine:
+# PHP is traced, the Python driver isn't. run_lifecycle records a failed case and runs on, so
+# both engines trace every case: without --fix-halfclose they share the half-close truncation.
+# 12-hyperf-skeleton stops with SIGTERM to the PHP it started, which strace would receive.
+RUNNERS = {'11-buffer-lifecycle': 'run_lifecycle'}
+
+
+def run(engine, project, run_project):
+    if project.get('mode') != 'driver':
+        return run_project(engine, project)
+    path = (ROOT / 'corpus' / project['id'] / project['entry']).resolve()
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    getattr(module, RUNNERS[project['id']])(engine)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--engine', action='append', required=True, help='NAME=/path/to/extension; exactly two')
     parser.add_argument('--php', default='php')
     parser.add_argument('--php-extension', action='append', default=[])
-    parser.add_argument('--project', action='append', help='a corpus project id; default every non-driver project')
+    parser.add_argument('--project', action='append', help='a corpus project id; default every project with a runner')
     parser.add_argument('--runs', type=int, default=2, help='runs per engine and project')
     parser.add_argument('--allowlist', default=str(ROOT / 'corpus/syscalls.json'))
     parser.add_argument('--output', default=str(ROOT / 'target/reports/syscalls.json'))
@@ -157,7 +175,8 @@ def main():
     if not shutil.which('strace'):
         parser.error('strace is not installed (.devcontainer/install.sh installs it)')
     allowed = json.loads(Path(args.allowlist).read_text())
-    projects = [p for p in MANIFEST if p.get('mode') != 'driver' and (not args.project or p['id'] in args.project)]
+    traceable = [p for p in MANIFEST if p.get('mode') != 'driver' or p['id'] in RUNNERS]
+    projects = [p for p in traceable if not args.project or p['id'] in args.project]
     report = {'schema_version': 1, 'engines': [e.metadata() for e in engines], 'runs': args.runs, 'projects': []}
     failed, used = False, set()
     for project in projects:
@@ -167,8 +186,8 @@ def main():
             for _ in range(args.runs):
                 for engine in engines:
                     with tempfile.TemporaryDirectory(prefix='swoole-strace-') as directory:
-                        run_project(Traced(engine.name, engine.extension, engine.php, engine.php_extensions,
-                                           Path(directory) / 'trace'), project)
+                        run(Traced(engine.name, engine.extension, engine.php, engine.php_extensions,
+                                   Path(directory) / 'trace'), project, run_project)
                         runs[engine.name].append(signatures(directory))
         except Exception as error:
             failed = True
@@ -199,7 +218,7 @@ def main():
         print(f'{project["id"]:20} {len(row["differences"]) - explained} unexplained, {explained} allowed, '
               f'{len(row["unstable"])} unstable', flush=True)
         report['projects'].append(row)
-    if len(projects) == len([p for p in MANIFEST if p.get('mode') != 'driver']):
+    if len(projects) == len(traceable):
         report['stale'] = [entry for index, entry in enumerate(allowed) if index not in used]
         for entry in report['stale']:
             print(f'stale allowlist entry: {entry}', flush=True)
