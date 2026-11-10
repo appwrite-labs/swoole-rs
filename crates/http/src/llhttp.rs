@@ -471,16 +471,52 @@ enum Word {
     Whole(u8),
 }
 
+/// Words to match a byte at a time, and by first byte, those starting with it.
+struct Words {
+    words: &'static [&'static str],
+    starts: [u64; 256],
+}
+
+impl Words {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a byte indexes the 256-entry table"
+    )]
+    const fn new(words: &'static [&'static str]) -> Self {
+        let mut starts = [0; 256];
+        let mut i = 0;
+        while i < words.len() {
+            if let [first, ..] = words[i].as_bytes() {
+                starts[*first as usize] |= 1 << i;
+            }
+            i += 1;
+        }
+        Self { words, starts }
+    }
+}
+
+const METHOD_WORDS: Words = Words::new(&METHODS);
+const PROTOCOL_WORDS: Words = Words::new(&PROTOCOLS);
+const HEADER_WORDS: Words = Words::new(&HEADERS);
+const CONNECTION_WORDS: Words = Words::new(&CONNECTION);
+const CHUNKED_WORDS: Words = Words::new(&["chunked"]);
+const PREFACE_WORDS: Words = Words::new(&[PREFACE]);
+
 /// Match `c` against `words`, after the parser's `index` bytes of word `word`.
-fn next_word(words: &[&str], parser: &mut Parser, c: u8) -> Word {
+fn next_word(words: &Words, parser: &mut Parser, c: u8) -> Word {
     let index = usize::from(parser.index);
-    // Past the first byte only the words matched so far can match, so each byte
-    // tests those alone, and only at `index`.
+    // Only the words matched so far (at first, those starting with `c`) can
+    // match, so each byte tests those alone, and only at `index`.
     let mut left = if index == 0 {
-        u64::MAX >> (64 - words.len())
+        words
+            .starts
+            .get(usize::from(c))
+            .copied()
+            .unwrap_or_default()
     } else {
         parser.candidates
     };
+    let words = words.words;
     let (mut whole, mut longer, mut next) = (None, None, 0);
     while left != 0 {
         let i = left.trailing_zeros() as usize;
@@ -520,8 +556,23 @@ fn url_ws(c: u8) -> bool {
 }
 
 fn token(c: u8) -> bool {
-    matches!(c, 0x21 | 0x23..=0x27 | 0x2a | 0x2b | 0x2d | 0x2e | b'0'..=b'9' | b'A'..=b'Z' | 0x5e..=0x7a | 0x7c | 0x7e)
+    TOKENS.get(usize::from(c)).copied().unwrap_or_default()
 }
+
+/// `token`'s bytes, as a table: a header name tests every byte.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a byte indexes the 256-entry table"
+)]
+const TOKENS: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut c = 0;
+    while c < 256 {
+        table[c] = matches!(c, 0x21 | 0x23..=0x27 | 0x2a | 0x2b | 0x2d | 0x2e | 0x30..=0x39 | 0x41..=0x5a | 0x5e..=0x7a | 0x7c | 0x7e);
+        c += 1;
+    }
+    table
+};
 
 fn value_char(c: u8) -> bool {
     c == 9 || c >= 0x20 && c != 0x7f
@@ -850,7 +901,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     /// The method's next byte.
     fn method(&mut self, c: u8) -> Next {
         let parser = self.parser();
-        match next_word(&METHODS, parser, c) {
+        match next_word(&METHOD_WORDS, parser, c) {
             Word::Whole(method) => {
                 parser.method = method;
                 self.eat(State::ReqFirstSpace)
@@ -872,7 +923,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     /// The protocol's next byte, and on a request its method's check.
     fn protocol(&mut self, c: u8) -> Next {
         let parser = self.parser();
-        let protocol = match next_word(&PROTOCOLS, parser, c) {
+        let protocol = match next_word(&PROTOCOL_WORDS, parser, c) {
             Word::Whole(protocol) => protocol,
             Word::Partial => return self.eat(State::Protocol),
             Word::Mismatch => {
@@ -898,7 +949,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     /// A tracked header name's next byte, or the general token rules.
     fn header_field(&mut self, c: u8) -> Next {
         let parser = self.parser();
-        match next_word(&HEADERS, parser, lower(c)) {
+        match next_word(&HEADER_WORDS, parser, lower(c)) {
             Word::Whole(header) => {
                 parser.header_state = HEADER_STATES
                     .get(usize::from(header))
@@ -917,7 +968,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
 
     fn connection(&mut self, c: u8) -> Next {
         let parser = self.parser();
-        match next_word(&CONNECTION, parser, lower(c)) {
+        match next_word(&CONNECTION_WORDS, parser, lower(c)) {
             Word::Whole(token) => {
                 parser.header_state = CONNECTION_STATES
                     .get(usize::from(token))
@@ -935,7 +986,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
 
     fn te_chunked(&mut self, c: u8) -> Next {
         let parser = self.parser();
-        match next_word(&["chunked"], parser, lower(c)) {
+        match next_word(&CHUNKED_WORDS, parser, lower(c)) {
             Word::Whole(_) => self.eat(State::TeChunkedLast),
             Word::Partial => self.eat(State::TeChunked),
             Word::Mismatch => {
@@ -947,7 +998,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
 
     fn pri_upgrade(&mut self, c: u8) -> Next {
         let parser = self.parser();
-        match next_word(&[PREFACE], parser, c) {
+        match next_word(&PREFACE_WORDS, parser, c) {
             Word::Whole(_) => self.eat_fail(HPE_PAUSED_H2_UPGRADE, &"Pause on PRI/Upgrade"),
             Word::Partial => self.eat(State::PriUpgrade),
             Word::Mismatch => {
