@@ -1153,7 +1153,12 @@ fn task_ipc_queue_4() {
 }
 
 /// `TEST(server, task_ipc_queue_5)`.
+///
+/// Thread mode needs `SW_THREAD`, which upstream's CMake defines for core-tests under
+/// `enable_thread` and the extension's MINIT sets for a ZTS PHP; this binary has no MINIT,
+/// so the case sets it, and threads start as `worker_thread_start`'s default (`fn()`).
 fn task_ipc_queue_5() {
+    swoole_rs_server::THREAD_SUPPORTED.store(true, Ordering::Relaxed);
     let serv = task_ipc_server(MODE_THREAD, TASK_IPC_MSGQUEUE);
 
     wait_all_child_processes();

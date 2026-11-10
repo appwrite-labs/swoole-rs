@@ -150,7 +150,10 @@ upstream symbols, and the inline ones (`send_pipe_message(id, data, len)`,
 mapping the forked processes inherit, as core-tests' memory-pool counters are, and an
 expectation in a callback records its failure there, so here one in a forked worker fails
 the case too. `no_idle_task_worker`'s client waits on a shared flag its `onWorkerStart`
-sets, where upstream's waited on a process-shared mutex it unlocked.
+sets, where upstream's waited on a process-shared mutex it unlocked. `task_ipc_queue_5`
+runs in thread mode, which needs `SW_THREAD`: upstream's CMake defines it for core-tests
+under `enable_thread`, and the extension's MINIT sets crates/server's `THREAD_SUPPORTED`
+for a ZTS PHP. This binary has no MINIT, so the case sets it.
 
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
