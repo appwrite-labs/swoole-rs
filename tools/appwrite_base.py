@@ -6,8 +6,8 @@ Appwrite's own configure flags, read from their stage: `upstream` is stock
 Swoole at this repository's pin, the control; `cargo` is the Cargo-built swoole.so
 (tools/build_ext.py), which always has Brotli, zstd and OpenSSL, so it takes only the
 other switches. Everything else in the image is untouched, so the two images differ only
-in Swoole. A build context without .git gets a throwaway repository, because the Cargo
-build records the source revision.
+in Swoole. A build context with no usable repository (no .git, or a worktree's .git file)
+gets a throwaway one, because the Cargo build records the source revision.
 """
 import argparse
 from pathlib import Path
@@ -35,7 +35,7 @@ RUN \\
   curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none && \\
   export PATH="/root/.cargo/bin:$PATH" && \\
   cd /swoole-rs && \\
-  {{ [ -d .git ] || {{ git init -q && git add -A && git -c user.name=build -c user.email=build@localhost commit -qm source; }}; }} && \\
+  {{ git rev-parse --git-dir >/dev/null 2>&1 || {{ rm -f .git && git init -q && git add -A && git -c user.name=build -c user.email=build@localhost commit -qm source; }}; }} && \\
   python3 tools/{build} --php-sockets {configure} && \\
   cp {output} /artifacts/swoole.so && \\
   strip /artifacts/swoole.so
