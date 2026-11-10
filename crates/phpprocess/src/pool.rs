@@ -599,16 +599,23 @@ fn set(call: &Call) {
     let pool = record(checked(this));
     swoole_rs_phpswoole::php_swoole_set_global_option(options);
     swoole_rs_phpcoroutines::set_coroutine_option(options);
+    // Each setter stops at a conversion's bailout, which upstream's ended the
+    // call at; the handler raises it.
     if swoole_rs_zend::bailout::pending() {
         return;
     }
     swoole_rs_phpswoole::php_swoole_set_aio_option(options);
+    if swoole_rs_zend::bailout::pending() {
+        return;
+    }
     if let Some(value) = options.get(b"max_package_size") {
         let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);
         pool.max_packet_size = packet_limit(pool.use_msgqueue != 0, max_package_size(size));
     }
     if let Some(value) = options.get(b"max_wait_time") {
-        let seconds = value.long();
+        let Some(seconds) = value.applied_long() else {
+            return;
+        };
         pool.max_wait_time = u32::try_from(seconds.clamp(0, u32::MAX.into())).unwrap_or(u32::MAX);
     }
     if let Some(value) = options.get(b"enable_coroutine") {

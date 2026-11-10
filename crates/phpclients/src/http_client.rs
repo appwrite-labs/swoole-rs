@@ -397,14 +397,24 @@ impl Client {
         if check_all {
             let get = |key: &[u8]| array.get(key);
             let truthy = Value::truthy;
+            // A conversion's bailout stops the settings, as upstream's did.
             if let Some(found) = get(b"connect_timeout") {
-                self.connect_timeout = found.double();
+                let Some(timeout) = found.applied_double() else {
+                    return;
+                };
+                self.connect_timeout = timeout;
             }
             if let Some(found) = get(b"timeout") {
-                self.response_timeout = found.double();
+                let Some(timeout) = found.applied_double() else {
+                    return;
+                };
+                self.response_timeout = timeout;
             }
             if let Some(found) = get(b"max_retries") {
-                let retries = found.long().min(i64::from(u8::MAX));
+                let Some(retries) = found.applied_long() else {
+                    return;
+                };
+                let retries = retries.min(i64::from(u8::MAX));
                 #[expect(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,

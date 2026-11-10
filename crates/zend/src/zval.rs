@@ -173,6 +173,23 @@ impl Value {
         out
     }
 
+    /// [`Value::long`], or `None` once a bailout is pending: upstream's
+    /// `zval_get_long` bailed out there, so the caller applies nothing more.
+    #[must_use]
+    #[inline]
+    pub fn applied_long(&self) -> Option<zend_long> {
+        let long = self.long();
+        (!bailout::pending()).then_some(long)
+    }
+
+    /// [`Value::double`], as [`Value::applied_long`].
+    #[must_use]
+    #[inline]
+    pub fn applied_double(&self) -> Option<f64> {
+        let double = self.double();
+        (!bailout::pending()).then_some(double)
+    }
+
     /// `zval_is_true`.
     #[must_use]
     #[inline]
