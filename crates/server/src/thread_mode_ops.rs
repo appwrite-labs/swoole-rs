@@ -35,7 +35,6 @@ use swoole_rs_process::workers::ops::{
     OP_USER_WORKER_NUM, OP_WORKER_ID, OP_WORKER_NUM, OP_WORKER_TYPE,
 };
 use swoole_rs_process::workers::thread::{ThreadManager, worker_thread_start};
-use swoole_rs_reactor::SocketRecord;
 
 use crate::callbacks::{
     CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP, CB_USER_WORKER_START,
@@ -380,9 +379,8 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_DGRAM => u64::from(matches!(port()?.1.r#type, 2 | 4 | 6)),
         OP_PORT_LISTEN => sign((methods().listen)(port()?.0)),
         OP_PORT_ADD => {
-            let socket = port()?.1.socket.cast::<SocketRecord>();
-            // SAFETY: the port's live socket.
-            Reactor::thread().add(unsafe { &mut *socket }, SW_EVENT_READ);
+            let socket = ctx.server().port_socket_at(usize::try_from(arg).ok()?)?;
+            Reactor::thread().add(socket, SW_EVENT_READ);
             0
         }
         OP_ON_MANAGER_START => ctx.call_server(CB_MANAGER_START),

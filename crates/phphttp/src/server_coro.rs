@@ -294,10 +294,10 @@ fn record<'a>(socket: Socket) -> &'a mut co::CoSocket {
     unsafe { co::record(socket) }
 }
 
-/// A live socket's network socket.
-fn network<'a>(socket: Socket) -> &'a mut swoole_rs_reactor::SocketRecord {
-    // SAFETY: a live socket's network socket, as live.
-    unsafe { &mut *record(socket).socket }
+/// A live socket's network socket, while it is open.
+fn network<'a>(socket: Socket) -> Option<swoole_rs_reactor::Socket<'a>> {
+    // SAFETY: a live socket's network socket: null or as live.
+    unsafe { swoole_rs_reactor::Socket::from_ptr(record(socket).socket) }
 }
 
 /// The socket's error code and message.
@@ -308,13 +308,18 @@ fn socket_error(socket: Socket) -> (c_int, *const c_char) {
 
 /// `get_addr()` and `get_port()`: the network socket's address.
 fn address(socket: Socket) -> (&'static CStr, c_int) {
-    let info = &raw const network(socket).info;
-    // SAFETY: a live address.
-    let host = unsafe { swr_v1_clients_address_host(info) };
-    // SAFETY: NUL-terminated text, live until the next call.
-    let host = unsafe { CStr::from_ptr(host) };
-    // SAFETY: a live address.
-    (host, unsafe { swr_v1_clients_address_port(info) })
+    let Some(network) = network(socket) else {
+        return (c"", 0);
+    };
+    network.read(|record| {
+        let info = &raw const record.info;
+        // SAFETY: a live address.
+        let host = unsafe { swr_v1_clients_address_host(info) };
+        // SAFETY: NUL-terminated text, live until the next call.
+        let host = unsafe { CStr::from_ptr(host) };
+        // SAFETY: a live address.
+        (host, unsafe { swr_v1_clients_address_port(info) })
+    })
 }
 
 /// `SW_EVENT_READ`.
@@ -356,7 +361,9 @@ fn http2_begin(socket: Socket) {
 
 /// `recv_wait`: the socket waits for a request.
 fn set_recv_wait(socket: Socket, waiting: bool) {
-    network(socket).recv_wait = u8::from(waiting);
+    if let Some(network) = network(socket) {
+        network.edit(|record| record.recv_wait = u8::from(waiting));
+    }
 }
 
 method_table! {
@@ -491,7 +498,7 @@ fn construct(call: &Call) {
         // SAFETY: as above.
         unsafe { *Holder::data(object) = server };
         if reuse_port {
-            set_reuse_port(network(socket).fd);
+            set_reuse_port(network(socket).map_or(-1, swoole_rs_reactor::Socket::fd));
         }
         #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
         // SAFETY: a live socket and the host's bytes.
@@ -965,7 +972,7 @@ unsafe extern "C" fn collect(
 ) {
     // SAFETY: a socket object in the server's array.
     let socket = unsafe { get_socket(connection) };
-    if network(socket).recv_wait != 0 {
+    if network(socket).is_some_and(|network| network.read(|record| record.recv_wait != 0)) {
         // SAFETY: `shutdown`'s vector, borrowed for the scan.
         unsafe { (*out.cast::<Vec<(z::zend_ulong, Socket)>>()).push((index, socket)) };
     }

@@ -93,7 +93,7 @@ impl Context {
     }
     /// `reactor->remove_read_event(pipe)` when `pipe` is still in the loop.
     fn unread(&self, pipe: *mut c_void) {
-        if let Some(sock) = socket(pipe).filter(|s| s.removed == 0) {
+        if let Some(sock) = socket(pipe).filter(|s| s.read(|s| s.removed == 0)) {
             self.reactor().unread(sock);
         }
     }
@@ -317,7 +317,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_DEL => {
             let port = *ctx.ports().get(usize::try_from(arg).ok()?)?;
             // SAFETY: one of the server's live ports.
-            let sock = socket(unsafe { view::port(port) }.socket)?;
+            let sock = unsafe { view::port_socket(port) }?;
             ctx.reactor().del(sock);
             0
         }
@@ -342,7 +342,7 @@ fn reactor_op(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let worker = ctx.other(arg);
             for pipe in [worker.pipe_master, worker.pipe_worker] {
                 if let Some(pipe) = socket(pipe) {
-                    pipe.output.buffer_size = u32::MAX;
+                    pipe.edit(|pipe| pipe.output.buffer_size = u32::MAX);
                 }
             }
             0

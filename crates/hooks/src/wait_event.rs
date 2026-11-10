@@ -213,9 +213,11 @@ pub(crate) mod native {
         object: *mut c_void,
         error: *mut i32,
     ) -> *mut c_void {
-        let socket = SocketRecord::with_fd(fd, FD_TYPE).into_raw();
-        // SAFETY: the new record.
-        unsafe { (*socket).object = object };
+        let socket = SocketRecord {
+            object,
+            ..SocketRecord::with_fd(fd, FD_TYPE)
+        }
+        .into_raw();
         // SAFETY: the new record, on the running reactor.
         if unsafe { swoole_event_add(socket, events) } < 0 {
             // SAFETY: the caller's slot.

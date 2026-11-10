@@ -970,7 +970,7 @@ impl Client {
             }
             if socket
                 .net()
-                .is_some_and(|record| record.output.close_wait != 0)
+                .is_some_and(|net| net.read(|record| record.output.close_wait != 0))
             {
                 break;
             }
@@ -1206,8 +1206,8 @@ impl Client {
             return false;
         };
         if self.in_callback {
-            if let Some(record) = socket.net() {
-                record.output.close_wait = 1;
+            if let Some(net) = socket.net() {
+                net.edit(|record| record.output.close_wait = 1);
             }
             return true;
         }
@@ -2120,7 +2120,7 @@ fn getsockname(call: &Call) {
         return call.set_bool(false);
     }
     let (address, port) = socket.address();
-    set_endpoint(call, address, port);
+    set_endpoint(call, &address, port);
 }
 
 fn set_endpoint(call: &Call, address: &CStr, port: c_int) {

@@ -400,8 +400,10 @@ impl Socket {
 
     /// `ssl_close()`; the socket holds an SSL.
     pub(crate) fn ssl_close(&self) {
-        // SAFETY: the live network::Socket, which holds an SSL.
-        unsafe { socket_ssl_close(self.co().socket()) };
+        // SAFETY: the live network::Socket.
+        if let Some(socket) = unsafe { swoole_rs_reactor::Socket::from_ptr(self.co().socket()) } {
+            socket_ssl_close(socket);
+        }
     }
 
     /// The peer certificate's PEM, empty without one.

@@ -13,7 +13,7 @@ use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
-use swoole_rs_reactor::{SocketAddress, SocketRecord};
+use swoole_rs_reactor::{Socket, SocketAddress, SocketRecord};
 use swoole_rs_tls::upstream::{socket_free, socket_ssl_close};
 
 pub use swoole_rs_corebase::net_types::Protocol;
@@ -216,6 +216,13 @@ impl Co {
         unsafe { self.socket().as_mut() }.map(f)
     }
 
+    /// `f` over the `network::Socket`'s handle, or `None` before the socket opens. The
+    /// handle lives only for the call, so it cannot outlive the record.
+    pub fn with_network<T>(self, f: impl FnOnce(Socket<'_>) -> T) -> Option<T> {
+        // SAFETY: `new`'s contract: null or a live network::Socket, for the call.
+        unsafe { Socket::from_ptr(self.socket()) }.map(f)
+    }
+
     /// `f` over the whole record. `f` is immediate: it neither yields nor reaches the
     /// record through another handle.
     pub fn with<T>(self, f: impl FnOnce(&mut CoSocket) -> T) -> T {
@@ -268,6 +275,7 @@ impl CoSocket {
     /// # Safety
     /// The socket is open (constructed with a `network::Socket`) and no other
     /// reference to that record is live.
+    #[cfg(test)]
     #[must_use]
     #[expect(
         clippy::mut_from_ref,
@@ -319,7 +327,7 @@ impl CoSocket {
     }
 
     /// `init_sock`: a nonblocking, close-on-exec socket of the record's type.
-    fn open(&mut self, owner: *mut c_void) -> bool {
+    fn open(&mut self, owner: *mut c_void) -> Option<Socket<'static>> {
         let socket = SocketRecord::open(
             self.kind,
             FD_CO_SOCKET,
@@ -328,58 +336,44 @@ impl CoSocket {
             self.sock_protocol,
             OPEN_FLAGS,
         );
-        if socket.is_null() {
-            return false;
-        }
-        self.attach(socket, owner);
-        true
+        self.attach(socket, owner)
     }
 
-    /// The fields `init_sock` and `init_reactor_socket` set on a new socket.
-    fn attach(&mut self, socket: *mut SocketRecord, owner: *mut c_void) {
+    /// The fields `init_sock` and `init_reactor_socket` set on a new socket; `None`,
+    /// with the record left alone, for null.
+    fn attach(&mut self, socket: *mut SocketRecord, owner: *mut c_void) -> Option<Socket<'static>> {
+        // SAFETY: null or a live record the caller just made, which this record owns now.
+        let network = unsafe { Socket::from_ptr(socket) }?;
         self.socket = socket;
-        // SAFETY: a live record the caller just made.
-        let record = unsafe { &mut *socket };
-        self.sock_fd = record.fd;
-        record.object = owner;
-        record.info.kind = self.kind;
+        self.sock_fd = network.edit(|record| {
+            record.object = owner;
+            record.info.kind = self.kind;
+            record.fd
+        });
+        Some(network)
     }
 
     /// `init_reactor_socket`: wrap `fd`, which the caller made nonblocking.
-    fn adopt(&mut self, fd: c_int, owner: *mut c_void) {
-        let socket = SocketRecord::with_fd(fd, FD_CO_SOCKET).into_raw();
-        // SAFETY: the record just made.
-        let record = unsafe { &mut *socket };
+    fn adopt(&mut self, fd: c_int, owner: *mut c_void) -> Option<Socket<'static>> {
+        let mut record = SocketRecord::with_fd(fd, FD_CO_SOCKET);
         record.socket_type = self.kind;
         record.output.nonblock = 1;
         record.cloexec = 1;
-        self.attach(socket, owner);
-    }
-
-    /// `Socket::set_nonblock`: the `fd_option` warnings, shifted for the result.
-    fn set_nonblock(&mut self) -> u32 {
-        // SAFETY: the live record `adopt` made.
-        let record = unsafe { &mut *self.socket };
-        let result = swoole_rs_reactor::swr_v1_socket_fd_option(record.fd, 1, -1);
-        if result.ok {
-            record.output.nonblock = 1;
-            record.cloexec = u8::MAX;
-        }
-        result.warnings << FD_WARNINGS_SHIFT
+        self.attach(record.into_raw(), owner)
     }
 
     /// `init_options`: `TCP_NODELAY` for TCP, the default buffer size for UDP, and
     /// the default length protocol.
-    fn init_options(&mut self) -> u32 {
-        // SAFETY: the live record the constructor made.
-        let record = unsafe { &*self.socket };
+    fn init_options(&mut self, network: Socket<'_>) -> u32 {
+        let (tcp, fd, socket_type) =
+            network.read(|record| (record.is_tcp(), record.fd, record.socket_type));
         let mut result = 0;
-        if record.is_tcp() {
+        if tcp {
             let on: c_int = 1;
             // SAFETY: an int option of the size given.
             let set = unsafe {
                 libc::setsockopt(
-                    record.fd,
+                    fd,
                     libc::IPPROTO_TCP,
                     libc::TCP_NODELAY,
                     (&raw const on).cast(),
@@ -390,11 +384,11 @@ impl CoSocket {
                 result |= NODELAY_FAILED;
             }
         }
-        if matches!(record.socket_type, 2 | 4) {
+        if matches!(socket_type, 2 | 4) {
             // SAFETY: a plain read of the default, which only the owning thread assigns.
             let size =
                 unsafe { (*ptr::addr_of!(swoole_rs_reactor::swr_v1_socket_defaults)).buffer_size };
-            swoole_rs_reactor::swr_v1_socket_buffer_size(record.fd, true, true, size);
+            swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
         }
         self.protocol.package_length_type = b'N';
         self.protocol.package_length_size = 4;
@@ -403,6 +397,18 @@ impl CoSocket {
         self.protocol.package_max_length = SW_INPUT_BUFFER_SIZE;
         result
     }
+}
+
+/// `Socket::set_nonblock`: the `fd_option` warnings, shifted for the result.
+fn set_nonblock(network: Socket<'_>) -> u32 {
+    let result = swoole_rs_reactor::swr_v1_socket_fd_option(network.fd(), 1, -1);
+    if result.ok {
+        network.edit(|record| {
+            record.output.nonblock = 1;
+            record.cloexec = u8::MAX;
+        });
+    }
+    result.warnings << FD_WARNINGS_SHIFT
 }
 
 #[expect(
@@ -466,9 +472,10 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
     }
     let network = record.socket;
     // SAFETY: the socket's live network record, if any.
-    if unsafe { network.as_ref() }.is_some_and(|network| !network.ssl.is_null()) {
-        // SAFETY: the live record holds an SSL.
-        unsafe { socket_ssl_close(network) };
+    if let Some(socket) = unsafe { Socket::from_ptr(network) }
+        && !socket.read(|record| record.ssl.is_null())
+    {
+        socket_ssl_close(socket);
     }
     if !network.is_null() {
         // SAFETY: the live record, which nothing uses afterwards.
@@ -566,18 +573,21 @@ impl CoSocket {
                 domain_and_type(socket_type, &mut socket.sock_domain, &mut socket.sock_type);
             }
         }
-        if how == NEW_BY_FAMILY || how == NEW_BY_TYPE {
-            if !socket.open(owner) {
-                return 0;
-            }
+        let opened = if how == NEW_BY_FAMILY || how == NEW_BY_TYPE {
+            socket.open(owner)
         } else {
-            socket.adopt(fd, owner);
+            socket.adopt(fd, owner)
+        };
+        let Some(network) = opened else {
+            return 0;
+        };
+        if how != NEW_BY_FAMILY && how != NEW_BY_TYPE {
             if how == NEW_FD_BY_TYPE && socket_type == SOCK_RAW {
                 return result;
             }
-            result |= socket.set_nonblock();
+            result |= set_nonblock(network);
         }
-        result | socket.init_options()
+        result | socket.init_options(network)
     }
 }
 
@@ -602,12 +612,9 @@ impl CoSocket {
             socket.sock_protocol,
             OPEN_FLAGS,
         );
-        if made.is_null() {
-            return None;
-        }
         let old = socket.socket;
         // Upstream records the old type on the new socket before taking the new one.
-        socket.attach(made, owner);
+        socket.attach(made, owner)?;
         socket.sock_domain = domain;
         socket.sock_type = kind;
         socket.kind = socket_type;
@@ -624,6 +631,7 @@ impl CoSocket {
 pub(crate) unsafe fn accepted(server: Co, conn: *mut SocketRecord) -> Co {
     let mut socket = Box::new(CoSocket::new(SocketState::alloc()));
     let owner = ptr::from_mut(&mut *socket).cast::<c_void>();
+    let timeouts = server.net(|record| record.timeouts);
     // SAFETY: the server's live record, read here only.
     let server = unsafe { &*server.raw() };
     socket.kind = server.kind;
@@ -631,19 +639,20 @@ pub(crate) unsafe fn accepted(server: Co, conn: *mut SocketRecord) -> Co {
     socket.sock_type = server.sock_type;
     socket.sock_protocol = server.sock_protocol;
     socket.socket = conn;
-    {
-        // SAFETY: the live accepted record.
-        let record = unsafe { &mut *conn };
-        socket.sock_fd = record.fd;
-        record.object = owner;
-        record.socket_type = server.kind;
-        record.fd_type = FD_CO_SOCKET;
+    let mut result = OPENED;
+    // SAFETY: as the caller promises.
+    if let Some(network) = unsafe { Socket::from_ptr(conn) } {
+        socket.sock_fd = network.edit(|record| {
+            record.object = owner;
+            record.socket_type = server.kind;
+            record.fd_type = FD_CO_SOCKET;
+            record.fd
+        });
+        result |= socket.init_options(network);
+        if let Some(timeouts) = timeouts {
+            network.edit(|record| record.timeouts = timeouts);
+        }
     }
-    let result = OPENED | socket.init_options();
-    // SAFETY: the server's live record.
-    let timeouts = unsafe { (*server.socket).timeouts };
-    // SAFETY: the live accepted record.
-    unsafe { (*conn).timeouts = timeouts };
     socket.open_length_check = server.open_length_check;
     socket.open_eof_check = server.open_eof_check;
     socket.http2 = server.http2;

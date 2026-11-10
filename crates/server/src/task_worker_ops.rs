@@ -27,7 +27,7 @@ use swoole_rs_process::workers::ops::{
     OP_WORKER_START_CALLBACK, OP_WORKER_STATUS, OP_WORKER_STOP_CALLBACK, OP_WRITE_RESULT_FILE,
     OP_ZERO_RESULT,
 };
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::{Socket, SocketRecord};
 
 use crate::callbacks::{CB_PIPE_MESSAGE, CB_TASK};
 use crate::commands::CommandFn;
@@ -61,6 +61,11 @@ impl Context {
     fn server(&self) -> view::Server<'_> {
         // SAFETY: the method that built the context lent its live server for the call.
         unsafe { view::Server::from_raw(self.serv) }
+    }
+    /// The pipe or stream socket the op runs over, if any.
+    fn socket(&self) -> Option<Socket<'_>> {
+        // SAFETY: null, or the live socket the method that built the context lent.
+        unsafe { Socket::from_ptr(self.socket) }
     }
 }
 
@@ -301,14 +306,12 @@ fn task(ctx: &mut Context, op: u32) -> Option<u64> {
             signed(unsafe { slot.receive(serv, ctx.task.cast_mut().cast()) })
         }
         OP_READ_TASK => {
-            // SAFETY: the live pipe socket the task arrives on.
-            let fd = unsafe { (*ctx.socket).fd };
+            let fd = ctx.socket()?.fd();
             // SAFETY: a whole `EventData` to read into.
             signed(unsafe { libc::read(fd, ctx.buf.cast(), EVENT_DATA_SIZE) } as i64)
         }
         LOG_READ_TASK => {
-            // SAFETY: as above.
-            let fd = unsafe { (*ctx.socket).fd };
+            let fd = ctx.socket().map_or(-1, Socket::fd);
             log::sys_warning(
                 c"TaskWorker_onPipeReceive",
                 format_args!("read({fd}, {EVENT_DATA_SIZE}) failed"),
@@ -476,12 +479,11 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
         OP_NOTIFY_WOULD_BLOCK => {
             let error = errno();
             let socket = crate::objects::socket(master_socket().cast())?;
-            u64::from(socket.catch_error(error) == SW_WAIT)
+            u64::from(socket.edit(|s| s.catch_error(error)) == SW_WAIT)
         }
         OP_WAIT_NOTIFY_WRITABLE => {
-            let wait = swoole_rs_reactor::socket_upstream::socket_wait_event;
-            // SAFETY: the notify pipe's live master socket.
-            signed(wait(unsafe { &*master_socket() }, -1, SW_EVENT_WRITE))
+            let socket = crate::objects::socket(master_socket().cast())?;
+            signed(socket.wait_event(-1, SW_EVENT_WRITE))
         }
         _ => return None,
     })
