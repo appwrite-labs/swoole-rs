@@ -4,7 +4,6 @@
 //! `swoole_http_request.cc` did. llhttp and the multipart parser stay the
 //! bundled C (third-party); what Swoole itself owns goes through `host`.
 use crate::host;
-use crate::server::new_zval;
 use crate::state::{Slot, State};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
@@ -18,11 +17,10 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_server::view;
 use swoole_rs_zend::sys::{
-    IS_DOUBLE, swr_zend_http_add_or_merge, swr_zend_http_estrndup, swr_zend_http_intern,
+    swr_zend_http_add_or_merge, swr_zend_http_estrndup, swr_zend_http_intern,
     swr_zend_http_max_input_vars, swr_zend_http_property_array, swr_zend_http_property_offset,
-    swr_zend_http_treat_data, swr_zend_http_upload, swr_zval_str, swr_zval_stringl,
-    zend_class_entry, zend_hash_add_new, zend_hash_str_find, zend_hash_update, zend_object,
-    zend_string, zend_value, zval,
+    swr_zend_http_treat_data, swr_zend_http_upload, zend_class_entry, zend_hash_add_new,
+    zend_hash_str_find, zend_hash_update, zend_object, zend_string, zval,
 };
 use swoole_rs_zend::{Owned, OwnedArray, Value, ZString, string, value};
 
@@ -332,18 +330,20 @@ pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
 }
 
 /// `http_server_add_server_array`: `$request->server[key] = value`.
-fn add_server(state: &State, key_: Key, value_: &mut zval) {
+fn add_server(state: &State, key_: Key, value_: Owned) {
+    let mut value_ = value_.into_zval();
     // SAFETY: the request's `server` array, created with the request.
     let table = unsafe { value::table(state.request.zserver.ptr) };
     // SAFETY: a live table, an interned key and a value it takes over.
-    unsafe { zend_hash_add_new(table, key(key_), value_) };
+    unsafe { zend_hash_add_new(table, key(key_), &raw mut value_) };
 }
 
-fn stringl(bytes: *const u8, length: usize) -> zval {
-    let mut target = new_zval();
+/// A new string of the `length` bytes at `bytes`.
+fn stringl(bytes: *const u8, length: usize) -> Owned {
     // SAFETY: `bytes` spans `length` readable bytes, per every caller.
-    unsafe { swr_zval_stringl(&raw mut target, bytes.cast(), length) };
-    target
+    Owned::string(ZString::new(unsafe {
+        std::slice::from_raw_parts(bytes, length)
+    }))
 }
 
 fn estrndup(bytes: *const u8, length: usize) -> *mut c_char {
@@ -493,8 +493,7 @@ fn url(state: &mut State, at: *const u8, length: usize) -> c_int {
         return 0;
     }
     let query = at.wrapping_add(parts.query_offset);
-    let mut tmp = stringl(query, parts.query_length);
-    add_server(state, Key::QueryString, &mut tmp);
+    add_server(state, Key::QueryString, stringl(query, parts.query_length));
     let get = property(state, Property::Get);
     treat_data(PARSE_STRING, query, parts.query_length, get);
     0
@@ -711,7 +710,7 @@ fn header_value(state: &mut State, at: *const u8, length: usize) -> c_int {
         RequestHeader::Compression => compression_method(state, at, length),
         RequestHeader::Append => {}
     }
-    let mut tmp = stringl(at, length);
+    let mut tmp = stringl(at, length).into_zval();
     // The request's `header` array, created with the request.
     let header = state.request.zheader.ptr;
     if let Some(&known) = request_key(name).and_then(|index| HEADER_KEYS.get(index)) {
@@ -756,21 +755,17 @@ unsafe extern "C" fn on_headers_complete(parser: *mut crate::state::Llhttp) -> c
     request.ext_len = ext_len;
 
     let method = method_name(state);
-    let mut tmp = stringl(method.as_ptr().cast(), method.count_bytes());
-    add_server(state, Key::RequestMethod, &mut tmp);
-    let mut tmp = stringl(path.as_ptr(), path.len());
-    add_server(state, Key::RequestUri, &mut tmp);
+    let method = Owned::string(ZString::new(method.to_bytes()));
+    add_server(state, Key::RequestMethod, method);
+    add_server(state, Key::RequestUri, Owned::string(ZString::new(path)));
 
     // path_info should be decoded
-    let decoded = string::copy(path);
+    let decoded = ZString::new(path);
     // SAFETY: a fresh string of `path.len()` bytes, decoded in place.
-    let decoded_len = unsafe { php_url_decode(string::val(decoded).cast(), path.len()) };
-    // SAFETY: the decoded bytes fit the string.
-    unsafe { (*decoded).len = decoded_len };
-    let mut tmp = new_zval();
-    // SAFETY: the zval takes over the fresh string.
-    unsafe { swr_zval_str(&raw mut tmp, decoded) };
-    add_server(state, Key::PathInfo, &mut tmp);
+    let decoded_len = unsafe { php_url_decode(string::val(decoded.as_ptr()).cast(), path.len()) };
+    // SAFETY: the decoded bytes fit the string, which nothing else holds.
+    unsafe { (*decoded.as_ptr()).len = decoded_len };
+    add_server(state, Key::PathInfo, Owned::string(decoded));
     request_times(state);
     let protocol = if state.request.version == 101 {
         Key::Http11
@@ -791,22 +786,15 @@ unsafe extern "C" fn on_headers_complete(parser: *mut crate::state::Llhttp) -> c
 pub(crate) fn request_times(state: &State) {
     // SAFETY: `time(NULL)`.
     let now = unsafe { libc::time(ptr::null_mut()) };
-    let mut tmp = new_zval();
-    // SAFETY: an empty zval.
-    unsafe { value::set_long(&raw mut tmp, now) };
-    add_server(state, Key::RequestTime, &mut tmp);
-    let mut tmp = new_zval();
-    tmp.value = zend_value { dval: microtime() };
-    tmp.u1.type_info = IS_DOUBLE;
-    add_server(state, Key::RequestTimeFloat, &mut tmp);
+    add_server(state, Key::RequestTime, Owned::long(now));
+    add_server(state, Key::RequestTimeFloat, Owned::double(microtime()));
 }
 
 /// `$request->server['server_protocol']`, an interned protocol name.
 pub(crate) fn add_protocol(state: &State, protocol: Key) {
-    let mut tmp = new_zval();
-    // SAFETY: an interned string, which ZVAL_STR does not count.
-    unsafe { swr_zval_str(&raw mut tmp, key(protocol)) };
-    add_server(state, Key::ServerProtocol, &mut tmp);
+    // SAFETY: an interned string, whose reference release ignores.
+    let protocol = unsafe { ZString::from_raw(key(protocol)) };
+    add_server(state, Key::ServerProtocol, Owned::string(protocol));
 }
 
 fn microtime() -> f64 {

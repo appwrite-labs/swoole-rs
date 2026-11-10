@@ -508,6 +508,16 @@ impl Owned {
         Self(Value(UnsafeCell::new(crate::long_zval(value))))
     }
 
+    /// `ZVAL_DOUBLE`.
+    #[must_use]
+    #[inline]
+    pub fn double(value: f64) -> Self {
+        let mut zval = UNDEF;
+        zval.value = zend_value { dval: value };
+        zval.u1.type_info = IS_DOUBLE;
+        Self(Value(UnsafeCell::new(zval)))
+    }
+
     /// `ZVAL_NULL`.
     #[must_use]
     #[inline]

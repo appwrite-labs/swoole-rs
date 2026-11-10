@@ -164,9 +164,7 @@ pub(crate) fn add(table: *mut HashTable, name: Key, string: *mut zend_string) {
 }
 
 pub(crate) fn add_long(table: *mut HashTable, name: Key, long: zend_long) {
-    let mut value = new_zval();
-    // SAFETY: writes a long into a local zval.
-    unsafe { swoole_rs_zend::value::set_long(&raw mut value, long) };
+    let mut value = swoole_rs_zend::long_zval(long);
     // SAFETY: as `add`.
     unsafe { zend_hash_add_new(table, key(name), &raw mut value) };
 }
