@@ -103,6 +103,12 @@ pub fn exception_class() -> *mut zend_class_entry {
     EXCEPTION.entry()
 }
 
+/// `Swoole\Exception`, to throw.
+#[must_use]
+pub fn exception() -> &'static Class {
+    &EXCEPTION
+}
+
 /// `PHP_MINIT_FUNCTION(swoole)`: the module globals and ini entries, the
 /// global constants, then `Swoole\Exception` and `Swoole\Error`
 /// (`swoole_exception_ce` and `swoole_error_ce`),

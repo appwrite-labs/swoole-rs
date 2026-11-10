@@ -149,6 +149,9 @@ pub struct Families {
     /// `php_swoole_timer_minit` and `php_swoole_timer_rshutdown`.
     pub timer_minit: Minit,
     pub timer_rshutdown: Hook,
+    /// `php_swoole_redis_server_minit` and `php_swoole_redis_server_rshutdown`.
+    pub redis_minit: Minit,
+    pub redis_rshutdown: Hook,
     /// `php_swoole_tracer_minit(threshold, blocking, profile, leaks)`, at MINIT, once.
     pub tracer_minit: unsafe fn(i64, bool, bool, bool),
     /// `Swoole\Thread`'s MINIT, then (after the thread locks') its barrier's,
@@ -247,11 +250,9 @@ unsafe extern "C" {
         module: c_int,
         features: u32,
     );
-    fn php_swoole_redis_server_minit(module_number: c_int);
     fn php_swoole_name_resolver_minit(module_number: c_int);
     fn php_swoole_runtime_mshutdown();
     fn php_swoole_runtime_rinit();
-    fn php_swoole_redis_server_rshutdown();
     fn php_swoole_runtime_rshutdown();
     fn php_swoole_process_rshutdown();
 }
@@ -325,7 +326,7 @@ pub(crate) fn startup(module_number: c_int) {
         M(http_minit::<3>),
         M(http_minit::<4>),
         M(http_minit::<5>),
-        M(php_swoole_redis_server_minit),
+        M(families.redis_minit),
         M(php_swoole_name_resolver_minit),
     ]);
     steps.extend(optional::minit());
@@ -589,7 +590,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
         Step::Hook(families.http.server_rshutdown),
         Step::Hook(families.http.response_rshutdown),
         Step::Hook(crate::asynchronous::rshutdown),
-        Step::Hook(php_swoole_redis_server_rshutdown),
+        Step::Hook(families.redis_rshutdown),
         Step::Hook(families.coroutine_rshutdown[0]),
         Step::Hook(families.coroutine_rshutdown[1]),
         Step::Hook(families.timer_rshutdown),

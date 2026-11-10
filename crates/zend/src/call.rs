@@ -437,6 +437,53 @@ impl Call {
         }
     }
 
+    /// `zend_update_property(scope, Z_OBJ_P(ZEND_THIS), name, value)`: the
+    /// property takes a copy. A dynamic property's deprecation runs the user
+    /// error handler, so this traps its bailout.
+    /// # Errors
+    /// The error handler bailed out.
+    pub fn update_property(
+        &self,
+        scope: Option<&Class>,
+        name: &[u8],
+        value: &Value,
+    ) -> Result<(), crate::bailout::Bailout> {
+        let scope = scope.map_or(ptr::null_mut(), Class::entry);
+        // SAFETY: a method's live `$this`, a registered class or null and a
+        // live value; Zend copies the name and the value.
+        let bailed = unsafe {
+            crate::sys::swr_zend_try_facade_update(
+                scope,
+                self.this(),
+                name.as_ptr().cast(),
+                name.len(),
+                value.as_ptr(),
+            )
+        };
+        crate::bailout::trapped(bailed)
+    }
+
+    /// `RETURN_ZVAL(zend_read_property(scope, Z_OBJ_P(ZEND_THIS), name, 1, &rv), 1, 0)`:
+    /// a copy of the property, read silently.
+    pub fn set_property(&self, scope: Option<&Class>, name: &[u8]) {
+        let scope = scope.map_or(ptr::null_mut(), Class::entry);
+        let rv = crate::Owned::default();
+        // SAFETY: a method's live `$this`, a registered class or null, and a
+        // slot for a computed value, which outlives the copy below.
+        let property = unsafe {
+            crate::sys::zend_read_property(
+                scope,
+                self.this(),
+                name.as_ptr().cast(),
+                name.len(),
+                true,
+                rv.as_ptr(),
+            )
+        };
+        // SAFETY: the property's live value, copied with a reference.
+        unsafe { crate::sys::swr_zval_copy(self.value, property) };
+    }
+
     /// `RETVAL_BOOL`.
     #[inline]
     pub fn set_bool(&self, value: bool) {
