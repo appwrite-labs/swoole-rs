@@ -151,8 +151,8 @@ extern "C-unwind" fn on_timer(multi: *mut c_void) {
 /// fired, before it is freed.
 pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> *mut c_void {
     let multi = ptr::from_ref(multi).cast_mut().cast();
-    // `on_timer` takes the multi, which outlives the timer.
-    swoole_rs_timer::swr_v1_timer_add_plain(ms, false, on_timer, multi)
+    // SAFETY: `on_timer` takes the multi, which deletes the timer before it goes.
+    unsafe { swoole_rs_timer::swr_v1_timer_add_plain(ms, false, on_timer, multi) }
 }
 
 /// # Safety

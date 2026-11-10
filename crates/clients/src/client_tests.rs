@@ -208,7 +208,7 @@ extern "C" fn listener(_: *mut c_void, event: c_int, _: *const c_char, length: u
     }
 }
 /// crates/timer's `swr_v1_timer_add_plain_sec`: logs, adds nothing.
-pub(super) fn swr_v1_timer_add_plain_sec(
+pub(super) unsafe fn swr_v1_timer_add_plain_sec(
     timeout: f64,
     _: bool,
     _: extern "C-unwind" fn(*mut c_void),

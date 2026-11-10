@@ -109,8 +109,13 @@ extern "C-unwind" fn swoole_timer_add(
 
 /// `swoole_timer_add(ms, persistent, ...)` of a callback of `data` alone: the
 /// node, or null.
+///
+/// # Safety
+/// Each time the timer fires, `callback(data)` meets `callback`'s contract:
+/// `data` stays valid for it until the timer has fired its last time or been
+/// deleted.
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn swr_v1_timer_add_plain(
+pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain(
     ms: c_long,
     persistent: bool,
     callback: Plain,
@@ -121,8 +126,11 @@ pub extern "C-unwind" fn swr_v1_timer_add_plain(
 
 /// `swoole_timer_add(timeout, persistent, ...)`, in seconds, of a callback of
 /// `data` alone: the node, or null.
+///
+/// # Safety
+/// As `swr_v1_timer_add_plain`.
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn swr_v1_timer_add_plain_sec(
+pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain_sec(
     timeout: f64,
     persistent: bool,
     callback: Plain,

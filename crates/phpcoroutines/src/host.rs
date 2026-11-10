@@ -678,7 +678,8 @@ pub unsafe fn timer_add(
     data: *mut c_void,
     f: unsafe extern "C-unwind" fn(*mut c_void),
 ) -> *mut c_void {
-    swoole_rs_timer::swr_v1_timer_add_plain_sec(timeout, false, f, data)
+    // SAFETY: per the caller, `f` accepts `data` when the timer fires.
+    unsafe { swoole_rs_timer::swr_v1_timer_add_plain_sec(timeout, false, f, data) }
 }
 
 /// `swoole_timer_del`.

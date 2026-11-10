@@ -334,7 +334,8 @@ pub(crate) unsafe fn answer(
         OP_HEARTBEAT_ENTRY => heartbeat_main as *const () as u64,
         OP_HEARTBEAT_TIMER | OP_RT_HEARTBEAT_TIMER => {
             let msec = c_long::from(config().heartbeat_check_interval) * 1000;
-            let timer = swr_v1_timer_add_plain(msec, true, heartbeat_check, reactor);
+            // SAFETY: `heartbeat_check` takes the reactor, which outlives its timers.
+            let timer = unsafe { swr_v1_timer_add_plain(msec, true, heartbeat_check, reactor) };
             if op == OP_HEARTBEAT_TIMER {
                 config().heartbeat_timer = timer;
             } else {
@@ -344,7 +345,11 @@ pub(crate) unsafe fn answer(
         }
         OP_RESUME_TIMER => {
             let msec = c_long::from(conn_ref().waiting_time);
-            let timer = swr_v1_timer_add_plain(msec, false, resume_data_receiving, ctx.sock.cast());
+            // SAFETY: `resume_data_receiving` takes the connection's socket, which
+            // deletes the timer before it goes.
+            let timer = unsafe {
+                swr_v1_timer_add_plain(msec, false, resume_data_receiving, ctx.sock.cast())
+            };
             conn_ref().timer = timer;
             u64::from(!timer.is_null())
         }

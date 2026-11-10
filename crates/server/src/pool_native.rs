@@ -657,12 +657,16 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         }
         OP_RELOAD_TIMER => {
             let task = record(pool).reload_task;
-            let timer = swr_v1_timer_add_plain(
-                c_long::from(record(pool).max_wait_time) * 1000,
-                false,
-                reload_timeout,
-                task.cast(),
-            );
+            // SAFETY: `reload_timeout` takes the pool's reload task, which
+            // deletes the timer before it goes.
+            let timer = unsafe {
+                swr_v1_timer_add_plain(
+                    c_long::from(record(pool).max_wait_time) * 1000,
+                    false,
+                    reload_timeout,
+                    task.cast(),
+                )
+            };
             // SAFETY: the pool's live reload task.
             unsafe { &mut *task }.set_timer(timer);
         }
@@ -735,12 +739,15 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
             }
         }
         OP_KILL_TIMER => {
-            swr_v1_timer_add_plain(
-                c_long::from(record(pool).max_wait_time) * 1000,
-                false,
-                kill_timeout,
-                pool.cast(),
-            );
+            // SAFETY: `kill_timeout` takes the pool, which outlives its timers.
+            unsafe {
+                swr_v1_timer_add_plain(
+                    c_long::from(record(pool).max_wait_time) * 1000,
+                    false,
+                    kill_timeout,
+                    pool.cast(),
+                )
+            };
         }
         _ => {}
     }

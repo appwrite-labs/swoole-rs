@@ -222,8 +222,9 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_ADD_HEARTBEAT_TIMER => {
             let msec = c_long::from(ctx.config().heartbeat_check_interval) * 1000;
             let reactor = ctx.reactor_handle().ptr();
-            // A persistent timer over the live reactor.
-            let node = swoole_rs_timer::swr_v1_timer_add_plain(msec, true, on_timeout, reactor);
+            // SAFETY: `on_timeout` takes the reactor, which outlives its timers.
+            let node =
+                unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, on_timeout, reactor) };
             ctx.config().heartbeat_timer = node;
             u64::from(!node.is_null())
         }

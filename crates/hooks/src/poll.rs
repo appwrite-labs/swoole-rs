@@ -336,8 +336,8 @@ pub(crate) mod native {
     }
 
     pub(super) fn timer_add(timeout: f64, task: *mut c_void) -> *mut c_void {
-        // The task outlives the timer, which fires or is deleted first.
-        swr_v1_timer_add_plain_sec(timeout, false, super::swr_v1_hook_poll_timeout, task)
+        // SAFETY: the task outlives the timer, which fires or is deleted first.
+        unsafe { swr_v1_timer_add_plain_sec(timeout, false, super::swr_v1_hook_poll_timeout, task) }
     }
 
     /// A one-shot timer calling `callback(data)` after `timeout` seconds, or null.
@@ -346,9 +346,8 @@ pub(crate) mod native {
         callback: extern "C-unwind" fn(*mut c_void),
         data: *mut c_void,
     ) -> *mut c_void {
-        // The callback takes any `data`; the caller deletes the timer before `data`
-        // goes.
-        swr_v1_timer_add_plain_sec(timeout, false, callback, data)
+        // SAFETY: a safe callback accepts any `data`.
+        unsafe { swr_v1_timer_add_plain_sec(timeout, false, callback, data) }
     }
 
     pub(crate) fn timer_del(timer: *mut c_void) {

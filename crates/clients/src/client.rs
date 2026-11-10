@@ -1534,8 +1534,11 @@ fn tcp_connect_async(this: Handle, host: *const c_char, port: c_int, timeout: f6
             // A finished connect needs no timeout timer; either way the write
             // handler runs the proxy and TLS handshakes.
             if ret < 0 && timeout > 0.0 {
-                // A timer over the live client, which deletes it first.
-                let timer = swr_v1_timer_add_plain_sec(timeout, false, on_timeout, this.0.cast());
+                // SAFETY: `on_timeout` takes the live client, which deletes the
+                // timer before it goes.
+                let timer = unsafe {
+                    swr_v1_timer_add_plain_sec(timeout, false, on_timeout, this.0.cast())
+                };
                 this.get().timer.set(timer);
                 if timer.is_null() {
                     return ERR;
