@@ -146,8 +146,6 @@ unsafe extern "C" {
     /// `E_ERROR` for an unconstructed one.
     static swoole_process_ce: *mut zend_class_entry;
     fn swr_v1_phpprocess_worker(object: *const zval, check: bool) -> *mut c_void;
-    /// `Swoole\Redis\Server` (crates/phpredis).
-    static swoole_redis_server_ce: *mut zend_class_entry;
     /// native/error/error.cc's `swoole_get_last_error_msg()`: `sw_error`.
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
@@ -162,8 +160,7 @@ fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> 
 /// What kind of Server `object` is: the most derived of `KIND_*`, else 0.
 fn kind(object: ServerObject) -> c_int {
     let ce = object.class();
-    // SAFETY: a class registered at MINIT, read-only since.
-    let redis = unsafe { swoole_redis_server_ce };
+    let redis = crate::server::REDIS_SERVER.entry();
     let http = swoole_rs_phpswoole::families().map(|families| &families.http);
     let websocket = http.map_or(ptr::null_mut(), |http| (http.websocket_class)());
     let http = http.map_or(ptr::null_mut(), |http| (http.server_class)());
