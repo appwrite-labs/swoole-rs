@@ -473,15 +473,28 @@ mod tests {
         assert_eq!(set(&ori_affinity), 0);
     }
 
-    /// Upstream's `os.set_isolation`: unknown names and a missing chroot only warn.
+    /// Upstream's `os.set_isolation`: unknown names and a missing chroot only warn. It runs
+    /// in a child, so that on a host where a name resolves or the directory exists the
+    /// credentials and root it changes are never the test process's.
     #[test]
     fn os_set_isolation() {
-        unsafe {
-            swr_v1_os_set_isolation(
-                c"not-exists-group".as_ptr(),
-                c"not-exists-user".as_ptr(),
-                c"/tmp/not-exists-dir".as_ptr(),
-            );
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork(2)");
+        if pid == 0 {
+            unsafe {
+                swr_v1_os_set_isolation(
+                    c"not-exists-group".as_ptr(),
+                    c"not-exists-user".as_ptr(),
+                    c"/tmp/not-exists-dir".as_ptr(),
+                );
+                libc::_exit(0);
+            }
         }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "{status}"
+        );
     }
 }
