@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `swoole::coroutine::Channel`: capacity, closed flag, last error, the data
-//! FIFO and both waiter queues, and pop/push/close as whole operations.
+//! FIFO (of any item type) and both waiter queues, and pop/push/close as whole
+//! operations.
 //!
 //! The host runs the coroutines through [`Effects`]: suspending the current one
 //! (with its timeout timer and cancel function) and resuming a waiter. No Rust
@@ -22,12 +23,11 @@ pub const ERROR_CANCELED: i32 = -3;
 pub const CANCELED: u32 = 1;
 pub const TIMEDOUT: u32 = 2;
 
-#[derive(Default)]
-pub struct Channel {
+pub struct Channel<T> {
     capacity: usize,
     closed: bool,
     error: i32,
-    data: VecDeque<*mut c_void>,
+    data: VecDeque<T>,
     producers: VecDeque<*mut c_void>,
     consumers: VecDeque<*mut c_void>,
 }
@@ -36,22 +36,25 @@ pub struct Channel {
 pub trait Effects {
     /// The current coroutine, queued as a waiter.
     fn current(&self) -> *mut c_void;
-    /// Suspends the current coroutine, already queued under `role` in `ch`,
-    /// until it is resumed, canceled or its timeout fires. The timer is
-    /// deleted before this returns `CANCELED` and/or `TIMEDOUT` bits; the
-    /// operation then removes the waiter ([`Channel::remove`]) if a cancel or
-    /// timeout has not.
-    fn wait(&mut self, ch: &UnsafeCell<Channel>, role: u32) -> u32;
+    /// Suspends the current coroutine, already queued as a waiter, until it
+    /// is resumed, canceled or its timeout fires. The timer is deleted before
+    /// this returns `CANCELED` and/or `TIMEDOUT` bits; the operation then
+    /// removes the waiter ([`Channel::remove`]) before anything else runs.
+    fn wait(&mut self) -> u32;
     /// Resumes a waiter just taken from a queue.
     fn resume(&mut self, co: *mut c_void);
 }
 
-impl Channel {
+impl<T> Channel<T> {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
-            ..Self::default()
+            closed: false,
+            error: ERROR_OK,
+            data: [].into(),
+            producers: [].into(),
+            consumers: [].into(),
         }
     }
 
@@ -74,9 +77,9 @@ impl Channel {
         queue.retain(|&entry| entry != co);
     }
 
-    /// Removes and returns the oldest item, or null when empty.
-    pub fn pop_data(&mut self) -> *mut c_void {
-        self.data.pop_front().unwrap_or(core::ptr::null_mut())
+    /// Removes and returns the oldest item.
+    pub fn pop_data(&mut self) -> Option<T> {
+        self.data.pop_front()
     }
 
     #[must_use]
@@ -112,7 +115,7 @@ impl Channel {
 
 /// `f` of the channel, which no other borrow reaches meanwhile: the cell is not
 /// `Sync`, and `f` (only the bodies below) runs no effect.
-fn with<R>(ch: &UnsafeCell<Channel>, f: impl FnOnce(&mut Channel) -> R) -> R {
+fn with<T, R>(ch: &UnsafeCell<Channel<T>>, f: impl FnOnce(&mut Channel<T>) -> R) -> R {
     // SAFETY: as above.
     f(unsafe { &mut *ch.get() })
 }
@@ -128,7 +131,7 @@ pub struct Stats {
 }
 
 /// The channel's [`Stats`].
-pub fn stats(ch: &UnsafeCell<Channel>) -> Stats {
+pub fn stats<T>(ch: &UnsafeCell<Channel<T>>) -> Stats {
     with(ch, |c| Stats {
         error: c.error,
         length: c.length(),
@@ -138,17 +141,17 @@ pub fn stats(ch: &UnsafeCell<Channel>) -> Stats {
     })
 }
 
-/// [`Channel::pop_data`]: the oldest item without waiting, or null.
-pub fn take(ch: &UnsafeCell<Channel>) -> *mut c_void {
+/// [`Channel::pop_data`]: the oldest item without waiting.
+pub fn take<T>(ch: &UnsafeCell<Channel<T>>) -> Option<T> {
     with(ch, Channel::pop_data)
 }
 
 /// Queues the current coroutine as a `role` waiter and suspends it. Returns the
 /// error to report, or `ERROR_OK` to proceed.
-fn wait(ch: &UnsafeCell<Channel>, fx: &mut impl Effects, role: u32) -> i32 {
+fn wait<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects, role: u32) -> i32 {
     let co = fx.current();
     with(ch, |c| c.queue(role).push_back(co));
-    let flags = fx.wait(ch, role);
+    let flags = fx.wait();
     if flags != 0 {
         with(ch, |c| c.remove(role, co));
     }
@@ -162,16 +165,16 @@ fn wait(ch: &UnsafeCell<Channel>, fx: &mut impl Effects, role: u32) -> i32 {
 }
 
 /// Sets the error unless it is `ERROR_OK`; whether it was.
-fn ok(ch: &UnsafeCell<Channel>, status: i32) -> bool {
+fn ok<T>(ch: &UnsafeCell<Channel<T>>, status: i32) -> bool {
     if status != ERROR_OK {
         with(ch, |c| c.error = status);
     }
     status == ERROR_OK
 }
 
-/// `Channel::pop`: the oldest item, or null with the error set. After the
+/// `Channel::pop`: the oldest item, or None with the error set. After the
 /// final resume the channel is not touched.
-pub fn pop(ch: &UnsafeCell<Channel>, fx: &mut impl Effects) -> *mut c_void {
+pub fn pop<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects) -> Option<T> {
     let (closed, wait_first) = with(ch, |c| {
         (
             c.closed && c.data.is_empty(),
@@ -180,7 +183,7 @@ pub fn pop(ch: &UnsafeCell<Channel>, fx: &mut impl Effects) -> *mut c_void {
     });
     if closed {
         ok(ch, ERROR_CLOSED);
-        return core::ptr::null_mut();
+        return None;
     }
     if wait_first {
         let status = wait(ch, fx, CONSUMER);
@@ -193,7 +196,7 @@ pub fn pop(ch: &UnsafeCell<Channel>, fx: &mut impl Effects) -> *mut c_void {
                 status
             },
         ) {
-            return core::ptr::null_mut();
+            return None;
         }
     }
     let (data, producer) = with(ch, |c| (c.pop_data(), c.producers.pop_front()));
@@ -203,12 +206,15 @@ pub fn pop(ch: &UnsafeCell<Channel>, fx: &mut impl Effects) -> *mut c_void {
     data
 }
 
-/// `Channel::push`: false with the error set when it fails. After the final
-/// resume the channel is not touched.
-pub fn push(ch: &UnsafeCell<Channel>, fx: &mut impl Effects, data: *mut c_void) -> bool {
+/// `Channel::push`: `data` back, with the error set, when it fails. After the
+/// final resume the channel is not touched.
+/// # Errors
+/// `data`, not queued: the channel is closed, or the wait timed out or was canceled.
+pub fn push<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects, data: T) -> Result<(), T> {
     let (closed, wait_first) = with(ch, |c| (c.closed, c.is_full() || !c.producers.is_empty()));
     if closed {
-        return ok(ch, ERROR_CLOSED);
+        ok(ch, ERROR_CLOSED);
+        return Err(data);
     }
     if wait_first {
         let status = wait(ch, fx, PRODUCER);
@@ -221,7 +227,7 @@ pub fn push(ch: &UnsafeCell<Channel>, fx: &mut impl Effects, data: *mut c_void) 
                 status
             },
         ) {
-            return false;
+            return Err(data);
         }
     }
     let consumer = with(ch, |c| {
@@ -231,11 +237,11 @@ pub fn push(ch: &UnsafeCell<Channel>, fx: &mut impl Effects, data: *mut c_void) 
     if let Some(co) = consumer {
         fx.resume(co);
     }
-    true
+    Ok(())
 }
 
 /// `Channel::close`: wakes producers, then consumers.
-pub fn close(ch: &UnsafeCell<Channel>, fx: &mut impl Effects) -> bool {
+pub fn close<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects) -> bool {
     if with(ch, |c| std::mem::replace(&mut c.closed, true)) {
         return false;
     }

@@ -16,7 +16,7 @@
 //! more than two seconds.
 use crate::fixed::{self, Fixed, Layout, Slice};
 use std::cell::UnsafeCell;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_int, c_void};
 use std::mem::{offset_of, size_of};
 use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -42,8 +42,11 @@ const SW_ERROR_MALLOC_FAIL: c_int = 501;
 /// `swr_v1_locks` kind of a pthread mutex.
 const MUTEX: i32 = 3;
 
-/// The host's hash of a key (`swoole_hash_php`, or Zend's for `Swoole\Table`).
-pub type Hash = unsafe extern "C" fn(key: *const c_char, length: usize) -> u64;
+/// The host's hash of a key as the caller passed it, whose row compares its
+/// first `compared` bytes: upstream's `hash_func(key, keylen)`, which
+/// `swoole_hash_php` reads `compared` bytes of and `Swoole\Table`'s hook the
+/// whole PHP string.
+pub type Hash = fn(key: &[u8], compared: usize) -> u64;
 /// Logs one whole warning line, as `swoole_warning` does.
 pub type Warning = fn(message: &[u8]);
 /// `swoole_set_last_error`.
@@ -356,9 +359,15 @@ fn warn(warning: Warning, message: &[u8]) {
     warning(message);
 }
 
-/// `check_key_length`: keys are cut to 63 bytes.
+/// The bytes of a key a row holds: its `uint16_t` length (as upstream's
+/// `Table` takes it), then `check_key_length`'s 63 bytes.
 fn clamp(key: &[u8]) -> &[u8] {
-    key.get(..KEY_SIZE - 1).unwrap_or(key)
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "upstream's Table takes uint16_t key lengths"
+    )]
+    let length = usize::from(key.len() as u16);
+    key.get(..length.min(KEY_SIZE - 1)).unwrap_or(key)
 }
 
 /// `TableRow::set_value()`: a number's 8 bytes, or a string cut to the
@@ -755,15 +764,16 @@ impl Table {
         if row.active() { row.0 } else { ptr::null_mut() }
     }
 
-    /// The bucket a (clamped) key hashes to.
-    fn bucket(&self, key: &[u8]) -> Live {
-        // SAFETY: the host's hash reads `key.len()` bytes.
-        let hash = unsafe { (self.hash)(key.as_ptr().cast(), key.len()) };
+    /// The bucket `key` hashes to, and the bytes its row compares ([`clamp`]).
+    fn bucket<'k>(&self, key: &'k [u8]) -> (Live, &'k [u8]) {
+        let compared = clamp(key);
+        let hash = (self.hash)(key, compared.len());
         #[expect(
             clippy::cast_possible_truncation,
             reason = "masked below the row count"
         )]
-        self.bucket_row((hash & (self.size as u64 - 1)) as usize)
+        let row = self.bucket_row((hash & (self.size as u64 - 1)) as usize);
+        (row, compared)
     }
 
     fn claim(&self, row: Live, key: &[u8]) {
@@ -778,8 +788,7 @@ impl Table {
         if !self.created {
             return ptr::null_mut();
         }
-        let key = clamp(key);
-        let root = self.bucket(key);
+        let (root, key) = self.bucket(key);
         *lock = root.0;
         root.lock(self.warning);
         let mut found = 0;
@@ -827,8 +836,7 @@ impl Table {
         if !self.created {
             return ptr::null_mut();
         }
-        let key = clamp(key);
-        let mut row = self.bucket(key);
+        let (mut row, key) = self.bucket(key);
         *lock = row.0;
         row.lock(self.warning);
         while row.key() != key {
@@ -856,8 +864,7 @@ impl Table {
         if !self.created {
             return false;
         }
-        let key = clamp(key);
-        let root = self.bucket(key);
+        let (root, key) = self.bucket(key);
         if !root.active() {
             return false;
         }

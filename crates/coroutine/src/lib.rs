@@ -20,7 +20,7 @@ pub use coroutine::*;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod facade;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub use facade::swr_v1_coroutine_create;
+pub use facade::{resumed, swr_v1_coroutine_create, wait};
 mod live;
 pub use live::*;
 mod scheduler;

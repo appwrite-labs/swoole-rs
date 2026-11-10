@@ -560,6 +560,13 @@ fn table_warning(message: &[u8]) {
     log::warning(&origin, format_args!("{rest}"));
 }
 
+/// `swoole_hash_php` of the bytes a row compares: a made table's hash.
+fn php_hash(key: &[u8], compared: usize) -> u64 {
+    let key = key.get(..compared).unwrap_or(key);
+    // SAFETY: `key` holds its length.
+    unsafe { swoole_rs_utilities::misc::swoole_hash_php(key.as_ptr().cast(), key.len()) }
+}
+
 /// `Table::make(rows_size, conflict_proportion)`: the header comes from the global
 /// memory pool, so forked workers share it.
 #[must_use]
@@ -569,9 +576,8 @@ pub fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
     if table.is_null() {
         return table;
     }
-    let hash = swoole_rs_utilities::misc::swoole_hash_php;
     // SAFETY: the pool's blocks are 8-aligned; `size_of::<Table>()` writable bytes.
-    if unsafe { !Table::init(table, rows, conflict, hash, table_warning, table_error) } {
+    if unsafe { !Table::init(table, rows, conflict, php_hash, table_warning, table_error) } {
         return ptr::null_mut();
     }
     table

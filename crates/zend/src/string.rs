@@ -1,16 +1,14 @@
 //! Non-persistent `zend_string`s: allocated here, handed to Zend by a return
 //! value or an array, or freed.
 use crate::sys::{swr_zend_string_alloc, zend_hash_func, zend_string};
-use std::{ffi::c_char, mem::offset_of};
+use std::mem::offset_of;
 
-/// `zend_hash_func`: the hash a `zend_string` of these bytes caches, for a
-/// host that takes a C hash function.
-/// # Safety
-/// `key` points at `length` readable bytes.
+/// `zend_hash_func`: the hash a `zend_string` of these bytes caches
+/// (`zend_string_hash_val`), whatever length of it the caller compares.
 #[must_use]
-pub unsafe extern "C" fn hash(key: *const c_char, length: usize) -> u64 {
-    // SAFETY: per the caller; Zend reads the bytes only.
-    unsafe { zend_hash_func(key, length) }
+pub fn hash(key: &[u8], _compared: usize) -> u64 {
+    // SAFETY: Zend reads the slice's bytes only.
+    unsafe { zend_hash_func(key.as_ptr().cast(), key.len()) }
 }
 
 /// `ZSTR_VAL`/`ZSTR_LEN` as bytes (without the terminating NUL, which follows).

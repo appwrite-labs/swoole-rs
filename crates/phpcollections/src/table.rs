@@ -53,7 +53,8 @@ impl Held {
     fn get(&self) -> Option<Rc<SharedTable>> {
         let table = self.0.take();
         let copy = table.clone();
-        self.0.set(table);
+        // Still empty: cloning an `Rc` runs no code, so nothing filled the slot.
+        std::mem::forget(self.0.replace(table));
         copy
     }
 }
@@ -188,16 +189,6 @@ fn change(call: &Call, change: impl FnOnce(&mut SharedTable) -> bool) -> bool {
     let changed = table.as_mut().and_then(Rc::get_mut).is_some_and(change);
     held.0.set(table);
     changed
-}
-
-/// The key as upstream passes it: its length cut to a `uint16_t`.
-fn table_key(key: &[u8]) -> &[u8] {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream passes size_t keys as uint16_t"
-    )]
-    let length = key.len() as u16;
-    key.get(..usize::from(length)).unwrap_or(key)
 }
 
 /// `__construct(int $table_size, float $conflict_proportion = 0.2)`.
@@ -342,7 +333,7 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Some(row) = table.lock_set(table_key(key)).filter(Locked::found) else {
+    let Some(row) = table.lock_set(key).filter(Locked::found) else {
         set_failed(key);
         call.set_bool(false);
         return;
@@ -373,7 +364,7 @@ fn update(call: &Call, subtract: bool) {
         return;
     };
     let by = call.value(3);
-    let Some(row) = table.lock_set(table_key(key)).filter(Locked::found) else {
+    let Some(row) = table.lock_set(key).filter(Locked::found) else {
         fatal(E_WARNING, c"unable to allocate memory");
         call.set_bool(false);
         return;
@@ -511,7 +502,7 @@ fn get(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let Some(row) = table.lock_get(table_key(key)).filter(Locked::found) else {
+    let Some(row) = table.lock_get(key).filter(Locked::found) else {
         call.set_bool(false);
         return;
     };
@@ -542,14 +533,14 @@ fn key(call: &Call) -> Option<&[u8]> {
 fn exists(call: &Call) {
     let Some(table) = created(call) else { return };
     let Some(key) = key(call) else { return };
-    call.set_bool(table.exists(table_key(key)));
+    call.set_bool(table.exists(key));
 }
 
 /// `del(string $key): bool`.
 fn del(call: &Call) {
     let Some(table) = created(call) else { return };
     let Some(key) = key(call) else { return };
-    call.set_bool(table.del(table_key(key)));
+    call.set_bool(table.del(key));
 }
 
 /// `count(int $mode = COUNT_NORMAL): int`.

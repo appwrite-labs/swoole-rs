@@ -86,14 +86,13 @@ impl Raw for Table {
 }
 
 /// `swoole_hash_php` (DJB "times 33"), as upstream's default.
-unsafe extern "C" fn djb(key: *const c_char, length: usize) -> u64 {
-    let bytes = unsafe { slice::from_raw_parts(key.cast::<u8>(), length) };
-    bytes.iter().fold(5381u64, |hash, &byte| {
+fn djb(key: &[u8], compared: usize) -> u64 {
+    key[..compared].iter().fold(5381u64, |hash, &byte| {
         hash.wrapping_mul(33).wrapping_add(u64::from(byte))
     })
 }
 
-unsafe extern "C" fn collide(_: *const c_char, _: usize) -> u64 {
+fn collide(_: &[u8], _: usize) -> u64 {
     0
 }
 
@@ -277,6 +276,24 @@ fn long_keys_are_cut_to_63_bytes() {
     assert_eq!(unsafe { row_key(row) }, &long[..63]);
     unsafe { unlock(lock) };
     assert!(t.exists(&long[..80]) && t.del(&long));
+}
+
+/// `Swoole\Table`'s hook hashes the whole PHP string, not the 63 bytes a row
+/// compares: keys sharing those bytes find each other only in one bucket.
+#[test]
+#[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
+fn the_hash_sees_the_whole_key() {
+    fn length(key: &[u8], compared: usize) -> u64 {
+        assert_eq!(compared, key.len().min(63));
+        key.len() as u64
+    }
+    let mut table = three_columns(64, 0.2);
+    table.get_mut().set_hash(length);
+    let t = table.get();
+    let long = [b'q'; 100];
+    put(t, &long, 7);
+    assert!(t.exists(&long) && t.exists(&[b'q'; 164]));
+    assert!(!t.exists(&long[..80]) && !t.del(&long[..80]));
 }
 
 #[test]
@@ -591,7 +608,7 @@ impl Drop for Upstream {
     }
 }
 
-unsafe extern "C" fn one(_: *const c_char, _: usize) -> u64 {
+fn one(_: &[u8], _: usize) -> u64 {
     1
 }
 

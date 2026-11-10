@@ -1,7 +1,7 @@
 //! PHP `Swoole\Coroutine\Channel`: class registration, object handlers and every
 //! method. The queue is crates/phpcoroutines' channel; values cross it as owned
 //! zval copies.
-use swoole_rs_phpcoroutines::channel::{Channel, Stats};
+use swoole_rs_phpcoroutines::channel::{Channel, Queue, Stats};
 use swoole_rs_phpstubs::channel_coro;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned,
@@ -40,17 +40,20 @@ impl Custom for Chan {
 
     /// `channel_coro_dtor_object`: free every queued value, then the channel.
     fn destruct(&self) {
-        while let Some(value) = self.0.take() {
-            drop(value);
-        }
-        self.release();
+        self.release(drop);
     }
 }
 
 impl Chan {
-    /// `Channel::~Channel`: warns about the coroutines still waiting.
-    fn release(&self) {
-        let Some(stats) = self.0.release() else {
+    /// Give each queued value to `free` (the channel stays meanwhile), then
+    /// `Channel::~Channel`: warn about the coroutines still waiting.
+    fn release(&self, free: impl Fn(Owned)) {
+        if let Some(queue) = self.0.queue() {
+            while let Some(value) = queue.take() {
+                free(value);
+            }
+        }
+        let Some(stats) = self.0.release().as_ref().map(Queue::stats) else {
             return;
         };
         for (count, role) in [
@@ -73,10 +76,7 @@ impl Drop for Chan {
     /// The free handler when the destructor did not run: upstream deletes the
     /// channel and leaves its values.
     fn drop(&mut self) {
-        while let Some(value) = self.0.take() {
-            std::mem::forget(value);
-        }
-        self.release();
+        self.release(std::mem::forget);
     }
 }
 
@@ -112,16 +112,15 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
 }
 
 /// `channel_coro_get_ptr`: the channel, or Swoole's fatal error (which exits).
-fn channel(call: &Call) -> Option<&Channel<Owned>> {
-    let chan = &call.custom::<Chan>()?.0;
-    if !chan.is_open() {
+fn channel(call: &Call) -> Option<Queue<Owned>> {
+    let queue = call.custom::<Chan>()?.0.queue();
+    if queue.is_none() {
         bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
             SW_ERROR_WRONG_OPERATION,
             c"must call constructor first",
         ));
-        return None;
     }
-    Some(chan)
+    queue
 }
 
 /// `$this->errCode = $code`, as the class sees it.
@@ -147,36 +146,42 @@ fn construct(call: &Call) {
 /// `push(mixed $data, float $timeout = -1): bool`: the channel holds a copy
 /// with its own reference (`sw_zval_dup`).
 fn push(call: &Call) {
-    let Some(chan) = channel(call) else { return };
+    let Some(queue) = channel(call) else { return };
     let Ok(timeout) = call.arity(1, 2).and_then(|()| call.double(2, -1.0)) else {
         call.set_bool(false);
         return;
     };
     let Some(data) = call.value(1) else { return };
-    let pushed = chan.push(data.copy(), timeout).is_ok();
-    set_error(call, if pushed { ERROR_OK } else { error(chan) });
-    call.set_bool(pushed);
+    match queue.push(data.copy(), timeout) {
+        Ok(()) => {
+            set_error(call, ERROR_OK);
+            call.set_bool(true);
+        }
+        Err((value, error)) => {
+            set_error(call, error.into());
+            drop(value);
+            call.set_bool(false);
+        }
+    }
 }
 
 /// `pop(float $timeout = -1): mixed`: the result takes over the copy's reference.
 fn pop(call: &Call) {
-    let Some(chan) = channel(call) else { return };
+    let Some(queue) = channel(call) else { return };
     let Ok(timeout) = call.arity(0, 1).and_then(|()| call.double(1, -1.0)) else {
         call.set_bool(false);
         return;
     };
-    if let Some(value) = chan.pop(timeout) {
-        call.set_owned(value);
-        set_error(call, ERROR_OK);
-    } else {
-        set_error(call, error(chan));
-        call.set_bool(false);
+    match queue.pop(timeout) {
+        Ok(value) => {
+            call.set_owned(value);
+            set_error(call, ERROR_OK);
+        }
+        Err(error) => {
+            set_error(call, error.into());
+            call.set_bool(false);
+        }
     }
-}
-
-/// The channel's last error.
-fn error(chan: &Channel<Owned>) -> i64 {
-    chan.stats().map_or(ERROR_OK, |stats| stats.error.into())
 }
 
 #[expect(clippy::cast_possible_wrap, reason = "queue sizes fit a zend_long")]
@@ -186,15 +191,15 @@ fn long(size: usize) -> i64 {
 
 /// `close(): bool`, which wakes every waiter.
 fn close(call: &Call) {
-    if let Some(chan) = channel(call) {
-        call.set_bool(chan.close());
+    if let Some(queue) = channel(call) {
+        call.set_bool(queue.close());
     }
 }
 
 /// The methods that read the channel: `length(): int`, `isEmpty(): bool`,
 /// `isFull(): bool` and `stats(): array`.
 fn query(call: &Call, answer: impl FnOnce(&Call, Stats)) {
-    if let Some(stats) = channel(call).and_then(Channel::stats) {
+    if let Some(stats) = channel(call).as_ref().map(Queue::stats) {
         answer(call, stats);
     }
 }

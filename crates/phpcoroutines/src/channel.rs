@@ -1,63 +1,27 @@
 //! `swoole::coroutine::Channel` of owned values on PHP's coroutines: the
-//! coroutine crate's queue, whose waits are `Coroutine::yield_ex` (a timeout
-//! timer, cancelable). The queue carries slot numbers; the values stay here.
+//! coroutine crate's queue, whose waits are `Coroutine::yield_ex`'s (a timeout
+//! timer, cancelable) without its last error.
 use crate::host::{self, Co};
 use std::{
-    cell::{Cell, RefCell, UnsafeCell},
+    cell::{Cell, UnsafeCell},
     ffi::{c_int, c_void},
-    mem::ManuallyDrop,
+    mem::{self, ManuallyDrop},
     ptr,
     rc::Rc,
 };
 pub use swoole_rs_coroutine::chan::Stats;
-use swoole_rs_coroutine::chan::{self, CANCELED, Effects, TIMEDOUT};
+use swoole_rs_coroutine::{
+    RC_CANCELED, RC_TIMEDOUT,
+    chan::{self, CANCELED, Effects, TIMEDOUT},
+};
 use swoole_rs_zend::bailout;
 
 /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
 const OUT_OF_COROUTINE: c_int = 10001;
 
-/// One queue and the values it carries, by slot.
-struct Inner<T> {
-    queue: UnsafeCell<chan::Channel>,
-    values: RefCell<Slots<T>>,
-}
-
-impl<T> Inner<T> {
-    /// The value in the slot the queue gave back (null for none).
-    fn value(&self, data: *mut c_void) -> Option<T> {
-        self.values.borrow_mut().take(data.addr())
-    }
-}
-
-/// Values by slot number (1-based: the queue's null is no value).
-struct Slots<T> {
-    slots: Vec<Option<T>>,
-    free: Vec<usize>,
-}
-
-impl<T> Slots<T> {
-    fn put(&mut self, value: T) -> usize {
-        if let Some(slot) = self.free.pop()
-            && let Some(free) = self.slots.get_mut(slot - 1)
-        {
-            *free = Some(value);
-            return slot;
-        }
-        self.slots.push(Some(value));
-        self.slots.len()
-    }
-
-    fn take(&mut self, slot: usize) -> Option<T> {
-        let value = self.slots.get_mut(slot.checked_sub(1)?)?.take()?;
-        self.free.push(slot);
-        Some(value)
-    }
-}
-
 /// A coroutine channel slot (upstream's `Channel *` of a channel object): none
-/// until [`Channel::open`]. Each operation keeps its queue alive until it
-/// returns, so a queue replaced or released meanwhile outlives its waiters.
-pub struct Channel<T>(Cell<Option<Rc<Inner<T>>>>);
+/// until [`Channel::open`].
+pub struct Channel<T>(Cell<Option<Queue<T>>>);
 
 impl<T> Default for Channel<T> {
     fn default() -> Self {
@@ -71,97 +35,96 @@ impl<T> Channel<T> {
         Self(Cell::new(None))
     }
 
-    fn get(&self) -> Option<Rc<Inner<T>>> {
-        let inner = self.0.take();
-        let copy = inner.clone();
-        self.0.set(inner);
-        copy
-    }
-
     /// A new queue of `capacity` values in place of any other, whose waiters
     /// keep it.
     pub fn open(&self, capacity: usize) {
-        self.0.set(Some(Rc::new(Inner {
-            queue: UnsafeCell::new(chan::Channel::new(capacity)),
-            values: RefCell::new(Slots {
-                slots: Vec::new(),
-                free: Vec::new(),
-            }),
-        })));
+        let queue = chan::Channel::new(capacity);
+        self.0.set(Some(Queue(Rc::new(UnsafeCell::new(queue)))));
     }
 
+    /// The queue. An operation keeps it alive until it returns, so a queue
+    /// replaced or released meanwhile outlives its waiters.
     #[must_use]
-    pub fn is_open(&self) -> bool {
-        self.get().is_some()
+    pub fn queue(&self) -> Option<Queue<T>> {
+        let queue = self.0.take();
+        let copy = queue.clone();
+        // Still empty: cloning an `Rc` runs no code, so nothing filled the slot.
+        mem::forget(self.0.replace(queue));
+        copy
     }
 
-    /// `Channel::push`: `value` back when the queue is closed, the wait timed
-    /// out or was canceled ([`Stats::error`] says which), there is no queue,
-    /// or this is no coroutine (Swoole's fatal error, deferred).
+    /// Give the queue up.
+    pub fn release(&self) -> Option<Queue<T>> {
+        self.0.take()
+    }
+}
+
+/// A channel's queue. The operations that may wait take the handle, so that
+/// no drop is pending in the caller's frame across a wait.
+pub struct Queue<T>(Rc<UnsafeCell<chan::Channel<T>>>);
+
+impl<T> Clone for Queue<T> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+impl<T> Queue<T> {
+    /// `Channel::push`.
     /// # Errors
-    /// `value`, not queued.
-    pub fn push(&self, value: T, timeout: f64) -> Result<(), T> {
-        let Some(inner) = self.get() else {
-            return Err(value);
-        };
+    /// `value`, not queued, with the queue's error: it is closed, or the wait
+    /// timed out or was canceled. Outside a coroutine, also Swoole's fatal
+    /// error (deferred).
+    pub fn push(self, value: T, timeout: f64) -> Result<(), (T, i32)> {
         let Some(mut php) = Php::current(timeout) else {
-            return Err(value);
+            let error = self.stats().error;
+            return Err((value, error));
         };
-        let slot = inner.values.borrow_mut().put(value);
         // No drop is pending across the effects: a coroutine that never
         // resumes keeps the queue, as upstream's frames keep their channel.
-        let inner = ManuallyDrop::new(inner);
-        let data = ptr::without_provenance_mut(slot);
-        let pushed = chan::push(&inner.queue, &mut php, data);
-        let inner = ManuallyDrop::into_inner(inner);
-        if pushed {
-            return Ok(());
-        }
-        // The queue refused the slot, which still holds the value.
-        inner.value(data).map_or(Ok(()), Err)
+        let queue = ManuallyDrop::new(self);
+        let pushed = chan::push(&queue.0, &mut php, value);
+        let queue = ManuallyDrop::into_inner(queue);
+        pushed.map_err(|value| (value, queue.stats().error))
     }
 
-    /// `Channel::pop`: None when the queue is closed and empty, the wait timed
-    /// out or was canceled ([`Stats::error`]), there is no queue, or this is
-    /// no coroutine (Swoole's fatal error, deferred).
-    pub fn pop(&self, timeout: f64) -> Option<T> {
-        let inner = self.get()?;
-        let mut php = Php::current(timeout)?;
-        let inner = ManuallyDrop::new(inner);
-        let data = chan::pop(&inner.queue, &mut php);
-        ManuallyDrop::into_inner(inner).value(data)
-    }
-
-    /// `Channel::close`: wakes every waiter; false if closed already or none.
-    pub fn close(&self) -> bool {
-        let Some(inner) = self.get() else {
-            return false;
+    /// `Channel::pop`: the oldest value.
+    /// # Errors
+    /// The queue's error: it is closed and empty, or the wait timed out or was
+    /// canceled. Outside a coroutine, also Swoole's fatal error (deferred).
+    pub fn pop(self, timeout: f64) -> Result<T, i32> {
+        let Some(mut php) = Php::current(timeout) else {
+            return Err(self.stats().error);
         };
+        let queue = ManuallyDrop::new(self);
+        let value = chan::pop(&queue.0, &mut php);
+        let queue = ManuallyDrop::into_inner(queue);
+        value.ok_or_else(|| queue.stats().error)
+    }
+
+    /// `Channel::close`: wakes every waiter; false if closed already.
+    #[must_use]
+    pub fn close(self) -> bool {
         let mut php = Php {
             co: ptr::null_mut(),
             timeout: 0.0,
         };
-        let inner = ManuallyDrop::new(inner);
-        let closed = chan::close(&inner.queue, &mut php);
-        drop(ManuallyDrop::into_inner(inner));
+        let queue = ManuallyDrop::new(self);
+        let closed = chan::close(&queue.0, &mut php);
+        drop(ManuallyDrop::into_inner(queue));
         closed
     }
 
     /// The queue's [`Stats`]: its last error, items and waiters.
     #[must_use]
-    pub fn stats(&self) -> Option<Stats> {
-        self.get().map(|inner| chan::stats(&inner.queue))
+    pub fn stats(&self) -> Stats {
+        chan::stats(&self.0)
     }
 
     /// The oldest queued value, without waiting.
+    #[must_use]
     pub fn take(&self) -> Option<T> {
-        let inner = self.get()?;
-        inner.value(chan::take(&inner.queue))
-    }
-
-    /// Give the queue up, with its last [`Stats`].
-    pub fn release(&self) -> Option<Stats> {
-        self.0.take().map(|inner| chan::stats(&inner.queue))
+        chan::take(&self.0)
     }
 }
 
@@ -174,17 +137,23 @@ struct Php {
 impl Php {
     /// The running coroutine, or Swoole's fatal error (deferred) outside one,
     /// where upstream's `Coroutine::get_current_safe()` raises it.
+    #[inline]
     fn current(timeout: f64) -> Option<Self> {
         let co = host::current();
         if co.is_null() {
-            bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
-                OUT_OF_COROUTINE,
-                c"API must be called in the coroutine",
-            ));
+            out_of_coroutine();
             return None;
         }
         Some(Self { co, timeout })
     }
+}
+
+#[cold]
+fn out_of_coroutine() {
+    bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+        OUT_OF_COROUTINE,
+        c"API must be called in the coroutine",
+    ));
 }
 
 impl Effects for Php {
@@ -193,18 +162,12 @@ impl Effects for Php {
     }
 
     /// Upstream's timer and cancel function remove the waiter, then resume
-    /// it; the queue removes it here before anything else runs. Unlike
-    /// `yield_ex`, a channel wait leaves Swoole's last error alone.
-    fn wait(&mut self, _: &UnsafeCell<chan::Channel>, _: u32) -> u32 {
-        let error = swoole_rs_corebase::log::last_error();
-        if host::yield_ex(self.co, self.timeout) {
-            return 0;
-        }
-        swoole_rs_corebase::log::set_last_error(error);
-        if host::is_canceled(self.co) {
-            CANCELED
-        } else {
-            TIMEDOUT
+    /// it; the queue removes it here before anything else runs.
+    fn wait(&mut self) -> u32 {
+        match host::wait(self.co, self.timeout) {
+            RC_CANCELED => CANCELED,
+            RC_TIMEDOUT => TIMEDOUT,
+            _ => 0,
         }
     }
 
