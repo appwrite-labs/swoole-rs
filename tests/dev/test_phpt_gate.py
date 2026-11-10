@@ -307,10 +307,10 @@ class PhptGate(unittest.TestCase):
                                       env={**environment, **env}, capture_output=True, text=True)
             self.assertNotIn('::error', gate().stderr)
             lines = gate(GITHUB_ACTIONS='true').stderr.splitlines()
-        # Nine by name and one count: GitHub shows about ten annotations of a level per step.
+        # Nine by name and one count: GitHub keeps about ten annotations of a level per step.
         self.assertEqual(lines[0], '::error title=PHPT regression::tests/t/0.phpt (cargo: failed)')
         self.assertEqual(len(lines), 10)
-        self.assertEqual(lines[-1], '::error title=PHPT regressions::3 more of 12; the step summary lists them all')
+        self.assertEqual(lines[-1], '::error title=3 more errors::3 more past the first 9; the log lists them all')
 
     def test_annotation_properties_escape_their_separators(self):
         from tools.annotations import escape
