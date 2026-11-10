@@ -149,7 +149,6 @@ def plan(args, reports):
     if integrate or args.compare or args.benchmark:
         engines += ['--engine', f'upstream={reference}']
     if integrate:
-        pytest('timer-kernel', 'tests/modules/timer/test_kernel.py', '--sanitize')
         add('format', 'cargo', 'fmt', '--all', '--check')
         add('clippy', 'cargo', 'clippy', '--locked', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings')
     script('ownership', 'tools/check_migration.py')

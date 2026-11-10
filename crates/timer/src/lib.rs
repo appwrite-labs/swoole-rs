@@ -17,7 +17,6 @@ pub use runtime::*;
 mod owner;
 #[cfg(feature = "upstream-symbols")]
 mod wrapper;
-use std::alloc::{Layout, alloc};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -37,7 +36,6 @@ const BUSY: i32 = -4;
 const NOT_FOUND: i32 = -5;
 const CLOSING: i32 = -6;
 const CAPACITY: i32 = -7;
-const PENDING: i32 = -8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,11 +131,11 @@ unsafe fn zero<T: Default>(out: *mut T) -> bool {
     }
 }
 
-/// The queue's operations, which crates/timer's owner calls directly. Each returns the
-/// status its `swr_v1_timer_*` export returns and, where that export fills a view, the
-/// view (the default when it fills none).
+/// The queue's operations, which crates/timer's owner calls directly
+/// (docs/timer-abi-v1.md). Each returns a status and, where the operation has one, a
+/// view (the default when it has none).
 impl Timer {
-    /// `swr_v1_timer_add`: a node due `delay` after `now`, repeating when `persistent`.
+    /// Adds a node due `delay` after `now`, repeating when `persistent`.
     pub fn add(
         &mut self,
         now: i64,
@@ -182,7 +180,7 @@ impl Timer {
         (OK, view)
     }
 
-    /// `swr_v1_timer_get`.
+    /// The node `id`'s view.
     #[must_use]
     pub fn get(&self, id: i64) -> (i32, TimerView) {
         if id <= 0 {
@@ -200,7 +198,7 @@ impl Timer {
             .map_or(ptr::null_mut(), |view| view.token)
     }
 
-    /// `swr_v1_timer_update`: `id` falls due at `deadline`.
+    /// Node `id` falls due at `deadline`.
     pub fn update(&mut self, id: i64, deadline: i64) -> (i32, TimerView) {
         let none = TimerView::default();
         if id <= 0 || deadline < 0 {
@@ -217,7 +215,7 @@ impl Timer {
         (OK, view)
     }
 
-    /// `swr_v1_timer_remove`: only `RELEASE` hands the token back.
+    /// Removes node `id`; only `RELEASE` hands the token back.
     pub fn remove(&mut self, id: i64) -> (i32, TimerView) {
         let none = TimerView::default();
         if id <= 0 {
@@ -236,7 +234,7 @@ impl Timer {
         }
     }
 
-    /// `swr_v1_timer_begin`: a selection at `now`.
+    /// Begins a selection at `now`.
     pub fn begin(&mut self, now: i64) -> i32 {
         if now < 0 {
             return INVALID;
@@ -259,7 +257,7 @@ impl Timer {
         OK
     }
 
-    /// `swr_v1_timer_next`: the selection's next due node, which becomes the active one.
+    /// The selection's next due node, which becomes the active one.
     pub fn select_next(&mut self) -> (i32, TimerView) {
         let none = TimerView::default();
         if !self.selecting {
@@ -281,7 +279,7 @@ impl Timer {
         (OK, view)
     }
 
-    /// `swr_v1_timer_complete`: the active node `id` ran.
+    /// The active node `id` ran.
     pub fn complete(&mut self, id: i64) -> (i32, TimerView) {
         let none = TimerView::default();
         if id <= 0 || !self.selecting || self.active_id != id {
@@ -320,7 +318,7 @@ impl Timer {
         (status, view)
     }
 
-    /// `swr_v1_timer_end`: the selection ends; the delay to the next deadline, or -1.
+    /// The selection ends; the delay to the next deadline, or -1.
     pub fn end(&mut self) -> (i32, i64) {
         if !self.selecting {
             return (INVALID, -1);
@@ -340,7 +338,7 @@ impl Timer {
         (OK, delay)
     }
 
-    /// `swr_v1_timer_stats_get`.
+    /// The count, round, active node and flags (`swr_v1_timer_stats_get`).
     #[must_use]
     pub fn stats(&self) -> TimerStats {
         TimerStats {
@@ -352,7 +350,7 @@ impl Timer {
         }
     }
 
-    /// `swr_v1_timer_close`: nothing is added, updated or selected after it, and the
+    /// Closes the queue: nothing is added, updated or selected after it, and the
     /// active node is marked removed.
     pub fn close(&mut self) {
         self.closing = true;
@@ -362,8 +360,8 @@ impl Timer {
         }
     }
 
-    /// `swr_v1_timer_drain`: a closed queue's next node to dispose of (`RELEASE`), or
-    /// `DEFERRED` when only the active one is left.
+    /// A closed queue's next node to dispose of (`RELEASE`), or `DEFERRED` when only
+    /// the active one is left.
     pub fn drain(&mut self) -> (i32, TimerView) {
         let none = TimerView::default();
         if !self.closing {
@@ -376,7 +374,7 @@ impl Timer {
             .map_or((DEFERRED, none), |view| (RELEASE, view))
     }
 
-    /// Whether `swr_v1_timer_release` may free the queue: no node and no selection.
+    /// Whether the queue may be freed: no node and no selection.
     #[must_use]
     pub fn idle(&self) -> bool {
         self.heap.is_empty() && !self.selecting
@@ -398,173 +396,21 @@ unsafe fn answer<T: Default>(out: *mut T, op: impl FnOnce() -> Option<(i32, T)>)
     status
 }
 
-/// # Safety
-/// Output must be valid, aligned and disjoint as specified in timer ABI v1.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_create(out: *mut *mut Timer) -> i32 {
-    if out.is_null() {
-        return INVALID;
-    }
-    // SAFETY: non-null (checked above), valid, aligned output.
-    unsafe { out.write(ptr::null_mut()) };
-    #[expect(
-        clippy::cast_ptr_alignment,
-        reason = "alloc honours Layout::new::<Timer>()"
-    )]
-    // SAFETY: `Timer` is not zero-sized; null is handled below.
-    let queue = unsafe { alloc(Layout::new::<Timer>()) }.cast::<Timer>();
-    if queue.is_null() {
-        return NOMEM;
-    }
-    // SAFETY: `queue` is a fresh, non-null allocation with `Timer`'s layout.
-    unsafe { queue.write(Timer::default()) };
-    // SAFETY: as for the first write to `out`.
-    unsafe { out.write(queue) };
-    OK
-}
-
-/// # Safety
-/// Handle must be live and exclusively owned; release is exactly once on success.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_release(queue: *mut Timer) -> i32 {
-    // SAFETY: null or a live handle from create, not concurrently mutated.
-    match unsafe { queue.as_ref() } {
-        None => INVALID,
-        Some(state) if !state.idle() => PENDING,
-        Some(_) => {
-            // SAFETY: create allocated it with `Timer`'s layout from the global
-            // allocator, as a Box does; exclusively owned and released exactly once.
-            drop(unsafe { Box::from_raw(queue) });
-            OK
-        }
-    }
-}
-
-/// # Safety
-/// Handle/output follow ABI validity/disjointness; token is a unique borrowed identity.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_add(
-    queue: *mut Timer,
-    now: i64,
-    delay: i64,
-    persistent: u32,
-    token: *mut c_void,
-    out: *mut TimerView,
-) -> i32 {
-    // SAFETY: null or a live handle from create, exclusively accessed.
-    let state = unsafe { queue.as_mut() };
-    let add = || {
-        let state = state?;
-        Some(if persistent > 1 {
-            (INVALID, TimerView::default())
-        } else {
-            state.add(now, delay, persistent == 1, token)
-        })
-    };
-    // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    unsafe { answer(out, add) }
-}
-
-/// # Safety
-/// Handle and exclusive output satisfy ABI validity/disjointness rules.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_get(
-    queue: *const Timer,
-    id: i64,
-    out: *mut TimerView,
-) -> i32 {
-    // SAFETY: null or a live handle from create, not concurrently mutated.
-    let state = unsafe { queue.as_ref() };
-    // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    unsafe { answer(out, || state.map(|state| state.get(id))) }
-}
-
 /// The token `id` was added with, or null. Native code applies every view it is
 /// handed to its token, so a lookup that only needs the token copies no view.
 /// # Safety
 /// The handle is null or live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_token(queue: *const Timer, id: i64) -> *mut c_void {
-    // SAFETY: null or a live handle from create, not concurrently mutated.
+    // SAFETY: null or a live queue (`swr_v1_timer_owner_queue`), not concurrently mutated.
     unsafe { queue.as_ref() }.map_or(ptr::null_mut(), |state| state.token(id))
-}
-
-/// # Safety
-/// Handle and output are valid, exclusive and disjoint per ABI v1.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_update(
-    queue: *mut Timer,
-    id: i64,
-    deadline: i64,
-    out: *mut TimerView,
-) -> i32 {
-    // SAFETY: null or a live handle from create, exclusively accessed.
-    let state = unsafe { queue.as_mut() };
-    // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    unsafe { answer(out, || state.map(|state| state.update(id, deadline))) }
-}
-
-/// # Safety
-/// Handle/output are valid; only RELEASE transfers the returned token's custody.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_remove(
-    queue: *mut Timer,
-    id: i64,
-    out: *mut TimerView,
-) -> i32 {
-    // SAFETY: null or a live handle from create, exclusively accessed.
-    let state = unsafe { queue.as_mut() };
-    // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    unsafe { answer(out, || state.map(|state| state.remove(id))) }
-}
-
-/// # Safety
-/// Handle is live and exclusively owned by its native thread.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_begin(queue: *mut Timer, now: i64) -> i32 {
-    // SAFETY: null or a live handle from create, exclusively accessed.
-    unsafe { queue.as_mut() }.map_or(INVALID, |state| state.begin(now))
-}
-
-/// # Safety
-/// Handle/output satisfy ABI v1; returned metadata does not transfer ownership.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_next(queue: *mut Timer, out: *mut TimerView) -> i32 {
-    // SAFETY: null or a live handle from create, exclusively accessed.
-    let state = unsafe { queue.as_mut() };
-    // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    unsafe { answer(out, || state.map(Timer::select_next)) }
-}
-
-/// # Safety
-/// Exact active ID and valid disjoint output are required by ABI v1.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_complete(
-    queue: *mut Timer,
-    id: i64,
-    out: *mut TimerView,
-) -> i32 {
-    // SAFETY: null or a live handle from create, exclusively accessed.
-    let state = unsafe { queue.as_mut() };
-    // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    unsafe { answer(out, || state.map(|state| state.complete(id))) }
-}
-
-/// # Safety
-/// Handle and `next_delay` output are valid and disjoint as specified by ABI v1.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_end(queue: *mut Timer, next_delay: *mut i64) -> i32 {
-    // SAFETY: null or a live handle from create, exclusively accessed.
-    let state = unsafe { queue.as_mut() };
-    // SAFETY: `next_delay` is null or valid, aligned output disjoint from the handle.
-    unsafe { answer(next_delay, || Some(state.map_or((INVALID, -1), Timer::end))) }
 }
 
 /// # Safety
 /// Handle and exclusive output must follow ABI v1 validity/disjointness rules.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_stats_get(queue: *const Timer, out: *mut TimerStats) -> i32 {
-    // SAFETY: null or a live handle from create, not concurrently mutated.
+    // SAFETY: null or a live queue (`swr_v1_timer_owner_queue`), not concurrently mutated.
     let state = unsafe { queue.as_ref() };
     // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
     unsafe { answer(out, || state.map(|state| (OK, state.stats()))) }
@@ -583,7 +429,7 @@ pub unsafe extern "C" fn swr_v1_timer_ids(
     if !unsafe { zero(count) } || queue.is_null() {
         return INVALID;
     }
-    // SAFETY: non-null (checked above); a live handle from create, not concurrently mutated.
+    // SAFETY: non-null (checked above); a live queue (`swr_v1_timer_owner_queue`), not concurrently mutated.
     let state = unsafe { &*queue };
     // SAFETY: `count` is non-null (checked above), valid, aligned and writable.
     unsafe { count.write(state.heap.len()) };
@@ -604,32 +450,14 @@ pub unsafe extern "C" fn swr_v1_timer_ids(
     OK
 }
 
-/// # Safety
-/// Handle is live and exclusively owned; tokens and native callbacks remain native.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_close(queue: *mut Timer) -> i32 {
-    // SAFETY: null or a live handle from create, exclusively accessed.
-    unsafe { queue.as_mut() }.map_or(INVALID, |state| {
-        state.close();
-        OK
-    })
-}
-
-/// # Safety
-/// Handle/output are valid; only RELEASE transfers a token for native disposal.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_drain(queue: *mut Timer, out: *mut TimerView) -> i32 {
-    // SAFETY: null or a live handle from create, exclusively accessed.
-    let state = unsafe { queue.as_mut() };
-    // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    unsafe { answer(out, || state.map(Timer::drain)) }
-}
+#[cfg(test)]
+mod kernel;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::alloc::{GlobalAlloc, System};
-    use std::cell::Cell;
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::{Cell, RefCell, RefMut};
 
     thread_local! { static FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) }; }
     struct FailureAllocator;
@@ -669,64 +497,55 @@ mod tests {
     }
     #[global_allocator]
     static ALLOCATOR: FailureAllocator = FailureAllocator;
-    struct Owned(*mut Timer);
+
+    /// A queue the test owns, closed, drained and checked idle when it drops.
+    struct Owned(RefCell<Timer>);
     impl Owned {
         fn new() -> Self {
-            let mut out = ptr::null_mut();
-            assert_eq!(unsafe { swr_v1_timer_create(&raw mut out) }, OK);
-            Self(out)
+            Self(RefCell::new(Timer::default()))
+        }
+        fn q(&self) -> RefMut<'_, Timer> {
+            self.0.borrow_mut()
         }
         fn add(&self, now: i64, delay: i64, persistent: bool, token: usize) -> TimerView {
-            let mut out = TimerView::default();
-            assert_eq!(
-                unsafe {
-                    swr_v1_timer_add(
-                        self.0,
-                        now,
-                        delay,
-                        u32::from(persistent),
-                        ptr::without_provenance_mut(token),
-                        &raw mut out,
-                    )
-                },
-                OK
-            );
-            out
+            let (status, view) =
+                self.q()
+                    .add(now, delay, persistent, ptr::without_provenance_mut(token));
+            assert_eq!(status, OK);
+            view
         }
         fn get(&self, id: i64) -> TimerView {
-            let mut out = TimerView::default();
-            assert_eq!(unsafe { swr_v1_timer_get(self.0, id, &raw mut out) }, OK);
-            out
+            let (status, view) = self.q().get(id);
+            assert_eq!(status, OK);
+            view
         }
         fn stats(&self) -> TimerStats {
-            let mut out = TimerStats::default();
-            assert_eq!(unsafe { swr_v1_timer_stats_get(self.0, &raw mut out) }, OK);
-            out
+            self.q().stats()
+        }
+        fn begin(&self, now: i64) -> i32 {
+            self.q().begin(now)
         }
         fn next(&self, expected: i32) -> TimerView {
-            let mut out = TimerView::default();
-            assert_eq!(unsafe { swr_v1_timer_next(self.0, &raw mut out) }, expected);
-            out
+            let (status, view) = self.q().select_next();
+            assert_eq!(status, expected);
+            view
         }
         fn complete(&self, id: i64, expected: i32) -> TimerView {
-            let mut out = TimerView::default();
-            assert_eq!(
-                unsafe { swr_v1_timer_complete(self.0, id, &raw mut out) },
-                expected
-            );
-            out
+            let (status, view) = self.q().complete(id);
+            assert_eq!(status, expected);
+            view
         }
         fn end(&self) -> i64 {
-            let mut delay = 99;
-            assert_eq!(unsafe { swr_v1_timer_end(self.0, &raw mut delay) }, OK);
+            let (status, delay) = self.q().end();
+            assert_eq!(status, OK);
             delay
         }
         fn prime(&self) {
-            assert_eq!(unsafe { swr_v1_timer_begin(self.0, 0) }, OK);
+            assert_eq!(self.begin(0), OK);
             self.end();
         }
         fn invariant(&self) {
-            let state = unsafe { &*self.0 };
+            let state = self.0.borrow();
             assert_eq!(state.heap.len(), state.positions.len());
             for (i, entry) in state.heap.iter().enumerate() {
                 assert_eq!(state.positions.get(&entry.id), state.heap.slot(i).as_ref());
@@ -739,19 +558,16 @@ mod tests {
     }
     impl Drop for Owned {
         fn drop(&mut self) {
-            unsafe {
-                assert_eq!(swr_v1_timer_close(self.0), OK);
-                let stats = self.stats();
-                if stats.active_id != 0 {
-                    self.complete(stats.active_id, RELEASE);
-                }
-                if stats.selecting != 0 {
-                    self.end();
-                }
-                let mut view = TimerView::default();
-                while swr_v1_timer_drain(self.0, &raw mut view) == RELEASE {}
-                assert_eq!(swr_v1_timer_release(self.0), OK);
+            self.q().close();
+            let stats = self.stats();
+            if stats.active_id != 0 {
+                self.complete(stats.active_id, RELEASE);
             }
+            if stats.selecting != 0 {
+                self.end();
+            }
+            while self.q().drain().0 == RELEASE {}
+            assert!(self.q().idle());
         }
     }
 
@@ -761,10 +577,10 @@ mod tests {
         let a = q.add(0, 1, false, 1);
         let b = q.add(0, 1, false, 2);
         let c = q.add(0, 1, false, 3);
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 1) }, OK);
+        assert_eq!(q.begin(1), OK);
         assert_eq!(q.next(EMPTY), TimerView::default());
         assert_eq!(q.end(), 1);
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 1) }, OK);
+        assert_eq!(q.begin(1), OK);
         for expected in [a, c, b] {
             assert_eq!(q.next(OK), expected);
             assert_eq!(q.complete(expected.id, RELEASE), expected);
@@ -774,16 +590,12 @@ mod tests {
         assert_eq!(q.end(), -1);
         // A callback-born head blocks an older due entry behind it.
         let old = q.add(1, 10, false, 4);
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 20) }, OK);
+        assert_eq!(q.begin(20), OK);
         let young = q.add(20, 1, false, 5);
-        let mut out = TimerView::default();
-        assert_eq!(
-            unsafe { swr_v1_timer_update(q.0, young.id, 0, &raw mut out) },
-            OK
-        );
+        assert_eq!(q.q().update(young.id, 0).0, OK);
         q.next(EMPTY);
         q.end();
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 20) }, OK);
+        assert_eq!(q.begin(20), OK);
         assert_eq!(q.next(OK).id, young.id);
         q.complete(young.id, RELEASE);
         assert_eq!(q.next(OK).id, old.id);
@@ -798,15 +610,11 @@ mod tests {
             let a = q.add(0, 5, persistent, 1);
             let b = q.add(0, 6, false, 2);
             q.prime();
-            assert_eq!(unsafe { swr_v1_timer_begin(q.0, 10) }, OK);
+            assert_eq!(q.begin(10), OK);
             assert_eq!(q.next(OK).id, a.id);
             assert_eq!(q.complete(b.id, INVALID), TimerView::default());
             assert_eq!(q.stats().active_id, a.id);
-            let mut out = TimerView::default();
-            assert_eq!(
-                unsafe { swr_v1_timer_update(q.0, a.id, 100, &raw mut out) },
-                OK
-            );
+            assert_eq!(q.q().update(a.id, 100).0, OK);
             let completed = q.complete(a.id, if persistent { OK } else { RELEASE });
             assert_eq!(completed.id, a.id);
             assert_eq!(completed.deadline, 100);
@@ -827,14 +635,14 @@ mod tests {
         let a = q.add(0, 5, true, 1);
         let b = q.add(0, 50, false, 2);
         q.prime();
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 23) }, OK);
+        assert_eq!(q.begin(23), OK);
         assert_eq!(q.next(OK).id, a.id);
         let c = q.add(100, 1, false, 3); // Accepted add time does not alter captured 23.
         assert_eq!(q.complete(a.id, OK).deadline, 25);
         q.next(EMPTY);
         assert_eq!(q.end(), 2);
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 99) }, INVALID);
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 100) }, OK);
+        assert_eq!(q.begin(99), INVALID);
+        assert_eq!(q.begin(100), OK);
         assert_eq!(q.next(OK).id, a.id);
         let out = q.complete(a.id, OK);
         assert_eq!(out.deadline, 105);
@@ -853,31 +661,23 @@ mod tests {
         let a = q.add(0, 1, true, 1);
         let b = q.add(0, 2, false, 2);
         q.prime();
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 10) }, OK);
+        assert_eq!(q.begin(10), OK);
         q.next(OK);
-        let mut out = TimerView::default();
-        assert_eq!(
-            unsafe { swr_v1_timer_remove(q.0, a.id, &raw mut out) },
-            DEFERRED
-        );
+        assert_eq!(q.q().remove(a.id).0, DEFERRED);
         assert_eq!(q.get(a.id).removed, 1);
-        assert_eq!(
-            unsafe { swr_v1_timer_remove(q.0, a.id, &raw mut out) },
-            NOT_FOUND
-        );
-        assert_eq!(out, TimerView::default());
-        assert_eq!(unsafe { swr_v1_timer_release(q.0) }, PENDING);
-        assert_eq!(unsafe { swr_v1_timer_close(q.0) }, OK);
+        assert_eq!(q.q().remove(a.id), (NOT_FOUND, TimerView::default()));
+        assert!(!q.q().idle(), "release would be PENDING");
+        q.q().close();
         q.next(BUSY);
-        assert_eq!(unsafe { swr_v1_timer_drain(q.0, &raw mut out) }, RELEASE);
+        let (status, out) = q.q().drain();
+        assert_eq!(status, RELEASE);
         assert_eq!(out.id, b.id);
-        assert_eq!(unsafe { swr_v1_timer_drain(q.0, &raw mut out) }, DEFERRED);
-        assert_eq!(out, TimerView::default());
+        assert_eq!(q.q().drain(), (DEFERRED, TimerView::default()));
         assert_eq!(q.complete(a.id, RELEASE).token, a.token);
         q.next(CLOSING);
         assert_eq!(q.end(), -1);
-        assert_eq!(unsafe { swr_v1_timer_drain(q.0, &raw mut out) }, EMPTY);
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 10) }, CLOSING);
+        assert_eq!(q.q().drain().0, EMPTY);
+        assert_eq!(q.begin(10), CLOSING);
     }
 
     #[test]
@@ -885,34 +685,31 @@ mod tests {
         let q = Owned::new();
         let a = q.add(0, 2, false, 1);
         let b = q.add(0, 1, false, 2);
+        let queue = q.0.as_ptr().cast_const();
         let mut ids = [99, 99];
         let mut count = 99;
         assert_eq!(
-            unsafe { swr_v1_timer_ids(q.0, ptr::null_mut(), 0, &raw mut count) },
+            unsafe { swr_v1_timer_ids(queue, ptr::null_mut(), 0, &raw mut count) },
             CAPACITY
         );
         assert_eq!(count, 2);
         assert_eq!(
-            unsafe { swr_v1_timer_ids(q.0, ids.as_mut_ptr(), 1, &raw mut count) },
+            unsafe { swr_v1_timer_ids(queue, ids.as_mut_ptr(), 1, &raw mut count) },
             CAPACITY
         );
         assert_eq!(ids, [99, 99]);
         assert_eq!(
-            unsafe { swr_v1_timer_ids(q.0, ids.as_mut_ptr(), 2, &raw mut count) },
+            unsafe { swr_v1_timer_ids(queue, ids.as_mut_ptr(), 2, &raw mut count) },
             OK
         );
         ids.sort_unstable();
         assert_eq!(ids, [a.id, b.id]);
-        let mut out = TimerView::default();
         for id in ids {
-            assert_eq!(
-                unsafe { swr_v1_timer_remove(q.0, id, &raw mut out) },
-                RELEASE
-            );
+            assert_eq!(q.q().remove(id).0, RELEASE);
             q.invariant();
         }
         assert_eq!(
-            unsafe { swr_v1_timer_ids(q.0, ptr::null_mut(), 0, &raw mut count) },
+            unsafe { swr_v1_timer_ids(queue, ptr::null_mut(), 0, &raw mut count) },
             OK
         );
         assert_eq!(count, 0);
@@ -921,44 +718,35 @@ mod tests {
     #[test]
     fn checked_id_round_and_repeat_limits_are_terminal_without_wrap() {
         let q = Owned::new();
-        unsafe {
-            (*q.0).last_id = i64::MAX - 1;
-        }
+        q.q().last_id = i64::MAX - 1;
         assert_eq!(q.add(0, 1, false, 1).id, i64::MAX);
         let before = q.stats();
-        let mut out = TimerView::default();
         assert_eq!(
-            unsafe { swr_v1_timer_add(q.0, 5, 1, 0, ptr::dangling_mut(), &raw mut out) },
-            OVERFLOW
+            q.q().add(5, 1, false, ptr::dangling_mut()),
+            (OVERFLOW, TimerView::default())
         );
-        assert_eq!(out, TimerView::default());
         assert_eq!(q.stats(), before);
-        assert_eq!(unsafe { (*q.0).last_time }, 0);
+        assert_eq!(q.q().last_time, 0);
         let rounds = Owned::new();
-        unsafe {
-            (*rounds.0).round = u64::MAX - 1;
-        }
-        assert_eq!(unsafe { swr_v1_timer_begin(rounds.0, 0) }, OK);
+        rounds.q().round = u64::MAX - 1;
+        assert_eq!(rounds.begin(0), OK);
         rounds.end();
         assert_eq!(rounds.stats().round, u64::MAX);
-        assert_eq!(unsafe { swr_v1_timer_begin(rounds.0, 1) }, OVERFLOW);
-        assert_eq!(unsafe { (*rounds.0).last_time }, 0);
+        assert_eq!(rounds.begin(1), OVERFLOW);
+        assert_eq!(rounds.q().last_time, 0);
         for execution_limit in [false, true] {
             let queue = Owned::new();
             let a = queue.add(0, 1, true, 1);
             queue.prime();
             if execution_limit {
-                let heap = unsafe { &mut (*queue.0).heap };
+                let heap = &mut queue.q().heap;
                 let view = TimerView {
                     exec_count: u64::MAX,
                     ..*heap.first().unwrap()
                 };
                 heap.update(0, view);
             }
-            assert_eq!(
-                unsafe { swr_v1_timer_begin(queue.0, if execution_limit { 1 } else { i64::MAX }) },
-                OK
-            );
+            assert_eq!(queue.begin(if execution_limit { 1 } else { i64::MAX }), OK);
             queue.next(OK);
             let released = queue.complete(a.id, RELEASE_OVERFLOW);
             assert_eq!(released.token, a.token);
@@ -978,26 +766,13 @@ mod tests {
             if step % 3 == 0 || q.stats().count == 0 {
                 q.add(0, i64::try_from(seed % 100 + 1).unwrap(), false, step + 1);
             } else {
-                let ids: Vec<i64> = unsafe { &*q.0 }.positions.keys().copied().collect();
+                let ids: Vec<i64> = q.0.borrow().positions.keys().copied().collect();
                 let id = ids[usize::try_from(seed % ids.len() as u64).unwrap()];
-                let mut out = TimerView::default();
                 if step % 3 == 1 {
-                    assert_eq!(
-                        unsafe {
-                            swr_v1_timer_update(
-                                q.0,
-                                id,
-                                i64::try_from(seed % 100).unwrap(),
-                                &raw mut out,
-                            )
-                        },
-                        OK
-                    );
+                    let deadline = i64::try_from(seed % 100).unwrap();
+                    assert_eq!(q.q().update(id, deadline).0, OK);
                 } else {
-                    assert_eq!(
-                        unsafe { swr_v1_timer_remove(q.0, id, &raw mut out) },
-                        RELEASE
-                    );
+                    assert_eq!(q.q().remove(id).0, RELEASE);
                 }
             }
             q.invariant();
@@ -1006,25 +781,18 @@ mod tests {
 
     #[test]
     fn allocation_failures_preserve_id_time_entries_and_existing_views() {
-        let mut handle = ptr::dangling_mut();
-        FAIL_AFTER.set(Some(0));
-        let status = unsafe { swr_v1_timer_create(&raw mut handle) };
-        FAIL_AFTER.set(None);
-        assert_eq!(status, NOMEM);
-        assert!(handle.is_null());
         for nth in 0..=3 {
             let q = Owned::new();
-            let mut out = TimerView::default();
+            let mut queue = q.q();
             FAIL_AFTER.set(Some(nth));
-            let status =
-                unsafe { swr_v1_timer_add(q.0, 10, 5, 0, ptr::dangling_mut(), &raw mut out) };
+            let (status, out) = queue.add(10, 5, false, ptr::dangling_mut());
             FAIL_AFTER.set(None);
             if nth < 3 {
                 assert_eq!(status, NOMEM);
                 assert_eq!(out, TimerView::default());
-                assert_eq!(q.stats().count, 0);
-                assert_eq!(unsafe { (*q.0).last_id }, 0);
-                assert_eq!(unsafe { (*q.0).last_time }, 0);
+                assert_eq!(queue.stats().count, 0);
+                assert_eq!(queue.last_id, 0);
+                assert_eq!(queue.last_time, 0);
             } else {
                 assert_eq!(status, OK);
                 assert_eq!(out.id, 1);
@@ -1033,35 +801,21 @@ mod tests {
         // Force hash-table growth while retaining an existing timer and a heap slot.
         let q = Owned::new();
         let first = q.add(0, 1, false, 1);
-        while unsafe { (*q.0).positions.len() < (*q.0).positions.capacity() } {
-            q.add(0, 2, false, unsafe {
-                usize::try_from((*q.0).last_id).unwrap() + 1
-            });
+        while q.0.borrow().positions.len() < q.0.borrow().positions.capacity() {
+            let token = usize::try_from(q.0.borrow().last_id).unwrap() + 1;
+            q.add(0, 2, false, token);
         }
-        unsafe {
-            (*q.0).heap.try_reserve(1).unwrap();
-        }
+        q.q().heap.try_reserve(1).unwrap();
         let stats = q.stats();
-        let last_id = unsafe { (*q.0).last_id };
-        let mut out = first;
+        let last_id = q.q().last_id;
         FAIL_AFTER.set(Some(0));
-        let status = unsafe {
-            swr_v1_timer_add(
-                q.0,
-                99,
-                1,
-                0,
-                ptr::without_provenance_mut(999),
-                &raw mut out,
-            )
-        };
+        let added = q.q().add(99, 1, false, ptr::without_provenance_mut(999));
         FAIL_AFTER.set(None);
-        assert_eq!(status, NOMEM);
-        assert_eq!(out, TimerView::default());
+        assert_eq!(added, (NOMEM, TimerView::default()));
         assert_eq!(q.stats(), stats);
         assert_eq!(q.get(first.id), first);
-        assert_eq!(unsafe { (*q.0).last_id }, last_id);
-        assert_eq!(unsafe { (*q.0).last_time }, 0);
+        assert_eq!(q.q().last_id, last_id);
+        assert_eq!(q.q().last_time, 0);
         q.invariant();
     }
 
@@ -1069,17 +823,17 @@ mod tests {
     fn repairs_and_removals_do_not_allocate_at_full_index_capacity() {
         let q = Owned::new();
         q.add(0, 10, false, 1);
-        while unsafe { (*q.0).positions.len() < (*q.0).positions.capacity() } {
-            q.add(0, 20, false, unsafe {
-                usize::try_from((*q.0).last_id).unwrap() + 1
-            });
+        while q.0.borrow().positions.len() < q.0.borrow().positions.capacity() {
+            let token = usize::try_from(q.0.borrow().last_id).unwrap() + 1;
+            q.add(0, 20, false, token);
         }
-        let last = unsafe { (*q.0).last_id };
-        let mut out = TimerView::default();
+        let last = q.q().last_id;
+        let mut queue = q.q();
         FAIL_AFTER.set(Some(0));
-        let updated = unsafe { swr_v1_timer_update(q.0, last, 0, &raw mut out) };
-        let removed = unsafe { swr_v1_timer_remove(q.0, 1, &raw mut out) };
+        let updated = queue.update(last, 0).0;
+        let removed = queue.remove(1).0;
         let allocation_not_attempted = FAIL_AFTER.replace(None);
+        drop(queue);
         assert_eq!(updated, OK);
         assert_eq!(removed, RELEASE);
         assert_eq!(allocation_not_attempted, Some(0));
@@ -1097,7 +851,6 @@ mod tests {
             seed ^= seed << 13;
             seed ^= seed >> 7;
             seed ^= seed << 17;
-            let mut out = TimerView::default();
             match seed % 4 {
                 0 => {
                     let delay = i64::try_from(seed % 47 + 1).unwrap();
@@ -1112,26 +865,22 @@ mod tests {
                         .nth(usize::try_from(seed % model.len() as u64).unwrap())
                         .unwrap();
                     if seed % 4 == 1 {
-                        assert_eq!(
-                            unsafe { swr_v1_timer_remove(q.0, id, &raw mut out) },
-                            RELEASE
-                        );
+                        let (status, out) = q.q().remove(id);
+                        assert_eq!(status, RELEASE);
                         assert_eq!(out, model.remove(&id).unwrap());
                     } else {
                         let deadline = now + i64::try_from(seed % 53).unwrap();
-                        assert_eq!(
-                            unsafe { swr_v1_timer_update(q.0, id, deadline, &raw mut out) },
-                            OK
-                        );
+                        let (status, out) = q.q().update(id, deadline);
+                        assert_eq!(status, OK);
                         model.get_mut(&id).unwrap().deadline = deadline;
                         assert_eq!(out, model[&id]);
                     }
                 }
                 _ => {
                     now += i64::try_from(seed % 7).unwrap();
-                    assert_eq!(unsafe { swr_v1_timer_begin(q.0, now) }, OK);
+                    assert_eq!(q.begin(now), OK);
                     loop {
-                        let status = unsafe { swr_v1_timer_next(q.0, &raw mut out) };
+                        let (status, out) = q.q().select_next();
                         if status == EMPTY {
                             if let Some(deadline) = model.values().map(|v| v.deadline).min() {
                                 assert!(
@@ -1187,54 +936,56 @@ mod tests {
     fn token_finds_live_timers_only() {
         let q = Owned::new();
         let view = q.add(0, 5, false, 7);
-        assert_eq!(unsafe { swr_v1_timer_token(q.0, view.id) }, view.token);
-        assert!(unsafe { swr_v1_timer_token(q.0, view.id + 1) }.is_null());
+        let queue = q.0.as_ptr().cast_const();
+        assert_eq!(unsafe { swr_v1_timer_token(queue, view.id) }, view.token);
+        assert!(unsafe { swr_v1_timer_token(queue, view.id + 1) }.is_null());
         assert!(unsafe { swr_v1_timer_token(ptr::null(), view.id) }.is_null());
-        let mut out = TimerView::default();
-        assert_eq!(
-            unsafe { swr_v1_timer_remove(q.0, view.id, &raw mut out) },
-            RELEASE
-        );
-        assert!(unsafe { swr_v1_timer_token(q.0, view.id) }.is_null());
+        assert_eq!(q.q().remove(view.id).0, RELEASE);
+        assert!(unsafe { swr_v1_timer_token(queue, view.id) }.is_null());
     }
 
     #[test]
-    fn invalid_inputs_zero_outputs_and_do_not_change_selection() {
+    fn stats_get_answers_the_queue_and_rejects_null() {
         let q = Owned::new();
-        let mut view = q.add(0, 1, false, 1);
-        let original = view;
+        q.add(0, 1, false, 1);
+        let mut stats = TimerStats {
+            count: 7,
+            ..TimerStats::default()
+        };
+        let queue = q.0.as_ptr().cast_const();
+        assert_eq!(unsafe { swr_v1_timer_stats_get(queue, &raw mut stats) }, OK);
+        assert_eq!(stats, q.stats());
+        stats.count = 7;
         assert_eq!(
-            unsafe { swr_v1_timer_get(ptr::null(), 1, &raw mut view) },
+            unsafe { swr_v1_timer_stats_get(ptr::null(), &raw mut stats) },
             INVALID
         );
-        assert_eq!(view, TimerView::default());
+        assert_eq!(stats, TimerStats::default());
         assert_eq!(
-            unsafe { swr_v1_timer_complete(q.0, original.id, &raw mut view) },
+            unsafe { swr_v1_timer_stats_get(queue, ptr::null_mut()) },
             INVALID
         );
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, -1) }, INVALID);
+    }
+
+    #[test]
+    fn invalid_inputs_return_empty_views_and_do_not_change_selection() {
+        let q = Owned::new();
+        let original = q.add(0, 1, false, 1);
+        assert_eq!(q.complete(original.id, INVALID), TimerView::default());
+        assert_eq!(q.begin(-1), INVALID);
         assert_eq!(
-            unsafe { swr_v1_timer_add(q.0, i64::MAX, 1, 0, ptr::dangling_mut(), &raw mut view) },
-            OVERFLOW
+            q.q().add(i64::MAX, 1, false, ptr::dangling_mut()),
+            (OVERFLOW, TimerView::default())
         );
-        assert_eq!(
-            unsafe { swr_v1_timer_add(q.0, 0, 1, 2, ptr::dangling_mut(), &raw mut view) },
-            INVALID
-        );
-        assert_eq!(
-            unsafe { swr_v1_timer_update(q.0, 1, -1, &raw mut view) },
-            INVALID
-        );
-        assert_eq!(unsafe { swr_v1_timer_drain(q.0, &raw mut view) }, INVALID);
+        assert_eq!(q.q().update(1, -1), (INVALID, TimerView::default()));
+        assert_eq!(q.q().drain(), (INVALID, TimerView::default()));
         assert_eq!(q.get(original.id), original);
         q.prime();
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 1) }, OK);
-        assert_eq!(unsafe { swr_v1_timer_begin(q.0, 100) }, BUSY);
-        assert_eq!(unsafe { (*q.0).captured }, 1);
+        assert_eq!(q.begin(1), OK);
+        assert_eq!(q.begin(100), BUSY);
+        assert_eq!(q.q().captured, 1);
         q.next(OK);
-        let mut delay = 123;
-        assert_eq!(unsafe { swr_v1_timer_end(q.0, &raw mut delay) }, BUSY);
-        assert_eq!(delay, -1);
+        assert_eq!(q.q().end(), (BUSY, -1));
         q.complete(original.id, RELEASE);
         q.end();
     }
