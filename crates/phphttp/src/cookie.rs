@@ -1,31 +1,51 @@
 //! PHP `Swoole\Http\Cookie`: class registration, objects and every method, and
-//! the `Set-Cookie` line `Swoole\Http\Response::cookie()` sends. The line is
-//! built by `swr_v1_httpbindings_cookie`'s phases; this file runs their effects.
-use std::ffi::{CStr, c_int};
-use swoole_rs_httpbindings::{
-    APPEND, APPEND_AGE, APPEND_DATE, APPEND_ENCODED, Action, CookieInput, DONE, ENCODE,
-    FORMAT_DATE, FREE_DATE, FREE_ENCODED, READ_AGE, Text, WARN, swr_v1_httpbindings_cookie,
-};
+//! the `Set-Cookie` line `Swoole\Http\Response::cookie()` sends.
+use std::{cell::RefCell, ffi::CStr};
 use swoole_rs_phpstubs::http_cookie;
 use swoole_rs_phpswoole::MinitArgs;
-use swoole_rs_zend::{
-    Call, Class, Minit, Object, Owned, OwnedArray, ZStr, ZString,
-    sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, php_format_date, php_time, php_url_encode, zend_class_entry,
-        zend_object, zend_object_handlers, zval,
-    },
-    unset_property_deny,
-};
+use swoole_rs_zend::{Call, Custom, CustomClass, Minit, Owned, OwnedArray, Value, ZStr, ZString};
 use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_ERROR_HTTP_COOKIE_UNAVAILABLE`.
-const COOKIE_UNAVAILABLE: c_int = 7107;
+const COOKIE_UNAVAILABLE: std::ffi::c_int = 7107;
 
-static COOKIE: Class = Class::new();
+static COOKIE: CustomClass<Held> = CustomClass::new();
+
+/// `struct HttpCookieObject { Cookie *cookie; zend_object std; }`: no cookie
+/// until `__construct` runs. Borrows never span PHP code.
+struct Held(RefCell<Option<Cookie>>);
+
+impl Custom for Held {
+    fn class() -> &'static CustomClass<Self> {
+        &COOKIE
+    }
+
+    fn new() -> Self {
+        Self(RefCell::new(None))
+    }
+}
+
+impl Held {
+    /// `f` on the constructed cookie.
+    fn with<R>(&self, f: impl FnOnce(&mut Cookie) -> R) -> Option<R> {
+        self.0.borrow_mut().as_mut().map(f)
+    }
+
+    /// `Cookie::toString`: the line, or None after a warning, which resets the
+    /// cookie. The warning may run PHP code, so it formats a copy.
+    fn line(&self) -> Option<ZString> {
+        let line = self.with(|cookie| cookie.clone())?.line();
+        if line.is_none() {
+            self.with(Cookie::reset);
+        }
+        line
+    }
+}
 
 /// `swoole::http::Cookie`. String fields are absent or non-empty.
+#[derive(Clone)]
 struct Cookie {
-    /// name, value, path, domain, sameSite, priority (the phases' field order).
+    /// name, value, path, domain, sameSite, priority.
     fields: [Option<ZString>; 6],
     expires: i64,
     encode: bool,
@@ -48,6 +68,26 @@ const KEYS: [&CStr; 6] = [
     c"sameSite",
     c"priority",
 ];
+
+/// The bytes no name, value, path or domain may hold.
+const ILLEGAL: &[u8] = b",; \t\r\n\x0b\x0c";
+/// How the warnings list them.
+const LISTED: &str = r#"",", ";", " ", "\t", "\r", "\n", "\013", or "\014""#;
+
+/// Whether `bytes` up to its first NUL (upstream's `strpbrk`) hold an illegal
+/// byte, or `=` in a `name`.
+fn illegal(bytes: &[u8], name: bool) -> bool {
+    bytes
+        .iter()
+        .take_while(|&&c| c != 0)
+        .any(|c| ILLEGAL.contains(c) || (name && *c == b'='))
+}
+
+/// Warn and give no line.
+fn warn(message: &str) -> Option<ZString> {
+    crate::host::notice(message);
+    None
+}
 
 impl Cookie {
     const fn new(encode: bool) -> Self {
@@ -72,99 +112,71 @@ impl Cookie {
 
     /// `Cookie::reset`, which also turns encoding back on.
     fn reset(&mut self) {
-        for field in 0..self.fields.len() {
-            self.set(field, None);
-        }
-        self.expires = 0;
-        self.encode = true;
-        self.secure = false;
-        self.http_only = false;
-        self.partitioned = false;
+        *self = Self::new(true);
     }
 
     /// `Cookie::toString`: the line, or None after a warning.
     fn line(&self) -> Option<ZString> {
-        let mut line = Vec::new();
-        let mut encoded: Option<ZString> = None;
-        let mut date: Option<ZString> = None;
-        let mut age = 0.0;
-        let mut phase = 0;
-        loop {
-            let mut input = CookieInput {
-                fields: [Text::default(); 6],
-                expires: self.expires,
-                flags: u32::from(self.encode)
-                    | u32::from(self.secure) << 1
-                    | u32::from(self.http_only) << 2
-                    | u32::from(self.partitioned) << 3,
-                age,
-            };
-            for (text, field) in input.fields.iter_mut().zip(&self.fields) {
-                if let Some(field) = field {
-                    *text = Text {
-                        data: field.bytes().as_ptr(),
-                        length: field.bytes().len(),
-                    };
-                }
+        const DATE: &CStr = c"D, d-M-Y H:i:s T";
+        let [name, value, path, domain, same_site, priority] = self
+            .fields
+            .each_ref()
+            .map(|field| field.as_ref().map_or(&[][..], |field| field.bytes()));
+        if name.is_empty() {
+            return warn("The name cannot be empty");
+        }
+        if illegal(name, true) {
+            return warn(&format!("The name cannot contain \"=\", {LISTED}"));
+        }
+        let mut line = name.to_vec();
+        if value.is_empty() {
+            line.extend_from_slice(b"=deleted; expires=");
+            line.extend_from_slice(ZString::format_date(DATE, 1, false).bytes());
+            line.extend_from_slice(b"; Max-Age=0");
+        } else {
+            if !self.encode && illegal(value, false) {
+                return warn(&format!("The value cannot contain {LISTED}"));
             }
-            let mut action = Action::default();
-            // SAFETY: live, disjoint locals; the fields outlive the call.
-            if unsafe {
-                swr_v1_httpbindings_cookie(Some(&input), Some(&mut phase), Some(&mut action))
-            } != 0
-            {
-                return None;
+            line.push(b'=');
+            if self.encode {
+                line.extend_from_slice(ZString::url_encode(value).bytes());
+            } else {
+                line.extend_from_slice(value);
             }
-            match action.kind {
-                APPEND => {
-                    // SAFETY: the phases append bytes of a field or a static literal.
-                    line.extend_from_slice(unsafe { text(&action.text) });
+            if self.expires > 0 {
+                if self.expires >= 253_402_300_800 {
+                    return warn("The expires cannot have a year greater than 9999");
                 }
-                WARN => {
-                    // SAFETY: a NUL-terminated static message.
-                    let message = unsafe { CStr::from_ptr(action.text.data.cast()) };
-                    crate::host::notice(&message.to_string_lossy());
-                    return None;
-                }
-                ENCODE => {
-                    // The phases encode only a present value.
-                    let value = self.fields[VALUE]
-                        .as_ref()
-                        .map_or(&[][..], |value| value.bytes());
-                    // SAFETY: Zend reads the bytes and returns a new string.
-                    let string = unsafe { php_url_encode(value.as_ptr().cast(), value.len()) };
-                    // SAFETY: that new string's reference.
-                    encoded = Some(unsafe { ZString::from_raw(string) });
-                }
-                APPEND_ENCODED => {
-                    line.extend_from_slice(encoded.as_ref().map_or(&[][..], |text| text.bytes()));
-                }
-                FREE_ENCODED => encoded = None,
-                FORMAT_DATE => {
-                    let format = c"D, d-M-Y H:i:s T";
-                    // SAFETY: a literal format and a timestamp; Zend returns a new string.
-                    let string = unsafe {
-                        php_format_date(format.as_ptr(), format.count_bytes(), action.value, false)
-                    };
-                    // SAFETY: that new string's reference.
-                    date = Some(unsafe { ZString::from_raw(string) });
-                }
-                APPEND_DATE => {
-                    line.extend_from_slice(date.as_ref().map_or(&[][..], |text| text.bytes()));
-                }
-                FREE_DATE => date = None,
-                READ_AGE => {
-                    // SAFETY: PHP's clock.
-                    let now = unsafe { php_time() };
-                    age = difftime(self.expires, now);
-                }
-                APPEND_AGE => {
-                    line.extend_from_slice(action.value.to_string().as_bytes());
-                }
-                DONE => return Some(ZString::new(&line)),
-                _ => return None,
+                line.extend_from_slice(b"; expires=");
+                line.extend_from_slice(ZString::format_date(DATE, self.expires, false).bytes());
+                let age = self.expires.saturating_sub(swoole_rs_zend::time()).max(0);
+                line.extend_from_slice(format!("; Max-Age={age}").as_bytes());
             }
         }
+        for (option, bytes) in [("path", path), ("domain", domain)] {
+            if !bytes.is_empty() {
+                if illegal(bytes, false) {
+                    return warn(&format!("The {option} option cannot contain {LISTED}"));
+                }
+                line.extend_from_slice(format!("; {option}=").as_bytes());
+                line.extend_from_slice(bytes);
+            }
+        }
+        for (on, attribute) in [(self.secure, "secure"), (self.http_only, "HttpOnly")] {
+            if on {
+                line.extend_from_slice(format!("; {attribute}").as_bytes());
+            }
+        }
+        for (attribute, bytes) in [("SameSite", same_site), ("Priority", priority)] {
+            if !bytes.is_empty() {
+                line.extend_from_slice(format!("; {attribute}=").as_bytes());
+                line.extend_from_slice(bytes);
+            }
+        }
+        if self.partitioned {
+            line.extend_from_slice(b"; Partitioned");
+        }
+        Some(ZString::new(&line))
     }
 
     /// `Cookie::toArray`, each string field with its own reference.
@@ -183,39 +195,6 @@ impl Cookie {
         array.insert_bool(b"partitioned", self.partitioned);
         array
     }
-}
-
-/// `difftime(end, start)`.
-#[expect(clippy::cast_precision_loss, reason = "difftime returns a double")]
-fn difftime(end: i64, start: i64) -> f64 {
-    end.wrapping_sub(start) as f64
-}
-
-/// The bytes a phase action names.
-/// # Safety
-/// `text` spans live bytes.
-unsafe fn text<'a>(text: &Text) -> &'a [u8] {
-    if text.length == 0 {
-        return &[];
-    }
-    // SAFETY: per the caller.
-    unsafe { std::slice::from_raw_parts(text.data, text.length) }
-}
-
-/// `struct HttpCookieObject { Cookie *cookie; zend_object std; }`.
-type CookieObject = Object<Option<Box<Cookie>>>;
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend calls `create_object` with this class or a subclass of it;
-    // zeroed data is no cookie.
-    unsafe { CookieObject::create(&COOKIE, ce) }
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    // SAFETY: Zend frees an object this class created.
-    drop(unsafe { CookieObject::data(std) }.take());
-    // SAFETY: as above.
-    unsafe { CookieObject::dtor(std) };
 }
 
 method_table! {
@@ -237,32 +216,29 @@ method_table! {
     ];
 }
 
-/// `php_swoole_http_cookie_minit`: register the class.
+/// `php_swoole_http_cookie_minit`: register the class (not serializable,
+/// clone and unset denied, custom object).
 /// # Safety
 /// Called once, at MINIT.
 pub unsafe fn php_swoole_http_cookie_minit(args: &MinitArgs) {
     // SAFETY: Zend's MINIT of this module, on this thread.
     let minit = unsafe { Minit::new(args.module) };
-    minit.register(&COOKIE, c"Swoole\\Http\\Cookie", &METHODS.0, configure);
+    minit.register_object::<Held>(c"Swoole\\Http\\Cookie", &METHODS.0, 0);
 }
 
-/// Not serializable, clone and unset denied, custom object.
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    CookieObject::install(entry, handlers, create, free);
-}
-
-/// `php_swoole_http_get_cooke_safety`: the object's cookie, or Swoole's
-/// `SW_ERROR_HTTP_COOKIE_UNAVAILABLE` (upstream then dereferences null).
-fn cookie<'a>(object: *mut zend_object) -> Option<&'a mut Cookie> {
-    // SAFETY: a Cookie object (methods' `$this`, or Response's typed argument).
-    let cookie = unsafe { CookieObject::data(object) }.as_deref_mut();
-    if cookie.is_none() {
+/// `php_swoole_http_get_cooke_safety`: a constructed cookie's object, or
+/// Swoole's `SW_ERROR_HTTP_COOKIE_UNAVAILABLE` (upstream then dereferences null).
+fn constructed(held: Option<&Held>) -> Option<&Held> {
+    let held = held.filter(|held| held.0.borrow().is_some());
+    if held.is_none() {
         crate::host::set_last_error(COOKIE_UNAVAILABLE);
     }
-    cookie
+    held
+}
+
+/// `$this`'s constructed cookie.
+fn cookie(call: &Call) -> Option<&Held> {
+    constructed(call.custom())
 }
 
 /// `__construct(bool $encode = true)`.
@@ -270,36 +246,37 @@ fn construct(call: &Call) {
     let Ok(encode) = call.arity(0, 1).and_then(|()| call.bool(1, true)) else {
         return;
     };
-    // SAFETY: Cookie methods are non-static, so `$this` is one of our objects.
-    let slot = unsafe { CookieObject::data(call.this()) };
-    if slot.is_some() {
+    let Some(Held(cookie)) = call.custom() else {
+        return;
+    };
+    if cookie.borrow().is_some() {
         call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }
-    *slot = Some(Box::new(Cookie::new(encode)));
+    *cookie.borrow_mut() = Some(Cookie::new(encode));
 }
 
 /// `with<Field>(string $field)`: set a string field and return `$this`.
 fn with_string(call: &Call, field: usize) {
-    let cookie = cookie(call.this());
+    let held = cookie(call);
     let Ok(string) = call.arity(1, 1).and_then(|()| call.zstr(1)) else {
         return;
     };
-    if let Some(cookie) = cookie {
-        cookie.set(field, string);
+    if let Some(held) = held {
+        held.with(|cookie| cookie.set(field, string));
     }
     call.set_this();
 }
 
 /// `with<Flag>(bool $flag = false)`: set a flag and return `$this`.
 fn with_flag(call: &Call, flag: fn(&mut Cookie) -> &mut bool) {
-    let cookie = cookie(call.this());
+    let held = cookie(call);
     let Ok(value) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return;
     };
-    if let Some(cookie) = cookie {
-        *flag(cookie) = value;
+    if let Some(held) = held {
+        held.with(|cookie| *flag(cookie) = value);
     }
     call.set_this();
 }
@@ -334,40 +311,38 @@ fn with_partitioned(call: &Call) {
 
 /// `withExpires(int $expires = 0)`.
 fn with_expires(call: &Call) {
-    let cookie = cookie(call.this());
+    let held = cookie(call);
     let Ok(expires) = call.arity(0, 1).and_then(|()| call.long(1, 0)) else {
         return;
     };
-    if let Some(cookie) = cookie {
-        cookie.expires = expires;
+    if let Some(held) = held {
+        held.with(|cookie| cookie.expires = expires);
     }
     call.set_this();
 }
 
 /// `toString(): string|false`; a cookie that cannot be sent is reset.
 fn to_string(call: &Call) {
-    let Some(cookie) = cookie(call.this()) else {
+    let Some(held) = cookie(call) else {
         return;
     };
-    if let Some(line) = cookie.line() {
-        call.set_zstring(line);
-    } else {
-        cookie.reset();
-        call.set_bool(false);
+    match held.line() {
+        Some(line) => call.set_zstring(line),
+        None => call.set_bool(false),
     }
 }
 
 /// `toArray(): array`.
 fn to_array(call: &Call) {
-    if let Some(cookie) = cookie(call.this()) {
-        call.set_owned(cookie.to_array().into_owned());
+    if let Some(array) = cookie(call).and_then(|held| held.with(|cookie| cookie.to_array())) {
+        call.set_owned(array.into_owned());
     }
 }
 
 /// `reset(): void`.
 fn reset(call: &Call) {
-    if let Some(cookie) = cookie(call.this()) {
-        cookie.reset();
+    if let Some(held) = cookie(call) {
+        held.with(Cookie::reset);
     }
 }
 
@@ -409,21 +384,11 @@ pub(crate) fn header_line(
     cookie.line()
 }
 
-/// `Response::cookie()` with a `Swoole\Http\Cookie`: its line, or None (after a
-/// warning, which also resets the cookie, or for an unconstructed cookie).
-/// # Safety
-/// `object` is a live `Swoole\Http\Cookie` zval.
-pub(crate) unsafe fn object_header_line(object: *const zval) -> Option<ZString> {
-    // SAFETY: per the caller, a live zval.
-    let value = unsafe { (*object).value };
-    // SAFETY: an object zval holds `obj`.
-    let std = unsafe { value.obj };
-    let cookie = cookie(std)?;
-    let line = cookie.line();
-    if line.is_none() {
-        cookie.reset();
-    }
-    line
+/// `Response::cookie()` with an object: a constructed `Swoole\Http\Cookie`'s
+/// line, or None (after a warning, which also resets the cookie, or for any
+/// other object).
+pub(crate) fn object_header_line(object: &Value) -> Option<ZString> {
+    constructed(object.custom())?.line()
 }
 
 #[cfg(test)]
@@ -431,27 +396,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn difftime_is_the_exact_difference() {
-        assert!(
-            (difftime(100, 40) - 60.0).abs() < f64::EPSILON,
-            "seconds left"
-        );
-        assert!((difftime(0, 5) + 5.0).abs() < f64::EPSILON, "expired");
-    }
-
-    #[test]
-    fn fields_follow_the_phase_order() {
-        assert_eq!(
-            KEYS.map(CStr::to_bytes),
-            [
-                &b"name"[..],
-                b"value",
-                b"path",
-                b"domain",
-                b"sameSite",
-                b"priority"
-            ],
-            "toArray keys match the phases' field order"
-        );
+    fn illegal_bytes_stop_at_nul() {
+        assert!(illegal(b"a;b", false), "a separator");
+        assert!(illegal(b"a=b", true), "= in a name");
+        assert!(!illegal(b"a=b", false), "= in a value");
+        assert!(!illegal(b"a\0;", false), "after a NUL");
     }
 }

@@ -386,8 +386,7 @@ fn set_cookie(call: &Call, encode: bool) {
             (secure, http_only, partitioned),
         )
     } else {
-        // SAFETY: an object argument; a non-Cookie one is reported by httpbindings.
-        unsafe { object_header_line(name.as_ptr()) }
+        object_header_line(name)
     };
     let Some(cookie) = cookie else {
         return call.set_bool(false);
