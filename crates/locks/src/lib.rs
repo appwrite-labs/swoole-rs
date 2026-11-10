@@ -26,7 +26,7 @@ compile_error!("Rust locks require validated macOS or Linux platform contracts")
 use libc::*;
 use std::{
     mem::{align_of, offset_of, size_of},
-    sync::atomic::{AtomicI64, AtomicU32, Ordering},
+    sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering},
 };
 
 pub mod coroutine;
@@ -339,16 +339,117 @@ pub unsafe extern "C" fn swr_v1_locks_destroy(storage: *mut c_void, kind: i32) {
     }
 }
 
+/// An initialized lock of `kind` (`Lock::Type`: rwlock 1, mutex 3, spinlock 5),
+/// in heap storage it owns or in process-shared storage it keeps for the
+/// program's life. Its words are `AtomicU64`s only to be 8-aligned, `Sync`
+/// storage that pthread alone accesses. pthread reports misuse (unlocking a
+/// lock this thread doesn't hold, destroying a held one) as an error code, as
+/// upstream's locks see it.
+#[derive(Debug)]
+pub struct Lock {
+    storage: Storage,
+    kind: i32,
+}
+
+#[derive(Debug)]
+enum Storage {
+    /// A thread-private lock's, destroyed with it.
+    Private(Box<[AtomicU64]>),
+    /// A shared lock's, which forked processes may still hold.
+    Shared(&'static [AtomicU64]),
+}
+
+impl Storage {
+    fn words(&self) -> &[AtomicU64] {
+        match self {
+            Self::Private(words) => words,
+            Self::Shared(words) => words,
+        }
+    }
+
+    fn ptr(&self) -> *mut c_void {
+        self.words().as_ptr().cast_mut().cast()
+    }
+}
+
+impl Lock {
+    /// A thread-private lock (`new Mutex(false)` and its rwlock and spinlock
+    /// twins); None for a kind this platform lacks, or when it can't be made.
+    #[must_use]
+    pub fn private(kind: i32) -> Option<Self> {
+        let words = swr_v1_locks_size(kind).div_ceil(size_of::<AtomicU64>());
+        Self::new(
+            kind,
+            Storage::Private((0..words).map(|_| AtomicU64::new(0)).collect()),
+            0,
+        )
+    }
+
+    /// A process-shared lock (`new Mutex(true)`) in `storage`, which it keeps:
+    /// None when `storage` is too small for `kind`, or the lock can't be made.
+    #[must_use]
+    pub fn shared(kind: i32, storage: &'static [AtomicU64]) -> Option<Self> {
+        Self::new(kind, Storage::Shared(storage), 1)
+    }
+
+    fn new(kind: i32, storage: Storage, shared: i32) -> Option<Self> {
+        let size = swr_v1_locks_size(kind);
+        let room = size_of_val::<[AtomicU64]>(storage.words());
+        if size == 0 || room < size || swr_v1_locks_align(kind) > align_of::<AtomicU64>() {
+            return None;
+        }
+        // SAFETY: at least `size` 8-aligned bytes, which only this lock uses.
+        (unsafe { swr_v1_locks_init(storage.ptr(), kind, shared) } == 0)
+            .then_some(Self { storage, kind })
+    }
+
+    /// `Lock::lock(operation, timeout)`: `LOCK_SH`/`LOCK_NB` from `operation`,
+    /// `timeout` in milliseconds (none when not positive), the timed waits
+    /// `capabilities` names (bit 0 mutex, bit 1 rwlock); 0 or an errno.
+    #[must_use]
+    pub fn lock(&self, operation: i32, timeout: i32, capabilities: u32) -> i32 {
+        // SAFETY: a lock `new` initialized.
+        unsafe {
+            swr_v1_locks_lock(
+                self.storage.ptr(),
+                self.kind,
+                operation,
+                timeout,
+                capabilities,
+            )
+        }
+    }
+
+    /// `Lock::unlock()`: 0 or an errno.
+    #[must_use]
+    pub fn unlock(&self) -> i32 {
+        // SAFETY: as in `lock`.
+        unsafe { swr_v1_locks_unlock(self.storage.ptr(), self.kind) }
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        if let Storage::Private(_) = self.storage {
+            // SAFETY: the last reference to a private lock `new` initialized.
+            unsafe { swr_v1_locks_destroy(self.storage.ptr(), self.kind) };
+        }
+    }
+}
+
 // Generic operations preserve unsigned/signed wrapping and __sync CAS/add/sub fences.
 // op: load=0, store=1, add-fetch=2, sub-fetch=3, compare-set=4 (expected last).
 macro_rules! atomic_api {
-    ($name:ident, $rust:ident, $atomic:ty, $word:ty) => {
-        /// The operation itself, inlined into Rust callers (PHP Atomic) so a
-        /// constant `op` folds away.
+    ($name:ident, $atomic:ty, $word:ty) => {
         /// # Safety
         /// `storage` is null or a live word that is only accessed atomically.
-        #[inline]
-        pub unsafe fn $rust(storage: *mut $word, op: u32, value: $word, expected: $word) -> $word {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(
+            storage: *mut $word,
+            op: u32,
+            value: $word,
+            expected: $word,
+        ) -> $word {
             if storage.is_null() || !(storage as usize).is_multiple_of(align_of::<$atomic>()) {
                 return 0;
             }
@@ -369,23 +470,10 @@ macro_rules! atomic_api {
                 _ => 0,
             }
         }
-
-        /// # Safety
-        /// As for the Rust function it wraps.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(
-            storage: *mut $word,
-            op: u32,
-            value: $word,
-            expected: $word,
-        ) -> $word {
-            // SAFETY: per the caller.
-            unsafe { $rust(storage, op, value, expected) }
-        }
     };
 }
-atomic_api!(swr_v1_locks_atomic32, atomic32, AtomicU32, u32);
-atomic_api!(swr_v1_locks_atomic64, atomic64, AtomicI64, i64);
+atomic_api!(swr_v1_locks_atomic32, AtomicU32, u32);
+atomic_api!(swr_v1_locks_atomic64, AtomicI64, i64);
 
 /// `swoole::Barrier` (`native/locks/swoole_lock.h`), whose methods are these exports under
 /// their C++ symbols. Linux uses a pthread barrier, as upstream's `SW_USE_PTHREAD_BARRIER`
@@ -496,9 +584,12 @@ unsafe fn word<'a>(word: *mut u32) -> Option<&'a AtomicU32> {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_locks_wait(word: *mut u32, timeout: f64) -> i32 {
     // SAFETY: the caller lends null or a live, atomic-only word for this call.
-    let Some(a) = (unsafe { self::word(word) }) else {
-        return -1;
-    };
+    unsafe { self::word(word) }.map_or(-1, |word| wait(word, timeout))
+}
+
+/// [`swr_v1_locks_wait`] on a word.
+#[cfg(target_os = "linux")]
+pub fn wait(a: &AtomicU32, timeout: f64) -> i32 {
     if a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
@@ -513,11 +604,11 @@ pub unsafe extern "C" fn swr_v1_locks_wait(word: *mut u32, timeout: f64) -> i32 
         tv_sec: timeout as time_t,
         tv_nsec: ((timeout - (timeout as time_t) as f64) * 1000.0 * 1000.0 * 1000.0) as c_long,
     };
-    // SAFETY: `word` is a live futex word; the timeout is null or the live `duration`.
+    // SAFETY: `a` is a live futex word; the timeout is null or the live `duration`.
     let result = unsafe {
         syscall(
             SYS_futex,
-            word,
+            a.as_ptr(),
             FUTEX_WAIT,
             0,
             if timeout > 0.0 {
@@ -544,9 +635,12 @@ pub unsafe extern "C" fn swr_v1_locks_wait(word: *mut u32, timeout: f64) -> i32 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_locks_wakeup(word: *mut u32, n: i32) -> i32 {
     // SAFETY: the caller lends null or a live, atomic-only word for this call.
-    let Some(a) = (unsafe { self::word(word) }) else {
-        return -1;
-    };
+    unsafe { self::word(word) }.map_or(-1, |word| wakeup(word, n))
+}
+
+/// [`swr_v1_locks_wakeup`] on a word.
+#[cfg(target_os = "linux")]
+pub fn wakeup(a: &AtomicU32, n: i32) -> i32 {
     if a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
@@ -554,11 +648,11 @@ pub unsafe extern "C" fn swr_v1_locks_wakeup(word: *mut u32, n: i32) -> i32 {
             clippy::cast_possible_truncation,
             reason = "FUTEX_WAKE returns -1 or at most `n` woken waiters"
         )]
-        // SAFETY: `word` is a live futex word; FUTEX_WAKE reads no other pointer.
+        // SAFETY: `a` is a live futex word; FUTEX_WAKE reads no other pointer.
         unsafe {
             syscall(
                 SYS_futex,
-                word,
+                a.as_ptr(),
                 FUTEX_WAKE,
                 n,
                 std::ptr::null::<c_void>(),
@@ -650,6 +744,17 @@ mod tests {
             }
         });
         barrier_destroy(&barrier);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_init")]
+    fn safe_locks_lock_and_refuse_what_they_cannot_hold() {
+        let lock = super::Lock::private(MUTEX).expect("a mutex");
+        assert_eq!(lock.lock(LOCK_EX, -1, CAPABILITIES), 0);
+        assert_eq!(lock.unlock(), 0);
+        assert!(super::Lock::private(42).is_none(), "no such kind");
+        let short = Box::leak(Box::new([AtomicU64::new(0)]));
+        assert!(super::Lock::shared(MUTEX, short).is_none(), "too small");
     }
 
     // What configure finds: Linux has pthread_mutex_timedlock and pthread_rwlock_timed*.

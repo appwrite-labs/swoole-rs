@@ -1,15 +1,15 @@
 {
-  "plaintext": 0.91,
-  "echo-1k": 0.92,
-  "json": 0.94,
-  "service-health": 0.93,
+  "plaintext": 0.95,
+  "echo-1k": 0.96,
+  "json": 0.97,
+  "service-health": 0.96,
   "websocket": 0.81,
   "timer": 0.67,
   "app": 0.92,
-  "http2": 0.95,
+  "http2": 0.97,
   "table": 0.98,
   "channel": 0.89,
-  "task": 0.94,
+  "task": 0.96,
   "mysql": 0.97,
   "connect": 1.09,
   "http-client": 0.95,
@@ -17,7 +17,7 @@
   "socket": 0.99,
   "gzip": 1.02,
   "websocket-deflate": 1.00,
-  "tcp-length": 1.02,
+  "tcp-length": 1.07,
   "tcp-eof": 0.55,
   "udp": 1.09,
   "http2-concurrent": 1.31,
@@ -28,5 +28,5 @@
   "https": 1.04,
   "wss": 1.04,
   "atomic": 1.02,
-  "process-mode": 0.95
+  "process-mode": 0.98
 }

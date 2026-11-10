@@ -245,8 +245,7 @@ fn construct(call: &Call) {
         clippy::cast_sign_loss,
         reason = "upstream passes the zend_long to a uint32_t and the double to a float"
     )]
-    // SAFETY: `swoole_init` made the global pool.
-    let table = unsafe { swr_table_make(rows as u32, conflict as f32) };
+    let table = swr_table_make(rows as u32, conflict as f32);
     // SAFETY: a made table, or null.
     if let Some(made) = unsafe { table.as_mut() } {
         made.set_hash(zend_hash);

@@ -235,6 +235,17 @@ pub fn current_safe() -> Co {
     co
 }
 
+/// `System::sleep(seconds)` of the running coroutine: 0, or -1 once canceled,
+/// and -1 outside a coroutine, where upstream's raises a fatal error.
+#[must_use]
+pub fn sleep(seconds: f64) -> c_int {
+    if current().is_null() {
+        return -1;
+    }
+    // SAFETY: C++ sleeps the running coroutine, which returns here.
+    unsafe { system_sleep(seconds) }
+}
+
 pub(crate) fn current_task() -> *mut c_void {
     task(current())
 }
@@ -348,8 +359,11 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
         // SAFETY: the creator's arguments, live until this coroutine first yields.
         let (count, sleep) = unsafe { *args.cast::<(c_long, f64)>() };
         for _ in 0..count {
-            // SAFETY: in a coroutine.
-            unsafe { system_sleep(sleep) };
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "upstream ignores each sleep's result"
+            )]
+            let _ = super::sleep(sleep);
         }
     }
     let mut args = (count, sleep);

@@ -121,7 +121,17 @@ impl Call {
         Some(unsafe { crate::Owned::object(this) })
     }
 
+    /// `$this`'s [`Custom`](crate::Custom) data, or None when `$this` is no `T`
+    /// object (a static method). The frame holds `$this` for the call.
+    #[must_use]
+    #[inline]
+    pub fn custom<T: crate::Custom>(&self) -> Option<&T> {
+        // SAFETY: the frame's live `$this`, held while `self` is borrowed.
+        unsafe { crate::object::custom(self.this_object()?) }
+    }
+
     /// `Z_OBJ_P(ZEND_THIS)`, or None without an object (a static method).
+    #[inline]
     fn this_object(&self) -> Option<*mut zend_object> {
         // SAFETY: a live frame.
         let this = unsafe { &raw const (*self.frame).This };
@@ -495,6 +505,7 @@ impl Call {
     /// `zend_update_property_long(scope, Z_OBJ_P(ZEND_THIS), name, value)`;
     /// `scope` is the class whose view of the property to update (NULL if none).
     /// A static method has no `$this` to update.
+    #[inline]
     pub fn update_property_long(&self, scope: Option<&Class>, name: &CStr, value: i64) {
         let Some(this) = self.this_object() else {
             return;

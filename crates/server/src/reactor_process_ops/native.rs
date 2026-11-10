@@ -55,8 +55,7 @@ impl Context {
     }
     /// `serv->ports`.
     pub(super) fn ports(&self) -> &[*mut c_void] {
-        // SAFETY: as above.
-        unsafe { super::ports(self.serv) }
+        self.server().ports()
     }
     pub(super) fn callback_slot(&self, index: u32) -> Option<&crate::callbacks::CallbackSlot> {
         self.state().callbacks.slot(index)
@@ -173,8 +172,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_ADD => {
-            // SAFETY: the context's live server.
-            let port = *unsafe { super::ports(ctx.serv) }.get(usize::try_from(arg).ok()?)?;
+            let port = *ctx.ports().get(usize::try_from(arg).ok()?)?;
             // SAFETY: one of its live ports.
             let port = unsafe { view::port(port) };
             let gs = port.counters()?;
