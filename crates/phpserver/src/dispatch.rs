@@ -691,10 +691,13 @@ extern "C" fn on_worker_error_slot(
 
 /// A task event's result, or its bailout raised.
 fn task_result(outcome: Result<c_int, Bailout>) -> c_int {
-    outcome.unwrap_or_else(|bailed| {
-        bailout::raise(Err(bailed));
+    let result = outcome.unwrap_or_else(|bailed| {
+        bailed.defer();
         SW_OK
-    })
+    });
+    // A callable's release can leave one pending behind an `Ok`.
+    bailout::finish();
+    result
 }
 
 extern "C" fn on_task(_: Ctx, server: view::Server<'_>, req: *mut c_void) -> c_int {

@@ -20,14 +20,6 @@ pub struct Callable {
     name: *mut zend_string,
 }
 
-fn outcome<T>(value: T) -> Result<T, bailout::Bailout> {
-    if bailout::pending() {
-        Err(bailout::Bailout)
-    } else {
-        Ok(value)
-    }
-}
-
 fn deferred(bailed: i32) -> bool {
     if bailed != 0 {
         bailout::Bailout.defer();
@@ -144,7 +136,7 @@ pub unsafe fn create(value: *mut zval, report: Report) -> Result<*mut Callable, 
 pub unsafe fn release(handle: *mut Callable) -> Result<(), bailout::Bailout> {
     // SAFETY: ownership returns to Rust, including its zval and diagnostic string.
     drop(unsafe { Box::from_raw(handle) });
-    outcome(())
+    bailout::outcome(())
 }
 
 /// # Safety
@@ -230,7 +222,7 @@ pub unsafe fn invoke(
             bailout::trap(sys::swr_zend_zval_release, (&raw mut temporary).cast())
         });
     }
-    outcome(success)
+    bailout::outcome(success)
 }
 
 /// # Errors
@@ -259,7 +251,7 @@ pub unsafe fn factory(
                     sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505)
                 });
             }
-            return outcome(ptr::null_mut());
+            return bailout::outcome(ptr::null_mut());
         }
     }
     // SAFETY: the candidate and native reporter satisfy callable_new's contract.
@@ -282,5 +274,5 @@ pub unsafe fn factory(
         // SAFETY: a registered exception class; Zend copies the message.
         deferred(unsafe { sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505) });
     }
-    outcome(ptr::null_mut())
+    bailout::outcome(ptr::null_mut())
 }
