@@ -663,12 +663,7 @@ mod tests {
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(
             native.events,
-            [
-                "length:3",
-                "package:\x01a",
-                "length:1",
-                "package:\0"
-            ]
+            ["length:3", "package:\x01a", "length:1", "package:\0"]
         );
         assert_eq!(
             (native.buffer.length, native.buffer.offset),

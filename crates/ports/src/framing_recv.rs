@@ -104,7 +104,14 @@ impl Packages for Callbacks {
         let length = b.offset.unsigned_abs();
         // SAFETY: the live protocol and socket, and the package's `length` bytes from
         // `start`, inside the buffer (the loop dispatches only a whole one).
-        unsafe { dispatch(r.protocol, r.socket, b.str.wrapping_add(start).cast_const(), length) }
+        unsafe {
+            dispatch(
+                r.protocol,
+                r.socket,
+                b.str.wrapping_add(start).cast_const(),
+                length,
+            )
+        }
     }
 }
 
