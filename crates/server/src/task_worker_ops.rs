@@ -400,7 +400,7 @@ fn finish(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let (buf, size) = (ctx.buf.cast(), ctx.packed_size());
             // SAFETY: the source worker, live, and the packed result.
             let sent = unsafe {
-                entry::send_to_worker_from_worker(serv, ctx.worker, buf, size, PIPE_MASTER)
+                swoole_rs_process::methods::send_pipe_message(ctx.worker, buf, size, PIPE_MASTER)
             };
             signed(sent as i64)
         }

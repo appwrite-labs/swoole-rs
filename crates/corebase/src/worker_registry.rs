@@ -174,14 +174,16 @@ mod tests {
     fn array_lookup_reads_unaligned_slots_and_keeps_first_match_after_raw_writes() {
         let mut bytes = [0_u8; 26];
         let array = bytes.as_mut_ptr().cast::<c_void>();
+        // The first record's PID, written through `array`: a write to `bytes` would end it.
+        let pid = array.cast::<u8>().wrapping_add(3).cast::<[u8; 4]>();
         unsafe {
             assert_eq!(find_array(array, 2, 13, 3, 0), array);
-            bytes[3..7].copy_from_slice(&9_i32.to_ne_bytes());
+            pid.write(9_i32.to_ne_bytes());
             assert_eq!(
                 find_array(array, 2, 13, 3, 0),
                 array.cast::<u8>().add(13).cast()
             );
-            bytes[3..7].copy_from_slice(&0_i32.to_ne_bytes());
+            pid.write(0_i32.to_ne_bytes());
             assert_eq!(find_array(array, 2, 13, 3, 0), array);
             assert!(find_array(array, 2, 13, 3, 7).is_null());
             assert!(find_array(core::ptr::null_mut(), 2, 13, 3, 0).is_null());

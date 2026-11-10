@@ -374,8 +374,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let data = (&raw const ev).cast::<u8>();
             // SAFETY: a worker of the live server and a head of the size passed.
             let sent = unsafe {
-                entry::send_to_worker_from_worker(
-                    serv,
+                swoole_rs_process::methods::send_pipe_message(
                     target,
                     data,
                     size_of::<DataHead>(),

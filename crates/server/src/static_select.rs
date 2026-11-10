@@ -116,10 +116,6 @@ fn encode(header: &HttpStaticHeaders<'_>) -> Vec<u8> {
     head
 }
 
-fn status_message(status: i32) -> Vec<u8> {
-    swoole_rs_http::status_message(status).into_owned()
-}
-
 #[expect(
     clippy::cast_possible_wrap,
     reason = "upstream prints the size_t length with %ld"
@@ -150,7 +146,7 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
         range_kind: 0,
     };
     if handler.status() == NOT_FOUND {
-        let status = status_message(NOT_FOUND);
+        let status = swoole_rs_http::status_message(NOT_FOUND);
         let page = page_404();
         header.status = &status;
         header.page = &page;
@@ -194,7 +190,7 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
     handler.parse_range(c_text(&range), c_text(&if_range));
     let tasks = handler.tasks();
     let status = handler.status();
-    let message = status_message(status);
+    let message = swoole_rs_http::status_message(status);
     header.variant = 3;
     header.status = &message;
     header.keep_alive = exchange.keep_alive();
@@ -253,7 +249,8 @@ impl SendfileTask {
     const HEAD: usize = 16;
 
     fn new(filename: &[u8]) -> Self {
-        let mut bytes = vec![0; Self::HEAD];
+        let mut bytes = Vec::with_capacity(Self::HEAD + filename.len() + 1);
+        bytes.extend_from_slice(&[0; Self::HEAD]);
         bytes.extend_from_slice(filename);
         bytes.push(0);
         Self(bytes)

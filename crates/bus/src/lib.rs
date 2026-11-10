@@ -940,6 +940,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
     fn stream_round_trips_direct_chunked_and_empty_packets() {
         let mut pipe = Pipe::new(libc::SOCK_STREAM, 8192, false);
         for (id, length) in [(1, 100), (2, 8152), (3, 8153), (4, 200_000), (5, 0)] {
@@ -951,6 +952,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
     fn dgram_round_trips_always_chunked_packets() {
         let mut pipe = Pipe::new(libc::SOCK_DGRAM, 8192, true);
         for (id, length) in [(1, 10), (2, 100_000)] {
@@ -962,6 +964,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
     fn moved_packets_are_not_freed_and_memory_counts_reassembly() {
         let mut pipe = Pipe::new(libc::SOCK_STREAM, 4096, true);
         assert!(pipe.write(9, &payload(5000)));
@@ -1002,6 +1005,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
     fn unknown_chunks_and_closed_pipes_are_reported() {
         let mut pipe = Pipe::new(libc::SOCK_DGRAM, 4096, true);
         let head = BusHead {
@@ -1233,6 +1237,7 @@ mod tests {
 
     /// `TEST(message_bus, read)`: a stream pair, `MessageBus::read`.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
     fn message_bus_read() {
         let (_bus, q, sent) = message_bus(libc::SOCK_STREAM, false);
         assert_packets(&q, &sent);
@@ -1242,6 +1247,7 @@ mod tests {
     /// upstream's core-tests: the 64KiB chunks need ENOBUFS to ask for smaller ones, and
     /// only Linux's `catch_pipe_error` reads ENOBUFS that way (macOS caps datagrams at 2KiB).
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
     #[cfg(target_os = "linux")]
     fn message_bus_read_with_buffer() {
         let (bus, q, sent) = message_bus(libc::SOCK_DGRAM, true);
