@@ -10,6 +10,7 @@ use crate::reactor_upstream::{prepared, reactor_change, reactor_interest};
 use crate::{ReactorFields, SocketRecord};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
+use std::rc::Rc;
 
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
 const EVENT_READ: c_int = 512;
@@ -306,15 +307,17 @@ pub trait CycleTask: 'static {
     fn retire(self: Box<Self>);
 }
 
-/// What `ReactorTask::data` holds while `cycle_task` is its callback: the task,
-/// and how many calls of its `run` are under way (a nested pass may replace it).
+/// What `ReactorTask::data` holds (from `Rc::into_raw`) while `cycle_task` is its
+/// callback: the task, and how many calls of its `run` are under way (a nested
+/// pass may replace it). Shared, so a replaced slot is never claimed uniquely
+/// while a run still borrows it.
 struct Slot {
     running: Cell<u32>,
     task: Box<dyn CycleTask>,
 }
 
 /// # Safety
-/// `data` is the live `Slot` box `swoole_event_cycle` gave the reactor.
+/// `data` is the live `Slot` `swoole_event_cycle` gave the reactor.
 unsafe extern "C-unwind" fn cycle_task(data: *mut c_void) {
     // SAFETY: as above; the slot outlives `run`, since a replaced slot is freed
     // only once `running` is back to 0.
@@ -327,14 +330,19 @@ unsafe extern "C-unwind" fn cycle_task(data: *mut c_void) {
 
 /// A replaced task, retired once the loop is out of the pass and its `run`;
 /// dropped if the reactor is freed first (kept if it is still running).
-struct Retired(Box<Slot>);
+struct Retired(Rc<Slot>);
 
 impl Deferred for Retired {
     fn run(self) {
-        if self.0.running.get() == 0 {
-            self.0.task.retire();
-        } else if let Err(running) = swoole_event_defer_value(self) {
-            running.dispose();
+        if self.0.running.get() != 0 {
+            if let Err(running) = swoole_event_defer_value(self) {
+                running.dispose();
+            }
+            return;
+        }
+        // The only owner: nothing else holds the slot once the reactor gave it up.
+        if let Ok(slot) = Rc::try_unwrap(self.0) {
+            slot.task.retire();
         }
     }
 
@@ -354,7 +362,7 @@ pub fn swoole_event_cycle(before: bool, task: Option<Box<dyn CycleTask>>) {
     }
     let data = task.map(|task| {
         let running = Cell::new(0);
-        Box::into_raw(Box::new(Slot { running, task }))
+        Rc::into_raw(Rc::new(Slot { running, task })).cast_mut()
     });
     let replaced = field_mut(|fields| {
         let slot = if before {
@@ -372,9 +380,9 @@ pub fn swoole_event_cycle(before: bool, task: Option<Box<dyn CycleTask>>) {
     let Some(replaced) = replaced.filter(|data| !data.is_null()) else {
         return;
     };
-    // SAFETY: only this function sets these tasks' data, to a `Slot` box, which
-    // the reactor no longer holds.
-    let replaced = Retired(unsafe { Box::from_raw(replaced.cast::<Slot>()) });
+    // SAFETY: only this function sets these tasks' data, to an `Rc<Slot>` it gave
+    // up, which the reactor no longer holds.
+    let replaced = Retired(unsafe { Rc::from_raw(replaced.cast::<Slot>()) });
     // The reactor was just there.
     let _kept = swoole_event_defer_value(replaced);
 }
