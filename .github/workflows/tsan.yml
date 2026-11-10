@@ -32,7 +32,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - uses: actions/cache@v4
         with:
           path: target/tsan/php

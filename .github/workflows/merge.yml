@@ -57,7 +57,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - if: steps.upstream.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py
       - if: steps.upstream.outputs.cache-hit != 'true'
@@ -71,7 +71,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: target/upstream-builds/php-sockets
-          key: upstream-php-sockets-${{ runner.os }}-${{ steps.install.outputs.php }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-php-sockets-${{ runner.os }}-${{ steps.install.outputs.php }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - if: steps.sockets.outputs.cache-hit != 'true'
         run: python3 tools/build_upstream.py --php-sockets
       - if: steps.sockets.outputs.cache-hit != 'true'
@@ -188,7 +188,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - if: hashFiles('target/upstream/src/modules/swoole.so') == ''
         run: python3 tools/build_upstream.py
       - run: cargo fetch --locked
@@ -229,7 +229,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - if: hashFiles('target/upstream/src/run-tests.php') == ''
         run: python3 tools/build_upstream.py
       - run: cargo fetch --locked
@@ -310,7 +310,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       - if: hashFiles('target/upstream/src/run-tests.php') == ''
         run: python3 tools/build_upstream.py
       - run: cargo fetch --locked
@@ -352,7 +352,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
           # Only the pinned tests are read here, and those don't change with the build script.
           restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
@@ -407,7 +407,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
           # Only the pinned tests are read here, and those don't change with the build script.
           restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true

@@ -35,7 +35,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
       # Saved here, restored by the shards and the gate.
       - uses: actions/cache@v4
         with:
@@ -74,7 +74,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
           # Only the pinned tests are read here, and those don't change with the build script.
           restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
@@ -110,7 +110,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
           # Only the pinned tests are read here, and those don't change with the build script.
           restore-keys: upstream-${{ runner.os }}-
           fail-on-cache-miss: true
