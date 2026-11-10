@@ -333,6 +333,8 @@ def plan(args, reports):
                '--package', ROOT / 'tests/modules/http/server',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
+               '--exclude', 'server.ssl_client_cert_3=MODE_THREAD needs thread support (SW_THREAD, a ZTS build); this '
+                            "NTS binary's create() fails with SW_ERROR_OPERATION_NOT_SUPPORT",
                *report('http-server-rust'))
     if 'utilities' in modules:
         script('utilities-native', 'tests/modules/utilities/gate.py', '--source', ROOT / 'target/upstream/src',

@@ -158,6 +158,9 @@ starts no server and is a crates/ports unit test (tests/modules/ports/README.md)
   entries and the subject's one-line form; its validity and public-key lines, which the
   `organizationName: swoole` search can't match, are left out.
 - `dtls2` reaps its forked client, which must exit 0.
+- `ssl_client_cert_3` is excluded: `MODE_THREAD` needs thread support (`SW_THREAD`, a ZTS
+  build), and this binary is NTS, so `create()` fails with "Thread support is not enabled"
+  (#2633).
 
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
