@@ -16,7 +16,7 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_phpruntime::{Report, co, report};
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_protocols_ffi::set_protocol as mqtt_set_protocol;
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::Socket as Net;
 use swoole_rs_zend::{
     Owned, ZString,
     bailout::{self, Bailout},
@@ -141,15 +141,10 @@ impl Co {
         unsafe { co::record(self.0) }
     }
 
-    /// The `network::Socket` record (`get_socket()`), or null.
-    pub(crate) fn socket_record(self) -> *mut SocketRecord {
-        self.record().socket
-    }
-
-    /// The `network::Socket` record, while the socket is open.
-    pub(crate) fn net<'a>(self) -> Option<&'a mut SocketRecord> {
-        // SAFETY: an open socket's live record; nothing else holds it during the borrow.
-        unsafe { self.socket_record().as_mut() }
+    /// The `network::Socket` (`get_socket()`), while the socket is open.
+    pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
+        // SAFETY: null or an open socket's live record, read fresh on every use.
+        unsafe { Net::from_ptr(self.record().socket) }
     }
 
     /// `socket_coro_init`'s socket half: zero copy and the zend string
@@ -167,10 +162,10 @@ impl Co {
 
     /// `move_fd()`: the socket forgets its fd, which stays open.
     pub(crate) fn move_fd(self) {
-        let r = self.record();
-        r.sock_fd = -1;
-        // SAFETY: its network::Socket record.
-        unsafe { r.record() }.fd = -1;
+        self.record().sock_fd = -1;
+        if let Some(net) = self.net() {
+            net.edit(|record| record.fd = -1);
+        }
     }
 
     /// `close()` inside `zend_try`.
@@ -436,11 +431,10 @@ impl Co {
         filled(buffer, unsafe { self.transfer(op, at, room, timeout) })
     }
 
-    /// `get_addr()` and `get_port()`; the text lives until this thread's next
-    /// presentation.
-    pub(crate) fn address<'a>(self) -> (&'a CStr, c_int) {
-        // SAFETY: an open socket's network::Socket record.
-        address(&unsafe { self.record().record() }.info)
+    /// `get_addr()` and `get_port()`.
+    pub(crate) fn address(self) -> (CString, c_int) {
+        self.net()
+            .map_or_else(|| (CString::default(), 0), net_address)
     }
 
     #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
@@ -572,13 +566,13 @@ impl Co {
 
     /// `get_ssl() != nullptr`.
     pub(crate) fn has_ssl(self) -> bool {
-        self.net().is_some_and(|record| !record.ssl.is_null())
+        self.net()
+            .is_some_and(|net| net.read(|record| !record.ssl.is_null()))
     }
 
     /// The peer certificate; the socket has TLS.
     pub(crate) fn peer_cert(self) -> Option<ZString> {
-        // SAFETY: a live record with TLS, as the callers check.
-        unsafe { peer_cert(self.socket_record()) }
+        self.net().and_then(peer_cert)
     }
 
     pub(crate) fn verify_peer(self, allow_self_signed: bool) -> bool {
@@ -663,15 +657,10 @@ impl Cli {
         unsafe { &mut *self.0.cast::<ClientRecord>() }
     }
 
-    /// `cli->socket`, or null.
-    pub(crate) fn socket(self) -> *mut SocketRecord {
-        self.record().socket
-    }
-
-    /// The socket record of a client that has one.
-    pub(crate) fn socket_mut<'a>(self) -> &'a mut SocketRecord {
-        // SAFETY: a constructed client's socket, live while the client is.
-        unsafe { &mut *self.socket() }
+    /// `cli->socket`, while the client has one.
+    pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
+        // SAFETY: null or a constructed client's socket, live while the client is.
+        unsafe { Net::from_ptr(self.record().socket) }
     }
 
     /// A [`Call`] of `op` on this client.
@@ -765,7 +754,7 @@ pub(crate) fn export_socket(cli: Cli) -> Option<Owned> {
         return None;
     }
     // SAFETY: dup(2) of the client's descriptor.
-    let fd = unsafe { libc::dup(cli.socket_mut().fd) };
+    let fd = unsafe { libc::dup(cli.net()?.fd()) };
     if fd < 0 {
         return None;
     }
@@ -775,14 +764,14 @@ pub(crate) fn export_socket(cli: Cli) -> Option<Owned> {
     Some(socket)
 }
 
-/// The peer certificate of `socket`, a live record with TLS:
+/// The peer certificate of `socket`, which has TLS:
 /// `ssl_get_peer_certificate` into a buffer of `sw_tg_buffer()`'s size.
-pub(crate) unsafe fn peer_cert(socket: *mut SocketRecord) -> Option<ZString> {
+pub(crate) fn peer_cert(socket: Net<'_>) -> Option<ZString> {
     let mut buffer = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
     // SAFETY: a live record with TLS and a writable buffer.
     let length = unsafe {
         swoole_rs_tls::upstream::socket_ssl_get_peer_certificate_pem(
-            socket,
+            socket.as_ptr(),
             buffer.as_mut_ptr().cast(),
             buffer.len(),
         )
@@ -806,6 +795,14 @@ pub(crate) fn filled<T: Copy + TryInto<usize>>(buffer: &mut ZBuf, received: T) -
         unsafe { buffer.set_len(len) };
     }
     received
+}
+
+/// [`address`] of `socket`'s `info`, copied out of the record.
+pub(crate) fn net_address(socket: Net<'_>) -> (CString, c_int) {
+    socket.read(|record| {
+        let (host, port) = address(&record.info);
+        (host.to_owned(), port)
+    })
 }
 
 /// The address and port of `address`: `get_addr()` and `get_port()`.

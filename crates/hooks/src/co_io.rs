@@ -365,13 +365,15 @@ mod native {
     }
 
     pub(super) fn ssl_shutdown(socket: Co) {
-        // SAFETY: an open record holding an SSL.
-        unsafe { swoole_rs_tls::upstream::socket_ssl_shutdown(socket.socket()) };
+        if let Some(network) = socket.network() {
+            swoole_rs_tls::upstream::socket_ssl_shutdown(network);
+        }
     }
 
     pub(super) fn liveness(socket: Co) -> bool {
-        // SAFETY: an open record.
-        unsafe { swoole_rs_tls::upstream::socket_check_liveness(&mut *socket.socket()) }
+        socket
+            .net(|network| swoole_rs_tls::upstream::socket_check_liveness(network))
+            .unwrap_or(false)
     }
 }
 

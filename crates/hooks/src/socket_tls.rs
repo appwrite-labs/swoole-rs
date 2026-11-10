@@ -230,13 +230,13 @@ unsafe extern "C" fn tls_create(context: *mut c_void) -> bool {
 unsafe extern "C" fn tls_step(context: *mut c_void) -> c_int {
     // SAFETY: the handshake's live socket.
     let socket = unsafe { handshake_socket(context) };
-    let network = socket.socket();
+    let Some(network) = socket.network() else {
+        return -1;
+    };
     if socket.ssl_is_server() {
-        // SAFETY: the live network::Socket and its session.
-        return unsafe { socket_ssl_accept(network) };
+        return socket_ssl_accept(network);
     }
-    // SAFETY: as above.
-    if unsafe { socket_ssl_connect(network) } < 0 {
+    if socket_ssl_connect(network) < 0 {
         return -1;
     }
     let state = socket.net(|record| record.tls.state).unwrap_or_default();

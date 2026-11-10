@@ -162,33 +162,35 @@ pub(crate) unsafe fn transfer(
 /// `Socket::recvfrom(buffer, length)`: `call(addr, addrlen)` receives into the
 /// `network::Socket`'s peer address, whose path a local socket's unnamed peer leaves
 /// empty.
-///
-/// # Safety
-/// `call` transfers on the record.
-pub(crate) unsafe fn recvfrom_peer(
+pub(crate) fn recvfrom_peer(
     socket: Co,
     call: impl FnOnce(*mut libc::sockaddr, *mut libc::socklen_t) -> isize,
 ) -> isize {
     if !available(socket, READ) {
         return -1;
     }
-    // SAFETY: an available record is open; the network::Socket outlives the call,
-    // and this borrow ends before it.
-    let network = unsafe { &mut *socket.socket() };
-    let local = network.is_local();
-    network.info.len = socklen(size_of::<AddressStorage>());
-    let info = &raw mut network.info;
-    let addr = &raw mut network.info.addr;
-    let addrlen = &raw mut network.info.len;
+    let Some(network) = socket.network() else {
+        return -1;
+    };
+    // The pointers outlive the borrow: `call` fills them, and nothing else touches the
+    // record until it returns.
+    let (local, addr, addrlen) = network.edit(|network| {
+        network.info.len = socklen(size_of::<AddressStorage>());
+        (
+            network.is_local(),
+            &raw mut network.info.addr,
+            &raw mut network.info.len,
+        )
+    });
     let result = call(addr.cast(), addrlen);
-    // SAFETY: as above; nothing else borrows it now.
-    let info = unsafe { &mut *info };
-    if result >= 0
-        && local
-        && info.len as usize <= core::mem::offset_of!(libc::sockaddr_un, sun_path)
-    {
-        // SAFETY: every member of the storage is plain bytes.
-        unsafe { info.addr.un.sun_path[0] = 0 };
+    if result >= 0 && local {
+        network.edit(|network| {
+            let info = &mut network.info;
+            if info.len as usize <= core::mem::offset_of!(libc::sockaddr_un, sun_path) {
+                // SAFETY: every member of the storage is plain bytes.
+                unsafe { info.addr.un.sun_path[0] = 0 };
+            }
+        });
     }
     result
 }

@@ -24,7 +24,8 @@ use core::ptr::null_mut;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{
-    CLASS_DGRAM, Event, ReactorIov, SocketAddress, SocketRecord, swr_v1_reactor_iov_view, type_is,
+    CLASS_DGRAM, Event, ReactorIov, Socket, SocketAddress, SocketRecord, swr_v1_reactor_iov_view,
+    type_is,
 };
 use swoole_rs_tls::owner_fields;
 use swoole_rs_tls::upstream::{
@@ -60,17 +61,18 @@ unsafe fn iov_owner(vector: *mut c_void) -> crate::uring_socket::IoVector {
     crate::uring_socket::IoVector(unsafe { *vector.cast::<*mut ReactorIov>() })
 }
 
-/// The coroutine socket a reactor event came from.
+/// The coroutine socket a reactor event came from, and its `network::Socket`.
 ///
 /// # Safety
 /// `event` is the reactor's live event for a live coroutine socket.
-unsafe fn event_socket(event: *const c_void) -> (Co, *const SocketRecord) {
+unsafe fn event_socket<'a>(event: *const c_void) -> Option<(Co, Socket<'a>)> {
     // SAFETY: as the caller promises.
     let source = unsafe { (*event.cast::<Event>()).socket }.cast::<SocketRecord>();
     // SAFETY: the event's live network::Socket.
-    let object = unsafe { (*source).object };
+    let source = unsafe { Socket::from_ptr(source) }?;
+    let object = source.read(|record| record.object);
     // SAFETY: a coroutine socket's network::Socket's object is that socket.
-    (unsafe { Co::of(object) }, source)
+    Some((unsafe { Co::of(object) }, source))
 }
 
 /// `Socket::readable_event_callback` and `writable_event_callback`: Rust picks the
@@ -80,10 +82,11 @@ unsafe fn event_socket(event: *const c_void) -> (Co, *const SocketRecord) {
 /// `event` is the reactor's live event for a coroutine socket.
 unsafe fn on_ready(event: *const c_void, kind: u32) -> c_int {
     // SAFETY: as the caller promises.
-    let (socket, source) = unsafe { event_socket(event) };
+    let Some((socket, source)) = (unsafe { event_socket(event) }) else {
+        return 0;
+    };
     set_err(socket, 0);
-    // SAFETY: the live network::Socket the event came from.
-    let hup = unsafe { (*source).event_hup } != 0;
+    let hup = source.read(|record| record.event_hup) != 0;
     // SAFETY: an installed barrier's state outlives its wait.
     let co = unsafe { ready(socket, kind, hup) };
     if !co.is_null() {
@@ -123,10 +126,10 @@ pub unsafe extern "C" fn writable_event_callback(
 /// # Safety
 /// As [`on_ready`].
 pub unsafe extern "C" fn error_event_callback(_reactor: *mut c_void, event: *mut c_void) -> c_int {
-    // SAFETY: as the caller promises.
-    let (socket, source) = unsafe { event_socket(event) };
-    // SAFETY: the network::Socket the event came from outlives the wake-ups.
-    unsafe { error_event(socket, source) };
+    // SAFETY: as the caller promises; the network::Socket outlives the wake-ups.
+    if let Some((socket, source)) = unsafe { event_socket(event) } {
+        error_event(socket, source);
+    }
     0
 }
 
@@ -843,8 +846,7 @@ impl Co {
             // SAFETY: the caller's buffer, into the record's peer address.
             unsafe { self.recvfrom(buf, n, addr, addrlen) }
         };
-        // SAFETY: `receive` transfers on the record.
-        unsafe { crate::transfer::recvfrom_peer(self, receive) }
+        crate::transfer::recvfrom_peer(self, receive)
     }
 
     /// `Socket::recvmsg(msg, flags)`.

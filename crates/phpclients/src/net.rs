@@ -22,7 +22,7 @@ use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::{Socket as Net, SocketRecord};
 use swoole_rs_zend::{
     Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
@@ -105,27 +105,25 @@ impl Conn {
         }
     }
 
-    /// `cli->socket`, or null.
-    pub(crate) fn socket(&self) -> *mut SocketRecord {
-        self.cli.socket()
-    }
-
     pub(crate) fn has_socket(&self) -> bool {
-        !self.socket().is_null()
+        self.cli.net().is_some()
     }
 
     /// `cli->socket->check_liveness()` of a client that has a socket.
     fn alive(&self) -> bool {
-        // SAFETY: the client's live socket.
-        swoole_rs_tls::upstream::socket_check_liveness(unsafe { &mut *self.socket() })
+        self.cli.net().is_some_and(|net| {
+            net.edit(|record| swoole_rs_tls::upstream::socket_check_liveness(record))
+        })
     }
 
     pub(crate) fn fd(&self) -> c_int {
-        self.cli.socket_mut().fd
+        self.cli.net().map_or(-1, Net::fd)
     }
 
     fn socket_type(&self) -> i64 {
-        i64::from(self.cli.socket_mut().socket_type)
+        self.cli
+            .net()
+            .map_or(-1, |net| i64::from(net.read(|record| record.socket_type)))
     }
 
     pub(crate) fn is_stream(&self) -> bool {
@@ -133,7 +131,9 @@ impl Conn {
     }
 
     pub(crate) fn has_ssl(&self) -> bool {
-        !self.cli.socket_mut().ssl.is_null()
+        self.cli
+            .net()
+            .is_some_and(|net| net.read(|record| !record.ssl.is_null()))
     }
 }
 
@@ -1111,17 +1111,17 @@ fn getsockname(call: &Call) {
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
     };
-    let socket = conn.socket();
-    // SAFETY: a live client's socket.
-    if unsafe { (*socket).get_name() } < 0 {
+    let Some(socket) = conn.cli.net() else {
+        return call.set_bool(false);
+    };
+    if socket.edit(SocketRecord::get_name) < 0 {
         let error = errno();
         warn_sys("getsockname() failed", error);
         set_err_code(Obj::this(call), error);
         return call.set_bool(false);
     }
-    // SAFETY: as above, its address just read.
-    let (host, port) = native::address(unsafe { &(*socket).info });
-    address_array(call, port, host);
+    let (host, port) = native::net_address(socket);
+    address_array(call, port, &host);
 }
 
 /// `['port' => $port, 'host' => $host]`.
@@ -1265,8 +1265,7 @@ fn get_peer_cert(call: &Call) {
         warn(ErrorKind::Fatal, "SSL is not ready");
         return call.set_bool(false);
     }
-    // SAFETY: a live client with TLS.
-    match unsafe { native::peer_cert(conn.socket()) } {
+    match conn.cli.net().and_then(native::peer_cert) {
         Some(cert) => call.set_zstring(cert),
         None => call.set_bool(false),
     }

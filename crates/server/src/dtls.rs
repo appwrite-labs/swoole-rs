@@ -9,7 +9,7 @@ use swoole_rs_clients::address::swr_v1_clients_address_assign;
 use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::Socket;
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
 use swoole_rs_tls::{
     DtlsSession, dtls_fields, swr_v1_tls_dtls_append, swr_v1_tls_dtls_append_buffer,
@@ -49,10 +49,7 @@ fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
 }
 
 /// `Socket::bind(host, port)`: the port's literal address, unresolved.
-///
-/// # Safety
-/// `sock` is a live socket.
-unsafe fn bind(sock: *mut SocketRecord, kind: c_int, host: &CStr, port: c_int) -> bool {
+fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
     let mut address = SocketAddress {
         // SAFETY: the sockaddr union is plain data.
         addr: unsafe { core::mem::zeroed() },
@@ -75,8 +72,7 @@ unsafe fn bind(sock: *mut SocketRecord, kind: c_int, host: &CStr, port: c_int) -
         log::set_last_error(error);
         return false;
     }
-    // SAFETY: the live socket and the address assigned above.
-    unsafe { (*sock).bind(&address) >= 0 }
+    sock.edit(|sock| sock.bind(&address)) >= 0
 }
 
 /// `Server::accept_dtls_connection(port, sa)`: a socket bound to the port and
@@ -86,24 +82,24 @@ unsafe fn bind(sock: *mut SocketRecord, kind: c_int, host: &CStr, port: c_int) -
 /// # Safety
 /// `serv` is a live server, `port` one of its live DTLS ports.
 unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *mut DtlsSession {
-    let (kind, number, host, server_fd) = {
+    let (kind, number, host) = {
         // SAFETY: as the caller guarantees; the borrow ends here.
         let config = unsafe { port_config::of(port) };
         let host = config.host();
         // SAFETY: a slot's view covers its length while `config` is borrowed.
         let host = unsafe { core::slice::from_raw_parts(host.data.cast::<u8>(), host.length) };
-        // SAFETY: the port's live listening socket.
-        let server_fd = unsafe { (*config.socket.cast::<SocketRecord>()).fd };
         // NUL-terminated: the address parser reads the host as a C string.
         let host = CString::new(host).unwrap_or_default();
-        (config.r#type, config.port, host, server_fd)
+        (config.r#type, config.port, host)
     };
+    // SAFETY: as the caller guarantees.
+    let server_fd = unsafe { crate::view::port_fd(port) };
     let sock = make_socket_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK);
-    if sock.is_null() {
+    // SAFETY: null, or the socket just made, which only this thread uses.
+    let Some(socket) = (unsafe { Socket::from_ptr(sock) }) else {
         return ptr::null_mut();
-    }
-    // SAFETY: the socket just made.
-    let fd = unsafe { (*sock).fd };
+    };
+    let fd = socket.fd();
     set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, 1);
     if cfg!(any(
         target_os = "macos",
@@ -121,8 +117,7 @@ unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *m
     let origin = c"Server::accept_dtls_connection";
     let mut conn: *mut ConnectionRecord = ptr::null_mut();
     'setup: {
-        // SAFETY: the socket just made.
-        if !unsafe { bind(sock, kind, &host, number) } {
+        if !bind(socket, kind, &host, number) {
             log::sys_warning(origin, format_args!("bind() failed"));
             break 'setup;
         }
@@ -136,12 +131,10 @@ unsafe fn accept(serv: *mut c_void, port: *mut c_void, sa: &SocketAddress) -> *m
             log::sys_warning(origin, format_args!("connect({host}:{port}) failed"));
             break 'setup;
         }
-        // SAFETY: the socket just made, which only this thread uses.
-        unsafe {
-            (*sock).info = *sa;
-        }
-        // SAFETY: as above.
-        unsafe { (*sock).chunk_size = SW_SSL_BUFFER_SIZE };
+        socket.edit(|socket| {
+            socket.info = *sa;
+            socket.chunk_size = SW_SSL_BUFFER_SIZE;
+        });
         // SAFETY: the live server and port, and the socket just made.
         conn = unsafe { crate::server_methods::add_connection(serv, port, sock.cast(), server_fd) }
             .cast();
@@ -206,8 +199,12 @@ pub(crate) unsafe fn on_packet(
         // SAFETY: the reactor and the session's socket.
         return i64::from(unsafe { crate::reactor_entry::close_connection(reactor, socket) });
     }
-    // SAFETY: a session socket's object is its live connection.
-    let conn = unsafe { (*socket).object.cast::<ConnectionRecord>() };
+    // SAFETY: the live session's socket.
+    let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
+        return -1;
+    };
+    // A session socket's object is its live connection.
+    let conn = record.read(|s| s.object.cast::<ConnectionRecord>());
     let failed = if single_thread {
         // SAFETY: the live server, reactor and connection.
         let incoming = unsafe { crate::server_methods::connection_incoming(serv, reactor, conn) };
@@ -246,14 +243,14 @@ pub(crate) unsafe fn on_packet(
 ///
 /// # Safety
 /// `port` is the live DTLS port, `sock` its session socket on `fd`.
-pub(crate) unsafe fn on_read(port: *mut c_void, sock: &SocketRecord, fd: c_int) -> bool {
+pub(crate) unsafe fn on_read(port: *mut c_void, sock: Socket<'_>, fd: c_int) -> bool {
     let size = usize::try_from(SW_BUFFER_SIZE_UDP).unwrap_or(0);
     // SAFETY: a `dtls::Buffer` header and its payload; the session frees it.
     let buffer = unsafe { libc::malloc(2 + size) }.cast::<u16>();
     // SAFETY: the payload follows the header.
     let data = unsafe { buffer.add(1) }.cast::<c_void>();
     // SAFETY: the live socket and the payload's `size` bytes.
-    let read = unsafe { libc::read(sock.fd, data, size) };
+    let read = unsafe { libc::read(sock.fd(), data, size) };
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,

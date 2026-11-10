@@ -89,12 +89,11 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_UNLIMIT_BUS_PIPES => {
             let id = u16::try_from(arg).unwrap_or(u16::MAX);
-            let worker = ctx.server().worker(id);
-            // SAFETY: its worker `arg`.
-            let worker = unsafe { &*worker };
-            for pipe in [worker.pipe_worker, worker.pipe_master] {
+            let server = ctx.server();
+            for pipe in [server.worker_pipe(id, false), server.worker_pipe(id, true)] {
+                let pipe = pipe.map_or(core::ptr::null_mut(), |pipe| pipe.as_ptr().cast());
                 if let Some(pipe) = socket(in_worker_bus(ctx.state(), ctx.config(), pipe)) {
-                    pipe.output.buffer_size = u32::MAX;
+                    pipe.edit(|pipe| pipe.output.buffer_size = u32::MAX);
                 }
             }
             0

@@ -205,8 +205,8 @@ pub(crate) unsafe fn import_stream(
     // SAFETY: the new object's live core socket.
     let socket = unsafe { Co::new(socket) };
     // Preserve the original one-bit nonblock assignment, rather than normalize other bits.
-    if let Some(record) = socket.net() {
-        record.output.nonblock = u8::from(nonblock & 1 != 0);
+    if let Some(net) = socket.net() {
+        net.edit(|record| record.output.nonblock = u8::from(nonblock & 1 != 0));
     }
     Ok(object)
 }

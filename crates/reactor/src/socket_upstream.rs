@@ -50,11 +50,16 @@ pub extern "C" fn socket_wait_event(
     timeout_ms: c_int,
     events: c_int,
 ) -> c_int {
+    wait_event(socket.fd, socket.dont_restart != 0, timeout_ms, events)
+}
+
+/// [`socket_wait_event`] over a socket's `fd` and `dont_restart`.
+pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, events: c_int) -> c_int {
     let result = crate::fd_wait(
-        socket.fd,
+        fd,
         crate::swr_v1_reactor_poll_events_to(events),
         timeout_ms,
-        socket.dont_restart != 0,
+        dont_restart,
         signal_dispatch(),
     );
     match result.status {

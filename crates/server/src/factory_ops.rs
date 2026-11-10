@@ -32,7 +32,6 @@ use swoole_rs_process::workers::ops::{
     OP_WAIT_MANAGER, OP_WAIT_TASK_WORKER, OP_WORKER_NUM, OP_WORKER_PID, OP_WRITE_TO_REACTOR,
     OP_WRITE_TO_WORKER,
 };
-use swoole_rs_reactor::SocketRecord;
 
 use crate::base_factory::{SendData, is_stream_event, low16};
 use crate::callbacks::{CB_CLOSE, CB_USER_WORKER_START, CallbackSlot};
@@ -206,9 +205,7 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let bus = unsafe { &*thread }.message_bus();
             // The worker the factory scheduled.
             let pipe = ctx.worker_at(worker_id(arg)).pipe_master;
-            // SAFETY: the worker's live pipe socket.
-            let fd = unsafe { (*pipe.cast::<SocketRecord>()).fd };
-            let socket = bus.pipe_fd(fd);
+            let socket = bus.pipe_socket(crate::objects::socket(pipe)?);
             let (mut info, data) = send();
             // SAFETY: the live pipe, and the data sent.
             u64::from(unsafe { bus.rust().send(socket.cast(), &mut info, data.cast()) })
