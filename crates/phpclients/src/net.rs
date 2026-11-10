@@ -7,7 +7,9 @@
 use crate::native::{self, Cli, ErrorKind, Run};
 use libc::{c_char, c_int, c_void};
 use std::{
+    cell::Cell,
     ffi::{CStr, CString},
+    marker::PhantomData,
     ptr,
     sync::{
         Mutex, MutexGuard, PoisonError,
@@ -34,7 +36,7 @@ use swoole_rs_zend::{
         get_active_function_name, zend_class_entry, zend_object, zend_object_handlers,
         zend_type_error, zval,
     },
-    throw_error, throw_exception, type_of, unset_property_deny,
+    throw_error, throw_exception, unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -141,12 +143,72 @@ impl Conn {
 
 /// `ClientObject` without its `zend_object`; `Swoole\Async\Client` shares it.
 #[repr(C)]
+///
+/// Cells, so PHP code a method runs can re-enter the same object's methods
+/// while it holds the data: nothing borrows it mutably.
 pub(crate) struct Data {
-    pub(crate) conn: *mut Conn,
+    pub(crate) conn: Cell<*mut Conn>,
     /// `getSocket()`'s socket (`IS_UNDEF`: none); zeroed bytes are `IS_UNDEF`.
-    zsocket: Owned,
+    zsocket: Cell<Owned>,
     /// The async callbacks (callables, by [`crate::async_net`] slot).
-    pub(crate) callbacks: *mut [*mut c_void; 7],
+    pub(crate) callbacks: Cell<*mut [*mut c_void; 7]>,
+}
+
+impl Data {
+    /// A new reference to `getSocket()`'s socket, if it has one.
+    fn zsocket(&self) -> Option<Owned> {
+        let held = self.zsocket.take();
+        let copy = (held.kind() != IS_UNDEF).then(|| held.copy());
+        self.zsocket.set(held);
+        copy
+    }
+}
+
+/// A `Swoole\Client` (or `Swoole\Async\Client`, which shares its layout)
+/// object, live for `'a`.
+#[derive(Clone, Copy)]
+pub(crate) struct Obj<'a>(*mut zend_object, PhantomData<&'a zend_object>);
+
+impl<'a> Obj<'a> {
+    /// # Safety
+    /// `object` is a live client or async client object for `'a`.
+    pub(crate) unsafe fn new(object: *mut zend_object) -> Self {
+        Self(object, PhantomData)
+    }
+
+    /// `$this` of a client method.
+    pub(crate) fn this(call: &'a Call) -> Self {
+        // SAFETY: client methods are non-static, so `$this` is a client object
+        // (or an async one), live for the call.
+        unsafe { Self::new(call.this()) }
+    }
+
+    pub(crate) fn as_ptr(self) -> *mut zend_object {
+        self.0
+    }
+
+    pub(crate) fn data(self) -> &'a Data {
+        // SAFETY: a live client object's data, only ever shared (its fields are cells).
+        unsafe { &*ClientObject::data_ptr(self.0) }
+    }
+
+    /// Property writes, under the object's own class.
+    pub(crate) fn props(self) -> Props<'a> {
+        // SAFETY: a live client object; the client class declares every name written.
+        unsafe { Props::new(CLIENT.entry(), self.0) }.own()
+    }
+
+    /// `ZSTR_VAL(Z_OBJCE_P(object)->name)`.
+    pub(crate) fn class_name(self) -> &'a CStr {
+        // SAFETY: a live object; its class outlives it.
+        unsafe { swoole_rs_zend::class_name(self.0) }
+    }
+
+    /// The declared property `name`.
+    fn property(self, name: &CStr) -> &'a Value {
+        // SAFETY: a live client object; the client class declares `name`.
+        unsafe { swoole_rs_zend::property(self.0, name) }
+    }
 }
 
 pub(crate) type ClientObject = Object<Data>;
@@ -174,8 +236,9 @@ unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
 
 unsafe extern "C" fn free(std: *mut zend_object) {
     // SAFETY: Zend frees a client object.
-    if !unsafe { ClientObject::data(std) }.callbacks.is_null() {
-        bailout::defer(crate::async_net::free_callbacks(std));
+    let object = unsafe { Obj::new(std) };
+    if !object.data().callbacks.get().is_null() {
+        bailout::defer(crate::async_net::free_callbacks(object));
     }
     // SAFETY: as above.
     unsafe { ClientObject::dtor(std) };
@@ -276,33 +339,14 @@ pub unsafe extern "C" fn php_swoole_client_minit(module: c_int) {
     EXCEPTION_PARENT.store(exception, Ordering::Release);
 }
 
-pub(crate) fn data<'a>(object: *mut zend_object) -> &'a mut Data {
-    // SAFETY: client methods are non-static, so `$this` is a client object (or
-    // an async one, which shares the layout), and no other reference to its
-    // data is live during the call.
-    unsafe { ClientObject::data(object) }
-}
-
-pub(crate) fn this<'a>(call: &Call) -> &'a mut Data {
-    data(call.this())
-}
-
-/// Property writes on a client object (or an async one), under its own class.
-fn props<'a>(object: *mut zend_object) -> Props<'a> {
-    // SAFETY: a live client object; the client class declares every name written.
-    unsafe { Props::new(CLIENT.entry(), object) }.own()
-}
-
-/// The declared property `name` of a client object (or an async one).
-fn property<'a>(object: *mut zend_object, name: &CStr) -> &'a Value {
-    // SAFETY: a live client object; the client class declares `name`.
-    unsafe { swoole_rs_zend::property(object, name) }
+pub(crate) fn this(call: &Call) -> &Data {
+    Obj::this(call).data()
 }
 
 /// The object's connection.
 pub(crate) fn conn<'a>(call: &Call) -> Option<&'a mut Conn> {
     // SAFETY: the object owns its connection while it holds it.
-    unsafe { this(call).conn.as_mut() }
+    unsafe { this(call).conn.get().as_mut() }
 }
 
 /// `php_swoole_client_get_type`: the socket type without the client flags.
@@ -355,8 +399,8 @@ pub(crate) fn last_error() -> c_int {
 }
 
 /// `errCode = code`.
-pub(crate) fn set_err_code(object: *mut zend_object, code: c_int) {
-    props(object).long(c"errCode", i64::from(code));
+pub(crate) fn set_err_code(object: Obj, code: c_int) {
+    object.props().long(c"errCode", i64::from(code));
 }
 
 pub(crate) fn errno() -> c_int {
@@ -393,7 +437,7 @@ pub(crate) fn bailed<T>(result: Result<T, Bailout>) -> Option<T> {
 
 /// `php_swoole_client_free`: release the connection's timer, length callable,
 /// pool entry and client, then the exported socket.
-pub(crate) fn release(object: *mut zend_object, conn: *mut Conn) -> Result<(), Bailout> {
+pub(crate) fn release(object: Obj, conn: *mut Conn) -> Result<(), Bailout> {
     // SAFETY: the connection the object held or the pool gave back, released once.
     let conn = unsafe { Box::from_raw(conn) };
     if conn.keep
@@ -402,17 +446,17 @@ pub(crate) fn release(object: *mut zend_object, conn: *mut Conn) -> Result<(), B
         pool.remove_empty(&conn.key);
     }
     let destroyed = native::destroy(conn.cli);
-    let data = data(object);
+    let data = object.data();
     // The reference the object took in getSocket().
-    drop(std::mem::take(&mut data.zsocket));
-    data.conn = ptr::null_mut();
+    drop(data.zsocket.take());
+    data.conn.set(ptr::null_mut());
     destroyed
 }
 
 /// `php_swoole_client_get_cli_safe`: the connected client; else errCode and a
 /// warning say it is not connected.
 pub(crate) fn connected<'a>(call: &Call) -> Option<&'a mut Conn> {
-    let object = call.this();
+    let object = Obj::this(call);
     if let Some(conn) = conn(call)
         && conn.has_socket()
     {
@@ -478,8 +522,8 @@ pub(crate) fn check_type(kind: i64) -> bool {
 }
 
 /// The object's `type` property, or None after upstream's fatal error.
-pub(crate) fn type_property(object: *mut zend_object, async_message: bool) -> Option<i64> {
-    let ztype = property(object, c"type");
+pub(crate) fn type_property(object: Obj, async_message: bool) -> Option<i64> {
+    let ztype = object.property(c"type");
     if ztype.is_null() {
         let message = if async_message {
             "failed to get client type"
@@ -493,13 +537,13 @@ pub(crate) fn type_property(object: *mut zend_object, async_message: bool) -> Op
 }
 
 /// The `setting` property when it is an array.
-pub(crate) fn settings(object: *mut zend_object) -> Option<*mut zval> {
-    let zset = property(object, c"setting");
+pub(crate) fn settings(object: Obj) -> Option<*mut zval> {
+    let zset = object.property(c"setting");
     (zset.kind() == IS_ARRAY).then(|| zset.as_ptr())
 }
 
 /// `php_swoole_client_new`: a pooled or new connection for `host:port`.
-fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut Conn> {
+fn connection(object: Obj, host: &[u8], port: i64) -> Option<*mut Conn> {
     let kind = type_property(object, false)?;
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
     let int_port = port as i32;
@@ -508,7 +552,7 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
         set_last_error(INVALID_PARAMS);
         return None;
     }
-    let id = property(object, c"id").str().map(ZStr::bytes);
+    let id = object.property(c"id").str().map(ZStr::bytes);
     let key = match id {
         Some(id) if !id.is_empty() => id.to_vec(),
         _ => {
@@ -527,7 +571,9 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
             let pooled = unsafe { &mut *conn };
             if pooled.alive() {
                 pooled.reuse_count += 1;
-                props(object).long(c"reuseCount", i64::from(pooled.reuse_count));
+                object
+                    .props()
+                    .long(c"reuseCount", i64::from(pooled.reuse_count));
             } else {
                 bailed(pooled.call(Op::Close).run())?;
                 bailed(release(object, conn))?;
@@ -551,7 +597,7 @@ fn connection(object: *mut zend_object, host: &[u8], port: i64) -> Option<*mut C
     }
     // SAFETY: the connection just taken or made.
     let connection = unsafe { &mut *conn };
-    props(object).long(c"sock", i64::from(connection.fd()));
+    object.props().long(c"sock", i64::from(connection.fd()));
     if kind & FLAG_KEEP != 0 {
         connection.keep = true;
     }
@@ -586,7 +632,7 @@ fn construct(call: &Call) {
     if !check_type(kind) {
         return call.set_bool(false);
     }
-    let props = props(call.this());
+    let props = Obj::this(call).props();
     props.long(c"type", kind);
     if let Some(id) = id {
         props.bytes(c"id", id);
@@ -594,15 +640,9 @@ fn construct(call: &Call) {
     call.set_bool(true);
 }
 
-/// `IS_OBJ_DESTRUCTOR_CALLED`.
-const DESTRUCTOR_CALLED: u32 = 1 << 8;
-
 /// `SW_PREVENT_USER_DESTRUCT`: false (returning null) when user code called it.
 pub(crate) fn destructing(call: &Call) -> bool {
-    // SAFETY: a method's live `$this`.
-    let info = unsafe { (*call.this()).gc.u };
-    // SAFETY: a refcounted header always sets `type_info`.
-    if unsafe { info.type_info } & DESTRUCTOR_CALLED == 0 {
+    if !call.destructor_called() {
         call.set_null();
         return false;
     }
@@ -611,7 +651,7 @@ pub(crate) fn destructing(call: &Call) -> bool {
 
 /// `__destruct()`: close a held connection through `Swoole\Client::close`.
 fn destruct(call: &Call) {
-    if !destructing(call) || this(call).conn.is_null() {
+    if !destructing(call) || this(call).conn.get().is_null() {
         return;
     }
     // SAFETY: a live client object; `Swoole\Client::close` with no arguments.
@@ -625,11 +665,10 @@ fn set(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    let settings = call.zval(1);
-    // SAFETY: a passed argument.
-    if unsafe { type_of(settings) } != IS_ARRAY {
+    let Some(settings) = call.value(1).filter(|settings| settings.array().is_some()) else {
         return call.set_bool(false);
-    }
+    };
+    let settings = settings.as_ptr();
     // SAFETY: `$this` is live; `settings` is a live array.
     unsafe {
         z::swr_zend_property_merge(
@@ -660,8 +699,8 @@ fn connect(call: &Call) {
         warn(ErrorKind::Fatal, "The host is empty");
         return call.set_bool(false);
     }
-    let object = call.this();
-    if !this(call).conn.is_null() {
+    let object = Obj::this(call);
+    if !this(call).conn.get().is_null() {
         warn(
             ErrorKind::Fatal,
             "connection to the server has already been established",
@@ -671,11 +710,11 @@ fn connect(call: &Call) {
     let Some(conn) = connection(object, host, port) else {
         return call.set_bool(false);
     };
-    this(call).conn = conn;
+    this(call).conn.set(conn);
     // SAFETY: the object's connection.
     let conn = unsafe { &mut *conn };
     if conn.keep && conn.flag(state::ACTIVE) {
-        props(object).bool(c"reuse", true);
+        object.props().bool(c"reuse", true);
         return call.set_bool(true);
     } else if conn.flag(state::ACTIVE) {
         warn(
@@ -753,7 +792,7 @@ fn send(call: &Call) {
         let error = errno();
         let message = format!("failed to send({}) {} bytes", conn.fd(), data.len());
         warn_sys(&message, error);
-        set_err_code(call.this(), last_error());
+        set_err_code(Obj::this(call), last_error());
         return call.set_bool(false);
     }
     call.set_long(sent);
@@ -771,14 +810,14 @@ fn sendto(call: &Call) {
         warn(ErrorKind::Error, "data to send is empty");
         return call.set_bool(false);
     }
-    let object = call.this();
-    if this(call).conn.is_null() {
+    let object = Obj::this(call);
+    if this(call).conn.get().is_null() {
         let Some(conn) = connection(object, host, port) else {
             return call.set_bool(false);
         };
         // SAFETY: the connection just made.
         unsafe { &*conn }.set_flag(state::ACTIVE, true);
-        this(call).conn = conn;
+        this(call).conn.set(conn);
     }
     let Some(conn) = conn(call) else {
         return call.set_bool(false);
@@ -834,7 +873,7 @@ fn sendfile(call: &Call) {
         let error = last_error();
         let message = format!("sendfile() failed. Error: {} [{error}]", strerror(error));
         warn(ErrorKind::Fatal, &message);
-        set_err_code(call.this(), last_error());
+        set_err_code(Obj::this(call), last_error());
         return call.set_bool(false);
     }
     call.set_bool(true);
@@ -859,7 +898,7 @@ fn receive_into(conn: &Conn, buffer: &mut ZBuf, length: usize, flags: i64) -> Re
 /// `recv()` failed (`error`): warn, errCode and false.
 fn recv_failed(call: &Call, error: c_int) {
     warn_sys("recv() failed", error);
-    set_err_code(call.this(), last_error());
+    set_err_code(Obj::this(call), last_error());
     call.set_bool(false);
 }
 
@@ -1095,7 +1134,7 @@ fn getsockname(call: &Call) {
     if unsafe { (*socket).get_name() } < 0 {
         let error = errno();
         warn_sys("getsockname() failed", error);
-        set_err_code(call.this(), error);
+        set_err_code(Obj::this(call), error);
         return call.set_bool(false);
     }
     // SAFETY: as above, its address just read.
@@ -1122,7 +1161,7 @@ fn getpeername(call: &Call) {
     if unsafe { state::swr_v1_clients_get_peer_name(conn.cli.0, &raw mut address) } < 0 {
         let error = errno();
         warn_sys("getpeername() failed", error);
-        set_err_code(call.this(), error);
+        set_err_code(Obj::this(call), error);
         return call.set_bool(false);
     }
     let (host, port) = native::address(&address);
@@ -1131,10 +1170,9 @@ fn getpeername(call: &Call) {
 
 /// `getSocket()`: the client's socket as an ext/sockets `Socket`.
 fn get_socket(call: &Call) {
-    let zsocket = &this(call).zsocket;
-    if zsocket.kind() != IS_UNDEF {
+    if let Some(zsocket) = this(call).zsocket() {
         // `RETURN_ZVAL(zsocket, 1, 0)`: a new reference for the return.
-        return call.set_owned(zsocket.copy());
+        return call.set_owned(zsocket);
     }
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
@@ -1151,7 +1189,7 @@ fn get_socket(call: &Call) {
     };
     // The object keeps a second reference, as upstream's dup does.
     call.set_owned(socket.copy());
-    this(call).zsocket = socket;
+    this(call).zsocket.set(socket);
 }
 
 /// `close(bool $force = false): bool`.
@@ -1159,8 +1197,8 @@ fn close(call: &Call) {
     let Ok(force) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return call.set_bool(false);
     };
-    let object = call.this();
-    let conn_ptr = this(call).conn;
+    let object = Obj::this(call);
+    let conn_ptr = this(call).conn.get();
     // SAFETY: the object's connection, if any.
     let Some(conn) = (unsafe { conn_ptr.as_mut() }).filter(|conn| conn.has_socket()) else {
         warn(ErrorKind::Fatal, "client is not connected to the server");
@@ -1194,7 +1232,7 @@ fn close(call: &Call) {
     if !matches!(pushed, Some(Ok(()))) {
         std::process::abort();
     }
-    this(call).conn = ptr::null_mut();
+    this(call).conn.set(ptr::null_mut());
     call.set_bool(true);
 }
 
@@ -1208,7 +1246,7 @@ pub(crate) fn enable_ssl(call: &Call, conn: &mut Conn) -> bool {
         warn(ErrorKind::Fatal, "SSL has been enabled");
         return false;
     }
-    if let Some(zset) = settings(call.this()) {
+    if let Some(zset) = settings(Obj::this(call)) {
         crate::settings::apply_ssl(conn.cli, zset);
     }
     bailed(conn.call(Op::EnableSsl).run()).is_some_and(|result| result == 0)
