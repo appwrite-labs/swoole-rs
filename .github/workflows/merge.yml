@@ -7,10 +7,14 @@ on:
   schedule:
     - cron: '17 5 * * 0'
   workflow_dispatch:
+  # main's merge queue: each group of queued PRs is tested on top of main before it lands,
+  # and the `required` job below decides whether it does.
+  merge_group:
 # Latest wins: one run at a time; GitHub keeps only the newest push pending, so the
 # next run always covers main's head. Never cancel-in-progress, or no run finishes.
 # A scheduled or dispatched run has a group of its own: pending in the pushes' group, the
-# next push would replace it and the weekly upstream run would rarely happen.
+# next push would replace it and the weekly upstream run would rarely happen. So does a
+# merge-queue run: the queue tests its groups side by side.
 concurrency:
   group: merge-${{ github.event_name == 'push' && github.ref || github.run_id }}
 # Explicit bash runs steps with -eo pipefail; the default (`bash -e`) lets a pipe
@@ -38,10 +42,12 @@ jobs:
           fetch-depth: 0
       - id: install
         uses: ./.github/actions/install
-      # Saved from main under a key the PR tier's ext and gates jobs restore.
+      # Saved from main under a key the PR tier's ext and gates jobs restore. A merge-queue
+      # run's cache would be scoped to its own branch, which nothing reads again.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # rust-cache restores all of target/, with git checkouts that lack a usable .git.
       # Those trees come from their own caches or a fresh clone instead.
       - run: rm -rf target/upstream target/upstream-builds target/thirdparty
@@ -120,7 +126,7 @@ jobs:
         with:
           engines: upstream cargo
       - id: baseline
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -526,3 +532,20 @@ jobs:
         with:
           name: phpt-alpine
           path: target/reports/phpt-alpine.json
+
+  # The merge queue's required check (main's ruleset names it, as it does the PR tier's): a
+  # group lands unless it fails a phase or a job that main's latest completed merge-tier run
+  # didn't fail (tools/ci.py new-failures --run). Only the queue reads it.
+  required:
+    if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+    needs: [full-gates, phpt-build, callgrind, phpt-stdext, iouring, cares, zts, threadcontext, h2spec, halfclose, phpt, phpt-root, library, autobahn, alpine]
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci.py new-failures --run ${{ github.run_id }} | tee -a "$GITHUB_STEP_SUMMARY"
