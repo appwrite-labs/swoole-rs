@@ -6,11 +6,12 @@ struct Slot {
     view: TimerView,
     position: usize,
 }
-/// `rank` is `(deadline, id)`: ids only grow, so equal deadlines fire in
-/// insertion order.
+/// `rank` is the deadline alone, and every sift stops on a tie, as upstream's
+/// `swoole::Heap` does, so equal deadlines fire in upstream's order: A, C, B for
+/// three timers added in that order.
 #[derive(Clone, Copy)]
 struct Key {
-    rank: (i64, i64),
+    rank: i64,
     slot: usize,
 }
 #[derive(Default)]
@@ -71,26 +72,15 @@ impl Heap {
         let index = self.order.len();
         self.order.push(Key {
             slot,
-            rank: (view.deadline, view.id),
+            rank: view.deadline,
         });
         self.sift_up(index);
         slot
     }
     pub(super) fn swap_remove(&mut self, index: usize) -> Option<TimerView> {
-        let removed = *self.order.get(index)?;
-        let last = self.order.pop()?;
-        if index < self.order.len() {
-            // Floyd's: walk the hole to a leaf along the smaller children, one
-            // comparison a level, then sift the last entry up from there, which
-            // usually stops at once: the last entry was a leaf, so it ranks late.
-            let mut hole = index;
-            while let Some((child, below)) = self.smaller_child(hole) {
-                self.put(hole, below);
-                hole = child;
-            }
-            self.put(hole, last);
-            self.sift_up(hole);
-        }
+        // Upstream's Heap::remove: the last entry takes the hole and sifts from there.
+        let removed = (index < self.order.len()).then(|| self.order.swap_remove(index))?;
+        self.repair(index);
         let entry = self.slots.get_mut(removed.slot)?;
         entry.position = self.free;
         self.free = removed.slot + 1;
@@ -105,7 +95,7 @@ impl Heap {
         let slot = self.slot(index)?;
         let view = self.slots.get(slot)?.view;
         Some(Key {
-            rank: (view.deadline, view.id),
+            rank: view.deadline,
             slot,
         })
     }
@@ -146,7 +136,7 @@ impl Heap {
             return;
         };
         while let Some((child, below)) = self.smaller_child(index)
-            && below.rank <= key.rank
+            && below.rank < key.rank
         {
             self.put(index, below);
             index = child;
