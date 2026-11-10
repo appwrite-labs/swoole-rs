@@ -466,15 +466,6 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
         // SAFETY: the optional native leaf accepts the live session and does not reenter.
         unsafe { grease(ssl, fields.grease != 0) };
     }
-    // SAFETY: the session is live; OpenSSL exposes its set-mode macro as SSL_ctrl.
-    unsafe {
-        openssl_sys::SSL_ctrl(
-            ssl,
-            openssl_sys::SSL_CTRL_MODE,
-            openssl_sys::SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER,
-            ptr::null_mut(),
-        )
-    };
     // SAFETY: the owner keeps the explicit hostname slot alive throughout configuration.
     let explicit =
         unsafe { swoole_rs_corebase::swr_v1_core_string_view(Arc::as_ptr(&owner_ref.strings[8])) };

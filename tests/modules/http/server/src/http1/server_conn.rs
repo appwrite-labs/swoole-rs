@@ -162,6 +162,17 @@ fn checks_held() {
     );
 }
 
+/// `Server(mode)`, with the shared memory mapped first, so the server's forks share it.
+/// The MODE_THREAD TESTs need upstream's `enable_thread` build (`SW_THREAD`); the crates
+/// have thread mode when the extension's MINIT says so, which the case does here.
+fn new_server(mode: c_int) -> Server {
+    shared();
+    if mode == MODE_THREAD {
+        swoole_rs_server::THREAD_SUPPORTED.store(true, Ordering::Relaxed);
+    }
+    Server::new(mode)
+}
+
 fn micro_sleep(usec: u32) {
     // SAFETY: usleep(3).
     unsafe { usleep(usec) };
@@ -313,23 +324,25 @@ unsafe extern "C" fn sendwait_receive(
     SW_OK
 }
 
-/// The client of `sendwait`, `system` and `forward_message`: one packet, one read, then
-/// SIGTERM to this process.
+/// The client of `sendwait`, `system` and `forward_message`: one packet, one read, which
+/// must be the reply, then SIGTERM to this process.
 fn packet_client(port: impl FnOnce() -> u16 + Send + 'static) {
     thread_client(move || {
         lock();
         let mut c = TcpStream::connect((TEST_HOST, port())).unwrap();
         c.write_all(PACKET).unwrap();
         let mut buf = [0; 1024];
-        recv(&mut c, &mut buf);
+        let n = recv(&mut c, &mut buf);
         drop(c);
+        // Upstream discards the reply; a client that got none must not pass.
+        assert_eq!(&buf[..usize::try_from(n).unwrap_or(0)], &reply()[..]);
         kill_self();
     });
 }
 
 /// `TEST(server, sendwait)`.
 fn sendwait() {
-    let serv = Server::new(MODE_BASE);
+    let serv = new_server(MODE_BASE);
     serv.config().worker_num = 1;
     set_log_warning();
 
@@ -355,7 +368,7 @@ fn sendwait() {
 fn system() {
     use std::os::fd::IntoRawFd;
 
-    let serv = Server::new(MODE_BASE);
+    let serv = new_server(MODE_BASE);
     serv.config().worker_num = 1;
     set_log_warning();
 
@@ -423,7 +436,7 @@ unsafe extern "C" fn udp_on_packet(_: *mut c_void, _: *mut c_void, req: *mut Rec
 /// `TEST(server, udp_packet)`. The forked client's failure fails the case, where
 /// upstream's went unseen.
 fn udp_packet() {
-    let server = Server::new(MODE_PROCESS);
+    let server = new_server(MODE_PROCESS);
     server.config().worker_num = 2;
     server.add_port(SW_SOCK_UDP, TEST_HOST, 0);
 
@@ -488,7 +501,7 @@ unsafe extern "C" fn pipe_message_worker_start(_: *mut c_void, serv: *mut c_void
 
 /// `TEST(server, pipe_message)`.
 fn pipe_message() {
-    let server = Server::new(MODE_PROCESS);
+    let server = new_server(MODE_PROCESS);
     server.config().worker_num = 2;
     server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
 
@@ -526,7 +539,7 @@ unsafe extern "C" fn forward_receive(
 
 /// `TEST(server, forward_message)`.
 fn forward_message() {
-    let serv = Server::new(MODE_BASE);
+    let serv = new_server(MODE_BASE);
     serv.config().worker_num = 2;
 
     set_log_warning();
@@ -574,7 +587,7 @@ unsafe extern "C" fn reopen_log_worker_start(_: *mut c_void, serv: *mut c_void, 
 
 /// `TEST(server, reopen_log)`.
 fn reopen_log() {
-    let serv = Server::new(MODE_PROCESS);
+    let serv = new_server(MODE_PROCESS);
     serv.config().worker_num = 2;
     set_log_warning();
     set_log_file(TEST_LOG_FILE);
@@ -610,7 +623,7 @@ unsafe extern "C" fn count_worker_start(_: *mut c_void, _: *mut c_void, _: *mut 
 
 /// `TEST(server, reopen_log2)`.
 fn reopen_log2() {
-    let serv = Server::new(MODE_PROCESS);
+    let serv = new_server(MODE_PROCESS);
     serv.config().worker_num = 2;
     set_log_level(SW_LOG_DEBUG);
     set_log_file(TEST_LOG_FILE);
@@ -683,7 +696,7 @@ unsafe extern "C" fn overflow_receive(
 
 /// `test_conn_overflow(mode, send_yield)`.
 fn test_conn_overflow(mode: c_int, send_yield: bool) {
-    let serv = Server::new(mode);
+    let serv = new_server(mode);
     serv.config().worker_num = 1;
     serv.config().send_yield = send_yield;
     SEND_YIELD.store(send_yield, Ordering::SeqCst);
@@ -753,7 +766,7 @@ unsafe extern "C" fn slow_receive(_: *mut c_void, _: *mut c_void, _: *mut c_void
 
 /// `TEST(server, no_idle_worker)`.
 fn no_idle_worker() {
-    let serv = Server::new(MODE_PROCESS);
+    let serv = new_server(MODE_PROCESS);
     serv.config().worker_num = 4;
     serv.config().dispatch_mode = DISPATCH_IDLE_WORKER;
 
@@ -808,15 +821,6 @@ fn max_request_client(serv: Server) {
     sleep(1.0);
 
     shutdown(serv);
-}
-
-/// `Server(mode)`. The MODE_THREAD TESTs need upstream's `enable_thread` build (`SW_THREAD`);
-/// the crates have thread mode when the extension's MINIT says so, which the case does here.
-fn new_server(mode: c_int) -> Server {
-    if mode == MODE_THREAD {
-        swoole_rs_server::THREAD_SUPPORTED.store(true, Ordering::Relaxed);
-    }
-    Server::new(mode)
 }
 
 /// `test_max_request(mode)`.
@@ -904,7 +908,7 @@ unsafe extern "C" fn count_buffer_full(_: *mut c_void, _: *mut c_void, _: *mut D
 
 /// `TEST(server, watermark)`.
 fn watermark() {
-    let serv = Server::new(MODE_PROCESS);
+    let serv = new_server(MODE_PROCESS);
     serv.config().worker_num = 2;
 
     new_lock();
@@ -968,7 +972,7 @@ unsafe extern "C" fn discard_data_receive(
 
 /// `TEST(server, discard_data)`.
 fn discard_data() {
-    let serv = Server::new(MODE_PROCESS);
+    let serv = new_server(MODE_PROCESS);
     serv.config().worker_num = 2;
     serv.config().dispatch_mode = DISPATCH_IDLE_WORKER;
     serv.config().discard_timeout_request = true;
@@ -1035,7 +1039,7 @@ unsafe extern "C" fn reply_receive(_: *mut c_void, serv: *mut c_void, req: *mut 
 
 /// `TEST(server, pause_and_resume)`.
 fn pause_and_resume() {
-    let serv = Server::new(MODE_BASE);
+    let serv = new_server(MODE_BASE);
     serv.config().worker_num = 2;
 
     set_log_level(SW_LOG_TRACE);
@@ -1101,7 +1105,7 @@ unsafe extern "C" fn max_queued_bytes_receive(
 
 /// `TEST(server, max_queued_bytes)`.
 fn max_queued_bytes() {
-    let serv = Server::new(MODE_PROCESS);
+    let serv = new_server(MODE_PROCESS);
     serv.config().worker_num = 2;
     serv.config().max_queued_bytes = 65536;
 
