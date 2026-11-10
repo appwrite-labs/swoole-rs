@@ -25,11 +25,15 @@ static void compare(const std::string &url,const Rules &rules){
 // the same bytes; every mismatch is listed. No atom starts with a digit, `=` or `!`, so none
 // forms a backreference or lookahead, which the Rust dialect leaves out.
 static void regex_sweep(){
- static const char *const atoms[]={"a","b","/","\x80","\xff",".","\\d","\\w","\\s","\\W","\\b","\\B","\\x80","\\xff","\\u00e9","\\cJ","\\0","\\/","\\.","[ab]","[^a]","[a-\\xff]","[\\x7f-\\x80]","[\\x80-\\xff]","[\\d-]","[[:alpha:]]","[]","[^]","^","$","(",")","(?:","|","*","+","?","*?","+?","??","{2}","{0,1}","{1,}","{0}","{","}","]","[","-",",","\\"};
+ static const char *const atoms[]={"a","b","/","\x80","\xff",".","\\d","\\w","\\s","\\W","\\b","\\B","\\x80","\\xff","\\u00e9","\\cJ","\\0","\\/","\\.","[ab]","[^a]","[a-\\xff]","[\\x7f-\\x80]","[\\x80-\\xff]","[\\d-]","[[:alpha:]]","[]","[^]","^","$","(",")","(?:","|","*","+","?","*?","+?","??","{2}","{0,1}","{1,}","{0}","{","}","]","[","-",",","\\",
+  // Escapes and class syntax at their edges: short or bad hex, `\c` before a non-letter,
+  // control escapes, `\b` and `\B` in a class, collating and equivalence classes, unknown
+  // and unclosed names, and counted repeats left open or reversed.
+  "\\x4g","\\u12","\\c1","\\c","\\n","\\t","\\v","\\f","\\r","\\S","\\D","\\e","\\$","\\^","\\*","\\(","\\|","[\\b]","[\\B]","[\\s\\S]","[[.a.]]","[[=a=]]","[[:foo:]]","[[:","[:a:]","(?","{1","{,2}","{2,1}"};
  static const char *const bytes[]={"a","b","/","\x80","\xff","1"," ","\n","_"};
  static const char *const formats[]={"X","$&","[$1]","<$2>","$`","$'","","$$"};
  std::mt19937 rng(7349);unsigned failures=0;
- for(unsigned i=0;i<10000;++i){
+ for(unsigned i=0;i<15000;++i){
   std::string pattern,url;for(unsigned n=1+rng()%7;n--;)pattern+=atoms[rng()%std::size(atoms)];
   for(unsigned n=rng()%9;n--;)url+=bytes[rng()%std::size(bytes)];
   try{compare(url,{{"~"+pattern+"~",formats[rng()%std::size(formats)]}});}
