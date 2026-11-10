@@ -3,22 +3,15 @@
 //! and the DNS cache calls are crates/hooks' `dns_cache.rs` under their upstream symbols.
 //! Each looks up a public name, so `hooks-system-rust` excludes them (external DNS).
 
-use super::{AF_INET, AF_INET6, Put, TEST_HTTP_DOMAIN, run};
-use std::ffi::{CStr, c_char, c_long, c_void};
+use super::hook::{put_ip, swr_v1_system_gethostbyname};
+use super::{AF_INET, AF_INET6, TEST_HTTP_DOMAIN, run};
+use std::ffi::{CStr, c_long};
 use std::time::{Duration, Instant};
 
 const TEST_DOMAIN_BAIDU: &CStr = c"www.baidu.com";
 
 #[link(name = "swoole")]
 unsafe extern "C" {
-    fn swr_v1_system_gethostbyname(
-        host: *const c_char,
-        length: usize,
-        family: c_long,
-        timeout: f64,
-        put: Put,
-        out: *mut c_void,
-    ) -> bool;
     #[link_name = "_ZN6swoole9coroutine6System22set_dns_cache_capacityEm"]
     fn set_dns_cache_capacity(capacity: usize);
     #[link_name = "_ZN6swoole9coroutine6System20set_dns_cache_expireEl"]
@@ -29,26 +22,18 @@ unsafe extern "C" {
     fn get_dns_cache_hit_ratio() -> f32;
 }
 
-unsafe extern "C" fn put_address(out: *mut c_void, data: *const c_char, length: usize) {
-    // SAFETY: `out` is the caller's String; `data` holds `length` bytes.
-    unsafe {
-        let bytes = std::slice::from_raw_parts(data.cast(), length);
-        *out.cast::<String>() = String::from_utf8(bytes.to_vec()).unwrap();
-    }
-}
-
 /// `System::gethostbyname(hostname, domain)`, whose timeout defaults to -1: "" when there
 /// is no address.
 fn gethostbyname(host: &CStr, domain: i32) -> String {
     let mut address = String::new();
-    // SAFETY: the host's bytes; `put_address` writes `address`, live for the call.
+    // SAFETY: the host's bytes; `put_ip` writes `address`, live for the call.
     unsafe {
         swr_v1_system_gethostbyname(
             host.as_ptr(),
             host.count_bytes(),
             c_long::from(domain),
             -1.0,
-            put_address,
+            put_ip,
             (&raw mut address).cast(),
         )
     };

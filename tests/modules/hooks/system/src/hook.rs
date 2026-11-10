@@ -190,7 +190,7 @@ unsafe extern "C" {
     fn swoole_coroutine_get_socket_object(fd: c_int) -> *mut CoSocket;
     #[link_name = "_Z37swoole_coroutine_get_socket_object_exi"]
     fn swoole_coroutine_get_socket_object_ex(fd: c_int) -> *mut CoSocket;
-    fn swr_v1_system_gethostbyname(
+    pub(super) fn swr_v1_system_gethostbyname(
         host: *const c_char,
         length: usize,
         family: c_long,
@@ -521,7 +521,7 @@ fn dir() {
     test_hook_dir();
 }
 
-unsafe extern "C" fn put_ip(out: *mut c_void, data: *const c_char, length: usize) {
+pub(super) unsafe extern "C" fn put_ip(out: *mut c_void, data: *const c_char, length: usize) {
     // SAFETY: `out` is the caller's String; `data` holds `length` bytes.
     unsafe {
         let bytes = std::slice::from_raw_parts(data.cast(), length);
