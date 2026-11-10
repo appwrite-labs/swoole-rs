@@ -156,31 +156,6 @@ fn checks_held() {
 /// `Server(mode)`, with the shared memory mapped first, so the server's forks share it.
 fn new_server(mode: c_int) -> Server {
     shared();
-    if mode == MODE_THREAD {
-        // DIAGNOSTIC (#2636, removed before merge): where each thread waits after 45 s.
-        std::thread::spawn(|| {
-            // The master's SIGTERM must not land here, where its action is the default.
-            block_all_signals();
-            std::thread::sleep(Duration::from_secs(45));
-            let counters: Vec<_> = (0..TEST_COUNTER_NUM).map(counter_get).collect();
-            eprintln!("watchdog: counters {counters:?}");
-            for task in std::fs::read_dir("/proc/self/task").unwrap().flatten() {
-                let read = |name: &str| {
-                    std::fs::read_to_string(task.path().join(name)).unwrap_or_default()
-                };
-                let stat = read("stat");
-                let state = stat.rsplit(") ").next().unwrap_or("").split(' ').next();
-                eprintln!(
-                    "watchdog: tid {:?} comm {:?} state {state:?} wchan {:?} syscall {:?}",
-                    task.file_name(),
-                    read("comm").trim(),
-                    read("wchan"),
-                    read("syscall").trim()
-                );
-            }
-            std::process::exit(1);
-        });
-    }
     Server::new(mode)
 }
 
