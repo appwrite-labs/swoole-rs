@@ -6,9 +6,10 @@ ratios are stable on shared CI runners where timings are not. Only requests are
 counted: instrumentation is switched on after startup and warmup, and off before
 shutdown. Every process (master, manager, worker) is followed and summed.
 With two engines and --max-ratio, exits 1 if any workload's first/second ratio exceeds it.
---limits is the merge tier's ratchet: per-workload ratios recorded in a JSON file, each
-allowed to drift by NOISE (docs/migration.md, Speed). --ratchet lowers those records to what
-two consecutive merge-tier results both beat (.github/workflows/badges.yml files the issue).
+--limits is the merge tier's ratchet: a directory with one file per workload holding its
+recorded ratio (so PRs changing different records never conflict), each allowed to drift by
+NOISE (docs/migration.md, Speed). --ratchet lowers those records to what two consecutive
+merge-tier results both beat (.github/workflows/badges.yml files the issue).
 """
 import argparse
 import gzip
@@ -343,6 +344,11 @@ def lowest(ratio):
     return math.ceil(round(ratio * 100, 6)) / 100
 
 
+def read_limits(directory):
+    """{workload: recorded ratio} from a limits directory: one file per workload, holding its ratio."""
+    return {path.name: float(path.read_text()) for path in sorted(directory.iterdir())}
+
+
 def ratchet(results, limits):
     """{workload: lower record} for each recorded workload that every result beats once rounded up.
     A result from before the Cargo build replaced the hybrid (no `cargo` row) lowers nothing."""
@@ -372,7 +378,7 @@ def main():
     parser.add_argument('--append', action='store_true',
                         help='Add these workloads to an existing --output, as a second pair of engines (a build variant) does')
     parser.add_argument('--max-ratio', type=float, help='Fail if first/second exceeds this for any workload')
-    parser.add_argument('--limits', type=Path, help='JSON {workload: recorded first/second ratio}; '
+    parser.add_argument('--limits', type=Path, help='DIR of files named by workload, each its recorded first/second ratio; '
                         'fail if one is exceeded by more than noise (overrides --max-ratio per workload)')
     parser.add_argument('--ratchet', type=Path, nargs='+', metavar='RESULT',
                         help='Lower --limits in place to what every RESULT (an --output) beats; run nothing')
@@ -380,19 +386,18 @@ def main():
     if args.ratchet:
         if not args.limits:
             parser.error('--ratchet needs --limits')
-        limits = json.loads(args.limits.read_text())
+        limits = read_limits(args.limits)
         lowered = ratchet([json.loads(path.read_text()) for path in args.ratchet], limits)
         for workload, record in lowered.items():
             print(f'{workload}: {limits[workload]:.2f} -> {record:.2f}')
-        args.limits.write_text('{\n' + ',\n'.join(f'  "{workload}": {record:.2f}' for workload, record
-                                                     in {**limits, **lowered}.items()) + '\n}\n')
+            (args.limits / workload).write_text(f'{record:.2f}\n')
         return 0
     if not args.engine:
         parser.error('--engine is required')
     engines = parse_engines(args.engine, args.php, args.php_extension)
     if (args.max_ratio or args.limits) and len(engines) != 2:
         parser.error('--max-ratio and --limits need exactly two engines')
-    recorded = json.loads(args.limits.read_text()) if args.limits else {}
+    recorded = read_limits(args.limits) if args.limits else {}
     results = json.loads(args.output.read_text())['instructions_per_request'] if args.append else {}
     failed = False
     for workload in args.workload or ['plaintext']:

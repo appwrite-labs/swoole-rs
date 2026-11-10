@@ -72,13 +72,13 @@ jobs:
       # (GITHUB_TOKEN may not open pull requests here, and one it opened would start no PR tier).
       - if: hashFiles('cg-previous/callgrind.json') != ''
         run: |
-          lowered=$(python3 benchmarks/callgrind.py --limits benchmarks/callgrind_limits.json --ratchet cg/callgrind.json cg-previous/callgrind.json)
+          lowered=$(python3 benchmarks/callgrind.py --limits benchmarks/callgrind_limits --ratchet cg/callgrind.json cg-previous/callgrind.json)
           [ -n "$lowered" ] || exit 0
           title='callgrind: lower the limits the last two merge runs beat'
-          body="The last two merge-tier callgrind results both beat these records, rounded up to two decimals (benchmarks/callgrind.py --ratchet). Lower them in benchmarks/callgrind_limits.json in a one-line PR (#1910).
+          body="The last two merge-tier callgrind results both beat these records, rounded up to two decimals (benchmarks/callgrind.py --ratchet). Lower each in its file under benchmarks/callgrind_limits/ in a one-line PR (#1910).
 
-          $(git diff -U0 benchmarks/callgrind_limits.json | sed 's/^/    /')"
-          git checkout benchmarks/callgrind_limits.json
+          $(git diff -U0 benchmarks/callgrind_limits | sed 's/^/    /')"
+          git checkout benchmarks/callgrind_limits
           open=$(gh issue list --state open --search "\"$title\" in:title" --json number -q '.[0].number')
           if [ -n "$open" ]; then
             gh issue edit "$open" --body "$body"

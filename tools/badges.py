@@ -64,7 +64,7 @@ def speed(result, limits, commit):
     table = (f'# Speed vs upstream Swoole\n\nCallgrind instructions per request (lower is better), measured by the '
              f'merge tier on `{commit[:7]}` (`benchmarks/callgrind.py`, {result.get("requests", "?")} requests). '
              f'Ratio is the Cargo build ÷ upstream: below 1.00× is faster than upstream. The limit is '
-             f'`benchmarks/callgrind_limits.json`; ✅ beats upstream, ➖ within the limit, ❌ over it.\n\n'
+             f'`benchmarks/callgrind_limits/`; ✅ beats upstream, ➖ within the limit, ❌ over it.\n\n'
              f'| workload | cargo | upstream | ratio | limit | |\n| --- | ---: | ---: | ---: | ---: | --- |\n{rows}\n'
              f'Geometric mean {mean:.4f}×. Goal: ≤ 1.00× on every workload '
              f'([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)).\n')
@@ -103,7 +103,8 @@ def main():
         passing, tests = phpt_passing(rows, not_applicable)
         badges['phpt'] = endpoint('upstream PHPTs passing', f'{passing:,} / {tests:,} @ {args.commit[:7]}')
     if args.callgrind:
-        limits = json.loads((ROOT / 'benchmarks/callgrind_limits.json').read_text())
+        from benchmarks.callgrind import read_limits
+        limits = read_limits(ROOT / 'benchmarks/callgrind_limits')
         badges['speed'], table = speed(json.loads(args.callgrind.read_text()), limits, args.callgrind_commit)
         (args.output / 'speed.md').write_text(table)
     if args.coverage:
