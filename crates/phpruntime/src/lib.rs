@@ -119,10 +119,10 @@ fn main_thread() -> bool {
 }
 
 /// `sw_callable_create(value)`: a crates/phphelpers callable, or null after a
-/// warning.
+/// warning. Null with a bailout pending (the warning's handler bailed out) is
+/// one the caller stops on, leaving the raise to its handler's last step.
 /// # Safety
-/// PHP is running and `value` is a live zval. The warning's handler may bail
-/// out, so the caller runs inside `zend_try` and owns nothing.
+/// PHP is running and `value` is a live zval.
 pub unsafe fn callable_create(value: *mut zval) -> *mut c_void {
     // SAFETY: per the caller; the reporter is C.
     let created = unsafe {
@@ -134,17 +134,21 @@ pub unsafe fn callable_create(value: *mut zval) -> *mut c_void {
             swr_zend_callable_warning,
         )
     };
-    bailout::finish();
-    created.unwrap_or(std::ptr::null_mut()).cast()
+    created
+        .map_err(bailout::Bailout::defer)
+        .unwrap_or(std::ptr::null_mut())
+        .cast()
 }
 
-/// `sw_callable_free(callable)`; null is ignored.
+/// `sw_callable_free(callable)`; null is ignored. The callable is gone even
+/// when a destructor leaves a bailout pending, which the caller stops on.
 /// # Safety
-/// As [`callable_create`]; `callable` is one it made, freed once.
+/// PHP is running; `callable` is one [`callable_create`] made, freed once and
+/// held by no slot.
 pub unsafe fn callable_free(callable: *mut c_void) {
     if !callable.is_null() {
         // SAFETY: per the caller.
-        bailout::raise(unsafe { handle::release(callable.cast()) });
+        bailout::defer(unsafe { handle::release(callable.cast()) });
     }
 }
 

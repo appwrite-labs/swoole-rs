@@ -1,0 +1,11 @@
+name: Install rustup
+description: rustup, without a toolchain; rust-toolchain.toml's is installed on first use.
+runs:
+  using: composite
+  steps:
+    # GitHub's runner image ships rustup; gcrunner's doesn't.
+    - shell: bash
+      run: |
+        command -v rustup >/dev/null && exit
+        curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"

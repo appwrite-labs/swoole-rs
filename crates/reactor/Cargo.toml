@@ -8,8 +8,6 @@ publish = false
 default = []
 # Publish original C++ method symbols only for the activated reactor overlay.
 upstream-symbols = []
-# Coroutine waitpid over io_uring (upstream's SW_USE_IOURING); crates/ffi's iouring.
-iouring = []
 
 [dependencies]
 swoole-rs-buffer = { path = "../buffer" }

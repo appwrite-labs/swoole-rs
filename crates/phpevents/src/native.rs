@@ -23,10 +23,9 @@ unsafe extern "C-unwind" {
     fn reactor_if_exit(reactor: *mut c_void) -> bool;
     #[link_name = "_ZN6swoole7Reactor4waitEv"]
     fn reactor_wait(reactor: *mut c_void) -> c_int;
-    // crates/phpprocess, crates/coroutine and crates/phptimer.
+    // crates/phpprocess and crates/coroutine.
     safe fn php_swoole_is_enable_coroutine() -> bool;
     fn swoole_coroutine_is_in() -> u8;
-    fn swr_v1_phptimer_clear_all() -> u8;
 }
 
 unsafe extern "C" {
@@ -170,9 +169,9 @@ unsafe extern "C" fn free_body(_: *mut c_void) {
     unsafe { swoole_event_free() };
 }
 
+/// Destructors may run PHP, under the caller's trap.
 unsafe extern "C" fn timers_body(_: *mut c_void) {
-    // SAFETY: no preconditions; destructors may run PHP, under the caller's trap.
-    unsafe { swr_v1_phptimer_clear_all() };
+    let _cleared = swoole_rs_phptimer::clear_all_timers();
 }
 
 /// `sw_reactor()->if_exit()`, under a trap.

@@ -300,12 +300,6 @@ pub unsafe extern "C-unwind" fn reactor_if_exit(reactor: *mut c_void) -> bool {
     unsafe(export_name = "_ZN6swoole7Reactor4waitEv")
 )]
 pub unsafe extern "C-unwind" fn reactor_wait(reactor: *mut c_void) -> c_int {
-    #[cfg(feature = "iouring")]
-    // SAFETY: crates/hooks's, with no preconditions.
-    unsafe extern "C" {
-        fn swr_v1_uring_interrupted(reactor: *mut c_void) -> c_int;
-        fn swr_v1_uring_interrupt(reactor: *mut c_void);
-    }
     fn begin(reactor: *mut c_void) {
         // SAFETY: the waiting reactor.
         let fields = unsafe { prepared(reactor) }.fields;
@@ -322,14 +316,6 @@ pub unsafe extern "C-unwind" fn reactor_wait(reactor: *mut c_void) -> c_int {
         reactor,
         begin,
         end,
-        #[cfg(feature = "iouring")]
-        interrupted: Some(swr_v1_uring_interrupted),
-        #[cfg(feature = "iouring")]
-        interrupt: Some(swr_v1_uring_interrupt),
-        #[cfg(not(feature = "iouring"))]
-        interrupted: None,
-        #[cfg(not(feature = "iouring"))]
-        interrupt: None,
     };
     // SAFETY: as the caller promises.
     let owner = unsafe { prepared(reactor) }.owner;

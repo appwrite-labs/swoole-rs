@@ -19,17 +19,18 @@ use crate::{CppString, Event, Hook, Receive};
 use swoole_rs_ports::{lifecycle_native, methods};
 use swoole_rs_server::server_methods;
 
-const SW_LOG_INFO: c_int = 2;
-const SW_SOCK_SSL: c_int = 512;
+pub(super) const SW_LOG_INFO: c_int = 2;
+pub(super) const SW_SOCK_SSL: c_int = 512;
 const CLOSE_POLICY_ERROR: c_int = 1008;
 // SSLContext's text slots (native/tls/swoole_ssl.h).
-const CERT_FILE: u32 = 4;
-const KEY_FILE: u32 = 5;
+pub(super) const CERT_FILE: u32 = 4;
+pub(super) const KEY_FILE: u32 = 5;
+pub(super) const CLIENT_CERT_FILE: u32 = 7;
 const CAFILE: u32 = 9;
 
 /// `swr_v1_tls_owner_fields`.
 #[repr(C)]
-struct TlsFields {
+pub(super) struct TlsFields {
     http: u8,
     http_v2: u8,
     prefer_server_ciphers: u8,
@@ -40,8 +41,8 @@ struct TlsFields {
     grease: u8,
     verify_depth: u8,
     disable_compress: u8,
-    verify_peer: u8,
-    allow_self_signed: u8,
+    pub(super) verify_peer: u8,
+    pub(super) allow_self_signed: u8,
     protocols: u32,
     create_flag: u8,
     context: *mut c_void,
@@ -63,7 +64,7 @@ struct TlsView {
 
 /// The head of `TimerNode`, through `destructor` (native/timer/swoole_timer.h).
 #[repr(C)]
-struct TimerNode {
+pub(super) struct TimerNode {
     id: c_long,
     kind: c_int,
     exec_msec: i64,
@@ -72,7 +73,7 @@ struct TimerNode {
     round: u64,
     removed: bool,
     callback: *const c_void,
-    data: *mut c_void,
+    pub(super) data: *mut c_void,
     destructor: Option<unsafe extern "C" fn(*mut TimerNode)>,
 }
 const _: () = assert!(
@@ -136,13 +137,13 @@ unsafe extern "C-unwind" {
         data: *mut c_void,
     ) -> *mut TimerNode;
     #[link_name = "_Z18swoole_timer_afterlPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
-    fn swoole_timer_after(
+    pub(super) fn swoole_timer_after(
         ms: c_long,
         callback: unsafe extern "C" fn(*mut c_void, *mut TimerNode),
         data: *mut c_void,
     ) -> c_long;
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(node: *mut TimerNode) -> bool;
+    pub(super) fn swoole_timer_del(node: *mut TimerNode) -> bool;
     #[link_name = "_ZN6swoole9websocket16pack_close_frameEPNS_6StringEiPKcmh"]
     fn pack_close_frame(
         buffer: *mut CppString,
@@ -215,20 +216,20 @@ impl Server {
 
 impl Port {
     /// `config()->ssl_context`.
-    fn ssl_context(self) -> *const c_void {
+    pub(super) fn ssl_context(self) -> *const c_void {
         self.config().ssl_context
     }
 }
 
 /// `SSLContext::fields()`.
-fn tls_fields(context: *const c_void) -> &'static mut TlsFields {
+pub(super) fn tls_fields(context: *const c_void) -> &'static mut TlsFields {
     // SAFETY: a live context, whose fields live as long as it.
     unsafe { &mut *swr_v1_tls_owner_view(context).fields }
 }
 
-/// `SSLContext::set_cert_file` (`CERT_FILE`) and `set_key_file`, whose results the cases
-/// ignore: the warning when the file can't be read.
-fn set_ssl_path(context: *const c_void, index: u32, file: *const c_char) {
+/// `SSLContext::set_cert_file` (`CERT_FILE`), `set_key_file` and `set_client_cert_file`,
+/// whose results the cases ignore: the warning when the file can't be read.
+pub(super) fn set_ssl_path(context: *const c_void, index: u32, file: *const c_char) {
     // SAFETY: a NUL-terminated path.
     let path = unsafe { CStr::from_ptr(file) };
     // SAFETY: a live context; `path` is readable for its length.
@@ -236,12 +237,16 @@ fn set_ssl_path(context: *const c_void, index: u32, file: *const c_char) {
         unsafe { swr_v1_tls_owner_set_path(context, index, path.as_ptr(), path.count_bytes()) };
     assert!(status >= 0, "bad_alloc");
     if status == 1 {
-        let what = if index == CERT_FILE { "cert" } else { "key" };
+        let what = match index {
+            CERT_FILE => "cert",
+            KEY_FILE => "key",
+            _ => "client cert",
+        };
         eprintln!("ssl {what} file[{}] not found", path.to_string_lossy());
     }
 }
 
-fn log_level(level: c_int) {
+pub(super) fn log_level(level: c_int) {
     // SAFETY: a plain call.
     unsafe { swoole_set_log_level(level) };
 }

@@ -1,7 +1,8 @@
 //! The reactor-thread entry points that were master.cc's: the reactor handlers
 //! (`ReactorThread_on*`) and the `Server` and `ReactorThread` methods that build a
-//! context and run one operation over it. With `upstream-symbols` the methods are
-//! defined under their upstream (Itanium) symbols. Every op they make is Rust's.
+//! context and run one operation over it. With `upstream-symbols`, `dispatch_task`
+//! keeps its upstream (Itanium) symbol, which crates/ports' protocols link. Every op
+//! they make is Rust's.
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 
@@ -11,7 +12,7 @@ use swoole_rs_reactor::SocketRecord;
 use crate::ops::{
     RUN_CLOSE_CONNECTION, RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED,
     RUN_PIPE_READ, RUN_REACTOR_THREAD_MAIN, RUN_RT_INIT, RUN_RT_PIPE_WRITE,
-    RUN_START_REACTOR_THREADS, RUN_THREAD_CLOSE, RUN_THREAD_SHUTDOWN,
+    RUN_START_REACTOR_THREADS, RUN_THREAD_SHUTDOWN,
 };
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
 use crate::{unanswered, view};
@@ -186,10 +187,6 @@ pub unsafe extern "C" fn on_write(reactor: *mut c_void, event: *mut c_void) -> c
 ///
 /// # Safety
 /// `reactor` is a live server `Reactor` and `socket` a live session socket of it.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server16close_connectionEPNS_7ReactorEPNS_7network6SocketE")
-)]
 pub unsafe extern "C-unwind" fn close_connection(
     reactor: *mut c_void,
     socket: *mut SocketRecord,
@@ -205,11 +202,7 @@ pub unsafe extern "C-unwind" fn close_connection(
 ///
 /// # Safety
 /// `thread` is the live `ReactorThread` that `reactor` belongs to.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole13ReactorThread8shutdownEPNS_7ReactorE")
-)]
-pub unsafe extern "C-unwind" fn thread_shutdown(thread: *mut c_void, reactor: *mut c_void) {
+pub unsafe fn thread_shutdown(thread: *mut c_void, reactor: *mut c_void) {
     // SAFETY: per the caller.
     let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
     ctx.thread = thread;
@@ -217,35 +210,11 @@ pub unsafe extern "C-unwind" fn thread_shutdown(thread: *mut c_void, reactor: *m
     unsafe { run(RUN_THREAD_SHUTDOWN, 0, &mut ctx) };
 }
 
-/// `int ReactorThread::close_connection(Reactor *, SessionId)`.
-///
-/// # Safety
-/// As [`thread_shutdown`].
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole13ReactorThread16close_connectionEPNS_7ReactorEl")
-)]
-pub unsafe extern "C-unwind" fn thread_close_connection(
-    thread: *mut c_void,
-    reactor: *mut c_void,
-    session_id: c_long,
-) -> c_int {
-    // SAFETY: per the caller.
-    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, reactor);
-    ctx.thread = thread;
-    // SAFETY: per the caller.
-    int(unsafe { run(RUN_THREAD_CLOSE, session_id.cast_unsigned(), &mut ctx) })
-}
-
 /// `int ReactorThread::init(Server *, Reactor *, uint16_t)`.
 ///
 /// # Safety
 /// `thread` is `serv`'s live `ReactorThread` and `reactor` its new reactor.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole13ReactorThread4initEPNS_6ServerEPNS_7ReactorEt")
-)]
-pub unsafe extern "C-unwind" fn thread_init(
+pub unsafe fn thread_init(
     thread: *mut c_void,
     serv: *mut c_void,
     reactor: *mut c_void,
@@ -261,11 +230,7 @@ pub unsafe extern "C-unwind" fn thread_init(
 ///
 /// # Safety
 /// `serv` is a live `Server` and `reactor` a live reactor of it.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server12init_reactorEPNS_7ReactorE")
-)]
-pub unsafe extern "C-unwind" fn init_reactor(serv: *mut c_void, reactor: *mut c_void) {
+pub unsafe fn init_reactor(serv: *mut c_void, reactor: *mut c_void) {
     // SAFETY: per the caller.
     unsafe { run(RUN_INIT_REACTOR, 0, &mut ReactorContext::new(serv, reactor)) };
 }
@@ -284,11 +249,7 @@ pub unsafe extern "C-unwind" fn start_reactor_threads(serv: *mut c_void) -> c_in
 ///
 /// # Safety
 /// `serv` is a live `Server`, on the reactor thread `reactor_id`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole6Server24reactor_thread_main_loopEPS0_i")
-)]
-pub unsafe extern "C-unwind" fn reactor_thread_main_loop(serv: *mut c_void, reactor_id: c_int) {
+pub unsafe fn reactor_thread_main_loop(serv: *mut c_void, reactor_id: c_int) {
     let mut ctx = ReactorContext::new(serv, ptr::null_mut());
     let id = i64::from(reactor_id).cast_unsigned();
     // SAFETY: per the caller.

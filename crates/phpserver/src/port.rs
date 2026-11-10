@@ -97,6 +97,7 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     unsafe { deref(std) };
     // SAFETY: as above.
     unsafe { Port::dtor(std) };
+    swoole_rs_zend::bailout::finish();
 }
 
 /// A new Port object (an emalloc'd zval) bound to `port` and its server `serv`.
@@ -138,7 +139,8 @@ pub(crate) unsafe fn bound_port(object: *mut zend_object) -> *mut c_void {
     port
 }
 
-/// `php_swoole_server_port_deref`: drop the callables and the port's link.
+/// `php_swoole_server_port_deref`: drop the callables and the port's link,
+/// all of them even when a destructor leaves a bailout pending.
 /// # Safety
 /// `object` is a `Swoole\Server\Port` this class created.
 pub(crate) unsafe fn deref(object: *mut zend_object) {
@@ -167,7 +169,7 @@ fn take(slot: &mut *mut c_void) -> *mut c_void {
 }
 
 /// Free a callable already out of its slot: a destructor this runs may reach
-/// the slot again.
+/// the slot again, or leave a bailout pending.
 fn free_callable(callable: *mut c_void) {
     if !callable.is_null() {
         // SAFETY: a callable created for this port, owned by no slot now.
@@ -308,6 +310,9 @@ fn on(call: &Call) {
         return call.set_bool(false);
     };
     free_callable(old);
+    if swoole_rs_zend::bailout::pending() {
+        return;
+    }
     // SAFETY: the callback argument.
     let callable = unsafe { swoole_rs_phpruntime::callable_create(cb) };
     if callable.is_null() {

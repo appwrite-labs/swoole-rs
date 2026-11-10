@@ -9,7 +9,7 @@ jobs:
   # Nightly: an hour across every fuzz/ target, growing ClusterFuzzLite's stored
   # corpus. The second schedule prunes that corpus. Crashes fail the job.
   fuzz:
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
     steps:
       - id: build
         uses: google/clusterfuzzlite/actions/build_fuzzers@v1
@@ -33,7 +33,7 @@ jobs:
   report:
     needs: fuzz
     if: failure()
-    runs-on: ${{ vars.RUNNER || 'ubuntu-24.04' }}
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
     permissions:
       issues: write
     steps:

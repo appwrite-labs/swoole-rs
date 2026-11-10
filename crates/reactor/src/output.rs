@@ -1,9 +1,9 @@
 //! Queued output over Rust socket and buffer records: the ordinary send commits
 //! the front chunk's cursor, the socket's wait flags and the queue's detachment;
 //! sendfile requests own their descriptor, path and range in `file_output`. The
-//! socket's I/O and cork effects are the caller's [`OutputHooks`].
+//! socket's I/O and cork effects are the caller's [`OutputEffects`].
 use std::io::Error;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::c_int;
 
 /// `swReturnCode`: `SW_WAIT`, `SW_CLOSE`, `SW_ERROR`; and `SW_ERR`.
 const WAIT: c_int = 2;
@@ -11,68 +11,21 @@ const CLOSE: c_int = 3;
 const ERROR: c_int = 4;
 const ERR: c_int = -1;
 
-/// What queued output needs from its `Socket`.
-#[derive(Clone, Copy)]
-pub struct OutputHooks {
-    socket: *mut c_void,
-    /// `Socket::kernel_nobufs`, which `catch_error` sets on ENOBUFS.
-    kernel_nobufs: *mut bool,
-    /// `Socket::send(data, length, 0)`.
-    send: unsafe extern "C" fn(socket: *mut c_void, data: *const c_void, length: usize) -> isize,
-    cork: unsafe extern "C" fn(socket: *mut c_void) -> bool,
-    uncork: unsafe extern "C" fn(socket: *mut c_void),
+/// What queued output needs from its `Socket` (`crates/tls`'s `upstream.rs`).
+pub trait OutputEffects {
+    /// `Socket::send(data, length, 0)`, leaving the kernel's errno.
+    fn send(&self, data: &[u8]) -> isize;
+    fn cork(&self) -> bool;
+    fn uncork(&self);
     /// Records the send time when the socket has a send timer.
-    sent: unsafe extern "C" fn(socket: *mut c_void),
+    fn sent(&self);
+    /// `catch_error(error)` over the socket's `kernel_nobufs`, which it sets on ENOBUFS.
+    fn catch_error(&self, error: c_int) -> c_int;
 }
 
-impl OutputHooks {
-    /// # Safety
-    /// While the hooks live, `kernel_nobufs` is writable and each effect may be
-    /// called with `socket`, `send` with any readable bytes.
-    pub const unsafe fn new(
-        socket: *mut c_void,
-        kernel_nobufs: *mut bool,
-        send: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> isize,
-        cork: unsafe extern "C" fn(*mut c_void) -> bool,
-        uncork: unsafe extern "C" fn(*mut c_void),
-        sent: unsafe extern "C" fn(*mut c_void),
-    ) -> Self {
-        Self {
-            socket,
-            kernel_nobufs,
-            send,
-            cork,
-            uncork,
-            sent,
-        }
-    }
-
-    fn send(&self, data: &[u8]) -> isize {
-        // SAFETY: `new`'s contract, over the caller's readable bytes.
-        unsafe { (self.send)(self.socket, data.as_ptr().cast(), data.len()) }
-    }
-
-    fn cork(&self) -> bool {
-        // SAFETY: `new`'s contract.
-        unsafe { (self.cork)(self.socket) }
-    }
-
-    fn uncork(&self) {
-        // SAFETY: `new`'s contract.
-        unsafe { (self.uncork)(self.socket) }
-    }
-
-    fn sent(&self) {
-        // SAFETY: `new`'s contract.
-        unsafe { (self.sent)(self.socket) }
-    }
-
-    /// `catch_error` over the errno the last effect left.
-    fn classify(&self) -> c_int {
-        let error = Error::last_os_error().raw_os_error().unwrap_or(0);
-        // SAFETY: `new`'s writable flag, which no other borrow holds during this call.
-        crate::catch_error(error, unsafe { &mut *self.kernel_nobufs })
-    }
+/// `catch_error` over the errno the last effect left.
+fn classify(hooks: &impl OutputEffects) -> c_int {
+    hooks.catch_error(Error::last_os_error().raw_os_error().unwrap_or(0))
 }
 
 /// What the caller applies after `handle_send`/`handle_sendfile`: pop the front
@@ -105,7 +58,7 @@ impl OutputResult {
 /// `Socket::handle_send`: send what is left of the front data chunk `data`, of
 /// which `offset` bytes are already sent.
 #[must_use]
-pub fn handle_send(hooks: &OutputHooks, data: &[u8], offset: u32) -> OutputResult {
+pub fn handle_send(hooks: &impl OutputEffects, data: &[u8], offset: u32) -> OutputResult {
     let mut result = OutputResult::default();
     let rest = data.get(offset as usize..).unwrap_or_default();
     if rest.is_empty() {
@@ -114,7 +67,7 @@ pub fn handle_send(hooks: &OutputHooks, data: &[u8], offset: u32) -> OutputResul
     }
     let sent = hooks.send(rest);
     if sent < 0 {
-        match hooks.classify() {
+        match classify(hooks) {
             ERROR => result.warn = 1,
             CLOSE => (result.close_wait, result.code) = (true, ERR),
             WAIT => (result.send_wait, result.code) = (true, ERR),
@@ -142,7 +95,7 @@ pub fn handle_send(hooks: &OutputHooks, data: &[u8], offset: u32) -> OutputResul
 /// `Socket::handle_sendfile` before its send: cork once, when more than `cork_min`
 /// bytes of `[begin, end)` remain. `corked` is the request's 0 unset / 1 / -1.
 pub fn sendfile_cork(
-    hooks: &OutputHooks,
+    hooks: &impl OutputEffects,
     corked: &mut i8,
     begin: libc::off_t,
     end: libc::off_t,
@@ -162,7 +115,7 @@ pub fn sendfile_cork(
 /// send time, and uncork and pop once the request is done.
 #[must_use]
 pub fn sendfile_sent(
-    hooks: &OutputHooks,
+    hooks: &impl OutputEffects,
     sent: isize,
     requested: usize,
     corked: &mut i8,
@@ -171,7 +124,7 @@ pub fn sendfile_sent(
 ) -> OutputResult {
     let result = OutputResult::default();
     if sent <= 0 {
-        match hooks.classify() {
+        match classify(hooks) {
             ERROR => {
                 return OutputResult {
                     warn: 2,
@@ -227,7 +180,7 @@ pub struct OwnedOutputResult {
 pub unsafe fn handle_send_owned(
     socket: *mut crate::SocketRecord,
     buffer: *mut swoole_rs_buffer::Buffer,
-    hooks: &OutputHooks,
+    hooks: &impl OutputEffects,
 ) -> OwnedOutputResult {
     let mut output = OwnedOutputResult {
         result: OutputResult::default(),
@@ -274,6 +227,7 @@ pub unsafe fn handle_send_owned(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::raw::c_void;
 
     const OK: c_int = 0;
     use std::cell::RefCell;
@@ -332,6 +286,35 @@ mod tests {
     }
     unsafe extern "C" fn sent(_: *mut c_void) {
         FAKE.with(|fake| fake.borrow_mut().sent += 1);
+    }
+
+    /// The effects above, over `socket` and its `kernel_nobufs`.
+    #[derive(Clone, Copy)]
+    struct OutputHooks {
+        socket: *mut c_void,
+        kernel_nobufs: *mut bool,
+        send: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> isize,
+        cork: unsafe extern "C" fn(*mut c_void) -> bool,
+        uncork: unsafe extern "C" fn(*mut c_void),
+        sent: unsafe extern "C" fn(*mut c_void),
+    }
+
+    impl OutputEffects for OutputHooks {
+        fn send(&self, data: &[u8]) -> isize {
+            unsafe { (self.send)(self.socket, data.as_ptr().cast(), data.len()) }
+        }
+        fn cork(&self) -> bool {
+            unsafe { (self.cork)(self.socket) }
+        }
+        fn uncork(&self) {
+            unsafe { (self.uncork)(self.socket) }
+        }
+        fn sent(&self) {
+            unsafe { (self.sent)(self.socket) }
+        }
+        fn catch_error(&self, error: c_int) -> c_int {
+            crate::catch_error(error, unsafe { &mut *self.kernel_nobufs })
+        }
     }
 
     fn hooks(socket: *mut c_void, nobufs: &mut bool) -> OutputHooks {
