@@ -1271,7 +1271,7 @@ fn heartbeat_client(serv: Server) {
 
 /// `test_heartbeat_check(mode, single_thread)`.
 fn test_heartbeat_check(mode: c_int, single_thread: bool) {
-    let serv = Server::new(mode);
+    let serv = new_server(mode);
     serv.config().worker_num = 1;
     serv.config().heartbeat_check_interval = 1;
     serv.config().single_thread = single_thread;
@@ -1385,7 +1385,7 @@ fn close_client(serv: Server) {
 
 /// `test_close(mode, close_in_client, single_thread)`.
 fn test_close(mode: c_int, close_in_client: bool, single_thread: bool) {
-    let serv = Server::new(mode);
+    let serv = new_server(mode);
     serv.config().worker_num = 1;
     serv.config().single_thread = single_thread;
     CLOSE_IN_CLIENT.store(close_in_client, Ordering::SeqCst);
