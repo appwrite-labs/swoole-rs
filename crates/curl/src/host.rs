@@ -22,12 +22,8 @@ const EVENT_ERROR: c_int = 1 << 11;
 const CO_OUT_OF_COROUTINE: c_int = 10001;
 const CO_HAS_BEEN_BOUND: c_int = 10002;
 
-// SAFETY: crates/coroutine's and crates/timer's upstream functions.
+// SAFETY: crates/coroutine's upstream function.
 unsafe extern "C-unwind" {
-    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(node: *mut c_void) -> bool;
-    #[link_name = "_Z25swoole_timer_is_availablev"]
-    fn swoole_timer_is_available() -> bool;
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn coroutine_yield_ex(co: *mut c_void, timeout: f64) -> bool;
 }
@@ -135,8 +131,7 @@ impl ReactorSocket {
 }
 
 pub(crate) fn timer_available() -> bool {
-    // SAFETY: no preconditions.
-    unsafe { swoole_timer_is_available() }
+    swoole_rs_timer::swoole_timer_is_available()
 }
 
 /// The multi's timer fired.
@@ -159,7 +154,7 @@ pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> *mut c_void {
 /// `timer` is pending.
 pub(crate) unsafe fn timer_del(timer: *mut c_void) {
     // SAFETY: per the caller.
-    unsafe { swoole_timer_del(timer) };
+    unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
 }
 
 /// `Coroutine::get_current()`.

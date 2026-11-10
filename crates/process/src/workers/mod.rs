@@ -122,8 +122,9 @@ fn effect(op: u32) -> Option<u64> {
     use core::ffi::c_int;
     use swoole_rs_corebase::log::{last_error, set_last_error};
     // SAFETY: crates/reactor's, crates/timer's, src/core/error.cc's
-    // and crates/ossupport's functions, under their upstream symbols.
-    unsafe extern "C" {
+    // and crates/ossupport's functions, under their upstream symbols. Declarations,
+    // since crates/reactor (and through it crates/timer) depends on this crate.
+    unsafe extern "C-unwind" {
         #[link_name = "_Z17swoole_event_initi"]
         fn swoole_event_init(flags: c_int) -> c_int;
         #[link_name = "_Z17swoole_event_freev"]

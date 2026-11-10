@@ -12,7 +12,7 @@ php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:swoole-rs-ph
        "dep:swoole-rs-process", "swoole-rs-process/upstream-symbols", "dep:swoole-rs-ossupport", "dep:swoole-rs-corebase",
        "dep:swoole-rs-phpswoole", "dep:swoole-rs-reactor", "dep:swoole-rs-tls", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php",
        "dep:swoole-rs-phphelpers", "swoole-rs-phphelpers/php", "dep:swoole-rs-server",
-       "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php"]
+       "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php", "dep:swoole-rs-timer", "swoole-rs-timer/upstream-symbols"]
 
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
@@ -28,6 +28,7 @@ swoole-rs-tls = { path = "../tls", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
 swoole-rs-phphelpers = { path = "../phphelpers", optional = true }
 swoole-rs-server = { path = "../server", optional = true }
+swoole-rs-timer = { path = "../timer", optional = true }
 
 [lints]
 workspace = true

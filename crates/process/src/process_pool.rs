@@ -309,8 +309,9 @@ impl PoolHost for Native<'_> {
 fn effect(op: u32, arg: u64) -> Option<i64> {
     use crate::methods::{swoole_get_worker_type, swoole_set_worker_type};
     // SAFETY: crates/timer's and crates/reactor's functions, and
-    // crates/reactor's swoole_waitpid, under their upstream symbols.
-    unsafe extern "C" {
+    // crates/reactor's swoole_waitpid, under their upstream symbols. Declarations,
+    // since crates/reactor (and through it crates/timer) depends on this crate.
+    unsafe extern "C-unwind" {
         #[link_name = "_Z25swoole_timer_is_availablev"]
         fn swoole_timer_is_available() -> bool;
         #[link_name = "_Z17swoole_timer_freev"]
