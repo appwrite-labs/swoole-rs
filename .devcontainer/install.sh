@@ -21,10 +21,12 @@ install() {
 }
 # Cached indexes (refreshed weekly by the cache key) are enough when every package
 # is cached too; if one isn't and the mirror has moved on, refresh and retry once.
+# A refresh can fail on one repository mid-sync while the others are fine, so only
+# the install decides: as the last command of each branch, its failure stops sh.
 if [ -n "$APT_CACHE" ] && ls "$APT_CACHE"/lists/*_Packages >/dev/null 2>&1; then
-    install "$@" || { apt-get $APT update -q && install "$@"; }
+    install "$@" || { apt-get $APT update -q || :; install "$@"; }
 else
-    apt-get $APT update -q
+    apt-get $APT update -q || :
     install "$@"
 fi
 [ -z "$APT_CACHE" ] || chmod -R a+rX "$APT_CACHE"
