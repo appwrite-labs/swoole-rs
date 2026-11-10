@@ -65,3 +65,107 @@ pub unsafe fn truncate(string: *mut zend_string, length: usize) {
 pub use crate::sys::swr_zend_string_free as free;
 /// `zend_string_realloc(string, length, 0)` of a live, unshared, non-interned string.
 pub use crate::sys::swr_zend_string_realloc as realloc;
+
+/// A new, unshared `zend_string` (`zend_string_alloc`) being filled, like a
+/// `Vec<u8>`: something writes at `as_mut_ptr() + len()`, `set_len` counts
+/// what it wrote, and `into_zstring` ends the string there. Dropped first, it
+/// is freed. It is no `ZStr`: the bytes past `len` are uninitialised.
+pub struct ZBuf {
+    string: *mut zend_string,
+    len: usize,
+    capacity: usize,
+}
+
+impl ZBuf {
+    /// Room for `capacity` bytes, none written.
+    #[must_use]
+    #[inline]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            string: alloc(capacity),
+            len: 0,
+            capacity,
+        }
+    }
+
+    /// Take over `string`, holding `len` written bytes and room for no more.
+    /// # Safety
+    /// `string` is a live, unshared, non-interned string nothing else
+    /// references, at least `len` bytes of which are written.
+    #[must_use]
+    #[inline]
+    pub unsafe fn from_raw(string: *mut zend_string, len: usize) -> Self {
+        Self {
+            string,
+            len,
+            capacity: len,
+        }
+    }
+
+    /// The first byte; `capacity()` bytes are writable from here.
+    #[must_use]
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        val(self.string)
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Count the first `len` bytes as written.
+    /// # Safety
+    /// `len <= capacity()` and the first `len` bytes are written.
+    #[inline]
+    pub unsafe fn set_len(&mut self, len: usize) {
+        self.len = len;
+    }
+
+    /// Append as much of `bytes` as there is room for.
+    pub fn extend_from_slice(&mut self, bytes: &[u8]) {
+        let count = bytes.len().min(self.capacity - self.len);
+        let at = self.as_mut_ptr().wrapping_add(self.len);
+        // SAFETY: `count` bytes of room past the written ones.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), at, count) };
+        self.len += count;
+    }
+
+    /// `zend_string_realloc` down to the written bytes.
+    pub fn shrink_to_fit(&mut self) {
+        // SAFETY: an unshared string; Zend copies the written bytes.
+        self.string = unsafe { realloc(self.string, self.len) };
+        self.capacity = self.len;
+    }
+
+    /// End the string after the written bytes and hand over its reference.
+    #[must_use]
+    pub fn into_zstring(self) -> crate::ZString {
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: an unshared string of at least `len` bytes.
+        unsafe { truncate(this.string, this.len) };
+        // SAFETY: the string's only reference, which this gives up.
+        unsafe { crate::ZString::from_raw(this.string) }
+    }
+}
+
+impl Drop for ZBuf {
+    #[inline]
+    fn drop(&mut self) {
+        // SAFETY: an unshared string nothing else references.
+        unsafe { free(self.string) };
+    }
+}

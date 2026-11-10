@@ -31,8 +31,6 @@ void swr_v1_utils_spinlock(uint32_t *, uint32_t cpus, uint32_t backoff_limit);
 int32_t swr_v1_utils_wait(uint32_t *, double timeout);
 int32_t swr_v1_utils_wakeup(uint32_t *, int32_t n);
 #endif
-/* The local zone's current offset from UTC, in seconds. */
-long swr_v1_utils_timezone(void);
 /* Borrowed bytes and independent aligned outputs; returns a substring span, never allocates. */
 int32_t swr_v1_utils_pretty_range(const uint8_t *, size_t, uint8_t strip, size_t *, size_t *);
 /* Logging enum policy, returned strings are immutable static NUL-terminated storage. */

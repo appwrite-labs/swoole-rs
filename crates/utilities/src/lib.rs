@@ -9,7 +9,7 @@
 mod frontdoor;
 pub use frontdoor::*;
 mod helpers;
-pub use helpers::{swr_v1_utils_strlchr, swr_v1_utils_timezone};
+pub use helpers::{swr_v1_utils_strlchr, timezone};
 mod logger;
 mod sni;
 pub use sni::sni_wildcard_matches;

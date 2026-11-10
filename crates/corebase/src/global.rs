@@ -363,6 +363,14 @@ mod tests {
     use super::*;
     use std::ffi::CStr;
 
+    /// Upstream's `time.get_seconds`: the wall clock's seconds against `time(NULL)`.
+    #[test]
+    fn time_get_seconds() {
+        let sec1 = time_now();
+        let sec2 = unsafe { libc::time(ptr::null_mut()) };
+        assert!(sec1 == sec2 || sec1 == sec2 - 1);
+    }
+
     // One test owns the process-wide record, so parallel tests never race on it.
     #[test]
     fn record_lifecycle() {
