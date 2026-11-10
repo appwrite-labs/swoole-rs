@@ -529,6 +529,7 @@ mod tests {
     /// thread), over a pool of its own, as the child's process had. The `thread_init` hook
     /// observes the worker's mask where upstream's `std_allocator.malloc` hook did.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigemptyset")]
     fn thread_starts_with_signals_blocked() {
         for already_blocked in [false, true] {
             std::thread::spawn(move || unsafe {
