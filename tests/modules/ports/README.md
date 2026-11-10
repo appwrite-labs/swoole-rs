@@ -27,6 +27,12 @@ it is `lifecycle::tests::server_ssl_matches_wildcard_name`, over the Rust
 certificate name and expected result, in its order (its commented-out ones stay out).
 server.cpp's other TLS TESTs start a server: tests/modules/http/README.md maps them.
 
+`core-tests/src/server/server.cpp`'s `server.protocols` reads only its port's
+`get_protocols()` and `clear_protocol()`, so it is `methods::tests::server_protocols`
+over a port of its own, with the same flags and expected names (`cargo test -p
+swoole-rs-ports --all-features server_protocols`). The rest of server.cpp is
+`tests/modules/http/server` (see the HTTP module's tests README).
+
 ## Running checks
 
 `tools/dev.py` registers most of these as `ports-*` phases. Placeholders:
