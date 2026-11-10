@@ -65,6 +65,19 @@ def gh(*args):
         result = subprocess.run(['gh', *args], capture_output=True, text=True)
         if result.returncode == 0:
             return result.stdout
+        # Every agent shares one account's hourly API limit (and every job the Actions token's):
+        # wait for the reset when the deadline allows, else say when it comes.
+        if 'API rate limit exceeded' in result.stderr:
+            reset = subprocess.run(['gh', 'api', 'rate_limit', '--jq', '.resources.core.reset'],
+                                   capture_output=True, text=True).stdout.strip()
+            wait = int(reset) - time.time() + 1 if reset.isdigit() else None
+            at = f'{datetime.fromtimestamp(int(reset)):%H:%M:%S}' if wait is not None else 'an unknown time'
+            if wait is not None and time.monotonic() + wait <= RETRY_DEADLINE:
+                say(f'gh {args[0]}: API rate limit exceeded; waiting until {at}')
+                time.sleep(max(wait, 0))
+                continue
+            raise subprocess.CalledProcessError(result.returncode, ['gh', *args], result.stdout,
+                                                f'{result.stderr.strip()}; it resets at {at}')
         # A 4xx is permanent even when its message (say, a branch name) contains a TRANSIENT word.
         transient = (not re.search(r'HTTP 4\d\d', result.stderr)
                      and any(text.lower() in result.stderr.lower() for text in TRANSIENT))

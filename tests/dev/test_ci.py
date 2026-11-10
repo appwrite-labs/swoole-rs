@@ -21,12 +21,17 @@ with open(os.environ['FAKE_GH_LOG'], 'a') as log:
 def save():
     state.write_text(json.dumps(data))
 call = ' '.join(args)
-for prefix, count in data.get('flaky', {}).items():
-    if call.startswith(prefix) and count > 0:
-        data['flaky'][prefix] = count - 1
-        save()
-        sys.stderr.write('HTTP 502: Bad Gateway\\n')
-        sys.exit(1)
+if call == 'api rate_limit --jq .resources.core.reset':
+    import time
+    print(int(time.time()) + data.get('reset_in', 3600))
+    sys.exit(0)
+for kind, error in [('flaky', 'HTTP 502: Bad Gateway'), ('limited', 'API rate limit exceeded for user ID 1. (HTTP 403)')]:
+    for prefix, count in data.get(kind, {}).items():
+        if call.startswith(prefix) and count > 0:
+            data[kind][prefix] = count - 1
+            save()
+            sys.stderr.write(error + '\\n')
+            sys.exit(1)
 deleted = [branch for branch in data.get('deleted', []) if call.startswith('api repos/{owner}/{repo}/commits/' + branch)]
 if deleted:
     sys.stderr.write(f'gh: No commit found for SHA: {deleted[0]} (HTTP 422)\\n')
@@ -347,6 +352,15 @@ class Ci(unittest.TestCase):
         code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'run list': 2, 'api': 1})
         self.assertEqual((code, result['state']), (0, 'passed'))
         self.assertEqual(stderr.count('HTTP 502: Bad Gateway; retrying'), 3)
+
+    def test_an_exhausted_rate_limit_is_waited_out_within_the_deadline_and_named_beyond_it(self):
+        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, limited={'run list': 1}, reset_in=0)
+        self.assertEqual((code, result['state']), (0, 'passed'))
+        self.assertIn('API rate limit exceeded; waiting until', stderr)
+        # `next` has no deadline: it stops at once and says when the limit resets.
+        code, _, stderr = self.ci('next', runs={}, flags=(), limited={'api': 1})
+        self.assertEqual(code, 1)
+        self.assertRegex(stderr, r'API rate limit exceeded .*; it resets at \d\d:\d\d:\d\d')
 
     def test_a_deleted_branch_resolves_through_its_pull_request(self):
         code, result, _ = self.ci('wait', '--workflow', 'pr.yml', '--commit', 'socket-timeout',
