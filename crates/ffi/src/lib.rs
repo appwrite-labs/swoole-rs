@@ -142,6 +142,8 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
         server_minit: swoole_rs_phpserver::php_swoole_server_minit,
         timer_minit: swoole_rs_phptimer::minit,
         timer_rshutdown: swoole_rs_phptimer::rshutdown,
+        redis_minit: swoole_rs_phpredis::redis_minit,
+        redis_rshutdown: swoole_rs_phpredis::redis_rshutdown,
         tracer_minit: co::tracer_minit,
         thread_minit: thread::thread_minit,
         thread_classes_minit: [

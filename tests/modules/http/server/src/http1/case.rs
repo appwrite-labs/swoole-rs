@@ -143,7 +143,7 @@ unsafe extern "C-unwind" {
         data: *mut c_void,
     ) -> c_long;
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(node: *mut TimerNode) -> bool;
+    pub(super) fn swoole_timer_del(node: *mut TimerNode) -> bool;
     #[link_name = "_ZN6swoole9websocket16pack_close_frameEPNS_6StringEiPKcmh"]
     fn pack_close_frame(
         buffer: *mut CppString,
