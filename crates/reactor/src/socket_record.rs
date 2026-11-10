@@ -270,10 +270,7 @@ impl SocketRecord {
         unknown: &mut bool,
     ) -> *mut Self {
         let (mut domain, mut kind) = (0, 0);
-        // SAFETY: two local ints.
-        if !unsafe {
-            crate::swr_v1_socket_domain_and_type(socket_type, &raw mut domain, &raw mut kind)
-        } {
+        if !crate::swr_v1_socket_domain_and_type(socket_type, &mut domain, &mut kind) {
             *unknown = true;
             crate::socket_sync::set_errno(libc::ESOCKTNOSUPPORT);
             return ptr::null_mut();

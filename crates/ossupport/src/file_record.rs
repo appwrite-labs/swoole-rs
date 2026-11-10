@@ -116,12 +116,9 @@ pub unsafe extern "C" fn swr_v1_os_file_record_new(
     Box::into_raw(Box::new(FileRecord { fd, flags: 0, path }))
 }
 /// Value-copy the descriptor/flags/path, matching File's value-copy interface.
-/// # Safety
-/// `source` is a live record. Each resulting record must be released once.
+/// Each resulting record must be released once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_record_clone(source: *const FileRecord) -> *mut FileRecord {
-    // SAFETY: source is live for this call.
-    let source = unsafe { &*source };
+pub extern "C" fn swr_v1_os_file_record_clone(source: &FileRecord) -> *mut FileRecord {
     let Some(path) = path_copy(&source.path) else {
         return ptr::null_mut();
     };
@@ -131,46 +128,34 @@ pub unsafe extern "C" fn swr_v1_os_file_record_clone(source: *const FileRecord) 
         path,
     }))
 }
-/// Destroy the record and close a still-owned nonnegative descriptor.
-/// # Safety
-/// `owner` is null or this API's unique live allocation.
+/// Destroy the record (null or new/clone's allocation, released once) and close a
+/// still-owned nonnegative descriptor.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_record_free(owner: *mut FileRecord) {
-    if !owner.is_null() {
-        // SAFETY: owner is the unique live allocation from new/clone.
-        unsafe { drop(Box::from_raw(owner)) };
-    }
+pub extern "C" fn swr_v1_os_file_record_free(owner: Option<Box<FileRecord>>) {
+    drop(owner);
 }
 /// Current descriptor; ready is fd != -1, and release writes -1.
-/// # Safety
-/// `owner` is live; release requires exclusive access.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_record_fd(owner: *mut FileRecord, release: bool) -> c_int {
-    // SAFETY: live caller-owned record, exclusive when releasing.
-    let fd = unsafe { (*owner).fd };
+pub extern "C" fn swr_v1_os_file_record_fd(owner: &mut FileRecord, release: bool) -> c_int {
+    let fd = owner.fd;
     if release {
-        // SAFETY: release requires the caller to lend exclusive access.
-        unsafe { (*owner).fd = -1 };
+        owner.fd = -1;
     }
     fd
 }
 /// Close invalidates the record before the syscall, including its failure path.
-/// # Safety
-/// `owner` is live and exclusively borrowed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_record_close(owner: *mut FileRecord) -> bool {
-    // SAFETY: forwards the live exclusive owner, releasing its descriptor first.
-    let fd = unsafe { swr_v1_os_file_record_fd(owner, true) };
-    file_close(fd)
+pub extern "C" fn swr_v1_os_file_record_close(owner: &mut FileRecord) -> bool {
+    file_close(swr_v1_os_file_record_fd(owner, true))
 }
 /// Open closes the old descriptor, assigns the native path view, then commits flags.
 /// -2 is allocation refusal; a native path exception is retained by `update`.
 /// # Safety
-/// `owner` is live/exclusive; path has length+1 readable bytes ending in NUL.
-/// `update` only updates native path storage, catches all exceptions, and never reenters Rust.
+/// Path has length+1 readable bytes ending in NUL. `update` only updates native path
+/// storage (never the record), catches all exceptions, and never reenters Rust.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_os_file_record_open(
-    owner: *mut FileRecord,
+    owner: &mut FileRecord,
     path: *const c_char,
     length: usize,
     flags: c_int,
@@ -178,12 +163,9 @@ pub unsafe extern "C" fn swr_v1_os_file_record_open(
     update: PathUpdate,
     context: *mut c_void,
 ) -> c_int {
-    // SAFETY: live record, read before the descriptor-changing syscall.
-    let previous = unsafe { (*owner).fd };
     // SAFETY: a NUL-terminated path, as the caller promises.
-    let fd = file_open(previous, unsafe { CStr::from_ptr(path) }, flags, mode);
-    // SAFETY: caller lends exclusive access to the record.
-    unsafe { (*owner).fd = fd };
+    let fd = file_open(owner.fd, unsafe { CStr::from_ptr(path) }, flags, mode);
+    owner.fd = fd;
     // SAFETY: the complete caller-owned path bytes are readable.
     let bytes = unsafe { slice::from_raw_parts(path.cast::<u8>(), length) };
     let Some(path) = path_copy(bytes) else {
@@ -193,10 +175,8 @@ pub unsafe extern "C" fn swr_v1_os_file_record_open(
     if unsafe { update(context) } != 0 {
         return -1;
     }
-    // SAFETY: live exclusive record; native view update completed.
-    let record = unsafe { &mut *owner };
-    record.path = path;
-    record.flags = flags;
+    owner.path = path;
+    owner.flags = flags;
     c_int::from(fd != -1)
 }
 /// Copy assignment publishes fd/flags before the native string assignment.
@@ -234,17 +214,16 @@ pub unsafe extern "C" fn swr_v1_os_file_record_assign(
 }
 /// File read/write/pread/pwrite. Flags and descriptor are read directly from Rust state.
 /// # Safety
-/// Live owner; buffer denotes length writable bytes for reads/readable bytes for writes.
+/// Buffer denotes length writable bytes for reads/readable bytes for writes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_os_file_record_io(
-    owner: *const FileRecord,
+    owner: &FileRecord,
     operation: u32,
     buffer: *mut c_void,
     length: usize,
     offset: off_t,
 ) -> isize {
-    // SAFETY: live caller-owned record.
-    let fd = unsafe { (*owner).fd };
+    let fd = owner.fd;
     match operation {
         // SAFETY: caller supplies the writable span.
         0 => unsafe { libc::read(fd, buffer, length) },
@@ -258,26 +237,23 @@ pub unsafe extern "C" fn swr_v1_os_file_record_io(
     }
 }
 /// fsync, truncate, seek/set, seek/current and flock control operations.
-/// # Safety
-/// `owner` is live and the descriptor belongs to the caller.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_record_control(
-    owner: *const FileRecord,
+pub extern "C" fn swr_v1_os_file_record_control(
+    owner: &FileRecord,
     operation: u32,
     value: off_t,
 ) -> off_t {
-    // SAFETY: live caller-owned record.
-    let fd = unsafe { (*owner).fd };
+    let fd = owner.fd;
     match operation {
-        // SAFETY: syscall on the caller-owned descriptor.
+        // SAFETY: syscall on the record's descriptor.
         0 => off_t::from(unsafe { libc::fsync(fd) }),
-        // SAFETY: syscall on the caller-owned descriptor.
+        // SAFETY: syscall on the record's descriptor.
         1 => off_t::from(unsafe { libc::ftruncate(fd, value) }),
-        // SAFETY: syscall on the caller-owned descriptor.
+        // SAFETY: syscall on the record's descriptor.
         2 => unsafe { libc::lseek(fd, value, libc::SEEK_SET) },
-        // SAFETY: syscall on the caller-owned descriptor.
+        // SAFETY: syscall on the record's descriptor.
         3 => unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) },
-        // SAFETY: syscall on the caller-owned descriptor, native operation is an int.
+        // SAFETY: syscall on the record's descriptor, native operation is an int.
         4 => off_t::from(unsafe { libc::flock(fd, c_int::try_from(value).unwrap_or(-1)) }),
         _ => -1,
     }
@@ -326,10 +302,16 @@ mod tests {
             assert!(!owner.is_null());
             let data = b"record-owned IO";
             assert_eq!(
-                swr_v1_os_file_record_io(owner, 1, data.as_ptr().cast_mut().cast(), data.len(), 0),
+                swr_v1_os_file_record_io(
+                    &*owner,
+                    1,
+                    data.as_ptr().cast_mut().cast(),
+                    data.len(),
+                    0
+                ),
                 15
             );
-            assert_eq!(swr_v1_os_file_record_control(owner, 3, 0), 15);
+            assert_eq!(swr_v1_os_file_record_control(&*owner, 3, 0), 15);
             let mut received = [0; 15];
             assert_eq!(
                 (*owner).read_all(&mut received),
@@ -339,16 +321,16 @@ mod tests {
                 }
             );
             assert_eq!(&received, data);
-            assert_eq!(swr_v1_os_file_record_control(owner, 3, 0), 15);
-            let copy = swr_v1_os_file_record_clone(owner);
+            assert_eq!(swr_v1_os_file_record_control(&*owner, 3, 0), 15);
+            let copy = swr_v1_os_file_record_clone(&*owner);
             assert_eq!((*copy).path, path.as_bytes());
-            assert_eq!(swr_v1_os_file_record_fd(copy, true), fd);
-            swr_v1_os_file_record_free(copy);
+            assert_eq!(swr_v1_os_file_record_fd(&mut *copy, true), fd);
+            swr_v1_os_file_record_free(Some(Box::from_raw(copy)));
             assert_ne!(libc::fcntl(fd, libc::F_GETFD), -1);
-            assert!(swr_v1_os_file_record_close(owner));
-            assert!(!swr_v1_os_file_record_close(owner));
-            assert_eq!(swr_v1_os_file_record_fd(owner, false), -1);
-            swr_v1_os_file_record_free(owner);
+            assert!(swr_v1_os_file_record_close(&mut *owner));
+            assert!(!swr_v1_os_file_record_close(&mut *owner));
+            assert_eq!(swr_v1_os_file_record_fd(&mut *owner, false), -1);
+            swr_v1_os_file_record_free(Some(Box::from_raw(owner)));
             assert_eq!(libc::fcntl(fd, libc::F_GETFD), -1);
             libc::unlink(path.as_ptr());
         }
@@ -361,7 +343,7 @@ mod tests {
             let owner = swr_v1_os_file_record_new(fd, c"old".as_ptr(), 3);
             assert_eq!(
                 swr_v1_os_file_record_open(
-                    owner,
+                    &mut *owner,
                     path.as_ptr(),
                     path.as_bytes().len(),
                     libc::O_RDWR | libc::O_APPEND,
@@ -376,7 +358,7 @@ mod tests {
             assert_ne!((*owner).fd, -1);
             assert_eq!(
                 swr_v1_os_file_record_open(
-                    owner,
+                    &mut *owner,
                     path.as_ptr(),
                     path.as_bytes().len(),
                     libc::O_RDWR | libc::O_APPEND,
@@ -389,8 +371,8 @@ mod tests {
             assert_eq!((*owner).path, path.as_bytes());
             assert_eq!((*owner).flags, libc::O_RDWR | libc::O_APPEND);
             assert_eq!((*owner).write_all(b"ab").done, 2);
-            assert_eq!(swr_v1_os_file_record_control(owner, 3, 0), 2);
-            swr_v1_os_file_record_free(owner);
+            assert_eq!(swr_v1_os_file_record_control(&*owner, 3, 0), 2);
+            swr_v1_os_file_record_free(Some(Box::from_raw(owner)));
             libc::unlink(path.as_ptr());
         }
     }
@@ -422,9 +404,9 @@ mod tests {
                 0
             );
             assert_eq!((*target).path, first_path.as_bytes());
-            swr_v1_os_file_record_fd(target, true);
-            swr_v1_os_file_record_free(target);
-            swr_v1_os_file_record_free(source);
+            swr_v1_os_file_record_fd(&mut *target, true);
+            swr_v1_os_file_record_free(Some(Box::from_raw(target)));
+            swr_v1_os_file_record_free(Some(Box::from_raw(source)));
             libc::close(second_fd);
             libc::unlink(first_path.as_ptr());
             libc::unlink(second_path.as_ptr());
@@ -442,9 +424,11 @@ mod tests {
             let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
             assert!(fd >= 0);
             let owner = swr_v1_os_file_record_new(fd, ptr::null(), 0);
-            assert!(swr_v1_os_file_record_close(owner));
-            assert_eq!(swr_v1_os_file_record_fd(owner, false), -1);
-            crate::isolated_process::replacement_survives(fd, || swr_v1_os_file_record_free(owner));
+            assert!(swr_v1_os_file_record_close(&mut *owner));
+            assert_eq!(swr_v1_os_file_record_fd(&mut *owner, false), -1);
+            crate::isolated_process::replacement_survives(fd, || {
+                swr_v1_os_file_record_free(Some(Box::from_raw(owner)));
+            });
         }
     }
 }

@@ -1713,14 +1713,8 @@ unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
         .iter()
         .fold(0, |events, kind| events | 1 << kind);
     // SAFETY: the live client; its callbacks take no object.
-    unsafe {
-        swr_v1_clients_listen(
-            CLEAN_CLIENT.load(Ordering::SeqCst),
-            ptr::null_mut(),
-            events,
-            clean_client_event,
-        )
-    };
+    let client = unsafe { &*CLEAN_CLIENT.load(Ordering::SeqCst) };
+    swr_v1_clients_listen(client, ptr::null_mut(), events, clean_client_event);
     let host = CString::new(TEST_HOST).unwrap();
     let connected = client_run(Op::Connect, |call| {
         call.data = host.as_ptr();

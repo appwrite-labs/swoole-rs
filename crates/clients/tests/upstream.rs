@@ -256,8 +256,7 @@ fn rust_assign(kind: c_int, host: &[u8], port: c_int, resolve_name: bool) -> ups
     }
     trace.len = address.len;
     trace.kind = address.kind;
-    // SAFETY: `address` is a whole record.
-    trace.loopback = c_int::from(unsafe { swr_v1_clients_address_loopback(&raw const address) });
+    trace.loopback = c_int::from(swr_v1_clients_address_loopback(&address));
     // SAFETY: `addr` holds `size` bytes.
     let stored =
         unsafe { std::slice::from_raw_parts((&raw const address.addr).cast::<u8>(), size) };
@@ -353,8 +352,7 @@ fn check_loopback(bytes: &[u8; 16]) -> usize {
         unsafe { field.copy_from_nonoverlapping(bytes.as_ptr(), length) };
         // SAFETY: `bytes` holds 16 bytes.
         let expected = unsafe { upstream::loopback(kind, bytes.as_ptr()) };
-        // SAFETY: `address` is a whole record.
-        let actual = unsafe { swr_v1_clients_address_loopback(&raw const address) };
+        let actual = swr_v1_clients_address_loopback(&address);
         assert_eq!(actual, expected, "{bytes:?} {kind}");
     }
     8
@@ -949,8 +947,7 @@ fn ip_text_matches_upstream() {
             };
             let expected = (bytes(&text[..length]), errno(), *address);
             set_errno(17);
-            // SAFETY: `address` holds the 16 bytes either version reads.
-            let actual = unsafe { swr_v1_clients_ip_text(version, address.as_ptr()) };
+            let actual = swr_v1_clients_ip_text(version, &address[..]);
             let length = usize::try_from(actual.length).unwrap_or(0);
             assert_eq!(
                 (actual.bytes[..length].to_vec(), errno(), *address),

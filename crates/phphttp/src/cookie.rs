@@ -110,7 +110,7 @@ impl Cookie {
             let mut action = Action::default();
             // SAFETY: live, disjoint locals; the fields outlive the call.
             if unsafe {
-                swr_v1_httpbindings_cookie(&raw const input, &raw mut phase, &raw mut action)
+                swr_v1_httpbindings_cookie(Some(&input), Some(&mut phase), Some(&mut action))
             } != 0
             {
                 return None;

@@ -420,7 +420,7 @@ fn proxy(
 /// client's `SSLContext` (crates/tls).
 pub(crate) fn apply_ssl(cli: Cli, settings: *const zval) {
     // SAFETY: a live client.
-    let owner = unsafe { swoole_rs_clients::client::swr_v1_clients_ssl_context(cli.0) }
+    let owner = swoole_rs_clients::client::swr_v1_clients_ssl_context(unsafe { &*cli.0 })
         .cast::<tls::OwnedTlsContext>();
     if owner.is_null() {
         return;

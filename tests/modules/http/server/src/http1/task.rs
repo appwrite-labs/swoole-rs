@@ -122,7 +122,7 @@ impl TaskHost for TaskPool {
 
     fn set_timeout(&mut self, timeout: f64) {
         // SAFETY: as above.
-        unsafe { socket_pair::set_timeout(self.pipe, timeout) };
+        socket_pair::set_timeout(unsafe { &mut *self.pipe }, timeout);
     }
 
     fn read_notify(&mut self) -> isize {

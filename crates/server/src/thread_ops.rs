@@ -204,12 +204,8 @@ pub(crate) unsafe fn answer(
                 let ip = unsafe { pkt.socket_addr.addr.inet_v4.sin_addr.s_addr };
                 c_long::from(ip.cast_signed())
             } else {
-                // SAFETY: the packet's live address.
-                let host = unsafe {
-                    swoole_rs_clients::address::swr_v1_clients_address_host(
-                        &raw const pkt.socket_addr,
-                    )
-                };
+                let host =
+                    swoole_rs_clients::address::swr_v1_clients_address_host(&pkt.socket_addr);
                 let length = pkt.socket_addr.len as usize;
                 if host.is_null() || length == 0 {
                     0
@@ -484,7 +480,8 @@ pub(crate) unsafe fn answer(
         OP_RT_FRONT => {
             let buffer = event_socket(ctx)?.read(|s| s.output.out_buffer);
             // SAFETY: the socket's live, non-empty output buffer.
-            let front = unsafe { swoole_rs_buffer::cpp::swr_cpp_buffer_typed_front(buffer.cast()) };
+            let front =
+                swoole_rs_buffer::cpp::swr_cpp_buffer_typed_front(unsafe { &*buffer.cast() });
             ctx.front = front.data.cast();
             ctx.front_length = front.length as usize;
             0

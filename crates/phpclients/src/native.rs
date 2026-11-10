@@ -807,13 +807,11 @@ pub(crate) fn net_address(socket: Net<'_>) -> (CString, c_int) {
 
 /// The address and port of `address`: `get_addr()` and `get_port()`.
 pub(crate) fn address(address: &SocketAddress) -> (&CStr, c_int) {
-    // SAFETY: a live address; the text lives until this thread's next
-    // presentation, after the caller copies it.
-    let host = unsafe { swr_v1_clients_address_host(address) };
-    // SAFETY: as above, NUL-terminated.
+    let host = swr_v1_clients_address_host(address);
+    // SAFETY: NUL-terminated text, live until this thread's next presentation,
+    // after the caller copies it.
     let host = unsafe { CStr::from_ptr(host) };
-    // SAFETY: as above.
-    (host, unsafe { swr_v1_clients_address_port(address) })
+    (host, swr_v1_clients_address_port(address))
 }
 
 /// `swoole_error_log(SW_LOG_WARNING, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, ...)`

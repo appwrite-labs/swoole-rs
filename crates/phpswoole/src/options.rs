@@ -183,16 +183,26 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     });
     number(c"log_level", &|level| swoole_set_log_level(int(level)));
     text_option(options, c"log_date_format", |format, _| {
-        // SAFETY: the live logger and a NUL-terminated format.
-        unsafe { swr_v1_logger_set_date_format(logger(), format) };
+        // SAFETY: the live logger.
+        let logger = unsafe { &*logger() };
+        // SAFETY: a NUL-terminated format.
+        unsafe { swr_v1_logger_set_date_format(logger, format) };
     });
     flag(c"log_date_with_microseconds", &|on| {
         // SAFETY: the live logger.
-        unsafe { swr_v1_logger_set(logger(), LoggerSetting::Microseconds, c_int::from(on)) };
+        swr_v1_logger_set(
+            unsafe { &*logger() },
+            LoggerSetting::Microseconds,
+            c_int::from(on),
+        );
     });
     number(c"log_rotation", &|rotation| {
         // SAFETY: the live logger.
-        unsafe { swr_v1_logger_set(logger(), LoggerSetting::Rotation, int(rotation)) };
+        swr_v1_logger_set(
+            unsafe { &*logger() },
+            LoggerSetting::Rotation,
+            int(rotation),
+        );
     });
     if let Some(value) = get(options, c"display_errors") {
         globals().display_errors.set(truthy(value) != 0);

@@ -461,8 +461,12 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
                 unsafe { slot.call(serv, worker.cast()) };
             }
         }
-        // SAFETY: the context's live worker and exit status.
-        OP_REPORT_ERROR => unsafe { worker_report_error(worker, ctx.status) },
+        OP_REPORT_ERROR => {
+            // SAFETY: the context's live worker.
+            let worker = unsafe { swoole_rs_process::worker_record::Worker::new(worker) };
+            // SAFETY: the context's live exit status.
+            worker_report_error(worker, unsafe { &*ctx.status });
+        }
         OP_CALL_WORKER_ERROR => {
             // SAFETY: the context's live server, worker and exit status.
             unsafe { entry::call_worker_error_callback(serv, worker.cast(), ctx.status.cast()) };

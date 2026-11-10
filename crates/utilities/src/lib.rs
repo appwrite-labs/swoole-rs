@@ -159,15 +159,11 @@ pub unsafe extern "C" fn swr_v1_utils_hash(
 }
 
 /// Native-compatible process-shared spinlock. Unlock remains the native release store.
-/// # Safety
-/// Lock is a valid aligned native u32 atomic, accessed atomically by all participants.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_spinlock(lock: *mut u32, cpus: u32, backoff_limit: u32) {
-    if lock.is_null() || !(lock as usize).is_multiple_of(std::mem::align_of::<AtomicU32>()) {
+pub extern "C" fn swr_v1_utils_spinlock(lock: Option<&AtomicU32>, cpus: u32, backoff_limit: u32) {
+    let Some(lock) = lock else {
         return;
-    }
-    // SAFETY: non-null and aligned (checked above); a live u32 accessed only atomically.
-    let lock = unsafe { &*lock.cast::<AtomicU32>() };
+    };
     let acquire = || {
         lock.load(Ordering::Relaxed) == 0
             && lock
@@ -196,43 +192,37 @@ pub unsafe extern "C" fn swr_v1_utils_spinlock(lock: *mut u32, cpus: u32, backof
 }
 
 /// Futex wait on the native atomic utility's word (`HAVE_FUTEX` builds only).
-/// # Safety
-/// Word is aligned, live u32 atomic storage shared only through atomic accesses.
 #[cfg(target_os = "linux")]
+#[must_use]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_wait(word: *mut u32, timeout: f64) -> i32 {
-    // SAFETY: forwards the caller's aligned, live, atomic-only futex word.
-    unsafe { swoole_rs_locks::swr_v1_locks_wait(word, timeout) }
+pub extern "C" fn swr_v1_utils_wait(word: Option<&AtomicU32>, timeout: f64) -> i32 {
+    swoole_rs_locks::swr_v1_locks_wait(word, timeout)
 }
 
 /// Futex wake for the native atomic utility's waiters.
-/// # Safety
-/// Word has the same alignment, lifetime and atomic-access requirements as wait.
 #[cfg(target_os = "linux")]
+#[must_use]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_wakeup(word: *mut u32, n: i32) -> i32 {
-    // SAFETY: forwards the caller's aligned, live, atomic-only futex word.
-    unsafe { swoole_rs_locks::swr_v1_locks_wakeup(word, n) }
+pub extern "C" fn swr_v1_utils_wakeup(word: Option<&AtomicU32>, n: i32) -> i32 {
+    swoole_rs_locks::swr_v1_locks_wakeup(word, n)
 }
 
 /// Return the exact pinned pretty-function substring as a byte span.
 /// # Safety
-/// Input is borrowed/readable; both outputs are aligned, writable and disjoint.
+/// Input is borrowed/readable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_utils_pretty_range(
     data: *const u8,
     length: usize,
     strip: u8,
-    begin: *mut usize,
-    count: *mut usize,
+    begin: Option<&mut usize>,
+    count: Option<&mut usize>,
 ) -> i32 {
-    if begin.is_null() || count.is_null() {
+    let (Some(begin), Some(count)) = (begin, count) else {
         return -1;
-    }
-    // SAFETY: non-null (checked above), aligned, writable outputs.
-    unsafe { begin.write(0) };
-    // SAFETY: as above.
-    unsafe { count.write(0) };
+    };
+    *begin = 0;
+    *count = 0;
     if length > isize::MAX as usize || (data.is_null() && length != 0) {
         return -1;
     }
@@ -258,10 +248,8 @@ pub unsafe extern "C" fn swr_v1_utils_pretty_range(
             .and_then(|head| head.windows(2).rposition(|w| w == b"::"));
         start += prior.unwrap_or(last) + 2;
     }
-    // SAFETY: non-null (checked above), aligned, writable outputs.
-    unsafe { begin.write(start) };
-    // SAFETY: as above.
-    unsafe { count.write(bracket - start) };
+    *begin = start;
+    *count = bracket - start;
     0
 }
 
@@ -454,9 +442,7 @@ mod tests {
             for _ in 0..4 {
                 scope.spawn(|| {
                     for _ in 0..5000 {
-                        unsafe {
-                            swr_v1_utils_spinlock(lock.as_ptr(), 4, 1024);
-                        }
+                        swr_v1_utils_spinlock(Some(&lock), 4, 1024);
                         value.store(value.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
                         lock.store(0, Ordering::SeqCst);
                     }

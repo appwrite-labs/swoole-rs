@@ -312,13 +312,11 @@ fn address(socket: Socket) -> (&'static CStr, c_int) {
         return (c"", 0);
     };
     network.read(|record| {
-        let info = &raw const record.info;
-        // SAFETY: a live address.
-        let host = unsafe { swr_v1_clients_address_host(info) };
+        let info = &record.info;
+        let host = swr_v1_clients_address_host(info);
         // SAFETY: NUL-terminated text, live until the next call.
         let host = unsafe { CStr::from_ptr(host) };
-        // SAFETY: a live address.
-        (host, unsafe { swr_v1_clients_address_port(info) })
+        (host, swr_v1_clients_address_port(info))
     })
 }
 
@@ -651,10 +649,8 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let compression = u32::from(COMPRESSION.load(Relaxed));
     loop {
         let mut action = Action::default();
-        // SAFETY: a local cursor and output.
-        if unsafe {
-            swr_v1_httpbindings_settings(&raw mut cursor, compression, found, &raw mut action)
-        } != 0
+        if swr_v1_httpbindings_settings(Some(&mut cursor), compression, found, Some(&mut action))
+            != 0
         {
             return Ok(None);
         }
@@ -701,8 +697,8 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         set_error: start_set_error,
         fail: start_fail,
     };
-    // SAFETY: the host below and the local policy table.
-    let accepted = unsafe { swr_v1_httpbindings_accept_loop(&raw const host, &raw const errors) };
+    // SAFETY: the host's callbacks take its data, `start`.
+    let accepted = unsafe { swr_v1_httpbindings_accept_loop(Some(&host), Some(&errors)) };
     if start.bailed.get() {
         return Err(bailout::Bailout);
     }
@@ -796,12 +792,11 @@ unsafe extern "C" fn start_running(data: *mut c_void) -> bool {
 
 /// Accept a connection and serve it with `onAccept` in a new coroutine: its
 /// id, or 0.
-unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i64 {
+unsafe extern "C" fn start_accept(data: *mut c_void, connected: &mut bool) -> i64 {
     let start = start_of(data);
     // SAFETY: the live listener, in `start`'s coroutine.
     let conn = unsafe { co::accept(start.socket, 0.0) };
-    // SAFETY: the loop's output.
-    unsafe { *connected = !conn.is_null() };
+    *connected = !conn.is_null();
     if conn.is_null() {
         return 0;
     }
@@ -839,10 +834,9 @@ unsafe extern "C" fn start_accept(data: *mut c_void, connected: *mut bool) -> i6
     cid
 }
 
-unsafe extern "C" fn start_error(data: *mut c_void, message: *mut *const c_char) -> c_int {
+unsafe extern "C" fn start_error(data: *mut c_void, message: &mut *const c_char) -> c_int {
     let (code, text) = socket_error(start_of(data).socket);
-    // SAFETY: the loop's output.
-    unsafe { *message = text };
+    *message = text;
     code
 }
 

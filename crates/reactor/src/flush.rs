@@ -37,8 +37,9 @@ unsafe fn empty(buffer: *mut Buffer) -> bool {
         return true;
     }
     let (mut length, mut count) = (0u32, 0usize);
-    // SAFETY: as the caller promises; both outputs are local.
-    unsafe { swr_v1_buffer_stats(buffer, &raw mut length, &raw mut count) != 0 || count == 0 }
+    // SAFETY: as the caller promises.
+    let buffer = unsafe { buffer.as_ref() };
+    swr_v1_buffer_stats(buffer, Some(&mut length), Some(&mut count)) != 0 || count == 0
 }
 
 /// `Reactor::_writable_callback`: send queued entries until the queue empties or a send
@@ -142,7 +143,10 @@ mod tests {
                 .with_borrow_mut(|n| (n.sends.remove(0), n.buffer, n.close_wait_on_fail, n.output));
             if result >= 0 {
                 let mut detached = TypedDetached::default();
-                unsafe { swr_v1_buffer_typed_pop(buffer as *mut Buffer, &raw mut detached) };
+                swr_v1_buffer_typed_pop(
+                    unsafe { (buffer as *mut Buffer).as_mut() },
+                    Some(&mut detached),
+                );
             } else if close_wait {
                 unsafe { (*(output as *mut SocketOutput)).close_wait = 1 };
             }
@@ -198,9 +202,12 @@ mod tests {
         close_wait: bool,
     ) -> (c_int, Vec<&'static str>) {
         let mut buffer = std::ptr::null_mut();
-        assert_eq!(unsafe { swr_v1_buffer_typed_create(1, &raw mut buffer) }, 0);
+        assert_eq!(swr_v1_buffer_typed_create(1, Some(&mut buffer)), 0);
         for _ in 0..entries {
-            assert_eq!(unsafe { swr_v1_buffer_append(buffer, b"x".as_ptr(), 1) }, 0);
+            assert_eq!(
+                unsafe { swr_v1_buffer_append(buffer.as_mut(), b"x".as_ptr(), 1) },
+                0
+            );
         }
         NATIVE.with_borrow_mut(|n| {
             *n = Native {
@@ -297,7 +304,10 @@ mod tests {
             });
             let mut detached = TypedDetached::default();
             assert_eq!(
-                unsafe { swr_v1_buffer_typed_pop(buffer as *mut Buffer, &raw mut detached) },
+                swr_v1_buffer_typed_pop(
+                    unsafe { (buffer as *mut Buffer).as_mut() },
+                    Some(&mut detached)
+                ),
                 0
             );
         }
@@ -345,9 +355,12 @@ mod tests {
 
         fn run(kinds: &[c_int], timer: bool, drain: bool) -> Vec<String> {
             let mut buffer = std::ptr::null_mut();
-            assert_eq!(unsafe { swr_v1_buffer_typed_create(1, &raw mut buffer) }, 0);
+            assert_eq!(swr_v1_buffer_typed_create(1, Some(&mut buffer)), 0);
             for _ in kinds {
-                assert_eq!(unsafe { swr_v1_buffer_append(buffer, b"x".as_ptr(), 1) }, 0);
+                assert_eq!(
+                    unsafe { swr_v1_buffer_append(buffer.as_mut(), b"x".as_ptr(), 1) },
+                    0
+                );
             }
             FACADE.with_borrow_mut(|f| {
                 *f = Facade {

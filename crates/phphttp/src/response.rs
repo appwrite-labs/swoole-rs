@@ -310,10 +310,7 @@ fn send_file(call: &Call) {
             return None;
         }
         let mut length = 0;
-        // SAFETY: a writable local.
-        match unsafe {
-            swr_v1_httpbindings_file_range(stat.st_size, offset, requested, &raw mut length)
-        } {
+        match swr_v1_httpbindings_file_range(stat.st_size, offset, requested, Some(&mut length)) {
             0 => {}
             1 | 3 => {
                 host::notice(&format!(

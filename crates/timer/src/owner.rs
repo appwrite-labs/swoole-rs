@@ -511,15 +511,6 @@ unsafe extern "C-unwind" fn destroyed(reactor: *mut c_void) {
     crate::wrapper::swoole_timer_free();
 }
 
-/// The record behind `timer`.
-///
-/// # Safety
-/// `timer` is a live timer from `swr_v1_timer_owner_new`.
-unsafe fn owner<'a>(timer: *const Owner) -> &'a Owner {
-    // SAFETY: as the caller promises.
-    unsafe { &*timer }
-}
-
 /// `new Timer(manually_trigger)`.
 #[unsafe(no_mangle)]
 extern "C-unwind" fn swr_v1_timer_owner_new(manually_trigger: bool) -> *mut Owner {
@@ -533,117 +524,72 @@ extern "C-unwind" fn swr_v1_timer_owner_new(manually_trigger: bool) -> *mut Owne
 #[unsafe(no_mangle)]
 pub(crate) unsafe extern "C-unwind" fn swr_v1_timer_owner_free(timer: *mut Owner) {
     // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.destroy();
+    unsafe { &*timer }.destroy();
     // SAFETY: Owner::create's allocation, no longer referenced.
     drop(unsafe { Box::from_raw(timer) });
 }
 
 /// The timer's queue, for the C++ view's reads.
-///
-/// # Safety
-/// `timer` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_owner_queue(timer: *const Owner) -> *mut Queue {
-    // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.queue.as_ptr()
+pub extern "C" fn swr_v1_timer_owner_queue(timer: &Owner) -> *mut Queue {
+    timer.queue.as_ptr()
 }
 
 /// `Timer::get_reactor()`.
-///
-/// # Safety
-/// `timer` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_owner_reactor(timer: *const Owner) -> *mut c_void {
-    // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.reactor.get()
+pub extern "C" fn swr_v1_timer_owner_reactor(timer: &Owner) -> *mut c_void {
+    timer.reactor.get()
 }
 
 /// `Timer::reinit(manually_trigger)`.
-///
-/// # Safety
-/// `timer` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_timer_owner_reinit(
-    timer: *mut Owner,
-    manually_trigger: bool,
-) {
-    // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.reinit(manually_trigger);
+pub extern "C-unwind" fn swr_v1_timer_owner_reinit(timer: &Owner, manually_trigger: bool) {
+    timer.reinit(manually_trigger);
 }
 
 /// `Timer::add`: the new node, or null with a warning.
-///
-/// # Safety
-/// `timer` is live.
 #[unsafe(no_mangle)]
-unsafe extern "C-unwind" fn swr_v1_timer_owner_add(
-    timer: *mut Owner,
+extern "C-unwind" fn swr_v1_timer_owner_add(
+    timer: &Owner,
     msec: c_long,
     persistent: bool,
     data: *mut c_void,
     callback: Option<Callback>,
 ) -> *mut TimerNode {
-    // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.add(msec, persistent, TimerNode::new(callback, data))
+    timer.add(msec, persistent, TimerNode::new(callback, data))
 }
 
 /// `Timer::remove(id)`.
-///
-/// # Safety
-/// `timer` is live.
 #[unsafe(no_mangle)]
-unsafe extern "C-unwind" fn swr_v1_timer_owner_remove(timer: *mut Owner, id: c_long) -> bool {
-    // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.remove(id)
+extern "C-unwind" fn swr_v1_timer_owner_remove(timer: &Owner, id: c_long) -> bool {
+    timer.remove(id)
 }
 
 /// `Timer::update(node)`.
-///
-/// # Safety
-/// `timer` is live; `node` is null or one of its nodes.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn swr_v1_timer_owner_update(timer: *mut Owner, node: *const TimerNode) {
-    // SAFETY: null or a live node, as the caller promises.
-    if let Some(node) = unsafe { node.as_ref() } {
-        // SAFETY: as the caller promises.
-        unsafe { owner(timer) }.update(node);
+extern "C" fn swr_v1_timer_owner_update(timer: &Owner, node: Option<&TimerNode>) {
+    if let Some(node) = node {
+        timer.update(node);
     }
 }
 
 /// `Timer::delay(node, delay_ms)`.
-///
-/// # Safety
-/// `timer` is live; `node` is null or one of its nodes.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn swr_v1_timer_owner_delay(
-    timer: *mut Owner,
-    node: *const TimerNode,
-    delay_ms: c_long,
-) {
-    // SAFETY: null or a live node, as the caller promises.
-    if let Some(node) = unsafe { node.as_ref() } {
-        // SAFETY: as the caller promises.
-        unsafe { owner(timer) }.delay(node, delay_ms);
+extern "C" fn swr_v1_timer_owner_delay(timer: &Owner, node: Option<&TimerNode>, delay_ms: c_long) {
+    if let Some(node) = node {
+        timer.delay(node, delay_ms);
     }
 }
 
 /// `Timer::select()`.
-///
-/// # Safety
-/// `timer` is live.
 #[unsafe(no_mangle)]
-unsafe extern "C-unwind" fn swr_v1_timer_owner_select(timer: *mut Owner) {
-    // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.select();
+extern "C-unwind" fn swr_v1_timer_owner_select(timer: &Owner) {
+    timer.select();
 }
 
 /// `Timer::abandon_selection(bailout)`: only after a caught Zend bailout whose
 /// selection will never resume.
-///
-/// # Safety
-/// `timer` is live.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn swr_v1_timer_owner_abandon(timer: *mut Owner, bailout: Option<Bailout>) {
-    // SAFETY: as the caller promises.
-    unsafe { owner(timer) }.abandon(bailout);
+extern "C" fn swr_v1_timer_owner_abandon(timer: &Owner, bailout: Option<Bailout>) {
+    timer.abandon(bailout);
 }

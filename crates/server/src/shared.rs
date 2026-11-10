@@ -131,11 +131,7 @@ pub unsafe fn swr_v1_server_shared_init(storage: *mut core::ffi::c_void) {
 /// # Safety
 /// The state is live and native callers keep the shared allocation mapped for this operation.
 #[inline(always)]
-pub(crate) unsafe fn native_fact(
-    state: *const crate::ServerState,
-    op: u32,
-    arg: u64,
-) -> Option<u64> {
+pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_IS_STARTED, OP_LC_CLAIM_START, OP_LC_START_TIME, OP_MANAGER_PID, OP_MASTER_PID,
         OP_MAXFD, OP_MINFD, OP_SESSION_ROUND, OP_SET_MAXFD, OP_SET_MINFD, OP_ST_GS_CONCURRENCY,
@@ -160,8 +156,7 @@ pub(crate) unsafe fn native_fact(
     ) {
         return None;
     }
-    // SAFETY: the caller lends a live state.
-    let gs = unsafe { &*state }.config_ref().gs.cast::<ServerCounters>();
+    let gs = state.config_ref().gs.cast::<ServerCounters>();
     if gs.is_null() {
         return None;
     }
@@ -356,15 +351,15 @@ mod tests {
             if pid == 0 {
                 // Only lock-free atomics/plain loaned cells and _exit run after
                 // fork; no Rust allocation, callback, destructor or test assertion.
-                native_fact(state, OP_ST_GS_CONCURRENCY_SUB, 2);
-                native_fact(state, OP_SET_MAXFD, 123);
+                native_fact(&*state, OP_ST_GS_CONCURRENCY_SUB, 2);
+                native_fact(&*state, OP_SET_MAXFD, 123);
                 libc::_exit(0);
             }
             let mut status = 0;
             assert_eq!(libc::waitpid(pid, &raw mut status, 0), pid);
             assert_eq!(status, 0);
-            assert_eq!(native_fact(state, OP_ST_GS_CONCURRENCY, 0), Some(5));
-            assert_eq!(native_fact(state, OP_MAXFD, 0), Some(123));
+            assert_eq!(native_fact(&*state, OP_ST_GS_CONCURRENCY, 0), Some(5));
+            assert_eq!(native_fact(&*state, OP_MAXFD, 0), Some(123));
             swr_v1_server_state_free(state);
             assert_eq!(libc::munmap(mapping, 4096), 0);
         }

@@ -154,7 +154,7 @@ fn stream_event(kind: u8) -> bool {
 /// `buffer` is null or a live `Buffer`.
 unsafe fn empty(buffer: *mut c_void) -> bool {
     // SAFETY: per the caller.
-    buffer.is_null() || unsafe { swr_cpp_buffer_empty(buffer.cast::<CppBuffer>()) }
+    buffer.is_null() || swr_cpp_buffer_empty(unsafe { &*buffer.cast::<CppBuffer>() })
 }
 
 /// `buffer ? buffer->length() : 0`.
@@ -166,7 +166,7 @@ unsafe fn length(buffer: *mut c_void) -> u32 {
         return 0;
     }
     // SAFETY: per the caller.
-    unsafe { swr_cpp_buffer_length(buffer.cast::<CppBuffer>()) }
+    swr_cpp_buffer_length(unsafe { &*buffer.cast::<CppBuffer>() })
 }
 
 /// The context's objects, each live when the op reading it runs.
@@ -237,7 +237,7 @@ impl Objects<'_> {
     /// The TLS port's `SSLContext` view.
     fn ssl(&self) -> OwnedTlsPrepared {
         // SAFETY: the ops reading it run on a TLS port, whose context is live.
-        unsafe { swr_v1_tls_owner_view(self.port().ssl_context) }
+        swr_v1_tls_owner_view(unsafe { &*self.port().ssl_context })
     }
     fn ssl_fields(&self) -> &OwnedTlsFields {
         // SAFETY: the owner's fields live as long as the port's reference.
@@ -460,14 +460,12 @@ fn error(level: c_int, code: E, origin: &core::ffi::CStr, message: core::fmt::Ar
 #[inline(always)]
 pub(crate) unsafe fn answer(
     ctx: *mut ReactorContext,
-    state: *const ServerState,
+    state: &ServerState,
     op: u32,
     arg: u64,
 ) -> Option<u64> {
     // SAFETY: per the caller; nothing else touches the context during the op.
     let ctx = unsafe { &mut *ctx };
-    // SAFETY: per the caller.
-    let state = unsafe { &*state };
     let mut o = Objects { ctx, state };
     Some(match op {
         LOG_RECVFROM => {
@@ -538,8 +536,7 @@ pub(crate) unsafe fn answer(
         }
         OP_SSL_VERIFY => {
             let allow_self_signed = o.ssl_fields().allow_self_signed != 0;
-            // SAFETY: a TLS socket's live record.
-            u64::from(unsafe { tls::socket_ssl_verify(o.ctx.sock, allow_self_signed) })
+            u64::from(o.read_sock(|sock| tls::socket_ssl_verify(sock, allow_self_signed)))
         }
         OP_CERT_TASK => {
             // SAFETY: OP_PEER_CERT filled this thread's live buffer.
@@ -861,7 +858,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_RT_POP => {
             let buffer = o.event_socket()?.read(|s| s.output.out_buffer);
             // SAFETY: the event socket's live buffer, which holds the front.
-            unsafe { swr_cpp_buffer_pop(buffer.cast()) };
+            swr_cpp_buffer_pop(unsafe { &*buffer.cast() });
             0
         }
         OP_WR_FRONT => {
@@ -871,7 +868,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 return Some(0);
             }
             // SAFETY: a live, non-empty buffer.
-            1 + u64::from(unsafe { swr_cpp_buffer_typed_front(buffer.cast()) }.kind)
+            1 + u64::from(swr_cpp_buffer_typed_front(unsafe { &*buffer.cast() }).kind)
         }
         OP_CC_QUEUE_CLOSE => {
             let sock = o.sock()?;
@@ -881,7 +878,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 sock.edit(|s| s.output.out_buffer = buffer);
             }
             // SAFETY: the socket's live output buffer.
-            unsafe { swr_cpp_buffer_typed_close(buffer.cast()) };
+            swr_cpp_buffer_typed_close(unsafe { &*buffer.cast() });
             o.conn().close_queued = 1;
             0
         }

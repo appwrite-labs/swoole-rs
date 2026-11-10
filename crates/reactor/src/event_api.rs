@@ -215,7 +215,7 @@ pub unsafe extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
     // SAFETY: as the caller promises.
     let registry = unsafe { prepared(current()) }.registry;
     // SAFETY: the live reactor's registry.
-    unsafe { crate::swr_v1_reactor_registry_get(registry, fd) }
+    crate::swr_v1_reactor_registry_get(unsafe { registry.as_ref() }, fd)
 }
 
 /// `int swoole_event_wait()`: run the loop unless it may already exit, then free it.

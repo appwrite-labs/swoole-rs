@@ -180,23 +180,18 @@ fn illegal(bytes: &[u8], name: bool) -> bool {
 /// Select one native effect, observing current fields anew after every effect.
 ///
 /// # Safety
-/// Input/output/phase must be initialized, valid, disjoint objects; each nonempty
-/// field spans initialized readable bytes for this call. No pointer is retained.
+/// Each nonempty field of `input` spans initialized readable bytes for this call. No
+/// pointer is retained.
 #[expect(
     clippy::too_many_lines,
     reason = "a decision table, one arm per state; it goes when the operation moves into Rust whole"
 )]
+#[must_use]
 pub unsafe fn swr_v1_httpbindings_cookie(
-    input: *const CookieInput,
-    phase: *mut u32,
-    output: *mut Action,
+    input: Option<&CookieInput>,
+    phase: Option<&mut u32>,
+    output: Option<&mut Action>,
 ) -> i32 {
-    // SAFETY: `input` is null or initialized, aligned and lent for this call.
-    let input = unsafe { input.as_ref() };
-    // SAFETY: `phase` is null or aligned, writable and disjoint from the other objects.
-    let phase = unsafe { phase.as_mut() };
-    // SAFETY: `output` is null or aligned, writable and disjoint from the other objects.
-    let output = unsafe { output.as_mut() };
     let (Some(input), Some(phase), Some(output)) = (input, phase, output) else {
         return -1;
     };
@@ -388,19 +383,15 @@ mod tests {
         let input = input();
         unsafe {
             assert_eq!(
-                swr_v1_httpbindings_cookie(core::ptr::null(), &raw mut phase, &raw mut action),
+                swr_v1_httpbindings_cookie(None, Some(&mut phase), Some(&mut action)),
                 -1
             );
             assert_eq!(
-                swr_v1_httpbindings_cookie(
-                    &raw const input,
-                    core::ptr::null_mut(),
-                    &raw mut action
-                ),
+                swr_v1_httpbindings_cookie(Some(&input), None, Some(&mut action)),
                 -1
             );
             assert_eq!(
-                swr_v1_httpbindings_cookie(&raw const input, &raw mut phase, core::ptr::null_mut()),
+                swr_v1_httpbindings_cookie(Some(&input), Some(&mut phase), None),
                 -1
             );
         }
@@ -414,7 +405,7 @@ mod tests {
         input.fields[0].length = 1;
         assert_eq!(
             unsafe {
-                swr_v1_httpbindings_cookie(&raw const input, &raw mut phase, &raw mut action)
+                swr_v1_httpbindings_cookie(Some(&input), Some(&mut phase), Some(&mut action))
             },
             -1
         );
@@ -424,7 +415,7 @@ mod tests {
         };
         assert_eq!(
             unsafe {
-                swr_v1_httpbindings_cookie(&raw const input, &raw mut phase, &raw mut action)
+                swr_v1_httpbindings_cookie(Some(&input), Some(&mut phase), Some(&mut action))
             },
             -1
         );
@@ -441,7 +432,7 @@ mod tests {
         };
         assert_eq!(
             unsafe {
-                swr_v1_httpbindings_cookie(&raw const input, &raw mut phase, &raw mut action)
+                swr_v1_httpbindings_cookie(Some(&input), Some(&mut phase), Some(&mut action))
             },
             -1
         );

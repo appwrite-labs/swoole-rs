@@ -770,10 +770,12 @@ unsafe fn error_event(reactor: *mut c_void, event: *mut c_void) -> Result<c_int,
         let kind = u32::from(events & EventType::SW_EVENT_READ as i32 == 0);
         // SAFETY: the live reactor's handler tables.
         let handlers = unsafe { swoole_rs_reactor::reactor_upstream::prepared(reactor) }.handlers;
-        // SAFETY: as above; `get_handler` always finds one, as upstream calls it unchecked.
-        let Some(handler) = (unsafe {
+        // SAFETY: as above.
+        let handlers = unsafe { &*handlers };
+        // `get_handler` always finds one, as upstream calls it unchecked.
+        let Some(handler) =
             swoole_rs_reactor::swr_v1_reactor_handlers_get(handlers, kind, fd_type, true)
-        }) else {
+        else {
             std::process::abort()
         };
         // SAFETY: the registered handler, with the reactor's own event.

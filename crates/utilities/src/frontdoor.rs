@@ -14,9 +14,6 @@ pub struct SwrLogAction {
 /// Advance one complete macro program with facts from the requested effect only.
 /// Operations: info, notice, warning, debug, trace, `sys_notice`, `sys_warning`,
 /// `error_log`, error, `sys_error`. Actions are declared in the matching C header.
-///
-/// # Safety
-/// `state` is a unique live aligned caller-owned context for this call only.
 #[unsafe(no_mangle)]
 #[expect(
     clippy::cast_possible_truncation,
@@ -24,16 +21,14 @@ pub struct SwrLogAction {
     clippy::cast_sign_loss,
     reason = "reproduces C's unsigned comparisons at each operand width"
 )]
-pub unsafe extern "C" fn swr_v2_utils_log_frontdoor_step(
-    state: *mut SwrLogFrontdoor,
+pub extern "C" fn swr_v2_utils_log_frontdoor_step(
+    state: &mut SwrLogFrontdoor,
     operation: u32,
     first: i64,
     second: i64,
     unsigned_width: u32,
     high: u64,
 ) -> SwrLogAction {
-    // SAFETY: the caller passes a unique, live, aligned context for this call only.
-    let state = unsafe { &mut *state };
     let level = match operation {
         0 => 2,
         1 | 5 => 3,
@@ -144,22 +139,18 @@ pub struct SwrLogHex {
 /// Build the complete hex-record program, requesting original native sprintf,
 /// byte observations and ctype effects individually. No input pointer is retained.
 /// Caller-owned row buffers are written only by the requested native effects.
-///
-/// # Safety
-/// `state` is a unique live aligned context for this call only. `length` remains
-/// the original captured length. `previous` is the last requested effect result.
+/// `length` remains the original captured length. `previous` is the last requested
+/// effect result.
 #[unsafe(no_mangle)]
 #[expect(
     clippy::cast_sign_loss,
     reason = "native size_t += int of the last effect's result"
 )]
-pub unsafe extern "C" fn swr_v2_utils_log_hex_step(
-    state: *mut SwrLogHex,
+pub extern "C" fn swr_v2_utils_log_hex_step(
+    s: &mut SwrLogHex,
     length: usize,
     previous: i32,
 ) -> u32 {
-    // SAFETY: the caller passes a unique, live, aligned context for this call only.
-    let s = unsafe { &mut *state };
     let next_byte = |s: &mut SwrLogHex| {
         if s.index < s.offset.wrapping_add(16) && s.index < length {
             s.phase = 2;
@@ -220,8 +211,7 @@ mod tests {
         let (mut a, mut b) = (0, 0);
         let mut trace = Vec::new();
         loop {
-            let action =
-                unsafe { swr_v2_utils_log_frontdoor_step(&raw mut state, op, a, b, 0, 0) }.action;
+            let action = swr_v2_utils_log_frontdoor_step(&mut state, op, a, b, 0, 0).action;
             if action == 0 {
                 return trace;
             }
@@ -259,7 +249,7 @@ mod tests {
             let mut state = SwrLogHex::default();
             let (mut previous, mut rows, mut bytes, mut headers, mut footers) = (0, 0, 0, 0, 0);
             loop {
-                let action = unsafe { swr_v2_utils_log_hex_step(&raw mut state, length, previous) };
+                let action = swr_v2_utils_log_hex_step(&mut state, length, previous);
                 match action {
                     0 => break,
                     1 => headers += 1,

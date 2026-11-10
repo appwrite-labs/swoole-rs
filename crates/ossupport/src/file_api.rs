@@ -123,31 +123,21 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
 /// `file_get_contents` for `swoole_file.h`, which the logger originals compile.
 ///
 /// # Safety
-/// `path` is NUL-terminated; `content` is a live String no one else uses.
+/// `path` is NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_os_file_get_contents(
     path: *const c_char,
-    content: *mut CppString,
+    content: &mut CppString,
 ) -> bool {
     // SAFETY: as the caller promises.
     let path = unsafe { CStr::from_ptr(path) };
-    // SAFETY: as the caller promises.
-    file_get_contents(path, unsafe { &mut *content })
+    file_get_contents(path, content)
 }
 
 /// `File::read_content`: reads to EOF into `content`, a fresh `String(SW_BUFFER_SIZE_STD)`.
-///
-/// # Safety
-/// `owner` is live; `content` is a live String no one else uses.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_file_read_content(
-    owner: *const FileRecord,
-    content: *mut CppString,
-) {
-    // SAFETY: as the caller promises.
-    let fd = unsafe { &*owner }.descriptor();
-    // SAFETY: as the caller promises.
-    let content = unsafe { &mut *content };
+pub extern "C" fn swr_v1_os_file_read_content(owner: &FileRecord, content: &mut CppString) {
+    let fd = owner.descriptor();
     content.alloc(BUFFER_SIZE_STD, std::ptr::null());
     loop {
         let n = sys::read(fd, content.spare());

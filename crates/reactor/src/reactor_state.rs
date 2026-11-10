@@ -635,13 +635,19 @@ pub(crate) mod tests {
             assert_eq!(record(state.owner, &raw mut socket, 0, 512), 0);
             assert_eq!(socket.events, 512);
             assert_eq!(socket.removed, 0);
-            assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 1);
+            assert_eq!(
+                crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
+                1
+            );
             record(state.owner, &raw mut socket, 1, 1024);
             assert_eq!(socket.events, 1024);
             record(state.owner, &raw mut socket, 2, 0);
             assert_eq!(socket.events, 0);
             assert_eq!(socket.removed, 1);
-            assert_eq!(crate::swr_v1_reactor_registry_count(state.registry), 0);
+            assert_eq!(
+                crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
+                0
+            );
             before_wait(&mut (*state.owner).fields);
             assert!((*fields).running && (*fields).start);
             assert_eq!((*fields).timeout_msec, -1);

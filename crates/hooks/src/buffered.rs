@@ -30,14 +30,12 @@ pub type Read = unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> isize;
 /// `buffer` describes a live buffer that only this call touches, except through
 /// `recv`, which reads into its free space; `out` holds `length` bytes.
 pub unsafe extern "C" fn swr_v1_hook_recv_buffered(
-    buffer: *const BufferFields,
+    buffer: &BufferFields,
     recv: Read,
     context: *mut c_void,
     out: *mut u8,
     length: usize,
 ) -> isize {
-    // SAFETY: a live buffer description (see above).
-    let buffer = unsafe { &*buffer };
     // SAFETY: the buffer's live field.
     let mut filled = unsafe { *buffer.length };
     // SAFETY: the buffer's live field.
@@ -183,7 +181,7 @@ pub unsafe fn recv_buffered(socket: Co, out: *mut u8, size: usize) -> isize {
     // SAFETY: the exclusive buffer fields and output remain live for the receive.
     let result = unsafe {
         swr_v1_hook_recv_buffered(
-            &raw const view,
+            &view,
             record_recv,
             (&raw mut ctx).cast(),
             out,
@@ -242,7 +240,7 @@ mod tests {
             let mut out = vec![0; n];
             let got = unsafe {
                 swr_v1_hook_recv_buffered(
-                    &raw const view,
+                    &view,
                     recv,
                     (&raw mut self.source).cast(),
                     out.as_mut_ptr(),
