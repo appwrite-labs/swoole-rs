@@ -165,14 +165,15 @@ fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info
 }
 
 /// `init_php_func_cache`: the `swoole_<name>` callable the trampoline runs,
-/// made outside the lock (resolving it can warn).
+/// made outside the lock (resolving it can warn). None is made once an
+/// earlier warning's handler bailed out: upstream never got this far.
 fn library_callable(key: &[u8]) {
     let has = table()
         .hooked
         .as_ref()
         .and_then(|hooked| hooked.get(key))
         .is_none_or(|record| !record.callable.is_null());
-    if has {
+    if has || bailout::pending() {
         return;
     }
     let mut name = [b"swoole_".as_slice(), key].concat();
@@ -332,7 +333,8 @@ pub(crate) fn copy_to_thread() {
 }
 
 /// RSHUTDOWN: every hooked function restored, its copies and callable freed,
-/// and every grafted class detached.
+/// and every grafted class detached; a destructor's bailout stays pending for
+/// `rshutdown` to raise last.
 pub(crate) fn finish() {
     let (hooked, children) = {
         let mut table = table();

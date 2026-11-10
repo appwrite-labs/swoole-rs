@@ -48,9 +48,11 @@ pub(super) unsafe fn close(object: *mut z::zend_object) -> Result<(), Bailout> {
     // Copy the owned callback pointer without borrowing the protocol across PHP.
     let callable = socket.record().protocol.private_data_1;
     if !callable.is_null() {
-        native::callable_free(callable)?;
-        // Upstream's ordering: publish null only after callback destruction returns.
+        let freed = native::callable_free(callable);
+        // Upstream's ordering: publish null only after callback destruction
+        // returns, which frees the callable even when it bails out.
         socket.record().protocol.private_data_1 = ptr::null_mut();
+        freed?;
     }
     // SAFETY: the live object's embedded stream slot stays allocated through the close leaf.
     let stream_value = unsafe { &raw mut (*state).stream };
