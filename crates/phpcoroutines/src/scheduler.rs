@@ -67,7 +67,6 @@ method_table! {
 /// serializable, clone and unset denied.
 /// # Safety
 /// Called once, at MINIT.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_coroutine_scheduler_minit(_module_number: c_int) {
     // SAFETY: the native MINIT entry lends these original startup arguments.
     let result = unsafe { init_phpcoroutines_scheduler_minit() };
@@ -430,7 +429,6 @@ fn can_exit() -> Result<bool, Bailout> {
 }
 
 /// RSHUTDOWN: drop the PHP name resolvers and the exit condition.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_coroutine_scheduler_rshutdown() {
     bailout::raise(rshutdown());
 }

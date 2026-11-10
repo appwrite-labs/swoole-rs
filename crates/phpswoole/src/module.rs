@@ -7,8 +7,9 @@
 use crate::{Switch, optional};
 use std::{
     cell::Cell,
-    ffi::{CStr, CString, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_long, c_void},
     ptr,
+    sync::OnceLock,
 };
 use swoole_rs_corebase::{
     log::set_last_error, swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace,
@@ -115,8 +116,54 @@ pub fn enable_library() -> bool {
     globals().enable_library.get()
 }
 
-type Minit = unsafe extern "C" fn(c_int);
-type Hook = unsafe extern "C" fn();
+/// A family's MINIT hook, with the module's number (C ABI: it runs inside `zend_try`).
+pub type Minit = unsafe extern "C" fn(c_int);
+/// Any other phase hook, likewise.
+pub type Hook = unsafe extern "C" fn();
+
+/// The hooks of the crates above this one in the dependency graph
+/// (crates/phpcoroutines, phpthread and phpserver), which it runs where
+/// upstream's phases did. crates/ffi, which links them all, registers them
+/// with [`crate::module_entry`] when Zend asks for the module entry, before any phase.
+pub struct Families {
+    /// `php_swoole_coroutine_minit`, `_system_minit` and `_scheduler_minit`.
+    pub coroutine_minit: [Minit; 3],
+    /// `php_swoole_server_minit`.
+    pub server_minit: Minit,
+    /// `php_swoole_tracer_minit(threshold, blocking, profile, leaks)`, at MINIT, once.
+    pub tracer_minit: unsafe fn(i64, bool, bool, bool),
+    /// `Swoole\Thread`'s MINIT, then (after the thread locks') its barrier's,
+    /// queue's, map's and list's, each at MINIT before any PHP thread starts.
+    pub thread_minit: unsafe fn(),
+    pub thread_classes_minit: [unsafe fn(); 4],
+    /// RINIT's coroutine, thread and tracer steps.
+    pub coroutine_rinit: Hook,
+    pub thread_rinit: Hook,
+    pub tracer_rinit: Hook,
+    /// RSHUTDOWN's server, coroutine and scheduler, thread and tracer steps.
+    pub server_rshutdown: Hook,
+    pub coroutine_rshutdown: [Hook; 2],
+    pub thread_rshutdown: Hook,
+    pub tracer_rshutdown: Hook,
+    /// `php_swoole_thread_bailout()`: the bailout that ends this PHP thread.
+    pub thread_bailout: extern "C" fn(),
+    /// `sw_php_print_backtrace(cid)`.
+    /// # Errors
+    /// Its output bailed out.
+    pub print_backtrace: fn(c_long) -> Result<(), Bailout>,
+}
+
+static FAMILIES: OnceLock<&'static Families> = OnceLock::new();
+
+/// Keep `families` for the phases; the first registration stands.
+pub(crate) fn register(families: &'static Families) {
+    FAMILIES.get_or_init(|| families);
+}
+
+/// The registered families: always some once Zend holds the module entry.
+pub(crate) fn families() -> Option<&'static Families> {
+    FAMILIES.get().copied()
+}
 
 unsafe extern "C" {
     fn php_swoole_event_minit(module_number: c_int);
@@ -126,9 +173,6 @@ unsafe extern "C" {
     fn php_swoole_process_pool_minit(module_number: c_int);
     fn php_swoole_table_minit(module_number: c_int);
     fn php_swoole_timer_minit(module_number: c_int);
-    fn php_swoole_coroutine_minit(module_number: c_int);
-    fn php_swoole_coroutine_system_minit(module_number: c_int);
-    fn php_swoole_coroutine_scheduler_minit(module_number: c_int);
     fn php_swoole_coroutine_lock_minit(module_number: c_int);
     fn php_swoole_channel_coro_minit(module_number: c_int);
     fn php_swoole_runtime_minit(module_number: c_int);
@@ -155,7 +199,6 @@ unsafe extern "C" {
         shortname: bool,
         module: c_int,
     );
-    fn php_swoole_server_minit(module_number: c_int);
     /// crates/phphttp's `Swoole\Http\Request`.
     fn swr_v1_phphttp_request_minit() -> *mut zend_class_entry;
     /// crates/phphttp's `Swoole\Http\Response`, and the codecs its parser knows.
@@ -176,28 +219,12 @@ unsafe extern "C" {
     fn swr_v1_phphttp_websocket_minit(module_number: c_int, serializable: bool, zlib: bool);
     fn php_swoole_redis_server_minit(module_number: c_int);
     fn php_swoole_name_resolver_minit(module_number: c_int);
-    /// crates/phpcoroutines' tracer, with its INI switches.
-    fn swr_v1_phpcoroutines_tracer_minit(
-        blocking_threshold: i64,
-        blocking_detection: bool,
-        profile: bool,
-        leak_detection: bool,
-    );
-
     fn php_swoole_runtime_mshutdown();
-
-    fn php_swoole_coroutine_rinit();
     fn php_swoole_runtime_rinit();
-    fn swr_v1_phpcoroutines_tracer_rinit();
-
-    fn php_swoole_server_rshutdown();
     fn php_swoole_redis_server_rshutdown();
-    fn php_swoole_coroutine_rshutdown();
-    fn php_swoole_coroutine_scheduler_rshutdown();
     fn php_swoole_timer_rshutdown();
     fn php_swoole_runtime_rshutdown();
     fn php_swoole_process_rshutdown();
-    fn swr_v1_phpcoroutines_tracer_rshutdown();
 }
 
 /// One step of a phase: a family's MINIT hook, or any other hook.
@@ -230,6 +257,9 @@ fn run(steps: &[Step], module_number: c_int) -> Result<(), Bailout> {
 /// is deferred for `swr_v1_phpswoole_minit` to raise.
 pub(crate) fn startup(module_number: c_int) {
     use Step::{Hook as H, Minit as M};
+    let Some(families) = families() else {
+        return;
+    };
     let mut steps = vec![
         H(core_startup),
         M(php_swoole_event_minit),
@@ -240,10 +270,10 @@ pub(crate) fn startup(module_number: c_int) {
         M(php_swoole_process_pool_minit),
         M(php_swoole_table_minit),
         M(php_swoole_timer_minit),
-        // coroutine
-        M(php_swoole_coroutine_minit),
-        M(php_swoole_coroutine_system_minit),
-        M(php_swoole_coroutine_scheduler_minit),
+    ];
+    // coroutine
+    steps.extend(families.coroutine_minit.map(M));
+    steps.extend([
         M(php_swoole_coroutine_lock_minit),
         M(php_swoole_channel_coro_minit),
         M(php_swoole_runtime_minit),
@@ -254,12 +284,12 @@ pub(crate) fn startup(module_number: c_int) {
         M(client_coro_minit),
         M(http_client_coro_minit),
         M(http2_client_coro_minit),
-    ];
+    ]);
     // The bundled C clients, ssh2 and ftp.
     steps.extend(optional::client_minit());
     steps.extend([
         // server
-        M(php_swoole_server_minit),
+        M(families.server_minit),
         M(http_request_minit),
         M(http_response_minit),
         M(php_swoole_http_cookie_minit),
@@ -280,8 +310,10 @@ extern "C" fn tracer_minit(_module_number: c_int) {
     let g = globals();
     let (blocking, profile) = (g.blocking_detection.get(), g.profile.get());
     let (threshold, leaks) = (g.blocking_threshold.get(), g.leak_detection.get());
-    // SAFETY: Rust's MINIT, once.
-    unsafe { swr_v1_phpcoroutines_tracer_minit(threshold, blocking, profile, leaks) };
+    if let Some(families) = families() {
+        // SAFETY: Rust's MINIT, once.
+        unsafe { (families.tracer_minit)(threshold, blocking, profile, leaks) };
+    }
     if blocking || profile {
         g.enable_fiber_mock.set(true);
     }
@@ -530,13 +562,16 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
     }
     // SAFETY: RINIT.
     unsafe { swr_zend_signals_uncheck() };
+    let Some(families) = families() else {
+        return SUCCESS;
+    };
     let mut steps = vec![
         Step::Hook(swr_v1_phphttp_server_rinit),
-        Step::Hook(php_swoole_coroutine_rinit),
+        Step::Hook(families.coroutine_rinit),
         Step::Hook(php_swoole_runtime_rinit),
     ];
-    steps.extend(optional::rinit());
-    steps.push(Step::Hook(swr_v1_phpcoroutines_tracer_rinit));
+    steps.extend(optional::rinit(families));
+    steps.push(Step::Hook(families.tracer_rinit));
     if let Err(bailed) = run(&steps, module_number) {
         bailout::raise(Err(bailed));
         return SUCCESS;
@@ -555,21 +590,24 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
         return SUCCESS;
     }
     globals.req_status.set(RSHUTDOWN_BEGIN);
+    let Some(families) = families() else {
+        return SUCCESS;
+    };
     let mut steps = vec![
-        Step::Hook(php_swoole_server_rshutdown),
+        Step::Hook(families.server_rshutdown),
         Step::Hook(swr_v1_phphttp_server_rshutdown),
         Step::Hook(swr_v1_phphttp_response_rshutdown),
         Step::Hook(crate::asynchronous::rshutdown),
         Step::Hook(php_swoole_redis_server_rshutdown),
-        Step::Hook(php_swoole_coroutine_rshutdown),
-        Step::Hook(php_swoole_coroutine_scheduler_rshutdown),
+        Step::Hook(families.coroutine_rshutdown[0]),
+        Step::Hook(families.coroutine_rshutdown[1]),
         Step::Hook(php_swoole_timer_rshutdown),
         Step::Hook(php_swoole_runtime_rshutdown),
         Step::Hook(php_swoole_process_rshutdown),
     ];
-    steps.extend(optional::rshutdown());
+    steps.extend(optional::rshutdown(families));
     steps.extend([
-        Step::Hook(swr_v1_phpcoroutines_tracer_rshutdown),
+        Step::Hook(families.tracer_rshutdown),
         Step::Hook(event_free),
     ]);
     if let Err(bailed) = run(&steps, module_number) {

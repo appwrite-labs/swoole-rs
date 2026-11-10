@@ -113,7 +113,6 @@ unsafe extern "C" {
 /// `php_swoole_coroutine_minit`.
 /// # Safety
 /// Called once, at MINIT, after `Swoole\Exception` and SPL's classes.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn php_swoole_coroutine_minit(module_number: i32) {
     let exception = swoole_rs_phpswoole::exception_class();
     // SAFETY: SPL registers its classes before any extension's MINIT.
@@ -245,13 +244,11 @@ unsafe fn init_phpcoroutines_minit(
 }
 
 /// `php_swoole_coroutine_rinit`.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_coroutine_rinit() {
     context::init_main();
 }
 
 /// `php_swoole_coroutine_rshutdown`: a bailout in deactivation is raised.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_coroutine_rshutdown() {
     AUTOLOADING.with(|a| a.borrow_mut().clear());
     if runtime::shutdown() {
