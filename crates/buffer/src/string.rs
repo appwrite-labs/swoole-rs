@@ -739,14 +739,20 @@ upstream! {
     pub unsafe extern "C" fn swr_string_append_string(this: *mut CppString, source: *const CppString) {
         // SAFETY: as the caller promises.
         let length = unsafe { read(source) }.length;
-        // SAFETY: as above; `source` is read again only through its pointer.
+        // SAFETY: as above; `source` is read again only when it isn't `this`.
         let string = unsafe { of(this) };
         let new_size = string.length.wrapping_add(length);
         if new_size > string.size {
             string.reserve(new_size);
         }
-        // SAFETY: read after any reallocation, which `source` may share.
-        let data = unsafe { read(source) }.str;
+        // Read after any reallocation; a `source` that is `this` is read through `string`,
+        // whose borrow would otherwise end the caller's `source` pointer.
+        let data = if ptr::eq(this, source) {
+            string.str
+        } else {
+            // SAFETY: as the caller promises; distinct from `string`.
+            unsafe { read(source) }.str
+        };
         // SAFETY: the buffer holds `new_size` bytes; `source` holds `length`.
         unsafe { ptr::copy(data, string.str.wrapping_add(string.length), length) };
         string.length = new_size;

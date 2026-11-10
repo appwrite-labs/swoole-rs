@@ -363,6 +363,7 @@ mod tests {
 
     /// Upstream's `time.get_seconds`: the wall clock's seconds against `time(NULL)`.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no libc time")]
     fn time_get_seconds() {
         let sec1 = time_now();
         let sec2 = unsafe { libc::time(ptr::null_mut()) };
@@ -371,6 +372,7 @@ mod tests {
 
     // One test owns the process-wide record, so parallel tests never race on it.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no srandom")]
     fn record_lifecycle() {
         swr_v1_core_reset();
         let pool = ptr::from_mut(&mut 7_u8).cast::<c_void>();
@@ -428,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no getrlimit")]
     fn max_sockets_caps_the_soft_limit() {
         assert_eq!(swr_v1_core_max_sockets(1), 1);
         assert!(swr_v1_core_max_sockets(u32::MAX) >= 1);

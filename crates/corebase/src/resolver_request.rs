@@ -43,7 +43,7 @@ pub extern "C" fn swr_v1_core_resolver_new(
     socktype: c_int,
     protocol: c_int,
 ) -> PreparedResolver {
-    swr_v1_core_resolver_view(Box::leak(Box::new(ResolverRequest {
+    let state = Box::leak(Box::new(ResolverRequest {
         refs: AtomicUsize::new(1),
         fields: UnsafeCell::new(ResolverFields {
             family,
@@ -54,7 +54,13 @@ pub extern "C" fn swr_v1_core_resolver_new(
         }),
         strings: std::array::from_fn(|_| StringSlot::default()),
         results: UnsafeCell::new(Vec::new()),
-    })))
+    }));
+    let view = swr_v1_core_resolver_view(state);
+    // A handle from the mutable borrow, as one from a shared borrow can't free the record.
+    PreparedResolver {
+        owner: &raw mut *state,
+        ..view
+    }
 }
 
 /// The record's fields and string slots, from its handle.

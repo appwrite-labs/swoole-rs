@@ -1,11 +1,12 @@
 # Timer queue ABI v1
 
-Declarations: `native/include/swoole_rs_timer.h` (15 exports). Feature value 4.
-Except `create`, `release` and `ids`, each export wraps a `Timer` method: the
-same name, but `select_next` for `next` and `stats` for `stats_get`. Callers:
-`tests/modules/timer/kernel.cc` and `native/timer/swoole_timer.h`'s reads;
-`swoole::Timer` (`crates/timer/src/owner.rs`, see
-[ownership.md](../native/timer/ownership.md)) calls the methods.
+The queue is `crates/timer`'s `Timer`, whose methods `swoole::Timer`
+(`crates/timer/src/owner.rs`, see [ownership.md](../native/timer/ownership.md))
+calls. Feature value 4. Three reads stay C exports for `native/timer/swoole_timer.h`
+(`native/include/swoole_rs_timer.h`): `swr_v1_timer_token`, `swr_v1_timer_stats_get`
+and `swr_v1_timer_ids`. The operations below are the methods, named as before:
+`next` is `select_next` and `stats` is `stats`. `crates/timer/src/kernel.rs` holds
+what the retired C++ harness (`kernel.cc`) checked, one test per topic.
 
 ## Ownership
 
@@ -17,14 +18,13 @@ Time is injected as signed 64-bit relative monotonic milliseconds; Rust creates 
 clock, runtime or thread.
 
 - One owner thread per handle; no concurrent calls.
-- Handles and outputs must be valid and aligned; outputs must not alias the
-  queue or each other. Null handles/outputs return `INVALID`.
+- The three exports take a valid, aligned queue and outputs that alias neither
+  the queue nor each other; a null queue or output returns `INVALID`.
 - The opaque non-null token is never dereferenced or freed by Rust. A successful
   add takes custody of one native node; only `RELEASE` or `RELEASE_OVERFLOW`
   hands it back. Get/next views are copied metadata.
-- No export invokes a callback, destructor, Zend function or exception. No Rust
-  panic or C++ exception crosses the boundary. Allocation is fallible and
-  arithmetic is checked.
+- No operation invokes a callback, destructor, Zend function or exception.
+  Allocation is fallible and arithmetic is checked.
 
 Native callbacks run only between `next` and `complete`. Native destructors run
 only after a Rust call has detached and returned the token; they may remove
@@ -45,13 +45,12 @@ No callback, Zend jump or bailout continuation runs under a Rust frame
 
 ## Operations
 
-All view/stats outputs are zeroed on entry, including on failure, except where a
-status returns valid metadata. Reserved fields are always zero. `next_delay`
+A failing operation returns the default (zeroed) view; only statuses that carry
+metadata return a filled one. Reserved fields are always zero. `end`'s delay
 defaults to -1. ID 0 means no active node; real IDs start at 1.
 
-- **create/release**: create returns null on failure. Release accepts only an
-  empty, non-selecting queue, otherwise `PENDING` and the queue stays usable.
-  Release never disposes tokens.
+- **idle**: an empty, non-selecting queue, the only one its owner frees. Freeing
+  never disposes tokens.
 - **add**: `now >= 0`, `delay > 0`, `persistent` 0 or 1, non-null token.
   Deadline is checked `now + delay`; interval = delay for repeats, 0 for
   one-shots. New entries have `exec_count` 0, the current birth round, removed 0.

@@ -337,6 +337,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
     fn plain_send_recv_and_peek() {
         let [a, b] = pair();
         // SAFETY: local buffers, no TLS.

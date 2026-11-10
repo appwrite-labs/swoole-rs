@@ -29,6 +29,10 @@ use swoole_rs_server::{ConnectionRecord, server_methods, view};
 use crate::client::{Client, USER_AGENT};
 
 pub(super) mod case;
+/// lifecycle.rs: `core-tests/src/server/server.cpp`'s reload, kill and restart TESTs.
+pub(super) mod lifecycle;
+/// schedule.rs: `core-tests/src/server/server.cpp`'s `schedule*` TESTs.
+pub(super) mod schedule;
 pub(super) mod server;
 pub(super) mod server_config;
 pub(super) mod server_conn;
@@ -402,6 +406,13 @@ struct DataHead {
 /// `RecvData`.
 #[repr(C)]
 struct RecvData {
+    info: DataHead,
+    data: *const c_char,
+}
+
+/// `SendData`: its head, then the payload.
+#[repr(C)]
+struct SendData {
     info: DataHead,
     data: *const c_char,
 }
@@ -1633,12 +1644,6 @@ fn max_queued_bytes() {
     }
 
     wait_all_child_processes();
-}
-
-/// `SendData`: its head.
-#[repr(C)]
-struct SendData {
-    info: DataHead,
 }
 
 unsafe extern "C" fn dispatch_error(
