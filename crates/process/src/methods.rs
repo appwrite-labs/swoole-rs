@@ -23,7 +23,7 @@ use crate::reload_task::{WARN_KILL_ALL_FAILED, WARN_KILL_ONE_FAILED};
 use crate::worker_globals::{
     swr_v1_worker_global_get, swr_v1_worker_global_set, worker_global_max_requests,
 };
-use crate::worker_record::{WorkerRecord, swr_v1_worker_exceeded_max_requests};
+use crate::worker_record::WorkerRecord;
 
 /// crates/server's table, which every method below lends its export
 /// (`crates/server/src/pool_native.rs`); null in tests, which drive the exports
@@ -108,15 +108,15 @@ unsafe fn run<R: Narrow>(pool: *mut PoolRecord, worker: *mut WorkerRecord, op: u
     R::narrow(result)
 }
 
-/// Each `ProcessPool` method that is one `RUN_*` operation: its symbol, Rust
-/// name, parameters, return type, and the operation's worker and argument.
+/// Each `ProcessPool` method that is one `RUN_*` operation: its symbol if something links
+/// it by name, Rust name, parameters, return type, and the operation's worker and argument.
 macro_rules! run_methods {
-    ($($symbol:literal fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $op:ident($worker:expr, $arg:expr);)*) => {$(
-        #[doc = concat!("`", $symbol, "`.")]
+    ($($($symbol:literal)? fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $op:ident($worker:expr, $arg:expr);)*) => {$(
+        #[doc = concat!("`ProcessPool::", stringify!($name), "`.")]
         ///
         /// # Safety
         /// `pool` is a live `ProcessPool`; a `worker` is one of its workers.
-        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
+        $(#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))])?
         pub unsafe extern "C" fn $name(pool: *mut PoolRecord, $($p: $t),*) -> $r {
             // SAFETY: as the caller guarantees.
             unsafe { run(pool, $worker, $op, $arg) }
@@ -125,19 +125,15 @@ macro_rules! run_methods {
 }
 
 run_methods! {
-    "_ZN6swoole11ProcessPool18create_message_boxEm"
     fn create_message_box(size: usize) -> c_int = RUN_CREATE_MESSAGE_BOX(ptr::null_mut(), size as u64);
     "_ZN6swoole11ProcessPool18create_message_busEv"
     fn create_message_bus() -> c_int = RUN_CREATE_MESSAGE_BUS(ptr::null_mut(), 0);
     "_ZN6swoole11ProcessPool12set_protocolENS_12ProtocolTypeE"
     fn set_protocol(protocol: c_int) -> () = RUN_SET_PROTOCOL(ptr::null_mut(), i64::from(protocol).cast_unsigned());
-    "_ZN6swoole11ProcessPool11start_checkEv"
     fn start_check() -> c_int = RUN_START_CHECK(ptr::null_mut(), 0);
     "_ZN6swoole11ProcessPool5startEv"
     fn start() -> c_int = RUN_START(ptr::null_mut(), 0);
-    "_ZNK6swoole11ProcessPool12push_messageEPKNS_9EventDataE"
     fn push_event(event: *const c_void) -> c_int = RUN_PUSH_MESSAGE(ptr::null_mut(), event.addr() as u64);
-    "_ZN6swoole11ProcessPool16drop_reload_taskEv"
     fn drop_reload_task() -> () = RUN_DROP_RELOAD_TASK(ptr::null_mut(), 0);
     "_ZN6swoole11ProcessPool6reloadEv"
     fn reload() -> bool = RUN_RELOAD(ptr::null_mut(), 0);
@@ -145,19 +141,13 @@ run_methods! {
     fn stop(worker: *mut WorkerRecord) -> () = RUN_STOP(worker, 0);
     "_ZN6swoole11ProcessPool13reopen_loggerEv"
     fn reopen_logger() -> () = RUN_REOPEN_LOGGER(ptr::null_mut(), 0);
-    "_ZN6swoole11ProcessPool6signalEiPNS_6WorkerE"
     fn signal(signo: c_int, worker: *mut WorkerRecord) -> () = RUN_SIGNAL(worker, i64::from(signo).cast_unsigned());
-    "_ZN6swoole11ProcessPool16kill_all_workersEi"
     fn kill_all_workers(signo: c_int) -> () = RUN_KILL_ALL(ptr::null_mut(), i64::from(signo).cast_unsigned());
     "_ZN6swoole11ProcessPool8shutdownEv"
     fn shutdown() -> bool = RUN_SHUTDOWN(ptr::null_mut(), 0);
-    "_ZN6swoole11ProcessPool5spawnEPNS_6WorkerE"
     fn spawn(worker: *mut WorkerRecord) -> c_int = RUN_SPAWN(worker, 0);
-    "_ZN6swoole11ProcessPool15set_max_requestEjj"
     fn set_max_request(max: u32, grace: u32) -> () = RUN_SET_MAX_REQUEST(ptr::null_mut(), u64::from(max) | (u64::from(grace) << 32));
-    "_ZN6swoole11ProcessPool8set_typeEi"
     fn set_type(kind: c_int) -> () = RUN_SET_TYPE(ptr::null_mut(), u64::from(kind.cast_unsigned() & 0xff));
-    "_ZN6swoole11ProcessPool12set_start_idEi"
     fn set_start_id(id: c_int) -> () = RUN_SET_START_ID(ptr::null_mut(), u64::from(id.cast_unsigned() & 0xffff));
     "_ZN6swoole11ProcessPool6detachEv"
     fn detach() -> bool = RUN_DETACH(ptr::null_mut(), 0);
@@ -212,22 +202,19 @@ pub unsafe extern "C" fn push_message(
     c_int::narrow(unsafe { swr_v1_process_pool_push(native(), pool, kind, data, length) })
 }
 
-/// `ProcessPool::dispatch(data, dst_worker_id)`.
+/// `ProcessPool::dispatch(data, dst_worker_id)`, or `dispatch_sync` when `blocking`.
 ///
 /// # Safety
 /// `pool` is a live `ProcessPool`; `event` an `EventData`; `worker_id` writable.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11ProcessPool8dispatchEPNS_9EventDataEPi")
-)]
-pub unsafe extern "C" fn dispatch(
+pub unsafe fn dispatch(
     pool: *mut PoolRecord,
     event: *mut u8,
     worker_id: *mut c_int,
+    blocking: bool,
 ) -> c_int {
     // SAFETY: as the caller guarantees; the table is native's.
     c_int::narrow(unsafe {
-        swr_v1_process_pool_dispatch_event(native(), pool, event, worker_id, false)
+        swr_v1_process_pool_dispatch_event(native(), pool, event, worker_id, blocking)
     })
 }
 
@@ -311,21 +298,14 @@ pub unsafe extern "C" fn get_worker_by_pid(
 ///
 /// # Safety
 /// `pool` is a live `ProcessPool`; `worker` a live worker.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole11ProcessPool17is_worker_runningEPNS_6WorkerE")
-)]
 #[must_use]
-pub unsafe extern "C" fn is_worker_running(
-    pool: *const PoolRecord,
-    worker: *const WorkerRecord,
-) -> bool {
+pub unsafe fn is_worker_running(pool: *const PoolRecord, worker: *const WorkerRecord) -> bool {
     // SAFETY: the caller lends a live pool.
     let running = unsafe { (*pool).running };
     // SAFETY: the caller lends a live worker.
     running
         && swr_v1_worker_global_get(4) == 0
-        && !unsafe { swr_v1_worker_exceeded_max_requests(worker) }
+        && !unsafe { Worker::new(worker) }.exceeded_max_request()
 }
 
 /// `Worker::send_pipe_message(buf, n, flags)`: through its pool's queue or the pipe
@@ -537,16 +517,8 @@ pub unsafe extern "C" fn send_message(
 /// # Safety
 /// `pool` is a created `ProcessPool` whose box, if any, was made with
 /// `SW_CHAN_LOCK`; `data` is writable for `size` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole11ProcessPool11pop_messageEPvm")
-)]
 #[must_use]
-pub unsafe extern "C" fn pop_message(
-    pool: *const PoolRecord,
-    data: *mut c_void,
-    size: usize,
-) -> c_int {
+pub unsafe fn pop_message(pool: *const PoolRecord, data: *mut c_void, size: usize) -> c_int {
     use swoole_rs_memory::channel::{swr_v1_memory_channel_lock, swr_v1_memory_channel_out};
     // SAFETY: the caller lends a live pool.
     let message_box = unsafe { (*pool).message_box };
@@ -610,14 +582,7 @@ impl ExitStatus {
 ///
 /// # Safety
 /// `worker` is a live worker; `exit_status` a live `ExitStatus`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole6Worker12report_errorERKNS_10ExitStatusE")
-)]
-pub unsafe extern "C" fn worker_report_error(
-    worker: *const WorkerRecord,
-    exit_status: *const ExitStatus,
-) {
+pub unsafe fn worker_report_error(worker: *const WorkerRecord, exit_status: *const ExitStatus) {
     // SAFETY: the caller lends a live worker.
     let id = unsafe { Worker::new(worker).id() };
     // SAFETY: the caller lends a live status.
@@ -641,10 +606,6 @@ pub unsafe extern "C" fn worker_report_error(
 
 /// `swoole::reload_warn`: a reload's failed or forced kill, under the
 /// `ReloadTask` method upstream logged it from; `errno` is the failed kill's.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11reload_warnEiij")
-)]
 pub extern "C" fn reload_warn(kind: c_int, pid: c_int, worker_id: u32) {
     use swoole_rs_corebase::log::{sys_warning, warning};
     match kind {
@@ -684,32 +645,20 @@ pub extern "C" fn worker_is_running() -> bool {
 }
 
 /// `swoole_get_worker_id()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z20swoole_get_worker_idv")
-)]
 #[must_use]
-pub extern "C" fn swoole_get_worker_id() -> u32 {
+pub fn swoole_get_worker_id() -> u32 {
     u32::try_from(swr_v1_worker_global_get(0)).unwrap_or_default()
 }
 
 /// `swoole_get_worker_pid()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z21swoole_get_worker_pidv")
-)]
 #[must_use]
-pub extern "C" fn swoole_get_worker_pid() -> c_int {
+pub fn swoole_get_worker_pid() -> c_int {
     c_int::try_from(swr_v1_worker_global_get(1)).unwrap_or_default()
 }
 
 /// `swoole_get_worker_type()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_get_worker_typev")
-)]
 #[must_use]
-pub extern "C" fn swoole_get_worker_type() -> c_int {
+pub fn swoole_get_worker_type() -> c_int {
     c_int::try_from(swr_v1_worker_global_get(2)).unwrap_or_default()
 }
 
@@ -723,11 +672,7 @@ pub extern "C" fn swoole_set_worker_id(id: u32) {
 }
 
 /// `swoole_set_worker_pid(pid)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z21swoole_set_worker_pidi")
-)]
-pub extern "C" fn swoole_set_worker_pid(pid: c_int) {
+pub fn swoole_set_worker_pid(pid: c_int) {
     swr_v1_worker_global_set(1, i64::from(pid));
 }
 
@@ -930,6 +875,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
     fn pop_message_takes_the_oldest_message_from_the_box() {
         use swoole_rs_memory::channel::{
             swr_v1_memory_channel_bytes, swr_v1_memory_channel_in, swr_v1_memory_channel_init,

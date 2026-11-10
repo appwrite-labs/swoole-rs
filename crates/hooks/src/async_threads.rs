@@ -32,14 +32,6 @@ const WRONG_OPERATION: c_int = 509;
 const AIO_BAD_REQUEST: c_int = 4001;
 const AIO_CANCELED: c_int = 4002;
 
-// SAFETY: crates/reactor's.
-unsafe extern "C" {
-    fn swr_v1_event_set_exit_condition(
-        id: c_int,
-        condition: unsafe extern "C" fn(*mut usize) -> bool,
-    );
-}
-
 /// `swoole::Event`'s leading descriptor.
 #[repr(C)]
 pub struct Event {
@@ -208,7 +200,7 @@ unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
 }
 
 /// The reactor's exit condition: in-flight events keep it running.
-unsafe extern "C" fn pending(event_num: *mut usize) -> bool {
+extern "C-unwind" fn pending(event_num: *mut usize) -> bool {
     let threads = current();
     // SAFETY: null or the live handle.
     if !threads.is_null() && unsafe { (*threads).task_num } == 0 {
@@ -265,8 +257,7 @@ fn create() -> *mut AsyncThreads {
     if unsafe { swr_v1_reactor_deferred_push(queue, destroyed, ptr::null_mut(), None) } != 0 {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<usize>());
     }
-    // SAFETY: the thread's live reactor.
-    unsafe { swr_v1_event_set_exit_condition(EXIT_CONDITION_AIO_TASK, pending) };
+    swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_AIO_TASK, pending);
     threads.pool = Some(Pool::acquire(
         HOOKS,
         usize::from(swr_v1_core_cpu_num()),

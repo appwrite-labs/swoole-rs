@@ -282,6 +282,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no recvfrom")]
     fn recvfrom_reads_what_was_sent() {
         let [a, b] = pair();
         write(b, b"hello");

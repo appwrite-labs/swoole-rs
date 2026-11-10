@@ -50,8 +50,7 @@ fn slot(signo: c_int) -> Option<&'static Slot> {
 }
 
 /// `void swoole_signalfd_init()`: an empty mask and table.
-#[unsafe(export_name = "_Z20swoole_signalfd_initv")]
-pub extern "C" fn swoole_signalfd_init() {
+pub fn swoole_signalfd_init() {
     clear_mask();
     signal_reset();
 }
@@ -229,6 +228,7 @@ mod tests {
     unsafe extern "C" fn handler(_: c_int) {}
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigemptyset")]
     fn registers_reads_and_clears() {
         let _state = crate::signal_state_lock();
         let handler = handler as *const () as usize;

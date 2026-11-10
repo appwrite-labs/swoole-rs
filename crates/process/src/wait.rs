@@ -240,6 +240,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn plain_and_coroutine_waits() {
         let plain = Coroutines {
             current: no_coroutine,

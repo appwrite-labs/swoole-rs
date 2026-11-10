@@ -237,24 +237,21 @@ pub extern "C" fn swr_v1_reactor_isset_exit(owner: &ReactorState, id: c_int) -> 
 }
 
 /// `sw_reactor()->set_end_callback(id, callback)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_event_set_end_callback(id: c_int, callback: EndFn) {
+pub fn swr_v1_event_set_end_callback(id: c_int, callback: EndFn) {
     if let Some(owner) = current() {
         swr_v1_reactor_set_end(owner, id, Some(callback));
     }
 }
 
 /// `sw_reactor()->set_exit_condition(id, condition)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_event_set_exit_condition(id: c_int, condition: ExitFn) {
+pub fn swr_v1_event_set_exit_condition(id: c_int, condition: ExitFn) {
     if let Some(owner) = current() {
         swr_v1_reactor_set_exit(owner, id, Some(condition));
     }
 }
 
 /// `sw_reactor()->remove_exit_condition(id)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_event_remove_exit_condition(id: c_int) {
+pub fn swr_v1_event_remove_exit_condition(id: c_int) {
     if let Some(owner) = current() {
         swr_v1_reactor_set_exit(owner, id, None);
     }
@@ -517,7 +514,10 @@ mod tests {
             assert!(!(*fields).running);
             (*fields).running = true;
             let mut socket = crate::SocketRecord::with_fd(3, 0);
-            assert_eq!((*owner).record(&mut socket, 0, 512), 0);
+            assert_eq!(
+                crate::reactor_state::tests::record(owner, &raw mut socket, 0, 512),
+                0
+            );
             assert!(!if_exit(owner));
             execute_end(owner, false);
             assert!((*fields).running);
