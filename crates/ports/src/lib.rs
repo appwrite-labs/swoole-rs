@@ -156,8 +156,8 @@ pub struct PortsProperty {
     pub kind: u32,
     pub private: u32,
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ports_class_property(index: usize) -> PortsProperty {
+#[must_use]
+pub fn swr_v1_ports_class_property(index: usize) -> PortsProperty {
     // Declaration order differs from callback enum order and is observable.
     const EVENT_ORDER: [usize; 12] = [0, 1, 2, 3, 10, 11, 4, 5, 7, 8, 9, 6];
     const PUBLIC: &[(&[u8], u32, i64)] = &[

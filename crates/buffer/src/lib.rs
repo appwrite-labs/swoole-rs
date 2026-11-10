@@ -346,8 +346,7 @@ pub extern "C" fn swr_v1_buffer_iovec_layout() -> PosixIovecLayout {
 /// validity/disjointness/stability rules. This is not the frozen POD type. No
 /// descriptor reference survives the call; callbacks and native effects remain outside.
 #[cfg(unix)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_append_iovec(
+pub unsafe fn swr_v1_buffer_append_iovec(
     buffer: *mut Buffer,
     iov: *const libc::iovec,
     count: usize,
