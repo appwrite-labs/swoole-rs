@@ -1,15 +1,9 @@
 //! The HTTP/2 server's frames, responses and request header blocks: upstream's
 //! `swoole_http2_server_parse` and everything it and `Response` send (headers
-//! over nghttp2's HPACK, bodies under flow control, trailers, files), over
+//! over crates/http2's HPACK, bodies under flow control, trailers, files), over
 //! the sessions and streams of `session`, and an async server's
 //! `onReceive` and `onClose` for its HTTP/2 connections. The HTTP contexts are
 //! crates/phphttp's.
-use crate::native::{
-    Header, swoole_http2_client_coro_deflate, swoole_http2_client_coro_deflate_bound,
-    swoole_http2_client_coro_deflate_table, swoole_http2_client_coro_deflater,
-    swoole_http2_client_coro_inflate, swoole_http2_client_coro_inflate_end,
-    swoole_http2_client_coro_inflater, swoole_http2_client_coro_strerror,
-};
 use crate::session::{Session, SessionState, Stream};
 use libc::{c_char, c_int, c_void};
 use std::{
@@ -17,12 +11,14 @@ use std::{
     ptr,
 };
 use swoole_rs_http2::{
-    Http2HeaderPlan, Http2RespondFacts, Http2WindowPlan, send_frame_size, sw_rs_http2_chunk,
-    sw_rs_http2_content_length_rejected, sw_rs_http2_data_rejected, sw_rs_http2_decode_frame,
-    sw_rs_http2_file_complete, sw_rs_http2_header_defaults, sw_rs_http2_header_plan,
-    sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
-    sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next, sw_rs_http2_response_status,
-    sw_rs_http2_setting_plan, sw_rs_http2_window_action, sw_rs_http2_window_plan,
+    Http2HeaderPlan, Http2RespondFacts, Http2WindowPlan,
+    hpack::{Encoder, Error},
+    send_frame_size, sw_rs_http2_chunk, sw_rs_http2_content_length_rejected,
+    sw_rs_http2_data_rejected, sw_rs_http2_decode_frame, sw_rs_http2_file_complete,
+    sw_rs_http2_header_defaults, sw_rs_http2_header_plan, sw_rs_http2_headers_flags,
+    sw_rs_http2_inflate_step, sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header,
+    sw_rs_http2_respond_next, sw_rs_http2_response_status, sw_rs_http2_setting_plan,
+    sw_rs_http2_window_action, sw_rs_http2_window_plan,
 };
 use swoole_rs_zend::{
     Array, Owned, Value as Zval, ZString, bailout, string,
@@ -95,10 +91,6 @@ const SETTING_HEADER_TABLE_SIZE: u16 = 1;
 /// `swoole::http2::Settings` field indexes.
 const INIT_WINDOW_SIZE: usize = 3;
 const MAX_FRAME_SIZE: usize = 4;
-/// `NGHTTP2_HD_INFLATE_EMIT`.
-const INFLATE_EMIT: c_int = 2;
-/// `NGHTTP2_NV_FLAG_NO_COPY_NAME | NGHTTP2_NV_FLAG_NO_COPY_VALUE`.
-const NV_NO_COPY: u8 = 0x02 | 0x04;
 /// Swoole error codes and log levels.
 const PHP_FATAL_ERROR: c_int = 503;
 const NO_PAYLOAD: c_int = 550;
@@ -159,16 +151,6 @@ fn report(code: c_int, always: bool, message: &[u8]) {
     }
 }
 
-/// nghttp2's text for `code`.
-fn strerror(code: c_int) -> String {
-    // SAFETY: a plain lookup.
-    let text = unsafe { swoole_http2_client_coro_strerror(code) };
-    // SAFETY: nghttp2's static error text.
-    unsafe { CStr::from_ptr(text) }
-        .to_string_lossy()
-        .into_owned()
-}
-
 /// A frame's nine header bytes.
 fn frame_header(kind: u32, length: usize, flags: u32, stream_id: u32) -> [u8; FRAME_HEADER] {
     #[expect(clippy::cast_possible_truncation, reason = "frame lengths are 24-bit")]
@@ -193,30 +175,6 @@ pub(crate) fn current(session: &Session, stream: &Stream) -> bool {
     }
     set(stream.ctx, Field::End, 1);
     false
-}
-
-/// The HPACK deflater, created on first use as `func`.
-fn deflater(session: &SessionState, func: &CStr) -> Option<*mut c_void> {
-    let deflater = session.deflater.get();
-    if !deflater.is_null() {
-        return Some(deflater);
-    }
-    let mut error = 0;
-    let size = session.remote[0].get();
-    // SAFETY: nghttp2's constructor; `error` is writable.
-    let deflater = unsafe { swoole_http2_client_coro_deflater(size, &raw mut error) };
-    if error != 0 {
-        warn(
-            func,
-            &format!(
-                "nghttp2_hd_deflate_new2() failed with error: {}",
-                strerror(error)
-            ),
-        );
-        return None;
-    }
-    session.deflater.set(deflater);
-    Some(deflater)
 }
 
 // --- small frames ---
@@ -295,7 +253,6 @@ struct Buffers {
     bytes: Vec<u8>,
     /// Each header's start, name length and value length in `bytes`.
     slots: Vec<(usize, usize, usize)>,
-    list: Vec<Header>,
     /// The frame: nine header bytes, then the HPACK block.
     frame: Vec<u8>,
 }
@@ -344,55 +301,27 @@ impl Headers {
         }
     }
 
-    /// Encode the set with `nghttp2_hd_deflate_hd` into the frame after its
-    /// nine header bytes, which `seal` fills in (`func` names the caller in logs).
-    fn deflate(mut self, session: &Session, func: &CStr) -> Option<Self> {
-        let deflater = deflater(session, func)?;
+    /// HPACK-encode the set into the frame after its nine header bytes, which
+    /// `seal` fills in, with the session's encoder, made on first use.
+    fn deflate(mut self, session: &Session) -> Self {
+        let mut deflater = session.deflater.borrow_mut();
+        let encoder = deflater.get_or_insert_with(|| Encoder::new(session.remote[0].get()));
         let Buffers {
             bytes,
             slots,
-            list,
             frame,
         } = &mut self.buffers;
-        let base = bytes.as_ptr();
-        list.extend(slots.iter().map(|&(start, name, value)| Header {
-            name: base.wrapping_add(start),
-            value: base.wrapping_add(start + name),
-            name_length: name,
-            value_length: value,
-            flags: NV_NO_COPY,
-        }));
-        // SAFETY: a live deflater and the list above.
-        let bound =
-            unsafe { swoole_http2_client_coro_deflate_bound(deflater, list.as_ptr(), list.len()) };
-        frame.resize(FRAME_HEADER + bound, 0);
-        // SAFETY: as above, into the `bound` writable bytes after the frame header.
-        let written = unsafe {
-            swoole_http2_client_coro_deflate(
-                deflater,
-                frame.as_mut_ptr().wrapping_add(FRAME_HEADER),
-                bound,
-                list.as_ptr(),
-                list.len(),
-            )
-        };
-        let Ok(written) = usize::try_from(written) else {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "nghttp2 error codes are small ints"
-            )]
-            let code = written as c_int;
-            warn(
-                func,
-                &format!(
-                    "nghttp2_hd_deflate_hd() failed with error: {}",
-                    strerror(code)
-                ),
-            );
-            return None;
-        };
-        frame.truncate(FRAME_HEADER + written);
-        Some(self)
+        frame.resize(FRAME_HEADER, 0);
+        let field = |start: usize, length: usize| bytes.get(start..start + length);
+        encoder.encode(
+            slots.iter().map(|&(start, name, value)| {
+                let value = field(start + name, value).unwrap_or_default();
+                (field(start, name).unwrap_or_default(), value)
+            }),
+            frame,
+        );
+        drop(deflater);
+        self
     }
 
     /// The frame `deflate` built, its header filled in.
@@ -411,7 +340,6 @@ impl Drop for Headers {
         let mut buffers = std::mem::take(&mut self.buffers);
         buffers.bytes.clear();
         buffers.slots.clear();
-        buffers.list.clear();
         buffers.frame.clear();
         POOL.with_borrow_mut(|pool| pool.push(buffers));
     }
@@ -485,7 +413,7 @@ fn build_trailer(ctx: Ctx, session: &Session) -> Option<Headers> {
         let value = string_of(value)?;
         headers.add_folded(key, value.bytes());
     }
-    headers.deflate(session, c"http2_server_build_trailer")
+    Some(headers.deflate(session))
 }
 
 /// The body a response header announces: its bytes (null for a file sent
@@ -592,7 +520,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Heade
             ),
         );
     }
-    let headers = headers.deflate(session, c"http2_server_build_header")?;
+    let headers = headers.deflate(session);
     set(ctx, Field::SendHeader, 1);
     Some(headers)
 }
@@ -651,8 +579,8 @@ fn send_header(
     end_stream: bool,
 ) -> bool {
     let Some(mut headers) = build_header(ctx, session, body) else {
-        // A failed HPACK encoding leaves the peer's decoder out of step.
-        if !session.deflater.get().is_null() {
+        // Upstream closes once the session has an encoder.
+        if session.deflater.borrow().is_some() {
             set(ctx, Field::End, 1);
             close(ctx);
         }
@@ -1215,13 +1143,13 @@ fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
         // SAFETY: six readable bytes, as upstream reads them.
         let entry = unsafe { at.cast::<[u8; 6]>().read_unaligned() };
         let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(&entry);
-        let deflater = session.deflater.get();
+        let mut deflater = session.deflater.borrow_mut();
         let old = if id == SETTING_HEADER_TABLE_SIZE {
             session.remote[0].get()
         } else {
             0
         };
-        let change = id == SETTING_HEADER_TABLE_SIZE && value != old && !deflater.is_null();
+        let change = id == SETTING_HEADER_TABLE_SIZE && value != old && deflater.is_some();
         let plan = sw_rs_http2_setting_plan(u32::from(id), value, old, u32::from(change), 1);
         if plan.set_value != 0
             && let Ok(field) = usize::try_from(plan.field)
@@ -1232,20 +1160,12 @@ fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
         if plan.set_window != 0 {
             session.remote_window_size.set(value);
         }
-        if plan.change_deflater != 0 {
-            // SAFETY: a live deflater.
-            let code = unsafe { swoole_http2_client_coro_deflate_table(deflater, value) };
-            if code != 0 {
-                warn(
-                    c"swoole_http2_server_parse",
-                    &format!(
-                        "nghttp2_hd_deflate_change_table_size() failed, errno={code}, errmsg={}",
-                        strerror(code)
-                    ),
-                );
-                return SW_ERR;
-            }
+        if plan.change_deflater != 0
+            && let Some(encoder) = deflater.as_mut()
+        {
+            encoder.set_table_size(value);
         }
+        drop(deflater);
         // SAFETY: the next setting, as upstream steps.
         at = unsafe { at.add(6) };
         left -= 6;
@@ -1320,88 +1240,43 @@ fn parse_header(
     session: &Session,
     stream: &Stream,
     flags: u32,
-    mut input: *const u8,
-    mut length: usize,
+    input: *const u8,
+    length: usize,
     discard: bool,
 ) -> c_int {
-    const FUNC: &CStr = c"http2_server_parse_header";
-    let mut inflater = session.inflater.get();
-    if inflater.is_null() {
-        let mut error = 0;
-        // SAFETY: nghttp2's constructor; `error` is writable.
-        inflater = unsafe { swoole_http2_client_coro_inflater(&raw mut error) };
-        if error != 0 {
-            warn(
-                FUNC,
-                &format!(
-                    "nghttp2_hd_inflate_new2() failed, Error: {}[{error}]",
-                    strerror(error)
-                ),
-            );
-            return SW_ERR;
-        }
-        session.inflater.set(inflater);
-    }
+    // SAFETY: the frame's `length` payload bytes.
+    let mut input = unsafe { std::slice::from_raw_parts(input, length) };
     if flags & FLAG_PRIORITY != 0 {
-        if length < 5 {
-            return SW_ERR;
-        }
         // The stream dependency and weight are ignored.
-        input = input.wrapping_add(5);
-        length -= 5;
+        let Some(block) = input.get(5..) else {
+            return SW_ERR;
+        };
+        input = block;
     }
     let zheader = zval_of(stream.ctx, Value::Header);
     let zserver = zval_of(stream.ctx, Value::Server);
+    let mut inflater = session.inflater.borrow_mut();
     loop {
-        let mut header = Header {
-            name: ptr::null(),
-            value: ptr::null(),
-            name_length: 0,
-            value_length: 0,
-            flags: 0,
-        };
-        let mut inflate_flags = 0;
-        // SAFETY: a live inflater over the rest of the block.
-        let read = unsafe {
-            swoole_http2_client_coro_inflate(
-                inflater,
-                input,
-                length,
-                &raw mut inflate_flags,
-                &raw mut header,
-                flags & FLAG_END_HEADERS != 0,
-            )
-        };
-        let Ok(read) = usize::try_from(read) else {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "nghttp2 error codes are small ints"
-            )]
-            let code = read as c_int;
-            warn(
-                FUNC,
-                &format!("inflate failed, Error: {}[{read}]", strerror(code)),
-            );
-            return SW_ERR;
-        };
-        // SAFETY: nghttp2 consumed `read` bytes of the input.
-        input = unsafe { input.add(read) };
-        length -= read;
-        // Trailers are decoded for the HPACK table but never exposed or acted on.
-        if inflate_flags & INFLATE_EMIT != 0 && !discard {
-            // SAFETY: nghttp2's header, live until the next inflate call.
-            let name = unsafe { std::slice::from_raw_parts(header.name, header.name_length) };
-            // SAFETY: as above.
-            let value = unsafe { std::slice::from_raw_parts(header.value, header.value_length) };
-            if !request_header(session, stream, zheader, zserver, name, value) {
-                continue;
+        let step = match inflater.decode(input, flags & FLAG_END_HEADERS != 0) {
+            Ok(step) => step,
+            Err(error) => {
+                let code = Error::CODE;
+                let text = format!("inflate failed, Error: {error}[{code}]");
+                warn(c"http2_server_parse_header", &text);
+                return SW_ERR;
             }
+        };
+        input = input.get(step.read..).unwrap_or_default();
+        let inflate_flags = step.flags();
+        // Trailers are decoded for the HPACK table but never exposed or acted on.
+        if let Some((name, value)) = step.header.filter(|_| !discard)
+            && !request_header(session, stream, zheader, zserver, name, value)
+        {
+            continue;
         }
-        #[expect(clippy::cast_sign_loss, reason = "nghttp2's flag bits")]
-        let step = sw_rs_http2_inflate_step(inflate_flags as u32, length, 0);
+        let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), 0);
         if step.end_headers != 0 {
-            // SAFETY: a live inflater.
-            unsafe { swoole_http2_client_coro_inflate_end(inflater) };
+            inflater.end_headers();
             break;
         }
         if step.finish != 0 {
