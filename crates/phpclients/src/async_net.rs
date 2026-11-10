@@ -119,7 +119,8 @@ fn callbacks<'a>(data: &net::Data) -> Option<&'a mut [*mut c_void; 7]> {
     unsafe { data.callbacks.as_mut() }
 }
 
-/// `php_swoole_client_async_free_object`: free every callback.
+/// `php_swoole_client_async_free_object`: free every callback, all of them
+/// even when a destructor bails out.
 pub(crate) fn free_callbacks(object: *mut zend_object) -> Result<(), Bailout> {
     let data = net::data(object);
     let slots = data.callbacks;
@@ -127,9 +128,9 @@ pub(crate) fn free_callbacks(object: *mut zend_object) -> Result<(), Bailout> {
     // SAFETY: allocated by `on()` as a box, released once.
     let slots = unsafe { Box::from_raw(slots) };
     for callable in slots.iter().copied().filter(|callable| !callable.is_null()) {
-        callable_free(callable)?;
+        bailout::defer(callable_free(callable));
     }
-    Ok(())
+    bailout::outcome(())
 }
 
 /// Call `callable` with `argv`: whether the call succeeded.

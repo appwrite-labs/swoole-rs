@@ -402,7 +402,7 @@ impl ServerObject {
     }
 
     /// `on()`'s server-level callback: replace callback `kind` with `callable`;
-    /// false if it is not callable.
+    /// false if it is not callable, or once the old one's destructor bails out.
     pub(crate) fn set_callback(self, kind: c_int, callable: &Value) -> bool {
         let Ok(kind) = usize::try_from(kind) else {
             return false;
@@ -420,6 +420,9 @@ impl ServerObject {
             unsafe { swoole_rs_phpruntime::callable_free(unowned) };
         };
         free(old);
+        if bailout::pending() {
+            return false;
+        }
         // SAFETY: a live value.
         let callable = unsafe { swoole_rs_phpruntime::callable_create(callable.as_ptr()) };
         if callable.is_null() {

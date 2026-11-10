@@ -440,10 +440,17 @@ impl Client {
                 self.body_decompression = truthy(found);
             }
             if let Some(found) = get(b"write_func") {
-                // SAFETY: the callable the client owns, if any.
-                unsafe { native::swoole_http_client_coro_callable_free(self.write_func) };
+                let old = std::mem::replace(&mut self.write_func, ptr::null_mut());
+                // SAFETY: the callable the client owned, if any, which it no longer holds.
+                unsafe { native::swoole_http_client_coro_callable_free(old) };
+                if bailout::pending() {
+                    return;
+                }
                 // SAFETY: a live zval.
                 self.write_func = unsafe { swoole_rs_phpruntime::callable_create(found.as_ptr()) };
+                if bailout::pending() {
+                    return;
+                }
             }
             // SAFETY: the client's WebSocket state and a live array.
             unsafe { native::swoole_http_client_coro_ws_apply(self.ws, settings.as_ptr()) };
@@ -1226,6 +1233,8 @@ enum Decoder {
 }
 
 impl Drop for Client {
+    /// Runs to the end even when a destructor the callable's release runs
+    /// bails out; that bailout stays pending for the `free` handler to raise.
     fn drop(&mut self) {
         self.close(true);
         // SAFETY: the C++ objects the client owns, freed once (null is ignored
@@ -1493,6 +1502,7 @@ unsafe extern "C" fn free(std: *mut zend_object) {
     }
     // SAFETY: as above.
     unsafe { ClientObject::dtor(std) };
+    bailout::finish();
 }
 
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {

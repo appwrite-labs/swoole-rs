@@ -349,14 +349,7 @@ fn set_protocol(s: &Settings, socket: Co) -> Result<bool, Stop> {
         edit(socket, |p| p.package_body_offset = offset);
     }
     if let Some(v) = s.get(c"package_length_func") {
-        let mut args = native::LengthCallable { socket, value: v };
-        // SAFETY: C++ that may report a PHP error, with its arguments.
-        bailout::defer(unsafe {
-            bailout::trap(
-                native::swoole_socket_coro_length_callable,
-                (&raw mut args).cast(),
-            )
-        });
+        native::length_callable(socket, v);
         checked()?;
     }
     if let Some(v) = s.get(c"package_max_length") {
