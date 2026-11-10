@@ -8,18 +8,18 @@ use crate::{
     string::bytes,
     sys::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
-        IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR, IS_REFERENCE, IS_STRING, IS_TRUE,
-        IS_UNDEF, add_assoc_bool_ex, add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex,
+        IS_DOUBLE, IS_FALSE, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR,
+        IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
+        add_assoc_bool_ex, add_assoc_double_ex, add_assoc_long_ex, add_assoc_zval_ex,
         add_next_index_long, add_next_index_null, add_next_index_stringl,
         swr_zend_array_add_or_merge, swr_zend_array_init, swr_zend_array_is_list,
         swr_zend_hash_foreach_kv, swr_zend_hash_next, swr_zend_object_properties,
-        swr_zend_separate_array, swr_zend_string_copy, swr_zend_string_release,
-        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
-        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zend_zval_value_name,
-        swr_zval_is_true, swr_zval_str, swr_zval_try_addref, zend_array_count, zend_class_entry,
-        zend_hash_add_new, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
-        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
-        zend_value, zval, zval_ptr_dtor,
+        swr_zend_separate_array, swr_zend_string_release, swr_zend_try_get_double,
+        swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_update,
+        swr_zend_try_ptr_dtor, swr_zend_zval_value_name, swr_zval_is_true, swr_zval_try_addref,
+        zend_array_count, zend_class_entry, zend_hash_add_new, zend_hash_index_find,
+        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
+        zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
     value,
 };
@@ -472,8 +472,21 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn to_owned(&self) -> ZString {
-        // SAFETY: a live string; the new reference is the `ZString`'s.
-        ZString(unsafe { swr_zend_string_copy(self.as_ptr()) })
+        if !self.interned() {
+            // SAFETY: a live, counted string; the new reference is the `ZString`'s.
+            unsafe { (*self.as_ptr()).gc.refcount += 1 };
+        }
+        ZString(self.as_ptr())
+    }
+
+    /// `ZSTR_IS_INTERNED`: interned strings are never counted or freed.
+    #[must_use]
+    #[inline]
+    pub fn interned(&self) -> bool {
+        // SAFETY: a live string begins with its `zend_refcounted_h`: the
+        // refcount, then `type_info`, two `u32`s.
+        let [_, info] = unsafe { self.as_ptr().cast::<[u32; 2]>().read() };
+        info & IS_STR_INTERNED != 0
     }
 
     /// `zend_ini_parse_quantity`: an ini quantity ("64M").
@@ -604,10 +617,16 @@ impl Owned {
     #[must_use]
     #[inline]
     pub fn string(string: ZString) -> Self {
-        let owned = Self::default();
-        // SAFETY: an undefined slot this owns takes the string's reference.
-        unsafe { swr_zval_str(owned.as_ptr(), string.into_raw()) };
-        owned
+        let mut zval = UNDEF;
+        zval.u1.type_info = if string.interned() {
+            IS_INTERNED_STRING_EX
+        } else {
+            IS_STRING_EX
+        };
+        zval.value = zend_value {
+            str_: string.into_raw(),
+        };
+        Self(Value(UnsafeCell::new(zval)))
     }
 
     /// The array this holds, to add to ([`ArrayMut`] separates it first), or
@@ -649,8 +668,8 @@ impl Owned {
     /// leaving nothing for the drop.
     #[must_use]
     #[inline]
-    pub fn into_zval(mut self) -> zval {
-        std::mem::replace(self.0.0.get_mut(), UNDEF)
+    pub fn into_zval(self) -> zval {
+        *std::mem::ManuallyDrop::new(self).0.0.get_mut()
     }
 }
 
@@ -908,7 +927,8 @@ impl Value {
             bailout::defer(bailout::trapped(unsafe {
                 swr_zend_try_ptr_dtor(self.as_ptr())
             }));
-        } else {
+        } else if self.kind() >= IS_STRING {
+            // Types below `IS_STRING` are scalars, never counted.
             // SAFETY: as above.
             unsafe { zval_ptr_dtor(self.as_ptr()) };
         }
