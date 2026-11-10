@@ -556,7 +556,8 @@ jobs:
   required:
     if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.ref == 'refs/heads/main') }}
     needs: [full-gates, phpt-build, callgrind, phpt-stdext, iouring, cares, zts, threadcontext, h2spec, halfclose, phpt, phpt-root, library, autobahn, alpine]
-    runs-on: gcrunner=${{ github.run_id }}/runner=small
+    # GitHub-hosted: one line of jq shouldn't wait 40 to 55 s for a VM at the end of every group.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - env:
