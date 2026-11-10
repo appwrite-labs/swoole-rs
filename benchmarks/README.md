@@ -34,6 +34,12 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 `benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
 `10-task-workers`.
 
+Every other HTTP workload reuses one kept-alive connection. `connect` (#2651) is
+`plaintext` on a new connection per request, sent with `Connection: close`, and the
+client waits for the server's close, so accepting the connection, setting up its
+session and tearing it down count in every request. Its record started 5% above an
+arm64 Linux run (0.99); the ratchet lowers it once two merge runs beat it.
+
 Three measure outbound coroutine clients against `benchmarks/clients` (#2647),
 each on a connection the worker keeps: `http-client` (a `Coroutine\Http\Client`
 GET), `client` and `socket` (a 1 KiB send/recv through `Coroutine\Client` and

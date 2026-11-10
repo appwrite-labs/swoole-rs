@@ -50,6 +50,7 @@ FRAME = (1024).to_bytes(4, 'big') + PAYLOAD[:1024]
 # verify it.
 # 'H2C' posts `body` on 16 HTTP/2 streams at once per request; 'WSF' sends `body` as a WebSocket
 # message in four fragments; 'UP' posts `body` as a multipart file upload.
+# 'GET1' is a GET on a new connection each time, closed by the server (Connection: close).
 H2BODY = PAYLOAD[:4000]
 STATIC = (Path(__file__).parent / 'traffic/static.txt').read_bytes()
 BOUNDARY = 'swoole-rs-benchmark'
@@ -76,6 +77,8 @@ WORKLOADS = {
     # A prepared SELECT through hooked PDO mysql (#2066); needs MySQL on MYSQL_HOST (root/root,
     # database test) and --php-extension mysqlnd --php-extension pdo --php-extension pdo_mysql.
     'mysql': ('benchmarks/mysql', 'GET', '/?id=42', None, b'{"id":42,"name":"benchmark"}'),
+    # plaintext with accept, the connection's setup and its close in every request (#2651).
+    'connect': ('corpus/01-hello', 'GET1', '/', None, b'Hello, Swoole!\n'),
     # Outbound coroutine clients (#2647), against the peers below.
     'http-client': ('benchmarks/clients', 'GET', '/http', None, b'ok\n'),
     'client': ('benchmarks/clients', 'GET', '/client', None, b'ok\n'),
@@ -215,6 +218,20 @@ def send(port, workload, count):
         return
     if method in ('H2', 'H2C'):
         send_h2(port, path, expected, count, *((payload, 16) if method == 'H2C' else ()))
+        return
+    if method == 'GET1':
+        request = f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'.encode()
+        for _ in range(count):
+            # A raw socket read to EOF: http.client drops its socket on Connection: close and
+            # stops at Content-Length, so the server's close could fall after the request.
+            with socket.create_connection(('127.0.0.1', port), timeout=60) as sock:
+                sock.sendall(request)
+                reply = b''
+                while chunk := sock.recv(65536):
+                    reply += chunk
+            head, _, body = reply.partition(b'\r\n\r\n')
+            if not head.startswith(b'HTTP/1.1 200 ') or body != expected:
+                raise RuntimeError(f'unexpected response: {reply[:80]!r}')
         return
     if method in ('TCP', 'UDP'):
         if method == 'TCP':
