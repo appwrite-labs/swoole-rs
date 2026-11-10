@@ -1,7 +1,8 @@
 //! Upstream's `core-tests/src/server/server.cpp` task-worker TESTs, one Rust function per
 //! TEST with the same inputs and expected values, over the crates. `Server::task` and
-//! `task_sync` are crates/server's `tasks` over crates/process's `Tasks`, as
-//! `Swoole\Server`'s task methods call them; `finish`, `task_pack`, `task_unpack`,
+//! `task_sync` are crates/process's `Tasks` over the server's task pool and this worker's
+//! notify pipe, lock and result slot ([`tasks`], as crates/phpserver's `task_state`
+//! lends them to `Swoole\Server`'s task methods); `finish`, `task_pack`, `task_unpack`,
 //! `task_dump`, `send_to_worker_from_worker`, `kill_worker` and the pool's `dispatch`,
 //! main loop and `destroy` are the crates' functions under their upstream symbols.
 //!
@@ -13,12 +14,13 @@ use super::*;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
+use swoole_rs_locks::{swr_v1_locks_lock, swr_v1_locks_unlock};
 use swoole_rs_process::process_pool::{PoolRecord, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{EventHead, task_dump, task_pack, task_unpack};
-use swoole_rs_process::task_sync::{Bailed, MultiTask};
+use swoole_rs_process::task_sync::{Bailed, MultiTask, TaskHost, Tasks};
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::{methods as pool, workers::entry};
-use swoole_rs_server::tasks::tasks;
+use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_utilities::swoole_set_log_file;
 
 use case::{TimerNode, swoole_timer_after};
@@ -42,6 +44,9 @@ const SW_SERVER_EVENT_SHUTDOWN: u8 = 16;
 const TEST_LOG_FILE: &str = "/tmp/swoole.log";
 const TEST_COUNTER_NUM: usize = 32;
 const IPC_MAX_SIZE: usize = SW_IPC_MAX_SIZE as usize;
+/// `Lock::MUTEX`, `LOCK_EX`.
+const MUTEX: i32 = 3;
+const LOCK_EX: i32 = 2;
 
 // Callback slots, in callbacks.rs's order.
 const CB_TASK: usize = 4;
@@ -95,6 +100,78 @@ impl EventData {
     /// `EventData::size()`.
     fn size(&self) -> usize {
         size_of::<DataHead>() + self.info.len as usize
+    }
+}
+
+/// The server's task pool, and this worker's notify pipe and lock.
+struct TaskPool {
+    pool: *mut PoolRecord,
+    pipe: *mut SocketPair,
+    lock: *mut c_void,
+}
+
+impl TaskHost for TaskPool {
+    fn dispatch(&mut self, task: *mut u8, worker_id: &mut c_int, blocking: bool) -> bool {
+        let dispatch = if blocking {
+            pool::dispatch_sync
+        } else {
+            pool::dispatch
+        };
+        // SAFETY: the live task pool and a packed task.
+        unsafe { dispatch(self.pool, task, worker_id) == SW_OK }
+    }
+
+    fn pipe_clean(&mut self) {
+        // SAFETY: this worker's live notify pipe.
+        unsafe { socket_pair::clean(self.pipe) };
+    }
+
+    fn set_timeout(&mut self, timeout: f64) {
+        // SAFETY: as above.
+        unsafe { socket_pair::set_timeout(self.pipe, timeout) };
+    }
+
+    fn read_notify(&mut self) -> isize {
+        let mut notify = 0u64;
+        // SAFETY: as above, into a local of that size.
+        unsafe { socket_pair::read(self.pipe, (&raw mut notify).cast(), size_of::<u64>()) }
+    }
+
+    fn lock(&mut self, on: bool) {
+        // SAFETY: this worker's live mutex.
+        unsafe {
+            if on {
+                swr_v1_locks_lock(self.lock, MUTEX, LOCK_EX, -1, 0);
+            } else {
+                swr_v1_locks_unlock(self.lock, MUTEX);
+            }
+        }
+    }
+}
+
+/// `serv`'s task state; for a call that waits (`sync`), with this worker's notify pipe,
+/// lock and `task_results` slot.
+fn tasks(serv: Server, sync: bool) -> Tasks<'static, TaskPool> {
+    let view = serv.view();
+    let counters = view.counters();
+    let mut host = TaskPool {
+        pool: view.task_pool(),
+        pipe: ptr::null_mut(),
+        lock: ptr::null_mut(),
+    };
+    let mut result = ptr::null_mut();
+    if sync {
+        let id = u16::try_from(pool::swoole_get_worker_id()).unwrap();
+        host.pipe = view.task_notify_pipe(id);
+        // SAFETY: this worker's live record.
+        host.lock = unsafe { (*view.worker(id)).lock };
+        result = serv.get_task_result().cast();
+    }
+    Tasks {
+        host,
+        tasking: &counters.tasking_num,
+        count: &counters.task_count,
+        result,
     }
 }
 
@@ -258,7 +335,7 @@ impl TaskServer for Server {
     }
 
     fn task(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> bool {
-        tasks(self.view(), false)
+        tasks(self, false)
             .task(buf.head().cast(), dst_worker_id, false)
             .unwrap_or(false)
     }
@@ -812,13 +889,13 @@ unsafe extern "C" fn task_sync_multi_on_task(
 }
 
 /// `task_sync_multi_task`'s tasks and results, which its worker inherits.
-static MULTI: Mutex<Tasks> = Mutex::new(Tasks {
+static MULTI: Mutex<MultiTasks> = Mutex::new(MultiTasks {
     tasks: Vec::new(),
     results: Vec::new(),
 });
 
 /// `task_sync_multi_task`'s `tasks` and `results`.
-struct Tasks {
+struct MultiTasks {
     tasks: Vec<Vec<u8>>,
     results: Vec<Vec<u8>>,
 }
@@ -865,7 +942,7 @@ unsafe extern "C" fn task_sync_multi_on_worker_start(
     let serv = Server(serv);
     if worker_id(worker) == 1 {
         let mut guard = MULTI.lock().unwrap();
-        let Tasks {
+        let MultiTasks {
             tasks: all,
             results,
         } = &mut *guard;
@@ -875,7 +952,7 @@ unsafe extern "C" fn task_sync_multi_on_worker_start(
         };
 
         check(
-            tasks(serv.view(), true)
+            tasks(serv, true)
                 .task_sync_many(&mut mt, 10.0)
                 .unwrap_or(false),
             "serv->task_sync(mt, 10)",
@@ -900,7 +977,7 @@ fn task_sync_multi_task() {
     let len_task = IPC_MAX_SIZE * 2;
     {
         let mut multi = MULTI.lock().unwrap();
-        let Tasks { tasks, results } = &mut *multi;
+        let MultiTasks { tasks, results } = &mut *multi;
         for _ in 0..n_task {
             let mut data = vec![0u8; len_task];
             // SAFETY: `len_task - 1` characters and their NUL.
@@ -959,7 +1036,7 @@ unsafe extern "C" fn task_sync_on_worker_start(
         let mut dst_worker_id = -1;
         let mut buf = EventData::packed(PACKET);
         check(
-            tasks(serv.view(), true)
+            tasks(serv, true)
                 .task_sync(buf.head().cast(), &mut dst_worker_id, 0.5)
                 .unwrap_or(false),
             "serv->task_sync(&buf, &_dst_worker_id, 0.5)",

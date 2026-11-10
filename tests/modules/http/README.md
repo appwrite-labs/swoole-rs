@@ -142,9 +142,9 @@ a blocking `TcpStream`.
 same Servers, inputs and expected values: `task_worker`, `task_worker2`, `task_worker_3`,
 `task_base`, `task_process`, `task_ipc_stream`, `task_worker3`, `task_worker4`,
 `task_sync_multi_task`, `task_sync`, `task_ipc_queue_1` .. `task_ipc_queue_5` and
-`no_idle_task_worker`. `Server::task` and both `task_sync`s are crates/server's `tasks`
-(the task pool, notify pipe, lock and result slot that `Swoole\Server`'s task methods use)
-over crates/process's `Tasks`; the other methods are the crates' functions under their
+`no_idle_task_worker`. `Server::task` and both `task_sync`s are crates/process's `Tasks`
+over the server's task pool and the worker's notify pipe, lock and result slot (`tasks`,
+as crates/phpserver's `task_state` lends them to `Swoole\Server`'s task methods); the other methods are the crates' functions under their
 upstream symbols, and the inline ones (`send_pipe_message(id, data, len)`,
 `get_task_result`, `get_worker_pid`) keep their bodies. `test::counter_*` is a shared
 mapping the forked processes inherit, as core-tests' memory-pool counters are, and an

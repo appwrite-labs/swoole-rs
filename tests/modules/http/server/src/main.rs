@@ -5,6 +5,7 @@
 //! (`core-tests/src/_lib/http.cpp`): the same upgrade request, and frames from the
 //! crates' `websocket::encode`, `mask`, `get_package_length` and `decode`.
 //!
+//! http1/task.rs adds `core-tests/src/server/server.cpp`'s task-worker TESTs;
 //! protocol.rs (tests/modules/framing) adds `core-tests/src/protocol/base.cpp`'s server TESTs,
 //! server.rs (tests/modules/protocols) `protocol/redis.cpp`'s and `server/mqtt.cpp`'s.
 //!

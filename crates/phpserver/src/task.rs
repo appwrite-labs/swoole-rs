@@ -4,8 +4,7 @@
 //! wait for results (upstream's `ServerProperty::task_callbacks` and
 //! `task_coroutine_map`), and the task encoding (a string, or PHP's serialize
 //! with `SW_TASK_SERIALIZE`), packed, sent and waited for by crates/process's
-//! `Server` methods over this worker's task pool, notify pipe and lock
-//! (crates/server's `tasks`).
+//! `Server` methods over this worker's task pool, notify pipe and lock ([`Host`]).
 use crate::dispatch::{handler_error, invoke, set_last_error, undef, zserv};
 use crate::lifecycle::Props;
 use crate::server::{DATA, TASK, fatal, running};
@@ -18,12 +17,16 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_locks::{swr_v1_locks_lock, swr_v1_locks_unlock};
 use swoole_rs_process::{
+    methods::{self, swoole_get_worker_id},
+    process_pool::{PoolRecord, SW_IPC_MAX_SIZE},
     task_file,
-    task_sync::{Bailed, MultiTask},
+    task_sync::{Bailed, MultiTask, TaskHost, Tasks},
     workers::entry::finish,
 };
-use swoole_rs_server::{tasks::tasks, view};
+use swoole_rs_server::view;
+use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
     Array, Call, E_WARNING, Value,
     bailout::Bailout,
@@ -78,6 +81,86 @@ struct Info {
     worker_id: i64,
     time: f64,
     flags: i64,
+}
+
+/// `Lock::MUTEX`.
+const MUTEX: i32 = 3;
+
+/// The server's task pool, and this worker's notify pipe and lock.
+struct Host {
+    pool: *mut PoolRecord,
+    pipe: *mut SocketPair,
+    lock: *mut c_void,
+}
+
+impl TaskHost for Host {
+    fn dispatch(&mut self, task: *mut u8, worker_id: &mut c_int, blocking: bool) -> bool {
+        let dispatch = if blocking {
+            methods::dispatch_sync
+        } else {
+            methods::dispatch
+        };
+        // SAFETY: the live task pool and a packed task.
+        unsafe { dispatch(self.pool, task, worker_id) == SW_OK }
+    }
+
+    fn pipe_clean(&mut self) {
+        // SAFETY: this worker's live notify pipe.
+        unsafe { socket_pair::clean(self.pipe) };
+    }
+
+    fn set_timeout(&mut self, timeout: f64) {
+        // SAFETY: as above.
+        unsafe { socket_pair::set_timeout(self.pipe, timeout) };
+    }
+
+    fn read_notify(&mut self) -> isize {
+        let mut notify = 0u64;
+        // SAFETY: as above, into a local of that size.
+        unsafe { socket_pair::read(self.pipe, (&raw mut notify).cast(), size_of::<u64>()) }
+    }
+
+    fn lock(&mut self, on: bool) {
+        if on {
+            // SAFETY: this worker's live mutex.
+            unsafe { swr_v1_locks_lock(self.lock, MUTEX, libc::LOCK_EX, -1, 0) };
+        } else {
+            // SAFETY: as above.
+            unsafe { swr_v1_locks_unlock(self.lock, MUTEX) };
+        }
+    }
+}
+
+/// `serv`'s task state; for a call that waits (`sync`), with this worker's
+/// notify pipe, lock and `task_results` slot.
+fn task_state(serv: view::Server<'_>, sync: bool) -> Tasks<'_, Host> {
+    let counters = serv.counters();
+    let mut host = Host {
+        pool: serv.task_pool(),
+        pipe: ptr::null_mut(),
+        lock: ptr::null_mut(),
+    };
+    let mut result = ptr::null_mut();
+    if sync {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "upstream's uint16_t worker id"
+        )]
+        let id = swoole_get_worker_id() as u16;
+        host.pipe = serv.task_notify_pipe(id);
+        let worker = serv.worker(id);
+        // SAFETY: this worker's live record.
+        host.lock = unsafe { (*worker).lock };
+        let results = serv.config().task_results.cast::<u8>();
+        let size = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or_default();
+        result = results.wrapping_add(usize::from(id) * size);
+    }
+    Tasks {
+        host,
+        tasking: &counters.tasking_num,
+        count: &counters.task_count,
+        result,
+    }
 }
 
 /// `taskWaitMulti`'s `Server::MultiTask`: the array of tasks, and the array of
@@ -318,7 +401,7 @@ fn add_flags(buf: *mut c_void, flags: u32) {
 
 /// `serv->task(buf, dst_worker_id)`.
 fn dispatch(server: view::Server<'_>, buf: &mut EventData, dst: &mut c_int) -> bool {
-    tasks(server, false)
+    task_state(server, false)
         .task(buf.ptr().cast(), dst, false)
         .unwrap_or_else(|Bailed| {
             Bailout.defer();
@@ -435,7 +518,7 @@ fn taskwait(call: &Call) {
     )]
     let mut dst = dst as c_int;
     if !swoole_rs_phpcoroutines::in_coroutine() {
-        let mut tasks = tasks(serv, true);
+        let mut tasks = task_state(serv, true);
         let done = match tasks.task_sync(buf.ptr().cast(), &mut dst, timeout) {
             // `serv->get_task_result()`: this worker's slot of `task_results`.
             Ok(true) => {
@@ -502,7 +585,7 @@ fn task_wait_multi(call: &Call) {
         out: call.return_value(),
         count: u16::try_from(n_task).unwrap_or_default(),
     };
-    let done = tasks(serv, true)
+    let done = task_state(serv, true)
         .task_sync_many(&mut multi, timeout)
         .unwrap_or_else(|Bailed| {
             Bailout.defer();
