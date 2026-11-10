@@ -20,7 +20,7 @@ fn current() -> *mut c_void {
 }
 
 /// A field of the thread's `Reactor`, or `None` without one.
-fn field<T>(read: impl FnOnce(&ReactorFields) -> T) -> Option<T> {
+pub(crate) fn field<T>(read: impl FnOnce(&ReactorFields) -> T) -> Option<T> {
     field_mut(|fields| read(fields))
 }
 
@@ -228,6 +228,21 @@ fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
     Some(write(unsafe { &mut *fields }))
 }
 
+/// Runs `call` (with null data) when the thread's `Reactor` is destroyed;
+/// nothing without one.
+#[cfg(all(target_os = "linux", feature = "upstream-symbols", not(test)))]
+pub(crate) fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
+    field_mut(|fields| {
+        let queue = &raw mut fields.destroy_callbacks;
+        // SAFETY: the live reactor's destroy queue; `call` is safe with any data.
+        let pushed =
+            unsafe { crate::swr_v1_reactor_deferred_push(queue, call, std::ptr::null_mut(), None) };
+        if pushed != 0 {
+            std::process::abort();
+        }
+    });
+}
+
 /// `sw_reactor()->running = running`, when there is a reactor.
 pub fn swoole_event_set_running(running: bool) {
     field_mut(|fields| fields.running = running);
@@ -282,29 +297,65 @@ pub fn swoole_event_set_fd_handler<H: FdHandler>(fd_type: c_int, event: c_int) {
     unsafe { swoole_event_set_handler(fd_type, event, Some(fd_handler::<H>)) };
 }
 
-/// A reactor cycle task: `Reactor::future_task` or `idle_task`.
-pub trait CycleTask {
-    fn run();
+/// A reactor cycle task: `Reactor::future_task` or `idle_task`. The reactor
+/// holds it, so it runs on whichever thread drives the loop.
+pub trait CycleTask: 'static {
+    fn run(&self);
+    /// The reactor gave it up and the pass that may be running it is over.
+    fn retire(self: Box<Self>);
 }
 
-extern "C-unwind" fn cycle_task<T: CycleTask>(_: *mut c_void) {
-    T::run();
+/// What `ReactorTask::data` holds while `cycle_task` is its callback.
+type Task = Box<dyn CycleTask>;
+
+/// # Safety
+/// `data` is the live `Task` box `swoole_event_cycle` gave the reactor.
+unsafe extern "C-unwind" fn cycle_task(data: *mut c_void) {
+    // SAFETY: as above; a replaced task is retired only after the pass.
+    unsafe { &*data.cast::<Task>() }.run();
 }
 
-/// Set (`run`) or clear the thread reactor's future (`before`) or idle task, when
-/// there is a reactor.
-pub fn swoole_event_cycle<T: CycleTask>(before: bool, run: bool) {
-    field_mut(|fields| {
-        let task = if before {
+/// A replaced task, retired once the loop is out of the pass; dropped if the
+/// reactor is freed first.
+struct Retired(Box<Task>);
+
+impl Deferred for Retired {
+    fn run(self) {
+        (*self.0).retire();
+    }
+
+    fn dispose(self) {}
+}
+
+/// Set (`Some`) or clear the thread reactor's future (`before`) or idle task;
+/// the task it held is retired after the current pass. Without a reactor,
+/// nothing is set and `task` is dropped.
+pub fn swoole_event_cycle(before: bool, task: Option<Task>) {
+    if current_prepared().is_none() {
+        return;
+    }
+    let data = task.map(|task| Box::into_raw(Box::new(task)));
+    let replaced = field_mut(|fields| {
+        let slot = if before {
             &mut fields.future_task
         } else {
             &mut fields.idle_task
         };
-        *task = crate::ReactorTask {
-            callback: run.then_some(cycle_task::<T> as crate::DeferCall),
-            data: std::ptr::null_mut(),
+        let replaced = slot.data;
+        *slot = crate::ReactorTask {
+            callback: data.map(|_| cycle_task as crate::DeferCall),
+            data: data.map_or(std::ptr::null_mut(), <*mut Task>::cast),
         };
+        replaced
     });
+    let Some(replaced) = replaced.filter(|data| !data.is_null()) else {
+        return;
+    };
+    // SAFETY: only this function sets these tasks' data, to a `Task` box, which
+    // the reactor no longer holds.
+    let replaced = Retired(unsafe { Box::from_raw(replaced.cast::<Task>()) });
+    // The reactor was just there.
+    let _kept = swoole_event_defer_value(replaced);
 }
 
 /// Whether the thread reactor's future (`before`) or idle task is set.

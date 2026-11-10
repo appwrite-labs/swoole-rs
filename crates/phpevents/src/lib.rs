@@ -52,26 +52,6 @@ struct Registered {
     object: Option<EventObject>,
 }
 
-/// The callables of the reactor's idle task and, `before` it waits, future task.
-struct Cycles {
-    idle: Option<Rc<Callable>>,
-    future: Option<Rc<Callable>>,
-}
-
-impl Cycles {
-    fn slot(&mut self, before: bool) -> &mut Option<Rc<Callable>> {
-        if before {
-            &mut self.future
-        } else {
-            &mut self.idle
-        }
-    }
-
-    fn get(&self, before: bool) -> Option<Rc<Callable>> {
-        if before { &self.future } else { &self.idle }.clone()
-    }
-}
-
 const READ: i64 = EventType::SW_EVENT_READ as i64;
 const WRITE: i64 = EventType::SW_EVENT_WRITE as i64;
 const FD_USER: c_int = FdType::SW_FD_USER as c_int;
@@ -85,10 +65,6 @@ thread_local! {
         RefCell::new(ManuallyDrop::new(HashMap::new()));
     /// The last `Registered::id` handed out.
     static ADDED: Cell<u64> = const { Cell::new(0) };
-    /// The callables the reactor's cycle tasks run; never dropped, as above.
-    static CYCLE: RefCell<ManuallyDrop<Cycles>> = const {
-        RefCell::new(ManuallyDrop::new(Cycles { idle: None, future: None }))
-    };
 }
 
 /// The global functions `SW_FUNCTION_ALIAS` registers, in upstream's order.
@@ -452,43 +428,26 @@ fn defer(call: &Call) {
     call.set_bool(true);
 }
 
-/// The reactor's idle (`BEFORE` false) or future task: `event_cycle_callback`.
-struct Cycle<const BEFORE: bool>;
+/// The reactor's idle or future task: `event_cycle_callback` of its callable.
+struct Cycle(Rc<Callable>);
 
-impl<const BEFORE: bool> CycleTask for Cycle<BEFORE> {
-    fn run() {
-        let Some(callable) = CYCLE.with_borrow(|cycle| cycle.get(BEFORE)) else {
-            return;
-        };
-        let result = invoke(&callable, None).and_then(|ok| {
+impl CycleTask for Cycle {
+    fn run(&self) {
+        let result = invoke(&self.0, None).and_then(|ok| {
             if ok {
                 Ok(())
             } else {
                 native::warning(c"Swoole\\Event::end callback handler error")
             }
         });
-        drop(callable);
         bailout::raise(result);
     }
-}
 
-/// Set (`Some`) or clear the reactor's idle or future (`before`) task: the
-/// callable it replaces.
-fn set_cycle(before: bool, callable: Option<Rc<Callable>>) -> Option<Rc<Callable>> {
-    let run = callable.is_some();
-    if before {
-        event_api::swoole_event_cycle::<Cycle<true>>(true, run);
-    } else {
-        event_api::swoole_event_cycle::<Cycle<false>>(false, run);
-    }
-    CYCLE.with_borrow_mut(|cycle| std::mem::replace(cycle.slot(before), callable))
-}
-
-/// Clear the reactor's idle or future (`before`) task; its callable is released
-/// once the loop is out of it.
-fn clear_cycle(before: bool) {
-    if let Some(replaced) = set_cycle(before, None) {
-        later(replaced);
+    /// Release the callable, then raise a destructor's bailout from this
+    /// frame, which owns nothing by then.
+    fn retire(self: Box<Self>) {
+        drop(self);
+        bailout::finish();
     }
 }
 
@@ -508,9 +467,9 @@ fn cycle(call: &Call) {
             call.set_bool(false);
             return;
         }
-        clear_cycle(before);
+        event_api::swoole_event_cycle(before, None);
     } else {
-        clear_cycle(before);
+        event_api::swoole_event_cycle(before, None);
         let callback = callable(zcallback, None, false);
         if bailout::pending() {
             return;
@@ -519,17 +478,17 @@ fn cycle(call: &Call) {
             call.set_bool(false);
             return;
         };
-        drop(set_cycle(before, Some(callback)));
+        event_api::swoole_event_cycle(before, Some(Box::new(Cycle(callback))));
     }
     call.set_bool(true);
 }
 
-/// Releases the cycle callables the reactor holds, as `wait` frees it: a loop left
-/// with one set (a callback that exited, or one never cleared) would lose it.
-fn release_cycle_tasks() -> Result<(), Bailout> {
-    drop(set_cycle(false, None));
-    drop(set_cycle(true, None));
-    bailout::outcome(())
+/// Clears the cycle tasks before `wait` frees the reactor, which then drops
+/// their callables: a loop left with one set (a callback that exited, or one
+/// never cleared) would lose it.
+fn release_cycle_tasks() {
+    event_api::swoole_event_cycle(false, None);
+    event_api::swoole_event_cycle(true, None);
 }
 
 /// `isset(mixed $fd, int $events = SWOOLE_EVENT_READ | SWOOLE_EVENT_WRITE): bool`.

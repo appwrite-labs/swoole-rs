@@ -57,9 +57,9 @@ pub(super) fn wait() -> Result<(), Bailout> {
         // The exact prior shutdown bit, after a normally completed wait.
         swoole_rs_zend::restore_shutdown(shutdown);
     }
-    let released = super::release_cycle_tasks();
+    super::release_cycle_tasks();
     let freed = native::free();
-    released.and(freed)
+    freed.and(swoole_rs_zend::bailout::outcome(()))
 }
 
 pub(super) fn exit() -> Result<(), Bailout> {

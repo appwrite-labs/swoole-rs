@@ -12,8 +12,6 @@ use crate::socket_sync::set_errno;
 use std::ffi::c_int;
 #[cfg(target_os = "linux")]
 use std::ffi::c_void;
-#[cfg(target_os = "linux")]
-use std::ptr;
 use swoole_rs_corebase::log;
 use swoole_rs_process::signal::swoole_signal_to_str;
 use swoole_rs_process::signal_loop::{self, Ops};
@@ -77,8 +75,7 @@ fn has_reactor() -> bool {
 }
 
 fn native_handle() -> i32 {
-    // SAFETY: the reactor's live fields.
-    current().map_or(-1, |reactor| unsafe { (*reactor.fields).native_handle })
+    crate::event_api::field(|fields| fields.native_handle).unwrap_or(-1)
 }
 
 /// # Safety
@@ -154,11 +151,10 @@ fn report(kind: u8, signo: i32, error: i32) {
 mod descriptor {
     use super::{
         EVENT_READ, EXIT_CONDITION_SIGNALFD, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK,
-        SocketRecord, c_int, c_void, current, ptr, socket_free, swoole_event_add, swoole_event_del,
+        SocketRecord, c_int, c_void, current, socket_free, swoole_event_add, swoole_event_del,
     };
     use crate::event_api::{FdHandler, swoole_event_isset_handler, swoole_event_set_fd_handler};
     use crate::socket_upstream::make_socket_fd;
-    use crate::swr_v1_reactor_deferred_push;
     use swoole_rs_process::signal_loop::DescriptorOps;
 
     pub(super) fn make(fd: i32) -> *mut c_void {
@@ -210,7 +206,7 @@ mod descriptor {
         }
     }
 
-    unsafe extern "C-unwind" fn destroyed(_data: *mut c_void) {
+    extern "C-unwind" fn destroyed(_data: *mut c_void) {
         swoole_rs_process::signal_loop::destroyed(&OPS);
     }
 
@@ -223,15 +219,7 @@ mod descriptor {
     pub(super) fn install() {
         swoole_event_set_fd_handler::<Read>(FD_SIGNAL, EVENT_READ);
         crate::swr_v1_event_set_exit_condition(EXIT_CONDITION_SIGNALFD, exit_condition);
-        let Some(reactor) = current() else { return };
-        // SAFETY: the loop's live fields.
-        let queue = unsafe { &raw mut (*reactor.fields).destroy_callbacks };
-        // SAFETY: the loop's live destroy queue; the call keeps no data.
-        let pushed =
-            unsafe { swr_v1_reactor_deferred_push(queue, destroyed, ptr::null_mut(), None) };
-        if pushed != 0 {
-            std::process::abort();
-        }
+        crate::event_api::on_destroy(destroyed);
     }
 
     pub(super) fn erase_end() {
