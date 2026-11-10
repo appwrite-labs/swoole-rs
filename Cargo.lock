@@ -562,6 +562,7 @@ dependencies = [
 name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 dependencies = [
+ "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
 ]
@@ -690,6 +691,7 @@ dependencies = [
  "libc",
  "pq-sys",
  "swoole-rs-corebase",
+ "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-zend",

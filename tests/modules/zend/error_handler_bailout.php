@@ -1,7 +1,6 @@
 <?php
 // A Rust-raised warning reaches a user error handler that exit()s or raises a
-// fatal error (a bailout). Output and exit code must match upstream's:
-//   run.sh <php> <upstream swoole.so> <hybrid swoole.so>
+// fatal error (a bailout). Output and exit code must match upstream's.
 // Usage: php error_handler_bailout.php <case> <exit|fatal>
 [$case, $mode] = [$argv[1], $argv[2]];
 

@@ -19,8 +19,14 @@ mod coroutine;
 pub use coroutine::*;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod facade;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub use facade::swr_v1_coroutine_create;
 mod live;
 pub use live::*;
+mod scheduler;
+pub use scheduler::{
+    Routine, current, resume, scheduler, swr_v1_coroutine_bail, yield_with_cancel,
+};
 mod stack;
 pub use stack::*;
 mod thread;

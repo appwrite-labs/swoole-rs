@@ -23,14 +23,7 @@ type Put = unsafe extern "C" fn(*mut c_void, *const c_char, usize);
 const TIMEOUT_ALL: c_int = 15;
 
 // SAFETY: crates/coroutine's.
-unsafe extern "C-unwind" {
-    fn swr_v1_coroutine_native_resume(co: *mut c_void);
-}
-
-// SAFETY: crates/coroutine's.
 unsafe extern "C" {
-    fn swr_v1_coroutine_scheduler_get() -> *mut c_void;
-    fn swr_v1_coroutine_yield(scheduler: *mut c_void, co: *mut c_void);
     fn swoole_coroutine_is_in() -> u8;
     /// `async::dispatch` (`async_threads.rs`, in the extension archive).
     #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
@@ -39,16 +32,16 @@ unsafe extern "C" {
 
 /// `co->yield()`.
 pub(crate) unsafe extern "C" fn park(co: *mut c_void) {
-    // SAFETY: this thread's scheduler.
-    let scheduler = unsafe { swr_v1_coroutine_scheduler_get() };
-    // SAFETY: `co` is the running coroutine, as the caller promises.
-    unsafe { swr_v1_coroutine_yield(scheduler, co) };
+    let scheduler = swoole_rs_coroutine::scheduler();
+    // SAFETY: this thread's scheduler; `co` is the running coroutine, as the caller
+    // promises.
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_yield(scheduler, co.cast()) };
 }
 
 /// `co->resume()`.
 pub(crate) unsafe extern "C" fn resume(co: *mut c_void) {
     // SAFETY: a coroutine parked in `coroutine::async`.
-    unsafe { swr_v1_coroutine_native_resume(co) };
+    unsafe { swoole_rs_coroutine::resume(co) };
 }
 
 /// `async::dispatch`.
