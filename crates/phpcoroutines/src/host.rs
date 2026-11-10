@@ -31,6 +31,8 @@ pub(crate) type Co = *mut c_void;
 
 use swoole_rs_hooks::sleep::system_sleep;
 
+// Declared, since crates/phpevents (its `php_swoole_reactor_init` and
+// `swr_v1_phpevents_wait`) depends on this crate, and PHP's `php_write`.
 unsafe extern "C" {
     // crates/phpevents, crates/phpclients and PHP.
     fn php_write(buf: *const c_void, size: usize) -> usize;

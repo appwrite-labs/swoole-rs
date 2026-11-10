@@ -194,8 +194,8 @@ pub unsafe extern "C" fn system_waitpid_safe(
     const OK: c_int = 0;
     const LOCK_DEFAULT_SECOND: f64 = 0.001;
     const LOCK_MAX_SECOND: f64 = 0.1;
-    // SAFETY: crates/hooks's.
-    unsafe extern "C" {
+    // SAFETY: crates/hooks's; declared, since crates/hooks depends on this crate.
+    unsafe extern "C-unwind" {
         #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
         fn system_sleep(seconds: f64) -> c_int;
     }

@@ -12,6 +12,7 @@ use swoole_rs_zend::{
     sys::{swr_zval_stringl, zval, zval_ptr_dtor},
 };
 
+// crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
 unsafe extern "C" {
     /// crates/phpevents.
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;

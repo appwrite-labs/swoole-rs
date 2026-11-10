@@ -27,6 +27,7 @@ use swoole_rs_hooks::wait_event::system_wait_event;
 
 unsafe extern "C" {
     fn swoole_coroutine_statvfs(path: *const c_char, buf: *mut libc::statvfs) -> c_int;
+    // crates/phpevents': declared, since crates/phpevents depends on this crate.
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
 
     // `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
