@@ -1235,7 +1235,7 @@ mod tests {
         let config = unsafe { port_config::of(at) };
         config.open_eof_check = true;
         config.protocol.package_eof_len = u8::try_from(SW_DATA_EOF_MAXLEN + 10).unwrap();
-        init_protocol(at);
+        init_protocol(config);
         assert_eq!(c"eof", get_protocols(config));
         assert_eq!(
             u32::from(config.protocol.package_eof_len),

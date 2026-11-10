@@ -53,8 +53,11 @@ pub unsafe extern "C" fn swr_v1_http_proxy_owned_authorization(
 /// Rust's allocation failures do.
 /// # Safety
 /// owner is a live owner nothing else uses; the views lend their bytes for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_proxy_configure(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "HttpProxy::create's owner, port and three strings as pointer and length"
+)]
+pub unsafe fn swr_v1_http_proxy_configure(
     owner: *mut ProxyState,
     host: *const c_char,
     host_length: usize,
@@ -106,8 +109,7 @@ fn authorization(owner: &ProxyState) -> Vec<u8> {
 /// whole length for a zero capacity).
 /// # Safety
 /// owner is live; host lends its bytes; output is `capacity` writable bytes disjoint from both.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_proxy_connect(
+pub unsafe fn swr_v1_http_proxy_connect(
     owner: *const ProxyState,
     host: *const u8,
     host_length: usize,
@@ -161,8 +163,8 @@ pub unsafe extern "C" fn swr_v1_http_proxy_connect(
 /// last error when the proxy refused it.
 /// # Safety
 /// data lends `length` bytes (null only when empty).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_proxy_accept(data: *const u8, length: usize) -> bool {
+#[must_use]
+pub unsafe fn swr_v1_http_proxy_accept(data: *const u8, length: usize) -> bool {
     // SAFETY: the caller's bytes.
     let Ok(input) = (unsafe { crate::bytes(data, length) }) else {
         return false;
