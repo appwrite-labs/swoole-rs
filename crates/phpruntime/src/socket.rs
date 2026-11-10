@@ -14,14 +14,6 @@ use swoole_rs_zend::{
 };
 
 unsafe extern "C" {
-    /// crates/phphelpers' `zend::function::call(name, argc, argv, retval)`.
-    fn swr_v1_phphelpers_named_call(
-        name: *const c_char,
-        length: usize,
-        argc: u32,
-        argv: *mut zval,
-        retval: *mut zval,
-    );
     /// crates/phpevents.
     fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
 }
@@ -514,7 +506,7 @@ unsafe extern "C" fn x509_read_body(call: *mut c_void) {
     let name = c"openssl_x509_read";
     // SAFETY: one live argument and the caller's writable result.
     unsafe {
-        swr_v1_phphelpers_named_call(
+        swoole_rs_phphelpers::swr_v1_phphelpers_named_call(
             name.as_ptr(),
             name.count_bytes(),
             1,

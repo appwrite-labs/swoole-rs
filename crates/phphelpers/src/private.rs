@@ -88,29 +88,13 @@ unsafe fn array_property(
     unsafe { read(scope, object, name, length, true, &raw mut value) }
 }
 
-/// # Safety
-/// Live internal scope/object with a declared property; returned storage belongs to the object.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_property(
-    scope: *mut zend_class_entry,
-    value: *mut zval,
-    name: *const c_char,
-    length: usize,
-    silent: bool,
-    array: bool,
-) -> *mut zval {
-    // SAFETY: per the caller.
-    let property = unsafe { property(scope, value, name, length, silent, array) };
-    bailout::finish();
-    property
-}
-
 /// `sw_zend_read_and_convert_property_array(scope, value, name, length, 0)`:
 /// the object's property, made an array first when it is not one.
 /// # Errors
 /// PHP bailed out; nothing is resumed while a Rust caller owns its state.
 /// # Safety
-/// As [`swr_v1_phphelpers_property`].
+/// A live internal scope and object with a declared property; the returned
+/// storage belongs to the object.
 pub unsafe fn array_property_of(
     scope: *mut zend_class_entry,
     value: *mut zval,
@@ -128,7 +112,7 @@ pub unsafe fn array_property_of(
 
 /// The property read, a bailout left pending.
 /// # Safety
-/// As [`swr_v1_phphelpers_property`].
+/// As [`array_property_of`].
 unsafe fn property(
     scope: *mut zend_class_entry,
     value: *mut zval,
@@ -190,8 +174,7 @@ unsafe fn closure(cache: *const zend_fcall_info_cache) -> *mut zend_object {
 
 /// # Safety
 /// A resolved cache owns the references Zend added when resolving it; each release may execute PHP.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_cache_free(cache: *mut zend_fcall_info_cache) {
+pub unsafe fn swr_v1_phphelpers_cache_free(cache: *mut zend_fcall_info_cache) {
     // SAFETY: read the initialized cache without keeping a Rust borrow across PHP.
     let object = unsafe { (*cache).object };
     if !object.is_null() {
@@ -296,8 +279,7 @@ pub unsafe extern "C" fn swr_v1_phphelpers_call(
 
 /// # Safety
 /// Live callable frame/cache; caller accepts the frame's upstream temporary-return convention.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_call_anyway(
+pub unsafe fn swr_v1_phphelpers_call_anyway(
     frame: *mut zend_fcall_info,
     cache: *mut zend_fcall_info_cache,
 ) -> c_int {
@@ -420,8 +402,7 @@ unsafe fn named(name: *const c_char, length: usize, argc: u32, argv: *mut zval, 
 
 /// # Safety
 /// As [`named`].
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_named_call(
+pub unsafe fn swr_v1_phphelpers_named_call(
     name: *const c_char,
     length: usize,
     argc: u32,
