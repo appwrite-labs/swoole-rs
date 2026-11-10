@@ -148,6 +148,19 @@ crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md)
 | `reactor_num_base`, `reactor_num_large`, `reactor_num_large2`, `reactor_num_zero` | same names | `SW_CPU_NUM` is `swr_v1_core_cpu_num()`, which `swoole_init` sets |
 | `startup_error` | same name | its `new` Server leaks, as upstream's |
 | `protocols` | crates/ports `methods::tests::server_protocols` | |
+| `sendwait`, `forward_message`, `pause_and_resume`, `max_queued_bytes` | same names (`server_conn.rs`) | the client thread starts before `serv.start()`, as upstream's |
+| `system` | same name | its listening socket takes a port the kernel picks, where upstream's took `get_random_port()` |
+| `no_idle_worker`, `overflow_1` .. `overflow_4`, `max_request_1`, `max_request_2`, `watermark`, `discard_data` | same names | the client thread starts in `onStart`, as upstream's |
+| `udp_packet` | same name | the server socket `sendto` answers on is `req->info.server_fd`, which `get_server_socket` looks up; the forked client's assertions fail the case |
+| `pipe_message`, `reopen_log` | same names | |
+| `reopen_log2` | same name | `signal_handler_reopen_logger` has no entry of its own in the crates; `master_signal_handler(SIGWINCH)` runs its body |
+
+`server_conn.rs` keeps core-tests' shared counters (`test::counter_*`) and the
+process-shared `Mutex(true)` its clients wait on in anonymous shared memory mapped
+before the server forks; the mutex is a flag a worker sets and the client takes. An
+expectation in a server callback is recorded there too, so the case fails on it once
+the server stops, from whichever process it failed in (gtest's went unseen in a forked
+worker). `SyncClient` is a blocking `TcpStream`: `send` writes it all, `recv` is one read.
 
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,

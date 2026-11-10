@@ -63,7 +63,7 @@ struct TlsView {
 
 /// The head of `TimerNode`, through `destructor` (native/timer/swoole_timer.h).
 #[repr(C)]
-struct TimerNode {
+pub(super) struct TimerNode {
     id: c_long,
     kind: c_int,
     exec_msec: i64,
@@ -72,7 +72,7 @@ struct TimerNode {
     round: u64,
     removed: bool,
     callback: *const c_void,
-    data: *mut c_void,
+    pub(super) data: *mut c_void,
     destructor: Option<unsafe extern "C" fn(*mut TimerNode)>,
 }
 const _: () = assert!(
@@ -136,7 +136,7 @@ unsafe extern "C-unwind" {
         data: *mut c_void,
     ) -> *mut TimerNode;
     #[link_name = "_Z18swoole_timer_afterlPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
-    fn swoole_timer_after(
+    pub(super) fn swoole_timer_after(
         ms: c_long,
         callback: unsafe extern "C" fn(*mut c_void, *mut TimerNode),
         data: *mut c_void,
