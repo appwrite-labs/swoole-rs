@@ -121,6 +121,7 @@ jobs:
   # http2, table and channel are benchmarks/primitives; task is a taskwait round trip (#1909).
   # mysql is benchmarks/mysql, a prepared SELECT through hooked PDO mysql (#2066).
   # http-client, client and socket are benchmarks/clients' outbound coroutine clients (#2647).
+  # tcp-length, tcp-eof and udp are Swoole\Server without HTTP (#2650).
   callgrind:
     runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 40
@@ -155,6 +156,7 @@ jobs:
           --workload websocket --workload timer --workload app
           --workload http2 --workload table --workload channel --workload task --workload mysql
           --workload http-client --workload client --workload socket
+          --workload tcp-length --workload tcp-eof --workload udp
           --php-extension pdo --php-extension pdo_sqlite --php-extension mysqlnd --php-extension pdo_mysql
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
@@ -211,7 +213,7 @@ jobs:
         run: >
           python3 tools/dev.py integrate --module phphelpers --stdext
           --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
-          --phase build --phase stdext-reference-build --phase phphelpers-runtime
+          --phase cargo-build --phase stdext-reference-build --phase phphelpers-runtime
       # tools/ci.py reads phases* artifacts for new and fixed phases.
       - uses: actions/upload-artifact@v4
         if: always()

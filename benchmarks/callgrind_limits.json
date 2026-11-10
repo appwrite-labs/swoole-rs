@@ -13,5 +13,8 @@
   "mysql": 0.97,
   "http-client": 0.97,
   "client": 0.96,
-  "socket": 0.99
+  "socket": 0.99,
+  "tcp-length": 1.02,
+  "tcp-eof": 0.57,
+  "udp": 1.09
 }
