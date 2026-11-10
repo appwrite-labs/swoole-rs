@@ -1242,4 +1242,69 @@ mod tests {
         destroy_http_request(&raw mut conn);
         assert!(conn.object.is_null(), "no request: nothing to do");
     }
+
+    /// Upstream's `server_port.import`. Linux, as core-tests: macOS answers
+    /// `SO_ACCEPTCONN` with `ENOPROTOOPT`, not the `EINVAL` of a socket that isn't listening.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn server_port_import() {
+        log::swr_v1_core_set_log_host(crate::read::tests::record);
+        let mut port = Fresh::new();
+        assert!(!import(port.at(), libc::STDIN_FILENO));
+        assert_eq!(log::last_error(), libc::ENOTSOCK);
+
+        let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(!import(port.at(), sock));
+        assert_eq!(log::last_error(), libc::EINVAL);
+        unsafe { libc::close(sock) };
+    }
+
+    /// Upstream's `server_port.create`. `Server::add_port` creates the socket, then the
+    /// case does again. `cert_file` is written into its slot, as upstream assigns the
+    /// string, without the setter's file check.
+    #[test]
+    fn server_port_create() {
+        log::swr_v1_core_set_log_host(crate::read::tests::record);
+        let mut port = unbound_port(1, "127.0.0.1", 0, true);
+        let at = (&raw mut port).cast::<c_void>();
+        assert_eq!(create_socket(at), 0, "add_port");
+        assert_eq!(0, create_socket(at));
+
+        let config = unsafe { port_config::of(at) };
+        config.open_eof_check = true;
+        config.protocol.package_eof_len = u8::try_from(SW_DATA_EOF_MAXLEN + 10).unwrap();
+        init_protocol(at);
+        assert_eq!(c"eof", get_protocols(config));
+        assert_eq!(
+            u32::from(config.protocol.package_eof_len),
+            SW_DATA_EOF_MAXLEN
+        );
+
+        assert!(ssl_context_init(at));
+        let context = config.ssl_context;
+        assert!(!unsafe { ssl_context_create(at, context, false) });
+        assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
+        let cert_file = unsafe { swoole_rs_tls::swr_v1_tls_owner_view(context) }.strings[4];
+        let set = |text: &str| unsafe {
+            swoole_rs_corebase::swr_v1_core_string_set(cert_file, text.as_ptr().cast(), text.len())
+        };
+        assert_eq!(set("server.crt"), 0, "cert_file = \"server.crt\"");
+        assert!(!unsafe { ssl_context_create(at, context, true) });
+        assert_eq!(set(""), 0, "cert_file.clear()");
+        assert!(unsafe { ssl_context_create(at, context, true) });
+
+        close(at);
+        unsafe { port_config::swr_v1_port_config_free(port) };
+    }
+
+    /// Upstream's `server_port.dgram`.
+    #[test]
+    fn server_port_dgram() {
+        let mut port = unbound_port(2, "127.0.0.1", 0, true);
+        let at = (&raw mut port).cast::<c_void>();
+        assert_eq!(create_socket(at), 0, "add_port");
+        assert_eq!(c"dgram", get_protocols(unsafe { port_config::of(at) }));
+        close_socket(at);
+        unsafe { port_config::swr_v1_port_config_free(port) };
+    }
 }

@@ -367,7 +367,10 @@ def check(engines, path, lines, alone=False):
         return ('timeout' if first[0]['status'] == 'timeout' else 'same'), first
     with contextlib.nullcontext() if alone else ALONE.exclusive():
         second, same = compare(engines, path)
-    return ('divergent' if not same and first[0] == second[0] else 'flaky'), second
+    if not same and first[0] == second[0]:
+        return 'divergent', second
+    # The outcomes that differed: the first run's when the rerun agreed.
+    return 'flaky', second if not same else first
 
 
 def minimise(engines, path, lines):

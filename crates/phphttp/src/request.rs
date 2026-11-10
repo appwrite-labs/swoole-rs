@@ -12,7 +12,6 @@ use swoole_rs_phpstubs::http_request;
 use swoole_rs_zend::{
     Call, Class, Key, Value, declare_long, declare_property_null, handlers, init_object,
     sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
-    value::obj_of,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -140,17 +139,17 @@ fn create_request(call: &Call) {
     };
     let ctx = context::alloc();
     parse::init_request_parser(ctx);
-    let object = call.return_value();
-    // SAFETY: the return slot and the registered class.
-    unsafe { init_object(object, entry()) };
     let state = send::state(ctx);
-    // SAFETY: the object just made; the context borrows it, as upstream's does.
-    state.request.zobject.value = unsafe { *object };
-    state.request.zobject.ptr = &raw mut state.request.zobject.value;
-    // SAFETY: the object just made.
-    let std = unsafe { obj_of(object) };
-    // SAFETY: one of our objects.
-    unsafe { context::set_context(std, ctx) };
+    let slot = &mut state.request.zobject;
+    // SAFETY: the context's own zval and the registered class.
+    unsafe { init_object(&raw mut slot.value, entry()) };
+    slot.ptr = &raw mut slot.value;
+    // The return slot takes the reference; the context borrows it, as upstream's does.
+    call.set_value(slot.value);
+    if let Some(std) = slot.object() {
+        // SAFETY: one of our objects.
+        unsafe { context::set_context(std, ctx) };
+    }
     state.parse_cookie = 1;
     state.parse_body = 1;
     state.parse_files = 1;

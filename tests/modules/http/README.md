@@ -88,7 +88,7 @@ same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-http
 | `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http-ffi/src/request.rs`: same names, over the bundled multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
-phase): a Rust case binary over system.py's libswoole.so (native/'s sources and the Cargo build's Rust archive), built and run by
+phase): a Rust case binary over the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources), built and run by
 `tests/modules/hooks/system.py --package tests/modules/http/server`. `server/src/http1/case.rs`
 builds the Servers upstream's `test_base_server`, `test_http_server` and `test_ssl_http`
 built, over the same records as `http1.rs` (below), with each callback slot holding the
@@ -130,6 +130,12 @@ unseen, as gtest's did.
 | `test_proxy_server` (forked) | `proxy_file`, `proxy_response` |
 | `test_http_server` (forked, or base mode for `chunked`) | `heartbeat`, `overflow`, `process`, `process1`, `redundant_callback`, `pause`, `bad_request`, `chunked`, `max_queued_bytes`, `dispatch_func_return_error_worker_id`, `http_range`, `http_range2` |
 | none | `fail` |
+
+`core-tests/src/server/buffer.cpp`'s one TEST, `server.send_buffer` (crates/server's send
+buffer: a 16 MiB response to one packet, then a close), is `server/src/http1/server.rs`
+in the same binary and phase, over the same records. Upstream's client thread waits on a
+mutex its `onWorkerStart` unlocks; here `onWorkerStart` starts it, and its `SyncClient` is
+a blocking `TcpStream`.
 
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,

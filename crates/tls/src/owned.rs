@@ -224,8 +224,7 @@ extern "C" fn slot_password(
 }
 /// # Safety
 /// owner is live/exclusive, and its logger does not throw.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
+pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
     // SAFETY: snapshot raw views without retaining a record reference across OpenSSL/log callbacks.
     let mut config = unsafe { configuration(owner) };
     // SAFETY: the live Arc owns interior-mutable slots; no exclusive borrow survives callbacks.

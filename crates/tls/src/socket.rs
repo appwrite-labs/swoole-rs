@@ -123,8 +123,7 @@ fn classify(tls: &mut SocketTls, ssl: *const SSL, n: c_int, write: bool) -> SslI
 /// # Safety
 /// `tls` is the live state group of the socket owning `ssl`, a live SSL, and
 /// `buffer` denotes `length` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_recv(
+pub unsafe fn swr_v1_socket_ssl_recv(
     tls: *mut SocketTls,
     ssl: *mut SSL,
     buffer: *mut c_void,
@@ -149,8 +148,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_recv(
 /// # Safety
 /// `tls` is the live state group of the socket owning `ssl`, a live SSL, and
 /// `buffer` denotes `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_send(
+pub unsafe fn swr_v1_socket_ssl_send(
     tls: *mut SocketTls,
     ssl: *mut SSL,
     buffer: *const c_void,
@@ -199,8 +197,7 @@ impl SslHandshakeResult {
 ///
 /// # Safety
 /// `tls` is the live state group of the socket owning `ssl`, a live SSL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_accept(
+pub unsafe fn swr_v1_socket_ssl_accept(
     tls: *mut SocketTls,
     ssl: *mut SSL,
     dtls: bool,
@@ -250,11 +247,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_accept(
 ///
 /// # Safety
 /// `tls` is the live state group of the socket owning `ssl`, a live SSL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_connect(
-    tls: *mut SocketTls,
-    ssl: *mut SSL,
-) -> SslHandshakeResult {
+pub unsafe fn swr_v1_socket_ssl_connect(tls: *mut SocketTls, ssl: *mut SSL) -> SslHandshakeResult {
     // SAFETY: the caller's live state group.
     let tls = unsafe { &mut *tls };
     tls.want(false, false);
@@ -299,8 +292,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_connect(
 ///
 /// # Safety
 /// `cert` is null or an owned X509 reference, and `name` denotes `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_check_host(
+pub unsafe fn swr_v1_socket_ssl_check_host(
     cert: *mut X509,
     name: *const c_char,
     length: usize,
@@ -320,11 +312,8 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_check_host(
 ///
 /// # Safety
 /// `ssl` is a live SSL owned by the caller.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_verify(
-    ssl: *const SSL,
-    allow_self_signed: bool,
-) -> c_long {
+#[must_use]
+pub unsafe fn swr_v1_socket_ssl_verify(ssl: *const SSL, allow_self_signed: bool) -> c_long {
     // SAFETY: the caller's live SSL.
     let result = unsafe { SSL_get_verify_result(ssl) };
     if allow_self_signed && result == c_long::from(X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT) {
@@ -340,8 +329,7 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_verify(
 /// # Safety
 /// `cert` is a live X509 (owned by the caller when `consume`), and `buffer` denotes
 /// `length` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_pem(
+pub unsafe fn swr_v1_socket_ssl_pem(
     cert: *mut X509,
     buffer: *mut c_char,
     length: usize,
@@ -392,8 +380,7 @@ pub fn error_reason(error: std::os::raw::c_ulong) -> c_int {
 ///
 /// # Safety
 /// `reason` is null or writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_error_reason(reason: *mut c_int) -> *const c_char {
+pub unsafe fn swr_v1_socket_ssl_error_reason(reason: *mut c_int) -> *const c_char {
     // SAFETY: this thread's OpenSSL error queue.
     let error = unsafe { ERR_get_error() };
     // SAFETY: `reason` is null or writable.
@@ -405,8 +392,8 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_error_reason(reason: *mut c_int) -> *
 }
 
 /// `Socket::ssl_catch_error`'s reason: the oldest queued error's reason code, left queued.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_ssl_peek_reason() -> c_int {
+#[must_use]
+pub fn swr_v1_socket_ssl_peek_reason() -> c_int {
     // SAFETY: this thread's OpenSSL error queue, read without popping.
     error_reason(unsafe { ERR_peek_error() })
 }
@@ -511,8 +498,7 @@ unsafe fn shutdown(
 /// # Safety
 /// `tls` is the live state group of the socket owning `ssl`, a live SSL, and
 /// `closed` is that socket's `ssl_closed_`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_shutdown(
+pub unsafe fn swr_v1_socket_ssl_shutdown(
     tls: *mut SocketTls,
     ssl: *mut SSL,
     closed: *mut u8,
@@ -537,8 +523,11 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_shutdown(
 /// # Safety
 /// `tls` is the socket's live state group, `context` a live `SSL_CTX`; `ssl` and
 /// `error` are writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_new(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Socket::ssl_create's inputs plus its two out-parameters"
+)]
+pub unsafe fn swr_v1_socket_ssl_new(
     tls: *mut SocketTls,
     context: *mut SSL_CTX,
     fd: c_int,

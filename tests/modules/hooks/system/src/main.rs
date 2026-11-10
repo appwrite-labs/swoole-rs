@@ -5,7 +5,7 @@
 //! in timer.rs, os/pipe.cpp in pipe.rs, os/process_pool.cpp in process_pool.rs and
 //! protocol/ssl.cpp in ssl.rs), one
 //! Rust function per TEST with the same inputs and expected values, over the
-//! hybrid's libswoole.so: the Rust `System` operations under their upstream
+//! crates: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
 //! signature carries C++ library types. The binary also runs coroutine/base.cpp
 //! and file.cpp (tests/modules/coroutine/base.rs), and the repo-owned C++ witnesses
@@ -16,12 +16,19 @@
 //! every assertion held. A failed assertion panics; inside a coroutine the panic
 //! cannot unwind through the context switch, so the trampoline `_exit(1)`s instead.
 
+#![expect(
+    clippy::mut_from_ref,
+    reason = "the records' views lend what the native pointer they wrap owns, as the C++ cases' pointers do"
+)]
+
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+// The crates, once: the C++ in libswoole.a and the cases call them by symbol.
+use swoole_rs_ffi as _;
 
 mod address;
 // Upstream's core-tests/src/network/client.cpp: a clients test, built here to share this
-// binary's libswoole.so build and runner.
+// binary's build and runner.
 #[path = "../../../clients/client.rs"]
 mod client;
 mod dns;
@@ -113,7 +120,6 @@ struct SharedPtr {
     control: *mut c_void,
 }
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     #[link_name = "_Z11swoole_initv"]
     fn swoole_init();

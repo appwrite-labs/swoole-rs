@@ -115,7 +115,6 @@ struct Event {
 
 type Handler = unsafe extern "C" fn(*mut c_void, *mut Event) -> c_int;
 
-#[link(name = "swoole")]
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole11make_socketE12swSocketType8swFdTypei"]
     fn make_socket3(kind: c_int, fd_type: c_int, flags: c_int) -> *mut Record;

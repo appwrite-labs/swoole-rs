@@ -852,8 +852,7 @@ pub unsafe extern "C" fn send_pipe_message(
 /// # Safety
 /// `serv` is a live `Server`; `name` holds `length` bytes; `handler.invoke` is a
 /// `commands::Handler`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_add_command(
+pub unsafe fn swr_v1_server_add_command(
     serv: *mut c_void,
     name: *const c_char,
     length: usize,
@@ -877,8 +876,11 @@ pub unsafe extern "C" fn swr_v1_server_add_command(
 /// # Safety
 /// `serv` is a live `Server`; `name` and `message` hold their lengths in bytes;
 /// `callback.invoke` is a `commands::Callback` whose context lives until it is called.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_command(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Server::command's five arguments, its two strings as pointer and length"
+)]
+pub unsafe fn swr_v1_server_command(
     serv: *mut c_void,
     process_id: u32,
     process_type: c_int,

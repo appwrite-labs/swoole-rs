@@ -111,8 +111,7 @@ pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) 
 ///
 /// # Safety
 /// `counters` is fresh writable storage with `ServerCounters` size/alignment and no readers.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_shared_init(storage: *mut core::ffi::c_void) {
+pub unsafe fn swr_v1_server_shared_init(storage: *mut core::ffi::c_void) {
     let counters = storage.cast::<ServerCounters>();
     let value = ServerCounters::default();
     value
@@ -246,8 +245,8 @@ pub unsafe extern "C" fn swr_v1_server_port_shared_init(storage: *mut core::ffi:
 /// # Safety
 /// `counters` is a mapped live port record; its non-null `connection_nums` loan has
 /// `workers` initialized aligned atomic cells for this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_port_connections(
+#[must_use]
+pub unsafe fn swr_v1_server_port_connections(
     storage: *const core::ffi::c_void,
     workers: u32,
 ) -> usize {

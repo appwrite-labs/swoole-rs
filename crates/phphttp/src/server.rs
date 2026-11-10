@@ -6,8 +6,9 @@
 use crate::{
     context,
     host::{self, Context},
-    parse::{Key, add_protocol, key, parse_request, request_times},
+    parse::{Key, add_protocol, add_server, key, parse_request, request_times},
     send::state,
+    state::State,
     websocket,
 };
 use std::{
@@ -26,11 +27,10 @@ use swoole_rs_phpserver::{
 };
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::sys::{
-    HashTable, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit,
-    swr_zend_http_uploads_rshutdown, swr_zval_str, zend_class_entry, zend_hash_add_new, zend_long,
-    zend_string, zval,
+    ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
+    zend_class_entry, zend_long, zval,
 };
-use swoole_rs_zend::{Class, ZStr, ZString, bailout, string, value};
+use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout, string, value};
 
 /// `Swoole\Http\Server`: `Swoole\Server` with no methods of its own.
 static SERVER: Class = Class::new();
@@ -112,15 +112,9 @@ const MODE_PROCESS: u8 = 2;
 /// `Server::DISPATCH_FDMOD`.
 const DISPATCH_FDMOD: u8 = 2;
 
-// Elsewhere: the HTTP/2 `onReceive` (crates/phphttp2), the connection's
-// addresses and its peer's port and loopback check (crates/clients).
+// Elsewhere: the connection's addresses and its peer's port and loopback
+// check (crates/clients).
 unsafe extern "C" {
-    #[link_name = "_Z29swoole_http2_server_onReceivePN6swoole6ServerEPNS_10ConnectionEPNS_8RecvDataE"]
-    fn swoole_http2_server_onReceive(
-        server: *mut c_void,
-        conn: *mut ConnectionRecord,
-        request: *mut c_void,
-    ) -> c_int;
     fn swr_v1_clients_address_host(
         address: *const swoole_rs_corebase::net_types::SocketAddress,
     ) -> *const c_char;
@@ -150,20 +144,6 @@ pub(crate) fn new_zval() -> zval {
     unsafe { std::mem::zeroed() }
 }
 
-pub(crate) fn add(table: *mut HashTable, name: Key, string: *mut zend_string) {
-    let mut value = new_zval();
-    // SAFETY: a string the table takes over (or an interned one).
-    unsafe { swr_zval_str(&raw mut value, string) };
-    // SAFETY: the request's live `server` table and an interned key.
-    unsafe { zend_hash_add_new(table, key(name), &raw mut value) };
-}
-
-pub(crate) fn add_long(table: *mut HashTable, name: Key, long: zend_long) {
-    let mut value = swoole_rs_zend::long_zval(long);
-    // SAFETY: as `add`.
-    unsafe { zend_hash_add_new(table, key(name), &raw mut value) };
-}
-
 fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> ZString {
     let text = if local {
         // SAFETY: the live server and connection the caller passed.
@@ -182,35 +162,37 @@ fn address(server: *mut c_void, conn: *mut ConnectionRecord, local: bool) -> ZSt
 /// addresses. `loopback` is 4 or 6 for a loopback peer, otherwise 0. With
 /// `cache`, the connection's fd, a session's addresses are made once and kept
 /// until the session closes. `server` and `conn` are the live server and the
-/// request's connection; `table` is the request's `server` array.
+/// request's connection; `state` the request's context.
 #[expect(clippy::too_many_arguments, reason = "upstream's request facts")]
 fn addresses(
     server: *mut c_void,
     conn: *mut ConnectionRecord,
-    table: *mut HashTable,
+    state: &mut State,
     session: i64,
     local_port: i64,
     remote_port: i64,
     loopback: c_int,
     cache: Option<usize>,
 ) {
-    add_long(table, Key::ServerPort, local_port);
-    add_long(table, Key::RemotePort, remote_port);
+    add_server(state, Key::ServerPort, Owned::long(local_port));
+    add_server(state, Key::RemotePort, Owned::long(remote_port));
     if loopback != 0 {
         let name = if loopback == 6 {
             Key::LoopbackV6
         } else {
             Key::LoopbackV4
         };
-        add(table, Key::ServerAddr, key(name));
-        add(table, Key::RemoteAddr, key(name));
+        if let Some(name) = key(name) {
+            add_server(state, Key::ServerAddr, Owned::string(name.to_owned()));
+            add_server(state, Key::RemoteAddr, Owned::string(name.to_owned()));
+        }
         return;
     }
     let cached = cache.and_then(|fd| cached(server, conn, fd, session));
     let [local, remote] =
         cached.unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]);
-    add(table, Key::ServerAddr, local.into_raw());
-    add(table, Key::RemoteAddr, remote.into_raw());
+    add_server(state, Key::ServerAddr, Owned::string(local));
+    add_server(state, Key::RemoteAddr, Owned::string(remote));
 }
 
 /// The session's cached addresses, each referenced once more for the caller;
@@ -253,8 +235,11 @@ pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_
             let conn = server
                 .verified(info.fd)
                 .map_or(ptr::null_mut(), ptr::from_mut);
+            let Some(http2) = crate::http2::server() else {
+                return -1;
+            };
             // SAFETY: as above, with the session's connection.
-            unsafe { swoole_http2_server_onReceive(server.raw(), conn, request) }
+            unsafe { (http2.on_receive)(server.raw(), conn.cast(), request) }
         }
         _ => 0,
     }
@@ -492,23 +477,23 @@ fn handle(
         return Ok(DONE);
     }
     let state = state(ctx);
-    // SAFETY: the request's `server` array.
-    let table = unsafe { value::table(state.request.zserver.ptr) };
+    let cache = facts.cache.filter(|_| state.keepalive != 0);
     addresses(
         server.raw(),
         conn,
-        table,
+        state,
         session,
         facts.local_port,
         facts.remote_port,
         facts.loopback,
-        facts.cache.filter(|_| state.keepalive != 0),
+        cache,
     );
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream's (zend_long) cast"
     )]
-    add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
+    let master_time = Owned::long(facts.last_recv_time as zend_long);
+    add_server(state, Key::MasterTime, master_time);
     if swoole_rs_corebase::swoole_isset_hook(HOOK_BEFORE_REQUEST) {
         // SAFETY: the hook's context argument.
         unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_BEFORE_REQUEST, ctx) };
@@ -595,18 +580,6 @@ const HTTP_VERSION_2: c_int = 3;
 const SERVICE_UNAVAILABLE_STATUS: c_int = 503;
 const HTTP2_INTERNAL_ERROR: u32 = 2;
 
-unsafe extern "C" {
-    /// The HTTP/2 server's (crates/phphttp2): the static handler, a whole
-    /// response and a stream reset.
-    fn swr_v1_phphttp2_server_static(server: *mut c_void, ctx: *mut Context) -> bool;
-    fn swr_v1_phphttp2_server_respond(
-        ctx: *mut Context,
-        data: *const c_char,
-        length: usize,
-    ) -> bool;
-    fn swr_v1_phphttp2_server_reset(ctx: *mut Context, stream_id: u32, code: u32);
-}
-
 /// `http2_server_onRequest`: a finished HTTP/2 request on a server's
 /// connection, answered by the static handler or the port's `onRequest`.
 /// A bailout in the handler is raised last, over this frame only.
@@ -626,30 +599,33 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
         return Ok(());
     };
     state(ctx).request.version = HTTP_VERSION_2;
-    // SAFETY: the live server and stream context.
-    if facts.static_handler && unsafe { swr_v1_phphttp2_server_static(server, ctx) } {
+    let Some(http2) = crate::http2::server() else {
+        context::release_objects(ctx);
+        return Ok(());
+    };
+    if facts.static_handler && (http2.static_file)(server, crate::http2::Ctx::of(ctx)) {
         context::release_objects(ctx);
         return Ok(());
     }
     let state = state(ctx);
-    // SAFETY: the request's `server` array.
-    let table = unsafe { value::table(state.request.zserver.ptr) };
+    let cache = facts.cache.filter(|_| state.keepalive != 0);
     addresses(
         server,
         conn,
-        table,
+        state,
         fd,
         facts.local_port,
         facts.remote_port,
         facts.loopback,
-        facts.cache.filter(|_| state.keepalive != 0),
+        cache,
     );
     request_times(state);
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream's (zend_long) cast"
     )]
-    add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
+    let master_time = Owned::long(facts.last_recv_time as zend_long);
+    add_server(state, Key::MasterTime, master_time);
     add_protocol(state, Key::Http2);
     // SAFETY: the live server.
     let server = unsafe { view::Server::from_raw(server) };
@@ -657,8 +633,7 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     if state.before_request != 0 {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
-            // SAFETY: a live stream context; an empty body.
-            unsafe { swr_v1_phphttp2_server_respond(ctx, ptr::null(), 0) };
+            (http2.respond)(crate::http2::Ctx::of(ctx), &[]);
             context::release_objects(ctx);
             return Ok(());
         }
@@ -673,8 +648,7 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
         Err(bailout) => return Err(bailout),
         Ok(false) => {
             let stream_id = self::state(ctx).stream_id;
-            // SAFETY: the stream's live context.
-            unsafe { swr_v1_phphttp2_server_reset(ctx, stream_id, HTTP2_INTERNAL_ERROR) };
+            (http2.reset)(crate::http2::Ctx::of(ctx), stream_id, HTTP2_INTERNAL_ERROR);
             host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
         }
         Ok(true) => {}
