@@ -23,6 +23,7 @@ mod error;
 mod frame;
 mod function;
 mod helpers;
+pub mod local;
 mod minit;
 mod object;
 pub mod registration;

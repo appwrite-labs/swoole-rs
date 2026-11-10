@@ -117,7 +117,7 @@ jobs:
           if echo "$changed" | grep -qE '^(crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.github/workflows/zts\.yml$|\.devcontainer/(install|php)\.sh$)'; then
             echo zts=true >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|process)/|\.github/workflows/threadcontext\.yml$)'; then
+          if echo "$changed" | grep -qE '^(native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|phpevents|process)/|\.github/workflows/threadcontext\.yml$)'; then
             echo threadcontext=true >> "$GITHUB_OUTPUT"
           fi
           if echo "$changed" | grep -qE '^(crates/(http2|phphttp2)/|tests/modules/http2/h2spec\.|\.github/workflows/h2spec\.yml$)'; then

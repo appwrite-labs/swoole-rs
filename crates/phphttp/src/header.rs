@@ -22,7 +22,7 @@ use swoole_rs_zend::sys::{
     swr_zend_efree, swr_zend_emalloc, swr_zend_http_get_string, swr_zend_http_property_offset,
     swr_zend_string_release, zend_class_entry, zend_string, zval,
 };
-use swoole_rs_zend::{Array, Key, Value, ZStr, ZString, bailout, string};
+use swoole_rs_zend::{Array, Key, Value, ZStr, ZString, bailout, php_local, string};
 
 /// `swHttpHeaderFlag`.
 const SERVER: i32 = 2;
