@@ -20,6 +20,10 @@ use std::{
 };
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_memory::flat::Table;
+use swoole_rs_phpserver::{
+    php_swoole_get_recv_data, php_swoole_server_get_callback, php_swoole_server_isset_callback,
+    php_swoole_server_on_close, php_swoole_server_on_receive,
+};
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::sys::{
     HashTable, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit,
@@ -113,33 +117,15 @@ const MODE_PROCESS: u8 = 2;
 /// `Server::DISPATCH_FDMOD`.
 const DISPATCH_FDMOD: u8 = 2;
 
-// Elsewhere: the TCP `onReceive` and `onClose` (crates/phpserver), the
-// WebSocket and HTTP/2 `onReceive`s (ext-src), the port callbacks and the
-// received data (swoole_server.cc), the connection's addresses (master.cc) and
-// its peer's port and loopback check (crates/clients).
+// Elsewhere: the HTTP/2 `onReceive` (crates/phphttp2), the connection's
+// addresses and its peer's port and loopback check (crates/clients).
 unsafe extern "C" {
-    fn swr_v1_phpserver_on_receive(server: *mut c_void, request: *mut c_void) -> c_int;
     #[link_name = "_Z29swoole_http2_server_onReceivePN6swoole6ServerEPNS_10ConnectionEPNS_8RecvDataE"]
     fn swoole_http2_server_onReceive(
         server: *mut c_void,
         conn: *mut ConnectionRecord,
         request: *mut c_void,
     ) -> c_int;
-    fn swr_v1_phpserver_on_close(server: *mut c_void, info: *mut DataHead);
-    #[link_name = "_Z32php_swoole_server_isset_callbackPN6swoole6ServerEPNS_10ListenPortEi"]
-    fn php_swoole_server_isset_callback(
-        server: *mut c_void,
-        port: *mut c_void,
-        kind: c_int,
-    ) -> bool;
-    #[link_name = "_Z30php_swoole_server_get_callbackPN6swoole6ServerEii"]
-    fn php_swoole_server_get_callback(
-        server: *mut c_void,
-        server_fd: c_int,
-        kind: c_int,
-    ) -> *mut c_void;
-    #[link_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE"]
-    fn php_swoole_get_recv_data(server: *mut c_void, zdata: *mut zval, request: *mut c_void);
     fn swr_v1_clients_address_host(
         address: *const swoole_rs_corebase::net_types::SocketAddress,
     ) -> *const c_char;
@@ -268,7 +254,7 @@ pub(crate) unsafe extern "C" fn on_receive(server: *mut c_void, request: *mut c_
     match receive(server, request, &info) {
         CLOSED => -1,
         // SAFETY: the live server and its request.
-        TCP => unsafe { swr_v1_phpserver_on_receive(server.raw(), request) },
+        TCP => unsafe { php_swoole_server_on_receive(server, request) },
         WEBSOCKET => websocket::on_message(server.raw(), request, &info),
         HTTP2 => {
             let conn = server
@@ -296,7 +282,7 @@ fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c
     // SAFETY: the connection's live port.
     let config = unsafe { view::port(port) };
     // SAFETY: the live server and port.
-    let isset = |kind| unsafe { php_swoole_server_isset_callback(server.raw(), port, kind) };
+    let isset = |kind| unsafe { php_swoole_server_isset_callback(server, port, kind) };
     // Only whether either is set routes the data, so onMessage is asked only without onRequest.
     let http = config.open_http_protocol && isset(ON_REQUEST);
     let websocket = !http && config.open_websocket_protocol && isset(ON_MESSAGE);
@@ -337,18 +323,17 @@ fn receive(server: view::Server<'_>, request: *mut c_void, info: &DataHead) -> c
     unsafe { php_swoole_get_recv_data(server.raw(), zdata, request) };
     crate::parse::init_request_parser(ctx);
     let conn = ptr::from_mut(conn);
-    let result =
-        handle(server.raw(), conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
-            if route == REQUEST {
-                // SAFETY: a live context; false leaves it queued.
-                if !unsafe { context::before_request(ctx) } {
-                    return Ok(());
-                }
-                call(ctx, facts.coroutine)?;
+    let result = handle(server, conn, ctx, zdata, session, server_fd, &facts).and_then(|route| {
+        if route == REQUEST {
+            // SAFETY: a live context; false leaves it queued.
+            if !unsafe { context::before_request(ctx) } {
+                return Ok(());
             }
-            release_objects(ctx);
-            Ok(())
-        });
+            call(ctx, facts.coroutine)?;
+        }
+        release_objects(ctx);
+        Ok(())
+    });
     bailout::raise(result);
     DONE
 }
@@ -420,11 +405,12 @@ pub(crate) fn call_port(
     args: &mut [zval],
 ) -> Result<Option<bool>, bailout::Bailout> {
     // SAFETY: the live server.
-    let callback = unsafe { php_swoole_server_get_callback(server, server_fd, kind) };
+    let server = unsafe { view::Server::from_raw(server) };
+    let callback = php_swoole_server_get_callback(server, server_fd, kind);
     if callback.is_null() {
         return Ok(None);
     }
-    call_handler(callback.cast(), args, enable_coroutine(server)).map(Some)
+    call_handler(callback.cast(), args, enable_coroutine(server.raw())).map(Some)
 }
 
 /// `php_swoole_get_recv_data`: the request's payload into `zdata`.
@@ -481,7 +467,7 @@ fn notice(message: &str) {
 
 /// Parse the request, fill `$request->server` and pick the handler.
 fn handle(
-    server: *mut c_void,
+    server: view::Server<'_>,
     conn: *mut ConnectionRecord,
     ctx: *mut Context,
     zdata: *mut zval,
@@ -516,7 +502,7 @@ fn handle(
     // SAFETY: the request's `server` array.
     let table = unsafe { value::table(state.request.zserver.ptr) };
     addresses(
-        server,
+        server.raw(),
         conn,
         table,
         session,
@@ -538,8 +524,7 @@ fn handle(
     // SAFETY: the request's live connection.
     let handshake = unsafe { (*conn).websocket_status } == STATUS_CONNECTION;
     let kind = if handshake { ON_HANDSHAKE } else { ON_REQUEST };
-    // SAFETY: the live server.
-    let callback = unsafe { php_swoole_server_get_callback(server, server_fd, kind) };
+    let callback = php_swoole_server_get_callback(server, server_fd, kind);
     if callback.is_null() {
         if handshake {
             websocket::handshake_open(ctx)?;
@@ -550,7 +535,7 @@ fn handle(
     }
     state.callback = callback;
     if handshake {
-        websocket::upgrading(server, session);
+        websocket::upgrading(server.raw(), session);
         state.upgrade = 1;
     }
     Ok(REQUEST)
@@ -674,7 +659,8 @@ fn http2_request(ctx: *mut Context) -> Result<(), bailout::Bailout> {
     add_long(table, Key::MasterTime, facts.last_recv_time as zend_long);
     add_protocol(state, Key::Http2);
     // SAFETY: the live server.
-    state.callback = unsafe { php_swoole_server_get_callback(server, facts.server_fd, ON_REQUEST) };
+    let server = unsafe { view::Server::from_raw(server) };
+    state.callback = php_swoole_server_get_callback(server, facts.server_fd, ON_REQUEST);
     if state.before_request != 0 {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
@@ -732,7 +718,7 @@ pub(crate) unsafe extern "C" fn on_close(server: *mut c_void, info: *mut DataHea
         });
     }
     // SAFETY: per the caller.
-    unsafe { swr_v1_phpserver_on_close(server.raw(), info) };
+    unsafe { php_swoole_server_on_close(server, info) };
 }
 
 /// The counters of the worker serving requests.

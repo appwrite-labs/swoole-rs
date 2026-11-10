@@ -101,26 +101,6 @@ mod php {
         include_flags(Command::new("pkg-config").args(["--cflags", module])).unwrap_or_default()
     }
 
-    /// Link the libraries pkg-config names for `modules`, from the directories it names.
-    fn pkg_link(modules: &[&str]) {
-        let output = Command::new("pkg-config")
-            .arg("--libs")
-            .args(modules)
-            .output()
-            .expect("ext: pkg-config --libs");
-        assert!(
-            output.status.success(),
-            "ext: pkg-config --libs {modules:?}"
-        );
-        for flag in String::from_utf8_lossy(&output.stdout).split_whitespace() {
-            if let Some(dir) = flag.strip_prefix("-L") {
-                println!("cargo::rustc-link-search=native={dir}");
-            } else if let Some(library) = flag.strip_prefix("-l") {
-                println!("cargo::rustc-link-lib={library}");
-            }
-        }
-    }
-
     /// config.m4's `SW_PHP_VERSION_ID`: 84 for PHP 8.4.x.
     fn php_version_id(php_config: &str) -> u32 {
         let output = Command::new(php_config)
@@ -395,8 +375,7 @@ mod php {
         includes.extend(env::var_os("DEP_OPENSSL_INCLUDE").map(PathBuf::from));
         includes.extend(php_includes(&php_config));
         includes.extend(profile.includes);
-        // native/phphelpers/host.c reads the Brotli and zstd versions (zstd-sys links libzstd).
-        includes.extend(pkg_includes("libbrotlienc"));
+        // native/phphelpers/host.c reads the zstd version (zstd-sys links libzstd).
         includes.extend(pkg_includes("libzstd"));
 
         let base = |cpp: bool| {
@@ -449,8 +428,6 @@ mod php {
             .files(profile.c.into_iter().map(own))
             .compile("swoole_native_c");
 
-        // After the objects that use them, or --as-needed drops them.
-        pkg_link(&["libbrotlienc", "libbrotlidec"]);
         for library in profile.libs.into_iter().chain(["z", "pthread", "m"]) {
             println!("cargo::rustc-link-lib={library}");
         }

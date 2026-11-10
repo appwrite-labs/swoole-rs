@@ -1160,7 +1160,7 @@ impl Client {
                 Compress::Gzip | Compress::Deflate => {
                     Ok(Decoder::Zlib(Inflate::new(self.compress == Compress::Gzip)))
                 }
-                Compress::Br => Ok(Decoder::Brotli(Box::default())),
+                Compress::Br => brotli::Decoder::new().map(Decoder::Brotli),
                 Compress::Zstd => zstd::Decoder::new().map(Decoder::Zstd),
                 Compress::None => Err(format!(
                     "HttpClient::decompress_response unknown compress method [{}]",
@@ -1205,7 +1205,7 @@ impl Client {
 /// A response's decoder, made on its first compressed chunk.
 enum Decoder {
     Zlib(Inflate),
-    Brotli(Box<brotli::Decoder>),
+    Brotli(brotli::Decoder),
     Zstd(zstd::Decoder),
 }
 

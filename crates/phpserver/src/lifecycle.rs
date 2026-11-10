@@ -349,8 +349,8 @@ impl ServerObject {
     }
 
     /// The running server's object (`php_swoole_server_zval_ptr`).
-    pub(crate) fn of(server: *mut c_void) -> Self {
-        let zserv = crate::dispatch::server_zval(server);
+    pub(crate) fn running() -> Self {
+        let zserv = crate::dispatch::zserv();
         // SAFETY: the server's object zval; the object outlives its running server.
         Self(unsafe { object_of(&raw const zserv) })
     }
@@ -454,8 +454,8 @@ impl ServerObject {
 }
 
 /// `server_object->get_callback(kind)`: a callable, or null.
-pub(crate) fn callback(server: *mut c_void, kind: c_int) -> *mut c_void {
-    ServerObject::of(server).callback(usize::try_from(kind).unwrap_or(CALLBACKS))
+pub(crate) fn callback(kind: c_int) -> *mut c_void {
+    ServerObject::running().callback(usize::try_from(kind).unwrap_or(CALLBACKS))
 }
 
 /// The Server class's `create_object`.
@@ -701,7 +701,7 @@ pub(crate) unsafe fn add_port(object: ServerObject, port: *mut c_void) -> *mut z
 fn bind(call: &Call, serv: view::Server<'_>) {
     let object = ServerObject::this(call);
     // *php_swoole_server_zval_ptr(serv) = *zserv
-    crate::dispatch::set_server_zval(serv.raw(), call.this_zval());
+    crate::dispatch::set_server_zval(call.this_zval());
     object.set_serv(serv.raw());
     let mut index = 0;
     while let port = serv.port_at(index)
@@ -925,7 +925,7 @@ fn add_command(call: &Call) {
 /// writes into `out`.
 unsafe extern "C" fn command_run(
     callable: *mut c_void,
-    server: *mut c_void,
+    _server: *mut c_void,
     message: *const c_char,
     length: usize,
     reply: Reply,
@@ -936,7 +936,7 @@ unsafe extern "C" fn command_run(
         unsafe { reply(out, text.as_ptr().cast(), text.len()) };
     };
     let mut args = [crate::dispatch::undef(), crate::dispatch::undef()];
-    args[0] = crate::dispatch::server_zval(server);
+    args[0] = crate::dispatch::zserv();
     // SAFETY: a writable zval and the message's bytes.
     unsafe { swr_zval_stringl(&raw mut args[1], message, length) };
     let mut retval = crate::dispatch::undef();
@@ -1355,7 +1355,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     if !swoole_rs_phpswoole::enable_library() {
         return Ok(());
     }
-    let mut zserv = [crate::dispatch::server_zval(serv.raw())];
+    let mut zserv = [crate::dispatch::zserv()];
     // SAFETY: the server's object zval.
     let called = unsafe {
         swoole_rs_phphelpers::named_call(br"\Swoole\Server\Helper::onBeforeStart", &mut zserv)
@@ -1417,28 +1417,20 @@ pub(crate) const SW_ERROR_OUTPUT_SEND_YIELD: c_int = 1010;
 
 /// `php_swoole_server_send_yield`: wait in the session's queue until its
 /// output buffer drains, then send; repeat while the send asks to yield again.
-/// 0: false, 1: true, 2: a trapped bailout for the C++ caller to re-raise.
-/// # Safety
-/// `server` is the running server and `data` holds `length` bytes, live while
-/// the coroutine waits.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
-    server: *mut c_void,
+/// # Errors
+/// A trapped bailout, for the caller to raise.
+pub fn php_swoole_server_send_yield(
+    server: view::Server<'_>,
     session_id: i64,
-    data: *const c_char,
-    length: usize,
-) -> c_int {
-    // SAFETY: per the caller, `server` is a live `Server` for the call.
-    let server = unsafe { view::Server::from_raw(server) };
-    if swoole_rs_phpruntime::coroutine_check().is_err() {
-        return 2;
-    }
+    data: &[u8],
+) -> Result<bool, bailout::Bailout> {
+    swoole_rs_phpruntime::coroutine_check()?;
     let co = swoole_rs_phpcoroutines::current();
-    if length == 0 {
-        return 0;
+    if data.is_empty() {
+        return Ok(false);
     }
     loop {
-        let (waiters, token) = ServerObject::of(server.raw()).property(|p| {
+        let (waiters, token) = ServerObject::running().property(|p| {
             p.send_token += 1;
             (
                 Rc::clone(p.send_waiters.entry(session_id).or_default()),
@@ -1450,28 +1442,30 @@ pub unsafe extern "C" fn swr_v1_phpserver_send_yield(
         // SAFETY: this call's coroutine; `onBufferEmpty` or `onClose` wakes it.
         if !unsafe { swoole_rs_phpcoroutines::suspend_for(co, timeout) } {
             waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
-            return 0;
+            return Ok(false);
         }
         #[expect(
             clippy::cast_possible_truncation,
             reason = "Server::send takes a uint32_t length, as upstream's ZSTR_LEN narrowing"
         )]
-        let narrowed = length as u32;
+        let narrowed = data.len() as u32;
         // SAFETY: a live server and the caller's bytes.
-        let sent = unsafe { server_methods::send(server.raw(), session_id, data.cast(), narrowed) };
+        let sent = unsafe {
+            server_methods::send(server.raw(), session_id, data.as_ptr().cast(), narrowed)
+        };
         let yielded = !sent && swoole_rs_corebase::log::last_error() == SW_ERROR_OUTPUT_SEND_YIELD;
         if yielded && fact(server, fact::SEND_YIELD) {
             continue;
         }
-        return c_int::from(sent);
+        return Ok(sent);
     }
 }
 
 /// Take the session's waiting coroutines out of the running server to wake
 /// (`onBufferEmpty` resumes each, `onClose` cancels each): null when none
 /// wait. Release with `send_waiters_free`.
-pub(crate) fn send_waiters(server: *mut c_void, session_id: i64) -> *mut c_void {
-    ServerObject::of(server)
+pub(crate) fn send_waiters(session_id: i64) -> *mut c_void {
+    ServerObject::running()
         .property(|p| p.send_waiters.remove(&session_id))
         .map_or(ptr::null_mut(), |waiters| {
             Box::into_raw(Box::new(waiters)).cast()

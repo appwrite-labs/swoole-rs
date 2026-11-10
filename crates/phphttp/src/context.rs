@@ -17,7 +17,7 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::string;
 use swoole_rs_zend::{
-    Class, Object, Owned, Value, bailout, init_object,
+    Class, Object, Owned, Value, init_object,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, swr_zend_efree, swr_zend_http_property_offset, zend_class_entry,
         zend_object, zend_object_handlers, zend_string, zval,
@@ -203,17 +203,6 @@ pub(crate) fn send_raw(ctx: *mut Context, data: *const c_char, length: usize) ->
 /// `SW_ERROR_OUTPUT_SEND_YIELD`.
 const OUTPUT_SEND_YIELD: c_int = 1010;
 
-unsafe extern "C" {
-    /// crates/phpserver's wait for the session's buffer to drain, then send:
-    /// 0 false, 1 true, 2 bailed out.
-    fn swr_v1_phpserver_send_yield(
-        server: *mut c_void,
-        session_id: i64,
-        data: *const c_char,
-        length: usize,
-    ) -> c_int;
-}
-
 /// `Server::send` to `fd`, waiting in a coroutine while the socket's buffer
 /// is full. A bailout while waiting is left for the handler to raise.
 /// # Safety
@@ -234,14 +223,13 @@ pub(crate) unsafe fn server_send(
         return sent;
     }
     // SAFETY: per the caller.
-    match unsafe { swr_v1_phpserver_send_yield(server, fd, data, length) } {
-        1 => true,
-        2 => {
-            bailout::defer(Err(bailout::Bailout));
-            false
-        }
-        _ => false,
-    }
+    let server = unsafe { view::Server::from_raw(server) };
+    // SAFETY: per the caller, live while the coroutine waits.
+    let data = unsafe { std::slice::from_raw_parts(data.cast(), length) };
+    swoole_rs_phpserver::php_swoole_server_send_yield(server, fd, data).unwrap_or_else(|bailed| {
+        bailed.defer();
+        false
+    })
 }
 
 /// `ctx->sendfile`.
