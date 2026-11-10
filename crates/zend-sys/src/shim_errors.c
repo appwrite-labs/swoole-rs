@@ -75,5 +75,7 @@ int swr_zend_try_ptr_dtor(zval *value) {
 }
 
 int swr_zend_try_hash_update(HashTable *table, zend_string *key, zval *value) {
+    /* A new key releases nothing, so no PHP code can run and needs no trap. */
+    if (zend_hash_add(table, key, value)) return 0;
     SWR_TRAP(zend_hash_update(table, key, value));
 }

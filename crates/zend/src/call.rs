@@ -513,6 +513,7 @@ impl Call {
     /// `zend_update_property_long(scope, Z_OBJ_P(ZEND_THIS), name, value)`;
     /// `scope` is the class whose view of the property to update (NULL if none).
     /// A static method has no `$this` to update.
+    #[inline]
     pub fn update_property_long(&self, scope: Option<&Class>, name: &CStr, value: i64) {
         let Some(this) = self.this_object() else {
             return;

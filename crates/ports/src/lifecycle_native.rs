@@ -458,12 +458,13 @@ fn socket_op(run: &mut Run, op: u32, arg: u64) -> u64 {
             0
         }
         OP_SOCKET_FAIL => {
-            // The fd stays the caller's; the port keeps pointing at the freed
-            // record, as upstream's does.
+            // The fd stays the caller's. Upstream's port keeps pointing at the
+            // freed record; this one forgets it, which deleting the port frees.
             // SAFETY: the record `OP_SOCKET_NEW` made.
             unsafe { (*run.sock).fd = -1 };
             // SAFETY: as above, freed once.
             unsafe { SocketRecord::free(run.sock) };
+            run.config().socket = ptr::null_mut();
             0
         }
         OP_ADOPT => {
