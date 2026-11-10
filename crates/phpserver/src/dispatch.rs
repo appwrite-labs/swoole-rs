@@ -29,8 +29,7 @@ use swoole_rs_zend::{
     class_name, long_zval, message, object_of, php_error, string,
     sys::{
         IS_NULL, ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
-        swr_zend_stack_unlimit, zend_fcall_info_cache, zend_update_property_long, zval,
-        zval_ptr_dtor,
+        swr_zend_stack_unlimit, zend_fcall_info_cache, zval, zval_ptr_dtor,
     },
     type_of,
     value::{get_long, set_str},
@@ -992,8 +991,8 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: *mu
     // SAFETY: the process object.
     let object = unsafe { object_of(process) };
     let ce = crate::lifecycle::process_class();
-    // SAFETY: a live `Swoole\Process` object; Zend copies the name.
-    unsafe { zend_update_property_long(ce, object, c"id".as_ptr(), 2, id) };
+    // SAFETY: a live `Swoole\Process` object.
+    unsafe { swoole_rs_zend::Props::new(ce, object) }.long(c"id", id);
     let gs = server.counters();
     let props = Props::server(server_object);
     props.long(c"master_pid", i64::from(gs.master_pid));
