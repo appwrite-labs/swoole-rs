@@ -22,6 +22,7 @@ import shutil
 import signal
 import socket
 import socketserver
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -43,7 +44,9 @@ FRAME = (1024).to_bytes(4, 'big') + PAYLOAD[:1024]
 # WebSocket to the app and echoes `body` frame by frame instead of sending HTTP; 'WSZ' does
 # so with permessage-deflate. 'GZ' is a POST sent with Accept-Encoding: gzip whose response
 # must come back gzip-encoded. 'TCP' and 'UDP' send `body` as raw bytes on one connection
-# (one socket) and read `expected` back.
+# (one socket) and read `expected` back. 'TLS' is a GET over HTTPS on one connection and
+# 'WSS' the WebSocket echo over TLS. The pin's test certificate is self-signed, so the client doesn't
+# verify it.
 WORKLOADS = {
     'plaintext': ('corpus/01-hello', 'GET', '/', None, b'Hello, Swoole!\n'),
     'json': ('corpus/02-router', 'GET', '/inspect?q=benchmark', None,
@@ -78,10 +81,15 @@ WORKLOADS = {
     'tcp-length': ('corpus/07-tcp-framing', 'TCP', None, FRAME, FRAME),
     'tcp-eof': ('benchmarks/framing', 'TCP', None, PAYLOAD[:1024] + b'\r\n', PAYLOAD[:1024] + b'\r\n'),
     'udp': ('benchmarks/framing', 'UDP', None, PAYLOAD[:1024], PAYLOAD[:1024]),
+    # TLS (#2648): the record layer on a kept-alive connection, and wss.
+    'https': ('benchmarks/tls', 'TLS', '/', None, b'ok\n'),
+    'wss': ('benchmarks/tls', 'WSS', '/chat', b'ping', b'ping'),
     # Swoole\Atomic and Swoole\Lock, and plaintext dispatched through SWOOLE_PROCESS's master (#2654).
     'atomic': ('benchmarks/primitives', 'GET', '/atomic', None, b'2016\n'),
     'process-mode': ('benchmarks/process', 'GET', '/', None, b'Hello, Swoole!\n'),
 }
+TLS = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+TLS.check_hostname, TLS.verify_mode = False, ssl.CERT_NONE
 
 
 class Pong(http.server.BaseHTTPRequestHandler):
@@ -165,8 +173,8 @@ def wait_for_port(port, proc, seconds=180):
 
 def send(port, workload, count):
     _, method, path, payload, expected = workload
-    if method in ('WS', 'WSZ'):
-        client = WebSocket(port, deflate=method == 'WSZ')
+    if method in ('WS', 'WSZ', 'WSS'):
+        client = WebSocket(port, deflate=method == 'WSZ', tls=TLS if method == 'WSS' else None)
         try:
             for _ in range(count):
                 client.send(payload)
@@ -195,12 +203,15 @@ def send(port, workload, count):
                 if body != expected:
                     raise RuntimeError(f'unexpected {method} reply: {body[:80]!r}')
         return
-    conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
+    if method == 'TLS':
+        conn = http.client.HTTPSConnection('127.0.0.1', port, timeout=60, context=TLS)
+    else:
+        conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
     for _ in range(count):
         if method == 'GZ':
             conn.request('POST', path, payload, {'Accept-Encoding': 'gzip'})
         else:
-            conn.request(method, path, payload)
+            conn.request('GET' if method == 'TLS' else method, path, payload)
         response = conn.getresponse()
         body = response.read()
         if method == 'GZ':

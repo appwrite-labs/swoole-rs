@@ -230,9 +230,8 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ADD_MASTER_TIMER => {
             let tick = crate::server_methods::master_timer_tick;
-            // SAFETY: a persistent timer over the live server.
-            let node =
-                unsafe { crate::pool_native::swr_v1_timer_add_plain(1000, true, tick, serv) };
+            // SAFETY: `tick` takes the server, which outlives the master's timer.
+            let node = unsafe { swoole_rs_timer::swr_v1_timer_add_plain(1000, true, tick, serv) };
             config.master_timer = node;
             u64::from(!node.is_null())
         }

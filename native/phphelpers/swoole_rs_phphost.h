@@ -213,9 +213,6 @@ struct Function {
     }
 };
 
-void unserialize(zval *return_value, const char *buf, size_t buf_len, HashTable *options);
-void json_decode(zval *return_value, const char *str, size_t str_len, zend_long options, zend_long zend_long);
-
 // Returns a reference.
 static inline zval *array_get(zval *arg, zend_ulong index) {
     return zend_hash_index_find(Z_ARRVAL_P(arg), index);

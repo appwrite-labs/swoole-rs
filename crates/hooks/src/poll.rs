@@ -317,14 +317,10 @@ pub(crate) mod native {
     use core::ffi::c_void;
     use swoole_rs_corebase::constants::FdType;
 
+    use swoole_rs_timer::swr_v1_timer_add_plain_sec;
+
     // SAFETY: crates/timer's.
     unsafe extern "C" {
-        fn swr_v1_timer_add_plain_sec(
-            timeout: f64,
-            persistent: bool,
-            callback: unsafe extern "C-unwind" fn(*mut c_void),
-            data: *mut c_void,
-        ) -> *mut c_void;
         #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
         fn swoole_timer_del(node: *mut c_void) -> bool;
     }
@@ -350,8 +346,7 @@ pub(crate) mod native {
         callback: extern "C-unwind" fn(*mut c_void),
         data: *mut c_void,
     ) -> *mut c_void {
-        // SAFETY: the callback takes any `data`; the caller deletes the timer before
-        // `data` goes.
+        // SAFETY: a safe callback accepts any `data`.
         unsafe { swr_v1_timer_add_plain_sec(timeout, false, callback, data) }
     }
 

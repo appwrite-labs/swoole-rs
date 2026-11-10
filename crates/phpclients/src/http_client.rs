@@ -5,7 +5,7 @@
 //! coroutine socket, files and callables are reached through
 //! `crate::http_native`, as is WebSocket framing, which stays C++.
 use crate::{
-    http_native::{self as native, TIMEOUT_READ},
+    http_native::{self as native, TIMEOUT_READ, WebSocket},
     http_request::{self as request, Compress},
     native::{Co, Socket, swoole_rs_php_error, unconstructed},
     socket::socket_of,
@@ -111,7 +111,7 @@ struct Client {
     body_decompression: bool,
     websocket: bool,
     accept_websocket_compression: bool,
-    ws: *mut c_void,
+    ws: Option<Box<dyn WebSocket>>,
     write_func: *mut c_void,
     path: Vec<u8>,
     basic_auth: Vec<u8>,
@@ -371,7 +371,7 @@ impl Client {
             websocket: false,
             accept_websocket_compression: false,
             // SAFETY: a fresh C++ allocation the client frees.
-            ws: unsafe { native::swoole_http_client_coro_ws_new() },
+            ws: native::websocket(),
             write_func: ptr::null_mut(),
             path: Vec::new(),
             basic_auth: Vec::new(),
@@ -502,8 +502,9 @@ impl Client {
                     return;
                 }
             }
-            // SAFETY: the client's WebSocket state and a live array.
-            unsafe { native::swoole_http_client_coro_ws_apply(self.ws, settings.as_ptr()) };
+            if let Some(ws) = self.ws.as_mut() {
+                ws.apply(array);
+            }
         }
         if let Some(socket) = self.co() {
             crate::socket_options::apply(socket, array, crate::socket_options::ALL);
@@ -1061,11 +1062,11 @@ impl Client {
         let Some(socket) = self.co() else {
             return call.set_bool(false);
         };
+        let Some(ws) = self.ws.as_mut() else {
+            return call.set_bool(false);
+        };
+        ws.recv(socket, call, timeout);
         let value = call.return_value();
-        // SAFETY: a live socket, the client's WebSocket state and the return slot.
-        unsafe {
-            native::swoole_http_client_coro_ws_recv(socket.as_ptr(), self.ws, value, timeout);
-        }
         if bailout::pending() {
             return;
         }
@@ -1108,8 +1109,7 @@ impl Client {
             Some(key.get(..written).unwrap_or(&key)),
         );
         // SAFETY: the client's WebSocket state.
-        if features() & 1 != 0 && unsafe { native::swoole_http_client_coro_ws_compression(self.ws) }
-        {
+        if features() & 1 != 0 && self.ws.as_ref().is_some_and(|ws| ws.compression()) {
             headers.insert_bytes(
                 b"Sec-Websocket-Extensions",
                 Some(DEFLATE_EXTENSION.to_bytes()),
@@ -1147,18 +1147,16 @@ impl Client {
             return false;
         };
         let flags = c_int::from(flags.to_le_bytes()[0]);
-        // SAFETY: a live socket, WebSocket state and data zval.
-        let result = unsafe {
-            native::swoole_http_client_coro_ws_push(
-                socket.as_ptr(),
-                self.ws,
-                data.as_ptr(),
+        let result = self.ws.as_ref().map_or(1, |ws| {
+            ws.push(
+                socket,
+                data,
                 opcode,
                 flags,
                 code,
                 self.accept_websocket_compression,
             )
-        };
+        });
         match result {
             0 => true,
             1 if bailout::pending() => false,
@@ -1291,8 +1289,6 @@ impl Drop for Client {
         // SAFETY: the C++ objects the client owns, freed once (null is ignored
         // by each, as `delete` is).
         unsafe { native::swoole_http_client_coro_callable_free(self.write_func) };
-        // SAFETY: as above.
-        unsafe { native::swoole_http_client_coro_ws_free(self.ws) };
         if let Some(fd) = self.download_file.take() {
             native::swoole_http_client_coro_file_close(fd);
         }
@@ -1412,8 +1408,7 @@ fn on_header_value(this: *mut Client, at: *const c_char, length: usize) -> c_int
         }
     } else if features() & 1 != 0
         && client.websocket
-        // SAFETY: the client's WebSocket state.
-        && unsafe { native::swoole_http_client_coro_ws_compression(client.ws) }
+        && client.ws.as_ref().is_some_and(|ws| ws.compression())
         && name == b"sec-websocket-extensions"
     {
         if request::contains_ignore_case(data, b"permessage-deflate") {

@@ -107,10 +107,12 @@ def coroutines(engine, entry):
 
 
 class WebSocket:
-    def __init__(self, port, deflate=False):
+    def __init__(self, port, deflate=False, tls=None):
         """`deflate` negotiates permessage-deflate without context takeover, as Swoole offers it:
-        each message is compressed on its own."""
+        each message is compressed on its own. `tls` is an ssl.SSLContext to connect with (wss)."""
         self.socket = socket.create_connection(('127.0.0.1', port), timeout=5)
+        if tls:
+            self.socket = tls.wrap_socket(self.socket, server_hostname='127.0.0.1')
         self.deflate = deflate
         try:
             key = base64.b64encode(os.urandom(16)).decode()

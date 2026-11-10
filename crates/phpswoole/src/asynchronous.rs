@@ -10,7 +10,7 @@ use crate::{
 use std::{
     cell::RefCell,
     collections::HashMap,
-    ffi::{CStr, c_char, c_void},
+    ffi::CStr,
     sync::atomic::{AtomicU64, Ordering},
 };
 use swoole_rs_corebase::{
@@ -26,18 +26,6 @@ use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, handlers, 
 /// `SW_ERROR_OPERATION_NOT_SUPPORT` and `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
 const OPERATION_NOT_SUPPORT: i32 = 507;
 const DNSLOOKUP_RESOLVE_FAILED: i32 = 711;
-
-unsafe extern "C" {
-    /// crates/hooks' `swoole::coroutine::dns_lookup(domain, family, timeout)`,
-    /// each address pushed onto `list` in order. The coroutine yields.
-    fn swr_v1_hook_dns_lookup(
-        domain: *const c_char,
-        family: i32,
-        timeout: f64,
-        push: extern "C" fn(list: *mut c_void, address: *const c_char),
-        list: *mut c_void,
-    );
-}
 
 handlers! {
     zif_swoole_async_set => async_set;
@@ -166,15 +154,6 @@ fn async_set(call: &Call) {
     }
 }
 
-/// The lookup's answers, as C++ pushes them.
-extern "C" fn push(list: *mut c_void, address: *const c_char) {
-    // SAFETY: `list` is the vector `dns_lookup` lent for the call.
-    let list = unsafe { &mut *list.cast::<Vec<Vec<u8>>>() };
-    // SAFETY: C++ passes a live C string.
-    let address = unsafe { CStr::from_ptr(address) };
-    list.push(address.to_bytes().to_vec());
-}
-
 /// `swoole_async_dns_lookup_coro(string $domain, float $timeout = 5, int $type = AF_INET)`.
 fn dns_lookup(call: &Call) {
     crate::coroutine_check();
@@ -214,23 +193,13 @@ fn dns_lookup(call: &Call) {
         return;
     }
     crate::check_reactor();
-    let mut answers: Vec<Vec<u8>> = Vec::new();
     #[expect(
         clippy::cast_possible_truncation,
         reason = "C's (int) conversion of the family"
     )]
     let family = family as i32;
-    // SAFETY: the domain as a C string (it ends at a NUL, as upstream passes
-    // it), and a vector `push` fills during the call; the coroutine may yield.
-    unsafe {
-        swr_v1_hook_dns_lookup(
-            name.as_ptr().cast(),
-            family,
-            timeout,
-            push,
-            (&raw mut answers).cast(),
-        );
-    }
+    // The coroutine yields.
+    let mut answers = swoole_rs_hooks::resolve::dns_lookup(name, family, timeout);
     if answers.is_empty() {
         set_last_error(DNSLOOKUP_RESOLVE_FAILED);
         call.set_bool(false);
@@ -241,7 +210,7 @@ fn dns_lookup(call: &Call) {
     } else {
         0
     };
-    let address = answers.swap_remove(pick);
+    let address = answers.swap_remove(pick).into_bytes();
     call.set_bytes(&address);
     let refresh = f64::from_bits(DNS_REFRESH_SECONDS.load(Ordering::Relaxed));
     let now = swoole_rs_timer::absolute_msec();

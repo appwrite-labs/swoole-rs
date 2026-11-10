@@ -1,7 +1,7 @@
 //! Compile what the extension still needs of C and C++ (native/ and the bundled
 //! thirdparty sources config.m4 lists) and link it into `swoole.so`, in place of
-//! phpize and configure. The sources are the unpatched pin's (`SWOOLE_SRC`), except
-//! the files native/swoole-src owns at the same paths.
+//! phpize and configure. The thirdparty sources are native/swoole-src's, except
+//! nghttp2, which is still the pin's (`SWOOLE_SRC`).
 
 fn main() {
     println!("cargo::rerun-if-env-changed=PHP_CONFIG");
@@ -332,13 +332,9 @@ mod php {
         let platform = if os == "macos" { MACOS } else { LINUX };
         let php_config = env::var("PHP_CONFIG").unwrap_or_else(|_| "php-config".into());
         let third = tree.join("thirdparty");
-        // native/swoole-src's copy of a pinned file, when it owns one.
         let owned = native.join("swoole-src");
-        let own = |path: PathBuf| {
-            let copy = owned.join(path.strip_prefix(&tree).unwrap_or(&path));
-            if copy.is_file() { copy } else { path }
-        };
-        let profile = profile(&third, php_version_id(&php_config));
+        let vendored = owned.join("thirdparty");
+        let profile = profile(&vendored, php_version_id(&php_config));
         // config.m4: thread context replaces boost.context's assembly switch.
         let asm_context = !feature("thread_context");
         let config: String = COMMON
@@ -399,9 +395,8 @@ mod php {
         for module in &modules {
             cxx.files(sources(module, "cc"));
         }
-        cxx.file(third.join("php/standard/var_decoder.cc"))
-            .file(own(third.join("php/standard/proc_open.cc")))
-            .files(profile.cxx.into_iter().map(own))
+        cxx.file(vendored.join("php/standard/proc_open.cc"))
+            .files(profile.cxx)
             .compile("swoole_native_cxx");
 
         let asm = context_asm(&os, &arch);
@@ -409,7 +404,7 @@ mod php {
         for module in &modules {
             c.files(sources(module, "c"));
         }
-        c.file(own(third.join("php/streams/plain_wrapper.c")))
+        c.file(vendored.join("php/streams/plain_wrapper.c"))
             .files(
                 [
                     "nghttp2_hd.c",
@@ -423,9 +418,9 @@ mod php {
                 .map(|f| third.join("nghttp2").join(f)),
             )
             // Rust's coroutine links boost.context's switch even under thread context.
-            .file(third.join("boost/asm").join(format!("make_{asm}")))
-            .file(third.join("boost/asm").join(format!("jump_{asm}")))
-            .files(profile.c.into_iter().map(own))
+            .file(vendored.join("boost/asm").join(format!("make_{asm}")))
+            .file(vendored.join("boost/asm").join(format!("jump_{asm}")))
+            .files(profile.c)
             .compile("swoole_native_c");
 
         for library in profile.libs.into_iter().chain(["z", "pthread", "m"]) {
