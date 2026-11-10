@@ -31,7 +31,8 @@ from corpus.run import WebSocket
 NOISE = 1.01  # counts for the same binaries drift well under 1% between runs
 PAYLOAD = bytes(range(256)) * 256
 # (application directory, method, path, body, expected response body). method 'WS' opens a
-# WebSocket to the app and echoes `body` frame by frame instead of sending HTTP.
+# WebSocket to the app and echoes `body` frame by frame instead of sending HTTP. 'GET1' is a
+# GET on a new connection each time, closed by the server (Connection: close).
 WORKLOADS = {
     'plaintext': ('corpus/01-hello', 'GET', '/', None, b'Hello, Swoole!\n'),
     'json': ('corpus/02-router', 'GET', '/inspect?q=benchmark', None,
@@ -55,6 +56,8 @@ WORKLOADS = {
     # A prepared SELECT through hooked PDO mysql (#2066); needs MySQL on MYSQL_HOST (root/root,
     # database test) and --php-extension mysqlnd --php-extension pdo --php-extension pdo_mysql.
     'mysql': ('benchmarks/mysql', 'GET', '/?id=42', None, b'{"id":42,"name":"benchmark"}'),
+    # plaintext with accept, the connection's setup and its close in every request (#2651).
+    'connect': ('corpus/01-hello', 'GET1', '/', None, b'Hello, Swoole!\n'),
 }
 
 
@@ -119,6 +122,19 @@ def send(port, workload, count):
         return
     if method == 'H2':
         send_h2(port, path, expected, count)
+        return
+    if method == 'GET1':
+        for _ in range(count):
+            conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
+            conn.request('GET', path, headers={'Connection': 'close'})
+            response = conn.getresponse()
+            body = response.read()
+            # Wait for the server's close, so the connection's teardown falls in this request.
+            if conn.sock and conn.sock.recv(1):
+                raise RuntimeError('server kept the connection open')
+            conn.close()
+            if response.status != 200 or body != expected:
+                raise RuntimeError(f'unexpected response {response.status}: {body[:80]!r}')
         return
     conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
     for _ in range(count):

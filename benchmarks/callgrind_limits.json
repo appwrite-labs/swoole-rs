@@ -10,5 +10,6 @@
   "table": 0.98,
   "channel": 0.89,
   "task": 0.94,
-  "mysql": 0.97
+  "mysql": 0.97,
+  "connect": 1.04
 }

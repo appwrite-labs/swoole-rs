@@ -120,6 +120,7 @@ jobs:
   # app is benchmarks/app, an application-shaped request with a Redis pool (#1907).
   # http2, table and channel are benchmarks/primitives; task is a taskwait round trip (#1909).
   # mysql is benchmarks/mysql, a prepared SELECT through hooked PDO mysql (#2066).
+  # connect is plaintext on a new connection per request (#2651).
   callgrind:
     runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 40
@@ -152,7 +153,7 @@ jobs:
           python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits.json
           --workload plaintext --workload echo-1k --workload json --workload service-health
           --workload websocket --workload timer --workload app
-          --workload http2 --workload table --workload channel --workload task --workload mysql
+          --workload http2 --workload table --workload channel --workload task --workload mysql --workload connect
           --php-extension pdo --php-extension pdo_sqlite --php-extension mysqlnd --php-extension pdo_mysql
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
