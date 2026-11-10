@@ -688,10 +688,7 @@ fn http(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
     }
     if let Some(value) = s.get(c"upload_tmp_dir") {
         let created = Settings::string(value, |dir| {
-            // SAFETY: the directory's bytes.
-            let created =
-                unsafe { crate::instance::php_swoole_create_dir(dir.as_ptr().cast(), dir.len()) }
-                    >= 0;
+            let created = crate::instance::php_swoole_create_dir(dir);
             if created {
                 s.server().set_upload_tmp_dir(dir);
             } else {

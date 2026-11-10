@@ -18,6 +18,7 @@ use std::{
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_phpruntime::co;
+use swoole_rs_phpserver::{php_swoole_server_get_ptr, php_swoole_server_zval_ptr};
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
@@ -153,13 +154,6 @@ struct Connection {
     server_fd: c_int,
     compression: bool,
     closed: bool,
-}
-
-unsafe extern "C" {
-    #[link_name = "_Z25php_swoole_server_get_ptrP12_zval_struct"]
-    fn php_swoole_server_get_ptr(object: *mut zval) -> *mut Server;
-    #[link_name = "_Z26php_swoole_server_zval_ptrPN6swoole6ServerE"]
-    fn php_swoole_server_zval_ptr(server: *mut Server) -> *mut zval;
 }
 
 /// `php_swoole_server_get_and_check_server(object)`: `None` after the
@@ -1061,11 +1055,9 @@ fn string_bytes(data: &zval) -> &[u8] {
 }
 
 /// The server object, as the first callback argument (borrowed).
-fn server_zval(server: *mut Server) -> zval {
-    // SAFETY: the live server's object.
-    let object = unsafe { php_swoole_server_zval_ptr(server) };
-    // SAFETY: the server's live zval.
-    unsafe { *object }
+fn server_zval() -> zval {
+    // SAFETY: the running server's live zval.
+    unsafe { *php_swoole_server_zval_ptr() }
 }
 
 /// `swoole_websocket_onMessage`: a frame `Server::dispatch_frame` delivered,
@@ -1116,7 +1108,7 @@ fn message(
         }
         data = plain;
     }
-    let mut args = [server_zval(server), new_zval()];
+    let mut args = [server_zval(), new_zval()];
     construct(
         &raw mut args[1],
         zend_long::from(opcode),
@@ -1199,7 +1191,7 @@ fn handshake(context: *mut Context) -> Result<bool, bailout::Bailout> {
         }
         let state = send::state(context);
         let mut args = [
-            server_zval(server),
+            server_zval(),
             // SAFETY: the context's live request and response objects.
             unsafe { *state.request.zobject.ptr },
             // SAFETY: as above.
@@ -1241,7 +1233,7 @@ fn on_open(server: *mut Server, context: *mut Context) -> Result<(), bailout::Ba
     };
     // SAFETY: the context's live request object.
     let request = unsafe { *send::state(context).request.zobject.ptr };
-    let mut args = [server_zval(server), request];
+    let mut args = [server_zval(), request];
     dispatch(server, conn.server_fd, ON_OPEN, &mut args, fd)
 }
 

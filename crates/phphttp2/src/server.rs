@@ -960,11 +960,6 @@ pub(crate) fn finish_file(ctx: *mut c_void, trailer: bool, error: bool) -> bool 
 
 // --- receiving ---
 
-unsafe extern "C" {
-    #[link_name = "_Z24php_swoole_get_recv_dataPN6swoole6ServerEP12_zval_structPNS_8RecvDataE"]
-    fn php_swoole_get_recv_data(server: *mut c_void, zdata: *mut zval, request: *mut c_void);
-}
-
 /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
 /// connection, whose session (and settings context) the first data makes.
 /// # Safety
@@ -999,7 +994,7 @@ pub unsafe extern "C" fn swoole_http2_server_on_receive(
     });
     let zdata = Owned::default();
     // SAFETY: the live server and its request; the data is a new string.
-    unsafe { php_swoole_get_recv_data(server, zdata.as_ptr(), request) };
+    unsafe { swoole_rs_phpserver::php_swoole_get_recv_data(server, zdata.as_ptr(), request) };
     let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
     let result = session.map_or(SW_ERR, |session| parse(&session, data.as_ptr()));
