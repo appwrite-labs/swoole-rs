@@ -137,6 +137,24 @@ in the same binary and phase, over the same records. Upstream's client thread wa
 mutex its `onWorkerStart` unlocks; here `onWorkerStart` starts it, and its `SyncClient` is
 a blocking `TcpStream`.
 
+`core-tests/src/server/server.cpp`'s TESTs go in the same binary and phase, suite `server`,
+one function per TEST under its own name (#2533). Its `schedule*` TESTs are
+`server/src/http1/schedule.rs`: each creates a process-mode Server and calls crates/server's
+`schedule_worker` under one dispatch mode, with the workers' status, `coroutine_num` or
+`concurrency` and the fake connections' `uid` and `worker_id` set as upstream sets them.
+Upstream's stack `network::Socket fake_sock{}` is `make_socket(fd)`, its `info` assigned by
+the `Address::assign` body (`swr_v1_clients_address_assign`).
+
+| Upstream TEST | Dispatch mode |
+| --- | --- |
+| `schedule` | `DISPATCH_IDLE_WORKER`, all busy then four idle |
+| `schedule_1` | `DISPATCH_ROUND` |
+| `schedule_4` | `DISPATCH_IPMOD`: IPv4 and IPv6 connections and a UDP packet in `sw_tg_buffer()` |
+| `schedule_5` | `DISPATCH_UIDMOD` |
+| `schedule_8` | `DISPATCH_CO_CONN_LB` |
+| `schedule_9` | `DISPATCH_CO_REQ_LB` (`Worker::coroutine_num`) |
+| `schedule_10` | `DISPATCH_CONCURRENT_LB` (`Worker::concurrency`) |
+
 The SDK's own response writer (`Context::end`, whose `TEST_STR` body curl printed in
 `upload`) went with it; responses on the production path are `Swoole\Http\Response`'s,
 covered by the PHPTs.

@@ -25,6 +25,8 @@ use swoole_rs_server::{ConnectionRecord, server_methods, view};
 use crate::client::{Client, USER_AGENT};
 
 pub(super) mod case;
+/// schedule.rs: `core-tests/src/server/server.cpp`'s `schedule*` TESTs.
+pub(super) mod schedule;
 pub(super) mod server;
 
 const TEST_HOST: &str = "127.0.0.1";

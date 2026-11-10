@@ -84,7 +84,7 @@ const _: () = assert!(
 /// The head of `network::Socket`, through `object` (native/reactor/swoole_rs_socket.h); `info`
 /// is at [`SOCKET_INFO`].
 #[repr(C)]
-struct SocketHead {
+pub(super) struct SocketHead {
     fd: c_int,
     fd_type: c_int,
     socket_type: c_int,
@@ -106,7 +106,7 @@ const _: () = assert!(
         && offset_of!(SocketHead, object) == 64
         && size_of::<Address>() == 120
 );
-const SOCKET_INFO: usize = 176;
+pub(super) const SOCKET_INFO: usize = 176;
 
 /// A timer's data: what upstream's lambdas capture.
 struct Tick {
@@ -127,7 +127,7 @@ unsafe extern "C-unwind" {
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
     #[link_name = "_ZN6swoole11make_socketEi8swFdType"]
-    fn make_socket(fd: c_int, fd_type: c_int) -> *mut SocketHead;
+    pub(super) fn make_socket(fd: c_int, fd_type: c_int) -> *mut SocketHead;
     #[link_name = "_Z16swoole_timer_addlbPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
     fn swoole_timer_add(
         ms: c_long,
